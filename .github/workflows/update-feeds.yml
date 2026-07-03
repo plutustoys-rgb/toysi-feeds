@@ -33,7 +33,7 @@ jobs:
           git config user.name "feed-bot"
           git config user.email "feed-bot@users.noreply.github.com"
           git checkout --orphan "$FEED_BRANCH-tmp"
-          git reset --hard
+          git rm -r --cached . > /dev/null
           git add feeds/rozetka_feed.xml feeds/prom_feed.xml
           git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"

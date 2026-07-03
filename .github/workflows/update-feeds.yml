@@ -1,0 +1,29 @@
+name: Update Toysi feeds
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TOYSI_API_KEY: ${{ secrets.TOYSI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python generate_rozetka_feed.py
+      - run: python generate_prom_feed.py
+      - run: |
+          git config user.name "feed-bot"
+          git config user.email "feed-bot@users.noreply.github.com"
+          git add feeds/*.xml
+          git diff --staged --quiet && echo "Немає змін" && exit 0
+          git commit -m "Auto-update feeds $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push

@@ -1,0 +1,17 @@
+.env
+
+__pycache__/
+*.pyc
+
+# Локальний кеш каталогу Toysi (десятки МБ, генерується скриптами наново)
+toysi_catalog_cache.json
+
+# Локальний стан конкурентного ціноутворення (не для публічного репо)
+competitor_pricing_checkpoint.json
+pricing_results.csv
+
+# Дебаг/скретч-файли
+debug_page.html
+debug_screenshot.png
+scratch_search.html
+scratch_product.html

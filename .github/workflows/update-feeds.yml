@@ -5,6 +5,9 @@ on:
     - cron: "0 */4 * * *"
   workflow_dispatch: {}
 
+env:
+  FEED_BRANCH: feed-data
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -20,10 +23,17 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python generate_rozetka_feed.py
       - run: python generate_prom_feed.py
-      - run: |
+
+      # Публікуємо тільки feeds/*.xml в окрему гілку feed-data одним коммітом,
+      # що щоразу перезаписує попередній (force-push). Це не дає git-історії
+      # рости на кожен запуск (кожні 4 години) — інакше репозиторій накопичував
+      # би десятки МБ щодня назавжди. Гілка main лишається чистою — тільки код.
+      - name: Publish feeds to ${{ env.FEED_BRANCH }} (force-push, no history)
+        run: |
           git config user.name "feed-bot"
           git config user.email "feed-bot@users.noreply.github.com"
-          git add feeds/*.xml
-          git diff --staged --quiet && echo "Немає змін" && exit 0
-          git commit -m "Auto-update feeds $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push
+          git checkout --orphan "$FEED_BRANCH-tmp"
+          git reset --hard
+          git add feeds/rozetka_feed.xml feeds/prom_feed.xml
+          git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"

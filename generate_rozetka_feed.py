@@ -6,7 +6,7 @@ from datetime import datetime
 from parser import fetch_toysi_catalog
 
 SHOP_NAME          = "Мій магазин"
-SHOP_COMPANY       = "ФОП Іванченко"
+SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійович"
 SHOP_URL           = "https://rozetka.com.ua"
 OUTPUT_FILE        = "feeds/rozetka_feed.xml"
 MIN_SUPPLIER_PRICE = 20  # товари дешевше цієї ціни постачальника пропускаємо

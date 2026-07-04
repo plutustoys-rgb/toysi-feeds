@@ -1,0 +1,182 @@
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime
+from typing import Optional
+
+DB_PATH = "orders.db"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS orders (
+    internal_order_id     TEXT PRIMARY KEY,   -- "{platform}_{order_id}", захист від дублів між Rozetka/Prom
+    order_id              TEXT NOT NULL,
+    platform              TEXT NOT NULL CHECK (platform IN ('rozetka', 'prom')),
+    status                TEXT NOT NULL DEFAULT 'new',
+    payment_method        TEXT NOT NULL CHECK (payment_method IN ('cod', 'prepaid')),
+    payment_confirmed     INTEGER NOT NULL DEFAULT 0,
+    customer_name         TEXT,
+    phone                 TEXT,
+    np_branch             TEXT,
+    items                 TEXT NOT NULL,      -- JSON: [{"toysi_code":.., "name":.., "qty":.., "price":..}, ...]
+    created_at            TEXT NOT NULL,
+    forwarded_to_toysi_at TEXT,
+    toysi_order_id        TEXT,               -- номер замовлення, який повернув Toysi order_create
+    toysi_ttn             TEXT,
+    delivery_status       TEXT,
+    UNIQUE (order_id, platform)
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
+CREATE INDEX IF NOT EXISTS idx_orders_payment_confirmed ON orders (payment_confirmed);
+"""
+
+
+@contextmanager
+def get_connection(db_path: str = DB_PATH):
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db(db_path: str = DB_PATH) -> None:
+    with get_connection(db_path) as conn:
+        conn.executescript(SCHEMA)
+
+
+def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM orders WHERE order_id = ? AND platform = ?", (order_id, platform)
+    ).fetchone()
+    return row is not None
+
+
+def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
+    """
+    Вставляє нове замовлення. Повертає False, якщо (order_id, platform) вже є в БД —
+    виклик має бути ідемпотентним при повторному опитуванні (Крок 3 плану).
+    """
+    if order_exists(conn, order["order_id"], order["platform"]):
+        return False
+
+    internal_order_id = f"{order['platform']}_{order['order_id']}"
+
+    conn.execute(
+        """
+        INSERT INTO orders (
+            internal_order_id, order_id, platform, status, payment_method,
+            payment_confirmed, customer_name, phone, np_branch, items,
+            created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            internal_order_id,
+            order["order_id"],
+            order["platform"],
+            order.get("status", "new"),
+            order["payment_method"],
+            int(order.get("payment_confirmed", False)),
+            order.get("customer_name"),
+            order.get("phone"),
+            order.get("np_branch"),
+            json.dumps(order["items"], ensure_ascii=False),
+            order.get("created_at") or datetime.now().isoformat(timespec="seconds"),
+            order.get("forwarded_to_toysi_at"),
+            order.get("toysi_order_id"),
+            order.get("toysi_ttn"),
+            order.get("delivery_status"),
+        ),
+    )
+    return True
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    result = dict(row)
+    result["items"] = json.loads(result["items"])
+    return result
+
+
+def get_order(conn: sqlite3.Connection, internal_order_id: str) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT * FROM orders WHERE internal_order_id = ?", (internal_order_id,)
+    ).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def get_orders_by_status(conn: sqlite3.Connection, status: str) -> list:
+    rows = conn.execute("SELECT * FROM orders WHERE status = ?", (status,)).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_orders_awaiting_payment(conn: sqlite3.Connection) -> list:
+    """Передоплачені замовлення, які ще чекають підтвердження bank_check.py (Крок 4)."""
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE payment_method = 'prepaid' AND payment_confirmed = 0"
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def mark_payment_confirmed(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    conn.execute(
+        "UPDATE orders SET payment_confirmed = 1 WHERE internal_order_id = ?",
+        (internal_order_id,),
+    )
+
+
+def mark_forwarded_to_toysi(conn: sqlite3.Connection, internal_order_id: str, toysi_order_id: str) -> None:
+    conn.execute(
+        """
+        UPDATE orders
+        SET forwarded_to_toysi_at = ?, toysi_order_id = ?, status = 'forwarded_to_supplier'
+        WHERE internal_order_id = ?
+        """,
+        (datetime.now().isoformat(timespec="seconds"), toysi_order_id, internal_order_id),
+    )
+
+
+def update_delivery_status(
+    conn: sqlite3.Connection,
+    internal_order_id: str,
+    toysi_ttn: str = None,
+    delivery_status: str = None,
+    status: str = None,
+) -> None:
+    fields, params = [], []
+    if toysi_ttn is not None:
+        fields.append("toysi_ttn = ?")
+        params.append(toysi_ttn)
+    if delivery_status is not None:
+        fields.append("delivery_status = ?")
+        params.append(delivery_status)
+    if status is not None:
+        fields.append("status = ?")
+        params.append(status)
+    if not fields:
+        return
+    params.append(internal_order_id)
+    conn.execute(f"UPDATE orders SET {', '.join(fields)} WHERE internal_order_id = ?", params)
+
+
+if __name__ == "__main__":
+    init_db()
+    print(f"[orders_db] Схему ініціалізовано: {DB_PATH}")
+
+    with get_connection() as conn:
+        demo = {
+            "order_id": "DEMO-0001",
+            "platform": "prom",
+            "payment_method": "cod",
+            "customer_name": "Демо Клієнт",
+            "phone": "380501234567",
+            "np_branch": "Київ, відділення №15",
+            "items": [{"toysi_code": "11623", "name": "Демо товар", "qty": 1, "price": 450.0}],
+        }
+        if insert_order(conn, demo):
+            print("[orders_db] Демо-запис додано")
+        else:
+            print("[orders_db] Демо-запис вже існує (повторний запуск)")
+
+        print(get_order(conn, "prom_DEMO-0001"))

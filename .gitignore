@@ -15,3 +15,6 @@ debug_page.html
 debug_screenshot.png
 scratch_search.html
 scratch_product.html
+
+# Локальна БД замовлень (runtime-стан, не для git)
+orders.db

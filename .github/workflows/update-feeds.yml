@@ -23,6 +23,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python generate_rozetka_feed.py
       - run: python generate_prom_feed.py
+      - run: python generate_prom_feed_top.py
 
       # Публікуємо тільки feeds/*.xml в окрему гілку feed-data одним коммітом,
       # що щоразу перезаписує попередній (force-push). Це не дає git-історії
@@ -34,6 +35,6 @@ jobs:
           git config user.email "feed-bot@users.noreply.github.com"
           git checkout --orphan "$FEED_BRANCH-tmp"
           git rm -r --cached . > /dev/null
-          git add feeds/rozetka_feed.xml feeds/prom_feed.xml
+          git add feeds/rozetka_feed.xml feeds/prom_feed.xml feeds/prom_feed_top.xml
           git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"

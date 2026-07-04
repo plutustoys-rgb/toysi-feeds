@@ -48,7 +48,8 @@ def build_order_create_payload(order: dict, test_mode: bool = True) -> dict:
       shipping_city_name      str
       shipping_address        str, можна "" при доставці на відділення
       shipping_city_id        str, optional — CityRef Нової Пошти (nova_poshta.resolve_shipping)
-      shipping_warehouse_id   int, optional — номер відділення (0 = доставка за адресою)
+      shipping_warehouse_id   int, за замовчуванням 0 (= доставка за адресою) — завжди
+                               надсилається, навіть якщо не задано (API вимагає цього)
       moneyback                float, 0 якщо клієнт уже передоплатив
       delivery_dt             datetime, optional (за замовчуванням — завтра 12:00)
       comment                 str, optional, <=500 символів
@@ -67,22 +68,27 @@ def build_order_create_payload(order: dict, test_mode: bool = True) -> dict:
         "api_method":            "order_create",
         "internal_order_id":     order["internal_order_id"][:25],
         "positions_count":       len(positions_quantity),
-        "shipping_carrier_name": order.get("shipping_carrier_name", "Нова Пошта"),
+        # ВАЖЛИВО: Toysi приймає лише точний рядок "Новая почта" (рос., як у їх
+        # тестовій формі toysi.ua/api-test.html) — "Нова Пошта" відхиляється як
+        # невідомий перевізник (response_code 4, без явного пояснення чому).
+        "shipping_carrier_name": order.get("shipping_carrier_name", "Новая почта"),
+        # ВАЖЛИВО: попри те, що документація описує це поле як optional,
+        # реальний API повертає response_code 4, якщо його взагалі немає в POST —
+        # завжди передаємо, 0 = доставка за адресою.
+        "shipping_warehouse_id": order.get("shipping_warehouse_id", 0),
         "shipping_city":         order["shipping_city_name"],
         "shipping_address":      order.get("shipping_address", ""),
         "shipping_firstname":    order["first_name"],
         "shipping_lastname":     order["last_name"],
         "shipping_phone":        order["phone"],
         "shipping_moneyback":    float(order.get("moneyback", 0)),
-        "shipping_dt":           delivery_dt.strftime("%Y-%m-%d %H:%M"),
+        "shipping_dt":           delivery_dt.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
     if order.get("middle_name"):
         payload["shipping_middlename"] = order["middle_name"]
     if order.get("comment"):
         payload["comment"] = order["comment"][:500]
-    if order.get("shipping_warehouse_id") is not None:
-        payload["shipping_warehouse_id"] = order["shipping_warehouse_id"]
     if order.get("shipping_city_id"):
         payload["shipping_city_id"] = order["shipping_city_id"]
     if order.get("declared_value"):

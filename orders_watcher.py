@@ -2,6 +2,7 @@ import os
 import sys
 import time
 
+import requests
 from dotenv import load_dotenv
 
 from orders_db import get_connection, init_db, insert_order
@@ -11,21 +12,82 @@ load_dotenv()
 PROM_API_KEY    = os.environ.get("PROM_API_KEY", "")
 ROZETKA_API_KEY = os.environ.get("ROZETKA_API_KEY", "")
 
+PROM_API_URL    = "https://my.prom.ua/api/v1"
+REQUEST_TIMEOUT = 30
+
 POLL_INTERVAL_SECONDS = 15 * 60  # 10-15 хв за планом (Крок 3)
+
+# Ключові слова, за якими розпізнаємо накладений платіж у вільному тексті
+# payment_option.name (Prom Orders API не дає чистого enum для способу оплати).
+# Все, що НЕ підпадає під ці слова, вважаємо передоплатою (безпечніший дефолт:
+# помилково зачекати підтвердження оплати краще, ніж помилково відправити
+# товар без реальної оплати).
+_COD_KEYWORDS = ("наклад", "післяплат", "отриманні", "готівк", "наложен")
 
 
 def fetch_new_orders_prom() -> list:
     """
-    TODO: реальний виклик Prom Orders API (статус "Нове"/"Очікує підтвердження"),
-    авторизація через PROM_API_KEY.
-    Поки ключа немає (магазин ще на модерації) — повертає мок-замовлення,
-    щоб можна було перевірити логіку router/orders.db без реального акаунту.
+    Реальний виклик Prom Orders API (https://public-api.docs.prom.ua/, GET /orders/list,
+    Authorization: Bearer PROM_API_KEY). Фільтр status=pending — це статус Prom для
+    щойно створеного замовлення, яке ще не оброблене продавцем ("Нове").
+    Поки ключа немає — мок-замовлення, щоб перевіряти логіку router/orders.db без акаунту.
     """
     if not PROM_API_KEY:
         print("[Prom] PROM_API_KEY не задано — використовую мок-замовлення для перевірки логіки")
         return _mock_prom_orders()
 
-    raise NotImplementedError("Підключити реальний Prom Orders API, коли з'явиться PROM_API_KEY")
+    try:
+        response = requests.get(
+            f"{PROM_API_URL}/orders/list",
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            params={"status": "pending", "limit": 100},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"[Prom] Помилка з'єднання: {e}", file=sys.stderr)
+        return []
+
+    try:
+        data = response.json()
+    except ValueError:
+        print(f"[Prom] Невалідна відповідь (не JSON): {response.text[:300]}", file=sys.stderr)
+        return []
+
+    return [_convert_prom_order(o) for o in data.get("orders", [])]
+
+
+def _convert_prom_order(order: dict) -> dict:
+    """Приводить замовлення з реального Prom Orders API до сирої структури,
+    яку очікує normalize_order() (той самий формат, що й мок-дані нижче)."""
+    payment_name = ((order.get("payment_option") or {}).get("name") or "").lower()
+    is_cod = any(kw in payment_name for kw in _COD_KEYWORDS)
+
+    customer_name = " ".join(
+        part for part in (order.get("client_first_name"), order.get("client_last_name")) if part
+    )
+
+    items = [
+        {
+            "toysi_code": product.get("sku") or product.get("external_id") or "",
+            "name": product.get("name", ""),
+            "qty": int(product.get("quantity") or 1),
+            "price": float(product.get("price") or 0),
+        }
+        for product in order.get("products", [])
+    ]
+
+    return {
+        "order_id": str(order["id"]),
+        "platform": "prom",
+        "status": order.get("status", "pending"),
+        "payment_method": "cod" if is_cod else "prepaid",
+        "payment_confirmed": False,
+        "customer_name": customer_name,
+        "phone": order.get("phone", ""),
+        "np_branch": order.get("delivery_address", ""),
+        "items": items,
+    }
 
 
 def fetch_new_orders_rozetka() -> list:

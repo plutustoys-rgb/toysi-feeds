@@ -11,15 +11,21 @@ NP_API_URL  = "https://api.novaposhta.ua/v2.0/json/"
 REQUEST_TIMEOUT = 15
 
 
+class NovaPoshtaAPIError(Exception):
+    """API явно відмовив обслуговувати запит (немає ключа, мережева помилка,
+    невалідна відповідь, або success:false — зламаний/протермінований ключ,
+    ліміт запитів, некоректний запит). На відміну від порожнього результату
+    пошуку (місто/відділення дійсно не знайдено), це не нормальний стан —
+    виклик вище має повідомити про проблему з API, а не "не знайдено"."""
+
+
 def _call(model_name: str, called_method: str, method_properties: dict) -> list:
     if not NP_API_KEY:
-        print(
-            "[NovaPoshta] ПОМИЛКА: не заданий NP_API_KEY.\n"
-            "  Безкоштовний ключ реєструється на novaposhta.ua (особистий кабінет -> Налаштування -> API).\n"
-            "  Окремий бізнес-акаунт НЕ потрібен. Додайте NP_API_KEY=... у .env",
-            file=sys.stderr,
+        raise NovaPoshtaAPIError(
+            "не заданий NP_API_KEY. Безкоштовний ключ реєструється на novaposhta.ua "
+            "(особистий кабінет -> Налаштування -> API). Окремий бізнес-акаунт НЕ потрібен. "
+            "Додайте NP_API_KEY=... у .env"
         )
-        return []
 
     payload = {
         "apiKey": NP_API_KEY,
@@ -31,25 +37,24 @@ def _call(model_name: str, called_method: str, method_properties: dict) -> list:
         response = requests.post(NP_API_URL, json=payload, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
-        print(f"[NovaPoshta] Помилка з'єднання: {e}", file=sys.stderr)
-        return []
+        raise NovaPoshtaAPIError(f"помилка з'єднання: {e}") from e
 
     try:
         data = response.json()
     except ValueError:
-        print(f"[NovaPoshta] Невалідна відповідь (не JSON): {response.text[:300]}", file=sys.stderr)
-        return []
+        raise NovaPoshtaAPIError(f"невалідна відповідь (не JSON): {response.text[:300]}")
 
     if not data.get("success"):
         errors = data.get("errors") or data.get("errorCodes") or []
-        print(f"[NovaPoshta] API повернув помилку: {errors}", file=sys.stderr)
-        return []
+        raise NovaPoshtaAPIError(f"API повернув помилку: {errors}")
 
     return data.get("data", [])
 
 
 def find_city(city_name: str, limit: int = 5) -> dict:
-    """Шукає місто за назвою. Повертає {"ref":.., "name":..} найбільш релевантного збігу або None."""
+    """Шукає місто за назвою. Повертає {"ref":.., "name":..} найбільш релевантного збігу,
+    або None, якщо міста дійсно немає в довіднику Нової Пошти.
+    Піднімає NovaPoshtaAPIError, якщо сам запит до API не вдався (окрема причина від "не знайдено")."""
     results = _call("Address", "getCities", {"FindByString": city_name, "Limit": str(limit)})
     if not results:
         return None
@@ -63,6 +68,7 @@ def find_warehouse(city_ref: str, warehouse_query: str = "") -> dict:
     warehouse_query — номер відділення ("15") або частина адреси з тексту замовлення.
     Фільтрація виконується на нашій стороні (по Description/Number), а не через FindByString
     сервера — ця опція для getWarehouses непослідовна між версіями API Нової Пошти.
+    Піднімає NovaPoshtaAPIError, якщо сам запит до API не вдався (окрема причина від "не знайдено").
     """
     warehouses = _call("AddressGeneral", "getWarehouses", {"CityRef": city_ref, "Limit": "500"})
     if not warehouses:
@@ -93,12 +99,20 @@ def resolve_shipping(city_name: str, warehouse_query: str = "") -> dict:
     CityRef (GUID) Нової Пошти. Це best-effort мапінг за офіційним описом полів Toysi;
     перевір на першому тестовому замовленні (api_mode=test) і скоригуй за потреби.
     """
-    city = find_city(city_name)
+    try:
+        city = find_city(city_name)
+    except NovaPoshtaAPIError as e:
+        print(f"[NovaPoshta] Проблема з API Нової Пошти (не з даними міста): {e}", file=sys.stderr)
+        return None
     if not city:
         print(f"[NovaPoshta] Місто не знайдено: {city_name}", file=sys.stderr)
         return None
 
-    warehouse = find_warehouse(city["ref"], warehouse_query)
+    try:
+        warehouse = find_warehouse(city["ref"], warehouse_query)
+    except NovaPoshtaAPIError as e:
+        print(f"[NovaPoshta] Проблема з API Нової Пошти (не з даними відділення): {e}", file=sys.stderr)
+        return None
     if not warehouse:
         print(f"[NovaPoshta] Відділення не знайдено: {city_name} / {warehouse_query}", file=sys.stderr)
         return None

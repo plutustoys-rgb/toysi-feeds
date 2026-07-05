@@ -25,3 +25,6 @@ orders.db
 # Згенеровані фіди (десятки МБ кожен) — публікуються тільки в гілку feed-data
 # (force-push, без історії), у master/main їм не місце
 feeds/*.xml
+
+# VPS-доступ (пароль root) — лише локально, ніколи в git
+vps_access.local.md

@@ -61,7 +61,7 @@ def is_leader_category(item: dict) -> bool:
 def _margin(item: dict) -> float:
     """Розрахункова маржа (retail - cost). -1, якщо товар не має валідної/прийнятної ціни
     або це уцінений/пошкоджений товар (не належить у "топ" незалежно від маржі)."""
-    if (item.get("name") or "").strip().lower().startswith("уцінка"):
+    if (item.get("name") or "").strip().lower().startswith(("уцінка", "уценка")):
         return -1
     try:
         cost = float(item.get("price") or 0)

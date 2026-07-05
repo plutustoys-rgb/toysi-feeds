@@ -1,4 +1,5 @@
 import html
+import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -150,6 +151,7 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     xml_str = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
     xml_str = _wrap_cdata(xml_str)
 
+    os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(xml_str)
 

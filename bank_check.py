@@ -122,6 +122,7 @@ def check_pending_prepayments() -> None:
         for order in pending:
             match = match_payment(order, transactions)
             if match:
+                transactions.remove(match)  # захист від повторного використання тієї самої транзакції
                 mark_payment_confirmed(conn, order["internal_order_id"])
                 print(f"[bank_check] Оплату підтверджено: {order['internal_order_id']}")
             else:

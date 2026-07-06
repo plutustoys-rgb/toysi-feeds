@@ -19,6 +19,9 @@ scratch_product.html
 # Локальна БД замовлень (runtime-стан, не для git)
 orders.db
 
+# Runtime-стан service_watchdog.py (OK/ALARM по кожному сервісу)
+watchdog_state.json
+
 # Запобіжник: файл з паролями не повинен потрапити в git навіть випадково
 паролі.txt
 

@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 
 from parser import fetch_toysi_catalog
+from generate_prom_feed import is_clearance_item, CLEARANCE_NOTICE
 
 SHOP_NAME          = "PlutusToys"
 SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійович"
@@ -114,6 +115,8 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
             ET.SubElement(offer, "barcode").text = item["barcode"]
 
         desc = item.get("description", "")
+        if is_clearance_item(item.get("name", "")):
+            desc += CLEARANCE_NOTICE
         if desc:
             ET.SubElement(offer, "description").text = desc
 

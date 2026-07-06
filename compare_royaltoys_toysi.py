@@ -14,6 +14,7 @@ Toysi (feeds/prom_feed_top.xml) реально є в каталозі RoyalToys.
 Це набагато точніше за оцінку по категоріях (звіт 2026-07-04), яка лише
 рахувала, чи RoyalToys продає щось у тій самій товарній категорії.
 """
+import os
 import re
 import sys
 from collections import defaultdict
@@ -24,6 +25,14 @@ import royaltoys_parser as rp
 
 TOYSI_TOP_FEED = "feeds/prom_feed_top.xml"
 MATCH_THRESHOLD = 0.55
+
+# Спільна папка PlutusToys_avtonomiya (Cowork і automation-сесія читають/пишуть
+# той самий фізичний файл на цій Windows-машині) — той самий підхід, що й у
+# TELEGRAM_OUTBOX_FILE у telegram_outbox_processor.py.
+REPORT_OUTPUT_PATH = os.environ.get(
+    "ROYALTOYS_SKU_REPORT_PATH",
+    r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\royaltoys_comparison_2026-07-06_sku.md",
+)
 
 _STOPWORDS = {
     "для", "з", "та", "і", "в", "на", "від", "до", "по", "шт", "см", "мм",
@@ -242,10 +251,9 @@ def main():
     )
 
     report = "\n".join(lines)
-    out_path = r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\royaltoys_comparison_2026-07-06_sku.md"
-    with open(out_path, "w", encoding="utf-8") as f:
+    with open(REPORT_OUTPUT_PATH, "w", encoding="utf-8") as f:
         f.write(report)
-    print(f"Звіт записано: {out_path}", file=sys.stderr)
+    print(f"Звіт записано: {REPORT_OUTPUT_PATH}", file=sys.stderr)
     print(f"Matched: {n_matched}/{total} ({n_matched/total*100:.1f}%)", file=sys.stderr)
 
 

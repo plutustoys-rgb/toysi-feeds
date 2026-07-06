@@ -119,6 +119,45 @@ def get_orders_awaiting_payment(conn: sqlite3.Connection) -> list:
     return [_row_to_dict(row) for row in rows]
 
 
+def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
+    """
+    Замовлення, готові до передачі Toysi (Крок 5): накладені — одразу;
+    передоплачені — лише після підтвердження оплати. Свідомо НЕ фільтрує
+    за полем `status` — воно містить вокабуляр платформи (напр. Prom
+    повертає "pending", мок-дані Rozetka — "new"), тож `forwarded_to_toysi_at
+    IS NULL` є єдиним надійним сигналом "ще не передано", незалежно від
+    того, яке значення `status` виставила конкретна платформа.
+    `toysi_error` виключено окремо, щоб не намагатись нескінченно
+    передати замовлення з даними, які Toysi вже відхилив (Крок 5, п.4).
+    """
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE forwarded_to_toysi_at IS NULL
+          AND (status IS NULL OR status != 'toysi_error')
+          AND (
+              payment_method = 'cod'
+              OR (payment_method = 'prepaid' AND payment_confirmed = 1)
+          )
+        """
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_active_toysi_orders(conn: sqlite3.Connection) -> list:
+    """Замовлення, вже передані Toysi, чий статус доставки ще не термінальний
+    (Крок 6) — саме ці order_status_tracker.py опитує далі."""
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE forwarded_to_toysi_at IS NOT NULL
+          AND toysi_order_id IS NOT NULL
+          AND (delivery_status IS NULL OR delivery_status NOT IN ('cancelled', 'returned', 'expired'))
+        """
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
 def mark_payment_confirmed(conn: sqlite3.Connection, internal_order_id: str) -> None:
     conn.execute(
         "UPDATE orders SET payment_confirmed = 1 WHERE internal_order_id = ?",

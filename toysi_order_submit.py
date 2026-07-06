@@ -177,6 +177,62 @@ def submit_order(order: dict, test_mode: bool = True) -> dict:
     }
 
 
+def fetch_order_statuses(toysi_order_ids: list) -> dict:
+    """
+    Пакетний запит order_status (Крок 6 плану) — до 500 номерів за раз,
+    не більше 5 запитів/сек до Toysi (інакше 503, тому паузи між чанками).
+    Повертає {toysi_order_id (str): {"order_id":.., "status": int, "TTN": str, ...}}
+    лише для ЗНАЙДЕНИХ замовлень — відсутні в результаті id просто не існують
+    чи вже застарілі (>40 днів, Toysi перестає їх обслуговувати).
+    """
+    if not toysi_order_ids:
+        return {}
+    if not TOYSI_AUTH_USER or not TOYSI_API_KEY:
+        raise RuntimeError(
+            "TOYSI_AUTH_USER / TOYSI_API_KEY не задані. "
+            "Взяти на toysi.ua/contact_info/?api=info і прописати в .env"
+        )
+
+    results = {}
+    chunk_size = 500
+    for i in range(0, len(toysi_order_ids), chunk_size):
+        chunk = toysi_order_ids[i : i + chunk_size]
+        payload = {
+            "auth_user": TOYSI_AUTH_USER,
+            "auth_key": TOYSI_API_KEY,
+            "api_version": 1,
+            "api_method": "order_status",
+            "order_id": ",".join(str(oid) for oid in chunk),
+        }
+
+        try:
+            response = requests.post(TOYSI_API_URL, data=payload, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"[toysi_order_submit] order_status: помилка з'єднання: {e}", file=sys.stderr)
+            continue
+
+        try:
+            data = response.json()
+        except ValueError:
+            print(f"[toysi_order_submit] order_status: невалідна відповідь (не JSON): {response.text[:300]}", file=sys.stderr)
+            continue
+
+        # Фатальна помилка на весь чанк (0/4/400/404) — top-level response_code присутній.
+        # Якщо знайдено хоч одне замовлення, response_code у відповіді взагалі немає
+        # (документація toysi.ua/api-doc.php) — знайдені записи повертаються напряму.
+        if isinstance(data, dict) and "response_code" in data:
+            print(
+                f"[toysi_order_submit] order_status: {data.get('response_code')} — {data.get('response_msg')}",
+                file=sys.stderr,
+            )
+            continue
+
+        results.update(data)
+
+    return results
+
+
 if __name__ == "__main__":
     fake_order = {
         "internal_order_id": "test_demo_0001",

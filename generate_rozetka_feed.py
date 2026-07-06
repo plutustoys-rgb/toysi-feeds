@@ -114,7 +114,9 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
         if item.get("barcode"):
             ET.SubElement(offer, "barcode").text = item["barcode"]
 
-        desc = append_clearance_notice(item.get("description", ""), item.get("name", ""))
+        desc = append_clearance_notice(
+            item.get("description", ""), item.get("name", ""), item.get("category_name", "")
+        )
         if desc:
             ET.SubElement(offer, "description").text = desc
 

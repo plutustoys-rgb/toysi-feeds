@@ -1,7 +1,7 @@
 import re
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed import calc_price, generate_feed, MIN_SUPPLIER_PRICE
+from generate_prom_feed import calc_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
 
 OUTPUT_FILE     = "feeds/prom_feed_top.xml"
 TARGET_COUNT    = 1000
@@ -61,7 +61,7 @@ def is_leader_category(item: dict) -> bool:
 def _margin(item: dict) -> float:
     """Розрахункова маржа (retail - cost). -1, якщо товар не має валідної/прийнятної ціни
     або це уцінений/пошкоджений товар (не належить у "топ" незалежно від маржі)."""
-    if (item.get("name") or "").strip().lower().startswith(("уцінка", "уценка")):
+    if is_clearance_item(item.get("name")):
         return -1
     try:
         cost = float(item.get("price") or 0)

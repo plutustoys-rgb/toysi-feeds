@@ -12,6 +12,38 @@ SHOP_URL           = "https://prom.ua"
 OUTPUT_FILE        = "feeds/prom_feed.xml"
 MIN_SUPPLIER_PRICE = 20  # товари дешевше цієї ціни постачальника пропускаємо
 
+# Товари категорії "Уцінка"/"Уценка" (обидва написання зустрічаються в каталозі
+# Toysi) — власник свідомо лишає їх у головних фідах (не виключає), але кожен
+# такий товар має отримати попередження про можливий дефект у описі. Перевірка
+# на реальних даних (2026-07-06): конкретний дефект від Toysi присутній у
+# назві/описі приблизно в 76-90%+ позицій (формат вкрай непослідовний — після
+# тире, у дужках, простим реченням, іноді лише в описі, а не в назві), тож
+# автоматично й надійно розрізнити "дефект є" від "дефекту немає" неможливо
+# без ризику пропустити реальний дефект через невдалий патерн. Тому дописуємо
+# застереження ЗАВЖДИ, для кожного товару категорії "Уцінка" — воно доповнює,
+# а не замінює власний текст Toysi.
+CLEARANCE_PREFIXES = ("уцінка", "уценка")
+CLEARANCE_NOTICE = (
+    "<b>⚠️ Товар категорії «Уцінка».</b> Постачальник не завжди "
+    "деталізує конкретний дефект для кожної позиції — можливі: пошкодження "
+    "чи потертості упаковки, косметичні дефекти виробу, відсутність дрібних "
+    "елементів комплектації. Перед замовленням рекомендуємо уточнити стан "
+    "товару в чаті."
+)
+
+
+def append_clearance_notice(description: str, name: str) -> str:
+    """Дописує CLEARANCE_NOTICE до опису товару категорії "Уцінка"/"Уценка",
+    без зайвого відступу на початку, якщо базовий опис порожній."""
+    if not is_clearance_item(name):
+        return description
+    separator = "<br/><br/>" if description else ""
+    return description + separator + CLEARANCE_NOTICE
+
+
+def is_clearance_item(name: str) -> bool:
+    return (name or "").strip().lower().startswith(CLEARANCE_PREFIXES)
+
 
 def calc_price(cost: float) -> float:
     """Розраховує роздрібну ціну з наценкою залежно від собівартості.
@@ -119,7 +151,8 @@ def _build_xml(catalog: dict, price_overrides: dict = None) -> tuple[ET.Element,
             ET.SubElement(offer, "barcode").text = item["barcode"]
 
         # Prom.ua вимагає наявність <description>, навіть якщо порожній
-        ET.SubElement(offer, "description").text = item.get("description", "")
+        description = append_clearance_notice(item.get("description", ""), item.get("name", ""))
+        ET.SubElement(offer, "description").text = description
 
         for param_name, param_val in item.get("params", []):
             ET.SubElement(offer, "param", name=param_name).text = str(param_val)

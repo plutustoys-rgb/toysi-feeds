@@ -2,10 +2,12 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
+from typing import Optional
 
 from dotenv import load_dotenv
 
 from orders_db import get_connection, get_orders_awaiting_payment, init_db
+from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
 
 # Консоль Windows (cp1251) не показує emoji — не заважає systemd/journald на VPS,
@@ -41,6 +43,60 @@ def _order_total(order_items: list) -> float:
     return sum(item.get("price", 0) * item.get("qty", 1) for item in order_items)
 
 
+def _toysi_wholesale_cost(item: dict, catalog: dict) -> Optional[float]:
+    """Оптова ціна Toysi (собівартість) для позиції замовлення — на відміну
+    від item["price"], яка в orders_db це РОЗДРІБНА ціна клієнту. Кожна
+    позиція замовлення сьогодні завжди від Toysi (item["toysi_code"]) —
+    маршрутизація RoyalToys ще не існує (Фаза 2), тому іншого постачальника
+    тут поки й не буває.
+
+    item["toysi_code"] походить із product["sku"]/["external_id"] у відповіді
+    Prom Orders API (orders_watcher.py) — тобто це те, що Prom повертає як
+    ідентифікатор товару в замовленні, а не напряму offer/@id з нашого фіда.
+    Перевірено емпірично на живому фіді Toysi (28 987 товарів, 2026-07-07):
+    <vendorCode> завжди дорівнює offer/@id (0 розбіжностей) — і саме
+    vendorCode ми публікуємо як <vendorCode> в prom_feed.xml (generate_prom_
+    feed.py). Тобто внутрішнє зіставлення справне; єдине, що неможливо
+    перевірити без живого замовлення — чи Prom дійсно повертає це саме
+    значення як sku/external_id. Перше реальне передане замовлення варто
+    звірити вручну."""
+    cat_item = catalog.get(str(item.get("toysi_code") or ""))
+    if not cat_item:
+        return None
+    try:
+        cost = float(cat_item.get("price") or 0)
+    except (TypeError, ValueError):
+        return None
+    return cost if cost > 0 else None
+
+
+def _cogs_for_forwarded_orders(conn, since: str, catalog: dict) -> tuple:
+    """Графа 6 КОДВ: собівартість реалізованих і оплачених постачальнику
+    товарів. `orders_db` не має окремого поля "оплата постачальнику
+    підтверджена" (Toysi API не дає такого статусу) — тому як проксі
+    використовуємо forwarded_to_toysi_at, як і решта звіту. За дропшип-
+    моделлю (лист "Інструкція" КОДВ) розрив між передачею замовлення й
+    оплатою постачальнику мінімальний, тож це ОЦІНКА для звірки з
+    накладною Toysi, а не остаточна цифра графи 6."""
+    rows = conn.execute(
+        "SELECT items FROM orders WHERE forwarded_to_toysi_at >= ?", (since,)
+    ).fetchall()
+
+    total_cost = 0.0
+    items_priced = 0
+    items_missing = 0
+    for row in rows:
+        for item in json.loads(row["items"]):
+            cost = _toysi_wholesale_cost(item, catalog)
+            if cost is None:
+                items_missing += 1
+                continue
+            total_cost += cost * item.get("qty", 1)
+            items_priced += 1
+
+    return total_cost, items_priced, items_missing
+
+
 def build_report() -> str:
     init_db()
     since = (datetime.now() - timedelta(hours=LOOKBACK_HOURS)).isoformat(timespec="seconds")
@@ -67,6 +123,18 @@ def build_report() -> str:
         returns_cancellations = conn.execute(
             "SELECT COUNT(*) FROM orders WHERE delivery_status IN ('returned', 'cancelled')"
         ).fetchone()[0]
+
+        cogs = items_priced = items_missing = 0
+        cogs_catalog_unavailable = False
+        if forwarded_today:
+            toysi_catalog = fetch_toysi_catalog()
+            if toysi_catalog:
+                cogs, items_priced, items_missing = _cogs_for_forwarded_orders(conn, since, toysi_catalog)
+            else:
+                # fetch_toysi_catalog() повертає {} і при відсутньому ключі, і при
+                # timeout/HTTP/XML-помилці — 0.00 грн тут виглядав би як "витрат
+                # немає", хоча насправді просто не вдалось порахувати.
+                cogs_catalog_unavailable = True
 
     counts_by_platform = {}
     revenue_by_platform = {}
@@ -100,9 +168,43 @@ def build_report() -> str:
     if returns_cancellations:
         lines.append(f"\n⚠️ Повернень/скасувань (поточний стан, не лише за добу): {returns_cancellations}")
 
+    lines.append(f"\n\n📒 Дані для КОДВ за {LOOKBACK_HOURS} год (для граф 6/8/9):")
+
+    if cogs_catalog_unavailable:
+        lines.append(
+            "\n\nГрафа 6 (собівартість реалізованих і оплачених товарів): "
+            "⚠️ НЕ ПОРАХОВАНО — каталог Toysi не завантажився (ключ/timeout/помилка "
+            f"XML), хоча за {LOOKBACK_HOURS} год передано {forwarded_today} замовлень. "
+            "Це НЕ означає нульові витрати — порахуй вручну за накладною."
+        )
+    else:
+        lines.append(f"\n\nГрафа 6 (собівартість реалізованих і оплачених товарів): {cogs:.2f} грн")
+        if forwarded_today:
+            lines.append(
+                f"\n  ({items_priced} позицій оцінено за поточним прайсом Toysi з "
+                f"{forwarded_today} переданих замовлень — \"передано постачальнику\" тут "
+                "проксі для \"оплачено постачальнику\" (дропшип, розрив мінімальний), "
+                "звір із фактичною накладною Toysi/RoyalToys)"
+            )
+            if items_missing:
+                lines.append(
+                    f"\n  ⚠️ {items_missing} позицій не знайдено в поточному каталозі Toysi — "
+                    "не враховано в сумі, перевір вручну"
+                )
+        else:
+            lines.append("\n  (сьогодні не було переданих Toysi замовлень)")
+
     lines.append(
-        "\n\nℹ️ Баланси Rozetka/Prom — ще не реалізовано (Крок 7 плану, окрема "
-        "інтеграція, не пов'язана з тим, що вже готово)."
+        "\n\nГрафа 9 (комісія Prom/Rozetka за продаж): дані з API недоступні — "
+        "балансове/статистичне API маркетплейсів ще не підключено (Крок 7 плану). "
+        "Внести вручну з виписки/акту маркетплейсу."
+    )
+    lines.append(
+        "\n\nГрафа 9 (інші сервісні платежі — Checkbox, хостинг VPS, Anthropic API тощо): "
+        "автоматичного джерела даних немає, вносити вручну за вхідними документами."
+    )
+    lines.append(
+        "\n\nГрафа 8 (ЄСВ, податки) — навмисно НЕ рахую, вноситься вручну з платіжок."
     )
 
     return "".join(lines)

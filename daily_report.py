@@ -48,14 +48,26 @@ def _toysi_wholesale_cost(item: dict, catalog: dict) -> Optional[float]:
     від item["price"], яка в orders_db це РОЗДРІБНА ціна клієнту. Кожна
     позиція замовлення сьогодні завжди від Toysi (item["toysi_code"]) —
     маршрутизація RoyalToys ще не існує (Фаза 2), тому іншого постачальника
-    тут поки й не буває."""
+    тут поки й не буває.
+
+    item["toysi_code"] походить із product["sku"]/["external_id"] у відповіді
+    Prom Orders API (orders_watcher.py) — тобто це те, що Prom повертає як
+    ідентифікатор товару в замовленні, а не напряму offer/@id з нашого фіда.
+    Перевірено емпірично на живому фіді Toysi (28 987 товарів, 2026-07-07):
+    <vendorCode> завжди дорівнює offer/@id (0 розбіжностей) — і саме
+    vendorCode ми публікуємо як <vendorCode> в prom_feed.xml (generate_prom_
+    feed.py). Тобто внутрішнє зіставлення справне; єдине, що неможливо
+    перевірити без живого замовлення — чи Prom дійсно повертає це саме
+    значення як sku/external_id. Перше реальне передане замовлення варто
+    звірити вручну."""
     cat_item = catalog.get(str(item.get("toysi_code") or ""))
     if not cat_item:
         return None
     try:
-        return float(cat_item.get("price") or 0)
+        cost = float(cat_item.get("price") or 0)
     except (TypeError, ValueError):
         return None
+    return cost if cost > 0 else None
 
 
 def _cogs_for_forwarded_orders(conn, since: str, catalog: dict) -> tuple:

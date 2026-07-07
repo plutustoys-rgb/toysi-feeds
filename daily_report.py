@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -42,7 +43,7 @@ def _order_total(order_items: list) -> float:
     return sum(item.get("price", 0) * item.get("qty", 1) for item in order_items)
 
 
-def _toysi_wholesale_cost(item: dict, catalog: dict) -> float:
+def _toysi_wholesale_cost(item: dict, catalog: dict) -> Optional[float]:
     """Оптова ціна Toysi (собівартість) для позиції замовлення — на відміну
     від item["price"], яка в orders_db це РОЗДРІБНА ціна клієнту. Кожна
     позиція замовлення сьогодні завжди від Toysi (item["toysi_code"]) —
@@ -112,10 +113,16 @@ def build_report() -> str:
         ).fetchone()[0]
 
         cogs = items_priced = items_missing = 0
+        cogs_catalog_unavailable = False
         if forwarded_today:
             toysi_catalog = fetch_toysi_catalog()
             if toysi_catalog:
                 cogs, items_priced, items_missing = _cogs_for_forwarded_orders(conn, since, toysi_catalog)
+            else:
+                # fetch_toysi_catalog() повертає {} і при відсутньому ключі, і при
+                # timeout/HTTP/XML-помилці — 0.00 грн тут виглядав би як "витрат
+                # немає", хоча насправді просто не вдалось порахувати.
+                cogs_catalog_unavailable = True
 
     counts_by_platform = {}
     revenue_by_platform = {}
@@ -151,21 +158,29 @@ def build_report() -> str:
 
     lines.append(f"\n\n📒 Дані для КОДВ за {LOOKBACK_HOURS} год (для граф 6/8/9):")
 
-    lines.append(f"\n\nГрафа 6 (собівартість реалізованих і оплачених товарів): {cogs:.2f} грн")
-    if forwarded_today:
+    if cogs_catalog_unavailable:
         lines.append(
-            f"\n  ({items_priced} позицій оцінено за поточним прайсом Toysi з "
-            f"{forwarded_today} переданих замовлень — \"передано постачальнику\" тут "
-            "проксі для \"оплачено постачальнику\" (дропшип, розрив мінімальний), "
-            "звір із фактичною накладною Toysi/RoyalToys)"
+            "\n\nГрафа 6 (собівартість реалізованих і оплачених товарів): "
+            "⚠️ НЕ ПОРАХОВАНО — каталог Toysi не завантажився (ключ/timeout/помилка "
+            f"XML), хоча за {LOOKBACK_HOURS} год передано {forwarded_today} замовлень. "
+            "Це НЕ означає нульові витрати — порахуй вручну за накладною."
         )
-        if items_missing:
-            lines.append(
-                f"\n  ⚠️ {items_missing} позицій не знайдено в поточному каталозі Toysi — "
-                "не враховано в сумі, перевір вручну"
-            )
     else:
-        lines.append("\n  (сьогодні не було переданих Toysi замовлень)")
+        lines.append(f"\n\nГрафа 6 (собівартість реалізованих і оплачених товарів): {cogs:.2f} грн")
+        if forwarded_today:
+            lines.append(
+                f"\n  ({items_priced} позицій оцінено за поточним прайсом Toysi з "
+                f"{forwarded_today} переданих замовлень — \"передано постачальнику\" тут "
+                "проксі для \"оплачено постачальнику\" (дропшип, розрив мінімальний), "
+                "звір із фактичною накладною Toysi/RoyalToys)"
+            )
+            if items_missing:
+                lines.append(
+                    f"\n  ⚠️ {items_missing} позицій не знайдено в поточному каталозі Toysi — "
+                    "не враховано в сумі, перевір вручну"
+                )
+        else:
+            lines.append("\n  (сьогодні не було переданих Toysi замовлень)")
 
     lines.append(
         "\n\nГрафа 9 (комісія Prom/Rozetka за продаж): дані з API недоступні — "

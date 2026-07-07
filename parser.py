@@ -30,7 +30,8 @@ REQUEST_TIMEOUT = 30  # секунды
 def fetch_toysi_catalog() -> Dict[str, dict]:
     """
     Скачивает XML-каталог от поставщика Toysi и возвращает словарь,
-    где ключ — штрих-код (EAN), значение — dict с данными товара.
+    где ключ — id товара Toysi (offer/@id, совпадает с vendorCode — см.
+    _parse_xml), значение — dict с данными товара.
     """
     if not TOYSI_API_KEY:
         print(
@@ -80,7 +81,7 @@ def _extract_vendor_from_params(params: list) -> str:
 def _parse_xml(xml_content: bytes) -> Dict[str, dict]:
     """
     Парсит YML-совместимый XML от Toysi.
-    Ключ возвращаемого словаря — EAN штрих-код товара.
+    Ключ возвращаемого словаря — id товара Toysi (offer/@id).
     """
     try:
         root = ET.fromstring(xml_content)

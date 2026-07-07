@@ -128,6 +128,7 @@ def _parse_xml(xml_content: bytes) -> Dict[str, dict]:
 
         catalog[product_id] = {
             "id":            product_id,
+            "supplier":      "Toysi",
             "vendor_code":   vendor_code,
             "name":          name,
             "price":         price,

@@ -36,7 +36,7 @@ def fetch_royaltoys_catalog() -> Dict[str, dict]:
         return {}
 
     try:
-        response = requests.get(ROYALTOYS_YML_URL, timeout=REQUEST_TIMEOUT)
+        response = requests.get(ROYALTOYS_YML_URL, timeout=REQUEST_TIMEOUT, stream=True)
         response.raise_for_status()
     except requests.exceptions.Timeout:
         print(f"[RoyalToys] Timeout: сервер не відповів за {REQUEST_TIMEOUT}с")
@@ -48,8 +48,10 @@ def fetch_royaltoys_catalog() -> Dict[str, dict]:
         print(f"[RoyalToys] Помилка з'єднання: {e}")
         return {}
 
-    import io
-    return _parse_xml_stream(io.BytesIO(response.content))
+    # decode_content=True — інакше raw віддає ще стиснутий (gzip) потік,
+    # а ET.iterparse чекає вже розпакований XML.
+    response.raw.decode_content = True
+    return _parse_xml_stream(response.raw)
 
 
 def _parse_xml_stream(fileobj) -> Dict[str, dict]:

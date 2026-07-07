@@ -107,7 +107,16 @@ def best_match(toysi_item, royaltoys_by_vendor, seq_cache):
 
 def main():
     print("Завантаження топ-970 Toysi...", file=sys.stderr)
-    toysi_items = load_toysi_top(TOYSI_TOP_FEED)
+    try:
+        toysi_items = load_toysi_top(TOYSI_TOP_FEED)
+    except FileNotFoundError:
+        print(
+            f"Не знайдено {TOYSI_TOP_FEED} — цей файл згенерований і не в git "
+            "(feeds/*.xml у .gitignore, живе лише в гілці feed-data). "
+            "Спочатку запусти: python generate_prom_feed_top.py",
+            file=sys.stderr,
+        )
+        return
     print(f"Toysi топ-асортимент: {len(toysi_items)} товарів", file=sys.stderr)
 
     print("Завантаження каталогу RoyalToys...", file=sys.stderr)

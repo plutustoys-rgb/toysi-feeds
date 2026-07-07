@@ -65,6 +65,151 @@ def is_clearance_item(name: str, category_name: str = "", category_id: str = "")
     return (category_name or "").strip().lower() in CLEARANCE_CATEGORY_NAMES
 
 
+# ---------------------------------------------------------------------------
+# SEO-пошукові запити (<keywords>/<keywords_ua>) — автогенерація з наявних
+# даних фіда (назва, категорія, бренд), без ручного введення на кожен SKU.
+# За документацією Prom (support.prom.ua/hc/uk/articles/360004963538):
+# розділювач — кома, ліміт 1024 символи в рядку; keywords_ua застосується
+# ЛИШЕ якщо в тому самому <offer> одночасно заповнені name_ua і
+# description_ua (див. _build_xml).
+# ---------------------------------------------------------------------------
+KEYWORDS_MAX_LEN     = 1024
+KEYWORDS_TARGET_COUNT = 10  # ціль 8-10 унікальних запитів на мову
+
+# За проханням Prom-менеджера — без "замовити"/назв регіону.
+_GENERIC_MODIFIERS_UA = ["дитячий", "подарунок дитині", "купити"]
+_GENERIC_MODIFIERS_RU = ["детский", "подарок ребенку", "купить"]
+
+_KEYWORD_STOPWORDS_UA = {
+    "з", "та", "і", "в", "на", "від", "до", "по", "для", "як", "що", "це", "із",
+}
+
+# Невеликий словник найпоширеніших товарних слів з каталогу Toysi — не повний
+# машинний переклад (для цього немає надійного джерела), а точковий переклад
+# типових термінів. Слова поза словником лишаються як є: чимало іграшкових
+# термінів — спільні корені чи однакові слова в обох мовах ("конструктор",
+# "кубик", "слайм", "антистрес", бренди на кшталт "Corso"/"MIC" тощо).
+_UA_RU_DICT = {
+    "дитячий": "детский", "дитяча": "детская", "дитяче": "детское", "дитячі": "детские",
+    "дитині": "ребенку", "дитина": "ребенок", "дітей": "детей",
+    "хлопчику": "мальчику", "хлопчика": "мальчика",
+    "дівчинці": "девочке", "дівчинки": "девочки",
+    "купити": "купить", "подарунок": "подарок",
+    "іграшка": "игрушка", "іграшки": "игрушки", "іграшок": "игрушек",
+    "набір": "набор", "набори": "наборы",
+    "лялька": "кукла", "ляльки": "куклы",
+    "гра": "игра", "ігри": "игры", "ігор": "игр",
+    "настільна": "настольная", "настільні": "настольные",
+    "посуд": "посуда", "кухня": "кухня", "кухні": "кухни",
+    "пазл": "пазл", "пазли": "пазлы", "пазлів": "пазлов",
+    "поїзд": "поезд", "вагон": "вагон", "вагоном": "вагоном",
+    "пластиковий": "пластиковый", "пластикова": "пластиковая", "пластикові": "пластиковые",
+    "бокс": "бокс", "боксу": "бокса",
+    "м'який": "мягкий", "м'яка": "мягкая", "м'яке": "мягкое", "м'які": "мягкие",
+    "надувний": "надувной", "надувне": "надувное", "надувна": "надувная",
+    "коло": "круг",
+    "фігурка": "фигурка", "фігурки": "фигурки",
+    "малий": "маленький", "мала": "маленькая", "мале": "маленькое",
+    "великий": "большой", "велика": "большая",
+    "конструктор": "конструктор", "конструктори": "конструкторы",
+    # Сполучники — трапляються всередині назв категорій ("Кухні і посуд");
+    # перекладаємо, а не пропускаємо, інакше лишається українське слово
+    # посеред інакше російської фрази.
+    "і": "и", "та": "и",
+}
+
+
+def _tokenize_name(name: str) -> list:
+    """Розбиває назву товару на змістовні слова (нижній регістр): без
+    розділових знаків, без коротких/стоп-слів, без дублів."""
+    cleaned = re.sub(r"[«»\"'()\[\],.\-–—/]", " ", name.lower())
+    words = []
+    seen = set()
+    for w in cleaned.split():
+        # Короткі слова відкидаємо завжди; для чисел лишаємо лише від 2 цифр —
+        # окремі "1"/"2" (частина артикулу) марні як пошуковий запит, а
+        # "80"/"64" (кількість елементів) — цілком реальний пошуковий термін.
+        if len(w) <= 2 and not (w.isdigit() and len(w) >= 2):
+            continue
+        if w in _KEYWORD_STOPWORDS_UA:
+            continue
+        if w in seen:
+            continue
+        seen.add(w)
+        words.append(w)
+    return words
+
+
+def _translate_word_ua_ru(word: str) -> str:
+    return _UA_RU_DICT.get(word, word)
+
+
+def _dedupe_preserve_order(phrases: list) -> list:
+    """Прибирає дублі (без урахування регістру) і коми всередині фрази —
+    кома в Prom є роздільником запитів (напр. деякі назви категорій Toysi
+    самі містять кому: "Лизуни, слайми та жуйки для рук"), тож лишати її
+    в самій фразі неоднозначно."""
+    seen = set()
+    result = []
+    for p in phrases:
+        key = p.strip().lower().replace(",", "")
+        key = re.sub(r"\s+", " ", key).strip()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(key)
+    return result
+
+
+def _join_within_limit(phrases: list, limit: int = KEYWORDS_MAX_LEN) -> str:
+    kept = []
+    total = 0
+    for p in phrases:
+        add_len = len(p) + (2 if kept else 0)  # ", "
+        if total + add_len > limit:
+            break
+        kept.append(p)
+        total += add_len
+    return ", ".join(kept)
+
+
+def generate_keywords(item: dict) -> tuple:
+    """Генерує пошукові запити <keywords_ua>/<keywords> з наявних даних
+    фіда: слова з назви товару, категорія, бренд (vendor), + загальні
+    модифікатори за змістом категорії іграшок. Ціль — 8-10 унікальних
+    запитів на мову, в межах ліміту 1024 символи."""
+    name = item.get("name", "") or ""
+    category_name = (item.get("category_name", "") or "").strip().lower()
+    vendor = (item.get("vendor", "") or "").strip()
+
+    name_words = _tokenize_name(name)
+
+    phrases_ua = list(name_words[:5])
+    if category_name:
+        phrases_ua.append(category_name)
+    if vendor:
+        phrases_ua.append(vendor.lower())
+        if name_words:
+            phrases_ua.append(f"{name_words[0]} {vendor.lower()}")
+    phrases_ua.extend(_GENERIC_MODIFIERS_UA)
+
+    phrases_ua = _dedupe_preserve_order(phrases_ua)[:KEYWORDS_TARGET_COUNT]
+    keywords_ua = _join_within_limit(phrases_ua)
+
+    phrases_ru = [_translate_word_ua_ru(w) for w in name_words[:5]]
+    if category_name:
+        phrases_ru.append(" ".join(_translate_word_ua_ru(w) for w in category_name.split()))
+    if vendor:
+        phrases_ru.append(vendor.lower())
+        if name_words:
+            phrases_ru.append(f"{_translate_word_ua_ru(name_words[0])} {vendor.lower()}")
+    phrases_ru.extend(_GENERIC_MODIFIERS_RU)
+
+    phrases_ru = _dedupe_preserve_order(phrases_ru)[:KEYWORDS_TARGET_COUNT]
+    keywords_ru = _join_within_limit(phrases_ru)
+
+    return keywords_ua, keywords_ru
+
+
 def calc_price(cost: float) -> float:
     """Розраховує роздрібну ціну з наценкою залежно від собівартості.
 
@@ -78,12 +223,16 @@ def calc_price(cost: float) -> float:
 
 
 def _wrap_cdata(xml_str: str) -> str:
-    """Post-process: wrap <description> content in CDATA."""
-    def replacer(m):
-        content = html.unescape(m.group(1))
-        content = content.replace("]]>", "]]]]><![CDATA[>")
-        return f"<description><![CDATA[{content}]]></description>"
-    return re.sub(r"<description>(.*?)</description>", replacer, xml_str, flags=re.DOTALL)
+    """Post-process: wrap <description>/<description_ua> content in CDATA."""
+    def make_replacer(tag):
+        def replacer(m):
+            content = html.unescape(m.group(1))
+            content = content.replace("]]>", "]]]]><![CDATA[>")
+            return f"<{tag}><![CDATA[{content}]]></{tag}>"
+        return replacer
+    for tag in ("description", "description_ua"):
+        xml_str = re.sub(rf"<{tag}>(.*?)</{tag}>", make_replacer(tag), xml_str, flags=re.DOTALL)
+    return xml_str
 
 
 def _build_xml(catalog: dict, price_overrides: dict = None) -> tuple[ET.Element, dict]:
@@ -148,8 +297,15 @@ def _build_xml(catalog: dict, price_overrides: dict = None) -> tuple[ET.Element,
         # Prom.ua: пріоритет коду товару vendorCode > barcode
         vendor_code = item.get("vendor_code") or item_id
         ET.SubElement(offer, "vendorCode").text        = vendor_code
-        # name_ua не дублюємо: фід і так лише українською (parser.py тягне lang=ukr)
-        ET.SubElement(offer, "name").text               = item.get("name", "")
+        # Фід і так лише українською (parser.py тягне lang=ukr) — тож name_ua/
+        # description_ua дублюють name/description. Це не просто формальність:
+        # за документацією Prom (support.prom.ua/hc/uk/articles/360004963538),
+        # <keywords_ua> підхоплюється на стороні Prom, ЛИШЕ якщо в тому самому
+        # <offer> одночасно заповнені name_ua І description_ua — без цього
+        # українські пошукові запити нижче просто не застосуються.
+        name = item.get("name", "")
+        ET.SubElement(offer, "name").text               = name
+        ET.SubElement(offer, "name_ua").text             = name
         ET.SubElement(offer, "price").text               = f"{retail:.2f}"
         ET.SubElement(offer, "currencyId").text          = "UAH"
         # Prom.ua використовує quantity_in_stock (а не stock_quantity, як Rozetka)
@@ -178,6 +334,15 @@ def _build_xml(catalog: dict, price_overrides: dict = None) -> tuple[ET.Element,
             item.get("category_id", ""),
         )
         ET.SubElement(offer, "description").text = description
+        # description_ua дублює description (та сама причина, що й name_ua вище) —
+        # обидва потрібні одночасно, щоб Prom підхопив keywords_ua.
+        ET.SubElement(offer, "description_ua").text = description
+
+        keywords_ua, keywords_ru = generate_keywords(item)
+        if keywords_ua:
+            ET.SubElement(offer, "keywords_ua").text = keywords_ua
+        if keywords_ru:
+            ET.SubElement(offer, "keywords").text = keywords_ru
 
         for param_name, param_val in item.get("params", []):
             ET.SubElement(offer, "param", name=param_name).text = str(param_val)

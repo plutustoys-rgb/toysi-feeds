@@ -89,6 +89,7 @@ def _parse_xml_stream(fileobj) -> Dict[str, dict]:
             available = (elem.get("available") or "").strip().lower() == "true"
             vendor = elem.findtext("vendor", "").strip()
             category_id = elem.findtext("categoryId", "").strip()
+            pictures = [p.text.strip() for p in elem.findall("picture") if p.text and p.text.strip()]
 
             catalog[product_id] = {
                 "id": product_id,
@@ -102,6 +103,7 @@ def _parse_xml_stream(fileobj) -> Dict[str, dict]:
                 "stock": stock,
                 "available": available,
                 "vendor": vendor,
+                "pictures": pictures,
                 "category_id": category_id,
                 "category_name": cat_names.get(category_id, ""),
             }

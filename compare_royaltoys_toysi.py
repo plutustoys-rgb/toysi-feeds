@@ -151,6 +151,9 @@ def main():
             unmatched_vendor_no_name.append((item, cand, score))
 
     total = len(toysi_items)
+    if total == 0:
+        print(f"{TOYSI_TOP_FEED} порожній (0 товарів) — порівнювати нічого", file=sys.stderr)
+        return
     n_matched = len(matched)
     n_no_vendor = len(unmatched_no_vendor)
     n_vendor_no_name = len(unmatched_vendor_no_name)

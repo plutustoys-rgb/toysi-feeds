@@ -179,6 +179,9 @@ def _build_xml(items: list) -> ET.Element:
         if item.get("category_id"):
             ET.SubElement(offer, "categoryId").text = item["category_id"]
 
+        for pic_url in item.get("pictures", [])[:10]:
+            ET.SubElement(offer, "picture").text = pic_url
+
         # RoyalToys деколи віддає бренд із зайвим "#" на початку (напр. "#sbabam") —
         # прибираємо для клієнтського фіда.
         ET.SubElement(offer, "vendor").text = (item.get("vendor", "") or "").lstrip("#").strip()

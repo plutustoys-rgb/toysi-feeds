@@ -1,7 +1,12 @@
 import sys
 
 from orders_db import get_connection, get_active_toysi_orders, update_delivery_status
-from toysi_order_submit import fetch_order_statuses, describe_order_status, TERMINAL_ORDER_STATUSES
+from toysi_order_submit import (
+    fetch_order_statuses,
+    describe_order_status,
+    TERMINAL_ORDER_STATUSES,
+    ToysiAPIError,
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -37,7 +42,7 @@ def track_orders() -> None:
 
         try:
             statuses = fetch_order_statuses(list(by_toysi_id.keys()))
-        except RuntimeError as e:
+        except (RuntimeError, ToysiAPIError) as e:
             print(f"[order_status_tracker] {e}", file=sys.stderr)
             return
 

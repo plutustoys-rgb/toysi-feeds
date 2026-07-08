@@ -133,7 +133,8 @@ def route_order(conn, order: dict, test_mode: bool = False) -> None:
             "перевір виклик route_order()/route_pending_orders()."
         )
         print(warning, file=sys.stderr)
-        send_telegram_message(warning)
+        if not send_telegram_message(warning):
+            print("[order_router] Не вдалося надіслати попередження про test_mode у Telegram", file=sys.stderr)
 
     toysi_order = build_toysi_order(order)
     result = submit_order(toysi_order, test_mode=test_mode)

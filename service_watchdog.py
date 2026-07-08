@@ -7,7 +7,7 @@ from datetime import datetime
 
 from orders_db import get_connection, get_active_toysi_orders
 from telegram_notify import send_telegram_message
-from toysi_order_submit import fetch_order_statuses
+from toysi_order_submit import fetch_order_statuses, ToysiAPIError
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -221,7 +221,13 @@ def check_toysi_reconciliation() -> None:
 
     try:
         statuses = fetch_order_statuses([str(o["toysi_order_id"]) for o, _ in candidates])
-    except RuntimeError as e:
+    except (RuntimeError, ToysiAPIError) as e:
+        # ToysiAPIError = сам запит не вдався (мережа/невалідна відповідь/фатальна
+        # помилка API) — НЕ те саме, що "жодне із замовлень не знайдено в Toysi".
+        # Лише лог, без new_alarms/Telegram: інакше короткочасний мережевий блип
+        # виглядав би так само, як реальний повтор бага test_mode (усі активні
+        # замовлення одразу потрапили б у "не знайдено в Toysi" — саме той
+        # крайовий випадок, який знайшло незалежне рев'ю PR #10).
         print(f"[watchdog] Звірка з Toysi: не вдалося перевірити — {e}", file=sys.stderr)
         return
 

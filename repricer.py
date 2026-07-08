@@ -2,7 +2,10 @@
 repricer.py — знижує ціни товарів що не продаються, орієнтуючись на Rozetka.
 
 Вхід:  CSV файл з товарами без продажів (id, name, our_price)
-Вихід: price_corrections.csv (id, name, toysi_price, competitor_price, new_price)
+Вихід: price_corrections.csv (id, name, toysi_price, competitor_price,
+       new_price_prom, new_price_rozetka) — ціна рахується ОКРЕМО для
+       кожного майданчика (різні комісії), формула — competitor_pricing.py
+       (decide_price_for_platform): ціна = max(нижня_межа_маржі, конкурент - 1 грн).
 
 Запуск:
     python repricer.py unsold.csv
@@ -26,12 +29,12 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 import requests
 from bs4 import BeautifulSoup
 
+from competitor_pricing import decide_price, PLATFORMS
+
 # ---------------------------------------------------------------------------
 # Налаштування
 # ---------------------------------------------------------------------------
 MAX_PRODUCTS  = 200
-MIN_MARGIN    = 1.25   # мінімальна маржа від ціни постачальника
-COMPETITOR_K  = 0.97   # на 3% нижче конкурента
 PAUSE_MIN     = 3.0    # секунди між запитами
 PAUSE_MAX     = 5.0
 
@@ -196,7 +199,6 @@ def run(unsold_path: str, output_path: str = OUTPUT_FILE) -> None:
         name      = item["name"]
         our_price = item["our_price"]
         cost      = toysi_prices.get(pid, 0)
-        floor     = cost * MIN_MARGIN if cost > 0 else 0
 
         print(f"[{i}/{len(unsold)}] {name[:60]}")
 
@@ -212,38 +214,41 @@ def run(unsold_path: str, output_path: str = OUTPUT_FILE) -> None:
                 time.sleep(random.uniform(PAUSE_MIN, PAUSE_MAX))
                 continue
 
-        print(f"    наша: {our_price:.0f} грн | конкурент: {comp_price:.0f} грн | floor: {floor:.0f} грн")
-
-        if comp_price >= our_price:
-            print(f"    -> наша ціна вже конкурентна, змін немає")
+        decision = decide_price(cost, comp_price) if cost > 0 else None
+        if decision is None:
+            print(f"    -> немає ціни постачальника Toysi для {pid}, пропускаємо")
             time.sleep(random.uniform(PAUSE_MIN, PAUSE_MAX))
             continue
 
-        candidate = comp_price * COMPETITOR_K
-        new_price  = max(candidate, floor) if floor > 0 else candidate
-        new_price  = round(new_price)  # округляємо до цілих гривень
+        print(f"    наша: {our_price:.0f} грн | конкурент: {comp_price:.0f} грн")
 
-        if new_price >= our_price:
-            print(f"    -> нова ціна ({new_price:.0f}) не нижча за поточну, пропускаємо")
+        row = {"id": pid, "name": name, "toysi_price": f"{cost:.2f}", "competitor_price": f"{comp_price:.2f}"}
+        changed_here = False
+        for platform in PLATFORMS:
+            result = decision[platform]
+            new_price = result["price"]
+            if new_price < our_price:
+                row[f"new_price_{platform}"] = f"{new_price:.2f}"
+                changed_here = True
+                print(f"    -> {platform}: нова ціна {new_price:.0f} грн [{result['category']}]")
+            else:
+                row[f"new_price_{platform}"] = ""
+                print(f"    -> {platform}: {new_price:.0f} грн не нижча за поточну ({our_price:.0f}), без змін")
+
+        if not changed_here:
             time.sleep(random.uniform(PAUSE_MIN, PAUSE_MAX))
             continue
 
-        print(f"    -> нова ціна: {new_price:.0f} грн ({'floor' if new_price == round(max(candidate, floor), 2) and floor > candidate else '-3%'})")
-        corrections.append({
-            "id":               pid,
-            "name":             name,
-            "toysi_price":      f"{cost:.2f}",
-            "competitor_price": f"{comp_price:.2f}",
-            "new_price":        f"{new_price:.2f}",
-        })
+        corrections.append(row)
         changed += 1
 
         time.sleep(random.uniform(PAUSE_MIN, PAUSE_MAX))
 
     # Зберігаємо результат
     if corrections:
+        fieldnames = ["id", "name", "toysi_price", "competitor_price"] + [f"new_price_{p}" for p in PLATFORMS]
         with open(output_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["id", "name", "toysi_price", "competitor_price", "new_price"])
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(corrections)
         print(f"\n[Repricer] Збережено {len(corrections)} коригувань -> {output_path}")

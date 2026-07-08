@@ -14,14 +14,26 @@ requests/urllib (перевірено — сайт розрізняє реаль
 Реальний пошук на Rozetka виконує оператор (Claude Code сесія) через
 claude-in-chrome, по одному товару за раз, і викликає --record з результатом.
 
-Логіка рішення (комісія Rozetka 22%, ФОП, категорія "Дитячі іграшки"):
-    беззбитковість = собівартість / (1 - 0.22)
-    ціль (25% прибутку) = беззбитковість * 1.25
+Логіка рішення (2026-07-09, окремо для кожного майданчика — Prom і Rozetka):
+    нижня_межа = (собівартість + собівартість*цільова_маржа) / (1 - комісія_майданчика - комісія_оплати)
+    кандидат   = ціна_конкурента - PRICE_STEP (фіксований крок, 1 грн — НЕ відсоток)
+    ціна       = max(нижня_межа, кандидат)
+    якщо конкурента немає -> ціна = max(нижня_межа, собівартість*NO_COMPETITOR_MULT)
 
-    - конкурента немає                          -> ціна = собівартість*1.75  [D]
-    - конкурент є, конкурент*0.97 < беззбитковість -> ПРОПУСК (збиток)       [C]
-    - конкурент є, конкурент*0.97 >= ціль          -> ціна = конкурент*0.97, >=25% прибутку [A]
-    - конкурент є, беззбитковість <= конкурент*0.97 < ціль -> ціна = конкурент*0.97, <25% [B]
+    Комісія майданчика:
+    - Prom: категорійна (12-23%+, з кабінету Prom -> Налаштування -> Комісії
+      за категоріями) — PROM_CATEGORY_COMMISSION, з fallback-дефолтом, поки
+      не всі категорії уточнено.
+    - Rozetka: перенесено як орієнтовний дефолт (22%) з попередньої версії
+      цієї логіки — Rozetka ще не активна (магазин не зареєстрований), не
+      блокує розробку, просто немає живих даних для звірки.
+
+    Комісія оплати (еквайринг/Prom-оплата через RozetkaPay тощо) — ОКРЕМА
+    від комісії майданчика, віднімається так само з виручки. Точний % не
+    підтверджено — PAYMENT_COMMISSION, за замовчуванням 0.0 (TODO власника).
+
+    Кожен продукт тепер отримує ДВІ незалежні ціни — price_prom, price_rozetka
+    (різні нижні межі через різні комісії) — не одну спільну ціну.
 
 Запуск:
     python competitor_pricing.py --seed-test           # записує вже знайдені 20 тестових товарів
@@ -49,14 +61,52 @@ CATALOG_CACHE_FILE = BASE_DIR / "toysi_catalog_cache.json"
 CATALOG_CACHE_TTL  = 3600  # секунд; --record викликається ~200 разів на день поспіль,
                            # кеш рятує від 200 зайвих запитів до фіду Toysi за один день
 
-COMMISSION       = 0.22
-MIN_PROFIT       = 0.25   # цільовий мінімум прибутку від собівартості
-UNDERCUT_K       = 0.97   # на 3% нижче конкурента
+MIN_PROFIT       = 0.25   # цільовий мінімум прибутку від собівартості (як частка cost)
+PRICE_STEP       = 1.0    # фіксований крок нижче конкурента, У ГРН — не відсоток
 NO_COMPETITOR_MULT = 1.75
 DAILY_LIMIT      = 200
 MIN_SUPPLIER_PRICE = 20
 
-FIELDNAMES = ["id", "name", "cost", "min_competitor", "breakeven", "price", "margin_pct", "category", "match_confidence"]
+PLATFORMS = ("prom", "rozetka")
+
+# ---------------------------------------------------------------------------
+# Комісії за майданчиком — окремо від комісії оплати (обидві віднімаються
+# з виручки, тому floor враховує суму двох).
+# ---------------------------------------------------------------------------
+
+# Prom.ua: комісія КАТЕГОРІЙНА (12-23%+) — дивитись у кабінеті Prom ->
+# Налаштування -> Комісії за категоріями. Формат ключа — довільний рядок
+# категорії (узгодь з тим, як позначаєш категорії деінде в проєкті).
+# Реально спостережено на замовленні №414634349 (2026-07-08, Prom,
+# категорія "Пазли Dankotoys"): cpa_commission.amount=9.08 грн на sum=39 грн
+# => ~23.28%. Це підтверджує верхню межу заявленого діапазону (12-23%+),
+# але навмисно НЕ підставлено як загальний дефолт нижче — одна категорія не
+# доказ для решти. TODO (власник): заповнити реальні % по категоріях.
+PROM_CATEGORY_COMMISSION: dict[str, float] = {
+    # "пазли": 0.2328,  # приклад — розкоментуй і додай решту зі свого кабінету
+}
+PROM_COMMISSION_DEFAULT = 0.20  # орієнтовний fallback, ПОКИ категорія не уточнена в кабінеті
+
+# Rozetka: перенесено як орієнтовний дефолт з попередньої версії цієї логіки
+# (комісія 22%, категорія "Дитячі іграшки") — Rozetka ще не активна (магазин
+# не зареєстрований), тому немає живих даних для звірки. Не блокує розробку.
+ROZETKA_COMMISSION_DEFAULT = 0.22
+
+# Комісія оплати (еквайринг/Prom-оплата через RozetkaPay, банківський
+# еквайринг Rozetka тощо) — ОКРЕМА статті від комісії майданчика вище.
+# Точний % не підтверджено в жодному з наявних документів проєкту.
+# TODO (власник): уточнити в кабінеті RozetkaPay / банку-еквайєра.
+PAYMENT_COMMISSION: dict[str, float] = {
+    "prom": 0.0,
+    "rozetka": 0.0,
+}
+
+FIELDNAMES = [
+    "id", "name", "cost", "min_competitor",
+    "floor_prom", "price_prom", "margin_pct_prom", "category_prom",
+    "floor_rozetka", "price_rozetka", "margin_pct_rozetka", "category_rozetka",
+    "match_confidence",
+]
 
 # Товари, які завідомо погано підходять для пошуку конкурента (уцінка/брак)
 _BAD_NAME_MARKERS = ("уцінка", "пошкодж", "не працює", "немає", "брак")
@@ -81,26 +131,76 @@ def get_catalog(force_refresh: bool = False) -> dict:
 # Логіка ціноутворення
 # ---------------------------------------------------------------------------
 
-def decide_price(cost: float, min_competitor: float | None) -> dict:
-    """Повертає рішення про ціну для одного товару."""
-    breakeven = cost / (1 - COMMISSION)
-    target = breakeven * (1 + MIN_PROFIT)
+def get_platform_commission(platform: str, category_name: str | None = None) -> float:
+    """Комісія майданчика (БЕЗ комісії оплати) для конкретної категорії.
+    Для Prom — категорійний пошук у PROM_CATEGORY_COMMISSION з fallback на
+    PROM_COMMISSION_DEFAULT; для Rozetka — один орієнтовний дефолт (категорія
+    поки не впливає, немає живих даних)."""
+    if platform == "prom":
+        if category_name and category_name in PROM_CATEGORY_COMMISSION:
+            return PROM_CATEGORY_COMMISSION[category_name]
+        return PROM_COMMISSION_DEFAULT
+    if platform == "rozetka":
+        return ROZETKA_COMMISSION_DEFAULT
+    raise ValueError(f"Невідомий майданчик: {platform!r}, очікую один з {PLATFORMS}")
+
+
+def decide_price_for_platform(
+    cost: float, min_competitor: float | None, platform: str, category_name: str | None = None
+) -> dict:
+    """
+    Рішення про ціну для ОДНОГО майданчика (Prom або Rozetka):
+        нижня_межа = (cost + cost*MIN_PROFIT) / (1 - комісія_майданчика - комісія_оплати)
+        кандидат   = min_competitor - PRICE_STEP (фіксований крок, грн — не %)
+        ціна       = max(нижня_межа, кандидат)
+
+    Завжди повертає ціну — товари з "нерентабельним" конкурентом більше НЕ
+    пропускаються (як було в старій категорії C): якщо кандидат нижчий за
+    нижню межу, ціна просто піднімається до межі (може вийти вищою за
+    конкурента — так і задумано формулою, це не помилка).
+    """
+    platform_commission = get_platform_commission(platform, category_name)
+    payment_commission = PAYMENT_COMMISSION.get(platform, 0.0)
+    total_commission = platform_commission + payment_commission
+    if total_commission >= 1:
+        raise ValueError(
+            f"[{platform}] сумарна комісія {total_commission:.0%} >= 100% — перевір "
+            "PROM_CATEGORY_COMMISSION/ROZETKA_COMMISSION_DEFAULT/PAYMENT_COMMISSION"
+        )
+
+    floor = (cost + cost * MIN_PROFIT) / (1 - total_commission)
 
     if min_competitor is None:
-        price = round(cost * NO_COMPETITOR_MULT, 2)
-        category = "D"
-        margin_pct = round((price * (1 - COMMISSION) - cost) / cost * 100, 1)
-        return {"breakeven": round(breakeven, 2), "price": price, "category": category, "margin_pct": margin_pct}
-
-    candidate = round(min_competitor * UNDERCUT_K, 2)
-    margin_pct = round((candidate * (1 - COMMISSION) - cost) / cost * 100, 1)
-
-    if candidate < breakeven:
-        return {"breakeven": round(breakeven, 2), "price": None, "category": "C", "margin_pct": margin_pct}
-    elif candidate >= target:
-        return {"breakeven": round(breakeven, 2), "price": candidate, "category": "A", "margin_pct": margin_pct}
+        price = round(max(cost * NO_COMPETITOR_MULT, floor), 2)
+        result_category = "no_competitor"
     else:
-        return {"breakeven": round(breakeven, 2), "price": candidate, "category": "B", "margin_pct": margin_pct}
+        candidate = min_competitor - PRICE_STEP
+        price = round(max(floor, candidate), 2)
+        result_category = "floor" if floor >= candidate else "undercut"
+
+    net_revenue = price * (1 - total_commission)
+    margin_pct = round((net_revenue - cost) / cost * 100, 1) if cost else 0.0
+
+    return {
+        "platform": platform,
+        "floor": round(floor, 2),
+        "price": price,
+        "category": result_category,
+        "margin_pct": margin_pct,
+    }
+
+
+def decide_price(cost: float, min_competitor: float | None, category_name: str | None = None) -> dict:
+    """
+    Рахує рішення ОКРЕМО для кожного майданчика (Prom, Rozetka) — комісії
+    різні (категорійна для Prom, орієнтовний дефолт для Rozetka), тож нижня
+    межа й підсумкова ціна теж різні. Повертає обидва результати під
+    ключами "prom"/"rozetka".
+    """
+    return {
+        "prom": decide_price_for_platform(cost, min_competitor, "prom", category_name),
+        "rozetka": decide_price_for_platform(cost, min_competitor, "rozetka"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +254,11 @@ def select_batch(limit: int = DAILY_LIMIT) -> list:
     """Обирає наступні до `limit` товарів для перевірки на Rozetka.
 
     Пріоритет — дешевші товари: тест на 20 позиціях показав, що товари
-    собівартістю <300 грн майже завжди потрапляють у категорії A/B (є шанс
-    на прибуток), тоді як товари >700 грн частіше опиняються в категорії C.
-    Уцінені/пошкоджені товари виключаються одразу (немає сенсу шукати
-    конкурента на брак).
+    собівартістю <300 грн частіше дають "undercut" (перебиваємо конкурента
+    й лишаємось прибутковими), тоді як товари >700 грн частіше впираються в
+    "floor" (конкурент занадто дешевий, ціну доводиться піднімати до межі
+    маржі). Уцінені/пошкоджені товари виключаються одразу (немає сенсу
+    шукати конкурента на брак).
     """
     catalog = get_catalog()
     processed = load_processed_ids()
@@ -189,16 +290,18 @@ def select_batch(limit: int = DAILY_LIMIT) -> list:
 def cmd_status() -> None:
     processed = load_processed_ids()
     cp = load_checkpoint()
-    counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+    counts = {"prom": {"undercut": 0, "floor": 0, "no_competitor": 0}, "rozetka": {"undercut": 0, "floor": 0, "no_competitor": 0}}
     if RESULTS_FILE.exists():
         with open(RESULTS_FILE, newline="", encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
-                counts[row["category"]] = counts.get(row["category"], 0) + 1
+                for platform in PLATFORMS:
+                    cat = row.get(f"category_{platform}")
+                    if cat in counts[platform]:
+                        counts[platform][cat] += 1
     print(f"Оброблено всього: {len(processed)}")
-    print(f"  A (undercut, >=25% прибутку): {counts['A']}")
-    print(f"  B (undercut, <25% прибутку):  {counts['B']}")
-    print(f"  C (пропуск, збиток):          {counts['C']}")
-    print(f"  D (конкурента немає):         {counts['D']}")
+    for platform in PLATFORMS:
+        c = counts[platform]
+        print(f"  {platform}: undercut={c['undercut']} floor={c['floor']} no_competitor={c['no_competitor']}")
     print(f"Останній запуск: {cp.get('last_run_date')}, оброблено сьогодні: {cp.get('processed_today', 0)}/{DAILY_LIMIT}")
 
 
@@ -215,7 +318,7 @@ def cmd_next_batch(limit: int) -> None:
         print(f"{pid}\t{cost:.2f}\t{name}")
 
 
-def cmd_record(pid: str, min_competitor_raw: str, match_confidence: str) -> None:
+def cmd_record(pid: str, min_competitor_raw: str, match_confidence: str, category_name: str | None = None) -> None:
     catalog = get_catalog()
     item = catalog.get(pid)
     if item is None:
@@ -223,18 +326,26 @@ def cmd_record(pid: str, min_competitor_raw: str, match_confidence: str) -> None
         sys.exit(1)
 
     cost = float(item.get("price") or 0)
+    if cost <= 0:
+        print(f"Товар {pid} має нульову/відсутню ціну постачальника Toysi (cost=0) — пропускаємо, ціну не рахуємо.")
+        return
     min_competitor = None if min_competitor_raw.lower() == "none" else float(min_competitor_raw)
 
-    decision = decide_price(cost, min_competitor)
+    decision = decide_price(cost, min_competitor, category_name)
+    prom, rozetka = decision["prom"], decision["rozetka"]
     row = {
         "id": pid,
         "name": item.get("name", ""),
         "cost": f"{cost:.2f}",
         "min_competitor": f"{min_competitor:.2f}" if min_competitor is not None else "",
-        "breakeven": f"{decision['breakeven']:.2f}",
-        "price": f"{decision['price']:.2f}" if decision["price"] is not None else "",
-        "margin_pct": f"{decision['margin_pct']:.1f}",
-        "category": decision["category"],
+        "floor_prom": f"{prom['floor']:.2f}",
+        "price_prom": f"{prom['price']:.2f}",
+        "margin_pct_prom": f"{prom['margin_pct']:.1f}",
+        "category_prom": prom["category"],
+        "floor_rozetka": f"{rozetka['floor']:.2f}",
+        "price_rozetka": f"{rozetka['price']:.2f}",
+        "margin_pct_rozetka": f"{rozetka['margin_pct']:.1f}",
+        "category_rozetka": rozetka["category"],
         "match_confidence": match_confidence,
     }
     append_result(row)
@@ -243,8 +354,11 @@ def cmd_record(pid: str, min_competitor_raw: str, match_confidence: str) -> None
     cp["processed_today"] = cp.get("processed_today", 0) + 1
     save_checkpoint(cp)
 
-    print(f"[{decision['category']}] {item.get('name','')[:50]} -> "
-          f"ціна={row['price'] or 'ПРОПУСК'} (прибуток {decision['margin_pct']}%)")
+    print(
+        f"{item.get('name','')[:50]} -> "
+        f"Prom: [{prom['category']}] {prom['price']:.2f} грн ({prom['margin_pct']}%) | "
+        f"Rozetka: [{rozetka['category']}] {rozetka['price']:.2f} грн ({rozetka['margin_pct']}%)"
+    )
 
 
 def cmd_seed_test() -> None:
@@ -297,6 +411,11 @@ def main() -> None:
     p_record.add_argument("id")
     p_record.add_argument("min_competitor", help='ціна конкурента або "none"')
     p_record.add_argument("confidence", nargs="?", default="точний")
+    p_record.add_argument(
+        "--category", default=None,
+        help="Категорія Prom для категорійної комісії (ключ у PROM_CATEGORY_COMMISSION); "
+             "якщо не задано — використовується PROM_COMMISSION_DEFAULT",
+    )
 
     args = ap.parse_args()
 
@@ -307,7 +426,7 @@ def main() -> None:
     elif args.cmd == "next-batch":
         cmd_next_batch(args.limit)
     elif args.cmd == "record":
-        cmd_record(args.id, args.min_competitor, args.confidence)
+        cmd_record(args.id, args.min_competitor, args.confidence, args.category)
 
 
 if __name__ == "__main__":

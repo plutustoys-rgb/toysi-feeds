@@ -9,6 +9,8 @@ toysi_catalog_cache.json
 # Локальний стан конкурентного ціноутворення (не для публічного репо)
 competitor_pricing_checkpoint.json
 pricing_results.csv
+pricing_results_v1_legacy_backup.csv
+price_corrections.csv
 
 # Дебаг/скретч-файли
 debug_page.html

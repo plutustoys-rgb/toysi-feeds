@@ -4,6 +4,7 @@ import sys
 from orders_db import get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi, update_delivery_status
 from toysi_order_submit import submit_order
 from nova_poshta import resolve_shipping, NovaPoshtaAPIError
+from telegram_notify import send_telegram_message
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -114,11 +115,40 @@ def build_toysi_order(order: dict) -> dict:
     }
 
 
-def route_order(conn, order: dict, test_mode: bool = True) -> None:
+def route_order(conn, order: dict, test_mode: bool = False) -> None:
+    if test_mode:
+        # Toysi документує api_mode=test буквально: "заказ не будет обрабатываться
+        # менеджером" — не списує депозит, не потрапляє в "Історію замовлень",
+        # ефемерний (авто-видалення через 41 день чи одразу при повторній передачі
+        # з тим самим internal_order_id в реальному режимі). Реальний випадок
+        # (замовлення №414634349, 2026-07-08): продакшн-виклик мовчки йшов у
+        # test_mode за замовчуванням тижнями — Toysi відповідав response_code=1,
+        # "успіх" виглядав правдоподібно, але жодне замовлення реально не
+        # створювалось. Тому test_mode тепер за замовчуванням False, а якщо його
+        # все ж передали True — сигналимо голосно, а не мовчки.
+        warning = (
+            f"⚠️ order_router: {order['internal_order_id']} передається в Toysi з "
+            "test_mode=True — Toysi НЕ створить реальне замовлення (не спише депозит, "
+            "не з'явиться в Історії замовлень). Якщо це не навмисний ручний тест — "
+            "перевір виклик route_order()/route_pending_orders()."
+        )
+        print(warning, file=sys.stderr)
+        send_telegram_message(warning)
+
     toysi_order = build_toysi_order(order)
     result = submit_order(toysi_order, test_mode=test_mode)
 
-    if result["accepted"]:
+    if result["accepted"] and test_mode:
+        # Не позначаємо forwarded_to_toysi_at/status='forwarded_to_supplier' — це
+        # передбачило б, що order_status_tracker.py/watchdog починають відстежувати
+        # РЕАЛЬНЕ виконання замовлення, якого в test_mode не існує.
+        print(
+            f"[order_router] Тестова відправка {order['internal_order_id']} прийнята "
+            f"Toysi (toysi_order_id={result.get('toysi_order_id')}, api_mode=test) — "
+            "НЕ позначено як передане, це не реальне замовлення",
+            file=sys.stderr,
+        )
+    elif result["accepted"]:
         toysi_id = result.get("toysi_order_id")
         mark_forwarded_to_toysi(conn, order["internal_order_id"], str(toysi_id) if toysi_id is not None else "")
         dup_note = " (дублікат — вже існував у Toysi)" if result["is_duplicate"] else ""
@@ -141,7 +171,7 @@ def route_order(conn, order: dict, test_mode: bool = True) -> None:
         )
 
 
-def route_pending_orders(test_mode: bool = True) -> None:
+def route_pending_orders(test_mode: bool = False) -> None:
     with get_connection() as conn:
         candidates = get_orders_ready_to_forward(conn)
         if not candidates:
@@ -153,4 +183,4 @@ def route_pending_orders(test_mode: bool = True) -> None:
 
 
 if __name__ == "__main__":
-    route_pending_orders(test_mode=True)
+    route_pending_orders()

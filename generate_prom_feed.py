@@ -160,7 +160,7 @@ def _tokenize_name(name: str) -> list:
     а не оточена пробілами, як звичайні лапки навколо назви)."""
     cleaned = name.lower().replace("'", "").replace("’", "")
     cleaned = re.sub(r'(?<=\w)"(?=\w)', "", cleaned)
-    cleaned = re.sub(r"[«»\"()\[\],.:;\-–—/]", " ", cleaned)
+    cleaned = re.sub(r"[«»\"()\[\],.:;!?%&+\-–—/]", " ", cleaned)
     words = []
     seen = set()
     for w in cleaned.split():

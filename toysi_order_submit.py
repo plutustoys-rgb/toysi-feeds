@@ -64,7 +64,7 @@ def describe_order_status(status_code: int) -> str:
     return ORDER_STATUS_MESSAGES.get(status_code, f"Невідомий status: {status_code}")
 
 
-def build_order_create_payload(order: dict, test_mode: bool = True) -> dict:
+def build_order_create_payload(order: dict, test_mode: bool = False) -> dict:
     """
     order — нормалізоване замовлення (orders_db + результат nova_poshta.resolve_shipping()):
       internal_order_id       str, <=25 символів, "{platform}_{order_id}"
@@ -130,11 +130,20 @@ def build_order_create_payload(order: dict, test_mode: bool = True) -> dict:
     return payload
 
 
-def submit_order(order: dict, test_mode: bool = True) -> dict:
+def submit_order(order: dict, test_mode: bool = False) -> dict:
     """
     Відправляє замовлення в Toysi через order_create.
     response_code 2 (дублікат) вважається успіхом, а не помилкою (Крок 5 плану).
     response_code 3 треба повторити; 4-21 — помилка в даних замовлення, показати в звіті.
+
+    test_mode=False за замовчуванням навмисно (безпечний дефолт): api_mode=test
+    у Toysi означає "заказ не будет обрабатываться менеджером" — не реальне
+    замовлення, не списує депозит, не з'являється в Історії замовлень, ефемерне.
+    Реальний випадок (замовлення №414634349, 2026-07-08): продакшн-виклик
+    order_router.py мовчки йшов у test_mode тижнями через саме такий небезпечний
+    дефолт — Toysi відповідав response_code=1, "успіх" виглядав правдоподібно,
+    але жодне замовлення реально не створювалось. Викликай з test_mode=True
+    лише свідомо, для ручного тестування (як у __main__ нижче).
     """
     if not TOYSI_AUTH_USER or not TOYSI_API_KEY:
         raise RuntimeError(

@@ -5,7 +5,9 @@ import subprocess
 import sys
 from datetime import datetime
 
+from orders_db import get_connection, get_active_toysi_orders
 from telegram_notify import send_telegram_message
+from toysi_order_submit import fetch_order_statuses
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -20,6 +22,17 @@ status=0/SUCCESS — при падінні логується "Failed with resul
 Сповіщає в Telegram лише на ЗМІНУ стану (OK -> ALARM і назад), а не на
 кожній перевірці — інакше при тривалому падінні прийшов би окремий алерт
 щоразу, коли запускається сам watchdog.
+
+Друга перевірка (check_toysi_reconciliation) — інша категорія проблем:
+не "сервіс впав", а "сервіс відзвітував про успіх, але дані по факту хибні".
+Реальний випадок (замовлення №414634349, 2026-07-08): order_router.py
+логував "Передано Toysi" з response_code=1 (справжній, валідний успіх за
+даними Toysi), і orders_watcher.py/order_router.py обидва завершувались
+статусом 0/SUCCESS — journald-перевірка вище нічого б не показала. Але
+через баг (test_mode=True за замовчуванням у продакшн-виклику) Toysi
+реально НІКОЛИ не створював замовлення. Ця перевірка звіряє нещодавно
+передані Toysi замовлення з їхнім реальним станом через order_status API —
+незалежно від того, що наш власний код вважає "успіхом".
 """
 
 # Назва сервісу -> поріг у хвилинах (2x очікуваний інтервал відповідного таймера).
@@ -29,6 +42,12 @@ MONITORED_SERVICES = {
 }
 
 LOOKBACK = "3 days ago"  # достатньо, щоб знайти останній успіх навіть після тривалого падіння
+
+# Скільки часу замовлення може лишатись непідтвердженим у Toysi (status=0,
+# order_is_paid=0, без ТТН, place_count=0) до алерту. Власник орієнтовно
+# назвав "1-2 години" — беремо верхню межу з запасом, оскільки навіть
+# реальне замовлення якийсь час лишається в статусі 0 до обробки менеджером.
+TOYSI_RECONCILE_THRESHOLD_MINUTES = 120
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog_state.json")
 
@@ -154,5 +173,102 @@ def check_services() -> None:
             print("[watchdog] Не вдалося надіслати повідомлення про відновлення в Telegram", file=sys.stderr)
 
 
+def _order_confirmed_in_toysi(info: dict) -> bool:
+    """Чи є в статусі Toysi ознака, що замовлення дійсно існує й
+    опрацьовується — а не назавжди "підвішене". Саме так виглядало тестове
+    замовлення №414634349: status=0, order_is_paid=0, TTN="", place_count=0
+    без кінця, бо воно було відправлене через api_mode=test і ніколи реально
+    не створювалось у Toysi."""
+    status = int(info.get("status", 0) or 0)
+    if status != 0:
+        return True
+    if int(info.get("order_is_paid", 0) or 0):
+        return True
+    if info.get("TTN"):
+        return True
+    if int(info.get("place_count", 0) or 0):
+        return True
+    return False
+
+
+def check_toysi_reconciliation() -> None:
+    """Звіряє нещодавно передані Toysi замовлення (forwarded_to_toysi_at
+    заповнено, доставка ще не термінальна) з їхнім реальним станом через
+    order_status API — незалежно від того, що наш власний код вважав
+    "успіхом" при передачі. Алармує, якщо замовлення старше
+    TOYSI_RECONCILE_THRESHOLD_MINUTES і досі не показує жодної ознаки
+    реального опрацювання (див. _order_confirmed_in_toysi)."""
+    now = datetime.now()
+    state = _load_state()
+    reconcile_state = state.get("toysi_reconcile", {})
+
+    with get_connection() as conn:
+        active_orders = get_active_toysi_orders(conn)
+
+    candidates = []
+    for order in active_orders:
+        try:
+            forwarded_at = datetime.fromisoformat(order["forwarded_to_toysi_at"])
+        except (TypeError, ValueError):
+            continue
+        age_minutes = (now - forwarded_at).total_seconds() / 60
+        if age_minutes >= TOYSI_RECONCILE_THRESHOLD_MINUTES:
+            candidates.append((order, age_minutes))
+
+    if not candidates:
+        print("[watchdog] Звірка з Toysi: немає замовлень, старших за поріг, для перевірки")
+        return
+
+    try:
+        statuses = fetch_order_statuses([str(o["toysi_order_id"]) for o, _ in candidates])
+    except RuntimeError as e:
+        print(f"[watchdog] Звірка з Toysi: не вдалося перевірити — {e}", file=sys.stderr)
+        return
+
+    still_unconfirmed = {}
+    new_alarms = []
+    recoveries = []
+
+    for order, age_minutes in candidates:
+        internal_id = order["internal_order_id"]
+        toysi_id = str(order["toysi_order_id"])
+        info = statuses.get(toysi_id)
+        was_alarming = reconcile_state.get(internal_id, False)
+        confirmed = info is not None and _order_confirmed_in_toysi(info)
+
+        if confirmed:
+            print(f"[watchdog] Звірка з Toysi: OK — {internal_id} (Toysi #{toysi_id}) підтверджено")
+            if was_alarming:
+                recoveries.append(f"✅ {internal_id} (Toysi #{toysi_id}): тепер підтверджено в Toysi")
+            continue
+
+        still_unconfirmed[internal_id] = True
+        reason = "не знайдено в Toysi" if info is None else "status=0, без оплати/ТТН/місць"
+        detail = f"{internal_id} (Toysi #{toysi_id}): непідтверджено {age_minutes:.0f} хв ({reason})"
+        print(f"[watchdog] Звірка з Toysi: ALARM — {detail}")
+        if not was_alarming:
+            new_alarms.append(f"⛔ {detail}")
+
+    state["toysi_reconcile"] = still_unconfirmed
+    _save_state(state)
+
+    if new_alarms:
+        message = (
+            "🚨 Watchdog PlutusToys: замовлення передане, але Toysi не підтверджує\n\n"
+            + "\n\n".join(new_alarms)
+            + "\n\nПеревір вручну — можливо, замовлення реально не створено "
+              "(як №414634349 через баг test_mode)."
+        )
+        print(message)
+        if not send_telegram_message(message):
+            print("[watchdog] Не вдалося надіслати алерт про звірку в Telegram", file=sys.stderr)
+    if recoveries:
+        message = "✅ Watchdog PlutusToys: звірка з Toysi відновлена\n\n" + "\n\n".join(recoveries)
+        print(message)
+        if not send_telegram_message(message):
+            print("[watchdog] Не вдалося надіслати повідомлення про відновлення звірки в Telegram", file=sys.stderr)
+
+
 if __name__ == "__main__":
     check_services()
+    check_toysi_reconciliation()

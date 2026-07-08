@@ -51,14 +51,27 @@ def _call(model_name: str, called_method: str, method_properties: dict) -> list:
     return data.get("data", [])
 
 
-def find_city(city_name: str, limit: int = 5) -> dict:
+def find_city(city_name: str, area_hint: str = "", limit: int = 5) -> dict:
     """Шукає місто за назвою. Повертає {"ref":.., "name":..} найбільш релевантного збігу,
     або None, якщо міста дійсно немає в довіднику Нової Пошти.
-    Піднімає NovaPoshtaAPIError, якщо сам запит до API не вдався (окрема причина від "не знайдено")."""
+    Піднімає NovaPoshtaAPIError, якщо сам запит до API не вдався (окрема причина від "не знайдено").
+
+    area_hint — назва області (без "обл.", напр. "Київська"), якщо вона була
+    в вихідній адресі. Багато сіл/селищ мають однакову назву в кількох
+    областях (Миколаївка, Іванівка тощо) — без area_hint перший результат
+    getCities може виявитись зовсім іншим населеним пунктом. Якщо area_hint
+    задано, і серед результатів є збіг за AreaDescription — беремо його;
+    інакше (як і раніше) — перший результат."""
     results = _call("Address", "getCities", {"FindByString": city_name, "Limit": str(limit)})
     if not results:
         return None
     top = results[0]
+    if area_hint:
+        area_hint_low = area_hint.strip().lower()
+        for candidate in results:
+            if area_hint_low in (candidate.get("AreaDescription") or "").lower():
+                top = candidate
+                break
     return {"ref": top.get("Ref"), "name": top.get("Description")}
 
 
@@ -88,7 +101,7 @@ def find_warehouse(city_ref: str, warehouse_query: str = "") -> dict:
     return None
 
 
-def resolve_shipping(city_name: str, warehouse_query: str = "") -> dict:
+def resolve_shipping(city_name: str, warehouse_query: str = "", area_hint: str = "") -> dict:
     """
     Повний резолв "назва міста + запит відділення" -> ідентифікатори для Toysi order_create.
 
@@ -98,9 +111,13 @@ def resolve_shipping(city_name: str, warehouse_query: str = "") -> dict:
     shipping_city_id документований як рядок-ідентифікатор міста перевізника — сюди йде
     CityRef (GUID) Нової Пошти. Це best-effort мапінг за офіційним описом полів Toysi;
     перевір на першому тестовому замовленні (api_mode=test) і скоригуй за потреби.
+
+    area_hint — назва області з вихідної адреси (якщо була), передається в
+    find_city() для розрізнення однойменних населених пунктів у різних
+    областях (див. докстрінг find_city).
     """
     try:
-        city = find_city(city_name)
+        city = find_city(city_name, area_hint=area_hint)
     except NovaPoshtaAPIError as e:
         print(f"[NovaPoshta] Проблема з API Нової Пошти (не з даними міста): {e}", file=sys.stderr)
         return None

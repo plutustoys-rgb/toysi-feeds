@@ -62,6 +62,16 @@ def _split_name(customer_name: str) -> tuple:
     return first_name, last_name
 
 
+def _normalize_phone_for_toysi(phone: str) -> str:
+    """Toysi документує shipping_phone як "12 цифр з '380...'" — без "+" та
+    без пробілів/дефісів. Реальний Prom order["phone"] прийшов у форматі
+    "+380504287634" (з "+") — мок-дані (єдине джерело перевірки логіки до
+    першого реального замовлення) завжди були без "+", тому це не спливало.
+    Перевірено на реальному замовленні №414634349: Toysi відхилив саме з цієї
+    причини (response_code=16, "Невірний телефон отримувача")."""
+    return re.sub(r"\D", "", phone or "")
+
+
 def build_toysi_order(order: dict) -> dict:
     """Перетворює запис orders_db на структуру для toysi_order_submit.submit_order()."""
     city, warehouse_query, area_hint = parse_np_branch(order.get("np_branch", ""))
@@ -93,7 +103,7 @@ def build_toysi_order(order: dict) -> dict:
         "items": order["items"],
         "first_name": first_name,
         "last_name": last_name,
-        "phone": order.get("phone", ""),
+        "phone": _normalize_phone_for_toysi(order.get("phone", "")),
         "shipping_city_name": city or "Київ",  # Toysi вимагає непорожнє місто
         # Без NP-резолву адреса лишається вільним текстом np_branch — бажано,
         # ніж порожній рядок (response_code 20 "порожня адреса доставки").

@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 
@@ -57,6 +58,17 @@ def fetch_new_orders_prom() -> list:
     return [_convert_prom_order(o) for o in data.get("orders", [])]
 
 
+def _parse_prom_price(raw) -> float:
+    """Prom Orders API повертає product["price"] як число АБО як рядок з
+    валютою ("39 грн") — перевірено на реальному замовленні №414634349, де
+    саме другий варіант і призвів до ValueError на кожному циклі опитування
+    (жоден мок-тест цього не ловив, бо мок-дані завжди були числами)."""
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    match = re.search(r"\d+(?:[.,]\d+)?", str(raw or "0"))
+    return float(match.group().replace(",", ".")) if match else 0.0
+
+
 def _convert_prom_order(order: dict) -> dict:
     """Приводить замовлення з реального Prom Orders API до сирої структури,
     яку очікує normalize_order() (той самий формат, що й мок-дані нижче)."""
@@ -72,7 +84,7 @@ def _convert_prom_order(order: dict) -> dict:
             "toysi_code": product.get("sku") or product.get("external_id") or "",
             "name": product.get("name", ""),
             "qty": int(product.get("quantity") or 1),
-            "price": float(product.get("price") or 0),
+            "price": _parse_prom_price(product.get("price")),
         }
         for product in order.get("products", [])
     ]

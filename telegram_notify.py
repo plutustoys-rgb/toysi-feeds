@@ -31,7 +31,12 @@ def send_telegram_message(text: str) -> bool:
         print(f"[telegram] Помилка з'єднання: {e}", file=sys.stderr)
         return False
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError:
+        print(f"[telegram] Невалідна відповідь (не JSON): {response.text[:300]}", file=sys.stderr)
+        return False
+
     if not data.get("ok"):
         print(f"[telegram] Telegram API відхилив повідомлення: {data}", file=sys.stderr)
         return False

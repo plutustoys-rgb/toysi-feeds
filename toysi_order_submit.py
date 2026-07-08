@@ -186,6 +186,16 @@ def submit_order(order: dict, test_mode: bool = False) -> dict:
     }
 
 
+class ToysiAPIError(Exception):
+    """Сам запит до order_status не вдався (мережа, невалідна відповідь,
+    фатальна помилка API) — на відміну від порожнього результату, коли
+    Toysi відповів нормально, але серед переданих id справді немає жодного
+    (не існують чи застаріли, >40 днів). Плутати ці два випадки небезпечно:
+    check_toysi_reconciliation() у service_watchdog.py трактує "не знайдено"
+    як ознаку, що замовлення могло піти в test_mode (як №414634349) — секундний
+    мережевий збій не повинен виглядати так само."""
+
+
 def fetch_order_statuses(toysi_order_ids: list) -> dict:
     """
     Пакетний запит order_status (Крок 6 плану) — до 500 номерів за раз,
@@ -193,6 +203,11 @@ def fetch_order_statuses(toysi_order_ids: list) -> dict:
     Повертає {toysi_order_id (str): {"order_id":.., "status": int, "TTN": str, ...}}
     лише для ЗНАЙДЕНИХ замовлень — відсутні в результаті id просто не існують
     чи вже застарілі (>40 днів, Toysi перестає їх обслуговувати).
+
+    Піднімає ToysiAPIError, якщо ЖОДЕН чанк не вдалося опитати успішно
+    (мережа/невалідна відповідь/фатальна помилка API) — це відрізняється від
+    "усі чанки опрацьовано, просто жоден id не знайдено", коли повертається
+    порожній dict без винятку.
     """
     if not toysi_order_ids:
         return {}
@@ -203,6 +218,7 @@ def fetch_order_statuses(toysi_order_ids: list) -> dict:
         )
 
     results = {}
+    had_failure = False
     chunk_size = 500
     for i in range(0, len(toysi_order_ids), chunk_size):
         chunk = toysi_order_ids[i : i + chunk_size]
@@ -219,25 +235,45 @@ def fetch_order_statuses(toysi_order_ids: list) -> dict:
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             print(f"[toysi_order_submit] order_status: помилка з'єднання: {e}", file=sys.stderr)
+            had_failure = True
             continue
 
         try:
             data = response.json()
         except ValueError:
             print(f"[toysi_order_submit] order_status: невалідна відповідь (не JSON): {response.text[:300]}", file=sys.stderr)
+            had_failure = True
+            continue
+
+        if not isinstance(data, dict):
+            # Незадокументована форма відповіді (null/список/рядок/число) — trap
+            # знайдено незалежним рев'ю: без цієї перевірки results.update(data)
+            # нижче впав би з TypeError на дечому на кшталт None, і жоден з
+            # викликів (order_status_tracker.py/service_watchdog.py) цього не
+            # ловить (лише RuntimeError/ToysiAPIError).
+            print(
+                f"[toysi_order_submit] order_status: неочікувана форма відповіді "
+                f"(не dict): {response.text[:300]}",
+                file=sys.stderr,
+            )
+            had_failure = True
             continue
 
         # Фатальна помилка на весь чанк (0/4/400/404) — top-level response_code присутній.
         # Якщо знайдено хоч одне замовлення, response_code у відповіді взагалі немає
         # (документація toysi.ua/api-doc.php) — знайдені записи повертаються напряму.
-        if isinstance(data, dict) and "response_code" in data:
+        if "response_code" in data:
             print(
                 f"[toysi_order_submit] order_status: {data.get('response_code')} — {data.get('response_msg')}",
                 file=sys.stderr,
             )
+            had_failure = True
             continue
 
         results.update(data)
+
+    if had_failure and not results:
+        raise ToysiAPIError("не вдалося перевірити жоден chunk — див. лог вище")
 
     return results
 

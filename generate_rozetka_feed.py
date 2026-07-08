@@ -128,7 +128,7 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
 
     print(f"[Rozetka] У фіді: {len(offers_el)} товарів | "
           f"пропущено (без ціни): {skipped} | дешевше {MIN_SUPPLIER_PRICE} грн: {skipped_cheap} | "
-          f"виключено як збиткові (категорія C): {skipped_unprof}")
+          f"виключено вручну (exclude_ids): {skipped_unprof}")
     return yml
 
 

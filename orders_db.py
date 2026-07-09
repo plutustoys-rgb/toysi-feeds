@@ -21,8 +21,12 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at            TEXT NOT NULL,
     forwarded_to_toysi_at TEXT,
     toysi_order_id        TEXT,               -- номер замовлення, який повернув Toysi order_create
-    toysi_ttn             TEXT,
+    toysi_ttn             TEXT,               -- ТТН зі СТОРОНИ Toysi (order_status) — для НП заповнюється
+                                               -- автоматично; для Укрпошти лише ПІСЛЯ ручного внесення в lk
     delivery_status       TEXT,
+    carrier               TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta')),
+    ukrposhta_ttn         TEXT,               -- ТТН, яку МИ створили через ukrposhta_client.py (до внесення в Toysi)
+    ukrposhta_sticker_path TEXT,              -- локальний шлях до PDF-етикетки Укрпошти
     UNIQUE (order_id, platform)
 );
 
@@ -42,9 +46,27 @@ def get_connection(db_path: str = DB_PATH):
         conn.close()
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """ALTER TABLE ADD COLUMN, ідемпотентно. CREATE TABLE IF NOT EXISTS у SCHEMA
+    НЕ чіпає таблицю, яка вже існує (на VPS orders.db вже містить реальні
+    замовлення) — тож нові колонки, додані до SCHEMA заднім числом, самі
+    собою на існуючій БД не з'являться. Виклик нижче — щоб додавання
+    carrier/ukrposhta_* (2026-07-10) не впало з "no such column" на вже
+    розгорнутій БД."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init_db(db_path: str = DB_PATH) -> None:
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA)
+        _ensure_column(
+            conn, "orders", "carrier",
+            "carrier TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta'))",
+        )
+        _ensure_column(conn, "orders", "ukrposhta_ttn", "ukrposhta_ttn TEXT")
+        _ensure_column(conn, "orders", "ukrposhta_sticker_path", "ukrposhta_sticker_path TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -69,8 +91,9 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
         INSERT INTO orders (
             internal_order_id, order_id, platform, status, payment_method,
             payment_confirmed, customer_name, phone, np_branch, items,
-            created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status,
+            carrier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             internal_order_id,
@@ -88,6 +111,7 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             order.get("toysi_order_id"),
             order.get("toysi_ttn"),
             order.get("delivery_status"),
+            order.get("carrier", "nova_poshta"),
         ),
     )
     return True
@@ -153,6 +177,44 @@ def get_active_toysi_orders(conn: sqlite3.Connection) -> list:
         WHERE forwarded_to_toysi_at IS NOT NULL
           AND toysi_order_id IS NOT NULL
           AND (delivery_status IS NULL OR delivery_status NOT IN ('cancelled', 'returned', 'expired'))
+        """
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def mark_ukrposhta_shipment(conn: sqlite3.Connection, internal_order_id: str, ttn: str, sticker_path: str) -> None:
+    """Записує ТТН і шлях до PDF-етикетки, отримані від ukrposhta_client.py.
+    Toysi НЕ приймає ТТН через order_create (підтверджено емпірично
+    2026-07-10: поле "ttn" у запиті ігнорується, order_status після цього
+    повертає порожній TTN) — тому номер ТТН і PDF-етикетку далі треба
+    внести в кабінет toysi.ua/lk ВРУЧНУ (дивись
+    get_orders_awaiting_manual_ttn_entry()).
+
+    Навмисно НЕ чіпає `status` — mark_forwarded_to_toysi() вже виставив
+    status='forwarded_to_supplier' одразу перед цим викликом, і це лишається
+    правдою (замовлення дійсно передане Toysi). "Очікує ручного внесення
+    ТТН" — похідний стан (ukrposhta_ttn задано, toysi_ttn ще ні), а не
+    окремий status, який довелось би вручну скидати після завершення
+    ручної дії."""
+    conn.execute(
+        "UPDATE orders SET ukrposhta_ttn = ?, ukrposhta_sticker_path = ? WHERE internal_order_id = ?",
+        (ttn, sticker_path, internal_order_id),
+    )
+
+
+def get_orders_awaiting_manual_ttn_entry(conn: sqlite3.Connection) -> list:
+    """Замовлення Укрпошта, для яких ТТН/етикетка вже створені нашим
+    ukrposhta_client.py (ukrposhta_ttn задано), але людина (чи Фаза 2 —
+    браузерна автоматизація через claude-in-chrome) ще не внесла ТТН у
+    кабінет toysi.ua/lk — тобто order_status_tracker.py ще не підтягнув
+    його назад як toysi_ttn. Список сам собою "звужується" щойно ручна
+    дія виконана — окремого статусу для цього не потрібно."""
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE carrier = 'ukrposhta'
+          AND ukrposhta_ttn IS NOT NULL
+          AND (toysi_ttn IS NULL OR toysi_ttn = '')
         """
     ).fetchall()
     return [_row_to_dict(row) for row in rows]

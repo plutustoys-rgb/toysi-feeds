@@ -1,9 +1,14 @@
+import os
 import re
 import sys
 
-from orders_db import get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi, update_delivery_status
+from orders_db import (
+    get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi,
+    mark_ukrposhta_shipment, update_delivery_status,
+)
 from toysi_order_submit import submit_order
 from nova_poshta import resolve_shipping, NovaPoshtaAPIError
+from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -15,7 +20,19 @@ if hasattr(sys.stdout, "reconfigure"):
 payment_confirmed=1 (виставляє bank_check.py). Обирає кандидатів через
 orders_db.get_orders_ready_to_forward() — воно вже враховує обидва правила
 і виключає замовлення з попередньою помилкою (status='toysi_error').
+
+Укрпошта (2026-07-10): паралельний шлях для order["carrier"]=="ukrposhta".
+Toysi не приймає наш API-ключ Укрпошти (політика компанії) — ТТН і PDF-
+етикетку створюємо самі через ukrposhta_client.py ПЕРЕД тим, як передати
+замовлення в Toysi (order_create). Toysi order_create НЕ приймає ТТН через
+API (підтверджено емпірично 2026-07-10: поле "ttn" у запиті ігнорується,
+order_status після цього повертає порожній TTN) — тож ТТН/етикетку далі
+треба вручну внести в кабінет toysi.ua/lk (одна дія, без третьої особи —
+дивись orders_db.get_orders_awaiting_manual_ttn_entry(), кандидат на
+браузерну автоматизацію Фази 2).
 """
+
+UKRPOSHTA_STICKERS_DIR = "ukrposhta_stickers"
 
 _WAREHOUSE_RE = re.compile(r"(?:відділенн\w*|відд\.?|№)\s*№?\s*(\d+)", re.IGNORECASE)
 _CITY_PREFIX_RE = re.compile(r"^(м\.|с\.|смт\.?)\s*", re.IGNORECASE)
@@ -78,7 +95,11 @@ def build_toysi_order(order: dict) -> dict:
     city, warehouse_query, area_hint = parse_np_branch(order.get("np_branch", ""))
 
     shipping_fields = {}
-    if city:
+    # NP-резолв (getCities/getWarehouses) стосується лише Нової Пошти — для
+    # Укрпошти shipping_city_id/warehouse_id взагалі не мають сенсу (Toysi
+    # не інтегрована з Укрпоштою, ці поля не використовуються на її боці),
+    # і сам виклик resolve_shipping() був би зайвим мережевим запитом.
+    if city and order.get("carrier", "nova_poshta") == "nova_poshta":
         try:
             shipping = resolve_shipping(city, warehouse_query, area_hint=area_hint)
         except NovaPoshtaAPIError as e:
@@ -115,6 +136,47 @@ def build_toysi_order(order: dict) -> dict:
     }
 
 
+def _create_ukrposhta_shipment(order: dict) -> dict:
+    """Створює відправлення Укрпоштою через ukrposhta_client.py: ТТН + PDF-
+    етикетка, збережена локально в UKRPOSHTA_STICKERS_DIR. Повертає None (без
+    винятку), якщо не вдалось — виклик вище просто пропускає замовлення до
+    наступного циклу, той самий підхід, що й для тимчасових помилок Toysi
+    (should_retry у route_order())."""
+    first_name, last_name = _split_name(order.get("customer_name", ""))
+    city, _, _ = parse_np_branch(order.get("np_branch", ""))
+
+    moneyback = 0.0
+    if order["payment_method"] == "cod":
+        moneyback = sum(item.get("price", 0) * item.get("qty", 1) for item in order["items"])
+
+    try:
+        shipment = create_shipment_with_label(
+            recipient_first_name=first_name,
+            recipient_last_name=last_name,
+            recipient_phone=_normalize_phone_for_toysi(order.get("phone", "")),
+            recipient_city=city or "Київ",
+            # TODO: Prom delivery_provider_data для Укрпошти може містити індекс
+            # отримувача окремим полем — уточнити на першому реальному
+            # замовленні з доставкою Укрпоштою (поки не було жодного).
+            recipient_postcode="",
+            cod_amount=moneyback,
+        )
+    except UkrposhtaAPIError as e:
+        print(
+            f"[order_router] Не вдалось створити відправлення Укрпоштою для "
+            f"{order['internal_order_id']}: {e}",
+            file=sys.stderr,
+        )
+        return None
+
+    os.makedirs(UKRPOSHTA_STICKERS_DIR, exist_ok=True)
+    sticker_path = os.path.join(UKRPOSHTA_STICKERS_DIR, f"{order['internal_order_id']}.pdf")
+    with open(sticker_path, "wb") as f:
+        f.write(shipment["sticker_pdf"])
+
+    return {"ttn": shipment["ttn"], "sticker_path": sticker_path}
+
+
 def route_order(conn, order: dict, test_mode: bool = False) -> None:
     if test_mode:
         # Toysi документує api_mode=test буквально: "заказ не будет обрабатываться
@@ -136,7 +198,22 @@ def route_order(conn, order: dict, test_mode: bool = False) -> None:
         if not send_telegram_message(warning):
             print("[order_router] Не вдалося надіслати попередження про test_mode у Telegram", file=sys.stderr)
 
+    carrier = order.get("carrier", "nova_poshta")
+    ukrposhta_shipment = None
+    if carrier == "ukrposhta":
+        # ТТН/етикетку створюємо ДО передачі в Toysi — якщо Укрпошта API
+        # недоступне (чи UKRPOSHTA_API_KEY ще не задано), немає сенсу
+        # реєструвати замовлення в Toysi, яке нічим відправити.
+        ukrposhta_shipment = _create_ukrposhta_shipment(order)
+        if ukrposhta_shipment is None:
+            return
+
     toysi_order = build_toysi_order(order)
+    if carrier == "ukrposhta":
+        # Прийнято Toysi без помилки (перевірено емпірично 2026-07-10), але
+        # НЕ створює реальне відправлення на боці Toysi — Укрпошта в них не
+        # інтегрована. Це лише інформативне поле для замовлення в їхній системі.
+        toysi_order["shipping_carrier_name"] = "Укрпошта"
     result = submit_order(toysi_order, test_mode=test_mode)
 
     if result["accepted"] and test_mode:
@@ -153,10 +230,20 @@ def route_order(conn, order: dict, test_mode: bool = False) -> None:
         toysi_id = result.get("toysi_order_id")
         mark_forwarded_to_toysi(conn, order["internal_order_id"], str(toysi_id) if toysi_id is not None else "")
         dup_note = " (дублікат — вже існував у Toysi)" if result["is_duplicate"] else ""
-        print(
-            f"[order_router] Передано Toysi: {order['internal_order_id']} -> "
-            f"toysi_order_id={toysi_id}{dup_note}"
-        )
+        if ukrposhta_shipment:
+            mark_ukrposhta_shipment(
+                conn, order["internal_order_id"], ukrposhta_shipment["ttn"], ukrposhta_shipment["sticker_path"],
+            )
+            print(
+                f"[order_router] Укрпошта: {order['internal_order_id']} -> ТТН "
+                f"{ukrposhta_shipment['ttn']}, передано Toysi (toysi_order_id={toysi_id}){dup_note} — "
+                "ЧЕКАЄ РУЧНОГО внесення ТТН/етикетки в toysi.ua/lk"
+            )
+        else:
+            print(
+                f"[order_router] Передано Toysi: {order['internal_order_id']} -> "
+                f"toysi_order_id={toysi_id}{dup_note}"
+            )
     elif result["should_retry"]:
         print(
             f"[order_router] Тимчасова помилка, спробуємо в наступному циклі: "

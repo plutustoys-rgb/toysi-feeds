@@ -21,6 +21,9 @@ scratch_product.html
 # Локальна БД замовлень (runtime-стан, не для git)
 orders.db
 
+# PDF-етикетки Укрпошти — персональні дані клієнтів (ім'я/адреса/телефон)
+ukrposhta_stickers/
+
 # Runtime-стан service_watchdog.py (OK/ALARM по кожному сервісу)
 watchdog_state.json
 

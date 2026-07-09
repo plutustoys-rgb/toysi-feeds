@@ -58,6 +58,21 @@ def is_leader_category(item: dict) -> bool:
     return False
 
 
+# Категорії, виключені з першої хвилі імпорту в Prom (рішення власника,
+# 2026-07-09) — audit_prom_characteristics.py виявив масову відсутність
+# характеристик з боку Toysi: "Велосипеди" — 450 з 970 SKU топ-фіда (46%
+# імпорту), 270 без країни походження, 450 без ЖОДНОЇ змістовної
+# характеристики (Toysi для цієї категорії не надає нічого, крім розмірів
+# упаковки). Перевір audit_prom_characteristics.py перед тим, як повертати
+# категорію назад — рішення діє, поки дані від Toysi не покращаться або
+# характеристики не буде донаповнено вручну в кабінеті Prom.
+EXCLUDED_CATEGORIES = {"велосипеди"}
+
+
+def is_excluded_category(item: dict) -> bool:
+    return (item.get("category_name") or "").strip().lower() in EXCLUDED_CATEGORIES
+
+
 def _margin(item: dict) -> float:
     """Розрахункова маржа (retail - cost), рахована ТІЄЮ Ж формулою, що й реальна
     ціна в generate_prom_feed.py (default_retail_price — комісія категорії Prom +
@@ -83,7 +98,10 @@ def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
     2. Якщо лідерів менше за target — доповнюємо рештою каталогу,
        теж за спаданням маржі, поки не набереться `target`.
     """
-    eligible = {pid: item for pid, item in catalog.items() if _margin(item) >= 0}
+    eligible = {
+        pid: item for pid, item in catalog.items()
+        if _margin(item) >= 0 and not is_excluded_category(item)
+    }
 
     leaders = {pid: item for pid, item in eligible.items() if is_leader_category(item)}
     rest    = {pid: item for pid, item in eligible.items() if pid not in leaders}

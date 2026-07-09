@@ -1,7 +1,7 @@
 import re
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed import calc_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
+from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
 
 OUTPUT_FILE     = "feeds/prom_feed_top.xml"
 TARGET_COUNT    = 1000
@@ -58,8 +58,27 @@ def is_leader_category(item: dict) -> bool:
     return False
 
 
+# Категорії, виключені з першої хвилі імпорту в Prom (рішення власника,
+# 2026-07-09) — audit_prom_characteristics.py виявив масову відсутність
+# характеристик з боку Toysi: "Велосипеди" — 450 з 970 SKU топ-фіда (46%
+# імпорту), 270 без країни походження, 450 без ЖОДНОЇ змістовної
+# характеристики (Toysi для цієї категорії не надає нічого, крім розмірів
+# упаковки). Перевір audit_prom_characteristics.py перед тим, як повертати
+# категорію назад — рішення діє, поки дані від Toysi не покращаться або
+# характеристики не буде донаповнено вручну в кабінеті Prom.
+EXCLUDED_CATEGORIES = {"велосипеди"}
+
+
+def is_excluded_category(item: dict) -> bool:
+    return (item.get("category_name") or "").strip().lower() in EXCLUDED_CATEGORIES
+
+
 def _margin(item: dict) -> float:
-    """Розрахункова маржа (retail - cost). -1, якщо товар не має валідної/прийнятної ціни
+    """Розрахункова маржа (retail - cost), рахована ТІЄЮ Ж формулою, що й реальна
+    ціна в generate_prom_feed.py (default_retail_price — комісія категорії Prom +
+    нижня межа маржі), а не старою calc_price() — інакше відбір "топ" товарів
+    орієнтувався б на маржу, яка не враховує комісію, і міг обрати гірші за
+    реальним прибутком SKU. -1, якщо товар не має валідної/прийнятної ціни
     або це уцінений/пошкоджений товар (не належить у "топ" незалежно від маржі)."""
     if is_clearance_item(item.get("name"), item.get("category_name"), item.get("category_id")):
         return -1
@@ -69,7 +88,7 @@ def _margin(item: dict) -> float:
         return -1
     if cost < MIN_SUPPLIER_PRICE:
         return -1
-    return calc_price(cost) - cost
+    return default_retail_price(cost, item.get("category_name")) - cost
 
 
 def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
@@ -79,7 +98,10 @@ def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
     2. Якщо лідерів менше за target — доповнюємо рештою каталогу,
        теж за спаданням маржі, поки не набереться `target`.
     """
-    eligible = {pid: item for pid, item in catalog.items() if _margin(item) >= 0}
+    eligible = {
+        pid: item for pid, item in catalog.items()
+        if _margin(item) >= 0 and not is_excluded_category(item)
+    }
 
     leaders = {pid: item for pid, item in eligible.items() if is_leader_category(item)}
     rest    = {pid: item for pid, item in eligible.items() if pid not in leaders}

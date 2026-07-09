@@ -4,6 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
+from competitor_pricing import decide_price_for_platform
 from parser import fetch_toysi_catalog
 
 SHOP_NAME          = "PlutusToys"
@@ -282,7 +283,11 @@ def generate_keywords(item: dict) -> tuple:
 
 
 def calc_price(cost: float) -> float:
-    """Розраховує роздрібну ціну з наценкою залежно від собівартості.
+    """СТАРА фіксована сходинкова наценка за ціновим діапазоном — БЕЗ жодного
+    урахування комісії Prom. Більше НЕ використовується як ціна за замовчуванням
+    у _build_xml() (дивись default_retail_price нижче) — залишена лише для
+    generate_royaltoys_feed.py / generate_prom_feed_top.py._margin(), які досі
+    її імпортують.
 
     до 100 грн: +60% | 100-300: +50% | 300-700: +40% | 700-2000: +35% | 2000+: +25%
     """
@@ -291,6 +296,20 @@ def calc_price(cost: float) -> float:
     elif cost < 700:  return round(cost * 1.40)
     elif cost < 2000: return round(cost * 1.35)
     else:             return round(cost * 1.25)
+
+
+def default_retail_price(cost: float, category_name: str = "") -> float:
+    """Ціна для SKU БЕЗ ручного запису ціни конкурента в pricing_results.csv —
+    тобто майже всі товари під час першого масового імпорту (competitor_pricing.py
+    --record обробляє ~200/день вручну, конкурента поки записано для жменьки SKU).
+
+    Рахує через ту саму формулу, що й ручний конвеєр конкурентів
+    (competitor_pricing.py, decide_price_for_platform): нижня межа маржі =
+    (cost + cost*MIN_PROFIT) / (1 - комісія_категорії_Prom - комісія_оплати),
+    ціна = max(нижня_межа, cost*NO_COMPETITOR_MULT) — а НЕ стара calc_price()
+    вище, яка комісію взагалі не віднімала і на частині категорій/діапазонів
+    цін давала нульову чи від'ємну маржу після реальної комісії Prom."""
+    return decide_price_for_platform(cost, None, "prom", category_name)["price"]
 
 
 def _wrap_cdata(xml_str: str) -> str:
@@ -329,18 +348,13 @@ def _build_xml(catalog: dict, price_overrides: dict = None) -> tuple[ET.Element,
     for cid in sorted(cat_map):
         ET.SubElement(categories_el, "category", id=cid).text = cat_map[cid]
 
-    offers_el     = ET.SubElement(shop, "offers")
-    overrides     = price_overrides or {}
-    skipped       = 0
-    skipped_cheap = 0
-    tier_counts   = {"<100": 0, "100-300": 0, "300-700": 0, "700-2000": 0, ">2000": 0}
-
-    def tier_of(cost: float) -> str:
-        if cost < 100:    return "<100"
-        elif cost < 300:  return "100-300"
-        elif cost < 700:  return "300-700"
-        elif cost < 2000: return "700-2000"
-        else:             return ">2000"
+    offers_el       = ET.SubElement(shop, "offers")
+    overrides       = price_overrides or {}
+    skipped         = 0
+    skipped_cheap   = 0
+    overridden_count       = 0  # ціна з pricing_results.csv (конкурент перевірений вручну)
+    floor_bound_count      = 0  # ціна за замовчуванням, впирається в нижню межу маржі
+    multiplier_bound_count = 0  # ціна за замовчуванням, NO_COMPETITOR_MULT вищий за межу
 
     for item in catalog.values():
         try:
@@ -355,11 +369,19 @@ def _build_xml(catalog: dict, price_overrides: dict = None) -> tuple[ET.Element,
             skipped_cheap += 1
             continue
 
-        item_id   = str(item["id"])
-        retail    = overrides.get(item_id, calc_price(cost))
+        item_id = str(item["id"])
+        if item_id in overrides:
+            retail = overrides[item_id]
+            overridden_count += 1
+        else:
+            decision = decide_price_for_platform(cost, None, "prom", item.get("category_name"))
+            retail = decision["price"]
+            if decision["price"] <= decision["floor"] + 0.005:
+                floor_bound_count += 1
+            else:
+                multiplier_bound_count += 1
         stock     = item.get("stock", 0)
         available = "true" if stock > 0 else "false"
-        tier_counts[tier_of(cost)] += 1
 
         offer = ET.SubElement(offers_el, "offer",
                               id=item_id,
@@ -422,7 +444,9 @@ def _build_xml(catalog: dict, price_overrides: dict = None) -> tuple[ET.Element,
         "total_in_feed": len(offers_el),
         "skipped_no_price": skipped,
         "skipped_cheap": skipped_cheap,
-        "tier_counts": tier_counts,
+        "overridden_count": overridden_count,
+        "floor_bound_count": floor_bound_count,
+        "multiplier_bound_count": multiplier_bound_count,
     }
     return yml, stats
 
@@ -449,17 +473,16 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(xml_str)
 
-    tc = stats["tier_counts"]
     print(f"[Prom] Готово! Збережено: {output_file}")
     print(f"[Prom] У фіді: {stats['total_in_feed']} товарів | "
           f"пропущено (без ціни): {stats['skipped_no_price']} | "
           f"дешевше {MIN_SUPPLIER_PRICE} грн: {stats['skipped_cheap']}")
-    print("[Prom] Розподіл за націнкою:")
-    print(f"    до 100 грн       (+60%): {tc['<100']}")
-    print(f"    100-300 грн      (+50%): {tc['100-300']}")
-    print(f"    300-700 грн      (+40%): {tc['300-700']}")
-    print(f"    700-2000 грн     (+35%): {tc['700-2000']}")
-    print(f"    більше 2000 грн  (+25%): {tc['>2000']}")
+    print(
+        f"[Prom] Ціноутворення: {stats['overridden_count']} з ручною ціною конкурента "
+        f"(pricing_results.csv), {stats['floor_bound_count']} впираються в нижню межу маржі "
+        f"(коротка маржа після комісії категорії), {stats['multiplier_bound_count']} за "
+        "стандартним множником NO_COMPETITOR_MULT"
+    )
 
 
 if __name__ == "__main__":

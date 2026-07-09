@@ -43,15 +43,38 @@ jobs:
       # що щоразу перезаписує попередній (force-push). Це не дає git-історії
       # рости на кожен запуск (кожні 4 години) — інакше репозиторій накопичував
       # би десятки МБ щодня назавжди. Гілка main лишається чистою — тільки код.
+      #
+      # 2026-07-10: prom_feed.xml виріс до 106+ МБ (жорсткий ліміт GitHub —
+      # 100 МБ на файл), rozetka_feed.xml — до 57+ МБ (лише попередження, під
+      # лімітом). GitHub відхиляє ВЕСЬ пуш як одну транзакцію через
+      # перевищення — це МОВЧКИ блокувало публікацію prom_feed_top.xml
+      # (~2 МБ, ніколи не наближається до ліміту) щоразу, коли великі фіди
+      # перевищували ліміт, з 2026-07-08 (виявлено під час підготовки
+      # реального імпорту топ-970 в Prom — публічний URL показував дані
+      # тижневої давності). Фолбек нижче: якщо повний пуш (усі 3 файли)
+      # відхилено — публікуємо ОКРЕМИМ пушем лише prom_feed_top.xml, щоб
+      # малий критичний файл не застарівав через провал великих. Сама
+      # проблема з розміром prom_feed.xml/rozetka_feed.xml (понад ліміт)
+      # лишається відкритою — потрібне окреме рішення (Git LFS чи інший
+      # хостинг), не вирішено тут.
       - name: Publish feeds to ${{ env.FEED_BRANCH }} (force-push, no history)
         run: |
           git config user.name "feed-bot"
           git config user.email "feed-bot@users.noreply.github.com"
           git checkout --orphan "$FEED_BRANCH-tmp"
           git rm -r --cached . > /dev/null
-          # -f: feeds/*.xml навмисно в .gitignore для master (щоб не роздувати його історію),
+          # -f: feeds/*.xml навмисно в .gitignore для master (щоб не роздувати її історію),
           # але саме ці файли й мають бути закомічені сюди, на feed-data — без -f git add
           # мовчки відмовляється додавати файли, що збігаються з .gitignore.
           git add -f feeds/rozetka_feed.xml feeds/prom_feed.xml feeds/prom_feed_top.xml
           git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"
+          if git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"; then
+            echo "Усі 3 фіди опубліковано."
+          else
+            echo "::warning::Повний пуш (усі 3 фіди) відхилено — ймовірно, prom_feed.xml і/чи rozetka_feed.xml перевищують ліміт розміру GitHub (100 МБ/файл). Публікуємо ОКРЕМО лише prom_feed_top.xml (малий, критичний для імпорту топ-970 в Prom), щоб він не застарів через провал інших файлів. rozetka_feed.xml/prom_feed.xml лишаються застарілими до окремого рішення проблеми розміру."
+            git checkout --orphan "$FEED_BRANCH-fallback"
+            git rm -r --cached . > /dev/null 2>&1 || true
+            git add -f feeds/prom_feed_top.xml
+            git commit -m "Feed update (лише top-970, фолбек через розмір інших фідів) $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push --force origin "$FEED_BRANCH-fallback:$FEED_BRANCH"
+          fi

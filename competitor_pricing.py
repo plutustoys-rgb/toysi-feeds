@@ -75,8 +75,10 @@ PLATFORMS = ("prom", "rozetka")
 # ---------------------------------------------------------------------------
 
 # Prom.ua: комісія КАТЕГОРІЙНА (12-23%+) — дивитись у кабінеті Prom ->
-# Налаштування -> Комісії за категоріями. Формат ключа — довільний рядок
-# категорії (узгодь з тим, як позначаєш категорії деінде в проєкті).
+# Налаштування -> Комісії за категоріями. Ключ — назва категорії В НИЖНЬОМУ
+# РЕГІСТРІ (get_platform_commission сам нормалізує вхідну category_name через
+# .strip().lower(), тож сира назва з фіда Toysi, у будь-якому регістрі, все
+# одно знайде відповідний ключ тут).
 # Реально спостережено на замовленні №414634349 (2026-07-08, Prom,
 # категорія "Пазли Dankotoys"): cpa_commission.amount=9.08 грн на sum=39 грн
 # => ~23.28%. Це підтверджує верхню межу заявленого діапазону (12-23%+),
@@ -135,10 +137,17 @@ def get_platform_commission(platform: str, category_name: str | None = None) -> 
     """Комісія майданчика (БЕЗ комісії оплати) для конкретної категорії.
     Для Prom — категорійний пошук у PROM_CATEGORY_COMMISSION з fallback на
     PROM_COMMISSION_DEFAULT; для Rozetka — один орієнтовний дефолт (категорія
-    поки не впливає, немає живих даних)."""
+    поки не впливає, немає живих даних).
+
+    category_name нормалізується (strip + lower) перед пошуком — сира назва
+    категорії з фіда Toysi (parser.py) зберігає оригінальний регістр, а ключі
+    PROM_CATEGORY_COMMISSION заповнюються вручну з кабінету Prom (приклад у
+    коментарі нижче — лише нижній регістр), тож без нормалізації збіг ніколи
+    не спрацював би для реальних категорій."""
     if platform == "prom":
-        if category_name and category_name in PROM_CATEGORY_COMMISSION:
-            return PROM_CATEGORY_COMMISSION[category_name]
+        key = category_name.strip().lower() if category_name else None
+        if key and key in PROM_CATEGORY_COMMISSION:
+            return PROM_CATEGORY_COMMISSION[key]
         return PROM_COMMISSION_DEFAULT
     if platform == "rozetka":
         return ROZETKA_COMMISSION_DEFAULT

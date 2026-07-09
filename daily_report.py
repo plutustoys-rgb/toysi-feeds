@@ -6,6 +6,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from competitor_pricing import get_platform_commission
 from orders_db import get_connection, get_orders_awaiting_payment, init_db
 from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
@@ -97,6 +98,40 @@ def _cogs_for_forwarded_orders(conn, since: str, catalog: dict) -> tuple:
     return total_cost, items_priced, items_missing
 
 
+def _estimated_commission(rows: list, catalog: dict) -> tuple:
+    """Графа 9: ОЦІНКА комісії маркетплейсу за продаж. Prom Orders API не
+    віддає фактичну суму комісії по замовленню (лише сама платформа знає
+    остаточну ставку в момент виплати) — тому рахуємо per-позицію: виручка
+    позиції × ставка категорії з competitor_pricing.py
+    (PROM_CATEGORY_COMMISSION/PROM_COMMISSION_DEFAULT для Prom,
+    ROZETKA_COMMISSION_DEFAULT для Rozetka) — та сама таблиця ставок, що й
+    для ціноутворення (get_platform_commission). Категорія товару береться
+    через toysi_code -> каталог Toysi (як і собівартість у
+    _toysi_wholesale_cost); якщо товару немає в поточному каталозі,
+    застосовується дефолтна ставка платформи без категорійного уточнення.
+    Це РОЗРАХУНКОВА оцінка для щомісячної звірки з випискою маркетплейсу,
+    не остаточна цифра."""
+    commission_by_platform = {"prom": 0.0, "rozetka": 0.0}
+    items_priced = 0
+    items_no_category = 0
+
+    for row in rows:
+        platform = row["platform"]
+        if platform not in commission_by_platform:
+            continue
+        for item in json.loads(row["items"]):
+            item_revenue = item.get("price", 0) * item.get("qty", 1)
+            cat_item = catalog.get(str(item.get("toysi_code") or ""))
+            category_name = cat_item.get("category_name") if cat_item else None
+            if not category_name:
+                items_no_category += 1
+            rate = get_platform_commission(platform, category_name)
+            commission_by_platform[platform] += item_revenue * rate
+            items_priced += 1
+
+    return commission_by_platform, items_priced, items_no_category
+
+
 def build_report() -> str:
     init_db()
     since = (datetime.now() - timedelta(hours=LOOKBACK_HOURS)).isoformat(timespec="seconds")
@@ -126,8 +161,15 @@ def build_report() -> str:
 
         cogs = items_priced = items_missing = 0
         cogs_catalog_unavailable = False
+        commission_by_platform = {"prom": 0.0, "rozetka": 0.0}
+        commission_items_priced = commission_items_no_category = 0
+        commission_catalog_unavailable = False
+
+        # Один запит каталогу на обидві графи (6 і 9), якщо хоч одній він потрібен —
+        # немає сенсу тягнути фід Toysi двічі за один прогін звіту.
+        toysi_catalog = fetch_toysi_catalog() if (forwarded_today or new_rows) else None
+
         if forwarded_today:
-            toysi_catalog = fetch_toysi_catalog()
             if toysi_catalog:
                 cogs, items_priced, items_missing = _cogs_for_forwarded_orders(conn, since, toysi_catalog)
             else:
@@ -135,6 +177,13 @@ def build_report() -> str:
                 # timeout/HTTP/XML-помилці — 0.00 грн тут виглядав би як "витрат
                 # немає", хоча насправді просто не вдалось порахувати.
                 cogs_catalog_unavailable = True
+
+        if new_rows:
+            if toysi_catalog:
+                commission_by_platform, commission_items_priced, commission_items_no_category = \
+                    _estimated_commission(new_rows, toysi_catalog)
+            else:
+                commission_catalog_unavailable = True
 
     counts_by_platform = {}
     revenue_by_platform = {}
@@ -194,11 +243,36 @@ def build_report() -> str:
         else:
             lines.append("\n  (сьогодні не було переданих Toysi замовлень)")
 
-    lines.append(
-        "\n\nГрафа 9 (комісія Prom/Rozetka за продаж): дані з API недоступні — "
-        "балансове/статистичне API маркетплейсів ще не підключено (Крок 7 плану). "
-        "Внести вручну з виписки/акту маркетплейсу."
-    )
+    if commission_catalog_unavailable:
+        lines.append(
+            "\n\nГрафа 9 (комісія Prom/Rozetka за продаж): ⚠️ НЕ ПОРАХОВАНО — "
+            "каталог Toysi не завантажився (ключ/timeout/помилка XML), хоча за "
+            f"{LOOKBACK_HOURS} год є {len(new_rows)} нових замовлень. "
+            "Внести вручну з виписки/акту маркетплейсу."
+        )
+    elif new_rows:
+        commission_prom = commission_by_platform.get("prom", 0.0)
+        commission_rozetka = commission_by_platform.get("rozetka", 0.0)
+        lines.append(
+            f"\n\nГрафа 9 (комісія Prom/Rozetka за продаж, РОЗРАХУНКОВО — звірити з випискою): "
+            f"Prom {commission_prom:.2f} грн, Rozetka {commission_rozetka:.2f} грн "
+            f"(разом {commission_prom + commission_rozetka:.2f} грн)"
+        )
+        lines.append(
+            f"\n  ({commission_items_priced} позицій оцінено за ставкою категорії з "
+            "competitor_pricing.py — PROM_CATEGORY_COMMISSION/ROZETKA_COMMISSION_DEFAULT; "
+            "Prom API не віддає фактичну комісію по замовленню, це ОЦІНКА для щомісячної "
+            "звірки з випискою/актом маркетплейсу, не остаточна цифра)"
+        )
+        if commission_items_no_category:
+            lines.append(
+                f"\n  ⚠️ {commission_items_no_category} позицій без категорії в поточному каталозі "
+                "Toysi — використано дефолтну ставку платформи замість категорійної"
+            )
+    else:
+        lines.append(
+            f"\n\nГрафа 9 (комісія Prom/Rozetka за продаж): нових замовлень за {LOOKBACK_HOURS} год немає."
+        )
     lines.append(
         "\n\nГрафа 9 (інші сервісні платежі — Checkbox, хостинг VPS, Anthropic API тощо): "
         "автоматичного джерела даних немає, вносити вручну за вхідними документами."

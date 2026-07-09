@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS orders (
     carrier               TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta')),
     ukrposhta_ttn         TEXT,               -- ТТН, яку МИ створили через ukrposhta_client.py (до внесення в Toysi)
     ukrposhta_sticker_path TEXT,              -- локальний шлях до PDF-етикетки Укрпошти
+    checkbox_ettn_registered_at TEXT,         -- коли зареєстровано ЕТТН у Checkbox (order_status_tracker.py) —
+                                               -- захист від повторної реєстрації (= дубль РЕАЛЬНОГО фіскального чека)
+    checkbox_receipt_id   TEXT,               -- id чека з відповіді Checkbox — для звірки/ручного пошуку
     UNIQUE (order_id, platform)
 );
 
@@ -67,6 +70,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         )
         _ensure_column(conn, "orders", "ukrposhta_ttn", "ukrposhta_ttn TEXT")
         _ensure_column(conn, "orders", "ukrposhta_sticker_path", "ukrposhta_sticker_path TEXT")
+        _ensure_column(conn, "orders", "checkbox_ettn_registered_at", "checkbox_ettn_registered_at TEXT")
+        _ensure_column(conn, "orders", "checkbox_receipt_id", "checkbox_receipt_id TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -218,6 +223,22 @@ def get_orders_awaiting_manual_ttn_entry(conn: sqlite3.Connection) -> list:
         """
     ).fetchall()
     return [_row_to_dict(row) for row in rows]
+
+
+def mark_checkbox_ettn_registered(conn: sqlite3.Connection, internal_order_id: str, receipt_id: str = None) -> None:
+    """Позначає, що ЕТТН для цього замовлення вже зареєстровано в Checkbox
+    (order_status_tracker.py, checkbox_client.register_ettn()). КРИТИЧНО
+    для ідемпотентності: order_status_tracker.py опитує замовлення
+    ПЕРІОДИЧНО, поки їхній статус не термінальний — без цієї позначки
+    кожен наступний цикл опитування створював би ДУБЛІКАТ РЕАЛЬНОГО
+    фіскального чека на той самий ТТН.
+
+    receipt_id — ідентифікатор чека з відповіді Checkbox (для звірки/ручного
+    пошуку конкретного чека пізніше — timestamp сам по собі цього не дає)."""
+    conn.execute(
+        "UPDATE orders SET checkbox_ettn_registered_at = ?, checkbox_receipt_id = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), receipt_id, internal_order_id),
+    )
 
 
 def mark_payment_confirmed(conn: sqlite3.Connection, internal_order_id: str) -> None:

@@ -1,7 +1,7 @@
 import re
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed import calc_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
+from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
 
 OUTPUT_FILE     = "feeds/prom_feed_top.xml"
 TARGET_COUNT    = 1000
@@ -59,7 +59,11 @@ def is_leader_category(item: dict) -> bool:
 
 
 def _margin(item: dict) -> float:
-    """Розрахункова маржа (retail - cost). -1, якщо товар не має валідної/прийнятної ціни
+    """Розрахункова маржа (retail - cost), рахована ТІЄЮ Ж формулою, що й реальна
+    ціна в generate_prom_feed.py (default_retail_price — комісія категорії Prom +
+    нижня межа маржі), а не старою calc_price() — інакше відбір "топ" товарів
+    орієнтувався б на маржу, яка не враховує комісію, і міг обрати гірші за
+    реальним прибутком SKU. -1, якщо товар не має валідної/прийнятної ціни
     або це уцінений/пошкоджений товар (не належить у "топ" незалежно від маржі)."""
     if is_clearance_item(item.get("name"), item.get("category_name"), item.get("category_id")):
         return -1
@@ -69,7 +73,7 @@ def _margin(item: dict) -> float:
         return -1
     if cost < MIN_SUPPLIER_PRICE:
         return -1
-    return calc_price(cost) - cost
+    return default_retail_price(cost, item.get("category_name")) - cost
 
 
 def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:

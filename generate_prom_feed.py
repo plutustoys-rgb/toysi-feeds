@@ -312,6 +312,33 @@ def default_retail_price(cost: float, category_name: str = "") -> float:
     return decide_price_for_platform(cost, None, "prom", category_name)["price"]
 
 
+# Toysi записує бренд MIC непослідовно (різний регістр) — підтверджено
+# дослідженням повного каталогу (29298 SKU, 2026-07-10): "MIC" явно
+# підтверджений власним текстом опису Toysi як реальний бренд у 99.9%
+# товарів з vendor="MIC" (5937/5940), тоді як vendor="MiC" НІКОЛИ не
+# отримує такого ж явного підтвердження в описі (0/1999) — це механічна
+# варіація регістру того самого значення поля vendor, не окрема торгова
+# марка. Категорійний профіль теж майже ідентичний (136 спільних
+# категорій із 149 у MiC / 220 у MIC), а точних збігів назв товарів між
+# ними лише 4 з ~7900 унікальних — забагато для "тієї самої лінійки
+# товарів двічі", замало, щоб це щось доводило саме по собі; вирішальний
+# доказ — явний бренд-лейбл в описі.
+#
+# "МІС" (кирилицею) — підтверджено ІНШИЙ, окремий бренд: 0 збігів назв
+# товарів з MIC/MiC, інший асортимент (рюкзаки/канцелярія проти
+# загальних іграшок), інший діапазон артикулів (100000+ проти
+# 10000-30000), власний явний бренд-лейбл "Бренд: МІС" в описах. НЕ
+# входить у це нормалізування — інші Unicode-символи (У+041C/0406/0421
+# кирилицею проти У+004D/0049/0043 латиницею), колізії неможливі навіть
+# випадково через .lower().
+_VENDOR_ALIASES = {"mic": "MIC"}  # ключ — vendor.strip().lower(), значення — канонічне написання
+
+
+def normalize_vendor(vendor: str) -> str:
+    stripped = vendor.strip()
+    return _VENDOR_ALIASES.get(stripped.lower(), stripped)
+
+
 def _wrap_cdata(xml_str: str) -> str:
     """Post-process: wrap <description>/<description_ua> content in CDATA."""
     def make_replacer(tag):
@@ -411,7 +438,7 @@ def _build_xml(catalog: dict, price_overrides: dict = None) -> tuple[ET.Element,
             ET.SubElement(offer, "picture").text = pic_url
 
         if item.get("vendor"):
-            ET.SubElement(offer, "vendor").text = item["vendor"]
+            ET.SubElement(offer, "vendor").text = normalize_vendor(item["vendor"])
 
         if item.get("country"):
             ET.SubElement(offer, "country").text = item["country"]

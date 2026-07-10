@@ -41,6 +41,11 @@ from dotenv import load_dotenv
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
 
+# Консоль Windows (cp1251) не показує деякі символи — без цього локальний
+# тестовий запуск падає на print() (див. daily_report.py).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 load_dotenv()
 
 PROM_API_KEY    = os.environ.get("PROM_API_KEY", "")

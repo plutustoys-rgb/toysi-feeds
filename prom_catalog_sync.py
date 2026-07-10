@@ -34,6 +34,7 @@
 import argparse
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from dotenv import load_dotenv
@@ -56,14 +57,38 @@ PAGE_SIZE  = 100  # /products/list
 EDIT_BATCH = 100  # /products/edit_by_external_id — розмір пачки на запит
 
 
-def fetch_prom_products() -> dict:
-    """Повний список товарів кабінету Prom (усі групи), ключ — external_id.
-    Пагінація за last_id ("товари з id не вище вказаного" — тож рухаємось
-    у бік менших id, поки сторінка не стане коротшою за PAGE_SIZE)."""
-    products = {}
+def _fetch_group_ids() -> list:
+    """Усі group_id кабінету, пагінація за last_id (та сама механіка, що й
+    products/list нижче). +[0] — коренева група, куди Prom тимчасово кладе
+    щойно імпортовані товари до розподілу по підгрупах."""
+    group_ids = [0]
     last_id = None
     while True:
         params = {"limit": PAGE_SIZE}
+        if last_id is not None:
+            params["last_id"] = last_id
+        response = requests.get(
+            f"{PROM_API_URL}/groups/list",
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        batch = response.json().get("groups", [])
+        if not batch:
+            break
+        group_ids.extend(g["id"] for g in batch)
+        if len(batch) < PAGE_SIZE:
+            break
+        last_id = min(g["id"] for g in batch) - 1
+    return group_ids
+
+
+def _fetch_products_in_group(group_id: int) -> list:
+    products = []
+    last_id = None
+    while True:
+        params = {"limit": PAGE_SIZE, "group_id": group_id}
         if last_id is not None:
             params["last_id"] = last_id
         response = requests.get(
@@ -76,15 +101,35 @@ def fetch_prom_products() -> dict:
         batch = response.json().get("products", [])
         if not batch:
             break
-
-        for p in batch:
-            ext_id = p.get("external_id")
-            if ext_id:
-                products[ext_id] = p
-
+        products.extend(batch)
         if len(batch) < PAGE_SIZE:
             break
         last_id = min(p["id"] for p in batch) - 1
+    return products
+
+
+def fetch_prom_products() -> dict:
+    """Повний список товарів кабінету Prom (усі групи), ключ — external_id.
+
+    ВАЖЛИВО: GET /products/list БЕЗ параметра group_id мовчки повертає лише
+    КОРЕНЕВУ групу (group_id=0), а не весь каталог — підтверджено напряму
+    2026-07-10 (запит із limit=100 і навіть зі штучно завищеним last_id
+    незмінно повертав рівно ту саму підмножину; явний group_id для відомої
+    підгрупи "Басейни" повернув інший, коректний набір). Це означає, що
+    попередні версії цієї функції РЕАЛЬНО недорахувати каталог щоразу, коли
+    Prom встигав розкласти товари по підгрупах — не лише зараз (тоді
+    показував 97 замість ~430). Тому тут явно перебираємо ВСІ group_id
+    (через /groups/list) і зводимо результати в один словник; паралельно
+    (ThreadPoolExecutor), бо групи вже налічують 100+."""
+    group_ids = _fetch_group_ids()
+
+    products: dict = {}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        for group_products in executor.map(_fetch_products_in_group, group_ids):
+            for p in group_products:
+                ext_id = p.get("external_id")
+                if ext_id:
+                    products[ext_id] = p
 
     return products
 

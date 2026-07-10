@@ -27,6 +27,12 @@ ukrposhta_stickers/
 # Runtime-стан service_watchdog.py (OK/ALARM по кожному сервісу)
 watchdog_state.json
 
+# Runtime-стан і звіти prom_catalog_auditor.py (генеруються наново на VPS,
+# не для git — reports/ містить щоденні звіти, state.json — трекінг "перша
+# поява проблеми" для порогу 24 год)
+prom_catalog_audit_state.json
+reports/
+
 # Запобіжник: файл з паролями не повинен потрапити в git навіть випадково
 паролі.txt
 

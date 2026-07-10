@@ -13,11 +13,29 @@ polling, той самий підхід, що й prom_catalog_sync.py/order_stat
 (`/chat/*`) — підтверджено: `GET /chat/rooms` повернув реальну кімнату з
 живою перепискою (той самий чат, що на storefront сторінках товару).
 
+ВАРТІСТЬ — рішення 2026-07-11: Claude Max-підписка НЕ підходить для цього
+бота, перевірено напряму по офіційній документації Claude Code
+(code.claude.com/docs/en/legal-and-compliance), не припущення:
+"Anthropic does not permit third-party developers to offer Claude.ai login
+or to route requests through Free, Pro, or Max plan credentials on behalf
+of their users" + OAuth "is intended exclusively for... ordinary use" —
+цей бот саме "продукт на базі Claude, що діє від імені користувачів
+(покупців)" і працює 24/7 без ручного запуску сесії, а не "звичайне
+використання". Рекомендований headless-шлях (`claude -p --bare`) сам
+технічно вимагає ANTHROPIC_API_KEY (пропускає OAuth). Тому економія
+робиться інакше — двома шарами нижче:
+1. Шаблонний шар БЕЗ жодного виклику LLM для типових питань (наявність
+   конкретного товару, ціна, спосіб/термін доставки) — пряма підстановка
+   даних із картки Prom/статичної політики магазину.
+2. Лише для нетипових повідомлень — виклик Claude Haiku (дешевша модель,
+   не Sonnet) для класифікації+відповіді.
+
 1. GET /chat/messages_history?status=new&project=promua&sort=asc — нові
    вхідні повідомлення. Фільтруємо на is_sender=false, type=message (не
    свої, не "context"/"attachment"-записи).
-2. Для кожного — одним викликом Claude: класифікація (normal/escalate) і,
-   якщо normal, одразу готова відповідь.
+2. Для кожного — спершу шаблонний шар (try_template_response, без LLM). Якщо
+   не спрацював — один виклик Claude Haiku: класифікація (normal/escalate)
+   і, якщо normal, одразу готова відповідь.
 3. normal   -> POST /chat/send_message (автоматично, без очікування
    підтвердження — власник explicitly підтвердив повну автономність
    2026-07-11 після того, як йому запропонували безпечніший варіант із
@@ -40,6 +58,7 @@ polling, той самий підхід, що й prom_catalog_sync.py/order_stat
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -61,7 +80,9 @@ PROM_API_URL = "https://my.prom.ua/api/v1"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL   = os.environ.get("PROM_CHAT_BOT_MODEL", "claude-sonnet-5")
+# Haiku, свідомо не Sonnet — LLM тепер лише fallback для нетипових повідомлень,
+# типові (наявність/ціна/доставка) відповідає шаблонний шар нижче без виклику API.
+ANTHROPIC_MODEL   = os.environ.get("PROM_CHAT_BOT_MODEL", "claude-haiku-4-5-20251001")
 
 REQUEST_TIMEOUT = 30
 ROOM_HISTORY_LIMIT = 10
@@ -186,6 +207,80 @@ def resolve_product_context(context_item_id) -> dict | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Шаблонний шар — БЕЗ жодного виклику LLM. Свідомо консервативний: працює
+# лише коли ВЕСЬ нормалізований текст повідомлення (без розділових знаків,
+# без "?") збігається з коротким явним списком типових формулювань, а не
+# по ключових словах усередині довшого тексту — реальне повідомлення з
+# практики ("Доброго дня!\nВ наявності?\nНа скільки літрів?\nЧи з шлангою
+# рюкзак?") НЕ повинно потрапити сюди, бо містить питання про характеристики
+# товару понад просту наявність, а на них шаблон відповісти не може.
+# Спрацьовує лише коли є product_context (наявність/ціна прив'язані до
+# конкретного товару) — без нього шаблонна відповідь не має сенсу.
+# ---------------------------------------------------------------------------
+STOCK_PHRASES = {
+    "в наявності", "чи є в наявності", "є в наявності", "наявність",
+    "чи в наявності", "це є в наявності", "товар в наявності",
+    "чи є", "є в наявності товар", "чи є цей товар в наявності",
+}
+PRICE_PHRASES = {
+    "яка ціна", "скільки коштує", "ціна", "почім", "по чому",
+    "скільки це коштує", "яка вартість", "вартість", "яка ціна товару",
+    "скільки коштує цей товар",
+}
+DELIVERY_PHRASES = {
+    "яка доставка", "як доставка", "способи доставки", "доставка",
+    "як відправляєте", "чим відправляєте", "яка пошта", "коли відправите",
+    "коли відправляєте", "новою поштою відправляєте",
+}
+
+DELIVERY_ANSWER = (
+    "Відправляємо Новою Поштою — замовлення, оформлені до ~13:00 у робочі "
+    "дні, йдуть того ж дня. Далі термін залежить від відділення Нової "
+    "Пошти отримувача, зазвичай 1-3 робочих дні. Оплата — накладений "
+    "платіж або передоплата, на вибір."
+)
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"[^\w\s]", "", text.lower(), flags=re.UNICODE).strip()
+
+
+def try_template_response(customer_message: str, product_context: dict | None) -> str | None:
+    """Пряма підстановка без LLM для явно типових питань. Повертає готовий
+    текст відповіді, або None якщо повідомлення не збігається чітко —
+    у цьому разі виклик іде далі, до Claude Haiku, а не вигадується тут."""
+    normalized = _normalize(customer_message)
+    if not normalized:
+        return None
+
+    if normalized in DELIVERY_PHRASES:
+        return DELIVERY_ANSWER
+
+    if not product_context:
+        return None  # наявність/ціна без прив'язки до товару — не шаблонизуємо
+
+    name = product_context.get("name") or "Цей товар"
+
+    if normalized in STOCK_PHRASES:
+        presence = product_context.get("presence")
+        qty = product_context.get("quantity_in_stock")
+        if presence == "available" and qty:
+            return f"{name} — так, є в наявності, залишок {qty} шт."
+        if presence == "available":
+            return f"{name} — так, є в наявності."
+        return f"{name} — на жаль, немає в наявності."
+
+    if normalized in PRICE_PHRASES:
+        price = product_context.get("price")
+        currency = product_context.get("currency") or "UAH"
+        if price:
+            return f"{name} — ціна {price} {currency}."
+        return None  # немає ціни в даних - краще не шаблонизувати, хай іде до LLM/ескалації
+
+    return None
+
+
 def classify_and_respond(customer_message: str, history: list, product_context: dict | None) -> dict:
     """Один виклик Claude — класифікація + (за потреби) готова відповідь.
     Будь-яка помилка (мережа, ліміт, вичерпаний баланс API) -> escalate,
@@ -308,7 +403,11 @@ def process_message(conn, msg: dict) -> None:
             product_context = resolve_product_context(h["context_item_id"])
             break
 
-    decision = classify_and_respond(body, history[:-1], product_context)  # [:-1] — без самого нового повідомлення (воно вже передається окремо)
+    template_reply = try_template_response(body, product_context)
+    if template_reply is not None:
+        decision = {"classification": "template", "reasoning": "типове питання — відповідь без LLM", "response": template_reply}
+    else:
+        decision = classify_and_respond(body, history[:-1], product_context)  # [:-1] — без самого нового повідомлення (воно вже передається окремо)
 
     if decision["classification"] == "escalate":
         escalate(msg, decision.get("reasoning", "не вказано"))
@@ -324,8 +423,8 @@ def process_message(conn, msg: dict) -> None:
 
     reply_text = decision.get("response") or ""
     if not reply_text.strip():
-        # normal, але порожня відповідь — не мовчати без причини, теж ескалація
-        escalate(msg, "Claude повернув classification=normal, але порожню відповідь")
+        # normal/template, але порожня відповідь — не мовчати без причини, теж ескалація
+        escalate(msg, "Порожня відповідь від обробника (не escalate, але й немає тексту)")
         update_response(
             conn, message_id,
             classification="escalate",
@@ -340,12 +439,12 @@ def process_message(conn, msg: dict) -> None:
         mark_read(message_id, room_id)
         update_response(
             conn, message_id,
-            classification="normal",
+            classification=decision["classification"],
             classification_reasoning=decision.get("reasoning"),
             response_status="auto_replied",
             response_body=reply_text,
         )
-        print(f"[ChatBot] Відповів автоматично: {reply_text[:80]!r}")
+        print(f"[ChatBot] Відповів автоматично ({decision['classification']}): {reply_text[:80]!r}")
     except requests.exceptions.RequestException as e:
         # Відповідь згенеровано, але надіслати/позначити не вдалось — ескалюємо,
         # щоб покупець не лишився без відповіді мовчки.
@@ -353,7 +452,7 @@ def process_message(conn, msg: dict) -> None:
         escalate(msg, f"Відповідь згенеровано, але відправка через Prom API впала: {e}")
         update_response(
             conn, message_id,
-            classification="normal",
+            classification=decision["classification"],
             classification_reasoning=decision.get("reasoning"),
             response_status="error",
             response_body=reply_text,

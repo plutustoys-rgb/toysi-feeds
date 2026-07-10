@@ -40,7 +40,8 @@ import requests
 from dotenv import load_dotenv
 
 from generate_prom_feed_top import select_top_items
-from parser import fetch_toysi_catalog
+from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
+from telegram_notify import send_telegram_message
 
 # Консоль Windows (cp1251) не показує деякі символи — без цього локальний
 # тестовий запуск падає на print() (див. daily_report.py).
@@ -158,21 +159,32 @@ def find_stale_external_ids(prom_products: dict, desired_ids: set, toysi_ids: se
 
 def deactivate(stale_ids: list) -> tuple:
     """POST /products/edit_by_external_id, status=deleted, пачками по EDIT_BATCH.
-    Повертає (processed_ids, errors)."""
+    Повертає (processed_ids, errors).
+
+    Кожна пачка — окремий try/except: якщо пізня пачка впаде HTTP-помилкою
+    (5xx, rate-limit, мережевий збій), уже виконані попередні пачки НЕ
+    втрачаються з результату (раніше виняток із raise_for_status() проривався
+    з функції без return, і виклик губив облік уже реально деактивованих
+    товарів на боці Prom — жодного логу, які саме id це були)."""
     processed, errors = [], {}
     for i in range(0, len(stale_ids), EDIT_BATCH):
         chunk = stale_ids[i:i + EDIT_BATCH]
         payload = [{"id": ext_id, "status": "deleted"} for ext_id in chunk]
-        response = requests.post(
-            f"{PROM_API_URL}/products/edit_by_external_id",
-            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        result = response.json()
-        processed.extend(result.get("processed_ids", []))
-        errors.update(result.get("errors", {}))
+        try:
+            response = requests.post(
+                f"{PROM_API_URL}/products/edit_by_external_id",
+                headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            result = response.json()
+            processed.extend(result.get("processed_ids", []))
+            errors.update(result.get("errors", {}))
+        except requests.exceptions.RequestException as e:
+            print(f"[Sync] Пачка {i // EDIT_BATCH + 1} ({len(chunk)} товарів) впала: {e}", file=sys.stderr)
+            for ext_id in chunk:
+                errors[ext_id] = f"batch request failed: {e}"
     return processed, errors
 
 
@@ -189,6 +201,19 @@ def main() -> None:
 
     print("[Sync] Рахую поточний відбір топ-970...")
     toysi_catalog = fetch_toysi_catalog()
+    try:
+        assert_catalog_size_sane(toysi_catalog)
+    except CatalogSizeError as e:
+        # Успішний HTTP-запит + валідний XML, але Toysi віддав менше офферів,
+        # ніж реально є (усічений, але структурно коректний фід) — на відміну
+        # від повної мережевої/HTTP-помилки (тоді fetch_toysi_catalog() сам
+        # повертає {} і toysi_ids виходить порожнім, що вже безпечно саме по
+        # собі), цей випадок інакше пройшов би непоміченим і призвів би до
+        # масового хибного видалення живих товарів, чий external_id просто не
+        # потрапив у цей конкретний усічений фетч.
+        print(f"[Sync] {e}", file=sys.stderr)
+        send_telegram_message(f"🚨 prom_catalog_sync.py зупинено: {e}")
+        sys.exit(1)
     top_catalog   = select_top_items(toysi_catalog)
     desired_ids   = {str(pid) for pid in top_catalog}
     toysi_ids     = {str(pid) for pid in toysi_catalog}

@@ -1,0 +1,169 @@
+"""
+Активна синхронізація каталогу Prom із поточним відбором топ-970.
+
+Навіщо цей скрипт існує (не дублює вбудований імпорт Prom):
+Кабінет Prom при повторному імпорті з "Статус товарів, яких немає в файлі" =
+"Немає в наявності" лише позначає товар недоступним — товар лишається
+"Опубліковано" і далі займає одне з обмежених 1000 місць тарифу (перевірено
+емпірично 2026-07-10: SKU 267230 після такого повторного імпорту досі
+"Опубліковано", а лічильник "Додано: X/1000" не зменшився). Прибирання
+товару з АКТИВНОГО каталогу (реальне звільнення місця під заміну кращим за
+маржею SKU) вбудований імпорт не робить — ні на 4-годинному, ні на нічному
+циклі. Цей скрипт закриває саме цю прогалину через Prom API.
+
+Що робить:
+1. Рахує актуальний відбір топ-970 (select_top_items — та сама логіка, що й
+   у фактичному фіді).
+2. Тягне ПОВНИЙ список товарів, які зараз реально опубліковані в кабінеті
+   Prom (GET /products/list).
+3. Товар деактивується (status="deleted" через POST /products/edit_by_external_id),
+   лише якщо ОБИДВІ умови виконані:
+   - його external_id є в ПОВНОМУ каталозі Toysi (тобто це наш дропшип-товар,
+     а не щось, додане вручну власником чи іншим постачальником — таких
+     ніколи не чіпаємо);
+   - його немає в поточному відборі топ-970 (нульовий залишок, витіснений
+     кращим за маржею SKU, чи категорія виключена).
+   Звільнене місце забирає наступний імпорт Prom (нічне створення нових
+   товарів — уже не задача цього скрипта, воно й так увімкнене через
+   "Автоматичне оновлення посилання: Раз на 4 години").
+
+Безпека: за замовчуванням DRY-RUN — лише друкує, що БУЛО Б деактивовано.
+Реальні зміни в кабінеті Prom — тільки з явним --apply.
+"""
+
+import argparse
+import os
+import sys
+
+import requests
+from dotenv import load_dotenv
+
+from generate_prom_feed_top import select_top_items
+from parser import fetch_toysi_catalog
+
+load_dotenv()
+
+PROM_API_KEY    = os.environ.get("PROM_API_KEY", "")
+PROM_API_URL    = "https://my.prom.ua/api/v1"
+REQUEST_TIMEOUT = 30
+
+PAGE_SIZE  = 100  # /products/list
+EDIT_BATCH = 100  # /products/edit_by_external_id — розмір пачки на запит
+
+
+def fetch_prom_products() -> dict:
+    """Повний список товарів кабінету Prom (усі групи), ключ — external_id.
+    Пагінація за last_id ("товари з id не вище вказаного" — тож рухаємось
+    у бік менших id, поки сторінка не стане коротшою за PAGE_SIZE)."""
+    products = {}
+    last_id = None
+    while True:
+        params = {"limit": PAGE_SIZE}
+        if last_id is not None:
+            params["last_id"] = last_id
+        response = requests.get(
+            f"{PROM_API_URL}/products/list",
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        batch = response.json().get("products", [])
+        if not batch:
+            break
+
+        for p in batch:
+            ext_id = p.get("external_id")
+            if ext_id:
+                products[ext_id] = p
+
+        if len(batch) < PAGE_SIZE:
+            break
+        last_id = min(p["id"] for p in batch) - 1
+
+    return products
+
+
+def find_stale_external_ids(prom_products: dict, desired_ids: set, toysi_ids: set) -> list:
+    """Товари, які реально опубліковані в Prom, походять з нашого Toysi-фіда
+    (не додані вручну власником — таких не чіпаємо), більше не входять у
+    поточний топ-970, і ще не позначені видаленими."""
+    return [
+        ext_id for ext_id, p in prom_products.items()
+        if ext_id in toysi_ids
+        and ext_id not in desired_ids
+        and p.get("status") != "deleted"
+    ]
+
+
+def deactivate(stale_ids: list) -> tuple:
+    """POST /products/edit_by_external_id, status=deleted, пачками по EDIT_BATCH.
+    Повертає (processed_ids, errors)."""
+    processed, errors = [], {}
+    for i in range(0, len(stale_ids), EDIT_BATCH):
+        chunk = stale_ids[i:i + EDIT_BATCH]
+        payload = [{"id": ext_id, "status": "deleted"} for ext_id in chunk]
+        response = requests.post(
+            f"{PROM_API_URL}/products/edit_by_external_id",
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        result = response.json()
+        processed.extend(result.get("processed_ids", []))
+        errors.update(result.get("errors", {}))
+    return processed, errors
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--apply", action="store_true",
+                     help="Реально викликати Prom API та деактивувати товари. "
+                          "Без цього прапорця — лише dry-run звіт.")
+    args = ap.parse_args()
+
+    if not PROM_API_KEY:
+        print("[Sync] PROM_API_KEY не задано — зупиняюсь.", file=sys.stderr)
+        sys.exit(1)
+
+    print("[Sync] Рахую поточний відбір топ-970...")
+    toysi_catalog = fetch_toysi_catalog()
+    top_catalog   = select_top_items(toysi_catalog)
+    desired_ids   = {str(pid) for pid in top_catalog}
+    toysi_ids     = {str(pid) for pid in toysi_catalog}
+
+    print("[Sync] Тягну повний список товарів кабінету Prom...")
+    prom_products = fetch_prom_products()
+    print(f"[Sync] У кабінеті Prom: {len(prom_products)} товарів. "
+          f"У поточному топ-970: {len(desired_ids)}.")
+
+    stale_ids = find_stale_external_ids(prom_products, desired_ids, toysi_ids)
+    print(f"[Sync] Застарілих товарів (є в Prom, походять з Toysi, "
+          f"випали з топ-970, ще не видалені): {len(stale_ids)}")
+
+    if not stale_ids:
+        print("[Sync] Нічого деактивувати — каталог відповідає топ-970.")
+        return
+
+    for ext_id in stale_ids[:20]:
+        p = prom_products[ext_id]
+        print(f"  - {ext_id}: {p.get('name', '')[:60]!r} "
+              f"(presence={p.get('presence')}, status={p.get('status')})")
+    if len(stale_ids) > 20:
+        print(f"  ... та ще {len(stale_ids) - 20}")
+
+    if not args.apply:
+        print("\n[Sync] DRY-RUN: жодних змін не внесено. Запусти з --apply, щоб реально деактивувати.")
+        return
+
+    print(f"\n[Sync] Деактивую {len(stale_ids)} товарів (status=deleted)...")
+    processed, errors = deactivate(stale_ids)
+    print(f"[Sync] Оброблено: {len(processed)}. Помилок: {len(errors)}.")
+    if errors:
+        for ext_id, err in list(errors.items())[:20]:
+            print(f"  - {ext_id}: {err}")
+
+
+if __name__ == "__main__":
+    main()

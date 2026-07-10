@@ -182,6 +182,35 @@ def _similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, _normalize_name(a), _normalize_name(b)).ratio()
 
 
+# Цільовий гейт проти конкретного класу хибних збігів, знайденого аудитом
+# (2026-07-11): SequenceMatcher — посимвольна метрика, не має жодного
+# розуміння, що "45 см" -> "25 см" — суттєва відмінність товару, а не
+# просто інший символ у довгому, інакше майже ідентичному рядку. Назва
+# ~50 символів, що відрізняється лише цим токеном, легко дає ratio
+# ~0.96-0.98 — набагато вище MATCH_MIN_SCORE_FOR_DELIST (0.85), хоча
+# товари можуть бути суттєво різними за розміром/об'ємом/вагою/кількістю.
+SIZE_TOKEN_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(см|мм|м|л|мл|кг|г|шт|штук|дюйм)\b")
+
+
+def _extract_size_tokens(name: str) -> set:
+    normalized = _normalize_name(name)
+    return {f"{num.replace(',', '.')}{unit}" for num, unit in SIZE_TOKEN_RE.findall(normalized)}
+
+
+def _size_tokens_conflict(our_name: str, competitor_name: str) -> bool:
+    """True, якщо в ОБОХ назвах є числові/розмірні токени (см/мм/л/мл/кг/
+    г/шт/дюйм), і ці набори НЕ перетинаються — ознака, що товари різняться
+    суттєвою характеристикою, навіть при високій текстовій схожості всього
+    рядка. Якщо токенів немає з одного чи обох боків — конфлікт НЕ
+    підтверджений (не можемо довести розбіжність із відсутніх даних), тому
+    delist не блокується цим гейтом — рішення лишається на MATCH_MIN_SCORE_FOR_DELIST."""
+    our_tokens = _extract_size_tokens(our_name)
+    comp_tokens = _extract_size_tokens(competitor_name)
+    if not our_tokens or not comp_tokens:
+        return False
+    return our_tokens.isdisjoint(comp_tokens)
+
+
 def find_best_competitor(search_name: str, cost: float) -> dict | None:
     """Шукає на Prom.ua, виключає власні товари й товари поза розумним
     ціновим діапазоном, повертає найкращий за текстовою схожістю кандидат,
@@ -215,7 +244,7 @@ def find_best_competitor(search_name: str, cost: float) -> dict | None:
     return candidates[0]
 
 
-def decide_action(cost: float, competitor: dict | None, category_name: str | None) -> dict:
+def decide_action(cost: float, competitor: dict | None, category_name: str | None, our_name: str = "") -> dict:
     """Гібридна дія: normal/floor -> "adjust" (нова ціна = decision["price"]);
     floor настільки вищий за конкурента, що навіть він неконкурентний ->
     "delist". Без знайденого конкурента (чи `find_best_competitor` не дав
@@ -226,6 +255,7 @@ def decide_action(cost: float, competitor: dict | None, category_name: str | Non
     min_competitor_prom = competitor["price"] if competitor else None
     decision = decide_price_for_platform(cost, min_competitor_prom, "prom", category_name)
     action = "adjust"
+    size_conflict = False
     if competitor and decision["category"] == "floor":
         if decision["floor"] > competitor["price"] * MAX_FLOOR_TO_COMPETITOR_RATIO:
             # Delist вимагає окремого, суворішого порогу впевненості збігу
@@ -234,9 +264,18 @@ def decide_action(cost: float, competitor: dict | None, category_name: str | Non
             # (найгірший наслідок хибного збігу тут — трохи неоптимальна
             # ціна, не втрата живого оголошення).
             if competitor["score"] >= MATCH_MIN_SCORE_FOR_DELIST:
-                action = "delist"
+                # Додатковий цільовий гейт (аудит, 2026-07-11): навіть при
+                # score >= 0.85 delist блокується, якщо назви містять явно
+                # різні числові/розмірні токени (див. _size_tokens_conflict) —
+                # SequenceMatcher сам по собі не бачить різницю між "розмір
+                # відрізняється" і "формулювання відрізняється".
+                if _size_tokens_conflict(our_name, competitor["name"]):
+                    size_conflict = True
+                else:
+                    action = "delist"
     decision["action"] = action
     decision["competitor"] = competitor
+    decision["size_conflict"] = size_conflict
     return decision
 
 
@@ -291,7 +330,7 @@ def main() -> None:
     print(f"[Pricer] Обробляю {len(items)} товарів (--limit {args.limit})...")
 
     adjust_count, delist_count, no_competitor_count, error_count = 0, 0, 0, 0
-    to_adjust, to_delist = [], []
+    to_adjust, to_delist, delist_details = [], [], []
 
     for pid, item in items:
         try:
@@ -306,7 +345,7 @@ def main() -> None:
         category_name = item.get("category_name")
 
         competitor = find_best_competitor(name_rus, cost)
-        decision = decide_action(cost, competitor, category_name)
+        decision = decide_action(cost, competitor, category_name, name_rus)
         time.sleep(SEARCH_DELAY)
 
         comp_desc = (
@@ -314,8 +353,9 @@ def main() -> None:
             f"(score={decision['competitor']['score']:.2f}) {decision['competitor']['name'][:40]!r}"
             if decision["competitor"] else "конкурент не знайдено"
         )
+        size_note = "  [РОЗМІР/ОБ'ЄМ НЕ ЗБІГАЄТЬСЯ -> delist заблоковано, залишено adjust]" if decision.get("size_conflict") else ""
         print(f"{pid}\t{name_ukr[:45]:45s}\tcost={cost:.0f}\tfloor={decision['floor']:.0f}\t"
-              f"price={decision['price']:.0f}\t[{decision['action']}]\t{comp_desc}")
+              f"price={decision['price']:.0f}\t[{decision['action']}]\t{comp_desc}{size_note}")
 
         if decision["competitor"] is None:
             no_competitor_count += 1
@@ -325,12 +365,28 @@ def main() -> None:
         elif decision["action"] == "delist":
             delist_count += 1
             to_delist.append(pid)
+            delist_details.append(
+                f"{pid} {name_ukr[:40]} (наша {decision['floor']:.0f} грн vs "
+                f"конкурент {decision['competitor']['price']:.0f} грн)"
+            )
 
     print(f"\n[Pricer] Підсумок: adjust={adjust_count}, delist={delist_count}, "
           f"без знайденого конкурента={no_competitor_count}")
 
     if not args.apply:
         print("\n[Pricer] DRY-RUN: жодних змін не внесено. Запусти з --apply, щоб реально застосувати.")
+        digest = (
+            f"📊 prom_competitor_pricer.py (dry-run, {len(items)} SKU): "
+            f"пропоновано скоригувати ціну — {adjust_count}, "
+            f"видалити як неконкурентні — {delist_count}, "
+            f"конкурента не знайдено — {no_competitor_count}."
+        )
+        if delist_details:
+            digest += "\n\nКандидати на видалення:\n" + "\n".join(delist_details[:15])
+            if len(delist_details) > 15:
+                digest += f"\n... та ще {len(delist_details) - 15}"
+        digest += "\n\n(--apply не вмикався, це лише пропозиція)"
+        send_telegram_message(digest)
         return
 
     print(f"\n[Pricer] Застосовую {len(to_adjust)} коригувань ціни...")
@@ -350,11 +406,15 @@ def main() -> None:
             print(f"  - {pid}: помилка видалення — {e}", file=sys.stderr)
 
     print(f"[Pricer] Готово. Помилок: {error_count}.")
-    if delist_count:
-        send_telegram_message(
-            f"💰 prom_competitor_pricer.py: скориговано цін — {adjust_count}, "
-            f"видалено як неконкурентні — {delist_count} товарів."
-        )
+    digest = (
+        f"💰 prom_competitor_pricer.py --apply: скориговано цін — {adjust_count}, "
+        f"видалено як неконкурентні — {delist_count} товарів. Помилок: {error_count}."
+    )
+    if delist_details:
+        digest += "\n\nВидалено:\n" + "\n".join(delist_details[:15])
+        if len(delist_details) > 15:
+            digest += f"\n... та ще {len(delist_details) - 15}"
+    send_telegram_message(digest)
 
 
 if __name__ == "__main__":

@@ -352,6 +352,23 @@ def _wrap_cdata(xml_str: str) -> str:
     return xml_str
 
 
+PROM_NAME_MAX_LEN = 130  # підтверджено буквально з реального звіту імпорту Prom
+# ("Поле Назва позиції[_укр]: Максимальна довжина поля: 130, буде обрізано
+# до 130 символів") — раніше ми не обрізали самі, тож Prom різав мовчки
+# посимвольно, потенційно посеред слова/дужки. Обрізаємо тут САМІ, на межі
+# слова, щоб контролювати результат, а не покладатись на чужий hard-cut.
+
+
+def _truncate_name(text: str, max_len: int = PROM_NAME_MAX_LEN) -> str:
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len]
+    last_space = cut.rfind(" ")
+    if last_space > max_len * 0.6:  # не обрізати до майже нічого, якщо пробіл дуже рано
+        cut = cut[:last_space]
+    return cut.rstrip(" ,.-")
+
+
 def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict = None) -> tuple[ET.Element, dict]:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
@@ -434,8 +451,8 @@ def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict =
         name_ru = (russian.get(item_id) or {}).get("name") or name
         if item_id not in russian:
             russian_missing_count += 1
-        ET.SubElement(offer, "name").text               = name_ru
-        ET.SubElement(offer, "name_ua").text             = name
+        ET.SubElement(offer, "name").text               = _truncate_name(name_ru)
+        ET.SubElement(offer, "name_ua").text             = _truncate_name(name)
         ET.SubElement(offer, "price").text               = f"{retail:.2f}"
         ET.SubElement(offer, "currencyId").text          = "UAH"
         # Prom.ua використовує quantity_in_stock (а не stock_quantity, як Rozetka)

@@ -1,6 +1,8 @@
 import os
 import re
 import sys
+from datetime import datetime
+from pathlib import Path
 
 from orders_db import (
     get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi,
@@ -33,6 +35,22 @@ order_status після цього повертає порожній TTN) — т
 """
 
 UKRPOSHTA_STICKERS_DIR = "ukrposhta_stickers"
+
+# Другий канал, крім Telegram (стандарт репо) — персистентний .md-лог на
+# VPS. Ця подія (test_mode=True в проді) рідкісна й ненульова за важливістю
+# (саме такий баг втратив замовлення №414634349) — тому дописуваний лог,
+# не файл з перезаписом.
+BASE_DIR   = Path(__file__).parent
+REPORT_DIR = BASE_DIR / "reports"
+
+
+def write_local_report(message: str) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().date().isoformat()
+    out_path = REPORT_DIR / f"order_router_{today}.md"
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    with open(out_path, "a", encoding="utf-8") as f:
+        f.write(f"\n## {timestamp}\n\n{message}\n")
 
 _WAREHOUSE_RE = re.compile(r"(?:відділенн\w*|відд\.?|№)\s*№?\s*(\d+)", re.IGNORECASE)
 _CITY_PREFIX_RE = re.compile(r"^(м\.|с\.|смт\.?)\s*", re.IGNORECASE)
@@ -195,6 +213,7 @@ def route_order(conn, order: dict, test_mode: bool = False) -> None:
             "перевір виклик route_order()/route_pending_orders()."
         )
         print(warning, file=sys.stderr)
+        write_local_report(warning)
         if not send_telegram_message(warning):
             print("[order_router] Не вдалося надіслати попередження про test_mode у Telegram", file=sys.stderr)
 

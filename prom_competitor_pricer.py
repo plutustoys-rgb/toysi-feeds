@@ -56,6 +56,8 @@ import os
 import re
 import sys
 import time
+from datetime import date
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -70,6 +72,13 @@ from competitor_pricing import decide_price_for_platform
 from telegram_notify import send_telegram_message
 
 load_dotenv()
+
+# Другий канал звітності, крім Telegram (стандарт репо — той самий підхід,
+# що й prom_catalog_auditor.py): персистентний .md-файл на VPS, який
+# переживає втрачене/непрочитане повідомлення в Telegram і дає повну (без
+# обрізання під ліміт Telegram) історію коригувань/видалень по датах.
+BASE_DIR   = Path(__file__).parent
+REPORT_DIR = BASE_DIR / "reports"
 
 PROM_API_KEY  = os.environ.get("PROM_API_KEY", "")
 PROM_API_URL  = "https://my.prom.ua/api/v1"
@@ -344,6 +353,17 @@ def delist(external_id: str) -> None:
     response.raise_for_status()
 
 
+def write_local_report(mode: str, body: str) -> None:
+    """Персистентний .md-звіт у REPORT_DIR — другий, незалежний від
+    Telegram канал (не обрізається лімітом 4096 символів, не губиться
+    при непрочитаному повідомленні)."""
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    today = date.today().isoformat()
+    out_path = REPORT_DIR / f"prom_competitor_pricer_{mode}_{today}.md"
+    out_path.write_text(body, encoding="utf-8")
+    print(f"[Pricer] Звіт збережено: {out_path}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true",
@@ -362,6 +382,7 @@ def main() -> None:
         assert_catalog_size_sane(toysi_catalog)
     except CatalogSizeError as e:
         print(f"[Pricer] {e}", file=sys.stderr)
+        write_local_report("aborted", f"# prom_competitor_pricer.py зупинено — {date.today().isoformat()}\n\n{e}")
         send_telegram_message(f"🚨 prom_competitor_pricer.py зупинено: {e}")
         sys.exit(1)
 
@@ -431,6 +452,16 @@ def main() -> None:
             if len(delist_details) > 15:
                 digest += f"\n... та ще {len(delist_details) - 15}"
         digest += "\n\n(--apply не вмикався, це лише пропозиція)"
+        report_body = (
+            f"# prom_competitor_pricer.py — dry-run — {date.today().isoformat()}\n\n"
+            f"Оброблено SKU: {len(items)} (--limit {args.limit})\n\n"
+            f"- Пропоновано скоригувати ціну: {adjust_count}\n"
+            f"- Пропоновано видалити (неконкурентні): {delist_count}\n"
+            f"- Конкурента не знайдено: {no_competitor_count}\n\n"
+            f"## Кандидати на видалення ({len(delist_details)})\n"
+            + ("\n".join(delist_details) if delist_details else "(немає)")
+        )
+        write_local_report("dryrun", report_body)
         send_telegram_message(digest)
         return
 
@@ -459,6 +490,17 @@ def main() -> None:
         digest += "\n\nВидалено:\n" + "\n".join(delist_details[:15])
         if len(delist_details) > 15:
             digest += f"\n... та ще {len(delist_details) - 15}"
+    report_body = (
+        f"# prom_competitor_pricer.py --apply — {date.today().isoformat()}\n\n"
+        f"Оброблено SKU: {len(items)} (--limit {args.limit})\n\n"
+        f"- Скориговано цін: {adjust_count}\n"
+        f"- Видалено (неконкурентні): {delist_count}\n"
+        f"- Конкурента не знайдено: {no_competitor_count}\n"
+        f"- Помилок: {error_count}\n\n"
+        f"## Видалено ({len(delist_details)})\n"
+        + ("\n".join(delist_details) if delist_details else "(немає)")
+    )
+    write_local_report("apply", report_body)
     send_telegram_message(digest)
 
 

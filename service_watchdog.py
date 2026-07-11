@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from orders_db import get_connection, get_active_toysi_orders
 from telegram_notify import send_telegram_message
@@ -50,6 +51,24 @@ LOOKBACK = "3 days ago"  # достатньо, щоб знайти останн�
 TOYSI_RECONCILE_THRESHOLD_MINUTES = 120
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog_state.json")
+
+# Другий канал, крім Telegram (стандарт репо — той самий підхід, що й
+# prom_catalog_auditor.py/prom_competitor_pricer.py): персистентний .md-лог
+# на VPS, який лишається доступним, навіть якщо повідомлення в Telegram
+# загубилось/непрочитане. Одна подія watchdog може траплятись кілька разів
+# за день (алярм і відновлення) — тому це ДОПИСУВАНИЙ лог, не файл, що
+# перезаписується, як у скриптів з одним прогоном на день.
+BASE_DIR   = Path(__file__).parent
+REPORT_DIR = BASE_DIR / "reports"
+
+
+def write_local_report(message: str) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().date().isoformat()
+    out_path = REPORT_DIR / f"service_watchdog_{today}.md"
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    with open(out_path, "a", encoding="utf-8") as f:
+        f.write(f"\n## {timestamp}\n\n{message}\n")
 
 # journalctl -o short-iso віддає зсув часового поясу без двокрапки (+0300),
 # а datetime.fromisoformat() приймає такий формат лише з Python 3.11+.
@@ -164,11 +183,13 @@ def check_services() -> None:
     if new_alarms:
         message = "🚨 Watchdog PlutusToys: сервіс(и) не відповідають\n\n" + "\n\n".join(new_alarms)
         print(message)
+        write_local_report(message)
         if not send_telegram_message(message):
             print("[watchdog] Не вдалося надіслати алерт у Telegram (див. вище)", file=sys.stderr)
     if recoveries:
         message = "✅ Watchdog PlutusToys: відновлено\n\n" + "\n\n".join(recoveries)
         print(message)
+        write_local_report(message)
         if not send_telegram_message(message):
             print("[watchdog] Не вдалося надіслати повідомлення про відновлення в Telegram", file=sys.stderr)
 
@@ -266,11 +287,13 @@ def check_toysi_reconciliation() -> None:
               "(як №414634349 через баг test_mode)."
         )
         print(message)
+        write_local_report(message)
         if not send_telegram_message(message):
             print("[watchdog] Не вдалося надіслати алерт про звірку в Telegram", file=sys.stderr)
     if recoveries:
         message = "✅ Watchdog PlutusToys: звірка з Toysi відновлена\n\n" + "\n\n".join(recoveries)
         print(message)
+        write_local_report(message)
         if not send_telegram_message(message):
             print("[watchdog] Не вдалося надіслати повідомлення про відновлення звірки в Telegram", file=sys.stderr)
 

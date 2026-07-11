@@ -2,6 +2,7 @@ import os
 import re
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from telegram_notify import send_telegram_message
 
@@ -12,6 +13,17 @@ if hasattr(sys.stdout, "reconfigure"):
 
 DEADLINES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deadlines.md")
 REMINDER_WINDOW_DAYS = 14
+
+# Другий канал, крім Telegram (стандарт репо) — персистентний .md-файл на VPS.
+BASE_DIR   = Path(__file__).parent
+REPORT_DIR = BASE_DIR / "reports"
+
+
+def write_local_report(message: str) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().date().isoformat()
+    out_path = REPORT_DIR / f"deadline_reminder_{today}.md"
+    out_path.write_text(message, encoding="utf-8")
 
 _DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 
@@ -85,6 +97,7 @@ def check_deadlines() -> None:
         message = "".join(lines)
 
     print(message)
+    write_local_report(message)
     sent = send_telegram_message(message)
     if not sent:
         print("[deadline_reminder] Не вдалося надіслати в Telegram (див. повідомлення вище)", file=sys.stderr)

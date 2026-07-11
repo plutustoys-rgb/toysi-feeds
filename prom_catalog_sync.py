@@ -35,6 +35,8 @@ import argparse
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -56,6 +58,16 @@ REQUEST_TIMEOUT = 30
 
 PAGE_SIZE  = 100  # /products/list
 EDIT_BATCH = 100  # /products/edit_by_external_id — розмір пачки на запит
+
+# Другий канал, крім Telegram (стандарт репо) — персистентний .md-файл на VPS.
+BASE_DIR   = Path(__file__).parent
+REPORT_DIR = BASE_DIR / "reports"
+
+
+def write_local_report(message: str) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = REPORT_DIR / f"prom_catalog_sync_aborted_{date.today().isoformat()}.md"
+    out_path.write_text(message, encoding="utf-8")
 
 
 TRUE_ROOT_GROUP_ID = 155011713  # "Корнева група" — підтверджено напряму 2026-07-11:
@@ -212,6 +224,7 @@ def main() -> None:
         # масового хибного видалення живих товарів, чий external_id просто не
         # потрапив у цей конкретний усічений фетч.
         print(f"[Sync] {e}", file=sys.stderr)
+        write_local_report(f"# prom_catalog_sync.py зупинено — {date.today().isoformat()}\n\n{e}")
         send_telegram_message(f"🚨 prom_catalog_sync.py зупинено: {e}")
         sys.exit(1)
     top_catalog   = select_top_items(toysi_catalog)

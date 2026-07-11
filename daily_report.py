@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -22,6 +23,17 @@ PROM_API_KEY    = os.environ.get("PROM_API_KEY", "")
 ROZETKA_API_KEY = os.environ.get("ROZETKA_API_KEY", "")
 
 LOOKBACK_HOURS = 24
+
+# Другий канал, крім Telegram (стандарт репо) — персистентний .md-файл на VPS.
+BASE_DIR   = Path(__file__).parent
+REPORT_DIR = BASE_DIR / "reports"
+
+
+def write_local_report(message: str) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().date().isoformat()
+    out_path = REPORT_DIR / f"daily_report_{today}.md"
+    out_path.write_text(message, encoding="utf-8")
 
 """
 Крок 8 плану. Не вистачає лише балансів Rozetka/Prom (Крок 7 — окрема
@@ -287,6 +299,7 @@ def build_report() -> str:
 def send_daily_report() -> None:
     message = build_report()
     print(message)
+    write_local_report(message)
     sent = send_telegram_message(message)
     if not sent:
         print("[daily_report] Не вдалося надіслати в Telegram (див. повідомлення вище)", file=sys.stderr)

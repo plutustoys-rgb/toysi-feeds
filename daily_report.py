@@ -144,13 +144,44 @@ def _estimated_commission(rows: list, catalog: dict) -> tuple:
     return commission_by_platform, items_priced, items_no_category
 
 
+# Ключові слова з РЕАЛЬНИХ назв способів оплати цього кабінету
+# (my.prom.ua/cms/settings/payment, перевірено 2026-07-11): "Пром-оплата" і
+# "Оплатити частинами 0% для покупця" — рівно ці 2 з 4 винятків комісії 10₴
+# (pt24), які взагалі можна визначити з payment_option_name. Два інші винятки
+# (дублікат замовлення протягом 24 год, тестове замовлення власника/менеджера)
+# Prom Orders API ніяк не позначає — тому вони НЕ враховані тут, оцінка нижче
+# схильна злегка ЗАВИЩувати комісію 10₴ (рідкісні випадки), не занижувати.
+_SITE_FEE_EXEMPT_KEYWORDS = ("пром-оплата", "оплатити частинами")
+SITE_ORDER_FEE = 10.0
+
+
+def _site_order_fee_estimate(rows: list) -> tuple:
+    """Графа 9, компонент "комісія 10₴ за замовлення з кошика власного сайту"
+    (pt24) — ОКРЕМИЙ механізм від категорійної комісії ProSale/еквайрингу, що
+    рахує _estimated_commission() вище, і додається ПОВЕРХ неї, не замість.
+    Застосовується лише до platform="prom" AND source="company_site"
+    (Rozetka не має цього механізму; каталожні замовлення Prom, source="portal",
+    комісії 10₴ не підлягають). source=None (старі замовлення до 2026-07-11,
+    коли поле ще не збиралось) свідомо НЕ рахується як сайт — не можемо
+    довести те, чого не знаємо."""
+    eligible_count = 0
+    for row in rows:
+        if row["platform"] != "prom" or row["source"] != "company_site":
+            continue
+        payment_name = (row["payment_option_name"] or "").lower()
+        if any(kw in payment_name for kw in _SITE_FEE_EXEMPT_KEYWORDS):
+            continue
+        eligible_count += 1
+    return eligible_count, eligible_count * SITE_ORDER_FEE
+
+
 def build_report() -> str:
     init_db()
     since = (datetime.now() - timedelta(hours=LOOKBACK_HOURS)).isoformat(timespec="seconds")
 
     with get_connection() as conn:
         new_rows = conn.execute(
-            "SELECT platform, items FROM orders WHERE created_at >= ?", (since,)
+            "SELECT platform, items, source, payment_option_name FROM orders WHERE created_at >= ?", (since,)
         ).fetchall()
 
         forwarded_today = conn.execute(
@@ -280,6 +311,19 @@ def build_report() -> str:
             lines.append(
                 f"\n  ⚠️ {commission_items_no_category} позицій без категорії в поточному каталозі "
                 "Toysi — використано дефолтну ставку платформи замість категорійної"
+            )
+
+        site_fee_count, site_fee_total = _site_order_fee_estimate(new_rows)
+        if site_fee_count:
+            lines.append(
+                f"\n\nГрафа 9, окремо (комісія 10₴ за замовлення з кошика власного сайту, pt24): "
+                f"{site_fee_count} замовлень x 10₴ = {site_fee_total:.2f} грн — ДОДАЄТЬСЯ поверх "
+                "категорійної комісії вище, не замість неї"
+            )
+            lines.append(
+                "\n  (винятки Пром-оплата/Оплатити частинами враховано за назвою способу оплати; "
+                "винятки \"дублікат замовлення\"/\"тестове замовлення власника\" Prom API не "
+                "позначає — тут НЕ враховані, тому оцінка може бути трохи ЗАВИЩеною, не заниженою)"
             )
     else:
         lines.append(

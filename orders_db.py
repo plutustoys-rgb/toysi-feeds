@@ -30,6 +30,16 @@ CREATE TABLE IF NOT EXISTS orders (
     checkbox_ettn_registered_at TEXT,         -- коли зареєстровано ЕТТН у Checkbox (order_status_tracker.py) —
                                                -- захист від повторної реєстрації (= дубль РЕАЛЬНОГО фіскального чека)
     checkbox_receipt_id   TEXT,               -- id чека з відповіді Checkbox — для звірки/ручного пошуку
+    source                TEXT,               -- канал замовлення з Prom Orders API: portal (каталог/маркетплейс),
+                                               -- company_site (кошик власного сайту — тут діє комісія 10₴, pt24),
+                                               -- company_cabinet (створено вручну в кабінеті). NULL для Rozetka
+                                               -- (там такого поля просто немає) і для старих замовлень до
+                                               -- 2026-07-11, коли поле ще не збиралось.
+    payment_option_name   TEXT,               -- сирий payment_option.name з Prom Orders API (напр. "Пром-оплата",
+                                               -- "Післяплата") — потрібен окремо від payment_method (cod/prepaid),
+                                               -- бо винятки комісії 10₴ (pt24) звужені до КОНКРЕТНИХ способів
+                                               -- оплати (Пром-оплата/розстрочка), а не всієї категорії "prepaid"
+                                               -- (напр. "Оплата на рахунок" — теж prepaid, але комісія 10₴ ДІЄ).
     UNIQUE (order_id, platform)
 );
 
@@ -72,6 +82,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "ukrposhta_sticker_path", "ukrposhta_sticker_path TEXT")
         _ensure_column(conn, "orders", "checkbox_ettn_registered_at", "checkbox_ettn_registered_at TEXT")
         _ensure_column(conn, "orders", "checkbox_receipt_id", "checkbox_receipt_id TEXT")
+        _ensure_column(conn, "orders", "source", "source TEXT")
+        _ensure_column(conn, "orders", "payment_option_name", "payment_option_name TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -97,8 +109,8 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             internal_order_id, order_id, platform, status, payment_method,
             payment_confirmed, customer_name, phone, np_branch, items,
             created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status,
-            carrier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            carrier, source, payment_option_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             internal_order_id,
@@ -117,6 +129,8 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             order.get("toysi_ttn"),
             order.get("delivery_status"),
             order.get("carrier", "nova_poshta"),
+            order.get("source"),
+            order.get("payment_option_name"),
         ),
     )
     return True

@@ -139,6 +139,13 @@ def _convert_prom_order(order: dict) -> dict:
         "np_branch": order.get("delivery_address", ""),
         "carrier": _detect_carrier(order.get("delivery_provider_data"), order.get("delivery_option")),
         "items": items,
+        # "portal"/"company_site"/"company_cabinet" (документація Prom Orders API,
+        # Order.yaml) — company_site = кошик власного сайту, де діє комісія 10₴
+        # за замовлення (pt24). Дефолт "portal", якщо Prom колись поверне
+        # замовлення без цього поля — безпечніший фолбек (каталог, комісія
+        # 10₴ не рахується), ніж мовчки вважати сайтом.
+        "source": order.get("source") or "portal",
+        "payment_option_name": (order.get("payment_option") or {}).get("name") or "",
     }
 
 
@@ -208,16 +215,20 @@ def _mock_rozetka_orders() -> list:
 def normalize_order(raw_order: dict) -> dict:
     """Приводить сирі дані з API платформи (або мок-дані) до єдиної структури orders.db."""
     return {
-        "order_id":          raw_order["order_id"],
-        "platform":          raw_order["platform"],
-        "status":            raw_order.get("status", "new"),
-        "payment_method":    raw_order["payment_method"],
-        "payment_confirmed": raw_order.get("payment_confirmed", False),
-        "customer_name":     raw_order.get("customer_name", ""),
-        "phone":             raw_order.get("phone", ""),
-        "np_branch":         raw_order.get("np_branch", ""),
-        "carrier":           raw_order.get("carrier", "nova_poshta"),
-        "items":             raw_order["items"],
+        "order_id":            raw_order["order_id"],
+        "platform":            raw_order["platform"],
+        "status":              raw_order.get("status", "new"),
+        "payment_method":      raw_order["payment_method"],
+        "payment_confirmed":   raw_order.get("payment_confirmed", False),
+        "customer_name":       raw_order.get("customer_name", ""),
+        "phone":               raw_order.get("phone", ""),
+        "np_branch":           raw_order.get("np_branch", ""),
+        "carrier":             raw_order.get("carrier", "nova_poshta"),
+        "items":               raw_order["items"],
+        # Rozetka (мок і майбутній реальний Seller API) не має поняття "джерело
+        # каталог/сайт" у тому ж сенсі, що Prom — None, а не вигаданий дефолт.
+        "source":              raw_order.get("source"),
+        "payment_option_name": raw_order.get("payment_option_name", ""),
     }
 
 

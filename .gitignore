@@ -6,6 +6,9 @@ __pycache__/
 # Локальний кеш каталогу Toysi (десятки МБ, генерується скриптами наново)
 toysi_catalog_cache.json
 
+# Локальний кеш популярності категорій (Google Trends, category_popularity.py)
+category_popularity_cache.json
+
 # Локальний стан конкурентного ціноутворення (не для публічного репо)
 competitor_pricing_checkpoint.json
 pricing_results.csv

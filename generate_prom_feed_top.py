@@ -2,6 +2,7 @@ import re
 
 from parser import fetch_toysi_catalog
 from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
+from category_popularity import fetch_category_popularity, get_popularity_score
 
 OUTPUT_FILE     = "feeds/prom_feed_top.xml"
 TARGET_COUNT    = 1000
@@ -96,12 +97,27 @@ def _margin(item: dict) -> float:
     return default_retail_price(cost, item.get("category_name")) - cost
 
 
-def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
+def select_top_items(catalog: dict, target: int = SELECT_COUNT, popularity_scores: dict = None) -> dict:
     """
-    1. Спочатку — товари з категорій-лідерів (LEADER_KEYWORD_GROUPS).
-       Якщо їх більше за target — сортуємо за маржею і беремо top `target`.
-    2. Якщо лідерів менше за target — доповнюємо рештою каталогу,
-       теж за спаданням маржі, поки не набереться `target`.
+    1. Фільтр (незмінний): лише товари з прийнятною маржею (_margin >= 0),
+       не виключеної категорії.
+    2. Спочатку — товари з категорій-лідерів (LEADER_KEYWORD_GROUPS, ручний
+       пріоритет власника — лишається як є, НЕ замінюється популярністю).
+       Якщо їх більше за target — сортуємо і беремо top `target`.
+    3. Якщо лідерів менше за target — доповнюємо рештою каталогу, тим самим
+       сортуванням, поки не набереться `target`.
+
+    Сортування всередині кожної з двох груп (2 і 3):
+    - popularity_scores=None (дефолт, БЕЗ ЗМІН існуючої поведінки для всіх
+      наявних викликачів — prom_catalog_sync.py, prom_competitor_pricer.py
+      тощо, які не передають цей параметр): сортуємо лише за маржею, як і
+      завжди.
+    - popularity_scores задано (dict category_name -> Google Trends скор,
+      див. category_popularity.py): сортуємо ЗА ПОПУЛЯРНІСТЮ категорії
+      (спадання), маржа — лише tie-break при однаковій популярності.
+      Це свідомо ОПТ-ІН, не дефолтна поведінка — зміна складу топ-970 за
+      новим фактором вимагає явного рішення власника, не тихого ввімкнення
+      для всіх існуючих викликачів цієї функції.
     """
     eligible = {
         pid: item for pid, item in catalog.items()
@@ -111,8 +127,16 @@ def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
     leaders = {pid: item for pid, item in eligible.items() if is_leader_category(item)}
     rest    = {pid: item for pid, item in eligible.items() if pid not in leaders}
 
-    leaders_sorted = sorted(leaders.items(), key=lambda kv: _margin(kv[1]), reverse=True)
-    rest_sorted    = sorted(rest.items(), key=lambda kv: _margin(kv[1]), reverse=True)
+    if popularity_scores is None:
+        sort_key = lambda kv: (_margin(kv[1]), 0.0)
+    else:
+        sort_key = lambda kv: (
+            get_popularity_score(kv[1].get("category_name", ""), popularity_scores),
+            _margin(kv[1]),
+        )
+
+    leaders_sorted = sorted(leaders.items(), key=sort_key, reverse=True)
+    rest_sorted    = sorted(rest.items(), key=sort_key, reverse=True)
 
     if len(leaders_sorted) >= target:
         selected = leaders_sorted[:target]

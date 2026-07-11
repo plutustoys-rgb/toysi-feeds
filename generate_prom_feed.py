@@ -401,6 +401,9 @@ def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict =
     floor_bound_count      = 0  # ціна за замовчуванням, впирається в нижню межу маржі
     multiplier_bound_count = 0  # ціна за замовчуванням, NO_COMPETITOR_MULT вищий за межу
     russian_missing_count  = 0  # немає rus-варіанту з Toysi — впало назад на українську
+    truncated_name_count    = 0  # name (рос.) довша за PROM_NAME_MAX_LEN, обрізана на межі слова
+    truncated_name_ua_count = 0  # name_ua (укр.) довша за PROM_NAME_MAX_LEN — окремий лічильник,
+                                  # бо укр./рос. варіанти різної довжини й можуть обрізатись незалежно
 
     for item in catalog.values():
         try:
@@ -451,6 +454,10 @@ def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict =
         name_ru = (russian.get(item_id) or {}).get("name") or name
         if item_id not in russian:
             russian_missing_count += 1
+        if len(name_ru) > PROM_NAME_MAX_LEN:
+            truncated_name_count += 1
+        if len(name) > PROM_NAME_MAX_LEN:
+            truncated_name_ua_count += 1
         ET.SubElement(offer, "name").text               = _truncate_name(name_ru)
         ET.SubElement(offer, "name_ua").text             = _truncate_name(name)
         ET.SubElement(offer, "price").text               = f"{retail:.2f}"
@@ -510,6 +517,8 @@ def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict =
         "floor_bound_count": floor_bound_count,
         "multiplier_bound_count": multiplier_bound_count,
         "russian_missing_count": russian_missing_count,
+        "truncated_name_count": truncated_name_count,
+        "truncated_name_ua_count": truncated_name_ua_count,
     }
     return yml, stats
 
@@ -565,6 +574,10 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     print(
         f"[Prom] Російська назва: {stats['russian_missing_count']} SKU без rus-варіанту в "
         "Toysi (впало назад на українську для <name>/<description>)"
+    )
+    print(
+        f"[Prom] Обрізання назви (>{PROM_NAME_MAX_LEN} символів, на межі слова): "
+        f"{stats['truncated_name_count']} SKU у <name>, {stats['truncated_name_ua_count']} SKU у <name_ua>"
     )
 
 

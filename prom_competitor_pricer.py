@@ -144,10 +144,21 @@ query SearchListingQuery($search_term: String!, $offset: Int, $limit: Int, $para
 """.strip()
 
 
-def search_prom_products(search_term: str, limit: int = SEARCH_LIMIT) -> list:
+def search_prom_products(search_term: str, limit: int = SEARCH_LIMIT, company_id: int = None) -> list:
     """Пошук на Prom.ua напряму через internal GraphQL (без браузера,
     без авторизації — підтверджено, ендпоінт публічний, той самий, яким
-    користується власна SPA-сторінка пошуку)."""
+    користується власна SPA-сторінка пошуку).
+
+    company_id — опційний фільтр (SearchListingQuery підтримує його як
+    змінну $company_id, раніше просто не передавався). За замовчуванням
+    None (усі існуючі виклики — find_best_competitor() — поводяться так
+    само, як і завжди: шукають по всьому маркетплейсу). Явно передане
+    значення звужує пошук ЛИШЕ до товарів цієї компанії — потрібно
+    generate_google_feed.py, щоб знайти власний товар за назвою, не
+    сподіваючись, що він потрапить у перші SEARCH_LIMIT результатів
+    загального пошуку (для популярних назв товарів конкуренти займають
+    усі топові позиції, власний єдиний лістинг легко не потрапляє навіть
+    у топ-20 — підтверджено емпірично, 2026-07-11)."""
     payload = {
         "operationName": "SearchListingQuery",
         "variables": {
@@ -156,6 +167,7 @@ def search_prom_products(search_term: str, limit: int = SEARCH_LIMIT) -> list:
             "offset": 0,
             "params": {"binary_filters": []},
             "regionId": None,
+            "company_id": company_id,
         },
         "query": SEARCH_QUERY,
     }

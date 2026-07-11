@@ -61,6 +61,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -86,6 +87,21 @@ ANTHROPIC_MODEL   = os.environ.get("PROM_CHAT_BOT_MODEL", "claude-haiku-4-5-2025
 
 REQUEST_TIMEOUT = 30
 ROOM_HISTORY_LIMIT = 10
+
+# Другий канал, крім Telegram (стандарт репо) — персистентний .md-лог на
+# VPS. Ескалації трапляються по одній за раз, протягом дня — дописуваний
+# лог, не файл з перезаписом.
+BASE_DIR   = Path(__file__).parent
+REPORT_DIR = BASE_DIR / "reports"
+
+
+def write_local_report(message: str) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().date().isoformat()
+    out_path = REPORT_DIR / f"prom_chat_bot_escalations_{today}.md"
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    with open(out_path, "a", encoding="utf-8") as f:
+        f.write(f"\n## {timestamp}\n\n{message}\n")
 MAX_REPLY_LEN = 1900  # ліміт Prom — 2000 символів на body, лишаємо запас
 
 PROJECT = "promua"
@@ -384,6 +400,7 @@ def escalate(msg: dict, reasoning: str) -> None:
         "Відповісти напряму в кабінеті Prom (Товари та послуги -> Повідомлення/Чат) — "
         "бот НЕ відповідав і НЕ позначав прочитаним."
     )
+    write_local_report(text)
     send_telegram_message(text)
 
 

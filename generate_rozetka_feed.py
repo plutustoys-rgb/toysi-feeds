@@ -234,10 +234,15 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
 
         # https, без кирилиці/пробілів — Toysi-URL вже відповідають цьому
         # формату за конструкцією, але перевіряємо явно замість припущення.
+        # ВИПРАВЛЕНО (незалежне рев'ю PR #39): фільтруємо на https ПЕРЕД
+        # обмеженням до ROZETKA_MAX_PICTURES, не після — інакше валідне
+        # https-фото на позиції 16+ могло й не потрапити в розгляд, і
+        # товар з дійсним фото десь глибше в списку мовчки випав би з
+        # фіда через те, що перші 15 сирих записів випадково не https.
         pictures = [
-            p for p in item.get("pictures", [])[:ROZETKA_MAX_PICTURES]
+            p for p in item.get("pictures", [])
             if p.startswith("https://")
-        ]
+        ][:ROZETKA_MAX_PICTURES]
         if not pictures:
             skipped_no_pics += 1
             continue

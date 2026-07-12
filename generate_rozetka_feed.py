@@ -1,43 +1,120 @@
-import html
+"""
+generate_rozetka_feed.py — генерує YML-фід для Rozetka Marketplace.
+
+Вимоги звірено напряму з офіційною документацією Rozetka
+(https://sellerhelp.rozetka.com.ua/p185-pricelist-requirements.html,
+оновлено 29.06.2026, перевірено 2026-07-12):
+- offer id — лише латиниця/цифри (Toysi id вже суто цифрові, підходить без змін);
+  id товарів і категорій НЕ повинні змінюватись після першого додавання —
+  ми завжди використовуємо той самий Toysi id, тож це вже дотримано.
+- Обов'язкові теги: price, currencyId, categoryId, picture (1-15, https,
+  без кирилиці/пробілів/плюсів в URL, до 10 МБ кожне), vendor, name,
+  description, param. available="true/false" на offer, stock_quantity
+  обов'язковий (товар доступний лише якщо >0).
+- name — максимум 255 символів, description — максимум 50 000.
+- Заборонені керівні ASCII-символи (0-31, крім 9/10/13) — фільтруємо самі,
+  щоб один "брудний" символ десь у Toysi-даних не зламав увесь фід.
+- rz_id (на <category>) і paramid/valueid (на <param>) — РЕКОМЕНДОВАНІ
+  Rozetka для прямого зв'язку з довідником категорій/характеристик
+  ("Priority of rz_id is higher than category name") замість зіставлення
+  за назвою. Довідник доступний ЛИШЕ в кабінеті продавця (Управління
+  товарами -> Довідники) — без інтерактивного логіну (login+password,
+  який ми свідомо не автоматизуємо) отримати ці ID програмно неможливо.
+  Тому зараз фід працює на фолбеку "зіставлення за назвою" (Rozetka явно
+  підтримує це, лише з нижчим пріоритетом) — якщо власниця експортує
+  довідник зі свого кабінету в ROZETKA_CATEGORY_RZ_ID_MAP_FILE
+  ({toysi_category_id: rozetka_rz_id}), rz_id підхопиться автоматично.
+
+ВАЖЛИВО — жодної російської мови: на відміну від Prom (де name/description
+РІВНОПРАВНІ рос./укр. поля, бо Prom вимагає окреме російське поле), Rozetka
+не вимагає цього, і власниця прямо попросила: тільки українська, без
+паттерну Prom. <name>/<description> заповнюються УКРАЇНСЬКИМ текстом з
+Toysi (lang=ukr, той самий, що й завжди) — НЕ викликаємо lang=rus, як
+робить generate_prom_feed.py. <name_ua>/<description_ua> дублюють
+<name>/<description> (той самий текст) — явно, а не покладаючись на
+автопереклад Rozetka "якщо поле порожнє", який міг би помилково
+спробувати перекласти вже український текст.
+
+vendor — обов'язкове поле Rozetka; ~30 SKU з повного каталогу Toysi (станом
+на 2026-07-12) не мають бренду (з parser.py: vendor не вказаний і не
+визначається з params) — вони природно відсіюються нижче. Це очікувано,
+не помилка.
+"""
+import json
 import os
 import re
+import html
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from parser import fetch_toysi_catalog
+from competitor_pricing import decide_price_for_platform
 from generate_prom_feed import append_clearance_notice
+from parser import fetch_toysi_catalog
 
 SHOP_NAME          = "PlutusToys"
 SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійович"
-SHOP_URL           = "https://rozetka.com.ua"
+SHOP_URL           = "https://plutustoys.com.ua"  # сайт компанії, не rozetka.com.ua
+                                                    # (попередня версія помилково
+                                                    # вказувала домен маркетплейсу)
 OUTPUT_FILE        = "feeds/rozetka_feed.xml"
 MIN_SUPPLIER_PRICE = 20  # товари дешевше цієї ціни постачальника пропускаємо
 
+ROZETKA_NAME_MAX_LEN        = 255     # https://sellerhelp.rozetka.com.ua/p185-pricelist-requirements.html
+ROZETKA_DESCRIPTION_MAX_LEN = 50_000
+ROZETKA_MAX_PICTURES        = 15
 
-def calc_price(cost: float) -> float:
-    """Розраховує роздрібну ціну з наценкою залежно від собівартості.
+# {toysi_category_id: rozetka_rz_id} — опційний файл, заповнюється вручну
+# власницею з довідника категорій у власному кабінеті (Управління товарами ->
+# Довідники). Якщо файл відсутній чи категорія в ньому не знайдена — фід
+# просто не додає rz_id для цієї категорії (Rozetka зіставить за назвою,
+# як і зараз, лише повільніше/з нижчим пріоритетом при модерації).
+ROZETKA_CATEGORY_RZ_ID_MAP_FILE = "rozetka_category_rz_id_map.json"
 
-    Враховує комісію Rozetka 22% (ФОП, категорія "Дитячі іграшки", ціна < 4000 грн).
-    Цільовий мінімум прибутку: 25% від собівартості після відрахування комісії
-    (ціна = собівартість / (1 - 0.22) * (1 + 0.25) ~= собівартість * 1.60).
-    """
-    if cost < 100:    return round(cost * 2.00)
-    elif cost < 300:  return round(cost * 1.85)
-    elif cost < 700:  return round(cost * 1.75)
-    elif cost < 2000: return round(cost * 1.65)
-    else:             return round(cost * 1.55)
+# Заборонені керівні ASCII-символи (0-31, крім 9=tab/10=LF/13=CR) —
+# Rozetka явно забороняє їх у фіді; чистимо самі, а не покладаємось на те,
+# що Toysi-дані завжди чисті (одиничний "сирий" символ десь усередині міг
+# би відхилити ВЕСЬ фід при валідації).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean_text(text: str) -> str:
+    return _CONTROL_CHARS_RE.sub("", text or "")
+
+
+def _truncate(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len]
+    last_space = cut.rfind(" ")
+    if last_space > max_len * 0.6:  # не обрізати до майже нічого, якщо пробіл дуже рано
+        cut = cut[:last_space]
+    return cut.rstrip(" ,.-")
+
+
+def _load_category_rz_id_map() -> dict:
+    if not os.path.exists(ROZETKA_CATEGORY_RZ_ID_MAP_FILE):
+        return {}
+    try:
+        with open(ROZETKA_CATEGORY_RZ_ID_MAP_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (ValueError, OSError):
+        return {}
 
 
 def _wrap_cdata(xml_str: str) -> str:
-    """Post-process: wrap <description> content in CDATA."""
-    def replacer(m):
-        content = html.unescape(m.group(1))
-        content = content.replace("]]>", "]]]]><![CDATA[>")
-        return f"<description><![CDATA[{content}]]></description>"
-    return re.sub(r"<description>(.*?)</description>", replacer, xml_str, flags=re.DOTALL)
+    """Post-process: wrap <description>/<description_ua> content in CDATA."""
+    def make_replacer(tag):
+        def replacer(m):
+            content = html.unescape(m.group(1))
+            content = content.replace("]]>", "]]]]><![CDATA[>")
+            return f"<{tag}><![CDATA[{content}]]></{tag}>"
+        return replacer
+    for tag in ("description", "description_ua"):
+        xml_str = re.sub(rf"<{tag}>(.*?)</{tag}>", make_replacer(tag), xml_str, flags=re.DOTALL)
+    return xml_str
 
 
-def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = None) -> ET.Element:
+def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = None) -> tuple[ET.Element, dict]:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
     shop = ET.SubElement(yml, "shop")
@@ -47,6 +124,8 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
 
     currencies = ET.SubElement(shop, "currencies")
     ET.SubElement(currencies, "currency", id="UAH", rate="1")
+
+    rz_id_map = _load_category_rz_id_map()
 
     # Collect unique categories from catalog items
     cat_map: dict = {}
@@ -58,23 +137,30 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
 
     categories_el = ET.SubElement(shop, "categories")
     for cid in sorted(cat_map):
-        ET.SubElement(categories_el, "category", id=cid).text = cat_map[cid]
+        attrs = {"id": cid}
+        rz_id = rz_id_map.get(cid)
+        if rz_id:
+            attrs["rz_id"] = str(rz_id)
+        ET.SubElement(categories_el, "category", **attrs).text = _clean_text(cat_map[cid])
 
-    offers_el      = ET.SubElement(shop, "offers")
-    overrides      = price_overrides or {}
-    excluded       = exclude_ids or set()
-    skipped        = 0
-    skipped_cheap  = 0
-    skipped_unprof = 0
+    offers_el       = ET.SubElement(shop, "offers")
+    overrides       = price_overrides or {}
+    excluded        = exclude_ids or set()
+    skipped_no_price  = 0
+    skipped_cheap     = 0
+    skipped_unprof    = 0
+    skipped_no_vendor = 0
+    skipped_no_pics   = 0
+    truncated_name_count = 0
 
     for item in catalog.values():
         try:
             cost = float(item.get("price") or 0)
         except (ValueError, TypeError):
-            skipped += 1
+            skipped_no_price += 1
             continue
         if cost <= 0:
-            skipped += 1
+            skipped_no_price += 1
             continue
         if cost < MIN_SUPPLIER_PRICE:
             skipped_cheap += 1
@@ -84,35 +170,71 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
         if item_id in excluded:
             skipped_unprof += 1
             continue
-        retail    = overrides.get(item_id, calc_price(cost))
+
+        # Rozetka вимагає vendor обов'язково — товари постачальника без
+        # бренду (parser.py не визначив vendor ні з <vendor>, ні з params)
+        # природно не потрапляють у фід. Очікувано (~30 SKU з ~29 тис. на
+        # 2026-07-12), не помилка.
+        vendor = (item.get("vendor") or "").strip()
+        if not vendor:
+            skipped_no_vendor += 1
+            continue
+
+        # https, без кирилиці/пробілів — Toysi-URL вже відповідають цьому
+        # формату за конструкцією, але перевіряємо явно замість припущення.
+        pictures = [
+            p for p in item.get("pictures", [])[:ROZETKA_MAX_PICTURES]
+            if p.startswith("https://")
+        ]
+        if not pictures:
+            skipped_no_pics += 1
+            continue
+
+        if item_id in overrides:
+            retail = overrides[item_id]
+        else:
+            decision = decide_price_for_platform(cost, None, "rozetka", item.get("category_name"))
+            retail = decision["price"]
+
         stock     = item.get("stock", 0)
         available = "true" if stock > 0 else "false"
 
-        offer = ET.SubElement(offers_el, "offer",
-                              id=item_id,
-                              available=available)
+        offer = ET.SubElement(offers_el, "offer", id=item_id, available=available)
 
-        ET.SubElement(offer, "vendorCode").text     = item.get("vendor_code") or item_id
-        # name_ua не дублюємо: фід і так лише українською (parser.py тягне lang=ukr)
-        ET.SubElement(offer, "name").text           = item.get("name", "")
+        ET.SubElement(offer, "vendorCode").text     = _clean_text(item.get("vendor_code") or item_id)
+
+        # Лише українська (з Toysi lang=ukr) — жодного окремого рос.
+        # запиту, на відміну від generate_prom_feed.py. name_ua/description_ua
+        # дублюють name/description явно, щоб Rozetka не намагався сам
+        # "перекладати" вже український текст, якщо поле лишити порожнім.
+        name = _clean_text(item.get("name", ""))
+        if len(name) > ROZETKA_NAME_MAX_LEN:
+            truncated_name_count += 1
+        name = _truncate(name, ROZETKA_NAME_MAX_LEN)
+        ET.SubElement(offer, "name").text    = name
+        ET.SubElement(offer, "name_ua").text = name
+
         ET.SubElement(offer, "price").text          = f"{retail:.2f}"
         ET.SubElement(offer, "currencyId").text     = "UAH"
         ET.SubElement(offer, "stock_quantity").text = str(stock)
 
         if item.get("category_id"):
-            ET.SubElement(offer, "categoryId").text = item["category_id"]
+            attrs = {}
+            rz_id = rz_id_map.get(item["category_id"])
+            if rz_id:
+                attrs["rz_id"] = str(rz_id)
+            ET.SubElement(offer, "categoryId", **attrs).text = item["category_id"]
 
-        for pic_url in item.get("pictures", [])[:10]:
+        for pic_url in pictures:
             ET.SubElement(offer, "picture").text = pic_url
 
-        if item.get("vendor"):
-            ET.SubElement(offer, "vendor").text = item["vendor"]
+        ET.SubElement(offer, "vendor").text = _clean_text(vendor)
 
         if item.get("country"):
-            ET.SubElement(offer, "country_of_origin").text = item["country"]
+            ET.SubElement(offer, "country_of_origin").text = _clean_text(item["country"])
 
         if item.get("barcode"):
-            ET.SubElement(offer, "barcode").text = item["barcode"]
+            ET.SubElement(offer, "barcode").text = _clean_text(item["barcode"])
 
         desc = append_clearance_notice(
             item.get("description", ""),
@@ -120,15 +242,18 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
             item.get("category_name", ""),
             item.get("category_id", ""),
         )
+        desc = _truncate(_clean_text(desc), ROZETKA_DESCRIPTION_MAX_LEN)
         if desc:
-            ET.SubElement(offer, "description").text = desc
+            ET.SubElement(offer, "description").text    = desc
+            ET.SubElement(offer, "description_ua").text = desc
 
         for param_name, param_val in item.get("params", []):
-            ET.SubElement(offer, "param", name=param_name).text = str(param_val)
+            ET.SubElement(offer, "param", name=_clean_text(param_name)).text = _clean_text(str(param_val))
 
     print(f"[Rozetka] У фіді: {len(offers_el)} товарів | "
-          f"пропущено (без ціни): {skipped} | дешевше {MIN_SUPPLIER_PRICE} грн: {skipped_cheap} | "
-          f"виключено вручну (exclude_ids): {skipped_unprof}")
+          f"без ціни: {skipped_no_price} | дешевше {MIN_SUPPLIER_PRICE} грн: {skipped_cheap} | "
+          f"виключено вручну: {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
+          f"без валідного фото: {skipped_no_pics} | назв обрізано (>{ROZETKA_NAME_MAX_LEN} симв.): {truncated_name_count}")
     return yml
 
 

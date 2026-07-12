@@ -30,15 +30,22 @@ generate_rozetka_feed.py — генерує YML-фід для Rozetka Marketplac
 не вимагає цього, і власниця прямо попросила: тільки українська, без
 паттерну Prom. <name>/<description> заповнюються УКРАЇНСЬКИМ текстом з
 Toysi (lang=ukr, той самий, що й завжди) — НЕ викликаємо lang=rus, як
-робить generate_prom_feed.py. <name_ua>/<description_ua> дублюють
-<name>/<description> (той самий текст) — явно, а не покладаючись на
-автопереклад Rozetka "якщо поле порожнє", який міг би помилково
-спробувати перекласти вже український текст.
+робить generate_prom_feed.py.
 
-vendor — обов'язкове поле Rozetka; ~30 SKU з повного каталогу Toysi (станом
-на 2026-07-12) не мають бренду (з parser.py: vendor не вказаний і не
-визначається з params) — вони природно відсіюються нижче. Це очікувано,
-не помилка.
+<name_ua>/<description_ua> СВІДОМО не дублюємо (перша версія цього файлу
+робила це явно, "про всяк випадок") — на живих даних (2026-07-12) це
+ледь не подвоїло розмір усього фіду (~60 МБ -> ~101 МБ), впритул до
+жорсткого ліміту GitHub 100 МБ/файл, який уже й так ламає prom_feed.xml
+(див. .github/workflows/update-feeds.yml). Документація Rozetka прямо
+описує порожнє _ua-поле як задокументовану, підтримувану поведінку
+("automatic translation applied if omitted") — не прогалину, яку
+обов'язково закривати ручним дублюванням ціною подвоєння розміру фіду.
+
+vendor — обов'язкове поле Rozetka; станом на 2026-07-12 повний каталог
+Toysi фактично не має SKU без визначеного бренду (parser.py вже й сам
+підставляє vendor із params, коли основне поле порожнє) — фільтр нижче
+лишається на випадок, якщо це зміниться, а не тому що зараз щось реально
+відсіює.
 """
 import json
 import os
@@ -102,16 +109,12 @@ def _load_category_rz_id_map() -> dict:
 
 
 def _wrap_cdata(xml_str: str) -> str:
-    """Post-process: wrap <description>/<description_ua> content in CDATA."""
-    def make_replacer(tag):
-        def replacer(m):
-            content = html.unescape(m.group(1))
-            content = content.replace("]]>", "]]]]><![CDATA[>")
-            return f"<{tag}><![CDATA[{content}]]></{tag}>"
-        return replacer
-    for tag in ("description", "description_ua"):
-        xml_str = re.sub(rf"<{tag}>(.*?)</{tag}>", make_replacer(tag), xml_str, flags=re.DOTALL)
-    return xml_str
+    """Post-process: wrap <description> content in CDATA."""
+    def replacer(m):
+        content = html.unescape(m.group(1))
+        content = content.replace("]]>", "]]]]><![CDATA[>")
+        return f"<description><![CDATA[{content}]]></description>"
+    return re.sub(r"<description>(.*?)</description>", replacer, xml_str, flags=re.DOTALL)
 
 
 def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = None) -> tuple[ET.Element, dict]:
@@ -204,15 +207,19 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
         ET.SubElement(offer, "vendorCode").text     = _clean_text(item.get("vendor_code") or item_id)
 
         # Лише українська (з Toysi lang=ukr) — жодного окремого рос.
-        # запиту, на відміну від generate_prom_feed.py. name_ua/description_ua
-        # дублюють name/description явно, щоб Rozetka не намагався сам
-        # "перекладати" вже український текст, якщо поле лишити порожнім.
+        # запиту, на відміну від generate_prom_feed.py. НЕ дублюємо в
+        # name_ua/description_ua (перша версія це робила явно "про всяк
+        # випадок" — на практиці це ледь не ПОДВОЇЛО розмір усього фіду,
+        # ~60МБ -> ~100МБ, впритул до жорсткого ліміту GitHub 100 МБ/файл,
+        # який уже й так ламає prom_feed.xml). Документація Rozetka
+        # прямо каже: "automatic translation applied if omitted" — тобто
+        # порожнє _ua-поле є ЗАДОКУМЕНТОВАНОЮ, підтримуваною поведінкою,
+        # не прогалиною, яку треба явно закривати дублюванням.
         name = _clean_text(item.get("name", ""))
         if len(name) > ROZETKA_NAME_MAX_LEN:
             truncated_name_count += 1
         name = _truncate(name, ROZETKA_NAME_MAX_LEN)
-        ET.SubElement(offer, "name").text    = name
-        ET.SubElement(offer, "name_ua").text = name
+        ET.SubElement(offer, "name").text = name
 
         ET.SubElement(offer, "price").text          = f"{retail:.2f}"
         ET.SubElement(offer, "currencyId").text     = "UAH"
@@ -244,8 +251,7 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
         )
         desc = _truncate(_clean_text(desc), ROZETKA_DESCRIPTION_MAX_LEN)
         if desc:
-            ET.SubElement(offer, "description").text    = desc
-            ET.SubElement(offer, "description_ua").text = desc
+            ET.SubElement(offer, "description").text = desc
 
         for param_name, param_val in item.get("params", []):
             ET.SubElement(offer, "param", name=_clean_text(param_name)).text = _clean_text(str(param_val))

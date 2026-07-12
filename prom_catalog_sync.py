@@ -80,7 +80,15 @@ TRUE_ROOT_GROUP_ID = 155011713  # "Корнева група" — підтвер
 # зараз) гарантувати повноту — цей поріг робить недорахунок ГОЛОСНИМ, а не
 # тихим, щоб наступного разу хтось не покладався мовчки на "відсутній у
 # Prom" висновок без прямої перевірки в кабінеті.
-MIN_EXPECTED_PRODUCT_COUNT = 950
+#
+# Кабінет зараз показує ~964/1000 опублікованих товарів. Поріг узгоджено із
+# запасом ~5-6% нижче цього (не впритул, як спершу поставлений 950 — лише
+# ~1.5% запасу, замало проти звичайного денного коливання) — той самий підхід
+# із запасом, що й TOYSI_EXPECTED_MIN_SIZE у parser.py (там ~15% запасу проти
+# ~29 325 реальних SKU; тут менший відсоток обґрунтований тим, що каталог
+# Prom природно коливається значно менше день у день, ніж повний каталог
+# постачальника Toysi).
+MIN_EXPECTED_PRODUCT_COUNT = 910
 
 
 def _fetch_group_ids() -> list:
@@ -135,6 +143,27 @@ def _fetch_products_in_group(group_id: int) -> list:
     return products
 
 
+def check_product_count_sane(products: dict) -> str | None:
+    """Повертає попередження (або None, якщо все в межах очікуваного), якщо
+    fetch_prom_products() повернув підозріло мало товарів. Винесено окремою
+    функцією (не лише inline-перевіркою всередині fetch_prom_products()),
+    щоб той самий поріг/повідомлення міг використати й виклик, якому
+    потрібен не просто друк у stderr, а сам текст попередження — напр.
+    prom_catalog_auditor.py, щоб включити його у звіт/Telegram-підсумок,
+    а не лишати лише в консольному виводі, який на VPS-кроні ніхто не
+    читає інтерактивно."""
+    if len(products) < MIN_EXPECTED_PRODUCT_COUNT:
+        return (
+            f"fetch_prom_products() повернув лише {len(products)} товарів — "
+            f"підозріло мало проти очікуваних ~{MIN_EXPECTED_PRODUCT_COUNT}+. "
+            f"Відомий випадок: /groups/list може мовчки не повертати реальні "
+            f"групи (напр. 'Сквіші', виявлено 2026-07-12) — перш ніж довіряти "
+            f"висновку 'товар відсутній у Prom' на основі цього результату, "
+            f"перевір напряму через my.prom.ua/cms/product?search_term=<sku>."
+        )
+    return None
+
+
 def fetch_prom_products() -> dict:
     """Повний список товарів кабінету Prom (усі групи), ключ — external_id.
 
@@ -158,17 +187,9 @@ def fetch_prom_products() -> dict:
                 if ext_id:
                     products[ext_id] = p
 
-    if len(products) < MIN_EXPECTED_PRODUCT_COUNT:
-        print(
-            f"[prom_catalog_sync] УВАГА: fetch_prom_products() повернув лише "
-            f"{len(products)} товарів — підозріло мало проти очікуваних "
-            f"~{MIN_EXPECTED_PRODUCT_COUNT}+. Відомий випадок: /groups/list може "
-            f"мовчки не повертати реальні групи (напр. 'Сквіші', виявлено "
-            f"2026-07-12) — перш ніж довіряти висновку 'товар відсутній у Prom' "
-            f"на основі цього результату, перевір напряму через "
-            f"my.prom.ua/cms/product?search_term=<sku>.",
-            file=sys.stderr,
-        )
+    warning = check_product_count_sane(products)
+    if warning:
+        print(f"[prom_catalog_sync] УВАГА: {warning}", file=sys.stderr)
 
     return products
 

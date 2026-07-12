@@ -21,6 +21,7 @@ scratch_product.html
 
 # Локальна БД замовлень (runtime-стан, не для git)
 orders.db
+prom_chat.db
 
 # PDF-етикетки Укрпошти — персональні дані клієнтів (ім'я/адреса/телефон)
 ukrposhta_stickers/

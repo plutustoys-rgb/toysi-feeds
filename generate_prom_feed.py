@@ -242,13 +242,31 @@ def _join_within_limit(phrases: list, limit: int = KEYWORDS_MAX_LEN) -> str:
     return ", ".join(kept)
 
 
+# Toysi сам іменує деякі категорії за СТИЛЕМ товару, а не власним брендом
+# ("Конструктори типу Лего" — узагальнена вказівка на тип "блокові
+# конструктори", не заявка, що товар — продукція LEGO). Пряме копіювання
+# такої назви категорії у наші <keywords>/<keywords_ua> все одно означає
+# використання чужого товарного знаку в SEO-полях — і Prom.ua блокує імпорт
+# за це незалежно від наміру. Підтверджено 2026-07-12: SKU 185349, 246910,
+# 177652, 251615 (усі з category_name "Конструктори типу Лего") — усі 4
+# відхилені імпортом Prom саме через поле "Пошукові запити укр", з
+# ідентичним повідомленням "порушують Правила розміщення інформації
+# Prom.ua". Вирізаємо саме назву торгової марки, лишаючи решту описової
+# фрази ("конструктори типу") — вона й так передає тип товару без бренду.
+_TRADEMARK_TERMS_RE = re.compile(r"\b(лего|lego)\b", re.IGNORECASE)
+
+
+def _strip_trademarks(text: str) -> str:
+    return re.sub(r"\s+", " ", _TRADEMARK_TERMS_RE.sub("", text)).strip()
+
+
 def generate_keywords(item: dict) -> tuple:
     """Генерує пошукові запити <keywords_ua>/<keywords> з наявних даних
     фіда: слова з назви товару, категорія, бренд (vendor), + загальні
     модифікатори за змістом категорії іграшок. Ціль — 8-10 унікальних
     запитів на мову, в межах ліміту 1024 символи."""
     name = item.get("name", "") or ""
-    category_name = (item.get("category_name", "") or "").strip().lower()
+    category_name = _strip_trademarks((item.get("category_name", "") or "").strip().lower())
     vendor = (item.get("vendor", "") or "").strip()
 
     name_words = _tokenize_name(name)

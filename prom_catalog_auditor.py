@@ -64,6 +64,7 @@ from generate_prom_feed import _VENDOR_ALIASES, normalize_vendor
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
 from prom_catalog_sync import (
+    check_product_count_sane,
     deactivate,
     fetch_prom_products,
     find_stale_external_ids,
@@ -230,9 +231,12 @@ def check_brands(toysi_catalog: dict) -> list:
 # Звіт
 # ---------------------------------------------------------------------------
 
-def build_report(today: str, results: dict, prom_total: int, top_count: int) -> str:
+def build_report(today: str, results: dict, prom_total: int, top_count: int, count_warning: str | None) -> str:
     lines = [f"# Аудит каталогу Prom — {today}", ""]
     lines.append(f"Товарів у кабінеті Prom (активні): {prom_total}. Поточний топ-970: {top_count}.")
+    if count_warning:
+        lines.append("")
+        lines.append(f"⚠️ {count_warning}")
     lines.append("")
 
     stock = results["stock"]
@@ -330,7 +334,7 @@ def build_report(today: str, results: dict, prom_total: int, top_count: int) -> 
     return "\n".join(lines)
 
 
-def build_telegram_summary(today: str, results: dict, sync_result: str | None) -> str:
+def build_telegram_summary(today: str, results: dict, sync_result: str | None, count_warning: str | None) -> str:
     counts = {k: len(v) for k, v in results.items()}
     total_issues = sum(counts.values())
     lines = [f"📋 Аудит каталогу Prom — {today}"]
@@ -342,6 +346,8 @@ def build_telegram_summary(today: str, results: dict, sync_result: str | None) -
             f"Заблоковані: {counts['blocked']} | Ціни на межі: {counts['price']} | "
             f"Характеристики: {counts['characteristics']} | Бренди: {counts['brands']}"
         )
+    if count_warning:
+        lines.append(f"⚠️ {count_warning}")
     if sync_result:
         lines.append(sync_result)
     return "\n".join(lines)
@@ -369,6 +375,7 @@ def main() -> None:
     print("[Auditor] Тягну повний список товарів кабінету Prom...")
     prom_products = fetch_prom_products()
     print(f"[Auditor] У кабінеті Prom: {len(prom_products)} товарів. У топ-970: {len(desired_ids)}.")
+    count_warning = check_product_count_sane(prom_products)
 
     state = load_state()
 
@@ -391,14 +398,14 @@ def main() -> None:
         sync_result = f"Синхронізація: деактивовано {len(processed)}, помилок {len(errors)}."
         print(f"[Auditor] {sync_result}")
 
-    report = build_report(today, results, len(prom_products), len(top_catalog))
+    report = build_report(today, results, len(prom_products), len(top_catalog), count_warning)
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = REPORT_DIR / f"prom_catalog_audit_{today}.md"
     out_path.write_text(report, encoding="utf-8")
     print(f"[Auditor] Звіт збережено: {out_path}")
 
-    summary = build_telegram_summary(today, results, sync_result)
+    summary = build_telegram_summary(today, results, sync_result, count_warning)
     if send_telegram_message(summary):
         print("[Auditor] Короткий підсумок надіслано в Telegram.")
 

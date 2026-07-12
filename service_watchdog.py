@@ -39,6 +39,7 @@ status=0/SUCCESS — при падінні логується "Failed with resul
 MONITORED_SERVICES = {
     "orders-watcher": 30,   # таймер кожні 15 хв
     "bank-check": 30,       # таймер кожні 15 хв
+    "order-router": 30,     # таймер кожні 15 хв
     "prom-chat-bot": 15,    # таймер кожні 5 хв
 }
 

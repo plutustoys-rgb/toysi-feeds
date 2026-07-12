@@ -18,12 +18,20 @@ listings), за аналогією з generate_prom_feed_top.py, але ОКРЕ
   = "Price mismatch" і немодерація.
 - link — Toysi/Prom Products API НЕ віддає URL сторінки товару (перевірено
   напряму: GET /products/{id} і /products/list — жодного поля "url" немає
-  в жодному з двох). Реальний робочий метод (перевірено емпірично,
-  2026-07-11): Prom маршрутизує сторінку товару ЛИШЕ за числовим id
-  (/p{id}-{будь-який-текст}.html — slug ігнорується, підтверджено; без
-  дефіса й тексту після нього — 404). Числовий id береться через internal
-  GraphQL-пошук (той самий SearchListingQuery, що й prom_competitor_pricer.py),
-  фільтруючи на company_id власного магазину замість виключення його.
+  в жодному з двох). Числовий id береться через internal GraphQL-пошук
+  (той самий SearchListingQuery, що й prom_competitor_pricer.py), фільтруючи
+  на company_id власного магазину замість виключення його.
+  ВИПРАВЛЕНО 2026-07-11 (аудит, pt34): SearchListingQuery вже повертає
+  поле `urlText` — реальний, транслітерований slug сторінки товару (напр.
+  "konstruktor-magicheskij-mir"), а не вигаданий плейсхолдер. Перевірено
+  напряму живим запитом: `/ua/p{id}-item.html` (старий плейсхолдер-підхід)
+  дійсно повертає 200, але через 30x-редирект на канонічний
+  `/ua/p{id}-{urlText}.html` — Google Merchant негативно ставиться саме
+  до посилань з редиректом у полі link (рекомендує кінцеву, канонічну
+  адресу). Тепер посилання будується одразу з `urlText`, без редиректу.
+  Товар без `urlText` у відповіді (малоймовірно, але можливо) — той самий
+  безпечний fallback, що й при невпевненому збігу: пропускаємо товар, а не
+  вигадуємо slug.
 - condition — Toysi цього поля не дає; увесь каталог дропшип, новий товар
   з коробки — жорстко "new" для всіх позицій.
 - brand — vendor Toysi є ~для більшості, але непослідовно (пробіли з
@@ -44,8 +52,10 @@ listings), за аналогією з generate_prom_feed_top.py, але ОКРЕ
   2026-07-11 — не з пам'яті), фолбек — загальна "Toys & Games" (1239)
   для категорій, які жодне правило не впізнало.
 """
+import random
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -53,7 +63,9 @@ from parser import fetch_toysi_catalog
 from generate_prom_feed import default_retail_price, normalize_vendor, fetch_russian_text
 from generate_prom_feed_top import select_top_items
 from prom_catalog_sync import fetch_prom_products
-from prom_competitor_pricer import search_prom_products, _similarity, PROM_OWN_COMPANY_ID
+from prom_competitor_pricer import (
+    search_prom_products, _similarity, _size_tokens_conflict, PROM_OWN_COMPANY_ID, SEARCH_DELAY,
+)
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
 
@@ -62,11 +74,19 @@ SHOP_URL   = "https://plutustoys.com.ua"
 FEED_LANG  = "uk"
 FEED_CURRENCY = "UAH"
 
-# Slug після дефіса ігнорується Prom-роутером (підтверджено емпірично,
-# 2026-07-11: /p{id}-completely-wrong-slug.html -> 200 OK; /p{id}.html
-# без дефіса й тексту -> 404) — тому підставляємо тривіальний плейсхолдер
-# замість того, щоб намагатись реконструювати точний оригінальний slug.
-LINK_TEMPLATE = SHOP_URL + "/ua/p{prom_id}-item.html"
+# Канонічний URL сторінки товару — {id}-{urlText}, обидва напряму з відповіді
+# GraphQL-пошуку (див. find_own_product_id нижче). Без реконструйованого
+# плейсхолдер-slug (був тут раніше, підтверджено гіршим — веде на той самий
+# результат лише через редирект).
+LINK_TEMPLATE = SHOP_URL + "/ua/p{prom_id}-{url_text}.html"
+
+# Той самий джитер-інтервал, що вже усталений у prom_competitor_pricer.py
+# для цього самого reverse-engineered GraphQL-ендпоінту (SEARCH_DELAY,
+# 0.4с) — build_feed_items() робить ще один окремий запит на кожен товар
+# топ-970 (до ~970 послідовних запитів), тож без паузи тут ми подвоюємо
+# навантаження на ендпоінт понад те, що вже й так генерує
+# prom_competitor_pricer.py в той самий день (аудит, pt34).
+SEARCH_JITTER_RANGE = (SEARCH_DELAY, SEARCH_DELAY * 1.5)
 
 GOOGLE_MIN_MATCH_SCORE = 0.55  # той самий клас порогу, що й MATCH_MIN_SCORE конкурентів —
                                 # тут це збіг НАШОГО товару із САМИМ СОБОЮ в пошуку, тому
@@ -160,26 +180,42 @@ def google_product_category(category_name: str) -> str:
 # запит, що й prom_competitor_pricer.py), відфільтрований на company_id
 # власного магазину замість виключення його з результатів.
 # ---------------------------------------------------------------------------
-def find_own_product_id(search_name: str) -> int | None:
+def find_own_product_id(search_name: str) -> tuple[int, str] | None:
     """Шукає товар СЕРЕД ВЛАСНИХ, фільтруючи запит на company_id власного
     магазину напряму (не постфільтром по топ-20 загального пошуку —
     підтверджено емпірично, 2026-07-11: для популярних назв товарів
     конкуренти займають усі перші позиції, власний єдиний лістинг легко
-    не потрапляє навіть у топ-20 без цього фільтра). Повертає числовий
-    Prom id найкращого текстового збігу, або None, якщо впевненого збігу
-    немає (GOOGLE_MIN_MATCH_SCORE) — у цьому разі link для товару НЕ
-    будується (краще пропустити товар у фіді, ніж подати Google
-    неправильне посилання)."""
+    не потрапляє навіть у топ-20 без цього фільтра). Повертає (id, urlText)
+    найкращого текстового збігу СЕРЕД ТИХ, ЩО НЕ конфліктують розмірним
+    токеном із search_name, або None, якщо впевненого й безконфліктного
+    збігу немає — у цьому разі link для товару НЕ будується (краще
+    пропустити товар у фіді, ніж подати Google неправильне посилання).
+
+    ВИПРАВЛЕНО 2026-07-11 (аудит, pt34): раніше брався єдиний найвищий за
+    _similarity() кандидат без жодної перевірки, чи це справді ТОЙ САМИЙ
+    товар, а не сусідній варіант (інший розмір/колір) з ВЛАСНОГО каталогу —
+    SequenceMatcher систематично дає високий скор для товарів, що
+    відрізняються лише коротким числовим токеном (той самий клас
+    помилки, задокументований і вже виправлений для конкурентів у
+    prom_competitor_pricer.py, pt14/pt16 — тут застосовано той самий
+    _size_tokens_conflict() гейт). Найгірший наслідок БЕЗ цього гейту —
+    не пропущений товар, а ВАЛІДНЕ, робоче посилання на сторінку ІНШОГО
+    власного товару."""
     results = search_prom_products(search_name, limit=10, company_id=PROM_OWN_COMPANY_ID)
-    best = None
-    best_score = 0.0
+    candidates = []
     for p in results:
         score = _similarity(search_name, p.get("name", ""))
-        if score > best_score:
-            best_score = score
-            best = p
-    if best and best_score >= GOOGLE_MIN_MATCH_SCORE:
-        return best.get("id")
+        if score >= GOOGLE_MIN_MATCH_SCORE:
+            candidates.append((score, p))
+    candidates.sort(key=lambda sp: sp[0], reverse=True)
+
+    for score, p in candidates:
+        if _size_tokens_conflict(search_name, p.get("name", "")):
+            continue  # найкращий за текстом, але явно інший розмір/об'єм -- не наш товар, шукаємо далі
+        prom_id = p.get("id")
+        url_text = p.get("urlText")
+        if prom_id is not None and url_text:
+            return prom_id, url_text
     return None
 
 
@@ -224,10 +260,16 @@ def build_feed_items(catalog: dict, prom_products: dict, russian_text: dict) -> 
         # текстового збігу, але показуємо в фіді (title/description)
         # ОРИГІНАЛЬНУ українську, за вимогою мови фіда.
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name
-        prom_id = find_own_product_id(name_rus)
-        if prom_id is None:
+        match = find_own_product_id(name_rus)
+        # Джитер між запитами до того самого reverse-engineered GraphQL-
+        # ендпоінту, що й prom_competitor_pricer.py (SEARCH_DELAY) — без
+        # цього повний прогін на топ-970 робить ~970 послідовних запитів
+        # без жодної паузи (аудит, pt34).
+        time.sleep(random.uniform(*SEARCH_JITTER_RANGE))
+        if match is None:
             stats["no_link_skipped"] += 1
             continue
+        prom_id, url_text = match
 
         prom_product = prom_products.get(str(item.get("vendor_code") or pid)) or {}
         image = prom_product.get("main_image") or (item.get("pictures") or [None])[0]
@@ -255,7 +297,7 @@ def build_feed_items(catalog: dict, prom_products: dict, russian_text: dict) -> 
             "id": str(item.get("vendor_code") or pid),
             "title": name[:150],
             "description": _clean_description(item.get("description", ""))[:5000] or name,
-            "link": LINK_TEMPLATE.format(prom_id=prom_id),
+            "link": LINK_TEMPLATE.format(prom_id=prom_id, url_text=url_text),
             "image_link": image,
             "price": f"{retail_price:.2f} {FEED_CURRENCY}",
             "availability": "in_stock" if stock > 0 else "out_of_stock",

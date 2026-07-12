@@ -412,6 +412,22 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
         top_catalog = dict(list(top_catalog.items())[:limit])
     print(f"[Google] У топ-970: {len(top_catalog)} товарів для обробки.")
 
+    # ВИПРАВЛЕНО (незалежне рев'ю PR #39, раунд 2): self-match (нижче) не
+    # потребує PROM_API_KEY — лише публічний GraphQL-пошук — тоді як
+    # fetch_prom_products() ПОТРЕБУЄ (живо підтверджено: 401 Unauthorized
+    # у workflow, де PROM_API_KEY secret не зареєстровано). Раніше
+    # fetch_prom_products() викликався ПЕРШИМ, тож будь-який збій
+    # авторизації обривав generate_google_feed() ДО того, як
+    # resolve_own_product_links() встигав записати кеш
+    # own_product_links_cache.json — а саме цей кеш і є єдиною метою
+    # цього кроку в CI (google_merchant_feed.xml ніде не публікується).
+    # Тепер self-match рахується й кешується ПЕРШИМ — навіть якщо
+    # fetch_prom_products() нижче впаде через відсутній/невалідний
+    # PROM_API_KEY, кеш для <url> у Rozetka-фіді вже буде на диску.
+    russian_text = fetch_russian_text()
+    print(f"[Google] Шукаємо реальні посилання на сторінки товарів (GraphQL, {len(top_catalog)} запитів)...")
+    links = resolve_own_product_links(top_catalog, russian_text)
+
     print("[Google] Завантажуємо реальний список товарів Prom (для фото)...")
     prom_products = fetch_prom_products()
     # Індекс за external_id (vendorCode) — ключ, який реально використовує Prom API
@@ -420,10 +436,6 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
         if p.get("external_id")
     } if isinstance(prom_products, dict) else {}
 
-    russian_text = fetch_russian_text()
-
-    print(f"[Google] Шукаємо реальні посилання на сторінки товарів (GraphQL, {len(top_catalog)} запитів)...")
-    links = resolve_own_product_links(top_catalog, russian_text)
     items, stats = build_feed_items(top_catalog, prom_by_external_id, links)
 
     root = _build_xml(items)

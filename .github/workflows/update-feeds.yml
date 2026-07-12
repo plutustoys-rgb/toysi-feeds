@@ -15,6 +15,13 @@ jobs:
       contents: write
     env:
       TOYSI_API_KEY: ${{ secrets.TOYSI_API_KEY }}
+      # Виправлено (незалежне рев'ю PR #39, раунд 2): generate_google_feed.py
+      # (крок нижче) викликає fetch_prom_products(), якому потрібен цей
+      # ключ — живо підтверджено 401 Unauthorized без нього. Секрет
+      # зареєстровано в Settings -> Secrets and variables -> Actions
+      # 2026-07-12 (раніше існував лише в .env на VPS, ніколи як GitHub
+      # secret).
+      PROM_API_KEY: ${{ secrets.PROM_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

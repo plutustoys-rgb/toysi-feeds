@@ -44,6 +44,12 @@ Reverse-engineering завершено 2026-07-11: `POST https://prom.ua/graphql
 - За замовчуванням DRY-RUN. Реальні зміни в кабінеті Prom — лише з --apply.
 - Денний ліміт (як і в competitor_pricing.py) — не бомбардувати пошуковий
   ендпоінт Prom тисячами запитів одномоментно.
+- verify_competitor_really_available() — ПЕРЕД будь-яким реальним delist,
+  пряма HTTP-перевірка сторінки конкурента (schema.org "availability" у
+  JSON-LD), не лише GraphQL-пошуковий presence.isAvailable — той виявився
+  ненадійним (2026-07-12: 2 дні поспіль хибний delist на застарілому
+  presence-флагу для тих самих 3 SKU, реальна сторінка конкурента вже
+  давно OutOfStock).
 
 Запуск:
     python prom_competitor_pricer.py --limit 50            # dry-run, перші 50 SKU топ-970
@@ -84,6 +90,11 @@ PROM_API_KEY  = os.environ.get("PROM_API_KEY", "")
 PROM_API_URL  = "https://my.prom.ua/api/v1"
 PROM_GRAPHQL_URL = "https://prom.ua/graphql"
 REQUEST_TIMEOUT  = 20
+
+# Пряма сторінка товару конкурента на Prom.ua — використовується ЛИШЕ для
+# перевірки перед delist (див. verify_competitor_really_available), не для
+# самого пошуку/зіставлення.
+COMPETITOR_PRODUCT_URL_TEMPLATE = "https://prom.ua/ua/p{id}-{url_text}.html"
 
 # c4219597-plutustoys.html — company_id власного магазину, підтверджено
 # напряму з URL кабінету/сторінки компанії. Результати пошуку з цим
@@ -310,6 +321,58 @@ def find_best_competitor(search_name: str, cost: float) -> dict | None:
     return candidates[0]
 
 
+# Знайдено в JSON-LD (schema.org Product) на реальній сторінці товару,
+# напр. `"availability":"http://schema.org/OutOfStock"`. Простий regex по
+# сирому HTML — свідомо не через BeautifulSoup: поле завжди в одному й
+# тому ж JSON-подібному вигляді в <script type="application/ld+json">,
+# повний DOM-парсинг заради одного поля не потрібен.
+_AVAILABILITY_RE = re.compile(r'"availability"\s*:\s*"([^"]+)"')
+
+
+def verify_competitor_really_available(competitor: dict) -> bool:
+    """Пряма перевірка сторінки товару конкурента ПЕРЕД delist — GraphQL-
+    пошук (presence.isAvailable) виявився ненадійним (2026-07-12): 2 дні
+    поспіль SKU 298613/299070/299071 зіставлялись з тим самим конкурентом
+    (company_id=3068206, "Toy and Joy"), чий presence.isAvailable в
+    пошуковій видачі стабільно True, хоча РЕАЛЬНА сторінка товару містить
+    schema.org `"availability":"http://schema.org/OutOfStock"` (підтверджено
+    напряму curl-ом з VPS). Пошуковий індекс Prom, судячи з усього, не
+    оновлює presence для окремих лістингів вчасно — покладатись лише на
+    нього для НЕВІДКОТНОЇ дії (delist) недостатньо.
+
+    Повертає True ЛИШЕ якщо сторінка конкурента прямо підтверджує
+    "InStock". Будь-яка невизначеність (мережева помилка, відсутнє поле,
+    інший статус на кшталт PreOrder/LimitedAvailability) -> False, тобто
+    delist БЛОКУЄТЬСЯ — той самий принцип безпечного дефолту, що й у
+    _size_tokens_conflict(): видалення живого оголошення при хибному
+    сигналі значно дорожча помилка за просто неоптимальну ціну, тож
+    вимагає позитивного підтвердження, а не лише відсутності заперечення."""
+    product_id = competitor.get("id")
+    url_text = competitor.get("urlText")
+    if not product_id or not url_text:
+        return False
+    url = COMPETITOR_PRODUCT_URL_TEMPLATE.format(id=product_id, url_text=url_text)
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "uk-UA,uk;q=0.9",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"[Pricer] Перевірка сторінки конкурента {url} не вдалась ({e}) — delist заблоковано", file=sys.stderr)
+        return False
+    match = _AVAILABILITY_RE.search(response.text)
+    if not match:
+        print(f"[Pricer] Сторінка конкурента {url}: поле availability не знайдено — delist заблоковано", file=sys.stderr)
+        return False
+    return match.group(1).endswith("/InStock")
+
+
 def decide_action(cost: float, competitor: dict | None, category_name: str | None, our_name: str = "") -> dict:
     """Гібридна дія: normal/floor -> "adjust" (нова ціна = decision["price"]);
     floor настільки вищий за конкурента, що навіть він неконкурентний ->
@@ -426,14 +489,29 @@ def main() -> None:
         decision = decide_action(cost, competitor, category_name, name_rus)
         time.sleep(SEARCH_DELAY)
 
+        # Другий, надійніший гейт ПЕРЕД фінальним delist — GraphQL-пошук
+        # (presence.isAvailable у find_best_competitor) сам по собі виявився
+        # ненадійним (2026-07-12, SKU 298613/299070/299071 delist'ились 2 дні
+        # поспіль на основі того самого протермінованого presence-флагу).
+        # Пряма HTTP-перевірка реальної сторінки конкурента — лише для
+        # кандидатів, що вже пройшли текстовий і розмірний гейт, тобто рідко
+        # (одиниці з ~300 SKU за прогін), тож зайвий запит тут не проблема.
+        presence_unconfirmed = False
+        if decision["action"] == "delist":
+            if not verify_competitor_really_available(decision["competitor"]):
+                decision["action"] = "adjust"
+                presence_unconfirmed = True
+            time.sleep(SEARCH_DELAY)
+
         comp_desc = (
             f"конкурент {decision['competitor']['price']:.0f} грн "
             f"(score={decision['competitor']['score']:.2f}) {decision['competitor']['name'][:40]!r}"
             if decision["competitor"] else "конкурент не знайдено"
         )
         size_note = "  [РОЗМІР/ОБ'ЄМ НЕ ЗБІГАЄТЬСЯ -> delist заблоковано, залишено adjust]" if decision.get("size_conflict") else ""
+        presence_note = "  [СТОРІНКА КОНКУРЕНТА НЕ ПІДТВЕРДЖУЄ InStock -> delist заблоковано, залишено adjust]" if presence_unconfirmed else ""
         print(f"{pid}\t{name_ukr[:45]:45s}\tcost={cost:.0f}\tfloor={decision['floor']:.0f}\t"
-              f"price={decision['price']:.0f}\t[{decision['action']}]\t{comp_desc}{size_note}")
+              f"price={decision['price']:.0f}\t[{decision['action']}]\t{comp_desc}{size_note}{presence_note}")
 
         if decision["competitor"] is None:
             no_competitor_count += 1

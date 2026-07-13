@@ -74,6 +74,18 @@ jobs:
           if [ "${{ github.event.inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
           python prom_competitor_pricer.py $ARGS
 
+      # Фолбек на випадок, якщо репрайсер аварійно завершився ДО першого
+      # виклику write_pricer_summary() (напр. не встиг навіть завантажити
+      # PROM_API_KEY) — гарантує, що файл існує до кроку публікації, той
+      # самий підхід, що й фолбек '{}' у кроці відновлення стану вище.
+      - name: Ensure prom_competitor_pricer_summary.md exists (best-effort fallback)
+        if: always()
+        run: |
+          if [ ! -s prom_competitor_pricer_summary.md ]; then
+            printf '# Репрайсер конкурентів Prom — стислий підсумок (перезаписується щоразу)\n\nОновлено: %s\n⚠ Файл не згенеровано — репрайсер, ймовірно, аварійно завершився до першого запису підсумку.\n' \
+              "$(date -u +'%Y-%m-%d %H:%M UTC')" > prom_competitor_pricer_summary.md
+          fi
+
       # Виправлено (незалежне рев'ю PR #39): раніше generate_google_feed.py
       # не викликався в жодному workflow, тож own_product_links_cache.json
       # ніколи не існував на CI, і <url> в Rozetka-фіді назавжди лишався
@@ -145,19 +157,23 @@ jobs:
             git push --force origin "$FEED_BRANCH-$branch_suffix:$FEED_BRANCH"
           }
 
-          # prom_competitor_price_state.json — невеликий JSON, додаємо в усі три
-          # рівні спроб (навіть у мінімальний фолбек), бо його відсутність тут
-          # означає повну втрату стану репрайсера (state.json не потрапить у
-          # feed-data і наступний прогін почне з нуля, ігноруючи гейт
-          # MIN_FULL_RUN_INTERVAL_HOURS і всі щойно застосовані ціни).
+          # prom_competitor_price_state.json і prom_competitor_pricer_summary.md
+          # — обидва невеликі, додаємо в усі три рівні спроб (навіть у
+          # мінімальний фолбек): перший — бо його відсутність означає повну
+          # втрату стану репрайсера (наступний прогін почне з нуля,
+          # ігноруючи гейт MIN_FULL_RUN_INTERVAL_HOURS і всі щойно застосовані
+          # ціни); другий — людський підсумок (дата/лічильники/гейт/помилки),
+          # синхронізується вручну в PlutusToys_avtonomiya, коли активна сесія.
           if publish_attempt tmp-full "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/rozetka_feed.xml feeds/prom_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json; then
+              feeds/rozetka_feed.xml feeds/prom_feed.xml feeds/prom_feed_top.xml \
+              prom_competitor_price_state.json prom_competitor_pricer_summary.md; then
             echo "Усі 3 фіди опубліковано."
           elif publish_attempt tmp-no-prom "Feed update (без prom_feed.xml, ймовірно >100МБ) $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json; then
+              feeds/rozetka_feed.xml feeds/prom_feed_top.xml \
+              prom_competitor_price_state.json prom_competitor_pricer_summary.md; then
             echo "::warning::Повний пуш відхилено (ймовірно, prom_feed.xml перевищує 100 МБ) — опубліковано rozetka_feed.xml + prom_feed_top.xml без нього."
           else
             echo "::warning::Пуш rozetka_feed.xml + prom_feed_top.xml теж відхилено — публікуємо ОКРЕМО лише prom_feed_top.xml (малий, критичний для імпорту топ-970 в Prom), щоб він не застарів через провал інших файлів."
             publish_attempt fallback "Feed update (лише top-970, фолбек через розмір інших фідів) $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/prom_feed_top.xml prom_competitor_price_state.json
+              feeds/prom_feed_top.xml prom_competitor_price_state.json prom_competitor_pricer_summary.md
           fi

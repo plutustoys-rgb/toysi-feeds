@@ -392,6 +392,25 @@ def get_platform_commission(platform: str, category_name: str | None = None) -> 
     raise ValueError(f"Невідомий майданчик: {platform!r}, очікую один з {PLATFORMS}")
 
 
+def compute_total_commission(platform: str, category_name: str | None = None) -> float:
+    """Сумарна комісія (майданчик + оплата) для категорії — спільна точка,
+    яку викликають і decide_price_for_platform(), і check_price_floor()
+    (prom_catalog_auditor.py), щоб не дублювати
+    get_platform_commission(...) + PAYMENT_COMMISSION.get(...) у кількох
+    місцях (рефакторинг, 2026-07-13, після рев'ю PR #46: та сама формула
+    вже була продубльована в 3 місцях, ризик розсинхронізації)."""
+    return get_platform_commission(platform, category_name) + PAYMENT_COMMISSION.get(platform, 0.0)
+
+
+def compute_floor(cost: float, total_commission: float, target_margin: float) -> float:
+    """Нижня межа ціни для заданої цільової маржі (частка cost, напр.
+    MIN_PROFIT чи MIN_PROFIT_COMPETITOR_FLOOR) при заданій сумарній
+    комісії. Спільна формула для обох "шляхів" decide_price_for_platform()
+    і для check_price_floor() (prom_catalog_auditor.py) — той самий
+    рефакторинг, що й compute_total_commission() вище."""
+    return (cost + cost * target_margin) / (1 - total_commission)
+
+
 def decide_price_for_platform(
     cost: float, min_competitor: float | None, platform: str, category_name: str | None = None
 ) -> dict:
@@ -413,9 +432,7 @@ def decide_price_for_platform(
     нижню межу, ціна просто піднімається до межі (може вийти вищою за
     конкурента — так і задумано формулою, це не помилка).
     """
-    platform_commission = get_platform_commission(platform, category_name)
-    payment_commission = PAYMENT_COMMISSION.get(platform, 0.0)
-    total_commission = platform_commission + payment_commission
+    total_commission = compute_total_commission(platform, category_name)
     if total_commission >= 1:
         raise ValueError(
             f"[{platform}] сумарна комісія {total_commission:.0%} >= 100% — перевір "
@@ -423,11 +440,11 @@ def decide_price_for_platform(
         )
 
     if min_competitor is None:
-        floor = (cost + cost * MIN_PROFIT) / (1 - total_commission)
+        floor = compute_floor(cost, total_commission, MIN_PROFIT)
         price = round(max(cost * NO_COMPETITOR_MULT, floor), 2)
         result_category = "no_competitor"
     else:
-        floor = (cost + cost * MIN_PROFIT_COMPETITOR_FLOOR) / (1 - total_commission)
+        floor = compute_floor(cost, total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
         candidate = min_competitor - PRICE_STEP
         price = round(max(floor, candidate), 2)
         result_category = "floor" if floor >= candidate else "undercut"

@@ -61,9 +61,9 @@ if hasattr(sys.stdout, "reconfigure"):
 from audit_prom_characteristics import audit as audit_characteristics
 from competitor_pricing import (
     MIN_PROFIT_COMPETITOR_FLOOR,
-    PAYMENT_COMMISSION,
+    compute_floor,
+    compute_total_commission,
     decide_price_for_platform,
-    get_platform_commission,
     load_fresh_prom_price_overrides,
 )
 from generate_prom_feed import _VENDOR_ALIASES, normalize_vendor
@@ -247,7 +247,13 @@ def check_price_floor(top_catalog: dict) -> list:
     на 3% майже КОЖЕН SKU з конкурентом виглядав би "на межі", хоча це
     тепер нормальний, очікуваний стан, не сигнал ризику. State-файл і
     далі зберігає лише {price, timestamp} — floor для порівняння
-    рахується тут же, локально, без зміни його схеми."""
+    рахується тут же, локально, без зміни його схеми.
+
+    РЕФАКТОРИНГ (2026-07-13, після рев'ю PR #46): та сама формула
+    total_commission/floor була продубльована в 3 місцях
+    (decide_price_for_platform(), і двічі тут) — винесено в
+    compute_total_commission()/compute_floor() (competitor_pricing.py),
+    без жодної зміни самої логіки."""
     price_overrides = load_fresh_prom_price_overrides()
     flagged = []
     for pid, item in top_catalog.items():
@@ -265,9 +271,9 @@ def check_price_floor(top_catalog: dict) -> list:
             margin_pct = decision["margin_pct"]
             floor_to_compare = decision["floor"]
         else:
-            total_commission = get_platform_commission("prom", category_name) + PAYMENT_COMMISSION.get("prom", 0.0)
+            total_commission = compute_total_commission("prom", category_name)
             margin_pct = round((actual_price * (1 - total_commission) - cost) / cost * 100, 1)
-            floor_to_compare = (cost + cost * MIN_PROFIT_COMPETITOR_FLOOR) / (1 - total_commission)
+            floor_to_compare = compute_floor(cost, total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
         if actual_price <= floor_to_compare + 0.005:
             flagged.append((pid, item.get("name", ""), category_name, margin_pct))
     return flagged

@@ -60,6 +60,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from audit_prom_characteristics import audit as audit_characteristics
 from competitor_pricing import (
+    MIN_PROFIT_COMPETITOR_FLOOR,
     PAYMENT_COMMISSION,
     decide_price_for_platform,
     get_platform_commission,
@@ -237,7 +238,16 @@ def check_price_floor(top_catalog: dict) -> list:
     чи нижче. Тепер бере фактично застосовану ціну зі спільного стану
     репрайсера (prom_competitor_price_state.json, поріг свіжості 30 год —
     той самий, що й у generate_prom_feed.py), і лише за відсутності свіжого
-    запису повертається до старої формули Шляху 1."""
+    запису повертається до старої формули Шляху 1.
+
+    ВИПРАВЛЕНО (fast-follow, 2026-07-13): коли actual_price приходить зі
+    свіжого Шлях-2-override, порівнювати його треба з ПЛАВАЮЧОЮ межею
+    MIN_PROFIT_COMPETITOR_FLOOR (3%, той самий фікс, що й PR #44), а не зі
+    старим 25%-floor з decision["floor"] (Шлях 1) — інакше після переходу
+    на 3% майже КОЖЕН SKU з конкурентом виглядав би "на межі", хоча це
+    тепер нормальний, очікуваний стан, не сигнал ризику. State-файл і
+    далі зберігає лише {price, timestamp} — floor для порівняння
+    рахується тут же, локально, без зміни його схеми."""
     price_overrides = load_fresh_prom_price_overrides()
     flagged = []
     for pid, item in top_catalog.items():
@@ -253,10 +263,12 @@ def check_price_floor(top_catalog: dict) -> list:
         if actual_price is None:
             actual_price = decision["price"]
             margin_pct = decision["margin_pct"]
+            floor_to_compare = decision["floor"]
         else:
             total_commission = get_platform_commission("prom", category_name) + PAYMENT_COMMISSION.get("prom", 0.0)
             margin_pct = round((actual_price * (1 - total_commission) - cost) / cost * 100, 1)
-        if actual_price <= decision["floor"] + 0.005:
+            floor_to_compare = (cost + cost * MIN_PROFIT_COMPETITOR_FLOOR) / (1 - total_commission)
+        if actual_price <= floor_to_compare + 0.005:
             flagged.append((pid, item.get("name", ""), category_name, margin_pct))
     return flagged
 

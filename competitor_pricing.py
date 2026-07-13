@@ -65,7 +65,7 @@ import argparse
 import csv
 import json
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import time
@@ -78,6 +78,64 @@ CHECKPOINT_FILE  = BASE_DIR / "competitor_pricing_checkpoint.json"
 CATALOG_CACHE_FILE = BASE_DIR / "toysi_catalog_cache.json"
 CATALOG_CACHE_TTL  = 3600  # секунд; --record викликається ~200 разів на день поспіль,
                            # кеш рятує від 200 зайвих запитів до фіду Toysi за один день
+
+# ---------------------------------------------------------------------------
+# Місток стійкості між prom_competitor_pricer.py (пише) і generate_prom_feed.py
+# (читає) — виявлено 2026-07-12: prom_competitor_pricer.py застосовує ціну з
+# урахуванням реального конкурента НАПРЯМУ через API, але generate_prom_feed.py
+# рахує ціну з нуля щоразу, коли генерує фід (кожні 4 год через GitHub
+# Actions) — без жодного знання про щойно застосоване рішення репрайсера.
+# Наступний автоімпорт Prom (кожні 4 год) читає цей фід і тихо повертає ціну
+# до дефолтної формули "немає конкурента" (cost * NO_COMPETITOR_MULT),
+# перекреслюючи коригування репрайсера за кілька годин. Цей файл — спільне
+# джерело правди для обох скриптів, замість двох незалежних розрахунків.
+#
+# НЕ pricing_results.csv (той файл — знімок РУЧНОГО процесу
+# competitor_pricing.py --record, без timestamp, з іншою структурою колонок
+# під обидва майданчики одразу) — окремий, спеціально для цього мосту.
+PROM_PRICE_STATE_FILE = BASE_DIR / "prom_competitor_price_state.json"
+
+# Довше за цикл автоімпорту Prom (4 год) і довше за добовий цикл репрайсера
+# (24 год) — із запасом на випадок затримки таймера. Старіше цього —
+# вважаємо застарілим, generate_prom_feed.py повертається до дефолтної
+# формули "немає конкурента", а не покладається на давнє рішення.
+PROM_PRICE_STATE_MAX_AGE_HOURS = 30
+
+
+def load_prom_price_state() -> dict:
+    if not PROM_PRICE_STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(PROM_PRICE_STATE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+def save_prom_price_state(state: dict) -> None:
+    PROM_PRICE_STATE_FILE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+
+
+def load_fresh_prom_price_overrides(max_age_hours: float = PROM_PRICE_STATE_MAX_AGE_HOURS) -> dict:
+    """{external_id: price} лише для записів не старіших за max_age_hours —
+    generate_prom_feed.py використовує це як price_overrides, щоб не
+    перезаписувати щойно застосовану репрайсером ціну дефолтною формулою
+    "немає конкурента" на наступному автоімпорті Prom."""
+    state = load_prom_price_state()
+    now = datetime.now()
+    overrides = {}
+    for pid, entry in state.items():
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"])
+            price = float(entry["price"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        age_hours = (now - ts).total_seconds() / 3600
+        if age_hours <= max_age_hours:
+            overrides[pid] = price
+    return overrides
+
 
 MIN_PROFIT       = 0.25   # цільовий мінімум прибутку від собівартості (як частка cost)
 PRICE_STEP       = 1.0    # фіксований крок нижче конкурента, У ГРН — не відсоток

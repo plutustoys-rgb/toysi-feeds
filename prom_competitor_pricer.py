@@ -56,6 +56,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
@@ -66,7 +67,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
 from generate_prom_feed_top import select_top_items
 from generate_prom_feed import fetch_russian_text
-from competitor_pricing import decide_price_for_platform
+from competitor_pricing import decide_price_for_platform, load_prom_price_state, save_prom_price_state
 from telegram_notify import send_telegram_message
 
 load_dotenv()
@@ -82,8 +83,32 @@ REQUEST_TIMEOUT  = 20
 PROM_OWN_COMPANY_ID = 4219597
 
 SEARCH_LIMIT = 20  # скільки кандидатів забирати на один пошуковий запит
-DAILY_LIMIT  = 300  # той самий клас обмеження, що DAILY_LIMIT у competitor_pricing.py
+
+# ВИПРАВЛЕНО 2026-07-12 (розслідування SKU 242610/289818): попереднє значення
+# 300 було помилково скопійоване "за аналогією" з DAILY_LIMIT у
+# competitor_pricing.py — але ТОЙ ліміт існує для РУЧНОГО процесу (оператор
+# сам перевіряє ціни конкурентів на Rozetka, немає автоматичного пошуку),
+# де денний ліміт має сенс. Тут — повністю автоматизований GraphQL-пошук,
+# і жодного реального обмеження часу виконання немає: живий прогін 300
+# позицій зайняв 6 хв 47 с (перевірено, journalctl 2026-07-12), тобто повні
+# 970 зайняли б ~22 хв — цілком нормально для сервісу з власним systemd-
+# таймером (не CI з обмеженим часом). Старий ліміт 300 і БЕЗ ротації (той
+# самий, стабільний за маржею зріз top_catalog.items()[:300] щодня) означав,
+# що товари на позиціях 301-970 (майже 2/3 топ-970) НІКОЛИ не перевірялись —
+# саме тому SKU 242610 (позиція #492) жодного разу не отримав коригування
+# ціни за конкурентом, хоча реальний, вигідний конкурент (Gummy) є.
+DAILY_LIMIT  = 1000  # з запасом вище будь-якого реального розміру топ-970
 SEARCH_DELAY = 0.4  # секунд між пошуковими запитами — не бомбардувати ендпоінт
+
+# Мігровано на GitHub Actions 2026-07-13 (той самий workflow update-feeds.yml,
+# що й generate_prom_feed.py) — контейнер тепер тригериться раз на 4 год
+# (cron), а не раз на добу systemd-таймером на VPS. Без цього гейту повний
+# GraphQL-пошук конкурентів (і, при --apply, зміна живих цін) відбувався б
+# 6х/добу замість 1х — і бомбардування реверс-інженерного ендпоінта Prom
+# вшестеро частіше, і живі ціни смикались би щочотири години замість
+# приблизно раз на день. Трохи менше доби (не 24), щоб дрейф часу тригера
+# cron не пропускав день повністю.
+MIN_FULL_RUN_INTERVAL_HOURS = 20
 
 MATCH_MIN_SCORE = 0.4          # SequenceMatcher ratio — поріг для "adjust" (низька ставка: помилковий
                                 # збіг лише трохи спотворює ціну, самокоригується наступним прогоном)
@@ -350,11 +375,29 @@ def main() -> None:
                      help="Реально змінювати ціни/видаляти товари в Prom. Без цього — лише dry-run звіт.")
     ap.add_argument("--limit", type=int, default=DAILY_LIMIT,
                      help=f"Скільки SKU топ-970 обробити за цей запуск (дефолт {DAILY_LIMIT}).")
+    ap.add_argument("--force", action="store_true",
+                     help="Ігнорувати перевірку 'повний прогін вже був нещодавно' (для ручного/тестового запуску).")
     args = ap.parse_args()
 
     if not PROM_API_KEY:
         print("[Pricer] PROM_API_KEY не задано — зупиняюсь.", file=sys.stderr)
         sys.exit(1)
+
+    price_state = load_prom_price_state()
+    last_run_iso = (price_state.get("_meta") or {}).get("last_full_run")
+    if last_run_iso and not args.force:
+        try:
+            hours_since = (datetime.now() - datetime.fromisoformat(last_run_iso)).total_seconds() / 3600
+        except ValueError:
+            hours_since = None
+        if hours_since is not None and hours_since < MIN_FULL_RUN_INTERVAL_HOURS:
+            print(f"[Pricer] Повний прогін вже був {hours_since:.1f} год тому "
+                  f"(< {MIN_FULL_RUN_INTERVAL_HOURS} год) — пропускаю цей запуск, щоб не робити повний "
+                  f"пошук конкурентів на кожному 4-годинному тригері GitHub Actions. Викликай з --force, "
+                  f"щоб примусово запустити повний прогін зараз.")
+            return
+    price_state.setdefault("_meta", {})["last_full_run"] = datetime.now().isoformat()
+    save_prom_price_state(price_state)
 
     print("[Pricer] Рахую поточний відбір топ-970...")
     toysi_catalog = fetch_toysi_catalog()
@@ -435,12 +478,26 @@ def main() -> None:
         return
 
     print(f"\n[Pricer] Застосовую {len(to_adjust)} коригувань ціни...")
+    # ВИПРАВЛЕНО 2026-07-12: раніше apply_price() лише писав ціну напряму в
+    # Prom API й ніде не зберігав рішення — generate_prom_feed.py рахував
+    # ціну з нуля на кожному прогоні (кожні 4 год) і тихо повертав її до
+    # дефолтної формули "немає конкурента", перекреслюючи щойно застосовану
+    # ціну за лічені години. Тепер зберігаємо {pid: {price, timestamp}} у
+    # спільний стан (competitor_pricing.py), який generate_prom_feed.py
+    # читає як price_overrides — доки запис не застаріє (>30 год). Той самий
+    # price_state, завантажений на початку main() (містить вже записаний
+    # _meta.last_full_run) — не перезавантажуємо, щоб не загубити його.
+    applied_count = 0
     for pid, price in to_adjust:
         try:
             apply_price(pid, price)
+            price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat()}
+            applied_count += 1
         except requests.exceptions.RequestException as e:
             error_count += 1
             print(f"  - {pid}: помилка зміни ціни — {e}", file=sys.stderr)
+    if applied_count:
+        save_prom_price_state(price_state)
 
     print(f"[Pricer] Видаляю {len(to_delist)} неконкурентних товарів...")
     for pid in to_delist:

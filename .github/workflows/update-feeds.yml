@@ -15,12 +15,41 @@ jobs:
       contents: write
     env:
       TOYSI_API_KEY: ${{ secrets.TOYSI_API_KEY }}
+      PROM_API_KEY: ${{ secrets.PROM_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+
+      # prom_competitor_pricer.py (мігровано сюди з VPS-таймера 2026-07-13 —
+      # інакше він писав спільний стан на VPS, а generate_prom_feed.py читав
+      # його тут, на окремому ефемерному runner'і без спільної файлової
+      # системи, тож щойно застосована конкурентна ціна ніколи не доходила
+      # до фіда) пише/читає prom_competitor_price_state.json — відновлюємо
+      # його з попереднього коміту feed-data перед запуском, інакше кожен
+      # прогін стартував би з чистого стану й губив усі раніше застосовані
+      # ціни та мітку last_full_run (гейт "не частіше ~20 год").
+      - name: Restore prom_competitor_price_state.json from ${{ env.FEED_BRANCH }}
+        run: |
+          git fetch origin "$FEED_BRANCH" 2>/dev/null || true
+          git show "origin/$FEED_BRANCH:prom_competitor_price_state.json" > prom_competitor_price_state.json 2>/dev/null \
+            || echo '{}' > prom_competitor_price_state.json
+
+      # continue-on-error: цей крок реально змінює ціни в Prom через API
+      # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими
+      # зовнішніми залежностями. Збій тут не повинен зупиняти генерацію й
+      # публікацію самих фідів (generate_*.py), які є основною метою workflow.
+      # Власний гейт всередині скрипта (MIN_FULL_RUN_INTERVAL_HOURS) не дає
+      # йому робити повний прогін частіше приблизно раз на добу, попри те, що
+      # сам workflow тепер тригериться щочотири години.
+      - name: Run competitor repricer (Prom)
+        continue-on-error: true
+        run: python prom_competitor_pricer.py --apply
+
       - run: python generate_rozetka_feed.py
       - run: python generate_prom_feed.py
       - run: python generate_prom_feed_top.py
@@ -77,14 +106,19 @@ jobs:
             git push --force origin "$FEED_BRANCH-$branch_suffix:$FEED_BRANCH"
           }
 
+          # prom_competitor_price_state.json — невеликий JSON, додаємо в усі три
+          # рівні спроб (навіть у мінімальний фолбек), бо його відсутність тут
+          # означає повну втрату стану репрайсера (state.json не потрапить у
+          # feed-data і наступний прогін почне з нуля, ігноруючи гейт
+          # MIN_FULL_RUN_INTERVAL_HOURS і всі щойно застосовані ціни).
           if publish_attempt tmp-full "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/rozetka_feed.xml feeds/prom_feed.xml feeds/prom_feed_top.xml; then
+              feeds/rozetka_feed.xml feeds/prom_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json; then
             echo "Усі 3 фіди опубліковано."
           elif publish_attempt tmp-no-prom "Feed update (без prom_feed.xml, ймовірно >100МБ) $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/rozetka_feed.xml feeds/prom_feed_top.xml; then
+              feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json; then
             echo "::warning::Повний пуш відхилено (ймовірно, prom_feed.xml перевищує 100 МБ) — опубліковано rozetka_feed.xml + prom_feed_top.xml без нього."
           else
             echo "::warning::Пуш rozetka_feed.xml + prom_feed_top.xml теж відхилено — публікуємо ОКРЕМО лише prom_feed_top.xml (малий, критичний для імпорту топ-970 в Prom), щоб він не застарів через провал інших файлів."
             publish_attempt fallback "Feed update (лише top-970, фолбек через розмір інших фідів) $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/prom_feed_top.xml
+              feeds/prom_feed_top.xml prom_competitor_price_state.json
           fi

@@ -107,6 +107,11 @@ def write_pricer_summary(note: str, *, checked: int = 0, adjust: int = 0,
 # company_id — це МИ САМІ, не конкурент, завжди виключаються.
 PROM_OWN_COMPANY_ID = 4219597
 
+# Пряма сторінка товару конкурента на Prom.ua — використовується ЛИШЕ для
+# перевірки перед delist (див. verify_competitor_really_available), не для
+# самого пошуку/зіставлення.
+COMPETITOR_PRODUCT_URL_TEMPLATE = "https://prom.ua/ua/p{id}-{url_text}.html"
+
 SEARCH_LIMIT = 20  # скільки кандидатів забирати на один пошуковий запит
 
 # ВИПРАВЛЕНО 2026-07-12 (розслідування SKU 242610/289818): попереднє значення
@@ -352,6 +357,70 @@ def find_best_competitor(search_name: str, cost: float) -> dict | None:
     return candidates[0]
 
 
+# Знайдено в JSON-LD (schema.org Product) на реальній сторінці товару,
+# напр. `"availability":"http://schema.org/OutOfStock"`. Простий regex по
+# сирому HTML — свідомо не через BeautifulSoup: поле завжди в одному й
+# тому ж JSON-подібному вигляді в <script type="application/ld+json">,
+# повний DOM-парсинг заради одного поля не потрібен.
+_AVAILABILITY_RE = re.compile(r'"availability"\s*:\s*"([^"]+)"')
+
+
+def verify_competitor_really_available(competitor: dict) -> bool:
+    """Пряма перевірка сторінки товару конкурента ПЕРЕД delist — GraphQL-
+    пошук (presence.isAvailable) виявився ненадійним (2026-07-12): 2 дні
+    поспіль SKU 298613/299070/299071 зіставлялись з тим самим конкурентом
+    (company_id=3068206, "Toy and Joy"), чий presence.isAvailable в
+    пошуковій видачі стабільно True, хоча РЕАЛЬНА сторінка товару містить
+    schema.org `"availability":"http://schema.org/OutOfStock"` (підтверджено
+    напряму curl-ом з VPS). Пошуковий індекс Prom, судячи з усього, не
+    оновлює presence для окремих лістингів вчасно — покладатись лише на
+    нього для НЕВІДКОТНОЇ дії (delist) недостатньо.
+
+    Повертає True ЛИШЕ якщо сторінка конкурента прямо підтверджує
+    "InStock". Будь-яка невизначеність (мережева помилка, відсутнє поле,
+    інший статус на кшталт PreOrder/LimitedAvailability) -> False, тобто
+    delist БЛОКУЄТЬСЯ — той самий принцип безпечного дефолту, що й у
+    _size_tokens_conflict(): видалення живого оголошення при хибному
+    сигналі значно дорожча помилка за просто неоптимальну ціну, тож
+    вимагає позитивного підтвердження, а не лише відсутності заперечення.
+
+    ПОРТОВАНО НА MASTER 2026-07-13 (задача про повний конкурентний скан
+    каталогу): функція була написана, технічно перевірена (аудит-сесія,
+    2026-07-12) і отримала пряму санкцію власника на деплой ще
+    2026-07-12 — але сиділа на PR #32, що базувався на ІНШОМУ, теж не
+    змердженому PR #31 (add-google-merchant-feed), тож НІКОЛИ фактично
+    не потрапила в master. Через це щоденні прогони репрайсера сьогодні
+    (2026-07-13, PR #40-48) виконувались БЕЗ цього захисту — той самий
+    ненадійний presence.isAvailable, що спричинив баг 2026-07-12, міг
+    знову вплинути на сьогоднішні delist-рішення. Портовано напряму
+    (не через merge старих гілок — за день code в prom_competitor_pricer.py
+    змінився занадто суттєво, конфлікт був би гарантований)."""
+    product_id = competitor.get("id")
+    url_text = competitor.get("urlText")
+    if not product_id or not url_text:
+        return False
+    url = COMPETITOR_PRODUCT_URL_TEMPLATE.format(id=product_id, url_text=url_text)
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "uk-UA,uk;q=0.9",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"[Pricer] Перевірка сторінки конкурента {url} не вдалась ({e}) — delist заблоковано", file=sys.stderr)
+        return False
+    match = _AVAILABILITY_RE.search(response.text)
+    if not match:
+        print(f"[Pricer] Сторінка конкурента {url}: поле availability не знайдено — delist заблоковано", file=sys.stderr)
+        return False
+    return match.group(1).endswith("/InStock")
+
+
 def decide_action(cost: float, competitor: dict | None, category_name: str | None, our_name: str = "") -> dict:
     """Гібридна дія: normal/floor -> "adjust" (нова ціна = decision["price"]);
     floor настільки вищий за конкурента, що навіть він неконкурентний ->
@@ -489,19 +558,34 @@ def main() -> None:
         decision = decide_action(cost, competitor, category_name, name_rus)
         time.sleep(SEARCH_DELAY)
 
+        # Другий, надійніший гейт ПЕРЕД фінальним delist — GraphQL-пошук
+        # (presence.isAvailable у find_best_competitor) сам по собі виявився
+        # ненадійним (2026-07-12, SKU 298613/299070/299071 delist'ились 2 дні
+        # поспіль на основі того самого протермінованого presence-флагу).
+        # Пряма HTTP-перевірка реальної сторінки конкурента — лише для
+        # кандидатів, що вже пройшли текстовий і розмірний гейт, тобто рідко
+        # (одиниці з ~300 SKU за прогін), тож зайвий запит тут не проблема.
+        presence_unconfirmed = False
+        if decision["action"] == "delist":
+            if not verify_competitor_really_available(decision["competitor"]):
+                decision["action"] = "adjust"
+                presence_unconfirmed = True
+            time.sleep(SEARCH_DELAY)
+
         comp_desc = (
             f"конкурент {decision['competitor']['price']:.0f} грн "
             f"(score={decision['competitor']['score']:.2f}) {decision['competitor']['name'][:40]!r}"
             if decision["competitor"] else "конкурент не знайдено"
         )
         size_note = "  [РОЗМІР/ОБ'ЄМ НЕ ЗБІГАЄТЬСЯ -> delist заблоковано, залишено adjust]" if decision.get("size_conflict") else ""
+        presence_note = "  [СТОРІНКА КОНКУРЕНТА НЕ ПІДТВЕРДЖУЄ InStock -> delist заблоковано, залишено adjust]" if presence_unconfirmed else ""
         # category/margin_pct додано в лог (рішення власника, 2026-07-13,
         # плаваюча межа MIN_PROFIT_COMPETITOR_FLOOR для Шляху 2) — щоб звіт
         # про те, скільки SKU реально впало під новою межею й наскільки,
         # можна було витягти напряму з логу цього прогону, не вручну.
         print(f"{pid}\t{name_ukr[:45]:45s}\tcost={cost:.0f}\tfloor={decision['floor']:.0f}\t"
               f"price={decision['price']:.0f}\tmargin={decision['margin_pct']:.1f}%\t"
-              f"[{decision['action']}/{decision['category']}]\t{comp_desc}{size_note}")
+              f"[{decision['action']}/{decision['category']}]\t{comp_desc}{size_note}{presence_note}")
 
         if decision["competitor"] is None:
             no_competitor_count += 1

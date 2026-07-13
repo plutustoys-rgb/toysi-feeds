@@ -59,7 +59,12 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from audit_prom_characteristics import audit as audit_characteristics
-from competitor_pricing import decide_price_for_platform
+from competitor_pricing import (
+    PAYMENT_COMMISSION,
+    decide_price_for_platform,
+    get_platform_commission,
+    load_fresh_prom_price_overrides,
+)
 from generate_prom_feed import _VENDOR_ALIASES, normalize_vendor
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
@@ -165,6 +170,21 @@ def check_blocked(desired_ids: set, prom_products: dict, top_catalog: dict, stat
 # ---------------------------------------------------------------------------
 
 def check_price_floor(top_catalog: dict) -> list:
+    """Перевіряє, чи поточна ціна не впала на нижню межу маржі (floor) чи
+    нижче.
+
+    ВИПРАВЛЕНО (задача #58): раніше ЗАВЖДИ викликав decide_price_for_platform
+    (cost, None, ...) — тобто рахував ціну так, ніби конкурента взагалі
+    немає (Шлях 1: "no_competitor"). Але за побудовою формули Шлях 1 —
+    max(cost*NO_COMPETITOR_MULT, floor) — і тому price ЗАВЖДИ >= floor,
+    тобто ця перевірка була структурно сліпою саме до того сценарію, де
+    реальний ризик і концентрується: Шлях 2, коли справжній конкурент
+    (floor/undercut рішення репрайсера) притискає нашу ціну до самої межі
+    чи нижче. Тепер бере фактично застосовану ціну зі спільного стану
+    репрайсера (prom_competitor_price_state.json, поріг свіжості 30 год —
+    той самий, що й у generate_prom_feed.py), і лише за відсутності свіжого
+    запису повертається до старої формули Шляху 1."""
+    price_overrides = load_fresh_prom_price_overrides()
     flagged = []
     for pid, item in top_catalog.items():
         try:
@@ -173,9 +193,17 @@ def check_price_floor(top_catalog: dict) -> list:
             continue
         if cost <= 0:
             continue
-        decision = decide_price_for_platform(cost, None, "prom", item.get("category_name"))
-        if decision["price"] <= decision["floor"] + 0.005:
-            flagged.append((pid, item.get("name", ""), item.get("category_name", ""), decision["margin_pct"]))
+        category_name = item.get("category_name")
+        decision = decide_price_for_platform(cost, None, "prom", category_name)
+        actual_price = price_overrides.get(pid)
+        if actual_price is None:
+            actual_price = decision["price"]
+            margin_pct = decision["margin_pct"]
+        else:
+            total_commission = get_platform_commission("prom", category_name) + PAYMENT_COMMISSION.get("prom", 0.0)
+            margin_pct = round((actual_price * (1 - total_commission) - cost) / cost * 100, 1)
+        if actual_price <= decision["floor"] + 0.005:
+            flagged.append((pid, item.get("name", ""), category_name, margin_pct))
     return flagged
 
 

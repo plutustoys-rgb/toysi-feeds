@@ -82,6 +82,16 @@ STALE_AGE_THRESHOLD_HOURS = 24  # для перевірок #2 (фото) і #3 
 CHARACTERISTICS_THRESHOLD  = 0.30  # 30% SKU категорії без даних — "масовий брак"
 CHARACTERISTICS_MIN_SAMPLE = 5     # категорії менше цього — відсоток на 1-2 SKU не показовий
 
+# Верхня межа для per-ID перевірки кандидатів на "відсутні" у check_blocked()
+# (задача #47/#64) — типовий випадок "невидима група" дає малу кількість
+# кандидатів (напр. 29 для "Сквіші"). Якщо candidate_missing раптом набагато
+# більший — це, найімовірніше, ознака СИСТЕМНОЇ проблеми (invalid/expired
+# PROM_API_KEY, масове блокування імпорту, збій fetch_prom_products() як
+# такого), а не купа окремих невидимих груп одночасно. У такому разі 50+
+# окремих HTTP-викликів лише сповільнюють і маскують реальну проблему —
+# краще пропустити per-ID перевірку й голосно попередити.
+MAX_CANDIDATE_MISSING_FOR_VERIFICATION = 50
+
 TELEGRAM_MAX_LEN = 3800  # запас під ліміт Telegram (4096) для розбиття на частини
 
 
@@ -128,6 +138,13 @@ def _older_than(state_bucket: dict, current_ids: set, now: datetime, hours: int)
 # ---------------------------------------------------------------------------
 
 def check_stock(prom_products: dict, desired_ids: set, toysi_ids: set) -> list:
+    """Успадковує "невидима група" сліпе місце group-based prom_products
+    (задача #47/#64) — на відміну від check_blocked() нижче, тут це НЕ
+    виправлено: виявлення застарілих товарів (find_stale_external_ids())
+    за своєю суттю потребує знайти НЕВІДОМІ ID (те, що є в Prom, але вже
+    не в топ-970), а per-ID перевірка (fetch_prom_products_by_external_ids)
+    вимагає знати ID заздалегідь — не може підказати "чого не вистачає",
+    лише підтвердити/спростувати вже відомий кандидат."""
     stale_ids = find_stale_external_ids(prom_products, desired_ids, toysi_ids)
     return [(ext_id, prom_products[ext_id].get("name", "")) for ext_id in stale_ids]
 
@@ -163,14 +180,33 @@ def check_blocked(desired_ids: set, prom_products: dict, top_catalog: dict, stat
     кількості кандидатів) додатково перевіряємо через
     fetch_prom_products_by_external_ids() — GET /products/by_external_id/
     {id}, який НЕ залежить від /groups/list і тому не має того самого
-    сліпого місця. Лише те, що не підтвердилось і тут, вважається
-    справді відсутнім."""
+    сліпого місця. Лише те, що НЕ підтвердилось присутнім і НЕ вийшло
+    невизначеним (мережева/авторизаційна помилка самої перевірки — не
+    доказ відсутності), вважається справді відсутнім.
+
+    ВИПРАВЛЕНО (рев'ю PR #43): якщо candidate_missing_ids раптом набагато
+    більший за типовий "невидима група" випадок
+    (MAX_CANDIDATE_MISSING_FOR_VERIFICATION), пропускаємо per-ID перевірку
+    повністю — це, найімовірніше, ознака системної проблеми (недійсний
+    ключ, масове блокування імпорту), а не купа окремих невидимих груп;
+    50+ окремих HTTP-викликів лише сповільнюють і маскують реальну
+    причину. У такому разі candidate_missing_ids трактується як і раніше
+    (без by-ID підтвердження) — той самий консервативний фолбек, що й до
+    цього фіксу."""
     now_iso = now.isoformat()
     candidate_missing_ids = desired_ids - set(prom_products.keys())
-    verified_present = (
-        fetch_prom_products_by_external_ids(candidate_missing_ids) if candidate_missing_ids else {}
-    )
-    missing_ids = candidate_missing_ids - set(verified_present.keys())
+    if candidate_missing_ids and len(candidate_missing_ids) <= MAX_CANDIDATE_MISSING_FOR_VERIFICATION:
+        verified_present, indeterminate_ids = fetch_prom_products_by_external_ids(candidate_missing_ids)
+    else:
+        if len(candidate_missing_ids) > MAX_CANDIDATE_MISSING_FOR_VERIFICATION:
+            print(
+                f"[Auditor] УВАГА: {len(candidate_missing_ids)} кандидатів на 'відсутні' — "
+                f"вище порогу {MAX_CANDIDATE_MISSING_FOR_VERIFICATION}, per-ID перевірку пропущено "
+                "(ймовірна системна проблема, не поодинокі невидимі групи).",
+                file=sys.stderr,
+            )
+        verified_present, indeterminate_ids = {}, set()
+    missing_ids = candidate_missing_ids - set(verified_present.keys()) - indeterminate_ids
     state["missing_since"] = _track_age(state["missing_since"], missing_ids, now_iso)
     flagged = _older_than(state["missing_since"], missing_ids, now, STALE_AGE_THRESHOLD_HOURS)
     return [

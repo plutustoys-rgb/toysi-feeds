@@ -46,9 +46,13 @@ reports/
 prom_competitor_price_state.json
 
 # Стислий людський підсумок останнього прогону репрайсера (не для коду) —
-# публікується разом зі станом вище в feed-data; синхронізація в спільну
-# Windows-теку PlutusToys_avtonomiya — вручну, коли активна Claude-сесія
-# (той самий підхід, що й prom_catalog_audit_summary.md там).
+# НЕ публікується в feed-data (та гілка вже публічна, а тут стратегічні
+# лічильники репрайсера — той самий тип сигналу про ціноутворення, який
+# раніше вирішили не публікувати відкрито). Замість цього — приватний
+# GitHub Actions artifact (update-feeds.yml), доступний лише через
+# автентифікований `gh run download`; синхронізація в спільну Windows-теку
+# PlutusToys_avtonomiya — вручну, коли активна Claude-сесія (той самий
+# підхід, що й prom_catalog_audit_summary.md там).
 prom_competitor_pricer_summary.md
 
 # Запобіжник: файл з паролями не повинен потрапити в git навіть випадково

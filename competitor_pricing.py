@@ -137,9 +137,18 @@ def load_fresh_prom_price_overrides(max_age_hours: float = PROM_PRICE_STATE_MAX_
     return overrides
 
 
-MIN_PROFIT       = 0.25   # цільовий мінімум прибутку від собівартості (як частка cost)
+MIN_PROFIT       = 0.25   # цільовий мінімум прибутку від собівартості (як частка cost) — лише Шлях 1 (немає конкурента)
 PRICE_STEP       = 1.0    # фіксований крок нижче конкурента, У ГРН — не відсоток
 NO_COMPETITOR_MULT = 1.75
+
+# Рішення власника, 2026-07-13: для товарів, де знайдено реального
+# конкурента (Шлях 2, category="floor"/"undercut"), фіксована ціль
+# MIN_PROFIT=25% замінена на плаваючу нижню межу — намагатись підрізати
+# конкурента якомога ближче, дозволяючи опускатись аж до 3% маржі, якщо
+# потрібно для конкурентності, і зупинятись саме на цій межі знизу.
+# Шлях 1 ("немає конкурента", NO_COMPETITOR_MULT) свідомо НЕ зачеплений —
+# там MIN_PROFIT=25% і поточна логіка лишаються без змін.
+MIN_PROFIT_COMPETITOR_FLOOR = 0.03
 DAILY_LIMIT      = 200
 MIN_SUPPLIER_PRICE = 20
 
@@ -254,9 +263,16 @@ def decide_price_for_platform(
 ) -> dict:
     """
     Рішення про ціну для ОДНОГО майданчика (Prom або Rozetka):
-        нижня_межа = (cost + cost*MIN_PROFIT) / (1 - комісія_майданчика - комісія_оплати)
-        кандидат   = min_competitor - PRICE_STEP (фіксований крок, грн — не %)
-        ціна       = max(нижня_межа, кандидат)
+        Шлях 1 (немає конкурента):
+            нижня_межа = (cost + cost*MIN_PROFIT) / (1 - комісія_майданчика - комісія_оплати)
+            ціна       = max(cost*NO_COMPETITOR_MULT, нижня_межа)
+        Шлях 2 (є конкурент, рішення власника 2026-07-13):
+            нижня_межа = (cost + cost*MIN_PROFIT_COMPETITOR_FLOOR) / (1 - комісія_майданчика - комісія_оплати)
+            кандидат   = min_competitor - PRICE_STEP (фіксований крок, грн — не %)
+            ціна       = max(нижня_межа, кандидат)
+    Дві РІЗНІ нижні межі — Шлях 1 тримає консервативні 25% (без конкурента
+    нема сенсу конкурувати ціною), Шлях 2 дозволяє опускатись аж до 3%,
+    якщо потрібно підрізати конкурента, і зупиняється саме там знизу.
 
     Завжди повертає ціну — товари з "нерентабельним" конкурентом більше НЕ
     пропускаються (як було в старій категорії C): якщо кандидат нижчий за
@@ -272,12 +288,12 @@ def decide_price_for_platform(
             "PROM_CATEGORY_COMMISSION/ROZETKA_COMMISSION_DEFAULT/PAYMENT_COMMISSION"
         )
 
-    floor = (cost + cost * MIN_PROFIT) / (1 - total_commission)
-
     if min_competitor is None:
+        floor = (cost + cost * MIN_PROFIT) / (1 - total_commission)
         price = round(max(cost * NO_COMPETITOR_MULT, floor), 2)
         result_category = "no_competitor"
     else:
+        floor = (cost + cost * MIN_PROFIT_COMPETITOR_FLOOR) / (1 - total_commission)
         candidate = min_competitor - PRICE_STEP
         price = round(max(floor, candidate), 2)
         result_category = "floor" if floor >= candidate else "undercut"

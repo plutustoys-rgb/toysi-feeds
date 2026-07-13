@@ -308,10 +308,23 @@ def _size_tokens_conflict(our_name: str, competitor_name: str) -> bool:
 
 def find_best_competitor(search_name: str, cost: float) -> dict | None:
     """Шукає на Prom.ua, виключає власні товари й товари поза розумним
-    ціновим діапазоном, повертає найкращий за текстовою схожістю кандидат,
-    або None, якщо жоден не проходить поріг впевненості — у цьому разі
-    ціна рахується формульно (як для "no_competitor" в decide_price_for_platform),
-    а НЕ вгадується з ненадійного збігу."""
+    ціновим діапазоном, повертає НАЙДЕШЕВШОГО серед підтверджених (score >=
+    MATCH_MIN_SCORE) кандидатів, або None, якщо жоден не проходить поріг
+    впевненості — у цьому разі ціна рахується формульно (як для
+    "no_competitor" в decide_price_for_platform), а НЕ вгадується з
+    ненадійного збігу.
+
+    ВИПРАВЛЕНО (підозра власника, підтверджена на SKU 242610 — 2026-07-13):
+    раніше сортування було `(-score, price)` — серед кандидатів, що
+    пройшли поріг впевненості MATCH_MIN_SCORE, обирався НАЙВИЩИЙ за
+    текстовою схожістю, а ціна була лише тай-брейкером для РІВНИХ score
+    (що з float score практично ніколи не трапляється). Це означало:
+    справді найдешевший конкурент (напр. Gummy, 1362 грн) міг мати трохи
+    нижчий score, ніж дорожчий (1830 грн), і програвати вибір — хоча обидва
+    вже "той самий товар" за порогом впевненості. Score тут — лише фільтр
+    "чи це взагалі той самий товар", не критерій вибору МІЖ підтвердженими
+    збігами; серед них правильний орієнтир для ціноутворення — найдешевший
+    реальний варіант, який покупець міг би обрати замість нас."""
     results = search_prom_products(search_name)
     candidates = []
     for p in results:
@@ -335,7 +348,7 @@ def find_best_competitor(search_name: str, cost: float) -> dict | None:
 
     if not candidates:
         return None
-    candidates.sort(key=lambda c: (-c["score"], c["price"]))
+    candidates.sort(key=lambda c: c["price"])
     return candidates[0]
 
 
@@ -482,8 +495,13 @@ def main() -> None:
             if decision["competitor"] else "конкурент не знайдено"
         )
         size_note = "  [РОЗМІР/ОБ'ЄМ НЕ ЗБІГАЄТЬСЯ -> delist заблоковано, залишено adjust]" if decision.get("size_conflict") else ""
+        # category/margin_pct додано в лог (рішення власника, 2026-07-13,
+        # плаваюча межа MIN_PROFIT_COMPETITOR_FLOOR для Шляху 2) — щоб звіт
+        # про те, скільки SKU реально впало під новою межею й наскільки,
+        # можна було витягти напряму з логу цього прогону, не вручну.
         print(f"{pid}\t{name_ukr[:45]:45s}\tcost={cost:.0f}\tfloor={decision['floor']:.0f}\t"
-              f"price={decision['price']:.0f}\t[{decision['action']}]\t{comp_desc}{size_note}")
+              f"price={decision['price']:.0f}\tmargin={decision['margin_pct']:.1f}%\t"
+              f"[{decision['action']}/{decision['category']}]\t{comp_desc}{size_note}")
 
         if decision["competitor"] is None:
             no_competitor_count += 1

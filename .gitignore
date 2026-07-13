@@ -55,6 +55,14 @@ prom_competitor_price_state.json
 # підхід, що й prom_catalog_audit_summary.md там).
 prom_competitor_pricer_summary.md
 
+# Runtime-стан одноразового скану повного каталогу (full_catalog_competitor_
+# scan.py, 2026-07-13) — {sku: {cost, category_name, competitor_price,
+# competitor_score, margin_pct, price_category}} для ~17 000 eligible SKU,
+# готує дані для побудови нового топ-1000. Round-trip'иться через ОКРЕМУ
+# гілку full-catalog-scan-data (full-catalog-scan.yml) — НЕ feed-data (та
+# гілка публічна й force-push на неї замінив би live-фіди/стан репрайсера).
+full_catalog_scan_state.json
+
 # Запобіжник: файл з паролями не повинен потрапити в git навіть випадково
 паролі.txt
 

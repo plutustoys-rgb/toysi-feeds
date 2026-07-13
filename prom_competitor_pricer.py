@@ -482,8 +482,13 @@ def main() -> None:
             if decision["competitor"] else "конкурент не знайдено"
         )
         size_note = "  [РОЗМІР/ОБ'ЄМ НЕ ЗБІГАЄТЬСЯ -> delist заблоковано, залишено adjust]" if decision.get("size_conflict") else ""
+        # category/margin_pct додано в лог (рішення власника, 2026-07-13,
+        # плаваюча межа MIN_PROFIT_COMPETITOR_FLOOR для Шляху 2) — щоб звіт
+        # про те, скільки SKU реально впало під новою межею й наскільки,
+        # можна було витягти напряму з логу цього прогону, не вручну.
         print(f"{pid}\t{name_ukr[:45]:45s}\tcost={cost:.0f}\tfloor={decision['floor']:.0f}\t"
-              f"price={decision['price']:.0f}\t[{decision['action']}]\t{comp_desc}{size_note}")
+              f"price={decision['price']:.0f}\tmargin={decision['margin_pct']:.1f}%\t"
+              f"[{decision['action']}/{decision['category']}]\t{comp_desc}{size_note}")
 
         if decision["competitor"] is None:
             no_competitor_count += 1

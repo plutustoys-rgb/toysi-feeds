@@ -194,6 +194,64 @@ def fetch_prom_products() -> dict:
     return products
 
 
+def fetch_prom_products_by_external_ids(external_ids: set) -> tuple[dict, set]:
+    """GET /products/by_external_id/{id} для КОЖНОГО external_id окремо —
+    підтверджено офіційною документацією (public-api.docs.prom.ua) і живим
+    викликом 2026-07-13 (SKU 289818, категорія "Сквіші" — знайдено напряму
+    цим шляхом, хоча group-based fetch_prom_products() його НЕ бачить). На
+    відміну від fetch_prom_products(), цей шлях НЕ йде через /groups/list
+    взагалі, тож структурно не може мати того самого "невидима група"
+    сліпого місця (задача #47/#64).
+
+    ВАЖЛИВО — це НЕ повна заміна fetch_prom_products(): придатний лише
+    коли ЗАЗДАЛЕГІДЬ відомий конкретний набір external_id для перевірки
+    (тут — кандидати на "відсутні", щоб підтвердити чи спростувати перед
+    ескалацією). НЕ може виявити НЕВІДОМІ/чужі лістинги в кабінеті (для
+    цього потрібне ім'я/ID заздалегідь) — find_stale_external_ids()
+    (виявлення застарілих товарів поза топ-970) і далі потребує повного
+    переліку каталогу через fetch_prom_products(), не зачіпається цим
+    фіксом.
+
+    Повертає (found, indeterminate):
+      - found: {external_id: product} для ПІДТВЕРДЖЕНО присутніх (200 OK).
+      - indeterminate: external_id, для яких сама перевірка НЕ вдалась
+        (мережева помилка, timeout, 401/403, 5xx, невалідний JSON) — це
+        НЕ доказ відсутності, лише те, що зараз перевірити не вдалось.
+        ВИПРАВЛЕНО (рев'ю PR #43): раніше 404 (справжня відсутність) і
+        будь-яка ІНША помилка поверталися однаково як None — транзиєнтний
+        мережевий/авторизаційний збій міг хибно підтвердити товар
+        "відсутнім" замість "невідомо". Викликач має трактувати
+        indeterminate як "спробувати наступного разу", а не як "відсутній"."""
+    found: dict = {}
+    indeterminate: set = set()
+
+    def _fetch_one(ext_id: str) -> tuple:
+        try:
+            response = requests.get(
+                f"{PROM_API_URL}/products/by_external_id/{ext_id}",
+                headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+                timeout=REQUEST_TIMEOUT,
+            )
+            if response.status_code == 404:
+                return "absent", None
+            response.raise_for_status()
+            return "found", response.json().get("product")
+        except (requests.exceptions.RequestException, ValueError):
+            return "indeterminate", None
+
+    ids_list = list(external_ids)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        for ext_id, (status, product) in zip(ids_list, executor.map(_fetch_one, ids_list)):
+            if status == "found" and product:
+                found[ext_id] = product
+            elif status == "indeterminate":
+                indeterminate.add(ext_id)
+            # status == "absent" (справжній 404) -> ні found, ні indeterminate;
+            # викликач трактує таке як підтверджено відсутнє.
+
+    return found, indeterminate
+
+
 def find_stale_external_ids(prom_products: dict, desired_ids: set, toysi_ids: set) -> list:
     """Товари, які реально опубліковані в Prom, походять з нашого Toysi-фіда
     (не додані вручну власником — таких не чіпаємо), більше не входять у

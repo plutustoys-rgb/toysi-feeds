@@ -1,43 +1,66 @@
 """
 full_catalog_competitor_scan.py — одноразовий (не щоденний) конкурентний
-скан ПОВНОГО каталогу Toysi, готуючи дані для побудови нового топ-1000
-(демонд + маржа + реальна конкурентність, той самий принцип, що й
-підбір нових товарів 2026-07-13).
+скан ПОВНОГО каталогу Toysi, готуючи дані для побудови нового топ-1000.
+
+СТРАТЕГІЯ (рішення власника, 2026-07-13, змінює попередній підхід): НЕ
+відбирати спочатку за власною маржею й перевіряти конкурентів реактивно
+(як довго лишалось непоміченим для SKU 242610/289818) — а спочатку
+прогнати ВЕСЬ наявний каталог через реальну конкурентну ціну, і лише
+ПОТІМ будувати топ-1000 із того, де ми реально сильні. Тому фільтр тут
+навмисно ШИРШИЙ за select_top_items() — жодного попереднього відбору за
+маржею, лише те, що взагалі може бути в каталозі (stock>0, не уцінка).
 
 НАВІЩО ОКРЕМИЙ СКРИПТ, НЕ prom_competitor_pricer.py: той файл свідомо
 сфокусований на щоденному топ-970/1000 (MIN_FULL_RUN_INTERVAL_HOURS=20,
 --apply реально міняє живі ціни). Цей скрипт — суто інформаційний
 (dry-run, НІКОЛИ не застосовує ціни в Prom) і працює на іншому,
-набагато ширшому пулі (17 000+ SKU замість ~970) — окремий стан, окремий
-workflow, не втручається в щоденний ритм репрайсера.
+набагато ширшому пулі — окремий стан, окремий workflow, не втручається
+в щоденний ритм репрайсера.
 
-ОБСЯГ (оцінено 2026-07-13): повний каталог Toysi — 29 330 SKU, з них
-"eligible" (той самий фільтр, що й select_top_items() — margin>=0, не
-виключена категорія) — 17 193. Решта (уцінка, виключені категорії,
-нульовий залишок/собівартість) ніколи не потраплять у топ-1000
-незалежно від конкурентних даних — скановані не будуть.
+ОБСЯГ (перевірено напряму 2026-07-13): повний каталог Toysi — 29 330
+SKU. Scope (stock>0, не Уцінка/Уценка через is_clearance_item() з
+generate_prom_feed.py) — 17 888 SKU.
 
-ЧАС: виміряно емпірично на топ-970 (2026-07-13) — 1.52 с/SKU у dry-run
-режимі (пошук без --apply). Повний eligible-пул (17 193) — ~7.25 год
-сумарно. GitHub Actions job має жорсткий ліміт 6 годин незалежно від
-timeout-minutes — тому обов'язкове розбиття на кілька прогонів.
+ЧАС (реальний бенчмарк 40 SKU, 2026-07-13, find_best_competitor() +
+verify_competitor_really_available() разом) — 2.521 с/SKU у середньому
+(100% mатчів конкурента в тестовій вибірці). Повний scope (17 888) —
+~12.5 год сумарно. GitHub Actions job має жорсткий ліміт 6 годин
+незалежно від timeout-minutes — тому обов'язкове розбиття.
+
+ГРУПУВАННЯ ЗА МОДЕЛЛЮ — розглянуто й ВІДХИЛЕНО: евристика "обрізати
+дужки-варіанти в назві" дає лише ~14% скорочення обсягу, і, що
+важливіше, ненадійна — дужки часто кодують СУТТЄВУ відмінність
+(кількість елементів пазла: 80/120/140/240 шт — не колір), а не просто
+варіант кольору. Ризик підмінити конкурентні дані для різних товарів
+переважує невелику економію. Замість групування — чисте розбиття за
+часом (BATCH_SIZE нижче).
 
 БЕЗПЕКА (рішення власника, 2026-07-13): ризик rate-limit на
-реверс-інженерний GraphQL-пошук Prom невідомий на такому обсязі (17-30x
-звичайного добового навантаження репрайсера, ~970/добу). Тому:
-- НІКОЛИ не --apply, лише читання/розрахунок.
-- Розтягнуто на ~6 днів по ~3000 SKU/день (BATCH_SIZE нижче), не
-  кілька прогонів поспіль за 1-2 дні.
-- Ручний workflow_dispatch (full-catalog-scan.yml) — не автоматичний
-  cron, щоб власник/сесія могли перевірити результат кожного дня перед
-  наступним пакетом.
+реверс-інженерний GraphQL-пошук Prom (і на звичайні сторінки товару
+для verify_competitor_really_available()) невідомий на такому обсязі
+(17-30x звичайного добового навантаження репрайсера, ~970/добу). Тому:
+- НІКОЛИ не --apply, лише читання/розрахунок — verify_competitor_
+  really_available() тут викликається для КОЖНОГО знайденого
+  конкурента (не лише перед delist, як у prom_competitor_pricer.py),
+  бо мета — знати, чи конкурент реально живий, для кожного рядка
+  таблиці, а не лише для рішень про видалення.
+- Той самий BATCH_SIZE=3000/день, ~6 днів — з новим, довшим часом
+  (~2.1 год/день замість ~1.25 год), досі в межах 180-хв safety
+  timeout workflow'у.
 
 РЕЗЮМОВАНІСТЬ: стан (FULL_SCAN_STATE_FILE) зберігає вже скановані SKU
-{sku: {cost, category_name, competitor_price, competitor_score,
-margin_pct, price_category, scanned_at}}. Кожен запуск бере наступні
-BATCH_SIZE ще НЕ сканованих SKU (за спаданням маржі — той самий порядок
-пріоритету, що й у select_top_items(), про всяк випадок, якщо скан не
-завершиться повністю за 6 днів) — ідемпотентно, безпечно перезапускати.
+{sku: {name, category_name, cost, competitor_price, competitor_score,
+competitor_alive, margin_pct, price_category}}. Кожен запуск бере
+наступні BATCH_SIZE ще НЕ сканованих SKU (стабільний порядок за
+ідентифікатором — тут немає "пріоритету за маржею", бо мета саме
+уникнути попередньої маржинальної фільтрації) — ідемпотентно, безпечно
+перезапускати.
+
+ФОРМАТ ВИВОДУ (за запитом власника) — код, категорія, собівартість,
+конкурент (ціна + підтверджено живий чи ні), маржа при цій ціні:
+повна таблиця для побудови нового топ-1000 буде згенерована окремо
+(build_top1000_report.py чи еквівалент) з готового state-файлу, коли
+скан завершиться повністю.
 
 Запуск:
     python full_catalog_competitor_scan.py              # наступний пакет (BATCH_SIZE)
@@ -54,17 +77,19 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed import fetch_russian_text
-from generate_prom_feed_top import is_excluded_category, _margin
+from generate_prom_feed import fetch_russian_text, is_clearance_item
 from competitor_pricing import decide_price_for_platform
-from prom_competitor_pricer import find_best_competitor, SEARCH_DELAY
+from prom_competitor_pricer import find_best_competitor, verify_competitor_really_available, SEARCH_DELAY
 
 BASE_DIR = Path(__file__).parent
 FULL_SCAN_STATE_FILE = BASE_DIR / "full_catalog_scan_state.json"
 
 # Узгоджено з власником 2026-07-13: ~3000/день, розтягнуто на ~6 днів —
 # консервативний темп проти невідомого ризику rate-limit на 17-30x
-# звичайного добового навантаження репрайсера.
+# звичайного добового навантаження репрайсера. Той самий розмір пакету,
+# що й у першій версії плану — довший час/день (~2.1 год замість ~1.25),
+# бо додано verify_competitor_really_available(), але досі в межах
+# 180-хв safety timeout workflow'у.
 BATCH_SIZE = 3000
 
 
@@ -83,14 +108,18 @@ def save_state(state: dict) -> None:
     )
 
 
-def _eligible_items(catalog: dict) -> dict:
-    """Той самий фільтр, що й select_top_items() (generate_prom_feed_top.py)
-    — margin>=0 (виключає stock=0/cost<=0) і не виключена категорія.
-    Уцінка/виключені категорії ніколи не потраплять у топ-1000, тож
-    скановані не будуть — економить ~41% обсягу (12 137 з 29 330 SKU)."""
+def _scope_items(catalog: dict) -> dict:
+    """Обсяг для повного сканування (рішення власника 2026-07-13): stock>0
+    і не уцінка/пошкоджений товар (is_clearance_item()) — НАВМИСНО без
+    попередньої фільтрації за маржею чи "виключеними" категоріями
+    (bicycles тощо, EXCLUDED_CATEGORIES у generate_prom_feed_top.py) —
+    мета саме побачити конкурентну ситуацію для ВСЬОГО каталогу перед
+    тим, як вирішувати, що варте топ-1000, а не звужувати заздалегідь
+    за власною економікою."""
     return {
         pid: item for pid, item in catalog.items()
-        if _margin(item) >= 0 and not is_excluded_category(item)
+        if item.get("stock", 0) > 0
+        and not is_clearance_item(item.get("name"), item.get("category_name"), item.get("category_id"))
     }
 
 
@@ -108,36 +137,37 @@ def main() -> None:
         print("[FullScan] Каталог порожній — зупиняюсь.", file=sys.stderr)
         sys.exit(1)
 
-    eligible = _eligible_items(catalog)
+    scope = _scope_items(catalog)
     state = load_state()
     scanned_ids = set(state.keys())
-    remaining_ids = set(eligible.keys()) - scanned_ids
+    remaining_ids = set(scope.keys()) - scanned_ids
 
-    print(f"[FullScan] Повний каталог: {len(catalog)} | eligible (може потрапити в топ-1000): {len(eligible)}")
+    print(f"[FullScan] Повний каталог: {len(catalog)} | обсяг (stock>0, не уцінка): {len(scope)}")
     print(f"[FullScan] Уже сканованих: {len(scanned_ids)} | лишилось: {len(remaining_ids)}")
 
     if args.status:
         return
 
     if not remaining_ids:
-        print("[FullScan] Усі eligible SKU вже скановані — нема чого робити. "
+        print("[FullScan] Увесь обсяг вже сканований — нема чого робити. "
               "Видали/перейменуй full_catalog_scan_state.json, щоб пересканувати з нуля.")
         return
 
-    # Пріоритет — за спаданням маржі (той самий порядок, що й select_top_items()),
-    # про всяк випадок, якщо повний скан не завершиться за заплановані ~6 днів —
-    # найцінніші кандидати вже будуть скановані.
-    ordered_remaining = sorted(remaining_ids, key=lambda pid: _margin(eligible[pid]), reverse=True)
+    # Стабільний порядок (за ID) — навмисно БЕЗ пріоритету за маржею, на
+    # відміну від попередньої версії плану: мета саме уникнути будь-якої
+    # попередньої економічної фільтрації/сортування до того, як зберемо
+    # дані по ВСЬОМУ обсягу.
+    ordered_remaining = sorted(remaining_ids)
     batch_ids = ordered_remaining[:args.batch_size]
 
     print(f"[FullScan] Пакет цього запуску: {len(batch_ids)} SKU "
-          f"(~{len(batch_ids) * SEARCH_DELAY / 60:.1f} хв мінімум на затримки між запитами).")
+          f"(~{len(batch_ids) * 2.521 / 60:.1f} хв за виміряним темпом 2.521с/SKU).")
 
     print("[FullScan] Завантажую російськомовні назви (кращий збіг з пошуком Prom)...")
     russian_text = fetch_russian_text()
 
     for i, pid in enumerate(batch_ids, start=1):
-        item = eligible[pid]
+        item = scope[pid]
         cost = float(item.get("price") or 0)
         name_ukr = (item.get("name") or "").strip()
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
@@ -148,11 +178,18 @@ def main() -> None:
         decision = decide_price_for_platform(cost, min_competitor_price, "prom", category_name)
         time.sleep(SEARCH_DELAY)
 
+        competitor_alive = None
+        if competitor:
+            competitor_alive = verify_competitor_really_available(competitor)
+            time.sleep(SEARCH_DELAY)
+
         state[pid] = {
-            "cost": cost,
+            "name": name_ukr,
             "category_name": category_name,
+            "cost": cost,
             "competitor_price": competitor["price"] if competitor else None,
             "competitor_score": round(competitor["score"], 2) if competitor else None,
+            "competitor_alive": competitor_alive,
             "margin_pct": decision["margin_pct"],
             "price_category": decision["category"],
         }
@@ -164,13 +201,12 @@ def main() -> None:
     save_state(state)
     scanned_now = len(scanned_ids) + len(batch_ids)
     print(f"[FullScan] Готово. Скановано цього разу: {len(batch_ids)}. "
-          f"Всього скановано: {scanned_now}/{len(eligible)} eligible SKU "
-          f"({scanned_now / len(eligible) * 100:.1f}%).")
-    if scanned_now < len(eligible):
-        print(f"[FullScan] Лишилось {len(eligible) - scanned_now} SKU — запусти ще раз "
-              "(наступного дня, за планом) для продовження.")
+          f"Всього скановано: {scanned_now}/{len(scope)} SKU обсягу "
+          f"({scanned_now / len(scope) * 100:.1f}%).")
+    if scanned_now < len(scope):
+        print(f"[FullScan] Лишилось {len(scope) - scanned_now} SKU — наступний прогін продовжить звідси.")
     else:
-        print("[FullScan] Повний скан eligible-пулу завершено!")
+        print("[FullScan] Повний скан обсягу завершено!")
 
 
 if __name__ == "__main__":

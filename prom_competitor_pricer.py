@@ -497,22 +497,18 @@ def main() -> None:
     # читає як price_overrides — доки запис не застаріє (>30 год). Той самий
     # price_state, завантажений на початку main() (містить вже записаний
     # _meta.last_full_run) — не перезавантажуємо, щоб не загубити його.
-    # ВИПРАВЛЕНО (рев'ю PR #40, знахідка №2): раніше save_prom_price_state()
-    # викликався ОДИН РАЗ після всього циклу — перервання самого ПРОЦЕСУ
-    # посеред цього циклу (таймаут/скасування job'у GitHub Actions, збій
-    # раннера — те, що try/except на рівні Python не ловить) губило б стан
-    # для цін, які вже РЕАЛЬНО застосувались на Prom, відтворюючи саме ту
-    # проблему персистентності, заради якої зроблено весь цей PR. Тепер
-    # зберігаємо періодично (кожні 25 застосованих), а не лише в кінці.
-    SAVE_EVERY = 25
+    # ВІДОМИЙ, НАВМИСНО НЕ ВИПРАВЛЕНИЙ ЗАРАЗ НЕДОЛІК (рев'ю PR #40, знахідка
+    # №2): save_prom_price_state() викликається ОДИН РАЗ після всього циклу —
+    # перервання самого ПРОЦЕСУ посеред цього циклу (таймаут/скасування
+    # job'у GitHub Actions) губило б стан для цін, які вже РЕАЛЬНО
+    # застосувались на Prom. Свідоме рішення власника: залишити як є зараз,
+    # виправити окремим fast-follow PR, не тут.
     applied_count = 0
     for pid, price in to_adjust:
         try:
             apply_price(pid, price)
             price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat()}
             applied_count += 1
-            if applied_count % SAVE_EVERY == 0:
-                save_prom_price_state(price_state)
         except requests.exceptions.RequestException as e:
             error_count += 1
             print(f"  - {pid}: помилка зміни ціни — {e}", file=sys.stderr)

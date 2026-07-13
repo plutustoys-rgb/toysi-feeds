@@ -54,3 +54,13 @@ feeds/*.xml
 
 # VPS-доступ (пароль root) — лише локально, ніколи в git
 vps_access.local.md
+
+# Кеш self-match товар<->Prom-лістинг (generate_google_feed.py пише,
+# generate_rozetka_feed.py лише читає) — генерується наново, не для git
+own_product_links_cache.json
+
+# Довідник rz_id категорій Rozetka, вручну експортований власницею з
+# власного кабінету (Управління товарами -> Довідники) — локальні,
+# специфічні для акаунту дані, не для git (той самий клас файлу, що й
+# інші локальні кеші/довідники вище)
+rozetka_category_rz_id_map.json

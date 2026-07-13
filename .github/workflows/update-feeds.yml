@@ -26,6 +26,12 @@ jobs:
       contents: write
     env:
       TOYSI_API_KEY: ${{ secrets.TOYSI_API_KEY }}
+      # Виправлено (незалежне рев'ю PR #39, раунд 2): generate_google_feed.py
+      # (крок нижче) викликає fetch_prom_products(), якому потрібен цей
+      # ключ — живо підтверджено 401 Unauthorized без нього. Секрет
+      # зареєстровано в Settings -> Secrets and variables -> Actions
+      # 2026-07-12 (раніше існував лише в .env на VPS, ніколи як GitHub
+      # secret). Той самий секрет тепер потрібен і prom_competitor_pricer.py.
       PROM_API_KEY: ${{ secrets.PROM_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -67,6 +73,21 @@ jobs:
           if [ "${{ github.event.inputs.apply }}" != "false" ]; then ARGS="$ARGS --apply"; fi
           if [ "${{ github.event.inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
           python prom_competitor_pricer.py $ARGS
+
+      # Виправлено (незалежне рев'ю PR #39): раніше generate_google_feed.py
+      # не викликався в жодному workflow, тож own_product_links_cache.json
+      # ніколи не існував на CI, і <url> в Rozetka-фіді назавжди лишався
+      # порожнім. Steps одного job'у діляться файловою системою раннера —
+      # цього достатньо, щоб наступний крок (generate_rozetka_feed.py)
+      # прочитав щойно записаний кеш; НЕ комітимо кеш у git (той самий
+      # підхід, що й для feeds/*.xml — регенерується заново щоразу, а не
+      # зберігається між прогонами). continue-on-error: <url> — необов'язковий
+      # тег, тож збій цього кроку (напр. reverse-engineered пошуковий
+      # ендпоінт Prom тимчасово недоступний) не повинен блокувати генерацію
+      # решти фідів, які раніше чудово працювали й без нього.
+      - name: Refresh own-product-link cache for Rozetka <url> tag (best-effort)
+        continue-on-error: true
+        run: python generate_google_feed.py
 
       - run: python generate_rozetka_feed.py
       - run: python generate_prom_feed.py

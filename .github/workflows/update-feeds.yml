@@ -10,6 +10,11 @@ on:
         required: false
         default: "true"
         type: boolean
+      force:
+        description: "Репрайсер: обійти гейт 'повний прогін вже був нещодавно' (--force). Шлях відновлення через UI Actions, без SSH/ручного редагування стану на feed-data."
+        required: false
+        default: "false"
+        type: boolean
 
 env:
   FEED_BRANCH: feed-data
@@ -52,17 +57,16 @@ jobs:
       # Власний гейт всередині скрипта (MIN_FULL_RUN_INTERVAL_HOURS) не дає
       # йому робити повний прогін частіше приблизно раз на добу, попри те, що
       # сам workflow тепер тригериться щочотири години.
-      # github.event.inputs.apply лише для workflow_dispatch (порожній рядок
-      # для cron) — тому планові прогони завжди потрапляють у гілку "!= false",
-      # тобто --apply, і лише ручний dispatch з apply=false робить dry-run.
+      # github.event.inputs.* лише для workflow_dispatch (порожній рядок для
+      # cron) — тому планові прогони завжди потрапляють у гілку "!= false",
+      # тобто --apply без --force, і лише ручний dispatch може відхилятись.
       - name: Run competitor repricer (Prom)
         continue-on-error: true
         run: |
-          if [ "${{ github.event.inputs.apply }}" = "false" ]; then
-            python prom_competitor_pricer.py
-          else
-            python prom_competitor_pricer.py --apply
-          fi
+          ARGS=""
+          if [ "${{ github.event.inputs.apply }}" != "false" ]; then ARGS="$ARGS --apply"; fi
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          python prom_competitor_pricer.py $ARGS
 
       - run: python generate_rozetka_feed.py
       - run: python generate_prom_feed.py

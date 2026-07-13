@@ -396,8 +396,6 @@ def main() -> None:
                   f"пошук конкурентів на кожному 4-годинному тригері GitHub Actions. Викликай з --force, "
                   f"щоб примусово запустити повний прогін зараз.")
             return
-    price_state.setdefault("_meta", {})["last_full_run"] = datetime.now().isoformat()
-    save_prom_price_state(price_state)
 
     print("[Pricer] Рахую поточний відбір топ-970...")
     toysi_catalog = fetch_toysi_catalog()
@@ -407,6 +405,18 @@ def main() -> None:
         print(f"[Pricer] {e}", file=sys.stderr)
         send_telegram_message(f"🚨 prom_competitor_pricer.py зупинено: {e}")
         sys.exit(1)
+
+    # ВИПРАВЛЕНО (рев'ю PR #40, знахідка №1): мітку гейту пишемо ЛИШЕ після
+    # успішної валідації каталогу, а не до fetch_toysi_catalog(). Раніше
+    # запис відбувався одразу після перевірки "чи не рано", ДО фетчу — і
+    # fetch_toysi_catalog() ковтає мережеві помилки, повертаючи {} замість
+    # винятку, тож одна транзиєнтна проблема з боку Toysi "отруювала" гейт
+    # на всі 20 год (sys.exit(1) нижче стався б уже ПІСЛЯ запису мітки).
+    # Гейт існує, щоб не бомбардувати дорогий GraphQL-пошук конкурентів
+    # частіше приблизно раз на добу — а не щоб захищати дешевий, швидко
+    # відмовний фетч каталогу, тож правильне місце для мітки — тут.
+    price_state.setdefault("_meta", {})["last_full_run"] = datetime.now().isoformat()
+    save_prom_price_state(price_state)
 
     top_catalog = select_top_items(toysi_catalog)
     print(f"[Pricer] У топ-970: {len(top_catalog)} товарів.")
@@ -487,12 +497,22 @@ def main() -> None:
     # читає як price_overrides — доки запис не застаріє (>30 год). Той самий
     # price_state, завантажений на початку main() (містить вже записаний
     # _meta.last_full_run) — не перезавантажуємо, щоб не загубити його.
+    # ВИПРАВЛЕНО (рев'ю PR #40, знахідка №2): раніше save_prom_price_state()
+    # викликався ОДИН РАЗ після всього циклу — перервання самого ПРОЦЕСУ
+    # посеред цього циклу (таймаут/скасування job'у GitHub Actions, збій
+    # раннера — те, що try/except на рівні Python не ловить) губило б стан
+    # для цін, які вже РЕАЛЬНО застосувались на Prom, відтворюючи саме ту
+    # проблему персистентності, заради якої зроблено весь цей PR. Тепер
+    # зберігаємо періодично (кожні 25 застосованих), а не лише в кінці.
+    SAVE_EVERY = 25
     applied_count = 0
     for pid, price in to_adjust:
         try:
             apply_price(pid, price)
             price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat()}
             applied_count += 1
+            if applied_count % SAVE_EVERY == 0:
+                save_prom_price_state(price_state)
         except requests.exceptions.RequestException as e:
             error_count += 1
             print(f"  - {pid}: помилка зміни ціни — {e}", file=sys.stderr)

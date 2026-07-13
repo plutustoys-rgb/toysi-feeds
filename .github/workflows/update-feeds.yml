@@ -3,7 +3,13 @@ name: Update Toysi feeds
 on:
   schedule:
     - cron: "0 */4 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Репрайсер: реально змінювати ціни в Prom (--apply). false = dry-run, лише звіт/лог, без реальних наслідків. Не впливає на планові (cron) запуски — ті завжди --apply."
+        required: false
+        default: "true"
+        type: boolean
 
 env:
   FEED_BRANCH: feed-data
@@ -46,9 +52,17 @@ jobs:
       # Власний гейт всередині скрипта (MIN_FULL_RUN_INTERVAL_HOURS) не дає
       # йому робити повний прогін частіше приблизно раз на добу, попри те, що
       # сам workflow тепер тригериться щочотири години.
+      # github.event.inputs.apply лише для workflow_dispatch (порожній рядок
+      # для cron) — тому планові прогони завжди потрапляють у гілку "!= false",
+      # тобто --apply, і лише ручний dispatch з apply=false робить dry-run.
       - name: Run competitor repricer (Prom)
         continue-on-error: true
-        run: python prom_competitor_pricer.py --apply
+        run: |
+          if [ "${{ github.event.inputs.apply }}" = "false" ]; then
+            python prom_competitor_pricer.py
+          else
+            python prom_competitor_pricer.py --apply
+          fi
 
       - run: python generate_rozetka_feed.py
       - run: python generate_prom_feed.py

@@ -67,6 +67,7 @@ from prom_catalog_sync import (
     check_product_count_sane,
     deactivate,
     fetch_prom_products,
+    fetch_prom_products_by_external_ids,
     find_stale_external_ids,
 )
 from telegram_notify import send_telegram_message
@@ -151,8 +152,25 @@ def check_images(prom_products: dict, state: dict, now: datetime) -> tuple:
 # ---------------------------------------------------------------------------
 
 def check_blocked(desired_ids: set, prom_products: dict, top_catalog: dict, state: dict, now: datetime) -> tuple:
+    """ВИПРАВЛЕНО (задача #47/#64): "відсутність" у group-based prom_products
+    (fetch_prom_products(), яка йде через /groups/list) не є надійним
+    доказом реальної відсутності — /groups/list мовчки не повертає деякі
+    реальні, активні групи (підтверджено: "Сквіші", SKU 289818 — живий і
+    опублікований у Prom, але невидимий для group-переліку). Раніше це
+    означало хибний "заблоковано" алерт для КОЖНОГО SKU в такій невидимій
+    групі після 24 год. Тепер кандидатів на "відсутні" (лише їх, не весь
+    top-970 — дорожче для великих списків, дешевше для типово малої
+    кількості кандидатів) додатково перевіряємо через
+    fetch_prom_products_by_external_ids() — GET /products/by_external_id/
+    {id}, який НЕ залежить від /groups/list і тому не має того самого
+    сліпого місця. Лише те, що не підтвердилось і тут, вважається
+    справді відсутнім."""
     now_iso = now.isoformat()
-    missing_ids = desired_ids - set(prom_products.keys())
+    candidate_missing_ids = desired_ids - set(prom_products.keys())
+    verified_present = (
+        fetch_prom_products_by_external_ids(candidate_missing_ids) if candidate_missing_ids else {}
+    )
+    missing_ids = candidate_missing_ids - set(verified_present.keys())
     state["missing_since"] = _track_age(state["missing_since"], missing_ids, now_iso)
     flagged = _older_than(state["missing_since"], missing_ids, now, STALE_AGE_THRESHOLD_HOURS)
     return [

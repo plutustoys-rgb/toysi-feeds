@@ -194,6 +194,48 @@ def fetch_prom_products() -> dict:
     return products
 
 
+def fetch_prom_products_by_external_ids(external_ids: set) -> dict:
+    """GET /products/by_external_id/{id} для КОЖНОГО external_id окремо —
+    підтверджено офіційною документацією (public-api.docs.prom.ua) і живим
+    викликом 2026-07-13 (SKU 289818, категорія "Сквіші" — знайдено напряму
+    цим шляхом, хоча group-based fetch_prom_products() його НЕ бачить). На
+    відміну від fetch_prom_products(), цей шлях НЕ йде через /groups/list
+    взагалі, тож структурно не може мати того самого "невидима група"
+    сліпого місця (задача #47/#64).
+
+    ВАЖЛИВО — це НЕ повна заміна fetch_prom_products(): придатний лише
+    коли ЗАЗДАЛЕГІДЬ відомий конкретний набір external_id для перевірки
+    (тут — кандидати на "відсутні", щоб підтвердити чи спростувати перед
+    ескалацією). НЕ може виявити НЕВІДОМІ/чужі лістинги в кабінеті (для
+    цього потрібне ім'я/ID заздалегідь) — find_stale_external_ids()
+    (виявлення застарілих товарів поза топ-970) і далі потребує повного
+    переліку каталогу через fetch_prom_products(), не зачіпається цим
+    фіксом."""
+    products: dict = {}
+
+    def _fetch_one(ext_id: str):
+        try:
+            response = requests.get(
+                f"{PROM_API_URL}/products/by_external_id/{ext_id}",
+                headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+                timeout=REQUEST_TIMEOUT,
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json().get("product")
+        except requests.exceptions.RequestException:
+            return None
+
+    ids_list = list(external_ids)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        for ext_id, product in zip(ids_list, executor.map(_fetch_one, ids_list)):
+            if product:
+                products[ext_id] = product
+
+    return products
+
+
 def find_stale_external_ids(prom_products: dict, desired_ids: set, toysi_ids: set) -> list:
     """Товари, які реально опубліковані в Prom, походять з нашого Toysi-фіда
     (не додані вручну власником — таких не чіпаємо), більше не входять у

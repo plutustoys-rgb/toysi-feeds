@@ -57,6 +57,7 @@ import re
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -76,6 +77,30 @@ PROM_API_KEY  = os.environ.get("PROM_API_KEY", "")
 PROM_API_URL  = "https://my.prom.ua/api/v1"
 PROM_GRAPHQL_URL = "https://prom.ua/graphql"
 REQUEST_TIMEOUT  = 20
+
+# Стислий підсумок для людини (не для коду) — той самий патерн, що й
+# prom_catalog_audit_summary.md у спільній Windows-теці PlutusToys_avtonomiya,
+# але той файл оновлюється вручну Claude-сесією; цей — публікується сюди,
+# в репо (гілка feed-data, поряд з prom_competitor_price_state.json), бо
+# GitHub Actions не має доступу до локальної теки власника. Синхронізація
+# в PlutusToys_avtonomiya — вручну, коли активна сесія.
+SUMMARY_FILE = Path(__file__).parent / "prom_competitor_pricer_summary.md"
+
+
+def write_pricer_summary(note: str, *, checked: int = 0, adjust: int = 0,
+                          delist: int = 0, no_competitor: int = 0,
+                          errors: int = 0) -> None:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [
+        "# Репрайсер конкурентів Prom — стислий підсумок (перезаписується щоразу)",
+        "",
+        f"Оновлено: {now}",
+        note,
+    ]
+    if checked or adjust or delist or no_competitor or errors:
+        lines.append(f"Перевірено товарів: {checked} | Скориговано цін: {adjust} | "
+                      f"Delist: {delist} | Без конкурента: {no_competitor} | Помилки: {errors}")
+    SUMMARY_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 # c4219597-plutustoys.html — company_id власного магазину, підтверджено
 # напряму з URL кабінету/сторінки компанії. Результати пошуку з цим
@@ -395,6 +420,10 @@ def main() -> None:
                   f"(< {MIN_FULL_RUN_INTERVAL_HOURS} год) — пропускаю цей запуск, щоб не робити повний "
                   f"пошук конкурентів на кожному 4-годинному тригері GitHub Actions. Викликай з --force, "
                   f"щоб примусово запустити повний прогін зараз.")
+            write_pricer_summary(
+                f"20-годинний гейт: СПРАЦЮВАВ — повний прогін пропущено "
+                f"(попередній був {hours_since:.1f} год тому, поріг {MIN_FULL_RUN_INTERVAL_HOURS} год)."
+            )
             return
 
     print("[Pricer] Рахую поточний відбір топ-970...")
@@ -404,6 +433,7 @@ def main() -> None:
     except CatalogSizeError as e:
         print(f"[Pricer] {e}", file=sys.stderr)
         send_telegram_message(f"🚨 prom_competitor_pricer.py зупинено: {e}")
+        write_pricer_summary(f"⚠ Зупинено: каталог Toysi порожній/замалий ({e}).", errors=1)
         sys.exit(1)
 
     # ВИПРАВЛЕНО (рев'ю PR #40, знахідка №1): мітку гейту пишемо ЛИШЕ після
@@ -485,6 +515,11 @@ def main() -> None:
                 digest += f"\n... та ще {len(delist_details) - 15}"
         digest += "\n\n(--apply не вмикався, це лише пропозиція)"
         send_telegram_message(digest)
+        write_pricer_summary(
+            "Режим: dry-run (--apply не використовувався). 20-годинний гейт: не спрацював (повний прогін виконано).",
+            checked=len(items), adjust=adjust_count, delist=delist_count,
+            no_competitor=no_competitor_count, errors=0,
+        )
         return
 
     print(f"\n[Pricer] Застосовую {len(to_adjust)} коригувань ціни...")
@@ -533,6 +568,11 @@ def main() -> None:
         if len(delist_details) > 15:
             digest += f"\n... та ще {len(delist_details) - 15}"
     send_telegram_message(digest)
+    write_pricer_summary(
+        "Режим: --apply (реальні зміни застосовано). 20-годинний гейт: не спрацював (повний прогін виконано).",
+        checked=len(items), adjust=adjust_count, delist=delist_count,
+        no_competitor=no_competitor_count, errors=error_count,
+    )
 
 
 if __name__ == "__main__":

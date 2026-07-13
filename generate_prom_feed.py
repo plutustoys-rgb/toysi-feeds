@@ -4,7 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from competitor_pricing import decide_price_for_platform
+from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides
 from parser import fetch_toysi_catalog
 
 SHOP_NAME          = "PlutusToys"
@@ -582,4 +582,13 @@ def generate_feed(output_file: str = OUTPUT_FILE,
 
 
 if __name__ == "__main__":
-    generate_feed()
+    # ВИПРАВЛЕНО 2026-07-12: раніше price_overrides тут завжди був порожнім
+    # (виклик без аргументів) — ціна для КОЖНОГО SKU рахувалась з нуля через
+    # decide_price_for_platform(cost, None, ...), тобто ЗАВЖДИ за формулою
+    # "немає конкурента", навіть якщо prom_competitor_pricer.py вже щойно
+    # застосував кращу, конкурентну ціну напряму в Prom через API. Через це
+    # наступний автоімпорт Prom (кожні 4 год) тихо повертав ціну назад до
+    # дефолту. load_fresh_prom_price_overrides() читає спільний стан, який
+    # тепер пише prom_competitor_pricer.py, і застосовує лише свіжі (не
+    # старіші 30 год) рішення — застаріле повертається до дефолтної формули.
+    generate_feed(price_overrides=load_fresh_prom_price_overrides())

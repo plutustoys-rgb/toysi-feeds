@@ -35,6 +35,16 @@ watchdog_state.json
 prom_catalog_audit_state.json
 reports/
 
+# Runtime-стан мосту prom_competitor_pricer.py (пише) <-> generate_prom_feed.py
+# (читає) — {external_id: {price, timestamp}} для щойно застосованих
+# конкурентних цін, плюс _meta.last_full_run для гейту "не частіше ~20 год".
+# Мігровано на GitHub Actions 2026-07-13: обидва скрипти тепер виконуються як
+# кроки в тому самому job update-feeds.yml (спільна файлова система job'у),
+# а сам файл round-trip'иться між прогонами через гілку feed-data (окремий
+# крок відновлює його з попереднього коміту перед запуском репрайсера,
+# крок публікації додає його назад) — не через master і не через VPS.
+prom_competitor_price_state.json
+
 # Запобіжник: файл з паролями не повинен потрапити в git навіть випадково
 паролі.txt
 

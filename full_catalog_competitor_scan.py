@@ -166,6 +166,7 @@ def main() -> None:
     print("[FullScan] Завантажую російськомовні назви (кращий збіг з пошуком Prom)...")
     russian_text = fetch_russian_text()
 
+    invalid_cost_count = 0
     for i, pid in enumerate(batch_ids, start=1):
         item = scope[pid]
         # ВИПРАВЛЕНО (незалежне рев'ю PR #48): раніше float() без
@@ -190,6 +191,7 @@ def main() -> None:
         category_name = item.get("category_name")
 
         if cost <= 0:
+            invalid_cost_count += 1
             state[pid] = {
                 "name": name_ukr,
                 "category_name": category_name,
@@ -229,7 +231,8 @@ def main() -> None:
 
     save_state(state)
     scanned_now = len(scanned_ids) + len(batch_ids)
-    print(f"[FullScan] Готово. Скановано цього разу: {len(batch_ids)}. "
+    print(f"[FullScan] Готово. Скановано цього разу: {len(batch_ids)} "
+          f"(з них без валідної ціни постачальника: {invalid_cost_count}). "
           f"Всього скановано: {scanned_now}/{len(scope)} SKU обсягу "
           f"({scanned_now / len(scope) * 100:.1f}%).")
     if scanned_now < len(scope):

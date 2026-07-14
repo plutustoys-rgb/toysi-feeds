@@ -168,10 +168,39 @@ def main() -> None:
 
     for i, pid in enumerate(batch_ids, start=1):
         item = scope[pid]
-        cost = float(item.get("price") or 0)
+        # ВИПРАВЛЕНО (незалежне рев'ю PR #48): раніше float() без
+        # try/except — один SKU з нечисловою/відсутньою ціною серед ~18 тис.
+        # валив увесь ~2-годинний пакет (ValueError/TypeError на float()),
+        # і жоден з уже відсканованих у цьому пакеті SKU НЕ зберігався (крах
+        # ДО save_state() в кінці). Той самий патерн, що вже в
+        # prom_competitor_pricer.py. На відміну від репрайсера (де просто
+        # `continue` — там немає стійкого стану, наступний прогін і так
+        # перебирає весь каталог заново), тут `remaining_ids` персистентний:
+        # "тихий" `continue` без запису в state лишав би цей SKU в
+        # remaining_ids НАЗАВЖДИ — він зайняв би місце в batch_ids щодня, і
+        # скан ніколи не дійшов би до 100%. Тому записуємо явний
+        # "invalid_cost" запис (без дорогого пошуку конкурента) — SKU
+        # рахується відсканованим, і скан рухається далі.
+        try:
+            cost = float(item.get("price") or 0)
+        except (TypeError, ValueError):
+            cost = 0
         name_ukr = (item.get("name") or "").strip()
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
         category_name = item.get("category_name")
+
+        if cost <= 0:
+            state[pid] = {
+                "name": name_ukr,
+                "category_name": category_name,
+                "cost": cost,
+                "competitor_price": None,
+                "competitor_score": None,
+                "competitor_alive": None,
+                "margin_pct": None,
+                "price_category": "invalid_cost",
+            }
+            continue
 
         competitor = find_best_competitor(name_rus, cost)
         min_competitor_price = competitor["price"] if competitor else None

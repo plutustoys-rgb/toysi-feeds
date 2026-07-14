@@ -2,6 +2,7 @@ import re
 
 from parser import fetch_toysi_catalog
 from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
+from competitor_pricing import load_fresh_prom_price_overrides
 
 OUTPUT_FILE     = "feeds/prom_feed_top.xml"
 TARGET_COUNT    = 1000
@@ -138,7 +139,21 @@ def generate_top_feed(output_file: str = OUTPUT_FILE) -> None:
         f"(з категорій-лідерів: {leaders_count}, доповнено рештою каталогу: {len(top_catalog) - leaders_count})"
     )
 
-    generate_feed(output_file=output_file, catalog=top_catalog)
+    # ВИПРАВЛЕНО 2026-07-14: той самий бага, що й у generate_prom_feed.py
+    # (виправлено там 2026-07-12), лишався тут неторкнутим — виклик без
+    # price_overrides означав, що КОЖЕН SKU топ-970 рахувався з нуля за
+    # формулою "немає конкурента", ігноруючи щойно застосовану
+    # prom_competitor_pricer.py конкурентну ціну. Оскільки prom_feed.xml
+    # (повний каталог) з 2026-07-13 стабільно не публікується через ліміт
+    # GitHub 100 МБ, саме цей файл (prom_feed_top.xml) — єдиний, що зараз
+    # реально й регулярно доходить до Prom, тож без цього фіксу коригування
+    # репрайсера для ~940 SKU топ-970 стиралися щоразу на наступному
+    # автоімпорті (~кожні 4 год).
+    generate_feed(
+        output_file=output_file,
+        catalog=top_catalog,
+        price_overrides=load_fresh_prom_price_overrides(),
+    )
 
 
 if __name__ == "__main__":

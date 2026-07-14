@@ -120,7 +120,11 @@ from generate_prom_feed import append_clearance_notice
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
 
-SHOP_NAME          = "PlutusToys"
+# ЗМІНЕНО 2026-07-14 (вимога Rozetka, передана напряму менеджером по
+# телефону): назва магазину на Rozetka має ВІДРІЗНЯТИСЯ від Prom
+# ("PlutusToys" лишається назвою на Prom, тут — НЕ те саме поле/бренд).
+# Власник обрав нову назву для Rozetka: "Plutonix".
+SHOP_NAME          = "Plutonix"
 SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійович"
 SHOP_URL           = "https://plutustoys.com.ua"  # сайт компанії, не rozetka.com.ua
                                                     # (попередня версія помилково

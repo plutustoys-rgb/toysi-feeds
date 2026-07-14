@@ -173,6 +173,7 @@ jobs:
       # результат кроку.
       - name: Notify on VPS upload failure
         if: steps.vps_upload.outcome == 'failure'
+        continue-on-error: true
         run: |
           echo "::error::Вивантаження prom_feed.xml на VPS не вдалось — файл на VPS міг застаріти. Перевір run ${{ github.run_id }}."
           python -c "

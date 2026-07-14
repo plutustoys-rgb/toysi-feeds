@@ -136,9 +136,18 @@ jobs:
           echo "${{ secrets.FEED_DEPLOY_SSH_KEY }}" > ~/.ssh/feed_deploy_key
           chmod 600 ~/.ssh/feed_deploy_key
           ssh-keyscan -H "${{ secrets.FEED_DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          # "root@" ОБОВ'ЯЗКОВИЙ тут: без явного користувача rsync/ssh
+          # підставляє ім'я ПОТОЧНОГО користувача на раннері (на ubuntu-latest
+          # це буквально "runner") як SSH-логін — VPS такого користувача не
+          # має, і автентифікація падає з "Invalid user runner" (живо
+          # підтверджено в /var/log/auth.log на VPS during діагностики
+          # 2026-07-14). Ключ обмежений через rrsync у authorized_keys саме
+          # під root — той самий обліковий запис, під яким живе
+          # /opt/plutustoys/feeds, тож root@ тут відповідає реальному
+          # обмеженню, не є зайвим підвищенням прав.
           rsync -avz --timeout=180 \
             -e "ssh -i ~/.ssh/feed_deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            feeds/prom_feed.xml "${{ secrets.FEED_DEPLOY_HOST }}:prom_feed.xml"
+            feeds/prom_feed.xml "root@${{ secrets.FEED_DEPLOY_HOST }}:prom_feed.xml"
 
       # Публікуємо rozetka_feed.xml + prom_feed_top.xml в окрему гілку feed-data
       # одним коммітом, що щоразу перезаписує попередній (force-push). Це не

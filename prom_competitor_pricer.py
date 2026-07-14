@@ -52,6 +52,7 @@ Reverse-engineering завершено 2026-07-11: `POST https://prom.ua/graphql
 
 import argparse
 import difflib
+import json
 import os
 import re
 import sys
@@ -111,6 +112,96 @@ PROM_OWN_COMPANY_ID = 4219597
 # перевірки перед delist (див. verify_competitor_really_available), не для
 # самого пошуку/зіставлення.
 COMPETITOR_PRODUCT_URL_TEMPLATE = "https://prom.ua/ua/p{id}-{url_text}.html"
+
+# ДОДАНО 2026-07-14 (три незалежні аудити 07-13/07-14 показали: SearchListingQuery
+# + текстовий fuzzy-збіг пропускає реальних конкурентів у 42-95% перевірених
+# SKU, включно з 242610/289818, — сам пошук за назвою просто не знаходить
+# те, що видно на нашій ж сторінці товару). Знайдено надійніше джерело:
+# кожна сторінка товару Prom.ua (у т.ч. НАША власна) містить у своєму SSR-
+# HTML вбудований блок `"buyBox":{"count":N,"modelId":"...","minPrice":X,
+# "maxPrice":Y,"companyCount":N}` — той самий блок, що рендерить видиму
+# секцію "Цей товар у інших продавців". Це власна ВНУТРІШНЯ система
+# зіставлення товарів Prom (product "model", ймовірно за GTIN/штрихкодом),
+# НЕ текстовий пошук — набагато надійніше за SequenceMatcher. Живо
+# перевірено на 2 SKU (242610: minPrice=1364 < наша 1543.40; 289818:
+# minPrice=336.74 > наша 310.36) — обидва підтверджують, що minPrice
+# ВИКЛЮЧАЄ нашу власну ціну (інакше на 289818, де ми найдешевші, minPrice
+# дорівнював би нашій ціні, а не був вищим).
+#
+# Дістається ЗВИЧАЙНИМ `requests.get()` на сторінку НАШОГО Ж товару (без
+# GraphQL-запиту, без браузера) — URL береться з own_product_links_cache.json
+# (пише generate_google_feed.py, той самий кеш, що вже читає
+# generate_rozetka_feed.py для <url>). Товари поза цим кешем (self-match
+# ще не знайдено) просто не отримують buyBox-дані цього прогону — не
+# помилка, це той самий "необов'язковий" підхід, що й скрізь з цим кешем.
+OWN_PRODUCT_LINKS_CACHE_FILE = Path(__file__).parent / "own_product_links_cache.json"
+OWN_PRODUCT_LINKS_CACHE_TTL_DAYS = 7
+_BUYBOX_RE = re.compile(r'"buyBox":(\{[^{}]*\})')
+
+
+def _load_own_product_links_cache() -> dict:
+    """{item_id: {"prom_id": int, "url_text": str}} — той самий кеш і те
+    саме читання (без власного запису), що вже робить
+    generate_rozetka_feed.py для <url>. Порожній словник, якщо кеш
+    відсутній чи застарів (>OWN_PRODUCT_LINKS_CACHE_TTL_DAYS) — у цьому
+    разі buyBox просто не використовується для жодного SKU цього прогону,
+    fallback на SearchListingQuery нижче лишається робочим."""
+    if not OWN_PRODUCT_LINKS_CACHE_FILE.exists():
+        return {}
+    age_days = (time.time() - OWN_PRODUCT_LINKS_CACHE_FILE.stat().st_mtime) / 86400
+    if age_days >= OWN_PRODUCT_LINKS_CACHE_TTL_DAYS:
+        return {}
+    try:
+        return json.loads(OWN_PRODUCT_LINKS_CACHE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+def fetch_buybox_competitor(prom_id: int, url_text: str) -> dict | None:
+    """Читає вбудований `buyBox` блок із СИРОГО HTML нашої власної сторінки
+    товару (regex, той самий стиль, що й _AVAILABILITY_RE нижче — легкий
+    парсинг одного JSON-подібного поля, не повний DOM/JSON парсер сторінки).
+    Повертає None, якщо сторінка недоступна, поле відсутнє, чи companyCount/
+    minPrice відсутні/нульові (немає жодного іншого продавця цього ж
+    товару) — НІКОЛИ не кидає виняток, той самий контракт, що й
+    search_prom_products()."""
+    url = COMPETITOR_PRODUCT_URL_TEMPLATE.format(id=prom_id, url_text=url_text)
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "uk-UA,uk;q=0.9",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        match = _BUYBOX_RE.search(response.text)
+        if not match:
+            return None
+        buybox = json.loads(match.group(1))
+        company_count = buybox.get("companyCount") or 0
+        min_price = float(buybox.get("minPrice") or 0)
+        if company_count <= 0 or min_price <= 0:
+            return None
+        # "name"/"id"/"urlText" — None: buyBox дає лише СУМАРНУ найнижчу
+        # ціну серед інших продавців, не конкретне оголошення. "source":
+        # "buybox" — явний маркер для decide_action(): не дозволяти delist
+        # без реального оголошення для перевірки presence (verify_
+        # competitor_really_available вимагає конкретний id/urlText, яких
+        # тут немає) — навіть попри високу впевненість збігу.
+        return {
+            "score": 1.0,
+            "price": min_price,
+            "name": f"BuyBox: {company_count} інших продавців цього ж товару",
+            "id": None,
+            "urlText": None,
+            "source": "buybox",
+        }
+    except (requests.exceptions.RequestException, ValueError, KeyError):
+        return None
+
 
 SEARCH_LIMIT = 20  # скільки кандидатів забирати на один пошуковий запит
 
@@ -311,9 +402,18 @@ def _size_tokens_conflict(our_name: str, competitor_name: str) -> bool:
     return our_tokens.isdisjoint(comp_tokens)
 
 
-def find_best_competitor(search_name: str, cost: float) -> dict | None:
-    """Шукає на Prom.ua, виключає власні товари й товари поза розумним
-    ціновим діапазоном, повертає НАЙДЕШЕВШОГО серед підтверджених (score >=
+def find_best_competitor(search_name: str, cost: float, own_link: dict | None = None) -> dict | None:
+    """Шукає конкурента для SKU. ОСНОВНЕ джерело (2026-07-14) — buyBox
+    нашої ж сторінки товару (fetch_buybox_competitor), якщо `own_link`
+    ({"prom_id", "url_text"} з own_product_links_cache.json) заданий і дає
+    результат — це власне зіставлення товарів Prom (product "model"),
+    надійніше за текстовий пошук. ФОЛБЕК — стара логіка SearchListingQuery
+    + fuzzy-збіг нижче, коли buyBox недоступний (own_link відсутній —
+    self-match ще не знайдено для цього SKU generate_google_feed.py, чи
+    buyBox не дав жодного іншого продавця).
+
+    Пошукова гілка: виключає власні товари й товари поза розумним ціновим
+    діапазоном, повертає НАЙДЕШЕВШОГО серед підтверджених (score >=
     MATCH_MIN_SCORE) кандидатів, або None, якщо жоден не проходить поріг
     впевненості — у цьому разі ціна рахується формульно (як для
     "no_competitor" в decide_price_for_platform), а НЕ вгадується з
@@ -330,6 +430,11 @@ def find_best_competitor(search_name: str, cost: float) -> dict | None:
     "чи це взагалі той самий товар", не критерій вибору МІЖ підтвердженими
     збігами; серед них правильний орієнтир для ціноутворення — найдешевший
     реальний варіант, який покупець міг би обрати замість нас."""
+    if own_link:
+        buybox = fetch_buybox_competitor(own_link["prom_id"], own_link["url_text"])
+        if buybox is not None:
+            return buybox
+
     results = search_prom_products(search_name)
     candidates = []
     for p in results:
@@ -433,7 +538,14 @@ def decide_action(cost: float, competitor: dict | None, category_name: str | Non
     decision = decide_price_for_platform(cost, min_competitor_prom, "prom", category_name)
     action = "adjust"
     size_conflict = False
-    if competitor and decision["category"] == "floor":
+    # competitor.get("source") == "buybox" (2026-07-14): buyBox дає лише
+    # СУМАРНУ найнижчу ціну серед інших продавців, без конкретного
+    # оголошення (id/urlText/name — None) — delist вимагає перевіряти
+    # ЖИВІСТЬ конкретного оголошення (verify_competitor_really_available),
+    # чого тут просто нема що перевіряти. verify_competitor_really_available
+    # і так поверне False на відсутній id/urlText, але виключаємо тут явно
+    # й одразу, а не покладаємось лише на побічний ефект нижче.
+    if competitor and decision["category"] == "floor" and competitor.get("source") != "buybox":
         if decision["floor"] > competitor["price"] * MAX_FLOOR_TO_COMPETITOR_RATIO:
             # Delist вимагає окремого, суворішого порогу впевненості збігу
             # (MATCH_MIN_SCORE_FOR_DELIST) — при недостатній впевненості
@@ -536,10 +648,20 @@ def main() -> None:
     print("[Pricer] Завантажуємо російськомовні назви (кращий збіг з пошуком Prom)...")
     russian_text = fetch_russian_text()
 
+    # 2026-07-14: own_product_links_cache.json ({item_id: {prom_id, url_text}},
+    # пише generate_google_feed.py) — джерело для buyBox-пошуку конкурента
+    # (fetch_buybox_competitor), основного джерела тепер. Завантажуємо ОДИН
+    # раз тут (не всередині find_best_competitor на кожен виклик), той самий
+    # патерн, що й russian_text вище.
+    own_product_links = _load_own_product_links_cache()
+    print(f"[Pricer] Кеш власних посилань: {len(own_product_links)} SKU "
+          f"({'знайдено' if own_product_links else 'відсутній/застарілий — увесь прогін на fallback-пошуку'}).")
+
     items = list(top_catalog.items())[:args.limit]
     print(f"[Pricer] Обробляю {len(items)} товарів (--limit {args.limit})...")
 
     adjust_count, delist_count, no_competitor_count, error_count = 0, 0, 0, 0
+    buybox_count = 0
     to_adjust, to_delist, delist_details = [], [], []
 
     for pid, item in items:
@@ -554,7 +676,9 @@ def main() -> None:
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
         category_name = item.get("category_name")
 
-        competitor = find_best_competitor(name_rus, cost)
+        competitor = find_best_competitor(name_rus, cost, own_product_links.get(pid))
+        if competitor and competitor.get("source") == "buybox":
+            buybox_count += 1
         decision = decide_action(cost, competitor, category_name, name_rus)
         time.sleep(SEARCH_DELAY)
 
@@ -601,7 +725,8 @@ def main() -> None:
             )
 
     print(f"\n[Pricer] Підсумок: adjust={adjust_count}, delist={delist_count}, "
-          f"без знайденого конкурента={no_competitor_count}")
+          f"без знайденого конкурента={no_competitor_count}, "
+          f"з них через buyBox (не SearchListingQuery): {buybox_count}")
 
     if not args.apply:
         print("\n[Pricer] DRY-RUN: жодних змін не внесено. Запусти з --apply, щоб реально застосувати.")

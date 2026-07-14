@@ -141,25 +141,49 @@ jobs:
       # VPS/мережа — зовнішня залежність, збій тут не повинен блокувати
       # публікацію rozetka_feed.xml/prom_feed_top.xml нижче, які й далі йдуть
       # у git (обидва помітно менші за 100 МБ, ще жоден пуш ними не впав).
+      #
+      # ВИПРАВЛЕНО 2026-07-14 (фолоу-ап з рев'ю pt5): ключ більше не дає
+      # доступу до root — окремий системний користувач feeddeploy на VPS,
+      # власник /opt/plutustoys/feeds, той самий rrsync-forced-command,
+      # обмежений тим самим каталогом. Компрометація ключа тепер обмежена
+      # одним каталогом, а не всією системою.
       - name: Upload prom_feed.xml to VPS (permanent hosting)
+        id: vps_upload
         continue-on-error: true
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.FEED_DEPLOY_SSH_KEY }}" > ~/.ssh/feed_deploy_key
           chmod 600 ~/.ssh/feed_deploy_key
           ssh-keyscan -H "${{ secrets.FEED_DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
-          # "root@" ОБОВ'ЯЗКОВИЙ тут: без явного користувача rsync/ssh
-          # підставляє ім'я ПОТОЧНОГО користувача на раннері (на ubuntu-latest
-          # це буквально "runner") як SSH-логін — VPS такого користувача не
+          # Явний користувач ОБОВ'ЯЗКОВИЙ тут: без нього rsync/ssh підставляє
+          # ім'я ПОТОЧНОГО користувача на раннері (на ubuntu-latest це
+          # буквально "runner") як SSH-логін — VPS такого користувача не
           # має, і автентифікація падає з "Invalid user runner" (живо
           # підтверджено в /var/log/auth.log на VPS during діагностики
-          # 2026-07-14). Ключ обмежений через rrsync у authorized_keys саме
-          # під root — той самий обліковий запис, під яким живе
-          # /opt/plutustoys/feeds, тож root@ тут відповідає реальному
-          # обмеженню, не є зайвим підвищенням прав.
+          # 2026-07-14).
           rsync -avz --timeout=180 \
             -e "ssh -i ~/.ssh/feed_deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            feeds/prom_feed.xml "root@${{ secrets.FEED_DEPLOY_HOST }}:prom_feed.xml"
+            feeds/prom_feed.xml "feeddeploy@${{ secrets.FEED_DEPLOY_HOST }}:prom_feed.xml"
+
+      # continue-on-error: true вище означає, що збій цього кроку НЕ провалює
+      # job і показує лише пасивний жовтий трикутник в UI Actions (той самий
+      # клас прогалини, що вже позначався в pt63/pt5) — а файл тепер
+      # критичний для імпорту в Prom. steps.vps_upload.outcome (не .conclusion,
+      # яке завжди "success" через continue-on-error) відображає РЕАЛЬНИЙ
+      # результат кроку.
+      - name: Notify on VPS upload failure
+        if: steps.vps_upload.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          echo "::error::Вивантаження prom_feed.xml на VPS не вдалось — файл на VPS міг застаріти. Перевір run ${{ github.run_id }}."
+          python -c "
+          from telegram_notify import send_telegram_message
+          send_telegram_message(
+              '🚨 update-feeds.yml: вивантаження prom_feed.xml на VPS не вдалось. '
+              'Файл на VPS може бути застарілим, доки не буде виправлено. '
+              'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          )
+          "
 
       # Публікуємо rozetka_feed.xml + prom_feed_top.xml в окрему гілку feed-data
       # одним коммітом, що щоразу перезаписує попередній (force-push). Це не

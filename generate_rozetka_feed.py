@@ -164,7 +164,16 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 # описі товару, яке Rozetka блокує. Загальний regex, а не точковий фікс
 # лише під ctrlcopy-span — на випадок, якщо схожі посилання є і в інших
 # SKU за межами перевірених 35 помилок валідатора.
-_URL_RE = re.compile(r"https?://\S+")
+#
+# ВИПРАВЛЕНО (незалежне рев'ю PR #50): \S+ жадібно захоплював і
+# оточуючу HTML-розмітку (лапки атрибута href, закривні теги) —
+# наприклад, у href="https://...html">текст</a></span> захоплював
+# усе аж до </span> включно, бо там немає пробілів. Результат — не
+# просто "видалили посилання", а понівечений, незакритий HTML у
+# CDATA-описі. Звужено до символів, що реально складають URL (без
+# пробілів, кутових дужок і лапок) — зупиняється рівно на межі
+# лапки/тега, залишаючи саму розмітку неушкодженою.
+_URL_RE = re.compile(r'https?://[^\s<>"]+')
 
 
 def _clean_text(text: str) -> str:
@@ -390,11 +399,21 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
                     color_val = str(param_val).strip()
                     break
             disambiguator = color_val or item_id
-            name = f"{name} ({disambiguator})"
+            suffix = f" ({disambiguator})"
 
-        if len(name) > ROZETKA_NAME_MAX_LEN:
+            # ВИПРАВЛЕНО (незалежне рев'ю PR #50): раніше суфікс додавався
+            # ДО _truncate(), тож при базовій назві ~253+ символів обрізання
+            # на межі ROZETKA_NAME_MAX_LEN могло з'їсти суфікс повністю (або
+            # частково) — саме той відмінник, що мав розрізнити дублікати,
+            # зникав, і назви знову зіштовхувались. Тепер ріжемо БАЗОВУ
+            # частину до (ліміт - довжина суфікса), суфікс додаємо ПІСЛЯ —
+            # він гарантовано лишається в межах ROZETKA_NAME_MAX_LEN.
+            if len(name) + len(suffix) > ROZETKA_NAME_MAX_LEN:
+                truncated_name_count += 1
+            name = _truncate(name, ROZETKA_NAME_MAX_LEN - len(suffix)) + suffix
+        elif len(name) > ROZETKA_NAME_MAX_LEN:
             truncated_name_count += 1
-        name = _truncate(name, ROZETKA_NAME_MAX_LEN)
+            name = _truncate(name, ROZETKA_NAME_MAX_LEN)
         ET.SubElement(offer, "name").text = name
 
         ET.SubElement(offer, "price").text          = f"{retail:.2f}"

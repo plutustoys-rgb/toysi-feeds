@@ -179,6 +179,16 @@ def fetch_buybox_competitor(prom_id: int, url_text: str) -> dict | None:
         response.raise_for_status()
         match = _BUYBOX_RE.search(response.text)
         if not match:
+            # ВИПРАВЛЕНО (незалежне рев'ю PR #53): раніше тихо повертало None
+            # тут само, як і на "є buyBox, але немає інших продавців" —
+            # обидва виглядали ІДЕНТИЧНО зовні (buybox=None), тож падіння
+            # success rate через зламаний regex (Prom змінив структуру
+            # сторінки) було б невідрізнюваним від звичайного "мало
+            # конкурентів сьогодні". Друкуємо ЛИШЕ для випадку "поле
+            # взагалі не знайдено" (можлива зміна сторінки) — не для
+            # "знайдено, але порожньо" (нормально, очікувано, друк був би
+            # шумом на кожному SKU без конкурентів).
+            print(f"[Pricer] buyBox: поле не знайдено на {url} — можлива зміна структури сторінки Prom", file=sys.stderr)
             return None
         buybox = json.loads(match.group(1))
         company_count = buybox.get("companyCount") or 0
@@ -542,9 +552,12 @@ def decide_action(cost: float, competitor: dict | None, category_name: str | Non
     # СУМАРНУ найнижчу ціну серед інших продавців, без конкретного
     # оголошення (id/urlText/name — None) — delist вимагає перевіряти
     # ЖИВІСТЬ конкретного оголошення (verify_competitor_really_available),
-    # чого тут просто нема що перевіряти. verify_competitor_really_available
-    # і так поверне False на відсутній id/urlText, але виключаємо тут явно
-    # й одразу, а не покладаємось лише на побічний ефект нижче.
+    # чого тут просто нема що перевіряти. УТОЧНЕНО (незалежне рев'ю PR #53):
+    # це ЄДИНИЙ реальний захист, не "другий рівень" — verify_competitor_
+    # really_available() тут навіть НЕ викликається для buyBox-кандидатів,
+    # бо ця перевірка нижче блокує action="delist" РАНІШЕ, до виклику
+    # verify_competitor_really_available() у main() (та функція гейтована
+    # за `if decision["action"] == "delist"`).
     if competitor and decision["category"] == "floor" and competitor.get("source") != "buybox":
         if decision["floor"] > competitor["price"] * MAX_FLOOR_TO_COMPETITOR_RATIO:
             # Delist вимагає окремого, суворішого порогу впевненості збігу
@@ -662,6 +675,9 @@ def main() -> None:
 
     adjust_count, delist_count, no_competitor_count, error_count = 0, 0, 0, 0
     buybox_count = 0
+    buybox_attempted_count = 0  # own_link був — buyBox ПРОБУВАЛИ (незалежно від результату);
+                                  # різке падіння buybox_count/buybox_attempted_count сигналізує
+                                  # про зламаний _BUYBOX_RE, а не просто "мало конкурентів" (рев'ю PR #53)
     to_adjust, to_delist, delist_details = [], [], []
 
     for pid, item in items:
@@ -676,9 +692,22 @@ def main() -> None:
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
         category_name = item.get("category_name")
 
-        competitor = find_best_competitor(name_rus, cost, own_product_links.get(pid))
+        own_link = own_product_links.get(pid)
+        if own_link:
+            buybox_attempted_count += 1
+        competitor = find_best_competitor(name_rus, cost, own_link)
         if competitor and competitor.get("source") == "buybox":
             buybox_count += 1
+            # Легкий sanity-моніторинг (рекомендація рев'ю PR #53): minPrice
+            # підозріло нижчий за собівартість — не блокуємо (сама ціна все
+            # одно проходить через нижню межу decide_price_for_platform),
+            # лише друкуємо попередження на випадок, якщо семантика поля
+            # colись зміниться (напр. Prom почне включати нашу ціну в
+            # розрахунок minPrice).
+            if competitor["price"] < cost * 0.5:
+                print(f"[Pricer] buyBox: підозріло низька ціна для {pid} "
+                      f"(minPrice={competitor['price']:.0f} < 50% собівартості {cost:.0f}) — "
+                      "перевір вручну", file=sys.stderr)
         decision = decide_action(cost, competitor, category_name, name_rus)
         time.sleep(SEARCH_DELAY)
 
@@ -726,7 +755,10 @@ def main() -> None:
 
     print(f"\n[Pricer] Підсумок: adjust={adjust_count}, delist={delist_count}, "
           f"без знайденого конкурента={no_competitor_count}, "
-          f"з них через buyBox (не SearchListingQuery): {buybox_count}")
+          f"з них через buyBox (не SearchListingQuery): {buybox_count} "
+          f"(пробували buyBox для {buybox_attempted_count} SKU — різке падіння "
+          f"buybox_count/buybox_attempted_count сигналізує про зламаний regex, "
+          f"не просто \"мало конкурентів\")")
 
     if not args.apply:
         print("\n[Pricer] DRY-RUN: жодних змін не внесено. Запусти з --apply, щоб реально застосувати.")

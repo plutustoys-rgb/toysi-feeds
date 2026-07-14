@@ -56,6 +56,33 @@ jobs:
           git show "origin/$FEED_BRANCH:prom_competitor_price_state.json" > prom_competitor_price_state.json 2>/dev/null \
             || echo '{}' > prom_competitor_price_state.json
 
+      # Виправлено (незалежне рев'ю PR #39): раніше generate_google_feed.py
+      # не викликався в жодному workflow, тож own_product_links_cache.json
+      # ніколи не існував на CI, і <url> в Rozetka-фіді назавжди лишався
+      # порожнім. Steps одного job'у діляться файловою системою раннера —
+      # цього достатньо, щоб наступні кроки прочитали щойно записаний кеш;
+      # НЕ комітимо кеш у git (той самий підхід, що й для feeds/*.xml —
+      # регенерується заново щоразу, а не зберігається між прогонами).
+      # continue-on-error: <url> — необов'язковий тег, тож збій цього кроку
+      # (напр. reverse-engineered пошуковий ендпоінт Prom тимчасово
+      # недоступний) не повинен блокувати генерацію решти фідів, які раніше
+      # чудово працювали й без нього.
+      #
+      # ВИПРАВЛЕНО (незалежне рев'ю PR #53, критична знахідка): цей крок
+      # ПЕРЕНЕСЕНО СЮДИ, ПЕРЕД репрайсером — раніше йшов ПІСЛЯ нього, і
+      # prom_competitor_pricer.py (buyBox-джерело конкурента, PR #53)
+      # завжди отримував порожній own_product_links_cache.json (файл
+      # фізично ще не існував на диску в момент його виконання), тож
+      # buyBox НІКОЛИ не активувався в реальному CI — 100% прогонів мовчки
+      # йшли на старий, менш надійний пошуковий fallback, попри те, що код
+      # і локальні тести PR #53 були коректними. generate_google_feed.py
+      # не залежить від результатів репрайсера чи від
+      # prom_competitor_price_state.json, тож цей обмін місцями нічого
+      # іншого не ламає.
+      - name: Refresh own-product-link cache for Rozetka <url> tag and buyBox competitor lookup (best-effort)
+        continue-on-error: true
+        run: python generate_google_feed.py
+
       # continue-on-error: цей крок реально змінює ціни в Prom через API
       # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими
       # зовнішніми залежностями. Збій тут не повинен зупиняти генерацію й
@@ -85,21 +112,6 @@ jobs:
             printf '# Репрайсер конкурентів Prom — стислий підсумок (перезаписується щоразу)\n\nОновлено: %s\n⚠ Файл не згенеровано — репрайсер, ймовірно, аварійно завершився до першого запису підсумку.\n' \
               "$(date -u +'%Y-%m-%d %H:%M UTC')" > prom_competitor_pricer_summary.md
           fi
-
-      # Виправлено (незалежне рев'ю PR #39): раніше generate_google_feed.py
-      # не викликався в жодному workflow, тож own_product_links_cache.json
-      # ніколи не існував на CI, і <url> в Rozetka-фіді назавжди лишався
-      # порожнім. Steps одного job'у діляться файловою системою раннера —
-      # цього достатньо, щоб наступний крок (generate_rozetka_feed.py)
-      # прочитав щойно записаний кеш; НЕ комітимо кеш у git (той самий
-      # підхід, що й для feeds/*.xml — регенерується заново щоразу, а не
-      # зберігається між прогонами). continue-on-error: <url> — необов'язковий
-      # тег, тож збій цього кроку (напр. reverse-engineered пошуковий
-      # ендпоінт Prom тимчасово недоступний) не повинен блокувати генерацію
-      # решти фідів, які раніше чудово працювали й без нього.
-      - name: Refresh own-product-link cache for Rozetka <url> tag (best-effort)
-        continue-on-error: true
-        run: python generate_google_feed.py
 
       - run: python generate_rozetka_feed.py
       - run: python generate_prom_feed.py

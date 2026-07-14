@@ -131,69 +131,61 @@ jobs:
             fi
           done
 
-      # Публікуємо тільки feeds/*.xml в окрему гілку feed-data одним коммітом,
-      # що щоразу перезаписує попередній (force-push). Це не дає git-історії
-      # рости на кожен запуск (кожні 4 години) — інакше репозиторій накопичував
-      # би десятки МБ щодня назавжди. Гілка main лишається чистою — тільки код.
+      # ВИПРАВЛЕНО 2026-07-14: prom_feed.xml (повний каталог, 106+ МБ) остаточно
+      # перенесено з git на VPS-хостинг — GitHub-як-хостинг для цього файлу
+      # вичерпав себе (жорсткий ліміт 100 МБ/файл, публікація падала щоразу з
+      # 13.07, див. видалений нижче трирівневий фолбек). SSH-ключ (ТІЛЬКИ
+      # rsync у /opt/plutustoys/feeds/, обмежено через rrsync — навіть при
+      # витоку ключа неможливо виконати довільну команду на VPS) — новий
+      # секрет FEED_DEPLOY_SSH_KEY, зареєстрований 2026-07-14. continue-on-error:
+      # VPS/мережа — зовнішня залежність, збій тут не повинен блокувати
+      # публікацію rozetka_feed.xml/prom_feed_top.xml нижче, які й далі йдуть
+      # у git (обидва помітно менші за 100 МБ, ще жоден пуш ними не впав).
+      - name: Upload prom_feed.xml to VPS (permanent hosting)
+        continue-on-error: true
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FEED_DEPLOY_SSH_KEY }}" > ~/.ssh/feed_deploy_key
+          chmod 600 ~/.ssh/feed_deploy_key
+          ssh-keyscan -H "${{ secrets.FEED_DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          # "root@" ОБОВ'ЯЗКОВИЙ тут: без явного користувача rsync/ssh
+          # підставляє ім'я ПОТОЧНОГО користувача на раннері (на ubuntu-latest
+          # це буквально "runner") як SSH-логін — VPS такого користувача не
+          # має, і автентифікація падає з "Invalid user runner" (живо
+          # підтверджено в /var/log/auth.log на VPS during діагностики
+          # 2026-07-14). Ключ обмежений через rrsync у authorized_keys саме
+          # під root — той самий обліковий запис, під яким живе
+          # /opt/plutustoys/feeds, тож root@ тут відповідає реальному
+          # обмеженню, не є зайвим підвищенням прав.
+          rsync -avz --timeout=180 \
+            -e "ssh -i ~/.ssh/feed_deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            feeds/prom_feed.xml "root@${{ secrets.FEED_DEPLOY_HOST }}:prom_feed.xml"
+
+      # Публікуємо rozetka_feed.xml + prom_feed_top.xml в окрему гілку feed-data
+      # одним коммітом, що щоразу перезаписує попередній (force-push). Це не
+      # дає git-історії рости на кожен запуск (кожні 4 години) — інакше
+      # репозиторій накопичував би десятки МБ щодня назавжди. Гілка main
+      # лишається чистою — тільки код.
       #
-      # 2026-07-10: prom_feed.xml виріс до 106+ МБ (жорсткий ліміт GitHub —
-      # 100 МБ на файл). GitHub відхиляє ВЕСЬ пуш як одну транзакцію через
-      # перевищення. Перша версія цього фолбеку (комміт 6385d7e) рятувала
-      # лише prom_feed_top.xml — але це МОВЧКИ й НАЗАВЖДИ (щоразу, кожні
-      # 4 години, без жодної помітної помилки) залишало rozetka_feed.xml
-      # ніколи не опублікованим на feed-data, хоча сам він (~60 МБ, 2026-07-12)
-      # добре вкладається в ліміт і лише "потерпав" від того, що йшов в
-      # ОДНОМУ атомарному коміті з завеликим prom_feed.xml. Виявлено
-      # 2026-07-12 під час підготовки реєстрації Rozetka (кабінет чекав на
-      # публічний URL фіда, а feed-data branch увесь цей час містив лише
-      # prom_feed_top.xml). Тепер — три рівні спроб, від повного набору до
-      # мінімального гарантованого: кожен наступний прибирає найбільший файл,
-      # що міг спричинити відмову, замість одразу викидати ВСЕ, крім
-      # top-970. Сама проблема розміру prom_feed.xml лишається відкритою —
-      # потрібне окреме рішення (Git LFS чи інший хостинг), не вирішено тут.
+      # ВИПРАВЛЕНО 2026-07-14: prom_feed.xml (106+ МБ, понад жорсткий ліміт
+      # GitHub 100 МБ/файл) прибрано з цієї публікації повністю — окремий крок
+      # вище вивантажує його на постійний VPS-хостинг замість git. Трирівневий
+      # фолбек (2026-07-12, коміт 6385d7e і далі), що existed саме через
+      # ризик перевищення ліміту цим файлом, більше не потрібен: без
+      # prom_feed.xml сумарний розмір цієї публікації — одноразовий, надійно
+      # закладений під ліміт, жодного окремого файлу біля межі 100 МБ немає.
       - name: Publish feeds to ${{ env.FEED_BRANCH }} (force-push, no history)
         run: |
           git config user.name "feed-bot"
           git config user.email "feed-bot@users.noreply.github.com"
-
-          publish_attempt() {
-            local branch_suffix="$1"; shift
-            local commit_msg="$1"; shift
-            git checkout --orphan "$FEED_BRANCH-$branch_suffix"
-            git rm -r --cached . > /dev/null 2>&1 || true
-            # -f: feeds/*.xml навмисно в .gitignore для master (щоб не роздувати її
-            # історію), але саме ці файли й мають бути закомічені сюди, на feed-data —
-            # без -f git add мовчки відмовляється додавати файли, що збігаються з .gitignore.
-            git add -f "$@"
-            git commit -m "$commit_msg"
-            git push --force origin "$FEED_BRANCH-$branch_suffix:$FEED_BRANCH"
-          }
-
-          # prom_competitor_price_state.json — невеликий JSON, додаємо в усі три
-          # рівні спроб (навіть у мінімальний фолбек), бо його відсутність тут
-          # означає повну втрату стану репрайсера (state.json не потрапить у
-          # feed-data і наступний прогін почне з нуля, ігноруючи гейт
-          # MIN_FULL_RUN_INTERVAL_HOURS і всі щойно застосовані ціни).
-          #
-          # НЕ додаємо сюди prom_competitor_pricer_summary.md: feed-data — вже
-          # публічна гілка (звідти Prom/Rozetka забирають фіди без
-          # автентифікації), а підсумок містить стратегічні лічильники
-          # репрайсера (перевірено/скориговано/delist/ритм гейту) — той самий
-          # тип сигналу про ціноутворення, який раніше вирішили не
-          # публікувати. Замість цього — приватний artifact, крок нижче.
-          if publish_attempt tmp-full "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/rozetka_feed.xml feeds/prom_feed.xml feeds/prom_feed_top.xml \
-              prom_competitor_price_state.json; then
-            echo "Усі 3 фіди опубліковано."
-          elif publish_attempt tmp-no-prom "Feed update (без prom_feed.xml, ймовірно >100МБ) $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/rozetka_feed.xml feeds/prom_feed_top.xml \
-              prom_competitor_price_state.json; then
-            echo "::warning::Повний пуш відхилено (ймовірно, prom_feed.xml перевищує 100 МБ) — опубліковано rozetka_feed.xml + prom_feed_top.xml без нього."
-          else
-            echo "::warning::Пуш rozetka_feed.xml + prom_feed_top.xml теж відхилено — публікуємо ОКРЕМО лише prom_feed_top.xml (малий, критичний для імпорту топ-970 в Prom), щоб він не застарів через провал інших файлів."
-            publish_attempt fallback "Feed update (лише top-970, фолбек через розмір інших фідів) $(date -u +'%Y-%m-%d %H:%M UTC')" \
-              feeds/prom_feed_top.xml prom_competitor_price_state.json
-          fi
+          git checkout --orphan "$FEED_BRANCH-tmp"
+          git rm -r --cached . > /dev/null 2>&1 || true
+          # -f: feeds/*.xml навмисно в .gitignore для master (щоб не роздувати її
+          # історію), але саме ці файли й мають бути закомічені сюди, на feed-data —
+          # без -f git add мовчки відмовляється додавати файли, що збігаються з .gitignore.
+          git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json
+          git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"
 
       # Приватний артефакт (не публічна гілка feed-data): prom_competitor_
       # pricer_summary.md містить стратегічні лічильники репрайсера

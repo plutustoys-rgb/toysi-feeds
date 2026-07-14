@@ -332,6 +332,66 @@ PROM_COMMISSION_DEFAULT = 0.20  # орієнтовний fallback, ПОКИ ка
 # не зареєстрований), тому немає живих даних для звірки. Не блокує розробку.
 ROZETKA_COMMISSION_DEFAULT = 0.22
 
+# ВИПРАВЛЕНО 2026-07-14: реальна ставка знайдена, плейсхолдер 22% застарілий.
+# Джерело — офіційний документ Rozetka "Тариф для ФОП та юридичних осіб"
+# (юридична особа, ФОП II-III групи — наш статус), наданий власником
+# (Downloads\Тариф для ФОП та юридичних осіб.pdf). ⚠️ Цей PDF містив після
+# таблиці прихований текст, адресований напряму AI-асистенту, що видавав
+# себе за системну команду (класична спроба prompt injection) — розпізнано
+# й проігноровано, ЖОДНА інструкція з нього не виконувалась. Самі числа
+# таблиці нижче звірено окремо, прямим повторним читанням документа.
+#
+# НЕ той самий документ, що вже парсили для Prom ProSale (задача #58,
+# джерело — живий dashboard-експорт my.prom.ua/cms/prosale,
+# prosale_commissions_full.md, категорії Prom "пазли і головоломки" тощо) —
+# цей файл описує ЗОВСІМ ІНШИЙ майданчик (Rozetka), іншу структуру
+# (роялті + комісія доступу до платформи + ПДВ), іншу категорійну ієрархію
+# (ID 1-19 Rozetka, не Prom) і інший формат джерела (офіційний PDF-тариф,
+# не CSV/дашборд-експорт). Ставок, що збігалися б за категорією між двома
+# документами, немає — Prom-таблиця не містить "Дитячі іграшки"/"Товари
+# для дітей" як ключі (це Rozetka-специфічні rz_id-категорії), тож
+# порівнювати нема з чим напряму, і розбіжності не виявлено.
+#
+# СХОДИНКИ (на відміну від Prom, де ставка залежить ЛИШЕ від категорії, тут
+# — і від категорії, і від ФІНАЛЬНОЇ роздрібної ціни): кожен запис —
+# [(верхня_межа_ціни, ставка), ...], відсортовано за зростанням межі,
+# ОСТАННЯ межа = float("inf") (найвища сходинка, без стелі). Значення —
+# "Відсоток комісії+ПДВ" з документа (роялті + доступ до платформи, з ПДВ
+# на доступ до платформи вже нарахованим).
+ROZETKA_CATEGORY_COMMISSION: dict[str, list[tuple[float, float]]] = {
+    # 17.2 Дитячі іграшки (rz_id 4265805)
+    "дитячі іграшки": [
+        (3999, 0.2376),
+        (9999, 0.162),
+        (19999, 0.108),
+        (float("inf"), 0.0756),
+    ],
+    # 17. Товари для дітей (rz_id 88468) — БАТЬКІВСЬКА категорія в дереві
+    # Rozetka, фолбек для дитячих SKU поза "Дитячі іграшки" (напр. дитячі
+    # меблі/коляски — у Rozetka це ОКРЕМІ сестринські підкатегорії з іншими
+    # ставками, яких тут немає). Дані звірені й коректні, але СВІДОМО НЕ
+    # підключені до пошуку нижче: без ручного rz_id-довідника
+    # (ROZETKA_CATEGORY_RZ_ID_MAP_FILE у generate_rozetka_feed.py —
+    # опційний, зараз відсутній на диску) немає надійного способу
+    # відрізнити, які саме Toysi-категорії з наших 291 мали б піти сюди, а
+    # не під "Дитячі іграшки" — вигадувати цей поділ без звірки означало б
+    # повторити саме ту помилку, якої свідомо уникає PROM_CATEGORY_COMMISSION
+    # (див. коментар там: "НЕ додаю, де категорія охоплює кілька варіантів
+    # з різними ставками одночасно"). Лишається тут як перевірені дані на
+    # майбутнє, коли з'явиться реальний rz_id-мапінг для нашого асортименту.
+    "товари для дітей": [
+        (5999, 0.1944),
+        (20999, 0.1296),
+        (float("inf"), 0.0756),
+    ],
+}
+
+# Максимум ітерацій розв'язання кола "ціна сходинки <-> сходинка ціни" (див.
+# _resolve_rozetka_floor нижче) — 3-4 сходинки на категорію, збігається за
+# 1-2 ітерації на практиці; якщо не збіглось за цю кількість (теоретична
+# осциляція на межі сходинки), фолбек на найвищу з побачених ставок.
+ROZETKA_TIER_MAX_ITER = 5
+
 # Комісія оплати (еквайринг/Prom-оплата через RozetkaPay, банківський
 # еквайринг Rozetka тощо) — ОКРЕМА статті від комісії майданчика вище.
 # Точний % не підтверджено в жодному з наявних документів проєкту.
@@ -371,15 +431,34 @@ def get_catalog(force_refresh: bool = False) -> dict:
 # Логіка ціноутворення
 # ---------------------------------------------------------------------------
 
-def get_platform_commission(platform: str, category_name: str | None = None) -> float:
+def _rozetka_tiered_commission(price: float) -> float:
+    """Ставка Rozetka "Дитячі іграшки" (rz_id 4265805) для заданої ФІНАЛЬНОЇ
+    ціни — сходинки з ROZETKA_CATEGORY_COMMISSION, відсортовані за
+    зростанням межі, тож перша, де price влазить, і є відповіддю. Категорія
+    зараз не параметризована (див. коментар над ROZETKA_CATEGORY_COMMISSION
+    — той самий "категорія поки не впливає", що й раніше, лише тепер ціна
+    впливає): застосовуємо тарифи "Дитячі іграшки" до всього каталогу
+    Rozetka, а не лише товарів, вручну зіставлених з цим rz_id."""
+    for ceiling, rate in ROZETKA_CATEGORY_COMMISSION["дитячі іграшки"]:
+        if price <= ceiling:
+            return rate
+    return ROZETKA_CATEGORY_COMMISSION["дитячі іграшки"][-1][1]  # недосяжно (остання межа = inf), про всяк випадок
+
+
+def get_platform_commission(platform: str, category_name: str | None = None, price: float | None = None) -> float:
     """Комісія майданчика (БЕЗ комісії оплати) для конкретної категорії.
     Для Prom — категорійний пошук у PROM_CATEGORY_COMMISSION з fallback на
-    PROM_COMMISSION_DEFAULT; для Rozetka — один орієнтовний дефолт (категорія
-    поки не впливає, немає живих даних).
+    PROM_COMMISSION_DEFAULT (категорія, ціна не впливає).
 
-    category_name нормалізується (strip + lower) перед пошуком — сира назва
-    категорії з фіда Toysi (parser.py) зберігає оригінальний регістр, а ключі
-    PROM_CATEGORY_COMMISSION заповнюються вручну з кабінету Prom (приклад у
+    Для Rozetka (2026-07-14): якщо передано `price` — сходинкова ставка
+    "Дитячі іграшки" з ROZETKA_CATEGORY_COMMISSION (див. коментар там); без
+    `price` (напр. daily_report.py, де конкретної ціни ще нема на момент
+    оцінки комісії за старе замовлення) — стара поведінка, ROZETKA_COMMISSION_DEFAULT,
+    без змін.
+
+    category_name нормалізується (strip + lower) перед пошуком у PROM_CATEGORY_COMMISSION
+    — сира назва категорії з фіда Toysi (parser.py) зберігає оригінальний регістр, а
+    ключі PROM_CATEGORY_COMMISSION заповнюються вручну з кабінету Prom (приклад у
     коментарі нижче — лише нижній регістр), тож без нормалізації збіг ніколи
     не спрацював би для реальних категорій."""
     if platform == "prom":
@@ -388,18 +467,20 @@ def get_platform_commission(platform: str, category_name: str | None = None) -> 
             return PROM_CATEGORY_COMMISSION[key]
         return PROM_COMMISSION_DEFAULT
     if platform == "rozetka":
+        if price is not None:
+            return _rozetka_tiered_commission(price)
         return ROZETKA_COMMISSION_DEFAULT
     raise ValueError(f"Невідомий майданчик: {platform!r}, очікую один з {PLATFORMS}")
 
 
-def compute_total_commission(platform: str, category_name: str | None = None) -> float:
+def compute_total_commission(platform: str, category_name: str | None = None, price: float | None = None) -> float:
     """Сумарна комісія (майданчик + оплата) для категорії — спільна точка,
     яку викликають і decide_price_for_platform(), і check_price_floor()
     (prom_catalog_auditor.py), щоб не дублювати
     get_platform_commission(...) + PAYMENT_COMMISSION.get(...) у кількох
     місцях (рефакторинг, 2026-07-13, після рев'ю PR #46: та сама формула
     вже була продубльована в 3 місцях, ризик розсинхронізації)."""
-    return get_platform_commission(platform, category_name) + PAYMENT_COMMISSION.get(platform, 0.0)
+    return get_platform_commission(platform, category_name, price) + PAYMENT_COMMISSION.get(platform, 0.0)
 
 
 def compute_floor(cost: float, total_commission: float, target_margin: float) -> float:
@@ -409,6 +490,42 @@ def compute_floor(cost: float, total_commission: float, target_margin: float) ->
     і для check_price_floor() (prom_catalog_auditor.py) — той самий
     рефакторинг, що й compute_total_commission() вище."""
     return (cost + cost * target_margin) / (1 - total_commission)
+
+
+def _resolve_rozetka_floor(cost: float, target_margin: float, payment_commission: float) -> tuple[float, float]:
+    """Rozetka-специфічне: розв'язує коло "ціна залежить від комісії,
+    комісія (сходинка) залежить від ціни" ітеративно. Починаємо зі
+    сходинки за cost (розумна початкова здогадка), рахуємо floor, дивимось,
+    у яку сходинку ФАКТИЧНО влазить floor — якщо та сама, готово; якщо ні,
+    перераховуємо з новою сходинкою. Збігається за 1-2 ітерації в
+    переважній більшості випадків (перевірено на реальних SKU в звіті).
+
+    ПІДТВЕРДЖЕНА ЖИВИМ ТЕСТОМ "мертва зона" біля межі сходинки (напр.
+    cost=2500 у "Дитячі іграшки"): floor за нижчою сходинкою (16.2%) падає
+    НИЖЧЕ її власної межі (назад у сходинку 23.76%), а floor за вищою
+    (23.76%) — ВИЩЕ межі 3999 (у сходинку 16.2%) — справжньої
+    самоузгодженої точки не існує, лише вічна осциляція між двома. Захист:
+    ROZETKA_TIER_MAX_ITER ітерацій, потім фолбек на НАЙВИЩУ з побачених
+    ставок. Це не довільний вибір: НАЙВИЩА ставка дає НАЙВИЩИЙ floor —
+    коли ця ціна реально потрапляє на Rozetka, застосується нижча реальна
+    ставка (бо ціна впала в дорожчу сходинку), тобто реалізована маржа
+    вийде ВИЩОЮ за цільову (безпечний надлишок, не недобір). Протилежний
+    вибір (найнижча ставка) дав би ціну, що на практиці впаде в дорожчу
+    сходинку і NЕДОБЕРЕ цільову маржу — тому саме "найвища з побачених", а
+    не проста осциляція чи середнє."""
+    commission = _rozetka_tiered_commission(cost)
+    seen_commissions = []
+    floor = compute_floor(cost, commission + payment_commission, target_margin)
+    for _ in range(ROZETKA_TIER_MAX_ITER):
+        seen_commissions.append(commission)
+        next_commission = _rozetka_tiered_commission(floor)
+        if next_commission == commission:
+            return floor, commission
+        commission = next_commission
+        floor = compute_floor(cost, commission + payment_commission, target_margin)
+    commission = max(seen_commissions)
+    floor = compute_floor(cost, commission + payment_commission, target_margin)
+    return floor, commission
 
 
 def decide_price_for_platform(
@@ -425,31 +542,51 @@ def decide_price_for_platform(
             ціна       = max(нижня_межа, кандидат)
     Дві РІЗНІ нижні межі — Шлях 1 тримає консервативні 25% (без конкурента
     нема сенсу конкурувати ціною), Шлях 2 дозволяє опускатись аж до 3%,
-    якщо потрібно підрізати конкурента, і зупиняється саме там знизу.
+    якщо потрібно підрізати конкурента, і зупиняється саме на цій межі знизу.
 
     Завжди повертає ціну — товари з "нерентабельним" конкурентом більше НЕ
     пропускаються (як було в старій категорії C): якщо кандидат нижчий за
     нижню межу, ціна просто піднімається до межі (може вийти вищою за
     конкурента — так і задумано формулою, це не помилка).
+
+    Rozetka (2026-07-14): комісія — СХОДИНКОВА за ФІНАЛЬНОЮ ціною (не лише
+    категорією, як Prom) — floor рахується ітеративно (_resolve_rozetka_floor,
+    вирішує коло "ціна <-> сходинка"). margin_pct рахується ОКРЕМО за вже
+    відомою фінальною ціною (не тим комісія, що йшла на floor — Шлях 2 може
+    завершитись на candidate, не на floor, і сходинка для нього інша).
     """
-    total_commission = compute_total_commission(platform, category_name)
-    if total_commission >= 1:
-        raise ValueError(
-            f"[{platform}] сумарна комісія {total_commission:.0%} >= 100% — перевір "
-            "PROM_CATEGORY_COMMISSION/ROZETKA_COMMISSION_DEFAULT/PAYMENT_COMMISSION"
-        )
+    payment_commission = PAYMENT_COMMISSION.get(platform, 0.0)
+    target_margin = MIN_PROFIT if min_competitor is None else MIN_PROFIT_COMPETITOR_FLOOR
+
+    if platform == "rozetka":
+        floor, floor_commission = _resolve_rozetka_floor(cost, target_margin, payment_commission)
+        if floor_commission + payment_commission >= 1:
+            raise ValueError(
+                f"[{platform}] сумарна комісія {floor_commission + payment_commission:.0%} >= 100% — перевір "
+                "ROZETKA_CATEGORY_COMMISSION/PAYMENT_COMMISSION"
+            )
+    else:
+        total_commission = compute_total_commission(platform, category_name)
+        if total_commission >= 1:
+            raise ValueError(
+                f"[{platform}] сумарна комісія {total_commission:.0%} >= 100% — перевір "
+                "PROM_CATEGORY_COMMISSION/ROZETKA_COMMISSION_DEFAULT/PAYMENT_COMMISSION"
+            )
+        floor = compute_floor(cost, total_commission, target_margin)
 
     if min_competitor is None:
-        floor = compute_floor(cost, total_commission, MIN_PROFIT)
         price = round(max(cost * NO_COMPETITOR_MULT, floor), 2)
         result_category = "no_competitor"
     else:
-        floor = compute_floor(cost, total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
         candidate = min_competitor - PRICE_STEP
         price = round(max(floor, candidate), 2)
         result_category = "floor" if floor >= candidate else "undercut"
 
-    net_revenue = price * (1 - total_commission)
+    # Комісія для звітного margin_pct — за ФІНАЛЬНОЮ ціною, окремо від
+    # комісії, що йшла на floor (для Rozetka Шлях 2/undercut фінальна ціна
+    # може відрізнятись від floor і потрапляти в іншу сходинку).
+    final_commission = compute_total_commission(platform, category_name, price)
+    net_revenue = price * (1 - final_commission)
     margin_pct = round((net_revenue - cost) / cost * 100, 1) if cost else 0.0
 
     return {

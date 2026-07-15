@@ -1,20 +1,18 @@
 """
 reconcile_revenue.py — звіряє замовлення в локальній БД (orders.db,
-orders_watcher.py/order_router.py) з тим, що показує Prom Orders API за
-той самий період.
+orders_watcher.py/order_router.py) з тим, що показує API маркетплейсу за
+той самий період — для Prom і Rozetka (з 2026-07-15).
 
-Знаходить:
-  - замовлення в Prom API, яких немає в БД (orders_watcher.py міг
+Знаходить, для кожної платформи:
+  - замовлення в API маркетплейсу, яких немає в БД (orders_watcher.py міг
     пропустити — простій сервісу, помилка мережі тощо)
-  - замовлення в БД (platform=prom), яких Prom API за цей період більше
-    не показує (скасовано/змінено на боці Prom?)
+  - замовлення в БД, яких API за цей період більше не показує
+    (скасовано/змінено на боці маркетплейсу?)
   - розбіжності суми замовлення (сума, збережена в БД при отриманні,
-    проти суми, яку Prom API показує зараз)
+    проти суми, яку API показує зараз)
 
-Rozetka НЕ звіряється — Seller API ще не підключено (orders_watcher.py,
-fetch_new_orders_rozetka: NotImplementedError без ключа).
-
-Пише reconciliation_report_YYYY-MM-DD.md у спільну папку звітів.
+Пише reconciliation_report_YYYY-MM-DD.md у спільну папку звітів (один
+файл, по секції на кожну платформу).
 
 Запуск:
     python reconcile_revenue.py                   # за вчора (00:00-23:59)
@@ -31,6 +29,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+import rozetka_client
 from orders_db import get_connection, init_db
 from orders_watcher import PROM_API_URL, REQUEST_TIMEOUT, _parse_prom_price
 
@@ -40,7 +39,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 load_dotenv()
 
-PROM_API_KEY = os.environ.get("PROM_API_KEY", "")
+PROM_API_KEY     = os.environ.get("PROM_API_KEY", "")
+ROZETKA_USERNAME = os.environ.get("ROZETKA_USERNAME", "")
+ROZETKA_PASSWORD = os.environ.get("ROZETKA_PASSWORD", "")
 
 REPORT_DIR = Path(r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya")
 
@@ -105,11 +106,38 @@ def _prom_order_total(order: dict) -> float:
     )
 
 
-def _db_orders_for_period(conn, date_from: str, date_to: str) -> dict:
-    """{order_id: сума} для платформи prom, за created_at в БД."""
+def fetch_rozetka_orders_for_period(date_from: str, date_to: str) -> list:
+    """Усі замовлення Rozetka за період — rozetka_client.
+    fetch_orders_by_date_range() (усі три type: В обробці/Успішні/Неуспішні)."""
+    if not (ROZETKA_USERNAME and ROZETKA_PASSWORD):
+        print(
+            "[Reconcile] ROZETKA_USERNAME/ROZETKA_PASSWORD не задано — звірка з Rozetka API неможлива.",
+            file=sys.stderr,
+        )
+        return []
+    try:
+        return rozetka_client.fetch_orders_by_date_range(date_from, date_to)
+    except rozetka_client.RozetkaAPIError as e:
+        print(f"[Reconcile] {e}", file=sys.stderr)
+        return []
+
+
+def _rozetka_order_total(order: dict) -> float:
+    """order.amount — сума замовлення по товарах (без доставки), той самий
+    зміст, що order_total у orders_db (лише товари, без вартості доставки) —
+    узгоджено з _db_orders_for_period() нижче, який теж рахує лише
+    price*qty з items, без доставки."""
+    try:
+        return float(order.get("amount", 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _db_orders_for_period(conn, platform: str, date_from: str, date_to: str) -> dict:
+    """{order_id: сума} для заданої платформи, за created_at в БД."""
     rows = conn.execute(
-        "SELECT order_id, items FROM orders WHERE platform = 'prom' AND created_at >= ? AND created_at < ?",
-        (date_from, date_to),
+        "SELECT order_id, items FROM orders WHERE platform = ? AND created_at >= ? AND created_at < ?",
+        (platform, date_from, date_to),
     ).fetchall()
     result = {}
     for row in rows:
@@ -118,67 +146,89 @@ def _db_orders_for_period(conn, date_from: str, date_to: str) -> dict:
     return result
 
 
-def build_reconciliation(date_from: str, date_to: str) -> str:
-    init_db()
-    with get_connection() as conn:
-        db_orders = _db_orders_for_period(conn, date_from, date_to)
+def _build_platform_section(
+    platform: str, platform_label: str, conn, date_from: str, date_to: str,
+    creds_available: bool, api_orders: list, api_order_total_fn,
+) -> str:
+    """Спільна логіка звірки БД проти API маркетплейсу — одна функція для
+    Prom і Rozetka замість дублювання (обидві платформи звіряються
+    однаково: пропущені/зайві замовлення + розбіжність суми)."""
+    db_orders = _db_orders_for_period(conn, platform, date_from, date_to)
 
-    lines = [f"# Звірка виручки Prom — {date_from}\n"]
-    lines.append(f"\nЗамовлень у БД (platform=prom): {len(db_orders)}")
+    lines = [f"\n\n# Звірка виручки {platform_label} — {date_from}\n"]
+    lines.append(f"\nЗамовлень у БД (platform={platform}): {len(db_orders)}")
 
-    if not PROM_API_KEY:
+    if not creds_available:
         lines.append(
-            "\n\n⚠️ PROM_API_KEY не задано — звірка з Prom API не виконана, "
+            f"\n\n⚠️ Облікові дані {platform_label} не задані — звірка з API не виконана, "
             "показані лише дані з локальної БД."
         )
         return "".join(lines)
 
-    prom_orders = fetch_prom_orders_for_period(date_from, date_to)
-    prom_by_id = {str(o["id"]): _prom_order_total(o) for o in prom_orders}
+    api_by_id = {str(o["id"]): api_order_total_fn(o) for o in api_orders}
 
-    missing_in_db   = sorted(set(prom_by_id) - set(db_orders))
-    missing_in_prom = sorted(set(db_orders) - set(prom_by_id))
-    common_ids      = set(prom_by_id) & set(db_orders)
+    missing_in_db  = sorted(set(api_by_id) - set(db_orders))
+    missing_in_api = sorted(set(db_orders) - set(api_by_id))
+    common_ids     = set(api_by_id) & set(db_orders)
     mismatched = [
-        (oid, db_orders[oid], prom_by_id[oid])
+        (oid, db_orders[oid], api_by_id[oid])
         for oid in sorted(common_ids)
-        if abs(db_orders[oid] - prom_by_id[oid]) > AMOUNT_TOLERANCE
+        if abs(db_orders[oid] - api_by_id[oid]) > AMOUNT_TOLERANCE
     ]
 
-    lines.append(f"\nЗамовлень у Prom API: {len(prom_by_id)}")
+    lines.append(f"\nЗамовлень у {platform_label} API: {len(api_by_id)}")
 
-    lines.append("\n\n## Пропущено orders_watcher.py (є в Prom, немає в БД)")
+    lines.append(f"\n\n## Пропущено orders_watcher.py (є в {platform_label}, немає в БД)")
     if missing_in_db:
         for oid in missing_in_db:
-            lines.append(f"\n- {oid}: {prom_by_id[oid]:.2f} грн")
+            lines.append(f"\n- {oid}: {api_by_id[oid]:.2f} грн")
     else:
-        lines.append("\nНемає — усі замовлення Prom потрапили в БД.")
+        lines.append(f"\nНемає — усі замовлення {platform_label} потрапили в БД.")
 
-    lines.append("\n\n## Є в БД, немає в Prom API за цей період (скасовано/змінено на боці Prom?)")
-    if missing_in_prom:
-        for oid in missing_in_prom:
+    lines.append(f"\n\n## Є в БД, немає в {platform_label} API за цей період (скасовано/змінено на боці маркетплейсу?)")
+    if missing_in_api:
+        for oid in missing_in_api:
             lines.append(f"\n- {oid}: {db_orders[oid]:.2f} грн")
     else:
         lines.append("\nНемає.")
 
     lines.append("\n\n## Розбіжність суми (те саме замовлення, різна сума)")
     if mismatched:
-        for oid, db_total, prom_total in mismatched:
+        for oid, db_total, api_total in mismatched:
             lines.append(
-                f"\n- {oid}: БД {db_total:.2f} грн, Prom API зараз {prom_total:.2f} грн "
-                f"(різниця {prom_total - db_total:+.2f} грн)"
+                f"\n- {oid}: БД {db_total:.2f} грн, {platform_label} API зараз {api_total:.2f} грн "
+                f"(різниця {api_total - db_total:+.2f} грн)"
             )
     else:
         lines.append("\nНемає розбіжностей серед спільних замовлень.")
 
-    total_prom = sum(prom_by_id.values())
-    total_db   = sum(db_orders.values())
+    total_api = sum(api_by_id.values())
+    total_db  = sum(db_orders.values())
     lines.append("\n\n## Підсумок")
-    lines.append(f"\nВиручка за Prom API: {total_prom:.2f} грн")
+    lines.append(f"\nВиручка за {platform_label} API: {total_api:.2f} грн")
     lines.append(f"\nВиручка за БД: {total_db:.2f} грн")
-    lines.append(f"\nРізниця: {total_prom - total_db:+.2f} грн")
+    lines.append(f"\nРізниця: {total_api - total_db:+.2f} грн")
 
     return "".join(lines)
+
+
+def build_reconciliation(date_from: str, date_to: str) -> str:
+    init_db()
+    with get_connection() as conn:
+        prom_orders = fetch_prom_orders_for_period(date_from, date_to) if PROM_API_KEY else []
+        rozetka_orders = fetch_rozetka_orders_for_period(date_from, date_to)
+
+        prom_section = _build_platform_section(
+            "prom", "Prom", conn, date_from, date_to,
+            creds_available=bool(PROM_API_KEY), api_orders=prom_orders, api_order_total_fn=_prom_order_total,
+        )
+        rozetka_section = _build_platform_section(
+            "rozetka", "Rozetka", conn, date_from, date_to,
+            creds_available=bool(ROZETKA_USERNAME and ROZETKA_PASSWORD),
+            api_orders=rozetka_orders, api_order_total_fn=_rozetka_order_total,
+        )
+
+    return (prom_section + rozetka_section).lstrip()
 
 
 def main() -> None:

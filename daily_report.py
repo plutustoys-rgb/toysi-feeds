@@ -6,6 +6,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+import rozetka_client
 from competitor_pricing import get_platform_commission
 from orders_db import get_connection, get_orders_awaiting_payment, init_db
 from parser import fetch_toysi_catalog
@@ -18,26 +19,72 @@ if hasattr(sys.stdout, "reconfigure"):
 
 load_dotenv()
 
-PROM_API_KEY    = os.environ.get("PROM_API_KEY", "")
-ROZETKA_API_KEY = os.environ.get("ROZETKA_API_KEY", "")
+PROM_API_KEY     = os.environ.get("PROM_API_KEY", "")
+ROZETKA_USERNAME = os.environ.get("ROZETKA_USERNAME", "")
+ROZETKA_PASSWORD = os.environ.get("ROZETKA_PASSWORD", "")
 
 LOOKBACK_HOURS = 24
 
+# 2026-07-15: дефолт, ще НЕ узгоджений з власницею — власне рішення, скільки
+# і коли поповнювати, лишається за нею (агент нічого не оплачує й не
+# нагадує текстом "заплати", лише позначає "низький" у звіті). Скоригуй за
+# власним відчуттям типового обороту на цьому балансі.
+ROZETKA_LOW_BALANCE_THRESHOLD = 500.0
+
 """
-Крок 8 плану. Не вистачає лише балансів Rozetka/Prom (Крок 7 — окрема
-інтеграція з балансовими API маркетплейсів, ще не написана, не пов'язана
-з order_router.py/order_status_tracker.py) — усе інше з оригінального
-переліку Кроку 8 тепер доступне: нові замовлення по платформах, виручка,
-скільки передано Toysi, скільки чекає оплати, повернення/відмови,
-замовлення з помилками Toysi.
+Крок 8 плану. Баланс Rozetka тепер підключено (Крок 7, 2026-07-15,
+rozetka_client.get_balance()). Баланс Prom — НЕ вдалось: офіційний
+публічний API Prom (public-api.docs.prom.ua) взагалі не має ендпоінту
+балансу/фінансів серед своїх дев'яти розділів (Orders/Messages/Clients/
+Products/Groups/Payment/Delivery/OrderStatus/Chat) — не питання
+відсутнього ключа чи прав доступу, а структурна відсутність такого
+методу в самому API. Показуємо це чесно в звіті нижче, а не мовчки
+нулем. Усе інше з оригінального переліку Кроку 8 тепер доступне: нові
+замовлення по платформах, виручка, скільки передано Toysi, скільки чекає
+оплати, повернення/відмови, замовлення з помилками Toysi.
 """
 
 
 def _source_label(platform: str) -> str:
-    """Реальні дані для платформи є, лише якщо задано відповідний API-ключ —
-    інакше orders_watcher.py досі повертає мок-замовлення (Крок 3 плану)."""
-    key = PROM_API_KEY if platform == "prom" else ROZETKA_API_KEY
-    return "реальні дані" if key else "мок-дані (ключа ще немає)"
+    """Реальні дані для платформи є, лише якщо задано відповідні облікові
+    дані — інакше orders_watcher.py досі повертає мок-замовлення (Крок 3
+    плану)."""
+    has_creds = bool(PROM_API_KEY) if platform == "prom" else bool(ROZETKA_USERNAME and ROZETKA_PASSWORD)
+    return "реальні дані" if has_creds else "мок-дані (облікових даних ще немає)"
+
+
+def _rozetka_balance_line() -> str:
+    """Графа балансу Rozetka для щоденного звіту (Крок 7 плану) —
+    rozetka_client.get_balance() (GET /v1/balances/current)."""
+    if not (ROZETKA_USERNAME and ROZETKA_PASSWORD):
+        return "\n\nБаланс Rozetka: ⚠️ ROZETKA_USERNAME/ROZETKA_PASSWORD не задані в .env — недоступно"
+
+    try:
+        balance = rozetka_client.get_balance()
+    except rozetka_client.RozetkaAPIError as e:
+        return f"\n\nБаланс Rozetka: ⚠️ не вдалось отримати ({e})"
+
+    try:
+        current = float(balance.get("current_balance", 0))
+    except (TypeError, ValueError):
+        return f"\n\nБаланс Rozetka: ⚠️ неочікуваний формат відповіді ({balance})"
+
+    if current < ROZETKA_LOW_BALANCE_THRESHOLD:
+        return (
+            f"\n\n🔴 БАЛАНС ROZETKA НИЗЬКИЙ: {current:.2f} грн "
+            f"(поріг {ROZETKA_LOW_BALANCE_THRESHOLD:.0f} грн) — розглянь поповнення"
+        )
+    return f"\n\nБаланс Rozetka: {current:.2f} грн"
+
+
+def _prom_balance_line() -> str:
+    """Prom НЕ має балансового ендпоінту в публічному API — структурна
+    відсутність методу, не проблема ключа/прав. Позначено чесно, не нулем."""
+    return (
+        "\n\nБаланс Prom: ⚠️ недоступно через API — публічний API Prom "
+        "(public-api.docs.prom.ua) не має жодного балансового/фінансового "
+        "ендпоінту серед своїх розділів; перевіряти в кабінеті вручну."
+    )
 
 
 def _order_total(order_items: list) -> float:
@@ -216,6 +263,9 @@ def build_report() -> str:
         lines.append(f"\n\n🔴 Замовлення з помилками Toysi (потребують уваги): {toysi_errors}")
     if returns_cancellations:
         lines.append(f"\n⚠️ Повернень/скасувань (поточний стан, не лише за добу): {returns_cancellations}")
+
+    lines.append(_rozetka_balance_line())
+    lines.append(_prom_balance_line())
 
     lines.append(f"\n\n📒 Дані для КОДВ за {LOOKBACK_HOURS} год (для граф 6/8/9):")
 

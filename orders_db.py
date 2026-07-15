@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS orders (
     checkbox_ettn_registered_at TEXT,         -- коли зареєстровано ЕТТН у Checkbox (order_status_tracker.py) —
                                                -- захист від повторної реєстрації (= дубль РЕАЛЬНОГО фіскального чека)
     checkbox_receipt_id   TEXT,               -- id чека з відповіді Checkbox — для звірки/ручного пошуку
+    rozetka_ttn_pushed_at TEXT,                -- коли ТТН передано НАЗАД у Rozetka через OrderUpdateStatus
+                                               -- (order_status_tracker.py) — захист від повторного PUT /orders/{id}
+                                               -- на кожному циклі опитування (Rozetka сама починає трекінг після
+                                               -- першого прикріплення ТТН, повторний виклик зайвий, не шкідливий,
+                                               -- але марний мережевий запит щоразу)
     UNIQUE (order_id, platform)
 );
 
@@ -72,6 +77,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "ukrposhta_sticker_path", "ukrposhta_sticker_path TEXT")
         _ensure_column(conn, "orders", "checkbox_ettn_registered_at", "checkbox_ettn_registered_at TEXT")
         _ensure_column(conn, "orders", "checkbox_receipt_id", "checkbox_receipt_id TEXT")
+        _ensure_column(conn, "orders", "rozetka_ttn_pushed_at", "rozetka_ttn_pushed_at TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -238,6 +244,17 @@ def mark_checkbox_ettn_registered(conn: sqlite3.Connection, internal_order_id: s
     conn.execute(
         "UPDATE orders SET checkbox_ettn_registered_at = ?, checkbox_receipt_id = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), receipt_id, internal_order_id),
+    )
+
+
+def mark_rozetka_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що ТТН вже передано в Rozetka через OrderUpdateStatus
+    (order_status_tracker.py, rozetka_client.update_order_status()) —
+    захист від повторного PUT /orders/{id} на кожному циклі опитування,
+    той самий підхід, що й mark_checkbox_ettn_registered()."""
+    conn.execute(
+        "UPDATE orders SET rozetka_ttn_pushed_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
 
 

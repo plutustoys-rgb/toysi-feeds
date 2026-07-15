@@ -114,6 +114,24 @@ jobs:
           fi
 
       - run: python generate_rozetka_feed.py
+
+      # Задача власниці 2026-07-15: "системне рішення замість реактивних
+      # патчів" — Rozetka заблокувала подачу через дублікати назв, які
+      # потім виявились ширшою прогалиною (43 групи/116 SKU), не 2
+      # одиничними випадками. rozetka_feed_preflight() зводить УСІ відомі
+      # класи помилок валідатора в один прогін і виконується тут, ПІСЛЯ
+      # генерації, ПЕРЕД публікацією нижче. НАВМИСНО без continue-on-error:
+      # ненульовий вихідний код зупиняє весь job (усі наступні steps без
+      # `if: always()` автоматично пропускаються) — тобто збій тут блокує
+      # НЕ ЛИШЕ публікацію rozetka_feed.xml, а й генерацію/вивантаження
+      # Prom-фідів у цьому ж прогоні. Свідомий компроміс: розділяти
+      # публікацію по фідах — це окремий, більший рефакторинг існуючого
+      # єдиного "Publish feeds to feed-data" кроку (комітить rozetka_feed.xml
+      # і prom_feed_top.xml РАЗОМ, ще до цієї задачі) — не чіпаю це зараз,
+      # щоб не змішувати непов'язані зміни.
+      - name: Rozetka feed preflight (blocking — errors stop publication)
+        run: python generate_rozetka_feed.py --preflight
+
       - run: python generate_prom_feed.py
       - run: python generate_prom_feed_top.py
 

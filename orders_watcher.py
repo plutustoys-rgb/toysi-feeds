@@ -2,11 +2,12 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timedelta
 
 import requests
 from dotenv import load_dotenv
 
-from orders_db import get_connection, init_db, insert_order
+from orders_db import get_connection, init_db, insert_order, mark_payment_confirmed
 
 load_dotenv()
 
@@ -17,6 +18,24 @@ PROM_API_URL    = "https://my.prom.ua/api/v1"
 REQUEST_TIMEOUT = 30
 
 POLL_INTERVAL_SECONDS = 15 * 60  # 10-15 хв за планом (Крок 3)
+
+# ВИПРАВЛЕНО (2026-07-15, реальний інцидент — замовлення №415858222,
+# оплачене через Пром-оплату о 20:41 UTC, підтверджено оплаченим Prom уже
+# о 20:42:46 — за 96 секунд): раніше fetch_new_orders_prom() запитував
+# ЛИШЕ status=pending. Онлайн-оплата (Пром-оплата/evopay) переводить
+# замовлення зі статусу "pending" в "paid" за лічені секунди — набагато
+# швидше за 15-хвилинний цикл опитування (POLL_INTERVAL_SECONDS вище).
+# Якщо жоден цикл не встигав застати це вузьке "pending"-вікно (живо
+# підтверджено журналом: перший прогін після створення замовлення був
+# через 9+ хв, замовлення вже мало статус paid) — замовлення випадало з
+# поля зору НАЗАВЖДИ, бо статус більше ніколи не повертається в pending.
+# Замінено на широкий діапазон дат БЕЗ фільтра статусу (PROM_ORDER_
+# LOOKBACK_HOURS) — той самий підхід, що вже перевірений живими
+# запитами в reconcile_revenue.fetch_prom_orders_for_period(). Дедуп за
+# (order_id, platform) і так уже робить orders_db.insert_order()/
+# order_exists() — повторний прихід уже відомого замовлення щоцикл
+# безпечний і дешевий (один SELECT), не створює дублів.
+PROM_ORDER_LOOKBACK_HOURS = 72
 
 # Ключові слова, за якими розпізнаємо накладений платіж у вільному тексті
 # payment_option.name (Prom Orders API не дає чистого enum для способу оплати).
@@ -29,33 +48,54 @@ _COD_KEYWORDS = ("наклад", "післяплат", "отриманні", "г
 def fetch_new_orders_prom() -> list:
     """
     Реальний виклик Prom Orders API (https://public-api.docs.prom.ua/, GET /orders/list,
-    Authorization: Bearer PROM_API_KEY). Фільтр status=pending — це статус Prom для
-    щойно створеного замовлення, яке ще не оброблене продавцем ("Нове").
-    Поки ключа немає — мок-замовлення, щоб перевіряти логіку router/orders.db без акаунту.
+    Authorization: Bearer PROM_API_KEY). Поки ключа немає — мок-замовлення,
+    щоб перевіряти логіку router/orders.db без акаунту.
+
+    Запитує ВСІ замовлення за PROM_ORDER_LOOKBACK_HOURS (без фільтра
+    status=pending — див. коментар біля константи вище) з пагінацією через
+    last_id (той самий підхід, що й reconcile_revenue.
+    fetch_prom_orders_for_period()). Дедуп — на рівні orders_db, тут
+    навмисно немає жодної спроби відрізнити "нове" від "вже баченого" —
+    insert_order() сам ігнорує вже наявні (order_id, platform).
     """
     if not PROM_API_KEY:
         print("[Prom] PROM_API_KEY не задано — використовую мок-замовлення для перевірки логіки")
         return _mock_prom_orders()
 
-    try:
-        response = requests.get(
-            f"{PROM_API_URL}/orders/list",
-            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
-            params={"status": "pending", "limit": 100},
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"[Prom] Помилка з'єднання: {e}", file=sys.stderr)
-        return []
+    date_from = (datetime.now() - timedelta(hours=PROM_ORDER_LOOKBACK_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
+    orders = []
+    last_id = None
+    while True:
+        params = {"date_from": date_from, "limit": 100}
+        if last_id is not None:
+            params["last_id"] = last_id
+        try:
+            response = requests.get(
+                f"{PROM_API_URL}/orders/list",
+                headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"[Prom] Помилка з'єднання: {e}", file=sys.stderr)
+            break
 
-    try:
-        data = response.json()
-    except ValueError:
-        print(f"[Prom] Невалідна відповідь (не JSON): {response.text[:300]}", file=sys.stderr)
-        return []
+        try:
+            data = response.json()
+        except ValueError:
+            print(f"[Prom] Невалідна відповідь (не JSON): {response.text[:300]}", file=sys.stderr)
+            break
 
-    return [_convert_prom_order(o) for o in data.get("orders", [])]
+        page = data.get("orders", [])
+        if not page:
+            break
+        orders.extend(page)
+        if len(page) < 100:
+            break
+        last_id = page[-1]["id"]
+
+    return [_convert_prom_order(o) for o in orders]
 
 
 _PRICE_WHITESPACE_RE = re.compile(r"[\s  ]")
@@ -114,6 +154,19 @@ def _convert_prom_order(order: dict) -> dict:
     payment_name = ((order.get("payment_option") or {}).get("name") or "").lower()
     is_cod = any(kw in payment_name for kw in _COD_KEYWORDS)
 
+    # ВИПРАВЛЕНО (2026-07-15, той самий інцидент №415858222): для онлайн-
+    # оплати (Пром-оплата/evopay) Prom сам підтверджує факт оплати через
+    # payment_data.status == "paid" — довіряємо цьому напряму, НЕ чекаємо
+    # bank_check.py/виписку ПриватБанку для таких замовлень. Кошти за
+    # Пром-оплату надходять на рахунок продавця лише через ~24 год ПІСЛЯ
+    # отримання посилки клієнтом (задокументовано в плані проєкту) — банк-
+    # звірка НІКОЛИ не встигне вчасно для цього способу оплати; замовлення
+    # 415858222 простояло непереданим саме тому, доки не втрутились
+    # вручну. payment_data відсутній (None) для накладеного платежу —
+    # is_cod вже покриває цей шлях окремо, тут це не зачіпає.
+    payment_data = order.get("payment_data") or {}
+    payment_confirmed_by_prom = not is_cod and payment_data.get("status") == "paid"
+
     customer_name = " ".join(
         part for part in (order.get("client_first_name"), order.get("client_last_name")) if part
     )
@@ -133,7 +186,7 @@ def _convert_prom_order(order: dict) -> dict:
         "platform": "prom",
         "status": order.get("status", "pending"),
         "payment_method": "cod" if is_cod else "prepaid",
-        "payment_confirmed": False,
+        "payment_confirmed": payment_confirmed_by_prom,
         "customer_name": customer_name,
         "phone": order.get("phone", ""),
         "np_branch": order.get("delivery_address", ""),
@@ -231,8 +284,27 @@ def poll_once() -> None:
             internal_id = f"{order['platform']}_{order['order_id']}"
             if insert_order(conn, order):
                 print(f"[orders_watcher] Нове замовлення збережено: {internal_id}")
-            else:
-                print(f"[orders_watcher] Пропущено (вже є в БД): {internal_id}")
+                continue
+
+            # ВИПРАВЛЕНО (2026-07-15): insert_order() НЕ оновлює вже наявний
+            # рядок — якщо замовлення потрапило в БД РАНІШЕ, ще до
+            # підтвердження оплати (напр. зловлене рівно в момент, коли
+            # Prom ще показував "pending"), а цей свіжий запит тепер
+            # показує payment_confirmed=True (Прom payment_data.status ==
+            # "paid"), без цієї перевірки воно лишилось би непідтвердженим
+            # НАЗАВЖДИ — bank_check.py теж його не знайде (кошти за
+            # Пром-оплату надходять на рахунок продавця з затримкою ~24
+            # год після отримання посилки клієнтом).
+            if order["platform"] == "prom" and order.get("payment_confirmed"):
+                existing = conn.execute(
+                    "SELECT payment_confirmed FROM orders WHERE internal_order_id = ?", (internal_id,)
+                ).fetchone()
+                if existing and not existing["payment_confirmed"]:
+                    mark_payment_confirmed(conn, internal_id)
+                    print(f"[orders_watcher] Оплату підтверджено (Prom payment_data): {internal_id}")
+                    continue
+
+            print(f"[orders_watcher] Пропущено (вже є в БД): {internal_id}")
 
 
 def run_forever() -> None:

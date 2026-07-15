@@ -8,11 +8,13 @@ import requests
 from dotenv import load_dotenv
 
 from orders_db import get_connection, init_db, insert_order, mark_payment_confirmed
+import rozetka_client
 
 load_dotenv()
 
-PROM_API_KEY    = os.environ.get("PROM_API_KEY", "")
-ROZETKA_API_KEY = os.environ.get("ROZETKA_API_KEY", "")
+PROM_API_KEY     = os.environ.get("PROM_API_KEY", "")
+ROZETKA_USERNAME = os.environ.get("ROZETKA_USERNAME", "")
+ROZETKA_PASSWORD = os.environ.get("ROZETKA_PASSWORD", "")
 
 PROM_API_URL    = "https://my.prom.ua/api/v1"
 REQUEST_TIMEOUT = 30
@@ -195,16 +197,91 @@ def _convert_prom_order(order: dict) -> dict:
     }
 
 
+def _rozetka_payment_method(order: dict) -> str:
+    """Rozetka повертає назву способу оплати текстом (payment_type_name/
+    payment_type) — той самий підхід евристики за ключовими словами, що й
+    _COD_KEYWORDS для Prom вище, бо чистого enum тут так само немає."""
+    name = str(order.get("payment_type_name") or order.get("payment_type") or "").lower()
+    return "cod" if any(kw in name for kw in _COD_KEYWORDS) else "prepaid"
+
+
+def _convert_rozetka_purchase(purchase: dict) -> dict:
+    """
+    Приводить одну позицію order.purchases[] до формату items у orders_db.
+
+    ⚠️ Точні назви полів purchases[] НЕ підтверджені живим замовленням —
+    apidoc Rozetka (api-seller.rozetka.com.ua/apidoc/) документує сам факт
+    існування order.purchases як Object[], але не розписує конкретні поля
+    моделі PurchaseDetails (порожній стаб у згенерованій документації).
+    Назви нижче — best-effort здогад за аналогією з іншими місцями цього ж
+    API (напр. order.items_photos використовує id/item_name/item_price) —
+    перевір і скоригуй за першим реальним замовленням Rozetka, той самий
+    підхід, що вже застосований для _detect_carrier() (ukrposhta-слаг) і
+    RUS-варіанту каталогу Prom.
+    """
+    return {
+        "toysi_code": purchase.get("item_id") or purchase.get("id") or "",
+        "name": purchase.get("item_name") or purchase.get("name", ""),
+        "qty": int(purchase.get("quantity") or purchase.get("amount") or 1),
+        "price": _parse_prom_price(purchase.get("price") or purchase.get("item_price")),
+    }
+
+
+def _rozetka_delivery_address(order: dict) -> str:
+    """⚠️ Так само не підтверджено живим замовленням — order.delivery є
+    Object (DeliveryDetails), точні під-поля (місто/відділення) не розписані
+    в apidoc. Фолбек на порожній рядок, якщо структура виявиться іншою —
+    безпечніше порожня адреса (Toysi це прийме як вільний текст), ніж
+    падіння всього опитування через один незнайомий формат."""
+    delivery = order.get("delivery") or {}
+    if isinstance(delivery, dict):
+        parts = [
+            delivery.get("city_name") or delivery.get("city") or "",
+            delivery.get("warehouse_name") or delivery.get("warehouse") or "",
+        ]
+        return ", ".join(p for p in parts if p)
+    return ""
+
+
+def _convert_rozetka_order(order: dict) -> dict:
+    """Приводить замовлення з реального Rozetka Seller API (GET /orders/search)
+    до сирої структури, яку очікує normalize_order()."""
+    purchases = order.get("purchases") or []
+    return {
+        "order_id": str(order["id"]),
+        "platform": "rozetka",
+        "status": "new",
+        "payment_method": _rozetka_payment_method(order),
+        "payment_confirmed": False,
+        "customer_name": order.get("userName") or (order.get("user") or {}).get("full_name", ""),
+        "phone": order.get("user_phone", ""),
+        "np_branch": _rozetka_delivery_address(order),
+        "carrier": "nova_poshta",  # Rozetka API окремо не документує carrier-слаг у search-відповіді
+        "items": [_convert_rozetka_purchase(p) for p in purchases] or [
+            {"toysi_code": "", "name": "⚠️ order.purchases порожній/незнайомого формату — перевір вручну", "qty": 1, "price": 0.0}
+        ],
+    }
+
+
 def fetch_new_orders_rozetka() -> list:
     """
-    TODO: реальний виклик Rozetka Seller API, авторизація через ROZETKA_API_KEY.
-    Поки ключа немає — мок-замовлення для перевірки логіки.
+    Реальний виклик Rozetka Seller API (rozetka_client.py): GET /orders/search
+    зі статусом 1 ("Нове замовлення"). Авторизація — логін/пароль кабінету
+    продавця (ROZETKA_USERNAME/ROZETKA_PASSWORD), не окремий API-ключ, як у
+    Prom — див. docstring rozetka_client._login(). Поки облікових даних
+    немає — мок-замовлення, щоб перевіряти логіку router/orders.db без акаунту.
     """
-    if not ROZETKA_API_KEY:
-        print("[Rozetka] ROZETKA_API_KEY не задано — використовую мок-замовлення для перевірки логіки")
+    if not ROZETKA_USERNAME or not ROZETKA_PASSWORD:
+        print("[Rozetka] ROZETKA_USERNAME/ROZETKA_PASSWORD не задано — використовую мок-замовлення для перевірки логіки")
         return _mock_rozetka_orders()
 
-    raise NotImplementedError("Підключити реальний Rozetka Seller API, коли з'явиться ROZETKA_API_KEY")
+    try:
+        raw_orders = rozetka_client.fetch_new_orders()
+    except rozetka_client.RozetkaAPIError as e:
+        print(f"[Rozetka] {e}", file=sys.stderr)
+        return []
+
+    return [_convert_rozetka_order(o) for o in raw_orders]
 
 
 def _mock_prom_orders() -> list:

@@ -2,8 +2,10 @@ import sys
 
 from checkbox_client import register_ettn, CheckboxAPIError
 from orders_db import (
-    get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered, update_delivery_status,
+    get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
+    mark_rozetka_ttn_pushed, update_delivery_status,
 )
+import rozetka_client
 from toysi_order_submit import (
     fetch_order_statuses,
     describe_order_status,
@@ -33,6 +35,17 @@ get_orders_awaiting_manual_ttn_entry() — ручний шлях, окремий
 підв'язує ТТН, створений ЧУЖИМ токеном НП. _maybe_register_ettn() нижче
 МОЖЕ мовчки й постійно повертати CheckboxAPIError для КОЖНОГО замовлення
 з цієї причини — це НЕ підтверджено без живого тесту (sandbox немає).
+
+Прикріплення ТТН НАЗАД у Rozetka (2026-07-15, _maybe_push_ttn_to_rozetka):
+щойно з'являється toysi_ttn для platform=rozetka — викликає
+rozetka_client.update_order_status(order_id, status=2, ttn=ttn). За
+документацією Rozetka Seller API, ttn разом зі status=2 автоматично
+переводить замовлення в статус 61, і Rozetka сама починає відстежувати
+трекінг доставки — подальших ручних переходів статусу не потрібно.
+На відміну від Prom: у цьому репозиторії НЕМАЄ аналогічного механізму
+"написати ТТН назад у Prom" — Prom Orders API такого ендпоінту в поточній
+інтеграції не використовує (сам Prom, судячи з усього, підхоплює трекінг
+іншим шляхом, не через явний push від продавця).
 """
 
 _STATUS_TO_DELIVERY_STATUS = {
@@ -110,6 +123,48 @@ def _maybe_register_ettn(conn, order: dict, ttn: str) -> None:
     print(f"[order_status_tracker] ЕТТН зареєстровано в Checkbox: {order['internal_order_id']} (ТТН {ttn})")
 
 
+def _maybe_push_ttn_to_rozetka(conn, order: dict, ttn: str) -> None:
+    """Прикріплює ТТН до замовлення на СТОРОНІ Rozetka (PUT /orders/{id},
+    status=2 + ttn) — щойно з'явився toysi_ttn і ще не передавали
+    (rozetka_ttn_pushed_at IS NULL). Ідемпотентність — той самий підхід,
+    що й _maybe_register_ettn() вище: перевіряємо прапорець щоразу, а не
+    лише "у момент появи ttn", щоб тимчасова мережева помилка Rozetka
+    природно повторилась на наступному циклі опитування, а не загубилась.
+
+    order["order_id"] тут — це ID замовлення В САМІЙ Rozetka (не
+    toysi_order_id) — саме те, що приймає rozetka_client.update_order_status().
+    Помилка (включно з НЕ-RozetkaAPIError винятком) НЕ має зупиняти
+    track_orders() для інших замовлень у тому самому циклі."""
+    if not ttn:
+        return
+    if order.get("platform") != "rozetka":
+        return
+    if order.get("rozetka_ttn_pushed_at"):
+        return
+
+    try:
+        rozetka_client.update_order_status(
+            order["order_id"], status=rozetka_client.ORDER_STATUS_PROCESSING, ttn=ttn,
+        )
+    except rozetka_client.RozetkaAPIError as e:
+        print(
+            f"[order_status_tracker] Не вдалось передати ТТН у Rozetka для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+    except Exception as e:
+        print(
+            f"[order_status_tracker] Неочікувана помилка при передачі ТТН у Rozetka для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+
+    mark_rozetka_ttn_pushed(conn, order["internal_order_id"])
+    print(f"[order_status_tracker] ТТН передано в Rozetka: {order['internal_order_id']} (ТТН {ttn})")
+
+
 def track_orders() -> None:
     with get_connection() as conn:
         active = get_active_toysi_orders(conn)
@@ -145,6 +200,7 @@ def track_orders() -> None:
             order = orders_by_internal_id[internal_id]
             order["toysi_ttn"] = ttn
             _maybe_register_ettn(conn, order, ttn)
+            _maybe_push_ttn_to_rozetka(conn, order, ttn)
 
             ttn_note = f", ТТН: {ttn}" if ttn else ""
             terminal_note = " [термінальний, більше не опитуємо]" if status_code in TERMINAL_ORDER_STATUSES else ""

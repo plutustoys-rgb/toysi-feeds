@@ -120,6 +120,31 @@ def _parse_prom_price(raw) -> float:
     return float(match.group().replace(",", ".")) if match else 0.0
 
 
+def _parse_qty(raw) -> int:
+    """ВИПРАВЛЕНО (2026-07-15, незалежне рев'ю pt19, критична знахідка):
+    голий `int(purchase.get("quantity") or 1)` падав на форматах на
+    кшталт "2 шт." (типова укр. e-commerce конвенція) — живо
+    підтверджено крахом. Оскільки fetch_new_orders_rozetka()/
+    fetch_new_orders_prom() будують ВЕСЬ список замовлень одним виразом
+    (list comprehension) ДО того, як цикл вставки в БД навіть починається,
+    ОДНЕ замовлення з таким форматом обвалювало б poll_once() ЦІЛКОМ —
+    втрачаючи одночасно і Prom-, і Rozetka-замовлення того самого циклу,
+    і повторюючи крах на КОЖНОМУ наступному 15-хвилинному циклі (реальний
+    шлях запуску — systemd oneshot, без try/except навколо poll_once(),
+    на відміну від run_forever()).
+
+    Той самий патерн, що вже рятує парсинг ціни (_parse_prom_price()) —
+    для чисел/float повертає як є (з fallback на 1, якщо 0/порожньо, той
+    самий сенс, що й старий "or 1"); для рядків витягує перше число
+    регексом, ігноруючи одиницю виміру ("шт.", "pcs" тощо)."""
+    if isinstance(raw, (int, float)):
+        qty = int(raw)
+    else:
+        match = re.search(r"\d+", str(raw or ""))
+        qty = int(match.group()) if match else 0
+    return qty or 1
+
+
 # Машинний слаг перевізника з delivery_provider_data.provider -> наш carrier.
 # "nova_poshta" підтверджено емпірично на реальному замовленні №414634349.
 # "ukrposhta" — best-effort здогад за аналогією (той самий стиль слага, що
@@ -177,7 +202,7 @@ def _convert_prom_order(order: dict) -> dict:
         {
             "toysi_code": product.get("sku") or product.get("external_id") or "",
             "name": product.get("name", ""),
-            "qty": int(product.get("quantity") or 1),
+            "qty": _parse_qty(product.get("quantity")),
             "price": _parse_prom_price(product.get("price")),
         }
         for product in order.get("products", [])
@@ -195,6 +220,56 @@ def _convert_prom_order(order: dict) -> dict:
         "carrier": _detect_carrier(order.get("delivery_provider_data"), order.get("delivery_option")),
         "items": items,
     }
+
+
+class PromAPIError(Exception):
+    """Запит до Prom Orders API (set_status) не вдався — мережа, невалідна
+    відповідь, чи сам Prom повернув warning_message для частини замовлень."""
+
+
+# "received" ("Принят") — Prom-статус, що відповідає "прийнято в обробку"
+# (public-api.docs.prom.ua, OrderStatus.name enum: pending/received/
+# delivered/canceled/draft/paid/custom-{id}). Підтверджено на реальному
+# замовленні №414634349: саме цей статус Prom виставляє, коли продавець
+# вручну натискає "Прийняти" в кабінеті — той самий сенс тут, лише
+# автоматично, одразу після успішної передачі в Toysi.
+PROM_ORDER_STATUS_ACCEPTED = "received"
+
+
+def update_prom_order_status(order_id, status: str = PROM_ORDER_STATUS_ACCEPTED) -> None:
+    """
+    POST /orders/set_status (public-api.docs.prom.ua, розділ Orders) —
+    оновлює статус замовлення на боці Prom, щоб клієнт бачив актуальний
+    стан ("прийнято в обробку"), а не старий, одразу після успішної
+    передачі в Toysi (order_router.py). Задача власниці 2026-07-15: клієнт
+    бачив старий статус, хоча замовлення вже реально в обробці.
+
+    Не підтверджено живим викликом на момент написання (лише читальні
+    /orders/list виклики були перевірені раніше) — перший реальний виклик
+    варто звірити з кабінетом Prom вручну.
+    """
+    if not PROM_API_KEY:
+        raise PromAPIError("PROM_API_KEY не задано")
+
+    try:
+        response = requests.post(
+            f"{PROM_API_URL}/orders/set_status",
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            json={"status": status, "ids": [int(order_id)]},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise PromAPIError(f"Помилка з'єднання: {e}")
+
+    try:
+        data = response.json()
+    except ValueError:
+        raise PromAPIError(f"Невалідна відповідь (не JSON): {response.text[:300]}")
+
+    warning = data.get("warning_message")
+    if warning:
+        raise PromAPIError(f"Prom попередив: {warning}")
 
 
 def _rozetka_payment_method(order: dict) -> str:
@@ -222,7 +297,7 @@ def _convert_rozetka_purchase(purchase: dict) -> dict:
     return {
         "toysi_code": purchase.get("item_id") or purchase.get("id") or "",
         "name": purchase.get("item_name") or purchase.get("name", ""),
-        "qty": int(purchase.get("quantity") or purchase.get("amount") or 1),
+        "qty": _parse_qty(purchase.get("quantity") or purchase.get("amount")),
         "price": _parse_prom_price(purchase.get("price") or purchase.get("item_price")),
     }
 

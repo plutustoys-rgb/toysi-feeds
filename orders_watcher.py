@@ -120,6 +120,31 @@ def _parse_prom_price(raw) -> float:
     return float(match.group().replace(",", ".")) if match else 0.0
 
 
+def _parse_qty(raw) -> int:
+    """ВИПРАВЛЕНО (2026-07-15, незалежне рев'ю pt19, критична знахідка):
+    голий `int(purchase.get("quantity") or 1)` падав на форматах на
+    кшталт "2 шт." (типова укр. e-commerce конвенція) — живо
+    підтверджено крахом. Оскільки fetch_new_orders_rozetka()/
+    fetch_new_orders_prom() будують ВЕСЬ список замовлень одним виразом
+    (list comprehension) ДО того, як цикл вставки в БД навіть починається,
+    ОДНЕ замовлення з таким форматом обвалювало б poll_once() ЦІЛКОМ —
+    втрачаючи одночасно і Prom-, і Rozetka-замовлення того самого циклу,
+    і повторюючи крах на КОЖНОМУ наступному 15-хвилинному циклі (реальний
+    шлях запуску — systemd oneshot, без try/except навколо poll_once(),
+    на відміну від run_forever()).
+
+    Той самий патерн, що вже рятує парсинг ціни (_parse_prom_price()) —
+    для чисел/float повертає як є (з fallback на 1, якщо 0/порожньо, той
+    самий сенс, що й старий "or 1"); для рядків витягує перше число
+    регексом, ігноруючи одиницю виміру ("шт.", "pcs" тощо)."""
+    if isinstance(raw, (int, float)):
+        qty = int(raw)
+    else:
+        match = re.search(r"\d+", str(raw or ""))
+        qty = int(match.group()) if match else 0
+    return qty or 1
+
+
 # Машинний слаг перевізника з delivery_provider_data.provider -> наш carrier.
 # "nova_poshta" підтверджено емпірично на реальному замовленні №414634349.
 # "ukrposhta" — best-effort здогад за аналогією (той самий стиль слага, що
@@ -177,7 +202,7 @@ def _convert_prom_order(order: dict) -> dict:
         {
             "toysi_code": product.get("sku") or product.get("external_id") or "",
             "name": product.get("name", ""),
-            "qty": int(product.get("quantity") or 1),
+            "qty": _parse_qty(product.get("quantity")),
             "price": _parse_prom_price(product.get("price")),
         }
         for product in order.get("products", [])
@@ -272,7 +297,7 @@ def _convert_rozetka_purchase(purchase: dict) -> dict:
     return {
         "toysi_code": purchase.get("item_id") or purchase.get("id") or "",
         "name": purchase.get("item_name") or purchase.get("name", ""),
-        "qty": int(purchase.get("quantity") or purchase.get("amount") or 1),
+        "qty": _parse_qty(purchase.get("quantity") or purchase.get("amount")),
         "price": _parse_prom_price(purchase.get("price") or purchase.get("item_price")),
     }
 

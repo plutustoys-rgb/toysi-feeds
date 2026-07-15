@@ -87,6 +87,35 @@ def _prom_balance_line() -> str:
     )
 
 
+def _rozetka_validation_status_line() -> str:
+    """
+    Задача власниці 2026-07-15, п.4: "API-еквівалент інструмента 'Перевірка
+    XML'" — GET /goods/errors + GET /goods/not-valid (rozetka_client.py) є
+    саме цим: живий, поточний стан валідації каталогу на боці Rozetka,
+    підтягується щоразу, коли будується цей звіт, без ручної перевірки
+    кабінету. Кожен елемент goods/errors має blocked_reason.title (людський
+    текст причини) — це й буде живим джерелом для стоп-списків категорій/
+    брендів (Крок 3 задачі), коли з'являться облікові дані.
+    """
+    if not (ROZETKA_USERNAME and ROZETKA_PASSWORD):
+        return "\n\nСтатус валідації Rozetka (goods/errors): ⚠️ облікових даних немає — недоступно"
+
+    try:
+        errors = rozetka_client.fetch_goods_errors()
+        not_valid = rozetka_client.fetch_goods_not_valid()
+    except rozetka_client.RozetkaAPIError as e:
+        return f"\n\nСтатус валідації Rozetka (goods/errors): ⚠️ не вдалось отримати ({e})"
+
+    if not errors and not not_valid:
+        return "\n\nСтатус валідації Rozetka (goods/errors): ✅ 0 товарів з помилками, 0 невалідних"
+
+    line = (
+        f"\n\n⚠️ Статус валідації Rozetka (goods/errors): {len(errors)} товарів з помилками, "
+        f"{len(not_valid)} невалідних — перевір деталі в кабінеті ('Товари з помилками'/'Невалідні товари')"
+    )
+    return line
+
+
 def _order_total(order_items: list) -> float:
     return sum(item.get("price", 0) * item.get("qty", 1) for item in order_items)
 
@@ -266,6 +295,7 @@ def build_report() -> str:
 
     lines.append(_rozetka_balance_line())
     lines.append(_prom_balance_line())
+    lines.append(_rozetka_validation_status_line())
 
     lines.append(f"\n\n📒 Дані для КОДВ за {LOOKBACK_HOURS} год (для граф 6/8/9):")
 

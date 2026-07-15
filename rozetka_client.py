@@ -239,6 +239,72 @@ def search_categories(name_query: str = None) -> list:
     return content.get("categories") or []
 
 
+def _fetch_goods_pages(path: str) -> list:
+    """Пагінований збір усіх товарів з ApiItems-ендпоінтів (GetGoodsErrors/
+    GetGoodsNotValid) — той самий підхід до пагінації (по page, до
+    порожньої сторінки), що й fetch_new_orders()."""
+    items = []
+    page = 1
+    while True:
+        content = _request("get", path, params={"page": page})
+        page_items = content.get("items") or []
+        if not page_items:
+            break
+        items.extend(page_items)
+        page += 1
+    return items
+
+
+def fetch_goods_errors() -> list:
+    """
+    GET /goods/errors — "Товари з помилками" (той самий розділ кабінету,
+    що й ручний перегляд вкладки). Кожен елемент має
+    `blocked_reason.title` (людський текст причини) — ЖИВЕ, авторитетне
+    джерело того, чому саме Rozetka блокує/приховує конкретний товар,
+    замість того, щоб ми самі вгадували/хардкодили стоп-списки категорій
+    й брендів (задача 2026-07-15, Крок 3: "живі стоп-списки замість
+    захардкоджених знімків").
+
+    ⚠️ НЕ підтверджено живим викликом (немає облікових даних на момент
+    написання) — структура `blocked_reason`/`error_reason` підтверджена
+    лише з полів у самій специфікації apidoc, не з реальної відповіді.
+    """
+    return _fetch_goods_pages("/goods/errors")
+
+
+def fetch_goods_not_valid() -> list:
+    """GET /goods/not-valid — "Невалідні товари". Разом з
+    fetch_goods_errors() це і є API-еквівалент кабінетного інструмента
+    "Перевірка XML" — живий, поточний стан валідації каталогу на боці
+    Rozetka, без потреби вручну заходити в кабінет чи вгадувати правила.
+    Так само не підтверджено живим викликом."""
+    return _fetch_goods_pages("/goods/not-valid")
+
+
+def summarize_blocked_reasons(errors: list) -> dict:
+    """
+    Групує результат fetch_goods_errors() за blocked_reason.title (людський
+    текст причини) -> кількість товарів. Перший крок до "живих стоп-списків
+    замість захардкоджених знімків" (задача 2026-07-15, Крок 3) — ЩЕ НЕ
+    автоматична заміна ROZETKA_CATEGORY_STOP_LIST/ROZETKA_BRAND_STOP_LIST
+    у generate_rozetka_feed.py.
+
+    🔴 НАВМИСНО не намагаюсь тут відрізнити "категорія в стоп-листі" від
+    "бренд у стоп-листі" чи від геть іншої причини (напр. поганий опис) —
+    я НЕ бачила жодної реальної відповіді цього ендпоінту (немає облікових
+    даних), тож вигадувати regex/keyword-розпізнавання конкретних
+    формулювань `blocked_reason.title` напевно означало б здогадуватись
+    наосліп і, можливо, помилково. Це проміжний, чесний крок: групування
+    без класифікації. Коли з'являться ROZETKA_USERNAME/ROZETKA_PASSWORD і
+    перший реальний виклик — звір реальні значення `title` тут і допиши
+    класифікацію (категорія/бренд/інше) окремим фолоу-апом."""
+    counts: dict = {}
+    for item in errors:
+        reason = (item.get("blocked_reason") or {}).get("title") or "(без причини)"
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
 def get_balance() -> dict:
     """GET /v1/balances/current — поточний баланс магазину (Крок 7 плану)."""
     return _request("get", "/v1/balances/current")

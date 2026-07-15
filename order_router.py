@@ -10,6 +10,8 @@ from toysi_order_submit import submit_order
 from nova_poshta import resolve_shipping, NovaPoshtaAPIError
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message
+import rozetka_client
+from orders_watcher import update_prom_order_status, PromAPIError
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -177,6 +179,53 @@ def _create_ukrposhta_shipment(order: dict) -> dict:
     return {"ttn": shipment["ttn"], "sticker_path": sticker_path}
 
 
+def _update_marketplace_status(order: dict) -> None:
+    """
+    Задача власниці 2026-07-15: клієнт бачив СТАРИЙ статус на маркетплейсі
+    (наприклад, "Оплачено"/"Нове замовлення"), хоча замовлення вже реально
+    передане в Toysi й в обробці — статус на самому маркетплейсі ніяк не
+    оновлювався в момент forward. Викликається одразу ПІСЛЯ
+    mark_forwarded_to_toysi(), лише для реальних (не test_mode) передач.
+
+    Best-effort: помилка тут НЕ повинна відкочувати чи блокувати вже
+    успішну передачу в Toysi — замовлення вже реально в обробці незалежно
+    від того, чи вдалось оновити видимий клієнту статус. Наступний цикл
+    order_status_tracker.py/route_pending_orders() тут нічого не
+    повторює автоматично (це одноразова дія в момент forward, не
+    ідемпотентний стан у orders_db) — якщо виклик не вдався, статус
+    лишиться старим до ручної перевірки.
+
+    ВИПРАВЛЕНО (знайдено власним тестом перед комітом): rozetka_client.
+    _login() кидає голий RuntimeError, коли ROZETKA_USERNAME/
+    ROZETKA_PASSWORD не задані в .env — НЕ RozetkaAPIError. Без широкого
+    except Exception нижче це реально ВАЛИЛО Б route_order() цілком (не
+    лише пропускало б оновлення статусу) для КОЖНОГО замовлення, доки
+    власниця не додасть ці облікові дані — той самий клас бага, що вже
+    закривали для _maybe_push_ttn_to_rozetka()/_maybe_register_ettn() у
+    order_status_tracker.py.
+    """
+    try:
+        if order["platform"] == "rozetka":
+            # status=2 без ttn — "Комплектується. Дані підтверджені", ТТН
+            # додасться пізніше окремо (order_status_tracker.py), коли
+            # з'явиться від Toysi.
+            rozetka_client.update_order_status(order["order_id"], status=rozetka_client.ORDER_STATUS_PROCESSING)
+        elif order["platform"] == "prom":
+            update_prom_order_status(order["order_id"])
+    except (rozetka_client.RozetkaAPIError, PromAPIError) as e:
+        print(
+            f"[order_router] Не вдалось оновити статус на {order['platform']} для "
+            f"{order['internal_order_id']}: {e}",
+            file=sys.stderr,
+        )
+    except Exception as e:
+        print(
+            f"[order_router] Неочікувана помилка при оновленні статусу на {order['platform']} для "
+            f"{order['internal_order_id']}: {e}",
+            file=sys.stderr,
+        )
+
+
 def route_order(conn, order: dict, test_mode: bool = False) -> None:
     if test_mode:
         # Toysi документує api_mode=test буквально: "заказ не будет обрабатываться
@@ -229,6 +278,7 @@ def route_order(conn, order: dict, test_mode: bool = False) -> None:
     elif result["accepted"]:
         toysi_id = result.get("toysi_order_id")
         mark_forwarded_to_toysi(conn, order["internal_order_id"], str(toysi_id) if toysi_id is not None else "")
+        _update_marketplace_status(order)
         dup_note = " (дублікат — вже існував у Toysi)" if result["is_duplicate"] else ""
         if ukrposhta_shipment:
             mark_ukrposhta_shipment(

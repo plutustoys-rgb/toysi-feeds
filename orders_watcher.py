@@ -222,6 +222,56 @@ def _convert_prom_order(order: dict) -> dict:
     }
 
 
+class PromAPIError(Exception):
+    """Запит до Prom Orders API (set_status) не вдався — мережа, невалідна
+    відповідь, чи сам Prom повернув warning_message для частини замовлень."""
+
+
+# "received" ("Принят") — Prom-статус, що відповідає "прийнято в обробку"
+# (public-api.docs.prom.ua, OrderStatus.name enum: pending/received/
+# delivered/canceled/draft/paid/custom-{id}). Підтверджено на реальному
+# замовленні №414634349: саме цей статус Prom виставляє, коли продавець
+# вручну натискає "Прийняти" в кабінеті — той самий сенс тут, лише
+# автоматично, одразу після успішної передачі в Toysi.
+PROM_ORDER_STATUS_ACCEPTED = "received"
+
+
+def update_prom_order_status(order_id, status: str = PROM_ORDER_STATUS_ACCEPTED) -> None:
+    """
+    POST /orders/set_status (public-api.docs.prom.ua, розділ Orders) —
+    оновлює статус замовлення на боці Prom, щоб клієнт бачив актуальний
+    стан ("прийнято в обробку"), а не старий, одразу після успішної
+    передачі в Toysi (order_router.py). Задача власниці 2026-07-15: клієнт
+    бачив старий статус, хоча замовлення вже реально в обробці.
+
+    Не підтверджено живим викликом на момент написання (лише читальні
+    /orders/list виклики були перевірені раніше) — перший реальний виклик
+    варто звірити з кабінетом Prom вручну.
+    """
+    if not PROM_API_KEY:
+        raise PromAPIError("PROM_API_KEY не задано")
+
+    try:
+        response = requests.post(
+            f"{PROM_API_URL}/orders/set_status",
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            json={"status": status, "ids": [int(order_id)]},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise PromAPIError(f"Помилка з'єднання: {e}")
+
+    try:
+        data = response.json()
+    except ValueError:
+        raise PromAPIError(f"Невалідна відповідь (не JSON): {response.text[:300]}")
+
+    warning = data.get("warning_message")
+    if warning:
+        raise PromAPIError(f"Prom попередив: {warning}")
+
+
 def _rozetka_payment_method(order: dict) -> str:
     """Rozetka повертає назву способу оплати текстом (payment_type_name/
     payment_type) — той самий підхід евристики за ключовими словами, що й

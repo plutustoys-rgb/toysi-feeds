@@ -219,6 +219,26 @@ def update_order_status(order_id, status: int, ttn: str = None, seller_comment: 
     return _request("put", f"/orders/{order_id}", json=body)
 
 
+def search_categories(name_query: str = None) -> list:
+    """
+    GET /market-categories/search — "Вибірка всіх активних категорій"
+    (тобто категорій, доступних продавцю прямо зараз) — природний спосіб
+    знайти дозволену альтернативу категорії зі стоп-списку програмно,
+    замість ручного перегляду "Управління товарами -> Довідники" в кабінеті.
+
+    ⚠️ НЕ підтверджено живим викликом (немає облікових даних на момент
+    написання) — apidoc не деталізує тіло відповіді для цього ендпоінту
+    так само детально, як для Orders/Balances. Перше використання варто
+    звірити з реальною відповіддю (структура списку категорій, чи саме
+    `name` — правильний параметр текстового пошуку).
+    """
+    params = {"name": name_query} if name_query else {}
+    content = _request("get", "/market-categories/search", params=params)
+    if isinstance(content, list):
+        return content
+    return content.get("categories") or []
+
+
 def get_balance() -> dict:
     """GET /v1/balances/current — поточний баланс магазину (Крок 7 плану)."""
     return _request("get", "/v1/balances/current")

@@ -56,6 +56,19 @@ jobs:
           git show "origin/$FEED_BRANCH:prom_competitor_price_state.json" > prom_competitor_price_state.json 2>/dev/null \
             || echo '{}' > prom_competitor_price_state.json
 
+      # ВИПРАВЛЕНО (2026-07-16, root-cause SKU 299318/299320/299321/249158 у
+      # "Видалені з прайсу" на Rozetka): rozetka_feed_membership_state.json
+      # пам'ятає, які offer_id вже були в куруваному відборі Rozetka, щоб
+      # тимчасово (grace-період) тримати available="false" замість того,
+      # щоб офер зникав із фіда цілком, щойно stock=0 в Toysi. Той самий
+      # round-trip через feed-data, що й для prom_competitor_price_state.json
+      # вище — інакше кожен прогін на ефемерному runner'і стартував би з
+      # порожнього стану й carry-forward ніколи б не спрацював насправді.
+      - name: Restore rozetka_feed_membership_state.json from ${{ env.FEED_BRANCH }}
+        run: |
+          git show "origin/$FEED_BRANCH:rozetka_feed_membership_state.json" > rozetka_feed_membership_state.json 2>/dev/null \
+            || echo '{}' > rozetka_feed_membership_state.json
+
       # Виправлено (незалежне рев'ю PR #39): раніше generate_google_feed.py
       # не викликався в жодному workflow, тож own_product_links_cache.json
       # ніколи не існував на CI, і <url> в Rozetka-фіді назавжди лишався
@@ -225,7 +238,7 @@ jobs:
           # -f: feeds/*.xml навмисно в .gitignore для master (щоб не роздувати її
           # історію), але саме ці файли й мають бути закомічені сюди, на feed-data —
           # без -f git add мовчки відмовляється додавати файли, що збігаються з .gitignore.
-          git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json
+          git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json rozetka_feed_membership_state.json
           git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"
 

@@ -63,6 +63,11 @@ prom_competitor_pricer_summary.md
 # гілка публічна й force-push на неї замінив би live-фіди/стан репрайсера).
 full_catalog_scan_state.json
 
+# Rozetka-only стан членства для grace-періоду тимчасово відсутніх товарів
+# (2026-07-16, root-cause SKU 299318/299320/299321/249158) — суто runtime,
+# перебудовується щоразу з живих даних Toysi, не для git.
+rozetka_feed_membership_state.json
+
 # Запобіжник: файл з паролями не повинен потрапити в git навіть випадково
 паролі.txt
 

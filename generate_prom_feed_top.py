@@ -1,8 +1,44 @@
+import json
 import re
+from pathlib import Path
 
 from parser import fetch_toysi_catalog
 from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
-from competitor_pricing import load_fresh_prom_price_overrides
+from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides
+
+# ВИПРАВЛЕНО (2026-07-16, задача власниці — full_catalog_competitor_scan.py
+# не мав лишатись окремим інформаційним скриптом): щоночі
+# full_catalog_competitor_scan.py (VPS-таймер, 01:00 Kyiv) поповнює цей
+# файл реальними конкурентними даними (competitor_price/competitor_alive/
+# decide_price_for_platform()) для дедалі більшої частки каталогу (3015/
+# 17836 на момент цього фіксу). Раніше ці дані просто лежали мертвим
+# вантажем — select_top_items()/_margin() ранжував УСІ товари наївною
+# формулою (собівартість + категорійна комісія), яка НЕ враховує, чи є
+# конкурент і за якою ціною — SKU, що виглядає прибутковим наївно, може
+# насправді впиратись у 3%-поріг floor, щойно відомий реальний конкурент;
+# і навпаки, SKU без конкурента може витримати вищу ціну, ніж наївна
+# формула йому дає. Тепер: для вже просканованих SKU _margin() рахує
+# РЕАЛЬНУ, конкурентно-обізнану маржу (тим самим decide_price_for_platform(),
+# що й сам скан), а не наївну оцінку — і бере участь у тій самій сортовій
+# ротації топ-970/1000, що й решта каталогу, автоматично, без окремого
+# запуску чи ручного втручання. Для ще НЕ просканованих SKU (переважна
+# більшість, поки скан не завершений) поведінка не змінюється.
+FULL_CATALOG_SCAN_STATE_FILE = Path(__file__).parent / "full_catalog_scan_state.json"
+
+
+def load_scan_state() -> dict:
+    """Читає стан full_catalog_competitor_scan.py, якщо він є (VPS-таймер
+    пише його локально; на GH Actions runner'і файл підтягується окремим
+    кроком workflow — див. update-feeds.yml). Відсутність файлу чи
+    помилка читання — НЕ помилка: просто ще немає накопичених
+    конкурентних даних, select_top_items() працює на наївній оцінці, як і
+    раніше до цього фіксу."""
+    if not FULL_CATALOG_SCAN_STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(FULL_CATALOG_SCAN_STATE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
 
 OUTPUT_FILE     = "feeds/prom_feed_top.xml"
 TARGET_COUNT    = 1000
@@ -74,16 +110,30 @@ def is_excluded_category(item: dict) -> bool:
     return (item.get("category_name") or "").strip().lower() in EXCLUDED_CATEGORIES
 
 
-def _margin(item: dict) -> float:
-    """Розрахункова маржа (retail - cost), рахована ТІЄЮ Ж формулою, що й реальна
-    ціна в generate_prom_feed.py (default_retail_price — комісія категорії Prom +
-    нижня межа маржі), а не старою calc_price() — інакше відбір "топ" товарів
-    орієнтувався б на маржу, яка не враховує комісію, і міг обрати гірші за
-    реальним прибутком SKU. -1, якщо товар не має валідної/прийнятної ціни,
-    немає залишку на складі Toysi (2026-07-10: раніше цього фільтра не було
-    взагалі — SKU 267102 потрапив у топ-970 з quantity_in_stock=0, зайнявши
-    місце товару, який реально можна продати), або це уцінений/пошкоджений
-    товар (не належить у "топ" незалежно від маржі)."""
+def _margin(item: dict, pid: str = None, scan_state: dict = None) -> float:
+    """Розрахункова маржа (retail - cost). -1, якщо товар не має валідної/
+    прийнятної ціни, немає залишку на складі Toysi (2026-07-10: раніше
+    цього фільтра не було взагалі — SKU 267102 потрапив у топ-970 з
+    quantity_in_stock=0, зайнявши місце товару, який реально можна
+    продати), або це уцінений/пошкоджений товар (не належить у "топ"
+    незалежно від маржі).
+
+    Дві формули для самої величини маржі:
+    - Товар ВЖЕ просканований full_catalog_competitor_scan.py (pid є в
+      scan_state) — рахуємо РЕАЛЬНУ, конкурентно-обізнану маржу тим самим
+      decide_price_for_platform(cost, competitor_price, "prom", category),
+      що й сам скан (competitor_price береться лише якщо
+      competitor_alive=True — мертвий конкурент трактуємо як "немає
+      конкурента", той самий принцип обережності, що й в іншому коді
+      проєкту). Це та сама формула, яку generate_prom_feed.py реально
+      застосує для ціни, якщо товар потрапить у топ — на відміну від
+      наївної оцінки нижче, вона знає, чи є конкурент і за якою ціною.
+    - Товар ЩЕ не просканований (переважна більшість, поки скан не
+      завершено) — стара наївна оцінка (default_retail_price — комісія
+      категорії Prom + нижня межа маржі, БЕЗ обізнаності про конкурента).
+      Це свідома, тимчасова відмінність у точності, не помилка — не
+      можемо порахувати конкурентно-обізнану маржу для товару, який ще
+      не скановано."""
     if is_clearance_item(item.get("name"), item.get("category_name"), item.get("category_id")):
         return -1
     if item.get("stock", 0) <= 0:
@@ -94,6 +144,13 @@ def _margin(item: dict) -> float:
         return -1
     if cost < MIN_SUPPLIER_PRICE:
         return -1
+
+    scan_entry = (scan_state or {}).get(pid) if pid is not None else None
+    if scan_entry is not None:
+        competitor_price = scan_entry.get("competitor_price") if scan_entry.get("competitor_alive") else None
+        decision = decide_price_for_platform(cost, competitor_price, "prom", item.get("category_name"))
+        return decision["price"] - cost
+
     return default_retail_price(cost, item.get("category_name")) - cost
 
 
@@ -103,17 +160,24 @@ def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
        Якщо їх більше за target — сортуємо за маржею і беремо top `target`.
     2. Якщо лідерів менше за target — доповнюємо рештою каталогу,
        теж за спаданням маржі, поки не набереться `target`.
+
+    Маржа рахується ОДИН раз на товар (не при кожному сортуванні) і бере
+    до уваги накопичені дані full_catalog_competitor_scan.py, якщо вони
+    є (load_scan_state()) — див. докстрінг _margin().
     """
+    scan_state = load_scan_state()
+    margins = {pid: _margin(item, pid, scan_state) for pid, item in catalog.items()}
+
     eligible = {
         pid: item for pid, item in catalog.items()
-        if _margin(item) >= 0 and not is_excluded_category(item)
+        if margins[pid] >= 0 and not is_excluded_category(item)
     }
 
     leaders = {pid: item for pid, item in eligible.items() if is_leader_category(item)}
     rest    = {pid: item for pid, item in eligible.items() if pid not in leaders}
 
-    leaders_sorted = sorted(leaders.items(), key=lambda kv: _margin(kv[1]), reverse=True)
-    rest_sorted    = sorted(rest.items(), key=lambda kv: _margin(kv[1]), reverse=True)
+    leaders_sorted = sorted(leaders.items(), key=lambda kv: margins[kv[0]], reverse=True)
+    rest_sorted    = sorted(rest.items(), key=lambda kv: margins[kv[0]], reverse=True)
 
     if len(leaders_sorted) >= target:
         selected = leaders_sorted[:target]

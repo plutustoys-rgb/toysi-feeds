@@ -71,7 +71,10 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
+
+import requests
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -79,10 +82,60 @@ if hasattr(sys.stdout, "reconfigure"):
 from parser import fetch_toysi_catalog
 from generate_prom_feed import fetch_russian_text, is_clearance_item
 from competitor_pricing import decide_price_for_platform
-from prom_competitor_pricer import find_best_competitor, verify_competitor_really_available, SEARCH_DELAY
+from prom_competitor_pricer import (
+    find_best_competitor, verify_competitor_really_available, SEARCH_DELAY,
+    MIN_FULL_RUN_INTERVAL_HOURS,
+)
 
 BASE_DIR = Path(__file__).parent
 FULL_SCAN_STATE_FILE = BASE_DIR / "full_catalog_scan_state.json"
+
+# ВИПРАВЛЕНО (2026-07-16, знахідка незалежного рев'ю pt25): цей скрипт
+# тепер запускається systemd-таймером на VPS о 01:00 Kyiv (раніше було
+# 02:00 — рев'ю правильно спіймало, що заявлений "5+ год буфер" до
+# наступного тика репрайсера о 03:00 був арифметичною помилкою, реально
+# 1 год). Живо підтверджено (2026-07-16): фіксований час старту НЕ
+# рятує сам по собі — GH Actions cron `0 */4 * * *` для update-feeds.yml
+# у реальності зсувається на ГОДИНИ від номінального часу (підтверджено:
+# номінальний тик 20:00 UTC фактично стартував о 23:36 UTC того ж дня,
+# а номінальний тик 00:00 UTC 2026-07-16 не запустився взагалі за
+# понад 4 години). Тому єдиний надійний сигнал — перевірити РЕАЛЬНИЙ
+# стан гейту репрайсера (той самий MIN_FULL_RUN_INTERVAL_HOURS/
+# _meta.last_full_run, що й у prom_competitor_pricer.py) через публічний
+# prom_competitor_price_state.json на гілці feed-data, а не покладатись
+# на номінальний розклад.
+REPRICER_STATE_URL = (
+    "https://raw.githubusercontent.com/plutustoys-rgb/toysi-feeds/"
+    "feed-data/prom_competitor_price_state.json"
+)
+# Обмежене очікування, не безстрокове пропускання — якщо гейт відкритий
+# (тобто повний прогін репрайсера МОЖЛИВИЙ на будь-якому наступному тику,
+# час якого непередбачуваний через дрейф GH Actions), чекаємо один раз
+# і йдемо далі — краще прийняти залишковий ризик накладання, ніж
+# роками стояти й не просуватись у скані через дрейф чужого розкладу.
+REPRICER_GATE_WAIT_MINUTES = 30
+
+
+def _repricer_gate_is_open() -> bool:
+    """True, якщо MIN_FULL_RUN_INTERVAL_HOURS від prom_competitor_pricer.py
+    вже минув відтоді як був останній ПОВНИЙ прогін репрайсера
+    (_meta.last_full_run у прод-стані на feed-data) — тобто повний прогін
+    репрайсера (важке навантаження на той самий Prom-пошук) можливий на
+    будь-якому наступному GH Actions тику. Мережева помилка чи відсутність
+    даних — консервативно НЕ блокує скан (немає підстав вважати ризик
+    підтвердженим, якщо ми навіть не змогли перевірити стан)."""
+    try:
+        r = requests.get(REPRICER_STATE_URL, timeout=15)
+        r.raise_for_status()
+        last_full_run = r.json().get("_meta", {}).get("last_full_run")
+        if not last_full_run:
+            return False
+        hours_since = (datetime.now() - datetime.fromisoformat(last_full_run)).total_seconds() / 3600
+        return hours_since >= MIN_FULL_RUN_INTERVAL_HOURS
+    except Exception as e:
+        print(f"[FullScan] Не вдалось перевірити гейт репрайсера ({e}) — "
+              f"продовжую без затримки.", file=sys.stderr)
+        return False
 
 # Узгоджено з власником 2026-07-13: ~3000/день, розтягнуто на ~6 днів —
 # консервативний темп проти невідомого ризику rate-limit на 17-30x
@@ -130,6 +183,13 @@ def main() -> None:
     ap.add_argument("--status", action="store_true",
                      help="Лише показати прогрес (скільки скановано/лишилось), без жодного сканування.")
     args = ap.parse_args()
+
+    if not args.status and _repricer_gate_is_open():
+        print(f"[FullScan] Гейт репрайсера відкритий (>= {MIN_FULL_RUN_INTERVAL_HOURS} год від "
+              f"останнього повного прогону) — повний прогін репрайсера можливий на будь-якому "
+              f"наступному GH Actions тику. Чекаю {REPRICER_GATE_WAIT_MINUTES} хв перед стартом, "
+              f"щоб зменшити ризик накладання на той самий Prom-пошук.")
+        time.sleep(REPRICER_GATE_WAIT_MINUTES * 60)
 
     print("[FullScan] Завантажую повний каталог Toysi...")
     catalog = fetch_toysi_catalog()

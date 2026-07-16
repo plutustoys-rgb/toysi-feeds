@@ -41,9 +41,12 @@ status=0/SUCCESS — при падінні логується "Failed with resul
 # order-pipeline.service (один послідовний процес, pt8/pt9 — усуває
 # гонку двох незалежних таймерів) — інакше цей чек продовжував би
 # ALARM-ити на два сервіси, які більше ніколи не запускаються.
+# ВИПРАВЛЕНО (2026-07-16): bank_check.py теж злито в order-pipeline
+# (та сама вразливість, що й orders_watcher/order_router — писало
+# payment_confirmed, яке order_router читає) — bank-check.timer
+# ретировано, більше не окремий запис тут.
 MONITORED_SERVICES = {
-    "order-pipeline": 30,   # таймер кожні 15 хв (fetch+save+forward одним процесом)
-    "bank-check": 30,       # таймер кожні 15 хв
+    "order-pipeline": 30,   # таймер кожні 15 хв (fetch+save+confirm+forward одним процесом)
     "prom-chat-bot": 15,    # таймер кожні 5 хв
 }
 

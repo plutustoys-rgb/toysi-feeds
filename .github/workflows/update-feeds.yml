@@ -69,6 +69,28 @@ jobs:
           git show "origin/$FEED_BRANCH:rozetka_feed_membership_state.json" > rozetka_feed_membership_state.json 2>/dev/null \
             || echo '{}' > rozetka_feed_membership_state.json
 
+      # ДОДАНО (2026-07-16, задача власниці — full_catalog_competitor_scan.py
+      # має системно впливати на топ-970, не лишатись окремим інформаційним
+      # скриптом): full_catalog_scan_state.json пишеться лише на VPS (там
+      # виконується нічний скан, окремий систем-таймер) — цей крок читає
+      # НАЙСВІЖІШУ версію з окремої гілки scan-state-data, куди VPS сам
+      # публікує стан після кожного нічного прогону (publish_scan_state.sh,
+      # власний deploy-ключ ЛИШЕ на VPS, обмежений записом у цей репозиторій
+      # — на боці GH Actions жодного нового секрету не додано, це звичайний
+      # публічний git fetch). ОКРЕМА гілка від feed-data навмисно — щоб два
+      # незалежні публікатори (ця гілка з VPS, feed-data з цього job'у) не
+      # затирали вміст одне одного своїм force-push без історії.
+      # continue-on-error: якщо гілки ще нема (перший запуск до першого
+      # нічного скану) чи VPS-публікація тимчасово не вдалась — не має
+      # блокувати генерацію фідів, select_top_items() коректно працює й
+      # без цього файлу (наївна оцінка маржі, як і раніше).
+      - name: Restore full_catalog_scan_state.json from scan-state-data (VPS-published)
+        continue-on-error: true
+        run: |
+          git fetch origin scan-state-data 2>/dev/null || true
+          git show "origin/scan-state-data:full_catalog_scan_state.json" > full_catalog_scan_state.json 2>/dev/null \
+            || echo '{}' > full_catalog_scan_state.json
+
       # Виправлено (незалежне рев'ю PR #39): раніше generate_google_feed.py
       # не викликався в жодному workflow, тож own_product_links_cache.json
       # ніколи не існував на CI, і <url> в Rozetka-фіді назавжди лишався

@@ -71,7 +71,7 @@ from generate_prom_feed_top import select_top_items
 from generate_prom_feed import fetch_russian_text
 from competitor_pricing import (
     decide_price_for_platform, load_prom_price_state, save_prom_price_state,
-    PROM_CATEGORY_COMMISSION, PROM_COMMISSION_DEFAULT,
+    PROM_CATEGORY_COMMISSION, PROM_COMMISSION_DEFAULT, _BAD_NAME_MARKERS,
 )
 from telegram_notify import send_telegram_message
 
@@ -280,7 +280,31 @@ MATCH_MIN_SCORE_FOR_DELIST = 0.85
 # власником як конкретне число — консервативний початковий дефолт.
 MAX_FLOOR_TO_COMPETITOR_RATIO = 1.5
 
+# P0-3 (2026-07-17): circuit breaker для --apply. Прецедент, що спричинив
+# цю задачу: один прогін змінив ціну на 949/970 позицій одразу, середня
+# маржа каталогу впала з 35.72% до 3% — жодна наявна перевірка цього не
+# ловила, бо кожна окрема ціна проходила формулу decide_price_for_platform()
+# коректно; проблема була в МАСШТАБІ й АГРЕГАТІ за один прогін, не в
+# окремому рішенні. Три незалежні сигнали (будь-який один зупиняє --apply
+# ПЕРЕД тим, як щось реально застосується):
+#   1. Середня маржа цього прогону нижче абсолютного порогу.
+#   2. Середня маржа впала занадто різко відносно попереднього прогону
+#      (зберігається в price_state["_meta"]["last_avg_margin_pct"]).
+#   3. Завелика частка товарів із ВЖЕ відомою ціною (price_state) раптом
+#      отримує СУТТЄВО іншу ціну за один прогін.
+CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT = 8.0
+CIRCUIT_BREAKER_MAX_MARGIN_DROP_PCT = 15.0
+CIRCUIT_BREAKER_PRICE_CHANGE_THRESHOLD = 0.05
+CIRCUIT_BREAKER_MAX_CHANGED_FRACTION = 0.5
+# Менше цього — надто мало даних, щоб частка "змінилось" щось значила
+# (напр. 2 з 3 — 67%, виглядає тривожно, але це шум малої вибірки).
+CIRCUIT_BREAKER_MIN_KNOWN_FOR_FRACTION_CHECK = 10
+
 EDIT_BATCH = 100  # POST /products/edit_by_external_id, як і в prom_catalog_sync.py
+
+# P0-5: раз на стільки успішно застосованих коригувань ціни зберігати
+# price_state на диск (не лише один раз наприкінці всього циклу).
+SAVE_EVERY = 25
 
 # Мінімальна GraphQL-схема — ЛИШЕ поля, що реально використовуються тут.
 # Свідомо не той величезний (11.7К символів) запит, яким сама сторінка
@@ -470,6 +494,17 @@ def find_best_competitor(search_name: str, cost: float, own_link: dict | None = 
         presence = p.get("presence") or {}
         if not presence.get("isAvailable"):
             continue
+        # ДОДАНО (2026-07-17, знайдено при точковому скані SKU 300391 поза
+        # чергою): SearchListingQuery-фолбек не фільтрував конкурентів за
+        # маркерами уцінки/пошкодження в НАЗВІ — уцінений/пошкоджений
+        # товар конкурента (типово найдешевший, бо не в товарному вигляді)
+        # легко проходить MATCH_MIN_SCORE і стає "найдешевшим кандидатом",
+        # штучно занижуючи floor/margin для товару, що насправді не
+        # порівнюваний. Той самий список маркерів, що вже фільтрує НАШ
+        # власний каталог у competitor_pricing.py's select_batch().
+        candidate_name_lower = (p.get("name") or "").lower()
+        if any(marker in candidate_name_lower for marker in _BAD_NAME_MARKERS):
+            continue
         try:
             price = float(p.get("price") or 0)
         except (TypeError, ValueError):
@@ -553,6 +588,53 @@ def verify_competitor_really_available(competitor: dict) -> bool:
     return match.group(1).endswith("/InStock")
 
 
+def evaluate_circuit_breaker(to_adjust: list, price_state: dict) -> tuple[bool, list, float | None]:
+    """P0-3: див. коментар біля CIRCUIT_BREAKER_* констант. `to_adjust` —
+    список (pid, price, margin_pct) кандидатів на коригування цього
+    прогону. Повертає (спрацював, причини, середня_маржа_цього_прогону) —
+    середня маржа повертається завжди (навіть якщо breaker не спрацював),
+    щоб main() міг зберегти її для порівняння НАСТУПНОГО прогону."""
+    if not to_adjust:
+        return False, [], None
+
+    avg_margin_this_run = sum(m for _, _, m in to_adjust) / len(to_adjust)
+
+    known_count = 0
+    changed_count = 0
+    for pid, price, _ in to_adjust:
+        prior_entry = price_state.get(pid)
+        prior_price = prior_entry.get("price") if isinstance(prior_entry, dict) else None
+        if not prior_price:
+            continue
+        known_count += 1
+        if abs(price - prior_price) / prior_price > CIRCUIT_BREAKER_PRICE_CHANGE_THRESHOLD:
+            changed_count += 1
+    changed_fraction = changed_count / known_count if known_count else 0.0
+
+    prev_avg_margin = (price_state.get("_meta") or {}).get("last_avg_margin_pct")
+
+    reasons = []
+    if avg_margin_this_run < CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT:
+        reasons.append(
+            f"середня маржа цього прогону {avg_margin_this_run:.1f}% нижче абсолютного "
+            f"порогу {CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT}%"
+        )
+    if prev_avg_margin is not None:
+        margin_drop = prev_avg_margin - avg_margin_this_run
+        if margin_drop > CIRCUIT_BREAKER_MAX_MARGIN_DROP_PCT:
+            reasons.append(
+                f"середня маржа впала на {margin_drop:.1f} п.п. відносно попереднього "
+                f"прогону ({prev_avg_margin:.1f}% -> {avg_margin_this_run:.1f}%)"
+            )
+    if known_count >= CIRCUIT_BREAKER_MIN_KNOWN_FOR_FRACTION_CHECK and changed_fraction > CIRCUIT_BREAKER_MAX_CHANGED_FRACTION:
+        reasons.append(
+            f"{changed_fraction * 100:.0f}% товарів із уже відомою ціною ({changed_count}/{known_count}) "
+            f"отримали суттєво іншу ціну (>{CIRCUIT_BREAKER_PRICE_CHANGE_THRESHOLD * 100:.0f}%) за один прогін"
+        )
+
+    return bool(reasons), reasons, avg_margin_this_run
+
+
 def decide_action(cost: float, competitor: dict | None, category_name: str | None, our_name: str = "") -> dict:
     """Гібридна дія: normal/floor -> "adjust" (нова ціна = decision["price"]);
     floor настільки вищий за конкурента, що навіть він неконкурентний ->
@@ -630,6 +712,11 @@ def main() -> None:
                      help="Дозволити --apply для SKU, чия категорія на PROM_COMMISSION_DEFAULT "
                           "(реальна ставка не підтверджена) — за замовчуванням такі SKU виключено "
                           "з auto-apply, лише позначені для ручного перегляду.")
+    ap.add_argument("--force-circuit-breaker", action="store_true",
+                     help="Ігнорувати circuit breaker (P0-3) і застосувати зміни навіть якщо він спрацював. "
+                          "ОКРЕМИЙ прапорець від --force (той стосується лише 20-годинного гейту) — це "
+                          "інша, серйозніша категорія ризику (масова зміна цін/обвал маржі), тому свідомо "
+                          "не ділить один і той самий перемикач.")
     args = ap.parse_args()
 
     if not PROM_API_KEY:
@@ -772,7 +859,7 @@ def main() -> None:
                   "потребує ручного перегляду")
         elif decision["action"] == "adjust":
             adjust_count += 1
-            to_adjust.append((pid, decision["price"]))
+            to_adjust.append((pid, decision["price"], decision["margin_pct"]))
         elif decision["action"] == "delist":
             delist_count += 1
             to_delist.append(pid)
@@ -800,6 +887,11 @@ def main() -> None:
         if len(default_commission_skipped) > 15:
             default_commission_note += f"\n... та ще {len(default_commission_skipped) - 15}"
 
+    breaker_tripped, breaker_reasons, avg_margin_this_run = evaluate_circuit_breaker(to_adjust, price_state)
+    if avg_margin_this_run is not None:
+        print(f"[Pricer] Circuit breaker: середня маржа цього прогону {avg_margin_this_run:.1f}%"
+              + (f" — СПРАЦЮВАВ: {'; '.join(breaker_reasons)}" if breaker_tripped else " — OK"))
+
     if not args.apply:
         print("\n[Pricer] DRY-RUN: жодних змін не внесено. Запусти з --apply, щоб реально застосувати.")
         digest = (
@@ -808,6 +900,10 @@ def main() -> None:
             f"видалити як неконкурентні — {delist_count}, "
             f"конкурента не знайдено — {no_competitor_count}."
         )
+        if breaker_tripped:
+            digest += (
+                f"\n\n🚨 CIRCUIT BREAKER СПРАЦЮВАВ БИ на --apply: " + "; ".join(breaker_reasons)
+            )
         if delist_details:
             digest += "\n\nКандидати на видалення:\n" + "\n".join(delist_details[:15])
             if len(delist_details) > 15:
@@ -817,11 +913,28 @@ def main() -> None:
         send_telegram_message(digest)
         write_pricer_summary(
             "Режим: dry-run (--apply не використовувався). 20-годинний гейт: не спрацював (повний прогін виконано)."
-            + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply." if default_commission_skipped else ""),
+            + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply." if default_commission_skipped else "")
+            + (f" Circuit breaker СПРАЦЮВАВ БИ: {'; '.join(breaker_reasons)}" if breaker_tripped else ""),
             checked=len(items), adjust=adjust_count, delist=delist_count,
             no_competitor=no_competitor_count, errors=0,
         )
         return
+
+    if breaker_tripped and not args.force_circuit_breaker:
+        message = (
+            "🚨 prom_competitor_pricer.py --apply ЗУПИНЕНО circuit breaker'ом (P0-3), "
+            "ЖОДНИХ змін не внесено:\n\n" + "\n".join(f"- {r}" for r in breaker_reasons)
+            + "\n\nПеревір вручну і, якщо зміни дійсно виправдані, перезапусти з "
+              "--force-circuit-breaker."
+        )
+        print(f"\n[Pricer] {message}", file=sys.stderr)
+        send_telegram_message(message)
+        write_pricer_summary(
+            f"🚨 Circuit breaker ЗУПИНИВ --apply (нічого не застосовано): {'; '.join(breaker_reasons)}",
+            checked=len(items), adjust=adjust_count, delist=delist_count,
+            no_competitor=no_competitor_count, errors=0,
+        )
+        sys.exit(1)
 
     print(f"\n[Pricer] Застосовую {len(to_adjust)} коригувань ціни...")
     # ВИПРАВЛЕНО 2026-07-12: раніше apply_price() лише писав ціну напряму в
@@ -833,22 +946,26 @@ def main() -> None:
     # читає як price_overrides — доки запис не застаріє (>30 год). Той самий
     # price_state, завантажений на початку main() (містить вже записаний
     # _meta.last_full_run) — не перезавантажуємо, щоб не загубити його.
-    # ВІДОМИЙ, НАВМИСНО НЕ ВИПРАВЛЕНИЙ ЗАРАЗ НЕДОЛІК (рев'ю PR #40, знахідка
-    # №2): save_prom_price_state() викликається ОДИН РАЗ після всього циклу —
-    # перервання самого ПРОЦЕСУ посеред цього циклу (таймаут/скасування
-    # job'у GitHub Actions) губило б стан для цін, які вже РЕАЛЬНО
-    # застосувались на Prom. Свідоме рішення власника: залишити як є зараз,
-    # виправити окремим fast-follow PR, не тут.
+    # P0-5 (2026-07-17, відновлено — раніше свідомо відкладено з коментарем
+    # "виправити окремим fast-follow PR", а масштаб apply відтоді зріс у
+    # сотні разів): періодичне збереження раз на SAVE_EVERY застосованих
+    # позицій, а не лише один раз після всього циклу — перервання процесу
+    # (таймаут/скасування job'у) посеред цього циклу тепер губить максимум
+    # SAVE_EVERY-1 позицій стану, а не весь прогін.
     applied_count = 0
-    for pid, price in to_adjust:
+    for pid, price, _ in to_adjust:
         try:
             apply_price(pid, price)
             price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat()}
             applied_count += 1
+            if applied_count % SAVE_EVERY == 0:
+                save_prom_price_state(price_state)
         except requests.exceptions.RequestException as e:
             error_count += 1
             print(f"  - {pid}: помилка зміни ціни — {e}", file=sys.stderr)
-    if applied_count:
+    if avg_margin_this_run is not None:
+        price_state.setdefault("_meta", {})["last_avg_margin_pct"] = avg_margin_this_run
+    if applied_count or avg_margin_this_run is not None:
         save_prom_price_state(price_state)
 
     print(f"[Pricer] Видаляю {len(to_delist)} неконкурентних товарів...")

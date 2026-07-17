@@ -1,9 +1,12 @@
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 from datetime import datetime
+
+import requests
 
 import order_router
 from orders_db import get_connection, get_active_toysi_orders, get_orders_ready_to_forward
@@ -74,6 +77,20 @@ TOYSI_RECONCILE_THRESHOLD_MINUTES = 120
 STALE_ORDER_THRESHOLD_MINUTES = 25
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog_state.json")
+
+# ДОДАНО (2026-07-17, P0-1 — 4-й підтверджений випадок дрейфу VPS↔master:
+# order_status_tracker.py/checkbox_client.py/orders_db.py та ще 5 файлів
+# змержено в master і тижнями не задеплоєно; знайдено лише ручним SHA256-
+# порівнянням, задеплоєно того ж дня). VPS не є git-чекаутом (ручний scp),
+# тож єдиний надійний спосіб виявити "змержено, але не задеплоєно" — це
+# звірити САМЕ те, що реально лежить на диску, проти origin/master.
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/plutustoys-rgb/toysi-feeds/master/"
+DEPLOY_DIR = os.path.dirname(os.path.abspath(__file__))
+# Раз на добу, а не на кожен 10-хвилинний цикл watchdog — мережевий запит
+# на кожен *.py файл при щоцикловій перевірці був би зайвим навантаженням
+# і шумом заради дрейфу, який за визначенням змінюється не швидше, ніж
+# хтось руками змержить і задеплоїть код.
+DEPLOY_DRIFT_CHECK_INTERVAL_HOURS = 24
 
 # journalctl -o short-iso віддає зсув часового поясу без двокрапки (+0300),
 # а datetime.fromisoformat() приймає такий формат лише з Python 3.11+.
@@ -195,6 +212,101 @@ def check_services() -> None:
         print(message)
         if not send_telegram_message(message):
             print("[watchdog] Не вдалося надіслати повідомлення про відновлення в Telegram", file=sys.stderr)
+
+
+def _local_deployed_py_files() -> list:
+    return sorted(f for f in os.listdir(DEPLOY_DIR) if f.endswith(".py"))
+
+
+def check_deploy_drift() -> None:
+    """SHA256-звірка кожного .py, що реально лежить на VPS, проти
+    відповідного файлу в origin/master (через raw.githubusercontent.com —
+    публічний репозиторій, токен не потрібен). Алармить у Telegram лише
+    на ПЕРШУ появу розбіжності для кожного файлу (той самий підхід, що й
+    check_services()), не на кожну перевірку.
+
+    Файл, якого немає в master (404) — НЕ алармимо: може бути легітимний
+    VPS-специфічний скрипт чи файл, який ще не встигли змержити — це інша
+    категорія від "змержено, але не задеплоєно". Помилки самої перевірки
+    (мережа, GitHub недоступний) — лише лог, без Telegram: короткочасний
+    мережевий блип не має виглядати як реальний дрейф коду."""
+    state = _load_state()
+    last_check = state.get("deploy_drift_last_check")
+    now = datetime.now()
+    if last_check:
+        try:
+            elapsed_hours = (now - datetime.fromisoformat(last_check)).total_seconds() / 3600
+            if elapsed_hours < DEPLOY_DRIFT_CHECK_INTERVAL_HOURS:
+                return
+        except ValueError:
+            pass
+
+    drift_state = state.get("deploy_drift", {})
+    still_drifted = {}
+    new_alarms = []
+    recoveries = []
+    check_errors = []
+
+    for fname in _local_deployed_py_files():
+        try:
+            with open(os.path.join(DEPLOY_DIR, fname), "rb") as f:
+                # \r\n -> \n: деплой робиться ручним scp з Windows-машини
+                # (core.autocrlf=true) — без нормалізації кінців рядків
+                # порівняння постійно хибно алармило б на КОЖЕН файл,
+                # задеплоєний так, попри ідентичний вміст.
+                local_hash = hashlib.sha256(f.read().replace(b"\r\n", b"\n")).hexdigest()
+        except OSError as e:
+            check_errors.append(f"{fname}: не вдалось прочитати локально ({e})")
+            continue
+
+        try:
+            response = requests.get(GITHUB_RAW_BASE + fname, timeout=15)
+        except requests.RequestException as e:
+            check_errors.append(f"{fname}: не вдалось завантажити з GitHub ({e})")
+            continue
+
+        if response.status_code == 404:
+            continue
+        if response.status_code != 200:
+            check_errors.append(f"{fname}: GitHub повернув {response.status_code}")
+            continue
+
+        master_hash = hashlib.sha256(response.content.replace(b"\r\n", b"\n")).hexdigest()
+        was_alarming = drift_state.get(fname, False)
+
+        if local_hash != master_hash:
+            still_drifted[fname] = True
+            print(f"[watchdog] Звірка деплою: ALARM — {fname} відрізняється від origin/master")
+            if not was_alarming:
+                new_alarms.append(f"⛔ {fname}: VPS-версія відрізняється від origin/master")
+        elif was_alarming:
+            recoveries.append(f"✅ {fname}: синхронізовано з origin/master")
+
+    if check_errors:
+        print(f"[watchdog] Звірка деплою: {len(check_errors)} помилок перевірки — " + "; ".join(check_errors),
+              file=sys.stderr)
+
+    state["deploy_drift"] = still_drifted
+    state["deploy_drift_last_check"] = now.isoformat()
+    _save_state(state)
+
+    if not new_alarms and not recoveries:
+        print(f"[watchdog] Звірка деплою: {len(still_drifted)} файл(ів) у розбіжності (без змін)")
+
+    if new_alarms:
+        message = (
+            "🚨 Watchdog PlutusToys: VPS-код розійшовся з origin/master\n\n"
+            + "\n\n".join(new_alarms)
+            + "\n\nЗмержений код НЕ виконується в проді — перевір і задеплой вручну (scp)."
+        )
+        print(message)
+        if not send_telegram_message(message):
+            print("[watchdog] Не вдалося надіслати алерт про дрейф деплою в Telegram", file=sys.stderr)
+    if recoveries:
+        message = "✅ Watchdog PlutusToys: дрейф деплою усунено\n\n" + "\n\n".join(recoveries)
+        print(message)
+        if not send_telegram_message(message):
+            print("[watchdog] Не вдалося надіслати повідомлення про усунення дрейфу деплою в Telegram", file=sys.stderr)
 
 
 def _order_confirmed_in_toysi(info: dict) -> bool:
@@ -395,3 +507,4 @@ if __name__ == "__main__":
     check_services()
     check_toysi_reconciliation()
     check_unforwarded_orders()
+    check_deploy_drift()

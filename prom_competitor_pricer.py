@@ -71,7 +71,7 @@ from generate_prom_feed_top import select_top_items
 from generate_prom_feed import fetch_russian_text
 from competitor_pricing import (
     decide_price_for_platform, load_prom_price_state, save_prom_price_state,
-    PROM_CATEGORY_COMMISSION, PROM_COMMISSION_DEFAULT, _BAD_NAME_MARKERS,
+    PROM_CATEGORY_COMMISSION, PROM_CATEGORY_ID_COMMISSION, PROM_COMMISSION_DEFAULT, _BAD_NAME_MARKERS,
 )
 from telegram_notify import send_telegram_message
 
@@ -141,6 +141,13 @@ OWN_PRODUCT_LINKS_CACHE_FILE = Path(__file__).parent / "own_product_links_cache.
 OWN_PRODUCT_LINKS_CACHE_TTL_DAYS = 7
 _BUYBOX_RE = re.compile(r'"buyBox":(\{[^{}]*\})')
 
+# Autonomy-11/Vis-11: {external_id: {"category_id": int, "category_caption": str}},
+# пише generate_google_feed.py (build_prom_category_cache, побічний ефект
+# fetch_prom_products() без додаткових запитів) — той самий кеш-патерн і
+# TTL, що й OWN_PRODUCT_LINKS_CACHE_FILE вище.
+PROM_CATEGORY_CACHE_FILE = Path(__file__).parent / "prom_category_cache.json"
+PROM_CATEGORY_CACHE_TTL_DAYS = 7
+
 
 def _load_own_product_links_cache() -> dict:
     """{item_id: {"prom_id": int, "url_text": str}} — той самий кеш і те
@@ -156,6 +163,24 @@ def _load_own_product_links_cache() -> dict:
         return {}
     try:
         return json.loads(OWN_PRODUCT_LINKS_CACHE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+def _load_prom_category_cache() -> dict:
+    """{item_id: {"category_id": int, "category_caption": str}} — лише
+    читання (запис — build_prom_category_cache() у generate_google_feed.py),
+    та сама TTL-логіка, що й _load_own_product_links_cache() вище. Порожній
+    словник, якщо кеш відсутній/застарів — decide_action() тоді просто
+    падає на Toysi-based PROM_CATEGORY_COMMISSION за назвою (стара
+    поведінка, без змін)."""
+    if not PROM_CATEGORY_CACHE_FILE.exists():
+        return {}
+    age_days = (time.time() - PROM_CATEGORY_CACHE_FILE.stat().st_mtime) / 86400
+    if age_days >= PROM_CATEGORY_CACHE_TTL_DAYS:
+        return {}
+    try:
+        return json.loads(PROM_CATEGORY_CACHE_FILE.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return {}
 
@@ -225,7 +250,16 @@ def fetch_buybox_competitor(prom_id: int, url_text: str) -> dict | None:
 # маржі, непомітно для жодної наявної перевірки. Такі SKU виключаються
 # з --apply (ні adjust, ні delist) до ручного підтвердження реальної
 # ставки категорії; дозволяється дозволити з ЯВНИМ прапорцем.
-def _category_commission_is_default(category_name: str | None) -> bool:
+#
+# Autonomy-11/Vis-11: якщо prom_category_id передано й закешовано
+# (prom_category_cache.json, generate_google_feed.py) І присутній у
+# PROM_CATEGORY_ID_COMMISSION — комісія ПІДТВЕРДЖЕНА напряму по товару,
+# незалежно від того, чи Toysi category_name є в PROM_CATEGORY_COMMISSION
+# (закриває саме ті 39 категорій/198 SKU, де назва Toysi неоднозначна —
+# розпадається на кілька різних Prom-категорій, напр. "рюкзаки").
+def _category_commission_is_default(category_name: str | None, prom_category_id: int | None = None) -> bool:
+    if prom_category_id is not None and prom_category_id in PROM_CATEGORY_ID_COMMISSION:
+        return False
     key = (category_name or "").strip().lower()
     return key not in PROM_CATEGORY_COMMISSION
 
@@ -635,16 +669,27 @@ def evaluate_circuit_breaker(to_adjust: list, price_state: dict) -> tuple[bool, 
     return bool(reasons), reasons, avg_margin_this_run
 
 
-def decide_action(cost: float, competitor: dict | None, category_name: str | None, our_name: str = "") -> dict:
+def decide_action(
+    cost: float,
+    competitor: dict | None,
+    category_name: str | None,
+    our_name: str = "",
+    prom_category_id: int | None = None,
+) -> dict:
     """Гібридна дія: normal/floor -> "adjust" (нова ціна = decision["price"]);
     floor настільки вищий за конкурента, що навіть він неконкурентний ->
     "delist". Без знайденого конкурента (чи `find_best_competitor` не дав
     впевненого збігу) -> "adjust" на формульну (no_competitor) ціну, як і
     завжди, НІКОЛИ не "delist" — видалення вимагає реального сигналу про
     те, що ми програємо конкретному конкуренту, не просто відсутність
-    даних про нього."""
+    даних про нього.
+
+    prom_category_id (Autonomy-11/Vis-11): реальна Prom-категорія товару
+    з prom_category_cache.json, якщо є — передається в
+    decide_price_for_platform(), де перевіряється ПЕРШОЮ (PROM_CATEGORY_ID_
+    COMMISSION), з фолбеком на Toysi-based category_name."""
     min_competitor_prom = competitor["price"] if competitor else None
-    decision = decide_price_for_platform(cost, min_competitor_prom, "prom", category_name)
+    decision = decide_price_for_platform(cost, min_competitor_prom, "prom", category_name, prom_category_id)
     action = "adjust"
     size_conflict = False
     # competitor.get("source") == "buybox" (2026-07-14): buyBox дає лише
@@ -797,6 +842,13 @@ def main() -> None:
     print(f"[Pricer] Кеш власних посилань: {len(own_product_links)} SKU "
           f"({'знайдено' if own_product_links else 'відсутній/застарілий — увесь прогін на fallback-пошуку'}).")
 
+    # Autonomy-11/Vis-11: та сама механіка кешу, для РЕАЛЬНОЇ Prom-категорії
+    # (замість здогаду за назвою Toysi) — закриває категорії, неоднозначні
+    # за назвою (напр. "рюкзаки", що розпадається на 3 різні Prom-категорії).
+    prom_category_cache = _load_prom_category_cache()
+    print(f"[Pricer] Кеш Prom-категорій: {len(prom_category_cache)} SKU "
+          f"({'знайдено' if prom_category_cache else 'відсутній/застарілий — фолбек на Toysi-категорію'}).")
+
     items = list(top_catalog.items())[:args.limit]
     print(f"[Pricer] Обробляю {len(items)} товарів (--limit {args.limit})...")
 
@@ -820,6 +872,7 @@ def main() -> None:
         name_ukr = (item.get("name") or "").strip()
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
         category_name = item.get("category_name")
+        prom_category_id = (prom_category_cache.get(pid) or {}).get("category_id")
 
         own_link = own_product_links.get(pid)
         if own_link:
@@ -837,7 +890,7 @@ def main() -> None:
                 print(f"[Pricer] buyBox: підозріло низька ціна для {pid} "
                       f"(minPrice={competitor['price']:.0f} < 50% собівартості {cost:.0f}) — "
                       "перевір вручну", file=sys.stderr)
-        decision = decide_action(cost, competitor, category_name, name_rus)
+        decision = decide_action(cost, competitor, category_name, name_rus, prom_category_id)
         time.sleep(SEARCH_DELAY)
 
         # Другий, надійніший гейт ПЕРЕД фінальним delist — GraphQL-пошук
@@ -874,7 +927,7 @@ def main() -> None:
         else:
             competitor_scores.append(decision["competitor"]["score"])
 
-        if _category_commission_is_default(category_name) and not args.allow_default_commission:
+        if _category_commission_is_default(category_name, prom_category_id) and not args.allow_default_commission:
             default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))
             print(f"  -> {pid}: категорія {category_name!r} на дефолтній комісії "
                   f"({PROM_COMMISSION_DEFAULT:.0%}, не підтверджена) — виключено з auto-apply, "

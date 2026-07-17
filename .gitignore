@@ -82,6 +82,11 @@ vps_access.local.md
 # generate_rozetka_feed.py лише читає) — генерується наново, не для git
 own_product_links_cache.json
 
+# Кеш реальної Prom-категорії товару (generate_google_feed.py пише,
+# prom_competitor_pricer.py/full_catalog_competitor_scan.py читають) —
+# той самий клас файлу, що й own_product_links_cache.json вище
+prom_category_cache.json
+
 # Довідник rz_id категорій Rozetka, вручну експортований власницею з
 # власного кабінету (Управління товарами -> Довідники) — локальні,
 # специфічні для акаунту дані, не для git (той самий клас файлу, що й

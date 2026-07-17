@@ -61,13 +61,13 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+import requests
+
 from parser import fetch_toysi_catalog
-from generate_prom_feed import default_retail_price, normalize_vendor, fetch_russian_text
+from generate_prom_feed import default_retail_price, normalize_vendor
 from generate_prom_feed_top import select_top_items
 from prom_catalog_sync import fetch_prom_products
-from prom_competitor_pricer import (
-    search_prom_products, _similarity, _size_tokens_conflict, PROM_OWN_COMPANY_ID, SEARCH_DELAY,
-)
+from prom_competitor_pricer import SEARCH_DELAY
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
 
@@ -76,26 +76,27 @@ SHOP_URL   = "https://plutustoys.com.ua"
 FEED_LANG  = "uk"
 FEED_CURRENCY = "UAH"
 
-# Канонічний URL сторінки товару — {id}-{urlText}, обидва напряму з відповіді
-# GraphQL-пошуку (див. find_own_product_id нижче). Без реконструйованого
-# плейсхолдер-slug (був тут раніше, підтверджено гіршим — веде на той самий
-# результат лише через редирект).
+# Канонічний URL сторінки товару — {id}-{urlText}. id — гарантований, напряму
+# з fetch_prom_products() (реальний Prom id за external_id, не пошук).
+# urlText — одним детермінованим HTTP-запитом (див. resolve_own_product_links
+# нижче), не з відповіді пошуку.
 LINK_TEMPLATE = SHOP_URL + "/ua/p{prom_id}-{url_text}.html"
 
 # Той самий джитер-інтервал, що вже усталений у prom_competitor_pricer.py
-# для цього самого reverse-engineered GraphQL-ендпоінту (SEARCH_DELAY,
-# 0.4с) — build_feed_items() робить ще один окремий запит на кожен товар
-# топ-970 (до ~970 послідовних запитів), тож без паузи тут ми подвоюємо
-# навантаження на ендпоінт понад те, що вже й так генерує
-# prom_competitor_pricer.py в той самий день (аудит, pt34).
+# для аналогічних послідовних запитів до prom.ua (SEARCH_DELAY, 0.4с) —
+# build_feed_items()/resolve_own_product_links() роблять до ~970
+# послідовних запитів на прогін, тож без паузи це непотрібне навантаження
+# на prom.ua понад те, що вже генерує prom_competitor_pricer.py в той
+# самий день.
 SEARCH_JITTER_RANGE = (SEARCH_DELAY, SEARCH_DELAY * 1.5)
 
-GOOGLE_MIN_MATCH_SCORE = 0.55  # той самий клас порогу, що й MATCH_MIN_SCORE конкурентів —
-                                # тут це збіг НАШОГО товару із САМИМ СОБОЮ в пошуку, тому
-                                # нижчий за MATCH_MIN_SCORE_FOR_DELIST (0.85) цілком безпечний:
-                                # найгірший наслідок помилки — пропущений link, не хибна дія.
-
 GTIN_VALID_LENGTHS = {8, 12, 13, 14}
+
+# Формат Location-заголовка редиректу prom.ua: /ua/p{id}-{urlText}.html —
+# захоплюємо лише urlText (частина після дефіса й до .html).
+_URL_TEXT_RE = re.compile(r"/ua/p\d+-([^/]+)\.html")
+
+REQUEST_TIMEOUT = 15
 
 # Кеш self-match результатів (Toysi pid -> {prom_id, url_text}), спільний
 # з generate_rozetka_feed.py: той файл своїх GraphQL-запитів НЕ робить,
@@ -187,66 +188,59 @@ def google_product_category(category_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# link — реальний URL сторінки товару на власному сайті. Ані Products API,
-# ані наш власний каталог Toysi не містять цього поля напряму — єдиний
-# перевірений робочий шлях: internal GraphQL-пошук (той самий ендпоінт і
-# запит, що й prom_competitor_pricer.py), пост-фільтрований на company_id
-# власного магазину — той самий патерн, що вже й так використовує
-# find_best_competitor() (postfilter, лише в протилежний бік: там
-# ВИКЛЮЧають власний company_id, тут ЛИШАЄМО тільки його).
+# link — реальний URL сторінки товару на власному сайті.
 #
-# ВИПРАВЛЕНО 2026-07-12 (незалежне рев'ю PR #39): попередня версія
-# передавала `company_id=PROM_OWN_COMPANY_ID` напряму в search_prom_products(),
-# але сама функція (prom_competitor_pricer.py) такого параметра не приймає —
-# гарантований TypeError на першому ж товарі. GraphQL-запит теоретично
-# підтримує $company_id на рівні самого запиту, але Python-обгортка
-# ніколи не передає це значення в variables — довелось би змінювати саму
-# search_prom_products() (спільну з prom_competitor_pricer.py), а не лише
-# цей виклик. Замість цього — пост-фільтр, як і скрізь у проєкті.
+# ПЕРЕРОБЛЕНО 2026-07-17 (Autonomy-6 — попередній GraphQL текстовий пошук
+# промахувався на ~71% топ-970, стеля покриття buyBox/Rozetka <url>/Google
+# link). Замінено на ДЕТЕРМІНОВАНИЙ шлях без жодного пошуку чи текстової
+# схожості:
+#   1. fetch_prom_products() (вже викликається щодня, prom_catalog_sync.py)
+#      дає ГАРАНТОВАНИЙ реальний Prom id за external_id напряму — це наш
+#      ЖЕ товар за визначенням (пряме зіставлення по ключу, не "найсхожіший
+#      серед знайдених").
+#   2. urlText (потрібен лише для канонічного посилання) — одним
+#      детермінованим запитом `GET /ua/p{id}-item.html` БЕЗ слідування
+#      редиректу: Prom резолвить сторінку виключно за числовим id,
+#      ігноруючи сам текст слага в запиті, і повертає 301 з
+#      `Location: /ua/p{id}-{реальний-urlText}.html`. Підтверджено живим
+#      запитом 2026-07-17 (SKU 300391 -> 301, Location із коректним
+#      "antistres-igrashka-butter").
+#
+# Жодного порогу впевненості чи розмірного гейту тут більше не потрібно —
+# попередній клас ризику ("хибний збіг з іншим власним варіантом
+# розміру/кольору", pt34) структурно виключений: це прямий lookup за
+# external_id, не текстовий пошук.
 # ---------------------------------------------------------------------------
-def find_own_product_id(search_name: str) -> tuple[int, str] | None:
-    """Шукає товар СЕРЕД ВЛАСНИХ пост-фільтром за company_id (не на рівні
-    самого GraphQL-запиту — search_prom_products() такого параметра не
-    приймає, див. виправлення вище). Повертає (id, urlText) найкращого
-    текстового збігу СЕРЕД ТИХ, ЩО НЕ конфліктують розмірним токеном із
-    search_name, або None, якщо впевненого й безконфліктного збігу немає
-    — у цьому разі link для товару НЕ будується (краще пропустити товар
-    у фіді, ніж подати Google неправильне посилання).
+def _resolve_url_text(prom_id: int) -> str | None:
+    """Один детермінований HTTP-запит на товар — без слідування редиректу,
+    парсимо Location. Повертає None (не виняток) на будь-яку мережеву
+    проблему чи неочікуваний формат відповіді — той самий безпечний
+    дефолт, що й скрізь у цьому файлі: пропустити link для товару, а не
+    вигадати його."""
+    try:
+        response = requests.get(
+            f"https://prom.ua/ua/p{prom_id}-item.html",
+            allow_redirects=False,
+            timeout=REQUEST_TIMEOUT,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            },
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"[Google] Не вдалось визначити urlText для prom_id={prom_id}: {e}", file=sys.stderr)
+        return None
 
-    limit=30 (вище дефолтних 20) — свідомо з запасом: пост-фільтр за
-    company_id спрацює, лише якщо власний лістинг взагалі потрапив у
-    вибірку; для популярних назв товарів конкуренти можуть займати
-    багато перших позицій, тож вужчий ліміт (было 10) ризикував би
-    занадто часто не знаходити власний товар навіть коли він реально є.
-
-    ВИПРАВЛЕНО 2026-07-11 (аудит, pt34): раніше брався єдиний найвищий за
-    _similarity() кандидат без жодної перевірки, чи це справді ТОЙ САМИЙ
-    товар, а не сусідній варіант (інший розмір/колір) з ВЛАСНОГО каталогу —
-    SequenceMatcher систематично дає високий скор для товарів, що
-    відрізняються лише коротким числовим токеном (той самий клас
-    помилки, задокументований і вже виправлений для конкурентів у
-    prom_competitor_pricer.py, pt14/pt16 — тут застосовано той самий
-    _size_tokens_conflict() гейт). Найгірший наслідок БЕЗ цього гейту —
-    не пропущений товар, а ВАЛІДНЕ, робоче посилання на сторінку ІНШОГО
-    власного товару."""
-    results = search_prom_products(search_name, limit=30)
-    candidates = []
-    for p in results:
-        if p.get("company_id") != PROM_OWN_COMPANY_ID:
-            continue  # не наш лістинг — пропускаємо, шукаємо серед решти
-        score = _similarity(search_name, p.get("name", ""))
-        if score >= GOOGLE_MIN_MATCH_SCORE:
-            candidates.append((score, p))
-    candidates.sort(key=lambda sp: sp[0], reverse=True)
-
-    for score, p in candidates:
-        if _size_tokens_conflict(search_name, p.get("name", "")):
-            continue  # найкращий за текстом, але явно інший розмір/об'єм -- не наш товар, шукаємо далі
-        prom_id = p.get("id")
-        url_text = p.get("urlText")
-        if prom_id is not None and url_text:
-            return prom_id, url_text
-    return None
+    location = response.headers.get("Location", "")
+    match = _URL_TEXT_RE.match(location)
+    if not match:
+        print(
+            f"[Google] Неочікувана відповідь для prom_id={prom_id} "
+            f"(статус={response.status_code}, Location={location!r}) — можлива зміна формату URL на Prom",
+            file=sys.stderr,
+        )
+        return None
+    return match.group(1)
 
 
 def _save_own_product_links_cache(links: dict) -> None:
@@ -259,32 +253,35 @@ def _save_own_product_links_cache(links: dict) -> None:
               f"наступний прогін просто порахує наново.", file=sys.stderr)
 
 
-def resolve_own_product_links(catalog: dict, russian_text: dict) -> dict:
-    """Для кожного товару catalog шукає власний Prom-лістинг через
-    find_own_product_id() (company_id-фільтрований GraphQL-пошук + захист
-    від плутанини розмірних варіантів). Повертає {pid: {"prom_id": int,
-    "url_text": str}} лише для товарів із впевненим збігом — решта просто
-    відсутня в результаті (не вигадуємо посилання).
+def resolve_own_product_links(catalog: dict, prom_products_by_external_id: dict) -> dict:
+    """Для кожного товару catalog бере ГАРАНТОВАНИЙ Prom id за external_id
+    з prom_products_by_external_id (fetch_prom_products(), не пошук), тоді
+    визначає urlText одним детермінованим запитом (_resolve_url_text).
+    Повертає {pid: {"prom_id": int, "url_text": str}} лише для товарів, що
+    вже імпортовані в Prom (є в prom_products_by_external_id) І чий
+    urlText вдалось визначити — решта відсутня в результаті (не вигадуємо
+    посилання).
 
     Побічний ефект: результат зберігається в OWN_PRODUCT_LINKS_CACHE_FILE
     — generate_rozetka_feed.py читає цей файл (лише читає, не рахує сам),
     щоб додати <url> для товарів, які збігаються з цим самим топ-970, без
-    повторного навантаження на пошуковий ендпоінт Prom."""
+    повторного навантаження на prom.ua."""
     links = {}
     for pid, item in catalog.items():
-        name = (item.get("name") or "").strip()
-        if not name:
+        product = prom_products_by_external_id.get(pid)
+        if not product:
             continue
-        name_rus = (russian_text.get(pid, {}) or {}).get("name") or name
-        match = find_own_product_id(name_rus)
-        # Джитер між запитами до того самого reverse-engineered GraphQL-
-        # ендпоінту, що й prom_competitor_pricer.py (SEARCH_DELAY) — без
-        # цього повний прогін на топ-970 робить ~970 послідовних запитів
-        # без жодної паузи (аудит, pt34).
+        prom_id = product.get("id")
+        if not prom_id:
+            continue
+
+        url_text = _resolve_url_text(prom_id)
+        # Джитер між послідовними запитами до prom.ua (SEARCH_DELAY) — без
+        # цього повний прогін на топ-970 робить до ~970 послідовних
+        # запитів без жодної паузи.
         time.sleep(random.uniform(*SEARCH_JITTER_RANGE))
-        if match is None:
+        if not url_text:
             continue
-        prom_id, url_text = match
         links[pid] = {"prom_id": prom_id, "url_text": url_text}
 
     _save_own_product_links_cache(links)
@@ -412,29 +409,26 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
         top_catalog = dict(list(top_catalog.items())[:limit])
     print(f"[Google] У топ-970: {len(top_catalog)} товарів для обробки.")
 
-    # ВИПРАВЛЕНО (незалежне рев'ю PR #39, раунд 2): self-match (нижче) не
-    # потребує PROM_API_KEY — лише публічний GraphQL-пошук — тоді як
-    # fetch_prom_products() ПОТРЕБУЄ (живо підтверджено: 401 Unauthorized
-    # у workflow, де PROM_API_KEY secret не зареєстровано). Раніше
-    # fetch_prom_products() викликався ПЕРШИМ, тож будь-який збій
-    # авторизації обривав generate_google_feed() ДО того, як
-    # resolve_own_product_links() встигав записати кеш
-    # own_product_links_cache.json — а саме цей кеш і є єдиною метою
-    # цього кроку в CI (google_merchant_feed.xml ніде не публікується).
-    # Тепер self-match рахується й кешується ПЕРШИМ — навіть якщо
-    # fetch_prom_products() нижче впаде через відсутній/невалідний
-    # PROM_API_KEY, кеш для <url> у Rozetka-фіді вже буде на диску.
-    russian_text = fetch_russian_text()
-    print(f"[Google] Шукаємо реальні посилання на сторінки товарів (GraphQL, {len(top_catalog)} запитів)...")
-    links = resolve_own_product_links(top_catalog, russian_text)
-
-    print("[Google] Завантажуємо реальний список товарів Prom (для фото)...")
+    # ЗМІНЕНО 2026-07-17 (Autonomy-6): fetch_prom_products() тепер
+    # ВИКЛИКАЄТЬСЯ ПЕРШИМ і НАВМИСНО — на відміну від попередньої версії,
+    # де self-match свідомо рахувався ДО нього (тоді self-match був
+    # незалежним GraphQL-пошуком без потреби в PROM_API_KEY). Новий
+    # resolve_own_product_links() сам залежить від fetch_prom_products()
+    # (бере звідти гарантований id за external_id, замість пошуку) — тож
+    # PROM_API_KEY тепер потрібен і для self-match теж. Це прийнятно:
+    # PROM_API_KEY — уже обов'язковий секрет для цього ж workflow
+    # (prom_competitor_pricer.py та інші кроки), не нова залежність на
+    # практиці.
+    print("[Google] Завантажуємо реальний список товарів Prom (для фото та self-match)...")
     prom_products = fetch_prom_products()
     # Індекс за external_id (vendorCode) — ключ, який реально використовує Prom API
     prom_by_external_id = {
         str(p.get("external_id")): p for p in prom_products.values()
         if p.get("external_id")
     } if isinstance(prom_products, dict) else {}
+
+    print(f"[Google] Визначаємо реальні посилання на сторінки товарів ({len(top_catalog)} товарів)...")
+    links = resolve_own_product_links(top_catalog, prom_by_external_id)
 
     items, stats = build_feed_items(top_catalog, prom_by_external_id, links)
 

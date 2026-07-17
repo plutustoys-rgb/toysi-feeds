@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+from datetime import datetime, timedelta
 
 from orders_db import (
     get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi,
@@ -13,7 +14,7 @@ from nova_poshta import resolve_shipping, NovaPoshtaAPIError
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message
 import rozetka_client
-from orders_watcher import update_prom_order_status, PromAPIError
+from orders_watcher import update_prom_order_status, check_prom_order_status, PromAPIError
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -263,7 +264,87 @@ def _update_marketplace_status(order: dict) -> None:
         )
 
 
+# ВИПРАВЛЕНО (2026-07-17, реальний інцидент — замовлення №415858222):
+# клієнтка скасувала замовлення на Prom, поки воно "зависло" непідхопленим
+# автоматикою; ручне відновлення (вставка запису в orders.db + запуск
+# order-router.service) відправило товар у Toysi, НЕ перевіривши, що
+# клієнт тим часом скасував замовлення на Prom — небажана відправка,
+# клієнтка сама сплатила доставку (субсидія "Дешева доставка" не
+# спрацювала, бо ТТН не було зареєстровано в самому Prom).
+_PROM_CANCELLED_STATUSES = {"canceled"}
+
+
+def _check_prom_not_cancelled(conn, order: dict) -> bool:
+    """Живий запит до Prom Orders API ПЕРЕД будь-яким форвардом у Toysi —
+    єдина точка виклику всередині route_order(), тож автоматично
+    покриває ОБИДВА шляхи, про які йде мова в задачі: звичайний цикл
+    (route_pending_orders() -> route_order()) і safety-net
+    (service_watchdog.check_unforwarded_orders(), що викликає route_order()
+    напряму, P0-6) — а також ручне відновлення (insert в orders.db +
+    перезапуск order-router.service, який зрештою так само доходить до
+    route_pending_orders()).
+
+    Лише для platform="prom" — Rozetka ще не активна в проді (статус
+    реєстрації "Підготовка"), еквівалентної перевірки там поки немає;
+    додати за тим самим патерном, коли Rozetka реально стане активною.
+
+    date_from для check_prom_order_status() — початок КАЛЕНДАРНОГО ДНЯ
+    перед датою створення замовлення (є в orders.db), не сама
+    дата/час створення з невеликим запасом — ПЕРЕВІРЕНО ЖИВО
+    (2026-07-17, реальне замовлення №415858222): 2-годинний запас від
+    known created_at виявився недостатнім (замовлення НЕ знайшлось у
+    вужчому вікні, хоча знайшлось з денним запасом) — найімовірніше,
+    orders.db зберігає created_at як момент, коли МИ вперше побачили
+    замовлення (наступний цикл опитування), а не точний date_created
+    Prom, тож малий запас відносно НАШОГО timestamp ризикує почати
+    вікно ПІЗНІШЕ за реальний Prom-timestamp. Початок попереднього дня —
+    надійний запас проти цього класу розбіжності, і досі знаходить
+    конкретне замовлення за 1-2 сторінки (перевірено), а не сканує весь
+    нещодавній список.
+
+    Повертає True (можна продовжувати форвард), якщо живий статус НЕ
+    "canceled", АБО якщо перевірити не вдалось (мережа/немає ключа/не
+    знайдено у вікні) — той самий fail-open принцип, що й
+    _check_toysi_stock() нижче: тимчасова недоступність перевірки не
+    повинна зупиняти весь конвеєр лише через відсутність підтвердження.
+
+    Повертає False (форвард НЕ відбувається) лише коли Prom ЖИВО й
+    ПОЗИТИВНО підтверджує скасування — ескалює в Telegram і позначає
+    status='prom_cancelled_before_forward', щоб get_orders_ready_to_
+    forward() більше не повертав це замовлення на кожному циклі (той
+    самий фільтр-виняток, що вже діє для 'toysi_error')."""
+    if order.get("platform") != "prom":
+        return True
+
+    date_from = None
+    created_at = order.get("created_at")
+    if created_at:
+        try:
+            created_date = datetime.fromisoformat(created_at).date()
+            date_from = (datetime(created_date.year, created_date.month, created_date.day) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            date_from = None
+
+    live_status = check_prom_order_status(order["order_id"], date_from=date_from)
+    if live_status not in _PROM_CANCELLED_STATUSES:
+        return True
+
+    message = (
+        f"🛑 {order['internal_order_id']} (Prom #{order['order_id']}): замовлення СКАСОВАНО на Prom "
+        f"(живий статус: {live_status}), поки воно чекало передачі в Toysi.\n"
+        f"Клієнт: {order.get('customer_name') or '?'}\n"
+        "Форвард у Toysi ЗУПИНЕНО автоматично. Відправити все одно вручну, чи залишити скасованим?"
+    )
+    print(f"[order_router] {message}", file=sys.stderr)
+    send_telegram_message(message)
+    update_delivery_status(conn, order["internal_order_id"], status="prom_cancelled_before_forward")
+    return False
+
+
 def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict = None) -> None:
+    if not _check_prom_not_cancelled(conn, order):
+        return
+
     # P0-6: якщо викликач не передав каталог (напр. service_watchdog.py's
     # check_unforwarded_orders(), який викликає route_order() напряму) —
     # завантажуємо самі, щоб перевірка діяла незалежно від того, звідки

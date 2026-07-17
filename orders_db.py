@@ -177,12 +177,19 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
     того, яке значення `status` виставила конкретна платформа.
     `toysi_error` виключено окремо, щоб не намагатись нескінченно
     передати замовлення з даними, які Toysi вже відхилив (Крок 5, п.4).
+
+    `prom_cancelled_before_forward` (2026-07-17, реальний інцидент
+    №415858222) — той самий принцип: order_router.py._check_prom_not_
+    cancelled() виставляє цей статус, коли живий запит до Prom Orders
+    API підтверджує скасування ПЕРЕД форвардом — без цього виключення
+    те саме замовлення потрапляло б у кандидати знову на кожному циклі,
+    попри вже надіслану ескалацію власнику.
     """
     rows = conn.execute(
         """
         SELECT * FROM orders
         WHERE forwarded_to_toysi_at IS NULL
-          AND (status IS NULL OR status != 'toysi_error')
+          AND (status IS NULL OR status NOT IN ('toysi_error', 'prom_cancelled_before_forward'))
           AND (
               payment_method = 'cod'
               OR (payment_method = 'prepaid' AND payment_confirmed = 1)

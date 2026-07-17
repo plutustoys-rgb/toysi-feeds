@@ -69,7 +69,10 @@ if hasattr(sys.stdout, "reconfigure"):
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
 from generate_prom_feed_top import select_top_items
 from generate_prom_feed import fetch_russian_text
-from competitor_pricing import decide_price_for_platform, load_prom_price_state, save_prom_price_state, _BAD_NAME_MARKERS
+from competitor_pricing import (
+    decide_price_for_platform, load_prom_price_state, save_prom_price_state,
+    PROM_CATEGORY_COMMISSION, PROM_COMMISSION_DEFAULT, _BAD_NAME_MARKERS,
+)
 from telegram_notify import send_telegram_message
 
 load_dotenv()
@@ -211,6 +214,20 @@ def fetch_buybox_competitor(prom_id: int, url_text: str) -> dict | None:
         }
     except (requests.exceptions.RequestException, ValueError, KeyError):
         return None
+
+
+# 2026-07-17: 284/970 (29%) топ-970 SKU наразі йдуть на PROM_COMMISSION_
+# DEFAULT (20%) — реальна ставка категорії не підтверджена (кабінет Prom
+# -> Показники роботи компанії -> Комісія за замовлення). Дефолт може
+# бути занижений відносно реальної ставки категорії (як-от підтверджені
+# 23-25% для кількох суміжних категорій) — застосування авто-ціни на
+# невірному, заниженому дефолті ризикує реальним заниженням floor і
+# маржі, непомітно для жодної наявної перевірки. Такі SKU виключаються
+# з --apply (ні adjust, ні delist) до ручного підтвердження реальної
+# ставки категорії; дозволяється дозволити з ЯВНИМ прапорцем.
+def _category_commission_is_default(category_name: str | None) -> bool:
+    key = (category_name or "").strip().lower()
+    return key not in PROM_CATEGORY_COMMISSION
 
 
 SEARCH_LIMIT = 20  # скільки кандидатів забирати на один пошуковий запит
@@ -691,6 +708,10 @@ def main() -> None:
                      help=f"Скільки SKU топ-970 обробити за цей запуск (дефолт {DAILY_LIMIT}).")
     ap.add_argument("--force", action="store_true",
                      help="Ігнорувати перевірку 'повний прогін вже був нещодавно' (для ручного/тестового запуску).")
+    ap.add_argument("--allow-default-commission", action="store_true",
+                     help="Дозволити --apply для SKU, чия категорія на PROM_COMMISSION_DEFAULT "
+                          "(реальна ставка не підтверджена) — за замовчуванням такі SKU виключено "
+                          "з auto-apply, лише позначені для ручного перегляду.")
     ap.add_argument("--force-circuit-breaker", action="store_true",
                      help="Ігнорувати circuit breaker (P0-3) і застосувати зміни навіть якщо він спрацював. "
                           "ОКРЕМИЙ прапорець від --force (той стосується лише 20-годинного гейту) — це "
@@ -766,6 +787,7 @@ def main() -> None:
                                   # різке падіння buybox_count/buybox_attempted_count сигналізує
                                   # про зламаний _BUYBOX_RE, а не просто "мало конкурентів" (рев'ю PR #53)
     to_adjust, to_delist, delist_details = [], [], []
+    default_commission_skipped = []  # (pid, name, category, price) — не потрапляють у to_adjust/to_delist
 
     for pid, item in items:
         try:
@@ -829,7 +851,13 @@ def main() -> None:
 
         if decision["competitor"] is None:
             no_competitor_count += 1
-        if decision["action"] == "adjust":
+
+        if _category_commission_is_default(category_name) and not args.allow_default_commission:
+            default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))
+            print(f"  -> {pid}: категорія {category_name!r} на дефолтній комісії "
+                  f"({PROM_COMMISSION_DEFAULT:.0%}, не підтверджена) — виключено з auto-apply, "
+                  "потребує ручного перегляду")
+        elif decision["action"] == "adjust":
             adjust_count += 1
             to_adjust.append((pid, decision["price"], decision["margin_pct"]))
         elif decision["action"] == "delist":
@@ -842,10 +870,22 @@ def main() -> None:
 
     print(f"\n[Pricer] Підсумок: adjust={adjust_count}, delist={delist_count}, "
           f"без знайденого конкурента={no_competitor_count}, "
+          f"на дефолтній комісії (виключено з auto-apply)={len(default_commission_skipped)}, "
           f"з них через buyBox (не SearchListingQuery): {buybox_count} "
           f"(пробували buyBox для {buybox_attempted_count} SKU — різке падіння "
           f"buybox_count/buybox_attempted_count сигналізує про зламаний regex, "
           f"не просто \"мало конкурентів\")")
+
+    default_commission_note = ""
+    if default_commission_skipped:
+        default_commission_note = (
+            f"\n\n⚠️ {len(default_commission_skipped)} SKU на дефолтній комісії "
+            f"({PROM_COMMISSION_DEFAULT:.0%}, категорія не підтверджена в кабінеті Prom) — "
+            "НЕ включено в auto-apply, потребують ручного перегляду ставки:\n"
+            + "\n".join(f"{pid} {name[:40]} [{cat}]" for pid, name, cat, _ in default_commission_skipped[:15])
+        )
+        if len(default_commission_skipped) > 15:
+            default_commission_note += f"\n... та ще {len(default_commission_skipped) - 15}"
 
     breaker_tripped, breaker_reasons, avg_margin_this_run = evaluate_circuit_breaker(to_adjust, price_state)
     if avg_margin_this_run is not None:
@@ -868,10 +908,12 @@ def main() -> None:
             digest += "\n\nКандидати на видалення:\n" + "\n".join(delist_details[:15])
             if len(delist_details) > 15:
                 digest += f"\n... та ще {len(delist_details) - 15}"
+        digest += default_commission_note
         digest += "\n\n(--apply не вмикався, це лише пропозиція)"
         send_telegram_message(digest)
         write_pricer_summary(
             "Режим: dry-run (--apply не використовувався). 20-годинний гейт: не спрацював (повний прогін виконано)."
+            + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply." if default_commission_skipped else "")
             + (f" Circuit breaker СПРАЦЮВАВ БИ: {'; '.join(breaker_reasons)}" if breaker_tripped else ""),
             checked=len(items), adjust=adjust_count, delist=delist_count,
             no_competitor=no_competitor_count, errors=0,
@@ -943,9 +985,11 @@ def main() -> None:
         digest += "\n\nВидалено:\n" + "\n".join(delist_details[:15])
         if len(delist_details) > 15:
             digest += f"\n... та ще {len(delist_details) - 15}"
+    digest += default_commission_note
     send_telegram_message(digest)
     write_pricer_summary(
-        "Режим: --apply (реальні зміни застосовано). 20-годинний гейт: не спрацював (повний прогін виконано).",
+        "Режим: --apply (реальні зміни застосовано). 20-годинний гейт: не спрацював (повний прогін виконано)."
+        + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply." if default_commission_skipped else ""),
         checked=len(items), adjust=adjust_count, delist=delist_count,
         no_competitor=no_competitor_count, errors=error_count,
     )

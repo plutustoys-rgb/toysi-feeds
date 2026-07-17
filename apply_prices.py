@@ -34,6 +34,27 @@ DEFAULT_CSV = "price_corrections.csv"
 PLATFORMS = ("prom", "rozetka")
 
 
+def _check_required_columns(reader: csv.DictReader, required: set, path: str) -> None:
+    """Надійність, п.1: тиха поломка схеми CSV (перейменована/видалена
+    колонка) раніше просто давала 0 коригувань без жодного пояснення —
+    csv.DictReader.get(col) на відсутню колонку повертає None так само
+    мовчки, як на порожнє значення в наявній колонці, тож немає способу
+    відрізнити "схема зламана" від "просто немає даних у цьому рядку"
+    без явної перевірки заголовка. Перевіряємо ОДИН раз, до першого
+    рядка — reader.fieldnames є одразу після створення DictReader, ще
+    до ітерації."""
+    header = set(reader.fieldnames or [])
+    missing = required - header
+    if missing:
+        print(
+            f"[ApplyPrices] ПОМИЛКА: {path} не містить очікувані колонки {sorted(missing)} "
+            f"(наявні: {sorted(header)}) — схема файлу змінилась чи файл пошкоджений. Зупиняюсь, "
+            "щоб не згенерувати фід із мовчки порожніми/невірними коригуваннями.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def load_corrections(path: str, platform: str) -> dict[str, float]:
     """Читає price_corrections.csv (формат repricer.py) і повертає {id: new_price} для одного майданчика."""
     corrections: dict[str, float] = {}
@@ -45,6 +66,7 @@ def load_corrections(path: str, platform: str) -> dict[str, float]:
     price_col = f"new_price_{platform}"
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
+        _check_required_columns(reader, {"id", price_col}, path)
         for row in reader:
             pid       = (row.get("id") or "").strip()
             raw_price = (row.get(price_col) or "").strip()
@@ -76,6 +98,7 @@ def load_pricing_results(path: str, platform: str) -> dict[str, float]:
 
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
+        _check_required_columns(reader, {"id", price_col}, path)
         for row in reader:
             pid       = (row.get("id") or "").strip()
             raw_price = (row.get(price_col) or "").strip()

@@ -3,8 +3,10 @@ import sys
 from checkbox_client import register_ettn, CheckboxAPIError
 from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
-    mark_rozetka_ttn_pushed, update_delivery_status,
+    mark_rozetka_ttn_pushed, mark_prom_delivered_pushed, update_delivery_status,
 )
+import nova_poshta
+from orders_watcher import update_prom_order_status, PromAPIError
 import rozetka_client
 from telegram_notify import send_telegram_message
 from toysi_order_submit import (
@@ -49,10 +51,16 @@ rozetka_client.update_order_status(order_id, status=2, ttn=ttn). За
 документацією Rozetka Seller API, ttn разом зі status=2 автоматично
 переводить замовлення в статус 61, і Rozetka сама починає відстежувати
 трекінг доставки — подальших ручних переходів статусу не потрібно.
-На відміну від Prom: у цьому репозиторії НЕМАЄ аналогічного механізму
-"написати ТТН назад у Prom" — Prom Orders API такого ендпоінту в поточній
-інтеграції не використовує (сам Prom, судячи з усього, підхоплює трекінг
-іншим шляхом, не через явний push від продавця).
+
+Prom (Auto-3, 2026-07-17, _maybe_push_delivered_to_prom): на відміну від
+Rozetka, Prom Orders API НЕ має ендпоінту "прикріпити ТТН" — і взагалі не
+відстежує доставку автоматично сам (підтверджено, code_report_2026-07-
+15_pt23.md). Замість передачі ТТН, тут ми самі опитуємо nova_poshta.
+get_tracking_status(ttn) (TrackingDocument.getStatusDocuments — реальний
+фізичний статус посилки від перевізника, окреме джерело від toysi_ttn/
+delivery_status, які відображають лише СТАТУС ЗАМОВЛЕННЯ на боці Toysi) і,
+щойно НП підтверджує фактичну видачу, самі викликаємо
+orders_watcher.update_prom_order_status(order_id, status="delivered").
 """
 
 _STATUS_TO_DELIVERY_STATUS = {
@@ -172,6 +180,76 @@ def _maybe_push_ttn_to_rozetka(conn, order: dict, ttn: str) -> None:
     print(f"[order_status_tracker] ТТН передано в Rozetka: {order['internal_order_id']} (ТТН {ttn})")
 
 
+def _maybe_push_delivered_to_prom(conn, order: dict, ttn: str) -> None:
+    """Auto-3 (2026-07-17): щойно Нова Пошта підтверджує ФАКТИЧНУ видачу
+    посилки (nova_poshta.get_tracking_status(ttn)["delivered"]) — викликає
+    orders_watcher.update_prom_order_status(order_id, status="delivered"),
+    щоб клієнт бачив реальний стан у кабінеті Prom, а не застряглий
+    "Прийнято" (Prom не робить цього сам, підтверджено — Vis-10). Лише
+    platform=prom + carrier=nova_poshta (Укрпошта немає цього API взагалі;
+    той самий carrier-гейт, що й _maybe_register_ettn вище).
+
+    Ідемпотентність — prom_delivered_pushed_at, той самий підхід, що й
+    rozetka_ttn_pushed_at: перевіряємо прапорець щоразу (не лише "у момент
+    появи ttn"), щоб тимчасова мережева помилка природно повторилась на
+    наступному циклі, а не загубилась назавжди.
+
+    Не критично (на гроші не впливає — Prom-оплата гейтована підтвердженням
+    покупця, не статусом замовлення, Vis-10) — тому будь-яка помилка тут
+    (мережа НП, помилка Prom API, неочікуваний виняток) лише логується,
+    ніколи не зупиняє track_orders() для інших замовлень у тому самому
+    циклі."""
+    if not ttn:
+        return
+    if order.get("platform") != "prom":
+        return
+    if order.get("carrier", "nova_poshta") != "nova_poshta":
+        return
+    if order.get("prom_delivered_pushed_at"):
+        return
+
+    try:
+        tracking = nova_poshta.get_tracking_status(ttn)
+    except nova_poshta.NovaPoshtaAPIError as e:
+        print(
+            f"[order_status_tracker] Не вдалось перевірити трекінг НП для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+    except Exception as e:
+        print(
+            f"[order_status_tracker] Неочікувана помилка трекінгу НП для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+
+    if not tracking or not tracking["delivered"]:
+        return
+
+    try:
+        update_prom_order_status(order["order_id"], status="delivered")
+    except PromAPIError as e:
+        print(
+            f"[order_status_tracker] Не вдалось передати статус \"delivered\" у Prom для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+    except Exception as e:
+        print(
+            f"[order_status_tracker] Неочікувана помилка при передачі статусу \"delivered\" у Prom для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+
+    mark_prom_delivered_pushed(conn, order["internal_order_id"])
+    print(f"[order_status_tracker] Статус \"delivered\" передано в Prom: "
+          f"{order['internal_order_id']} (ТТН {ttn}, НП: {tracking['status']})")
+
+
 def track_orders() -> None:
     with get_connection() as conn:
         active = get_active_toysi_orders(conn)
@@ -218,6 +296,7 @@ def track_orders() -> None:
             order["toysi_ttn"] = ttn
             _maybe_register_ettn(conn, order, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)
+            _maybe_push_delivered_to_prom(conn, order, ttn)
 
             ttn_note = f", ТТН: {ttn}" if ttn else ""
             terminal_note = " [термінальний, більше не опитуємо]" if status_code in TERMINAL_ORDER_STATUSES else ""

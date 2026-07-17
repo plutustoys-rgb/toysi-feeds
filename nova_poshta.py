@@ -143,6 +143,57 @@ def resolve_shipping(city_name: str, warehouse_query: str = "", area_hint: str =
     }
 
 
+# Vis-10/Auto-3 (2026-07-17): Prom не має жодного вбудованого механізму
+# автоматичного трекінгу доставки (підтверджено — див. code_report_2026-07-
+# 15_pt23.md) — статус замовлення в кабінеті Prom лишається "Прийнято" й
+# після реальної фізичної видачі клієнту, доки хтось вручну не перемкне
+# його на "Доставлено". Власниця обрала: власне відстеження через API
+# самої Нової Пошти замість ручного/status Toysi.
+#
+# ВАЖЛИВО — це НЕ те саме джерело, що toysi_ttn/delivery_status у
+# order_status_tracker.py: те поле відображає СТАТУС ЗАМОВЛЕННЯ на боці
+# Toysi (order_status, коди 0-503 з fetch_order_statuses()), тут —
+# ФІЗИЧНИЙ статус ПОСИЛКИ напряму від перевізника.
+#
+# TrackingDocument.getStatusDocuments — публічний, READ-ONLY метод трекінгу
+# за номером ТТН: на відміну від checkbox_client.register_ettn() (де
+# "СЕРЙОЗНИЙ АРХІТЕКТУРНИЙ РИЗИК" — чужий токен НП може не давати
+# зареєструвати ЕТТН, бо це МУТАЦІЯ на чужому ресурсі), тут лише ЧИТАННЯ
+# публічно доступного статусу відправлення за номером — той самий метод,
+# яким користується публічний трекінг-віджет НП на будь-якому сайті, без
+# прив'язки до того, чий акаунт створив саму накладну. Тому працездатність
+# НЕ залежить від "чужого" акаунту Toysi, що реально створює ТТН (див.
+# докстрінг order_status_tracker.py) — це не підтверджено живим викликом
+# на момент написання, лише на основі документованої публічної природи
+# методу, варто звірити на першому реальному ТТН.
+def get_tracking_status(ttn: str) -> dict | None:
+    """Повертає {"status": str, "status_code": str, "delivered": bool,
+    "actual_delivery_date": str|None} для ТТН, або None, якщо ТТН не
+    знайдено (посилку ще не створено/не відскановано перевізником — не
+    помилка запиту). Піднімає NovaPoshtaAPIError на реальну проблему із
+    самим запитом (мережа, ключ, невалідна відповідь).
+
+    delivered визначається за НЕПОРОЖНІМ ActualDeliveryDate — задокументоване
+    поле НП, що заповнюється лише після фактичної видачі отримувачу, а не за
+    числовим StatusCode (StatusCode має десятки можливих значень, і жоден
+    офіційний перелік з чітким "це і лише це означає доставлено" під рукою
+    не звірявся — ActualDeliveryDate однозначний і не потребує такого
+    перепису)."""
+    results = _call("TrackingDocument", "getStatusDocuments", {
+        "Documents": [{"DocumentNumber": ttn, "Phone": ""}],
+    })
+    if not results:
+        return None
+    info = results[0]
+    actual_delivery_date = (info.get("ActualDeliveryDate") or "").strip()
+    return {
+        "status": info.get("Status", ""),
+        "status_code": str(info.get("StatusCode", "")),
+        "delivered": bool(actual_delivery_date),
+        "actual_delivery_date": actual_delivery_date or None,
+    }
+
+
 if __name__ == "__main__":
     result = resolve_shipping("Київ", "15")
     if result:

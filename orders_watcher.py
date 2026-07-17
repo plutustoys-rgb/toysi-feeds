@@ -100,6 +100,80 @@ def fetch_new_orders_prom() -> list:
     return [_convert_prom_order(o) for o in orders]
 
 
+# ВИПРАВЛЕНО (2026-07-17, реальний інцидент — замовлення №415858222):
+# клієнтка скасувала замовлення на Prom, поки воно "зависло"
+# непідхопленим автоматикою; ручне відновлення (вставка запису в
+# orders.db + запуск order-router.service) відправило товар у Toysi, НЕ
+# перевіривши живий статус на Prom — небажана відправка, клієнтка сама
+# оплатила доставку (субсидія "Дешева доставка" не спрацювала, бо ТТН не
+# зареєстровано в самому Prom).
+#
+# GET /orders/list НЕ підтримує фільтр за конкретним id — перевірено
+# живо 2026-07-17: жоден з очевидних варіантів параметра (`ids[]`, `ids`,
+# `id`, `order_id`) не фільтрує відповідь, API мовчки повертає той самий
+# дефолтний список. Єдиний робочий шлях — той самий, що вже й так
+# використовує fetch_new_orders_prom(): `date_from` + пагінація за
+# `last_id`, і шукати потрібний `id` серед сторінок. `date_from` тут —
+# дата створення САМОГО замовлення (відома з orders.db) мінус невеликий
+# запас, а не широкий LOOKBACK — щоб знайти конкретне замовлення за 1-2
+# сторінки, не сканувати весь недавній список щоразу.
+def check_prom_order_status(order_id, date_from: str = None) -> str | None:
+    """Живий статус КОНКРЕТНОГО замовлення на Prom прямо зараз (той самий
+    вокабуляр, що й update_prom_order_status(): pending/received/
+    delivered/canceled/draft/paid/custom-{id}).
+
+    Повертає None (не помилку), якщо PROM_API_KEY не задано, запит не
+    вдався (мережа/невалідна відповідь), чи замовлення не знайдено в
+    межах перевіреного вікна — це НЕ доказ, що замовлення не існує, лише
+    те, що зараз перевірити не вдалось. Викликач (route_order()) має
+    трактувати None як "не вдалось перевірити" і НЕ блокувати форвард
+    лише на цій підставі (той самий fail-open принцип, що й
+    _check_toysi_stock() у order_router.py — тимчасова недоступність
+    перевірки не повинна зупиняти весь конвеєр)."""
+    if not PROM_API_KEY:
+        return None
+    if date_from is None:
+        date_from = (datetime.now() - timedelta(hours=PROM_ORDER_LOOKBACK_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    last_id = None
+    for _ in range(50):  # запобіжник проти нескінченної пагінації
+        params = {"date_from": date_from, "limit": 100}
+        if last_id is not None:
+            params["last_id"] = last_id
+        try:
+            response = requests.get(
+                f"{PROM_API_URL}/orders/list",
+                headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (requests.exceptions.RequestException, ValueError) as e:
+            print(
+                f"[Prom] Не вдалось перевірити живий статус замовлення {order_id}: {e}",
+                file=sys.stderr,
+            )
+            return None
+
+        page = data.get("orders", [])
+        if not page:
+            break
+        for o in page:
+            if str(o.get("id")) == str(order_id):
+                return o.get("status")
+        if len(page) < 100:
+            break
+        last_id = page[-1]["id"]
+
+    print(
+        f"[Prom] Замовлення {order_id} не знайдено в перевіреному вікні (date_from={date_from}) — "
+        "не блокую форвард лише на цій підставі.",
+        file=sys.stderr,
+    )
+    return None
+
+
 _PRICE_WHITESPACE_RE = re.compile(r"[\s  ]")
 
 

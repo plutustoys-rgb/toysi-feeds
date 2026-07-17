@@ -45,9 +45,16 @@ status=0/SUCCESS — при падінні логується "Failed with resul
 # (та сама вразливість, що й orders_watcher/order_router — писало
 # payment_confirmed, яке order_router читає) — bank-check.timer
 # ретировано, більше не окремий запис тут.
+# ДОДАНО (2026-07-17, P0-7): order-status-tracker.service досі був
+# ПОВНІСТЮ поза цим списком — це вхідні двері TTN/статусу доставки для
+# КОЖНОГО замовлення (checkbox-фіскалізація, Rozetka TTN push-back), і
+# якщо він мовчки зависне/впаде, ніхто про це не дізнається інакше, ніж
+# вручну перевіривши логи. bank_check.py/orders_watcher.py НЕ додаються
+# окремо — вони більше не самостійні сервіси (злиті в order-pipeline вище).
 MONITORED_SERVICES = {
-    "order-pipeline": 30,   # таймер кожні 15 хв (fetch+save+confirm+forward одним процесом)
-    "prom-chat-bot": 15,    # таймер кожні 5 хв
+    "order-pipeline": 30,          # таймер кожні 15 хв (fetch+save+confirm+forward одним процесом)
+    "prom-chat-bot": 15,           # таймер кожні 5 хв
+    "order-status-tracker": 60,    # таймер кожні 30 хв
 }
 
 LOOKBACK = "3 days ago"  # достатньо, щоб знайти останній успіх навіть після тривалого падіння

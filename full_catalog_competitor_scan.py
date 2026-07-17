@@ -84,7 +84,7 @@ from generate_prom_feed import fetch_russian_text, is_clearance_item
 from competitor_pricing import decide_price_for_platform
 from prom_competitor_pricer import (
     find_best_competitor, verify_competitor_really_available, SEARCH_DELAY,
-    MIN_FULL_RUN_INTERVAL_HOURS,
+    MIN_FULL_RUN_INTERVAL_HOURS, _load_prom_category_cache,
 )
 from telegram_notify import send_telegram_message
 
@@ -250,6 +250,13 @@ def main() -> None:
     print("[FullScan] Завантажую російськомовні назви (кращий збіг з пошуком Prom)...")
     russian_text = fetch_russian_text()
 
+    # Autonomy-11/Vis-11: та сама механіка, що й prom_competitor_pricer.py —
+    # реальна Prom-категорія товару (якщо закешована) переважає здогад за
+    # назвою Toysi при виборі комісії.
+    prom_category_cache = _load_prom_category_cache()
+    print(f"[FullScan] Кеш Prom-категорій: {len(prom_category_cache)} SKU "
+          f"({'знайдено' if prom_category_cache else 'відсутній/застарілий — фолбек на Toysi-категорію'}).")
+
     invalid_cost_count = 0
     for i, pid in enumerate(batch_ids, start=1):
         item = scope[pid]
@@ -273,6 +280,7 @@ def main() -> None:
         name_ukr = (item.get("name") or "").strip()
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
         category_name = item.get("category_name")
+        prom_category_id = (prom_category_cache.get(pid) or {}).get("category_id")
 
         if cost <= 0:
             invalid_cost_count += 1
@@ -290,7 +298,7 @@ def main() -> None:
 
         competitor = find_best_competitor(name_rus, cost)
         min_competitor_price = competitor["price"] if competitor else None
-        decision = decide_price_for_platform(cost, min_competitor_price, "prom", category_name)
+        decision = decide_price_for_platform(cost, min_competitor_price, "prom", category_name, prom_category_id)
         time.sleep(SEARCH_DELAY)
 
         competitor_alive = None

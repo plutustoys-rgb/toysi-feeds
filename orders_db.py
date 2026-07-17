@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- на кожному циклі опитування (Rozetka сама починає трекінг після
                                                -- першого прикріплення ТТН, повторний виклик зайвий, не шкідливий,
                                                -- але марний мережевий запит щоразу)
+    prom_delivered_pushed_at TEXT,             -- коли статус "delivered" передано в Prom (Auto-3, 2026-07-17,
+                                               -- order_status_tracker.py, за живим трекінгом Нової Пошти,
+                                               -- TrackingDocument.getStatusDocuments) — захист від повторного
+                                               -- POST /orders/set_status на кожному циклі опитування
     UNIQUE (order_id, platform)
 );
 
@@ -86,6 +90,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         # rozetka_ttn_pushed_at — перевіряємо прапорець, не пропускаємо
         # замовлення назавжди).
         _ensure_column(conn, "orders", "stock_alert_sent_at", "stock_alert_sent_at TEXT")
+        _ensure_column(conn, "orders", "prom_delivered_pushed_at", "prom_delivered_pushed_at TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -283,6 +288,17 @@ def mark_rozetka_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) ->
     той самий підхід, що й mark_checkbox_ettn_registered()."""
     conn.execute(
         "UPDATE orders SET rozetka_ttn_pushed_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_prom_delivered_pushed(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що статус "delivered" вже передано в Prom (Auto-3,
+    order_status_tracker.py, orders_watcher.update_prom_order_status()) —
+    захист від повторного POST /orders/set_status на кожному циклі
+    опитування, той самий підхід, що й mark_rozetka_ttn_pushed()."""
+    conn.execute(
+        "UPDATE orders SET prom_delivered_pushed_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
 

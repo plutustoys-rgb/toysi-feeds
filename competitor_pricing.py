@@ -438,6 +438,73 @@ PROM_CATEGORY_COMMISSION: dict[str, float] = {
 }
 PROM_COMMISSION_DEFAULT = 0.20  # орієнтовний fallback, ПОКИ категорія не уточнена в кабінеті
 
+# 2026-07-17 (Autonomy-11/Vis-11): PROM_CATEGORY_COMMISSION вище прив'язаний
+# до НАЗВИ категорії Toysi — точний, лише коли Toysi-категорія семантично
+# однозначна (є винятки, і саме "рюкзаки" — найбільший приклад: один Toysi-
+# category_name реально розподіляється по ТРЬОХ різних Prom-категоріях з
+# різними ставками). Prom Product API (GET /products/list,
+# /products/by_external_id/{id}) повертає `category: {id, caption}` —
+# ТОЧНУ, поточну категорію Prom для КОНКРЕТНОГО товару, без жодного
+# здогаду. Цей словник — те саме джерело ставок (84-категорійна таблиця
+# власниці, 2026-07-17), але ключ — СТАБІЛЬНИЙ ЧИСЛОВИЙ category.id, не
+# рядок назви (назва в Prom API — РОСІЙСЬКОЮ, "caption", що НЕ збігається
+# буквально з українськими назвами таблиці — тому не рядок, а число).
+#
+# Значення нижче зіставлені ЖИВИМ перехресним запитом 2026-07-17: для
+# кожного SKU топ-970, чия Toysi-категорія раніше була на дефолтній
+# комісії, запитано РЕАЛЬНИЙ category.id/caption через
+# fetch_prom_products() — і кожен спостережений caption ОДНОЗНАЧНО
+# відповідає одному запису 84-категорійної таблиці (пряма назва тієї ж
+# категорії іншою мовою, не переклад-здогад). Підтверджено на прикладі
+# "рюкзаки": реальний розподіл 41×Школьные рюкзаки и портфели (15.47%),
+# 13×Городские и спортивные рюкзаки (19.66%), 2×Детские сумки и рюкзаки
+# (15.26%) — точно відповідає відомому 3-way split із таблиці.
+#
+# get_platform_commission(..., prom_category_id=...) перевіряє ЦЕЙ
+# словник ПЕРШИМ (якщо id передано й закешовано) — лише коли товару ще
+# немає в prom_category_cache.json (не імпортований у Prom, кеш
+# застарів), падає назад на PROM_CATEGORY_COMMISSION за назвою Toysi.
+PROM_CATEGORY_ID_COMMISSION: dict[int, float] = {
+    2656: 0.2373,      # Игрушки-антистресс
+    15030319: 0.1063,  # Детские диваны и мягкие кресла
+    1768: 0.0893,       # Адвент календари
+    180607: 0.2258,     # Настольные игры
+    150110: 0.1411,     # Санки и снегокаты
+    2608: 0.198,        # Интерактивные детские игрушки
+    15011909: 0.187,    # Резинки для плетения
+    2615: 0.1608,       # Детские мячи
+    2629: 0.1959,       # Тематические игровые наборы
+    1742: 0.2343,       # Воздушные шары и композиции из них
+    618: 0.1035,        # Вентиляторы
+    12510: 0.08,        # Игровые площадки и песочницы
+    2621: 0.0875,       # Домашние надувные батуты, игровые центры
+    2642: 0.1952,       # Игрушки для игр с песком, водой и снегом
+    2602: 0.1087,       # Развивающие и обучающие игрушки
+    264802: 0.1488,     # Подвижные, соревновательные игры
+    380520: 0.1547,     # Школьные рюкзаки и портфели
+    380601: 0.1966,     # Городские и спортивные рюкзаки
+    380501: 0.1526,     # Детские сумки и рюкзаки
+    34706: 0.2119,      # Аксессуары для карнавальных костюмов
+    2613: 0.1559,       # Радиоуправляемые игрушки
+    2606: 0.1575,       # Игрушечные машинки, самолетики, техника
+    2604: 0.1993,       # Мягкие игрушки (== "м'які іграшки" за назвою, крос-перевірка збіглась)
+    500414: 0.1955,     # Детские цифровые фотоаппараты
+    2605: 0.1981,       # Куклы, пупсы
+    2638: 0.1992,       # Игровые фигурки, роботы трансформеры (== "ігрові фігурки..." за назвою)
+    2614: 0.1967,       # Конструкторы
+    15012202: 0.1004,   # Аспираторы
+    200330: 0.1599,     # Медболы
+    150104: 0.1013,     # Детские горшки и сиденья на унитаз
+    15011913: 0.1973,   # 3D ручки
+    611: 0.116,         # Соковыжималки
+    2010: 0.1424,       # Надувные матрасы
+    2627: 0.1586,       # Детские игрушки-каталки
+    180613: 0.2328,     # Пазлы и головоломки
+    264702: 0.1929,     # Детская мозаика
+    330109: 0.1343,     # Детская декоративная косметика
+    15010107: 0.0983,   # Детская посуда для кормления
+}
+
 # Rozetka: перенесено як орієнтовний дефолт з попередньої версії цієї логіки
 # (комісія 22%, категорія "Дитячі іграшки") — Rozetka ще не активна (магазин
 # не зареєстрований), тому немає живих даних для звірки. Не блокує розробку.
@@ -569,10 +636,21 @@ def _rozetka_tiered_commission(price: float) -> float:
     return ROZETKA_CATEGORY_COMMISSION["дитячі іграшки"][-1][1]  # недосяжно (остання межа = inf), про всяк випадок
 
 
-def get_platform_commission(platform: str, category_name: str | None = None, price: float | None = None) -> float:
+def get_platform_commission(
+    platform: str,
+    category_name: str | None = None,
+    price: float | None = None,
+    prom_category_id: int | None = None,
+) -> float:
     """Комісія майданчика (БЕЗ комісії оплати) для конкретної категорії.
-    Для Prom — категорійний пошук у PROM_CATEGORY_COMMISSION з fallback на
-    PROM_COMMISSION_DEFAULT (категорія, ціна не впливає).
+    Для Prom — ПЕРШИМ перевіряється PROM_CATEGORY_ID_COMMISSION за
+    `prom_category_id` (реальна Prom-категорія КОНКРЕТНОГО товару, з
+    prom_category_cache.json — див. коментар над PROM_CATEGORY_ID_COMMISSION),
+    що коректно розрізняє випадки, коли один Toysi category_name
+    розпадається на кілька різних Prom-категорій (напр. "рюкзаки"). Якщо
+    id не передано або відсутній у кеші — fallback на категорійний пошук
+    у PROM_CATEGORY_COMMISSION за назвою Toysi, і далі на
+    PROM_COMMISSION_DEFAULT (стара поведінка, без змін).
 
     Для Rozetka (2026-07-14): якщо передано `price` — сходинкова ставка
     "Дитячі іграшки" з ROZETKA_CATEGORY_COMMISSION (див. коментар там); без
@@ -586,6 +664,8 @@ def get_platform_commission(platform: str, category_name: str | None = None, pri
     коментарі нижче — лише нижній регістр), тож без нормалізації збіг ніколи
     не спрацював би для реальних категорій."""
     if platform == "prom":
+        if prom_category_id is not None and prom_category_id in PROM_CATEGORY_ID_COMMISSION:
+            return PROM_CATEGORY_ID_COMMISSION[prom_category_id]
         key = category_name.strip().lower() if category_name else None
         if key and key in PROM_CATEGORY_COMMISSION:
             return PROM_CATEGORY_COMMISSION[key]
@@ -597,14 +677,19 @@ def get_platform_commission(platform: str, category_name: str | None = None, pri
     raise ValueError(f"Невідомий майданчик: {platform!r}, очікую один з {PLATFORMS}")
 
 
-def compute_total_commission(platform: str, category_name: str | None = None, price: float | None = None) -> float:
+def compute_total_commission(
+    platform: str,
+    category_name: str | None = None,
+    price: float | None = None,
+    prom_category_id: int | None = None,
+) -> float:
     """Сумарна комісія (майданчик + оплата) для категорії — спільна точка,
     яку викликають і decide_price_for_platform(), і check_price_floor()
     (prom_catalog_auditor.py), щоб не дублювати
     get_platform_commission(...) + PAYMENT_COMMISSION.get(...) у кількох
     місцях (рефакторинг, 2026-07-13, після рев'ю PR #46: та сама формула
     вже була продубльована в 3 місцях, ризик розсинхронізації)."""
-    return get_platform_commission(platform, category_name, price) + PAYMENT_COMMISSION.get(platform, 0.0)
+    return get_platform_commission(platform, category_name, price, prom_category_id) + PAYMENT_COMMISSION.get(platform, 0.0)
 
 
 def compute_floor(cost: float, total_commission: float, target_margin: float) -> float:
@@ -663,7 +748,11 @@ def _resolve_rozetka_floor(cost: float, target_margin: float, payment_commission
 
 
 def decide_price_for_platform(
-    cost: float, min_competitor: float | None, platform: str, category_name: str | None = None
+    cost: float,
+    min_competitor: float | None,
+    platform: str,
+    category_name: str | None = None,
+    prom_category_id: int | None = None,
 ) -> dict:
     """
     Рішення про ціну для ОДНОГО майданчика (Prom або Rozetka):
@@ -700,7 +789,7 @@ def decide_price_for_platform(
                 "ROZETKA_CATEGORY_COMMISSION/PAYMENT_COMMISSION"
             )
     else:
-        total_commission = compute_total_commission(platform, category_name)
+        total_commission = compute_total_commission(platform, category_name, prom_category_id=prom_category_id)
         if total_commission >= 1:
             raise ValueError(
                 f"[{platform}] сумарна комісія {total_commission:.0%} >= 100% — перевір "
@@ -719,7 +808,7 @@ def decide_price_for_platform(
     # Комісія для звітного margin_pct — за ФІНАЛЬНОЮ ціною, окремо від
     # комісії, що йшла на floor (для Rozetka Шлях 2/undercut фінальна ціна
     # може відрізнятись від floor і потрапляти в іншу сходинку).
-    final_commission = compute_total_commission(platform, category_name, price)
+    final_commission = compute_total_commission(platform, category_name, price, prom_category_id=prom_category_id)
     net_revenue = price * (1 - final_commission)
     margin_pct = round((net_revenue - cost) / cost * 100, 1) if cost else 0.0
 
@@ -737,6 +826,7 @@ def decide_price(
     min_competitor_rozetka: float | None,
     min_competitor_prom: float | None = None,
     category_name: str | None = None,
+    prom_category_id: int | None = None,
 ) -> dict:
     """
     Рахує рішення ОКРЕМО для кожного майданчика (Prom, Rozetka) — не лише
@@ -745,9 +835,13 @@ def decide_price(
     2026-07-11 — раніше одна спільна ціна конкурента з Rozetka помилково
     підставлялась і в Prom-розрахунок теж, див. докстрінг файлу). Повертає
     обидва результати під ключами "prom"/"rozetka".
+
+    prom_category_id (2026-07-17): реальна Prom-категорія товару з
+    prom_category_cache.json, якщо є — застосовується лише до "prom"
+    (Rozetka категорія не параметризована, див. _rozetka_tiered_commission).
     """
     return {
-        "prom": decide_price_for_platform(cost, min_competitor_prom, "prom", category_name),
+        "prom": decide_price_for_platform(cost, min_competitor_prom, "prom", category_name, prom_category_id),
         "rozetka": decide_price_for_platform(cost, min_competitor_rozetka, "rozetka"),
     }
 

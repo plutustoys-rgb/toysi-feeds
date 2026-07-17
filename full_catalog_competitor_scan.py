@@ -86,6 +86,16 @@ from prom_competitor_pricer import (
     find_best_competitor, verify_competitor_really_available, SEARCH_DELAY,
     MIN_FULL_RUN_INTERVAL_HOURS,
 )
+from telegram_notify import send_telegram_message
+
+# Надійність, п.4: invalid_cost_count вже рахувався й друкувався в
+# журнал/консоль щоночі, але ніхто не бачить це без ручного зазирання в
+# journalctl — сирі, зіпсовані ціни Toysi для цілого пакету могли б
+# накопичуватись місяцями непоміченими. Поріг — ЧАСТКА пакету, а не
+# абсолютне число: кілька SKU без ціни за ніч — нормально (реальний
+# асортимент завжди має якийсь "шум"), різке зростання частки — ознака
+# структурної проблеми з фідом Toysi (не поодинокий SKU).
+INVALID_COST_ALERT_FRACTION = 0.05
 
 BASE_DIR = Path(__file__).parent
 FULL_SCAN_STATE_FILE = BASE_DIR / "full_catalog_scan_state.json"
@@ -309,6 +319,15 @@ def main() -> None:
           f"(з них без валідної ціни постачальника: {invalid_cost_count}). "
           f"Всього скановано: {scanned_now}/{len(scope)} SKU обсягу "
           f"({scanned_now / len(scope) * 100:.1f}%).")
+
+    invalid_cost_fraction = invalid_cost_count / len(batch_ids) if batch_ids else 0.0
+    if invalid_cost_fraction > INVALID_COST_ALERT_FRACTION:
+        send_telegram_message(
+            f"⚠️ full_catalog_competitor_scan.py: {invalid_cost_count}/{len(batch_ids)} "
+            f"SKU цього пакету ({invalid_cost_fraction * 100:.0f}%) без валідної ціни постачальника "
+            f"Toysi — вище порогу {INVALID_COST_ALERT_FRACTION * 100:.0f}%. Можлива структурна "
+            "проблема з фідом Toysi (не поодинокі SKU), перевір вручну."
+        )
     if scanned_now < len(scope):
         print(f"[FullScan] Лишилось {len(scope) - scanned_now} SKU — наступний прогін продовжить звідси.")
     else:

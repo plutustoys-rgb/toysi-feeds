@@ -6,6 +6,17 @@ from datetime import datetime
 
 from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides
 from parser import fetch_toysi_catalog
+from telegram_notify import send_telegram_message
+
+# Надійність, п.5: truncated_name_count/truncated_name_ua_count вже
+# рахувались і друкувались у консоль/GH Actions лог щоразу, але без
+# алерту — той самий клас "тихої трансформації", що й invalid_cost_count
+# у full_catalog_competitor_scan.py. Поріг — частка фіду, не абсолютне
+# число: обрізання поодиноких довгих назв нормальне, різке зростання
+# частки — ознака структурної проблеми (напр. PROM_NAME_MAX_LEN
+# розсинхронізувався з реальним лімітом Prom, чи Toysi масово надсилає
+# аномально довгі назви).
+TRUNCATED_NAME_ALERT_FRACTION = 0.10
 
 SHOP_NAME          = "PlutusToys"
 SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійович"
@@ -579,6 +590,18 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         f"[Prom] Обрізання назви (>{PROM_NAME_MAX_LEN} символів, на межі слова): "
         f"{stats['truncated_name_count']} SKU у <name>, {stats['truncated_name_ua_count']} SKU у <name_ua>"
     )
+
+    total_in_feed = stats["total_in_feed"] or 1
+    worst_truncated_fraction = max(stats["truncated_name_count"], stats["truncated_name_ua_count"]) / total_in_feed
+    if worst_truncated_fraction > TRUNCATED_NAME_ALERT_FRACTION:
+        send_telegram_message(
+            f"⚠️ generate_prom_feed.py: обрізання назви зачепило "
+            f"{stats['truncated_name_count']} SKU у <name> і {stats['truncated_name_ua_count']} у "
+            f"<name_ua> з {stats['total_in_feed']} ({worst_truncated_fraction * 100:.0f}%) — вище "
+            f"порогу {TRUNCATED_NAME_ALERT_FRACTION * 100:.0f}%. Можлива структурна проблема "
+            "(PROM_NAME_MAX_LEN розсинхронізувався з лімітом Prom, чи Toysi масово надсилає "
+            "аномально довгі назви), перевір вручну."
+        )
 
 
 if __name__ == "__main__":

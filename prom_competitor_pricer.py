@@ -69,7 +69,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
 from generate_prom_feed_top import select_top_items
 from generate_prom_feed import fetch_russian_text
-from competitor_pricing import decide_price_for_platform, load_prom_price_state, save_prom_price_state
+from competitor_pricing import decide_price_for_platform, load_prom_price_state, save_prom_price_state, _BAD_NAME_MARKERS
 from telegram_notify import send_telegram_message
 
 load_dotenv()
@@ -476,6 +476,17 @@ def find_best_competitor(search_name: str, cost: float, own_link: dict | None = 
             continue
         presence = p.get("presence") or {}
         if not presence.get("isAvailable"):
+            continue
+        # ДОДАНО (2026-07-17, знайдено при точковому скані SKU 300391 поза
+        # чергою): SearchListingQuery-фолбек не фільтрував конкурентів за
+        # маркерами уцінки/пошкодження в НАЗВІ — уцінений/пошкоджений
+        # товар конкурента (типово найдешевший, бо не в товарному вигляді)
+        # легко проходить MATCH_MIN_SCORE і стає "найдешевшим кандидатом",
+        # штучно занижуючи floor/margin для товару, що насправді не
+        # порівнюваний. Той самий список маркерів, що вже фільтрує НАШ
+        # власний каталог у competitor_pricing.py's select_batch().
+        candidate_name_lower = (p.get("name") or "").lower()
+        if any(marker in candidate_name_lower for marker in _BAD_NAME_MARKERS):
             continue
         try:
             price = float(p.get("price") or 0)

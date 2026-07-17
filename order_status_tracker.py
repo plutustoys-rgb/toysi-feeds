@@ -3,10 +3,11 @@ import sys
 from checkbox_client import register_ettn, CheckboxAPIError
 from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
-    mark_rozetka_ttn_pushed, mark_prom_delivered_pushed, update_delivery_status,
+    mark_rozetka_ttn_pushed, mark_prom_delivered_pushed, mark_prom_ttn_pushed,
+    update_delivery_status,
 )
 import nova_poshta
-from orders_watcher import update_prom_order_status, PromAPIError
+from orders_watcher import update_prom_order_status, attach_prom_declaration_id, PromAPIError
 import rozetka_client
 from telegram_notify import send_telegram_message
 from toysi_order_submit import (
@@ -52,14 +53,25 @@ rozetka_client.update_order_status(order_id, status=2, ttn=ttn). За
 переводить замовлення в статус 61, і Rozetka сама починає відстежувати
 трекінг доставки — подальших ручних переходів статусу не потрібно.
 
-Prom (Auto-3, 2026-07-17, _maybe_push_delivered_to_prom): на відміну від
-Rozetka, Prom Orders API НЕ має ендпоінту "прикріпити ТТН" — і взагалі не
-відстежує доставку автоматично сам (підтверджено, code_report_2026-07-
-15_pt23.md). Замість передачі ТТН, тут ми самі опитуємо nova_poshta.
-get_tracking_status(ttn) (TrackingDocument.getStatusDocuments — реальний
-фізичний статус посилки від перевізника, окреме джерело від toysi_ttn/
-delivery_status, які відображають лише СТАТУС ЗАМОВЛЕННЯ на боці Toysi) і,
-щойно НП підтверджує фактичну видачу, самі викликаємо
+Prom ЕН (2026-07-17, _maybe_push_ttn_to_prom): ВИПРАВЛЕНО — попередній
+докстрінг стверджував, що Prom Orders API "НЕ має ендпоінту прикріпити
+ТТН" (code_report_2026-07-15_pt23.md); це виявилось неповним висновком.
+Ендпоінт є — POST /delivery/save_declaration_id (не задокументований у
+тому ж місці, що /orders/set_status, звідси й пропуск раніше) — живо
+перевірено 2026-07-17 на реальному замовленні №415965259:
+declaration_number у Prom справді заповнюється. Це РІВНО той виклик, що
+Prom вимагає для активації "Дешевої доставки" Новою Поштою (офіційна
+довідка support.prom.ua: "додайте ЕН не пізніше дня відправлення").
+Раніше цей виклик не робився НІКОЛИ — тобто умова не виконувалась для
+ЖОДНОГО замовлення за всю історію, незалежно від підписки клієнта.
+
+Prom "delivered" (Auto-3, 2026-07-17, _maybe_push_delivered_to_prom): на
+відміну від Rozetka, Prom Orders API не відстежує доставку автоматично
+сам (підтверджено, code_report_2026-07-15_pt23.md). Тут ми самі опитуємо
+nova_poshta.get_tracking_status(ttn) (TrackingDocument.getStatusDocuments
+— реальний фізичний статус посилки від перевізника, окреме джерело від
+toysi_ttn/delivery_status, які відображають лише СТАТУС ЗАМОВЛЕННЯ на
+боці Toysi) і, щойно НП підтверджує фактичну видачу, самі викликаємо
 orders_watcher.update_prom_order_status(order_id, status="delivered").
 """
 
@@ -180,6 +192,62 @@ def _maybe_push_ttn_to_rozetka(conn, order: dict, ttn: str) -> None:
     print(f"[order_status_tracker] ТТН передано в Rozetka: {order['internal_order_id']} (ТТН {ttn})")
 
 
+def _maybe_push_ttn_to_prom(conn, order: dict, ttn: str) -> None:
+    """Прикріплює ЕН до замовлення на СТОРОНІ Prom (POST
+    /delivery/save_declaration_id) — щойно з'явився toysi_ttn і ще не
+    передавали (prom_ttn_pushed_at IS NULL). Викликається НЕЗАЛЕЖНО від
+    підтвердження доставки (на відміну від _maybe_push_delivered_to_prom
+    нижче) — саме швидкість тут важлива: офіційна вимога Prom для
+    "Дешевої доставки" — ЕН має з'явитись НЕ ПІЗНІШЕ дня відправлення,
+    тож чекати підтвердження видачі від НП (може бути через кілька днів)
+    означало б систематично запізнюватись з кожним замовленням.
+
+    Лише platform=prom + carrier=nova_poshta (Prom /delivery/save_declaration_id
+    підтримує nova_poshta/ukrposhta/meest/rozetka_delivery — з наших двох
+    carrier ми підтримуємо лише ці два, ukrposhta теж технічно підійде,
+    якщо колись знадобиться).
+
+    Ідемпотентність — той самий підхід, що й rozetka_ttn_pushed_at/
+    prom_delivered_pushed_at: перевіряємо прапорець щоразу, а не лише "у
+    момент появи ttn", щоб тимчасова мережева помилка природно
+    повторилась на наступному циклі, а не загубилась назавжди. Prom сам
+    повертає ідемпотентну відповідь при повторному ЕН
+    (attach_prom_declaration_id() трактує це як success), тож подвійний
+    виклик (напр. якщо прапорець з якоїсь причини не збігся з реальністю)
+    не шкідливий.
+
+    Помилка тут (включно з НЕ-PromAPIError винятком) НЕ має зупиняти
+    track_orders() для інших замовлень у тому самому циклі."""
+    if not ttn:
+        return
+    if order.get("platform") != "prom":
+        return
+    if order.get("carrier", "nova_poshta") not in ("nova_poshta", "ukrposhta"):
+        return
+    if order.get("prom_ttn_pushed_at"):
+        return
+
+    try:
+        attach_prom_declaration_id(order["order_id"], ttn, delivery_type=order.get("carrier", "nova_poshta"))
+    except PromAPIError as e:
+        print(
+            f"[order_status_tracker] Не вдалось передати ЕН у Prom для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+    except Exception as e:
+        print(
+            f"[order_status_tracker] Неочікувана помилка при передачі ЕН у Prom для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+
+    mark_prom_ttn_pushed(conn, order["internal_order_id"])
+    print(f"[order_status_tracker] ЕН передано в Prom: {order['internal_order_id']} (ТТН {ttn})")
+
+
 def _maybe_push_delivered_to_prom(conn, order: dict, ttn: str) -> None:
     """Auto-3 (2026-07-17): щойно Нова Пошта підтверджує ФАКТИЧНУ видачу
     посилки (nova_poshta.get_tracking_status(ttn)["delivered"]) — викликає
@@ -296,6 +364,7 @@ def track_orders() -> None:
             order["toysi_ttn"] = ttn
             _maybe_register_ettn(conn, order, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)
+            _maybe_push_ttn_to_prom(conn, order, ttn)
             _maybe_push_delivered_to_prom(conn, order, ttn)
 
             ttn_note = f", ТТН: {ttn}" if ttn else ""

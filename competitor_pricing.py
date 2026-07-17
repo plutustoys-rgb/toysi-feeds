@@ -152,6 +152,16 @@ MIN_PROFIT_COMPETITOR_FLOOR = 0.03
 DAILY_LIMIT      = 200
 MIN_SUPPLIER_PRICE = 20
 
+# P0-4 (2026-07-17): абсолютний мінімум прибутку в гривнях, окремо від
+# відсоткового MIN_PROFIT_COMPETITOR_FLOOR (3%) — на дешевих товарах 3%
+# від собівартості дає лічені гривні прибутку, а жодна наявна перевірка
+# це не ловить (відсоток сам по собі виглядає "нормально"). Застосовується
+# в compute_floor() як другий, незалежний floor — підсумковий floor це
+# максимум із обох, тож не applies слабший поріг там, де відсотковий і так
+# суворіший (дорожчі товари). Конкретне число (25₴) — від власниці,
+# підлягає перегляду за фактичним досвідом маржі.
+MIN_PROFIT_UAH = 25.0
+
 PLATFORMS = ("prom", "rozetka")
 
 # ---------------------------------------------------------------------------
@@ -488,8 +498,16 @@ def compute_floor(cost: float, total_commission: float, target_margin: float) ->
     MIN_PROFIT чи MIN_PROFIT_COMPETITOR_FLOOR) при заданій сумарній
     комісії. Спільна формула для обох "шляхів" decide_price_for_platform()
     і для check_price_floor() (prom_catalog_auditor.py) — той самий
-    рефакторинг, що й compute_total_commission() вище."""
-    return (cost + cost * target_margin) / (1 - total_commission)
+    рефакторинг, що й compute_total_commission() вище.
+
+    P0-4: результат — це МАКСИМУМ відсоткового floor і окремого
+    абсолютного floor (MIN_PROFIT_UAH грн прибутку) — на дешевих товарах
+    відсотковий floor (особливо MIN_PROFIT_COMPETITOR_FLOOR=3%) сам по
+    собі дає лічені гривні; абсолютний floor гарантує мінімальний
+    прибуток незалежно від собівартості."""
+    percentage_floor = (cost + cost * target_margin) / (1 - total_commission)
+    absolute_floor = (cost + MIN_PROFIT_UAH) / (1 - total_commission)
+    return max(percentage_floor, absolute_floor)
 
 
 def _resolve_rozetka_floor(cost: float, target_margin: float, payment_commission: float) -> tuple[float, float]:

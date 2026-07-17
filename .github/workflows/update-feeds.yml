@@ -164,16 +164,37 @@ jobs:
       # одиничними випадками. rozetka_feed_preflight() зводить УСІ відомі
       # класи помилок валідатора в один прогін і виконується тут, ПІСЛЯ
       # генерації, ПЕРЕД публікацією нижче. НАВМИСНО без continue-on-error:
-      # ненульовий вихідний код зупиняє весь job (усі наступні steps без
-      # `if: always()` автоматично пропускаються) — тобто збій тут блокує
-      # НЕ ЛИШЕ публікацію rozetka_feed.xml, а й генерацію/вивантаження
-      # Prom-фідів у цьому ж прогоні. Свідомий компроміс: розділяти
-      # публікацію по фідах — це окремий, більший рефакторинг існуючого
-      # єдиного "Publish feeds to feed-data" кроку (комітить rozetka_feed.xml
-      # і prom_feed_top.xml РАЗОМ, ще до цієї задачі) — не чіпаю це зараз,
-      # щоб не змішувати непов'язані зміни.
-      - name: Rozetka feed preflight (blocking — errors stop publication)
+      # НАДІЙНІСТЬ, П.2 (2026-07-17): раніше ненульовий вихідний код тут
+      # зупиняв ВЕСЬ job — усі наступні steps без `if: always()`
+      # автоматично пропускались, тобто помилка ЛИШЕ в Rozetka-валідації
+      # блокувала й генерацію/публікацію робочого Prom-фіда в тому ж
+      # прогоні. Тепер continue-on-error: true — Prom-кроки нижче завжди
+      # виконуються незалежно від результату Rozetka preflight. Замість
+      # блокування всього job'у — окремий фолбек-крок нижче (Restore last
+      # known-good rozetka_feed.xml) підміняє потенційно зламаний
+      # rozetka_feed.xml на останню опубліковану РОБОЧУ версію, якщо
+      # preflight провалився, — так публікація ніколи не понесе НЕвалідний
+      # rozetka_feed.xml, і водночас ніколи не блокує Prom.
+      - name: Rozetka feed preflight
+        id: rozetka_preflight
+        continue-on-error: true
         run: python generate_rozetka_feed.py --preflight
+
+      - name: Restore last known-good rozetka_feed.xml (preflight failed this run)
+        if: steps.rozetka_preflight.outcome == 'failure'
+        run: |
+          echo "::error::Rozetka preflight провалився — публікую ОСТАННЮ РОБОЧУ версію rozetka_feed.xml замість щойно згенерованої, Prom-фіди публікуються незалежно."
+          git fetch origin "$FEED_BRANCH" 2>/dev/null || true
+          git show "origin/$FEED_BRANCH:feeds/rozetka_feed.xml" > feeds/rozetka_feed.xml 2>/dev/null || true
+          python -c "
+          from telegram_notify import send_telegram_message
+          send_telegram_message(
+              '⚠️ update-feeds.yml: Rozetka preflight провалився цього прогону — '
+              'публікується попередня робоча версія rozetka_feed.xml (Prom-фіди йдуть '
+              'своїм ходом, не заблоковані). Деталі: '
+              'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          )
+          "
 
       - run: python generate_prom_feed.py
       - run: python generate_prom_feed_top.py
@@ -251,6 +272,13 @@ jobs:
       # дає git-історії рости на кожен запуск (кожні 4 години) — інакше
       # репозиторій накопичував би десятки МБ щодня назавжди. Гілка main
       # лишається чистою — тільки код.
+      #
+      # НАДІЙНІСТЬ, П.2 (2026-07-17): цей крок тепер ЗАВЖДИ доходить сюди й
+      # публікує ОБИДВА фіди — Rozetka preflight вище більше НЕ блокує job
+      # (continue-on-error: true), а замінює потенційно зламаний
+      # rozetka_feed.xml на останню робочу версію при провалі. Тобто помилка
+      # ЛИШЕ в Rozetka-валідації більше не заважає щойно згенерованому,
+      # робочому Prom-фіду публікуватись цього ж прогону.
       #
       # ВИПРАВЛЕНО 2026-07-14: prom_feed.xml (106+ МБ, понад жорсткий ліміт
       # GitHub 100 МБ/файл) прибрано з цієї публікації повністю — окремий крок

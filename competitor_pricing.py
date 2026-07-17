@@ -117,6 +117,45 @@ def save_prom_price_state(state: dict) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Vis-9 (2026-07-17): 93/970 SKU (9.6%) отримують від Toysi ЛИШЕ мінімальний
+# boilerplate-опис ("<b>Бренд:</b> MIC<br/><b>Країна виробник:</b> Україна",
+# без жодного реального тексту про сам товар) — підтверджено напряму через
+# Toysi API (не помилка парсингу з нашого боку). Рішення власниці: писати
+# описи самостійно (не просити Toysi, не лишати як є).
+#
+# Формат: {external_id: {"description": str, "country"?: str}} — рядок
+# "description" повністю ЗАМІНЮЄ сирий опис Toysi (і для _ua, і для
+# рос.-варіанту в Prom-фіді: один написаний вручну текст для товару, а не
+# окремі переклади), "country" (опційно) так само замінює <country>/
+# <country_of_origin>, коли текст боїться, що реальна країна відрізняється
+# від того, що (можливо помилково) вказано в Toysi.
+#
+# Тексти пише Cowork/власниця окремо, ця функція — лише плумбінг читання.
+# Правило для country в НОВИХ описах (узгоджено з власницею): "Китай", якщо
+# не позначено інше явно.
+#
+# Файл НЕ автогенерується (на відміну від prom_price_state.json/кешів вище)
+# — це вручну курований контент, тому без TTL/staleness: раз написаний
+# опис лишається чинним, доки хтось явно не змінить запис чи не видалить
+# SKU з файлу.
+DESCRIPTION_OVERRIDES_FILE = BASE_DIR / "description_overrides.json"
+
+
+def load_description_overrides() -> dict:
+    """{external_id: {"description": str, "country"?: str}} — порожній
+    словник, якщо файл відсутній чи пошкоджений (той самий безпечний
+    дефолт, що й в усіх інших load_*() у цьому файлі): виклик просто падає
+    назад на сирий опис/країну Toysi для КОЖНОГО SKU, не лише для тих, що
+    мали б override."""
+    if not DESCRIPTION_OVERRIDES_FILE.exists():
+        return {}
+    try:
+        return json.loads(DESCRIPTION_OVERRIDES_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
 def load_fresh_prom_price_overrides(max_age_hours: float = PROM_PRICE_STATE_MAX_AGE_HOURS) -> dict:
     """{external_id: price} лише для записів не старіших за max_age_hours —
     generate_prom_feed.py використовує це як price_overrides, щоб не

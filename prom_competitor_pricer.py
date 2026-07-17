@@ -788,6 +788,7 @@ def main() -> None:
                                   # про зламаний _BUYBOX_RE, а не просто "мало конкурентів" (рев'ю PR #53)
     to_adjust, to_delist, delist_details = [], [], []
     default_commission_skipped = []  # (pid, name, category, price) — не потрапляють у to_adjust/to_delist
+    competitor_scores = []  # Автономність, п.7: score КОЖНОГО використаного конкурента
 
     for pid, item in items:
         try:
@@ -851,6 +852,8 @@ def main() -> None:
 
         if decision["competitor"] is None:
             no_competitor_count += 1
+        else:
+            competitor_scores.append(decision["competitor"]["score"])
 
         if _category_commission_is_default(category_name) and not args.allow_default_commission:
             default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))
@@ -875,6 +878,25 @@ def main() -> None:
           f"(пробували buyBox для {buybox_attempted_count} SKU — різке падіння "
           f"buybox_count/buybox_attempted_count сигналізує про зламаний regex, "
           f"не просто \"мало конкурентів\")")
+
+    # Автономність, п.7: розподіл score обраних конкурентів. find_best_
+    # competitor() вибирає НАЙДЕШЕВШОГО серед кандидатів, що пройшли поріг
+    # MATCH_MIN_SCORE (0.4) — не найсхожішого. Якщо низький-score-збіги
+    # (близько порогу) з часом стають частішими, це системний ризик:
+    # "найдешевший, а не найсхожіший" конкурент усе частіше виявляється
+    # НЕПОРІВНЯНИМ товаром (як SKU 300391 з уценкою, знайдено 2026-07-17),
+    # а не просто рідкісним винятком. Жодного окремого запиту не потрібно —
+    # score уже обчислюється для кожного рішення, тут лише агрегація.
+    low_score_threshold = 0.6
+    if competitor_scores:
+        low_score_count = sum(1 for s in competitor_scores if s < low_score_threshold)
+        avg_score = sum(competitor_scores) / len(competitor_scores)
+        print(
+            f"[Pricer] Розподіл score конкурентів: середній={avg_score:.2f}, "
+            f"мін={min(competitor_scores):.2f}, макс={max(competitor_scores):.2f}, "
+            f"нижче {low_score_threshold} (ризик \"найдешевший, не найсхожіший\"): "
+            f"{low_score_count}/{len(competitor_scores)} ({low_score_count / len(competitor_scores) * 100:.0f}%)"
+        )
 
     default_commission_note = ""
     if default_commission_skipped:

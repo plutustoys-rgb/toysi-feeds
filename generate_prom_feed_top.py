@@ -158,8 +158,26 @@ def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
     """
     1. Спочатку — товари з категорій-лідерів (LEADER_KEYWORD_GROUPS).
        Якщо їх більше за target — сортуємо за маржею і беремо top `target`.
-    2. Якщо лідерів менше за target — доповнюємо рештою каталогу,
-       теж за спаданням маржі, поки не набереться `target`.
+    2. Якщо лідерів менше за target — доповнюємо "решта"-кошиком, поки не
+       набереться `target`. Усередині "решта" — ДВОЕТАПНЕ ранжування
+       (ВИПРАВЛЕНО 2026-07-17, code_report pt18, Варіант А): спершу ВСІ
+       вже ПРОСКАНОВАНІ (підтверджена конкурентна маржа) SKU, відсортовані
+       за грошовою маржею між собою; лише якщо після них лишились вільні
+       місця — непросканові SKU за наївною формулою, теж за спаданням.
+
+    Чому саме так: пряме сортування ВСЬОГО "решта"-кошика за грошовою
+    маржею (стара поведінка) систематично ставило непідтверджені здогадки
+    ВИЩЕ за доведений прибуток — наївна формула (default_retail_price)
+    ЗАВЖДИ припускає "конкурента немає" (множник 1.75×), тож дає велику
+    номінальну маржу незалежно від реальності, тоді як підтверджена,
+    просканована маржа обмежена тонкою ціллю ~3% (Шлях 2, коли конкурент
+    реально знайдений) — набагато менша в грошах, НАВІТЬ коли товар
+    дійсно прибутковий і конкурентоздатний. Живо підтверджено pt18: 2925
+    із 3016 просканованих SKU з підтвердженою маржею ≥3% були виключені
+    з топ-970 на користь непідтверджених здогадок, 570 із 970 позицій
+    "решта"-кошика були чистими здогадками. Двоетапне ранжування нижче
+    гарантує, що ЖОДЕН підтверджений прибутковий SKU не програє
+    непідтвердженому лише через різницю номінальних формул.
 
     Маржа рахується ОДИН раз на товар (не при кожному сортуванні) і бере
     до уваги накопичені дані full_catalog_competitor_scan.py, якщо вони
@@ -177,7 +195,12 @@ def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
     rest    = {pid: item for pid, item in eligible.items() if pid not in leaders}
 
     leaders_sorted = sorted(leaders.items(), key=lambda kv: margins[kv[0]], reverse=True)
-    rest_sorted    = sorted(rest.items(), key=lambda kv: margins[kv[0]], reverse=True)
+
+    rest_scanned   = {pid: item for pid, item in rest.items() if pid in scan_state}
+    rest_unscanned = {pid: item for pid, item in rest.items() if pid not in scan_state}
+    rest_scanned_sorted   = sorted(rest_scanned.items(), key=lambda kv: margins[kv[0]], reverse=True)
+    rest_unscanned_sorted = sorted(rest_unscanned.items(), key=lambda kv: margins[kv[0]], reverse=True)
+    rest_sorted = rest_scanned_sorted + rest_unscanned_sorted
 
     if len(leaders_sorted) >= target:
         selected = leaders_sorted[:target]

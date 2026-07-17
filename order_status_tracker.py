@@ -6,12 +6,19 @@ from orders_db import (
     mark_rozetka_ttn_pushed, update_delivery_status,
 )
 import rozetka_client
+from telegram_notify import send_telegram_message
 from toysi_order_submit import (
     fetch_order_statuses,
     describe_order_status,
     TERMINAL_ORDER_STATUSES,
     ToysiAPIError,
 )
+
+# Множина delivery_status, що враховуються як "неуспішні" для показника
+# Prom "успішних замовлень" (P0-2, daily_report.py) — той самий набір тут,
+# щоб алерт на кожне ОКРЕМЕ скасування (нижче) і 60-денний агрегат рахували
+# одне й те саме.
+_UNSUCCESSFUL_DELIVERY_STATUSES = {"cancelled", "returned"}
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -195,9 +202,19 @@ def track_orders() -> None:
             ttn = info.get("TTN") or None
             delivery_status = _STATUS_TO_DELIVERY_STATUS.get(status_code, f"unknown_{status_code}")
 
-            update_delivery_status(conn, internal_id, toysi_ttn=ttn, delivery_status=delivery_status)
-
             order = orders_by_internal_id[internal_id]
+            was_unsuccessful = order["delivery_status"] in _UNSUCCESSFUL_DELIVERY_STATUSES if order["delivery_status"] else False
+            update_delivery_status(conn, internal_id, toysi_ttn=ttn, delivery_status=delivery_status)
+            if delivery_status in _UNSUCCESSFUL_DELIVERY_STATUSES and not was_unsuccessful:
+                # Одразу, а не лише в щоденному звіті (P0-2) — власниця
+                # прямо просила алерт на КОЖНЕ скасування, не лише
+                # агрегований 60-денний показник раз на добу.
+                send_telegram_message(
+                    f"⚠️ Замовлення {internal_id} (Toysi #{toysi_id}, {order.get('platform', '?')}): "
+                    f"{'скасовано' if delivery_status == 'cancelled' else 'повернення'} "
+                    f"({describe_order_status(status_code)})"
+                )
+
             order["toysi_ttn"] = ttn
             _maybe_register_ettn(conn, order, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)

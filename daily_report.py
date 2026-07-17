@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -30,6 +31,30 @@ LOOKBACK_HOURS = 24
 # нагадує текстом "заплати", лише позначає "низький" у звіті). Скоригуй за
 # власним відчуттям типового обороту на цьому балансі.
 ROZETKA_LOW_BALANCE_THRESHOLD = 500.0
+
+# P0-2 (2026-07-17): Prom "показник успішних замовлень" (support.prom.ua/hc/
+# uk/articles/4405624956573) — офіційно: 60-денне вікно, що ЗАКІНЧУЄТЬСЯ за
+# 10 днів до сьогодні (не сьогодні), рахується лише за 8+ замовлень у цьому
+# вікні; нижче 60% -> каталог ховають від покупців. За словами власниці — 2
+# такі порушення за 6 місяців ведуть до ПОСТІЙНОЇ деактивації.
+#
+# Офіційна методика Prom ВИКЛЮЧАЄ зі знаменника: спам-замовлення/накрутки
+# конкурентів, скасування за скаргою продавця, скасування САМИМ покупцем,
+# і незабрані на відділенні. orders_db.py не розрізняє ХТО/ЧОМУ скасував
+# (лише delivery_status) — тому це РАХУЄ КОЖНЕ cancelled/returned як
+# "неуспішне", що структурно ЗАНИЖУЄ показник відносно офіційного числа
+# Prom (тобто ця перевірка попереджає РАНІШЕ/СУВОРІШЕ, ніж реальний ризик
+# від Prom, ніколи пізніше/м'якше) — свідомий компроміс, бо точної розбивки
+# по ініціатору скасування в даних просто немає.
+PROM_SUCCESS_WINDOW_DAYS = 60
+PROM_SUCCESS_WINDOW_LAG_DAYS = 10
+PROM_SUCCESS_MIN_ORDERS = 8
+PROM_SUCCESS_OFFICIAL_THRESHOLD = 0.60   # нижче цього Prom ховає каталог
+PROM_SUCCESS_WARN_THRESHOLD = 0.75       # наш власний "жовтий" поріг, раніше офіційного
+PROM_SUCCESS_VIOLATION_WINDOW_DAYS = 182  # ~6 місяців
+PROM_SUCCESS_VIOLATIONS_BEFORE_PERMANENT = 2
+
+PROM_SUCCESS_STATE_FILE = Path(__file__).parent / "prom_success_rate_state.json"
 
 """
 Крок 8 плану. Баланс Rozetka тепер підключено (Крок 7, 2026-07-15,
@@ -114,6 +139,81 @@ def _rozetka_validation_status_line() -> str:
         f"{len(not_valid)} невалідних — перевір деталі в кабінеті ('Товари з помилками'/'Невалідні товари')"
     )
     return line
+
+
+def _load_prom_success_state() -> dict:
+    if not PROM_SUCCESS_STATE_FILE.exists():
+        return {"violations": []}
+    try:
+        return json.loads(PROM_SUCCESS_STATE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {"violations": []}
+
+
+def _save_prom_success_state(state: dict) -> None:
+    PROM_SUCCESS_STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _prom_success_rate_section(conn) -> str:
+    """Графа для щоденного звіту + P0-2 alerting: див. коментар біля
+    PROM_SUCCESS_* констант вище щодо методики й свідомих спрощень."""
+    window_end = datetime.now() - timedelta(days=PROM_SUCCESS_WINDOW_LAG_DAYS)
+    window_start = window_end - timedelta(days=PROM_SUCCESS_WINDOW_DAYS)
+
+    rows = conn.execute(
+        "SELECT delivery_status FROM orders WHERE platform = 'prom' AND created_at >= ? AND created_at < ?",
+        (window_start.isoformat(timespec="seconds"), window_end.isoformat(timespec="seconds")),
+    ).fetchall()
+
+    total = len(rows)
+    if total < PROM_SUCCESS_MIN_ORDERS:
+        return (
+            f"\n\nПоказник успішних замовлень Prom: недостатньо даних для розрахунку "
+            f"({total} замовлень за 60-денне вікно, Prom рахує від {PROM_SUCCESS_MIN_ORDERS})"
+        )
+
+    unsuccessful = sum(1 for r in rows if r["delivery_status"] in ("cancelled", "returned"))
+    success_rate = (total - unsuccessful) / total
+
+    state = _load_prom_success_state()
+    violations = [v for v in state.get("violations", [])
+                  if (datetime.now() - datetime.fromisoformat(v)).days <= PROM_SUCCESS_VIOLATION_WINDOW_DAYS]
+
+    alert_lines = []
+    if success_rate < PROM_SUCCESS_OFFICIAL_THRESHOLD:
+        today_iso = datetime.now().date().isoformat()
+        if today_iso not in violations:
+            violations.append(today_iso)
+        violation_count = len(violations)
+        alert_lines.append(
+            f"\n\n🔴 ПОКАЗНИК УСПІШНИХ ЗАМОВЛЕНЬ PROM НИЖЧЕ ОФІЦІЙНОГО ПОРОГУ "
+            f"({success_rate * 100:.0f}% < {PROM_SUCCESS_OFFICIAL_THRESHOLD * 100:.0f}%) — "
+            f"каталог може бути прихований від покупців. Порушення за останні "
+            f"{PROM_SUCCESS_VIOLATION_WINDOW_DAYS // 30} міс: {violation_count}."
+        )
+        if violation_count >= PROM_SUCCESS_VIOLATIONS_BEFORE_PERMANENT:
+            alert_lines.append(
+                f"\n🔴🔴 {violation_count}-ге порушення за півроку — за словами власниці, "
+                "це поріг ПОСТІЙНОЇ деактивації каталогу Prom. Перевір негайно."
+            )
+    elif success_rate < PROM_SUCCESS_WARN_THRESHOLD:
+        alert_lines.append(
+            f"\n\n⚠️ Показник успішних замовлень Prom знижується: {success_rate * 100:.0f}% "
+            f"(жовтий поріг {PROM_SUCCESS_WARN_THRESHOLD * 100:.0f}%, офіційний поріг блокування "
+            f"{PROM_SUCCESS_OFFICIAL_THRESHOLD * 100:.0f}%)"
+        )
+
+    state["violations"] = violations
+    _save_prom_success_state(state)
+
+    base_line = (
+        f"\n\nПоказник успішних замовлень Prom (60-денне вікно): {success_rate * 100:.0f}% "
+        f"({total - unsuccessful}/{total}, {unsuccessful} скасовано/повернуто) — ОЦІНКА: рахує "
+        "кожне скасування/повернення як неуспішне, тоді як офіційна методика Prom виключає "
+        "скасування покупцем/незабрані/скарги продавця — реальний офіційний показник, "
+        "найімовірніше, вищий за це число"
+    )
+    return base_line + "".join(alert_lines)
 
 
 def _order_total(order_items: list) -> float:
@@ -235,6 +335,8 @@ def build_report() -> str:
             "SELECT COUNT(*) FROM orders WHERE delivery_status IN ('returned', 'cancelled')"
         ).fetchone()[0]
 
+        prom_success_section = _prom_success_rate_section(conn)
+
         cogs = items_priced = items_missing = 0
         cogs_catalog_unavailable = False
         commission_by_platform = {"prom": 0.0, "rozetka": 0.0}
@@ -296,6 +398,7 @@ def build_report() -> str:
     lines.append(_rozetka_balance_line())
     lines.append(_prom_balance_line())
     lines.append(_rozetka_validation_status_line())
+    lines.append(prom_success_section)
 
     lines.append(f"\n\n📒 Дані для КОДВ за {LOOKBACK_HOURS} год (для граф 6/8/9):")
 

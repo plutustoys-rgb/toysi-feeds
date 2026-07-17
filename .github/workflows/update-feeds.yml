@@ -297,6 +297,23 @@ jobs:
           # історію), але саме ці файли й мають бути закомічені сюди, на feed-data —
           # без -f git add мовчки відмовляється додавати файли, що збігаються з .gitignore.
           git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json rozetka_feed_membership_state.json
+          # Видимість, п.1 (2026-07-17): Google Merchant феєд (топ-970, малий,
+          # той самий порядок розміру, що prom_feed_top.xml — жодного ризику
+          # ліміту 100МБ) досі ніколи не публікувався сюди, попри те, що
+          # generate_google_feed.py вже виконується вище щоразу — стабільного
+          # публічного URL не існувало, власниця не могла подати феєд у Google
+          # Merchant Center. Кроком-джерелом навмисно лишається best-effort
+          # (continue-on-error: true, рядок вище "Refresh own-product-link
+          # cache..." — той самий крок генерує і цей файл) — тому файл тут
+          # додається, лише якщо реально існує й непорожній: якщо
+          # reverse-engineered self-match/self-lookup цього прогону впав,
+          # публікація решти (критичних) фідів все одно не має заблокуватись
+          # відсутнім pathspec для git add.
+          if [ -s feeds/google_merchant_feed.xml ]; then
+            git add -f feeds/google_merchant_feed.xml
+          else
+            echo "::warning::feeds/google_merchant_feed.xml відсутній/порожній цього прогону — Google-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
+          fi
           git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"
 

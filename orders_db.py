@@ -78,6 +78,14 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "checkbox_ettn_registered_at", "checkbox_ettn_registered_at TEXT")
         _ensure_column(conn, "orders", "checkbox_receipt_id", "checkbox_receipt_id TEXT")
         _ensure_column(conn, "orders", "rozetka_ttn_pushed_at", "rozetka_ttn_pushed_at TEXT")
+        # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
+        # залишку" для цього замовлення — щоб order_router.py не спамив той
+        # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
+        # чи замовлення не оброблять вручну. НЕ блокує повторні спроби
+        # передачі (та сама ідемпотентність, що й checkbox_ettn_registered_at/
+        # rozetka_ttn_pushed_at — перевіряємо прапорець, не пропускаємо
+        # замовлення назавжди).
+        _ensure_column(conn, "orders", "stock_alert_sent_at", "stock_alert_sent_at TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -229,6 +237,27 @@ def get_orders_awaiting_manual_ttn_entry(conn: sqlite3.Connection) -> list:
         """
     ).fetchall()
     return [_row_to_dict(row) for row in rows]
+
+
+def mark_stock_alert_sent(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що алерт "Toysi зараз без залишку" для цього замовлення вже
+    надіслано (P0-6, order_router.py) — не блокує повторні спроби передачі
+    наступного циклу, лише запобігає повторному Telegram-алерту щоцикл."""
+    conn.execute(
+        "UPDATE orders SET stock_alert_sent_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def clear_stock_alert(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Скидає прапорець алерту, коли залишок Toysi знову достатній — щоб
+    ПОВТОРНИЙ дефіцит того самого замовлення (малоймовірно, але можливо:
+    з'явився -> знову зник) знову подав сигнал, а не мовчав назавжди після
+    першого разу."""
+    conn.execute(
+        "UPDATE orders SET stock_alert_sent_at = NULL WHERE internal_order_id = ?",
+        (internal_order_id,),
+    )
 
 
 def mark_checkbox_ettn_registered(conn: sqlite3.Connection, internal_order_id: str, receipt_id: str = None) -> None:

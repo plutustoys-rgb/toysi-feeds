@@ -5,7 +5,9 @@ import sys
 from orders_db import (
     get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi,
     mark_ukrposhta_shipment, update_delivery_status,
+    mark_stock_alert_sent, clear_stock_alert,
 )
+from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
 from nova_poshta import resolve_shipping, NovaPoshtaAPIError
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
@@ -90,6 +92,41 @@ def _normalize_phone_for_toysi(phone: str) -> str:
     Перевірено на реальному замовленні №414634349: Toysi відхилив саме з цієї
     причини (response_code=16, "Невірний телефон отримувача")."""
     return re.sub(r"\D", "", phone or "")
+
+
+# P0-6 (2026-07-17): Prom-фід (generate_prom_feed*.py) регенерується й
+# перезаливається кожні 4 год через GitHub Actions, тож клієнт міг
+# оформити замовлення на товар, чий залишок у Toysi змінився вже ПІСЛЯ
+# останньої синхронізації фіда — вікно застарілості до ~8 год (два цикли
+# поспіль). Це структурно годує показник скасувань Prom (P0-2): ми
+# передаємо в Toysi замовлення на товар, якого вже немає, Toysi/Нова
+# Пошта згодом самі це виявляють, і це стає скасуванням, яке рахується
+# ПРОТИ нас. Перевірка тут — ОСТАННІЙ живий погляд на залишок Toysi САМЕ
+# в момент передачі (а не довіра фіду, яким клієнт користувався), ПЕРЕД
+# тим, як ми підтверджуємо замовлення на маркетплейсі (_update_marketplace_
+# status() нижче, викликається лише ПІСЛЯ успішної передачі Toysi).
+#
+# Toysi не має окремого API для перевірки залишку ОДНОГО товару — єдине
+# джерело це весь каталог (fetch_toysi_catalog(), ~70МБ). Тому
+# route_pending_orders() завантажує його ОДИН РАЗ на весь цикл (не на
+# кожне замовлення) і передає сюди.
+def _check_toysi_stock(order: dict, toysi_catalog: dict) -> tuple:
+    """Повертає (є_в_наявності, опис) для ВСІХ позицій замовлення разом.
+    Позиція, відсутня в поточному каталозі Toysi взагалі (не лише
+    stock=0) — теж трактується як недоступна (могла зникнути з
+    асортименту постачальника цілком, не лише скінчитись на складі)."""
+    shortages = []
+    for item in order["items"]:
+        toysi_code = str(item.get("toysi_code") or "")
+        needed_qty = item.get("qty", 1)
+        cat_item = toysi_catalog.get(toysi_code)
+        available = cat_item.get("stock", 0) if cat_item else 0
+        if available < needed_qty:
+            name = (cat_item or {}).get("name") or item.get("name") or toysi_code
+            shortages.append(f"{name} (потрібно {needed_qty}, є {available})")
+    if shortages:
+        return False, "; ".join(shortages)
+    return True, ""
 
 
 def build_toysi_order(order: dict) -> dict:
@@ -226,7 +263,39 @@ def _update_marketplace_status(order: dict) -> None:
         )
 
 
-def route_order(conn, order: dict, test_mode: bool = False) -> None:
+def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict = None) -> None:
+    # P0-6: якщо викликач не передав каталог (напр. service_watchdog.py's
+    # check_unforwarded_orders(), який викликає route_order() напряму) —
+    # завантажуємо самі, щоб перевірка діяла незалежно від того, звідки
+    # прийшов виклик. Порожній каталог (мережева помилка/немає ключа) не
+    # блокує передачу — best-effort: краще ризикнути застарілим
+    # припущенням "в наявності", ніж зупинити весь конвеєр через
+    # тимчасову недоступність фіда Toysi.
+    if toysi_catalog is None:
+        toysi_catalog = fetch_toysi_catalog()
+
+    if toysi_catalog:
+        in_stock, shortage_detail = _check_toysi_stock(order, toysi_catalog)
+        if not in_stock:
+            if not order.get("stock_alert_sent_at"):
+                message = (
+                    f"⚠️ {order['internal_order_id']}: живий залишок Toysi зараз "
+                    f"недостатній — {shortage_detail}. Замовлення НЕ передано в Toysi, "
+                    "спробуємо знову наступного циклу (можливо, тимчасово)."
+                )
+                print(f"[order_router] {message}", file=sys.stderr)
+                if send_telegram_message(message):
+                    mark_stock_alert_sent(conn, order["internal_order_id"])
+            else:
+                print(
+                    f"[order_router] {order['internal_order_id']}: залишок Toysi досі "
+                    f"недостатній ({shortage_detail}) — алерт вже надсилався, повторюємо мовчки",
+                    file=sys.stderr,
+                )
+            return
+        elif order.get("stock_alert_sent_at"):
+            clear_stock_alert(conn, order["internal_order_id"])
+
     if test_mode:
         # Toysi документує api_mode=test буквально: "заказ не будет обрабатываться
         # менеджером" — не списує депозит, не потрапляє в "Історію замовлень",
@@ -316,8 +385,12 @@ def route_pending_orders(test_mode: bool = False) -> None:
             print("[order_router] Немає замовлень, готових до передачі")
             return
 
+        # P0-6: один живий фетч каталогу Toysi на весь цикл, не на кожне
+        # замовлення окремо — той самий каталог, свіжий на момент ЦЬОГО
+        # прогону order_pipeline.py, а не кешована копія з генерації фіда.
+        toysi_catalog = fetch_toysi_catalog()
         for order in candidates:
-            route_order(conn, order, test_mode=test_mode)
+            route_order(conn, order, test_mode=test_mode, toysi_catalog=toysi_catalog)
 
 
 if __name__ == "__main__":

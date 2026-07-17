@@ -719,6 +719,25 @@ def main() -> None:
                           "не ділить один і той самий перемикач.")
     args = ap.parse_args()
 
+    # Надійність, п.3: SAFETY_HOLD — ручний, миттєвий стоп-кран, незалежний
+    # від git merge/deploy циклу. Прецедент, якого це запобігає: відомий
+    # баг безпеки виявлено, фікс ще НЕ готовий/не змержено — досі жодного
+    # способу негайно зупинити --apply, окрім видалення/паузи самого
+    # workflow вручну. Це env var (не файл у репо), щоб увімкнути/вимкнути
+    # можна було ОДНІЄЮ командою (`gh variable set SAFETY_HOLD --body true`),
+    # без PR/мержу/чекання на CI — швидше за будь-який кодовий фікс.
+    # Значення env var (не просто "1"/"true") друкується як причина, якщо
+    # задано власником — щоб було видно, ЧОМУ саме зараз hold, не лише що.
+    safety_hold_reason = os.environ.get("SAFETY_HOLD", "").strip()
+    if safety_hold_reason and args.apply:
+        message = (
+            f"🛑 prom_competitor_pricer.py: SAFETY_HOLD активний — примусовий dry-run, "
+            f"--apply проігноровано. Причина: {safety_hold_reason}"
+        )
+        print(f"[Pricer] {message}", file=sys.stderr)
+        send_telegram_message(message)
+        args.apply = False
+
     if not PROM_API_KEY:
         print("[Pricer] PROM_API_KEY не задано — зупиняюсь.", file=sys.stderr)
         sys.exit(1)

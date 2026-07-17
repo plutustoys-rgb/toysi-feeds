@@ -130,6 +130,14 @@ jobs:
       # тобто --apply без --force, і лише ручний dispatch може відхилятись.
       - name: Run competitor repricer (Prom)
         continue-on-error: true
+        # SAFETY_HOLD (Надійність, п.3): repository variable, НЕ секрет —
+        # умикається/вимикається однією командою (`gh variable set
+        # SAFETY_HOLD --body "причина"` / `gh variable delete SAFETY_HOLD`),
+        # без PR/мержу/чекання на CI, коли відомий баг безпеки виявлено, а
+        # фікс ще не готовий. Порожнє значення (дефолт, змінна не задана)
+        # не вмикає hold — перевірка truthy-рядка всередині скрипта.
+        env:
+          SAFETY_HOLD: ${{ vars.SAFETY_HOLD }}
         run: |
           ARGS=""
           if [ "${{ github.event.inputs.apply }}" != "false" ]; then ARGS="$ARGS --apply"; fi

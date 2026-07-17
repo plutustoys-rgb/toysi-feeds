@@ -10,6 +10,7 @@ import requests
 
 import order_router
 from orders_db import get_connection, get_active_toysi_orders, get_orders_ready_to_forward
+from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
 from toysi_order_submit import fetch_order_statuses, ToysiAPIError
 
@@ -454,12 +455,18 @@ def check_unforwarded_orders() -> None:
                     print("[watchdog] Не вдалося надіслати повідомлення про відновлення застряглих замовлень у Telegram", file=sys.stderr)
             return
 
+        # Один живий фетч каталогу Toysi (P0-6) на весь цей прогін, не на
+        # кожне застрягле замовлення окремо — інакше кожне ЩЕ ОДНЕ застрягле
+        # замовлення в тому самому інциденті додавало б ще один ~70МБ
+        # запит, сповільнюючи саме той safety-net, що має рятувати систему
+        # під час проблеми (той самий підхід, що й route_pending_orders()).
+        toysi_catalog = fetch_toysi_catalog()
         for order, age_minutes in stale:
             internal_id = order["internal_order_id"]
             print(f"[watchdog] Застрягле замовлення: {internal_id} ({age_minutes:.0f} хв, "
                   f"поріг {STALE_ORDER_THRESHOLD_MINUTES} хв) — намагаюсь підхопити зараз")
             try:
-                order_router.route_order(conn, order)
+                order_router.route_order(conn, order, toysi_catalog=toysi_catalog)
             except Exception as e:
                 print(f"[watchdog] Спроба підхопити {internal_id} впала: {e}", file=sys.stderr)
 

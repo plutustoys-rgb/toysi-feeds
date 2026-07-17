@@ -116,7 +116,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from competitor_pricing import decide_price_for_platform
+from competitor_pricing import decide_price_for_platform, load_description_overrides
 from generate_prom_feed import append_clearance_notice
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
@@ -411,7 +411,12 @@ def _wrap_cdata(xml_str: str) -> str:
     return re.sub(r"<description>(.*?)</description>", replacer, xml_str, flags=re.DOTALL)
 
 
-def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = None) -> tuple[ET.Element, dict]:
+def _build_xml(
+    catalog: dict,
+    price_overrides: dict = None,
+    exclude_ids: set = None,
+    description_overrides: dict = None,
+) -> tuple[ET.Element, dict]:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
     shop = ET.SubElement(yml, "shop")
@@ -444,6 +449,8 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
     offers_el       = ET.SubElement(shop, "offers")
     overrides       = price_overrides or {}
     excluded        = exclude_ids or set()
+    desc_overrides  = description_overrides or {}
+    described_count = 0  # Vis-9: SKU, що отримали вручну написаний опис замість сирого Toysi
 
     # Прохід 1/2: рахуємо, скільки товарів, що РЕАЛЬНО потраплять у фід
     # (ті самі фільтри, що й нижче), мають однакову <name> — Rozetka
@@ -595,14 +602,27 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
 
         ET.SubElement(offer, "vendor").text = _clean_text(vendor)
 
-        if item.get("country"):
-            ET.SubElement(offer, "country_of_origin").text = _clean_text(item["country"])
+        # Vis-9: override — той самий механізм і той самий файл
+        # (description_overrides.json), що й generate_prom_feed.py: коли
+        # Toysi дає лише мінімальний "Бренд+Країна" boilerplate, вручну
+        # написаний текст ПОВНІСТЮ замінює сирий опис Toysi (і, якщо
+        # заданий у записі, <country_of_origin>).
+        desc_override = desc_overrides.get(item_id)
+        raw_description = item.get("description", "")
+        country = item.get("country")
+        if desc_override:
+            described_count += 1
+            raw_description = desc_override.get("description") or raw_description
+            country = desc_override.get("country") or country
+
+        if country:
+            ET.SubElement(offer, "country_of_origin").text = _clean_text(country)
 
         if item.get("barcode"):
             ET.SubElement(offer, "barcode").text = _clean_text(item["barcode"])
 
         desc = append_clearance_notice(
-            item.get("description", ""),
+            raw_description,
             item.get("name", ""),
             item.get("category_name", ""),
             item.get("category_id", ""),
@@ -638,13 +658,16 @@ def _build_xml(catalog: dict, price_overrides: dict = None, exclude_ids: set = N
           f"без валідного фото: {skipped_no_pics} | назв обрізано (>{ROZETKA_NAME_MAX_LEN} симв.): {truncated_name_count}")
     print(f"[Rozetka] <url> додано для {url_added_count} з {len(offers_el)} товарів "
           f"(лише топ-970 з впевненим self-match на Prom, кеш {'знайдено' if own_product_links else 'відсутній/застарілий'})")
+    print(f"[Rozetka] Vis-9: {described_count} SKU отримали вручну написаний опис "
+          "(description_overrides.json) замість сирого Toysi")
     return yml
 
 
 def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
                   catalog: dict = None,
-                  exclude_ids: set = None) -> None:
+                  exclude_ids: set = None,
+                  description_overrides: dict = None) -> None:
     if catalog is None:
         print("[Rozetka] Завантажуємо каталог Toysi...")
         catalog = fetch_toysi_catalog()
@@ -673,7 +696,10 @@ def generate_feed(output_file: str = OUTPUT_FILE,
               f"{ROZETKA_OOS_GRACE_DAYS} днів): {carried_forward} товарів.")
 
     print(f"[Rozetka] Генеруємо XML для {len(top_catalog)} товарів...")
-    root = _build_xml(top_catalog, price_overrides=price_overrides, exclude_ids=exclude_ids)
+    root = _build_xml(
+        top_catalog, price_overrides=price_overrides, exclude_ids=exclude_ids,
+        description_overrides=description_overrides,
+    )
 
     ET.indent(root, space="  ")
     xml_str = ET.tostring(root, encoding="unicode")
@@ -824,4 +850,4 @@ def _preflight_cli() -> int:
 if __name__ == "__main__":
     if "--preflight" in sys.argv:
         sys.exit(_preflight_cli())
-    generate_feed()
+    generate_feed(description_overrides=load_description_overrides())

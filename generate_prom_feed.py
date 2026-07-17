@@ -4,7 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides
+from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides, load_description_overrides
 from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
 
@@ -380,7 +380,12 @@ def _truncate_name(text: str, max_len: int = PROM_NAME_MAX_LEN) -> str:
     return cut.rstrip(" ,.-")
 
 
-def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict = None) -> tuple[ET.Element, dict]:
+def _build_xml(
+    catalog: dict,
+    price_overrides: dict = None,
+    russian_text: dict = None,
+    description_overrides: dict = None,
+) -> tuple[ET.Element, dict]:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
     shop = ET.SubElement(yml, "shop")
@@ -406,6 +411,8 @@ def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict =
     offers_el       = ET.SubElement(shop, "offers")
     overrides       = price_overrides or {}
     russian         = russian_text or {}
+    desc_overrides  = description_overrides or {}
+    described_count = 0  # Vis-9: SKU, що отримали вручну написаний опис замість сирого Toysi
     skipped         = 0
     skipped_cheap   = 0
     overridden_count       = 0  # ціна з pricing_results.csv (конкурент перевірений вручну)
@@ -485,20 +492,38 @@ def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict =
         if item.get("vendor"):
             ET.SubElement(offer, "vendor").text = normalize_vendor(item["vendor"])
 
-        if item.get("country"):
-            ET.SubElement(offer, "country").text = item["country"]
+        # Vis-9: override — коли Toysi дає лише мінімальний "Бренд+Країна"
+        # boilerplate (93/970 SKU), вручну написаний текст (desc_override)
+        # ЗАМІНЮЄ сирий опис Toysi ПОВНІСТЮ, для ОБОХ мовних варіантів
+        # нижче (один написаний текст на товар, а не окремі переклади) —
+        # той самий override перекриває й <country>, якщо в записі є
+        # "country" (реальне походження часом відрізняється від того, що
+        # (можливо помилково) вказано в Toysi).
+        desc_override = desc_overrides.get(item_id)
+        raw_description = item.get("description", "")
+        country = item.get("country")
+        if desc_override:
+            described_count += 1
+            raw_description = desc_override.get("description") or raw_description
+            country = desc_override.get("country") or country
+
+        if country:
+            ET.SubElement(offer, "country").text = country
 
         if item.get("barcode"):
             ET.SubElement(offer, "barcode").text = item["barcode"]
 
         # Prom.ua вимагає наявність <description>, навіть якщо порожній
         description_ua = append_clearance_notice(
-            item.get("description", ""),
+            raw_description,
             item.get("name", ""),
             item.get("category_name", ""),
             item.get("category_id", ""),
         )
-        description_ru_raw = (russian.get(item_id) or {}).get("description") or item.get("description", "")
+        description_ru_raw = (
+            raw_description if desc_override
+            else (russian.get(item_id) or {}).get("description") or raw_description
+        )
         # CLEARANCE_NOTICE сам лишається українською (немає перекладу тексту
         # попередження) навіть у "російському" описі — прийнятний компроміс,
         # ніж взагалі не попередити покупця про уцінку.
@@ -530,6 +555,7 @@ def _build_xml(catalog: dict, price_overrides: dict = None, russian_text: dict =
         "russian_missing_count": russian_missing_count,
         "truncated_name_count": truncated_name_count,
         "truncated_name_ua_count": truncated_name_ua_count,
+        "described_count": described_count,
     }
     return yml, stats
 
@@ -550,7 +576,8 @@ def fetch_russian_text() -> dict:
 
 def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
-                  catalog: dict = None) -> None:
+                  catalog: dict = None,
+                  description_overrides: dict = None) -> None:
     if catalog is None:
         print("[Prom] Завантажуємо каталог Toysi...")
         catalog = fetch_toysi_catalog()
@@ -561,7 +588,10 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     russian_text = fetch_russian_text()
 
     print(f"[Prom] Генеруємо XML для {len(catalog)} товарів...")
-    root, stats = _build_xml(catalog, price_overrides=price_overrides, russian_text=russian_text)
+    root, stats = _build_xml(
+        catalog, price_overrides=price_overrides, russian_text=russian_text,
+        description_overrides=description_overrides,
+    )
 
     ET.indent(root, space="  ")
     xml_str = ET.tostring(root, encoding="unicode")
@@ -590,6 +620,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         f"[Prom] Обрізання назви (>{PROM_NAME_MAX_LEN} символів, на межі слова): "
         f"{stats['truncated_name_count']} SKU у <name>, {stats['truncated_name_ua_count']} SKU у <name_ua>"
     )
+    print(f"[Prom] Vis-9: {stats['described_count']} SKU отримали вручну написаний опис "
+          "(description_overrides.json) замість сирого Toysi")
 
     total_in_feed = stats["total_in_feed"] or 1
     worst_truncated_fraction = max(stats["truncated_name_count"], stats["truncated_name_ua_count"]) / total_in_feed
@@ -614,4 +646,7 @@ if __name__ == "__main__":
     # дефолту. load_fresh_prom_price_overrides() читає спільний стан, який
     # тепер пише prom_competitor_pricer.py, і застосовує лише свіжі (не
     # старіші 30 год) рішення — застаріле повертається до дефолтної формули.
-    generate_feed(price_overrides=load_fresh_prom_price_overrides())
+    generate_feed(
+        price_overrides=load_fresh_prom_price_overrides(),
+        description_overrides=load_description_overrides(),
+    )

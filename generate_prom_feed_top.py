@@ -4,7 +4,7 @@ from pathlib import Path
 
 from parser import fetch_toysi_catalog
 from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
-from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides
+from competitor_pricing import decide_price_for_platform, load_delisted_pids, load_fresh_prom_price_overrides
 
 # ВИПРАВЛЕНО (2026-07-16, задача власниці — full_catalog_competitor_scan.py
 # не мав лишатись окремим інформаційним скриптом): щоночі
@@ -110,13 +110,26 @@ def is_excluded_category(item: dict) -> bool:
     return (item.get("category_name") or "").strip().lower() in EXCLUDED_CATEGORIES
 
 
-def _margin(item: dict, pid: str = None, scan_state: dict = None) -> float:
+def _margin(item: dict, pid: str = None, scan_state: dict = None, delisted_pids: dict = None) -> float:
     """Розрахункова маржа (retail - cost). -1, якщо товар не має валідної/
     прийнятної ціни, немає залишку на складі Toysi (2026-07-10: раніше
     цього фільтра не було взагалі — SKU 267102 потрапив у топ-970 з
     quantity_in_stock=0, зайнявши місце товару, який реально можна
-    продати), або це уцінений/пошкоджений товар (не належить у "топ"
-    незалежно від маржі).
+    продати), уцінений/пошкоджений товар (не належить у "топ" незалежно
+    від маржі), чи ПІДТВЕРДЖЕНО видалений prom_competitor_pricer.py на
+    попередньому прогоні за неконкурентність (delisted_pids —
+    competitor_pricing.load_delisted_pids()).
+
+    КРИТИЧНИЙ ФІКС (2026-07-18, реальний інцидент — SKU 266990/265230 та
+    ще ~357 інших): без цієї перевірки select_top_items() одразу ж (той
+    самий workflow-прогін, наступний крок після repricer'а) знову включав
+    щойно ЖИВО видалений SKU в prom_feed_top.xml, бо не мав ЖОДНОГО
+    сигналу про сам факт видалення — рахував топ-970 виключно з даних
+    Toysi/scan_state. Коли Prom періодично імпортував цей прайс-лист — він
+    сам відновлював "видалене" оголошення, повністю скасовуючи ефект
+    delist() протягом кількох годин. Запис прибирається з delisted_pids
+    автоматично, щойно SKU знову проходить у to_adjust (конкурент
+    подешевшав/зник) — див. prom_competitor_pricer.py::main().
 
     Дві формули для самої величини маржі:
     - Товар ВЖЕ просканований full_catalog_competitor_scan.py (pid є в
@@ -148,6 +161,8 @@ def _margin(item: dict, pid: str = None, scan_state: dict = None) -> float:
     if is_clearance_item(item.get("name"), item.get("category_name"), item.get("category_id")):
         return -1
     if item.get("stock", 0) <= 0:
+        return -1
+    if pid is not None and pid in (delisted_pids or {}):
         return -1
     try:
         cost = float(item.get("price") or 0)
@@ -194,10 +209,14 @@ def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
 
     Маржа рахується ОДИН раз на товар (не при кожному сортуванні) і бере
     до уваги накопичені дані full_catalog_competitor_scan.py, якщо вони
-    є (load_scan_state()) — див. докстрінг _margin().
+    є (load_scan_state()), а також SKU, підтверджено видалені
+    prom_competitor_pricer.py на попередньому прогоні (load_delisted_pids())
+    — обидва повністю виключають товар з відбору (return -1 у _margin()),
+    див. докстрінги обох функцій.
     """
     scan_state = load_scan_state()
-    margins = {pid: _margin(item, pid, scan_state) for pid, item in catalog.items()}
+    delisted_pids = load_delisted_pids()
+    margins = {pid: _margin(item, pid, scan_state, delisted_pids) for pid, item in catalog.items()}
 
     eligible = {
         pid: item for pid, item in catalog.items()

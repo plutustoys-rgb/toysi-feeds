@@ -15,6 +15,11 @@ on:
         required: false
         default: "false"
         type: boolean
+      force_circuit_breaker:
+        description: "Репрайсер: обійти circuit breaker (--force-circuit-breaker). Використовувати ЛИШЕ для свідомо очікуваного разового стрибка (напр. перший прогін після зміни самої формули/правила ціноутворення) — НЕ залишати true за замовчуванням, інакше breaker перестає захищати від справжніх аномалій. Не впливає на планові (cron) запуски — ті ніколи не передають цей прапорець."
+        required: false
+        default: "false"
+        type: boolean
 
 env:
   FEED_BRANCH: feed-data
@@ -142,6 +147,7 @@ jobs:
           ARGS=""
           if [ "${{ github.event.inputs.apply }}" != "false" ]; then ARGS="$ARGS --apply"; fi
           if [ "${{ github.event.inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "${{ github.event.inputs.force_circuit_breaker }}" = "true" ]; then ARGS="$ARGS --force-circuit-breaker"; fi
           python prom_competitor_pricer.py $ARGS
 
       # Фолбек на випадок, якщо репрайсер аварійно завершився ДО першого

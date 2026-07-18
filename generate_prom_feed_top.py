@@ -128,6 +128,17 @@ def _margin(item: dict, pid: str = None, scan_state: dict = None) -> float:
       проєкту). Це та сама формула, яку generate_prom_feed.py реально
       застосує для ціни, якщо товар потрапить у топ — на відміну від
       наївної оцінки нижче, вона знає, чи є конкурент і за якою ціною.
+
+      ВИПРАВЛЕНО (2026-07-18, пряме рішення власника, той самий фікс, що
+      й prom_competitor_pricer.py::decide_action() — code_report_2026-
+      07-18_pt3.md): якщо є ЖИВИЙ конкурент і навіть наша нижня межа
+      маржі (3%) не дозволяє підрізати його на 1 грн (decision["category"]
+      == "floor") — товар НЕ претендує на місце в топ-970/1000 ВЗАГАЛІ
+      (return -1, як і немає залишку/уцінка), а не просто нижчим рангом.
+      Раніше такий SKU все одно потрапляв у топ і показувався на вітрині
+      системно дорожчим за конкурента (підтверджено живо: 10-31% розрив на
+      реальних SKU) — тепер його місце звільняється для дійсно
+      конкурентного/прибуткового товару.
     - Товар ЩЕ не просканований (переважна більшість, поки скан не
       завершено) — стара наївна оцінка (default_retail_price — комісія
       категорії Prom + нижня межа маржі, БЕЗ обізнаності про конкурента).
@@ -149,6 +160,8 @@ def _margin(item: dict, pid: str = None, scan_state: dict = None) -> float:
     if scan_entry is not None:
         competitor_price = scan_entry.get("competitor_price") if scan_entry.get("competitor_alive") else None
         decision = decide_price_for_platform(cost, competitor_price, "prom", item.get("category_name"))
+        if decision["category"] == "floor":
+            return -1
         return decision["price"] - cost
 
     return default_retail_price(cost, item.get("category_name")) - cost

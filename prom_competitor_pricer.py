@@ -337,6 +337,19 @@ CIRCUIT_BREAKER_MAX_CHANGED_FRACTION = 0.5
 # (напр. 2 з 3 — 67%, виглядає тривожно, але це шум малої вибірки).
 CIRCUIT_BREAKER_MIN_KNOWN_FOR_FRACTION_CHECK = 10
 
+# ДОДАНО (2026-07-18, незалежний аудит PR #95 — code_report_2026-07-
+# 18_pt4.md, критична знахідка): три сигнали вище рахують ЛИШЕ
+# to_adjust — жоден з них НІКОЛИ не бачить delist взагалі. PR #95 (той
+# самий прогін, після якого сесія додала цей фікс) зробив delist
+# структурно можливим у масовому масштабі (361/970 = 37% у реальному
+# dry-run) — без цього сигналу такий сплеск ВИДАЛЕНЬ пройшов би повз
+# breaker непоміченим, навіть якщо середня маржа й частка змінених ЦІН
+# (у to_adjust) виглядають абсолютно нормально. Поріг НЕ підтверджений
+# власником як конкретне число (та сама категорія, що й
+# MAX_FLOOR_TO_COMPETITOR_RATIO раніше) — консервативний початковий
+# дефолт, підлягає підтвердженню.
+CIRCUIT_BREAKER_MAX_DELIST_FRACTION = 0.15
+
 EDIT_BATCH = 100  # POST /products/edit_by_external_id, як і в prom_catalog_sync.py
 
 # P0-5: раз на стільки успішно застосованих коригувань ціни зберігати
@@ -625,14 +638,33 @@ def verify_competitor_really_available(competitor: dict) -> bool:
     return match.group(1).endswith("/InStock")
 
 
-def evaluate_circuit_breaker(to_adjust: list, price_state: dict) -> tuple[bool, list, float | None]:
+def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict) -> tuple[bool, list, float | None]:
     """P0-3: див. коментар біля CIRCUIT_BREAKER_* констант. `to_adjust` —
     список (pid, price, margin_pct) кандидатів на коригування цього
-    прогону. Повертає (спрацював, причини, середня_маржа_цього_прогону) —
-    середня маржа повертається завжди (навіть якщо breaker не спрацював),
-    щоб main() міг зберегти її для порівняння НАСТУПНОГО прогону."""
+    прогону. `to_delist` — список pid, призначених на видалення цього
+    прогону (ДОДАНО 2026-07-18, незалежний аудит PR #95 —
+    code_report_2026-07-18_pt4.md: до цього фіксу жоден із трьох сигналів
+    нижче взагалі не бачив delist, і масовий сплеск видалень проходив би
+    повз circuit breaker непоміченим). Повертає (спрацював, причини,
+    середня_маржа_цього_прогону) — середня маржа повертається завжди
+    (навіть якщо breaker не спрацював чи to_adjust порожній), щоб main()
+    міг зберегти її для порівняння НАСТУПНОГО прогону.
+
+    Перевірка масштабу delist рахується ПЕРШОЮ, до раннього виходу при
+    порожньому to_adjust — інакше прогін, де ВСІ рішення виявились
+    "delist" (найгірший можливий сценарій для цього сигналу), взагалі
+    ніколи б не дійшов до перевірки нижче."""
+    reasons = []
+    total_decided = len(to_adjust) + len(to_delist)
+    if total_decided and len(to_delist) / total_decided > CIRCUIT_BREAKER_MAX_DELIST_FRACTION:
+        reasons.append(
+            f"{len(to_delist) / total_decided * 100:.0f}% товарів із визначеним конкурентом "
+            f"({len(to_delist)}/{total_decided}) призначено на видалення за один прогін "
+            f"(поріг {CIRCUIT_BREAKER_MAX_DELIST_FRACTION * 100:.0f}%)"
+        )
+
     if not to_adjust:
-        return False, [], None
+        return bool(reasons), reasons, None
 
     avg_margin_this_run = sum(m for _, _, m in to_adjust) / len(to_adjust)
 
@@ -650,7 +682,6 @@ def evaluate_circuit_breaker(to_adjust: list, price_state: dict) -> tuple[bool, 
 
     prev_avg_margin = (price_state.get("_meta") or {}).get("last_avg_margin_pct")
 
-    reasons = []
     if avg_margin_this_run < CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT:
         reasons.append(
             f"середня маржа цього прогону {avg_margin_this_run:.1f}% нижче абсолютного "
@@ -1010,7 +1041,7 @@ def main() -> None:
         if len(default_commission_skipped) > 15:
             default_commission_note += f"\n... та ще {len(default_commission_skipped) - 15}"
 
-    breaker_tripped, breaker_reasons, avg_margin_this_run = evaluate_circuit_breaker(to_adjust, price_state)
+    breaker_tripped, breaker_reasons, avg_margin_this_run = evaluate_circuit_breaker(to_adjust, to_delist, price_state)
     if avg_margin_this_run is not None:
         print(f"[Pricer] Circuit breaker: середня маржа цього прогону {avg_margin_this_run:.1f}%"
               + (f" — СПРАЦЮВАВ: {'; '.join(breaker_reasons)}" if breaker_tripped else " — OK"))

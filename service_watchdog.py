@@ -229,9 +229,19 @@ def _local_deployed_py_files() -> list:
 def check_deploy_drift() -> None:
     """SHA256-звірка кожного .py, що реально лежить на VPS, проти
     відповідного файлу в origin/master (через raw.githubusercontent.com —
-    публічний репозиторій, токен не потрібен). Алармить у Telegram лише
-    на ПЕРШУ появу розбіжності для кожного файлу (той самий підхід, що й
-    check_services()), не на кожну перевірку.
+    публічний репозиторій, токен не потрібен).
+
+    ВИПРАВЛЕНО (2026-07-18, реальний інцидент — PR #90/#91/#93 змержені
+    07-17, ЖОДЕН не задеплоєний на VPS цілу добу, знайдено лише ручною
+    звіркою наступного дня): раніше алармило в Telegram лише на ПЕРШУ
+    появу розбіжності для кожного файлу, а далі мовчало, поки дрейф не
+    зникав, — один пропущений/забутий алерт означав, що змержений і
+    неперевірений код міг тижнями виконуватись у проді непоміченим. Тепер
+    ЩОДНЯ (той самий цикл DEPLOY_DRIFT_CHECK_INTERVAL_HOURS=24), поки
+    файл лишається в розбіжності, шле ПОВТОРНЕ нагадування — не лише
+    один раз. Не про кожну перевірку (та сама 24-годинна пауза, що й
+    раніше) — просто одноразовий алерт замінено на щоденний, доки
+    ситуація не виправиться.
 
     Файл, якого немає в master (404) — НЕ алармимо: може бути легітимний
     VPS-специфічний скрипт чи файл, який ще не встигли змержити — це інша
@@ -252,6 +262,7 @@ def check_deploy_drift() -> None:
     drift_state = state.get("deploy_drift", {})
     still_drifted = {}
     new_alarms = []
+    reminders = []
     recoveries = []
     check_errors = []
 
@@ -287,6 +298,8 @@ def check_deploy_drift() -> None:
             print(f"[watchdog] Звірка деплою: ALARM — {fname} відрізняється від origin/master")
             if not was_alarming:
                 new_alarms.append(f"⛔ {fname}: VPS-версія відрізняється від origin/master")
+            else:
+                reminders.append(f"⏰ {fname}: ДОСІ не задеплоєно (розбіжність триває)")
         elif was_alarming:
             recoveries.append(f"✅ {fname}: синхронізовано з origin/master")
 
@@ -298,14 +311,15 @@ def check_deploy_drift() -> None:
     state["deploy_drift_last_check"] = now.isoformat()
     _save_state(state)
 
-    if not new_alarms and not recoveries:
+    if not new_alarms and not reminders and not recoveries:
         print(f"[watchdog] Звірка деплою: {len(still_drifted)} файл(ів) у розбіжності (без змін)")
 
-    if new_alarms:
+    if new_alarms or reminders:
         message = (
             "🚨 Watchdog PlutusToys: VPS-код розійшовся з origin/master\n\n"
-            + "\n\n".join(new_alarms)
-            + "\n\nЗмержений код НЕ виконується в проді — перевір і задеплой вручну (scp)."
+            + "\n\n".join(new_alarms + reminders)
+            + "\n\nЗмержений код НЕ виконується в проді — перевір і задеплой вручну (scp). "
+              "Це нагадування буде повторюватись щодня, доки не буде задеплоєно."
         )
         print(message)
         if not send_telegram_message(message):

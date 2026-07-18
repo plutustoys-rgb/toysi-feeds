@@ -346,6 +346,57 @@ def update_prom_order_status(order_id, status: str = PROM_ORDER_STATUS_ACCEPTED)
         raise PromAPIError(f"Prom попередив: {warning}")
 
 
+def attach_prom_declaration_id(order_id, ttn: str, delivery_type: str = "nova_poshta") -> None:
+    """
+    POST /delivery/save_declaration_id (my.prom.ua/api/v1) — прикріплює
+    номер ЕН до замовлення на СТОРОНІ Prom (заповнює
+    delivery_provider_data.declaration_number, порожнє досі для КОЖНОГО
+    замовлення за всю історію — жоден інший виклик у коді цього не робив,
+    підтверджено 2026-07-17 живою перевіркою GET /orders/{id}).
+
+    Це саме той виклик, що потрібен для програми "Дешева доставка" Новою
+    Поштою — офіційна довідка Prom (support.prom.ua) вимагає з боку
+    продавця РІВНО одне: "додайте ЕН не пізніше дня відправлення; без ЕН
+    доставка лишається платною". Раніше ЕН не передавався в Prom ЖОДНОГО
+    разу — тобто ця умова не виконувалась НІКОЛИ, незалежно від того, чи
+    в клієнта була активна підписка ("Свій"/SMART). Підтверджено живим
+    викликом на замовленні №415965259: `has_order_promo_free_delivery`
+    лишився `false`, бо ЕН на той момент був зареєстрований заднім числом
+    (за 2 дні по відправленню) — тест підтверджує МЕХАНІЗМ, не гарантує
+    субсидію заднім числом на вже відправлені замовлення.
+
+    Prom (перевірено живо) повертає 200 OK з `{"status": "error",
+    "message": "Этот ЭН уже добавлен к данному заказу"}` при повторному
+    виклику з тим самим ЕН — трактуємо як success (мета вже досягнута),
+    щоб ідемпотентний повторний виклик (той самий підхід, що й в
+    update_prom_order_status()) не заважав щоцикловому опитуванню.
+    """
+    if not PROM_API_KEY:
+        raise PromAPIError("PROM_API_KEY не задано")
+
+    try:
+        response = requests.post(
+            f"{PROM_API_URL}/delivery/save_declaration_id",
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            json={"order_id": int(order_id), "delivery_type": delivery_type, "declaration_id": str(ttn)},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise PromAPIError(f"Помилка з'єднання: {e}")
+
+    try:
+        data = response.json()
+    except ValueError:
+        raise PromAPIError(f"Невалідна відповідь (не JSON): {response.text[:300]}")
+
+    if data.get("status") == "error":
+        message = data.get("message", "")
+        if "уже добавлен" in message or "уже додан" in message:
+            return
+        raise PromAPIError(f"Prom відхилив ЕН: {message} ({data.get('errors')})")
+
+
 def _rozetka_payment_method(order: dict) -> str:
     """Rozetka повертає назву способу оплати текстом (payment_type_name/
     payment_type) — той самий підхід евристики за ключовими словами, що й

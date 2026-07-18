@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- order_status_tracker.py, за живим трекінгом Нової Пошти,
                                                -- TrackingDocument.getStatusDocuments) — захист від повторного
                                                -- POST /orders/set_status на кожному циклі опитування
+    prom_ttn_pushed_at    TEXT,               -- коли ЕН передано в Prom через POST /delivery/save_declaration_id
+                                               -- (order_status_tracker.py, 2026-07-17) — до цього фіксу ЕН у Prom
+                                               -- не реєструвався НІКОЛИ (declaration_number завжди лишався null),
+                                               -- що унеможливлювало "Дешеву доставку" Новою Поштою для КОЖНОГО
+                                               -- замовлення; захист від повторного POST щоцикл опитування
     UNIQUE (order_id, platform)
 );
 
@@ -91,6 +96,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         # замовлення назавжди).
         _ensure_column(conn, "orders", "stock_alert_sent_at", "stock_alert_sent_at TEXT")
         _ensure_column(conn, "orders", "prom_delivered_pushed_at", "prom_delivered_pushed_at TEXT")
+        _ensure_column(conn, "orders", "prom_ttn_pushed_at", "prom_ttn_pushed_at TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -306,6 +312,17 @@ def mark_prom_delivered_pushed(conn: sqlite3.Connection, internal_order_id: str)
     опитування, той самий підхід, що й mark_rozetka_ttn_pushed()."""
     conn.execute(
         "UPDATE orders SET prom_delivered_pushed_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_prom_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що ЕН вже передано в Prom через POST /delivery/save_declaration_id
+    (order_status_tracker.py, orders_watcher.attach_prom_declaration_id()) —
+    захист від повторного POST на кожному циклі опитування, той самий
+    підхід, що й mark_rozetka_ttn_pushed()/mark_prom_delivered_pushed()."""
+    conn.execute(
+        "UPDATE orders SET prom_ttn_pushed_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
 

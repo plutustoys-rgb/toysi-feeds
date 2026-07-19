@@ -73,6 +73,7 @@ from generate_prom_feed import fetch_russian_text
 from competitor_pricing import (
     decide_price_for_platform, load_prom_price_state, save_prom_price_state,
     PROM_CATEGORY_COMMISSION, PROM_CATEGORY_ID_COMMISSION, PROM_COMMISSION_DEFAULT, _BAD_NAME_MARKERS,
+    is_bundle_listing,
 )
 from telegram_notify import send_telegram_message
 
@@ -573,6 +574,8 @@ def find_best_competitor(search_name: str, cost: float, own_link: dict | None = 
         # власний каталог у competitor_pricing.py's select_batch().
         candidate_name_lower = (p.get("name") or "").lower()
         if any(marker in candidate_name_lower for marker in _BAD_NAME_MARKERS):
+            continue
+        if is_bundle_listing(p.get("name")):
             continue
         try:
             price = float(p.get("price") or 0)

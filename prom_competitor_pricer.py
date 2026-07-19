@@ -782,6 +782,28 @@ class PromEditError(Exception):
     самий ризик для коригувань ціни, не лише delist)."""
 
 
+def _fetch_product_by_external_id(external_id: str) -> dict | None:
+    """GET-звірка живого стану ОДНОГО товару. Повертає None і для 404
+    (товар видалений/не існує), і для будь-якої мережевої проблеми — той
+    самий "не знаємо напевно" default, що й решта цього файлу. Навмисно
+    НЕ bulk /products/list (той ігнорує фільтр external_id — підтверджено
+    живо 2026-07-19, code_report_2026-07-18_pt11.md)."""
+    try:
+        r = requests.get(
+            f"{PROM_API_URL}/products/by_external_id/{external_id}",
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.exceptions.RequestException:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        return r.json().get("product")
+    except ValueError:
+        return None
+
+
 def _edit_by_external_id(payload: dict) -> None:
     response = requests.post(
         f"{PROM_API_URL}/products/edit_by_external_id",
@@ -796,9 +818,54 @@ def _edit_by_external_id(payload: dict) -> None:
         raise PromEditError(f"Невалідна відповідь (не JSON) для {payload['id']}: {response.text[:300]}")
     ext_id = str(payload["id"])
     processed = {str(x) for x in data.get("processed_ids", [])}
-    if ext_id not in processed:
-        detail = (data.get("errors") or {}).get(ext_id) or data.get("errors")
+    if ext_id in processed:
+        return
+
+    detail = (data.get("errors") or {}).get(ext_id) or data.get("errors")
+    if detail:
+        # Prom дав конкретну причину відхилу — реальна помилка, живий
+        # запит нічого не додасть.
         raise PromEditError(f"Prom НЕ підтвердив зміну для {ext_id} (processed_ids порожній/без цього ID): {detail}")
+
+    # ЗНАЙДЕНО ЖИВО (2026-07-19, forced re-apply прогін 29677266900,
+    # code_report_2026-07-18_pt11.md): порожній processed_ids БЕЗ жодної
+    # деталі помилки — Prom так само відповідає, коли запитувана зміна
+    # НІЧОГО не міняє (ціна вже така сама; товар уже status=deleted).
+    # Без цієї звірки такий no-op трактувався б як провал назавжди —
+    # для delist() це означало, що _delisted_since ніколи не отримував
+    # позначку для товару, вже видаленого РАНІШЕ (напр. попереднім
+    # прогоном чи ручною дією поза цим циклом), тож той самий SKU
+    # щоразу знову потрапляв у обробку й щоразу знову "провалювався".
+    product = _fetch_product_by_external_id(ext_id)
+    if product is None:
+        if payload.get("status") == "deleted":
+            # 404 для delist-запиту — найімовірніше, товар уже видалений
+            # (Prom не віддає видалені товари через цей ендпоінт,
+            # підтверджено живо на 10 SKU 2026-07-19). Уже досягнутий
+            # цільовий стан — вважаємо успіхом.
+            return
+        raise PromEditError(f"Prom НЕ підтвердив зміну для {ext_id} (processed_ids порожній/без деталі помилки), "
+                            f"живий GET також не знайшов товар — стан невідомий")
+
+    if payload.get("status") == "deleted":
+        if product.get("status") == "deleted":
+            return
+        raise PromEditError(f"Prom НЕ підтвердив видалення {ext_id}, живий GET показує status="
+                            f"{product.get('status')!r} — товар досі не видалений")
+
+    if "price" in payload:
+        live_price = product.get("price")
+        try:
+            already_correct = live_price is not None and abs(float(live_price) - float(payload["price"])) < 1
+        except (TypeError, ValueError):
+            already_correct = False
+        if already_correct:
+            return
+        raise PromEditError(f"Prom НЕ підтвердив зміну ціни {ext_id}, живий GET показує price="
+                            f"{live_price!r} (очікували {payload['price']!r}) — зміна не відбулась")
+
+    raise PromEditError(f"Prom НЕ підтвердив зміну для {ext_id} (processed_ids порожній/без деталі помилки), "
+                        f"живий стан не відповідає запитуваній зміні")
 
 
 def apply_price(external_id: str, price: float) -> None:

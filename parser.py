@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 import requests
 import xml.etree.ElementTree as ET
@@ -25,6 +26,18 @@ def _build_xml_url(api_key: str, lang: str = "ukr") -> str:
 TOYSI_XML_URL  = _build_xml_url(TOYSI_API_KEY) if TOYSI_API_KEY else ""
 
 REQUEST_TIMEOUT = 60  # секунд — повний каталог ~70МБ, 30с часом замало навіть для lang=ukr
+
+# ДОДАНО (2026-07-19, живо підтверджено): full-catalog-scan.timer на VPS
+# провалювався ТРИ ночі поспіль (17-19.07, journalctl) з ІДЕНТИЧНИМ
+# "[Toysi] Timeout" рівно біля 01:00 Kyiv щоразу — схоже на власне нічне
+# обслуговування/бекап Toysi саме в цей час, не наша випадкова мережева
+# проблема. Раніше жодного ретраю не було: один таймаут = 0 сканованих
+# SKU за всю ніч. Короткий ретрай із паузою (типове вікно обслуговування
+# — хвилини, не години) не додає ризику викликачам (той самий інтерфейс,
+# той самий фолбек на {} якщо всі спроби провалились), лише підвищує
+# шанс встигнути до кінця вікна.
+TOYSI_FETCH_RETRIES = 2  # додаткові спроби ПІСЛЯ першої (разом — 3)
+TOYSI_RETRY_DELAY = 45  # секунд між спробами
 
 _TOYSI_TIMEOUT_MSG = (
     "[Toysi] ПОМИЛКА: не заданий TOYSI_API_KEY.\n"
@@ -55,20 +68,28 @@ def fetch_toysi_catalog(lang: str = "ukr") -> Dict[str, dict]:
         return {}
 
     url = _build_xml_url(TOYSI_API_KEY, lang) if lang != "ukr" else TOYSI_XML_URL
-    try:
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-    except requests.exceptions.Timeout:
-        print(f"[Toysi] Timeout: сервер не ответил за {REQUEST_TIMEOUT}с")
-        return {}
-    except requests.exceptions.HTTPError as e:
-        print(f"[Toysi] HTTP ошибка: {e.response.status_code} — {e.response.reason}")
-        return {}
-    except requests.exceptions.RequestException as e:
-        print(f"[Toysi] Ошибка соединения: {e}")
-        return {}
+    attempts = TOYSI_FETCH_RETRIES + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(url, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+        except requests.exceptions.Timeout:
+            print(f"[Toysi] Timeout: сервер не ответил за {REQUEST_TIMEOUT}с "
+                  f"(спроба {attempt}/{attempts})")
+        except requests.exceptions.HTTPError as e:
+            # Визначена відповідь сервера (напр. 401/500) — повторна спроба
+            # відразу навряд чи допоможе, не ретраїмо.
+            print(f"[Toysi] HTTP ошибка: {e.response.status_code} — {e.response.reason}")
+            return {}
+        except requests.exceptions.RequestException as e:
+            print(f"[Toysi] Ошибка соединения: {e} (спроба {attempt}/{attempts})")
+        else:
+            return _parse_xml(response.content)
 
-    return _parse_xml(response.content)
+        if attempt < attempts:
+            time.sleep(TOYSI_RETRY_DELAY)
+
+    return {}
 
 
 class CatalogSizeError(Exception):

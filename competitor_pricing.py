@@ -664,6 +664,18 @@ _BUNDLE_NAME_MARKERS = (
 # ЧИСЛОВА, ключові слова самі по собі (без числа) надто загальні.
 _BUNDLE_QTY_RE = re.compile(r"\b\d{2,}\s*(?:шт\.?|штук|штуки)\b", re.IGNORECASE)
 
+# ЗНАЙДЕНО АУДИТОМ (2026-07-19, code_report_2026-07-19_pt1.md): "N шт" —
+# ЗВИЧАЙНИЙ спосіб позначати кількість ДЕТАЛЕЙ одного пазла/конструктора
+# в українських оголошеннях ("Пазл Замок 1000 шт", "Кубики дерев'яні
+# 20 шт") — не лот, той самий патерн `\d{2,}\s*шт`, що й у справжніх
+# лотах. Живо відтворено на реалістичних назвах цієї категорії. Для цих
+# типів товару "N шт" НЕ рахуємо ознакою лота (явні фрази "в блоці"/
+# "в упаковці"/"оптом"/"гуртом" вище й далі спрацьовують незалежно —
+# перевіряються ПЕРШИМИ, до цього винятку).
+_PIECE_COUNT_PRODUCT_MARKERS = (
+    "пазл", "конструктор", "мозаїка", "мозаика", "кубик",
+)
+
 
 def is_bundle_listing(name: str) -> bool:
     """True, якщо назва товару виглядає як гуртовий лот/упаковка кількох
@@ -673,6 +685,8 @@ def is_bundle_listing(name: str) -> bool:
     name_lower = (name or "").lower()
     if any(marker in name_lower for marker in _BUNDLE_NAME_MARKERS):
         return True
+    if any(marker in name_lower for marker in _PIECE_COUNT_PRODUCT_MARKERS):
+        return False
     return bool(_BUNDLE_QTY_RE.search(name_lower))
 
 

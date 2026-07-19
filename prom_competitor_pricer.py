@@ -350,6 +350,25 @@ CIRCUIT_BREAKER_MIN_KNOWN_FOR_FRACTION_CHECK = 10
 # дефолт, підлягає підтвердженню.
 CIRCUIT_BREAKER_MAX_DELIST_FRACTION = 0.15
 
+# ДОДАНО (2026-07-19, живий інцидент + пряма знахідка Cowork): окремий,
+# ЖОРСТКИЙ запобіжник ПОВЕРХ circuit breaker — не частка сигналів, які
+# --force-circuit-breaker свідомо може обійти (той механізм ІСНУЄ саме
+# для того, щоб власниця могла оглянути причини й свідомо продовжити).
+# Цей ліміт — інша категорія: forced-прогін 29677266900 видалив 722
+# товари за раз (76% > 15%, форсовано за прямим дозволом власниці) —
+# кабінет обвалився з ~970 до 244 живих товарів на кілька годин, бо Prom
+# створює товари-замінники значно повільніше, ніж видаляє. Навіть
+# свідомий, поінформований override circuit breaker'а не повинен мати
+# можливість повторити рівно цей сценарій одним прапорцем командного
+# рядка — тому ця перевірка НЕ входить у evaluate_circuit_breaker() і НЕ
+# перевіряє args.force_circuit_breaker взагалі (див. виклик у main()).
+# Підняти ліміт можна лише прямою зміною цього числа в коді (новий PR,
+# новий аудит, нова свідома власницька перевірка) — не прапорцем.
+# 150 — верхня межа рекомендованого Cowork діапазону (100-150):
+# звичайний природний щоденний цикл рідко видаляє більше кількох
+# десятків товарів за раз, тож цей ліміт не заважає нормальній роботі.
+MAX_DELIST_PER_RUN = 150
+
 EDIT_BATCH = 100  # POST /products/edit_by_external_id, як і в prom_catalog_sync.py
 
 # P0-5: раз на стільки успішно застосованих коригувань ціни зберігати
@@ -1208,10 +1227,15 @@ def main() -> None:
         if len(default_commission_skipped) > 15:
             default_commission_note += f"\n... та ще {len(default_commission_skipped) - 15}"
 
+    hard_cap_tripped = len(to_delist) > MAX_DELIST_PER_RUN
+
     breaker_tripped, breaker_reasons, avg_margin_this_run = evaluate_circuit_breaker(to_adjust, to_delist, price_state)
     if avg_margin_this_run is not None:
         print(f"[Pricer] Circuit breaker: середня маржа цього прогону {avg_margin_this_run:.1f}%"
               + (f" — СПРАЦЮВАВ: {'; '.join(breaker_reasons)}" if breaker_tripped else " — OK"))
+    if hard_cap_tripped:
+        print(f"[Pricer] MAX_DELIST_PER_RUN: {len(to_delist)} > {MAX_DELIST_PER_RUN} — "
+              "жорсткий ліміт, --force-circuit-breaker його НЕ обходить.")
 
     if not args.apply:
         print("\n[Pricer] DRY-RUN: жодних змін не внесено. Запусти з --apply, щоб реально застосувати.")
@@ -1224,6 +1248,12 @@ def main() -> None:
         if breaker_tripped:
             digest += (
                 f"\n\n🚨 CIRCUIT BREAKER СПРАЦЮВАВ БИ на --apply: " + "; ".join(breaker_reasons)
+            )
+        if hard_cap_tripped:
+            digest += (
+                f"\n\n⛔ ЖОРСТКИЙ ЛІМІТ MAX_DELIST_PER_RUN ({MAX_DELIST_PER_RUN}) ЗУПИНИВ БИ --apply "
+                f"({len(to_delist)} на видалення) — цей ліміт --force-circuit-breaker НЕ обходить, "
+                "потрібна пряма зміна коду."
             )
         if delist_details:
             digest += "\n\nКандидати на видалення:\n" + "\n".join(delist_details[:15])
@@ -1240,6 +1270,27 @@ def main() -> None:
             no_competitor=no_competitor_count, errors=0,
         )
         return
+
+    if hard_cap_tripped:
+        message = (
+            f"🚨 prom_competitor_pricer.py --apply ЗУПИНЕНО жорстким лімітом MAX_DELIST_PER_RUN "
+            f"({len(to_delist)} > {MAX_DELIST_PER_RUN}), ЖОДНИХ змін не внесено.\n\n"
+            "Цей ліміт НЕ обходиться --force-circuit-breaker навмисно — після інциденту "
+            "2026-07-19 (обвал каталогу Prom з ~970 до ~244 живих товарів через 722 "
+            "видалення за один прогін; Prom видаляє миттєво, але створює заміну значно "
+            "повільніше). Якщо видалення такого масштабу дійсно виправдане — потрібна "
+            "пряма зміна MAX_DELIST_PER_RUN у коді (новий PR, новий аудит), не прапорець "
+            "командного рядка."
+        )
+        print(f"\n[Pricer] {message}", file=sys.stderr)
+        send_telegram_message(message)
+        write_pricer_summary(
+            f"🚨 MAX_DELIST_PER_RUN ЗУПИНИВ --apply (нічого не застосовано): "
+            f"{len(to_delist)} > {MAX_DELIST_PER_RUN}",
+            checked=len(items), adjust=adjust_count, delist=delist_count,
+            no_competitor=no_competitor_count, errors=0,
+        )
+        sys.exit(1)
 
     if breaker_tripped and not args.force_circuit_breaker:
         message = (

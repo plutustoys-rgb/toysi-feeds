@@ -820,6 +820,69 @@ def delist(external_id: str) -> None:
     _edit_by_external_id({"id": external_id, "status": "deleted"})
 
 
+def _recheck_delisted_pids(
+    delisted_since: dict,
+    toysi_catalog: dict,
+    russian_text: dict,
+    own_product_links: dict,
+    prom_category_cache: dict,
+) -> int:
+    """ДОДАНО (2026-07-18, знахідка незалежного аудиту PR #97 —
+    code_report_2026-07-18_pt9.md): заявлене "самоочищення" delisted_since
+    (запис прибирається, щойно SKU знову потрапляє в to_adjust) НІКОЛИ не
+    спрацьовує на практиці — select_top_items() вже виключає позначені
+    SKU РАНІШЕ, ніж вони можуть дістатись до основного циклу нижче, тож
+    цикл, який мав прибирати позначку, ніколи їх знову не бачить. Напрямок
+    помилки безпечний (забагато виключень, не хибне повернення
+    неконкурентного товару), але без цієї функції позначка де-факто стає
+    ПОСТІЙНОЮ — навіть коли конкурент згодом подорожчає чи зникне.
+
+    Ця функція — окрема, ЦІЛЕСПРЯМОВАНА перевірка САМЕ delisted-множини
+    (типово в рази менша за весь топ-970), НЕ частина основного циклу:
+    бере товар напряму з toysi_catalog (не top_catalog, бо delisted SKU
+    там структурно відсутній), рахує ту саму decide_price_for_platform()
+    з тим самим кешем buyBox/категорій, і прибирає позначку, якщо
+    результат більше НЕ "floor" (конкурент подешевшав/зник, чи ми
+    подешевшали через нижчу собівартість Toysi). Мутує delisted_since
+    на місці (той самий патерн, що й основний цикл: pop() на
+    посилання, яке зрештою зберігається як price_state["_delisted_since"]).
+
+    Повертає кількість прибраних позначок (для логу/дайджесту)."""
+    cleared = 0
+    for pid in list(delisted_since.keys()):
+        item = toysi_catalog.get(pid)
+        if item is None:
+            # SKU більше немає в каталозі Toysi взагалі (закінчився
+            # назавжди чи товар знято) — позначка неактуальна, але й
+            # питання "чи знову конкурентний" не стоїть; лишаємо як є,
+            # наступний прогін просто пропустить (той самий safe-default,
+            # що й скрізь у цьому файлі: не гадаємо, коли даних нема).
+            continue
+        try:
+            cost = float(item.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cost <= 0 or item.get("stock", 0) <= 0:
+            continue
+
+        name_ukr = (item.get("name") or "").strip()
+        name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
+        category_name = item.get("category_name")
+        prom_category_id = (prom_category_cache.get(pid) or {}).get("category_id")
+        own_link = own_product_links.get(pid)
+
+        competitor = find_best_competitor(name_rus, cost, own_link)
+        time.sleep(SEARCH_DELAY)
+        decision = decide_price_for_platform(cost, competitor["price"] if competitor else None,
+                                              "prom", category_name, prom_category_id)
+        if decision["category"] != "floor":
+            delisted_since.pop(pid, None)
+            cleared += 1
+            print(f"[Pricer] Знову конкурентний, знято позначку delisted: {pid} {name_ukr[:40]}")
+
+    return cleared
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true",
@@ -923,6 +986,18 @@ def main() -> None:
     prom_category_cache = _load_prom_category_cache()
     print(f"[Pricer] Кеш Prom-категорій: {len(prom_category_cache)} SKU "
           f"({'знайдено' if prom_category_cache else 'відсутній/застарілий — фолбек на Toysi-категорію'}).")
+
+    # ДОДАНО (2026-07-18, знахідка аудиту PR #97): delisted_since сам по
+    # собі ніколи не самоочищується через основний цикл нижче (select_top_
+    # items() вже виключає ці SKU з top_catalog/items) — окрема,
+    # цілеспрямована перевірка САМЕ delisted-множини, до основного циклу.
+    delisted_since = price_state.get("_delisted_since", {})
+    if delisted_since:
+        print(f"[Pricer] Перевіряю {len(delisted_since)} раніше видалених SKU — чи не подешевшав конкурент...")
+        cleared = _recheck_delisted_pids(delisted_since, toysi_catalog, russian_text, own_product_links, prom_category_cache)
+        print(f"[Pricer] Знято позначку delisted: {cleared}/{len(delisted_since)}.")
+        if cleared:
+            save_prom_price_state(price_state)
 
     items = list(top_catalog.items())[:args.limit]
     print(f"[Pricer] Обробляю {len(items)} товарів (--limit {args.limit})...")

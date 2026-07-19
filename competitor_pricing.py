@@ -123,6 +123,27 @@ def save_prom_price_state(state: dict) -> None:
     )
 
 
+def load_delisted_pids() -> dict:
+    """{pid: iso_timestamp} — SKU, які prom_competitor_pricer.py реально
+    ПІДТВЕРДИВ видаленими з Prom (не просто спробував — див. PromEditError
+    там), на цьому чи попередньому прогоні.
+
+    ВИПРАВЛЕНО (2026-07-18, реальний інцидент — SKU 266990/265230 та ще
+    ~357 інших лишались "видаленими" лише кілька годин): live-delist
+    happens ЛИШЕ в Prom API — generate_prom_feed_top.py::select_top_items()
+    рахує топ-970 виключно з даних Toysi/scan_state і про сам факт
+    видалення нічого не знав, тож одразу ж (той самий workflow-прогін)
+    знову включав щойно видалений SKU в prom_feed_top.xml. Коли Prom
+    періодично імпортує цей прайс-лист — він сам відновлював "видалене"
+    оголошення. Читається з того самого prom_competitor_price_state.json
+    (уже round-tripped через feed-data) — окремий top-level ключ, щоб не
+    плутати з ціновими записами adjust. Запис прибирається автоматично
+    (prom_competitor_pricer.py), щойно SKU знову потрапляє в to_adjust
+    (конкурент подешевшав/зник) — тому тут НЕМАЄ TTL за віком, на відміну
+    від load_fresh_prom_price_overrides()."""
+    return load_prom_price_state().get("_delisted_since", {})
+
+
 # ---------------------------------------------------------------------------
 # Vis-9 (2026-07-17): 93/970 SKU (9.6%) отримують від Toysi ЛИШЕ мінімальний
 # boilerplate-опис ("<b>Бренд:</b> MIC<br/><b>Країна виробник:</b> Україна",

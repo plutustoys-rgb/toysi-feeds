@@ -764,14 +764,45 @@ def decide_action(
     return decision
 
 
-def apply_price(external_id: str, price: float) -> None:
+class PromEditError(Exception):
+    """edit_by_external_id повернув HTTP 200, але БЕЗ реальної зміни для
+    конкретного ID (external_id відсутній у processed_ids, і/чи є запис
+    у errors) — HTTP-статус сам по собі НЕ гарантує, що зміна реально
+    відбулась.
+
+    ЗНАЙДЕНО ЖИВО (2026-07-18): SKU 266990 значився "видаленим" у звіті
+    прогону (delist=359, Помилок: 0), але живий GET одразу після прогону
+    показав status="on_display" — товар НЕ зник. Прямий повторний виклик
+    edit_by_external_id з тим самим payload повернув
+    `{"processed_ids": [], "errors": {...}}` — HTTP 200, жодного винятку
+    (стара delist()/apply_price() перевіряли лише response.raise_for_status(),
+    ніколи не читали тіло відповіді) — тобто перший виклик, найімовірніше,
+    отримав ТОЙ САМИЙ "тихий" відхил, який стара перевірка не ловила
+    взагалі. Це стосується і apply_price() (той самий API-виклик, той
+    самий ризик для коригувань ціни, не лише delist)."""
+
+
+def _edit_by_external_id(payload: dict) -> None:
     response = requests.post(
         f"{PROM_API_URL}/products/edit_by_external_id",
         headers={"Authorization": f"Bearer {PROM_API_KEY}"},
-        json=[{"id": external_id, "price": price}],
+        json=[payload],
         timeout=REQUEST_TIMEOUT,
     )
     response.raise_for_status()
+    try:
+        data = response.json()
+    except ValueError:
+        raise PromEditError(f"Невалідна відповідь (не JSON) для {payload['id']}: {response.text[:300]}")
+    ext_id = str(payload["id"])
+    processed = {str(x) for x in data.get("processed_ids", [])}
+    if ext_id not in processed:
+        detail = (data.get("errors") or {}).get(ext_id) or data.get("errors")
+        raise PromEditError(f"Prom НЕ підтвердив зміну для {ext_id} (processed_ids порожній/без цього ID): {detail}")
+
+
+def apply_price(external_id: str, price: float) -> None:
+    _edit_by_external_id({"id": external_id, "price": price})
 
 
 def delist(external_id: str) -> None:
@@ -786,13 +817,7 @@ def delist(external_id: str) -> None:
     (деактивація за відсутністю стоку в Toysi) використовує для СВОГО,
     іншого приводу (товар більше ніколи не постачається). Тут той самий
     механізм застосовується за ціновим приводом (неконкурентна ціна)."""
-    response = requests.post(
-        f"{PROM_API_URL}/products/edit_by_external_id",
-        headers={"Authorization": f"Bearer {PROM_API_KEY}"},
-        json=[{"id": external_id, "status": "deleted"}],
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
+    _edit_by_external_id({"id": external_id, "status": "deleted"})
 
 
 def main() -> None:
@@ -1107,14 +1132,21 @@ def main() -> None:
     # (таймаут/скасування job'у) посеред цього циклу тепер губить максимум
     # SAVE_EVERY-1 позицій стану, а не весь прогін.
     applied_count = 0
+    delisted_since = price_state.setdefault("_delisted_since", {})
     for pid, price, _ in to_adjust:
         try:
             apply_price(pid, price)
             price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat()}
+            # ВИПРАВЛЕНО (2026-07-18, той самий інцидент, що й нижче): якщо
+            # SKU раніше було підтверджено видаленим, а тепер знову
+            # конкурентний (opinion "adjust", не "delist") — прибираємо
+            # позначку, інакше select_top_items() назавжди виключав би
+            # товар, який РЕАЛЬНО повернувся до конкурентності.
+            delisted_since.pop(pid, None)
             applied_count += 1
             if applied_count % SAVE_EVERY == 0:
                 save_prom_price_state(price_state)
-        except requests.exceptions.RequestException as e:
+        except (requests.exceptions.RequestException, PromEditError) as e:
             error_count += 1
             print(f"  - {pid}: помилка зміни ціни — {e}", file=sys.stderr)
     if avg_margin_this_run is not None:
@@ -1122,13 +1154,36 @@ def main() -> None:
     if applied_count or avg_margin_this_run is not None:
         save_prom_price_state(price_state)
 
+    # КРИТИЧНИЙ ФІКС (2026-07-18, реальний інцидент — SKU 266990/265230 та
+    # ще ~357 інших): live-видалення через delist() відбувається ЛИШЕ в
+    # Prom API — select_top_items() (generate_prom_feed_top.py, наступний
+    # крок ТОГО САМОГО workflow-прогону) про це нічого не знав і одразу
+    # знову включав щойно видалений SKU в prom_feed_top.xml, бо рахує
+    # топ-970 виключно з даних Toysi/scan_state. Коли Prom періодично
+    # імпортує цей прайс-лист — він сам відновлював "видалене" оголошення.
+    # Тепер підтверджено видалені pid записуються в price_state
+    # ("_delisted_since", round-tripped через feed-data, як і решта цього
+    # файлу) — generate_prom_feed_top.py::_margin() виключає їх з відбору,
+    # доки вони не з'являться в to_adjust вище (конкурент подешевшав чи
+    # зник) — лише тоді запис прибирається і SKU знову претендує на топ.
+    confirmed_delist_count = 0
     print(f"[Pricer] Видаляю {len(to_delist)} неконкурентних товарів...")
     for pid in to_delist:
         try:
             delist(pid)
-        except requests.exceptions.RequestException as e:
+            delisted_since[pid] = datetime.now().isoformat()
+            confirmed_delist_count += 1
+        except (requests.exceptions.RequestException, PromEditError) as e:
             error_count += 1
             print(f"  - {pid}: помилка видалення — {e}", file=sys.stderr)
+    save_prom_price_state(price_state)
+
+    if confirmed_delist_count != len(to_delist):
+        print(
+            f"[Pricer] УВАГА: підтверджено видалено {confirmed_delist_count} з {len(to_delist)} "
+            "запланованих — решта не пройшла перевірку processed_ids (див. помилки вище).",
+            file=sys.stderr,
+        )
 
     print(f"[Pricer] Готово. Помилок: {error_count}.")
     digest = (

@@ -393,10 +393,11 @@ def main() -> None:
     print(f"[FullScan] Звіт збережено: {report_path}")
 
     undercut_count = sum(1 for pid in batch_ids if state.get(pid, {}).get("price_category") == "undercut")
+    scanned_pct = (scanned_now / len(scope) * 100) if scope else 0.0
     send_telegram_message(
         f"🌙 Нічний скан каталогу ({today}): просканировано {len(batch_ids)}, "
         f"з них конкурентних (undercut) {undercut_count}. Накопичено всього: "
-        f"{scanned_now}/{len(scope)} ({scanned_now / len(scope) * 100:.1f}%)."
+        f"{scanned_now}/{len(scope)} ({scanned_pct:.1f}%)."
     )
 
 

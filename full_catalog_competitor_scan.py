@@ -100,6 +100,50 @@ INVALID_COST_ALERT_FRACTION = 0.05
 BASE_DIR = Path(__file__).parent
 FULL_SCAN_STATE_FILE = BASE_DIR / "full_catalog_scan_state.json"
 
+# ДОДАНО (2026-07-20, пряме прохання власниці): дотепер прогрес цього
+# скану був видимий лише через `journalctl` на VPS — жодного дати-
+# рованого звіту, жодного сповіщення. Той самий патерн, що вже
+# встановлений у prom_catalog_auditor.py (див. його докстрінг): VPS
+# виконує це через systemd, а не інтерактивно на Windows-машині, звідки
+# code_report_*.md пишуться напряму в спільну папку — з Linux-таймера
+# туди не дотягнутись, тож датований файл у REPORT_DIR + Telegram —
+# еквівалентний канал доставки власниці.
+REPORT_DIR = BASE_DIR / "reports"
+
+
+def build_scan_report(today: str, batch_ids: list, state: dict, scanned_now: int, scope_total: int) -> str:
+    """Розбивка ЛИШЕ по цьому прогону (batch_ids) — накопичений total
+    рахується окремим числом (scanned_now/scope_total), не по категоріях,
+    бо старіші записи вже й так відображені в попередніх звітах."""
+    floor = undercut = no_competitor = errors = 0
+    for pid in batch_ids:
+        category = state.get(pid, {}).get("price_category")
+        if category == "floor":
+            floor += 1
+        elif category == "undercut":
+            undercut += 1
+        elif category == "no_competitor":
+            no_competitor += 1
+        elif category == "invalid_cost":
+            errors += 1
+
+    pct = (scanned_now / scope_total * 100) if scope_total else 0.0
+    lines = [
+        f"# Нічний конкурентний скан каталогу — {today}",
+        "",
+        f"Оновлено: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        f"Просканировано цього прогону: {len(batch_ids)} SKU.",
+        f"Накопичено всього: {scanned_now}/{scope_total} SKU обсягу ({pct:.1f}%).",
+        "",
+        "## Розбивка цього прогону",
+        f"- Конкурентні (undercut — ми дешевші за конкурента): {undercut}",
+        f"- Неконкурентні (floor — конкурент дешевший, навіть на нижній межі маржі): {floor}",
+        f"- Без знайденого конкурента: {no_competitor}",
+        f"- Помилки (немає валідної ціни постачальника Toysi): {errors}",
+    ]
+    return "\n".join(lines) + "\n"
+
 # ВИПРАВЛЕНО (2026-07-16, знахідка незалежного рев'ю pt25): цей скрипт
 # тепер запускається systemd-таймером на VPS о 01:00 Kyiv (раніше було
 # 02:00 — рев'ю правильно спіймало, що заявлений "5+ год буфер" до
@@ -340,6 +384,21 @@ def main() -> None:
         print(f"[FullScan] Лишилось {len(scope) - scanned_now} SKU — наступний прогін продовжить звідси.")
     else:
         print("[FullScan] Повний скан обсягу завершено!")
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    report = build_scan_report(today, batch_ids, state, scanned_now, len(scope))
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = REPORT_DIR / f"full_catalog_scan_report_{today}.md"
+    report_path.write_text(report, encoding="utf-8")
+    print(f"[FullScan] Звіт збережено: {report_path}")
+
+    undercut_count = sum(1 for pid in batch_ids if state.get(pid, {}).get("price_category") == "undercut")
+    scanned_pct = (scanned_now / len(scope) * 100) if scope else 0.0
+    send_telegram_message(
+        f"🌙 Нічний скан каталогу ({today}): просканировано {len(batch_ids)}, "
+        f"з них конкурентних (undercut) {undercut_count}. Накопичено всього: "
+        f"{scanned_now}/{len(scope)} ({scanned_pct:.1f}%)."
+    )
 
 
 if __name__ == "__main__":

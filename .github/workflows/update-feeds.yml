@@ -144,6 +144,23 @@ jobs:
         continue-on-error: true
         run: python generate_google_feed.py
 
+      # ДОДАНО (2026-07-20, задачі #170/#171 власниці — видимість магазину):
+      # generate_meta_feed.py/generate_bing_feed.py ЛИШЕ ЧИТАЮТЬ
+      # own_product_links_cache.json, який щойно (крок вище) побудував
+      # generate_google_feed.py — жодного власного ~970-запитового
+      # self-match пошуку, щоб не потроїти навантаження на prom.ua в
+      # тому самому прогоні. continue-on-error: той самий best-effort
+      # статус, що й у Google/Rozetka <url> кроці вище — обидва фіди
+      # необов'язкові, збій тут не повинен блокувати генерацію/
+      # публікацію критичних Rozetka/Prom фідів нижче.
+      - name: Generate Meta Commerce Manager feed (best-effort)
+        continue-on-error: true
+        run: python generate_meta_feed.py
+
+      - name: Generate Bing Merchant Center feed (best-effort)
+        continue-on-error: true
+        run: python generate_bing_feed.py
+
       # continue-on-error: цей крок реально змінює ціни в Prom через API
       # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими
       # зовнішніми залежностями. Збій тут не повинен зупиняти генерацію й
@@ -410,6 +427,20 @@ jobs:
             git add -f feeds/google_merchant_feed.xml
           else
             echo "::warning::feeds/google_merchant_feed.xml відсутній/порожній цього прогону — Google-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
+          fi
+          # Задачі #170/#171 (2026-07-20): той самий best-effort/умовний
+          # git add, що й для google_merchant_feed.xml вище — обидва нові
+          # феєди best-effort (continue-on-error), тож можуть бути
+          # відсутні/порожні окремо від решти публікації.
+          if [ -s feeds/meta_feed.xml ]; then
+            git add -f feeds/meta_feed.xml
+          else
+            echo "::warning::feeds/meta_feed.xml відсутній/порожній цього прогону — Meta-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
+          fi
+          if [ -s feeds/bing_feed.xml ]; then
+            git add -f feeds/bing_feed.xml
+          else
+            echo "::warning::feeds/bing_feed.xml відсутній/порожній цього прогону — Bing-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
           fi
           git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"

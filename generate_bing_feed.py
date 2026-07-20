@@ -47,6 +47,7 @@ from generate_prom_feed_top import select_top_items
 from prom_catalog_sync import fetch_prom_products
 from generate_google_feed import (
     build_feed_items,
+    load_prom_products_cache,
     OWN_PRODUCT_LINKS_CACHE_FILE,
     OWN_PRODUCT_LINKS_CACHE_TTL_DAYS,
     SHOP_NAME,
@@ -109,8 +110,15 @@ def generate_bing_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
         top_catalog = dict(list(top_catalog.items())[:limit])
     print(f"[Bing] У топ-970: {len(top_catalog)} товарів для обробки.")
 
+    # ВИПРАВЛЕНО (2026-07-20, аудит PR #109 — code_report_2026-07-20_pt11.md):
+    # той самий фікс, що й у generate_meta_feed.py — читає кеш
+    # generate_google_feed.py (TTL 1 година) замість власного важкого
+    # live-виклику; фолбек на live-фетч лише якщо кеш відсутній/застарів.
     print("[Bing] Завантажуємо реальний список товарів Prom (для фото/self-match)...")
-    prom_products = fetch_prom_products()
+    prom_products = load_prom_products_cache()
+    if prom_products is None:
+        print("[Bing] Кеш товарів Prom відсутній/застарів — власний live-фетч.", file=sys.stderr)
+        prom_products = fetch_prom_products()
     prom_by_external_id = {
         str(p.get("external_id")): p for p in prom_products.values()
         if p.get("external_id")

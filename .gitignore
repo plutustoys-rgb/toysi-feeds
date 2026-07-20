@@ -96,6 +96,12 @@ own_product_links_cache.json
 # той самий клас файлу, що й own_product_links_cache.json вище
 prom_category_cache.json
 
+# Внутрішньопрогонний кеш повного списку товарів Prom (TTL 1 година —
+# generate_google_feed.py пише, generate_meta_feed.py/generate_bing_feed.py
+# читають, щоб не робити той самий важкий /groups/list-запит тричі в
+# одному прогоні update-feeds.yml, аудит PR #109)
+prom_products_raw_cache.json
+
 # Вручну курований override-опис для 93 SKU з мінімальним "Бренд+Країна"
 # описом від Toysi (Vis-9) — реальний контент, який пише Cowork/власниця
 # напряму на VPS, не для git (той самий клас локальних даних, що й

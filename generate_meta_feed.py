@@ -40,6 +40,7 @@ from generate_prom_feed_top import select_top_items
 from prom_catalog_sync import fetch_prom_products
 from generate_google_feed import (
     build_feed_items,
+    load_prom_products_cache,
     OWN_PRODUCT_LINKS_CACHE_FILE,
     OWN_PRODUCT_LINKS_CACHE_TTL_DAYS,
     SHOP_NAME,
@@ -110,8 +111,20 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
         top_catalog = dict(list(top_catalog.items())[:limit])
     print(f"[Meta] У топ-970: {len(top_catalog)} товарів для обробки.")
 
+    # ВИПРАВЛЕНО (2026-07-20, аудит PR #109 — code_report_2026-07-20_pt11.md):
+    # раніше цей крок робив ВЛАСНИЙ live-виклик fetch_prom_products() —
+    # той самий важкий /groups/list + /products/list запит, що вже
+    # виконав generate_google_feed.py секундами раніше в тому самому
+    # прогоні. Тепер спершу читає його кеш (TTL 1 година — див.
+    # load_prom_products_cache() у generate_google_feed.py); лише якщо
+    # кеш відсутній/застарів (напр. цей скрипт запущено окремо, поза
+    # звичайним порядком workflow) — падає на власний live-фетч, той
+    # самий безпечний дефолт "працює і без кешу", що й скрізь у проєкті.
     print("[Meta] Завантажуємо реальний список товарів Prom (для фото/self-match)...")
-    prom_products = fetch_prom_products()
+    prom_products = load_prom_products_cache()
+    if prom_products is None:
+        print("[Meta] Кеш товарів Prom відсутній/застарів — власний live-фетч.", file=sys.stderr)
+        prom_products = fetch_prom_products()
     prom_by_external_id = {
         str(p.get("external_id")): p for p in prom_products.values()
         if p.get("external_id")

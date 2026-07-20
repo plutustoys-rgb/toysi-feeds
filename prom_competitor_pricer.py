@@ -305,6 +305,21 @@ SEARCH_DELAY = 0.4  # секунд між пошуковими запитами 
 # покриття ~17768 SKU.
 ROTATED_OUT_BATCH_LIMIT = 1000
 
+# ДОДАНО (2026-07-20, аудит PR #111 — code_report_2026-07-20_pt15.md):
+# _rotated_out_needing_live_lookup() (Шлях 2 — SKU поза топ-970 БЕЗ
+# даних нічного скану, обробляються повним живим пайплайном) НЕ мав
+# жодного явного ліміту розміру, на відміну від ROTATED_OUT_BATCH_LIMIT
+# вище. Обґрунтування "малий, самообмежений набір — скан наздожене" не
+# гарантоване структурно: сам нічний скан (full-catalog-scan.service)
+# провалювався кілька ночей поспіль того самого тижня (виправлено
+# окремо, не тут) — якщо це повториться, набір міг би зростати без
+# стелі, повністю мережевий/SEARCH_DELAY-гейтований пайплайн. Менший за
+# ROTATED_OUT_BATCH_LIMIT (той — дешевий, без мережі; цей — з живими
+# запитами до пошуку/buyBox/presence-перевірки на кожен SKU) — за
+# ~1-2с/SKU (SEARCH_DELAY + мережеві виклики) 300 — це до ~10 хв
+# додатково на прогін, прийнятно для сервісу кожні 4 години.
+LIVE_LOOKUP_EXTRA_BATCH_LIMIT = 300
+
 # Мігровано на GitHub Actions 2026-07-13 (той самий workflow update-feeds.yml,
 # що й generate_prom_feed.py) — контейнер тепер тригериться раз на 4 год
 # (cron), а не раз на добу systemd-таймером на VPS. Без цього гейту повний
@@ -1204,8 +1219,10 @@ def main() -> None:
     # проходом), додані просто як ще один шматок `items`. Див. докстрінг
     # _rotated_out_needing_live_lookup() — чому цей набір малий і
     # самоскорочується з часом.
-    live_lookup_extra = _rotated_out_needing_live_lookup(top_catalog, toysi_catalog, scan_state, price_state)
-    print(f"[Pricer] Додатково поза топ-970 (без даних скану — живий пошук): {len(live_lookup_extra)} товарів.")
+    live_lookup_extra_all = _rotated_out_needing_live_lookup(top_catalog, toysi_catalog, scan_state, price_state)
+    live_lookup_extra = dict(list(live_lookup_extra_all.items())[:LIVE_LOOKUP_EXTRA_BATCH_LIMIT])
+    print(f"[Pricer] Додатково поза топ-970 (без даних скану — живий пошук): "
+          f"{len(live_lookup_extra_all)} товарів, оброблю до {LIVE_LOOKUP_EXTRA_BATCH_LIMIT} цього прогону.")
 
     print("[Pricer] Завантажуємо російськомовні назви (кращий збіг з пошуком Prom)...")
     russian_text = fetch_russian_text()

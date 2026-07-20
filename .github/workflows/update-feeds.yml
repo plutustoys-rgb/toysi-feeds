@@ -183,7 +183,19 @@ jobs:
               "$(date -u +'%Y-%m-%d %H:%M UTC')" > prom_competitor_pricer_summary.md
           fi
 
-      - run: python generate_rozetka_feed.py
+      # ВИПРАВЛЕНО (2026-07-20, задача власниці — "розділити публікацію
+      # Rozetka/Prom фідів, щоб збій одного не блокував інший"): раніше цей
+      # крок не мав continue-on-error — крах самого generate_rozetka_feed.py
+      # (не лише його --preflight режиму нижче, який уже мав цей захист)
+      # зупиняв УВЕСЬ job одразу тут, тож жоден із наступних, повністю
+      # незалежних Prom-кроків (generate_prom_feed.py/generate_prom_feed_top.py)
+      # ніколи навіть не запускався б того прогону. id: gen_rozetka дає
+      # фолбек-кроку нижче змогу перевірити РЕАЛЬНИЙ результат саме цього
+      # кроку (не лише --preflight).
+      - name: Generate Rozetka feed
+        id: gen_rozetka
+        continue-on-error: true
+        run: python generate_rozetka_feed.py
 
       # Задача власниці 2026-07-15: "системне рішення замість реактивних
       # патчів" — Rozetka заблокувала подачу через дублікати назв, які
@@ -207,35 +219,81 @@ jobs:
         continue-on-error: true
         run: python generate_rozetka_feed.py --preflight
 
-      - name: Restore last known-good rozetka_feed.xml (preflight failed this run)
-        if: steps.rozetka_preflight.outcome == 'failure'
+      # Умова розширена (2026-07-20) на steps.gen_rozetka.outcome — той самий
+      # фолбек тепер покриває і крах САМОЇ генерації, не лише preflight.
+      - name: Restore last known-good rozetka_feed.xml (generation or preflight failed this run)
+        if: steps.gen_rozetka.outcome == 'failure' || steps.rozetka_preflight.outcome == 'failure'
         run: |
-          echo "::error::Rozetka preflight провалився — публікую ОСТАННЮ РОБОЧУ версію rozetka_feed.xml замість щойно згенерованої, Prom-фіди публікуються незалежно."
+          echo "::error::Rozetka feed генерація або preflight провалились — публікую ОСТАННЮ РОБОЧУ версію rozetka_feed.xml замість щойно згенерованої, Prom-фіди публікуються незалежно."
           git fetch origin "$FEED_BRANCH" 2>/dev/null || true
           git show "origin/$FEED_BRANCH:feeds/rozetka_feed.xml" > feeds/rozetka_feed.xml 2>/dev/null || true
           python -c "
           from telegram_notify import send_telegram_message
           send_telegram_message(
-              '⚠️ update-feeds.yml: Rozetka preflight провалився цього прогону — '
+              '⚠️ update-feeds.yml: генерація/preflight Rozetka-фіда провалились цього прогону — '
               'публікується попередня робоча версія rozetka_feed.xml (Prom-фіди йдуть '
               'своїм ходом, не заблоковані). Деталі: '
               'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
           )
           "
 
-      - run: python generate_prom_feed.py
-      - run: python generate_prom_feed_top.py
+      # ВИПРАВЛЕНО (2026-07-20, той самий запит — тепер симетрично для Prom):
+      # раніше жоден з цих двох кроків не мав continue-on-error, тож крах
+      # генерації Prom-фіда (напр. тимчасовий збій Toysi API) зупиняв job
+      # ще ДО єдиного спільного кроку публікації нижче — тобто щойно успішно
+      # згенерований і провалідований rozetka_feed.xml теж ніколи б не
+      # опублікувався того прогону, попри те, що сам не мав жодної проблеми.
+      - name: Generate Prom feed (full catalog)
+        id: gen_prom_full
+        continue-on-error: true
+        run: python generate_prom_feed.py
+
+      - name: Generate Prom feed (top-970)
+        id: gen_prom_top
+        continue-on-error: true
+        run: python generate_prom_feed_top.py
+
+      # Симетрично до Rozetka-фолбеку вище: якщо генерація Prom top-970
+      # провалилась, підміняємо останньою робочою версією з feed-data,
+      # замість того щоб publish-крок пропустив/затер файл на порожній.
+      # prom_feed.xml (повний каталог) НЕ комітиться в git узагалі (>100МБ,
+      # хоститься на VPS, окремий крок нижче) — для нього симетричний
+      # захист інший: guard на непорожній файл перед rsync, див. коментар
+      # біля "Upload prom_feed.xml to VPS" нижче.
+      - name: Restore last known-good prom_feed_top.xml (generation failed this run)
+        if: steps.gen_prom_top.outcome == 'failure'
+        run: |
+          echo "::error::Генерація prom_feed_top.xml провалилась — публікую ОСТАННЮ РОБОЧУ версію замість щойно згенерованої/відсутньої."
+          git fetch origin "$FEED_BRANCH" 2>/dev/null || true
+          git show "origin/$FEED_BRANCH:feeds/prom_feed_top.xml" > feeds/prom_feed_top.xml 2>/dev/null || true
+          python -c "
+          from telegram_notify import send_telegram_message
+          send_telegram_message(
+              '⚠️ update-feeds.yml: генерація prom_feed_top.xml провалилась цього прогону — '
+              'публікується попередня робоча версія (Rozetka-фід йде своїм ходом, не заблокований). '
+              'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          )
+          "
 
       # Явна перевірка перед git-операціями: якщо TOYSI_API_KEY відсутній/невалідний
       # або каталог Toysi порожній, generate_*.py свідомо не пишуть файл (design decision
       # в самих скриптах) — раніше це тихо маскувалось старими закомодженими копіями
       # feeds/*.xml на master, тепер (після git-гігієни, коміт 72ad9fd) фолбеку немає,
       # тож без цієї перевірки помилка виглядає як незрозумілий git pathspec-фейл.
+      #
+      # ЗВУЖЕНО (2026-07-20, той самий запит про ізоляцію збоїв Rozetka/Prom):
+      # prom_feed.xml прибрано з цього списку — на відміну від двох інших файлів,
+      # у нього НЕМАЄ git-фолбеку (не комітиться, >100МБ, VPS-хостинг), тож його
+      # відсутність тут раніше блокувала ЦІЛИЙ job (exit 1, без continue-on-error) —
+      # тобто щойно згенеровані/фолбек-відновлені rozetka_feed.xml і prom_feed_top.xml
+      # так і не публікувались через збій ОКРЕМОГО, непов'язаного файлу. Власна
+      # перевірка непорожності prom_feed.xml тепер лише в "Upload prom_feed.xml to
+      # VPS" вище, де вона й блокує ЛИШЕ той крок, не решту job'у.
       - name: Verify feeds were generated
         run: |
-          for f in feeds/rozetka_feed.xml feeds/prom_feed.xml feeds/prom_feed_top.xml; do
+          for f in feeds/rozetka_feed.xml feeds/prom_feed_top.xml; do
             if [ ! -s "$f" ]; then
-              echo "::error::$f не згенеровано (порожній файл або відсутній) — ймовірно, TOYSI_API_KEY secret відсутній/невалідний, або Toysi API недоступний. Перевір Settings -> Secrets and variables -> Actions."
+              echo "::error::$f не згенеровано (порожній файл або відсутній, і фолбек з feed-data теж не спрацював — ймовірно, перший запуск до існування гілки feed-data) — ймовірно, TOYSI_API_KEY secret відсутній/невалідний, або Toysi API недоступний. Перевір Settings -> Secrets and variables -> Actions."
               exit 1
             fi
           done
@@ -260,6 +318,18 @@ jobs:
         id: vps_upload
         continue-on-error: true
         run: |
+          # ДОДАНО (2026-07-20, той самий запит про ізоляцію збоїв Rozetka/Prom):
+          # prom_feed.xml НЕ комітиться в git (>100МБ) і тому не має git-based
+          # фолбеку, як rozetka_feed.xml/prom_feed_top.xml вище — якщо
+          # generate_prom_feed.py (id: gen_prom_full) провалився, локальний
+          # файл може бути відсутнім АБО (гірше) порожнім 0-байтовим. Без цього
+          # guard'а rsync мовчки перезаписав би РОБОЧИЙ файл на VPS порожнім —
+          # тому явна перевірка ПЕРЕД rsync, не покладаємось лише на те, що
+          # rsync сам відмовиться синкати відсутній source.
+          if [ ! -s feeds/prom_feed.xml ]; then
+            echo "::error::feeds/prom_feed.xml відсутній або порожній (генерація, ймовірно, провалилась) — НЕ вивантажую на VPS, щоб не затерти робочу версію порожньою."
+            exit 1
+          fi
           mkdir -p ~/.ssh
           echo "${{ secrets.FEED_DEPLOY_SSH_KEY }}" > ~/.ssh/feed_deploy_key
           chmod 600 ~/.ssh/feed_deploy_key

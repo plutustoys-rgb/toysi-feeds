@@ -102,6 +102,13 @@ def init_db(db_path: str = DB_PATH) -> None:
         # вікно, щоб дрейф/пропуск таймера (як уже стався з update-feeds.yml)
         # не спричиняв дублікатів чи пропусків у ФІНАНСОВОМУ журналі.
         _ensure_column(conn, "orders", "kodv_logged_at", "kodv_logged_at TEXT")
+        # Пізні повернення/скасування (2026-07-20, пряме прохання власниці):
+        # _append_kodv_ledger_entries() перевіряє delivery_status ЛИШЕ в
+        # момент запису — якщо статус стає returned/cancelled ПІСЛЯ того, як
+        # дохід уже потрапив у журнал, без цієї позначки compensating-запис
+        # (сторно) писався б повторно щодня. kodv_reversed_at — та сама
+        # ідемпотентність, що й kodv_logged_at вище, для протилежного боку.
+        _ensure_column(conn, "orders", "kodv_reversed_at", "kodv_reversed_at TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:

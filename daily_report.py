@@ -425,6 +425,117 @@ def _append_kodv_ledger_entries(conn, catalog: dict) -> int:
     return len(rows)
 
 
+def _find_kodv_ledger_entry(order_id: str, platform: str) -> Optional[dict]:
+    """Шукає ОРИГІНАЛЬНИЙ запис для order_id/platform у kodv_ledger.jsonl
+    (лінійний прохід — журнал зростає повільно, по одному запису на
+    замовлення, не варто заводити окремий індекс заради цього). Потрібен
+    для сторно (_append_kodv_reversal_entries) — навмисно НЕ перераховуємо
+    графу 6/9 заново за ПОТОЧНИМ каталогом Toysi: якщо собівартість товару
+    змінилась з моменту оригінального запису, перерахунок дав би ІНШІ
+    числа, і сума оригінал+сторно не дала б точний нуль для замовлення.
+    Пропускає власні сторно-записи (type == "reversal"), щоб не знайти
+    вже дописане сторно замість оригіналу."""
+    if not KODV_LEDGER_FILE.exists():
+        return None
+    with KODV_LEDGER_FILE.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if (entry.get("order_id") == order_id and entry.get("platform") == platform
+                    and entry.get("type") != "reversal"):
+                return entry
+    return None
+
+
+def _append_kodv_reversal_entries(conn) -> int:
+    """Періодична звірка на ПІЗНІ повернення/скасування (2026-07-20, пряме
+    прохання власниці): _append_kodv_ledger_entries() перевіряє
+    delivery_status ЛИШЕ в момент запису — якщо статус стає
+    returned/cancelled/expired (та сама множина KODV_FAILED_DELIVERY_
+    STATUSES, що вже виключає їх при первинному записі — для
+    узгодженості, не лише два явно названі власницею стани) ПІСЛЯ того,
+    як дохід уже потрапив у журнал, без цієї перевірки завищений дохід
+    лишався б там назавжди непоміченим.
+
+    Дописує компенсаційний запис ("type": "reversal") з ТОЧНО такими ж,
+    але від'ємними сумами, що й в оригінальному записі (_find_kodv_
+    ledger_entry) — не новий розрахунок за поточним каталогом. Позначає
+    kodv_reversed_at (окрема від kodv_logged_at колонка), щоб те саме
+    замовлення не сторнувалось повторно на кожному наступному прогоні.
+
+    Якщо оригінальний запис не знайдено (файл журналу відсутній/
+    пошкоджений, чи замовлення залоговане до впровадження цієї функції)
+    — свідомо НЕ вигадує суму й НЕ позначає kodv_reversed_at, лишає для
+    ручної перевірки власницею; спробує знайти знову наступного прогону
+    (безпечний дефолт "не гадати без даних", той самий принцип, що й
+    решта цього файлу)."""
+    rows = conn.execute(
+        f"""SELECT * FROM orders
+            WHERE kodv_logged_at IS NOT NULL
+              AND kodv_reversed_at IS NULL
+              AND delivery_status IN ({','.join('?' * len(KODV_FAILED_DELIVERY_STATUSES))})""",
+        KODV_FAILED_DELIVERY_STATUSES,
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now().isoformat(timespec="seconds")
+    lines = []
+    reversed_ids = []
+    skipped_missing_original = 0
+    for row in rows:
+        original = _find_kodv_ledger_entry(row["order_id"], row["platform"])
+        if original is None:
+            skipped_missing_original += 1
+            continue
+        entry = {
+            "date": today,
+            "platform": row["platform"],
+            "order_id": row["order_id"],
+            "product": original.get("product", ""),
+            "revenue": -original.get("revenue", 0),
+            "graph6_cogs": -original.get("graph6_cogs", 0),
+            "graph9_commission": -original.get("graph9_commission", 0),
+            "type": "reversal",
+            "reason": row["delivery_status"],
+        }
+        lines.append(json.dumps(entry, ensure_ascii=False))
+        reversed_ids.append(row["internal_order_id"])
+
+    if skipped_missing_original:
+        print(
+            f"[daily_report] КОДВ: {skipped_missing_original} замовлень стали "
+            "returned/cancelled/expired ПІСЛЯ логування, але оригінальний запис "
+            "у kodv_ledger.jsonl не знайдено — перевір вручну, спробує знову наступного разу.",
+            file=sys.stderr,
+        )
+
+    if not lines:
+        return 0
+
+    # Той самий порядок, що й у _append_kodv_ledger_entries() (аудит PR #106):
+    # commit() ДО запису у файл, щоб найгірший наслідок краху був пропущений
+    # запис (виявний, безпечний повтор), не постійний дублікат сторно.
+    for internal_order_id in reversed_ids:
+        conn.execute(
+            "UPDATE orders SET kodv_reversed_at = ? WHERE internal_order_id = ?",
+            (now, internal_order_id),
+        )
+    conn.commit()
+
+    with KODV_LEDGER_FILE.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    return len(lines)
+
+
 def build_report() -> str:
     init_db()
     since = (datetime.now() - timedelta(hours=LOOKBACK_HOURS)).isoformat(timespec="seconds")
@@ -489,6 +600,10 @@ def build_report() -> str:
                 commission_catalog_unavailable = True
 
         kodv_logged_count = _append_kodv_ledger_entries(conn, toysi_catalog) if kodv_pending else 0
+
+        # Не залежить від toysi_catalog — сторно бере числа напряму з
+        # оригінального запису (_find_kodv_ledger_entry), не перераховує.
+        kodv_reversed_count = _append_kodv_reversal_entries(conn)
 
     counts_by_platform = {}
     revenue_by_platform = {}
@@ -599,6 +714,12 @@ def build_report() -> str:
                 f"\n\n📒 KODV-журнал: {kodv_pending} замовлень очікують запису, "
                 "але каталог Toysi не завантажився цього прогону — спробує знову наступного разу."
             )
+
+    if kodv_reversed_count:
+        lines.append(
+            f"\n\n⚠️ KODV-журнал: {kodv_reversed_count} замовлень стали returned/cancelled/expired "
+            f"ПІСЛЯ того, як дохід уже залогований — дописано компенсаційні (сторно) записи."
+        )
 
     return "".join(lines)
 

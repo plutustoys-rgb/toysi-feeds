@@ -56,6 +56,25 @@ PROM_SUCCESS_VIOLATIONS_BEFORE_PERMANENT = 2
 
 PROM_SUCCESS_STATE_FILE = Path(__file__).parent / "prom_success_rate_state.json"
 
+# КОДВ-журнал (2026-07-20, пряме прохання власниці): постійний, накопичу-
+# вальний облік для звірки з Книгою обліку доходів і витрат — окремо від
+# Telegram-звіту вище (той — лише знімок останніх LOOKBACK_HOURS годин,
+# цей — append-only історія по кожному РЕАЛЬНОМУ замовленню).
+KODV_LEDGER_FILE = Path(__file__).parent / "kodv_ledger.jsonl"
+
+# Ім'я отримувача, під яким власниця сама оформлює тестові замовлення на
+# Prom/Rozetka для перевірки пайплайна — підтверджено власницею напряму
+# (нема окремого прапорця/поля в orders_db, лише це ПІБ). Порівняння
+# точне (==), не substring — щоб не зачепити реального клієнта з тим
+# самим прізвищем/іменем випадково.
+KODV_TEST_CUSTOMER_NAME = "Чечетенко Олександр Юрійович"
+
+# Стани, що означають "не відбулось" — виключаються з журналу так само,
+# як власниця просила ("скасовані/повернені"); "expired" (протерміноване
+# на відділенні) додано тим самим принципом — це так само НЕ реалізований
+# продаж, не лише два явно названі стани.
+KODV_FAILED_DELIVERY_STATUSES = ("cancelled", "returned", "expired")
+
 """
 Крок 8 плану. Баланс Rozetka тепер підключено (Крок 7, 2026-07-15,
 rozetka_client.get_balance()). Баланс Prom — НЕ вдалось: офіційний
@@ -308,6 +327,91 @@ def _estimated_commission(rows: list, catalog: dict) -> tuple:
     return commission_by_platform, items_priced, items_no_category
 
 
+def _order_cogs_and_commission(items: list, platform: str, catalog: dict) -> tuple:
+    """Те саме, що _cogs_for_forwarded_orders()/_estimated_commission() вище,
+    але для ОДНОГО замовлення (для запису в kodv_ledger.jsonl) — той самий
+    per-позиційний розрахунок (_toysi_wholesale_cost/get_platform_commission),
+    без агрегації по всій БД."""
+    cogs = 0.0
+    commission = 0.0
+    for item in items:
+        item_revenue = item.get("price", 0) * item.get("qty", 1)
+        cost = _toysi_wholesale_cost(item, catalog)
+        if cost is not None:
+            cogs += cost * item.get("qty", 1)
+        cat_item = catalog.get(str(item.get("toysi_code") or ""))
+        category_name = cat_item.get("category_name") if cat_item else None
+        commission += item_revenue * get_platform_commission(platform, category_name)
+    return cogs, commission
+
+
+def _append_kodv_ledger_entries(conn, catalog: dict) -> int:
+    """Дописує по одному JSON-рядку в KODV_LEDGER_FILE на кожне НОВЕ
+    завершене замовлення — "завершене" тут те саме, що вже означає графа 6
+    вище: forwarded_to_toysi_at IS NOT NULL (перевірене представниками
+    supplier-boку, той самий проксі "оплачено постачальнику", що й
+    _cogs_for_forwarded_orders()) — свідомо той самий критерій, не новий,
+    щоб журнал узгоджувався з уже наявними графами 6/9 у Telegram-звіті.
+
+    Ідемпотентність через kodv_logged_at (персистентна позначка в БД), НЕ
+    через 24-годинне вікно LOOKBACK_HOURS — таймер (systemd, раз на добу)
+    міг би пропустити цикл чи здвинутись (як уже сталось з update-feeds.yml
+    на GitHub Actions), і вікно тоді або пропустило б замовлення, або
+    задублювало б запис. `kodv_logged_at` гарантує рівно один запис на
+    замовлення незалежно від точного часу запуску.
+
+    Виключає: тестові замовлення власниці (KODV_TEST_CUSTOMER_NAME) і
+    скасовані/повернені/протерміновані (KODV_FAILED_DELIVERY_STATUSES) —
+    перевіряється в МОМЕНТ запису, не ретроактивно (якщо статус зміниться
+    ПІСЛЯ того, як запис уже дописано, журнал це не побачить — той самий
+    рівень точності, що й в графах 6/9 вище, звірка з випискою постачальника/
+    маркетплейсу лишається за власницею).
+
+    Повертає кількість дописаних записів."""
+    rows = conn.execute(
+        """SELECT * FROM orders
+           WHERE forwarded_to_toysi_at IS NOT NULL
+             AND kodv_logged_at IS NULL
+             AND (customer_name IS NULL OR customer_name != ?)
+             AND (delivery_status IS NULL OR delivery_status NOT IN (?, ?, ?))""",
+        (KODV_TEST_CUSTOMER_NAME, *KODV_FAILED_DELIVERY_STATUSES),
+    ).fetchall()
+
+    if not rows:
+        return 0
+    if not catalog:
+        # Каталог Toysi недоступний цього прогону — не пишемо часткові/нульові
+        # графи 6/9 у постійний журнал; kodv_logged_at лишається NULL, тож ці
+        # замовлення просто спробують знову на наступному щоденному прогоні.
+        return 0
+
+    lines = []
+    now = datetime.now().isoformat(timespec="seconds")
+    for row in rows:
+        items = json.loads(row["items"])
+        cogs, commission = _order_cogs_and_commission(items, row["platform"], catalog)
+        product = "; ".join(item.get("name", "") for item in items)[:200]
+        entry = {
+            "date": (row["forwarded_to_toysi_at"] or row["created_at"])[:10],
+            "platform": row["platform"],
+            "order_id": row["order_id"],
+            "product": product,
+            "revenue": round(_order_total(items), 2),
+            "graph6_cogs": round(cogs, 2),
+            "graph9_commission": round(commission, 2),
+        }
+        lines.append(json.dumps(entry, ensure_ascii=False))
+        conn.execute(
+            "UPDATE orders SET kodv_logged_at = ? WHERE internal_order_id = ?",
+            (now, row["internal_order_id"]),
+        )
+
+    with KODV_LEDGER_FILE.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    return len(rows)
+
+
 def build_report() -> str:
     init_db()
     since = (datetime.now() - timedelta(hours=LOOKBACK_HOURS)).isoformat(timespec="seconds")
@@ -343,9 +447,17 @@ def build_report() -> str:
         commission_items_priced = commission_items_no_category = 0
         commission_catalog_unavailable = False
 
-        # Один запит каталогу на обидві графи (6 і 9), якщо хоч одній він потрібен —
-        # немає сенсу тягнути фід Toysi двічі за один прогін звіту.
-        toysi_catalog = fetch_toysi_catalog() if (forwarded_today or new_rows) else None
+        # Чи є взагалі замовлення, що очікують запису в КОДВ-журнал —
+        # НЕЗАЛЕЖНО від 24-годинного вікна LOOKBACK_HOURS (kodv_logged_at,
+        # не since, див. докстрінг _append_kodv_ledger_entries).
+        kodv_pending = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE forwarded_to_toysi_at IS NOT NULL AND kodv_logged_at IS NULL"
+        ).fetchone()[0]
+
+        # Один запит каталогу на всі три графи (6, 9, КОДВ-журнал), якщо хоч
+        # одній він потрібен — немає сенсу тягнути фід Toysi кілька разів за
+        # один прогін звіту.
+        toysi_catalog = fetch_toysi_catalog() if (forwarded_today or new_rows or kodv_pending) else None
 
         if forwarded_today:
             if toysi_catalog:
@@ -362,6 +474,8 @@ def build_report() -> str:
                     _estimated_commission(new_rows, toysi_catalog)
             else:
                 commission_catalog_unavailable = True
+
+        kodv_logged_count = _append_kodv_ledger_entries(conn, toysi_catalog) if kodv_pending else 0
 
     counts_by_platform = {}
     revenue_by_platform = {}
@@ -463,6 +577,15 @@ def build_report() -> str:
     lines.append(
         "\n\nГрафа 8 (ЄСВ, податки) — навмисно НЕ рахую, вноситься вручну з платіжок."
     )
+
+    if kodv_pending:
+        if kodv_logged_count:
+            lines.append(f"\n\n📒 KODV-журнал: дописано {kodv_logged_count} нових записів у {KODV_LEDGER_FILE.name}.")
+        else:
+            lines.append(
+                f"\n\n📒 KODV-журнал: {kodv_pending} замовлень очікують запису, "
+                "але каталог Toysi не завантажився цього прогону — спробує знову наступного разу."
+            )
 
     return "".join(lines)
 

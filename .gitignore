@@ -68,6 +68,15 @@ full_catalog_scan_state.json
 # перебудовується щоразу з живих даних Toysi, не для git.
 rozetka_feed_membership_state.json
 
+# КОДВ-журнал (daily_report.py, 2026-07-20) — накопичувальний, живе на
+# VPS, публікується publish_kodv_ledger.sh в ОКРЕМУ гілку kodv-ledger-data
+# (НЕ feed-data — той самий принцип ізоляції, що й full_catalog_scan_state.json
+# вище: два незалежні force-push-публікатори на ОДНУ гілку затирали б один
+# одного; тут іще важливіше, бо це фінансові дані, які force-push взагалі
+# не повинен зачіпати — publish_kodv_ledger.sh комітить з реальною історією,
+# не force-push).
+kodv_ledger.jsonl
+
 # Запобіжник: файл з паролями не повинен потрапити в git навіть випадково
 паролі.txt
 

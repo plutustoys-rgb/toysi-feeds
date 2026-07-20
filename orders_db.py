@@ -97,6 +97,11 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "stock_alert_sent_at", "stock_alert_sent_at TEXT")
         _ensure_column(conn, "orders", "prom_delivered_pushed_at", "prom_delivered_pushed_at TEXT")
         _ensure_column(conn, "orders", "prom_ttn_pushed_at", "prom_ttn_pushed_at TEXT")
+        # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
+        # дописано в kodv_ledger.jsonl — персистентна позначка, не 24-годинне
+        # вікно, щоб дрейф/пропуск таймера (як уже стався з update-feeds.yml)
+        # не спричиняв дублікатів чи пропусків у ФІНАНСОВОМУ журналі.
+        _ensure_column(conn, "orders", "kodv_logged_at", "kodv_logged_at TEXT")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:

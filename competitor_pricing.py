@@ -466,6 +466,24 @@ PROM_CATEGORY_COMMISSION: dict[str, float] = {
 }
 PROM_COMMISSION_DEFAULT = 0.20  # орієнтовний fallback, ПОКИ категорія не уточнена в кабінеті
 
+# ПОДАТКОВИЙ/ТАРИФНИЙ ПЕРЕМИКАЧ (2026-07-21): 2026-07-21 власниця перемкнула
+# рівень ProSale в кабінеті Prom "Звичайний" -> "Економ"
+# (my.prom.ua/cms/prosale/4277464) — підтверджено живо: це вдвічі знижує
+# КОЖНУ категорійну ставку в таблиці (приклади: "Товари, загальне" 25%->
+# 12.5%, "Вентилятори" 10.35%->5.18%). PROM_CATEGORY_COMMISSION і
+# PROM_CATEGORY_ID_COMMISSION нижче й досі містять ставки, вписані під час
+# дії рівня "Звичайний" — множник тут виправляє ОБИДВІ таблиці одразу,
+# свідомо БЕЗ дублювання їх вдвічі окремим словником (сам факт рівня може
+# знову змінитись — власниця планує повернути на "Звичайний", коли
+# конкурентність зросте; тоді досить змінити один рядок нижче).
+# PROM_COMMISSION_DEFAULT вище СВІДОМО НЕ множиться — це окремий,
+# орієнтовний fallback для категорій без підтвердженої ставки (а не запис
+# із живої ProSale-таблиці), і залишити його як є — безпечний напрямок
+# (завищена комісія -> вищий floor, ніж по факту треба, ніколи не нижчий
+# за реальний мінімум прибутку).
+PROSALE_TIER = "econom"  # "econom" | "standard" — поточний рівень у кабінеті Prom
+PROSALE_TIER_MULTIPLIER: dict[str, float] = {"standard": 1.0, "econom": 0.5}
+
 # 2026-07-17 (Autonomy-11/Vis-11): PROM_CATEGORY_COMMISSION вище прив'язаний
 # до НАЗВИ категорії Toysi — точний, лише коли Toysi-категорія семантично
 # однозначна (є винятки, і саме "рюкзаки" — найбільший приклад: один Toysi-
@@ -769,13 +787,23 @@ def get_platform_commission(
     — сира назва категорії з фіда Toysi (parser.py) зберігає оригінальний регістр, а
     ключі PROM_CATEGORY_COMMISSION заповнюються вручну з кабінету Prom (приклад у
     коментарі нижче — лише нижній регістр), тож без нормалізації збіг ніколи
-    не спрацював би для реальних категорій."""
+    не спрацював би для реальних категорій.
+
+    PROSALE_TIER (2026-07-21): і PROM_CATEGORY_ID_COMMISSION, і
+    PROM_CATEGORY_COMMISSION — те саме джерело (жива таблиця ProSale з
+    кабінету Prom), лише різні ключі (id vs назва) для того самого набору
+    ставок — тож множник рівня застосовується до ОБОХ однаково, інакше
+    товар з відомим prom_category_id і той самий товар без нього (fallback
+    на назву) отримали б РІЗНУ комісію для однієї й тієї ж реальної
+    категорії. PROM_COMMISSION_DEFAULT — окремий, неточний fallback,
+    множник свідомо НЕ зачіпає (див. коментар над PROSALE_TIER)."""
     if platform == "prom":
+        tier_mult = PROSALE_TIER_MULTIPLIER[PROSALE_TIER]
         if prom_category_id is not None and prom_category_id in PROM_CATEGORY_ID_COMMISSION:
-            return PROM_CATEGORY_ID_COMMISSION[prom_category_id]
+            return PROM_CATEGORY_ID_COMMISSION[prom_category_id] * tier_mult
         key = category_name.strip().lower() if category_name else None
         if key and key in PROM_CATEGORY_COMMISSION:
-            return PROM_CATEGORY_COMMISSION[key]
+            return PROM_CATEGORY_COMMISSION[key] * tier_mult
         return PROM_COMMISSION_DEFAULT
     if platform == "rozetka":
         if price is not None:

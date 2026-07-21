@@ -84,7 +84,7 @@ from generate_prom_feed import fetch_russian_text, is_clearance_item
 from competitor_pricing import decide_price_for_platform
 from prom_competitor_pricer import (
     find_best_competitor, verify_competitor_really_available, SEARCH_DELAY,
-    MIN_FULL_RUN_INTERVAL_HOURS, _load_prom_category_cache,
+    MIN_FULL_RUN_INTERVAL_HOURS, _load_prom_category_cache, MATCH_MIN_SCORE_FOR_PRICING,
 )
 from telegram_notify import send_telegram_message
 
@@ -341,8 +341,23 @@ def main() -> None:
             continue
 
         competitor = find_best_competitor(name_rus, cost)
-        min_competitor_price = competitor["price"] if competitor else None
-        decision = decide_price_for_platform(cost, min_competitor_price, "prom", category_name, prom_category_id)
+        # ВИПРАВЛЕНО (2026-07-21, MATCH_MIN_SCORE_FOR_PRICING —
+        # prom_competitor_pricer.py, живий ручний аудит власниці): скан
+        # НЕ використовує buyBox (find_best_competitor() тут викликається
+        # БЕЗ own_link) — лише текстовий пошук, ризик хибного збігу
+        # такий самий, як і в основному циклі репрайсера. Зберігаємо
+        # СИРУ знайдену ціну в competitor_price нижче (для прозорості/
+        # діагностики), але decide_price_for_platform() (звідки беруться
+        # margin_pct/price_category, які потім РЕАЛЬНО впливають на ціну
+        # через _decide_from_scan_entry()) отримує ЛИШЕ довірений
+        # (score >= порогу) конкурент — інакше застосована ціна
+        # рахувалась би проти, можливо, зовсім іншого товару.
+        trusted_competitor_price = (
+            competitor["price"]
+            if competitor and competitor["score"] >= MATCH_MIN_SCORE_FOR_PRICING
+            else None
+        )
+        decision = decide_price_for_platform(cost, trusted_competitor_price, "prom", category_name, prom_category_id)
         time.sleep(SEARCH_DELAY)
 
         competitor_alive = None

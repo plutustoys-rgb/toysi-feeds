@@ -411,8 +411,10 @@ def _fetch_image_phash(url: str) -> "imagehash.ImageHash | None":
 
 def _photo_confirms_match(own_pictures: list | None, competitor_image: str | None) -> bool:
     """True ЛИШЕ якщо перцептивна відстань між нашим фото (перше з
-    own_pictures — той самий пріоритет, що вже усталений для власних
-    фото Toysi в generate_google_feed.py) і фото кандидата <=
+    own_pictures, сире фото Toysi — на відміну від generate_google_feed.py,
+    де prom_product.get("main_image") пріоритизується НАД Toysi-фото,
+    тут такої пріоритизації немає: own_pictures[0] береться напряму)
+    і фото кандидата <=
     PHOTO_MATCH_MAX_DISTANCE. Будь-яка невизначеність (немає жодного з
     двох фото, помилка завантаження/хешування) -> False — не рятуємо
     кандидата "про всяк випадок", лишаємо на безпечний дефолт

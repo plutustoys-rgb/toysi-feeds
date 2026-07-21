@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime
+from importlib import metadata as importlib_metadata
 
 import requests
 
@@ -99,6 +100,22 @@ DEPLOY_DIR = os.path.dirname(os.path.abspath(__file__))
 # і шумом заради дрейфу, який за визначенням змінюється не швидше, ніж
 # хтось руками змержить і задеплоїть код.
 DEPLOY_DRIFT_CHECK_INTERVAL_HOURS = 24
+
+# ДОДАНО (2026-07-21, findings_log.md — "dependency-drift-not-code-drift"):
+# check_deploy_drift() вище хешує ТЕКСТ .py-файлів — новий `import imagehash`
+# у щойно задеплоєному коді він би виявив (файл змінився -> хеш не збігається
+# з master), АЛЕ факт, що сам ПАКЕТ imagehash фізично не встановлений у venv,
+# для нього невидимий взагалі: requirements.txt — не .py-файл, і, навіть якби
+# й був, збіг хешів requirements.txt нічого не каже про те, що реально
+# встановлено в venv ПІСЛЯ його редагування (pip install — окрема, ручна дія,
+# яку легко забути після мержу нової залежності). Живий інцидент (2026-07-21,
+# PR #113): Pillow/ImageHash додані в requirements.txt, деплой .py-файлів
+# пройшов би success/checksum-зелений, але нічний скан впав би на ПЕРШОМУ ж
+# `import imagehash` — знайдено вручну під час деплою, не автоматично.
+# Той самий 24-годинний цикл, що й check_deploy_drift() (не свій, частіший —
+# дрейф залежностей за визначенням теж змінюється не швидше, ніж хтось
+# руками відредагує requirements.txt).
+DEPENDENCY_DRIFT_CHECK_INTERVAL_HOURS = 24
 
 # journalctl -o short-iso віддає зсув часового поясу без двокрапки (+0300),
 # а datetime.fromisoformat() приймає такий формат лише з Python 3.11+.
@@ -331,6 +348,109 @@ def check_deploy_drift() -> None:
             print("[watchdog] Не вдалося надіслати повідомлення про усунення дрейфу деплою в Telegram", file=sys.stderr)
 
 
+def _normalize_pkg_name(name: str) -> str:
+    """PEP 503-подібна нормалізація ("Pillow" == "pillow" == "PILLOW",
+    "python-dotenv" == "python_dotenv") — щоб порівняння requirements.txt
+    (як пише людина) проти назв реально встановлених дистрибутивів
+    (як їх повертає importlib.metadata) не хибно алармило на різницю
+    в регістрі/розділювачі, якої нема насправді."""
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+
+def _required_package_names(requirements_text: str) -> set:
+    """Парсить requirements.txt у множину нормалізованих назв пакетів,
+    ігноруючи версійні специфікатори (>=, ==, тощо), коментарі, порожні
+    рядки. Навмисно НЕ звіряє версії — мета лише "пакет фізично
+    встановлений", не "встановлена версія рівно та, що в файлі" (друге
+    складніше й крихкіше: pip може підтягнути сумісну новішу версію, це
+    не помилка)."""
+    names = set()
+    for line in requirements_text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)", line)
+        if match:
+            names.add(_normalize_pkg_name(match.group(1)))
+    return names
+
+
+def check_dependency_drift() -> None:
+    """ДОДАНО (2026-07-21, findings_log.md — "dependency-drift-not-code-drift",
+    живий інцидент під час деплою PR #113): check_deploy_drift() вище
+    звіряє ТЕКСТ .py-файлів, але не бачить, чи пакети, перелічені в
+    requirements.txt, РЕАЛЬНО встановлені у venv, де виконується цей же
+    процес. Живий приклад: `Pillow`/`ImageHash` додані в requirements.txt
+    разом із кодом, що їх імпортує (`prom_competitor_pricer.py`) — деплой
+    .py-файлів пройшов би checksum-зеленим, але `import imagehash` на
+    першому ж рядку впав би з ModuleNotFoundError, і весь нічний скан
+    пропав би без жодного алерту, доки хтось не поглянув би в journalctl.
+
+    Механізм: тягне requirements.txt із live origin/master (той самий
+    GITHUB_RAW_BASE, що й check_deploy_drift), парсить назви пакетів,
+    звіряє проти `importlib.metadata.distributions()` ПОТОЧНОГО
+    інтерпретатора (той самий venv, у якому виконується сам watchdog —
+    жодного subprocess/pip-виклику не потрібно, встановлені дистрибутиви
+    видно напряму з процесу, що вже запущений усередині цього venv).
+    Той самий цикл "щоденний алерт, повторюється, доки не виправлено, +
+    повідомлення про відновлення", що й check_deploy_drift() — навмисна
+    симетрія, той самий клас проблеми (VPS відстав від того, що вимагає
+    master), лише інший ШАР (залежності, не код)."""
+    state = _load_state()
+    last_check = state.get("dependency_drift_last_check")
+    now = datetime.now()
+    if last_check:
+        try:
+            elapsed_hours = (now - datetime.fromisoformat(last_check)).total_seconds() / 3600
+            if elapsed_hours < DEPENDENCY_DRIFT_CHECK_INTERVAL_HOURS:
+                return
+        except ValueError:
+            pass
+
+    try:
+        response = requests.get(GITHUB_RAW_BASE + "requirements.txt", timeout=15)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        print(f"[watchdog] Звірка залежностей: не вдалось завантажити requirements.txt з GitHub ({e})",
+              file=sys.stderr)
+        return
+
+    required = _required_package_names(response.text)
+    installed = {_normalize_pkg_name(dist.metadata["Name"]) for dist in importlib_metadata.distributions()
+                 if dist.metadata.get("Name")}
+
+    missing_now = sorted(required - installed)
+    drift_state = set(state.get("dependency_drift", []))
+
+    new_alarms = [f"⛔ {name}: у requirements.txt є, у venv НЕ встановлено" for name in missing_now if name not in drift_state]
+    reminders = [f"⏰ {name}: ДОСІ не встановлено (розбіжність триває)" for name in missing_now if name in drift_state]
+    recoveries = [f"✅ {name}: тепер встановлено" for name in drift_state if name not in missing_now]
+
+    state["dependency_drift"] = missing_now
+    state["dependency_drift_last_check"] = now.isoformat()
+    _save_state(state)
+
+    if not new_alarms and not reminders and not recoveries:
+        print(f"[watchdog] Звірка залежностей: {len(missing_now)} пакет(ів) відсутні (без змін)")
+
+    if new_alarms or reminders:
+        message = (
+            "🚨 Watchdog PlutusToys: requirements.txt вимагає пакети, яких немає у venv на VPS\n\n"
+            + "\n\n".join(new_alarms + reminders)
+            + "\n\nКод, що їх імпортує, впаде з ModuleNotFoundError при першому ж запуску — "
+              "постав вручну (venv/bin/pip install -r requirements.txt). "
+              "Це нагадування буде повторюватись щодня, доки не буде встановлено."
+        )
+        print(message)
+        if not send_telegram_message(message):
+            print("[watchdog] Не вдалося надіслати алерт про дрейф залежностей у Telegram", file=sys.stderr)
+    if recoveries:
+        message = "✅ Watchdog PlutusToys: дрейф залежностей усунено\n\n" + "\n\n".join(recoveries)
+        print(message)
+        if not send_telegram_message(message):
+            print("[watchdog] Не вдалося надіслати повідомлення про усунення дрейфу залежностей у Telegram", file=sys.stderr)
+
+
 def _order_confirmed_in_toysi(info: dict) -> bool:
     """Чи є в статусі Toysi ознака, що замовлення дійсно існує й
     опрацьовується — а не назавжди "підвішене". Саме так виглядало тестове
@@ -536,3 +656,4 @@ if __name__ == "__main__":
     check_toysi_reconciliation()
     check_unforwarded_orders()
     check_deploy_drift()
+    check_dependency_drift()

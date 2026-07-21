@@ -85,6 +85,7 @@ from competitor_pricing import decide_price_for_platform
 from prom_competitor_pricer import (
     find_best_competitor, verify_competitor_really_available, SEARCH_DELAY,
     MIN_FULL_RUN_INTERVAL_HOURS, _load_prom_category_cache, MATCH_MIN_SCORE_FOR_PRICING,
+    MATCH_MIN_SCORE, _photo_confirms_match,
 )
 from telegram_notify import send_telegram_message
 
@@ -335,6 +336,7 @@ def main() -> None:
                 "competitor_price": None,
                 "competitor_score": None,
                 "competitor_alive": None,
+                "competitor_image": None,
                 "margin_pct": None,
                 "price_category": "invalid_cost",
             }
@@ -357,6 +359,18 @@ def main() -> None:
             if competitor and competitor["score"] >= MATCH_MIN_SCORE_FOR_PRICING
             else None
         )
+        # ДОДАНО (2026-07-21, той самий фото-рятувальний механізм, що й у
+        # decide_action()/_decide_from_scan_entry() prom_competitor_pricer.py —
+        # пряме прохання власниці порівнювати ще й по фото): кандидат у
+        # зоні 0.4-0.59 (нижче MATCH_MIN_SCORE_FOR_PRICING) рятується, якщо
+        # перцептивний хеш його фото збігається з нашим власним.
+        if (
+            trusted_competitor_price is None
+            and competitor
+            and competitor["score"] >= MATCH_MIN_SCORE
+            and _photo_confirms_match(item.get("pictures"), competitor.get("image"))
+        ):
+            trusted_competitor_price = competitor["price"]
         decision = decide_price_for_platform(cost, trusted_competitor_price, "prom", category_name, prom_category_id)
         time.sleep(SEARCH_DELAY)
 
@@ -372,6 +386,7 @@ def main() -> None:
             "competitor_price": competitor["price"] if competitor else None,
             "competitor_score": round(competitor["score"], 2) if competitor else None,
             "competitor_alive": competitor_alive,
+            "competitor_image": competitor.get("image") if competitor else None,
             "margin_pct": decision["margin_pct"],
             "price_category": decision["category"],
         }

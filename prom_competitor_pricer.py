@@ -63,6 +63,9 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+from io import BytesIO
+from PIL import Image
+import imagehash
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -237,6 +240,7 @@ def fetch_buybox_competitor(prom_id: int, url_text: str) -> dict | None:
             "name": f"BuyBox: {company_count} інших продавців цього ж товару",
             "id": None,
             "urlText": None,
+            "image": None,  # buyBox не дає фото КОНКРЕТНОГО оголошення — не потрібне, score=1.0 і так довірений
             "source": "buybox",
         }
     except (requests.exceptions.RequestException, ValueError, KeyError):
@@ -373,6 +377,57 @@ MATCH_MIN_SCORE_FOR_DELIST = 0.85
 # для delist, лишається без змін.
 MATCH_MIN_SCORE_FOR_PRICING = 0.6
 
+# ДОДАНО (2026-07-21, пряме прохання власниці): "рятує" кандидатів, що не
+# пройшли MATCH_MIN_SCORE_FOR_PRICING за текстом (0.4-0.59), якщо ФОТО
+# підтверджує той самий товар — фото зазвичай ідентичне між продавцями
+# одного товару (той самий постачальник), тоді як назва в кожного своя.
+# Перцептивний хеш (imagehash.phash, 64-біт) — стійкий до масштабування/
+# перестиснення/легкого кадрування, на відміну від точного побайтового
+# порівняння. Поріг звірено на реальному прикладі (SKU 275296, 2026-07-21):
+# справжні конкуренти (той самий планшет, інший колір) — відстань 2;
+# хибно знайдений текстом пазл (зовсім інший товар) — відстань 22-28.
+# 10 — з великим запасом нижче найменшої спостереженої "різний товар"
+# відстані (22), і з великим запасом вище найбільшої спостереженої
+# "той самий товар" відстані (2) у цій вибірці.
+PHOTO_MATCH_MAX_DISTANCE = 10
+
+
+def _fetch_image_phash(url: str) -> "imagehash.ImageHash | None":
+    """Завантажує зображення й рахує перцептивний хеш. None (не виняток)
+    на БУДЬ-яку помилку (мережа/таймаут/невалідний формат зображення) —
+    той самий безпечний дефолт, що й скрізь у цьому файлі: не можемо
+    підтвердити — не довіряємо, а не вгадуємо."""
+    if not url:
+        return None
+    try:
+        response = requests.get(url, timeout=REQUEST_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        image = Image.open(BytesIO(response.content))
+        return imagehash.phash(image)
+    except Exception as e:
+        print(f"[Pricer] Не вдалось порахувати хеш зображення {url!r}: {e}", file=sys.stderr)
+        return None
+
+
+def _photo_confirms_match(own_pictures: list | None, competitor_image: str | None) -> bool:
+    """True ЛИШЕ якщо перцептивна відстань між нашим фото (перше з
+    own_pictures — той самий пріоритет, що вже усталений для власних
+    фото Toysi в generate_google_feed.py) і фото кандидата <=
+    PHOTO_MATCH_MAX_DISTANCE. Будь-яка невизначеність (немає жодного з
+    двох фото, помилка завантаження/хешування) -> False — не рятуємо
+    кандидата "про всяк випадок", лишаємо на безпечний дефолт
+    MATCH_MIN_SCORE_FOR_PRICING (немає конкурента для ціноутворення)."""
+    if not own_pictures or not competitor_image:
+        return False
+    own_hash = _fetch_image_phash(own_pictures[0])
+    if own_hash is None:
+        return False
+    competitor_hash = _fetch_image_phash(competitor_image)
+    if competitor_hash is None:
+        return False
+    return (own_hash - competitor_hash) <= PHOTO_MATCH_MAX_DISTANCE
+
+
 # ВИДАЛЕНО (2026-07-18, пряме рішення власника): "грація" 1.5x (floor міг
 # перевищувати конкурента аж на 50%, лишаючись просто "дорожчою
 # пропозицією", не delist) — власник прямо підтвердив: жодної грації,
@@ -448,6 +503,20 @@ SAVE_EVERY = 25
 # Свідомо не той величезний (11.7К символів) запит, яким сама сторінка
 # пошуку тягне SEO-теги/фільтри/мотори тощо, — вужчий контракт, менший
 # ризик поламатись, якщо Prom змінить поля, які нас не цікавлять.
+#
+# ДОДАНО (2026-07-21, пряме прохання власниці — живий ручний аудит
+# виявив хибні текстові збіги, MATCH_MIN_SCORE_FOR_PRICING/PR #113):
+# `image(width, height)` — Introspection на цьому GraphQL вимкнено
+# (перевірено напряму), тож поле знайдено пробним запитом полів-
+# кандидатів; виявилось скалярним полем з ОБОВ'ЯЗКОВИМИ width/height
+# (не типом-вузлом із власними під-полями, як спершу здавалось із
+# помилки "Required option... is not specified"). Дає URL фото
+# кандидата — фото зазвичай ідентичне між різними продавцями того
+# самого товару (той самий постачальник/фото від виробника), тоді як
+# назва в кожного продавця своя (переклад/скорочення/порядок слів) —
+# надійніший сигнал збігу за текстову схожість, підтверджено живо
+# (SKU 275296: наш планшет vs справжні конкуренти-планшети інших
+# кольорів — phash-відстань 2; vs хибно знайдений пазл — 22-28).
 SEARCH_QUERY = """
 query SearchListingQuery($search_term: String!, $offset: Int, $limit: Int, $params: Any, $company_id: Int, $sort: String, $regionId: Int = null, $subdomain: String = null) {
   listing: searchListing(search_term: $search_term, limit: $limit, offset: $offset, params: $params, company_id: $company_id, sort: $sort, region: {id: $regionId, subdomain: $subdomain}) {
@@ -462,6 +531,7 @@ query SearchListingQuery($search_term: String!, $offset: Int, $limit: Int, $para
           company_id
           urlText
           presence { presence isAvailable }
+          image(width: 200, height: 200)
         }
       }
     }
@@ -656,7 +726,8 @@ def find_best_competitor(search_name: str, cost: float, own_link: dict | None = 
         score = _similarity(search_name, p.get("name", ""))
         if score >= MATCH_MIN_SCORE:
             candidates.append({"score": score, "price": price, "name": p.get("name"),
-                                "id": p.get("id"), "urlText": p.get("urlText")})
+                                "id": p.get("id"), "urlText": p.get("urlText"),
+                                "image": p.get("image")})
 
     if not candidates:
         return None
@@ -799,6 +870,7 @@ def decide_action(
     category_name: str | None,
     our_name: str = "",
     prom_category_id: int | None = None,
+    own_pictures: list | None = None,
 ) -> dict:
     """Гібридна дія: undercut/no_competitor -> "adjust" (нова ціна =
     decision["price"]); floor вищий за (конкурент - PRICE_STEP), тобто ми
@@ -839,6 +911,18 @@ def decide_action(
     trusted_competitor_price = (
         competitor["price"] if competitor and competitor["score"] >= MATCH_MIN_SCORE_FOR_PRICING else None
     )
+    # ДОДАНО (2026-07-21, PHOTO_MATCH_MAX_DISTANCE — пряме прохання
+    # власниці: порівнювати ще й по фото, бо назва відрізняється частіше,
+    # ніж фото). "Рятує" лише кандидатів у зоні 0.4-0.59 (нижче
+    # MATCH_MIN_SCORE взагалі не дійде до decide_action — find_best_competitor
+    # відкидає їх раніше), і лише якщо фото підтверджує той самий товар.
+    if (
+        trusted_competitor_price is None
+        and competitor
+        and competitor["score"] >= MATCH_MIN_SCORE
+        and _photo_confirms_match(own_pictures, competitor.get("image"))
+    ):
+        trusted_competitor_price = competitor["price"]
     decision = decide_price_for_platform(cost, trusted_competitor_price, "prom", category_name, prom_category_id)
     action = "adjust"
     size_conflict = False
@@ -936,7 +1020,7 @@ def _rotated_out_needing_live_lookup(top_catalog: dict, toysi_catalog: dict, sca
 
 
 def _decide_from_scan_entry(cost: float, category_name: str | None, prom_category_id: int | None,
-                             scan_entry: dict) -> dict:
+                             scan_entry: dict, own_pictures: list | None = None) -> dict:
     """Рахує коригування ціни для SKU поза топ-970 БЕЗ живого пошуку
     конкурента — використовує вже наявні дані з full_catalog_scan_state.json
     (competitor_price/competitor_alive), рахуючи decide_price_for_platform()
@@ -959,7 +1043,8 @@ def _decide_from_scan_entry(cost: float, category_name: str | None, prom_categor
     # на момент сканування — трактуємо як "конкурента немає" (той самий
     # безпечний дефолт, що presence_unconfirmed у звичайному циклі: не
     # довіряти протермінованому сигналу про наявність).
-    if scan_entry.get("competitor_alive") is False:
+    competitor_confirmed_dead = scan_entry.get("competitor_alive") is False
+    if competitor_confirmed_dead:
         competitor_price = None
     # ДОДАНО (2026-07-21, MATCH_MIN_SCORE_FOR_PRICING — той самий гейт,
     # що й у decide_action() для основного циклу): дані скану зберігають
@@ -969,6 +1054,19 @@ def _decide_from_scan_entry(cost: float, category_name: str | None, prom_categor
     competitor_score = scan_entry.get("competitor_score")
     if competitor_score is not None and competitor_score < MATCH_MIN_SCORE_FOR_PRICING:
         competitor_price = None
+        # ДОДАНО (2026-07-21, фото-рятування — той самий механізм, що й у
+        # decide_action()): скан зберігає competitor_image лише з дати
+        # цього фіксу — старі записи (до розгортання) не матимуть цього
+        # поля взагалі, .get() поверне None, _photo_confirms_match() сам
+        # безпечно поверне False. НЕ рятує, якщо конкурент уже підтверджено
+        # неживим вище (competitor_confirmed_dead) — фото не скасовує факт,
+        # що самого оголошення конкурента вже не існує.
+        if (
+            not competitor_confirmed_dead
+            and competitor_score >= MATCH_MIN_SCORE
+            and _photo_confirms_match(own_pictures, scan_entry.get("competitor_image"))
+        ):
+            competitor_price = scan_entry.get("competitor_price")
     decision = decide_price_for_platform(cost, competitor_price, "prom", category_name, prom_category_id)
     decision["action"] = "adjust"
     return decision
@@ -1343,7 +1441,7 @@ def main() -> None:
                 print(f"[Pricer] buyBox: підозріло низька ціна для {pid} "
                       f"(minPrice={competitor['price']:.0f} < 50% собівартості {cost:.0f}) — "
                       "перевір вручну", file=sys.stderr)
-        decision = decide_action(cost, competitor, category_name, name_rus, prom_category_id)
+        decision = decide_action(cost, competitor, category_name, name_rus, prom_category_id, item.get("pictures"))
         time.sleep(SEARCH_DELAY)
 
         # Другий, надійніший гейт ПЕРЕД фінальним delist — GraphQL-пошук
@@ -1425,7 +1523,7 @@ def main() -> None:
         prom_category_id = (prom_category_cache.get(pid) or {}).get("category_id")
         scan_entry = scan_state.get(pid, {})
 
-        decision = _decide_from_scan_entry(cost, category_name, prom_category_id, scan_entry)
+        decision = _decide_from_scan_entry(cost, category_name, prom_category_id, scan_entry, item.get("pictures"))
 
         if _category_commission_is_default(category_name, prom_category_id) and not args.allow_default_commission:
             default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))

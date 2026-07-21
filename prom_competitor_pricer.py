@@ -816,33 +816,49 @@ def verify_competitor_really_available(competitor: dict) -> bool:
     return match.group(1).endswith("/InStock")
 
 
-def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict) -> tuple[bool, list, float | None]:
+def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict) -> tuple[list, list, float | None]:
     """P0-3: див. коментар біля CIRCUIT_BREAKER_* констант. `to_adjust` —
     список (pid, price, margin_pct) кандидатів на коригування цього
     прогону. `to_delist` — список pid, призначених на видалення цього
     прогону (ДОДАНО 2026-07-18, незалежний аудит PR #95 —
     code_report_2026-07-18_pt4.md: до цього фіксу жоден із трьох сигналів
     нижче взагалі не бачив delist, і масовий сплеск видалень проходив би
-    повз circuit breaker непоміченим). Повертає (спрацював, причини,
-    середня_маржа_цього_прогону) — середня маржа повертається завжди
-    (навіть якщо breaker не спрацював чи to_adjust порожній), щоб main()
-    міг зберегти її для порівняння НАСТУПНОГО прогону.
+    повз circuit breaker непоміченим). Повертає (delist_reasons,
+    adjust_reasons, середня_маржа_цього_прогону) — середня маржа
+    повертається завжди (навіть якщо обидва списки причин порожні чи
+    to_adjust порожній), щоб main() міг зберегти її для порівняння
+    НАСТУПНОГО прогону.
+
+    ВИПРАВЛЕНО (2026-07-21, пряме прохання власниці — "чому блокувалось
+    ПОВНА кількість... а не пропускав дозволену, а інші залишав"):
+    раніше повертався ОДИН спільний bool/список причин, тож будь-яка
+    причина (навіть суто про delist — CIRCUIT_BREAKER_MAX_DELIST_FRACTION)
+    блокувала і to_adjust теж, хоча коригування ціни й видалення —
+    структурно різні за ризиком дії (див. коментар біля
+    MATCH_MIN_SCORE_FOR_DELIST: помилка в ціні дешева/самокоригується,
+    помилка у видаленні — ні). Тепер причини розділені за тим, ЯКОГО
+    саме кошика вони стосуються: частка delist — лише delist_reasons;
+    середня маржа/її падіння/частка суттєвих змін ціни — усі рахуються
+    ВИКЛЮЧНО з to_adjust, тож логічно належать adjust_reasons. main()
+    гейтує кожен кошик своїми причинами окремо — аномалія в масштабі
+    delist більше не тримає заручником непов'язаний, здоровий to_adjust.
 
     Перевірка масштабу delist рахується ПЕРШОЮ, до раннього виходу при
     порожньому to_adjust — інакше прогін, де ВСІ рішення виявились
     "delist" (найгірший можливий сценарій для цього сигналу), взагалі
     ніколи б не дійшов до перевірки нижче."""
-    reasons = []
+    delist_reasons = []
+    adjust_reasons = []
     total_decided = len(to_adjust) + len(to_delist)
     if total_decided and len(to_delist) / total_decided > CIRCUIT_BREAKER_MAX_DELIST_FRACTION:
-        reasons.append(
+        delist_reasons.append(
             f"{len(to_delist) / total_decided * 100:.0f}% товарів із визначеним конкурентом "
             f"({len(to_delist)}/{total_decided}) призначено на видалення за один прогін "
             f"(поріг {CIRCUIT_BREAKER_MAX_DELIST_FRACTION * 100:.0f}%)"
         )
 
     if not to_adjust:
-        return bool(reasons), reasons, None
+        return delist_reasons, adjust_reasons, None
 
     avg_margin_this_run = sum(m for _, _, m in to_adjust) / len(to_adjust)
 
@@ -861,24 +877,24 @@ def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict
     prev_avg_margin = (price_state.get("_meta") or {}).get("last_avg_margin_pct")
 
     if avg_margin_this_run < CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT:
-        reasons.append(
+        adjust_reasons.append(
             f"середня маржа цього прогону {avg_margin_this_run:.1f}% нижче абсолютного "
             f"порогу {CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT}%"
         )
     if prev_avg_margin is not None:
         margin_drop = prev_avg_margin - avg_margin_this_run
         if margin_drop > CIRCUIT_BREAKER_MAX_MARGIN_DROP_PCT:
-            reasons.append(
+            adjust_reasons.append(
                 f"середня маржа впала на {margin_drop:.1f} п.п. відносно попереднього "
                 f"прогону ({prev_avg_margin:.1f}% -> {avg_margin_this_run:.1f}%)"
             )
     if known_count >= CIRCUIT_BREAKER_MIN_KNOWN_FOR_FRACTION_CHECK and changed_fraction > CIRCUIT_BREAKER_MAX_CHANGED_FRACTION:
-        reasons.append(
+        adjust_reasons.append(
             f"{changed_fraction * 100:.0f}% товарів із уже відомою ціною ({changed_count}/{known_count}) "
             f"отримали суттєво іншу ціну (>{CIRCUIT_BREAKER_PRICE_CHANGE_THRESHOLD * 100:.0f}%) за один прогін"
         )
 
-    return bool(reasons), reasons, avg_margin_this_run
+    return delist_reasons, adjust_reasons, avg_margin_this_run
 
 
 def decide_action(
@@ -1594,13 +1610,31 @@ def main() -> None:
 
     hard_cap_tripped = len(to_delist) > MAX_DELIST_PER_RUN
 
-    breaker_tripped, breaker_reasons, avg_margin_this_run = evaluate_circuit_breaker(to_adjust, to_delist, price_state)
+    delist_breaker_reasons, adjust_breaker_reasons, avg_margin_this_run = evaluate_circuit_breaker(to_adjust, to_delist, price_state)
     if avg_margin_this_run is not None:
-        print(f"[Pricer] Circuit breaker: середня маржа цього прогону {avg_margin_this_run:.1f}%"
-              + (f" — СПРАЦЮВАВ: {'; '.join(breaker_reasons)}" if breaker_tripped else " — OK"))
+        print(f"[Pricer] Circuit breaker (adjust): середня маржа цього прогону {avg_margin_this_run:.1f}%"
+              + (f" — СПРАЦЮВАВ: {'; '.join(adjust_breaker_reasons)}" if adjust_breaker_reasons else " — OK"))
+    if delist_breaker_reasons:
+        print(f"[Pricer] Circuit breaker (delist): СПРАЦЮВАВ: {'; '.join(delist_breaker_reasons)}")
     if hard_cap_tripped:
         print(f"[Pricer] MAX_DELIST_PER_RUN: {len(to_delist)} > {MAX_DELIST_PER_RUN} — "
               "жорсткий ліміт, --force-circuit-breaker його НЕ обходить.")
+
+    # ВИПРАВЛЕНО (2026-07-21, пряме прохання власниці — "чому блокувалось
+    # ПОВНА кількість... а не пропускав дозволену, а інші залишав"):
+    # раніше БУДЬ-яка причина (навіть суто про масштаб delist) блокувала
+    # ОБИДВА кошики одним спільним sys.exit(1) — учора 469 легітимних
+    # коригувань ціни не застосувались лише тому, що delist-кандидатів
+    # виявилось забагато. Тепер кожен кошик гейтується ЛИШЕ своїми
+    # причинами (див. docstring evaluate_circuit_breaker): delist_blocked
+    # реагує на MAX_DELIST_PER_RUN і частку delist (обидва — виключно про
+    # масштаб видалень); adjust_blocked реагує лише на середню
+    # маржу/її падіння/частку суттєвих змін ціни (усі рахуються виключно
+    # з to_adjust). --force-circuit-breaker обходить ОБИДВА (як і раніше,
+    # це свідомий, разовий override для власниці) — MAX_DELIST_PER_RUN
+    # і надалі НЕ обходиться нічим, окрім прямої зміни коду.
+    delist_blocked = hard_cap_tripped or (bool(delist_breaker_reasons) and not args.force_circuit_breaker)
+    adjust_blocked = bool(adjust_breaker_reasons) and not args.force_circuit_breaker
 
     if not args.apply:
         print("\n[Pricer] DRY-RUN: жодних змін не внесено. Запусти з --apply, щоб реально застосувати.")
@@ -1610,15 +1644,19 @@ def main() -> None:
             f"видалити як неконкурентні — {delist_count}, "
             f"конкурента не знайдено — {no_competitor_count}."
         )
-        if breaker_tripped:
+        if adjust_blocked:
             digest += (
-                f"\n\n🚨 CIRCUIT BREAKER СПРАЦЮВАВ БИ на --apply: " + "; ".join(breaker_reasons)
+                f"\n\n🚨 CIRCUIT BREAKER (adjust) ЗУПИНИВ БИ коригування цін: " + "; ".join(adjust_breaker_reasons)
             )
         if hard_cap_tripped:
             digest += (
-                f"\n\n⛔ ЖОРСТКИЙ ЛІМІТ MAX_DELIST_PER_RUN ({MAX_DELIST_PER_RUN}) ЗУПИНИВ БИ --apply "
+                f"\n\n⛔ ЖОРСТКИЙ ЛІМІТ MAX_DELIST_PER_RUN ({MAX_DELIST_PER_RUN}) ЗУПИНИВ БИ видалення "
                 f"({len(to_delist)} на видалення) — цей ліміт --force-circuit-breaker НЕ обходить, "
                 "потрібна пряма зміна коду."
+            )
+        elif delist_breaker_reasons:
+            digest += (
+                f"\n\n🚨 CIRCUIT BREAKER (delist) ЗУПИНИВ БИ видалення: " + "; ".join(delist_breaker_reasons)
             )
         if delist_details:
             digest += "\n\nКандидати на видалення:\n" + "\n".join(delist_details[:15])
@@ -1630,50 +1668,67 @@ def main() -> None:
         write_pricer_summary(
             "Режим: dry-run (--apply не використовувався). 20-годинний гейт: не спрацював (повний прогін виконано)."
             + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply." if default_commission_skipped else "")
-            + (f" Circuit breaker СПРАЦЮВАВ БИ: {'; '.join(breaker_reasons)}" if breaker_tripped else ""),
+            + (f" Circuit breaker (adjust) СПРАЦЮВАВ БИ: {'; '.join(adjust_breaker_reasons)}" if adjust_blocked else "")
+            + (f" Circuit breaker (delist) СПРАЦЮВАВ БИ: {'; '.join(delist_breaker_reasons)}" if (delist_breaker_reasons and not hard_cap_tripped) else ""),
             checked=len(items), adjust=adjust_count, delist=delist_count,
             no_competitor=no_competitor_count, errors=0,
         )
         return
 
-    if hard_cap_tripped:
-        message = (
-            f"🚨 prom_competitor_pricer.py --apply ЗУПИНЕНО жорстким лімітом MAX_DELIST_PER_RUN "
-            f"({len(to_delist)} > {MAX_DELIST_PER_RUN}), ЖОДНИХ змін не внесено.\n\n"
-            "Цей ліміт НЕ обходиться --force-circuit-breaker навмисно — після інциденту "
-            "2026-07-19 (обвал каталогу Prom з ~970 до ~244 живих товарів через 722 "
-            "видалення за один прогін; Prom видаляє миттєво, але створює заміну значно "
-            "повільніше). Якщо видалення такого масштабу дійсно виправдане — потрібна "
-            "пряма зміна MAX_DELIST_PER_RUN у коді (новий PR, новий аудит), не прапорець "
-            "командного рядка."
-        )
+    if delist_blocked and to_delist:
+        if hard_cap_tripped:
+            message = (
+                f"🚨 prom_competitor_pricer.py --apply: видалення ЗУПИНЕНО жорстким лімітом "
+                f"MAX_DELIST_PER_RUN ({len(to_delist)} > {MAX_DELIST_PER_RUN}).\n\n"
+                "Цей ліміт НЕ обходиться --force-circuit-breaker навмисно — після інциденту "
+                "2026-07-19 (обвал каталогу Prom з ~970 до ~244 живих товарів через 722 "
+                "видалення за один прогін; Prom видаляє миттєво, але створює заміну значно "
+                "повільніше). Якщо видалення такого масштабу дійсно виправдане — потрібна "
+                "пряма зміна MAX_DELIST_PER_RUN у коді (новий PR, новий аудит), не прапорець "
+                "командного рядка."
+            )
+        else:
+            message = (
+                "🚨 prom_competitor_pricer.py --apply: видалення ЗУПИНЕНО circuit breaker'ом (P0-3):\n\n"
+                + "\n".join(f"- {r}" for r in delist_breaker_reasons)
+                + "\n\nПеревір вручну і, якщо видалення дійсно виправдані, перезапусти з "
+                  "--force-circuit-breaker."
+            )
+        message += f"\n\nКоригування ціни (to_adjust, {len(to_adjust)} шт.) НЕ заблоковано — обробляються нижче незалежно."
         print(f"\n[Pricer] {message}", file=sys.stderr)
         send_telegram_message(message)
-        write_pricer_summary(
-            f"🚨 MAX_DELIST_PER_RUN ЗУПИНИВ --apply (нічого не застосовано): "
-            f"{len(to_delist)} > {MAX_DELIST_PER_RUN}",
-            checked=len(items), adjust=adjust_count, delist=delist_count,
-            no_competitor=no_competitor_count, errors=0,
-        )
-        sys.exit(1)
 
-    if breaker_tripped and not args.force_circuit_breaker:
+    if adjust_blocked and to_adjust:
         message = (
-            "🚨 prom_competitor_pricer.py --apply ЗУПИНЕНО circuit breaker'ом (P0-3), "
-            "ЖОДНИХ змін не внесено:\n\n" + "\n".join(f"- {r}" for r in breaker_reasons)
+            "🚨 prom_competitor_pricer.py --apply: коригування ЦІНИ ЗУПИНЕНО circuit breaker'ом (P0-3):\n\n"
+            + "\n".join(f"- {r}" for r in adjust_breaker_reasons)
             + "\n\nПеревір вручну і, якщо зміни дійсно виправдані, перезапусти з "
-              "--force-circuit-breaker."
+              "--force-circuit-breaker.\n\n"
+            f"Видалення (to_delist, {len(to_delist)} шт.) НЕ заблоковано цим сигналом — "
+            "обробляються нижче незалежно (якщо не заблоковані окремо)."
         )
         print(f"\n[Pricer] {message}", file=sys.stderr)
         send_telegram_message(message)
+
+    if not to_adjust and not to_delist:
+        print("[Pricer] Немає що коригувати чи видаляти цього прогону.")
         write_pricer_summary(
-            f"🚨 Circuit breaker ЗУПИНИВ --apply (нічого не застосовано): {'; '.join(breaker_reasons)}",
+            "Режим: --apply (0 коригувань, 0 видалень цього прогону).",
+            checked=len(items), adjust=0, delist=0,
+            no_competitor=no_competitor_count, errors=0,
+        )
+        return
+
+    if adjust_blocked and delist_blocked:
+        write_pricer_summary(
+            "🚨 --apply: І коригування ціни, І видалення заблоковано (див. Telegram). Нічого не застосовано.",
             checked=len(items), adjust=adjust_count, delist=delist_count,
             no_competitor=no_competitor_count, errors=0,
         )
         sys.exit(1)
 
-    print(f"\n[Pricer] Застосовую {len(to_adjust)} коригувань ціни...")
+    print(f"\n[Pricer] Застосовую {0 if adjust_blocked else len(to_adjust)} коригувань ціни..."
+          + (" (ЗАБЛОКОВАНО circuit breaker'ом)" if adjust_blocked else ""))
     # ВИПРАВЛЕНО 2026-07-12: раніше apply_price() лише писав ціну напряму в
     # Prom API й ніде не зберігав рішення — generate_prom_feed.py рахував
     # ціну з нуля на кожному прогоні (кожні 4 год) і тихо повертав її до
@@ -1691,7 +1746,9 @@ def main() -> None:
     # SAVE_EVERY-1 позицій стану, а не весь прогін.
     applied_count = 0
     delisted_since = price_state.setdefault("_delisted_since", {})
-    for pid, price, _ in to_adjust:
+    # ЗАБЛОКОВАНО (adjust_blocked) -> порожній список, той самий безпечний
+    # шаблон, що вже застосований нижче для to_delist.
+    for pid, price, _ in ([] if adjust_blocked else to_adjust):
         try:
             apply_price(pid, price)
             price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat()}
@@ -1707,9 +1764,13 @@ def main() -> None:
         except (requests.exceptions.RequestException, PromEditError) as e:
             error_count += 1
             print(f"  - {pid}: помилка зміни ціни — {e}", file=sys.stderr)
-    if avg_margin_this_run is not None:
+    # avg_margin_this_run зберігається для порівняння НАСТУПНОГО прогону
+    # лише якщо adjust реально виконувався цього разу — інакше заблокований
+    # прогін (де to_adjust взагалі не торкались) спотворив би базу
+    # порівняння для наступного circuit breaker.
+    if avg_margin_this_run is not None and not adjust_blocked:
         price_state.setdefault("_meta", {})["last_avg_margin_pct"] = avg_margin_this_run
-    if applied_count or avg_margin_this_run is not None:
+    if applied_count or (avg_margin_this_run is not None and not adjust_blocked):
         save_prom_price_state(price_state)
 
     # КРИТИЧНИЙ ФІКС (2026-07-18, реальний інцидент — SKU 266990/265230 та
@@ -1725,8 +1786,9 @@ def main() -> None:
     # доки вони не з'являться в to_adjust вище (конкурент подешевшав чи
     # зник) — лише тоді запис прибирається і SKU знову претендує на топ.
     confirmed_delist_count = 0
-    print(f"[Pricer] Видаляю {len(to_delist)} неконкурентних товарів...")
-    for pid in to_delist:
+    print(f"[Pricer] Видаляю {0 if delist_blocked else len(to_delist)} неконкурентних товарів..."
+          + (" (ЗАБЛОКОВАНО)" if delist_blocked else ""))
+    for pid in ([] if delist_blocked else to_delist):
         try:
             delist(pid)
             delisted_since[pid] = datetime.now().isoformat()
@@ -1736,7 +1798,7 @@ def main() -> None:
             print(f"  - {pid}: помилка видалення — {e}", file=sys.stderr)
     save_prom_price_state(price_state)
 
-    if confirmed_delist_count != len(to_delist):
+    if not delist_blocked and confirmed_delist_count != len(to_delist):
         print(
             f"[Pricer] УВАГА: підтверджено видалено {confirmed_delist_count} з {len(to_delist)} "
             "запланованих — решта не пройшла перевірку processed_ids (див. помилки вище).",
@@ -1745,21 +1807,29 @@ def main() -> None:
 
     print(f"[Pricer] Готово. Помилок: {error_count}.")
     digest = (
-        f"💰 prom_competitor_pricer.py --apply: скориговано цін — {adjust_count}, "
-        f"видалено як неконкурентні — {delist_count} товарів. Помилок: {error_count}."
+        f"💰 prom_competitor_pricer.py --apply: скориговано цін — "
+        f"{'0 (ЗАБЛОКОВАНО circuit breaker)' if adjust_blocked else applied_count}, "
+        f"видалено як неконкурентні — "
+        f"{'0 (ЗАБЛОКОВАНО)' if delist_blocked else confirmed_delist_count} товарів. "
+        f"Помилок: {error_count}."
     )
-    if delist_details:
+    if not delist_blocked and delist_details:
         digest += "\n\nВидалено:\n" + "\n".join(delist_details[:15])
         if len(delist_details) > 15:
             digest += f"\n... та ще {len(delist_details) - 15}"
     digest += default_commission_note
     send_telegram_message(digest)
     write_pricer_summary(
-        "Режим: --apply (реальні зміни застосовано). 20-годинний гейт: не спрацював (повний прогін виконано)."
+        "Режим: --apply"
+        + (" (частково заблоковано circuit breaker'ом — див. Telegram)." if (adjust_blocked or delist_blocked) else " (реальні зміни застосовано).")
+        + " 20-годинний гейт: не спрацював (повний прогін виконано)."
         + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply." if default_commission_skipped else ""),
-        checked=len(items), adjust=adjust_count, delist=delist_count,
+        checked=len(items), adjust=(0 if adjust_blocked else applied_count),
+        delist=(0 if delist_blocked else confirmed_delist_count),
         no_competitor=no_competitor_count, errors=error_count,
     )
+    if adjust_blocked or delist_blocked:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

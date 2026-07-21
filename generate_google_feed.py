@@ -299,9 +299,26 @@ def _resolve_url_text(prom_id: int) -> str | None:
 
 
 def _save_own_product_links_cache(links: dict) -> None:
+    """ВИПРАВЛЕНО (2026-07-21, findings_log.md — "buybox-unreachable-
+    outside-top970"): раніше блайнд-перезаписував ЦІЛИЙ файл лише
+    результатом ЦЬОГО прогону (топ-970). Тепер full_catalog_competitor_
+    scan.py ТЕЖ пише в цей самий файл — для SKU поза топ-970, вмикаючи
+    buyBox і там. Блайнд-перезапис звідси стирав би той внесок кожні
+    ~4 години (цикл цього прогону). Об'єднання (не заміна) — старі
+    записи для SKU, що випали з топ-970 цього разу, теж лишаються
+    (власне посилання Prom-товару практично ніколи не змінюється, поки
+    оголошення живе — немає причини забувати його лише через ротацію
+    топ-970)."""
+    existing = {}
+    if OWN_PRODUCT_LINKS_CACHE_FILE.exists():
+        try:
+            existing = json.loads(OWN_PRODUCT_LINKS_CACHE_FILE.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            existing = {}
+    existing.update(links)
     try:
         OWN_PRODUCT_LINKS_CACHE_FILE.write_text(
-            json.dumps(links, ensure_ascii=False, indent=1), encoding="utf-8"
+            json.dumps(existing, ensure_ascii=False, indent=1), encoding="utf-8"
         )
     except OSError as e:
         print(f"[Google] Не вдалось зберегти кеш посилань ({e}) — не критично, "

@@ -85,6 +85,7 @@ scanned_at і пересканує їх, тож жоден SKU не лишаєт
 """
 import argparse
 import json
+import random
 import sys
 import time
 from datetime import datetime
@@ -104,6 +105,33 @@ from prom_competitor_pricer import (
     MATCH_MIN_SCORE, _photo_confirms_match,
 )
 from telegram_notify import send_telegram_message
+
+# ДОДАНО (2026-07-21, findings_log.md — "buybox-unreachable-outside-top970",
+# живий приклад SKU 296283: наша ціна 1314.44 грн проти реального
+# buyBox-конкурента 829 грн, +58%, ніколи не виправлено): buyBox
+# (find_best_competitor(..., own_link=...) у prom_competitor_pricer.py) —
+# ЄДИНЕ структурно надійне джерело конкурента (читається напряму з живої
+# ВЛАСНОЇ сторінки товару, не текстовий пошук — не може хибно зіставити
+# інший товар), але вимагає вже відомий own_link (prom_id + urlText), а
+# resolve_own_product_links() у generate_google_feed.py рахує його ЛИШЕ
+# для топ-970. Для ~94% каталогу поза топ-970 (той самий обсяг, який
+# сканує цей скрипт) buyBox був структурно недосяжний — лишався тільки
+# текстовий пошук, який для SKU 296283 живо дав хибний збіг (score=0.59,
+# "цукрові прикраси на торт" замість фігурок-іграшок).
+#
+# Фікс: цей скрипт тепер САМ поступово розв'язує own_link для SKU свого
+# нічного пакету (той самий дешевий, надійний механізм, що вже закрив
+# баг "Сквіші" — fetch_prom_products_by_external_ids(), НЕ /groups/list)
+# і передає його в find_best_competitor(), вмикаючи buyBox і для товарів
+# поза топ-970. Розв'язані посилання зберігаються в ТОЙ САМИЙ
+# own_product_links_cache.json, яким уже користуються prom_competitor_
+# pricer.py/generate_rozetka_feed.py — MERGE, не перезапис (див.
+# _merge_own_product_links нижче й відповідний фікс generate_google_
+# feed.py::_save_own_product_links_cache), інакше наступний прогін
+# generate_google_feed.py (кожні ~4 год, лише для топ-970) стер би цей
+# внесок повністю.
+from generate_google_feed import _resolve_url_text, OWN_PRODUCT_LINKS_CACHE_FILE, SEARCH_JITTER_RANGE
+from prom_catalog_sync import fetch_prom_products_by_external_ids
 
 # Надійність, п.4: invalid_cost_count вже рахувався й друкувався в
 # журнал/консоль щоночі, але ніхто не бачить це без ручного зазирання в
@@ -246,6 +274,89 @@ def save_state(state: dict) -> None:
     )
 
 
+def _load_own_product_links_raw() -> dict:
+    """Читає ВЕСЬ own_product_links_cache.json БЕЗ TTL-гейту (на відміну
+    від однойменного завантажувача в prom_competitor_pricer.py/
+    generate_google_feed.py, який повертає {} для файлу старшого за
+    OWN_PRODUCT_LINKS_CACHE_TTL_DAYS=7). Той TTL захищає ІНШИЙ сценарій
+    ("чи весь механізм self-match ще активно підтримується") — тут мета
+    інша: власне посилання Prom-товару (prom_id + urlText) практично
+    НІКОЛИ не змінюється, поки оголошення живе (єдиний реалістичний
+    виняток — видалено й перестворено з нуля, рідкісний випадок). Тому
+    забувати накопичене знання лише через те, що минуло 7 днів з
+    ОСТАННЬОГО запису файлу, було б марною втратою вже виконаної роботи
+    — найгірший практичний ризик застарілого запису й так покритий:
+    fetch_buybox_competitor() сам поверне None на мертву/змінену URL,
+    не помилкове зіставлення з іншим товаром."""
+    if not OWN_PRODUCT_LINKS_CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(OWN_PRODUCT_LINKS_CACHE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+def _merge_own_product_links(new_entries: dict) -> None:
+    """Read-modify-write ОБ'ЄДНАННЯ (не перезапис) у спільний
+    own_product_links_cache.json. generate_google_feed.py (кожні ~4 год,
+    лише топ-970) тепер теж мержить, а не перезаписує (той самий фікс,
+    2026-07-21) — без цього одне джерело запису стирало б внесок
+    іншого. Не викликати з порожнім new_entries — марний диск-I/O."""
+    if not new_entries:
+        return
+    existing = _load_own_product_links_raw()
+    existing.update(new_entries)
+    try:
+        OWN_PRODUCT_LINKS_CACHE_FILE.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except OSError as e:
+        print(f"[FullScan] Не вдалось зберегти кеш власних посилань ({e})", file=sys.stderr)
+
+
+def _resolve_own_links_for_batch(batch_ids: list, already_known: dict) -> dict:
+    """Розв'язує own_link (prom_id + urlText) для SKU цього пакету, яких
+    ще НЕМАЄ в кеші — вмикає buyBox для товарів поза топ-970 (див.
+    докстрінг імпортів вище). Два кроки:
+    1. Один пакетний виклик fetch_prom_products_by_external_ids() —
+       той самий надійний, дешевий шлях (НЕ /groups/list), що вже
+       закрив баг "Сквіші" (2026-07-12) — підтверджує, які з
+       unresolved_ids взагалі імпортовані в Prom, без жодного ризику
+       "невидимої групи".
+    2. Для кожного підтвердженого — один _resolve_url_text() (той самий
+       детермінований HTTP-редирект-запит, що й generate_google_feed.py
+       для топ-970), з тим самим джиттером між запитами.
+
+    Повертає лише НОВІ записи (для merge збереження) — already_known
+    НЕ дублюється у поверненому результаті."""
+    unresolved_ids = [pid for pid in batch_ids if pid not in already_known]
+    if not unresolved_ids:
+        return {}
+
+    print(f"[FullScan] Розв'язую власні посилання Prom для {len(unresolved_ids)} "
+          f"ще не відомих SKU цього пакету (вмикає buyBox)...")
+    found, indeterminate = fetch_prom_products_by_external_ids(set(unresolved_ids))
+
+    newly_resolved = {}
+    for pid in unresolved_ids:
+        product = found.get(pid)
+        if not product:
+            continue
+        prom_id = product.get("id")
+        if not prom_id:
+            continue
+        url_text = _resolve_url_text(prom_id)
+        time.sleep(random.uniform(*SEARCH_JITTER_RANGE))
+        if not url_text:
+            continue
+        newly_resolved[pid] = {"prom_id": prom_id, "url_text": url_text}
+
+    print(f"[FullScan] Розв'язано нових посилань: {len(newly_resolved)}/{len(unresolved_ids)} "
+          f"(решта — товар ще не імпортований у Prom, чи urlText не вдалось визначити; "
+          f"{len(indeterminate)} невизначено через мережеву помилку — спробує наступний прогін).")
+    return newly_resolved
+
+
 def _scope_items(catalog: dict) -> dict:
     """Обсяг для повного сканування (рішення власника 2026-07-13): stock>0
     і не уцінка/пошкоджений товар (is_clearance_item()) — НАВМИСНО без
@@ -352,6 +463,19 @@ def main() -> None:
     print(f"[FullScan] Кеш Prom-категорій: {len(prom_category_cache)} SKU "
           f"({'знайдено' if prom_category_cache else 'відсутній/застарілий — фолбек на Toysi-категорію'}).")
 
+    # ДОДАНО (2026-07-21, findings_log.md — "buybox-unreachable-outside-top970"):
+    # розв'язуємо own_link для ще не відомих SKU цього пакету ОДРАЗУ,
+    # одним пакетним запитом — вмикає buyBox у циклі нижче замість
+    # самого лише текстового пошуку. own_links тут — ПОВНИЙ, накопичений
+    # кеш (уже відомі + щойно розв'язані цього прогону), не лише нові.
+    own_links = _load_own_product_links_raw()
+    newly_resolved_links = _resolve_own_links_for_batch(batch_ids, own_links)
+    if newly_resolved_links:
+        own_links.update(newly_resolved_links)
+        _merge_own_product_links(newly_resolved_links)
+    print(f"[FullScan] Кеш власних посилань: {len(own_links)} SKU відомо всього "
+          f"({len(newly_resolved_links)} нових цього прогону).")
+
     invalid_cost_count = 0
     for i, pid in enumerate(batch_ids, start=1):
         item = scope[pid]
@@ -393,12 +517,17 @@ def main() -> None:
             }
             continue
 
-        competitor = find_best_competitor(name_rus, cost)
+        own_link = own_links.get(pid)
+        competitor = find_best_competitor(name_rus, cost, own_link)
         # ВИПРАВЛЕНО (2026-07-21, MATCH_MIN_SCORE_FOR_PRICING —
         # prom_competitor_pricer.py, живий ручний аудит власниці): скан
-        # НЕ використовує buyBox (find_best_competitor() тут викликається
-        # БЕЗ own_link) — лише текстовий пошук, ризик хибного збігу
-        # такий самий, як і в основному циклі репрайсера. Зберігаємо
+        # РАНІШЕ ніколи не використовував buyBox (find_best_competitor()
+        # викликався БЕЗ own_link) — лише текстовий пошук, ризик хибного
+        # збігу такий самий, як і в основному циклі репрайсера. Тепер
+        # (findings_log.md, "buybox-unreachable-outside-top970") own_link
+        # вище вмикає buyBox і тут, щойно посилання розв'язано — далі
+        # цей поріг усе одно лишається як захист для решти SKU, де
+        # own_link ще невідомий і буде лише текстовий пошук. Зберігаємо
         # СИРУ знайдену ціну в competitor_price нижче (для прозорості/
         # діагностики), але decide_price_for_platform() (звідки беруться
         # margin_pct/price_category, які потім РЕАЛЬНО впливають на ціну
@@ -425,10 +554,25 @@ def main() -> None:
         decision = decide_price_for_platform(cost, trusted_competitor_price, "prom", category_name, prom_category_id)
         time.sleep(SEARCH_DELAY)
 
+        # ВИПРАВЛЕНО (2026-07-21, той самий фікс, що вже є в decide_action()
+        # prom_competitor_pricer.py, знайдено САМА під час підключення
+        # buyBox сюди): verify_competitor_really_available() вимагає
+        # id/urlText КОНКРЕТНОГО оголошення — buyBox навмисно повертає
+        # їх як None (агрегована ціна серед ІНШИХ продавців, не одне
+        # оголошення), тож без цього гейту виклик завжди повертав би
+        # False для buyBox-конкурента, помилково нулюючи щойно довірену
+        # ціну нижче через "competitor_alive=False". buyBox читається
+        # НАПРЯМУ з живої власної сторінки в МОМЕНТ цього прогону — сам
+        # факт його отримання вже є підтвердженням наявності, окрема
+        # перевірка не потрібна (той самий принцип, що й в основному
+        # циклі репрайсера).
         competitor_alive = None
         if competitor:
-            competitor_alive = verify_competitor_really_available(competitor)
-            time.sleep(SEARCH_DELAY)
+            if competitor.get("source") == "buybox":
+                competitor_alive = True
+            else:
+                competitor_alive = verify_competitor_really_available(competitor)
+                time.sleep(SEARCH_DELAY)
 
         state[pid] = {
             "name": name_ukr,

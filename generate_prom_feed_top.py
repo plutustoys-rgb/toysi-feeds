@@ -41,6 +41,10 @@ def load_scan_state() -> dict:
         return {}
 
 OUTPUT_FILE     = "feeds/prom_feed_top.xml"
+# Одна константа платформи на файл — див. коментар біля PLATFORM у
+# generate_prom_feed.py (той самий фікс, 2026-07-21, привід — плутанина
+# комісій між феєдами).
+PLATFORM        = "prom"
 TARGET_COUNT    = 1000
 SAFETY_BUFFER   = 30  # тримаємось нижче ліміту Prom, бо він рахує ще й "різновиди"
 SELECT_COUNT    = TARGET_COUNT - SAFETY_BUFFER
@@ -134,7 +138,7 @@ def _margin(item: dict, pid: str = None, scan_state: dict = None, delisted_pids:
     Дві формули для самої величини маржі:
     - Товар ВЖЕ просканований full_catalog_competitor_scan.py (pid є в
       scan_state) — рахуємо РЕАЛЬНУ, конкурентно-обізнану маржу тим самим
-      decide_price_for_platform(cost, competitor_price, "prom", category),
+      decide_price_for_platform(cost, competitor_price, PLATFORM, category),
       що й сам скан (competitor_price береться лише якщо
       competitor_alive=True — мертвий конкурент трактуємо як "немає
       конкурента", той самий принцип обережності, що й в іншому коді
@@ -174,7 +178,7 @@ def _margin(item: dict, pid: str = None, scan_state: dict = None, delisted_pids:
     scan_entry = (scan_state or {}).get(pid) if pid is not None else None
     if scan_entry is not None:
         competitor_price = scan_entry.get("competitor_price") if scan_entry.get("competitor_alive") else None
-        decision = decide_price_for_platform(cost, competitor_price, "prom", item.get("category_name"))
+        decision = decide_price_for_platform(cost, competitor_price, PLATFORM, item.get("category_name"))
         if decision["category"] == "floor":
             return -1
         return decision["price"] - cost

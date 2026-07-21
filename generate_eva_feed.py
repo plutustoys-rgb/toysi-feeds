@@ -81,6 +81,11 @@ SHOP_NAME          = "PlutusToys"
 SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійович"
 SHOP_URL           = "https://plutustoys.com.ua"
 OUTPUT_FILE        = "feeds/eva_feed.xml"
+# Одна константа платформи на файл — саме брак цього й спричинив
+# сьогоднішню знахідку аудиту (цей файл спершу помилково передавав
+# "prom" замість "eva" при виклику decide_price_for_platform()). Див.
+# коментар біля PLATFORM у generate_prom_feed.py.
+PLATFORM           = "eva"
 MIN_SUPPLIER_PRICE = 20  # той самий поріг, що й Prom/Rozetka — товари дешевше собівартості постачальника пропускаємо
 
 # Пряме завдання власниці (2026-07-21) — стоп-бренди EVA, категорія KIDS.
@@ -277,7 +282,7 @@ def _build_xml(
         if item_id in overrides:
             retail = overrides[item_id]
         else:
-            decision = decide_price_for_platform(cost, None, "eva", item.get("category_name"))
+            decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))
             retail = decision["price"]
 
         stock     = item.get("stock", 0)

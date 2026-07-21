@@ -277,7 +277,7 @@ def _build_xml(
         if item_id in overrides:
             retail = overrides[item_id]
         else:
-            decision = decide_price_for_platform(cost, None, "prom", item.get("category_name"))
+            decision = decide_price_for_platform(cost, None, "eva", item.get("category_name"))
             retail = decision["price"]
 
         stock     = item.get("stock", 0)

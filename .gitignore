@@ -68,6 +68,12 @@ full_catalog_scan_state.json
 # перебудовується щоразу з живих даних Toysi, не для git.
 rozetka_feed_membership_state.json
 
+# Лічильник "застряг N прогонів" для SKU, які Prom API мовчки/явно
+# відмовляється видаляти (2026-07-21, findings_log.md
+# "prom-delete-still-rejected-for-specific-sku") — суто runtime-трекінг
+# послідовних невдалих спроб prom_catalog_sync.py, не для git.
+prom_catalog_sync_stuck_state.json
+
 # КОДВ-журнал (daily_report.py, 2026-07-20) — накопичувальний, живе на
 # VPS, публікується publish_kodv_ledger.sh в ОКРЕМУ гілку kodv-ledger-data
 # (НЕ feed-data — той самий принцип ізоляції, що й full_catalog_scan_state.json

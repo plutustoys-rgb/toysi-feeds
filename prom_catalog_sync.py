@@ -32,9 +32,11 @@
 """
 
 import argparse
+import json
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -56,6 +58,78 @@ PROM_API_URL    = "https://my.prom.ua/api/v1"
 REQUEST_TIMEOUT = 30
 
 PAGE_SIZE  = 100  # /products/list
+
+# ДОДАНО (2026-07-21, findings_log.md "prom-delete-still-rejected-for-specific-sku",
+# PR #123/#124): дослідження встановило, що для частини товарів
+# edit_by_external_id(status=deleted) структурно не працює на боці Prom
+# (публічний API v1.0, "закритий бета-тест" — жодного альтернативного
+# документованого способу немає; живо підтверджено, що товар НЕ
+# заблокований бізнес-логікою — ручне видалення в кабінеті спрацьовує
+# миттєво). Без цього лічильника `deactivate()` намагався б видалити ті
+# самі SKU щоцикл (кожні 4 год) вічно, без результату і без сповіщення.
+# Окремий стейт-файл — prom_catalog_sync.py досі не мав ЖОДНОГО
+# персистентного стану (на відміну від prom_competitor_pricer.py чи
+# generate_rozetka_feed.py).
+STUCK_STATE_FILE     = Path(__file__).parent / "prom_catalog_sync_stuck_state.json"
+STUCK_ALERT_THRESHOLD = 3  # послідовних невдалих прогонів (~12г при циклі 4г)
+
+
+def _load_stuck_state() -> dict:
+    if not STUCK_STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(STUCK_STATE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+def _save_stuck_state(state: dict) -> None:
+    try:
+        STUCK_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError as e:
+        print(f"[Sync] Не вдалось зберегти prom_catalog_sync_stuck_state.json ({e})", file=sys.stderr)
+
+
+def _update_stuck_state_and_alert(state: dict, stale_ids: list, processed: list, errors: dict,
+                                   prom_products: dict) -> dict:
+    """Оновлює лічильник послідовних невдалих спроб видалення на external_id
+    і повертає (мутований) стан. Скидає лічильник, щойно SKU успішно
+    видалився чи зник зі списку застарілих (повернувся в наявність/топ-970,
+    чи вже видалений раніше). Надсилає ОДИН Telegram-алерт за прогін для
+    щойно "застряглих" SKU (fail_count досяг порогу вперше) — не повторює
+    сповіщення про вже позначений SKU, доки він не зникне зі списку
+    (пункт 3 задачі: не спамити на кожен наступний прогін)."""
+    stale_set = set(stale_ids)
+
+    for pid in processed:
+        state.pop(pid, None)
+    for pid in list(state.keys()):
+        if pid not in stale_set:
+            state.pop(pid, None)
+
+    for pid in errors:
+        entry = state.get(pid, {"fail_count": 0, "alerted": False})
+        entry["fail_count"] = entry.get("fail_count", 0) + 1
+        state[pid] = entry
+
+    newly_stuck = [
+        pid for pid, entry in state.items()
+        if entry.get("fail_count", 0) >= STUCK_ALERT_THRESHOLD and not entry.get("alerted", False)
+    ]
+    if newly_stuck:
+        lines = []
+        for pid in newly_stuck:
+            name = (prom_products.get(pid) or {}).get("name", "")[:60]
+            lines.append(f"{pid} {name} ({state[pid]['fail_count']} невдалих спроб поспіль)")
+            state[pid]["alerted"] = True
+        send_telegram_message(
+            f"⚠️ prom_catalog_sync.py: {len(newly_stuck)} товарів не вдається видалити через Prom API "
+            f"вже {STUCK_ALERT_THRESHOLD}+ прогонів поспіль (структурний дефект edit_by_external_id, "
+            "findings_log.md \"prom-delete-still-rejected-for-specific-sku\") — потребують РУЧНОГО "
+            "видалення в кабінеті Prom (Товари -> Дії -> Видалити):\n\n" + "\n".join(lines)
+        )
+
+    return state
 
 
 TRUE_ROOT_GROUP_ID = 155011713  # "Корнева група" — підтверджено напряму 2026-07-11:
@@ -351,6 +425,14 @@ def main() -> None:
     if errors:
         for ext_id, err in list(errors.items())[:20]:
             print(f"  - {ext_id}: {err}")
+
+    stuck_state = _load_stuck_state()
+    stuck_state = _update_stuck_state_and_alert(stuck_state, stale_ids, processed, errors, prom_products)
+    _save_stuck_state(stuck_state)
+    still_stuck = sum(1 for e in stuck_state.values() if e.get("fail_count", 0) >= STUCK_ALERT_THRESHOLD)
+    if still_stuck:
+        print(f"[Sync] {still_stuck} товарів застрягли на видаленні {STUCK_ALERT_THRESHOLD}+ прогонів поспіль "
+              "(алерт надіслано щойно для нових, повторно не спамимо).")
 
 
 if __name__ == "__main__":

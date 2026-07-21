@@ -1443,6 +1443,20 @@ def main() -> None:
                                   # про зламаний _BUYBOX_RE, а не просто "мало конкурентів" (рев'ю PR #53)
     to_adjust, to_delist, delist_details = [], [], []
     default_commission_skipped = []  # (pid, name, category, price) — не потрапляють у to_adjust/to_delist
+    # ДОДАНО (2026-07-21, живий приклад SKU 260299 "Тварини і птахи",
+    # findings_log.md): SKU з непідтвердженою комісією раніше НІКОЛИ не
+    # отримували запис у price_state (лише apply_price()-цикл нижче його
+    # пише, а ці SKU туди не потрапляють). За PROM_PRICE_STATE_MAX_AGE_HOURS
+    # (30г) "свіже перевизначення" протухало, і generate_prom_feed_top.py
+    # відкочував ФІД (не лише прямий API) на найгіршу з можливих формул
+    # "конкурента нема" (1.75×cost) — підтверджено живо: 163/970 SKU топ-970
+    # (17%) саме зараз показують цю наївну ціну замість уже порахованої
+    # конкурентної. Тут лише ЗБИРАЄМО (pid, price) — сам запис у price_state
+    # робиться нижче, ПІСЛЯ гейту `if not args.apply`, щоб dry-run і надалі
+    # не мав жодного побічного ефекту на файл стану. Прямий API-патч
+    # (apply_price()) і delist лишаються заблокованими для цих SKU так само,
+    # як і раніше — змінюється лише те, що бачить ФІД.
+    feed_only_price_updates = []  # (pid, price) — лише для price_state, БЕЗ apply_price()
     competitor_scores = []  # Автономність, п.7: score КОЖНОГО використаного конкурента
 
     for pid, item in items:
@@ -1523,9 +1537,10 @@ def main() -> None:
 
         if _category_commission_is_default(category_name, prom_category_id) and not args.allow_default_commission:
             default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))
+            feed_only_price_updates.append((pid, decision["price"]))
             print(f"  -> {pid}: категорія {category_name!r} на дефолтній комісії "
                   f"({PROM_COMMISSION_DEFAULT:.0%}, не підтверджена) — виключено з auto-apply, "
-                  "потребує ручного перегляду")
+                  "потребує ручного перегляду (ціна все одно піде у фід — Vis-11.1)")
         elif decision["action"] == "adjust":
             adjust_count += 1
             to_adjust.append((pid, decision["price"], decision["margin_pct"]))
@@ -1560,6 +1575,7 @@ def main() -> None:
 
         if _category_commission_is_default(category_name, prom_category_id) and not args.allow_default_commission:
             default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))
+            feed_only_price_updates.append((pid, decision["price"]))
             continue
 
         adjust_count += 1
@@ -1674,6 +1690,18 @@ def main() -> None:
             no_competitor=no_competitor_count, errors=0,
         )
         return
+
+    # Записуємо feed_only_price_updates у price_state ТІЛЬКИ тут (--apply
+    # гілка, після return вище) — dry-run не має жодного побічного ефекту
+    # на файл стану. Без apply_price(): прямий API-патч і delist лишаються
+    # заблокованими для цих SKU, як і раніше — оновлюється лише те, що
+    # побачить generate_prom_feed_top.py на наступній генерації фіда.
+    if feed_only_price_updates:
+        now_iso = datetime.now().isoformat()
+        for pid, price in feed_only_price_updates:
+            price_state[pid] = {"price": price, "timestamp": now_iso}
+        print(f"[Pricer] {len(feed_only_price_updates)} SKU на непідтвердженій комісії — "
+              "ціна оновлена лише в price_state для фіда (без прямого API-патчу).")
 
     if delist_blocked and to_delist:
         if hard_cap_tripped:

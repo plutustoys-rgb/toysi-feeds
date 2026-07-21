@@ -42,6 +42,7 @@ from dotenv import load_dotenv
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
 from telegram_notify import send_telegram_message
+from prom_api_client import PromEditError, delist as _prom_delist
 
 # Консоль Windows (cp1251) не показує деякі символи — без цього локальний
 # тестовий запуск падає на print() (див. daily_report.py).
@@ -55,7 +56,6 @@ PROM_API_URL    = "https://my.prom.ua/api/v1"
 REQUEST_TIMEOUT = 30
 
 PAGE_SIZE  = 100  # /products/list
-EDIT_BATCH = 100  # /products/edit_by_external_id — розмір пачки на запит
 
 
 TRUE_ROOT_GROUP_ID = 155011713  # "Корнева група" — підтверджено напряму 2026-07-11:
@@ -265,33 +265,29 @@ def find_stale_external_ids(prom_products: dict, desired_ids: set, toysi_ids: se
 
 
 def deactivate(stale_ids: list) -> tuple:
-    """POST /products/edit_by_external_id, status=deleted, пачками по EDIT_BATCH.
-    Повертає (processed_ids, errors).
+    """delist() ПО ОДНОМУ товару (prom_api_client.py), з живою GET-звіркою
+    після кожного виклику. Повертає (processed_ids, errors).
 
-    Кожна пачка — окремий try/except: якщо пізня пачка впаде HTTP-помилкою
-    (5xx, rate-limit, мережевий збій), уже виконані попередні пачки НЕ
-    втрачаються з результату (раніше виняток із raise_for_status() проривався
-    з функції без return, і виклик губив облік уже реально деактивованих
-    товарів на боці Prom — жодного логу, які саме id це були)."""
+    ВИПРАВЛЕНО (2026-07-21, пряма вимога власниці "роби фікси глобальні,
+    щоб ця проблема більше не повторювалась" — знахідка з живого прикладу
+    SKU 201887/185297): стара реалізація надсилала ВЕСЬ stale_ids ОДНИМ
+    батч-POST (пачками по 100) і сліпо довіряла processed_ids/errors з
+    відповіді Prom — той самий мовчазний відхил API, вже виявлений і
+    виправлений 2026-07-18 для prom_competitor_pricer.py::delist()
+    (SKU 266990: HTTP 200, "Помилок: 0", але товар живо НЕ видалений),
+    тут не мав жодного захисту. Живо підтверджено: 3 прогони поспіль
+    (07:30/11:30/15:30) показували SKU 201887/185297 "застарілими",
+    реально оброблялось 8-90% пачки залежно від прогону — решта мовчки
+    губилась без єдиного запису в errors. Повільніше (один HTTP-виклик +
+    жива GET-звірка на SKU, замість трьох батч-запитів), але реально
+    видаляє, а не недораховує без сліду."""
     processed, errors = [], {}
-    for i in range(0, len(stale_ids), EDIT_BATCH):
-        chunk = stale_ids[i:i + EDIT_BATCH]
-        payload = [{"id": ext_id, "status": "deleted"} for ext_id in chunk]
+    for ext_id in stale_ids:
         try:
-            response = requests.post(
-                f"{PROM_API_URL}/products/edit_by_external_id",
-                headers={"Authorization": f"Bearer {PROM_API_KEY}"},
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            result = response.json()
-            processed.extend(result.get("processed_ids", []))
-            errors.update(result.get("errors", {}))
-        except requests.exceptions.RequestException as e:
-            print(f"[Sync] Пачка {i // EDIT_BATCH + 1} ({len(chunk)} товарів) впала: {e}", file=sys.stderr)
-            for ext_id in chunk:
-                errors[ext_id] = f"batch request failed: {e}"
+            _prom_delist(ext_id)
+            processed.append(ext_id)
+        except (requests.exceptions.RequestException, PromEditError) as e:
+            errors[ext_id] = str(e)
     return processed, errors
 
 

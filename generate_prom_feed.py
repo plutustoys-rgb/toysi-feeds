@@ -22,6 +22,21 @@ SHOP_NAME          = "PlutusToys"
 SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійович"
 SHOP_URL           = "https://prom.ua"
 OUTPUT_FILE        = "feeds/prom_feed.xml"
+
+# ДОДАНО (2026-07-21, пряме питання власниці: "не заплутаєтесь в
+# комісіях? різні фіди різні комісії різний контроль" — прямий привід:
+# generate_eva_feed.py спершу викликав decide_price_for_platform(...,
+# "prom", ...) замість "eva", копіпаст-помилка з шаблону, знайдена
+# лише аудитом, не структурою коду). Кожен генератор фіду тепер має
+# ОДНУ, локальну константу PLATFORM — усі виклики decide_price_for_
+# platform()/compute_total_commission() у цьому файлі посилаються на
+# НЕЇ, не на окремі рядкові літерали в кожному місці виклику. Це не
+# усуває ризик повністю (можна помилитись і в самій константі), але
+# зводить точку можливої помилки до ОДНОГО рядка на файл замість
+# кількох розкиданих — копіпаст усього файлу як шаблону для нового
+# майданчика тепер вимагає змінити ЧИТАБЕЛЬНО ОДНЕ місце, а не шукати
+# кожен виклик окремо.
+PLATFORM           = "prom"
 MIN_SUPPLIER_PRICE = 20  # товари дешевше цієї ціни постачальника пропускаємо
 
 # Товари категорії "Уцінка"/"Уценка" (обидва написання зустрічаються в каталозі
@@ -320,7 +335,7 @@ def default_retail_price(cost: float, category_name: str = "") -> float:
     ціна = max(нижня_межа, cost*NO_COMPETITOR_MULT) — а НЕ стара calc_price()
     вище, яка комісію взагалі не віднімала і на частині категорій/діапазонів
     цін давала нульову чи від'ємну маржу після реальної комісії Prom."""
-    return decide_price_for_platform(cost, None, "prom", category_name)["price"]
+    return decide_price_for_platform(cost, None, PLATFORM, category_name)["price"]
 
 
 # Toysi записує бренд MIC непослідовно (різний регістр) — підтверджено
@@ -441,7 +456,7 @@ def _build_xml(
             retail = overrides[item_id]
             overridden_count += 1
         else:
-            decision = decide_price_for_platform(cost, None, "prom", item.get("category_name"))
+            decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))
             retail = decision["price"]
             if decision["price"] <= decision["floor"] + 0.005:
                 floor_bound_count += 1

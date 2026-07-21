@@ -161,6 +161,17 @@ jobs:
         continue-on-error: true
         run: python generate_bing_feed.py
 
+      # ДОДАНО (2026-07-21, задача власниці — підготовка EVA Маркетплейс,
+      # PR #118): на відміну від Meta/Bing вище, цей скрипт НЕ читає
+      # own_product_links_cache.json — власний виклик select_top_items(),
+      # без залежності від generate_google_feed.py цього ж прогону.
+      # continue-on-error: той самий best-effort статус — це підготовка
+      # коду ДО реєстрації на EVA (власниця ще не подала заявку), збій
+      # тут не повинен блокувати публікацію критичних Prom/Rozetka фідів.
+      - name: Generate EVA Marketplace feed (best-effort, prep-only)
+        continue-on-error: true
+        run: python generate_eva_feed.py
+
       # continue-on-error: цей крок реально змінює ціни в Prom через API
       # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими
       # зовнішніми залежностями. Збій тут не повинен зупиняти генерацію й
@@ -441,6 +452,13 @@ jobs:
             git add -f feeds/bing_feed.xml
           else
             echo "::warning::feeds/bing_feed.xml відсутній/порожній цього прогону — Bing-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
+          fi
+          # Той самий best-effort/умовний git add, що й для meta/bing вище —
+          # EVA-феєд (PR #118, prep-only) так само необов'язковий.
+          if [ -s feeds/eva_feed.xml ]; then
+            git add -f feeds/eva_feed.xml
+          else
+            echo "::warning::feeds/eva_feed.xml відсутній/порожній цього прогону — EVA-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
           fi
           git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"

@@ -255,8 +255,16 @@ def create_receipt(
         ],
         "payments": [{"type": payment_type, "value": round(total_amount * 100)}],
     }
-    if order_id:
-        body["order_id"] = str(order_id)
+    # ВИПРАВЛЕНО (2026-07-22, живий крах усіх 6 замовлень на першому
+    # реальному прогоні після активації ключів — 422 Unprocessable Entity):
+    # Checkbox вимагає, щоб order_id був СПРАВЖНІМ UUID
+    # ({"loc":["body","order_id"],"msg":"Невірне значення uuid",
+    # "type":"type_error.uuid"} — живо підтверджено прямим запитом), а наш
+    # внутрішній internal_order_id ("prom_414634349" тощо) — не UUID.
+    # Поле задокументоване як необов'язкове (Swagger) — просто НЕ
+    # надсилаємо його: наше власне зіставлення замовлення з чеком уже
+    # робиться через checkbox_receipt_id (значення З ВІДПОВІДІ Checkbox,
+    # збережене в orders_db.py), не потребує окремого поля в запиті.
 
     headers = {"X-License-Key": CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
     try:
@@ -267,6 +275,16 @@ def create_receipt(
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        # ВИПРАВЛЕНО (2026-07-22, той самий інцидент): попередня версія
+        # друкувала лише str(e) ("... 422 Client Error: Unprocessable
+        # Entity for url: ...") — БЕЗ тіла відповіді, де Checkbox реально
+        # пояснює ЩО невалідне (detail/loc/msg). Без цього перше живе
+        # розслідування зайняло окремий ручний запит поза журналом.
+        raise CheckboxAPIError(
+            f"POST /receipts/sell відхилено (замовлення {order_id}): {e} — "
+            f"тіло відповіді: {response.text[:500]}"
+        ) from e
     except requests.exceptions.RequestException as e:
         raise CheckboxAPIError(f"помилка з'єднання (POST /receipts/sell, замовлення {order_id}): {e}") from e
 

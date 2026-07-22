@@ -325,6 +325,35 @@ ROTATED_OUT_BATCH_LIMIT = 1000
 # додатково на прогін, прийнятно для сервісу кожні 4 години.
 LIVE_LOOKUP_EXTRA_BATCH_LIMIT = 300
 
+# ДОДАНО (2026-07-22, живий приклад SKU 302166/302185, живо знайдено власницею
+# через скріншоти "звичайної рандомної вибірки", де наша ціна помітно вища за
+# видимих конкурентів): own_product_links_cache.json (джерело buyBox для
+# find_best_competitor()) ДОСІ РАХУЄ ЛИШЕ generate_google_feed.py — цей файл
+# лише ЧИТАЄ його (_load_own_product_links_cache() вище, пасивно). Живо
+# підтверджено: 969/970 (99.9%!) поточного топ-970 НЕ мають own_link, тобто
+# find_best_competitor() для майже всього каталогу йде в НЕНАДІЙНИЙ fallback
+# (текстовий GraphQL-пошук), не в buyBox — саме той клас помилки, що вже
+# ставався мені самій цієї сесії (перевірка конкурентності без own_link).
+# generate_google_feed.py рахує кеш лише для СВОГО топ-970 знімку на СВІЙ
+# розклад — рідко збігається з топ-970 САМЕ цього прогону (ротація щодня).
+#
+# Фікс: цей файл ТЕПЕР сам донараховує own_link для SKU з ПОТОЧНОГО
+# батчу (items нижче), яких нема в кеші — той самий детермінований механізм
+# (fetch_prom_products_by_external_ids + resolve_own_product_links), що вже
+# перевірений і використовується generate_google_feed.py, лише importовано
+# (лінивий імпорт УСЕРЕДИНІ функції — generate_google_feed.py імпортує
+# SEARCH_DELAY ЗВІДСИ на своєму верхньому рівні, тож прямий top-level імпорт
+# звідти сюди дав би циклічний імпорт; лінивий імпорт всередині main()
+# уникає цього, бо на момент виклику цей модуль уже повністю завантажений).
+#
+# Обмежено батчем за прогін (не всі 969 одразу) — той самий принцип
+# self-throttling, що й ROTATED_OUT_BATCH_LIMIT/LIVE_LOOKUP_EXTRA_BATCH_LIMIT
+# вище: кожен запис — 2 додаткові живі HTTP-запити (by_external_id +
+# urlText-редирект), за 6 прогонів/добу (кожні 4 год) 200/прогін покриває
+# ~970 SKU за трохи більше доби — прийнятний компроміс між швидкістю
+# закриття прогалини й навантаженням на prom.ua/Prom API за один прогін.
+OWN_LINK_RESOLVE_BATCH_LIMIT = 200
+
 # Мігровано на GitHub Actions 2026-07-13 (той самий workflow update-feeds.yml,
 # що й generate_prom_feed.py) — контейнер тепер тригериться раз на 4 год
 # (cron), а не раз на добу systemd-таймером на VPS. Без цього гейту повний
@@ -1544,6 +1573,25 @@ def main() -> None:
     items = list(top_catalog.items())[:args.limit] + list(live_lookup_extra.items())
     print(f"[Pricer] Обробляю {len(items)} товарів (--limit {args.limit} + "
           f"{len(live_lookup_extra)} поза топ-970 без даних скану)...")
+
+    # Донарахування own_link для ПОТОЧНОГО батчу — див. коментар біля
+    # OWN_LINK_RESOLVE_BATCH_LIMIT вище (чому цей крок взагалі потрібен).
+    missing_own_link_ids = [pid for pid, _ in items if pid not in own_product_links][:OWN_LINK_RESOLVE_BATCH_LIMIT]
+    if missing_own_link_ids:
+        from generate_google_feed import resolve_own_product_links  # лінивий імпорт, див. коментар вище
+        from prom_catalog_sync import fetch_prom_products_by_external_ids
+
+        print(f"[Pricer] Кеш власних посилань не покриває {len(missing_own_link_ids)} SKU цього "
+              f"батчу (з {sum(1 for pid, _ in items if pid not in own_product_links)} загалом) — "
+              f"донараховую детермінованим запитом (не пошуком)...")
+        found_products, _indeterminate = fetch_prom_products_by_external_ids(set(missing_own_link_ids))
+        if found_products:
+            missing_catalog_subset = {pid: item for pid, item in items if pid in found_products}
+            newly_resolved = resolve_own_product_links(missing_catalog_subset, found_products)
+            own_product_links.update(newly_resolved)
+            print(f"[Pricer] Донараховано {len(newly_resolved)}/{len(missing_own_link_ids)} нових "
+                  f"посилань (buyBox тепер доступний для них; решта — товар ще не імпортований у "
+                  f"Prom чи urlText не вдалось визначити).")
 
     adjust_count, delist_count, no_competitor_count, error_count = 0, 0, 0, 0
     buybox_count = 0

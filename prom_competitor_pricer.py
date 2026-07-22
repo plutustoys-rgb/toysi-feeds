@@ -411,24 +411,32 @@ def _fetch_image_phash(url: str) -> "imagehash.ImageHash | None":
 
 
 def _photo_confirms_match(own_pictures: list | None, competitor_image: str | None) -> bool:
-    """True ЛИШЕ якщо перцептивна відстань між нашим фото (перше з
-    own_pictures, сире фото Toysi — на відміну від generate_google_feed.py,
-    де prom_product.get("main_image") пріоритизується НАД Toysi-фото,
-    тут такої пріоритизації немає: own_pictures[0] береться напряму)
-    і фото кандидата <=
-    PHOTO_MATCH_MAX_DISTANCE. Будь-яка невизначеність (немає жодного з
-    двох фото, помилка завантаження/хешування) -> False — не рятуємо
-    кандидата "про всяк випадок", лишаємо на безпечний дефолт
-    MATCH_MIN_SCORE_FOR_PRICING (немає конкурента для ціноутворення)."""
+    """True якщо перцептивна відстань МІЖ БУДЬ-ЯКИМ з own_pictures і фото
+    кандидата <= PHOTO_MATCH_MAX_DISTANCE (перший збіг зупиняє перебір).
+    Перевіряємо всі фото, а не лише own_pictures[0]: перше фото Toysi
+    часто колаж/демо-фото з рукою (саме так було пропущено реальний
+    збіг для SKU 302166 — акуратне одиночне фото конкурента не
+    співпало з композиційно іншим першим фото), а пізніше фото в тому
+    ж списку буває чистим одиночним кадром товару. На відміну від
+    generate_google_feed.py, де prom_product.get("main_image")
+    пріоритизується НАД Toysi-фото, тут такої пріоритизації немає —
+    беремо own_pictures напряму. Будь-яка невизначеність (немає жодного
+    свого фото, немає фото кандидата, усі хеші не порахувались) ->
+    False — не рятуємо кандидата "про всяк випадок", лишаємо на
+    безпечний дефолт MATCH_MIN_SCORE_FOR_PRICING (немає конкурента для
+    ціноутворення)."""
     if not own_pictures or not competitor_image:
-        return False
-    own_hash = _fetch_image_phash(own_pictures[0])
-    if own_hash is None:
         return False
     competitor_hash = _fetch_image_phash(competitor_image)
     if competitor_hash is None:
         return False
-    return (own_hash - competitor_hash) <= PHOTO_MATCH_MAX_DISTANCE
+    for own_picture in own_pictures:
+        own_hash = _fetch_image_phash(own_picture)
+        if own_hash is None:
+            continue
+        if (own_hash - competitor_hash) <= PHOTO_MATCH_MAX_DISTANCE:
+            return True
+    return False
 
 
 # ВИДАЛЕНО (2026-07-18, пряме рішення власника): "грація" 1.5x (floor міг
@@ -601,8 +609,48 @@ def _normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", (name or "").lower(), flags=re.UNICODE)).strip()
 
 
+def _token_sort_key(name: str) -> str:
+    """Токени нормалізованої назви, відсортовані алфавітно й склеєні назад
+    у рядок — той самий трюк, що й "token sort ratio" в бібліотеках на
+    кшталт fuzzywuzzy, без нової залежності (лише stdlib difflib)."""
+    return " ".join(sorted(_normalize_name(name).split()))
+
+
 def _similarity(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, _normalize_name(a), _normalize_name(b)).ratio()
+    """СИСТЕМНЕ ПОКРАЩЕННЯ (2026-07-22, пряма вимога власниці "виправити
+    системно" — за тиждень практично не бачили конкурентів): чистий
+    посимвольний SequenceMatcher (як було) катастрофічно занижує схожість,
+    коли дві назви описують ТОЙ САМИЙ товар іншим порядком слів чи з
+    зайвими/відсутніми словами-наповнювачами (типово для різних продавців
+    одного товару Toysi) — SequenceMatcher бачить це як велику "вставку/
+    видалення" в середині рядка, хоча зміст ідентичний. Живий приклад
+    (SKU 145422 "Каталка Мотоцикл, рожевий"): конкурент "Каталка Мотоцикл,
+    розовый" мав би score близько 1.0 при порівнянні за словами, але
+    порядок символів трохи інший через кирилицю/розкладку.
+
+    Береться МАКСИМУМ із двох метрик:
+    - "сирий" посимвольний ratio (стара поведінка, не гіршає ні для
+      одного випадку, де вона й так була найкращою);
+    - ratio між версіями з відсортованими словами (не бачить різниці в
+      ПОРЯДКУ слів взагалі, все ще чутливий до РІЗНИХ слів — два
+      набори токенів, що не перетинаються, дадуть низький ratio навіть
+      посортовані).
+
+    Обидва компоненти — ПОСИМВОЛЬНІ метрики на нормалізованому тексті,
+    жодна семантика/синоніми не додається (і не мала б — "лялька" й
+    "пупс" лишаються різними словами, як і мають бути) — це вужче,
+    контрольованіше покращення, ніж повна заміна на embedding-подібний
+    підхід, з передбачуваним, тестованим ефектом лише на порядок/зайві
+    слова.
+
+    ВАЖЛИВО: підвищення score саме собою МОЖЕ інфляціювати оцінку для
+    товарів з тими самими "родовими" словами (типу "іграшка антистрес
+    для дітей"), але РІЗНИМ конкретним розміром/об'ємом — той ризик
+    покриває окремий гейт _size_tokens_conflict(), тепер застосований і
+    до довіри ЦІНІ (не лише delist, як раніше), див. decide_action()."""
+    raw_ratio = difflib.SequenceMatcher(None, _normalize_name(a), _normalize_name(b)).ratio()
+    token_ratio = difflib.SequenceMatcher(None, _token_sort_key(a), _token_sort_key(b)).ratio()
+    return max(raw_ratio, token_ratio)
 
 
 # Цільовий гейт проти конкретного класу хибних збігів, знайденого аудитом
@@ -956,6 +1004,23 @@ def decide_action(
     з prom_category_cache.json, якщо є — передається в
     decide_price_for_platform(), де перевіряється ПЕРШОЮ (PROM_CATEGORY_ID_
     COMMISSION), з фолбеком на Toysi-based category_name."""
+    # ДОДАНО (2026-07-22, системний фікс ідентифікації — пряма вимога
+    # власниці "виправити системно, щоб більше не повертатися"): _similarity()
+    # тепер бере максимум із посимвольного й "token sort" ratio (див.
+    # коментар там-таки) — це підвищує score для назв з іншим порядком
+    # слів, АЛЕ так само підвищило б score для двох РІЗНИХ розмірів/об'ємів
+    # одного родового товару ("іграшка антистрес 5см" проти "іграшка
+    # антистрес 14см" — багато спільних токенів, високий token-ratio).
+    # _size_tokens_conflict() уже існував, але застосовувався ЛИШЕ до
+    # delist — довіра ЦІНІ (adjust) досі не мала цього захисту. Тепер
+    # конфлікт розмірів блокує довіру ціні так само, як і delist, для
+    # ОБОХ шляхів нижче (прямий поріг і фото-підтвердження). BuyBox не
+    # має реальної "назви" (лише службовий рядок "BuyBox: N ...") — там
+    # немає розмірних токенів для конфлікту, гейт для нього мовчки не
+    # спрацьовує, як і задумано (buyBox структурно не може мати цей
+    # ризик).
+    size_conflict_for_pricing = bool(competitor) and _size_tokens_conflict(our_name, competitor.get("name") or "")
+
     # ВИПРАВЛЕНО (2026-07-21, MATCH_MIN_SCORE_FOR_PRICING — див. коментар
     # там-таки): конкурент з score нижче цього порогу НЕ трактується як
     # "знайдений" для розрахунку ЦІНИ (лишається "знайденим" для решти
@@ -963,7 +1028,9 @@ def decide_action(
     # просто ціна рахується так, ніби конкурента для формули немає).
     # BuyBox (score=1.0 завжди) цим порогом не зачіпається взагалі.
     trusted_competitor_price = (
-        competitor["price"] if competitor and competitor["score"] >= MATCH_MIN_SCORE_FOR_PRICING else None
+        competitor["price"]
+        if competitor and not size_conflict_for_pricing and competitor["score"] >= MATCH_MIN_SCORE_FOR_PRICING
+        else None
     )
     # ДОДАНО (2026-07-21, PHOTO_MATCH_MAX_DISTANCE — пряме прохання
     # власниці: порівнювати ще й по фото, бо назва відрізняється частіше,
@@ -973,6 +1040,7 @@ def decide_action(
     if (
         trusted_competitor_price is None
         and competitor
+        and not size_conflict_for_pricing
         and competitor["score"] >= MATCH_MIN_SCORE
         and _photo_confirms_match(own_pictures, competitor.get("image"))
     ):
@@ -990,7 +1058,9 @@ def decide_action(
             # SequenceMatcher сам по собі не бачить різницю між "розмір
             # відрізняється" і "формулювання відрізняється". Це лишається
             # актуальним ЛИШЕ для НЕ-buyBox (текстовий пошук) джерела.
-            if _size_tokens_conflict(our_name, competitor["name"]):
+            # Перевикористовуємо вже обчислений size_conflict_for_pricing
+            # (той самий гейт, порахований один раз) — не рахуємо вдруге.
+            if size_conflict_for_pricing:
                 size_conflict = True
             else:
                 action = "delist"

@@ -458,6 +458,27 @@ def _photo_confirms_match(own_pictures: list | None, competitor_image: str | Non
 #      (зберігається в price_state["_meta"]["last_avg_margin_pct"]).
 #   3. Завелика частка товарів із ВЖЕ відомою ціною (price_state) раптом
 #      отримує СУТТЄВО іншу ціну за один прогін.
+#
+# ВИПРАВЛЕНО (2026-07-22, пряма вимога власниці "вирішить системно" —
+# сигнал 3 спрацьовував ВДРУГЕ поспіль одразу після легітимної зміни
+# ціноутворення: вперше після PR #122 (ProSale econom-множник,
+# 2026-07-21, форсовано через --force-circuit-breaker за прямим
+# дозволом власниці), вдруге одразу після PR #126/#127 (два-рівневий
+# вибір конкурента + token-sort схожість): 73% товарів змінили ціну
+# >5% за прогін, СЕРЕДНЯ МАРЖА ПРИ ЦЬОМУ БУЛА ЗДОРОВОЮ (47%, далеко
+# вище порогу 8%) — сигнали 1/2 (реальна небезпека: маржа завалюється)
+# НЕ спрацювали, спрацював лише сигнал 3 (масштаб/кількість змін), який
+# не розрізняв "знайшли КРАЩОГО конкурента" (мета самого фіксу) від
+# "той самий конкурент раптом видає геть іншу ціну" (реальна ознака
+# бага парсингу/скрапінгу). Тепер сигнал 3 порівнює ціну лише коли
+# ОБИДВА прогони мали ту саму ІДЕНТИЧНІСТЬ джерела конкурента
+# (price_state[pid]["competitor_key"], _competitor_identity_key() —
+# "buybox" чи конкретний Prom id) — новий/інший/раніше відсутній
+# конкурент більше не рахується як "суттєва зміна", а лише РЕАЛЬНИЙ
+# стрибок ціни ТОГО САМОГО оголошення далі зупиняє --apply. Сигнали 1/2
+# (маржа) НЕ чіпались — вони й далі ловлять справжню небезпеку (каталог
+# стає збитковим) незалежно від того, чи змінилась ідентичність
+# конкурента.
 CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT = 8.0
 CIRCUIT_BREAKER_MAX_MARGIN_DROP_PCT = 15.0
 CIRCUIT_BREAKER_PRICE_CHANGE_THRESHOLD = 0.05
@@ -885,11 +906,29 @@ def verify_competitor_really_available(competitor: dict) -> bool:
     return match.group(1).endswith("/InStock")
 
 
+def _competitor_identity_key(competitor: dict | None) -> str | None:
+    """Стабільний ідентифікатор ДЖЕРЕЛА конкурентної ціни — не самої ціни,
+    а ТОГО Ж САМОГО оголошення/сигналу, з якого вона порахована. "buybox"
+    для buyBox (сумарний, без id конкретного оголошення, але завжди той
+    самий ТИП сигналу для цього SKU), Prom `id` для текстового пошуку.
+    None, якщо конкурента немає взагалі, чи ідентичність не збережена
+    (шлях reuse-скану поза топ-970 не має id) — "не можемо довести" тут
+    навмисно НЕ трактується як "те саме", див. use у evaluate_circuit_breaker()."""
+    if not competitor:
+        return None
+    if competitor.get("source") == "buybox":
+        return "buybox"
+    cid = competitor.get("id")
+    return str(cid) if cid is not None else None
+
+
 def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict) -> tuple[list, list, float | None]:
     """P0-3: див. коментар біля CIRCUIT_BREAKER_* констант. `to_adjust` —
-    список (pid, price, margin_pct) кандидатів на коригування цього
-    прогону. `to_delist` — список pid, призначених на видалення цього
-    прогону (ДОДАНО 2026-07-18, незалежний аудит PR #95 —
+    список (pid, price, margin_pct, competitor_key) кандидатів на
+    коригування цього прогону (competitor_key — див. _competitor_identity_key(),
+    ДОДАНО 2026-07-22, див. докстрінг нижче). `to_delist` — список pid,
+    призначених на видалення цього прогону (ДОДАНО 2026-07-18, незалежний
+    аудит PR #95 —
     code_report_2026-07-18_pt4.md: до цього фіксу жоден із трьох сигналів
     нижче взагалі не бачив delist, і масовий сплеск видалень проходив би
     повз circuit breaker непоміченим). Повертає (delist_reasons,
@@ -929,14 +968,32 @@ def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict
     if not to_adjust:
         return delist_reasons, adjust_reasons, None
 
-    avg_margin_this_run = sum(m for _, _, m in to_adjust) / len(to_adjust)
+    avg_margin_this_run = sum(m for _, _, m, _ in to_adjust) / len(to_adjust)
 
     known_count = 0
     changed_count = 0
-    for pid, price, _ in to_adjust:
+    for pid, price, _, competitor_key in to_adjust:
         prior_entry = price_state.get(pid)
         prior_price = prior_entry.get("price") if isinstance(prior_entry, dict) else None
         if not prior_price:
+            continue
+        # ДОДАНО (2026-07-22, пряма вимога власниці "вирішити системно" —
+        # цей сигнал двічі поспіль хибно спрацював саме тоді, коли фікс
+        # ідентифікації РЕАЛЬНО знаходив кращих/нових конкурентів, не
+        # коли щось зламалось): порівнювати ціну як "суттєву зміну" має
+        # сенс лише якщо обидва прогони рахували її з ОДНОГО й того
+        # самого джерела конкурента — інакше "змінилась ціна" насправді
+        # означає "знайшли кращого конкурента", саме те, для чого й
+        # існують find_best_competitor()/decide_action(). Стабільна
+        # ідентичність джерела ("buybox" чи конкретний Prom `id`)
+        # зберігається в price_state[pid]["competitor_key"] з
+        # попереднього прогону (_competitor_identity_key()); None з
+        # будь-якого боку (buyBox без id, reuse-скан поза топ-970, запис
+        # ще ДО цього поля) чи розбіжність ключів -> НЕ можемо довести,
+        # що це те саме джерело, тож виключаємо пару з обчислення замість
+        # вгадування в будь-який бік (ні "known", ні "changed").
+        prior_key = prior_entry.get("competitor_key")
+        if prior_key is None or competitor_key is None or prior_key != competitor_key:
             continue
         known_count += 1
         if abs(price - prior_price) / prior_price > CIRCUIT_BREAKER_PRICE_CHANGE_THRESHOLD:
@@ -1512,13 +1569,13 @@ def main() -> None:
 
         if _category_commission_is_default(category_name, prom_category_id) and not args.allow_default_commission:
             default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))
-            feed_only_price_updates.append((pid, decision["price"]))
+            feed_only_price_updates.append((pid, decision["price"], _competitor_identity_key(decision["competitor"])))
             print(f"  -> {pid}: категорія {category_name!r} на дефолтній комісії "
                   f"({PROM_COMMISSION_DEFAULT:.0%}, не підтверджена) — виключено з auto-apply, "
                   "потребує ручного перегляду (ціна все одно піде у фід — Vis-11.1)")
         elif decision["action"] == "adjust":
             adjust_count += 1
-            to_adjust.append((pid, decision["price"], decision["margin_pct"]))
+            to_adjust.append((pid, decision["price"], decision["margin_pct"], _competitor_identity_key(decision["competitor"])))
         elif decision["action"] == "delist":
             delist_count += 1
             to_delist.append(pid)
@@ -1550,12 +1607,15 @@ def main() -> None:
 
         if _category_commission_is_default(category_name, prom_category_id) and not args.allow_default_commission:
             default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))
-            feed_only_price_updates.append((pid, decision["price"]))
+            # None: цей шлях (reuse даних нічного скану) не зберігає id
+            # конкретного оголошення конкурента — немає стабільної
+            # ідентичності, яку можна було б порівняти між прогонами.
+            feed_only_price_updates.append((pid, decision["price"], None))
             continue
 
         adjust_count += 1
         rotated_out_adjust_count += 1
-        to_adjust.append((pid, decision["price"], decision["margin_pct"]))
+        to_adjust.append((pid, decision["price"], decision["margin_pct"], None))
 
     if rotated_out.items():
         print(f"[Pricer] Поза топ-970 (reuse даних скану): {rotated_out_adjust_count} "
@@ -1673,8 +1733,8 @@ def main() -> None:
     # побачить generate_prom_feed_top.py на наступній генерації фіда.
     if feed_only_price_updates:
         now_iso = datetime.now().isoformat()
-        for pid, price in feed_only_price_updates:
-            price_state[pid] = {"price": price, "timestamp": now_iso}
+        for pid, price, competitor_key in feed_only_price_updates:
+            price_state[pid] = {"price": price, "timestamp": now_iso, "competitor_key": competitor_key}
         print(f"[Pricer] {len(feed_only_price_updates)} SKU на непідтвердженій комісії — "
               "ціна оновлена лише в price_state для фіда (без прямого API-патчу).")
 
@@ -1751,10 +1811,10 @@ def main() -> None:
     delisted_since = price_state.setdefault("_delisted_since", {})
     # ЗАБЛОКОВАНО (adjust_blocked) -> порожній список, той самий безпечний
     # шаблон, що вже застосований нижче для to_delist.
-    for pid, price, _ in ([] if adjust_blocked else to_adjust):
+    for pid, price, _, competitor_key in ([] if adjust_blocked else to_adjust):
         try:
             apply_price(pid, price)
-            price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat()}
+            price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat(), "competitor_key": competitor_key}
             # ВИПРАВЛЕНО (2026-07-18, той самий інцидент, що й нижче): якщо
             # SKU раніше було підтверджено видаленим, а тепер знову
             # конкурентний (opinion "adjust", не "delist") — прибираємо

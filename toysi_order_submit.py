@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 
 import requests
@@ -276,6 +277,88 @@ def fetch_order_statuses(toysi_order_ids: list) -> dict:
         raise ToysiAPIError("не вдалося перевірити жоден chunk — див. лог вище")
 
     return results
+
+
+# Пауза між викликами order_positions (2026-07-22, знахідка власниці — Графа 6
+# КОДВ) — той самий ліміт "не більше 5 запитів/сек", що вже документований для
+# order_status вище, але тут КОЖЕН виклик — це ОКРЕМИЙ HTTP-запит (на відміну
+# від order_status, що батчить до 500 id в один запит), бо документація
+# toysi.ua/api-doc.php прямо каже: "Для метода order_positions можно указать
+# только один номер заказа". 0.25с = 4 запити/сек, безпечно нижче ліміту.
+ORDER_POSITIONS_REQUEST_DELAY_SEC = 0.25
+
+
+def fetch_order_positions(toysi_order_id) -> dict | None:
+    """order_positions (2026-07-22, знахідка власниці — Графа 6 КОДВ):
+    ЄДИНИЙ спосіб дістати РЕАЛЬНУ суму, що йде на списання з депозиту Toysi
+    за конкретне замовлення — на відміну від каталогу (parser.py), який
+    віддає лише ПОТОЧНУ базову оптову ціну товару БЕЗ персональної знижки,
+    order_positions повертає "sum_with_discount" — фактичну суму ЦЬОГО
+    замовлення з ЗАСТОСОВАНОЮ на момент його створення персональною знижкою
+    (personal_discount, що змінювалась в часі 5%->15% — саме тому catalog-
+    based оцінка структурно не могла бути точною для старих замовлень).
+
+    Живо підтверджено на 6 реальних замовленнях: сума sum_with_discount
+    ТОЧНО дорівнює реальному списанню з депозиту (671.92₴) — БЕЗ жодного
+    додавання. Гіпотеза власниці про окремий фіксований збір Toysi
+    "Збірка" (15₴/замовлення) перевірена й ВІДХИЛЕНА (daily_report.py,
+    _real_toysi_order_cost() — додавання дало б невірні 761.92₴); "Збірка"
+    в ЦІЙ відповіді API так само НЕ присутня (перевірено проти документації
+    toysi.ua/api-doc.php — поле відсутнє в списку).
+
+    Повертає dict з полями (усі суми — рядки за документацією Toysi, парсити
+    на float у виклику): order_id, status, sum, personal_discount,
+    sum_with_discount, positions_price, positions_discount_price,
+    positions_name, positions_quantity, shipping_moneyback. None — якщо
+    запит не вдався, замовлення не знайдено, чи відповідь фатальна
+    (response_code)."""
+    if not TOYSI_AUTH_USER or not TOYSI_API_KEY:
+        raise RuntimeError(
+            "TOYSI_AUTH_USER / TOYSI_API_KEY не задані. "
+            "Взяти на toysi.ua/contact_info/?api=info і прописати в .env"
+        )
+
+    payload = {
+        "auth_user":   TOYSI_AUTH_USER,
+        "auth_key":    TOYSI_API_KEY,
+        "api_version": 1,
+        "api_method":  "order_positions",
+        "order_id":    str(toysi_order_id),
+    }
+
+    try:
+        response = requests.post(TOYSI_API_URL, data=payload, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"[toysi_order_submit] order_positions({toysi_order_id}): помилка з'єднання: {e}", file=sys.stderr)
+        return None
+    finally:
+        time.sleep(ORDER_POSITIONS_REQUEST_DELAY_SEC)
+
+    try:
+        data = response.json()
+    except ValueError:
+        print(
+            f"[toysi_order_submit] order_positions({toysi_order_id}): невалідна відповідь "
+            f"(не JSON): {response.text[:300]}", file=sys.stderr,
+        )
+        return None
+
+    if not isinstance(data, dict):
+        print(
+            f"[toysi_order_submit] order_positions({toysi_order_id}): неочікувана форма "
+            f"відповіді (не dict): {response.text[:300]}", file=sys.stderr,
+        )
+        return None
+
+    if "response_code" in data:
+        print(
+            f"[toysi_order_submit] order_positions({toysi_order_id}): "
+            f"{data.get('response_code')} — {data.get('response_msg')}", file=sys.stderr,
+        )
+        return None
+
+    return data.get(str(toysi_order_id))
 
 
 if __name__ == "__main__":

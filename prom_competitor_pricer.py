@@ -76,7 +76,7 @@ from generate_prom_feed import fetch_russian_text
 from competitor_pricing import (
     decide_price_for_platform, load_prom_price_state, save_prom_price_state,
     PROM_CATEGORY_COMMISSION, PROM_CATEGORY_ID_COMMISSION, PROM_COMMISSION_DEFAULT, _BAD_NAME_MARKERS,
-    is_bundle_listing,
+    is_bundle_listing, MIN_PROFIT_COMPETITOR_FLOOR,
 )
 from telegram_notify import send_telegram_message
 from prom_api_client import PromEditError, apply_price, delist
@@ -479,7 +479,28 @@ def _photo_confirms_match(own_pictures: list | None, competitor_image: str | Non
 # (маржа) НЕ чіпались — вони й далі ловлять справжню небезпеку (каталог
 # стає збитковим) незалежно від того, чи змінилась ідентичність
 # конкурента.
-CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT = 8.0
+#
+# ВИПРАВЛЕНО (2026-07-22, друге питання власниці в тій самій розмові —
+# "чого 8% наче у нас 3% було?"): поріг сигналу 1 раніше був відірваним
+# магічним числом 8.0, вписаним 2026-07-17 — через 4 дні ПІСЛЯ того, як
+# власниця напряму вирішила знизити floor для конкурентних SKU з 25% до
+# 3% (MIN_PROFIT_COMPETITOR_FLOOR, competitor_pricing.py, 2026-07-13),
+# і ніколи не звірявся з цим рішенням. Наслідок: коли РЕАЛЬНО багато
+# SKU законно впираються у власний дозволений floor 3% (саме те, для
+# чого MIN_PROFIT_COMPETITOR_FLOOR і існує — агресивна конкурентна
+# ціна), середня маржа прогону структурно опиняється БЛИЗЬКО до 3%,
+# набагато нижче старого 8% — сигнал 1 бив тривогу на здоровій,
+# очікуваній роботі системи, не на реальній проблемі. Тепер поріг
+# ПРИВ'ЯЗАНИЙ напряму до MIN_PROFIT_COMPETITOR_FLOOR (той самий
+# коефіцієнт, що й у compute_floor()) — якщо власниця колись знову
+# свідомо змінить floor, цей поріг автоматично оновиться разом з ним,
+# без окремого PR. `compute_floor()` бере MAX(відсотковий floor,
+# абсолютний MIN_PROFIT_UAH) — тобто РЕАЛЬНА маржа окремого SKU НІКОЛИ
+# не має структурної причини впасти НИЖЧЕ цього відсотка; сигнал 1
+# тепер ловить САМЕ це — середню маржу, що впала нижче гарантованого
+# мінімуму (ознака реального бага у формулі/застосуванні), а не "просто
+# багато SKU на своєму ж дозволеному floor".
+CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT = MIN_PROFIT_COMPETITOR_FLOOR * 100
 CIRCUIT_BREAKER_MAX_MARGIN_DROP_PCT = 15.0
 CIRCUIT_BREAKER_PRICE_CHANGE_THRESHOLD = 0.05
 CIRCUIT_BREAKER_MAX_CHANGED_FRACTION = 0.5

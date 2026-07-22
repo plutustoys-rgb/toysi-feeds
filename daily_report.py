@@ -12,6 +12,7 @@ from competitor_pricing import get_platform_commission
 from orders_db import get_connection, get_orders_awaiting_payment, init_db
 from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
+from toysi_order_submit import fetch_order_positions
 
 # Консоль Windows (cp1251) не показує emoji — не заважає systemd/journald на VPS,
 # але без цього локальний тестовий запуск падає на print().
@@ -266,6 +267,43 @@ def _toysi_wholesale_cost(item: dict, catalog: dict) -> Optional[float]:
     return cost if cost > 0 else None
 
 
+def _real_toysi_order_cost(toysi_order_id: str) -> Optional[float]:
+    """Графа 6 КОДВ — РЕАЛЬНА собівартість ОДНОГО замовлення напряму з
+    Toysi (2026-07-22, знахідка власниці, живо підтверджено): order_positions
+    повертає "sum_with_discount" — фактичну суму замовлення з ПЕРСОНАЛЬНОЮ
+    знижкою, яка ДІЯЛА САМЕ на момент цього замовлення (personal_discount
+    змінювалась в часі 5%->15%) — на відміну від каталогу (parser.py), який
+    дає лише ПОТОЧНУ базову оптову ціну товару без жодної знижки. Це й
+    спричиняло розрив: наші записи рахували собівартість за каталогом
+    (без знижки) замість реальної суми, що йде на списання з депозиту.
+
+    Живо перевірено на 6 реальних замовленнях (100444982/100445579/100445626/
+    100445701/100445756/100446076): сума sum_with_discount = 671.92₴ — ТОЧНО
+    збігається з реальним списанням з депозиту, підтвердженим власницею.
+    Фіксований збір Toysi "Збірка" (15₴/замовлення), про який власниця
+    запитувала окремо, СВІДОМО НЕ додається тут: sum_with_discount САМ ПО
+    СОБІ вже дає точний збіг без жодного додавання — отже "Збірка", якщо
+    вона existує, або НЕ застосовується до цих конкретних (дрібних
+    іграшкових) замовлень, або вже якимось чином відображена в наведеній
+    сумі. Додавання +15₴/замовлення поверх уже точної суми дало б ПОМИЛКОВЕ
+    завищення (761.92₴ замість підтверджених 671.92₴) — перевірено й
+    відхилено, не просто не реалізовано.
+
+    Повертає None, якщо order_positions недоступний (мережа/помилка/
+    замовлення застаріло) — виклик має тоді впасти на catalog-based оцінку
+    (той самий підхід graceful degradation, що вже є для cogs_catalog_unavailable
+    вище)."""
+    if not toysi_order_id:
+        return None
+    data = fetch_order_positions(toysi_order_id)
+    if not data:
+        return None
+    try:
+        return float(data["sum_with_discount"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _cogs_for_forwarded_orders(conn, since: str, catalog: dict) -> tuple:
     """Графа 6 КОДВ: собівартість реалізованих і оплачених постачальнику
     товарів. `orders_db` не має окремого поля "оплата постачальнику
@@ -273,15 +311,31 @@ def _cogs_for_forwarded_orders(conn, since: str, catalog: dict) -> tuple:
     використовуємо forwarded_to_toysi_at, як і решта звіту. За дропшип-
     моделлю (лист "Інструкція" КОДВ) розрив між передачею замовлення й
     оплатою постачальнику мінімальний, тож це ОЦІНКА для звірки з
-    накладною Toysi, а не остаточна цифра графи 6."""
+    накладною Toysi, а не остаточна цифра графи 6.
+
+    2026-07-22: для кожного замовлення СПОЧАТКУ пробуємо РЕАЛЬНУ суму через
+    _real_toysi_order_cost() (order_positions, враховує персональну знижку,
+    що діяла саме на момент ЦЬОГО замовлення) — набагато точніше за
+    catalog-based оцінку нижче (поточна базова ціна БЕЗ жодної знижки).
+    Catalog-based per-item підрахунок лишається ФОЛБЕКОМ лише коли
+    order_positions недоступний (мережа/замовлення застаріло), щоб графа 6
+    ніколи не залишалась порожньою через тимчасову недоступність API."""
     rows = conn.execute(
-        "SELECT items FROM orders WHERE forwarded_to_toysi_at >= ?", (since,)
+        "SELECT items, toysi_order_id FROM orders WHERE forwarded_to_toysi_at >= ?", (since,)
     ).fetchall()
 
     total_cost = 0.0
     items_priced = 0
     items_missing = 0
+    orders_real = 0
+    orders_estimated = 0
     for row in rows:
+        real_cost = _real_toysi_order_cost(row["toysi_order_id"])
+        if real_cost is not None:
+            total_cost += real_cost
+            orders_real += 1
+            continue
+        orders_estimated += 1
         for item in json.loads(row["items"]):
             cost = _toysi_wholesale_cost(item, catalog)
             if cost is None:
@@ -290,7 +344,7 @@ def _cogs_for_forwarded_orders(conn, since: str, catalog: dict) -> tuple:
             total_cost += cost * item.get("qty", 1)
             items_priced += 1
 
-    return total_cost, items_priced, items_missing
+    return total_cost, items_priced, items_missing, orders_real, orders_estimated
 
 
 def _estimated_commission(rows: list, catalog: dict) -> tuple:
@@ -327,21 +381,33 @@ def _estimated_commission(rows: list, catalog: dict) -> tuple:
     return commission_by_platform, items_priced, items_no_category
 
 
-def _order_cogs_and_commission(items: list, platform: str, catalog: dict) -> tuple:
+def _order_cogs_and_commission(items: list, platform: str, catalog: dict, toysi_order_id: str = None) -> tuple:
     """Те саме, що _cogs_for_forwarded_orders()/_estimated_commission() вище,
-    але для ОДНОГО замовлення (для запису в kodv_ledger.jsonl) — той самий
-    per-позиційний розрахунок (_toysi_wholesale_cost/get_platform_commission),
-    без агрегації по всій БД."""
-    cogs = 0.0
+    але для ОДНОГО замовлення (для запису в kodv_ledger.jsonl).
+
+    2026-07-22: cogs (графа 6) пробує РЕАЛЬНУ суму через
+    _real_toysi_order_cost() (order_positions, з урахуванням персональної
+    знижки на момент саме цього замовлення) — той самий фікс, що й
+    _cogs_for_forwarded_orders(). Catalog-based per-item підрахунок —
+    фолбек лише коли order_positions недоступний. Комісія (графа 9) — БЕЗ
+    змін, той самий per-позиційний розрахунок за категорією (не стосується
+    знахідки власниці про знижку/збірку Toysi)."""
     commission = 0.0
     for item in items:
         item_revenue = item.get("price", 0) * item.get("qty", 1)
-        cost = _toysi_wholesale_cost(item, catalog)
-        if cost is not None:
-            cogs += cost * item.get("qty", 1)
         cat_item = catalog.get(str(item.get("toysi_code") or ""))
         category_name = cat_item.get("category_name") if cat_item else None
         commission += item_revenue * get_platform_commission(platform, category_name)
+
+    real_cost = _real_toysi_order_cost(toysi_order_id)
+    if real_cost is not None:
+        return real_cost, commission
+
+    cogs = 0.0
+    for item in items:
+        cost = _toysi_wholesale_cost(item, catalog)
+        if cost is not None:
+            cogs += cost * item.get("qty", 1)
     return cogs, commission
 
 
@@ -389,7 +455,7 @@ def _append_kodv_ledger_entries(conn, catalog: dict) -> int:
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
         items = json.loads(row["items"])
-        cogs, commission = _order_cogs_and_commission(items, row["platform"], catalog)
+        cogs, commission = _order_cogs_and_commission(items, row["platform"], catalog, row["toysi_order_id"])
         product = "; ".join(item.get("name", "") for item in items)[:200]
         entry = {
             "date": (row["forwarded_to_toysi_at"] or row["created_at"])[:10],
@@ -565,7 +631,7 @@ def build_report() -> str:
 
         prom_success_section = _prom_success_rate_section(conn)
 
-        cogs = items_priced = items_missing = 0
+        cogs = items_priced = items_missing = orders_real = orders_estimated = 0
         cogs_catalog_unavailable = False
         commission_by_platform = {"prom": 0.0, "rozetka": 0.0}
         commission_items_priced = commission_items_no_category = 0
@@ -585,7 +651,8 @@ def build_report() -> str:
 
         if forwarded_today:
             if toysi_catalog:
-                cogs, items_priced, items_missing = _cogs_for_forwarded_orders(conn, since, toysi_catalog)
+                cogs, items_priced, items_missing, orders_real, orders_estimated = \
+                    _cogs_for_forwarded_orders(conn, since, toysi_catalog)
             else:
                 # fetch_toysi_catalog() повертає {} і при відсутньому ключі, і при
                 # timeout/HTTP/XML-помилці — 0.00 грн тут виглядав би як "витрат
@@ -655,8 +722,10 @@ def build_report() -> str:
         lines.append(f"\n\nГрафа 6 (собівартість реалізованих і оплачених товарів): {cogs:.2f} грн")
         if forwarded_today:
             lines.append(
-                f"\n  ({items_priced} позицій оцінено за поточним прайсом Toysi з "
-                f"{forwarded_today} переданих замовлень — \"передано постачальнику\" тут "
+                f"\n  ({orders_real} замовлень — РЕАЛЬНА сума з Toysi (order_positions, "
+                f"з урахуванням персональної знижки на момент замовлення), {orders_estimated} — "
+                f"оцінка за поточним прайсом Toysi без знижки (order_positions недоступний) "
+                f"з {forwarded_today} переданих замовлень — \"передано постачальнику\" тут "
                 "проксі для \"оплачено постачальнику\" (дропшип, розрив мінімальний), "
                 "звір із фактичною накладною Toysi/RoyalToys)"
             )

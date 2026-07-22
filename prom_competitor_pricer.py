@@ -76,7 +76,7 @@ from generate_prom_feed import fetch_russian_text
 from competitor_pricing import (
     decide_price_for_platform, load_prom_price_state, save_prom_price_state,
     PROM_CATEGORY_COMMISSION, PROM_CATEGORY_ID_COMMISSION, PROM_COMMISSION_DEFAULT, _BAD_NAME_MARKERS,
-    is_bundle_listing, MIN_PROFIT_COMPETITOR_FLOOR,
+    is_bundle_listing, MIN_PROFIT_COMPETITOR_FLOOR, real_toysi_cost,
 )
 from telegram_notify import send_telegram_message
 from prom_api_client import PromEditError, apply_price, delist
@@ -1227,7 +1227,7 @@ def _rotated_out_scan_candidates(top_catalog: dict, toysi_catalog: dict, scan_st
         if not item:
             continue
         try:
-            cost = float(item.get("price") or 0)
+            cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         except (TypeError, ValueError):
             cost = 0
         if cost <= 0 or (item.get("stock") or 0) <= 0:
@@ -1268,7 +1268,7 @@ def _rotated_out_needing_live_lookup(top_catalog: dict, toysi_catalog: dict, sca
         if not item:
             continue
         try:
-            cost = float(item.get("price") or 0)
+            cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         except (TypeError, ValueError):
             cost = 0
         if cost <= 0 or (item.get("stock") or 0) <= 0:
@@ -1376,7 +1376,7 @@ def _recheck_delisted_pids(
             # що й скрізь у цьому файлі: не гадаємо, коли даних нема).
             continue
         try:
-            cost = float(item.get("price") or 0)
+            cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         except (TypeError, ValueError):
             continue
         if cost <= 0 or item.get("stock", 0) <= 0:
@@ -1570,7 +1570,7 @@ def main() -> None:
 
     for pid, item in items:
         try:
-            cost = float(item.get("price") or 0)
+            cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         except (TypeError, ValueError):
             cost = 0
         if cost <= 0:
@@ -1670,7 +1670,7 @@ def main() -> None:
     rotated_out_adjust_count = 0
     for pid, item in list(rotated_out.items())[:ROTATED_OUT_BATCH_LIMIT]:
         try:
-            cost = float(item.get("price") or 0)
+            cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         except (TypeError, ValueError):
             cost = 0
         if cost <= 0:

@@ -8,7 +8,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 import rozetka_client
-from competitor_pricing import get_platform_commission
+from competitor_pricing import get_platform_commission, real_toysi_cost
 from orders_db import get_connection, get_orders_awaiting_payment, init_db
 from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
@@ -260,10 +260,7 @@ def _toysi_wholesale_cost(item: dict, catalog: dict) -> Optional[float]:
     cat_item = catalog.get(str(item.get("toysi_code") or ""))
     if not cat_item:
         return None
-    try:
-        cost = float(cat_item.get("price") or 0)
-    except (TypeError, ValueError):
-        return None
+    cost = real_toysi_cost(cat_item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi (фолбек, коли order_positions недоступний)
     return cost if cost > 0 else None
 
 

@@ -98,7 +98,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from parser import fetch_toysi_catalog
 from generate_prom_feed import fetch_russian_text, is_clearance_item
-from competitor_pricing import decide_price_for_platform
+from competitor_pricing import decide_price_for_platform, real_toysi_cost
 from prom_competitor_pricer import (
     find_best_competitor, verify_competitor_really_available, SEARCH_DELAY,
     MIN_FULL_RUN_INTERVAL_HOURS, _load_prom_category_cache, MATCH_MIN_SCORE_FOR_PRICING,
@@ -492,10 +492,7 @@ def main() -> None:
         # скан ніколи не дійшов би до 100%. Тому записуємо явний
         # "invalid_cost" запис (без дорогого пошуку конкурента) — SKU
         # рахується відсканованим, і скан рухається далі.
-        try:
-            cost = float(item.get("price") or 0)
-        except (TypeError, ValueError):
-            cost = 0
+        cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         name_ukr = (item.get("name") or "").strip()
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
         category_name = item.get("category_name")

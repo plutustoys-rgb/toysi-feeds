@@ -4,7 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides, load_description_overrides
+from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides, load_description_overrides, real_toysi_cost
 from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
 
@@ -439,11 +439,7 @@ def _build_xml(
                                   # бо укр./рос. варіанти різної довжини й можуть обрізатись незалежно
 
     for item in catalog.values():
-        try:
-            cost = float(item.get("price") or 0)
-        except (ValueError, TypeError):
-            skipped += 1
-            continue
+        cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         if cost <= 0:
             skipped += 1
             continue

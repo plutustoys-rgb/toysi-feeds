@@ -4,7 +4,7 @@ from pathlib import Path
 
 from parser import fetch_toysi_catalog
 from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
-from competitor_pricing import decide_price_for_platform, load_delisted_pids, load_fresh_prom_price_overrides
+from competitor_pricing import decide_price_for_platform, load_delisted_pids, load_fresh_prom_price_overrides, real_toysi_cost
 
 # ВИПРАВЛЕНО (2026-07-16, задача власниці — full_catalog_competitor_scan.py
 # не мав лишатись окремим інформаційним скриптом): щоночі
@@ -168,11 +168,8 @@ def _margin(item: dict, pid: str = None, scan_state: dict = None, delisted_pids:
         return -1
     if pid is not None and pid in (delisted_pids or {}):
         return -1
-    try:
-        cost = float(item.get("price") or 0)
-    except (TypeError, ValueError):
-        return -1
-    if cost < MIN_SUPPLIER_PRICE:
+    cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
+    if cost <= 0 or cost < MIN_SUPPLIER_PRICE:
         return -1
 
     scan_entry = (scan_state or {}).get(pid) if pid is not None else None

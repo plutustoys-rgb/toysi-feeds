@@ -138,7 +138,11 @@ def _authenticate_cashier() -> str:
     except ValueError:
         raise CheckboxAPIError(f"невалідна відповідь (не JSON) при автентифікації касира: {response.text[:300]}")
 
-    token = data.get("access_token") or data.get("token")
+    # ВИПРАВЛЕНО (2026-07-22, знахідка аудиту PR #135 — той самий клас бага, що
+    # щойно живо підтвердився для GET /cashier/shift: Checkbox може повернути
+    # HTTP 200 з тілом буквально "null" замість dict): без `data or {}` .get()
+    # нижче впав би з тим самим "'NoneType' object has no attribute 'get'".
+    token = (data or {}).get("access_token") or (data or {}).get("token")
     if not token:
         raise CheckboxAPIError(f"відповідь автентифікації касира без токена: {data}")
     return token

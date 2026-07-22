@@ -327,6 +327,41 @@ ROTATED_OUT_BATCH_LIMIT = 1000
 # додатково на прогін, прийнятно для сервісу кожні 4 години.
 LIVE_LOOKUP_EXTRA_BATCH_LIMIT = 300
 
+# ДОДАНО (2026-07-22, живий приклад SKU 302166/302185, живо знайдено власницею
+# через скріншоти "звичайної рандомної вибірки", де наша ціна помітно вища за
+# видимих конкурентів): own_product_links_cache.json (джерело buyBox для
+# find_best_competitor()) ДОСІ РАХУЄ ЛИШЕ generate_google_feed.py — цей файл
+# лише ЧИТАЄ його (_load_own_product_links_cache() вище, пасивно). Живо
+# підтверджено: 969/970 (99.9%!) поточного топ-970 НЕ мають own_link, тобто
+# find_best_competitor() для майже всього каталогу йде в НЕНАДІЙНИЙ fallback
+# (текстовий GraphQL-пошук), не в buyBox — саме той клас помилки, що вже
+# ставався мені самій цієї сесії (перевірка конкурентності без own_link).
+# generate_google_feed.py рахує кеш лише для СВОГО топ-970 знімку на СВІЙ
+# розклад — рідко збігається з топ-970 САМЕ цього прогону (ротація щодня).
+#
+# Фікс: цей файл ТЕПЕР сам донараховує own_link для SKU з ПОТОЧНОГО
+# батчу (items нижче), яких нема в кеші — той самий детермінований механізм
+# (fetch_prom_products_by_external_ids + resolve_own_product_links), що вже
+# перевірений і використовується generate_google_feed.py, лише importовано
+# (лінивий імпорт УСЕРЕДИНІ функції — generate_google_feed.py імпортує
+# SEARCH_DELAY ЗВІДСИ на своєму верхньому рівні, тож прямий top-level імпорт
+# звідти сюди дав би циклічний імпорт; лінивий імпорт всередині main()
+# уникає цього, бо на момент виклику цей модуль уже повністю завантажений).
+#
+# Обмежено батчем за прогін (не всі 969 одразу) — той самий принцип
+# self-throttling, що й ROTATED_OUT_BATCH_LIMIT/LIVE_LOOKUP_EXTRA_BATCH_LIMIT
+# вище: кожен запис — 2 додаткові живі HTTP-запити (by_external_id +
+# urlText-редирект).
+#
+# ПІДВИЩЕНО 200->400 (2026-07-22, пряме прохання власниці "чіткіше
+# знаходити конкурентів" — швидше покриття buyBox): за 6 прогонів/добу
+# (кожні 4 год) 400/прогін покриває ~970 SKU менш ніж за добу (раніше —
+# трохи більше доби), удвічі швидше закриває прогалину "969/970 без
+# buyBox". Навантаження все одно бюджетоване (SEARCH_DELAY-джитер між
+# запитами, той самий механізм, що вже прийнятний для 970 SKU/добу
+# основного циклу).
+OWN_LINK_RESOLVE_BATCH_LIMIT = 400
+
 # Мігровано на GitHub Actions 2026-07-13 (той самий workflow update-feeds.yml,
 # що й generate_prom_feed.py) — контейнер тепер тригериться раз на 4 год
 # (cron), а не раз на добу systemd-таймером на VPS. Без цього гейту повний
@@ -393,6 +428,16 @@ MATCH_MIN_SCORE_FOR_PRICING = 0.6
 # відстані (22), і з великим запасом вище найбільшої спостереженої
 # "той самий товар" відстані (2) у цій вибірці.
 PHOTO_MATCH_MAX_DISTANCE = 10
+
+# ДОДАНО (2026-07-22, "чіткіше знаходити конкурентів"): скільки найдешевших
+# ДОВІРЕНИХ (score>=MATCH_MIN_SCORE_FOR_PRICING) кандидатів у
+# find_best_competitor() перевіряти фото-збігом, перш ніж здатися й
+# повернутись до сліпого "найдешевший за текстом". Кожна перевірка —
+# 1-2 живих мережевих запити (own_pictures × кандидат, з раннім виходом
+# на першому збігу) — 5 кандидатів обмежує додатковий час на SKU
+# розумною межею (гірший випадок ~5x вартості однієї фото-перевірки),
+# не перевіряючи весь пул (може бути й 20+ кандидатів).
+PHOTO_VERIFY_CANDIDATE_LIMIT = 5
 
 
 def _fetch_image_phash(url: str) -> "imagehash.ImageHash | None":
@@ -786,7 +831,9 @@ def _size_tokens_conflict(our_name: str, competitor_name: str) -> bool:
     return our_tokens.isdisjoint(comp_tokens)
 
 
-def find_best_competitor(search_name: str, cost: float, own_link: dict | None = None) -> dict | None:
+def find_best_competitor(
+    search_name: str, cost: float, own_link: dict | None = None, own_pictures: list | None = None,
+) -> dict | None:
     """Шукає конкурента для SKU. ОСНОВНЕ джерело (2026-07-14) — buyBox
     нашої ж сторінки товару (fetch_buybox_competitor), якщо `own_link`
     ({"prom_id", "url_text"} з own_product_links_cache.json) заданий і дає
@@ -877,6 +924,25 @@ def find_best_competitor(search_name: str, cost: float, own_link: dict | None = 
     trusted = [c for c in candidates if c["score"] >= MATCH_MIN_SCORE_FOR_PRICING]
     pool = trusted if trusted else candidates
     pool.sort(key=lambda c: c["price"])
+
+    # ДОДАНО (2026-07-22, пряме прохання власниці "чіткіше знаходити
+    # конкурентів" — не сліпо довіряти найдешевшому за текстовою
+    # схожістю): серед кількох найдешевших ДОВІРЕНИХ кандидатів (не
+    # лише одного) шукаємо фото-підтвердженого — той самий механізм
+    # (_photo_confirms_match), що вже рятує НЕдовірених кандидатів
+    # (0.4-0.6 зона), тепер застосований і для ВИБОРУ серед уже
+    # довірених. Обмежено PHOTO_VERIFY_CANDIDATE_LIMIT (кожна перевірка —
+    # живі мережеві запити) — перевіряємо в порядку зростання ціни,
+    # повертаємо ПЕРШОГО фото-підтвердженого; якщо жоден з перевірених
+    # не підтвердився, повертаємось до старої поведінки (найдешевший за
+    # текстом, як і раніше) — це чистий БОНУС до впевненості, не суворіший
+    # фільтр: жоден раніше прийнятний кандидат не відкидається через цю
+    # зміну.
+    if own_pictures and trusted:
+        for candidate in pool[:PHOTO_VERIFY_CANDIDATE_LIMIT]:
+            if _photo_confirms_match(own_pictures, candidate.get("image")):
+                return candidate
+
     return pool[0]
 
 
@@ -1390,7 +1456,7 @@ def _recheck_delisted_pids(
         prom_category_id = (prom_category_cache.get(pid) or {}).get("category_id")
         own_link = own_product_links.get(pid)
 
-        competitor = find_best_competitor(name_rus, cost, own_link)
+        competitor = find_best_competitor(name_rus, cost, own_link, item.get("pictures"))
         time.sleep(SEARCH_DELAY)
         decision = decide_price_for_platform(cost, competitor["price"] if competitor else None,
                                               "prom", category_name, prom_category_id)
@@ -1547,6 +1613,25 @@ def main() -> None:
     print(f"[Pricer] Обробляю {len(items)} товарів (--limit {args.limit} + "
           f"{len(live_lookup_extra)} поза топ-970 без даних скану)...")
 
+    # Донарахування own_link для ПОТОЧНОГО батчу — див. коментар біля
+    # OWN_LINK_RESOLVE_BATCH_LIMIT вище (чому цей крок взагалі потрібен).
+    missing_own_link_ids = [pid for pid, _ in items if pid not in own_product_links][:OWN_LINK_RESOLVE_BATCH_LIMIT]
+    if missing_own_link_ids:
+        from generate_google_feed import resolve_own_product_links  # лінивий імпорт, див. коментар вище
+        from prom_catalog_sync import fetch_prom_products_by_external_ids
+
+        print(f"[Pricer] Кеш власних посилань не покриває {len(missing_own_link_ids)} SKU цього "
+              f"батчу (з {sum(1 for pid, _ in items if pid not in own_product_links)} загалом) — "
+              f"донараховую детермінованим запитом (не пошуком)...")
+        found_products, _indeterminate = fetch_prom_products_by_external_ids(set(missing_own_link_ids))
+        if found_products:
+            missing_catalog_subset = {pid: item for pid, item in items if pid in found_products}
+            newly_resolved = resolve_own_product_links(missing_catalog_subset, found_products)
+            own_product_links.update(newly_resolved)
+            print(f"[Pricer] Донараховано {len(newly_resolved)}/{len(missing_own_link_ids)} нових "
+                  f"посилань (buyBox тепер доступний для них; решта — товар ще не імпортований у "
+                  f"Prom чи urlText не вдалось визначити).")
+
     adjust_count, delist_count, no_competitor_count, error_count = 0, 0, 0, 0
     buybox_count = 0
     buybox_attempted_count = 0  # own_link був — buyBox ПРОБУВАЛИ (незалежно від результату);
@@ -1586,7 +1671,7 @@ def main() -> None:
         own_link = own_product_links.get(pid)
         if own_link:
             buybox_attempted_count += 1
-        competitor = find_best_competitor(name_rus, cost, own_link)
+        competitor = find_best_competitor(name_rus, cost, own_link, item.get("pictures"))
         if competitor and competitor.get("source") == "buybox":
             buybox_count += 1
             # Легкий sanity-моніторинг (рекомендація рев'ю PR #53): minPrice

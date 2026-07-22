@@ -1,65 +1,52 @@
 """
-checkbox_client.py — Checkbox API клієнт: автофіскалізація чеків при видачі
-товару, доставленого Новою Поштою чи Укрпоштою (ЕТТН), Крок ... плану,
-2026-07-09.
+checkbox_client.py — Checkbox API клієнт: фіскалізація чеків для замовлень.
 
-Замінює й генералізує те, що раніше було в checkbox_ukrposhta.py (PR #15,
-2026-07-09) — тодішнє припущення, що ЕТТН реєструється ОДИН РАЗ як
-"проєкт", виявилось неточним. Насправді реєстрація — на КОЖНЕ відправлення
-(ТТН) окремо, з сумою чека, що МАЄ ТОЧНО збігатися із сумою контролю оплати
-на ТТН (документація Checkbox: "Сума чека зі знижками повинна повністю
-співпадати із сумою контролю оплати у ТТН").
+ВИПРАВЛЕНО (2026-07-22, термінове розслідування — 5 реальних замовлень без
+чеків, штраф ФОП за невидачу 100-150% вартості товару): register_ettn()
+(нижче, ЕТТН-прив'язка до Нової Пошти) структурно НЕ МОЖЕ працювати для цієї
+дропшип-моделі — підтверджено, не лише запідозрено:
+  1. `InternetDocument.getDocumentList` (наш власний NP_API_KEY, весь
+     період 01.07-22.07.2026) повернув 0 документів — ми не створюємо
+     ЖОДНОЇ накладної під власним акаунтом НП взагалі.
+  2. Офіційна інструкція Checkbox (wiki.checkbox.ua/.../nova-poshta)
+     підтверджує: інтеграція вимагає ВЛАСНОГО активного контракту з Nova
+     Pay, якого в PlutusToys немає (Toysi — фулфілмент-партнер, створює
+     ТТН під СВОЇМ акаунтом НП).
+Це саме той ризик, що вже був задокументований нижче (register_ettn()),
+тепер підтверджений на 100%, не лише запідозрений.
 
-⚠️ ЖОДНОГО ТЕСТОВОГО/SANDBOX РЕЖИМУ НЕ ІСНУЄ (підтверджено дослідженням
-публічної документації Checkbox, code_report_2026-07-09_pt4.md): "Testing
-is only possible on a real fiscal register with a real Nova Poshta
-waybill" — тобто ПЕРШИЙ живий виклик register_ettn() СТВОРИТЬ РЕАЛЬНИЙ,
-юридично значущий фіскальний чек. За дорученням власника (2026-07-09) —
-у ЦІЙ задачі лише каркас, без жодного живого виклику; перший реальний
-виклик відбудеться природно на кроці 9 (наскрізний тест власника на
-реальному замовленні), НЕ раніше і НЕ автоматично звідси.
+Систвін фікс: `create_receipt()` — прямий чек продажу через
+POST /receipts/sell (офіційний Swagger, api.checkbox.in.ua/api/docs),
+ЗОВСІМ БЕЗ прив'язки до ЕТТН/Нової Пошти — потребує лише CHECKBOX_API_KEY +
+CHECKBOX_CASHIER_PIN (CHECKBOX_NP_API_KEY НЕ потрібен цій функції).
+Тригер — вже наявні сигнали в order_status_tracker.py: payment_confirmed
+(передоплата) чи nova_poshta.get_tracking_status(ttn)["delivered"] (накладений
+платіж, той самий сигнал, що й _maybe_push_delivered_to_prom, PR #88) —
+жодна з цих подій не залежить від того, чиїм токеном НП створено накладну.
 
-Авторизація (best-effort — немає під рукою офіційної документації з
-точними назвами полів/заголовків, звір і скоригуй перед першим реальним
-викликом):
-  - CHECKBOX_API_KEY — ліцензійний ключ каси (X-License-Key чи
-    аналогічний заголовок).
-  - CHECKBOX_CASHIER_PIN — PIN-код касира, потрібен для автентифікації
-    конкретного співробітника/відкриття зміни (Checkbox зазвичай
-    вимагає це окремо від ліцензійного ключа каси).
-  - CHECKBOX_NP_API_KEY — ключ Нової Пошти, прив'язаний до ФОП у кабінеті
-    Checkbox (2026-07-09: "Токен НП успішно прив'язано в Checkbox" —
-    власник підтвердив, що це ОКРЕМИЙ від NP_API_KEY ключ/акаунт, не той,
-    що використовує nova_poshta.py для пошуку міст/відділень).
+⚠️ ЖОДНОГО ТЕСТОВОГО РЕЖИМУ ДЛЯ ЦЬОГО ПОТОКУ НЕ ПЕРЕВІРЕНО: загальний
+демо-режим Checkbox існує (wiki.checkbox.ua/uk/portal/test-data, окремі
+тестова каса/касир з'являються одразу після реєстрації акаунта), але в
+цьому кабінеті (ФОП Чечетенко Олександр Юрійович) такого тестового запису
+в розділах "Каси"/"Касири" не знайдено — ПЕРШИЙ живий виклик create_receipt()
+створить РЕАЛЬНИЙ, юридично значущий фіскальний чек.
 
-Запуск: НЕ передбачений як самостійний скрипт (register_ettn() викликає
-лише order_status_tracker.py, коли з'являється реальний ТТН) — прямий
-`python checkbox_client.py` нижче лише перевіряє наявність ключів,
-жодного мережевого запиту не робить.
+Авторизація (підтверджено офіційним Swagger, не best-effort):
+  - CHECKBOX_API_KEY — ліцензійний ключ каси (заголовок X-License-Key).
+  - CHECKBOX_CASHIER_PIN — PIN-код касира (POST /cashier/signinPinCode
+    {"pin_code": ...} -> JWT access_token для наступних викликів).
+  - CHECKBOX_NP_API_KEY — потрібен ЛИШЕ старій register_ettn() (нижче,
+    залишена як історичний контекст і задокументований глухий кут — не
+    видаляю функцію повністю, щоб не загубити саме дослідження, але
+    order_status_tracker.py більше її НЕ викликає).
 
-🔴 СЕРЙОЗНИЙ АРХІТЕКТУРНИЙ РИЗИК (дослідження, 2026-07-09, НЕ підтверджено
-живим тестом — sandbox немає, дивись вище): ТТН для carrier=nova_poshta
-СТВОРЮЄ TOYSI (виклик order_create з shipping_carrier_name="Новая почта" —
-Toysi сама створює відправлення НП на СВОЄМУ боці, під СВОЇМ акаунтом
-Нової Пошти; ми не передаємо Toysi жодного власного NP-ключа чи
-контрагента). Публічна документація й форуми користувачів Checkbox
-одностайно стверджують: ЕТТН-механізм Checkbox ЯВНО перевіряє, що ТТН
-створено ТИМ САМИМ API-токеном НП, який використовується для реєстрації
-чека — "накладну, створену на чужий токен", підв'язати НЕ можна
-("Не найдено накладной: перевірте номер ТТН або чи не створена вона на
-інший API-токен"). Оскільки токен CHECKBOX_NP_API_KEY належить НАШОМУ
-(ФОП) акаунту, а не Toysi — register_ettn() для замовлень, де ТТН
-створено Toysi, МОЖЕ НЕ СПРАЦЮВАТИ ВЗАГАЛІ через цю саме причину.
-Це НЕ підтверджено на 100% (жодного sandbox для перевірки немає), але
-достатньо задокументовано в незалежних джерелах, щоб вважати реальним
-ризиком. Перед тим, як покладатись на цю автоматизацію — варто уточнити
-в підтримки Checkbox, чи є спосіб прив'язати ТТН стороннього
-постачальника (дропшип-модель), чи цей шлях у принципі непридатний для
-поточної архітектури (Toysi як фулфілмент-партнер, не ми, створює
-накладну)."""
+🔴 register_ettn() нижче — ЗБЕРЕЖЕНО ЛИШЕ як задокументований архітектурний
+глухий кут (див. підтвердження вище), НЕ використовується жодним викликом у
+проєкті з 2026-07-22. Оригінальний ризик-опис лишається нижче для історії."""
 
 import os
 import sys
+import time
 
 import requests
 from dotenv import load_dotenv
@@ -72,13 +59,22 @@ load_dotenv()
 CHECKBOX_API_KEY    = os.environ.get("CHECKBOX_API_KEY", "")
 CHECKBOX_CASHIER_PIN = os.environ.get("CHECKBOX_CASHIER_PIN", "")
 CHECKBOX_NP_API_KEY  = os.environ.get("CHECKBOX_NP_API_KEY", "")
-CHECKBOX_API_URL    = "https://api.checkbox.in.ua/api/v1"  # TODO: звір з офіційною документацією/підтримкою
+CHECKBOX_API_URL    = "https://api.checkbox.in.ua/api/v1"  # підтверджено офіційним Swagger (api.checkbox.in.ua/api/docs)
 REQUEST_TIMEOUT     = 30
 
-# Допустима похибка при звірці суми чека із сумою контролю оплати ТТН —
+# Допустима похибка при звірці суми чека із заявленою сумою замовлення —
 # лише захист від помилок округлення float, НЕ послаблення самої вимоги
 # точного збігу.
 AMOUNT_TOLERANCE = 0.01
+
+# POST /shifts асинхронний (202 Accepted, підтверджено Swagger) — зміна
+# проходить CREATED -> OPENING -> OPENED за лаштунками. Опитуємо
+# GET /cashier/shift, доки статус не стане OPENED, з розумним лімітом —
+# якщо не відкрилась (протермінований КЕП касира, несплачений рахунок за
+# касу — офіційна документація прямо називає ці 2 причини), не висіти
+# вічно, кинути явну помилку.
+SHIFT_OPEN_POLL_ATTEMPTS = 10
+SHIFT_OPEN_POLL_INTERVAL_SEC = 3
 
 
 class CheckboxAPIError(Exception):
@@ -102,11 +98,30 @@ def _require_credentials() -> None:
         )
 
 
+def _require_receipt_credentials() -> None:
+    """create_receipt() (POST /receipts/sell) потребує ЛИШЕ ці два ключі —
+    на відміну від _require_credentials() нижче (уся трійка, для старої
+    register_ettn()), CHECKBOX_NP_API_KEY тут не задіяний узагалі."""
+    missing = [
+        name for name, value in (
+            ("CHECKBOX_API_KEY", CHECKBOX_API_KEY),
+            ("CHECKBOX_CASHIER_PIN", CHECKBOX_CASHIER_PIN),
+        ) if not value
+    ]
+    if missing:
+        raise CheckboxAPIError(
+            f"не задано: {', '.join(missing)}. Додайте у .env, коли власник надасть "
+            "(PIN касира — окремо в чат, не через .env вручну, за домовленістю)."
+        )
+
+
 def _authenticate_cashier() -> str:
-    """Автентифікація касира за PIN — best-effort (немає під рукою точної
-    назви ендпоінту/полів). Повертає токен/ідентифікатор сесії касира для
-    подальших запитів. TODO: звір з офіційною документацією Checkbox."""
-    _require_credentials()
+    """POST /api/v1/cashier/signinPinCode (підтверджено офіційним Swagger,
+    api.checkbox.in.ua/api/docs) — X-License-Key заголовок + {"pin_code":...}
+    тіло, повертає access_token (Cashier JWT). Потрібні лише API_KEY+PIN,
+    не NP-ключ — виклики цієї функції (create_receipt і стара register_ettn)
+    самі перевіряють свій повний набір credentials окремо."""
+    _require_receipt_credentials()
     try:
         response = requests.post(
             f"{CHECKBOX_API_URL}/cashier/signinPinCode",
@@ -127,6 +142,127 @@ def _authenticate_cashier() -> str:
     if not token:
         raise CheckboxAPIError(f"відповідь автентифікації касира без токена: {data}")
     return token
+
+
+def _ensure_shift_open(token: str) -> None:
+    """GET /cashier/shift -> якщо статус уже OPENED, нічого не робити.
+    Інакше POST /shifts (асинхронний, 202 Accepted — Swagger підтверджує
+    ланцюжок CREATED -> OPENING -> OPENED) і опитуємо GET /cashier/shift,
+    доки статус не стане OPENED чи не вичерпається ліміт спроб.
+
+    Офіційна документація Checkbox прямо називає 2 причини, чому зміна може
+    НЕ відкритись: несплачений рахунок за касу, протермінований КЕП касира
+    (wiki.checkbox.ua/.../nova-poshta, розділ "Контроль статусу відправлень")
+    — у цьому разі кидаємо явну помилку з посиланням на обидві причини,
+    не мовчазний нескінченний цикл."""
+    headers = {"X-License-Key": CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
+
+    def _current_status() -> str | None:
+        try:
+            response = requests.get(f"{CHECKBOX_API_URL}/cashier/shift", headers=headers, timeout=REQUEST_TIMEOUT)
+        except requests.exceptions.RequestException as e:
+            raise CheckboxAPIError(f"помилка з'єднання (GET /cashier/shift): {e}") from e
+        if response.status_code == 404:
+            return None
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            raise CheckboxAPIError(f"помилка перевірки зміни касира: {e}") from e
+        try:
+            return response.json().get("status")
+        except ValueError:
+            raise CheckboxAPIError(f"невалідна відповідь (не JSON) при перевірці зміни: {response.text[:300]}")
+
+    if _current_status() == "OPENED":
+        return
+
+    try:
+        open_response = requests.post(f"{CHECKBOX_API_URL}/shifts", headers=headers, json={}, timeout=REQUEST_TIMEOUT)
+        open_response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise CheckboxAPIError(f"помилка з'єднання (POST /shifts, відкриття зміни): {e}") from e
+
+    for _ in range(SHIFT_OPEN_POLL_ATTEMPTS):
+        time.sleep(SHIFT_OPEN_POLL_INTERVAL_SEC)
+        if _current_status() == "OPENED":
+            return
+
+    raise CheckboxAPIError(
+        "зміна касира не відкрилась за відведений час — можливі причини (офіційна "
+        "документація Checkbox): несплачений рахунок за касу, протермінований КЕП "
+        "касира. Перевір розділ \"Каси\"/\"Касири\" в кабінеті Checkbox."
+    )
+
+
+def create_receipt(
+    goods: list,
+    payment_type: str,
+    total_amount: float,
+    order_id: str | None = None,
+) -> dict:
+    """POST /api/v1/receipts/sell (підтверджено офіційним Swagger,
+    api.checkbox.in.ua/api/docs) — прямий чек продажу, БЕЗ жодної залежності
+    від Нової Пошти/ЕТТН (на відміну від register_ettn() нижче, яка
+    структурно не може працювати для цієї дропшип-моделі — див. докстрінг
+    файлу). Саме ця функція замінює register_ettn() як основний шлях
+    фіскалізації (order_status_tracker.py, _maybe_issue_receipt()).
+
+    goods — [{"code":.., "name":.., "price":.., "qty":..}, ...] у гривнях і
+    штуках — конвертація в копійки (Checkbox: "Вартість в копійках за
+    quantity = 1000") відбувається тут, не на виклику.
+    payment_type — "CASH" (накладений платіж — гроші фактично отримані при
+    видачі посилки) чи "CASHLESS" (передоплата карткою/через Prom).
+    total_amount — сума чека в гривнях, МАЄ дорівнювати сумі goods —
+    перевіряється ДО мережевого запиту (той самий принцип точного збігу,
+    що й був у register_ettn(), хоч сама вимога Checkbox для /receipts/sell
+    цього явно не документує — зайва перевірка тут не шкодить, лише
+    підтверджує, що ми не надсилаємо суму, яка розходиться з тим, що самі
+    порахували)."""
+    _require_receipt_credentials()
+
+    goods_sum = round(sum(item["price"] * item.get("qty", 1) for item in goods), 2)
+    if abs(goods_sum - round(total_amount, 2)) > AMOUNT_TOLERANCE:
+        raise CheckboxAPIError(
+            f"Сума товарів чека ({goods_sum} грн) не збігається із заявленою сумою "
+            f"замовлення ({total_amount} грн) — виклик заблоковано до мережевого запиту."
+        )
+
+    token = _authenticate_cashier()
+    _ensure_shift_open(token)
+
+    body = {
+        "goods": [
+            {
+                "good": {
+                    "code": str(item.get("code") or item["name"])[:50],
+                    "name": item["name"][:200],
+                    "price": round(item["price"] * 100),
+                },
+                "quantity": round(item.get("qty", 1) * 1000),
+            }
+            for item in goods
+        ],
+        "payments": [{"type": payment_type, "value": round(total_amount * 100)}],
+    }
+    if order_id:
+        body["order_id"] = str(order_id)
+
+    headers = {"X-License-Key": CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
+    try:
+        response = requests.post(
+            f"{CHECKBOX_API_URL}/receipts/sell",
+            headers=headers,
+            json=body,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise CheckboxAPIError(f"помилка з'єднання (POST /receipts/sell, замовлення {order_id}): {e}") from e
+
+    try:
+        return response.json()
+    except ValueError:
+        raise CheckboxAPIError(f"невалідна відповідь (не JSON) для /receipts/sell: {response.text[:300]}")
 
 
 def register_ettn(
@@ -150,7 +286,12 @@ def register_ettn(
     Сума receipt_items МАЄ ТОЧНО збігатися з payment_control_amount —
     перевіряється ДО мережевого запиту (документація Checkbox: "Сума чека
     зі знижками повинна повністю співпадати із сумою контролю оплати у
-    ТТН"), щоб розбіжність не пішла в реальний фіскальний виклик."""
+    ТТН"), щоб розбіжність не пішла в реальний фіскальний виклик.
+
+    ЗБЕРЕЖЕНО ЛИШЕ як задокументований архітектурний глухий кут (див.
+    докстрінг файлу) — жоден виклик у проєкті більше не використовує цю
+    функцію з 2026-07-22, замінена на create_receipt() вище."""
+    _require_credentials()
     receipt_sum = round(sum(item["price"] * item["quantity"] for item in receipt_items), 2)
     if abs(receipt_sum - round(payment_control_amount, 2)) > AMOUNT_TOLERANCE:
         raise CheckboxAPIError(
@@ -192,11 +333,12 @@ def register_ettn(
 
 if __name__ == "__main__":
     try:
-        _require_credentials()
+        _require_receipt_credentials()
         print(
-            "[checkbox_client] Усі ключі задані — каркас готовий. Жодного мережевого "
-            "запиту не виконано (register_ettn() викликається лише з "
-            "order_status_tracker.py, на реальному ТТН)."
+            "[checkbox_client] CHECKBOX_API_KEY/CHECKBOX_CASHIER_PIN задані — "
+            "create_receipt() готова. Жодного мережевого запиту не виконано "
+            "(викликається лише з order_status_tracker.py, _maybe_issue_receipt(), "
+            "на реальному підтвердженні оплати/доставки)."
         )
     except CheckboxAPIError as e:
         print(f"[checkbox_client] {e}", file=sys.stderr)

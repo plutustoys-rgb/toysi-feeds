@@ -1,6 +1,6 @@
 import sys
 
-from checkbox_client import register_ettn, CheckboxAPIError
+from checkbox_client import create_receipt, CheckboxAPIError
 from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
     mark_rozetka_ttn_pushed, mark_prom_delivered_pushed, mark_prom_ttn_pushed,
@@ -31,20 +31,29 @@ if hasattr(sys.stdout, "reconfigure"):
 Toysi (order_router.py), поки їхній статус не термінальний. Мапить числові
 коди Toysi на власний delivery_status, зберігає ТТН, як тільки з'являється.
 
-Автофіскалізація Checkbox (2026-07-09): щойно з'являється реальний ТТН для
-carrier=nova_poshta + payment_method=cod — реєструє ЕТТН у Checkbox
-(_maybe_register_ettn). ЛИШЕ для НП + накладеного платежу: "Контроль
-оплати"/ЕТТН стосується саме накладеного платежу на ТТН; передоплачені
-замовлення фіскалізуються окремо, в момент оплати (не тут), а Укрпошта не
-має автоматичного ТТН від Toysi взагалі (дивись orders_db.
-get_orders_awaiting_manual_ttn_entry() — ручний шлях, окремий від цього).
+Фіскалізація Checkbox (2026-07-09, ПЕРЕРОБЛЕНО 2026-07-22): попередній
+шлях через ЕТТН-прив'язку до Нової Пошти (_maybe_register_ettn,
+checkbox_client.register_ettn) виявився СТРУКТУРНО непрацездатним для цієї
+дропшип-моделі — підтверджено (не лише запідозрено): `InternetDocument.
+getDocumentList` (наш власний NP_API_KEY, весь липень 2026) повертає 0
+документів, бо ТТН для carrier=nova_poshta створює TOYSI під СВОЇМ
+акаунтом НП, а офіційна інструкція Checkbox вимагає ВЛАСНОГО активного
+контракту з Nova Pay для будь-якої ЕТТН-прив'язки. 5 реальних замовлень
+без чеків (415858222/415965259/416114712/416236076/416856359) — пряме
+свідчення цього провалу.
 
-🔴 ТТН для carrier=nova_poshta створює TOYSI під СВОЇМ акаунтом НП, не
-нашим — дивись докстрінг checkbox_client.py, розділ "СЕРЙОЗНИЙ
-АРХІТЕКТУРНИЙ РИЗИК": незалежні джерела стверджують, що Checkbox не
-підв'язує ТТН, створений ЧУЖИМ токеном НП. _maybe_register_ettn() нижче
-МОЖЕ мовчки й постійно повертати CheckboxAPIError для КОЖНОГО замовлення
-з цієї причини — це НЕ підтверджено без живого тесту (sandbox немає).
+Новий шлях (_maybe_issue_receipt, checkbox_client.create_receipt) —
+прямий чек продажу (POST /receipts/sell), ЗОВСІМ БЕЗ залежності від
+Нової Пошти чи ТОГО, чиїм токеном створено ТТН:
+  - payment_method="prepaid": тригер — payment_confirmed (гроші вже
+    отримані, чекати доставки не треба), payment_type="CASHLESS".
+  - payment_method="cod": тригер — nova_poshta.get_tracking_status(ttn)
+    ["delivered"], ТОЙ САМИЙ сигнал, що вже підтверджує факт видачі
+    посилки для _maybe_push_delivered_to_prom() нижче (PR #88) — гроші
+    накладеного платежу фактично отримані саме в цей момент, не раніше.
+    payment_type="CASH". Лише carrier=nova_poshta (Укрпошта не має
+    автоматичного ТТН від Toysi взагалі — дивись orders_db.
+    get_orders_awaiting_manual_ttn_entry(), ручний шлях, окремий від цього).
 
 Прикріплення ТТН НАЗАД у Rozetka (2026-07-15, _maybe_push_ttn_to_rozetka):
 щойно з'являється toysi_ttn для platform=rozetka — викликає
@@ -89,65 +98,95 @@ _STATUS_TO_DELIVERY_STATUS = {
 }
 
 
-def _receipt_items_from_order(order: dict) -> list:
-    """order["items"] (toysi_code/name/qty/price) -> receipt_items для
-    checkbox_client.register_ettn() — best-effort форма, звір з офіційною
-    документацією Checkbox перед першим реальним викликом."""
+def _receipt_goods_from_order(order: dict) -> list:
+    """order["items"] (toysi_code/name/qty/price) -> goods для
+    checkbox_client.create_receipt()."""
     return [
-        {"name": item.get("name", ""), "price": item.get("price", 0), "quantity": item.get("qty", 1)}
+        {
+            "code": item.get("toysi_code", ""),
+            "name": item.get("name", ""),
+            "price": item.get("price", 0),
+            "qty": item.get("qty", 1),
+        }
         for item in order["items"]
     ]
 
 
-def _maybe_register_ettn(conn, order: dict, ttn: str) -> None:
-    """Реєструє ЕТТН у Checkbox для carrier=nova_poshta + payment_method=cod,
-    коли є ТТН і ще НЕ зареєстровано (checkbox_ettn_registered_at IS NULL).
+def _maybe_issue_receipt(conn, order: dict, ttn: str) -> None:
+    """Видає фіскальний чек напряму (checkbox_client.create_receipt) —
+    замінює колишню ЕТТН-прив'язку (_maybe_register_ettn, ЗАКРИТО
+    2026-07-22, див. докстрінг файлу) — не залежить від того, чиїм
+    токеном НП створено ТТН.
 
-    Навмисно НЕ прив'язано до "ТТН щойно з'явився" — перевіряється щоразу,
-    коли є toysi_ttn і прапорець ще не виставлено, щоб мережева/тимчасова
-    помилка Checkbox природно повторювалась на наступному циклі опитування
-    (той самий підхід, що й should_retry для Toysi), а не губилась назавжди
-    після одного невдалого виклику.
+    Ідемпотентність — той самий прапорець checkbox_ettn_registered_at,
+    що й раніше (перевикористано, не нова колонка): перевіряємо щоразу,
+    коли умова тригера виконана, а прапорець ще не виставлено, щоб
+    тимчасова мережева помилка природно повторилась на наступному циклі
+    опитування, а не загубилась назавжди.
+
+    Два незалежні тригери (перший, що спрацював — видає чек, більше не
+    перевіряємо другий цього ж циклу):
+    - payment_method="prepaid": payment_confirmed — гроші вже отримані.
+    - payment_method="cod" + carrier=nova_poshta: get_tracking_status(ttn)
+      ["delivered"] — гроші накладеного платежу отримані фактично зараз.
 
     Помилка тут (включно з НЕ-Checkbox винятком, напр. malformed order
     ["items"]) НЕ має зупиняти track_orders() для ІНШИХ замовлень у тому ж
     циклі опитування — тому ловимо широко (Exception), а не лише
     CheckboxAPIError."""
-    if not ttn:
-        return
-    if order.get("carrier", "nova_poshta") != "nova_poshta":
-        return
-    if order["payment_method"] != "cod":
-        return
     if order.get("checkbox_ettn_registered_at"):
         return
 
+    payment_method = order.get("payment_method")
+    if payment_method == "prepaid":
+        if not order.get("payment_confirmed"):
+            return
+        payment_type = "CASHLESS"
+    elif payment_method == "cod":
+        if not ttn or order.get("carrier", "nova_poshta") != "nova_poshta":
+            return
+        try:
+            tracking = nova_poshta.get_tracking_status(ttn)
+        except nova_poshta.NovaPoshtaAPIError as e:
+            print(
+                f"[order_status_tracker] Не вдалось перевірити трекінг НП для видачі чека "
+                f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+                file=sys.stderr,
+            )
+            return
+        if not tracking or not tracking["delivered"]:
+            return
+        payment_type = "CASH"
+    else:
+        return
+
     try:
-        payment_control_amount = sum(item.get("price", 0) * item.get("qty", 1) for item in order["items"])
-        result = register_ettn(
-            carrier="nova_poshta",
-            ttn=ttn,
-            receipt_items=_receipt_items_from_order(order),
-            payment_control_amount=payment_control_amount,
+        total_amount = sum(item.get("price", 0) * item.get("qty", 1) for item in order["items"])
+        result = create_receipt(
+            goods=_receipt_goods_from_order(order),
+            payment_type=payment_type,
+            total_amount=total_amount,
+            order_id=order["internal_order_id"],
         )
     except CheckboxAPIError as e:
         print(
-            f"[order_status_tracker] Не вдалось зареєструвати ЕТТН у Checkbox для "
-            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            f"[order_status_tracker] Не вдалось видати чек Checkbox для "
+            f"{order['internal_order_id']} ({payment_type}): {e}",
             file=sys.stderr,
         )
         return
     except Exception as e:
         print(
-            f"[order_status_tracker] Неочікувана помилка при реєстрації ЕТТН для "
-            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            f"[order_status_tracker] Неочікувана помилка при видачі чека для "
+            f"{order['internal_order_id']}: {e}",
             file=sys.stderr,
         )
         return
 
-    receipt_id = result.get("id") or result.get("receipt_id") if isinstance(result, dict) else None
+    receipt_id = result.get("id") if isinstance(result, dict) else None
     mark_checkbox_ettn_registered(conn, order["internal_order_id"], receipt_id)
-    print(f"[order_status_tracker] ЕТТН зареєстровано в Checkbox: {order['internal_order_id']} (ТТН {ttn})")
+    print(f"[order_status_tracker] Чек Checkbox видано ({payment_type}): "
+          f"{order['internal_order_id']} (receipt_id={receipt_id})")
 
 
 def _maybe_push_ttn_to_rozetka(conn, order: dict, ttn: str) -> None:
@@ -362,7 +401,7 @@ def track_orders() -> None:
                 )
 
             order["toysi_ttn"] = ttn
-            _maybe_register_ettn(conn, order, ttn)
+            _maybe_issue_receipt(conn, order, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)
             _maybe_push_ttn_to_prom(conn, order, ttn)
             _maybe_push_delivered_to_prom(conn, order, ttn)

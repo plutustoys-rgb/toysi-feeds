@@ -169,9 +169,16 @@ def _ensure_shift_open(token: str) -> None:
         except requests.exceptions.HTTPError as e:
             raise CheckboxAPIError(f"помилка перевірки зміни касира: {e}") from e
         try:
-            return response.json().get("status")
+            data = response.json()
         except ValueError:
             raise CheckboxAPIError(f"невалідна відповідь (не JSON) при перевірці зміни: {response.text[:300]}")
+        # ВИПРАВЛЕНО (2026-07-22, живий крах усіх 6 замовлень на першому реальному
+        # прогоні — "'NoneType' object has no attribute 'get'"): коли зміни нема,
+        # Checkbox повертає HTTP 200 з тілом ЛІТЕРАЛЬНО "null" (json() -> Python
+        # None), НЕ 404, як припускав код досі — .get("status") на None валив
+        # кожен виклик _ensure_shift_open() без жодного шансу відкрити зміну чи
+        # видати чек. Живо підтверджено прямим запитом.
+        return data.get("status") if data else None
 
     if _current_status() == "OPENED":
         return

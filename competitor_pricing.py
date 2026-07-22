@@ -253,6 +253,81 @@ PACKAGING_COST_UAH = 15.0
 SITE_CART_COMMISSION_UAH = 10.0
 FIXED_COST_UAH = PACKAGING_COST_UAH + SITE_CART_COMMISSION_UAH
 
+# ДОДАНО (2026-07-22, знахідка власниці — "я впевнений, що ціна рахується
+# неправильно", офіційний документ Toysi "Система знижок"): каталожний
+# фід Toysi (parser.py, item["price"]) — ЦІНА БЕЗ персональної накопичувальної
+# знижки. Живо підтверджено: positions_price з order_positions (Toysi API,
+# "без урахування знижки") ТОЧНО дорівнює каталожній ціні для тих самих
+# товарів — уся цінова логіка досі рахувала собівартість систематично
+# завищеною для ВСЬОГО каталогу (не лише окремих SKU).
+#
+# TOYSI_DISCOUNT_RATE=0.15 — поточний підтверджений рівень (одноразове
+# поповнення депозиту 15000₴, найвищий щабель "Системи знижок"; живо
+# підтверджено 5 з 6 реальних замовлень із personal_discount=0.15,
+# лише найстаріше з 08.07 мало 0.05 — ймовірно, до досягнення порогу).
+# НЕ можна визначити напряму з каталожного фіда для КОНКРЕТНОГО товару
+# заздалегідь (Toysi API віддає personal_discount лише ПІСЛЯ створення
+# реального замовлення) — це РОБОЧЕ ПРИПУЩЕННЯ на основі найновіших
+# живих спостережень, підлягає коригуванню, якщо власниця повідомить про
+# зміну рівня.
+#
+# Винятки — той самий офіційний документ:
+# - товари українського виробництва (country="Україна"/"Украина") —
+#   знижка ОБМЕЖЕНА 5%, навіть якщо загальний рівень вищий;
+# - бренди Castorland/Kinsmart/Intex — знижка НЕ діє (0%);
+# - категорії Автокрісла/Біговели/Велосипеди/Самокати (усі
+#   різновиди)/Електромобілі — знижка НЕ діє (0%). "Електромобілі" в
+#   живому каталозі Toysi зараз не зустрічається (перевірено), лишено
+#   про запас — дешева перевірка, нічого не коштує, якщо категорія
+#   з'явиться пізніше.
+TOYSI_DISCOUNT_RATE = 0.15
+TOYSI_DISCOUNT_UKRAINE_CAP = 0.05
+TOYSI_DISCOUNT_UKRAINE_COUNTRIES = {"україна", "украина"}
+TOYSI_DISCOUNT_EXCLUDED_BRANDS = {"castorland", "kinsmart", "intex"}
+TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS = (
+    "автокрісл", "біговел", "велосипед", "самокат", "електромобіл",
+)
+
+
+def _normalize_for_discount_match(text: str) -> str:
+    """Той самий нормалізаційний принцип, що й _normalize_brand() у
+    generate_eva_feed.py — регістр і розділювач не мають значення."""
+    return re.sub(r"[-_\s]+", " ", (text or "").strip().lower())
+
+
+def real_toysi_cost(item: dict) -> float:
+    """Реальна собівартість товару Toysi з урахуванням персональної
+    накопичувальної знижки (див. коментар над TOYSI_DISCOUNT_RATE) —
+    те, що ФАКТИЧНО спишеться з депозиту за цей товар, а не каталожна
+    ціна (яка систематично завищена на розмір знижки). Використовувати
+    ЗАМІСТЬ прямого item.get("price") усюди, де рахується маржа/floor.
+
+    Повертає каталожну ціну БЕЗ ЗМІН (без знижки) для товарів, на які
+    знижка не поширюється (виняткові бренди/категорії) — не занижуємо
+    собівартість там, де реальної знижки немає."""
+    try:
+        base_price = float(item.get("price") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if base_price <= 0:
+        return base_price
+
+    vendor_norm = _normalize_for_discount_match(item.get("vendor"))
+    if vendor_norm in TOYSI_DISCOUNT_EXCLUDED_BRANDS:
+        return base_price
+
+    category_name = (item.get("category_name") or "").lower()
+    if any(kw in category_name for kw in TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS):
+        return base_price
+
+    discount = TOYSI_DISCOUNT_RATE
+    country = _normalize_for_discount_match(item.get("country"))
+    if country in TOYSI_DISCOUNT_UKRAINE_COUNTRIES:
+        discount = min(discount, TOYSI_DISCOUNT_UKRAINE_CAP)
+
+    return round(base_price * (1 - discount), 2)
+
+
 PLATFORMS = ("prom", "rozetka")
 
 # ---------------------------------------------------------------------------
@@ -1084,9 +1159,8 @@ def select_batch(limit: int = DAILY_LIMIT) -> list:
         name = (item.get("name") or "").strip()
         if any(marker in name.lower() for marker in _BAD_NAME_MARKERS):
             continue
-        try:
-            cost = float(item.get("price") or 0)
-        except (ValueError, TypeError):
+        cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi
+        if cost <= 0:
             continue
         if cost < MIN_SUPPLIER_PRICE:
             continue
@@ -1144,7 +1218,7 @@ def cmd_record(
         print(f"Товар {pid} не знайдено в каталозі Toysi (можливо, зник з живого фіда постачальника).")
         sys.exit(1)
 
-    cost = float(item.get("price") or 0)
+    cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi
     if cost <= 0:
         print(f"Товар {pid} має нульову/відсутню ціну постачальника Toysi (cost=0) — пропускаємо, ціну не рахуємо.")
         return

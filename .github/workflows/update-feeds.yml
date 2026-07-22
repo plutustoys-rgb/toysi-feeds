@@ -95,6 +95,27 @@ jobs:
           git show "origin/$FEED_BRANCH:rozetka_feed_membership_state.json" > rozetka_feed_membership_state.json 2>/dev/null \
             || echo '{}' > rozetka_feed_membership_state.json
 
+      # ВИПРАВЛЕНО (2026-07-22, знахідка аудиту PR #136 — Security audit:
+      # rozetka_agent): own_product_links_cache.json (єдине джерело buyBox
+      # для find_best_competitor() у prom_competitor_pricer.py) НІКОЛИ не
+      # персистувався між прогонами — коментар нижче біля "Refresh
+      # own-product-link cache" явно документував це як свідоме рішення
+      # ("НЕ комітимо кеш у git... регенерується заново щоразу"), прийняте
+      # ДО того, як від цього кешу почав залежати щоденний репрайсер
+      # (PR #53), а не лише необов'язковий <url>-тег Rozetka/Google-феєду.
+      # Наслідок, підтверджений аудитом: 99.9%-прогалина buyBox (PR #136)
+      # НІКОЛИ не закривалась би прогін-до-прогону — кожен job стартував з
+      # порожнього кешу, і донарахування (до 400 SKU/прогін,
+      # OWN_LINK_RESOLVE_BATCH_LIMIT) просто губилось би за 4 години.
+      # Той самий round-trip через feed-data, що вже є для
+      # prom_competitor_price_state.json/rozetka_feed_membership_state.json
+      # вище — тепер buyBox-покриття РЕАЛЬНО накопичується з часом, а не
+      # відкочується щоразу.
+      - name: Restore own_product_links_cache.json from ${{ env.FEED_BRANCH }}
+        run: |
+          git show "origin/$FEED_BRANCH:own_product_links_cache.json" > own_product_links_cache.json 2>/dev/null \
+            || echo '{}' > own_product_links_cache.json
+
       # ДОДАНО (2026-07-16, задача власниці — full_catalog_competitor_scan.py
       # має системно впливати на топ-970, не лишатись окремим інформаційним
       # скриптом): full_catalog_scan_state.json пишеться лише на VPS (там
@@ -121,9 +142,17 @@ jobs:
       # не викликався в жодному workflow, тож own_product_links_cache.json
       # ніколи не існував на CI, і <url> в Rozetka-фіді назавжди лишався
       # порожнім. Steps одного job'у діляться файловою системою раннера —
-      # цього достатньо, щоб наступні кроки прочитали щойно записаний кеш;
-      # НЕ комітимо кеш у git (той самий підхід, що й для feeds/*.xml —
-      # регенерується заново щоразу, а не зберігається між прогонами).
+      # цього достатньо, щоб наступні кроки прочитали щойно записаний кеш.
+      #
+      # ВИПРАВЛЕНО (2026-07-22, знахідка аудиту PR #136): раніше тут було
+      # "НЕ комітимо кеш у git... регенерується заново щоразу" — рішення,
+      # прийняте ДО того, як від цього кешу почав залежати щоденний
+      # репрайсер (PR #53). Тепер кеш ВІДНОВЛЮЄТЬСЯ на початку job'у (крок
+      # вище) і ПУБЛІКУЄТЬСЯ в feed-data наприкінці (як
+      # prom_competitor_price_state.json) — _save_own_product_links_cache()
+      # у generate_google_feed.py вже й так МЕРЖИТЬ (не перезаписує)
+      # результат, тож цей round-trip лише вмикає РЕАЛЬНЕ накопичення
+      # покриття buyBox з часом, замість щоразового скидання в нуль.
       # continue-on-error: <url> — необов'язковий тег, тож збій цього кроку
       # (напр. reverse-engineered пошуковий ендпоінт Prom тимчасово
       # недоступний) не повинен блокувати генерацію решти фідів, які раніше
@@ -421,7 +450,7 @@ jobs:
           # -f: feeds/*.xml навмисно в .gitignore для master (щоб не роздувати її
           # історію), але саме ці файли й мають бути закомічені сюди, на feed-data —
           # без -f git add мовчки відмовляється додавати файли, що збігаються з .gitignore.
-          git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json rozetka_feed_membership_state.json
+          git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json rozetka_feed_membership_state.json own_product_links_cache.json
           # Видимість, п.1 (2026-07-17): Google Merchant феєд (топ-970, малий,
           # той самий порядок розміру, що prom_feed_top.xml — жодного ризику
           # ліміту 100МБ) досі ніколи не публікувався сюди, попри те, що

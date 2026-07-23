@@ -4,7 +4,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
 
 import requests
@@ -116,6 +116,28 @@ DEPLOY_DRIFT_CHECK_INTERVAL_HOURS = 24
 # дрейф залежностей за визначенням теж змінюється не швидше, ніж хтось
 # руками відредагує requirements.txt).
 DEPENDENCY_DRIFT_CHECK_INTERVAL_HOURS = 24
+
+# ДОДАНО (2026-07-23, живий інцидент — власниця помітила падіння каталогу
+# Prom до 473/1000 через скріншот): GitHub Actions `schedule`-подія (cron
+# "0 */4 * * *" в update-feeds.yml) сама по собі НЕ гарантована — GitHub
+# офіційно документує, що scheduled-запуски можуть затримуватись чи
+# пропускатись під навантаженням платформи. Живо підтверджено: останній
+# запуск був о 09:14 UTC, вікно 12:00 UTC пропущено повністю (сам workflow
+# лишався "active", не вимкнений) — і про це ніхто не дізнався б, поки
+# хтось не поглянув би в кабінет Prom вручну. Той самий клас проблеми, що
+# й deploy/dependency drift вище ("щось застигло, і треба знати про це
+# ШВИДКО, не через випадковий скріншот годинами пізніше") — той самий
+# архітектурний патерн (стейт-трекований алярм, щоденне нагадування, доки
+# триває, повідомлення про відновлення). НЕ автозапускає новий прогін
+# (не потребує токена із правом запису на VPS, і повторний форсований
+# --apply без людського рішення — це вже інший, ризикованіший клас дії) —
+# лише сповіщає, щоб людина (чи я в наступній сесії) могла запустити
+# вручну, поки затримка ще свіжа, а не виявлена випадково.
+GITHUB_API_WORKFLOW_RUNS_URL = (
+    "https://api.github.com/repos/plutustoys-rgb/toysi-feeds/actions/workflows/update-feeds.yml/runs"
+)
+FEED_PIPELINE_CHECK_INTERVAL_HOURS = 1  # дешевий, неавтентифікований GH API виклик — можна частіше за 24-годинний drift-цикл
+FEED_PIPELINE_MAX_GAP_HOURS = 5  # cron кожні 4 год + запас на звичайну затримку GH Actions schedule-подій
 
 # journalctl -o short-iso віддає зсув часового поясу без двокрапки (+0300),
 # а datetime.fromisoformat() приймає такий формат лише з Python 3.11+.
@@ -451,6 +473,69 @@ def check_dependency_drift() -> None:
             print("[watchdog] Не вдалося надіслати повідомлення про усунення дрейфу залежностей у Telegram", file=sys.stderr)
 
 
+def check_feed_pipeline_schedule() -> None:
+    """GH Actions `schedule` для update-feeds.yml — best-effort з боку
+    GitHub, не гарантія (див. коментар над FEED_PIPELINE_MAX_GAP_HOURS).
+    Перевіряє час останнього запуску (БУДЬ-ЯКого — schedule чи
+    workflow_dispatch, обидва однаково підтверджують, що конвеєр живий)
+    через публічний GitHub API (репозиторій публічний — токен не
+    потрібен). Той самий стейт-трекований цикл "алярм -> щоденне
+    нагадування, доки триває -> відновлення", що й check_deploy_drift()/
+    check_dependency_drift() вище, лише з власним, коротшим інтервалом
+    перевірки (FEED_PIPELINE_CHECK_INTERVAL_HOURS=1, не 24 — тут важлива
+    швидкість виявлення, а не рідкісність запиту)."""
+    state = _load_state()
+    last_check = state.get("feed_pipeline_last_check")
+    now = datetime.now()
+    if last_check:
+        try:
+            elapsed_hours = (now - datetime.fromisoformat(last_check)).total_seconds() / 3600
+            if elapsed_hours < FEED_PIPELINE_CHECK_INTERVAL_HOURS:
+                return
+        except ValueError:
+            pass
+
+    try:
+        response = requests.get(GITHUB_API_WORKFLOW_RUNS_URL, params={"per_page": 1}, timeout=15)
+        response.raise_for_status()
+        run = response.json()["workflow_runs"][0]
+        last_run_at = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
+    except (requests.RequestException, ValueError, KeyError, IndexError) as e:
+        print(f"[watchdog] Перевірка розкладу update-feeds.yml: не вдалося перевірити ({e})", file=sys.stderr)
+        return
+
+    gap_hours = (datetime.now(timezone.utc) - last_run_at).total_seconds() / 3600
+    was_alarming = state.get("feed_pipeline_alarm", False)
+    is_alarming = gap_hours > FEED_PIPELINE_MAX_GAP_HOURS
+
+    state["feed_pipeline_last_check"] = now.isoformat()
+    state["feed_pipeline_alarm"] = is_alarming
+    _save_state(state)
+
+    detail = (
+        f"останній запуск update-feeds.yml {last_run_at.strftime('%d.%m.%Y %H:%M UTC')} "
+        f"({gap_hours:.1f} год тому, поріг {FEED_PIPELINE_MAX_GAP_HOURS} год)"
+    )
+    print(f"[watchdog] Розклад update-feeds.yml: {'ALARM' if is_alarming else 'OK'} — {detail}")
+
+    if is_alarming and not was_alarming:
+        message = (
+            "🚨 Watchdog PlutusToys: заплановий прогін фідів (update-feeds.yml) запізнюється\n\n"
+            f"⛔ {detail}\n\n"
+            "Планується кожні 4 год (GitHub Actions schedule) — GitHub іноді сам пропускає "
+            "заплановий тригер під навантаженням, workflow лишається активним. "
+            "Запусти вручну: Actions -> Update Toysi feeds -> Run workflow."
+        )
+        print(message)
+        if not send_telegram_message(message):
+            print("[watchdog] Не вдалося надіслати алерт про запізнення update-feeds.yml у Telegram", file=sys.stderr)
+    elif not is_alarming and was_alarming:
+        message = f"✅ Watchdog PlutusToys: update-feeds.yml знову виконується вчасно ({detail})"
+        print(message)
+        if not send_telegram_message(message):
+            print("[watchdog] Не вдалося надіслати повідомлення про відновлення розкладу update-feeds.yml у Telegram", file=sys.stderr)
+
+
 def _order_confirmed_in_toysi(info: dict) -> bool:
     """Чи є в статусі Toysi ознака, що замовлення дійсно існує й
     опрацьовується — а не назавжди "підвішене". Саме так виглядало тестове
@@ -657,3 +742,4 @@ if __name__ == "__main__":
     check_unforwarded_orders()
     check_deploy_drift()
     check_dependency_drift()
+    check_feed_pipeline_schedule()

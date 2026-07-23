@@ -1638,7 +1638,7 @@ def main() -> None:
     buybox_attempted_count = 0  # own_link був — buyBox ПРОБУВАЛИ (незалежно від результату);
                                   # різке падіння buybox_count/buybox_attempted_count сигналізує
                                   # про зламаний _BUYBOX_RE, а не просто "мало конкурентів" (рев'ю PR #53)
-    to_adjust, to_delist, delist_details = [], [], []
+    to_adjust, to_delist = [], []
     default_commission_skipped = []  # (pid, name, category, price) — не потрапляють у to_adjust/to_delist
     # ДОДАНО (2026-07-21, живий приклад SKU 260299 "Тварини і птахи",
     # findings_log.md): SKU з непідтвердженою комісією раніше НІКОЛИ не
@@ -1744,10 +1744,6 @@ def main() -> None:
         elif decision["action"] == "delist":
             delist_count += 1
             to_delist.append(pid)
-            delist_details.append(
-                f"{pid} {name_ukr[:40]} (наша {decision['floor']:.0f} грн vs "
-                f"конкурент {decision['competitor']['price']:.0f} грн)"
-            )
 
     # ДОДАНО (2026-07-20, "постійно конкурентні, раз і назавжди"):
     # окремий, дешевий прохід над SKU поза топ-970 — БЕЗ живого пошуку
@@ -1815,14 +1811,24 @@ def main() -> None:
 
     default_commission_note = ""
     if default_commission_skipped:
+        # ЗМІНЕНО (2026-07-23, пряме прохання власниці — "не переглядатиму
+        # їх вручну, виводьте тільки значущу інфу"): раніше тут виводились
+        # 15 випадкових SKU з ~725 — жодної практичної дії з конкретного
+        # SKU не випливало (власниця йде звіряти КАТЕГОРІЮ в кабінеті Prom,
+        # не окремий товар). Агрегація за категорією замість списку SKU —
+        # саме той рівень деталізації, який реально актуативний.
+        category_counts: dict[str, int] = {}
+        for _, _, cat, _ in default_commission_skipped:
+            category_counts[cat or "(без категорії)"] = category_counts.get(cat or "(без категорії)", 0) + 1
+        top_categories = sorted(category_counts.items(), key=lambda x: -x[1])[:10]
         default_commission_note = (
             f"\n\n⚠️ {len(default_commission_skipped)} SKU на дефолтній комісії "
             f"({PROM_COMMISSION_DEFAULT:.0%}, категорія не підтверджена в кабінеті Prom) — "
-            "НЕ включено в auto-apply, потребують ручного перегляду ставки:\n"
-            + "\n".join(f"{pid} {name[:40]} [{cat}]" for pid, name, cat, _ in default_commission_skipped[:15])
+            "НЕ включено в auto-apply. Категорії, що потребують звірки ставки в кабінеті Prom:\n"
+            + "\n".join(f"{cat}: {count}" for cat, count in top_categories)
         )
-        if len(default_commission_skipped) > 15:
-            default_commission_note += f"\n... та ще {len(default_commission_skipped) - 15}"
+        if len(category_counts) > 10:
+            default_commission_note += f"\n... та ще {len(category_counts) - 10} категорій"
 
     hard_cap_tripped = len(to_delist) > MAX_DELIST_PER_RUN
 
@@ -1874,10 +1880,6 @@ def main() -> None:
             digest += (
                 f"\n\n🚨 CIRCUIT BREAKER (delist) ЗУПИНИВ БИ видалення: " + "; ".join(delist_breaker_reasons)
             )
-        if delist_details:
-            digest += "\n\nКандидати на видалення:\n" + "\n".join(delist_details[:15])
-            if len(delist_details) > 15:
-                digest += f"\n... та ще {len(delist_details) - 15}"
         digest += default_commission_note
         digest += "\n\n(--apply не вмикався, це лише пропозиція)"
         send_telegram_message(digest)
@@ -2041,10 +2043,6 @@ def main() -> None:
         f"{'0 (ЗАБЛОКОВАНО)' if delist_blocked else confirmed_delist_count} товарів. "
         f"Помилок: {error_count}."
     )
-    if not delist_blocked and delist_details:
-        digest += "\n\nВидалено:\n" + "\n".join(delist_details[:15])
-        if len(delist_details) > 15:
-            digest += f"\n... та ще {len(delist_details) - 15}"
     digest += default_commission_note
     send_telegram_message(digest)
     write_pricer_summary(

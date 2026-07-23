@@ -72,7 +72,10 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from competitor_pricing import decide_price_for_platform, load_description_overrides
+from competitor_pricing import (
+    compute_floor, get_platform_commission, load_description_overrides,
+    load_fresh_prom_price_overrides, real_toysi_cost, MIN_PROFIT,
+)
 from generate_prom_feed import append_clearance_notice, normalize_vendor
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
@@ -81,11 +84,6 @@ SHOP_NAME          = "PlutusToys"
 SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійович"
 SHOP_URL           = "https://plutustoys.com.ua"
 OUTPUT_FILE        = "feeds/eva_feed.xml"
-# Одна константа платформи на файл — саме брак цього й спричинив
-# сьогоднішню знахідку аудиту (цей файл спершу помилково передавав
-# "prom" замість "eva" при виклику decide_price_for_platform()). Див.
-# коментар біля PLATFORM у generate_prom_feed.py.
-PLATFORM           = "eva"
 MIN_SUPPLIER_PRICE = 20  # той самий поріг, що й Prom/Rozetka — товари дешевше собівартості постачальника пропускаємо
 
 # Пряме завдання власниці (2026-07-21) — стоп-бренди EVA, категорія KIDS.
@@ -165,17 +163,31 @@ def _truncate(text: str, max_len: int) -> str:
     return cut.rstrip(" ,.-")
 
 
-def _qualifies_for_feed(item: dict, excluded: set) -> bool:
+def _qualifies_for_feed(item: dict, excluded: set, prom_price_overrides: dict) -> bool:
     """Дзеркало основного циклу _build_xml() нижче — винесено окремо для
     підрахунку дублікатів <name_ua> ЛИШЕ серед товарів, що реально
-    потраплять у фід (той самий принцип, що й Rozetka)."""
+    потраплять у фід (той самий принцип, що й Rozetka).
+
+    ЦІНА ЕВА = ЦІНА PROM (2026-07-23, пряме рішення власниці): EVA більше
+    не рахує свою ціну незалежно через decide_price_for_platform() —
+    товар без свіжого prom_price_overrides запису (ще не пройшов через
+    репрайсер Prom цього ж циклу update-feeds.yml) чи з ціною Prom, що не
+    проходить floor рентабельності EVA (реальна комісія EVA, real_toysi_cost),
+    просто не потрапляє у фід — див. дзеркальну логіку в _build_xml()."""
     try:
-        cost = float(item.get("price") or 0)
+        cost = real_toysi_cost(item)
     except (ValueError, TypeError):
         return False
     if cost <= 0 or cost < MIN_SUPPLIER_PRICE:
         return False
-    if str(item["id"]) in excluded:
+    item_id = str(item["id"])
+    if item_id in excluded:
+        return False
+    prom_price = prom_price_overrides.get(item_id)
+    if prom_price is None:
+        return False
+    eva_floor = compute_floor(cost, get_platform_commission("eva"), MIN_PROFIT)
+    if prom_price < eva_floor:
         return False
     vendor = (item.get("vendor") or "").strip()
     if not vendor:
@@ -232,12 +244,13 @@ def _build_xml(
     name_counts = Counter(
         _dedup_key(_clean_text(item.get("name", "")))
         for item in catalog.values()
-        if _qualifies_for_feed(item, excluded)
+        if _qualifies_for_feed(item, excluded, overrides)
     )
 
     skipped_no_price      = 0
     skipped_cheap         = 0
     skipped_unprof        = 0
+    skipped_no_prom_price = 0
     skipped_no_vendor     = 0
     skipped_stop_brand    = 0
     skipped_no_pics       = 0
@@ -246,7 +259,7 @@ def _build_xml(
 
     for item in catalog.values():
         try:
-            cost = float(item.get("price") or 0)
+            cost = real_toysi_cost(item)
         except (ValueError, TypeError):
             skipped_no_price += 1
             continue
@@ -259,6 +272,28 @@ def _build_xml(
 
         item_id = str(item["id"])
         if item_id in excluded:
+            skipped_unprof += 1
+            continue
+
+        # ЦІНА EVA = ЦІНА PROM (2026-07-23, пряме рішення власниці): EVA
+        # більше НЕ рахує ціну незалежно (decide_price_for_platform) —
+        # копіює свіжу ціну, яку репрайсер щойно застосував на Prom у
+        # ТОМУ Ж прогоні update-feeds.yml (load_fresh_prom_price_overrides,
+        # <=PROM_PRICE_STATE_MAX_AGE_HOURS годин). Товар без свіжого запису
+        # (ще не торкнутий репрайсером) просто не потрапляє в фід EVA —
+        # немає окремої "ціни EVA" без Prom як джерела істини.
+        retail = overrides.get(item_id)
+        if retail is None:
+            skipped_no_prom_price += 1
+            continue
+
+        # Профіт-запобіжник: якщо ціна Prom під РЕАЛЬНОЮ комісією EVA
+        # (get_platform_commission("eva"), 15%) з реальною собівартістю
+        # (real_toysi_cost) не проходить той самий floor рентабельності,
+        # що й Prom "без конкурента" (MIN_PROFIT=25%+MIN_PROFIT_UAH) —
+        # виключаємо з фіда EVA, а не публікуємо збитковим/на межі.
+        eva_floor = compute_floor(cost, get_platform_commission("eva"), MIN_PROFIT)
+        if retail < eva_floor:
             skipped_unprof += 1
             continue
 
@@ -278,12 +313,6 @@ def _build_xml(
         if not pictures:
             skipped_no_pics += 1
             continue
-
-        if item_id in overrides:
-            retail = overrides[item_id]
-        else:
-            decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))
-            retail = decision["price"]
 
         stock     = item.get("stock", 0)
         available = "true" if stock > 0 else "false"
@@ -355,7 +384,8 @@ def _build_xml(
 
     print(f"[EVA] У фіді: {len(offers_el)} товарів | "
           f"без ціни: {skipped_no_price} | дешевше {MIN_SUPPLIER_PRICE} грн: {skipped_cheap} | "
-          f"виключено вручну: {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
+          f"немає свіжої ціни Prom (ще не торкнуто репрайсером цього циклу): {skipped_no_prom_price} | "
+          f"виключено вручну/нерентабельно під комісією EVA: {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
           f"бренд у стоп-листі EVA: {skipped_stop_brand} | "
           f"без валідного фото: {skipped_no_pics} | назв обрізано (>{EVA_NAME_MAX_LEN} симв.): {truncated_name_count}")
     if skipped_short_desc:
@@ -401,4 +431,4 @@ if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     description_overrides = load_description_overrides()
-    generate_feed(description_overrides=description_overrides)
+    generate_feed(description_overrides=description_overrides, price_overrides=load_fresh_prom_price_overrides())

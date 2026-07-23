@@ -123,7 +123,18 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from competitor_pricing import decide_price_for_platform, load_description_overrides
+from competitor_pricing import (
+    decide_price_for_platform, load_description_overrides,
+    load_fresh_prom_price_overrides, real_toysi_cost,
+)
+
+# Поріг цінового паритету АЛЛО (докстрінг файлу, "🔴 РИЗИК ЦІНОВОГО
+# ПАРИТЕТУ" вище) — "відмінність у БІЛЬШИЙ бік і особливо різниця 20%+
+# призводить до пониження рейтингу... статусу 'Призупинено'". Директивно
+# (лише ЦІНА АЛЛО ВИЩА за референс), не симетрично — документація прямо
+# каже про завищення, не заниження, тож дешевша за Prom ціна на АЛЛО не є
+# тим самим ризиком і не повинна виключати SKU з фіда.
+ALLO_PRICE_PARITY_MAX_RATIO = 1.20
 from generate_prom_feed import append_clearance_notice, normalize_vendor
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
@@ -199,16 +210,28 @@ def _truncate(text: str, max_len: int) -> str:
     return cut.rstrip(" ,.-")
 
 
-def _qualifies_for_feed(item: dict, excluded: set) -> bool:
+def _qualifies_for_feed(item: dict, excluded: set, overrides: dict, prom_price_overrides: dict) -> bool:
     """Дзеркало основного циклу _build_xml() нижче — той самий принцип, що
-    в generate_eva_feed.py::_qualifies_for_feed()."""
+    в generate_eva_feed.py::_qualifies_for_feed(). Формула ціни АЛЛО (Шлях
+    decide_price_for_platform) лишається НЕЗМІННОЮ (пряме рішення
+    власниці) — цей запобіжник лише ВИКЛЮЧАЄ SKU з фіда, якщо вже
+    порахована ціна порушує ціновий паритет АЛЛО (див.
+    ALLO_PRICE_PARITY_MAX_RATIO вище), не перераховує її."""
     try:
-        cost = float(item.get("price") or 0)
+        cost = real_toysi_cost(item)
     except (ValueError, TypeError):
         return False
     if cost <= 0 or cost < MIN_SUPPLIER_PRICE:
         return False
-    if str(item["id"]) in excluded:
+    item_id = str(item["id"])
+    if item_id in excluded:
+        return False
+    if item_id in overrides:
+        retail = overrides[item_id]
+    else:
+        retail = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))["price"]
+    prom_price = prom_price_overrides.get(item_id)
+    if prom_price and retail > prom_price * ALLO_PRICE_PARITY_MAX_RATIO:
         return False
     vendor = (item.get("vendor") or "").strip()
     if not vendor:
@@ -234,6 +257,7 @@ def _build_xml(
     price_overrides: dict = None,
     exclude_ids: set = None,
     description_overrides: dict = None,
+    prom_price_reference: dict = None,
 ) -> ET.Element:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
@@ -260,17 +284,19 @@ def _build_xml(
     overrides      = price_overrides or {}
     excluded       = exclude_ids or set()
     desc_overrides = description_overrides or {}
+    prom_reference = prom_price_reference or {}
     described_count = 0
 
     name_counts = Counter(
         _dedup_key(_clean_text(item.get("name", "")))
         for item in catalog.values()
-        if _qualifies_for_feed(item, excluded)
+        if _qualifies_for_feed(item, excluded, overrides, prom_reference)
     )
 
     skipped_no_price      = 0
     skipped_cheap         = 0
     skipped_unprof        = 0
+    skipped_price_parity  = 0
     skipped_no_vendor     = 0
     skipped_stop_brand    = 0
     skipped_no_pics       = 0
@@ -278,7 +304,7 @@ def _build_xml(
 
     for item in catalog.values():
         try:
-            cost = float(item.get("price") or 0)
+            cost = real_toysi_cost(item)
         except (ValueError, TypeError):
             skipped_no_price += 1
             continue
@@ -292,6 +318,21 @@ def _build_xml(
         item_id = str(item["id"])
         if item_id in excluded:
             skipped_unprof += 1
+            continue
+
+        if item_id in overrides:
+            retail = overrides[item_id]
+        else:
+            decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))
+            retail = decision["price"]
+
+        # Ціновий паритет АЛЛО (докстрінг файлу, "🔴 РИЗИК ЦІНОВОГО
+        # ПАРИТЕТУ") — формулу ціни АЛЛО вище НЕ чіпаємо, лише виключаємо
+        # SKU з фіда, якщо вже порахована ціна перевищує Prom на 20%+
+        # (документація: 20%+ завищення -> пониження рейтингу/призупинення).
+        prom_price = prom_reference.get(item_id)
+        if prom_price and retail > prom_price * ALLO_PRICE_PARITY_MAX_RATIO:
+            skipped_price_parity += 1
             continue
 
         vendor = (item.get("vendor") or "").strip()
@@ -310,12 +351,6 @@ def _build_xml(
         if not pictures:
             skipped_no_pics += 1
             continue
-
-        if item_id in overrides:
-            retail = overrides[item_id]
-        else:
-            decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))
-            retail = decision["price"]
 
         stock     = item.get("stock", 0)
         available = "true" if stock > 0 else "false"
@@ -390,7 +425,8 @@ def _build_xml(
 
     print(f"[ALLO] У фіді: {len(offers_el)} товарів | "
           f"без ціни: {skipped_no_price} | дешевше {MIN_SUPPLIER_PRICE} грн: {skipped_cheap} | "
-          f"виключено вручну: {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
+          f"виключено вручну: {skipped_unprof} | цінового паритету АЛЛО не пройшло (>20% над Prom): {skipped_price_parity} | "
+          f"без бренду (vendor обов'язковий): {skipped_no_vendor} | "
           f"бренд у стоп-листі АЛЛО: {skipped_stop_brand} | "
           f"без валідного фото: {skipped_no_pics} | назв обрізано (>{ALLO_NAME_MAX_LEN} симв.): {truncated_name_count}")
     print(f"[ALLO] Vis-9: {described_count} SKU отримали вручну написаний опис (description_overrides.json)")
@@ -401,7 +437,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
                   catalog: dict = None,
                   exclude_ids: set = None,
-                  description_overrides: dict = None) -> None:
+                  description_overrides: dict = None,
+                  prom_price_reference: dict = None) -> None:
     if catalog is None:
         print("[ALLO] Завантажуємо каталог Toysi...")
         catalog = fetch_toysi_catalog()
@@ -414,7 +451,7 @@ def generate_feed(output_file: str = OUTPUT_FILE,
 
     root = _build_xml(
         top_catalog, price_overrides=price_overrides, exclude_ids=exclude_ids,
-        description_overrides=description_overrides,
+        description_overrides=description_overrides, prom_price_reference=prom_price_reference,
     )
 
     ET.indent(root, space="  ")
@@ -433,4 +470,4 @@ if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     description_overrides = load_description_overrides()
-    generate_feed(description_overrides=description_overrides)
+    generate_feed(description_overrides=description_overrides, prom_price_reference=load_fresh_prom_price_overrides())

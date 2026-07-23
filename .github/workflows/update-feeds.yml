@@ -190,17 +190,6 @@ jobs:
         continue-on-error: true
         run: python generate_bing_feed.py
 
-      # ДОДАНО (2026-07-21, задача власниці — підготовка EVA Маркетплейс,
-      # PR #118): на відміну від Meta/Bing вище, цей скрипт НЕ читає
-      # own_product_links_cache.json — власний виклик select_top_items(),
-      # без залежності від generate_google_feed.py цього ж прогону.
-      # continue-on-error: той самий best-effort статус — це підготовка
-      # коду ДО реєстрації на EVA (власниця ще не подала заявку), збій
-      # тут не повинен блокувати публікацію критичних Prom/Rozetka фідів.
-      - name: Generate EVA Marketplace feed (best-effort, prep-only)
-        continue-on-error: true
-        run: python generate_eva_feed.py
-
       # continue-on-error: цей крок реально змінює ціни в Prom через API
       # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими
       # зовнішніми залежностями. Збій тут не повинен зупиняти генерацію й
@@ -239,6 +228,19 @@ jobs:
             printf '# Репрайсер конкурентів Prom — стислий підсумок (перезаписується щоразу)\n\nОновлено: %s\n⚠ Файл не згенеровано — репрайсер, ймовірно, аварійно завершився до першого запису підсумку.\n' \
               "$(date -u +'%Y-%m-%d %H:%M UTC')" > prom_competitor_pricer_summary.md
           fi
+
+      # ПЕРЕНЕСЕНО СЮДИ (2026-07-23, пряме рішення власниці): ціна EVA
+      # тепер = ціні Prom напряму (не власний розрахунок через
+      # EVA_COMMISSION_TOYS) — має читати prom_competitor_price_state.json
+      # ПІСЛЯ репрайсера вище, інакше load_fresh_prom_price_overrides()
+      # підхопить учорашню ціну, а не щойно застосовану цим самим
+      # прогоном. continue-on-error: той самий best-effort статус, що й
+      # раніше — це підготовка коду ДО реєстрації на EVA (власниця ще не
+      # подала заявку), збій тут не повинен блокувати публікацію
+      # критичних Prom/Rozetka фідів.
+      - name: Generate EVA Marketplace feed (best-effort, prep-only)
+        continue-on-error: true
+        run: python generate_eva_feed.py
 
       # ВИПРАВЛЕНО (2026-07-20, задача власниці — "розділити публікацію
       # Rozetka/Prom фідів, щоб збій одного не блокував інший"): раніше цей

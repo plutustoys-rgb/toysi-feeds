@@ -1638,7 +1638,7 @@ def main() -> None:
     buybox_attempted_count = 0  # own_link був — buyBox ПРОБУВАЛИ (незалежно від результату);
                                   # різке падіння buybox_count/buybox_attempted_count сигналізує
                                   # про зламаний _BUYBOX_RE, а не просто "мало конкурентів" (рев'ю PR #53)
-    to_adjust, to_delist, delist_details = [], [], []
+    to_adjust, to_delist = [], []
     default_commission_skipped = []  # (pid, name, category, price) — не потрапляють у to_adjust/to_delist
     # ДОДАНО (2026-07-21, живий приклад SKU 260299 "Тварини і птахи",
     # findings_log.md): SKU з непідтвердженою комісією раніше НІКОЛИ не
@@ -1744,10 +1744,6 @@ def main() -> None:
         elif decision["action"] == "delist":
             delist_count += 1
             to_delist.append(pid)
-            delist_details.append(
-                f"{pid} {name_ukr[:40]} (наша {decision['floor']:.0f} грн vs "
-                f"конкурент {decision['competitor']['price']:.0f} грн)"
-            )
 
     # ДОДАНО (2026-07-20, "постійно конкурентні, раз і назавжди"):
     # окремий, дешевий прохід над SKU поза топ-970 — БЕЗ живого пошуку
@@ -1813,16 +1809,27 @@ def main() -> None:
             f"{low_score_count}/{len(competitor_scores)} ({low_score_count / len(competitor_scores) * 100:.0f}%)"
         )
 
-    default_commission_note = ""
+    # ЗМІНЕНО (2026-07-23, пряме прохання власниці — "я не буду звіряти,
+    # це повинні робити ви. Мені в телеграм тільки результати"): категорія
+    # на дефолтній комісії — це МОЯ backlog-задача (дослідити реальну
+    # ставку ProSale і додати в PROM_CATEGORY_COMMISSION/
+    # PROM_CATEGORY_ID_COMMISSION), а не завдання для власниці. Тому
+    # деталізація за категоріями йде ТІЛЬКИ у write_pricer_summary()
+    # (внутрішній артефакт, який переглядаю я між сесіями) — у Telegram
+    # (власниці) лишається лише сирий факт-результат: скільки SKU
+    # виключено з auto-apply, без жодного заклику щось перевірити.
+    default_commission_category_detail = ""
     if default_commission_skipped:
-        default_commission_note = (
-            f"\n\n⚠️ {len(default_commission_skipped)} SKU на дефолтній комісії "
-            f"({PROM_COMMISSION_DEFAULT:.0%}, категорія не підтверджена в кабінеті Prom) — "
-            "НЕ включено в auto-apply, потребують ручного перегляду ставки:\n"
-            + "\n".join(f"{pid} {name[:40]} [{cat}]" for pid, name, cat, _ in default_commission_skipped[:15])
+        category_counts: dict[str, int] = {}
+        for _, _, cat, _ in default_commission_skipped:
+            category_counts[cat or "(без категорії)"] = category_counts.get(cat or "(без категорії)", 0) + 1
+        top_categories = sorted(category_counts.items(), key=lambda x: -x[1])[:10]
+        default_commission_category_detail = (
+            " Категорії на дефолтній комісії (backlog для дослідження реальної ставки, "
+            "не дія власниці): " + ", ".join(f"{cat} ({count})" for cat, count in top_categories)
         )
-        if len(default_commission_skipped) > 15:
-            default_commission_note += f"\n... та ще {len(default_commission_skipped) - 15}"
+        if len(category_counts) > 10:
+            default_commission_category_detail += f" та ще {len(category_counts) - 10} категорій"
 
     hard_cap_tripped = len(to_delist) > MAX_DELIST_PER_RUN
 
@@ -1858,7 +1865,9 @@ def main() -> None:
             f"📊 prom_competitor_pricer.py (dry-run, {len(items)} SKU): "
             f"пропоновано скоригувати ціну — {adjust_count}, "
             f"видалити як неконкурентні — {delist_count}, "
-            f"конкурента не знайдено — {no_competitor_count}."
+            f"конкурента не знайдено — {no_competitor_count}"
+            + (f", виключено через непідтверджену комісію — {len(default_commission_skipped)}" if default_commission_skipped else "")
+            + "."
         )
         if adjust_blocked:
             digest += (
@@ -1874,16 +1883,12 @@ def main() -> None:
             digest += (
                 f"\n\n🚨 CIRCUIT BREAKER (delist) ЗУПИНИВ БИ видалення: " + "; ".join(delist_breaker_reasons)
             )
-        if delist_details:
-            digest += "\n\nКандидати на видалення:\n" + "\n".join(delist_details[:15])
-            if len(delist_details) > 15:
-                digest += f"\n... та ще {len(delist_details) - 15}"
-        digest += default_commission_note
         digest += "\n\n(--apply не вмикався, це лише пропозиція)"
         send_telegram_message(digest)
         write_pricer_summary(
             "Режим: dry-run (--apply не використовувався). 20-годинний гейт: не спрацював (повний прогін виконано)."
-            + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply." if default_commission_skipped else "")
+            + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply."
+               + default_commission_category_detail if default_commission_skipped else "")
             + (f" Circuit breaker (adjust) СПРАЦЮВАВ БИ: {'; '.join(adjust_breaker_reasons)}" if adjust_blocked else "")
             + (f" Circuit breaker (delist) СПРАЦЮВАВ БИ: {'; '.join(delist_breaker_reasons)}" if (delist_breaker_reasons and not hard_cap_tripped) else ""),
             checked=len(items), adjust=adjust_count, delist=delist_count,
@@ -2038,20 +2043,17 @@ def main() -> None:
         f"💰 prom_competitor_pricer.py --apply: скориговано цін — "
         f"{'0 (ЗАБЛОКОВАНО circuit breaker)' if adjust_blocked else applied_count}, "
         f"видалено як неконкурентні — "
-        f"{'0 (ЗАБЛОКОВАНО)' if delist_blocked else confirmed_delist_count} товарів. "
-        f"Помилок: {error_count}."
+        f"{'0 (ЗАБЛОКОВАНО)' if delist_blocked else confirmed_delist_count} товарів"
+        + (f", виключено через непідтверджену комісію — {len(default_commission_skipped)}" if default_commission_skipped else "")
+        + f". Помилок: {error_count}."
     )
-    if not delist_blocked and delist_details:
-        digest += "\n\nВидалено:\n" + "\n".join(delist_details[:15])
-        if len(delist_details) > 15:
-            digest += f"\n... та ще {len(delist_details) - 15}"
-    digest += default_commission_note
     send_telegram_message(digest)
     write_pricer_summary(
         "Режим: --apply"
         + (" (частково заблоковано circuit breaker'ом — див. Telegram)." if (adjust_blocked or delist_blocked) else " (реальні зміни застосовано).")
         + " 20-годинний гейт: не спрацював (повний прогін виконано)."
-        + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply." if default_commission_skipped else ""),
+        + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply."
+           + default_commission_category_detail if default_commission_skipped else ""),
         checked=len(items), adjust=(0 if adjust_blocked else applied_count),
         delist=(0 if delist_blocked else confirmed_delist_count),
         no_competitor=no_competitor_count, errors=error_count,

@@ -290,7 +290,7 @@ def _build_xml(
         # Профіт-запобіжник: якщо ціна Prom під РЕАЛЬНОЮ комісією EVA
         # (get_platform_commission("eva"), 15%) з реальною собівартістю
         # (real_toysi_cost) не проходить той самий floor рентабельності,
-        # що й Prom "без конкурента" (MIN_PROFIT=25%+MIN_PROFIT_UAH) —
+        # що й Prom "без конкурента" (MIN_PROFIT=25%) —
         # виключаємо з фіда EVA, а не публікуємо збитковим/на межі.
         eva_floor = compute_floor(cost, get_platform_commission("eva"), MIN_PROFIT)
         if retail < eva_floor:

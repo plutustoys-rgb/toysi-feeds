@@ -6,21 +6,87 @@ generate_eva_feed.py — генерує YML-фід для EVA Маркетпле
 - https://sellersupport.eva.ua/category/upravlinnia-tovaramy/vymohy-do-oformlennia-informatsii-pro-tovary
 - https://sellersupport.eva.ua/article/pidhotovka-prays-listu-xml
 
-Формат — YML (той самий стандарт, що й Prom/Rozetka), корінь
-`<yml_catalog><shop><offers><offer available="true/false" id="...">`.
-Обов'язкові поля offer: price, currencyId, categoryId, picture (1-15,
-https, мін. 512x512px — розмір зображення не перевіряємо тут, лише
-https/кількість, як і в generate_rozetka_feed.py), vendor, name_ua
-(укр. назва, макс. 255 симв.), stock_quantity (ЦІЛЕ число залишку, не
-bool — та сама специфіка, що й у Rozetka), description_ua (укр. опис,
-30-60 000 симв.), param (характеристики, хоча б один).
+ПОВНА ЗВІРКА 5 ПУНКТІВ (2026-07-23, пряме прохання власниці, джерела —
+статті sellersupport.eva.ua "Назва товару"/"Опис товару"/"Зображення
+товару"/"Параметри товару"/"Заборонені товари для продажу на EVA
+Маркетплейс"):
 
-НАВМИСНО НЕ пишемо `<name>`/`<description>` (російські, опційні поля
-EVA) — той самий принцип, що вже встановлено для Rozetka
-(generate_rozetka_feed.py): лише українською, без пари rus/ukr, як
-робить Prom. EVA явно позначає _ua-поля обов'язковими, а не-суфіксовані
-— опційними (дзеркальна структура до Rozetka, де навпаки "без _ua
-означає авто-переклад").
+1. НАЗВА — реалізовано частково, свідомо:
+   - `<name>` (рос.) тепер ЗАПОВНЮЄТЬСЯ (fetch_russian_text() з
+     generate_prom_feed.py, той самий rus-фід Toysi lang=rus, з
+     фолбеком на укр. назву, якщо для SKU рос-варіанту нема) — РАНІШЕ
+     поле взагалі не писалось (докстрінг досі мав хибне пояснення "не
+     пишемо, бо непотрібне" — власниця процитувала вимогу "лише
+     російською заборонена", що прямо суперечило старому коду).
+   - Прибрано ВЕЛИКІ ЛІТЕРИ (_denoise_caps): якщо >=60% літер назви —
+     великі, перетворюємо на Title Case, крім коротких токенів (<=3
+     симв., ймовірні акроніми/моделі: "M-9", "3D") і токенів з цифрами.
+     Живо перевірено на 669 реально "кричущих" назвах каталогу Toysi —
+     без жодного зіпсованого моделі/акроніма.
+   - Обмеження пунктуації (_limit_punctuation): СВІДОМО вузьке —
+     схлопує лише явно декоративну повторювану пунктуацію (!!, ??, 4+
+     крапки), НЕ займає лапки/коми/дужки. Причина: лапки — це стабільна
+     конвенція самого Toysi для позначення конкретної моделі/назви
+     всередині типу товару (та сама "модель/колір/розмір" пільга, що
+     прямо назвала власниця) — сліпе "макс. 1 розділовий знак" зламало
+     б практично КОЖНУ назву в каталозі (перевірено: 3635 назв мають
+     2+ коми, здебільшого легітимний перелік розмір/колір).
+   - НЕ РЕАЛІЗОВАНО (чесно, не автоматизовується безпечно): структурна
+     трансформація в формулу "Тип+Бренд+Модель+Характеристики+Колір+
+     (Артикул)" вимагає надійного розбору довільної назви на типізовані
+     поля — жодного надійного правила для ~29000 різнорідних SKU різних
+     категорій немає без ризику зіпсувати реальні назви. Toysi-назви й
+     так здебільшого вже йдуть у форматі "Тип ... "Модель"" (див.
+     приклади вище) — залишено як є, без ризикованої автоперебудови.
+
+2. ОПИС — реалізовано з ЕВІДЕНС-BASED звуженням обсягу:
+   - Контакти/ціна (_strip_contacts_and_price): телефон (regex за
+     цифровим патерном, НЕ за словом "телефон" — 231 живий SKU згадує
+     "телефон" як ФУНКЦІЮ іграшки, не номер), email, месенджер-посилання
+     (t.me/, @handle, viber/whatsapp), ціна+валюта (число+грн/₴).
+   - Заклики до дії (_strip_cta_phrases): ТОЧНІ багатослівні фрази
+     ("менеджер передзвонить", "зателефонуйте нам" тощо), видаляються
+     ПОРЕЧЕННЯМИ (не весь опис). СВІДОМО НЕ окремі слова "купити/
+     замовити/опт/акція/менеджер/знижка" — живо перевірено на реальних
+     описах Toysi: "опт" 630 разів false positive ("оптимальний"),
+     "менеджер" 6/6 false positive (назва гри "Менеджер"), "телефон"
+     231 здебільшого продукт-ознака, "акці"/"знижк" false positive
+     (ігрові фішки-акції компаній у "Монополії", гарантійний пункт про
+     компенсацію) — сліпий словниковий фільтр active ЗІПСУВАВ БИ сотні
+     легітимних описів, тому лише точні багатослівні фрази заклику.
+   - "Інфо про асортимент моделі" — НЕ реалізовано окремим фільтром
+     (та сама евіденс-based обережність — жодного надійного маркера
+     без ризику false positive не знайдено в живих даних).
+
+3. ФОТО — НЕ РЕАЛІЗОВАНО, чесно: перевірка ЗМІСТУ фото (інфографіка/
+   текст на фото, колір фону, мова тексту, роздільна здатність)
+   вимагає аналізу самого зображення (vision-модель чи ручний
+   перегляд) — жодного такого механізму немає в жодному фіді проєкту.
+   Це не рядок коду, який можна дописати безпечно без окремого рішення
+   власниці про архітектуру/вартість (напр. виклик vision-API на кожне
+   фото). Лишається відкритим пунктом.
+
+4. ПАРАМЕТРИ — гарантовано мінімум 2 <param> на offer (fallback-пул
+   "Виробник"/"Категорія" топує до 2, якщо Toysi дав менше).
+
+5. ЗАБОРОНЕНІ ТОВАРИ (країна/тематика) — реалізовано:
+   - Країна походження (EVA_BANNED_COUNTRY_PATTERNS): рф/білорусь
+     (обидва живі варіанти написання каталогу — "Білорусь"/"Білорось",
+     типова помилка друку Toysi)/кндр/іран/куба — перевірено проти ВСІХ
+     36 реальних значень item["country"] живого каталогу: 0 false
+     positive, спрацьовує лише на 2 варіантах написання Білорусі.
+   - Тематика/студія "Союзмультфільм" — доданий до EVA_STOP_BRANDS
+     (перевірка ЛИШЕ за полем vendor, той самий механізм, що бренди) —
+     СВІДОМО НЕ вільнотекстовий пошук по назві/опису: живо знайдено
+     РЕАЛЬНИЙ небезпечний false positive — SKU 297245 (фігурка Funko
+     POP! "Роккі 4") згадує "СРСР" у сюжетному описі фільму (Роккі
+     проти Івана Драго), а кілька SKU з фразою "Рускій воєнний
+     корабль, іди на... дно" — це патріотичний антиросійський мем-товар
+     (кухлі/значки/блокноти), не пропагандистський! Сліпий текстовий
+     пошук на "рос"/"срср" видалив би саме ці антиросійські товари з
+     фіда — прямо протилежний ефект. Тому лише vendor-поле.
+   - "Зображення проросійських осіб" — НЕ РЕАЛІЗОВАНО, та сама причина,
+     що й п.3 (аналіз змісту фото, не текстових даних).
 
 СТОП-БРЕНДИ (пряме завдання власниці, 2026-07-21, категорія KIDS EVA):
 EVA_STOP_BRANDS — той самий патерн, що вже є для Rozetka
@@ -76,7 +142,7 @@ from competitor_pricing import (
     compute_floor, get_platform_commission, load_description_overrides,
     load_fresh_prom_price_overrides, real_toysi_cost, MIN_PROFIT,
 )
-from generate_prom_feed import append_clearance_notice, normalize_vendor
+from generate_prom_feed import append_clearance_notice, fetch_russian_text, normalize_vendor
 from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
 
@@ -97,6 +163,15 @@ EVA_STOP_BRANDS = {
     "play doh", "spin master", "strateg", "suavinex", "technok", "технок",
     "tigres", "tiny love", "trefl", "vladi toys", "енергія плюс",
     "київська фабрика іграшок", "країна іграшок", "курносики",
+    # Заборонені товари EVA — тематика/студія "Союзмультфільм" (радянська
+    # студія мультиплікації), доданий СЮДИ (перевірка лише vendor-поля),
+    # СВІДОМО НЕ як вільнотекстовий пошук у назві/описі — див. докстрінг
+    # файлу, п.5: живо знайдено небезпечний false positive (SKU 297245,
+    # опис фільму згадує "СРСР" сюжетно; кілька SKU з патріотичною
+    # антиросійською фразою "Рускій воєнний корабль, іди на... дно" —
+    # текстовий пошук на "рос"/"срср" видалив би саме антиросійський
+    # товар, протилежний намір).
+    "союзмультфільм", "союзмультфильм",
 }
 
 
@@ -107,6 +182,27 @@ def _normalize_brand(vendor: str) -> str:
     транслітеруються одне в одне автоматично (окрім explicit TechnoK/
     Технок пари в EVA_STOP_BRANDS вище)."""
     return re.sub(r"[-_\s]+", " ", (vendor or "").strip().lower())
+
+
+# Заборонені товари EVA, п.5 (докстрінг файлу) — країна походження,
+# перевірено ЛИШЕ проти item["country"] (структуроване поле Toysi), НЕ
+# вільнотекстовий пошук по назві/опису (див. докстрінг — той самий
+# ризик false positive, що й тематика/студія нижче). Живо звірено
+# проти всіх 36 реальних значень country у каталозі (2026-07-23) —
+# спрацьовує лише на 2 варіантах написання Білорусі, 0 false positive
+# на решті 34 (Індія/Італія/Китай/Туреччина тощо).
+EVA_BANNED_COUNTRY_PATTERNS = (
+    "рф", "росі", "russia",
+    "білорус", "білорос", "беларус", "belarus",
+    "кндр", "північна корея", "north korea",
+    "іран", "iran",
+    "куба", "cuba",
+)
+
+
+def _is_banned_country(country: str) -> bool:
+    normalized = (country or "").strip().lower().replace("’", "").replace("'", "")
+    return any(pattern in normalized for pattern in EVA_BANNED_COUNTRY_PATTERNS)
 
 
 EVA_NAME_MAX_LEN        = 255       # https://sellersupport.eva.ua/article/pidhotovka-prays-listu-xml
@@ -145,12 +241,160 @@ def _dedup_key(name: str) -> str:
     return name
 
 
+def _normalize_trailing_color_case(name: str) -> str:
+    """Живо знайдено (SKU 299913 та ще 1063 у каталозі): назва Toysi
+    може бути ЗАГАЛОМ нормального регістру, але з кінцевим "(КОЛІР)"
+    ВЕЛИКИМИ ЛІТЕРАМИ (напр. "...(БІЛИЙ)") — _denoise_caps() вище
+    свідомо НЕ спрацьовує тут (поріг 60% літер усієї назви — одне
+    слово в дужках занадто мала частка). Той самий _TRAILING_COLOR_
+    PAREN_RE/_COLOR_WORDS, що вже є для дедуп-ключа, тут — щоб
+    нормалізувати регістр САМЕ цього ізольованого "кричущого" слова,
+    не займаючи решту назви."""
+    match = _TRAILING_COLOR_PAREN_RE.search(name)
+    if match and match.group(1).strip().lower() in _COLOR_WORDS and match.group(1).isupper():
+        color = match.group(1).capitalize()
+        return name[:match.start()].rstrip() + f" ({color})"
+    return name
+
+
 def _clean_text(text: str) -> str:
     return _CONTROL_CHARS_RE.sub("", text or "")
 
 
 def _strip_urls(text: str) -> str:
     return _URL_RE.sub("", text or "")
+
+
+# Назва, п.1 (докстрінг файлу) — прибрати ВЕЛИКІ ЛІТЕРИ. Короткі
+# службові слова (прийменники/сполучники) — НЕ вважати акронімом/
+# моделлю навіть при довжині <=3, лишати lower() (живо знайдено false
+# positive "ПО НОМЕРАХ" -> хибно збережено як "акронім" без цього списку).
+_LETTER_RE = re.compile(r"[A-ZА-ЯЁІЇЄa-zа-яёіїє]")
+_SHORT_FUNCTION_WORDS = {
+    "по", "до", "за", "на", "від", "як", "і", "й", "та", "або", "чи",
+    "не", "в", "у", "зі", "о", "а", "б", "ж", "це", "з",
+}
+
+
+def _denoise_caps(name: str) -> str:
+    """Якщо >=60% літер назви — великі (поріг обраний так, щоб НЕ чіпати
+    короткі акроніми/моделі на кшталт "USB"/"M-9", які природно займають
+    малу частку довгої назви), перетворює слова на Title Case. Короткі
+    токени (<=3 симв. core, окрім службових слів вище) і токени з
+    цифрами (моделі "M-9", розміри "3D") лишаються недоторканими.
+    ВИПРАВЛЕНО (аудит, pt15): попередній приклад "LEGO" тут був
+    НЕТОЧНИМ — "LEGO" (4 літери, без цифр) НЕ підпадає під захист
+    "<=3 символи" і перетворюється на "Lego" (перевірено незалежно) —
+    це не пошкодження даних (читабельна, коректно написана назва бренду),
+    але коментар раніше стверджував протилежне. Живо перевірено на 669
+    реально "кричущих" назвах живого каталогу Toysi —
+    без жодного зіпсованого моделі/акроніма/патріотичного тексту."""
+    letters = _LETTER_RE.findall(name)
+    if len(letters) < 6:
+        return name
+    upper_frac = sum(1 for c in letters if c.isupper()) / len(letters)
+    if upper_frac < 0.6:
+        return name
+    words = name.split(" ")
+    fixed = []
+    for w in words:
+        if any(ch.isdigit() for ch in w):
+            fixed.append(w)
+            continue
+        i = 0
+        while i < len(w) and not w[i].isalpha():
+            i += 1
+        j = len(w)
+        while j > i and not w[j - 1].isalpha():
+            j -= 1
+        core = w[i:j]
+        if not core:
+            fixed.append(w)
+        elif core.lower() in _SHORT_FUNCTION_WORDS:
+            fixed.append(w[:i] + core.lower() + w[j:])
+        elif len(core) <= 3:
+            fixed.append(w)
+        else:
+            fixed.append(w[:i] + core[0].upper() + core[1:].lower() + w[j:])
+    return " ".join(fixed)
+
+
+# Назва, п.1 — обмеження пунктуації. СВІДОМО вузьке: лапки/коми/дужки
+# НЕ чіпаємо (стабільна конвенція самого Toysi для моделі/кольору/
+# розміру — та сама пільга, що прямо назвала власниця; сліпе "макс. 1
+# розділовий знак" зламало б практично кожну назву, перевірено: 3635
+# назв мають 2+ коми, здебільшого легітимний розмір/колір). Лише явно
+# декоративна повторювана пунктуація.
+_REPEAT_BANG_RE  = re.compile(r"!{2,}")
+_REPEAT_QMARK_RE = re.compile(r"\?{2,}")
+_EXCESS_DOTS_RE  = re.compile(r"\.{4,}")  # 4+; звичайний "..." (3 крапки) — стандартна пунктуація, не декор
+
+
+def _limit_punctuation(name: str) -> str:
+    name = _REPEAT_BANG_RE.sub("!", name)
+    name = _REPEAT_QMARK_RE.sub("?", name)
+    name = _EXCESS_DOTS_RE.sub("...", name)
+    return name
+
+
+# Опис, п.2 (докстрінг файлу) — контакти/ціна. Телефон — ЦИФРОВИЙ
+# патерн, НЕ слово "телефон" (231 живий SKU згадує "телефон" як функцію
+# іграшки, не номер). Email/месенджер-посилання/ціна+валюта.
+# ВИПРАВЛЕНО (аудит, pt15): без межі проти сусідніх цифр regex матчив
+# БУДЬ-ЯКУ 10-значну підпослідовність УСЕРЕДИНІ довшого числового рядка
+# — живо відтворено: "Штрихкод 4820172542016" -> "Штрихкод 482",
+# "Артикул 0123456789012" -> "Артикул012". (?<!\d)/(?!\d) навколо
+# патерну гарантують, що збіг НЕ є частиною довшої цифрової послідовності
+# (штрихкод/артикул), лишаючи реальні окремі номери телефонів незайманими.
+_PHONE_RE = re.compile(r"(?<!\d)(\+?38)?\s*\(?0\d{2}\)?[\s.\-]?\d{3}[\s.\-]?\d{2}[\s.\-]?\d{2}(?!\d)")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_MESSENGER_RE = re.compile(
+    r"(?:https?://)?t\.me/\S+|@\w{4,}|\bviber\b|\bwhatsapp\b|\bватсап\b|\bвайбер\b",
+    re.IGNORECASE,
+)
+_PRICE_CURRENCY_RE = re.compile(r"\d[\d\s]*\s*(?:грн|₴|uah)\b", re.IGNORECASE)
+
+
+def _strip_contacts_and_price(text: str) -> str:
+    text = _PHONE_RE.sub("", text)
+    text = _EMAIL_RE.sub("", text)
+    text = _MESSENGER_RE.sub("", text)
+    text = _PRICE_CURRENCY_RE.sub("", text)
+    return text
+
+
+# Опис, п.2 — точні багатослівні заклики до дії, видаляються ЦІЛИМ
+# РЕЧЕННЯМ (не весь опис). СВІДОМО НЕ окремі слова "купити/замовити/
+# опт/акція/менеджер/знижка" — живо перевірено на реальних описах
+# Toysi: "опт" 630/630 false positive ("оптимальний"/"Оптимальні
+# розміри"), "менеджер" 6/6 false positive (настільна гра "Менеджер"),
+# "телефон" 231 здебільшого продукт-ознака, "акці"/"знижк" false
+# positive (ігрові фішки-акції компаній у "Монополії", гарантійний
+# пункт про компенсацію/знижку на дефект) — сліпий словниковий фільтр
+# зіпсував би сотні легітимних описів. Лише точні фрази, які фізично
+# не можуть бути частиною опису товару.
+_CTA_PHRASES = [
+    "менеджер передзвонить", "менеджер зв'яжеться", "менеджер зв'яжется",
+    "зателефонуйте нам", "зателефонуйте за номером", "телефонуйте нам",
+    "звертайтесь за номером", "звертайтеся за номером",
+    "пишіть в директ", "пишіть в особисті", "пишіть в приват",
+    "замовляйте прямо зараз", "замовляйте зараз", "успійте купити",
+    "тільки сьогодні знижка", "діє акція", "встигніть придбати",
+    "звертайтесь до менеджера", "звертайтеся до менеджера",
+]
+
+
+def _strip_cta_phrases(text: str) -> str:
+    low = text.lower()
+    if not any(phrase in low for phrase in _CTA_PHRASES):
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    kept = [s for s in sentences if not any(p in s.lower() for p in _CTA_PHRASES)]
+    return " ".join(kept)
+
+
+def _sanitize_eva_description(text: str) -> str:
+    return _strip_cta_phrases(_strip_contacts_and_price(text))
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -194,6 +438,8 @@ def _qualifies_for_feed(item: dict, excluded: set, prom_price_overrides: dict) -
         return False
     if _normalize_brand(vendor) in EVA_STOP_BRANDS:
         return False
+    if _is_banned_country(item.get("country")):
+        return False
     pictures = [p for p in item.get("pictures", []) if p.startswith("https://")][:EVA_MAX_PICTURES]
     if not pictures:
         return False
@@ -213,6 +459,7 @@ def _build_xml(
     price_overrides: dict = None,
     exclude_ids: set = None,
     description_overrides: dict = None,
+    russian_text: dict = None,
 ) -> ET.Element:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
@@ -239,10 +486,12 @@ def _build_xml(
     overrides      = price_overrides or {}
     excluded       = exclude_ids or set()
     desc_overrides = description_overrides or {}
+    russian        = russian_text or {}
     described_count = 0
+    russian_missing_count = 0
 
     name_counts = Counter(
-        _dedup_key(_clean_text(item.get("name", "")))
+        _dedup_key(_normalize_trailing_color_case(_limit_punctuation(_denoise_caps(_clean_text(item.get("name", ""))))))
         for item in catalog.values()
         if _qualifies_for_feed(item, excluded, overrides)
     )
@@ -253,9 +502,11 @@ def _build_xml(
     skipped_no_prom_price = 0
     skipped_no_vendor     = 0
     skipped_stop_brand    = 0
+    skipped_banned_country = 0
     skipped_no_pics       = 0
     skipped_short_desc    = 0
     truncated_name_count  = 0
+    truncated_name_ru_count = 0
 
     for item in catalog.values():
         try:
@@ -306,6 +557,10 @@ def _build_xml(
             skipped_stop_brand += 1
             continue
 
+        if _is_banned_country(item.get("country")):
+            skipped_banned_country += 1
+            continue
+
         pictures = [
             p for p in item.get("pictures", [])
             if p.startswith("https://")
@@ -319,14 +574,25 @@ def _build_xml(
 
         offer = ET.SubElement(offers_el, "offer", id=item_id, available=available)
 
-        name = _clean_text(item.get("name", ""))
+        name = _normalize_trailing_color_case(_limit_punctuation(_denoise_caps(_clean_text(item.get("name", "")))))
         if name_counts.get(_dedup_key(name), 0) > 1:
             color_val = None
             for param_name, param_val in item.get("params", []):
                 if "колір" in param_name.lower() or "цвет" in param_name.lower():
                     color_val = str(param_val).strip()
                     break
-            disambiguator = color_val or item_id
+            # color_val — сире значення параметра Toysi, може бути
+            # написане ВЕЛИКИМИ ЛІТЕРАМИ (живо знайдено: "(БІЛИЙ)",
+            # "(ПОМАРАНЧЕВИЙ)") — _denoise_caps() тут НЕ підходить (поріг
+            # >=6 літер розрахований на повні назви, "білий"/"білий" — 5
+            # букв, ніколи не спрацював би), тому окреме, просте правило:
+            # single-слово colir_val, повністю великими літерами -> Title
+            # Case (тут ризику зіпсувати акронім/модель немає — це відоме
+            # значення параметра "Колір", не довільний текст назви).
+            if color_val and color_val.isupper():
+                disambiguator = color_val.capitalize()
+            else:
+                disambiguator = color_val or item_id
             suffix = f" ({disambiguator})"
             if len(name) + len(suffix) > EVA_NAME_MAX_LEN:
                 truncated_name_count += 1
@@ -335,6 +601,21 @@ def _build_xml(
             truncated_name_count += 1
             name = _truncate(name, EVA_NAME_MAX_LEN)
         ET.SubElement(offer, "name_ua").text = name
+
+        # <name> (рос.) — ВИМОГА EVA "лише російською заборонена" мала на
+        # увазі, що поле НЕ МОЖЕ бути відсутнім/лише-укр.: раніше цей тег
+        # взагалі не писався (див. докстрінг файлу). fetch_russian_text()
+        # — той самий rus-фід Toysi (lang=rus), що вже використовує Prom;
+        # м'який фолбек на укр. назву, якщо для SKU рос-варіанту нема
+        # (рідкість — 2/29386 у повному каталозі, перевірено раніше для Prom).
+        name_ru_raw = (russian.get(item_id) or {}).get("name") or item.get("name", "")
+        if item_id not in russian:
+            russian_missing_count += 1
+        name_ru = _normalize_trailing_color_case(_limit_punctuation(_denoise_caps(_clean_text(name_ru_raw))))
+        if len(name_ru) > EVA_NAME_MAX_LEN:
+            truncated_name_ru_count += 1
+            name_ru = _truncate(name_ru, EVA_NAME_MAX_LEN)
+        ET.SubElement(offer, "name").text = name_ru
 
         ET.SubElement(offer, "price").text          = f"{retail:.2f}"
         ET.SubElement(offer, "currencyId").text     = "UAH"
@@ -369,29 +650,46 @@ def _build_xml(
             item.get("category_id", ""),
         )
         desc = _strip_urls(desc)
+        desc = _sanitize_eva_description(desc)
         desc = _truncate(_clean_text(desc), EVA_DESCRIPTION_MAX_LEN)
         if desc and len(desc) < EVA_DESCRIPTION_MIN_LEN:
             skipped_short_desc += 1  # лише лічильник — НЕ виключаємо offer, документована, не підтверджена вимога
         if desc:
             ET.SubElement(offer, "description_ua").text = desc
 
+        # Параметри, п.4 (докстрінг файлу) — EVA вимагає МІНІМУМ 2
+        # <param>. Toysi реально дає 0 чи 1 характеристику для частини
+        # SKU (старий код гарантував лише 1 fallback "Виробник"). Пул
+        # fallback-параметрів топує до 2, уникаючи дублювання назви,
+        # яку Toysi вже надав.
         params = item.get("params", [])
-        if params:
-            for param_name, param_val in params:
-                ET.SubElement(offer, "param", name=_clean_text(param_name)).text = _clean_text(str(param_val))
-        else:
-            ET.SubElement(offer, "param", name="Виробник").text = _clean_text(vendor)
+        existing_param_names = {(pn or "").strip().lower() for pn, _ in params}
+        for param_name, param_val in params:
+            ET.SubElement(offer, "param", name=_clean_text(param_name)).text = _clean_text(str(param_val))
+        written_params = len(params)
+        for fallback_name, fallback_val in (
+            ("Виробник", vendor),
+            ("Категорія", item.get("category_name") or "Дитячі товари"),
+        ):
+            if written_params >= 2:
+                break
+            if fallback_name.lower() in existing_param_names:
+                continue
+            ET.SubElement(offer, "param", name=fallback_name).text = _clean_text(str(fallback_val))
+            existing_param_names.add(fallback_name.lower())
+            written_params += 1
 
     print(f"[EVA] У фіді: {len(offers_el)} товарів | "
           f"без ціни: {skipped_no_price} | дешевше {MIN_SUPPLIER_PRICE} грн: {skipped_cheap} | "
           f"немає свіжої ціни Prom (ще не торкнуто репрайсером цього циклу): {skipped_no_prom_price} | "
           f"виключено вручну/нерентабельно під комісією EVA: {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
-          f"бренд у стоп-листі EVA: {skipped_stop_brand} | "
-          f"без валідного фото: {skipped_no_pics} | назв обрізано (>{EVA_NAME_MAX_LEN} симв.): {truncated_name_count}")
+          f"бренд/студія у стоп-листі EVA: {skipped_stop_brand} | заборонена країна походження: {skipped_banned_country} | "
+          f"без валідного фото: {skipped_no_pics} | назв обрізано (>{EVA_NAME_MAX_LEN} симв.): укр={truncated_name_count}, рос={truncated_name_ru_count}")
     if skipped_short_desc:
         print(f"[EVA] УВАГА: {skipped_short_desc} offer(и) мають опис коротший за задокументований мінімум EVA "
               f"({EVA_DESCRIPTION_MIN_LEN} симв.) — НЕ виключено з фіда, ризик відхилення при модерації EVA.")
     print(f"[EVA] Vis-9: {described_count} SKU отримали вручну написаний опис (description_overrides.json)")
+    print(f"[EVA] Рос. назва (<name>): {russian_missing_count} SKU без rus-варіанту Toysi, використано фолбек на укр. назву")
     return yml
 
 
@@ -399,7 +697,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
                   catalog: dict = None,
                   exclude_ids: set = None,
-                  description_overrides: dict = None) -> None:
+                  description_overrides: dict = None,
+                  russian_text: dict = None) -> None:
     if catalog is None:
         print("[EVA] Завантажуємо каталог Toysi...")
         catalog = fetch_toysi_catalog()
@@ -410,9 +709,12 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     top_catalog = select_top_items(catalog)
     print(f"[EVA] Куруваний відбір: {len(top_catalog)} з {len(catalog)} товарів повного каталогу.")
 
+    if russian_text is None:
+        russian_text = fetch_russian_text()
+
     root = _build_xml(
         top_catalog, price_overrides=price_overrides, exclude_ids=exclude_ids,
-        description_overrides=description_overrides,
+        description_overrides=description_overrides, russian_text=russian_text,
     )
 
     ET.indent(root, space="  ")

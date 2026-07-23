@@ -64,10 +64,11 @@ from xml.sax.saxutils import escape
 import requests
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed import default_retail_price, normalize_vendor
+from generate_prom_feed import normalize_vendor
 from generate_prom_feed_top import select_top_items
 from prom_catalog_sync import fetch_prom_products
 from prom_competitor_pricer import SEARCH_DELAY
+from competitor_pricing import real_toysi_cost, load_fresh_prom_price_overrides
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
 
@@ -410,10 +411,11 @@ def _clean_description(html_desc: str) -> str:
     return text
 
 
-def build_feed_items(catalog: dict, prom_products: dict, links: dict) -> tuple[list, dict]:
+def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price_overrides: dict) -> tuple[list, dict]:
     stats = {
         "total_considered": len(catalog),
         "no_price": 0,
+        "no_prom_price": 0,
         "no_link_skipped": 0,
         "no_image": 0,
         "no_gtin": 0,
@@ -425,11 +427,25 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict) -> tuple[l
 
     for pid, item in catalog.items():
         try:
-            cost = float(item.get("price") or 0)
+            cost = real_toysi_cost(item)
         except (TypeError, ValueError):
             cost = 0
         if cost <= 0:
             stats["no_price"] += 1
+            continue
+
+        # ЦІНА GOOGLE = ЦІНА PROM (2026-07-23, той самий принцип, що й EVA,
+        # PR #141): раніше рахувалась незалежно через default_retail_price()
+        # (просту "без конкурента"-формулу, БЕЗ урахування живої
+        # конкурентної/floor-логіки, яку реально застосовує репрайсер до
+        # ціни на самому Prom) — Google звіряє ціну фіда з ціною на сторінці
+        # товару (докстрінг файлу), розбіжність = "Price mismatch". SKU без
+        # свіжого запису ціни Prom (репрайсер ще не торкнувся) просто не
+        # потрапляє у фід — жодна незалежно порахована ціна тут більше не
+        # ризикує розійтися з реальною.
+        retail_price = prom_price_overrides.get(pid)
+        if retail_price is None:
+            stats["no_prom_price"] += 1
             continue
 
         name = (item.get("name") or "").strip()
@@ -448,7 +464,6 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict) -> tuple[l
             stats["no_image"] += 1
             continue
 
-        retail_price = default_retail_price(cost, item.get("category_name"))
         stock = item.get("stock", 0)
 
         brand = normalize_vendor(item.get("vendor") or "")
@@ -552,7 +567,8 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     category_cache = build_prom_category_cache(top_catalog, prom_by_external_id)
     print(f"[Google] Кеш реальних Prom-категорій: {len(category_cache)} товарів.")
 
-    items, stats = build_feed_items(top_catalog, prom_by_external_id, links)
+    prom_price_overrides = load_fresh_prom_price_overrides()
+    items, stats = build_feed_items(top_catalog, prom_by_external_id, links, prom_price_overrides)
 
     root = _build_xml(items)
     ET.indent(root, space="  ")
@@ -567,6 +583,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] Готово! Збережено: {output_file}")
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — без ціни: {stats['no_price']}")
+    print(f"[Google] Пропущено — немає свіжої ціни Prom (репрайсер ще не торкнувся): {stats['no_prom_price']}")
     print(f"[Google] Пропущено — не знайдено впевненого посилання на сторінку: {stats['no_link_skipped']}")
     print(f"[Google] Пропущено — без фото: {stats['no_image']}")
     print(f"[Google] Без GTIN (пропущено поле, не весь товар): {stats['no_gtin']}")

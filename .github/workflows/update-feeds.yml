@@ -82,6 +82,27 @@ jobs:
           git show "origin/$FEED_BRANCH:prom_competitor_price_state.json" > prom_competitor_price_state.json 2>/dev/null \
             || echo '{}' > prom_competitor_price_state.json
 
+      # ДОДАНО (2026-07-24, живий root-cause: Prom import падав на "Поле
+      # status: Позиція недоступна для оновлення" для 179 SKU — реально й
+      # назавжди видалені через prom_catalog_sync.py::deactivate() (SKU
+      # випав з топ-970), окремий від prom_competitor_pricer.py::delist()
+      # шлях видалення, який НІКОЛИ не писав _delisted_since, тож
+      # select_top_items() тихо пропонував їх знову). prom_catalog_sync.py
+      # виконується на VPS (systemd-таймер, окремий локальний файл стану,
+      # не той самий runner) — публікує свій _delisted_since в окрему гілку
+      # catalog-sync-delisted-data (publish_catalog_sync_delisted.sh, той
+      # самий принцип ізоляції, що вже є для scan-state-data). Тут — МЕРЖ
+      # (не перезапис) у вже відновлений price_state вище, ДО
+      # select_top_items() — обидва джерела delisted_since тепер
+      # об'єднуються перед ранжуванням/фідом.
+      - name: Merge catalog-sync delisted SKU from catalog-sync-delisted-data (VPS-published)
+        continue-on-error: true
+        run: |
+          git fetch origin catalog-sync-delisted-data 2>/dev/null || true
+          git show "origin/catalog-sync-delisted-data:prom_competitor_price_state.json" > /tmp/catalog_sync_delisted.json 2>/dev/null \
+            || echo '{}' > /tmp/catalog_sync_delisted.json
+          python merge_delisted_since.py
+
       # ВИПРАВЛЕНО (2026-07-16, root-cause SKU 299318/299320/299321/249158 у
       # "Видалені з прайсу" на Rozetka): rozetka_feed_membership_state.json
       # пам'ятає, які offer_id вже були в куруваному відборі Rozetka, щоб

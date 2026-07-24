@@ -36,6 +36,7 @@ import json
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -45,6 +46,7 @@ from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
 from telegram_notify import send_telegram_message
 from prom_api_client import PromEditError, delist as _prom_delist
+from competitor_pricing import load_prom_price_state, save_prom_price_state
 
 # Консоль Windows (cp1251) не показує деякі символи — без цього локальний
 # тестовий запуск падає на print() (див. daily_report.py).
@@ -425,6 +427,27 @@ def main() -> None:
     if errors:
         for ext_id, err in list(errors.items())[:20]:
             print(f"  - {ext_id}: {err}")
+
+    # ДОДАНО (2026-07-24, живий root-cause: Prom import падав на "Поле status:
+    # Позиція недоступна для оновлення" для 179 SKU, підтверджено 404 напряму
+    # через products/by_external_id — товари реально й назавжди видалені, але
+    # select_top_items() продовжувала їх пропонувати знову). deactivate() тут —
+    # ДРУГИЙ, окремий від prom_competitor_pricer.py::delist() шлях реального
+    # видалення (SKU випав з топ-970, не через ціну конкурента), і єдиний, який
+    # НІКОЛИ не записував _delisted_since — той самий запис, який
+    # generate_prom_feed_top.py::_margin() вже й так перевіряє (load_delisted_
+    # pids()), просто досі покривав лише ОДИН з двох реальних шляхів видалення.
+    # Той самий принцип, що вже застосований для repricer-делісту — тепер
+    # уніфіковано на ОБИДВА шляхи, а не патч лише для цих конкретних 179 SKU.
+    if processed:
+        price_state = load_prom_price_state()
+        now_iso = datetime.now().isoformat()
+        delisted_since = price_state.setdefault("_delisted_since", {})
+        for ext_id in processed:
+            delisted_since[ext_id] = now_iso
+        save_prom_price_state(price_state)
+        print(f"[Sync] Записано {len(processed)} SKU у _delisted_since — "
+              f"select_top_items() більше не пропонуватиме їх знову.")
 
     stuck_state = _load_stuck_state()
     stuck_state = _update_stuck_state_and_alert(stuck_state, stale_ids, processed, errors, prom_products)

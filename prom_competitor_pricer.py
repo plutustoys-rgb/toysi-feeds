@@ -271,7 +271,9 @@ def fetch_buybox_competitor(prom_id: int, url_text: str) -> dict | None:
 # ширший пул. Той самий prom_id, що вже резолвлено для buyBox — жодного
 # нового резолву own_link не треба. Це ДОДАЄ навантаження лише на частку
 # SKU, де buyBox не вистачило, а не подвоює його для всього каталогу.
-PROM_GRAPHQL_URL = "https://prom.ua/graphql"
+# PROM_GRAPHQL_URL вже визначено вище (той самий ендпоінт, що й для
+# SearchListingQuery/search_prom_products()) — перевикористовуємо, не
+# дублюємо.
 
 _RECOMMENDED_QUERY = """query ConvProductPremiumAdvQuery($productId: Long, $limit: Int = 10) {
   recommended(visited_product_ids: [], product_id: $productId, boostPremium: true, quantity: $limit) {

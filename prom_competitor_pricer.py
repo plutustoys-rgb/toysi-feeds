@@ -275,20 +275,23 @@ def _category_commission_is_default(category_name: str | None, prom_category_id:
 
 SEARCH_LIMIT = 20  # скільки кандидатів забирати на один пошуковий запит
 
-# ВИПРАВЛЕНО 2026-07-12 (розслідування SKU 242610/289818): попереднє значення
-# 300 було помилково скопійоване "за аналогією" з DAILY_LIMIT у
-# competitor_pricing.py — але ТОЙ ліміт існує для РУЧНОГО процесу (оператор
-# сам перевіряє ціни конкурентів на Rozetka, немає автоматичного пошуку),
-# де денний ліміт має сенс. Тут — повністю автоматизований GraphQL-пошук,
-# і жодного реального обмеження часу виконання немає: живий прогін 300
-# позицій зайняв 6 хв 47 с (перевірено, journalctl 2026-07-12), тобто повні
-# 970 зайняли б ~22 хв — цілком нормально для сервісу з власним systemd-
-# таймером (не CI з обмеженим часом). Старий ліміт 300 і БЕЗ ротації (той
-# самий, стабільний за маржею зріз top_catalog.items()[:300] щодня) означав,
-# що товари на позиціях 301-970 (майже 2/3 топ-970) НІКОЛИ не перевірялись —
-# саме тому SKU 242610 (позиція #492) жодного разу не отримав коригування
-# ціни за конкурентом, хоча реальний, вигідний конкурент (Gummy) є.
-DAILY_LIMIT  = 1000  # з запасом вище будь-якого реального розміру топ-970
+# ЗМІНЕНО (2026-07-24, розширення вітрини до 6000 SKU — пряме рішення
+# власниці, "усі 6000 отримують живий пошук, як сьогоднішні ~1000, а не
+# 2-й рівень з тижневою застарілістю"): DAILY_LIMIT/MIN_FULL_RUN_INTERVAL_
+# HOURS (нижче) замінені на ротаційні партії. Причина: живий вимір
+# (run 30062202019) — ~3.8с/SKU живого пошуку. Один прогін на всі 6000
+# зайняв би ~6.2-6.3 год — впритул/вище за жорстку 6-годинну стелю
+# виконання job'у GH Actions на хостованих раннерах. Замість переїзду на
+# VPS (розглядався, PR #149, відхилено — публічне репо робить self-hosted
+# раннер небезпечним, а сам переїзд виявився непотрібним): щочотири
+# години (кожен тик update-feeds.yml) репрайсер обробляє РОТАЦІЙНУ
+# партію в ROTATION_BATCH_SIZE SKU — найстаріші за часом останньої
+# живої перевірки (price_state[pid]["timestamp"]), а не завжди одні й ті
+# самі перші N. 3000 SKU × 3.8с ≈ 3.2 год/прогін — безпечно нижче
+# 6-годинної стелі й вписується в 4-годинний проміжок до наступного
+# тику. Два прогони покривають усі 6000 → повне оновлення кожного SKU
+# приблизно раз на ~8 год (замість ~20-24 год раніше).
+ROTATION_BATCH_SIZE = 3000
 SEARCH_DELAY = 0.4  # секунд між пошуковими запитами — не бомбардувати ендпоінт
 
 # ДОДАНО (2026-07-20, пряме прохання власниці — "постійно конкурентні
@@ -361,16 +364,6 @@ LIVE_LOOKUP_EXTRA_BATCH_LIMIT = 300
 # запитами, той самий механізм, що вже прийнятний для 970 SKU/добу
 # основного циклу).
 OWN_LINK_RESOLVE_BATCH_LIMIT = 400
-
-# Мігровано на GitHub Actions 2026-07-13 (той самий workflow update-feeds.yml,
-# що й generate_prom_feed.py) — контейнер тепер тригериться раз на 4 год
-# (cron), а не раз на добу systemd-таймером на VPS. Без цього гейту повний
-# GraphQL-пошук конкурентів (і, при --apply, зміна живих цін) відбувався б
-# 6х/добу замість 1х — і бомбардування реверс-інженерного ендпоінта Prom
-# вшестеро частіше, і живі ціни смикались би щочотири години замість
-# приблизно раз на день. Трохи менше доби (не 24), щоб дрейф часу тригера
-# cron не пропускав день повністю.
-MIN_FULL_RUN_INTERVAL_HOURS = 20
 
 MATCH_MIN_SCORE = 0.4          # SequenceMatcher ratio — поріг для "adjust" (низька ставка: помилковий
                                 # збіг лише трохи спотворює ціну, самокоригується наступним прогоном)
@@ -1473,19 +1466,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true",
                      help="Реально змінювати ціни/видаляти товари в Prom. Без цього — лише dry-run звіт.")
-    ap.add_argument("--limit", type=int, default=DAILY_LIMIT,
-                     help=f"Скільки SKU топ-970 обробити за цей запуск (дефолт {DAILY_LIMIT}).")
-    ap.add_argument("--force", action="store_true",
-                     help="Ігнорувати перевірку 'повний прогін вже був нещодавно' (для ручного/тестового запуску).")
+    ap.add_argument("--limit", type=int, default=ROTATION_BATCH_SIZE,
+                     help=f"Скільки найстаріших-за-перевіркою SKU топ-970 обробити за цей запуск "
+                          f"(дефолт {ROTATION_BATCH_SIZE}).")
     ap.add_argument("--allow-default-commission", action="store_true",
                      help="Дозволити --apply для SKU, чия категорія на PROM_COMMISSION_DEFAULT "
                           "(реальна ставка не підтверджена) — за замовчуванням такі SKU виключено "
                           "з auto-apply, лише позначені для ручного перегляду.")
     ap.add_argument("--force-circuit-breaker", action="store_true",
                      help="Ігнорувати circuit breaker (P0-3) і застосувати зміни навіть якщо він спрацював. "
-                          "ОКРЕМИЙ прапорець від --force (той стосується лише 20-годинного гейту) — це "
-                          "інша, серйозніша категорія ризику (масова зміна цін/обвал маржі), тому свідомо "
-                          "не ділить один і той самий перемикач.")
+                          "Використовувати ЛИШЕ для свідомо очікуваного разового стрибка — не залишати "
+                          "true за замовчуванням, інакше breaker перестає захищати від справжніх аномалій.")
     args = ap.parse_args()
 
     # Надійність, п.3: SAFETY_HOLD — ручний, миттєвий стоп-кран, незалежний
@@ -1512,22 +1503,6 @@ def main() -> None:
         sys.exit(1)
 
     price_state = load_prom_price_state()
-    last_run_iso = (price_state.get("_meta") or {}).get("last_full_run")
-    if last_run_iso and not args.force:
-        try:
-            hours_since = (datetime.now() - datetime.fromisoformat(last_run_iso)).total_seconds() / 3600
-        except ValueError:
-            hours_since = None
-        if hours_since is not None and hours_since < MIN_FULL_RUN_INTERVAL_HOURS:
-            print(f"[Pricer] Повний прогін вже був {hours_since:.1f} год тому "
-                  f"(< {MIN_FULL_RUN_INTERVAL_HOURS} год) — пропускаю цей запуск, щоб не робити повний "
-                  f"пошук конкурентів на кожному 4-годинному тригері GitHub Actions. Викликай з --force, "
-                  f"щоб примусово запустити повний прогін зараз.")
-            write_pricer_summary(
-                f"20-годинний гейт: СПРАЦЮВАВ — повний прогін пропущено "
-                f"(попередній був {hours_since:.1f} год тому, поріг {MIN_FULL_RUN_INTERVAL_HOURS} год)."
-            )
-            return
 
     print("[Pricer] Рахую поточний відбір топ-970...")
     toysi_catalog = fetch_toysi_catalog()
@@ -1539,16 +1514,11 @@ def main() -> None:
         write_pricer_summary(f"⚠ Зупинено: каталог Toysi порожній/замалий ({e}).", errors=1)
         sys.exit(1)
 
-    # ВИПРАВЛЕНО (рев'ю PR #40, знахідка №1): мітку гейту пишемо ЛИШЕ після
-    # успішної валідації каталогу, а не до fetch_toysi_catalog(). Раніше
-    # запис відбувався одразу після перевірки "чи не рано", ДО фетчу — і
-    # fetch_toysi_catalog() ковтає мережеві помилки, повертаючи {} замість
-    # винятку, тож одна транзиєнтна проблема з боку Toysi "отруювала" гейт
-    # на всі 20 год (sys.exit(1) нижче стався б уже ПІСЛЯ запису мітки).
-    # Гейт існує, щоб не бомбардувати дорогий GraphQL-пошук конкурентів
-    # частіше приблизно раз на добу — а не щоб захищати дешевий, швидко
-    # відмовний фетч каталогу, тож правильне місце для мітки — тут.
-    price_state.setdefault("_meta", {})["last_full_run"] = datetime.now().isoformat()
+    # ЗМІНЕНО (2026-07-24, ротаційні партії замість гейту "не частіше
+    # ~20 год"): мітка last_batch_run пишеться на КОЖНОМУ прогоні (не
+    # лише раз на добу) — суто діагностична, "коли репрайсер востаннє
+    # реально запускався", жоден код більше не читає її для гейтування.
+    price_state.setdefault("_meta", {})["last_batch_run"] = datetime.now().isoformat()
     save_prom_price_state(price_state)
 
     top_catalog = select_top_items(toysi_catalog)
@@ -1606,13 +1576,26 @@ def main() -> None:
         if cleared:
             save_prom_price_state(price_state)
 
-    # live_lookup_extra додається ПІСЛЯ зрізу --limit (сам ліміт
-    # документовано як "скільки SKU топ-970" — не має сенсу зменшувати
-    # цей малий, самообмежений додатковий набір через ліміт, розрахований
-    # на розмір топ-970).
-    items = list(top_catalog.items())[:args.limit] + list(live_lookup_extra.items())
-    print(f"[Pricer] Обробляю {len(items)} товарів (--limit {args.limit} + "
-          f"{len(live_lookup_extra)} поза топ-970 без даних скану)...")
+    # ЗМІНЕНО (2026-07-24, ротаційні партії): раніше — завжди перші N
+    # top_catalog.items() (стабільний, рангований зріз). Тепер, коли
+    # SELECT_COUNT (generate_prom_feed_top.py) перевищує --limit (SKU
+    # 1971-1970 і далі при topКаталог=1970+ на кроках 4000/6000), брати
+    # завжди першу тисячу(-і) означало б, що решта НІКОЛИ не отримає
+    # живого пошуку. Натомість сортуємо за часом ОСТАННЬОЇ живої
+    # перевірки (price_state[pid]["timestamp"]) — найстаріші (чи взагалі
+    # без запису — трактується як "ніколи не перевірявся", найвищий
+    # пріоритет) обробляються першими. За кілька прогонів це природно
+    # ротує через увесь top_catalog, а не залипає на першому зрізі.
+    def _last_checked(pid: str) -> str:
+        return price_state.get(pid, {}).get("timestamp") or ""
+
+    rotation_batch = dict(
+        sorted(top_catalog.items(), key=lambda kv: _last_checked(kv[0]))[:args.limit]
+    )
+    items = list(rotation_batch.items()) + list(live_lookup_extra.items())
+    print(f"[Pricer] Обробляю {len(items)} товарів (ротаційна партія {len(rotation_batch)} "
+          f"найстаріших з {len(top_catalog)} у топ-970 + {len(live_lookup_extra)} поза "
+          f"топ-970 без даних скану)...")
 
     # Донарахування own_link для ПОТОЧНОГО батчу — див. коментар біля
     # OWN_LINK_RESOLVE_BATCH_LIMIT вище (чому цей крок взагалі потрібен).
@@ -1886,7 +1869,7 @@ def main() -> None:
         digest += "\n\n(--apply не вмикався, це лише пропозиція)"
         send_telegram_message(digest)
         write_pricer_summary(
-            "Режим: dry-run (--apply не використовувався). 20-годинний гейт: не спрацював (повний прогін виконано)."
+            "Режим: dry-run (--apply не використовувався). Ротаційна партія оброблена."
             + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply."
                + default_commission_category_detail if default_commission_skipped else "")
             + (f" Circuit breaker (adjust) СПРАЦЮВАВ БИ: {'; '.join(adjust_breaker_reasons)}" if adjust_blocked else "")
@@ -1970,7 +1953,7 @@ def main() -> None:
     # спільний стан (competitor_pricing.py), який generate_prom_feed.py
     # читає як price_overrides — доки запис не застаріє (>30 год). Той самий
     # price_state, завантажений на початку main() (містить вже записаний
-    # _meta.last_full_run) — не перезавантажуємо, щоб не загубити його.
+    # _meta.last_batch_run) — не перезавантажуємо, щоб не загубити його.
     # P0-5 (2026-07-17, відновлено — раніше свідомо відкладено з коментарем
     # "виправити окремим fast-follow PR", а масштаб apply відтоді зріс у
     # сотні разів): періодичне збереження раз на SAVE_EVERY застосованих
@@ -2051,7 +2034,7 @@ def main() -> None:
     write_pricer_summary(
         "Режим: --apply"
         + (" (частково заблоковано circuit breaker'ом — див. Telegram)." if (adjust_blocked or delist_blocked) else " (реальні зміни застосовано).")
-        + " 20-годинний гейт: не спрацював (повний прогін виконано)."
+        + " Ротаційна партія оброблена."
         + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply."
            + default_commission_category_detail if default_commission_skipped else ""),
         checked=len(items), adjust=(0 if adjust_blocked else applied_count),

@@ -23,8 +23,8 @@ full_catalog_competitor_scan.py — безкінечний, поступовий
 маржею, лише те, що взагалі може бути в каталозі (stock>0, не уцінка).
 
 НАВІЩО ОКРЕМИЙ СКРИПТ, НЕ prom_competitor_pricer.py: той файл свідомо
-сфокусований на щоденному топ-970/1000 (MIN_FULL_RUN_INTERVAL_HOURS=20,
---apply реально міняє живі ціни). Цей скрипт — суто інформаційний
+сфокусований на топ-970/1000 ротаційними партіями (ROTATION_BATCH_SIZE),
+--apply реально міняє живі ціни. Цей скрипт — суто інформаційний
 (dry-run, НІКОЛИ не застосовує ціни в Prom) і працює на іншому,
 набагато ширшому пулі — окремий стан, окремий workflow, не втручається
 в щоденний ритм репрайсера.
@@ -91,8 +91,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import requests
-
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -101,7 +99,7 @@ from generate_prom_feed import fetch_russian_text, is_clearance_item
 from competitor_pricing import decide_price_for_platform, real_toysi_cost
 from prom_competitor_pricer import (
     find_best_competitor, verify_competitor_really_available, SEARCH_DELAY,
-    MIN_FULL_RUN_INTERVAL_HOURS, _load_prom_category_cache, MATCH_MIN_SCORE_FOR_PRICING,
+    _load_prom_category_cache, MATCH_MIN_SCORE_FOR_PRICING,
     MATCH_MIN_SCORE, _photo_confirms_match,
 )
 from telegram_notify import send_telegram_message
@@ -190,65 +188,21 @@ def build_scan_report(today: str, batch_ids: list, state: dict, scanned_now: int
     return "\n".join(lines) + "\n"
 
 # ВИПРАВЛЕНО (2026-07-16, знахідка незалежного рев'ю pt25): цей скрипт
-# тепер запускається systemd-таймером на VPS о 01:00 Kyiv (раніше було
-# 02:00 — рев'ю правильно спіймало, що заявлений "5+ год буфер" до
-# наступного тика репрайсера о 03:00 був арифметичною помилкою, реально
-# 1 год). Живо підтверджено (2026-07-16): фіксований час старту НЕ
-# рятує сам по собі — GH Actions cron `0 */4 * * *` для update-feeds.yml
-# у реальності зсувається на ГОДИНИ від номінального часу (підтверджено:
-# номінальний тик 20:00 UTC фактично стартував о 23:36 UTC того ж дня,
-# а номінальний тик 00:00 UTC 2026-07-16 не запустився взагалі за
-# понад 4 години). Тому єдиний надійний сигнал — перевірити РЕАЛЬНИЙ
-# стан гейту репрайсера (той самий MIN_FULL_RUN_INTERVAL_HOURS/
-# _meta.last_full_run, що й у prom_competitor_pricer.py) через публічний
-# prom_competitor_price_state.json на гілці feed-data, а не покладатись
-# на номінальний розклад.
-REPRICER_STATE_URL = (
-    "https://raw.githubusercontent.com/plutustoys-rgb/toysi-feeds/"
-    "feed-data/prom_competitor_price_state.json"
-)
-# Обмежене очікування, не безстрокове пропускання — якщо гейт відкритий
-# (тобто повний прогін репрайсера МОЖЛИВИЙ на будь-якому наступному тику,
-# час якого непередбачуваний через дрейф GH Actions), чекаємо один раз
-# і йдемо далі — краще прийняти залишковий ризик накладання, ніж
-# роками стояти й не просуватись у скані через дрейф чужого розкладу.
-REPRICER_GATE_WAIT_MINUTES = 30
-
-
-def _repricer_gate_is_open() -> bool:
-    """True, якщо є реальний ризик, що повний прогін репрайсера активний
-    зараз АБО можливий на будь-якому наступному GH Actions тику —
-    важке навантаження на той самий Prom-пошук, що й цей скан.
-
-    Дві окремі умови (ВИПРАВЛЕНО 2026-07-16, незалежне рев'ю pt5, вузька
-    прогалина в первісній версії): prom_competitor_pricer.py пише
-    _meta.last_full_run ОДРАЗУ на старті прогону, ДО самого пошуку
-    конкурентів (рядок 655 у файлі) — сам пошук триває ~45-90+ хв ПІСЛЯ
-    цього запису. Тобто щойно репрайсер стартує, hours_since миттєво
-    падає до ~0, і стара перевірка (лише `>= MIN_FULL_RUN_INTERVAL_HOURS`)
-    хибно вважала гейт "закритим" (нібито безпечно) саме в той момент,
-    коли репрайсер активно навантажує Prom-пошук:
-    - `hours_since >= MIN_FULL_RUN_INTERVAL_HOURS` — гейт скоро
-      відкриється, повний прогін можливий на будь-якому наступному тику.
-    - `hours_since < 2` — повний прогін, найімовірніше, щойно стартував
-      і ще виконується (2 год — запас понад типові 45-90 хв, з запасом
-      на нетипово довгий прогін).
-
-    Мережева помилка чи відсутність даних — консервативно НЕ блокує скан
-    (немає підстав вважати ризик підтвердженим, якщо ми навіть не змогли
-    перевірити стан)."""
-    try:
-        r = requests.get(REPRICER_STATE_URL, timeout=15)
-        r.raise_for_status()
-        last_full_run = r.json().get("_meta", {}).get("last_full_run")
-        if not last_full_run:
-            return False
-        hours_since = (datetime.now() - datetime.fromisoformat(last_full_run)).total_seconds() / 3600
-        return hours_since >= MIN_FULL_RUN_INTERVAL_HOURS or hours_since < 2
-    except Exception as e:
-        print(f"[FullScan] Не вдалось перевірити гейт репрайсера ({e}) — "
-              f"продовжую без затримки.", file=sys.stderr)
-        return False
+# запускається systemd-таймером на VPS о 01:00 Kyiv.
+#
+# ВИДАЛЕНО (2026-07-24, розширення до 6000 SKU): раніше тут була
+# _repricer_gate_is_open() — перевіряла через публічний
+# prom_competitor_price_state.json, чи не активний/не ось-ось стартує
+# повний прогін репрайсера (той працював ОДИН раз на ~20 год у
+# непередбачуваний через дрейф GH Actions момент). Тепер репрайсер
+# робить ротаційну партію (ROTATION_BATCH_SIZE) на КОЖНОМУ 4-годинному
+# тику, майже завжди активний (~3 з кожних 4 год) — стара умова
+# `hours_since < 2` спрацьовувала б практично щоразу, перетворюючи гейт
+# на завжди-true 30-хвилинний очікувач без реального сигналу. Обидва
+# скрипти й так незалежно темпуються власним SEARCH_DELAY і
+# запускаються з РІЗНИХ машин (GH Actions egress IP ≠ VPS IP) —
+# одночасна робота безпечна сама по собі, окремий гейт більше не
+# потрібен.
 
 # Узгоджено з власником 2026-07-13: ~3000/день — консервативний темп
 # проти невідомого ризику rate-limit на 17-30x звичайного добового
@@ -387,13 +341,7 @@ def main() -> None:
                      help="Лише показати прогрес (скільки скановано/лишилось), без жодного сканування.")
     args = ap.parse_args()
 
-    if not args.status and _repricer_gate_is_open():
-        print(f"[FullScan] Гейт репрайсера відкритий (>= {MIN_FULL_RUN_INTERVAL_HOURS} год від "
-              f"останнього повного прогону) — повний прогін репрайсера можливий на будь-якому "
-              f"наступному GH Actions тику. Чекаю {REPRICER_GATE_WAIT_MINUTES} хв перед стартом, "
-              f"щоб зменшити ризик накладання на той самий Prom-пошук.")
-        time.sleep(REPRICER_GATE_WAIT_MINUTES * 60)
-
+    # Гейт репрайсера видалено — див. коментар вище файлу (2026-07-24).
     print("[FullScan] Завантажую повний каталог Toysi...")
     catalog = fetch_toysi_catalog()
     if not catalog:

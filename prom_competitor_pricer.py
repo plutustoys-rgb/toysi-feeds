@@ -250,6 +250,144 @@ def fetch_buybox_competitor(prom_id: int, url_text: str) -> dict | None:
         return None
 
 
+# ДОДАНО (2026-07-24, живе мережеве перехоплення на реальній сторінці
+# товару, пряме прохання власниці "може ще щось придумаєте для
+# покращення пошуку конкурентів"): той самий /graphql-ендпоінт, що вже
+# дає SearchListingQuery (search_prom_products нижче), також обслуговує
+# блок "Дивись також" на сторінці товару — запит ConvProductPremiumAdvQuery,
+# recommended(product_id, quantity). Підтверджено живо: працює прямим
+# requests.post() без жодної автентифікації/сесії, повертає до 10
+# товарів із реальними ціною/назвою/company_id.
+#
+# ВАЖЛИВО: це НЕ гарантовано "той самий товар, інший продавець", як
+# buyBox — серед 10 результатів на тестовому SKU були і точні аналоги
+# (та сама назва, інша компанія), і просто схожі, але ІНШІ товари.
+# Фільтрація/скоринг (_rank_competitor_candidates нижче) так само
+# обов'язкова, як і для текстового пошуку.
+#
+# Викликається ЛИШЕ як проміжний фолбек, коли buyBox нічого не дав (не
+# для кожного SKU) — buyBox вимагає інших продавців НА ТІЙ САМІЙ,
+# точній сторінці (вужчий, рідший збіг), тоді як recommended() дає
+# ширший пул. Той самий prom_id, що вже резолвлено для buyBox — жодного
+# нового резолву own_link не треба. Це ДОДАЄ навантаження лише на частку
+# SKU, де buyBox не вистачило, а не подвоює його для всього каталогу.
+# PROM_GRAPHQL_URL вже визначено вище (той самий ендпоінт, що й для
+# SearchListingQuery/search_prom_products()) — перевикористовуємо, не
+# дублюємо.
+
+_RECOMMENDED_QUERY = """query ConvProductPremiumAdvQuery($productId: Long, $limit: Int = 10) {
+  recommended(visited_product_ids: [], product_id: $productId, boostPremium: true, quantity: $limit) {
+    product {
+      id
+      name
+      priceOriginal
+      urlText
+      company_id
+      image(width: 200, height: 200)
+    }
+  }
+}"""
+
+RECOMMENDED_QUANTITY = 10
+
+
+def fetch_recommended_products(prom_id: int) -> list:
+    """Сирі кандидати з блоку "Дивись також" нашої власної сторінки —
+    той самий формат полів (price/name/id/urlText/company_id/image), що й
+    search_prom_products(), щоб обидва джерела проходили через ОДНУ
+    спільну фільтрацію (_rank_competitor_candidates). Немає поля presence
+    (GraphQL не дає isAvailable для цього запиту) — викликач має явно
+    пропустити цю перевірку (check_presence=False). Мережева помилка чи
+    несподіваний формат відповіді -> порожній список, той самий безпечний
+    контракт, що й у fetch_buybox_competitor (ніколи не кидає виняток)."""
+    payload = {
+        "operationName": "ConvProductPremiumAdvQuery",
+        "variables": {"limit": RECOMMENDED_QUANTITY, "productId": prom_id},
+        "query": _RECOMMENDED_QUERY,
+    }
+    try:
+        response = requests.post(
+            PROM_GRAPHQL_URL,
+            json=payload,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+        items = (data.get("data") or {}).get("recommended") or []
+        products = []
+        for item in items:
+            p = item.get("product") or {}
+            if not p:
+                continue
+            products.append({
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "price": p.get("priceOriginal"),
+                "urlText": p.get("urlText"),
+                "company_id": p.get("company_id"),
+                "image": p.get("image"),
+            })
+        return products
+    except (requests.exceptions.RequestException, ValueError, KeyError):
+        return []
+
+
+def _rank_competitor_candidates(
+    raw_products: list, search_name: str, cost: float,
+    own_pictures: list | None = None, check_presence: bool = True,
+) -> dict | None:
+    """Спільна фільтрація/ранжування кандидатів — той самий ланцюжок
+    перевірок, що раніше був лише в текстовому пошуку (SearchListingQuery),
+    винесений сюди (2026-07-24), щоб і нове джерело (fetch_recommended_
+    products) проходило через ту саму логіку, без дублювання ~40 рядків.
+
+    check_presence=False для джерел без поля presence (recommended —
+    GraphQL не дає isAvailable для цього запиту; сам запит і так вертає
+    обмежений, курований пул, а не повний каталог, тож ризик застарілого
+    "в наявності" тут менший, ніж був би для повного пошуку)."""
+    candidates = []
+    for p in raw_products:
+        if p.get("company_id") == PROM_OWN_COMPANY_ID:
+            continue
+        if check_presence:
+            presence = p.get("presence") or {}
+            if not presence.get("isAvailable"):
+                continue
+        candidate_name_lower = (p.get("name") or "").lower()
+        if any(marker in candidate_name_lower for marker in _BAD_NAME_MARKERS):
+            continue
+        if is_bundle_listing(p.get("name")):
+            continue
+        try:
+            price = float(p.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+        if not (cost * PRICE_SANITY_MIN_RATIO <= price <= cost * PRICE_SANITY_MAX_RATIO):
+            continue
+        score = _similarity(search_name, p.get("name", ""))
+        if score >= MATCH_MIN_SCORE:
+            candidates.append({"score": score, "price": price, "name": p.get("name"),
+                                "id": p.get("id"), "urlText": p.get("urlText"),
+                                "image": p.get("image")})
+
+    if not candidates:
+        return None
+    trusted = [c for c in candidates if c["score"] >= MATCH_MIN_SCORE_FOR_PRICING]
+    pool = trusted if trusted else candidates
+    pool.sort(key=lambda c: c["price"])
+
+    if own_pictures and trusted:
+        for candidate in pool[:PHOTO_VERIFY_CANDIDATE_LIMIT]:
+            if _photo_confirms_match(own_pictures, candidate.get("image")):
+                return candidate
+
+    return pool[0]
+
+
 # 2026-07-17: 284/970 (29%) топ-970 SKU наразі йдуть на PROM_COMMISSION_
 # DEFAULT (20%) — реальна ставка категорії не підтверджена (кабінет Prom
 # -> Показники роботи компанії -> Комісія за замовлення). Дефолт може
@@ -878,66 +1016,32 @@ def find_best_competitor(
         if buybox is not None:
             return buybox
 
+        # ДОДАНО (2026-07-24): recommended() як проміжний фолбек, лише коли
+        # buyBox нічого не дав — див. коментар біля fetch_recommended_products()
+        # вище щодо чому саме тут і чому це не подвоює навантаження на всі SKU.
+        time.sleep(SEARCH_DELAY)
+        recommended_raw = fetch_recommended_products(own_link["prom_id"])
+        recommended = _rank_competitor_candidates(
+            recommended_raw, search_name, cost, own_pictures, check_presence=False,
+        )
+        if recommended is not None:
+            recommended["source"] = "recommended"
+            return recommended
+
+    # ДОДАНО (2026-07-17, знайдено при точковому скані SKU 300391 поза
+    # чергою): SearchListingQuery-фолбек не фільтрував конкурентів за
+    # маркерами уцінки/пошкодження в НАЗВІ — уцінений/пошкоджений
+    # товар конкурента (типово найдешевший, бо не в товарному вигляді)
+    # легко проходить MATCH_MIN_SCORE і стає "найдешевшим кандидатом",
+    # штучно занижуючи floor/margin для товару, що насправді не
+    # порівнюваний. Той самий список маркерів, що вже фільтрує НАШ
+    # власний каталог у competitor_pricing.py's select_batch(). Той самий
+    # ланцюжок перевірок тепер спільний з recommended() у
+    # _rank_competitor_candidates() вище — включно з фото-підтвердженням
+    # серед довірених кандидатів (2026-07-22, пряме прохання власниці
+    # "чіткіше знаходити конкурентів").
     results = search_prom_products(search_name)
-    candidates = []
-    for p in results:
-        if p.get("company_id") == PROM_OWN_COMPANY_ID:
-            continue
-        presence = p.get("presence") or {}
-        if not presence.get("isAvailable"):
-            continue
-        # ДОДАНО (2026-07-17, знайдено при точковому скані SKU 300391 поза
-        # чергою): SearchListingQuery-фолбек не фільтрував конкурентів за
-        # маркерами уцінки/пошкодження в НАЗВІ — уцінений/пошкоджений
-        # товар конкурента (типово найдешевший, бо не в товарному вигляді)
-        # легко проходить MATCH_MIN_SCORE і стає "найдешевшим кандидатом",
-        # штучно занижуючи floor/margin для товару, що насправді не
-        # порівнюваний. Той самий список маркерів, що вже фільтрує НАШ
-        # власний каталог у competitor_pricing.py's select_batch().
-        candidate_name_lower = (p.get("name") or "").lower()
-        if any(marker in candidate_name_lower for marker in _BAD_NAME_MARKERS):
-            continue
-        if is_bundle_listing(p.get("name")):
-            continue
-        try:
-            price = float(p.get("price") or 0)
-        except (TypeError, ValueError):
-            continue
-        if price <= 0:
-            continue
-        if not (cost * PRICE_SANITY_MIN_RATIO <= price <= cost * PRICE_SANITY_MAX_RATIO):
-            continue
-        score = _similarity(search_name, p.get("name", ""))
-        if score >= MATCH_MIN_SCORE:
-            candidates.append({"score": score, "price": price, "name": p.get("name"),
-                                "id": p.get("id"), "urlText": p.get("urlText"),
-                                "image": p.get("image")})
-
-    if not candidates:
-        return None
-    trusted = [c for c in candidates if c["score"] >= MATCH_MIN_SCORE_FOR_PRICING]
-    pool = trusted if trusted else candidates
-    pool.sort(key=lambda c: c["price"])
-
-    # ДОДАНО (2026-07-22, пряме прохання власниці "чіткіше знаходити
-    # конкурентів" — не сліпо довіряти найдешевшому за текстовою
-    # схожістю): серед кількох найдешевших ДОВІРЕНИХ кандидатів (не
-    # лише одного) шукаємо фото-підтвердженого — той самий механізм
-    # (_photo_confirms_match), що вже рятує НЕдовірених кандидатів
-    # (0.4-0.6 зона), тепер застосований і для ВИБОРУ серед уже
-    # довірених. Обмежено PHOTO_VERIFY_CANDIDATE_LIMIT (кожна перевірка —
-    # живі мережеві запити) — перевіряємо в порядку зростання ціни,
-    # повертаємо ПЕРШОГО фото-підтвердженого; якщо жоден з перевірених
-    # не підтвердився, повертаємось до старої поведінки (найдешевший за
-    # текстом, як і раніше) — це чистий БОНУС до впевненості, не суворіший
-    # фільтр: жоден раніше прийнятний кандидат не відкидається через цю
-    # зміну.
-    if own_pictures and trusted:
-        for candidate in pool[:PHOTO_VERIFY_CANDIDATE_LIMIT]:
-            if _photo_confirms_match(own_pictures, candidate.get("image")):
-                return candidate
-
-    return pool[0]
+    return _rank_competitor_candidates(results, search_name, cost, own_pictures, check_presence=True)
 
 
 # Знайдено в JSON-LD (schema.org Product) на реальній сторінці товару,

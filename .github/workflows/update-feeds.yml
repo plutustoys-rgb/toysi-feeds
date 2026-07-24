@@ -3,23 +3,13 @@ name: Update Toysi feeds
 on:
   schedule:
     - cron: "0 */4 * * *"
+  # ВИДАЛЕНО (2026-07-24, міграція репрайсера на VPS-таймер): apply/
+  # force/force_circuit_breaker керували ЛИШЕ кроком "Run competitor
+  # repricer", якого тут більше немає (6.2-6.3 год живого пошуку на
+  # 6000 SKU перевищує 6-годинну стелю GH Actions job'у) — тепер це
+  # `--force`/`--force-circuit-breaker` прапорці run_prom_competitor_pricer_vps.sh
+  # напряму на VPS, без PR/UI Actions.
   workflow_dispatch:
-    inputs:
-      apply:
-        description: "Репрайсер: реально змінювати ціни в Prom (--apply). false = dry-run, лише звіт/лог, без реальних наслідків. Не впливає на планові (cron) запуски — ті завжди --apply."
-        required: false
-        default: "true"
-        type: boolean
-      force:
-        description: "Репрайсер: обійти гейт 'повний прогін вже був нещодавно' (--force). Шлях відновлення через UI Actions, без SSH/ручного редагування стану на feed-data."
-        required: false
-        default: "false"
-        type: boolean
-      force_circuit_breaker:
-        description: "Репрайсер: обійти circuit breaker (--force-circuit-breaker). Використовувати ЛИШЕ для свідомо очікуваного разового стрибка (напр. перший прогін після зміни самої формули/правила ціноутворення) — НЕ залишати true за замовчуванням, інакше breaker перестає захищати від справжніх аномалій. Не впливає на планові (cron) запуски — ті ніколи не передають цей прапорець."
-        required: false
-        default: "false"
-        type: boolean
 
 env:
   FEED_BRANCH: feed-data
@@ -68,19 +58,28 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
 
-      # prom_competitor_pricer.py (мігровано сюди з VPS-таймера 2026-07-13 —
-      # інакше він писав спільний стан на VPS, а generate_prom_feed.py читав
-      # його тут, на окремому ефемерному runner'і без спільної файлової
-      # системи, тож щойно застосована конкурентна ціна ніколи не доходила
-      # до фіда) пише/читає prom_competitor_price_state.json — відновлюємо
-      # його з попереднього коміту feed-data перед запуском, інакше кожен
-      # прогін стартував би з чистого стану й губив усі раніше застосовані
-      # ціни та мітку last_full_run (гейт "не частіше ~20 год").
-      - name: Restore prom_competitor_price_state.json from ${{ env.FEED_BRANCH }}
+      # ЗМІНЕНО (2026-07-24, міграція репрайсера НАЗАД на VPS-таймер —
+      # причина: 6.2-6.3 год живого пошуку конкурента на 6000 SKU
+      # (розширення вітрини) перевищує жорстку 6-годинну стелю виконання
+      # job'у GH Actions на хостованих раннерах; той самий клас проблеми,
+      # що вже спричинив аналогічну міграцію full_catalog_competitor_scan.py
+      # 2026-07-15, commit 500422d). prom_competitor_pricer.py більше НЕ
+      # виконується в цьому job'і — читає/пише prom_competitor_price_state.json
+      # локально на VPS між прогонами (без CI-обмежень), публікує в окрему
+      # гілку pricer-state-data одразу після кожного реального прогону
+      # (publish_pricer_state.sh, власний вузько призначений deploy-ключ,
+      # той самий принцип, що вже є для scan-state-data). Цей крок лише
+      # ЧИТАЄ найсвіжішу опубліковану копію — для решти генерації фідів
+      # (EVA/ALLO/Google дзеркалять ціну Prom).
+      - name: Restore prom_competitor_price_state.json from pricer-state-data (VPS-published)
+        continue-on-error: true
         run: |
-          git fetch origin "$FEED_BRANCH" 2>/dev/null || true
-          git show "origin/$FEED_BRANCH:prom_competitor_price_state.json" > prom_competitor_price_state.json 2>/dev/null \
+          git fetch origin pricer-state-data 2>/dev/null || true
+          git show "origin/pricer-state-data:prom_competitor_price_state.json" > prom_competitor_price_state.json 2>/dev/null \
             || echo '{}' > prom_competitor_price_state.json
+          git show "origin/pricer-state-data:prom_competitor_pricer_summary.md" > prom_competitor_pricer_summary.md 2>/dev/null \
+            || printf '# Репрайсер конкурентів Prom — стислий підсумок (перезаписується щоразу)\n\nОновлено: %s\n⚠ Гілка pricer-state-data ще не існує (перший запуск до першого VPS-прогону) або читання не вдалось.\n' \
+              "$(date -u +'%Y-%m-%d %H:%M UTC')" > prom_competitor_pricer_summary.md
 
       # ВИПРАВЛЕНО (2026-07-16, root-cause SKU 299318/299320/299321/249158 у
       # "Видалені з прайсу" на Rozetka): rozetka_feed_membership_state.json
@@ -190,54 +189,15 @@ jobs:
         continue-on-error: true
         run: python generate_bing_feed.py
 
-      # continue-on-error: цей крок реально змінює ціни в Prom через API
-      # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими
-      # зовнішніми залежностями. Збій тут не повинен зупиняти генерацію й
-      # публікацію самих фідів (generate_*.py), які є основною метою workflow.
-      # Власний гейт всередині скрипта (MIN_FULL_RUN_INTERVAL_HOURS) не дає
-      # йому робити повний прогін частіше приблизно раз на добу, попри те, що
-      # сам workflow тепер тригериться щочотири години.
-      # github.event.inputs.* лише для workflow_dispatch (порожній рядок для
-      # cron) — тому планові прогони завжди потрапляють у гілку "!= false",
-      # тобто --apply без --force, і лише ручний dispatch може відхилятись.
-      - name: Run competitor repricer (Prom)
-        continue-on-error: true
-        # SAFETY_HOLD (Надійність, п.3): repository variable, НЕ секрет —
-        # умикається/вимикається однією командою (`gh variable set
-        # SAFETY_HOLD --body "причина"` / `gh variable delete SAFETY_HOLD`),
-        # без PR/мержу/чекання на CI, коли відомий баг безпеки виявлено, а
-        # фікс ще не готовий. Порожнє значення (дефолт, змінна не задана)
-        # не вмикає hold — перевірка truthy-рядка всередині скрипта.
-        env:
-          SAFETY_HOLD: ${{ vars.SAFETY_HOLD }}
-        run: |
-          ARGS=""
-          if [ "${{ github.event.inputs.apply }}" != "false" ]; then ARGS="$ARGS --apply"; fi
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
-          if [ "${{ github.event.inputs.force_circuit_breaker }}" = "true" ]; then ARGS="$ARGS --force-circuit-breaker"; fi
-          python prom_competitor_pricer.py $ARGS
-
-      # Фолбек на випадок, якщо репрайсер аварійно завершився ДО першого
-      # виклику write_pricer_summary() (напр. не встиг навіть завантажити
-      # PROM_API_KEY) — гарантує, що файл існує до кроку публікації, той
-      # самий підхід, що й фолбек '{}' у кроці відновлення стану вище.
-      - name: Ensure prom_competitor_pricer_summary.md exists (best-effort fallback)
-        if: always()
-        run: |
-          if [ ! -s prom_competitor_pricer_summary.md ]; then
-            printf '# Репрайсер конкурентів Prom — стислий підсумок (перезаписується щоразу)\n\nОновлено: %s\n⚠ Файл не згенеровано — репрайсер, ймовірно, аварійно завершився до першого запису підсумку.\n' \
-              "$(date -u +'%Y-%m-%d %H:%M UTC')" > prom_competitor_pricer_summary.md
-          fi
-
       # ПЕРЕНЕСЕНО СЮДИ (2026-07-23, пряме рішення власниці): ціна EVA
       # тепер = ціні Prom напряму (не власний розрахунок через
-      # EVA_COMMISSION_TOYS) — має читати prom_competitor_price_state.json
-      # ПІСЛЯ репрайсера вище, інакше load_fresh_prom_price_overrides()
-      # підхопить учорашню ціну, а не щойно застосовану цим самим
-      # прогоном. continue-on-error: той самий best-effort статус, що й
-      # раніше — це підготовка коду ДО реєстрації на EVA (власниця ще не
-      # подала заявку), збій тут не повинен блокувати публікацію
-      # критичних Prom/Rozetka фідів.
+      # EVA_COMMISSION_TOYS) — читає prom_competitor_price_state.json,
+      # відновлений з pricer-state-data на початку job'у (найсвіжіший
+      # опублікований VPS-прогін репрайсера; сам репрайсер більше НЕ
+      # виконується в цьому job'і, див. коментар біля кроку відновлення
+      # стану вище). continue-on-error: це підготовка коду ДО реєстрації
+      # на EVA (власниця ще не подала заявку), збій тут не повинен
+      # блокувати публікацію критичних Prom/Rozetka фідів.
       - name: Generate EVA Marketplace feed (best-effort, prep-only)
         continue-on-error: true
         run: python generate_eva_feed.py

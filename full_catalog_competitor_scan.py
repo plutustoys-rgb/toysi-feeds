@@ -201,11 +201,20 @@ def build_scan_report(today: str, batch_ids: list, state: dict, scanned_now: int
 # понад 4 години). Тому єдиний надійний сигнал — перевірити РЕАЛЬНИЙ
 # стан гейту репрайсера (той самий MIN_FULL_RUN_INTERVAL_HOURS/
 # _meta.last_full_run, що й у prom_competitor_pricer.py) через публічний
-# prom_competitor_price_state.json на гілці feed-data, а не покладатись
-# на номінальний розклад.
+# prom_competitor_price_state.json, а не покладатись на номінальний розклад.
+# ЗМІНЕНО (2026-07-24, міграція репрайсера з GH Actions на VPS-таймер —
+# причина: 6.2-6.3 год на живий пошук 6000 SKU перевищує жорстку 6-годинну
+# стелю виконання job'у GH Actions на хостованих раннерах): репрайсер
+# більше не пише в feed-data (той файл там лишається лише застарілою
+# копією, що republish'иться update-feeds.yml раз на ~4 год за читанням
+# ЦІЄЇ ж гілки) — джерело істини тепер гілка pricer-state-data, куди VPS
+# публікує стан одразу після кожного реального прогону
+# (publish_pricer_state.sh, той самий принцип ізоляції, що вже є для
+# scan-state-data/kodv-ledger-data — окремий вузько призначений
+# deploy-ключ, лише запис у цей репозиторій).
 REPRICER_STATE_URL = (
     "https://raw.githubusercontent.com/plutustoys-rgb/toysi-feeds/"
-    "feed-data/prom_competitor_price_state.json"
+    "pricer-state-data/prom_competitor_price_state.json"
 )
 # Обмежене очікування, не безстрокове пропускання — якщо гейт відкритий
 # (тобто повний прогін репрайсера МОЖЛИВИЙ на будь-якому наступному тику,

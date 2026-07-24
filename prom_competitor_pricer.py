@@ -1492,12 +1492,21 @@ def main() -> None:
     # від git merge/deploy циклу. Прецедент, якого це запобігає: відомий
     # баг безпеки виявлено, фікс ще НЕ готовий/не змержено — досі жодного
     # способу негайно зупинити --apply, окрім видалення/паузи самого
-    # workflow вручну. Це env var (не файл у репо), щоб увімкнути/вимкнути
-    # можна було ОДНІЄЮ командою (`gh variable set SAFETY_HOLD --body true`),
-    # без PR/мержу/чекання на CI — швидше за будь-який кодовий фікс.
-    # Значення env var (не просто "1"/"true") друкується як причина, якщо
-    # задано власником — щоб було видно, ЧОМУ саме зараз hold, не лише що.
+    # workflow вручну. Спершу env var (GH Actions repository variable,
+    # `gh variable set SAFETY_HOLD --body "причина"`) — без PR/мержу/
+    # чекання на CI. ДОДАНО (2026-07-24, міграція на VPS-таймер): коли
+    # скрипт виконується на VPS, GH Actions repository variable вже
+    # недоступна — тому локальний файл SAFETY_HOLD поруч зі скриптом як
+    # рівноцінна за швидкістю альтернатива (власниця редагує/видаляє його
+    # напряму на VPS, так само миттєво, без PR). Перевіряється, лише якщо
+    # env var порожній — обидва шляхи лишаються робочими одночасно.
+    # Значення (не просто "1"/"true") друкується як причина, якщо задано
+    # власником — щоб було видно, ЧОМУ саме зараз hold, не лише що.
     safety_hold_reason = os.environ.get("SAFETY_HOLD", "").strip()
+    if not safety_hold_reason:
+        safety_hold_path = Path(__file__).parent / "SAFETY_HOLD"
+        if safety_hold_path.exists():
+            safety_hold_reason = safety_hold_path.read_text(encoding="utf-8").strip()
     if safety_hold_reason and args.apply:
         message = (
             f"🛑 prom_competitor_pricer.py: SAFETY_HOLD активний — примусовий dry-run, "

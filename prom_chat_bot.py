@@ -221,6 +221,7 @@ def resolve_product_context(context_item_id) -> dict | None:
             "quantity_in_stock": product.get("quantity_in_stock"),
             "description": (product.get("description") or "")[:1500],
             "external_id": product.get("external_id"),
+            "image": product.get("main_image"),
         }
     except requests.exceptions.RequestException as e:
         print(f"[ChatBot] Не вдалось отримати дані товару {context_item_id}: {e}", file=sys.stderr)
@@ -451,6 +452,94 @@ def _try_color_variant_response(product_context: dict, requested_color: str) -> 
     return None  # не в наявності — не стверджуємо напевно "немає", той самий принцип, що й STOCK/PRICE вище
 
 
+# ---------------------------------------------------------------------------
+# Уточнення ідентичності товару — 2026-07-24. Питання виду "чи це [назва/
+# характеристика]?" (клієнт звіряє, чи товар/замовлення відповідає тому, що
+# він думає) — за зразком _detect_requested_color/_try_color_variant_response
+# вище: власна вузька пара гейт+відповідь, БЕЗ виклику Haiku, коли впевнений
+# збіг є технічно доступний з product_context.
+#
+# Розширений (не лише кольоровий) список маркерів скарги — питання про
+# ідентичність товару частіше межує зі "прийшло не те" скаргами, ніж просте
+# питання про колір, тому гейт тут свідомо ширший за _COLOR_COMPLAINT_MARKERS.
+# ---------------------------------------------------------------------------
+_IDENTITY_COMPLAINT_MARKERS = _COLOR_COMPLAINT_MARKERS | {
+    "переплутали", "переплутала", "неправильний", "неправильна", "неправильне",
+    "неправильні", "помилка", "помилку", "помилкою", "жахливо", "розчарована",
+    "розчарований", "не те", "не той", "не та", "невідповідність",
+}
+
+# Слова, що самі по собі занадто загальні, щоб вважатись "явною назвою
+# товару" — без цього фільтра будь-яке коротке "це нормально?" чи "це
+# точно?" хибно намагалося б зіставлятись із назвою товару.
+_IDENTITY_STOPWORDS = {
+    "воно", "воно", "той", "та", "те", "ці", "цей", "ця", "товар", "замовлення",
+    "нормально", "точно", "правильно", "справді", "дійсно", "все", "усе",
+    "добре", "гаразд", "так", "нормальний", "нормальна",
+}
+
+_IDENTITY_QUESTION_PATTERNS = [
+    re.compile(r"чи\s+це\s+(.+?)\?", re.IGNORECASE | re.UNICODE | re.DOTALL),
+    re.compile(r"\bце\s+(.+?)\?", re.IGNORECASE | re.UNICODE | re.DOTALL),
+]
+
+
+def _detect_identity_claim(customer_message: str) -> str | None:
+    """Повертає сирий текст явно названої клієнтом назви/характеристики з
+    питання "чи це X?"/"це X?", або None — якщо повідомлення не така
+    форма питання, чи містить маркер скарги (тоді свідомо не чіпаємо,
+    хай іде до ескалації/LLM, а не даємо життєрадісну автовідповідь на
+    скаргу "прийшло не те")."""
+    if "?" not in customer_message:
+        return None
+    tokens = _normalize(customer_message).split()
+    if any(t in _IDENTITY_COMPLAINT_MARKERS for t in tokens):
+        return None
+    if any(phrase in _normalize(customer_message) for phrase in ("не те", "не той", "не та")):
+        return None
+    for pattern in _IDENTITY_QUESTION_PATTERNS:
+        match = pattern.search(customer_message)
+        if match:
+            candidate = match.group(1).strip(" ?.,!")
+            if candidate:
+                return candidate
+    return None
+
+
+def _try_identity_response(customer_message: str, product_context: dict) -> str | None:
+    """Звіряє явно названу клієнтом назву/характеристику з РЕАЛЬНОЮ назвою
+    товару з product_context (жива картка Prom). Відповідає напряму лише
+    коли збіг/розбіжність достатньо впевнені (є принаймні один змістовний
+    токен для порівняння) — інакше None, без вгадування."""
+    candidate = _detect_identity_claim(customer_message)
+    if not candidate:
+        return None
+
+    real_name = product_context.get("name")
+    if not real_name:
+        return None
+
+    candidate_tokens = {t for t in _normalize(candidate).split() if t not in _IDENTITY_STOPWORDS and len(t) >= 3}
+    if not candidate_tokens:
+        return None  # немає жодного змістовного слова для порівняння — не вгадуємо
+
+    name_tokens = set(_normalize(real_name).split())
+    overlap = candidate_tokens & name_tokens
+
+    image = product_context.get("image")
+    photo_suffix = f" Фото: {image}" if image else ""
+
+    # Більшість названих клієнтом слів справді є в реальній назві — підтверджуємо.
+    if len(overlap) >= (len(candidate_tokens) + 1) // 2:
+        return f"Так, це {real_name}.{photo_suffix}"
+
+    # Жодного перетину зі змістовними словами реальної назви — явна розбіжність.
+    if not overlap:
+        return f"Ваше замовлення — це {real_name}, не {candidate}.{photo_suffix}"
+
+    return None  # частковий, неоднозначний збіг — краще не вгадувати
+
+
 def try_template_response(customer_message: str, product_context: dict | None) -> str | None:
     """Пряма підстановка без LLM для явно типових питань. Повертає готовий
     текст відповіді, або None якщо повідомлення не збігається чітко —
@@ -492,6 +581,10 @@ def try_template_response(customer_message: str, product_context: dict | None) -
         variant_reply = _try_color_variant_response(product_context, requested_color)
         if variant_reply is not None:
             return variant_reply
+
+    identity_reply = _try_identity_response(customer_message, product_context)
+    if identity_reply is not None:
+        return identity_reply
 
     return None
 

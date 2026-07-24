@@ -353,8 +353,24 @@ def main() -> None:
                     print(f"[NovaPay] Реєстр №{result['registry_number']}: {result['rows']} рядків, "
                           f"{result['matched']} зіставлено, {result['unmatched']} без відповідника в orders_db.")
                 except NovaPayStatementError as e:
-                    print(f"[NovaPay] Не вдалось розпарсити вкладення '{filename}': {e} — "
-                          f"лист лишаю непрочитаним для повторної спроби.", file=sys.stderr)
+                    message = (
+                        f"⚠️ novapay_statement.py: не вдалось розпарсити вкладення '{filename}': {e} — "
+                        f"лист лишається непрочитаним, повторна спроба наступного запуску."
+                    )
+                    print(f"[NovaPay] {message}", file=sys.stderr)
+                    send_telegram_message(message)
+                except Exception as e:
+                    # ВИПРАВЛЕНО (аудит PR #156, pt8): будь-яка НЕОЧІКУВАНА помилка тут
+                    # раніше пропагувалась вище й аварійно завершувала весь скрипт БЕЗ
+                    # жодного сповіщення — для скрипта, чия єдина мета фінансова звірка,
+                    # тиха відмова означає пропущену звірку, яку ніхто не помітить. Той
+                    # самий принцип, що й у order_status_tracker.py/service_watchdog.py.
+                    message = (
+                        f"🚨 novapay_statement.py: неочікувана помилка обробки вкладення "
+                        f"'{filename}': {e} — лист лишається непрочитаним для повторної спроби."
+                    )
+                    print(f"[NovaPay] {message}", file=sys.stderr)
+                    send_telegram_message(message)
 
         _save_processed_registries(processed)
 
@@ -371,6 +387,15 @@ def main() -> None:
             )
             send_telegram_message(summary)
             print(f"[NovaPay] {summary}")
+    except Exception as e:
+        # Той самий принцип, що й вище — будь-яка помилка ПОЗА циклом обробки
+        # окремих вкладень (наприклад, сам IMAP SEARCH чи запис processed-
+        # registries на диск) теж повинна дійти до Telegram, не лише traceback
+        # у логах VPS, які ніхто не читає без окремого приводу.
+        message = f"🚨 novapay_statement.py: неочікувана помилка: {e}"
+        print(f"[NovaPay] {message}", file=sys.stderr)
+        send_telegram_message(message)
+        raise
     finally:
         try:
             imap_conn.logout()

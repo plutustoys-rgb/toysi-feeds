@@ -411,6 +411,26 @@ def _clean_description(html_desc: str) -> str:
     return text
 
 
+# ДОДАНО (2026-07-24, пряме прохання власниці): images.prom.ua віддає
+# розмір зображення напряму з URL (main_image/images[].url — завжди
+# "..._w200_h200_..."). Живо перевірено на реальних товарах — запит
+# більшого розміру (w1024_h1024) НІКОЛИ не гіршає: якщо джерело (Toysi)
+# має вище за 200x200 роздільність, Prom віддає реальний більший файл
+# (підтверджено: 198x199 -> 500x500 на кількох зразках); якщо оригінал
+# менший за запитаний розмір — Prom просто віддає свій максимум
+# (перевірено: w800/w1024/w1200/w1500 дають БУКВАЛЬНО той самий файл,
+# не апскейлить штучно й не падає). Наближає до рекомендованих Meta
+# 1024x1024px наскільки дозволяє джерело, без ризику зіпсувати чи
+# уповільнити щось для товарів з дійсно низькою роздільністю.
+_PROM_IMAGE_SIZE_RE = re.compile(r"_w\d+_h\d+_")
+
+
+def _upscale_prom_image(url: str) -> str:
+    if not url or "images.prom.ua" not in url:
+        return url
+    return _PROM_IMAGE_SIZE_RE.sub("_w1024_h1024_", url, count=1)
+
+
 def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price_overrides: dict) -> tuple[list, dict]:
     stats = {
         "total_considered": len(catalog),
@@ -463,6 +483,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         if not image:
             stats["no_image"] += 1
             continue
+        image = _upscale_prom_image(image)
 
         stock = item.get("stock", 0)
 

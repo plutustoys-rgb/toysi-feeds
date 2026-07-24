@@ -10,11 +10,6 @@ on:
         required: false
         default: "true"
         type: boolean
-      force:
-        description: "Репрайсер: обійти гейт 'повний прогін вже був нещодавно' (--force). Шлях відновлення через UI Actions, без SSH/ручного редагування стану на feed-data."
-        required: false
-        default: "false"
-        type: boolean
       force_circuit_breaker:
         description: "Репрайсер: обійти circuit breaker (--force-circuit-breaker). Використовувати ЛИШЕ для свідомо очікуваного разового стрибка (напр. перший прогін після зміни самої формули/правила ціноутворення) — НЕ залишати true за замовчуванням, інакше breaker перестає захищати від справжніх аномалій. Не впливає на планові (cron) запуски — ті ніколи не передають цей прапорець."
         required: false
@@ -194,12 +189,12 @@ jobs:
       # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими
       # зовнішніми залежностями. Збій тут не повинен зупиняти генерацію й
       # публікацію самих фідів (generate_*.py), які є основною метою workflow.
-      # Власний гейт всередині скрипта (MIN_FULL_RUN_INTERVAL_HOURS) не дає
-      # йому робити повний прогін частіше приблизно раз на добу, попри те, що
-      # сам workflow тепер тригериться щочотири години.
-      # github.event.inputs.* лише для workflow_dispatch (порожній рядок для
-      # cron) — тому планові прогони завжди потрапляють у гілку "!= false",
-      # тобто --apply без --force, і лише ручний dispatch може відхилятись.
+      # ЗМІНЕНО (2026-07-24, розширення до 6000 SKU): раніше — гейт
+      # MIN_FULL_RUN_INTERVAL_HOURS дозволяв повний прогін лише раз на
+      # ~20 год, попри тригер кожні 4 год. Тепер КОЖЕН тик обробляє
+      # ротаційну партію (ROTATION_BATCH_SIZE, найстаріші за часом
+      # перевірки SKU) — гейту/--force більше немає, скрипт завжди щось
+      # робить.
       - name: Run competitor repricer (Prom)
         continue-on-error: true
         # SAFETY_HOLD (Надійність, п.3): repository variable, НЕ секрет —
@@ -213,7 +208,6 @@ jobs:
         run: |
           ARGS=""
           if [ "${{ github.event.inputs.apply }}" != "false" ]; then ARGS="$ARGS --apply"; fi
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
           if [ "${{ github.event.inputs.force_circuit_breaker }}" = "true" ]; then ARGS="$ARGS --force-circuit-breaker"; fi
           python prom_competitor_pricer.py $ARGS
 

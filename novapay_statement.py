@@ -78,6 +78,14 @@ NOVAPAY_IMAP_APP_PASSWORD = os.environ.get("NOVAPAY_IMAP_APP_PASSWORD", "")
 # інструкції з pt20 збігається з Gmail-термінологією); перевизначувано
 # через .env, якщо скринька насправді на іншому провайдері.
 NOVAPAY_IMAP_HOST = os.environ.get("NOVAPAY_IMAP_HOST", "imap.gmail.com")
+# ВИПРАВЛЕНО (2026-07-24, живе спостереження після першого прогону на VPS):
+# перший живий тест показав "Усього листів у INBOX: 3, Листів з реєстром: 0"
+# — реєстри НЕ в INBOX. Живо перевірено (Gmail, label:novapay): Gmail-фільтр
+# автоматично лейблить і АРХІВУЄ (пропускає інбокс) ці листи в мітку
+# "NovaPay" — Gmail IMAP експонує мітки як окремі "теки", тому select()
+# саме цієї назви, не INBOX. Перевизначувано через .env на випадок іншої
+# назви мітки/іншого провайдера.
+NOVAPAY_IMAP_FOLDER = os.environ.get("NOVAPAY_IMAP_FOLDER", "NovaPay")
 
 BASE_DIR = Path(__file__).parent
 PROCESSED_REGISTRIES_FILE = BASE_DIR / "novapay_processed_registries.json"
@@ -121,7 +129,12 @@ def _fetch_unseen_registry_attachments(imap_conn: imaplib.IMAP4_SSL) -> list:
     вкладенням .xlsx, ім'я якого містить _ATTACHMENT_NAME_MARKER. Листи БЕЗ
     такого вкладення НЕ чіпаємо (не позначаємо прочитаними) — вони можуть
     бути про щось інше, не наша справа їх чіпати."""
-    imap_conn.select("INBOX")
+    status, _ = imap_conn.select(NOVAPAY_IMAP_FOLDER)
+    if status != "OK":
+        raise NovaPayStatementError(
+            f"IMAP SELECT теки/мітки '{NOVAPAY_IMAP_FOLDER}' не вдався — "
+            f"перевір NOVAPAY_IMAP_FOLDER у .env (реальна назва мітки в кабінеті пошти)"
+        )
     status, data = imap_conn.search(None, "UNSEEN")
     if status != "OK":
         raise NovaPayStatementError(f"IMAP SEARCH не вдався: {status}")

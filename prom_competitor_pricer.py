@@ -1682,17 +1682,42 @@ def main() -> None:
     # (той самий кеш, що вже вище фільтрує rotated_out), отримує позначку
     # delisted — не лише ці конкретні 542, а й будь-які майбутні випадки
     # того самого класу.
+    #
+    # ВИПРАВЛЕНО (2026-07-25, повторний перегляд аудиту PR #163, знахідка
+    # pt6): live_prom_ids сам походить від fetch_prom_products() (/groups/
+    # list) — структурно схильний до відомого класу бага "невидима
+    # група" (той самий інцидент "Сквіші" 07-12, коли /groups/list
+    # мовчки не повертав реальну групу товарів). Позначення _delisted_
+    # since — реальна, майже деструктивна дія (структурно виключає SKU з
+    # select_top_items() надалі), тому спиратись лише на кеш, схильний до
+    # сліпих плям, для НЕЇ недостатньо надійно — навіть попри існуючий
+    # самозцілювальний _recheck_delisted_pids(). Кандидатів (дешевий
+    # перший прохід через live_prom_ids) тепер підтверджуємо ще раз
+    # детермінованим, per-ID запитом fetch_prom_products_by_external_ids()
+    # (той самий метод, яким власне це розслідування підтвердило 542
+    # SKU) — структурно імунний до "невидимої групи", бо не йде через
+    # /groups/list узагалі. indeterminate (мережевий збій/timeout під час
+    # ЦІЄЇ перевірки) навмисно НЕ позначаємо — "не вдалось перевірити" це
+    # не доказ відсутності.
     if live_prom_ids is not None:
+        _ghost_candidates = [pid for pid in top_catalog if pid not in live_prom_ids]
         _delisted_since_early = price_state.setdefault("_delisted_since", {})
-        _newly_ghost = [pid for pid in top_catalog if pid not in live_prom_ids and pid not in _delisted_since_early]
-        if _newly_ghost:
-            _now_iso = datetime.now().isoformat()
-            for _pid in _newly_ghost:
-                _delisted_since_early[_pid] = _now_iso
-            save_prom_price_state(price_state)
-            print(f"[Pricer] УВАГА: {len(_newly_ghost)} SKU з топ-6000 відсутні в живому Prom "
-                  f"(не наш delist/deactivate) — позначено delisted, звільнено місце для реальних кандидатів "
-                  f"з наступного прогону select_top_items().")
+        _to_check = [pid for pid in _ghost_candidates if pid not in _delisted_since_early]
+        if _to_check:
+            from prom_catalog_sync import fetch_prom_products_by_external_ids  # лінивий імпорт, той самий патерн, що й нижче
+            _found, _indeterminate = fetch_prom_products_by_external_ids(set(_to_check))
+            _newly_ghost = [pid for pid in _to_check if pid not in _found and pid not in _indeterminate]
+            print(f"[Pricer] Кандидати-привиди з топ-6000 (немає в live_prom_ids): {len(_to_check)}, "
+                  f"з них підтверджено детерміновано відсутні: {len(_newly_ghost)} "
+                  f"(спростовано хибне спрацювання кешу: {len(_found)}, не вдалось перевірити: {len(_indeterminate)}).")
+            if _newly_ghost:
+                _now_iso = datetime.now().isoformat()
+                for _pid in _newly_ghost:
+                    _delisted_since_early[_pid] = _now_iso
+                save_prom_price_state(price_state)
+                print(f"[Pricer] УВАГА: {len(_newly_ghost)} SKU з топ-6000 підтверджено відсутні в живому Prom "
+                      f"(не наш delist/deactivate) — позначено delisted, звільнено місце для реальних кандидатів "
+                      f"з наступного прогону select_top_items().")
 
     # ДОДАНО (2026-07-20, "постійно конкурентні, раз і назавжди" —
     # див. коментар біля ROTATED_OUT_BATCH_LIMIT вище): SKU, що вже мають

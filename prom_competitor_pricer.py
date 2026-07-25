@@ -1784,12 +1784,38 @@ def main() -> None:
     def _last_checked(pid: str) -> str:
         return price_state.get(pid, {}).get("timestamp") or ""
 
-    rotation_batch = dict(
-        sorted(top_catalog.items(), key=lambda kv: _last_checked(kv[0]))[:args.limit]
+    # ВИПРАВЛЕНО (2026-07-25, живий root-cause "чому досі 846 товарів" —
+    # прохання власниці "шукай"): порожній timestamp сортується РАНІШЕ
+    # будь-якої реальної дати — тобто "ніколи не перевірявся" завжди мав
+    # абсолютний пріоритет над "перевірявся давно". Живо підтверджено на
+    # реальному фіді сьогодні: 2787 SKU з топ-6000 НІКОЛИ не перевірялись
+    # (майже вдвічі більше за ROTATION_BATCH_SIZE) — тобто КОЖНА партія
+    # без винятку повністю з'їдалась саме ними, а 3213 вже перевірених
+    # SKU (включно з тими, кому вже 190+ годин) НІКОЛИ не отримували
+    # повторної черги — структурне голодування, не рідкісний виняток.
+    # Наслідок: конкурентна ціна тихо застарівала (>PROM_PRICE_STATE_
+    # MAX_AGE_HOURS=30г) і відкочувалась на неконкурентну наївну формулу
+    # (живий приклад: SKU 302183 — мали 347.54₴, у фіді 456.72₴; випадкова
+    # вибірка 20 SKU підтвердила 7/20 (35%) з тим самим патерном).
+    # Фікс: партія ділиться навпіл — половина на найстаріші "ніколи не
+    # перевірені" (нові товари з розширення каталогу теж мають отримати
+    # хоч один живий пошук), половина ГАРАНТОВАНО на найстаріші З
+    # РЕАЛЬНОЮ датою (оновлення) — незалежно від того, скільки нових
+    # кандидатів чекає в черзі. Обидва боки тепер прогресують щоразу.
+    never_checked_items = {pid: item for pid, item in top_catalog.items() if not _last_checked(pid)}
+    previously_checked_items = {pid: item for pid, item in top_catalog.items() if _last_checked(pid)}
+
+    never_checked_share = args.limit // 2
+    never_checked_batch = dict(list(never_checked_items.items())[:never_checked_share])
+    refresh_slots = args.limit - len(never_checked_batch)
+    refresh_batch = dict(
+        sorted(previously_checked_items.items(), key=lambda kv: _last_checked(kv[0]))[:refresh_slots]
     )
+    rotation_batch = {**never_checked_batch, **refresh_batch}
     items = list(rotation_batch.items()) + list(live_lookup_extra.items())
-    print(f"[Pricer] Обробляю {len(items)} товарів (ротаційна партія {len(rotation_batch)} "
-          f"найстаріших з {len(top_catalog)} у топ-970 + {len(live_lookup_extra)} поза "
+    print(f"[Pricer] Обробляю {len(items)} товарів (ротаційна партія: {len(never_checked_batch)} нових "
+          f"(ніколи не перевірених з {len(never_checked_items)}) + {len(refresh_batch)} на оновлення "
+          f"(найстаріші з {len(previously_checked_items)} вже перевірених) + {len(live_lookup_extra)} поза "
           f"топ-970 без даних скану)...")
 
     # Донарахування own_link для ПОТОЧНОГО батчу — див. коментар біля

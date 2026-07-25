@@ -66,16 +66,27 @@ class PromCabinetError(Exception):
     pass
 
 
-def _save_failure_artifacts(page, prefix: str) -> None:
-    """При будь-якому непередбаченому кроці — скріншот+HTML для живого
+def _save_failure_artifacts(page, prefix: str, save_html: bool = True) -> None:
+    """При будь-якому непередбаченому кроці — скріншот(+HTML) для живого
     налагодження (той самий принцип, що novapay_statement.py: краще
-    зберегти діагностику, ніж мовчки впасти без сліду)."""
+    зберегти діагностику, ніж мовчки впасти без сліду).
+
+    ВИПРАВЛЕНО (аудит PR #160): save_html=False для кроку логіну — HTML-
+    дамп через page.content() серіалізує ПОТОЧНИЙ DOM, а <input
+    type="password"> у ньому МОЖЕ ще містити щойно введений реальний
+    пароль (залежно від того, контрольований це компонент чи звичайна
+    форма) саме в момент падіння login() (наприклад, невірний пароль —
+    сам docstring нижче називає це очікуваним сценарієм). Скріншот
+    безпечний незалежно — браузер завжди малює type="password" як
+    крапки/зірочки, не текстом."""
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     try:
         page.screenshot(path=str(REPORT_DIR / f"prom_cabinet_scraper_failure_{prefix}_{ts}.png"), full_page=True)
     except Exception:
         pass
+    if not save_html:
+        return
     try:
         (REPORT_DIR / f"prom_cabinet_scraper_failure_{prefix}_{ts}.html").write_text(
             page.content(), encoding="utf-8"
@@ -151,11 +162,13 @@ def main() -> None:
         try:
             try:
                 login(page)
-            except (PlaywrightTimeoutError, Exception) as e:
-                _save_failure_artifacts(page, "login")
+            except Exception as e:
+                # save_html=False — див. докстрінг _save_failure_artifacts().
+                _save_failure_artifacts(page, "login", save_html=False)
                 message = (
                     f"🚨 prom_cabinet_scraper.py: не вдалось увійти в кабінет Prom: {e} — "
-                    f"скріншот/HTML збережено в reports/ для налагодження."
+                    f"скріншот збережено в reports/ для налагодження (HTML свідомо не зберігається "
+                    f"на цьому кроці — може містити щойно введений пароль у полі форми)."
                 )
                 print(f"[PromCabinet] {message}", file=sys.stderr)
                 send_telegram_message(message)

@@ -282,10 +282,17 @@ def generate_top_feed(output_file: str = OUTPUT_FILE) -> None:
     # реально й регулярно доходить до Prom, тож без цього фіксу коригування
     # репрайсера для ~940 SKU топ-970 стиралися щоразу на наступному
     # автоімпорті (~кожні 4 год).
+    # ВИПРАВЛЕНО (2026-07-25, живий root-cause "не росте кабінет"): лінивий
+    # імпорт (той самий принцип, що вже є для resolve_own_product_links у
+    # prom_competitor_pricer.py) — на рівні модуля утворив би циклічний
+    # імпорт, бо prom_competitor_pricer.py вже імпортує з цього файлу
+    # (select_top_items/load_scan_state).
+    from prom_competitor_pricer import _load_prom_category_cache
     generate_feed(
         output_file=output_file,
         catalog=top_catalog,
         price_overrides=load_fresh_prom_price_overrides(),
+        prom_category_cache=_load_prom_category_cache(),
     )
 
 

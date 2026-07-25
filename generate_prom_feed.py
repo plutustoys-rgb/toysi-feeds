@@ -107,6 +107,25 @@ KEYWORDS_TARGET_COUNT = 10  # ціль 8-10 унікальних запитів 
 _GENERIC_MODIFIERS_UA = ["дитячий", "подарунок дитині", "купити"]
 _GENERIC_MODIFIERS_RU = ["детский", "подарок ребенку", "купить"]
 
+# 2026-07-25: Toysi сама називає деякі категорії за чужим товарним знаком
+# ("конструктори типу лего") — якщо сліпо копіювати таку назву категорії в
+# keywords для товару іншого виробника (vendor != LEGO), Prom блокує імпорт
+# як порушення Правил розміщення інформації (живо підтверджено: 26/26 SKU з
+# "лего"/"lego" в keywords мали інший vendor). Перевіряємо це тут, а не лише
+# для категорії "конструктори", щоб покрити будь-яку майбутню назву категорії
+# з тим самим паттерном.
+_TRADEMARK_CATEGORY_TERMS = ("лего", "lego")
+
+
+def _category_name_is_safe_keyword(category_name: str, vendor: str) -> bool:
+    """category_name — вже .lower()-нута (див. виклик нижче). Кожен elif
+    у TRADEMARK_CATEGORY_TERMS відповідає своєму бренду — тут лише лего,
+    але список легко розширити такою ж парою (термін, бренд-виняток)."""
+    vendor_lower = (vendor or "").strip().lower()
+    if any(term in category_name for term in _TRADEMARK_CATEGORY_TERMS):
+        return "lego" in vendor_lower or "лего" in vendor_lower
+    return True
+
 _KEYWORD_STOPWORDS_UA = {
     "з", "та", "і", "в", "на", "від", "до", "по", "для", "як", "що", "це", "із",
 }
@@ -276,11 +295,12 @@ def generate_keywords(item: dict) -> tuple:
     name = item.get("name", "") or ""
     category_name = (item.get("category_name", "") or "").strip().lower()
     vendor = (item.get("vendor", "") or "").strip()
+    category_name_safe = _category_name_is_safe_keyword(category_name, vendor)
 
     name_words = _tokenize_name(name)
 
     phrases_ua = list(name_words[:5])
-    if category_name:
+    if category_name and category_name_safe:
         phrases_ua.append(category_name)
     if vendor:
         phrases_ua.append(vendor.lower())
@@ -292,7 +312,7 @@ def generate_keywords(item: dict) -> tuple:
     keywords_ua = _join_within_limit(phrases_ua)
 
     phrases_ru = [_translate_word_ua_ru(w) for w in name_words[:5]]
-    if category_name:
+    if category_name and category_name_safe:
         translated_cat = _translate_phrase_if_complete(category_name)
         if translated_cat:
             phrases_ru.append(translated_cat)

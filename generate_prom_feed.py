@@ -397,6 +397,7 @@ def _truncate_name(text: str, max_len: int = PROM_NAME_MAX_LEN) -> str:
 
 def _build_xml(
     catalog: dict,
+    prom_category_cache: dict = None,
     price_overrides: dict = None,
     russian_text: dict = None,
     description_overrides: dict = None,
@@ -437,6 +438,7 @@ def _build_xml(
     truncated_name_count    = 0  # name (рос.) довша за PROM_NAME_MAX_LEN, обрізана на межі слова
     truncated_name_ua_count = 0  # name_ua (укр.) довша за PROM_NAME_MAX_LEN — окремий лічильник,
                                   # бо укр./рос. варіанти різної довжини й можуть обрізатись незалежно
+    resolved_category_count = 0  # SKU з РЕАЛЬНИМ Prom category_id з кешу (не Toysi-ID, не порожньо)
 
     for item in catalog.values():
         cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
@@ -494,8 +496,21 @@ def _build_xml(
         # Prom.ua використовує quantity_in_stock (а не stock_quantity, як Rozetka)
         ET.SubElement(offer, "quantity_in_stock").text   = str(stock)
 
-        if item.get("category_id"):
-            ET.SubElement(offer, "categoryId").text = item["category_id"]
+        # ВИПРАВЛЕНО (2026-07-25, живий root-cause "не росте кабінет"):
+        # раніше сюди йшло item["category_id"] — це TOYSI-власний ID
+        # категорії (з їхньої XML, parser.py), не Prom-категорія. Prom
+        # очікує ID зі СВОЄЇ таксономії; чужий/невідповідний ID Prom
+        # мовчки ігнорує й авто-визначає категорію сам (живо підтверджено
+        # 25.07: звіт імпорту показав "Для 662 товарів автоматично
+        # визначена категорія" — 72% партії). prom_category_cache.json
+        # (build_prom_category_cache(), generate_google_feed.py) уже дає
+        # РЕАЛЬНИЙ Prom category_id для SKU, які вже імпортовані — той
+        # самий кеш, що prom_competitor_pricer.py давно використовує для
+        # точної комісії, просто не був підключений сюди, до самого фіда.
+        real_category_id = ((prom_category_cache or {}).get(item_id) or {}).get("category_id")
+        if real_category_id:
+            ET.SubElement(offer, "categoryId").text = str(real_category_id)
+            resolved_category_count += 1
 
         for pic_url in item.get("pictures", [])[:10]:
             ET.SubElement(offer, "picture").text = pic_url
@@ -567,6 +582,7 @@ def _build_xml(
         "truncated_name_count": truncated_name_count,
         "truncated_name_ua_count": truncated_name_ua_count,
         "described_count": described_count,
+        "resolved_category_count": resolved_category_count,
     }
     return yml, stats
 
@@ -588,7 +604,8 @@ def fetch_russian_text() -> dict:
 def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
                   catalog: dict = None,
-                  description_overrides: dict = None) -> None:
+                  description_overrides: dict = None,
+                  prom_category_cache: dict = None) -> None:
     if catalog is None:
         print("[Prom] Завантажуємо каталог Toysi...")
         catalog = fetch_toysi_catalog()
@@ -600,8 +617,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
 
     print(f"[Prom] Генеруємо XML для {len(catalog)} товарів...")
     root, stats = _build_xml(
-        catalog, price_overrides=price_overrides, russian_text=russian_text,
-        description_overrides=description_overrides,
+        catalog, prom_category_cache=prom_category_cache, price_overrides=price_overrides,
+        russian_text=russian_text, description_overrides=description_overrides,
     )
 
     ET.indent(root, space="  ")
@@ -633,6 +650,11 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     )
     print(f"[Prom] Vis-9: {stats['described_count']} SKU отримали вручну написаний опис "
           "(description_overrides.json) замість сирого Toysi")
+    cache_total = len(prom_category_cache) if prom_category_cache else 0
+    print(
+        f"[Prom] Категорії: {stats['resolved_category_count']} SKU з реальним Prom category_id "
+        f"(кеш: {cache_total} SKU відомо) — решта без <categoryId>, Prom визначає сам за назвою."
+    )
 
     total_in_feed = stats["total_in_feed"] or 1
     worst_truncated_fraction = max(stats["truncated_name_count"], stats["truncated_name_ua_count"]) / total_in_feed

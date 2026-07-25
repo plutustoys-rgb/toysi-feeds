@@ -1666,6 +1666,34 @@ def main() -> None:
     print(f"[Pricer] Кеш живих товарів Prom для фільтра rotated_out: "
           f"{'відсутній/застарілий — фільтр вимкнено' if live_prom_ids is None else f'{len(live_prom_ids)} SKU'}.")
 
+    # ДОДАНО (2026-07-25, друга хвиля "чому кабінет не росте" — прямий
+    # запит власниці "копай"): звіт імпорту Prom того ж дня показав 542
+    # SKU з "Поле status: Позиція недоступна для оновлення" — ЖОДЕН не
+    # був позначений _delisted_since, на відміну від кейсу PR #151 (там
+    # prom_catalog_sync.py::deactivate() САМ ІНІЦІЮВАВ видалення, тому й
+    # міг одразу писати позначку). Ці зникли з Prom ЯКИМОСЬ ІНШИМ шляхом
+    # (можлива дедуплікація/модерація на боці Prom, не наш код) — жоден
+    # наш delist()/deactivate() ніколи не викликався для них, тому
+    # позначку ставити не було кому: select_top_items() щоразу знову
+    # обирав їх у топ-6000, назавжди займаючи слоти, які могли б зайняти
+    # реальні кандидати (живо підтверджено: 0/20 вибірки реально існують
+    # у Prom, fetch_prom_products_by_external_ids). Тут — загальний
+    # запобіжник: БУДЬ-ЯКИЙ SKU з top_catalog, якого немає в live_prom_ids
+    # (той самий кеш, що вже вище фільтрує rotated_out), отримує позначку
+    # delisted — не лише ці конкретні 542, а й будь-які майбутні випадки
+    # того самого класу.
+    if live_prom_ids is not None:
+        _delisted_since_early = price_state.setdefault("_delisted_since", {})
+        _newly_ghost = [pid for pid in top_catalog if pid not in live_prom_ids and pid not in _delisted_since_early]
+        if _newly_ghost:
+            _now_iso = datetime.now().isoformat()
+            for _pid in _newly_ghost:
+                _delisted_since_early[_pid] = _now_iso
+            save_prom_price_state(price_state)
+            print(f"[Pricer] УВАГА: {len(_newly_ghost)} SKU з топ-6000 відсутні в живому Prom "
+                  f"(не наш delist/deactivate) — позначено delisted, звільнено місце для реальних кандидатів "
+                  f"з наступного прогону select_top_items().")
+
     # ДОДАНО (2026-07-20, "постійно конкурентні, раз і назавжди" —
     # див. коментар біля ROTATED_OUT_BATCH_LIMIT вище): SKU, що вже мають
     # дані скану, але випали з топ-970, обробляються ОКРЕМИМ, дешевим

@@ -317,11 +317,6 @@ jobs:
       # ще ДО єдиного спільного кроку публікації нижче — тобто щойно успішно
       # згенерований і провалідований rozetka_feed.xml теж ніколи б не
       # опублікувався того прогону, попри те, що сам не мав жодної проблеми.
-      - name: Generate Prom feed (full catalog)
-        id: gen_prom_full
-        continue-on-error: true
-        run: python generate_prom_feed.py
-
       - name: Generate Prom feed (top-970)
         id: gen_prom_top
         continue-on-error: true
@@ -330,10 +325,6 @@ jobs:
       # Симетрично до Rozetka-фолбеку вище: якщо генерація Prom top-970
       # провалилась, підміняємо останньою робочою версією з feed-data,
       # замість того щоб publish-крок пропустив/затер файл на порожній.
-      # prom_feed.xml (повний каталог) НЕ комітиться в git узагалі (>100МБ,
-      # хоститься на VPS, окремий крок нижче) — для нього симетричний
-      # захист інший: guard на непорожній файл перед rsync, див. коментар
-      # біля "Upload prom_feed.xml to VPS" нижче.
       - name: Restore last known-good prom_feed_top.xml (generation failed this run)
         if: steps.gen_prom_top.outcome == 'failure'
         run: |
@@ -355,14 +346,14 @@ jobs:
       # feeds/*.xml на master, тепер (після git-гігієни, коміт 72ad9fd) фолбеку немає,
       # тож без цієї перевірки помилка виглядає як незрозумілий git pathspec-фейл.
       #
-      # ЗВУЖЕНО (2026-07-20, той самий запит про ізоляцію збоїв Rozetka/Prom):
-      # prom_feed.xml прибрано з цього списку — на відміну від двох інших файлів,
-      # у нього НЕМАЄ git-фолбеку (не комітиться, >100МБ, VPS-хостинг), тож його
-      # відсутність тут раніше блокувала ЦІЛИЙ job (exit 1, без continue-on-error) —
-      # тобто щойно згенеровані/фолбек-відновлені rozetka_feed.xml і prom_feed_top.xml
-      # так і не публікувались через збій ОКРЕМОГО, непов'язаного файлу. Власна
-      # перевірка непорожності prom_feed.xml тепер лише в "Upload prom_feed.xml to
-      # VPS" вище, де вона й блокує ЛИШЕ той крок, не решту job'у.
+      # ВИДАЛЕНО (2026-07-25, пряме рішення власниці): "Generate Prom feed
+      # (full catalog)"/"Upload prom_feed.xml to VPS" прибрано повністю —
+      # цей повний-каталог фід (29000+ SKU) був історичним підходом ще з
+      # першого коміту проєкту, до появи куруваного топ-N; нічний сканер
+      # конкурентів (full_catalog_competitor_scan.py) сам тягне повний
+      # каталог напряму з Toysi, не з цього файлу, а сам Prom імпортує
+      # лише prom_feed_top.xml (куруваний топ-6000, що вже покриває всю
+      # підписку) — prom_feed.xml не мав жодного реального споживача.
       - name: Verify feeds were generated
         run: |
           for f in feeds/rozetka_feed.xml feeds/prom_feed_top.xml; do
@@ -371,72 +362,6 @@ jobs:
               exit 1
             fi
           done
-
-      # ВИПРАВЛЕНО 2026-07-14: prom_feed.xml (повний каталог, 106+ МБ) остаточно
-      # перенесено з git на VPS-хостинг — GitHub-як-хостинг для цього файлу
-      # вичерпав себе (жорсткий ліміт 100 МБ/файл, публікація падала щоразу з
-      # 13.07, див. видалений нижче трирівневий фолбек). SSH-ключ (ТІЛЬКИ
-      # rsync у /opt/plutustoys/feeds/, обмежено через rrsync — навіть при
-      # витоку ключа неможливо виконати довільну команду на VPS) — новий
-      # секрет FEED_DEPLOY_SSH_KEY, зареєстрований 2026-07-14. continue-on-error:
-      # VPS/мережа — зовнішня залежність, збій тут не повинен блокувати
-      # публікацію rozetka_feed.xml/prom_feed_top.xml нижче, які й далі йдуть
-      # у git (обидва помітно менші за 100 МБ, ще жоден пуш ними не впав).
-      #
-      # ВИПРАВЛЕНО 2026-07-14 (фолоу-ап з рев'ю pt5): ключ більше не дає
-      # доступу до root — окремий системний користувач feeddeploy на VPS,
-      # власник /opt/plutustoys/feeds, той самий rrsync-forced-command,
-      # обмежений тим самим каталогом. Компрометація ключа тепер обмежена
-      # одним каталогом, а не всією системою.
-      - name: Upload prom_feed.xml to VPS (permanent hosting)
-        id: vps_upload
-        continue-on-error: true
-        run: |
-          # ДОДАНО (2026-07-20, той самий запит про ізоляцію збоїв Rozetka/Prom):
-          # prom_feed.xml НЕ комітиться в git (>100МБ) і тому не має git-based
-          # фолбеку, як rozetka_feed.xml/prom_feed_top.xml вище — якщо
-          # generate_prom_feed.py (id: gen_prom_full) провалився, локальний
-          # файл може бути відсутнім АБО (гірше) порожнім 0-байтовим. Без цього
-          # guard'а rsync мовчки перезаписав би РОБОЧИЙ файл на VPS порожнім —
-          # тому явна перевірка ПЕРЕД rsync, не покладаємось лише на те, що
-          # rsync сам відмовиться синкати відсутній source.
-          if [ ! -s feeds/prom_feed.xml ]; then
-            echo "::error::feeds/prom_feed.xml відсутній або порожній (генерація, ймовірно, провалилась) — НЕ вивантажую на VPS, щоб не затерти робочу версію порожньою."
-            exit 1
-          fi
-          mkdir -p ~/.ssh
-          echo "${{ secrets.FEED_DEPLOY_SSH_KEY }}" > ~/.ssh/feed_deploy_key
-          chmod 600 ~/.ssh/feed_deploy_key
-          ssh-keyscan -H "${{ secrets.FEED_DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
-          # Явний користувач ОБОВ'ЯЗКОВИЙ тут: без нього rsync/ssh підставляє
-          # ім'я ПОТОЧНОГО користувача на раннері (на ubuntu-latest це
-          # буквально "runner") як SSH-логін — VPS такого користувача не
-          # має, і автентифікація падає з "Invalid user runner" (живо
-          # підтверджено в /var/log/auth.log на VPS during діагностики
-          # 2026-07-14).
-          rsync -avz --timeout=180 \
-            -e "ssh -i ~/.ssh/feed_deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            feeds/prom_feed.xml "feeddeploy@${{ secrets.FEED_DEPLOY_HOST }}:prom_feed.xml"
-
-      # continue-on-error: true вище означає, що збій цього кроку НЕ провалює
-      # job і показує лише пасивний жовтий трикутник в UI Actions (той самий
-      # клас прогалини, що вже позначався в pt63/pt5) — а файл тепер
-      # критичний для імпорту в Prom. steps.vps_upload.outcome (не .conclusion,
-      # яке завжди "success" через continue-on-error) відображає РЕАЛЬНИЙ
-      # результат кроку.
-      - name: Notify on VPS upload failure
-        if: steps.vps_upload.outcome == 'failure'
-        continue-on-error: true
-        run: |
-          echo "::error::Вивантаження prom_feed.xml на VPS не вдалось — файл на VPS міг застаріти. Перевір run ${{ github.run_id }}."
-          python -c "
-          from telegram_notify import send_telegram_message
-          send_telegram_message(
-              '🚨 update-feeds.yml: вивантаження prom_feed.xml на VPS не вдалось. '
-              'Файл на VPS може бути застарілим, доки не буде виправлено. '
-              'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
-          )
-          "
 
       # Публікуємо rozetka_feed.xml + prom_feed_top.xml в окрему гілку feed-data
       # одним коммітом, що щоразу перезаписує попередній (force-push). Це не
@@ -451,12 +376,11 @@ jobs:
       # ЛИШЕ в Rozetka-валідації більше не заважає щойно згенерованому,
       # робочому Prom-фіду публікуватись цього ж прогону.
       #
-      # ВИПРАВЛЕНО 2026-07-14: prom_feed.xml (106+ МБ, понад жорсткий ліміт
-      # GitHub 100 МБ/файл) прибрано з цієї публікації повністю — окремий крок
-      # вище вивантажує його на постійний VPS-хостинг замість git. Трирівневий
-      # фолбек (2026-07-12, коміт 6385d7e і далі), що existed саме через
-      # ризик перевищення ліміту цим файлом, більше не потрібен: без
-      # prom_feed.xml сумарний розмір цієї публікації — одноразовий, надійно
+      # prom_feed.xml (повний каталог, 106+ МБ, понад жорсткий ліміт GitHub
+      # 100 МБ/файл) НІКОЛИ не входив у цю публікацію — генерація й окреме
+      # VPS-хостинг цього файлу прибрані повністю (2026-07-25, рішення
+      # власниці — не мав реального споживача, історичний підхід ще з
+      # першого коміту). Сумарний розмір цієї публікації — надійно
       # закладений під ліміт, жодного окремого файлу біля межі 100 МБ немає.
       - name: Publish feeds to ${{ env.FEED_BRANCH }} (force-push, no history)
         run: |

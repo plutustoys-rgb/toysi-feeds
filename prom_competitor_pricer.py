@@ -1379,7 +1379,8 @@ def decide_action(
     return decision
 
 
-def _rotated_out_scan_candidates(top_catalog: dict, toysi_catalog: dict, scan_state: dict) -> dict:
+def _rotated_out_scan_candidates(top_catalog: dict, toysi_catalog: dict, scan_state: dict,
+                                  live_prom_ids: set | None = None) -> dict:
     """SKU, які full_catalog_competitor_scan.py вже оцінив (є конкурентні
     дані в full_catalog_scan_state.json), але які ЗАРАЗ поза топ-970
     (select_top_items() ротує його щодня) — звичайний цикл нижче їх
@@ -1391,12 +1392,24 @@ def _rotated_out_scan_candidates(top_catalog: dict, toysi_catalog: dict, scan_st
     - НЕ в top_catalog (уникнути подвійної, дорожчої обробки нижче);
     - досі валідні в живому каталозі Toysi (cost>0, stock>0 — не гає
       зусиль на товар, що взагалі зник/скінчився з тих пір);
-    - скан дав РЕАЛЬНЕ рішення (price_category != "invalid_cost")."""
+    - скан дав РЕАЛЬНЕ рішення (price_category != "invalid_cost");
+    - ЖИВИЙ у Prom (live_prom_ids, якщо переданий) — ВИПРАВЛЕНО
+      (2026-07-25, живий root-cause: 1987/1987 SKU з "Продукт не найден"
+      цього прогону виявились рівно тут). full_catalog_scan_state.json
+      покриває ввесь каталог Toysi (18183 SKU на момент фіксу) незалежно
+      від того, чи SKU колись реально був створений у Prom (наразі лише
+      847/6000 заповнено) — без цієї перевірки код слав live price-update
+      на явно неіснуючий у Prom товар, гарантовано отримуючи помилку й
+      марно витрачаючи час прогону (внесок у перевищення оцінки 3.2 год).
+      live_prom_ids=None (кеш відсутній/застарів) — стара поведінка, без
+      фільтра, той самий best-effort принцип, що й prom_category_cache."""
     candidates = {}
     for pid, scan_entry in scan_state.items():
         if pid in top_catalog:
             continue
         if scan_entry.get("price_category") == "invalid_cost":
+            continue
+        if live_prom_ids is not None and pid not in live_prom_ids:
             continue
         item = toysi_catalog.get(pid)
         if not item:
@@ -1412,7 +1425,7 @@ def _rotated_out_scan_candidates(top_catalog: dict, toysi_catalog: dict, scan_st
 
 
 def _rotated_out_needing_live_lookup(top_catalog: dict, toysi_catalog: dict, scan_state: dict,
-                                      price_state: dict) -> dict:
+                                      price_state: dict, live_prom_ids: set | None = None) -> dict:
     """SKU з попередньою конкурентною ціною (уже колись потрапляв у
     топ-970, отже, має запис у prom_competitor_price_state.json), що
     зараз ПОЗА топ-970 і ЩЕ НЕ охоплений нічним сканом
@@ -1438,6 +1451,8 @@ def _rotated_out_needing_live_lookup(top_catalog: dict, toysi_catalog: dict, sca
     candidates = {}
     for pid in tracked:
         if pid in top_catalog or pid in scan_state:
+            continue
+        if live_prom_ids is not None and pid not in live_prom_ids:
             continue
         item = toysi_catalog.get(pid)
         if not item:
@@ -1637,13 +1652,27 @@ def main() -> None:
     top_catalog = select_top_items(toysi_catalog)
     print(f"[Pricer] У топ-970: {len(top_catalog)} товарів.")
 
+    # ДОДАНО (2026-07-25, живий root-cause 1987 помилок "Продукт не
+    # найден" за один прогін): той самий внутрішньопрогонний кеш живих
+    # товарів Prom, що вже пише generate_google_feed.py на кроках Meta/
+    # Bing-феєдів ЦЬОГО Ж прогону workflow (TTL 1 год — на момент кроку
+    # репрайсера кеш свіжий, без жодного додаткового HTTP-запиту).
+    # Використовується нижче, щоб відфільтрувати з rotated_out/
+    # live_lookup_extra SKU, яких Prom реально не має — див. докстрінги
+    # _rotated_out_scan_candidates()/_rotated_out_needing_live_lookup().
+    from generate_google_feed import load_prom_products_cache  # лінивий імпорт, той самий патерн, що й вище
+    _live_prom_products = load_prom_products_cache()
+    live_prom_ids = set(_live_prom_products.keys()) if _live_prom_products is not None else None
+    print(f"[Pricer] Кеш живих товарів Prom для фільтра rotated_out: "
+          f"{'відсутній/застарілий — фільтр вимкнено' if live_prom_ids is None else f'{len(live_prom_ids)} SKU'}.")
+
     # ДОДАНО (2026-07-20, "постійно конкурентні, раз і назавжди" —
     # див. коментар біля ROTATED_OUT_BATCH_LIMIT вище): SKU, що вже мають
     # дані скану, але випали з топ-970, обробляються ОКРЕМИМ, дешевим
     # проходом нижче (після основного циклу) — без живого пошуку
     # конкурента, лише adjust, ніколи delist.
     scan_state = load_scan_state()
-    rotated_out = _rotated_out_scan_candidates(top_catalog, toysi_catalog, scan_state)
+    rotated_out = _rotated_out_scan_candidates(top_catalog, toysi_catalog, scan_state, live_prom_ids)
     print(f"[Pricer] Додатково поза топ-970 (є дані скану, ще в наявності): {len(rotated_out)} товарів "
           f"(оброблю до {ROTATED_OUT_BATCH_LIMIT} цього прогону).")
 
@@ -1653,7 +1682,7 @@ def main() -> None:
     # проходом), додані просто як ще один шматок `items`. Див. докстрінг
     # _rotated_out_needing_live_lookup() — чому цей набір малий і
     # самоскорочується з часом.
-    live_lookup_extra_all = _rotated_out_needing_live_lookup(top_catalog, toysi_catalog, scan_state, price_state)
+    live_lookup_extra_all = _rotated_out_needing_live_lookup(top_catalog, toysi_catalog, scan_state, price_state, live_prom_ids)
     live_lookup_extra = dict(list(live_lookup_extra_all.items())[:LIVE_LOOKUP_EXTRA_BATCH_LIMIT])
     print(f"[Pricer] Додатково поза топ-970 (без даних скану — живий пошук): "
           f"{len(live_lookup_extra_all)} товарів, оброблю до {LIVE_LOOKUP_EXTRA_BATCH_LIMIT} цього прогону.")

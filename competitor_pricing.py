@@ -1124,6 +1124,15 @@ def decide_price_for_platform(
         "price": price,
         "category": result_category,
         "margin_pct": margin_pct,
+        # ДОДАНО (2026-07-26, пряме прохання власниці — повний слід рішення
+        # для price_state): саме ЦЕ значення (не сирий competitor["price"]
+        # з викликаючого коду) реально пішло у формулу — decide_action()/
+        # _decide_from_scan_entry() можуть занулити довіру до конкурента
+        # (низький score, конфлікт розміру, competitor_alive=False) ще ДО
+        # виклику цієї функції, тож будь-яке інше джерело точки candidate
+        # заднім числом було б ненадійним (саме це показав живий приклад
+        # SKU 292858).
+        "competitor_price": min_competitor,
     }
 
 

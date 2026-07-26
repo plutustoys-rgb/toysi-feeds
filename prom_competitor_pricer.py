@@ -1193,9 +1193,12 @@ def _competitor_identity_key(competitor: dict | None) -> str | None:
 
 def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict) -> tuple[list, list, float | None]:
     """P0-3: див. коментар біля CIRCUIT_BREAKER_* констант. `to_adjust` —
-    список (pid, price, margin_pct, competitor_key) кандидатів на
-    коригування цього прогону (competitor_key — див. _competitor_identity_key(),
-    ДОДАНО 2026-07-22, див. докстрінг нижче). `to_delist` — список pid,
+    список (pid, price, margin_pct, competitor_key, category, competitor_price,
+    cost) кандидатів на коригування цього прогону (competitor_key — див.
+    _competitor_identity_key(), ДОДАНО 2026-07-22; category/competitor_price/
+    cost — ДОДАНО 2026-07-26, повний слід рішення для price_state, пряме
+    прохання власниці "ми повинні записувати усі данні для майбутніх
+    коригувань... що знати як формувалась ціна"). `to_delist` — список pid,
     призначених на видалення цього прогону (ДОДАНО 2026-07-18, незалежний
     аудит PR #95 —
     code_report_2026-07-18_pt4.md: до цього фіксу жоден із трьох сигналів
@@ -1237,11 +1240,11 @@ def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict
     if not to_adjust:
         return delist_reasons, adjust_reasons, None
 
-    avg_margin_this_run = sum(m for _, _, m, _ in to_adjust) / len(to_adjust)
+    avg_margin_this_run = sum(m for _, _, m, *_ in to_adjust) / len(to_adjust)
 
     known_count = 0
     changed_count = 0
-    for pid, price, _, competitor_key in to_adjust:
+    for pid, price, _, competitor_key, *_ in to_adjust:
         prior_entry = price_state.get(pid)
         prior_price = prior_entry.get("price") if isinstance(prior_entry, dict) else None
         if not prior_price:
@@ -1926,7 +1929,7 @@ def main() -> None:
     # не мав жодного побічного ефекту на файл стану. Прямий API-патч
     # (apply_price()) і delist лишаються заблокованими для цих SKU так само,
     # як і раніше — змінюється лише те, що бачить ФІД.
-    feed_only_price_updates = []  # (pid, price) — лише для price_state, БЕЗ apply_price()
+    feed_only_price_updates = []  # (pid, price, margin_pct, competitor_key, category, competitor_price, cost) — лише для price_state, БЕЗ apply_price()
     competitor_scores = []  # Автономність, п.7: score КОЖНОГО використаного конкурента
 
     for pid, item in items:
@@ -2009,15 +2012,36 @@ def main() -> None:
         else:
             competitor_scores.append(decision["competitor"]["score"])
 
+        # ДОДАНО (2026-07-26, пряме прохання власниці — "ми повинні
+        # записувати усі данні для майбутніх коригувань, як конкурента так
+        # і тойсі, що знати як формувалась ціна"): category/competitor_price/
+        # cost йдуть у price_state поруч із price/margin_pct, щоб пізніше
+        # МОЖНА було достовірно відрізнити "undercut" (реально продиктовано
+        # живим конкурентом) від "floor" (наша власна нижня межа, ціна
+        # конкурента могла бути суттєво іншою) — без цього відтворити
+        # candidate заднім числом небезпечно (живий приклад SKU 292858:
+        # 37.71 реконструйовано проти 69 реальної ціни конкурента).
+        # decision["competitor_price"] (не сирий competitor["price"]!) — те
+        # саме значення, яке РЕАЛЬНО пішло у формулу decide_price_for_platform():
+        # decide_action() вище могло занулити довіру до competitor (низький
+        # score/конфлікт розміру) ще до цього виклику.
         if _category_commission_is_default(category_name, prom_category_id) and not args.allow_default_commission:
             default_commission_skipped.append((pid, name_ukr, category_name, decision["price"]))
-            feed_only_price_updates.append((pid, decision["price"], _competitor_identity_key(decision["competitor"])))
+            feed_only_price_updates.append((
+                pid, decision["price"], decision["margin_pct"],
+                _competitor_identity_key(decision["competitor"]),
+                decision["category"], decision["competitor_price"], cost,
+            ))
             print(f"  -> {pid}: категорія {category_name!r} на дефолтній комісії "
                   f"({PROM_COMMISSION_DEFAULT:.0%}, не підтверджена) — виключено з auto-apply, "
                   "потребує ручного перегляду (ціна все одно піде у фід — Vis-11.1)")
         elif decision["action"] == "adjust":
             adjust_count += 1
-            to_adjust.append((pid, decision["price"], decision["margin_pct"], _competitor_identity_key(decision["competitor"])))
+            to_adjust.append((
+                pid, decision["price"], decision["margin_pct"],
+                _competitor_identity_key(decision["competitor"]),
+                decision["category"], decision["competitor_price"], cost,
+            ))
         elif decision["action"] == "delist":
             delist_count += 1
             to_delist.append(pid)
@@ -2051,12 +2075,18 @@ def main() -> None:
             # None: цей шлях (reuse даних нічного скану) не зберігає id
             # конкретного оголошення конкурента — немає стабільної
             # ідентичності, яку можна було б порівняти між прогонами.
-            feed_only_price_updates.append((pid, decision["price"], None))
+            feed_only_price_updates.append((
+                pid, decision["price"], decision["margin_pct"], None,
+                decision["category"], decision["competitor_price"], cost,
+            ))
             continue
 
         adjust_count += 1
         rotated_out_adjust_count += 1
-        to_adjust.append((pid, decision["price"], decision["margin_pct"], None))
+        to_adjust.append((
+            pid, decision["price"], decision["margin_pct"], None,
+            decision["category"], decision["competitor_price"], cost,
+        ))
 
     if rotated_out.items():
         print(f"[Pricer] Поза топ-970 (reuse даних скану): {rotated_out_adjust_count} "
@@ -2183,8 +2213,12 @@ def main() -> None:
     # побачить generate_prom_feed_top.py на наступній генерації фіда.
     if feed_only_price_updates:
         now_iso = datetime.now().isoformat()
-        for pid, price, competitor_key in feed_only_price_updates:
-            price_state[pid] = {"price": price, "timestamp": now_iso, "competitor_key": competitor_key}
+        for pid, price, margin_pct, competitor_key, category, competitor_price, cost in feed_only_price_updates:
+            price_state[pid] = {
+                "price": price, "timestamp": now_iso, "competitor_key": competitor_key,
+                "category": category, "competitor_price": competitor_price,
+                "cost": cost, "margin_pct": margin_pct,
+            }
         print(f"[Pricer] {len(feed_only_price_updates)} SKU на непідтвердженій комісії — "
               "ціна оновлена лише в price_state для фіда (без прямого API-патчу).")
 
@@ -2261,14 +2295,18 @@ def main() -> None:
     delisted_since = price_state.setdefault("_delisted_since", {})
     # ЗАБЛОКОВАНО (adjust_blocked) -> порожній список, той самий безпечний
     # шаблон, що вже застосований нижче для to_delist.
-    for pid, price, _, competitor_key in ([] if adjust_blocked else to_adjust):
+    for pid, price, margin_pct, competitor_key, category, competitor_price, cost in ([] if adjust_blocked else to_adjust):
         if _time_budget_exceeded():
             print(f"[Pricer] Часовий бюджет вичерпано — зупиняю застосування цін достроково "
                   f"({applied_count} застосовано з {len(to_adjust)}).")
             break
         try:
             apply_price(pid, price)
-            price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat(), "competitor_key": competitor_key}
+            price_state[pid] = {
+                "price": price, "timestamp": datetime.now().isoformat(), "competitor_key": competitor_key,
+                "category": category, "competitor_price": competitor_price,
+                "cost": cost, "margin_pct": margin_pct,
+            }
             # ВИПРАВЛЕНО (2026-07-18, той самий інцидент, що й нижче): якщо
             # SKU раніше було підтверджено видаленим, а тепер знову
             # конкурентний (opinion "adjust", не "delist") — прибираємо

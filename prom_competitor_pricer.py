@@ -477,6 +477,23 @@ ROTATED_OUT_BATCH_LIMIT = 1000
 # додатково на прогін, прийнятно для сервісу кожні 4 години.
 LIVE_LOOKUP_EXTRA_BATCH_LIMIT = 300
 
+# ДОДАНО (2026-07-25, живий root-cause скасованого 5.5-годинного прогону
+# 30156977509): _recheck_delisted_pids() не мав ЖОДНОГО ліміту партії —
+# докстрінг обіцяв "типово в рази менша за весь топ-970", але це
+# припущення структурно зламалось того ж дня: PR #163 додав механізм,
+# що може позначити ТИСЯЧІ SKU delisted за один прогін (живо: 5192 за
+# раз), а ця функція робить find_best_competitor() (жива мережа) +
+# SEARCH_DELAY на КОЖЕН pid у всій множині без стелі. З delisted-
+# множиною, що тепер може налічувати тисячі записів, повний прохід сам
+# по собі займає години — незалежно від основної ротаційної партії
+# (ROTATION_BATCH_SIZE) — і саме це, а не описана раніше гіпотеза про
+# застарілий кеш, і є справжньою причиною, чому прогін впирається в
+# 6-годинний timeout GitHub Actions і ніколи не публікує результат.
+# Той самий патерн ротації, що й ROTATION_BATCH_SIZE/LIVE_LOOKUP_EXTRA_
+# BATCH_LIMIT — найстаріші позначки (за _delisted_since timestamp)
+# першими, гарантований прогрес по всій множині за кілька прогонів.
+RECHECK_DELISTED_BATCH_LIMIT = 500
+
 # ДОДАНО (2026-07-22, живий приклад SKU 302166/302185, живо знайдено власницею
 # через скріншоти "звичайної рандомної вибірки", де наша ціна помітно вища за
 # видимих конкурентів): own_product_links_cache.json (джерело buyBox для
@@ -1533,6 +1550,7 @@ def _recheck_delisted_pids(
     russian_text: dict,
     own_product_links: dict,
     prom_category_cache: dict,
+    limit: int = RECHECK_DELISTED_BATCH_LIMIT,
 ) -> int:
     """ДОДАНО (2026-07-18, знахідка незалежного аудиту PR #97 —
     code_report_2026-07-18_pt9.md): заявлене "самоочищення" delisted_since
@@ -1556,7 +1574,8 @@ def _recheck_delisted_pids(
 
     Повертає кількість прибраних позначок (для логу/дайджесту)."""
     cleared = 0
-    for pid in list(delisted_since.keys()):
+    pids_to_check = sorted(delisted_since.keys(), key=lambda p: delisted_since[p])[:limit]
+    for pid in pids_to_check:
         item = toysi_catalog.get(pid)
         if item is None:
             # SKU більше немає в каталозі Toysi взагалі (закінчився
@@ -1765,9 +1784,11 @@ def main() -> None:
     # цілеспрямована перевірка САМЕ delisted-множини, до основного циклу.
     delisted_since = price_state.get("_delisted_since", {})
     if delisted_since:
-        print(f"[Pricer] Перевіряю {len(delisted_since)} раніше видалених SKU — чи не подешевшав конкурент...")
+        print(f"[Pricer] Перевіряю до {RECHECK_DELISTED_BATCH_LIMIT} найстаріших позначок з "
+              f"{len(delisted_since)} раніше видалених SKU — чи не подешевшав конкурент...")
         cleared = _recheck_delisted_pids(delisted_since, toysi_catalog, russian_text, own_product_links, prom_category_cache)
-        print(f"[Pricer] Знято позначку delisted: {cleared}/{len(delisted_since)}.")
+        print(f"[Pricer] Знято позначку delisted: {cleared}/{min(RECHECK_DELISTED_BATCH_LIMIT, len(delisted_since))} "
+              f"перевірених (з {len(delisted_since)} загалом).")
         if cleared:
             save_prom_price_state(price_state)
 

@@ -68,6 +68,14 @@ full_catalog_scan_state.json
 # перебудовується щоразу з живих даних Toysi, не для git.
 rozetka_feed_membership_state.json
 
+# Резюмований прогрес РУЧНОГО, разового apply_live_dumping_fix.py
+# (2026-07-26) — {started_at, done_pids} для ПОТОЧНОГО sweep'у, щоб
+# повторний ручний запуск міг продовжити, а не починати каталог заново.
+# Суто локальний runtime-маркер одного ручного контролера, не round-trip
+# через жодну гілку (на відміну від prom_competitor_price_state.json) —
+# скидається автоматично, щойно sweep повністю покрито.
+live_dumping_fix_progress.json
+
 # Лічильник "застряг N прогонів" для SKU, які Prom API мовчки/явно
 # відмовляється видаляти (2026-07-21, findings_log.md
 # "prom-delete-still-rejected-for-specific-sku") — суто runtime-трекінг

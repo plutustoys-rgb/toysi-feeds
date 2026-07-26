@@ -439,6 +439,47 @@ SEARCH_LIMIT = 20  # скільки кандидатів забирати на �
 # тепер займає 4 цикли (~16 год замість ~8) — свідомий компроміс
 # швидкості ротації заради надійної публікації фіда щочотири години.
 ROTATION_BATCH_SIZE = 1500
+
+# ДОДАНО (2026-07-26, пряме прохання власниці — "давай прибирати цей
+# ризик"): усі стелі партій вище (ROTATION_BATCH_SIZE, ROTATED_OUT_
+# BATCH_LIMIT, LIVE_LOOKUP_EXTRA_BATCH_LIMIT, RECHECK_DELISTED_BATCH_
+# LIMIT) — це ОЦІНКИ "має влізти в 4-годинний тик", підібрані вручну
+# методом проб і помилок (див. коментар над ROTATION_BATCH_SIZE:
+# 3000→1500 після реального інциденту з переповненням). Жодна з них не
+# захищає від структурного ризику: якщо оцінка виявиться неточною
+# (повільніша мережа, більший catalog, нова партія делистед), прогін
+# впирається в ЗОВНІШНІЙ 6-годинний timeout GitHub Actions, який просто
+# ВБИВАЄ job — жоден крок ПІСЛЯ репрайсера (генерація фідів, публікація)
+# не встигає виконатись, і вся вже зроблена робота (ціни, delist) губиться,
+# бо periodic-save пише лише ЛОКАЛЬНИЙ файл на ефемерному runner'і, а
+# публікація в git відбувається лише в самому кінці job'у (живий
+# інцидент 2026-07-25, прогін 30156977509 — 5.5г роботи, 0 опубліковано).
+#
+# Це виправляє РИЗИК СТРУКТУРНО, а не підбором "безпечнішого" числа:
+# репрайсер сам стежить за витраченим часом і ДОБРОВІЛЬНО зупиняє
+# ПОДАЛЬШУ обробку (зберігши вже зроблене й дозволивши процесу дійти до
+# природного кінця — а отже, і решті workflow'у дійти до кроку
+# публікації), щойно наближається до safe-запасу під зовнішній ліміт.
+# Це означає: жодну зі стель партій вище більше не потрібно підбирати
+# консервативно "про всяк випадок" — можна сміливо піднімати --limit
+# для прискорених прогонів, бо структурний запобіжник нижче гарантує
+# graceful-завершення незалежно від фактичного розміру партії.
+#
+# 5 годин = 6-годинна стеля GitHub Actions мінус 1 година запасу (крок
+# репрайсера — не єдиний у job'і: setup/checkout/інші феєди теж займають
+# час до й після нього, тож запас рахується від старту JOB'у, не кроку).
+MAX_RUNTIME_SECONDS = 5 * 3600
+
+# Встановлюється в main() на старті ({time.monotonic()} + MAX_RUNTIME_
+# SECONDS) — модульний рівень (не локальна змінна main()), щоб усі
+# довгі цикли нижче (основний decide-цикл, rotated_out, apply, delist,
+# і _recheck_delisted_pids() в ОКРЕМІЙ функції) могли звірятись з ОДНІЄЮ
+# спільною межею без протягування параметра через кожен виклик.
+_RUN_DEADLINE: float | None = None
+
+
+def _time_budget_exceeded() -> bool:
+    return _RUN_DEADLINE is not None and time.monotonic() >= _RUN_DEADLINE
 SEARCH_DELAY = 0.4  # секунд між пошуковими запитами — не бомбардувати ендпоінт
 
 # ДОДАНО (2026-07-20, пряме прохання власниці — "постійно конкурентні
@@ -1576,6 +1617,10 @@ def _recheck_delisted_pids(
     cleared = 0
     pids_to_check = sorted(delisted_since.keys(), key=lambda p: delisted_since[p])[:limit]
     for pid in pids_to_check:
+        if _time_budget_exceeded():
+            print(f"[Pricer] Часовий бюджет вичерпано — зупиняю перевірку delisted достроково "
+                  f"({cleared} знято з {len(pids_to_check)} у цій партії).")
+            break
         item = toysi_catalog.get(pid)
         if item is None:
             # SKU більше немає в каталозі Toysi взагалі (закінчився
@@ -1625,6 +1670,9 @@ def main() -> None:
                           "Використовувати ЛИШЕ для свідомо очікуваного разового стрибка — не залишати "
                           "true за замовчуванням, інакше breaker перестає захищати від справжніх аномалій.")
     args = ap.parse_args()
+
+    global _RUN_DEADLINE
+    _RUN_DEADLINE = time.monotonic() + MAX_RUNTIME_SECONDS
 
     # Надійність, п.3: SAFETY_HOLD — ручний, миттєвий стоп-кран, незалежний
     # від git merge/deploy циклу. Прецедент, якого це запобігає: відомий
@@ -1882,6 +1930,10 @@ def main() -> None:
     competitor_scores = []  # Автономність, п.7: score КОЖНОГО використаного конкурента
 
     for pid, item in items:
+        if _time_budget_exceeded():
+            print(f"[Pricer] Часовий бюджет ({MAX_RUNTIME_SECONDS/3600:.0f}г) вичерпано — "
+                  "зупиняю основний цикл достроково, решта партії зачекає наступного прогону.")
+            break
         try:
             cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         except (TypeError, ValueError):
@@ -1978,6 +2030,9 @@ def main() -> None:
     # основний цикл вище — не auto-apply на непідтверджену комісію.
     rotated_out_adjust_count = 0
     for pid, item in list(rotated_out.items())[:ROTATED_OUT_BATCH_LIMIT]:
+        if _time_budget_exceeded():
+            print("[Pricer] Часовий бюджет вичерпано — зупиняю rotated_out-цикл достроково.")
+            break
         try:
             cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         except (TypeError, ValueError):
@@ -2207,6 +2262,10 @@ def main() -> None:
     # ЗАБЛОКОВАНО (adjust_blocked) -> порожній список, той самий безпечний
     # шаблон, що вже застосований нижче для to_delist.
     for pid, price, _, competitor_key in ([] if adjust_blocked else to_adjust):
+        if _time_budget_exceeded():
+            print(f"[Pricer] Часовий бюджет вичерпано — зупиняю застосування цін достроково "
+                  f"({applied_count} застосовано з {len(to_adjust)}).")
+            break
         try:
             apply_price(pid, price)
             price_state[pid] = {"price": price, "timestamp": datetime.now().isoformat(), "competitor_key": competitor_key}
@@ -2247,6 +2306,10 @@ def main() -> None:
     print(f"[Pricer] Видаляю {0 if delist_blocked else len(to_delist)} неконкурентних товарів..."
           + (" (ЗАБЛОКОВАНО)" if delist_blocked else ""))
     for pid in ([] if delist_blocked else to_delist):
+        if _time_budget_exceeded():
+            print(f"[Pricer] Часовий бюджет вичерпано — зупиняю видалення достроково "
+                  f"({confirmed_delist_count} видалено з {len(to_delist)}).")
+            break
         try:
             delist(pid)
             delisted_since[pid] = datetime.now().isoformat()

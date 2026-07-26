@@ -198,13 +198,34 @@ def main() -> None:
     scan_state = load_scan_state()
     prom_category_cache = _load_prom_category_cache()
 
+    # ДОДАНО (2026-07-26, живий root-cause — власниця запустила прогін,
+    # переважна більшість спроб для "поза топ-N" букету провалилась з
+    # "Продукт не найден", підтверджено 4/4 вибірки НАПРЯМУ живим GET):
+    # prom_products_raw_cache.json — короткоживучий (TTL 1г) кеш, який у
+    # звичайному CI будує ОКРЕМИЙ, РАНІШИЙ крок ТОГО Ж прогону
+    # (generate_google_feed.py, на кроках Meta/Bing-феєдів). Цей скрипт —
+    # самостійний, разовий локальний запуск БЕЗ такого попереднього кроку,
+    # тож кеш ЗАВЖДИ відсутній/застарілий тут — тихий фолбек "не
+    # фільтруємо" (як у prom_competitor_pricer.py, де це безпечно, бо є
+    # свіжий кеш) означав би: жодного фільтра "чи це взагалі колись
+    # створювалось у Prom" для ВСЬОГО rotated_out-бюкету, апробуючи
+    # apply_price() на потенційно тисячах SKU, яких у Prom ніколи не
+    # існувало. Якщо кешу немає — робимо ЖИВИЙ повний фетч (fetch_prom_products(),
+    # той самий метод, що будує сам кеш) замість мовчазного вимкнення фільтра.
     live_prom_ids = None
     try:
         from generate_google_feed import load_prom_products_cache
         _live = load_prom_products_cache()
-        live_prom_ids = set(_live.keys()) if _live is not None else None
+        if _live is not None:
+            live_prom_ids = set(_live.keys())
     except Exception:
         live_prom_ids = None
+    if live_prom_ids is None:
+        print("[LiveDumpingFix] Кеш живих товарів Prom відсутній/застарів — роблю живий фетч "
+              "(може зайняти кілька хвилин, це самостійний запуск без окремого попереднього кроку)...")
+        from prom_catalog_sync import fetch_prom_products
+        live_prom_ids = set(fetch_prom_products().keys())
+        print(f"[LiveDumpingFix] Живих товарів у Prom: {len(live_prom_ids)}.")
 
     # Джерело 1: топ-N ("наші 6000 товарів") — лише ті, для яких уже є
     # дані конкурента в кеші нічного скану (без них decide_price_for_

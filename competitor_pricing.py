@@ -1092,6 +1092,29 @@ def decide_price_for_platform(
     # комісії, що йшла на floor (для Rozetka Шлях 2/undercut фінальна ціна
     # може відрізнятись від floor і потрапляти в іншу сходинку).
     final_commission = compute_total_commission(platform, category_name, price, prom_category_id=prom_category_id)
+
+    # ДОДАНО (2026-07-26, пряме прохання власниці — "продаж не повинен бути
+    # меншим за собівартість"): абсолютний останній запобіжник, НЕЗАЛЕЖНО
+    # від того, яка гілка/формула вище дала ціну. ВАЖЛИВО: перевіряти
+    # потрібно ЧИСТУ ВИРУЧКУ (після комісії), а не саму ціну — живо
+    # перевірено на edge-case (competitor майже 0₴): ціна виходила ВИЩЕ
+    # за cost (37.39 > 36.53), але після віднімання комісії Prom чиста
+    # виручка давала margin_pct = -21.9% (реальний збиток). Перша версія
+    # цього запобіжника (price < cost) цю ситуацію НЕ ловила. Тепер —
+    # мінімальна безпечна ціна рахується так, щоб net_revenue = cost:
+    # min_safe_price = cost / (1 - final_commission). Спрацювання цього
+    # запобіжника — сигнал, що щось вище порахувалось не так, тож той
+    # самий SKU так само позначається "floor" (кандидат на перегляд/
+    # delist), а не тихо продається по аварійній ціні. Комісія для
+    # Rozetka (сходинкова, залежить від ціни) перераховується ще раз ПІСЛЯ
+    # підняття ціни — сходинка могла змінитись.
+    if final_commission < 1:
+        min_safe_price = round(cost / (1 - final_commission), 2)
+        if price < min_safe_price:
+            price = min_safe_price
+            result_category = "floor"
+            final_commission = compute_total_commission(platform, category_name, price, prom_category_id=prom_category_id)
+
     net_revenue = price * (1 - final_commission)
     margin_pct = round((net_revenue - cost) / cost * 100, 1) if cost else 0.0
 

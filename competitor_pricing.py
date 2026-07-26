@@ -273,6 +273,35 @@ TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS = (
     "автокрісл", "біговел", "велосипед", "самокат", "електромобіл",
 )
 
+# ДОДАНО (2026-07-26, живе прохання власниці — "де наша вигода", реальне
+# замовлення toysi.ua/order_detailed показало окрему статтю "Збірка" 15₴
+# понад ціну товару): живо підтверджено через order_positions API на 6
+# реальних замовленнях (100444982/100445579/100445626/100445701/
+# 100445756/100446076) — КОЖНЕ містить окрему позицію pid=33340 "Збірка"
+# = 15₴ РІВНО, ОДИН РАЗ на замовлення (не на одиницю товару — замовлення
+# 100445579 із ДВОМА різними товарами й досі має рівно одну позицію
+# Збірка 15₴), і БЕЗ знижки (positions_discount_price для 33340 = 15,
+# те саме, що й positions_price — знижка 15% на неї не діє).
+#
+# Це НЕ те саме питання, що вже перевірялось 2026-07-22
+# (_real_toysi_order_cost() у daily_report.py, Графа 6 КОДВ) — там
+# sum_with_discount УЖЕ включає позицію Збірка природно (це РЕТРОСПЕКТИВНИЙ
+# облік по факту замовлення), і додавання ще +15₴ поверх було б подвійним
+# рахунком. Але real_toysi_cost() тут — ІНША функція: рахує собівартість
+# ДО того, як замовлення взагалі існує (з каталожного фіда, де жодної
+# інформації про Збірку немає), і саме ЇЇ використовують усі формули
+# ціноутворення/floor/маржі. Ця функція НІКОЛИ не додавала Збірку — тому
+# висновок "не додається" з 07-22 сюди помилково перенісся, хоча
+# стосувався геть іншого коду.
+#
+# Консервативне припущення: більшість реальних замовлень — один товар
+# (5 із 6 перевірених), тож віднесення повних 15₴ на кожну продану
+# одиницю — це або точний збіг, або невеликий запас консервативності
+# (якщо покупець замовить кілька різних товарів разом, реальна Збірка на
+# одиницю буде трохи меншою за 15₴, не більшою — ризик лише в бік
+# заниженої, не завищеної ціни).
+TOYSI_ASSEMBLY_FEE_UAH = 15.0
+
 
 def _normalize_for_discount_match(text: str) -> str:
     """Той самий нормалізаційний принцип, що й _normalize_brand() у
@@ -282,14 +311,17 @@ def _normalize_for_discount_match(text: str) -> str:
 
 def real_toysi_cost(item: dict) -> float:
     """Реальна собівартість товару Toysi з урахуванням персональної
-    накопичувальної знижки (див. коментар над TOYSI_DISCOUNT_RATE) —
+    накопичувальної знижки (див. коментар над TOYSI_DISCOUNT_RATE) і
+    фіксованої плати "Збірка" (див. коментар над TOYSI_ASSEMBLY_FEE_UAH) —
     те, що ФАКТИЧНО спишеться з депозиту за цей товар, а не каталожна
-    ціна (яка систематично завищена на розмір знижки). Використовувати
-    ЗАМІСТЬ прямого item.get("price") усюди, де рахується маржа/floor.
+    ціна (яка систематично завищена на розмір знижки і не включає
+    Збірку). Використовувати ЗАМІСТЬ прямого item.get("price") усюди,
+    де рахується маржа/floor.
 
-    Повертає каталожну ціну БЕЗ ЗМІН (без знижки) для товарів, на які
-    знижка не поширюється (виняткові бренди/категорії) — не занижуємо
-    собівартість там, де реальної знижки немає."""
+    Знижка НЕ поширюється на товари з виняткових брендів/категорій, а
+    Збірка на неї взагалі не поширюється НІКОЛИ (підтверджено живо —
+    positions_discount_price для Збірки завжди дорівнює її повній ціні),
+    тому Збірка додається ОКРЕМО, після знижки, в усіх випадках."""
     try:
         base_price = float(item.get("price") or 0)
     except (TypeError, ValueError):
@@ -298,19 +330,20 @@ def real_toysi_cost(item: dict) -> float:
         return base_price
 
     vendor_norm = _normalize_for_discount_match(item.get("vendor"))
-    if vendor_norm in TOYSI_DISCOUNT_EXCLUDED_BRANDS:
-        return base_price
-
     category_name = (item.get("category_name") or "").lower()
-    if any(kw in category_name for kw in TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS):
-        return base_price
+    if (
+        vendor_norm in TOYSI_DISCOUNT_EXCLUDED_BRANDS
+        or any(kw in category_name for kw in TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS)
+    ):
+        discounted_price = base_price
+    else:
+        discount = TOYSI_DISCOUNT_RATE
+        country = _normalize_for_discount_match(item.get("country"))
+        if country in TOYSI_DISCOUNT_UKRAINE_COUNTRIES:
+            discount = min(discount, TOYSI_DISCOUNT_UKRAINE_CAP)
+        discounted_price = base_price * (1 - discount)
 
-    discount = TOYSI_DISCOUNT_RATE
-    country = _normalize_for_discount_match(item.get("country"))
-    if country in TOYSI_DISCOUNT_UKRAINE_COUNTRIES:
-        discount = min(discount, TOYSI_DISCOUNT_UKRAINE_CAP)
-
-    return round(base_price * (1 - discount), 2)
+    return round(discounted_price + TOYSI_ASSEMBLY_FEE_UAH, 2)
 
 
 PLATFORMS = ("prom", "rozetka")
@@ -997,24 +1030,34 @@ def decide_price_for_platform(
         Шлях 1 (немає конкурента):
             нижня_межа = (cost + cost*MIN_PROFIT) / (1 - комісія_майданчика - комісія_оплати)
             ціна       = max(cost*NO_COMPETITOR_MULT, нижня_межа)
-        Шлях 2 (є конкурент, рішення власника 2026-07-13):
+        Шлях 2, Rozetka (є конкурент):
             нижня_межа = (cost + cost*MIN_PROFIT_COMPETITOR_FLOOR) / (1 - комісія_майданчика - комісія_оплати)
             кандидат   = min_competitor - PRICE_STEP (фіксований крок, грн — не %)
             ціна       = max(нижня_межа, кандидат)
-    Дві РІЗНІ нижні межі — Шлях 1 тримає консервативні 25% (без конкурента
-    нема сенсу конкурувати ціною), Шлях 2 дозволяє опускатись аж до 3%,
-    якщо потрібно підрізати конкурента, і зупиняється саме на цій межі знизу.
+        Шлях 2, Prom (є конкурент) — КАНОНІЧНА ФОРМУЛА ВЛАСНИЦІ, 2026-07-26
+        ("запишіть формулу раз і на завжди", проговорено й перевірено на
+        живому прикладі SKU 292858, конкурент 67₴):
+            A (кандидат) = min_competitor - PRICE_STEP
+            B (floor)    = cost*(1+MIN_PROFIT_COMPETITOR_FLOOR) + A*сумарна_комісія
+        B рахується ПРЯМИМ ДОДАВАННЯМ від A (конкретної відомої ціни), А
+        НЕ діленням від ще нерозрахованого floor (це й була помилка старої
+        формули, яку власниця виправила напряму) — комісія береться як
+        відсоток від candidate, не розв'язується рівнянням "яка ціна дасть
+        комісію-як-частку-від-себе-самої".
 
-    Завжди повертає ціну — товари з "нерентабельним" конкурентом більше НЕ
-    пропускаються (як було в старій категорії C): якщо кандидат нижчий за
-    нижню межу, ціна просто піднімається до межі (може вийти вищою за
-    конкурента — так і задумано формулою, це не помилка).
+    Завжди повертає ціну навіть якщо B > A (floor вищий за кандидата) —
+    "floor"-категорія нижче лише СИГНАЛІЗУЄ decide_action() (prom_
+    competitor_pricer.py), що товар — кандидат на delist (після перевірки
+    якості зіставлення конкурента); сама ця функція рішення про
+    видалення не приймає, тільки ціну/категорію.
 
     Rozetka (2026-07-14): комісія — СХОДИНКОВА за ФІНАЛЬНОЮ ціною (не лише
     категорією, як Prom) — floor рахується ітеративно (_resolve_rozetka_floor,
-    вирішує коло "ціна <-> сходинка"). margin_pct рахується ОКРЕМО за вже
-    відомою фінальною ціною (не тим комісія, що йшла на floor — Шлях 2 може
-    завершитись на candidate, не на floor, і сходинка для нього інша).
+    вирішує коло "ціна <-> сходинка"), формулу власниці 07-26 НЕ зачіпає
+    (вона стосувалась явно Prom — "конкурент наипромі"). margin_pct
+    рахується ОКРЕМО за вже відомою фінальною ціною (не тим комісія, що
+    йшла на floor — Шлях 2 може завершитись на candidate, не на floor, і
+    сходинка для нього інша).
     """
     payment_commission = PAYMENT_COMMISSION.get(platform, 0.0)
     target_margin = MIN_PROFIT if min_competitor is None else MIN_PROFIT_COMPETITOR_FLOOR
@@ -1039,7 +1082,9 @@ def decide_price_for_platform(
         price = round(max(cost * NO_COMPETITOR_MULT, floor), 2)
         result_category = "no_competitor"
     else:
-        candidate = min_competitor - PRICE_STEP
+        candidate = round(min_competitor - PRICE_STEP, 2)
+        if platform != "rozetka":
+            floor = round(cost * (1 + target_margin) + candidate * total_commission, 2)
         price = round(max(floor, candidate), 2)
         result_category = "floor" if floor >= candidate else "undercut"
 
@@ -1047,6 +1092,29 @@ def decide_price_for_platform(
     # комісії, що йшла на floor (для Rozetka Шлях 2/undercut фінальна ціна
     # може відрізнятись від floor і потрапляти в іншу сходинку).
     final_commission = compute_total_commission(platform, category_name, price, prom_category_id=prom_category_id)
+
+    # ДОДАНО (2026-07-26, пряме прохання власниці — "продаж не повинен бути
+    # меншим за собівартість"): абсолютний останній запобіжник, НЕЗАЛЕЖНО
+    # від того, яка гілка/формула вище дала ціну. ВАЖЛИВО: перевіряти
+    # потрібно ЧИСТУ ВИРУЧКУ (після комісії), а не саму ціну — живо
+    # перевірено на edge-case (competitor майже 0₴): ціна виходила ВИЩЕ
+    # за cost (37.39 > 36.53), але після віднімання комісії Prom чиста
+    # виручка давала margin_pct = -21.9% (реальний збиток). Перша версія
+    # цього запобіжника (price < cost) цю ситуацію НЕ ловила. Тепер —
+    # мінімальна безпечна ціна рахується так, щоб net_revenue = cost:
+    # min_safe_price = cost / (1 - final_commission). Спрацювання цього
+    # запобіжника — сигнал, що щось вище порахувалось не так, тож той
+    # самий SKU так само позначається "floor" (кандидат на перегляд/
+    # delist), а не тихо продається по аварійній ціні. Комісія для
+    # Rozetka (сходинкова, залежить від ціни) перераховується ще раз ПІСЛЯ
+    # підняття ціни — сходинка могла змінитись.
+    if final_commission < 1:
+        min_safe_price = round(cost / (1 - final_commission), 2)
+        if price < min_safe_price:
+            price = min_safe_price
+            result_category = "floor"
+            final_commission = compute_total_commission(platform, category_name, price, prom_category_id=prom_category_id)
+
     net_revenue = price * (1 - final_commission)
     margin_pct = round((net_revenue - cost) / cost * 100, 1) if cost else 0.0
 

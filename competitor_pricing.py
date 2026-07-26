@@ -273,6 +273,35 @@ TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS = (
     "автокрісл", "біговел", "велосипед", "самокат", "електромобіл",
 )
 
+# ДОДАНО (2026-07-26, живе прохання власниці — "де наша вигода", реальне
+# замовлення toysi.ua/order_detailed показало окрему статтю "Збірка" 15₴
+# понад ціну товару): живо підтверджено через order_positions API на 6
+# реальних замовленнях (100444982/100445579/100445626/100445701/
+# 100445756/100446076) — КОЖНЕ містить окрему позицію pid=33340 "Збірка"
+# = 15₴ РІВНО, ОДИН РАЗ на замовлення (не на одиницю товару — замовлення
+# 100445579 із ДВОМА різними товарами й досі має рівно одну позицію
+# Збірка 15₴), і БЕЗ знижки (positions_discount_price для 33340 = 15,
+# те саме, що й positions_price — знижка 15% на неї не діє).
+#
+# Це НЕ те саме питання, що вже перевірялось 2026-07-22
+# (_real_toysi_order_cost() у daily_report.py, Графа 6 КОДВ) — там
+# sum_with_discount УЖЕ включає позицію Збірка природно (це РЕТРОСПЕКТИВНИЙ
+# облік по факту замовлення), і додавання ще +15₴ поверх було б подвійним
+# рахунком. Але real_toysi_cost() тут — ІНША функція: рахує собівартість
+# ДО того, як замовлення взагалі існує (з каталожного фіда, де жодної
+# інформації про Збірку немає), і саме ЇЇ використовують усі формули
+# ціноутворення/floor/маржі. Ця функція НІКОЛИ не додавала Збірку — тому
+# висновок "не додається" з 07-22 сюди помилково перенісся, хоча
+# стосувався геть іншого коду.
+#
+# Консервативне припущення: більшість реальних замовлень — один товар
+# (5 із 6 перевірених), тож віднесення повних 15₴ на кожну продану
+# одиницю — це або точний збіг, або невеликий запас консервативності
+# (якщо покупець замовить кілька різних товарів разом, реальна Збірка на
+# одиницю буде трохи меншою за 15₴, не більшою — ризик лише в бік
+# заниженої, не завищеної ціни).
+TOYSI_ASSEMBLY_FEE_UAH = 15.0
+
 
 def _normalize_for_discount_match(text: str) -> str:
     """Той самий нормалізаційний принцип, що й _normalize_brand() у
@@ -282,14 +311,17 @@ def _normalize_for_discount_match(text: str) -> str:
 
 def real_toysi_cost(item: dict) -> float:
     """Реальна собівартість товару Toysi з урахуванням персональної
-    накопичувальної знижки (див. коментар над TOYSI_DISCOUNT_RATE) —
+    накопичувальної знижки (див. коментар над TOYSI_DISCOUNT_RATE) і
+    фіксованої плати "Збірка" (див. коментар над TOYSI_ASSEMBLY_FEE_UAH) —
     те, що ФАКТИЧНО спишеться з депозиту за цей товар, а не каталожна
-    ціна (яка систематично завищена на розмір знижки). Використовувати
-    ЗАМІСТЬ прямого item.get("price") усюди, де рахується маржа/floor.
+    ціна (яка систематично завищена на розмір знижки і не включає
+    Збірку). Використовувати ЗАМІСТЬ прямого item.get("price") усюди,
+    де рахується маржа/floor.
 
-    Повертає каталожну ціну БЕЗ ЗМІН (без знижки) для товарів, на які
-    знижка не поширюється (виняткові бренди/категорії) — не занижуємо
-    собівартість там, де реальної знижки немає."""
+    Знижка НЕ поширюється на товари з виняткових брендів/категорій, а
+    Збірка на неї взагалі не поширюється НІКОЛИ (підтверджено живо —
+    positions_discount_price для Збірки завжди дорівнює її повній ціні),
+    тому Збірка додається ОКРЕМО, після знижки, в усіх випадках."""
     try:
         base_price = float(item.get("price") or 0)
     except (TypeError, ValueError):
@@ -298,19 +330,20 @@ def real_toysi_cost(item: dict) -> float:
         return base_price
 
     vendor_norm = _normalize_for_discount_match(item.get("vendor"))
-    if vendor_norm in TOYSI_DISCOUNT_EXCLUDED_BRANDS:
-        return base_price
-
     category_name = (item.get("category_name") or "").lower()
-    if any(kw in category_name for kw in TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS):
-        return base_price
+    if (
+        vendor_norm in TOYSI_DISCOUNT_EXCLUDED_BRANDS
+        or any(kw in category_name for kw in TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS)
+    ):
+        discounted_price = base_price
+    else:
+        discount = TOYSI_DISCOUNT_RATE
+        country = _normalize_for_discount_match(item.get("country"))
+        if country in TOYSI_DISCOUNT_UKRAINE_COUNTRIES:
+            discount = min(discount, TOYSI_DISCOUNT_UKRAINE_CAP)
+        discounted_price = base_price * (1 - discount)
 
-    discount = TOYSI_DISCOUNT_RATE
-    country = _normalize_for_discount_match(item.get("country"))
-    if country in TOYSI_DISCOUNT_UKRAINE_COUNTRIES:
-        discount = min(discount, TOYSI_DISCOUNT_UKRAINE_CAP)
-
-    return round(base_price * (1 - discount), 2)
+    return round(discounted_price + TOYSI_ASSEMBLY_FEE_UAH, 2)
 
 
 PLATFORMS = ("prom", "rozetka")

@@ -33,6 +33,24 @@ delist (той самий принцип, що й _decide_from_scan_entry() — 
 нічного скану недостатньо надійні для живого delist без
 verify_competitor_really_available()).
 
+СИНХРОНІЗАЦІЯ З feed-data (ДОДАНО 2026-07-26, пряме зауваження власниці
+— "звичайно він повинен бути синхронізован, інакше нащо все це"):
+apply_price() змінює ЖИВУ ціну в Prom НЕГАЙНО (прямий API-виклик), але
+цей скрипт запускається ЛОКАЛЬНО й без синхронізації писав би лише в
+локальний price_state.json — той самий файл, який generate_prom_feed_top.py
+читає як price_overrides, ЗАВАНТАЖУЄТЬСЯ у CI з гілки feed-data, НЕ з
+локального диска. Без синхронізації наступний авто-імпорт Prom власного
+фіда (окремий, періодичний механізм на боці Prom) міг би відкотити щойно
+застосовану ціну назад на стару, бо фід генерувався б зі старого
+price_state. _sync_price_state_to_feed_data() публікує НАШІ зміни
+(тільки ті pid, які цей прогін реально торкнувся) напряму в feed-data —
+через тимчасовий git worktree (не займає її основну робочу гілку),
+злитих ПОВЕРХ найсвіжішого стану з тієї гілки (звичайний push, НЕ
+force — якщо хтось (напр. звичайний CI-репрайсер) запушив паралельно,
+push відхиляється, і наступна спроба перечитує свіжий стан і накладає
+наші зміни знову, не втрачаючи чужі). Викликається періодично (разом
+із SAVE_EVERY) і в кінці прогону.
+
 БЕЗПЕКА для потенційно тисяч живих apply_price()-викликів за один
 прогін:
 - Часовий бюджет (MAX_RUNTIME_SECONDS, той самий патерн, що й PR #169) —
@@ -56,7 +74,10 @@ verify_competitor_really_available()).
     python apply_live_dumping_fix.py
 """
 import json
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -84,6 +105,10 @@ MAX_RUNTIME_SECONDS = 5 * 3600
 
 PROGRESS_FILE = Path(__file__).parent / "live_dumping_fix_progress.json"
 
+FEED_BRANCH = "feed-data"
+PRICE_STATE_FILENAME = "prom_competitor_price_state.json"
+FEED_DATA_SYNC_RETRIES = 3
+
 _RUN_DEADLINE: float | None = None
 
 
@@ -102,6 +127,57 @@ def _load_progress() -> dict:
 
 def _save_progress(progress: dict) -> None:
     PROGRESS_FILE.write_text(json.dumps(progress, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def _sync_price_state_to_feed_data(pending: dict) -> bool:
+    """Публікує ЛИШЕ pending ({pid: entry}) у гілку feed-data — злиті
+    поверх НАЙСВІЖІШОГО стану звідти (не наш можливо застарілий локальний
+    price_state), через одноразовий git worktree, звичайний (не force)
+    push. Повертає True при успіху (pending можна очистити), False —
+    щоб викликач лишив pending накопиченим і спробував ще раз пізніше."""
+    if not pending:
+        return True
+    for attempt in range(1, FEED_DATA_SYNC_RETRIES + 1):
+        tmp_dir = tempfile.mkdtemp(prefix="feed_data_sync_")
+        try:
+            subprocess.run(
+                ["git", "fetch", "origin", FEED_BRANCH],
+                check=True, capture_output=True, text=True, encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", "--force", tmp_dir, f"origin/{FEED_BRANCH}"],
+                check=True, capture_output=True, text=True, encoding="utf-8",
+            )
+            state_file = Path(tmp_dir) / PRICE_STATE_FILENAME
+            remote_state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+            remote_state.update(pending)
+            state_file.write_text(json.dumps(remote_state, ensure_ascii=False, indent=1), encoding="utf-8")
+
+            subprocess.run(["git", "add", PRICE_STATE_FILENAME], cwd=tmp_dir, check=True,
+                            capture_output=True, text=True, encoding="utf-8")
+            diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=tmp_dir)
+            if diff_check.returncode == 0:
+                return True  # remote вже містить ідентичні значення (напр. попередня спроба вже пройшла)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", f"apply_live_dumping_fix.py: sync {len(pending)} SKU"],
+                cwd=tmp_dir, check=True, capture_output=True, text=True, encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "push", "origin", f"HEAD:{FEED_BRANCH}"],
+                cwd=tmp_dir, check=True, capture_output=True, text=True, encoding="utf-8",
+            )
+            print(f"[LiveDumpingFix] Синхронізовано з {FEED_BRANCH}: {len(pending)} SKU.")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"[LiveDumpingFix] Спроба синхронізації {attempt}/{FEED_DATA_SYNC_RETRIES} з {FEED_BRANCH} "
+                  f"не вдалась (ймовірно, паралельний запис — CI чи інший прогін): {e.stderr}", file=sys.stderr)
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", tmp_dir], capture_output=True, text=True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    print(f"[LiveDumpingFix] УВАГА: синхронізація з {FEED_BRANCH} не вдалась після "
+          f"{FEED_DATA_SYNC_RETRIES} спроб — {len(pending)} SKU залишаються лише в локальному "
+          "price_state, спробую знову на наступному циклі збереження.", file=sys.stderr)
+    return False
 
 
 def main() -> None:
@@ -161,6 +237,7 @@ def main() -> None:
     error_count = 0
     category_counts = {"undercut": 0, "floor": 0, "no_competitor": 0}
     time_budget_hit = False
+    pending_sync: dict = {}  # {pid: entry} з ЦЬОГО прогону, ще не опубліковані в feed-data
 
     for pid, item in remaining.items():
         if _time_budget_exceeded():
@@ -189,21 +266,25 @@ def main() -> None:
             # підтверджена реальною категорією Prom -> НЕ auto-apply,
             # ціна все одно йде у price_state для фіда/ручного перегляду.
             default_commission_count += 1
-            price_state[pid] = {
+            entry = {
                 "price": decision["price"], "timestamp": now_iso, "competitor_key": None,
                 "category": decision["category"], "competitor_price": decision["competitor_price"],
                 "cost": cost, "margin_pct": decision["margin_pct"],
             }
+            price_state[pid] = entry
+            pending_sync[pid] = entry
             done_pids.add(pid)
             continue
 
         try:
             apply_price(pid, decision["price"])
-            price_state[pid] = {
+            entry = {
                 "price": decision["price"], "timestamp": now_iso, "competitor_key": None,
                 "category": decision["category"], "competitor_price": decision["competitor_price"],
                 "cost": cost, "margin_pct": decision["margin_pct"],
             }
+            price_state[pid] = entry
+            pending_sync[pid] = entry
             applied_count += 1
             category_counts[decision["category"]] = category_counts.get(decision["category"], 0) + 1
             time.sleep(APPLY_THROTTLE_SECONDS)
@@ -217,17 +298,22 @@ def main() -> None:
             save_prom_price_state(price_state)
             progress["done_pids"] = sorted(done_pids)
             _save_progress(progress)
+            if _sync_price_state_to_feed_data(pending_sync):
+                pending_sync = {}
             print(f"[LiveDumpingFix] {len(done_pids)}/{len(candidates)} оброблено "
                   f"(застосовано {applied_count}, помилок {error_count})...")
 
     progress["done_pids"] = sorted(done_pids)
     _save_progress(progress)
     save_prom_price_state(price_state)
+    if _sync_price_state_to_feed_data(pending_sync):
+        pending_sync = {}
 
     remaining_after = len(candidates) - len(done_pids)
     print(f"[LiveDumpingFix] Готово. Застосовано живо: {applied_count}, "
           f"на непідтвердженій комісії (лише фід) — {default_commission_count}, помилок — {error_count}. "
-          f"Залишилось у sweep'і: {remaining_after}.")
+          f"Залишилось у sweep'і: {remaining_after}."
+          + (f" УВАГА: {len(pending_sync)} SKU не вдалось синхронізувати з {FEED_BRANCH}." if pending_sync else ""))
 
     digest = (
         f"🏷 apply_live_dumping_fix.py: застосовано живо — {applied_count} "
@@ -237,6 +323,8 @@ def main() -> None:
         + (f"\n\n⏱ Часовий бюджет вичерпано — залишилось {remaining_after} SKU, "
            "запусти скрипт ще раз для продовження цього sweep'у." if time_budget_hit else
            "\n\n✅ Sweep повністю завершено.")
+        + (f"\n\n⚠ {len(pending_sync)} SKU НЕ синхронізовано з {FEED_BRANCH} (буде повторна спроба "
+           "на наступному запуску)." if pending_sync else "")
     )
     send_telegram_message(digest)
 

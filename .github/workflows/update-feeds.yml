@@ -15,11 +15,6 @@ on:
         required: false
         default: "false"
         type: boolean
-      run_scan_state_sweep:
-        description: "Разовий feed-only перерахунок цін для SKU ПОЗА топ-970 з уже наявних даних full_catalog_scan_state.json (apply_cached_scan_prices.py) — БЕЗ живого пошуку конкурента, БЕЗ apply_price() у Prom, лише price_state (ціна на вітрині зміниться на наступному імпорті Prom). Використовувати після зміни формули/правила ціноутворення, щоб швидко підтягнути ці SKU до нової формули, не чекаючи щоденної партії (ROTATED_OUT_BATCH_LIMIT). Не впливає на планові (cron) запуски — ті ніколи не передають цей прапорець."
-        required: false
-        default: "false"
-        type: boolean
 
 env:
   FEED_BRANCH: feed-data
@@ -249,22 +244,18 @@ jobs:
               "$(date -u +'%Y-%m-%d %H:%M UTC')" > prom_competitor_pricer_summary.md
           fi
 
-      # ДОДАНО (2026-07-26, пряме прохання власниці — "я хочу підлаштувати
-      # цю вітрину разово не чекаючи репрайсера"): звичайний репрайсер вище
-      # покриває SKU поза топ-970 лише невеликою щоденною партією
-      # (ROTATED_OUT_BATCH_LIMIT=1000) — на весь обсяг, охоплений нічним
-      # сканом full_catalog_competitor_scan.py, пішло б кілька тижнів.
-      # apply_cached_scan_prices.py перераховує ВСІ такі SKU одразу з уже
-      # наявних кешованих даних конкурента (без живого пошуку) і пише
-      # ЛИШЕ у price_state (без apply_price() — власниця explicitly не
-      # хотіла миттєвого сплеску живих API-запитів по ~тисячах SKU).
-      # Вимкнено за замовчуванням (default: false) — вмикається вручну
-      # разовим workflow_dispatch, коли потрібно швидко підтягнути ціни
-      # під щойно змінену формулу.
-      - name: One-time cached-scan price sweep for SKU outside top-970 (feed-only, manual)
-        if: github.event.inputs.run_scan_state_sweep == 'true'
-        continue-on-error: true
-        run: python apply_cached_scan_prices.py
+      # apply_live_dumping_fix.py (2026-07-26, пряме прохання власниці —
+      # "треба виставити наші 6000 товарів на рівень конкурент - 3 грн, не
+      # чекаючи репрайсера, ця операція контролера буде використовуватися
+      # вручну") НАВМИСНО НЕ підключений сюди як workflow_dispatch-крок:
+      # власниця прямо підтвердила, що запускатиме його ЛОКАЛЬНО (одна
+      # машина, персистентна файлова система), де резюмований прогрес
+      # (live_dumping_fix_progress.json) реально працює. Через ефемерний
+      # GitHub Actions runner цей файл НЕ round-trip'иться (на відміну від
+      # price_state) — кожен запуск через Actions почав би sweep заново,
+      # тому підключення сюди лише додало б непрацюючу обіцянку
+      # резюмованості (знахідка аудиту, code_report_2026-07-26_pt6.md).
+      # Запуск: python apply_live_dumping_fix.py — просто локально.
 
       # ПЕРЕНЕСЕНО СЮДИ (2026-07-23, пряме рішення власниці): ціна EVA
       # тепер = ціні Prom напряму (не власний розрахунок через

@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -167,6 +168,40 @@ TRUE_ROOT_GROUP_ID = 155011713  # "Корнева група" — підтвер
 MIN_EXPECTED_PRODUCT_COUNT = 910
 
 
+# ДОДАНО (2026-07-27, живий інцидент: apply_live_dumping_fix.py впав на
+# 429 Too Many Requests ДВІЧІ поспіль, на самому старті, ще ДО будь-якого
+# apply_price() — findings_log.md "fetch-prom-products-429-silent",
+# відкрито 2026-07-25, аудит попереджав про це ще pt9 як "успадкований,
+# не блокуючий" ризик, який тепер реально заважає скрипту хоч раз
+# доїхати до живого apply_price()). ThreadPoolExecutor(max_workers=10)
+# у fetch_prom_products() б'є по /products/list паралельно на кожен
+# group_id БЕЗ жодної паузи — саме такий паралельний сплеск і призводить
+# до rate-limit, підтверджено живо. MAX_429_RETRIES спроб з експоненційним
+# backoff (поважає Retry-After, якщо Prom його повертає) замість негайного
+# краху на першому ж 429.
+MAX_429_RETRIES = 5
+RETRY_BACKOFF_BASE_SECONDS = 3
+
+
+def _get_with_retry(url: str, params: dict) -> requests.Response:
+    for attempt in range(MAX_429_RETRIES + 1):
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if response.status_code != 429 or attempt == MAX_429_RETRIES:
+            response.raise_for_status()
+            return response
+        retry_after = response.headers.get("Retry-After")
+        wait = float(retry_after) if retry_after and retry_after.isdigit() else RETRY_BACKOFF_BASE_SECONDS * (2 ** attempt)
+        print(f"[prom_catalog_sync] 429 Too Many Requests на {url} — чекаю {wait:.0f}с "
+              f"(спроба {attempt + 1}/{MAX_429_RETRIES})...", file=sys.stderr)
+        time.sleep(wait)
+    raise AssertionError("unreachable")  # цикл завжди повертає чи кидає виняток на attempt == MAX_429_RETRIES
+
+
 def _fetch_group_ids() -> list:
     """Усі group_id кабінету, пагінація за last_id (та сама механіка, що й
     products/list нижче). +[0, TRUE_ROOT_GROUP_ID] — обидві "кореневі"
@@ -178,13 +213,7 @@ def _fetch_group_ids() -> list:
         params = {"limit": PAGE_SIZE}
         if last_id is not None:
             params["last_id"] = last_id
-        response = requests.get(
-            f"{PROM_API_URL}/groups/list",
-            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
-            params=params,
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
+        response = _get_with_retry(f"{PROM_API_URL}/groups/list", params)
         batch = response.json().get("groups", [])
         if not batch:
             break
@@ -202,13 +231,7 @@ def _fetch_products_in_group(group_id: int) -> list:
         params = {"limit": PAGE_SIZE, "group_id": group_id}
         if last_id is not None:
             params["last_id"] = last_id
-        response = requests.get(
-            f"{PROM_API_URL}/products/list",
-            headers={"Authorization": f"Bearer {PROM_API_KEY}"},
-            params=params,
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
+        response = _get_with_retry(f"{PROM_API_URL}/products/list", params)
         batch = response.json().get("products", [])
         if not batch:
             break

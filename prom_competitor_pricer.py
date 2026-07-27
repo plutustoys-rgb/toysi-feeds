@@ -1198,8 +1198,14 @@ def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict
     _competitor_identity_key(), ДОДАНО 2026-07-22; category/competitor_price/
     cost — ДОДАНО 2026-07-26, повний слід рішення для price_state, пряме
     прохання власниці "ми повинні записувати усі данні для майбутніх
-    коригувань... що знати як формувалась ціна"). `to_delist` — список pid,
-    призначених на видалення цього прогону (ДОДАНО 2026-07-18, незалежний
+    коригувань... що знати як формувалась ціна"). `to_delist` — список
+    (pid, price, ...), той самий 7-елементний формат, що й `to_adjust`
+    (ДОДАНО 2026-07-27, пряме зауваження власниці — "нехай вона більше
+    показувала би та чекала на видалення, алеж не демпінгувала би": ціна
+    тепер піднімається до безпечної межі ПЕРЕД спробою видалення,
+    незалежно від того, чи саме видалення відбудеться цього прогону) —
+    тут використовується лише `len()`, формат елементів не важливий.
+    Призначених на видалення цього прогону (ДОДАНО 2026-07-18, незалежний
     аудит PR #95 —
     code_report_2026-07-18_pt4.md: до цього фіксу жоден із трьох сигналів
     нижче взагалі не бачив delist, і масовий сплеск видалень проходив би
@@ -2044,7 +2050,19 @@ def main() -> None:
             ))
         elif decision["action"] == "delist":
             delist_count += 1
-            to_delist.append(pid)
+            # ДОДАНО (2026-07-27, пряме зауваження власниці — "нехай вона
+            # більше показувала би та чекала на видалення, алеж не
+            # демпінгувала би"): decision["price"] тут — той самий
+            # безпечний floor (уже включає net_revenue>=cost запобіжник),
+            # рахований для delist-рішення так само, як і для adjust —
+            # несемо ту саму інформацію, що й to_adjust, щоб застосувати
+            # ціну НЕЗАЛЕЖНО від того, коли (чи чи) реально відбудеться
+            # видалення (див. коментар біля циклу видалення нижче).
+            to_delist.append((
+                pid, decision["price"], decision["margin_pct"],
+                _competitor_identity_key(decision["competitor"]),
+                decision["category"], decision["competitor_price"], cost,
+            ))
 
     # ДОДАНО (2026-07-20, "постійно конкурентні, раз і назавжди"):
     # окремий, дешевий прохід над SKU поза топ-970 — БЕЗ живого пошуку
@@ -2342,12 +2360,34 @@ def main() -> None:
     # зник) — лише тоді запис прибирається і SKU знову претендує на топ.
     confirmed_delist_count = 0
     print(f"[Pricer] Видаляю {0 if delist_blocked else len(to_delist)} неконкурентних товарів..."
-          + (" (ЗАБЛОКОВАНО)" if delist_blocked else ""))
-    for pid in ([] if delist_blocked else to_delist):
+          + (" (ЗАБЛОКОВАНО)" if delist_blocked else "")
+          + f" Спершу піднімаю ціну до безпечної межі для всіх {len(to_delist)} — "
+            "незалежно від circuit breaker чи успіху самого видалення.")
+    for pid, price, margin_pct, competitor_key, category, competitor_price, cost in to_delist:
         if _time_budget_exceeded():
             print(f"[Pricer] Часовий бюджет вичерпано — зупиняю видалення достроково "
                   f"({confirmed_delist_count} видалено з {len(to_delist)}).")
             break
+        # ДОДАНО (2026-07-27, пряме зауваження власниці — "нехай вона
+        # більше показувала би та чекала на видалення, алеж не
+        # демпінгувала би і не була би для нас збитковою"): ціна
+        # піднімається до безпечної межі (price — той самий floor, що вже
+        # включає net_revenue>=cost запобіжник) ЗАВЖДИ, навіть якщо
+        # delist_blocked (circuit breaker) чи саме видалення нижче
+        # провалиться — захист маржі не повинен чекати на успішне
+        # видалення чи на зняття circuit breaker'а.
+        try:
+            apply_price(pid, price)
+            price_state[pid] = {
+                "price": price, "timestamp": datetime.now().isoformat(), "competitor_key": competitor_key,
+                "category": category, "competitor_price": competitor_price, "cost": cost, "margin_pct": margin_pct,
+            }
+        except (requests.exceptions.RequestException, PromEditError) as e:
+            error_count += 1
+            print(f"  - {pid}: помилка підняття ціни перед видаленням — {e}", file=sys.stderr)
+
+        if delist_blocked:
+            continue
         try:
             delist(pid)
             delisted_since[pid] = datetime.now().isoformat()

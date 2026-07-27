@@ -433,7 +433,16 @@ def main() -> None:
             # ВСІХ трьох джерел, не лише третього — _delisted_since
             # не перевіряється при побудові rotated_out (джерело 2),
             # тож застаріла позначка теоретично могла торкнутись і його.
-            if delisted_since.pop(pid, None) is not None:
+            # ВИПРАВЛЕНО (знахідка аудиту pt2, 2026-07-27): об'єднання
+            # adjust-/delist-шляхів у цей спільний try-блок (piagoditi
+            # ціну перед delist) лишило .pop() БЕЗ гейту на
+            # decision["action"] — знімало позначку "видалено" і для
+            # СЬОГОДНІШНЬОГО рішення "delist" теж, хоча SKU не став
+            # конкурентним. select_top_items() після цього вважав би такий
+            # SKU знову придатним для топ-N навіть після реального
+            # видалення з Prom — саме той клас бага, заради якого
+            # _delisted_since взагалі існує (PR #95).
+            if decision["action"] != "delist" and delisted_since.pop(pid, None) is not None:
                 pending_undelisted.add(pid)
             time.sleep(APPLY_THROTTLE_SECONDS)
         except (requests.exceptions.RequestException, PromEditError) as e:

@@ -33,12 +33,20 @@ mkdir -p feeds
 cp /opt/plutustoys/feeds/rozetka_feed.xml feeds/
 cp /opt/plutustoys/feeds/prom_feed_top.xml feeds/
 cp /opt/plutustoys/prom_competitor_price_state.json .
-cp /opt/plutustoys/rozetka_feed_membership_state.json .
 cp /opt/plutustoys/own_product_links_cache.json .
 
 git checkout --orphan feed-data -q
 git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml \
-    prom_competitor_price_state.json rozetka_feed_membership_state.json own_product_links_cache.json
+    prom_competitor_price_state.json own_product_links_cache.json
+
+# rozetka_static_selection.json (PR #179 — замінює rozetka_feed_membership_state.json,
+# більше не пишеться generate_rozetka_feed.py) — той самий умовний
+# принцип, що й для необов'язкових фідів нижче: якщо файл ще не існує
+# (перший прогін ще не завершився), не блокувати публікацію решти.
+if [ -s /opt/plutustoys/rozetka_static_selection.json ]; then
+    cp /opt/plutustoys/rozetka_static_selection.json .
+    git add -f rozetka_static_selection.json
+fi
 
 for f in google_merchant_feed.xml meta_feed.xml bing_feed.xml eva_feed.xml; do
     if [ -s "/opt/plutustoys/feeds/$f" ]; then

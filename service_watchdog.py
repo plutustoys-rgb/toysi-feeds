@@ -127,27 +127,30 @@ AUTODEPLOY_REMINDER_INTERVAL_HOURS = 24
 # руками відредагує requirements.txt).
 DEPENDENCY_DRIFT_CHECK_INTERVAL_HOURS = 24
 
-# ДОДАНО (2026-07-23, живий інцидент — власниця помітила падіння каталогу
+# ІСТОРІЯ (2026-07-23, живий інцидент — власниця помітила падіння каталогу
 # Prom до 473/1000 через скріншот): GitHub Actions `schedule`-подія (cron
 # "0 */4 * * *" в update-feeds.yml) сама по собі НЕ гарантована — GitHub
 # офіційно документує, що scheduled-запуски можуть затримуватись чи
-# пропускатись під навантаженням платформи. Живо підтверджено: останній
-# запуск був о 09:14 UTC, вікно 12:00 UTC пропущено повністю (сам workflow
-# лишався "active", не вимкнений) — і про це ніхто не дізнався б, поки
-# хтось не поглянув би в кабінет Prom вручну. Той самий клас проблеми, що
-# й deploy/dependency drift вище ("щось застигло, і треба знати про це
-# ШВИДКО, не через випадковий скріншот годинами пізніше") — той самий
-# архітектурний патерн (стейт-трекований алярм, щоденне нагадування, доки
-# триває, повідомлення про відновлення). НЕ автозапускає новий прогін
-# (не потребує токена із правом запису на VPS, і повторний форсований
-# --apply без людського рішення — це вже інший, ризикованіший клас дії) —
-# лише сповіщає, щоб людина (чи я в наступній сесії) могла запустити
-# вручну, поки затримка ще свіжа, а не виявлена випадково.
-GITHUB_API_WORKFLOW_RUNS_URL = (
-    "https://api.github.com/repos/plutustoys-rgb/toysi-feeds/actions/workflows/update-feeds.yml/runs"
-)
-FEED_PIPELINE_CHECK_INTERVAL_HOURS = 1  # дешевий, неавтентифікований GH API виклик — можна частіше за 24-годинний drift-цикл
-FEED_PIPELINE_MAX_GAP_HOURS = 5  # cron кожні 4 год + запас на звичайну затримку GH Actions schedule-подій
+# пропускатись під навантаженням платформи. check_feed_pipeline_schedule()
+# моніторила історію запусків update-feeds.yml через публічний GitHub API.
+# ЗАМІНЕНО (2026-07-27, знахідка аудиту pt6, Фаза 2 VPS-міграції): весь
+# фід-пайплайн (генерація+репрайсер) переїхав на VPS
+# (run_feed_pipeline_vps.sh, feed-pipeline.timer), а schedule: в
+# update-feeds.yml закоментовано — стара перевірка або хибно алармила б
+# постійно (GH Actions більше не оновлюється регулярно), або мовчала б
+# про реальний стан VPS-пайплайну. check_feed_pipeline_vps_status()
+# нижче читає локальний feed_pipeline_state.json (пише
+# feed_pipeline_report.py, викликається з run_feed_pipeline_vps.sh) —
+# той самий патерн, що й check_autodeploy_status()/vps_code_sync_state.json.
+FEED_PIPELINE_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_pipeline_state.json")
+# 2x очікуваний інтервал feed-pipeline.timer (OnUnitActiveSec=6h за
+# runbook) — та сама логіка порогу "2x інтервал таймера", що й
+# MONITORED_SERVICES/AUTODEPLOY_STALE_THRESHOLD_MINUTES вище.
+FEED_PIPELINE_STALE_THRESHOLD_HOURS = 12
+# Той самий принцип, що й AUTODEPLOY_REMINDER_INTERVAL_HOURS — нагадувати
+# про триваючу невдачу/degraded-стан варто, щоб не загубити непоміченим
+# (P0-1, 2026-07-18), але не на кожному циклі watchdog.
+FEED_PIPELINE_REMINDER_INTERVAL_HOURS = 24
 
 # journalctl -o short-iso віддає зсув часового поясу без двокрапки (+0300),
 # а datetime.fromisoformat() приймає такий формат лише з Python 3.11+.
@@ -488,67 +491,114 @@ def check_dependency_drift() -> None:
             print("[watchdog] Не вдалося надіслати повідомлення про усунення дрейфу залежностей у Telegram", file=sys.stderr)
 
 
-def check_feed_pipeline_schedule() -> None:
-    """GH Actions `schedule` для update-feeds.yml — best-effort з боку
-    GitHub, не гарантія (див. коментар над FEED_PIPELINE_MAX_GAP_HOURS).
-    Перевіряє час останнього запуску (БУДЬ-ЯКого — schedule чи
-    workflow_dispatch, обидва однаково підтверджують, що конвеєр живий)
-    через публічний GitHub API (репозиторій публічний — токен не
-    потрібен). Той самий стейт-трекований цикл "алярм -> щоденне
-    нагадування, доки триває -> відновлення", що й check_deploy_drift()/
-    check_dependency_drift() вище, лише з власним, коротшим інтервалом
-    перевірки (FEED_PIPELINE_CHECK_INTERVAL_HOURS=1, не 24 — тут важлива
-    швидкість виявлення, а не рідкісність запиту)."""
+def _load_feed_pipeline_state() -> dict:
+    if not os.path.exists(FEED_PIPELINE_STATE_FILE):
+        return {}
+    try:
+        with open(FEED_PIPELINE_STATE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (ValueError, OSError):
+        return {}
+
+
+def check_feed_pipeline_vps_status() -> None:
+    """ЗАМІНЮЄ check_feed_pipeline_schedule() (моніторила update-feeds.yml
+    через GitHub API) — після переносу фід-пайплайну на VPS
+    (run_feed_pipeline_vps.sh, feed-pipeline.timer, Фаза 2, 2026-07-27)
+    читає локальний feed_pipeline_state.json (пише feed_pipeline_report.py
+    після КОЖНОГО прогону) — той самий патерн, що й
+    check_autodeploy_status()/vps_code_sync_state.json.
+
+    Три сигнали:
+    1. `last_status == "failed"` — публікація пропущена цього прогону
+       (фіди відсутні/порожні навіть після фолбеку) — new/recovery
+       одразу, "ДОСІ" — гейтнуто FEED_PIPELINE_REMINDER_INTERVAL_HOURS
+       (той самий throttle-принцип, що й check_autodeploy_status(),
+       знахідка аудиту pt3/pt4 звідти).
+    2. `last_status == "degraded"` — репрайсер чи generate_prom_feed_top.py
+       провалились, але фолбек дозволив публікацію (не критично, але
+       варто знати) — той самий new/repeat(throttled)/recovery цикл,
+       окремим формулюванням.
+    3. `last_run` старіший за FEED_PIPELINE_STALE_THRESHOLD_HOURS — сам
+       таймер/сервіс на VPS міг зупинитись, і без цього ніхто б не
+       помітив."""
     state = _load_state()
-    last_check = state.get("feed_pipeline_last_check")
-    now = datetime.now()
-    if last_check:
+    pipeline_state = _load_feed_pipeline_state()
+    if not pipeline_state:
+        return  # feed-pipeline.timer ще не запускався жодного разу на цій машині
+
+    try:
+        last_run = datetime.fromisoformat(pipeline_state["last_run"])
+    except (KeyError, ValueError):
+        return
+    if last_run.tzinfo is None:
+        last_run = last_run.astimezone()
+    now = datetime.now(last_run.tzinfo)
+
+    elapsed_hours = (now - last_run).total_seconds() / 3600
+    is_stale = elapsed_hours > FEED_PIPELINE_STALE_THRESHOLD_HOURS
+    last_status = pipeline_state.get("last_status")
+    is_failing = last_status == "failed"
+    is_degraded = last_status == "degraded"
+    reason = pipeline_state.get("reason") or "причина невідома"
+
+    was_stale = state.get("feed_pipeline_stale", False)
+    was_failing = state.get("feed_pipeline_failing", False)
+    was_degraded = state.get("feed_pipeline_degraded", False)
+    last_reminder = state.get("feed_pipeline_last_reminder")
+
+    messages = []
+
+    if is_stale and not was_stale:
+        messages.append(
+            f"⛔ Фід-пайплайн VPS: feed-pipeline.timer не звітував {elapsed_hours:.1f} год "
+            f"(поріг {FEED_PIPELINE_STALE_THRESHOLD_HOURS}) — сам таймер міг зупинитись на VPS"
+        )
+    elif not is_stale and was_stale:
+        messages.append("✅ Фід-пайплайн VPS: feed-pipeline.timer знову звітує вчасно")
+
+    reminder_due = True
+    if last_reminder:
         try:
-            elapsed_hours = (now - datetime.fromisoformat(last_check)).total_seconds() / 3600
-            if elapsed_hours < FEED_PIPELINE_CHECK_INTERVAL_HOURS:
-                return
+            reminder_due = (now - datetime.fromisoformat(last_reminder)).total_seconds() / 3600 \
+                >= FEED_PIPELINE_REMINDER_INTERVAL_HOURS
         except ValueError:
             pass
 
-    try:
-        response = requests.get(GITHUB_API_WORKFLOW_RUNS_URL, params={"per_page": 1}, timeout=15)
-        response.raise_for_status()
-        run = response.json()["workflow_runs"][0]
-        last_run_at = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
-    except (requests.RequestException, ValueError, KeyError, IndexError) as e:
-        print(f"[watchdog] Перевірка розкладу update-feeds.yml: не вдалося перевірити ({e})", file=sys.stderr)
-        return
+    if is_failing and not was_failing:
+        messages.append(f"⛔ Фід-пайплайн VPS: публікація ПРОПУЩЕНА — {reason}")
+        state["feed_pipeline_last_reminder"] = now.isoformat()
+    elif is_failing and was_failing:
+        if reminder_due:
+            messages.append(f"⏰ Фід-пайплайн VPS: публікація ДОСІ пропускається — {reason}")
+            state["feed_pipeline_last_reminder"] = now.isoformat()
+    elif not is_failing and was_failing:
+        messages.append("✅ Фід-пайплайн VPS: публікація відновлена")
+        state.pop("feed_pipeline_last_reminder", None)
+    elif is_degraded and not was_degraded:
+        messages.append(f"⚠️ Фід-пайплайн VPS: прогін degraded (фолбек спрацював) — {reason}")
+        state["feed_pipeline_last_reminder"] = now.isoformat()
+    elif is_degraded and was_degraded:
+        if reminder_due:
+            messages.append(f"⏰ Фід-пайплайн VPS: ДОСІ degraded — {reason}")
+            state["feed_pipeline_last_reminder"] = now.isoformat()
+    elif not is_degraded and was_degraded:
+        messages.append("✅ Фід-пайплайн VPS: більше не degraded")
+        state.pop("feed_pipeline_last_reminder", None)
 
-    gap_hours = (datetime.now(timezone.utc) - last_run_at).total_seconds() / 3600
-    was_alarming = state.get("feed_pipeline_alarm", False)
-    is_alarming = gap_hours > FEED_PIPELINE_MAX_GAP_HOURS
-
-    state["feed_pipeline_last_check"] = now.isoformat()
-    state["feed_pipeline_alarm"] = is_alarming
+    state["feed_pipeline_stale"] = is_stale
+    state["feed_pipeline_failing"] = is_failing
+    state["feed_pipeline_degraded"] = is_degraded
     _save_state(state)
 
-    detail = (
-        f"останній запуск update-feeds.yml {last_run_at.strftime('%d.%m.%Y %H:%M UTC')} "
-        f"({gap_hours:.1f} год тому, поріг {FEED_PIPELINE_MAX_GAP_HOURS} год)"
-    )
-    print(f"[watchdog] Розклад update-feeds.yml: {'ALARM' if is_alarming else 'OK'} — {detail}")
+    if not messages:
+        print(f"[watchdog] Фід-пайплайн VPS: {last_status or '?'}, {elapsed_hours:.1f} год тому")
+        return
 
-    if is_alarming and not was_alarming:
-        message = (
-            "🚨 Watchdog PlutusToys: заплановий прогін фідів (update-feeds.yml) запізнюється\n\n"
-            f"⛔ {detail}\n\n"
-            "Планується кожні 4 год (GitHub Actions schedule) — GitHub іноді сам пропускає "
-            "заплановий тригер під навантаженням, workflow лишається активним. "
-            "Запусти вручну: Actions -> Update Toysi feeds -> Run workflow."
-        )
-        print(message)
-        if not send_telegram_message(message):
-            print("[watchdog] Не вдалося надіслати алерт про запізнення update-feeds.yml у Telegram", file=sys.stderr)
-    elif not is_alarming and was_alarming:
-        message = f"✅ Watchdog PlutusToys: update-feeds.yml знову виконується вчасно ({detail})"
-        print(message)
-        if not send_telegram_message(message):
-            print("[watchdog] Не вдалося надіслати повідомлення про відновлення розкладу update-feeds.yml у Telegram", file=sys.stderr)
+    print("[watchdog] " + " | ".join(messages))
+    message = "🚀 Watchdog PlutusToys: фід-пайплайн VPS\n\n" + "\n\n".join(messages)
+    if not send_telegram_message(message):
+        print("[watchdog] Не вдалося надіслати алерт про фід-пайплайн VPS у Telegram", file=sys.stderr)
 
 
 def _order_confirmed_in_toysi(info: dict) -> bool:
@@ -757,4 +807,4 @@ if __name__ == "__main__":
     check_unforwarded_orders()
     check_autodeploy_status()
     check_dependency_drift()
-    check_feed_pipeline_schedule()
+    check_feed_pipeline_vps_status()

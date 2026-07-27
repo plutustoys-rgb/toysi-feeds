@@ -128,3 +128,10 @@ description_overrides.json
 # специфічні для акаунту дані, не для git (той самий клас файлу, що й
 # інші локальні кеші/довідники вище)
 rozetka_category_rz_id_map.json
+
+# Runtime-стан vps_code_sync.sh (2026-07-27) — {last_run, last_status,
+# last_commit, last_success_commit, reason, changed_files} для кожного
+# прогону автопулу /opt/plutustoys. Читає check_autodeploy_status() у
+# service_watchdog.py — суто локальний runtime-маркер, не round-trip
+# через жодну гілку.
+vps_code_sync_state.json

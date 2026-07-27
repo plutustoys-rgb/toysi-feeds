@@ -102,6 +102,9 @@ from generate_prom_feed import fetch_russian_text
 from generate_prom_feed_top import select_top_items, load_scan_state
 from prom_competitor_pricer import (
     SEARCH_DELAY,
+    LIVE_LOOKUP_EXTRA_BATCH_LIMIT,
+    MAX_DELIST_PER_RUN,
+    CIRCUIT_BREAKER_MAX_DELIST_FRACTION,
     find_best_competitor,
     decide_action,
     verify_competitor_really_available,
@@ -151,7 +154,7 @@ def _fetch_fresh_price_state() -> dict:
     тижнями застарілий локальний файл на цій машині. Локальний
     load_prom_price_state() — лише фолбек, якщо мережа/git недоступні."""
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["git", "fetch", "origin", FEED_BRANCH],
             check=True, capture_output=True, text=True, encoding="utf-8",
         )
@@ -167,13 +170,15 @@ def _fetch_fresh_price_state() -> dict:
         return load_prom_price_state()
 
 
-def _sync_price_state_to_feed_data(pending: dict, pending_delisted: dict) -> bool:
-    """Публікує ЛИШЕ pending (ціни, {pid: entry}) і pending_delisted
-    ({pid: timestamp}) у гілку feed-data — злиті поверх НАЙСВІЖІШОГО
-    стану звідти, через одноразовий git worktree, звичайний (не force)
-    push. Повертає True при успіху (обидва dict можна очистити), False —
-    щоб викликач лишив їх накопиченими і спробував ще раз пізніше."""
-    if not pending and not pending_delisted:
+def _sync_price_state_to_feed_data(pending: dict, pending_delisted: dict, pending_undelisted: set) -> bool:
+    """Публікує ЛИШЕ pending (ціни, {pid: entry}), pending_delisted
+    ({pid: timestamp}, нові позначки) і pending_undelisted (set pid,
+    зняті позначки — SKU знову конкурентний) у гілку feed-data — злиті
+    поверх НАЙСВІЖІШОГО стану звідти, через одноразовий git worktree,
+    звичайний (не force) push. Повертає True при успіху (усі три
+    структури можна очистити), False — щоб викликач лишив їх
+    накопиченими і спробував ще раз пізніше."""
+    if not pending and not pending_delisted and not pending_undelisted:
         return True
     for attempt in range(1, FEED_DATA_SYNC_RETRIES + 1):
         tmp_dir = tempfile.mkdtemp(prefix="feed_data_sync_")
@@ -189,9 +194,11 @@ def _sync_price_state_to_feed_data(pending: dict, pending_delisted: dict) -> boo
             state_file = Path(tmp_dir) / PRICE_STATE_FILENAME
             remote_state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
             remote_state.update(pending)
-            if pending_delisted:
+            if pending_delisted or pending_undelisted:
                 remote_delisted = remote_state.setdefault("_delisted_since", {})
                 remote_delisted.update(pending_delisted)
+                for pid in pending_undelisted:
+                    remote_delisted.pop(pid, None)
             state_file.write_text(json.dumps(remote_state, ensure_ascii=False, indent=1), encoding="utf-8")
 
             subprocess.run(["git", "add", PRICE_STATE_FILENAME], cwd=tmp_dir, check=True,
@@ -201,7 +208,8 @@ def _sync_price_state_to_feed_data(pending: dict, pending_delisted: dict) -> boo
                 return True  # remote вже містить ідентичні значення (напр. попередня спроба вже пройшла)
             subprocess.run(
                 ["git", "commit", "-q", "-m",
-                 f"apply_live_dumping_fix.py: sync {len(pending)} price + {len(pending_delisted)} delisted"],
+                 f"apply_live_dumping_fix.py: sync {len(pending)} price + {len(pending_delisted)} delisted "
+                 f"+ {len(pending_undelisted)} undelisted"],
                 cwd=tmp_dir, check=True, capture_output=True, text=True, encoding="utf-8",
             )
             subprocess.run(
@@ -209,7 +217,7 @@ def _sync_price_state_to_feed_data(pending: dict, pending_delisted: dict) -> boo
                 cwd=tmp_dir, check=True, capture_output=True, text=True, encoding="utf-8",
             )
             print(f"[LiveDumpingFix] Синхронізовано з {FEED_BRANCH}: {len(pending)} цін, "
-                  f"{len(pending_delisted)} delisted.")
+                  f"{len(pending_delisted)} delisted, {len(pending_undelisted)} undelisted.")
             return True
         except subprocess.CalledProcessError as e:
             print(f"[LiveDumpingFix] Спроба синхронізації {attempt}/{FEED_DATA_SYNC_RETRIES} з {FEED_BRANCH} "
@@ -218,8 +226,9 @@ def _sync_price_state_to_feed_data(pending: dict, pending_delisted: dict) -> boo
             subprocess.run(["git", "worktree", "remove", "--force", tmp_dir], capture_output=True, text=True)
             shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"[LiveDumpingFix] УВАГА: синхронізація з {FEED_BRANCH} не вдалась після "
-          f"{FEED_DATA_SYNC_RETRIES} спроб — {len(pending)} цін/{len(pending_delisted)} delisted "
-          "залишаються лише локально, спробую знову на наступному циклі збереження.", file=sys.stderr)
+          f"{FEED_DATA_SYNC_RETRIES} спроб — {len(pending)} цін/{len(pending_delisted)} delisted/"
+          f"{len(pending_undelisted)} undelisted залишаються лише локально, спробую знову на "
+          "наступному циклі збереження.", file=sys.stderr)
     return False
 
 
@@ -279,7 +288,14 @@ def main() -> None:
     # Джерело 3: живі на Prom, поза топ-N, БЕЗ даних скану, але з
     # історичним price_state-записом — потребує повного живого пайплайна
     # (find_best_competitor + decide_action, включно з можливим delist).
-    live_lookup_extra = _rotated_out_needing_live_lookup(top_catalog, toysi_catalog, scan_state, price_state, live_prom_ids)
+    # ОБМЕЖЕНО LIVE_LOOKUP_EXTRA_BATCH_LIMIT (знахідка аудиту,
+    # code_report_2026-07-26_pt10.md) — той самий ліміт, що вже є в
+    # звичайному репрайсері для цього самого класу кандидатів; без нього
+    # немає жодної стелі на розмір бакету, який (на відміну від джерел
+    # 1-2) МОЖЕ робити живий delist. Резюмованість прогресу означає, що
+    # решта цього бакету дочекається наступного запуску скрипта.
+    live_lookup_extra_all = _rotated_out_needing_live_lookup(top_catalog, toysi_catalog, scan_state, price_state, live_prom_ids)
+    live_lookup_extra = dict(list(live_lookup_extra_all.items())[:LIVE_LOOKUP_EXTRA_BATCH_LIMIT])
     live_lookup_pids = set(live_lookup_extra.keys())
 
     candidates = dict(top_with_scan_data)
@@ -287,7 +303,8 @@ def main() -> None:
     candidates.update(live_lookup_extra)  # теж без перетину (виключає top_catalog І scan_state)
     print(f"[LiveDumpingFix] Кандидатів усього: {len(candidates)} "
           f"(топ-N з даними скану: {len(top_with_scan_data)}, поза топ-N живі (скан): {len(rotated_out)}, "
-          f"поза топ-N живий пошук: {len(live_lookup_extra)}).")
+          f"поза топ-N живий пошук: {len(live_lookup_extra)} з {len(live_lookup_extra_all)} доступних "
+          f"— обмежено LIVE_LOOKUP_EXTRA_BATCH_LIMIT={LIVE_LOOKUP_EXTRA_BATCH_LIMIT}).")
 
     progress = _load_progress()
     done_pids = set(progress.get("done_pids") or [])
@@ -309,7 +326,21 @@ def main() -> None:
     time_budget_hit = False
     pending_sync: dict = {}  # {pid: entry} з ЦЬОГО прогону, ще не опубліковані в feed-data
     pending_delisted: dict = {}  # {pid: timestamp} з ЦЬОГО прогону, ще не опубліковані в feed-data
+    pending_undelisted: set = set()  # pid, зняті позначки _delisted_since цього прогону (SKU знову конкурентний)
     delisted_since = price_state.setdefault("_delisted_since", {})
+
+    # ДОДАНО (знахідка аудиту, code_report_2026-07-26_pt10.md): звичайний
+    # репрайсер для ЦЬОГО САМОГО класу кандидатів (live_lookup_extra) має
+    # АГРЕГАТНИЙ захист (MAX_DELIST_PER_RUN + evaluate_circuit_breaker()),
+    # перевірений ПЕРЕД тим, як реально почати видаляти — тут його не
+    # було зовсім, попри те, що це ПЕРШЕ місце в цьому скрипті, де
+    # з'являється живий delist(). Тому delist для джерела 3 не
+    # виконується одразу — рішення накопичуються тут, і РЕАЛЬНЕ
+    # видалення відбувається лише ПІСЛЯ основного циклу, якщо ні
+    # абсолютна кількість, ні частка не перевищують той самий поріг, що
+    # й у prom_competitor_pricer.py.
+    to_delist_3: list[str] = []
+    source3_decided_count = 0
 
     for pid, item in remaining.items():
         if _time_budget_exceeded():
@@ -364,16 +395,14 @@ def main() -> None:
             done_pids.add(pid)
             continue
 
+        if pid in live_lookup_pids:
+            source3_decided_count += 1
+
         if decision["action"] == "delist":
-            try:
-                delist(pid)
-                delisted_since[pid] = now_iso
-                pending_delisted[pid] = now_iso
-                confirmed_delist_count += 1
-                time.sleep(APPLY_THROTTLE_SECONDS)
-            except (requests.exceptions.RequestException, PromEditError) as e:
-                error_count += 1
-                print(f"  - {pid}: помилка видалення — {e}", file=sys.stderr)
+            # Джерело 3 ЛИШЕ (джерела 1-2 ніколи не приймають це рішення) —
+            # НЕ видаляємо одразу, накопичуємо для агрегатної перевірки
+            # ПІСЛЯ основного циклу (див. коментар біля to_delist_3 вище).
+            to_delist_3.append(pid)
         else:
             try:
                 apply_price(pid, decision["price"])
@@ -386,6 +415,18 @@ def main() -> None:
                 pending_sync[pid] = entry
                 applied_count += 1
                 category_counts[decision["category"]] = category_counts.get(decision["category"], 0) + 1
+                # ДОДАНО (знахідка аудиту, pt10): той самий універсальний
+                # патерн, що й у звичайному репрайсері (рядки 1653/2315
+                # поточної версії prom_competitor_pricer.py) — якщо SKU
+                # раніше було підтверджено видаленим, а тепер знову
+                # конкурентний ("adjust"), знімаємо позначку, інакше
+                # select_top_items() назавжди виключав би товар, який
+                # РЕАЛЬНО повернувся до конкурентності. Універсально для
+                # ВСІХ трьох джерел, не лише третього — _delisted_since
+                # не перевіряється при побудові rotated_out (джерело 2),
+                # тож застаріла позначка теоретично могла торкнутись і його.
+                if delisted_since.pop(pid, None) is not None:
+                    pending_undelisted.add(pid)
                 time.sleep(APPLY_THROTTLE_SECONDS)
             except (requests.exceptions.RequestException, PromEditError) as e:
                 error_count += 1
@@ -397,21 +438,57 @@ def main() -> None:
             save_prom_price_state(price_state)
             progress["done_pids"] = sorted(done_pids)
             _save_progress(progress)
-            if _sync_price_state_to_feed_data(pending_sync, pending_delisted):
+            if _sync_price_state_to_feed_data(pending_sync, pending_delisted, pending_undelisted):
                 pending_sync = {}
                 pending_delisted = {}
+                pending_undelisted = set()
             print(f"[LiveDumpingFix] {len(done_pids)}/{len(candidates)} оброблено "
                   f"(застосовано {applied_count}, видалено {confirmed_delist_count}, помилок {error_count})...")
+
+    # Агрегатна перевірка ПЕРЕД тим, як реально виконати НАКОПИЧЕНІ
+    # delist-рішення джерела 3 (той самий принцип, що й hard_cap_tripped/
+    # evaluate_circuit_breaker() у prom_competitor_pricer.py, знахідка
+    # аудиту pt10). Якщо аномально багато — НЕ видаляємо жодного цього
+    # прогону і повертаємо ці pid у "не оброблені" (наступний запуск
+    # переоцінить їх заново, можливо аномалія на той час минула).
+    delist_fraction = (len(to_delist_3) / source3_decided_count) if source3_decided_count else 0.0
+    hard_cap_tripped = len(to_delist_3) > MAX_DELIST_PER_RUN
+    fraction_tripped = delist_fraction > CIRCUIT_BREAKER_MAX_DELIST_FRACTION
+    if to_delist_3 and (hard_cap_tripped or fraction_tripped):
+        reason = (
+            f"{len(to_delist_3)} > MAX_DELIST_PER_RUN ({MAX_DELIST_PER_RUN})" if hard_cap_tripped else
+            f"{delist_fraction:.0%} > {CIRCUIT_BREAKER_MAX_DELIST_FRACTION:.0%} від джерела 3 ({source3_decided_count} рішень)"
+        )
+        print(f"[LiveDumpingFix] 🚨 Circuit breaker: delist для джерела 3 ЗАБЛОКОВАНО ({reason}) — "
+              f"жодного з {len(to_delist_3)} не видалено цього прогону.", file=sys.stderr)
+        send_telegram_message(
+            f"🚨 apply_live_dumping_fix.py: delist ЗАБЛОКОВАНО circuit breaker'ом ({reason}). "
+            f"Перевір вручну — {len(to_delist_3)} SKU лишились live_lookup_extra до наступного запуску."
+        )
+        done_pids -= set(to_delist_3)  # переоцінити заново наступного разу, не "загублено назавжди"
+    else:
+        for pid in to_delist_3:
+            try:
+                delist(pid)
+                now_iso = datetime.now().isoformat()
+                delisted_since[pid] = now_iso
+                pending_delisted[pid] = now_iso
+                confirmed_delist_count += 1
+                time.sleep(APPLY_THROTTLE_SECONDS)
+            except (requests.exceptions.RequestException, PromEditError) as e:
+                error_count += 1
+                print(f"  - {pid}: помилка видалення — {e}", file=sys.stderr)
 
     progress["done_pids"] = sorted(done_pids)
     _save_progress(progress)
     save_prom_price_state(price_state)
-    if _sync_price_state_to_feed_data(pending_sync, pending_delisted):
+    if _sync_price_state_to_feed_data(pending_sync, pending_delisted, pending_undelisted):
         pending_sync = {}
         pending_delisted = {}
+        pending_undelisted = set()
 
     remaining_after = len(candidates) - len(done_pids)
-    unsynced = len(pending_sync) + len(pending_delisted)
+    unsynced = len(pending_sync) + len(pending_delisted) + len(pending_undelisted)
     print(f"[LiveDumpingFix] Готово. Застосовано живо: {applied_count}, видалено: {confirmed_delist_count}, "
           f"на непідтвердженій комісії (лише фід) — {default_commission_count}, помилок — {error_count}. "
           f"Залишилось у sweep'і: {remaining_after}."

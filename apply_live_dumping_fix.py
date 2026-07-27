@@ -322,6 +322,7 @@ def main() -> None:
     default_commission_count = 0
     error_count = 0
     confirmed_delist_count = 0
+    price_protected_for_delist_count = 0  # ціна піднята до безпечної межі для SKU, що ЧЕКАЮТЬ на delist (не входить у applied_count)
     category_counts = {"undercut": 0, "floor": 0, "no_competitor": 0}
     time_budget_hit = False
     pending_sync: dict = {}  # {pid: entry} з ЦЬОГО прогону, ще не опубліковані в feed-data
@@ -398,39 +399,53 @@ def main() -> None:
         if pid in live_lookup_pids:
             source3_decided_count += 1
 
-        if decision["action"] == "delist":
-            # Джерело 3 ЛИШЕ (джерела 1-2 ніколи не приймають це рішення) —
-            # НЕ видаляємо одразу, накопичуємо для агрегатної перевірки
-            # ПІСЛЯ основного циклу (див. коментар біля to_delist_3 вище).
-            to_delist_3.append(pid)
-        else:
-            try:
-                apply_price(pid, decision["price"])
-                entry = {
-                    "price": decision["price"], "timestamp": now_iso, "competitor_key": None,
-                    "category": decision["category"], "competitor_price": decision["competitor_price"],
-                    "cost": cost, "margin_pct": decision["margin_pct"],
-                }
-                price_state[pid] = entry
-                pending_sync[pid] = entry
+        # ДОДАНО (2026-07-27, пряме зауваження власниці — "нехай вона
+        # більше показувала би та чекала на видалення, алеж не
+        # демпінгувала би і не була би для нас збитковою"): ціна
+        # піднімається до безпечної межі ЗАВЖДИ, НЕЗАЛЕЖНО від того, чи
+        # рішення "adjust", чи "delist" — decision["price"] в обох
+        # випадках уже включає net_revenue>=cost запобіжник. Раніше для
+        # "delist" ціна взагалі не чіпалась, тож поки видалення чекало
+        # черги/агрегатної перевірки (чи взагалі не траплялось), SKU
+        # лишався зі СТАРОЮ, потенційно збитковою ціною — живий приклад,
+        # що виявив це: SKU 292858/293138.
+        try:
+            apply_price(pid, decision["price"])
+            entry = {
+                "price": decision["price"], "timestamp": now_iso, "competitor_key": None,
+                "category": decision["category"], "competitor_price": decision["competitor_price"],
+                "cost": cost, "margin_pct": decision["margin_pct"],
+            }
+            price_state[pid] = entry
+            pending_sync[pid] = entry
+            if decision["action"] == "delist":
+                price_protected_for_delist_count += 1
+            else:
                 applied_count += 1
                 category_counts[decision["category"]] = category_counts.get(decision["category"], 0) + 1
-                # ДОДАНО (знахідка аудиту, pt10): той самий універсальний
-                # патерн, що й у звичайному репрайсері (рядки 1653/2315
-                # поточної версії prom_competitor_pricer.py) — якщо SKU
-                # раніше було підтверджено видаленим, а тепер знову
-                # конкурентний ("adjust"), знімаємо позначку, інакше
-                # select_top_items() назавжди виключав би товар, який
-                # РЕАЛЬНО повернувся до конкурентності. Універсально для
-                # ВСІХ трьох джерел, не лише третього — _delisted_since
-                # не перевіряється при побудові rotated_out (джерело 2),
-                # тож застаріла позначка теоретично могла торкнутись і його.
-                if delisted_since.pop(pid, None) is not None:
-                    pending_undelisted.add(pid)
-                time.sleep(APPLY_THROTTLE_SECONDS)
-            except (requests.exceptions.RequestException, PromEditError) as e:
-                error_count += 1
-                print(f"  - {pid}: помилка зміни ціни — {e}", file=sys.stderr)
+            # ДОДАНО (знахідка аудиту, pt10): той самий універсальний
+            # патерн, що й у звичайному репрайсері (рядки 1653/2315
+            # поточної версії prom_competitor_pricer.py) — якщо SKU
+            # раніше було підтверджено видаленим, а тепер знову
+            # конкурентний ("adjust"), знімаємо позначку, інакше
+            # select_top_items() назавжди виключав би товар, який
+            # РЕАЛЬНО повернувся до конкурентності. Універсально для
+            # ВСІХ трьох джерел, не лише третього — _delisted_since
+            # не перевіряється при побудові rotated_out (джерело 2),
+            # тож застаріла позначка теоретично могла торкнутись і його.
+            if delisted_since.pop(pid, None) is not None:
+                pending_undelisted.add(pid)
+            time.sleep(APPLY_THROTTLE_SECONDS)
+        except (requests.exceptions.RequestException, PromEditError) as e:
+            error_count += 1
+            print(f"  - {pid}: помилка зміни ціни — {e}", file=sys.stderr)
+
+        if decision["action"] == "delist":
+            # Джерело 3 ЛИШЕ (джерела 1-2 ніколи не приймають це рішення) —
+            # ціна вже піднята вище; САМЕ видалення накопичуємо для
+            # агрегатної перевірки ПІСЛЯ основного циклу (див. коментар
+            # біля to_delist_3 вище).
+            to_delist_3.append(pid)
 
         done_pids.add(pid)  # позначаємо оброблений НЕЗАЛЕЖНО від успіху -- постійна помилка на одному SKU не має блокувати прогрес
 
@@ -490,6 +505,7 @@ def main() -> None:
     remaining_after = len(candidates) - len(done_pids)
     unsynced = len(pending_sync) + len(pending_delisted) + len(pending_undelisted)
     print(f"[LiveDumpingFix] Готово. Застосовано живо: {applied_count}, видалено: {confirmed_delist_count}, "
+          f"ціна піднята до безпечної межі перед очікуваним видаленням: {price_protected_for_delist_count}, "
           f"на непідтвердженій комісії (лише фід) — {default_commission_count}, помилок — {error_count}. "
           f"Залишилось у sweep'і: {remaining_after}."
           + (f" УВАГА: {unsynced} SKU не вдалось синхронізувати з {FEED_BRANCH}." if unsynced else ""))
@@ -497,7 +513,8 @@ def main() -> None:
     digest = (
         f"🏷 apply_live_dumping_fix.py: застосовано живо — {applied_count} "
         f"(підрізано конкурента — {category_counts.get('undercut', 0)}, "
-        f"піднято до floor — {category_counts.get('floor', 0)}), видалено — {confirmed_delist_count}, "
+        f"піднято до floor — {category_counts.get('floor', 0)}), видалено — {confirmed_delist_count} "
+        f"(з них ціна заздалегідь піднята до безпечної межі — {price_protected_for_delist_count}), "
         f"на непідтвердженій комісії (лише фід) — {default_commission_count}, помилок — {error_count}."
         + (f"\n\n⏱ Часовий бюджет вичерпано — залишилось {remaining_after} SKU, "
            "запусти скрипт ще раз для продовження цього sweep'у." if time_budget_hit else

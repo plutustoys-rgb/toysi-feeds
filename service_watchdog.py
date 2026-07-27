@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import re
@@ -87,19 +86,30 @@ STALE_ORDER_THRESHOLD_MINUTES = 25
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog_state.json")
 
-# ДОДАНО (2026-07-17, P0-1 — 4-й підтверджений випадок дрейфу VPS↔master:
+# ІСТОРІЯ (2026-07-17, P0-1 — 4-й підтверджений випадок дрейфу VPS↔master:
 # order_status_tracker.py/checkbox_client.py/orders_db.py та ще 5 файлів
-# змержено в master і тижнями не задеплоєно; знайдено лише ручним SHA256-
-# порівнянням, задеплоєно того ж дня). VPS не є git-чекаутом (ручний scp),
-# тож єдиний надійний спосіб виявити "змержено, але не задеплоєно" — це
-# звірити САМЕ те, що реально лежить на диску, проти origin/master.
+# змержено в master і тижнями не задеплоєно, знайдено лише ручним SHA256-
+# порівнянням): тоді /opt/plutustoys деплоївся ручним scp, тож check_deploy_drift()
+# звіряла кожен .py-файл на диску проти origin/master через
+# raw.githubusercontent.com. ЗАМІНЕНО (2026-07-27, vps-git-autodeploy): VPS
+# тепер справжній git-клон з автопулом (vps_code_sync.sh, vps-code-sync.timer),
+# тож цей клас розбіжності структурно неможливий — див. check_autodeploy_status()
+# нижче, яка натомість читає стан САМОГО автопулу.
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/plutustoys-rgb/toysi-feeds/master/"
-DEPLOY_DIR = os.path.dirname(os.path.abspath(__file__))
-# Раз на добу, а не на кожен 10-хвилинний цикл watchdog — мережевий запит
-# на кожен *.py файл при щоцикловій перевірці був би зайвим навантаженням
-# і шумом заради дрейфу, який за визначенням змінюється не швидше, ніж
-# хтось руками змержить і задеплоїть код.
-DEPLOY_DRIFT_CHECK_INTERVAL_HOURS = 24
+
+VPS_CODE_SYNC_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vps_code_sync_state.json")
+# 2x очікуваний інтервал vps-code-sync.timer (OnUnitActiveSec=15min) — та сама
+# логіка порогу "2x інтервал таймера", що й MONITORED_SERVICES вище.
+AUTODEPLOY_STALE_THRESHOLD_MINUTES = 30
+
+# ВИПРАВЛЕНО (знахідка аудиту pt3, 2026-07-27): "ДОСІ не вдається"-нагадування
+# нижче спочатку не мало жодного throttle — при затяжному non-fast-forward
+# (watchdog на ~10-хвилинному циклі) це слало б Telegram-алерт що ~10 хв,
+# доки не виправлять вручну. Той самий 24-годинний throttle, що був у
+# колишній check_deploy_drift() (DEPLOY_DRIFT_CHECK_INTERVAL_HOURS,
+# прибрано разом з рештою SHA256-звірки) — нагадувати варто, щоб тривала
+# невдача не загубилась непоміченою (P0-1, 2026-07-18), але не щоцикл.
+AUTODEPLOY_REMINDER_INTERVAL_HOURS = 24
 
 # ДОДАНО (2026-07-21, findings_log.md — "dependency-drift-not-code-drift"):
 # check_deploy_drift() вище хешує ТЕКСТ .py-файлів — новий `import imagehash`
@@ -261,113 +271,118 @@ def check_services() -> None:
             print("[watchdog] Не вдалося надіслати повідомлення про відновлення в Telegram", file=sys.stderr)
 
 
-def _local_deployed_py_files() -> list:
-    return sorted(f for f in os.listdir(DEPLOY_DIR) if f.endswith(".py"))
+def _load_vps_code_sync_state() -> dict:
+    if not os.path.exists(VPS_CODE_SYNC_STATE_FILE):
+        return {}
+    try:
+        with open(VPS_CODE_SYNC_STATE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (ValueError, OSError):
+        return {}
 
 
-def check_deploy_drift() -> None:
-    """SHA256-звірка кожного .py, що реально лежить на VPS, проти
-    відповідного файлу в origin/master (через raw.githubusercontent.com —
-    публічний репозиторій, токен не потрібен).
+def check_autodeploy_status() -> None:
+    """ЗАМІНЮЄ колишню check_deploy_drift() (SHA256-звірку .py-файлів проти
+    origin/master через raw.githubusercontent.com) — після переведення
+    /opt/plutustoys на справжній git-клон з автопулом (vps-code-sync.timer,
+    vps_code_sync.sh, 2026-07-27) цей клас розбіжності структурно
+    неможливий: VPS або точно на origin/master, або явно провалив спробу
+    (non-fast-forward), і про це вже пише vps_code_sync_state.json —
+    звірка файл-за-файлом через мережу більше не потрібна.
 
-    ВИПРАВЛЕНО (2026-07-18, реальний інцидент — PR #90/#91/#93 змержені
-    07-17, ЖОДЕН не задеплоєний на VPS цілу добу, знайдено лише ручною
-    звіркою наступного дня): раніше алармило в Telegram лише на ПЕРШУ
-    появу розбіжності для кожного файлу, а далі мовчало, поки дрейф не
-    зникав, — один пропущений/забутий алерт означав, що змержений і
-    неперевірений код міг тижнями виконуватись у проді непоміченим. Тепер
-    ЩОДНЯ (той самий цикл DEPLOY_DRIFT_CHECK_INTERVAL_HOURS=24), поки
-    файл лишається в розбіжності, шле ПОВТОРНЕ нагадування — не лише
-    один раз. Не про кожну перевірку (та сама 24-годинна пауза, що й
-    раніше) — просто одноразовий алерт замінено на щоденний, доки
-    ситуація не виправиться.
-
-    Файл, якого немає в master (404) — НЕ алармимо: може бути легітимний
-    VPS-специфічний скрипт чи файл, який ще не встигли змержити — це інша
-    категорія від "змержено, але не задеплоєно". Помилки самої перевірки
-    (мережа, GitHub недоступний) — лише лог, без Telegram: короткочасний
-    мережевий блип не має виглядати як реальний дрейф коду."""
+    Три незалежні сигнали з того самого стану:
+    1. `last_status == "failed"` — автопул не зміг дотягнутись: одноразовий
+       алерт на нову невдачу й на відновлення (як у check_services()), АЛЕ,
+       на відміну від check_services(), ще й окреме "ДОСІ не вдається"
+       нагадування, поки невдача триває — гейтнуте AUTODEPLOY_REMINDER_
+       INTERVAL_HOURS (24 год), інакше на ~10-хвилинному циклі watchdog це
+       був би Telegram-спам щоцикл (знахідка аудиту pt3).
+    2. `last_run` старіший за 2x інтервал таймера
+       (AUTODEPLOY_STALE_THRESHOLD_MINUTES) — сам таймер/сервіс на VPS
+       міг зупинитись, і без цього ніхто б не помітив.
+    3. `last_success_commit` змінився відносно останнього разу, коли ми
+       про це сповіщали — одноразове "підтягнуто X" (не сплять на самому
+       факті успіху щоцикл, лише на ЗМІНУ)."""
     state = _load_state()
-    last_check = state.get("deploy_drift_last_check")
-    now = datetime.now()
-    if last_check:
-        try:
-            elapsed_hours = (now - datetime.fromisoformat(last_check)).total_seconds() / 3600
-            if elapsed_hours < DEPLOY_DRIFT_CHECK_INTERVAL_HOURS:
-                return
-        except ValueError:
-            pass
+    sync_state = _load_vps_code_sync_state()
+    if not sync_state:
+        return  # vps-code-sync.sh ще не запускався жодного разу на цій машині
 
-    drift_state = state.get("deploy_drift", {})
-    still_drifted = {}
-    new_alarms = []
-    reminders = []
-    recoveries = []
-    check_errors = []
+    try:
+        last_run = datetime.fromisoformat(sync_state["last_run"])
+    except (KeyError, ValueError):
+        return
+    if last_run.tzinfo is None:
+        last_run = last_run.astimezone()
+    now = datetime.now(last_run.tzinfo)
 
-    for fname in _local_deployed_py_files():
-        try:
-            with open(os.path.join(DEPLOY_DIR, fname), "rb") as f:
-                # \r\n -> \n: деплой робиться ручним scp з Windows-машини
-                # (core.autocrlf=true) — без нормалізації кінців рядків
-                # порівняння постійно хибно алармило б на КОЖЕН файл,
-                # задеплоєний так, попри ідентичний вміст.
-                local_hash = hashlib.sha256(f.read().replace(b"\r\n", b"\n")).hexdigest()
-        except OSError as e:
-            check_errors.append(f"{fname}: не вдалось прочитати локально ({e})")
-            continue
+    elapsed_minutes = (now - last_run).total_seconds() / 60
+    is_stale = elapsed_minutes > AUTODEPLOY_STALE_THRESHOLD_MINUTES
+    is_failing = sync_state.get("last_status") == "failed"
 
-        try:
-            response = requests.get(GITHUB_RAW_BASE + fname, timeout=15)
-        except requests.RequestException as e:
-            check_errors.append(f"{fname}: не вдалось завантажити з GitHub ({e})")
-            continue
+    was_stale = state.get("autodeploy_stale", False)
+    was_failing = state.get("autodeploy_failing", False)
+    last_alerted_commit = state.get("autodeploy_last_alerted_commit")
+    last_reminder = state.get("autodeploy_failing_last_reminder")
 
-        if response.status_code == 404:
-            continue
-        if response.status_code != 200:
-            check_errors.append(f"{fname}: GitHub повернув {response.status_code}")
-            continue
+    messages = []
 
-        master_hash = hashlib.sha256(response.content.replace(b"\r\n", b"\n")).hexdigest()
-        was_alarming = drift_state.get(fname, False)
+    if is_stale and not was_stale:
+        messages.append(
+            f"⛔ Автодеплой: vps-code-sync.timer не звітував {elapsed_minutes:.0f} хв "
+            f"(поріг {AUTODEPLOY_STALE_THRESHOLD_MINUTES}) — сам таймер міг зупинитись на VPS"
+        )
+    elif not is_stale and was_stale:
+        messages.append("✅ Автодеплой: vps-code-sync.timer знову звітує вчасно")
 
-        if local_hash != master_hash:
-            still_drifted[fname] = True
-            print(f"[watchdog] Звірка деплою: ALARM — {fname} відрізняється від origin/master")
-            if not was_alarming:
-                new_alarms.append(f"⛔ {fname}: VPS-версія відрізняється від origin/master")
-            else:
-                reminders.append(f"⏰ {fname}: ДОСІ не задеплоєно (розбіжність триває)")
-        elif was_alarming:
-            recoveries.append(f"✅ {fname}: синхронізовано з origin/master")
+    if is_failing and not was_failing:
+        messages.append(f"⛔ Автодеплой не вдався: {sync_state.get('reason', 'причина невідома')}")
+        state["autodeploy_failing_last_reminder"] = now.isoformat()
+    elif is_failing and was_failing:
+        reminder_due = True
+        if last_reminder:
+            try:
+                reminder_due = (now - datetime.fromisoformat(last_reminder)).total_seconds() / 3600 \
+                    >= AUTODEPLOY_REMINDER_INTERVAL_HOURS
+            except ValueError:
+                pass
+        if reminder_due:
+            messages.append(f"⏰ Автодеплой ДОСІ не вдається: {sync_state.get('reason', 'причина невідома')}")
+            state["autodeploy_failing_last_reminder"] = now.isoformat()
+    elif not is_failing and was_failing:
+        messages.append("✅ Автодеплой: відновлено, VPS знову синхронізовано з master")
+        state.pop("autodeploy_failing_last_reminder", None)
 
-    if check_errors:
-        print(f"[watchdog] Звірка деплою: {len(check_errors)} помилок перевірки — " + "; ".join(check_errors),
-              file=sys.stderr)
+    current_success_commit = sync_state.get("last_success_commit")
+    if not is_failing and current_success_commit and current_success_commit != last_alerted_commit \
+            and last_alerted_commit is not None:
+        changed = sync_state.get("changed_files") or []
+        detail = f" ({len(changed)} файл(ів) змінено)" if changed else " (без змін коду)"
+        when = last_run.astimezone().strftime("%d.%m.%Y %H:%M")
+        messages.append(f"✅ Автодеплой: підтягнуто commit {current_success_commit[:8]} о {when}{detail}")
 
-    state["deploy_drift"] = still_drifted
-    state["deploy_drift_last_check"] = now.isoformat()
+    state["autodeploy_stale"] = is_stale
+    state["autodeploy_failing"] = is_failing
+    if current_success_commit:
+        state["autodeploy_last_alerted_commit"] = current_success_commit
     _save_state(state)
 
-    if not new_alarms and not reminders and not recoveries:
-        print(f"[watchdog] Звірка деплою: {len(still_drifted)} файл(ів) у розбіжності (без змін)")
+    if not messages:
+        if is_failing:
+            # Невдача триває, але нагадування притлумлене (AUTODEPLOY_REMINDER_
+            # INTERVAL_HOURS ще не минув) — консольний лог не повинен вдавати
+            # "OK", інакше журнал journalctl вводить в оману так само, як
+            # раніше вводило б Telegram-повідомлення без throttle.
+            print(f"[watchdog] Автодеплой: досі не вдається ({sync_state.get('reason', 'причина невідома')}), "
+                  "нагадування притлумлене")
+        else:
+            print(f"[watchdog] Автодеплой: OK, commit {sync_state.get('last_success_commit', '?')[:8]}")
+        return
 
-    if new_alarms or reminders:
-        message = (
-            "🚨 Watchdog PlutusToys: VPS-код розійшовся з origin/master\n\n"
-            + "\n\n".join(new_alarms + reminders)
-            + "\n\nЗмержений код НЕ виконується в проді — перевір і задеплой вручну (scp). "
-              "Це нагадування буде повторюватись щодня, доки не буде задеплоєно."
-        )
-        print(message)
-        if not send_telegram_message(message):
-            print("[watchdog] Не вдалося надіслати алерт про дрейф деплою в Telegram", file=sys.stderr)
-    if recoveries:
-        message = "✅ Watchdog PlutusToys: дрейф деплою усунено\n\n" + "\n\n".join(recoveries)
-        print(message)
-        if not send_telegram_message(message):
-            print("[watchdog] Не вдалося надіслати повідомлення про усунення дрейфу деплою в Telegram", file=sys.stderr)
+    print("[watchdog] " + " | ".join(messages))
+    message = "🚀 Watchdog PlutusToys: автодеплой\n\n" + "\n\n".join(messages)
+    if not send_telegram_message(message):
+        print("[watchdog] Не вдалося надіслати алерт про автодеплой у Telegram", file=sys.stderr)
 
 
 def _normalize_pkg_name(name: str) -> str:
@@ -740,6 +755,6 @@ if __name__ == "__main__":
     check_services()
     check_toysi_reconciliation()
     check_unforwarded_orders()
-    check_deploy_drift()
+    check_autodeploy_status()
     check_dependency_drift()
     check_feed_pipeline_schedule()

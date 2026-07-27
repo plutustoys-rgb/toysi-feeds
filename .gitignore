@@ -135,3 +135,10 @@ rozetka_category_rz_id_map.json
 # service_watchdog.py — суто локальний runtime-маркер, не round-trip
 # через жодну гілку.
 vps_code_sync_state.json
+
+# Знахідка аудиту pt3 (2026-07-27): каталог з ПРИВАТНИМ read-only deploy-
+# ключем vps-pull-deploy для vps_code_sync.sh — після Кроку 1 runbook'у
+# /opt/plutustoys стає справжнім git working directory, і без цього
+# запису будь-яка майбутня ручна дія (git add -A під час обслуговування
+# тощо) могла б випадково застейджити приватний ключ у публічний репо.
+.ssh_deploy_pull/

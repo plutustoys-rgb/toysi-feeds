@@ -102,6 +102,15 @@ VPS_CODE_SYNC_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__
 # логіка порогу "2x інтервал таймера", що й MONITORED_SERVICES вище.
 AUTODEPLOY_STALE_THRESHOLD_MINUTES = 30
 
+# ВИПРАВЛЕНО (знахідка аудиту pt3, 2026-07-27): "ДОСІ не вдається"-нагадування
+# нижче спочатку не мало жодного throttle — при затяжному non-fast-forward
+# (watchdog на ~10-хвилинному циклі) це слало б Telegram-алерт що ~10 хв,
+# доки не виправлять вручну. Той самий 24-годинний throttle, що був у
+# колишній check_deploy_drift() (DEPLOY_DRIFT_CHECK_INTERVAL_HOURS,
+# прибрано разом з рештою SHA256-звірки) — нагадувати варто, щоб тривала
+# невдача не загубилась непоміченою (P0-1, 2026-07-18), але не щоцикл.
+AUTODEPLOY_REMINDER_INTERVAL_HOURS = 24
+
 # ДОДАНО (2026-07-21, findings_log.md — "dependency-drift-not-code-drift"):
 # check_deploy_drift() вище хешує ТЕКСТ .py-файлів — новий `import imagehash`
 # у щойно задеплоєному коді він би виявив (файл змінився -> хеш не збігається
@@ -282,8 +291,12 @@ def check_autodeploy_status() -> None:
     звірка файл-за-файлом через мережу більше не потрібна.
 
     Три незалежні сигнали з того самого стану:
-    1. `last_status == "failed"` — автопул не зміг дотягнутись (та сама
-       "новий/повторний/відновлення" логіка, що й у check_services()).
+    1. `last_status == "failed"` — автопул не зміг дотягнутись: одноразовий
+       алерт на нову невдачу й на відновлення (як у check_services()), АЛЕ,
+       на відміну від check_services(), ще й окреме "ДОСІ не вдається"
+       нагадування, поки невдача триває — гейтнуте AUTODEPLOY_REMINDER_
+       INTERVAL_HOURS (24 год), інакше на ~10-хвилинному циклі watchdog це
+       був би Telegram-спам щоцикл (знахідка аудиту pt3).
     2. `last_run` старіший за 2x інтервал таймера
        (AUTODEPLOY_STALE_THRESHOLD_MINUTES) — сам таймер/сервіс на VPS
        міг зупинитись, і без цього ніхто б не помітив.
@@ -310,6 +323,7 @@ def check_autodeploy_status() -> None:
     was_stale = state.get("autodeploy_stale", False)
     was_failing = state.get("autodeploy_failing", False)
     last_alerted_commit = state.get("autodeploy_last_alerted_commit")
+    last_reminder = state.get("autodeploy_failing_last_reminder")
 
     messages = []
 
@@ -323,10 +337,21 @@ def check_autodeploy_status() -> None:
 
     if is_failing and not was_failing:
         messages.append(f"⛔ Автодеплой не вдався: {sync_state.get('reason', 'причина невідома')}")
+        state["autodeploy_failing_last_reminder"] = now.isoformat()
     elif is_failing and was_failing:
-        messages.append(f"⏰ Автодеплой ДОСІ не вдається: {sync_state.get('reason', 'причина невідома')}")
+        reminder_due = True
+        if last_reminder:
+            try:
+                reminder_due = (now - datetime.fromisoformat(last_reminder)).total_seconds() / 3600 \
+                    >= AUTODEPLOY_REMINDER_INTERVAL_HOURS
+            except ValueError:
+                pass
+        if reminder_due:
+            messages.append(f"⏰ Автодеплой ДОСІ не вдається: {sync_state.get('reason', 'причина невідома')}")
+            state["autodeploy_failing_last_reminder"] = now.isoformat()
     elif not is_failing and was_failing:
         messages.append("✅ Автодеплой: відновлено, VPS знову синхронізовано з master")
+        state.pop("autodeploy_failing_last_reminder", None)
 
     current_success_commit = sync_state.get("last_success_commit")
     if not is_failing and current_success_commit and current_success_commit != last_alerted_commit \
@@ -343,7 +368,15 @@ def check_autodeploy_status() -> None:
     _save_state(state)
 
     if not messages:
-        print(f"[watchdog] Автодеплой: OK, commit {sync_state.get('last_success_commit', '?')[:8]}")
+        if is_failing:
+            # Невдача триває, але нагадування притлумлене (AUTODEPLOY_REMINDER_
+            # INTERVAL_HOURS ще не минув) — консольний лог не повинен вдавати
+            # "OK", інакше журнал journalctl вводить в оману так само, як
+            # раніше вводило б Telegram-повідомлення без throttle.
+            print(f"[watchdog] Автодеплой: досі не вдається ({sync_state.get('reason', 'причина невідома')}), "
+                  "нагадування притлумлене")
+        else:
+            print(f"[watchdog] Автодеплой: OK, commit {sync_state.get('last_success_commit', '?')[:8]}")
         return
 
     print("[watchdog] " + " | ".join(messages))

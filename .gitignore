@@ -68,10 +68,25 @@ prom_competitor_pricer_summary.md
 # гілка публічна й force-push на неї замінив би live-фіди/стан репрайсера).
 full_catalog_scan_state.json
 
-# Rozetka-only стан членства для grace-періоду тимчасово відсутніх товарів
-# (2026-07-16, root-cause SKU 299318/299320/299321/249158) — суто runtime,
-# перебудовується щоразу з живих даних Toysi, не для git.
+# ЗАМІНЕНО (2026-07-27) на rozetka_static_selection.json нижче —
+# select_top_items()/грейс-період для Rozetka прибрано повністю (пряме
+# рішення власниці, див. generate_rozetka_feed.py). Код більше не пише
+# цей файл, але запис лишається (defense in depth) — старі копії
+# можуть і далі лежати на VPS/інших чекаутах, не для git у будь-якому разі.
 rozetka_feed_membership_state.json
+
+# Заморожений, ОДНОРАЗОВО сформований статичний відбір для Rozetka
+# (2026-07-27, пряме рішення власниці — незалежно від Prom, без
+# ротації, "навіть без перевірки складу, поки не пройшли модерацію") —
+# {items, prices, built_at}. НЕ для git як файл (специфічний для
+# конкретного акаунту знімок), АЛЕ round-trip'иться через feed-data
+# (знахідка аудиту pt7 — без цього round-trip файл ніколи не пережив би
+# ефемерний GH Actions runner, і "заморожування" виконувалось би заново
+# щопрогону) — той самий принцип, що й prom_competitor_price_state.json/
+# own_product_links_cache.json. Видалення файлу (і в git-history гілки
+# feed-data) — єдиний спосіб змусити наступний прогін перебудувати
+# список з нуля.
+rozetka_static_selection.json
 
 # Резюмований прогрес РУЧНОГО, разового apply_live_dumping_fix.py
 # (2026-07-26) — {started_at, done_pids} для ПОТОЧНОГО sweep'у, щоб

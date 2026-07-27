@@ -123,6 +123,21 @@ jobs:
           git show "origin/$FEED_BRANCH:own_product_links_cache.json" > own_product_links_cache.json 2>/dev/null \
             || echo '{}' > own_product_links_cache.json
 
+      # ВИПРАВЛЕНО (знахідка аудиту pt7, 2026-07-27, PR #179): без цього
+      # кроку rozetka_static_selection.json НІКОЛИ не існує на старті
+      # ефемерного GH Actions runner'а — _build_rozetka_static_selection()
+      # виконувала б гілку "перший виклик" (живий перерахунок із
+      # catalog ЦЬОГО прогону) КОЖЕН раз, замість заморозити список один
+      # раз назавжди. Той самий round-trip, що й для
+      # prom_competitor_price_state.json/own_product_links_cache.json
+      # вище — фолбек `{}` безпечний: функція сама трактує відсутні
+      # ключі "items"/"prices" як "файл пошкоджений/відсутній" і формує
+      # список заново (лише якщо він СПРАВДІ ще не існував десь).
+      - name: Restore rozetka_static_selection.json from ${{ env.FEED_BRANCH }}
+        run: |
+          git show "origin/$FEED_BRANCH:rozetka_static_selection.json" > rozetka_static_selection.json 2>/dev/null \
+            || echo '{}' > rozetka_static_selection.json
+
       # ДОДАНО (2026-07-16, задача власниці — full_catalog_competitor_scan.py
       # має системно впливати на топ-970, не лишатись окремим інформаційним
       # скриптом): full_catalog_scan_state.json пишеться лише на VPS (там
@@ -395,7 +410,7 @@ jobs:
           # -f: feeds/*.xml навмисно в .gitignore для master (щоб не роздувати її
           # історію), але саме ці файли й мають бути закомічені сюди, на feed-data —
           # без -f git add мовчки відмовляється додавати файли, що збігаються з .gitignore.
-          git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json own_product_links_cache.json
+          git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json own_product_links_cache.json rozetka_static_selection.json
           # Видимість, п.1 (2026-07-17): Google Merchant феєд (топ-970, малий,
           # той самий порядок розміру, що prom_feed_top.xml — жодного ризику
           # ліміту 100МБ) досі ніколи не публікувався сюди, попри те, що

@@ -66,7 +66,7 @@ import requests
 from parser import fetch_toysi_catalog
 from generate_prom_feed import normalize_vendor
 from generate_prom_feed_top import select_top_items
-from prom_catalog_sync import fetch_prom_products
+from prom_catalog_sync import fetch_prom_products, fetch_prom_products_by_external_ids
 from prom_competitor_pricer import SEARCH_DELAY
 from competitor_pricing import real_toysi_cost, load_fresh_prom_price_overrides
 
@@ -371,11 +371,20 @@ def _save_prom_category_cache(cache: dict) -> None:
               f"наступний прогін просто порахує наново.", file=sys.stderr)
 
 
+CATEGORY_CACHE_EXTRA_LOOKUP_LIMIT = 300  # той самий принцип, що
+# LIVE_LOOKUP_EXTRA_BATCH_LIMIT (prom_competitor_pricer.py) — обмежує
+# кількість додаткових по-одному запитів за прогін, щоб не спровокувати
+# 429 (fetch_prom_products_by_external_ids() і так паралелить по 10, але
+# тисячі викликів одним прогоном — вже інший масштаб). Кеш добудовується
+# поступово, за кілька прогонів — той самий підхід, що й
+# own_product_links_cache.json.
+
+
 def build_prom_category_cache(catalog: dict, prom_products_by_external_id: dict) -> dict:
-    """{external_id: {"category_id": int, "category_caption": str}} — БЕЗ
-    жодного додаткового HTTP-запиту: prom_products_by_external_id (уже
-    отриманий fetch_prom_products() для self-match/фото вище) містить поле
-    `category: {id, caption}` для кожного товару напряму з /products/list.
+    """{external_id: {"category_id": int, "category_caption": str}} —
+    prom_products_by_external_id (уже отриманий fetch_prom_products() для
+    self-match/фото вище) містить поле `category: {id, caption}` для
+    кожного товару напряму з /products/list.
 
     Це РЕАЛЬНА Prom-категорія КОНКРЕТНОГО товару — на відміну від
     PROM_CATEGORY_COMMISSION (competitor_pricing.py), яка зіставляє
@@ -384,18 +393,45 @@ def build_prom_category_cache(catalog: dict, prom_products_by_external_id: dict)
     з різними ставками (підтверджено на "рюкзаки": 3 різні Prom-категорії
     в реальному розподілі топ-970, див. PROM_CATEGORY_ID_COMMISSION).
 
-    Товари, ще не імпортовані в Prom (немає в prom_products_by_external_id)
-    чи без поля category — просто відсутні в результаті (не вигадуємо)."""
+    ВИПРАВЛЕНО (2026-07-27, живий інцидент — реальний імпорт-звіт Prom
+    показав "Для 4037 товарів автоматично визначена категорія" з 6000,
+    після живого підтвердження, що fetch_prom_products() бачить лише
+    ~1440-1787 з реальних ~3000+ товарів кабінету через відомий "невидима
+    група" сліпий бік /groups/list, задокументований ще 2026-07-12 для
+    категорії "Сквіші"): товари, яких немає в prom_products_by_external_id,
+    РАНІШЕ просто лишались без categoryId назавжди, навіть якщо вони вже
+    давно живуть у Prom із коректною категорією — саме ця "невидима група"
+    прогалина, не "ще не встигли додати". Тепер такі кандидати (обмежені
+    CATEGORY_CACHE_EXTRA_LOOKUP_LIMIT, щоб не спровокувати 429) додатково
+    перевіряються через fetch_prom_products_by_external_ids() — той самий
+    метод, що вже використовує prom_catalog_auditor.py::check_blocked()
+    для підтвердження "відсутніх" товарів, і структурно НЕ має цього
+    сліпого боку (іде напряму по external_id, не через /groups/list)."""
     cache = {}
+    missing_pids = []
     for pid in catalog:
         product = prom_products_by_external_id.get(pid)
         if not product:
+            missing_pids.append(pid)
             continue
         category = product.get("category") or {}
         category_id = category.get("id")
         if not category_id:
             continue
         cache[pid] = {"category_id": category_id, "category_caption": category.get("caption")}
+
+    if missing_pids:
+        lookup_batch = missing_pids[:CATEGORY_CACHE_EXTRA_LOOKUP_LIMIT]
+        found, _indeterminate = fetch_prom_products_by_external_ids(set(lookup_batch))
+        for pid, product in found.items():
+            category = product.get("category") or {}
+            category_id = category.get("id")
+            if not category_id:
+                continue
+            cache[pid] = {"category_id": category_id, "category_caption": category.get("caption")}
+        print(f"[Google] Кеш категорій: {len(missing_pids)} товарів відсутні в group-based фетчі "
+              f"(відомий сліпий бік /groups/list), додатково перевірено {len(lookup_batch)}, "
+              f"знайдено реальну категорію для {len(found)}.")
 
     _save_prom_category_cache(cache)
     return cache

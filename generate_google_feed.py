@@ -66,7 +66,7 @@ import requests
 from parser import fetch_toysi_catalog
 from generate_prom_feed import normalize_vendor
 from generate_prom_feed_top import select_top_items
-from prom_catalog_sync import fetch_prom_products
+from prom_catalog_sync import fetch_prom_products, fetch_prom_products_by_external_ids
 from prom_competitor_pricer import SEARCH_DELAY
 from competitor_pricing import real_toysi_cost, load_fresh_prom_price_overrides
 
@@ -371,11 +371,65 @@ def _save_prom_category_cache(cache: dict) -> None:
               f"наступний прогін просто порахує наново.", file=sys.stderr)
 
 
+def _load_prom_category_cache() -> dict:
+    """Та сама TTL-логіка, що й _load_prom_category_cache() у
+    prom_competitor_pricer.py (читач цього ж файлу) — навмисно
+    продубльовано тут (не імпортовано звідти), бо ЦЕЙ файл — писар,
+    той — лише читач, і дублювання конкретно цієї TTL-перевірки дешевше
+    за циклічний імпорт між двома модулями."""
+    if not PROM_CATEGORY_CACHE_FILE.exists():
+        return {}
+    age_days = (time.time() - PROM_CATEGORY_CACHE_FILE.stat().st_mtime) / 86400
+    if age_days >= PROM_CATEGORY_CACHE_TTL_DAYS:
+        return {}
+    try:
+        return json.loads(PROM_CATEGORY_CACHE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+
+
+# ВИПРАВЛЕНО (2026-07-27, аудит code_report_2026-07-27_pt10.md — той самий
+# клас "starvation"-бага, що вже виправлявся в PR #165 для
+# ROTATION_BATCH_SIZE): окремий файл лише зі списком external_id, які вже
+# БУЛИ СПРОБУВАНІ через fetch_prom_products_by_external_ids() (незалежно
+# від результату — знайдено чи підтверджено 404), не змішується з самим
+# prom_category_cache.json (той читає prom_competitor_pricer.py напряму
+# як {pid: {category_id, category_caption}} — новий ключ тут поламав би
+# цей контракт).
+PROM_CATEGORY_CACHE_CHECKED_FILE = Path(__file__).parent / "prom_category_cache_checked.json"
+
+
+def _load_checked_pids() -> set:
+    if not PROM_CATEGORY_CACHE_CHECKED_FILE.exists():
+        return set()
+    try:
+        return set(json.loads(PROM_CATEGORY_CACHE_CHECKED_FILE.read_text(encoding="utf-8")))
+    except (ValueError, OSError):
+        return set()
+
+
+def _save_checked_pids(checked_pids: set) -> None:
+    try:
+        PROM_CATEGORY_CACHE_CHECKED_FILE.write_text(
+            json.dumps(sorted(checked_pids), ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except OSError as e:
+        print(f"[Google] Не вдалось зберегти prom_category_cache_checked.json ({e}) — не критично.",
+              file=sys.stderr)
+
+
+CATEGORY_CACHE_EXTRA_LOOKUP_LIMIT = 300  # той самий принцип, що
+# LIVE_LOOKUP_EXTRA_BATCH_LIMIT (prom_competitor_pricer.py) — обмежує
+# кількість додаткових по-одному запитів за прогін, щоб не спровокувати
+# 429 (fetch_prom_products_by_external_ids() і так паралелить по 10, але
+# тисячі викликів одним прогоном — вже інший масштаб).
+
+
 def build_prom_category_cache(catalog: dict, prom_products_by_external_id: dict) -> dict:
-    """{external_id: {"category_id": int, "category_caption": str}} — БЕЗ
-    жодного додаткового HTTP-запиту: prom_products_by_external_id (уже
-    отриманий fetch_prom_products() для self-match/фото вище) містить поле
-    `category: {id, caption}` для кожного товару напряму з /products/list.
+    """{external_id: {"category_id": int, "category_caption": str}} —
+    prom_products_by_external_id (уже отриманий fetch_prom_products() для
+    self-match/фото вище) містить поле `category: {id, caption}` для
+    кожного товару напряму з /products/list.
 
     Це РЕАЛЬНА Prom-категорія КОНКРЕТНОГО товару — на відміну від
     PROM_CATEGORY_COMMISSION (competitor_pricing.py), яка зіставляє
@@ -384,18 +438,74 @@ def build_prom_category_cache(catalog: dict, prom_products_by_external_id: dict)
     з різними ставками (підтверджено на "рюкзаки": 3 різні Prom-категорії
     в реальному розподілі топ-970, див. PROM_CATEGORY_ID_COMMISSION).
 
-    Товари, ще не імпортовані в Prom (немає в prom_products_by_external_id)
-    чи без поля category — просто відсутні в результаті (не вигадуємо)."""
-    cache = {}
+    ВИПРАВЛЕНО (2026-07-27, живий інцидент — реальний імпорт-звіт Prom
+    показав "Для 4037 товарів автоматично визначена категорія" з 6000,
+    після живого підтвердження, що fetch_prom_products() бачить лише
+    ~1440-1787 з реальних ~3000+ товарів кабінету через відомий "невидима
+    група" сліпий бік /groups/list, задокументований ще 2026-07-12 для
+    категорії "Сквіші"): товари, яких немає в prom_products_by_external_id,
+    РАНІШЕ просто лишались без categoryId назавжди, навіть якщо вони вже
+    давно живуть у Prom із коректною категорією.
+
+    ВИПРАВЛЕНО ВДРУГЕ (аудит code_report_2026-07-27_pt10.md — перша
+    версія цього фіксу мала ТОЧНО ТОЙ САМИЙ клас "starvation"-бага, що
+    вже виправлявся в PR #165 для ROTATION_BATCH_SIZE): без персистентності
+    `cache = {}` на старті + наївний `missing_pids[:LIMIT]` стабільно
+    беруть РІВНО ту саму першу підмножину щоразу — решта ніколи не
+    прогресує, скільки прогонів не запускай. Тепер: (1) `cache`
+    завантажується з попереднього `prom_category_cache.json` (TTL 7 днів,
+    та сама логіка, що й читач-споживач у prom_competitor_pricer.py) —
+    уже вирішені pid не переспитуються повторно; (2) `checked_pids`
+    (окремий файл, PROM_CATEGORY_CACHE_CHECKED_FILE) пам'ятає, які pid
+    ВЖЕ пройшли через fetch_prom_products_by_external_ids() (незалежно
+    від результату), і бюджет CATEGORY_CACHE_EXTRA_LOOKUP_LIMIT ділиться
+    навпіл — половина на ще НІКОЛИ не перевірені (гарантований прогрес по
+    бэклогу), половина на вже перевірені, але досі невирішені (генуїнно
+    відсутні в Prom SKU з часом самі створюються — цей бюджет ловить,
+    коли вони з'являться) — той самий принцип, що never_checked/
+    previously_checked у PR #165."""
+    cache = dict(_load_prom_category_cache())
+    checked_pids = _load_checked_pids()
+
+    missing_pids = []
     for pid in catalog:
         product = prom_products_by_external_id.get(pid)
         if not product:
+            if pid not in cache:
+                missing_pids.append(pid)
             continue
         category = product.get("category") or {}
         category_id = category.get("id")
         if not category_id:
             continue
         cache[pid] = {"category_id": category_id, "category_caption": category.get("caption")}
+
+    if missing_pids:
+        never_checked = [pid for pid in missing_pids if pid not in checked_pids]
+        previously_checked = [pid for pid in missing_pids if pid in checked_pids]
+        half = CATEGORY_CACHE_EXTRA_LOOKUP_LIMIT // 2
+        lookup_batch = never_checked[:half] + previously_checked[:CATEGORY_CACHE_EXTRA_LOOKUP_LIMIT - min(half, len(never_checked))]
+
+        found, indeterminate = fetch_prom_products_by_external_ids(set(lookup_batch))
+        for pid, product in found.items():
+            category = product.get("category") or {}
+            category_id = category.get("id")
+            if not category_id:
+                continue
+            cache[pid] = {"category_id": category_id, "category_caption": category.get("caption")}
+
+        # indeterminate (мережева/авторизаційна помилка самої перевірки) —
+        # НЕ доказ відсутності, навмисно НЕ позначаємо "перевіреним", щоб
+        # спробувати знову наступного прогону (контракт
+        # fetch_prom_products_by_external_ids(), не наш вибір тут).
+        newly_checked = (set(lookup_batch) - indeterminate)
+        checked_pids |= newly_checked
+        _save_checked_pids(checked_pids)
+
+        print(f"[Google] Кеш категорій: {len(missing_pids)} товарів відсутні в group-based фетчі "
+              f"(відомий сліпий бік /groups/list) і ще не в кеші, перевірено {len(lookup_batch)} "
+              f"({len(never_checked[:half])} нових, {len(lookup_batch) - len(never_checked[:half])} повторно), "
+              f"знайдено реальну категорію для {len(found)}.")
 
     _save_prom_category_cache(cache)
     return cache

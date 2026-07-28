@@ -1,5 +1,10 @@
 .env
 
+# Тимчасове локальне сховище для щойно згенерованих приватних ключів
+# (напр. vps-pull-deploy, 2026-07-27) до передачі власниці й видалення —
+# ніколи не для git, той самий принцип, що й .env вище.
+.local_secrets/
+
 __pycache__/
 *.pyc
 
@@ -63,10 +68,25 @@ prom_competitor_pricer_summary.md
 # гілка публічна й force-push на неї замінив би live-фіди/стан репрайсера).
 full_catalog_scan_state.json
 
-# Rozetka-only стан членства для grace-періоду тимчасово відсутніх товарів
-# (2026-07-16, root-cause SKU 299318/299320/299321/249158) — суто runtime,
-# перебудовується щоразу з живих даних Toysi, не для git.
+# ЗАМІНЕНО (2026-07-27) на rozetka_static_selection.json нижче —
+# select_top_items()/грейс-період для Rozetka прибрано повністю (пряме
+# рішення власниці, див. generate_rozetka_feed.py). Код більше не пише
+# цей файл, але запис лишається (defense in depth) — старі копії
+# можуть і далі лежати на VPS/інших чекаутах, не для git у будь-якому разі.
 rozetka_feed_membership_state.json
+
+# Заморожений, ОДНОРАЗОВО сформований статичний відбір для Rozetka
+# (2026-07-27, пряме рішення власниці — незалежно від Prom, без
+# ротації, "навіть без перевірки складу, поки не пройшли модерацію") —
+# {items, prices, built_at}. НЕ для git як файл (специфічний для
+# конкретного акаунту знімок), АЛЕ round-trip'иться через feed-data
+# (знахідка аудиту pt7 — без цього round-trip файл ніколи не пережив би
+# ефемерний GH Actions runner, і "заморожування" виконувалось би заново
+# щопрогону) — той самий принцип, що й prom_competitor_price_state.json/
+# own_product_links_cache.json. Видалення файлу (і в git-history гілки
+# feed-data) — єдиний спосіб змусити наступний прогін перебудувати
+# список з нуля.
+rozetka_static_selection.json
 
 # Резюмований прогрес РУЧНОГО, разового apply_live_dumping_fix.py
 # (2026-07-26) — {started_at, done_pids} для ПОТОЧНОГО sweep'у, щоб
@@ -109,6 +129,13 @@ own_product_links_cache.json
 # prom_competitor_pricer.py/full_catalog_competitor_scan.py читають) —
 # той самий клас файлу, що й own_product_links_cache.json вище
 prom_category_cache.json
+
+# ДОДАНО (2026-07-27, аудит code_report_2026-07-27_pt10.md, фікс
+# "starvation"-бага в build_prom_category_cache()): окремий список
+# external_id, вже спробуваних через fetch_prom_products_by_external_ids()
+# (не змішується з prom_category_cache.json, щоб не поламати контракт
+# читача prom_competitor_pricer.py) — той самий клас ефемерного файлу
+prom_category_cache_checked.json
 
 # Внутрішньопрогонний кеш повного списку товарів Prom (TTL 1 година —
 # generate_google_feed.py пише, generate_meta_feed.py/generate_bing_feed.py
@@ -154,3 +181,30 @@ vps_code_sync_state.json
 # service_watchdog.py (знахідка аудиту pt6 — замінює check_feed_pipeline_schedule(),
 # яка стала непридатною, щойно schedule: в update-feeds.yml закоментовано).
 feed_pipeline_state.json
+
+# ЗНАХІДКА (2026-07-27, живо після Кроку 1 автодеплою — власниця побачила
+# в `git status` на VPS): клієнтський сертифікат NovaPay
+# (NOVAPAY_CERT_PATH, novapay_client.py) і його бекапи НЕ були покриті
+# жодним існуючим записом — на відміну від .env/*_state.json вище.
+# Репозиторій ПУБЛІЧНИЙ: будь-який майбутній `git add -A` на VPS миттєво
+# й незворотно розкрив би приватний сертифікат. Wildcard покриває сам
+# файл і всі спостережені варіанти бекапів (.bak/.old_pubkey/.save).
+novapay_cert.pem*
+
+# Стандартний venv-каталог (Python) — ніколи не для git, той самий
+# принцип, що й __pycache__/ вище.
+venv/
+
+# Загальні бекап-артефакти, знайдені на VPS 2026-07-27 (ручні копії "про
+# всяк випадок" під час обслуговування) — не код, не потрібні в git.
+*.bak*
+_backup_*/
+_drift_backup_*/
+
+# Одноразові діагностичні/тестові скрипти NovaPay-інтеграції (створені
+# напряму на VPS під час живого тестування SOAP/IMAP-шляху, задачі
+# #146/#147) — не частина постійного коду проєкту, навіть якщо лишаються
+# на VPS для довідки.
+novapay_auth_test.py
+novapay_diagnostic.py
+novapay_explore*.py

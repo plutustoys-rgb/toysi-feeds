@@ -47,29 +47,51 @@ Toysi фактично не має SKU без визначеного бренд�
 лишається на випадок, якщо це зміниться, а не тому що зараз щось реально
 відсіює.
 
-ЗВУЖЕНО ДО КУРУВАНОГО ВІДБОРУ (2026-07-13, задача власника): раніше цей
-фід вивантажував ПОВНИЙ каталог Toysi (~28 000+ SKU) без жодного відбору
-— на відміну від Prom, де в кабінет реально йде куруваний топ-970
-(generate_prom_feed_top.py). Тепер `generate_feed()` застосовує ТУ САМУ
-select_top_items() (не рахує незалежний відбір з нуля) — Rozetka отримує
-еквівалентний куруваний список (~970 SKU), той самий, що й Prom. Формула
-ціноутворення (decide_price_for_platform(platform="rozetka")) не
-змінилась — міняється лише те, ЯКІ SKU взагалі потрапляють у фід.
+НЕЗАЛЕЖНИЙ, СТАТИЧНИЙ ВІДБІР (2026-07-27, пряме, двічі повторене й
+посилене рішення власниці — перше "перевикористання select_top_items()
+з Prom неправильне, немає жодних реальних Rozetka-продажів, щоб
+обґрунтувати ранжування чи ротацію", друге, жорсткіше: "повністю
+статичний, навіть без перевірки складу, поки не пройшли модерацію"):
 
-ВІДОМИЙ ТИМЧАСОВИЙ КОМПРОМІС (задокументовано за рекомендацією рев'ю
-PR #45): select_top_items()/_margin() ранжує товари за МАРЖЕЮ PROM
-(через default_retail_price() у generate_prom_feed.py, категорійна
-комісія саме Prom), не за Rozetka-маржею — тобто "куруваний топ-970" для
-Rozetka зараз означає "топ-970 за прибутковістю на Prom", не незалежний
-Rozetka-специфічний відбір. Сама РОЗДРІБНА ЦІНА для кожного SKU нижче
-рахується коректно, платформо-специфічно (decide_price_for_platform(
-platform="rozetka")) — торкається лише ТОГО, ЯКІ САМЕ SKU взагалі
-потрапляють у список. Причина: категорійні ставки комісії Rozetka
-програмно/публічно ще не знайдено (кабінет на стадії "Підготовка"), тож
-незалежний Rozetka-ранжований відбір поки не на чому побудувати. Не
-змінювати зараз — якщо колись з'явиться реальна Rozetka-комісія по
-категоріях, варто порахувати "куруваний топ-970" для Rozetka незалежно,
-а не й далі перевикористовувати Prom-ранжування.
+Раніше (2026-07-13—2026-07-26) `generate_feed()` перевикористовував
+Prom-функцію `select_top_items()`/`_margin()` — ранжування за МАРЖЕЮ
+PROM (тодішня причина: Rozetka-комісія по категоріях ще не була відома,
+не було на чому побудувати незалежний відбір). Відколи
+`ROZETKA_CATEGORY_COMMISSION` існує (Vis-задача), цей компроміс
+структурно застарів — і власниця прямо відхилила його продовження.
+
+Тепер `_build_rozetka_static_selection()` нижче:
+1. Рахує список ОДИН ЄДИНИЙ РАЗ (перший запуск, коли
+   `ROZETKA_STATIC_SELECTION_FILE` ще не існує) — критерій: вимоги
+   Rozetka до даних (`_qualifies_for_feed()`, без змін), stock>0 РІВНО
+   на момент формування, і прибутковість під ВЛАСНОЮ Rozetka-комісією
+   (`decide_price_for_platform(cost, None, "rozetka", ...)` — БЕЗ
+   конкурента, Prom-формула тут узагалі не бере участі). Розмір —
+   `ROZETKA_STATIC_LIST_SIZE = 2000` (пряме число від власниці, не моя
+   екстраполяція з Prom-970/6000) — сортуємо кандидатів за margin_pct
+   (Rozetka) спадно й беремо перших 2000; це ОДНОРАЗОВЕ сортування для
+   побудови списку, не перманентна ротація/переранжування.
+2. На ВСІХ наступних запусках — просто повертає той самий, раніше
+   збережений список БЕЗ ЖОДНОГО перерахунку з живого каталогу: ні
+   ціна, ні available/stock_quantity, ні сам факт присутності товару в
+   фіді НЕ змінюються, НАВІТЬ якщо stock у Toysi впаде до 0. Це свідома
+   відмова від live-перевірки складу для цієї підмножини — приймається
+   ризик показати товар доступним, коли його вже нема, заради того, щоб
+   не зривати проходження модерації Rozetka повторними змінами. Немає
+   (поки що) жодного сигналу "модерацію пройдено" з API/фіда Rozetka —
+   тож УВЕСЬ список трактується як "ще на модерації" за замовчуванням.
+
+Що робити з конкретним SKU ПІСЛЯ підтвердженого проходження модерації
+(відновити live-оновлення ціни/складу для нього?) — окреме МАЙБУТНЄ
+рішення, свідомо не вирішується цим фіксом (немає даних, щоб визначити
+цей стан зараз).
+
+ЗАМІНЕНО ЦИМ ЖЕ ФІКСОМ: `_apply_rozetka_oos_grace()`/
+`ROZETKA_MEMBERSHIP_STATE_FILE`/`rozetka_feed_membership_state.json`
+(grace-період "тимчасово немає в наявності" для товарів, що випадали з
+select_top_items() через stock=0) — увесь цей механізм ставав зайвим:
+статичний список тепер узагалі не виключає товари за stock=0 в
+принципі, тож більше нема що "тимчасово тримати" через грейс-період.
 
 <url> (необов'язковий тег, до 500 символів) — посилання на сторінку
 товару. Самозіставлення з реальним лістингом на Prom (той самий механізм,
@@ -118,7 +140,6 @@ from pathlib import Path
 
 from competitor_pricing import decide_price_for_platform, load_description_overrides
 from generate_prom_feed import append_clearance_notice
-from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
 
 # ЗМІНЕНО 2026-07-14 (вимога Rozetka, передана напряму менеджером по
@@ -137,84 +158,11 @@ OUTPUT_FILE        = "feeds/rozetka_feed.xml"
 PLATFORM           = "rozetka"
 MIN_SUPPLIER_PRICE = 20  # товари дешевше цієї ціни постачальника пропускаємо
 
-# ВИПРАВЛЕНО (2026-07-16, root-cause SKU 299318/299320/299321/249158 у
-# "Видалені з прайсу" на Rozetka): select_top_items() (спільна з Prom
-# функція відбору топ-970) виключає stock=0 товари з eligible-пулу
-# ЦІЛКОМ (_margin() повертає -1) — тобто товар, щойно вичерпаний у
-# Toysi, миттєво зникає з <offers> НАСТУПНОГО прогону фіда, замість
-# лишитись у ньому з available="false" (механізм, який _build_xml()
-# нижче й так вміє писати правильно, коли товар взагалі присутній у
-# переданому наборі). Rozetka трактує "офер зник із фіда" як "Видалено
-# з прайсу" (втрата видимості/історії/рейтингу), а не як "тимчасово
-# немає в наявності" — це РІЗНІ статуси в кабінеті, і для тимчасового
-# вичерпання запасу постачальника правильний саме другий.
-#
-# Рішення: окремий, лише для Rozetka, стан членства
-# (ROZETKA_MEMBERSHIP_STATE_FILE) — пам'ятає, які offer_id вже були в
-# куруваному відборі. Товар, що випав із select_top_items() САМЕ через
-# stock=0 (не через програш за маржею серед товарів, які й далі в
-# наявності — це відрізняємо явно, звіряючи з живим catalog[pid]
-# нижче) — довантажується назад у top_catalog із живого catalog (не
-# top_catalog) зі своїм актуальним (нульовим) залишком, тож
-# _build_xml() природно запише available="false", а не мовчки пропустить
-# офер. ROZETKA_OOS_GRACE_DAYS обмежує, як довго товар може лишатись
-# "тимчасово недоступним" у фіді, перш ніж ми відпустимо його насправді
-# (не роздувати фід мертвими SKU, які постачальник більше ніколи не
-# поповнить).
-ROZETKA_MEMBERSHIP_STATE_FILE = Path(__file__).parent / "rozetka_feed_membership_state.json"
-ROZETKA_OOS_GRACE_DAYS = 14
-
-
-def _load_rozetka_membership_state() -> dict:
-    if not ROZETKA_MEMBERSHIP_STATE_FILE.exists():
-        return {}
-    try:
-        return json.loads(ROZETKA_MEMBERSHIP_STATE_FILE.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {}
-
-
-def _save_rozetka_membership_state(state: dict) -> None:
-    ROZETKA_MEMBERSHIP_STATE_FILE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8"
-    )
-
-
-def _apply_rozetka_oos_grace(top_catalog: dict, catalog: dict) -> dict:
-    """Довантажує назад у top_catalog товари, що випали з select_top_items()
-    ЛИШЕ через власне stock=0 (звіряючи з живим catalog[pid], а не
-    здогадуючись за причиною випадання) і ще в межах ROZETKA_OOS_GRACE_DAYS
-    від останнього разу, коли вони реально були в наявності. Мутує й
-    повертає копію top_catalog — сам catalog не чіпає."""
-    today = datetime.now().date()
-    state = _load_rozetka_membership_state()
-    extended = dict(top_catalog)
-
-    for pid in top_catalog:
-        state[pid] = today.isoformat()
-
-    for pid, last_seen_str in list(state.items()):
-        if pid in top_catalog:
-            continue
-        live_item = catalog.get(pid)
-        if live_item is None:
-            del state[pid]  # товар зник із самого Toysi — відпускаємо, нема з чого будувати офер
-            continue
-        if live_item.get("stock", 0) > 0:
-            del state[pid]  # у наявності, але програв за маржею — не наша ціль тут, відпускаємо
-            continue
-        try:
-            last_seen = datetime.strptime(last_seen_str, "%Y-%m-%d").date()
-        except (TypeError, ValueError):
-            del state[pid]
-            continue
-        if (today - last_seen).days > ROZETKA_OOS_GRACE_DAYS:
-            del state[pid]  # грейс-період вичерпано — товар реально відпускаємо з фіда
-            continue
-        extended[pid] = live_item  # у межах грейс-періоду — довантажуємо назад, available="false" напише _build_xml()
-
-    _save_rozetka_membership_state(state)
-    return extended
+# Пряме число від власниці (2026-07-27) — НЕ екстрапольоване з Prom
+# (970/6000), окреме рішення для Rozetka. Розмір ПІСЛЯ модерації —
+# окреме майбутнє рішення, не вирішується цим числом.
+ROZETKA_STATIC_LIST_SIZE = 2000
+ROZETKA_STATIC_SELECTION_FILE = Path(__file__).parent / "rozetka_static_selection.json"
 
 # ВИПРАВЛЕНО (2026-07-15, знайдено валідатором Rozetka: попередження на
 # бренд "Wader", 9 товарів) — Rozetka відхиляє окремі бренди за власною
@@ -667,6 +615,56 @@ def _build_xml(
     return yml
 
 
+def _build_rozetka_static_selection(catalog: dict) -> tuple[dict, dict]:
+    """Незалежний від Prom, СТАТИЧНИЙ відбір для Rozetka (2026-07-27,
+    пряме рішення власниці — див. докстрінг файлу вище). Повертає
+    (items, prices): items — {pid: item} заморожений на момент першого
+    формування знімок каталогу (усі поля — назва/опис/фото/stock/тощо —
+    рівно такі, якими вони були ТОДІ, не live), prices — {pid: retail}
+    заморожена ціна, порахована ОДИН РАЗ через decide_price_for_platform()
+    з Rozetka-комісією, без конкурента.
+
+    Перший виклик (файл ще не існує) — рахує й зберігає. Кожен наступний
+    виклик — читає збережене й повертає БЕЗ ЖОДНОГО перерахунку: жодне
+    поле жодного SKU з цього списку не змінюється, доки хтось явно не
+    вирішить інакше (видаливши файл чи додавши майбутній механізм
+    "SKU X пройшов модерацію")."""
+    if ROZETKA_STATIC_SELECTION_FILE.exists():
+        try:
+            saved = json.loads(ROZETKA_STATIC_SELECTION_FILE.read_text(encoding="utf-8"))
+            return saved["items"], saved["prices"]
+        except (ValueError, OSError, KeyError):
+            pass  # пошкоджений/неповний файл — сформувати заново нижче, як при першому запуску
+
+    candidates = []
+    for pid, item in catalog.items():
+        if not _qualifies_for_feed(item, excluded=set()):
+            continue
+        if item.get("stock", 0) <= 0:
+            continue
+        cost = float(item.get("price") or 0)
+        decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))
+        candidates.append((pid, item, decision["price"], decision["margin_pct"]))
+
+    candidates.sort(key=lambda c: c[3], reverse=True)
+    selected = candidates[:ROZETKA_STATIC_LIST_SIZE]
+
+    items  = {pid: item for pid, item, _, _ in selected}
+    prices = {pid: price for pid, _, price, _ in selected}
+
+    ROZETKA_STATIC_SELECTION_FILE.write_text(
+        json.dumps({"items": items, "prices": prices, "built_at": datetime.now().isoformat()},
+                   ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+    print(f"[Rozetka] Статичний список сформовано ВПЕРШЕ: {len(items)} з {len(candidates)} "
+          f"прибуткових/якісних кандидатів (з {len(catalog)} товарів каталогу Toysi). "
+          "Список ЗАМОРОЖЕНИЙ — наступні прогони використовуватимуть той самий, без змін "
+          "(ні ціна, ні наявність, ні сам факт присутності), доки не буде окремого рішення "
+          "про товари, що пройшли модерацію Rozetka.")
+    return items, prices
+
+
 def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
                   catalog: dict = None,
@@ -679,29 +677,19 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         print("[Rozetka] Каталог порожній — файл не створено.")
         return
 
-    # ЗВУЖЕНО (задача власника, 2026-07-13): раніше цей фід вивантажував
-    # ПОВНИЙ каталог Toysi (28 000+ офферів) без жодного відбору — на
-    # відміну від Prom, де в кабінет реально йде куруваний топ-970
-    # (generate_prom_feed_top.py, select_top_items() — відбір за маржею,
-    # тепер з балансом попит/маржа). Перевикористовуємо ТУ САМУ функцію
-    # відбору (не рахуємо незалежний список з нуля) — Rozetka отримує
-    # еквівалентний куруваний список, той самий SELECT_COUNT (~970), що
-    # й Prom. Ціна/маржа й далі рахуються окремо через
-    # decide_price_for_platform(platform="rozetka") нижче — міняється
-    # лише ВІДБІР товарів, не формула ціноутворення.
-    top_catalog = select_top_items(catalog)
-    print(f"[Rozetka] Куруваний відбір: {len(top_catalog)} з {len(catalog)} товарів повного каталогу.")
+    # Незалежний, СТАТИЧНИЙ відбір (2026-07-27, див. докстрінг файлу й
+    # _build_rozetka_static_selection() вище) — заморожений знімок,
+    # перерахований лише один раз, при першому формуванні.
+    static_items, static_prices = _build_rozetka_static_selection(catalog)
+    print(f"[Rozetka] Статичний (заморожений) відбір: {len(static_items)} товарів.")
 
-    before_grace = len(top_catalog)
-    top_catalog = _apply_rozetka_oos_grace(top_catalog, catalog)
-    carried_forward = len(top_catalog) - before_grace
-    if carried_forward:
-        print(f"[Rozetka] Тимчасово довантажено назад (available=\"false\", grace-період "
-              f"{ROZETKA_OOS_GRACE_DAYS} днів): {carried_forward} товарів.")
+    frozen_price_overrides = dict(static_prices)
+    if price_overrides:
+        frozen_price_overrides.update(price_overrides)  # явний зовнішній override (якщо переданий) має пріоритет
 
-    print(f"[Rozetka] Генеруємо XML для {len(top_catalog)} товарів...")
+    print(f"[Rozetka] Генеруємо XML для {len(static_items)} товарів...")
     root = _build_xml(
-        top_catalog, price_overrides=price_overrides, exclude_ids=exclude_ids,
+        static_items, price_overrides=frozen_price_overrides, exclude_ids=exclude_ids,
         description_overrides=description_overrides,
     )
 

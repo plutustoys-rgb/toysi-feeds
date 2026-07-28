@@ -130,6 +130,13 @@ own_product_links_cache.json
 # той самий клас файлу, що й own_product_links_cache.json вище
 prom_category_cache.json
 
+# ДОДАНО (2026-07-27, аудит code_report_2026-07-27_pt10.md, фікс
+# "starvation"-бага в build_prom_category_cache()): окремий список
+# external_id, вже спробуваних через fetch_prom_products_by_external_ids()
+# (не змішується з prom_category_cache.json, щоб не поламати контракт
+# читача prom_competitor_pricer.py) — той самий клас ефемерного файлу
+prom_category_cache_checked.json
+
 # Внутрішньопрогонний кеш повного списку товарів Prom (TTL 1 година —
 # generate_google_feed.py пише, generate_meta_feed.py/generate_bing_feed.py
 # читають, щоб не робити той самий важкий /groups/list-запит тричі в

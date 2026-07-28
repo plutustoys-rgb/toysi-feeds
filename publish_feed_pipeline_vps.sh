@@ -17,6 +17,25 @@
 # для Prom-імпорту (він її не читає напряму), а тому що
 # apply_live_dumping_fix.py (ручний, разовий контролер) досі фетчить
 # цей файл з feed-data як джерело правди (_fetch_fresh_price_state()).
+#
+# ВИПРАВЛЕНО (2026-07-28, пряме рішення власниці): Rozetka повністю
+# прибрана з цього скрипта — ані feeds/rozetka_feed.xml, ані
+# rozetka_static_selection.json. VPS більше НЕ викликає
+# generate_rozetka_feed.py (run_feed_pipeline_vps.sh), тож локальної
+# копії цих файлів на диску VPS взагалі не існує — публікація
+# лишається виключно на GH Actions (update-feeds.yml), щоб дві сторони
+# ніколи не писали в ту саму частину feed-data.
+#
+# КРИТИЧНО ВИПРАВЛЕНО (2026-07-28, знайдено ДО живого прогону): просте
+# розділення "хто які файли додає" НЕ РЯТУЄ від взаємного затирання,
+# поки обидва боки роблять orphan-коміт — кожен такий коміт БУДУЄ
+# ПОРОЖНЄ дерево з нуля, тож хто б не запушив ПІЗНІШЕ, повністю стирає
+# ВСЕ, чого немає в його власному коміті (включно з файлами Rozetka від
+# GH Actions). Тому: перед стейджингом власних файлів ПІДТЯГУЄМО ПОВНЕ
+# поточне дерево feed-data (git checkout origin/feed-data -- .) —
+# комміт лишається "плоским" (без росту історії, той самий принцип, що
+# й раніше), але тепер містить УСІ файли: свої (щойно перезаписані) і
+# чужі (Rozetka від GH Actions — незмінні, збережені як є).
 set -e
 cd /opt/plutustoys
 export GIT_SSH_COMMAND="ssh -i /opt/plutustoys/.ssh_feed_publish/deploy_key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/opt/plutustoys/.ssh_feed_publish/known_hosts"
@@ -26,27 +45,24 @@ rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 git init -q
+git remote add origin git@github.com:plutustoys-rgb/toysi-feeds.git
 git config user.name "feed-pipeline-bot"
 git config user.email "feed-pipeline-bot@users.noreply.github.com"
 
+# Підтягуємо ПОВНЕ поточне дерево feed-data (включно з файлами Rozetka,
+# за які відповідає GH Actions) — || true на випадок геть першого разу,
+# коли гілка feed-data ще не існує.
+git fetch --depth 1 origin feed-data 2>/dev/null || true
+git checkout --orphan feed-data -q
+git checkout origin/feed-data -- . 2>/dev/null || true
+
 mkdir -p feeds
-cp /opt/plutustoys/feeds/rozetka_feed.xml feeds/
 cp /opt/plutustoys/feeds/prom_feed_top.xml feeds/
 cp /opt/plutustoys/prom_competitor_price_state.json .
 cp /opt/plutustoys/own_product_links_cache.json .
 
-git checkout --orphan feed-data -q
-git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml \
+git add -f feeds/prom_feed_top.xml \
     prom_competitor_price_state.json own_product_links_cache.json
-
-# rozetka_static_selection.json (PR #179 — замінює rozetka_feed_membership_state.json,
-# більше не пишеться generate_rozetka_feed.py) — той самий умовний
-# принцип, що й для необов'язкових фідів нижче: якщо файл ще не існує
-# (перший прогін ще не завершився), не блокувати публікацію решти.
-if [ -s /opt/plutustoys/rozetka_static_selection.json ]; then
-    cp /opt/plutustoys/rozetka_static_selection.json .
-    git add -f rozetka_static_selection.json
-fi
 
 for f in google_merchant_feed.xml meta_feed.xml bing_feed.xml eva_feed.xml; do
     if [ -s "/opt/plutustoys/feeds/$f" ]; then

@@ -173,23 +173,34 @@ def get_tracking_status(ttn: str) -> dict | None:
     помилка запиту). Піднімає NovaPoshtaAPIError на реальну проблему із
     самим запитом (мережа, ключ, невалідна відповідь).
 
-    delivered визначається за НЕПОРОЖНІМ ActualDeliveryDate — задокументоване
-    поле НП, що заповнюється лише після фактичної видачі отримувачу, а не за
-    числовим StatusCode (StatusCode має десятки можливих значень, і жоден
-    офіційний перелік з чітким "це і лише це означає доставлено" під рукою
-    не звірявся — ActualDeliveryDate однозначний і не потребує такого
-    перепису)."""
+    ВИПРАВЛЕНО (2026-07-28, живий інцидент — Checkbox видав фіскальний чек
+    для замовлення (ТТН 20451496852253), яке фактично ще НЕ отримане
+    клієнтом): попереднє припущення "ActualDeliveryDate заповнюється лише
+    після фактичної видачі отримувачу" — СПРОСТОВАНО живими даними. Живий
+    виклик для цього ТТН показав status_code="7" ("Прибув у відділення" —
+    посилка щойно прибула, НЕ видана) з уже НЕПОРОЖНІМ ActualDeliveryDate.
+    Нова Пошта, схоже, проставляє це поле вже в момент прибуття на
+    відділення самовивозу, не в момент фактичної видачі.
+
+    Вибірка 5 останніх виданих COD-чеків проти живого статусу НП
+    (2026-07-28) підтвердила: НЕ системний збій (лише 1/5 показав цей
+    патерн), але реально відтворюваний — тому delivered тепер визначається
+    за ТЕКСТОМ статусу (чи містить "отримано", а не лише порожність дати) —
+    підтверджено на 4/5 легітимних кейсах (status_code 9/11, обидва
+    "Відправлення отримано..."), жоден з яких не мав слова "Прибув"."""
     results = _call("TrackingDocument", "getStatusDocuments", {
         "Documents": [{"DocumentNumber": ttn, "Phone": ""}],
     })
     if not results:
         return None
     info = results[0]
+    status = info.get("Status", "")
     actual_delivery_date = (info.get("ActualDeliveryDate") or "").strip()
+    delivered = bool(actual_delivery_date) and "отримано" in status.lower()
     return {
-        "status": info.get("Status", ""),
+        "status": status,
         "status_code": str(info.get("StatusCode", "")),
-        "delivered": bool(actual_delivery_date),
+        "delivered": delivered,
         "actual_delivery_date": actual_delivery_date or None,
     }
 

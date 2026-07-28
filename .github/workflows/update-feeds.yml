@@ -192,8 +192,38 @@ jobs:
       # prom_competitor_price_state.json, тож цей обмін місцями нічого
       # іншого не ламає.
       - name: Refresh own-product-link cache for Rozetka <url> tag and buyBox competitor lookup (best-effort)
+        id: gen_google
         continue-on-error: true
         run: python generate_google_feed.py
+
+      # ВИПРАВЛЕНО (2026-07-28, живий інцидент — CLAUDE.md задокументував
+      # цей клас ризику як відкритий, і він одразу ж стався: generate_google_feed.py
+      # впав/повернув порожній файл на одному з прогонів, публікація нижче
+      # (orphan force-push, git checkout --orphan + git rm -r --cached . +
+      # force-push) мовчки пропустила git add для порожнього файлу — і
+      # feeds/google_merchant_feed.xml ФІЗИЧНО ЗНИК з гілки feed-data
+      # НАЗАВЖДИ, без жодного сліду попередньої версії. Наслідок: URL,
+      # зареєстрований у Google Merchant Center, почав повертати 404,
+      # "Исправьте ошибки в файле". Той самий фолбек-принцип, що вже є
+      # для rozetka_feed.xml/prom_feed_top.xml нижче — просто раніше не
+      # був поширений на ці три best-effort-фіди, бо вони вважались
+      # "необов'язковими" й не мали власного restore-кроку.
+      - name: Restore last known-good feeds/google_merchant_feed.xml (this run's generation failed/empty)
+        if: always()
+        run: |
+          if [ ! -s feeds/google_merchant_feed.xml ]; then
+            echo "::warning::feeds/google_merchant_feed.xml відсутній/порожній цього прогону — відновлюю останню робочу версію з ${{ env.FEED_BRANCH }} замість втрати файлу назавжди (orphan force-push інакше видалив би його з гілки без сліду)."
+            git fetch origin "$FEED_BRANCH" 2>/dev/null || true
+            git show "origin/$FEED_BRANCH:feeds/google_merchant_feed.xml" > feeds/google_merchant_feed.xml 2>/dev/null || true
+            python -c "
+            from telegram_notify import send_telegram_message
+            send_telegram_message(
+                '⚠️ update-feeds.yml: генерація google_merchant_feed.xml провалилась/дала порожній файл цього прогону — '
+                'публікується попередня робоча версія (решта фідів йдуть своїм ходом, не заблоковані). '
+                'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+            )
+            "
+          fi
 
       # ДОДАНО (2026-07-20, задачі #170/#171 власниці — видимість магазину):
       # generate_meta_feed.py/generate_bing_feed.py ЛИШЕ ЧИТАЮТЬ
@@ -205,12 +235,53 @@ jobs:
       # необов'язкові, збій тут не повинен блокувати генерацію/
       # публікацію критичних Rozetka/Prom фідів нижче.
       - name: Generate Meta Commerce Manager feed (best-effort)
+        id: gen_meta
         continue-on-error: true
         run: python generate_meta_feed.py
 
+      # Симетрично до Google-фолбеку вище (2026-07-28) — той самий клас
+      # ризику: orphan force-push мовчки губить feeds/meta_feed.xml
+      # назавжди, якщо він порожній/відсутній цього прогону.
+      - name: Restore last known-good feeds/meta_feed.xml (this run's generation failed/empty)
+        if: always()
+        run: |
+          if [ ! -s feeds/meta_feed.xml ]; then
+            echo "::warning::feeds/meta_feed.xml відсутній/порожній цього прогону — відновлюю останню робочу версію з ${{ env.FEED_BRANCH }}."
+            git fetch origin "$FEED_BRANCH" 2>/dev/null || true
+            git show "origin/$FEED_BRANCH:feeds/meta_feed.xml" > feeds/meta_feed.xml 2>/dev/null || true
+            python -c "
+            from telegram_notify import send_telegram_message
+            send_telegram_message(
+                '⚠️ update-feeds.yml: генерація meta_feed.xml провалилась/дала порожній файл цього прогону — '
+                'публікується попередня робоча версія (решта фідів йдуть своїм ходом, не заблоковані). '
+                'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+            )
+            "
+          fi
+
       - name: Generate Bing Merchant Center feed (best-effort)
+        id: gen_bing
         continue-on-error: true
         run: python generate_bing_feed.py
+
+      # Симетрично до Google/Meta-фолбеку вище (2026-07-28) — той самий
+      # клас ризику для feeds/bing_feed.xml.
+      - name: Restore last known-good feeds/bing_feed.xml (this run's generation failed/empty)
+        if: always()
+        run: |
+          if [ ! -s feeds/bing_feed.xml ]; then
+            echo "::warning::feeds/bing_feed.xml відсутній/порожній цього прогону — відновлюю останню робочу версію з ${{ env.FEED_BRANCH }}."
+            git fetch origin "$FEED_BRANCH" 2>/dev/null || true
+            git show "origin/$FEED_BRANCH:feeds/bing_feed.xml" > feeds/bing_feed.xml 2>/dev/null || true
+            python -c "
+            from telegram_notify import send_telegram_message
+            send_telegram_message(
+                '⚠️ update-feeds.yml: генерація bing_feed.xml провалилась/дала порожній файл цього прогону — '
+                'публікується попередня робоча версія (решта фідів йдуть своїм ходом, не заблоковані). '
+                'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+            )
+            "
+          fi
 
       # continue-on-error: цей крок реально змінює ціни в Prom через API
       # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими

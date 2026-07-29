@@ -170,6 +170,18 @@ vps_code_sync_state.json
 # тощо) могла б випадково застейджити приватний ключ у публічний репо.
 .ssh_deploy_pull/
 
+# Каталог з ПРИВАТНИМ write-only (лише feed-data) deploy-ключем
+# vps-feed-publish для publish_feed_pipeline_vps.sh — той самий принцип,
+# що й .ssh_deploy_pull/ вище.
+.ssh_feed_publish/
+
+# Runtime-стан run_feed_pipeline_vps.sh (Фаза 2, 2026-07-27) —
+# {last_run, last_status (ok/degraded/failed), reason} для кожного
+# прогону VPS-фід-пайплайну. Читає check_feed_pipeline_vps_status() у
+# service_watchdog.py (знахідка аудиту pt6 — замінює check_feed_pipeline_schedule(),
+# яка стала непридатною, щойно schedule: в update-feeds.yml закоментовано).
+feed_pipeline_state.json
+
 # ЗНАХІДКА (2026-07-27, живо після Кроку 1 автодеплою — власниця побачила
 # в `git status` на VPS): клієнтський сертифікат NovaPay
 # (NOVAPAY_CERT_PATH, novapay_client.py) і його бекапи НЕ були покриті

@@ -1,41 +1,39 @@
-name: Update Toysi feeds
+name: Update Rozetka feed (Prom/Google/Meta/Bing/EVA + репрайсер — на VPS feed-pipeline.timer)
 
+# ЗВУЖЕНО (2026-07-28, пряме рішення власниці — "Фаза 2 переносить УСЕ,
+# крім Rozetka"): цей job тепер відповідає ВИКЛЮЧНО за
+# feeds/rozetka_feed.xml. Google/Meta/Bing/EVA-фіди, репрайсер Prom
+# (--apply), prom_feed_top.xml — усе це перенесено на VPS
+# (run_feed_pipeline_vps.sh, feed-pipeline.timer).
+#
+# ЧОМУ РОЗДІЛЕННЯ САМЕ ТАК: живий інцидент 2026-07-28 — ручний
+# workflow_dispatch цього ж job'у (коли він ще робив УСЕ) перетнувся зі
+# звичайним запланованим прогоном (3г24хв паралельно), і той, що
+# завершився пізніше, force-push'ем затер легітимну публікацію іншого —
+# prom_feed_top.xml впав з ~6000 до 1575 офферів. Той самий клас гонки,
+# що вже спричиняв інцидент 2026-07-19. Розділення на GH Actions
+# (ЛИШЕ Rozetka) і VPS (усе інше) означає: навіть якщо обидва колись
+# запустяться одночасно, вони пишуть у РІЗНІ файли feed-data — жодного
+# спільного файлу для перезапису.
+#
+# `schedule:` НЕ закоментовано (на відміну від попередньої версії,
+# коли job робив усе) — пряме рішення власниці. Rozetka-фід тепер
+# легкий (заморожений статичний відбір, rozetka_static_selection.json,
+# жодної живої репрайсинг-логіки) — плановий прогін щочотири години
+# безпечний і не конфліктує з VPS, бо VPS більше НЕ торкається
+# feeds/rozetka_feed.xml узагалі.
 on:
   schedule:
     - cron: "0 */4 * * *"
   workflow_dispatch:
-    inputs:
-      apply:
-        description: "Репрайсер: реально змінювати ціни в Prom (--apply). false = dry-run, лише звіт/лог, без реальних наслідків. Не впливає на планові (cron) запуски — ті завжди --apply."
-        required: false
-        default: "true"
-        type: boolean
-      force_circuit_breaker:
-        description: "Репрайсер: обійти circuit breaker (--force-circuit-breaker). Використовувати ЛИШЕ для свідомо очікуваного разового стрибка (напр. перший прогін після зміни самої формули/правила ціноутворення) — НЕ залишати true за замовчуванням, інакше breaker перестає захищати від справжніх аномалій. Не впливає на планові (cron) запуски — ті ніколи не передають цей прапорець."
-        required: false
-        default: "false"
-        type: boolean
 
 env:
   FEED_BRANCH: feed-data
 
-# ДОДАНО (2026-07-19, живий інцидент — code_report_2026-07-19_pt2.md):
-# forced workflow_dispatch-прогін (29677266900) і звичайний scheduled-
-# прогін виконувались ОДНОЧАСНО (перекриття ~30 хв) — кожен незалежно
-# fetch'ив prom_competitor_price_state.json на СВОЄМУ старті й
-# force-push'ив свою локальну копію наприкінці ("Publish feeds"
-# нижче), тож той, хто завершився ПІЗНІШЕ, стер роботу того, хто
-# завершився РАНІШЕ, навіть якщо сам нічого не змінював (гейт "повний
-# прогін вже був" лише пропускає repricer-крок, не решту job'у).
-# Наслідок: усі 722 delisted-позначки того прогону обнулились,
-# Prom-імпорт відновив усі 722 неконкурентні товари як живі.
-#
-# concurrency-група ставить ДРУГИЙ запуск у ЧЕРГУ (чекає завершення
-# першого), а не скасовує його (cancel-in-progress: false — форсований
-# прогін не повинен обриватись через щойно прибулий плановий тригер) —
-# усуває саму МОЖЛИВІСТЬ двох одночасних job'ів, що перезаписують той
-# самий файл стану, замість того щоб намагатись зливати стан заднім
-# числом після факту.
+# concurrency-група лишається — запобігає накладенню ДВОХ прогонів
+# ЦЬОГО САМОГО job'у одне на одного (напр. ручний workflow_dispatch під
+# час планового прогону) — той самий принцип, що й раніше, просто
+# тепер захищає лише Rozetka-частину.
 concurrency:
   group: update-feeds
   cancel-in-progress: false
@@ -47,13 +45,6 @@ jobs:
       contents: write
     env:
       TOYSI_API_KEY: ${{ secrets.TOYSI_API_KEY }}
-      # Виправлено (незалежне рев'ю PR #39, раунд 2): generate_google_feed.py
-      # (крок нижче) викликає fetch_prom_products(), якому потрібен цей
-      # ключ — живо підтверджено 401 Unauthorized без нього. Секрет
-      # зареєстровано в Settings -> Secrets and variables -> Actions
-      # 2026-07-12 (раніше існував лише в .env на VPS, ніколи як GitHub
-      # secret). Той самий секрет тепер потрібен і prom_competitor_pricer.py.
-      PROM_API_KEY: ${{ secrets.PROM_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
@@ -63,477 +54,121 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
 
-      # prom_competitor_pricer.py (мігровано сюди з VPS-таймера 2026-07-13 —
-      # інакше він писав спільний стан на VPS, а generate_prom_feed.py читав
-      # його тут, на окремому ефемерному runner'і без спільної файлової
-      # системи, тож щойно застосована конкурентна ціна ніколи не доходила
-      # до фіда) пише/читає prom_competitor_price_state.json — відновлюємо
-      # його з попереднього коміту feed-data перед запуском, інакше кожен
-      # прогін стартував би з чистого стану й губив усі раніше застосовані
-      # ціни та мітку last_full_run (гейт "не частіше ~20 год").
-      - name: Restore prom_competitor_price_state.json from ${{ env.FEED_BRANCH }}
-        run: |
-          git fetch origin "$FEED_BRANCH" 2>/dev/null || true
-          git show "origin/$FEED_BRANCH:prom_competitor_price_state.json" > prom_competitor_price_state.json 2>/dev/null \
-            || echo '{}' > prom_competitor_price_state.json
-
-      # ДОДАНО (2026-07-24, живий root-cause: Prom import падав на "Поле
-      # status: Позиція недоступна для оновлення" для 179 SKU — реально й
-      # назавжди видалені через prom_catalog_sync.py::deactivate() (SKU
-      # випав з топ-970), окремий від prom_competitor_pricer.py::delist()
-      # шлях видалення, який НІКОЛИ не писав _delisted_since, тож
-      # select_top_items() тихо пропонував їх знову). prom_catalog_sync.py
-      # виконується на VPS (systemd-таймер, окремий локальний файл стану,
-      # не той самий runner) — публікує свій _delisted_since в окрему гілку
-      # catalog-sync-delisted-data (publish_catalog_sync_delisted.sh, той
-      # самий принцип ізоляції, що вже є для scan-state-data). Тут — МЕРЖ
-      # (не перезапис) у вже відновлений price_state вище, ДО
-      # select_top_items() — обидва джерела delisted_since тепер
-      # об'єднуються перед ранжуванням/фідом.
-      - name: Merge catalog-sync delisted SKU from catalog-sync-delisted-data (VPS-published)
-        continue-on-error: true
-        run: |
-          git fetch origin catalog-sync-delisted-data 2>/dev/null || true
-          git show "origin/catalog-sync-delisted-data:prom_competitor_price_state.json" > /tmp/catalog_sync_delisted.json 2>/dev/null \
-            || echo '{}' > /tmp/catalog_sync_delisted.json
-          python merge_delisted_since.py
-
-      # ВИДАЛЕНО (2026-07-27, пряме рішення власниці): select_top_items()/
-      # грейс-період для Rozetka прибрано повністю — новий незалежний,
-      # СТАТИЧНИЙ відбір (generate_rozetka_feed.py, rozetka_static_selection.json)
-      # більше не потребує round-trip rozetka_feed_membership_state.json.
-
-      # ВИПРАВЛЕНО (2026-07-22, знахідка аудиту PR #136 — Security audit:
-      # rozetka_agent): own_product_links_cache.json (єдине джерело buyBox
-      # для find_best_competitor() у prom_competitor_pricer.py) НІКОЛИ не
-      # персистувався між прогонами — коментар нижче біля "Refresh
-      # own-product-link cache" явно документував це як свідоме рішення
-      # ("НЕ комітимо кеш у git... регенерується заново щоразу"), прийняте
-      # ДО того, як від цього кешу почав залежати щоденний репрайсер
-      # (PR #53), а не лише необов'язковий <url>-тег Rozetka/Google-феєду.
-      # Наслідок, підтверджений аудитом: 99.9%-прогалина buyBox (PR #136)
-      # НІКОЛИ не закривалась би прогін-до-прогону — кожен job стартував з
-      # порожнього кешу, і донарахування (до 400 SKU/прогін,
-      # OWN_LINK_RESOLVE_BATCH_LIMIT) просто губилось би за 4 години.
-      # Той самий round-trip через feed-data, що вже є для
-      # prom_competitor_price_state.json вище — тепер buyBox-покриття
-      # РЕАЛЬНО накопичується з часом, а не відкочується щоразу.
-      - name: Restore own_product_links_cache.json from ${{ env.FEED_BRANCH }}
-        run: |
-          git show "origin/$FEED_BRANCH:own_product_links_cache.json" > own_product_links_cache.json 2>/dev/null \
-            || echo '{}' > own_product_links_cache.json
-
       # ВИПРАВЛЕНО (знахідка аудиту pt7, 2026-07-27, PR #179): без цього
       # кроку rozetka_static_selection.json НІКОЛИ не існує на старті
       # ефемерного GH Actions runner'а — _build_rozetka_static_selection()
       # виконувала б гілку "перший виклик" (живий перерахунок із
       # catalog ЦЬОГО прогону) КОЖЕН раз, замість заморозити список один
-      # раз назавжди. Той самий round-trip, що й для
-      # prom_competitor_price_state.json/own_product_links_cache.json
-      # вище — фолбек `{}` безпечний: функція сама трактує відсутні
-      # ключі "items"/"prices" як "файл пошкоджений/відсутній" і формує
-      # список заново (лише якщо він СПРАВДІ ще не існував десь).
+      # раз назавжди. Фолбек `{}` безпечний: функція сама трактує
+      # відсутні ключі "items"/"prices" як "файл пошкоджений/відсутній"
+      # і формує список заново (лише якщо він СПРАВДІ ще не існував).
       - name: Restore rozetka_static_selection.json from ${{ env.FEED_BRANCH }}
         run: |
+          git fetch origin "$FEED_BRANCH" 2>/dev/null || true
           git show "origin/$FEED_BRANCH:rozetka_static_selection.json" > rozetka_static_selection.json 2>/dev/null \
             || echo '{}' > rozetka_static_selection.json
 
-      # ДОДАНО (2026-07-16, задача власниці — full_catalog_competitor_scan.py
-      # має системно впливати на топ-970, не лишатись окремим інформаційним
-      # скриптом): full_catalog_scan_state.json пишеться лише на VPS (там
-      # виконується нічний скан, окремий систем-таймер) — цей крок читає
-      # НАЙСВІЖІШУ версію з окремої гілки scan-state-data, куди VPS сам
-      # публікує стан після кожного нічного прогону (publish_scan_state.sh,
-      # власний deploy-ключ ЛИШЕ на VPS, обмежений записом у цей репозиторій
-      # — на боці GH Actions жодного нового секрету не додано, це звичайний
-      # публічний git fetch). ОКРЕМА гілка від feed-data навмисно — щоб два
-      # незалежні публікатори (ця гілка з VPS, feed-data з цього job'у) не
-      # затирали вміст одне одного своїм force-push без історії.
-      # continue-on-error: якщо гілки ще нема (перший запуск до першого
-      # нічного скану) чи VPS-публікація тимчасово не вдалась — не має
-      # блокувати генерацію фідів, select_top_items() коректно працює й
-      # без цього файлу (наївна оцінка маржі, як і раніше).
-      - name: Restore full_catalog_scan_state.json from scan-state-data (VPS-published)
+      # own_product_links_cache.json — ЛИШЕ ЧИТАННЯ (Rozetka-фід читає
+      # цей кеш для <url>-тегу, ніколи не пише й не публікує). Кеш тепер
+      # БУДУЄТЬСЯ на VPS (generate_google_feed.py, run_feed_pipeline_vps.sh)
+      # і публікується звідти в feed-data — цей крок лише читає
+      # НАЙСВІЖІШУ опубліковану версію. Read-only залежність, не
+      # створює конфлікту запису з VPS.
+      - name: Restore own_product_links_cache.json from ${{ env.FEED_BRANCH }} (read-only, VPS-published)
         continue-on-error: true
         run: |
-          git fetch origin scan-state-data 2>/dev/null || true
-          git show "origin/scan-state-data:full_catalog_scan_state.json" > full_catalog_scan_state.json 2>/dev/null \
-            || echo '{}' > full_catalog_scan_state.json
-
-      # Виправлено (незалежне рев'ю PR #39): раніше generate_google_feed.py
-      # не викликався в жодному workflow, тож own_product_links_cache.json
-      # ніколи не існував на CI, і <url> в Rozetka-фіді назавжди лишався
-      # порожнім. Steps одного job'у діляться файловою системою раннера —
-      # цього достатньо, щоб наступні кроки прочитали щойно записаний кеш.
-      #
-      # ВИПРАВЛЕНО (2026-07-22, знахідка аудиту PR #136): раніше тут було
-      # "НЕ комітимо кеш у git... регенерується заново щоразу" — рішення,
-      # прийняте ДО того, як від цього кешу почав залежати щоденний
-      # репрайсер (PR #53). Тепер кеш ВІДНОВЛЮЄТЬСЯ на початку job'у (крок
-      # вище) і ПУБЛІКУЄТЬСЯ в feed-data наприкінці (як
-      # prom_competitor_price_state.json) — _save_own_product_links_cache()
-      # у generate_google_feed.py вже й так МЕРЖИТЬ (не перезаписує)
-      # результат, тож цей round-trip лише вмикає РЕАЛЬНЕ накопичення
-      # покриття buyBox з часом, замість щоразового скидання в нуль.
-      # continue-on-error: <url> — необов'язковий тег, тож збій цього кроку
-      # (напр. reverse-engineered пошуковий ендпоінт Prom тимчасово
-      # недоступний) не повинен блокувати генерацію решти фідів, які раніше
-      # чудово працювали й без нього.
-      #
-      # ВИПРАВЛЕНО (незалежне рев'ю PR #53, критична знахідка): цей крок
-      # ПЕРЕНЕСЕНО СЮДИ, ПЕРЕД репрайсером — раніше йшов ПІСЛЯ нього, і
-      # prom_competitor_pricer.py (buyBox-джерело конкурента, PR #53)
-      # завжди отримував порожній own_product_links_cache.json (файл
-      # фізично ще не існував на диску в момент його виконання), тож
-      # buyBox НІКОЛИ не активувався в реальному CI — 100% прогонів мовчки
-      # йшли на старий, менш надійний пошуковий fallback, попри те, що код
-      # і локальні тести PR #53 були коректними. generate_google_feed.py
-      # не залежить від результатів репрайсера чи від
-      # prom_competitor_price_state.json, тож цей обмін місцями нічого
-      # іншого не ламає.
-      - name: Refresh own-product-link cache for Rozetka <url> tag and buyBox competitor lookup (best-effort)
-        id: gen_google
-        continue-on-error: true
-        run: python generate_google_feed.py
-
-      # ВИПРАВЛЕНО (2026-07-28, живий інцидент — CLAUDE.md задокументував
-      # цей клас ризику як відкритий, і він одразу ж стався: generate_google_feed.py
-      # впав/повернув порожній файл на одному з прогонів, публікація нижче
-      # (orphan force-push, git checkout --orphan + git rm -r --cached . +
-      # force-push) мовчки пропустила git add для порожнього файлу — і
-      # feeds/google_merchant_feed.xml ФІЗИЧНО ЗНИК з гілки feed-data
-      # НАЗАВЖДИ, без жодного сліду попередньої версії. Наслідок: URL,
-      # зареєстрований у Google Merchant Center, почав повертати 404,
-      # "Исправьте ошибки в файле". Той самий фолбек-принцип, що вже є
-      # для rozetka_feed.xml/prom_feed_top.xml нижче — просто раніше не
-      # був поширений на ці три best-effort-фіди, бо вони вважались
-      # "необов'язковими" й не мали власного restore-кроку.
-      - name: Restore last known-good feeds/google_merchant_feed.xml (this run's generation failed/empty)
-        if: always()
-        run: |
-          if [ ! -s feeds/google_merchant_feed.xml ]; then
-            echo "::warning::feeds/google_merchant_feed.xml відсутній/порожній цього прогону — відновлюю останню робочу версію з ${{ env.FEED_BRANCH }} замість втрати файлу назавжди (orphan force-push інакше видалив би його з гілки без сліду)."
-            git fetch origin "$FEED_BRANCH" 2>/dev/null || true
-            git show "origin/$FEED_BRANCH:feeds/google_merchant_feed.xml" > feeds/google_merchant_feed.xml 2>/dev/null || true
-            python -c "
-            from telegram_notify import send_telegram_message
-            send_telegram_message(
-                '⚠️ update-feeds.yml: генерація google_merchant_feed.xml провалилась/дала порожній файл цього прогону — '
-                'публікується попередня робоча версія (решта фідів йдуть своїм ходом, не заблоковані). '
-                'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
-            )
-            "
-          fi
-
-      # ДОДАНО (2026-07-20, задачі #170/#171 власниці — видимість магазину):
-      # generate_meta_feed.py/generate_bing_feed.py ЛИШЕ ЧИТАЮТЬ
-      # own_product_links_cache.json, який щойно (крок вище) побудував
-      # generate_google_feed.py — жодного власного ~970-запитового
-      # self-match пошуку, щоб не потроїти навантаження на prom.ua в
-      # тому самому прогоні. continue-on-error: той самий best-effort
-      # статус, що й у Google/Rozetka <url> кроці вище — обидва фіди
-      # необов'язкові, збій тут не повинен блокувати генерацію/
-      # публікацію критичних Rozetka/Prom фідів нижче.
-      - name: Generate Meta Commerce Manager feed (best-effort)
-        id: gen_meta
-        continue-on-error: true
-        run: python generate_meta_feed.py
-
-      # Симетрично до Google-фолбеку вище (2026-07-28) — той самий клас
-      # ризику: orphan force-push мовчки губить feeds/meta_feed.xml
-      # назавжди, якщо він порожній/відсутній цього прогону.
-      - name: Restore last known-good feeds/meta_feed.xml (this run's generation failed/empty)
-        if: always()
-        run: |
-          if [ ! -s feeds/meta_feed.xml ]; then
-            echo "::warning::feeds/meta_feed.xml відсутній/порожній цього прогону — відновлюю останню робочу версію з ${{ env.FEED_BRANCH }}."
-            git fetch origin "$FEED_BRANCH" 2>/dev/null || true
-            git show "origin/$FEED_BRANCH:feeds/meta_feed.xml" > feeds/meta_feed.xml 2>/dev/null || true
-            python -c "
-            from telegram_notify import send_telegram_message
-            send_telegram_message(
-                '⚠️ update-feeds.yml: генерація meta_feed.xml провалилась/дала порожній файл цього прогону — '
-                'публікується попередня робоча версія (решта фідів йдуть своїм ходом, не заблоковані). '
-                'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
-            )
-            "
-          fi
-
-      - name: Generate Bing Merchant Center feed (best-effort)
-        id: gen_bing
-        continue-on-error: true
-        run: python generate_bing_feed.py
-
-      # Симетрично до Google/Meta-фолбеку вище (2026-07-28) — той самий
-      # клас ризику для feeds/bing_feed.xml.
-      - name: Restore last known-good feeds/bing_feed.xml (this run's generation failed/empty)
-        if: always()
-        run: |
-          if [ ! -s feeds/bing_feed.xml ]; then
-            echo "::warning::feeds/bing_feed.xml відсутній/порожній цього прогону — відновлюю останню робочу версію з ${{ env.FEED_BRANCH }}."
-            git fetch origin "$FEED_BRANCH" 2>/dev/null || true
-            git show "origin/$FEED_BRANCH:feeds/bing_feed.xml" > feeds/bing_feed.xml 2>/dev/null || true
-            python -c "
-            from telegram_notify import send_telegram_message
-            send_telegram_message(
-                '⚠️ update-feeds.yml: генерація bing_feed.xml провалилась/дала порожній файл цього прогону — '
-                'публікується попередня робоча версія (решта фідів йдуть своїм ходом, не заблоковані). '
-                'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
-            )
-            "
-          fi
-
-      # continue-on-error: цей крок реально змінює ціни в Prom через API
-      # (--apply) і опитує реверс-інженерний GraphQL-пошук — обидва є крихкими
-      # зовнішніми залежностями. Збій тут не повинен зупиняти генерацію й
-      # публікацію самих фідів (generate_*.py), які є основною метою workflow.
-      # ЗМІНЕНО (2026-07-24, розширення до 6000 SKU): раніше — гейт
-      # MIN_FULL_RUN_INTERVAL_HOURS дозволяв повний прогін лише раз на
-      # ~20 год, попри тригер кожні 4 год. Тепер КОЖЕН тик обробляє
-      # ротаційну партію (ROTATION_BATCH_SIZE, найстаріші за часом
-      # перевірки SKU) — гейту/--force більше немає, скрипт завжди щось
-      # робить.
-      - name: Run competitor repricer (Prom)
-        continue-on-error: true
-        # SAFETY_HOLD (Надійність, п.3): repository variable, НЕ секрет —
-        # умикається/вимикається однією командою (`gh variable set
-        # SAFETY_HOLD --body "причина"` / `gh variable delete SAFETY_HOLD`),
-        # без PR/мержу/чекання на CI, коли відомий баг безпеки виявлено, а
-        # фікс ще не готовий. Порожнє значення (дефолт, змінна не задана)
-        # не вмикає hold — перевірка truthy-рядка всередині скрипта.
-        env:
-          SAFETY_HOLD: ${{ vars.SAFETY_HOLD }}
-        run: |
-          ARGS=""
-          if [ "${{ github.event.inputs.apply }}" != "false" ]; then ARGS="$ARGS --apply"; fi
-          if [ "${{ github.event.inputs.force_circuit_breaker }}" = "true" ]; then ARGS="$ARGS --force-circuit-breaker"; fi
-          python prom_competitor_pricer.py $ARGS
-
-      # Фолбек на випадок, якщо репрайсер аварійно завершився ДО першого
-      # виклику write_pricer_summary() (напр. не встиг навіть завантажити
-      # PROM_API_KEY) — гарантує, що файл існує до кроку публікації, той
-      # самий підхід, що й фолбек '{}' у кроці відновлення стану вище.
-      - name: Ensure prom_competitor_pricer_summary.md exists (best-effort fallback)
-        if: always()
-        run: |
-          if [ ! -s prom_competitor_pricer_summary.md ]; then
-            printf '# Репрайсер конкурентів Prom — стислий підсумок (перезаписується щоразу)\n\nОновлено: %s\n⚠ Файл не згенеровано — репрайсер, ймовірно, аварійно завершився до першого запису підсумку.\n' \
-              "$(date -u +'%Y-%m-%d %H:%M UTC')" > prom_competitor_pricer_summary.md
-          fi
-
-      # apply_live_dumping_fix.py (2026-07-26, пряме прохання власниці —
-      # "треба виставити наші 6000 товарів на рівень конкурент - 3 грн, не
-      # чекаючи репрайсера, ця операція контролера буде використовуватися
-      # вручну") НАВМИСНО НЕ підключений сюди як workflow_dispatch-крок:
-      # власниця прямо підтвердила, що запускатиме його ЛОКАЛЬНО (одна
-      # машина, персистентна файлова система), де резюмований прогрес
-      # (live_dumping_fix_progress.json) реально працює. Через ефемерний
-      # GitHub Actions runner цей файл НЕ round-trip'иться (на відміну від
-      # price_state) — кожен запуск через Actions почав би sweep заново,
-      # тому підключення сюди лише додало б непрацюючу обіцянку
-      # резюмованості (знахідка аудиту, code_report_2026-07-26_pt6.md).
-      # Запуск: python apply_live_dumping_fix.py — просто локально.
-
-      # ПЕРЕНЕСЕНО СЮДИ (2026-07-23, пряме рішення власниці): ціна EVA
-      # тепер = ціні Prom напряму (не власний розрахунок через
-      # EVA_COMMISSION_TOYS) — має читати prom_competitor_price_state.json
-      # ПІСЛЯ репрайсера вище, інакше load_fresh_prom_price_overrides()
-      # підхопить учорашню ціну, а не щойно застосовану цим самим
-      # прогоном. continue-on-error: той самий best-effort статус, що й
-      # раніше — це підготовка коду ДО реєстрації на EVA (власниця ще не
-      # подала заявку), збій тут не повинен блокувати публікацію
-      # критичних Prom/Rozetka фідів.
-      - name: Generate EVA Marketplace feed (best-effort, prep-only)
-        continue-on-error: true
-        run: python generate_eva_feed.py
+          git show "origin/$FEED_BRANCH:own_product_links_cache.json" > own_product_links_cache.json 2>/dev/null \
+            || echo '{}' > own_product_links_cache.json
 
       # ВИПРАВЛЕНО (2026-07-20, задача власниці — "розділити публікацію
-      # Rozetka/Prom фідів, щоб збій одного не блокував інший"): раніше цей
-      # крок не мав continue-on-error — крах самого generate_rozetka_feed.py
-      # (не лише його --preflight режиму нижче, який уже мав цей захист)
-      # зупиняв УВЕСЬ job одразу тут, тож жоден із наступних, повністю
-      # незалежних Prom-кроків (generate_prom_feed.py/generate_prom_feed_top.py)
-      # ніколи навіть не запускався б того прогону. id: gen_rozetka дає
-      # фолбек-кроку нижче змогу перевірити РЕАЛЬНИЙ результат саме цього
-      # кроку (не лише --preflight).
+      # Rozetka/Prom фідів, щоб збій одного не блокував інший"): крах
+      # самого generate_rozetka_feed.py не повинен зупиняти job — id:
+      # gen_rozetka дає фолбек-кроку нижче змогу перевірити РЕАЛЬНИЙ
+      # результат саме цього кроку (не лише --preflight).
       - name: Generate Rozetka feed
         id: gen_rozetka
         continue-on-error: true
         run: python generate_rozetka_feed.py
 
       # Задача власниці 2026-07-15: "системне рішення замість реактивних
-      # патчів" — Rozetka заблокувала подачу через дублікати назв, які
-      # потім виявились ширшою прогалиною (43 групи/116 SKU), не 2
-      # одиничними випадками. rozetka_feed_preflight() зводить УСІ відомі
-      # класи помилок валідатора в один прогін і виконується тут, ПІСЛЯ
-      # генерації, ПЕРЕД публікацією нижче. НАВМИСНО без continue-on-error:
-      # НАДІЙНІСТЬ, П.2 (2026-07-17): раніше ненульовий вихідний код тут
-      # зупиняв ВЕСЬ job — усі наступні steps без `if: always()`
-      # автоматично пропускались, тобто помилка ЛИШЕ в Rozetka-валідації
-      # блокувала й генерацію/публікацію робочого Prom-фіда в тому ж
-      # прогоні. Тепер continue-on-error: true — Prom-кроки нижче завжди
-      # виконуються незалежно від результату Rozetka preflight. Замість
-      # блокування всього job'у — окремий фолбек-крок нижче (Restore last
-      # known-good rozetka_feed.xml) підміняє потенційно зламаний
-      # rozetka_feed.xml на останню опубліковану РОБОЧУ версію, якщо
-      # preflight провалився, — так публікація ніколи не понесе НЕвалідний
-      # rozetka_feed.xml, і водночас ніколи не блокує Prom.
+      # патчів" — rozetka_feed_preflight() зводить УСІ відомі класи
+      # помилок валідатора в один прогін, ПІСЛЯ генерації, ПЕРЕД
+      # публікацією нижче. continue-on-error: true — окремий фолбек-крок
+      # нижче підміняє потенційно зламаний rozetka_feed.xml на останню
+      # опубліковану РОБОЧУ версію, якщо preflight провалився.
       - name: Rozetka feed preflight
         id: rozetka_preflight
         continue-on-error: true
         run: python generate_rozetka_feed.py --preflight
 
-      # Умова розширена (2026-07-20) на steps.gen_rozetka.outcome — той самий
-      # фолбек тепер покриває і крах САМОЇ генерації, не лише preflight.
+      # Умова покриває і крах САМОЇ генерації, і preflight.
       - name: Restore last known-good rozetka_feed.xml (generation or preflight failed this run)
         if: steps.gen_rozetka.outcome == 'failure' || steps.rozetka_preflight.outcome == 'failure'
         run: |
-          echo "::error::Rozetka feed генерація або preflight провалились — публікую ОСТАННЮ РОБОЧУ версію rozetka_feed.xml замість щойно згенерованої, Prom-фіди публікуються незалежно."
+          echo "::error::Rozetka feed генерація або preflight провалились — публікую ОСТАННЮ РОБОЧУ версію rozetka_feed.xml замість щойно згенерованої."
           git fetch origin "$FEED_BRANCH" 2>/dev/null || true
           git show "origin/$FEED_BRANCH:feeds/rozetka_feed.xml" > feeds/rozetka_feed.xml 2>/dev/null || true
           python -c "
           from telegram_notify import send_telegram_message
           send_telegram_message(
-              '⚠️ update-feeds.yml: генерація/preflight Rozetka-фіда провалились цього прогону — '
-              'публікується попередня робоча версія rozetka_feed.xml (Prom-фіди йдуть '
-              'своїм ходом, не заблоковані). Деталі: '
+              '⚠️ update-feeds.yml (Rozetka): генерація/preflight провалились цього прогону — '
+              'публікується попередня робоча версія rozetka_feed.xml. Деталі: '
               'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
           )
           "
 
-      # ВИПРАВЛЕНО (2026-07-20, той самий запит — тепер симетрично для Prom):
-      # раніше жоден з цих двох кроків не мав continue-on-error, тож крах
-      # генерації Prom-фіда (напр. тимчасовий збій Toysi API) зупиняв job
-      # ще ДО єдиного спільного кроку публікації нижче — тобто щойно успішно
-      # згенерований і провалідований rozetka_feed.xml теж ніколи б не
-      # опублікувався того прогону, попри те, що сам не мав жодної проблеми.
-      - name: Generate Prom feed (top-970)
-        id: gen_prom_top
-        continue-on-error: true
-        run: python generate_prom_feed_top.py
-
-      # Симетрично до Rozetka-фолбеку вище: якщо генерація Prom top-970
-      # провалилась, підміняємо останньою робочою версією з feed-data,
-      # замість того щоб publish-крок пропустив/затер файл на порожній.
-      - name: Restore last known-good prom_feed_top.xml (generation failed this run)
-        if: steps.gen_prom_top.outcome == 'failure'
+      - name: Verify Rozetka feed was generated
         run: |
-          echo "::error::Генерація prom_feed_top.xml провалилась — публікую ОСТАННЮ РОБОЧУ версію замість щойно згенерованої/відсутньої."
-          git fetch origin "$FEED_BRANCH" 2>/dev/null || true
-          git show "origin/$FEED_BRANCH:feeds/prom_feed_top.xml" > feeds/prom_feed_top.xml 2>/dev/null || true
-          python -c "
-          from telegram_notify import send_telegram_message
-          send_telegram_message(
-              '⚠️ update-feeds.yml: генерація prom_feed_top.xml провалилась цього прогону — '
-              'публікується попередня робоча версія (Rozetka-фід йде своїм ходом, не заблокований). '
-              'Деталі: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
-          )
-          "
+          if [ ! -s feeds/rozetka_feed.xml ]; then
+            echo "::error::feeds/rozetka_feed.xml не згенеровано (порожній файл або відсутній, і фолбек з feed-data теж не спрацював — ймовірно, перший запуск до існування гілки feed-data) — ймовірно, TOYSI_API_KEY secret відсутній/невалідний, або Toysi API недоступний."
+            exit 1
+          fi
 
-      # Явна перевірка перед git-операціями: якщо TOYSI_API_KEY відсутній/невалідний
-      # або каталог Toysi порожній, generate_*.py свідомо не пишуть файл (design decision
-      # в самих скриптах) — раніше це тихо маскувалось старими закомодженими копіями
-      # feeds/*.xml на master, тепер (після git-гігієни, коміт 72ad9fd) фолбеку немає,
-      # тож без цієї перевірки помилка виглядає як незрозумілий git pathspec-фейл.
+      # Публікуємо ЛИШЕ feeds/rozetka_feed.xml + rozetka_static_selection.json
+      # у feed-data — orphan force-push, БЕЗ росту історії (той самий
+      # принцип, що й раніше).
       #
-      # ВИДАЛЕНО (2026-07-25, пряме рішення власниці): "Generate Prom feed
-      # (full catalog)"/"Upload prom_feed.xml to VPS" прибрано повністю —
-      # цей повний-каталог фід (29000+ SKU) був історичним підходом ще з
-      # першого коміту проєкту, до появи куруваного топ-N; нічний сканер
-      # конкурентів (full_catalog_competitor_scan.py) сам тягне повний
-      # каталог напряму з Toysi, не з цього файлу, а сам Prom імпортує
-      # лише prom_feed_top.xml (куруваний топ-6000, що вже покриває всю
-      # підписку) — prom_feed.xml не мав жодного реального споживача.
-      - name: Verify feeds were generated
+      # КРИТИЧНО (2026-07-28, знайдено ДО живого прогону, той самий
+      # клас ризику, що й у publish_feed_pipeline_vps.sh на VPS): просте
+      # "цей job додає лише свої файли" НЕ РЯТУЄ від взаємного
+      # затирання, поки і GH Actions, і VPS роблять orphan-коміт —
+      # кожен такий коміт будує ПОРОЖНЄ дерево з нуля, тож хто б не
+      # запушив ПІЗНІШЕ, стирає ВСЕ, чого немає в його власному коміті
+      # (включно з файлами VPS — prom_feed_top.xml,
+      # own_product_links_cache.json, prom_competitor_price_state.json,
+      # google/meta/bing/eva-фіди). Тому: перед стейджингом власних
+      # файлів ПІДТЯГУЄМО ПОВНЕ поточне дерево feed-data (git checkout
+      # origin/feed-data -- .) — комміт лишається "плоским" (без росту
+      # історії), але містить УСІ файли: свій (щойно перезаписаний) і
+      # чужі (VPS — незмінні, збережені як є).
+      - name: Publish Rozetka feed to ${{ env.FEED_BRANCH }} (force-push, preserves VPS-owned files)
         run: |
-          for f in feeds/rozetka_feed.xml feeds/prom_feed_top.xml; do
-            if [ ! -s "$f" ]; then
-              echo "::error::$f не згенеровано (порожній файл або відсутній, і фолбек з feed-data теж не спрацював — ймовірно, перший запуск до існування гілки feed-data) — ймовірно, TOYSI_API_KEY secret відсутній/невалідний, або Toysi API недоступний. Перевір Settings -> Secrets and variables -> Actions."
-              exit 1
-            fi
-          done
-
-      # Публікуємо rozetka_feed.xml + prom_feed_top.xml в окрему гілку feed-data
-      # одним коммітом, що щоразу перезаписує попередній (force-push). Це не
-      # дає git-історії рости на кожен запуск (кожні 4 години) — інакше
-      # репозиторій накопичував би десятки МБ щодня назавжди. Гілка main
-      # лишається чистою — тільки код.
-      #
-      # НАДІЙНІСТЬ, П.2 (2026-07-17): цей крок тепер ЗАВЖДИ доходить сюди й
-      # публікує ОБИДВА фіди — Rozetka preflight вище більше НЕ блокує job
-      # (continue-on-error: true), а замінює потенційно зламаний
-      # rozetka_feed.xml на останню робочу версію при провалі. Тобто помилка
-      # ЛИШЕ в Rozetka-валідації більше не заважає щойно згенерованому,
-      # робочому Prom-фіду публікуватись цього ж прогону.
-      #
-      # prom_feed.xml (повний каталог, 106+ МБ, понад жорсткий ліміт GitHub
-      # 100 МБ/файл) НІКОЛИ не входив у цю публікацію — генерація й окреме
-      # VPS-хостинг цього файлу прибрані повністю (2026-07-25, рішення
-      # власниці — не мав реального споживача, історичний підхід ще з
-      # першого коміту). Сумарний розмір цієї публікації — надійно
-      # закладений під ліміт, жодного окремого файлу біля межі 100 МБ немає.
-      - name: Publish feeds to ${{ env.FEED_BRANCH }} (force-push, no history)
-        run: |
+          # ОКРЕМА тимчасова директорія (не поточний checkout) — навмисно:
+          # git checkout "origin/$FEED_BRANCH" -- . нижче ВІДНОВЛЮЄ файли з
+          # feed-data на диск, і якби це робилось у ТІЙ САМІЙ директорії, де
+          # вже лежить щойно згенерований feeds/rozetka_feed.xml, воно
+          # перезаписало б його СТАРОЮ версією з feed-data — саме той клас
+          # багу, якого весь цей крок і мав уникнути. Копіюємо свіжі файли
+          # в тимчасову директорію ЯВНО, після відновлення чужого дерева.
+          SRC_DIR="$GITHUB_WORKSPACE"
+          WORKDIR="$(mktemp -d)"
+          cd "$WORKDIR"
+          git init -q
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git config user.name "feed-bot"
           git config user.email "feed-bot@users.noreply.github.com"
-          git checkout --orphan "$FEED_BRANCH-tmp"
-          git rm -r --cached . > /dev/null 2>&1 || true
+
+          git fetch --depth 1 origin "$FEED_BRANCH" 2>/dev/null || true
+          git checkout --orphan "$FEED_BRANCH" -q
+          git checkout "origin/$FEED_BRANCH" -- . 2>/dev/null || true
+
+          mkdir -p feeds
+          cp "$SRC_DIR/feeds/rozetka_feed.xml" feeds/rozetka_feed.xml
+          cp "$SRC_DIR/rozetka_static_selection.json" rozetka_static_selection.json
+
           # -f: feeds/*.xml навмисно в .gitignore для master (щоб не роздувати її
           # історію), але саме ці файли й мають бути закомічені сюди, на feed-data —
           # без -f git add мовчки відмовляється додавати файли, що збігаються з .gitignore.
-          git add -f feeds/rozetka_feed.xml feeds/prom_feed_top.xml prom_competitor_price_state.json own_product_links_cache.json rozetka_static_selection.json
-          # Видимість, п.1 (2026-07-17): Google Merchant феєд (топ-970, малий,
-          # той самий порядок розміру, що prom_feed_top.xml — жодного ризику
-          # ліміту 100МБ) досі ніколи не публікувався сюди, попри те, що
-          # generate_google_feed.py вже виконується вище щоразу — стабільного
-          # публічного URL не існувало, власниця не могла подати феєд у Google
-          # Merchant Center. Кроком-джерелом навмисно лишається best-effort
-          # (continue-on-error: true, рядок вище "Refresh own-product-link
-          # cache..." — той самий крок генерує і цей файл) — тому файл тут
-          # додається, лише якщо реально існує й непорожній: якщо
-          # reverse-engineered self-match/self-lookup цього прогону впав,
-          # публікація решти (критичних) фідів все одно не має заблокуватись
-          # відсутнім pathspec для git add.
-          if [ -s feeds/google_merchant_feed.xml ]; then
-            git add -f feeds/google_merchant_feed.xml
-          else
-            echo "::warning::feeds/google_merchant_feed.xml відсутній/порожній цього прогону — Google-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
-          fi
-          # Задачі #170/#171 (2026-07-20): той самий best-effort/умовний
-          # git add, що й для google_merchant_feed.xml вище — обидва нові
-          # феєди best-effort (continue-on-error), тож можуть бути
-          # відсутні/порожні окремо від решти публікації.
-          if [ -s feeds/meta_feed.xml ]; then
-            git add -f feeds/meta_feed.xml
-          else
-            echo "::warning::feeds/meta_feed.xml відсутній/порожній цього прогону — Meta-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
-          fi
-          if [ -s feeds/bing_feed.xml ]; then
-            git add -f feeds/bing_feed.xml
-          else
-            echo "::warning::feeds/bing_feed.xml відсутній/порожній цього прогону — Bing-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
-          fi
-          # Той самий best-effort/умовний git add, що й для meta/bing вище —
-          # EVA-феєд (PR #118, prep-only) так само необов'язковий.
-          if [ -s feeds/eva_feed.xml ]; then
-            git add -f feeds/eva_feed.xml
-          else
-            echo "::warning::feeds/eva_feed.xml відсутній/порожній цього прогону — EVA-феєд НЕ опубліковано (решта фідів публікуються як завжди)."
-          fi
-          git commit -m "Feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push --force origin "$FEED_BRANCH-tmp:$FEED_BRANCH"
-
-      # Приватний артефакт (не публічна гілка feed-data): prom_competitor_
-      # pricer_summary.md містить стратегічні лічильники репрайсера
-      # (перевірено/скориговано/delist/ритм гейту) — той самий тип сигналу
-      # про ціноутворення, який раніше вирішили не публікувати відкрито.
-      # Доступ лише через автентифікований `gh run download` або UI Actions
-      # власника, ніколи публічно. retention 14 днів — це лише "останній
-      # знімок", попередні прогони не потрібні довше цього.
-      - name: Upload pricer summary as private artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: prom-competitor-pricer-summary
-          path: prom_competitor_pricer_summary.md
-          retention-days: 14
+          git add -f feeds/rozetka_feed.xml rozetka_static_selection.json
+          git commit -q -m "Rozetka feed update $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push --force origin "$FEED_BRANCH:$FEED_BRANCH"

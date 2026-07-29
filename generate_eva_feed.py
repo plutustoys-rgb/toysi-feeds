@@ -128,7 +128,27 @@ EVA лише РЕКОМЕНДУЮТЬ продавцю самостійно зв
 конкурентний моніторинг для EVA — доведеться будувати окремий
 зовнішній механізм (як GraphQL-пошук для Prom), не готовий фід від
 маркетплейсу.
+
+ЗАМОРОЗКА НА МОДЕРАЦІЮ (2026-07-29, пряме рішення власниці — той самий
+патерн, що вже реалізований і живий для Rozetka, rozetka_static_
+selection.json, generate_rozetka_feed.py::_build_rozetka_static_
+selection()): власниця сплатила реєстрацію EVA (роялті + доступ,
+рахунки 28.07.2026) і подає каталог на модерацію. `_build_eva_static_
+selection()` нижче заморожує ПОТОЧНИЙ результат generate_feed() (той
+самий select_top_items() + _qualifies_for_feed(), без зміни алгоритму
+відбору) — items (сирі поля Toysi), ціни (Prom-ціна НА МОМЕНТ заморозки,
+через load_fresh_prom_price_overrides()) і рос. назви — у
+eva_static_selection.json. Перший виклик (файл не існує) рахує й
+зберігає; кожен наступний — повертає збережене БЕЗ ЖОДНОГО перерахунку
+з живого каталогу/цін Prom, доки власниця прямо не скаже, що модерація
+EVA завершена (видалення файлу — єдиний спосіб змусити перебудову,
+той самий принцип, що й для Rozetka). Round-trip через feed-data
+(restore-фолбек у run_feed_pipeline_vps.sh, публікація в
+publish_feed_pipeline_vps.sh) — той самий патерн, що вже є для
+rozetka_static_selection.json, навіть попри те, що VPS-диск і так
+переживає між прогонами (додатковий захист від втрати диска).
 """
+import json
 import os
 import re
 import html
@@ -151,6 +171,10 @@ SHOP_COMPANY       = "ФОП Чечетенко Олександр Юрійов�
 SHOP_URL           = "https://plutustoys.com.ua"
 OUTPUT_FILE        = "feeds/eva_feed.xml"
 MIN_SUPPLIER_PRICE = 20  # той самий поріг, що й Prom/Rozetka — товари дешевше собівартості постачальника пропускаємо
+
+# Заморозка на модерацію EVA (2026-07-29, пряме рішення власниці, той
+# самий патерн, що й ROZETKA_STATIC_SELECTION_FILE) — див. докстрінг файлу.
+EVA_STATIC_SELECTION_FILE = Path(__file__).parent / "eva_static_selection.json"
 
 # Пряме завдання власниці (2026-07-21) — стоп-бренди EVA, категорія KIDS.
 # Порівняння регістронезалежне/без урахування розділювача (див. _normalize_brand
@@ -693,8 +717,68 @@ def _build_xml(
     return yml
 
 
+def _build_eva_static_selection(catalog: dict, russian_text: dict = None) -> tuple[dict, dict, dict]:
+    """Заморожений знімок EVA-фіда на момент подачі на модерацію
+    (2026-07-29, пряме рішення власниці — той самий патерн заморозки, що
+    вже є для Rozetka, generate_rozetka_feed.py::_build_rozetka_static_
+    selection()). Повертає (items, prices, russian_names):
+    - items: {pid: item} — сирий каталог-товар НА МОМЕНТ заморозки
+      (усі поля — назва/опис/фото/stock/тощо — рівно такі, якими вони
+      були ТОДІ, не live)
+    - prices: {pid: retail} — ціна Prom НА МОМЕНТ заморозки
+      (load_fresh_prom_price_overrides() цього ОДНОГО виклику) —
+      НЕ перераховується надалі, незалежно від того, що зробить
+      репрайсер Prom після заморозки
+    - russian_names: {pid: name} — рос. назва (fetch_russian_text())
+      НА МОМЕНТ заморозки
+
+    Відбір (select_top_items() + _qualifies_for_feed()) — той самий
+    алгоритм, що вже й так використовувався до заморозки, НЕ новий
+    незалежний розрахунок (на відміну від Rozetka, де сам алгоритм теж
+    замінювався) — заморожується лише РЕЗУЛЬТАТ, не логіка відбору.
+
+    Перший виклик (файл ще не існує) — рахує й зберігає. Кожен наступний
+    виклик — читає збережене й повертає БЕЗ ЖОДНОГО перерахунку: жодне
+    поле жодного SKU з цього списку не змінюється, доки власниця прямо
+    не скаже, що модерація EVA завершена (видалення файлу — єдиний
+    спосіб змусити перебудову, той самий принцип, що й для Rozetka)."""
+    if EVA_STATIC_SELECTION_FILE.exists():
+        try:
+            saved = json.loads(EVA_STATIC_SELECTION_FILE.read_text(encoding="utf-8"))
+            return saved["items"], saved["prices"], saved.get("russian_names", {})
+        except (ValueError, OSError, KeyError):
+            pass  # пошкоджений/неповний файл — сформувати заново нижче, як при першому запуску
+
+    top_catalog = select_top_items(catalog)
+    price_overrides = load_fresh_prom_price_overrides()
+    russian = russian_text or {}
+
+    items: dict = {}
+    prices: dict = {}
+    russian_names: dict = {}
+    for pid, item in top_catalog.items():
+        if not _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides):
+            continue
+        items[pid] = item
+        prices[pid] = price_overrides[pid]
+        russian_names[pid] = (russian.get(pid) or {}).get("name") or item.get("name", "")
+
+    EVA_STATIC_SELECTION_FILE.write_text(
+        json.dumps({"items": items, "prices": prices, "russian_names": russian_names,
+                   "built_at": datetime.now().isoformat()},
+                   ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+    print(f"[EVA] Статичний список сформовано ВПЕРШЕ (заморозка на модерацію EVA): "
+          f"{len(items)} з {len(top_catalog)} товарів курованого відбору "
+          f"(з {len(catalog)} товарів повного каталогу Toysi). Список ЗАМОРОЖЕНИЙ — "
+          "наступні прогони використовуватимуть той самий, без перерахунку "
+          "(ні ціна Prom, ні наявність, ні сам факт присутності), доки не буде окремої "
+          "команди власниці про завершення модерації EVA.")
+    return items, prices, russian_names
+
+
 def generate_feed(output_file: str = OUTPUT_FILE,
-                  price_overrides: dict = None,
                   catalog: dict = None,
                   exclude_ids: set = None,
                   description_overrides: dict = None,
@@ -706,15 +790,22 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         print("[EVA] Каталог порожній — файл не створено.")
         return
 
-    top_catalog = select_top_items(catalog)
-    print(f"[EVA] Куруваний відбір: {len(top_catalog)} з {len(catalog)} товарів повного каталогу.")
-
     if russian_text is None:
         russian_text = fetch_russian_text()
 
+    # Заморозка на модерацію EVA (2026-07-29, див. докстрінг файлу й
+    # _build_eva_static_selection() вище) — заморожений знімок,
+    # перерахований лише один раз, при першому формуванні.
+    static_items, static_prices, static_russian_names = _build_eva_static_selection(
+        catalog, russian_text=russian_text,
+    )
+    print(f"[EVA] Заморожений відбір (модерація EVA): {len(static_items)} товарів.")
+
+    frozen_russian_text = {pid: {"name": name} for pid, name in static_russian_names.items()}
+
     root = _build_xml(
-        top_catalog, price_overrides=price_overrides, exclude_ids=exclude_ids,
-        description_overrides=description_overrides, russian_text=russian_text,
+        static_items, price_overrides=static_prices, exclude_ids=exclude_ids,
+        description_overrides=description_overrides, russian_text=frozen_russian_text,
     )
 
     ET.indent(root, space="  ")
@@ -733,4 +824,4 @@ if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     description_overrides = load_description_overrides()
-    generate_feed(description_overrides=description_overrides, price_overrides=load_fresh_prom_price_overrides())
+    generate_feed(description_overrides=description_overrides)

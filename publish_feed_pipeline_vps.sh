@@ -64,6 +64,14 @@ cp /opt/plutustoys/own_product_links_cache.json .
 git add -f feeds/prom_feed_top.xml \
     prom_competitor_price_state.json own_product_links_cache.json
 
+# ДОДАНО (2026-07-29, заморозка EVA на модерацію) — публікується, ЛИШЕ
+# якщо файл існує (перший прогін після PR ще не заморозив нічого) — той
+# самий умовний патерн, що вже нижче для google/meta/bing/eva-фідів.
+if [ -s /opt/plutustoys/eva_static_selection.json ]; then
+    cp /opt/plutustoys/eva_static_selection.json .
+    git add -f eva_static_selection.json
+fi
+
 for f in google_merchant_feed.xml meta_feed.xml bing_feed.xml eva_feed.xml; do
     if [ -s "/opt/plutustoys/feeds/$f" ]; then
         cp "/opt/plutustoys/feeds/$f" "feeds/$f"

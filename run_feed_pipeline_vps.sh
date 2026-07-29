@@ -76,6 +76,21 @@ if ! python3 prom_competitor_pricer.py --apply; then
     echo "[FeedPipeline] ПОПЕРЕДЖЕННЯ: $FAIL_REASON — продовжую з наявним (не порожнім, персистентним) prom_competitor_price_state.json."
 fi
 
+# ДОДАНО (2026-07-29, пряме рішення власниці — заморозка EVA на
+# модерацію, той самий патерн, що вже є для Rozetka): eva_static_
+# selection.json переживає між прогонами на VPS-диску природно (той
+# самий принцип, що й прогону перегляду інших локальних стан-файлів у
+# цьому скрипті) — цей restore-фолбек лише страхує на випадок втрати
+# диска (той самий клас захисту, що й нижче для prom_feed_top.xml).
+# Без цього — якщо файл колись зникне з диска, generate_eva_feed.py
+# трактував би це як "перший запуск" і перерахував би заморожений
+# список заново з ЖИВОГО каталогу/цін Prom, порушуючи заморозку.
+if [ ! -f eva_static_selection.json ]; then
+    echo "[FeedPipeline] eva_static_selection.json відсутній локально — відновлюю з feed-data (заморозка на модерацію EVA не повинна перераховуватись з нуля)."
+    git fetch origin feed-data 2>/dev/null || true
+    git show origin/feed-data:eva_static_selection.json > eva_static_selection.json 2>/dev/null || true
+fi
+
 python3 generate_eva_feed.py || echo "[FeedPipeline] generate_eva_feed.py провалився (best-effort, prep-only)"
 
 # Rozetka навмисно ВІДСУТНЯ тут (2026-07-28, пряме рішення власниці) —

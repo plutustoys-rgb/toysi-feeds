@@ -88,6 +88,18 @@ rozetka_feed_membership_state.json
 # список з нуля.
 rozetka_static_selection.json
 
+# Заморожений, ОДНОРАЗОВО сформований статичний знімок для EVA (2026-07-29,
+# пряме рішення власниці — сплачена реєстрація EVA, каталог подано на
+# модерацію) — {items, prices, russian_names, built_at}. Той самий
+# принцип, що й rozetka_static_selection.json вище: не для git як файл,
+# АЛЕ round-trip'иться через feed-data (run_feed_pipeline_vps.sh
+# відновлює, publish_feed_pipeline_vps.sh публікує) — VPS-диск і так
+# переживає між прогонами, round-trip тут лише додатковий захист від
+# втрати диска. Видалення файлу (і в git-history гілки feed-data) —
+# єдиний спосіб змусити наступний прогін перебудувати список з нуля,
+# коли власниця підтвердить завершення модерації EVA.
+eva_static_selection.json
+
 # Резюмований прогрес РУЧНОГО, разового apply_live_dumping_fix.py
 # (2026-07-26) — {started_at, done_pids} для ПОТОЧНОГО sweep'у, щоб
 # повторний ручний запуск міг продовжити, а не починати каталог заново.

@@ -129,24 +129,21 @@ EVA лише РЕКОМЕНДУЮТЬ продавцю самостійно зв
 зовнішній механізм (як GraphQL-пошук для Prom), не готовий фід від
 маркетплейсу.
 
-ЗАМОРОЗКА НА МОДЕРАЦІЮ (2026-07-29, пряме рішення власниці — той самий
-патерн, що вже реалізований і живий для Rozetka, rozetka_static_
-selection.json, generate_rozetka_feed.py::_build_rozetka_static_
-selection()): власниця сплатила реєстрацію EVA (роялті + доступ,
-рахунки 28.07.2026) і подає каталог на модерацію. `_build_eva_static_
-selection()` нижче заморожує ПОТОЧНИЙ результат generate_feed() (той
-самий select_top_items() + _qualifies_for_feed(), без зміни алгоритму
-відбору) — items (сирі поля Toysi), ціни (Prom-ціна НА МОМЕНТ заморозки,
-через load_fresh_prom_price_overrides()) і рос. назви — у
-eva_static_selection.json. Перший виклик (файл не існує) рахує й
-зберігає; кожен наступний — повертає збережене БЕЗ ЖОДНОГО перерахунку
-з живого каталогу/цін Prom, доки власниця прямо не скаже, що модерація
-EVA завершена (видалення файлу — єдиний спосіб змусити перебудову,
-той самий принцип, що й для Rozetka). Round-trip через feed-data
-(restore-фолбек у run_feed_pipeline_vps.sh, публікація в
-publish_feed_pipeline_vps.sh) — той самий патерн, що вже є для
-rozetka_static_selection.json, навіть попри те, що VPS-диск і так
-переживає між прогонами (додатковий захист від втрати диска).
+РОЗМОРОЖЕНО 2026-07-30 (пряме рішення власниці — товар пройшов модерацію
+EVA): EVA тепер ведеться ЯК Prom. generate_feed() рахує відбір ЩОПРОГОНУ
+через _build_eva_live_selection() на ЖИВОМУ каталозі Toysi і ЖИВИХ цінах
+Prom — наявність/склад (available/stock_quantity), ціна й сам склад списку
+актуальні, а НЕ з замороженого знімка. Це прямо усуває ризик «проданий/
+відсутній товар лишається available», який давала заморозка (stock фіксувався
+на момент знімка).
+
+ІСТОРІЯ — ЗАМОРОЗКА НА МОДЕРАЦІЮ (2026-07-29 … завершено 2026-07-30): на
+період модерації EVA застосовувався той самий патерн заморозки, що й Rozetka
+(_build_eva_static_selection() → eva_static_selection.json, round-trip через
+feed-data), щоб каталог не змінювався під час розгляду. Функцію
+_build_eva_static_selection() ЗБЕРЕЖЕНО (більше не викликається) — щоб швидко
+ПОВЕРНУТИ заморозку за потреби: перемкнути виклик у generate_feed() назад на
+неї + відновити eva_static_selection round-trip у run_/publish_feed_pipeline_vps.sh.
 """
 import json
 import os
@@ -717,6 +714,28 @@ def _build_xml(
     return yml
 
 
+def _build_eva_live_selection(catalog: dict, russian_text: dict = None) -> tuple[dict, dict, dict]:
+    """Живий (динамічний) відбір EVA — той самий select_top_items() + _qualifies_for_feed(),
+    але рахується ЩОПРОГОНУ на ЖИВОМУ каталозі Toysi і ЖИВИХ цінах Prom: наявність/склад
+    (available/stock_quantity), ціна Prom і сам склад списку — усе актуальне. Використовується
+    generate_feed() після РОЗМОРОЗКИ 2026-07-30 (пряме рішення власниці: товар пройшов
+    модерацію EVA → вести EVA як Prom, живі залишки замість замороженого знімка).
+    Повертає (items, prices, russian_names)."""
+    top_catalog = select_top_items(catalog)
+    price_overrides = load_fresh_prom_price_overrides()
+    russian = russian_text or {}
+    items: dict = {}
+    prices: dict = {}
+    russian_names: dict = {}
+    for pid, item in top_catalog.items():
+        if not _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides):
+            continue
+        items[pid] = item
+        prices[pid] = price_overrides[pid]
+        russian_names[pid] = (russian.get(pid) or {}).get("name") or item.get("name", "")
+    return items, prices, russian_names
+
+
 def _build_eva_static_selection(catalog: dict, russian_text: dict = None) -> tuple[dict, dict, dict]:
     """Заморожений знімок EVA-фіда на момент подачі на модерацію
     (2026-07-29, пряме рішення власниці — той самий патерн заморозки, що
@@ -793,13 +812,16 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     if russian_text is None:
         russian_text = fetch_russian_text()
 
-    # Заморозка на модерацію EVA (2026-07-29, див. докстрінг файлу й
-    # _build_eva_static_selection() вище) — заморожений знімок,
-    # перерахований лише один раз, при першому формуванні.
-    static_items, static_prices, static_russian_names = _build_eva_static_selection(
+    # РОЗМОРОЖЕНО 2026-07-30 (пряме рішення власниці — товар пройшов модерацію EVA →
+    # вести EVA як Prom: живі залишки/ціни). Відбір рахується ЩОПРОГОНУ через
+    # _build_eva_live_selection() (динамічно), а НЕ з замороженого знімка (static_* —
+    # історична назва змінних, тепер тримають ЖИВІ дані). Щоб ПОВЕРНУТИ заморозку —
+    # замінити виклик назад на _build_eva_static_selection() (функція збережена вище) +
+    # відновити eva_static_selection round-trip у run_/publish_feed_pipeline_vps.sh.
+    static_items, static_prices, static_russian_names = _build_eva_live_selection(
         catalog, russian_text=russian_text,
     )
-    print(f"[EVA] Заморожений відбір (модерація EVA): {len(static_items)} товарів.")
+    print(f"[EVA] Живий відбір (динамічно, живі залишки/ціни): {len(static_items)} товарів.")
 
     frozen_russian_text = {pid: {"name": name} for pid, name in static_russian_names.items()}
 

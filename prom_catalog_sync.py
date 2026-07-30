@@ -263,6 +263,33 @@ def check_product_count_sane(products: dict) -> str | None:
     return None
 
 
+# ДОДАНО (2026-07-30, root_cause_report_2026-07-30_sales_stopped.md): deactivate()
+# раніше не мав жодного капу — видаляв УСЕ, що find_stale_external_ids() позначив,
+# скільки б не було (живо: 348-661/прогін у липні; нотифікація Prom "видалено 2256").
+# Легітимна ротація зараз ~50-80/прогін. Партія понад цей ліміт — сигнал імовірного
+# збою (колапс select_top_items, стрибок "невидимої групи"), а не реальної ротації.
+MAX_DEACTIVATIONS_PER_RUN = 200
+
+
+def deletion_guard_reason(prom_products: dict, stale_ids: list) -> str | None:
+    """Повертає причину ПРОПУСТИТИ масове видалення цього прогону (і заалертити),
+    або None, якщо видаляти безпечно. Два незалежні запобіжники:
+    (1) надійність виду кабінету — не вирішувати про видалення на неповному зрізі
+        (відома "невидима група" в fetch_prom_products());
+    (2) кап на масовість — партія > MAX_DEACTIVATIONS_PER_RUN не видаляється
+        автоматично, а віддається на огляд людині."""
+    view_warning = check_product_count_sane(prom_products)
+    if view_warning:
+        return (f"НЕнадійний вид кабінету — {len(prom_products)} товарів "
+                f"(< {MIN_EXPECTED_PRODUCT_COUNT}), рішення про видалення наосліп небезпечне. "
+                f"{view_warning}")
+    if len(stale_ids) > MAX_DEACTIVATIONS_PER_RUN:
+        return (f"{len(stale_ids)} застарілих товарів перевищує ліміт "
+                f"{MAX_DEACTIVATIONS_PER_RUN}/прогін — ймовірний збій відбору/скану, "
+                f"а не реальна ротація.")
+    return None
+
+
 def fetch_prom_products() -> dict:
     """Повний список товарів кабінету Prom (усі групи), ключ — external_id.
 
@@ -442,6 +469,16 @@ def main() -> None:
 
     if not args.apply:
         print("\n[Sync] DRY-RUN: жодних змін не внесено. Запусти з --apply, щоб реально деактивувати.")
+        return
+
+    # ЗАХИСТ від масового видалення (2026-07-30): перш ніж реально видаляти —
+    # надійність виду кабінету + кап на масовість. Понад ліміт або на частковому
+    # зрізі: НЕ видаляємо, алертимо в Telegram, лишаємо рішення людині.
+    block_reason = deletion_guard_reason(prom_products, stale_ids)
+    if block_reason:
+        msg = f"prom_catalog_sync: масове видалення ПРОПУЩЕНО — {block_reason}"
+        print(f"[Sync] {msg}", file=sys.stderr)
+        send_telegram_message("🚨 " + msg)
         return
 
     print(f"\n[Sync] Деактивую {len(stale_ids)} товарів (status=deleted)...")

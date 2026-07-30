@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -182,9 +183,40 @@ MIN_EXPECTED_PRODUCT_COUNT = 910
 MAX_429_RETRIES = 5
 RETRY_BACKOFF_BASE_SECONDS = 3
 
+# ДОДАНО (2026-07-30, друге звернення — root_cause_report_2026-07-25_why_not_6000.md
+# пункт 4, і root_cause_report_2026-07-30_sales_stopped.md): _get_with_retry вище лише
+# ВІДНОВЛЮЄТЬСЯ після 429, але не ЗАПОБІГАЄ сплеску. Корінь — ThreadPoolExecutor
+# (fetch_prom_products / fetch_prom_products_by_external_ids) б'є по /products/list
+# паралельно БЕЗ пауз. Тут — глобальний (на весь модуль, для всіх потоків) throttle:
+# мінімум PROM_API_MIN_INTERVAL_SECONDS між СТАРТАМИ будь-яких двох запитів, той самий
+# принцип "власної ввічливості", що й SEARCH_DELAY=0.4 в prom_competitor_pricer.py.
+# Лок утримується під час sleep навмисно — так старти запитів рознесені в часі навіть
+# коли їх ініціюють 10 потоків одночасно (сам HTTP-I/O далі йде поза локом, тож мережеві
+# затримки й далі перекриваються між потоками). Проактивний throttle + зменшений
+# max_workers разом усувають сплеск, а не лише лікують його наслідок.
+PROM_API_MIN_INTERVAL_SECONDS = 0.4
+# Зменшено 10 -> 4: глобальний _throttle() і так серіалізує старти запитів, тож високий
+# паралелізм давав лише сплеск на старті (усі 10 стартують одночасно) без виграшу в
+# швидкості. 4 потоки перекривають мережеву латентність, не створюючи "громового стада".
+PROM_FETCH_MAX_WORKERS = 4
+_throttle_lock = threading.Lock()
+_last_request_ts = 0.0
+
+
+def _throttle() -> None:
+    """Рознести старти запитів до Prom API щонайменше на PROM_API_MIN_INTERVAL_SECONDS,
+    потокобезпечно (для паралельних викликів через ThreadPoolExecutor)."""
+    global _last_request_ts
+    with _throttle_lock:
+        wait = PROM_API_MIN_INTERVAL_SECONDS - (time.monotonic() - _last_request_ts)
+        if wait > 0:
+            time.sleep(wait)
+        _last_request_ts = time.monotonic()
+
 
 def _get_with_retry(url: str, params: dict) -> requests.Response:
     for attempt in range(MAX_429_RETRIES + 1):
+        _throttle()
         response = requests.get(
             url,
             headers={"Authorization": f"Bearer {PROM_API_KEY}"},
@@ -279,7 +311,7 @@ def fetch_prom_products() -> dict:
     group_ids = _fetch_group_ids()
 
     products: dict = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=PROM_FETCH_MAX_WORKERS) as executor:
         for group_products in executor.map(_fetch_products_in_group, group_ids):
             for p in group_products:
                 ext_id = p.get("external_id")
@@ -326,6 +358,7 @@ def fetch_prom_products_by_external_ids(external_ids: set) -> tuple[dict, set]:
 
     def _fetch_one(ext_id: str) -> tuple:
         try:
+            _throttle()  # той самий глобальний throttle, що й _get_with_retry — цей шлях теж паралельний і теж бив 429
             response = requests.get(
                 f"{PROM_API_URL}/products/by_external_id/{ext_id}",
                 headers={"Authorization": f"Bearer {PROM_API_KEY}"},
@@ -339,7 +372,7 @@ def fetch_prom_products_by_external_ids(external_ids: set) -> tuple[dict, set]:
             return "indeterminate", None
 
     ids_list = list(external_ids)
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=PROM_FETCH_MAX_WORKERS) as executor:
         for ext_id, (status, product) in zip(ids_list, executor.map(_fetch_one, ids_list)):
             if status == "found" and product:
                 found[ext_id] = product

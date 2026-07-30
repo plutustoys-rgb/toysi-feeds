@@ -173,6 +173,14 @@ MIN_SUPPLIER_PRICE = 20  # той самий поріг, що й Prom/Rozetka �
 # самий патерн, що й ROZETKA_STATIC_SELECTION_FILE) — див. докстрінг файлу.
 EVA_STATIC_SELECTION_FILE = Path(__file__).parent / "eva_static_selection.json"
 
+# Порядок відбору EVA (2026-07-30, пряме рішення власника): у фід беремо лише товари з
+# наявністю СТРОГО більше EVA_SELECTION_MIN_STOCK шт (ostatok Toysi — діапазон, парсер
+# бере мінімум; менший ризик оверселу), впорядковані найновіші-першими за тегом <date>
+# Toysi (дата надходження новинки; порожня = не новинка). Крок "топ Тойсі" (пріоритетний)
+# у фіді Toysi ВІДСУТНІЙ (лише в кабінеті) — стане першим ключем сортування, щойно з'явиться
+# машинне джерело топа (Toysi-API/ручний експорт). Наразі порядок: наявність>2 → найновіші.
+EVA_SELECTION_MIN_STOCK = 2
+
 # Пряме завдання власниці (2026-07-21) — стоп-бренди EVA, категорія KIDS.
 # Порівняння регістронезалежне/без урахування розділювача (див. _normalize_brand
 # нижче) — включно з обома написаннями TechnoK/Технок (див. докстрінг файлу).
@@ -724,12 +732,25 @@ def _build_eva_live_selection(catalog: dict, russian_text: dict = None) -> tuple
     top_catalog = select_top_items(catalog)
     price_overrides = load_fresh_prom_price_overrides()
     russian = russian_text or {}
+
+    # Порядок відбору (2026-07-30, пряме рішення власника): (2) лише наявність
+    # > EVA_SELECTION_MIN_STOCK шт, (3) найновіші першими за <date> Toysi.
+    # (1) "топ Тойсі" — коли з'явиться машинне джерело топа (у фіді його немає).
+    qualified = [
+        (pid, item) for pid, item in top_catalog.items()
+        if item.get("stock", 0) > EVA_SELECTION_MIN_STOCK
+        and _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides)
+    ]
+    # найновіші першими: непорожня <date> desc; тай-брейк — новіший id (Toysi нумерує послідовно)
+    qualified.sort(
+        key=lambda kv: (kv[1].get("date") or "", int(kv[0]) if str(kv[0]).isdigit() else -1),
+        reverse=True,
+    )
+
     items: dict = {}
     prices: dict = {}
     russian_names: dict = {}
-    for pid, item in top_catalog.items():
-        if not _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides):
-            continue
+    for pid, item in qualified:
         items[pid] = item
         prices[pid] = price_overrides[pid]
         russian_names[pid] = (russian.get(pid) or {}).get("name") or item.get("name", "")

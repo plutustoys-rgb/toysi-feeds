@@ -190,6 +190,10 @@ def _parse_xml(xml_content: bytes) -> Dict[str, dict]:
             vendor = _extract_vendor_from_params(params)
 
         country = offer.findtext("country", "").strip()
+        # ДОДАНО (2026-07-30): тег <date> Toysi — дата надходження новинки (ISO, порожня
+        # для не-новинок). Раніше відкидався; тепер потрібен для кроку "найновіші" у
+        # порядку відбору EVA (пряме рішення власника).
+        date = offer.findtext("date", "").strip()
 
         catalog[product_id] = {
             "id":            product_id,
@@ -206,6 +210,7 @@ def _parse_xml(xml_content: bytes) -> Dict[str, dict]:
             "category_id":   category_id,
             "category_name": cat_names.get(category_id, ""),
             "params":        params,
+            "date":          date,
         }
 
     print(f"[Toysi] Загружено товаров: {len(catalog)}")

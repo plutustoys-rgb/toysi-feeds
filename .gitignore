@@ -114,6 +114,10 @@ live_dumping_fix_progress.json
 # послідовних невдалих спроб prom_catalog_sync.py, не для git.
 prom_catalog_sync_stuck_state.json
 
+# 24-год throttle останнього блок-алерту deletion_guard (2026-07-30) — суто
+# runtime-стан prom_catalog_sync.py, скидається при здоровому прогоні, не для git.
+prom_catalog_sync_block_alert_state.json
+
 # КОДВ-журнал (daily_report.py, 2026-07-20) — накопичувальний, живе на
 # VPS, публікується publish_kodv_ledger.sh в ОКРЕМУ гілку kodv-ledger-data
 # (НЕ feed-data — той самий принцип ізоляції, що й full_catalog_scan_state.json

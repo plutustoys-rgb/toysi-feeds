@@ -114,13 +114,18 @@ rozetka_client.py лише тоді, коли з'явиться реальний
 власницею діапазону (5-12%), той самий принцип асиметрії ризику, що вже
 застосований для EVA_COMMISSION_TOYS.
 
-КУРУВАНИЙ ВІДБІР: той самий select_top_items() (топ-970), що й
-Prom/Rozetka/EVA — консервативний старт для нового, ще не протестованого
-каналу.
+КУРУВАНИЙ ВІДБІР + ЗАМОРОЗКА: базовий відбір — той самий select_top_items()
+(топ-970), що й Prom/EVA. Але фінальний список ЗАМОРОЖЕНИЙ статичним знімком
+(allo_static_selection.json, _build_allo_static_selection() нижче) — той самий
+патерн, що вже застосований для Rozetka й EVA (2026-07-30, пряме рішення
+власниці): для нового каналу на модерації каталог не повинен змінюватись між
+прогонами (ні склад списку, ні заморожена ціна Prom), доки власниця не скаже,
+що модерація АЛЛО завершена (видалення файлу = перебудова з нуля).
 """
 import os
 import re
 import html
+import json
 import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -150,6 +155,13 @@ MIN_SUPPLIER_PRICE = 20  # той самий поріг, що й Prom/Rozetka/EV
 # буде реальний перелік від Аліни Бондаренко чи з кабінету — той самий
 # механізм, що EVA_STOP_BRANDS у generate_eva_feed.py.
 ALLO_STOP_BRANDS: set[str] = set()
+
+# Заморозка АЛЛО на модерацію (2026-07-30, пряме рішення власниці — той
+# самий патерн, що ROZETKA_STATIC_SELECTION_FILE / EVA_STATIC_SELECTION_FILE):
+# ALLO у статусі "підготовка/реєстрація", і статичний знімок не даватиме
+# каталогу змінюватись під час модерації нового каналу. Див.
+# _build_allo_static_selection() нижче.
+ALLO_STATIC_SELECTION_FILE = Path(__file__).parent / "allo_static_selection.json"
 
 
 def _normalize_brand(vendor: str) -> str:
@@ -430,6 +442,49 @@ def _build_xml(
     return yml
 
 
+def _build_allo_static_selection(catalog: dict, price_overrides: dict = None) -> tuple[dict, dict]:
+    """Заморожений статичний відбір для АЛЛО — той самий патерн, що
+    _build_eva_static_selection() / Rozetka.
+
+    Перший виклик (файл ще не існує) рахує курований топ-970, фільтрує через
+    _qualifies_for_feed() і зберігає {items, prices, built_at}. Кожен наступний
+    виклик читає збережене й повертає БЕЗ ЖОДНОГО перерахунку: ні ціна Prom, ні
+    наявність, ні сам факт присутності SKU не змінюються, доки власниця прямо не
+    скаже, що модерація АЛЛО завершена (видалення файлу — єдиний спосіб змусити
+    перебудову, той самий принцип, що для EVA/Rozetka)."""
+    if ALLO_STATIC_SELECTION_FILE.exists():
+        try:
+            saved = json.loads(ALLO_STATIC_SELECTION_FILE.read_text(encoding="utf-8"))
+            return saved["items"], saved["prices"]
+        except (ValueError, OSError, KeyError):
+            pass  # пошкоджений/неповний файл — сформувати заново нижче, як при першому запуску
+
+    if price_overrides is None:
+        price_overrides = load_fresh_prom_price_overrides()
+    top_catalog = select_top_items(catalog)
+
+    items: dict = {}
+    prices: dict = {}
+    for pid, item in top_catalog.items():
+        if not _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides):
+            continue
+        items[pid] = item
+        prices[pid] = price_overrides[pid]
+
+    ALLO_STATIC_SELECTION_FILE.write_text(
+        json.dumps({"items": items, "prices": prices, "built_at": datetime.now().isoformat()},
+                   ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+    print(f"[ALLO] Статичний список сформовано ВПЕРШЕ (заморозка на модерацію АЛЛО): "
+          f"{len(items)} з {len(top_catalog)} товарів курованого відбору "
+          f"(з {len(catalog)} товарів повного каталогу Toysi). Список ЗАМОРОЖЕНИЙ — "
+          "наступні прогони використовуватимуть той самий, без перерахунку "
+          "(ні ціна Prom, ні наявність, ні сам факт присутності), доки не буде окремої "
+          "команди власниці про завершення модерації АЛЛО.")
+    return items, prices
+
+
 def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
                   catalog: dict = None,
@@ -442,11 +497,15 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         print("[ALLO] Каталог порожній — файл не створено.")
         return
 
-    top_catalog = select_top_items(catalog)
-    print(f"[ALLO] Куруваний відбір: {len(top_catalog)} з {len(catalog)} товарів повного каталогу.")
+    # Заморозка на модерацію АЛЛО (2026-07-30, див. докстрінг файлу й
+    # _build_allo_static_selection() вище) — заморожений знімок, перерахований
+    # лише один раз, при першому формуванні. Ціни теж заморожені (ЦІНА АЛЛО =
+    # ЦІНА PROM на момент знімка), як в EVA.
+    static_items, static_prices = _build_allo_static_selection(catalog, price_overrides)
+    print(f"[ALLO] Заморожений відбір (модерація АЛЛО): {len(static_items)} товарів.")
 
     root = _build_xml(
-        top_catalog, price_overrides=price_overrides, exclude_ids=exclude_ids,
+        static_items, price_overrides=static_prices, exclude_ids=exclude_ids,
         description_overrides=description_overrides,
     )
 

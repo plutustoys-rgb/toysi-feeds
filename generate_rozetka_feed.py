@@ -363,6 +363,59 @@ def _wrap_cdata(xml_str: str) -> str:
     return re.sub(r"<description>(.*?)</description>", replacer, xml_str, flags=re.DOTALL)
 
 
+# ДОДАНО (2026-07-30, STATUS.md — Rozetka перейшла на групування карток "М'які
+# іграшки" за param "Колір" (rz paramid 22611) і "Висота іграшки" (35419); товари
+# без цих param НЕ показуються в групі = пряма загроза продажам). Toysi не дає
+# структурованих "Колір"/"Висота іграшки" для м'яких іграшок (живо: 0/73), тож
+# добуваємо: колір — з СУФІКСА назви (де Toysi за конвенцією пише колір), висоту
+# іграшки — з param "Висота без упаковки" (реальна висота іграшки, живо є в ~13/73;
+# висоту УПАКОВКИ навмисно НЕ підставляємо — це інша, більша величина).
+_COLOR_STEMS = {
+    "червон": "Червоний", "помаранч": "Помаранчевий", "оранж": "Помаранчевий",
+    "жовт": "Жовтий", "зелен": "Зелений", "салатов": "Салатовий",
+    "блакит": "Блакитний", "бірюз": "Бірюзовий", "синь": "Синій", "синій": "Синій",
+    "фіолет": "Фіолетовий", "бузков": "Бузковий", "рожев": "Рожевий", "малинов": "Малиновий",
+    "бордов": "Бордовий", "коричнев": "Коричневий", "бежев": "Бежевий",
+    "чорн": "Чорний", "білий": "Білий", "біла": "Білий", "біле": "Білий",
+    "сірий": "Сірий", "сіра": "Сірий", "сіре": "Сірий",
+    "золот": "Золотий", "срібл": "Срібний", "різнокол": "Різнокольоровий", "мікс": "Мікс",
+}
+_COLOR_PAREN_RE = re.compile(r"\(([^()]{2,40})\)")
+
+
+def _extract_color_from_name(name: str) -> str | None:
+    """Колір із СУФІКСНИХ позицій назви — у дужках `(жовтий)` або після останньої
+    коми в кінці `, рожева` (де Toysi за конвенцією пише колір). Повертає канонічну
+    назву кольору або None. Розмір (є цифра, напр. "45 см") ігнорується. Свідомо НЕ
+    шукаємо колірне слово будь-де в назві — щоб не сплутати з назвою персонажа
+    (напр. "Червона Шапочка")."""
+    name = name or ""
+    candidates = list(_COLOR_PAREN_RE.findall(name))
+    if "," in name:
+        candidates.append(name.rsplit(",", 1)[-1])
+    for frag in candidates:
+        fl = frag.lower()
+        if any(ch.isdigit() for ch in fl):   # розмір/кількість, не колір
+            continue
+        for stem, canon in _COLOR_STEMS.items():
+            if stem in fl:
+                return canon
+    return None
+
+
+def _extract_toy_height(params) -> str | None:
+    """Реальна висота ІГРАШКИ — Toysi дає її в param "Висота без упаковки (см)" для
+    частини товарів. Повертає значення або None. Висоту УПАКОВКИ ("Висота в упаковці")
+    НЕ використовуємо — це інша (зазвичай більша) величина, підставляти її як висоту
+    іграшки означало б хибні дані в картці."""
+    for pn, pv in params or []:
+        pl = (pn or "").lower()
+        if "висот" in pl and "без упаков" in pl:
+            v = str(pv).strip()
+            return v or None
+    return None
+
+
 def _build_xml(
     catalog: dict,
     price_overrides: dict = None,
@@ -589,7 +642,24 @@ def _build_xml(
         if desc:
             ET.SubElement(offer, "description").text = desc
 
-        params = item.get("params", [])
+        params = list(item.get("params", []) or [])
+
+        # Збагачення для м'яких іграшок (Rozetka групує їх за "Колір"/"Висота іграшки",
+        # 2026-07-30) — Toysi не дає цих структурованих param; додаємо з назви (колір) і з
+        # "Висота без упаковки" (висота іграшки), ЛИШЕ якщо їх ще немає й дані реально є.
+        # Без цих param товар не показується в груповій вітрині Rozetka.
+        cat_l = (item.get("category_name", "") or "").lower()
+        if "м'як" in cat_l or "мʼяк" in cat_l or "мяк" in cat_l:
+            existing = {(pn or "").strip().lower() for pn, _ in params}
+            if not any(("колір" in e or "цвет" in e) for e in existing):
+                color = _extract_color_from_name(item.get("name", ""))
+                if color:
+                    params.append(("Колір", color))
+            if not any("висота іграшки" in e for e in existing):
+                th = _extract_toy_height(item.get("params", []))
+                if th:
+                    params.append(("Висота іграшки", th))
+
         if params:
             for param_name, param_val in params:
                 ET.SubElement(offer, "param", name=_clean_text(param_name)).text = _clean_text(str(param_val))

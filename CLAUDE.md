@@ -33,4 +33,6 @@ Rozetka НЕ має власної історії продажів. Жодна �
 
 ## Детальніше
 
+Швидкий старт нової сесії будь-якої ролі (Cowork / Code Desktop / Security audit) — `PlutusToys_avtonomiya/BOOTSTRAP.md` (читати ПЕРШИМ, до STATUS.md).
+
 Повна історія рішень і чому саме так — `PlutusToys_avtonomiya_plan.md` і `STATUS.md`/`GOTCHAS.md` у спільній Cowork-папці (якщо змонтована).

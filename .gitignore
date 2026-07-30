@@ -127,6 +127,11 @@ prom_catalog_sync_stuck_state.json
 # runtime-стан prom_catalog_sync.py, скидається при здоровому прогоні, не для git.
 prom_catalog_sync_block_alert_state.json
 
+# Sweep-курсор супплементу "невидимої групи" (2026-07-30, STATUS.md п.6) — які
+# desired-id уже перевірено через by_external_id у поточному циклі, для гарантованого
+# прогресу по бэклогу. Суто runtime-стан, скидається на новий цикл, не для git.
+prom_cabinet_supplement_checked.json
+
 # КОДВ-журнал (daily_report.py, 2026-07-20) — накопичувальний, живе на
 # VPS, публікується publish_kodv_ledger.sh в ОКРЕМУ гілку kodv-ledger-data
 # (НЕ feed-data — той самий принцип ізоляції, що й full_catalog_scan_state.json

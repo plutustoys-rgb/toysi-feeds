@@ -458,6 +458,65 @@ def fetch_prom_products_by_external_ids(external_ids: set) -> tuple[dict, set]:
     return found, indeterminate
 
 
+# ДОДАНО (2026-07-30, STATUS.md пункт 6 — ПРІОРИТЕТ Code Desktop): обхід "невидимої
+# групи". /groups/list стабільно не віддає частину груп цього акаунта (докум. "Сквіші"
+# вище), тож груповий fetch_prom_products() періодично недорахує кабінет (історично 38%
+# прогонів <910), і view-guard (deletion_guard_reason) на таких прогонах блокує видалення,
+# не звільняючи місце під нові товари. Тут — bounded-супплемент через /by_external_id
+# (структурно НЕ залежить від /groups/list — задача #47/#64), той самий патерн, що
+# build_prom_category_cache()/PR #165/#180. Кандидати — DESIRED (топ-відбір, які МАЄМО в
+# Prom): набагато вища влучність, ніж сліпо по всьому каталозі Toysi (~27k з якого —
+# "не додано", гарантований 404). Дані завжди СВІЖІ (by_external_id цього прогону, не
+# кеш) — безпечно для рішення про видалення. Sweep-курсор (persistent checked-set)
+# гарантовано покриває ВСЮ множину desired-missing по CABINET_SUPPLEMENT_LOOKUP_LIMIT за
+# ceil(N/LIMIT) прогонів, потім скидається на новий цикл — не застрягає на першому батчі.
+CABINET_SUPPLEMENT_LOOKUP_LIMIT = 800
+CABINET_SUPPLEMENT_CHECKED_FILE = Path(__file__).parent / "prom_cabinet_supplement_checked.json"
+
+
+def _load_cabinet_checked() -> set:
+    try:
+        data = json.loads(CABINET_SUPPLEMENT_CHECKED_FILE.read_text(encoding="utf-8"))
+        return set(data) if isinstance(data, list) else set()
+    except (OSError, ValueError):
+        return set()
+
+
+def _save_cabinet_checked(checked: set) -> None:
+    try:
+        CABINET_SUPPLEMENT_CHECKED_FILE.write_text(
+            json.dumps(sorted(checked), ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        print(f"[Sync] Не вдалось зберегти {CABINET_SUPPLEMENT_CHECKED_FILE.name} ({e})", file=sys.stderr)
+
+
+def supplement_cabinet_view(prom_products: dict, desired_ids: set) -> dict:
+    """Дочитує bounded-батч DESIRED-товарів, яких нема в груповому фетчі, через
+    /by_external_id (обхід "невидимої групи"), і додає ЗНАЙДЕНІ (свіжі дані цього прогону)
+    у prom_products. Мутує й повертає той самий словник. Sweep-курсор: спершу ще-не-
+    перевірені цього циклу; коли всі поточні desired-missing пройдено — скидаємо checked
+    і починаємо новий цикл. Так за кілька прогонів покривається вся множина, і жоден
+    підмножинний "застряглий" батч не блокує прогрес."""
+    missing = [e for e in desired_ids if e not in prom_products]
+    if not missing:
+        return prom_products
+    missing_set = set(missing)
+    checked = _load_cabinet_checked() & missing_set  # лише актуальні desired-missing
+    pool = [e for e in missing if e not in checked]
+    if not pool:                    # весь поточний missing уже пройдено — новий цикл
+        checked = set()
+        pool = missing
+    batch = pool[:CABINET_SUPPLEMENT_LOOKUP_LIMIT]
+    found, _indeterminate = fetch_prom_products_by_external_ids(set(batch))
+    prom_products.update(found)     # свіжі дані, не кеш
+    checked.update(batch)
+    _save_cabinet_checked(checked)
+    print(f"[Sync] Обхід невидимої групи: {len(missing)} desired-id поза груповим фетчем, "
+          f"перевірено {len(batch)} цього прогону через by_external_id, знайдено в кабінеті "
+          f"{len(found)} (додано до виду).")
+    return prom_products
+
+
 def find_stale_external_ids(prom_products: dict, desired_ids: set, toysi_ids: set) -> list:
     """Товари, які реально опубліковані в Prom, походять з нашого Toysi-фіда
     (не додані вручну власником — таких не чіпаємо), більше не входять у
@@ -529,6 +588,10 @@ def main() -> None:
 
     print("[Sync] Тягну повний список товарів кабінету Prom...")
     prom_products = fetch_prom_products()
+    # Обхід "невидимої групи" (STATUS.md п.6): дочитати desired-товари, яких груповий
+    # /groups/list не повернув, через by_external_id — робить вид повнішим (менше хибних
+    # блокувань view-guard) і дає find_stale бачити застарілі товари з невидимих груп.
+    prom_products = supplement_cabinet_view(prom_products, desired_ids)
     print(f"[Sync] У кабінеті Prom: {len(prom_products)} товарів. "
           f"У поточному топ-970: {len(desired_ids)}.")
 

@@ -100,6 +100,15 @@ rozetka_static_selection.json
 # коли власниця підтвердить завершення модерації EVA.
 eva_static_selection.json
 
+# Заморожений статичний знімок для АЛЛО (2026-07-30, пряме рішення власниці —
+# канал у стані реєстрації/модерації). Той самий принцип, що
+# eva_static_selection.json / rozetka_static_selection.json вище: не для git як
+# файл (специфічний для акаунту знімок). ALLO ще НЕ підключений до пайплайну
+# (feeds/allo_feed.xml не публікується) — коли підключать, додати restore/publish
+# round-trip через feed-data (як для EVA в run_feed_pipeline_vps.sh). Видалення
+# файлу — єдиний спосіб перебудувати список, коли модерацію АЛЛО завершать.
+allo_static_selection.json
+
 # Резюмований прогрес РУЧНОГО, разового apply_live_dumping_fix.py
 # (2026-07-26) — {started_at, done_pids} для ПОТОЧНОГО sweep'у, щоб
 # повторний ручний запуск міг продовжити, а не починати каталог заново.

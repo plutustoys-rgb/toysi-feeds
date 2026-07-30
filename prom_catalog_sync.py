@@ -336,7 +336,10 @@ BLOCK_ALERT_INTERVAL_HOURS  = 24
 def _block_alert_due(now: datetime) -> bool:
     """True, якщо блок-алерт ще не слався або минуло >= BLOCK_ALERT_INTERVAL_HOURS."""
     try:
-        last = json.loads(BLOCK_ALERT_STATE_FILE.read_text(encoding="utf-8")).get("last_block_alert")
+        data = json.loads(BLOCK_ALERT_STATE_FILE.read_text(encoding="utf-8"))
+        # isinstance-guard (аудит #189 pt3): валідний JSON-нескаляр (0/[]/"str") інакше
+        # кинув би AttributeError на .get() поза except нижче — fail-open замість краху.
+        last = data.get("last_block_alert") if isinstance(data, dict) else None
     except (OSError, ValueError):
         last = None
     if not last:

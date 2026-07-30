@@ -322,6 +322,50 @@ def deletion_guard_reason(prom_products: dict, stale_ids: list) -> str | None:
     return None
 
 
+# ДОДАНО (2026-07-30, аудит PR #188 pt2, GOTCHAS #5): блок-алерт deletion_guard
+# спрацьовує до 4×/день (таймер 07:30/11:30/15:30/19:30), і при затяжному
+# нестабільному виді "невидимої групи" спамив би Telegram щопрогону. Той самий
+# 24-год throttle-патерн, що й у service_watchdog.py (check_autodeploy_status /
+# feed_pipeline): не частіше 1 алерту / BLOCK_ALERT_INTERVAL_HOURS; здоровий прогін
+# (видалення дозволено) скидає стан, щоб наступний НОВИЙ епізод блокування
+# заалертив одразу (new/repeat-throttled/recovery-цикл, як у watchdog).
+BLOCK_ALERT_STATE_FILE      = Path(__file__).parent / "prom_catalog_sync_block_alert_state.json"
+BLOCK_ALERT_INTERVAL_HOURS  = 24
+
+
+def _block_alert_due(now: datetime) -> bool:
+    """True, якщо блок-алерт ще не слався або минуло >= BLOCK_ALERT_INTERVAL_HOURS."""
+    try:
+        last = json.loads(BLOCK_ALERT_STATE_FILE.read_text(encoding="utf-8")).get("last_block_alert")
+    except (OSError, ValueError):
+        last = None
+    if not last:
+        return True
+    try:
+        return (now - datetime.fromisoformat(last)).total_seconds() / 3600 >= BLOCK_ALERT_INTERVAL_HOURS
+    except ValueError:
+        return True  # пошкоджений таймстемп — не глушити алерт
+
+
+def _record_block_alert(now: datetime) -> None:
+    try:
+        BLOCK_ALERT_STATE_FILE.write_text(
+            json.dumps({"last_block_alert": now.isoformat()}, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        print(f"[Sync] Не вдалось зберегти {BLOCK_ALERT_STATE_FILE.name} ({e})", file=sys.stderr)
+
+
+def _clear_block_alert() -> None:
+    """Скинути throttle-стан — викликається, коли прогін ДОЗВОЛИВ видалення (епізод
+    блокування завершився), щоб наступне блокування заалертило без затримки."""
+    try:
+        BLOCK_ALERT_STATE_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"[Sync] Не вдалось скинути {BLOCK_ALERT_STATE_FILE.name} ({e})", file=sys.stderr)
+
+
 def fetch_prom_products() -> dict:
     """Повний список товарів кабінету Prom (усі групи), ключ — external_id.
 
@@ -510,10 +554,17 @@ def main() -> None:
     block_reason = deletion_guard_reason(prom_products, stale_ids)
     if block_reason:
         msg = f"prom_catalog_sync: масове видалення ПРОПУЩЕНО — {block_reason}"
-        print(f"[Sync] {msg}", file=sys.stderr)
-        send_telegram_message("🚨 " + msg)
+        print(f"[Sync] {msg}", file=sys.stderr)  # у лог — ЗАВЖДИ, на кожному заблокованому прогоні
+        now = datetime.now()
+        if _block_alert_due(now):  # Telegram — не частіше 1/24год (throttle, аудит #188/GOTCHAS #5)
+            send_telegram_message("🚨 " + msg)
+            _record_block_alert(now)
+        else:
+            print("[Sync] Telegram-алерт про блокування пропущено — 24-год throttle (вже алертив нещодавно).",
+                  file=sys.stderr)
         return
 
+    _clear_block_alert()  # видалення дозволено цього прогону → епізод блокування завершено, скидаємо throttle
     print(f"\n[Sync] Деактивую {len(stale_ids)} товарів (status=deleted)...")
     processed, errors = deactivate(stale_ids)
     print(f"[Sync] Оброблено: {len(processed)}. Помилок: {len(errors)}.")

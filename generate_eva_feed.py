@@ -12,12 +12,12 @@ generate_eva_feed.py — генерує YML-фід для EVA Маркетпле
 Маркетплейс"):
 
 1. НАЗВА — реалізовано частково, свідомо:
-   - `<name>` (рос.) тепер ЗАПОВНЮЄТЬСЯ (fetch_russian_text() з
-     generate_prom_feed.py, той самий rus-фід Toysi lang=rus, з
-     фолбеком на укр. назву, якщо для SKU рос-варіанту нема) — РАНІШЕ
-     поле взагалі не писалось (докстрінг досі мав хибне пояснення "не
-     пишемо, бо непотрібне" — власниця процитувала вимогу "лише
-     російською заборонена", що прямо суперечило старому коду).
+   - `<name>` (рос.) СВІДОМО НЕ ЕМІТИТЬСЯ (2026-07-31): авто-модерація EVA
+     відхиляла ВСІ товари з «Виявлено російську мову у невідповідному полі» —
+     російське поле `<name>` було тригером (живо: 0 активних, усі «Відхилені»).
+     За специфікацією EVA `<name>` ОПЦІЙНЕ, тож лишається лише обов'язкове
+     укр. `<name_ua>`. (Раніше `<name>` помилково заповнювалось rus-фідом Toysi —
+     ми думали, EVA ВИМАГАЄ рос. назву; насправді EVA її забороняє.)
    - Прибрано ВЕЛИКІ ЛІТЕРИ (_denoise_caps): якщо >=60% літер назви —
      великі, перетворюємо на Title Case, крім коротких токенів (<=3
      симв., ймовірні акроніми/моделі: "M-9", "3D") і токенів з цифрами.
@@ -158,7 +158,7 @@ from pathlib import Path
 from competitor_pricing import (
     load_description_overrides, real_toysi_cost,
 )
-from generate_prom_feed import append_clearance_notice, fetch_russian_text, normalize_vendor
+from generate_prom_feed import append_clearance_notice, normalize_vendor
 from parser import fetch_toysi_catalog
 
 SHOP_NAME          = "PlutusToys"
@@ -439,8 +439,30 @@ def _strip_cta_phrases(text: str) -> str:
     return " ".join(kept)
 
 
+# Прибирає АТРИБУТИ з HTML-тегів, лишаючи самі теги: <p data-start="8"
+# class="PDq2pG_selectionAnchorContainer"> -> <p>; <br data-start=...> -> <br>;
+# <span aria-hidden="true" class="..."> -> <span>; </p> -> </p>; <b> -> <b>.
+# Значення атрибутів матчаться з урахуванням ЛАПОК ("..."/'...'), тож '>' УСЕРЕДИНІ
+# значення (напр. Tailwind-клас class="[&>*]:mt-4", що трапляється у забрудненому
+# чат-HTML деяких описів Toysi) не обриває тег завчасно (знахідка аудиту pt9).
+_HTML_TAG_RE = re.compile(
+    r"<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9]*)"
+    r"(?:\s+[^\s=/>]+(?:\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+))?)*"
+    r"\s*(/?)\s*>",
+    re.DOTALL,
+)
+
+
+def _strip_html_attributes(text: str) -> str:
+    """Описи Toysi/Vis-9 містять сміттєві атрибути веб-редактора (data-start,
+    data-end, data-section-id, class="PDq2pG_...", aria-hidden) — EVA це не
+    потрібно, засмічує картку й підвищує ризик модерації. Лишаємо структуру
+    тегів (<p>/<br>/<b>/<ul>/<li>/<strong>), прибираємо всі атрибути."""
+    return _HTML_TAG_RE.sub(lambda m: f"<{m.group(1)}{m.group(2)}{m.group(3)}>", text)
+
+
 def _sanitize_eva_description(text: str) -> str:
-    return _strip_cta_phrases(_strip_contacts_and_price(text))
+    return _strip_cta_phrases(_strip_contacts_and_price(_strip_html_attributes(text)))
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -570,9 +592,7 @@ def _build_xml(
     overrides      = price_overrides or {}
     excluded       = exclude_ids or set()
     desc_overrides = description_overrides or {}
-    russian        = russian_text or {}
     described_count = 0
-    russian_missing_count = 0
 
     name_counts = Counter(
         _dedup_key(_normalize_trailing_color_case(_limit_punctuation(_denoise_caps(_clean_text(item.get("name", ""))))))
@@ -590,7 +610,6 @@ def _build_xml(
     skipped_no_pics       = 0
     skipped_short_desc    = 0
     truncated_name_count  = 0
-    truncated_name_ru_count = 0
 
     for item in catalog.values():
         try:
@@ -678,20 +697,14 @@ def _build_xml(
             name = _truncate(name, EVA_NAME_MAX_LEN)
         ET.SubElement(offer, "name_ua").text = name
 
-        # <name> (рос.) — ВИМОГА EVA "лише російською заборонена" мала на
-        # увазі, що поле НЕ МОЖЕ бути відсутнім/лише-укр.: раніше цей тег
-        # взагалі не писався (див. докстрінг файлу). fetch_russian_text()
-        # — той самий rus-фід Toysi (lang=rus), що вже використовує Prom;
-        # м'який фолбек на укр. назву, якщо для SKU рос-варіанту нема
-        # (рідкість — 2/29386 у повному каталозі, перевірено раніше для Prom).
-        name_ru_raw = (russian.get(item_id) or {}).get("name") or item.get("name", "")
-        if item_id not in russian:
-            russian_missing_count += 1
-        name_ru = _normalize_trailing_color_case(_limit_punctuation(_denoise_caps(_clean_text(name_ru_raw))))
-        if len(name_ru) > EVA_NAME_MAX_LEN:
-            truncated_name_ru_count += 1
-            name_ru = _truncate(name_ru, EVA_NAME_MAX_LEN)
-        ET.SubElement(offer, "name").text = name_ru
+        # <name> (рос.) СВІДОМО НЕ емітиться (2026-07-31): авто-модерація EVA
+        # відхиляла ВСІ товари з «Виявлено російську мову у невідповідному полі» —
+        # російське поле <name> було тригером (живо знайдено в кабінеті продавця:
+        # 0 активних, усі у «Відхилені»). За специфікацією EVA (sellersupport
+        # pidhotovka-prays-listu-xml) <name> ОПЦІЙНЕ (внутрішнє, не показується),
+        # тож прибираємо його зовсім — лишається лише обов'язкове укр. <name_ua>.
+        # Раніше <name> заповнювався рос-фідом Toysi — це було помилкою (EVA не
+        # ВИМАГАЄ рос. назву, а НАВПАКИ ловить російську авто-модерацією).
 
         ET.SubElement(offer, "price").text          = f"{retail:.2f}"
         ET.SubElement(offer, "currencyId").text     = "UAH"
@@ -754,13 +767,12 @@ def _build_xml(
           f"без порахованої ціни EVA (страхувальник, має бути 0): {skipped_no_prom_price} | "
           f"виключено вручну (exclude_ids): {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
           f"бренд/студія у стоп-листі EVA: {skipped_stop_brand} | заборонена країна походження: {skipped_banned_country} | "
-          f"без валідного фото: {skipped_no_pics} | назв обрізано (>{EVA_NAME_MAX_LEN} симв.): укр={truncated_name_count}, рос={truncated_name_ru_count}")
+          f"без валідного фото: {skipped_no_pics} | назв обрізано (>{EVA_NAME_MAX_LEN} симв.): укр={truncated_name_count}")
     if skipped_short_desc:
         print(f"[EVA] ІНВАРІАНТ ПОРУШЕНО: {skipped_short_desc} offer(и) з описом коротшим за мінімум EVA "
               f"({EVA_DESCRIPTION_MIN_LEN} симв.) дійшли до _build_xml, хоча відбір мав їх відсіяти "
               "(строгий гейт _build_eva_live_selection розсинхронізований із _final_eva_description?).")
     print(f"[EVA] Vis-9: {described_count} SKU отримали вручну написаний опис (description_overrides.json)")
-    print(f"[EVA] Рос. назва (<name>): {russian_missing_count} SKU без rus-варіанту Toysi, використано фолбек на укр. назву")
     return yml
 
 
@@ -880,8 +892,9 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         print("[EVA] Каталог порожній — файл не створено.")
         return
 
-    if russian_text is None:
-        russian_text = fetch_russian_text()
+    # rus-фід Toysi (fetch_russian_text) БІЛЬШЕ НЕ потрібен: EVA-фід більше не
+    # емітить російське <name> (2026-07-31 — авто-модерація EVA його відхиляла).
+    # Прибрано зайвий ~70МБ/~17с фетч rus-каталогу щопрогону.
 
     # РОЗМОРОЖЕНО 2026-07-30 (пряме рішення власниці — товар пройшов модерацію EVA →
     # вести EVA як Prom: живі залишки/ціни). Відбір рахується ЩОПРОГОНУ через
@@ -889,16 +902,14 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     # історична назва змінних, тепер тримають ЖИВІ дані). Щоб ПОВЕРНУТИ заморозку —
     # замінити виклик назад на _build_eva_static_selection() (функція збережена вище) +
     # відновити eva_static_selection round-trip у run_/publish_feed_pipeline_vps.sh.
-    static_items, static_prices, static_russian_names = _build_eva_live_selection(
-        catalog, russian_text=russian_text, description_overrides=description_overrides,
+    static_items, static_prices, _static_russian_names = _build_eva_live_selection(
+        catalog, description_overrides=description_overrides,
     )
     print(f"[EVA] Живий відбір (динамічно, живі залишки/ціни): {len(static_items)} товарів.")
 
-    frozen_russian_text = {pid: {"name": name} for pid, name in static_russian_names.items()}
-
     root = _build_xml(
         static_items, price_overrides=static_prices, exclude_ids=exclude_ids,
-        description_overrides=description_overrides, russian_text=frozen_russian_text,
+        description_overrides=description_overrides,
     )
 
     ET.indent(root, space="  ")

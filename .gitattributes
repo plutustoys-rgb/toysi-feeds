@@ -1,0 +1,4 @@
+# Shell-скрипти виконуються на Linux-VPS — ЗАВЖДИ LF, інакше CRLF дає
+# "/bin/bash^M: bad interpreter" на VPS. Форсуємо незалежно від core.autocrlf
+# розробницької машини (Windows).
+*.sh text eol=lf

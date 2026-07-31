@@ -156,7 +156,7 @@ from datetime import datetime
 from pathlib import Path
 
 from competitor_pricing import (
-    load_description_overrides, real_toysi_cost,
+    load_description_overrides, real_toysi_cost, toysi_discounted_price,
 )
 from generate_prom_feed import append_clearance_notice, normalize_vendor
 from parser import fetch_toysi_catalog
@@ -182,9 +182,10 @@ EVA_SELECTION_MIN_STOCK = 2
 # EVA РОЗВ'ЯЗАНА З PROM (2026-07-30, пряме рішення власника, дослівно: «я відміняю
 # спайку фіда єви з промом ... вартість = вартість тойсі з нашою знижкою × 1,45.
 # поки така формула, товар повинен бути в наявності, кількість у фіді поки 2000»):
-# ціна EVA — ПРЯМА ФІКСОВАНА НАЦІНКА real_toysi_cost × EVA_PRICE_MULTIPLIER, без
-# жодного розрахунку/даних Prom (без decide_price_for_platform, без compute_floor,
-# без get_platform_commission). У фід беруться ВСІ валідні товари в наявності,
+# ціна EVA — ПРЯМА ФІКСОВАНА НАЦІНКА: ЦІНА TOYSI З НАШОЮ ЗНИЖКОЮ (toysi_discounted_price,
+# БЕЗ «Збірки») × EVA_PRICE_MULTIPLIER (уточнення власника 2026-07-31: «лише ціна тойсі
+# × 1,45» — Збірку в ціну НЕ включати; деталі в _eva_price). Без розрахунку/даних Prom
+# (без decide_price_for_platform, без compute_floor). У фід беруться ВСІ валідні товари в наявності,
 # впорядковані найновіші-першими (<date> Toysi), обрізані до EVA_TARGET_SIZE.
 #
 # ТИМЧАСОВА формула («поки така» — власник) — легко замінити, коли дасть постійну.
@@ -534,22 +535,27 @@ def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: 
 
 
 def _eva_price(item: dict):
-    """Роздрібна ціна EVA = real_toysi_cost(item) × EVA_PRICE_MULTIPLIER (1.45),
-    округлено до копійки. ТИМЧАСОВА формула — пряма фіксована націнка (пряме
-    рішення власника 2026-07-30, дослівно «вартість тойсі з нашою знижкою × 1,45.
-    поки така формула»). real_toysi_cost вже враховує нашу знижку Toysi + збірку.
-    БЕЗ конкурентного розрахунку, БЕЗ compute_floor / get_platform_commission /
-    decide_price_for_platform — жодної залежності від Prom. Повертає None, якщо
-    собівартість невалідна (тоді товар не потрапляє у фід — не публікуємо без ціни).
-    Профіт безпечний і без floor: 1.45 × (1 − 0.15 комісія EVA) = 1.2325 → +23% нетто
-    навіть на найвищій комісії, тож збиток неможливий (floor свідомо не потрібен)."""
+    """Роздрібна ціна EVA = ЦІНА TOYSI З НАШОЮ ЗНИЖКОЮ × EVA_PRICE_MULTIPLIER (1.45),
+    округлено до копійки. Пряме рішення власника (2026-07-31, УТОЧНЕНО): «лише ціна
+    тойсі помножена на 1,45» — база це знижена ціна Toysi БЕЗ фіксованої «Збірки»
+    (toysi_discounted_price), напр. «Вівця» 257.74 → 373.72 (а НЕ real_toysi_cost
+    272.74 зі Збіркою → 395.47, як було до цього). Валідність (>= MIN_SUPPLIER_PRICE)
+    перевіряється за ПОВНОЮ real_toysi_cost (реальна собівартість зі Збіркою). БЕЗ
+    floor / конкурента / Prom. Повертає None, якщо собівартість невалідна.
+
+    УВАГА (флагнуто власнику 2026-07-31, свідомо прийнято): без Збірки в ціні дешеві
+    товари (real_toysi_cost < ~65 грн) продаються трохи в збиток — власник обрав просту
+    формулу без запобіжника беззбитковості («лише ціна тойсі × 1,45»)."""
     try:
-        cost = real_toysi_cost(item)
+        cost = real_toysi_cost(item)          # реальна собівартість (зі Збіркою) — для валідності
+        base = toysi_discounted_price(item)   # ціна тойсі з нашою знижкою (БЕЗ Збірки) — база ×1.45
     except (ValueError, TypeError):
         return None
     if not cost or cost < MIN_SUPPLIER_PRICE:
         return None
-    return round(cost * EVA_PRICE_MULTIPLIER, 2)
+    if base <= 0:
+        return None
+    return round(base * EVA_PRICE_MULTIPLIER, 2)
 
 
 def _wrap_cdata(xml_str: str) -> str:
@@ -629,9 +635,10 @@ def _build_xml(
             skipped_unprof += 1
             continue
 
-        # ЦІНА EVA — ПРЯМА ФІКСОВАНА НАЦІНКА ×1.45 (2026-07-30, рішення власника):
-        # price_overrides тут — це вже пораховані _eva_price() ціни (real_toysi_cost
-        # × EVA_PRICE_MULTIPLIER), передані з _build_eva_live_selection(). Кожен
+        # ЦІНА EVA — ПРЯМА ФІКСОВАНА НАЦІНКА ×1.45 (2026-07-31, рішення власника):
+        # price_overrides тут — це вже пораховані _eva_price() ціни (ціна тойсі зі
+        # знижкою БЕЗ Збірки × EVA_PRICE_MULTIPLIER), передані з _build_eva_live_selection().
+        # Кожен
         # відібраний SKU має ціну; item без запису сюди не доходить (відсіяний ще у
         # відборі) — цей guard лишається як страхувальний від None.
         # СВІДОМО НЕМАЄ floor-запобіжника (compute_floor/get_platform_commission):

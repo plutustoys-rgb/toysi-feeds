@@ -322,6 +322,20 @@ def real_toysi_cost(item: dict) -> float:
     Збірка на неї взагалі не поширюється НІКОЛИ (підтверджено живо —
     positions_discount_price для Збірки завжди дорівнює її повній ціні),
     тому Збірка додається ОКРЕМО, після знижки, в усіх випадках."""
+    discounted_price = toysi_discounted_price(item)
+    if discounted_price <= 0:
+        return discounted_price
+    return round(discounted_price + TOYSI_ASSEMBLY_FEE_UAH, 2)
+
+
+def toysi_discounted_price(item: dict) -> float:
+    """Ціна Toysi З НАШОЮ ЗНИЖКОЮ, але БЕЗ фіксованої «Збірки» — саме та знижена
+    каталожна ціна, яку показує сторінка Toysi (напр. 257.74 для «Вівці» при
+    каталожній 303.22). Знижка НЕ діє на винятки-бренди/категорії
+    (TOYSI_DISCOUNT_EXCLUDED_*); для товарів країни-України капується
+    TOYSI_DISCOUNT_UKRAINE_CAP. НЕ округлює (округлення — на боці real_toysi_cost /
+    _eva_price). Винесено з real_toysi_cost 2026-07-31 (пряме рішення власника: ціна
+    EVA = «лише ціна тойсі × 1,45», Збірку в неї НЕ включати — див. generate_eva_feed._eva_price)."""
     try:
         base_price = float(item.get("price") or 0)
     except (TypeError, ValueError):
@@ -335,15 +349,13 @@ def real_toysi_cost(item: dict) -> float:
         vendor_norm in TOYSI_DISCOUNT_EXCLUDED_BRANDS
         or any(kw in category_name for kw in TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS)
     ):
-        discounted_price = base_price
-    else:
-        discount = TOYSI_DISCOUNT_RATE
-        country = _normalize_for_discount_match(item.get("country"))
-        if country in TOYSI_DISCOUNT_UKRAINE_COUNTRIES:
-            discount = min(discount, TOYSI_DISCOUNT_UKRAINE_CAP)
-        discounted_price = base_price * (1 - discount)
+        return base_price
 
-    return round(discounted_price + TOYSI_ASSEMBLY_FEE_UAH, 2)
+    discount = TOYSI_DISCOUNT_RATE
+    country = _normalize_for_discount_match(item.get("country"))
+    if country in TOYSI_DISCOUNT_UKRAINE_COUNTRIES:
+        discount = min(discount, TOYSI_DISCOUNT_UKRAINE_CAP)
+    return base_price * (1 - discount)
 
 
 PLATFORMS = ("prom", "rozetka")

@@ -38,6 +38,18 @@
 # чужі (Rozetka від GH Actions — незмінні, збережені як є).
 set -e
 cd /opt/plutustoys
+
+# Спільний lock публікацій у feed-data (ДОДАНО 2026-07-31 разом із погодинним
+# eva-feed.timer): feed-pipeline (6 год) і eva-feed (1 год) обидва роблять
+# orphan-force-push у feed-data. Без спільного локу пізніший force-push із коміту,
+# що імпортував СТАРІШЕ дерево, відкинув би фіди іншого боку (напр. eva_feed.xml від
+# погодинного циклу) до наступного прогону. Лок гарантує, що імпорт дерева
+# (git checkout origin/feed-data -- .) завжди бачить останній push. Той самий lock —
+# у publish_eva_feed_vps.sh. Чекаємо до 300с, інакше пропускаємо публікацію (наступний
+# feed-pipeline за 6 год; краще пропустити, ніж зробити гонку).
+exec 9>/opt/plutustoys/.feeddata_publish.lock
+flock -w 300 9 || { echo "[PublishFeedPipeline] feed-data lock не взято за 300с — публікацію пропущено цього прогону."; exit 0; }
+
 export GIT_SSH_COMMAND="ssh -i /opt/plutustoys/.ssh_feed_publish/deploy_key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/opt/plutustoys/.ssh_feed_publish/known_hosts"
 
 WORKDIR=/opt/plutustoys/.feed_pipeline_git

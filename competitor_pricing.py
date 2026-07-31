@@ -580,7 +580,7 @@ PROM_COMMISSION_DEFAULT = 0.20  # орієнтовний fallback, ПОКИ ка
 # із живої ProSale-таблиці), і залишити його як є — безпечний напрямок
 # (завищена комісія -> вищий floor, ніж по факту треба, ніколи не нижчий
 # за реальний мінімум прибутку).
-PROSALE_TIER = "standard"  # "econom" | "standard" — поточний рівень у кабінеті Prom
+PROSALE_TIER = "econom"  # "econom" | "standard" — поточний рівень у кабінеті Prom
 PROSALE_TIER_MULTIPLIER: dict[str, float] = {"standard": 1.0, "econom": 0.5}
 
 # 2026-07-17 (Autonomy-11/Vis-11): PROM_CATEGORY_COMMISSION вище прив'язаний

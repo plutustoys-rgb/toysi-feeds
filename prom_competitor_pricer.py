@@ -1796,24 +1796,66 @@ def main() -> None:
     # ЦІЄЇ перевірки) навмисно НЕ позначаємо — "не вдалось перевірити" це
     # не доказ відсутності.
     if live_prom_ids is not None:
-        _ghost_candidates = [pid for pid in top_catalog if pid not in live_prom_ids]
+        # ever_live-трекінг (2026-07-31, фікс «чому вітрина не росте до 6000»):
+        # множина товарів, що КОЛИСЬ підтверджено існували в Prom. Мета —
+        # розрізнити СПРАВЖНІХ привидів (були живі → зникли) і товари, яких
+        # ще НІКОЛИ не створювали. До цього фіксу обидва однаково позначались
+        # _delisted_since і НАЗАВЖДИ виключались із select_top_items(): відсутність
+        # у live_prom_ids трактувалась як «привид», хоча для never-created вона
+        # означає рівно протилежне — «ще треба дослати, щоб Prom створив». Через
+        # це НОВІ товари ніколи не потрапляли у прайс-лист → ніколи не
+        # створювались → лишались delisted назавжди (chicken-and-egg), і вітрина
+        # застрягала (~3200) далеко від цілі 6000. Каталог ріс лише «випадково»
+        # — на зламаних циклах (429 → кеш live порожній → цей блок пропускався).
+        # ever_live лише РОСТЕ (ніколи не викидаємо запис), тож транзієнтно
+        # неповний live_prom_ids («невидима група») не ламає інваріант — просто
+        # чекає наступного прогону з повним списком.
+        _ever_live = price_state.setdefault("_ever_live", {})
+        _ever_live_now = datetime.now().isoformat()
+        for _pid in live_prom_ids:
+            if _pid not in _ever_live:
+                _ever_live[_pid] = _ever_live_now
         _delisted_since_early = price_state.setdefault("_delisted_since", {})
+        # Одноразова міграція (прапорець _ever_live_migrated): до введення
+        # ever_live-трекінгу _delisted_since накопичив товари, яких НІКОЛИ не
+        # було в Prom (помилково виключені chicken-and-egg). Повертаємо їх у
+        # відбір рівно ОДИН раз. Ті з них, що реально non-competitive, наступний
+        # прогін пере-оцінить живим рішенням і за потреби знову підніме ціну до
+        # floor / delist — але вже НЕ безпідставно. Флор-захист гарантує, що
+        # повернуті товари не продаються в збиток навіть до пере-оцінки.
+        if not price_state.get("_ever_live_migrated"):
+            _legacy_trapped = [p for p in list(_delisted_since_early) if p not in _ever_live]
+            _total_before = len(_delisted_since_early)
+            for _p in _legacy_trapped:
+                _delisted_since_early.pop(_p, None)
+            price_state["_ever_live_migrated"] = True
+            save_prom_price_state(price_state)
+            print(f"[Pricer] Міграція ever_live: із {_total_before} позначених delisted відновлено "
+                  f"{len(_legacy_trapped)} SKU, яких НІКОЛИ не було в Prom (chicken-and-egg) — повертаю у "
+                  f"select_top_items() для створення. Лишилось delisted (справжні привиди/наш delist): "
+                  f"{len(_delisted_since_early)}. ever_live-база: {len(_ever_live)} SKU.")
+        # Кандидати-привиди — ЛИШЕ ті, що КОЛИСЬ були живі (ever_live) і тепер
+        # зникли з live_prom_ids. Товари, яких ніколи не створювали (не в
+        # ever_live), свідомо НЕ позначаємо: їх треба дослати в прайс-лист, щоб
+        # Prom їх створив, а не виключати назавжди.
+        _ghost_candidates = [pid for pid in top_catalog if pid not in live_prom_ids and pid in _ever_live]
         _to_check = [pid for pid in _ghost_candidates if pid not in _delisted_since_early]
         if _to_check:
             from prom_catalog_sync import fetch_prom_products_by_external_ids  # лінивий імпорт, той самий патерн, що й нижче
             _found, _indeterminate = fetch_prom_products_by_external_ids(set(_to_check))
             _newly_ghost = [pid for pid in _to_check if pid not in _found and pid not in _indeterminate]
-            print(f"[Pricer] Кандидати-привиди з топ-6000 (немає в live_prom_ids): {len(_to_check)}, "
+            print(f"[Pricer] Кандидати-привиди з топ-6000 (БУЛИ живі, зникли): {len(_to_check)}, "
                   f"з них підтверджено детерміновано відсутні: {len(_newly_ghost)} "
                   f"(спростовано хибне спрацювання кешу: {len(_found)}, не вдалось перевірити: {len(_indeterminate)}).")
             if _newly_ghost:
                 _now_iso = datetime.now().isoformat()
                 for _pid in _newly_ghost:
                     _delisted_since_early[_pid] = _now_iso
-                save_prom_price_state(price_state)
                 print(f"[Pricer] УВАГА: {len(_newly_ghost)} SKU з топ-6000 підтверджено відсутні в живому Prom "
                       f"(не наш delist/deactivate) — позначено delisted, звільнено місце для реальних кандидатів "
                       f"з наступного прогону select_top_items().")
+        # Зберігаємо завжди — ever_live міг зрости навіть без нових привидів.
+        save_prom_price_state(price_state)
 
     # ДОДАНО (2026-07-20, "постійно конкурентні, раз і назавжди" —
     # див. коментар біля ROTATED_OUT_BATCH_LIMIT вище): SKU, що вже мають

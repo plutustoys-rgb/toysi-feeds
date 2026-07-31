@@ -415,6 +415,35 @@ def _truncate_name(text: str, max_len: int = PROM_NAME_MAX_LEN) -> str:
     return cut.rstrip(" ,.-")
 
 
+def _derive_toysi_to_prom_category(catalog: dict, prom_category_cache: dict) -> dict:
+    """Виводить {toysi_category_id: Prom_category_id} з товарів, яких Prom УЖЕ
+    категоризував (prom_category_cache), згруповано за Toysi-категорією: для
+    кожної Toysi-категорії — НАЙЧАСТІШИЙ реальний Prom category_id серед її
+    вже-категоризованих SKU.
+
+    НАВІЩО (2026-08-01, живий root-cause після фіксу вітрини 6000): <categoryId>
+    досі проставлявся ЛИШЕ для SKU, що вже є в prom_category_cache (той
+    наповнюється тільки з товарів, яких Prom сам категоризував) — класичний
+    "категорійний круг". Після відновлення ~2750 нових SKU (ever_live-фікс) 3800
+    із 6000 не мали categoryId → Prom позначав їх "помилки в даних". Ця мапа дає
+    новому SKU fallback-категорію ТІЄЇ Ж Toysi-категорії (те, що Prom сам
+    призначив схожим товарам) замість порожнечі. Ризик низький — це власна
+    категоризація Prom, узагальнена в межах однієї Toysi-категорії; Prom і так
+    авто-визначав би категорію за назвою, лише гірше. Само-покращується: кеш
+    росте → покриття мапи росте. Нічого не вигадує: Toysi-категорія без жодного
+    вже-категоризованого прикладу лишається без fallback (як і раніше)."""
+    if not prom_category_cache:
+        return {}
+    from collections import Counter, defaultdict
+    tally = defaultdict(Counter)
+    for item_id, item in catalog.items():
+        pcat = (prom_category_cache.get(item_id) or {}).get("category_id")
+        tcat = (item.get("category_id") or "").strip()
+        if pcat and tcat:
+            tally[tcat][str(pcat)] += 1
+    return {tcat: c.most_common(1)[0][0] for tcat, c in tally.items()}
+
+
 def _build_xml(
     catalog: dict,
     prom_category_cache: dict = None,
@@ -459,6 +488,11 @@ def _build_xml(
     truncated_name_ua_count = 0  # name_ua (укр.) довша за PROM_NAME_MAX_LEN — окремий лічильник,
                                   # бо укр./рос. варіанти різної довжини й можуть обрізатись незалежно
     resolved_category_count = 0  # SKU з РЕАЛЬНИМ Prom category_id з кешу (не Toysi-ID, не порожньо)
+    fallback_category_count = 0  # SKU без кеш-категорії, але з виведеною fallback-Prom-категорією (розрив "категорійного круга")
+
+    # Мапа Toysi-категорія → найчастіший Prom category_id (з уже-категоризованих
+    # SKU цього ж каталогу) — fallback для нових SKU, яких ще нема в кеші.
+    derived_prom_category = _derive_toysi_to_prom_category(catalog, prom_category_cache)
 
     for item in catalog.values():
         cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
@@ -531,6 +565,15 @@ def _build_xml(
         if real_category_id:
             ET.SubElement(offer, "categoryId").text = str(real_category_id)
             resolved_category_count += 1
+        else:
+            # Fallback (2026-08-01): SKU ще нема в кеші (Prom його не
+            # категоризував) — беремо найчастіший Prom category_id тієї ж
+            # Toysi-категорії. Розриває "категорійний круг": нові товари
+            # приходять із категорією, а не порожнім <categoryId>.
+            fallback_cat = derived_prom_category.get((item.get("category_id") or "").strip())
+            if fallback_cat:
+                ET.SubElement(offer, "categoryId").text = str(fallback_cat)
+                fallback_category_count += 1
 
         for pic_url in item.get("pictures", [])[:10]:
             ET.SubElement(offer, "picture").text = pic_url
@@ -603,6 +646,7 @@ def _build_xml(
         "truncated_name_ua_count": truncated_name_ua_count,
         "described_count": described_count,
         "resolved_category_count": resolved_category_count,
+        "fallback_category_count": fallback_category_count,
     }
     return yml, stats
 
@@ -673,7 +717,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     cache_total = len(prom_category_cache) if prom_category_cache else 0
     print(
         f"[Prom] Категорії: {stats['resolved_category_count']} SKU з реальним Prom category_id "
-        f"(кеш: {cache_total} SKU відомо) — решта без <categoryId>, Prom визначає сам за назвою."
+        f"(кеш: {cache_total} SKU відомо) + {stats['fallback_category_count']} SKU з fallback-категорією "
+        f"(найчастіший Prom-id тієї ж Toysi-категорії) — решта без <categoryId>, Prom визначає сам за назвою."
     )
 
     total_in_feed = stats["total_in_feed"] or 1

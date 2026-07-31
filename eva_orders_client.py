@@ -181,8 +181,9 @@ def _request_env(method: str, path: str, **kwargs) -> dict:
 def fetch_orders(status: int = EVA_STATUS_NEW, date_from: str = None,
                  updated_from: str = None, page_limit: int = 100) -> list:
     """GET /orders — усі замовлення заданого статусу (за замовчуванням нові = 1),
-    з наскрізною пагінацією (offset/limit, limit до 100). Повертає список коротких
-    записів OrderBase; повні деталі (позиції/доставка) — окремо через get_order().
+    з наскрізною СТОРІНКОВОЮ пагінацією (page/page_size, page_size 20-100 — реальний
+    контракт конверта; OpenAPI-схема декларує limit/offset, розбіжність під TODO нижче).
+    Повертає список коротких OrderBase; повні деталі — окремо через get_order().
 
     status має бути одним зі EVA_STATUS_FILTER_VALUES (API приймає лише 1/9/10/11/12).
     date_from/updated_from — ISO 8601 (напр. "2026-07-31T00:00:00Z")."""

@@ -158,6 +158,7 @@ from pathlib import Path
 from competitor_pricing import (
     compute_floor, get_platform_commission, load_description_overrides,
     load_fresh_prom_price_overrides, real_toysi_cost, MIN_PROFIT,
+    decide_price_for_platform,
 )
 from generate_prom_feed import append_clearance_notice, fetch_russian_text, normalize_vendor
 from generate_prom_feed_top import select_top_items
@@ -180,6 +181,15 @@ EVA_STATIC_SELECTION_FILE = Path(__file__).parent / "eva_static_selection.json"
 # у фіді Toysi ВІДСУТНІЙ (лише в кабінеті) — стане першим ключем сортування, щойно з'явиться
 # машинне джерело топа (Toysi-API/ручний експорт). Наразі порядок: наявність>2 → найновіші.
 EVA_SELECTION_MIN_STOCK = 2
+
+# EVA РОЗВ'ЯЗАНА З PROM (2026-07-31, пряме рішення власника: "EVA більше ніяк не
+# пов'язана з Prom, є формула"): ціна EVA рахується ВЛАСНОЮ формулою
+# decide_price_for_platform(cost, None, "eva", category) — незалежно від того, чи
+# товар пройшов prom-репрайсер. Це знімає стелю ~660 (лише prom-відрейсені товари) —
+# у фід беруться ВСІ валідні товари в наявності>2, до цільового розміру нижче,
+# впорядковані найновіші-першими (<date> Toysi). Ціль — 2000 (усі валідні, обрізані
+# до цього числа; якщо валідних менше — беремо всіх).
+EVA_TARGET_SIZE = 2000
 
 # Пряме завдання власниці (2026-07-21) — стоп-бренди EVA, категорія KIDS.
 # Порівняння регістронезалежне/без урахування розділювача (див. _normalize_brand
@@ -436,31 +446,30 @@ def _truncate(text: str, max_len: int) -> str:
     return cut.rstrip(" ,.-")
 
 
-def _qualifies_for_feed(item: dict, excluded: set, prom_price_overrides: dict) -> bool:
-    """Дзеркало основного циклу _build_xml() нижче — винесено окремо для
-    підрахунку дублікатів <name_ua> ЛИШЕ серед товарів, що реально
-    потраплять у фід (той самий принцип, що й Rozetka).
+def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: dict = None) -> bool:
+    """Чи товар ВАЛІДНИЙ для EVA-фіда — БЕЗ вимоги ціни (роздрібну ціну рахує
+    окремо _eva_price() власною формулою EVA). Дзеркало валідаційної частини
+    _build_xml() нижче — винесено для підрахунку дублікатів <name_ua> ЛИШЕ
+    серед товарів, що реально потраплять у фід (той самий принцип, що й Rozetka).
 
-    ЦІНА ЕВА = ЦІНА PROM (2026-07-23, пряме рішення власниці): EVA більше
-    не рахує свою ціну незалежно через decide_price_for_platform() —
-    товар без свіжого prom_price_overrides запису (ще не пройшов через
-    репрайсер Prom цього ж циклу update-feeds.yml) чи з ціною Prom, що не
-    проходить floor рентабельності EVA (реальна комісія EVA, real_toysi_cost),
-    просто не потрапляє у фід — див. дзеркальну логіку в _build_xml()."""
+    EVA РОЗВ'ЯЗАНА З PROM (2026-07-31, пряме рішення власника «EVA більше ніяк
+    не пов'язана з Prom, є формула»): вимога наявності свіжого prom_price_overrides
+    запису ПРИБРАНА — беремо будь-який валідний товар незалежно від того, чи
+    торкнувся його репрайсер Prom, бо ціну EVA тепер рахуємо власною формулою
+    (_eva_price), а не копіюємо з Prom. Параметр prom_price_overrides збережено
+    в сигнатурі лише для сумісності зі старим замороженим (більше не викликаним)
+    _build_eva_static_selection() — тут ІГНОРУЄТЬСЯ.
+
+    Валідність: реальна собівартість >= MIN_SUPPLIER_PRICE, є vendor, не стоп-бренд
+    EVA, не заборонена країна походження, є хоч одне https-фото."""
+    excluded = excluded or set()
     try:
         cost = real_toysi_cost(item)
     except (ValueError, TypeError):
         return False
     if cost <= 0 or cost < MIN_SUPPLIER_PRICE:
         return False
-    item_id = str(item["id"])
-    if item_id in excluded:
-        return False
-    prom_price = prom_price_overrides.get(item_id)
-    if prom_price is None:
-        return False
-    eva_floor = compute_floor(cost, get_platform_commission("eva"), MIN_PROFIT)
-    if prom_price < eva_floor:
+    if str(item["id"]) in excluded:
         return False
     vendor = (item.get("vendor") or "").strip()
     if not vendor:
@@ -473,6 +482,27 @@ def _qualifies_for_feed(item: dict, excluded: set, prom_price_overrides: dict) -
     if not pictures:
         return False
     return True
+
+
+def _eva_price(item: dict):
+    """Роздрібна ціна EVA за ВЛАСНОЮ формулою (EVA розв'язана з Prom, 2026-07-31):
+    decide_price_for_platform(cost, конкурента немає, платформа "eva", категорія) —
+    Шлях 1 (без конкурента): max(cost*NO_COMPETITOR_MULT, floor рентабельності під
+    реальною комісією EVA + комісією оплати, MIN_PROFIT). НЕ копіює ціну Prom.
+    Повертає ціну (float) або None, якщо собівартість невалідна / формула не змогла
+    (тоді товар просто не потрапляє у фід — не публікуємо без ціни)."""
+    try:
+        cost = real_toysi_cost(item)
+    except (ValueError, TypeError):
+        return None
+    if not cost or cost < MIN_SUPPLIER_PRICE:
+        return None
+    try:
+        result = decide_price_for_platform(cost, None, "eva", item.get("category_name"))
+    except (ValueError, KeyError, ZeroDivisionError, TypeError):
+        return None
+    price = (result or {}).get("price")
+    return price if price and price > 0 else None
 
 
 def _wrap_cdata(xml_str: str) -> str:
@@ -555,23 +585,23 @@ def _build_xml(
             skipped_unprof += 1
             continue
 
-        # ЦІНА EVA = ЦІНА PROM (2026-07-23, пряме рішення власниці): EVA
-        # більше НЕ рахує ціну незалежно (decide_price_for_platform) —
-        # копіює свіжу ціну, яку репрайсер щойно застосував на Prom у
-        # ТОМУ Ж прогоні update-feeds.yml (load_fresh_prom_price_overrides,
-        # <=PROM_PRICE_STATE_MAX_AGE_HOURS годин). Товар без свіжого запису
-        # (ще не торкнутий репрайсером) просто не потрапляє в фід EVA —
-        # немає окремої "ціни EVA" без Prom як джерела істини.
+        # ЦІНА EVA — ВЛАСНА ФОРМУЛА (2026-07-31, EVA розв'язана з Prom):
+        # price_overrides тут — це вже пораховані _eva_price() ціни
+        # (decide_price_for_platform для платформи "eva"), передані з
+        # _build_eva_live_selection(), а НЕ дзеркало Prom. Кожен відібраний
+        # SKU має ціну; item без запису сюди не доходить (відсіяний ще у
+        # відборі) — цей guard лишається як страхувальний.
         retail = overrides.get(item_id)
         if retail is None:
             skipped_no_prom_price += 1
             continue
 
-        # Профіт-запобіжник: якщо ціна Prom під РЕАЛЬНОЮ комісією EVA
-        # (get_platform_commission("eva"), 15%) з реальною собівартістю
-        # (real_toysi_cost) не проходить той самий floor рентабельності,
-        # що й Prom "без конкурента" (MIN_PROFIT=25%) —
-        # виключаємо з фіда EVA, а не публікуємо збитковим/на межі.
+        # Профіт-запобіжник (тепер РЕДУНДАНТНИЙ, лишений як страхувальний):
+        # _eva_price() рахує ціну як max(..., floor під сумарною комісією EVA
+        # з комісією оплати), тож вона завжди >= цього floor (той самий
+        # get_platform_commission("eva")=15%, але без комісії оплати — тобто
+        # нижчий поріг). Якщо колись формула зміниться й дасть збиткову ціну —
+        # цей guard усе одно не пропустить її у фід.
         eva_floor = compute_floor(cost, get_platform_commission("eva"), MIN_PROFIT)
         if retail < eva_floor:
             skipped_unprof += 1
@@ -723,37 +753,56 @@ def _build_xml(
 
 
 def _build_eva_live_selection(catalog: dict, russian_text: dict = None) -> tuple[dict, dict, dict]:
-    """Живий (динамічний) відбір EVA — той самий select_top_items() + _qualifies_for_feed(),
-    але рахується ЩОПРОГОНУ на ЖИВОМУ каталозі Toysi і ЖИВИХ цінах Prom: наявність/склад
-    (available/stock_quantity), ціна Prom і сам склад списку — усе актуальне. Використовується
-    generate_feed() після РОЗМОРОЗКИ 2026-07-30 (пряме рішення власниці: товар пройшов
+    """Живий (динамічний) відбір EVA — рахується ЩОПРОГОНУ на ЖИВОМУ каталозі Toysi.
+    Використовується generate_feed() після РОЗМОРОЗКИ 2026-07-30 (товар пройшов
     модерацію EVA → вести EVA як Prom, живі залишки замість замороженого знімка).
-    Повертає (items, prices, russian_names)."""
-    top_catalog = select_top_items(catalog)
-    price_overrides = load_fresh_prom_price_overrides()
+
+    EVA РОЗВ'ЯЗАНА З PROM (2026-07-31, пряме рішення власника «EVA більше ніяк не
+    пов'язана з Prom, є формула; 2000 усіх, категорії всі валідні»): відбір більше
+    НЕ обмежений prom-топом (select_top_items) і НЕ вимагає prom-ціни — беремо ВЕСЬ
+    каталог Toysi, лишаємо валідні (_qualifies_for_feed) товари в наявності
+    > EVA_SELECTION_MIN_STOCK, рахуємо роздрібну ціну ВЛАСНОЮ формулою EVA
+    (_eva_price), впорядковуємо найновіші-першими за <date> Toysi й обрізаємо до
+    EVA_TARGET_SIZE. Повертає (items, prices, russian_names)."""
     russian = russian_text or {}
 
-    # Порядок відбору (2026-07-30, пряме рішення власника): (2) лише наявність
-    # > EVA_SELECTION_MIN_STOCK шт, (3) найновіші першими за <date> Toysi.
-    # (1) "топ Тойсі" — коли з'явиться машинне джерело топа (у фіді його немає).
-    qualified = [
-        (pid, item) for pid, item in top_catalog.items()
-        if item.get("stock", 0) > EVA_SELECTION_MIN_STOCK
-        and _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides)
-    ]
-    # найновіші першими: непорожня <date> desc; тай-брейк — новіший id (Toysi нумерує послідовно)
-    qualified.sort(
-        key=lambda kv: (kv[1].get("date") or "", int(kv[0]) if str(kv[0]).isdigit() else -1),
+    # Кандидати: увесь каталог, наявність > EVA_SELECTION_MIN_STOCK, валідні,
+    # з порахованою власною ціною EVA (без ціни — не публікуємо).
+    candidates = []
+    skipped_stock = skipped_invalid = skipped_no_price = 0
+    for pid, item in catalog.items():
+        if item.get("stock", 0) <= EVA_SELECTION_MIN_STOCK:
+            skipped_stock += 1
+            continue
+        if not _qualifies_for_feed(item):
+            skipped_invalid += 1
+            continue
+        price = _eva_price(item)
+        if price is None:
+            skipped_no_price += 1
+            continue
+        candidates.append((pid, item, price))
+
+    # Порядок (2026-07-30/31, пряме рішення власника): найновіші першими —
+    # непорожня <date> desc; тай-брейк — новіший id (Toysi нумерує послідовно).
+    # (Крок "топ Тойсі" стане першим ключем, щойно з'явиться машинне джерело топа.)
+    candidates.sort(
+        key=lambda c: (c[1].get("date") or "", int(c[0]) if str(c[0]).isdigit() else -1),
         reverse=True,
     )
 
     items: dict = {}
     prices: dict = {}
     russian_names: dict = {}
-    for pid, item in qualified:
+    for pid, item, price in candidates[:EVA_TARGET_SIZE]:
         items[pid] = item
-        prices[pid] = price_overrides[pid]
+        prices[pid] = price
         russian_names[pid] = (russian.get(pid) or {}).get("name") or item.get("name", "")
+
+    print(f"[EVA] Відбір (розв'язаний з Prom, власна формула): {len(candidates)} валідних "
+          f"кандидатів у наявності>{EVA_SELECTION_MIN_STOCK} (відсіяно: склад={skipped_stock}, "
+          f"невалідні={skipped_invalid}, без ціни={skipped_no_price}); у фід {len(items)} "
+          f"(ціль {EVA_TARGET_SIZE}, найновіші першими).")
     return items, prices, russian_names
 
 

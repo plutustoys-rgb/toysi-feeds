@@ -157,11 +157,9 @@ from pathlib import Path
 
 from competitor_pricing import (
     compute_floor, get_platform_commission, load_description_overrides,
-    load_fresh_prom_price_overrides, real_toysi_cost, MIN_PROFIT,
-    decide_price_for_platform,
+    real_toysi_cost, MIN_PROFIT, decide_price_for_platform,
 )
 from generate_prom_feed import append_clearance_notice, fetch_russian_text, normalize_vendor
-from generate_prom_feed_top import select_top_items
 from parser import fetch_toysi_catalog
 
 SHOP_NAME          = "PlutusToys"
@@ -446,6 +444,26 @@ def _truncate(text: str, max_len: int) -> str:
     return cut.rstrip(" ,.-")
 
 
+def _final_eva_description(item: dict, desc_override: dict = None) -> str:
+    """Фінальний санітизований опис EVA — рівно той рядок, що піде в <description_ua>
+    (append_clearance_notice → _strip_urls → _sanitize_eva_description → _clean_text →
+    _truncate). ЄДИНЕ джерело правди і для відбору (строгий гейт мін. довжини EVA), і для
+    _build_xml — щоб довжина, за якою відбираємо, точно збігалася з тією, що публікується."""
+    raw = item.get("description", "")
+    if desc_override:
+        raw = desc_override.get("description") or raw
+    desc = append_clearance_notice(
+        raw,
+        item.get("name", ""),
+        item.get("category_name", ""),
+        item.get("category_id", ""),
+    )
+    desc = _strip_urls(desc)
+    desc = _sanitize_eva_description(desc)
+    desc = _truncate(_clean_text(desc), EVA_DESCRIPTION_MAX_LEN)
+    return desc
+
+
 def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: dict = None) -> bool:
     """Чи товар ВАЛІДНИЙ для EVA-фіда — БЕЗ вимоги ціни (роздрібну ціну рахує
     окремо _eva_price() власною формулою EVA). Дзеркало валідаційної частини
@@ -597,11 +615,11 @@ def _build_xml(
             continue
 
         # Профіт-запобіжник (тепер РЕДУНДАНТНИЙ, лишений як страхувальний):
-        # _eva_price() рахує ціну як max(..., floor під сумарною комісією EVA
-        # з комісією оплати), тож вона завжди >= цього floor (той самий
-        # get_platform_commission("eva")=15%, але без комісії оплати — тобто
-        # нижчий поріг). Якщо колись формула зміниться й дасть збиткову ціну —
-        # цей guard усе одно не пропустить її у фід.
+        # _eva_price() рахує ціну як max(cost*NO_COMPETITOR_MULT, floor під сумарною
+        # комісією EVA), тож вона завжди >= цього floor. Комісія оплати для EVA = 0
+        # (PAYMENT_COMMISSION не має ключа "eva"), тому цей floor і floor у _eva_price
+        # ІДЕНТИЧНІ (той самий get_platform_commission("eva")=15%). Якщо колись формула
+        # зміниться й дасть збиткову ціну — цей guard усе одно не пропустить її у фід.
         eva_floor = compute_floor(cost, get_platform_commission("eva"), MIN_PROFIT)
         if retail < eva_floor:
             skipped_unprof += 1
@@ -689,11 +707,9 @@ def _build_xml(
         ET.SubElement(offer, "vendor").text = _clean_text(normalize_vendor(vendor))
 
         desc_override = desc_overrides.get(item_id)
-        raw_description = item.get("description", "")
         country = item.get("country")
         if desc_override:
             described_count += 1
-            raw_description = desc_override.get("description") or raw_description
             country = desc_override.get("country") or country
 
         if country:
@@ -702,17 +718,13 @@ def _build_xml(
         if item.get("barcode"):
             ET.SubElement(offer, "barcode").text = _clean_text(item["barcode"])
 
-        desc = append_clearance_notice(
-            raw_description,
-            item.get("name", ""),
-            item.get("category_name", ""),
-            item.get("category_id", ""),
-        )
-        desc = _strip_urls(desc)
-        desc = _sanitize_eva_description(desc)
-        desc = _truncate(_clean_text(desc), EVA_DESCRIPTION_MAX_LEN)
+        # Опис — через спільний _final_eva_description() (той самий рядок, за яким
+        # відбір строго гейтить довжину). Виключення короткоописних робить ВІДБІР
+        # (_build_eva_live_selection) з backfill'ом — тут лишається лічильник
+        # спостережності (за строгим відбором має друкувати 0).
+        desc = _final_eva_description(item, desc_override)
         if desc and len(desc) < EVA_DESCRIPTION_MIN_LEN:
-            skipped_short_desc += 1  # лише лічильник — НЕ виключаємо offer, документована, не підтверджена вимога
+            skipped_short_desc += 1
         if desc:
             ET.SubElement(offer, "description_ua").text = desc
 
@@ -752,7 +764,8 @@ def _build_xml(
     return yml
 
 
-def _build_eva_live_selection(catalog: dict, russian_text: dict = None) -> tuple[dict, dict, dict]:
+def _build_eva_live_selection(catalog: dict, russian_text: dict = None,
+                              description_overrides: dict = None) -> tuple[dict, dict, dict]:
     """Живий (динамічний) відбір EVA — рахується ЩОПРОГОНУ на ЖИВОМУ каталозі Toysi.
     Використовується generate_feed() після РОЗМОРОЗКИ 2026-07-30 (товар пройшов
     модерацію EVA → вести EVA як Prom, живі залишки замість замороженого знімка).
@@ -765,11 +778,16 @@ def _build_eva_live_selection(catalog: dict, russian_text: dict = None) -> tuple
     (_eva_price), впорядковуємо найновіші-першими за <date> Toysi й обрізаємо до
     EVA_TARGET_SIZE. Повертає (items, prices, russian_names)."""
     russian = russian_text or {}
+    desc_overrides = description_overrides or {}
 
     # Кандидати: увесь каталог, наявність > EVA_SELECTION_MIN_STOCK, валідні,
-    # з порахованою власною ціною EVA (без ціни — не публікуємо).
+    # з порахованою власною ціною EVA (без ціни — не публікуємо), і — СТРОГО за
+    # вимогою EVA — з повноцінним описом (фінальний санітизований опис не коротший
+    # за EVA_DESCRIPTION_MIN_LEN). Оскільки каталог надлишковий (валідних набагато
+    # більше за ціль), короткоописні відсіюються, а місце добирається рештою пулу
+    # (backfill) — фід лишається повним, але лише з товарів, що проходять модерацію EVA.
     candidates = []
-    skipped_stock = skipped_invalid = skipped_no_price = 0
+    skipped_stock = skipped_invalid = skipped_no_price = skipped_short_desc = 0
     for pid, item in catalog.items():
         if item.get("stock", 0) <= EVA_SELECTION_MIN_STOCK:
             skipped_stock += 1
@@ -780,6 +798,9 @@ def _build_eva_live_selection(catalog: dict, russian_text: dict = None) -> tuple
         price = _eva_price(item)
         if price is None:
             skipped_no_price += 1
+            continue
+        if len(_final_eva_description(item, desc_overrides.get(pid))) < EVA_DESCRIPTION_MIN_LEN:
+            skipped_short_desc += 1
             continue
         candidates.append((pid, item, price))
 
@@ -801,36 +822,28 @@ def _build_eva_live_selection(catalog: dict, russian_text: dict = None) -> tuple
 
     print(f"[EVA] Відбір (розв'язаний з Prom, власна формула): {len(candidates)} валідних "
           f"кандидатів у наявності>{EVA_SELECTION_MIN_STOCK} (відсіяно: склад={skipped_stock}, "
-          f"невалідні={skipped_invalid}, без ціни={skipped_no_price}); у фід {len(items)} "
-          f"(ціль {EVA_TARGET_SIZE}, найновіші першими).")
+          f"невалідні={skipped_invalid}, без ціни={skipped_no_price}, "
+          f"короткий опис (<{EVA_DESCRIPTION_MIN_LEN} симв., строго за EVA)={skipped_short_desc}); "
+          f"у фід {len(items)} (ціль {EVA_TARGET_SIZE}, найновіші першими).")
     return items, prices, russian_names
 
 
-def _build_eva_static_selection(catalog: dict, russian_text: dict = None) -> tuple[dict, dict, dict]:
-    """Заморожений знімок EVA-фіда на момент подачі на модерацію
-    (2026-07-29, пряме рішення власниці — той самий патерн заморозки, що
-    вже є для Rozetka, generate_rozetka_feed.py::_build_rozetka_static_
-    selection()). Повертає (items, prices, russian_names):
-    - items: {pid: item} — сирий каталог-товар НА МОМЕНТ заморозки
-      (усі поля — назва/опис/фото/stock/тощо — рівно такі, якими вони
-      були ТОДІ, не live)
-    - prices: {pid: retail} — ціна Prom НА МОМЕНТ заморозки
-      (load_fresh_prom_price_overrides() цього ОДНОГО виклику) —
-      НЕ перераховується надалі, незалежно від того, що зробить
-      репрайсер Prom після заморозки
-    - russian_names: {pid: name} — рос. назва (fetch_russian_text())
-      НА МОМЕНТ заморозки
+def _build_eva_static_selection(catalog: dict, russian_text: dict = None,
+                                description_overrides: dict = None) -> tuple[dict, dict, dict]:
+    """Заморожений знімок EVA-фіда (rollback-шлях, той самий патерн, що й
+    Rozetka _build_rozetka_static_selection()). Повертає (items, prices,
+    russian_names): сирий каталог-товар / ціна / рос. назва НА МОМЕНТ заморозки —
+    надалі НЕ перераховуються, доки файл не видалено.
 
-    Відбір (select_top_items() + _qualifies_for_feed()) — той самий
-    алгоритм, що вже й так використовувався до заморозки, НЕ новий
-    незалежний розрахунок (на відміну від Rozetka, де сам алгоритм теж
-    замінювався) — заморожується лише РЕЗУЛЬТАТ, не логіка відбору.
+    ВІДБІР І ЦІНА (2026-07-31, після розв'язки EVA↔Prom): заморожується РЕЗУЛЬТАТ
+    того самого живого відбору _build_eva_live_selection() — власна формула ціни EVA,
+    повний каталог, наявність>2, строгий гейт опису, найновіші-першими, cap 2000.
+    РАНІШЕ заморожувався select_top_items()+ціна Prom; після розв'язки той шлях
+    прибрано (він і спирався на гарантію prom-ціни, якої більше нема — inline-
+    freeze дав би KeyError). Тепер re-freeze дає рівно те, що й живий фід.
 
-    Перший виклик (файл ще не існує) — рахує й зберігає. Кожен наступний
-    виклик — читає збережене й повертає БЕЗ ЖОДНОГО перерахунку: жодне
-    поле жодного SKU з цього списку не змінюється, доки власниця прямо
-    не скаже, що модерація EVA завершена (видалення файлу — єдиний
-    спосіб змусити перебудову, той самий принцип, що й для Rozetka)."""
+    Перший виклик (файл ще не існує) — рахує через живий відбір і зберігає. Кожен
+    наступний — читає збережене й повертає БЕЗ перерахунку."""
     if EVA_STATIC_SELECTION_FILE.exists():
         try:
             saved = json.loads(EVA_STATIC_SELECTION_FILE.read_text(encoding="utf-8"))
@@ -838,19 +851,9 @@ def _build_eva_static_selection(catalog: dict, russian_text: dict = None) -> tup
         except (ValueError, OSError, KeyError):
             pass  # пошкоджений/неповний файл — сформувати заново нижче, як при першому запуску
 
-    top_catalog = select_top_items(catalog)
-    price_overrides = load_fresh_prom_price_overrides()
-    russian = russian_text or {}
-
-    items: dict = {}
-    prices: dict = {}
-    russian_names: dict = {}
-    for pid, item in top_catalog.items():
-        if not _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides):
-            continue
-        items[pid] = item
-        prices[pid] = price_overrides[pid]
-        russian_names[pid] = (russian.get(pid) or {}).get("name") or item.get("name", "")
+    items, prices, russian_names = _build_eva_live_selection(
+        catalog, russian_text=russian_text, description_overrides=description_overrides,
+    )
 
     EVA_STATIC_SELECTION_FILE.write_text(
         json.dumps({"items": items, "prices": prices, "russian_names": russian_names,
@@ -858,12 +861,10 @@ def _build_eva_static_selection(catalog: dict, russian_text: dict = None) -> tup
                    ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
-    print(f"[EVA] Статичний список сформовано ВПЕРШЕ (заморозка на модерацію EVA): "
-          f"{len(items)} з {len(top_catalog)} товарів курованого відбору "
-          f"(з {len(catalog)} товарів повного каталогу Toysi). Список ЗАМОРОЖЕНИЙ — "
-          "наступні прогони використовуватимуть той самий, без перерахунку "
-          "(ні ціна Prom, ні наявність, ні сам факт присутності), доки не буде окремої "
-          "команди власниці про завершення модерації EVA.")
+    print(f"[EVA] Статичний список сформовано ВПЕРШЕ (заморозка): {len(items)} товарів "
+          f"(з {len(catalog)} повного каталогу Toysi, живий відбір заморожено). Список "
+          "ЗАМОРОЖЕНИЙ — наступні прогони використовуватимуть той самий, без перерахунку "
+          "(ні ціна, ні наявність, ні сам факт присутності), доки файл не видалено.")
     return items, prices, russian_names
 
 
@@ -889,7 +890,7 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     # замінити виклик назад на _build_eva_static_selection() (функція збережена вище) +
     # відновити eva_static_selection round-trip у run_/publish_feed_pipeline_vps.sh.
     static_items, static_prices, static_russian_names = _build_eva_live_selection(
-        catalog, russian_text=russian_text,
+        catalog, russian_text=russian_text, description_overrides=description_overrides,
     )
     print(f"[EVA] Живий відбір (динамічно, живі залишки/ціни): {len(static_items)} товарів.")
 

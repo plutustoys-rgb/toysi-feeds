@@ -53,16 +53,22 @@ git checkout origin/feed-data -- . 2>/dev/null || true
 
 mkdir -p feeds
 cp /opt/plutustoys/feeds/eva_feed.xml feeds/eva_feed.xml
-git add -f feeds/eva_feed.xml
 
-# Якщо eva_feed.xml не змінився (той самий вміст, що вже у feed-data) — commit із
-# --allow-empty дав би порожній коміт; git commit без змін завершиться помилкою під
-# set -e. Тому перевіряємо наявність застейджених змін.
-if git diff --cached --quiet; then
+# Пушимо ЛИШЕ якщо eva_feed.xml реально змінився проти вже опублікованого — інакше
+# force-push щотика (щогодини) без потреби. Порівнюємо робоче дерево з origin/feed-data
+# (щойно зафетчено вище). ВАЖЛИВО (знахідка аудиту pt4, LOW-1): попередній
+# `git diff --cached` ТУТ НЕ ПРАЦЮВАВ — на свіжому orphan-HEAD (коміт ще не народжений)
+# diff --cached бачив увесь імпортований `git checkout origin/feed-data -- .` як «зміни»
+# й завжди пушив. `git diff` проти origin/feed-data порівнює саме опублікований eva з
+# новим. На ПЕРШОМУ прогоні (гілки feed-data ще нема) origin/feed-data відсутній →
+# && коротко замикає, умова хибна → пушимо (перша публікація), як і треба.
+if git rev-parse --verify -q origin/feed-data >/dev/null 2>&1 \
+   && git diff --quiet origin/feed-data -- feeds/eva_feed.xml; then
     echo "[PublishEva] eva_feed.xml не змінився з попередньої публікації — нічого пушити."
     exit 0
 fi
 
+git add -f feeds/eva_feed.xml
 git commit -q -m "EVA feed update (VPS, погодинний) $(date -u +'%Y-%m-%d %H:%M UTC')"
 git push --force git@github.com:plutustoys-rgb/toysi-feeds.git feed-data:feed-data
 echo "[PublishEva] eva_feed.xml опубліковано у feed-data."

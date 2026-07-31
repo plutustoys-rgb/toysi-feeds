@@ -94,8 +94,12 @@ def _migrate_platform_allow_eva(conn: sqlite3.Connection) -> None:
     if not row or not row[0]:
         return  # таблиці ще нема — свіжий SCHEMA (executescript вище) створив її вже з 'eva'
     old_sql = row[0]
-    if "'eva'" in old_sql:
-        return  # вже дозволено
+    # Ідемпотентність, прив'язана САМЕ до платформного CHECK (NIT аудиту pt7): скануємо
+    # список платформ у CHECK, а не весь DDL — інакше майбутня колонка з літералом 'eva'
+    # (назва/дефолт/коментар) хибно пропустила б міграцію.
+    _plat = re.search(r"platform\s+IN\s*\(([^)]*)\)", old_sql)
+    if _plat and "'eva'" in _plat.group(1):
+        return  # 'eva' уже в платформному CHECK
 
     new_sql = re.sub(
         r"platform\s+IN\s*\(\s*'rozetka'\s*,\s*'prom'\s*\)",

@@ -156,8 +156,7 @@ from datetime import datetime
 from pathlib import Path
 
 from competitor_pricing import (
-    compute_floor, get_platform_commission, load_description_overrides,
-    real_toysi_cost, MIN_PROFIT, decide_price_for_platform,
+    load_description_overrides, real_toysi_cost,
 )
 from generate_prom_feed import append_clearance_notice, fetch_russian_text, normalize_vendor
 from parser import fetch_toysi_catalog
@@ -180,13 +179,16 @@ EVA_STATIC_SELECTION_FILE = Path(__file__).parent / "eva_static_selection.json"
 # машинне джерело топа (Toysi-API/ручний експорт). Наразі порядок: наявність>2 → найновіші.
 EVA_SELECTION_MIN_STOCK = 2
 
-# EVA РОЗВ'ЯЗАНА З PROM (2026-07-31, пряме рішення власника: "EVA більше ніяк не
-# пов'язана з Prom, є формула"): ціна EVA рахується ВЛАСНОЮ формулою
-# decide_price_for_platform(cost, None, "eva", category) — незалежно від того, чи
-# товар пройшов prom-репрайсер. Це знімає стелю ~660 (лише prom-відрейсені товари) —
-# у фід беруться ВСІ валідні товари в наявності>2, до цільового розміру нижче,
-# впорядковані найновіші-першими (<date> Toysi). Ціль — 2000 (усі валідні, обрізані
-# до цього числа; якщо валідних менше — беремо всіх).
+# EVA РОЗВ'ЯЗАНА З PROM (2026-07-30, пряме рішення власника, дослівно: «я відміняю
+# спайку фіда єви з промом ... вартість = вартість тойсі з нашою знижкою × 1,45.
+# поки така формула, товар повинен бути в наявності, кількість у фіді поки 2000»):
+# ціна EVA — ПРЯМА ФІКСОВАНА НАЦІНКА real_toysi_cost × EVA_PRICE_MULTIPLIER, без
+# жодного розрахунку/даних Prom (без decide_price_for_platform, без compute_floor,
+# без get_platform_commission). У фід беруться ВСІ валідні товари в наявності,
+# впорядковані найновіші-першими (<date> Toysi), обрізані до EVA_TARGET_SIZE.
+#
+# ТИМЧАСОВА формула («поки така» — власник) — легко замінити, коли дасть постійну.
+EVA_PRICE_MULTIPLIER = 1.45
 EVA_TARGET_SIZE = 2000
 
 # Пряме завдання власниці (2026-07-21) — стоп-бренди EVA, категорія KIDS.
@@ -503,24 +505,22 @@ def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: 
 
 
 def _eva_price(item: dict):
-    """Роздрібна ціна EVA за ВЛАСНОЮ формулою (EVA розв'язана з Prom, 2026-07-31):
-    decide_price_for_platform(cost, конкурента немає, платформа "eva", категорія) —
-    Шлях 1 (без конкурента): max(cost*NO_COMPETITOR_MULT, floor рентабельності під
-    реальною комісією EVA + комісією оплати, MIN_PROFIT). НЕ копіює ціну Prom.
-    Повертає ціну (float) або None, якщо собівартість невалідна / формула не змогла
-    (тоді товар просто не потрапляє у фід — не публікуємо без ціни)."""
+    """Роздрібна ціна EVA = real_toysi_cost(item) × EVA_PRICE_MULTIPLIER (1.45),
+    округлено до копійки. ТИМЧАСОВА формула — пряма фіксована націнка (пряме
+    рішення власника 2026-07-30, дослівно «вартість тойсі з нашою знижкою × 1,45.
+    поки така формула»). real_toysi_cost вже враховує нашу знижку Toysi + збірку.
+    БЕЗ конкурентного розрахунку, БЕЗ compute_floor / get_platform_commission /
+    decide_price_for_platform — жодної залежності від Prom. Повертає None, якщо
+    собівартість невалідна (тоді товар не потрапляє у фід — не публікуємо без ціни).
+    Профіт безпечний і без floor: 1.45 × (1 − 0.15 комісія EVA) = 1.2325 → +23% нетто
+    навіть на найвищій комісії, тож збиток неможливий (floor свідомо не потрібен)."""
     try:
         cost = real_toysi_cost(item)
     except (ValueError, TypeError):
         return None
     if not cost or cost < MIN_SUPPLIER_PRICE:
         return None
-    try:
-        result = decide_price_for_platform(cost, None, "eva", item.get("category_name"))
-    except (ValueError, KeyError, ZeroDivisionError, TypeError):
-        return None
-    price = (result or {}).get("price")
-    return price if price and price > 0 else None
+    return round(cost * EVA_PRICE_MULTIPLIER, 2)
 
 
 def _wrap_cdata(xml_str: str) -> str:
@@ -603,26 +603,18 @@ def _build_xml(
             skipped_unprof += 1
             continue
 
-        # ЦІНА EVA — ВЛАСНА ФОРМУЛА (2026-07-31, EVA розв'язана з Prom):
-        # price_overrides тут — це вже пораховані _eva_price() ціни
-        # (decide_price_for_platform для платформи "eva"), передані з
-        # _build_eva_live_selection(), а НЕ дзеркало Prom. Кожен відібраний
-        # SKU має ціну; item без запису сюди не доходить (відсіяний ще у
-        # відборі) — цей guard лишається як страхувальний.
+        # ЦІНА EVA — ПРЯМА ФІКСОВАНА НАЦІНКА ×1.45 (2026-07-30, рішення власника):
+        # price_overrides тут — це вже пораховані _eva_price() ціни (real_toysi_cost
+        # × EVA_PRICE_MULTIPLIER), передані з _build_eva_live_selection(). Кожен
+        # відібраний SKU має ціну; item без запису сюди не доходить (відсіяний ще у
+        # відборі) — цей guard лишається як страхувальний від None.
+        # СВІДОМО НЕМАЄ floor-запобіжника (compute_floor/get_platform_commission):
+        # власник задав пряму націнку без floor, а ×1.45 і так завжди прибуткова
+        # (нетто +23% навіть на 15% комісії). Floor тут ХИБНО відкинув би ВЕСЬ фід —
+        # cost×1.45 < compute_floor(cost,0.15,0.25)=cost×1.47.
         retail = overrides.get(item_id)
         if retail is None:
             skipped_no_prom_price += 1
-            continue
-
-        # Профіт-запобіжник (тепер РЕДУНДАНТНИЙ, лишений як страхувальний):
-        # _eva_price() рахує ціну як max(cost*NO_COMPETITOR_MULT, floor під сумарною
-        # комісією EVA), тож вона завжди >= цього floor. Комісія оплати для EVA = 0
-        # (PAYMENT_COMMISSION не має ключа "eva"), тому цей floor і floor у _eva_price
-        # ІДЕНТИЧНІ (той самий get_platform_commission("eva")=15%). Якщо колись формула
-        # зміниться й дасть збиткову ціну — цей guard усе одно не пропустить її у фід.
-        eva_floor = compute_floor(cost, get_platform_commission("eva"), MIN_PROFIT)
-        if retail < eva_floor:
-            skipped_unprof += 1
             continue
 
         vendor = (item.get("vendor") or "").strip()
@@ -752,13 +744,14 @@ def _build_xml(
 
     print(f"[EVA] У фіді: {len(offers_el)} товарів | "
           f"без ціни: {skipped_no_price} | дешевше {MIN_SUPPLIER_PRICE} грн: {skipped_cheap} | "
-          f"немає свіжої ціни Prom (ще не торкнуто репрайсером цього циклу): {skipped_no_prom_price} | "
-          f"виключено вручну/нерентабельно під комісією EVA: {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
+          f"без порахованої ціни EVA (страхувальник, має бути 0): {skipped_no_prom_price} | "
+          f"виключено вручну (exclude_ids): {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
           f"бренд/студія у стоп-листі EVA: {skipped_stop_brand} | заборонена країна походження: {skipped_banned_country} | "
           f"без валідного фото: {skipped_no_pics} | назв обрізано (>{EVA_NAME_MAX_LEN} симв.): укр={truncated_name_count}, рос={truncated_name_ru_count}")
     if skipped_short_desc:
-        print(f"[EVA] УВАГА: {skipped_short_desc} offer(и) мають опис коротший за задокументований мінімум EVA "
-              f"({EVA_DESCRIPTION_MIN_LEN} симв.) — НЕ виключено з фіда, ризик відхилення при модерації EVA.")
+        print(f"[EVA] ІНВАРІАНТ ПОРУШЕНО: {skipped_short_desc} offer(и) з описом коротшим за мінімум EVA "
+              f"({EVA_DESCRIPTION_MIN_LEN} симв.) дійшли до _build_xml, хоча відбір мав їх відсіяти "
+              "(строгий гейт _build_eva_live_selection розсинхронізований із _final_eva_description?).")
     print(f"[EVA] Vis-9: {described_count} SKU отримали вручну написаний опис (description_overrides.json)")
     print(f"[EVA] Рос. назва (<name>): {russian_missing_count} SKU без rus-варіанту Toysi, використано фолбек на укр. назву")
     return yml

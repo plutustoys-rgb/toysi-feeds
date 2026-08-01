@@ -565,9 +565,17 @@ def _convert_eva_order(order: dict) -> dict:
     )
     items = [
         {
-            # article — артикул продавця (наш зовнішній код у фіді); sku — маркетплейс-
-            # ідентифікатор EVA. Пробуємо article першим, звірити на живому замовленні.
-            "toysi_code": product.get("article") or product.get("sku") or "",
+            # toysi_code = item["id"] — це offer id, що МИ віддали у фіді
+            # (<offer id=...>), тобто код товару Toysi. Звірено на 1-му живому
+            # замовленні (2026-08-01): item.id="160515" (наш offer id, 6 цифр,
+            # резолвиться в реальний залишок Toysi), тоді як item.sku="2289628" —
+            # ВНУТРІШНІЙ ID EVA (7 цифр, не Toysi-код), а item.article=null.
+            # ПОПЕРЕДНЯ версія (#205) брала article/sku → шукала залишок за EVA-ID
+            # → Toysi повертав "0" → КОЖНЕ EVA-замовлення хибно зависало як OOS і
+            # ніколи не форвардилось (+ ризик 72-год штрафу EVA). НЕ падаємо на
+            # sku/article — вони EVA-ідентифікатори, не Toysi-коди; порожній id
+            # (не має траплятись) → "" (order_router позначить на ручну перевірку).
+            "toysi_code": str(product.get("id") or "").strip(),
             "name": product.get("name", ""),
             "qty": _parse_qty(product.get("quantity")),
             "price": _parse_prom_price(product.get("price")),

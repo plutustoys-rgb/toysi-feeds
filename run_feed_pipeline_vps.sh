@@ -106,6 +106,12 @@ send_telegram_message('🚨 VPS feed-pipeline: $f відсутній/порож�
     fi
 done
 
+# Трек наповненості вітрини (catalog_size_tracker.py, 2026-08-01): рахує offer'и у
+# щойно згенерованих фідах (prom/eva локально; rozetka генерує GH Actions — трекер
+# її тут пропускає), веде часовий ряд catalog_size_history.jsonl + Telegram-алерт на
+# суттєве просідання. Best-effort — помилка трекера НЕ зриває публікацію фідів.
+python3 catalog_size_tracker.py || echo "[FeedPipeline] catalog_size_tracker.py провалився (best-effort)"
+
 bash publish_feed_pipeline_vps.sh
 
 if [ -z "$FAIL_REASON" ]; then

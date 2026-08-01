@@ -171,6 +171,72 @@ MIN_SUPPLIER_PRICE = 20  # той самий поріг, що й Prom/Rozetka �
 # самий патерн, що й ROZETKA_STATIC_SELECTION_FILE) — див. докстрінг файлу.
 EVA_STATIC_SELECTION_FILE = Path(__file__).parent / "eva_static_selection.json"
 
+# ── Контроль залишків EVA / деактивація OOS (2026-08-01) ─────────────────────
+# EVA НЕ має product/stock API (лише orders+auth — перевірено на /api/schema), тож
+# деактивувати товар, що розпродався на Toysi, можна ЛИШЕ через фід: погодинний
+# autoimport оновлює товари, що Є у фіді, але НЕ деактивує ті, що з нього ЗНИКЛИ
+# (історія імпорту: "Видалені: 0" на кожному авто-прогоні). Через це товар, який
+# упав нижче порога наявності й випав із фіда, лишався на вітрині EVA зі старим
+# available="true" → покупець міг замовити те, чого вже нема (оверсел).
+#
+# Розв'язок (той самий принцип, що ever_live у Prom-репрайсері): відстежуємо
+# «коли-небудь листовані» товари; для тих із них, що зараз OOS/випали, але ще
+# існують у каталозі Toysi — ДОДАЄМО у фід МІНІМАЛЬНИЙ offer із available="false"
+# + stock_quantity=0, щоб autoimport перевів їх у «недоступні». Стан локальний на
+# VPS (як eva_static_selection.json) — переживає між прогонами, не публікується.
+EVA_LISTED_STATE_FILE = Path(__file__).parent / "eva_listed_state.json"
+
+
+def _load_eva_listed() -> set:
+    """Множина id товарів, які КОЛИСЬ були у фіді EVA з available="true".
+    Пошкоджений/відсутній файл → порожня множина (безпечно: у гіршому разі
+    повертаємось до поточної поведінки, поки товари знову не залистуються)."""
+    try:
+        data = json.loads(EVA_LISTED_STATE_FILE.read_text(encoding="utf-8"))
+        return set(data.get("listed", []))
+    except (ValueError, OSError, KeyError, TypeError):
+        return set()
+
+
+def _save_eva_listed(listed: set) -> None:
+    try:
+        EVA_LISTED_STATE_FILE.write_text(
+            json.dumps({"listed": sorted(listed), "saved_at": datetime.now().isoformat()},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        print(f"[EVA] Не вдалось зберегти eva_listed_state.json: {e}")
+
+
+def _compute_eva_deactivations(catalog: dict, active_pids: set) -> dict:
+    """Товари для деактивації на вітрині EVA: КОЛИСЬ листовані (ever_listed), але
+    зараз НЕ в активному відборі (OOS/впали/виключені), і ще існують у каталозі
+    Toysi. Оновлює й зберігає ever_listed (додає поточні активні). Повертає
+    {pid: (item, price)} — для мінімальних available="false" offer'ів у _build_xml.
+
+    Товар, що ЗНИК із каталогу Toysi зовсім, тут пропускаємо (немає що віддати у
+    фід; EVA лишить його останній стан — окремий рідкісний кейс). ever_listed лише
+    росте (як ever_live) — монотонність робить деактивацію стійкою до транзієнтно
+    неповного каталогу."""
+    ever = _load_eva_listed()
+    ever |= {str(p) for p in active_pids}
+
+    deactivations = {}
+    for pid in ever:
+        if pid in active_pids:
+            continue
+        item = catalog.get(pid)
+        if item is None:
+            continue
+        price = _eva_price(item)
+        if price is None:
+            continue
+        deactivations[pid] = (item, price)
+
+    _save_eva_listed(ever)
+    return deactivations
+
 # Порядок відбору EVA (2026-07-30, пряме рішення власника): у фід беремо лише товари з
 # наявністю СТРОГО більше EVA_SELECTION_MIN_STOCK шт (ostatok Toysi — діапазон, парсер
 # бере мінімум; менший ризик оверселу), впорядковані найновіші-першими за тегом <date>
@@ -572,6 +638,7 @@ def _build_xml(
     exclude_ids: set = None,
     description_overrides: dict = None,
     russian_text: dict = None,
+    deactivate_items: dict = None,
 ) -> ET.Element:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
@@ -780,6 +847,37 @@ def _build_xml(
               f"({EVA_DESCRIPTION_MIN_LEN} симв.) дійшли до _build_xml, хоча відбір мав їх відсіяти "
               "(строгий гейт _build_eva_live_selection розсинхронізований із _final_eva_description?).")
     print(f"[EVA] Vis-9: {described_count} SKU отримали вручну написаний опис (description_overrides.json)")
+
+    # Деактивація OOS (2026-08-01): мінімальні offer'и available="false" +
+    # stock_quantity=0 для товарів, що КОЛИСЬ були листовані, але зараз випали з
+    # активного відбору — щоб autoimport EVA перевів їх у «недоступні» (EVA не має
+    # product API; єдиний канал — фід). СВІДОМО обходять фільтри якості основного
+    # циклу вище: мета — ПРИБРАТИ товар із вітрини, а не оцінити його якість; товар
+    # уже існує на EVA (був листований), тож для UPDATE достатньо id+available+
+    # stock+name+price. НЕ емітимо вже наявні активні id (deactivate_items за
+    # побудовою не перетинається з активним відбором) і виключені ex​clude_ids.
+    deactivated_count = 0
+    for pid, (item, price) in (deactivate_items or {}).items():
+        pid_s = str(pid)
+        if pid_s in excluded:
+            continue
+        d_offer = ET.SubElement(offers_el, "offer", id=pid_s, available="false")
+        d_name = _truncate(
+            _normalize_trailing_color_case(_limit_punctuation(_denoise_caps(_clean_text(item.get("name", ""))))),
+            EVA_NAME_MAX_LEN,
+        ) or f"Товар {pid_s}"
+        ET.SubElement(d_offer, "name_ua").text = d_name
+        ET.SubElement(d_offer, "price").text = f"{price:.2f}"
+        ET.SubElement(d_offer, "currencyId").text = "UAH"
+        ET.SubElement(d_offer, "stock_quantity").text = "0"
+        cat_id = (item.get("category_id") or "").strip()
+        if cat_id:
+            ET.SubElement(d_offer, "categoryId").text = cat_id
+        deactivated_count += 1
+    if deactivate_items is not None:
+        print(f"[EVA] Деактивація OOS: {deactivated_count} товарів у фіді з available=\"false\" "
+              f"(колись листовані, зараз випали з відбору) — autoimport переведе їх у «недоступні».")
+
     return yml
 
 
@@ -914,9 +1012,13 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     )
     print(f"[EVA] Живий відбір (динамічно, живі залишки/ціни): {len(static_items)} товарів.")
 
+    # Контроль залишків: товари, що КОЛИСЬ листувались, але зараз випали (OOS) —
+    # додаємо у фід як available="false", щоб EVA деактивувала їх (не оверселила).
+    deactivations = _compute_eva_deactivations(catalog, set(static_items.keys()))
+
     root = _build_xml(
         static_items, price_overrides=static_prices, exclude_ids=exclude_ids,
-        description_overrides=description_overrides,
+        description_overrides=description_overrides, deactivate_items=deactivations,
     )
 
     ET.indent(root, space="  ")

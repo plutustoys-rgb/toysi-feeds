@@ -4,11 +4,12 @@ from checkbox_client import create_receipt, CheckboxAPIError
 from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
     mark_rozetka_ttn_pushed, mark_prom_delivered_pushed, mark_prom_ttn_pushed,
-    update_delivery_status,
+    mark_eva_ttn_pushed, update_delivery_status,
 )
 import nova_poshta
 from orders_watcher import update_prom_order_status, attach_prom_declaration_id, PromAPIError
 import rozetka_client
+import eva_orders_client
 from telegram_notify import send_telegram_message
 from toysi_order_submit import (
     fetch_order_statuses,
@@ -231,6 +232,51 @@ def _maybe_push_ttn_to_rozetka(conn, order: dict, ttn: str) -> None:
     print(f"[order_status_tracker] ТТН передано в Rozetka: {order['internal_order_id']} (ТТН {ttn})")
 
 
+def _maybe_push_ttn_to_eva(conn, order: dict, ttn: str) -> None:
+    """Прикріплює ТТН до замовлення на СТОРОНІ EVA (PATCH /orders/{id}/status,
+    status=12 «Підтверджене покупцем» + tracking_number) — щойно з'явився
+    toysi_ttn і ще не передавали (eva_ttn_pushed_at IS NULL). За потоком EVA
+    (див. eva_orders_client): 1 -> 11 (accept, order_router) -> 12 (з ТТН, тут)
+    -> EVA САМА виставляє 5 (Відправлено) з трекінгу перевізника.
+
+    order["order_id"] — ID замовлення В САМІЙ EVA (не toysi_order_id), саме те,
+    що приймає eva_orders_client.update_order_status(). Ідемпотентність і
+    широкий except — той самий підхід, що _maybe_push_ttn_to_rozetka(): помилка
+    (включно з НЕ-EvaAPIError) НЕ має зупиняти track_orders() для інших
+    замовлень; прапорець перевіряється щоцикл, щоб тимчасова помилка природно
+    повторилась наступного разу, а не загубилась."""
+    if not ttn:
+        return
+    if order.get("platform") != "eva":
+        return
+    if order.get("eva_ttn_pushed_at"):
+        return
+
+    try:
+        eva_orders_client.update_order_status(
+            order["order_id"],
+            status=eva_orders_client.EVA_STATUS_CONFIRMED_BY_BUYER,
+            tracking_number=ttn,
+        )
+    except eva_orders_client.EvaAPIError as e:
+        print(
+            f"[order_status_tracker] Не вдалось передати ТТН у EVA для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+    except Exception as e:
+        print(
+            f"[order_status_tracker] Неочікувана помилка при передачі ТТН у EVA для "
+            f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+            file=sys.stderr,
+        )
+        return
+
+    mark_eva_ttn_pushed(conn, order["internal_order_id"])
+    print(f"[order_status_tracker] ТТН передано в EVA: {order['internal_order_id']} (ТТН {ttn})")
+
+
 def _maybe_push_ttn_to_prom(conn, order: dict, ttn: str) -> None:
     """Прикріплює ЕН до замовлення на СТОРОНІ Prom (POST
     /delivery/save_declaration_id) — щойно з'явився toysi_ttn і ще не
@@ -404,6 +450,7 @@ def track_orders() -> None:
             _maybe_issue_receipt(conn, order, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)
             _maybe_push_ttn_to_prom(conn, order, ttn)
+            _maybe_push_ttn_to_eva(conn, order, ttn)
             _maybe_push_delivered_to_prom(conn, order, ttn)
 
             ttn_note = f", ТТН: {ttn}" if ttn else ""

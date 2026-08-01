@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- не реєструвався НІКОЛИ (declaration_number завжди лишався null),
                                                -- що унеможливлювало "Дешеву доставку" Новою Поштою для КОЖНОГО
                                                -- замовлення; захист від повторного POST щоцикл опитування
+    eva_ttn_pushed_at     TEXT,               -- коли ТТН передано в EVA через PATCH /orders/{id}/status
+                                               -- (status=12 + tracking_number, order_status_tracker.py, 2026-08-01);
+                                               -- захист від повторного PATCH щоцикл опитування
     UNIQUE (order_id, platform)
 );
 
@@ -159,6 +162,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "stock_alert_sent_at", "stock_alert_sent_at TEXT")
         _ensure_column(conn, "orders", "prom_delivered_pushed_at", "prom_delivered_pushed_at TEXT")
         _ensure_column(conn, "orders", "prom_ttn_pushed_at", "prom_ttn_pushed_at TEXT")
+        _ensure_column(conn, "orders", "eva_ttn_pushed_at", "eva_ttn_pushed_at TEXT")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
         # дописано в kodv_ledger.jsonl — персистентна позначка, не 24-годинне
         # вікно, щоб дрейф/пропуск таймера (як уже стався з update-feeds.yml)
@@ -401,6 +405,18 @@ def mark_prom_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) -> No
     підхід, що й mark_rozetka_ttn_pushed()/mark_prom_delivered_pushed()."""
     conn.execute(
         "UPDATE orders SET prom_ttn_pushed_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_eva_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що ТТН вже передано в EVA через PATCH /orders/{id}/status
+    (status=12 + tracking_number, order_status_tracker.py,
+    eva_orders_client.update_order_status()) — захист від повторного PATCH на
+    кожному циклі опитування, той самий підхід, що й mark_rozetka_ttn_pushed()/
+    mark_prom_ttn_pushed()."""
+    conn.execute(
+        "UPDATE orders SET eva_ttn_pushed_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
 

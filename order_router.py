@@ -14,6 +14,7 @@ from nova_poshta import resolve_shipping, NovaPoshtaAPIError
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message
 import rozetka_client
+import eva_orders_client
 from orders_watcher import update_prom_order_status, check_prom_order_status, PromAPIError
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -250,7 +251,15 @@ def _update_marketplace_status(order: dict) -> None:
             rozetka_client.update_order_status(order["order_id"], status=rozetka_client.ORDER_STATUS_PROCESSING)
         elif order["platform"] == "prom":
             update_prom_order_status(order["order_id"])
-    except (rozetka_client.RozetkaAPIError, PromAPIError) as e:
+        elif order["platform"] == "eva":
+            # EVA-потік: 1 (Нове) -> 11 (Підтверджене продавцем). ТТН
+            # прикріпиться пізніше окремо (order_status_tracker._maybe_push_ttn_to_eva,
+            # статус 12 з tracking_number), коли з'явиться від Toysi — точно як
+            # для Rozetka (status=2 зараз, ТТН потім).
+            eva_orders_client.update_order_status(
+                order["order_id"], status=eva_orders_client.EVA_STATUS_CONFIRMED_BY_SELLER
+            )
+    except (rozetka_client.RozetkaAPIError, PromAPIError, eva_orders_client.EvaAPIError) as e:
         print(
             f"[order_router] Не вдалось оновити статус на {order['platform']} для "
             f"{order['internal_order_id']}: {e}",

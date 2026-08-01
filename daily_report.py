@@ -23,6 +23,8 @@ load_dotenv()
 
 PROM_API_KEY     = os.environ.get("PROM_API_KEY", "")
 ROZETKA_USERNAME = os.environ.get("ROZETKA_USERNAME", "")
+EVA_MERCHANT_USERNAME = os.environ.get("EVA_MERCHANT_USERNAME", "")
+EVA_MERCHANT_PASSWORD = os.environ.get("EVA_MERCHANT_PASSWORD", "")
 ROZETKA_PASSWORD = os.environ.get("ROZETKA_PASSWORD", "")
 
 LOOKBACK_HOURS = 24
@@ -94,7 +96,12 @@ def _source_label(platform: str) -> str:
     """Реальні дані для платформи є, лише якщо задано відповідні облікові
     дані — інакше orders_watcher.py досі повертає мок-замовлення (Крок 3
     плану)."""
-    has_creds = bool(PROM_API_KEY) if platform == "prom" else bool(ROZETKA_USERNAME and ROZETKA_PASSWORD)
+    if platform == "prom":
+        has_creds = bool(PROM_API_KEY)
+    elif platform == "eva":
+        has_creds = bool(EVA_MERCHANT_USERNAME and EVA_MERCHANT_PASSWORD)
+    else:
+        has_creds = bool(ROZETKA_USERNAME and ROZETKA_PASSWORD)
     return "реальні дані" if has_creds else "мок-дані (облікових даних ще немає)"
 
 
@@ -357,7 +364,7 @@ def _estimated_commission(rows: list, catalog: dict) -> tuple:
     застосовується дефолтна ставка платформи без категорійного уточнення.
     Це РОЗРАХУНКОВА оцінка для щомісячної звірки з випискою маркетплейсу,
     не остаточна цифра."""
-    commission_by_platform = {"prom": 0.0, "rozetka": 0.0}
+    commission_by_platform = {"prom": 0.0, "rozetka": 0.0, "eva": 0.0}
     items_priced = 0
     items_no_category = 0
 
@@ -630,7 +637,7 @@ def build_report() -> str:
 
         cogs = items_priced = items_missing = orders_real = orders_estimated = 0
         cogs_catalog_unavailable = False
-        commission_by_platform = {"prom": 0.0, "rozetka": 0.0}
+        commission_by_platform = {"prom": 0.0, "rozetka": 0.0, "eva": 0.0}
         commission_items_priced = commission_items_no_category = 0
         commission_catalog_unavailable = False
 
@@ -681,10 +688,11 @@ def build_report() -> str:
     lines = [f"📋 Щоденний звіт PlutusToys — {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"]
     lines.append(f"\nНових замовлень за останні {LOOKBACK_HOURS} год: {len(new_rows)}")
 
-    for platform in ("prom", "rozetka"):
+    for platform in ("prom", "rozetka", "eva"):
         count = counts_by_platform.get(platform, 0)
         revenue = revenue_by_platform.get(platform, 0)
-        lines.append(f"\n  {platform.capitalize()}: {count} на {revenue:.2f} грн ({_source_label(platform)})")
+        lines.append(f"\n  {platform.upper() if platform == 'eva' else platform.capitalize()}: "
+                     f"{count} на {revenue:.2f} грн ({_source_label(platform)})")
 
     lines.append(f"\n\nВиручка нових замовлень за {LOOKBACK_HOURS} год: {total_revenue:.2f} грн")
     lines.append(

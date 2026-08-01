@@ -9,12 +9,15 @@ from dotenv import load_dotenv
 
 from orders_db import get_connection, init_db, insert_order, mark_payment_confirmed
 import rozetka_client
+import eva_orders_client
 
 load_dotenv()
 
 PROM_API_KEY     = os.environ.get("PROM_API_KEY", "")
 ROZETKA_USERNAME = os.environ.get("ROZETKA_USERNAME", "")
 ROZETKA_PASSWORD = os.environ.get("ROZETKA_PASSWORD", "")
+EVA_MERCHANT_USERNAME = os.environ.get("EVA_MERCHANT_USERNAME", "")
+EVA_MERCHANT_PASSWORD = os.environ.get("EVA_MERCHANT_PASSWORD", "")
 
 PROM_API_URL    = "https://my.prom.ua/api/v1"
 REQUEST_TIMEOUT = 30
@@ -484,6 +487,139 @@ def fetch_new_orders_rozetka() -> list:
     return [_convert_rozetka_order(o) for o in raw_orders]
 
 
+# ── EVA (merchant-api.eva.ua) ────────────────────────────────────────────────
+# Способи оплати EVA (payment.method, OrderBase зі схеми /api/schema): рівно два —
+# CASH_ON_DELIVERY (накладений) і LIQPAY (онлайн). Все, що не LIQPAY-authorized —
+# не вважаємо оплаченим (той самий безпечний дефолт, що й для Prom/Rozetka).
+EVA_PAYMENT_COD = "CASH_ON_DELIVERY"
+EVA_PAYMENT_LIQPAY = "LIQPAY"
+
+
+def _eva_payment_method(order: dict) -> str:
+    method = str((order.get("payment") or {}).get("method") or "").upper()
+    return "cod" if method == EVA_PAYMENT_COD else "prepaid"
+
+
+def _eva_carrier(order: dict) -> str:
+    """shipping.method (enum зі схеми): novaposhta_warehouse/novaposhta_packstation/
+    ukrposhta_postoffice. Мапимо на слаги order_router (nova_poshta/ukrposhta)."""
+    method = str((order.get("shipping") or {}).get("method") or "").lower()
+    return "ukrposhta" if method.startswith("ukrposhta") else "nova_poshta"
+
+
+def _eva_delivery_address(order: dict) -> str:
+    """⚠️ shipping.address — динамічний об'єкт (schema: "dynamic properties"),
+    точні під-поля НЕ підтверджені живим замовленням (0 замовлень на момент
+    написання) — best-effort: зібрати рядкові значення в людський рядок, фолбек —
+    сам метод доставки. Той самий підхід, що _rozetka_delivery_address()."""
+    shipping = order.get("shipping") or {}
+    address = shipping.get("address")
+    if isinstance(address, dict):
+        parts = [str(v).strip() for v in address.values()
+                 if isinstance(v, (str, int, float)) and str(v).strip()]
+        if parts:
+            return ", ".join(parts)
+    if isinstance(address, str) and address.strip():
+        return address.strip()
+    return str(shipping.get("method") or "")
+
+
+def _eva_customer_name(order: dict) -> str:
+    """Отримувач (recipient) у пріоритеті — саме він отримує посилку; фолбек —
+    customer (замовник). Обидва зі схеми: {first_name, last_name, middle_name, phone}."""
+    for key in ("recipient", "customer"):
+        person = order.get(key) or {}
+        name = " ".join(p for p in (person.get("first_name"), person.get("last_name")) if p)
+        if name.strip():
+            return name.strip()
+    return ""
+
+
+def _convert_eva_order(order: dict) -> dict:
+    """OrderExtended EVA (get_order) -> сира структура для normalize_order().
+
+    ⚠️ Мапінг address (динамічний) і toysi_code (article vs sku) — best-effort за
+    OpenAPI-схемою (merchant-api.eva.ua/api/schema, v1.1.0); 0 живих замовлень на
+    момент написання. Звірити на ПЕРШОМУ реальному замовленні (той самий підхід,
+    що вже застосований для _convert_rozetka_order і RUS-каталогу Prom)."""
+    payment = order.get("payment") or {}
+    payment_confirmed = (
+        str(payment.get("method") or "").upper() == EVA_PAYMENT_LIQPAY
+        and str(payment.get("status") or "").lower() == "authorized"
+    )
+    items = [
+        {
+            # article — артикул продавця (наш зовнішній код у фіді); sku — маркетплейс-
+            # ідентифікатор EVA. Пробуємо article першим, звірити на живому замовленні.
+            "toysi_code": product.get("article") or product.get("sku") or "",
+            "name": product.get("name", ""),
+            "qty": _parse_qty(product.get("quantity")),
+            "price": _parse_prom_price(product.get("price")),
+        }
+        for product in (order.get("items") or [])
+    ]
+    return {
+        "order_id": str(order["id"]),
+        "platform": "eva",
+        "status": "new",
+        "payment_method": _eva_payment_method(order),
+        "payment_confirmed": payment_confirmed,
+        "customer_name": _eva_customer_name(order),
+        "phone": (order.get("recipient") or {}).get("phone") or (order.get("customer") or {}).get("phone") or "",
+        "np_branch": _eva_delivery_address(order),
+        "carrier": _eva_carrier(order),
+        "items": items or [
+            {"toysi_code": "", "name": "⚠️ items EVA порожній/незнайомого формату — перевір вручну", "qty": 1, "price": 0.0}
+        ],
+    }
+
+
+def fetch_new_orders_eva() -> list:
+    """EVA Merchant Center API (eva_orders_client.py): нові замовлення (status=1).
+    fetch_orders повертає короткі OrderBase (БЕЗ items) — по кожному тягнемо повні
+    деталі get_order() (OrderExtended з items/shipping/recipient). Без кредів
+    (EVA_MERCHANT_USERNAME/PASSWORD) — мок, як у Prom/Rozetka."""
+    if not EVA_MERCHANT_USERNAME or not EVA_MERCHANT_PASSWORD:
+        print("[EVA] EVA_MERCHANT_USERNAME/PASSWORD не задано — мок-замовлення для перевірки логіки")
+        return _mock_eva_orders()
+
+    try:
+        base_orders = eva_orders_client.fetch_orders(status=eva_orders_client.EVA_STATUS_NEW)
+    except eva_orders_client.EvaAPIError as e:
+        print(f"[EVA] {e}", file=sys.stderr)
+        return []
+
+    result = []
+    for base in base_orders:
+        oid = base.get("id")
+        try:
+            full = eva_orders_client.get_order(oid)
+        except eva_orders_client.EvaAPIError as e:
+            print(f"[EVA] не вдалось отримати деталі замовлення {oid}: {e}", file=sys.stderr)
+            continue
+        result.append(_convert_eva_order(full or base))
+    return result
+
+
+def _mock_eva_orders() -> list:
+    return [
+        {
+            "order_id": "EVA-700001",
+            "platform": "eva",
+            "status": "new",
+            "payment_method": "cod",
+            "payment_confirmed": False,
+            "customer_name": "Тестовий EVA Клієнт",
+            "phone": "380631234567",
+            "np_branch": "Київ, відділення №5",
+            "carrier": "nova_poshta",
+            "items": [
+                {"toysi_code": "298094", "name": "Антистрес ROBLOX 3D друк", "qty": 1, "price": 183.64},
+            ],
+        },
+    ]
+
+
 def _mock_prom_orders() -> list:
     return [
         {
@@ -553,7 +689,7 @@ def normalize_order(raw_order: dict) -> dict:
 
 def poll_once() -> None:
     init_db()
-    raw_orders = fetch_new_orders_prom() + fetch_new_orders_rozetka()
+    raw_orders = fetch_new_orders_prom() + fetch_new_orders_rozetka() + fetch_new_orders_eva()
 
     with get_connection() as conn:
         for raw in raw_orders:
@@ -572,13 +708,16 @@ def poll_once() -> None:
             # НАЗАВЖДИ — bank_check.py теж його не знайде (кошти за
             # Пром-оплату надходять на рахунок продавця з затримкою ~24
             # год після отримання посилки клієнтом).
-            if order["platform"] == "prom" and order.get("payment_confirmed"):
+            # Prom (payment_data.status=="paid") і EVA (LIQPAY authorized) обидва
+            # можуть перейти pending->оплачено швидше за цикл опитування — та сама
+            # логіка до-підтвердження вже наявного в БД запису.
+            if order["platform"] in ("prom", "eva") and order.get("payment_confirmed"):
                 existing = conn.execute(
                     "SELECT payment_confirmed FROM orders WHERE internal_order_id = ?", (internal_id,)
                 ).fetchone()
                 if existing and not existing["payment_confirmed"]:
                     mark_payment_confirmed(conn, internal_id)
-                    print(f"[orders_watcher] Оплату підтверджено (Prom payment_data): {internal_id}")
+                    print(f"[orders_watcher] Оплату підтверджено ({order['platform']}): {internal_id}")
                     continue
 
             print(f"[orders_watcher] Пропущено (вже є в БД): {internal_id}")

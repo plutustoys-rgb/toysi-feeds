@@ -508,15 +508,26 @@ def _eva_carrier(order: dict) -> str:
 
 
 def _eva_delivery_address(order: dict) -> str:
-    """⚠️ shipping.address — динамічний об'єкт (schema: "dynamic properties"),
-    точні під-поля НЕ підтверджені живим замовленням (0 замовлень на момент
-    написання) — best-effort: зібрати рядкові значення в людський рядок, фолбек —
-    сам метод доставки. Той самий підхід, що _rozetka_delivery_address()."""
+    """shipping.address — структуру звірено на ПЕРШОМУ реальному замовленні
+    (2026-08-01, novaposhta_warehouse): {city, region, street:{name}, city_id,
+    region_id, warehouse_id, settlement_type, warehouse_number,
+    settlement_description}. Людське — `city` + `street.name` (напр. "Київ,
+    Відділення №253 (до 30 кг) : вул. Данила Щербаківського, 59"); решта *_id —
+    технічні UUID-рефи Нової Пошти, у людську адресу НЕ йдуть (перша версія
+    зліплювала все підряд і давала кашу з UUID). Фолбек, якщо street порожній —
+    "№{warehouse_number}"; далі — рядкова address чи метод доставки."""
     shipping = order.get("shipping") or {}
     address = shipping.get("address")
     if isinstance(address, dict):
-        parts = [str(v).strip() for v in address.values()
-                 if isinstance(v, (str, int, float)) and str(v).strip()]
+        city = str(address.get("city") or "").strip()
+        street = address.get("street")
+        if isinstance(street, dict):
+            street = str(street.get("name") or "").strip()
+        else:
+            street = str(street or "").strip()
+        if not street and address.get("warehouse_number") is not None:
+            street = f"№{address.get('warehouse_number')}"
+        parts = [p for p in (city, street) if p]
         if parts:
             return ", ".join(parts)
     if isinstance(address, str) and address.strip():
@@ -526,10 +537,15 @@ def _eva_delivery_address(order: dict) -> str:
 
 def _eva_customer_name(order: dict) -> str:
     """Отримувач (recipient) у пріоритеті — саме він отримує посилку; фолбек —
-    customer (замовник). Обидва зі схеми: {first_name, last_name, middle_name, phone}."""
+    customer (замовник). Формат ПІБ (Прізвище Ім'я По-батькові) — стандарт
+    контакту Нової Пошти; middle_name (по батькові) ВКЛЮЧАЄМО (звірено на
+    першому реальному замовленні 2026-08-01 — recipient мав middle_name
+    'Юрійович', а перша версія його ігнорувала)."""
     for key in ("recipient", "customer"):
         person = order.get(key) or {}
-        name = " ".join(p for p in (person.get("first_name"), person.get("last_name")) if p)
+        name = " ".join(
+            p for p in (person.get("last_name"), person.get("first_name"), person.get("middle_name")) if p
+        )
         if name.strip():
             return name.strip()
     return ""

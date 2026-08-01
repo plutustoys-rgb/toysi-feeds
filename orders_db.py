@@ -277,7 +277,7 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
         """
         SELECT * FROM orders
         WHERE forwarded_to_toysi_at IS NULL
-          AND (status IS NULL OR status NOT IN ('toysi_error', 'prom_cancelled_before_forward'))
+          AND (status IS NULL OR status NOT IN ('toysi_error', 'prom_cancelled_before_forward', 'eva_cancelled_before_forward'))
           AND (
               payment_method = 'cod'
               OR (payment_method = 'prepaid' AND payment_confirmed = 1)

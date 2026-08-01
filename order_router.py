@@ -350,8 +350,60 @@ def _check_prom_not_cancelled(conn, order: dict) -> bool:
     return False
 
 
+_EVA_CANCELLED_STATUSES = {9, 10}  # 9=скасовано покупцем, 10=скасовано продавцем (eva_orders_client)
+
+
+def _check_eva_not_cancelled(conn, order: dict) -> bool:
+    """Живий запит до EVA Merchant API ПЕРЕД форвардом у Toysi — ДЗЕРКАЛО
+    _check_prom_not_cancelled() під EVA (2026-08-01, пряме прохання власника
+    «адаптуй Prom-конвейєр під єву»; gap-аналіз показав, що це єдиний
+    Prom-крок без EVA-еквівалента).
+
+    Покупець EVA може скасувати замовлення (статус 9) поки воно чекало
+    передачі; без цієї перевірки ми б відправили в Toysi вже скасоване
+    замовлення — реальні гроші/доставка (той самий клас інциденту, що
+    №415858222 на Prom). Лише platform="eva".
+
+    Fail-open — той самий принцип, що _check_prom_not_cancelled()/
+    _check_toysi_stock(): якщо живий статус перевірити не вдалось
+    (мережа/API), форвард ПРОДОВЖУЄТЬСЯ — тимчасова недоступність не
+    блокує весь конвеєр. Повертає False (форвард ЗУПИНЕНО) лише коли EVA
+    ЖИВО й ПОЗИТИВНО підтверджує скасування (статус 9/10); тоді ескалює в
+    Telegram і позначає 'eva_cancelled_before_forward', щоб
+    get_orders_ready_to_forward() більше не повертав це замовлення щоцикл
+    (той самий фільтр-виняток, що вже діє для 'prom_cancelled_before_forward')."""
+    if order.get("platform") != "eva":
+        return True
+
+    try:
+        live = eva_orders_client.get_order(order["order_id"])
+    except eva_orders_client.EvaAPIError as e:
+        print(
+            f"[order_router] EVA-статус {order['internal_order_id']} перевірити не вдалось "
+            f"(fail-open, форвард продовжується): {e}",
+            file=sys.stderr,
+        )
+        return True
+
+    if (live or {}).get("status") not in _EVA_CANCELLED_STATUSES:
+        return True
+
+    message = (
+        f"🛑 {order['internal_order_id']} (EVA #{order['order_id']}): замовлення СКАСОВАНО на EVA "
+        f"(живий статус: {(live or {}).get('status')}), поки воно чекало передачі в Toysi.\n"
+        f"Клієнт: {order.get('customer_name') or '?'}\n"
+        "Форвард у Toysi ЗУПИНЕНО автоматично."
+    )
+    print(f"[order_router] {message}", file=sys.stderr)
+    send_telegram_message(message)
+    update_delivery_status(conn, order["internal_order_id"], status="eva_cancelled_before_forward")
+    return False
+
+
 def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict = None) -> None:
     if not _check_prom_not_cancelled(conn, order):
+        return
+    if not _check_eva_not_cancelled(conn, order):
         return
 
     # P0-6: якщо викликач не передав каталог (напр. service_watchdog.py's

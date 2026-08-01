@@ -193,8 +193,11 @@ def _load_eva_listed() -> set:
     повертаємось до поточної поведінки, поки товари знову не залистуються)."""
     try:
         data = json.loads(EVA_LISTED_STATE_FILE.read_text(encoding="utf-8"))
-        return set(data.get("listed", []))
-    except (ValueError, OSError, KeyError, TypeError):
+        listed = data.get("listed", [])
+        if not isinstance(listed, list):  # валідний JSON, але "listed" не список (напр. рядок) — не ітеруємо посимвольно
+            return set()
+        return {str(p) for p in listed}
+    except (ValueError, OSError, KeyError, TypeError, AttributeError):
         return set()
 
 
@@ -656,6 +659,13 @@ def _build_xml(
         cname = (item.get("category_name") or "").strip()
         if cid and cid not in cat_map:
             cat_map[cid] = cname or cid
+    # Категорії деактиваційних товарів теж декларуємо, інакше їхній <categoryId>
+    # посилався б на невизначену <category> (аудит #209 NIT) — окремий OOS-offer
+    # міг би через це відхилитись autoimport'ом і лишитись available.
+    for _d_item, _d_price in (deactivate_items or {}).values():
+        cid = (_d_item.get("category_id") or "").strip()
+        if cid and cid not in cat_map:
+            cat_map[cid] = (_d_item.get("category_name") or "").strip() or cid
 
     categories_el = ET.SubElement(shop, "categories")
     for cid in sorted(cat_map):

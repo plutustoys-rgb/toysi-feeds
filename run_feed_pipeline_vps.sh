@@ -82,6 +82,19 @@ fi
 # заморозки більше не потрібен.
 python3 generate_eva_feed.py || echo "[FeedPipeline] generate_eva_feed.py провалився (best-effort)"
 
+# ALLO (2026-08-03, підключення нового каналу — пряме рішення власника «запускаємо
+# ALLO»): генеруємо allo_feed.xml (заморожений allo_static_selection.json, як EVA/
+# Rozetka до розморозки — стабільний список на час модерації АЛЛО; ціна=Prom,
+# currencyId=UAH, усі обов'язкові поля вже є). Best-effort + restore-фолбек із
+# feed-data — ПРАВИЛО CLAUDE.md для НОВОГО публікованого файлу: без restore він
+# зникне НАЗАВЖДИ при падінні генерації (orphan-force-push переписує все).
+python3 generate_allo_feed.py || echo "[FeedPipeline] generate_allo_feed.py провалився (best-effort, відновлю з feed-data)"
+if [ ! -s feeds/allo_feed.xml ]; then
+    echo "[FeedPipeline] feeds/allo_feed.xml відсутній/порожній — відновлюю останню версію з feed-data перед публікацією (перший прогін може ще не мати чого відновлювати)."
+    git fetch origin feed-data 2>/dev/null || true
+    git show origin/feed-data:feeds/allo_feed.xml > feeds/allo_feed.xml 2>/dev/null || true
+fi
+
 # Rozetka навмисно ВІДСУТНЯ тут (2026-07-28, пряме рішення власниці) —
 # лишається виключно на GH Actions (update-feeds.yml), щоб GH Actions і
 # VPS ніколи не писали в той самий feeds/rozetka_feed.xml у feed-data.

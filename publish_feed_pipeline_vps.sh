@@ -80,7 +80,7 @@ git add -f feeds/prom_feed_top.xml \
 # ведеться живим фідом, знімок заморозки не використовується). eva_feed.xml і далі
 # публікується в циклі нижче; при порожньому прогоні попередня версія зберігається
 # автоматично через `git checkout origin/feed-data -- .` вище (рядок ~57).
-for f in google_merchant_feed.xml meta_feed.xml bing_feed.xml eva_feed.xml; do
+for f in google_merchant_feed.xml meta_feed.xml bing_feed.xml eva_feed.xml allo_feed.xml; do
     if [ -s "/opt/plutustoys/feeds/$f" ]; then
         cp "/opt/plutustoys/feeds/$f" "feeds/$f"
         git add -f "feeds/$f"

@@ -186,6 +186,49 @@ EVA_STATIC_SELECTION_FILE = Path(__file__).parent / "eva_static_selection.json"
 # VPS (як eva_static_selection.json) — переживає між прогонами, не публікується.
 EVA_LISTED_STATE_FILE = Path(__file__).parent / "eva_listed_state.json"
 
+# Семантичне зіставлення наших (Toysi) категорій → дерево EVA (2026-08-03, пряме
+# рішення власника «це ж наша проблема» — зіставлення робимо МИ, довідник БТК EVA
+# від Ярослава лише як референс). Файл eva_category_map.json = {toysi_category_id:
+# {"id": eva_category_id, "name": eva_category_name}}. Мета: фід віддає EVA-categoryId
+# + ТОЧНУ EVA-назву, і EVA впізнає свою категорію напряму (авто-матч за назвою — живо
+# підтверджено в кабінеті: «Енциклопедії»→«Словники та енциклопедії»), замість ручного
+# зіставлення 4626 товарів. Не в мапі → фолбек на Toysi-id+назву (поведінка як раніше:
+# товар лишається «не співставленим», без збою). 201 категорія покриває ~85% товарів;
+# решта (рольові набори, уцінка) — очікує рішення власника, поки віддається як Toysi.
+EVA_CATEGORY_MAP_FILE = Path(__file__).parent / "eva_category_map.json"
+
+
+def _load_eva_category_map() -> dict:
+    """{toysi_category_id: {"id": eva_id, "name": eva_name}}. Пошкоджений/відсутній
+    файл → {} (безпечний фолбек: віддаємо Toysi-id, генерація не падає)."""
+    try:
+        data = json.loads(EVA_CATEGORY_MAP_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        out = {}
+        for tid, ev in data.items():
+            if isinstance(ev, dict) and str(ev.get("id") or "").strip():
+                out[str(tid).strip()] = {
+                    "id":   str(ev["id"]).strip(),
+                    "name": str(ev.get("name") or "").strip(),
+                }
+        return out
+    except (ValueError, OSError, TypeError, AttributeError):
+        return {}
+
+
+EVA_CATEGORY_MAP = _load_eva_category_map()
+
+
+def _map_eva_category(cid: str, cname: str):
+    """(final_id, final_name): EVA-id+назва, якщо наша категорія зіставлена; інакше
+    Toysi-id+назва (фолбек). Кілька наших категорій можуть лягти в один EVA-листок —
+    тому <categories> дедуплікується за фінальним id."""
+    ev = EVA_CATEGORY_MAP.get((cid or "").strip())
+    if ev:
+        return ev["id"], (ev["name"] or cname or ev["id"])
+    return cid, cname
+
 
 def _load_eva_listed() -> set:
     """Множина id товарів, які КОЛИСЬ були у фіді EVA з available="true".
@@ -653,19 +696,29 @@ def _build_xml(
     currencies = ET.SubElement(shop, "currencies")
     ET.SubElement(currencies, "currency", id="UAH", rate="1")
 
+    # Кожну категорію проводимо крізь _map_eva_category → декларуємо EVA-id+назву
+    # (зіставлені) або Toysi-id+назву (фолбек). Дедуп за ФІНАЛЬНИМ id, бо кілька
+    # наших категорій можуть лягти в один EVA-листок (напр. «Мильні бульбашки» +
+    # «Пісочні набори» → «Ігри для вулиці»).
     cat_map: dict = {}
     for item in catalog.values():
         cid   = (item.get("category_id") or "").strip()
         cname = (item.get("category_name") or "").strip()
-        if cid and cid not in cat_map:
-            cat_map[cid] = cname or cid
+        if not cid:
+            continue
+        fid, fname = _map_eva_category(cid, cname)
+        if fid and fid not in cat_map:
+            cat_map[fid] = fname or fid
     # Категорії деактиваційних товарів теж декларуємо, інакше їхній <categoryId>
     # посилався б на невизначену <category> (аудит #209 NIT) — окремий OOS-offer
     # міг би через це відхилитись autoimport'ом і лишитись available.
     for _d_item, _d_price in (deactivate_items or {}).values():
         cid = (_d_item.get("category_id") or "").strip()
-        if cid and cid not in cat_map:
-            cat_map[cid] = (_d_item.get("category_name") or "").strip() or cid
+        if not cid:
+            continue
+        fid, fname = _map_eva_category(cid, (_d_item.get("category_name") or "").strip())
+        if fid and fid not in cat_map:
+            cat_map[fid] = fname or fid
 
     categories_el = ET.SubElement(shop, "categories")
     for cid in sorted(cat_map):
@@ -795,7 +848,10 @@ def _build_xml(
         ET.SubElement(offer, "stock_quantity").text = str(stock)
 
         if item.get("category_id"):
-            ET.SubElement(offer, "categoryId").text = item["category_id"]
+            _fid, _ = _map_eva_category((item.get("category_id") or "").strip(),
+                                        (item.get("category_name") or "").strip())
+            if _fid:
+                ET.SubElement(offer, "categoryId").text = _fid
 
         for pic_url in pictures:
             ET.SubElement(offer, "picture").text = pic_url
@@ -882,7 +938,8 @@ def _build_xml(
         ET.SubElement(d_offer, "stock_quantity").text = "0"
         cat_id = (item.get("category_id") or "").strip()
         if cat_id:
-            ET.SubElement(d_offer, "categoryId").text = cat_id
+            _fid, _ = _map_eva_category(cat_id, (item.get("category_name") or "").strip())
+            ET.SubElement(d_offer, "categoryId").text = _fid
         deactivated_count += 1
     if deactivate_items is not None:
         print(f"[EVA] Деактивація OOS: {deactivated_count} товарів у фіді з available=\"false\" "

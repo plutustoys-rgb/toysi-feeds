@@ -246,3 +246,7 @@ novapay_explore*.py
 # catalog_size_history.jsonl — локальний часовий ряд наповненості вітрини
 # (catalog_size_tracker.py): VPS-стан, не для git (як kodv_ledger.jsonl вище).
 catalog_size_history.jsonl
+
+# balance_history.jsonl — локальний часовий ряд балансів кабінетів
+# (eva_cabinet_scraper.py та ін.): локальний стан, не для git.
+balance_history.jsonl

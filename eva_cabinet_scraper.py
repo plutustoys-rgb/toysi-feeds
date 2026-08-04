@@ -48,8 +48,13 @@ from telegram_notify import send_telegram_message
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent
-REPORT_DIR = BASE_DIR / "reports"
-HISTORY_FILE = BASE_DIR / "balance_history.jsonl"
+# Куди писати звіт+історію. За замовч. локально в репо; AUDIT_REPORT_DIR перевизначає —
+# локальний прогін (Task Scheduler) пише ПРЯМО у спільну Cowork-папку (рішення власника
+# 2026-08-04, «без телеграма, у папку»). AUDIT_NO_TELEGRAM=1 — без Telegram.
+_OUT_DIR = Path(os.environ.get("AUDIT_REPORT_DIR") or (BASE_DIR / "reports"))
+REPORT_DIR = _OUT_DIR
+HISTORY_FILE = _OUT_DIR / "balance_history.jsonl"
+_NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
 
 # storageState (кукі сесії EVA) — секрет, поза git і поза Cowork-папкою.
 # Перевизначається змінною EVA_CABINET_STATE_FILE (напр. інший шлях на VPS).
@@ -80,7 +85,10 @@ def _save_failure_artifacts(page, prefix: str) -> None:
 
 def _notify(msg: str) -> None:
     """Telegram best-effort — недоступність Telegram НЕ повинна валити прогін
-    трейсбеком (звіт+історія вже збережені на диск до цього кроку)."""
+    трейсбеком (звіт+історія вже збережені на диск до цього кроку). AUDIT_NO_TELEGRAM=1
+    → взагалі не шлемо (локальна доставка у Cowork-папку замість Telegram)."""
+    if _NO_TELEGRAM:
+        return
     try:
         send_telegram_message(msg)
     except Exception as e:

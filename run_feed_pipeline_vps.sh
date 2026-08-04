@@ -133,26 +133,10 @@ else
     python3 feed_pipeline_report.py --status degraded --reason "$FAIL_REASON"
 fi
 
-# Каталог-аудитори (2026-08-04, вшито в пайплайн — пряме рішення власника «проблема
-# запуску аудиторів»): раніше залежали від окремих systemd-таймерів, яких НЕМА в git
-# і які не запускались надійно — EVA-аудитор не стартував ЖОДНОГО разу з мержу 01.08,
-# Prom-аудитор замовк ~24.07. Той самий best-effort патерн, що й catalog_size_tracker
-# вище. Запускаємо ХВОСТОМ, після публікації + звіту пайплайна, щоб їхня тривалість
-# (Prom-аудитор ходить у Prom API) не затримувала свіжість фідів. Обидва feed/API-
-# derivable, кабінет не потрібен (кабінет-залежний аудит — окремо, Playwright-скрейпер).
-#
-# Добовий guard: пайплайн бігає кожні ~6 год, а повний аудит-звіт потрібен раз/добу —
-# інакше 4× Telegram-звіти на день. Запускаємо аудитора лише якщо сьогоднішнього звіту
-# ще НЕМА (перший прогін доби створює його; решта циклів пропускають). При збої файл не
-# створюється → наступний цикл повторить, поки не вдасться раз на добу. Дата ЛОКАЛЬНА
-# (date без -u) — щоб збігалася з datetime.now() всередині обох аудиторів.
-mkdir -p reports || true
-AUDIT_DAY=$(date +'%Y-%m-%d')
-if [ ! -f "reports/eva_catalog_audit_${AUDIT_DAY}.md" ]; then
-    python3 eva_catalog_auditor.py || echo "[FeedPipeline] eva_catalog_auditor.py провалився (best-effort)"
-fi
-if [ ! -f "reports/prom_catalog_audit_${AUDIT_DAY}.md" ]; then
-    python3 prom_catalog_auditor.py || echo "[FeedPipeline] prom_catalog_auditor.py провалився (best-effort)"
-fi
+# ПРИМІТКА (2026-08-04): каталог-аудитори (eva_/prom_catalog_auditor) БУЛИ тут
+# коротко вшиті (#216), але за рішенням власника перенесені на ЛОКАЛЬНИЙ прогін
+# (Windows Task Scheduler → local_cabinet_audit.ps1), щоб звіти писались ПРЯМО у
+# спільну Cowork-папку без Telegram і без VPS→ПК-синхронізації (якої не існує).
+# Тут навмисно НЕ запускаємо — інакше дублювались би з локальним прогоном.
 
 echo "[FeedPipeline] $(date -u +'%Y-%m-%d %H:%M UTC') — цикл завершено."

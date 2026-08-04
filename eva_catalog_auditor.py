@@ -20,6 +20,7 @@ prom_catalog_auditor.py, але з EVA-специфічними перевірк
 Звіт — reports/eva_catalog_audit_YYYY-MM-DD.md + Telegram-підсумок. Read-only,
 жодних дій запису (той самий принцип, що prom_catalog_auditor).
 """
+import os
 import re
 import sys
 from collections import Counter
@@ -32,7 +33,12 @@ from telegram_notify import send_telegram_message
 
 BASE_DIR = Path(__file__).parent
 FEED_FILE = BASE_DIR / "feeds" / "eva_feed.xml"
-REPORT_DIR = BASE_DIR / "reports"
+# Куди писати звіт. За замовч. reports/ (VPS). AUDIT_REPORT_DIR перевизначає —
+# локальний прогін (Task Scheduler) пише ПРЯМО у спільну Cowork-папку, щоб звіт
+# читався без SSH (рішення власника 2026-08-04, «без телеграма, у папку»).
+REPORT_DIR = Path(os.environ.get("AUDIT_REPORT_DIR") or (BASE_DIR / "reports"))
+# AUDIT_NO_TELEGRAM=1 — не слати Telegram (локальна доставка у папку замість Telegram).
+_NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
 
 EVA_TARGET_SOFT = 8000          # м'яка ціль наповненості (як у catalog_size_tracker)
 LOSS_EXAMPLES = 10              # скільки прикладів збиткових показати у звіті
@@ -178,7 +184,8 @@ def main() -> None:
     print(f"[EVA-audit] Звіт: {out_path}")
     print(f"[EVA-audit] Активних {deact['active']} | збиткових {loss['count']}/{loss['checked']} | дублів {len(dups)}")
 
-    send_telegram_message(build_telegram_summary(today, loss, dups, deact))
+    if not _NO_TELEGRAM:
+        send_telegram_message(build_telegram_summary(today, loss, dups, deact))
 
 
 if __name__ == "__main__":

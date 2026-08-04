@@ -82,7 +82,11 @@ load_dotenv()
 
 BASE_DIR    = Path(__file__).parent
 STATE_FILE  = BASE_DIR / "prom_catalog_audit_state.json"
-REPORT_DIR  = BASE_DIR / "reports"
+# Куди писати звіт. За замовч. reports/ (VPS). AUDIT_REPORT_DIR перевизначає —
+# локальний прогін (Task Scheduler) пише ПРЯМО у спільну Cowork-папку (рішення
+# власника 2026-08-04, «без телеграма, у папку»). AUDIT_NO_TELEGRAM=1 — без Telegram.
+REPORT_DIR  = Path(os.environ.get("AUDIT_REPORT_DIR") or (BASE_DIR / "reports"))
+_NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
 
 STALE_AGE_THRESHOLD_HOURS = 24  # для перевірок #2 (фото) і #3 (заблоковані)
 CHARACTERISTICS_THRESHOLD  = 0.30  # 30% SKU категорії без даних — "масовий брак"
@@ -506,7 +510,7 @@ def main() -> None:
     print(f"[Auditor] Звіт збережено: {out_path}")
 
     summary = build_telegram_summary(today, results, sync_result, count_warning)
-    if send_telegram_message(summary):
+    if not _NO_TELEGRAM and send_telegram_message(summary):
         print("[Auditor] Короткий підсумок надіслано в Telegram.")
 
 

@@ -78,6 +78,15 @@ def _save_failure_artifacts(page, prefix: str) -> None:
         pass
 
 
+def _notify(msg: str) -> None:
+    """Telegram best-effort — недоступність Telegram НЕ повинна валити прогін
+    трейсбеком (звіт+історія вже збережені на диск до цього кроку)."""
+    try:
+        send_telegram_message(msg)
+    except Exception as e:
+        print(f"[EvaCabinet] Telegram не надіслано (не критично): {e}", file=sys.stderr)
+
+
 def create_state() -> None:
     """--login: відкриває ВИДИМЕ вікно, власник логіниться сам (OAuth/2FA — що
     завгодно), тоді натискає Enter, і поточна сесія зберігається у STATE_FILE.
@@ -165,10 +174,7 @@ def scrape() -> None:
         msg = (f"🚨 eva_cabinet_scraper: нема збереженої сесії ({STATE_FILE.name}). "
                f"Запусти раз `python eva_cabinet_scraper.py --login` і залогінься.")
         print(f"[EvaCabinet] {msg}", file=sys.stderr)
-        try:
-            send_telegram_message(msg)
-        except Exception:
-            pass
+        _notify(msg)
         sys.exit(1)
 
     balance = None
@@ -185,7 +191,7 @@ def scrape() -> None:
                 msg = (f"🚨 eva_cabinet_scraper: не вдалось прочитати баланс EVA: {e}. "
                        f"Якщо сесія протухла — `python eva_cabinet_scraper.py --login`.")
                 print(f"[EvaCabinet] {msg}", file=sys.stderr)
-                send_telegram_message(msg)
+                _notify(msg)
                 sys.exit(1)
             fullness = read_fullness(page)
         finally:
@@ -228,7 +234,7 @@ def scrape() -> None:
     fl = fullness
     if any(v is not None for v in fl.values()):
         summary += f" Наповненість: активні {fl['active']}, модерація {fl['moderation']}, з помилками {fl['errors']}."
-    send_telegram_message(summary)
+    _notify(summary)
     print(f"[EvaCabinet] {summary}")
 
 

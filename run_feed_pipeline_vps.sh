@@ -146,7 +146,7 @@ fi
 # ще НЕМА (перший прогін доби створює його; решта циклів пропускають). При збої файл не
 # створюється → наступний цикл повторить, поки не вдасться раз на добу. Дата ЛОКАЛЬНА
 # (date без -u) — щоб збігалася з datetime.now() всередині обох аудиторів.
-mkdir -p reports
+mkdir -p reports || true
 AUDIT_DAY=$(date +'%Y-%m-%d')
 if [ ! -f "reports/eva_catalog_audit_${AUDIT_DAY}.md" ]; then
     python3 eva_catalog_auditor.py || echo "[FeedPipeline] eva_catalog_auditor.py провалився (best-effort)"

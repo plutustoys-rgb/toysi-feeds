@@ -144,20 +144,35 @@ def scrape() -> None:
 
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = REPORT_DIR / f"prom_notifications_{today}.md"
-    lines = [f"# Сповіщення кабінету Prom — {now.strftime('%Y-%m-%d %H:%M')}", "",
-             "_Сирий текст верху списку сповіщень (newest-first). Шукай грошові сигнали "
-             "(«підвищені ставки ProSale», «змініть категорію», блокування)._", "",
-             "```", notif_text, "```", ""]
-    report_path.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[PromNotif] Звіт: {report_path}")
-
-    # Telegram — лише якщо у сповіщеннях є грошовий сигнал (щоб не шуміти).
     money_markers = ("ProSale", "підвищеними ставками", "змініть категорію", "переплач", "заблокован")
     flagged = [m for m in money_markers if m in notif_text]
+
+    # СИРИЙ текст сповіщень МОЖЕ містити персональні дані (імена/питання покупців,
+    # референси замовлень) — тримаємо його ЛОКАЛЬНО (BASE_DIR/reports, gitignore, не
+    # синхронізується), а НЕ у спільній Cowork-папці. Правило CLAUDE.md «без чутливого
+    # у спільній папці» (там був реальний витік NovaPay) + узгодженість з failure-
+    # скріном тієї ж сторінки, який теж лишається локально (аудит #222).
+    local_dir = BASE_DIR / "reports"
+    local_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = local_dir / f"prom_notifications_{today}.md"
+    raw_path.write_text(
+        f"# Сповіщення Prom — ПОВНИЙ текст (локально), {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+        f"```\n{notif_text}\n```\n", encoding="utf-8")
+    print(f"[PromNotif] Повний текст (локально): {raw_path}")
+
+    # У спільну Cowork-папку — лише ЗНЕОСОБЛЕНЕ зведення (які грошові сигнали є +
+    # де читати повний текст). Без сирого тексту → без PII у спільній папці.
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    summary_path = REPORT_DIR / f"prom_notifications_{today}.md"
+    summary_path.write_text(
+        f"# Сповіщення Prom — зведення, {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+        f"- Грошові сигнали у сповіщеннях: {', '.join(flagged) if flagged else 'не знайдено'}\n"
+        f"- Повний текст (локально, з міркувань приватності — не в спільній папці): `{raw_path}`\n", encoding="utf-8")
+    print(f"[PromNotif] Зведення (спільна папка): {summary_path}")
+
+    # Telegram — лише при грошовому сигналі (щоб не шуміти), без сирого тексту.
     if flagged:
-        _notify(f"📨 Prom-сповіщення {today}: є сигнали — {', '.join(flagged)}. Деталі: {report_path.name}.")
+        _notify(f"📨 Prom-сповіщення {today}: є сигнали — {', '.join(flagged)}. Повний текст локально: {raw_path.name}.")
     print(f"[PromNotif] Готово (сигнали: {flagged or 'нема'}).")
 
 

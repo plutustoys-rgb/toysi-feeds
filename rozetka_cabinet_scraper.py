@@ -1,6 +1,6 @@
 """
 rozetka_cabinet_scraper.py — headless-читання каталог-здоров'я кабінету Rozetka
-(seller.rozetka.com.ua/main/cabinet): статуси товарів (Всього/Активні/Неактивні/
+(seller.rozetka.com.ua/main/cabinet): статуси товарів (Всі товари/Активні/Неактивні/
 Нові/На модерації) + лічильники блокувань (Стоп-слово/Стоп-бренд/Стоп-категорія/
 Прихованих модератором).
 
@@ -11,6 +11,12 @@ rozetka_cabinet_scraper.py — headless-читання каталог-здоро
 PASSWORD; повні counts видно лише в кабінеті. Тому — той самий Playwright+storageState
 патерн, що eva_/toysi_cabinet_scraper.py.
 
+ВЕРСТКА звірена з живим DOM 2026-08-05:
+- Статуси: «мітка\\nчисло» (число на наступному рядку). «Активні» лічильника НЕ має
+  → лишається None (Rozetka його не показує).
+- Блокування: підсумок «мітка … warning|check_circle N» — ця структура (іконка+число)
+  є ЛИШЕ в підсумку, не в рядках товарів, тож не збігається з тими самими словами там.
+
 АВТЕНТИФІКАЦІЯ: збережений storageState (`--login` раз). Протухла сесія → прогін
 виявляє (counts не знайдено) і просить `--login`.
 
@@ -19,7 +25,7 @@ PASSWORD; повні counts видно лише в кабінеті. Тому �
 
 ЗАПУСК:
     python rozetka_cabinet_scraper.py --login   # раз: вікно, логін, стан збережено
-    python rozetka_cabinet_scraper.py           # headless (Task Scheduler / local_cabinet_audit.ps1)
+    python rozetka_cabinet_scraper.py           # headless (local_cabinet_audit.ps1)
 
 РЕЗУЛЬТАТ: reports/rozetka_cabinet_YYYY-MM-DD.md + Telegram (якщо не AUDIT_NO_TELEGRAM).
 """
@@ -53,11 +59,12 @@ CABINET_URL = "https://seller.rozetka.com.ua/main/cabinet"
 LOGIN_START_URL = "https://seller.rozetka.com.ua/"
 NAV_TIMEOUT_MS = 30000
 
-# Мітки статусів каталогу + причин блокувань (живо бачені Cowork 2026-08-05).
-STATUS_LABELS = {"total": "Всього", "active": "Активні", "inactive": "Неактивні",
+# Мітки (звірено з реальним DOM 2026-08-05). Загальна — «Всі товари», не «Всього».
+STATUS_LABELS = {"total": "Всі товари", "active": "Активні", "inactive": "Неактивні",
                  "new": "Нові", "moderation": "На модерації"}
+# Блокування: мітки специфічні (повна фраза для hidden), щоб не збігтися з рядками товарів.
 BLOCK_LABELS = {"stop_word": "Стоп-слово", "stop_brand": "Стоп-бренд",
-                "stop_category": "Стоп-категорія", "hidden": "Прихован"}
+                "stop_category": "Стоп-категорія", "hidden": "Прихованих модератором"}
 
 
 class RozetkaCabinetError(Exception):
@@ -103,35 +110,19 @@ def create_state() -> None:
     print(f"[RozetkaCabinet] Сесію збережено: {STATE_FILE}")
 
 
-def _clean_int(raw: str):
-    # прибираємо роздільники тисяч: NBSP (\xa0), narrow-NBSP ( ), звичайний пробіл.
-    raw = raw.replace("\xa0", "").replace(" ", "").replace(" ", "")
-    return int(raw) if raw.isdigit() else None
+def _status_count(text: str, label: str):
+    """Статус-лічильник: «мітка\\nчисло» (число на наступному рядку). Якщо одразу після
+    мітки не число (як «Активні»→«Неактивні») → None. Числа в DOM — прості (без
+    роздільників тисяч), тож (\\d+). Звірено з живим DOM 2026-08-05."""
+    m = re.search(re.escape(label) + r"\s*\n\s*(\d+)", text)
+    return int(m.group(1)) if m else None
 
 
-def _count_near(text: str, label: str, window: int = 60):
-    """Ціле число, пов'язане з міткою. ПРІОРИТЕТ — число ОДРАЗУ ПІСЛЯ мітки
-    (типова стат-картка «Мітка N» / «Мітка: N»), бо це коректно розводить СУСІДНІ
-    лічильники (напр. «Активні 5 Неактивні 7950» — кожна мітка бере своє число
-    після себе, а не сусіднє). Фолбек — найближче число ПЕРЕД міткою (layout
-    «N Мітка»). None, якщо мітки нема / поряд немає числа.
-    ⚠️ Точний layout кабінету Rozetka не звірено живо — валідується першим
-    --login-прогоном; якщо числа не ті, підправити напрямок пошуку під реальну
-    верстку (те саме, що робили для eva/toysi-скрейперів)."""
-    low = text.lower()
-    idx = low.find(label.lower())
-    if idx == -1:
-        return None
-    after = text[idx + len(label): idx + len(label) + window]
-    # число одразу після мітки; \xa0/ = NBSP/narrow-NBSP (роздільники тисяч)
-    m = re.match(r"\D{0,8}(\d[\d\xa0\u202f ]*)", after)
-    if m:
-        v = _clean_int(m.group(1))
-        if v is not None:
-            return v
-    before = text[max(0, idx - window): idx]   # фолбек: останнє число перед міткою
-    nums = re.findall(r"\d[\d\xa0\u202f ]*", before)
-    return _clean_int(nums[-1]) if nums else None
+def _block_count(text: str, label: str):
+    """Лічильник блокувань з ПІДСУМКОВОЇ секції: «мітка … warning|check_circle N».
+    Ця структура є лише в підсумку → не збігається з тими ж словами в рядках товарів."""
+    m = re.search(re.escape(label) + r".{0,30}?(?:warning|check_circle)\s+(\d+)", text, re.S)
+    return int(m.group(1)) if m else None
 
 
 def read_cabinet(page) -> dict:
@@ -140,8 +131,8 @@ def read_cabinet(page) -> dict:
     if "/main" not in page.url and "cabinet" not in page.url:
         raise RozetkaCabinetError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
     text = page.inner_text("body")
-    status = {k: _count_near(text, lbl) for k, lbl in STATUS_LABELS.items()}
-    blocks = {k: _count_near(text, lbl) for k, lbl in BLOCK_LABELS.items()}
+    status = {k: _status_count(text, lbl) for k, lbl in STATUS_LABELS.items()}
+    blocks = {k: _block_count(text, lbl) for k, lbl in BLOCK_LABELS.items()}
     if all(v is None for v in status.values()):
         raise RozetkaCabinetError("на /main/cabinet не знайдено жодного статус-лічильника "
                                   "(сесія протухла або змінилась верстка)")
@@ -181,7 +172,7 @@ def scrape() -> None:
     report_path = REPORT_DIR / f"rozetka_cabinet_{today}.md"
     lines = [f"# Кабінет Rozetka — каталог-здоров'я, {now.strftime('%Y-%m-%d %H:%M')}", ""]
     lines.append("## Статуси товарів")
-    lines.append(f"- Всього: {st['total']}")
+    lines.append(f"- Всі товари: {st['total']}")
     lines.append(f"- Активні: {st['active']}")
     lines.append(f"- Неактивні: {st['inactive']}")
     lines.append(f"- Нові: {st['new']}")
@@ -196,7 +187,7 @@ def scrape() -> None:
     report_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"[RozetkaCabinet] Звіт: {report_path}")
 
-    summary = (f"🛒 Rozetka {today}: всього {st['total']}, активні {st['active']}, "
+    summary = (f"🛒 Rozetka {today}: всього {st['total']}, неактивні {st['inactive']}, "
                f"модерація {st['moderation']}. Блокування: стоп-бренд {bl['stop_brand']}, "
                f"стоп-категорія {bl['stop_category']}, стоп-слово {bl['stop_word']}, приховано {bl['hidden']}.")
     _notify(summary)

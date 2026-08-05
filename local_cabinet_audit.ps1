@@ -44,6 +44,9 @@ try {
 # 3b. Toysi deposit (same pattern). One-time: `python toysi_cabinet_scraper.py --login`.
 & $py toysi_cabinet_scraper.py
 
+# 3c. Rozetka catalog health (counts + block reasons). One-time: `--login`.
+& $py rozetka_cabinet_scraper.py
+
 # 4. Weekly balance trend digest (rewrites today's - cheap to run daily).
 & $py weekly_balance_digest.py
 

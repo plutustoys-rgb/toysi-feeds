@@ -104,7 +104,8 @@ def create_state() -> None:
 
 
 def _clean_int(raw: str):
-    raw = raw.replace(" ", "").replace(" ", "")
+    # прибираємо роздільники тисяч: NBSP (\xa0), narrow-NBSP ( ), звичайний пробіл.
+    raw = raw.replace("\xa0", "").replace(" ", "").replace(" ", "")
     return int(raw) if raw.isdigit() else None
 
 
@@ -122,13 +123,14 @@ def _count_near(text: str, label: str, window: int = 60):
     if idx == -1:
         return None
     after = text[idx + len(label): idx + len(label) + window]
-    m = re.match(r"\D{0,8}(\d[\d  ]*)", after)  # число одразу після мітки
+    # число одразу після мітки; \xa0/ = NBSP/narrow-NBSP (роздільники тисяч)
+    m = re.match(r"\D{0,8}(\d[\d\xa0\u202f ]*)", after)
     if m:
         v = _clean_int(m.group(1))
         if v is not None:
             return v
     before = text[max(0, idx - window): idx]   # фолбек: останнє число перед міткою
-    nums = re.findall(r"\d[\d  ]*", before)
+    nums = re.findall(r"\d[\d\xa0\u202f ]*", before)
     return _clean_int(nums[-1]) if nums else None
 
 

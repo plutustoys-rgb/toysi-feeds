@@ -102,8 +102,11 @@ def create_state() -> None:
 
 
 def read_notifications(page) -> str:
-    page.goto(NOTIF_URL, timeout=NAV_TIMEOUT_MS)
-    page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+    # my.prom.ua — важкий SPA з постійним фоновим polling: wait_for_load_state
+    # ("networkidle") НІКОЛИ не настає → 30с timeout (живо 2026-08-05). Тому чекаємо
+    # лише domcontentloaded + фіксована пауза на SPA-рендер списку сповіщень.
+    page.goto(NOTIF_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+    page.wait_for_timeout(4000)
     if "my.prom.ua" not in page.url or "login" in page.url.lower():
         raise PromNotifError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
     text = page.inner_text("body")

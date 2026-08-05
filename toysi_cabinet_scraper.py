@@ -70,11 +70,14 @@ def _notify(msg: str) -> None:
 
 
 def _save_failure_artifacts(page, prefix: str) -> None:
-    """Лише скріншот (без HTML — сторінка може містити персональні дані)."""
+    """Лише скріншот (без HTML — сторінка може містити персональні дані). Пишемо в
+    ЛОКАЛЬНУ reports/ (BASE_DIR), НЕ в AUDIT_REPORT_DIR: скрін шапки містить ті самі
+    персональні дані, тож не кладемо його у спільну Cowork-папку (аудит #220 нит)."""
     try:
-        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        fail_dir = BASE_DIR / "reports"
+        fail_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        page.screenshot(path=str(REPORT_DIR / f"toysi_cabinet_scraper_failure_{prefix}_{ts}.png"), full_page=True)
+        page.screenshot(path=str(fail_dir / f"toysi_cabinet_scraper_failure_{prefix}_{ts}.png"), full_page=True)
     except Exception:
         pass
 

@@ -76,9 +76,12 @@ def _save_failure_artifacts(page, prefix: str) -> None:
     мовчазний крах (той самий принцип, що prom_cabinet_scraper). HTML НЕ
     зберігаємо: сторінки кабінету можуть містити персональні/сесійні дані."""
     try:
-        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        # ЛОКАЛЬНА reports/, НЕ AUDIT_REPORT_DIR: скрін кабінету містить персональні
+        # дані, не кладемо його у спільну Cowork-папку (аудит #220 нит).
+        fail_dir = BASE_DIR / "reports"
+        fail_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        page.screenshot(path=str(REPORT_DIR / f"eva_cabinet_scraper_failure_{prefix}_{ts}.png"), full_page=True)
+        page.screenshot(path=str(fail_dir / f"eva_cabinet_scraper_failure_{prefix}_{ts}.png"), full_page=True)
     except Exception:
         pass
 

@@ -41,6 +41,9 @@ try {
 #    prints that you must run `python eva_cabinet_scraper.py --login` once.
 & $py eva_cabinet_scraper.py
 
+# 3b. Toysi deposit (same pattern). One-time: `python toysi_cabinet_scraper.py --login`.
+& $py toysi_cabinet_scraper.py
+
 # 4. Weekly balance trend digest (rewrites today's - cheap to run daily).
 & $py weekly_balance_digest.py
 

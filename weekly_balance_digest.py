@@ -64,15 +64,21 @@ def build_digest(rows: list, now: datetime) -> str:
     for platform, entries in sorted(by_platform.items()):
         entries.sort(key=lambda e: e[0])
         last = entries[-1][1]
-        totals = [e[1].get("balance_total") for e in entries if e[1].get("balance_total") is not None]
+
+        # EVA пише balance_total, Toysi — deposit; беремо те, що є.
+        def _amt(r):
+            v = r.get("balance_total")
+            return v if v is not None else r.get("deposit")
+        totals = [_amt(e[1]) for e in entries if _amt(e[1]) is not None]
+        label = "Депозит" if platform == "toysi" else "Баланс"
         lines.append(f"## {platform.upper()} ({len(entries)} записів за тиждень)")
         if totals:
             change = round(totals[-1] - totals[0], 2)
             arrow = "▲" if change > 0 else ("▼" if change < 0 else "=")
-            lines.append(f"- Баланс: {totals[0]} → {totals[-1]} ₴  ({arrow} {change:+.2f})")
+            lines.append(f"- {label}: {totals[0]} → {totals[-1]} ₴  ({arrow} {change:+.2f})")
             lines.append(f"- Мін / Макс за тиждень: {min(totals)} / {max(totals)} ₴")
         else:
-            lines.append("- Баланс: немає числових значень за тиждень")
+            lines.append(f"- {label}: немає числових значень за тиждень")
         if any(last.get(k) is not None for k in ("active", "moderation", "errors")):
             lines.append(f"- Наповненість (останнє): активні {last.get('active')}, "
                          f"модерація {last.get('moderation')}, з помилками {last.get('errors')}")

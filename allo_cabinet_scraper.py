@@ -9,10 +9,11 @@ eva/toysi/rozetka/prom-скрейпери.
 блокування» (Баланс абонплати 120 ₴), 0 замовлень, і 876/1085 товарів НЕ додались
 при імпорті. ALLO не має публічного API балансу/статусів — лише кабінет.
 
-⚠️ ВЕРСТКА НЕ ЗВІРЕНА ЖИВО (сесія в кабінеті протухла при побудові) — маркери взято
-з детального живого звіту Cowork; ТОЧНИЙ layout валідується ПЕРШИМ --login-прогоном
-(як робили для rozetka-скрейпера). Якщо числа не ті — при parse-невдачі зберігається
-локальний дамп сирого тексту (allo_cabinet_debug_*.txt) для доналаштування парсера.
+ВЕРСТКА ЗВІРЕНА ЖИВО 2026-08-06 (перший --login-прогін): баланси НЕ на дашборді, а
+на `/billing/status` («Баланс ТМ:\\n\\n2 500 ₴», «Баланс абонплати:\\n\\n120 ₴»,
+«...для уникнення блокування»); замовлення на дашборді картками «N% N СтатусЛейбл»
+(число ПЕРЕД міткою). При parse-невдачі зберігається локальний дамп сирого тексту
+(allo_cabinet_debug_*.txt) для доналаштування, якщо ALLO змінить верстку.
 
 БЕЗПЕКА: лише навігація + читання тексту. storageState — секрет у .local_secrets/
 (gitignore), не в Cowork-папці. (Позначення сповіщень прочитаними — окрема write-дія,
@@ -53,8 +54,8 @@ STATE_FILE = Path(
     os.environ.get("ALLO_CABINET_STATE_FILE", str(BASE_DIR / ".local_secrets" / "allo_cabinet_state.json"))
 )
 
-DASHBOARD_URL = "https://partner.allo.ua/"
-ORDERS_URL = "https://partner.allo.ua/orders/"
+DASHBOARD_URL = "https://partner.allo.ua/"           # дашборд = картки замовлень
+BILLING_URL = "https://partner.allo.ua/billing/status"  # баланси ТМ/абонплати/Холд + попередження
 LOGIN_START_URL = "https://partner.allo.ua/"
 NAV_TIMEOUT_MS = 30000
 
@@ -123,34 +124,37 @@ def _amount_after(text: str, label: str):
         return None
 
 
-def _count_after(text: str, label: str):
-    """Ціле число одразу після мітки (стат-картка «Мітка N»). int|None."""
-    m = re.search(re.escape(label) + r"[^\d]{0,12}?(\d+)", text)
+def _count_before(text: str, label: str):
+    """Ціле число ПЕРЕД міткою (дашборд ALLO: картка «N% N СтатусЛейбл» — число count
+    йде перед назвою статусу). Живо звірено 2026-08-06. int|None."""
+    m = re.search(r"(\d+)[^\d]{0,6}" + re.escape(label), text)
     return int(m.group(1)) if m else None
 
 
 def read_cabinet(page) -> dict:
-    # 1) Дашборд — баланси + прапорець попередження.
-    page.goto(DASHBOARD_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+    # 1) Баланси — сторінка /billing/status (на дашборді їх нема: у шапці лише сума ТМ
+    #    без мітки, а «Баланс абонплати» + попередження — лише тут). Живо звірено 06.08:
+    #    «Баланс ТМ:\n\n2 500 ₴», «Баланс абонплати:\n\n120 ₴», «...для уникнення блокування».
+    page.goto(BILLING_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
     page.wait_for_timeout(3500)
     if "sign_in" in page.url.lower() or "login" in page.url.lower():
         raise AlloCabinetError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
-    dash = page.inner_text("body")
-    balance_tm = _amount_after(dash, "Баланс ТМ")
-    balance_sub = _amount_after(dash, "Баланс абонплати")
-    block_warning = BLOCK_WARN_MARKER in dash
+    bill = page.inner_text("body")
+    balance_tm = _amount_after(bill, "Баланс ТМ")
+    balance_sub = _amount_after(bill, "Баланс абонплати")
+    block_warning = BLOCK_WARN_MARKER in bill
 
-    # 2) Замовлення — лічильники по статусах.
-    page.goto(ORDERS_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-    page.wait_for_timeout(3500)
-    orders_text = page.inner_text("body")
-    orders = {k: _count_after(orders_text, lbl) for k, lbl in ORDER_LABELS.items()}
+    # 2) Замовлення — дашборд «/»: картки «N% N СтатусЛейбл» (число ПЕРЕД міткою).
+    page.goto(DASHBOARD_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+    page.wait_for_timeout(3000)
+    dash = page.inner_text("body")
+    orders = {k: _count_before(dash, lbl) for k, lbl in ORDER_LABELS.items()}
 
     if balance_tm is None and balance_sub is None:
-        raise AlloCabinetError("на дашборді не знайдено балансів (сесія протухла або "
-                               "змінилась верстка)")
+        raise AlloCabinetError("на /billing/status не знайдено балансів (сесія протухла "
+                               "або змінилась верстка)")
     return {"balance_tm": balance_tm, "balance_sub": balance_sub,
-            "block_warning": block_warning, "orders": orders, "_dash": dash}
+            "block_warning": block_warning, "orders": orders, "_dash": bill}
 
 
 def scrape() -> None:

@@ -112,10 +112,11 @@ def create_state() -> None:
 
 def _amount_after(text: str, label: str):
     """Сума (грн) після мітки: «мітка … N ₴» (N з роздільниками тисяч). float|None."""
-    m = re.search(re.escape(label) + r"[^\d]{0,20}?(\d[\d\xa0 ]*(?:[.,]\d{1,2})?)", text)
+    m = re.search(re.escape(label) + r"[^\d]{0,20}?(\d[\d\xa0   ]*(?:[.,]\d{1,2})?)", text)
     if not m:
         return None
-    raw = m.group(1).replace("\xa0", "").replace(" ", "").replace(" ", "").replace(",", ".")
+    raw = (m.group(1).replace("\xa0", "").replace(" ", "").replace(" ", "")
+           .replace(" ", "").replace(",", "."))
     try:
         return round(float(raw), 2)
     except ValueError:
@@ -132,7 +133,7 @@ def read_cabinet(page) -> dict:
     # 1) Дашборд — баланси + прапорець попередження.
     page.goto(DASHBOARD_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
     page.wait_for_timeout(3500)
-    if "sign_in" in page.url or "login" in page.url.lower():
+    if "sign_in" in page.url.lower() or "login" in page.url.lower():
         raise AlloCabinetError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
     dash = page.inner_text("body")
     balance_tm = _amount_after(dash, "Баланс ТМ")

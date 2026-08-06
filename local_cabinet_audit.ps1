@@ -50,6 +50,9 @@ try {
 # 3d. Prom notifications (top of /cms/notifications, money signals). One-time: `--login`.
 & $py prom_notifications_scraper.py
 
+# 3e. ALLO cabinet (balances + subscription-balance warning + orders). One-time: `--login`.
+& $py allo_cabinet_scraper.py
+
 # 4. Weekly balance trend digest (rewrites today's - cheap to run daily).
 & $py weekly_balance_digest.py
 

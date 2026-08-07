@@ -56,8 +56,6 @@ REQUEST_TIMEOUT = 30
 MAX_MSG_LEN = 1000
 
 MIN_HOURS_SINCE_DELIVERED = 24
-# Не чіпаємо покупців, чиє замовлення повернуто/скасовано після видачі.
-_EXCLUDE_DELIVERY_STATUSES = ("returned", "cancelled")
 
 REVIEW_URL_TEMPLATE = "https://prom.ua/ua/product-opinions/create/{pid}"
 # Дослівно той текст, що Prom генерує в модалці «Запит на відгук про товар»

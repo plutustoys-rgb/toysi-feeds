@@ -175,6 +175,12 @@ def init_db(db_path: str = DB_PATH) -> None:
         # (сторно) писався б повторно щодня. kodv_reversed_at — та сама
         # ідемпотентність, що й kodv_logged_at вище, для протилежного боку.
         _ensure_column(conn, "orders", "kodv_reversed_at", "kodv_reversed_at TEXT")
+        # Запит на відгук про товар у Prom (2026-08-07, prom_review_requester.py):
+        # коли покупцю надіслано товарний запит на відгук через Prom-чат —
+        # персистентна позначка (не 24-год вікно), щоб той самий покупець НЕ
+        # отримав дубль, навіть якщо таймер дрейфне/повториться. Той самий клас
+        # ідемпотентності, що й kodv_logged_at/prom_delivered_pushed_at вище.
+        _ensure_column(conn, "orders", "prom_review_request_sent_at", "prom_review_request_sent_at TEXT")
         # EVA як платформа (2026-07-31): додати 'eva' у CHECK(platform) на існуючих БД
         # (SQLite не ALTER-ить CHECK — перебудова таблиці). Викликається ПІСЛЯ
         # _ensure_column, щоб перебудова зберегла всі щойно додані колонки.

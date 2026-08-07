@@ -10,19 +10,27 @@ vs відхилив і ЧОМУ (disapprovals = «некоректність т�
 ~1800 Prom-топу не потрапляють (self-match ~70%). Але СТАТУС у GMC (active/disapproved)
 ми ніде не читаємо — цей скрейпер це закриває.
 
-⚠️ ВЕРСТКА GMC НЕ ЗВІРЕНА (складний Google-SPA, доступу не було при побудові). Перший
---login-прогін ЗАВЖДИ зберігає локальний дамп сирого тексту сторінки (gmc_debug_*.txt)
-— по ньому фіналізується парсер (як робили для allo/rozetka). Best-effort парсинг
-поки за загальними мітками; точні мітки/URL — після першого дампу.
+🚫 УВАГА — ЦЕЙ ПІДХІД НЕ ПРАЦЮЄ (звірено живо 2026-08-06). На відміну від
+ALLO/Rozetka/EVA/Prom, Google НАВМИСНО блокує OAuth-вхід з автоматизованих браузерів:
+`--login` у Playwright-Chromium дає екран «Не вдається ввійти в обліковий запис —
+можливо, цей веб-переглядач або додаток небезпечний». Обійти це патерном
+storageState (як у решти скрейперів) НЕ можна — Google детектить керований
+автоматизацією браузер до збереження сесії. Тобто headless-читання GMC цим шляхом
+неможливе В ПРИНЦИПІ.
+
+ЖИТТЄЗДАТНІ ШЛЯХИ моніторингу GMC:
+  1. РАЗОВИЙ огляд — читати кабінет у РЕАЛЬНОМУ Chrome власника (Claude in Chrome),
+     де сесія Google уже валідна. Так і робили 06.08 (див. технічні_вимоги/google_merchant.md).
+  2. ДУРАБЕЛЬНА автоматизація — Google Content API for Shopping (OAuth service-account
+     / client), як наші клієнти Prom/Rozetka/EVA. Потребує налаштування в Google Cloud
+     (увімкнути API, створити креденшли, прив'язати до Merchant Center 5824264949).
+     Це рекомендований шлях; цей файл лишається як довідка/скелет під той рерайт.
+
+Код нижче (Playwright --login + парсинг) ЗБЕРЕЖЕНО лише історично — НЕ запускати
+--login (не спрацює). У local_cabinet_audit.ps1 цей скрейпер НЕ підключений і не має бути.
 
 БЕЗПЕКА: лише навігація + читання тексту. storageState — секрет у .local_secrets/
 (gitignore), не в Cowork-папці.
-
-ЗАПУСК:
-    python gmc_scraper.py --login   # раз: вікно, логін у Google Merchant, стан збережено
-    python gmc_scraper.py           # headless (local_cabinet_audit.ps1)
-
-РЕЗУЛЬТАТ: reports/gmc_YYYY-MM-DD.md + Telegram (якщо не AUDIT_NO_TELEGRAM).
 """
 import argparse
 import os
@@ -197,7 +205,12 @@ def main() -> None:
     parser.add_argument("--login", action="store_true", help="Раз: вікно, логін у Google Merchant, зберегти сесію.")
     args = parser.parse_args()
     if args.login:
-        create_state()
+        print("[GMC] 🚫 --login НЕ спрацює: Google блокує вхід з автоматизованих браузерів "
+              "(«веб-переглядач небезпечний»), звірено живо 2026-08-06. Playwright-читання GMC "
+              "неможливе в принципі. Шляхи: (1) разово — реальний Chrome власника (Claude in "
+              "Chrome); (2) дурабельно — Google Content API for Shopping. Деталі — у докстрінгу "
+              "файлу та технічні_вимоги_маркетплієтів/google_merchant.md.", file=sys.stderr)
+        sys.exit(2)
     else:
         scrape()
 

@@ -326,21 +326,53 @@ def _save_own_product_links_cache(links: dict) -> None:
               f"наступний прогін просто порахує наново.", file=sys.stderr)
 
 
-def resolve_own_product_links(catalog: dict, prom_products_by_external_id: dict) -> dict:
-    """Для кожного товару catalog бере ГАРАНТОВАНИЙ Prom id за external_id
-    з prom_products_by_external_id (fetch_prom_products(), не пошук), тоді
-    визначає urlText одним детермінованим запитом (_resolve_url_text).
-    Повертає {pid: {"prom_id": int, "url_text": str}} лише для товарів, що
-    вже імпортовані в Prom (є в prom_products_by_external_id) І чий
-    urlText вдалось визначити — решта відсутня в результаті (не вигадуємо
-    посилання).
+def _load_own_product_links_cache_raw() -> dict:
+    """Читає ВЕСЬ own_product_links_cache.json БЕЗ TTL-гейту. Посилання
+    стабільне, поки оголошення живе (див. _save_own_product_links_cache),
+    а застарілі записи для делістнутих SKU природно відсіюються далі:
+    build_feed_items вимагає СВІЖИЙ Prom-ціновий override (prom_price_overrides),
+    якого делістнутий товар уже не має, тож у фід він не потрапляє."""
+    if not OWN_PRODUCT_LINKS_CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(OWN_PRODUCT_LINKS_CACHE_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
 
-    Побічний ефект: результат зберігається в OWN_PRODUCT_LINKS_CACHE_FILE
-    — generate_rozetka_feed.py читає цей файл (лише читає, не рахує сам),
-    щоб додати <url> для товарів, які збігаються з цим самим топ-970, без
-    повторного навантаження на prom.ua."""
+
+def resolve_own_product_links(catalog: dict, prom_products_by_external_id: dict) -> dict:
+    """Повертає {pid: {"prom_id": int, "url_text": str}} для товарів catalog,
+    чиє посилання на власну сторінку Prom відоме.
+
+    ВИПРАВЛЕНО (2026-08-06, жива діагностика кабінету GMC): раніше ця функція
+    БУДУВАЛА посилання ЛИШЕ з prom_products_by_external_id (fetch_prom_products()
+    — group-fetch по /groups/list), який має задокументовану сліпу пляму
+    «невидимих груп» і бачить лише ~2356 з топ-6000. Тому у google_merchant_feed
+    доходило ~2100 товарів (решту build_feed_items викидав як no_link_skipped),
+    хоча `full_catalog_competitor_scan.py` УЖЕ резолвить posилання (prom_id+urlText)
+    для ПОВНОГО каталогу через fetch_prom_products_by_external_ids() (оминає сліпу
+    пляму) і зберігає їх у OWN_PRODUCT_LINKS_CACHE_FILE. Ця робота була НЕВИДИМА
+    фіду, бо тут кеш не читався. Тепер:
+      1. СІД з персистентного кешу (весь накопичений повнокаталожний резолв
+         full_catalog_competitor_scan → одразу доходить у XML);
+      2. ДОРЕЗОЛВ через group-fetch лише тих catalog-pid, яких у кеші ще нема
+         (свіжоімпортовані топ-товари, до яких ротаційний full-scan ще не дійшов).
+
+    Побічний ефект: результат зберігається (merge) в OWN_PRODUCT_LINKS_CACHE_FILE
+    — generate_rozetka_feed.py читає цей файл, щоб додати <url> без повторного
+    навантаження на prom.ua."""
+    cached = _load_own_product_links_cache_raw()
     links = {}
+    # 1. Сід з кешу — лише для товарів поточного catalog і лише повні записи.
+    for pid in catalog:
+        info = cached.get(pid)
+        if info and info.get("prom_id") and info.get("url_text"):
+            links[pid] = {"prom_id": info["prom_id"], "url_text": info["url_text"]}
+
+    # 2. Дорезолв group-fetch-видимих товарів, яких кеш ще не покрив.
     for pid, item in catalog.items():
+        if pid in links:
+            continue
         product = prom_products_by_external_id.get(pid)
         if not product:
             continue
@@ -350,8 +382,7 @@ def resolve_own_product_links(catalog: dict, prom_products_by_external_id: dict)
 
         url_text = _resolve_url_text(prom_id)
         # Джитер між послідовними запитами до prom.ua (SEARCH_DELAY) — без
-        # цього повний прогін на топ-970 робить до ~970 послідовних
-        # запитів без жодної паузи.
+        # цього прогін робить багато послідовних запитів без жодної паузи.
         time.sleep(random.uniform(*SEARCH_JITTER_RANGE))
         if not url_text:
             continue

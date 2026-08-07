@@ -14,11 +14,12 @@ Prom іде лише на email, а наші покупці (накладени�
     самий канал, що prom_chat_bot.py. Адресація по кімнаті: order.client_id → кімната
     з тим самим buyer_client_id (`GET /chat/rooms`).
 
-ТРИГЕР (рішення власника): замовлення, чий `delivery_status='delivered'` («Отримано»)
-СТАВ таким ≥24 год тому (за `prom_delivered_pushed_at`), товарний запит ще не слався
-(`prom_review_request_sent_at IS NULL`). Критерій — СТАН замовлення, не «щойно нове»:
-бэклог уже доставлених підхопиться при першому прогоні. ЛИШЕ товарний відгук —
-компанійський НЕ чіпаємо (пряме рішення власника).
+ТРИГЕР (рішення власника): Prom-замовлення, ОТРИМАНЕ покупцем ≥24 год тому, товарний
+запит ще не слався (`prom_review_request_sent_at IS NULL`). Сигнал «отримано» —
+`prom_delivered_pushed_at` (ставиться, коли Нова Пошта підтвердила видачу; живо
+звірено 2026-08-07, що `delivery_status` до 'delivered' не доходить — лишається
+'shipped'). Критерій — СТАН замовлення, не «щойно нове»: бэклог уже отриманих
+підхопиться при першому прогоні. ЛИШЕ товарний відгук — компанійський НЕ чіпаємо.
 
 ⚠️ ВІДКРИТЕ: у покупця, який нам не писав, кімнати чату може не бути — тоді відправка
 пропускається (лог), позначка НЕ ставиться (спробує пізніше). Перша реальна відправка
@@ -55,7 +56,8 @@ REQUEST_TIMEOUT = 30
 MAX_MSG_LEN = 1000
 
 MIN_HOURS_SINCE_DELIVERED = 24
-DELIVERED_STATUS = "delivered"
+# Не чіпаємо покупців, чиє замовлення повернуто/скасовано після видачі.
+_EXCLUDE_DELIVERY_STATUSES = ("returned", "cancelled")
 
 REVIEW_URL_TEMPLATE = "https://prom.ua/ua/product-opinions/create/{pid}"
 # Дослівно той текст, що Prom генерує в модалці «Запит на відгук про товар»
@@ -99,16 +101,25 @@ def resolve_room_ident(rooms: list, client_id) -> str | None:
 
 
 def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED, now: datetime = None) -> list:
-    """Prom-замовлення, доставлені (`delivery_status='delivered'`) ≥ min_hours тому
-    (за `prom_delivered_pushed_at`), яким товарний запит на відгук ще не слався."""
+    """Prom-замовлення, ОТРИМАНІ покупцем ≥ min_hours тому, яким товарний запит на
+    відгук ще не слався.
+
+    Сигнал «отримано» — `prom_delivered_pushed_at IS NOT NULL` (а НЕ рядок
+    `delivery_status`): ця мітка ставиться саме коли Нова Пошта підтвердила
+    ФАКТИЧНУ видачу посилки (order_status_tracker._maybe_push_delivered_to_prom,
+    `tracking["delivered"]`). Живо звірено 2026-08-07: реальні orders.db не мають
+    значення `delivery_status='delivered'` (доходить лише до 'shipped'=НП-код 60),
+    а видачу відображає саме `prom_delivered_pushed_at` (=НП «вручено»). Час мітки
+    ≈ момент видачі, тож `<= cutoff` дає «≥N год після отримання»."""
     now = now or datetime.now()
     cutoff = (now - timedelta(hours=min_hours)).isoformat(timespec="seconds")
     rows = conn.execute(
         "SELECT * FROM orders "
-        "WHERE platform = 'prom' AND delivery_status = ? "
+        "WHERE platform = 'prom' "
         "AND prom_delivered_pushed_at IS NOT NULL AND prom_delivered_pushed_at <= ? "
-        "AND prom_review_request_sent_at IS NULL",
-        (DELIVERED_STATUS, cutoff),
+        "AND prom_review_request_sent_at IS NULL "
+        "AND (delivery_status IS NULL OR delivery_status NOT IN ('returned', 'cancelled'))",
+        (cutoff,),
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 

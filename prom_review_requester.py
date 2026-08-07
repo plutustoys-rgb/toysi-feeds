@@ -26,12 +26,12 @@ Prom іде лише на email, а наші покупці (накладени�
 
 БЕЗПЕКА: за замовчуванням DRY-RUN (лише друкує, що надіслав би). Реальна відправка —
 лише з `--send`. `--mark-sent <order_id>` ставить позначку БЕЗ відправки (для
-backdate замовлень, уже оброблених вручну, напр. №419488858 Вика Цвигун).
+backdate замовлень, уже оброблених вручну до першого прогону — щоб їм не пішов дубль).
 
 ЗАПУСК:
     python prom_review_requester.py                 # DRY-RUN: показати, що надіслав би
     python prom_review_requester.py --send          # реально надіслати
-    python prom_review_requester.py --mark-sent 419488858   # backdate без відправки
+    python prom_review_requester.py --mark-sent <order_id>  # backdate без відправки
 """
 import argparse
 import os
@@ -198,6 +198,10 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
                 continue
 
             try:
+                # Ідемпотентність per-ЗАМОВЛЕННЯ (позначка після всіх повідомлень): якщо
+                # у замовленні ≥2 товари і 2-й send впаде після успішного 1-го — на
+                # наступному прогоні 1-й товар піде повторно. Прийнятно: більшість
+                # замовлень однотоварні, а дубль одного посилання не шкідливий.
                 for m in messages:
                     send_chat_message(room_ident, m)
                 mark_sent(conn, row["internal_order_id"])

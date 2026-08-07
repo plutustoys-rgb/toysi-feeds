@@ -667,12 +667,18 @@ def _open_orders_detail_section(conn) -> str:
         except (ValueError, TypeError):
             amount = 0.0
         status, pm, pc = r["status"], r["payment_method"], r["payment_confirmed"]
+        # Порядок важливий: awaiting_manual_confirmation ставиться саме на
+        # prepaid+не підтверджено (bank_check.py), тож перевіряємо його ПЕРЕД
+        # загальною prepaid-гілкою, інакше він ніколи не показався б окремо.
         if status == "toysi_error":
             reason = "🔴 помилка Toysi"
-        elif pm == "prepaid" and not pc:
-            reason = "очікує оплати (prepaid)"
         elif status == "awaiting_manual_confirmation":
             reason = "очікує ручного підтвердження"
+        elif pm == "prepaid" and not pc:
+            reason = "очікує оплати (prepaid)"
+        elif age_h < 0:
+            # created_at не розпарсився — не стверджуємо ні «застрягло», ні «готове».
+            reason = "стан невідомий (вік не визначено)"
         elif age_h >= _OPEN_STUCK_HOURS:
             reason = "🔴 застрягло (мало передатись)"
         else:

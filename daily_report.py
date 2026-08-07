@@ -606,6 +606,98 @@ def _append_kodv_reversal_entries(conn) -> int:
     return len(lines)
 
 
+# Замовлення, що «мали б передатись у Toysi», але висять довше цього — сигнал
+# застою пайплайна (не легітимне очікування оплати, яке рахується окремо).
+_OPEN_STUCK_HOURS = 6
+_OPEN_ORDERS_CAP = 15  # у Telegram-звіті показуємо стільки найстаріших, решту — числом
+
+
+def _parse_created_dt(s):
+    """Толерантний парс created_at (наш формат isoformat; з платформи можливі
+    варіації). Повертає naive datetime або None."""
+    if not s:
+        return None
+    s = str(s).strip()
+    try:
+        dt = datetime.fromisoformat(s)
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    except ValueError:
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s[:19], fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def _fmt_age(hours: float) -> str:
+    if hours < 0:
+        return "вік невідомий"
+    h = int(hours)
+    return f"{h}г" if h < 24 else f"{h // 24}д {h % 24}г"
+
+
+def _open_orders_detail_section(conn) -> str:
+    """Per-order деталізація ВІДКРИТИХ замовлень (ще не передані в Toysi, не
+    скасовані) — на прохання власника 2026-08-07 «детальніше по кожному».
+    READ-ONLY, автоматизацію не чіпає. Іде в ПРИВАТНИЙ Telegram-звіт, тож
+    містить order_id (для звірки в кабінеті) — без імен/адрес/ТТН.
+
+    Для кожного показує, ЧОГО замовлення чекає: оплати (prepaid ще не
+    підтверджено — це норма, не застій), ручного підтвердження, помилки Toysi,
+    чи «застрягло» (мало передатись, але висить довше _OPEN_STUCK_HOURS)."""
+    rows = conn.execute(
+        "SELECT order_id, platform, status, payment_method, payment_confirmed, "
+        "created_at, items FROM orders "
+        "WHERE forwarded_to_toysi_at IS NULL "
+        "AND (delivery_status IS NULL OR delivery_status NOT IN ('cancelled', 'returned')) "
+        "AND (status IS NULL OR status NOT IN "
+        "('prom_cancelled_before_forward', 'eva_cancelled_before_forward', 'cancelled'))"
+    ).fetchall()
+    if not rows:
+        return "\n\n📦 Відкритих (не переданих у Toysi) замовлень немає."
+
+    now = datetime.now()
+    parsed = []
+    for r in rows:
+        created = _parse_created_dt(r["created_at"])
+        age_h = (now - created).total_seconds() / 3600 if created else -1
+        try:
+            amount = _order_total(json.loads(r["items"]))
+        except (ValueError, TypeError):
+            amount = 0.0
+        status, pm, pc = r["status"], r["payment_method"], r["payment_confirmed"]
+        # Порядок важливий: awaiting_manual_confirmation ставиться саме на
+        # prepaid+не підтверджено (bank_check.py), тож перевіряємо його ПЕРЕД
+        # загальною prepaid-гілкою, інакше він ніколи не показався б окремо.
+        if status == "toysi_error":
+            reason = "🔴 помилка Toysi"
+        elif status == "awaiting_manual_confirmation":
+            reason = "очікує ручного підтвердження"
+        elif pm == "prepaid" and not pc:
+            reason = "очікує оплати (prepaid)"
+        elif age_h < 0:
+            # created_at не розпарсився — не стверджуємо ні «застрягло», ні «готове».
+            reason = "стан невідомий (вік не визначено)"
+        elif age_h >= _OPEN_STUCK_HOURS:
+            reason = "🔴 застрягло (мало передатись)"
+        else:
+            reason = "готове до передачі"
+        parsed.append((age_h, r["platform"], r["order_id"], amount, reason))
+
+    parsed.sort(key=lambda x: x[0], reverse=True)  # найстаріші зверху
+    stuck = sum(1 for p in parsed if "застрягло" in p[4] or "Toysi" in p[4])
+    head = f"\n\n📦 Відкриті замовлення (не передані в Toysi): {len(parsed)}"
+    if stuck:
+        head += f" — 🔴 {stuck} потребують уваги"
+    lines = [head]
+    for age_h, platform, oid, amount, reason in parsed[:_OPEN_ORDERS_CAP]:
+        lines.append(f"\n  • {platform} №{oid} — {amount:.2f} грн — {reason} ({_fmt_age(age_h)})")
+    if len(parsed) > _OPEN_ORDERS_CAP:
+        lines.append(f"\n  … і ще {len(parsed) - _OPEN_ORDERS_CAP} (показано {_OPEN_ORDERS_CAP} найстаріших)")
+    return "".join(lines)
+
+
 def build_report() -> str:
     init_db()
     since = (datetime.now() - timedelta(hours=LOOKBACK_HOURS)).isoformat(timespec="seconds")
@@ -634,6 +726,8 @@ def build_report() -> str:
         ).fetchone()[0]
 
         prom_success_section = _prom_success_rate_section(conn)
+
+        open_orders_section = _open_orders_detail_section(conn)
 
         cogs = items_priced = items_missing = orders_real = orders_estimated = 0
         cogs_catalog_unavailable = False
@@ -703,6 +797,8 @@ def build_report() -> str:
     lines.append(f"\n\nПередано Toysi за {LOOKBACK_HOURS} год: {forwarded_today}")
     lines.append(f"\nОчікують перевірки оплати (prepaid, ще не підтверджено): {awaiting_bank_check}")
     lines.append(f"\nПозначено \"очікує ручного підтвердження\": {awaiting_manual}")
+
+    lines.append(open_orders_section)
 
     if toysi_errors:
         lines.append(f"\n\n🔴 Замовлення з помилками Toysi (потребують уваги): {toysi_errors}")

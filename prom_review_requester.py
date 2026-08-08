@@ -144,12 +144,16 @@ def fetch_prom_order(order_id: str) -> dict:
 
 def send_order_context(order_id: str, body: str) -> int | None:
     """POST /chat/send_order_context — шле повідомлення + картку замовлення покупцю,
-    сам створює кімнату чату. Адресація по order_id (не по кімнаті). multipart/form-data
-    зі схеми API. Кидає RuntimeError, якщо Prom повернув status != ok."""
+    сам створює кімнату чату. Адресація по order_id (не по кімнаті). Кидає RuntimeError,
+    якщо Prom повернув status != ok.
+
+    ФОРМАТ — JSON (звірено ЖИВО 2026-08-08): офіційна спека каже multipart/form-data,
+    але реально multipart дає 400 Bad Request, а JSON `{order_id:int, body}` доходить до
+    логіки API (200). order_id має бути числом."""
     r = requests.post(
         f"{PROM_API_URL}/chat/send_order_context",
         headers=_headers(),
-        files={"order_id": (None, str(int(order_id))), "body": (None, body[:MAX_BODY_LEN])},
+        json={"order_id": int(order_id), "body": body[:MAX_BODY_LEN]},
         timeout=REQUEST_TIMEOUT,
     )
     r.raise_for_status()

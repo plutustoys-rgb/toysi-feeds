@@ -61,6 +61,11 @@ REQUEST_TIMEOUT = 30
 MAX_BODY_LEN = 1000  # ліміт body у /chat/send_order_context
 
 MIN_HOURS_SINCE_DELIVERED = 24
+# Верхня межа (рішення власника 2026-08-08): не слати по замовленнях, отриманих
+# давніше тижня. Дві причини: (1) свіжий запит доречніший; (2) старі замовлення поза
+# вікном відгуку Prom (~30 днів від дати замовлення) → send_order_context повертає
+# «Order not found», і без цієї межі автоматика билась би об них щопрогону.
+MAX_DAYS_SINCE_DELIVERED = 7
 
 REVIEW_URL_TEMPLATE = "https://prom.ua/ua/product-opinions/create/{pid}"
 # Дослівно текст, що Prom генерує в модалці «Запит на відгук про товар» (звірено
@@ -110,9 +115,10 @@ def build_review_body(order: dict) -> str | None:
     return MESSAGE_COMPANY.format(url=url)
 
 
-def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED, now: datetime = None) -> list:
-    """Prom-замовлення, ОТРИМАНІ покупцем ≥ min_hours тому, яким товарний запит на
-    відгук ще не слався.
+def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED,
+                    max_days: int = MAX_DAYS_SINCE_DELIVERED, now: datetime = None) -> list:
+    """Prom-замовлення, ОТРИМАНІ покупцем у вікні [max_days тому … min_hours тому],
+    яким товарний запит на відгук ще не слався.
 
     Сигнал «отримано» — `prom_delivered_pushed_at IS NOT NULL` (а НЕ рядок
     `delivery_status`): ця мітка ставиться саме коли Нова Пошта підтвердила
@@ -120,16 +126,22 @@ def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED, now: datet
     `tracking["delivered"]`). Живо звірено 2026-08-07: реальні orders.db не мають
     значення `delivery_status='delivered'` (доходить лише до 'shipped'=НП-код 60),
     а видачу відображає саме `prom_delivered_pushed_at` (=НП «вручено»). Час мітки
-    ≈ момент видачі, тож `<= cutoff` дає «≥N год після отримання»."""
+    ≈ момент видачі.
+
+    Нижня межа `min_hours` (24г) — «наступного дня після отримання». Верхня
+    `max_days` (7 днів) — не чіпати старі замовлення (свіжіший запит + поза
+    ~30-денним вікном відгуку Prom send_order_context дає «Order not found»)."""
     now = now or datetime.now()
-    cutoff = (now - timedelta(hours=min_hours)).isoformat(timespec="seconds")
+    upper = (now - timedelta(hours=min_hours)).isoformat(timespec="seconds")   # не свіжіше 24г
+    lower = (now - timedelta(days=max_days)).isoformat(timespec="seconds")     # не старіше 7 днів
     rows = conn.execute(
         "SELECT * FROM orders "
         "WHERE platform = 'prom' "
-        "AND prom_delivered_pushed_at IS NOT NULL AND prom_delivered_pushed_at <= ? "
+        "AND prom_delivered_pushed_at IS NOT NULL "
+        "AND prom_delivered_pushed_at <= ? AND prom_delivered_pushed_at >= ? "
         "AND prom_review_request_sent_at IS NULL "
         "AND (delivery_status IS NULL OR delivery_status NOT IN ('returned', 'cancelled'))",
-        (cutoff,),
+        (upper, lower),
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 

@@ -1,0 +1,14 @@
+[Unit]
+Description=PlutusToys: daily trigger for prom_review_requester (--send)
+
+[Timer]
+# Раз на день о 10:00 (системний час VPS) — робочий час, доречно писати покупцям.
+# Точний час не важливий: тригер відбору — «отримано 1-7 днів тому», не година запуску.
+OnCalendar=*-*-* 10:00:00
+# Наздогнати, якщо VPS був вимкнений у момент спрацювання (замовлення нікуди не діляться —
+# позначка prom_review_request_sent_at не дасть дублів навіть при кількох спрацюваннях).
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

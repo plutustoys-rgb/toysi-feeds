@@ -1,0 +1,19 @@
+[Unit]
+# PlutusToys — щоденний товарний запит на відгук у Prom-чаті.
+# Запускає prom_review_requester.py --send: бере Prom-замовлення, отримані 1-7 днів
+# тому, яким запит ще не слався, і шле запит на відгук через /chat/send_order_context
+# (позначає кожне в orders.db → без дублів). Деплой: копія в /etc/systemd/system/,
+# `systemctl enable --now prom-review-requester.timer`.
+Description=PlutusToys: daily Prom product-review requests (prom_review_requester.py --send)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python, бо голий python3 не має python-dotenv/requests і
+# впаде. Робоча тека /opt/plutustoys — щоб orders.db і .env резолвились відносними шляхами.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/prom_review_requester.py --send
+# Не критичний сервіс: будь-яка помилка лише логується в journal, нічого більше не зупиняє.
+TimeoutStartSec=600

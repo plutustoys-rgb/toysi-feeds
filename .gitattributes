@@ -2,3 +2,6 @@
 # "/bin/bash^M: bad interpreter" на VPS. Форсуємо незалежно від core.autocrlf
 # розробницької машини (Windows).
 *.sh text eol=lf
+# systemd-юніти теж деплояться на VPS — CRLF ламає парсинг unit-файлів. ЗАВЖДИ LF.
+*.service text eol=lf
+*.timer text eol=lf

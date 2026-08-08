@@ -52,6 +52,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from orders_db import get_connection, init_db, _row_to_dict
+from telegram_notify import send_telegram_message
 
 load_dotenv()
 
@@ -238,7 +239,24 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
 
     print(f"\n[ReviewReq] Підсумок: придатних {stats['eligible']}, надіслано {stats['sent']}, "
           f"пропущено {stats['skipped_no_products']}, помилок {stats['errors']}.")
+    _notify_summary(dry_run, stats)
     return stats
+
+
+def _notify_summary(dry_run: bool, stats: dict) -> None:
+    """Telegram-сповіщення про результат РЕАЛЬНОГО прогону (щоб не тримати в голові
+    й не лізти в journal). Тихі дні (0 надіслано, 0 помилок) НЕ турбують — шлемо лише
+    коли щось реально сталось. dry-run не сповіщає ніколи. Помилка Telegram — не критична."""
+    if dry_run or not (stats["sent"] or stats["errors"]):
+        return
+    msg = f"🌟 Prom-відгуки: надіслано {stats['sent']}"
+    if stats["errors"]:
+        msg += (f", ⚠️ помилок {stats['errors']} — глянь "
+                f"`journalctl -u prom-review-requester.service --since today`")
+    try:
+        send_telegram_message(msg)
+    except Exception as e:
+        print(f"[ReviewReq] Telegram не надіслано (не критично): {e}", file=sys.stderr)
 
 
 def cmd_mark_sent(order_id: str) -> None:

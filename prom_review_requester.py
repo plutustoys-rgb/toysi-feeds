@@ -25,9 +25,10 @@ Prom іде лише на email, а наші покупці (накладени�
 Критерій — СТАН замовлення: бэклог уже отриманих підхопиться першим прогоном.
 ЛИШЕ товарний відгук — компанійський НЕ чіпаємо (пряме рішення власника).
 
-Товар без Prom-`id` (делістнутий з каталогу — id/sku/url = null) пропускаємо: сторінки
-`product-opinions/create/{id}` для нього не існує. Якщо ВСІ товари замовлення такі —
-запит не шлемо.
+Товар без Prom-`id` (делістнутий з каталогу — id/sku/url = null) не має сторінки
+`product-opinions/create/{id}`. Якщо ВСІ товари замовлення такі — фолбек на відгук
+про КОМПАНІЮ (`opinions/create/{company_id}?order_id=...`, дозвіл власника 2026-08-07),
+щоб не втрачати відгук зовсім.
 
 БЕЗПЕКА: за замовчуванням DRY-RUN (лише друкує, що надіслав би). Реальна відправка —
 лише з `--send`. `--mark-sent <order_id>` ставить позначку БЕЗ відправки (для backdate
@@ -66,6 +67,15 @@ REVIEW_URL_TEMPLATE = "https://prom.ua/ua/product-opinions/create/{pid}"
 MESSAGE_ONE = "Дякуємо за покупку! Будь ласка, залиште відгук про товар тут: {url}"
 MESSAGE_MANY = "Дякуємо за покупку! Будь ласка, залиште відгук про товари:\n{urls}"
 
+# Фолбек на відгук про КОМПАНІЮ (дозвіл власника 2026-08-07: коли товар делістнутий і
+# сторінки відгуку про товар не існує). URL звірено живо — кнопка «Скопіювати запит на
+# відгук про компанію» дає короткий лінк, що редіректить на цей канонічний вигляд:
+# https://prom.ua/ua/opinions/create/{company_id}?order_id={order_id}. company_id 4219597
+# — наш (ID кабінету PlutusToys, статичний).
+COMPANY_ID = "4219597"
+COMPANY_REVIEW_URL = "https://prom.ua/ua/opinions/create/{company_id}?order_id={order_id}"
+MESSAGE_COMPANY = "Дякуємо за покупку! Будь ласка, залиште відгук про нашу компанію тут: {url}"
+
 
 def _headers() -> dict:
     return {"Authorization": f"Bearer {PROM_API_KEY}"}
@@ -74,21 +84,29 @@ def _headers() -> dict:
 # ---- Чисті, тестовані функції (без мережі) --------------------------------
 
 def build_review_body(order: dict) -> str | None:
-    """Одне повідомлення на ЗАМОВЛЕННЯ з посиланнями на відгук по кожному товару,
-    що має Prom-`id`. Товар без `id` (делістнутий) пропускаємо. None, якщо жоден
-    товар не має id (запит слати нема куди)."""
-    urls = []
-    for p in order.get("products", []) or []:
-        pid = p.get("id")
-        if pid:
-            urls.append(REVIEW_URL_TEMPLATE.format(pid=pid))
-    if not urls:
-        return None
-    if len(urls) == 1:
-        body = MESSAGE_ONE.format(url=urls[0])
-    else:
+    """Одне повідомлення на ЗАМОВЛЕННЯ:
+    - якщо є товари з Prom-`id` — запит відгуку про ТОВАР (посилання по кожному);
+    - якщо ВСІ товари делістнуті (id=None → сторінки відгуку про товар нема) —
+      фолбек на відгук про КОМПАНІЮ (дозвіл власника 2026-08-07).
+    None лише як крайній випадок — коли й order_id відсутній (нема куди слати)."""
+    urls = [REVIEW_URL_TEMPLATE.format(pid=p["id"]) for p in (order.get("products") or []) if p.get("id")]
+    if urls:
+        if len(urls) == 1:
+            return MESSAGE_ONE.format(url=urls[0])
+        # Складаємо стільки ПОВНИХ URL, скільки влазить у MAX_BODY_LEN — ніколи не
+        # ріжемо посеред лінка (реально замовлення 1-3 товари, тож майже недосяжно).
         body = MESSAGE_MANY.format(urls="\n".join(urls))
-    return body[:MAX_BODY_LEN]
+        while len(body) > MAX_BODY_LEN and len(urls) > 1:
+            urls.pop()
+            body = MESSAGE_MANY.format(urls="\n".join(urls))
+        return body
+
+    # Усі товари делістнуті → відгук про компанію (за order_id).
+    order_id = order.get("id")
+    if not order_id:
+        return None
+    url = COMPANY_REVIEW_URL.format(company_id=COMPANY_ID, order_id=order_id)
+    return MESSAGE_COMPANY.format(url=url)
 
 
 def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED, now: datetime = None) -> list:
@@ -169,8 +187,11 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
         for row in eligible:
             oid = row["order_id"]
             try:
+                # ValueError ловить і JSONDecodeError (битий JSON на HTTP-200) — без
+                # цього виняток вилетів би з циклу ДО commit і відкотив уже проставлені
+                # позначки → дублі наступного прогону (нит аудитора N3).
                 order = fetch_prom_order(oid)
-            except requests.RequestException as e:
+            except (requests.RequestException, ValueError) as e:
                 print(f"  ⚠️ №{oid}: не вдалось отримати замовлення ({e}) — пропускаю цей прогін.")
                 stats["errors"] += 1
                 continue
@@ -178,7 +199,7 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
             body = build_review_body(order)
             buyer = f"{order.get('client_first_name', '')} {order.get('client_last_name', '')}".strip()
             if not body:
-                print(f"  ⏭️ №{oid} ({buyer}): усі товари без Prom-id (делістнуті) — запит не побудувати, пропускаю.")
+                print(f"  ⏭️ №{oid} ({buyer}): нема даних замовлення (ні товарів, ні order_id) — пропускаю.")
                 stats["skipped_no_products"] += 1
                 continue
 
@@ -190,6 +211,8 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
             try:
                 send_order_context(oid, body)
                 mark_sent(conn, row["internal_order_id"])
+                conn.commit()  # робимо позначку ДУРАБЕЛЬНОЮ одразу — щоб краш/kill
+                               # на наступному замовленні не відкотив уже надіслане (→ дублі)
                 stats["sent"] += 1
                 print(f"  ✅ №{oid} ({buyer}): надіслано, позначено.")
             except (requests.RequestException, RuntimeError, ValueError) as e:
@@ -197,7 +220,7 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
                 stats["errors"] += 1
 
     print(f"\n[ReviewReq] Підсумок: придатних {stats['eligible']}, надіслано {stats['sent']}, "
-          f"без Prom-id {stats['skipped_no_products']}, помилок {stats['errors']}.")
+          f"пропущено {stats['skipped_no_products']}, помилок {stats['errors']}.")
     return stats
 
 

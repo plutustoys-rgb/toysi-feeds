@@ -13,6 +13,17 @@
 # топ-970), але generate_prom_feed_top.py::_margin() перевіряв ЛИШЕ
 # delisted_since від prom_competitor_pricer.py::delist() — інший,
 # паралельний шлях реального видалення, НІКОЛИ не мав власної пам'яті).
+# ⛔ ВИМКНЕНО 2026-08-10 (фінансовий витік): catalog-sync-delisted-data — гілка ПУБЛІЧНОГО репо;
+# prom_competitor_price_state.json містив `cost`+`margin_pct` для 1626 SKU та
+# `_meta.last_avg_margin_pct` (наша середня маржа ~29%), читабельних будь-ким за raw-URL. Той
+# самий клас витоку, що KODV/scan-state. `_delisted_since` для generate_prom_feed_top.py::_margin()
+# береться з ЛОКАЛЬНОГО файлу VPS (merge_delisted_since.py зливає локальні файли, НЕ гілку), а
+# споживач prom_feed_top переїхав на VPS 2026-07-28 — крос-машинна публікація стану більше не
+# потрібна. Жоден код не фетчить цю гілку назад; локальний файл недоторканий.
+# Публічний пуш ЗУПИНЕНО; гілку catalog-sync-delisted-data видалено. Тіло нижче лишено для історії.
+echo "[publish_catalog_sync_delisted] ВИМКНЕНО: публікація стану зупинена (витік собівартості/маржі)." >&2
+exit 0
+
 set -e
 cd /opt/plutustoys
 export GIT_SSH_COMMAND="ssh -i /opt/plutustoys/.ssh_catalog_sync_delisted/deploy_key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/opt/plutustoys/.ssh_catalog_sync_delisted/known_hosts"

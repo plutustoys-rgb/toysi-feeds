@@ -199,7 +199,11 @@ def _sync_price_state_to_feed_data(pending: dict, pending_delisted: dict, pendin
                 remote_delisted.update(pending_delisted)
                 for pid in pending_undelisted:
                     remote_delisted.pop(pid, None)
-            state_file.write_text(json.dumps(remote_state, ensure_ascii=False, indent=1), encoding="utf-8")
+            # Публікуємо РЕДАГОВАНУ копію (без cost/margin_pct/_meta.last_avg_margin_pct) — feed-data
+            # публічна (витік 2026-08-10). remote_state лишається повним для локального вжитку;
+            # redact_price_state не мутує вхід. Читачі беруть лише _delisted_since+price/competitor_price.
+            from price_state_redact import redact_price_state
+            state_file.write_text(json.dumps(redact_price_state(remote_state), ensure_ascii=False, indent=1), encoding="utf-8")
 
             subprocess.run(["git", "add", PRICE_STATE_FILENAME], cwd=tmp_dir, check=True,
                             capture_output=True, text=True, encoding="utf-8")

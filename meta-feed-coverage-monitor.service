@@ -1,0 +1,17 @@
+[Unit]
+# PlutusToys — щоденний монітор покриття Meta(Facebook)-фіда.
+# Запускає meta_feed_coverage_monitor.py: рахує <item> у meta_feed.xml (feed-data),
+# порівнює з історією й шле Telegram-алерт, якщо фід просів (товари зникають із FB).
+# Деплой: копія в /etc/systemd/system/, `systemctl enable --now meta-feed-coverage-monitor.timer`.
+Description=PlutusToys: daily Meta(Facebook) feed coverage monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# venv-python per CLAUDE.md (голий python3 без requests/dotenv упаде). Робоча тека
+# /opt/plutustoys — щоб meta_feed_count_history.jsonl і .env резолвились відносно.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/meta_feed_coverage_monitor.py
+TimeoutStartSec=300

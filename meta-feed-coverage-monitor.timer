@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: daily trigger for meta_feed_coverage_monitor
+
+[Timer]
+# Раз на день о 10:30 (системний час VPS) — після ранкового циклу публікації фідів,
+# щоб перевіряти вже свіжий meta_feed.xml. Точна хвилина не критична (порівняння
+# «попередній замір vs поточний», не прив'язка до події).
+OnCalendar=*-*-* 10:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

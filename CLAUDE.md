@@ -8,8 +8,8 @@
 
 - `master` — код
 - `feed-data` — публічні фіди + стан-файли. **Публікується orphan force-push (git checkout --orphan + git rm -r --cached . + force-push) — переписує ВСЕ щоразу, без історії.** Будь-який файл, доданий лише умовно (best-effort крок), зникає НАЗАВЖДИ, якщо генерація цього прогону впаде/поверне порожній файл, і немає симетричного restore-кроку. `rozetka_feed.xml`/`prom_feed_top.xml` мають такий restore-фолбек; `google_merchant_feed.xml`/`meta_feed.xml`/`bing_feed.xml`/`eva_feed.xml` — НЕ МАЮТЬ (відомий незакритий ризик, вже спричинив реальний інцидент з Google Merchant Center 2026-07-27).
-- `scan-state-data` — стан нічного конкурентного скану (публікує VPS)
-- `catalog-sync-delisted-data` — стан delisted SKU від VPS catalog sync (публікує VPS)
+- ~~`scan-state-data`~~, ~~`catalog-sync-delisted-data`~~ — **ВИЛУЧЕНО 2026-08-10 (PR #241, фінансовий витік cost/margin).** Це були write-only мости VPS→GitHub→GH Actions; після переїзду всього (крім Rozetka) на VPS 28.07 читач зник. Стан тепер ЛИШЕ локальний на VPS (`full_catalog_scan_state.json`, `prom_competitor_price_state.json`); публікатори (`publish_scan_state.sh`, `publish_catalog_sync_delisted.sh`) — no-op (лишені як файли, бо їх кличуть VPS-systemd-юніти), гілки видалено. Так само вимкнено `publish_kodv_ledger.sh` + видалено гілку `kodv-ledger-data`.
+- `prom_competitor_price_state.json` у `feed-data` публікується РЕДАГОВАНИМ (без `cost`/`margin_pct`/`_meta.last_avg_margin_pct` — `price_state_redact.py`, PR #242): гілка публічна, ці поля — фінтаємниця. Локальна копія на VPS лишається повною. Читачі беруть лише `_delisted_since`/`price`/`competitor_price`.
 
 **Правило для нового публікованого файлу в будь-яку з цих гілок:** якщо генерація best-effort — обов'язково додай restore-крок (`git show origin/BRANCH:path > path`, якщо файл цього прогону порожній/відсутній), інакше файл рано чи пізно зникне без сліду.
 

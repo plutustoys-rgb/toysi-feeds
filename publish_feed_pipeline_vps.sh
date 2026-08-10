@@ -70,7 +70,19 @@ git checkout origin/feed-data -- . 2>/dev/null || true
 
 mkdir -p feeds
 cp /opt/plutustoys/feeds/prom_feed_top.xml feeds/
-cp /opt/plutustoys/prom_competitor_price_state.json .
+# prom_competitor_price_state.json — публікуємо РЕДАГОВАНУ копію (без cost/margin_pct/_meta.
+# last_avg_margin_pct): feed-data публічна, а ці поля — фінансова таємниця (витік 2026-08-10,
+# price_state_redact.py). Локальний файл лишається повним. Restore-фолбек: якщо редактор упав/
+# дав порожнє — НЕ перезаписуємо (лишається версія, відновлена `git checkout origin/feed-data`
+# вище), щоб збій редактора ніколи не стер опублікований стан у orphan-force-push.
+if /opt/plutustoys/venv/bin/python3 /opt/plutustoys/price_state_redact.py \
+        /opt/plutustoys/prom_competitor_price_state.json > prom_competitor_price_state.json.tmp \
+        && [ -s prom_competitor_price_state.json.tmp ]; then
+    mv prom_competitor_price_state.json.tmp prom_competitor_price_state.json
+else
+    echo "[PublishFeedPipeline] УВАГА: redact price_state впав — публікую попередню опубліковану версію (fallback), фінполя не витікають." >&2
+    rm -f prom_competitor_price_state.json.tmp
+fi
 cp /opt/plutustoys/own_product_links_cache.json .
 
 git add -f feeds/prom_feed_top.xml \

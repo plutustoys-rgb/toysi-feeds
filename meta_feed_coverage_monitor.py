@@ -47,17 +47,24 @@ def fetch_feed_count() -> int:
 
 
 def _load_last() -> dict | None:
-    """Останній запис історії (найновіший рядок), або None."""
+    """Останній ВАЛІДНИЙ запис історії (найновіший рядок), або None. Бита лінія
+    пропускається окремо (per-line try) — один невалідний JSON НЕ скидає всю
+    історію (інакше append-only файл осліпив би монітор до просідань назавжди)."""
     if not HISTORY_FILE.exists():
         return None
-    last = None
     try:
-        for line in HISTORY_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                last = json.loads(line)
-    except (ValueError, OSError):
+        lines = HISTORY_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
         return None
+    last = None
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            last = json.loads(line)
+        except ValueError:
+            continue  # бита лінія — пропускаємо, беремо останню валідну
     return last
 
 

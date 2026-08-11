@@ -1,0 +1,19 @@
+[Unit]
+# PlutusToys — щоденний монітор здоров'я Prom-каталогу.
+# Рахує «пул наявних конкурентних товарів vs ціль 6000» + застарілий out-of-stock
+# бэклог у слотах, і шле Telegram-алерт при дрейфі (catalog_health_monitor.py).
+# Лише читання — нічого не деактивує. Деплой: копія в /etc/systemd/system/,
+# `systemctl enable --now catalog-health-monitor.timer`.
+Description=PlutusToys: daily Prom catalog health monitor (6000 in-stock competitive)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# venv-python (голий python3 без залежностей упаде). Робоча тека /opt/plutustoys —
+# щоб catalog_health_history.jsonl і .env резолвились відносно. Таймаут більший:
+# вантажить повний каталог Toysi (~29k) + тягне список кабінету Prom.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/catalog_health_monitor.py
+TimeoutStartSec=1200

@@ -1,0 +1,12 @@
+[Unit]
+Description=PlutusToys: daily trigger for catalog_health_monitor
+
+[Timer]
+# Раз на день о 09:00 (системний час VPS). Точна хвилина не критична — це метрика
+# стану, не прив'язка до події. RandomizedDelaySec розводить пік із іншими таймерами.
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

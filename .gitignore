@@ -258,3 +258,11 @@ catalog_health_history.jsonl
 
 # novapay_imap_alert_state.json — локальний throttle-стан IMAP-алерту (VPS-стан, не для git)
 novapay_imap_alert_state.json
+
+# prom_pushed_ledger.json — журнал external_id, які ми колись штовхали в Prom
+# (prom_pushed_ledger.py, 2026-08-11): для авто-чистки «невидимих» OOS у prom_catalog_sync.
+# Account-specific, перебудовується з фідів, лише id товарів (без фінданих) — VPS-стан, не для git.
+prom_pushed_ledger.json
+# prom_ledger_sweep_checked.json — sweep-курсор звірки журналу (які кандидати вже пройдено
+# в поточному циклі), той самий клас, що prom_cabinet_supplement_checked.json — не для git.
+prom_ledger_sweep_checked.json

@@ -272,6 +272,19 @@ def generate_top_feed(output_file: str = OUTPUT_FILE) -> None:
         f"(з категорій-лідерів: {leaders_count}, доповнено рештою каталогу: {len(top_catalog) - leaders_count})"
     )
 
+    # Журнал «штовхнутих у Prom» (prom_pushed_ledger.py, 2026-08-11): фіксуємо КОЖЕН
+    # external_id, який іде в prom_feed_top.xml, щоб prom_catalog_sync міг АВТОМАТИЧНО
+    # знаходити й чистити OOS-мотлох у «невидимих групах» (яких /groups/list не віддає),
+    # без ручної сесії кабінету (Phase 3). Товари, що випадуть з топ-6000 наступними
+    # прогонами, лишаться в журналі як кандидати на звірку/деактивацію. Best-effort:
+    # збій запису журналу не має ламати генерацію самого фіду.
+    try:
+        from prom_pushed_ledger import record_pushed
+        size = record_pushed(top_catalog.keys())
+        print(f"[Prom Top] Журнал штовхнутих у Prom: {size} external_id (для авто-чистки невидимих OOS).")
+    except Exception as e:  # noqa: BLE001 — журнал допоміжний, ніколи не блокує фід
+        print(f"[Prom Top] Попередження: не вдалось оновити журнал штовхнутих ({e}).", file=__import__("sys").stderr)
+
     # ВИПРАВЛЕНО 2026-07-14: той самий бага, що й у generate_prom_feed.py
     # (виправлено там 2026-07-12), лишався тут неторкнутим — виклик без
     # price_overrides означав, що КОЖЕН SKU топ-970 рахувався з нуля за

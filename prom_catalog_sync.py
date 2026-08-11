@@ -49,6 +49,7 @@ from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeErr
 from telegram_notify import send_telegram_message
 from prom_api_client import PromEditError, delist as _prom_delist
 from competitor_pricing import load_prom_price_state, save_prom_price_state
+from prom_pushed_ledger import load_ledger, prune as _prune_ledger
 
 # Консоль Windows (cp1251) не показує деякі символи — без цього локальний
 # тестовий запуск падає на print() (див. daily_report.py).
@@ -517,6 +518,86 @@ def supplement_cabinet_view(prom_products: dict, desired_ids: set) -> dict:
     return prom_products
 
 
+# ДОДАНО (2026-08-11): автоматична чистка «невидимих» OOS через журнал штовхнутих
+# (prom_pushed_ledger.py). Досі find_stale_external_ids() бачив лише товари, які
+# fetch_prom_products() дістав через /groups/list — а він стабільно недобирає «невидимі
+# групи» (історично ~2402 з ~5836). Тому OOS-мотлох, що випав з топ-6000 і осів у
+# невидимій групі, автоматично НЕ чистився — лише вручну (clear_invisible_oos.py, Phase 3,
+# через сесію кабінету /cms/product/list?presence=not_avail). Журнал дає повний набір
+# «наших» лістингів (усе, що ми колись штовхали у prom_feed_top.xml); кандидатів на
+# застарілість звіряємо НАЖИВО через by_external_id (структурно НЕ через /groups/list —
+# задача #47/#64), тож рішення безпечне навіть коли груповий зріз неповний (той самий
+# принцип свіжої звірки, що й supplement_cabinet_view). Bounded lookup + delist-кап +
+# sweep-курсор — як у супплементі вище.
+LEDGER_SWEEP_LOOKUP_LIMIT = 800   # by_external_id-звірок за прогін (як CABINET_SUPPLEMENT_LOOKUP_LIMIT)
+LEDGER_MAX_DELIST_PER_RUN = 200   # кап на деактивації з цього шляху (дзеркало MAX_DEACTIVATIONS_PER_RUN)
+LEDGER_SWEEP_CHECKED_FILE = Path(__file__).parent / "prom_ledger_sweep_checked.json"
+
+
+def _load_ledger_checked() -> set:
+    try:
+        data = json.loads(LEDGER_SWEEP_CHECKED_FILE.read_text(encoding="utf-8"))
+        return set(data) if isinstance(data, list) else set()
+    except (OSError, ValueError):
+        return set()
+
+
+def _save_ledger_checked(checked: set) -> None:
+    try:
+        LEDGER_SWEEP_CHECKED_FILE.write_text(
+            json.dumps(sorted(checked), ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        print(f"[Sync] Не вдалось зберегти {LEDGER_SWEEP_CHECKED_FILE.name} ({e})", file=sys.stderr)
+
+
+def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict) -> tuple:
+    """Знаходить застарілі товари в «невидимих групах» через журнал штовхнутих.
+
+    Кандидати = журнал − поточний_топ − вже_видимий_зріз (тобто наші лістинги, які випали
+    з топ-6000 і яких груповий fetch_prom_products() НЕ побачив), звужені до наших дропшип-
+    товарів (toysi_ids). Кожного звіряємо НАЖИВО через by_external_id.
+
+    Повертає (to_delist, to_prune):
+      to_delist — ПІДТВЕРДЖЕНО живі (200) + ще не deleted → безпечно деактивувати (свіжа
+                  звірка цього прогону, не залежить від повноти /groups/list).
+      to_prune  — підтверджено відсутні (404) або вже deleted (надгробки) → прибрати з
+                  журналу (самоочищення, щоб пул кандидатів не ріс). indeterminate
+                  (мережевий/авторизаційний збій) НЕ чіпаємо — це не доказ відсутності,
+                  повторимо наступного прогону.
+
+    Sweep-курсор (persistent checked-set, як supplement_cabinet_view): за кілька прогонів
+    покриває ВЕСЬ пул по LEDGER_SWEEP_LOOKUP_LIMIT, потім скидається на новий цикл —
+    жоден підмножинний батч не блокує прогрес по бэклогу."""
+    ledger = load_ledger()
+    candidates = [
+        e for e in ledger
+        if e in toysi_ids and e not in desired_ids and e not in prom_products
+    ]
+    if not candidates:
+        return [], []
+
+    cand_set = set(candidates)
+    checked = _load_ledger_checked() & cand_set   # лише актуальні кандидати
+    pool = [e for e in candidates if e not in checked]
+    if not pool:                                  # весь поточний пул пройдено — новий цикл
+        checked = set()
+        pool = candidates
+    batch = pool[:LEDGER_SWEEP_LOOKUP_LIMIT]
+
+    found, indeterminate = fetch_prom_products_by_external_ids(set(batch))
+    to_delist = [e for e, p in found.items() if p.get("status") != "deleted"]
+    to_prune = [e for e in batch if e not in found and e not in indeterminate]   # підтверджено 404
+    to_prune += [e for e, p in found.items() if p.get("status") == "deleted"]    # надгробки
+
+    checked.update(batch)                         # sweep-курсор (як supplement_cabinet_view)
+    _save_ledger_checked(checked)
+
+    print(f"[Sync] Журнал невидимих OOS: {len(candidates)} кандидатів (журнал−топ−видимий зріз), "
+          f"звірено {len(batch)} через by_external_id — живих застарілих {len(to_delist)}, "
+          f"на очищення журналу {len(to_prune)}, невизначених {len(indeterminate)}.")
+    return to_delist, to_prune
+
+
 def find_stale_external_ids(prom_products: dict, desired_ids: set, toysi_ids: set) -> list:
     """Товари, які реально опубліковані в Prom, походять з нашого Toysi-фіда
     (не додані вручну власником — таких не чіпаємо), більше не входять у
@@ -609,6 +690,37 @@ def main() -> None:
     prom_products = supplement_cabinet_view(prom_products, desired_ids)
     print(f"[Sync] У кабінеті Prom: {len(prom_products)} товарів. "
           f"У поточному топ-6000: {len(desired_ids)}.")
+
+    # АВТО-ЧИСТКА «НЕВИДИМИХ» OOS (2026-08-11) — окремий, незалежний від видимого зрізу
+    # шлях: кандидати з журналу штовхнутих, звірені НАЖИВО через by_external_id, тож
+    # безпечні навіть коли /groups/list неповний (той самий принцип, що supplement_cabinet_
+    # view). Замінює РУЧНИЙ clear_invisible_oos.py (Phase 3). Виконується ЗАВЖДИ (навіть якщо
+    # видимий find_stale нижче порожній чи заблокований view-guard), бо це різний клас даних.
+    ledger_delist, ledger_prune = find_stale_via_ledger(desired_ids, toysi_ids, prom_products)
+    if ledger_prune:
+        removed = _prune_ledger(ledger_prune)
+        print(f"[Sync] Журнал: прибрано {removed} відсутніх/видалених external_id (самоочищення).")
+    if ledger_delist:
+        if not args.apply:
+            print(f"[Sync] DRY-RUN (журнал): деактивував би {len(ledger_delist)} невидимих застарілих "
+                  f"(перші 10: {ledger_delist[:10]}).")
+        else:
+            l_batch = ledger_delist[:LEDGER_MAX_DELIST_PER_RUN]
+            if len(ledger_delist) > LEDGER_MAX_DELIST_PER_RUN:
+                print(f"[Sync] Журнал: {len(ledger_delist)} живих застарілих — беру перші "
+                      f"{LEDGER_MAX_DELIST_PER_RUN} цього прогону, решту наступними.")
+            print(f"[Sync] Деактивую {len(l_batch)} невидимих застарілих (журнал, свіжа GET-звірка на кожен)...")
+            l_processed, l_errors = deactivate(l_batch)
+            print(f"[Sync] Журнал: оброблено {len(l_processed)}, помилок {len(l_errors)}.")
+            if l_processed:
+                l_price_state = load_prom_price_state()
+                l_now_iso = datetime.now().isoformat()
+                l_delisted_since = l_price_state.setdefault("_delisted_since", {})
+                for e in l_processed:
+                    l_delisted_since[e] = l_now_iso
+                save_prom_price_state(l_price_state)
+                print(f"[Sync] Журнал: записано {len(l_processed)} SKU у _delisted_since "
+                      "(select_top_items() не пропонуватиме їх знову).")
 
     stale_ids = find_stale_external_ids(prom_products, desired_ids, toysi_ids)
     print(f"[Sync] Застарілих товарів (є в Prom, походять з Toysi, "

@@ -251,3 +251,7 @@ catalog_size_history.jsonl
 # (eva_cabinet_scraper.py та ін.): локальний стан, не для git.
 balance_history.jsonl
 meta_feed_count_history.jsonl
+
+# catalog_health_history.jsonl — локальний часовий ряд здоров'я Prom-каталогу
+# (catalog_health_monitor.py): VPS-стан, не для git.
+catalog_health_history.jsonl

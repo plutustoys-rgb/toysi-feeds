@@ -570,6 +570,14 @@ def main() -> None:
                           f"{MAX_DEACTIVATIONS_PER_RUN}/прогін.")
     args = ap.parse_args()
 
+    if args.max_deactivations is not None and args.max_deactivations < 0:
+        # Захист від помилки знаку ("-200" замість "200"): зріз stale_ids[:-N] = "всі,
+        # КРІМ останніх N" → обійшов би кап у зворотний бік (масове видалення). dry-run
+        # цього не ловить (показує повний список ДО обрізання). 0 = безпечний no-op.
+        print("[Sync] --max-deactivations не може бути від'ємним (вкажи 0 або додатне число).",
+              file=sys.stderr)
+        sys.exit(2)
+
     if not PROM_API_KEY:
         print("[Sync] PROM_API_KEY не задано — зупиняюсь.", file=sys.stderr)
         sys.exit(1)

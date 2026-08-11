@@ -89,6 +89,32 @@ NOVAPAY_IMAP_FOLDER = os.environ.get("NOVAPAY_IMAP_FOLDER", "NovaPay")
 
 BASE_DIR = Path(__file__).parent
 PROCESSED_REGISTRIES_FILE = BASE_DIR / "novapay_processed_registries.json"
+# Throttle Telegram-алерту про провал IMAP-підключення: таймер крутиться кожні
+# 30хв, і при відкликаному app-password це спамило б Telegram щопрогону. Той
+# самий 24-год патерн, що prom_catalog_sync block-alert / service_watchdog.
+IMAP_ALERT_STATE_FILE = BASE_DIR / "novapay_imap_alert_state.json"
+IMAP_ALERT_INTERVAL_HOURS = 24
+
+
+def _imap_alert_due() -> bool:
+    """True, якщо з останнього IMAP-алерту минуло >IMAP_ALERT_INTERVAL_HOURS (або
+    його ще не було). Стійко до відсутнього/битого стан-файлу — тоді алертимо."""
+    try:
+        from datetime import timedelta
+        ts = json.loads(IMAP_ALERT_STATE_FILE.read_text(encoding="utf-8")).get("last_alert")
+        if not ts:
+            return True
+        return datetime.now() - datetime.fromisoformat(ts) > timedelta(hours=IMAP_ALERT_INTERVAL_HOURS)
+    except (OSError, ValueError, TypeError):
+        return True
+
+
+def _record_imap_alert() -> None:
+    try:
+        IMAP_ALERT_STATE_FILE.write_text(
+            json.dumps({"last_alert": datetime.now().isoformat()}), encoding="utf-8")
+    except OSError:
+        pass
 
 # Ім'я вкладення реєстру завжди містить це слово (перевірено на реальному
 # зразку: "Реєстр платежів контрагента ... .XLSX") — не залежимо від точної
@@ -345,8 +371,17 @@ def main() -> None:
         imap_conn.login(NOVAPAY_IMAP_EMAIL, NOVAPAY_IMAP_APP_PASSWORD)
     except (imaplib.IMAP4.error, OSError) as e:
         message = f"🚨 novapay_statement.py: не вдалось підключитись до IMAP ({NOVAPAY_IMAP_HOST}): {e}"
-        print(f"[NovaPay] {message}", file=sys.stderr)
-        send_telegram_message(message)
+        print(f"[NovaPay] {message}", file=sys.stderr)  # у лог — ЗАВЖДИ, кожен прогін
+        # Telegram — не частіше 1/24год (throttle): при AUTHENTICATIONFAILED (відкликаний
+        # app-password) без цього спамило б щопівгодини. Root-фікс — новий Gmail app-password + .env.
+        if _imap_alert_due():
+            send_telegram_message(
+                message + "\n(Ймовірно Gmail відкликав app-password — згенеруй новий у "
+                "Google Account → Security → App passwords і онови NOVAPAY_IMAP_APP_PASSWORD у .env на VPS.)")
+            _record_imap_alert()
+        else:
+            print("[NovaPay] Telegram-алерт про IMAP пропущено — 24-год throttle (вже алертив нещодавно).",
+                  file=sys.stderr)
         sys.exit(1)
 
     try:

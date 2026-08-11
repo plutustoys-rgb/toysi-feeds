@@ -255,3 +255,6 @@ meta_feed_count_history.jsonl
 # catalog_health_history.jsonl — локальний часовий ряд здоров'я Prom-каталогу
 # (catalog_health_monitor.py): VPS-стан, не для git.
 catalog_health_history.jsonl
+
+# novapay_imap_alert_state.json — локальний throttle-стан IMAP-алерту (VPS-стан, не для git)
+novapay_imap_alert_state.json

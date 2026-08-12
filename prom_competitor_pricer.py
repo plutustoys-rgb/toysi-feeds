@@ -1645,10 +1645,11 @@ def _recheck_delisted_pids(
     Повертає кількість прибраних позначок (для логу/дайджесту)."""
     cleared = 0
     pids_to_check = sorted(delisted_since.keys(), key=lambda p: delisted_since[p])[:limit]
+    candidates = []  # знову ціново-конкурентні — КАНДИДАТИ на зняття позначки (перед гейтом живості)
     for pid in pids_to_check:
         if _time_budget_exceeded():
             print(f"[Pricer] Часовий бюджет вичерпано — зупиняю перевірку delisted достроково "
-                  f"({cleared} знято з {len(pids_to_check)} у цій партії).")
+                  f"({len(candidates)} кандидатів зібрано з {len(pids_to_check)} у цій партії).")
             break
         item = toysi_catalog.get(pid)
         if item is None:
@@ -1676,9 +1677,26 @@ def _recheck_delisted_pids(
         decision = decide_price_for_platform(cost, competitor["price"] if competitor else None,
                                               "prom", category_name, prom_category_id)
         if decision["category"] != "floor":
-            delisted_since.pop(pid, None)
-            cleared += 1
-            print(f"[Pricer] Знову конкурентний, знято позначку delisted: {pid} {name_ukr[:40]}")
+            candidates.append((pid, name_ukr))
+
+    # ГЕЙТ ЖИВОСТІ (2026-08-12, root-cause 688 «Поле status: Позиція недоступна для
+    # оновлення» на Prom-імпорті): цінова конкурентність — НЕ підстава знімати позначку
+    # delisted. Якщо SKU ВИДАЛЕНИЙ на Prom (status=deleted чи 404), зняття позначки
+    # поверне його у prom_feed_top.xml, а Prom не може ОНОВИТИ видалену позицію → саме та
+    # import-помилка. Тож знімаємо позначку ЛИШЕ для кандидатів, ПІДТВЕРДЖЕНО живих на
+    # Prom (200 + status != "deleted"). Відсутні (справжній ghost) / невизначені (мережа) /
+    # знайдені-але-deleted — ЛИШАЄМО позначку. Це робить _recheck таким самим self-
+    # verifying, як головний adjust-цикл (той знімає позначку лише ПІСЛЯ живого apply_price).
+    # Той самий by_external_id-шлях, що вже вживає ever_live-блок нижче.
+    if candidates:
+        from prom_catalog_sync import fetch_prom_products_by_external_ids
+        found, _indeterminate = fetch_prom_products_by_external_ids({pid for pid, _ in candidates})
+        for pid, name_ukr in candidates:
+            prod = found.get(pid)
+            if prod is not None and prod.get("status") != "deleted":
+                delisted_since.pop(pid, None)
+                cleared += 1
+                print(f"[Pricer] Знову конкурентний І живий на Prom — знято позначку delisted: {pid} {name_ukr[:40]}")
 
     return cleared
 

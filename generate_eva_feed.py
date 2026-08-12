@@ -397,6 +397,52 @@ def _is_banned_country(country: str) -> bool:
     return any(pattern in normalized for pattern in EVA_BANNED_COUNTRY_PATTERNS)
 
 
+# Заборонені слова в НАЗВІ (2026-08-12, живо в кабінеті seller.eva.ua: десятки товарів
+# відхилено «Автоматична модерація: Виявлено заборонені слова»). EVA-модерація ловить
+# ТМ/бренд у НАЗВІ товару, навіть коли vendor нейтральний (стоп-бренд-фільтр вище звіряє
+# ЛИШЕ vendor). Тут — цільовий скан САМОГО ТЕКСТУ назви, але СВІДОМО ВУЗЬКИМ whole-word
+# списком ОДНОЗНАЧНИХ міжнародних брендів/франшиз. Двозначні побутові слова
+# (майстер/менеджер/люкс/premium/extreme/vega) НЕ включені навмисно — потрібне
+# підтвердження точним словником EVA (менеджер Валерія Симоненко), інакше whole-word
+# «майстер» тощо викинув би живі товари («набір майстер»). Той самий урок обережності,
+# що й «рос»/«срср» у EVA_STOP_BRANDS вище: НЕ широкий вільний пошук. Список легко
+# розширювати в міру нових відхилень / коли EVA дасть офіційний словник.
+EVA_STOP_WORDS_IN_NAME = {
+    # Міжнародні бренди (обидва написання) — ті самі, що вже в EVA_STOP_BRANDS для vendor,
+    # але Toysi часто пише бренд у назві, а vendor ставить виробника.
+    "lego", "лего", "barbie", "барбі", "барби",
+    "hot wheels", "хот вілс", "хотвілс",
+    "play doh", "play-doh", "плей до", "плей-до", "плейдо",
+    "hasbro", "хасбро", "mattel", "маттел",
+    "fisher price", "фішер прайс", "spin master", "спін мастер",
+    "trefl", "трефл", "strateg", "стратег",
+    "danko toys", "данко тойс", "vladi toys", "владі тойс",
+    "tigres", "тигрес", "technok", "технок",
+    "avent", "авент", "suavinex", "akuku", "акуку",
+    # Франшизи/персонажі та ігрові ТМ (з відхилених EVA + відомі Disney/Marvel/Hasbro).
+    "disney", "дісней", "дисней", "marvel", "марвел",
+    "avengers", "месники", "frozen", "холодне серце",
+    "twister", "твістер", "ерудит",
+}
+
+# Whole-word (межа слова, Unicode) + без урахування регістру. Багатослівні бренди
+# ("hot wheels") матчаться як фраза. Розділювачі -/_ нормалізуємо в пробіл (як
+# _normalize_brand), щоб "play-doh" ловилось і як "play doh".
+_EVA_NAME_STOPWORD_RE = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(w) for w in sorted(EVA_STOP_WORDS_IN_NAME, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _name_has_forbidden_word(name: str) -> bool:
+    """True, якщо в назві є заборонене EVA слово (ТМ/бренд) — whole-word.
+    Нормалізує -/_ у пробіл, щоб дефісні написання теж ловились."""
+    blob = re.sub(r"[-_]+", " ", str(name or "").lower())  # str() — захист від нерядкового name (аудит #252 A)
+    return bool(_EVA_NAME_STOPWORD_RE.search(blob))
+
+
 EVA_NAME_MAX_LEN        = 255       # https://sellersupport.eva.ua/article/pidhotovka-prays-listu-xml
 EVA_DESCRIPTION_MAX_LEN = 60_000
 EVA_DESCRIPTION_MIN_LEN = 30        # заявлено документацією EVA — НЕ ВИМІРЮВАНО живо (немає ще підключеного кабінету
@@ -673,6 +719,11 @@ def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: 
         return False
     if _normalize_brand(vendor) in EVA_STOP_BRANDS:
         return False
+    # Заборонене EVA слово (ТМ/бренд) у НАЗВІ — навіть коли vendor нейтральний
+    # (2026-08-12, «Виявлено заборонені слова» в модерації EVA). Виключаємо товар,
+    # як і зі стоп-вендором вище: не віддаємо EVA те, що вона все одно відхилить.
+    if _name_has_forbidden_word(item.get("name")):
+        return False
     if _is_banned_country(item.get("country")):
         return False
     pictures = [p for p in item.get("pictures", []) if p.startswith("https://")][:EVA_MAX_PICTURES]
@@ -781,6 +832,7 @@ def _build_xml(
     skipped_no_prom_price = 0
     skipped_no_vendor     = 0
     skipped_stop_brand    = 0
+    skipped_stop_word_name = 0
     skipped_banned_country = 0
     skipped_no_pics       = 0
     skipped_short_desc    = 0
@@ -834,6 +886,10 @@ def _build_xml(
 
         if _normalize_brand(vendor) in EVA_STOP_BRANDS:
             skipped_stop_brand += 1
+            continue
+
+        if _name_has_forbidden_word(item.get("name")):
+            skipped_stop_word_name += 1
             continue
 
         if _is_banned_country(item.get("country")):
@@ -953,7 +1009,8 @@ def _build_xml(
           f"без ціни: {skipped_no_price} | дешевше {MIN_SUPPLIER_PRICE} грн: {skipped_cheap} | "
           f"без порахованої ціни EVA (страхувальник, має бути 0): {skipped_no_prom_price} | "
           f"виключено вручну (exclude_ids): {skipped_unprof} | без бренду (vendor обов'язковий): {skipped_no_vendor} | "
-          f"бренд/студія у стоп-листі EVA: {skipped_stop_brand} | заборонена країна походження: {skipped_banned_country} | "
+          f"бренд/студія у стоп-листі EVA (vendor): {skipped_stop_brand} | заборонене слово/ТМ у назві: {skipped_stop_word_name} | "
+          f"заборонена країна походження: {skipped_banned_country} | "
           f"без валідного фото: {skipped_no_pics} | назв обрізано (>{EVA_NAME_MAX_LEN} симв.): укр={truncated_name_count}")
     if skipped_short_desc:
         print(f"[EVA] ІНВАРІАНТ ПОРУШЕНО: {skipped_short_desc} offer(и) з описом коротшим за мінімум EVA "

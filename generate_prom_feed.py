@@ -415,6 +415,96 @@ def _truncate_name(text: str, max_len: int = PROM_NAME_MAX_LEN) -> str:
     return cut.rstrip(" ,.-")
 
 
+# Заглушка Prom «Товари, загальне» (id 29, 25% комісія — НАЙВИЩА в каталозі,
+# competitor_pricing.PROM_CATEGORY_ID_COMMISSION[29]). Prom кидає сюди КОЖЕН товар,
+# для якого не зміг розпізнати точнішу категорію — тобто це не «правильна категорія»,
+# а «не розпізнано». Тому і per-SKU кеш-хіт у 29, і виведений fallback у 29 ми
+# трактуємо як «ще не категоризовано» й МОЖЕМО покращити куруваною мапою нижче.
+PROM_STUB_CATEGORY_ID = "29"
+
+# Курована мапа Toysi-категорія (назва, як у фіді) → реальний Prom portal category_id
+# (2026-08-11, перекатегоризація «Товари, загальне»). Джерело й перехресна валідація:
+# кожен Prom-id узято з competitor_pricing.PROM_CATEGORY_ID_COMMISSION (живий 90-
+# категорійний експорт кабінету Prom, з РОС-назвами), а пара «Toysi-назва ↔ Prom-id»
+# підтверджена ОДНОЧАСНО двома незалежними сигналами: (1) семантичний збіг назв і
+# (2) ІДЕНТИЧНА ставка комісії між competitor_pricing.PROM_CATEGORY_COMMISSION (ключ —
+# ця Toysi-назва) і PROM_CATEGORY_ID_COMMISSION (ключ — цей Prom-id). Свідомо включені
+# ЛИШЕ однозначні пари (той самий принцип, що й PROM_CATEGORY_COMMISSION: не мапимо
+# категорію, яка охоплює кілька Prom-категорій з різними ставками). Довгий хвіст
+# Toysi-категорій без однозначної відповідності лишається на виведеному fallback/кеші.
+# Це закриває саме той клас, який виведений fallback НЕ може: Toysi-категорії, які Prom
+# сам стабільно кидає в заглушку 29 (тоді кеш/derive дають 29 → нічого не покращують).
+TOYSI_TO_PROM_CATEGORY: dict[str, int] = {
+    # Игрушки-антистресс — 23.73% (Prom 2656)
+    "іграшки антистрес": 2656,
+    "сквіші": 2656,
+    "тягучки та стретчі": 2656,
+    "лизуни, слайми та жуйки для рук": 2656,
+    # Настольные игры — 22.58% (Prom 180607)
+    "настільні ігри": 180607,
+    # Пазлы и головоломки — 23.28% (Prom 180613)
+    "пазли підлогові": 180613,
+    "пазли g-toys": 180613,
+    "пазли castorland": 180613,
+    "пазли dankotoys": 180613,
+    "пазли trefl": 180613,
+    "пазли для малюків": 180613,
+    "інші пазли": 180613,
+    "пазли і вкладиші": 180613,
+    "головоломки": 180613,
+    # Конструкторы — 19.67% (Prom 2614)
+    "конструктори": 2614,
+    "пластикові конструктори": 2614,
+    "конструктори типу лего": 2614,
+    "дерев'яні конструктори": 2614,
+    "металеві конструктори": 2614,
+    "магнітні конструктори": 2614,
+    "незвичайні конструктори": 2614,
+    # Куклы, пупсы — 19.81% (Prom 2605)
+    "ляльки": 2605,
+    "пупси": 2605,
+    # Мягкие игрушки — 19.93% (Prom 2604)
+    "м'які іграшки": 2604,
+    "ведмеді": 2604,
+    # Игровые фигурки, роботы трансформеры — 19.92% (Prom 2638)
+    "трансформери": 2638,
+    "роботи": 2638,
+    # Игрушечные машинки, самолетики, техника — 15.75% (Prom 2606)
+    "пластикові машинки": 2606,
+    "машини гіганти": 2606,
+    "літаки і вертольоти": 2606,
+    "планери": 2606,
+    "машинки на батарейках": 2606,
+    # Радиоуправляемые игрушки — 15.59% (Prom 2613)
+    "машинки ру": 2613,
+    # Тематические игровые наборы — 19.59% (Prom 2629)
+    "лікарські набори": 2629,
+    "перукарські набори": 2629,
+    "набори інструментів": 2629,
+    "супермаркет": 2629,
+    # Игрушки для игр с песком, водой и снегом — 19.52% (Prom 2642)
+    "пісочні набори": 2642,
+    "лопатки і граблі": 2642,
+    "пасочки": 2642,
+    "кінетичний пісок": 2642,
+    # Развивающие и обучающие игрушки — 10.87% (Prom 2602)
+    "розвиваючі килимки": 2602,
+    "набори для навчання": 2602,
+    # Интерактивные детские игрушки — 19.8% (Prom 2608)
+    "розважальні інтерактивні іграшки": 2608,
+    # Детские игрушки-каталки — 15.86% (Prom 2627)
+    "іграшки - каталки": 2627,
+    # Надувные матрасы — 14.24% (Prom 2010)
+    "надувні матраси": 2010,
+}
+
+
+def _map_curated_category(category_name: str):
+    """Реальний Prom category_id для Toysi-категорії за куруваною мапою, або None.
+    Нормалізація ключа — та сама, що в PROM_CATEGORY_COMMISSION (strip+lower)."""
+    return TOYSI_TO_PROM_CATEGORY.get((category_name or "").strip().lower())
+
+
 def _derive_toysi_to_prom_category(catalog: dict, prom_category_cache: dict) -> dict:
     """Виводить {toysi_category_id: Prom_category_id} з товарів, яких Prom УЖЕ
     категоризував (prom_category_cache), згруповано за Toysi-категорією: для
@@ -490,6 +580,7 @@ def _build_xml(
                                   # бо укр./рос. варіанти різної довжини й можуть обрізатись незалежно
     resolved_category_count = 0  # SKU з РЕАЛЬНИМ Prom category_id з кешу (не Toysi-ID, не порожньо)
     fallback_category_count = 0  # SKU без кеш-категорії, але з виведеною fallback-Prom-категорією (розрив "категорійного круга")
+    curated_category_count  = 0  # SKU, категоризовані куруваною мапою TOYSI_TO_PROM_CATEGORY (проти заглушки «Товари, загальне»)
 
     # Мапа Toysi-категорія → найчастіший Prom category_id (з уже-категоризованих
     # SKU) — fallback для SKU, яких ще нема в кеші.
@@ -570,19 +661,32 @@ def _build_xml(
         # РЕАЛЬНИЙ Prom category_id для SKU, які вже імпортовані — той
         # самий кеш, що prom_competitor_pricer.py давно використовує для
         # точної комісії, просто не був підключений сюди, до самого фіда.
-        real_category_id = ((prom_category_cache or {}).get(item_id) or {}).get("category_id")
-        if real_category_id:
-            ET.SubElement(offer, "categoryId").text = str(real_category_id)
+        # Пріоритет визначення Prom-категорії (2026-08-11, курована мапа проти
+        # заглушки «Товари, загальне» 25%):
+        #   1) реальна категорія з кешу (Prom сам категоризував цей SKU) — але ЛИШЕ
+        #      якщо це не заглушка 29 (29 = «не розпізнано», а не правильна категорія);
+        #   2) курована мапа Toysi-назва→Prom-id (звірена з таблицями комісій) — точний
+        #      намір для найбільших категорій; ПЕРЕКРИВАЄ й заглушку-кеш, і derive-29;
+        #   3) виведений fallback (найчастіший Prom-id тієї ж Toysi-категорії) — теж лише
+        #      якщо не заглушка;
+        #   4) якщо кращого нема — лишаємо реальну з кешу (навіть заглушку 29); інакше
+        #      порожньо (Prom однак кине в 29 — той самий результат).
+        real_str    = str(((prom_category_cache or {}).get(item_id) or {}).get("category_id") or "")
+        curated_cat = _map_curated_category(item.get("category_name"))
+        derived_cat = derived_prom_category.get((item.get("category_id") or "").strip())
+
+        if real_str and real_str != PROM_STUB_CATEGORY_ID:
+            ET.SubElement(offer, "categoryId").text = real_str
             resolved_category_count += 1
-        else:
-            # Fallback (2026-08-01): SKU ще нема в кеші (Prom його не
-            # категоризував) — беремо найчастіший Prom category_id тієї ж
-            # Toysi-категорії. Розриває "категорійний круг": нові товари
-            # приходять із категорією, а не порожнім <categoryId>.
-            fallback_cat = derived_prom_category.get((item.get("category_id") or "").strip())
-            if fallback_cat:
-                ET.SubElement(offer, "categoryId").text = str(fallback_cat)
-                fallback_category_count += 1
+        elif curated_cat:
+            ET.SubElement(offer, "categoryId").text = str(curated_cat)
+            curated_category_count += 1
+        elif derived_cat and str(derived_cat) != PROM_STUB_CATEGORY_ID:
+            ET.SubElement(offer, "categoryId").text = str(derived_cat)
+            fallback_category_count += 1
+        elif real_str:  # == заглушка 29, кращого джерела нема — лишаємо як є
+            ET.SubElement(offer, "categoryId").text = real_str
+            resolved_category_count += 1
 
         for pic_url in item.get("pictures", [])[:10]:
             ET.SubElement(offer, "picture").text = pic_url
@@ -656,6 +760,7 @@ def _build_xml(
         "described_count": described_count,
         "resolved_category_count": resolved_category_count,
         "fallback_category_count": fallback_category_count,
+        "curated_category_count": curated_category_count,
     }
     return yml, stats
 
@@ -730,7 +835,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     cache_total = len(prom_category_cache) if prom_category_cache else 0
     print(
         f"[Prom] Категорії: {stats['resolved_category_count']} SKU з реальним Prom category_id "
-        f"(кеш: {cache_total} SKU відомо) + {stats['fallback_category_count']} SKU з fallback-категорією "
+        f"(кеш: {cache_total} SKU відомо) + {stats['curated_category_count']} SKU з куруваної мапи "
+        f"(проти заглушки «Товари, загальне») + {stats['fallback_category_count']} SKU з fallback-категорією "
         f"(найчастіший Prom-id тієї ж Toysi-категорії) — решта без <categoryId>, Prom визначає сам за назвою."
     )
 

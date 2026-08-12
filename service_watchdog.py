@@ -69,6 +69,18 @@ LOOKBACK = "3 days ago"  # достатньо, щоб знайти останн�
 # реальне замовлення якийсь час лишається в статусі 0 до обробки менеджером.
 TOYSI_RECONCILE_THRESHOLD_MINUTES = 120
 
+# ВЕРХНЯ межа вікна звірки (2026-08-11, хибний алерт «Toysi не підтверджує»):
+# order_status Toysi має ретенцію 40 днів — fetch_order_statuses() повертає застарілі
+# замовлення як ВІДСУТНІ в результаті (response_code 503 «Замовлення застаріло (>40 днів)»,
+# toysi_order_submit.py:56, docstring fetch_order_statuses). Без цієї межі замовлення, що
+# лишилось нетермінальним у нашій БД понад 40 днів (order_status_tracker не довів
+# delivery_status до термінального), потрапляло у звірку, отримувало info=None і хибно
+# алертило «не знайдено в Toysi» — попри те, що воно могло успішно пройти ще на 1-й день і
+# лише тепер випасти з ретенції. Справжній фантом test_mode, який ця перевірка ловить,
+# проявляється за хвилини/години (info=None вже з ~120 хв), а не через 40+ днів — тож понад
+# ретенцію звірка беззмістовна, і такі замовлення пропускаємо (не алертимо).
+TOYSI_RECONCILE_MAX_AGE_MINUTES = 40 * 24 * 60  # 40 днів ретенції Toysi order_status
+
 # ВИПРАВЛЕНО (2026-07-16, safety-net після третього поспіль випадку
 # недоходження замовлення вчасно — 415858222/вузький фільтр status=
 # pending, 100445626/норма Toysi, 416114712/гонка таймерів, pt8/pt9):
@@ -634,14 +646,27 @@ def check_toysi_reconciliation() -> None:
         active_orders = get_active_toysi_orders(conn)
 
     candidates = []
+    aged_out = 0
     for order in active_orders:
         try:
             forwarded_at = datetime.fromisoformat(order["forwarded_to_toysi_at"])
         except (TypeError, ValueError):
             continue
         age_minutes = (now - forwarded_at).total_seconds() / 60
-        if age_minutes >= TOYSI_RECONCILE_THRESHOLD_MINUTES:
-            candidates.append((order, age_minutes))
+        if age_minutes < TOYSI_RECONCILE_THRESHOLD_MINUTES:
+            continue
+        if age_minutes > TOYSI_RECONCILE_MAX_AGE_MINUTES:
+            # Понад 40-денну ретенцію Toysi order_status: info=None означало б «застаріло»,
+            # а не «не створено» — звірка беззмістовна, «не знайдено»-алерт був би хибним
+            # (див. TOYSI_RECONCILE_MAX_AGE_MINUTES). Такі замовлення природно випадають і
+            # з reconcile-стану нижче (still_unconfirmed перебудовується лише з кандидатів).
+            aged_out += 1
+            continue
+        candidates.append((order, age_minutes))
+
+    if aged_out:
+        print(f"[watchdog] Звірка з Toysi: пропущено {aged_out} замовлень старших за 40-денну "
+              f"ретенцію Toysi (order_status їх уже не віддає — звірка беззмістовна, не алертимо).")
 
     if not candidates:
         print("[watchdog] Звірка з Toysi: немає замовлень, старших за поріг, для перевірки")

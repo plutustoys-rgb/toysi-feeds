@@ -450,6 +450,7 @@ def _build_xml(
     price_overrides: dict = None,
     russian_text: dict = None,
     description_overrides: dict = None,
+    full_catalog: dict = None,
 ) -> tuple[ET.Element, dict]:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
@@ -491,8 +492,16 @@ def _build_xml(
     fallback_category_count = 0  # SKU без кеш-категорії, але з виведеною fallback-Prom-категорією (розрив "категорійного круга")
 
     # Мапа Toysi-категорія → найчастіший Prom category_id (з уже-категоризованих
-    # SKU цього ж каталогу) — fallback для нових SKU, яких ще нема в кеші.
-    derived_prom_category = _derive_toysi_to_prom_category(catalog, prom_category_cache)
+    # SKU) — fallback для SKU, яких ще нема в кеші.
+    # ВИПРАВЛЕНО (2026-08-11, перекатегоризація ~3190 у «Товари, общее» 25%): виводимо
+    # мапу з ПОВНОГО каталогу Toysi (full_catalog), а не лише з поточного топ-6000
+    # (catalog). Prom-категорії в кеші є для всіх ~5836 імпортованих SKU, але через
+    # ротацію більшість із них ЗАРАЗ поза топ-6000 — тож derive лише по топ-6000
+    # «не бачив» їхню Toysi→Prom відповідність, і SKU з тих самих Toysi-категорій
+    # лишались без <categoryId> (Prom → «Товари, общее»). Derive по повному каталогу
+    # захоплює всі кеш-приклади → набагато ширше покриття fallback. Монотонно:
+    # додає лише коректний fallback тієї Ж Toysi-категорії, нічого не перезаписує.
+    derived_prom_category = _derive_toysi_to_prom_category(full_catalog or catalog, prom_category_cache)
 
     for item in catalog.values():
         cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
@@ -669,7 +678,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
                   catalog: dict = None,
                   description_overrides: dict = None,
-                  prom_category_cache: dict = None) -> None:
+                  prom_category_cache: dict = None,
+                  full_catalog: dict = None) -> None:
     if catalog is None:
         print("[Prom] Завантажуємо каталог Toysi...")
         catalog = fetch_toysi_catalog()
@@ -683,6 +693,9 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     root, stats = _build_xml(
         catalog, prom_category_cache=prom_category_cache, price_overrides=price_overrides,
         russian_text=russian_text, description_overrides=description_overrides,
+        # Повний каталог для виведення Toysi→Prom категорійної мапи (ширше покриття
+        # fallback-категорій, ніж лише топ-6000) — див. _build_xml/_derive.
+        full_catalog=full_catalog,
     )
 
     ET.indent(root, space="  ")

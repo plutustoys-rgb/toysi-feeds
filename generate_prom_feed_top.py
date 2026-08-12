@@ -306,6 +306,11 @@ def generate_top_feed(output_file: str = OUTPUT_FILE) -> None:
         catalog=top_catalog,
         price_overrides=load_fresh_prom_price_overrides(),
         prom_category_cache=_load_prom_category_cache(),
+        # ПОВНИЙ каталог (не лише топ-6000) для виведення Toysi→Prom категорій:
+        # кеш містить Prom-категорії всіх ~5836 імпортованих SKU, більшість з яких
+        # через ротацію зараз поза топ-6000 — derive по повному каталогу дає їм усім
+        # шанс стати fallback-джерелом і різко зменшує «Товари, общее» 25% (~3190).
+        full_catalog=catalog,
     )
 
 

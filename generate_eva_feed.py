@@ -439,7 +439,7 @@ _EVA_NAME_STOPWORD_RE = re.compile(
 def _name_has_forbidden_word(name: str) -> bool:
     """True, якщо в назві є заборонене EVA слово (ТМ/бренд) — whole-word.
     Нормалізує -/_ у пробіл, щоб дефісні написання теж ловились."""
-    blob = re.sub(r"[-_]+", " ", (name or "").lower())
+    blob = re.sub(r"[-_]+", " ", str(name or "").lower())  # str() — захист від нерядкового name (аудит #252 A)
     return bool(_EVA_NAME_STOPWORD_RE.search(blob))
 
 

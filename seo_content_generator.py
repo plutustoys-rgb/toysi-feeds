@@ -212,12 +212,61 @@ def generate(limit: int = DEFAULT_LIMIT, sample_path: str = None) -> dict:
     return stats
 
 
+def _pilot_skus() -> set:
+    """SKU рукописного золотого пілота — шаблон їх НЕ чіпає (золото має пріоритет)."""
+    try:
+        data = json.loads(db.PILOT_BATCH.read_text(encoding="utf-8"))
+        return {str(it.get("sku")) for it in data.get("items", []) if it.get("sku")}
+    except (OSError, ValueError):
+        return set()
+
+
+def export_batch(limit: int, out_path: str, generated_at: str) -> int:
+    """Генерує ЗАТВЕРДЖЕНИЙ committed batch-файл (meta.approved=true) для топ-`limit` SKU,
+    ВИКЛЮЧАЮЧИ золотий пілот. Файл детермінований (items sorted by sku) → без git-churn поки
+    каталог не змінився. Деплой — тим самим bootstrap-шляхом, що й пілот (без SSH). Викликати
+    ЛИШЕ після style-approval власника. Повертає кількість items."""
+    catalog = fetch_toysi_catalog()
+    if not catalog:
+        raise RuntimeError("Каталог Toysi порожній — експорт скасовано.")
+    top = select_top_items(catalog)
+    skip = _pilot_skus()
+    items = []
+    for sku, item in top.items():
+        if len(items) >= limit:
+            break
+        sku = str(sku)
+        if sku in skip:
+            continue
+        try:
+            seo = build_seo(item)
+        except Exception as e:
+            print(f"[seo-gen] export: SKU {sku} пропущено ({type(e).__name__}: {e})", file=sys.stderr)
+            continue
+        items.append({"sku": sku, **seo})
+    items.sort(key=lambda it: it["sku"])
+    payload = {
+        "meta": {"approved": True, "source": SEO_SOURCE, "generated_at": generated_at,
+                 "note": "Фаза 2, шаблонний генератор. Затверджено власником (стиль) 2026-08-13. Виключає золотий пілот."},
+        "items": items,
+    }
+    Path(out_path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[seo-gen] Експортовано {len(items)} approved описів → {out_path}")
+    return len(items)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help=f"Скільки SKU за прогін (дефолт {DEFAULT_LIMIT}).")
     ap.add_argument("--sample", metavar="FILE", help="Експортувати «сире vs SEO» у файл на огляд власнику.")
+    ap.add_argument("--export-batch", metavar="FILE",
+                    help="Згенерувати ЗАТВЕРДЖЕНИЙ committed batch (approved=true) для деплою. Лише після style-approval.")
+    ap.add_argument("--generated-at", default="", help="Дата для meta.generated_at (для детермінованого файлу).")
     args = ap.parse_args()
-    generate(limit=args.limit, sample_path=args.sample)
+    if args.export_batch:
+        export_batch(limit=args.limit, out_path=args.export_batch, generated_at=args.generated_at)
+    else:
+        generate(limit=args.limit, sample_path=args.sample)
 
 
 if __name__ == "__main__":

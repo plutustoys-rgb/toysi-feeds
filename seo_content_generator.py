@@ -20,6 +20,7 @@ source_hash уже збігається (idempotent — не регенерує�
 """
 import argparse
 import hashlib
+import html
 import json
 import re
 import sys
@@ -131,6 +132,7 @@ def build_seo(item: dict) -> dict:
     vendor = (item.get("vendor") or "").strip()
     country = (item.get("country") or "").strip()
     benefit = _benefit(category, sku)
+    closer = _pick(CLOSERS, sku, "c")
 
     facts = []
     if vendor:
@@ -141,15 +143,19 @@ def build_seo(item: dict) -> dict:
     if dims:
         facts.append(dims)
 
-    # Грамотно-безпечний каркас (усе в називному / лейблами; змінні не відмінюються):
-    sentences = [f"{name}."]
+    # Грамотно-безпечний каркас (усе в називному / лейблами; змінні не відмінюються).
+    # html.escape ЛИШЕ для HTML-варіанту: назва/бренд Toysi може містити «<»/«&», що зламало б
+    # розмітку сторінки. title/meta лишаються сирими (це plain-text поля; «&quot;» там — сміття).
+    def _p(*texts):
+        return "".join(f"<p>{html.escape(t)}</p>" for t in texts if t)
+    body_bits = []
     if category:
-        sentences.append(f"Категорія: {category}.")
-    sentences.append(benefit)
+        body_bits.append(f"Категорія: {category}.")
+    body_bits.append(benefit)
     if facts:
-        sentences.append(" ".join(facts))
-    sentences.append(_pick(CLOSERS, sku, "c"))
-    long_html = "".join(f"<p>{s}</p>" for s in [sentences[0]] + [" ".join(sentences[1:])])
+        body_bits.append(" ".join(facts))
+    body_bits.append(closer)
+    long_html = _p(f"{name}.", " ".join(body_bits))
 
     title = name[:255]
     meta = f"{name} — {category}. {benefit}"[:155] if category else f"{name}. {benefit}"[:155]
@@ -166,8 +172,12 @@ def generate(limit: int = DEFAULT_LIMIT, sample_path: str = None) -> dict:
         return {"generated": 0}
     top = select_top_items(catalog)
 
+    # Спершу гарантуємо, що золотий пілот (approved=1) у БД — інакше, якщо генератор першим
+    # наповнить свіжу БД, фідовий bootstrap (gated на count==0) назавжди пропустить пілот.
+    db.load_approved_prom_overrides()
+
     existing = db.load_all_meta()   # {sku: {approved, source_hash}}
-    stats = {"generated": 0, "skipped_approved": 0, "skipped_unchanged": 0}
+    stats = {"generated": 0, "skipped_approved": 0, "skipped_unchanged": 0, "errors": 0}
     samples = []
     for sku, item in top.items():
         sku = str(sku)
@@ -177,12 +187,17 @@ def generate(limit: int = DEFAULT_LIMIT, sample_path: str = None) -> dict:
         if cur and cur.get("approved"):
             stats["skipped_approved"] += 1
             continue
-        src_hash = db.compute_source_hash(item)
-        if cur and cur.get("source_hash") == src_hash and src_hash:
-            stats["skipped_unchanged"] += 1
+        try:
+            src_hash = db.compute_source_hash(item)
+            if cur and cur.get("source_hash") == src_hash and src_hash:
+                stats["skipped_unchanged"] += 1
+                continue
+            seo = build_seo(item)
+            db.upsert(sku, source_hash=src_hash, source=SEO_SOURCE, approved=0, **seo)
+        except Exception as e:   # один битий товар не має валити весь прогін
+            stats["errors"] += 1
+            print(f"[seo-gen] SKU {sku} пропущено ({type(e).__name__}: {e})", file=sys.stderr)
             continue
-        seo = build_seo(item)
-        db.upsert(sku, source_hash=src_hash, source=SEO_SOURCE, approved=0, **seo)
         stats["generated"] += 1
         if sample_path and len(samples) < 30:
             raw = re.sub(r"<[^>]+>", " ", str(item.get("description", "")))[:200].strip()

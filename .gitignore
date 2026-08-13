@@ -270,3 +270,9 @@ prom_ledger_sweep_checked.json
 # SEO-описи товарів (seo_content_db.py) — VPS-runtime SQLite, бутстрапиться з
 # committed seo_pilot_manual_batch.json / пише Фаза-2 генератор. Не для git (account-specific).
 seo_content.db
+
+# Соцмережевий автопостер (social_auto_poster.py): згенеровані пости-артефакти й журнал
+# опублікованого — VPS-runtime, account-specific, не для git (як seo_content.db вище).
+# Ручний пілот Cowork (social_posts/postN_*) НЕ ігнорується — лише авто-підпапка.
+social_posts/auto/
+social_posted_ledger.json

@@ -28,6 +28,10 @@ import sqlite3
 
 SEO_DB = Path(__file__).parent / "seo_content.db"
 PILOT_BATCH = Path(__file__).parent / "seo_pilot_manual_batch.json"
+TEMPLATE_BATCH = Path(__file__).parent / "seo_template_batch.json"
+# Committed batch-файли, які bootstrap-имо у VPS-runtime БД. Пілот ОСТАННІМ → рукописне
+# «золото» перекриває шаблон на будь-якому спільному SKU (шаблон їх і так виключає при генерації).
+BOOTSTRAP_BATCHES = [TEMPLATE_BATCH, PILOT_BATCH]
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -110,15 +114,35 @@ def _count() -> int:
         conn.close()
 
 
+def _ensure_batches_imported() -> None:
+    """Імпортує committed batch-файли (шаблонний + пілот) у БД — по одному разу на кожну ВЕРСІЮ
+    файлу (ledger за sha вмісту). Розв'язує count==0-пастку: коли БД уже має пілот, новий/змінений
+    batch усе одно підхоплюється (без ручного VPS-кроку). Незмінний batch не реімпортується.
+    Пілот імпортується ОСТАННІМ → золото перекриває шаблон на спільних SKU."""
+    conn = _connect()
+    conn.execute("CREATE TABLE IF NOT EXISTS imported_batches (sha TEXT PRIMARY KEY, name TEXT)")
+    seen = {r[0] for r in conn.execute("SELECT sha FROM imported_batches").fetchall()}
+    conn.close()
+    for b in BOOTSTRAP_BATCHES:
+        if not b.exists():
+            continue
+        sha = hashlib.sha256(b.read_bytes()).hexdigest()
+        if sha in seen:
+            continue
+        import_batch(b)
+        c = _connect()
+        c.execute("INSERT OR REPLACE INTO imported_batches (sha, name) VALUES (?, ?)", (sha, b.name))
+        c.commit()
+        c.close()
+
+
 def load_approved_prom_overrides() -> dict:
     """{sku: {"description": seo_long_html}} для approved=1 з непорожнім long_html — формат
     desc_override, який уже вживає generate_prom_feed._build_xml (Prom першим). Бутстрап без
-    ручного кроку: якщо БД порожня/відсутня, імпортуємо committed pilot batch (idempotent).
+    ручного кроку: committed batch-файли (пілот + шаблон Фази-2) імпортуються по версії вмісту.
     Пошкодження БД/файлу → порожній dict (фід тихо падає на сирі описи Toysi, нічого не ламає)."""
     try:
-        if not SEO_DB.exists() or _count() == 0:
-            if PILOT_BATCH.exists():
-                import_batch()
+        _ensure_batches_imported()
         conn = _connect()
         rows = conn.execute(
             "SELECT sku, seo_long_html FROM seo WHERE approved = 1 AND seo_long_html != ''"

@@ -310,11 +310,17 @@ def generate_top_feed(output_file: str = OUTPUT_FILE) -> None:
     # імпорт, бо prom_competitor_pricer.py вже імпортує з цього файлу
     # (select_top_items/load_scan_state).
     from prom_competitor_pricer import _load_prom_category_cache
+    # SEO-описи (задача Cowork найновіше-18/20, пілот 30 затверджено власником): approved
+    # SEO-опис ПОВНІСТЮ замінює сирий опис Toysi для свого SKU (той самий desc_override-механізм
+    # _build_xml, Vis-9), фолбек на Toysi для решти → поступова безпечна розкатка по SKU.
+    # Prom першим (за домовленістю). Порожньо/помилка → сирі описи (нічого не ламає).
+    from seo_content_db import load_approved_prom_overrides
     generate_feed(
         output_file=output_file,
         catalog=top_catalog,
         price_overrides=load_fresh_prom_price_overrides(),
         prom_category_cache=_load_prom_category_cache(),
+        description_overrides=load_approved_prom_overrides(),
         # ПОВНИЙ каталог (не лише топ-6000) для виведення Toysi→Prom категорій:
         # кеш містить Prom-категорії всіх ~5836 імпортованих SKU, більшість з яких
         # через ротацію зараз поза топ-6000 — derive по повному каталогу дає їм усім

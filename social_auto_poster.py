@@ -80,7 +80,8 @@ def _clean_name(name: str) -> str:
     """Прибирає внутрішній мотлох із назви Toysi для соцпосту: '#374' (внутр. артикул),
     '(10/100)'/'(12/600)' (кількість у коробі). Кольори/розміри в дужках (не цифра/цифра)
     лишаються. Схлопує пробіли. Назву як факт НЕ перекручуємо — лише службові токени."""
-    n = re.sub(r"#\d+", "", name or "")
+    n = re.sub(r"<[^>]+>", " ", name or "")   # захист: жодних HTML-тегів у підписі
+    n = re.sub(r"#\d+", "", n)
     n = re.sub(r"\(\s*\d+\s*/\s*\d+\s*\)", "", n)
     return re.sub(r"\s+", " ", n).strip()
 
@@ -130,7 +131,11 @@ def load_products() -> list:
     if not META_FEED.exists():
         print(f"[social] нема {META_FEED} — спершу згенеруй Meta-фід.", file=sys.stderr)
         return []
-    root = ET.parse(META_FEED).getroot()
+    try:
+        root = ET.parse(META_FEED).getroot()
+    except ET.ParseError as e:   # битий/обрізаний фід не має валити прогін (симетрично з ledger)
+        print(f"[social] {META_FEED} биті XML ({e}) — пропускаю прогін.", file=sys.stderr)
+        return []
     out = []
     for item in root.iter("item"):
         g = lambda t: item.findtext("g:" + t, namespaces=NS)
@@ -150,9 +155,8 @@ def load_products() -> list:
 
 def _price_grn(raw: str) -> str:
     """'518.02 UAH' -> '518 грн.'; порожнє/невідоме -> ''."""
-    num = (raw or "").split()[0] if raw else ""
     try:
-        return f"{round(float(num))} грн."
+        return f"{round(float((raw or '').split()[0]))} грн."
     except (ValueError, IndexError):
         return ""
 
@@ -253,6 +257,13 @@ def run(limit: int, publish: bool) -> dict:
             else:
                 stats["errors"] += 1
                 print(f"[social] ПОМИЛКА публікації {p['sku']}: {res['error']}", file=sys.stderr)
+                if stats["errors"] >= 3 and stats["posted"] == 0:
+                    # 3 поспіль невдачі без жодного успіху → системна проблема (протухлий/
+                    # неправильний токен, бан). Зупиняємось, щоб не гатити 100+ мертвих POST у FB.
+                    print("[social] 3 невдалі публікації поспіль, 0 успішних — зупиняю прогін "
+                          "(ймовірно токен/дозвіл). Перевір FB_PAGE_ACCESS_TOKEN.", file=sys.stderr)
+                    _notify("⚠️ Facebook-постер зупинено: 3 невдачі поспіль (токен/дозвіл?).")
+                    break
         else:
             stats["dryrun"] += 1
 

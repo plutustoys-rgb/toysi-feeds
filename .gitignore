@@ -266,3 +266,7 @@ prom_pushed_ledger.json
 # prom_ledger_sweep_checked.json — sweep-курсор звірки журналу (які кандидати вже пройдено
 # в поточному циклі), той самий клас, що prom_cabinet_supplement_checked.json — не для git.
 prom_ledger_sweep_checked.json
+
+# SEO-описи товарів (seo_content_db.py) — VPS-runtime SQLite, бутстрапиться з
+# committed seo_pilot_manual_batch.json / пише Фаза-2 генератор. Не для git (account-specific).
+seo_content.db

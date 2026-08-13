@@ -114,26 +114,51 @@ def _count() -> int:
         conn.close()
 
 
+def _record_sha(name: str, sha: str) -> None:
+    c = _connect()
+    c.execute("INSERT OR REPLACE INTO imported_batches (sha, name) VALUES (?, ?)", (sha, name))
+    c.commit()
+    c.close()
+
+
 def _ensure_batches_imported() -> None:
     """Імпортує committed batch-файли (шаблонний + пілот) у БД — по одному разу на кожну ВЕРСІЮ
     файлу (ledger за sha вмісту). Розв'язує count==0-пастку: коли БД уже має пілот, новий/змінений
     batch усе одно підхоплюється (без ручного VPS-кроку). Незмінний batch не реімпортується.
-    Пілот імпортується ОСТАННІМ → золото перекриває шаблон на спільних SKU."""
+
+    ГАРАНТІЯ «золото перекриває шаблон»: пілот імпортується ОСТАННІМ і реімпортується щоразу,
+    коли цього прогону змінився будь-який інший batch (не лише на свіжій БД) — тож рукописне
+    золото завжди виграє на спільному SKU, навіть якщо майбутній шаблон його зачепить.
+    Помилка в одному batch (пошкоджений файл) НЕ валить решту — тихо пропускаємо, інші лишаються."""
     conn = _connect()
     conn.execute("CREATE TABLE IF NOT EXISTS imported_batches (sha TEXT PRIMARY KEY, name TEXT)")
     seen = {r[0] for r in conn.execute("SELECT sha FROM imported_batches").fetchall()}
     conn.close()
+
+    imported_any = False
     for b in BOOTSTRAP_BATCHES:
-        if not b.exists():
-            continue
-        sha = hashlib.sha256(b.read_bytes()).hexdigest()
-        if sha in seen:
-            continue
-        import_batch(b)
-        c = _connect()
-        c.execute("INSERT OR REPLACE INTO imported_batches (sha, name) VALUES (?, ?)", (sha, b.name))
-        c.commit()
-        c.close()
+        if b == PILOT_BATCH or not b.exists():
+            continue  # пілот — окремо в кінці (нижче)
+        try:
+            sha = hashlib.sha256(b.read_bytes()).hexdigest()
+            if sha in seen:
+                continue
+            import_batch(b)
+            _record_sha(b.name, sha)
+            imported_any = True
+        except (OSError, ValueError, sqlite3.Error) as e:
+            print(f"[seo] batch {b.name} пропущено ({e}) — інші лишаються.", file=sys.stderr)
+
+    # Пілот ОСТАННІМ: якщо його версія нова АБО цього прогону змінився інший batch → (ре)імпорт,
+    # щоб золото завжди перекривало шаблон.
+    if PILOT_BATCH.exists():
+        try:
+            psha = hashlib.sha256(PILOT_BATCH.read_bytes()).hexdigest()
+            if psha not in seen or imported_any:
+                import_batch(PILOT_BATCH)
+                _record_sha(PILOT_BATCH.name, psha)
+        except (OSError, ValueError, sqlite3.Error) as e:
+            print(f"[seo] pilot batch пропущено ({e}).", file=sys.stderr)
 
 
 def load_approved_prom_overrides() -> dict:

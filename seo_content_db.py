@@ -131,6 +131,20 @@ def load_approved_prom_overrides() -> dict:
         return {}
 
 
+def load_all_meta() -> dict:
+    """{sku: {"approved": int, "source_hash": str}} для ВСІХ записів — для генератора Фази 2
+    (пропускати вже approved=1 «золотий» пілот і незмінені за source_hash). Помилка → {}."""
+    try:
+        if not SEO_DB.exists():
+            return {}
+        conn = _connect()
+        rows = conn.execute("SELECT sku, approved, source_hash FROM seo").fetchall()
+        conn.close()
+        return {str(sku): {"approved": int(appr or 0), "source_hash": sh or ""} for sku, appr, sh in rows}
+    except (sqlite3.Error, ValueError, OSError):
+        return {}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--import", dest="import_path", metavar="JSON", nargs="?", const=str(PILOT_BATCH),

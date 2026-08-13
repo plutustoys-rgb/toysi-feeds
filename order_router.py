@@ -10,6 +10,7 @@ from orders_db import (
 )
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
+from meta_conversions_client import send_purchase_event
 from nova_poshta import resolve_shipping, NovaPoshtaAPIError
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message
@@ -490,6 +491,11 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         toysi_id = result.get("toysi_order_id")
         mark_forwarded_to_toysi(conn, order["internal_order_id"], str(toysi_id) if toysi_id is not None else "")
         _update_marketplace_status(order)
+        # Meta Conversions API — подія Purchase у момент передачі в Toysi (STATUS.md
+        # найновіше-13/14). Best-effort: send_purchase_event() ніколи не піднімає виняток
+        # і тихо no-op'ить без META_DATASET_ID/META_CONVERSIONS_API_TOKEN у .env. Той самий
+        # момент і той самий принцип «не ламати order flow», що й _update_marketplace_status.
+        send_purchase_event(order)
         dup_note = " (дублікат — вже існував у Toysi)" if result["is_duplicate"] else ""
         if ukrposhta_shipment:
             mark_ukrposhta_shipment(

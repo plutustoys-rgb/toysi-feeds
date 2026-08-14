@@ -1,4 +1,5 @@
 import html
+import math
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -622,7 +623,9 @@ def _build_xml(
                 MIN_PROFIT_COMPETITOR_FLOOR,
             )
             if retail < floor:
-                retail = round(floor, 2)
+                # ceil до копійки (не round) — гард ніколи не має публікувати навіть на пів-копійки
+                # НИЖЧЕ floor; -1e-6 гасить float-шум, щоб рівно-копійчаний floor не стрибав угору.
+                retail = math.ceil(floor * 100 - 1e-6) / 100
                 floor_clamped_count += 1
             overridden_count += 1
         else:

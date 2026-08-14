@@ -4,7 +4,9 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from competitor_pricing import decide_price_for_platform, load_fresh_prom_price_overrides, load_description_overrides, real_toysi_cost
+from competitor_pricing import (decide_price_for_platform, load_fresh_prom_price_overrides,
+                                 load_description_overrides, real_toysi_cost,
+                                 compute_floor, compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
 from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
 
@@ -572,6 +574,7 @@ def _build_xml(
     skipped         = 0
     skipped_cheap   = 0
     overridden_count       = 0  # ціна з pricing_results.csv (конкурент перевірений вручну)
+    floor_clamped_count    = 0  # override-ціна БУЛА нижче свіжого floor → підняли до floor (суцільний гард)
     floor_bound_count      = 0  # ціна за замовчуванням, впирається в нижню межу маржі
     multiplier_bound_count = 0  # ціна за замовчуванням, NO_COMPETITOR_MULT вищий за межу
     russian_missing_count  = 0  # немає rus-варіанту з Toysi — впало назад на українську
@@ -606,6 +609,21 @@ def _build_xml(
         item_id = str(item["id"])
         if item_id in overrides:
             retail = overrides[item_id]
+            # СУЦІЛЬНИЙ floor-гард (усі ~6000 SKU, на КОЖНІЙ генерації фіду). Override — це
+            # конкурентна ціна репрайсера, яку могло занизити зростання собівартості Toysi ПІСЛЯ
+            # ціноутворення (лаг ротації: репрайсер обходить каталог за кілька діб). Тут, у момент
+            # публікації, зі СВІЖОЮ собівартістю (cost = real_toysi_cost, кеш ≤1 год) не даємо
+            # опублікувати нижче 3%-floor: піднімаємо ЛИШЕ вгору до floor (ніколи не опускаємо й
+            # ніколи не нижче конкурента). Формульна гілка (else) floor уже поважає через
+            # decide_price_for_platform. Read-only по стану репрайсера — жодної гонки за файл.
+            floor = compute_floor(
+                cost,
+                compute_total_commission(PLATFORM, item.get("category_name"), retail),
+                MIN_PROFIT_COMPETITOR_FLOOR,
+            )
+            if retail < floor:
+                retail = round(floor, 2)
+                floor_clamped_count += 1
             overridden_count += 1
         else:
             decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))
@@ -752,6 +770,7 @@ def _build_xml(
         "skipped_no_price": skipped,
         "skipped_cheap": skipped_cheap,
         "overridden_count": overridden_count,
+        "floor_clamped_count": floor_clamped_count,
         "floor_bound_count": floor_bound_count,
         "multiplier_bound_count": multiplier_bound_count,
         "russian_missing_count": russian_missing_count,
@@ -821,6 +840,10 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         f"(pricing_results.csv), {stats['floor_bound_count']} впираються в нижню межу маржі "
         f"(коротка маржа після комісії категорії), {stats['multiplier_bound_count']} за "
         "стандартним множником NO_COMPETITOR_MULT"
+    )
+    print(
+        f"[Prom] Суцільний floor-гард: {stats['floor_clamped_count']} override-цін були нижче "
+        f"свіжого floor і піднято до нього (захист маржі між ротаціями репрайсера)."
     )
     print(
         f"[Prom] Російська назва: {stats['russian_missing_count']} SKU без rus-варіанту в "

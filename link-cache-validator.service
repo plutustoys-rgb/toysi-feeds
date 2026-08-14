@@ -1,0 +1,20 @@
+[Unit]
+# PlutusToys — щоденна ре-валідація own_product_links_cache.json, щоб фіди (Google Merchant /
+# Bing / Meta) не несли 404-лінки (втрата видимості товару; GMC ще й відхиляє — реальний
+# інцидент 2026-07-27). Переслаглені ЖИВІ товари лагодить (новий slug із prom.ua), зниклі
+# прибирає. Запобіжник у скрипті абортить при масовій «смерті» (транзієнтний збій мережі).
+# Деплой: копія в /etc/systemd/system/,
+# `systemctl daemon-reload && systemctl enable --now link-cache-validator.timer`.
+Description=PlutusToys: revalidate own_product_links_cache (fix re-slugged / prune dead links)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python (requests/dotenv; голий python3 впаде). Робоча тека
+# /opt/plutustoys — щоб own_product_links_cache.json резолвився відносним шляхом.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/link_cache_validator.py
+# Ре-резолв мертвих із джитером до prom.ua може зайняти кілька хвилин на 100+ мертвих.
+TimeoutStartSec=1800

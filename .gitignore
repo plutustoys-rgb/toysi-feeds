@@ -276,3 +276,5 @@ seo_content.db
 # Ручний пілот Cowork (social_posts/postN_*) НЕ ігнорується — лише авто-підпапка.
 social_posts/auto/
 social_posted_ledger.json
+# Міжпроцесний lock соц-постера (flock) — щоб FB- та IG-таймери не гнали ledger одночасно.
+.social_poster.lock

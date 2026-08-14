@@ -1,0 +1,14 @@
+[Unit]
+Description=PlutusToys: daily trigger for Facebook auto-post (social_auto_poster --target fb)
+
+[Timer]
+# Facebook — 1 пост/день (7/тиждень), рішення власника найновіше-40. 11:00 системного часу VPS
+# (EEST). IG-таймер навмисно на ІНШИХ годинах (12:00/18:00), щоб не збігтись за ledger; плюс
+# файловий lock у скрипті — подвійний захист від одночасного запуску.
+OnCalendar=*-*-* 11:00:00
+# Наздогнати пропущене, якщо VPS був вимкнений (ledger не дасть дублів; lock — від збігу з IG).
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

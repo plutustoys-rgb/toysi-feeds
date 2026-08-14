@@ -1,0 +1,15 @@
+[Unit]
+Description=PlutusToys: daily trigger for link_cache_validator (fix/prune dead product links)
+
+[Timer]
+# Раз на добу о 03:40 системного часу VPS. Свідомо НЕ на 4-годинній межі (00:00/04:00/…),
+# де крутиться фід-пайплайн, — щоб не збігтись за запис own_product_links_cache.json (наш
+# запис атомарний, тож навіть збіг лише самовиправиться наступного разу, але 03:40 і так поза
+# піком). Точна хвилина не важлива (RandomizedDelaySec розмиває).
+OnCalendar=*-*-* 03:40:00
+# Наздогнати пропущене, якщо VPS був вимкнений (валідація ідемпотентна).
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

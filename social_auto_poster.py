@@ -269,12 +269,13 @@ def _ig_product_id(sku: str, name: str, cache: dict):
             if IG_CATALOG_ID:
                 params["catalog_id"] = IG_CATALOG_ID
             r = requests.get(base, params=params, timeout=REQUEST_TIMEOUT)
-            for prod in ((r.json() if r.content else {}).get("data") or []):
-                if str(prod.get("retailer_id")) == str(sku):
+            data = (r.json() if r.content else {}).get("data") or []
+            for prod in data:
+                if isinstance(prod, dict) and str(prod.get("retailer_id")) == str(sku):
                     pid = prod.get("product_id")
                     break
-        except (requests.RequestException, ValueError):
-            pass
+        except (requests.RequestException, ValueError, AttributeError, TypeError):
+            pass   # несподівана форма відповіді / мережа → None (постимо без мітки)
     cache[sku] = pid
     return pid
 
@@ -294,12 +295,14 @@ def _publish_ig(p: dict, caption: str, product_id=None) -> dict:
     Якщо створення З МІТКОЮ впало (товар не approved / позиція) — ретрай БЕЗ мітки, щоб пост
     усе одно вийшов (мітка — бонус, не блокер). Токен — FB_PAGE_ACCESS_TOKEN. Не кидає."""
     base = f"https://graph.facebook.com/{GRAPH_VERSION}"
+    used_tag = bool(product_id)
     try:
         c = _ig_create_media(p["image"], caption, product_id)
         cj = c.json() if c.content else {}
         if not (c.ok and cj.get("id")) and product_id:
             # мітка завалила створення → повтор без неї (пост важливіший за мітку)
             print(f"[social] IG {p['sku']}: product-мітка не прийнялась, постю без неї.", file=sys.stderr)
+            used_tag = False
             c = _ig_create_media(p["image"], caption, None)
             cj = c.json() if c.content else {}
         creation_id = cj.get("id")
@@ -320,9 +323,9 @@ def _publish_ig(p: dict, caption: str, product_id=None) -> dict:
                             timeout=REQUEST_TIMEOUT)
         pj = pub.json() if pub.content else {}
         if pub.ok and pj.get("id"):
-            return {"ok": True, "id": pj["id"]}
+            return {"ok": True, "id": pj["id"], "tagged": used_tag}   # tagged = чи РЕАЛЬНО причепилась
         return {"ok": False, "error": pj.get("error", {}).get("message", f"publish HTTP {pub.status_code}")}
-    except (requests.RequestException, ValueError) as e:
+    except (requests.RequestException, ValueError, AttributeError, TypeError) as e:
         return {"ok": False, "error": str(e)}
 
 
@@ -385,10 +388,11 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
             if res["ok"]:
                 _record_post(ledger, pl, sku, res["id"])
                 stats["posted"] += 1
-                if product_id:
+                really_tagged = bool(res.get("tagged"))   # чи мітка справді причепилась (не намір)
+                if really_tagged:
                     stats["tagged"] += 1
                 print(f"[social] {pl.upper()} опубліковано {sku} → {res['id']}"
-                      + (" (з product-міткою)" if product_id else ""))
+                      + (" (з product-міткою)" if really_tagged else ""))
             else:
                 stats["errors"] += 1
                 print(f"[social] {pl.upper()} ПОМИЛКА {sku}: {res['error']}", file=sys.stderr)

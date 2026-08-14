@@ -45,8 +45,15 @@ if hasattr(sys.stdout, "reconfigure"):
 
 FB_PAGE_ID = os.environ.get("FB_PAGE_ID", "").strip()
 FB_PAGE_ACCESS_TOKEN = os.environ.get("FB_PAGE_ACCESS_TOKEN", "").strip()
+# Instagram Business Account ID (з /{page-id}?fields=instagram_business_account). Токен той
+# самий FB_PAGE_ACCESS_TOKEN — щойно застосунок отримає instagram_basic+instagram_content_publish
+# (у Dev-режимі адмін вмикає собі без App Review, як з pages_manage_posts). Без IG_USER_ID —
+# IG-бекенд тихий no-op.
+IG_USER_ID = os.environ.get("IG_USER_ID", "").strip()
 GRAPH_VERSION = "v21.0"
 REQUEST_TIMEOUT = 30
+IG_MEDIA_POLL_TRIES = 5      # контейнер IG інколи ще обробляється — коротко чекаємо FINISHED
+IG_MEDIA_POLL_SLEEP = 3
 
 BASE = Path(__file__).parent
 META_FEED = BASE / "feeds" / "meta_feed.xml"
@@ -161,32 +168,57 @@ def _price_grn(raw: str) -> str:
         return ""
 
 
-def build_caption(p: dict) -> str:
+def build_caption(p: dict, platform: str = "fb") -> str:
+    """Підпис під платформу. Спільне: хук + назва + користь + ціна + хештеги. Різниця: на FB
+    URL товару клікабельний → лишаємо; на IG посилання в підписі НЕ клікабельні → замість URL
+    даємо заклик на профіль (лінк — у шапці профілю)."""
     sku = p["sku"]
     lines = [_pick(HOOKS, sku, "h"), p["name"] + ".", _benefit(p["name"], sku)]
     price = _price_grn(p.get("price"))
     if price:
         lines.append(f"Ціна: {price}")
-    lines.append(p["url"])
+    if platform == "ig":
+        lines.append("Замовлення — за посиланням у шапці профілю 🔗")
+    else:
+        lines.append(p["url"])
     lines.append(_hashtags(p["name"]))
     return "\n".join(lines)
 
 
 def _load_ledger() -> dict:
+    """Ledger платформо-залежний: {platform: {sku: {at, post_id}}}. Legacy-формат (пласкі
+    {sku: {at, post_id}} з FB-ери до IG) мігруємо під ключ 'fb', щоб уже постнуті на FB SKU
+    не постнулись повторно."""
     try:
-        return json.loads(LEDGER.read_text(encoding="utf-8")) if LEDGER.exists() else {}
+        raw = json.loads(LEDGER.read_text(encoding="utf-8")) if LEDGER.exists() else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    # legacy-детект: значення верхнього рівня схожі на запис поста (мають 'at'/'post_id'),
+    # а не на під-словник платформи.
+    if any(isinstance(v, dict) and ("at" in v or "post_id" in v) for v in raw.values()):
+        return {"fb": raw}
+    return raw
 
 
 def _save_ledger(led: dict) -> None:
     LEDGER.write_text(json.dumps(led, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _write_dryrun(p: dict, caption: str) -> None:
+def _already_posted(led: dict, platform: str, sku: str) -> bool:
+    return sku in led.get(platform, {})
+
+
+def _record_post(led: dict, platform: str, sku: str, post_id: str) -> None:
+    led.setdefault(platform, {})[sku] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "post_id": post_id}
+    _save_ledger(led)
+
+
+def _write_dryrun(p: dict, caption: str, platform: str = "fb") -> None:
     d = OUT_DIR / p["sku"]
     d.mkdir(parents=True, exist_ok=True)
-    (d / "caption.txt").write_text(caption, encoding="utf-8")
+    (d / f"caption_{platform}.txt").write_text(caption, encoding="utf-8")
     (d / "info.json").write_text(json.dumps({"sku": p["sku"], "url": p["url"], "image": p["image"]},
                                             ensure_ascii=False, indent=2), encoding="utf-8")
     try:  # images.prom.ua без хотлінк-блокування → можна одразу тягнути на прев'ю власнику
@@ -214,6 +246,53 @@ def _publish_fb(p: dict, caption: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def _publish_ig(p: dict, caption: str) -> dict:
+    """Instagram-публікація — ДВА кроки: (1) створити media-контейнер (/{ig}/media з image_url+
+    caption), (2) media_publish за creation_id. Між ними коротко чекаємо status_code=FINISHED
+    (фото зазвичай готове одразу, але буває обробка). Токен — той самий FB_PAGE_ACCESS_TOKEN
+    (з instagram_content_publish). Повертає {ok, id|error}. Ніколи не кидає."""
+    base = f"https://graph.facebook.com/{GRAPH_VERSION}"
+    try:
+        c = requests.post(f"{base}/{IG_USER_ID}/media",
+                          data={"image_url": p["image"], "caption": caption,
+                                "access_token": FB_PAGE_ACCESS_TOKEN}, timeout=REQUEST_TIMEOUT)
+        cj = c.json() if c.content else {}
+        creation_id = cj.get("id")
+        if not (c.ok and creation_id):
+            return {"ok": False, "error": cj.get("error", {}).get("message", f"media HTTP {c.status_code}")}
+        # почекати FINISHED (best-effort; IN_PROGRESS → повтор, ERROR/EXPIRED → вихід)
+        for _ in range(IG_MEDIA_POLL_TRIES):
+            s = requests.get(f"{base}/{creation_id}", params={"fields": "status_code",
+                             "access_token": FB_PAGE_ACCESS_TOKEN}, timeout=REQUEST_TIMEOUT)
+            code = (s.json() if s.content else {}).get("status_code")
+            if code == "FINISHED":
+                break
+            if code in ("ERROR", "EXPIRED"):
+                return {"ok": False, "error": f"media status {code}"}
+            time.sleep(IG_MEDIA_POLL_SLEEP)
+        pub = requests.post(f"{base}/{IG_USER_ID}/media_publish",
+                            data={"creation_id": creation_id, "access_token": FB_PAGE_ACCESS_TOKEN},
+                            timeout=REQUEST_TIMEOUT)
+        pj = pub.json() if pub.content else {}
+        if pub.ok and pj.get("id"):
+            return {"ok": True, "id": pj["id"]}
+        return {"ok": False, "error": pj.get("error", {}).get("message", f"publish HTTP {pub.status_code}")}
+    except (requests.RequestException, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+# Бекенди публікації + гейт «чи є креденшели» на платформу.
+PUBLISHERS = {"fb": _publish_fb, "ig": _publish_ig}
+
+
+def _platform_ready(platform: str) -> bool:
+    if platform == "fb":
+        return bool(FB_PAGE_ID and FB_PAGE_ACCESS_TOKEN)
+    if platform == "ig":
+        return bool(IG_USER_ID and FB_PAGE_ACCESS_TOKEN)
+    return False
+
+
 def _notify(text: str) -> None:
     try:
         from telegram_notify import send_telegram_message
@@ -222,66 +301,82 @@ def _notify(text: str) -> None:
         pass
 
 
-def run(limit: int, publish: bool) -> dict:
+def run(limit: int, publish: bool, targets=("fb",)) -> dict:
+    """targets — платформи цього прогону ('fb'/'ig'). `limit` рахує ТОВАРИ, не пости: один
+    обраний товар постить на всі задані платформи, де його ще нема (ledger per-platform).
+    Товар «покрито», лише коли він у ledger усіх заданих платформ."""
     products = load_products()
     if not products:
-        return {"posted": 0}
+        return {"processed": 0}
     ledger = _load_ledger()
-    live_publish = publish and FB_PAGE_ID and FB_PAGE_ACCESS_TOKEN
-    if publish and not live_publish:
-        print("[social] --publish задано, але нема FB_PAGE_ID/FB_PAGE_ACCESS_TOKEN у .env — "
-              "тихий no-op (готую dry-run пости). Постинг оживе, щойно токен буде в оточенні.",
-              file=sys.stderr)
+    live = [pl for pl in targets if _platform_ready(pl)] if publish else []
+    if publish:
+        for pl in targets:
+            if pl not in live:
+                miss = "FB_PAGE_ID/FB_PAGE_ACCESS_TOKEN" if pl == "fb" else "IG_USER_ID (+FB_PAGE_ACCESS_TOKEN)"
+                print(f"[social] {pl.upper()}: нема {miss} у .env — тихий no-op (dry-run усе одно "
+                      f"готую). Оживе, щойно креденшели будуть в оточенні.", file=sys.stderr)
 
-    stats = {"posted": 0, "dryrun": 0, "skipped": 0, "dead_links": 0, "errors": 0}
+    stats = {"processed": 0, "posted": 0, "dryrun": 0, "skipped": 0, "dead_links": 0, "errors": 0}
     url_cache = {}
     for p in products:
-        if stats["posted"] + stats["dryrun"] >= limit:
+        if stats["processed"] >= limit:
             break
-        if p["sku"] in ledger:
-            stats["skipped"] += 1
+        sku = p["sku"]
+        needed = [pl for pl in targets if not _already_posted(ledger, pl, sku)]
+        if not needed:
+            stats["skipped"] += 1     # уже покрито на всіх заданих платформах
             continue
-        if not _url_alive(p["url"], url_cache):   # не постимо битих посилань (стейл-кеш → 404)
+        if not _url_alive(p["url"], url_cache):   # не постимо/не готуємо биті посилання
             stats["dead_links"] += 1
-            print(f"[social] пропущено {p['sku']}: мертве посилання {p['url']}", file=sys.stderr)
+            print(f"[social] пропущено {sku}: мертве посилання {p['url']}", file=sys.stderr)
             continue
-        caption = build_caption(p)
-        _write_dryrun(p, caption)   # завжди лишаємо артефакт (і як прев'ю, і як лог опублікованого)
-        if live_publish:
-            res = _publish_fb(p, caption)
+        stats["processed"] += 1
+        for pl in needed:
+            caption = build_caption(p, pl)
+            _write_dryrun(p, caption, pl)   # завжди артефакт (прев'ю + лог)
+            if pl not in live:
+                stats["dryrun"] += 1
+                continue
+            res = PUBLISHERS[pl](p, caption)
             if res["ok"]:
-                ledger[p["sku"]] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "post_id": res["id"]}
-                _save_ledger(ledger)
+                _record_post(ledger, pl, sku, res["id"])
                 stats["posted"] += 1
-                print(f"[social] опубліковано {p['sku']} → {res['id']}")
+                print(f"[social] {pl.upper()} опубліковано {sku} → {res['id']}")
             else:
                 stats["errors"] += 1
-                print(f"[social] ПОМИЛКА публікації {p['sku']}: {res['error']}", file=sys.stderr)
+                print(f"[social] {pl.upper()} ПОМИЛКА {sku}: {res['error']}", file=sys.stderr)
                 if stats["errors"] >= 3 and stats["posted"] == 0:
-                    # 3 поспіль невдачі без жодного успіху → системна проблема (протухлий/
-                    # неправильний токен, бан). Зупиняємось, щоб не гатити 100+ мертвих POST у FB.
-                    print("[social] 3 невдалі публікації поспіль, 0 успішних — зупиняю прогін "
-                          "(ймовірно токен/дозвіл). Перевір FB_PAGE_ACCESS_TOKEN.", file=sys.stderr)
-                    _notify("⚠️ Facebook-постер зупинено: 3 невдачі поспіль (токен/дозвіл?).")
-                    break
-        else:
-            stats["dryrun"] += 1
+                    # 3 поспіль невдачі без жодного успіху → системна проблема (токен/дозвіл/бан).
+                    # Зупиняємось, щоб не гатити десятки мертвих запитів у Meta.
+                    print("[social] 3 невдачі поспіль, 0 успіхів — зупиняю прогін (токен/дозвіл?).",
+                          file=sys.stderr)
+                    _notify("⚠️ Соц-постер зупинено: 3 невдачі поспіль (токен/дозвіл?).")
+                    _report(stats)
+                    return stats
 
-    if live_publish and stats["posted"]:
-        _notify(f"📣 Facebook: опубліковано {stats['posted']} пост(ів). Помилок: {stats['errors']}.")
-    print(f"[social] posted={stats['posted']} dryrun={stats['dryrun']} "
-          f"skipped(вже постили)={stats['skipped']} мертвих_лінків={stats['dead_links']} "
-          f"errors={stats['errors']}. Артефакти: {OUT_DIR}")
+    if stats["posted"]:
+        _notify(f"📣 Соцпостинг: {stats['posted']} пост(ів) на {'+'.join(live)}. Помилок: {stats['errors']}.")
+    _report(stats)
     return stats
+
+
+def _report(stats: dict) -> None:
+    print(f"[social] processed={stats['processed']} posted={stats['posted']} dryrun={stats['dryrun']} "
+          f"skipped(покрито)={stats['skipped']} мертвих_лінків={stats['dead_links']} "
+          f"errors={stats['errors']}. Артефакти: {OUT_DIR}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--limit", type=int, default=3, help="Скільки постів за прогін (дефолт 3).")
+    ap.add_argument("--limit", type=int, default=3, help="Скільки ТОВАРІВ за прогін (дефолт 3).")
     ap.add_argument("--publish", action="store_true",
-                    help="Реально постити на FB-Сторінку. Без FB_PAGE_ID/FB_PAGE_ACCESS_TOKEN — no-op.")
+                    help="Реально постити. Без креденшелів платформи — тихий no-op (dry-run).")
+    ap.add_argument("--target", default="fb", choices=["fb", "ig", "both"],
+                    help="Куди постити: fb (дефолт, як зараз), ig, both. IG активний лише з IG_USER_ID у .env.")
     args = ap.parse_args()
-    run(limit=args.limit, publish=args.publish)
+    targets = ("fb", "ig") if args.target == "both" else (args.target,)
+    run(limit=args.limit, publish=args.publish, targets=targets)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,12 @@
 [Unit]
-# PlutusToys — автопост товару на Facebook-Сторінку (3×/тиждень через таймер).
-# Запускає social_auto_poster.py --limit 1 --publish: бере наступний ще-не-постнутий
-# ЖИВИЙ товар з feeds/meta_feed.xml (перевіряє 200 перед постом), публікує фото+підпис
-# на Сторінку через Graph API /{page-id}/photos, позначає в social_posted_ledger.json
-# (без повторів). Деплой: копія в /etc/systemd/system/,
+# PlutusToys — автопост товару на Facebook-Сторінку І Instagram (3×/тиждень через таймер).
+# Запускає social_auto_poster.py --limit 1 --publish --target both: бере наступний ще-не-
+# постнутий ЖИВИЙ товар з feeds/meta_feed.xml (перевіряє 200 перед постом) і публікує його
+# фото+підпис на FB-Сторінку (/{page-id}/photos) ТА в Instagram (двокроковий /media→
+# /media_publish), позначає окремо по платформах у social_posted_ledger.json (без повторів).
+# Деплой: копія в /etc/systemd/system/,
 # `systemctl daemon-reload && systemctl enable --now social-poster.timer`.
-Description=PlutusToys: Facebook Page auto-post (social_auto_poster.py --limit 1 --publish)
+Description=PlutusToys: FB Page + Instagram auto-post (social_auto_poster.py --target both)
 After=network-online.target
 Wants=network-online.target
 
@@ -14,9 +15,9 @@ Type=oneshot
 User=root
 WorkingDirectory=/opt/plutustoys
 # КРИТИЧНО (CLAUDE.md): venv-python (має python-dotenv/requests; голий python3 впаде).
-# Робоча тека /opt/plutustoys — щоб .env (FB_PAGE_ID/FB_PAGE_ACCESS_TOKEN),
+# Робоча тека /opt/plutustoys — щоб .env (FB_PAGE_ID/FB_PAGE_ACCESS_TOKEN/IG_USER_ID),
 # feeds/meta_feed.xml і social_posted_ledger.json резолвились.
-ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/social_auto_poster.py --limit 1 --publish
-# Не критичний сервіс: помилка лише логується в journal. Без токена — тихий no-op
-# (нічого не постить). 3 невдачі поспіль → скрипт сам зупиняється (стоп-гард).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/social_auto_poster.py --limit 1 --publish --target both
+# Не критичний сервіс: помилка лише логується в journal. Без креденшелів платформи — тихий
+# no-op (та платформа не постить). 3 невдачі поспіль → скрипт сам зупиняється (стоп-гард).
 TimeoutStartSec=600

@@ -50,6 +50,9 @@ FB_PAGE_ACCESS_TOKEN = os.environ.get("FB_PAGE_ACCESS_TOKEN", "").strip()
 # (у Dev-режимі адмін вмикає собі без App Review, як з pages_manage_posts). Без IG_USER_ID —
 # IG-бекенд тихий no-op.
 IG_USER_ID = os.environ.get("IG_USER_ID", "").strip()
+# Каталог Meta/IG Shopping (той самий PlutusToys Catalog, що годує meta_feed.xml). Потрібен,
+# щоб знайти product_id для product-мітки (тап на фото → картка → сторінка товару). НЕ секрет.
+IG_CATALOG_ID = os.environ.get("IG_CATALOG_ID", "2300136924133733").strip()
 GRAPH_VERSION = "v21.0"
 REQUEST_TIMEOUT = 30
 IG_MEDIA_POLL_TRIES = 5      # контейнер IG інколи ще обробляється — коротко чекаємо FINISHED
@@ -168,17 +171,20 @@ def _price_grn(raw: str) -> str:
         return ""
 
 
-def build_caption(p: dict, platform: str = "fb") -> str:
+def build_caption(p: dict, platform: str = "fb", tagged: bool = False) -> str:
     """Підпис під платформу. Спільне: хук + назва + користь + ціна + хештеги. Різниця: на FB
-    URL товару клікабельний → лишаємо; на IG посилання в підписі НЕ клікабельні → замість URL
-    даємо заклик на профіль (лінк — у шапці профілю)."""
+    URL товару клікабельний → лишаємо; на IG посилання в підписі НЕ клікабельні. Якщо на IG
+    причеплено product-мітку (tagged=True) → CTA на позначку (тап → сторінка товару); інакше —
+    на посилання в профілі. Формулювання tagged згадує ОБИДВА шляхи, тож лишається коректним,
+    навіть якщо мітка при публікації не причепилась (fallback у _publish_ig)."""
     sku = p["sku"]
     lines = [_pick(HOOKS, sku, "h"), p["name"] + ".", _benefit(p["name"], sku)]
     price = _price_grn(p.get("price"))
     if price:
         lines.append(f"Ціна: {price}")
     if platform == "ig":
-        lines.append("Замовлення — за посиланням у шапці профілю 🔗")
+        lines.append("🛍️ Щоб замовити — тапни позначку товару на фото або посилання в профілі."
+                     if tagged else "Замовлення — за посиланням у шапці профілю 🔗")
     else:
         lines.append(p["url"])
     lines.append(_hashtags(p["name"]))
@@ -246,17 +252,56 @@ def _publish_fb(p: dict, caption: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def _publish_ig(p: dict, caption: str) -> dict:
-    """Instagram-публікація — ДВА кроки: (1) створити media-контейнер (/{ig}/media з image_url+
-    caption), (2) media_publish за creation_id. Між ними коротко чекаємо status_code=FINISHED
-    (фото зазвичай готове одразу, але буває обробка). Токен — той самий FB_PAGE_ACCESS_TOKEN
-    (з instagram_content_publish). Повертає {ok, id|error}. Ніколи не кидає."""
+def _ig_product_id(sku: str, name: str, cache: dict):
+    """catalog_product_search за SKU/назвою → catalog product_id для product-мітки. Повертає
+    None (постимо без мітки), якщо: товар ще не схвалено під IG Shopping, немає збігу за
+    retailer_id, бракує дозволу чи будь-яка помилка. Тобто мітка — БОНУС, ніколи не блокер.
+    Результат кешується в межах прогону."""
+    if sku in cache:
+        return cache[sku]
+    pid = None
+    base = f"https://graph.facebook.com/{GRAPH_VERSION}/{IG_USER_ID}/catalog_product_search"
+    for q in (sku, (name or "")[:60]):
+        if pid or not q:
+            break
+        try:
+            params = {"q": q, "access_token": FB_PAGE_ACCESS_TOKEN}
+            if IG_CATALOG_ID:
+                params["catalog_id"] = IG_CATALOG_ID
+            r = requests.get(base, params=params, timeout=REQUEST_TIMEOUT)
+            for prod in ((r.json() if r.content else {}).get("data") or []):
+                if str(prod.get("retailer_id")) == str(sku):
+                    pid = prod.get("product_id")
+                    break
+        except (requests.RequestException, ValueError):
+            pass
+    cache[sku] = pid
+    return pid
+
+
+def _ig_create_media(image: str, caption: str, product_id):
+    """Крок 1 IG — media-контейнер. З product_id причіпляє product_tag (позиція в центрі)."""
+    data = {"image_url": image, "caption": caption, "access_token": FB_PAGE_ACCESS_TOKEN}
+    if product_id:
+        data["product_tags"] = json.dumps([{"product_id": product_id, "x": 0.5, "y": 0.5}])
+    return requests.post(f"https://graph.facebook.com/{GRAPH_VERSION}/{IG_USER_ID}/media",
+                         data=data, timeout=REQUEST_TIMEOUT)
+
+
+def _publish_ig(p: dict, caption: str, product_id=None) -> dict:
+    """Instagram-публікація — ДВА кроки: (1) media-контейнер (з product-міткою, якщо є
+    product_id), (2) media_publish за creation_id. Між ними чекаємо status_code=FINISHED.
+    Якщо створення З МІТКОЮ впало (товар не approved / позиція) — ретрай БЕЗ мітки, щоб пост
+    усе одно вийшов (мітка — бонус, не блокер). Токен — FB_PAGE_ACCESS_TOKEN. Не кидає."""
     base = f"https://graph.facebook.com/{GRAPH_VERSION}"
     try:
-        c = requests.post(f"{base}/{IG_USER_ID}/media",
-                          data={"image_url": p["image"], "caption": caption,
-                                "access_token": FB_PAGE_ACCESS_TOKEN}, timeout=REQUEST_TIMEOUT)
+        c = _ig_create_media(p["image"], caption, product_id)
         cj = c.json() if c.content else {}
+        if not (c.ok and cj.get("id")) and product_id:
+            # мітка завалила створення → повтор без неї (пост важливіший за мітку)
+            print(f"[social] IG {p['sku']}: product-мітка не прийнялась, постю без неї.", file=sys.stderr)
+            c = _ig_create_media(p["image"], caption, None)
+            cj = c.json() if c.content else {}
         creation_id = cj.get("id")
         if not (c.ok and creation_id):
             return {"ok": False, "error": cj.get("error", {}).get("message", f"media HTTP {c.status_code}")}
@@ -279,10 +324,6 @@ def _publish_ig(p: dict, caption: str) -> dict:
         return {"ok": False, "error": pj.get("error", {}).get("message", f"publish HTTP {pub.status_code}")}
     except (requests.RequestException, ValueError) as e:
         return {"ok": False, "error": str(e)}
-
-
-# Бекенди публікації + гейт «чи є креденшели» на платформу.
-PUBLISHERS = {"fb": _publish_fb, "ig": _publish_ig}
 
 
 def _platform_ready(platform: str) -> bool:
@@ -317,8 +358,8 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
                 print(f"[social] {pl.upper()}: нема {miss} у .env — тихий no-op (dry-run усе одно "
                       f"готую). Оживе, щойно креденшели будуть в оточенні.", file=sys.stderr)
 
-    stats = {"processed": 0, "posted": 0, "dryrun": 0, "skipped": 0, "dead_links": 0, "errors": 0}
-    url_cache = {}
+    stats = {"processed": 0, "posted": 0, "dryrun": 0, "skipped": 0, "dead_links": 0, "errors": 0, "tagged": 0}
+    url_cache, pid_cache = {}, {}
     for p in products:
         if stats["processed"] >= limit:
             break
@@ -333,16 +374,21 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
             continue
         stats["processed"] += 1
         for pl in needed:
-            caption = build_caption(p, pl)
+            # IG: спробувати знайти catalog product_id → product-мітка (тап → сторінка товару).
+            product_id = _ig_product_id(sku, p["name"], pid_cache) if (pl == "ig" and pl in live) else None
+            caption = build_caption(p, pl, tagged=bool(product_id))
             _write_dryrun(p, caption, pl)   # завжди артефакт (прев'ю + лог)
             if pl not in live:
                 stats["dryrun"] += 1
                 continue
-            res = PUBLISHERS[pl](p, caption)
+            res = _publish_ig(p, caption, product_id) if pl == "ig" else _publish_fb(p, caption)
             if res["ok"]:
                 _record_post(ledger, pl, sku, res["id"])
                 stats["posted"] += 1
-                print(f"[social] {pl.upper()} опубліковано {sku} → {res['id']}")
+                if product_id:
+                    stats["tagged"] += 1
+                print(f"[social] {pl.upper()} опубліковано {sku} → {res['id']}"
+                      + (" (з product-міткою)" if product_id else ""))
             else:
                 stats["errors"] += 1
                 print(f"[social] {pl.upper()} ПОМИЛКА {sku}: {res['error']}", file=sys.stderr)
@@ -362,7 +408,8 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
 
 
 def _report(stats: dict) -> None:
-    print(f"[social] processed={stats['processed']} posted={stats['posted']} dryrun={stats['dryrun']} "
+    print(f"[social] processed={stats['processed']} posted={stats['posted']} "
+          f"(з них з IG-міткою={stats.get('tagged', 0)}) dryrun={stats['dryrun']} "
           f"skipped(покрито)={stats['skipped']} мертвих_лінків={stats['dead_links']} "
           f"errors={stats['errors']}. Артефакти: {OUT_DIR}")
 

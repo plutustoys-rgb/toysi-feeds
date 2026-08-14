@@ -419,14 +419,38 @@ def _report(stats: dict) -> None:
           f"errors={stats['errors']}. Артефакти: {OUT_DIR}")
 
 
+def _acquire_lock():
+    """Ексклюзивний міжпроцесний lock — щоб окремі таймери (FB щодня + IG 2×/день) НІКОЛИ не
+    гнали ledger одночасно (навіть якщо Persistent-наздоганяння на буті спробує запустити кілька
+    прогонів разом). ledger пишеться повним перезаписом файлу → паралельні прогони затерли б
+    правки один одного. Linux: fcntl.flock (неблокуючий). Інша ОС (локальні тести): no-op (True).
+    Повертає file-handle/True при успіху або None, якщо інший прогін уже тримає lock."""
+    try:
+        import fcntl
+    except ImportError:
+        return True   # не-Linux (локальні тести) — без локу
+    fh = open(BASE / ".social_poster.lock", "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh     # тримаємо відкритим до кінця процесу — лок звільниться сам при виході
+    except OSError:
+        fh.close()
+        return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--limit", type=int, default=3, help="Скільки ТОВАРІВ за прогін (дефолт 3).")
     ap.add_argument("--publish", action="store_true",
                     help="Реально постити. Без креденшелів платформи — тихий no-op (dry-run).")
     ap.add_argument("--target", default="fb", choices=["fb", "ig", "both"],
-                    help="Куди постити: fb (дефолт, як зараз), ig, both. IG активний лише з IG_USER_ID у .env.")
+                    help="Куди постити: fb (дефолт), ig, both. IG активний лише з IG_USER_ID у .env.")
     args = ap.parse_args()
+    lock = _acquire_lock()
+    if not lock:
+        print("[social] інший прогін соц-постера вже триває — пропускаю (уникаю гонки ledger).",
+              file=sys.stderr)
+        return
     targets = ("fb", "ig") if args.target == "both" else (args.target,)
     run(limit=args.limit, publish=args.publish, targets=targets)
 

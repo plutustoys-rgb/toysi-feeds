@@ -1,0 +1,18 @@
+[Unit]
+# PlutusToys — автопост на Facebook-Сторінку, 1×/день (рішення власника, найновіше-40).
+# social_auto_poster.py --target fb: 1 товар за спрацювання. Ledger платформо-залежний +
+# файловий lock у скрипті → без гонки з IG-таймером. Деплой: копія в /etc/systemd/system/,
+# `systemctl daemon-reload && systemctl enable --now social-poster-fb.timer`.
+Description=PlutusToys: Facebook Page auto-post (social_auto_poster.py --target fb, 1/day)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Робоча тека /opt/plutustoys — щоб .env/meta_feed.xml/
+# social_posted_ledger.json/.social_poster.lock резолвились.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/social_auto_poster.py --limit 1 --publish --target fb
+# Не критичний сервіс: помилка лише в journal. Без креденшелів — no-op. 3 невдачі поспіль → стоп.
+TimeoutStartSec=600

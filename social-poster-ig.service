@@ -1,0 +1,19 @@
+[Unit]
+# PlutusToys — автопост в Instagram, 2×/день (рішення власника, найновіше-40: IG толерантніший
+# до частоти). social_auto_poster.py --target ig: 1 товар за спрацювання (з product-міткою, якщо
+# товар таггабельний). Ledger платформо-залежний + файловий lock → без гонки з FB-таймером.
+# Деплой: копія в /etc/systemd/system/,
+# `systemctl daemon-reload && systemctl enable --now social-poster-ig.timer`.
+Description=PlutusToys: Instagram auto-post (social_auto_poster.py --target ig, 2/day)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Робоча тека /opt/plutustoys — щоб .env/meta_feed.xml/
+# social_posted_ledger.json/.social_poster.lock резолвились.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/social_auto_poster.py --limit 1 --publish --target ig
+# Не критичний сервіс: помилка лише в journal. Без креденшелів — no-op. 3 невдачі поспіль → стоп.
+TimeoutStartSec=600

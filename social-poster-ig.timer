@@ -1,0 +1,15 @@
+[Unit]
+Description=PlutusToys: 2x/day trigger for Instagram auto-post (social_auto_poster --target ig)
+
+[Timer]
+# Instagram — 2 пости/день (14/тиждень), рішення власника найновіше-40. 12:00 і 18:00 системного
+# часу VPS (EEST). Свідомо НЕ 11:00 (час FB) — щоб два прогони не збіглись за ledger (Cowork:
+# «аби не збігався з існуючим FB-часом»). RandomizedDelaySec малий, щоб вікна 12:00 і FB-11:00 не
+# перетнулись; плюс файловий lock у скрипті — подвійний захист.
+OnCalendar=*-*-* 12,18:00:00
+# Наздогнати пропущене (ledger не дасть дублів; lock — від збігу з FB на буті).
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

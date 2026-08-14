@@ -253,26 +253,27 @@ def _publish_fb(p: dict, caption: str) -> dict:
 
 
 def _ig_product_id(sku: str, name: str, cache: dict):
-    """catalog_product_search за SKU/назвою → catalog product_id для product-мітки. Повертає
-    None (постимо без мітки), якщо: товар ще не схвалено під IG Shopping, немає збігу за
-    retailer_id, бракує дозволу чи будь-яка помилка. Тобто мітка — БОНУС, ніколи не блокер.
-    Результат кешується в межах прогону."""
+    """catalog product_id (для product-мітки) за нашим SKU через ПРЯМИЙ запит каталогу
+    `/{catalog_id}/products?filter=retailer_id`. Саме він працює з дозволом catalog_management
+    (живо перевірено 2026-08-14: IG-scoped `catalog_product_search` дає (#10) no permission, а
+    цей ендпоінт коректно повертає {id, retailer_id}). Повертає catalog `id` (=product_id для
+    мітки) або None (постимо БЕЗ мітки — товару нема в каталозі / помилка / бракує доступу).
+    Мітка — БОНУС, ніколи не блокер. Кеш у межах прогону."""
     if sku in cache:
         return cache[sku]
     pid = None
-    base = f"https://graph.facebook.com/{GRAPH_VERSION}/{IG_USER_ID}/catalog_product_search"
-    for q in (sku, (name or "")[:60]):
-        if pid or not q:
-            break
+    if IG_CATALOG_ID:
         try:
-            params = {"q": q, "access_token": FB_PAGE_ACCESS_TOKEN}
-            if IG_CATALOG_ID:
-                params["catalog_id"] = IG_CATALOG_ID
-            r = requests.get(base, params=params, timeout=REQUEST_TIMEOUT)
-            data = (r.json() if r.content else {}).get("data") or []
-            for prod in data:
+            r = requests.get(
+                f"https://graph.facebook.com/{GRAPH_VERSION}/{IG_CATALOG_ID}/products",
+                params={"fields": "id,retailer_id",
+                        "filter": json.dumps({"retailer_id": {"eq": str(sku)}}),
+                        "access_token": FB_PAGE_ACCESS_TOKEN},
+                timeout=REQUEST_TIMEOUT,
+            )
+            for prod in ((r.json() if r.content else {}).get("data") or []):
                 if isinstance(prod, dict) and str(prod.get("retailer_id")) == str(sku):
-                    pid = prod.get("product_id")
+                    pid = prod.get("id")
                     break
         except (requests.RequestException, ValueError, AttributeError, TypeError):
             pass   # несподівана форма відповіді / мережа → None (постимо без мітки)

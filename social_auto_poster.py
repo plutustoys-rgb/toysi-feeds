@@ -57,6 +57,12 @@ GRAPH_VERSION = "v21.0"
 REQUEST_TIMEOUT = 30
 IG_MEDIA_POLL_TRIES = 5      # контейнер IG інколи ще обробляється — коротко чекаємо FINISHED
 IG_MEDIA_POLL_SLEEP = 3
+# Кап перевірок посилань за прогін — щоб НЕ гатити вітрину тисячами GET-ів (self-throttle →
+# Cloudflare rate-limit → усе виглядає «мертвим» → пропуск постів; реальний інцидент 15.08).
+# За норми живий товар знаходиться за 1-2 перевірки (битих ~3%).
+MAX_LINK_CHECKS = 40
+MAX_TRANSIENT_FAILS = 6      # стільки «unsure» (429/5xx/timeout) → вітрина троттлить → аборт
+                            # прогону (спроба наступного разу), а не мовчазний пропуск.
 
 BASE = Path(__file__).parent
 META_FEED = BASE / "feeds" / "meta_feed.xml"
@@ -96,19 +102,21 @@ def _clean_name(name: str) -> str:
     return re.sub(r"\s+", " ", n).strip()
 
 
-def _url_alive(url: str, cache: dict) -> bool:
-    """GET із трасуванням редіректів → True лише на фінальному 200. Лінк-кеш власного сайту
-    (own_product_links_cache) буває застарілим → мертві 404 (реально зустрілось). Не постимо
-    битих посилань. Мережна помилка → вважаємо мертвим (fail-safe: краще пропустити, ніж
-    опублікувати биту URL). Результат кешується в межах прогону."""
+def _link_status(url: str, cache: dict) -> str:
+    """Статус посилання товару: 'live' (200), 'dead' (РІВНО 404 — товар видалено/переслаглено),
+    'unsure' (429/5xx/timeout/мережа — це радше rate-limit/транзієнт вітрини, НЕ «мертвий»).
+    ВАЖЛИВО (урок 15.08): раніше будь-який не-200 рахувався «мертвим» → під rate-limit усе
+    виглядало мертвим і постер мовчки пропускав пости. Тепер лише 404 = dead; троттл → unsure
+    (не постимо, але й не таврируємо мертвим). Кеш у межах прогону."""
     if url in cache:
         return cache[url]
     try:
-        ok = requests.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True).status_code == 200
+        code = requests.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True).status_code
+        st = "live" if code == 200 else ("dead" if code == 404 else "unsure")
     except requests.RequestException:
-        ok = False
-    cache[url] = ok
-    return ok
+        st = "unsure"
+    cache[url] = st
+    return st
 
 
 def _match_key(name: str):
@@ -365,8 +373,10 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
                 print(f"[social] {pl.upper()}: нема {miss} у .env — тихий no-op (dry-run усе одно "
                       f"готую). Оживе, щойно креденшели будуть в оточенні.", file=sys.stderr)
 
-    stats = {"processed": 0, "posted": 0, "dryrun": 0, "skipped": 0, "dead_links": 0, "errors": 0, "tagged": 0}
+    stats = {"processed": 0, "posted": 0, "dryrun": 0, "skipped": 0, "dead_links": 0,
+             "unsure_links": 0, "errors": 0, "tagged": 0}
     url_cache, pid_cache = {}, {}
+    checks = 0            # перевірок посилань цього прогону — кап MAX_LINK_CHECKS проти self-throttle
     for p in products:
         if stats["processed"] >= limit:
             break
@@ -375,10 +385,29 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
         if not needed:
             stats["skipped"] += 1     # уже покрито на всіх заданих платформах
             continue
-        if not _url_alive(p["url"], url_cache):   # не постимо/не готуємо биті посилання
-            stats["dead_links"] += 1
-            print(f"[social] пропущено {sku}: мертве посилання {p['url']}", file=sys.stderr)
+        st = _link_status(p["url"], url_cache)
+        if st == "unsure":            # rate-limit/транзієнт — не постимо, але й не «мертвий»
+            stats["unsure_links"] += 1
+            if stats["unsure_links"] >= MAX_TRANSIENT_FAILS:
+                print(f"[social] вітрина недоступна/rate-limit ({stats['unsure_links']} поспіль) — "
+                      f"зупиняю прогін, спроба наступного разу.", file=sys.stderr)
+                _notify("⚠️ Соц-постер: вітрина недоступна (rate-limit?) — прогін зупинено без постів, "
+                        "спроба наступного разу.")
+                _report(stats)
+                return stats
             continue
+        if st == "dead":              # рівно 404 — товар видалено/переслаглено
+            stats["dead_links"] += 1
+            checks += 1
+            if checks >= MAX_LINK_CHECKS:
+                print(f"[social] {checks} перевірок без живого товару — зупиняю (без self-DoS).",
+                      file=sys.stderr)
+                _notify(f"⚠️ Соц-постер: не знайшов живого товару за {checks} перевірок — прогін без "
+                        "постів (багато 404 у фіді чи rate-limit?).")
+                _report(stats)
+                return stats
+            continue
+        checks += 1                   # st == "live"
         stats["processed"] += 1
         for pl in needed:
             # IG: спробувати знайти catalog product_id → product-мітка (тап → сторінка товару).
@@ -411,6 +440,11 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
 
     if stats["posted"]:
         _notify(f"📣 Соцпостинг: {stats['posted']} пост(ів) на {'+'.join(live)}. Помилок: {stats['errors']}.")
+    elif live and (stats["dead_links"] or stats["unsure_links"]):
+        # прогін закінчився без постів, хоча були кандидати з битими/недоступними лінками —
+        # не мовчимо (урок 15.08: постер тихо пропускав пости під rate-limit).
+        _notify(f"⚠️ Соц-постер: 0 постів (мертвих {stats['dead_links']}, недоступних "
+                f"{stats['unsure_links']}) — не знайшов живого товару.")
     _report(stats)
     return stats
 
@@ -419,7 +453,7 @@ def _report(stats: dict) -> None:
     print(f"[social] processed={stats['processed']} posted={stats['posted']} "
           f"(з них з IG-міткою={stats.get('tagged', 0)}) dryrun={stats['dryrun']} "
           f"skipped(покрито)={stats['skipped']} мертвих_лінків={stats['dead_links']} "
-          f"errors={stats['errors']}. Артефакти: {OUT_DIR}")
+          f"недоступних={stats.get('unsure_links', 0)} errors={stats['errors']}. Артефакти: {OUT_DIR}")
 
 
 def _acquire_lock():

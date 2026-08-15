@@ -33,7 +33,11 @@ changed=0
 # 1) копіюємо нові/змінені
 for u in $desired; do
     if ! cmp -s "$REPO/$u" "$DEST/$u" 2>/dev/null; then
-        cp "$REPO/$u" "$DEST/$u" && { echo "[units] оновлено $u"; changed=1; }
+        if cp "$REPO/$u" "$DEST/$u"; then
+            echo "[units] оновлено $u"; changed=1
+        else
+            echo "[units] ПОПЕРЕДЖЕННЯ: не вдалось скопіювати $u — лишаю стару версію." >&2
+        fi
     fi
 done
 

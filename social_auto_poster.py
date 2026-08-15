@@ -216,8 +216,11 @@ def _already_posted(led: dict, platform: str, sku: str) -> bool:
     return sku in led.get(platform, {})
 
 
-def _record_post(led: dict, platform: str, sku: str, post_id: str) -> None:
-    led.setdefault(platform, {})[sku] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "post_id": post_id}
+def _record_post(led: dict, platform: str, sku: str, post_id: str, url: str = "") -> None:
+    # url — сторінка товару на момент посту; social_dead_post_cleaner перевіряє її на 404
+    # (видалений товар), щоб прибрати мертвий FB-пост. Старі записи без url — чистильник пропускає.
+    led.setdefault(platform, {})[sku] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                         "post_id": post_id, "url": url}
     _save_ledger(led)
 
 
@@ -387,7 +390,7 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
                 continue
             res = _publish_ig(p, caption, product_id) if pl == "ig" else _publish_fb(p, caption)
             if res["ok"]:
-                _record_post(ledger, pl, sku, res["id"])
+                _record_post(ledger, pl, sku, res["id"], p["url"])
                 stats["posted"] += 1
                 really_tagged = bool(res.get("tagged"))   # чи мітка справді причепилась (не намір)
                 if really_tagged:

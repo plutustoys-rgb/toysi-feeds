@@ -5,10 +5,11 @@ Instagram видалити через API не можна (обмеження Me
 
 НАДІЙНІСТЬ — пост видаляється ЛИШЕ коли ДВА незалежні сигнали згодні:
   1. URL товару (збережений у ledger на момент посту) дає РІВНО 404;
-  2. sku ВІДСУТНІЙ у own_product_links_cache (ре-валідатор #270 прибирає лише реально ЗНИКЛІ;
-     переслаглені живі товари ЛИШАЄ з новим slug).
-Отже переслаглений ЖИВИЙ товар (старий URL 404, але sku в кеші) — пост НЕ видаляємо. Мережева
-помилка / 5xx / таймаут → не чіпаємо (транзієнт). Кеш недоступний → cross-check неможливий →
+  2. sku ВІДСУТНІЙ серед <g:id> поточного meta_feed.xml (видалений товар випадає з фіду;
+     переслаглений живий — лишається з новим лінком; OOS теж у фіді). Той самий ключ-простір,
+     що й ledger (обидва — g:id фіду), тож без розсинхрону ключів.
+Отже переслаглений ЖИВИЙ товар (старий URL 404, але sku ще у фіді) — пост НЕ видаляємо. Мережева
+помилка / 5xx / таймаут → не чіпаємо (транзієнт). Фід недоступний → cross-check неможливий →
 нічого не видаляємо (обережність). ЗАПОБІЖНИК: >25% «404» → аборт (масовий 404 = збій сайту).
 
 Lock (спільний із постером) → не гнати ledger одночасно. Атомарний запис. `--dry-run`.
@@ -17,12 +18,12 @@ Lock (спільний із постером) → не гнати ledger одн�
 import argparse
 import json
 import sys
+import xml.etree.ElementTree as ET
 
 import requests
 
 from social_auto_poster import (FB_PAGE_ACCESS_TOKEN, GRAPH_VERSION, LEDGER,
-                                _load_ledger, _acquire_lock)
-from generate_google_feed import OWN_PRODUCT_LINKS_CACHE_FILE
+                                META_FEED, NS, _load_ledger, _acquire_lock)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -39,13 +40,21 @@ def _status(url: str):
 
 
 def _live_skus():
-    """set живих sku з own_product_links_cache, або None якщо кеш недоступний (тоді cross-check
-    неможливий → нічого не видаляємо)."""
-    try:
-        d = json.loads(OWN_PRODUCT_LINKS_CACHE_FILE.read_text(encoding="utf-8"))
-        return set(d) if isinstance(d, dict) else None
-    except (OSError, ValueError):
+    """set sku ЖИВИХ товарів = усі <g:id> з meta_feed.xml (будь-яка наявність, включно OOS —
+    фід несе й out-of-stock). НАВМИСНО meta_feed, а не own_product_links_cache: ledger ключується
+    тим самим <g:id> фіду, тож ключ-простір збігається (кеш ключується pid → міг би розсинхрон).
+    Товар, ВИДАЛЕНИЙ з магазина, у фіді відсутній; переслаглений живий — присутній (з новим
+    лінком). Фід відсутній/битий/порожній → None (cross-check неможливий → нічого не видаляємо)."""
+    if not META_FEED.exists():
         return None
+    try:
+        root = ET.parse(META_FEED).getroot()
+    except ET.ParseError:
+        return None
+    ids = {(it.findtext("g:id", namespaces=NS) or it.findtext("id") or "").strip()
+           for it in root.iter("item")}
+    ids.discard("")
+    return ids or None
 
 
 def _delete_fb_post(post_id: str) -> bool:
@@ -87,13 +96,13 @@ def clean(dry_run: bool = False) -> dict:
         return {"checked": len(checkable), "dead404": len(dead404), "aborted": True}
 
     if live is None and dead404:
-        print("[dead-post] own_product_links_cache недоступний → cross-check неможливий, "
+        print("[dead-post] meta_feed недоступний → cross-check неможливий, "
               "жодного поста не чіпаю (обережність).", file=sys.stderr)
         return {"checked": len(checkable), "dead404": len(dead404), "deleted": 0}
 
     deleted = reslug = 0
     for sku, e in dead404:
-        if sku in live:                 # 404, але sku ЖИВИЙ у кеші → переслаглено → лишаємо
+        if sku in live:                 # 404, але sku ЩЕ У ФІДІ → переслаглено (живий) → лишаємо
             reslug += 1
             continue
         if dry_run:                     # 404 + відсутній у кеші → видалено

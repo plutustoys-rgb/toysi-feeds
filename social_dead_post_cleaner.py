@@ -17,7 +17,9 @@ Lock (спільний із постером) → не гнати ledger одн�
 """
 import argparse
 import json
+import random
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 import requests
@@ -30,6 +32,11 @@ if hasattr(sys.stdout, "reconfigure"):
 
 REQUEST_TIMEOUT = 20
 SAFE_404_RATIO = 0.25
+# ⚠️ Stage 2 (інцидент rate-limit 2026-08-15): не гатити вітрину. Перевіряємо ПОСЛІДОВНО з
+# джитером; серія «недоступних» (429/5xx/timeout/мережа) → вітрина глушить нас → АБОРТ (не
+# видаляємо нічого цього прогону). Тільки РІВНО 404 = кандидат на видалення; троттл ≠ 404.
+CHECK_JITTER = (0.3, 0.6)
+MAX_TRANSIENT_FAILS = 8
 
 
 def _status(url: str):
@@ -86,7 +93,26 @@ def clean(dry_run: bool = False) -> dict:
         print("[dead-post] нема FB-постів з url для перевірки.")
         return {"deleted": 0}
 
-    dead404 = [(sku, e) for sku, e in checkable.items() if _status(e["url"]) == 404]
+    # Послідовна перевірка з джитером + backoff: серія недоступних (429/5xx/timeout/мережа)
+    # = вітрина нас глушить → аборт (не робимо хибних рішень і не довбаємо далі).
+    dead404, transient_streak = [], 0
+    items = list(checkable.items())
+    for idx, (sku, e) in enumerate(items):
+        code = _status(e["url"])
+        if idx + 1 < len(items):
+            time.sleep(random.uniform(*CHECK_JITTER))
+        if code == 404:
+            dead404.append((sku, e))
+            transient_streak = 0
+        elif code == 200:
+            transient_streak = 0
+        else:                      # None / 429 / 5xx / інше — недоступно, НЕ 404
+            transient_streak += 1
+            if transient_streak >= MAX_TRANSIENT_FAILS:
+                print(f"[dead-post] АБОРТ: {transient_streak} недоступних поспіль "
+                      f"(rate-limit/збій вітрини) — нічого не видаляю цього прогону.",
+                      file=sys.stderr)
+                return {"checked": idx + 1, "dead404": len(dead404), "aborted": True}
     print(f"[dead-post] перевірено FB-постів: {len(checkable)}, з них 404: {len(dead404)}.")
 
     if len(dead404) / len(checkable) > SAFE_404_RATIO:

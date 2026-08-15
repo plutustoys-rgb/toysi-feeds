@@ -1,0 +1,15 @@
+[Unit]
+Description=PlutusToys: daily trigger for social_dead_post_cleaner (delete dead FB posts)
+
+[Timer]
+# Щодня 04:10 системного часу VPS — ПІСЛЯ link-cache-validator (03:40), щоб cross-check
+# «sku відсутній у кеші» йшов по СВІЖОМУ own_product_links_cache (видалені товари вже прибрані
+# ре-валідатором). Далеко від часів постингу (FB 11:00, IG 12:00/18:00); плюс спільний lock із
+# постером — ledger одночасно не гнатимуть.
+OnCalendar=*-*-* 04:10:00
+# Наздогнати пропущене (ідемпотентно; lock від збігу).
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

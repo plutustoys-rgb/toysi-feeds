@@ -1,0 +1,19 @@
+[Unit]
+# PlutusToys — щоденно прибирає FB-пости, чий товар ВИДАЛЕНО з магазина (сторінка 404). OOS (200,
+# «немає в наявності») НЕ чіпає. Instagram видалити через API не можна (обмеження Meta) — там
+# тег/картка самі показують недоступність. Видаляє лише при подвійному сигналі (404 + sku
+# відсутній у own_product_links_cache). Деплой: копія в /etc/systemd/system/,
+# `systemctl daemon-reload && systemctl enable --now social-dead-post-cleaner.timer`.
+Description=PlutusToys: delete FB posts whose product page 404s (deleted from store)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Робоча тека /opt/plutustoys — щоб .env / social_posted_ledger
+# .json / own_product_links_cache.json / .social_poster.lock резолвились.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/social_dead_post_cleaner.py
+# Перевірка URL кожного постнутого товару може зайняти кілька хвилин.
+TimeoutStartSec=1800

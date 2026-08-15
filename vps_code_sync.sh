@@ -29,6 +29,11 @@ if git merge --ff-only origin/master; then
     else
         CHANGED=""
     fi
+    # Авто-застосування systemd-юнітів (найновіше-24 п.1): копіює нові/змінені *.service/*.timer
+    # у /etc/systemd/system, вмикає нові таймери, знімає зниклі — щоб не робити це вручну на
+    # кожен деплой. Керує ЛИШЕ нашими юнітами (див. deploy_systemd_units.sh); збій НЕ валить sync
+    # коду (|| true). Потребує root; під нерутом м'яко пропускає.
+    bash deploy_systemd_units.sh || echo "[sync] застосування юнітів не вдалось (код синхронізовано)."
     python3 vps_code_sync_report.py --status ok --commit "$AFTER" --changed "$CHANGED"
 else
     CURRENT=$(git rev-parse HEAD)

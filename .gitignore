@@ -278,3 +278,7 @@ social_posts/auto/
 social_posted_ledger.json
 # Міжпроцесний lock соц-постера (flock) — щоб FB- та IG-таймери не гнали ledger одночасно.
 .social_poster.lock
+
+# Стан авто-деплою systemd-юнітів (deploy_systemd_units.sh): які юніти встановлені нами —
+# для виявлення зниклих. VPS-runtime, не для git.
+.deployed_units

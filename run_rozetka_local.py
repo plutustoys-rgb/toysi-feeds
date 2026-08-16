@@ -21,6 +21,7 @@ GitHub Actions генерацію Rozetka ПРИБРАНО (щоб два дже
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,8 @@ def _run(cmd, cwd=None, check=False, quiet=False):
     if not quiet and r.stdout:
         print(r.stdout.rstrip())
     if check and r.returncode != 0:
-        raise RuntimeError(f"команда впала ({r.returncode}): {' '.join(cmd)}")
+        safe = re.sub(r"x-access-token:[^@]*@", "x-access-token:***@", " ".join(cmd))
+        raise RuntimeError(f"команда впала ({r.returncode}): {safe}")
     return r
 
 

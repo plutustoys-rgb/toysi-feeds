@@ -469,13 +469,20 @@ def _convert_rozetka_order(order: dict) -> dict:
 def fetch_new_orders_rozetka() -> list:
     """
     Реальний виклик Rozetka Seller API (rozetka_client.py): GET /orders/search
-    зі статусом 1 ("Нове замовлення"). Авторизація — логін/пароль кабінету
-    продавця (ROZETKA_USERNAME/ROZETKA_PASSWORD), не окремий API-ключ, як у
-    Prom — див. docstring rozetka_client._login(). Поки облікових даних
-    немає — мок-замовлення, щоб перевіряти логіку router/orders.db без акаунту.
+    зі статусом 1 ("Нове замовлення"). Авторизація — АБО довгоживучий
+    `ROZETKA_API_TOKEN` (пріоритет, `rozetka_client._get_token()`), АБО логін/
+    пароль кабінету (`ROZETKA_USERNAME/ROZETKA_PASSWORD`, фолбек `_login()`).
+    Мок-замовлення — ЛИШЕ коли НЕМАЄ ЖОДНОЇ авторизації (перевірка логіки без
+    акаунту).
+
+    ⚠️ ВИПРАВЛЕНО 2026-08-16: раніше гейт мокав за відсутності USERNAME/PASSWORD,
+    ІГНОРУЮЧИ робочий ROZETKA_API_TOKEN → якщо на сервері лише токен (а він
+    тепер працює, магазин "Активний"), пайплайн повертав МОК замість РЕАЛЬНИХ
+    замовлень → перше справжнє замовлення клієнта мовчки не потрапляло в Toysi.
+    Тепер узгоджено з rozetka_client: токен АБО логін/пароль → реальний API.
     """
-    if not ROZETKA_USERNAME or not ROZETKA_PASSWORD:
-        print("[Rozetka] ROZETKA_USERNAME/ROZETKA_PASSWORD не задано — використовую мок-замовлення для перевірки логіки")
+    if not rozetka_client.ROZETKA_API_TOKEN and not (ROZETKA_USERNAME and ROZETKA_PASSWORD):
+        print("[Rozetka] Нема ні ROZETKA_API_TOKEN, ні USERNAME/PASSWORD — мок-замовлення (перевірка логіки)")
         return _mock_rozetka_orders()
 
     try:

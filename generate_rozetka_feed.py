@@ -71,20 +71,19 @@ PROM (тодішня причина: Rozetka-комісія по категор�
    екстраполяція з Prom-970/6000) — сортуємо кандидатів за margin_pct
    (Rozetka) спадно й беремо перших 2000; це ОДНОРАЗОВЕ сортування для
    побудови списку, не перманентна ротація/переранжування.
-2. На ВСІХ наступних запусках — просто повертає той самий, раніше
-   збережений список БЕЗ ЖОДНОГО перерахунку з живого каталогу: ні
-   ціна, ні available/stock_quantity, ні сам факт присутності товару в
-   фіді НЕ змінюються, НАВІТЬ якщо stock у Toysi впаде до 0. Це свідома
-   відмова від live-перевірки складу для цієї підмножини — приймається
-   ризик показати товар доступним, коли його вже нема, заради того, щоб
-   не зривати проходження модерації Rozetka повторними змінами. Немає
-   (поки що) жодного сигналу "модерацію пройдено" з API/фіда Rozetka —
-   тож УВЕСЬ список трактується як "ще на модерації" за замовчуванням.
-
-Що робити з конкретним SKU ПІСЛЯ підтвердженого проходження модерації
-(відновити live-оновлення ціни/складу для нього?) — окреме МАЙБУТНЄ
-рішення, свідомо не вирішується цим фіксом (немає даних, щоб визначити
-цей стан зараз).
+2. ⚠️ ОНОВЛЕНО 2026-08-16 (РОЗМОРОЗКА, КРОК 1 — задача власника найновіше-53,
+   модерацію по суті пройдено: 1882 активні). Раніше список повертався
+   БЕЗ ЖОДНОГО перерахунку (ні ціна, ні склад, ні фото не мінялись). ТЕПЕР:
+   `generate_feed()` бере з цього файлу ЛИШЕ MEMBERSHIP (набір pid, що вже
+   подані на Rozetka → жодної нової хвилі модерації), а всі ДАНІ товару —
+   ЖИВІ щопрогону: `available`/`stock_quantity` за реальним stock Toysi,
+   ціна через `decide_price_for_platform(cost, None, "rozetka", ...)`
+   (Rozetka-флор), фото — ЧИСТІ `images.prom.ua` без вотермарки (див.
+   `_clean_pictures`, фолбек на toysi). Тобто `_build_rozetka_static_selection`
+   тепер служить ЛИШЕ джерелом membership (через `_load_rozetka_approved_ids`),
+   а не замороженим знімком даних. КРОК 2 (розкатати повний живий каталог,
+   а не лише цей набір) — окреме рішення, коли переконаємось, що чисті фото
+   проходять модерацію Rozetka.
 
 ЗАМІНЕНО ЦИМ ЖЕ ФІКСОМ: `_apply_rozetka_oos_grace()`/
 `ROZETKA_MEMBERSHIP_STATE_FILE`/`rozetka_feed_membership_state.json`
@@ -406,11 +405,74 @@ def _extract_color_from_name(name: str) -> str | None:
     return None
 
 
+PROM_PRODUCTS_CACHE_FILE = Path(__file__).parent / "prom_products_raw_cache.json"
+_PROM_IMAGE_SIZE_RE = re.compile(r"_w\d+_h\d+_")
+
+
+def _load_prom_products_cache() -> dict:
+    """Кеш товарів Prom (`prom_products_raw_cache.json`, оновлює prom_catalog_sync щодня) —
+    key = external_id (= наш vendor_code), value містить ЧИСТУ галерею `images.prom.ua` без
+    вотермарки. Потрібен, щоб на Rozetka НЕ публікувати фото `toysi.ua` з вотермаркою постачальника
+    (модератор Rozetka блокує такі — 98 товарів, найновіше-52). Немає/битий кеш → {} (фолбек на
+    toysi-фото, стара поведінка)."""
+    try:
+        return json.loads(PROM_PRODUCTS_CACHE_FILE.read_text(encoding="utf-8")) or {}
+    except (ValueError, OSError):
+        return {}
+
+
+def _upscale_prom_image(url: str) -> str:
+    if not url or "images.prom.ua" not in url:
+        return url
+    return _PROM_IMAGE_SIZE_RE.sub("_w1024_h1024_", url, count=1)
+
+
+def _clean_pictures(item: dict, prom_products: dict) -> list:
+    """Фото товару для Rozetka: спершу ЧИСТА галерея з Prom (`images.prom.ua`, без вотермарки,
+    апскейл до 1024), фолбек — сирі `toysi.ua` pictures (з вотермаркою) лише якщо на Prom товару
+    нема. Обмежуємо до ROZETKA_MAX_PICTURES. Той самий чистий бренд-нейтральний ряд фото, що вже
+    годує Google/Meta-фіди."""
+    prod = prom_products.get(str(item.get("vendor_code") or item.get("id"))) if prom_products else None
+    clean = []
+    if prod:
+        for im in (prod.get("images") or []):
+            u = (im.get("url") or "").strip()
+            if u.startswith("https://images.prom.ua"):
+                clean.append(_upscale_prom_image(u))
+        if not clean:
+            mi = (prod.get("main_image") or "").strip()
+            if mi.startswith("https://images.prom.ua"):
+                clean.append(_upscale_prom_image(mi))
+    if clean:
+        return clean[:ROZETKA_MAX_PICTURES]
+    return [p for p in item.get("pictures", []) if p.startswith("https://")][:ROZETKA_MAX_PICTURES]
+
+
+def _load_rozetka_approved_ids(catalog: dict) -> set:
+    """Множина pid, які ВЖЕ подані на Rozetka (промодерований набір). Крок 1 розморозки
+    (2026-08-16, задача власника найновіше-53): membership лишається СТАЛИМ (жодної нової хвилі
+    модерації), але дані товарів — ЖИВІ (склад/ціна/фото), не заморожені. Джерело membership —
+    ключі `rozetka_static_selection.json` (round-trip через feed-data). Файлу нема (перший запуск
+    / не підтягнутий) → одноразово відтворюємо той самий набір через _build_rozetka_static_selection,
+    щоб НЕ вивалити раптом увесь каталог у модерацію (це був би Крок 2, окреме рішення)."""
+    if ROZETKA_STATIC_SELECTION_FILE.exists():
+        try:
+            data = json.loads(ROZETKA_STATIC_SELECTION_FILE.read_text(encoding="utf-8"))
+            ids = set((data.get("items") or {}).keys())
+            if ids:
+                return ids
+        except (ValueError, OSError):
+            pass
+    items, _ = _build_rozetka_static_selection(catalog)
+    return set(items.keys())
+
+
 def _build_xml(
     catalog: dict,
     price_overrides: dict = None,
     exclude_ids: set = None,
     description_overrides: dict = None,
+    prom_products: dict = None,
 ) -> tuple[ET.Element, dict]:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
@@ -510,10 +572,9 @@ def _build_xml(
         # https-фото на позиції 16+ могло й не потрапити в розгляд, і
         # товар з дійсним фото десь глибше в списку мовчки випав би з
         # фіда через те, що перші 15 сирих записів випадково не https.
-        pictures = [
-            p for p in item.get("pictures", [])
-            if p.startswith("https://")
-        ][:ROZETKA_MAX_PICTURES]
+        # ЧИСТІ фото (images.prom.ua, без вотермарки) з фолбеком на toysi — див. _clean_pictures.
+        # Rozetka блокувала 98 товарів за вотермарку на toysi-фото (найновіше-52).
+        pictures = _clean_pictures(item, prom_products or {})
         if not pictures:
             skipped_no_pics += 1
             continue
@@ -736,20 +797,22 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         print("[Rozetka] Каталог порожній — файл не створено.")
         return
 
-    # Незалежний, СТАТИЧНИЙ відбір (2026-07-27, див. докстрінг файлу й
-    # _build_rozetka_static_selection() вище) — заморожений знімок,
-    # перерахований лише один раз, при першому формуванні.
-    static_items, static_prices = _build_rozetka_static_selection(catalog)
-    print(f"[Rozetka] Статичний (заморожений) відбір: {len(static_items)} товарів.")
+    # РОЗМОРОЗКА, КРОК 1 (2026-08-16, задача власника найновіше-53). Раніше тут був заморожений
+    # знімок (static_items + static_prices) — усі поля (склад/ціна/фото) заморожені на 2026-07-27.
+    # Тепер: membership промодерованого набору лишається СТАЛИМ (ключі rozetka_static_selection.json
+    # — жодної нової хвилі модерації), але дані товарів ЖИВІ — склад, ціна (через decide_price_for_
+    # platform у _build_xml) і фото (чисті images.prom.ua) актуалізуються щопрогону. Крок 2 (повний
+    # каталог) — окремо, коли переконаємось, що чисті фото проходять модерацію Rozetka.
+    prom_products = _load_prom_products_cache()
+    approved_ids = _load_rozetka_approved_ids(catalog)
+    live_items = {pid: catalog[pid] for pid in approved_ids if pid in catalog}
+    print(f"[Rozetka] Оживлений промодерований набір: {len(live_items)} з {len(approved_ids)} "
+          f"затверджених (решта відсутня в поточному каталозі Toysi). "
+          f"Чисті фото images.prom.ua з кешу на {len(prom_products)} товарів; склад/ціна — живі.")
 
-    frozen_price_overrides = dict(static_prices)
-    if price_overrides:
-        frozen_price_overrides.update(price_overrides)  # явний зовнішній override (якщо переданий) має пріоритет
-
-    print(f"[Rozetka] Генеруємо XML для {len(static_items)} товарів...")
     root = _build_xml(
-        static_items, price_overrides=frozen_price_overrides, exclude_ids=exclude_ids,
-        description_overrides=description_overrides,
+        live_items, price_overrides=price_overrides, exclude_ids=exclude_ids,
+        description_overrides=description_overrides, prom_products=prom_products,
     )
 
     ET.indent(root, space="  ")

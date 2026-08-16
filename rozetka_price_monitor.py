@@ -150,35 +150,47 @@ def _num(v):
 
 
 def pull(page, auth: str) -> dict:
-    """Моніторинг цін (internal+external) + комісії. Кожен блок best-effort."""
-    out = {"at": datetime.now().isoformat(), "recommended": {}, "commission": {}, "summary": {}}
+    """Моніторинг цін (internal+external) + комісії — ВСЕ ключується НАШИМ offer id.
+
+    КЛЮЧІ (звірено живо 2026-08-16): наш offer id == `item_article` комісії (1762/1762 збіг).
+    Моніторинг має лише внутрішній Rozetka `goods_id`, який == `item_id` комісії → комісія
+    служить МІСТКОМ (goods_id → item_id → item_article = наш offer id). Тому спершу тягнемо
+    комісії (будуємо міст), потім моніторинг (ремапимо goods_id → наш offer id)."""
+    out = {"at": datetime.now().isoformat(), "recommended": {}, "commission": {},
+           "summary": {}, "unmapped_recommended": 0}
+
+    bridge = {}  # rz_goods_id -> наш offer id (з комісій)
+    for it in _pull_paginated(page, "/items-commissions/search", "commissions", auth):
+        our_id = str(it.get("item_article") or "").strip()   # = наш offer id
+        if not our_id:
+            continue
+        rz_gid = str(it.get("item_id") or "").strip()
+        out["commission"][our_id] = {
+            "rz_category_id": it.get("catalog_id"),
+            "rz_category": it.get("catalog_name"),
+            "commission_pct": _num(it.get("commission")),
+            "price": _num(it.get("item_price")),
+            "rz_goods_id": rz_gid or None,
+        }
+        if rz_gid:
+            bridge[rz_gid] = our_id
 
     for scope in ("internal", "external"):
         summ = _api_get(page, f"/analytics/item-recommended-price/{scope}/percent-count", auth)
         if isinstance(summ, dict):
             out["summary"][scope] = summ.get("content") or summ
         for it in _pull_paginated(page, f"/analytics/item-recommended-price/{scope}/search", "items", auth):
-            sku = str(it.get("goods_id") or "").strip()
-            if not sku:
+            our_id = bridge.get(str(it.get("goods_id") or "").strip())
+            if not our_id:                    # моніторинг без містка до нашого товару — пропускаємо
+                out["unmapped_recommended"] += 1
                 continue
-            out["recommended"].setdefault(sku, {})[scope] = {
+            out["recommended"].setdefault(our_id, {})[scope] = {
                 "current": _num(it.get("goods_price")),
                 "recommended": _num(it.get("recommend_price")),
                 "min_market": _num(it.get("min_price")),
                 "diff_pct": _num(it.get("perc_diff_price")),
                 "segment_id": it.get("segment_id"),
             }
-
-    for it in _pull_paginated(page, "/items-commissions/search", "commissions", auth):
-        sku = str(it.get("item_id") or "").strip()
-        if not sku:
-            continue
-        out["commission"][sku] = {
-            "rz_category_id": it.get("catalog_id"),
-            "rz_category": it.get("catalog_name"),
-            "commission_pct": _num(it.get("commission")),
-            "price": _num(it.get("item_price")),
-        }
     return out
 
 

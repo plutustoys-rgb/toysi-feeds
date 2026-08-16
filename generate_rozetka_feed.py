@@ -406,7 +406,26 @@ def _extract_color_from_name(name: str) -> str | None:
 
 
 PROM_PRODUCTS_CACHE_FILE = Path(__file__).parent / "prom_products_raw_cache.json"
+ROZETKA_PRICE_OVERRIDES_FILE = Path(__file__).parent / "rozetka_price_overrides.json"
 _PROM_IMAGE_SIZE_RE = re.compile(r"_w\d+_h\d+_")
+
+
+def _load_price_overrides() -> dict:
+    """Конкурентні ціни від rozetka_competitor_repricer.py (Фаза 2): {our_offer_id: retail}.
+    Немає/битий файл → {} (фід рахує формулу). Значення нормалізуємо у float."""
+    try:
+        raw = json.loads(ROZETKA_PRICE_OVERRIDES_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    out = {}
+    for k, v in (raw.items() if isinstance(raw, dict) else []):
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if fv > 0:
+            out[str(k)] = fv
+    return out
 
 
 def _load_prom_products_cache() -> dict:
@@ -809,6 +828,17 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     print(f"[Rozetka] Оживлений промодерований набір: {len(live_items)} з {len(approved_ids)} "
           f"затверджених (решта відсутня в поточному каталозі Toysi). "
           f"Чисті фото images.prom.ua з кешу на {len(prom_products)} товарів; склад/ціна — живі.")
+
+    # КОНКУРЕНТНІ ЦІНИ (Фаза 2, rozetka_competitor_repricer.py): підбиті під рекомендовану ціну
+    # Rozetka в межах флору. Файл {our_id: retail}; явний price_overrides (напр. з тесту) — вище.
+    repricer = _load_price_overrides()
+    if repricer or price_overrides:
+        merged = dict(repricer)
+        if price_overrides:
+            merged.update(price_overrides)
+        price_overrides = merged
+        print(f"[Rozetka] Цінових override-ів: {len(price_overrides)} "
+              f"(репрайсер {len(repricer)}).")
 
     root = _build_xml(
         live_items, price_overrides=price_overrides, exclude_ids=exclude_ids,

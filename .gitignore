@@ -282,3 +282,6 @@ social_posted_ledger.json
 # Стан авто-деплою systemd-юнітів (deploy_systemd_units.sh): які юніти встановлені нами —
 # для виявлення зниклих. VPS-runtime, не для git.
 .deployed_units
+rozetka_price_overrides.json
+rozetka_commission_reference.json
+rozetka_commission_source.xlsx

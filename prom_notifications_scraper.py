@@ -179,12 +179,47 @@ def scrape() -> None:
     print(f"[PromNotif] Готово (сигнали: {flagged or 'нема'}).")
 
 
+def keepalive() -> None:
+    """Тримає Prom-кабінетну сесію ТЕПЛОЮ (як Rozetka-keepalive): відкриває кабінет під
+    збереженою сесією й ПЕРЕСОХРАНЯЄ storageState (оновлює cookies/токени), щоб не протухала.
+    Причина, що сесія падала: scrape() лише ЧИТАВ, ніколи не пересохраняв стан. Запускати по
+    таймеру (~30 хв), прихованим запуском (див. задачу PlutusToys_PromCabinetKeepalive)."""
+    if not STATE_FILE.exists():
+        msg = (f"🚨 prom_notifications_scraper keepalive: нема сесії ({STATE_FILE.name}). "
+               f"Запусти раз `python prom_notifications_scraper.py --login`.")
+        print(f"[PromNotif] {msg}", file=sys.stderr)
+        _notify(msg)
+        sys.exit(1)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(storage_state=str(STATE_FILE))
+        page = ctx.new_page()
+        try:
+            page.goto(LOGIN_START_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+            if "my.prom.ua" not in page.url or "login" in page.url.lower():
+                raise PromNotifError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
+            ctx.storage_state(path=str(STATE_FILE))  # пересохраняємо → оновлює сесію (теплою)
+            print("[PromNotif] keepalive: сесію оновлено.")
+        except (PlaywrightTimeoutError, PromNotifError) as e:
+            msg = (f"🚨 prom_notifications_scraper keepalive: сесія протухла/збій ({e}). "
+                   f"Перелогінься: `python prom_notifications_scraper.py --login`.")
+            print(f"[PromNotif] {msg}", file=sys.stderr)
+            _notify(msg)
+            sys.exit(1)
+        finally:
+            browser.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Headless-читання сповіщень кабінету Prom (Playwright + storageState).")
     parser.add_argument("--login", action="store_true", help="Раз: вікно, логін, зберегти сесію.")
+    parser.add_argument("--keepalive", action="store_true", help="Тримати сесію теплою (по таймеру ~30 хв).")
     args = parser.parse_args()
     if args.login:
         create_state()
+    elif args.keepalive:
+        keepalive()
     else:
         scrape()
 

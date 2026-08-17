@@ -195,12 +195,19 @@ def keepalive() -> None:
         ctx = browser.new_context(storage_state=str(STATE_FILE))
         page = ctx.new_page()
         try:
-            page.goto(LOGIN_START_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            # ВАЖЛИВО: йдемо на КАБІНЕТНУ сторінку (/cms/notifications), НЕ на корінь my.prom.ua/.
+            # Корінь для залогіненого продавця РЕДІРЕКТИТЬ на storefront prom.ua/ (не /cms) →
+            # стара перевірка «нема my.prom.ua» давала ХИБНЕ «сесія протухла» при живій сесії
+            # (реальний хибний алерт 2026-08-17). /cms-сторінка ж лишається на my.prom.ua, поки
+            # сесія жива, а при протуханні редіректить на логін — тоді сигнал справжній.
+            page.goto(NOTIF_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
             page.wait_for_timeout(3000)
-            if "my.prom.ua" not in page.url or "login" in page.url.lower():
-                raise PromNotifError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
+            if "login" in page.url.lower() or "my.prom.ua/cms" not in page.url:
+                raise PromNotifError(
+                    f"сесію НЕ прийнято: після переходу на {NOTIF_URL} опинились на {page.url} "
+                    f"(нема my.prom.ua/cms → редірект на логін/storefront = сесія протухла, треба --login)")
             ctx.storage_state(path=str(STATE_FILE))  # пересохраняємо → оновлює сесію (теплою)
-            print("[PromNotif] keepalive: сесію оновлено.")
+            print("[PromNotif] keepalive: сесію оновлено (перевірено на /cms).")
         except (PlaywrightTimeoutError, PromNotifError) as e:
             msg = (f"🚨 prom_notifications_scraper keepalive: сесія протухла/збій ({e}). "
                    f"Перелогінься: `python prom_notifications_scraper.py --login`.")

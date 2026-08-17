@@ -768,6 +768,12 @@ def _photo_confirms_match(own_pictures: list | None, competitor_image: str | Non
 # багато SKU на своєму ж дозволеному floor".
 CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT = MIN_PROFIT_COMPETITOR_FLOOR * 100
 CIRCUIT_BREAKER_MAX_MARGIN_DROP_PCT = 15.0
+# УТОЧНЕНО 2026-08-17 (пряма директива власника "тільки конкурентний товар, інакше не тримаємо"
+# + перевірений діагноз заморозки: ротаційний скан влучив у батч, де 76% товарів мають конкурента
+# → легітимне конкурентне зниження маржі, не баг/збиток). Падіння маржі (сигнал 2) БЛОКУЄ лише
+# якщо результат ще й ЛАНДИТЬ на нездоровому рівні (наближається до loss-floor). Падіння до ЗДОРОВОЇ
+# маржі (значно вище floor) — це саме те, що директива вимагає, тож лише ПОПЕРЕДЖАЄМО. 2× loss-floor.
+CIRCUIT_BREAKER_MARGIN_DROP_DANGER_PCT = CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT * 2
 CIRCUIT_BREAKER_PRICE_CHANGE_THRESHOLD = 0.05
 CIRCUIT_BREAKER_MAX_CHANGED_FRACTION = 0.5
 # Менше цього — надто мало даних, щоб частка "змінилось" щось значила
@@ -1308,10 +1314,35 @@ def evaluate_circuit_breaker(to_adjust: list, to_delist: list, price_state: dict
     if prev_avg_margin is not None:
         margin_drop = prev_avg_margin - avg_margin_this_run
         if margin_drop > CIRCUIT_BREAKER_MAX_MARGIN_DROP_PCT:
-            adjust_reasons.append(
-                f"середня маржа впала на {margin_drop:.1f} п.п. відносно попереднього "
-                f"прогону ({prev_avg_margin:.1f}% -> {avg_margin_this_run:.1f}%)"
-            )
+            # САМОДІАГНОСТИКА (правило власника 2026-08-17: код має САМ казати ЧОМУ впав, а не
+            # змушувати розслідувати). Розкладаємо падіння маржі по даних ЦЬОГО прогону:
+            _margins = sorted(m for _, _, m, *_ in to_adjust)
+            _n = len(_margins)
+            _with_comp = sum(1 for _p, _pr, _m, ck, *_ in to_adjust
+                             if ck and str(ck).lower() != "no_competitor")
+            _near_floor = sum(1 for m in _margins if m < CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT + 2)
+            _loss = sum(1 for m in _margins if m < CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT)
+            _med = _margins[_n // 2] if _n else 0.0
+            _why = (f"ПРИЧИНА: {_with_comp}/{_n} ({(_with_comp * 100 // _n) if _n else 0}%) товарів "
+                    f"цього прогону мають конкурента → опущено під нього; {_near_floor} біля floor, "
+                    f"медіана маржі {_med:.1f}%, збиткових (<{CIRCUIT_BREAKER_MIN_AVG_MARGIN_PCT:.0f}%) {_loss}")
+            _base = (f"середня маржа впала на {margin_drop:.1f} п.п. відносно попереднього "
+                     f"прогону ({prev_avg_margin:.1f}% -> {avg_margin_this_run:.1f}%)")
+            # БЛОКУЄМО лише якщо результат нездоровий (близько до loss-floor). Падіння до здорової
+            # маржі — легітимна конкурентність (директива власника "тільки конкурентний товар") →
+            # лише попереджаємо в лог, НЕ блокуємо (сигнали 1/3 і далі ловлять збиток/баг-скрейп).
+            if avg_margin_this_run < CIRCUIT_BREAKER_MARGIN_DROP_DANGER_PCT:
+                adjust_reasons.append(
+                    f"{_base}, і опустилась НИЖЧЕ здорового рівня "
+                    f"{CIRCUIT_BREAKER_MARGIN_DROP_DANGER_PCT:.0f}%. {_why}"
+                )
+            else:
+                print(
+                    f"[Pricer] ⚠ {_base}, але лишається ЗДОРОВОЮ "
+                    f"(>{CIRCUIT_BREAKER_MARGIN_DROP_DANGER_PCT:.0f}%) — легітимна конкурентність "
+                    f"(директива власника 'тільки конкурентний товар'), НЕ блокую. {_why}",
+                    file=sys.stderr,
+                )
     if known_count >= CIRCUIT_BREAKER_MIN_KNOWN_FOR_FRACTION_CHECK and changed_fraction > CIRCUIT_BREAKER_MAX_CHANGED_FRACTION:
         adjust_reasons.append(
             f"{changed_fraction * 100:.0f}% товарів із уже відомою ціною ({changed_count}/{known_count}) "

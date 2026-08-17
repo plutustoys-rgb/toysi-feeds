@@ -410,13 +410,11 @@ ROZETKA_PRICE_OVERRIDES_FILE = Path(__file__).parent / "rozetka_price_overrides.
 _PROM_IMAGE_SIZE_RE = re.compile(r"_w\d+_h\d+_")
 
 
-ROZETKA_MERCHANT_PRICES_FILE = Path(__file__).parent / "rozetka_merchant_prices.json"
-
-
-def _load_json_prices(path: Path) -> dict:
-    """{our_offer_id: retail} з JSON-файлу, нормалізовано у float>0. Немає/битий → {}."""
+def _load_price_overrides() -> dict:
+    """Конкурентні ціни від rozetka_competitor_repricer.py (Фаза 2): {our_offer_id: retail}.
+    Немає/битий файл → {} (фід рахує формулу). Значення нормалізуємо у float."""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(ROZETKA_PRICE_OVERRIDES_FILE.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return {}
     out = {}
@@ -427,18 +425,6 @@ def _load_json_prices(path: Path) -> dict:
             continue
         if fv > 0:
             out[str(k)] = fv
-    return out
-
-
-def _load_price_overrides() -> dict:
-    """Конкурентні ціни для фіду. ДВА джерела, чіткий пріоритет:
-      1) `rozetka_merchant_prices.json` — стартова конкурентна ціна ТОВАРОЗНАВЦЯ для щойно доданих
-         товарів (їх ще нема в моніторингу репрайсера) — БАЗА.
-      2) `rozetka_price_overrides.json` — ЖИВІ ціни репрайсера (Фаза 2, моніторинг кабінету) —
-         НАКРИВАЮТЬ merchant (щойно товар потрапляє в моніторинг, керує репрайсер).
-    Немає/биті файли → {} (фід рахує формулу сам). Значення float."""
-    out = _load_json_prices(ROZETKA_MERCHANT_PRICES_FILE)      # база (нові товари)
-    out.update(_load_json_prices(ROZETKA_PRICE_OVERRIDES_FILE))  # репрайсер зверху (живі)
     return out
 
 

@@ -283,7 +283,6 @@ social_posted_ledger.json
 # для виявлення зниклих. VPS-runtime, не для git.
 .deployed_units
 rozetka_price_overrides.json
-rozetka_merchant_prices.json
 rozetka_commission_reference.json
 rozetka_commission_source.xlsx
 rozetka_merchant_candidates.json

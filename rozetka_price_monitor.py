@@ -47,7 +47,6 @@ BASE_DIR = Path(__file__).parent
 STATE_FILE = Path(os.environ.get("ROZETKA_CABINET_STATE_FILE",
                                  str(BASE_DIR / ".local_secrets" / "rozetka_cabinet_state.json")))
 OUTPUT_FILE = BASE_DIR / ".local_secrets" / "rozetka_competitor_state.json"
-REJECTED_FILE = BASE_DIR / ".local_secrets" / "rozetka_rejected_ids.json"
 _NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
 
 CABINET_URL = "https://seller.rozetka.com.ua/main/cabinet"
@@ -231,31 +230,6 @@ def run_pull() -> None:
         _notify("⚠️ rozetka_price_monitor: 0 даних (ендпоінти лежать або верстка змінилась) — перевір.")
 
 
-def pull_rejected(page, auth: str) -> dict:
-    """Товари, приховані модератором Rozetka (фідбек модерації) — /goods/hidden.
-    Ключ = наш offer id (`article`); значення — причини (reason_id/title) + текстовий `comment`
-    модератора. Читає товарознавчий commit як ЧОРНИЙ СПИСОК (не подавати знову)."""
-    out = {"at": datetime.now().isoformat(), "ids": {}}
-    for it in _pull_paginated(page, "/goods/hidden", "items", auth):
-        art = str(it.get("article") or "").strip()
-        if not art:
-            continue
-        reasons = it.get("blocked_reason") or []
-        out["ids"][art] = {
-            "reason_ids": [r.get("reason_id") for r in reasons if isinstance(r, dict)],
-            "reasons": [r.get("title") for r in reasons if isinstance(r, dict)],
-            "comment": it.get("comment"),
-        }
-    return out
-
-
-def run_rejected() -> None:
-    data = _with_session(pull_rejected)
-    REJECTED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    REJECTED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"[RzPrice] Збережено {REJECTED_FILE.name}: {len(data['ids'])} відхилених товарів (чорний список).")
-
-
 def keepalive() -> None:
     _with_session(lambda page, auth: None)
     print("[RzPrice] keepalive: сесію оновлено.")
@@ -265,14 +239,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--login", action="store_true", help="Раз: вікно, логін, зберегти спільну сесію.")
     ap.add_argument("--keepalive", action="store_true", help="Тримати сесію теплою (по таймеру ~30-40 хв).")
-    ap.add_argument("--rejected", action="store_true", help="Тягнути чорний список відхилених (/goods/hidden).")
     a = ap.parse_args()
     if a.login:
         create_state()
     elif a.keepalive:
         keepalive()
-    elif a.rejected:
-        run_rejected()
     else:
         run_pull()
 

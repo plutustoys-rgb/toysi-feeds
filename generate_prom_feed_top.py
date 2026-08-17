@@ -205,37 +205,62 @@ def _margin(item: dict, pid: str = None, scan_state: dict = None, delisted_pids:
     return default_retail_price(cost, item.get("category_name")) - cost
 
 
-def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
-    """
-    1. Спочатку — товари з категорій-лідерів (LEADER_KEYWORD_GROUPS).
-       Якщо їх більше за target — сортуємо за маржею і беремо top `target`.
-    2. Якщо лідерів менше за target — доповнюємо "решта"-кошиком, поки не
-       набереться `target`. Усередині "решта" — ДВОЕТАПНЕ ранжування
-       (ВИПРАВЛЕНО 2026-07-17, code_report pt18, Варіант А): спершу ВСІ
-       вже ПРОСКАНОВАНІ (підтверджена конкурентна маржа) SKU, відсортовані
-       за грошовою маржею між собою; лише якщо після них лишились вільні
-       місця — непросканові SKU за наївною формулою, теж за спаданням.
+FEED_PATH = Path(__file__).parent / OUTPUT_FILE
 
-    Чому саме так: пряме сортування ВСЬОГО "решта"-кошика за грошовою
-    маржею (стара поведінка) систематично ставило непідтверджені здогадки
-    ВИЩЕ за доведений прибуток — наївна формула (default_retail_price)
-    ЗАВЖДИ припускає "конкурента немає" (множник 1.75×), тож дає велику
-    номінальну маржу незалежно від реальності, тоді як підтверджена,
-    просканована маржа обмежена тонкою ціллю ~3% (Шлях 2, коли конкурент
-    реально знайдений) — набагато менша в грошах, НАВІТЬ коли товар
-    дійсно прибутковий і конкурентоздатний. Живо підтверджено pt18: 2925
-    із 3016 просканованих SKU з підтвердженою маржею ≥3% були виключені
-    з топ-970 на користь непідтверджених здогадок, 570 із 970 позицій
-    "решта"-кошика були чистими здогадками. Двоетапне ранжування нижче
-    гарантує, що ЖОДЕН підтверджений прибутковий SKU не програє
-    непідтвердженому лише через різницю номінальних формул.
 
-    Маржа рахується ОДИН раз на товар (не при кожному сортуванні) і бере
-    до уваги накопичені дані full_catalog_competitor_scan.py, якщо вони
-    є (load_scan_state()), а також SKU, підтверджено видалені
-    prom_competitor_pricer.py на попередньому прогоні (load_delisted_pids())
-    — обидва повністю виключають товар з відбору (return -1 у _margin()),
-    див. докстрінги обох функцій.
+def load_feed_membership() -> set:
+    """external_id-и з поточного prom_feed_top.xml = хто ВЖЕ у фіді (і, з лагом, на Prom).
+    Це основа СТІЙКОГО membership (стоп-churn). Відсутній/порожній файл → порожня множина:
+    ПЕРШИЙ прогін (чи чистий чекаут) = звичайний топ-відбір за маржею, з якого membership і
+    починається. Читаємо ДО того, як generate_feed() перезапише файл цим же прогоном."""
+    try:
+        xml = FEED_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return set(re.findall(r'<offer id="([^"]+)"', xml))
+
+
+def _rank_pool(pool: dict, margins: dict, scan_state: dict) -> list:
+    """Ранжує кошик кандидатів існуючою логікою: спершу категорії-лідери (за маржею),
+    тоді ПРОСКАНОВАНІ (підтверджена конкурентна маржа, за маржею), тоді непросканові
+    (наївна оцінка, за маржею). Див. довгий коментар в історії select_top_items щодо
+    ЧОМУ просканований прибуток має стояти вище непідтвердженого здогаду."""
+    leaders = {pid: it for pid, it in pool.items() if is_leader_category(it)}
+    rest    = {pid: it for pid, it in pool.items() if pid not in leaders}
+    leaders_sorted = sorted(leaders.items(), key=lambda kv: margins[kv[0]], reverse=True)
+    rest_scanned   = sorted(((p, i) for p, i in rest.items() if p in scan_state),
+                            key=lambda kv: margins[kv[0]], reverse=True)
+    rest_unscanned = sorted(((p, i) for p, i in rest.items() if p not in scan_state),
+                            key=lambda kv: margins[kv[0]], reverse=True)
+    return leaders_sorted + rest_scanned + rest_unscanned
+
+
+def select_top_items(catalog: dict, target: int = SELECT_COUNT, sticky: bool = True) -> dict:
+    """Курований набір ~`target` (6000) SKU для Prom (і, через спільний виклик, для
+    репрайсера, catalog_sync та рекламних фідів — усі бачать ОДИН набір).
+
+    СТІЙКИЙ MEMBERSHIP (2026-08-17, жива діагностика: фід churn'ився ~46%/прогін —
+    топ-6000 за маржею перетасовувався щоразу, бо скан прогресивно міняв маржу товару
+    з наївної на реальну → міняв ранг. Prom не встигав: 2758 товарів фіду не створені,
+    2268 живих, що випали, catalog_sync гасив у OOS → стабільно живими лишалось лише 2620
+    з 6000). Лік — той самий membership-принцип, що вже прийнято для Rozetka: хто ВЖЕ у
+    фіді Й ДОСІ якісний (в наявності, прибутковий, не delisted, не виключена категорія) —
+    ЛИШАЄТЬСЯ; вільні до `target` слоти добираються найкращими НОВИМИ кандидатами. Так
+    набір перестає перетасовуватись, catalog_sync не гасить те, що фід тримає, і каталог
+    Prom сходиться до 6000. Товар ЛИШАЄ набір лише коли РЕАЛЬНО перестав бути якісним
+    (OOS/збитковий/delisted → _margin()=-1 → випадає з eligible), не через дрібну різницю
+    маржі. `sticky=False` — чистий топ-відбір без пам'яті (для аналітики/першого засіву).
+
+    Ранжування кандидатів (і членів, і нових) — існуюче двоетапне: лідери → просканований
+    прибуток → непросканований здогад (див. _rank_pool + історичний коментар нижче). Маржа
+    рахується ОДИН раз на товар; враховує scan_state (реальна конкурентна маржа для
+    просканованих) і delisted_pids (підтверджено видалені репрайсером — _margin()=-1).
+
+    ІСТОРІЯ (двоетапне ранжування, ВИПРАВЛЕНО 2026-07-17 pt18): пряме сортування всього
+    "решта"-кошика за грошовою маржею ставило непідтверджені здогадки (наївна формула,
+    множник 1.75×) вище доведеного прибутку (просканована маржа, обмежена ~3% floor) —
+    2925 із 3016 просканованих ≥3% витіснялись здогадами. Тому просканований прибуток
+    ранжується ПЕРЕД непросканованим, а не програє йому за номіналом.
     """
     scan_state = load_scan_state()
     delisted_pids = load_delisted_pids()
@@ -246,22 +271,28 @@ def select_top_items(catalog: dict, target: int = SELECT_COUNT) -> dict:
         if margins[pid] >= 0 and not is_excluded_category(item)
     }
 
-    leaders = {pid: item for pid, item in eligible.items() if is_leader_category(item)}
-    rest    = {pid: item for pid, item in eligible.items() if pid not in leaders}
+    # СТІЙКИЙ membership: члени = ті, хто вже у фіді Й досі eligible. Тримаємо їх; вільні
+    # слоти добираємо найкращими новими. sticky=False → member_ids порожні → чистий топ.
+    member_ids = (load_feed_membership() & set(eligible)) if sticky else set()
+    members_pool = {pid: eligible[pid] for pid in member_ids}
+    new_pool     = {pid: it for pid, it in eligible.items() if pid not in member_ids}
 
-    leaders_sorted = sorted(leaders.items(), key=lambda kv: margins[kv[0]], reverse=True)
+    members_ranked = _rank_pool(members_pool, margins, scan_state)
+    new_ranked     = _rank_pool(new_pool, margins, scan_state)
 
-    rest_scanned   = {pid: item for pid, item in rest.items() if pid in scan_state}
-    rest_unscanned = {pid: item for pid, item in rest.items() if pid not in scan_state}
-    rest_scanned_sorted   = sorted(rest_scanned.items(), key=lambda kv: margins[kv[0]], reverse=True)
-    rest_unscanned_sorted = sorted(rest_unscanned.items(), key=lambda kv: margins[kv[0]], reverse=True)
-    rest_sorted = rest_scanned_sorted + rest_unscanned_sorted
-
-    if len(leaders_sorted) >= target:
-        selected = leaders_sorted[:target]
+    if len(members_ranked) >= target:
+        # Усі слоти зайняті чинними членами — евіктимо лише найнижчий надлишок (рідко:
+        # лише коли ВСІ ~6000 попередніх членів досі якісні). Стабільність збережено.
+        selected = members_ranked[:target]
     else:
-        remaining = target - len(leaders_sorted)
-        selected = leaders_sorted + rest_sorted[:remaining]
+        selected = members_ranked + new_ranked[:target - len(members_ranked)]
+
+    if sticky:
+        kept = len(members_ranked[:target]) if len(members_ranked) >= target else len(members_ranked)
+        backfilled = max(0, len(selected) - kept)
+        print(f"[Prom Top] СТІЙКИЙ membership: лишено з попереднього фіду {kept}, "
+              f"добрано нових {backfilled} (з {len(eligible)} придатних; ціль {target}). "
+              f"Churn стабілізовано — catalog_sync не гаситиме утриманих.")
 
     return dict(selected)
 

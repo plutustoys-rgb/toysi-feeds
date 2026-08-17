@@ -98,7 +98,7 @@ def send_marking(text: str, to_toysi: bool = False) -> bool:
 
     target = _resolve_target(target_raw)
     try:
-        with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+        with TelegramClient(StringSession(session_str), api_id, API_HASH) as client:
             if not client.is_user_authorized():
                 raise UserbotError("сесія протухла/відкликана — власнику перелогінитись: telegram_userbot_login.py")
             try:

@@ -61,7 +61,7 @@ def main() -> None:
 
     print("[userbot-login] Відкриваю логін. Введи номер ДРУГОГО акаунта, код із Telegram, і 2FA-пароль (якщо є)...")
     # StringSession() порожня → client.start() проведе інтерактивний логін (номер/код/2FA).
-    with TelegramClient(StringSession(), api_id, api_hash) as client:
+    with TelegramClient(StringSession(), api_id, API_HASH) as client:
         me = client.get_me()
         session_str = client.session.save()  # рядок сесії — СЕКРЕТ, не друкуємо
 

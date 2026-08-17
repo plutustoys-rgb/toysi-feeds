@@ -12,7 +12,8 @@ Prom-скану — у Prom і Rozetka РІЗНІ конкуренти, ціна
 ЛАНЦЮГ (для кожного кандидата, РОТАЦІЙНО з капом — rate-limit):
   1. з каталогу Toysi: наявність stock ≥ MIN_STOCK (2) — запас, щоб не продати останній;
   2. ще НЕ на Rozetka (не в rozetka_static_selection.json membership);
-  3. картка проходить Rozetka-валідацію (_qualifies_for_feed) + чисте фото images.prom.ua (без вотермарки);
+  3. картка проходить Rozetka-валідацію (_qualifies_for_feed) + є фото (джерело — сам Toysi,
+     `toysi.ua/p/enl_*.jpg`, у переважній більшості чисте; images.prom.ua — лише дзеркало-фолбек);
   4. РИНКОВА перевірка на Rozetka: публічний пошук за назвою (Playwright — товари рендеряться в
      браузері, requests не бачить; rz-client-state зашифрований) → плитки {назва, ціна, фото};
      pHash ФОТО-ЗВІРКА нашого фото vs фото плитки → підтвердити «той самий товар» (пошук дає різні
@@ -23,7 +24,7 @@ Prom-скану — у Prom і Rozetka РІЗНІ конкуренти, ціна
 Результат — rozetka_merchant_candidates.json (список «додати» + звіт). НЕ пише в membership сам
 (власник тестує спершу). Підключення до фіду — окремо.
 
-⚠️ pHash-поріг (PHASH_MAX_DISTANCE) калібрується на живих прикладах (наше фото images.prom.ua vs
+⚠️ pHash-поріг (PHASH_MAX_DISTANCE) калібрується на живих прикладах (наше фото Toysi vs
 фото Rozetka можуть бути різними знімками того ж товару). Перший повний прогін — під наглядом.
 """
 import argparse
@@ -72,17 +73,31 @@ def _load_membership() -> set:
 
 
 def _our_image(item: dict, prom_products: dict) -> str | None:
-    """Чисте фото товару (images.prom.ua) для фото-звірки."""
-    prod = prom_products.get(str(item.get("vendor_code") or item.get("id"))) if prom_products else None
-    if not prod:
-        return None
-    mi = (prod.get("main_image") or "").strip()
-    if mi.startswith("https://images.prom.ua"):
-        return mi
-    for im in (prod.get("images") or []):
-        u = (im.get("url") or "").strip()
-        if u.startswith("https://images.prom.ua"):
+    """Фото товару для фото-звірки (pHash) та фіду.
+
+    ДЖЕРЕЛО ЧИСТИХ ФОТО — САМ Toysi (`toysi.ua/p/enl_*.jpg`): у переважній більшості
+    товарів фото Toysi чисті, без вотермарки (перевірено наживо 2026-08-17). `images.prom.ua`
+    — це НЕ окреме «чисте джерело», а лише дзеркало тих самих фото Toysi, яке Prom перезалив
+    собі при заведенні товару. Тому беремо фото Toysi НАПРЯМУ (пул кандидатів = весь каталог,
+    не лише ~500 товарів, що вже на Prom).
+
+    Prom-копія лишається ЛИШЕ як фолбек (на випадок рідкісного товару, де фото Toysi недоступне).
+    Рідкісні вотермарк-товари (~0.3%, які Rozetka рубає на модерації) обробляються окремо —
+    ідентифікацією за фідбеком модерації, не тут."""
+    for p in (item.get("pictures") or []):
+        u = (p or "").strip()
+        if u.startswith("https://"):
             return u
+    # фолбек: дзеркало тих самих фото на Prom (images.prom.ua)
+    prod = prom_products.get(str(item.get("vendor_code") or item.get("id"))) if prom_products else None
+    if prod:
+        mi = (prod.get("main_image") or "").strip()
+        if mi.startswith("https://images.prom.ua"):
+            return mi
+        for im in (prod.get("images") or []):
+            u = (im.get("url") or "").strip()
+            if u.startswith("https://images.prom.ua"):
+                return u
     return None
 
 

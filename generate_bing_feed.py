@@ -43,7 +43,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed_top import select_top_items
+from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products
 from competitor_pricing import load_fresh_prom_price_overrides
 from generate_google_feed import (
@@ -109,7 +109,7 @@ def generate_bing_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
     top_catalog = select_top_items(catalog)
     if limit:
         top_catalog = dict(list(top_catalog.items())[:limit])
-    print(f"[Bing] У топ-970: {len(top_catalog)} товарів для обробки.")
+    print(f"[Bing] У відборі (ціль топ-{SELECT_COUNT}): {len(top_catalog)} товарів для обробки.")
 
     # ВИПРАВЛЕНО (2026-07-20, аудит PR #109 — code_report_2026-07-20_pt11.md):
     # той самий фікс, що й у generate_meta_feed.py — читає кеш

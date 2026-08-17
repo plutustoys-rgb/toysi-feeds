@@ -65,7 +65,7 @@ import requests
 
 from parser import fetch_toysi_catalog
 from generate_prom_feed import normalize_vendor
-from generate_prom_feed_top import select_top_items
+from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products, fetch_prom_products_by_external_ids
 from prom_competitor_pricer import SEARCH_DELAY
 from competitor_pricing import real_toysi_cost, load_fresh_prom_price_overrides
@@ -302,7 +302,7 @@ def _resolve_url_text(prom_id: int) -> str | None:
 def _save_own_product_links_cache(links: dict) -> None:
     """ВИПРАВЛЕНО (2026-07-21, findings_log.md — "buybox-unreachable-
     outside-top970"): раніше блайнд-перезаписував ЦІЛИЙ файл лише
-    результатом ЦЬОГО прогону (топ-970). Тепер full_catalog_competitor_
+    результатом ЦЬОГО прогону (поточний відбір). Тепер full_catalog_competitor_
     scan.py ТЕЖ пише в цей самий файл — для SKU поза топ-970, вмикаючи
     buyBox і там. Блайнд-перезапис звідси стирав би той внесок кожні
     ~4 години (цикл цього прогону). Об'єднання (не заміна) — старі
@@ -696,7 +696,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     top_catalog = select_top_items(catalog)
     if limit:
         top_catalog = dict(list(top_catalog.items())[:limit])
-    print(f"[Google] У топ-970: {len(top_catalog)} товарів для обробки.")
+    print(f"[Google] У відборі (ціль топ-{SELECT_COUNT}): {len(top_catalog)} товарів для обробки.")
 
     # ЗМІНЕНО 2026-07-17 (Autonomy-6): fetch_prom_products() тепер
     # ВИКЛИКАЄТЬСЯ ПЕРШИМ і НАВМИСНО — на відміну від попередньої версії,

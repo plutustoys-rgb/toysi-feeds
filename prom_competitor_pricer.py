@@ -73,7 +73,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
-from generate_prom_feed_top import select_top_items, load_scan_state
+from generate_prom_feed_top import select_top_items, load_scan_state, SELECT_COUNT
 from generate_prom_feed import fetch_russian_text
 from competitor_pricing import (
     decide_price_for_platform, load_prom_price_state, save_prom_price_state,
@@ -1746,7 +1746,7 @@ def main() -> None:
 
     price_state = load_prom_price_state()
 
-    print("[Pricer] Рахую поточний відбір топ-970...")
+    print(f"[Pricer] Рахую поточний відбір (топ-{SELECT_COUNT})...")
     toysi_catalog = fetch_toysi_catalog()
     try:
         assert_catalog_size_sane(toysi_catalog)
@@ -1764,7 +1764,7 @@ def main() -> None:
     save_prom_price_state(price_state)
 
     top_catalog = select_top_items(toysi_catalog)
-    print(f"[Pricer] У топ-970: {len(top_catalog)} товарів.")
+    print(f"[Pricer] У відборі (ціль топ-{SELECT_COUNT}): {len(top_catalog)} товарів.")
 
     # ДОДАНО (2026-07-25, живий root-cause 1987 помилок "Продукт не
     # найден" за один прогін): той самий внутрішньопрогонний кеш живих

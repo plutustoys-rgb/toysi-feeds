@@ -67,7 +67,7 @@ from competitor_pricing import (
     load_fresh_prom_price_overrides,
 )
 from generate_prom_feed import _VENDOR_ALIASES, normalize_vendor
-from generate_prom_feed_top import select_top_items
+from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from parser import fetch_toysi_catalog
 from prom_catalog_sync import (
     check_product_count_sane,
@@ -337,7 +337,7 @@ def check_brands(toysi_catalog: dict) -> list:
 
 def build_report(today: str, results: dict, prom_total: int, top_count: int, count_warning: str | None) -> str:
     lines = [f"# Аудит каталогу Prom — {today}", ""]
-    lines.append(f"Товарів у кабінеті Prom (активні): {prom_total}. Поточний топ-970: {top_count}.")
+    lines.append(f"Товарів у кабінеті Prom (активні): {prom_total}. Поточний відбір (ціль топ-{SELECT_COUNT}): {top_count}.")
     if count_warning:
         lines.append("")
         lines.append(f"⚠️ {count_warning}")
@@ -357,7 +357,7 @@ def build_report(today: str, results: dict, prom_total: int, top_count: int, cou
             "(автоматично за розкладом, якщо увімкнено)."
         )
     else:
-        lines.append("Немає — каталог відповідає поточному топ-970 по наявності.")
+        lines.append("Немає — каталог відповідає поточному відбору по наявності.")
     lines.append("")
 
     images = results["images"]
@@ -373,7 +373,7 @@ def build_report(today: str, results: dict, prom_total: int, top_count: int, cou
     lines.append("")
 
     blocked = results["blocked"]
-    lines.append(f"## 3. Заблоковані/відсутні товари — {len(blocked)} SKU з топ-970 відсутні в Prom довше {STALE_AGE_THRESHOLD_HOURS} год")
+    lines.append(f"## 3. Заблоковані/відсутні товари — {len(blocked)} SKU з відбору (ціль топ-{SELECT_COUNT}) відсутні в Prom довше {STALE_AGE_THRESHOLD_HOURS} год")
     if blocked:
         lines.append("")
         for ext_id, name, age in blocked[:30]:
@@ -391,7 +391,7 @@ def build_report(today: str, results: dict, prom_total: int, top_count: int, cou
 
     price = results["price"]
     pct = (len(price) / top_count * 100) if top_count else 0
-    lines.append(f"## 4. Ціни на межі маржі — {len(price)} SKU ({pct:.1f}% топ-970) впираються в нижню межу")
+    lines.append(f"## 4. Ціни на межі маржі — {len(price)} SKU ({pct:.1f}% відбору) впираються в нижню межу")
     if price:
         lines.append("")
         for pid, name, cat, margin_pct in price[:20]:
@@ -413,7 +413,7 @@ def build_report(today: str, results: dict, prom_total: int, top_count: int, cou
             )
         lines.append("")
         lines.append(
-            "⚠️ Розглянь виключення категорії з топ-970 (EXCLUDED_CATEGORIES у "
+            "⚠️ Розглянь виключення категорії з відбору (EXCLUDED_CATEGORIES у "
             "generate_prom_feed_top.py), як раніше зроблено для «Велосипеди»."
         )
     else:
@@ -478,7 +478,7 @@ def main() -> None:
 
     print("[Auditor] Тягну повний список товарів кабінету Prom...")
     prom_products = fetch_prom_products()
-    print(f"[Auditor] У кабінеті Prom: {len(prom_products)} товарів. У топ-970: {len(desired_ids)}.")
+    print(f"[Auditor] У кабінеті Prom: {len(prom_products)} товарів. У відборі (ціль топ-{SELECT_COUNT}): {len(desired_ids)}.")
     count_warning = check_product_count_sane(prom_products)
 
     state = load_state()

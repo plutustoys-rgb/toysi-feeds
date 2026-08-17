@@ -122,6 +122,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="усе, крім фінального git push")
     ap.add_argument("--skip-pull", action="store_true", help="не оновлювати конкурентні дані (взяти наявні)")
+    ap.add_argument("--skip-merchant", action="store_true", help="не запускати товарознавця (пошук+додавання)")
     a = ap.parse_args()
 
     # 1-2. Свіжі конкурентні дані + override-и (best-effort — збій НЕ валить публікацію фіду).
@@ -130,6 +131,10 @@ def main() -> None:
         _run([PY, str(BASE_DIR / "rozetka_price_monitor.py")])
     print("[RzLocal] 2) репрайсер (override-и цін)...")
     _run([PY, str(BASE_DIR / "rozetka_competitor_repricer.py")])
+    # 2b. Чорний список відхилених модератором (/goods/hidden) — щоб товарознавець не додав брак.
+    if not a.skip_pull:
+        print("[RzLocal] 2b) чорний список відхилених (/goods/hidden)...")
+        _run([PY, str(BASE_DIR / "rozetka_price_monitor.py"), "--rejected"])
 
     # 3. own_product_links_cache для <url> (фід ЛИШЕ читає його).
     if not _restore_from_feed_data("own_product_links_cache.json", BASE_DIR / "own_product_links_cache.json"):
@@ -139,6 +144,16 @@ def main() -> None:
     # щоб _build_rozetka_static_selection НЕ перерахував набір заново (це була б хвиля нової модерації).
     if not (STATIC_SEL.exists() and STATIC_SEL.stat().st_size > 2):
         _restore_from_feed_data("rozetka_static_selection.json", STATIC_SEL)
+
+    # 3c-3d. Товарознавець: знайти конкурентних кандидатів (ротаційна партія) → підключити у фід
+    # (додає в membership до КАПУ 6000, ціна конкурентна/соло, пропускає чорний список). Best-effort:
+    # збій НЕ валить публікацію наявного фіду. Виконується ПІСЛЯ відновлення membership, ДО генерації —
+    # щоб нові товари одразу потрапили у цей фід і публікація крок 8 зберегла їх у feed-data.
+    if not a.skip_merchant:
+        print("[RzLocal] 3c) товарознавець — пошук конкурентних кандидатів...")
+        _run([PY, str(BASE_DIR / "rozetka_merchant_agent.py")])
+        print("[RzLocal] 3d) підключення кандидатів у membership (кап 6000)...")
+        _run([PY, str(BASE_DIR / "rozetka_merchant_commit.py")])
 
     # 4-5. Генерація + preflight.
     print("[RzLocal] 4) генерація Rozetka-фіду...")

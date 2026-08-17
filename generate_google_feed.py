@@ -53,6 +53,7 @@ listings), за аналогією з generate_prom_feed_top.py, але ОКРЕ
   для категорій, які жодне правило не впізнало.
 """
 import json
+import math
 import random
 import re
 import sys
@@ -68,7 +69,9 @@ from generate_prom_feed import normalize_vendor
 from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products, fetch_prom_products_by_external_ids
 from prom_competitor_pricer import SEARCH_DELAY
-from competitor_pricing import real_toysi_cost, load_fresh_prom_price_overrides
+from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides,
+                                decide_price_for_platform, compute_floor,
+                                compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
 
@@ -572,11 +575,30 @@ def _upscale_prom_image(url: str) -> str:
     return _PROM_IMAGE_SIZE_RE.sub("_w1024_h1024_", url, count=1)
 
 
+def _prom_page_price(cost: float, category_name, override) -> float:
+    """Ціна, ЩО РЕАЛЬНО ЙДЕ НА СТОРІНКУ PROM — точна копія логіки generate_prom_feed.py (ряд. ~611-637).
+    Оголошення Google/Meta/Bing ведуть на цю сторінку, тож беруть ТУ САМУ ціну → жодного
+    'price mismatch' і ТІ САМІ товари, що на сайті Prom.
+      • є свіжий override репрайсера → беремо його, але піднімаємо до 3%-floor зі СВІЖОЮ cost
+        (той самий floor-гард, що у Prom-фіді — override міг застаріти проти зрослої собівартості);
+      • нема override → порахована ціна decide_price_for_platform (та сама формула, що на сторінці).
+    ⚠️ МУСИТЬ збігатися з generate_prom_feed.py — якщо там зміниться логіка ціни, синхронізувати тут."""
+    if override is not None:
+        retail = float(override)
+        floor = compute_floor(cost, compute_total_commission("prom", category_name, retail),
+                              MIN_PROFIT_COMPETITOR_FLOOR)
+        if retail < floor:
+            retail = math.ceil(floor * 100 - 1e-6) / 100
+        return retail
+    return decide_price_for_platform(cost, None, "prom", category_name)["price"]
+
+
 def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price_overrides: dict) -> tuple[list, dict]:
     stats = {
         "total_considered": len(catalog),
         "no_price": 0,
-        "no_prom_price": 0,
+        "no_prom_price": 0,   # застаріле: більше не викидаємо, лишаємо для сумісності друку (=0)
+        "computed_price": 0,  # взято порахована ціна (нема свіжого override) — фолбек як у Prom-фіді
         "no_link_skipped": 0,
         "no_image": 0,
         "no_gtin": 0,
@@ -604,10 +626,14 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         # свіжого запису ціни Prom (репрайсер ще не торкнувся) просто не
         # потрапляє у фід — жодна незалежно порахована ціна тут більше не
         # ризикує розійтися з реальною.
-        retail_price = prom_price_overrides.get(pid)
-        if retail_price is None:
-            stats["no_prom_price"] += 1
-            continue
+        # ЦІНА == ЦІНА СТОРІНКИ PROM (та сама, що на сайті) → оголошення містять ТІ САМІ товари,
+        # що й Prom (без 'price mismatch'). ВИПРАВЛЕНО 2026-08-17: раніше товар без свіжого
+        # override просто викидався (no_prom_price) → оголошення мали ~600 замість ~6000 сайту.
+        # Тепер фолбек на порахувану ціну (ідентична сторінці) через _prom_page_price().
+        override = prom_price_overrides.get(pid)
+        retail_price = _prom_page_price(cost, item.get("category_name"), override)
+        if override is None:
+            stats["computed_price"] += 1
 
         name = (item.get("name") or "").strip()
         if not name:
@@ -745,7 +771,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] Готово! Збережено: {output_file}")
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — без ціни: {stats['no_price']}")
-    print(f"[Google] Пропущено — немає свіжої ціни Prom (репрайсер ще не торкнувся): {stats['no_prom_price']}")
+    print(f"[Google] Ціна порахована (нема свіжого override, як на сторінці Prom): {stats['computed_price']}")
     print(f"[Google] Пропущено — не знайдено впевненого посилання на сторінку: {stats['no_link_skipped']}")
     print(f"[Google] Пропущено — без фото: {stats['no_image']}")
     print(f"[Google] Без GTIN (пропущено поле, не весь товар): {stats['no_gtin']}")

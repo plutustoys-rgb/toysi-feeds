@@ -44,7 +44,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from generate_prom_feed_top import select_top_items
+from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
 from telegram_notify import send_telegram_message
 from prom_api_client import PromEditError, delist as _prom_delist
@@ -167,7 +167,12 @@ TRUE_ROOT_GROUP_ID = 155011713  # "Корнева група" — підтвер
 # ~29 325 реальних SKU; тут менший відсоток обґрунтований тим, що каталог
 # Prom природно коливається значно менше день у день, ніж повний каталог
 # постачальника Toysi).
-MIN_EXPECTED_PRODUCT_COUNT = 910
+# ВИПРАВЛЕНО 2026-08-17: було мертве число 910 — застаріле (коментар вище сам каже «кабінет ~6116/6000»).
+# Наслідок: fetch_prom_products, обрізаний Prom-API-капом ~499/групу, повертав ~1419 (чверть каталогу),
+# але 1419 > 910 → гейт видалення НЕ спрацьовував → find_stale_external_ids позначав НЕбачені товари
+# як «зниклі» → їх видаляло наосліп («втрачаємо товари»). Тепер поріг ДИНАМІЧНИЙ від реального
+# таргету каталогу (SELECT_COUNT=6000), 60% — щоб ловити втрату виду >40%, не мертвим числом.
+MIN_EXPECTED_PRODUCT_COUNT = int(SELECT_COUNT * 0.6)
 
 
 # ДОДАНО (2026-07-27, живий інцидент: apply_live_dumping_fix.py впав на
@@ -286,12 +291,12 @@ def check_product_count_sane(products: dict) -> str | None:
     читає інтерактивно."""
     if len(products) < MIN_EXPECTED_PRODUCT_COUNT:
         return (
-            f"fetch_prom_products() повернув лише {len(products)} товарів — "
-            f"підозріло мало проти очікуваних ~{MIN_EXPECTED_PRODUCT_COUNT}+. "
-            f"Відомий випадок: /groups/list може мовчки не повертати реальні "
-            f"групи (напр. 'Сквіші', виявлено 2026-07-12) — перш ніж довіряти "
-            f"висновку 'товар відсутній у Prom' на основі цього результату, "
-            f"перевір напряму через my.prom.ua/cms/product?search_term=<sku>."
+            f"fetch_prom_products() повернув лише {len(products)} товарів — підозріло мало проти "
+            f"таргету ~{SELECT_COUNT} (поріг {MIN_EXPECTED_PRODUCT_COUNT}). "
+            f"ПРИЧИНА (діагноз 2026-08-17): Prom /products/list капить ~499 товарів на group_id, а "
+            f"кореневі групи (де сидить більшість каталогу) саме такі — last_id/дата кап не пробивають. "
+            f"Отже вид кабінету НЕПОВНИЙ. НЕ робити висновок 'товар відсутній у Prom' на цьому зрізі "
+            f"(інакше видаляємо небачене) — перевіряти напряму my.prom.ua/cms/product?search_term=<sku>."
         )
     return None
 

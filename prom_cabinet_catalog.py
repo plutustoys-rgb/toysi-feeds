@@ -35,15 +35,24 @@ BASE_DIR = Path(__file__).parent
 STATE_FILE = Path(os.environ.get("PROM_CABINET_STATE_FILE",
                                  str(BASE_DIR / ".local_secrets" / "prom_cabinet_state.json")))
 OUTPUT_FILE = BASE_DIR / ".local_secrets" / "prom_full_catalog.json"
+# Денна append-only історія per-SKU (запит R2 SEO-агента 2026-08-18): один файл на добу,
+# щоб мати часовий ряд видимості (position/orders_count/quality_steps) і форвардну експозицію
+# — на відміну від OUTPUT_FILE, що перезаписується. НЕ фінансові поля (commission_preview НЕ
+# беремо — там rate/amount; правило «фінданих у спільне не кладемо»).
+HISTORY_DIR = BASE_DIR / "reports" / "prom_catalog_history"
 CMS_URL = "https://my.prom.ua/cms/product/list"
 NAV_TIMEOUT_MS = 45000
 PER_PAGE = 100
 _NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
 
-# Поля, які тримаємо з кожного товару (діагностика + мапінг). НЕ весь товстий запис.
+# Поля, які тримаємо з кожного товару (діагностика + мапінг + сигнали видимості для SEO). НЕ
+# весь товстий запис і НЕ фінанси (commission_preview свідомо виключено).
 _KEEP = ("sku", "id", "status", "presence", "presence_title", "quantity_in_stock",
          "price", "unadvertised_reasons", "underpriced", "group_id", "category_id",
-         "view_catalog_url", "selling_type")
+         "view_catalog_url", "selling_type",
+         # R2: сигнали видимості/якості для SEO-атрибуції
+         "orders_count", "product_opinion_count", "quality_steps", "position",
+         "in_running_cpa", "in_running_cpc")
 
 
 class PromCabinetError(Exception):
@@ -106,6 +115,18 @@ def fetch_full_catalog(per_page: int = PER_PAGE) -> dict:
     return out
 
 
+def _write_daily_history(cat: dict) -> Path:
+    """Денний знімок каталогу → reports/prom_catalog_history/YYYY-MM-DD.json (один файл на добу).
+    Часовий ряд видимості для SEO (position/orders_count/quality_steps) + форвардна експозиція.
+    Перезапис У МЕЖАХ доби (останній зріз дня) — але НЕ між добами (кожна доба свій файл)."""
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    day = datetime.now().strftime("%Y-%m-%d")
+    path = HISTORY_DIR / f"{day}.json"
+    path.write_text(json.dumps({"at": datetime.now().isoformat(timespec="minutes"),
+                                "count": len(cat), "items": cat}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def summary() -> None:
     print("[PromCat] Тягну повний каталог Prom через кабінет...")
     try:
@@ -118,6 +139,7 @@ def summary() -> None:
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(json.dumps({"at": datetime.now().isoformat(), "count": len(cat),
                                        "items": cat}, ensure_ascii=False), encoding="utf-8")
+    hist_path = _write_daily_history(cat)   # R2: денна історія (не перезапис між добами)
     st = Counter(v.get("status") for v in cat.values())
     pres = Counter(v.get("presence") for v in cat.values())
     underpriced = sum(1 for v in cat.values() if v.get("underpriced"))
@@ -125,7 +147,8 @@ def summary() -> None:
     for v in cat.values():
         for reason in (v.get("unadvertised_reasons") or []):
             unadv[str(reason)] += 1
-    print(f"[PromCat] ПОВНИЙ каталог: {len(cat)} товарів (API бачив ~1419) → {OUTPUT_FILE.name}")
+    print(f"[PromCat] ПОВНИЙ каталог: {len(cat)} товарів (API бачив ~1419) → {OUTPUT_FILE.name} "
+          f"+ денна історія → {hist_path.relative_to(BASE_DIR)}")
     print(f"[PromCat] status: {dict(st)}")
     print(f"[PromCat] presence: {dict(pres)}")
     print(f"[PromCat] underpriced (неконкурентні за оцінкою Prom): {underpriced}")

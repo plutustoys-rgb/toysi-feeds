@@ -45,8 +45,8 @@ import imagehash
 from PIL import Image
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-from generate_rozetka_feed import (_qualifies_for_feed, _load_prom_products_cache,
-                                   ROZETKA_STATIC_SELECTION_FILE)
+from generate_rozetka_feed import (_qualifies_for_feed, _within_rz_delivery_dims,
+                                   _load_prom_products_cache, ROZETKA_STATIC_SELECTION_FILE)
 from competitor_pricing import _resolve_rozetka_floor, PAYMENT_COMMISSION, real_toysi_cost
 
 BASE_DIR = Path(__file__).parent
@@ -194,7 +194,8 @@ def run(catalog: dict, membership: set, prom_products: dict, limit: int) -> tupl
     """Готує ротаційну партію придатних кандидатів, перевіряє ринок на Rozetka, повертає (add, stats)."""
     import random
     st = {"eligible": 0, "checked": 0, "competitive": 0, "uncompetitive": 0, "unique": 0,
-          "blocked": 0, "oos_or_lowstock": 0, "already": 0, "invalid_card": 0, "no_clean_image": 0, "bad_cost": 0}
+          "blocked": 0, "oos_or_lowstock": 0, "already": 0, "invalid_card": 0, "no_clean_image": 0,
+          "bad_cost": 0, "oversized": 0}
     # 1) придатні (Toysi-напряму): stock≥2, не на Rozetka, валідна картка, чисте фото
     eligible = []
     for pid in sorted(catalog.keys()):
@@ -205,6 +206,8 @@ def run(catalog: dict, membership: set, prom_products: dict, limit: int) -> tupl
             st["oos_or_lowstock"] += 1;  continue
         if not _qualifies_for_feed(item, set()):
             st["invalid_card"] += 1;  continue
+        if not _within_rz_delivery_dims(item):     # великогабаритні (>120см) — не додаємо на Rozetka
+            st["oversized"] += 1;  continue
         our_img = _our_image(item, prom_products)
         if not our_img:
             st["no_clean_image"] += 1;  continue
@@ -292,7 +295,8 @@ def main() -> None:
           f"конкурентні {st['competitive']}, унікальні {st['unique']}, дорожчі {st['uncompetitive']} "
           f"| пропущено (антибот/помилка) {st['blocked']}")
     print(f"[Merchant] відсіяно (у придатності): вже на Rozetka {st['already']}, "
-          f"низький склад/OOS {st['oos_or_lowstock']}, невалідна картка {st['invalid_card']}, без фото {st['no_clean_image']}")
+          f"низький склад/OOS {st['oos_or_lowstock']}, невалідна картка {st['invalid_card']}, без фото {st['no_clean_image']}, "
+          f"великогабаритні >120см {st['oversized']}")
     print(f"[Merchant] → {OUTPUT_FILE.name} (накопичено {len(merged)} кандидатів «додати»)")
 
 

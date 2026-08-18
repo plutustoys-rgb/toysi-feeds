@@ -28,7 +28,8 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from generate_rozetka_feed import (_qualifies_for_feed, _load_prom_products_cache,
+from generate_rozetka_feed import (_qualifies_for_feed, _within_rz_delivery_dims,
+                                   _load_prom_products_cache,
                                    ROZETKA_STATIC_SELECTION_FILE, ROZETKA_MERCHANT_PRICES_FILE)
 from competitor_pricing import decide_price_for_platform, real_toysi_cost
 from rozetka_merchant_agent import MIN_STOCK, _our_image, OUTPUT_FILE as CANDIDATES_FILE
@@ -99,7 +100,8 @@ def main() -> None:
     order = {"competitive": 0, "unique": 1}
     candidates = sorted(candidates, key=lambda c: order.get(c.get("decision"), 9))
 
-    added, skipped = 0, {"already": 0, "blocked": 0, "gone": 0, "oos": 0, "invalid": 0, "no_img": 0, "bad_cost": 0}
+    added, skipped = 0, {"already": 0, "blocked": 0, "gone": 0, "oos": 0, "invalid": 0,
+                         "no_img": 0, "bad_cost": 0, "oversized": 0}
     reached_cap = False
     count = start_count
     for c in candidates:
@@ -118,6 +120,8 @@ def main() -> None:
             skipped["oos"] += 1;  continue            # уже не в наявності / <2
         if not _qualifies_for_feed(item, set()):
             skipped["invalid"] += 1;  continue
+        if not _within_rz_delivery_dims(item):       # великогабаритні (>120см) — не додаємо на Rozetka
+            skipped["oversized"] += 1;  continue
         if not _our_image(item, prom_products):
             skipped["no_img"] += 1;  continue
         try:

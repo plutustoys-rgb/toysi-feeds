@@ -296,6 +296,34 @@ def _truncate(text: str, max_len: int) -> str:
     return cut.rstrip(" ,.-")
 
 
+RZ_DELIVERY_MAX_SIDE_CM = 120.0  # ліміт габаритів ROZETKA Delivery (лист Анна Марченко 2026-08-18)
+
+
+def _package_max_side_cm(item: dict):
+    """Макс. сторона упаковки (см) з Toysi params (Довжина/Ширина/Висота в упаковці).
+    None, якщо розмірів нема."""
+    sides = []
+    for p in (item.get("params") or []):
+        if not isinstance(p, (list, tuple)) or len(p) < 2:
+            continue
+        key = str(p[0]).lower()
+        if "в упаковці" in key and ("довжина" in key or "ширина" in key or "висота" in key):
+            try:
+                sides.append(float(str(p[1]).replace(",", ".").split()[0]))
+            except (ValueError, IndexError):
+                pass
+    return max(sides) if sides else None
+
+
+def _within_rz_delivery_dims(item: dict) -> bool:
+    """True якщо товар вписується в габарити ROZETKA Delivery (макс. сторона ≤120 см) АБО
+    розмірів нема (невідомо — не блокуємо, іграшки майже всі малі). False лише для ЯВНО
+    великогабаритних. Зовнішній фільтр товарознавця (рішення власника 2026-08-18): не
+    додавати на Rozetka великогабаритні, бо ROZETKA Delivery їх не приймає."""
+    side = _package_max_side_cm(item)
+    return side is None or side <= RZ_DELIVERY_MAX_SIDE_CM
+
+
 def _qualifies_for_feed(item: dict, excluded: set) -> bool:
     """Ті самі skip-фільтри, що й основний цикл _build_xml() (ціна,
     excluded id, vendor, https-фото) — винесено окремо, щоб рахувати

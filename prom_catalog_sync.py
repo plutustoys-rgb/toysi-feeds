@@ -337,10 +337,14 @@ def deletion_guard_reason(prom_products: dict, stale_ids: list) -> str | None:
 # заалертив одразу (new/repeat-throttled/recovery-цикл, як у watchdog).
 BLOCK_ALERT_STATE_FILE      = Path(__file__).parent / "prom_catalog_sync_block_alert_state.json"
 BLOCK_ALERT_INTERVAL_HOURS  = 24
+# Для ОЧІКУВАНОЇ причини «неповний вид кабінету» (кап Prom-API 499/група — постійний, не
+# інцидент; OOS усе одно чиститься find_stale_via_ledger) шлемо ℹ️ рідше (тиждень), щоб не
+# «кричати вовк» щодня. Реальний масо-кап-збій (>MAX_DEACTIVATIONS) лишається 🚨/24год.
+CAP_INFO_INTERVAL_HOURS     = 168
 
 
-def _block_alert_due(now: datetime) -> bool:
-    """True, якщо блок-алерт ще не слався або минуло >= BLOCK_ALERT_INTERVAL_HOURS."""
+def _block_alert_due(now: datetime, interval_hours: float = BLOCK_ALERT_INTERVAL_HOURS) -> bool:
+    """True, якщо блок-алерт ще не слався або минуло >= interval_hours."""
     try:
         data = json.loads(BLOCK_ALERT_STATE_FILE.read_text(encoding="utf-8"))
         # isinstance-guard (аудит #189 pt3): валідний JSON-нескаляр (0/[]/"str") інакше
@@ -351,7 +355,7 @@ def _block_alert_due(now: datetime) -> bool:
     if not last:
         return True
     try:
-        return (now - datetime.fromisoformat(last)).total_seconds() / 3600 >= BLOCK_ALERT_INTERVAL_HOURS
+        return (now - datetime.fromisoformat(last)).total_seconds() / 3600 >= interval_hours
     except ValueError:
         return True  # пошкоджений таймстемп — не глушити алерт
 
@@ -767,14 +771,25 @@ def main() -> None:
         # зрізі: НЕ видаляємо, алертимо в Telegram, лишаємо рішення людині.
         block_reason = deletion_guard_reason(prom_products, stale_ids)
         if block_reason:
-            msg = f"prom_catalog_sync: масове видалення ПРОПУЩЕНО — {block_reason}"
-            print(f"[Sync] {msg}", file=sys.stderr)  # у лог — ЗАВЖДИ, на кожному заблокованому прогоні
+            # ОЧІКУВАНИЙ кап (неповний вид кабінету) vs РЕАЛЬНИЙ масо-кап-збій — різна серйозність.
+            # Кап: постійний (Prom-API 499/група), OOS чистить find_stale_via_ledger → ℹ️, тиждень.
+            # Масо-кап (>MAX_DEACTIVATIONS): ймовірний збій відбору/скану → 🚨, 24год.
+            expected_cap = check_product_count_sane(prom_products) is not None
+            print(f"[Sync] масове видалення ПРОПУЩЕНО — {block_reason}", file=sys.stderr)  # у лог ЗАВЖДИ
             now = datetime.now()
-            if _block_alert_due(now):  # Telegram — не частіше 1/24год (throttle, аудит #188/GOTCHAS #5)
-                send_telegram_message("🚨 " + msg)
+            if expected_cap:
+                icon, interval = "ℹ️", CAP_INFO_INTERVAL_HOURS
+                msg = ("prom_catalog_sync: масове видалення на паузі — неповний вид кабінету "
+                       f"({len(prom_products)} товарів через кап Prom-API 499/група). Це ОЧІКУВАНО й "
+                       "безпечно: OOS усе одно чиститься журналом (find_stale_via_ledger), живе не видаляється.")
+            else:
+                icon, interval = "🚨", BLOCK_ALERT_INTERVAL_HOURS
+                msg = f"prom_catalog_sync: масове видалення ПРОПУЩЕНО — {block_reason}"
+            if _block_alert_due(now, interval):  # throttle: кап 1/тиждень, реальний збій 1/24год
+                send_telegram_message(f"{icon} " + msg)
                 _record_block_alert(now)
             else:
-                print("[Sync] Telegram-алерт про блокування пропущено — 24-год throttle (вже алертив нещодавно).",
+                print(f"[Sync] Telegram-алерт про блокування пропущено — throttle ({interval}год).",
                       file=sys.stderr)
             return
 

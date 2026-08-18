@@ -29,11 +29,16 @@ ROZETKA_PASSWORD = os.environ.get("ROZETKA_PASSWORD", "")
 
 LOOKBACK_HOURS = 24
 
-# 2026-07-15: дефолт, ще НЕ узгоджений з власницею — власне рішення, скільки
-# і коли поповнювати, лишається за нею (агент нічого не оплачує й не
-# нагадує текстом "заплати", лише позначає "низький" у звіті). Скоригуй за
-# власним відчуттям типового обороту на цьому балансі.
-ROZETKA_LOW_BALANCE_THRESHOLD = 500.0
+# ВИПРАВЛЕНО 2026-08-18 (живий кабінет + дамп API): раніше алерт реагував на
+# current_balance<500 і кричав «БАЛАНС НИЗЬКИЙ 0», хоча це ХИБНО. Розбір:
+#   • current_balance/balance у /v1/balances/current — це операційний/РЕКЛАМНИЙ баланс
+#     (Ліміти Реклами), у нас нормально 0, бо Rozetka-реклами не крутимо;
+#   • реальний баланс магазину — «Гарантійний платіж (баланс)» = 1000₴ — у кабінеті,
+#     і Seller API його НЕ віддає (немає такого поля у відповіді);
+#   • справжній ризик блокування = count_days_to_lock (null = не рахує) + заборгованість.
+# Тому тепер алертимо лише на РЕАЛЬНИЙ ризик (відлік до блокування), а current_balance=0
+# не вважаємо тривогою.
+ROZETKA_DAYS_TO_LOCK_WARN = 7   # відлік ≤ стільки днів до блокування → червоний алерт
 
 # P0-2 (2026-07-17): Prom "показник успішних замовлень" (support.prom.ua/hc/
 # uk/articles/4405624956573) — офіційно: 60-денне вікно, що ЗАКІНЧУЄТЬСЯ за
@@ -116,17 +121,29 @@ def _rozetka_balance_line() -> str:
     except rozetka_client.RozetkaAPIError as e:
         return f"\n\nБаланс Rozetka: ⚠️ не вдалось отримати ({e})"
 
-    try:
-        current = float(balance.get("current_balance", 0))
-    except (TypeError, ValueError):
+    if not isinstance(balance, dict):
         return f"\n\nБаланс Rozetka: ⚠️ неочікуваний формат відповіді ({balance})"
 
-    if current < ROZETKA_LOW_BALANCE_THRESHOLD:
+    # Реальний ризик блокування — count_days_to_lock (несплата/заборгованість). null/відсутнє = безпечно.
+    days = balance.get("count_days_to_lock")
+    d = None
+    if days is not None:
+        try:
+            d = int(days)
+        except (TypeError, ValueError):
+            d = None
+    paid = balance.get("paid_month")
+    ad_bal = balance.get("current_balance", balance.get("balance", 0))
+
+    if d is not None and d <= ROZETKA_DAYS_TO_LOCK_WARN:
         return (
-            f"\n\n🔴 БАЛАНС ROZETKA НИЗЬКИЙ: {current:.2f} грн "
-            f"(поріг {ROZETKA_LOW_BALANCE_THRESHOLD:.0f} грн) — розглянь поповнення"
+            f"\n\n🔴 ROZETKA: магазин заблокується через {d} дн — заборгованість/несплата, "
+            f"поповни рахунок у кабінеті (Гарантійний платіж)"
         )
-    return f"\n\nБаланс Rozetka: {current:.2f} грн"
+    # Норма: current_balance (рекламний) може бути 0 — це НЕ тривога. Гарантійний платіж,
+    # що тримає магазин, цей API не віддає (див. rozetka.md) — перевіряти в кабінеті за потреби.
+    paid_note = f", оплачено до {paid}" if paid else ""
+    return f"\n\nБаланс Rozetka: ✅ активний{paid_note} (рекламний баланс {ad_bal}₴; гарантійний платіж — у кабінеті)"
 
 
 def _prom_balance_line() -> str:

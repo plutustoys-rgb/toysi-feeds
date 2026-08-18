@@ -25,9 +25,11 @@ DRY-RUN за замовчуванням: складає готові пости 
 на перегляд власнику. `--publish` реально постить. Ledger не дає постити той самий товар двічі.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -69,6 +71,14 @@ META_FEED = BASE / "feeds" / "meta_feed.xml"
 OUT_DIR = BASE / "social_posts" / "auto"
 LEDGER = BASE / "social_posted_ledger.json"
 NS = {"g": "http://base.google.com/ns/1.0"}
+
+# Плутус-overlay: ~кожен PLUTUS_EVERY_N-й FB-пост стає відео з маскотом на картці товару
+# (engagement-«пасхалка» — глядач вгадує, де виринув Плутус). Детерміновано за sku → стабільно
+# ~1/3 каталогу. Fail-safe: будь-який збій рендеру → відкат на звичайне фото (постер не ламається).
+# Потребує plutus_overlay.py + plutus_scenes/*_GREEN.mp4 (у репо) + imageio/scipy/imageio-ffmpeg у venv.
+PLUTUS_SCENES_DIR = BASE / "plutus_scenes"
+PLUTUS_EVERY_N = int(os.environ.get("PLUTUS_EVERY_N", "3"))
+PLUTUS_RENDER_TIMEOUT = 180
 
 # Касуальні хуки (без змінних → без відмінкових помилок), обираються за hash(sku).
 HOOKS = [
@@ -246,6 +256,70 @@ def _write_dryrun(p: dict, caption: str, platform: str = "fb") -> None:
         pass
 
 
+def _is_plutus_post(sku: str) -> bool:
+    """Детерміновано ~1/PLUTUS_EVERY_N постів → Плутус-відео (стабільно за sku)."""
+    if PLUTUS_EVERY_N <= 1:
+        return PLUTUS_EVERY_N == 1
+    return int(hashlib.md5(sku.encode()).hexdigest(), 16) % PLUTUS_EVERY_N == 0
+
+
+def _plutus_scene_for(sku: str):
+    """Зелена сценка для цього sku (детерміновано — розмаїття без випадковості між прогонами)."""
+    scenes = sorted(PLUTUS_SCENES_DIR.glob("*_GREEN.mp4")) if PLUTUS_SCENES_DIR.exists() else []
+    if not scenes:
+        return None
+    return scenes[int(hashlib.md5(("sc" + sku).encode()).hexdigest(), 16) % len(scenes)]
+
+
+def _render_plutus(image_url: str, sku: str, out_path: Path) -> bool:
+    """Рендерить overlay-відео Плутуса на фото товару (plutus_overlay.py, subprocess).
+    FAIL-SAFE: будь-який збій (нема сценок/залежностей, мережа, таймаут, ненульовий код) →
+    False, і постер відкочується на звичайне фото. Причина логується (самодіагностика)."""
+    scene = _plutus_scene_for(sku)
+    if scene is None:
+        print("[social] Плутус: нема зелених сценок у plutus_scenes/ — відкат на фото.", file=sys.stderr)
+        return False
+    try:
+        r = requests.get(image_url, timeout=REQUEST_TIMEOUT)
+        if not (r.ok and r.content):
+            return False
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_img = out_path.parent / "_plutus_product.jpg"
+        tmp_img.write_bytes(r.content)
+        seed = int(hashlib.md5(sku.encode()).hexdigest()[:8], 16) % 100000
+        res = subprocess.run(
+            [sys.executable, str(BASE / "plutus_overlay.py"),
+             "--scene", str(scene), "--product", str(tmp_img),
+             "--out", str(out_path), "--seed", str(seed)],
+            cwd=str(BASE), capture_output=True, text=True, timeout=PLUTUS_RENDER_TIMEOUT)
+        ok = res.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0
+        if not ok:
+            tail = (res.stderr or res.stdout or f"код {res.returncode}")[-200:]
+            print(f"[social] Плутус-рендер {sku} не вдався ({tail}) — відкат на фото.", file=sys.stderr)
+        return ok
+    except Exception as e:  # noqa: BLE001 — рендер НІКОЛИ не має валити постинг
+        print(f"[social] Плутус-рендер {sku} виняток: {e} — відкат на фото.", file=sys.stderr)
+        return False
+
+
+def _publish_fb_video(video_path: Path, caption: str) -> dict:
+    """POST /{page-id}/videos — відео файлом + опис. Повертає {ok, id|error}. Ніколи не кидає."""
+    try:
+        with open(video_path, "rb") as f:
+            resp = requests.post(
+                f"https://graph.facebook.com/{GRAPH_VERSION}/{FB_PAGE_ID}/videos",
+                data={"description": caption, "access_token": FB_PAGE_ACCESS_TOKEN},
+                files={"source": f},
+                timeout=PLUTUS_RENDER_TIMEOUT,
+            )
+        j = resp.json() if resp.content else {}
+        if resp.ok and j.get("id"):
+            return {"ok": True, "id": j.get("id")}
+        return {"ok": False, "error": j.get("error", {}).get("message", f"HTTP {resp.status_code}")}
+    except (requests.RequestException, ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+
+
 def _publish_fb(p: dict, caption: str) -> dict:
     """POST /{page-id}/photos — фото на URL + підпис. Повертає {ok, id|error}. Ніколи не кидає."""
     try:
@@ -374,7 +448,7 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
                       f"готую). Оживе, щойно креденшели будуть в оточенні.", file=sys.stderr)
 
     stats = {"processed": 0, "posted": 0, "dryrun": 0, "skipped": 0, "dead_links": 0,
-             "unsure_links": 0, "errors": 0, "tagged": 0}
+             "unsure_links": 0, "errors": 0, "tagged": 0, "plutus": 0}
     url_cache, pid_cache = {}, {}
     checks = 0            # перевірок посилань цього прогону — кап MAX_LINK_CHECKS проти self-throttle
     for p in products:
@@ -414,10 +488,22 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
             product_id = _ig_product_id(sku, p["name"], pid_cache) if (pl == "ig" and pl in live) else None
             caption = build_caption(p, pl, tagged=bool(product_id))
             _write_dryrun(p, caption, pl)   # завжди артефакт (прев'ю + лог)
+            # Плутус-overlay для ~кожного PLUTUS_EVERY_N-го FB-поста (fail-safe → звичайне фото).
+            # Рендеримо і для dry-run (прев'ю відео власнику), і для живого постингу.
+            plutus_video = None
+            if pl == "fb" and _is_plutus_post(sku):
+                vpath = OUT_DIR / sku / "plutus.mp4"
+                if _render_plutus(p["image"], sku, vpath):
+                    plutus_video = vpath
             if pl not in live:
                 stats["dryrun"] += 1
                 continue
-            res = _publish_ig(p, caption, product_id) if pl == "ig" else _publish_fb(p, caption)
+            if pl == "fb":
+                res = _publish_fb_video(plutus_video, caption) if plutus_video else _publish_fb(p, caption)
+                if plutus_video and res.get("ok"):
+                    stats["plutus"] += 1
+            else:
+                res = _publish_ig(p, caption, product_id)
             if res["ok"]:
                 _record_post(ledger, pl, sku, res["id"], p["url"])
                 stats["posted"] += 1
@@ -439,7 +525,8 @@ def run(limit: int, publish: bool, targets=("fb",)) -> dict:
                     return stats
 
     if stats["posted"]:
-        _notify(f"📣 Соцпостинг: {stats['posted']} пост(ів) на {'+'.join(live)}. Помилок: {stats['errors']}.")
+        pl_note = f", з них Плутус-відео: {stats['plutus']}" if stats.get("plutus") else ""
+        _notify(f"📣 Соцпостинг: {stats['posted']} пост(ів) на {'+'.join(live)}{pl_note}. Помилок: {stats['errors']}.")
     elif live and (stats["dead_links"] or stats["unsure_links"]):
         # прогін закінчився без постів, хоча були кандидати з битими/недоступними лінками —
         # не мовчимо (урок 15.08: постер тихо пропускав пости під rate-limit).

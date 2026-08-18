@@ -6,3 +6,7 @@ ImageHash>=4.3
 openpyxl>=3.1
 playwright>=1.45
 telethon>=1.40
+imageio
+imageio-ffmpeg
+scipy
+numpy

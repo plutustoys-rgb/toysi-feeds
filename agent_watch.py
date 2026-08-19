@@ -30,6 +30,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -73,14 +74,23 @@ WATCHERS = [
     {
         "name": "SEO",
         "target_label": "SEO",
-        "channels": ["SEO_CHANNEL.md"],
+        # SEO стежить ОБИДВА канали: SMM може крос-постнути йому `[SMM → SEO]` у свій канал.
+        "channels": ["SEO_CHANNEL.md", "MARKETING_CHANNEL.md"],
         "max_wakes_per_day": 12,
-        "schedule": None,   # SEO налаштує свій розклад сам (напр. чек-поінт 20.08) окремим PR
+        # Тижневий огляд GSC/GA4 щопонеділка 11:00 (не перетинається з keepalive 10:00 і
+        # знімком каталогу 10:30 за кабінетну сесію Prom). Запит SEO 2026-08-19.
+        "schedule": {"weekday": 0, "hour": 11},
         "wake_prompt": (
-            "/seo-agent Ти прокинувся за монітором каналу. Прочитай SEO_CHANNEL.md — є новий "
-            "запис до тебе від Коду/власника. Обробі відкриті запити/питання до тебе за "
-            "конвенцією каналу; підтвердження/закриті пункти не відписуй. Дій самостійно; що "
-            "потребує власника — через OWNER_INBOX.md."
+            "/seo-agent Ти прокинувся за монітором каналу. Прочитай SEO_CHANNEL.md (і свій рядок у "
+            "MARKETING_CHANNEL.md, якщо там є `[X → SEO]`) — є новий запис до тебе. Обробі відкриті "
+            "запити/питання за конвенцією каналу; підтвердження/закриті пункти не відписуй. Дій "
+            "самостійно; що потребує власника — через OWNER_INBOX.md."
+        ),
+        "periodic_prompt": (
+            "/seo-agent Тижневий огляд (за розкладом). Зніми з кабінету Search Console свіжу "
+            "Ефективність (покази/кліки/позиція) та Індексацію сторінок і GA4-зріз (Organic Search), "
+            "поклади зріз у reports/, і коротко познач у SEO_CHANNEL.md, що змінилось за тиждень. "
+            "Нічого незворотного/публічного без власника."
         ),
     },
     {
@@ -132,14 +142,23 @@ def _notify(msg: str) -> None:
         print(f"[AgentWatch] Telegram не надіслано (не критично): {e}", file=sys.stderr)
 
 
+def _parse_recipients(receiver: str) -> set:
+    """Отримувачі з частини після `→`: підтримує кілька через `+`/`,` (крос-пост).
+    Регістронезалежно. `Код + SMM` → {'код', 'smm'}."""
+    return {r.strip().casefold() for r in re.split(r"[+,]", receiver) if r.strip()}
+
+
 def _newest_incoming_header(text: str, target_label: str) -> str | None:
-    """Найновіший (топовий, бо newest-on-top) заголовок `## [X → <target>] ...`, де X != target.
-    Повертає повний рядок заголовка як підпис-сигнатуру, або None якщо вхідних нема."""
+    """Найновіший (топовий, бо newest-on-top) заголовок `## [X → <адресати>] ...`, де мітка
+    target ВХОДИТЬ у множину адресатів (не лише рівність!) і X != target. Повертає повний рядок
+    заголовка як підпис-сигнатуру, або None. Фікс 2026-08-19 (SEO): мультиадресні крос-пости
+    `[SEO → Код + SMM]` раніше не бачив НІХТО (вимагалась точна рівність), хоча протокол їх дозволяє."""
+    tgt = target_label.strip().casefold()
     for line in text.splitlines():
         s = line.strip()
         if not s.startswith("## ["):
             continue
-        # очікуємо `## [ВІДПРАВНИК → ОТРИМУВАЧ] ...`
+        # очікуємо `## [ВІДПРАВНИК → ОТРИМУВАЧ(І)] ...`
         try:
             inside = s[s.index("[") + 1: s.index("]")]
             if "→" not in inside:
@@ -147,7 +166,7 @@ def _newest_incoming_header(text: str, target_label: str) -> str | None:
             sender, receiver = [p.strip() for p in inside.split("→", 1)]
         except ValueError:
             continue
-        if receiver == target_label and sender != target_label:
+        if tgt in _parse_recipients(receiver) and sender.casefold() != tgt:
             return s   # топовий підходящий = найновіший
     return None
 
@@ -172,9 +191,11 @@ def _periodic_due(schedule: dict | None, state: dict) -> bool:
     return False
 
 
-def _wake(cfg: dict, reason: str, dry: bool) -> bool:
-    """Піднімає повного агента через `claude -p`. True якщо успішно (exit 0)."""
-    prompt = f"{cfg['wake_prompt']}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
+def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
+    """Піднімає повного агента через `claude -p`. True якщо успішно (exit 0).
+    Для періодичної задачі бере `periodic_prompt` (якщо є), інакше — звичайний `wake_prompt`."""
+    base = cfg.get("periodic_prompt") if (periodic and cfg.get("periodic_prompt")) else cfg["wake_prompt"]
+    prompt = f"{base}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
     cmd = ["claude", "-p", prompt, "--add-dir", str(COWORK_DIR)]
     print(f"[AgentWatch] {'DRY — БУВ БИ' if dry else 'БУДЖУ'} агент '{cfg['name']}' ({reason})")
     if dry:
@@ -231,6 +252,7 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
 
     # 1) новий вхідний запис у будь-якому з каналів?
     reason = None
+    periodic = False
     new_sig = None
     seen = st.get("seen", {})
     for ch in cfg["channels"]:
@@ -250,13 +272,14 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
     # 2) або настала періодична задача
     if reason is None and _periodic_due(cfg.get("schedule"), st):
         reason = "періодична задача за розкладом"
+        periodic = True
 
     if reason is None and not force:
         return
     if force and reason is None:
         reason = "примусове пробудження (--force)"
 
-    ok = _wake(cfg, reason, dry)
+    ok = _wake(cfg, reason, dry, periodic)
     if dry:
         return
     if ok:
@@ -264,7 +287,7 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
         if new_sig:
             seen[new_sig[0]] = new_sig[1]
             st["seen"] = seen
-        if "періодична" in reason:
+        if periodic:
             st["last_periodic_iso"] = _now().isoformat()
         st["wakes_today"] = st.get("wakes_today", 0) + 1
         st["last_wake_at"] = _now().isoformat()

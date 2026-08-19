@@ -12,7 +12,9 @@ productViews, orders, gmv, ...}], metadata}. `id` — ВНУТРІШНІЙ Prom-
 мапимо через /cms/product/list (prom_cabinet_catalog: у кожному рядку є і `id`, і `sku`).
 
 ВИХІД: reports/prom_seo_pilot_stats_YYYY-MM-DD.csv — колонки sku, period, impressions,
-clicks, orders (impressions=viewsInCatalog, clicks=productViews). Два періоди за замовч.:
+product_views, orders (impressions=viewsInCatalog, product_views=productViews). УВАГА (SEO
+2026-08-19): product_views НЕ є підмножиною impressions — це різні поверхні (покази в каталозі
+vs перегляди картки з будь-якого джерела), тож CTR=views/impressions рахувати НЕ МОЖНА. Два періоди за замовч.:
 before=2026-08-06..2026-08-12, after=2026-08-13..2026-08-19 (перевизначаються прапорцями).
 
 САМОДІАГНОСТИКА (правило власника): у шапці CSV + лозі — скільки товарів віддав кабінет,
@@ -121,7 +123,7 @@ def run(windows: dict, out_csv: Path) -> dict:
                     result_rows.append({
                         "sku": sku, "period": period,
                         "impressions": r.get("viewsInCatalog") or 0,
-                        "clicks": r.get("productViews") or 0,
+                        "product_views": r.get("productViews") or 0,
                         "orders": r.get("orders") or 0,
                     })
                 diag[period] = {"dateStart": ds, "dateEnd": de, "returned": len(rows),
@@ -138,7 +140,7 @@ def run(windows: dict, out_csv: Path) -> dict:
         for period, d in diag.items():
             f.write(f"# {period}: {d['dateStart']}..{d['dateEnd']} — кабінет віддав {d['returned']}, "
                     f"змаплено на sku {d['mapped']}, БЕЗ нашого sku {d['unmapped']}\n")
-        w = csv.DictWriter(f, fieldnames=["sku", "period", "impressions", "clicks", "orders"])
+        w = csv.DictWriter(f, fieldnames=["sku", "period", "impressions", "product_views", "orders"])
         w.writeheader()
         w.writerows(result_rows)
 

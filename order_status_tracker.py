@@ -216,6 +216,13 @@ def _maybe_advance_rozetka_processing(conn, order: dict, delivery_status: str, t
             order["order_id"], status=rozetka_client.ORDER_STATUS_PROCESSING,
         )
     except rozetka_client.RozetkaAPIError as e:
+        # code=1005 «Наступний статус недоступний» — замовлення вже НЕ на 26 (уже
+        # комплектується/далі за потоком). Це НЕ транзиторно: ретраї не допоможуть,
+        # тож ставимо прапорець, щоб не спамити цим виклик щоцикл. Інші (мережеві)
+        # помилки — лишаємо без прапорця, щоб природно повторились наступного разу.
+        if "code=1005" in str(e):
+            mark_rozetka_processing_pushed(conn, order["internal_order_id"])
+            return
         print(
             f"[order_status_tracker] Не вдалось виставити 'Комплектується' у Rozetka для "
             f"{order['internal_order_id']}: {e}",

@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- на кожному циклі опитування (Rozetka сама починає трекінг після
                                                -- першого прикріплення ТТН, повторний виклик зайвий, не шкідливий,
                                                -- але марний мережевий запит щоразу)
+    rozetka_processing_pushed_at TEXT,         -- коли на Rozetka виставлено 2 «Комплектується» (гладкість статусу
+                                               -- для клієнта: 26→2→61, коли Toysi у стані assembling/packed) —
+                                               -- захист від повторного PUT status=2 щоцикл (той самий патерн ідемпот.)
     prom_delivered_pushed_at TEXT,             -- коли статус "delivered" передано в Prom (Auto-3, 2026-07-17,
                                                -- order_status_tracker.py, за живим трекінгом Нової Пошти,
                                                -- TrackingDocument.getStatusDocuments) — захист від повторного
@@ -152,6 +155,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "checkbox_ettn_registered_at", "checkbox_ettn_registered_at TEXT")
         _ensure_column(conn, "orders", "checkbox_receipt_id", "checkbox_receipt_id TEXT")
         _ensure_column(conn, "orders", "rozetka_ttn_pushed_at", "rozetka_ttn_pushed_at TEXT")
+        _ensure_column(conn, "orders", "rozetka_processing_pushed_at", "rozetka_processing_pushed_at TEXT")
         # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
         # залишку" для цього замовлення — щоб order_router.py не спамив той
         # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
@@ -389,6 +393,16 @@ def mark_rozetka_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) ->
     той самий підхід, що й mark_checkbox_ettn_registered()."""
     conn.execute(
         "UPDATE orders SET rozetka_ttn_pushed_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_rozetka_processing_pushed(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що на Rozetka вже виставлено 2 «Комплектується. Дані підтверджені»
+    (order_status_tracker._maybe_advance_rozetka_processing) — захист від повторного
+    PUT status=2 щоцикл; той самий підхід, що й mark_rozetka_ttn_pushed()."""
+    conn.execute(
+        "UPDATE orders SET rozetka_processing_pushed_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
 

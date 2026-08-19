@@ -42,6 +42,11 @@ ORDER_STATUS_AUTO_TRACKED      = 61  # Авто-статус: Rozetka сама �
 # кінцеві стани, після яких подальше опитування сенсу не має).
 TERMINAL_STATUSES = {6, 7, 11, 12, 13, 15, 16, 17, 18, 19, 20, 24, 49}
 
+# Жорсткий кап сторінок пагінації /orders/search — захист від зациклення, бо API ігнорує
+# параметр page (перевірено живо 2026-08-19). За реального обсягу замовлень 50 сторінок з
+# запасом вистачає; головний стоп — «сторінка без нових id» у fetch_new_orders/by_date_range.
+_MAX_ORDER_PAGES = 50
+
 
 class RozetkaAPIError(Exception):
     """Запит до Rozetka Seller API не вдався (мережа, невалідна відповідь,
@@ -171,9 +176,8 @@ def fetch_new_orders() -> list:
     fetch_prom_orders_for_period(), де точний розмір сторінки Prom API теж
     не задокументовано явно).
     """
-    orders = []
-    page = 1
-    while True:
+    orders, seen, page = [], set(), 1
+    while page <= _MAX_ORDER_PAGES:
         content = _request(
             "get", "/orders/search",
             params={"status": ORDER_STATUS_NEW, "page": page, "expand": "delivery,user,purchases"},
@@ -181,7 +185,15 @@ def fetch_new_orders() -> list:
         page_orders = content.get("orders", [])
         if not page_orders:
             break
-        orders.extend(page_orders)
+        # ⚠️ Rozetka /orders/search ІГНОРУЄ page (перевірено живо 2026-08-19: кожна сторінка
+        # вертала ТЕ САМЕ замовлення → while True крутив сотні разів, 39с CPU, фетч «зависав»).
+        # Зупиняємось, коли сторінка не дає ЖОДНОГО нового id (пагінація не рухається) + кап.
+        new = [o for o in page_orders if str(o.get("id")) not in seen]
+        if not new:
+            break
+        for o in new:
+            seen.add(str(o.get("id")))
+            orders.append(o)
         page += 1
     return orders
 
@@ -202,8 +214,8 @@ def fetch_orders_by_date_range(created_from: str, created_to: str) -> list:
     """
     orders = []
     for order_type in (1, 2, 3):
-        page = 1
-        while True:
+        seen, page = set(), 1
+        while page <= _MAX_ORDER_PAGES:
             content = _request(
                 "get", "/orders/search",
                 params={
@@ -214,7 +226,13 @@ def fetch_orders_by_date_range(created_from: str, created_to: str) -> list:
             page_orders = content.get("orders", [])
             if not page_orders:
                 break
-            orders.extend(page_orders)
+            # Той самий захист від ігнорованого page (див. fetch_new_orders).
+            new = [o for o in page_orders if str(o.get("id")) not in seen]
+            if not new:
+                break
+            for o in new:
+                seen.add(str(o.get("id")))
+                orders.append(o)
             page += 1
     return orders
 

@@ -449,9 +449,17 @@ def _rozetka_delivery_address(order: dict) -> str:
         return ""
     city = d.get("city") if isinstance(d.get("city"), dict) else {}
     city_name = (city.get("name_ua") or city.get("name") or d.get("city_name") or "").strip()
-    # RZ Delivery pickup (903643405): вулиця/будинок/номер пункту; НП-фолбек: warehouse_name.
-    street = " ".join(p for p in (d.get("place_street"), d.get("place_house"),
-                                  d.get("place_number")) if p).strip()
+    place_number = str(d.get("place_number") or "").strip()
+    # ⭐ Звірено на живому NP-замовленні 903652847 (2026-08-19): для НП номер відділення лежить у
+    # place_number (напр. '253'), НЕ у warehouse_name. Формат МУСИТЬ бути «Місто, Відділення №N»,
+    # щоб order_router.parse_np_branch витяг номер (регекс шукає «відділення/№»); інакше NP-резолв
+    # порожній → крива адреса в Toysi. RZ Delivery та НП вертають ті самі place_*-поля, але з різним
+    # ЗМІСТОМ place_number (у RZ Delivery — опис ЖК), тому розгалужуємо за carrier.
+    if _rozetka_carrier(order) == "nova_poshta":
+        wh = place_number or (d.get("warehouse_name") or d.get("warehouse") or "").strip()
+        return (f"{city_name}, Відділення №{wh}".strip(", ") if wh else city_name)
+    # RZ Delivery / інше: адреса пункту видачі вільним текстом (вулиця/будинок/номер).
+    street = " ".join(p for p in (d.get("place_street"), d.get("place_house"), place_number) if p).strip()
     warehouse = (d.get("warehouse_name") or d.get("warehouse") or "").strip()
     return ", ".join(p for p in (city_name, street or warehouse) if p)
 

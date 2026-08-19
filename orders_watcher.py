@@ -456,7 +456,8 @@ def _rozetka_carrier(order: dict) -> str:
     """Спосіб доставки з delivery.delivery_service_name / name_logo. Звірено на 903643405:
     'ROZETKA Delivery' + name_logo='octopus' + is_action_np=False → 'rozetka_delivery'
     (самовивіз у магазин Rozetka). Інакше — 'nova_poshta' (безпечний дефолт, як було)."""
-    d = order.get("delivery") or {}
+    d = order.get("delivery")
+    d = d if isinstance(d, dict) else {}
     svc = str(d.get("delivery_service_name") or "").lower()
     if "rozetka" in svc or str(d.get("name_logo") or "").lower() == "octopus":
         return "rozetka_delivery"
@@ -466,8 +467,10 @@ def _rozetka_carrier(order: dict) -> str:
 def _rozetka_customer_name(order: dict) -> str:
     """Ім'я отримувача. На 903643405 order.userName=None → беремо delivery.recipient_title,
     інакше склад recipient_*_name, інакше user.contact_fio."""
-    d = order.get("delivery") or {}
-    u = order.get("user") or {}
+    d = order.get("delivery")
+    d = d if isinstance(d, dict) else {}
+    u = order.get("user")
+    u = u if isinstance(u, dict) else {}
     return (d.get("recipient_title")
             or " ".join(p for p in (d.get("recipient_last_name"), d.get("recipient_first_name"),
                                     d.get("recipient_second_name")) if p).strip()
@@ -479,7 +482,8 @@ def _convert_rozetka_order(order: dict) -> dict:
     normalize_order(). Поля ЗВІРЕНІ на живому замовленні 903643405 (2026-08-19), а не здогад по
     apidoc-стабах, як було раніше (див. rozetka.md — «сира структура замовлення»)."""
     purchases = order.get("purchases") or []
-    delivery = order.get("delivery") or {}
+    delivery = order.get("delivery")
+    delivery = delivery if isinstance(delivery, dict) else {}
     return {
         "order_id": str(order["id"]),
         "platform": "rozetka",

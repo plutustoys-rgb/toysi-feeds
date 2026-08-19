@@ -422,13 +422,17 @@ def _convert_rozetka_purchase(purchase: dict) -> dict:
     підхід, що вже застосований для _detect_carrier() (ukrposhta-слаг) і
     RUS-варіанту каталогу Prom.
     """
+    # ⭐ Звірено на живому 903643405 (жива перевірка маркування 2026-08-19): коди товару ВКЛАДЕНІ
+    # в purchase["item"], а НЕ на top-level позиції. Top-level має лише item_id (Rozetka-product-id
+    # 611293757), item_name, price, quantity. Раніше конвертер шукав article на top-level → падав
+    # на item_id → у маркуванні йшов Rozetka-id, з яким Toysi order_create дав би code 11.
+    item = purchase.get("item") if isinstance(purchase.get("item"), dict) else {}
     return {
-        # ⭐ Звірено на живому замовленні 903643405 (2026-08-19): toysi_code = article /
-        # price_offer_id / uploader_offer_id (= наш offer_id = Toysi id, напр. '16692'), а НЕ
-        # item_id (то внутрішній Rozetka-id 611293757, у Toysi не існує → order_create впав би).
-        "toysi_code": str(purchase.get("article") or purchase.get("price_offer_id")
-                          or purchase.get("uploader_offer_id") or purchase.get("item_id") or "").strip(),
-        "name": purchase.get("name") or purchase.get("item_name", ""),
+        # toysi_code = item.article / price_offer_id / uploader_offer_id (= наш offer_id = Toysi id,
+        # напр. '16692'); фолбек на item_id лише якщо item-об'єкта нема.
+        "toysi_code": str(item.get("article") or item.get("price_offer_id")
+                          or item.get("uploader_offer_id") or purchase.get("item_id") or "").strip(),
+        "name": purchase.get("item_name") or item.get("name") or purchase.get("name", ""),
         "qty": _parse_qty(purchase.get("quantity") or purchase.get("amount")),
         "price": _parse_prom_price(purchase.get("price") or purchase.get("item_price")),
     }

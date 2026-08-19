@@ -153,6 +153,21 @@ def _hashtags(name: str) -> str:
     return " ".join(out[:4])
 
 
+# Захист від дрейфу токена розміру у meta_feed.xml: соцпост має брати МАКСИМУМ, що віддає
+# майстер (images.prom.ua апскейлу понад джерело не робить — фактично 500×500 для більшості
+# іграшок; підтверджено вимірами SMM/SEO 2026-08-19). На VPS фід уже _w1024_, тож це no-op у
+# проді, АЛЕ страхує, якщо колись фід віддасть зменшену копію (_w200_ тощо) — тоді соцпост усе
+# одно попросить майстер, а не 200×200 у стрічку. Той самий підхід, що _upscale_prom_image у
+# generate_google_feed.py.
+_PROM_IMG_SIZE_RE = re.compile(r"_w\d+_h\d+_")
+
+
+def _max_prom_image(url: str) -> str:
+    if not url or "images.prom.ua" not in url:
+        return url
+    return _PROM_IMG_SIZE_RE.sub("_w1024_h1024_", url, count=1)
+
+
 def load_products() -> list:
     """Товари з meta_feed.xml (уже живі/in-stock, з коректним URL і фото). Порядок фіду
     зберігаємо — він відображає пріоритет пайплайна."""
@@ -170,7 +185,7 @@ def load_products() -> list:
         sku = (g("id") or item.findtext("id") or "").strip()
         name = _clean_name(item.findtext("title") or g("title") or "")
         url = (g("link") or item.findtext("link") or "").strip()
-        image = (g("image_link") or "").strip()
+        image = _max_prom_image((g("image_link") or "").strip())
         price = (g("price") or "").strip()
         avail = (g("availability") or "").strip().lower()
         if not (sku and name and url and image):
@@ -263,9 +278,21 @@ def _is_plutus_post(sku: str) -> bool:
     return int(hashlib.md5(sku.encode()).hexdigest(), 16) % PLUTUS_EVERY_N == 0
 
 
+# Сцени, ВИКЛЮЧЕНІ з автопостингу через поганий хромакей (сірий ореол навколо маскота,
+# видно оком у стрічці — знахідка SMM 2026-08-19, джерело PixVerse). Файли НЕ видаляємо
+# (реверсивно, лишаються для переоцінки/перегенерації) — просто постер їх не бере. Сцени
+# з Pika (02/03/04) чистяться нормально. Прибрати з набору, коли будуть чисті заміни.
+_PLUTUS_SCENE_EXCLUDE = {
+    "scene05_sneeze_pixverse_GREEN.mp4",
+    "scene06_grooming_pixverse_GREEN.mp4",
+}
+
+
 def _plutus_scene_for(sku: str):
-    """Зелена сценка для цього sku (детерміновано — розмаїття без випадковості між прогонами)."""
-    scenes = sorted(PLUTUS_SCENES_DIR.glob("*_GREEN.mp4")) if PLUTUS_SCENES_DIR.exists() else []
+    """Зелена сценка для цього sku (детерміновано — розмаїття без випадковості між прогонами).
+    Виключаємо сцени з _PLUTUS_SCENE_EXCLUDE (поганий хромакей)."""
+    scenes = [s for s in sorted(PLUTUS_SCENES_DIR.glob("*_GREEN.mp4"))
+              if s.name not in _PLUTUS_SCENE_EXCLUDE] if PLUTUS_SCENES_DIR.exists() else []
     if not scenes:
         return None
     return scenes[int(hashlib.md5(("sc" + sku).encode()).hexdigest(), 16) % len(scenes)]

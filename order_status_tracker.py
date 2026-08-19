@@ -58,10 +58,11 @@ getDocumentList` (наш власний NP_API_KEY, весь липень 2026) 
 
 Прикріплення ТТН НАЗАД у Rozetka (2026-07-15, _maybe_push_ttn_to_rozetka):
 щойно з'являється toysi_ttn для platform=rozetka — викликає
-rozetka_client.update_order_status(order_id, status=2, ttn=ttn). За
-документацією Rozetka Seller API, ttn разом зі status=2 автоматично
-переводить замовлення в статус 61, і Rozetka сама починає відстежувати
-трекінг доставки — подальших ручних переходів статусу не потрібно.
+rozetka_client.update_order_status(order_id, status=61, ttn=ttn) —
+status=61 «Заплановано передачу перевізникові» (звірено 2026-08-19:
+apidoc status_order.61 + live status_available 26→61 напряму; раніше
+помилково слали status=2 «Комплектується», куди ТТН не належить). Після
+61 Rozetka сама веде трекінг доставки — ручних переходів не потрібно.
 
 Prom ЕН (2026-07-17, _maybe_push_ttn_to_prom): ВИПРАВЛЕНО — попередній
 докстрінг стверджував, що Prom Orders API "НЕ має ендпоінту прикріпити
@@ -192,7 +193,7 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str) -> None:
 
 def _maybe_push_ttn_to_rozetka(conn, order: dict, ttn: str) -> None:
     """Прикріплює ТТН до замовлення на СТОРОНІ Rozetka (PUT /orders/{id},
-    status=2 + ttn) — щойно з'явився toysi_ttn і ще не передавали
+    status=61 «Заплановано передачу перевізникові» + ttn) — щойно з'явився toysi_ttn і ще не передавали
     (rozetka_ttn_pushed_at IS NULL). Ідемпотентність — той самий підхід,
     що й _maybe_register_ettn() вище: перевіряємо прапорець щоразу, а не
     лише "у момент появи ttn", щоб тимчасова мережева помилка Rozetka
@@ -211,7 +212,7 @@ def _maybe_push_ttn_to_rozetka(conn, order: dict, ttn: str) -> None:
 
     try:
         rozetka_client.update_order_status(
-            order["order_id"], status=rozetka_client.ORDER_STATUS_PROCESSING, ttn=ttn,
+            order["order_id"], status=rozetka_client.ORDER_STATUS_SCHEDULED_HANDOVER, ttn=ttn,
         )
     except rozetka_client.RozetkaAPIError as e:
         print(

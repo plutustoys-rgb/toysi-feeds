@@ -180,7 +180,11 @@ def fetch_new_orders() -> list:
     while page <= _MAX_ORDER_PAGES:
         content = _request(
             "get", "/orders/search",
-            params={"status": ORDER_STATUS_NEW, "page": page, "expand": "delivery,user,purchases"},
+            # ⚠️ payment_type_name ОБОВ'ЯЗКОВО в expand (перевірено живо 2026-08-19): search БЕЗ
+            # нього не вертає тип оплати → _rozetka_payment_method бачив порожньо → УСІ замовлення
+            # класифікувались як prepaid → жодне COD не форвардилось (трималось на ручному).
+            params={"status": ORDER_STATUS_NEW, "page": page,
+                    "expand": "delivery,user,purchases,payment_type_name"},
         )
         page_orders = content.get("orders", [])
         if not page_orders:

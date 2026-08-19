@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -44,6 +45,14 @@ STATE_DIR = BASE_DIR / ".local_secrets" / "agent_watch"
 LOCK_FILE = STATE_DIR / "poller.lock"
 LOCK_STALE_MIN = 25          # лок, старший за це, вважаємо покинутим
 CLAUDE_TIMEOUT_SEC = 900     # стеля на одне пробудження агента
+
+# ⚠️ Windows: `claude` — це npm-shim `.CMD`. `subprocess.run(["claude", ...])` списком (без
+# shell) НЕ резолвить bare-назву без розширення → FileNotFoundError [WinError 2], і кожне
+# пробудження падало (стан не рухався, wakes_today=0). `shutil.which` додає PATHEXT і знаходить
+# claude.CMD навіть у контексті фонової задачі (перевірено 2026-08-19). Fallback — відомий
+# npm-шлях; CLAUDE_BIN env — ручний оверайд.
+CLAUDE_BIN = (os.environ.get("CLAUDE_BIN") or shutil.which("claude")
+              or r"C:\Users\smach\AppData\Roaming\npm\claude.cmd")
 _NO_TELEGRAM = os.environ.get("AGENT_WATCH_NO_TELEGRAM") == "1"
 
 # Спільна папка Cowork з канал-файлами (машинозалежна → через env з дефолтом).
@@ -196,7 +205,7 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     Для періодичної задачі бере `periodic_prompt` (якщо є), інакше — звичайний `wake_prompt`."""
     base = cfg.get("periodic_prompt") if (periodic and cfg.get("periodic_prompt")) else cfg["wake_prompt"]
     prompt = f"{base}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
-    cmd = ["claude", "-p", prompt, "--add-dir", str(COWORK_DIR)]
+    cmd = [CLAUDE_BIN, "-p", prompt, "--add-dir", str(COWORK_DIR)]
     print(f"[AgentWatch] {'DRY — БУВ БИ' if dry else 'БУДЖУ'} агент '{cfg['name']}' ({reason})")
     if dry:
         return False
@@ -211,6 +220,12 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
         return True
     except subprocess.TimeoutExpired:
         print(f"[AgentWatch] агент '{cfg['name']}' — таймаут {CLAUDE_TIMEOUT_SEC}s", file=sys.stderr)
+        return False
+    except Exception as e:
+        # напр. FileNotFoundError, якщо claude все ж не знайдено — НЕ вилітаємо повз save_state
+        # (інакше стан застрягає й летить Telegram-спам щоцикл); повертаємо False → ретрай наступного разу.
+        print(f"[AgentWatch] агент '{cfg['name']}' — не вдалось запустити claude ({CLAUDE_BIN}): {e}",
+              file=sys.stderr)
         return False
 
 

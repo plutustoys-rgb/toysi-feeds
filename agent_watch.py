@@ -83,36 +83,47 @@ WATCHERS = [
     {
         "name": "SEO",
         "target_label": "SEO",
+        "cwd": str(COWORK_DIR),   # стартує в папці каналів — інакше не бачить SEO_CHANNEL.md
         # SEO стежить ОБИДВА канали: SMM може крос-постнути йому `[SMM → SEO]` у свій канал.
         "channels": ["SEO_CHANNEL.md", "MARKETING_CHANNEL.md"],
         "max_wakes_per_day": 12,
         # Тижневий огляд GSC/GA4 щопонеділка 11:00 (не перетинається з keepalive 10:00 і
         # знімком каталогу 10:30 за кабінетну сесію Prom). Запит SEO 2026-08-19.
         "schedule": {"weekday": 0, "hour": 11},
+        # ⚠️ БЕЗ слеш-команд: у headless `claude -p` `/seo-agent` = «Unknown command» → no-op
+        # (перевірено живо 2026-08-19). Роль задаємо звичайним текстом, self-contained.
         "wake_prompt": (
-            "/seo-agent Ти прокинувся за монітором каналу. Прочитай SEO_CHANNEL.md (і свій рядок у "
-            "MARKETING_CHANNEL.md, якщо там є `[X → SEO]`) — є новий запис до тебе. Обробі відкриті "
-            "запити/питання за конвенцією каналу; підтвердження/закриті пункти не відписуй. Дій "
-            "самостійно; що потребує власника — через OWNER_INBOX.md."
+            "Ти — сесія SEO-агента PlutusToys (магазин Plutonix, дропшип іграшок; орієнтуйся на "
+            "бриф/бутстрап SEO у спільній папці, якщо є). Ти прокинувся за монітором каналу — "
+            "прочитай SEO_CHANNEL.md (і свій рядок у MARKETING_CHANNEL.md, якщо там є `## [X → SEO]`). "
+            "Обробі ВІДКРИТІ запити/питання за конвенцією каналу; підтвердження/закриті пункти не "
+            "відписуй. Дій самостійно; нічого незворотного/публічного без власника; що потребує "
+            "рішення власника — пиши в OWNER_INBOX.md."
         ),
         "periodic_prompt": (
-            "/seo-agent Тижневий огляд (за розкладом). Зніми з кабінету Search Console свіжу "
-            "Ефективність (покази/кліки/позиція) та Індексацію сторінок і GA4-зріз (Organic Search), "
-            "поклади зріз у reports/, і коротко познач у SEO_CHANNEL.md, що змінилось за тиждень. "
-            "Нічого незворотного/публічного без власника."
+            "Ти — сесія SEO-агента PlutusToys. Тижневий огляд за розкладом: зніми з кабінету Search "
+            "Console свіжу Ефективність (покази/кліки/позиція) та Індексацію сторінок і GA4-зріз "
+            "(Organic Search), поклади зріз у reports/, і коротко познач у SEO_CHANNEL.md, що "
+            "змінилось за тиждень. Нічого незворотного/публічного без власника."
         ),
     },
     {
         "name": "SMM",
         "target_label": "SMM",
+        "cwd": str(COWORK_DIR),   # стартує в папці каналів — інакше не бачить MARKETING_CHANNEL.md
         "channels": ["MARKETING_CHANNEL.md"],
         "max_wakes_per_day": 12,
         "schedule": None,   # SMM налаштує свій розклад сам (напр. тижневий огляд) окремим PR
+        # ⚠️ БЕЗ слеш-команд: `/plutustoys-smm` у headless `claude -p` = «Unknown command» → no-op
+        # (перевірено живо 2026-08-19). Роль — звичайним текстом.
         "wake_prompt": (
-            "/plutustoys-smm Ти прокинувся за монітором каналу. Прочитай MARKETING_CHANNEL.md — "
-            "є новий запис до тебе від Коду. Обробі відкриті запити/питання за конвенцією каналу; "
-            "підтвердження/закриті пункти не відписуй. Meta Ads не чіпай (фаза 2). Що потребує "
-            "власника (IG-scope, доступи, схвалення нового контенту) — через OWNER_INBOX.md."
+            "Ти — сесія SMM-маркетолога PlutusToys (магазин Plutonix на Rozetka/Prom, дропшип "
+            "іграшок; орієнтуйся на бриф маркетолога у спільній папці, якщо є). Ти прокинувся за "
+            "монітором каналу — прочитай MARKETING_CHANNEL.md. Обробі ВІДКРИТІ запити/питання, "
+            "адресовані SMM (заголовки `## [X → SMM]`), за конвенцією каналу; підтвердження/закриті "
+            "пункти не відписуй. Meta Ads не чіпай (фаза 2). Нічого незворотного/публічного без "
+            "власника; що потребує рішення власника (IG-scope, доступи, схвалення контенту) — "
+            "пиши в OWNER_INBOX.md."
         ),
     },
 ]
@@ -205,12 +216,18 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     Для періодичної задачі бере `periodic_prompt` (якщо є), інакше — звичайний `wake_prompt`."""
     base = cfg.get("periodic_prompt") if (periodic and cfg.get("periodic_prompt")) else cfg["wake_prompt"]
     prompt = f"{base}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
-    cmd = [CLAUDE_BIN, "-p", prompt, "--add-dir", str(COWORK_DIR)]
+    # Обидві директорії доступні; cwd визначає, ДЕ агент передусім читає/пише файли й чий
+    # CLAUDE.md автозавантажиться. Канал-агенти (SEO/SMM) стартують у папці каналів
+    # (cfg["cwd"]=COWORK) — інакше agent не бачить MARKETING_CHANNEL.md/SEO_CHANNEL.md (через
+    # --add-dir доступ ненадійний, перевірено живо 2026-08-19). «Код» лишається в репо (default
+    # BASE_DIR), щоб автозавантажився CLAUDE.md з правилом аудиту.
+    run_cwd = cfg.get("cwd") or str(BASE_DIR)
+    cmd = [CLAUDE_BIN, "-p", prompt, "--add-dir", str(COWORK_DIR), "--add-dir", str(BASE_DIR)]
     print(f"[AgentWatch] {'DRY — БУВ БИ' if dry else 'БУДЖУ'} агент '{cfg['name']}' ({reason})")
     if dry:
         return False
     try:
-        r = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True,
+        r = subprocess.run(cmd, cwd=run_cwd, capture_output=True, text=True,
                            timeout=CLAUDE_TIMEOUT_SEC, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             print(f"[AgentWatch] агент '{cfg['name']}' exit={r.returncode}: {(r.stderr or '')[:300]}",

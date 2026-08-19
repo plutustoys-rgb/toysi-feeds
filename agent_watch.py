@@ -222,13 +222,16 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     # --add-dir доступ ненадійний, перевірено живо 2026-08-19). «Код» лишається в репо (default
     # BASE_DIR), щоб автозавантажився CLAUDE.md з правилом аудиту.
     run_cwd = cfg.get("cwd") or str(BASE_DIR)
-    # --permission-mode acceptEdits: у headless `-p` без нього агент НЕ може записати відповідь
-    # у канал (просить інтерактивний дозвіл, якого в фоні ніхто не дає) → генерує текст у stdout,
-    # який монітор відкидає = «нічого не зробив» (перевірено живо 2026-08-19). acceptEdits
-    # авто-приймає ЛИШЕ правки файлів у робочому просторі (канали/OWNER_INBOX/репо), але НЕ Bash
-    # (git/gh/rm) — ті в headless просто впадуть, тож автономний мерж без аудиту неможливий.
-    cmd = [CLAUDE_BIN, "-p", prompt, "--permission-mode", "acceptEdits",
-           "--add-dir", str(COWORK_DIR), "--add-dir", str(BASE_DIR)]
+    # --allowedTools: у headless `-p` без дозволу агент НЕ може записати відповідь у канал
+    # (просить інтерактивний дозвіл, якого в фоні ніхто не дає) → віддає текст у stdout, який
+    # монітор відкидає = «нічого не зробив» (перевірено живо 2026-08-19). Дозволяємо РІВНО
+    # файлові інструменти (читати/писати/шукати канали й файли) і НІЧОГО більше — жодного Bash,
+    # тож агент фізично не може rm/mv/git/gh/curl (усе інше в headless просто впаде). Це
+    # найтісніший дозвіл під координацію: свідомо вужче за acceptEdits (той авто-приймав ще й
+    # rm/mv/sed у робочому просторі — зайво широко для автономного циклу, харнес це відзначив).
+    cmd = [CLAUDE_BIN, "-p", prompt,
+           "--add-dir", str(COWORK_DIR), "--add-dir", str(BASE_DIR),
+           "--allowedTools", "Read", "Edit", "Write", "Glob", "Grep"]
     print(f"[AgentWatch] {'DRY — БУВ БИ' if dry else 'БУДЖУ'} агент '{cfg['name']}' ({reason})")
     if dry:
         return False

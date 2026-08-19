@@ -423,8 +423,12 @@ def _convert_rozetka_purchase(purchase: dict) -> dict:
     RUS-варіанту каталогу Prom.
     """
     return {
-        "toysi_code": purchase.get("item_id") or purchase.get("id") or "",
-        "name": purchase.get("item_name") or purchase.get("name", ""),
+        # ⭐ Звірено на живому замовленні 903643405 (2026-08-19): toysi_code = article /
+        # price_offer_id / uploader_offer_id (= наш offer_id = Toysi id, напр. '16692'), а НЕ
+        # item_id (то внутрішній Rozetka-id 611293757, у Toysi не існує → order_create впав би).
+        "toysi_code": str(purchase.get("article") or purchase.get("price_offer_id")
+                          or purchase.get("uploader_offer_id") or purchase.get("item_id") or "").strip(),
+        "name": purchase.get("name") or purchase.get("item_name", ""),
         "qty": _parse_qty(purchase.get("quantity") or purchase.get("amount")),
         "price": _parse_prom_price(purchase.get("price") or purchase.get("item_price")),
     }
@@ -436,30 +440,56 @@ def _rozetka_delivery_address(order: dict) -> str:
     в apidoc. Фолбек на порожній рядок, якщо структура виявиться іншою —
     безпечніше порожня адреса (Toysi це прийме як вільний текст), ніж
     падіння всього опитування через один незнайомий формат."""
-    delivery = order.get("delivery") or {}
-    if isinstance(delivery, dict):
-        parts = [
-            delivery.get("city_name") or delivery.get("city") or "",
-            delivery.get("warehouse_name") or delivery.get("warehouse") or "",
-        ]
-        return ", ".join(p for p in parts if p)
-    return ""
+    d = order.get("delivery") or {}
+    if not isinstance(d, dict):
+        return ""
+    city = d.get("city") if isinstance(d.get("city"), dict) else {}
+    city_name = (city.get("name_ua") or city.get("name") or d.get("city_name") or "").strip()
+    # RZ Delivery pickup (903643405): вулиця/будинок/номер пункту; НП-фолбек: warehouse_name.
+    street = " ".join(p for p in (d.get("place_street"), d.get("place_house"),
+                                  d.get("place_number")) if p).strip()
+    warehouse = (d.get("warehouse_name") or d.get("warehouse") or "").strip()
+    return ", ".join(p for p in (city_name, street or warehouse) if p)
+
+
+def _rozetka_carrier(order: dict) -> str:
+    """Спосіб доставки з delivery.delivery_service_name / name_logo. Звірено на 903643405:
+    'ROZETKA Delivery' + name_logo='octopus' + is_action_np=False → 'rozetka_delivery'
+    (самовивіз у магазин Rozetka). Інакше — 'nova_poshta' (безпечний дефолт, як було)."""
+    d = order.get("delivery") or {}
+    svc = str(d.get("delivery_service_name") or "").lower()
+    if "rozetka" in svc or str(d.get("name_logo") or "").lower() == "octopus":
+        return "rozetka_delivery"
+    return "nova_poshta"
+
+
+def _rozetka_customer_name(order: dict) -> str:
+    """Ім'я отримувача. На 903643405 order.userName=None → беремо delivery.recipient_title,
+    інакше склад recipient_*_name, інакше user.contact_fio."""
+    d = order.get("delivery") or {}
+    u = order.get("user") or {}
+    return (d.get("recipient_title")
+            or " ".join(p for p in (d.get("recipient_last_name"), d.get("recipient_first_name"),
+                                    d.get("recipient_second_name")) if p).strip()
+            or u.get("contact_fio") or order.get("userName") or "").strip()
 
 
 def _convert_rozetka_order(order: dict) -> dict:
-    """Приводить замовлення з реального Rozetka Seller API (GET /orders/search)
-    до сирої структури, яку очікує normalize_order()."""
+    """Rozetka Seller API (GET /orders/{id}?expand=delivery,user,purchases) → сира структура для
+    normalize_order(). Поля ЗВІРЕНІ на живому замовленні 903643405 (2026-08-19), а не здогад по
+    apidoc-стабах, як було раніше (див. rozetka.md — «сира структура замовлення»)."""
     purchases = order.get("purchases") or []
+    delivery = order.get("delivery") or {}
     return {
         "order_id": str(order["id"]),
         "platform": "rozetka",
         "status": "new",
         "payment_method": _rozetka_payment_method(order),
         "payment_confirmed": False,
-        "customer_name": order.get("userName") or (order.get("user") or {}).get("full_name", ""),
-        "phone": order.get("user_phone", ""),
+        "customer_name": _rozetka_customer_name(order),
+        "phone": order.get("user_phone") or delivery.get("recipient_phone", ""),
         "np_branch": _rozetka_delivery_address(order),
-        "carrier": "nova_poshta",  # Rozetka API окремо не документує carrier-слаг у search-відповіді
+        "carrier": _rozetka_carrier(order),
         "items": [_convert_rozetka_purchase(p) for p in purchases] or [
             {"toysi_code": "", "name": "⚠️ order.purchases порожній/незнайомого формату — перевір вручну", "qty": 1, "price": 0.0}
         ],

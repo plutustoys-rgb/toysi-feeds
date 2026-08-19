@@ -246,10 +246,13 @@ def _update_marketplace_status(order: dict) -> None:
     """
     try:
         if order["platform"] == "rozetka":
-            # status=2 без ttn — "Комплектується. Дані підтверджені", ТТН
-            # додасться пізніше окремо (order_status_tracker.py), коли
-            # з'явиться від Toysi.
-            rozetka_client.update_order_status(order["order_id"], status=rozetka_client.ORDER_STATUS_PROCESSING)
+            # status=26 "Обробляється менеджером" — ПЕРШИЙ дозволений перехід з нового(1).
+            # (Раніше слали status=2 "Комплектується" — Rozetka відхиляла code=1005
+            # "Наступний статус недоступний", бо 2 з нового недосяжний: спершу 26, потім
+            # 2. Звірено живо 2026-08-19 через ?expand=status_available.) ТТН і подальші
+            # статуси додасться пізніше окремо (order_status_tracker.py), коли з'явиться
+            # від Toysi.
+            rozetka_client.update_order_status(order["order_id"], status=rozetka_client.ORDER_STATUS_MANAGER_PROCESSING)
         elif order["platform"] == "prom":
             update_prom_order_status(order["order_id"])
         elif order["platform"] == "eva":

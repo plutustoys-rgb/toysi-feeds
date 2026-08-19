@@ -3,8 +3,8 @@ import sys
 from checkbox_client import create_receipt, CheckboxAPIError
 from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
-    mark_rozetka_ttn_pushed, mark_prom_delivered_pushed, mark_prom_ttn_pushed,
-    mark_eva_ttn_pushed, update_delivery_status,
+    mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
+    mark_prom_ttn_pushed, mark_eva_ttn_pushed, update_delivery_status,
 )
 import nova_poshta
 from orders_watcher import update_prom_order_status, attach_prom_declaration_id, PromAPIError
@@ -189,6 +189,49 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str) -> None:
     mark_checkbox_ettn_registered(conn, order["internal_order_id"], receipt_id)
     print(f"[order_status_tracker] Чек Checkbox видано ({payment_type}): "
           f"{order['internal_order_id']} (receipt_id={receipt_id})")
+
+
+# delivery_status Toysi, на яких доречно показати клієнту «Комплектується» (2) на Rozetka.
+_ROZETKA_PROCESSING_DELIVERY_STATUSES = {"assembling", "packed"}
+
+
+def _maybe_advance_rozetka_processing(conn, order: dict, delivery_status: str, ttn: str) -> None:
+    """Гладкість статусу для клієнта: коли Toysi у стані assembling/packed і ТТН ще нема —
+    виставляє на Rozetka 2 «Комплектується. Дані підтверджені» (перехід 26→2, звірено живо
+    2026-08-19: status_available 26 містить 2, а 2 містить 61). Щоб клієнт бачив плавну
+    прогресію 26→2→61, а не стрибок. Ідемпотентно (rozetka_processing_pushed_at); best-effort —
+    помилка НЕ валить track_orders() для інших замовлень. Пропускаємо, якщо ТТН уже є (тоді
+    одразу 61 через _maybe_push_ttn_to_rozetka) або крок 2 уже робили / ТТН уже слали."""
+    if order.get("platform") != "rozetka":
+        return
+    if ttn:
+        return
+    if order.get("rozetka_processing_pushed_at") or order.get("rozetka_ttn_pushed_at"):
+        return
+    if delivery_status not in _ROZETKA_PROCESSING_DELIVERY_STATUSES:
+        return
+
+    try:
+        rozetka_client.update_order_status(
+            order["order_id"], status=rozetka_client.ORDER_STATUS_PROCESSING,
+        )
+    except rozetka_client.RozetkaAPIError as e:
+        print(
+            f"[order_status_tracker] Не вдалось виставити 'Комплектується' у Rozetka для "
+            f"{order['internal_order_id']}: {e}",
+            file=sys.stderr,
+        )
+        return
+    except Exception as e:
+        print(
+            f"[order_status_tracker] Неочікувана помилка при виставленні 'Комплектується' у Rozetka для "
+            f"{order['internal_order_id']}: {e}",
+            file=sys.stderr,
+        )
+        return
+
+    mark_rozetka_processing_pushed(conn, order["internal_order_id"])
+    print(f"[order_status_tracker] Rozetka 'Комплектується' (2) виставлено: {order['internal_order_id']}")
 
 
 def _maybe_push_ttn_to_rozetka(conn, order: dict, ttn: str) -> None:
@@ -449,6 +492,7 @@ def track_orders() -> None:
 
             order["toysi_ttn"] = ttn
             _maybe_issue_receipt(conn, order, ttn)
+            _maybe_advance_rozetka_processing(conn, order, delivery_status, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)
             _maybe_push_ttn_to_prom(conn, order, ttn)
             _maybe_push_ttn_to_eva(conn, order, ttn)

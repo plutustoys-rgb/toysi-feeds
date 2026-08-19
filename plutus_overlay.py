@@ -122,6 +122,107 @@ def dust_frame(base, cx, cy, t, rng, spread=100):
     return out
 
 
+# --- 9:16 вертикальний режим (Reels/Stories) --------------------------------------------
+# Спека SMM 2026-08-19: полотно 1080×1920; градієнт #FFF7EE→#FFE0C4; квадрат на всю ширину при
+# y=470, скруглення 56 + м'яка тінь #F6D6BA зсув +16; гачок зверху (до 3 рядків), назва+ціна
+# знизу (ціна в пілюлі #E87A2A); верх 120 / низ 220 порожні (UI Instagram перекриває). Шрифти —
+# з ФОЛБЕКОМ (overlay через автопостер біжить на VPS=Linux, де segoeui немає → DejaVu → дефолт).
+V_W, V_H = 1080, 1920
+V_BG_TOP, V_BG_BOT = (255, 247, 238), (255, 224, 196)
+V_SQUARE_Y, V_RADIUS = 470, 56
+# Квадрат ≈на всю ширину, АЛЕ трохи зменшений, щоб низ гарантовано вмістив назву(2р)+ціну-пілюлю
+# над полем IG-UI (без накладання, яке дає жорсткий 1080). V_SQ ≈1050 (поля з боків ~15px).
+V_SQ = min(V_W, V_H - V_SQUARE_Y - 400)
+V_SQ_X = (V_W - V_SQ) // 2
+V_SHADOW, V_PILL = (246, 214, 186), (232, 122, 42)
+V_TEXT = (60, 40, 25)
+_FONT_BOLD = ["segoeuib.ttf", "C:/Windows/Fonts/segoeuib.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "DejaVuSans-Bold.ttf"]
+_FONT_REG = ["segoeui.ttf", "C:/Windows/Fonts/segoeui.ttf",
+             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVuSans.ttf"]
+
+
+def _load_font(size, bold=True):
+    from PIL import ImageFont
+    for path in (_FONT_BOLD if bold else _FONT_REG):
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default()
+
+
+def _wrap_text(draw, text, font, max_w, max_lines):
+    lines, cur = [], ""
+    for w in (text or "").split():
+        trial = (cur + " " + w).strip()
+        if not cur or draw.textlength(trial, font=font) <= max_w:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+            if len(lines) == max_lines:
+                cur = ""
+                break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    return lines[:max_lines]
+
+
+def _vertical_canvas(hook, name, price):
+    """Статичне полотно 1080×1920 (градієнт + гачок + назва + ціна-пілюля + тінь квадрата).
+    Квадрат НЕ малюємо — вклеюємо покадрово. Повертає (canvas_uint8_array, rounded_mask_L)."""
+    from PIL import Image, ImageDraw, ImageFilter
+    t = np.linspace(0, 1, V_H)[:, None]
+    grad = ((1 - t) * np.array(V_BG_TOP) + t * np.array(V_BG_BOT))
+    img = Image.fromarray(np.repeat(grad[:, None, :], V_W, axis=1).clip(0, 255).astype(np.uint8))
+    draw = ImageDraw.Draw(img)
+    # м'яка тінь квадрата (скруглений прямокутник, зсув +16, розмитий)
+    sh = Image.new("L", (V_W, V_H), 0)
+    ImageDraw.Draw(sh).rounded_rectangle([V_SQ_X, V_SQUARE_Y + 16, V_SQ_X + V_SQ - 1, V_SQUARE_Y + 16 + V_SQ],
+                                         radius=V_RADIUS, fill=120)
+    img.paste(Image.new("RGB", (V_W, V_H), V_SHADOW), (0, 0), sh.filter(ImageFilter.GaussianBlur(12)))
+    # гачок (до 3 рядків, центрований, y≈190)
+    if hook:
+        f = _load_font(76, bold=True)
+        yy = 190
+        for ln in _wrap_text(draw, hook, f, V_W - 120, 3):
+            draw.text(((V_W - draw.textlength(ln, font=f)) / 2, yy), ln, font=f, fill=V_TEXT)
+            yy += 90
+    # назва під квадратом (~44, до 2 рядків)
+    yb = V_SQUARE_Y + V_SQ + 24
+    if name:
+        f = _load_font(44, bold=False)
+        for ln in _wrap_text(draw, name, f, V_W - 120, 2):
+            draw.text(((V_W - draw.textlength(ln, font=f)) / 2, yb), ln, font=f, fill=V_TEXT)
+            yb += 54
+    # ціна-пілюля (#E87A2A, білий жирний ~64) — під назвою, без накладання
+    if price:
+        f = _load_font(64, bold=True)
+        tw = draw.textlength(price, font=f)
+        pw, ph = int(tw) + 80, 96
+        px = (V_W - pw) // 2
+        py = min(yb + 14, V_H - 150 - ph)   # низ ≥150px вільний (поле IG-UI)
+        draw.rounded_rectangle([px, py, px + pw, py + ph], radius=ph // 2, fill=V_PILL)
+        draw.text((px + (pw - tw) / 2, py + (ph - 64) / 2 - 6), price, font=f, fill=(255, 255, 255))
+    mask = Image.new("L", (V_SQ, V_SQ), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, V_SQ - 1, V_SQ - 1], radius=V_RADIUS, fill=255)
+    return np.asarray(img).astype(np.uint8), mask
+
+
+def to_vertical(square_frames, hook, name, price):
+    """Кожен квадратний кадр → 1080×1920 (на всю ширину при y=470, зі скругленням) на статичне полотно."""
+    from PIL import Image
+    canvas_arr, mask = _vertical_canvas(hook, name, price)
+    out = []
+    for fr in square_frames:
+        sq = Image.fromarray(fr).resize((V_SQ, V_SQ), Image.LANCZOS)
+        base = Image.fromarray(canvas_arr.copy())
+        base.paste(sq, (V_SQ_X, V_SQUARE_Y), mask)
+        out.append(np.asarray(base).astype(np.uint8))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="Overlay Плутуса на картку товару (петля-дух).")
     ap.add_argument("--scene", required=True)
@@ -136,6 +237,11 @@ def main():
     ap.add_argument("--tail", type=int, default=14, help="кадрів чистого товару після зникнення")
     ap.add_argument("--puff", type=int, default=10, help="кадрів матеріалізації/розчинення")
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--aspect", choices=["1:1", "9:16"], default="1:1",
+                    help="1:1 квадрат (feed) або 9:16 вертикаль 1080×1920 (Reels/Stories)")
+    ap.add_argument("--hook", default="", help="гачок-текст зверху (лише 9:16)")
+    ap.add_argument("--name", default="", help="назва товару під квадратом (лише 9:16)")
+    ap.add_argument("--price", default="", help="ціна в пілюлі (лише 9:16)")
     a = ap.parse_args()
     rng = np.random.default_rng(a.seed)
     S = a.size
@@ -225,12 +331,20 @@ def main():
     # TAIL — чистий товар (безшовна петля з HEAD)
     out_frames += [clean() for _ in range(a.tail)]
 
-    writer = imageio.get_writer(a.out, fps=fps, codec="libx264", quality=8, macro_block_size=1)
+    # 9:16: обгортаємо квадратні кадри на вертикальне полотно (1:1-шлях лишається незмінним)
+    if a.aspect == "9:16":
+        out_frames = to_vertical(out_frames, a.hook, a.name, a.price)
+        out_fps, size_desc = 30.0, f"{V_W}x{V_H}"
+        writer = imageio.get_writer(a.out, fps=out_fps, codec="libx264", quality=8,
+                                    macro_block_size=1, pixelformat="yuv420p")
+    else:
+        out_fps, size_desc = fps, f"{S}x{S}"
+        writer = imageio.get_writer(a.out, fps=out_fps, codec="libx264", quality=8, macro_block_size=1)
     for fr in out_frames:
         writer.append_data(fr)
     writer.close()
-    dur = len(out_frames) / fps
-    print(f"[overlay] Готово: {a.out}  ({len(out_frames)} кадрів @ {fps:.0f}fps = {dur:.1f}с, {S}x{S}, "
+    dur = len(out_frames) / out_fps
+    print(f"[overlay] Готово: {a.out}  ({len(out_frames)} кадрів @ {out_fps:.0f}fps = {dur:.1f}с, {size_desc}, "
           f"поз=({px},{py}) {'auto-біла-зона' if a.corner=='auto' else a.corner})")
 
 

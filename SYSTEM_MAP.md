@@ -81,6 +81,7 @@
 | Task | Що запускає | Домен |
 |---|---|---|
 | `PlutusToys_AgentWatch` | `agent_watch.py` (30 хв) | координація (будить SEO/SMM/Код на нові записи каналів) |
+| `PlutusToys_SystemMapDriftCheck` | `system_map_driftcheck.py --alert` (щодня 08:40) | сам звіряє цей SSOT із живими тасками, Telegram-алерт при дрейфі |
 | `PlutusToys_RozetkaLocalChain` | `run_rozetka_local.py` | Rozetka: pull цін → **товарознавець** → commit membership → фід |
 | `PlutusToys_RozetkaPricePull` | `rozetka_price_monitor.py` | Rozetka: пул цін конкурентів |
 | `PlutusToys_RozetkaKeepalive` | `rozetka_price_monitor.py --keepalive` | Rozetka: тримати сесію вітрини теплою |
@@ -213,7 +214,8 @@
 ```json
 {
   "local_tasks": [
-    "PlutusToys_AgentWatch", "PlutusToys_RozetkaLocalChain", "PlutusToys_RozetkaPricePull",
+    "PlutusToys_AgentWatch", "PlutusToys_SystemMapDriftCheck",
+    "PlutusToys_RozetkaLocalChain", "PlutusToys_RozetkaPricePull",
     "PlutusToys_RozetkaKeepalive", "PlutusToys_PromCatalogHistory", "PlutusToys_PromCabinetKeepalive",
     "PlutusToys_PromConvergenceMonitor", "PlutusToys-TelegramOutbox", "PlutusToys-CabinetAudit",
     "PlutusToys-Graph6Daily", "PlutusToys-KODVDailyCheck", "PlutusToys-NovaPayRegistryArchiver",

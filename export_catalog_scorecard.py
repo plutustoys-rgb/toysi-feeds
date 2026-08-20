@@ -41,9 +41,31 @@ SNAPSHOT = Path(os.environ.get("PROM_CABINET_STATE_FILE",
 REPORTS_DIR = BASE_DIR / "reports"
 
 
+MERCHANT_CANDIDATES = BASE_DIR / "rozetka_merchant_candidates.json"
+
+
 def _latest_stats_csv() -> Path | None:
     files = sorted(REPORTS_DIR.glob("prom_seo_pilot_stats_*.csv"))
     return files[-1] if files else None
+
+
+def load_merchant_signals(snapshot_skus: set) -> dict:
+    """{sku: 'competitive'|'unique'} для товарів, які товарознавець (rozetka_merchant_agent) визнав
+    вартими Rozetka І які присутні на Prom (перетин ~90/392). Легка КРОС-підказка: наповнювати
+    першими Prom-картки товарів, уже доведено конкурентних на іншій площадці. БЕЗ фінполів — беремо
+    ЛИШЕ decision (cost/ціни з файлу товарознавця свідомо НЕ читаємо; файл у спільну папку). Best-effort."""
+    if not MERCHANT_CANDIDATES.exists():
+        return {}
+    try:
+        cands = json.loads(MERCHANT_CANDIDATES.read_text(encoding="utf-8")).get("candidates") or []
+    except (ValueError, OSError):
+        return {}
+    out = {}
+    for c in cands:
+        pid = str(c.get("pid") or "").strip()
+        if pid and pid in snapshot_skus:   # pid збігається з Prom sku для перетину
+            out[pid] = c.get("decision") or ""
+    return out
 
 
 def load_product_views(stats_path: Path | None) -> dict:
@@ -76,7 +98,8 @@ def _norm(values: dict) -> dict:
     return {k: (v - lo) / (hi - lo) for k, v in values.items()}
 
 
-def build_scorecard(snapshot: dict, product_views: dict) -> list:
+def build_scorecard(snapshot: dict, product_views: dict, merchant_signals: dict = None) -> list:
+    merchant_signals = merchant_signals or {}
     items = snapshot.get("items") or {}
     # сирі сигнали попиту для нормалізації по всьому avail-набору
     raw_pv, raw_orders = {}, {}
@@ -104,6 +127,7 @@ def build_scorecard(snapshot: dict, product_views: dict) -> list:
             "product_views": pv,
             "orders_count": orders,
             "product_opinion_count": p.get("product_opinion_count") or 0,
+            "rozetka_signal": merchant_signals.get(str(sku), ""),   # competitive/unique на Rozetka (крос-підказка)
         }
         if avail:
             raw_pv[sku] = pv
@@ -130,8 +154,8 @@ def build_scorecard(snapshot: dict, product_views: dict) -> list:
 
 
 _COLUMNS = ["sku", "category_id", "presence", "product_attrs_count", "category_attrs_count",
-            "completeness", "has_description", "has_brand_gtin", "position", "product_views",
-            "orders_count", "product_opinion_count", "demand", "completeness_gap",
+            "completeness", "has_description", "has_brand_gtin", "rozetka_signal", "position",
+            "product_views", "orders_count", "product_opinion_count", "demand", "completeness_gap",
             "fill_priority", "top_score"]
 
 
@@ -186,7 +210,9 @@ def main() -> None:
           f"product_views із: {stats_path.name if stats_path else 'НЕМА (demand лише orders)'} "
           f"({len(product_views)} SKU)")
 
-    rows = build_scorecard(snapshot, product_views)
+    merchant_signals = load_merchant_signals(set(str(s) for s in snapshot.get("items", {})))
+    print(f"[scorecard] крос-сигнал Rozetka (товарознавець ∩ Prom): {len(merchant_signals)} товарів")
+    rows = build_scorecard(snapshot, product_views, merchant_signals)
     out_path = Path(a.out) if a.out else REPORTS_DIR / f"catalog_scorecard_{datetime.now().strftime('%Y-%m-%d')}.csv"
     write_csv(rows, out_path)
     print(f"[scorecard] записано: {out_path} ({len(rows)} рядків, сорт. за fill_priority)")

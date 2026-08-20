@@ -455,7 +455,8 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
                 + (f"ТТН: {ttn}\n" if ttn else "")
                 + f"Товар: {items}\n"
                 f"Пункт видачі: {order.get('np_branch', '')}\n"
-                f"Отримувач: {order.get('customer_name', '')}, тел {order.get('phone', '')}")
+                f"Отримувач: {order.get('customer_name', '')}, тел {order.get('phone', '')}\n"
+                + ("Наклейка ТТН — у файлі. Дякую!" if ttn else "Дякую!"))
         dest = "тест (номер власника)" if test_mode else "РЕАЛЬНИЙ Toysi (@admtoys)"
         # Крок 2а: якщо є ТТН — спробувати надіслати ГОТОВУ наклейку ФАЙЛОМ (PDF) з текстом у
         # підписі: Toysi клеїть її на посилку. Best-effort — якщо друк/відправка файлу впала,

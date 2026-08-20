@@ -1,11 +1,15 @@
 import json
+import os
 import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
-DB_PATH = "orders.db"
+# ORDERS_DB_PATH дозволяє ізолювати тести на тимчасовій БД (інакше вони пишуть у бойову
+# orders.db — реальний клас «тест-дані в проді»). Default — незмінний, тож прод-поведінка
+# та сама. Env читається на імпорті; тест має ставити ORDERS_DB_PATH ДО import orders_db.
+DB_PATH = os.environ.get("ORDERS_DB_PATH", "orders.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS orders (

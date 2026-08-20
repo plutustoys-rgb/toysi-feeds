@@ -26,9 +26,6 @@ import sys
 
 from orders_db import get_connection
 
-# Поля items, які ДОЗВОЛЕНО віддавати. price НАВМИСНО відсутній (без фінансів).
-_ITEM_SAFE_FIELDS = ("name", "toysi_code")
-
 _HEADER = [
     "order_id", "marketplace", "order_date", "delivery_status",
     "order_status", "toysi_order_id", "items",
@@ -41,14 +38,22 @@ def _safe_items(items_json: str) -> str:
         items = json.loads(items_json) if items_json else []
     except (ValueError, TypeError):
         return ""
+    if not isinstance(items, list):   # items завжди JSON-масив; захист від скаляра/об'єкта
+        return ""
     parts = []
     for it in items:
         if not isinstance(it, dict):
             continue
+        # ЛИШЕ name+toysi_code — price/qty свідомо НЕ читаємо (без фінансів).
         name = str(it.get("name") or "").strip()
         sku = str(it.get("toysi_code") or "").strip()
-        parts.append(f"{name} ({sku})" if sku else name)
-    return "; ".join(p for p in parts if p)
+        if name and sku:
+            parts.append(f"{name} ({sku})")
+        elif name:
+            parts.append(name)
+        elif sku:
+            parts.append(f"({sku})")
+    return "; ".join(parts)
 
 
 def fetch_candidates(delivered_only: bool = True) -> list:

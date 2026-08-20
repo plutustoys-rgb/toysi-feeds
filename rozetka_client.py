@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import sys
 
@@ -279,6 +280,67 @@ def is_order_paid(order_id) -> bool:
         # БУДЬ-ЯКА невизначеність (мережа, несподівана форма відповіді) → False: краще тримати
         # непідтвердженим, ніж форварднути неоплачене. Той самий безпечний напрямок.
         return False
+
+
+def _rz_delivery_sender() -> dict:
+    """Реквізити відправника для RZ-Delivery-ТТН — усе через env (легко правити без деплою).
+    Дефолти: пункт здачі Toysi «Алматинська, 4» (department=pickup_id, звірено живо 2026-08-20),
+    відправник = ФОП Чечетенко О.Ю. (Plutonix — це НАЗВА МАГАЗИНА, а не ПІБ; sender.name для
+    natural = ПІБ ФОП). Тел від власника. `info` НЕ може бути порожнім (RZ-модуль вимагає ≥1
+    символ). Контракт звірено на живій ТТН RMP-835110782 (903719616)."""
+    return {
+        "type": os.environ.get("RZ_SENDER_TYPE", "natural"),   # ENUM: natural(физ)/legal(юр). ФОП=natural
+        "city": os.environ.get("RZ_SENDER_CITY", "Київ"),
+        "address": os.environ.get("RZ_SENDER_ADDRESS", "Алматинська, 4"),
+        "department": os.environ.get("RZ_SENDER_DEPARTMENT", "0bc950b0-493f-4afb-bc7e-046d38580df3"),
+        "name": os.environ.get("RZ_SENDER_NAME", "Чечетенко О.Ю."),      # ПІБ ФОП (офіц. відправник)
+        "phones": [os.environ.get("RZ_SENDER_PHONE", "+380730150815")],
+        "info": os.environ.get("RZ_SENDER_INFO", "Plutonix"),            # назва магазина (не порожнє)
+    }
+
+
+def create_delivery_ttn(order_id, weight: float = 0.5, height: int = 20, width: int = 20,
+                        length: int = 20, places: int = 1, has_paid: bool = True,
+                        cost: float = 0.0) -> dict:
+    """POST /delivery-rozetka/create-order-ttn — створює RZ-Delivery-ТТН ІЗ замовлення.
+
+    ⚠️ Для RZ Delivery ТТН створює ПРОДАВЕЦЬ (МИ), не постачальник: у Toysi нема доступу до
+    нашого кабінета, і на пункті Rozetka вони не оформлятимуть (пряме уточнення власника +
+    відповідь Toysi 2026-08-17). Контракт звірено ЖИВО 2026-08-20 — цей body створив реальну
+    ТТН RMP-835110782 для 903719616. Отримувач тягнеться самим замовленням (не передаємо).
+
+    payer='sender' (доставку платить відправник — як у кабінеті). prepaid → has_paid=True,cost=0;
+    COD → has_paid=False, cost=сума накладеного. Повертає повну відповідь (ТТН — у track_num,
+    діставати через extract_delivery_ttn)."""
+    body = {
+        "order_id": int(order_id),
+        "sender": _rz_delivery_sender(),
+        "params": {"weight": weight, "height": height, "width": width, "length": length},
+        "places": places,
+        "payer": "sender",
+        "has_paid": bool(has_paid),
+        "cost": cost,
+    }
+    return _request("post", "/delivery-rozetka/create-order-ttn", json=body)
+
+
+def extract_delivery_ttn(create_resp: dict):
+    """Номер ТТН (track_num) з відповіді create_delivery_ttn. `original_info` — JSON-рядок,
+    у ньому track_num (напр. 'RMP-835110782'). Повертає рядок ТТН або None."""
+    if not isinstance(create_resp, dict):
+        return None
+    tn = create_resp.get("carrier_track_num") or create_resp.get("track_num")
+    if tn:
+        return tn
+    oi = create_resp.get("original_info")
+    if isinstance(oi, str):
+        try:
+            oi = json.loads(oi)
+        except (ValueError, TypeError):
+            oi = {}
+    if isinstance(oi, dict):
+        return oi.get("track_num") or oi.get("carrier_track_num")
+    return None
 
 
 def update_order_status(order_id, status: int, ttn: str = None, seller_comment: str = None) -> dict:

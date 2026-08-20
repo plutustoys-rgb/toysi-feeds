@@ -422,6 +422,23 @@ def _maybe_send_rz_delivery_marking(order: dict) -> None:
     у .env, не щоразу. Юзербот-сесія й таргети — на VPS (telegram_userbot_client)."""
     if order.get("carrier") != "rozetka_delivery":
         return
+    # Крок 1: створити RZ-Delivery-ТТН. Для RZ Delivery ТТН робить ПРОДАВЕЦЬ (МИ) через api-seller
+    # (`create_delivery_ttn`) — Toysi не має доступу до нашого кабінета й на пункті не оформлює
+    # (уточнення власника + Toysi 2026-08-20; контракт звірено на живій ТТН RMP-835110782).
+    # Best-effort: збій створення ТТН не валить order flow і не блокує маркування.
+    ttn = None
+    try:
+        is_cod = order.get("payment_method") == "cod"
+        cost = (sum(it.get("price", 0) * it.get("qty", 1) for it in (order.get("items") or []))
+                if is_cod else 0.0)
+        resp = rozetka_client.create_delivery_ttn(order["order_id"], has_paid=not is_cod, cost=cost)
+        ttn = rozetka_client.extract_delivery_ttn(resp)
+        print(f"[order_router] RZ Delivery ТТН для {order['internal_order_id']}: "
+              f"{ttn or ('створено без track_num — ' + str(resp)[:150])}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — best-effort, ТТН можна створити вручну/наступного разу
+        print(f"[order_router] RZ Delivery ТТН НЕ створено (не критично) для "
+              f"{order.get('internal_order_id')}: {e}", file=sys.stderr)
+    # Крок 2: маркування (з ТТН, якщо створилась) у Toysi
     try:
         import telegram_userbot_client
         test_mode = os.environ.get("MARKING_TEST_MODE", "1").strip() != "0"
@@ -430,7 +447,8 @@ def _maybe_send_rz_delivery_marking(order: dict) -> None:
             for it in (order.get("items") or [])
         )
         text = (f"🟢 ROZETKA Delivery — замовлення {order['internal_order_id']}\n"
-                f"Товар: {items}\n"
+                + (f"ТТН: {ttn}\n" if ttn else "")
+                + f"Товар: {items}\n"
                 f"Пункт видачі: {order.get('np_branch', '')}\n"
                 f"Отримувач: {order.get('customer_name', '')}, тел {order.get('phone', '')}")
         ok = telegram_userbot_client.send_marking(text, to_toysi=not test_mode)

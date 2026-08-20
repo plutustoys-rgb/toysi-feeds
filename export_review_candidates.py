@@ -8,10 +8,10 @@ order_id, marketplace, order_date, delivery_status, status, items (назва+sk
 за самим запитом SMM («без сум, без собівартості, без маржі»). З items беремо ЛИШЕ
 name+toysi_code, поле price свідомо ВИКИДАЄМО.
 
-Поля, яких у нас НЕМА (чесно позначено в CSV як порожні/довідково):
-- delivered_date: окремого таймстемпа доставки не зберігаємо; ознака доставленості —
-  delivery_status='delivered' (order_status_tracker за живим трекінгом НП). Дату видачі
-  наразі не фіксуємо окремою колонкою.
+delivered_date — тепер Є (колонка delivered_at, стемпиться коли delivery_status уперше
+стає 'delivered'; order_status_tracker за живим трекінгом НП). Для не-доставлених ще порожня.
+
+Поля, яких у нас НЕМА:
 - review_requested: центрального поля нема; SMM веде власний ledger за стабільним order_id.
 
 Вивід: CSV у stdout або у файл (--out). За замовчуванням лише доставлені

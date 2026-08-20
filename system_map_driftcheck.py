@@ -34,6 +34,11 @@ MAP_FILE = BASE_DIR / "SYSTEM_MAP.md"
 # ключові слова для фільтра юнітів VPS (ті самі, що в бандлі знаття)
 VPS_UNIT_KEYWORDS = ("plutus", "feed", "order", "prom", "rozetka", "novapay",
                      "daily", "deadline", "watchdog", "catalog", "scan")
+# СИСТЕМНІ юніти Ubuntu, які збігаються з keyword'ами (daily→apt-daily, catalog→systemd-journal-
+# catalog-update) — це НЕ наші, drift-check їх ігнорує (інакше хибний «дрейф»; знайдено живо на VPS).
+VPS_UNIT_EXCLUDE_PREFIX = ("apt-", "apt.", "systemd-", "fwupd", "logrotate", "man-db", "dpkg",
+                           "e2scrub", "fstrim", "motd", "update-notifier", "ua-", "ua_", "snap.",
+                           "phpsessionclean", "certbot", "unattended-upgrades")
 
 
 def load_registry() -> dict:
@@ -83,7 +88,9 @@ def live_vps_units() -> set | None:
     for ln in r.stdout.splitlines():
         name = ln.split()[0] if ln.split() else ""
         low = name.lower()
-        if name and any(k in low for k in VPS_UNIT_KEYWORDS):
+        if not name or low.startswith(VPS_UNIT_EXCLUDE_PREFIX):
+            continue   # системні Ubuntu-юніти — не наші
+        if any(k in low for k in VPS_UNIT_KEYWORDS):
             # тримаємо і .timer, і .service — але для звірки з мапою беремо базове ім'я без суфікса
             units.add(name)
     return units

@@ -59,6 +59,10 @@ GRAPH_VERSION = "v21.0"
 REQUEST_TIMEOUT = 30
 IG_MEDIA_POLL_TRIES = 5      # контейнер IG інколи ще обробляється — коротко чекаємо FINISHED
 IG_MEDIA_POLL_SLEEP = 3
+# Reels — це ВІДЕО: контейнер обробляється помітно довше за фото, тож поллінг щедріший
+# (до ~2.5 хв: 25×6с). IG вимагає публічний video_url (файл не приймає, на відміну від FB).
+IG_REEL_POLL_TRIES = 25
+IG_REEL_POLL_SLEEP = 6
 # Кап перевірок посилань за прогін — щоб НЕ гатити вітрину тисячами GET-ів (self-throttle →
 # Cloudflare rate-limit → усе виглядає «мертвим» → пропуск постів; реальний інцидент 15.08).
 # За норми живий товар знаходиться за 1-2 перевірки (битих ~3%).
@@ -442,6 +446,67 @@ def _publish_ig(p: dict, caption: str, product_id=None) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def _ig_create_reel(video_url: str, caption: str):
+    """Крок 1 IG-Reels — media-контейнер типу REELS. IG приймає лише публічний video_url
+    (файл, на відміну від FB /videos, НЕ приймає) — його IG сам стягує й обробляє."""
+    return requests.post(
+        f"https://graph.facebook.com/{GRAPH_VERSION}/{IG_USER_ID}/media",
+        data={"media_type": "REELS", "video_url": video_url, "caption": caption,
+              "access_token": FB_PAGE_ACCESS_TOKEN},
+        timeout=REQUEST_TIMEOUT,
+    )
+
+
+def _publish_ig_reel(video_url: str, caption: str) -> dict:
+    """IG-Reels публікація — ДВА кроки (як фото-IG, але для відео): (1) media-контейнер
+    media_type=REELS з публічним video_url, (2) media_publish за creation_id, МІЖ ними
+    чекаємо status_code=FINISHED (відео обробляється довше → щедріший поллінг). Токен —
+    FB_PAGE_ACCESS_TOKEN. Product-мітки для Reels не чіпляємо. Не кидає — повертає {ok,id|error}."""
+    base = f"https://graph.facebook.com/{GRAPH_VERSION}"
+    try:
+        c = _ig_create_reel(video_url, caption)
+        cj = c.json() if c.content else {}
+        creation_id = cj.get("id")
+        if not (c.ok and creation_id):
+            return {"ok": False, "error": cj.get("error", {}).get("message", f"reel media HTTP {c.status_code}")}
+        for _ in range(IG_REEL_POLL_TRIES):
+            s = requests.get(f"{base}/{creation_id}", params={"fields": "status_code",
+                             "access_token": FB_PAGE_ACCESS_TOKEN}, timeout=REQUEST_TIMEOUT)
+            code = (s.json() if s.content else {}).get("status_code")
+            if code == "FINISHED":
+                break
+            if code in ("ERROR", "EXPIRED"):
+                return {"ok": False, "error": f"reel media status {code}"}
+            time.sleep(IG_REEL_POLL_SLEEP)
+        else:
+            return {"ok": False, "error": "reel media не дійшов до FINISHED (ще обробляється?)"}
+        pub = requests.post(f"{base}/{IG_USER_ID}/media_publish",
+                            data={"creation_id": creation_id, "access_token": FB_PAGE_ACCESS_TOKEN},
+                            timeout=REQUEST_TIMEOUT)
+        pj = pub.json() if pub.content else {}
+        if pub.ok and pj.get("id"):
+            return {"ok": True, "id": pj["id"]}
+        return {"ok": False, "error": pj.get("error", {}).get("message", f"reel publish HTTP {pub.status_code}")}
+    except (requests.RequestException, ValueError, AttributeError, TypeError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+def post_single_reel(video_url: str, caption: str, publish: bool) -> dict:
+    """Опублікувати ОДИН Reel за публічним video_url + підпис. Без --publish або без
+    IG-креденшелів — dry-run (лише друкує, що зробив би). Розв'язує блокер SMM: механіка
+    Reels уже є, лишалось подати `video_url` (заявка SMM 2026-08-19)."""
+    if not publish or not _platform_ready("ig"):
+        why = "без --publish" if not publish else "нема IG_USER_ID/FB_PAGE_ACCESS_TOKEN у .env"
+        print(f"[social] DRY-RUN Reel ({why}): video_url={video_url} | caption={caption[:60]}...")
+        return {"ok": False, "dryrun": True}
+    res = _publish_ig_reel(video_url, caption)
+    if res.get("ok"):
+        print(f"[social] IG-Reel опубліковано → {res['id']}")
+    else:
+        print(f"[social] IG-Reel ПОМИЛКА: {res.get('error')}", file=sys.stderr)
+    return res
+
+
 def _platform_ready(platform: str) -> bool:
     if platform == "fb":
         return bool(FB_PAGE_ID and FB_PAGE_ACCESS_TOKEN)
@@ -596,7 +661,15 @@ def main() -> None:
                     help="Реально постити. Без креденшелів платформи — тихий no-op (dry-run).")
     ap.add_argument("--target", default="fb", choices=["fb", "ig", "both"],
                     help="Куди постити: fb (дефолт), ig, both. IG активний лише з IG_USER_ID у .env.")
+    ap.add_argument("--reel", metavar="VIDEO_URL",
+                    help="Опублікувати ОДИН IG-Reel за публічним video_url (замість каталог-прогону). "
+                         "Потребує --caption. Без --publish — dry-run.")
+    ap.add_argument("--caption", default="", help="Підпис для --reel.")
     args = ap.parse_args()
+    if args.reel:
+        # Reels — окремий одноразовий вхід, ledger/каталог не чіпає, лок не потрібен.
+        post_single_reel(args.reel, args.caption, args.publish)
+        return
     lock = _acquire_lock()
     if not lock:
         print("[social] інший прогін соц-постера вже триває — пропускаю (уникаю гонки ledger).",

@@ -165,7 +165,8 @@
   `reconcile_revenue` → Код + **КОДВ** (звірка).
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,
   `plutus_overlay`, `meta_conversions_client`, `publish_reel_video.sh` (хостинг відео у feed-data/media
-  → публічний raw-URL для Reels) → **SMM** (стратегія) + Код (механіка).
+  → публічний raw-URL для Reels), `social_ledger_report` (ledger→CSV + розклад-vs-факт для SMM)
+  → **SMM** (стратегія) + Код (механіка).
 - **EVA:** `eva_cabinet_scraper`, `eva_catalog_auditor`, `eva_orders_client`, `generate_eva_feed` → Код + SEO (якість).
 - **ALLO:** `allo_cabinet_scraper`, `generate_allo_feed` → Код.
 - **Toysi / RoyalToys (постачальник):** `toysi_cabinet_scraper`, `parser` (fetch_toysi_catalog),

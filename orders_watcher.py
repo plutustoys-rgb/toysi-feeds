@@ -770,34 +770,51 @@ def poll_once() -> None:
 
     with get_connection() as conn:
         for raw in raw_orders:
-            order = normalize_order(raw)
-            internal_id = f"{order['platform']}_{order['order_id']}"
-            if insert_order(conn, order):
-                print(f"[orders_watcher] Нове замовлення збережено: {internal_id}")
-                continue
-
-            # ВИПРАВЛЕНО (2026-07-15): insert_order() НЕ оновлює вже наявний
-            # рядок — якщо замовлення потрапило в БД РАНІШЕ, ще до
-            # підтвердження оплати (напр. зловлене рівно в момент, коли
-            # Prom ще показував "pending"), а цей свіжий запит тепер
-            # показує payment_confirmed=True (Прom payment_data.status ==
-            # "paid"), без цієї перевірки воно лишилось би непідтвердженим
-            # НАЗАВЖДИ — bank_check.py теж його не знайде (кошти за
-            # Пром-оплату надходять на рахунок продавця з затримкою ~24
-            # год після отримання посилки клієнтом).
-            # Prom (payment_data.status=="paid") і EVA (LIQPAY authorized) обидва
-            # можуть перейти pending->оплачено швидше за цикл опитування — та сама
-            # логіка до-підтвердження вже наявного в БД запису.
-            if order["platform"] in ("prom", "eva") and order.get("payment_confirmed"):
-                existing = conn.execute(
-                    "SELECT payment_confirmed FROM orders WHERE internal_order_id = ?", (internal_id,)
-                ).fetchone()
-                if existing and not existing["payment_confirmed"]:
-                    mark_payment_confirmed(conn, internal_id)
-                    print(f"[orders_watcher] Оплату підтверджено ({order['platform']}): {internal_id}")
+            # Одне погане замовлення НЕ повинно валити ВЕСЬ прогін. Інцидент 2026-08-20:
+            # RZ-Delivery-замовлення (carrier='rozetka_delivery') падало на CHECK-констрейнті
+            # insert_order (IntegrityError) → кидало виняток з poll_once → жодне замовлення не
+            # оброблялось з 12:54. Ізолюємо кожне: помилка → лог + Telegram-алерт + наступне.
+            try:
+                order = normalize_order(raw)
+                internal_id = f"{order['platform']}_{order['order_id']}"
+                if insert_order(conn, order):
+                    print(f"[orders_watcher] Нове замовлення збережено: {internal_id}")
                     continue
 
-            print(f"[orders_watcher] Пропущено (вже є в БД): {internal_id}")
+                # ВИПРАВЛЕНО (2026-07-15): insert_order() НЕ оновлює вже наявний
+                # рядок — якщо замовлення потрапило в БД РАНІШЕ, ще до
+                # підтвердження оплати (напр. зловлене рівно в момент, коли
+                # Prom ще показував "pending"), а цей свіжий запит тепер
+                # показує payment_confirmed=True (Прom payment_data.status ==
+                # "paid"), без цієї перевірки воно лишилось би непідтвердженим
+                # НАЗАВЖДИ — bank_check.py теж його не знайде (кошти за
+                # Пром-оплату надходять на рахунок продавця з затримкою ~24
+                # год після отримання посилки клієнтом).
+                # Prom (payment_data.status=="paid") і EVA (LIQPAY authorized) обидва
+                # можуть перейти pending->оплачено швидше за цикл опитування — та сама
+                # логіка до-підтвердження вже наявного в БД запису.
+                if order["platform"] in ("prom", "eva") and order.get("payment_confirmed"):
+                    existing = conn.execute(
+                        "SELECT payment_confirmed FROM orders WHERE internal_order_id = ?", (internal_id,)
+                    ).fetchone()
+                    if existing and not existing["payment_confirmed"]:
+                        mark_payment_confirmed(conn, internal_id)
+                        print(f"[orders_watcher] Оплату підтверджено ({order['platform']}): {internal_id}")
+                        continue
+
+                print(f"[orders_watcher] Пропущено (вже є в БД): {internal_id}")
+            except Exception as e:
+                _oid = (raw.get("order_id") or raw.get("id") or "?") if isinstance(raw, dict) else "?"
+                print(f"[orders_watcher] ⚠️ Замовлення {_oid} НЕ оброблено ({type(e).__name__}: {e}) "
+                      f"— прогін продовжено", file=sys.stderr)
+                try:
+                    from telegram_notify import send_telegram_message
+                    send_telegram_message(
+                        f"⚠️ orders_watcher: замовлення {_oid} НЕ оброблено "
+                        f"({type(e).__name__}: {str(e)[:150]}) — прогін продовжено, перевір лог"
+                    )
+                except Exception:
+                    pass
 
 
 def run_forever() -> None:

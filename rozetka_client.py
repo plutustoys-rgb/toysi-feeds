@@ -275,7 +275,9 @@ def is_order_paid(order_id) -> bool:
     try:
         st = get_payment_status(order_id)
         return isinstance(st, dict) and str(st.get("name", "")).lower() == "paid"
-    except RozetkaAPIError:
+    except Exception:
+        # БУДЬ-ЯКА невизначеність (мережа, несподівана форма відповіді) → False: краще тримати
+        # непідтвердженим, ніж форварднути неоплачене. Той самий безпечний напрямок.
         return False
 
 

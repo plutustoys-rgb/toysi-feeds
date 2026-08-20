@@ -132,6 +132,14 @@ def _check_toysi_stock(order: dict, toysi_catalog: dict) -> tuple:
     return True, ""
 
 
+# Назва перевізника для RZ-Delivery-замовлень у самому замовленні Toysi (не дефолт «Новая
+# почта»). Маркування (@admtoys) Toysi КЛЕЇТЬ на посилку, а це поле визначає перевізника в
+# їхній CRM — без нього авто-підтяжка конфліктувала: order каже НП, маркування — ROZETKA
+# Delivery (інцидент 903719616 2026-08-20). Якщо Toysi очікує іншу точну назву в дропдауні —
+# це єдине місце для правки (env-оверайд TOYSI_ROZETKA_CARRIER для швидкої зміни без деплою).
+ROZETKA_DELIVERY_TOYSI_CARRIER = os.environ.get("TOYSI_ROZETKA_CARRIER", "Rozetka")
+
+
 def build_toysi_order(order: dict) -> dict:
     """Перетворює запис orders_db на структуру для toysi_order_submit.submit_order()."""
     city, warehouse_query, area_hint = parse_np_branch(order.get("np_branch", ""))
@@ -508,6 +516,11 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         # НЕ створює реальне відправлення на боці Toysi — Укрпошта в них не
         # інтегрована. Це лише інформативне поле для замовлення в їхній системі.
         toysi_order["shipping_carrier_name"] = "Укрпошта"
+    elif carrier == "rozetka_delivery":
+        # RZ Delivery: перевізник у замовленні = ROZETKA Delivery, а не дефолт «Новая почта»
+        # (щоб авто-підтяжка Toysi не конфліктувала з маркуванням @admtoys). Місто вже
+        # передається в build_toysi_order (shipping_city_name з np_branch, напр. «Київ»).
+        toysi_order["shipping_carrier_name"] = ROZETKA_DELIVERY_TOYSI_CARRIER
     result = submit_order(toysi_order, test_mode=test_mode)
 
     if result["accepted"] and test_mode:

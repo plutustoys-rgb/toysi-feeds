@@ -27,7 +27,7 @@ import sys
 from orders_db import get_connection
 
 _HEADER = [
-    "order_id", "marketplace", "order_date", "delivery_status",
+    "order_id", "marketplace", "order_date", "delivered_date", "delivery_status",
     "order_status", "toysi_order_id", "items",
 ]
 
@@ -64,7 +64,7 @@ def fetch_candidates(delivered_only: bool = True) -> list:
     with get_connection() as conn:
         rows = conn.execute(
             f"""
-            SELECT order_id, platform, created_at, delivery_status, status,
+            SELECT order_id, platform, created_at, delivered_at, delivery_status, status,
                    toysi_order_id, items
             FROM orders
             {where}
@@ -77,6 +77,7 @@ def fetch_candidates(delivered_only: bool = True) -> list:
             r["order_id"],
             r["platform"],
             r["created_at"],
+            r["delivered_at"] or "",
             r["delivery_status"] or "",
             r["status"],
             r["toysi_order_id"] or "",

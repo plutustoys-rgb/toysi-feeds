@@ -57,9 +57,10 @@ def load_merchant_signals(snapshot_skus: set) -> dict:
     if not MERCHANT_CANDIDATES.exists():
         return {}
     try:
-        cands = json.loads(MERCHANT_CANDIDATES.read_text(encoding="utf-8")).get("candidates") or []
+        data = json.loads(MERCHANT_CANDIDATES.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return {}
+    cands = (data.get("candidates") if isinstance(data, dict) else None) or []
     out = {}
     for c in cands:
         pid = str(c.get("pid") or "").strip()

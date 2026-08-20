@@ -109,10 +109,10 @@
 
 | Unit (`.service`, є парний `.timer`) | ExecStart | Домен |
 |---|---|---|
-| `order-pipeline` | `order_pipeline.py` | замовлення: забір/збереження/пересил (RZ ТТН, маркування Toysi) |
-| `order-router` | `order_router.py` | замовлення: роутинг у Toysi ⚠️ (див. дрейф нижче) |
-| `orders-watcher` | `orders_watcher.py` | замовлення: полінг нових ⚠️ (див. дрейф нижче) |
-| `order-status-tracker` | `order_status_tracker.py` | замовлення: статуси доставки/ТТН |
+| `order-pipeline` | `order_pipeline.py` | замовлення: ЄДИНИЙ процесор — забір(poll_once)+bank_check+роутинг послідовно. enabled+active ~15хв |
+| `order-router` | `order_router.py` | ⛔ **DISABLED leftover** — поглинуто order-pipeline (звірено 2026-08-20: enabled=disabled, inactive) |
+| `orders-watcher` | `orders_watcher.py` | ⛔ **DISABLED leftover** — поглинуто order-pipeline (звірено 2026-08-20: enabled=disabled, inactive) |
+| `order-status-tracker` | `order_status_tracker.py` | замовлення: статуси доставки/ТТН. enabled+active |
 | `feed-pipeline` | (генерація фідів + репрайсер) | фіди Prom-top/Google/Meta/Bing, публікація `feed-data` |
 | `eva-feed` | (генерація EVA-фіда) | EVA-фід окремим юнітом |
 | `eva-catalog-auditor` | `eva_catalog_auditor.py` | аудит каталогу EVA |
@@ -129,12 +129,12 @@
 | `deadline-reminder` | `deadline_reminder.py` | дедлайни/платежі |
 | `service-watchdog` | `service_watchdog.py` | алерти застою + дрейф автодеплою |
 
-> **⚠️ ЗНАЙДЕНИЙ ДРЕЙФ (2026-08-20, приклад цінності SSOT):** на VPS ЖИВІ окремими юнітами
-> `order-pipeline` + `order-router` + `orders-watcher` — хоча доки казали, що `order-pipeline` ЗАМІНИВ
-> watcher+router (щоб прибрати гонку). Або order-flow легітимно розкладено на 4 юніти, або є
-> надлишок/подвійний запуск. **Не чіпати наосліп** — окреме рішення власника/Коду: з'ясувати живо
-> (чи всі активні, чи конфліктують за orders.db) і або задокументувати як задумане, або прибрати зайве.
-> `vps-code-sync` (автопул master) — у видимому виводі не потрапив; підтвердити першим drift-check на VPS.
+> **✅ ДРЕЙФ order-flow РОЗВ'ЯЗАНО (звірено живо 2026-08-20):** `order-router` і `orders-watcher` на VPS
+> **DISABLED + inactive** — це мертві файли-юніти, поглинуті `order-pipeline` (він робить poll_once+
+> bank_check+route послідовно в одному процесі, щоб не було гонки). Активні лише `order-pipeline` +
+> `order-status-tracker`. Подвійної обробки/гонки НЕМА. Косметичний хвіст: файли-юніти `order-router`/
+> `orders-watcher` можна прибрати (`systemctl disable` вже стоїть; видалення `.timer/.service` — за бажанням,
+> не критично). `vps-code-sync` — у видимому виводі бандла не потрапив; підтвердити drift-check на VPS.
 
 ### 2В. GitHub Actions (`plutustoys-rgb/toysi-feeds`)
 - `update-feeds.yml` — cron 4 год: генерує ЛИШЕ `feeds/rozetka_feed.xml` (відокремлено від VPS, щоб не було гонки orphan-force-push).

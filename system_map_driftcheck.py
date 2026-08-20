@@ -96,28 +96,42 @@ def live_vps_units() -> set | None:
     return units
 
 
-def _diff(declared: set, live: set, label: str) -> bool:
-    """Друкує розбіжності; повертає True, якщо є дрейф."""
+def _diff(declared: set, live: set, label: str) -> tuple:
+    """Друкує розбіжності; повертає (є_дрейф: bool, повідомлення: list[str])."""
     missing = declared - live      # у мапі є, живого нема → зникло/переіменовано
     extra = live - declared         # живе є, у мапі нема → додали, не вписали в SSOT
     if not missing and not extra:
         print(f"[drift] {label}: ✅ збіг ({len(live)} живих = реєстр)")
-        return False
+        return False, []
+    msgs = []
     if missing:
-        print(f"[drift] {label}: ⚠️ У МАПІ Є, ЖИВОГО НЕМА ({len(missing)}): {sorted(missing)}")
+        m = f"{label}: У МАПІ Є, ЖИВОГО НЕМА ({len(missing)}): {sorted(missing)}"
+        print(f"[drift] ⚠️ {m}"); msgs.append(m)
     if extra:
-        print(f"[drift] {label}: ⚠️ ЖИВЕ Є, У МАПІ НЕМА ({len(extra)}): {sorted(extra)}")
-    return True
+        m = f"{label}: ЖИВЕ Є, У МАПІ НЕМА ({len(extra)}): {sorted(extra)}"
+        print(f"[drift] ⚠️ {m}"); msgs.append(m)
+    return True, msgs
+
+
+def _alert(text: str) -> None:
+    """Best-effort Telegram-алерт (щоб дрейф сам казав про себе). Збій алерту не валить перевірку."""
+    try:
+        from telegram_notify import send_telegram_message
+        send_telegram_message(text)
+    except Exception as e:  # noqa: BLE001
+        print(f"[drift] Telegram-алерт не надіслано (не критично): {e}", file=sys.stderr)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Звірка SYSTEM_MAP.md проти живої системи.")
     ap.add_argument("--json", action="store_true", help="машинний вивід")
+    ap.add_argument("--alert", action="store_true", help="слати Telegram-алерт при дрейфі (для таймера)")
     a = ap.parse_args()
 
     reg = load_registry()
     is_windows = os.name == "nt" or sys.platform.startswith("win")
     result = {"env": "windows" if is_windows else "linux", "drift": False, "checked": None, "error": None}
+    msgs = []
 
     if is_windows:
         declared = set(reg.get("local_tasks", []))
@@ -126,7 +140,7 @@ def main() -> None:
             result["error"] = "не зняв Windows-таски"
         else:
             result["checked"] = "local_tasks"
-            result["drift"] = _diff(declared, live, "Локальні таски")
+            result["drift"], msgs = _diff(declared, live, "Локальні таски")
     else:
         declared = set(reg.get("vps_units", []))
         if any("__PROVISIONAL__" in d for d in declared):
@@ -140,7 +154,11 @@ def main() -> None:
                 # мапа може тримати короткі імена; звіряємо за входженням
                 live_base = {u.rsplit(".", 1)[0] for u in live}
                 result["checked"] = "vps_units"
-                result["drift"] = _diff(declared, live_base, "VPS-юніти")
+                result["drift"], msgs = _diff(declared, live_base, "VPS-юніти")
+
+    if a.alert and result["drift"] and msgs:
+        _alert("🗺️ SYSTEM_MAP дрейф (" + result["env"] + "):\n" + "\n".join(msgs)
+               + "\n→ онови SYSTEM_MAP.md (реальність змінилась).")
 
     if a.json:
         print(json.dumps(result, ensure_ascii=False))

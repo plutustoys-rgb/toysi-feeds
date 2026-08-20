@@ -496,12 +496,19 @@ def _convert_rozetka_order(order: dict) -> dict:
     purchases = order.get("purchases") or []
     delivery = order.get("delivery")
     delivery = delivery if isinstance(delivery, dict) else {}
+    pm = _rozetka_payment_method(order)
+    # prepaid-Rozetka: оплата на боці Rozetka (Google Pay/картка), НЕ в ПРИВАТ-виписці, тож
+    # payment_confirmed беремо з /orders/status-payment (name=='paid'), а не завжди False —
+    # інакше ОПЛАЧЕНЕ замовлення трималось би непідтвердженим вічно (bank_check його не бачить,
+    # інцидент 903719616 2026-08-20). COD — payment_confirmed не важить (форвард одразу), тож
+    # зайвий API-виклик статусу оплати НЕ робимо.
+    payment_confirmed = rozetka_client.is_order_paid(order["id"]) if pm == "prepaid" else False
     return {
         "order_id": str(order["id"]),
         "platform": "rozetka",
         "status": "new",
-        "payment_method": _rozetka_payment_method(order),
-        "payment_confirmed": False,
+        "payment_method": pm,
+        "payment_confirmed": payment_confirmed,
         "customer_name": _rozetka_customer_name(order),
         "phone": order.get("user_phone") or delivery.get("recipient_phone", ""),
         "np_branch": _rozetka_delivery_address(order),
@@ -790,10 +797,11 @@ def poll_once() -> None:
                 # НАЗАВЖДИ — bank_check.py теж його не знайде (кошти за
                 # Пром-оплату надходять на рахунок продавця з затримкою ~24
                 # год після отримання посилки клієнтом).
-                # Prom (payment_data.status=="paid") і EVA (LIQPAY authorized) обидва
-                # можуть перейти pending->оплачено швидше за цикл опитування — та сама
-                # логіка до-підтвердження вже наявного в БД запису.
-                if order["platform"] in ("prom", "eva") and order.get("payment_confirmed"):
+                # Prom (payment_data.status=="paid"), EVA (LIQPAY authorized) і Rozetka
+                # (/orders/status-payment name=="paid") — усі можуть перейти pending->оплачено
+                # швидше за цикл опитування; та сама логіка до-підтвердження вже наявного запису
+                # (напр. замовлення збереглось непідтвердженим, а через цикл клієнт оплатив).
+                if order["platform"] in ("prom", "eva", "rozetka") and order.get("payment_confirmed"):
                     existing = conn.execute(
                         "SELECT payment_confirmed FROM orders WHERE internal_order_id = ?", (internal_id,)
                     ).fetchone()

@@ -261,6 +261,26 @@ def get_order_details(order_id) -> dict:
     )
 
 
+def get_payment_status(order_id) -> dict:
+    """GET /orders/status-payment/{id} — статус оплати замовлення. Оплачене → name=='paid'
+    (title='Оплачено', value=1). Живо звірено на 903719616 (2026-08-20). Об'єкт замовлення
+    окремого прапорця «оплачено» НЕ має — оце правильне джерело для payment_confirmed
+    prepaid-Rozetka (bank_check/ПРИВАТ Rozetka-оплату не бачить)."""
+    return _request("get", f"/orders/status-payment/{order_id}")
+
+
+def is_order_paid(order_id) -> bool:
+    """True, якщо Rozetka каже, що замовлення оплачене (name=='paid'). Помилка/невідомо →
+    False (краще тримати непідтвердженим, ніж форварднути неоплачене наосліп)."""
+    try:
+        st = get_payment_status(order_id)
+        return isinstance(st, dict) and str(st.get("name", "")).lower() == "paid"
+    except Exception:
+        # БУДЬ-ЯКА невизначеність (мережа, несподівана форма відповіді) → False: краще тримати
+        # непідтвердженим, ніж форварднути неоплачене. Той самий безпечний напрямок.
+        return False
+
+
 def update_order_status(order_id, status: int, ttn: str = None, seller_comment: str = None) -> dict:
     """
     PUT /orders/{id} — зміна статусу і/або прикріплення ТТН.

@@ -72,44 +72,6 @@ _AVAILABILITY_MAP = {
     "out_of_stock": "out of stock",
 }
 
-# ── Виключення реплік вогнепальної зброї з Meta-фіда (діагноз SMM 2026-08-20) ──────────
-# Meta «Правила торгівлі» забороняють зброю та її репліки → відхиляла товари (лист «(0)»,
-# реально 6, категорія «Магазини і Marketplace»). Це ПОЛІТИКА, «запросити перевірку» не діє.
-# Фільтр звірено ЖИВО на feed-data:meta_feed.xml (5187 товарів, 2026-08-20): ловить 34 репліки
-# (усі 20 відомих SMM + 14 схожих, вкл. «Пістолет мет.»), 0 із 136 водяних пістолетів (обидва
-# написання водн/водян + піна/мильн/бульбашк), 0 легальних (парасольки
-# «автоматичні», брелки-карабіни, дрилі, килимки «6 мм», деревʼяні гумкострільні).
-# ⚠️ ТІЛЬКИ Meta. google/bing — рішення SEO (SMM координує окремо), тут не чіпаємо.
-# Явний ID-набір — для реплік, названих моделлю реальної зброї («Пістолет P99»), де в назві
-# нема слова «кульки», тож keyword їх не спіймав би.
-_WEAPON_REPLICA_IDS = {
-    "276019", "302703", "298753", "283436", "283432", "282774",   # 6 відхилених Meta
-    "298752", "298754", "283435", "283441", "283443", "283444",
-    "297430", "297434", "290074", "52911", "252322", "273936", "277752", "150232",
-}
-_WATER_WORDS = ("водн", "водян", "water", "піна", "мильн", "бульбашк")  # легальне — НІКОЛИ не чіпати
-_WEAPON_WORDS = ("пістолет", "револьвер", "автомат", "рушниц", "гвинтівк",
-                 "снайпер", "калаш", "дробовик", "кулемет")            # без "карабін" (=брелок-кліп)
-_PROJECTILE_WORDS = ("кульк", "пульк", "страйкбол", "металев", " мет.", "пістон")  # " мет." — абревіатура «металевий» («Пістолет мет.»)
-
-
-def _is_weapon_replica(item_id: str, title: str) -> bool:
-    """Репліка вогнепальної зброї (заборонена Meta), АЛЕ не водяний/піна-пістолет (легальні).
-    Явний ID-набір + назва: (зброя-слово ∧ твердий-проєктиль) | страйкбол | (6мм ∧ кульки)."""
-    if item_id in _WEAPON_REPLICA_IDS:
-        return True
-    t = (title or "").lower()
-    if any(w in t for w in _WATER_WORDS):
-        return False
-    if any(w in t for w in _WEAPON_WORDS) and any(p in t for p in _PROJECTILE_WORDS):
-        return True
-    if "страйкбол" in t:
-        return True
-    if ("6 мм" in t or "6мм" in t) and ("кульк" in t or "пульк" in t):
-        return True
-    return False
-
-
 def _build_xml(items: list) -> ET.Element:
     NS = "http://base.google.com/ns/1.0"
     ET.register_namespace("g", NS)
@@ -177,13 +139,7 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
         )
 
     items, stats = build_feed_items(top_catalog, prom_by_external_id, links, load_fresh_prom_price_overrides())
-
-    # Виключити репліки зброї (Meta «Правила торгівлі») — ТІЛЬКИ для Meta-фіда.
-    before = len(items)
-    items = [it for it in items if not _is_weapon_replica(it.get("id", ""), it.get("title", ""))]
-    excluded = before - len(items)
-    if excluded:
-        print(f"[Meta] Виключено реплік зброї (Правила торгівлі Meta): {excluded}")
+    # Репліки зброї виключає САМ build_feed_items (спільно для google/meta/bing) — тут не дублюємо.
 
     root = _build_xml(items)
     ET.indent(root, space="  ")

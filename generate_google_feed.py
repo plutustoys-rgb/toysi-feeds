@@ -593,6 +593,40 @@ def _prom_page_price(cost: float, category_name, override) -> float:
     return decide_price_for_platform(cost, None, "prom", category_name)["price"]
 
 
+# ── Виключення реплік вогнепальної зброї з ТОВАРНИХ фідів ─────────────────────────────
+# Meta «Правила торгівлі» І Google Merchant однаково забороняють зброю та її репліки →
+# відхиляють товари (Meta відхилила 6, діагноз SMM 2026-08-20). Застосовуємо в build_feed_items,
+# тож ВСІ фіди (google/meta/bing), що його викликають, чисті автоматично. Rozetka/EVA мають
+# власні генератори — сюди не входять. Звірено ЖИВО на meta_feed.xml (5187 товарів): ловить 34
+# репліки (усі 20 відомих SMM + 14 схожих), 0 із 136 водяних пістолетів, 0 легальних.
+_WEAPON_REPLICA_IDS = {
+    "276019", "302703", "298753", "283436", "283432", "282774",   # 6 відхилених Meta
+    "298752", "298754", "283435", "283441", "283443", "283444",
+    "297430", "297434", "290074", "52911", "252322", "273936", "277752", "150232",
+}
+_WATER_WORDS = ("водн", "водян", "water", "піна", "мильн", "бульбашк")   # легальне — НІКОЛИ не чіпати
+_WEAPON_WORDS = ("пістолет", "револьвер", "автомат", "рушниц", "гвинтівк",
+                 "снайпер", "калаш", "дробовик", "кулемет")             # без "карабін" (=брелок-кліп)
+_PROJECTILE_WORDS = ("кульк", "пульк", "страйкбол", "металев", " мет.", "пістон")
+
+
+def is_weapon_replica(item_id: str, title: str) -> bool:
+    """Репліка вогнепальної зброї (заборонена Meta/Google), АЛЕ не водяний/піна-пістолет.
+    Явний ID-набір + назва: (зброя-слово ∧ твердий-проєктиль) | страйкбол | (6мм ∧ кульки)."""
+    if item_id in _WEAPON_REPLICA_IDS:
+        return True
+    t = (title or "").lower()
+    if any(w in t for w in _WATER_WORDS):
+        return False
+    if any(w in t for w in _WEAPON_WORDS) and any(p in t for p in _PROJECTILE_WORDS):
+        return True
+    if "страйкбол" in t:
+        return True
+    if ("6 мм" in t or "6мм" in t) and ("кульк" in t or "пульк" in t):
+        return True
+    return False
+
+
 def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price_overrides: dict) -> tuple[list, dict]:
     stats = {
         "total_considered": len(catalog),
@@ -681,6 +715,15 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "google_product_category": cat_id,
         })
         stats["included"] += 1
+
+    # Виключити репліки зброї (Правила торгівлі Meta/Google) — з усіх фідів на build_feed_items.
+    before = len(items)
+    items = [it for it in items if not is_weapon_replica(it["id"], it["title"])]
+    excluded = before - len(items)
+    if excluded:
+        stats["weapon_replicas_excluded"] = excluded
+        stats["included"] -= excluded
+        print(f"[feed] Виключено реплік зброї (Правила торгівлі): {excluded}")
 
     return items, stats
 

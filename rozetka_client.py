@@ -343,6 +343,79 @@ def extract_delivery_ttn(create_resp: dict):
     return None
 
 
+def _request_raw(method: str, path: str, **kwargs):
+    """Як _request, але повертає СИРУ requests.Response (для бінарних файлів, напр. PDF-
+    наклейки) — JSON не парситься. 401 → один релогін+повтор (той самий підхід, що _request)."""
+    token = _get_token()
+    headers = dict(kwargs.pop("headers", {}) or {})
+    headers["Authorization"] = f"Bearer {token}"
+    headers.setdefault("Content-Language", "uk")
+
+    def _do_request():
+        return requests.request(
+            method, f"{ROZETKA_API_URL}{path}", headers=headers, timeout=REQUEST_TIMEOUT, **kwargs
+        )
+
+    try:
+        response = _do_request()
+    except requests.exceptions.RequestException as e:
+        raise RozetkaAPIError(f"Помилка з'єднання ({method} {path}): {e}")
+
+    if response.status_code == 401:
+        headers["Authorization"] = f"Bearer {_get_token(force_refresh=True)}"
+        try:
+            response = _do_request()
+        except requests.exceptions.RequestException as e:
+            raise RozetkaAPIError(f"Помилка з'єднання після релогіну ({method} {path}): {e}")
+    return response
+
+
+def fetch_delivery_label(ttn: str) -> bytes:
+    """POST /delivery-rozetka/ttn-print-batch {track_numbers:[ttn]} → PDF-наклейка ТТН (байти).
+
+    Це друкована наклейка, яку Toysi клеїть на посилку й здає на пункт Rozetka. За apidoc
+    (api_data.js) Success 200 = File(pdf). Стійко до двох форм відповіді:
+      • сирий бінарний PDF (тіло починається з %PDF або Content-Type application/pdf);
+      • JSON-обгортка {content:{file:<base64|url>}} — витягуємо base64 (data:...;base64,)
+        або лишаємо на потім (url) — тоді кидаємо помітну помилку, щоб не гадати мовчки.
+    На помилку API повертає JSON {success:false,errors:{...}} → RozetkaAPIError із причиною.
+    ⚠️ Живу форму відповіді ще не знято (токен лише на VPS) — best-effort у роутері, збій не
+    валить order flow; перша реальна відправка/проба власника підтвердить форму."""
+    if not ttn:
+        raise RozetkaAPIError("fetch_delivery_label: порожня ТТН")
+    resp = _request_raw("post", "/delivery-rozetka/ttn-print-batch",
+                        json={"track_numbers": [str(ttn)]})
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    body = resp.content or b""
+    if body[:4] == b"%PDF" or "application/pdf" in ctype:
+        return body
+    # не схоже на сирий PDF — пробуємо JSON (або помилка, або base64/url-обгортка)
+    try:
+        data = resp.json()
+    except ValueError:
+        raise RozetkaAPIError(f"ttn-print-batch {ttn}: несподівана відповідь "
+                              f"(ctype={ctype}, {resp.text[:200]})")
+    if isinstance(data, dict) and not data.get("success", True):
+        err = data.get("errors", {}) or {}
+        raise RozetkaAPIError(f"ttn-print-batch {ttn}: {err.get('message')} (code={err.get('code')})")
+    # success або без прапорця → шукаємо файл усередині content
+    content = data.get("content") if isinstance(data, dict) else None
+    file_ref = None
+    if isinstance(content, dict):
+        file_ref = content.get("file") or content.get("pdf") or content.get("label")
+    elif isinstance(content, str):
+        file_ref = content
+    if isinstance(file_ref, str) and file_ref:
+        b64 = file_ref.split("base64,", 1)[-1] if "base64," in file_ref else file_ref
+        try:
+            return base64.b64decode(b64, validate=False)
+        except (ValueError, TypeError):
+            raise RozetkaAPIError(f"ttn-print-batch {ttn}: content.file не декодується як base64 "
+                                  f"(схоже на URL? '{file_ref[:80]}') — звірити форму живо")
+    raise RozetkaAPIError(f"ttn-print-batch {ttn}: успіх, але файл не знайдено у відповіді "
+                          f"({str(data)[:200]}) — звірити форму живо")
+
+
 def update_order_status(order_id, status: int, ttn: str = None, seller_comment: str = None) -> dict:
     """
     PUT /orders/{id} — зміна статусу і/або прикріплення ТТН.

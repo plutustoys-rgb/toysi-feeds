@@ -456,10 +456,27 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
                 + f"Товар: {items}\n"
                 f"Пункт видачі: {order.get('np_branch', '')}\n"
                 f"Отримувач: {order.get('customer_name', '')}, тел {order.get('phone', '')}")
-        ok = telegram_userbot_client.send_marking(text, to_toysi=not test_mode)
         dest = "тест (номер власника)" if test_mode else "РЕАЛЬНИЙ Toysi (@admtoys)"
-        print(f"[order_router] RZ Delivery маркування {order['internal_order_id']} → {dest}: "
-              f"{'надіслано' if ok else 'НЕ надіслано'}", file=sys.stderr)
+        # Крок 2а: якщо є ТТН — спробувати надіслати ГОТОВУ наклейку ФАЙЛОМ (PDF) з текстом у
+        # підписі: Toysi клеїть її на посилку. Best-effort — якщо друк/відправка файлу впала,
+        # фолбек на текст-лише (щоб маркування все одно дійшло). Форму відповіді ще не звірено
+        # живо (токен на VPS) → збій тут очікуваний і не критичний.
+        sent_file = False
+        if ttn:
+            try:
+                pdf = rozetka_client.fetch_delivery_label(ttn)
+                telegram_userbot_client.send_marking_file(
+                    pdf, filename=f"rozetka_ttn_{ttn}.pdf", caption=text, to_toysi=not test_mode)
+                sent_file = True
+                print(f"[order_router] RZ Delivery наклейка-PDF {order['internal_order_id']} "
+                      f"({ttn}) → {dest}: надіслано файлом", file=sys.stderr)
+            except Exception as e:  # noqa: BLE001 — фолбек на текст нижче
+                print(f"[order_router] RZ Delivery наклейку-PDF не надіслано (фолбек на текст) "
+                      f"для {order.get('internal_order_id')}: {e}", file=sys.stderr)
+        if not sent_file:
+            ok = telegram_userbot_client.send_marking(text, to_toysi=not test_mode)
+            print(f"[order_router] RZ Delivery маркування {order['internal_order_id']} → {dest}: "
+                  f"{'надіслано (текст)' if ok else 'НЕ надіслано'}", file=sys.stderr)
     except Exception as e:  # noqa: BLE001 — best-effort, не валимо order flow
         print(f"[order_router] RZ Delivery маркування не надіслано (не критично) для "
               f"{order.get('internal_order_id')}: {e}", file=sys.stderr)

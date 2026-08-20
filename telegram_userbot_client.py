@@ -65,13 +65,13 @@ def _load_session_str() -> str:
     return s
 
 
-def send_marking(text: str, to_toysi: bool = False) -> bool:
-    """Шле `text` через юзербот. to_toysi=False → на TEST_TARGET (основний акаунт власника);
-    True → на реальний чат Toysi (лише якщо TELEGRAM_USERBOT_TOYSI_TARGET заданий).
-    Повертає True при успіху; кидає UserbotError із ЗРОЗУМІЛОЮ причиною при збої (сесія/
-    креденшели/ціль/мережа) — самодіагностика, не голий стектрейс."""
-    if not text or not text.strip():
-        raise UserbotError("порожній текст маркування — нема чого слати")
+def _send_via_userbot(to_toysi: bool, action) -> bool:
+    """Спільний каркас відправки через юзербот: перевірки env/сесії, конект, авторизація,
+    резолв цілі, обгортка помилок у зрозумілий UserbotError. `action(client, target)` — що
+    саме слати (текст чи файл), викликається всередині під'єднаного клієнта. Повертає True.
+
+    to_toysi=False → TEST_TARGET (основний акаунт власника); True → реальний чат Toysi (лише
+    якщо TELEGRAM_USERBOT_TOYSI_TARGET заданий)."""
     if not API_ID or not API_HASH:
         raise UserbotError("немає TELEGRAM_USERBOT_API_ID/HASH у .env (my.telegram.org під другим номером)")
     try:
@@ -102,7 +102,7 @@ def send_marking(text: str, to_toysi: bool = False) -> bool:
             if not client.is_user_authorized():
                 raise UserbotError("сесія протухла/відкликана — власнику перелогінитись: telegram_userbot_login.py")
             try:
-                client.send_message(target, text)
+                action(client, target)
             except FloodWaitError as e:
                 # Telegram сам каже, скільки чекати — не гадаємо.
                 raise UserbotError(f"FloodWait: Telegram просить зачекати {e.seconds} сек "
@@ -118,6 +118,34 @@ def send_marking(text: str, to_toysi: bool = False) -> bool:
     dest = "РЕАЛЬНИЙ Toysi" if to_toysi else "тест (основний акаунт)"
     print(f"[userbot] Надіслано ({dest}).")
     return True
+
+
+def send_marking(text: str, to_toysi: bool = False) -> bool:
+    """Шле `text` через юзербот. to_toysi=False → на TEST_TARGET (основний акаунт власника);
+    True → на реальний чат Toysi (лише якщо TELEGRAM_USERBOT_TOYSI_TARGET заданий).
+    Повертає True при успіху; кидає UserbotError із ЗРОЗУМІЛОЮ причиною при збої (сесія/
+    креденшели/ціль/мережа) — самодіагностика, не голий стектрейс."""
+    if not text or not text.strip():
+        raise UserbotError("порожній текст маркування — нема чого слати")
+    return _send_via_userbot(to_toysi, lambda client, target: client.send_message(target, text))
+
+
+def send_marking_file(file_bytes: bytes, filename: str, caption: str = "",
+                      to_toysi: bool = False) -> bool:
+    """Шле ФАЙЛ (напр. PDF-наклейку ТТН RZ Delivery) через юзербот, з опційним підписом.
+    Toysi отримує готову етикетку файлом (не «оформи сам»), клеїть і здає на пункт Rozetka.
+    Той самий каркас/цілі/безпека, що й send_marking. `filename` дає Telegram ім'я документа."""
+    if not file_bytes:
+        raise UserbotError("порожній файл — нема чого слати")
+    import io
+
+    def _do(client, target):
+        bio = io.BytesIO(file_bytes)
+        bio.name = filename or "label.pdf"      # telethon бере ім'я документа з .name
+        # force_document=True — надіслати як файл-документ (PDF), не як фото/прев'ю
+        client.send_file(target, bio, caption=(caption or None), force_document=True)
+
+    return _send_via_userbot(to_toysi, _do)
 
 
 def main() -> None:

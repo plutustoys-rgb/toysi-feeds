@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from orders_db import (
     get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi,
     mark_ukrposhta_shipment, update_delivery_status,
-    mark_stock_alert_sent, clear_stock_alert,
+    mark_stock_alert_sent, clear_stock_alert, mark_rozetka_delivery_ttn,
 )
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
@@ -412,10 +412,10 @@ def _check_eva_not_cancelled(conn, order: dict) -> bool:
     return False
 
 
-def _maybe_send_rz_delivery_marking(order: dict) -> None:
-    """RZ-Delivery-замовлення (carrier='rozetka_delivery') → маркування в Toysi через юзербот,
-    щоб постачальник відправив на пункт видачі Rozetka. BEST-EFFORT, НІКОЛИ не піднімає виняток
-    (той самий принцип, що send_purchase_event — збій маркування не валить order flow).
+def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
+    """RZ-Delivery-замовлення (carrier='rozetka_delivery') → створити ТТН (робить ПРОДАВЕЦЬ, не
+    Toysi) + маркування в Toysi через юзербот, щоб постачальник здав посилку на пункт Rozetka.
+    BEST-EFFORT, НІКОЛИ не піднімає виняток (як send_purchase_event — збій не валить order flow).
 
     Гейт «тестове на мій номер, наступні на Toysi» = env MARKING_TEST_MODE: '1' (ДЕФОЛТ) → на
     TEST_TARGET (номер власника, звірка); '0' → у реальний Toysi-чат (@admtoys). Один перемикач
@@ -426,18 +426,23 @@ def _maybe_send_rz_delivery_marking(order: dict) -> None:
     # (`create_delivery_ttn`) — Toysi не має доступу до нашого кабінета й на пункті не оформлює
     # (уточнення власника + Toysi 2026-08-20; контракт звірено на живій ТТН RMP-835110782).
     # Best-effort: збій створення ТТН не валить order flow і не блокує маркування.
-    ttn = None
-    try:
-        is_cod = order.get("payment_method") == "cod"
-        cost = (sum(it.get("price", 0) * it.get("qty", 1) for it in (order.get("items") or []))
-                if is_cod else 0.0)
-        resp = rozetka_client.create_delivery_ttn(order["order_id"], has_paid=not is_cod, cost=cost)
-        ttn = rozetka_client.extract_delivery_ttn(resp)
-        print(f"[order_router] RZ Delivery ТТН для {order['internal_order_id']}: "
-              f"{ttn or ('створено без track_num — ' + str(resp)[:150])}", file=sys.stderr)
-    except Exception as e:  # noqa: BLE001 — best-effort, ТТН можна створити вручну/наступного разу
-        print(f"[order_router] RZ Delivery ТТН НЕ створено (не критично) для "
-              f"{order.get('internal_order_id')}: {e}", file=sys.stderr)
+    # ⚠️ ЗАХИСТ ВІД ДУБЛЯ реального відправлення: якщо ТТН уже створена (rozetka_delivery_ttn у
+    # БД) — НЕ створюємо повторно, беремо збережену (аналог ukrposhta_ttn).
+    ttn = order.get("rozetka_delivery_ttn")
+    if not ttn:
+        try:
+            is_cod = order.get("payment_method") == "cod"
+            cost = (sum(it.get("price", 0) * it.get("qty", 1) for it in (order.get("items") or []))
+                    if is_cod else 0.0)
+            resp = rozetka_client.create_delivery_ttn(order["order_id"], has_paid=not is_cod, cost=cost)
+            ttn = rozetka_client.extract_delivery_ttn(resp)
+            if ttn:
+                mark_rozetka_delivery_ttn(conn, order["internal_order_id"], ttn)
+            print(f"[order_router] RZ Delivery ТТН для {order['internal_order_id']}: "
+                  f"{ttn or ('створено без track_num — ' + str(resp)[:150])}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 — best-effort, ТТН можна створити вручну/наступного разу
+            print(f"[order_router] RZ Delivery ТТН НЕ створено (не критично) для "
+                  f"{order.get('internal_order_id')}: {e}", file=sys.stderr)
     # Крок 2: маркування (з ТТН, якщо створилась) у Toysi
     try:
         import telegram_userbot_client
@@ -560,7 +565,7 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         # і тихо no-op'ить без META_DATASET_ID/META_CONVERSIONS_API_TOKEN у .env. Той самий
         # момент і той самий принцип «не ламати order flow», що й _update_marketplace_status.
         send_purchase_event(order)
-        _maybe_send_rz_delivery_marking(order)   # RZ Delivery → маркування в Toysi (best-effort)
+        _maybe_send_rz_delivery_marking(conn, order)   # RZ Delivery → ТТН + маркування (best-effort)
         dup_note = " (дублікат — вже існував у Toysi)" if result["is_duplicate"] else ""
         if ukrposhta_shipment:
             mark_ukrposhta_shipment(

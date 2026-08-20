@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS orders (
     toysi_ttn             TEXT,               -- ТТН зі СТОРОНИ Toysi (order_status) — для НП заповнюється
                                                -- автоматично; для Укрпошти лише ПІСЛЯ ручного внесення в lk
     delivery_status       TEXT,
+    delivered_at          TEXT,               -- коли delivery_status уперше став 'delivered' (для запиту
+                                               -- відгуків у потрібний момент — заявка SMM); стемпиться раз
     carrier               TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta')),
     ukrposhta_ttn         TEXT,               -- ТТН, яку МИ створили через ukrposhta_client.py (до внесення в Toysi)
     ukrposhta_sticker_path TEXT,              -- локальний шлях до PDF-етикетки Укрпошти
@@ -160,6 +162,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "checkbox_receipt_id", "checkbox_receipt_id TEXT")
         _ensure_column(conn, "orders", "rozetka_ttn_pushed_at", "rozetka_ttn_pushed_at TEXT")
         _ensure_column(conn, "orders", "rozetka_processing_pushed_at", "rozetka_processing_pushed_at TEXT")
+        _ensure_column(conn, "orders", "delivered_at", "delivered_at TEXT")
         # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
         # залишку" для цього замовлення — щоб order_router.py не спамив той
         # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
@@ -477,6 +480,11 @@ def update_delivery_status(
     if delivery_status is not None:
         fields.append("delivery_status = ?")
         params.append(delivery_status)
+        if delivery_status == "delivered":
+            # стемпимо дату першої доставки РАЗ (COALESCE зберігає найпершу, не перетирає
+            # на повторних опитуваннях) — для запиту відгуків у потрібний момент (заявка SMM)
+            fields.append("delivered_at = COALESCE(delivered_at, ?)")
+            params.append(datetime.now().isoformat(timespec="seconds"))
     if status is not None:
         fields.append("status = ?")
         params.append(status)

@@ -8,10 +8,10 @@ order_id, marketplace, order_date, delivery_status, status, items (назва+sk
 за самим запитом SMM («без сум, без собівартості, без маржі»). З items беремо ЛИШЕ
 name+toysi_code, поле price свідомо ВИКИДАЄМО.
 
-Поля, яких у нас НЕМА (чесно позначено в CSV як порожні/довідково):
-- delivered_date: окремого таймстемпа доставки не зберігаємо; ознака доставленості —
-  delivery_status='delivered' (order_status_tracker за живим трекінгом НП). Дату видачі
-  наразі не фіксуємо окремою колонкою.
+delivered_date — тепер Є (колонка delivered_at, стемпиться коли delivery_status уперше
+стає 'delivered'; order_status_tracker за живим трекінгом НП). Для не-доставлених ще порожня.
+
+Поля, яких у нас НЕМА:
 - review_requested: центрального поля нема; SMM веде власний ledger за стабільним order_id.
 
 Вивід: CSV у stdout або у файл (--out). За замовчуванням лише доставлені
@@ -27,7 +27,7 @@ import sys
 from orders_db import get_connection
 
 _HEADER = [
-    "order_id", "marketplace", "order_date", "delivery_status",
+    "order_id", "marketplace", "order_date", "delivered_date", "delivery_status",
     "order_status", "toysi_order_id", "items",
 ]
 
@@ -64,7 +64,7 @@ def fetch_candidates(delivered_only: bool = True) -> list:
     with get_connection() as conn:
         rows = conn.execute(
             f"""
-            SELECT order_id, platform, created_at, delivery_status, status,
+            SELECT order_id, platform, created_at, delivered_at, delivery_status, status,
                    toysi_order_id, items
             FROM orders
             {where}
@@ -77,6 +77,7 @@ def fetch_candidates(delivered_only: bool = True) -> list:
             r["order_id"],
             r["platform"],
             r["created_at"],
+            r["delivered_at"] or "",
             r["delivery_status"] or "",
             r["status"],
             r["toysi_order_id"] or "",

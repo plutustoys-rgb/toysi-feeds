@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS orders (
     delivery_status       TEXT,
     delivered_at          TEXT,               -- коли delivery_status уперше став 'delivered' (для запиту
                                                -- відгуків у потрібний момент — заявка SMM); стемпиться раз
+    rozetka_delivery_ttn  TEXT,               -- RZ-Delivery-ТТН, яку МИ створили (create_delivery_ttn) —
+                                               -- захист від ДУБЛЯ реального відправлення: якщо вже є, не
+                                               -- створюємо повторно (аналог ukrposhta_ttn)
     carrier               TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta', 'rozetka_delivery')),
     ukrposhta_ttn         TEXT,               -- ТТН, яку МИ створили через ukrposhta_client.py (до внесення в Toysi)
     ukrposhta_sticker_path TEXT,              -- локальний шлях до PDF-етикетки Укрпошти
@@ -217,6 +220,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rozetka_ttn_pushed_at", "rozetka_ttn_pushed_at TEXT")
         _ensure_column(conn, "orders", "rozetka_processing_pushed_at", "rozetka_processing_pushed_at TEXT")
         _ensure_column(conn, "orders", "delivered_at", "delivered_at TEXT")
+        _ensure_column(conn, "orders", "rozetka_delivery_ttn", "rozetka_delivery_ttn TEXT")
         # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
         # залишку" для цього замовлення — щоб order_router.py не спамив той
         # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
@@ -456,6 +460,15 @@ def mark_rozetka_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) ->
     conn.execute(
         "UPDATE orders SET rozetka_ttn_pushed_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_rozetka_delivery_ttn(conn: sqlite3.Connection, internal_order_id: str, ttn: str) -> None:
+    """Зберігає створену RZ-Delivery-ТТН — захист від ДУБЛЯ реального відправлення
+    (order_router._maybe_send_rz_delivery_marking пропускає створення, якщо вже є)."""
+    conn.execute(
+        "UPDATE orders SET rozetka_delivery_ttn = ? WHERE internal_order_id = ?",
+        (ttn, internal_order_id),
     )
 
 

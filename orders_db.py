@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS orders (
     delivery_status       TEXT,
     delivered_at          TEXT,               -- коли delivery_status уперше став 'delivered' (для запиту
                                                -- відгуків у потрібний момент — заявка SMM); стемпиться раз
-    carrier               TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta')),
+    carrier               TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta', 'rozetka_delivery')),
     ukrposhta_ttn         TEXT,               -- ТТН, яку МИ створили через ukrposhta_client.py (до внесення в Toysi)
     ukrposhta_sticker_path TEXT,              -- локальний шлях до PDF-етикетки Укрпошти
     checkbox_ettn_registered_at TEXT,         -- коли зареєстровано ЕТТН у Checkbox (order_status_tracker.py) —
@@ -149,12 +149,66 @@ def _migrate_platform_allow_eva(conn: sqlite3.Connection) -> None:
     conn.execute("RELEASE eva_platform_migrate")
 
 
+def _migrate_carrier_allow_rozetka_delivery(conn: sqlite3.Connection) -> None:
+    """Додає 'rozetka_delivery' до CHECK колонки `carrier` на ІСНУЮЧІЙ orders.db.
+
+    Причина (інцидент 2026-08-20): RZ-Delivery-замовлення мають carrier='rozetka_delivery',
+    а старий CHECK дозволяв лише nova_poshta/ukrposhta → insert_order падав IntegrityError,
+    що валило ВЕСЬ poll_once (пайплайн лежав, жодне замовлення не оброблялось з 12:54).
+
+    Той самий безпечний rebuild-підхід, що _migrate_platform_allow_eva (SQLite не ALTER-ить
+    CHECK): беремо живий DDL із sqlite_master, змінюємо ЛИШЕ список carrier у CHECK, копіюємо
+    дані за явним списком колонок. Ідемпотентна (якщо 'rozetka_delivery' уже дозволено —
+    нічого не робить) + атомарна через SAVEPOINT (money-БД)."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'"
+    ).fetchone()
+    if not row or not row[0]:
+        return
+    old_sql = row[0]
+    _carr = re.search(r"carrier\s+IN\s*\(([^)]*)\)", old_sql)
+    if _carr and "'rozetka_delivery'" in _carr.group(1):
+        return  # уже дозволено (свіжий SCHEMA або міграція пройшла)
+
+    new_sql = re.sub(
+        r"carrier\s+IN\s*\(\s*'nova_poshta'\s*,\s*'ukrposhta'\s*\)",
+        "carrier IN ('nova_poshta', 'ukrposhta', 'rozetka_delivery')",
+        old_sql, count=1,
+    )
+    if new_sql == old_sql:
+        raise RuntimeError(
+            "orders_db міграція RZ Delivery: у DDL orders не знайдено "
+            "CHECK(carrier IN ('nova_poshta','ukrposhta')) — перевір схему вручну."
+        )
+    new_table_sql = re.sub(r"\borders\b", "orders_carrier_migration_tmp", new_sql, count=1)
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)")]
+    col_list = ", ".join(f'"{c}"' for c in cols)
+
+    conn.execute("SAVEPOINT carrier_migrate")
+    try:
+        conn.execute(new_table_sql)
+        conn.execute(
+            f"INSERT INTO orders_carrier_migration_tmp ({col_list}) "
+            f"SELECT {col_list} FROM orders"
+        )
+        conn.execute("DROP TABLE orders")
+        conn.execute("ALTER TABLE orders_carrier_migration_tmp RENAME TO orders")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_payment_confirmed ON orders (payment_confirmed)")
+    except Exception:
+        conn.execute("ROLLBACK TO carrier_migrate")
+        conn.execute("RELEASE carrier_migrate")
+        raise
+    conn.execute("RELEASE carrier_migrate")
+
+
 def init_db(db_path: str = DB_PATH) -> None:
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA)
         _ensure_column(
             conn, "orders", "carrier",
-            "carrier TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta'))",
+            "carrier TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta', 'rozetka_delivery'))",
         )
         _ensure_column(conn, "orders", "ukrposhta_ttn", "ukrposhta_ttn TEXT")
         _ensure_column(conn, "orders", "ukrposhta_sticker_path", "ukrposhta_sticker_path TEXT")
@@ -196,6 +250,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         # (SQLite не ALTER-ить CHECK — перебудова таблиці). Викликається ПІСЛЯ
         # _ensure_column, щоб перебудова зберегла всі щойно додані колонки.
         _migrate_platform_allow_eva(conn)
+        _migrate_carrier_allow_rozetka_delivery(conn)
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:

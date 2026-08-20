@@ -768,6 +768,22 @@ def _build_xml(
         for param_name, param_val in item.get("params", []):
             ET.SubElement(offer, "param", name=param_name).text = str(param_val)
 
+        # R3 (запит SEO 2026-08-20): «Виробник»/«Країна виробництва» як <param> — Prom мапить у
+        # ХАРАКТЕРИСТИКИ картки саме з <param name=...>, а окремі теги <vendor>/<country> у
+        # характеристики стабільно НЕ тягне (SEO домiряв: 866 SKU «без характеристик» мають vendor).
+        # Дані вже є (vendor 100%, country 89%) — нічого не вигадуємо. ТЕСТ-ГЕЙТ PROM_ATTR_PARAMS:
+        # "" (дефолт) — ВИМКНЕНО; "all" — усі; список categoryId через кому — лише ці категорії
+        # (експеримент на обмеженій вибірці, як просив SEO — перевірити в кабінеті, тоді розкатувати).
+        _attr_mode = os.environ.get("PROM_ATTR_PARAMS", "").strip()
+        if _attr_mode:
+            _emit_attr = _attr_mode == "all" or str(item.get("category_id", "") or "") in {
+                c.strip() for c in _attr_mode.split(",") if c.strip()}
+            if _emit_attr:
+                if item.get("vendor"):
+                    ET.SubElement(offer, "param", name="Виробник").text = normalize_vendor(item["vendor"])
+                if country:
+                    ET.SubElement(offer, "param", name="Країна виробництва").text = country
+
     stats = {
         "total_in_feed": len(offers_el),
         "skipped_no_price": skipped,

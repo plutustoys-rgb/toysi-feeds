@@ -52,7 +52,12 @@ _KEEP = ("sku", "id", "status", "presence", "presence_title", "quantity_in_stock
          "view_catalog_url", "selling_type",
          # R2: сигнали видимості/якості для SEO-атрибуції
          "orders_count", "product_opinion_count", "quality_steps", "position",
-         "in_running_cpa", "in_running_cpc")
+         "in_running_cpa", "in_running_cpc",
+         # R3 (2026-08-20, запит SEO): РЕАЛЬНА повнота характеристик. quality_steps.attributes=true
+         # вмикається від ПЕРШОГО ж атрибута → «зелена якість» ≠ повнота. Реальне покриття = ці два
+         # лічильники (напр. 7 із 22). attributes_map={id_атрибута: id_значення} — ЯКІ саме заповнені
+         # (бонус для пріоритезації; ключі звірено з живого /cms/product/list 2026-08-20).
+         "category_attrs_count", "product_attrs_count", "attributes_map")
 
 
 class PromCabinetError(Exception):

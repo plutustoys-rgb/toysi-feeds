@@ -242,8 +242,9 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     # тож агент фізично не може rm/mv/git/gh/curl (усе інше в headless просто впаде). Це
     # найтісніший дозвіл під координацію: свідомо вужче за acceptEdits (той авто-приймав ще й
     # rm/mv/sed у робочому просторі — зайво широко для автономного циклу, харнес це відзначив).
-    # Per-agent інструменти: дефолт — лише файлові (SEO/SMM). Код має свій розширений набір (+Bash),
-    # щоб автономно збирати код і ВІДКРИВАТИ PR. Мерж усе одно заблоковано хуком (env нижче).
+    # Per-agent інструменти: дефолт — лише файлові (усі троє — модель A). Bash headless дає sandbox
+    # (агент read-only, не пише) — перевірено живо, тому Bash нікому не даємо. Per-agent ключ лишаємо
+    # на майбутнє, але зараз усі троє на дефолті.
     allowed = cfg.get("allowed_tools") or ["Read", "Edit", "Write", "Glob", "Grep"]
     cmd = [CLAUDE_BIN, "-p", prompt,
            "--add-dir", str(COWORK_DIR), "--add-dir", str(BASE_DIR),

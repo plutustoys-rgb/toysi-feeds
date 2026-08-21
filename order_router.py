@@ -584,7 +584,7 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
             f"🟢 САМОВИВІЗ / ROZETKA DELIVERY — з пункта видачі Rozetka, НЕ Нова Пошта. "
             f"ТТН створено продавцем, етикетку надіслано в @admtoys. Спакувати і передати "
             f"на пункт/кур'єру Rozetka ЗА НАШОЮ ЕТИКЕТКОЮ. Не створювати ТТН Нової Пошти. "
-            f"Пункт видачі: {order.get('np_branch','')} [{order['platform']} #{order['order_id']}]"
+            f"[{order['platform']} #{order['order_id']}]"
         )
     result = submit_order(toysi_order, test_mode=test_mode)
 

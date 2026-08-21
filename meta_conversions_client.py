@@ -61,13 +61,26 @@ def _normalize_phone(phone: str) -> str:
     return digits                       # інший формат — віддаємо як є (Meta сама відсіє невалідне)
 
 
-def _split_name(full_name: str) -> tuple:
-    """Ім'я/прізвище з рядка ПІБ (перше слово — ім'я, решта — прізвище). Дзеркалить
-    order_router._split_name, продубльовано тут, щоб уникнути циклічного імпорту
-    (order_router імпортує цей модуль)."""
+# Порядок ПІБ у customer_name залежить від площадки — Rozetka/EVA склеюють «Прізвище Ім'я
+# По-батькові» (стандарт НП), Prom — «Ім'я Прізвище». Дзеркалить order_router._SURNAME_FIRST_PLATFORMS
+# (продубльовано, щоб уникнути циклічного імпорту: order_router імпортує цей модуль). Тримати в
+# синхроні з order_router.
+_SURNAME_FIRST_PLATFORMS = {"rozetka", "eva"}
+
+
+def _split_name(full_name: str, platform: str = "") -> tuple:
+    """(first, last) з рядка ПІБ з урахуванням порядку джерела. Rozetka/EVA — «Прізвище Ім'я
+    По-батькові» (last=1-е слово, first=2-е); решта (Prom, мок, невідоме) — «Ім'я Прізвище».
+    По-батькові в Meta advanced matching не використовується (лише fn/ln), тож не повертаємо.
+    Дзеркалить order_router._split_recipient_name — без цього fn↔ln у хешах атрибуції реклами
+    для Rozetka/EVA переставлялись, знижуючи якість метчингу."""
     parts = (full_name or "").strip().split()
     if not parts:
         return "", ""
+    if platform in _SURNAME_FIRST_PLATFORMS:
+        last = parts[0]
+        first = parts[1] if len(parts) > 1 else ""
+        return first, last
     if len(parts) == 1:
         return parts[0], ""
     return parts[0], " ".join(parts[1:])
@@ -90,7 +103,7 @@ def send_purchase_event(order: dict) -> bool:
         return False
     try:
         items = order.get("items") or []
-        first, last = _split_name(order.get("customer_name", ""))
+        first, last = _split_name(order.get("customer_name", ""), order.get("platform", ""))
         phone = _normalize_phone(order.get("phone", ""))
         city, _, _ = ("", "", "")
         raw_branch = order.get("np_branch", "") or ""

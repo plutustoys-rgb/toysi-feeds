@@ -161,15 +161,12 @@ def _check_toysi_stock(order: dict, toysi_catalog: dict) -> tuple:
     return True, ""
 
 
-# Перевізник для RZ-Delivery-замовлень у замовленні Toysi. КОРІНЬ (підтверджено Toysi 2026-08-21):
-# їхня CRM НЕ має Rozetka-перевізника в синхронізації → будь-яке невпізнане значення (у т.ч.
-# наш колишній "Rozetka", PR #334) падає у фолбек «Новая почта» + коментар. Єдине значення, що
-# зупиняє цей фолбек і при цьому ДОКУМЕНТОВАНЕ в Toysi — самовивіз "toysi" (+shipping_warehouse_id=1):
-# їхня система читає його як «без зовнішнього перевізника», Toysi нічого не везе сама, а клеїть
-# НАШУ етикетку (@admtoys) і передає на пункт Rozetka. Реальну інструкцію несе comment + етикетка.
-# env-оверайд TOYSI_ROZETKA_CARRIER — миттєвий відкат/зміна значення БЕЗ деплою (якщо Toysi
-# підтвердить інше). Коли значення == "toysi", нижче авто-додається shipping_warehouse_id=1.
-ROZETKA_DELIVERY_TOYSI_CARRIER = os.environ.get("TOYSI_ROZETKA_CARRIER", "toysi")
+# Назва перевізника для RZ-Delivery-замовлень у самому замовленні Toysi (не дефолт «Новая
+# почта»). Маркування (@admtoys) Toysi КЛЕЇТЬ на посилку, а це поле визначає перевізника в
+# їхній CRM — без нього авто-підтяжка конфліктувала: order каже НП, маркування — ROZETKA
+# Delivery (інцидент 903719616 2026-08-20). Якщо Toysi очікує іншу точну назву в дропдауні —
+# це єдине місце для правки (env-оверайд TOYSI_ROZETKA_CARRIER для швидкої зміни без деплою).
+ROZETKA_DELIVERY_TOYSI_CARRIER = os.environ.get("TOYSI_ROZETKA_CARRIER", "Rozetka")
 
 
 def build_toysi_order(order: dict) -> dict:
@@ -600,21 +597,10 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         # інтегрована. Це лише інформативне поле для замовлення в їхній системі.
         toysi_order["shipping_carrier_name"] = "Укрпошта"
     elif carrier == "rozetka_delivery":
-        # RZ Delivery: Toysi CRM не має Rozetka-перевізника → невпізнане значення дає фолбек
-        # «Новая почта» (підтверджено Toysi 2026-08-21). Шлемо самовивіз "toysi"+warehouse_id=1
-        # (документований, зупиняє NP-фолбек). Toysi не везе сама — клеїть НАШУ етикетку (@admtoys)
-        # і передає на пункт Rozetka. Реальну інструкцію дублюємо в comment — незмильно, щоб
-        # пакувальник не сплутав із НП, навіть якщо системний тег десь лишиться.
+        # RZ Delivery: перевізник у замовленні = ROZETKA Delivery, а не дефолт «Новая почта»
+        # (щоб авто-підтяжка Toysi не конфліктувала з маркуванням @admtoys). Місто вже
+        # передається в build_toysi_order (shipping_city_name з np_branch, напр. «Київ»).
         toysi_order["shipping_carrier_name"] = ROZETKA_DELIVERY_TOYSI_CARRIER
-        if ROZETKA_DELIVERY_TOYSI_CARRIER == "toysi":
-            toysi_order["shipping_warehouse_id"] = 1  # самовивіз (док Toysi): «без зовн. перевізника»
-        # Клієнт платить на пункті Rozetka (або передоплата) — Toysi НІКОЛИ не інкасує за RZ Delivery.
-        # Форсуємо 0, щоб не дати їхній системі чекати накладений платіж (латентна фінміна, якщо
-        # COD-Delivery колись увімкнуть у кабінеті). Зараз COD-Delivery вимкнено → фактично вже 0.
-        toysi_order["moneyback"] = 0.0
-        # Мінімальний коментар (вказівка власника): самовивіз-перевізник уже сигналить системі,
-        # що це не НП — вербальні попередження зайві. Order-id-тег лишаємо для простежування.
-        toysi_order["comment"] = f"🟢 Самовивіз / з пункта видачі Rozetka [{order['platform']} #{order['order_id']}]"
     result = submit_order(toysi_order, test_mode=test_mode)
 
     if result["accepted"] and test_mode:

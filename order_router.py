@@ -451,7 +451,12 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
             f"{it.get('qty', 1)}×{it.get('name', '')} (код {it.get('toysi_code', '')})"
             for it in (order.get("items") or [])
         )
-        text = (f"🟢 ROZETKA Delivery — замовлення {order['internal_order_id']}\n"
+        # Номер замовлення Toysi ВЕДЕ підпис — щоб їхні логісти зіставили наклейку з замовленням
+        # (пряме прохання Toysi 2026-08-21). Далі — наш Rozetka-номер і ТТН (номер перевізника).
+        toysi_no = order.get("toysi_order_id")
+        text = ((f"🟢 ROZETKA Delivery — Ваше замовлення №{toysi_no}\n" if toysi_no
+                 else "🟢 ROZETKA Delivery\n")
+                + f"(наш Rozetka-№ {order['internal_order_id']})\n"
                 + (f"ТТН: {ttn}\n" if ttn else "")
                 + f"Товар: {items}\n"
                 f"Пункт видачі: {order.get('np_branch', '')}\n"
@@ -466,8 +471,10 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
         if ttn:
             try:
                 pdf = rozetka_client.fetch_delivery_label(ttn)
+                _fname = (f"zamovlennia_{toysi_no}_ttn_{ttn}.pdf" if toysi_no
+                          else f"rozetka_ttn_{ttn}.pdf")   # номер Toysi у назві — для матчингу логістами
                 telegram_userbot_client.send_marking_file(
-                    pdf, filename=f"rozetka_ttn_{ttn}.pdf", caption=text, to_toysi=not test_mode)
+                    pdf, filename=_fname, caption=text, to_toysi=not test_mode)
                 sent_file = True
                 print(f"[order_router] RZ Delivery наклейка-PDF {order['internal_order_id']} "
                       f"({ttn}) → {dest}: надіслано файлом", file=sys.stderr)
@@ -583,6 +590,10 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         # і тихо no-op'ить без META_DATASET_ID/META_CONVERSIONS_API_TOKEN у .env. Той самий
         # момент і той самий принцип «не ламати order flow», що й _update_marketplace_status.
         send_purchase_event(order)
+        # Прокидаємо номер замовлення Toysi в order — маркування RZ Delivery має його показати, щоб
+        # логісти Toysi зіставили наклейку з їхнім замовленням (пряме прохання Toysi 2026-08-21).
+        if toysi_id is not None:
+            order["toysi_order_id"] = toysi_id
         _maybe_send_rz_delivery_marking(conn, order)   # RZ Delivery → ТТН + маркування (best-effort)
         dup_note = " (дублікат — вже існував у Toysi)" if result["is_duplicate"] else ""
         if ukrposhta_shipment:

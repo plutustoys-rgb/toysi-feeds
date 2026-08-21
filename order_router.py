@@ -7,6 +7,7 @@ from orders_db import (
     get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi,
     mark_ukrposhta_shipment, update_delivery_status,
     mark_stock_alert_sent, clear_stock_alert, mark_rozetka_delivery_ttn,
+    init_db, mark_rz_marking_sent, bump_rz_marking_attempt, get_rz_markings_to_retry,
 )
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
@@ -167,6 +168,12 @@ def _check_toysi_stock(order: dict, toysi_catalog: dict) -> tuple:
 # Delivery (інцидент 903719616 2026-08-20). Якщо Toysi очікує іншу точну назву в дропдауні —
 # це єдине місце для правки (env-оверайд TOYSI_ROZETKA_CARRIER для швидкої зміни без деплою).
 ROZETKA_DELIVERY_TOYSI_CARRIER = os.environ.get("TOYSI_ROZETKA_CARRIER", "Rozetka")
+
+# Скільки разів пробувати надіслати RZ-Delivery-маркування (наклейку) перш ніж здатись і
+# алертнути власника. Кожен прогін order_pipeline дає ЩОНАЙМЕНШЕ одну спробу (у ретрай-пасі);
+# свіжопередане замовлення, чия перша спроба в route_order впала, того ж прогону отримає ще одну
+# в ретрай-пасі — це прискорює відновлення/алерт і дубля НЕ дає. env-оверайд без деплою.
+MAX_MARKING_ATTEMPTS = int(os.environ.get("RZ_MARKING_MAX_ATTEMPTS", "5"))
 
 
 def build_toysi_order(order: dict) -> dict:
@@ -444,7 +451,7 @@ def _check_eva_not_cancelled(conn, order: dict) -> bool:
     return False
 
 
-def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
+def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
     """RZ-Delivery-замовлення (carrier='rozetka_delivery') → створити ТТН (робить ПРОДАВЕЦЬ, не
     Toysi) + маркування в Toysi через юзербот, щоб постачальник здав посилку на пункт Rozetka.
     BEST-EFFORT, НІКОЛИ не піднімає виняток (як send_purchase_event — збій не валить order flow).
@@ -453,7 +460,11 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
     TEST_TARGET (номер власника, звірка); '0' → у реальний Toysi-чат (@admtoys). Один перемикач
     у .env, не щоразу. Юзербот-сесія й таргети — на VPS (telegram_userbot_client)."""
     if order.get("carrier") != "rozetka_delivery":
-        return
+        return False
+    iid = order["internal_order_id"]
+    # Лічимо спробу ще ДО відправки — щоб при падінні (виняток/збій) спроба зарахувалась і
+    # ретрай-пас рухався до ліміту, а не крутив нескінченно.
+    attempts = bump_rz_marking_attempt(conn, iid)
     # Крок 1: створити RZ-Delivery-ТТН. Для RZ Delivery ТТН робить ПРОДАВЕЦЬ (МИ) через api-seller
     # (`create_delivery_ttn`) — Toysi не має доступу до нашого кабінета й на пункті не оформлює
     # (уточнення власника + Toysi 2026-08-20; контракт звірено на живій ТТН RMP-835110782).
@@ -475,7 +486,8 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
         except Exception as e:  # noqa: BLE001 — best-effort, ТТН можна створити вручну/наступного разу
             print(f"[order_router] RZ Delivery ТТН НЕ створено (не критично) для "
                   f"{order.get('internal_order_id')}: {e}", file=sys.stderr)
-    # Крок 2: маркування (з ТТН, якщо створилась) у Toysi
+    # Крок 2: маркування (з ТТН, якщо створилась) у Toysi. sent відстежуємо для прапорця/ретраю/алерту.
+    sent = False
     try:
         import telegram_userbot_client
         test_mode = os.environ.get("MARKING_TEST_MODE", "1").strip() != "0"
@@ -513,13 +525,22 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
             except Exception as e:  # noqa: BLE001 — фолбек на текст нижче
                 print(f"[order_router] RZ Delivery наклейку-PDF не надіслано (фолбек на текст) "
                       f"для {order.get('internal_order_id')}: {e}", file=sys.stderr)
-        if not sent_file:
-            ok = telegram_userbot_client.send_marking(text, to_toysi=not test_mode)
+        if sent_file:
+            sent = True
+        else:
+            sent = bool(telegram_userbot_client.send_marking(text, to_toysi=not test_mode))
             print(f"[order_router] RZ Delivery маркування {order['internal_order_id']} → {dest}: "
-                  f"{'надіслано (текст)' if ok else 'НЕ надіслано'}", file=sys.stderr)
+                  f"{'надіслано (текст)' if sent else 'НЕ надіслано'}", file=sys.stderr)
     except Exception as e:  # noqa: BLE001 — best-effort, не валимо order flow
         print(f"[order_router] RZ Delivery маркування не надіслано (не критично) для "
               f"{order.get('internal_order_id')}: {e}", file=sys.stderr)
+    # Надійність: успіх → прапорець (ретрай більше не чіпає); вичерпані спроби без успіху → алерт РАЗ
+    # (attempts дорівнює MAX рівно на одному проході, бо get_rz_markings_to_retry далі його не бере).
+    if sent:
+        mark_rz_marking_sent(conn, iid)
+    elif attempts >= MAX_MARKING_ATTEMPTS:
+        _alert_marking_failed(order, attempts, ttn)
+    return sent
 
 
 def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict = None) -> None:
@@ -657,19 +678,60 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         )
 
 
+def _alert_marking_failed(order: dict, attempts: int, ttn: str) -> None:
+    """Самодіагностичний алерт власнику: замовлення передано в Toysi, але наклейку не вдалось
+    надіслати за MAX_MARKING_ATTEMPTS спроб. Каже ЙМОВІРНУ причину + готову ручну команду
+    (правило власника: запобіжник має сам казати, чому впав і що робити). Best-effort."""
+    iid = order.get("internal_order_id")
+    toysi_no = order.get("toysi_order_id")
+    msg = (
+        f"🚨 RZ Delivery: наклейку для {iid} (Toysi №{toysi_no or '?'}, ТТН {ttn or '—'}) "
+        f"НЕ надіслано за {attempts} спроб. Замовлення В Toysi передано, але маркування не пішло.\n"
+        f"Ймовірна причина: відпала сесія юзербота (перезалогінь `telegram_userbot_login.py` на VPS) "
+        f"або Rozetka не віддала етикетку.\n"
+    )
+    if ttn:
+        msg += (
+            f"Надіслати вручну на VPS:\n"
+            f"/opt/plutustoys/venv/bin/python3 -c \"import rozetka_client, telegram_userbot_client as tg; "
+            f"t='{ttn}'; tg.send_marking_file(rozetka_client.fetch_delivery_label(t), "
+            f"filename='zamovlennia_{toysi_no}_ttn_'+t+'.pdf', "
+            f"caption='ROZETKA Delivery №{toysi_no}, ТТН '+t, to_toysi=True)\""
+        )
+    try:
+        send_telegram_message(msg)
+    except Exception as e:  # noqa: BLE001 — алерт best-effort, не валимо цикл
+        print(f"[order_router] алерт про непереслане маркування не надіслано: {e}", file=sys.stderr)
+
+
+def _retry_pending_rz_markings(conn) -> None:
+    """Допослати RZ-Delivery-маркування, що передались у Toysi, але наклейка ще не пішла (напр.
+    сесія юзербота падала в момент передачі). Кожен прогін пайплайна — ще одна спроба, до ліміту;
+    алерт вилітає з _maybe_send_rz_delivery_marking на вичерпанні спроб. Закриває тиху втрату наклейки."""
+    pending = get_rz_markings_to_retry(conn, MAX_MARKING_ATTEMPTS)
+    if not pending:
+        return
+    print(f"[order_router] RZ Delivery: {len(pending)} непересланих маркувань — ретрай", file=sys.stderr)
+    for order in pending:
+        _maybe_send_rz_delivery_marking(conn, order)
+
+
 def route_pending_orders(test_mode: bool = False) -> None:
+    init_db()  # гарантувати наявність колонок (міграція ідемпотентна) навіть при standalone-запуску
     with get_connection() as conn:
         candidates = get_orders_ready_to_forward(conn)
-        if not candidates:
+        if candidates:
+            # P0-6: один живий фетч каталогу Toysi на весь цикл, не на кожне
+            # замовлення окремо — той самий каталог, свіжий на момент ЦЬОГО
+            # прогону order_pipeline.py, а не кешована копія з генерації фіда.
+            toysi_catalog = fetch_toysi_catalog()
+            for order in candidates:
+                route_order(conn, order, test_mode=test_mode, toysi_catalog=toysi_catalog)
+        else:
             print("[order_router] Немає замовлень, готових до передачі")
-            return
-
-        # P0-6: один живий фетч каталогу Toysi на весь цикл, не на кожне
-        # замовлення окремо — той самий каталог, свіжий на момент ЦЬОГО
-        # прогону order_pipeline.py, а не кешована копія з генерації фіда.
-        toysi_catalog = fetch_toysi_catalog()
-        for order in candidates:
-            route_order(conn, order, test_mode=test_mode, toysi_catalog=toysi_catalog)
+        # Ретрай непересланих RZ-Delivery-маркувань — біжить НЕЗАЛЕЖНО від наявності нових замовлень
+        # (раніше при порожньому candidates був ранній return, і ретрай не мав би шансу).
+        _retry_pending_rz_markings(conn)
 
 
 if __name__ == "__main__":

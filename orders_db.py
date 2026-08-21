@@ -221,6 +221,12 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rozetka_processing_pushed_at", "rozetka_processing_pushed_at TEXT")
         _ensure_column(conn, "orders", "delivered_at", "delivered_at TEXT")
         _ensure_column(conn, "orders", "rozetka_delivery_ttn", "rozetka_delivery_ttn TEXT")
+        # Надійність RZ-Delivery-маркування: раніше наклейка слалась best-effort БЕЗ ретраю —
+        # відпала сесія юзербота → замовлення «передано», а наклейка тихо втрачена. Тепер
+        # rz_marking_sent_at стемпиться на успіху, rz_marking_attempts рахує спроби; ретрай-пас
+        # у route_pending_orders допосилає непереслані до ліміту, далі — самодіагностичний алерт.
+        _ensure_column(conn, "orders", "rz_marking_sent_at", "rz_marking_sent_at TEXT")
+        _ensure_column(conn, "orders", "rz_marking_attempts", "rz_marking_attempts INTEGER NOT NULL DEFAULT 0")
         # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
         # залишку" для цього замовлення — щоб order_router.py не спамив той
         # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
@@ -470,6 +476,41 @@ def mark_rozetka_delivery_ttn(conn: sqlite3.Connection, internal_order_id: str, 
         "UPDATE orders SET rozetka_delivery_ttn = ? WHERE internal_order_id = ?",
         (ttn, internal_order_id),
     )
+
+
+def mark_rz_marking_sent(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що RZ-Delivery-наклейку НАДІСЛАНО в Toysi — щоб ретрай-пас її більше не чіпав."""
+    conn.execute(
+        "UPDATE orders SET rz_marking_sent_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def bump_rz_marking_attempt(conn: sqlite3.Connection, internal_order_id: str) -> int:
+    """+1 до лічильника спроб надіслати RZ-Delivery-маркування; повертає НОВЕ значення
+    (та сама конекція бачить власний UPDATE до коміту, тож читання коректне)."""
+    conn.execute(
+        "UPDATE orders SET rz_marking_attempts = COALESCE(rz_marking_attempts, 0) + 1 "
+        "WHERE internal_order_id = ?",
+        (internal_order_id,),
+    )
+    row = conn.execute(
+        "SELECT rz_marking_attempts FROM orders WHERE internal_order_id = ?",
+        (internal_order_id,),
+    ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def get_rz_markings_to_retry(conn: sqlite3.Connection, max_attempts: int) -> list:
+    """RZ-Delivery-замовлення, ПЕРЕДАНІ в Toysi, але маркування яких ще НЕ надіслано і ліміт
+    спроб не вичерпано — щоб допослати наклейку (best-effort раніше губив її без ретраю)."""
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE carrier = 'rozetka_delivery' "
+        "AND forwarded_to_toysi_at IS NOT NULL AND rz_marking_sent_at IS NULL "
+        "AND COALESCE(rz_marking_attempts, 0) < ?",
+        (max_attempts,),
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
 
 
 def mark_rozetka_processing_pushed(conn: sqlite3.Connection, internal_order_id: str) -> None:

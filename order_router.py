@@ -580,12 +580,9 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         # Форсуємо 0, щоб не дати їхній системі чекати накладений платіж (латентна фінміна, якщо
         # COD-Delivery колись увімкнуть у кабінеті). Зараз COD-Delivery вимкнено → фактично вже 0.
         toysi_order["moneyback"] = 0.0
-        toysi_order["comment"] = (
-            f"🟢 САМОВИВІЗ / ROZETKA DELIVERY — з пункта видачі Rozetka, НЕ Нова Пошта. "
-            f"ТТН створено продавцем, етикетку надіслано в @admtoys. Спакувати і передати "
-            f"на пункт/кур'єру Rozetka ЗА НАШОЮ ЕТИКЕТКОЮ. Не створювати ТТН Нової Пошти. "
-            f"[{order['platform']} #{order['order_id']}]"
-        )
+        # Мінімальний коментар (вказівка власника): самовивіз-перевізник уже сигналить системі,
+        # що це не НП — вербальні попередження зайві. Order-id-тег лишаємо для простежування.
+        toysi_order["comment"] = f"🟢 Самовивіз / з пункта видачі Rozetka [{order['platform']} #{order['order_id']}]"
     result = submit_order(toysi_order, test_mode=test_mode)
 
     if result["accepted"] and test_mode:

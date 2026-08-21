@@ -33,7 +33,7 @@ BASE_DIR = Path(__file__).parent
 MAP_FILE = BASE_DIR / "SYSTEM_MAP.md"
 # ключові слова для фільтра юнітів VPS (ті самі, що в бандлі знаття)
 VPS_UNIT_KEYWORDS = ("plutus", "feed", "order", "prom", "rozetka", "novapay",
-                     "daily", "deadline", "watchdog", "catalog", "scan")
+                     "daily", "deadline", "watchdog", "catalog", "scan", "social")
 # СИСТЕМНІ юніти Ubuntu, які збігаються з keyword'ами (daily→apt-daily, catalog→systemd-journal-
 # catalog-update) — це НЕ наші, drift-check їх ігнорує (інакше хибний «дрейф»; знайдено живо на VPS).
 VPS_UNIT_EXCLUDE_PREFIX = ("apt-", "apt.", "systemd-", "fwupd", "logrotate", "man-db", "dpkg",

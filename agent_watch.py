@@ -85,7 +85,7 @@ WATCHERS = [
             "КАНАЛИ — у твоєму cwd (SEO_CHANNEL.md, MARKETING_CHANNEL.md): читай і пиши їх напряму. "
             "РЕПО коду — `C:\\Users\\smach\\rozetka_agent`: УСІ операції з кодом (читати/редагувати файли, "
             "тести, git, gh) роби ЧЕРЕЗ Bash (`cd` у репо; редагуй файли heredoc/sed/python, НЕ Edit-tool "
-            "— він поза cwd і заблокується). Правила репо — прочитай Bash'ем `cat rozetka_agent/CLAUDE.md`. "
+            "— він поза cwd і заблокується). Правила репо — Bash'ем `cat C:\\Users\\smach\\rozetka_agent\\CLAUDE.md`. "
             "Обробі ВІДКРИТІ запити до Коду: якщо це ПИТАННЯ — дай відповідь у канал; якщо треба ЗМІНА коду "
             "— збери гілку, тести, `git push`, `gh pr create` і онови канал рядком `[Код → X] PR #NNN "
             "відкрито, чекає аудит+мерж`. НЕ МЕРЖ і НЕ став `.audit_ok` — аудит+мерж робить ІНТЕРАКТИВНА "
@@ -230,11 +230,11 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     Для періодичної задачі бере `periodic_prompt` (якщо є), інакше — звичайний `wake_prompt`."""
     base = cfg.get("periodic_prompt") if (periodic and cfg.get("periodic_prompt")) else cfg["wake_prompt"]
     prompt = f"{base}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
-    # Обидві директорії доступні; cwd визначає, ДЕ агент передусім читає/пише файли й чий
-    # CLAUDE.md автозавантажиться. Канал-агенти (SEO/SMM) стартують у папці каналів
-    # (cfg["cwd"]=COWORK) — інакше agent не бачить MARKETING_CHANNEL.md/SEO_CHANNEL.md (через
-    # --add-dir доступ ненадійний, перевірено живо 2026-08-19). «Код» лишається в репо (default
-    # BASE_DIR), щоб автозавантажився CLAUDE.md з правилом аудиту.
+    # cwd визначає, ДЕ агент передусім читає/пише файли. УСІ три агенти (SEO/SMM/Код з 2026-08-21)
+    # стартують у папці каналів (cfg["cwd"]=COWORK) — інакше НЕ бачать MARKETING_CHANNEL.md/
+    # SEO_CHANNEL.md (доступ через --add-dir у headless упирається в дозвіл-промпт, перевірено живо).
+    # Код при цьому репо чіпає через Bash (не гейтиться по шляху); CLAUDE.md не автозавантажується —
+    # правила несе wake_prompt, а мерж-гейт тримає хук незалежно. Фолбек BASE_DIR — на випадок конфігу без cwd.
     run_cwd = cfg.get("cwd") or str(BASE_DIR)
     # --allowedTools: у headless `-p` без дозволу агент НЕ може записати відповідь у канал
     # (просить інтерактивний дозвіл, якого в фоні ніхто не дає) → віддає текст у stdout, який

@@ -168,7 +168,8 @@
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,
   `plutus_overlay`, `meta_conversions_client`, `publish_reel_video.sh` (хостинг відео у feed-data/media
   → публічний raw-URL для Reels), `social_ledger_report` (ledger→CSV + розклад-vs-факт для SMM),
-  `social_insights_report` (per-post метрики IG→CSV; FB pending scope read_insights),
+  `social_insights_report` (per-post метрики IG+FB→CSV; FB отримав scope read_insights 2026-08-21,
+  FB PagePost вимагає інших полів/метрик, ніж IG),
   `fb_token_refresh.py` (ручний VPS-утиліт: короткий FB-токен → довгостроковий Page-токен у `.env`,
   verify-before-write + `.env.bak`; замінює ад-хок одноряковик при додаванні дозволів)
   → **SMM** (стратегія) + Код (механіка).

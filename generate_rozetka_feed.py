@@ -341,6 +341,11 @@ def _qualifies_for_feed(item: dict, excluded: set) -> bool:
         return False
     if str(item["id"]) in excluded:
         return False
+    # D3 (2026-08-21, фідбек модерації Rozetka): «Уцінка …» (пошкоджена упаковка) — модератор
+    # відхиляє як «товар занесено як новий, вкажіть стан used». Ми дропшип, уцінені одиничні позиції
+    # не варті модерації/скарг — виключаємо з фіда (рекомендація SEO, звірено: 10/11 «некор. хар-ка»).
+    if (item.get("name") or "").strip().lower().startswith("уцінка"):
+        return False
     vendor = (item.get("vendor") or "").strip()
     if not vendor:
         return False
@@ -609,6 +614,13 @@ def _build_xml(
             skipped_unprof += 1
             continue
 
+        # D3 (2026-08-21, фідбек модерації Rozetka): «Уцінка …» (пошкоджена упаковка) — модератор
+        # відхиляє «занесено як новий, вкажіть used». Дропшип, одиничні позиції — виключаємо (той самий
+        # фільтр, що в _qualifies_for_feed вище — ОБИДВА місця, бо фільтри дубльовані: тут реальний гейт).
+        if (item.get("name") or "").strip().lower().startswith("уцінка"):
+            skipped_unprof += 1
+            continue
+
         # Rozetka вимагає vendor обов'язково — товари постачальника без
         # бренду (parser.py не визначив vendor ні з <vendor>, ні з params)
         # природно не потрапляють у фід. Очікувано (~30 SKU з ~29 тис. на
@@ -846,6 +858,26 @@ def _build_rozetka_static_selection(catalog: dict) -> tuple[dict, dict]:
     return items, prices
 
 
+ROZETKA_REJECTED_IDS_FILE = Path(__file__).parent / ".local_secrets" / "rozetka_rejected_ids.json"
+
+
+def _load_rozetka_rejected_ids() -> set:
+    """D1 (2026-08-21): id товарів, ВІДХИЛЕНИХ модератором Rozetka (сховані, /goods/hidden) — щоб НЕ
+    подавати їх у фід знову щогодини. Джерело — `.local_secrets/rozetka_rejected_ids.json` (структура
+    {'at':..., 'ids': {id: {reasons, comment}}}), який оновлює `rozetka_price_monitor.py --rejected`.
+    Best-effort: нема файлу/битий → порожньо (фід не ламається)."""
+    try:
+        data = json.loads(ROZETKA_REJECTED_IDS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    ids = data.get("ids") if isinstance(data, dict) else None
+    if isinstance(ids, dict):
+        return set(str(k) for k in ids.keys())
+    if isinstance(ids, list):
+        return set(str(x.get("id") if isinstance(x, dict) else x) for x in ids)
+    return set()
+
+
 def generate_feed(output_file: str = OUTPUT_FILE,
                   price_overrides: dict = None,
                   catalog: dict = None,
@@ -857,6 +889,13 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     if not catalog:
         print("[Rozetka] Каталог порожній — файл не створено.")
         return
+
+    # D1 (2026-08-21): додаємо у виключення id, ВІДХИЛЕНІ модератором Rozetka — інакше щогодини
+    # подавали б їх назад (звірено живо: 91/91 відхилених були в живому rozetka_feed.xml).
+    rejected = _load_rozetka_rejected_ids()
+    if rejected:
+        exclude_ids = (exclude_ids or set()) | rejected
+        print(f"[Rozetka] Виключено {len(rejected)} відхилених модератором (фідбек /goods/hidden).")
 
     # РОЗМОРОЗКА, КРОК 1 (2026-08-16, задача власника найновіше-53). Раніше тут був заморожений
     # знімок (static_items + static_prices) — усі поля (склад/ціна/фото) заморожені на 2026-07-27.

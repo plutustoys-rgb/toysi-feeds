@@ -57,7 +57,11 @@ _KEEP = ("sku", "id", "status", "presence", "presence_title", "quantity_in_stock
          # вмикається від ПЕРШОГО ж атрибута → «зелена якість» ≠ повнота. Реальне покриття = ці два
          # лічильники (напр. 7 із 22). attributes_map={id_атрибута: id_значення} — ЯКІ саме заповнені
          # (бонус для пріоритезації; ключі звірено з живого /cms/product/list 2026-08-20).
-         "category_attrs_count", "product_attrs_count", "attributes_map")
+         "category_attrs_count", "product_attrs_count", "attributes_map",
+         # R4 (2026-08-21, D2 чисті фото Rozetka): image_url — ЧИСТЕ головне фото images.prom.ua (без
+         # вотермарки, звірено живо). Джерело для _clean_pictures у generate_rozetka_feed замість
+         # замерзлого prom_products_raw_cache (23.07). Апскейл _w100→_w1024 робить фід.
+         "image_url")
 
 
 class PromCabinetError(Exception):

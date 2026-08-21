@@ -487,6 +487,27 @@ def _load_prom_products_cache() -> dict:
         return {}
 
 
+PROM_SNAPSHOT_FILE = Path(__file__).parent / ".local_secrets" / "prom_full_catalog.json"
+
+
+def _load_snapshot_clean_photos() -> dict:
+    """D2 (2026-08-21): {sku: {"main_image": <чистий images.prom.ua>}} зі СВІЖОГО денного знімка Prom
+    (`prom_full_catalog.json`, поле `image_url` — R4). Заміна ЗАМЕРЗЛОМУ `prom_products_raw_cache`
+    (23.07, оновлювач prom-catalog-sync вимкнено з 30.07). Дає ЧИСТЕ ГОЛОВНЕ фото (не галерею) для
+    товарів, що Є на Prom (~513 із 2364 Rozetka-набору). Ключ = sku = external_id = наш vendor_code
+    (той самий, за яким шукає _clean_pictures). Best-effort → {}."""
+    try:
+        items = json.loads(PROM_SNAPSHOT_FILE.read_text(encoding="utf-8")).get("items") or {}
+    except (ValueError, OSError, AttributeError):
+        return {}
+    out = {}
+    for sku, rec in items.items():
+        iu = (rec.get("image_url") or "").strip() if isinstance(rec, dict) else ""
+        if iu.startswith("https://images.prom.ua"):
+            out[str(sku)] = {"main_image": iu}
+    return out
+
+
 def _upscale_prom_image(url: str) -> str:
     if not url or "images.prom.ua" not in url:
         return url
@@ -904,6 +925,16 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     # platform у _build_xml) і фото (чисті images.prom.ua) актуалізуються щопрогону. Крок 2 (повний
     # каталог) — окремо, коли переконаємось, що чисті фото проходять модерацію Rozetka.
     prom_products = _load_prom_products_cache()
+    # D2 (2026-08-21): доливаємо ЧИСТЕ головне фото зі свіжого знімка каталогу — raw-кеш замерз 23.07
+    # (34 чистих), знімок покриває ~513 on-Prom SKU. main_image ставимо ЛИШЕ якщо в raw-кеші його нема
+    # (галерея raw-кеша, де вона є, лишається пріоритетною). Для ~1850 не-Prom SKU чистого джерела нема.
+    _snap_photos = _load_snapshot_clean_photos()
+    for _sku, _ph in _snap_photos.items():
+        prom_products.setdefault(_sku, {}).setdefault("main_image", _ph["main_image"])
+    # ⚠️ це РОЗМІР ПУЛУ знімка (весь Prom), НЕ вплив на фід — застосується лише до перетину з набором
+    # Rozetka (~500). Фактичне число чистих у фіді дивись у підсумку прогону нижче (перше <picture>).
+    print(f"[Rozetka] Пул чистих головних фото зі знімка каталогу: {len(_snap_photos)} SKU "
+          f"(застосуються до тих, що в наборі Rozetka).")
     approved_ids = _load_rozetka_approved_ids(catalog)
     live_items = {pid: catalog[pid] for pid in approved_ids if pid in catalog}
     print(f"[Rozetka] Оживлений промодерований набір: {len(live_items)} з {len(approved_ids)} "

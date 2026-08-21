@@ -931,7 +931,10 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     _snap_photos = _load_snapshot_clean_photos()
     for _sku, _ph in _snap_photos.items():
         prom_products.setdefault(_sku, {}).setdefault("main_image", _ph["main_image"])
-    print(f"[Rozetka] Чисті головні фото зі знімка каталогу: +{len(_snap_photos)} SKU.")
+    # ⚠️ це РОЗМІР ПУЛУ знімка (весь Prom), НЕ вплив на фід — застосується лише до перетину з набором
+    # Rozetka (~500). Фактичне число чистих у фіді дивись у підсумку прогону нижче (перше <picture>).
+    print(f"[Rozetka] Пул чистих головних фото зі знімка каталогу: {len(_snap_photos)} SKU "
+          f"(застосуються до тих, що в наборі Rozetka).")
     approved_ids = _load_rozetka_approved_ids(catalog)
     live_items = {pid: catalog[pid] for pid in approved_ids if pid in catalog}
     print(f"[Rozetka] Оживлений промодерований набір: {len(live_items)} з {len(approved_ids)} "

@@ -288,3 +288,9 @@ rozetka_commission_reference.json
 rozetka_commission_source.xlsx
 rozetka_merchant_candidates.json
 .local_secrets/rozetka_merchant_cursor.json
+
+# Рендер-відео рілсів (VPS: /opt/plutustoys/reels/) — 4МБ-бінарники, не для git. Профілактика проти
+# випадкового `git add -A` у master (заявка SMM 2026-08-21; publish_reel_video.sh бере шлях аргументом).
+# ⚠️ НЕ `*.mp4` — у репо відстежуються plutus_scenes/*_GREEN.mp4 (сцени маскота), і нові додаватимуться
+# (scene06 під перегенерацію); широкий патерн мовчки блокував би їх. Тільки тека рендер-виходу.
+reels/

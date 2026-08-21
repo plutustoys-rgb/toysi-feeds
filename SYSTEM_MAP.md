@@ -12,7 +12,7 @@
 >    нижче й алертить на дрейф (запобіжник сам каже, де збрехав). Ганяється локально й на VPS.
 > 4. **Обов'язковий перший читаний** — BOOTSTRAP.md і CLAUDE.md указують сюди.
 
-Останнє живе зняття: **локаль — 2026-08-20 (15 тасків, drift-check зелений)**; **VPS — 2026-08-20 (21 юніт: 19 звірено бандлом + 2 `social-poster-*` додано з доків, чекають re-drift-check на VPS із ключем «social»)**.
+Останнє живе зняття: **локаль — 2026-08-20 (15 тасків, drift-check зелений)**; **VPS — 2026-08-21 (22 юніти, re-drift-check на VPS зелений: 19 бандл + social-poster-fb/ig підтверджено + social-dead-post-cleaner знайдено самим drift-check)**.
 
 ---
 
@@ -102,11 +102,10 @@
 
 ### 2Б. VPS (45.94.157.4, `/opt/plutustoys`, systemd `.timer`+`.service`, venv-python) — знято живо 2026-08-20
 
-> ✅ **ЗВІРЕНО drift-check НА VPS 2026-08-20:** 19 юнітів нижче — ЖИВІ й ПОВНІ (жодного «у мапі є, живого
-> нема»; 3 системні apt/journal відфільтровано). ⚠️ АЛЕ фільтр тоді не мав ключа «social» → `social-poster-fb`/
-> `social-poster-ig` (домен SMM, задокументовані) у той прогін НЕ потрапили. Додав їх + ключ «social» — **треба
-> re-drift-check на VPS**, щоб підтвердити точні імена (якщо ім'я інше — drift-check покаже, виправлю).
-> Розклади (OnCalendar) — у `list-timers`. Відкрите: order-flow-дрейф нижче.
+> ✅ **ЗВІРЕНО re-drift-check НА VPS 2026-08-21:** 22 юніти нижче — ЖИВІ й ПОВНІ. Історія: 19 знято бандлом;
+> `social-poster-fb`/`social-poster-ig` дописано з доків і re-drift-check ПІДТВЕРДИВ (їх нема в «живого нема»);
+> `social-dead-post-cleaner` — сам drift-check ЗНАЙШОВ як «живе, не в мапі» (наочно: механізм ловить те, що
+> людина проґавила), дописано. 3 системні apt/journal відфільтровано. Розклади (OnCalendar) — у `list-timers`.
 
 | Unit (`.service`, є парний `.timer`) | ExecStart | Домен |
 |---|---|---|
@@ -127,6 +126,7 @@
 | `prom-chat-bot` | `prom_chat_bot.py` | Prom: автовідповіді в чаті |
 | `social-poster-fb` | `social_auto_poster.py` (fb) | Соцмережі: автопост FB 1×/день 11:00 (домен SMM) |
 | `social-poster-ig` | `social_auto_poster.py` (ig) | Соцмережі: автопост IG 1×/день (домен SMM) |
+| `social-dead-post-cleaner` | `social_dead_post_cleaner.py` | Соцмережі: чистка мертвих FB-постів (404 товар) — знайдено re-drift-check 2026-08-21 |
 | `novapay-statement` | `novapay_statement.py` | КОДВ: звірка COD через IMAP NovaPay |
 | `daily-report` | `daily_report.py` | зведення в Telegram |
 | `deadline-reminder` | `deadline_reminder.py` | дедлайни/платежі |
@@ -231,7 +231,7 @@
     "feed-pipeline", "eva-feed", "eva-catalog-auditor", "meta-feed-coverage-monitor",
     "catalog-health-monitor", "full-catalog-scan", "prom-catalog-sync", "prom-catalog-auditor",
     "prom-competitor-pricer", "prom-review-requester", "prom-chat-bot",
-    "social-poster-fb", "social-poster-ig",
+    "social-poster-fb", "social-poster-ig", "social-dead-post-cleaner",
     "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog"
   ],
   "gh_workflows": ["update-feeds.yml"]

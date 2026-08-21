@@ -23,6 +23,13 @@ import sys
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
+
+# При РУЧНОМУ запуску на VPS .env не підвантажується автоматично (systemd-юніти беруть його через
+# EnvironmentFile, а гола сесія — ні). Тягнемо самі, як решта скриптів (bank_check/daily_report/...).
+# PLUTUS_ENV_PATH дозволяє вказати інший шлях (тести/локаль); за замовч. .env на VPS. Не оверрайдить
+# уже наявні змінні оточення (default override=False), тож set -a; . .env лишається сумісним.
+load_dotenv(os.environ.get("PLUTUS_ENV_PATH", "/opt/plutustoys/.env"))
 
 GRAPH = f"https://graph.facebook.com/{os.environ.get('GRAPH_VERSION', 'v21.0')}"
 APP_ID = os.environ.get("FB_APP_ID", "1787100088972907").strip()   # застосунок «PlutusToys Poster»

@@ -114,7 +114,7 @@ def _receipt_goods_from_order(order: dict) -> list:
     ]
 
 
-def _maybe_issue_receipt(conn, order: dict, ttn: str) -> None:
+def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = None) -> None:
     """Видає фіскальний чек напряму (checkbox_client.create_receipt) —
     замінює колишню ЕТТН-прив'язку (_maybe_register_ettn, ЗАКРИТО
     2026-07-22, див. докстрінг файлу) — не залежить від того, чиїм
@@ -145,19 +145,31 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str) -> None:
             return
         payment_type = "CASHLESS"
     elif payment_method == "cod":
-        if not ttn or order.get("carrier", "nova_poshta") != "nova_poshta":
-            return
-        try:
-            tracking = nova_poshta.get_tracking_status(ttn)
-        except nova_poshta.NovaPoshtaAPIError as e:
-            print(
-                f"[order_status_tracker] Не вдалось перевірити трекінг НП для видачі чека "
-                f"{order['internal_order_id']} (ТТН {ttn}): {e}",
-                file=sys.stderr,
-            )
-            return
-        if not tracking or not tracking["delivered"]:
-            return
+        # COD-чек CASH: гроші отримані у МОМЕНТ видачі. Сигнал видачі — РІЗНИЙ за перевізником:
+        carrier = order.get("carrier", "nova_poshta")
+        if carrier == "nova_poshta":
+            if not ttn:
+                return
+            try:
+                tracking = nova_poshta.get_tracking_status(ttn)
+            except nova_poshta.NovaPoshtaAPIError as e:
+                print(
+                    f"[order_status_tracker] Не вдалось перевірити трекінг НП для видачі чека "
+                    f"{order['internal_order_id']} (ТТН {ttn}): {e}",
+                    file=sys.stderr,
+                )
+                return
+            if not tracking or not tracking["delivered"]:
+                return
+        elif carrier == "rozetka_delivery":
+            # RZ Delivery COD: NP-трекінгу нема (інший перевізник). Гроші отримано при видачі на
+            # пункті Rozetka = delivery_status 'delivered' (з Toysi/Rozetka-статусу, track_orders).
+            # ⚠️ Наразі RZ-Delivery COD ВИМКНЕНО в кабінеті Rozetka (2026-08-21) — цей шлях латентний,
+            # живо ще не спрацьовував; вмикання COD у кабінеті одразу дасть коректну фіскалізацію.
+            if delivery_status != "delivered":
+                return
+        else:
+            return  # інші перевізники (напр. укрпошта) — COD-чек поки не покрито
         payment_type = "CASH"
     else:
         return
@@ -498,7 +510,7 @@ def track_orders() -> None:
                 )
 
             order["toysi_ttn"] = ttn
-            _maybe_issue_receipt(conn, order, ttn)
+            _maybe_issue_receipt(conn, order, ttn, delivery_status)
             _maybe_advance_rozetka_processing(conn, order, delivery_status, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)
             _maybe_push_ttn_to_prom(conn, order, ttn)

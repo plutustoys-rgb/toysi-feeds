@@ -70,14 +70,21 @@ WATCHERS = [
         "channels": ["SEO_CHANNEL.md", "MARKETING_CHANNEL.md"],
         "max_wakes_per_day": 16,
         "schedule": None,
+        # B (2026-08-21): Код МОЖЕ збирати код і відкривати PR (Bash+git+gh), АЛЕ мерж headless
+        # заблоковано хуком merge-guard через env PLUTUS_AGENT_HEADLESS — фінальний аудит+мерж лишаються
+        # за інтерактивною сесією/власником. Без Bash Код був no-op (не міг PR) → усе чекало на людину.
+        "allowed_tools": ["Read", "Edit", "Write", "Glob", "Grep", "Bash"],
         "wake_prompt": (
             "Ти — сесія «Код» проєкту PlutusToys (діють CLAUDE.md і BOOTSTRAP.md). "
             "Монітор виявив НОВИЙ запис, адресований Коду, в одному з каналів. "
             "Прочитай SEO_CHANNEL.md і MARKETING_CHANNEL.md у спільній папці й обробі ВІДКРИТІ "
-            "запити до Коду (дані/зрізи/PR — код лише через PR + незалежний аудит). "
-            "Якщо запис — підтвердження/закритий пункт, нічого не відписуй. "
-            "Нічого незворотного чи публічного без власника; cost/margin у спільні файли не клади. "
-            "Те, що потребує рішення власника (доступи, токени, схвалення), пиши в OWNER_INBOX.md."
+            "запити до Коду. Ти МОЖЕШ писати код, ганяти тести й ВІДКРИВАТИ PR (гілка+commit+push+"
+            "`gh pr create`). АЛЕ НЕ МЕРЖ і НЕ став маркер `.audit_ok`: незалежний аудит і мерж робить "
+            "ІНТЕРАКТИВНА сесія/власник (headless-мерж заблоковано хуком). Після відкриття PR — онови "
+            "канал рядком `[Код → X] PR #NNN відкрито, чекає аудит+мерж`, щоб інтерактивна сесія його "
+            "доперевірила. Якщо запис — підтвердження/закритий пункт, нічого не роби. Нічого іншого "
+            "незворотного чи публічного без власника; cost/margin у спільні файли не клади. Рішення "
+            "власника (доступи, токени, схвалення) → OWNER_INBOX.md."
         ),
     },
     {
@@ -229,14 +236,20 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     # тож агент фізично не може rm/mv/git/gh/curl (усе інше в headless просто впаде). Це
     # найтісніший дозвіл під координацію: свідомо вужче за acceptEdits (той авто-приймав ще й
     # rm/mv/sed у робочому просторі — зайво широко для автономного циклу, харнес це відзначив).
+    # Per-agent інструменти: дефолт — лише файлові (SEO/SMM). Код має свій розширений набір (+Bash),
+    # щоб автономно збирати код і ВІДКРИВАТИ PR. Мерж усе одно заблоковано хуком (env нижче).
+    allowed = cfg.get("allowed_tools") or ["Read", "Edit", "Write", "Glob", "Grep"]
     cmd = [CLAUDE_BIN, "-p", prompt,
            "--add-dir", str(COWORK_DIR), "--add-dir", str(BASE_DIR),
-           "--allowedTools", "Read", "Edit", "Write", "Glob", "Grep"]
+           "--allowedTools", *allowed]
+    # PLUTUS_AGENT_HEADLESS=1 → merge-guard хук ЖОРСТКО відмовляє `gh pr merge` у headless-сесії
+    # монітора (навіть якби агент поставив .audit_ok). Мерж лишається за інтерактивною сесією.
+    env = {**os.environ, "PLUTUS_AGENT_HEADLESS": "1"}
     print(f"[AgentWatch] {'DRY — БУВ БИ' if dry else 'БУДЖУ'} агент '{cfg['name']}' ({reason})")
     if dry:
         return False
     try:
-        r = subprocess.run(cmd, cwd=run_cwd, capture_output=True, text=True,
+        r = subprocess.run(cmd, cwd=run_cwd, capture_output=True, text=True, env=env,
                            timeout=CLAUDE_TIMEOUT_SEC, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             print(f"[AgentWatch] агент '{cfg['name']}' exit={r.returncode}: {(r.stderr or '')[:300]}",
@@ -320,6 +333,20 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
     if force and reason is None:
         reason = "примусове пробудження (--force)"
 
+    # D (2026-08-21): знімок mtime каналів ПЕРЕД пробудженням — щоб перевірити, чи агент реально
+    # щось написав (артефакт), а не просто exit-0. Інакше запит тихо позначався б «seen» і губився.
+    def _chan_mtimes() -> dict:
+        m = {}
+        for ch in cfg["channels"]:
+            p = COWORK_DIR / ch
+            if p.exists():
+                try:
+                    m[ch] = p.stat().st_mtime
+                except OSError:
+                    pass
+        return m
+    mt_before = _chan_mtimes()
+
     ok = _wake(cfg, reason, dry, periodic)
     if dry:
         return
@@ -332,6 +359,16 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
             st["last_periodic_iso"] = _now().isoformat()
         st["wakes_today"] = st.get("wakes_today", 0) + 1
         st["last_wake_at"] = _now().isoformat()
+        # D: exit-0 БЕЗ артефакту (жоден канал не змінився) на ЗАПИТ (не періодику) → алерт, щоб
+        # запит не зник тихо (правило власника про самодіагностику). seen уже просунуто (не циклимо),
+        # алерт — сигнал людині глянути вручну. Періодику й підтвердження (не-new_sig) не чіпаємо.
+        if new_sig and not periodic:
+            mt_after = _chan_mtimes()
+            wrote = any(mt_after.get(ch) != mt_before.get(ch) for ch in mt_after)
+            if not wrote:
+                _notify(f"⚠️ AgentWatch: '{cfg['name']}' прокинувся на запит, але НІЧОГО не написав у "
+                        f"канал:\n{new_sig[1][:120]}\n→ якщо це був запит — можливо, загубилось (глянь "
+                        f"вручну); якщо підтвердження — ігноруй.")
     w.save_state(st)
 
 

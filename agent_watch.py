@@ -45,6 +45,12 @@ STATE_DIR = BASE_DIR / ".local_secrets" / "agent_watch"
 LOCK_FILE = STATE_DIR / "poller.lock"
 LOCK_STALE_MIN = 25          # лок, старший за це, вважаємо покинутим
 CLAUDE_TIMEOUT_SEC = 900     # стеля на одне пробудження агента
+# Модель для headless-ТРІАЖУ. Пробудження монітора — низькоризикова робота (прочитати новий запис
+# у каналі й записати «прийнято в чергу» + пункт у OWNER_INBOX); реальну роботу робить інтерактивна
+# сесія. Тримати тут дорогу дефолтну модель — марна витрата токенів (це головний recurring-кошт
+# автоматики). Дешева модель для тріажу; env AGENT_WATCH_MODEL або per-agent cfg["model"] — оверайд,
+# якщо якийсь агент потребує сильнішої. Порожній рядок ("") → без --model (дефолт CLI).
+WAKE_MODEL = os.environ.get("AGENT_WATCH_MODEL", "haiku")
 
 # ⚠️ Windows: `claude` — це npm-shim `.CMD`. `subprocess.run(["claude", ...])` списком (без
 # shell) НЕ резолвить bare-назву без розширення → FileNotFoundError [WinError 2], і кожне
@@ -249,6 +255,10 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     cmd = [CLAUDE_BIN, "-p", prompt,
            "--add-dir", str(COWORK_DIR), "--add-dir", str(BASE_DIR),
            "--allowedTools", *allowed]
+    # Дешева модель для тріажу (див. WAKE_MODEL) — головний важіль економії токенів автоматики.
+    wake_model = cfg.get("model") or WAKE_MODEL
+    if wake_model:
+        cmd += ["--model", wake_model]
     # PLUTUS_AGENT_HEADLESS=1 → merge-guard хук ЖОРСТКО відмовляє `gh pr merge` у headless-сесії
     # монітора (навіть якби агент поставив .audit_ok). Мерж лишається за інтерактивною сесією.
     env = {**os.environ, "PLUTUS_AGENT_HEADLESS": "1"}

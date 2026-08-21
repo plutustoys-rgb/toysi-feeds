@@ -80,11 +80,40 @@ def parse_np_branch(np_branch: str) -> tuple:
 
 
 def _split_name(customer_name: str) -> tuple:
-    """Toysi вимагає ім'я/прізвище окремо; customer_name у нас — один рядок."""
+    """Toysi вимагає ім'я/прізвище окремо; customer_name у нас — один рядок.
+    Припускає порядок «Ім'я Прізвище» (Prom, мок). Для площадок, де порядок інший,
+    використовуй _split_recipient_name (нижче) — воно знає формат джерела."""
     parts = (customer_name or "").split(maxsplit=1)
     first_name = parts[0] if parts else "Клієнт"
     last_name = parts[1] if len(parts) > 1 else "Невідомо"
     return first_name, last_name
+
+
+# Порядок ПІБ у customer_name залежить від ПЛОЩАДКИ (звірено в конвертерах orders_watcher та на
+# живих замовленнях): Rozetka (_rozetka_customer_name) і EVA (_eva_customer_name) склеюють
+# «Прізвище Ім'я По-батькові» — стандарт контакту Нової Пошти; Prom (orders_watcher:274) —
+# «Ім'я Прізвище» (окремі client_first_name/client_last_name). Якщо розбирати всіх за одним
+# порядком, отримувач Rozetka/EVA їде в CRM Toysi з переставленими Прізвище↔Ім'я, а по-батькові
+# застрягає у прізвищі (реальний інцидент: замовлення Toysi 100449125 — «Олександр Юрійович» у
+# полі «Фамилия», «Чечетенко» у полі «Имя»).
+_SURNAME_FIRST_PLATFORMS = {"rozetka", "eva"}
+
+
+def _split_recipient_name(customer_name: str, platform: str = "") -> tuple:
+    """(first_name, last_name, middle_name) з урахуванням порядку ПІБ джерела.
+    Rozetka/EVA — «Прізвище Ім'я По-батькові»; решта (Prom, мок, невідоме) — «Ім'я Прізвище»."""
+    parts = (customer_name or "").split()
+    if not parts:
+        return "Клієнт", "Невідомо", ""
+    if platform in _SURNAME_FIRST_PLATFORMS:
+        last_name = parts[0]
+        first_name = parts[1] if len(parts) > 1 else "Невідомо"
+        middle_name = " ".join(parts[2:]) if len(parts) > 2 else ""
+    else:
+        first_name = parts[0]
+        last_name = " ".join(parts[1:]) if len(parts) > 1 else "Невідомо"
+        middle_name = ""
+    return first_name, last_name, middle_name
 
 
 def _normalize_phone_for_toysi(phone: str) -> str:
@@ -167,7 +196,8 @@ def build_toysi_order(order: dict) -> dict:
                 "shipping_warehouse_id": shipping["shipping_warehouse_id"],
             }
 
-    first_name, last_name = _split_name(order.get("customer_name", ""))
+    first_name, last_name, middle_name = _split_recipient_name(
+        order.get("customer_name", ""), order.get("platform", ""))
 
     moneyback = 0.0
     if order["payment_method"] == "cod":
@@ -178,6 +208,7 @@ def build_toysi_order(order: dict) -> dict:
         "items": order["items"],
         "first_name": first_name,
         "last_name": last_name,
+        "middle_name": middle_name,
         "phone": _normalize_phone_for_toysi(order.get("phone", "")),
         "shipping_city_name": city or "Київ",  # Toysi вимагає непорожнє місто
         # Без NP-резолву адреса лишається вільним текстом np_branch — бажано,
@@ -195,7 +226,8 @@ def _create_ukrposhta_shipment(order: dict) -> dict:
     винятку), якщо не вдалось — виклик вище просто пропускає замовлення до
     наступного циклу, той самий підхід, що й для тимчасових помилок Toysi
     (should_retry у route_order())."""
-    first_name, last_name = _split_name(order.get("customer_name", ""))
+    first_name, last_name, _ = _split_recipient_name(
+        order.get("customer_name", ""), order.get("platform", ""))
     city, _, _ = parse_np_branch(order.get("np_branch", ""))
 
     moneyback = 0.0

@@ -18,7 +18,7 @@ media_type, tagged, views, reach, reactions, comments, shares, saves, profile_vi
 
 ЗАПУСК (на VPS, де токен):
     python social_insights_report.py                      # IG per-post CSV у reports/
-    python social_insights_report.py --platform all       # + FB-рядки (метрики порожні до scope)
+    python social_insights_report.py --platform all       # + FB per-post метрики (read_insights є)
     python social_insights_report.py --probe 1784xxxxxxx  # сирі insights одного медіа (звірити метрики)
 """
 import argparse

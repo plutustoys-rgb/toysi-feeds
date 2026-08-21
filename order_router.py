@@ -170,8 +170,9 @@ def _check_toysi_stock(order: dict, toysi_catalog: dict) -> tuple:
 ROZETKA_DELIVERY_TOYSI_CARRIER = os.environ.get("TOYSI_ROZETKA_CARRIER", "Rozetka")
 
 # Скільки разів пробувати надіслати RZ-Delivery-маркування (наклейку) перш ніж здатись і
-# алертнути власника. Кожен прогін order_pipeline = одна спроба (перша — в route_order, решта —
-# у ретрай-пасі). env-оверайд для гнучкості без деплою.
+# алертнути власника. Кожен прогін order_pipeline дає ЩОНАЙМЕНШЕ одну спробу (у ретрай-пасі);
+# свіжопередане замовлення, чия перша спроба в route_order впала, того ж прогону отримає ще одну
+# в ретрай-пасі — це прискорює відновлення/алерт і дубля НЕ дає. env-оверайд без деплою.
 MAX_MARKING_ATTEMPTS = int(os.environ.get("RZ_MARKING_MAX_ATTEMPTS", "5"))
 
 
@@ -450,7 +451,7 @@ def _check_eva_not_cancelled(conn, order: dict) -> bool:
     return False
 
 
-def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
+def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
     """RZ-Delivery-замовлення (carrier='rozetka_delivery') → створити ТТН (робить ПРОДАВЕЦЬ, не
     Toysi) + маркування в Toysi через юзербот, щоб постачальник здав посилку на пункт Rozetka.
     BEST-EFFORT, НІКОЛИ не піднімає виняток (як send_purchase_event — збій не валить order flow).
@@ -459,7 +460,7 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> None:
     TEST_TARGET (номер власника, звірка); '0' → у реальний Toysi-чат (@admtoys). Один перемикач
     у .env, не щоразу. Юзербот-сесія й таргети — на VPS (telegram_userbot_client)."""
     if order.get("carrier") != "rozetka_delivery":
-        return
+        return False
     iid = order["internal_order_id"]
     # Лічимо спробу ще ДО відправки — щоб при падінні (виняток/збій) спроба зарахувалась і
     # ретрай-пас рухався до ліміту, а не крутив нескінченно.

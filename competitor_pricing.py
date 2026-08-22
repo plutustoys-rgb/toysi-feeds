@@ -204,6 +204,33 @@ def load_fresh_prom_price_overrides(max_age_hours: float = PROM_PRICE_STATE_MAX_
     return overrides
 
 
+def load_fresh_prom_competitor_prices(max_age_hours: float = PROM_PRICE_STATE_MAX_AGE_HOURS) -> dict:
+    """{external_id: competitor_price} лише для СВІЖИХ записів із ЖИВИМ конкурентом
+    (competitor_alive != False, competitor_price > 0). Використовує floor-гард у
+    generate_prom_feed, щоб перерахувати нижню межу ТІЄЮ Ж канонічною формулою власниці
+    (canonical_competitor_floor, candidate = competitor - PRICE_STEP), а не завищеним
+    division-floor (compute_floor). Свіжість — той самий поріг, що й
+    load_fresh_prom_price_overrides (щоб пари price/competitor були узгоджені)."""
+    state = load_prom_price_state()
+    now = datetime.now()
+    out = {}
+    for pid, entry in state.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("competitor_alive") is False:
+            continue
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"])
+            comp = float(entry["competitor_price"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if comp <= 0:
+            continue
+        if (now - ts).total_seconds() / 3600 <= max_age_hours:
+            out[pid] = comp
+    return out
+
+
 MIN_PROFIT       = 0.25   # цільовий мінімум прибутку від собівартості (як частка cost) — лише Шлях 1 (немає конкурента)
 PRICE_STEP       = 3.0    # фіксований крок нижче конкурента, У ГРН — не відсоток (підвищено з 1₴
                           # 2026-07-22, пряме рішення власниці — помітніша різниця для покупця,
@@ -994,6 +1021,25 @@ def compute_floor(cost: float, total_commission: float, target_margin: float) ->
     return (cost + cost * target_margin) / (1 - total_commission)
 
 
+def canonical_competitor_floor(
+    cost: float,
+    candidate: float,
+    total_commission: float,
+    target_margin: float = MIN_PROFIT_COMPETITOR_FLOOR,
+) -> float:
+    """Канонічна нижня межа Prom при ВІДОМОМУ конкуренті (формула власниці,
+    2026-07-26 — "запишіть формулу раз і назавжди", SKU 292858):
+        B = cost*(1+target_margin) + candidate*сумарна_комісія
+    ПРЯМЕ ДОДАВАННЯ від конкретного candidate (=competitor - PRICE_STEP), а НЕ
+    ділення `cost*(1+m)/(1-commission)` (compute_floor) — власниця явно відкинула
+    ділення, бо воно завищує floor від ще-нерозрахованої ціни. Спільна точка для
+    decide_price_for_platform() (Шлях 2 Prom) і floor-гарда в generate_prom_feed
+    — щоб гард не перебивав коректний undercut завищеним division-floor (баг
+    2026-08-22: 325 SKU піднімались НАД ринок при свіжому зростанні собівартості).
+    Rozetka має власний сходинковий floor (_resolve_rozetka_floor) — цю не чіпає."""
+    return round(cost * (1 + target_margin) + candidate * total_commission, 2)
+
+
 def _resolve_rozetka_floor(cost: float, target_margin: float, payment_commission: float) -> tuple[float, float]:
     """Rozetka-специфічне: розв'язує коло "ціна залежить від комісії,
     комісія (сходинка) залежить від ціни" ітеративно. Починаємо зі
@@ -1096,7 +1142,9 @@ def decide_price_for_platform(
     else:
         candidate = round(min_competitor - PRICE_STEP, 2)
         if platform != "rozetka":
-            floor = round(cost * (1 + target_margin) + candidate * total_commission, 2)
+            # Канонічна формула власниці (пряме додавання) — винесена у спільний
+            # canonical_competitor_floor(), той самий floor кличе floor-гард фіду.
+            floor = canonical_competitor_floor(cost, candidate, total_commission, target_margin)
         price = round(max(floor, candidate), 2)
         result_category = "floor" if floor >= candidate else "undercut"
 

@@ -27,13 +27,28 @@ BASE_DIR = Path(__file__).resolve().parent
 ARCHIVE_DIR = BASE_DIR / "archive"   # холодний архів повної історії (див. archive/README.md)
 COWORK_DIR = Path(os.environ.get(
     "PLUTUS_COWORK_DIR", r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))
-# Токени, що нічого не кажуть про тему (щоб не матчити пів-репо).
+
+# Профілі ролей: кожен агент шукає у СВОЇХ джерелах (не в коді — SEO/SMM працюють у каналах, не в
+# репо). `recall.py --config seo "тема"` → шукає лише в цих файлах/папках + їх archive. Дублі в них
+# інші, ніж у коду: повторне дослідження/закритий запит (напр. SEO подав уже закриті «укр-назви»).
+_CONFIGS = {
+    "seo": [COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "MARKETING_CHANNEL.md",
+            COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "archive" / "seo"],
+    "smm": [COWORK_DIR / "MARKETING_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
+            COWORK_DIR / "archive" / "smm"],
+}
+# Токени, що нічого не кажуть про тему (щоб не матчити пів-репо). Латиниця (код) + укр (канали).
 _STOP = {"py", "sh", "test", "tests", "util", "utils", "the", "and", "for", "new", "old",
-         "tmp", "temp", "client", "run", "main", "get", "set", "make", "data", "file"}
+         "tmp", "temp", "client", "run", "main", "get", "set", "make", "data", "file",
+         "для", "або", "вже", "що", "цей", "той", "при", "над", "під", "так", "але",
+         "який", "яка", "яке", "наш", "наша", "які", "теж", "усе", "все", "цього", "того",
+         "було", "буде", "щоб", "тому", "його", "цю", "цим", "них", "them"}
 
 
 def _terms(text: str) -> list:
-    toks = [t for t in re.split(r"[^a-zA-Z0-9]+", (text or "").lower()) if t]
+    # [\W_]+ (Unicode): розбиває і на не-літери, і на підкреслення — тож і код-стеми
+    # (fb_token_refresh → fb,token,refresh), і кирилиця (укр-назви → укр,назви) токенізуються.
+    toks = [t for t in re.split(r"[\W_]+", (text or "").lower()) if t]
     return [t for t in toks if len(t) >= 3 and t not in _STOP]
 
 
@@ -84,6 +99,23 @@ def _archive_hits(terms: list) -> list:
     return hits[:8]
 
 
+def _search_roots(roots: list, terms: list) -> list:
+    """Пошук теми у ДЖЕРЕЛАХ ролі (файли + *.md у папках). Повертає рядки 'файл: сніпет'."""
+    out = []
+    for r in roots:
+        try:
+            if r.is_file():
+                for s in _grep_file(r, terms, r.name):
+                    out.append(f"{r.name}: {s}")
+            elif r.is_dir():
+                for p in sorted(r.glob("*.md")):
+                    for s in _grep_file(p, terms, p.name):
+                        out.append(f"{r.name}/{p.name}: {s}")
+        except Exception:
+            continue
+    return out[:12]
+
+
 def _grep_file(path: Path, terms: list, label: str) -> list:
     if not path.exists() or not terms:
         return []
@@ -98,12 +130,29 @@ def _grep_file(path: Path, terms: list, label: str) -> list:
     return out[:6]
 
 
-def recall(query: str, file_mode: str = "") -> int:
+def recall(query: str, file_mode: str = "", config: str = "") -> int:
     stem = Path(file_mode).stem if file_mode else query
     terms = _terms(stem if file_mode else query)
     if not terms:
         print("[recall] порожній/загальний запит — уточни тему.")
         return 0
+
+    # Профіль ролі (SEO/SMM): шукаємо ЛИШЕ в їхніх джерелах (канали/OWNER_INBOX/їх архів), не в коді.
+    if config:
+        roots = _CONFIGS.get(config)
+        if not roots:
+            print(f"[recall] невідомий --config '{config}' (є: {', '.join(_CONFIGS)})")
+            return 0
+        hits = _search_roots(roots, terms)
+        print(f"=== RECALL [{config}]: '{stem}'  (терміни: {', '.join(terms[:6])}) ===")
+        if hits:
+            print("🔴 ВЖЕ Є у твоїх джерелах (канал/OWNER_INBOX/архів) — не дублюй:")
+            for h in hits:
+                print(f"   • {h}")
+        else:
+            print("Нічого схожого не знайдено — тема, схоже, нова.")
+        return 0
+
     files = _tracked_files()
 
     strong = []
@@ -166,11 +215,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("query", nargs="?", default="", help="тема для пошуку історії")
     ap.add_argument("--file", default="", help="режим дубль-варта для нового файлу (exit 3 якщо схоже вже є)")
+    ap.add_argument("--config", default="", choices=["", *_CONFIGS.keys()],
+                    help="профіль ролі (seo/smm): шукати в ЇХНІХ джерелах (канали/OWNER_INBOX/архів), не в коді")
     a = ap.parse_args()
     if not a.query and not a.file:
         ap.print_help()
         sys.exit(0)
-    sys.exit(recall(a.query, a.file))
+    sys.exit(recall(a.query, a.file, a.config))
 
 
 if __name__ == "__main__":

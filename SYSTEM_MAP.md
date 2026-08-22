@@ -182,7 +182,10 @@
 - **Telegram / сповіщення (спільна інфра):** `telegram_notify`, `telegram_outbox_processor`,
   `telegram_userbot_client`, `telegram_userbot_login` → Код.
 - **Координація / інфра / деплой:** `agent_watch`, `service_watchdog`, `vps_code_sync_report`,
-  `deadline_reminder`, `system_map_driftcheck` → Код (координатор).
+  `deadline_reminder`, `system_map_driftcheck`,
+  `recall.py` (антидубль/пам'ять: «що вже зроблено про X» з git+коду+SYSTEM_MAP+CODE_LOG;
+  `--file` = дубль-варта, exit 3 якщо схоже вже є. Хук `recall-guard.sh` [локальний, `~/.claude/hooks/`]
+  автоматично впорскує його перед створенням нового файлу — щоб після ущільнення сесії не робити дублі) → Код (координатор).
 
 ---
 

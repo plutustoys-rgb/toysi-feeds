@@ -24,6 +24,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 BASE_DIR = Path(__file__).resolve().parent
+ARCHIVE_DIR = BASE_DIR / "archive"   # холодний архів повної історії (див. archive/README.md)
 COWORK_DIR = Path(os.environ.get(
     "PLUTUS_COWORK_DIR", r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))
 # Токени, що нічого не кажуть про тему (щоб не матчити пів-репо).
@@ -62,6 +63,27 @@ def _similar_files(stem_terms: list, files: list) -> list:
     return hits
 
 
+def _archive_hits(terms: list) -> list:
+    """Вказівники на файли холодного архіву, що метчать тему (за назвою АБО вмістом). Повертаємо
+    лише шляхи (не вміст) — щоб recall лишався коротким; повну сагу читати відкривши файл."""
+    if not ARCHIVE_DIR.exists() or not terms:
+        return []
+    hits = []
+    for p in sorted(ARCHIVE_DIR.glob("*.md")):
+        if p.name.lower() == "readme.md":
+            continue
+        name_low = p.name.lower()
+        if any(t in name_low for t in terms):
+            hits.append(f"archive/{p.name}")
+            continue
+        try:
+            if any(t in p.read_text(encoding="utf-8", errors="replace").lower() for t in terms):
+                hits.append(f"archive/{p.name}")
+        except Exception:
+            continue
+    return hits[:8]
+
+
 def _grep_file(path: Path, terms: list, label: str) -> list:
     if not path.exists() or not terms:
         return []
@@ -97,6 +119,7 @@ def recall(query: str, file_mode: str = "") -> int:
     # SYSTEM_MAP + CODE_LOG
     sysmap = _grep_file(BASE_DIR / "SYSTEM_MAP.md", terms, "SYSTEM_MAP")
     codelog = _grep_file(COWORK_DIR / "CODE_LOG.md", terms, "CODE_LOG")
+    archive = _archive_hits(terms)
 
     # означення у коді (def/class) з термінами
     defs = []
@@ -130,7 +153,11 @@ def recall(query: str, file_mode: str = "") -> int:
         print("CODE_LOG:")
         for s in codelog:
             print(f"   • {s}")
-    if not (strong or defs or commits or sysmap or codelog):
+    if archive:
+        print("Архів (повна історія — відкрий файл для деталей):")
+        for a in archive:
+            print(f"   • {a}")
+    if not (strong or defs or commits or sysmap or codelog or archive):
         print("Нічого схожого не знайдено — тема, схоже, нова.")
     return 3 if dup else 0
 

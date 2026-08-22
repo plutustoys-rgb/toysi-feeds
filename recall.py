@@ -16,6 +16,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Не залежати від ambient-кодування stdout: на дефолтному Windows/cp1251-Python вивід із емодзі
+# (🔴) чи стрілками/галочками (→ ✅) з git/SYSTEM_MAP/CODE_LOG інакше падає UnicodeEncodeError —
+# і хук recall-guard, що спирається на exit-код, мовчки не спрацьовує (аудит PR #370). errors=replace
+# — щоб НІКОЛИ не падати на екзотичному гліфі, а не лише перекодувати.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 BASE_DIR = Path(__file__).resolve().parent
 COWORK_DIR = Path(os.environ.get(
     "PLUTUS_COWORK_DIR", r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))

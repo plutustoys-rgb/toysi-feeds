@@ -540,7 +540,7 @@ def _derive_toysi_to_prom_category(catalog: dict, prom_category_cache: dict) -> 
 # Російськомовні товари — виключати (наказ власника 2026-08-21). Тримати регекс у СИНХРОНІ з
 # generate_rozetka_feed._RUSSIAN_LANG_RE. Лише мовний маркер («(рос)»/«(рус)»/standalone «рос»/«рус»/
 # «рос. звучення»), НЕ голе «російськ» (зміст «російські народні казки» — лишаємо).
-_RUSSIAN_LANG_RE = re.compile(r"\bрос\b|\bрус\b|\(\s*рос|\(\s*рус|рос\.\s*звуч", re.IGNORECASE)
+_RUSSIAN_LANG_RE = re.compile(r"\bрос\b|\bрус\b|російською|російськомов|рос\.\s*звуч", re.IGNORECASE)
 
 
 def _is_russian_language(name: str) -> bool:

@@ -256,6 +256,9 @@ def init_db(db_path: str = DB_PATH) -> None:
         # отримав дубль, навіть якщо таймер дрейфне/повториться. Той самий клас
         # ідемпотентності, що й kodv_logged_at/prom_delivered_pushed_at вище.
         _ensure_column(conn, "orders", "prom_review_request_sent_at", "prom_review_request_sent_at TEXT")
+        # Компанійський відгук — окрема мітка (рішення власника 2026-08-21: компанійський шлемо
+        # У МОМЕНТ отримання посилки, товарний — наступного дня). Різні тайминги → різні мітки.
+        _ensure_column(conn, "orders", "prom_company_review_sent_at", "prom_company_review_sent_at TEXT")
         # EVA як платформа (2026-07-31): додати 'eva' у CHECK(platform) на існуючих БД
         # (SQLite не ALTER-ить CHECK — перебудова таблиці). Викликається ПІСЛЯ
         # _ensure_column, щоб перебудова зберегла всі щойно додані колонки.

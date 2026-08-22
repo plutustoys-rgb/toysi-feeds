@@ -18,18 +18,18 @@ Prom іде лише на email, а наші покупці (накладени�
     (`{user_id}_{company_id}_buyer`, де user_id — chat-id, НЕ order.client_id), тож
     його не використовуємо.
 
-ТРИГЕР (рішення власника): Prom-замовлення, ОТРИМАНЕ покупцем ≥24 год тому, товарний
-запит ще не слався (`prom_review_request_sent_at IS NULL`). Сигнал «отримано» —
-`prom_delivered_pushed_at` (ставиться, коли Нова Пошта підтвердила видачу; живо
-звірено, що `delivery_status` до 'delivered' не доходить — лишається 'shipped').
-Критерій — СТАН замовлення: бэклог уже отриманих підхопиться першим прогоном.
-Пріоритет — товарний відгук; компанійський — ЛИШЕ як фолбек, коли всі товари
-делістнуті (дозвіл власника 2026-08-07), а не як окремий проактивний запит.
+ТРИГЕР (рішення власника 2026-08-21) — ДВА ЕТАПИ за сигналом «отримано» (`prom_delivered_pushed_at`
+— ставиться, коли Нова Пошта підтвердила видачу; живо звірено, що `delivery_status` до 'delivered'
+не доходить — лишається 'shipped'):
+  • КОМПАНІЙСЬКИЙ відгук — У МОМЕНТ отримання (0 год), поки не слався (`prom_company_review_sent_at
+    IS NULL`). Лягає на весь магазин + тай-брейк ранжування — вартий кратно більше (оцінка SEO).
+  • ТОВАРНИЙ відгук — НАСТУПНОГО ДНЯ (≥24 год), поки не слався (`prom_review_request_sent_at IS NULL`).
+Окремі мітки/тайминги, тож етапи не заважають один одному. Бэклог уже отриманих (у вікні max_days)
+підхопиться першим прогоном.
 
-Товар без Prom-`id` (делістнутий з каталогу — id/sku/url = null) не має сторінки
-`product-opinions/create/{id}`. Якщо ВСІ товари замовлення такі — фолбек на відгук
-про КОМПАНІЮ (`opinions/create/{company_id}?order_id=...`, дозвіл власника 2026-08-07),
-щоб не втрачати відгук зовсім.
+Товар без Prom-`id` (делістнутий — id/sku/url = null) не має сторінки `product-opinions/create/{id}`,
+тож товарний етап його пропускає (компанійський уже пішов при отриманні — відгук не втрачаємо).
+URL: товар `product-opinions/create/{pid}`, компанія `opinions/create/{company_id}?order_id=...`.
 
 БЕЗПЕКА: за замовчуванням DRY-RUN (лише друкує, що надіслав би). Реальна відправка —
 лише з `--send`. `--mark-sent <order_id>` ставить позначку БЕЗ відправки (для backdate
@@ -91,24 +91,27 @@ def _headers() -> dict:
 # ---- Чисті, тестовані функції (без мережі) --------------------------------
 
 def build_review_body(order: dict) -> str | None:
-    """Одне повідомлення на ЗАМОВЛЕННЯ:
-    - якщо є товари з Prom-`id` — запит відгуку про ТОВАР (посилання по кожному);
-    - якщо ВСІ товари делістнуті (id=None → сторінки відгуку про товар нема) —
-      фолбек на відгук про КОМПАНІЮ (дозвіл власника 2026-08-07).
-    None лише як крайній випадок — коли й order_id відсутній (нема куди слати)."""
+    """ТОВАРНИЙ відгук (наступного дня) — посилання по кожному товару з Prom-`id`.
+    None, якщо ЖОДНОГО товару з id (усі делістнуті) — тоді товарний етап пропускаємо:
+    компанійський запит уже пішов при отриманні (окремий етап), дублювати нема сенсу."""
     urls = [REVIEW_URL_TEMPLATE.format(pid=p["id"]) for p in (order.get("products") or []) if p.get("id")]
-    if urls:
-        if len(urls) == 1:
-            return MESSAGE_ONE.format(url=urls[0])
-        # Складаємо стільки ПОВНИХ URL, скільки влазить у MAX_BODY_LEN — ніколи не
-        # ріжемо посеред лінка (реально замовлення 1-3 товари, тож майже недосяжно).
+    if not urls:
+        return None
+    if len(urls) == 1:
+        return MESSAGE_ONE.format(url=urls[0])
+    # Складаємо стільки ПОВНИХ URL, скільки влазить у MAX_BODY_LEN — ніколи не
+    # ріжемо посеред лінка (реально замовлення 1-3 товари, тож майже недосяжно).
+    body = MESSAGE_MANY.format(urls="\n".join(urls))
+    while len(body) > MAX_BODY_LEN and len(urls) > 1:
+        urls.pop()
         body = MESSAGE_MANY.format(urls="\n".join(urls))
-        while len(body) > MAX_BODY_LEN and len(urls) > 1:
-            urls.pop()
-            body = MESSAGE_MANY.format(urls="\n".join(urls))
-        return body
+    return body
 
-    # Усі товари делістнуті → відгук про компанію (за order_id).
+
+def build_company_body(order: dict) -> str | None:
+    """КОМПАНІЙСЬКИЙ відгук — шлемо У МОМЕНТ отримання посилки (рішення власника 2026-08-21).
+    Компанійський відгук лягає на весь магазин + тай-брейк ранжування (вартий кратно більше за
+    товарний за нашого обсягу — оцінка SEO). None лише якщо нема order_id (нема куди слати)."""
     order_id = order.get("id")
     if not order_id:
         return None
@@ -143,6 +146,24 @@ def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED,
         "AND prom_review_request_sent_at IS NULL "
         "AND (delivery_status IS NULL OR delivery_status NOT IN ('returned', 'cancelled'))",
         (upper, lower),
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def select_company_eligible(conn, max_days: int = MAX_DAYS_SINCE_DELIVERED, now: datetime = None) -> list:
+    """Prom-замовлення, ОТРИМАНІ покупцем, яким КОМПАНІЙСЬКИЙ запит ще не слався — на відміну
+    від товарного, шлемо ОДРАЗУ при отриманні (БЕЗ 24-год нижньої межі). Верхня межа max_days —
+    щоб на першому прогоні не завалити старий бек-лог і не вийти за ~30-денне вікно відгуку Prom."""
+    now = now or datetime.now()
+    lower = (now - timedelta(days=max_days)).isoformat(timespec="seconds")
+    rows = conn.execute(
+        "SELECT * FROM orders "
+        "WHERE platform = 'prom' "
+        "AND prom_delivered_pushed_at IS NOT NULL "
+        "AND prom_delivered_pushed_at >= ? "
+        "AND prom_company_review_sent_at IS NULL "
+        "AND (delivery_status IS NULL OR delivery_status NOT IN ('returned', 'cancelled'))",
+        (lower,),
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
@@ -183,7 +204,48 @@ def mark_sent(conn, internal_order_id: str) -> None:
     )
 
 
+def mark_company_sent(conn, internal_order_id: str) -> None:
+    conn.execute(
+        "UPDATE orders SET prom_company_review_sent_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
 # ---- Оркестрація -----------------------------------------------------------
+
+def _process_stage(conn, orders: list, body_fn, mark_fn, label: str, dry_run: bool, stats: dict) -> None:
+    """Один етап (компанія/товар): для кожного замовлення — тіло → відправка → мітка. Позначку
+    робимо ДУРАБЕЛЬНОЮ одразу (commit), щоб краш на наступному замовленні не відкотив уже
+    надіслане (→ дублі). body_fn/mark_fn відрізняють компанійський і товарний етапи."""
+    for row in orders:
+        oid = row["order_id"]
+        try:
+            # ValueError ловить і JSONDecodeError (битий JSON на HTTP-200).
+            order = fetch_prom_order(oid)
+        except (requests.RequestException, ValueError) as e:
+            print(f"  ⚠️ №{oid} [{label}]: не вдалось отримати замовлення ({e}) — пропуск.")
+            stats["errors"] += 1
+            continue
+        body = body_fn(order)
+        buyer = f"{order.get('client_first_name', '')} {order.get('client_last_name', '')}".strip()
+        if not body:
+            print(f"  ⏭️ №{oid} [{label}] ({buyer}): нема тіла запиту — пропуск.")
+            stats["skipped_no_products"] += 1
+            continue
+        if dry_run:
+            preview = body.replace("\n", "\n         ")
+            print(f"  ✉️ №{oid} [{label}] ({buyer}):\n         «{preview}»")
+            continue
+        try:
+            send_order_context(oid, body)
+            mark_fn(conn, row["internal_order_id"])
+            conn.commit()
+            stats["sent"] += 1
+            print(f"  ✅ №{oid} [{label}] ({buyer}): надіслано, позначено.")
+        except (requests.RequestException, RuntimeError, ValueError) as e:
+            print(f"  ⚠️ №{oid} [{label}] ({buyer}): помилка відправки ({e}) — позначку НЕ ставлю.")
+            stats["errors"] += 1
+
 
 def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dict:
     if not PROM_API_KEY:
@@ -193,49 +255,19 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
     init_db()
     stats = {"eligible": 0, "sent": 0, "skipped_no_products": 0, "errors": 0}
     with get_connection() as conn:
-        eligible = select_eligible(conn, min_hours=min_hours)
-        stats["eligible"] = len(eligible)
-        if not eligible:
-            print("[ReviewReq] Придатних замовлень нема (усе вже оброблено або нічого не отримано ≥24г).")
+        # Два етапи (рішення власника 2026-08-21): КОМПАНІЙСЬКИЙ — у момент отримання (0 год);
+        # ТОВАРНИЙ — наступного дня (≥24 год). Окремі мітки, тож не заважають один одному.
+        company = select_company_eligible(conn)
+        product = select_eligible(conn, min_hours=min_hours)
+        stats["eligible"] = len(company) + len(product)
+        if not company and not product:
+            print("[ReviewReq] Придатних замовлень нема (усе оброблено / нічого не отримано).")
             return stats
-
         mode = "DRY-RUN (нічого не шлю)" if dry_run else "SEND (реальна відправка)"
-        print(f"[ReviewReq] {mode}. Придатних замовлень: {len(eligible)}.\n")
-
-        for row in eligible:
-            oid = row["order_id"]
-            try:
-                # ValueError ловить і JSONDecodeError (битий JSON на HTTP-200) — без
-                # цього виняток вилетів би з циклу ДО commit і відкотив уже проставлені
-                # позначки → дублі наступного прогону (нит аудитора N3).
-                order = fetch_prom_order(oid)
-            except (requests.RequestException, ValueError) as e:
-                print(f"  ⚠️ №{oid}: не вдалось отримати замовлення ({e}) — пропускаю цей прогін.")
-                stats["errors"] += 1
-                continue
-
-            body = build_review_body(order)
-            buyer = f"{order.get('client_first_name', '')} {order.get('client_last_name', '')}".strip()
-            if not body:
-                print(f"  ⏭️ №{oid} ({buyer}): нема даних замовлення (ні товарів, ні order_id) — пропускаю.")
-                stats["skipped_no_products"] += 1
-                continue
-
-            if dry_run:
-                preview = body.replace("\n", "\n         ")
-                print(f"  ✉️ №{oid} ({buyer}):\n         «{preview}»")
-                continue
-
-            try:
-                send_order_context(oid, body)
-                mark_sent(conn, row["internal_order_id"])
-                conn.commit()  # робимо позначку ДУРАБЕЛЬНОЮ одразу — щоб краш/kill
-                               # на наступному замовленні не відкотив уже надіслане (→ дублі)
-                stats["sent"] += 1
-                print(f"  ✅ №{oid} ({buyer}): надіслано, позначено.")
-            except (requests.RequestException, RuntimeError, ValueError) as e:
-                print(f"  ⚠️ №{oid} ({buyer}): помилка відправки ({e}) — позначку НЕ ставлю.")
-                stats["errors"] += 1
+        print(f"[ReviewReq] {mode}. Компанійських (при отриманні): {len(company)}, "
+              f"товарних (наступного дня): {len(product)}.\n")
+        _process_stage(conn, company, build_company_body, mark_company_sent, "компанія", dry_run, stats)
+        _process_stage(conn, product, build_review_body, mark_sent, "товар", dry_run, stats)
 
     print(f"\n[ReviewReq] Підсумок: придатних {stats['eligible']}, надіслано {stats['sent']}, "
           f"пропущено {stats['skipped_no_products']}, помилок {stats['errors']}.")

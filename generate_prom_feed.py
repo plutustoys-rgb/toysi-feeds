@@ -537,6 +537,16 @@ def _derive_toysi_to_prom_category(catalog: dict, prom_category_cache: dict) -> 
     return {tcat: c.most_common(1)[0][0] for tcat, c in tally.items()}
 
 
+# Російськомовні товари — виключати (наказ власника 2026-08-21). Тримати регекс у СИНХРОНІ з
+# generate_rozetka_feed._RUSSIAN_LANG_RE. Лише мовний маркер («(рос)»/«(рус)»/standalone «рос»/«рус»/
+# «рос. звучення»), НЕ голе «російськ» (зміст «російські народні казки» — лишаємо).
+_RUSSIAN_LANG_RE = re.compile(r"\bрос\b|\bрус\b|російською|російськомов|рос\.\s*звуч", re.IGNORECASE)
+
+
+def _is_russian_language(name: str) -> bool:
+    return bool(_RUSSIAN_LANG_RE.search(name or ""))
+
+
 def _build_xml(
     catalog: dict,
     prom_category_cache: dict = None,
@@ -574,6 +584,7 @@ def _build_xml(
     described_count = 0  # Vis-9: SKU, що отримали вручну написаний опис замість сирого Toysi
     skipped         = 0
     skipped_cheap   = 0
+    skipped_russian = 0   # рос-мовні товари — виключаємо (наказ власника 2026-08-21)
     overridden_count       = 0  # ціна з pricing_results.csv (конкурент перевірений вручну)
     floor_clamped_count    = 0  # override-ціна БУЛА нижче свіжого floor → підняли до floor (суцільний гард)
     floor_bound_count      = 0  # ціна за замовчуванням, впирається в нижню межу маржі
@@ -605,6 +616,9 @@ def _build_xml(
             continue
         if cost < MIN_SUPPLIER_PRICE:
             skipped_cheap += 1
+            continue
+        if _is_russian_language(item.get("name") or ""):
+            skipped_russian += 1
             continue
 
         item_id = str(item["id"])
@@ -788,6 +802,7 @@ def _build_xml(
         "total_in_feed": len(offers_el),
         "skipped_no_price": skipped,
         "skipped_cheap": skipped_cheap,
+        "skipped_russian": skipped_russian,
         "overridden_count": overridden_count,
         "floor_clamped_count": floor_clamped_count,
         "floor_bound_count": floor_bound_count,

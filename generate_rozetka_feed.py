@@ -324,6 +324,17 @@ def _within_rz_delivery_dims(item: dict) -> bool:
     return side is None or side <= RZ_DELIVERY_MAX_SIDE_CM
 
 
+# Російськомовні товари — власник наказав ВИКЛЮЧАТИ 2026-08-21 (Rozetka такі не пропускає в принципі
+# + репутація дитячого укр-магазину). Маркер МОВИ товару в назві: «(рос)»/«(рус)», standalone «рос»/
+# «рус» (напр. «(B2) рос»), «рос. звучення». НЕ голе «російськ» — щоб не зачепити ЗМІСТ («російські
+# народні казки» = про казки, не мовний маркер; лишаємо, звірено на живому фіді).
+_RUSSIAN_LANG_RE = re.compile(r"\bрос\b|\bрус\b|\(\s*рос|\(\s*рус|рос\.\s*звуч", re.IGNORECASE)
+
+
+def _is_russian_language(name: str) -> bool:
+    return bool(_RUSSIAN_LANG_RE.search(name or ""))
+
+
 def _qualifies_for_feed(item: dict, excluded: set) -> bool:
     """Ті самі skip-фільтри, що й основний цикл _build_xml() (ціна,
     excluded id, vendor, https-фото) — винесено окремо, щоб рахувати
@@ -345,6 +356,8 @@ def _qualifies_for_feed(item: dict, excluded: set) -> bool:
     # відхиляє як «товар занесено як новий, вкажіть стан used». Ми дропшип, уцінені одиничні позиції
     # не варті модерації/скарг — виключаємо з фіда (рекомендація SEO, звірено: 10/11 «некор. хар-ка»).
     if (item.get("name") or "").strip().lower().startswith("уцінка"):
+        return False
+    if _is_russian_language(item.get("name") or ""):   # рос-мовний товар — власник наказав виключати
         return False
     vendor = (item.get("vendor") or "").strip()
     if not vendor:
@@ -639,6 +652,9 @@ def _build_xml(
         # відхиляє «занесено як новий, вкажіть used». Дропшип, одиничні позиції — виключаємо (той самий
         # фільтр, що в _qualifies_for_feed вище — ОБИДВА місця, бо фільтри дубльовані: тут реальний гейт).
         if (item.get("name") or "").strip().lower().startswith("уцінка"):
+            skipped_unprof += 1
+            continue
+        if _is_russian_language(item.get("name") or ""):   # рос-мовний — виключаємо (наказ власника)
             skipped_unprof += 1
             continue
 

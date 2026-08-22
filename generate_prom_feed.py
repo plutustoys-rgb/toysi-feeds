@@ -650,6 +650,15 @@ def _build_xml(
                 # Немає свіжого живого конкурента (override = ціна "без конкурента",
                 # NO_COMPETITOR_MULT/25%) — консервативний division-floor як і раніше.
                 floor = compute_floor(cost, commission, MIN_PROFIT_COMPETITOR_FLOOR)
+            # min_safe: та сама остання гарантія, що в decide_price_for_platform (net-виручка
+            # ≥ собівартість), яку власниця додала 2026-07-26 проти "конкурент ≈ 0₴ → чиста
+            # виручка < cost". Канонічний floor її НЕ забезпечує (при низькому конкуренті +
+            # свіжому зростанні собівартості C = cost*1.03 + candidate*comm може бути < cost/
+            # (1-comm)); стара division-формула забезпечувала неявно (D ≥ min_safe). Клемп
+            # безпечний для ОБОХ гілок: у здоровому undercut candidate ≥ min_safe, тож не кусає
+            # й не повертає баг 325-SKU — спрацьовує лише в дистрес-режимі (товар і так над ринком).
+            if commission < 1:
+                floor = max(floor, round(cost / (1 - commission), 2))
             if retail < floor:
                 # ceil до копійки (не round) — гард ніколи не має публікувати навіть на пів-копійки
                 # НИЖЧЕ floor; -1e-6 гасить float-шум, щоб рівно-копійчаний floor не стрибав угору.

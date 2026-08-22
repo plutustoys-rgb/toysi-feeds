@@ -4,7 +4,7 @@ from pathlib import Path
 
 from parser import fetch_toysi_catalog
 from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
-from competitor_pricing import decide_price_for_platform, load_delisted_pids, load_fresh_prom_price_overrides, real_toysi_cost
+from competitor_pricing import decide_price_for_platform, load_delisted_pids, load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices, real_toysi_cost
 
 # ВИПРАВЛЕНО (2026-07-16, задача власниці — full_catalog_competitor_scan.py
 # не мав лишатись окремим інформаційним скриптом): щоночі
@@ -350,6 +350,9 @@ def generate_top_feed(output_file: str = OUTPUT_FILE) -> None:
         output_file=output_file,
         catalog=top_catalog,
         price_overrides=load_fresh_prom_price_overrides(),
+        # competitor_price тих самих свіжих записів → floor-гард рахує канонічний floor
+        # власниці (не завищений division), щоб не перебивати undercut над ринок (2026-08-22).
+        competitor_prices=load_fresh_prom_competitor_prices(),
         prom_category_cache=_load_prom_category_cache(),
         description_overrides=load_approved_prom_overrides(),
         # ПОВНИЙ каталог (не лише топ-6000) для виведення Toysi→Prom категорій:

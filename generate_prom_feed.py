@@ -7,7 +7,8 @@ from datetime import datetime
 
 from competitor_pricing import (decide_price_for_platform, load_fresh_prom_price_overrides,
                                  load_description_overrides, real_toysi_cost,
-                                 compute_floor, compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
+                                 compute_floor, compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR,
+                                 canonical_competitor_floor, PRICE_STEP)
 from parser import fetch_toysi_catalog
 from telegram_notify import send_telegram_message
 
@@ -554,6 +555,7 @@ def _build_xml(
     russian_text: dict = None,
     description_overrides: dict = None,
     full_catalog: dict = None,
+    competitor_prices: dict = None,
 ) -> tuple[ET.Element, dict]:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     yml  = ET.Element("yml_catalog", date=now)
@@ -579,6 +581,7 @@ def _build_xml(
 
     offers_el       = ET.SubElement(shop, "offers")
     overrides       = price_overrides or {}
+    comp_prices     = competitor_prices or {}
     russian         = russian_text or {}
     desc_overrides  = description_overrides or {}
     described_count = 0  # Vis-9: SKU, що отримали вручну написаний опис замість сирого Toysi
@@ -631,11 +634,22 @@ def _build_xml(
             # опублікувати нижче 3%-floor: піднімаємо ЛИШЕ вгору до floor (ніколи не опускаємо й
             # ніколи не нижче конкурента). Формульна гілка (else) floor уже поважає через
             # decide_price_for_platform. Read-only по стану репрайсера — жодної гонки за файл.
-            floor = compute_floor(
-                cost,
-                compute_total_commission(PLATFORM, item.get("category_name"), retail),
-                MIN_PROFIT_COMPETITOR_FLOOR,
-            )
+            commission = compute_total_commission(PLATFORM, item.get("category_name"), retail)
+            comp = comp_prices.get(item_id)
+            if comp and comp > 0:
+                # Є свіжий ЖИВИЙ конкурент → floor рахуємо КАНОНІЧНОЮ формулою власниці
+                # (пряме додавання від candidate=competitor-PRICE_STEP) — ТОЮ Ж, що
+                # decide_price_for_platform/репрайсер. Раніше тут стояв division-floor
+                # (compute_floor), який власниця явно відкинула 2026-07-26: для граничних
+                # SKU (собівартість зросла після ціноутворення) він завищував межу й
+                # перебивав коректний undercut −3 на ціну НАД ринком (баг 2026-08-22:
+                # 325 SKU опинялись вище конкурента при медіані каталогу −3).
+                candidate = round(comp - PRICE_STEP, 2)
+                floor = canonical_competitor_floor(cost, candidate, commission)
+            else:
+                # Немає свіжого живого конкурента (override = ціна "без конкурента",
+                # NO_COMPETITOR_MULT/25%) — консервативний division-floor як і раніше.
+                floor = compute_floor(cost, commission, MIN_PROFIT_COMPETITOR_FLOOR)
             if retail < floor:
                 # ceil до копійки (не round) — гард ніколи не має публікувати навіть на пів-копійки
                 # НИЖЧЕ floor; -1e-6 гасить float-шум, щоб рівно-копійчаний floor не стрибав угору.
@@ -837,7 +851,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
                   catalog: dict = None,
                   description_overrides: dict = None,
                   prom_category_cache: dict = None,
-                  full_catalog: dict = None) -> None:
+                  full_catalog: dict = None,
+                  competitor_prices: dict = None) -> None:
     if catalog is None:
         print("[Prom] Завантажуємо каталог Toysi...")
         catalog = fetch_toysi_catalog()
@@ -851,6 +866,7 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     root, stats = _build_xml(
         catalog, prom_category_cache=prom_category_cache, price_overrides=price_overrides,
         russian_text=russian_text, description_overrides=description_overrides,
+        competitor_prices=competitor_prices,
         # Повний каталог для виведення Toysi→Prom категорійної мапи (ширше покриття
         # fallback-категорій, ніж лише топ-6000) — див. _build_xml/_derive.
         full_catalog=full_catalog,

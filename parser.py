@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from typing import Dict
 from dotenv import load_dotenv
 from name_normalize import normalize_display_name
+from name_overrides import apply_name_override
 
 load_dotenv()
 
@@ -179,6 +180,9 @@ def _parse_xml(xml_content: bytes, lang: str = "ukr") -> Dict[str, dict]:
         # соц (meta_feed) консистентно. lang-aware: ukr → ще «антистресс»→«антистрес»; rus (окремий
         # запит для Prom <name>) → ні, бо в російській «антистресс» правильний. Гомогліфи+пробіли — в обох.
         name        = normalize_display_name(offer.findtext("name", "").strip(), ukr_spelling=(lang != "rus"))
+        # Курована таблиця виправлень поіменно (SEO 2026-08-23, name_overrides): повні переклади рос.→укр,
+        # «элем.»→«елем.», випадки поза правилом гомогліфів. ЛИШЕ укр. назва (не чіпає рос. поле Prom <name>).
+        name        = apply_name_override(product_id, name, ukr_spelling=(lang != "rus"))
         price       = offer.findtext("price", "").strip()
 
         ostatok_raw = offer.findtext("ostatok", "0").strip()

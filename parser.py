@@ -85,7 +85,7 @@ def fetch_toysi_catalog(lang: str = "ukr") -> Dict[str, dict]:
         except requests.exceptions.RequestException as e:
             print(f"[Toysi] Ошибка соединения: {e} (спроба {attempt}/{attempts})")
         else:
-            return _parse_xml(response.content)
+            return _parse_xml(response.content, lang)
 
         if attempt < attempts:
             time.sleep(TOYSI_RETRY_DELAY)
@@ -143,7 +143,7 @@ def _extract_vendor_from_params(params: list) -> str:
     return ""
 
 
-def _parse_xml(xml_content: bytes) -> Dict[str, dict]:
+def _parse_xml(xml_content: bytes, lang: str = "ukr") -> Dict[str, dict]:
     """
     Парсит YML-совместимый XML от Toysi.
     Ключ возвращаемого словаря — id товара Toysi (offer/@id).

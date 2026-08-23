@@ -671,7 +671,16 @@ def main() -> None:
                          "тире (—) й емодзі при передачі підпису аргументом (інцидент 2026-08-23, "
                          "перший рілс). Має пріоритет над --caption.")
     args = ap.parse_args()
-    if args.reel:
+    # --reel/--caption-file переданий → РЕЖИМ РІЛСА, НІКОЛИ не провалюємось у каталог-прогін.
+    # FOOTGUN-ІНЦИДЕНТ 2026-08-23: publish_reel_video.sh віддав ПОРОЖНІЙ URL, `--reel ""` став
+    # falsy, `if args.reel:` пропустив рілс-гілку → скрипт мовчки перейшов у каталог і запостив
+    # 3 товарні FB-пости замість рілса. Тепер порожній URL = ГУЧНА помилка, а не тихий каталог.
+    if args.reel is not None or args.caption_file:
+        if not (args.reel or "").strip():
+            print("[social] --reel порожній/без URL — НЕ публікую рілс і НЕ падаю в каталог-прогін "
+                  "(footgun-захист). Найпевніше publish_reel_video.sh не віддав URL — перевір його.",
+                  file=sys.stderr)
+            sys.exit(2)
         # Reels — окремий одноразовий вхід, ledger/каталог не чіпає, лок не потрібен.
         caption = args.caption
         if args.caption_file:

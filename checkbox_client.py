@@ -45,6 +45,7 @@ CHECKBOX_CASHIER_PIN (CHECKBOX_NP_API_KEY НЕ потрібен цій функ�
 проєкті з 2026-07-22. Оригінальний ризик-опис лишається нижче для історії."""
 
 import os
+import re
 import sys
 import time
 
@@ -205,11 +206,27 @@ def _ensure_shift_open(token: str) -> None:
     )
 
 
+def _normalize_delivery_phone(phone: str | None) -> str | None:
+    """Приводить телефон до формату Checkbox DeliveryPayload.phone (Swagger pattern
+    `\\+?380\\d{9}$`, звірено api.checkbox.in.ua/api/openapi.json 2026-08-23): будує
+    `+380XXXXXXXXX`. None, якщо не схоже на укр. мобільний → delivery НЕ додаємо (чек усе
+    одно створюється, просто без авто-надсилання — не ламаємо фіскалізацію через кривий номер)."""
+    if not phone:
+        return None
+    d = re.sub(r"\D", "", str(phone))
+    if len(d) == 10 and d.startswith("0"):   # 0XXXXXXXXX → 380XXXXXXXXX
+        d = "380" + d[1:]
+    if len(d) == 12 and d.startswith("380"):
+        return "+" + d
+    return None
+
+
 def create_receipt(
     goods: list,
     payment_type: str,
     total_amount: float,
     order_id: str | None = None,
+    customer_phone: str | None = None,
 ) -> dict:
     """POST /api/v1/receipts/sell (підтверджено офіційним Swagger,
     api.checkbox.in.ua/api/docs) — прямий чек продажу, БЕЗ жодної залежності
@@ -255,6 +272,15 @@ def create_receipt(
         ],
         "payments": [{"type": payment_type, "value": round(total_amount * 100)}],
     }
+    # ДОСТАВКА ЧЕКА ПОКУПЦЮ (обов'язок дистанційної торгівлі — чек має бути АКТИВНО наданий
+    # покупцю не пізніше видачі, знахідка агента-бухгалтера 2026-08-23, КОДВ §7). Checkbox поле
+    # `delivery` (ReceiptSellPayload.delivery → DeliveryPayload, звірено OpenAPI 2026-08-23) з
+    # телефоном → авто-надсилання чека у Viber/SMS. Телефон беремо з orders_db (customer_phone).
+    # Якщо номер кривий/порожній → delivery не додаємо (чек усе одно фіскалізується).
+    # ⚠️ Примітка Swagger: надсилання на SMS може бути ПЛАТНИМ (Viber — безкоштовно).
+    delivery_phone = _normalize_delivery_phone(customer_phone)
+    if delivery_phone:
+        body["delivery"] = {"phone": delivery_phone}
     # ВИПРАВЛЕНО (2026-07-22, живий крах усіх 6 замовлень на першому
     # реальному прогоні після активації ключів — 422 Unprocessable Entity):
     # Checkbox вимагає, щоб order_id був СПРАВЖНІМ UUID

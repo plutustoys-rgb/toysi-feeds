@@ -701,6 +701,8 @@ def _build_xml(
         # якщо для SKU rus-варіанту немає (рідкість — 2 з ~29386 у
         # повному каталозі) чи russian_text не передано, м'яко падаємо
         # назад на українську, а не лишаємо поле порожнім.
+        # name/name_ua уже пройшли гомогліфну чистку (name_normalize) у джерелі —
+        # parser.fetch_toysi_catalog (lang-aware: ukr→антистрес-фікс, rus→ні). Запит SEO 2026-08-23.
         name    = item.get("name", "")
         name_ru = (russian.get(item_id) or {}).get("name") or name
         if item_id not in russian:

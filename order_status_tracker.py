@@ -162,17 +162,18 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = Non
             if not tracking or not tracking["delivered"]:
                 return
         elif carrier == "rozetka_delivery":
-            # RZ Delivery COD: НЕ через delivery_status='delivered' — живо підтверджено 2026-08-23,
-            # що delivery_status для RZ Delivery (як і для НП) застрягає на 'shipped'/'processing' і
-            # НІКОЛИ не доходить до 'delivered' (мапиться з кодів Toysi, а Toysi не знає моменту видачі
-            # покупцю на пункті Rozetka). Старий тригер не видав би чек ВЗАГАЛІ = фіскальне порушення
-            # (реальне замовлення rozetka_903992205). Правильний сигнал «гроші отримано» — оплата,
-            # підтверджена Rozetka на пункті: is_order_paid (GET /orders/status-payment, name=='paid').
-            # Бухгалтер підтвердив (CODE_LOG 2026-08-23): чек можна видати при видачі (правила Rozetka
-            # — до відправки АБО при видачі). is_order_paid=False на помилці/невідомо → чек не поспішає
-            # (безпечний дефалт, той самий цикл опитування повторить). ⚠️ ПОВЕДІНКА is_order_paid для COD
-            # ще не звірена живо (перший RZ-COD 903992205 у дорозі) — верифікувати на ньому.
-            if not rozetka_client.is_order_paid(order["order_id"]):
+            # RZ Delivery COD: сигнал «покупець забрав+оплатив» = order-статус Rozetka **6 «Виконано»**
+            # (rozetka_client.is_order_done). ЗВІРЕНО АВТОРИТЕТНО (apidoc api_data.js + живо 2026-08-23):
+            #  • delivery_status (Toysi-коди) застрягає на 'shipped' — ніколи не 'delivered' (PR #352 хибний);
+            #  • is_order_paid теж хибний для COD — apidoc: payment_type='cash' має payment_status=null,
+            #    Rozetka не трекає готівку на пункті платіжним статусом (PR #382 хибний);
+            #  • правильний enum: 4 Доставляється → 5/76 чекає на пункті → **6 Виконано** (Rozetka сама
+            #    ставить після видачі+оплати); живо: 903654095 (COD-отримано)=6, Кравчук 903992205=80 (у дорозі).
+            # is_order_done=False на помилці/невідомо → чек не поспішає (безпечний дефалт, наступний цикл
+            # опитування повторить). Ідемпотентність (checkbox_ettn_registered_at, вгорі функції) гарантує
+            # один чек: prepaid/НП-гілки виставляють свій чек раніше й ставлять прапорець, тож дубля на
+            # статусі 6 не буде — ця гілка кличеться лише для cod+rozetka_delivery.
+            if not rozetka_client.is_order_done(order["order_id"]):
                 return
         else:
             return  # інші перевізники (напр. укрпошта) — COD-чек поки не покрито

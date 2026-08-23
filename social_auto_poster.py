@@ -664,11 +664,22 @@ def main() -> None:
     ap.add_argument("--reel", metavar="VIDEO_URL",
                     help="Опублікувати ОДИН IG-Reel за публічним video_url (замість каталог-прогону). "
                          "Потребує --caption. Без --publish — dry-run.")
-    ap.add_argument("--caption", default="", help="Підпис для --reel.")
+    ap.add_argument("--caption", default="", help="Підпис для --reel (рядком).")
+    ap.add_argument("--caption-file", metavar="PATH",
+                    help="Читати підпис із UTF-8 файлу — НАДІЙНІШЕ за --caption: обходить "
+                         "перекодування консолі/argv/шелла, яке з'їдало кирилицю (К/З), довге "
+                         "тире (—) й емодзі при передачі підпису аргументом (інцидент 2026-08-23, "
+                         "перший рілс). Має пріоритет над --caption.")
     args = ap.parse_args()
     if args.reel:
         # Reels — окремий одноразовий вхід, ledger/каталог не чіпає, лок не потрібен.
-        post_single_reel(args.reel, args.caption, args.publish)
+        caption = args.caption
+        if args.caption_file:
+            # Явний UTF-8 — не покладаємось на локаль VPS (може бути C/ascii), інакше
+            # той самий клас багу переїхав би з argv у читання файлу.
+            with open(args.caption_file, encoding="utf-8") as f:
+                caption = f.read().strip()
+        post_single_reel(args.reel, caption, args.publish)
         return
     lock = _acquire_lock()
     if not lock:

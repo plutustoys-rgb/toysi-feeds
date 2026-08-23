@@ -162,11 +162,17 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = Non
             if not tracking or not tracking["delivered"]:
                 return
         elif carrier == "rozetka_delivery":
-            # RZ Delivery COD: NP-трекінгу нема (інший перевізник). Гроші отримано при видачі на
-            # пункті Rozetka = delivery_status 'delivered' (з Toysi/Rozetka-статусу, track_orders).
-            # ⚠️ Наразі RZ-Delivery COD ВИМКНЕНО в кабінеті Rozetka (2026-08-21) — цей шлях латентний,
-            # живо ще не спрацьовував; вмикання COD у кабінеті одразу дасть коректну фіскалізацію.
-            if delivery_status != "delivered":
+            # RZ Delivery COD: НЕ через delivery_status='delivered' — живо підтверджено 2026-08-23,
+            # що delivery_status для RZ Delivery (як і для НП) застрягає на 'shipped'/'processing' і
+            # НІКОЛИ не доходить до 'delivered' (мапиться з кодів Toysi, а Toysi не знає моменту видачі
+            # покупцю на пункті Rozetka). Старий тригер не видав би чек ВЗАГАЛІ = фіскальне порушення
+            # (реальне замовлення rozetka_903992205). Правильний сигнал «гроші отримано» — оплата,
+            # підтверджена Rozetka на пункті: is_order_paid (GET /orders/status-payment, name=='paid').
+            # Бухгалтер підтвердив (CODE_LOG 2026-08-23): чек можна видати при видачі (правила Rozetka
+            # — до відправки АБО при видачі). is_order_paid=False на помилці/невідомо → чек не поспішає
+            # (безпечний дефалт, той самий цикл опитування повторить). ⚠️ ПОВЕДІНКА is_order_paid для COD
+            # ще не звірена живо (перший RZ-COD 903992205 у дорозі) — верифікувати на ньому.
+            if not rozetka_client.is_order_paid(order["order_id"]):
                 return
         else:
             return  # інші перевізники (напр. укрпошта) — COD-чек поки не покрито

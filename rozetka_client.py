@@ -49,7 +49,10 @@ ORDER_STATUS_AUTO_TRACKED      = 61  # DEPRECATED-alias (стара НЕВІРН
 # «Комплектується перевізником»(56)/«Виконано» звірити через status_available НА ТІЙ стадії.
 ORDER_STATUS_HANDED_TO_DELIVERY = 3  # ⚠️ НЕ звірено — можливо не той код
 ORDER_STATUS_DELIVERING        = 4   # ⚠️ НЕ звірено
-ORDER_STATUS_DONE              = 6   # ⚠️ НЕ звірено
+ORDER_STATUS_DONE              = 6   # «Замовлення виконано» (термінальний). ЗВІРЕНО apidoc
+                                     # GetOrderStatuses + ЖИВО 2026-08-23 (get_order_details.status:
+                                     # 903654095 COD-отримано=6, 903719616 prepaid-отримано=6, Кравчук
+                                     # 903992205 у дорозі=80 «чекає отримання від продавця»).
 
 # Термінальні для order_status_tracker.py/аналогічної логіки (успішні й неуспішні
 # кінцеві стани, після яких подальше опитування сенсу не має).
@@ -272,7 +275,11 @@ def get_payment_status(order_id) -> dict:
 
 def is_order_paid(order_id) -> bool:
     """True, якщо Rozetka каже, що замовлення оплачене (name=='paid'). Помилка/невідомо →
-    False (краще тримати непідтвердженим, ніж форварднути неоплачене наосліп)."""
+    False (краще тримати непідтвердженим, ніж форварднути неоплачене наосліп).
+
+    ⚠️ ЛИШЕ для PREPAID (оплата через платіжку Rozetka). Для COD НЕ ПРАЦЮЄ — apidoc: у
+    payment_type='cash' `payment_status: null`, Rozetka не трекає готівку на пункті платіжним
+    статусом. Сигнал завершення COD — get_order_status()==ORDER_STATUS_DONE (див. нижче)."""
     try:
         st = get_payment_status(order_id)
         return isinstance(st, dict) and str(st.get("name", "")).lower() == "paid"
@@ -280,6 +287,28 @@ def is_order_paid(order_id) -> bool:
         # БУДЬ-ЯКА невизначеність (мережа, несподівана форма відповіді) → False: краще тримати
         # непідтвердженим, ніж форварднути неоплачене. Той самий безпечний напрямок.
         return False
+
+
+def get_order_status(order_id) -> int | None:
+    """Поточний order-статус замовлення в Rozetka — поле `status` у GET /orders/{id}
+    (звірено живо 2026-08-23: `order_status` у відповіді = None, реальний статус у `status`).
+    None на будь-якій помилці/несподіваній формі. Легкий запит без expand."""
+    try:
+        c = _request("get", f"/orders/{order_id}")
+        st = c.get("status") if isinstance(c, dict) else None
+        return int(st) if st is not None else None
+    except Exception:
+        # ШИРОКО (аудит #383): _login() може кинути RuntimeError (нема креденшелів), а контракт
+        # _maybe_issue_receipt — «помилка тут не зупиняє track_orders для інших замовлень». Той
+        # самий безпечний напрямок, що is_order_paid: будь-яка невизначеність → None → чек не поспішає.
+        return None
+
+
+def is_order_done(order_id) -> bool:
+    """True, якщо Rozetka-статус = 6 «Замовлення виконано» (термінальний; для COD = покупець
+    ЗАБРАВ+ОПЛАТИВ на пункті). Це правильний сигнал COD-фіскалізації (не is_order_paid, який для
+    COD завжди False). Помилка/невідомо → False (безпечно, не поспішаємо з чеком до підтвердження)."""
+    return get_order_status(order_id) == ORDER_STATUS_DONE
 
 
 def _rz_delivery_sender() -> dict:

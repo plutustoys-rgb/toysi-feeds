@@ -297,7 +297,10 @@ def get_order_status(order_id) -> int | None:
         c = _request("get", f"/orders/{order_id}")
         st = c.get("status") if isinstance(c, dict) else None
         return int(st) if st is not None else None
-    except (RozetkaAPIError, ValueError, TypeError):
+    except Exception:
+        # ШИРОКО (аудит #383): _login() може кинути RuntimeError (нема креденшелів), а контракт
+        # _maybe_issue_receipt — «помилка тут не зупиняє track_orders для інших замовлень». Той
+        # самий безпечний напрямок, що is_order_paid: будь-яка невизначеність → None → чек не поспішає.
         return None
 
 

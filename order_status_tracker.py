@@ -188,6 +188,7 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = Non
             payment_type=payment_type,
             total_amount=total_amount,
             order_id=order["internal_order_id"],
+            customer_phone=order.get("phone"),  # авто-надсилання чека покупцю (Viber/SMS), КОДВ §7
         )
     except CheckboxAPIError as e:
         print(

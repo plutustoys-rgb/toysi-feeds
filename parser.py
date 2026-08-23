@@ -6,6 +6,7 @@ import requests
 import xml.etree.ElementTree as ET
 from typing import Dict
 from dotenv import load_dotenv
+from name_normalize import normalize_display_name
 
 load_dotenv()
 
@@ -173,7 +174,11 @@ def _parse_xml(xml_content: bytes) -> Dict[str, dict]:
     for offer in offers:
         product_id  = offer.get("id") or offer.findtext("vendorCode", "").strip()
         vendor_code = offer.findtext("vendorCode", "").strip()
-        name        = offer.findtext("name", "").strip()
+        # Гомогліфна чистка назви (SEO 2026-08-23, name_normalize): латиниця-маска під кирилицю
+        # робить товар невидимим у пошуку. У джерелі — щоб чистими були ВСІ фіди + дедуп Rozetka +
+        # соц (meta_feed) консистентно. lang-aware: ukr → ще «антистресс»→«антистрес»; rus (окремий
+        # запит для Prom <name>) → ні, бо в російській «антистресс» правильний. Гомогліфи+пробіли — в обох.
+        name        = normalize_display_name(offer.findtext("name", "").strip(), ukr_spelling=(lang != "rus"))
         price       = offer.findtext("price", "").strip()
 
         ostatok_raw = offer.findtext("ostatok", "0").strip()

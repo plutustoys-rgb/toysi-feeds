@@ -625,6 +625,14 @@ def _build_xml(
             continue
 
         item_id = str(item["id"])
+        # prom_category_id (реальний Prom-id з кешу) — ТОЙ САМИЙ вхід, що використовує
+        # репрайсер (prom_competitor_pricer.decide_action → decide_price_for_platform).
+        # Без нього комісія (а отже floor) для SKU, де ставку задає САМЕ id (а назва Toysi
+        # неоднозначна — 39 категорій/~198 SKU, PROM_CATEGORY_ID_COMMISSION), падала на
+        # ДЕФОЛТНУ й завищувала floor → фід перебивав коректний undercut над ринок (2026-08-23:
+        # ~343 SKU — це «виключено через непідтверджену комісію» репрайсера, яких фід усе одно
+        # клемпив вгаданою name-комісією). Передаємо id, щоб фід і репрайсер рахували ОДНУ комісію.
+        prom_category_id = ((prom_category_cache or {}).get(item_id) or {}).get("category_id")
         if item_id in overrides:
             retail = overrides[item_id]
             # СУЦІЛЬНИЙ floor-гард (усі ~6000 SKU, на КОЖНІЙ генерації фіду). Override — це
@@ -634,7 +642,7 @@ def _build_xml(
             # опублікувати нижче 3%-floor: піднімаємо ЛИШЕ вгору до floor (ніколи не опускаємо й
             # ніколи не нижче конкурента). Формульна гілка (else) floor уже поважає через
             # decide_price_for_platform. Read-only по стану репрайсера — жодної гонки за файл.
-            commission = compute_total_commission(PLATFORM, item.get("category_name"), retail)
+            commission = compute_total_commission(PLATFORM, item.get("category_name"), retail, prom_category_id=prom_category_id)
             comp = comp_prices.get(item_id)
             if comp and comp > 0:
                 # Є свіжий ЖИВИЙ конкурент → floor рахуємо КАНОНІЧНОЮ формулою власниці
@@ -666,7 +674,7 @@ def _build_xml(
                 floor_clamped_count += 1
             overridden_count += 1
         else:
-            decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"))
+            decision = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"), prom_category_id=prom_category_id)
             retail = decision["price"]
             if decision["price"] <= decision["floor"] + 0.005:
                 floor_bound_count += 1

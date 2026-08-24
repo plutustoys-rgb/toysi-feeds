@@ -314,15 +314,20 @@ def is_order_done(order_id) -> bool:
 def _rz_delivery_sender() -> dict:
     """Реквізити відправника для RZ-Delivery-ТТН — усе через env (легко правити без деплою).
     Дефолти: пункт здачі Toysi «Алматинська, 4» (department=pickup_id, звірено живо 2026-08-20),
-    відправник = ФОП Чечетенко О.Ю. (Plutonix — це НАЗВА МАГАЗИНА, а не ПІБ; sender.name для
-    natural = ПІБ ФОП). Тел від власника. `info` НЕ може бути порожнім (RZ-модуль вимагає ≥1
-    символ). Контракт звірено на живій ТТН RMP-835110782 (903719616)."""
+    Тел від власника. `info` НЕ може бути порожнім (RZ-модуль вимагає ≥1 символ).
+
+    ПРЯМИЙ НАКАЗ ВЛАСНИКА 2026-08-24: у колонці «Від» наклейки має стояти НАЗВА МАГАЗИНА «Plutonix»,
+    а не особисте ПІБ. Тому `sender.name = "Plutonix"` (дефолт нижче). Перевізник це приймає навіть
+    для type=natural — доведено живою валідною ТТН RMP-835110782 (903719616), у якої «Від: Plutonix».
+    Раніше дефолт був «Чечетенко О.Ю.» → ТТН 903820880 вийшла з особистим ПІБ (те, що власник забракував).
+    Легальна ідентичність ФОП лишається в кабінеті-продавці Rozetka (акаунт = ФОП), у наклейці не потрібна.
+    ⚠️ Якщо на VPS у .env задано RZ_SENDER_NAME — воно ПЕРЕБИВАЄ цей дефолт; має бути «Plutonix» або знято."""
     return {
         "type": os.environ.get("RZ_SENDER_TYPE", "natural"),   # ENUM: natural(физ)/legal(юр). ФОП=natural
         "city": os.environ.get("RZ_SENDER_CITY", "Київ"),
         "address": os.environ.get("RZ_SENDER_ADDRESS", "Алматинська, 4"),
         "department": os.environ.get("RZ_SENDER_DEPARTMENT", "0bc950b0-493f-4afb-bc7e-046d38580df3"),
-        "name": os.environ.get("RZ_SENDER_NAME", "Чечетенко О.Ю."),      # ПІБ ФОП (офіц. відправник)
+        "name": os.environ.get("RZ_SENDER_NAME", "Plutonix"),            # «Від» на наклейці = назва магазина (наказ власника 2026-08-24)
         "phones": [os.environ.get("RZ_SENDER_PHONE", "+380730150815")],
         "info": os.environ.get("RZ_SENDER_INFO", "Plutonix"),            # назва магазина (не порожнє)
     }

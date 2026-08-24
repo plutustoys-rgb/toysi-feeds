@@ -166,7 +166,7 @@ def product_segment(item, feed, n_frames):
     fd, prepped = tempfile.mkstemp(suffix=".png")
     os.close(fd)
     try:
-        reel_prep_product.prep(photo, prepped)
+        reel_prep_product.prep(photo, prepped, center=True)   # рілс: товар по центру картки (маскота на ній нема)
         arr = np.asarray(Image.open(prepped).convert("RGB"))
     finally:
         os.remove(prepped)

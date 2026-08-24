@@ -149,6 +149,15 @@ def summary() -> None:
     OUTPUT_FILE.write_text(json.dumps({"at": datetime.now().isoformat(), "count": len(cat),
                                        "items": cat}, ensure_ascii=False), encoding="utf-8")
     hist_path = _write_daily_history(cat)   # R2: денна історія (не перезапис між добами)
+    # Прапорець стабільності (SEO+SMM 2026-08-23): рахуємо ПІСЛЯ запису сьогоднішнього знімка,
+    # щоб серія враховувала свіжий день. Читає лише історію, тож безпечно; помилку не піднімаємо
+    # (знімок уже записано — це головне), але сигналимо.
+    try:
+        import stable_days
+        sd_path = stable_days.refresh()
+        print(f"[PromCat] stable_days -> {os.path.relpath(sd_path, BASE_DIR)}")
+    except Exception as e:  # noqa: BLE001 — розрахунок допоміжний, не має валити денний прогін
+        print(f"[PromCat] WARN stable_days не оновлено: {e}", file=sys.stderr)
     st = Counter(v.get("status") for v in cat.values())
     pres = Counter(v.get("presence") for v in cat.values())
     underpriced = sum(1 for v in cat.values() if v.get("underpriced"))

@@ -289,6 +289,10 @@ def _is_plutus_post(sku: str) -> bool:
 _PLUTUS_SCENE_EXCLUDE = {
     "scene05_sneeze_pixverse_GREEN.mp4",
     "scene06_grooming_pixverse_GREEN.mp4",
+    # scene04: «плита-підлога» під персонажем (matte.py «scene04 слабо» + SMM 2026-08-24 +
+    # звірено очима: сіро-рожевий мазок-тінь під хвостом лишається після кею, видно на світлому).
+    # Заміна — чиста scene07 (Pika, edge-touch 0/151, без плити). SMM її не бере й у майбутні набори.
+    "scene04_sniff_curious_pika_GREEN.mp4",
 }
 
 

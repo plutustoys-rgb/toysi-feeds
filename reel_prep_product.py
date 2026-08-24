@@ -27,6 +27,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 CANVAS = 1080
 MAX_W = 0.76          # рамка товару по ширині
 MAX_H = 0.58          # рамка товару по висоті (лишає верхні ~36% під маскота)
+CENTER_FILL = 0.82    # center=True (рілс): товар заповнює картку по центру (маскота на картці нема)
 MAX_H_SQUARE = 0.74   # ширша межа висоти для квадратних/портретних товарів (aspect 0.75-1.3):
                       # інакше їх обмежує занижена MAX_H, а не ширина, і вони лишаються
                       # дрібними з порожнім білим полем праворуч (кейс "Тигр-ловець")
@@ -49,7 +50,10 @@ def content_bbox(img, thresh=243):
             min(xs.max() + pad, img.width), min(ys.max() + pad, img.height))
 
 
-def prep(src, dst):
+def prep(src, dst, center=False):
+    """center=False (дефолт, авто-пост): товар притиснуто донизу, верх ~34% білий ПІД МАСКОТА.
+    center=True (РІЛС): маскота на товарній картці НЕМА → товар ЦЕНТРУЄМО й заповнюємо картку
+    (без резерву під маскота), інакше товар «висить» знизу з порожнім верхом (правка 2026-08-24)."""
     im = Image.open(src).convert("RGB")
     im = im.crop(content_bbox(im))
     aspect = im.width / im.height
@@ -65,13 +69,18 @@ def prep(src, dst):
         im = im.crop(content_bbox(im))
         aspect = im.width / im.height
         rotated = True
-    max_h = MAX_H_SQUARE if SQUARE_ASPECT_LO <= aspect <= SQUARE_ASPECT_HI else MAX_H
-    scale = min(CANVAS * MAX_W / im.width, CANVAS * max_h / im.height)
+    if center:
+        scale = min(CANVAS * CENTER_FILL / im.width, CANVAS * CENTER_FILL / im.height)
+    else:
+        max_h = MAX_H_SQUARE if SQUARE_ASPECT_LO <= aspect <= SQUARE_ASPECT_HI else MAX_H
+        scale = min(CANVAS * MAX_W / im.width, CANVAS * max_h / im.height)
     im = im.resize((max(1, int(im.width * scale)), max(1, int(im.height * scale))),
                    Image.LANCZOS)
     canvas = Image.new("RGB", (CANVAS, CANVAS), (255, 255, 255))
     x = (CANVAS - im.width) // 2
-    if im.height < CANVAS * 0.30:
+    if center:
+        y = (CANVAS - im.height) // 2                        # рівно по центру картки
+    elif im.height < CANVAS * 0.30:
         # дуже пласкі товари (змія-тягучка, планка кейкапів): якщо притиснути їх до низу,
         # у картці лишається величезна порожнеча, яка читається як помилка верстки —
         # тому центруємо їх нижче середини, а не по нижньому краю

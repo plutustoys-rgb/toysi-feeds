@@ -84,10 +84,16 @@ T = {
     "hook_max": 80,
 }
 
-# SOURCE-SIDE matte-QA: у теплій палітрі насиченого зеленого нема; будь-яка зелена нитка на вирізі
-# маскота = залишок хромакею. Поріг щедрий (чиста scene07 дає ~кількасот px антиаліасу); перевищення
-# = погано-кейнута сцена → СТОП (не публікуємо рілс із зеленою бахромою). Число друкується — самодіагностика.
-MATTE_GREEN_LIMIT = 4000
+# «Щоб не повторювалось» = курований ЧОРНИЙ СПИСОК вручну звірених дефектних ендсцен (як
+# _PLUTUS_SCENE_EXCLUDE у social_auto_poster). Піксельний зелений-детектор для цього НЕПРИДАТНИЙ:
+# despill у clean_mascot ДЕТЕРМІНОВАНИЙ і завжди зануляє зелень (нема варіації для міряння), а реальний
+# дефект (плита scene04) — СІРИЙ, не зелений (памʼять reel-qa-must-be-source-side; аудит PR#390 довів
+# такий гейт мертвим). Дозволені зараз: scene02/03/07 (звірено очима — чисті).
+_ENDSCENE_BLOCKED = {
+    "scene04_sniff_curious_pika_GREEN.mp4",  # плита-тінь під хвостом (matte.py «слабо» + звірено очима)
+    "scene05_sneeze_pixverse_GREEN.mp4",     # поганий хромакей
+    "scene06_grooming_pixverse_GREEN.mp4",   # поганий хромакей (заміна — scene07)
+}
 
 
 # ─────────────────────────── живий фід ───────────────────────────
@@ -145,7 +151,12 @@ def _resolve_photo(item, feed):
         sys.exit(f"[reel] СТОП: для {item['id']} нема ні локального фото, ні g:image_link у фіді")
     fd, tmp = tempfile.mkstemp(suffix=".img")
     os.close(fd)
-    _fetch_image(url, tmp)
+    try:
+        _fetch_image(url, tmp)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)   # не лишати temp-сироту на мережевому збої
+        raise
     return tmp, tmp
 
 
@@ -295,15 +306,11 @@ def mascot_on_light(arr, scene_file, plate):
     return arr
 
 
-def matte_quality(scene_file):
-    """SOURCE-SIDE QA: виріз маскота не має лишати зеленої нитки хромакею.
-    Повертає (ok, green_px). Композитить cutout на біле, рахує зелено-домінантні пікселі."""
-    rgb, alpha = clean_mascot(scene_file)
-    m = alpha > 0.5
-    comp = np.where(m[..., None], rgb, 255).astype(int)
-    r, g, b = comp[..., 0], comp[..., 1], comp[..., 2]
-    green = int(((g - r > 25) & (g - b > 25) & (g > 60)).sum())
-    return green <= MATTE_GREEN_LIMIT, green
+def check_endscene(scene_file):
+    """«Щоб не повторювалось»: ендсцена має бути вручну звіреною (не в чорному списку дефектних).
+    Надійніше за піксельний детектор — див. _ENDSCENE_BLOCKED, чому зелений-гейт тут мертвий."""
+    if scene_file in _ENDSCENE_BLOCKED:
+        sys.exit(f"[reel] СТОП: ендсцена {scene_file} у чорному списку (дефект вирізу) — рілс не рендеримо")
 
 
 def endcard(bg, n_frames, endline, scene_file):
@@ -332,28 +339,42 @@ def endcard(bg, n_frames, endline, scene_file):
 
 # ─────────────────────────── збірка ───────────────────────────
 
+def _validate_spec(spec, feed):
+    """УСЯ валідація ДО відкриття райтера (щоб не лишати недоплетений mp4): ключі, ендсцена не в
+    чорному списку, items непорожній, форма кожного товару, наявність (ПРАВИЛО №0). Повертає
+    [(item, price, live_title), ...]. Будь-яка проблема → чіткий sys.exit, а не сирий traceback."""
+    for k in ("out", "endline", "endscene", "items"):
+        if k not in spec:
+            sys.exit(f"[reel] СТОП: у специфікації нема ключа '{k}'")
+    check_endscene(spec["endscene"])
+    if not spec["items"]:
+        sys.exit("[reel] СТОП: порожній items — нема чого рендерити")
+    validated = []
+    for it in spec["items"]:
+        for k in ("id", "hook", "name", "spec"):
+            if k not in it:
+                sys.exit(f"[reel] СТОП: у товарі {it.get('id', '?')} нема ключа '{k}'")
+        if not (isinstance(it["spec"], (list, tuple)) and len(it["spec"]) == 2):
+            sys.exit(f"[reel] СТОП: spec товару {it['id']} має бути парою [stat, tail], а не {it['spec']!r}")
+        price, live_title = check_live(feed, it["id"])   # наявність — жорстко, ДО райтера
+        validated.append((it, price, live_title))
+    return validated
+
+
 def build(spec, feed_path=FEED):
     feed = live_feed(feed_path)
     os.makedirs(OUT, exist_ok=True)
-    # SOURCE-SIDE matte-QA ендкарти ДО рендеру: зелена нитка → СТОП (щоб не повторювалось)
-    ok, green = matte_quality(spec["endscene"])
-    print(f"[reel] matte-QA {spec['endscene']}: зелений залишок={green}px (ліміт {MATTE_GREEN_LIMIT})")
-    if not ok:
-        sys.exit(f"[reel] СТОП: сцена {spec['endscene']} лишає зелену нитку ({green}px > {MATTE_GREEN_LIMIT}) — "
-                 f"погано кейнута, рілс не рендеримо")
-    # ПЕРЕДПОЛІТ: наявність УСІХ товарів звіряємо ДО відкриття райтера — інакше OOS на 2-му товарі
-    # лишив би недоплетений mp4. ПРАВИЛО №0: ціна лише в лог для підпису.
-    validated = []
-    for it in spec["items"]:
-        price, live_title = check_live(feed, it["id"])
-        validated.append((it, price, live_title))
+    validated = _validate_spec(spec, feed)
     bg = gradient_bg()
     mask = card_mask()
     dst = os.path.join(OUT, spec["out"] + ".mp4")
-    seg_frames = int(round(2.0 * FPS))   # тривалість сегмента товару
-    wr = imageio.get_writer(dst, fps=FPS, codec="libx264", quality=8,
-                            macro_block_size=1, ffmpeg_params=["-pix_fmt", "yuv420p"])
+    tmp = os.path.join(OUT, spec["out"] + ".part.mp4")   # .mp4-розширення (imageio за ним обирає бекенд);
+    #                                                      атомарний rename у dst лише на ПОВНОМУ успіху
+    seg_frames = int(round(2.0 * FPS))
+    wr = imageio.get_writer(tmp, fps=FPS, codec="libx264", quality=8,
+                            macro_block_size=1, pixelformat="yuv420p")   # yuv420p для IG-сумісності
     total = 0
+    done = False
     try:
         for it, price, live_title in validated:
             chrome = draw_chrome(bg, it["hook"], it["name"], tuple(it["spec"])).astype(np.float32)
@@ -369,8 +390,12 @@ def build(spec, feed_path=FEED):
         for fr in endcard(bg, int(2.5 * FPS), spec["endline"], spec["endscene"]):
             wr.append_data(fr)
         total += int(2.5 * FPS)
+        done = True
     finally:
-        wr.close()   # закрити райтер навіть на винятку — не лишати битий/незакритий mp4
+        wr.close()   # закрити райтер завжди
+        if not done and os.path.exists(tmp):
+            os.remove(tmp)   # прибрати недоплетений temp — не лишати битий поряд
+    os.replace(tmp, dst)     # досягли сюди лише при повному успіху
     print(f"[reel:{spec['out']}] готово: {total} кадрів = {total / FPS:.1f}с -> {dst}")
     return dst
 

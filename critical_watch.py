@@ -109,6 +109,7 @@ def _eval_event(ev: dict, today: date) -> dict:
     lead = int(ev.get("lead_days", DEFAULT_LEAD_DAYS))
     out = {"id": ev.get("id"), "name": ev.get("name", "?"), "icon": ev.get("icon", "dot"),
            "blocks": ev.get("blocks", ""), "source": ev.get("source", ""),
+           "used_in": ev.get("used_in", ""), "renewal": ev.get("renewal", ""),
            "note": ev.get("note", ""), "state": OK, "detail": ""}
 
     if etype in ("balance_threshold", "count_threshold"):
@@ -160,6 +161,39 @@ def _eval_event(ev: dict, today: date) -> dict:
         out["detail"] = f"наступне ~{nxt.isoformat()} · {days} дн"
         return out
 
+    if etype == "heartbeat":
+        # Самовідновний health-check: читає «пульс» (останній успішний прогін) з файлу.
+        # 🔴 якщо пульсу нема / застарів; 🟢 сам щойно прогін оновить файл — без ручних дат.
+        hb_file = OUT_DIR / str(ev.get("heartbeat_file", ""))
+        field = ev.get("heartbeat_field", "last_ok")
+        max_stale = int(ev.get("max_stale_days", 2))
+        warn_stale = int(ev.get("warn_stale_days", 1))
+        if not ev.get("heartbeat_file") or not hb_file.exists():
+            out["state"] = CRITICAL
+            out["detail"] = f"пульсу нема ({ev.get('heartbeat_file') or '?'}) — прогін не підтверджено"
+            return out
+        try:
+            data = json.loads(hb_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            out["state"] = WARN
+            out["detail"] = "пульс нечитабельний"
+            return out
+        last = _parse_date(str(data.get(field)))
+        if last is None:
+            out["state"] = WARN
+            out["detail"] = "пульс без дати"
+            return out
+        age = (today - last).days
+        if age > max_stale:
+            out["state"] = CRITICAL
+            out["detail"] = f"останній успіх {age} дн тому (поріг {max_stale})"
+        elif age > warn_stale:
+            out["state"] = WARN
+            out["detail"] = f"останній успіх {age} дн тому"
+        else:
+            out["detail"] = f"звірка жива — останній успіх {age} дн тому"
+        return out
+
     if etype == "manual_date":
         d = _parse_date(ev.get("date"))
         if d is None:
@@ -205,12 +239,16 @@ def render_html(results: list, now: datetime) -> str:
         src = html.escape(r["source"])
         sub = " · ".join(p for p in (blocks, src) if p)
         note = f"<div class='note'>{html.escape(r['note'])}</div>" if r.get("note") else ""
+        used = (f"<div class='meta'><span class='lbl'>Задіяно:</span> {html.escape(r['used_in'])}</div>"
+                if r.get("used_in") else "")
+        renew = (f"<div class='meta'><span class='lbl'>Відновити:</span> {html.escape(r['renewal'])}</div>"
+                 if r.get("renewal") else "")
         rows.append(
             "<div class='row'>"
             f"<span class='dot' style='background:{color}'></span>"
             "<div class='main'>"
             f"<div class='name'>{html.escape(r['name'])}</div>"
-            f"<div class='sub'>{sub}</div>{note}</div>"
+            f"<div class='sub'>{sub}</div>{note}{used}{renew}</div>"
             "<div class='right'>"
             f"<div class='detail'>{html.escape(r['detail'])}</div>"
             f"<span class='pill' style='color:{color};border-color:{color}'>{_STATE_UA.get(r['state'], '?')}</span>"
@@ -235,14 +273,16 @@ h1{{font-size:20px;font-weight:600;margin:0 0 2px}}
 .kpi .lbl{{font-size:13px;color:var(--mut)}}
 .kpi .num{{font-size:26px;font-weight:600;margin-top:2px}}
 .list{{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}}
-.row{{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line)}}
+.row{{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line)}}
 .row:last-child{{border-bottom:none}}
-.dot{{width:12px;height:12px;border-radius:50%;flex:none}}
+.dot{{width:12px;height:12px;border-radius:50%;flex:none;margin-top:5px}}
 .main{{flex:1;min-width:0}}
 .name{{font-weight:600}}
 .sub{{font-size:13px;color:var(--mut);margin-top:2px}}
 .note{{font-size:12px;color:var(--mut);margin-top:2px;font-style:italic}}
-.right{{text-align:right;white-space:nowrap}}
+.meta{{font-size:12px;color:var(--mut);margin-top:4px;line-height:1.45}}
+.lbl{{font-weight:600;color:var(--txt)}}
+.right{{text-align:right;white-space:nowrap;flex:none;padding-top:2px}}
 .detail{{font-size:14px}}
 .pill{{display:inline-block;margin-top:4px;font-size:12px;padding:2px 10px;border:1px solid;border-radius:999px}}
 </style></head><body><div class="wrap">

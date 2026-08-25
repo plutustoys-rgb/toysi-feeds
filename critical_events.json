@@ -1,5 +1,5 @@
 {
-  "_note": "Реєстр критичних подій для critical_watch.py. Кожна подія має тип, поріг/дату, джерело й lead_days (за скільки днів попереджати). Балансові типи читають ЖИВЕ значення з balance_history.jsonl (де є скрейпер) або manual_* (де ще нема). Ручні дати без джерела прострочуються в 'звірити', а не тихо зеленіють. blocks — яку дію гейт спинить, коли критично (гейт — окремий крок, тут лише позначка).",
+  "_note": "Реєстр критичних подій для critical_watch.py. Кожна подія: тип, поріг/дата, джерело, lead_days, blocks (яку дію гейт спинить), used_in (ДЕ ключ задіяний у коді/системі — щоб бачити blast radius), renewal (ТОЧНІ кроки відновлення). Мета — щоб 🟡/🔴 був самодостатнім: коли + що блокує + де задіяно + як полагодити. Балансові типи читають ЖИВЕ значення з balance_history.jsonl де є скрейпер, або manual_* де ще нема.",
   "events": [
     {
       "id": "rozetka_token",
@@ -10,7 +10,37 @@
       "lead_days": 14,
       "blocks": "Rozetka: отримання замовлень",
       "source": "кабінет Rozetka -> Безпека API",
+      "used_in": "rozetka_client._get_token -> усі виклики Rozetka Seller API: fetch_new_orders (нові замовлення), статус оплати, пуш ТТН/маркування. Env ROZETKA_API_TOKEN на VPS.",
+      "renewal": "Кабінет Rozetka -> Налаштування -> Безпека API -> новий токен з роллю «Менеджер з обробки замовлень» -> вписати ROZETKA_API_TOKEN у .env на VPS (перед правкою: cp .env .env.bak) -> оновити дату тут. Авто-НЕ можна (перегенерація лише в кабінеті).",
       "note": "оновлювати дату вручну після перегенерації токена"
+    },
+    {
+      "id": "novapay_imap",
+      "name": "NovaPay — авто-звірка COD (IMAP)",
+      "icon": "mail",
+      "type": "heartbeat",
+      "heartbeat_file": "novapay_last_ok.json",
+      "heartbeat_field": "last_ok",
+      "max_stale_days": 2,
+      "warn_stale_days": 1,
+      "blocks": "зіставлення COD-зарахувань НП із замовленнями (фінзвірка КОДВ)",
+      "source": "heartbeat novapay_statement.py (reports/novapay_last_ok.json)",
+      "used_in": "novapay-statement.service -> novapay_statement.py читає «Реєстр переказів» з Gmail-теки (NOVAPAY_IMAP_FOLDER) через app-password -> зіставляє COD з orders.db -> kodv_ledger.jsonl. Пише heartbeat при КОЖНОМУ успішному конекті.",
+      "renewal": "Якщо 🔴 (нема успіху >2 дн): найімовірніше Gmail app-password недійсний -> Google Account -> Security -> App passwords -> новий для Mail -> NOVAPAY_IMAP_APP_PASSWORD у .env (спершу cp .env .env.bak) -> прогнати novapay_statement.py. Плитка згасне САМА після успіху.",
+      "note": "самовідновна: heartbeat при кожному успішному прогоні; інцидент 11-25.08 (14 дн простою) закрито 25.08"
+    },
+    {
+      "id": "novapay_cabinet",
+      "name": "NovaPay — вхід у кабінет (веб)",
+      "icon": "key",
+      "type": "expiry_date",
+      "date": "2026-08-21",
+      "lead_days": 7,
+      "blocks": "лише ручний вхід у веб-кабінет NovaPay (окремо від IMAP-звірки)",
+      "source": "кабінет NovaPay (Refresh-token)",
+      "used_in": "НІДЕ в коді (ручний веб-вхід). Не плутати з IMAP-звіркою вище — то окрема поломка (app-password).",
+      "renewal": "Перелогінитись у веб-кабінеті NovaPay (ручний вхід логіном).",
+      "note": "прострочено — перелогінитись, коли зайдеш; аварії автоматики САМЕ від цього немає"
     },
     {
       "id": "toysi_deposit",
@@ -23,7 +53,9 @@
       "balance_platform": "toysi",
       "balance_field": "deposit",
       "blocks": "форвард і закупівля",
-      "source": "скрейпер кабінету Toysi (balance_history.jsonl)"
+      "source": "скрейпер кабінету Toysi (balance_history.jsonl)",
+      "used_in": "toysi_cabinet_scraper.py читає баланс у balance_history; сам депозит списується при КОЖНІЙ передачі замовлення в Toysi (order_create) — фінансує всі закупівлі дропшипу.",
+      "renewal": "Поповнити депозит у кабінеті Toysi вище порогу. Якщо тут «немає даних» — відновити СЕСІЮ скрейпера кабінету Toysi (окрема причина від NovaPay)."
     },
     {
       "id": "prro_kasa",
@@ -37,7 +69,9 @@
       "manual_as_of": "2026-08-25",
       "blocks": "фіскальні чеки (продажі)",
       "source": "кабінет Checkbox (сплачено до 04.09.2026)",
-      "note": "передплачений баланс, списання авто з балансу ~04 числа; TODO: авточитання Checkbox"
+      "used_in": "checkbox_client.py -> фіскальний чек (create_receipt) + реєстрація ЕТТН на КОЖЕН продаж. Env CHECKBOX_* на VPS.",
+      "renewal": "Поповнити «Баланс кас» у кабінеті Checkbox (списання авто з балансу ~04 числа). TODO: авточитання балансу через checkbox_client.",
+      "note": "передплачений баланс; TODO авточитання Checkbox"
     },
     {
       "id": "prro_sms",
@@ -50,7 +84,9 @@
       "manual_value": 99,
       "manual_as_of": "2026-08-25",
       "blocks": "SMS-чеки клієнтам",
-      "source": "кабінет Checkbox"
+      "source": "кабінет Checkbox",
+      "used_in": "Checkbox -> SMS-доставка електронного чека клієнту після продажу.",
+      "renewal": "Поповнити «Баланс SMS» у кабінеті Checkbox."
     },
     {
       "id": "hostiq",
@@ -61,6 +97,8 @@
       "lead_days": 3,
       "blocks": "вся автоматика (VPS)",
       "source": "рахунок HostIQ (КОДВ: ~5 число, next ~05.09.2026)",
+      "used_in": "Сам VPS 45.94.157.4 — тут крутиться ВСЯ автоматика: order-pipeline, генерація фідів, репрайсер, скрейпери, трекер статусів.",
+      "renewal": "Сплатити рахунок HostIQ (email ~5 числа). Сума нестабільна — звірити перед оплатою.",
       "note": "сума нестабільна"
     },
     {
@@ -72,6 +110,8 @@
       "lead_days": 14,
       "blocks": "магазин недоступний",
       "source": "IMENA (КОДВ: сплачено 11.07.2026, ймовірно річний — НЕ підтверджено)",
+      "used_in": "Домен вітрини магазину (адреса, за якою покупці й площадки бачать магазин).",
+      "renewal": "Продовжити домен у реєстратора IMENA. Спершу уточнити реальну дату закінчення (внести сюди).",
       "note": "дата продовження невідома — потребує звірки"
     }
   ]

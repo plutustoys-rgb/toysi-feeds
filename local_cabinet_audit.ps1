@@ -56,4 +56,9 @@ try {
 # 4. Weekly balance trend digest (rewrites today's - cheap to run daily).
 & $py weekly_balance_digest.py
 
+# 4b. NovaPay IMAP heartbeat (login-only, no orders.db) - lets critical_watch show the
+#     reconciliation tile self-healing locally. Reconciliation itself runs on VPS; this is
+#     just an auth-liveness check catching the AUTHENTICATIONFAILED class (app-password revoked).
+& $py novapay_imap_heartbeat.py
+
 Write-Output "[local-audit] Done. Reports in $reportDir"

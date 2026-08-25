@@ -26,8 +26,8 @@
       "blocks": "зіставлення COD-зарахувань НП із замовленнями (фінзвірка КОДВ)",
       "source": "heartbeat novapay_statement.py (reports/novapay_last_ok.json)",
       "used_in": "novapay-statement.service -> novapay_statement.py читає «Реєстр переказів» з Gmail-теки (NOVAPAY_IMAP_FOLDER) через app-password -> зіставляє COD з orders.db -> kodv_ledger.jsonl. Пише heartbeat при КОЖНОМУ успішному конекті.",
-      "renewal": "Якщо 🔴 (нема успіху >2 дн): найімовірніше Gmail app-password недійсний -> Google Account -> Security -> App passwords -> новий для Mail -> NOVAPAY_IMAP_APP_PASSWORD у .env (спершу cp .env .env.bak) -> прогнати novapay_statement.py. Плитка згасне САМА після успіху.",
-      "note": "самовідновна: heartbeat при кожному успішному прогоні; інцидент 11-25.08 (14 дн простою) закрито 25.08"
+      "renewal": "Якщо 🔴 (нема успіху >2 дн): найімовірніше Gmail app-password недійсний -> Google Account -> Security -> App passwords -> новий для Mail. Онови NOVAPAY_IMAP_APP_PASSWORD у ОБОХ .env: на VPS (cp .env .env.bak спершу) І в локальному C:\\Users\\smach\\rozetka_agent\\.env (звідти локальний heartbeat). Плитка згасне САМА після успіху.",
+      "note": "самовідновна: локальний IMAP-heartbeat (login-only) пише пульс щодня; реконсиляція на VPS. Інцидент 11-25.08 (14 дн простою) закрито 25.08"
     },
     {
       "id": "novapay_cabinet",

@@ -95,6 +95,24 @@ PROCESSED_REGISTRIES_FILE = BASE_DIR / "novapay_processed_registries.json"
 IMAP_ALERT_STATE_FILE = BASE_DIR / "novapay_imap_alert_state.json"
 IMAP_ALERT_INTERVAL_HOURS = 24
 
+# Пульс успішного IMAP-конекту (пишеться при КОЖНОМУ успішному прогоні, навіть 0 реєстрів).
+# critical_watch.py читає його й тримає плитку NovaPay-звірки САМОВІДНОВНОЮ: 🔴 якщо пульсу
+# нема >N днів, 🟢 сам після успіху — без ручного правлення дати. Той самий каталог, що
+# читає critical_watch (OUT_DIR): AUDIT_REPORT_DIR або reports/.
+HEARTBEAT_FILE = Path(os.environ.get("AUDIT_REPORT_DIR") or (BASE_DIR / "reports")) / "novapay_last_ok.json"
+
+
+def _write_heartbeat(unread: int) -> None:
+    """Best-effort пульс успішного IMAP-конекту — збій запису НЕ валить звірку."""
+    try:
+        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_FILE.write_text(
+            json.dumps({"last_ok": datetime.now().isoformat(timespec="seconds"), "unread": unread},
+                       ensure_ascii=False),
+            encoding="utf-8")
+    except OSError as e:
+        print(f"[NovaPay] heartbeat не записано: {e}", file=sys.stderr)
+
 
 def _imap_alert_due() -> bool:
     """True, якщо з останнього IMAP-алерту минуло >IMAP_ALERT_INTERVAL_HOURS (або
@@ -387,6 +405,7 @@ def main() -> None:
     try:
         attachments = _fetch_unseen_registry_attachments(imap_conn)
         print(f"[NovaPay] Непрочитаних листів із реєстром: {len(attachments)}.")
+        _write_heartbeat(len(attachments))  # пульс: конект+SEARCH успішні (навіть при 0 реєстрів)
 
         if not attachments:
             return

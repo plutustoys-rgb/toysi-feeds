@@ -36,6 +36,12 @@ _CONFIGS = {
             COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "archive" / "seo"],
     "smm": [COWORK_DIR / "MARKETING_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
             COWORK_DIR / "archive" / "smm"],
+    "consultant": [COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
+                   COWORK_DIR / "онбординг_консультанта_відповіді_Код.md", COWORK_DIR / "STATUS.md",
+                   COWORK_DIR / "archive" / "consultant"],
+    "kodv": [COWORK_DIR / "КОДВ_CHANNEL.md", COWORK_DIR / "КОДВ_журнал.md",
+             COWORK_DIR / "КОДВ_норми_довідник.md", COWORK_DIR / "документи_КОДВ",
+             COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "archive" / "kodv"],
 }
 # Токени, що нічого не кажуть про тему (щоб не матчити пів-репо). Латиниця (код) + укр (канали).
 _STOP = {"py", "sh", "test", "tests", "util", "utils", "the", "and", "for", "new", "old",

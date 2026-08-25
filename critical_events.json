@@ -1,0 +1,78 @@
+{
+  "_note": "Реєстр критичних подій для critical_watch.py. Кожна подія має тип, поріг/дату, джерело й lead_days (за скільки днів попереджати). Балансові типи читають ЖИВЕ значення з balance_history.jsonl (де є скрейпер) або manual_* (де ще нема). Ручні дати без джерела прострочуються в 'звірити', а не тихо зеленіють. blocks — яку дію гейт спинить, коли критично (гейт — окремий крок, тут лише позначка).",
+  "events": [
+    {
+      "id": "rozetka_token",
+      "name": "API-токен Rozetka",
+      "icon": "key",
+      "type": "expiry_date",
+      "date": "2027-02-25",
+      "lead_days": 14,
+      "blocks": "Rozetka: отримання замовлень",
+      "source": "кабінет Rozetka -> Безпека API",
+      "note": "оновлювати дату вручну після перегенерації токена"
+    },
+    {
+      "id": "toysi_deposit",
+      "name": "Депозит Toysi",
+      "icon": "wallet",
+      "type": "balance_threshold",
+      "threshold": 1000,
+      "warn_ratio": 1.5,
+      "unit": "₴",
+      "balance_platform": "toysi",
+      "balance_field": "deposit",
+      "blocks": "форвард і закупівля",
+      "source": "скрейпер кабінету Toysi (balance_history.jsonl)"
+    },
+    {
+      "id": "prro_kasa",
+      "name": "ПРРО-каса (абонплата)",
+      "icon": "cash-register",
+      "type": "balance_threshold",
+      "threshold": 249,
+      "warn_ratio": 2,
+      "unit": "₴",
+      "manual_value": 249,
+      "manual_as_of": "2026-08-25",
+      "blocks": "фіскальні чеки (продажі)",
+      "source": "кабінет Checkbox (сплачено до 04.09.2026)",
+      "note": "передплачений баланс, списання авто з балансу ~04 числа; TODO: авточитання Checkbox"
+    },
+    {
+      "id": "prro_sms",
+      "name": "SMS-доставка чеків",
+      "icon": "message",
+      "type": "count_threshold",
+      "threshold": 20,
+      "warn_ratio": 2.5,
+      "unit": "SMS",
+      "manual_value": 99,
+      "manual_as_of": "2026-08-25",
+      "blocks": "SMS-чеки клієнтам",
+      "source": "кабінет Checkbox"
+    },
+    {
+      "id": "hostiq",
+      "name": "Хостинг HostIQ (VPS)",
+      "icon": "server",
+      "type": "recurring_monthly",
+      "day_of_month": 5,
+      "lead_days": 3,
+      "blocks": "вся автоматика (VPS)",
+      "source": "рахунок HostIQ (КОДВ: ~5 число, next ~05.09.2026)",
+      "note": "сума нестабільна"
+    },
+    {
+      "id": "domain",
+      "name": "Домен plutustoys.com.ua",
+      "icon": "world",
+      "type": "manual_date",
+      "date": null,
+      "lead_days": 14,
+      "blocks": "магазин недоступний",
+      "source": "IMENA (КОДВ: сплачено 11.07.2026, ймовірно річний — НЕ підтверджено)",
+      "note": "дата продовження невідома — потребує звірки"
+    }
+  ]
+}

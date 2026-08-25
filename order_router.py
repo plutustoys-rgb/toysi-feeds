@@ -14,7 +14,7 @@ from toysi_order_submit import submit_order
 from meta_conversions_client import send_purchase_event
 from nova_poshta import resolve_shipping, NovaPoshtaAPIError
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
-from telegram_notify import send_telegram_message
+from telegram_notify import send_telegram_message, send_throttled_alert
 import rozetka_client
 import eva_orders_client
 from orders_watcher import update_prom_order_status, check_prom_order_status, PromAPIError
@@ -669,6 +669,21 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
             f"{order['internal_order_id']} — {result['message']}",
             file=sys.stderr,
         )
+        # response_code=5 ("Невірний auth_user або auth_key") тепер should_retry
+        # (див. toysi_order_submit.submit_order) — замовлення лишається в черзі й
+        # переспробується щоцикл. Але без алерту цей ретрай тихий: замовлення
+        # доїде в Toysi лише коли хтось помітить і полагодить ключ. Самодіагностований
+        # throttled-алерт (1/3год) — щоб конфіг-проблема з TOYSI_API_KEY не ховала
+        # живе замовлення (інцидент 904194938, 2026-08-25). Код 3 (звичайний
+        # тимчасовий збій Toysi) не алертимо — він розсмоктується сам.
+        if result.get("response_code") == 5:
+            send_throttled_alert(
+                "toysi_submit_auth",
+                f"🔴 Toysi відхиляє авторизацію (response_code=5) при передачі "
+                f"{order['internal_order_id']}. Замовлення в черзі, але НЕ доїде в Toysi, "
+                "поки не полагодять TOYSI_API_KEY/TOYSI_AUTH_USER у .env на VPS "
+                "(значення — toysi.ua → API, або відновити з .env.bak).",
+            )
     else:
         update_delivery_status(conn, order["internal_order_id"], status="toysi_error")
         print(

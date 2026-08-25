@@ -541,7 +541,24 @@ def fetch_new_orders_rozetka() -> list:
     try:
         raw_orders = rozetka_client.fetch_new_orders()
     except rozetka_client.RozetkaAPIError as e:
+        # Самодіагностований алерт: обрив Rozetka-авторизації (напр. протух
+        # ROZETKA_API_TOKEN → incorrect_access_token code=1020) раніше лише тихо
+        # писався в stderr, а fetch повертав [] — нові Rozetka-замовлення тихо не
+        # надходили в Toysi, і живе замовлення висіло невидимим годинами (інцидент
+        # 904194938, 2026-08-25). Тепер кричить у Telegram у перший же цикл; тротлінг
+        # тримає це на 1/3год, щоб щоциклова (~15 хв) помилка не спамила.
         print(f"[Rozetka] {e}", file=sys.stderr)
+        try:
+            from telegram_notify import send_throttled_alert
+            send_throttled_alert(
+                "rozetka_fetch_fail",
+                f"🔴 Rozetka: не вдалося отримати нові замовлення — {e}. "
+                "Нові Rozetka-замовлення НЕ надходять у Toysi, поки не полагоджено. "
+                "Найімовірніше протух ROZETKA_API_TOKEN — онови в кабінеті Rozetka "
+                "(Налаштування → Безпека API) і в .env на VPS.",
+            )
+        except Exception:  # noqa: BLE001 — алерт best-effort, не валимо опитування
+            pass
         return []
 
     return [_convert_rozetka_order(o) for o in raw_orders]

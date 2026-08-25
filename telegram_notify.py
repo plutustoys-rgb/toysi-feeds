@@ -1,5 +1,7 @@
+import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -88,3 +90,44 @@ def send_telegram_message(text: str) -> bool:
         return False
 
     return True
+
+
+# Стан тротлінгу повторюваних алертів: {dedup_key: last_epoch}. Поряд з
+# telegram_alerts.md у reports/ (той самий каталог, уже писабельний на VPS).
+ALERT_THROTTLE_FILE = Path(__file__).parent / "reports" / ".alert_throttle.json"
+
+
+def send_throttled_alert(dedup_key: str, text: str, cooldown_sec: int = 3 * 60 * 60) -> bool:
+    """Як send_telegram_message, але не частіше ніж раз на cooldown_sec для одного
+    dedup_key. Для повторюваних збоїв, які перевіряються щоцикл (напр. протух токен —
+    order-pipeline біжить кожні ~15 хв): БЕЗ тротлінгу це 96 однакових алертів/добу
+    (власник замутить), а зовсім без алерту — тиха втрата (інцидент 904194938,
+    2026-08-25: живе замовлення висіло годинами невидимим). Тротлінг тримає баланс:
+    гучно попереджає, але не спамить.
+
+    Стан — reports/.alert_throttle.json. Помилка читання/запису стану НЕ блокує сам
+    алерт (best-effort: краще зайвий алерт, ніж пропущений). Повертає True, якщо
+    повідомлення реально надіслано цього разу (поза вікном тиші)."""
+    now = time.time()
+    state = {}
+    try:
+        with open(ALERT_THROTTLE_FILE, encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            state = loaded
+    except (OSError, ValueError):
+        state = {}
+
+    last = state.get(dedup_key)
+    if isinstance(last, (int, float)) and (now - last) < cooldown_sec:
+        return False  # у вікні тиші для цього ключа — не шлемо повторно
+
+    sent = send_telegram_message(text)
+    state[dedup_key] = now
+    try:
+        ALERT_THROTTLE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(ALERT_THROTTLE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except OSError as e:
+        print(f"[telegram] не вдалося зберегти стан тротлінгу {ALERT_THROTTLE_FILE}: {e}", file=sys.stderr)
+    return sent

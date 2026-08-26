@@ -48,22 +48,38 @@ def load_active_freeze(today: date = None) -> dict:
             price = float(e.get("price"))
         except (ValueError, TypeError):
             continue
+        # опційне "from": дозволяє enroll НАПЕРЕД (запис лежить, але заморозка вмикається
+        # лише з дати старту акції — до неї репрайсер оптимізує SKU вільно). Битий from →
+        # не морозимо (безпечний дефолт: краще не заморозити, ніж заморозити не в той час).
+        frm = e.get("from")
+        if frm:
+            try:
+                if today < date.fromisoformat(str(frm)[:10]):
+                    continue
+            except (ValueError, TypeError):
+                continue
         if price > 0 and today <= until:
             out[str(pid)] = price
     return out
 
 
-def enroll_skus(prices: dict, until: str, note: str = "") -> int:
-    """Записати/оновити заморозки. prices={pid: ціна-знімок}, until='YYYY-MM-DD'.
-    Перевіряє until на валідність ISO. Повертає к-сть заморожених."""
-    date.fromisoformat(until)  # валідація формату (кине ValueError, якщо криво)
+def enroll_skus(prices: dict, until: str, from_date: str = None, note: str = "") -> int:
+    """Записати/оновити заморозки. prices={pid: ціна-знімок}, until='YYYY-MM-DD',
+    from_date (опц.)='YYYY-MM-DD' — заморозка вмикається лише з цієї дати (enroll наперед).
+    Валідує дати. Повертає к-сть заморожених (ціна>0)."""
+    date.fromisoformat(until)  # валідація (кине ValueError, якщо криво)
+    if from_date:
+        date.fromisoformat(from_date)
     reg = _load_raw()
     added = 0
     for pid, price in prices.items():
         p = round(float(price), 2)
         if p <= 0:
             continue
-        reg[str(pid)] = {"price": p, "until": until, "note": note}
+        entry = {"price": p, "until": until, "note": note}
+        if from_date:
+            entry["from"] = from_date
+        reg[str(pid)] = entry
         added += 1
     PROMO_FREEZE_FILE.write_text(json.dumps(reg, ensure_ascii=False, indent=2), encoding="utf-8")
     return added

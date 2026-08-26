@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: daily trigger for promo_margin_guard
+
+[Timer]
+# Раз на день о 08:30 (системний час VPS) — до health-monitor (09:00), щоб min-маржа вже
+# лежала в balance_history.jsonl, коли будується критичний календар. Точна хвилина не
+# критична. RandomizedDelaySec розводить пік із іншими таймерами.
+OnCalendar=*-*-* 08:30:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

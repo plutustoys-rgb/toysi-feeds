@@ -1,0 +1,19 @@
+[Unit]
+# PlutusToys — щоденний margin-guard активних промо-SKU (заморожених у promo_freeze).
+# Рахує РЕАЛЬНУ маржу на ціні продажу (база×0.95) із живою собівартістю Toysi + комісією
+# (ідентично фіду: real_toysi_cost + compute_total_commission) і піднімає збиткові/тонкі SKU
+# у критичний календар (min-маржа → balance_history.jsonl → подія promo_margin). Лише читає
+# й сигналить — нічого не міняє. Деплой: deploy_systemd_units.sh (копія + enable таймера).
+Description=PlutusToys: daily promo-SKU margin guard (frozen prices vs live Toysi cost)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# venv-python (голий python3 без залежностей упаде). Робоча тека /opt/plutustoys —
+# щоб promo_freeze.json, prom_category_cache.json, reports/ і .env резолвились відносно.
+# Таймаут більший: вантажить повний каталог Toysi (жива собівартість).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/promo_margin_guard.py
+TimeoutStartSec=1200

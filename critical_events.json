@@ -105,6 +105,22 @@
       "note": "блок при −120 ₴; поріг 120 = попередження за ~місяць буфера. API-баланс на 26.08 = ТМ 2620 ₴ (restBalance), не абонплата."
     },
     {
+      "id": "promo_margin",
+      "name": "Маржа промо-SKU (акції)",
+      "icon": "discount",
+      "type": "balance_threshold",
+      "threshold": 2,
+      "warn_ratio": 2.5,
+      "unit": "%",
+      "balance_platform": "promo_guard",
+      "balance_field": "min_net_pct",
+      "blocks": "прибутковість акційних SKU (можуть продаватись у збиток на −5%)",
+      "source": "promo_margin_guard.py (щоденний таймер -> balance_history.jsonl, поле min_net_pct)",
+      "used_in": "Активні заморожені промо-SKU (promo_freeze) продаються на Prom за база×0.95. Floor-гард у фіді перевіряє БАЗУ, не −5% -> SKU може стати збитковим на знижці, а floor цього не бачить. promo_margin_guard рахує РЕАЛЬНУ маржу (real_toysi_cost + compute_total_commission) і пише НАЙГІРШУ (min_net_pct) сюди.",
+      "renewal": "Якщо 🔴 (найтонша маржа <2%): прогнати `python promo_margin_guard.py` — звіт назве конкретні збиткові/тонкі SKU. Дії: (а) якщо комісія «ДЕФОЛТ20%» — звірити реальну Prom-категорію SKU (можливо маржа насправді ок); (б) інакше — прибрати SKU з акції в кабінеті Prom + з promo_freeze.json. Якщо «немає даних» — таймер promo-margin-guard не відпрацював.",
+      "note": "видимість, не блок (floor не публікує нижче собівартості БАЗИ); ловить збиток саме на −5% знижці, який floor пропускає"
+    },
+    {
       "id": "hostiq",
       "name": "Хостинг HostIQ (VPS)",
       "icon": "server",

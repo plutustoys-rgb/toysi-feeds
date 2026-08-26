@@ -2420,11 +2420,24 @@ def main() -> None:
     # позицій, а не лише один раз після всього циклу — перервання процесу
     # (таймаут/скасування job'у) посеред цього циклу тепер губить максимум
     # SAVE_EVERY-1 позицій стану, а не весь прогін.
+    # promo_freeze (2026-08-26, «Сезонні знижки» Prom): SKU з активною заморозкою НЕ чіпаємо
+    # в кабінеті — ні apply_price (зміна ціни викине товар з акції), ні delist. Базову ціну
+    # для них тримає фід (заморожена в overrides). Пропускаємо в ОБОХ циклах нижче.
+    try:
+        from promo_freeze import load_active_freeze
+        _promo_frozen_pids = {str(p) for p in load_active_freeze()}
+    except Exception as e:  # noqa: BLE001 — best-effort, не валимо репрайсер
+        print(f"[Pricer] promo_freeze пропущено ({type(e).__name__}: {e})", file=sys.stderr)
+        _promo_frozen_pids = set()
+    _promo_frozen_skipped = 0
     applied_count = 0
     delisted_since = price_state.setdefault("_delisted_since", {})
     # ЗАБЛОКОВАНО (adjust_blocked) -> порожній список, той самий безпечний
     # шаблон, що вже застосований нижче для to_delist.
     for pid, price, margin_pct, competitor_key, category, competitor_price, cost in ([] if adjust_blocked else to_adjust):
+        if str(pid) in _promo_frozen_pids:
+            _promo_frozen_skipped += 1
+            continue
         if _time_budget_exceeded():
             print(f"[Pricer] Часовий бюджет вичерпано — зупиняю застосування цін достроково "
                   f"({applied_count} застосовано з {len(to_adjust)}).")
@@ -2475,6 +2488,9 @@ def main() -> None:
           + f" Спершу піднімаю ціну до безпечної межі для всіх {len(to_delist)} — "
             "незалежно від circuit breaker чи успіху самого видалення.")
     for pid, price, margin_pct, competitor_key, category, competitor_price, cost in to_delist:
+        if str(pid) in _promo_frozen_pids:
+            _promo_frozen_skipped += 1
+            continue  # в акції — не видаляємо й не міняємо ціну
         if _time_budget_exceeded():
             print(f"[Pricer] Часовий бюджет вичерпано — зупиняю видалення достроково "
                   f"({confirmed_delist_count} видалено з {len(to_delist)}).")
@@ -2515,6 +2531,9 @@ def main() -> None:
             file=sys.stderr,
         )
 
+    if _promo_frozen_skipped:
+        print(f"[Pricer] promo_freeze: пропущено {_promo_frozen_skipped} SKU у кабінеті "
+              "(в акції, ціну тримає фід).")
     print(f"[Pricer] Готово. Помилок: {error_count}.")
     digest = (
         f"💰 prom_competitor_pricer.py --apply: скориговано цін — "

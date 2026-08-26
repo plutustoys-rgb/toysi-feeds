@@ -581,6 +581,18 @@ def _build_xml(
 
     offers_el       = ET.SubElement(shop, "offers")
     overrides       = price_overrides or {}
+    # promo_freeze (2026-08-26, «Сезонні знижки» Prom): заморожені ціни ПЕРЕБИВАЮТЬ
+    # репрайсерні override — щоб базова ціна не мінялась у вікні акції (інакше Prom
+    # викидає товар). Ідуть тією ж override-гілкою нижче, тож floor-гард лишається:
+    # збиткову НЕ публікуємо (маржа > участі в акції). Після until — авто-розморозка.
+    try:
+        from promo_freeze import load_active_freeze
+        _frozen = load_active_freeze()
+        if _frozen:
+            overrides = {**overrides, **_frozen}
+            print(f"[Prom] promo_freeze: {len(_frozen)} SKU з замороженою ціною (акція)")
+    except Exception as e:  # noqa: BLE001 — заморозка best-effort, не валимо фід
+        print(f"[Prom] promo_freeze пропущено ({type(e).__name__}: {e})", file=sys.stderr)
     comp_prices     = competitor_prices or {}
     russian         = russian_text or {}
     desc_overrides  = description_overrides or {}

@@ -89,6 +89,22 @@
       "renewal": "Поповнити «Баланс SMS» у кабінеті Checkbox."
     },
     {
+      "id": "allo_subscription",
+      "name": "Абонплата ALLO",
+      "icon": "discount",
+      "type": "balance_threshold",
+      "threshold": 120,
+      "warn_ratio": 2,
+      "unit": "₴",
+      "balance_platform": "allo",
+      "balance_field": "balance_sub",
+      "blocks": "ALLO ховає показ ВСІХ наших товарів (картки)",
+      "source": "allo_cabinet_scraper.py (balance_history.jsonl, поле balance_sub)",
+      "used_in": "ALLO бере щомісячну абонплату (окремо від комісії). Баланс абонплати нижче −120 ₴/міс -> ALLO блокує показ усіх наших товарів. Живе значення пише allo_cabinet_scraper при прогоні кабінету partner.allo.ua.",
+      "renewal": "Поповнити «Баланс абонплати» у кабінеті partner.allo.ua. Якщо тут «немає даних» — прогнати allo_cabinet_scraper (інтерактивний логін). API getBalance абонплату НЕ віддає (лише restBalance/ТМ-баланс), тому джерело — ЛИШЕ кабінет.",
+      "note": "блок при −120 ₴; поріг 120 = попередження за ~місяць буфера. API-баланс на 26.08 = ТМ 2620 ₴ (restBalance), не абонплата."
+    },
+    {
       "id": "hostiq",
       "name": "Хостинг HostIQ (VPS)",
       "icon": "server",

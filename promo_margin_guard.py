@@ -54,7 +54,7 @@ def evaluate(today: date = None, catalog: dict = None) -> dict:
     active = promo_freeze.load_active_freeze(today)  # {sku: заморожена БАЗОВА ціна}
     result = {"today": today.isoformat(), "active": len(active), "rows": [],
               "at_risk": [], "loss": [], "thin": [], "gone": [], "oos": [],
-              "min_net_pct": None, "min_sku": None}
+              "unknown_comm": [], "min_net_pct": None, "min_sku": None}
     if not active:
         return result
     if catalog is None:
@@ -97,6 +97,13 @@ def evaluate(today: date = None, catalog: dict = None) -> dict:
         result["rows"].append(row)
         if stock <= 0:
             result["oos"].append(row)
+        # SKU без РЕАЛЬНОЇ Prom-комісії (fallback на дефолт 20%) — маржу НЕ судимо: дефолт
+        # систематично завищує комісію (реальна Prom-комісія часто ~4-10%), тож «збиток» тут
+        # хибний. Виносимо в окреме «комісія невідома» (інформативно), НЕ в loss/thin/min.
+        # Реальний фікс — домапити Prom-категорію SKU у prom_category_cache.
+        if row["comm_source"] == "ДЕФОЛТ20%":
+            result["unknown_comm"].append(row)
+            continue
         if net < 0:
             result["loss"].append(row)
         elif net_pct is not None and net_pct < THIN_PCT:
@@ -110,9 +117,12 @@ def evaluate(today: date = None, catalog: dict = None) -> dict:
                 seen.add(r["sku"]); result["at_risk"].append(r)
     result["at_risk"].sort(key=lambda r: (r["net_pct"] if r["net_pct"] is not None else -999))
 
-    pcts = [r["net_pct"] for r in result["rows"] if r["net_pct"] is not None]
-    if pcts:
-        worst = min(result["rows"], key=lambda r: (r["net_pct"] if r["net_pct"] is not None else 999))
+    # min-маржа — лише по SKU з ВІДОМОЮ комісією (дефолт-SKU не судимо, див. вище),
+    # інакше хибний дефолт-«збиток» смикав би червоний у календарі.
+    judged = [r for r in result["rows"]
+              if r["comm_source"] != "ДЕФОЛТ20%" and r["net_pct"] is not None]
+    if judged:
+        worst = min(judged, key=lambda r: r["net_pct"])
         result["min_net_pct"] = worst["net_pct"]
         result["min_sku"] = worst["sku"]
     return result
@@ -142,7 +152,8 @@ def _print_report(result: dict) -> None:
         print(f"  найтонша маржа: {result['min_net_pct']}% (SKU {result['min_sku']}) "
               f"[поріг тонкої {THIN_PCT}%]")
     for label, key in (("🔴 ЗБИТКОВІ", "loss"), ("🟡 ТОНКІ", "thin"),
-                       ("📦 OOS (stock 0)", "oos"), ("❌ ЗНИКЛИ з Toysi", "gone")):
+                       ("📦 OOS (stock 0)", "oos"), ("❌ ЗНИКЛИ з Toysi", "gone"),
+                       ("ℹ️ КОМІСІЯ НЕВІДОМА (дефолт, не суджу)", "unknown_comm")):
         bucket = result[key]
         if not bucket:
             continue
@@ -155,7 +166,8 @@ def _print_report(result: dict) -> None:
                       f"({r['net_pct']}%) stock {r['stock']}{warn}")
             else:
                 print(f"    {r} — нема в каталозі Toysi")
-    if not (result["loss"] or result["thin"] or result["oos"] or result["gone"]):
+    if not (result["loss"] or result["thin"] or result["oos"] or result["gone"]
+            or result["unknown_comm"]):
         print("  ✅ усі активні промо-SKU здорові (маржа вища за поріг, у наявності).")
 
 

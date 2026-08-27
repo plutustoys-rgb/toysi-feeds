@@ -69,6 +69,34 @@ MAX_TILES_PER_SEARCH = 24      # скільки плиток звіряти фо
 SEARCH_DELAY = (1.5, 2.5)      # пауза між пошуками
 NAV_TIMEOUT_MS = 25000
 
+# Матчинг конкурента — ДВА сигнали. pHash сам пропускає конкурентів з ІНШИМ фото (саме так
+# товарознавець давав хибне «унікальний» — перевірено вручну 2026-08-27: «Літак ТехноК» у нас
+# 72₴ vs 40/59/70₴ у інших, а матчер казав «нема конкурента»). Тому додаємо:
+#   1) pHash фото ≤ PHASH_MAX_DISTANCE (сильний, точний);
+#   2) НАЗВА збігається (частка спільних значущих токенів нашої назви ≥ NAME_OVERLAP_MIN) І ціна
+#      в РОЗУМНІЙ смузі (≥ NAME_MATCH_MIN_PRICE_RATIO нашого floor — правило SEO проти хибних
+#      «6₴»-матчів іншого товару).
+# Конкурент = будь-який сигнал. Пороги КАЛІБРУВАТИ на 20-валідації ПЕРЕД масштабуванням.
+NAME_OVERLAP_MIN = float(__import__("os").environ.get("ROZETKA_NAME_OVERLAP_MIN", "0.6"))
+NAME_MATCH_MIN_PRICE_RATIO = 0.30
+_NAME_STOP = {"для", "з", "у", "в", "та", "і", "the", "and", "см", "шт", "мл", "кг", "набір"}
+
+
+def _name_tokens(s: str) -> set:
+    """Значущі токени назви: нижній регістр, без пунктуації/стоп-слів, довжина ≥3."""
+    import re as _re
+    toks = _re.findall(r"[a-zа-яіїєґ0-9]+", (s or "").lower())
+    return {t for t in toks if len(t) >= 3 and t not in _NAME_STOP}
+
+
+def _name_overlap(ours: set, tile: set) -> float:
+    """Частка спільних токенів відносно КОРОТШОЇ назви (0..1). Мін-база — щоб зловити конкурента
+    з коротшою АБО довшою назвою (напр. наша «Карткова гра Люкс City» vs плитка «Люкс City» =
+    1.0, а не 0.5). Гвард проти одно-токенних збігів («Пазл») — у виклику (len(tile)>=2)."""
+    if not ours or not tile:
+        return 0.0
+    return len(ours & tile) / min(len(ours), len(tile))
+
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "Accept-Language": "uk-UA,uk"}
 
@@ -142,11 +170,13 @@ def _page_blocked(page) -> bool:
         return False
 
 
-def rozetka_market_price(page, session, name: str, our_hash):
-    """Публічний пошук Rozetka за назвою (СПРАВЖНІЙ Chrome рендерить плитки) → pHash-звірка фото →
-    min ціна серед підтверджених «той самий товар».
-    Повертає: float (ринок), None (сторінка ок, підтвердженого конкурента нема → унікальний),
-    BLOCKED (антибот/помилка — кандидата пропустити, НЕ трактувати як унікальний)."""
+def rozetka_market_price(page, session, name: str, our_hash, our_price=None):
+    """Публічний пошук Rozetka за назвою (СПРАВЖНІЙ Chrome) → підтвердження «той самий товар»
+    ДВОМА сигналами (pHash фото АБО збіг назви+розумна ціна, див. коментар над NAME_OVERLAP_MIN) →
+    min ціна серед підтверджених.
+    Повертає: float (ринок), None (сторінка ок, конкурента нема → унікальний),
+    BLOCKED (антибот/помилка — кандидата пропустити, НЕ трактувати як унікальний).
+    our_price (наш floor) — для гварда назви: конкурент дешевший за 30% нього = інший товар, ігнор."""
     from urllib.parse import quote
     try:
         page.goto(f"https://rozetka.com.ua/ua/search/?text={quote(name[:120])}", timeout=NAV_TIMEOUT_MS)
@@ -160,20 +190,31 @@ def rozetka_market_price(page, session, name: str, our_hash):
     try:
         tiles = page.evaluate("""() => [...document.querySelectorAll('rz-catalog-tile')].slice(0,%d).map(t=>{
             const p=t.querySelector('[class*="price"]'); const img=t.querySelector('img');
-            return {price:p?p.textContent:'', img:img?(img.getAttribute('src')||img.getAttribute('data-src')||''):''};
+            const ti=t.querySelector('[class*="title"]');
+            return {price:p?p.textContent:'', img:img?(img.getAttribute('src')||img.getAttribute('data-src')||''):'', title:ti?ti.textContent:''};
         })""" % MAX_TILES_PER_SEARCH)
     except PlaywrightTimeoutError:
         return BLOCKED
-    if our_hash is None:
-        return None   # нема нашого фото для звірки → не можемо підтвердити → трактуємо як унікальний
+    # (прибрано ранній `our_hash is None → None`: без нашого фото сигнал назви ще працює —
+    # саме через той return ми хибно вважали товари унікальними.)
     matched = []
+    our_toks = _name_tokens(name)
     for t in tiles:
         price = _price_num(t.get("price"))
-        img = (t.get("img") or "").strip()
-        if not price or not img.startswith("http"):
+        if not price:
             continue
-        th = _phash(img, session)
-        if th is not None and (our_hash - th) <= PHASH_MAX_DISTANCE:
+        # сигнал 1: pHash фото (сильний, точний)
+        img = (t.get("img") or "").strip()
+        if our_hash is not None and img.startswith("http"):
+            th = _phash(img, session)
+            if th is not None and (our_hash - th) <= PHASH_MAX_DISTANCE:
+                matched.append(price)
+                continue
+        # сигнал 2: збіг назви + розумна ціна (ловить конкурента з ІНШИМ фото)
+        tile_toks = _name_tokens(t.get("title"))
+        if our_price and len(tile_toks) >= 2 \
+                and _name_overlap(our_toks, tile_toks) >= NAME_OVERLAP_MIN \
+                and price >= our_price * NAME_MATCH_MIN_PRICE_RATIO:
             matched.append(price)
     return min(matched) if matched else None
 
@@ -236,14 +277,14 @@ def run(catalog: dict, membership: set, prom_products: dict, limit: int) -> tupl
                 cost = 0
             if cost <= 0:
                 st["bad_cost"] += 1;  continue
+            floor, commission = _resolve_rozetka_floor(cost, ROZETKA_COMPETITOR_MARGIN, ROZETKA_PAYMENT_COMMISSION)
             our_hash = _phash(our_img, session)
-            market = rozetka_market_price(page, session, item.get("name", ""), our_hash)
+            market = rozetka_market_price(page, session, item.get("name", ""), our_hash, our_price=floor)
             if market is BLOCKED:
                 st["blocked"] += 1
                 time.sleep(random.uniform(*SEARCH_DELAY))
                 continue   # непевно (антибот/помилка) — НЕ додаємо
             st["checked"] += 1
-            floor, commission = _resolve_rozetka_floor(cost, ROZETKA_COMPETITOR_MARGIN, ROZETKA_PAYMENT_COMMISSION)
             if market is None:
                 decision = "unique"; st["unique"] += 1
             elif floor <= market:

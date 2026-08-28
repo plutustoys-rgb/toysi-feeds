@@ -52,6 +52,10 @@ from competitor_pricing import _resolve_rozetka_floor, PAYMENT_COMMISSION, real_
 BASE_DIR = Path(__file__).parent
 OUTPUT_FILE = BASE_DIR / "rozetka_merchant_candidates.json"
 CURSOR_FILE = BASE_DIR / ".local_secrets" / "rozetka_merchant_cursor.json"
+# Переаудит наявних членів (--audit-members): окремий курсор ротації + окремий файл-накопичувач
+# кандидатів на ЗНЯТТЯ (dry-run, membership НЕ чіпаємо тут — знімає окремий крок після огляду).
+AUDIT_CURSOR_FILE = BASE_DIR / ".local_secrets" / "rozetka_merchant_audit_cursor.json"
+REMOVAL_OUTPUT_FILE = BASE_DIR / "rozetka_member_removal_candidates.json"
 # Профіль СПРАВЖНЬОГО Chrome для публічного пошуку Rozetka. КРИТИЧНО: bundled
 # chromium-headless-shell Playwright ловить антибот Rozetka (403 «Трохи зачекайте…» / 500) →
 # 0 плиток → усе хибно трактується як «унікальний». Справжній Chrome (channel="chrome") з
@@ -231,13 +235,61 @@ def _save_cursor(off: int) -> None:
     CURSOR_FILE.write_text(json.dumps({"offset": off}), encoding="utf-8")
 
 
-def run(catalog: dict, membership: set, prom_products: dict, limit: int) -> tuple[list, dict]:
-    """Готує ротаційну партію придатних кандидатів, перевіряє ринок на Rozetka, повертає (add, stats)."""
+def _empty_stats() -> dict:
+    return {"eligible": 0, "checked": 0, "competitive": 0, "uncompetitive": 0, "unique": 0,
+            "blocked": 0, "oos_or_lowstock": 0, "already": 0, "invalid_card": 0,
+            "no_clean_image": 0, "bad_cost": 0, "oversized": 0, "gone": 0}
+
+
+def _check_market_batch(batch: list, st: dict) -> list:
+    """СПІЛЬНЕ ЯДРО: відкриває СПРАВЖНІЙ Chrome (не bundled — інакше антибот Rozetka віддає 0
+    плиток) і для кожного (pid, item, our_img) рахує floor + ринкову ціну (rozetka_market_price,
+    2 сигнали) + рішення competitive/uncompetitive/unique. Повертає list результатів
+    {pid,item,cost,floor,market,decision}; оновлює st. Використовують run() (додавання) і
+    audit_members() (переаудит наявних) — щоб чек був ОДИН, не два розсинхронені."""
     import random
-    st = {"eligible": 0, "checked": 0, "competitive": 0, "uncompetitive": 0, "unique": 0,
-          "blocked": 0, "oos_or_lowstock": 0, "already": 0, "invalid_card": 0, "no_clean_image": 0,
-          "bad_cost": 0, "oversized": 0}
-    # 1) придатні (Toysi-напряму): stock≥2, не на Rozetka, валідна картка, чисте фото
+    results = []
+    CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            str(CHROME_PROFILE), channel="chrome", headless=True,
+            args=["--disable-blink-features=AutomationControlled"], locale="uk-UA",
+            viewport={"width": 1366, "height": 900}, user_agent=HEADERS["User-Agent"])
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        session = requests.Session()
+        for pid, item, our_img in batch:
+            try:
+                cost = float(real_toysi_cost(item) or 0)
+            except (TypeError, ValueError):
+                cost = 0
+            if cost <= 0:
+                st["bad_cost"] += 1;  continue
+            floor, _commission = _resolve_rozetka_floor(cost, ROZETKA_COMPETITOR_MARGIN, ROZETKA_PAYMENT_COMMISSION)
+            our_hash = _phash(our_img, session)
+            market = rozetka_market_price(page, session, item.get("name", ""), our_hash, our_price=floor)
+            if market is BLOCKED:
+                st["blocked"] += 1
+                time.sleep(random.uniform(*SEARCH_DELAY))
+                continue   # непевно (антибот/помилка) — пропускаємо (НЕ додаємо / НЕ знімаємо)
+            st["checked"] += 1
+            if market is None:
+                decision = "unique"; st["unique"] += 1
+            elif floor <= market:
+                decision = "competitive"; st["competitive"] += 1
+            else:
+                decision = "uncompetitive"; st["uncompetitive"] += 1
+            results.append({"pid": pid, "item": item, "cost": round(cost, 2),
+                            "floor": round(floor, 2),
+                            "market": (round(market, 2) if market else None), "decision": decision})
+            time.sleep(random.uniform(*SEARCH_DELAY))
+        ctx.close()
+    return results
+
+
+def run(catalog: dict, membership: set, prom_products: dict, limit: int) -> tuple[list, dict]:
+    """ДОДАВАННЯ: ротаційна партія придатних НЕ-членів → перевірка ринку → кандидати «додати»
+    (competitive/unique). Стара поведінка, тепер через спільне ядро _check_market_batch."""
+    st = _empty_stats()
     eligible = []
     for pid in sorted(catalog.keys()):
         item = catalog[pid]
@@ -254,60 +306,70 @@ def run(catalog: dict, membership: set, prom_products: dict, limit: int) -> tupl
             st["no_clean_image"] += 1;  continue
         eligible.append((pid, item, our_img))
     st["eligible"] = len(eligible)
-
-    # 2) ротаційна партія
     total = len(eligible)
     off = _load_cursor() % total if total else 0
     batch = [eligible[(off + k) % total] for k in range(min(limit, total))]
-
-    add = []
-    CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as p:
-        # СПРАВЖНІЙ Chrome (не bundled chromium) — інакше антибот Rozetka віддає 0 плиток.
-        ctx = p.chromium.launch_persistent_context(
-            str(CHROME_PROFILE), channel="chrome", headless=True,
-            args=["--disable-blink-features=AutomationControlled"], locale="uk-UA",
-            viewport={"width": 1366, "height": 900}, user_agent=HEADERS["User-Agent"])
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        session = requests.Session()
-        for pid, item, our_img in batch:
-            try:
-                cost = float(real_toysi_cost(item) or 0)
-            except (TypeError, ValueError):
-                cost = 0
-            if cost <= 0:
-                st["bad_cost"] += 1;  continue
-            floor, commission = _resolve_rozetka_floor(cost, ROZETKA_COMPETITOR_MARGIN, ROZETKA_PAYMENT_COMMISSION)
-            our_hash = _phash(our_img, session)
-            market = rozetka_market_price(page, session, item.get("name", ""), our_hash, our_price=floor)
-            if market is BLOCKED:
-                st["blocked"] += 1
-                time.sleep(random.uniform(*SEARCH_DELAY))
-                continue   # непевно (антибот/помилка) — НЕ додаємо
-            st["checked"] += 1
-            if market is None:
-                decision = "unique"; st["unique"] += 1
-            elif floor <= market:
-                decision = "competitive"; st["competitive"] += 1
-            else:
-                decision = "uncompetitive"; st["uncompetitive"] += 1
-            if decision in ("competitive", "unique"):
-                add.append({"pid": pid, "name": (item.get("name") or "")[:80],
-                            "category": item.get("category_name"), "cost": round(cost, 2),
-                            "rozetka_floor_5pct": round(floor, 2),
-                            "rozetka_market": (round(market, 2) if market else None),
-                            "decision": decision, "stock": item.get("stock")})
-            time.sleep(random.uniform(*SEARCH_DELAY))
-        ctx.close()
-
+    results = _check_market_batch(batch, st)
+    add = [{"pid": r["pid"], "name": (r["item"].get("name") or "")[:80],
+            "category": r["item"].get("category_name"), "cost": r["cost"],
+            "rozetka_floor_5pct": r["floor"], "rozetka_market": r["market"],
+            "decision": r["decision"], "stock": r["item"].get("stock")}
+           for r in results if r["decision"] in ("competitive", "unique")]
     if total:
         _save_cursor((off + len(batch)) % total)
     return add, st
 
 
+def _load_audit_cursor() -> int:
+    try:
+        return int(json.loads(AUDIT_CURSOR_FILE.read_text(encoding="utf-8")).get("offset", 0))
+    except (ValueError, OSError, TypeError, AttributeError):
+        return 0
+
+
+def _save_audit_cursor(off: int) -> None:
+    AUDIT_CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AUDIT_CURSOR_FILE.write_text(json.dumps({"offset": off}), encoding="utf-8")
+
+
+def audit_members(catalog: dict, membership: set, prom_products: dict, limit: int) -> tuple[list, dict]:
+    """ПЕРЕАУДИТ наявних членів Rozetka тим самим чеком (окремий курсор ротації). DRY-RUN:
+    membership НЕ чіпає — лише повертає (remove_candidates, st). remove = члени, де floor > ринок
+    (uncompetitive) → кандидати на ЗНЯТТЯ. competitive/unique лишаємо; blocked/без-фото/OOS/зниклі
+    пропускаємо (на непевності НЕ знімаємо — краще лишити, ніж помилково зняти живий лістинг)."""
+    st = _empty_stats()
+    eligible = []
+    for pid in sorted(str(p) for p in membership):
+        item = catalog.get(pid)
+        if not item:
+            st["gone"] += 1;  continue      # зник з каталогу Toysi — окремий випадок, тут не знімаємо
+        if int(item.get("stock", 0) or 0) < MIN_STOCK:
+            st["oos_or_lowstock"] += 1;  continue
+        our_img = _our_image(item, prom_products)
+        if not our_img:
+            st["no_clean_image"] += 1;  continue
+        eligible.append((pid, item, our_img))
+    st["eligible"] = len(eligible)
+    total = len(eligible)
+    off = _load_audit_cursor() % total if total else 0
+    batch = [eligible[(off + k) % total] for k in range(min(limit, total))]
+    results = _check_market_batch(batch, st)
+    remove = [{"pid": r["pid"], "name": (r["item"].get("name") or "")[:80],
+               "category": r["item"].get("category_name"), "cost": r["cost"],
+               "rozetka_floor_5pct": r["floor"], "rozetka_market": r["market"],
+               "reason": "uncompetitive (floor>ринок)"}
+              for r in results if r["decision"] == "uncompetitive"]
+    if total:
+        _save_audit_cursor((off + len(batch)) % total)
+    return remove, st
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--limit", type=int, default=BATCH_SIZE, help="кандидатів за прогін (ротація)")
+    ap.add_argument("--audit-members", action="store_true",
+                    help="ПЕРЕАУДИТ наявних членів Rozetka (dry-run): кандидати на ЗНЯТТЯ "
+                         "неконкурентних (floor>ринок); membership НЕ чіпає")
     a = ap.parse_args()
     membership = _load_membership()
     prom_products = _load_prom_products_cache()
@@ -316,6 +378,29 @@ def main() -> None:
     catalog = {str(k): v for k, v in (fetch_toysi_catalog() or {}).items()}
     if not catalog:
         print("[Merchant] каталог порожній — вихід.", file=sys.stderr); sys.exit(1)
+
+    if a.audit_members:
+        member_ids = set(membership.keys()) if isinstance(membership, dict) else set(membership)
+        remove, st = audit_members(catalog, member_ids, prom_products, a.limit)
+        prev = []
+        if REMOVAL_OUTPUT_FILE.exists():
+            try:
+                prev = json.loads(REMOVAL_OUTPUT_FILE.read_text(encoding="utf-8")).get("remove", [])
+            except (ValueError, OSError):
+                prev = []
+        seen = {c["pid"] for c in remove}
+        merged = remove + [c for c in prev if c["pid"] not in seen]
+        REMOVAL_OUTPUT_FILE.write_text(json.dumps(
+            {"at": datetime.now().isoformat(), "count": len(merged), "remove": merged},
+            ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"[Merchant/audit] членів до перевірки: {st['eligible']} "
+              f"(зникли з Toysi {st['gone']}, OOS/низький склад {st['oos_or_lowstock']}, без фото {st['no_clean_image']})")
+        print(f"[Merchant/audit] перевірено ринок: {st['checked']} → у ринку/лишаємо "
+              f"{st['competitive'] + st['unique']}, ДОРОЖЧІ (на зняття) {st['uncompetitive']} "
+              f"| пропущено (антибот) {st['blocked']}")
+        print(f"[Merchant/audit] DRY-RUN → {REMOVAL_OUTPUT_FILE.name} "
+              f"(накопичено {len(merged)} на ЗНЯТТЯ; membership НЕ змінено)")
+        return
 
     add, st = run(catalog, membership, prom_products, a.limit)
     # мерджимо у файл-накопичувач (ротація за кілька прогонів)

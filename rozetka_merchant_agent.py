@@ -83,7 +83,12 @@ NAV_TIMEOUT_MS = 25000
 # Конкурент = будь-який сигнал. Пороги КАЛІБРУВАТИ на 20-валідації ПЕРЕД масштабуванням.
 NAME_OVERLAP_MIN = float(__import__("os").environ.get("ROZETKA_NAME_OVERLAP_MIN", "0.6"))
 NAME_MATCH_MIN_PRICE_RATIO = 0.30
-_NAME_STOP = {"для", "з", "у", "в", "та", "і", "the", "and", "см", "шт", "мл", "кг", "набір"}
+NAME_MATCH_MIN_SHARED = 2   # мінімум СПІЛЬНИХ значущих токенів (проти одно-токенних / родових збігів)
+# Стоп-лист: службові + РОДОВІ токени іграшкового каталогу (інакше «іграшка/гра/дитяча» роздувають
+# збіг різних товарів — аудит 2026-08-28, ниті 1-2). Специфіка (бренд/модель/серія) лишається.
+_NAME_STOP = {"для", "з", "у", "в", "та", "і", "the", "and", "см", "шт", "мл", "кг", "набір",
+              "іграшка", "іграшки", "іграшкова", "гра", "дитяча", "дитячий", "дитяче", "дитячі",
+              "комплект", "розвивальна", "розвиваюча", "інтерактивна"}
 
 
 def _name_tokens(s: str) -> set:
@@ -216,7 +221,7 @@ def rozetka_market_price(page, session, name: str, our_hash, our_price=None):
                 continue
         # сигнал 2: збіг назви + розумна ціна (ловить конкурента з ІНШИМ фото)
         tile_toks = _name_tokens(t.get("title"))
-        if our_price and len(tile_toks) >= 2 \
+        if our_price and len(our_toks & tile_toks) >= NAME_MATCH_MIN_SHARED \
                 and _name_overlap(our_toks, tile_toks) >= NAME_OVERLAP_MIN \
                 and price >= our_price * NAME_MATCH_MIN_PRICE_RATIO:
             matched.append(price)

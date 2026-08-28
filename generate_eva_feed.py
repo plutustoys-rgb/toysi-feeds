@@ -348,9 +348,11 @@ EVA_PRICE_MULTIPLIER = 1.5   # 2026-08-28 власник підняв 1.45 → 1
 def _load_birthday_promo() -> tuple:
     try:
         d = json.loads((Path(__file__).parent / "eva_birthday_promo.json").read_text(encoding="utf-8"))
+        if not isinstance(d, dict):
+            return set(), EVA_PRICE_MULTIPLIER   # валідний JSON, але не об'єкт — фолбек, не краш
         skus = {str(s).strip() for s in (d.get("skus") or []) if str(s).strip()}
         return skus, float(d.get("multiplier") or EVA_PRICE_MULTIPLIER)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
         return set(), EVA_PRICE_MULTIPLIER
 
 

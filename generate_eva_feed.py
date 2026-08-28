@@ -340,6 +340,23 @@ EVA_SELECTION_MIN_STOCK = 2
 # ТИМЧАСОВА формула («поки така» — власник) — легко замінити, коли дасть постійну.
 EVA_PRICE_MULTIPLIER = 1.5   # 2026-08-28 власник підняв 1.45 → 1.5 (маржа). Застосовується до бази
                              # без «Збірки» (див. _eva_price); від реальної собівартості вийде ~×1.425.
+
+
+# EVA «День народження»: для 39 in-demand SKU (наказ власника 28.08) ціна = база × 2.143 замість
+# ×1.5. Ці SKU також ОБХОДЯТЬ EVA_EXCLUDED_CATEGORIES (щоб точно потрапили у фід — власник просив
+# додати, щоб SEO їх помітив). Список і коефіцієнт — eva_birthday_promo.json (легко правити).
+def _load_birthday_promo() -> tuple:
+    try:
+        d = json.loads((Path(__file__).parent / "eva_birthday_promo.json").read_text(encoding="utf-8"))
+        if not isinstance(d, dict):
+            return set(), EVA_PRICE_MULTIPLIER   # валідний JSON, але не об'єкт — фолбек, не краш
+        skus = {str(s).strip() for s in (d.get("skus") or []) if str(s).strip()}
+        return skus, float(d.get("multiplier") or EVA_PRICE_MULTIPLIER)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return set(), EVA_PRICE_MULTIPLIER
+
+
+EVA_BIRTHDAY_PROMO_SKUS, EVA_BIRTHDAY_PROMO_MULT = _load_birthday_promo()
 # Ціль фіда: УСІ валідні товари (пряме рішення власника 2026-07-31 «піднімай», після
 # підтвердження виміром — генерація 8879 товарів ~54с, файл ~20МБ; EVA не обмежує
 # кількість, ліміт файла 300МБ не досягається). 15000 — запобіжник за розміром файла,
@@ -726,8 +743,9 @@ def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: 
         return False
     if str(item["id"]) in excluded:
         return False
-    if (item.get("category_id") or "").strip() in EVA_EXCLUDED_CATEGORIES:
-        return False
+    if (item.get("category_id") or "").strip() in EVA_EXCLUDED_CATEGORIES \
+            and str(item.get("id")) not in EVA_BIRTHDAY_PROMO_SKUS:
+        return False   # промо-SKU обходять виключення категорій (власник: додати у фід)
     vendor = (item.get("vendor") or "").strip()
     if not vendor:
         return False
@@ -767,7 +785,8 @@ def _eva_price(item: dict):
         return None
     if base <= 0:
         return None
-    return round(base * EVA_PRICE_MULTIPLIER, 2)
+    mult = EVA_BIRTHDAY_PROMO_MULT if str(item.get("id")) in EVA_BIRTHDAY_PROMO_SKUS else EVA_PRICE_MULTIPLIER
+    return round(base * mult, 2)
 
 
 def _wrap_cdata(xml_str: str) -> str:

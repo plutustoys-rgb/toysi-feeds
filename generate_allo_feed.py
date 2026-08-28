@@ -381,6 +381,10 @@ def _build_xml(
             truncated_name_count += 1
             name = _truncate(name, ALLO_NAME_MAX_LEN)
         ET.SubElement(offer, "name").text = name
+        # <name_ua>: наші назви українські. БЕЗ цього тега ALLO кладе єдиний <name> лише в RU-слот,
+        # а ОБОВ'ЯЗКОВЕ «Назва товару_UA» лишається порожнім → картка не проходить модерацію
+        # (нуль товарів у продажу — блокер, знайдений SEO 28.08). Аналогічно до <description_ua>.
+        ET.SubElement(offer, "name_ua").text = name
 
         ET.SubElement(offer, "price").text          = f"{retail:.2f}"
         ET.SubElement(offer, "currencyId").text     = "UAH"
@@ -463,9 +467,16 @@ def _build_allo_static_selection(catalog: dict, price_overrides: dict = None) ->
         price_overrides = load_fresh_prom_price_overrides()
     top_catalog = select_top_items(catalog)
 
+    # Фільтр НЕ-ІГРАШОК — той самий, що EVA (косметика/гігієна/прикраси/уцінка тощо, ~5315 позицій).
+    # Раніше ALLO його НЕ мав (excluded=set()) → у фід летіли не-іграшки → 150 незіставлених категорій
+    # + ~876 не-імпортованих (SEO 28.08). EVA_EXCLUDED_CATEGORIES — set(category_id), тому окрема
+    # перевірка (як generate_eva_feed:728), НЕ через excluded (той про item_id).
+    from generate_eva_feed import EVA_EXCLUDED_CATEGORIES
     items: dict = {}
     prices: dict = {}
     for pid, item in top_catalog.items():
+        if (item.get("category_id") or "").strip() in EVA_EXCLUDED_CATEGORIES:
+            continue
         if not _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides):
             continue
         items[pid] = item

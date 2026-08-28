@@ -154,6 +154,11 @@ def main() -> None:
         _run([PY, str(BASE_DIR / "rozetka_merchant_agent.py")])
         print("[RzLocal] 3d) підключення кандидатів у membership (кап 6000)...")
         _run([PY, str(BASE_DIR / "rozetka_merchant_commit.py")])
+        # 3e. Переаудит НАЯВНИХ членів (dry-run): накопичує кандидатів на ЗНЯТТЯ неконкурентних
+        # (floor>ринок) у rozetka_member_removal_candidates.json. НЕ чіпає membership — рішення про
+        # реальне зняття за людиною. Окремий курсор ротації; ~1 повний прохід 2908 членів за ~кілька днів.
+        print("[RzLocal] 3e) переаудит наявних членів (dry-run на зняття)...")
+        _run([PY, str(BASE_DIR / "rozetka_merchant_agent.py"), "--audit-members"])
 
     # 4-5. Генерація + preflight.
     print("[RzLocal] 4) генерація Rozetka-фіду...")

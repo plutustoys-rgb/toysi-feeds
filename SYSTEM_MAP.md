@@ -101,7 +101,7 @@
 | `PlutusToys-CabinetAudit` | `local_cabinet_audit.ps1` | аудит кабінетів (Prom/Rozetka) |
 | `PlutusToys-Graph6Daily` | `graph6_daily.ps1` | КОДВ/звітність |
 | `PlutusToys-KODVDailyCheck` | `kodv_daily_check.ps1` | КОДВ: денна перевірка |
-| `PlutusToys-NovaPayRegistryArchiver` | `novapay_registry_archiver.ps1` | КОДВ: архів реєстрів NovaPay |
+| `PlutusToys-NovaPayRegistryArchiver` | `novapay_registry_archiver.ps1` → `kodv_mail_archiver.py` | КОДВ: архів реєстрів NovaPay + актів звірки НоваПошта у документи_КОДВ (read-only IMAP, книгу не пише) |
 | `PlutusToys-PrivatDailySync` | `privat_daily_sync.ps1` | КОДВ: синк Privat |
 | `PlutusToys-ChecboxRegistrySync` | `checkbox_registry_sync.ps1` | КОДВ: синк Checkbox/ПРРО |
 

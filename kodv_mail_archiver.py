@@ -148,14 +148,22 @@ def archive(dry_run: bool = False) -> dict:
     skipped_dupe = 0
     unclassified_msgs = 0
 
-    since = datetime.now(timezone.utc).date().toordinal() - LOOKBACK_DAYS
-    since_str = datetime.fromordinal(since).strftime("%d-%b-%Y")
+    # IMAP SEARCH дата — англ. абревіатура місяця ЖОРСТКО (не strftime("%b"): у cp1251-Windows,
+    # якщо будь-який імпорт викличе locale.setlocale(LC_TIME,''), %b стане кирилицею й SEARCH зламається).
+    _MON = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    since_d = datetime.fromordinal(datetime.now(timezone.utc).date().toordinal() - LOOKBACK_DAYS)
+    since_str = f"{since_d.day:02d}-{_MON[since_d.month - 1]}-{since_d.year}"
 
     imap = imaplib.IMAP4_SSL(IMAP_HOST)
     imap.login(IMAP_EMAIL, IMAP_APP_PASSWORD)
     try:
         scanned_any = False
         for folder in FOLDERS:
+            if not folder.isascii():
+                # imaplib кодує назву теки в ASCII; кирилична (напр. локалізована Gmail-тека)
+                # кинула б UnicodeEncodeError. Пропускаємо явно, а не сирим трейсбеком.
+                _log(f"тека '{folder}' не-ASCII — imaplib її не підтримує, пропускаю.")
+                continue
             if imap.select(folder, readonly=True)[0] != "OK":
                 _log(f"тека '{folder}' не вибралась (нема такої мітки?) — пропускаю.")
                 continue

@@ -41,11 +41,22 @@ try {
 #    prints that you must run `python eva_cabinet_scraper.py --login` once.
 & $py eva_cabinet_scraper.py
 
+# 3a-2. EVA unbooked-orders candidates for KODV (owner request 2026-08-29, same automation as
+#       rozetka_commission_ledger.py above). Reuses eva_cabinet_scraper.py's session - no
+#       separate login. Writes candidates into документи_КОДВ, never into the book itself.
+& $py eva_orders_ledger.py
+
 # 3b. Toysi deposit (same pattern). One-time: `python toysi_cabinet_scraper.py --login`.
 & $py toysi_cabinet_scraper.py
 
 # 3c. Rozetka catalog health (counts + block reasons). One-time: `--login`.
 & $py rozetka_cabinet_scraper.py
+
+# 3c-2. Rozetka royalty+logistics commission ledger for KODV graph 9 (owner request 2026-08-29:
+#       accountant was manually re-checking every order's commission). Reuses the same session
+#       as rozetka_cabinet_scraper.py above - no separate login. Writes candidates straight into
+#       the shared документи_КОДВ folder, never into the book itself.
+& $py rozetka_commission_ledger.py
 
 # 3d. Prom notifications (top of /cms/notifications, money signals). One-time: `--login`.
 & $py prom_notifications_scraper.py

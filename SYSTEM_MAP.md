@@ -100,7 +100,6 @@
 | `PlutusToys-TelegramOutbox` | `telegram_outbox_processor.py` | інфра: черга вихідних Telegram |
 | `PlutusToys-CabinetAudit` | `local_cabinet_audit.ps1` | аудит кабінетів (Prom/Rozetka) + КОДВ-леджери кандидатів: `rozetka_commission_ledger`, `eva_orders_ledger`, `prom_commission_ledger` (комісія Prom з Orders API у графу 9, §3 довідника) — усі пишуть кандидатів у документи_КОДВ, книгу не пишуть |
 | `PlutusToys-Graph6Daily` | `graph6_daily.ps1` → `graph6_daily.py` | КОДВ: собівартість реалізованих замовлень Toysi (кабінет «Історія замовлень», лише «Відвантажене») → кандидати графи 6 у документи_КОДВ (read-only, книгу не пише) |
-| `PlutusToys-KODVDailyCheck` | `kodv_daily_check.ps1` | КОДВ: денна перевірка |
 | `PlutusToys-NovaPayRegistryArchiver` | `novapay_registry_archiver.ps1` → `kodv_mail_archiver.py` | КОДВ: архів реєстрів NovaPay + актів звірки НоваПошта у документи_КОДВ (read-only IMAP, книгу не пише) |
 | `PlutusToys-PrivatDailySync` | `privat_daily_sync.ps1` | КОДВ: синк Privat |
 | `PlutusToys-ChecboxRegistrySync` | `checkbox_registry_sync.ps1` → `checkbox_registry_sync.py` | КОДВ: нові фіскальні чеки Checkbox → кандидати доходу у документи_КОДВ (read-only API, книгу не пише) |
@@ -246,7 +245,7 @@
     "PlutusToys_RozetkaKeepalive", "PlutusToys_PromCatalogHistory", "PlutusToys_PromCabinetKeepalive",
     "PlutusToys_PromConvergenceMonitor", "PlutusToys_CriticalCalendar",
     "PlutusToys-TelegramOutbox", "PlutusToys-CabinetAudit",
-    "PlutusToys-Graph6Daily", "PlutusToys-KODVDailyCheck", "PlutusToys-NovaPayRegistryArchiver",
+    "PlutusToys-Graph6Daily", "PlutusToys-NovaPayRegistryArchiver",
     "PlutusToys-PrivatDailySync", "PlutusToys-ChecboxRegistrySync"
   ],
   "vps_units": [

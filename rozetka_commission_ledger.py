@@ -190,7 +190,7 @@ def _lookup_book_row(order_id: str) -> dict:
         for row in ws.iter_rows(min_row=7):
             e = row[4].value if len(row) > 4 else None
             if e and needle in str(e):
-                return {"row": row[0].row, "current_i9": row[8].value if len(row) > 8 else None,
+                return {"row": row[4].row, "current_i9": row[8].value if len(row) > 8 else None,
                         "e_text": str(e)}
     except Exception as e:
         print(f"[RzCommission] крос-звірка з книгою не вдалась (не критично): {e}", file=sys.stderr)

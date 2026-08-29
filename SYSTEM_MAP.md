@@ -98,7 +98,7 @@
 | `PlutusToys_PromCabinetKeepalive` | `prom_notifications_scraper.py --keepalive` | Prom: тримати кабінетну сесію теплою |
 | `PlutusToys_PromConvergenceMonitor` | `prom_convergence_monitor.py` | Prom: контроль збіжності каталогу до 6000 |
 | `PlutusToys-TelegramOutbox` | `telegram_outbox_processor.py` | інфра: черга вихідних Telegram |
-| `PlutusToys-CabinetAudit` | `local_cabinet_audit.ps1` | аудит кабінетів (Prom/Rozetka) |
+| `PlutusToys-CabinetAudit` | `local_cabinet_audit.ps1` | аудит кабінетів (Prom/Rozetka) + КОДВ-леджери кандидатів: `rozetka_commission_ledger`, `eva_orders_ledger`, `prom_commission_ledger` (комісія Prom з Orders API у графу 9, §3 довідника) — усі пишуть кандидатів у документи_КОДВ, книгу не пишуть |
 | `PlutusToys-Graph6Daily` | `graph6_daily.ps1` | КОДВ/звітність |
 | `PlutusToys-KODVDailyCheck` | `kodv_daily_check.ps1` | КОДВ: денна перевірка |
 | `PlutusToys-NovaPayRegistryArchiver` | `novapay_registry_archiver.ps1` → `kodv_mail_archiver.py` | КОДВ: архів реєстрів NovaPay + актів звірки НоваПошта у документи_КОДВ (read-only IMAP, книгу не пише) |

@@ -103,7 +103,7 @@
 | `PlutusToys-KODVDailyCheck` | `kodv_daily_check.ps1` | КОДВ: денна перевірка |
 | `PlutusToys-NovaPayRegistryArchiver` | `novapay_registry_archiver.ps1` → `kodv_mail_archiver.py` | КОДВ: архів реєстрів NovaPay + актів звірки НоваПошта у документи_КОДВ (read-only IMAP, книгу не пише) |
 | `PlutusToys-PrivatDailySync` | `privat_daily_sync.ps1` | КОДВ: синк Privat |
-| `PlutusToys-ChecboxRegistrySync` | `checkbox_registry_sync.ps1` | КОДВ: синк Checkbox/ПРРО |
+| `PlutusToys-ChecboxRegistrySync` | `checkbox_registry_sync.ps1` → `checkbox_registry_sync.py` | КОДВ: нові фіскальні чеки Checkbox → кандидати доходу у документи_КОДВ (read-only API, книгу не пише) |
 
 > **Чому Rozetka + Prom-кабінет + agent_watch крутяться ЛОКАЛЬНО, а не на VPS:** вітрина/кабінет
 > захищені антиботом, який пропускає лише справжній Chrome із профілем (bundled chromium → 403/500);

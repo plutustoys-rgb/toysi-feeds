@@ -95,6 +95,14 @@ def fetch_receipts() -> list:
         results = (resp.json() or {}).get("results") or []
     except ValueError:
         raise cb.CheckboxAPIError(f"невалідна відповідь (не JSON) /receipts/search: {resp.text[:300]}")
+    if len(results) >= FETCH_LIMIT:
+        # Сторінка заповнена вщент — між прогонами могло з'явитись >FETCH_LIMIT чеків, і найстаріші
+        # «нові» випали б за межу вибірки, а курсор стрибнув би повз них (латентна втрата). Каса
+        # низькооборотна, тож малоймовірно, але сигналимо, щоб не пройшло тихо.
+        _log(f"⚠️ отримано {len(results)} чеків = ліміт сторінки {FETCH_LIMIT}: можливо є ще старіші "
+             f"нові чеки поза вибіркою — за потреби додати пагінацію по meta.offset.")
+        _notify(f"⚠️ checkbox_registry_sync: сторінка чеків заповнена ({FETCH_LIMIT}) — перевір, чи "
+                f"не втрачено старіші нові чеки; можливо потрібна пагінація.")
 
     receipts = []
     for it in results:
@@ -195,11 +203,15 @@ def main() -> None:
         _notify(f"🚨 checkbox_registry_sync: помилка збору чеків Checkbox: {e}")
         _log(f"помилка: {e}")
         sys.exit(1)
+    except Exception as e:  # noqa: BLE001 — несподівана помилка не має падати ТИХО без сповіщення
+        _notify(f"🚨 checkbox_registry_sync: несподівана помилка: {e}")
+        _log(f"несподівана помилка: {e}")
+        sys.exit(1)
 
     if is_baseline:
         if not dry_run and new_serial is not None:
             _save_cursor(new_serial)
-        _log("Базова лінія встановлена — нових кандидатів нема." if not candidates else "")
+        _log("Базова лінія встановлена — нових кандидатів нема.")
         return
 
     if not candidates:

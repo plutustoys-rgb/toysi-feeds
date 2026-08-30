@@ -467,7 +467,13 @@ def _rozetka_delivery_address(order: dict) -> str:
         region = re.sub(r"\s*обл(?:асть|\.)?\s*$", "", (city.get("region_title") or "").strip(),
                         flags=re.IGNORECASE).strip()
         city_out = f"{city_name} ({region} обл.)" if (region and city_name) else city_name
-        return (f"{city_out}, Відділення №{wh}".strip(", ") if wh else city_out)
+        # Ярлик пункту: ПОШТОМАТ чи ВІДДІЛЕННЯ (delivery_service_name = «Нова Пошта (поштомати)» для
+        # поштомата). Важить у крайовому випадку, коли NP-резолв провалиться і np_branch іде в Toysi
+        # вільним текстом (order_router shipping_address) — інакше поштомат позначався б «Відділення».
+        # За норми (NP резолвиться) Toysi бере Ref номера пункту, текст не йде. parse_np_branch витягує
+        # номер і з «Поштомат №N» (гілка «№» у _WAREHOUSE_RE), тож резолв від зміни ярлика не ламається.
+        label = "Поштомат" if "поштомат" in (d.get("delivery_service_name") or "").lower() else "Відділення"
+        return (f"{city_out}, {label} №{wh}".strip(", ") if wh else city_out)
     # RZ Delivery / інше: адреса пункту видачі вільним текстом (вулиця/будинок/номер).
     street = " ".join(p for p in (d.get("place_street"), d.get("place_house"), place_number) if p).strip()
     warehouse = (d.get("warehouse_name") or d.get("warehouse") or "").strip()

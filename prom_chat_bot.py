@@ -183,6 +183,34 @@ def fetch_new_messages() -> list:
     return response.json().get("data", {}).get("messages", [])
 
 
+def fetch_recent_messages(limit: int = 50) -> list:
+    """Останні повідомлення в УСІХ кімнатах НЕЗАЛЕЖНО від статусу — щоб зловити й ті, що вже стали
+    'read' (людина/власник відкрили чат ДО прогону бота), інакше status=new-фетч їх пропускає й
+    покупець лишається без відповіді (реальний кейс 2026-08-30). Дедуп/гейт «чи вже відповіли» —
+    у main() (get_response_status + перевірка відповіді продавця в кімнаті), щоб не задвоїти."""
+    response = requests.get(
+        f"{PROM_API_URL}/chat/messages_history",
+        headers=_prom_headers(),
+        params={"project": PROJECT, "sort": "desc", "limit": limit},
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json().get("data", {}).get("messages", [])
+
+
+def _room_already_answered(room_ident: str, after_date: str) -> bool:
+    """Чи є відповідь ПРОДАВЦЯ (is_sender) у кімнаті ПІСЛЯ повідомлення покупця (after_date). Захист
+    від задвоєння: якщо на прочитане-необроблене-ботом повідомлення вже відповіла ЛЮДИНА (тож у БД
+    бота його нема), бот НЕ має відповідати вдруге."""
+    try:
+        for h in fetch_room_history(room_ident):
+            if h.get("is_sender") and (h.get("date_sent") or "") > (after_date or ""):
+                return True
+    except requests.exceptions.RequestException:
+        return True  # не змогли перевірити історію — БЕЗПЕЧНІШЕ вважати відповіджено (не спамити)
+    return False
+
+
 def fetch_room_history(room_ident: str, limit: int = ROOM_HISTORY_LIMIT) -> list:
     """Останні повідомлення кімнати НАПРЯМУ з Prom (не з локальної БД) —
     джерело правди, включно з повідомленнями до першого запуску бота."""
@@ -801,10 +829,19 @@ def main() -> None:
 
     print("[ChatBot] Перевіряю нові повідомлення в чаті Prom...")
     try:
-        messages = fetch_new_messages()
+        new_messages = fetch_new_messages()
+        recent_messages = fetch_recent_messages()  # + прочитані-до-прогону, щоб не зависали
     except requests.exceptions.RequestException as e:
         print(f"[ChatBot] Не вдалось отримати список повідомлень: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Злиття status=new + нещодавніх (усі статуси). Дедуп по id. Гейт «чи вже відповіли» — нижче.
+    seen_ids, messages = set(), []
+    for m in new_messages + recent_messages:
+        mid = m.get("id")
+        if mid is not None and mid not in seen_ids:
+            seen_ids.add(mid)
+            messages.append(m)
 
     to_process = [
         m for m in messages
@@ -838,6 +875,15 @@ def main() -> None:
             already = get_response_status(conn, msg["id"])
             if already is not None:
                 print(f"[ChatBot] Повідомлення {msg['id']} вже оброблено раніше ({already}) — пропускаю.")
+                continue
+            # Гейт від ЗАДВОЄННЯ (для прочитаних-до-прогону, яких нема в БД бота): якщо в кімнаті вже
+            # є відповідь ПРОДАВЦЯ після цього повідомлення (людина відповіла вручну) — не відповідаємо
+            # вдруге, лише фіксуємо як опрацьоване зовні, щоб не перевіряти щопрогону.
+            if _room_already_answered(msg["room_ident"], msg.get("date_sent")):
+                print(f"[ChatBot] {msg['id']}: у кімнаті вже є відповідь продавця — пропускаю (не задвоюю).")
+                update_response(conn, msg["id"], classification="skip",
+                                classification_reasoning="вже відповіли в кімнаті (людина/раніше)",
+                                response_status="answered_externally")
                 continue
             try:
                 process_message(conn, msg)

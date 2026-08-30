@@ -461,7 +461,11 @@ def _rozetka_delivery_address(order: dict) -> str:
         # плутав міста-тезки. Інцидент 904295184 (2026-08-30): «Березанка» є в кількох областях;
         # без області find_city брав ПЕРШУ getCities-кандидатку (Чернігівську) замість Миколаївської
         # → криве відділення. Джерело області — delivery.city.region_title (звірено живо: «Миколаївська»).
-        region = (city.get("region_title") or "").strip()
+        # region_title живо = голе «Миколаївська» (без «обл.»); захищаємось, якщо колись прийде
+        # «Миколаївська обл.»/«область» — інакше задвоїлось би «обл. обл.» і area_hint не зматчив би
+        # NP-AreaDescription «Миколаївська» (ниточка аудиту #436).
+        region = re.sub(r"\s*обл(?:асть|\.)?\s*$", "", (city.get("region_title") or "").strip(),
+                        flags=re.IGNORECASE).strip()
         city_out = f"{city_name} ({region} обл.)" if (region and city_name) else city_name
         return (f"{city_out}, Відділення №{wh}".strip(", ") if wh else city_out)
     # RZ Delivery / інше: адреса пункту видачі вільним текстом (вулиця/будинок/номер).

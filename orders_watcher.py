@@ -510,7 +510,14 @@ def _convert_rozetka_order(order: dict) -> dict:
         "payment_method": pm,
         "payment_confirmed": payment_confirmed,
         "customer_name": _rozetka_customer_name(order),
-        "phone": order.get("user_phone") or delivery.get("recipient_phone", ""),
+        # ОТРИМУВАЧ (order.recipient_phone) ПЕРШИМ, не замовник (order.user_phone): для доставки НП
+        # телефон — це кого повідомляють/кому віддають посилку. Інцидент 904295184 (2026-08-30):
+        # замовник Попова +380987498930, отримувач Хацьор +380669452265 — старий код брав user_phone
+        # першим і відправив у Toysi телефон ЗАМОВНИКА. КРИТИЧНО (rozetka.md рядок 573): recipient_phone
+        # — поле САМОГО замовлення (order.recipient_phone), НЕ order.delivery.recipient_phone; старий
+        # `delivery.get("recipient_phone")` завжди повертав None → завжди падало на user_phone.
+        # user_phone лишається фолбеком (коли отримувач=замовник, recipient_phone порожній).
+        "phone": order.get("recipient_phone") or delivery.get("recipient_phone") or order.get("user_phone") or "",
         "np_branch": _rozetka_delivery_address(order),
         "carrier": _rozetka_carrier(order),
         "items": [_convert_rozetka_purchase(p) for p in purchases] or [

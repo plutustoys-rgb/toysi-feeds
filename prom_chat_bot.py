@@ -198,16 +198,24 @@ def fetch_recent_messages(limit: int = 50) -> list:
     return response.json().get("data", {}).get("messages", [])
 
 
-def _room_already_answered(room_ident: str, after_date: str) -> bool:
-    """Чи є відповідь ПРОДАВЦЯ (is_sender) у кімнаті ПІСЛЯ повідомлення покупця (after_date). Захист
-    від задвоєння: якщо на прочитане-необроблене-ботом повідомлення вже відповіла ЛЮДИНА (тож у БД
-    бота його нема), бот НЕ має відповідати вдруге."""
+def _room_already_answered(room_ident: str, after_date: str, before_date: str):
+    """Тристан: True = продавець уже відповів ПІСЛЯ повідомлення покупця але ДО початку цього прогону
+    (людина/попередній прогін); False = такої відповіді нема; None = не змогли перевірити (мережа).
+
+    Захист від задвоєння: на прочитане-необроблене-ботом повідомлення, на яке вже відповіла ЛЮДИНА
+    (тож у БД бота його нема), бот не відповідає вдруге. before_date (run_start) ВИКЛЮЧАЄ власну
+    щойно надіслану цього прогону відповідь бота — інакше, відповівши на M1, бот вважав би M2 у тій
+    же кімнаті вже відповідженим (блокер аудиту #442). None на винятку — щоб main НЕ маркував
+    answered_externally незворотно на мережевому блимку, а повторив наступного прогону (блокер #442)."""
     try:
-        for h in fetch_room_history(room_ident):
-            if h.get("is_sender") and (h.get("date_sent") or "") > (after_date or ""):
-                return True
+        history = fetch_room_history(room_ident)
     except requests.exceptions.RequestException:
-        return True  # не змогли перевірити історію — БЕЗПЕЧНІШЕ вважати відповіджено (не спамити)
+        return None  # невизначено — не маркувати, повторити наступного прогону
+    ad = after_date or ""
+    for h in history:
+        ds = h.get("date_sent") or ""
+        if h.get("is_sender") and ad < ds < before_date:
+            return True
     return False
 
 
@@ -826,6 +834,7 @@ def main() -> None:
         sys.exit(1)
 
     init_db()
+    run_start = datetime.now(timezone.utc).isoformat()  # межа: власні відповіді цього прогону НЕ рахуємо
 
     print("[ChatBot] Перевіряю нові повідомлення в чаті Prom...")
     try:
@@ -879,8 +888,14 @@ def main() -> None:
             # Гейт від ЗАДВОЄННЯ (для прочитаних-до-прогону, яких нема в БД бота): якщо в кімнаті вже
             # є відповідь ПРОДАВЦЯ після цього повідомлення (людина відповіла вручну) — не відповідаємо
             # вдруге, лише фіксуємо як опрацьоване зовні, щоб не перевіряти щопрогону.
-            if _room_already_answered(msg["room_ident"], msg.get("date_sent")):
-                print(f"[ChatBot] {msg['id']}: у кімнаті вже є відповідь продавця — пропускаю (не задвоюю).")
+            answered = _room_already_answered(msg["room_ident"], msg.get("date_sent"), run_start)
+            if answered is None:
+                # Не змогли перевірити історію кімнати (мережа) — НЕ маркуємо нічого, повторимо
+                # наступного прогону (інакше мережевий блимок назавжди заглушив би покупця).
+                print(f"[ChatBot] {msg['id']}: не змогли перевірити історію кімнати — пропускаю цей прогін.")
+                continue
+            if answered:
+                print(f"[ChatBot] {msg['id']}: у кімнаті вже є відповідь продавця (до цього прогону) — пропускаю (не задвоюю).")
                 update_response(conn, msg["id"], classification="skip",
                                 classification_reasoning="вже відповіли в кімнаті (людина/раніше)",
                                 response_status="answered_externally")

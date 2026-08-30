@@ -346,13 +346,23 @@ EVA_PRICE_MULTIPLIER = 1.5   # 2026-08-28 власник підняв 1.45 → 1
 # ×1.5. Ці SKU також ОБХОДЯТЬ EVA_EXCLUDED_CATEGORIES (щоб точно потрапили у фід — власник просив
 # додати, щоб SEO їх помітив). Список і коефіцієнт — eva_birthday_promo.json (легко правити).
 def _load_birthday_promo() -> tuple:
+    # Лог обов'язковий (запит SEO 2026-08-29 + правило «алерт сам каже ЧОМУ впав»): раніше при
+    # відсутньому/побитому файлі промо ТИХО вимикалось (фід виглядав нормальним, у логу — нічого,
+    # година розслідування). Тепер кожен випадок пише рядок у лог генерації фіду.
     try:
         d = json.loads((Path(__file__).parent / "eva_birthday_promo.json").read_text(encoding="utf-8"))
         if not isinstance(d, dict):
+            print("[EVA] Промо ВИМКНЕНО: eva_birthday_promo.json — валідний JSON, але не об'єкт.")
             return set(), EVA_PRICE_MULTIPLIER   # валідний JSON, але не об'єкт — фолбек, не краш
         skus = {str(s).strip() for s in (d.get("skus") or []) if str(s).strip()}
-        return skus, float(d.get("multiplier") or EVA_PRICE_MULTIPLIER)
-    except (OSError, ValueError, TypeError, AttributeError):
+        mult = float(d.get("multiplier") or EVA_PRICE_MULTIPLIER)
+        if skus:
+            print(f"[EVA] Промо «День народження»: {len(skus)} SKU, множник {mult}")
+        else:
+            print("[EVA] Промо ВИМКНЕНО: eva_birthday_promo.json без SKU (порожній список).")
+        return skus, mult
+    except (OSError, ValueError, TypeError, AttributeError) as e:
+        print(f"[EVA] Промо ВИМКНЕНО: eva_birthday_promo.json відсутній/нечитний ({type(e).__name__}: {e}).")
         return set(), EVA_PRICE_MULTIPLIER
 
 

@@ -451,6 +451,50 @@ def _check_eva_not_cancelled(conn, order: dict) -> bool:
     return False
 
 
+def _check_rozetka_not_cancelled(conn, order: dict) -> bool:
+    """Дзеркало _check_prom_not_cancelled()/_check_eva_not_cancelled() для
+    Rozetka. Докстрінг Prom-гейта прямо позначав цей TODO: «Лише для prom —
+    Rozetka ще не активна... додати за тим самим патерном, коли Rozetka реально
+    стане активною». Вона активна (живі COD-замовлення), тож гейт потрібен.
+
+    Живий rozetka_client.get_order_status() ПЕРЕД форвардом; якщо статус —
+    скасувальний код (ROZETKA_CANCELLED_STATUSES, звірено apidoc/rozetka.md),
+    форвард зупиняється, ескалація в Telegram, статус = 'rozetka_cancelled_
+    before_forward' (той самий фільтр-виняток get_orders_ready_to_forward(),
+    що вже діє для prom/eva).
+
+    Fail-open — той самий принцип, що prom/eva: get_order_status() повертає
+    None (не знайдено/None у відповіді) або кидає RozetkaAPIError (мережа/токен)
+    → True (не блокуємо конвеєр через тимчасову недоступність перевірки).
+    Повертає False лише коли Rozetka ЖИВО й ПОЗИТИВНО підтверджує скасування."""
+    if order.get("platform") != "rozetka":
+        return True
+
+    try:
+        live_status = rozetka_client.get_order_status(order["order_id"])
+    except rozetka_client.RozetkaAPIError as e:
+        print(
+            f"[order_router] Не вдалось перевірити статус Rozetka #{order['order_id']} "
+            f"перед форвардом ({e}) — fail-open, продовжуємо форвард.",
+            file=sys.stderr,
+        )
+        return True
+
+    if live_status is None or live_status not in rozetka_client.ROZETKA_CANCELLED_STATUSES:
+        return True
+
+    message = (
+        f"🛑 {order['internal_order_id']} (Rozetka #{order['order_id']}): замовлення СКАСОВАНО на Rozetka "
+        f"(живий статус: {live_status}), поки воно чекало передачі в Toysi.\n"
+        f"Клієнт: {order.get('customer_name') or '?'}\n"
+        "Форвард у Toysi ЗУПИНЕНО автоматично."
+    )
+    print(f"[order_router] {message}", file=sys.stderr)
+    send_telegram_message(message)
+    update_delivery_status(conn, order["internal_order_id"], status="rozetka_cancelled_before_forward")
+    return False
+
+
 def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
     """RZ-Delivery-замовлення (carrier='rozetka_delivery') → створити ТТН (робить ПРОДАВЕЦЬ, не
     Toysi) + маркування в Toysi через юзербот, щоб постачальник здав посилку на пункт Rozetka.
@@ -547,6 +591,8 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
     if not _check_prom_not_cancelled(conn, order):
         return
     if not _check_eva_not_cancelled(conn, order):
+        return
+    if not _check_rozetka_not_cancelled(conn, order):
         return
 
     # P0-6: якщо викликач не передав каталог (напр. service_watchdog.py's

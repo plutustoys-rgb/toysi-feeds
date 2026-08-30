@@ -1,3 +1,4 @@
+import os
 import sys
 
 from checkbox_client import create_receipt, CheckboxAPIError
@@ -479,15 +480,19 @@ def _maybe_ticket_rozetka_cancelled(conn, order: dict) -> None:
     """Пост-форвард захист від «купили й відправили скасоване». Замовлення вже
     передане в Toysi (форвард відбувся), АЛЕ покупець скасував його на Rozetka.
     Toysi API НЕ має методу скасування (лише order_create + order_status), тож
-    автоматично зняти замовлення в постачальника ми не можемо — натомість
-    шлемо АДМІНУ тікет у чат (Telegram) на РУЧНЕ скасування в Toysi, поки воно
-    ще не відвантажене (інакше оплатимо мертве замовлення).
+    автоматично зняти замовлення через API ми не можемо — натомість шлемо запит
+    на скасування ПРЯМО В ЧАТ МЕНЕДЖЕРА Toysi тим самим каналом, що й RZ-Delivery
+    маркування: telegram_userbot_client.send_marking(). Гейт MARKING_TEST_MODE
+    (той самий, що для маркування): '1' (ДЕФОЛТ) → на номер власника (перевірка
+    формату), '0' → реальний чат Toysi. Текст — звернення до Toysi, готове як є.
 
     Живий rozetka_client.get_order_status(); якщо скасувальний код
-    (ROZETKA_CANCELLED_STATUSES) і тікет ще не слався — Telegram + позначка
-    rozetka_cancel_ticket_sent_at (ідемпотентно, щоб не спамити щоцикл).
-    Best-effort: RozetkaAPIError/None → тихо виходимо (наступний цикл повторить),
-    не валимо основне відстеження Toysi-статусів. Лише platform='rozetka'."""
+    (ROZETKA_CANCELLED_STATUSES) і тікет ще не слався — send_marking у Toysi +
+    короткий FYI власнику + позначка rozetka_cancel_ticket_sent_at (ідемпотентно).
+    Мітка ставиться ЛИШЕ на УСПІШНІЙ відправці (send_marking кидає UserbotError
+    при збої сесії/цілі/мережі) — інакше наступний цикл повторить спробу.
+    Best-effort: RozetkaAPIError/None → тихо виходимо, не валимо основне
+    відстеження Toysi-статусів інших замовлень. Лише platform='rozetka'."""
     if order.get("platform") != "rozetka":
         return
     if order.get("rozetka_cancel_ticket_sent_at"):
@@ -517,8 +522,32 @@ def _maybe_ticket_rozetka_cancelled(conn, order: dict) -> None:
         f"Rozetka #{order['order_id']} · {order.get('customer_name') or '?'}"
     )
     print(f"[order_status_tracker] {message}", file=sys.stderr)
-    send_telegram_message(message)
+
+    # Канал до Toysi — той самий юзербот, що шле RZ-Delivery маркування, з тим
+    # самим гейтом MARKING_TEST_MODE ('1' дефолт → номер власника; '0' → Toysi).
+    test_mode = os.environ.get("MARKING_TEST_MODE", "1").strip() != "0"
+    dest = "мій номер (тест)" if test_mode else "чат Toysi"
+    try:
+        import telegram_userbot_client
+        sent = bool(telegram_userbot_client.send_marking(message, to_toysi=not test_mode))
+    except Exception as e:  # noqa: BLE001 — send_marking кидає UserbotError; збій → ретрай наступним циклом
+        print(
+            f"[order_status_tracker] Запит на скасування Rozetka #{order['order_id']} "
+            f"(Toysi #{toysi_id}) → {dest}: НЕ надіслано ({e}). Ретрай наступним циклом.",
+            file=sys.stderr,
+        )
+        return
+
+    if not sent:
+        return
+
     mark_rozetka_cancel_ticket_sent(conn, order["internal_order_id"])
+    # FYI власнику в алерти (send_marking у тест-режимі йде на його ж номер, але
+    # у бойовому — в чат Toysi, тож окремий запис у канал алертів для видимості).
+    send_telegram_message(
+        f"↪️ Запит на скасування Rozetka #{order['order_id']} (Toysi #{toysi_id}, "
+        f"{order.get('customer_name') or '?'}) надіслано → {dest}."
+    )
 
 
 def track_orders() -> None:

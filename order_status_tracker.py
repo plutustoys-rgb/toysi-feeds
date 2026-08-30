@@ -514,7 +514,7 @@ def _maybe_ticket_rozetka_cancelled(conn, order: dict) -> None:
     message = (
         f"Доброго дня! Просимо скасувати замовлення #{toysi_id}, поки воно ще не "
         f"відвантажене — покупець скасував його з нашого боку. Дякуємо!\n"
-        f"Rozetka #{order['order_id']} · {order.get('customer_name') or '?'} · статус {live_status}"
+        f"Rozetka #{order['order_id']} · {order.get('customer_name') or '?'}"
     )
     print(f"[order_status_tracker] {message}", file=sys.stderr)
     send_telegram_message(message)

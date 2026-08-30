@@ -46,6 +46,12 @@ try {
 #       separate login. Writes candidates into документи_КОДВ, never into the book itself.
 & $py eva_orders_ledger.py
 
+# 3a-3. EVA actual per-order commission for KODV graph 9 (bookkeeper gap 2026-08-29). Reads the
+#       «Сума комісії» block on each seller.eva.ua/merchant/orders/{id} card (fact, not the 15%
+#       estimate; §довідника, verified live). Reuses eva session - no separate login. Candidates
+#       into документи_КОДВ/EVA, never the book.
+& $py eva_commission_ledger.py
+
 # 3b. Toysi deposit (same pattern). One-time: `python toysi_cabinet_scraper.py --login`.
 & $py toysi_cabinet_scraper.py
 

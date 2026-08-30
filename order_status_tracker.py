@@ -5,6 +5,7 @@ from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
     mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
     mark_prom_ttn_pushed, mark_eva_ttn_pushed, update_delivery_status,
+    mark_rozetka_cancel_ticket_sent,
 )
 import nova_poshta
 from orders_watcher import update_prom_order_status, attach_prom_declaration_id, PromAPIError
@@ -474,6 +475,51 @@ def _maybe_push_delivered_to_prom(conn, order: dict, ttn: str) -> None:
           f"{order['internal_order_id']} (ТТН {ttn}, НП: {tracking['status']})")
 
 
+def _maybe_ticket_rozetka_cancelled(conn, order: dict) -> None:
+    """Пост-форвард захист від «купили й відправили скасоване». Замовлення вже
+    передане в Toysi (форвард відбувся), АЛЕ покупець скасував його на Rozetka.
+    Toysi API НЕ має методу скасування (лише order_create + order_status), тож
+    автоматично зняти замовлення в постачальника ми не можемо — натомість
+    шлемо АДМІНУ тікет у чат (Telegram) на РУЧНЕ скасування в Toysi, поки воно
+    ще не відвантажене (інакше оплатимо мертве замовлення).
+
+    Живий rozetka_client.get_order_status(); якщо скасувальний код
+    (ROZETKA_CANCELLED_STATUSES) і тікет ще не слався — Telegram + позначка
+    rozetka_cancel_ticket_sent_at (ідемпотентно, щоб не спамити щоцикл).
+    Best-effort: RozetkaAPIError/None → тихо виходимо (наступний цикл повторить),
+    не валимо основне відстеження Toysi-статусів. Лише platform='rozetka'."""
+    if order.get("platform") != "rozetka":
+        return
+    if order.get("rozetka_cancel_ticket_sent_at"):
+        return
+
+    try:
+        live_status = rozetka_client.get_order_status(order["order_id"])
+    except rozetka_client.RozetkaAPIError as e:
+        print(
+            f"[order_status_tracker] Не вдалось перевірити скасування Rozetka #{order['order_id']} "
+            f"(тікет): {e}",
+            file=sys.stderr,
+        )
+        return
+
+    if live_status is None or live_status not in rozetka_client.ROZETKA_CANCELLED_STATUSES:
+        return
+
+    toysi_id = order.get("toysi_order_id")
+    message = (
+        f"🎫 ТІКЕТ — скасувати вручну в Toysi.\n"
+        f"Rozetka #{order['order_id']} СКАСОВАНО покупцем (живий статус {live_status}), "
+        f"але замовлення вже передане постачальнику Toysi #{toysi_id}.\n"
+        f"Клієнт: {order.get('customer_name') or '?'}\n"
+        f"Toysi API не має автоскасування — напиши менеджеру Toysi скасувати замовлення "
+        f"#{toysi_id}, поки не відвантажене, інакше воно піде й ми його оплатимо."
+    )
+    print(f"[order_status_tracker] {message}", file=sys.stderr)
+    send_telegram_message(message)
+    mark_rozetka_cancel_ticket_sent(conn, order["internal_order_id"])
+
+
 def track_orders() -> None:
     with get_connection() as conn:
         active = get_active_toysi_orders(conn)
@@ -524,6 +570,10 @@ def track_orders() -> None:
             _maybe_push_ttn_to_prom(conn, order, ttn)
             _maybe_push_ttn_to_eva(conn, order, ttn)
             _maybe_push_delivered_to_prom(conn, order, ttn)
+            # Пост-форвард: покупець міг скасувати на Rozetka вже ПІСЛЯ передачі
+            # в Toysi (Toysi цього не знає й веде замовлення далі) — тікет адміну
+            # на ручне скасування в Toysi, поки не відвантажене.
+            _maybe_ticket_rozetka_cancelled(conn, order)
 
             ttn_note = f", ТТН: {ttn}" if ttn else ""
             terminal_note = " [термінальний, більше не опитуємо]" if status_code in TERMINAL_ORDER_STATUSES else ""
@@ -534,4 +584,9 @@ def track_orders() -> None:
 
 
 if __name__ == "__main__":
+    # Гарантувати наявність колонок (міграція ідемпотентна) навіть якщо tracker
+    # запускається раніше за order_router після деплою — інакше mark_rozetka_
+    # cancel_ticket_sent() впав би «no such column» на щойно доданій колонці.
+    from orders_db import init_db
+    init_db()
     track_orders()

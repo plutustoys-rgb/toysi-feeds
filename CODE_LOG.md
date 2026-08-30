@@ -1,4 +1,31 @@
 
+## 2026-08-30 — Rozetka: обробка скасування покупцем (pre-forward гейт + пост-forward тікет адміну)
+
+Власник помітив на скріні кабінету Rozetka-замовлення 904664322 «Скасовано покупцем», яке ВЖЕ пішло в
+Toysi. З'ясував у коді: (1) Rozetka НЕ мала pre-forward гейта проти скасування — Prom/EVA мали
+(`_check_prom/eva_not_cancelled`), Rozetka ні, хоча докстрінг Prom-гейта прямо позначав це як TODO «коли
+Rozetka стане активною»; (2) Toysi API взагалі не має методу скасування (лише order_create+order_status).
+Власник: «якщо не можна відмінити треба автоматом відправляти у чат адміну тікет». Зробив гілкою
+`rozetka-cancel-ticket`:
+
+- **rozetka_client.py:** `ROZETKA_CANCELLED_STATUSES` = {13,17,18,28,29,32–45,49} — скасувальні ORDER-коди
+  (звірено довідник rozetka.md/apidoc, 45=«Скасовано покупцем»). Навмисно БЕЗ 11/12/19 (пост-відправкові,
+  їх ловить Toysi-трекер як returned).
+- **order_router.py `_check_rozetka_not_cancelled`** (дзеркало Prom/EVA) — живий `get_order_status()` ПЕРЕД
+  форвардом; скасувальний код → стоп + Telegram + `status='rozetka_cancelled_before_forward'` (виключено з
+  `get_orders_ready_to_forward`). Fail-open (APIError/None → форвард дозволено).
+- **order_status_tracker.py `_maybe_ticket_rozetka_cancelled`** — пост-форвард: замовлення вже в Toysi +
+  скасоване на Rozetka → 🎫 ТІКЕТ адміну в Telegram (Toysi# + клієнт + «напиши менеджеру Toysi скасувати»),
+  ідемпотентно (`rozetka_cancel_ticket_sent_at`). Додав `init_db()` у tracker's __main__ (standalone-запуск
+  раніше за order_router не впаде «no such column»).
+- **orders_db.py:** колонка `rozetka_cancel_ticket_sent_at` (SCHEMA + `_ensure_column` + `mark_*`),
+  виключення `rozetka_cancelled_before_forward` у `get_orders_ready_to_forward`.
+- Синтетичний тест (temp orders.db): 4/4 — pre-forward стоп+виключення, fail-open (6/APIError), пост-forward
+  тікет+ідемпотентність, не-скасоване (61) без тікета. Довідник rozetka.md оновлено.
+
+Замовлення 904664322 конкретно: після деплою tracker сам згенерує тікет (воно forwarded + статус 45), поки
+активне. Ручна дія власника по ньому — написати Toysi скасувати, поки не відвантажили.
+
 ## 2026-08-29/30 — КОДВ-автоматизація: 5 битих Task Scheduler-задач + 2 прогалини комісій закрито
 
 Власник передав задачу бухгалтера (видалив spawn_task-сесію): механічні КОДВ-рутини — детермінованими

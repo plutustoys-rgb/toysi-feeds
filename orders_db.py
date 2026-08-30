@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS orders (
     eva_ttn_pushed_at     TEXT,               -- коли ТТН передано в EVA через PATCH /orders/{id}/status
                                                -- (status=12 + tracking_number, order_status_tracker.py, 2026-08-01);
                                                -- захист від повторного PATCH щоцикл опитування
+    rozetka_cancel_ticket_sent_at TEXT,        -- коли надіслано тікет адміну, що Rozetka-замовлення скасовано
+                                               -- покупцем ПІСЛЯ форварду в Toysi (Toysi API не має автоскасування —
+                                               -- потрібне ручне; order_status_tracker._maybe_ticket_rozetka_cancelled);
+                                               -- захист від повторного тікета щоцикл опитування
     UNIQUE (order_id, platform)
 );
 
@@ -227,6 +231,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         # у route_pending_orders допосилає непереслані до ліміту, далі — самодіагностичний алерт.
         _ensure_column(conn, "orders", "rz_marking_sent_at", "rz_marking_sent_at TEXT")
         _ensure_column(conn, "orders", "rz_marking_attempts", "rz_marking_attempts INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "orders", "rozetka_cancel_ticket_sent_at", "rozetka_cancel_ticket_sent_at TEXT")
         # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
         # залишку" для цього замовлення — щоб order_router.py не спамив той
         # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
@@ -362,7 +367,7 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
         """
         SELECT * FROM orders
         WHERE forwarded_to_toysi_at IS NULL
-          AND (status IS NULL OR status NOT IN ('toysi_error', 'prom_cancelled_before_forward', 'eva_cancelled_before_forward'))
+          AND (status IS NULL OR status NOT IN ('toysi_error', 'prom_cancelled_before_forward', 'eva_cancelled_before_forward', 'rozetka_cancelled_before_forward'))
           AND (
               payment_method = 'cod'
               OR (payment_method = 'prepaid' AND payment_confirmed = 1)
@@ -556,6 +561,18 @@ def mark_eva_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) -> Non
     mark_prom_ttn_pushed()."""
     conn.execute(
         "UPDATE orders SET eva_ttn_pushed_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_rozetka_cancel_ticket_sent(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що адміну вже надіслано тікет «Rozetka-замовлення скасовано
+    покупцем ПІСЛЯ форварду в Toysi — скасувати вручну» (Toysi API не має
+    автоскасування). Захист від повторного тікета на кожному циклі опитування —
+    той самий ідемпотентний підхід, що й mark_eva_ttn_pushed()/
+    mark_stock_alert_sent()."""
+    conn.execute(
+        "UPDATE orders SET rozetka_cancel_ticket_sent_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
 

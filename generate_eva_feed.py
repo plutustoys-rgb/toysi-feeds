@@ -341,6 +341,13 @@ EVA_SELECTION_MIN_STOCK = 2
 EVA_PRICE_MULTIPLIER = 1.5   # 2026-08-28 власник підняв 1.45 → 1.5 (маржа). Застосовується до бази
                              # без «Збірки» (див. _eva_price); від реальної собівартості вийде ~×1.425.
 
+# Покривна ПІДЛОГА для збиткових (рішення власника 2026-08-30 «5% тільки для тих хто в мінусі»):
+# на дешевих товарах пласка «Збірка» (~15₴) підминає ×1.5 → нетто після комісії EVA нижче
+# собівартості. _eva_price піднімає ЛИШЕ такі (в мінусі) до 5% маржі над собівартістю; прибуткові
+# не чіпає. EVA_COMMISSION_EST — пласка 15%-оцінка комісії EVA (та сама, що get_platform_commission).
+EVA_COMMISSION_EST = 0.15
+EVA_LOSS_FLOOR_MARGIN = 0.05
+
 
 # EVA «День народження»: для 39 in-demand SKU (наказ власника 28.08) ціна = база × 2.143 замість
 # ×1.5. Ці SKU також ОБХОДЯТЬ EVA_EXCLUDED_CATEGORIES (щоб точно потрапили у фід — власник просив
@@ -795,8 +802,17 @@ def _eva_price(item: dict):
         return None
     if base <= 0:
         return None
-    mult = EVA_BIRTHDAY_PROMO_MULT if str(item.get("id")) in EVA_BIRTHDAY_PROMO_SKUS else EVA_PRICE_MULTIPLIER
-    return round(base * mult, 2)
+    is_promo = str(item.get("id")) in EVA_BIRTHDAY_PROMO_SKUS
+    mult = EVA_BIRTHDAY_PROMO_MULT if is_promo else EVA_PRICE_MULTIPLIER
+    price = round(base * mult, 2)
+    # Покривна підлога ТІЛЬКИ для збиткових (рішення власника 2026-08-30, «5% тільки для тих хто в
+    # мінусі»): якщо нетто після комісії EVA (price×(1-15%)) НИЖЧЕ собівартості — товар у мінус;
+    # піднімаємо до 5% маржі над собівартістю: price = cost×1.05/(1-0.15). Прибуткові (нетто≥cost)
+    # НЕ чіпаємо. Промо-SKU (×2.143) виключені — це свідома акційна ціна власника з окремою −30%
+    # знижкою EVA, підлога тут не застосовна (їх мало, ціна вища за ×1.5, у мінус майже не бувають).
+    if not is_promo and price * (1 - EVA_COMMISSION_EST) < cost:
+        price = round(cost * (1 + EVA_LOSS_FLOOR_MARGIN) / (1 - EVA_COMMISSION_EST), 2)
+    return price
 
 
 def _wrap_cdata(xml_str: str) -> str:

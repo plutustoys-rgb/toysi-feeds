@@ -457,7 +457,13 @@ def _rozetka_delivery_address(order: dict) -> str:
     # ЗМІСТОМ place_number (у RZ Delivery — опис ЖК), тому розгалужуємо за carrier.
     if _rozetka_carrier(order) == "nova_poshta":
         wh = place_number or (d.get("warehouse_name") or d.get("warehouse") or "").strip()
-        return (f"{city_name}, Відділення №{wh}".strip(", ") if wh else city_name)
+        # Область у форматі «(Xобл.)» — щоб order_router.parse_np_branch витяг area_hint і NP не
+        # плутав міста-тезки. Інцидент 904295184 (2026-08-30): «Березанка» є в кількох областях;
+        # без області find_city брав ПЕРШУ getCities-кандидатку (Чернігівську) замість Миколаївської
+        # → криве відділення. Джерело області — delivery.city.region_title (звірено живо: «Миколаївська»).
+        region = (city.get("region_title") or "").strip()
+        city_out = f"{city_name} ({region} обл.)" if (region and city_name) else city_name
+        return (f"{city_out}, Відділення №{wh}".strip(", ") if wh else city_out)
     # RZ Delivery / інше: адреса пункту видачі вільним текстом (вулиця/будинок/номер).
     street = " ".join(p for p in (d.get("place_street"), d.get("place_house"), place_number) if p).strip()
     warehouse = (d.get("warehouse_name") or d.get("warehouse") or "").strip()

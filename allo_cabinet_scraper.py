@@ -57,6 +57,10 @@ STATE_FILE = Path(
 DASHBOARD_URL = "https://partner.allo.ua/"           # дашборд = картки замовлень
 BILLING_URL = "https://partner.allo.ua/billing/status"  # баланси ТМ/абонплати/Холд + попередження
 LOGIN_START_URL = "https://partner.allo.ua/"
+# WRITE-дії (автоцикл, наказ власника 2026-08-31 через SEO — EVA/ALLO не мали автоциклу, як Rozetka/Prom):
+PRICES_URL = "https://partner.allo.ua/products/prices"     # список прайс-листів → «Редагувати» → майстер зіставлення
+CONTENT_URL = "https://partner.allo.ua/products/content"   # Товари → вкладка «Керування» → «Надіслати на модерацію все»
+ALLO_BASE = "https://partner.allo.ua"
 NAV_TIMEOUT_MS = 30000
 
 ORDER_LABELS = {"accepted": "Прийнято", "picking": "Комплектується", "delivering": "Доставляється",
@@ -157,6 +161,197 @@ def read_cabinet(page) -> dict:
             "block_warning": block_warning, "orders": orders, "_dash": bill}
 
 
+def _ensure_session(page) -> None:
+    """Кидає AlloCabinetError, якщо storageState протух (редірект на логін). Головний
+    сигнал 'онови сесію' — щоб автоцикл НЕ мовчав про протухлу сесію (як 10-денний
+    мовчазний збій EVA, CODE_LOG 29.08)."""
+    u = (page.url or "").lower()
+    if "sign_in" in u or "/login" in u or "/auth" in u:
+        raise AlloCabinetError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
+
+
+def _btn_actionable(btn) -> bool:
+    """Кнопка існує, видима, увімкнена й не aria-disabled (ALLO дизейблить
+    «Автозіставлення...» тултіпом «Триває...» доки async триває — тоді пропускаємо)."""
+    try:
+        if btn.count() == 0:
+            return False
+        b = btn.first
+        if not b.is_visible() or not b.is_enabled():
+            return False
+        if (b.get_attribute("aria-disabled") or "").lower() == "true":
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def automap_pricelists(page, apply: bool) -> dict:
+    """Частина B автоциклу: авто-завершення майстра «Зіставлення даних прайса».
+    Заходить на /products/prices, для КОЖНОГО прайса відкриває майстер («Редагувати»
+    → /products/import/<код>) і тисне ДОСТУПНІ кнопки «Автозіставлення категорій» /
+    «Автозіставлення характеристик». Діє за станом КНОПКИ (enabled), не за текстом
+    статусу — ідемпотентно: вже зіставлені/ті, де триває async, пропускає.
+
+    ОБМЕЖЕННЯ (чесно): майстер відкривається на ПОТОЧНОМУ незавершеному кроці. Кнопку
+    «Автозіставлення характеристик» (крок 3) звірено живо 2026-08-31 (тост «Прайс-лист
+    відправлено на автозіставлення», async). «Автозіставлення категорій» (крок 2) —
+    тиснеться, лише якщо присутня на завантаженій сторінці; випадок, коли прайс застряг
+    саме на кроці категорій (треба спершу перемкнути крок), тут НЕ покрито — окремий
+    інкремент, якщо трапиться (поки не бачив живого)."""
+    page.goto(PRICES_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+    page.wait_for_timeout(3500)
+    _ensure_session(page)
+    hrefs = []
+    try:
+        links = page.get_by_role("link", name="Редагувати")
+        for i in range(links.count()):
+            h = links.nth(i).get_attribute("href")
+            if h and "/products/import/" in h and h not in hrefs:
+                hrefs.append(h)
+    except Exception as e:
+        raise AlloCabinetError(f"не зчитав перелік прайс-листів: {e}")
+    res = {"pricelists": len(hrefs), "acted": [], "skipped": 0}
+    for h in hrefs:
+        url = h if h.startswith("http") else ALLO_BASE + h
+        code = h.rstrip("/").split("/")[-1]
+        try:
+            page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_timeout(3500)
+            _ensure_session(page)
+        except AlloCabinetError:
+            raise
+        except Exception as e:
+            print(f"[AlloCabinet] {code}: не відкрив майстер зіставлення ({e})", file=sys.stderr)
+            continue
+        did = []
+        for label in ("Автозіставлення категорій", "Автозіставлення характеристик"):
+            btn = page.get_by_role("button", name=label)
+            if not _btn_actionable(btn):
+                continue
+            if apply:
+                try:
+                    btn.first.click()
+                    page.wait_for_timeout(3000)  # старт фонового автозіставлення + тост
+                except Exception as e:
+                    print(f"[AlloCabinet] {code}: {label} — клік не вдався ({e})", file=sys.stderr)
+                    continue
+            did.append(label)
+        if did:
+            res["acted"].append({"code": code, "buttons": did})
+        else:
+            res["skipped"] += 1
+    return res
+
+
+def moderate_all(page, apply: bool) -> dict:
+    """Частина A автоциклу: bulk-подача «Надіслати на модерацію все» (вкладка «Керування»
+    сторінки Товари /products/content). Звірено живо 2026-08-31: ПРЯМА дія без діалогу
+    підтвердження, тост «Товари додані в обробку», кнопка одразу знову активна."""
+    page.goto(CONTENT_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+    page.wait_for_timeout(3500)
+    _ensure_session(page)
+    try:
+        page.get_by_role("tab", name="Керування").first.click()
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        raise AlloCabinetError(f"не знайшов вкладку 'Керування': {e}")
+    body = page.inner_text("body")
+    m = re.search(r"Новий\D{0,8}(\d[\d\xa0   ]*)", body)
+    pending = None
+    if m:
+        try:
+            pending = int(m.group(1).replace("\xa0", "").replace(" ", "").replace(" ", "").replace(" ", ""))
+        except ValueError:
+            pending = None
+    res = {"pending_new": pending, "submitted": False, "toast": None}
+    if apply:
+        btn = page.get_by_role("button", name="Надіслати на модерацію все")
+        if _btn_actionable(btn):
+            btn.first.click()
+            page.wait_for_timeout(3500)
+            try:
+                if page.get_by_text("додані в обробку").count():
+                    res["toast"] = "Товари додані в обробку"
+            except Exception:
+                pass
+            res["submitted"] = True
+    return res
+
+
+def run_actions(apply: bool, do_automap: bool, do_moderate: bool) -> None:
+    """Оркестратор автоциклу ALLO. Одна сесія браузера на обидві дії. Кожна дія в своєму
+    try/except — збій однієї не глушить іншу, протухла сесія сигналиться в Telegram."""
+    if not STATE_FILE.exists():
+        msg = (f"🚨 allo_cabinet_scraper: нема збереженої сесії ({STATE_FILE.name}). "
+               f"Запусти раз `python allo_cabinet_scraper.py --login`.")
+        print(f"[AlloCabinet] {msg}", file=sys.stderr)
+        _notify(msg)
+        sys.exit(1)
+
+    automap_res = None
+    moderate_res = None
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(storage_state=str(STATE_FILE))
+        page = ctx.new_page()
+        try:
+            if do_automap:
+                try:
+                    automap_res = automap_pricelists(page, apply)
+                except (PlaywrightTimeoutError, AlloCabinetError) as e:
+                    _save_failure_artifacts(page, "automap")
+                    msg = (f"🚨 allo автозіставлення не вдалось: {e}. "
+                           f"Якщо сесія протухла — `python allo_cabinet_scraper.py --login`.")
+                    print(f"[AlloCabinet] {msg}", file=sys.stderr)
+                    _notify(msg)
+            if do_moderate:
+                try:
+                    moderate_res = moderate_all(page, apply)
+                except (PlaywrightTimeoutError, AlloCabinetError) as e:
+                    _save_failure_artifacts(page, "moderate")
+                    msg = (f"🚨 allo подача на модерацію не вдалась: {e}. "
+                           f"Якщо сесія протухла — `python allo_cabinet_scraper.py --login`.")
+                    print(f"[AlloCabinet] {msg}", file=sys.stderr)
+                    _notify(msg)
+        finally:
+            browser.close()
+
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    mode = "APPLY" if apply else "DRY-RUN"
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    lines = [f"# ALLO авто-дії ({mode}), {now.strftime('%Y-%m-%d %H:%M')}", ""]
+    if automap_res is not None:
+        lines.append("## Автозіставлення прайс-листів")
+        lines.append(f"- Прайс-листів усього: {automap_res['pricelists']}")
+        lines.append(f"- Оброблено цей прогін: {len(automap_res['acted'])}")
+        for a in automap_res["acted"]:
+            lines.append(f"  - {a['code']}: {', '.join(a['buttons'])}")
+        lines.append(f"- Пропущено (нема що зіставляти / триває / вже готово): {automap_res['skipped']}")
+        lines.append("")
+    if moderate_res is not None:
+        lines.append("## Подача на модерацію")
+        lines.append(f"- Було у статусі 'Новий': {moderate_res['pending_new']}")
+        sub = "так" if moderate_res["submitted"] else "ні (dry-run)"
+        if moderate_res.get("toast"):
+            sub += f" — {moderate_res['toast']}"
+        lines.append(f"- Подано: {sub}")
+        lines.append("")
+    report_path = REPORT_DIR / f"allo_actions_{today}.md"
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[AlloCabinet] Звіт авто-дій: {report_path}")
+
+    parts = []
+    if automap_res is not None:
+        parts.append(f"автозіставлення {len(automap_res['acted'])}/{automap_res['pricelists']} прайсів")
+    if moderate_res is not None and moderate_res["submitted"]:
+        parts.append(f"подано на модерацію (було Новий {moderate_res['pending_new']})")
+    if parts:
+        _notify(f"🅰️ ALLO авто-дії {today} ({mode}): " + "; ".join(parts) + ".")
+        print(f"[AlloCabinet] {'; '.join(parts)}")
+
+
 def scrape() -> None:
     if not STATE_FILE.exists():
         msg = (f"🚨 allo_cabinet_scraper: нема збереженої сесії ({STATE_FILE.name}). "
@@ -225,11 +420,23 @@ def scrape() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Headless-читання кабінету ALLO (Playwright + storageState).")
+    parser = argparse.ArgumentParser(description="Кабінет ALLO (Playwright + storageState): читання балансів/замовлень + автоцикл дій.")
     parser.add_argument("--login", action="store_true", help="Раз: вікно, логін, зберегти сесію.")
+    parser.add_argument("--automap", action="store_true",
+                        help="Авто-завершити майстер 'Зіставлення даних' усіх прайс-листів.")
+    parser.add_argument("--moderate-all", action="store_true",
+                        help="'Надіслати на модерацію все' (вкладка Керування сторінки Товари).")
+    parser.add_argument("--auto-cycle", action="store_true",
+                        help="automap + moderate-all послідовно — щоденний автоцикл (як Rozetka/Prom).")
+    parser.add_argument("--apply", action="store_true",
+                        help="Реально виконати дії. Без нього — DRY-RUN: лише звіт що БУДЕ зроблено, без кліків.")
     args = parser.parse_args()
     if args.login:
         create_state()
+    elif args.automap or args.moderate_all or args.auto_cycle:
+        run_actions(apply=args.apply,
+                    do_automap=args.automap or args.auto_cycle,
+                    do_moderate=args.moderate_all or args.auto_cycle)
     else:
         scrape()
 

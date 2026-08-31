@@ -155,6 +155,7 @@ from collections import Counter
 from datetime import datetime
 
 import clean_photos
+from seo_description import description_for
 from pathlib import Path
 
 from competitor_pricing import (
@@ -723,9 +724,9 @@ def _final_eva_description(item: dict, desc_override: dict = None) -> str:
     (append_clearance_notice → _strip_urls → _sanitize_eva_description → _clean_text →
     _truncate). ЄДИНЕ джерело правди і для відбору (строгий гейт мін. довжини EVA), і для
     _build_xml — щоб довжина, за якою відбираємо, точно збігалася з тією, що публікується."""
-    raw = item.get("description", "")
-    if desc_override:
-        raw = desc_override.get("description") or raw
+    # Опис: затверджений override або згенерований НА ЛЬОТУ (build_seo) — покриває
+    # КОЖЕН SKU і нові товари, фолбек на сирий Toysi лише якщо генератор впав.
+    raw = description_for(item, desc_override)
     desc = append_clearance_notice(
         raw,
         item.get("name", ""),

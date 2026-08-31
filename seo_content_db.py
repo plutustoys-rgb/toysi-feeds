@@ -79,6 +79,15 @@ def upsert(sku, *, source_hash="", seo_title="", seo_meta_description="",
     conn.close()
 
 
+def _delete_source(source: str) -> None:
+    """Видаляє всі рядки заданого source (синхронізація перед re-імпортом батча — щоб
+    спорожнений/зменшений батч прибирав старі рядки, не лишав їх через INSERT OR REPLACE)."""
+    conn = _connect()
+    conn.execute("DELETE FROM seo WHERE source = ?", (source,))
+    conn.commit()
+    conn.close()
+
+
 def import_batch(json_path=PILOT_BATCH, catalog: dict = None) -> int:
     """Імпорт batch-файлу (seo_pilot_manual_batch.json) у БД. `approved` — з meta.approved
     (пілот затверджений власником). Idempotent (INSERT OR REPLACE за sku). source_hash —
@@ -89,6 +98,13 @@ def import_batch(json_path=PILOT_BATCH, catalog: dict = None) -> int:
     approved = 1 if meta.get("approved") else 0
     source = meta.get("source", "batch")
     gen = meta.get("generated_at", "")
+    # СИНХРОНІЗАЦІЯ джерела: спершу видаляємо всі попередні рядки цього source, щоб
+    # ЗМЕНШЕНИЙ/СПОРОЖНЕНИЙ батч реально ПРИБИРАВ старі рядки (INSERT OR REPLACE лише
+    # оновлює/додає, не видаляє). Без цього спорожнення template_v1 (перехід на
+    # on-the-fly) лишало б ~6000 заморожених статичних описів у БД, і on-the-fly їх
+    # не перекривав би (override виграє). Пілот і шаблон мають РІЗНІ source
+    # (cowork_manual_pilot vs template_v1), тож видалення одного не чіпає інший.
+    _delete_source(source)
     n = 0
     for it in data.get("items", []):
         sku = str(it.get("sku") or "").strip()

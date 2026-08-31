@@ -66,6 +66,16 @@ MERCHANT_URL = "https://seller.eva.ua/merchant"
 LOGIN_START_URL = "https://seller.eva.ua/"
 NAV_TIMEOUT_MS = 30000
 
+# WRITE-дія: повний імпорт (нові товари → модерація). Наказ власника 2026-08-31 (через SEO):
+# EVA не мала автоциклу повного імпорту — робилось руками. Автоімпорт EVA (той, що в кабінеті
+# «Автоматичний») тягне ЛИШЕ оновлення цін/залишків (Оновлені N, Нові 0) — новий товар на
+# модерацію дає тільки цей повний імпорт за посиланням. URL фіда = опублікований eva_feed.xml.
+IMPORTS_NEW_URL = "https://seller.eva.ua/integrations/imports/new"
+EVA_FEED_URL = os.environ.get(
+    "EVA_FEED_URL",
+    "https://raw.githubusercontent.com/plutustoys-rgb/toysi-feeds/feed-data/feeds/eva_feed.xml",
+)
+
 
 class EvaCabinetError(Exception):
     pass
@@ -180,6 +190,106 @@ def read_fullness(page) -> dict:
     return result
 
 
+def _ensure_session(page) -> None:
+    """Протухла сесія → EvaCabinetError (щоб автоцикл НЕ мовчав про це, як 10-денний
+    мовчазний збій EVA, CODE_LOG 29.08)."""
+    u = (page.url or "").lower()
+    if "login" in u or "oauth" in u or "/auth" in u:
+        raise EvaCabinetError(f"сесію не прийнято — редірект на {page.url} (storageState протух, треба --login)")
+
+
+def trigger_full_import(page, feed_url: str, apply: bool) -> dict:
+    """Частина C автоциклу: повний імпорт EVA за посиланням (нові товари → модерація).
+    Звірено живо 2026-08-31 на /integrations/imports/new: radio «через посилання» (за
+    замовч. вибраний) + поле «Введіть адресу XML файлу» + чекбокс «Відправити нові товари
+    з співставленою категорією на модерацію» + кнопка «Почати».
+
+    БЕЗ apply — DRY-RUN: заповнює форму (radio+url+чекбокс), але НЕ тисне «Почати»."""
+    page.goto(IMPORTS_NEW_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+    page.wait_for_timeout(3000)
+    _ensure_session(page)
+    res = {"feed_url": feed_url, "moderation_checked": None, "submitted": False}
+
+    # radio «через посилання» (не «через завантаження файлу») — має бути вибраний за замовч.,
+    # але явно ставимо, щоб не залежати від дефолта верстки.
+    try:
+        radio = page.get_by_role("radio", name=re.compile("через посилання"))
+        if radio.count() and not radio.first.is_checked():
+            radio.first.check()
+    except Exception as e:
+        print(f"[EvaCabinet] radio 'через посилання' не встановлено ({e})", file=sys.stderr)
+
+    # поле URL
+    box = page.get_by_role("textbox", name="Введіть адресу XML файлу")
+    if box.count() == 0:
+        raise EvaCabinetError("не знайдено поле 'Введіть адресу XML файлу' (верстка змінилась або сесія неповна)")
+    box.first.fill(feed_url)
+
+    # чекбокс «Відправити нові товари з співставленою категорією на модерацію» — саме він
+    # робить імпорт ПОВНИМ (нові → модерація), а не лише оновленням.
+    try:
+        cb = page.get_by_role("checkbox")
+        if cb.count():
+            if not cb.first.is_checked():
+                cb.first.check()
+            res["moderation_checked"] = cb.first.is_checked()
+    except Exception as e:
+        print(f"[EvaCabinet] чекбокс модерації не встановлено ({e})", file=sys.stderr)
+
+    if apply:
+        btn = page.get_by_role("button", name="Почати")
+        if btn.count() == 0 or not btn.first.is_enabled():
+            raise EvaCabinetError("кнопка 'Почати' відсутня/неактивна — форму не подано")
+        btn.first.click()
+        page.wait_for_timeout(4000)  # старт імпорту (запис зʼявляється в «Історія імпорту»)
+        res["submitted"] = True
+    return res
+
+
+def run_full_import(apply: bool) -> None:
+    """Оркестратор повного імпорту EVA. Одна сесія браузера; протухла сесія/збій → сигнал."""
+    if not STATE_FILE.exists():
+        msg = (f"🚨 eva_cabinet_scraper: нема збереженої сесії ({STATE_FILE.name}). "
+               f"Запусти раз `python eva_cabinet_scraper.py --login` і залогінься.")
+        print(f"[EvaCabinet] {msg}", file=sys.stderr)
+        _notify(msg)
+        sys.exit(1)
+
+    result = None
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(storage_state=str(STATE_FILE))
+        page = ctx.new_page()
+        try:
+            result = trigger_full_import(page, EVA_FEED_URL, apply)
+        except (PlaywrightTimeoutError, EvaCabinetError) as e:
+            _save_failure_artifacts(page, "import")
+            msg = (f"🚨 eva повний імпорт не вдався: {e}. "
+                   f"Якщо сесія протухла — `python eva_cabinet_scraper.py --login`.")
+            print(f"[EvaCabinet] {msg}", file=sys.stderr)
+            _notify(msg)
+        finally:
+            browser.close()
+
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    mode = "APPLY" if apply else "DRY-RUN"
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    lines = [f"# EVA повний імпорт ({mode}), {now.strftime('%Y-%m-%d %H:%M')}", ""]
+    if result is not None:
+        lines.append(f"- Фід: {result['feed_url']}")
+        lines.append(f"- Чекбокс 'на модерацію': {result['moderation_checked']}")
+        lines.append(f"- Подано ('Почати'): {'так' if result['submitted'] else 'ні (dry-run)'}")
+    else:
+        lines.append("- ❌ Імпорт не запущено (див. сигнал/скрін збою).")
+    report_path = REPORT_DIR / f"eva_full_import_{today}.md"
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[EvaCabinet] Звіт імпорту: {report_path}")
+
+    if result is not None and result["submitted"]:
+        _notify(f"🟣 EVA повний імпорт {today} ({mode}): подано (чекбокс модерації {result['moderation_checked']}).")
+
+
 def scrape() -> None:
     if not STATE_FILE.exists():
         msg = (f"🚨 eva_cabinet_scraper: нема збереженої сесії ({STATE_FILE.name}). "
@@ -253,9 +363,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Headless-читання балансу/наповненості кабінету EVA (Playwright + storageState).")
     parser.add_argument("--login", action="store_true",
                         help="Раз: відкрити вікно, залогінитись вручну, зберегти сесію у storageState.")
+    parser.add_argument("--full-import", action="store_true",
+                        help="Повний імпорт EVA за посиланням (нові товари → модерація) — автоцикл.")
+    parser.add_argument("--apply", action="store_true",
+                        help="Реально подати ('Почати'). Без нього — DRY-RUN: заповнити форму, не подавати.")
     args = parser.parse_args()
     if args.login:
         create_state()
+    elif args.full_import:
+        run_full_import(apply=args.apply)
     else:
         scrape()
 

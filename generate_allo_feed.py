@@ -130,6 +130,8 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime
+
+import clean_photos
 from pathlib import Path
 
 from competitor_pricing import (
@@ -352,10 +354,9 @@ def _build_xml(
             skipped_stop_brand += 1
             continue
 
-        pictures = [
-            p for p in item.get("pictures", [])
-            if p.startswith("https://")
-        ][:ALLO_MAX_PICTURES]
+        # ЧИСТЕ фото (images.prom.ua, без вотермарки/«асортименту»), фолбек на сирі
+        # Toysi — спільний хелпер, той самий чистий ряд, що вже годує Rozetka.
+        pictures = clean_photos.pictures_for(item, ALLO_MAX_PICTURES)
         if not pictures:
             skipped_no_pics += 1
             continue

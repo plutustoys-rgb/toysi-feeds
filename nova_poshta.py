@@ -75,6 +75,35 @@ def find_city(city_name: str, area_hint: str = "", limit: int = 5) -> dict:
     return {"ref": top.get("Ref"), "name": top.get("Description")}
 
 
+def settlement_raion(city_name: str, settlement_ref: str = "") -> str:
+    """Район (`getSettlements.RegionsDescription`) населеного пункту. Потрібен
+    для сіл, де район критичний для логістики Toysi (менеджер звіряє його з ТТН),
+    а `getCities`/`find_city` міст не містить сіл узагалі.
+
+    `settlement_ref` — точний Ref Нової Пошти (напр. EVA `address.city_id`): якщо
+    заданий, беремо ЙОГО збіг серед результатів (детерміновано, бо одне село-назва
+    є в кількох районах — напр. «Троїцьке» в Одеській обл. є і в Біляївському, і в
+    Любашівському). Ref заданий, але не знайдено → "" (НЕ гадаємо перший, щоб не
+    вписати чужий район). Без ref — перший результат.
+
+    Best-effort: порожня назва / помилка API / нема збігу → "" (викличник лишає
+    адресу без району, як раніше — не валимо конвертацію замовлення через НП)."""
+    if not city_name:
+        return ""
+    try:
+        results = _call("Address", "getSettlements", {"FindByString": city_name, "Limit": "50"})
+    except NovaPoshtaAPIError:
+        return ""
+    if not results:
+        return ""
+    if settlement_ref:
+        for s in results:
+            if s.get("Ref") == settlement_ref:
+                return (s.get("RegionsDescription") or "").strip()
+        return ""
+    return (results[0].get("RegionsDescription") or "").strip()
+
+
 def find_warehouse(city_ref: str, warehouse_query: str = "") -> dict:
     """
     Шукає відділення/поштомат у місті за CityRef.

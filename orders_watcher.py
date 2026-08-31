@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from orders_db import get_connection, init_db, insert_order, mark_payment_confirmed
 import rozetka_client
 import eva_orders_client
+import nova_poshta
 
 load_dotenv()
 
@@ -630,7 +631,20 @@ def _eva_delivery_address(order: dict) -> str:
         # матч area_hint з NP-AreaDescription (та сама нитка, що аудит #436 Rozetka).
         region = re.sub(r"\s*обл(?:асть|\.)?\s*$", "",
                         str(address.get("region") or "").strip(), flags=re.IGNORECASE).strip()
-        city_out = f"{city} ({region} обл.)" if (region and city) else city
+        # РАЙОН (село-тезки в ОДНІЙ області) — область не завжди розрізняє: у Одеській
+        # обл. два села «Троїцьке» (Біляївський і Любашівський р-ни). Toysi-менеджер
+        # прямо просив район «для перевірки з ТТН» (2026-08-31). EVA назви району не
+        # дає, але дає точний NP-Ref села (`city_id`) — резолвимо район по НЬОМУ через
+        # nova_poshta.settlement_raion (getSettlements), детерміновано, без гадання.
+        # Best-effort: НП недоступна / не знайдено → лишається сама область (як #446).
+        raion = ""
+        if region and city:
+            raion = nova_poshta.settlement_raion(city, str(address.get("city_id") or "").strip())
+        if region and city:
+            geo = f"{region} обл." + (f", {raion} р-н" if raion else "")
+            city_out = f"{city} ({geo})"
+        else:
+            city_out = city
         street = address.get("street")
         if isinstance(street, dict):
             street = str(street.get("name") or "").strip()

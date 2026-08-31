@@ -171,17 +171,32 @@ DESCRIPTION_OVERRIDES_FILE = BASE_DIR / "description_overrides.json"
 
 
 def load_description_overrides() -> dict:
-    """{external_id: {"description": str, "country"?: str}} — порожній
-    словник, якщо файл відсутній чи пошкоджений (той самий безпечний
-    дефолт, що й в усіх інших load_*() у цьому файлі): виклик просто падає
-    назад на сирий опис/країну Toysi для КОЖНОГО SKU, не лише для тих, що
-    мали б override."""
-    if not DESCRIPTION_OVERRIDES_FILE.exists():
-        return {}
+    """{external_id: {"description": str, "country"?: str}}. Об'єднує ДВА джерела
+    (SEO-запит 2026-08-31: 230 затверджених SEO-описів раніше бачив ЛИШЕ Prom):
+
+    1. **seo_content_db.load_approved_prom_overrides()** — затверджені SEO-описи (пілот
+       + Фаза 2), формат `{sku: {"description": html}}`. Тепер живлять і EVA/ALLO/Rozetka:
+       EVA вимагає `description_ua` ≥30 симв. (сирий Toysi-текст часто куций), а ALLO читає
+       предметні атрибути (тип/к-сть/колір) З ТЕКСТУ опису, бо структурованих даних Toysi
+       не дає — тобто якісний SEO-опис одразу працює на модерацію обох.
+    2. **description_overrides.json** — курований ручний набір (акційні SKU, з `country`).
+       Накладається ПОВЕРХ SEO (`update`) → має перевагу, щоб не затерти акційні описи/країну.
+
+    Обидва best-effort: збій одного → лишається інше; порожньо усюди → {} (кожен SKU падає
+    на сирий опис/країну Toysi, як і було). Prom бере SEO-описи напряму (generate_prom_feed_
+    top), тож для нього злиття тут нічого не змінює — лише додає EVA/ALLO/Rozetka."""
+    merged = {}
     try:
-        return json.loads(DESCRIPTION_OVERRIDES_FILE.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {}
+        from seo_content_db import load_approved_prom_overrides
+        merged.update(load_approved_prom_overrides())
+    except Exception:  # noqa: BLE001 — SEO-описи best-effort, збій БД не валить фід
+        pass
+    if DESCRIPTION_OVERRIDES_FILE.exists():
+        try:
+            merged.update(json.loads(DESCRIPTION_OVERRIDES_FILE.read_text(encoding="utf-8")))
+        except (ValueError, OSError):
+            pass
+    return merged
 
 
 def load_fresh_prom_price_overrides(max_age_hours: float = PROM_PRICE_STATE_MAX_AGE_HOURS) -> dict:

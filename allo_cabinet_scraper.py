@@ -161,13 +161,31 @@ def read_cabinet(page) -> dict:
             "block_warning": block_warning, "orders": orders, "_dash": bill}
 
 
+_LOGIN_URL_MARKERS = ("sign_in", "/login", "/auth", "oauth")
+# Текст логін-форми ALLO (звірено живо 2026-08-31 на протухлій сесії) — потрібен, бо
+# редірект на /sign_in КЛІЄНТСЬКИЙ і стається на ~4с ПІСЛЯ domcontentloaded: гола перевірка
+# URL одразу його НЕ бачить, і дія мовчки повертає «0» (реальний баг, спіймано живим тестом).
+_LOGIN_BODY_MARKERS = ("Відновити пароль", "E-mail або телефон", "Запам'ятати мене")
+
+
 def _ensure_session(page) -> None:
-    """Кидає AlloCabinetError, якщо storageState протух (редірект на логін). Головний
-    сигнал 'онови сесію' — щоб автоцикл НЕ мовчав про протухлу сесію (як 10-денний
-    мовчазний збій EVA, CODE_LOG 29.08)."""
+    """Кидає AlloCabinetError, якщо storageState протух. Головний сигнал 'онови сесію' —
+    щоб автоцикл НЕ мовчав про протухлу сесію (як 10-денний мовчазний збій EVA, CODE_LOG
+    29.08). Спершу ДОЧЕКАТИСЬ, поки клієнтський редірект на логін встигне статись (networkidle,
+    best-effort), потім перевірити і URL, і текст логін-форми."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass  # SPA-зʼєднання можуть не «затихати» — тоді покладаємось на перевірки нижче
     u = (page.url or "").lower()
-    if "sign_in" in u or "/login" in u or "/auth" in u:
+    if any(m in u for m in _LOGIN_URL_MARKERS):
         raise AlloCabinetError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
+    try:
+        body = page.inner_text("body")
+    except Exception:
+        body = ""
+    if any(m in body for m in _LOGIN_BODY_MARKERS):
+        raise AlloCabinetError(f"сесію не прийнято — сторінка логіну на {page.url} (треба --login)")
 
 
 def _btn_actionable(btn) -> bool:

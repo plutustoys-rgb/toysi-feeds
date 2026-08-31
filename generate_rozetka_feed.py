@@ -138,6 +138,7 @@ from datetime import datetime
 from pathlib import Path
 
 from competitor_pricing import decide_price_for_platform, load_description_overrides
+from seo_description import description_for
 from generate_prom_feed import append_clearance_notice
 from parser import fetch_toysi_catalog
 
@@ -774,12 +775,13 @@ def _build_xml(
         # написаний текст ПОВНІСТЮ замінює сирий опис Toysi (і, якщо
         # заданий у записі, <country_of_origin>).
         desc_override = desc_overrides.get(item_id)
-        raw_description = item.get("description", "")
         country = item.get("country")
         if desc_override:
             described_count += 1
-            raw_description = desc_override.get("description") or raw_description
             country = desc_override.get("country") or country
+        # Опис: override або згенерований НА ЛЬОТУ (build_seo) — покриває КОЖЕН SKU і
+        # нові товари; сирий Toysi лише якщо генератор впав.
+        raw_description = description_for(item, desc_override)
 
         if country:
             ET.SubElement(offer, "country_of_origin").text = _clean_text(country)

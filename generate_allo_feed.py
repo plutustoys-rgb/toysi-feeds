@@ -132,6 +132,7 @@ from collections import Counter
 from datetime import datetime
 
 import clean_photos
+from seo_description import description_for
 from pathlib import Path
 
 from competitor_pricing import (
@@ -405,12 +406,13 @@ def _build_xml(
         ET.SubElement(offer, "warranty_months").text = str(ALLO_WARRANTY_DEFAULT_MONTHS)
 
         desc_override = desc_overrides.get(item_id)
-        raw_description = item.get("description", "")
         country = item.get("country")
         if desc_override:
             described_count += 1
-            raw_description = desc_override.get("description") or raw_description
             country = desc_override.get("country") or country
+        # Опис: override або згенерований НА ЛЬОТУ (build_seo) — покриває КОЖЕН SKU і
+        # нові товари; сирий Toysi лише якщо генератор впав.
+        raw_description = description_for(item, desc_override)
 
         if country:
             ET.SubElement(offer, "country_of_origin").text = _clean_text(country)

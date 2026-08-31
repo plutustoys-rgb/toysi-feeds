@@ -10,6 +10,7 @@ from competitor_pricing import (decide_price_for_platform, load_fresh_prom_price
                                  compute_floor, compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR,
                                  canonical_competitor_floor, PRICE_STEP)
 from parser import fetch_toysi_catalog
+from seo_description import description_for
 from telegram_notify import send_telegram_message
 
 # Надійність, п.5: truncated_name_count/truncated_name_ua_count вже
@@ -782,12 +783,13 @@ def _build_xml(
         # "country" (реальне походження часом відрізняється від того, що
         # (можливо помилково) вказано в Toysi).
         desc_override = desc_overrides.get(item_id)
-        raw_description = item.get("description", "")
         country = item.get("country")
         if desc_override:
             described_count += 1
-            raw_description = desc_override.get("description") or raw_description
             country = desc_override.get("country") or country
+        # Опис (description_ua): override або згенерований НА ЛЬОТУ (build_seo) —
+        # повна розкатка SEO на весь каталог + нові товари; сирий Toysi лише при збої.
+        raw_description = description_for(item, desc_override)
 
         if country:
             ET.SubElement(offer, "country").text = country

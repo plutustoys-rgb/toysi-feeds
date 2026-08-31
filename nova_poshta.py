@@ -75,19 +75,22 @@ def find_city(city_name: str, area_hint: str = "", limit: int = 5) -> dict:
     return {"ref": top.get("Ref"), "name": top.get("Description")}
 
 
-def settlement_raion(city_name: str, settlement_ref: str = "") -> str:
-    """Район (`getSettlements.RegionsDescription`) населеного пункту. Потрібен
-    для сіл, де район критичний для логістики Toysi (менеджер звіряє його з ТТН),
-    а `getCities`/`find_city` міст не містить сіл узагалі.
+def settlement_raion(city_name: str, settlement_ref: str = "", area_hint: str = "") -> str:
+    """Район (`getSettlements.RegionsDescription`) населеного пункту. Потрібен, бо
+    Toysi-менеджер звіряє район з ТТН для КОЖНОГО замовлення (пряме прохання
+    2026-08-31), а `getCities`/`find_city` міст не містить сіл узагалі.
 
-    `settlement_ref` — точний Ref Нової Пошти (напр. EVA `address.city_id`): якщо
-    заданий, беремо ЙОГО збіг серед результатів (детерміновано, бо одне село-назва
-    є в кількох районах — напр. «Троїцьке» в Одеській обл. є і в Біляївському, і в
-    Любашівському). Ref заданий, але не знайдено → "" (НЕ гадаємо перший, щоб не
-    вписати чужий район). Без ref — перший результат.
+    Три режими (за спаданням надійності), усі БЕЗ гадання:
+    - `settlement_ref` (точний Ref НП, напр. EVA `address.city_id`) → беремо ЙОГО
+      збіг. Ref заданий+не знайдено → "" (не гадаємо). Найдетермінованіше.
+    - без ref, з `area_hint` (область) → беремо район ЛИШЕ якщо в цій області РІВНО
+      ОДИН збіг за точною назвою. Кілька («Троїцьке» в Одеській обл. є і в
+      Біляївському, і в Любашівському) → "" (не гадаємо — хибний район менеджер
+      звірить з ТТН, це гірше за відсутній). Для Rozetka/Prom (Ref нема, область є).
+    - без ref і без унікальності → "".
 
-    Best-effort: порожня назва / помилка API / нема збігу → "" (викличник лишає
-    адресу без району, як раніше — не валимо конвертацію замовлення через НП)."""
+    Best-effort: порожня назва / помилка API / нема однозначного збігу → "" (адреса
+    лишається без району, не валимо конвертацію замовлення через НП)."""
     if not city_name:
         return ""
     try:
@@ -101,7 +104,16 @@ def settlement_raion(city_name: str, settlement_ref: str = "") -> str:
             if s.get("Ref") == settlement_ref:
                 return (s.get("RegionsDescription") or "").strip()
         return ""
-    return (results[0].get("RegionsDescription") or "").strip()
+    # Без Ref — розрізняємо за областю, і ЛИШЕ якщо однозначно (рівно один збіг за
+    # точною назвою в цій області). Інакше "" — детермінізм тримається на унікальності.
+    name_low = city_name.strip().lower()
+    matches = [s for s in results if (s.get("Description") or "").strip().lower() == name_low]
+    if area_hint:
+        ah = area_hint.strip().lower()
+        matches = [s for s in matches if ah in (s.get("AreaDescription") or "").lower()]
+    if len(matches) == 1:
+        return (matches[0].get("RegionsDescription") or "").strip()
+    return ""
 
 
 def find_warehouse(city_ref: str, warehouse_query: str = "") -> dict:

@@ -1101,7 +1101,23 @@ def _build_xml(
         cat_id = (item.get("category_id") or "").strip()
         if cat_id:
             _fid, _ = _map_eva_category(cat_id, (item.get("category_name") or "").strip())
-            ET.SubElement(d_offer, "categoryId").text = _fid
+            if _fid:
+                ET.SubElement(d_offer, "categoryId").text = _fid
+        # ПОВНІ поля (не голий offer) — щоб ПОВНИЙ імпорт EVA (SEO додає картки під
+        # акцію) не створював OOS-товар неповним. Живий інцидент: 1608 карток
+        # «відсутні бренд/фото/опис» — саме голі деактиваційні offer'и, які повний
+        # імпорт SEO вгодував як неповні картки (автоімпорт = лише ціни/залишки,
+        # ці поля не лікує). Автоімпорт зайві поля ІГНОРУЄ; повний імпорт бере →
+        # картка повна. Best-effort: чого нема в Toysi — просто не емітимо (не
+        # скіпаємо деактивацію — мета все одно позначити OOS).
+        for pic_url in clean_photos.pictures_for(item, EVA_MAX_PICTURES):
+            ET.SubElement(d_offer, "picture").text = pic_url
+        d_vendor = (item.get("vendor") or "").strip()
+        if d_vendor:
+            ET.SubElement(d_offer, "vendor").text = _clean_text(normalize_vendor(d_vendor))
+        d_desc = _final_eva_description(item, desc_overrides.get(pid_s))
+        if d_desc:
+            ET.SubElement(d_offer, "description_ua").text = d_desc
         deactivated_count += 1
     if deactivate_items is not None:
         print(f"[EVA] Деактивація OOS: {deactivated_count} товарів у фіді з available=\"false\" "

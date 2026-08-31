@@ -45,7 +45,12 @@ UKRPOSHTA_STICKERS_DIR = "ukrposhta_stickers"
 _WAREHOUSE_RE = re.compile(r"(?:відділенн\w*|відд\.?|№)\s*№?\s*(\d+)", re.IGNORECASE)
 _CITY_PREFIX_RE = re.compile(r"^(м\.|с\.|смт\.?)\s*", re.IGNORECASE)
 _CITY_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
-_CITY_AREA_RE = re.compile(r"\(([^)]*?)\s*обл\.?\)\s*$", re.IGNORECASE)
+# Витягує область із «(Xобл.)» — область для area_hint (розрізнення міст-тезок при
+# NP-резолві). Опційний хвіст «, <район> р-н» ДОПУСКАЄТЬСЯ (EVA-адреси сіл несуть і
+# район для логістики Toysi, напр. «Троїцьке (Одеська обл., Біляївський р-н)») — але
+# в area_hint іде ЛИШЕ область (район find_city не вживає). Rozetka-формат «(Xобл.)»
+# без хвоста лишається сумісним (хвіст опційний).
+_CITY_AREA_RE = re.compile(r"\(([^)]*?)\s*обл\.?(?:\s*,[^)]*)?\)\s*$", re.IGNORECASE)
 
 
 def parse_np_branch(np_branch: str) -> tuple:
@@ -71,7 +76,22 @@ def parse_np_branch(np_branch: str) -> tuple:
     warehouse_match = _WAREHOUSE_RE.search(np_branch)
     warehouse_query = warehouse_match.group(1) if warehouse_match else ""
 
-    city_part = np_branch.split(",")[0]
+    # city_part = усе до ПЕРШОЇ коми ВЕРХНЬОГО рівня (поза дужками). Проста
+    # np_branch.split(",")[0] ламалась би на EVA-адресах сіл, де район додає кому
+    # ВСЕРЕДИНІ дужок: «Троїцьке (Одеська обл., Біляївський р-н), Відділення №1» —
+    # split дав би обрізане «Троїцьке (Одеська обл.» (без закритої дужки) → area_hint
+    # і місто побиті. Дужко-свідомий розріз тримає всю гео-дужку в city_part.
+    depth = 0
+    cut = len(np_branch)
+    for i, ch in enumerate(np_branch):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            cut = i
+            break
+    city_part = np_branch[:cut]
     area_match = _CITY_AREA_RE.search(city_part)
     area_hint = area_match.group(1).strip() if area_match else ""
 

@@ -620,6 +620,17 @@ def _eva_delivery_address(order: dict) -> str:
     address = shipping.get("address")
     if isinstance(address, dict):
         city = str(address.get("city") or "").strip()
+        # Область у форматі «(Xобл.)» — щоб order_router.parse_np_branch витяг
+        # area_hint і Нова Пошта не плутала міста-тезки (той самий захист, що вже
+        # діє для Rozetka — _rozetka_delivery_address). Інцидент 8-080364562
+        # (2026-08-31): «Троїцьке» (село) є в кількох областях; без області форма
+        # Toysi показала «Перевозчик не выбран, уточняйте область и район».
+        # EVA `region` живо = голе «Одеська» (без «обл.»); захищаємось, якщо колись
+        # прийде «Одеська обл.»/«область», щоб не задвоїти «обл. обл.» і не зламати
+        # матч area_hint з NP-AreaDescription (та сама нитка, що аудит #436 Rozetka).
+        region = re.sub(r"\s*обл(?:асть|\.)?\s*$", "",
+                        str(address.get("region") or "").strip(), flags=re.IGNORECASE).strip()
+        city_out = f"{city} ({region} обл.)" if (region and city) else city
         street = address.get("street")
         if isinstance(street, dict):
             street = str(street.get("name") or "").strip()
@@ -627,7 +638,7 @@ def _eva_delivery_address(order: dict) -> str:
             street = str(street or "").strip()
         if not street and address.get("warehouse_number") is not None:
             street = f"№{address.get('warehouse_number')}"
-        parts = [p for p in (city, street) if p]
+        parts = [p for p in (city_out, street) if p]
         if parts:
             return ", ".join(parts)
     if isinstance(address, str) and address.strip():

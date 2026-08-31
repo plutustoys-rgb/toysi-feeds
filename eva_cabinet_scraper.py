@@ -192,9 +192,15 @@ def read_fullness(page) -> dict:
 
 def _ensure_session(page) -> None:
     """Протухла сесія → EvaCabinetError (щоб автоцикл НЕ мовчав про це, як 10-денний
-    мовчазний збій EVA, CODE_LOG 29.08)."""
+    мовчазний збій EVA, CODE_LOG 29.08). Спершу ДОЧЕКАТИСЬ клієнтського редіректу на
+    логін/oauth (networkidle, best-effort) — інакше гола перевірка URL одразу його не бачить
+    (той самий клас бага, що спіймано на ALLO живим тестом 2026-08-31), потім перевірити URL."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
     u = (page.url or "").lower()
-    if "login" in u or "oauth" in u or "/auth" in u:
+    if "login" in u or "oauth" in u or "/auth" in u or "sign_in" in u:
         raise EvaCabinetError(f"сесію не прийнято — редірект на {page.url} (storageState протух, треба --login)")
 
 

@@ -12,7 +12,7 @@ from orders_db import (
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
 from meta_conversions_client import send_purchase_event
-from nova_poshta import resolve_shipping, NovaPoshtaAPIError
+from nova_poshta import resolve_shipping, settlement_raion, NovaPoshtaAPIError
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message, send_throttled_alert
 import rozetka_client
@@ -227,6 +227,25 @@ def build_toysi_order(order: dict) -> dict:
     if order["payment_method"] == "cod":
         moneyback = sum(item.get("price", 0) * item.get("qty", 1) for item in order["items"])
 
+    # РАЙОН у comment — Toysi-менеджер звіряє його з ТТН для КОЖНОГО замовлення
+    # (пряме прохання 2026-08-31, не лише EVA). comment завжди йде в Toysi й
+    # видимий на формі («Автоматично: eva #…»). В окреме поле Toysi район не має,
+    # а в назву міста його класти НЕ можна — зламало б Ref-матч перевізника.
+    # Універсально для всіх площадок: район резолвиться з (місто, область) через
+    # nova_poshta.settlement_raion — БЕЗ гадання (лише однозначний збіг в області;
+    # EVA-адреси вже несуть район у np_branch/shipping_address окремо, #447).
+    # Best-effort, лише НП: збій/неоднозначність → комент без району, як раніше.
+    raion = ""
+    if city and order.get("carrier", "nova_poshta") == "nova_poshta":
+        try:
+            raion = settlement_raion(city, area_hint=area_hint)
+        except Exception:  # noqa: BLE001 — район необов'язковий, не валимо передачу замовлення
+            raion = ""
+
+    comment = f"Автоматично: {order['platform']} #{order['order_id']}"
+    if raion:
+        comment += f" · {city}, {raion} р-н" + (f", {area_hint} обл." if area_hint else "")
+
     return {
         "internal_order_id": order["internal_order_id"][:25],
         "items": order["items"],
@@ -239,7 +258,7 @@ def build_toysi_order(order: dict) -> dict:
         # ніж порожній рядок (response_code 20 "порожня адреса доставки").
         "shipping_address": order.get("np_branch", "") if not shipping_fields else "",
         "moneyback": moneyback,
-        "comment": f"Автоматично: {order['platform']} #{order['order_id']}",
+        "comment": comment,
         **shipping_fields,
     }
 

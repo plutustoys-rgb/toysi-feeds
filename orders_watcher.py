@@ -637,9 +637,14 @@ def _eva_delivery_address(order: dict) -> str:
         # дає, але дає точний NP-Ref села (`city_id`) — резолвимо район по НЬОМУ через
         # nova_poshta.settlement_raion (getSettlements), детерміновано, без гадання.
         # Best-effort: НП недоступна / не знайдено → лишається сама область (як #446).
+        # ГЕЙТ на city_id: район детермінований ЛИШЕ по точному NP-Ref села. Без
+        # Ref settlement_raion повернув би ПЕРШИЙ результат — для села-тезки це
+        # може бути ЧУЖИЙ район, а хибний район менеджер Toysi звірить з ТТН і
+        # введе в оману (гірше за відсутній). Нема city_id → лишається сама
+        # область (як #446). (Аудит #447.)
         raion = ""
-        if region and city:
-            raion = nova_poshta.settlement_raion(city, str(address.get("city_id") or "").strip())
+        if region and city and address.get("city_id"):
+            raion = nova_poshta.settlement_raion(city, str(address.get("city_id")).strip())
         if region and city:
             geo = f"{region} обл." + (f", {raion} р-н" if raion else "")
             city_out = f"{city} ({geo})"

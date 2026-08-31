@@ -578,9 +578,18 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
     покриває ВЕСЬ пул по LEDGER_SWEEP_LOOKUP_LIMIT, потім скидається на новий цикл —
     жоден підмножинний батч не блокує прогрес по бэклогу."""
     ledger = load_ledger()
+    # Кандидати = наші листовані товари (журнал), що випали з топ-6000 — НЕЗАЛЕЖНО від
+    # того, чи їх видно у капнутому груповому фетчі. РАНІШЕ був ще фільтр
+    # `e not in prom_products` (лише невидима група), і застарілі У ГРУПОВОМУ виді
+    # лишались діркою: груповий шлях find_stale_external_ids їх бачив, але deletion_guard
+    # блокував його на неповному зрізі (вид ~2965<3600) → вони НІКОЛИ не деактивувались і
+    # місяцями займали слоти (реальний прогін 2026-08-31: 462 таких застарілих).
+    # Знято фільтр безпечно, бо кожен кандидат тут ОКРЕМО звіряється НАЖИВО через
+    # by_external_id (to_delist = лише підтверджено живі, не deleted) — це не залежить від
+    # повноти /groups/list, тож обходить cap-guard без ризику видалити небачене.
     candidates = [
         e for e in ledger
-        if e in toysi_ids and e not in desired_ids and e not in prom_products
+        if e in toysi_ids and e not in desired_ids
     ]
     if not candidates:
         return [], []
@@ -601,7 +610,7 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
     checked.update(batch)                         # sweep-курсор (як supplement_cabinet_view)
     _save_ledger_checked(checked)
 
-    print(f"[Sync] Журнал невидимих OOS: {len(candidates)} кандидатів (журнал−топ−видимий зріз), "
+    print(f"[Sync] Журнал OOS (усі поза топ, live-звірка): {len(candidates)} кандидатів (журнал−топ), "
           f"звірено {len(batch)} через by_external_id — живих застарілих {len(to_delist)}, "
           f"на очищення журналу {len(to_prune)}, невизначених {len(indeterminate)}.")
     return to_delist, to_prune

@@ -68,6 +68,11 @@ _ATTACH_EXT = (".xlsx", ".xls", ".pdf")
 _NOVAPAY_MARKERS = ("реєстр переказів", "реестр переводов", "novapay", "нова пей")
 _NP_AKT_MARKERS = ("акт звірки", "акт сверки", "акт звірення", "реєстр нп",
                    "нова пошта", "новапошта", "novaposhta", "nova poshta", "акт-звірка")
+# FC/RozetkaPay — щоденний реєстр виплат (обслуговує і Prom-оплату, і Rozetka-картки, один
+# процесор). Ім'я файлу: «Реєстр платежів ФОП Чечетенко Олександр Юрійович_YYYY-MM-DD (0).xlsx».
+# Відрізняється від NovaPay «реєстр ПЕРЕказів» словом «ПЛАтежів». Запит бухгалтера 2026-08-31
+# (сторно 17 днів висіло непоміченим). НЕ дублювати старою назвою «Rozetka» — окрема тека RozetkaPay.
+_ROZETKAPAY_MARKERS = ("реєстр платежів", "реестр платежей")
 
 
 def _log(msg: str) -> None:
@@ -111,8 +116,15 @@ def _save_cursor(saved: set) -> None:
 
 
 def _classify(filename_l: str, subject_l: str, sender_l: str) -> str | None:
-    """Джерело для вкладення: 'NovaPay' / 'НоваПошта' / None (не наш документ)."""
+    """Джерело для вкладення: 'RozetkaPay' / 'NovaPay' / 'НоваПошта' / None (не наш документ).
+    RozetkaPay перевіряємо ПЕРШИМ — його маркер «реєстр платежів» специфічніший і не колізить із
+    NovaPay «реєстр переказів»."""
     hay = f"{filename_l} {subject_l} {sender_l}"
+    # RozetkaPay = «реєстр платежів [ФОП Чечетенко Олександр Юрійович]». ВИКЛЮЧАЄМО легасі-файли
+    # «реєстр платежів КОНТРАГЕНТА Чечетенко О.Ю.» (інші документи), щоб вони не затінили денний
+    # реєстр у теці (аудит #464: _newest_registry бере найновіший xlsx).
+    if any(m in hay for m in _ROZETKAPAY_MARKERS) and "контрагент" not in hay:
+        return "RozetkaPay"
     if any(m in hay for m in _NOVAPAY_MARKERS):
         return "NovaPay"
     if any(m in hay for m in _NP_AKT_MARKERS):
@@ -144,7 +156,7 @@ def _iter_attachments(msg):
 
 def archive(dry_run: bool = False) -> dict:
     saved_cursor = _load_cursor()
-    newly = {"NovaPay": 0, "НоваПошта": 0}
+    newly = {"RozetkaPay": 0, "NovaPay": 0, "НоваПошта": 0}
     skipped_dupe = 0
     unclassified_msgs = 0
 
@@ -235,7 +247,7 @@ def main() -> None:
         sys.exit(1)
 
     n = r["newly"]
-    _log(f"ГОТОВО: NovaPay +{n['NovaPay']}, НоваПошта +{n['НоваПошта']} нових; "
+    _log(f"ГОТОВО: RozetkaPay +{n['RozetkaPay']}, NovaPay +{n['NovaPay']}, НоваПошта +{n['НоваПошта']} нових; "
          f"дублів пропущено {r['skipped_dupe']}; "
          f"схожих листів без розпізнаного вкладення {r['unclassified']}.")
     if r["unclassified"]:

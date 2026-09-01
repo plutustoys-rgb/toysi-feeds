@@ -64,6 +64,12 @@ try {
 #       the shared документи_КОДВ folder, never into the book itself.
 & $py rozetka_commission_ledger.py
 
+# 3c-3. FC/RozetkaPay registry STORNO detector for KODV (accountant request 2026-08-31: a bank
+#       storno sat unnoticed in the book for 17 days). Reads the archived RozetkaPay registry
+#       (kodv_mail_archiver routes it to документи_КОДВ/*/RozetkaPay/), flags storno + acquiring
+#       graph-9 candidates cross-referenced with the book (READ-ONLY). Candidates only, never the book.
+& $py rozetkapay_registry_kandydaty.py
+
 # 3d. Prom notifications (top of /cms/notifications, money signals). One-time: `--login`.
 & $py prom_notifications_scraper.py
 

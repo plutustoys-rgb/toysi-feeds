@@ -51,6 +51,23 @@ REGISTRY = [
 ]
 
 
+def _repo_stable() -> bool:
+    """Чи репозиторій у СТАБІЛЬНОМУ стані (гілка master, чистий working tree). Гейт має
+    алертити лише про РЕАЛЬНИЙ дрейф, а не про транзитний стан під час активної розробки:
+    щоденний аудит-таск раз спрацював саме коли агент мержив/перемикав гілки і зловив
+    момент, коли довідник-файл на мить відсутній у working tree → ХИБНИЙ алерт власнику
+    (2026-09-01). На VPS/idle-машині tree = master = стабільний, тож гейт працює нормально.
+    Не змогли визначити стан → вважаємо НЕстабільним (краще змовчати, ніж кричати вовк)."""
+    try:
+        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(BASE),
+                                capture_output=True, text=True, timeout=15).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=str(BASE),
+                               capture_output=True, text=True, timeout=15).stdout.strip()
+        return branch == "master" and dirty == ""
+    except Exception:  # noqa: BLE001 — не визначили → НЕстабільно (не алертимо)
+        return False
+
+
 def _telegram(msg: str) -> None:
     """Алерт про порушення дисципліни. ПОВАЖАЄ AUDIT_NO_TELEGRAM=1 — щоб локальні/тестові прогони
     НЕ спамили власника (реальний інцидент 2026-09-01: тест-порушення надіслало хибний алерт).
@@ -139,8 +156,13 @@ def main() -> int:
 
     if violations:
         who = ", ".join(p for p, _ in violations)
-        _telegram(f"🔴 Гейт вимог маркетплейсів: ПОРУШЕННЯ у {who} — довідник/автоперевірка зламані. "
-                  f"Товари в цих категоріях будуть порожні. Див. marketplace_requirements_gate.md")
+        # Алертимо ЛИШЕ у стабільному стані — інакше транзитний dev-стан дає хибний «вовк».
+        if _repo_stable():
+            _telegram(f"🔴 Гейт вимог маркетплейсів: ПОРУШЕННЯ у {who} — довідник/автоперевірка зламані. "
+                      f"Товари в цих категоріях будуть порожні. Див. marketplace_requirements_gate.md")
+        else:
+            print("[mp-gate] НЕстабільний стан репо (не master/брудний tree) — алерт ПРИДУШЕНО "
+                  "(ймовірно активна розробка, не реальний дрейф). Звіт усе одно записано.")
         print("[mp-gate] РЕЗУЛЬТАТ: ❌ є порушення enforced-платформ (див. вище).")
         return 1
     print("[mp-gate] РЕЗУЛЬТАТ: ✅ усі enforced-платформи в нормі "

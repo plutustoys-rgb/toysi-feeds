@@ -80,7 +80,8 @@ def check_enforced(entry: dict) -> list:
             env = dict(os.environ, AUDIT_NO_TELEGRAM="1")  # verify сам не має слати свій алерт із гейта
             try:
                 r = subprocess.run([sys.executable, str(script)] + list(verify[1:]),
-                                   cwd=str(BASE), capture_output=True, text=True, timeout=180, env=env)
+                                   cwd=str(BASE), capture_output=True, text=True, timeout=180, env=env,
+                                   encoding="utf-8", errors="replace")  # Windows cp1251 інакше валить кирилицю verify
                 if r.returncode != 0:
                     tail = (r.stdout or "").strip().splitlines()[-1:] or [""]
                     problems.append(f"verify НЕ пройшов ({verify[0]}, exit {r.returncode}): {tail[0][:120]}")

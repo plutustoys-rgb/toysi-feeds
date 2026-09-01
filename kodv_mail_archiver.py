@@ -68,6 +68,11 @@ _ATTACH_EXT = (".xlsx", ".xls", ".pdf")
 _NOVAPAY_MARKERS = ("реєстр переказів", "реестр переводов", "novapay", "нова пей")
 _NP_AKT_MARKERS = ("акт звірки", "акт сверки", "акт звірення", "реєстр нп",
                    "нова пошта", "новапошта", "novaposhta", "nova poshta", "акт-звірка")
+# FC/RozetkaPay — щоденний реєстр виплат (обслуговує і Prom-оплату, і Rozetka-картки, один
+# процесор). Ім'я файлу: «Реєстр платежів ФОП Чечетенко Олександр Юрійович_YYYY-MM-DD (0).xlsx».
+# Відрізняється від NovaPay «реєстр ПЕРЕказів» словом «ПЛАтежів». Запит бухгалтера 2026-08-31
+# (сторно 17 днів висіло непоміченим). НЕ дублювати старою назвою «Rozetka» — окрема тека RozetkaPay.
+_ROZETKAPAY_MARKERS = ("реєстр платежів", "реестр платежей")
 
 
 def _log(msg: str) -> None:
@@ -111,8 +116,12 @@ def _save_cursor(saved: set) -> None:
 
 
 def _classify(filename_l: str, subject_l: str, sender_l: str) -> str | None:
-    """Джерело для вкладення: 'NovaPay' / 'НоваПошта' / None (не наш документ)."""
+    """Джерело для вкладення: 'RozetkaPay' / 'NovaPay' / 'НоваПошта' / None (не наш документ).
+    RozetkaPay перевіряємо ПЕРШИМ — його маркер «реєстр платежів» специфічніший і не колізить із
+    NovaPay «реєстр переказів»."""
     hay = f"{filename_l} {subject_l} {sender_l}"
+    if any(m in hay for m in _ROZETKAPAY_MARKERS):
+        return "RozetkaPay"
     if any(m in hay for m in _NOVAPAY_MARKERS):
         return "NovaPay"
     if any(m in hay for m in _NP_AKT_MARKERS):

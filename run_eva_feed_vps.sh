@@ -31,6 +31,12 @@ if [ ! -s feeds/eva_feed.xml ]; then
     git show origin/feed-data:feeds/eva_feed.xml > feeds/eva_feed.xml 2>/dev/null || true
 fi
 
+# Авто-перевірка зіставлення категорій із ОФІЦІЙНИМ деревом EVA (eva_category_reference.csv).
+# Робить «зіставлення категорій зроблено» ДОКАЗОВИМ і ловить дрейф САМ (Telegram-алерт усередині
+# verify), щоб задача більше не поверталась мовчки. Best-effort (set -e вимкнено на цей крок):
+# дрейф категорій НЕ має валити публікацію фіда — лише сигналити.
+python3 verify_eva_category_map.py || echo "[EvaFeed] verify_eva_category_map: розбіжність або збій (див. Telegram)."
+
 bash publish_eva_feed_vps.sh
 
 echo "[EvaFeed] $(date -u +'%Y-%m-%d %H:%M UTC') — погодинний EVA-цикл завершено."

@@ -22,6 +22,7 @@ EVA заповнює категорію товару, ЛИШЕ якщо фід �
 """
 import csv
 import json
+import os
 import re
 import sys
 from pathlib import Path

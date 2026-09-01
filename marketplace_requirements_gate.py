@@ -52,18 +52,29 @@ REGISTRY = [
 
 
 def _repo_stable() -> bool:
-    """Чи репозиторій у СТАБІЛЬНОМУ стані (гілка master, чистий working tree). Гейт має
-    алертити лише про РЕАЛЬНИЙ дрейф, а не про транзитний стан під час активної розробки:
-    щоденний аудит-таск раз спрацював саме коли агент мержив/перемикав гілки і зловив
-    момент, коли довідник-файл на мить відсутній у working tree → ХИБНИЙ алерт власнику
-    (2026-09-01). На VPS/idle-машині tree = master = стабільний, тож гейт працює нормально.
-    Не змогли визначити стан → вважаємо НЕстабільним (краще змовчати, ніж кричати вовк)."""
+    """Чи репозиторій у СТАБІЛЬНОМУ стані для алертингу. Гейт має алертити лише про РЕАЛЬНИЙ
+    дрейф, а не про транзитний стан під час активної розробки: аудит-таск раз спрацював саме
+    коли агент мержив/перемикав гілки й зловив момент, коли довідник-файл на мить відсутній у
+    working tree → ХИБНИЙ алерт (2026-09-01).
+
+    Корінь — АКТИВНА git-операція (checkout/merge), а НЕ наявність untracked-скретчу. Тому:
+      • нема in-progress git-операції (index.lock / MERGE_HEAD / rebase-*) — прямо ловить checkout/merge;
+      • гілка == master (не feature-гілка);
+      • нема TRACKED-модифікацій (`--untracked-files=no` — скретч-файли, яких нема на master, ІГНОРУЄМО:
+        інакше на idle-master реальний дрейф глушився б — блокер, знайдений аудитом #463).
+    Не визначили стан → НЕстабільно (краще змовчати, ніж кричати вовк)."""
     try:
+        git_dir = BASE / ".git"
+        for marker in ("index.lock", "MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD"):
+            if (git_dir / marker).exists():
+                return False  # активна git-операція → транзитний стан
         branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(BASE),
                                 capture_output=True, text=True, timeout=15).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=str(BASE),
-                               capture_output=True, text=True, timeout=15).stdout.strip()
-        return branch == "master" and dirty == ""
+        if branch != "master":
+            return False
+        tracked_dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                                       cwd=str(BASE), capture_output=True, text=True, timeout=15).stdout.strip()
+        return tracked_dirty == ""
     except Exception:  # noqa: BLE001 — не визначили → НЕстабільно (не алертимо)
         return False
 

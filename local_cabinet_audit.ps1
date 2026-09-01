@@ -99,4 +99,10 @@ $env:AUDIT_NO_TELEGRAM = ""
 & $py marketplace_requirements_gate.py
 $env:AUDIT_NO_TELEGRAM = "1"
 
+# 6. Channel auto-archiver (owner 2026-09-01: the archiving discipline had slipped - archive/ dirs
+#    empty while SEO_CHANNEL grew to 6446 lines). Moves OLD channel entries (beyond the last ~40 or
+#    older than 30d) into archive/<role>/ so hot files stay lean. Mechanical enforcement, not memory.
+#    Data-safe: appends to archive BEFORE rewriting the hot file (move, never delete).
+& $py archive_channels.py --apply
+
 Write-Output "[local-audit] Done. Reports in $reportDir"

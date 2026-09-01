@@ -89,6 +89,16 @@ def main() -> int:
 
     if bad:
         print("[verify-eva-cats] РЕЗУЛЬТАТ: ❌ мапа має розбіжності з офіційним деревом EVA — див. вище.")
+        # Самосигнал: щоб дрейф (хтось відредагував eva_category_map.json повз довідник) НЕ пройшов
+        # тихо — Telegram-алерт. AUDIT_NO_TELEGRAM=1 глушить (локальні прогони). Best-effort.
+        if os.environ.get("AUDIT_NO_TELEGRAM") != "1":
+            try:
+                from telegram_notify import send_telegram_message
+                send_telegram_message(
+                    f"🟣 EVA-категорії: мапа РОЗІЙШЛАСЯ з офіційним деревом EVA — {len(bad)} невалідних "
+                    f"таргетів (напр. {bad[0][1]}). Товари в них будуть порожні. verify_eva_category_map.py")
+            except Exception:  # noqa: BLE001 — сигнал best-effort, не валимо прогін
+                pass
         return 1
     print("[verify-eva-cats] РЕЗУЛЬТАТ: ✅ усі EVA-таргети мапи — валідні офіційні листки EVA.")
     return 0

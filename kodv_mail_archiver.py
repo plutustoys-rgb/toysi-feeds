@@ -73,6 +73,12 @@ _NP_AKT_MARKERS = ("акт звірки", "акт сверки", "акт зві�
 # Відрізняється від NovaPay «реєстр ПЕРЕказів» словом «ПЛАтежів». Запит бухгалтера 2026-08-31
 # (сторно 17 днів висіло непоміченим). НЕ дублювати старою назвою «Rozetka» — окрема тека RozetkaPay.
 _ROZETKAPAY_MARKERS = ("реєстр платежів", "реестр платежей")
+# ПриватБанк — щоденна виписка (PDF) на ту саму скриньку. Запит бухгалтера 2026-08-31: завести
+# заздалегідь, email ще не тече. Маркери BEST-GUESS (відправник @privatbank.ua/@privat24.ua або
+# «Приват24 для бізнесу»/«виписка»); ⚠ ЗВІРИТИ за ПЕРШИМ реальним листом (точний формат невідомий —
+# якщо не спіймається, лист впаде в лічильник «unclassified» → уточнити маркер). Тека: ПриватБанк.
+_PRIVAT_STATEMENT_MARKERS = ("privatbank.ua", "privat24", "приват24", "приватбанк",
+                             "приват24 для бізнесу", "приват24 для бизнеса")
 
 
 def _log(msg: str) -> None:
@@ -116,7 +122,7 @@ def _save_cursor(saved: set) -> None:
 
 
 def _classify(filename_l: str, subject_l: str, sender_l: str) -> str | None:
-    """Джерело для вкладення: 'RozetkaPay' / 'NovaPay' / 'НоваПошта' / None (не наш документ).
+    """Джерело для вкладення: 'RozetkaPay' / 'ПриватБанк' / 'NovaPay' / 'НоваПошта' / None.
     RozetkaPay перевіряємо ПЕРШИМ — його маркер «реєстр платежів» специфічніший і не колізить із
     NovaPay «реєстр переказів»."""
     hay = f"{filename_l} {subject_l} {sender_l}"
@@ -125,6 +131,8 @@ def _classify(filename_l: str, subject_l: str, sender_l: str) -> str | None:
     # реєстр у теці (аудит #464: _newest_registry бере найновіший xlsx).
     if any(m in hay for m in _ROZETKAPAY_MARKERS) and "контрагент" not in hay:
         return "RozetkaPay"
+    if any(m in hay for m in _PRIVAT_STATEMENT_MARKERS):
+        return "ПриватБанк"
     if any(m in hay for m in _NOVAPAY_MARKERS):
         return "NovaPay"
     if any(m in hay for m in _NP_AKT_MARKERS):
@@ -156,7 +164,7 @@ def _iter_attachments(msg):
 
 def archive(dry_run: bool = False) -> dict:
     saved_cursor = _load_cursor()
-    newly = {"RozetkaPay": 0, "NovaPay": 0, "НоваПошта": 0}
+    newly = {"RozetkaPay": 0, "ПриватБанк": 0, "NovaPay": 0, "НоваПошта": 0}
     skipped_dupe = 0
     unclassified_msgs = 0
 
@@ -247,8 +255,8 @@ def main() -> None:
         sys.exit(1)
 
     n = r["newly"]
-    _log(f"ГОТОВО: RozetkaPay +{n['RozetkaPay']}, NovaPay +{n['NovaPay']}, НоваПошта +{n['НоваПошта']} нових; "
-         f"дублів пропущено {r['skipped_dupe']}; "
+    _log(f"ГОТОВО: RozetkaPay +{n['RozetkaPay']}, ПриватБанк +{n['ПриватБанк']}, NovaPay +{n['NovaPay']}, "
+         f"НоваПошта +{n['НоваПошта']} нових; дублів пропущено {r['skipped_dupe']}; "
          f"схожих листів без розпізнаного вкладення {r['unclassified']}.")
     if r["unclassified"]:
         _log("↑ якщо тут >0 — можливо, маркери актів НП треба уточнити за реальним листом "

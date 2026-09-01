@@ -34,17 +34,20 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # Єдине джерело правди. status: "enforced" (довідник+verify мають бути) | "audit_pending" (борг).
 REGISTRY = [
-    {"platform": "EVA", "requirement": "дерево категорій (авто-матч за назвою+BTK_id)",
+    # enforced — площадка ВИМАГАЄ валідні значення зі свого дерева, товари ламаються без цього:
+    {"platform": "EVA", "requirement": "дерево категорій EVA (авто-матч за назвою+BTK_id)",
      "reference": "eva_category_reference.csv", "verify": ["verify_eva_category_map.py"],
      "status": "enforced"},
-    {"platform": "Prom", "requirement": "категорії/комісія — з'ясувати, що площадка дає обов'язково",
-     "reference": None, "verify": None, "status": "audit_pending"},
-    {"platform": "Rozetka", "requirement": "категорійні rz_id — з'ясувати обов'язковий довідник",
-     "reference": None, "verify": None, "status": "audit_pending"},
-    {"platform": "ALLO", "requirement": "дерево категорій + атрибути (зіставлення в кабінеті)",
-     "reference": None, "verify": None, "status": "audit_pending"},
-    {"platform": "Google/Meta/Bing", "requirement": "google_product_category (таксономія)",
-     "reference": None, "verify": None, "status": "audit_pending"},
+    {"platform": "Google/Meta/Bing", "requirement": "google_product_category (офіційна таксономія Google)",
+     "reference": "google_product_taxonomy.txt", "verify": ["verify_google_category_ids.py"],
+     "status": "enforced"},
+    # not_required — модель площадки НЕ вимагає збереженого зовнішнього дерева (аудит 2026-09-01):
+    {"platform": "Prom", "requirement": "віддаємо ВЛАСНЕ дерево категорій — Prom гнучкий, зовнішнього матчити не треба",
+     "reference": None, "verify": None, "status": "not_required"},
+    {"platform": "Rozetka", "requirement": "rz_id РЕКОМЕНДОВАНИЙ (не обов'язк.); Rozetka матчить за назвою + membership вже схвалено",
+     "reference": None, "verify": None, "status": "not_required"},
+    {"platform": "ALLO", "requirement": "матч за назвою + кабінетне авто-зіставлення (allo_cabinet_scraper --automap)",
+     "reference": None, "verify": None, "status": "not_required"},
 ]
 
 
@@ -108,13 +111,22 @@ def main() -> int:
             lines.append(f"- ✅ {e['platform']} — {e['reference']} + verify OK")
 
     lines.append("")
-    lines.append("## Audit pending (борг дисципліни — довідник ще НЕ заведено)")
+    lines.append("## Not required (модель площадки не вимагає збереженого зовнішнього дерева — аудит)")
+    for e in REGISTRY:
+        if e["status"] == "not_required":
+            lines.append(f"- ✅ {e['platform']}: {e['requirement']}")
+
+    lines.append("")
+    lines.append("## Audit pending (борг дисципліни — вимогу ще НЕ з'ясовано/не заведено)")
+    pend_any = False
     for e in REGISTRY:
         if e["status"] != "audit_pending":
             continue
+        pend_any = True
         pending.append(e["platform"])
-        lines.append(f"- ⚠ {e['platform']}: {e['requirement']} — завести довідник у репо + verify, "
-                     "тоді перевести в enforced")
+        lines.append(f"- ⚠ {e['platform']}: {e['requirement']} — з'ясувати + завести довідник+verify")
+    if not pend_any:
+        lines.append("- (порожньо — усі фіди класифіковано)")
 
     lines.append("")
     lines.append(f"**Підсумок:** enforced-порушень {len(violations)}, борг аудиту {len(pending)}.")

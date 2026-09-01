@@ -84,4 +84,13 @@ try {
 #     just an auth-liveness check catching the AUTHENTICATIONFAILED class (app-password revoked).
 & $py novapay_imap_heartbeat.py
 
+# 5. Marketplace requirements GATE - structural enforcement (owner 2026-09-01): every feed that
+#    needs an authoritative marketplace reference (category tree/attributes) must keep it SAVED in
+#    the repo + a passing auto-verify. Runs WITH Telegram ON (unset AUDIT_NO_TELEGRAM only for this
+#    step) so a real violation actually reaches the owner - discipline that does not depend on any
+#    session remembering. Restores the silent flag right after.
+$env:AUDIT_NO_TELEGRAM = ""
+& $py marketplace_requirements_gate.py
+$env:AUDIT_NO_TELEGRAM = "1"
+
 Write-Output "[local-audit] Done. Reports in $reportDir"

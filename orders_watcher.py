@@ -656,7 +656,14 @@ def _eva_delivery_address(order: dict) -> str:
         else:
             street = str(street or "").strip()
         if not street and address.get("warehouse_number") is not None:
-            street = f"№{address.get('warehouse_number')}"
+            # Фолбек, коли EVA не дала street.name: зберігаємо ТИП пункту з shipping.method, щоб
+            # поштомат НЕ виглядав відділенням. Інакше «№N» без ярлика → NP-резолв (order_router/Toysi)
+            # взяв би ВІДДІЛЕННЯ №N — фізично інший пункт, посилка поїхала б не туди. Детерміновано за
+            # методом (не чекаємо живого замовлення). Дзеркало Rozetka `_rozetka_delivery_address`.
+            # Поштомат увімкнено в кабінеті EVA 2026-09-01; parse_np_branch витягує номер і з «Поштомат №N».
+            method = str(shipping.get("method") or "").lower()
+            label = "Поштомат" if "packstation" in method else "Відділення"
+            street = f"{label} №{address.get('warehouse_number')}"
         parts = [p for p in (city_out, street) if p]
         if parts:
             return ", ".join(parts)

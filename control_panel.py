@@ -62,10 +62,20 @@ TERM_TIMEOUT_SEC = 90
 _HEAD_RE = re.compile(r"^##\s+\[(.+?)\s*→\s*(.+?)\]\s*(\d{4}-\d{2}-\d{2})?")
 
 
+# Ролі, доступні в ПАНЕЛІ додатково до agent_watch.WATCHERS (Код/SEO/SMM). Власник керує ними
+# вручну — тож додаємо їх у панель, але СВІДОМО НЕ в auto-wake agent_watch, щоб не вмикати їм
+# автопробудження, поки власник цього не вирішив (панель ≠ зміна набору спостерігачів монітора).
+# label = мітка «до мене» в заголовках каналу (## [X → <label>]); у КОДВ мітка каналу = "КОДВ".
+PANEL_EXTRA_AGENTS = [
+    {"name": "Консультант", "target_label": "Консультант", "channels": ["CONSULTANT_CHANNEL.md"]},
+    {"name": "Бухгалтер", "target_label": "КОДВ", "channels": ["КОДВ_CHANNEL.md"]},
+]
+
+
 def _agents():
-    """Список агентів із agent_watch (ім'я, мітка, канали, cwd)."""
+    """Агенти панелі: з agent_watch (Код/SEO/SMM) + PANEL_EXTRA (консультант/бухгалтер)."""
     out = []
-    for w in WATCHERS:
+    for w in list(WATCHERS) + PANEL_EXTRA_AGENTS:
         out.append({"name": w["name"], "label": w.get("target_label", w["name"]),
                     "channels": w.get("channels", []), "cwd": w.get("cwd") or str(COWORK_DIR)})
     return out

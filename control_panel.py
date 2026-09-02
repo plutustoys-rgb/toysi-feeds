@@ -173,7 +173,7 @@ def _launch(agent):
     if os.name != "nt":
         return False, "запуск нового терміналу реалізовано лише під Windows"
     # start "" cmd /k <claude> — новий консоль-вікно з інтерактивним claude у папці каналів
-    inner = f'cd /d "{agent["cwd"]}" && "{CLAUDE_BIN}"'
+    inner = f'cd /d "{agent["cwd"]}" && "{CLAUDE_BIN}" --add-dir "{BASE_DIR}"'
     try:
         subprocess.Popen(["cmd", "/c", "start", "", "cmd", "/k", inner], cwd=agent["cwd"])
         return True, f"відкрив термінал для «{agent['name']}» у {agent['cwd']}"
@@ -365,8 +365,8 @@ function renderSession(){
         <div class=row><button onclick=send()>💬 надіслати</button>
           <button class=ghost onclick=openSess()>🔗 відкрити сесію</button>
           <button class=ghost onclick=queue()>📥 у чергу (канал)</button></div>
-        <div class="small mut" style="margin-top:4px">🔗 = твоя справжня сесія claude.ai (пам'ять+інструменти).
-          <span style="cursor:pointer;text-decoration:underline" onclick=setSessUrl()>налаштувати URL</span></div>
+        <div class="small mut" style="margin-top:4px">🔗 = справжня сесія claude у новому терміналі (усі інструменти).
+          Всередині набери /навичку (напр. /seo-agent), щоб увімкнути повну роль.</div>
       </div>
       <div>
         <div class=meta>🖥 Термінал — тека репо (rozetka_agent)</div>
@@ -392,14 +392,7 @@ async function send(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return;
   LOG[a].pop();LOG[a].push({who:a,txt:r.reply||r.error||'?'});if(SEL===a)renderSession();}
 async function queue(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return;
   const r=await jpost('/api/task',{agent:a,text:msg});alert(r.msg||r.error);if(r.ok!==false&&$('#inp'))$('#inp').value='';}
-function _sk(a){return 'sess_url_'+a}
-function _getUrl(a){try{return localStorage.getItem(_sk(a))||''}catch(e){return ''}}
-function setSessUrl(){const a=SEL;let cur='';try{cur=localStorage.getItem(_sk(a))||''}catch(e){}
-  const u=prompt('URL сесії claude.ai/code для «'+a+'» (візьми з десктоп-застосунку → потрібна сесія → скопіюй посилання):', cur);
-  if(u===null)return;try{if(u.trim())localStorage.setItem(_sk(a),u.trim());else localStorage.removeItem(_sk(a))}catch(e){alert('не вдалось зберегти URL')}}
-function openSess(){const a=SEL;let u=_getUrl(a);
-  if(!u){if(!confirm('Для «'+a+'» ще не задано URL справжньої сесії. Задати зараз?'))return;setSessUrl();u=_getUrl(a);if(!u)return;}
-  window.open(u,'_blank','noopener');}
+async function openSess(){const r=await jpost('/api/launch',{agent:SEL});alert(r.msg||r.error);}
 refresh();setInterval(refresh,60000);
 </script></body></html>"""
 

@@ -172,11 +172,14 @@ def _launch(agent):
     """Відкриває ІНТЕРАКТИВНУ сесію claude в новому терміналі (Windows). Власник далі керує сам."""
     if os.name != "nt":
         return False, "запуск нового терміналу реалізовано лише під Windows"
-    # start "" cmd /k <claude> — новий консоль-вікно з інтерактивним claude у папці каналів
-    inner = f'cd /d "{agent["cwd"]}" && "{CLAUDE_BIN}" --add-dir "{BASE_DIR}"'
+    # start /d <cwd> — новий консоль у папці агента; claude+аргументи ОКРЕМИМИ елементами списку
+    # (Popen квотить кожен сам), а НЕ через `cd "..." && "..."` з ручними лапками — те ланцюжкове
+    # рішення ламало парсинг cmd ("syntax is incorrect", діагностовано живо 2026-09-02: cd спрацьовував,
+    # а claude ні). cmd /k тримає вікно відкритим, щоб було видно й можливі помилки старту claude.
     try:
-        subprocess.Popen(["cmd", "/c", "start", "", "cmd", "/k", inner], cwd=agent["cwd"])
-        return True, f"відкрив термінал для «{agent['name']}» у {agent['cwd']}"
+        subprocess.Popen(["cmd", "/c", "start", f"claude {agent['name']}", "/d", agent["cwd"],
+                          "cmd", "/k", CLAUDE_BIN, "--add-dir", str(BASE_DIR)])
+        return True, f"відкрив справжню сесію «{agent['name']}» у {agent['cwd']}"
     except Exception as e:
         return False, f"не вдалось: {e}"
 

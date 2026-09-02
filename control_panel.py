@@ -4,9 +4,14 @@
 (статуси + telegram-дайджест + критичний календар + баланси), (2) СЛЕ задачу агенту, (3)
 ЗАПУСКАЄ сесію агента, (4) ЧАТИТЬ з агентом. Замість гортати Telegram і термінали.
 
-АРХІТЕКТУРА: маленький stdlib-сервер (без Flask/залежностей) на 127.0.0.1 — НІЧОГО не хоститься
-в інтернет, нуль нової поверхні атаки (VPS ми щойно замкнули; це свідомо localhost-only). Доступ
-із телефона — окремий опт-ін крок пізніше (тунель+авторизація), не тут.
+АРХІТЕКТУРА: маленький stdlib-сервер (без Flask/залежностей) на 127.0.0.1 — не хоститься в
+інтернет (VPS ми щойно замкнули; це свідомо localhost-only). Доступ із телефона — окремий опт-ін
+крок пізніше (тунель+авторизація), не тут.
+
+БЕЗПЕКА (CSRF): панель на 127.0.0.1 ДОСЯЖНА крос-доменно з локального браузера — тож POST-и,
+що змінюють стан, захищені у `do_POST._csrf_ok` (кастомний заголовок X-Panel + Origin/Sec-Fetch),
+щоб стороння вебсторінка не могла впорснути задачу/запустити сесію. НЕ «нуль поверхні» — поверхня
+локальна й закрита свідомо (знахідка аудиту PR #469).
 
 ПЕРЕВИКОРИСТАННЯ, не дублювання:
   • telegram_digest.build_digest — той самий дайджест, що вже перевірений на живих даних;
@@ -49,7 +54,6 @@ except Exception as e:  # агент_watch має імпортуватись ч�
 
 HOST = "127.0.0.1"          # LOCALHOST-ONLY — свідомо, не для інтернету
 CHAT_TIMEOUT_SEC = 240
-_ENTRY_RE = re.compile(r"^##\s+\[(.+?)\s*[—-]?>?\s*→?\s*(.+?)\]")   # м'який матч заголовка каналу
 _HEAD_RE = re.compile(r"^##\s+\[(.+?)\s*→\s*(.+?)\]\s*(\d{4}-\d{2}-\d{2})?")
 
 
@@ -180,19 +184,42 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
-        if path == "/":
-            self._send(200, _PAGE, "text/html")
-        elif path == "/api/status":
-            self._json(200, _status_payload())
-        elif path == "/api/digest":
-            self._json(200, {"text": _digest_payload()})
-        else:
-            self._send(404, "not found", "text/plain")
+        try:
+            if path == "/":
+                self._send(200, _PAGE, "text/html")
+            elif path == "/api/status":
+                self._json(200, _status_payload())
+            elif path == "/api/digest":
+                self._json(200, {"text": _digest_payload()})
+            else:
+                self._send(404, "not found", "text/plain")
+        except Exception as e:
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+
+    def _csrf_ok(self) -> bool:
+        """Захист від CSRF із ЛОКАЛЬНОГО браузера (панель на 127.0.0.1 досяжна крос-доменно).
+        (1) кастомний заголовок X-Panel — крос-домен його не поставить на «простому» запиті без
+        preflight, а preflight ми не схвалюємо (жодних CORS-заголовків) → браузер блокує.
+        (2) Origin/Sec-Fetch-Site — додатковий шар. Фронтенд панелі шле X-Panel сам."""
+        if self.headers.get("X-Panel") != "1":
+            return False
+        port = self.server.server_address[1]
+        origin = self.headers.get("Origin")
+        if origin and origin not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
+            return False
+        sfs = self.headers.get("Sec-Fetch-Site")
+        if sfs and sfs != "same-origin":
+            return False
+        return True
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if not self._csrf_ok():
+            return self._json(403, {"error": "заборонено (локальний CSRF-захист)"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n < 0 or n > 1_000_000:
+                return self._json(400, {"error": "тіло завелике"})
             body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             return self._json(400, {"error": "bad json"})
@@ -278,12 +305,12 @@ async function loadAll(){
 }
 async function chat(n){const t=$('#t_'+n);const box=$('#c_'+n);const msg=t.value.trim();if(!msg)return;
   box.style.display='block';box.innerHTML+=`<div class=reply><b>ти:</b> ${esc(msg)}</div><div class=mut id=w>…думає (до 4 хв)…</div>`;
-  box.scrollTop=box.scrollHeight;const r=await j('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:n,text:msg})});
+  box.scrollTop=box.scrollHeight;const r=await j('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','X-Panel':'1'},body:JSON.stringify({agent:n,text:msg})});
   $('#w').remove();box.innerHTML+=`<div class=reply><b>${esc(n)}:</b> ${esc(r.reply||r.error)}</div>`;box.scrollTop=box.scrollHeight;t.value=''}
 async function task(n){const t=$('#t_'+n);const msg=t.value.trim();if(!msg)return;
-  const r=await j('/api/task',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:n,text:msg})});
+  const r=await j('/api/task',{method:'POST',headers:{'Content-Type':'application/json','X-Panel':'1'},body:JSON.stringify({agent:n,text:msg})});
   alert(r.msg||r.error);if(r.ok!==false)t.value=''}
-async function launch(n){const r=await j('/api/launch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:n})});alert(r.msg||r.error)}
+async function launch(n){const r=await j('/api/launch',{method:'POST',headers:{'Content-Type':'application/json','X-Panel':'1'},body:JSON.stringify({agent:n})});alert(r.msg||r.error)}
 loadAll();setInterval(loadAll,60000);
 </script></body></html>"""
 

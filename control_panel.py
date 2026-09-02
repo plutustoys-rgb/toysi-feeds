@@ -25,6 +25,10 @@
     далі його підхоплює agent_watch. Це НЕ незворотна дія, лише запис у локальний канал-файл.
   • ЗАПУСК — відкриває ІНТЕРАКТИВНУ сесію `claude` в НОВОМУ терміналі (там власник сам керує);
     саме інтерактивна (не headless) сесія робить реальну збірку/PR (headless-Код sandboxed).
+  • ТЕРМІНАЛ (/api/term) — виконує shell-команду в теці репо (вбудований термінал у панелі).
+    ⚠️ Довільне ЛОКАЛЬНЕ виконання — прийнятне лише через bind 127.0.0.1 + CSRF-гейт (X-Panel):
+    досяжний ЛИШЕ зі сторінки панелі власника, а локальний код і так має локальний exec, тож
+    НОВОЇ зовнішньої поверхні не додає. НЕ відкривати панель у мережу без автентифікації.
 
 ЗАПУСК: python control_panel.py [--port 8787]  → відкрий http://127.0.0.1:8787
 """
@@ -54,6 +58,7 @@ except Exception as e:  # агент_watch має імпортуватись ч�
 
 HOST = "127.0.0.1"          # LOCALHOST-ONLY — свідомо, не для інтернету
 CHAT_TIMEOUT_SEC = 240
+TERM_TIMEOUT_SEC = 90
 _HEAD_RE = re.compile(r"^##\s+\[(.+?)\s*→\s*(.+?)\]\s*(\d{4}-\d{2}-\d{2})?")
 
 
@@ -166,6 +171,22 @@ def _launch(agent):
         return False, f"не вдалось: {e}"
 
 
+def _term(cmd: str) -> dict:
+    """Виконує shell-команду в теці репо й повертає вивід. ⚠️ Це ДОВІЛЬНЕ ЛОКАЛЬНЕ виконання —
+    прийнятне лише тому, що сервер прив'язаний до 127.0.0.1 + CSRF-гейт (X-Panel у do_POST), тож
+    досяжний ЛИШЕ зі сторінки панелі власника; будь-який локальний код і так має локальний exec,
+    тож НОВОЇ зовнішньої поверхні атаки це не додає (див. докстрінг модуля). Вивід обрізаємо."""
+    try:
+        r = subprocess.run(cmd, shell=True, cwd=str(BASE_DIR), capture_output=True, text=True,
+                           timeout=TERM_TIMEOUT_SEC, encoding="utf-8", errors="replace")
+        out = (r.stdout or "") + (r.stderr or "")
+        return {"out": out[-8000:] or "(порожній вивід)", "code": r.returncode}
+    except subprocess.TimeoutExpired:
+        return {"out": f"[таймаут {TERM_TIMEOUT_SEC}s — команда триває задовго]", "code": -1}
+    except Exception as e:
+        return {"out": f"[помилка: {e}]", "code": -1}
+
+
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # тихо
@@ -244,6 +265,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/launch":
             ok, msg = _launch(agent)
             return self._json(200 if ok else 500, {"ok": ok, "msg": msg})
+        if path == "/api/term":          # термінал НЕ прив'язаний до агента (машинна оболонка)
+            cmd = (body.get("cmd") or "").strip()
+            if not cmd:
+                return self._json(400, {"error": "порожня команда"})
+            return self._json(200, _term(cmd))
         self._json(404, {"error": "not found"})
 
 
@@ -253,7 +279,7 @@ _PAGE = """<!doctype html><html lang=uk><head><meta charset=utf-8>
 :root{--bg:#0f1216;--card:#181d24;--line:#2a323d;--tx:#e6e9ee;--mut:#8b96a5;--acc:#4a9eff;--ok:#3ecf8e;--warn:#f0b429;--err:#ff5c5c}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 system-ui,Segoe UI,sans-serif}
 header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px}
-h1{font-size:16px;margin:0}.mut{color:var(--mut)}.small{font-size:12px}.wrap{max-width:1100px;margin:0 auto;padding:18px 20px}
+h1{font-size:16px;margin:0}.mut{color:var(--mut)}.small{font-size:12px}.wrap{max-width:none;margin:0;padding:18px 38px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:820px){.grid{grid-template-columns:1fr}}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
 .card h2{font-size:14px;margin:0 0 10px}pre{white-space:pre-wrap;word-break:break-word;margin:0;font:12.5px/1.5 ui-monospace,Consolas,monospace}
@@ -266,8 +292,12 @@ h1{font-size:16px;margin:0}.mut{color:var(--mut)}.small{font-size:12px}.wrap{max
 textarea{width:100%;background:#0e1319;color:var(--tx);border:1px solid var(--line);border-radius:7px;padding:8px;font:13px system-ui;resize:vertical;min-height:58px}
 button{background:var(--acc);color:#04121f;border:0;border-radius:7px;padding:9px 14px;font-weight:600;cursor:pointer;white-space:nowrap}
 button.ghost{background:#222a33;color:var(--tx)}button:disabled{opacity:.5;cursor:wait}
-.chat{background:#0e1319;border:1px solid var(--line);border-radius:7px;padding:10px;margin:10px 0;max-height:300px;overflow:auto;min-height:64px}
+.chat{background:#0e1319;border:1px solid var(--line);border-radius:7px;padding:12px;margin:10px 0;height:360px;overflow:auto}
 .reply{border-left:2px solid var(--acc);padding-left:8px;margin:8px 0;white-space:pre-wrap}.b{color:var(--acc)}
+.sess{display:grid;grid-template-columns:3fr 2fr;gap:16px}@media(max-width:900px){.sess{grid-template-columns:1fr}}
+.term{background:#05070a;border:1px solid var(--line);border-radius:7px;padding:10px;margin:6px 0;height:360px;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.tinp{width:100%;background:#0e1319;color:var(--tx);border:1px solid var(--line);border-radius:7px;padding:9px;font:12.5px ui-monospace,Consolas,monospace}
+.tcmd{color:var(--acc)}
 </style></head><body>
 <header><h1>🎛️ PlutusToys — панель керування</h1><span class=mut id=gen></span>
 <span style="margin-left:auto"><button class=ghost onclick=refresh()>↻ оновити</button></span></header>
@@ -286,7 +316,8 @@ button.ghost{background:#222a33;color:var(--tx)}button:disabled{opacity:.5;curso
 const $=s=>document.querySelector(s);
 const H={'Content-Type':'application/json','X-Panel':'1'};
 let AG=[], SEL=null, SHOWN=null;
-const LOG={};   // історія чату в пам'яті, по агенту
+const LOG={};    // історія чату в пам'яті, по агенту
+const TLOG=[];   // історія терміналу (машинна, спільна — не по агенту)
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 async function jget(u){return (await fetch(u)).json()}
 async function jpost(u,b){return (await fetch(u,{method:'POST',headers:H,body:JSON.stringify(b)})).json()}
@@ -316,22 +347,37 @@ function renderSession(){
     <div><span class=tag>${esc(a.channels.join(', ')||'—')}</span></div>
     <div class=meta>← до нього: ${esc(a.to_me||'—')}</div>
     <div class=meta>→ від нього: ${esc(a.by_me||'—')}</div>
-    <div class=chat id=chat>${hist}</div>
-    <textarea id=inp placeholder="повідомлення для ${esc(a.name)}…"></textarea>
-    <div class=row>
-      <button onclick=send()>💬 надіслати (чат)</button>
-      <button class=ghost onclick=term()>🖥 термінал (сесія)</button>
-      <button class=ghost onclick=queue()>📥 у чергу (канал)</button>
+    <div class=sess>
+      <div>
+        <div class=meta>💬 Чат з «${esc(a.name)}»</div>
+        <div class=chat id=chat>${hist}</div>
+        <textarea id=inp placeholder="повідомлення для ${esc(a.name)}…"></textarea>
+        <div class=row><button onclick=send()>💬 надіслати</button><button class=ghost onclick=queue()>📥 у чергу (канал)</button></div>
+      </div>
+      <div>
+        <div class=meta>🖥 Термінал — тека репо (rozetka_agent)</div>
+        <div class=term id=term></div>
+        <input id=tcmd class=tinp placeholder="команда + Enter (напр. git status)…"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();runTerm()}">
+      </div>
     </div>`;
   const c=$('#chat');if(c)c.scrollTop=c.scrollHeight;
+  renderTerm();
 }
+function renderTerm(){const t=$('#term');if(!t)return;
+  t.innerHTML=TLOG.map(x=>`<div style="margin-bottom:8px"><span class=tcmd>&gt; ${esc(x.cmd)}</span><div>${esc(x.out)}</div></div>`).join('')
+    ||'<span class=mut>Термінал порожній. Введи команду нижче (виконується в теці репо).</span>';
+  t.scrollTop=t.scrollHeight;}
+async function runTerm(){const i=$('#tcmd'),cmd=i.value.trim();if(!cmd)return;
+  TLOG.push({cmd,out:'…виконую…'});renderTerm();i.value='';
+  const r=await jpost('/api/term',{cmd});
+  TLOG[TLOG.length-1].out=(r.out!==undefined?r.out:(r.error||'?'));renderTerm();}
 async function send(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return;
   LOG[a].push({who:'ти',txt:msg});LOG[a].push({who:a,txt:'…думає (до 4 хв)…'});renderSession();
   const r=await jpost('/api/chat',{agent:a,text:msg});
   LOG[a].pop();LOG[a].push({who:a,txt:r.reply||r.error||'?'});if(SEL===a)renderSession();}
 async function queue(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return;
   const r=await jpost('/api/task',{agent:a,text:msg});alert(r.msg||r.error);if(r.ok!==false&&$('#inp'))$('#inp').value='';}
-async function term(){const r=await jpost('/api/launch',{agent:SEL});alert(r.msg||r.error)}
 refresh();setInterval(refresh,60000);
 </script></body></html>"""
 

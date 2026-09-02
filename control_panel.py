@@ -253,23 +253,30 @@ _PAGE = """<!doctype html><html lang=uk><head><meta charset=utf-8>
 :root{--bg:#0f1216;--card:#181d24;--line:#2a323d;--tx:#e6e9ee;--mut:#8b96a5;--acc:#4a9eff;--ok:#3ecf8e;--warn:#f0b429;--err:#ff5c5c}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 system-ui,Segoe UI,sans-serif}
 header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px}
-h1{font-size:16px;margin:0}.mut{color:var(--mut)}.wrap{max-width:1100px;margin:0 auto;padding:18px 20px}
+h1{font-size:16px;margin:0}.mut{color:var(--mut)}.small{font-size:12px}.wrap{max-width:1100px;margin:0 auto;padding:18px 20px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:820px){.grid{grid-template-columns:1fr}}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
 .card h2{font-size:14px;margin:0 0 10px}pre{white-space:pre-wrap;word-break:break-word;margin:0;font:12.5px/1.5 ui-monospace,Consolas,monospace}
-.agent{margin-bottom:14px}.row{display:flex;gap:8px;margin-top:8px}
-textarea,input{width:100%;background:#0e1319;color:var(--tx);border:1px solid var(--line);border-radius:7px;padding:8px;font:13px system-ui}
-textarea{resize:vertical;min-height:52px}button{background:var(--acc);color:#04121f;border:0;border-radius:7px;padding:8px 12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.scroll{max-height:300px;overflow:auto}
+.tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.tab{background:#222a33;color:var(--tx);border:1px solid var(--line);border-radius:9px;padding:12px 24px;font-size:15px;font-weight:700;cursor:pointer}
+.tab.active{background:var(--acc);color:#04121f;border-color:var(--acc)}
+.meta{font-size:12px;color:var(--mut);margin:2px 0}.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);color:var(--mut)}
+.row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+textarea{width:100%;background:#0e1319;color:var(--tx);border:1px solid var(--line);border-radius:7px;padding:8px;font:13px system-ui;resize:vertical;min-height:58px}
+button{background:var(--acc);color:#04121f;border:0;border-radius:7px;padding:9px 14px;font-weight:600;cursor:pointer;white-space:nowrap}
 button.ghost{background:#222a33;color:var(--tx)}button:disabled{opacity:.5;cursor:wait}
-.small{font-size:12px}.chat{background:#0e1319;border:1px solid var(--line);border-radius:7px;padding:8px;margin-top:8px;max-height:220px;overflow:auto;display:none}
-.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);color:var(--mut)}
-.b{color:var(--acc)}.reply{border-left:2px solid var(--acc);padding-left:8px;margin:6px 0;white-space:pre-wrap}
-.scroll{max-height:300px;overflow:auto}.agent{border-bottom:1px solid var(--line);padding-bottom:12px}
+.chat{background:#0e1319;border:1px solid var(--line);border-radius:7px;padding:10px;margin:10px 0;max-height:300px;overflow:auto;min-height:64px}
+.reply{border-left:2px solid var(--acc);padding-left:8px;margin:8px 0;white-space:pre-wrap}.b{color:var(--acc)}
 </style></head><body>
 <header><h1>🎛️ PlutusToys — панель керування</h1><span class=mut id=gen></span>
-<span style="margin-left:auto"><button class=ghost onclick=loadAll()>↻ оновити</button></span></header>
+<span style="margin-left:auto"><button class=ghost onclick=refresh()>↻ оновити</button></span></header>
 <div class=wrap>
-<div class=card><h2>🤖 Агенти — чат / задача / запуск</h2><div id=agents>завантаження…</div></div>
+<div class=card>
+  <h2>🤖 Агенти — обери, щоб відкрити сесію</h2>
+  <div class=tabs id=tabs>завантаження…</div>
+  <div id=session></div>
+</div>
 <div class=grid style=margin-top:16px>
   <div class=card><h2>🧭 Що діється (Telegram-дайджест, 7 дн.)</h2><pre id=digest class=scroll>завантаження…</pre></div>
   <div class=card><h2>🚦 Критичний статус</h2><div id=crit class="small scroll">завантаження…</div></div>
@@ -277,41 +284,55 @@ button.ghost{background:#222a33;color:var(--tx)}button:disabled{opacity:.5;curso
 </div>
 <script>
 const $=s=>document.querySelector(s);
-async function j(u,o){const r=await fetch(u,o);return r.json()}
+const H={'Content-Type':'application/json','X-Panel':'1'};
+let AG=[], SEL=null, SHOWN=null;
+const LOG={};   // історія чату в пам'яті, по агенту
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
-async function loadAll(){
-  const st=await j('/api/status');$('#gen').textContent='оновлено '+st.generated;
-  const dot={critical:'🔴',warn:'🟠',ok:'🟢'};
-  const ev=(st.critical&&st.critical.events)||[];
+async function jget(u){return (await fetch(u)).json()}
+async function jpost(u,b){return (await fetch(u,{method:'POST',headers:H,body:JSON.stringify(b)})).json()}
+async function refresh(){
+  const st=await jget('/api/status');$('#gen').textContent='оновлено '+st.generated;
+  AG=st.agents; if(!SEL && AG.length) SEL=AG[0].name;
+  renderTabs();
+  if(SHOWN!==SEL) renderSession();   // не перемальовуємо сесію на автооновленні (щоб не стерти ввід/чат)
+  const dot={critical:'🔴',warn:'🟠',ok:'🟢'};const ev=(st.critical&&st.critical.events)||[];
   const ord={critical:0,warn:1,ok:2};ev.sort((a,b)=>(ord[a.state]??3)-(ord[b.state]??3));
   $('#crit').innerHTML=ev.length?ev.map(e=>`<div style="padding:5px 0;border-bottom:1px solid var(--line)">`
     +`${dot[e.state]||'⚪'} <b>${esc(e.name)}</b> <span class=mut>— ${esc(e.detail||'')}</span>`
     +(e.state!=='ok'&&e.blocks?`<div class="small mut" style="margin-left:20px">блокує: ${esc(e.blocks)}</div>`:'')
     +`</div>`).join(''):'нема reports/critical_status.json';
-  const d=await j('/api/digest');$('#digest').textContent=d.text;
-  $('#agents').innerHTML=st.agents.map(a=>`
-   <div class=agent>
-     <div><b class=b>${esc(a.name)}</b> <span class=tag>${esc(a.channels.join(', ')||'—')}</span></div>
-     <div class="small mut">← до нього: ${esc(a.to_me||'—')}</div>
-     <div class="small mut">→ від нього: ${esc(a.by_me||'—')}</div>
-     <textarea id="t_${a.name}" placeholder="повідомлення / задача для ${esc(a.name)}…"></textarea>
-     <div class=row>
-       <button onclick="chat('${a.name}')">💬 чат</button>
-       <button class=ghost onclick="task('${a.name}')">📥 у чергу (канал)</button>
-       <button class=ghost onclick="launch('${a.name}')">🚀 запустити сесію</button>
-     </div>
-     <div class=chat id="c_${a.name}"></div>
-   </div>`).join('');
+  const d=await jget('/api/digest');$('#digest').textContent=d.text;
 }
-async function chat(n){const t=$('#t_'+n);const box=$('#c_'+n);const msg=t.value.trim();if(!msg)return;
-  box.style.display='block';box.innerHTML+=`<div class=reply><b>ти:</b> ${esc(msg)}</div><div class=mut id=w>…думає (до 4 хв)…</div>`;
-  box.scrollTop=box.scrollHeight;const r=await j('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','X-Panel':'1'},body:JSON.stringify({agent:n,text:msg})});
-  $('#w').remove();box.innerHTML+=`<div class=reply><b>${esc(n)}:</b> ${esc(r.reply||r.error)}</div>`;box.scrollTop=box.scrollHeight;t.value=''}
-async function task(n){const t=$('#t_'+n);const msg=t.value.trim();if(!msg)return;
-  const r=await j('/api/task',{method:'POST',headers:{'Content-Type':'application/json','X-Panel':'1'},body:JSON.stringify({agent:n,text:msg})});
-  alert(r.msg||r.error);if(r.ok!==false)t.value=''}
-async function launch(n){const r=await j('/api/launch',{method:'POST',headers:{'Content-Type':'application/json','X-Panel':'1'},body:JSON.stringify({agent:n})});alert(r.msg||r.error)}
-loadAll();setInterval(loadAll,60000);
+function renderTabs(){
+  $('#tabs').innerHTML=AG.map(a=>`<button class="tab${a.name===SEL?' active':''}" onclick="pick('${a.name}')">${esc(a.name)}</button>`).join('');
+}
+function pick(n){SEL=n;renderTabs();renderSession()}
+function renderSession(){
+  SHOWN=SEL;const a=AG.find(x=>x.name===SEL);if(!a){$('#session').innerHTML='';return}
+  if(!LOG[a.name])LOG[a.name]=[];
+  const hist=LOG[a.name].map(m=>`<div class=reply><b>${esc(m.who)}:</b> ${esc(m.txt)}</div>`).join('')
+             ||'<span class=mut>Чат порожній — напиши повідомлення нижче.</span>';
+  $('#session').innerHTML=`
+    <div><span class=tag>${esc(a.channels.join(', ')||'—')}</span></div>
+    <div class=meta>← до нього: ${esc(a.to_me||'—')}</div>
+    <div class=meta>→ від нього: ${esc(a.by_me||'—')}</div>
+    <div class=chat id=chat>${hist}</div>
+    <textarea id=inp placeholder="повідомлення для ${esc(a.name)}…"></textarea>
+    <div class=row>
+      <button onclick=send()>💬 надіслати (чат)</button>
+      <button class=ghost onclick=term()>🖥 термінал (сесія)</button>
+      <button class=ghost onclick=queue()>📥 у чергу (канал)</button>
+    </div>`;
+  const c=$('#chat');if(c)c.scrollTop=c.scrollHeight;
+}
+async function send(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return;
+  LOG[a].push({who:'ти',txt:msg});LOG[a].push({who:a,txt:'…думає (до 4 хв)…'});renderSession();
+  const r=await jpost('/api/chat',{agent:a,text:msg});
+  LOG[a].pop();LOG[a].push({who:a,txt:r.reply||r.error||'?'});if(SEL===a)renderSession();}
+async function queue(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return;
+  const r=await jpost('/api/task',{agent:a,text:msg});alert(r.msg||r.error);if(r.ok!==false&&$('#inp'))$('#inp').value='';}
+async function term(){const r=await jpost('/api/launch',{agent:SEL});alert(r.msg||r.error)}
+refresh();setInterval(refresh,60000);
 </script></body></html>"""
 
 

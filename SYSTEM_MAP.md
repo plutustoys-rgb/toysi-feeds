@@ -106,6 +106,8 @@
 > **Чому Rozetka + Prom-кабінет + agent_watch крутяться ЛОКАЛЬНО, а не на VPS:** вітрина/кабінет
 > захищені антиботом, який пропускає лише справжній Chrome із профілем (bundled chromium → 403/500);
 > agent_watch будить сесії через локальний `claude`. VPS — headless, туди це не переноситься.
+>
+> **Панель керування (on-demand, НЕ таска):** `control_panel.py` — локальний сервер `127.0.0.1:8787` (запуск `run_panel.bat` або `python control_panel.py` з теки репо). Дає: статуси 5 агентів (Код/SEO/SMM/Консультант/Бухгалтер) + telegram-дайджест (`telegram_digest.py`, по запиту з `reports/telegram_alerts.md`) + критичні плитки; по кожному агенту — чат (`claude -p`), задача-в-канал (agent_watch підхопить), термінал (shell у теці репо), «відкрити сесію» (інтерактивний `claude`). localhost-only + CSRF (`X-Panel`). Запускає власник, не cron.
 
 ### 2Б. VPS (45.94.157.4, `/opt/plutustoys`, systemd `.timer`+`.service`, venv-python) — знято живо 2026-08-20
 
@@ -148,7 +150,7 @@
 
 ### 2В. GitHub Actions (`plutustoys-rgb/toysi-feeds`)
 - `update-feeds.yml` — cron 4 год: генерує ЛИШЕ `feeds/rozetka_feed.xml` (відокремлено від VPS, щоб не було гонки orphan-force-push).
-- ~~`claude-review.yml`~~ — **ВИМКНЕНО** (не профінансований; аудит тепер лише внутрішньосесійний субагент). Хвіст — видалити workflow.
+- ~~`claude-review.yml`~~ — **ВИДАЛЕНО 2026-09-02** (не профінансований `anthropics/claude-code-action`, падав червоним на кожному PR; аудит тепер лише внутрішньосесійний субагент).
 
 ---
 

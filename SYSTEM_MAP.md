@@ -107,7 +107,7 @@
 > захищені антиботом, який пропускає лише справжній Chrome із профілем (bundled chromium → 403/500);
 > agent_watch будить сесії через локальний `claude`. VPS — headless, туди це не переноситься.
 >
-> **Панель керування (on-demand, НЕ таска):** `control_panel.py` — локальний сервер `127.0.0.1:8787` (запуск `run_panel.bat` або `python control_panel.py` з теки репо). Дає: статуси 5 агентів (Код/SEO/SMM/Консультант/Бухгалтер) + telegram-дайджест (`telegram_digest.py`, по запиту з `reports/telegram_alerts.md`) + критичні плитки; по кожному агенту — чат (`claude -p`), задача-в-канал (agent_watch підхопить), термінал (shell у теці репо), «відкрити сесію» (інтерактивний `claude`). localhost-only + CSRF (`X-Panel`). Запускає власник, не cron.
+> **Панель керування (on-demand, НЕ таска):** `control_panel.py` — локальний сервер `127.0.0.1:8787` (запуск `run_panel.bat` або `python control_panel.py` з теки репо). Дає: статуси 5 агентів (Код/SEO/SMM/Консультант/Бухгалтер) + telegram-дайджест (`telegram_digest.py`, по запиту з `reports/telegram_alerts.md`) + критичні плитки; по кожному агенту — чат (`claude -p`), задача-в-канал (agent_watch підхопить), термінал (shell у теці репо), **«відкрити сесію» = ПОВНИЙ агент** (`claude --agent plutus-<роль>` у теці репо: роль+правила з `.claude/agents/plutus-{seo,smm,kod,consultant,kodv}.md` + навичка через `skills:` — seo-agent/plutustoys-smm/business-consultant/accountant; канали Cowork через --add-dir). Синк-скіли завантажуються раз: `CLAUDE_CODE_SYNC_SKILLS=1 claude -p ...` → `~/.claude/skills/synced/`. localhost-only + CSRF (`X-Panel`). Запускає власник, не cron.
 
 ### 2Б. VPS (45.94.157.4, `/opt/plutustoys`, systemd `.timer`+`.service`, venv-python) — знято живо 2026-08-20
 

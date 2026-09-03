@@ -58,6 +58,10 @@ IMAP_HOST = os.environ.get("NOVAPAY_IMAP_HOST", "imap.gmail.com")
 # природний через курсор. Якщо документи виявляться під міткою — додати її в KODV_MAIL_FOLDERS.
 FOLDERS = [f.strip() for f in os.environ.get("KODV_MAIL_FOLDERS", "INBOX").split(",") if f.strip()]
 LOOKBACK_DAYS = int(os.environ.get("KODV_MAIL_LOOKBACK_DAYS", "60"))
+# Таймаут на КОЖНУ IMAP-операцію (сек). Без нього конект/читання може висіти ВІЧНО, якщо gmail
+# застопориться — і таск-планувальник вбиває процес (STATUS_CONTROL_C_EXIT / 0xC000013A), як сталося
+# 2026-09-02. socket.timeout — підклас OSError, тож ловиться наявним except → алерт+вихід, не хол.
+IMAP_TIMEOUT = int(os.environ.get("KODV_MAIL_IMAP_TIMEOUT", "60"))
 
 CURSOR_FILE = BASE_DIR / ".local_secrets" / "kodv_mail_archiver_cursor.json"
 _NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
@@ -174,7 +178,7 @@ def archive(dry_run: bool = False) -> dict:
     since_d = datetime.fromordinal(datetime.now(timezone.utc).date().toordinal() - LOOKBACK_DAYS)
     since_str = f"{since_d.day:02d}-{_MON[since_d.month - 1]}-{since_d.year}"
 
-    imap = imaplib.IMAP4_SSL(IMAP_HOST)
+    imap = imaplib.IMAP4_SSL(IMAP_HOST, timeout=IMAP_TIMEOUT)
     imap.login(IMAP_EMAIL, IMAP_APP_PASSWORD)
     try:
         scanned_any = False

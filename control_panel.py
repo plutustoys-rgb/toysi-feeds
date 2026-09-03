@@ -71,6 +71,14 @@ PANEL_EXTRA_AGENTS = [
     {"name": "Бухгалтер", "target_label": "КОДВ", "channels": ["КОДВ_CHANNEL.md"]},
 ]
 
+# Ім'я агента → повний Claude Code agent-def (.claude/agents/<slug>.md у репо): роль+правила+
+# навичка (skills:). Кнопка «🔗 відкрити сесію» запускає `claude --agent <slug>` у теці репо, тож
+# def знаходиться, а CLAUDE.md авто-завантажується; канали Cowork — через --add-dir.
+_AGENT_DEF = {
+    "Код": "plutus-kod", "SEO": "plutus-seo", "SMM": "plutus-smm",
+    "Консультант": "plutus-consultant", "Бухгалтер": "plutus-kodv",
+}
+
 
 def _agents():
     """Агенти панелі: з agent_watch (Код/SEO/SMM) + PANEL_EXTRA (консультант/бухгалтер)."""
@@ -172,14 +180,20 @@ def _launch(agent):
     """Відкриває ІНТЕРАКТИВНУ сесію claude в новому терміналі (Windows). Власник далі керує сам."""
     if os.name != "nt":
         return False, "запуск нового терміналу реалізовано лише під Windows"
-    # start /d <cwd> — новий консоль у папці агента; claude+аргументи ОКРЕМИМИ елементами списку
-    # (Popen квотить кожен сам), а НЕ через `cd "..." && "..."` з ручними лапками — те ланцюжкове
-    # рішення ламало парсинг cmd ("syntax is incorrect", діагностовано живо 2026-09-02: cd спрацьовував,
-    # а claude ні). cmd /k тримає вікно відкритим, щоб було видно й можливі помилки старту claude.
+    # ПОВНИЙ агент: `claude --agent <slug>` вантажить роль+правила+навичку (agent-def + skills:).
+    # Стартуємо в теці РЕПО (/d BASE_DIR), щоб (1) знайшовся .claude/agents/<slug>.md, (2) авто-
+    # завантажився CLAUDE.md; канали Cowork — через --add-dir. Аргументи ОКРЕМИМИ елементами списку
+    # (Popen квотить кожен), а НЕ через `cd && ..` з ручними лапками — те ламало парсинг cmd
+    # ("syntax is incorrect", 2026-09-02). cmd /k тримає вікно відкритим (видно й помилки старту).
+    slug = _AGENT_DEF.get(agent["name"])
+    args = [CLAUDE_BIN]
+    if slug:
+        args += ["--agent", slug]
+    args += ["--add-dir", str(COWORK_DIR)]
     try:
-        subprocess.Popen(["cmd", "/c", "start", f"claude {agent['name']}", "/d", agent["cwd"],
-                          "cmd", "/k", CLAUDE_BIN, "--add-dir", str(BASE_DIR)])
-        return True, f"відкрив справжню сесію «{agent['name']}» у {agent['cwd']}"
+        subprocess.Popen(["cmd", "/c", "start", agent["name"], "/d", str(BASE_DIR), "cmd", "/k", *args])
+        what = f"повного агента «{slug}» (роль+навичка+правила)" if slug else f"сесію «{agent['name']}»"
+        return True, f"відкрив {what} у теці репо; канали Cowork через --add-dir"
     except Exception as e:
         return False, f"не вдалось: {e}"
 
@@ -368,8 +382,8 @@ function renderSession(){
         <div class=row><button onclick=send()>💬 надіслати</button>
           <button class=ghost onclick=openSess()>🔗 відкрити сесію</button>
           <button class=ghost onclick=queue()>📥 у чергу (канал)</button></div>
-        <div class="small mut" style="margin-top:4px">🔗 = справжня сесія claude у новому терміналі (усі інструменти).
-          Всередині набери /навичку (напр. /seo-agent), щоб увімкнути повну роль.</div>
+        <div class="small mut" style="margin-top:4px">🔗 = ПОВНИЙ агент у новому терміналі —
+          роль + навичка + правила завантажені одразу (claude --agent). Просто пиши задачу.</div>
       </div>
       <div>
         <div class=meta>🖥 Термінал — тека репо (rozetka_agent)</div>

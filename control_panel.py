@@ -151,27 +151,66 @@ def _append_task(agent, text):
     return str(p)
 
 
+# Памʼять розмов панелі: {ім'я агента: session_id}. Дає ТЯГЛІСТЬ — і чат, і 🔗 продовжують ОДНУ
+# сесію на агента (`claude --resume`), тож агент памʼятає попередні репліки. Локально, не в git.
+SESS_FILE = BASE_DIR / ".local_secrets" / "panel_sessions.json"
+
+
+def _load_sess() -> dict:
+    try:
+        d = json.loads(SESS_FILE.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _set_sess(name, sid) -> None:
+    d = _load_sess()
+    if sid:
+        d[name] = sid
+    else:
+        d.pop(name, None)
+    try:
+        SESS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SESS_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _chat(agent, message):
-    """`claude -p` у контексті агента, ЛИШЕ read-інструменти → відповідь зі stdout."""
-    preamble = (f"Ти — сесія «{agent['name']}» проєкту PlutusToys. Канали у твоєму cwd "
-                f"({', '.join(agent['channels']) or 'нема'}) — можеш читати. Це ШВИДКИЙ чат від "
-                f"власника з панелі керування (read-only: відповідай, але нічого не пиши/не роби "
-                f"незворотного — для роботи власник запустить інтерактивну сесію). Питання:\n\n{message}")
-    # ⚠️ Промпт передаємо через STDIN, а не як argv: багаторядковий рядок як аргумент до
-    # claude.CMD на Windows ріжеться на першому переносі (cmd.exe), і все після «Питання:\n\n»
-    # губиться — агент бачить порожнє питання (діагностовано живо 2026-09-02). stdin надійний.
-    cmd = [CLAUDE_BIN, "-p",
+    """Повідомлення до ПОВНОГО агента з ТЯГЛІСТЮ (памʼять). Перша репліка створює сесію агента
+    (`--agent <slug>` → роль+навичка+правила), далі `--resume <sid>` продовжує ту саму розмову —
+    агент памʼятає попереднє. Read-only інструменти (чат відповідає, нічого не пише). session_id
+    тримаємо по агенту в SESS_FILE; ту саму сесію продовжує й кнопка 🔗 (інтерактивно)."""
+    slug = _AGENT_DEF.get(agent["name"])
+    sid = _load_sess().get(agent["name"])
+    cmd = [CLAUDE_BIN, "-p", "--output-format", "json",
            "--add-dir", str(COWORK_DIR), "--add-dir", str(BASE_DIR),
            "--allowedTools", "Read", "Glob", "Grep"]
+    if sid:
+        cmd += ["--resume", sid]      # продовжуємо — роль/навичка/памʼять уже в сесії
+    elif slug:
+        cmd += ["--agent", slug]      # перша репліка — повний агент із def
     env = {**os.environ, "PLUTUS_AGENT_HEADLESS": "1"}
+    # Промпт через STDIN (багаторядковий argv до claude.CMD на Windows ріжеться, 2026-09-02).
     try:
-        r = subprocess.run(cmd, input=preamble, cwd=agent["cwd"], capture_output=True, text=True,
+        r = subprocess.run(cmd, input=message, cwd=str(BASE_DIR), capture_output=True, text=True,
                            env=env, timeout=CHAT_TIMEOUT_SEC, encoding="utf-8", errors="replace")
         if r.returncode != 0:
-            return f"[помилка claude exit={r.returncode}] {(r.stderr or '')[:400]}"
-        return (r.stdout or "").strip() or "[порожня відповідь]"
+            if sid:                   # сесія могла протухнути — скидаємо, наступна почне свіжу
+                _set_sess(agent["name"], None)
+            return (f"[помилка claude exit={r.returncode}] {(r.stderr or '')[:300]}"
+                    + (" — розмову скинуто, напиши ще раз" if sid else ""))
+        try:
+            j = json.loads(r.stdout or "{}")
+        except ValueError:
+            return (r.stdout or "").strip()[:2000] or "[невалідна відповідь]"
+        new_sid = j.get("session_id")
+        if new_sid:
+            _set_sess(agent["name"], new_sid)
+        return (j.get("result") or "").strip() or "[порожня відповідь]"
     except subprocess.TimeoutExpired:
-        return f"[таймаут {CHAT_TIMEOUT_SEC}s — питання складне, запусти інтерактивну сесію]"
+        return f"[таймаут {CHAT_TIMEOUT_SEC}s — питання складне, відкрий сесію 🔗]"
     except Exception as e:
         return f"[не вдалось запустити claude: {e}]"
 
@@ -186,14 +225,18 @@ def _launch(agent):
     # (Popen квотить кожен), а НЕ через `cd && ..` з ручними лапками — те ламало парсинг cmd
     # ("syntax is incorrect", 2026-09-02). cmd /k тримає вікно відкритим (видно й помилки старту).
     slug = _AGENT_DEF.get(agent["name"])
+    sid = _load_sess().get(agent["name"])
     args = [CLAUDE_BIN]
-    if slug:
-        args += ["--agent", slug]
+    if sid:
+        args += ["--resume", sid]      # продовжуємо ТУ САМУ розмову, що й чат (памʼять)
+    elif slug:
+        args += ["--agent", slug]      # нема сесії — новий повний агент із def
     args += ["--add-dir", str(COWORK_DIR)]
     try:
         subprocess.Popen(["cmd", "/c", "start", agent["name"], "/d", str(BASE_DIR), "cmd", "/k", *args])
-        what = f"повного агента «{slug}» (роль+навичка+правила)" if slug else f"сесію «{agent['name']}»"
-        return True, f"відкрив {what} у теці репо; канали Cowork через --add-dir"
+        what = ("ПРОДОВЖИВ розмову" if sid else
+                (f"відкрив повного агента «{slug}»" if slug else f"відкрив сесію «{agent['name']}»"))
+        return True, f"{what} з «{agent['name']}» у терміналі (роль+навичка+правила+памʼять)"
     except Exception as e:
         return False, f"не вдалось: {e}"
 
@@ -272,8 +315,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._json(400, {"error": "bad json"})
         agent = _agent_by_name(body.get("agent", ""))
-        if path in ("/api/task", "/api/chat", "/api/launch") and not agent:
+        if path in ("/api/task", "/api/chat", "/api/launch", "/api/reset") and not agent:
             return self._json(400, {"error": "невідомий агент"})
+        if path == "/api/reset":
+            _set_sess(agent["name"], None)
+            return self._json(200, {"ok": True, "msg": f"розмову з «{agent['name']}» скинуто "
+                                    f"— наступна репліка почне нову сесію"})
         if path == "/api/task":
             text = (body.get("text") or "").strip()
             if not text:
@@ -381,9 +428,10 @@ function renderSession(){
         <textarea id=inp placeholder="повідомлення для ${esc(a.name)}…"></textarea>
         <div class=row><button onclick=send()>💬 надіслати</button>
           <button class=ghost onclick=openSess()>🔗 відкрити сесію</button>
-          <button class=ghost onclick=queue()>📥 у чергу (канал)</button></div>
-        <div class="small mut" style="margin-top:4px">🔗 = ПОВНИЙ агент у новому терміналі —
-          роль + навичка + правила завантажені одразу (claude --agent). Просто пиши задачу.</div>
+          <button class=ghost onclick=queue()>📥 у чергу (канал)</button>
+          <button class=ghost onclick=reset()>🔄 нова розмова</button></div>
+        <div class="small mut" style="margin-top:4px">💬 і 🔗 продовжують ОДНУ сесію агента —
+          він <b>памʼятає</b> попередні репліки (роль+навичка+правила завантажені одразу). «🔄 нова розмова» — почати з чистого.</div>
       </div>
       <div>
         <div class=meta>🖥 Термінал — тека репо (rozetka_agent)</div>
@@ -410,6 +458,8 @@ async function send(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return;
 async function queue(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return;
   const r=await jpost('/api/task',{agent:a,text:msg});alert(r.msg||r.error);if(r.ok!==false&&$('#inp'))$('#inp').value='';}
 async function openSess(){const r=await jpost('/api/launch',{agent:SEL});alert(r.msg||r.error);}
+async function reset(){const a=SEL;if(!confirm('Почати нову розмову з «'+a+'»? Памʼять поточної сесії скинеться.'))return;
+  const r=await jpost('/api/reset',{agent:a});LOG[a]=[];if(SEL===a)renderSession();alert(r.msg||r.error);}
 refresh();setInterval(refresh,60000);
 </script></body></html>"""
 

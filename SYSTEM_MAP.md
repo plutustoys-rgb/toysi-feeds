@@ -97,6 +97,7 @@
 | `PlutusToys_PromCatalogHistory` | `prom_cabinet_catalog.py --summary` | Prom: денний знімок каталогу (+ лічильники повноти) |
 | `PlutusToys_PromCabinetKeepalive` | `prom_notifications_scraper.py --keepalive` | Prom: тримати кабінетну сесію теплою |
 | `PlutusToys_PromConvergenceMonitor` | `prom_convergence_monitor.py` | Prom: контроль збіжності каталогу до 6000 |
+| `PlutusToys_MarketplaceActions` | `run_marketplace_actions.py` (кожні 6 год) | EVA/ALLO: періодичний автоцикл ДІЙ — EVA повний імпорт «через посилання» (нові товари→модерація) + ALLO авто-зіставлення майстра «Зіставлення даних» + подача «Нових» на модерацію (`eva_cabinet_scraper.py --full-import --apply`, `allo_cabinet_scraper.py --auto-cycle --apply`). Best-effort; на протухлій сесії скрейпери сигналять (Telegram) і пропускають, не діють наосліп. Разовий `--login` власником per-платформа. Закрив прогалину: Rozetka/Prom мали автоцикл, EVA/ALLO — ні (наказ власника 2026-08-31) |
 | `PlutusToys-TelegramOutbox` | `telegram_outbox_processor.py` | інфра: черга вихідних Telegram |
 | `PlutusToys-CabinetAudit` | `local_cabinet_audit.ps1` | аудит кабінетів (Prom/Rozetka) + КОДВ-леджери кандидатів: `rozetka_commission_ledger`, `eva_orders_ledger`, `eva_commission_ledger` (фактична комісія EVA з картки замовлення, замість 15%-оцінки), `prom_commission_ledger` (комісія Prom з Orders API у графу 9, §3 довідника), **`rozetkapay_registry_kandydaty`** (СТОРНО-детектор з реєстру FC/RozetkaPay: банк-сторно → кандидат, крос-звірка з книгою read-only) — усі пишуть кандидатів у документи_КОДВ, книгу не пишуть. **+ `marketplace_requirements_gate.py`** — структурний гейт дисципліни: кожен фід, що вимагає авторитетного довідника площадки (дерево категорій/атрибути), мусить мати його ЗБЕРЕЖЕНИМ у репо + робочою автоперевіркою; реєстр у самому скрипті (EVA=enforced з `eva_category_reference.csv`+`verify_eva_category_map.py`; Prom/Rozetka/ALLO/Google=audit_pending). Порушення enforced → Telegram-алерт (крок гониться з увімкненим Telegram). **+ `archive_channels.py --apply`** — auto-archiver каналів агентів: старі записи (поза останніми ~40 / старші 30д) → `archive/<роль>/`, тримає гарячі канали лінивими (data-safe: append в архів ДО перепису гарячого) |
 | `PlutusToys-Graph6Daily` | `graph6_daily.ps1` → `graph6_daily.py` | КОДВ: собівартість реалізованих замовлень Toysi (кабінет «Історія замовлень», лише «Відвантажене») → кандидати графи 6 у документи_КОДВ (read-only, книгу не пише) |
@@ -245,6 +246,7 @@
     "PlutusToys_RozetkaLocalChain", "PlutusToys_RozetkaPricePull",
     "PlutusToys_RozetkaKeepalive", "PlutusToys_PromCatalogHistory", "PlutusToys_PromCabinetKeepalive",
     "PlutusToys_PromConvergenceMonitor", "PlutusToys_CriticalCalendar",
+    "PlutusToys_MarketplaceActions",
     "PlutusToys-TelegramOutbox", "PlutusToys-CabinetAudit",
     "PlutusToys-Graph6Daily", "PlutusToys-NovaPayRegistryArchiver",
     "PlutusToys-ChecboxRegistrySync"

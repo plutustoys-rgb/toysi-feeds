@@ -424,6 +424,20 @@ def _normalize_brand(vendor: str) -> str:
     return re.sub(r"[-_\s]+", " ", (vendor or "").strip().lower())
 
 
+# Форми стоп-брендів БЕЗ розділювачів — для стійкого порівняння: Toysi віддає бренд то з пробілом,
+# то суцільно («Dankotoys» vs «danko toys» у сеті). _normalize_brand лише СХЛОПУЄ наявні розділювачі,
+# а не вставляє пробіл у суцільне слово, тож без цієї форми фільтр пропускав суцільні написання
+# (SEO 2026-09-02, живо: «Dankotoys» → 378 SKU у фіді з забороненим брендом; той самий клас — «vladitoys»).
+_EVA_STOP_STRIPPED = frozenset(b.replace(" ", "") for b in EVA_STOP_BRANDS)
+
+
+def _is_stop_brand(vendor: str) -> bool:
+    """True, якщо vendor — заборонений бренд EVA. Звіряємо і нормалізований (розділювачі→пробіл),
+    і суцільний (без розділювачів) — щоб «Dankotoys» ловився так само, як «danko toys»."""
+    n = _normalize_brand(vendor)
+    return n in EVA_STOP_BRANDS or n.replace(" ", "") in _EVA_STOP_STRIPPED
+
+
 # Заборонені товари EVA, п.5 (докстрінг файлу) — країна походження,
 # перевірено ЛИШЕ проти item["country"] (структуроване поле Toysi), НЕ
 # вільнотекстовий пошук по назві/опису (див. докстрінг — той самий
@@ -775,7 +789,7 @@ def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: 
     vendor = (item.get("vendor") or "").strip()
     if not vendor:
         return False
-    if _normalize_brand(vendor) in EVA_STOP_BRANDS:
+    if _is_stop_brand(vendor):
         return False
     # Заборонене EVA слово (ТМ/бренд) у НАЗВІ — навіть коли vendor нейтральний
     # (2026-08-12, «Виявлено заборонені слова» в модерації EVA). Виключаємо товар,
@@ -949,7 +963,7 @@ def _build_xml(
             skipped_no_vendor += 1
             continue
 
-        if _normalize_brand(vendor) in EVA_STOP_BRANDS:
+        if _is_stop_brand(vendor):
             skipped_stop_brand += 1
             continue
 

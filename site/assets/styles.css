@@ -139,3 +139,47 @@ h1.prod{font-size:22px;line-height:1.25;margin:0 0 12px;font-weight:700;
 
 footer.foot{text-align:center;color:var(--muted);font-size:12px;padding:24px 16px 32px}
 footer.foot a{color:var(--accent)}
+
+/* ══ Адаптив: одна верстка, синхронна на телефон / планшет / десктоп ══
+   Мобільний-перший (базові правила вище). Ширші екрани — ширший контейнер і більше колонок. */
+
+/* Планшет */
+@media (min-width:600px){
+  .wrap{max-width:760px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px}
+  .buybar-inner{max-width:760px}
+  .cattile{width:150px}
+  .hero .btn{max-width:300px}
+}
+
+/* Десктоп */
+@media (min-width:1000px){
+  .wrap{max-width:1120px}
+  header.top{padding:16px 24px;gap:14px}
+  .search{max-width:520px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:20px;padding:0 24px}
+  .chips,.catrow{padding-left:24px;padding-right:24px}
+  h1.page{margin-left:24px;margin-right:24px}
+  .sec-title{margin-left:24px;margin-right:24px}
+  .hero{margin-left:24px;margin-right:24px;padding:40px}
+  .hero h2{font-size:30px}
+  .hero .fox{font-size:44px}
+  .buybar-inner{max-width:1120px;padding:0 8px}
+
+  /* Картка товару — 2 колонки: фото залипає ліворуч, опис праворуч */
+  .pad-bar{display:flex;gap:36px;align-items:flex-start;padding:8px 24px 96px} /* резерв під фіксовану .buybar */
+  .photo{flex:0 0 460px;border:1px solid var(--line);border-radius:var(--radius);
+    position:sticky;top:88px;overflow:hidden}
+  .photo img,.photo .ph{border-radius:var(--radius)}
+  .body{flex:1;padding-top:0}
+  h1.prod{font-size:26px}
+
+  /* Кошик/checkout — тримаємо читабельну колонку, а не на всю ширину */
+  #cart-body,#cart-summary,#checkout-form{max-width:640px}
+}
+
+/* Дуже широкі екрани — сітка не розповзається понад комфортну колонку */
+@media (min-width:1400px){
+  .wrap{max-width:1280px}
+  .buybar-inner{max-width:1280px}
+}

@@ -1,0 +1,7 @@
+# Згенерований вихід статичного сайту (будується build_site.py на деплої, не комітимо)
+index.html
+catalog.html
+cart.html
+product-*.html
+category-*.html
+index.json

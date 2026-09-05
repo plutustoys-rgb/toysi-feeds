@@ -203,8 +203,9 @@ def build():
     write_catalog("Каталог іграшок", prods, cat_list, cat_slug, "catalog.html", active=None)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
-    # 5) кошик + checkout
+    # 5) кошик + checkout + сторінка подяки
     write_cart()
+    write_thanks()
     # 6) індекс пошуку
     idx = [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"]} for p in prods]
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
@@ -303,19 +304,35 @@ def write_cart():
       '</div>'
       # checkout
       '<h1 class="page" style="margin-left:0">Оформлення</h1>'
-      '<form id="checkout-form">'
-        '<div class="field"><label>Ім’я та прізвище</label><input name="name" required placeholder="Отримувач посилки"></div>'
-        '<div class="field"><label>Телефон</label><input name="phone" type="tel" required placeholder="+380…"></div>'
+      '<form id="checkout-form" autocomplete="off">'
+        '<div class="field"><label>Ім’я та прізвище</label>'
+          '<input id="f-name" name="name" required placeholder="Отримувач посилки"></div>'
+        '<div class="field"><label>Телефон</label>'
+          '<input id="f-phone" name="phone" type="tel" required placeholder="+380…"></div>'
         '<div class="field"><label>Email <span style="opacity:.6">(необовʼязково, для чека й статусу)</span></label>'
-          '<input name="email" type="email" placeholder="you@example.com"></div>'
-        '<div class="field"><label>Місто</label><input name="city" required placeholder="Почніть вводити місто…"></div>'
-        '<div class="field"><label>Відділення Нової Пошти</label>'
-          '<input name="warehouse" required placeholder="Спершу оберіть місто"></div>'
-        '<button class="btn" type="submit">Оформити й оплатити</button>'
+          '<input id="f-email" name="email" type="email" placeholder="you@example.com"></div>'
+        '<div class="field ac-wrap"><label>Місто</label>'
+          '<input id="f-city" name="city" required placeholder="Почніть вводити місто…">'
+          '<div class="ac" id="ac-city"></div></div>'
+        '<div class="field ac-wrap"><label>Відділення Нової Пошти</label>'
+          '<input id="f-warehouse" name="warehouse" required placeholder="Спершу оберіть місто" disabled>'
+          '<div class="ac" id="ac-warehouse"></div></div>'
+        '<button class="btn" type="submit" id="checkout-submit">Оформити й оплатити</button>'
         '<div class="note" id="checkout-msg"></div>'
       '</form></div>'
     )
     _write("cart.html", page("Кошик", body))
+
+def write_thanks():
+    body = (
+      '<div class="done"><div class="fox">🦊</div>'
+      '<h2>Дякуємо за замовлення!</h2>'
+      '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
+      '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'
+      '<p style="margin-top:20px"><a class="btn ghost" href="index.html" style="display:inline-block;max-width:260px">На головну</a></p>'
+      '</div>'
+    )
+    _write("thanks.html", page("Дякуємо за замовлення", body))
 
 def _write(fname, content):
     with open(os.path.join(OUT, fname), "w", encoding="utf-8") as f:

@@ -167,7 +167,7 @@ footer.foot a{color:var(--accent)}
   .buybar-inner{max-width:1120px;padding:0 8px}
 
   /* Картка товару — 2 колонки: фото залипає ліворуч, опис праворуч */
-  .pad-bar{display:flex;gap:36px;align-items:flex-start;padding:8px 24px 0}
+  .pad-bar{display:flex;gap:36px;align-items:flex-start;padding:8px 24px 96px} /* резерв під фіксовану .buybar */
   .photo{flex:0 0 460px;border:1px solid var(--line);border-radius:var(--radius);
     position:sticky;top:88px;overflow:hidden}
   .photo img,.photo .ph{border-radius:var(--radius)}

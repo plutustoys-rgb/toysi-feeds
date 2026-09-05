@@ -1,0 +1,27 @@
+[Unit]
+Description=PlutusToys site order API (plutustoys.com.ua) — приймання веб-замовлень + LiqPay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python в ExecStart, інакше системний python3 без залежностей падає.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_order_api.py
+# Секрети (NP_API_KEY, LIQPAY_PUBLIC_KEY/PRIVATE_KEY, LIQPAY_SANDBOX) підхоплюються з
+# /opt/plutustoys/.env через load_dotenv() у nova_poshta/liqpay_client (WorkingDirectory).
+Environment=SITE_API_HOST=127.0.0.1
+Environment=SITE_API_PORT=8901
+Environment=SITE_DIR=/opt/plutustoys/site
+Environment=SITE_BASE_URL=https://plutustoys.com.ua
+# orders.db — та сама бойова БД, що й order-pipeline (WorkingDirectory=/opt/plutustoys),
+# тож веб-замовлення (platform='site', prepaid, payment_confirmed=0) форвардяться наявним
+# пайплайном ЛИШЕ після підтвердженого колбека LiqPay.
+Restart=on-failure
+RestartSec=5
+# Помірний захист
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

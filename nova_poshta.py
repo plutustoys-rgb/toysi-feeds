@@ -246,6 +246,55 @@ def get_tracking_status(ttn: str) -> dict | None:
     }
 
 
+# --- Автоповернення при скасуванні покупцем (orderCargoReturn) ---------------
+# Створення заявки на повернення в NP API виконує клієнт-ВІДПРАВНИК. Наш акаунт
+# такі повернення СТВОРЮЄ (звірено живо 2026-09-05: AdditionalServiceGeneral.
+# getReturnOrdersList нашим ключем повертає реальні повернення, отримувач — наш
+# ФОП). Причина/підтип звірені живо через getReturnReasons(Subtypes). Модель і всі
+# реф-и — через env, щоб правити без деплою, якщо НП змінить довідник.
+RETURN_MODEL       = os.environ.get("NP_RETURN_MODEL", "AdditionalServiceGeneral")
+RETURN_REASON_REF  = os.environ.get("NP_RETURN_REASON_REF",  "49754eb2-a9e1-11e3-9fa0-0050568002cf")  # «Відмова від доставки»
+RETURN_SUBTYPE_REF = os.environ.get("NP_RETURN_SUBTYPE_REF", "49754ec6-a9e1-11e3-9fa0-0050568002cf")  # «Відправник скасував доставку відправлення»
+RETURN_PAYMENT     = os.environ.get("NP_RETURN_PAYMENT_METHOD", "Cash")
+RETURN_ADDRESS_REF = os.environ.get("NP_RETURN_ADDRESS_REF", "")  # порожньо → НП повертає на дефолтну адресу відправника (наш ФОП)
+
+
+def check_return_possibility(ttn: str) -> dict:
+    """READ-ONLY: чи можливе повернення по ТТН (CheckPossibilityCreateReturn).
+    Повертає {'possible': bool, 'error': str|None, 'data': raw}. API-помилку
+    (напр. «Документ не належить даному користувачу») НЕ кидає — кладе в 'error',
+    щоб викликач сам вирішив (лог+ескалація), а не завалив пайплайн інших замовлень."""
+    try:
+        data = _call(RETURN_MODEL, "CheckPossibilityCreateReturn", {"Number": str(ttn)})
+        return {"possible": True, "error": None, "data": data}
+    except Exception as e:  # NovaPoshtaAPIError від _call при API-помилці (ловимо широко — не кидаємо вгору)
+        return {"possible": False, "error": str(e), "data": None}
+
+
+def create_return_order(ttn: str, note: str = "", reason_ref: str = "",
+                        subtype_ref: str = "", payment_method: str = "",
+                        return_address_ref: str = "") -> dict:
+    """РЕАЛЬНА дія: створює заявку на повернення (orderCargoReturn) по ТТН. Кликати
+    ЛИШЕ коли викликач переконався (NP_RETURN_APPLY=1) — створює реальне повернення.
+    Повертає {'number','ref'} (Number = НОВА зворотна ТТН, зберегти). КИДАЄ виняток
+    при API-помилці — викликач мусить логувати повний текст + ескалювати (self-
+    diagnosing), НЕ ковтати мовчки."""
+    props = {
+        "IntDocumentNumber": str(ttn),
+        "PaymentMethod": payment_method or RETURN_PAYMENT,
+        "Reason": reason_ref or RETURN_REASON_REF,
+        "SubtypeReason": subtype_ref or RETURN_SUBTYPE_REF,
+        "OrderType": "orderCargoReturn",
+        "Note": note or "Автоповернення: покупець скасував замовлення",
+    }
+    addr = return_address_ref or RETURN_ADDRESS_REF
+    if addr:
+        props["ReturnAddressRef"] = addr
+    data = _call(RETURN_MODEL, "save", props)
+    rec = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+    return {"number": rec.get("Number"), "ref": rec.get("Ref")}
+
+
 if __name__ == "__main__":
     result = resolve_shipping("Київ", "15")
     if result:

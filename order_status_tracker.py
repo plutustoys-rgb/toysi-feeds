@@ -6,7 +6,7 @@ from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
     mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
     mark_prom_ttn_pushed, mark_eva_ttn_pushed, update_delivery_status,
-    mark_rozetka_cancel_ticket_sent,
+    mark_rozetka_cancel_ticket_sent, mark_np_return_created,
 )
 import nova_poshta
 from orders_watcher import update_prom_order_status, attach_prom_declaration_id, PromAPIError
@@ -550,6 +550,71 @@ def _maybe_ticket_rozetka_cancelled(conn, order: dict) -> None:
     )
 
 
+def _maybe_create_np_return(conn, order: dict, delivery_status: str, ttn: str) -> None:
+    """Автоповернення НП при скасуванні покупцем: якщо посилку вже відправлено (є ТТН),
+    а покупець скасував (delivery_status='cancelled') — створити зворотну ТТН НП, щоб
+    власник не оформляв її вручну. Створення повернення в НП виконує клієнт-ВІДПРАВНИК;
+    наш акаунт це вміє (звірено живо 2026-09-05: nova_poshta.getReturnOrdersList повертає
+    наші реальні повернення). Причина «Відмова від доставки», підтип «Відправник скасував
+    доставку» (nova_poshta.RETURN_* — env-налаштовні).
+
+    ⚙️ ГЕЙТ БЕЗПЕКИ `NP_RETURN_APPLY`: '0' (ДЕФОЛТ) → DRY-RUN: лише read-only перевірка
+    можливості (CheckPossibilityCreateReturn) + FYI власнику, БЕЗ створення реальної
+    зворотної посилки. Так на ПЕРШОМУ реальному скасуванні ми побачимо, чи проходить
+    виклик нашим ключем, без ризику. '1' → реально створює зворотну ТТН.
+
+    Ідемпотентно (`np_return_created_at`) — бот опитує щоцикл, без мітки плодив би реальні
+    зворотні посилки (= гроші). Best-effort + self-diagnosing: будь-яка помилка НП → повний
+    лог + Telegram-FYI, НЕ валить відстеження інших замовлень і мітку НЕ ставить (ретрай
+    наступним циклом). Стосується всіх площадок (Prom/EVA/Rozetka) — ТТН НП спільна."""
+    if delivery_status != "cancelled" or not ttn:
+        return
+    if order.get("np_return_created_at"):
+        return  # вже створено — не дублюємо реальне повернення
+
+    internal_id = order.get("internal_order_id")
+    label = (f"{internal_id} (Toysi #{order.get('toysi_order_id')}, "
+             f"{order.get('platform', '?')}, ТТН {ttn})")
+    poss = nova_poshta.check_return_possibility(ttn)
+    apply = os.environ.get("NP_RETURN_APPLY", "0").strip() == "1"
+
+    if not apply:
+        # DRY-RUN: показуємо власнику, чи можливе повернення — БЕЗ створення.
+        verdict = "можливе ✅" if poss["possible"] else f"НЕ можливе — {poss['error']}"
+        msg = (f"🧪 Автоповернення НП (dry-run, створення вимкнено NP_RETURN_APPLY=0): "
+               f"скасовано {label}. Перевірка: повернення {verdict}.")
+        print(f"[order_status_tracker] {msg}", file=sys.stderr)
+        send_telegram_message(msg)
+        return
+
+    if not poss["possible"]:
+        msg = f"🚨 Автоповернення НП {label}: перевірка не пройшла — {poss['error']}. Оформи вручну."
+        print(f"[order_status_tracker] {msg}", file=sys.stderr)
+        send_telegram_message(msg)
+        return
+
+    try:
+        res = nova_poshta.create_return_order(
+            ttn, note=f"Автоповернення: покупець скасував замовлення {internal_id}")
+    except Exception as e:  # noqa: BLE001 — self-diagnosing: ескалюємо, не мовчимо; ретрай наступним циклом
+        msg = f"🚨 Автоповернення НП {label} НЕ створено: {e}. Оформи вручну."
+        print(f"[order_status_tracker] {msg}", file=sys.stderr)
+        send_telegram_message(msg)
+        return
+
+    return_ttn = res.get("number") or ""
+    if not return_ttn:
+        send_telegram_message(f"🚨 Автоповернення НП {label}: НП не повернув номер зворотної ТТН ({res}). Перевір вручну.")
+        return  # мітку НЕ ставимо — щоб не вважати створеним без номера
+    mark_np_return_created(conn, internal_id, return_ttn)
+    # ГРОШІ: комітимо мітку НЕГАЙНО (не чекаючи батч-коміту в кінці track_orders) — інакше
+    # непойманий виняток на ПІЗНІШОМУ замовленні того ж циклу відкотив би мітку → наступний
+    # цикл створив би ДУБЛЬ реальної зворотної посилки (аудит #486). Реальне повернення в НП
+    # уже створене, тож мітка мусить пережити будь-який подальший збій циклу.
+    conn.commit()
+    send_telegram_message(f"↩️ Автоповернення НП створено для {label}: зворотна ТТН {return_ttn}.")
+
+
 def track_orders() -> None:
     with get_connection() as conn:
         active = get_active_toysi_orders(conn)
@@ -604,6 +669,9 @@ def track_orders() -> None:
             # в Toysi (Toysi цього не знає й веде замовлення далі) — тікет адміну
             # на ручне скасування в Toysi, поки не відвантажене.
             _maybe_ticket_rozetka_cancelled(conn, order)
+            # Автоповернення НП: покупець скасував ВІДПРАВЛЕНУ посилку → створити зворотну ТТН
+            # (dry-run за дефолтом, NP_RETURN_APPLY=1 вмикає реальне створення). Ідемпотентно.
+            _maybe_create_np_return(conn, order, delivery_status, ttn)
 
             ttn_note = f", ТТН: {ttn}" if ttn else ""
             terminal_note = " [термінальний, більше не опитуємо]" if status_code in TERMINAL_ORDER_STATUSES else ""

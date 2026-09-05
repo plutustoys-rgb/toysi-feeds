@@ -122,7 +122,7 @@
 | `order-pipeline` | `order_pipeline.py` | замовлення: ЄДИНИЙ процесор — забір(poll_once)+bank_check+роутинг послідовно. enabled+active ~15хв |
 | `order-router` | `order_router.py` | ⛔ **DISABLED leftover** — поглинуто order-pipeline (звірено 2026-08-20: enabled=disabled, inactive) |
 | `orders-watcher` | `orders_watcher.py` | ⛔ **DISABLED leftover** — поглинуто order-pipeline (звірено 2026-08-20: enabled=disabled, inactive) |
-| `order-status-tracker` | `order_status_tracker.py` | замовлення: статуси доставки/ТТН. enabled+active |
+| `order-status-tracker` | `order_status_tracker.py` | замовлення: статуси доставки/ТТН + **автоповернення НП** при скасуванні покупцем (`_maybe_create_np_return` → `nova_poshta.create_return_order` orderCargoReturn; гейт `NP_RETURN_APPLY`, дефолт DRY-RUN; ідемпотентно `np_return_created_at`; довідник `технічні_вимоги_маркетплейсів/nova_poshta.md`). enabled+active |
 | `feed-pipeline` | (генерація фідів + репрайсер) | фіди Prom-top/Google/Meta/Bing, публікація `feed-data` |
 | `eva-feed` | (генерація EVA-фіда) | EVA-фід окремим юнітом |
 | `eva-catalog-auditor` | `eva_catalog_auditor.py` | аудит каталогу EVA |

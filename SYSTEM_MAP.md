@@ -175,6 +175,12 @@
 - **Замовлення/доставка/фінзвірка замовлень:** `order_pipeline`, `order_router`, `orders_watcher`, `orders_db`,
   `order_status_tracker`, `toysi_order_submit`, `nova_poshta`, `ukrposhta_client`, `bank_check`,
   `reconcile_revenue` → Код + **КОДВ** (звірка).
+- **Власний сайт-магазин `plutustoys.com.ua`:** `site/build_site.py` (статичний генератор з каталогу Toysi:
+  головна/каталог/категорії/картки/кошик/пошук, `site/assets/*`), `liqpay_client` (підпис/колбек LiqPay, sandbox),
+  `site_order_api` (HTTP-шар: NP-автокомпліт + `POST /api/order` prepaid+payment_confirmed=0 + колбек LiqPay).
+  Веб-замовлення = `platform='site'`, форвард у Toysi через наявний order-pipeline лише по підтвердженій оплаті.
+  **Ще НЕ розгорнуто як VPS-юніт** (systemd/nginx + бойові LiqPay-ключі — окремий крок; тому не в §2/§6).
+  → Код (механіка) + SMM (дизайн) + власник (LiqPay-компанія).
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,
   `plutus_overlay`, `meta_conversions_client`, `publish_reel_video.sh` (хостинг відео у feed-data/media
   → публічний raw-URL для Reels), `social_ledger_report` (ledger→CSV + розклад-vs-факт для SMM),

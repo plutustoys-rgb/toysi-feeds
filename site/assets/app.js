@@ -142,18 +142,98 @@
     if(so){ so.addEventListener("input", function(){ runSearch(so.value); }); }
 
     renderCart();
+    initCheckout();
+    initNpAutocomplete();
 
-    // оформлення (checkout) — поки заглушка бекенду (крок 3)
-    var form=document.getElementById("checkout-form");
-    if(form){
-      form.addEventListener("submit", function(e){
-        e.preventDefault();
-        var msg=document.getElementById("checkout-msg");
-        if(count()===0){ if(msg) msg.textContent="Кошик порожній."; return; }
-        // TODO(крок 3): POST payload → /api/order → LiqPay redirect. Зараз демонструємо збір даних.
-        if(msg){ msg.style.color="var(--success)";
-          msg.textContent="Дані зібрано. Оплата LiqPay та відправка НП підключаються на кроці бекенду."; }
-      });
-    }
+    // сторінка подяки — підставити номер замовлення
+    var oidEl=document.getElementById("thanks-oid");
+    if(oidEl){ try{ oidEl.textContent = sessionStorage.getItem("pt_last_order") || ""; }catch(e){} }
   });
+
+  // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
+  var selectedCityRef = "";
+  function debounce(fn, ms){ var t; return function(){ var a=arguments, self=this; clearTimeout(t); t=setTimeout(function(){ fn.apply(self,a); }, ms); }; }
+  function renderAc(box, opts, onPick){
+    if(!opts.length){ box.innerHTML=""; return; }
+    box.innerHTML = opts.map(function(o,i){
+      return '<div class="opt" data-i="'+i+'">'+esc(o.label)+(o.sub?'<small>'+esc(o.sub)+'</small>':'')+'</div>';
+    }).join("");
+    Array.prototype.forEach.call(box.querySelectorAll(".opt"), function(el){
+      el.addEventListener("mousedown", function(ev){ ev.preventDefault(); onPick(opts[+el.getAttribute("data-i")]); box.innerHTML=""; });
+    });
+  }
+  function initNpAutocomplete(){
+    var city=document.getElementById("f-city"), acCity=document.getElementById("ac-city");
+    var wh=document.getElementById("f-warehouse"), acWh=document.getElementById("ac-warehouse");
+    if(!city || !wh) return;
+
+    city.addEventListener("input", debounce(function(){
+      selectedCityRef=""; wh.value=""; wh.disabled=true; wh.placeholder="Спершу оберіть місто"; acWh.innerHTML="";
+      var q=city.value.trim(); if(q.length<2){ acCity.innerHTML=""; return; }
+      fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
+        renderAc(acCity, (d.cities||[]).map(function(c){ return {label:c.name, sub:c.area, ref:c.ref, name:c.name}; }),
+          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; wh.disabled=false; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
+      }).catch(function(){ acCity.innerHTML=""; });
+    }, 250));
+
+    wh.addEventListener("input", debounce(function(){
+      if(!selectedCityRef) return;
+      var q=wh.value.trim();
+      fetch("api/np/warehouse?city_ref="+encodeURIComponent(selectedCityRef)+"&q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
+        renderAc(acWh, (d.warehouses||[]).map(function(w){ return {label:w.description, name:w.description}; }),
+          function(pick){ wh.value=pick.name; acWh.innerHTML=""; });
+      }).catch(function(){ acWh.innerHTML=""; });
+    }, 250));
+
+    document.addEventListener("click", function(e){
+      if(!e.target.closest("#f-city")&&!e.target.closest("#ac-city")) acCity.innerHTML="";
+      if(!e.target.closest("#f-warehouse")&&!e.target.closest("#ac-warehouse")) acWh.innerHTML="";
+    });
+  }
+
+  // ── Оформлення: POST /api/order → редірект на LiqPay або підтвердження ──
+  function initCheckout(){
+    var form=document.getElementById("checkout-form");
+    if(!form) return;
+    form.addEventListener("submit", function(e){
+      e.preventDefault();
+      var msg=document.getElementById("checkout-msg");
+      var btn=document.getElementById("checkout-submit");
+      function fail(t){ if(msg){ msg.classList.add("err"); msg.textContent=t; } if(btn){ btn.disabled=false; btn.textContent="Оформити й оплатити"; } }
+      if(msg){ msg.classList.remove("err"); msg.textContent=""; }
+
+      var cart=read(), items=Object.keys(cart).map(function(id){ return {id:id, qty:cart[id].qty}; });
+      if(!items.length){ fail("Кошик порожній."); return; }
+      var payload={
+        items:items,
+        name:(document.getElementById("f-name").value||"").trim(),
+        phone:(document.getElementById("f-phone").value||"").trim(),
+        email:(document.getElementById("f-email").value||"").trim(),
+        city_name:(document.getElementById("f-city").value||"").trim(),
+        warehouse_name:(document.getElementById("f-warehouse").value||"").trim()
+      };
+      if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }
+
+      fetch("api/order", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)})
+        .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+        .then(function(res){
+          if(!res.ok){ fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return; }
+          var d=res.j;
+          try{ sessionStorage.setItem("pt_last_order", d.order_id); }catch(e){}
+          if(d.liqpay && d.liqpay.data){ PT.clear(); redirectToLiqPay(d.liqpay); return; }
+          // Без онлайн-оплати (LiqPay ще не підключено) — показуємо підтвердження
+          PT.clear();
+          location.href = "thanks.html";
+        })
+        .catch(function(){ fail("Немає звʼязку з сервером. Спробуйте ще раз."); });
+    });
+  }
+  function redirectToLiqPay(lq){
+    var f=document.createElement("form");
+    f.method="POST"; f.action=lq.action_url; f.acceptCharset="utf-8";
+    [["data",lq.data],["signature",lq.signature]].forEach(function(kv){
+      var i=document.createElement("input"); i.type="hidden"; i.name=kv[0]; i.value=kv[1]; f.appendChild(i);
+    });
+    document.body.appendChild(f); f.submit();
+  }
 })();

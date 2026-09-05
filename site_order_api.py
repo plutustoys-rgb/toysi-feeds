@@ -23,6 +23,7 @@ MONEY-SAFETY:
 """
 import os
 import re
+import sys
 import json
 import time
 import secrets
@@ -97,9 +98,10 @@ def build_order(payload: dict) -> tuple:
 
     items, total = [], 0
     for it in raw_items:
-        pid = str((it or {}).get("id", "")).strip()
+        it = it if isinstance(it, dict) else {}   # елемент не-обʼєкт → чиста валідаційна відмова, не 500
+        pid = str(it.get("id", "")).strip()
         try:
-            qty = int((it or {}).get("qty", 0))
+            qty = int(it.get("qty", 0))
         except (TypeError, ValueError):
             qty = 0
         if pid not in pm:
@@ -210,7 +212,8 @@ class Handler(SimpleHTTPRequestHandler):
         except nova_poshta.NovaPoshtaAPIError as e:
             return self._json(502, {"error": "Нова Пошта тимчасово недоступна", "detail": str(e)})
         except Exception as e:
-            return self._json(500, {"error": "внутрішня помилка", "detail": str(e)})
+            print(f"[site_order_api] {self.command} {self.path}: {e}", file=sys.stderr)
+            return self._json(500, {"error": "внутрішня помилка"})
         return self._json(404, {"error": "невідомий ендпоінт"})
 
     # ── POST: замовлення + колбек LiqPay ──
@@ -229,14 +232,22 @@ class Handler(SimpleHTTPRequestHandler):
         except OrderError as e:
             return self._json(400, {"error": str(e)})
         except Exception as e:
-            return self._json(500, {"error": "внутрішня помилка", "detail": str(e)})
+            print(f"[site_order_api] {self.command} {self.path}: {e}", file=sys.stderr)
+            return self._json(500, {"error": "внутрішня помилка"})
 
         try:
             with get_connection() as conn:
                 created = insert_order(conn, order)
+                if created:
+                    # фіксуємо виставлену суму для звірки з колбеком (стійко до дрейфу цін у каталозі)
+                    conn.execute(
+                        "UPDATE orders SET site_charged_total=? WHERE internal_order_id=?",
+                        (total, f"site_{order['order_id']}"),
+                    )
                 conn.commit()
         except Exception as e:
-            return self._json(500, {"error": "не вдалося зберегти замовлення", "detail": str(e)})
+            print(f"[site_order_api] insert_order помилка: {e}", file=sys.stderr)
+            return self._json(500, {"error": "не вдалося зберегти замовлення"})
         if not created:
             return self._json(409, {"error": "замовлення вже існує"})
 
@@ -275,15 +286,20 @@ class Handler(SimpleHTTPRequestHandler):
                 order = get_order(conn, internal)
                 if not order:
                     return self._text(404, "order not found")
-                expected = recompute_total(order["items"])
+                # звіряємо із зафіксованою при оформленні сумою (стійко до дрейфу цін);
+                # фолбек на перерахунок для давніх замовлень без site_charged_total
+                expected = order.get("site_charged_total")
+                if expected is None:
+                    expected = recompute_total(order["items"])
                 amount = res.get("amount")
-                if amount is not None and abs(float(amount) - expected) > 0.01:
+                if amount is not None and abs(float(amount) - float(expected)) > 0.01:
                     # сума не збігається — НЕ підтверджуємо (money-safety), лишаємо для розбору
                     return self._text(400, f"amount mismatch: got {amount}, expected {expected}")
                 mark_payment_confirmed(conn, internal)  # ідемпотентно
                 conn.commit()
         except Exception as e:
-            return self._text(500, f"error: {e}")
+            print(f"[site_order_api] callback помилка: {e}", file=sys.stderr)
+            return self._text(500, "internal error")
         return self._text(200, "ok")
 
 

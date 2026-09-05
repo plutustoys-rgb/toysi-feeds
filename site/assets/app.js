@@ -219,10 +219,10 @@
         .then(function(res){
           if(!res.ok){ fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return; }
           var d=res.j;
+          try{ sessionStorage.setItem("pt_last_order", d.order_id); }catch(e){}
           if(d.liqpay && d.liqpay.data){ PT.clear(); redirectToLiqPay(d.liqpay); return; }
           // Без онлайн-оплати (LiqPay ще не підключено) — показуємо підтвердження
           PT.clear();
-          try{ sessionStorage.setItem("pt_last_order", d.order_id); }catch(e){}
           location.href = "thanks.html";
         })
         .catch(function(){ fail("Немає звʼязку з сервером. Спробуйте ще раз."); });

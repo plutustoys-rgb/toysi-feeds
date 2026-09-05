@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- покупцем ПІСЛЯ форварду в Toysi (Toysi API не має автоскасування —
                                                -- потрібне ручне; order_status_tracker._maybe_ticket_rozetka_cancelled);
                                                -- захист від повторного тікета щоцикл опитування
+    np_return_created_at  TEXT,                -- коли створено зворотну ТТН НП при скасуванні покупцем
+                                               -- (order_status_tracker._maybe_create_np_return); ідемпотентність
+    np_return_ttn         TEXT,                -- номер створеної зворотної ТТН НП
     UNIQUE (order_id, platform)
 );
 
@@ -232,6 +235,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rz_marking_sent_at", "rz_marking_sent_at TEXT")
         _ensure_column(conn, "orders", "rz_marking_attempts", "rz_marking_attempts INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "orders", "rozetka_cancel_ticket_sent_at", "rozetka_cancel_ticket_sent_at TEXT")
+        _ensure_column(conn, "orders", "np_return_created_at", "np_return_created_at TEXT")
+        _ensure_column(conn, "orders", "np_return_ttn", "np_return_ttn TEXT")
         # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
         # залишку" для цього замовлення — щоб order_router.py не спамив той
         # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
@@ -574,6 +579,17 @@ def mark_rozetka_cancel_ticket_sent(conn: sqlite3.Connection, internal_order_id:
     conn.execute(
         "UPDATE orders SET rozetka_cancel_ticket_sent_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_np_return_created(conn: sqlite3.Connection, internal_order_id: str, return_ttn: str) -> None:
+    """Позначає, що при скасуванні покупцем уже створено зворотну ТТН НП (номер
+    return_ttn) — ідемпотентність, щоб order_status_tracker._maybe_create_np_return
+    НЕ створював нову реальну зворотну посилку щоцикл опитування (той самий підхід,
+    що mark_rozetka_cancel_ticket_sent). Стемпиться ЛИШЕ на успішному створенні."""
+    conn.execute(
+        "UPDATE orders SET np_return_created_at = ?, np_return_ttn = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), return_ttn, internal_order_id),
     )
 
 

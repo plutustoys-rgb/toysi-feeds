@@ -87,13 +87,15 @@
     var box=document.getElementById("cart-body");
     if(!box) return;
     var c=read(), ids=Object.keys(c);
-    var checkoutBtn=document.getElementById("to-checkout");
+    var form=document.getElementById("checkout-form");
     if(ids.length===0){
       box.innerHTML='<div class="empty"><div class="fox">🦊</div>Кошик порожній.<br>Оберіть іграшки в <a href="catalog.html" style="color:var(--accent)">каталозі</a>.</div>';
       var s=document.getElementById("cart-summary"); if(s) s.style.display="none";
-      if(checkoutBtn) checkoutBtn.style.display="none";
+      if(form) form.style.display="none";
       return;
     }
+    var s0=document.getElementById("cart-summary"); if(s0) s0.style.display="";
+    if(form) form.style.display="";
     var html="";
     ids.forEach(function(id){
       var it=c[id];

@@ -161,7 +161,16 @@ def build():
     for p in prods:
         cats.setdefault(p["category"], []).append(p)
     cat_list = sorted(cats.keys(), key=lambda c: -len(cats[c]))
-    cat_slug = {c: slugify(c) for c in cat_list}
+    # унікальні слаги: дві різні категорії з однаковим slugify() не перезаписують файл одна одної
+    cat_slug, _used = {}, {}
+    for c in cat_list:
+        base = slugify(c)
+        if base in _used:
+            _used[base] += 1
+            cat_slug[c] = f"{base}-{_used[base]}"
+        else:
+            _used[base] = 1
+            cat_slug[c] = base
 
     n = 0
     # 1) картки товарів

@@ -15,7 +15,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS orders (
     internal_order_id     TEXT PRIMARY KEY,   -- "{platform}_{order_id}", захист від дублів між Rozetka/Prom
     order_id              TEXT NOT NULL,
-    platform              TEXT NOT NULL CHECK (platform IN ('rozetka', 'prom', 'eva')),
+    platform              TEXT NOT NULL CHECK (platform IN ('rozetka', 'prom', 'eva', 'site')),
     status                TEXT NOT NULL DEFAULT 'new',
     payment_method        TEXT NOT NULL CHECK (payment_method IN ('cod', 'prepaid')),
     payment_confirmed     INTEGER NOT NULL DEFAULT 0,
@@ -159,6 +159,59 @@ def _migrate_platform_allow_eva(conn: sqlite3.Connection) -> None:
     conn.execute("RELEASE eva_platform_migrate")
 
 
+def _migrate_platform_allow_site(conn: sqlite3.Connection) -> None:
+    """Додає 'site' до CHECK колонки `platform` на ІСНУЮЧІЙ orders.db (замовлення з власного
+    сайту plutustoys.com.ua). Той самий безпечний rebuild-підхід, що _migrate_platform_allow_eva
+    (SQLite не ALTER-ить CHECK): беремо живий DDL із sqlite_master, змінюємо ЛИШЕ список платформ
+    у CHECK, копіюємо дані за явним списком колонок. Викликається ПІСЛЯ _migrate_platform_allow_eva,
+    тож на вході очікуємо CHECK(platform IN ('rozetka','prom','eva')). Ідемпотентна (якщо 'site'
+    уже дозволено — нічого не робить) + атомарна через SAVEPOINT (money-БД)."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'"
+    ).fetchone()
+    if not row or not row[0]:
+        return  # таблиці ще нема — свіжий SCHEMA уже містить 'site'
+    old_sql = row[0]
+    # Ідемпотентність, прив'язана САМЕ до платформного CHECK (як у eva-міграції).
+    _plat = re.search(r"platform\s+IN\s*\(([^)]*)\)", old_sql)
+    if _plat and "'site'" in _plat.group(1):
+        return  # 'site' уже в платформному CHECK
+
+    new_sql = re.sub(
+        r"platform\s+IN\s*\(\s*'rozetka'\s*,\s*'prom'\s*,\s*'eva'\s*\)",
+        "platform IN ('rozetka', 'prom', 'eva', 'site')",
+        old_sql, count=1,
+    )
+    if new_sql == old_sql:
+        # Патерн CHECK не знайдено — НЕ ризикуємо сліпою перебудовою money-БД.
+        raise RuntimeError(
+            "orders_db міграція SITE: у DDL таблиці orders не знайдено "
+            "CHECK(platform IN ('rozetka','prom','eva')) — перевір схему вручну."
+        )
+    new_table_sql = re.sub(r"\borders\b", "orders_site_migration_tmp", new_sql, count=1)
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)")]
+    col_list = ", ".join(f'"{c}"' for c in cols)
+
+    conn.execute("SAVEPOINT site_platform_migrate")
+    try:
+        conn.execute(new_table_sql)
+        conn.execute(
+            f"INSERT INTO orders_site_migration_tmp ({col_list}) "
+            f"SELECT {col_list} FROM orders"
+        )
+        conn.execute("DROP TABLE orders")
+        conn.execute("ALTER TABLE orders_site_migration_tmp RENAME TO orders")
+        # Індекси належали старій таблиці (зникли з DROP) — відновлюємо ті самі, що в SCHEMA.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_payment_confirmed ON orders (payment_confirmed)")
+    except Exception:
+        conn.execute("ROLLBACK TO site_platform_migrate")
+        conn.execute("RELEASE site_platform_migrate")
+        raise
+    conn.execute("RELEASE site_platform_migrate")
+
+
 def _migrate_carrier_allow_rozetka_delivery(conn: sqlite3.Connection) -> None:
     """Додає 'rozetka_delivery' до CHECK колонки `carrier` на ІСНУЮЧІЙ orders.db.
 
@@ -273,6 +326,9 @@ def init_db(db_path: str = DB_PATH) -> None:
         # (SQLite не ALTER-ить CHECK — перебудова таблиці). Викликається ПІСЛЯ
         # _ensure_column, щоб перебудова зберегла всі щойно додані колонки.
         _migrate_platform_allow_eva(conn)
+        # 'site' — замовлення з власного сайту plutustoys.com.ua (2026-09-05). ПІСЛЯ eva-міграції,
+        # бо очікує на вході CHECK(platform IN ('rozetka','prom','eva')) і додає до нього 'site'.
+        _migrate_platform_allow_site(conn)
         _migrate_carrier_allow_rozetka_delivery(conn)
 
 

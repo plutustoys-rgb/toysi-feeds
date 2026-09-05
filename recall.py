@@ -25,6 +25,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 BASE_DIR = Path(__file__).resolve().parent
 ARCHIVE_DIR = BASE_DIR / "archive"   # холодний архів повної історії (див. archive/README.md)
+MEMORY_DIR = Path(os.environ.get(    # durable памʼять агента (факти/фідбек/проєкт) — ЧИТАТИ ПЕРШИМ
+    "CLAUDE_MEMORY_DIR", r"C:\Users\smach\.claude\projects\C--Users-smach\memory"))
 COWORK_DIR = Path(os.environ.get(
     "PLUTUS_COWORK_DIR", r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))
 
@@ -136,6 +138,32 @@ def _grep_file(path: Path, terms: list, label: str) -> list:
     return out[:6]
 
 
+def _memory_hits(terms: list) -> list:
+    """Збіги в durable-памʼяті агента (memory/*.md). ЧИТАТИ ПЕРШИМ — це найсвіжіші висновки/правила."""
+    if not MEMORY_DIR.exists() or not terms:
+        return []
+    scored = []
+    for p in sorted(MEMORY_DIR.glob("*.md")):
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        low = txt.lower()
+        score = sum(low.count(t) for t in terms)   # ранг за кількістю збігів термінів
+        if not score:
+            continue
+        snip = ""
+        for ln in txt.splitlines():
+            l = ln.strip()
+            if (l and any(t in l.lower() for t in terms)
+                    and not l.startswith(("---", "name:", "description:", "metadata", "node_type", "type:", "originSessionId", "modified"))):
+                snip = l[:140]
+                break
+        scored.append((score, f"memory/{p.name}: {snip}" if snip else f"memory/{p.name}"))
+    scored.sort(key=lambda x: x[0], reverse=True)   # найрелевантніше першим (щоб не обрізалось капом)
+    return [h for _, h in scored[:8]]
+
+
 def recall(query: str, file_mode: str = "", config: str = "") -> int:
     stem = Path(file_mode).stem if file_mode else query
     terms = _terms(stem if file_mode else query)
@@ -175,6 +203,7 @@ def recall(query: str, file_mode: str = "", config: str = "") -> int:
     sysmap = _grep_file(BASE_DIR / "SYSTEM_MAP.md", terms, "SYSTEM_MAP")
     codelog = _grep_file(COWORK_DIR / "CODE_LOG.md", terms, "CODE_LOG")
     archive = _archive_hits(terms)
+    memory = _memory_hits(terms)
 
     # означення у коді (def/class) з термінами
     defs = []
@@ -188,6 +217,10 @@ def recall(query: str, file_mode: str = "", config: str = "") -> int:
 
     dup = bool(strong)
     print(f"=== RECALL: '{stem}'  (терміни: {', '.join(terms[:6])}) ===")
+    if memory:
+        print("Памʼять (durable факти/правила — ЧИТАЙ ПЕРШИМ):")
+        for m in memory:
+            print(f"   • {m}")
     if strong:
         print("🔴 МОЖЛИВИЙ ДУБЛЬ — уже є схожі файли:")
         for f, sh in strong[:6]:
@@ -212,7 +245,7 @@ def recall(query: str, file_mode: str = "", config: str = "") -> int:
         print("Архів (повна історія — відкрий файл для деталей):")
         for a in archive:
             print(f"   • {a}")
-    if not (strong or defs or commits or sysmap or codelog or archive):
+    if not (strong or defs or commits or sysmap or codelog or archive or memory):
         print("Нічого схожого не знайдено — тема, схоже, нова.")
     return 3 if dup else 0
 

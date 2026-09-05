@@ -322,6 +322,10 @@ def init_db(db_path: str = DB_PATH) -> None:
         # Компанійський відгук — окрема мітка (рішення власника 2026-08-21: компанійський шлемо
         # У МОМЕНТ отримання посилки, товарний — наступного дня). Різні тайминги → різні мітки.
         _ensure_column(conn, "orders", "prom_company_review_sent_at", "prom_company_review_sent_at TEXT")
+        # Сума, на яку виставлено рахунок web-замовленню (platform='site') у момент оформлення —
+        # site_order_api звіряє її з сумою колбека LiqPay, щоб дрейф ціни в каталозі між checkout
+        # і оплатою не провалював звірку реально оплаченого замовлення. Простий ADD COLUMN (не CHECK).
+        _ensure_column(conn, "orders", "site_charged_total", "site_charged_total INTEGER")
         # EVA як платформа (2026-07-31): додати 'eva' у CHECK(platform) на існуючих БД
         # (SQLite не ALTER-ить CHECK — перебудова таблиці). Викликається ПІСЛЯ
         # _ensure_column, щоб перебудова зберегла всі щойно додані колонки.

@@ -267,7 +267,7 @@ def check_return_possibility(ttn: str) -> dict:
     try:
         data = _call(RETURN_MODEL, "CheckPossibilityCreateReturn", {"Number": str(ttn)})
         return {"possible": True, "error": None, "data": data}
-    except Exception as e:  # NovaPoshtaError від _call при API-помилці
+    except Exception as e:  # NovaPoshtaAPIError від _call при API-помилці (ловимо широко — не кидаємо вгору)
         return {"possible": False, "error": str(e), "data": None}
 
 

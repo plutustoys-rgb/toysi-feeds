@@ -142,6 +142,39 @@ def find_warehouse(city_ref: str, warehouse_query: str = "") -> dict:
     return None
 
 
+def search_cities(query: str, limit: int = 8) -> list:
+    """Список міст для АВТОКОМПЛІТУ на checkout (на відміну від find_city, що вертає один
+    найкращий збіг для резолву). Кожен елемент — {ref, name, area}. Порожній запит → [].
+    Піднімає NovaPoshtaAPIError, якщо запит до API не вдався."""
+    if not (query or "").strip():
+        return []
+    results = _call("Address", "getCities", {"FindByString": query.strip(), "Limit": str(limit)})
+    return [
+        {"ref": c.get("Ref"), "name": c.get("Description"), "area": c.get("AreaDescription") or ""}
+        for c in (results or [])
+    ]
+
+
+def search_warehouses(city_ref: str, query: str = "", limit: int = 12) -> list:
+    """Список відділень/поштоматів міста для АВТОКОМПЛІТУ. Кожен елемент — {ref, description, number}.
+    query (частина назви/номер) фільтрує на нашому боці (як find_warehouse). Порожній city_ref → [].
+    Піднімає NovaPoshtaAPIError, якщо запит до API не вдався."""
+    if not (city_ref or "").strip():
+        return []
+    warehouses = _call("AddressGeneral", "getWarehouses", {"CityRef": city_ref, "Limit": "500"})
+    q = (query or "").strip().lower()
+    out = []
+    for wh in (warehouses or []):
+        number = (wh.get("Number") or "").strip()
+        description = wh.get("Description") or ""
+        if q and not (q == number or q in description.lower()):
+            continue
+        out.append({"ref": wh.get("Ref"), "description": description, "number": number})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def resolve_shipping(city_name: str, warehouse_query: str = "", area_hint: str = "") -> dict:
     """
     Повний резолв "назва міста + запит відділення" -> ідентифікатори для Toysi order_create.

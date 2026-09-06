@@ -17,11 +17,15 @@ PY="$APP/venv/bin/python3"
 echo "==> 1/4 Генерую статичний сайт (build_site.py)"
 "$PY" "$APP/site/build_site.py"
 
-echo "==> 2/4 systemd-юніт site-order-api"
+echo "==> 2/4 systemd-юніти (API + періодичний ребілд)"
 cp "$APP/deploy/site-order-api.service" /etc/systemd/system/site-order-api.service
+cp "$APP/deploy/site-rebuild.service" /etc/systemd/system/site-rebuild.service
+cp "$APP/deploy/site-rebuild.timer" /etc/systemd/system/site-rebuild.timer
 systemctl daemon-reload
 systemctl enable --now site-order-api
+systemctl enable --now site-rebuild.timer   # ребілд сайту 4×/день (свіжі ціни/наявність)
 systemctl --no-pager --lines=0 status site-order-api || true
+systemctl --no-pager --lines=0 status site-rebuild.timer || true
 
 echo "==> 3/4 nginx (статика + проксі /api)"
 if command -v nginx >/dev/null 2>&1; then

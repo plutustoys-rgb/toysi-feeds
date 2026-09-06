@@ -22,9 +22,10 @@ A-запис `plutustoys.com.ua` і `www` → IP VPS (45.94.157.4).
 ```
 /opt/plutustoys/venv/bin/python3 /opt/plutustoys/site/build_site.py
 ```
-Створює `/opt/plutustoys/site/*.html` + `index.json`. **Оновлення цін/наявності:** поставити
-періодичний ребілд (напр. щоденний systemd-timer або в наявний feed-pipeline) — `index.json`
-є джерелом серверних цін для `POST /api/order`.
+Створює `/opt/plutustoys/site/*.html` + `index.json` + `sitemap.xml` + `robots.txt`.
+**Оновлення цін/наявності — автоматичне:** `site-rebuild.timer` (ставиться скриптом активації)
+регенерує сайт **4×/день**, тож `index.json` (джерело серверних цін для `POST /api/order`) і
+вітрина лишаються свіжими. `site_order_api` підхоплює новий `index.json` сам (кеш по mtime).
 
 ## 2. systemd-юніт API
 ```

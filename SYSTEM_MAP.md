@@ -179,7 +179,8 @@
   головна/каталог/категорії/картки/кошик/пошук, `site/assets/*`), `liqpay_client` (підпис/колбек LiqPay, sandbox),
   `site_order_api` (HTTP-шар: NP-автокомпліт + `POST /api/order` prepaid+payment_confirmed=0 + колбек LiqPay).
   Веб-замовлення = `platform='site'`, форвард у Toysi через наявний order-pipeline лише по підтвердженій оплаті.
-  Деплой-артефакти — `deploy/site-order-api.service` (venv-python daemon, :8901), `deploy/nginx-plutustoys.conf`,
+  Деплой-артефакти — `deploy/site-order-api.service` (venv-python daemon, :8901), `deploy/site-rebuild.{service,timer}`
+  (ребілд сайту 4×/день — свіжі ціни/наявність), `deploy/nginx-plutustoys.conf`, `deploy/activate_site.sh` (активація в одну команду),
   `deploy/DEPLOY_SITE.md` (кроки: DNS→build_site→systemd→nginx→certbot→бойові LiqPay-ключі).
   **Ще НЕ активовано як VPS-юніт** (одноразовий `systemctl enable` + nginx/TLS + LiqPay-компанія — тому не в §2Б/§6;
   після активації дописати `site-order-api` туди — drift-check це підкаже). → Код (механіка) + SMM (дизайн) + власник (LiqPay + активація).

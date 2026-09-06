@@ -1,0 +1,10 @@
+[Unit]
+Description=Періодичний ребілд статичного сайту PlutusToys (свіжі ціни/наявність)
+
+[Timer]
+# 4 рази на день (кожні 6 год, о :20 щоб не збігатися з іншими юнітами)
+OnCalendar=*-*-* 00/6:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

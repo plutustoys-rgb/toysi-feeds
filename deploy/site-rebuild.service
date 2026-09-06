@@ -1,0 +1,12 @@
+[Unit]
+Description=PlutusToys site rebuild — регенерація статичного магазину з живого каталогу Toysi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+# venv-python (CLAUDE.md); build_site.py оновлює site/*.html + index.json + sitemap.xml.
+# site_order_api сам підхоплює новий index.json (price_map кеш по mtime) — рестарт не потрібен.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site/build_site.py
+Nice=10

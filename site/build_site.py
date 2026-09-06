@@ -25,6 +25,8 @@ OUT = os.path.dirname(os.path.abspath(__file__))
 PRICE_MULT = 1.5
 MIN_PRICE = 120          # відсікаємо дрібницю-капкан (антистрес тощо) з вітрини
 LIMIT = int(os.environ.get("LIMIT", "0") or "0")   # 0 = без ліміту
+# Абсолютний домен для canonical/OG/sitemap (SEO). Той самий, що SITE_BASE_URL у site_order_api.
+SITE_URL = os.environ.get("SITE_BASE_URL", "https://plutustoys.com.ua").rstrip("/")
 
 CAT_EMOJI = [
     # транспорт/колеса
@@ -111,12 +113,29 @@ def footer():
       'Оплата карткою (LiqPay) або накладений платіж.</footer>'
     )
 
-def page(title, body, extra_head=""):
+def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False):
+    full_title = f"{title} — PlutusToys"
+    url = f"{SITE_URL}/{canonical}" if canonical else ""
+    meta = [
+        f'<meta name="description" content="{esc(description)}">' if description else "",
+        '<meta name="robots" content="noindex,follow">' if noindex else "",
+        f'<link rel="canonical" href="{esc(url)}">' if url else "",
+        '<meta property="og:site_name" content="PlutusToys">',
+        '<meta property="og:locale" content="uk_UA">',
+        f'<meta property="og:type" content="{esc(og_type)}">',
+        f'<meta property="og:title" content="{esc(full_title)}">',
+        f'<meta property="og:description" content="{esc(description)}">' if description else "",
+        f'<meta property="og:url" content="{esc(url)}">' if url else "",
+        f'<meta property="og:image" content="{esc(og_image)}">' if og_image else "",
+        '<meta name="twitter:card" content="summary_large_image">',
+    ]
+    head_meta = "".join(m + "\n" for m in meta if m)
     return (
       "<!doctype html>\n<html lang=\"uk\">\n<head>\n"
       "<meta charset=\"utf-8\">\n"
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-      f"<title>{esc(title)} — PlutusToys</title>\n"
+      f"<title>{esc(full_title)}</title>\n"
+      f"{head_meta}"
       "<link rel=\"stylesheet\" href=\"assets/styles.css\">\n"
       f"{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
       f"{header()}\n{body}\n{footer()}\n</div>\n"
@@ -210,8 +229,11 @@ def build():
     idx = [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"]} for p in prods]
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
+    # 7) SEO: sitemap + robots
+    write_sitemap(prods, cat_list, cat_slug)
+    write_robots()
 
-    print(f"[build] готово: {n} карток, {len(cat_list)} категорій, +index/catalog/cart/index.json")
+    print(f"[build] готово: {n} карток, {len(cat_list)} категорій, +index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
 def chips(cat_list, cat_slug, active):
     out = [f'<a class="chip{"" if active else " active"}" href="catalog.html">Усі</a>']
@@ -226,7 +248,8 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
         f'\n<h1 class="page">{esc(title)}</h1>\n' +
         grid(prods)
     )
-    _write(fname, page(title, body))
+    desc = f"{title} — {len(prods)} іграшок з доставкою Новою Поштою по Україні. Ціни, наявність, купити онлайн у PlutusToys."
+    _write(fname, page(title, body, description=desc, canonical=fname))
 
 def write_home(prods, cats, cat_list, cat_slug):
     # «Новинки» (правка SMM: не «Хіти продажів») — різноманітно: по 1 товару з топ-категорій,
@@ -253,7 +276,10 @@ def write_home(prods, cats, cat_list, cat_slug):
       '<div class="sec-title"><h2>Новинки</h2><a href="catalog.html">Дивитись усі →</a></div>'
       + grid(novelties)
     )
-    _write("index.html", page("PlutusToys — іграшки з доставкою", body))
+    _write("index.html", page(
+        "Іграшки з доставкою Новою Поштою", body,
+        description="Дитячі іграшки з доставкою Новою Поштою по всій Україні: конструктори, ляльки, машинки, розвиваючі. Оплата карткою або накладений платіж. Магазин PlutusToys.",
+        canonical="index.html"))
 
 def write_product(p):
     raw = p["desc"]
@@ -290,7 +316,30 @@ def write_product(p):
       f"<button class=\"btn\" data-add='{esc(add)}'>У кошик</button>"
       '</div></div>'
     )
-    _write(f"product-{p['id']}.html", page(p["name"], body))
+    # SEO: опис для сніпета (без HTML, обрізаний) + JSON-LD Product для Google Rich Results
+    plain = re.sub(r"<[^>]+>", "", lead).strip()
+    meta_desc = (plain or f'{p["name"]} — купити з доставкою Новою Поштою по Україні. PlutusToys.')[:160]
+    ld = {
+        "@context": "https://schema.org", "@type": "Product",
+        "name": p["name"], "category": p.get("category") or "",
+        "sku": str(p["id"]),
+        "image": [p["photo"]] if p["photo"] else [],
+        "description": plain[:500] or p["name"],
+        "offers": {
+            "@type": "Offer",
+            "price": str(p["price"]), "priceCurrency": "UAH",
+            "availability": "https://schema.org/InStock" if p["stock"] > 0 else "https://schema.org/OutOfStock",
+            "url": f'{SITE_URL}/product-{p["id"]}.html',
+        },
+    }
+    # безпечно в <script>: екрануємо КОЖЕН '<' у < (валідний JSON) — жоден HTML-вектор
+    # (</script>, <!--, <script) не може вийти літерально, навіть із назви товару.
+    # chr(92) = '\' — однозначно, без крихкого backslash-літерала.
+    ld_json = json.dumps(ld, ensure_ascii=False).replace("<", chr(92) + "u003c")
+    extra = f'<script type="application/ld+json">{ld_json}</script>\n'
+    _write(f"product-{p['id']}.html", page(
+        p["name"], body, extra_head=extra, description=meta_desc,
+        canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product"))
 
 def write_cart():
     body = (
@@ -321,7 +370,8 @@ def write_cart():
         '<div class="note" id="checkout-msg"></div>'
       '</form></div>'
     )
-    _write("cart.html", page("Кошик", body))
+    _write("cart.html", page("Кошик і оформлення", body,
+        description="Ваш кошик і оформлення замовлення в PlutusToys.", noindex=True))
 
 def write_thanks():
     body = (
@@ -332,7 +382,31 @@ def write_thanks():
       '<p style="margin-top:20px"><a class="btn ghost" href="index.html" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )
-    _write("thanks.html", page("Дякуємо за замовлення", body))
+    _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True))
+
+def write_sitemap(prods, cat_list, cat_slug):
+    from datetime import date
+    today = date.today().isoformat()
+    urls = [("index.html", "1.0", "daily"), ("catalog.html", "0.9", "daily")]
+    urls += [(f"category-{cat_slug[c]}.html", "0.7", "weekly") for c in cat_list]
+    urls += [(f"product-{p['id']}.html", "0.6", "weekly") for p in prods]
+    items = "\n".join(
+        f"  <url><loc>{SITE_URL}/{u}</loc><lastmod>{today}</lastmod>"
+        f"<changefreq>{cf}</changefreq><priority>{pr}</priority></url>"
+        for u, pr, cf in urls
+    )
+    _write("sitemap.xml",
+           '<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+           f"{items}\n</urlset>\n")
+
+def write_robots():
+    _write("robots.txt",
+           "User-agent: *\n"
+           "Allow: /\n"
+           "Disallow: /cart.html\n"
+           "Disallow: /thanks.html\n"
+           f"Sitemap: {SITE_URL}/sitemap.xml\n")
 
 def _write(fname, content):
     with open(os.path.join(OUT, fname), "w", encoding="utf-8") as f:

@@ -332,7 +332,10 @@ def write_product(p):
             "url": f'{SITE_URL}/product-{p["id"]}.html',
         },
     }
-    ld_json = json.dumps(ld, ensure_ascii=False).replace("</", "<\\/")  # безпечно в <script>
+    # безпечно в <script>: екрануємо КОЖЕН '<' у < (валідний JSON) — жоден HTML-вектор
+    # (</script>, <!--, <script) не може вийти літерально, навіть із назви товару.
+    # chr(92) = '\' — однозначно, без крихкого backslash-літерала.
+    ld_json = json.dumps(ld, ensure_ascii=False).replace("<", chr(92) + "u003c")
     extra = f'<script type="application/ld+json">{ld_json}</script>\n'
     _write(f"product-{p['id']}.html", page(
         p["name"], body, extra_head=extra, description=meta_desc,

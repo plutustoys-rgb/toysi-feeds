@@ -38,7 +38,7 @@ fi
 
 echo "==> 4/4 Перевірка API (localhost)"
 sleep 1
-curl -sS -o /dev/null -w "  api/np/city → HTTP %{http_code}\n" \
+curl -sS --max-time 15 -o /dev/null -w "  api/np/city → HTTP %{http_code}\n" \
   "http://127.0.0.1:8901/api/np/city?q=%D0%9A%D0%B8%D1%97%D0%B2" \
   || echo "  API не відповів — дивись: journalctl -u site-order-api -n 40 --no-pager"
 

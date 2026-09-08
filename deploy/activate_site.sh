@@ -16,6 +16,9 @@ PY="$APP/venv/bin/python3"
 
 echo "==> 1/4 Генерую статичний сайт (build_site.py)"
 "$PY" "$APP/site/build_site.py"
+# 301-мапа старих Prom-URL → наші картки (щоб не пропала GMC). Файл має існувати ДО nginx -t.
+"$PY" "$APP/generate_prom_redirects.py" || echo "  (мапа редиректів не згенерована — перевір own_product_links_cache.json)"
+[ -f "$APP/prom_redirects.map" ] || echo "# порожня мапа (fallback)" > "$APP/prom_redirects.map"
 
 echo "==> 2/4 systemd-юніти (API + періодичний ребілд)"
 cp "$APP/deploy/site-order-api.service" /etc/systemd/system/site-order-api.service

@@ -43,6 +43,17 @@ ln -sf /etc/nginx/sites-available/plutustoys.com.ua /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
 ```
 
+## 3.1 GMC / Google Shopping — щоб не пропала видимість
+GMC-фід віддає посилання за Prom-структурою `https://plutustoys.com.ua/ua/p{prom_id}-slug.html`.
+Активація вже генерує `prom_redirects.map` і nginx робить **301** зі старих Prom-URL на наші картки
+`/product-{toysi_id}.html` (непокриті → `/catalog.html`). Тож при перенесенні DNS старі посилання з
+фіда/індексу Google не впадуть у 404, а перекинуться на наш сайт — видимість зберігається.
+- **Твоя частина в кабінеті GMC:** переконатися, що домен `plutustoys.com.ua` лишається верифікованим
+  після зміни хостингу (можливо, підтвердити наново meta-тегом/DNS-записом).
+- **Пізніше (окремий крок, коли редиректи стоять і Google перекраулив):** перемкнути `LINK_TEMPLATE`
+  у `generate_google_feed.py` на рідні `/product-{id}.html` — прибрати зайвий редирект-хоп. НЕ робити
+  до перенесення DNS (інакше поточні GMC-посилання зламаються).
+
 ## 4. TLS (Let's Encrypt)
 ```
 certbot --nginx -d plutustoys.com.ua -d www.plutustoys.com.ua

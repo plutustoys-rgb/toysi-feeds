@@ -295,3 +295,6 @@ rozetka_merchant_candidates.json
 # ⚠️ НЕ `*.mp4` — у репо відстежуються plutus_scenes/*_GREEN.mp4 (сцени маскота), і нові додаватимуться
 # (scene06 під перегенерацію); широкий патерн мовчки блокував би їх. Тільки тека рендер-виходу.
 reels/
+
+# 301-редирект-мапа Prom→сайт (генерується generate_prom_redirects.py на VPS, не в git)
+prom_redirects.map

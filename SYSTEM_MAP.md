@@ -180,8 +180,11 @@
   `site_order_api` (HTTP-шар: NP-автокомпліт + `POST /api/order` prepaid+payment_confirmed=0 + колбек LiqPay).
   Веб-замовлення = `platform='site'`, форвард у Toysi через наявний order-pipeline лише по підтвердженій оплаті.
   Деплой-артефакти — `deploy/site-order-api.service` (venv-python daemon, :8901), `deploy/site-rebuild.{service,timer}`
-  (ребілд сайту 4×/день — свіжі ціни/наявність), `deploy/nginx-plutustoys.conf`, `deploy/activate_site.sh` (активація в одну команду),
-  `deploy/DEPLOY_SITE.md` (кроки: DNS→build_site→systemd→nginx→certbot→бойові LiqPay-ключі).
+  (ребілд сайту 4×/день — свіжі ціни/наявність + оновлення GMC-редиректів + reload nginx), `deploy/nginx-plutustoys.conf`,
+  `deploy/activate_site.sh` (активація в одну команду), `deploy/DEPLOY_SITE.md`.
+  **GMC-міграція:** `generate_prom_redirects.py` інвертує `own_product_links_cache.json` → nginx-мапа 301
+  `/ua/p{prom_id}-*.html` → `/product-{toysi_id}.html`, щоб при перенесенні домену з Prom на VPS не пропала
+  видимість у Google Merchant (старі Prom-URL з фіда не впали в 404).
   **Ще НЕ активовано як VPS-юніти** (одноразовий `systemctl enable` + nginx/TLS + LiqPay-компанія — тому не в §2Б/§6;
   після активації дописати туди ОБИДВА персистентні юніти — `site-order-api` (daemon) і `site-rebuild.timer` — drift-check це підкаже).
   → Код (механіка) + SMM (дизайн) + власник (LiqPay + активація).

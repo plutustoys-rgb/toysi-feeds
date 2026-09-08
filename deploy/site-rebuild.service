@@ -9,4 +9,8 @@ WorkingDirectory=/opt/plutustoys
 # venv-python (CLAUDE.md); build_site.py оновлює site/*.html + index.json + sitemap.xml.
 # site_order_api сам підхоплює новий index.json (price_map кеш по mtime) — рестарт не потрібен.
 ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site/build_site.py
+# оновити 301-мапу старих Prom-URL (GMC) і перечитати nginx, щоб підхопив нові редиректи.
+# '-' → не-фатально: збій цих кроків не валить ребілд сайту.
+ExecStartPost=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/generate_prom_redirects.py
+ExecStartPost=-/bin/systemctl reload nginx
 Nice=10

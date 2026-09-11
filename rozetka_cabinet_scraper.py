@@ -33,6 +33,7 @@ import argparse
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -126,16 +127,24 @@ def _block_count(text: str, label: str):
 
 
 def read_cabinet(page) -> dict:
-    page.goto(CABINET_URL, timeout=NAV_TIMEOUT_MS)
-    page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+    # domcontentloaded, НЕ networkidle: SPA-кабінет Rozetka не «затихає» (телеметрія) → networkidle
+    # майже не настає за 30с → хибний Timeout (мітився як «сесія протухла»). Реальний сигнал —
+    # поява статус-лічильників, які Angular домальовує ПІСЛЯ завантаження (полінг нижче).
+    page.goto(CABINET_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
     if "/main" not in page.url and "cabinet" not in page.url:
         raise RozetkaCabinetError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
-    text = page.inner_text("body")
-    status = {k: _status_count(text, lbl) for k, lbl in STATUS_LABELS.items()}
-    blocks = {k: _block_count(text, lbl) for k, lbl in BLOCK_LABELS.items()}
+    deadline = time.time() + NAV_TIMEOUT_MS / 1000
+    text, status = "", {}
+    while time.time() < deadline:
+        text = page.inner_text("body")
+        status = {k: _status_count(text, lbl) for k, lbl in STATUS_LABELS.items()}
+        if any(v is not None for v in status.values()):
+            break
+        page.wait_for_timeout(300)
     if all(v is None for v in status.values()):
         raise RozetkaCabinetError("на /main/cabinet не знайдено жодного статус-лічильника "
                                   "(сесія протухла або змінилась верстка)")
+    blocks = {k: _block_count(text, lbl) for k, lbl in BLOCK_LABELS.items()}
     return {"status": status, "blocks": blocks}
 
 

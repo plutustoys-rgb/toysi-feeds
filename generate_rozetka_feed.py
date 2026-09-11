@@ -172,6 +172,32 @@ ROZETKA_STATIC_SELECTION_FILE = Path(__file__).parent / "rozetka_static_selectio
 # (Toysi vendor трапляється і як "Wader", і як "WADER").
 ROZETKA_BRAND_STOP_LIST = {"wader"}
 
+# ВИПРАВЛЕНО (2026-09-11, претензія Mattel на ТМ «UNO» через Rozetka, дедлайн
+# 15.09.2026, запит SEO): Mattel володіє торговою маркою «UNO». Треті бренди
+# (MiC, Enfant, Strateg тощо) продають власні картярські ігри з «UNO»/«УНО» в
+# назві — Rozetka на вимогу правовласника блокує/знімає такі позиції. Рішення:
+# виключати з фіда Rozetka будь-який товар, чия <name> містить «uno»/«уно» як
+# ЦІЛЕ СЛОВО, ЯКЩО vendor не сам правовласник. Ці SKU й далі йдуть на Prom без
+# змін (там окремої претензії нема — фільтр стосується ЛИШЕ Rozetka-фіда).
+#
+# Whole-word (\b), НЕ підрядок — щоб НЕ зачепити легітимні назви, де «уно»/«uno»
+# лише частина слова: «КапиУНО»/«capiuno» (id 292041), «УНА Семейная» (id 247475,
+# це «уна», не «уно»). У Python 3 \b/\w для str за замовчуванням Unicode-aware,
+# тож межа слова коректно спрацьовує і на кирилиці. Латиниця й кирилиця обидві
+# покриті (товари трапляються в обох написаннях).
+ROZETKA_TRADEMARK_UNO_RE = re.compile(r"\b(?:uno|уно)\b", re.IGNORECASE)
+# Вендори-правовласники, яким «UNO» в назві дозволено (офіційний товар Mattel).
+ROZETKA_TRADEMARK_UNO_ALLOWED_VENDORS = {"mattel"}
+
+
+def _is_uno_trademark_blocked(name: str, vendor: str) -> bool:
+    """True, якщо назва містить «uno»/«уно» цілим словом І vendor не правовласник
+    (Mattel) → виключити з Rozetka-фіда за претензією ТМ. Порожня назва/vendor —
+    не блокуємо (нема на що спиратись). Регістр ігнорується."""
+    if not ROZETKA_TRADEMARK_UNO_RE.search(name or ""):
+        return False
+    return (vendor or "").strip().lower() not in ROZETKA_TRADEMARK_UNO_ALLOWED_VENDORS
+
 # ВИПРАВЛЕНО (2026-07-15, знайдено валідатором Rozetka: попередження на
 # категорію "Рюкзаки", 52 товари) — Toysi category_id 98923. На відміну
 # від бренду вище, тут НЕМАЄ підтвердженої дозволеної альтернативи (не
@@ -364,6 +390,9 @@ def _qualifies_for_feed(item: dict, excluded: set) -> bool:
     if not vendor:
         return False
     if vendor.lower() in ROZETKA_BRAND_STOP_LIST:
+        return False
+    # ТМ «UNO» Mattel (2026-09-11): «uno»/«уно» цілим словом + vendor не Mattel → виключити.
+    if _is_uno_trademark_blocked(item.get("name") or "", vendor):
         return False
     pictures = [p for p in item.get("pictures", []) if p.startswith("https://")][:ROZETKA_MAX_PICTURES]
     if not pictures:
@@ -673,6 +702,13 @@ def _build_xml(
         # (стоп-лист, не помилка даних). Рішення власниці: виключити з
         # фіда Rozetka повністю, ці SKU й далі йдуть на Prom без змін.
         if vendor.lower() in ROZETKA_BRAND_STOP_LIST:
+            skipped_stop_brand += 1
+            continue
+
+        # ТМ «UNO» Mattel (2026-09-11, претензія через Rozetka, дедлайн 15.09, запит SEO):
+        # «uno»/«уно» цілим словом у назві + vendor не правовласник → виключити з Rozetka-фіда.
+        # Той самий гейт, що в _qualifies_for_feed вище (ОБИДВА місця — фільтри дубльовані).
+        if _is_uno_trademark_blocked(item.get("name") or "", vendor):
             skipped_stop_brand += 1
             continue
 

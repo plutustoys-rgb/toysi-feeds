@@ -63,6 +63,15 @@ export GIT_SSH_COMMAND="ssh -i /opt/plutustoys/.ssh_deploy_pull/deploy_key -o St
 set -e
 cd /opt/plutustoys
 
+# venv у PATH (2026-09-11): скрипт кличе голий `python3` (усі кроки нижче). systemd-таймер
+# (feed-pipeline.timer) має PATH з venv через юніт і працює, АЛЕ РУЧНИЙ запуск через ssh
+# успадковує системний PATH без venv → `python3` = системний інтерпретатор без залежностей
+# (`ModuleNotFoundError: No module named 'dotenv'`), і ВЕСЬ пайплайн падає (реальний інцидент
+# 2026-09-11: власник запустив вручну — усі генератори + репрайсер + топ-фід провалились,
+# фід не перезібрано). Явний експорт робить скрипт самодостатнім у БУДЬ-ЯКОМУ середовищі
+# (той самий принцип, що вимога venv-python для .service у CLAUDE.md).
+export PATH="/opt/plutustoys/venv/bin:$PATH"
+
 echo "[FeedPipeline] $(date -u +'%Y-%m-%d %H:%M UTC') — старт повного циклу."
 
 FAIL_REASON=""

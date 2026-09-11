@@ -54,6 +54,7 @@ CABINET_URL = "https://seller.rozetka.com.ua/main/cabinet"
 LOGIN_START_URL = "https://seller.rozetka.com.ua/"
 API = "https://cabinet-seller.rozetka.com.ua"
 NAV_TIMEOUT_MS = 30000
+AUTH_WAIT_MS = 20000    # скільки чекати перехоплення auth-заголовка після domcontentloaded (реальний сигнал готовності)
 API_TIMEOUT_MS = 45000
 API_RETRIES = 3
 PAGE_SIZE = 100
@@ -98,8 +99,14 @@ def _open_cabinet(page, cap: dict) -> None:
             if a and "auth" not in cap:
                 cap["auth"] = a
     page.on("request", on_req)
-    page.goto(CABINET_URL, timeout=NAV_TIMEOUT_MS)
-    page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+    # domcontentloaded, НЕ networkidle: SPA-кабінет Rozetka безперервно полить телеметрію/аналітику,
+    # тож networkidle майже не настає за 30с → ІНТЕРМІТЕНТНИЙ хибний Timeout, який код мітив як
+    # «сесія протухла» (хоча keepalive її щоцикл рефрешить). Playwright сам не радить networkidle.
+    # Реальний сигнал «кабінет ожив під валідною сесією» = перехоплений auth-заголовок застосунку.
+    page.goto(CABINET_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+    deadline = time.time() + AUTH_WAIT_MS / 1000
+    while not cap.get("auth") and time.time() < deadline:
+        page.wait_for_timeout(250)   # пампимо event-loop, щоб спрацював on_req-перехоплювач
     if "cabinet" not in page.url and "/main" not in page.url:
         raise RozetkaSessionError(f"сесію не прийнято — редірект на {page.url}")
     if not cap.get("auth"):
@@ -211,9 +218,16 @@ def _with_session(fn):
             result = fn(page, cap["auth"])
             ctx.storage_state(path=str(STATE_FILE))  # оновлений (рефрешнутий) стан
             return result
-        except (PlaywrightTimeoutError, RozetkaSessionError) as e:
-            msg = f"🚨 rozetka_price_monitor: сесія протухла/збій ({e}). Перелогінься: `--login`."
+        except RozetkaSessionError as e:
+            # РЕАЛЬНЕ протухання: редірект на логін / нема auth-заголовка → потрібен --login.
+            msg = f"🚨 rozetka_price_monitor: сесія протухла ({e}). Перелогінься: `--login`."
             print(f"[RzPrice] {msg}", file=sys.stderr); _notify(msg); sys.exit(1)
+        except PlaywrightTimeoutError as e:
+            # ТИМЧАСОВИЙ мережевий таймаут (не сесія — keepalive її щоцикл рефрешить). НЕ проси
+            # перелогінюватись (хибний алярм). Наступний цикл повторить; при стійких таймаутах
+            # окремий сигнал каже правду — «ендпоінт лежить», без інструкції --login.
+            msg = f"⚠️ rozetka_price_monitor: тимчасовий таймаут ({e}) — дані не оновлено цього циклу; сесія жива."
+            print(f"[RzPrice] {msg}", file=sys.stderr); _notify(msg); sys.exit(2)
         finally:
             try:
                 browser.close()

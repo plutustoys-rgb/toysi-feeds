@@ -139,8 +139,10 @@ def _parse_amount(text: str):
 
 
 def _read_table(page, url: str) -> list:
-    page.goto(url, timeout=NAV_TIMEOUT_MS)
-    page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+    # domcontentloaded, НЕ networkidle: SPA-кабінет Rozetka не «затихає» (телеметрія) → networkidle
+    # майже не настає за 30с → хибний Timeout. Тут networkidle був ЗАЙВИЙ — реальний сигнал готовності
+    # це wait_for_selector('table tbody tr') нижче.
+    page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
     if "/login" in page.url or "/main" not in page.url:
         raise RozetkaCommissionError(f"сесію не прийнято — редірект на {page.url} (треба --login)")
     page.wait_for_selector("table tbody tr", timeout=NAV_TIMEOUT_MS)

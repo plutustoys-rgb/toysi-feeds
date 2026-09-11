@@ -846,7 +846,17 @@ CIRCUIT_BREAKER_MAX_DELIST_FRACTION = 0.15
 # бэклог (324), лишаючись на порядок нижче за 722, що спричинило обвал
 # каталогу 970→244. ОДИН контрольований прогін — повернути назад до 250
 # одразу після (той самий патерн, що й 750->150 2026-07-19).
-MAX_DELIST_PER_RUN = 350
+#
+# ЗМІНЕНО НА КАП, НЕ БЛОК (2026-09-11, пряме рішення власника — перехід
+# Prom на звичайний тариф, PR #503: «каталог буде просідати, але треба
+# видалення не більше 250 но не блокування»). Раніше перевищення цього
+# ліміту БЛОКУВАЛО ВСІ видалення (нуль) — на повній комісії частка delist
+# регулярно перевищуватиме поріг, і блок лишав би неконкурентні/збиткові
+# позиції живими. Тепер: знімаємо найгірші (до) MAX_DELIST_PER_RUN за
+# прогін, решту ВІДКЛАДАЄМО на наступний прогін (їхня ціна вже піднята до
+# безпечного флору → не збиткові поки чекають). Видалення НІКОЛИ не
+# блокується до нуля. Повернено до 250 (з 350).
+MAX_DELIST_PER_RUN = 250
 
 EDIT_BATCH = 100  # POST /products/edit_by_external_id, як і в prom_catalog_sync.py
 
@@ -2280,7 +2290,7 @@ def main() -> None:
         print(f"[Pricer] Circuit breaker (delist): СПРАЦЮВАВ: {'; '.join(delist_breaker_reasons)}")
     if hard_cap_tripped:
         print(f"[Pricer] MAX_DELIST_PER_RUN: {len(to_delist)} > {MAX_DELIST_PER_RUN} — "
-              "жорсткий ліміт, --force-circuit-breaker його НЕ обходить.")
+              f"КАП (не блок): знімаємо {MAX_DELIST_PER_RUN} найгірших, решту відкладаємо на наступний прогін.")
 
     # ВИПРАВЛЕНО (2026-07-21, пряме прохання власниці — "чому блокувалось
     # ПОВНА кількість... а не пропускав дозволену, а інші залишав"):
@@ -2295,7 +2305,12 @@ def main() -> None:
     # з to_adjust). --force-circuit-breaker обходить ОБИДВА (як і раніше,
     # це свідомий, разовий override для власниці) — MAX_DELIST_PER_RUN
     # і надалі НЕ обходиться нічим, окрім прямої зміни коду.
-    delist_blocked = hard_cap_tripped or (bool(delist_breaker_reasons) and not args.force_circuit_breaker)
+    # ЗМІНЕНО (2026-09-11, рішення власника — див. коментар біля MAX_DELIST_PER_RUN):
+    # видалення БІЛЬШЕ НЕ БЛОКУЄТЬСЯ. Замість блокувати все при перевищенні ліміту/частки,
+    # цикл видалення нижче КАПИТЬ на MAX_DELIST_PER_RUN (знімає найгірші, решту відкладає).
+    # hard_cap_tripped/delist_breaker_reasons лишаються ЛИШЕ як інформаційний сигнал (Telegram/лог),
+    # не як блокер (тому окремої змінної delist_blocked більше нема). adjust-кошик (коригування
+    # ЦІНИ) гейтується як і раніше — його власник не чіпав.
     adjust_blocked = bool(adjust_breaker_reasons) and not args.force_circuit_breaker
 
     if not args.apply:
@@ -2314,13 +2329,13 @@ def main() -> None:
             )
         if hard_cap_tripped:
             digest += (
-                f"\n\n⛔ ЖОРСТКИЙ ЛІМІТ MAX_DELIST_PER_RUN ({MAX_DELIST_PER_RUN}) ЗУПИНИВ БИ видалення "
-                f"({len(to_delist)} на видалення) — цей ліміт --force-circuit-breaker НЕ обходить, "
-                "потрібна пряма зміна коду."
+                f"\n\nℹ️ КАП MAX_DELIST_PER_RUN ({MAX_DELIST_PER_RUN}): цього прогону зняли б {MAX_DELIST_PER_RUN} "
+                f"найнеконкурентніших з {len(to_delist)}, решту ({len(to_delist) - MAX_DELIST_PER_RUN}) відклали б "
+                "на наступний прогін (не блокування)."
             )
         elif delist_breaker_reasons:
             digest += (
-                f"\n\n🚨 CIRCUIT BREAKER (delist) ЗУПИНИВ БИ видалення: " + "; ".join(delist_breaker_reasons)
+                f"\n\nℹ️ Сигнал масштабу delist (не блокує, кап {MAX_DELIST_PER_RUN}): " + "; ".join(delist_breaker_reasons)
             )
         digest += "\n\n(--apply не вмикався, це лише пропозиція)"
         send_telegram_message(digest)
@@ -2329,7 +2344,7 @@ def main() -> None:
             + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply."
                + default_commission_category_detail if default_commission_skipped else "")
             + (f" Circuit breaker (adjust) СПРАЦЮВАВ БИ: {'; '.join(adjust_breaker_reasons)}" if adjust_blocked else "")
-            + (f" Circuit breaker (delist) СПРАЦЮВАВ БИ: {'; '.join(delist_breaker_reasons)}" if (delist_breaker_reasons and not hard_cap_tripped) else ""),
+            + (f" Delist капіровано б на {MAX_DELIST_PER_RUN} (відкладено {len(to_delist) - MAX_DELIST_PER_RUN})" if hard_cap_tripped else ""),
             checked=len(items), adjust=adjust_count, delist=delist_count,
             no_competitor=no_competitor_count, errors=0,
         )
@@ -2351,28 +2366,21 @@ def main() -> None:
         print(f"[Pricer] {len(feed_only_price_updates)} SKU на непідтвердженій комісії — "
               "ціна оновлена лише в price_state для фіда (без прямого API-патчу).")
 
-    if delist_blocked and to_delist:
-        if hard_cap_tripped:
-            message = (
-                f"🚨 prom_competitor_pricer.py --apply: видалення ЗУПИНЕНО жорстким лімітом "
-                f"MAX_DELIST_PER_RUN ({len(to_delist)} > {MAX_DELIST_PER_RUN}).\n\n"
-                "Цей ліміт НЕ обходиться --force-circuit-breaker навмисно — після інциденту "
-                "2026-07-19 (обвал каталогу Prom з ~970 до ~244 живих товарів через 722 "
-                "видалення за один прогін; Prom видаляє миттєво, але створює заміну значно "
-                "повільніше). Якщо видалення такого масштабу дійсно виправдане — потрібна "
-                "пряма зміна MAX_DELIST_PER_RUN у коді (новий PR, новий аудит), не прапорець "
-                "командного рядка."
-            )
-        else:
-            message = (
-                "🚨 prom_competitor_pricer.py --apply: видалення ЗУПИНЕНО circuit breaker'ом (P0-3):\n\n"
-                + "\n".join(f"- {r}" for r in delist_breaker_reasons)
-                + "\n\nПеревір вручну і, якщо видалення дійсно виправдані, перезапусти з "
-                  "--force-circuit-breaker."
-            )
-        message += f"\n\nКоригування ціни (to_adjust, {len(to_adjust)} шт.) НЕ заблоковано — обробляються нижче незалежно."
+    # ІНФОРМАЦІЙНИЙ алерт про КАП (не блокування, 2026-09-11): якщо видалень більше за ліміт —
+    # знімаємо MAX_DELIST_PER_RUN найгірших цього прогону, решту відкладаємо (їхня ціна вже піднята
+    # до безпечного флору). Кап на порядок нижче за 722, що спричинило обвал 970→244 (2026-07-19).
+    if hard_cap_tripped and to_delist:
+        message = (
+            f"ℹ️ prom_competitor_pricer.py --apply: delist КАПІРОВАНО на {MAX_DELIST_PER_RUN} "
+            f"(кандидатів {len(to_delist)}, відкладено {len(to_delist) - MAX_DELIST_PER_RUN} на наступний прогін).\n\n"
+            "Знімаємо найнеконкурентніші першими; відкладені лишаються живими з ціною, піднятою до "
+            "безпечного флору (не збиткові). Кап захищає від обвалу каталогу (пор. 722 → 970→244, 2026-07-19)."
+        )
         print(f"\n[Pricer] {message}", file=sys.stderr)
         send_telegram_message(message)
+    elif delist_breaker_reasons and to_delist:
+        # Частка delist висока — лише сигнал, НЕ блок (кап нижче й так бортує масштаб).
+        print(f"[Pricer] ℹ️ Сигнал масштабу delist (не блокує): {'; '.join(delist_breaker_reasons)}", file=sys.stderr)
 
     if adjust_blocked and to_adjust:
         message = (
@@ -2380,8 +2388,8 @@ def main() -> None:
             + "\n".join(f"- {r}" for r in adjust_breaker_reasons)
             + "\n\nПеревір вручну і, якщо зміни дійсно виправдані, перезапусти з "
               "--force-circuit-breaker.\n\n"
-            f"Видалення (to_delist, {len(to_delist)} шт.) НЕ заблоковано цим сигналом — "
-            "обробляються нижче незалежно (якщо не заблоковані окремо)."
+            f"Видалення (to_delist, {len(to_delist)} шт.) НЕ заблоковано — капіруються на "
+            f"{MAX_DELIST_PER_RUN}/прогін незалежно."
         )
         print(f"\n[Pricer] {message}", file=sys.stderr)
         send_telegram_message(message)
@@ -2395,9 +2403,11 @@ def main() -> None:
         )
         return
 
-    if adjust_blocked and delist_blocked:
+    # delist_blocked більше не існує як блок (кап у циклі). Виходимо лише якщо коригування
+    # заблоковано І видаляти нема чого — тоді цей прогін справді нічого не застосує.
+    if adjust_blocked and not to_delist:
         write_pricer_summary(
-            "🚨 --apply: І коригування ціни, І видалення заблоковано (див. Telegram). Нічого не застосовано.",
+            "🚨 --apply: коригування ціни заблоковано circuit breaker'ом, видаляти нема чого. Нічого не застосовано.",
             checked=len(items), adjust=adjust_count, delist=delist_count,
             no_competitor=no_competitor_count, errors=0,
         )
@@ -2483,10 +2493,18 @@ def main() -> None:
     # доки вони не з'являться в to_adjust вище (конкурент подешевшав чи
     # зник) — лише тоді запис прибирається і SKU знову претендує на топ.
     confirmed_delist_count = 0
-    print(f"[Pricer] Видаляю {0 if delist_blocked else len(to_delist)} неконкурентних товарів..."
-          + (" (ЗАБЛОКОВАНО)" if delist_blocked else "")
-          + f" Спершу піднімаю ціну до безпечної межі для всіх {len(to_delist)} — "
-            "незалежно від circuit breaker чи успіху самого видалення.")
+    # КАП, НЕ БЛОК (2026-09-11, рішення власника): знімаємо найгірші (до) MAX_DELIST_PER_RUN
+    # за прогін. Сортуємо to_delist так, щоб найнеконкурентніші (найбільший розрив нашої ціни
+    # над ринком, price/competitor_price) йшли ПЕРШИМИ й потрапили в кап; менш критичні —
+    # відкладаються на наступний прогін. Ціна ВСІХ to_delist однаково піднімається до безпечного
+    # флору нижче (захист маржі не залежить від того, чи товар знято цього прогону).
+    to_delist.sort(key=lambda t: (t[1] / t[5]) if t[5] else 0.0, reverse=True)
+    delist_cap = min(len(to_delist), MAX_DELIST_PER_RUN)
+    deferred_delist = max(0, len(to_delist) - delist_cap)
+    print(f"[Pricer] Видаляю до {delist_cap} з {len(to_delist)} неконкурентних "
+          f"(кап MAX_DELIST_PER_RUN={MAX_DELIST_PER_RUN}"
+          + (f", відкладено {deferred_delist} на наступний прогін" if deferred_delist else "")
+          + "). Спершу піднімаю ціну до безпечної межі для ВСІХ — незалежно від капу чи успіху видалення.")
     for pid, price, margin_pct, competitor_key, category, competitor_price, cost in to_delist:
         if str(pid) in _promo_frozen_pids:
             _promo_frozen_skipped += 1
@@ -2513,7 +2531,9 @@ def main() -> None:
             error_count += 1
             print(f"  - {pid}: помилка підняття ціни перед видаленням — {e}", file=sys.stderr)
 
-        if delist_blocked:
+        # КАП замість блоку: досягли ліміту цього прогону — ціну вже піднято (не збиткові),
+        # саме видалення відкладаємо на наступний прогін. НЕ блокуємо до нуля.
+        if confirmed_delist_count >= delist_cap:
             continue
         try:
             delist(pid)
@@ -2524,10 +2544,14 @@ def main() -> None:
             print(f"  - {pid}: помилка видалення — {e}", file=sys.stderr)
     save_prom_price_state(price_state)
 
-    if not delist_blocked and confirmed_delist_count != len(to_delist):
+    # Порівнюємо з КАПОМ цього прогону (delist_cap), а не з повним len(to_delist): різниця
+    # len−cap — навмисне відкладення на наступний прогін, НЕ збій. Менше за кап (мінус
+    # промо-заморожені/часовий бюджет) = реальні збої processed_ids.
+    if confirmed_delist_count < delist_cap:
         print(
-            f"[Pricer] УВАГА: підтверджено видалено {confirmed_delist_count} з {len(to_delist)} "
-            "запланованих — решта не пройшла перевірку processed_ids (див. помилки вище).",
+            f"[Pricer] УВАГА: підтверджено видалено {confirmed_delist_count} з {delist_cap} "
+            "запланованих цього прогону — решта не пройшла перевірку processed_ids "
+            "(або промо-заморозка/часовий бюджет; див. помилки вище).",
             file=sys.stderr,
         )
 
@@ -2538,23 +2562,24 @@ def main() -> None:
     digest = (
         f"💰 prom_competitor_pricer.py --apply: скориговано цін — "
         f"{'0 (ЗАБЛОКОВАНО circuit breaker)' if adjust_blocked else applied_count}, "
-        f"видалено як неконкурентні — "
-        f"{'0 (ЗАБЛОКОВАНО)' if delist_blocked else confirmed_delist_count} товарів"
+        f"видалено як неконкурентні — {confirmed_delist_count} товарів"
+        + (f" (кап {MAX_DELIST_PER_RUN}, відкладено {deferred_delist} на наступний прогін)" if deferred_delist else "")
         + (f", виключено через непідтверджену комісію — {len(default_commission_skipped)}" if default_commission_skipped else "")
         + f". Помилок: {error_count}."
     )
     send_telegram_message(digest)
     write_pricer_summary(
         "Режим: --apply"
-        + (" (частково заблоковано circuit breaker'ом — див. Telegram)." if (adjust_blocked or delist_blocked) else " (реальні зміни застосовано).")
+        + (" (коригування ціни заблоковано circuit breaker'ом — див. Telegram)." if adjust_blocked else " (реальні зміни застосовано).")
         + " Ротаційна партія оброблена."
+        + (f" Delist капіровано на {MAX_DELIST_PER_RUN}, відкладено {deferred_delist}." if deferred_delist else "")
         + (f" {len(default_commission_skipped)} SKU на дефолтній комісії виключено з auto-apply."
            + default_commission_category_detail if default_commission_skipped else ""),
         checked=len(items), adjust=(0 if adjust_blocked else applied_count),
-        delist=(0 if delist_blocked else confirmed_delist_count),
+        delist=confirmed_delist_count,
         no_competitor=no_competitor_count, errors=error_count,
     )
-    if adjust_blocked or delist_blocked:
+    if adjust_blocked:
         sys.exit(1)
 
 

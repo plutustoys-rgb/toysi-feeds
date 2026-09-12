@@ -70,6 +70,13 @@ try {
 #       graph-9 candidates cross-referenced with the book (READ-ONLY). Candidates only, never the book.
 & $py rozetkapay_registry_kandydaty.py
 
+# 3c-4. NovaPay COD registry -> KODV book candidates (accountant request 2026-09-12: EVA order
+#       8-080364562 sat unnoticed in the archive for days). novapay_statement.py already reconciles
+#       vs orders_db on VPS, but the bookkeeper needs a candidate file checked vs the BOOK (local),
+#       which VPS can't reach. Reuses novapay_statement.parse_registry_xlsx; reads archived
+#       документи_КОДВ/*/NovaPay/*.XLSX, flags payments NOT in the book (READ-ONLY). Candidates only.
+& $py novapay_registry_kandydaty.py
+
 # 3d. Prom notifications (top of /cms/notifications, money signals). One-time: `--login`.
 & $py prom_notifications_scraper.py
 

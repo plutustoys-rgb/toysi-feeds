@@ -99,7 +99,7 @@ def _headers() -> dict:
 # ---- Чисті, тестовані функції (без мережі) --------------------------------
 
 def build_review_body(order: dict) -> str | None:
-    """ТОВАРНИЙ відгук (наступного дня) — посилання по кожному товару з Prom-`id`.
+    """ТОВАРНИЙ відгук (через 3 дні) — посилання по кожному товару з Prom-`id`.
     None, якщо ЖОДНОГО товару з id (усі делістнуті) — тоді товарний етап пропускаємо:
     компанійський запит уже пішов при отриманні (окремий етап), дублювати нема сенсу."""
     urls = [REVIEW_URL_TEMPLATE.format(pid=p["id"]) for p in (order.get("products") or []) if p.get("id")]
@@ -145,7 +145,7 @@ def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED,
     ~30-денним вікном відгуку Prom send_order_context дає «Order not found»).
     Вікно товарного етапу тепер [7 днів … 3 дні тому] — 4-денне, робоче."""
     now = now or datetime.now()
-    upper = (now - timedelta(hours=min_hours)).isoformat(timespec="seconds")   # не свіжіше 24г
+    upper = (now - timedelta(hours=min_hours)).isoformat(timespec="seconds")   # не свіжіше 72г (3 дні)
     lower = (now - timedelta(days=max_days)).isoformat(timespec="seconds")     # не старіше 7 днів
     rows = conn.execute(
         "SELECT * FROM orders "
@@ -265,7 +265,7 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
     stats = {"eligible": 0, "sent": 0, "skipped_no_products": 0, "errors": 0}
     with get_connection() as conn:
         # Два етапи (рішення власника 2026-08-21): КОМПАНІЙСЬКИЙ — у момент отримання (0 год);
-        # ТОВАРНИЙ — наступного дня (≥24 год). Окремі мітки, тож не заважають один одному.
+        # ТОВАРНИЙ — через 3 дні (≥72 год). Окремі мітки, тож не заважають один одному.
         company = select_company_eligible(conn)
         product = select_eligible(conn, min_hours=min_hours)
         stats["eligible"] = len(company) + len(product)
@@ -274,7 +274,7 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
             return stats
         mode = "DRY-RUN (нічого не шлю)" if dry_run else "SEND (реальна відправка)"
         print(f"[ReviewReq] {mode}. Компанійських (при отриманні): {len(company)}, "
-              f"товарних (наступного дня): {len(product)}.\n")
+              f"товарних (через 3 дні): {len(product)}.\n")
         _process_stage(conn, company, build_company_body, mark_company_sent, "компанія", dry_run, stats)
         _process_stage(conn, product, build_review_body, mark_sent, "товар", dry_run, stats)
 

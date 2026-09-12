@@ -135,10 +135,14 @@ def collect(rows: list) -> tuple:
         return [], this_batch
 
     candidates = []
+    seen_this_run = set()  # intra-run дедуп: той самий реєстр буває заархівований у двох теках
     for r in rows:
         ttn = str(r.get("ttn") or "").strip()
         if ttn and ttn in seen:
-            continue  # вже бачили
+            continue  # вже бачили (між прогонами, курсор)
+        if ttn and ttn in seen_this_run:
+            continue  # уже додано цього ж прогону (дубль-реєстр) — не подвоюємо
+        seen_this_run.add(ttn)
         plat, order = _bare_order(r.get("internal_order_id") or "")
         book = _book_has(order, ttn)
         if book:

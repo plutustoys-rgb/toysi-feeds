@@ -110,7 +110,9 @@ def _parse_registry(path: Path) -> list:
 
 
 def _lookup_book_row(order_id: str) -> dict:
-    """READ-ONLY: шукає '№<order_id>' у графі 5 (колонка E) книги КОДВ. {row, current_i9} або {}.
+    """READ-ONLY: шукає '№<order_id>' у графі 5 (колонка E) книги КОДВ. {row, current_i9, e_text} або {}.
+    `e_text` — повний текст графи 5 (містить назву платформи «Rozetka»/«Prom.ua» — джерело для
+    визначення маркетплейсу, бо в самому реєстрі project='[FC_Acquiring]' і платформу не розрізняє).
     Книгу НЕ пише — графу пише лише роль «бухгалтер» (правило власника)."""
     if not order_id or not KODV_XLSX.exists():
         return {}
@@ -122,10 +124,22 @@ def _lookup_book_row(order_id: str) -> dict:
         for row in ws.iter_rows(min_row=7):
             e = row[4].value if len(row) > 4 else None
             if e and needle in str(e):
-                return {"row": row[4].row, "current_i9": row[8].value if len(row) > 8 else None}
+                return {"row": row[4].row, "current_i9": row[8].value if len(row) > 8 else None,
+                        "e_text": str(e)}
     except Exception as e:  # noqa: BLE001
         print(f"[RzPayReg] крос-звірка з книгою не вдалась (не критично): {e}", file=sys.stderr)
     return {}
+
+
+def _book_marketplace(book: dict) -> str:
+    """Маркетплейс за текстом графи 5 книги (авторитетне джерело, бо реєстр не розрізняє).
+    'Rozetka' / 'Prom' / '?' (нема запису в книзі чи не впізнано)."""
+    t = (book.get("e_text") or "").lower()
+    if "rozetka" in t:
+        return "Rozetka"
+    if "prom" in t:
+        return "Prom"
+    return "?"
 
 
 def _is_storno(row: dict) -> bool:
@@ -165,17 +179,52 @@ def collect(rows: list) -> tuple:
             candidates.append({
                 "kind": "storno",
                 "order_id": oid,
-                "marketplace": _marketplace(r),
+                "marketplace": _book_marketplace(book) if book else _marketplace(r),
                 "date": r["date_pay"] or r["date_transfer"],
                 "sum": r["sum"],
                 "commission_returned": r["commission"],
                 "book_row": book.get("row"),
                 "book_current_i9": book.get("current_i9"),
-                "note": (f"СТОРНО: банк повернув оплату замовлення {oid} ({_marketplace(r)}) "
+                "note": (f"СТОРНО: банк повернув оплату замовлення {oid} "
                          f"на {r['date_pay']}, сума {r['sum']}, комісія повернена {r['commission']}. "
                          + (f"У книзі рядок {book['row']} — перевір графу 5/6 (дохід міг лишитись повним)."
                             if book else "У книзі замовлення не знайдено — можливо, ще не внесено.")),
             })
+            continue
+
+        # ГІЛКА «ЕКВАЙРИНГ-ЧАСТИНА ГРАФИ 9» (запит КОДВ 2026-09-11/12, друга обіцяна докстрінгом
+        # гілка). Платіж (не сторно) FC/RozetkaPay-еквайрингу: банк утримав комісію еквайрингу |E|,
+        # яка для Rozetka має докластись до роялті в графі 9 книги.
+        book = _lookup_book_row(oid)
+        mkt = _book_marketplace(book)
+        # Prom, уже в книзі: комісію/еквайринг у графі 9 веде окремий prom_commission_ledger.py —
+        # не дублюємо (щоб не плодити шум). Rozetka АБО ще-не-в-книзі (саме ті, що «губились» —
+        # нове замовлення не потрапляло в жоден кандидат-файл) — генеруємо кандидата.
+        if mkt == "Prom" and book:
+            continue
+        acq = abs(r["commission"]) if isinstance(r["commission"], (int, float)) else r["commission"]
+        i9 = book.get("current_i9")
+        if not book:
+            note = (f"ЕКВАЙРИНГ: платіж {oid} ({mkt}) на {r['date_pay']}, сума {r['sum']}, комісія "
+                    f"еквайрингу {acq}. У книзі замовлення НЕ знайдено — внеси й додай еквайринг-частину "
+                    f"в графу 9 (для Rozetka — роялті+еквайринг).")
+        else:
+            note = (f"ЕКВАЙРИНГ (Rozetka): замовлення {oid} на {r['date_pay']}, сума {r['sum']}, "
+                    f"еквайринг-частина графи 9 = {acq}. Поточна графа 9 (книга рядок {book['row']}) = "
+                    f"{i9}. Звір з ОЧІКУВАНОЮ сумою (роялті+еквайринг) — якщо i9 містить лише роялті, "
+                    f"доклади еквайринг {acq}; якщо вже повна — пропусти.")
+        candidates.append({
+            "kind": "acquiring",
+            "order_id": oid,
+            "marketplace": mkt,
+            "date": r["date_pay"] or r["date_transfer"],
+            "sum": r["sum"],
+            "acquiring": acq,
+            "in_book": bool(book),
+            "book_row": book.get("row"),
+            "book_current_i9": i9,
+            "note": note,
+        })
     return candidates, this_file
 
 
@@ -186,10 +235,17 @@ def _write_report(candidates: list, src: Path) -> Path:
     stamp = today.strftime("%Y-%m-%d")
     md = month_dir / f"{stamp}_rozetkapay_kandydaty.md"
     js = month_dir / f"{stamp}_rozetkapay_kandydaty.json"
+    n_storno = sum(1 for c in candidates if c.get("kind") == "storno")
+    n_acq = sum(1 for c in candidates if c.get("kind") == "acquiring")
     lines = [f"# RozetkaPay реєстр — кандидати (сторно/еквайринг), {today.strftime('%Y-%m-%d %H:%M')}", "",
-             f"Джерело: {src.name}", f"**Кандидатів: {len(candidates)}** (книгу НЕ чіпаю — це роль бухгалтера).", ""]
+             f"Джерело: {src.name}",
+             f"**Кандидатів: {len(candidates)}** (сторно {n_storno}, еквайринг {n_acq}; книгу НЕ чіпаю — це роль бухгалтера).", ""]
     for c in candidates:
-        lines.append(f"## 🔴 СТОРНО — замовлення {c['order_id']} ({c['marketplace']})")
+        if c.get("kind") == "storno":
+            lines.append(f"## 🔴 СТОРНО — замовлення {c['order_id']} ({c['marketplace']})")
+        else:
+            head = "еквайринг" if c.get("in_book") else "еквайринг, НЕ в книзі"
+            lines.append(f"## 💳 ЕКВАЙРИНГ (графа 9) — замовлення {c['order_id']} ({c['marketplace']}, {head})")
         lines.append(f"- {c['note']}")
         lines.append(f"- Книга: рядок {c['book_row']}, поточна графа 9 = {c['book_current_i9']}")
         lines.append("")
@@ -213,9 +269,11 @@ def main() -> int:
     candidates, this_file = collect(rows)
     if candidates:
         report = _write_report(candidates, src)
-        print(f"[RzPayReg] Кандидатів {len(candidates)} → {report}")
-        _notify(f"💳 RozetkaPay: {len(candidates)} СТОРНО-кандидат(ів) у реєстрі — книга може показувати "
-                f"повний дохід. Див. {report.name}")
+        n_storno = sum(1 for c in candidates if c.get("kind") == "storno")
+        n_acq = len(candidates) - n_storno
+        print(f"[RzPayReg] Кандидатів {len(candidates)} (сторно {n_storno}, еквайринг {n_acq}) → {report}")
+        _notify(f"💳 RozetkaPay: {len(candidates)} кандидат(ів) у реєстрі — сторно {n_storno}, "
+                f"еквайринг-графа9 {n_acq}. Перевір книгу. Див. {report.name}")
     else:
         print("[RzPayReg] Нових кандидатів немає.")
 

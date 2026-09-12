@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS orders (
     payment_confirmed     INTEGER NOT NULL DEFAULT 0,
     customer_name         TEXT,
     phone                 TEXT,
+    email                 TEXT,               -- опційний email покупця (лише web-замовлення сайту; накладений
+                                               -- платіж НП/маркетплейси email не дають — там NULL). Для листа-
+                                               -- підтвердження/відгуку сайту (SMM 2026-09-04: провести email через pipeline)
     np_branch             TEXT,
     items                 TEXT NOT NULL,      -- JSON: [{"toysi_code":.., "name":.., "qty":.., "price":..}, ...]
     created_at            TEXT NOT NULL,
@@ -326,6 +329,10 @@ def init_db(db_path: str = DB_PATH) -> None:
         # site_order_api звіряє її з сумою колбека LiqPay, щоб дрейф ціни в каталозі між checkout
         # і оплатою не провалював звірку реально оплаченого замовлення. Простий ADD COLUMN (не CHECK).
         _ensure_column(conn, "orders", "site_charged_total", "site_charged_total INTEGER")
+        # Email покупця (2026-09-12, задача SMM «провести email через order-pipeline»): опційний,
+        # лише web-замовлення сайту; checkout його збирає, але раніше він відкидався (у orders не було
+        # колонки). ADD COLUMN перед міграціями-перебудовами, щоб ті його зберегли.
+        _ensure_column(conn, "orders", "email", "email TEXT")
         # EVA як платформа (2026-07-31): додати 'eva' у CHECK(platform) на існуючих БД
         # (SQLite не ALTER-ить CHECK — перебудова таблиці). Викликається ПІСЛЯ
         # _ensure_column, щоб перебудова зберегла всі щойно додані колонки.
@@ -357,10 +364,10 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
         """
         INSERT INTO orders (
             internal_order_id, order_id, platform, status, payment_method,
-            payment_confirmed, customer_name, phone, np_branch, items,
+            payment_confirmed, customer_name, phone, email, np_branch, items,
             created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status,
             carrier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             internal_order_id,
@@ -371,6 +378,7 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             int(order.get("payment_confirmed", False)),
             order.get("customer_name"),
             order.get("phone"),
+            order.get("email"),
             order.get("np_branch"),
             json.dumps(order["items"], ensure_ascii=False),
             order.get("created_at") or datetime.now().isoformat(timespec="seconds"),

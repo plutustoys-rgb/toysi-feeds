@@ -124,6 +124,12 @@ def build_order(payload: dict) -> tuple:
     if not city or not warehouse:
         raise OrderError("Оберіть місто та відділення Нової Пошти")
 
+    # Email — ОПЦІЙНИЙ (рішення SMM: email опційне). Приймаємо, лише якщо схоже на валідний
+    # (@ + крапка в домені); інакше тихо None — не блокуємо замовлення через кривий необовʼязковий
+    # email. Зберігаємо в orders (колонка email) → далі для листа-підтвердження сайту.
+    email_raw = (payload.get("email") or "").strip()
+    email = email_raw if ("@" in email_raw and "." in email_raw.split("@")[-1]) else None
+
     order_id = "PT-" + time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
     order = {
         "order_id": order_id,
@@ -133,6 +139,7 @@ def build_order(payload: dict) -> tuple:
         "payment_confirmed": 0,
         "customer_name": name,
         "phone": phone,
+        "email": email,
         "np_branch": f"{city}, {warehouse}",   # order_router.parse_np_branch розбере при форварді
         "items": items,
         "carrier": "nova_poshta",

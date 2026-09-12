@@ -23,7 +23,8 @@ Prom іде лише на email, а наші покупці (накладени�
 не доходить — лишається 'shipped'):
   • КОМПАНІЙСЬКИЙ відгук — У МОМЕНТ отримання (0 год), поки не слався (`prom_company_review_sent_at
     IS NULL`). Лягає на весь магазин + тай-брейк ранжування — вартий кратно більше (оцінка SEO).
-  • ТОВАРНИЙ відгук — НАСТУПНОГО ДНЯ (≥24 год), поки не слався (`prom_review_request_sent_at IS NULL`).
+  • ТОВАРНИЙ відгук — ЧЕРЕЗ 3 ДНІ (≥72 год, рішення SMM 2026-09-04 — дитина має погратись перед
+    оцінкою товару), поки не слався (`prom_review_request_sent_at IS NULL`).
 Окремі мітки/тайминги, тож етапи не заважають один одному. Бэклог уже отриманих (у вікні max_days)
 підхопиться першим прогоном.
 
@@ -61,7 +62,10 @@ PROM_API_URL = "https://my.prom.ua/api/v1"
 REQUEST_TIMEOUT = 30
 MAX_BODY_LEN = 1000  # ліміт body у /chat/send_order_context
 
-MIN_HOURS_SINCE_DELIVERED = 24
+MIN_HOURS_SINCE_DELIVERED = 72  # ТОВАРНИЙ відгук — через 3 дні після видачі (рішення SMM
+# 2026-09-04): «день у день дитина фізично не встигла погратись — просимо думку про те, чого
+# людина ще не має». Було 24 (наступного дня). КОМПАНІЙСЬКИЙ відгук — окремий етап, лишається
+# миттєвим при отриманні (він формує рівень продавця; товарний — рейтинг товару, не рівень).
 # Верхня межа (рішення власника 2026-08-08): не слати по замовленнях, отриманих
 # давніше тижня. Дві причини: (1) свіжий запит доречніший; (2) старі замовлення поза
 # вікном відгуку Prom (~30 днів від дати замовлення) → send_order_context повертає
@@ -95,7 +99,7 @@ def _headers() -> dict:
 # ---- Чисті, тестовані функції (без мережі) --------------------------------
 
 def build_review_body(order: dict) -> str | None:
-    """ТОВАРНИЙ відгук (наступного дня) — посилання по кожному товару з Prom-`id`.
+    """ТОВАРНИЙ відгук (через 3 дні) — посилання по кожному товару з Prom-`id`.
     None, якщо ЖОДНОГО товару з id (усі делістнуті) — тоді товарний етап пропускаємо:
     компанійський запит уже пішов при отриманні (окремий етап), дублювати нема сенсу."""
     urls = [REVIEW_URL_TEMPLATE.format(pid=p["id"]) for p in (order.get("products") or []) if p.get("id")]
@@ -136,11 +140,12 @@ def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED,
     а видачу відображає саме `prom_delivered_pushed_at` (=НП «вручено»). Час мітки
     ≈ момент видачі.
 
-    Нижня межа `min_hours` (24г) — «наступного дня після отримання». Верхня
+    Нижня межа `min_hours` (72г) — «через 3 дні після отримання» (SMM 2026-09-04). Верхня
     `max_days` (7 днів) — не чіпати старі замовлення (свіжіший запит + поза
-    ~30-денним вікном відгуку Prom send_order_context дає «Order not found»)."""
+    ~30-денним вікном відгуку Prom send_order_context дає «Order not found»).
+    Вікно товарного етапу тепер [7 днів … 3 дні тому] — 4-денне, робоче."""
     now = now or datetime.now()
-    upper = (now - timedelta(hours=min_hours)).isoformat(timespec="seconds")   # не свіжіше 24г
+    upper = (now - timedelta(hours=min_hours)).isoformat(timespec="seconds")   # не свіжіше 72г (3 дні)
     lower = (now - timedelta(days=max_days)).isoformat(timespec="seconds")     # не старіше 7 днів
     rows = conn.execute(
         "SELECT * FROM orders "
@@ -156,7 +161,7 @@ def select_eligible(conn, min_hours: int = MIN_HOURS_SINCE_DELIVERED,
 
 def select_company_eligible(conn, max_days: int = MAX_DAYS_SINCE_DELIVERED, now: datetime = None) -> list:
     """Prom-замовлення, ОТРИМАНІ покупцем, яким КОМПАНІЙСЬКИЙ запит ще не слався — на відміну
-    від товарного, шлемо ОДРАЗУ при отриманні (БЕЗ 24-год нижньої межі). Верхня межа max_days —
+    від товарного (≥72 год), шлемо ОДРАЗУ при отриманні (БЕЗ нижньої межі часу). Верхня межа max_days —
     щоб на першому прогоні не завалити старий бек-лог і не вийти за ~30-денне вікно відгуку Prom."""
     now = now or datetime.now()
     lower = (now - timedelta(days=max_days)).isoformat(timespec="seconds")
@@ -260,7 +265,7 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
     stats = {"eligible": 0, "sent": 0, "skipped_no_products": 0, "errors": 0}
     with get_connection() as conn:
         # Два етапи (рішення власника 2026-08-21): КОМПАНІЙСЬКИЙ — у момент отримання (0 год);
-        # ТОВАРНИЙ — наступного дня (≥24 год). Окремі мітки, тож не заважають один одному.
+        # ТОВАРНИЙ — через 3 дні (≥72 год). Окремі мітки, тож не заважають один одному.
         company = select_company_eligible(conn)
         product = select_eligible(conn, min_hours=min_hours)
         stats["eligible"] = len(company) + len(product)
@@ -269,7 +274,7 @@ def run(dry_run: bool = True, min_hours: int = MIN_HOURS_SINCE_DELIVERED) -> dic
             return stats
         mode = "DRY-RUN (нічого не шлю)" if dry_run else "SEND (реальна відправка)"
         print(f"[ReviewReq] {mode}. Компанійських (при отриманні): {len(company)}, "
-              f"товарних (наступного дня): {len(product)}.\n")
+              f"товарних (через 3 дні): {len(product)}.\n")
         _process_stage(conn, company, build_company_body, mark_company_sent, "компанія", dry_run, stats)
         _process_stage(conn, product, build_review_body, mark_sent, "товар", dry_run, stats)
 

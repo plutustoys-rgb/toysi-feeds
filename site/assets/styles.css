@@ -177,3 +177,12 @@ footer.foot a{color:var(--accent)}
 .search{max-width:640px}
 /* Одне-єдине уточнення для дуже широких моніторів: трохи ширша колонка */
 @media (min-width:1500px){ .wrap{max-width:1320px} }
+
+/* ══ Пагінація каталогу/категорій ══ */
+.pagenote{color:var(--muted);font-size:13px;padding:0 16px 8px}
+.pager{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;align-items:center;padding:20px 16px 8px}
+.pager .pg{display:inline-flex;align-items:center;justify-content:center;min-width:40px;height:40px;padding:0 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);font-size:14px;font-weight:600;text-decoration:none}
+.pager a.pg:hover{border-color:var(--accent);color:var(--accent)}
+.pager .pg.cur{background:var(--accent);border-color:var(--accent);color:#fff}
+.pager .pg.nav{font-weight:700}
+.pager .pg.gap{border:none;background:none;min-width:20px;padding:0;color:var(--muted);font-weight:400}

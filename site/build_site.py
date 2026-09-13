@@ -25,6 +25,7 @@ OUT = os.path.dirname(os.path.abspath(__file__))
 PRICE_MULT = 1.5
 MIN_PRICE = 120          # відсікаємо дрібницю-капкан (антистрес тощо) з вітрини
 LIMIT = int(os.environ.get("LIMIT", "0") or "0")   # 0 = без ліміту
+PER_PAGE = 24            # товарів на сторінку каталогу/категорії (мобільна пагінація: легкий перший екран)
 # Абсолютний домен для canonical/OG/sitemap (SEO). Той самий, що SITE_BASE_URL у site_order_api.
 SITE_URL = os.environ.get("SITE_BASE_URL", "https://plutustoys.com.ua").rstrip("/")
 
@@ -221,11 +222,11 @@ def build():
     for p in prods:
         write_product(p)
         n += 1
-    # 2) сторінки категорій
+    # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
+    paged = set()
     for c in cat_list:
-        write_catalog(f"Каталог • {c}", cats[c], cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
-    # 3) повний каталог
-    write_catalog("Каталог іграшок", prods, cat_list, cat_slug, "catalog.html", active=None)
+        paged |= write_catalog(f"Каталог • {c}", cats[c], cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
+    paged |= write_catalog("Каталог іграшок", prods, cat_list, cat_slug, "catalog.html", active=None)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
     # 5) кошик + checkout + сторінка подяки
@@ -236,17 +237,20 @@ def build():
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap + robots
-    write_sitemap(prods, cat_list, cat_slug)
+    write_sitemap(prods, paged)
     write_robots()
 
     # 8) ПРИБИРАННЯ ЗАСТАРІЛИХ сторінок від попередніх білдів: build пише лише поточний вибір,
-    # а старі product-/category-*.html лишались у site/ і віддавались із застарілими цінами/сміттям
+    # а старі product-/category-/catalog-*.html лишались у site/ і віддавались із застарілими цінами/сміттям
     # (реально знайдено 84 такі). Видаляємо ті, що не входять у поточний набір (пишемо УСІ актуальні
-    # вище ДО цього кроку, тож видаляємо лише справжні залишки).
-    valid = {f"product-{p['id']}.html" for p in prods} | {f"category-{s}.html" for s in cat_slug.values()}
+    # вище ДО цього кроку, тож видаляємо лише справжні залишки). `paged` містить усі сторінки
+    # каталогу/категорій (вкл. пагіновані catalog_N/category-slug_N), тож застарілі сторінки
+    # пагінації від більшого попереднього білда теж приберуться.
+    valid = {f"product-{p['id']}.html" for p in prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
-        if (fn.startswith("product-") or fn.startswith("category-")) and fn.endswith(".html") and fn not in valid:
+        if (fn.startswith(("product-", "category-", "catalog")) and fn.endswith(".html")
+                and fn not in valid):
             try:
                 os.remove(os.path.join(OUT, fn))
                 removed += 1
@@ -263,14 +267,69 @@ def chips(cat_list, cat_slug, active):
         out.append(f'<a class="chip{cls}" href="category-{cat_slug[c]}.html">{esc(c)}</a>')
     return '<div class="chips">' + "".join(out) + '</div>'
 
+def _page_fname(fname, k):
+    """Ім'я файлу k-ї сторінки. Стор.1 = базове ім'я (щоб наявні посилання жили).
+    Стор.k≥2 → '<stem>_<k>.html'. Роздільник '_' навмисне: slugify НІКОЛИ не породжує
+    '_' (re.sub[^a-z0-9]+→'-'), тож 'category-foo_2.html' не може збігтися з page-1
+    файлом дедупленої категорії зі слагом на кшталт 'foo-2' → без колізій імен."""
+    if k <= 1:
+        return fname
+    stem = fname[:-5] if fname.endswith(".html") else fname
+    return f"{stem}_{k}.html"
+
+def _pager(fname, k, pages):
+    """Навігація сторінками (вікно ±2 + перша/остання). Порожньо, якщо сторінка одна."""
+    if pages <= 1:
+        return ""
+    def lnk(i, txt, cls="pg"):
+        return f'<a class="{cls}" href="{_page_fname(fname, i)}">{txt}</a>'
+    out = ['<nav class="pager" aria-label="Сторінки">']
+    if k > 1:
+        out.append(lnk(k - 1, "← Назад", "pg nav"))
+    lo, hi = max(1, k - 2), min(pages, k + 2)
+    if lo > 1:
+        out.append(lnk(1, "1"))
+        if lo > 2:
+            out.append('<span class="pg gap">…</span>')
+    for i in range(lo, hi + 1):
+        out.append(f'<span class="pg cur">{i}</span>' if i == k else lnk(i, str(i)))
+    if hi < pages:
+        if hi < pages - 1:
+            out.append('<span class="pg gap">…</span>')
+        out.append(lnk(pages, str(pages)))
+    if k < pages:
+        out.append(lnk(k + 1, "Далі →", "pg nav"))
+    out.append('</nav>')
+    return "".join(out)
+
 def write_catalog(title, prods, cat_list, cat_slug, fname, active):
-    body = (
-        chips(cat_list, cat_slug, active) +
-        f'\n<h1 class="page">{esc(title)}</h1>\n' +
-        grid(prods)
-    )
-    desc = f"{title} — {len(prods)} іграшок з доставкою Новою Поштою по Україні. Ціни, наявність, купити онлайн у PlutusToys."
-    _write(fname, page(title, body, description=desc, canonical=fname))
+    """Пише каталог/категорію З ПАГІНАЦІЄЮ (PER_PAGE/стор.). Повертає set імен усіх
+    записаних сторінок (для valid-набору прибирання й sitemap)."""
+    total = len(prods)
+    pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+    written = set()
+    for k in range(1, pages + 1):
+        chunk = prods[(k - 1) * PER_PAGE : k * PER_PAGE]
+        cur = _page_fname(fname, k)
+        ptitle = title if k == 1 else f"{title} — сторінка {k}"
+        desc = f"{title} — {total} іграшок з доставкою Новою Поштою по Україні. Ціни, наявність, купити онлайн у PlutusToys."
+        if k > 1:
+            desc = f"Сторінка {k} з {pages}. " + desc
+        head = ""
+        if k > 1:
+            head += f'<link rel="prev" href="{_page_fname(fname, k - 1)}">\n'
+        if k < pages:
+            head += f'<link rel="next" href="{_page_fname(fname, k + 1)}">\n'
+        body = (
+            chips(cat_list, cat_slug, active) +
+            f'\n<h1 class="page">{esc(title)}</h1>\n' +
+            (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
+            grid(chunk) +
+            _pager(fname, k, pages)
+        )
+        _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur))
+        written.add(cur)
+    return written
 
 def write_home(prods, cats, cat_list, cat_slug):
     # «Новинки» (правка SMM: не «Хіти продажів») — різноманітно: по 1 товару з топ-категорій,
@@ -441,11 +500,21 @@ def write_thanks():
     )
     _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True))
 
-def write_sitemap(prods, cat_list, cat_slug):
+def write_sitemap(prods, paged):
+    """paged = усі сторінки каталогу/категорій (з пагінацією). Стор.≥2 (мають '_N' перед .html)
+    ідуть з нижчим пріоритетом; catalog.html — найвищий серед лістингів."""
     from datetime import date
     today = date.today().isoformat()
-    urls = [("index.html", "1.0", "daily"), ("catalog.html", "0.9", "daily")]
-    urls += [(f"category-{cat_slug[c]}.html", "0.7", "weekly") for c in cat_list]
+    urls = [("index.html", "1.0", "daily")]
+    for fn in sorted(paged):
+        secondary = bool(re.search(r"_\d+\.html$", fn))   # сторінка ≥2
+        if fn == "catalog.html":
+            pr, cf = "0.9", "daily"
+        elif secondary:
+            pr, cf = "0.5", "weekly"
+        else:                                             # page-1 категорії/каталогу
+            pr, cf = "0.7", "weekly"
+        urls.append((fn, pr, cf))
     urls += [(f"product-{p['id']}.html", "0.6", "weekly") for p in prods]
     items = "\n".join(
         f"  <url><loc>{SITE_URL}/{u}</loc><lastmod>{today}</lastmod>"

@@ -82,6 +82,73 @@
   }
   function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
 
+  // ── Каталог: сортування + фільтри (клієнтом з index.json, весь каталог) ──
+  function catCard(p){
+    var av = p.s ? '<span class="av">У наявності</span>' : '<span class="av oos">Немає</span>';
+    var img = p.p ? '<img src="'+esc(p.p)+'" loading="lazy" alt="'+esc(p.n)+'">' : '<div class="ph"></div>';
+    return '<a class="card" href="product-'+esc(p.id)+'.html"><div class="ph">'+img+'</div>'+
+      '<div class="info"><div class="nm">'+esc(p.n)+'</div>'+
+      '<div class="foot"><span class="pr">'+p.pr+' ₴</span>'+av+'</div></div></a>';
+  }
+  function initCatalog(){
+    var controls=document.getElementById("cat-controls");
+    if(!controls) return;  // не сторінка каталогу з панеллю
+    var elSort=document.getElementById("cf-sort"), elCat=document.getElementById("cf-cat"),
+        elMin=document.getElementById("cf-min"), elMax=document.getElementById("cf-max"),
+        elStock=document.getElementById("cf-instock"), elReset=document.getElementById("cf-reset"),
+        grid=document.getElementById("cat-js"), count=document.getElementById("cat-count"),
+        moreWrap=document.getElementById("cat-more-wrap"), moreBtn=document.getElementById("cat-more"),
+        statik=document.getElementById("cat-static");
+    var PER=24, shown=0, filtered=[];
+    ensureIndex(function(data){
+      var cats={};
+      for(var i=0;i<data.length;i++){ if(data[i].c) cats[data[i].c]=(cats[data[i].c]||0)+1; }
+      Object.keys(cats).sort(function(a,b){return a.localeCompare(b,"uk");}).forEach(function(c){
+        var o=document.createElement("option"); o.value=c; o.textContent=c+" ("+cats[c]+")"; elCat.appendChild(o);
+      });
+      controls.hidden=false;
+      apply();
+    });
+    function apply(){
+      var min=parseInt(elMin.value,10), max=parseInt(elMax.value,10);
+      if(isNaN(min)) min=null; if(isNaN(max)) max=null;
+      var cat=elCat.value, ins=elStock.checked, sort=elSort.value;
+      filtered=(idx||[]).filter(function(p){
+        if(cat && p.c!==cat) return false;
+        if(ins && !p.s) return false;
+        if(min!=null && p.pr<min) return false;
+        if(max!=null && p.pr>max) return false;
+        return true;
+      });
+      if(sort==="cheap") filtered.sort(function(a,b){return a.pr-b.pr;});
+      else if(sort==="dear") filtered.sort(function(a,b){return b.pr-a.pr;});
+      else if(sort==="az") filtered.sort(function(a,b){return String(a.n).localeCompare(String(b.n),"uk");});
+      // pop = природний порядок index.json (за замовчуванням)
+      shown=0; grid.innerHTML="";
+      if(statik) statik.hidden=true;
+      grid.hidden=false; count.hidden=false;
+      renderMore();
+    }
+    function renderMore(){
+      if(!filtered.length){
+        grid.innerHTML='<div class="empty" style="padding:40px 0">Нічого не знайдено за фільтром. <a href="#" id="cf-reset2">Скинути</a></div>';
+        var r2=document.getElementById("cf-reset2"); if(r2) r2.addEventListener("click",function(e){e.preventDefault();doReset();});
+        count.textContent="Знайдено: 0"; moreWrap.hidden=true; return;
+      }
+      var slice=filtered.slice(shown, shown+PER);
+      grid.insertAdjacentHTML("beforeend", slice.map(catCard).join(""));
+      shown+=slice.length;
+      count.textContent="Знайдено: "+filtered.length+" · показано "+shown;
+      moreWrap.hidden = shown>=filtered.length;
+    }
+    function doReset(){ elSort.value="pop"; elCat.value=""; elMin.value=""; elMax.value=""; elStock.checked=false; apply(); }
+    var deb=debounce(apply,250);
+    [elSort,elCat,elStock].forEach(function(e){ if(e) e.addEventListener("change",apply); });
+    [elMin,elMax].forEach(function(e){ if(e) e.addEventListener("input",deb); });
+    if(moreBtn) moreBtn.addEventListener("click",renderMore);
+    if(elReset) elReset.addEventListener("click",doReset);
+  }
+
   // ── Рендер кошика (сторінка cart.html) ──
   function renderCart(){
     var box=document.getElementById("cart-body");
@@ -144,6 +211,7 @@
     renderCart();
     initCheckout();
     initNpAutocomplete();
+    initCatalog();
 
     // сторінка подяки — підставити номер замовлення
     var oidEl=document.getElementById("thanks-oid");

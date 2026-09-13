@@ -250,7 +250,9 @@ def build():
     write_categories_index(cat_list, cat_slug, cats)
     trust = write_trust_pages()
     # 6) індекс пошуку
-    idx = [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"]} for p in prods]
+    # index.json — клієнтський пошук + фільтр/сорт каталогу. c=категорія, s=наявність(1/0).
+    idx = [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"],
+            "c": p["category"], "s": 1 if p["stock"] > 0 else 0} for p in prods]
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap + robots
@@ -320,6 +322,28 @@ def _pager(fname, k, pages):
     out.append('</nav>')
     return "".join(out)
 
+def _catalog_controls():
+    """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
+    hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
+    return (
+      '<div id="cat-controls" class="cat-controls" hidden>'
+        '<select id="cf-sort" aria-label="Сортування">'
+          '<option value="pop">Спочатку популярні</option>'
+          '<option value="cheap">Спершу дешевші</option>'
+          '<option value="dear">Спершу дорожчі</option>'
+          '<option value="az">За назвою А–Я</option>'
+        '</select>'
+        '<select id="cf-cat" aria-label="Категорія"><option value="">Усі категорії</option></select>'
+        '<span class="cf-price"><input id="cf-min" type="number" inputmode="numeric" min="0" placeholder="ціна від">'
+          '<input id="cf-max" type="number" inputmode="numeric" min="0" placeholder="до"></span>'
+        '<label class="cf-stock"><input id="cf-instock" type="checkbox"> лише в наявності</label>'
+        '<button id="cf-reset" class="cf-reset" type="button">Скинути</button>'
+      '</div>'
+      '<p id="cat-count" class="pagenote" hidden></p>'
+      '<div id="cat-js" class="grid" hidden></div>'
+      '<div id="cat-more-wrap" hidden><button id="cat-more" class="btn ghost">Показати ще</button></div>'
+    )
+
 def write_catalog(title, prods, cat_list, cat_slug, fname, active):
     """Пише каталог/категорію З ПАГІНАЦІЄЮ (PER_PAGE/стор.). Повертає set імен усіх
     записаних сторінок (для valid-набору прибирання й sitemap)."""
@@ -338,12 +362,19 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
             head += f'<link rel="prev" href="{_page_fname(fname, k - 1)}">\n'
         if k < pages:
             head += f'<link rel="next" href="{_page_fname(fname, k + 1)}">\n'
+        # Панель сорт/фільтр — лише на головному каталозі (стор.1). Працює клієнтом з index.json
+        # (усі товари), тож фільтрує/сортує ВЕСЬ каталог, не лише сторінку. Прогресивне покращення:
+        # без JS лишається статична пагінована сітка (SEO), контроли сховані (hidden) до ініціалізації.
+        controls = _catalog_controls() if (active is None and k == 1) else ""
+        static_grid = grid(chunk) + _pager(fname, k, pages)
+        if controls:
+            static_grid = f'<div id="cat-static">{static_grid}</div>'
         body = (
             chips(cat_list, cat_slug, active) +
             f'\n<h1 class="page">{esc(title)}</h1>\n' +
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
-            grid(chunk) +
-            _pager(fname, k, pages)
+            controls +
+            static_grid
         )
         _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE))
         written.add(cur)

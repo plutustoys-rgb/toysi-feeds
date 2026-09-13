@@ -719,6 +719,16 @@ def _convert_eva_order(order: dict) -> dict:
         }
         for product in (order.get("items") or [])
     ]
+    # EVA передає СТРУКТУРНІ реф-поля НП напряму (shipping.address.city_id — NP CityRef GUID,
+    # warehouse_number — точний № відділення, який обрав клієнт). Протягуємо їх, щоб
+    # build_toysi_order віддав Toysi саме цей номер БЕЗ повторного пошуку в НП (find_warehouse
+    # давав хибний збіг по цифрі в описі → баг «3→2», інцидент 2026-09-13). np_branch (людський
+    # рядок) лишається для менеджера/фолбеку. Порожні/відсутні → None (тоді build_toysi_order
+    # падає на текст-парс+resolve_shipping, як для Prom).
+    _addr = (order.get("shipping") or {}).get("address")
+    _addr = _addr if isinstance(_addr, dict) else {}
+    _city_ref = str(_addr.get("city_id") or "").strip() or None
+    _wh_num = str(_addr.get("warehouse_number") or "").strip() or None  # симетрично з city_ref: порожнє/пробіли → None
     return {
         "order_id": str(order["id"]),
         "platform": "eva",
@@ -728,6 +738,8 @@ def _convert_eva_order(order: dict) -> dict:
         "customer_name": _eva_customer_name(order),
         "phone": (order.get("recipient") or {}).get("phone") or (order.get("customer") or {}).get("phone") or "",
         "np_branch": _eva_delivery_address(order),
+        "np_city_ref": _city_ref,
+        "np_warehouse_number": _wh_num,
         "carrier": _eva_carrier(order),
         "items": items or [
             {"toysi_code": "", "name": "⚠️ items EVA порожній/незнайомого формату — перевір вручну", "qty": 1, "price": 0.0}
@@ -843,6 +855,8 @@ def normalize_order(raw_order: dict) -> dict:
         "customer_name":     raw_order.get("customer_name", ""),
         "phone":             raw_order.get("phone", ""),
         "np_branch":         raw_order.get("np_branch", ""),
+        "np_city_ref":       raw_order.get("np_city_ref"),          # структурний NP CityRef (EVA), якщо є
+        "np_warehouse_number": raw_order.get("np_warehouse_number"), # точний № відділення з площадки, якщо є
         "carrier":           raw_order.get("carrier", "nova_poshta"),
         "items":             raw_order["items"],
     }

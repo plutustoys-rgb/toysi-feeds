@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- платіж НП/маркетплейси email не дають — там NULL). Для листа-
                                                -- підтвердження/відгуку сайту (SMM 2026-09-04: провести email через pipeline)
     np_branch             TEXT,
+    np_city_ref           TEXT,               -- NP CityRef (GUID), якщо площадка передала структурно (EVA city_id); інакше NULL
+    np_warehouse_number   TEXT,               -- точний № відділення НП з площадки (EVA warehouse_number) — віддається Toysi
+                                               -- НАПРЯМУ, без повторного пошуку в НП (усуває баг «3→2» від find_warehouse; 2026-09-13)
     items                 TEXT NOT NULL,      -- JSON: [{"toysi_code":.., "name":.., "qty":.., "price":..}, ...]
     created_at            TEXT NOT NULL,
     forwarded_to_toysi_at TEXT,
@@ -293,6 +296,11 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rozetka_cancel_ticket_sent_at", "rozetka_cancel_ticket_sent_at TEXT")
         _ensure_column(conn, "orders", "np_return_created_at", "np_return_created_at TEXT")
         _ensure_column(conn, "orders", "np_return_ttn", "np_return_ttn TEXT")
+        # Структурні реф-поля відділення НП з площадки (EVA передає city_id/warehouse_number
+        # напряму) — щоб build_toysi_order віддав точний вибір клієнта Toysi БЕЗ повторного
+        # пошуку в НП (find_warehouse давав хибний збіг по цифрі в описі, баг «3→2» 2026-09-13).
+        _ensure_column(conn, "orders", "np_city_ref", "np_city_ref TEXT")
+        _ensure_column(conn, "orders", "np_warehouse_number", "np_warehouse_number TEXT")
         # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
         # залишку" для цього замовлення — щоб order_router.py не спамив той
         # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
@@ -364,10 +372,11 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
         """
         INSERT INTO orders (
             internal_order_id, order_id, platform, status, payment_method,
-            payment_confirmed, customer_name, phone, email, np_branch, items,
+            payment_confirmed, customer_name, phone, email, np_branch,
+            np_city_ref, np_warehouse_number, items,
             created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status,
             carrier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             internal_order_id,
@@ -380,6 +389,8 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             order.get("phone"),
             order.get("email"),
             order.get("np_branch"),
+            order.get("np_city_ref"),
+            order.get("np_warehouse_number"),
             json.dumps(order["items"], ensure_ascii=False),
             order.get("created_at") or datetime.now().isoformat(timespec="seconds"),
             order.get("forwarded_to_toysi_at"),

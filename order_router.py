@@ -201,11 +201,25 @@ def build_toysi_order(order: dict) -> dict:
     city, warehouse_query, area_hint = parse_np_branch(order.get("np_branch", ""))
 
     shipping_fields = {}
+    is_np = order.get("carrier", "nova_poshta") == "nova_poshta"
+    # ПРІОРИТЕТ: якщо площадка передала СТРУКТУРНІ реф-поля НП (EVA: city_id→np_city_ref,
+    # warehouse_number→np_warehouse_number) — віддаємо Toysi ВИБІР КЛІЄНТА напряму, БЕЗ
+    # повторного пошуку getCities/getWarehouses. Так усувається сам зайвий крок, де голий
+    # номер відділення хибно збігався з цифрою в описі раніше розташованого відділення
+    # (баг «замовляли №3 — прийшло на №2», інцидент EVA 2026-09-13). Текст-парс+resolve_shipping
+    # лишається фолбеком для площадок без структурних рефів (Prom дає лише вільний текст адреси).
+    struct_city = (order.get("np_city_ref") or "").strip()
+    struct_wh = (order.get("np_warehouse_number") or "").strip()
+    if is_np and struct_city and struct_wh:
+        shipping_fields = {
+            "shipping_city_id": struct_city,
+            "shipping_warehouse_id": struct_wh,
+        }
     # NP-резолв (getCities/getWarehouses) стосується лише Нової Пошти — для
     # Укрпошти shipping_city_id/warehouse_id взагалі не мають сенсу (Toysi
     # не інтегрована з Укрпоштою, ці поля не використовуються на її боці),
     # і сам виклик resolve_shipping() був би зайвим мережевим запитом.
-    if city and order.get("carrier", "nova_poshta") == "nova_poshta":
+    elif city and is_np:
         try:
             shipping = resolve_shipping(city, warehouse_query, area_hint=area_hint)
         except NovaPoshtaAPIError as e:

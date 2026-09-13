@@ -728,8 +728,7 @@ def _convert_eva_order(order: dict) -> dict:
     _addr = (order.get("shipping") or {}).get("address")
     _addr = _addr if isinstance(_addr, dict) else {}
     _city_ref = str(_addr.get("city_id") or "").strip() or None
-    _wh_num = _addr.get("warehouse_number")
-    _wh_num = str(_wh_num).strip() if _wh_num not in (None, "") else None
+    _wh_num = str(_addr.get("warehouse_number") or "").strip() or None  # симетрично з city_ref: порожнє/пробіли → None
     return {
         "order_id": str(order["id"]),
         "platform": "eva",

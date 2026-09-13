@@ -6,15 +6,19 @@ site_order_api.py — HTTP-бекенд власного магазину plutus
 
   GET  /api/np/city?q=<текст>                 → автокомпліт міста НП        → [{ref,name,area}]
   GET  /api/np/warehouse?city_ref=<ref>&q=<n> → автокомпліт відділення НП   → [{ref,description,number}]
-  POST /api/order        {items:[{id,qty}], name, phone, email, city_name, warehouse_name}
-                         → створює замовлення (prepaid, payment_confirmed=0) → {order_id,total,liqpay}
+  POST /api/order        {items:[{id,qty}], name, phone, email, city_name, warehouse_name,
+                          payment_method: "cod"|"prepaid"}
+                         → створює замовлення (payment_confirmed=0) → {order_id,total,payment_method,liqpay}
+                           cod  → liqpay=null, замовлення прийнято одразу (накладений платіж НП)
+                           prepaid → liqpay={...} для редіректу (або null, якщо ключі не задані)
   POST /api/liqpay/callback  (data, signature)  → verify → mark_payment_confirmed → 200
 
 MONEY-SAFETY:
 - Ціни рахуються НА СЕРВЕРІ з site/index.json (id→pr) — ціни з кошика клієнта НЕ довіряються.
-- Замовлення завжди prepaid + payment_confirmed=0 → order-pipeline форвардить у Toysi ЛИШЕ
-  після підтвердженого колбека LiqPay (get_orders_ready_to_forward). Тестовий/несплачений
-  платіж закупівлю не запускає.
+- payment_confirmed=0 на старті для ОБОХ способів. order_router: COD форвардиться одразу
+  (накладений — гроші беруться при отриманні), prepaid форвардиться ЛИШЕ після підтвердженого
+  колбека LiqPay (get_orders_ready_to_forward). Тестовий/несплачений prepaid закупівлю не запускає.
+- payment_method невідоме/відсутнє → cod (консервативно; не запускає передоплатну гілку помилково).
 - Колбек: підпис (verify_callback) + звірка суми з перерахованою + відсів sandbox-статусу в бою.
 - Тест: ORDERS_DB_PATH=<тимчасова БД> ДО запуску (не бойова orders.db).
 
@@ -109,7 +113,9 @@ def build_order(payload: dict) -> tuple:
         if qty < 1 or qty > MAX_QTY_PER_ITEM:
             raise OrderError(f"Некоректна кількість для товару {pid}")
         total += pm[pid]["price"] * qty
-        items.append({"toysi_code": pid, "qty": qty})
+        # price+name ОБОВʼЯЗКОВІ у позиції: order_router рахує COD moneyback як
+        # sum(item["price"]*qty) (order_router.py:228) — без price COD-ТТН вийде на 0 ₴.
+        items.append({"toysi_code": pid, "name": pm[pid]["name"], "qty": qty, "price": pm[pid]["price"]})
     if not items:
         raise OrderError("Кошик порожній")
 
@@ -130,12 +136,19 @@ def build_order(payload: dict) -> tuple:
     email_raw = (payload.get("email") or "").strip()
     email = email_raw if ("@" in email_raw and "." in email_raw.split("@")[-1]) else None
 
+    # Спосіб оплати — з фронта: "cod" (накладений платіж НП) або "prepaid" (картка онлайн).
+    # Default cod — консервативно й money-safe: невідомий/відсутній → накладений (forward одразу),
+    # а не передоплата (яка форвардиться лише по payment_confirmed=1). order_router:
+    # COD форвардиться одразу, prepaid — лише коли payment_confirmed=1.
+    pay_raw = (payload.get("payment_method") or "").strip().lower()
+    payment_method = "prepaid" if pay_raw == "prepaid" else "cod"
+
     order_id = "PT-" + time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
     order = {
         "order_id": order_id,
         "platform": "site",
         "status": "new",
-        "payment_method": "prepaid",   # web-оплата карткою; forward лише по payment_confirmed=1
+        "payment_method": payment_method,   # cod=накладений (forward одразу) | prepaid=картка (forward по payment_confirmed=1)
         "payment_confirmed": 0,
         "customer_name": name,
         "phone": phone,
@@ -258,8 +271,14 @@ class Handler(SimpleHTTPRequestHandler):
         if not created:
             return self._json(409, {"error": "замовлення вже існує"})
 
-        resp = {"order_id": order["order_id"], "total": total}
-        # LiqPay: форма оплати, якщо ключі задані; інакше — замовлення прийнято без онлайн-оплати (sandbox/заглушка)
+        resp = {"order_id": order["order_id"], "total": total,
+                "payment_method": order["payment_method"]}
+        if order["payment_method"] == "cod":
+            # Накладений платіж — онлайн-оплата не потрібна; замовлення прийнято одразу.
+            resp["liqpay"] = None
+            resp["message"] = "Замовлення прийнято. Оплата при отриманні на Новій Пошті."
+            return self._json(200, resp)
+        # prepaid: форма LiqPay, якщо ключі задані; інакше — фронт покаже, що онлайн-оплата недоступна
         if liqpay_client.is_configured():
             desc = f"Замовлення {order['order_id']} на PlutusToys"
             ck = liqpay_client.build_checkout(

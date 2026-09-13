@@ -416,7 +416,14 @@ def write_cart():
         '<div class="field ac-wrap"><label>Відділення Нової Пошти</label>'
           '<input id="f-warehouse" name="warehouse" required placeholder="Спершу оберіть місто" disabled>'
           '<div class="ac" id="ac-warehouse"></div></div>'
-        '<button class="btn" type="submit" id="checkout-submit">Оформити й оплатити</button>'
+        # Спосіб оплати — накладений (оплата при отриманні) за замовчуванням: для незнайомого магазину
+        # це головний аргумент довіри (рев'ю), і LiqPay поки sandbox. Вибір явний, у payload іде payment.
+        '<div class="field"><label>Спосіб оплати</label>'
+          '<label class="pay"><input type="radio" name="payment" value="cod" checked> '
+            'Оплата при отриманні (накладений платіж на Новій Пошті)</label>'
+          '<label class="pay"><input type="radio" name="payment" value="prepaid"> '
+            'Оплата карткою онлайн</label></div>'
+        '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
         '<div class="note" id="checkout-msg"></div>'
       '</form></div>'
     )

@@ -171,9 +171,15 @@
       selectedCityRef=""; wh.value=""; wh.disabled=true; wh.placeholder="Спершу оберіть місто"; acWh.innerHTML="";
       var q=city.value.trim(); if(q.length<2){ acCity.innerHTML=""; return; }
       fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
-        renderAc(acCity, (d.cities||[]).map(function(c){ return {label:c.name, sub:c.area, ref:c.ref, name:c.name}; }),
+        var cities=(d.cities||[]);
+        renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, ref:c.ref, name:c.name}; }),
           function(pick){ city.value=pick.name; selectedCityRef=pick.ref; wh.disabled=false; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
-      }).catch(function(){ acCity.innerHTML=""; });
+        // Фолбек: автокомпліт нічого не повернув — дозволяємо ручний ввід відділення (не блокуємо замовлення).
+        if(!cities.length){ wh.disabled=false; wh.placeholder="Введіть № або адресу відділення вручну"; }
+      }).catch(function(){
+        // Фолбек при недоступному API НП: не лишаємо форму в глухому куті — ручний ввід.
+        acCity.innerHTML=""; wh.disabled=false; wh.placeholder="Введіть № або адресу відділення вручну";
+      });
     }, 250));
 
     wh.addEventListener("input", debounce(function(){
@@ -199,18 +205,21 @@
       e.preventDefault();
       var msg=document.getElementById("checkout-msg");
       var btn=document.getElementById("checkout-submit");
-      function fail(t){ if(msg){ msg.classList.add("err"); msg.textContent=t; } if(btn){ btn.disabled=false; btn.textContent="Оформити й оплатити"; } }
+      function fail(t){ if(msg){ msg.classList.add("err"); msg.textContent=t; } if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; } }
       if(msg){ msg.classList.remove("err"); msg.textContent=""; }
 
       var cart=read(), items=Object.keys(cart).map(function(id){ return {id:id, qty:cart[id].qty}; });
       if(!items.length){ fail("Кошик порожній."); return; }
+      var payEl=document.querySelector('input[name="payment"]:checked');
+      var payment=payEl ? payEl.value : "cod";
       var payload={
         items:items,
         name:(document.getElementById("f-name").value||"").trim(),
         phone:(document.getElementById("f-phone").value||"").trim(),
         email:(document.getElementById("f-email").value||"").trim(),
         city_name:(document.getElementById("f-city").value||"").trim(),
-        warehouse_name:(document.getElementById("f-warehouse").value||"").trim()
+        warehouse_name:(document.getElementById("f-warehouse").value||"").trim(),
+        payment_method:payment
       };
       if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }
 
@@ -220,8 +229,14 @@
           if(!res.ok){ fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return; }
           var d=res.j;
           try{ sessionStorage.setItem("pt_last_order", d.order_id); }catch(e){}
-          if(d.liqpay && d.liqpay.data){ PT.clear(); redirectToLiqPay(d.liqpay); return; }
-          // Без онлайн-оплати (LiqPay ще не підключено) — показуємо підтвердження
+          // Оплата карткою: редірект на LiqPay. Якщо LiqPay не налаштований — НЕ імітуємо «дякуємо»,
+          // а чесно кажемо обрати накладений (рев'ю покупця: фейкове «замовлення прийнято» без оплати).
+          if(payment==="prepaid"){
+            if(d.liqpay && d.liqpay.data){ PT.clear(); redirectToLiqPay(d.liqpay); return; }
+            fail("Онлайн-оплата тимчасово недоступна. Оберіть «Оплата при отриманні».");
+            return;
+          }
+          // Накладений платіж: замовлення прийнято, оплата при отриманні на Новій Пошті.
           PT.clear();
           location.href = "thanks.html";
         })

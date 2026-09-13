@@ -113,7 +113,9 @@ def build_order(payload: dict) -> tuple:
         if qty < 1 or qty > MAX_QTY_PER_ITEM:
             raise OrderError(f"Некоректна кількість для товару {pid}")
         total += pm[pid]["price"] * qty
-        items.append({"toysi_code": pid, "qty": qty})
+        # price+name ОБОВʼЯЗКОВІ у позиції: order_router рахує COD moneyback як
+        # sum(item["price"]*qty) (order_router.py:228) — без price COD-ТТН вийде на 0 ₴.
+        items.append({"toysi_code": pid, "name": pm[pid]["name"], "qty": qty, "price": pm[pid]["price"]})
     if not items:
         raise OrderError("Кошик порожній")
 
@@ -138,8 +140,8 @@ def build_order(payload: dict) -> tuple:
     # Default cod — консервативно й money-safe: невідомий/відсутній → накладений (forward одразу),
     # а не передоплата (яка форвардиться лише по payment_confirmed=1). order_router:
     # COD форвардиться одразу, prepaid — лише коли payment_confirmed=1.
-    pm = (payload.get("payment_method") or "").strip().lower()
-    payment_method = "prepaid" if pm == "prepaid" else "cod"
+    pay_raw = (payload.get("payment_method") or "").strip().lower()
+    payment_method = "prepaid" if pay_raw == "prepaid" else "cod"
 
     order_id = "PT-" + time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
     order = {

@@ -186,3 +186,22 @@ footer.foot a{color:var(--accent)}
 .pager .pg.cur{background:var(--accent);border-color:var(--accent);color:#fff}
 .pager .pg.nav{font-weight:700}
 .pager .pg.gap{border:none;background:none;min-width:20px;padding:0;color:var(--muted);font-weight:400}
+
+/* ══ Індекс усіх категорій (categories.html) ══ */
+.catgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;padding:8px 16px 24px}
+.catgrid .cattile{width:auto;flex:initial;display:flex;flex-direction:column;align-items:center;justify-content:flex-start}
+.cattile .cnt{font-size:11px;color:var(--muted);margin-top:4px}
+
+/* ══ Футер із навігацією ══ */
+.foot .fnav{display:flex;flex-wrap:wrap;gap:4px 10px;justify-content:center;margin-bottom:12px}
+.foot .fnav a{color:var(--text);font-size:13px}
+.foot .fnav a:hover{color:var(--accent)}
+.foot .ftag{margin:0}
+
+/* ══ Текстові сторінки довіри (Про нас/Доставка/…) ══ */
+.doc{max-width:720px;margin:0 auto;padding:8px 16px 32px;line-height:1.6;color:var(--text)}
+.doc h1{font-size:26px;margin:12px 0 16px}
+.doc h2{font-size:18px;margin:24px 0 8px}
+.doc p{margin:0 0 12px}
+.doc ul{margin:0 0 12px;padding-left:20px}
+.doc li{margin:0 0 6px}

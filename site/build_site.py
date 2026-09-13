@@ -28,6 +28,8 @@ LIMIT = int(os.environ.get("LIMIT", "0") or "0")   # 0 = без ліміту
 PER_PAGE = 24            # товарів на сторінку каталогу/категорії (мобільна пагінація: легкий перший екран)
 # Абсолютний домен для canonical/OG/sitemap (SEO). Той самий, що SITE_BASE_URL у site_order_api.
 SITE_URL = os.environ.get("SITE_BASE_URL", "https://plutustoys.com.ua").rstrip("/")
+# Брендове OG-прев'ю (маскот Плутус) для соц-репостів головної/лістингів (товар має власне фото).
+OG_IMAGE = f"{SITE_URL}/assets/og-home.jpg"
 
 CAT_EMOJI = [
     # транспорт/колеса
@@ -343,7 +345,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
             grid(chunk) +
             _pager(fname, k, pages)
         )
-        _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur))
+        _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE))
         written.add(cur)
     return written
 
@@ -377,7 +379,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body,
         description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі — з доставкою Новою Поштою по всій Україні. Оплата при отриманні або карткою.",
-        canonical="index.html"))
+        canonical="index.html", og_image=OG_IMAGE))
 
 def _cut(text, n):
     """Обрізка по МЕЖІ СЛОВА (не посеред слова) + '…', якщо реально різали."""
@@ -540,7 +542,7 @@ def write_categories_index(cat_list, cat_slug, cats):
     )
     desc = (f"Усі {len(cat_list)} категорій іграшок PlutusToys: конструктори, ляльки, машинки, "
             "творчість, розвиваючі та інші. Доставка Новою Поштою по всій Україні.")
-    _write("categories.html", page("Усі категорії", body, description=desc, canonical="categories.html"))
+    _write("categories.html", page("Усі категорії", body, description=desc, canonical="categories.html", og_image=OG_IMAGE))
     return "categories.html"
 
 def _plural(n):

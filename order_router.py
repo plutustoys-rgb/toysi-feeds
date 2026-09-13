@@ -12,7 +12,7 @@ from orders_db import (
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
 from meta_conversions_client import send_purchase_event
-from nova_poshta import resolve_shipping, settlement_raion, NovaPoshtaAPIError
+from nova_poshta import find_city, settlement_raion, NovaPoshtaAPIError
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message, send_throttled_alert
 import rozetka_client
@@ -202,36 +202,34 @@ def build_toysi_order(order: dict) -> dict:
 
     shipping_fields = {}
     is_np = order.get("carrier", "nova_poshta") == "nova_poshta"
-    # ПРІОРИТЕТ: якщо площадка передала СТРУКТУРНІ реф-поля НП (EVA: city_id→np_city_ref,
-    # warehouse_number→np_warehouse_number) — віддаємо Toysi ВИБІР КЛІЄНТА напряму, БЕЗ
-    # повторного пошуку getCities/getWarehouses. Так усувається сам зайвий крок, де голий
-    # номер відділення хибно збігався з цифрою в описі раніше розташованого відділення
-    # (баг «замовляли №3 — прийшло на №2», інцидент EVA 2026-09-13). Текст-парс+resolve_shipping
-    # лишається фолбеком для площадок без структурних рефів (Prom дає лише вільний текст адреси).
-    struct_city = (order.get("np_city_ref") or "").strip()
-    struct_wh = (order.get("np_warehouse_number") or "").strip()
-    if is_np and struct_city and struct_wh:
-        shipping_fields = {
-            "shipping_city_id": struct_city,
-            "shipping_warehouse_id": struct_wh,
-        }
-    # NP-резолв (getCities/getWarehouses) стосується лише Нової Пошти — для
-    # Укрпошти shipping_city_id/warehouse_id взагалі не мають сенсу (Toysi
-    # не інтегрована з Укрпоштою, ці поля не використовуються на її боці),
-    # і сам виклик resolve_shipping() був би зайвим мережевим запитом.
-    elif city and is_np:
-        try:
-            shipping = resolve_shipping(city, warehouse_query, area_hint=area_hint)
-        except NovaPoshtaAPIError as e:
-            print(
-                f"[order_router] Проблема з API Нової Пошти для {order['internal_order_id']}: {e}",
-                file=sys.stderr,
-            )
-            shipping = None
-        if shipping:
+    # НАДІЙНІСТЬ ДОСТАВКИ (рішення власника 2026-09-13: «передавати Toysi точну адресу від
+    # клієнта», «зроби надійно, щоб більше не повертались»). Toysi приймає shipping_warehouse_id
+    # як НОМЕР відділення НП. № — це ВИБІР КЛІЄНТА: структурний з площадки (EVA/Rozetka/сайт —
+    # np_warehouse_number) або розпарсений з вільного тексту адреси (Prom — parse_np_branch).
+    # Беремо його ЯК Є й віддаємо Toysi НАПРЯМУ. МИ БІЛЬШЕ НЕ ПЕРЕШУКУЄМО відділення в НП
+    # (getWarehouses) — саме той перешук по опису повертав ЧУЖЕ відділення (напр. «№3» збігалось
+    # із «3» у «до 30 кг» опису №2 → посилка на №2; інцидент EVA 2026-09-13). Так відправити на
+    # чуже відділення стає фізично неможливо: Toysi отримує рівно той номер, що обрав клієнт.
+    # У НП резолвимо ЛИШЕ місто (назва→CityRef), і лише коли площадка не дала CityRef напряму.
+    wh_number = (order.get("np_warehouse_number") or "").strip() or (warehouse_query or "").strip()
+    if is_np and city and wh_number:
+        city_ref = (order.get("np_city_ref") or "").strip()   # EVA/сайт дають CityRef напряму
+        if not city_ref:
+            # Rozetka/Prom CityRef не дають — резолвимо ТІЛЬКИ місто (find_city з area_hint для
+            # міст-тезок). Відділення НЕ шукаємо. НП недоступна → city_ref="" → адреса піде текстом.
+            try:
+                _c = find_city(city, area_hint=area_hint)
+                city_ref = (_c or {}).get("ref") or ""
+            except NovaPoshtaAPIError as e:
+                print(
+                    f"[order_router] НП find_city для {order['internal_order_id']}: {e}",
+                    file=sys.stderr,
+                )
+                city_ref = ""
+        if city_ref:
             shipping_fields = {
-                "shipping_city_id": shipping["shipping_city_id"],
-                "shipping_warehouse_id": shipping["shipping_warehouse_id"],
+                "shipping_city_id": city_ref,
+                "shipping_warehouse_id": wh_number,
             }
 
     first_name, last_name, middle_name = _split_recipient_name(

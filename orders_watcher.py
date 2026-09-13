@@ -520,6 +520,11 @@ def _convert_rozetka_order(order: dict) -> dict:
     # інцидент 903719616 2026-08-20). COD — payment_confirmed не важить (форвард одразу), тож
     # зайвий API-виклик статусу оплати НЕ робимо.
     payment_confirmed = rozetka_client.is_order_paid(order["id"]) if pm == "prepaid" else False
+    # № відділення НП з площадки (delivery.place_number, напр. '253' — звірено на 903652847):
+    # протягуємо, щоб build_toysi_order віддав Toysi точний вибір клієнта БЕЗ пошуку відділення
+    # в НП. ЛИШЕ для НП — у RZ-Delivery place_number містить опис ЖК, не номер відділення.
+    _rz_wh = (str(delivery.get("place_number") or "").strip()
+              if _rozetka_carrier(order) == "nova_poshta" else "") or None
     return {
         "order_id": str(order["id"]),
         "platform": "rozetka",
@@ -527,6 +532,8 @@ def _convert_rozetka_order(order: dict) -> dict:
         "payment_method": pm,
         "payment_confirmed": payment_confirmed,
         "customer_name": _rozetka_customer_name(order),
+        "np_warehouse_number": _rz_wh,  # точний № відділення НП → build_toysi_order віддає напряму
+
         # ОТРИМУВАЧ (order.recipient_phone) ПЕРШИМ, не замовник (order.user_phone): для доставки НП
         # телефон — це кого повідомляють/кому віддають посилку. Інцидент 904295184 (2026-08-30):
         # замовник Попова +380987498930, отримувач Хацьор +380669452265 — старий код брав user_phone

@@ -205,3 +205,10 @@ footer.foot a{color:var(--accent)}
 .doc p{margin:0 0 12px}
 .doc ul{margin:0 0 12px;padding-left:20px}
 .doc li{margin:0 0 6px}
+
+/* ══ Мікро-довіра біля ціни на товарі + телефон у футері ══ */
+.trust-badges{display:flex;flex-wrap:wrap;gap:6px 14px;margin:10px 0 4px}
+.trust-badges .tb{font-size:12.5px;color:var(--success);text-decoration:none;font-weight:600}
+.trust-badges a.tb:hover{text-decoration:underline}
+.foot .fphone{margin:0 0 10px;font-size:13px}
+.foot .fphone a{color:var(--accent);font-weight:700}

@@ -133,11 +133,26 @@ def find_warehouse(city_ref: str, warehouse_query: str = "") -> dict:
         return {"ref": top.get("Ref"), "description": top.get("Description"), "number": top.get("Number")}
 
     query = warehouse_query.strip().lower()
+
+    # 1) ТОЧНИЙ номер має АБСОЛЮТНИЙ пріоритет — окремим повним проходом.
+    # Раніше умова була `query == number OR query in description` в одному циклі:
+    # для однозначного запиту (parse_np_branch дає голий \d+, напр. "3") підрядок
+    # спрацьовував на РАНІШЕ розташованому відділенні, чий опис містить цю цифру
+    # («Відділення №2 (до 30 кг…)» містить "3" у "30") → цикл віддавав №2 замість №3,
+    # і Toysi створював ТТН не на те відділення (реальний інцидент EVA 2026-09-13,
+    # замовляли №3 — прийшло на №2). Тому спершу точний номер по ВСІХ відділеннях.
     for wh in warehouses:
-        number = (wh.get("Number") or "").strip()
-        description = wh.get("Description") or ""
-        if query == number or query in description.lower():
-            return {"ref": wh.get("Ref"), "description": description, "number": number}
+        if query == (wh.get("Number") or "").strip().lower():
+            return {"ref": wh.get("Ref"), "description": wh.get("Description") or "", "number": (wh.get("Number") or "").strip()}
+
+    # 2) Фолбек ПІДРЯДКОМ — лише для НЕЧИСЛОВОГО запиту (текст-фрагмент адреси,
+    # напр. назва вулиці). Для суто числового запиту підрядок вимкнено — саме він
+    # давав хибний збіг по цифрі в «до 30 кг»/номері будинку/індексі.
+    if not query.isdigit():
+        for wh in warehouses:
+            description = wh.get("Description") or ""
+            if query in description.lower():
+                return {"ref": wh.get("Ref"), "description": description, "number": (wh.get("Number") or "").strip()}
 
     return None
 

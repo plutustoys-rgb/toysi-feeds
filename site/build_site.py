@@ -231,10 +231,21 @@ def build():
             _used[base] = 1
             cat_slug[c] = base
 
+    # крос-сел «З цим купують»: до 4 товарів ТІЄЇ Ж категорії, найближчих за ціною —
+    # пріоритет не дорожчим (добір, не апсел), потім дорожчі, якщо мало (консультант:
+    # та сама категорія + близька ціна). Рахуємо раз, O(n log n) на категорію.
+    related_map = {}
+    for c, lst in cats.items():
+        sp = sorted(lst, key=lambda x: x["price"])
+        for i in range(len(sp)):
+            lower = sp[max(0, i - 4):i][::-1]   # до 4 дешевших, найближчі перші
+            higher = sp[i + 1:i + 5]            # до 4 дорожчих (фолбек)
+            related_map[sp[i]["id"]] = (lower + higher)[:4]
+
     n = 0
     # 1) картки товарів
     for p in prods:
-        write_product(p)
+        write_product(p, related=related_map.get(p["id"]))
         n += 1
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
@@ -428,7 +439,7 @@ def _clean_desc(html):
     return html.strip()
 
 
-def write_product(p):
+def write_product(p, related=None):
     raw = p["desc"]
     parts = [x.strip() for x in re.split(r"<br\s*/?>", raw) if x.strip()]
     lead = _clean_desc(parts[0]) if parts else ""
@@ -467,7 +478,8 @@ def write_product(p):
       'далі 1–3 робочі дні. Оплата карткою на сайті або накладений платіж.</div></div>'
       f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
       '</div></div>'
-      '<div class="buybar"><div class="buybar-inner">'
+      + (f'<section class="related"><h2>З цим купують</h2>{grid(related)}</section>' if related else "")
+      + '<div class="buybar"><div class="buybar-inner">'
       f'<div class="p">{p["price"]} ₴</div>'
       f'{buy_btn}'
       '</div></div>'

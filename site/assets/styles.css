@@ -226,3 +226,7 @@ footer.foot a{color:var(--accent)}
 .cat-controls .cf-reset:hover{color:var(--accent);border-color:var(--accent)}
 .btn.ghost{background:var(--surface);color:var(--accent);border:1px solid var(--accent)}
 #cat-more-wrap{display:flex;justify-content:center;padding:16px}
+
+/* ══ Крос-сел «З цим купують» на товарі ══ */
+.related{margin-top:24px}
+.related>h2{font-size:18px;margin:0 16px 8px}

@@ -119,6 +119,8 @@ def footer():
     return (
       '<footer class="foot">'
       f'<nav class="fnav">{nav}</nav>'
+      '<p class="fphone"><a href="tel:+380730150815">📞 +380 (73) 015-08-15</a> · '
+      '<a href="mailto:plutustoys@gmail.com">plutustoys@gmail.com</a></p>'
       '<p class="ftag">PlutusToys — іграшки з доставкою Новою Поштою по Україні.<br>'
       'Оплата карткою (LiqPay) або накладений платіж.</p>'
       '</footer>'
@@ -420,6 +422,11 @@ def write_product(p):
       f'<h1 class="prod">{esc(p["name"])}</h1>'
       f'<div class="price-row"><div class="price">{p["price"]} ₴</div>'
       f'<div class="avail {oos}">{avail}</div></div>'
+      '<div class="trust-badges">'
+        '<span class="tb">✓ Оплата при отриманні</span>'
+        '<a class="tb" href="returns.html">✓ Повернення 14 днів</a>'
+        '<span class="tb">✓ Доставка Новою Поштою</span>'
+      '</div>'
       '<div class="delivery"><span class="fox">🦊</span>'
       '<div><b>Доставка Новою Поштою</b> — від 65 ₴. Замовлення до 12:00 йдуть того ж дня, '
       'далі 1–3 робочі дні. Оплата карткою на сайті або накладений платіж.</div></div>'
@@ -653,7 +660,9 @@ def write_sitemap(prods, paged, static_urls=None):
     ідуть з нижчим пріоритетом; catalog.html — найвищий серед лістингів."""
     from datetime import date
     today = date.today().isoformat()
-    urls = [("index.html", "1.0", "daily")]
+    # головна — КОРІНЬ '/', а не '/index.html': збігається з canonical головної (page()),
+    # інакше конфліктний сигнал каноніку (loc {SITE_URL}/{u} з u='' дає {SITE_URL}/).
+    urls = [("", "1.0", "daily")]
     urls += list(static_urls or [])            # categories.html + сторінки довіри
     for fn in sorted(paged):
         secondary = bool(re.search(r"_\d+\.html$", fn))   # сторінка ≥2

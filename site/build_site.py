@@ -163,7 +163,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
     )
 
 def tile(p):
-    av = '<span class="av">є</span>' if p["stock"] > 0 else '<span class="av oos">нема</span>'
+    av = '<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>'
     img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" loading="lazy">'
            if p["photo"] else '<div class="ph"></div>')
     return (
@@ -365,8 +365,10 @@ def write_home(prods, cats, cat_list, cat_slug):
     body = (
       '<div class="hero"><div class="fox">🦊</div>'
       '<h1>Іграшки, що радують</h1>'
-      '<p>Доставка Новою Поштою по всій Україні. Оплата карткою або накладений платіж.</p>'
-      '<a class="btn" href="catalog.html">Перейти в каталог</a></div>'
+      '<p>Обираємо іграшки, які роблять дитину щасливою, а маму — спокійною. '
+      'Привезе Нова Пошта, а Плутус подбає про решту.</p>'
+      '<a class="btn" href="catalog.html">Обрати іграшку</a>'
+      '<p class="hero-note">🚚 Доставка Новою Поштою по Україні · оплата при отриманні або карткою</p></div>'
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
       f'<div class="catrow">{cat_tiles}</div>'
       '<div class="sec-title"><h2>Новинки</h2><a href="catalog.html">Дивитись усі →</a></div>'
@@ -374,7 +376,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body,
-        description="Дитячі іграшки з доставкою Новою Поштою по всій Україні: конструктори, ляльки, машинки, розвиваючі. Оплата карткою або накладений платіж. Магазин PlutusToys.",
+        description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі — з доставкою Новою Поштою по всій Україні. Оплата при отриманні або карткою.",
         canonical="index.html"))
 
 def _cut(text, n):

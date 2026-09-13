@@ -168,17 +168,21 @@
     if(!city || !wh) return;
 
     city.addEventListener("input", debounce(function(){
-      selectedCityRef=""; wh.value=""; wh.disabled=true; wh.placeholder="Спершу оберіть місто"; acWh.innerHTML="";
+      // Щойно користувач торкнувся міста — РОЗБЛОКОВУЄМО відділення й БІЛЬШЕ не вимикаємо його.
+      // Раніше поле лишалось disabled, доки не тапнеш підказку міста — на телефоні це зривало
+      // оформлення (не влучив пальцем у випадайку → відділення «мертве»). Тап по місту лише
+      // додає ref для автопідказок відділення; без тапу — ручний ввід відділення (він і так
+      // приймається як вільний текст, order_router розбирає при форварді).
+      selectedCityRef=""; wh.value=""; acWh.innerHTML="";
+      wh.disabled=false; wh.placeholder="Оберіть місто зі списку — або введіть відділення";
       var q=city.value.trim(); if(q.length<2){ acCity.innerHTML=""; return; }
       fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
         var cities=(d.cities||[]);
         renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, ref:c.ref, name:c.name}; }),
-          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; wh.disabled=false; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
-        // Фолбек: автокомпліт нічого не повернув — дозволяємо ручний ввід відділення (не блокуємо замовлення).
-        if(!cities.length){ wh.disabled=false; wh.placeholder="Введіть № або адресу відділення вручну"; }
+          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
       }).catch(function(){
-        // Фолбек при недоступному API НП: не лишаємо форму в глухому куті — ручний ввід.
-        acCity.innerHTML=""; wh.disabled=false; wh.placeholder="Введіть № або адресу відділення вручну";
+        // API НП недоступний — не лишаємо форму в глухому куті: підказок нема, ручний ввід уже дозволено.
+        acCity.innerHTML="";
       });
     }, 250));
 

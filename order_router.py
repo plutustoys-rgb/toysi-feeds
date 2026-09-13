@@ -229,10 +229,32 @@ def build_toysi_order(order: dict) -> dict:
             )
             shipping = None
         if shipping:
-            shipping_fields = {
-                "shipping_city_id": shipping["shipping_city_id"],
-                "shipping_warehouse_id": shipping["shipping_warehouse_id"],
-            }
+            # САМОДІАГНОСТИКА (принцип власника: код сам ловить збій, а не чекає скарги клієнта).
+            # Якщо просили КОНКРЕТНИЙ № відділення, а НП-резолв повернув ІНШИЙ — НЕ прикріплюємо
+            # реф (не відправляємо мовчки на чуже відділення — це і був клас багу «3→2» 2026-09-13).
+            # Лишаємо текст-адресу з правильним номером у np_branch → менеджер Toysi звірить вручну,
+            # + throttled-алерт власнику. False-positive малоймовірний: після exact-пріоритету у
+            # find_warehouse резолв віддає саме запитаний номер, тож гард спрацює лише на реальному
+            # розходженні (номера немає в НП / повернувся інший).
+            req = (warehouse_query or "").strip()
+            got = str(shipping.get("shipping_warehouse_id") or "").strip()
+            if req.isdigit() and got and got != req:
+                send_throttled_alert(
+                    f"wh-mismatch-{order['internal_order_id']}",
+                    f"⚠️ НП-резолв відділення розійшовся: {order['platform']} #{order['order_id']} "
+                    f"({city}) — просили №{req}, НП дала №{got}. Реф НЕ прикріплено, адреса піде "
+                    f"текстом для ручної звірки. Перевір відділення в замовленні.",
+                )
+                print(
+                    f"[order_router] ⚠️ warehouse mismatch req=№{req} got=№{got} "
+                    f"{order['internal_order_id']} — реф не прикріплено, текст-адреса",
+                    file=sys.stderr,
+                )
+            else:
+                shipping_fields = {
+                    "shipping_city_id": shipping["shipping_city_id"],
+                    "shipping_warehouse_id": shipping["shipping_warehouse_id"],
+                }
 
     first_name, last_name, middle_name = _split_recipient_name(
         order.get("customer_name", ""), order.get("platform", ""))

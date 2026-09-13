@@ -152,6 +152,7 @@
 
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";
+  var selectedWarehouseNumber = "";  // № обраного з автокомпліту відділення НП → віддаємо Toysi напряму
   function debounce(fn, ms){ var t; return function(){ var a=arguments, self=this; clearTimeout(t); t=setTimeout(function(){ fn.apply(self,a); }, ms); }; }
   function renderAc(box, opts, onPick){
     if(!opts.length){ box.innerHTML=""; return; }
@@ -173,7 +174,7 @@
       // оформлення (не влучив пальцем у випадайку → відділення «мертве»). Тап по місту лише
       // додає ref для автопідказок відділення; без тапу — ручний ввід відділення (він і так
       // приймається як вільний текст, order_router розбирає при форварді).
-      selectedCityRef=""; wh.value=""; acWh.innerHTML="";
+      selectedCityRef=""; selectedWarehouseNumber=""; wh.value=""; acWh.innerHTML="";
       wh.disabled=false; wh.placeholder="Оберіть місто зі списку — або введіть відділення";
       var q=city.value.trim(); if(q.length<2){ acCity.innerHTML=""; return; }
       fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
@@ -187,11 +188,12 @@
     }, 250));
 
     wh.addEventListener("input", debounce(function(){
+      selectedWarehouseNumber="";  // ввід руками скидає обраний № — щоб не лишити стале значення
       if(!selectedCityRef) return;
       var q=wh.value.trim();
       fetch("api/np/warehouse?city_ref="+encodeURIComponent(selectedCityRef)+"&q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
-        renderAc(acWh, (d.warehouses||[]).map(function(w){ return {label:w.description, name:w.description}; }),
-          function(pick){ wh.value=pick.name; acWh.innerHTML=""; });
+        renderAc(acWh, (d.warehouses||[]).map(function(w){ return {label:w.description, name:w.description, number:w.number}; }),
+          function(pick){ wh.value=pick.name; selectedWarehouseNumber=pick.number||""; acWh.innerHTML=""; });
       }).catch(function(){ acWh.innerHTML=""; });
     }, 250));
 
@@ -223,6 +225,8 @@
         email:(document.getElementById("f-email").value||"").trim(),
         city_name:(document.getElementById("f-city").value||"").trim(),
         warehouse_name:(document.getElementById("f-warehouse").value||"").trim(),
+        np_city_ref:selectedCityRef||"",            // CityRef НП, якщо місто обране з автокомпліту
+        np_warehouse_number:selectedWarehouseNumber||"", // № відділення, якщо обране з автокомпліту → Toysi напряму
         payment_method:payment
       };
       if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }

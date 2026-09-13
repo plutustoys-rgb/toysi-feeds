@@ -143,6 +143,15 @@ def build_order(payload: dict) -> tuple:
     pay_raw = (payload.get("payment_method") or "").strip().lower()
     payment_method = "prepaid" if pay_raw == "prepaid" else "cod"
 
+    # Структурні реф-поля НП з автокомпліту фронта: якщо клієнт ОБРАВ місто/відділення зі
+    # списку — маємо точний CityRef + № відділення → order_router віддасть Toysi їх НАПРЯМУ,
+    # без пошуку в НП (як EVA). Порожні (ручний ввід без вибору) → None → форвард парсить
+    # np_branch текстом, як раніше. Валідуємо формат: ref — GUID-подібний, № — цифри.
+    _cref = (payload.get("np_city_ref") or "").strip()
+    np_city_ref = _cref if re.fullmatch(r"[0-9a-fA-F-]{10,}", _cref) else None
+    _wnum = (payload.get("np_warehouse_number") or "").strip()
+    np_warehouse_number = _wnum if _wnum.isdigit() else None
+
     order_id = "PT-" + time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
     order = {
         "order_id": order_id,
@@ -153,7 +162,9 @@ def build_order(payload: dict) -> tuple:
         "customer_name": name,
         "phone": phone,
         "email": email,
-        "np_branch": f"{city}, {warehouse}",   # order_router.parse_np_branch розбере при форварді
+        "np_branch": f"{city}, {warehouse}",   # людський рядок (фолбек, якщо рефів нема)
+        "np_city_ref": np_city_ref,            # точний CityRef НП (автокомпліт) → Toysi напряму
+        "np_warehouse_number": np_warehouse_number,  # точний № відділення (автокомпліт) → Toysi напряму
         "items": items,
         "carrier": "nova_poshta",
     }

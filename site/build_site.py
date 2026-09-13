@@ -115,7 +115,11 @@ def footer():
 
 def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False):
     full_title = f"{title} — PlutusToys"
-    url = f"{SITE_URL}/{canonical}" if canonical else ""
+    # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
+    if canonical == "index.html":
+        url = f"{SITE_URL}/"
+    else:
+        url = f"{SITE_URL}/{canonical}" if canonical else ""
     meta = [
         f'<meta name="description" content="{esc(description)}">' if description else "",
         '<meta name="robots" content="noindex,follow">' if noindex else "",
@@ -136,6 +140,8 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
       f"<title>{esc(full_title)}</title>\n"
       f"{head_meta}"
+      "<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
+      "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n"
       "<link rel=\"stylesheet\" href=\"assets/styles.css\">\n"
       f"{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
       f"{header()}\n{body}\n{footer()}\n</div>\n"
@@ -233,7 +239,22 @@ def build():
     write_sitemap(prods, cat_list, cat_slug)
     write_robots()
 
-    print(f"[build] готово: {n} карток, {len(cat_list)} категорій, +index/catalog/cart/index.json/sitemap.xml/robots.txt")
+    # 8) ПРИБИРАННЯ ЗАСТАРІЛИХ сторінок від попередніх білдів: build пише лише поточний вибір,
+    # а старі product-/category-*.html лишались у site/ і віддавались із застарілими цінами/сміттям
+    # (реально знайдено 84 такі). Видаляємо ті, що не входять у поточний набір (пишемо УСІ актуальні
+    # вище ДО цього кроку, тож видаляємо лише справжні залишки).
+    valid = {f"product-{p['id']}.html" for p in prods} | {f"category-{s}.html" for s in cat_slug.values()}
+    removed = 0
+    for fn in os.listdir(OUT):
+        if (fn.startswith("product-") or fn.startswith("category-")) and fn.endswith(".html") and fn not in valid:
+            try:
+                os.remove(os.path.join(OUT, fn))
+                removed += 1
+            except OSError:
+                pass
+
+    print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, "
+          "+index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
 def chips(cat_list, cat_slug, active):
     out = [f'<a class="chip{"" if active else " active"}" href="catalog.html">Усі</a>']
@@ -268,7 +289,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     )
     body = (
       '<div class="hero"><div class="fox">🦊</div>'
-      '<h2>Іграшки, що радують</h2>'
+      '<h1>Іграшки, що радують</h1>'
       '<p>Доставка Новою Поштою по всій Україні. Оплата карткою або накладений платіж.</p>'
       '<a class="btn" href="catalog.html">Перейти в каталог</a></div>'
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
@@ -281,13 +302,29 @@ def write_home(prods, cats, cat_list, cat_slug):
         description="Дитячі іграшки з доставкою Новою Поштою по всій Україні: конструктори, ляльки, машинки, розвиваючі. Оплата карткою або накладений платіж. Магазин PlutusToys.",
         canonical="index.html"))
 
+def _cut(text, n):
+    """Обрізка по МЕЖІ СЛОВА (не посеред слова) + '…', якщо реально різали."""
+    text = (text or "").strip()
+    if len(text) <= n:
+        return text
+    return text[:n].rsplit(" ", 1)[0].rstrip(" ,.;:—–-") + "…"
+
+
+def _clean_desc(html):
+    """Прибирає сміття від вставки з ChatGPT: атрибути data-*/style, розкриває зайву вкладеність <p>.
+    Лишає лише простий inline-текст (жирний/списки формуються окремо)."""
+    html = re.sub(r'\s(?:data-[a-z-]+|style|class)="[^"]*"', "", html or "")
+    html = re.sub(r"</?p\b[^>]*>", "", html)   # прибираємо самі <p>-обгортки (текст лишається)
+    return html.strip()
+
+
 def write_product(p):
     raw = p["desc"]
     parts = [x.strip() for x in re.split(r"<br\s*/?>", raw) if x.strip()]
-    lead = parts[0] if parts else ""
+    lead = _clean_desc(parts[0]) if parts else ""
     if lead in ("-", "—", "–") or len(re.sub(r"<[^>]+>", "", lead)) < 3:
         lead = ""  # порожній/сміттєвий опис не показуємо
-    specs = [x for x in parts[1:] if x.startswith("<b>") and "</b>" in x and ":" in x
+    specs = [_clean_desc(x) for x in parts[1:] if x.startswith("<b>") and "</b>" in x and ":" in x
              and not x.rstrip().endswith("</b>")][:6]
     desc_html = f"<p>{lead}</p>" if lead else ""
     if specs:
@@ -296,8 +333,12 @@ def write_product(p):
              if p["photo"] else '<div class="ph">Фото готуємо</div>')
     avail = "У наявності" if p["stock"] > 0 else "Немає в наявності"
     oos = "" if p["stock"] > 0 else "oos"
+    in_stock = p["stock"] > 0
     add = json.dumps({"id": p["id"], "name": p["name"], "price": p["price"], "photo": p["photo"]},
                      ensure_ascii=False)
+    # OOS: кнопку деактивуємо (немає data-add) — не даємо покласти в кошик те, чого нема (баг рев'ю).
+    buy_btn = (f"<button class=\"btn\" data-add='{esc(add)}'>У кошик</button>" if in_stock
+               else '<button class="btn" disabled>Немає в наявності</button>')
     body = (
       '<div class="pad-bar">'
       f'<div class="photo">{photo}</div>'
@@ -313,18 +354,25 @@ def write_product(p):
       '</div></div>'
       '<div class="buybar"><div class="buybar-inner">'
       f'<div class="p">{p["price"]} ₴</div>'
-      f"<button class=\"btn\" data-add='{esc(add)}'>У кошик</button>"
+      f'{buy_btn}'
       '</div></div>'
     )
-    # SEO: опис для сніпета (без HTML, обрізаний) + JSON-LD Product для Google Rich Results
+    # SEO: опис для сніпета (без HTML, ОБРІЗАНИЙ ПО СЛОВУ) + JSON-LD Product для Google Rich Results
     plain = re.sub(r"<[^>]+>", "", lead).strip()
-    meta_desc = (plain or f'{p["name"]} — купити з доставкою Новою Поштою по Україні. PlutusToys.')[:160]
+    meta_desc = _cut(plain, 155) or f'{p["name"]} — купити з доставкою Новою Поштою по Україні. PlutusToys.'
+    # brand зі специфікацій «<b>Бренд:</b> X» — Google Rich Results цінує brand у Product.
+    brand = ""
+    for s in specs:
+        m = re.search(r"бренд\s*:?\s*</b>\s*(.+)$", s, re.I)
+        if m:
+            brand = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+            break
     ld = {
         "@context": "https://schema.org", "@type": "Product",
         "name": p["name"], "category": p.get("category") or "",
         "sku": str(p["id"]),
         "image": [p["photo"]] if p["photo"] else [],
-        "description": plain[:500] or p["name"],
+        "description": _cut(plain, 500) or p["name"],
         "offers": {
             "@type": "Offer",
             "price": str(p["price"]), "priceCurrency": "UAH",
@@ -332,6 +380,8 @@ def write_product(p):
             "url": f'{SITE_URL}/product-{p["id"]}.html',
         },
     }
+    if brand:
+        ld["brand"] = {"@type": "Brand", "name": brand}
     # безпечно в <script>: екрануємо КОЖЕН '<' у < (валідний JSON) — жоден HTML-вектор
     # (</script>, <!--, <script) не може вийти літерально, навіть із назви товару.
     # chr(92) = '\' — однозначно, без крихкого backslash-літерала.

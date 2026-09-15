@@ -496,6 +496,26 @@ EVA_STOP_WORDS_IN_NAME = {
     "енергія плюс", "київська фабрика іграшок", "країна іграшок", "курносики",
 }
 
+# Кураторський ручний blocklist ЗА ID — для товарів, безпечних за назвою/вендором
+# (стоп-фільтри вище їх НЕ ловлять), але непридатних для EVA з ПРЕДМЕТНОЇ причини.
+# На відміну від whole-word назв-фільтра, тут точковий ID — БЕЗ побічних жертв:
+# додати франшизне слово в EVA_STOP_WORDS_IN_NAME викинуло б і сотні ЛЕГІТИМНИХ
+# ліцензійних товарів (напр. "minecraft" — 130 назв у каталозі: пазли, Funko Pop),
+# а ID б'є рівно по потрібному SKU. Застосовується ЗАВЖДИ (складається з excluded
+# у _qualifies_for_feed і в _build_xml), і СПРАЦЬОВУЄ РАНІШЕ за промо-обхід
+# EVA_EXCLUDED_CATEGORIES — тобто виключений SKU не протягне навіть промо.
+# Рішення власника 2026-09-15 («п.7 згоден») за звітом SEO 2026-08-29:
+#   283436 — «Пістолет з металевими деталями»: за коробкою це AIRSOFT GUN C27A,
+#            6 mm BB (страйкбольна пневматика) — вікове обмеження, не дитяча іграшка.
+#   280395, 280387, 280394 — 3D-друковані брелоки-репліки чужих ТМ
+#            (Minecraft/Ендермен, «Як приборкати дракона», «Ліло і Стіч»), vendor MIC,
+#            ліцензії немає — юридичний ризик листа від правовласника.
+# УВАГА (винесено власнику окремо 2026-09-15): у каталозі є ще ДЕСЯТКИ схожих
+# неліцензійних 3D-друк реплік того ж класу (Enderman/Беззубик/Стіч брелоки й фігурки
+# від MIC), яких SEO не бачив — вони були поза 15-товарною партією описів. Рішення
+# «виключати весь клас чи лише ці» — за власником; тут лишаємо РІВНО схвалені SKU.
+EVA_MANUAL_EXCLUDE_IDS = {"283436", "280395", "280387", "280394"}
+
 # Whole-word (межа слова, Unicode) + без урахування регістру. Багатослівні бренди
 # ("hot wheels") матчаться як фраза. Розділювачі -/_ нормалізуємо в пробіл (як
 # _normalize_brand), щоб "play-doh" ловилось і як "play doh".
@@ -774,7 +794,7 @@ def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: 
 
     Валідність: реальна собівартість >= MIN_SUPPLIER_PRICE, є vendor, не стоп-бренд
     EVA, не заборонена країна походження, є хоч одне https-фото."""
-    excluded = excluded or set()
+    excluded = (excluded or set()) | EVA_MANUAL_EXCLUDE_IDS
     try:
         cost = real_toysi_cost(item)
     except (ValueError, TypeError):
@@ -898,7 +918,7 @@ def _build_xml(
 
     offers_el      = ET.SubElement(shop, "offers")
     overrides      = price_overrides or {}
-    excluded       = exclude_ids or set()
+    excluded       = (exclude_ids or set()) | EVA_MANUAL_EXCLUDE_IDS
     desc_overrides = description_overrides or {}
     described_count = 0
 

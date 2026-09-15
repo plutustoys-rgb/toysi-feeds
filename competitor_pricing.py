@@ -1086,6 +1086,11 @@ ALLO_COMMISSION_DEFAULT = 0.20
 PAYMENT_COMMISSION: dict[str, float] = {
     "prom": 0.037,
     "rozetka": 0.0,
+    # Власний сайт plutustoys.com.ua: маркет-комісії НЕМА (get_platform_commission
+    # "site" = 0) — у цьому й сенс сайту. Тут лише еквайринг картки (LiqPay ~2.75%),
+    # взято консервативно 2.8% і використовується ВИКЛЮЧНО для no-loss floor у
+    # decide_price_for_platform("site"): чиста виручка після еквайрингу ≥ собівартість.
+    "site": 0.028,
 }
 
 FIELDNAMES = [
@@ -1244,6 +1249,12 @@ def get_platform_commission(
         return EVA_COMMISSION_TOYS
     if platform == "allo":
         return ALLO_COMMISSION_DEFAULT
+    if platform == "site":
+        # Власний сайт plutustoys.com.ua: маркет-комісії НЕМА — це його структурна
+        # перевага (втеча від комісій площадок). No-loss гарантує лише еквайринг
+        # (PAYMENT_COMMISSION["site"]) у decide_price_for_platform. Дозволяє глибший
+        # undercut ринку за тієї ж маржі, ніж Prom/Rozetka з їхньою комісією.
+        return 0.0
     raise ValueError(f"Невідомий майданчик: {platform!r}, очікую один з {PLATFORMS}")
 
 

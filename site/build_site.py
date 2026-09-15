@@ -15,7 +15,7 @@ PlutusToys — статичний генератор власного магаз
 Ціна = real_toysi_discounted × 1.5 (без комісії маркетплейсу — сенс власного сайту).
 LIMIT (env) обмежує к-ть карток для швидкого демо-прогону; порожній = увесь in-stock+фото.
 """
-import os, re, sys, json, html, unicodedata
+import os, re, sys, json, html, math, unicodedata
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 
 import parser as tp
@@ -88,9 +88,16 @@ def price_of(it, competitor=None):
     floor = собівартість×(1+3%) + candidate×еквайринг — прибуток гарантований).
 
     ВАЖЛИВО — лише ПІДРІЗАЄМО вниз: беремо min(базова, конкурентна). Ніколи не
-    піднімаємо ціну над нашою ×1.5 (якщо конкурент дорожчий за нас — лишаємось на ×1.5).
-    Це прицільно лікує дефект «сайт найдорожчий на ринку саме на ходових товарах з
-    конкурентом» (Консультант 2026-09-15), не чіпаючи товари без конкурента.
+    піднімаємо ціну над нашою ×1.5. При конкуренті ВИЩЕ за flat+PRICE_STEP лишаємось
+    рівно на ×1.5; у вузькій смузі (flat, flat+PRICE_STEP] ціна = конкурент−PRICE_STEP,
+    тобто трохи нижче flat (усе одно НЕ вище — маржа лише більшає). Це прицільно лікує
+    дефект «сайт найдорожчий на ринку саме на ходових товарах з конкурентом»
+    (Консультант 2026-09-15), не чіпаючи товари без конкурента.
+
+    Округлення конкурентної ціни — math.ceil (ВГОРУ): decide_price_for_platform
+    гарантує net≥cost на float-ціні, а округлення вниз (int(round)) після застосування
+    еквайрингу до заниженого цілого пробивало б floor на ≤0.5₴ (аудит PR #536). ceil
+    зберігає net≥cost ціною ≤0.97₴ маржі.
 
     Нема даних конкурента (локальна збірка без свіжого state / товар без живого
     конкурента) → рівно поточна поведінка ×1.5 (безпечна деградація)."""
@@ -101,7 +108,7 @@ def price_of(it, competitor=None):
         except (ValueError, TypeError):
             return flat
         if cost > 0:
-            comp_price = int(round(cp.decide_price_for_platform(cost, competitor, "site")["price"]))
+            comp_price = math.ceil(cp.decide_price_for_platform(cost, competitor, "site")["price"])
             if comp_price < flat:          # лише вниз до ринку, ніколи не вище нашої ×1.5
                 return comp_price
     return flat
@@ -230,11 +237,16 @@ def build():
         # не ведемо вітрину уціненим/дефектним товаром — виключаємо «Уцінку»
         if "уцінк" in catname.lower() or "уценк" in catname.lower() or name.lower().startswith("уцінка"):
             continue
+        # Видимість вітрини вирішує БАЗОВА (×1.5) ціна — «дрібниця-капкан» відсікається
+        # за ВЛАСНОЮ вартістю товару, а не за тим, що конкурент демпінгує. Інакше підріз
+        # міг би сховати легітивний товар (самокат тощо) лише через дешевого конкурента
+        # (зауваження аудиту #536, п. g). Набір товарів вітрини не залежить від підрізу.
+        flat = int(round(cp.toysi_discounted_price(it) * PRICE_MULT))
+        if flat < MIN_PRICE:
+            continue
         competitor = comp_prices.get(str(it.get("id")))
         price = price_of(it, competitor)
-        if price < MIN_PRICE:
-            continue
-        if competitor and price < int(round(cp.toysi_discounted_price(it) * PRICE_MULT)):
+        if competitor and price < flat:
             n_undercut += 1
         prods.append({
             "id": str(it.get("id")), "name": name, "price": price,

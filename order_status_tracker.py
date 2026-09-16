@@ -511,6 +511,13 @@ def _maybe_ticket_rozetka_cancelled(conn, order: dict) -> None:
     if live_status is None or live_status not in rozetka_client.ROZETKA_CANCELLED_STATUSES:
         return
 
+    # Скасовано в КАБІНЕТІ Rozetka ПІСЛЯ форварда. Якщо посилку вже відправлено (є ТТН) —
+    # створюємо зворотну ТТН НП (ми — юридичний відправник), не чекаючи, поки Toysi відобразить
+    # статус. Ідемпотентно + dry-run-гейт усередині _create_np_return; якщо ТТН ще нема (не
+    # відвантажено) — там ранній вихід, і нижче лишається тікет Toysi на скасування.
+    _create_np_return(conn, order, order.get("toysi_ttn"),
+                      reason=f"Rozetka #{order.get('order_id')} — покупець скасував у кабінеті")
+
     toysi_id = order.get("toysi_order_id")
     # Тон повідомлення — звернення ДО Toysi (готове до пересилання менеджеру
     # постачальника): перша строка одразу проситься переслати, без внутрішньої
@@ -550,13 +557,14 @@ def _maybe_ticket_rozetka_cancelled(conn, order: dict) -> None:
     )
 
 
-def _maybe_create_np_return(conn, order: dict, delivery_status: str, ttn: str) -> None:
-    """Автоповернення НП при скасуванні покупцем: якщо посилку вже відправлено (є ТТН),
-    а покупець скасував (delivery_status='cancelled') — створити зворотну ТТН НП, щоб
-    власник не оформляв її вручну. Створення повернення в НП виконує клієнт-ВІДПРАВНИК;
-    наш акаунт це вміє (звірено живо 2026-09-05: nova_poshta.getReturnOrdersList повертає
-    наші реальні повернення). Причина «Відмова від доставки», підтип «Відправник скасував
-    доставку» (nova_poshta.RETURN_* — env-налаштовні).
+def _create_np_return(conn, order: dict, ttn: str, reason: str) -> None:
+    """ЯДРО автоповернення НП: якщо посилку вже відправлено (є ТТН) — створити зворотну
+    ТТН НП, щоб власник не оформляв її вручну. Викликається з БУДЬ-ЯКОГО джерела
+    скасування: Toysi-статус «скасовано» АБО скасування покупцем у КАБІНЕТІ маркетплейсу
+    (`reason` пояснює джерело у FYI/нотатці). Створення повернення виконує клієнт-
+    ВІДПРАВНИК; юридичний відправник наших дропшип-посилок — МИ (ФОП), Toysi лише фізично
+    передає нашим NP-API (уточнення власника 2026-09-16), тож наш ключ це вміє (звірено
+    живо: nova_poshta.getReturnOrdersList повертає наші реальні повернення).
 
     ⚙️ ГЕЙТ БЕЗПЕКИ `NP_RETURN_APPLY`: '0' (ДЕФОЛТ) → DRY-RUN: лише read-only перевірка
     можливості (CheckPossibilityCreateReturn) + FYI власнику, БЕЗ створення реальної
@@ -567,10 +575,18 @@ def _maybe_create_np_return(conn, order: dict, delivery_status: str, ttn: str) -
     зворотні посилки (= гроші). Best-effort + self-diagnosing: будь-яка помилка НП → повний
     лог + Telegram-FYI, НЕ валить відстеження інших замовлень і мітку НЕ ставить (ретрай
     наступним циклом). Стосується всіх площадок (Prom/EVA/Rozetka) — ТТН НП спільна."""
-    if delivery_status != "cancelled" or not ttn:
+    if not ttn:
         return
     if order.get("np_return_created_at"):
-        return  # вже створено — не дублюємо реальне повернення
+        return  # вже створено (мітка з БД, крос-цикл) — не дублюємо реальне повернення
+    # ⚠️ ГРОШІ (аудит #539): обидва тригери (кабінетне скасування Rozetka + Toysi-статус
+    # 'cancelled') можуть спрацювати на ОДИН order-dict в ОДНОМУ циклі track_orders. Мітка
+    # np_return_created_at, яку ставить перший виклик, іде лише в БД — in-memory dict у циклі
+    # НЕ перечитується, тож другий виклик не побачив би її й створив ДРУГУ реальну зворотну
+    # ТТН. Транзієнтний прапорець на самому dict закриває це вікно (і заразом дедуп dry-run FYI).
+    if order.get("_np_return_handled"):
+        return
+    order["_np_return_handled"] = True
 
     internal_id = order.get("internal_order_id")
     label = (f"{internal_id} (Toysi #{order.get('toysi_order_id')}, "
@@ -582,7 +598,7 @@ def _maybe_create_np_return(conn, order: dict, delivery_status: str, ttn: str) -
         # DRY-RUN: показуємо власнику, чи можливе повернення — БЕЗ створення.
         verdict = "можливе ✅" if poss["possible"] else f"НЕ можливе — {poss['error']}"
         msg = (f"🧪 Автоповернення НП (dry-run, створення вимкнено NP_RETURN_APPLY=0): "
-               f"скасовано {label}. Перевірка: повернення {verdict}.")
+               f"{reason} · {label}. Перевірка: повернення {verdict}.")
         print(f"[order_status_tracker] {msg}", file=sys.stderr)
         send_telegram_message(msg)
         return
@@ -595,7 +611,7 @@ def _maybe_create_np_return(conn, order: dict, delivery_status: str, ttn: str) -
 
     try:
         res = nova_poshta.create_return_order(
-            ttn, note=f"Автоповернення: покупець скасував замовлення {internal_id}")
+            ttn, note=f"Автоповернення ({reason}): {internal_id}")
     except Exception as e:  # noqa: BLE001 — self-diagnosing: ескалюємо, не мовчимо; ретрай наступним циклом
         msg = f"🚨 Автоповернення НП {label} НЕ створено: {e}. Оформи вручну."
         print(f"[order_status_tracker] {msg}", file=sys.stderr)
@@ -613,6 +629,17 @@ def _maybe_create_np_return(conn, order: dict, delivery_status: str, ttn: str) -
     # уже створене, тож мітка мусить пережити будь-який подальший збій циклу.
     conn.commit()
     send_telegram_message(f"↩️ Автоповернення НП створено для {label}: зворотна ТТН {return_ttn}.")
+
+
+def _maybe_create_np_return(conn, order: dict, delivery_status: str, ttn: str) -> None:
+    """Тригер автоповернення від Toysi-СТАТУСУ: коли Toysi веде замовлення як
+    «скасовано» (delivery_status='cancelled', код 10). Ядро — _create_np_return.
+    Джерело скасування в кабінеті маркетплейсу обробляється окремо (див.
+    _maybe_ticket_rozetka_cancelled) — там частіше й раніше видно скасування покупцем."""
+    if delivery_status != "cancelled":
+        return
+    _create_np_return(conn, order, ttn,
+                      reason=f"Toysi-статус «скасовано» — {order.get('internal_order_id')}")
 
 
 def track_orders() -> None:

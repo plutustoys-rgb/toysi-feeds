@@ -7,6 +7,12 @@ from dotenv import load_dotenv
 
 from orders_db import get_connection, get_orders_awaiting_payment, mark_payment_confirmed, update_delivery_status
 
+# UTF-8-вивід: стрілка «→» у логах підтвердження інакше валить UnicodeEncodeError на
+# cp1251-консолі (десктоп без PYTHONUTF8). На VPS (UTF-8/systemd) без різниці; тут — щоб
+# крах друку не заважав циклу підтверджень (аудит PR #538).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 load_dotenv()
 
 PRIVAT_AUTOCLIENT_ID    = os.environ.get("PRIVAT_AUTOCLIENT_ID", "")

@@ -24,6 +24,13 @@ import sys
 
 from orders_db import get_connection, mark_payment_confirmed, _row_to_dict
 
+# UTF-8-вивід: інакше emoji/стрілки у print валять UnicodeEncodeError на cp1251-консолі
+# (Windows-десктоп без PYTHONUTF8). Критично тут: крах друку стається ПІСЛЯ
+# mark_payment_confirmed, але ДО коміту контекст-менеджера → rollback → підтвердження
+# НЕ збереглося б. reconfigure знімає цей ризик (аудит PR #538).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 
 def main() -> None:
     if len(sys.argv) != 2 or sys.argv[1].strip() in ("-h", "--help", ""):

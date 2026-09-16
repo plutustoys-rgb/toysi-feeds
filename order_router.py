@@ -593,39 +593,42 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
         # Номер замовлення Toysi ВЕДЕ підпис — щоб їхні логісти зіставили наклейку з замовленням
         # (пряме прохання Toysi 2026-08-21). Далі — наш Rozetka-номер і ТТН (номер перевізника).
         toysi_no = order.get("toysi_order_id")
-        text = ((f"🟢 ROZETKA Delivery — Ваше замовлення №{toysi_no}\n" if toysi_no
+        # Друкований RMP-номер для наклейки+підпису. Self-heal: якщо збережений/створений ttn —
+        # кур'єрський (723-...), беремо канонічний RMP із замовлення (інакше друк падає code 1005).
+        print_ttn = rozetka_client.printable_delivery_ttn(order["order_id"], ttn) if ttn else None
+        # Номер замовлення Toysi ВЕДЕ підпис — щоб їхні логісти зіставили наклейку з замовленням
+        # (пряме прохання Toysi 2026-08-21). Далі — наш Rozetka-номер і ТТН (RMP).
+        base = ((f"🟢 ROZETKA Delivery — Ваше замовлення №{toysi_no}\n" if toysi_no
                  else "🟢 ROZETKA Delivery\n")
                 + f"(наш Rozetka-№ {order['internal_order_id']})\n"
-                + (f"ТТН: {ttn}\n" if ttn else "")
+                + (f"ТТН: {print_ttn}\n" if print_ttn else "")
                 + f"Товар: {items}\n"
                 f"Пункт видачі: {order.get('np_branch', '')}\n"
-                f"Отримувач: {order.get('customer_name', '')}, тел {order.get('phone', '')}\n"
-                + ("Наклейка ТТН — у файлі. Дякую!" if ttn else "Дякую!"))
+                f"Отримувач: {order.get('customer_name', '')}, тел {order.get('phone', '')}\n")
+        file_caption = base + "Наклейка ТТН — у файлі. Дякую!"
         dest = "тест (номер власника)" if test_mode else "РЕАЛЬНИЙ Toysi (@admtoys)"
-        # Крок 2а: якщо є ТТН — спробувати надіслати ГОТОВУ наклейку ФАЙЛОМ (PDF) з текстом у
-        # підписі: Toysi клеїть її на посилку. Best-effort — якщо друк/відправка файлу впала,
-        # фолбек на текст-лише (щоб маркування все одно дійшло). Форму відповіді ще не звірено
-        # живо (токен на VPS) → збій тут очікуваний і не критичний.
+        # Крок 2а: наклейка (PDF) — САМ СЕНС маркування (Toysi клеїть її на посилку; доступу до
+        # нашого кабінета Rozetka вони не мають, самі роздрукувати не можуть). Тож маркування
+        # вважаємо надісланим (sent=True) ЛИШЕ коли РЕАЛЬНО пішов файл. Якщо файл не пішов —
+        # НЕ шлемо текст (він без наклейки не дієвий, а раніше ще й брехливо казав «у файлі»):
+        # лишаємо sent=False → ретрай-пас допробує файл наступного циклу, а на вичерпанні спроб
+        # спрацює _alert_marking_failed (алерт НАМ, не Toysi). Це закриває інцидент 100451689.
         sent_file = False
-        if ttn:
+        if print_ttn:
             try:
-                pdf = rozetka_client.fetch_delivery_label(ttn)
-                _fname = (f"zamovlennia_{toysi_no}_ttn_{ttn}.pdf" if toysi_no
-                          else f"rozetka_ttn_{ttn}.pdf")   # номер Toysi у назві — для матчингу логістами
+                pdf = rozetka_client.fetch_delivery_label(print_ttn)
+                _fname = (f"zamovlennia_{toysi_no}_ttn_{print_ttn}.pdf" if toysi_no
+                          else f"rozetka_ttn_{print_ttn}.pdf")   # номер Toysi у назві — для матчингу логістами
                 telegram_userbot_client.send_marking_file(
-                    pdf, filename=_fname, caption=text, to_toysi=not test_mode)
+                    pdf, filename=_fname, caption=file_caption, to_toysi=not test_mode)
                 sent_file = True
                 print(f"[order_router] RZ Delivery наклейка-PDF {order['internal_order_id']} "
-                      f"({ttn}) → {dest}: надіслано файлом", file=sys.stderr)
-            except Exception as e:  # noqa: BLE001 — фолбек на текст нижче
-                print(f"[order_router] RZ Delivery наклейку-PDF не надіслано (фолбек на текст) "
-                      f"для {order.get('internal_order_id')}: {e}", file=sys.stderr)
-        if sent_file:
-            sent = True
-        else:
-            sent = bool(telegram_userbot_client.send_marking(text, to_toysi=not test_mode))
-            print(f"[order_router] RZ Delivery маркування {order['internal_order_id']} → {dest}: "
-                  f"{'надіслано (текст)' if sent else 'НЕ надіслано'}", file=sys.stderr)
+                      f"({print_ttn}) → {dest}: надіслано файлом", file=sys.stderr)
+            except Exception as e:  # noqa: BLE001 — не шлемо текст-брехню; ретрай допробує файл
+                print(f"[order_router] RZ Delivery наклейку-PDF не надіслано (буде ретрай, "
+                      f"без тексту) для {order.get('internal_order_id')} ({print_ttn}): {e}",
+                      file=sys.stderr)
+        sent = sent_file
     except Exception as e:  # noqa: BLE001 — best-effort, не валимо order flow
         print(f"[order_router] RZ Delivery маркування не надіслано (не критично) для "
               f"{order.get('internal_order_id')}: {e}", file=sys.stderr)
@@ -796,6 +799,11 @@ def _alert_marking_failed(order: dict, attempts: int, ttn: str) -> None:
     (правило власника: запобіжник має сам казати, чому впав і що робити). Best-effort."""
     iid = order.get("internal_order_id")
     toysi_no = order.get("toysi_order_id")
+    # Друкований RMP-номер для ручної команди (raw ttn може бути кур'єрським → друк відхилив би 1005).
+    try:
+        ttn = rozetka_client.printable_delivery_ttn(order.get("order_id"), ttn) or ttn
+    except Exception:  # noqa: BLE001 — алерт best-effort, лишаємо як є
+        pass
     msg = (
         f"🚨 RZ Delivery: наклейку для {iid} (Toysi №{toysi_no or '?'}, ТТН {ttn or '—'}) "
         f"НЕ надіслано за {attempts} спроб. Замовлення В Toysi передано, але маркування не пішло.\n"

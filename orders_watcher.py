@@ -520,11 +520,28 @@ def _convert_rozetka_order(order: dict) -> dict:
     # інцидент 903719616 2026-08-20). COD — payment_confirmed не важить (форвард одразу), тож
     # зайвий API-виклик статусу оплати НЕ робимо.
     payment_confirmed = rozetka_client.is_order_paid(order["id"]) if pm == "prepaid" else False
-    # № відділення НП з площадки (delivery.place_number, напр. '253' — звірено на 903652847):
-    # протягуємо, щоб build_toysi_order віддав Toysi точний вибір клієнта БЕЗ пошуку відділення
-    # в НП. ЛИШЕ для НП — у RZ-Delivery place_number містить опис ЖК, не номер відділення.
-    _rz_wh = (str(delivery.get("place_number") or "").strip()
-              if _rozetka_carrier(order) == "nova_poshta" else "") or None
+    # ТОЧНИЙ вибір клієнта — БЕЗ гадання. Rozetka в delivery.ref_id дає РЕФ відділення НП, яке
+    # обрав клієнт. З нього ОДИН запит (nova_poshta.warehouse_by_ref) віддає CityRef + номер →
+    # кладемо обидва → build_toysi_order передає Toysi напряму, БЕЗ пошуку міста за назвою.
+    # Це усуває клас «однойменних сіл» (інцидент 906224962: 4 «Дмитрівки» в Київській — find_city
+    # за назвою слав у чуже село Бородянський замість Бучанського). Фолбок (ref_id нема / НП
+    # недоступна) — place_number як номер, місто резолвиться далі як раніше (не гіршає).
+    _rz_wh = None
+    _rz_city_ref = None
+    if _rozetka_carrier(order) == "nova_poshta":
+        _wh = None
+        _wh_ref = (delivery.get("ref_id") or "").strip()
+        if _wh_ref:
+            try:
+                _wh = nova_poshta.warehouse_by_ref(_wh_ref)
+            except Exception as _e:  # noqa: BLE001 — не валимо конвертацію; фолбек нижче
+                print(f"[orders_watcher] Rozetka NP warehouse_by_ref {order.get('id')} "
+                      f"({_wh_ref}): {_e}", file=sys.stderr)
+        if _wh and _wh.get("city_ref") and _wh.get("number"):
+            _rz_city_ref = _wh["city_ref"]
+            _rz_wh = _wh["number"]
+        else:
+            _rz_wh = str(delivery.get("place_number") or "").strip() or None
     return {
         "order_id": str(order["id"]),
         "platform": "rozetka",
@@ -533,6 +550,7 @@ def _convert_rozetka_order(order: dict) -> dict:
         "payment_confirmed": payment_confirmed,
         "customer_name": _rozetka_customer_name(order),
         "np_warehouse_number": _rz_wh,  # точний № відділення НП → build_toysi_order віддає напряму
+        "np_city_ref": _rz_city_ref,    # точний CityRef із рефа відділення (delivery.ref_id) → без гадання міста
 
         # ОТРИМУВАЧ (order.recipient_phone) ПЕРШИМ, не замовник (order.user_phone): для доставки НП
         # телефон — це кого повідомляють/кому віддають посилку. Інцидент 904295184 (2026-08-30):

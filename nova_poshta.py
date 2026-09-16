@@ -157,6 +157,31 @@ def find_warehouse(city_ref: str, warehouse_query: str = "") -> dict:
     return None
 
 
+def warehouse_by_ref(warehouse_ref: str) -> dict | None:
+    """Точне відділення НП за його Ref — БЕЗ пошуку за назвою/номером. Повертає
+    {city_ref, number, description} або None (нема ключа/помилка/не знайдено).
+
+    Навіщо: площадки дають ТОЧНИЙ Ref відділення, яке обрав клієнт (Rozetka —
+    delivery.ref_id). З нього getWarehouses(Ref=...) віддає рівно одне відділення з
+    його CityRef і Number → передаємо Toysi напряму (shipping_city_id+shipping_warehouse_id),
+    БЕЗ гадання міста за назвою. Це усуває клас «однойменних сіл» (інцидент 906224962:
+    4 «Дмитрівки» в Київській обл. — посилка йшла в чуже село через find_city за назвою)."""
+    if not (warehouse_ref or "").strip():
+        return None
+    try:
+        data = _call("AddressGeneral", "getWarehouses", {"Ref": warehouse_ref.strip()})
+    except NovaPoshtaAPIError:
+        return None
+    if not data:
+        return None
+    w = data[0]
+    return {
+        "city_ref": w.get("CityRef"),
+        "number": (w.get("Number") or "").strip(),
+        "description": w.get("Description") or "",
+    }
+
+
 def search_cities(query: str, limit: int = 8) -> list:
     """Список міст для АВТОКОМПЛІТУ на checkout (на відміну від find_city, що вертає один
     найкращий збіг для резолву). Кожен елемент — {ref, name, area}. Порожній запит → [].

@@ -75,6 +75,40 @@ def find_city(city_name: str, area_hint: str = "", limit: int = 5) -> dict:
     return {"ref": top.get("Ref"), "name": top.get("Description")}
 
 
+def find_settlement_ref(city_name: str, area: str = "", district: str = "") -> str | None:
+    """Точний NP CityRef (DeliveryCity) за назвою + ОБЛАСТЮ + РАЙОНОМ — для сіл-омонімів.
+    Реальний баг (Rozetka 906224962, гроші): «Дмитрівка» в Київській обл. існує в 4 районах
+    (Бучанський/Бородянський/Фастівський/Вишгородський); `find_city` (getCities, лише область)
+    брав НЕ той → посилка в чуже село. `searchSettlements` дає Area(область)+Region(район)+
+    DeliveryCity(NP-ref); тут дизамбіг за районом.
+
+    Повертає NP-ref, ЛИШЕ коли визначили однозначно:
+      • є район і в цій області знайдено РІВНО одне поселення з таким районом; АБО
+      • району нема, але за назвою в цій області РІВНО один кандидат.
+    Інакше None → викликач лишає резолюцію на find_city (не гіршає за поточну поведінку).
+    Помилка API / порожньо → None (не валимо конвертацію замовлення)."""
+    if not (city_name or "").strip():
+        return None
+    try:
+        res = _call("Address", "searchSettlements", {"CityName": city_name.strip(), "Limit": "50"})
+    except NovaPoshtaAPIError:
+        return None
+    addrs = (res[0].get("Addresses") if res else None) or []
+    if not addrs:
+        return None
+    area_l = (area or "").lower().replace("обл.", "").replace("область", "").strip()
+    dist_l = (district or "").lower().replace("р-н", "").replace("район", "").strip()
+    in_area = [a for a in addrs if not area_l or area_l in (a.get("Area") or "").lower()]
+    if dist_l:
+        by_district = [a for a in in_area if dist_l in (a.get("Region") or "").lower()]
+        if len(by_district) == 1:
+            return by_district[0].get("DeliveryCity")
+        return None  # район заданий, але не дав однозначного збігу — не гадаємо
+    if len(in_area) == 1:
+        return in_area[0].get("DeliveryCity")
+    return None  # неоднозначно без району — не гадаємо (лишаємо find_city)
+
+
 def settlement_raion(city_name: str, settlement_ref: str = "", area_hint: str = "") -> str:
     """Район (`getSettlements.RegionsDescription`) населеного пункту. Потрібен, бо
     Toysi-менеджер звіряє район з ТТН для КОЖНОГО замовлення (пряме прохання

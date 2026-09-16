@@ -525,6 +525,23 @@ def _convert_rozetka_order(order: dict) -> dict:
     # в НП. ЛИШЕ для НП — у RZ-Delivery place_number містить опис ЖК, не номер відділення.
     _rz_wh = (str(delivery.get("place_number") or "").strip()
               if _rozetka_carrier(order) == "nova_poshta" else "") or None
+    # ТОЧНИЙ NP CityRef за назвою+ОБЛАСТЮ+РАЙОНОМ — дизамбіг сіл-омонімів. Rozetka НЕ дає NP-ref,
+    # але дає район у delivery.city.title (напр. «Дмитрівка, Бучанський р-н, Київська обл.»); без
+    # району build_toysi_order резолвив місто лише за назвою+областю й брав ЧУЖЕ село (реальний
+    # інцидент 906224962: 4 Дмитрівки в Київській, посилка пішла в Бородянський замість Бучанського).
+    # Резолвимо ТУТ і кладемо в np_city_ref → build_toysi_order віддає Toysi точний ref, як для EVA.
+    _rz_city_ref = None
+    if _rozetka_carrier(order) == "nova_poshta":
+        _city = delivery.get("city") or {}
+        _name = (_city.get("name_ua") or _city.get("city_name") or "").strip()
+        _region = (_city.get("region_title") or "").strip()
+        _m = re.search(r",\s*([^,]+?)\s+р-н", _city.get("title") or "")
+        _district = _m.group(1).strip() if _m else ""
+        try:
+            _rz_city_ref = nova_poshta.find_settlement_ref(_name, _region, _district)
+        except Exception as _e:  # noqa: BLE001 — не валимо конвертацію; фолбек на find_city у build
+            print(f"[orders_watcher] Rozetka NP CityRef для {order.get('id')} не резолвнуто "
+                  f"({_name}/{_district}): {_e}", file=sys.stderr)
     return {
         "order_id": str(order["id"]),
         "platform": "rozetka",
@@ -533,6 +550,7 @@ def _convert_rozetka_order(order: dict) -> dict:
         "payment_confirmed": payment_confirmed,
         "customer_name": _rozetka_customer_name(order),
         "np_warehouse_number": _rz_wh,  # точний № відділення НП → build_toysi_order віддає напряму
+        "np_city_ref": _rz_city_ref,    # точний NP CityRef (дизамбіг за районом) → Toysi без гадання міста
 
         # ОТРИМУВАЧ (order.recipient_phone) ПЕРШИМ, не замовник (order.user_phone): для доставки НП
         # телефон — це кого повідомляють/кому віддають посилку. Інцидент 904295184 (2026-08-30):

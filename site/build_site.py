@@ -266,19 +266,32 @@ def build():
         price = price_of(it, competitor)
         if competitor and price < flat:
             n_undercut += 1
+        # ВНЕСОК (маржа на замовлення) для ранжування «Рекомендовані» + home-floor:
+        # ціна − собівартість − еквайринг(ціна·site-payment) − логістика/замовлення.
+        # Комісії маркетплейсу на власному сайті НЕМА (у цьому й сенс сайту). Невідома
+        # собівартість → contribution=None: такий товар іде в кінець сорту й не пускається
+        # на головну (не ведемо вітрину товаром з невідомою маржею).
+        try:
+            cost = cp.real_toysi_cost(it)
+        except (ValueError, TypeError):
+            cost = 0.0
+        contribution = (price - cost - price * cp.PAYMENT_COMMISSION.get("site", 0.0)
+                        - SITE_FULFILL_PER_ORDER) if cost > 0 else None
         prods.append({
             "id": str(it.get("id")), "name": name, "price": price,
             "category": it.get("category_name") or "Інше",
             "photo": pics[0], "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
+            "contribution": contribution,
         })
     print(f"[build] підрізано до ринку (конкурентна ціна < ×1.5): {n_undercut} товарів")
-    # для демо-ліміту наповнюємо НАЙБІЛЬШІ категорії (щоб сторінки категорій були не порожні)
-    csize = {}
-    for p in prods:
-        csize[p["category"]] = csize.get(p["category"], 0) + 1
-    # порядок: спершу великі категорії, всередині — дорожчі товари
-    prods.sort(key=lambda p: (-csize[p["category"]], p["category"], -p["price"]))
+    # Порядок «Рекомендовані» = за ВНЕСКОМ спадно (рішення Консультанта: на перший екран —
+    # позиції, що приносять маржу, а не найбільша категорія/найдорожче). Товари з невідомою
+    # собівартістю (contribution=None) — у кінець. Тай-брейк: ціна спадно, потім назва (детермінізм).
+    def _rank_key(p):
+        c = p["contribution"] if p["contribution"] is not None else -1e9
+        return (-c, -p["price"], p["name"])
+    prods.sort(key=_rank_key)
     if LIMIT:
         prods = prods[:LIMIT]
     print(f"[build] карток до генерації: {len(prods)}")
@@ -473,11 +486,16 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
     return written
 
 def write_home(prods, cats, cat_list, cat_slug):
-    # «Новинки» (правка SMM: не «Хіти продажів») — різноманітно: по 1 товару з топ-категорій,
-    # беремо позицію біля медіани ціни, щоб не вести лише найдорожчим
+    # «Новинки» (назва — домен SMM: не «Хіти продажів») — по 1 товару з топ-категорій.
+    # ФІЛЬТР (рішення Консультанта): на головну — лише позиції з внеском ≥ HOME_MIN_CONTRIB,
+    # щоб не вести вітрину товаром, що майже не приносить маржі. Серед прохідних беремо
+    # медіанний за списком (різноманітність, не лише найвищий внесок); cats[c] уже
+    # відсортований за внеском спадно. Категорії без прохідних — пропускаємо.
+    HOME_MIN_CONTRIB = 100.0
     novelties = []
     for c in cat_list[:12]:
-        lst = cats[c]
+        lst = [p for p in cats[c]
+               if p.get("contribution") is not None and p["contribution"] >= HOME_MIN_CONTRIB]
         if lst:
             novelties.append(lst[len(lst) // 2])
         if len(novelties) >= 8:
@@ -496,8 +514,8 @@ def write_home(prods, cats, cat_list, cat_slug):
       '<p class="hero-note">🚚 Доставка Новою Поштою по Україні · оплата при отриманні або карткою</p></div>'
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
       f'<div class="catrow">{cat_tiles}</div>'
-      '<div class="sec-title"><h2>Новинки</h2><a href="catalog.html">Дивитись усі →</a></div>'
-      + grid(novelties)
+      + ('<div class="sec-title"><h2>Новинки</h2><a href="catalog.html">Дивитись усі →</a></div>'
+         + grid(novelties) if novelties else "")
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body,

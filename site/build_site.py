@@ -299,16 +299,29 @@ def build():
             _used[base] = 1
             cat_slug[c] = base
 
-    # крос-сел «З цим купують»: до 4 товарів ТІЄЇ Ж категорії, найближчих за ціною —
-    # пріоритет не дорожчим (добір, не апсел), потім дорожчі, якщо мало (консультант:
-    # та сама категорія + близька ціна). Рахуємо раз, O(n log n) на категорію.
+    # крос-сел як ДОПОВНЕННЯ (add-on), НЕ замінник: до 4 ДЕШЕВШИХ товарів з ІНШОЇ
+    # категорії. Стара логіка брала ту саму категорію за близькою ціною → на картці
+    # виходили 4 копії того самого типу товару за тією ж ціною (замінники), що НЕ
+    # піднімає чек (та сама ціна, та сама категорія). Тепер пропонуємо дешеві позиції
+    # з інших категорій — класичний add-on до замовлення: додає ПОЗИЦІЮ → росте чек і
+    # сукупний внесок. Пул обмежений найдешевшими в наявності (кеп), тож O(n·CAP), не O(n²).
+    _ADDON_POOL_CAP = 80
+    _addon_pool = sorted((p for p in prods if p["stock"] > 0),
+                         key=lambda x: x["price"])[:_ADDON_POOL_CAP]
     related_map = {}
-    for c, lst in cats.items():
-        sp = sorted(lst, key=lambda x: x["price"])
-        for i in range(len(sp)):
-            lower = sp[max(0, i - 4):i][::-1]   # до 4 дешевших, найближчі перші
-            higher = sp[i + 1:i + 5]            # до 4 дорожчих (фолбек)
-            related_map[sp[i]["id"]] = (lower + higher)[:4]
+    for p in prods:
+        picks, seen_cat = [], set()
+        # найближчі знизу (найдорожчі серед дешевших за p), не більше 1 з категорії
+        for cand in reversed(_addon_pool):
+            if cand["id"] == p["id"] or cand["price"] >= p["price"]:
+                continue
+            if cand["category"] == p["category"] or cand["category"] in seen_cat:
+                continue
+            picks.append(cand)
+            seen_cat.add(cand["category"])
+            if len(picks) == 4:
+                break
+        related_map[p["id"]] = picks
 
     n = 0
     # 1) картки товарів
@@ -407,7 +420,7 @@ def _catalog_controls():
     return (
       '<div id="cat-controls" class="cat-controls" hidden>'
         '<select id="cf-sort" aria-label="Сортування">'
-          '<option value="pop">Спочатку популярні</option>'
+          '<option value="rec">Рекомендовані</option>'
           '<option value="cheap">Спершу дешевші</option>'
           '<option value="dear">Спершу дорожчі</option>'
           '<option value="az">За назвою А–Я</option>'
@@ -546,7 +559,7 @@ def write_product(p, related=None):
       'далі 1–3 робочі дні. Оплата карткою на сайті або накладений платіж.</div></div>'
       f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
       '</div></div>'
-      + (f'<section class="related"><h2>З цим купують</h2>{grid(related)}</section>' if related else "")
+      + (f'<section class="related"><h2>Додайте до замовлення</h2>{grid(related)}</section>' if related else "")
       + '<div class="buybar"><div class="buybar-inner">'
       f'<div class="p">{p["price"]} ₴</div>'
       f'{buy_btn}'

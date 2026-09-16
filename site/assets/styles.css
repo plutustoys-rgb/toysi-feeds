@@ -232,8 +232,11 @@ footer.foot a{color:var(--accent)}
 .related>h2{font-size:18px;margin:0 16px 8px}
 
 /* ══ Маскот Плутус (PNG замість емодзі 🦊) ══ */
+/* Відступи дають обгортки .fox/.hero/.done — .mascot лише розмір, без свого margin-bottom
+   (інакше подвійний нижній відступ). */
 .mascot{display:inline-block;vertical-align:middle;height:auto;max-width:100%}
 .logo .mascot{height:22px}
-.hero .mascot{height:64px;margin-bottom:8px}
+.hero .mascot{height:64px}
 .delivery .mascot{height:28px}
-.done .mascot{height:96px;margin-bottom:12px}
+.done .mascot{height:96px}
+.empty .mascot{height:44px}

@@ -156,7 +156,7 @@
     var c=read(), ids=Object.keys(c);
     var form=document.getElementById("checkout-form");
     if(ids.length===0){
-      box.innerHTML='<div class="empty"><div class="fox">🦊</div>Кошик порожній.<br>Оберіть іграшки в <a href="catalog.html" style="color:var(--accent)">каталозі</a>.</div>';
+      box.innerHTML='<div class="empty"><div class="fox"><img class="mascot" src="assets/plutus_mascot.png" alt="Плутус" width="48" height="44" decoding="async"></div>Кошик порожній.<br>Оберіть іграшки в <a href="catalog.html" style="color:var(--accent)">каталозі</a>.</div>';
       var s=document.getElementById("cart-summary"); if(s) s.style.display="none";
       if(form) form.style.display="none";
       return;

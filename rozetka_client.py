@@ -373,22 +373,30 @@ def create_delivery_ttn(order_id, weight: float = 0.5, height: int = 20, width: 
 
 
 def extract_delivery_ttn(create_resp: dict):
-    """Номер ТТН (track_num) з відповіді create_delivery_ttn. `original_info` — JSON-рядок,
-    у ньому track_num (напр. 'RMP-835110782'). Повертає рядок ТТН або None."""
+    """Друкований RMP-номер ТТН з відповіді create_delivery_ttn. Повертає рядок ТТН або None.
+
+    ⚠️ ПРІОРИТЕТ `track_num` (формат 'RMP-XXXXXXXXX') — це ЄДИНИЙ номер, який приймає друк
+    наклейки (/delivery-rozetka/ttn-print-batch). `carrier_track_num` — кур'єрський трек
+    (напр. '723-3467245'); друк його ВІДХИЛЯЄ (code 1005 check_correctness_of_data —
+    звірено ЖИВО 2026-09-16 на 906231670: RMP-834041233 → PDF, 723-3467245 → 1005).
+    Раніше тут пріоритет був у carrier_track_num → маркування тягло непридатний номер,
+    друк падав, а фолбек-текст брехливо казав «наклейка у файлі» (інцидент 100451689).
+    carrier_track_num лишається лише КРАЙНІМ фолбеком (не друкується, але краще ніж None).
+    `original_info` — JSON-рядок, у ньому теж track_num."""
     if not isinstance(create_resp, dict):
         return None
-    tn = create_resp.get("carrier_track_num") or create_resp.get("track_num")
-    if tn:
-        return tn
     oi = create_resp.get("original_info")
     if isinstance(oi, str):
         try:
             oi = json.loads(oi)
         except (ValueError, TypeError):
             oi = {}
-    if isinstance(oi, dict):
-        return oi.get("track_num") or oi.get("carrier_track_num")
-    return None
+    if not isinstance(oi, dict):
+        oi = {}
+    return (create_resp.get("track_num")
+            or oi.get("track_num")
+            or create_resp.get("carrier_track_num")
+            or oi.get("carrier_track_num"))
 
 
 def _request_raw(method: str, path: str, **kwargs):
@@ -462,6 +470,29 @@ def fetch_delivery_label(ttn: str) -> bytes:
                                   f"(схоже на URL? '{file_ref[:80]}') — звірити форму живо")
     raise RozetkaAPIError(f"ttn-print-batch {ttn}: успіх, але файл не знайдено у відповіді "
                           f"({str(data)[:200]}) — звірити форму живо")
+
+
+def printable_delivery_ttn(order_id, known_ttn: str = None) -> str | None:
+    """RMP-номер ТТН, придатний для ДРУКУ наклейки (ttn-print-batch приймає лише 'RMP-...').
+
+    Self-heal: якщо `known_ttn` уже RMP-формату — повертаємо його без запиту; інакше (порожньо
+    або збережений КУР'ЄРСЬКИЙ номер напр. '723-...', який друк відхиляє code 1005) тягнемо
+    канонічний ТТН із GET /orders/{id} (поле верхнього рівня `ttn` = 'RMP-...'; звірено живо
+    2026-09-16 на 906231670). Так наклейка друкується правильно навіть для замовлень, де в БД
+    лежить старий carrier_track_num. Помилка/нема ttn у замовленні → повертаємо known_ttn (хоч
+    щось для лога/алерту); None лишається None."""
+    if known_ttn and str(known_ttn).upper().startswith("RMP"):
+        return str(known_ttn)
+    try:
+        d = get_order_details(order_id)
+        o = d.get("content", d) if isinstance(d, dict) else d
+        t = o.get("ttn") if isinstance(o, dict) else None
+        if t:
+            return str(t)
+    except Exception as e:  # noqa: BLE001 — best-effort self-heal, не валимо маркування
+        print(f"[rozetka_client] printable_delivery_ttn({order_id}) не звірив канонічний ТТН: {e}",
+              file=sys.stderr)
+    return known_ttn
 
 
 def update_order_status(order_id, status: int, ttn: str = None, seller_comment: str = None) -> dict:

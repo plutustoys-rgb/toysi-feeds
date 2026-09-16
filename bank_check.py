@@ -5,7 +5,10 @@ from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
 
-from orders_db import get_connection, get_orders_awaiting_payment, mark_payment_confirmed, update_delivery_status
+from orders_db import (
+    get_connection, get_orders_awaiting_payment, mark_payment_confirmed,
+    update_delivery_status, mark_cancelled,
+)
 
 # UTF-8-вивід: стрілка «→» у логах підтвердження інакше валить UnicodeEncodeError на
 # cp1251-консолі (десктоп без PYTHONUTF8). На VPS (UTF-8/systemd) без різниці; тут — щоб
@@ -124,18 +127,20 @@ def _try_confirm_rozetka_via_api(conn, order) -> bool:
     return False
 
 
-def _cabinet_cancelled(order: dict) -> bool:
-    """True, якщо кабінет площадки ПОЗИТИВНО каже, що замовлення скасоване. Дзеркало
-    пре-форвардних `order_router._check_*_not_cancelled`, але БЕЗ їхніх side-effects
-    (тут замовлення ще НЕ форварднуте — payment_confirmed=0). Консервативно: помилка/
-    невідомо/порожньо → False (не позначаємо cancelled без підтвердження)."""
+def _cabinet_cancel_reason(order: dict) -> str | None:
+    """ПРИЧИНА-рядок (для аудиту), якщо кабінет площадки ПОЗИТИВНО каже, що замовлення
+    скасоване; інакше None. Дзеркало пре-форвардних `order_router._check_*_not_cancelled`,
+    але БЕЗ їхніх side-effects (тут замовлення ще НЕ форварднуте — payment_confirmed=0).
+    Консервативно: помилка/невідомо/порожньо → None (не позначаємо cancelled без підтвердження)."""
     platform = order.get("platform")
     oid = order.get("order_id")
     try:
         if platform == "rozetka":
             import rozetka_client
-            return rozetka_client.get_order_status(oid) in rozetka_client.ROZETKA_CANCELLED_STATUSES
-        if platform == "prom":
+            st = rozetka_client.get_order_status(oid)
+            if st in rozetka_client.ROZETKA_CANCELLED_STATUSES:
+                return f"Rozetka кабінет: статус {st} (скасовано)"
+        elif platform == "prom":
             from orders_watcher import check_prom_order_status
             date_from = None
             ca = order.get("created_at")
@@ -145,15 +150,17 @@ def _cabinet_cancelled(order: dict) -> bool:
                     date_from = (datetime(d.year, d.month, d.day) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
                 except ValueError:
                     date_from = None
-            return check_prom_order_status(oid, date_from=date_from) == "canceled"
-        if platform == "eva":
+            if check_prom_order_status(oid, date_from=date_from) == "canceled":
+                return "Prom кабінет: canceled"
+        elif platform == "eva":
             import eva_orders_client
-            live = eva_orders_client.get_order(oid)
-            return (live or {}).get("status") in (9, 10)  # 9=скасовано покупцем, 10=продавцем
+            st = (eva_orders_client.get_order(oid) or {}).get("status")
+            if st in (9, 10):
+                return f"EVA кабінет: статус {st} ({'покупцем' if st == 9 else 'продавцем'})"
     except Exception as e:  # noqa: BLE001 — не позначаємо cancelled без певності; не валимо цикл
         print(f"[bank_check] Кабінет-статус скасування {order.get('internal_order_id')} "
               f"не зчитано (не чіпаю): {e}", file=sys.stderr)
-    return False
+    return None
 
 
 def check_pending_prepayments() -> None:
@@ -184,14 +191,14 @@ def check_pending_prepayments() -> None:
         if not pending:
             return
 
-        # Прохід 2: мертві скасовані застряглі → cancelled (облік + очистка беклогу/шуму звіту).
+        # Прохід 2: мертві скасовані застряглі → cancelled з АУДИТ-СЛІДОМ (cancelled_at+reason).
         cancelled_n, remaining = 0, []
         for o in pending:
-            if _cabinet_cancelled(o):
-                update_delivery_status(conn, o["internal_order_id"],
-                                       delivery_status="cancelled", status="cancelled")
-                print(f"[bank_check] Застрягла передоплата скасована в кабінеті → cancelled: "
-                      f"{o['internal_order_id']} ({o.get('platform')} #{o.get('order_id')})")
+            reason = _cabinet_cancel_reason(o)
+            if reason:
+                mark_cancelled(conn, o["internal_order_id"], reason)
+                print(f"[bank_check] Застрягла передоплата скасована → cancelled (аудит): "
+                      f"{o['internal_order_id']} ({o.get('platform')} #{o.get('order_id')}) — {reason}")
                 cancelled_n += 1
             else:
                 remaining.append(o)

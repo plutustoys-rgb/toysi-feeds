@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS orders (
     np_return_ttn         TEXT,                -- номер створеної зворотної ТТН НП
     np_return_dryrun_notified_at TEXT,         -- коли в DRY-RUN уже слали FYI про потрібне повернення
                                                -- (NP_RETURN_APPLY=0) — щоб не спамити щоцикл, поки не ввімкнено
+    cancelled_at          TEXT,                -- коли замовлення позначено скасованим (аудит скасувань)
+    cancel_reason         TEXT,                -- ЧОМУ/звідки скасування (кабінет+статус) — для аудиту/КОДВ
     UNIQUE (order_id, platform)
 );
 
@@ -299,6 +301,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "np_return_created_at", "np_return_created_at TEXT")
         _ensure_column(conn, "orders", "np_return_ttn", "np_return_ttn TEXT")
         _ensure_column(conn, "orders", "np_return_dryrun_notified_at", "np_return_dryrun_notified_at TEXT")
+        _ensure_column(conn, "orders", "cancelled_at", "cancelled_at TEXT")
+        _ensure_column(conn, "orders", "cancel_reason", "cancel_reason TEXT")
         # Структурні реф-поля відділення НП з площадки (EVA передає city_id/warehouse_number
         # напряму) — щоб build_toysi_order віддав точний вибір клієнта Toysi БЕЗ повторного
         # пошуку в НП (find_warehouse давав хибний збіг по цифрі в описі, баг «3→2» 2026-09-13).
@@ -682,6 +686,20 @@ def mark_np_return_dryrun_notified(conn: sqlite3.Connection, internal_order_id: 
     conn.execute(
         "UPDATE orders SET np_return_dryrun_notified_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_cancelled(conn: sqlite3.Connection, internal_order_id: str, reason: str) -> None:
+    """Позначає замовлення скасованим З АУДИТ-СЛІДОМ: delivery_status+status='cancelled'
+    (падає зі списків awaiting/active), cancelled_at=now, cancel_reason=ЧОМУ (кабінет+статус).
+    Єдина точка позначки скасування — щоб кожне скасування було обліковане, а не тихо
+    зникло (вимога власника 2026-09-16: «аудит скасованих замовлень»). Ідемпотентно:
+    cancelled_at ставимо лише якщо ще не стояв (COALESCE — зберігаємо ПЕРШУ дату)."""
+    conn.execute(
+        "UPDATE orders SET delivery_status = 'cancelled', status = 'cancelled', "
+        "cancelled_at = COALESCE(cancelled_at, ?), cancel_reason = COALESCE(cancel_reason, ?) "
+        "WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), reason, internal_order_id),
     )
 
 

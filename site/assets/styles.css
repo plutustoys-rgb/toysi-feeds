@@ -230,3 +230,10 @@ footer.foot a{color:var(--accent)}
 /* ══ Крос-сел «З цим купують» на товарі ══ */
 .related{margin-top:24px}
 .related>h2{font-size:18px;margin:0 16px 8px}
+
+/* ══ Маскот Плутус (PNG замість емодзі 🦊) ══ */
+.mascot{display:inline-block;vertical-align:middle;height:auto;max-width:100%}
+.logo .mascot{height:22px}
+.hero .mascot{height:64px;margin-bottom:8px}
+.delivery .mascot{height:28px}
+.done .mascot{height:96px;margin-bottom:12px}

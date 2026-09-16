@@ -124,13 +124,51 @@ def _try_confirm_rozetka_via_api(conn, order) -> bool:
     return False
 
 
+def _cabinet_cancelled(order: dict) -> bool:
+    """True, якщо кабінет площадки ПОЗИТИВНО каже, що замовлення скасоване. Дзеркало
+    пре-форвардних `order_router._check_*_not_cancelled`, але БЕЗ їхніх side-effects
+    (тут замовлення ще НЕ форварднуте — payment_confirmed=0). Консервативно: помилка/
+    невідомо/порожньо → False (не позначаємо cancelled без підтвердження)."""
+    platform = order.get("platform")
+    oid = order.get("order_id")
+    try:
+        if platform == "rozetka":
+            import rozetka_client
+            return rozetka_client.get_order_status(oid) in rozetka_client.ROZETKA_CANCELLED_STATUSES
+        if platform == "prom":
+            from orders_watcher import check_prom_order_status
+            date_from = None
+            ca = order.get("created_at")
+            if ca:
+                try:
+                    d = datetime.fromisoformat(ca).date()
+                    date_from = (datetime(d.year, d.month, d.day) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+                except ValueError:
+                    date_from = None
+            return check_prom_order_status(oid, date_from=date_from) == "canceled"
+        if platform == "eva":
+            import eva_orders_client
+            live = eva_orders_client.get_order(oid)
+            return (live or {}).get("status") in (9, 10)  # 9=скасовано покупцем, 10=продавцем
+    except Exception as e:  # noqa: BLE001 — не позначаємо cancelled без певності; не валимо цикл
+        print(f"[bank_check] Кабінет-статус скасування {order.get('internal_order_id')} "
+              f"не зчитано (не чіпаю): {e}", file=sys.stderr)
+    return False
+
+
 def check_pending_prepayments() -> None:
     """
     Проходить замовлення зі статусом "очікує передоплати" (payment_method=prepaid,
     payment_confirmed=0) і звіряє з випискою ПриватБанку.
 
-    ПЕРШИЙ прохід — Rozetka is_order_paid (пряме джерело RozetkaPay, незалежне від
-    банку): підтверджує оплачені-після-забору. Решта → банк-виписка або ручне.
+    ПРОХІД 1 — Rozetka is_order_paid (пряме джерело RozetkaPay, незалежне від банку):
+    підтверджує оплачені-після-забору.
+    ПРОХІД 2 — очистка МЕРТВИХ: застрягла передоплата, яку покупець скасував у кабінеті
+    (payment_confirmed=0 → до форварду не дійшла → пре-форвардна перевірка скасування
+    ніколи не спрацьовувала → висіла вічно в 'awaiting_manual_confirmation', засмічуючи
+    звіт: реальний беклог, напр. rozetka 903652847 27 днів). Позначаємо cancelled = облік
+    + падає зі списку. Посилки/повернення тут нема (форварду не було).
+    Решта → банк-виписка або ручне.
 
     Якщо Автоклієнт не підключено (немає PRIVAT_* у .env) — заглушка з плану (Крок 4, п.6):
     позначає замовлення 'awaiting_manual_confirmation', щоб потрапило у щоденний звіт.
@@ -143,6 +181,24 @@ def check_pending_prepayments() -> None:
 
         # Прохід 1: Rozetka-передоплати — пряме джерело оплати (RozetkaPay), не залежить від банку.
         pending = [o for o in pending if not _try_confirm_rozetka_via_api(conn, o)]
+        if not pending:
+            return
+
+        # Прохід 2: мертві скасовані застряглі → cancelled (облік + очистка беклогу/шуму звіту).
+        cancelled_n, remaining = 0, []
+        for o in pending:
+            if _cabinet_cancelled(o):
+                update_delivery_status(conn, o["internal_order_id"],
+                                       delivery_status="cancelled", status="cancelled")
+                print(f"[bank_check] Застрягла передоплата скасована в кабінеті → cancelled: "
+                      f"{o['internal_order_id']} ({o.get('platform')} #{o.get('order_id')})")
+                cancelled_n += 1
+            else:
+                remaining.append(o)
+        if cancelled_n:
+            conn.commit()  # облік мертвих зберігаємо негайно, не чекаючи кінця циклу
+            print(f"[bank_check] Очищено мертвих скасованих застряглих передоплат: {cancelled_n}")
+        pending = remaining
         if not pending:
             return
 

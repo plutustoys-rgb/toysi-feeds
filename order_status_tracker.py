@@ -578,7 +578,15 @@ def _create_np_return(conn, order: dict, ttn: str, reason: str) -> None:
     if not ttn:
         return
     if order.get("np_return_created_at"):
-        return  # вже створено — не дублюємо реальне повернення
+        return  # вже створено (мітка з БД, крос-цикл) — не дублюємо реальне повернення
+    # ⚠️ ГРОШІ (аудит #539): обидва тригери (кабінетне скасування Rozetka + Toysi-статус
+    # 'cancelled') можуть спрацювати на ОДИН order-dict в ОДНОМУ циклі track_orders. Мітка
+    # np_return_created_at, яку ставить перший виклик, іде лише в БД — in-memory dict у циклі
+    # НЕ перечитується, тож другий виклик не побачив би її й створив ДРУГУ реальну зворотну
+    # ТТН. Транзієнтний прапорець на самому dict закриває це вікно (і заразом дедуп dry-run FYI).
+    if order.get("_np_return_handled"):
+        return
+    order["_np_return_handled"] = True
 
     internal_id = order.get("internal_order_id")
     label = (f"{internal_id} (Toysi #{order.get('toysi_order_id')}, "

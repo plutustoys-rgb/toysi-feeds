@@ -91,10 +91,40 @@ def match_payment(order: dict, transactions: list) -> dict:
     return None
 
 
+def _try_confirm_rozetka_via_api(conn, order) -> bool:
+    """Для Rozetka-передоплати — ПРЯМЕ джерело оплати: `rozetka is_order_paid`
+    (RozetkaPay, name=='paid'). Незалежне від банк-Автоклієнта.
+
+    Навіщо: `payment_confirmed` ставиться ЛИШЕ раз — при заборі замовлення
+    (orders_watcher: `is_order_paid()` на статусі 1), коли покупець типово ще НЕ
+    оплатив → payment_confirmed=0. Далі ніхто не перепитував, тож RozetkaPay-оплата,
+    що прийшла ПІСЛЯ забору, не підхоплювалась і замовлення висіло на ручному
+    (реальний кейс 906058641, 2026-09-16). Тут перепитуємо щоцикл.
+
+    Консервативно: is_order_paid сам повертає False на будь-якій помилці/порожній
+    відповіді (ендпоінт status-payment порожній для частини замовлень) — тобто
+    хибного підтвердження бути не може, лише пропуск (тоді лишається bank/ручне)."""
+    if order.get("platform") != "rozetka":
+        return False
+    try:
+        import rozetka_client
+        if rozetka_client.is_order_paid(order["order_id"]):
+            mark_payment_confirmed(conn, order["internal_order_id"])
+            print(f"[bank_check] Rozetka is_order_paid=paid → підтверджено: {order['internal_order_id']}")
+            return True
+    except Exception as e:  # noqa: BLE001 — best-effort, не валимо цикл підтверджень
+        print(f"[bank_check] Rozetka is_order_paid для {order['internal_order_id']} не вдалась: {e}",
+              file=sys.stderr)
+    return False
+
+
 def check_pending_prepayments() -> None:
     """
     Проходить замовлення зі статусом "очікує передоплати" (payment_method=prepaid,
     payment_confirmed=0) і звіряє з випискою ПриватБанку.
+
+    ПЕРШИЙ прохід — Rozetka is_order_paid (пряме джерело RozetkaPay, незалежне від
+    банку): підтверджує оплачені-після-забору. Решта → банк-виписка або ручне.
 
     Якщо Автоклієнт не підключено (немає PRIVAT_* у .env) — заглушка з плану (Крок 4, п.6):
     позначає замовлення 'awaiting_manual_confirmation', щоб потрапило у щоденний звіт.
@@ -103,6 +133,11 @@ def check_pending_prepayments() -> None:
         pending = get_orders_awaiting_payment(conn)
         if not pending:
             print("[bank_check] Немає замовлень, що очікують передоплати")
+            return
+
+        # Прохід 1: Rozetka-передоплати — пряме джерело оплати (RozetkaPay), не залежить від банку.
+        pending = [o for o in pending if not _try_confirm_rozetka_via_api(conn, o)]
+        if not pending:
             return
 
         if not BANK_AVAILABLE:

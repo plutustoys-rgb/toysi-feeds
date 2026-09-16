@@ -123,7 +123,7 @@
       if(sort==="cheap") filtered.sort(function(a,b){return a.pr-b.pr;});
       else if(sort==="dear") filtered.sort(function(a,b){return b.pr-a.pr;});
       else if(sort==="az") filtered.sort(function(a,b){return String(a.n).localeCompare(String(b.n),"uk");});
-      // pop = природний порядок index.json (за замовчуванням)
+      // rec = природний порядок index.json (рекомендовані, за замовчуванням)
       shown=0; grid.innerHTML="";
       if(statik) statik.hidden=true;
       grid.hidden=false; count.hidden=false;
@@ -141,7 +141,7 @@
       count.textContent="Знайдено: "+filtered.length+" · показано "+shown;
       moreWrap.hidden = shown>=filtered.length;
     }
-    function doReset(){ elSort.value="pop"; elCat.value=""; elMin.value=""; elMax.value=""; elStock.checked=false; apply(); }
+    function doReset(){ elSort.value="rec"; elCat.value=""; elMin.value=""; elMax.value=""; elStock.checked=false; apply(); }
     var deb=debounce(apply,250);
     [elSort,elCat,elStock].forEach(function(e){ if(e) e.addEventListener("change",apply); });
     [elMin,elMax].forEach(function(e){ if(e) e.addEventListener("input",deb); });

@@ -1,15 +1,18 @@
 import os
 import sys
+from datetime import datetime, timedelta
 
 from checkbox_client import create_receipt, CheckboxAPIError
 from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
     mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
     mark_prom_ttn_pushed, mark_eva_ttn_pushed, update_delivery_status,
-    mark_rozetka_cancel_ticket_sent, mark_np_return_created,
+    mark_rozetka_cancel_ticket_sent, mark_np_return_created, mark_np_return_dryrun_notified,
 )
 import nova_poshta
-from orders_watcher import update_prom_order_status, attach_prom_declaration_id, PromAPIError
+from orders_watcher import (
+    update_prom_order_status, attach_prom_declaration_id, check_prom_order_status, PromAPIError,
+)
 import rozetka_client
 import eva_orders_client
 from telegram_notify import send_telegram_message
@@ -588,19 +591,28 @@ def _create_np_return(conn, order: dict, ttn: str, reason: str) -> None:
         return
     order["_np_return_handled"] = True
 
+    apply = os.environ.get("NP_RETURN_APPLY", "0").strip() == "1"
+    # DRY-RUN шле FYI лише РАЗ на замовлення (np_return_dryrun_notified_at). Інакше, поки
+    # скасоване-але-ВІДПРАВЛЕНЕ замовлення лишається активним (кабінетний скас не потрапив у
+    # delivery_status) і APPLY=0, FYI спамив би щоцикл (скарга власника на шум 2026-09-16).
+    # Реального повернення не стосується — та ідемпотентність окрема (np_return_created_at).
+    if not apply and order.get("np_return_dryrun_notified_at"):
+        return
+
     internal_id = order.get("internal_order_id")
     label = (f"{internal_id} (Toysi #{order.get('toysi_order_id')}, "
              f"{order.get('platform', '?')}, ТТН {ttn})")
     poss = nova_poshta.check_return_possibility(ttn)
-    apply = os.environ.get("NP_RETURN_APPLY", "0").strip() == "1"
 
     if not apply:
-        # DRY-RUN: показуємо власнику, чи можливе повернення — БЕЗ створення.
+        # DRY-RUN: показуємо власнику РАЗ, чи можливе повернення — БЕЗ створення.
         verdict = "можливе ✅" if poss["possible"] else f"НЕ можливе — {poss['error']}"
         msg = (f"🧪 Автоповернення НП (dry-run, створення вимкнено NP_RETURN_APPLY=0): "
                f"{reason} · {label}. Перевірка: повернення {verdict}.")
         print(f"[order_status_tracker] {msg}", file=sys.stderr)
         send_telegram_message(msg)
+        mark_np_return_dryrun_notified(conn, internal_id)
+        conn.commit()
         return
 
     if not poss["possible"]:
@@ -640,6 +652,55 @@ def _maybe_create_np_return(conn, order: dict, delivery_status: str, ttn: str) -
         return
     _create_np_return(conn, order, ttn,
                       reason=f"Toysi-статус «скасовано» — {order.get('internal_order_id')}")
+
+
+_PROM_CANCELLED_STATUSES = {"canceled"}   # дзеркало order_router._PROM_CANCELLED_STATUSES
+_EVA_CANCELLED_STATUSES = {9, 10}         # 9=скасовано покупцем, 10=продавцем (order_router/eva_orders_client)
+
+
+def _maybe_return_prom_eva_cancelled(conn, order: dict) -> None:
+    """Пост-форвард: покупець скасував у КАБІНЕТІ Prom/EVA вже ПІСЛЯ передачі в Toysi
+    (посилка може бути в дорозі). Дзеркало _maybe_ticket_rozetka_cancelled для Prom/EVA —
+    живий статус кабінету; якщо скасовано і є ТТН → зворотна ТТН НП (_create_np_return,
+    dry-run/ідемпотентно). ЧИСТА детекція, БЕЗ пре-форвардних міток 'prom/eva_cancelled_
+    before_forward' (замовлення вже передане — тут вони хибні). Fail-open: помилка API → тихо
+    виходимо, ретрай наступним циклом. Лише platform prom/eva з ТТН і без вже-створеного повернення."""
+    platform = order.get("platform")
+    ttn = order.get("toysi_ttn")
+    if platform not in ("prom", "eva") or not ttn:
+        return
+    if order.get("np_return_created_at"):
+        return
+
+    if platform == "prom":
+        date_from = None
+        created_at = order.get("created_at")
+        if created_at:
+            try:
+                d = datetime.fromisoformat(created_at).date()
+                date_from = (datetime(d.year, d.month, d.day) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+            except ValueError:
+                date_from = None
+        try:
+            live = check_prom_order_status(order["order_id"], date_from=date_from)
+        except PromAPIError as e:  # fail-open — не валимо трекінг інших замовлень
+            print(f"[order_status_tracker] Prom-статус скасування {order['internal_order_id']} "
+                  f"не зчитано (fail-open): {e}", file=sys.stderr)
+            return
+        cancelled = live in _PROM_CANCELLED_STATUSES
+    else:  # eva
+        try:
+            live = eva_orders_client.get_order(order["order_id"])
+        except eva_orders_client.EvaAPIError as e:  # fail-open
+            print(f"[order_status_tracker] EVA-статус скасування {order['internal_order_id']} "
+                  f"не зчитано (fail-open): {e}", file=sys.stderr)
+            return
+        cancelled = (live or {}).get("status") in _EVA_CANCELLED_STATUSES
+
+    if not cancelled:
+        return
+    _create_np_return(conn, order, ttn,
+                      reason=f"{platform.upper()} #{order.get('order_id')} — покупець скасував у кабінеті")
 
 
 def track_orders() -> None:
@@ -699,6 +760,8 @@ def track_orders() -> None:
             # Автоповернення НП: покупець скасував ВІДПРАВЛЕНУ посилку → створити зворотну ТТН
             # (dry-run за дефолтом, NP_RETURN_APPLY=1 вмикає реальне створення). Ідемпотентно.
             _maybe_create_np_return(conn, order, delivery_status, ttn)
+            # Post-forward кабінетне скасування Prom/EVA (Rozetka вже в _maybe_ticket_rozetka_cancelled).
+            _maybe_return_prom_eva_cancelled(conn, order)
 
             ttn_note = f", ТТН: {ttn}" if ttn else ""
             terminal_note = " [термінальний, більше не опитуємо]" if status_code in TERMINAL_ORDER_STATUSES else ""

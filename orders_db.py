@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS orders (
     np_return_created_at  TEXT,                -- коли створено зворотну ТТН НП при скасуванні покупцем
                                                -- (order_status_tracker._maybe_create_np_return); ідемпотентність
     np_return_ttn         TEXT,                -- номер створеної зворотної ТТН НП
+    np_return_dryrun_notified_at TEXT,         -- коли в DRY-RUN уже слали FYI про потрібне повернення
+                                               -- (NP_RETURN_APPLY=0) — щоб не спамити щоцикл, поки не ввімкнено
     UNIQUE (order_id, platform)
 );
 
@@ -296,6 +298,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rozetka_cancel_ticket_sent_at", "rozetka_cancel_ticket_sent_at TEXT")
         _ensure_column(conn, "orders", "np_return_created_at", "np_return_created_at TEXT")
         _ensure_column(conn, "orders", "np_return_ttn", "np_return_ttn TEXT")
+        _ensure_column(conn, "orders", "np_return_dryrun_notified_at", "np_return_dryrun_notified_at TEXT")
         # Структурні реф-поля відділення НП з площадки (EVA передає city_id/warehouse_number
         # напряму) — щоб build_toysi_order віддав точний вибір клієнта Toysi БЕЗ повторного
         # пошуку в НП (find_warehouse давав хибний збіг по цифрі в описі, баг «3→2» 2026-09-13).
@@ -669,6 +672,16 @@ def mark_np_return_created(conn: sqlite3.Connection, internal_order_id: str, ret
     conn.execute(
         "UPDATE orders SET np_return_created_at = ?, np_return_ttn = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), return_ttn, internal_order_id),
+    )
+
+
+def mark_np_return_dryrun_notified(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """DRY-RUN (NP_RETURN_APPLY=0): позначає, що про потрібне повернення власника вже
+    повідомлено — щоб FYI не спамив щоцикл, поки не ввімкнено реальне створення. Реального
+    повернення НЕ стосується (та ідемпотентність — окремо, np_return_created_at)."""
+    conn.execute(
+        "UPDATE orders SET np_return_dryrun_notified_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
 
 

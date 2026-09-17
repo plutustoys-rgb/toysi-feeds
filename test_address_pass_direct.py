@@ -13,8 +13,11 @@ test_address_pass_direct.py — регрес-тест «передаємо ад�
   3. np_city_ref ПОРОЖНІЙ (НП недоступна) → номер+місто ВСЕ ОДНО йдуть; shipping_city_id ВІДСУТНІЙ;
      міста за назвою НЕ гадаємо (find_city прибрано — його імпорту в модулі більше нема).
   4. shipping_address порожній, коли є структурний номер (не текст-фолбек).
+  5. np_city_ref порожній, АЛЕ np_ref_id є (сирий Ref persisted, інцидент 906260104) → build_toysi_order
+     ретраїть warehouse_by_ref ще раз при форварді: успіх → city_id/warehouse_id з retry; провал
+     ОБОХ спроб → текст-фолбек як і раніше, ПЛЮС Telegram-алерт (не мовчазна деградація).
 
-Мережа не потрібна (find_city усунено; settlement_raion замокано нижче).
+Мережа не потрібна (find_city усунено; settlement_raion + warehouse_by_ref замокано нижче).
 `python test_address_pass_direct.py` → exit 0/1.
 """
 import sys
@@ -80,6 +83,59 @@ _chk("Prom: city_id відсутній (без гадання)", "shipping_city_
 to = orr.build_toysi_order(_order(carrier="rozetka_delivery", np_warehouse_number="65",
                                   np_city_ref="x"))
 _chk("не-НП: без shipping_warehouse_id", "shipping_warehouse_id" not in to)
+
+# 6: РЕТРАЙ ПРИ ФОРВАРДІ (інцидент 906260104) — np_city_ref порожній (як від throttled інжесту),
+# але np_ref_id persisted → build_toysi_order пробує warehouse_by_ref ЩЕ РАЗ.
+_calls = []
+
+
+def _mock_warehouse_by_ref_ok(ref):
+    _calls.append(ref)
+    return {"city_ref": "db5c88e0-391c-11dd-90d9-001a92567626", "number": "65", "description": ""}
+
+
+def _mock_warehouse_by_ref_fail(ref):
+    _calls.append(ref)
+    return None
+
+
+_alerts = []
+orr.send_throttled_alert = lambda dedup_key, msg, **kw: (_alerts.append((dedup_key, msg)) or True)
+
+# 6a: ретрай УСПІШНИЙ → city_id проставлено з retry, БЕЗ алерту
+orr.warehouse_by_ref = _mock_warehouse_by_ref_ok
+_calls.clear()
+_alerts.clear()
+to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="",
+                                  np_ref_id="b7fab5aa-a62c-11e4-a77a-005056887b8d"))
+_chk("ретрай успішний: warehouse_by_ref викликано з тим Ref", _calls == ["b7fab5aa-a62c-11e4-a77a-005056887b8d"])
+_chk("ретрай успішний: city_id з retry", to.get("shipping_city_id") == "db5c88e0-391c-11dd-90d9-001a92567626")
+_chk("ретрай успішний: warehouse_id з retry", to.get("shipping_warehouse_id") == "65")
+_chk("ретрай успішний: адреса-текст порожня (структурно однозначно)", to.get("shipping_address") == "")
+_chk("ретрай успішний: БЕЗ алерту", _alerts == [])
+
+# 6b: ретрай ТЕЖ провалився → фолбек як і раніше, АЛЕ з алертом (не мовчазна деградація)
+orr.warehouse_by_ref = _mock_warehouse_by_ref_fail
+_calls.clear()
+_alerts.clear()
+to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="",
+                                  np_ref_id="b7fab5aa-a62c-11e4-a77a-005056887b8d"))
+_chk("ретрай провалено: warehouse_by_ref усе одно викликано", len(_calls) == 1)
+_chk("ретрай провалено: city_id ВІДСУТНІЙ", "shipping_city_id" not in to)
+_chk("ретрай провалено: warehouse_id все одно клієнтів №65", to.get("shipping_warehouse_id") == "65")
+_chk("ретрай провалено: повний текст адреси (фолбек як і раніше)",
+     to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
+_chk("ретрай провалено: throttled-алерт надіслано з internal_order_id (дедуп-ключ + текст)",
+     len(_alerts) == 1 and "t_1" in _alerts[0][0] and "t_1" in _alerts[0][1])
+
+# 6c: np_ref_id ВІДСУТНІЙ (Prom/EVA — нема чим ретраїти) → warehouse_by_ref НЕ викликається, без алерту
+orr.warehouse_by_ref = _mock_warehouse_by_ref_fail
+_calls.clear()
+_alerts.clear()
+to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="", np_ref_id=None))
+_chk("без np_ref_id: warehouse_by_ref НЕ викликається", _calls == [])
+_chk("без np_ref_id: без алерту", _alerts == [])
+_chk("без np_ref_id: city_id відсутній (як і раніше)", "shipping_city_id" not in to)
 
 
 if _FAILS:

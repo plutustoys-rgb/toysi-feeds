@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS orders (
     np_city_ref           TEXT,               -- NP CityRef (GUID), якщо площадка передала структурно (EVA city_id); інакше NULL
     np_warehouse_number   TEXT,               -- точний № відділення НП з площадки (EVA warehouse_number) — віддається Toysi
                                                -- НАПРЯМУ, без повторного пошуку в НП (усуває баг «3→2» від find_warehouse; 2026-09-13)
+    np_ref_id             TEXT,               -- сирий Ref відділення НП з Rozetka (delivery.ref_id), ЗАВЖДИ persisted, навіть
+                                               -- якщо warehouse_by_ref не резолвнувся при інжесті (throttling НП) — щоб
+                                               -- build_toysi_order міг спробувати резолв ЩЕ РАЗ при форварді, іншим моментом
+                                               -- часу (інцидент 906260104, 2026-09-17: єдина спроба на інжесті впала під throttle,
+                                               -- city_ref/warehouse_id загубились НАЗАВЖДИ, бо Ref ніде не зберігався для ретраю)
     items                 TEXT NOT NULL,      -- JSON: [{"toysi_code":.., "name":.., "qty":.., "price":..}, ...]
     created_at            TEXT NOT NULL,
     forwarded_to_toysi_at TEXT,
@@ -308,6 +313,9 @@ def init_db(db_path: str = DB_PATH) -> None:
         # пошуку в НП (find_warehouse давав хибний збіг по цифрі в описі, баг «3→2» 2026-09-13).
         _ensure_column(conn, "orders", "np_city_ref", "np_city_ref TEXT")
         _ensure_column(conn, "orders", "np_warehouse_number", "np_warehouse_number TEXT")
+        # Сирий Ref відділення НП (Rozetka delivery.ref_id) — persisted ЗАВЖДИ, щоб build_toysi_order
+        # міг ретраїти резолв при форварді, якщо інжест зловив throttling НП (2026-09-17, 906260104).
+        _ensure_column(conn, "orders", "np_ref_id", "np_ref_id TEXT")
         # P0-6 (2026-07-17): коли востаннє надіслано алерт "Toysi зараз без
         # залишку" для цього замовлення — щоб order_router.py не спамив той
         # самий алерт щоцикл (кожні 15 хв), доки товар не з'явиться знову
@@ -380,10 +388,10 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
         INSERT INTO orders (
             internal_order_id, order_id, platform, status, payment_method,
             payment_confirmed, customer_name, phone, email, np_branch,
-            np_city_ref, np_warehouse_number, items,
+            np_city_ref, np_warehouse_number, np_ref_id, items,
             created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status,
             carrier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             internal_order_id,
@@ -398,6 +406,7 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             order.get("np_branch"),
             order.get("np_city_ref"),
             order.get("np_warehouse_number"),
+            order.get("np_ref_id"),
             json.dumps(order["items"], ensure_ascii=False),
             order.get("created_at") or datetime.now().isoformat(timespec="seconds"),
             order.get("forwarded_to_toysi_at"),

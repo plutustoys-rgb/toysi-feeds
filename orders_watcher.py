@@ -761,6 +761,17 @@ def _convert_eva_order(order: dict) -> dict:
     _addr = _addr if isinstance(_addr, dict) else {}
     _city_ref = str(_addr.get("city_id") or "").strip() or None
     _wh_num = str(_addr.get("warehouse_number") or "").strip() or None  # симетрично з city_ref: порожнє/пробіли → None
+    # warehouse_id — ОКРЕМИЙ UUID-реф НП самого відділення (не city_id!), задокументований у
+    # довіднику eva.md («city_id/region_id/warehouse_id/settlement_type: UUID-рефи НП») ще з
+    # 2026-08-01, але код його ніколи не читав. Протягуємо як np_ref_id — той самий механізм
+    # ретраю/відкладання, що вже є для Rozetka (order_router.build_toysi_order): якщо колись
+    # city_id прийде порожнім, а warehouse_id — ні, build_toysi_order спробує
+    # nova_poshta.warehouse_by_ref(warehouse_id) замість одразу падати на текст без структури.
+    # Без жодної живої перевірки на EVA-даних (недоступні локально) — рішення спирається на
+    # задокументований тип поля, не на здогад; якщо колись виявиться, що warehouse_id — це щось
+    # інше (не NP Warehouse Ref), warehouse_by_ref просто поверне None, як для будь-якого
+    # невідомого Ref (fail-safe, не money-risk).
+    _wh_id = str(_addr.get("warehouse_id") or "").strip() or None
     return {
         "order_id": str(order["id"]),
         "platform": "eva",
@@ -772,6 +783,7 @@ def _convert_eva_order(order: dict) -> dict:
         "np_branch": _eva_delivery_address(order),
         "np_city_ref": _city_ref,
         "np_warehouse_number": _wh_num,
+        "np_ref_id": _wh_id,
         "carrier": _eva_carrier(order),
         "items": items or [
             {"toysi_code": "", "name": "⚠️ items EVA порожній/незнайомого формату — перевір вручну", "qty": 1, "price": 0.0}
@@ -889,7 +901,7 @@ def normalize_order(raw_order: dict) -> dict:
         "np_branch":         raw_order.get("np_branch", ""),
         "np_city_ref":       raw_order.get("np_city_ref"),          # структурний NP CityRef (EVA), якщо є
         "np_warehouse_number": raw_order.get("np_warehouse_number"), # точний № відділення з площадки, якщо є
-        "np_ref_id":         raw_order.get("np_ref_id"),            # сирий Ref (Rozetka) — на ретрай резолву при форварді
+        "np_ref_id":         raw_order.get("np_ref_id"),            # сирий Ref НП (Rozetka delivery.ref_id / EVA warehouse_id) — на ретрай резолву при форварді
         "carrier":           raw_order.get("carrier", "nova_poshta"),
         "items":             raw_order["items"],
     }

@@ -32,6 +32,7 @@ import json
 import time
 import secrets
 import threading
+from datetime import datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -47,6 +48,21 @@ BASE_URL = os.environ.get("SITE_BASE_URL", "https://plutustoys.com.ua").rstrip("
 
 MAX_QTY_PER_ITEM = 50
 MAX_ITEMS = 100
+
+# ── Гардрейли COD (CONSULTANT_CHANNEL.md 2026-09-13 → ескалював 2026-09-16 з «на розсуд» до
+# необхідного: EVA-звірка КОДВ, 25 замовлень 01.08-05.09, 8/25=32% скасовано покупцем/відхилено —
+# «кожне третє не доходить до грошей», а сайт форвардить COD у Toysi ОДРАЗУ, до оплати, платимо
+# зворотну логістику наперед). Консультант НЕ пише код і не встановлює точні пороги — лише
+# ризик+напрямок; конкретні числа нижче МОЇ, tunable через env, не звірені з живими продажами
+# сайту (трафіку на сайті ще нема, WebSocket-канал 0 замовлень) — коли зʼявляться перші реальні
+# COD-замовлення, звірити разом з Консультантом і КОДВ, чи пороги адекватні.
+# Стеля суми COD-замовлення — «умовно 3 000 ₴» (Консультант, дослівно). Вище — лише передоплата.
+SITE_COD_CEILING = int(os.environ.get("SITE_COD_CEILING", "3000"))
+# Ліміт COD-замовлень з ОДНОГО телефону за 24 год — Консультант НЕ назвав число («рішення твоє»).
+# 2 — обережний дефолт: блокує спам/накрутку одним номером, не заважає легітимному повторному
+# замовленню того самого дня (напр. забув товар). Рахуємо ЛИШЕ COD — prepaid самообмежується
+# оплатою наперед, той самий ризик там відсутній.
+SITE_COD_PHONE_DAILY_LIMIT = int(os.environ.get("SITE_COD_PHONE_DAILY_LIMIT", "2"))
 
 # ── Ціни з боку сервера (site/index.json: [{id,n,pr,p}, ...]) — НЕ довіряємо кошику клієнта ──
 _price_lock = threading.Lock()
@@ -171,6 +187,32 @@ def build_order(payload: dict) -> tuple:
     return order, total
 
 
+def _check_cod_ceiling(payment_method: str, total: int) -> None:
+    """Стеля суми COD (Консультант 13.09). Вище стелі не відмовляємо в купівлі повністю —
+    просимо передоплату, як і для будь-якого дорогого замовлення."""
+    if payment_method == "cod" and total > SITE_COD_CEILING:
+        raise OrderError(
+            f"Накладений платіж доступний до {SITE_COD_CEILING} ₴. "
+            "Оформіть, будь ласка, замовлення передоплатою карткою."
+        )
+
+
+def _check_cod_phone_limit(conn, phone: str) -> None:
+    """Забагато COD-замовлень з одного телефону за 24 год → відмова (клієнт може оформити
+    передоплатою). Рахує ЛИШЕ COD-замовлення сайту (SITE_COD_PHONE_DAILY_LIMIT вище)."""
+    since = (datetime.now() - timedelta(hours=24)).isoformat(timespec="seconds")
+    row = conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE platform='site' AND payment_method='cod' "
+        "AND phone=? AND created_at>=?",
+        (phone, since),
+    ).fetchone()
+    if row and row[0] >= SITE_COD_PHONE_DAILY_LIMIT:
+        raise OrderError(
+            "Забагато замовлень накладеним платежем з цього номера за останню добу. "
+            "Оформіть, будь ласка, наступне замовлення передоплатою карткою."
+        )
+
+
 def recompute_total(items: list) -> int:
     """Перераховує суму збережених items (для звірки з колбеком LiqPay)."""
     pm = price_map()
@@ -260,6 +302,7 @@ class Handler(SimpleHTTPRequestHandler):
         payload = self._read_json()
         try:
             order, total = build_order(payload)
+            _check_cod_ceiling(order["payment_method"], total)
         except OrderError as e:
             return self._json(400, {"error": str(e)})
         except Exception as e:
@@ -268,6 +311,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             with get_connection() as conn:
+                if order["payment_method"] == "cod":
+                    _check_cod_phone_limit(conn, order["phone"])
                 created = insert_order(conn, order)
                 if created:
                     # фіксуємо виставлену суму для звірки з колбеком (стійко до дрейфу цін у каталозі)
@@ -276,6 +321,8 @@ class Handler(SimpleHTTPRequestHandler):
                         (total, f"site_{order['order_id']}"),
                     )
                 conn.commit()
+        except OrderError as e:
+            return self._json(400, {"error": str(e)})
         except Exception as e:
             print(f"[site_order_api] insert_order помилка: {e}", file=sys.stderr)
             return self._json(500, {"error": "не вдалося зберегти замовлення"})

@@ -100,7 +100,7 @@ def _mock_warehouse_by_ref_fail(ref):
 
 
 _alerts = []
-orr.send_telegram_message = lambda msg: (_alerts.append(msg) or True)
+orr.send_throttled_alert = lambda dedup_key, msg, **kw: (_alerts.append((dedup_key, msg)) or True)
 
 # 6a: ретрай УСПІШНИЙ → city_id проставлено з retry, БЕЗ алерту
 orr.warehouse_by_ref = _mock_warehouse_by_ref_ok
@@ -125,8 +125,8 @@ _chk("ретрай провалено: city_id ВІДСУТНІЙ", "shipping_ci
 _chk("ретрай провалено: warehouse_id все одно клієнтів №65", to.get("shipping_warehouse_id") == "65")
 _chk("ретрай провалено: повний текст адреси (фолбек як і раніше)",
      to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
-_chk("ретрай провалено: Telegram-алерт надіслано з internal_order_id",
-     len(_alerts) == 1 and "t_1" in _alerts[0])
+_chk("ретрай провалено: throttled-алерт надіслано з internal_order_id (дедуп-ключ + текст)",
+     len(_alerts) == 1 and "t_1" in _alerts[0][0] and "t_1" in _alerts[0][1])
 
 # 6c: np_ref_id ВІДСУТНІЙ (Prom/EVA — нема чим ретраїти) → warehouse_by_ref НЕ викликається, без алерту
 orr.warehouse_by_ref = _mock_warehouse_by_ref_fail

@@ -248,7 +248,12 @@ def build_toysi_order(order: dict) -> dict:
             # (warehouse_id + повний текстовий np_branch, як і раніше), але це вже РІДКІСНИЙ,
             # вартий уваги випадок (не штатний потік) — алертимо, щоб хтось звірив з Toysi
             # ВРУЧНУ до відвантаження, а не випадково через скрін, як 906260104.
-            send_telegram_message(
+            # send_throttled_alert (не send_telegram_message, аудит #555 nit): якщо замовлення
+            # лишається непереданим з НЕЗАЛЕЖНОЇ причини (напр. Toysi API тимчасово недоступний),
+            # build_toysi_order викликається повторно щоцикл (~15 хв, order_pipeline) і додатково
+            # з service_watchdog — без тротлінгу це був би спам того самого алерту щоразу.
+            send_throttled_alert(
+                f"np_city_ref_unresolved:{order['internal_order_id']}",
                 f"⚠️ {order['internal_order_id']}: CityRef Нової Пошти не резолвнувся ДВІЧІ "
                 f"(інжест + форвард) для Ref {order['np_ref_id']} — Toysi отримає адресу вільним "
                 f"текстом без структурного відділення. Звір із Toysi-кабінетом до відвантаження."

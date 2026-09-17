@@ -1,0 +1,21 @@
+[Unit]
+# PlutusToys — нічна синхронізація локального кешу довідника відділень/поштоматів НП
+# (nova_poshta_warehouse_cache.py). За офіційною рекомендацією developers.novaposhta.ua
+# (getWarehouses): "регулярне щоденне оновлення довідника є необхідним... щоночі". Прибирає
+# throttle-ризик структурно для order_router/orders_watcher (замість живого запиту на кожне
+# замовлення — миттєве локальне читання; кеш-міс усе одно фолбечить на живий запит).
+# Лише читає НП і пише у власний np_warehouses_cache.db — нічого в orders.db не міняє.
+# Деплой: deploy_systemd_units.sh (копія + enable таймера).
+Description=PlutusToys: nightly Nova Poshta warehouse directory cache sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# venv-python (голий python3 без залежностей упаде). Робоча тека /opt/plutustoys — щоб
+# np_warehouses_cache.db і .env резолвились відносно.
+# Таймаут великий: десятки тисяч записів посторінково, з паузою між сторінками (throttle).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/nova_poshta_warehouse_cache.py
+TimeoutStartSec=3600

@@ -130,6 +130,7 @@
 | `order-router` | `order_router.py` | ⛔ **DISABLED leftover** — поглинуто order-pipeline (звірено 2026-08-20: enabled=disabled, inactive) |
 | `orders-watcher` | `orders_watcher.py` | ⛔ **DISABLED leftover** — поглинуто order-pipeline (звірено 2026-08-20: enabled=disabled, inactive) |
 | `order-status-tracker` | `order_status_tracker.py` | замовлення: статуси доставки/ТТН + **автоповернення НП** при скасуванні покупцем (`_maybe_create_np_return` → `nova_poshta.create_return_order` orderCargoReturn; гейт `NP_RETURN_APPLY`, дефолт DRY-RUN; ідемпотентно `np_return_created_at`; довідник `технічні_вимоги_маркетплейсів/nova_poshta.md`). enabled+active |
+| `np-warehouse-sync` | `nova_poshta_warehouse_cache.py` | замовлення: нічна (03:00) синхронізація локального кешу довідника відділень/поштоматів НП (`np_warehouses_cache.db`, посторінково `AddressGeneral.getWarehouses`) — за офіційною рекомендацією НП («оновлювати щоночі»). `nova_poshta.warehouse_by_ref()` читає кеш ПЕРШИМ (мілісекунди, без throttle-ризику), фолбек на живий запит лише при кеш-місі. Закриває структурно throttle-клас, що спричинив інцидент 906260104 (PR #553-556 закрили ретраєм; це — корінь). Read-only до НП, пише лише у власний файл, orders.db не чіпає |
 | `feed-pipeline` | (генерація фідів + репрайсер) | фіди Prom-top/Google/Meta/Bing, публікація `feed-data` |
 | `eva-feed` | (генерація EVA-фіда) | EVA-фід окремим юнітом |
 | `eva-catalog-auditor` | `eva_catalog_auditor.py` | аудит каталогу EVA |

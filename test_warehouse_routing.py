@@ -13,7 +13,7 @@ test_warehouse_routing.py — регрес-тест маршрутизації �
 і лише коли площадка не дала CityRef напряму.
 
 Самодостатній: `python test_warehouse_routing.py` → exit 0 (усі ок) / 1 (є провал).
-find_city замоканий (мережа НП не потрібна); бойові дані не чіпаються.
+settlement_raion замоканий (мережа НП не потрібна); find_city усунено з коду; бойові дані не чіпаються.
 """
 import sys
 
@@ -83,7 +83,8 @@ def main():
     r = orr.build_toysi_order(_order(platform="prom", np_branch="Київ, Відділення №5"))
     _check("Реф-fail: warehouse=5 структурно", r.get("shipping_warehouse_id"), "5")
     _check("Реф-fail: city_id відсутній (без гадання)", "shipping_city_id" in r, False)
-    _check("Реф-fail: адреса-текст порожня (є номер)", r.get("shipping_address"), "")
+    # Без CityRef → ПОВНИЙ текст адреси клієнта у shipping_address (Toysi має максимум даних), аудит #553
+    _check("Реф-fail: повний текст адреси у shipping_address", r.get("shipping_address"), "Київ, Відділення №5")
 
     print()
     if _FAILS:

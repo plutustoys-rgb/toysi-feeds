@@ -247,9 +247,17 @@ def build_toysi_order(order: dict) -> dict:
         except Exception:  # noqa: BLE001 — район необов'язковий, не валимо передачу замовлення
             raion = ""
 
+    # ЛОКАЦІЯ в comment (звірка менеджером Toysi): місто + район (якщо однозначно) + ОБЛАСТЬ.
+    # Область кладемо ЗАВЖДИ, коли вона є — щоб при відсутньому CityRef Toysi-менеджер мав за чим
+    # розрізнити однойменні міста/села (аудит #553: раніше без району область губилась зовсім).
     comment = f"Автоматично: {order['platform']} #{order['order_id']}"
-    if raion:
-        comment += f" · {city}, {raion} р-н" + (f", {area_hint} обл." if area_hint else "")
+    if order.get("carrier", "nova_poshta") == "nova_poshta" and city:
+        loc = city
+        if raion:
+            loc += f", {raion} р-н"
+        if area_hint:
+            loc += f", {area_hint} обл."
+        comment += f" · {loc}"
 
     return {
         "internal_order_id": order["internal_order_id"][:25],
@@ -259,9 +267,12 @@ def build_toysi_order(order: dict) -> dict:
         "middle_name": middle_name,
         "phone": _normalize_phone_for_toysi(order.get("phone", "")),
         "shipping_city_name": city or "Київ",  # Toysi вимагає непорожнє місто
-        # Без NP-резолву адреса лишається вільним текстом np_branch — бажано,
-        # ніж порожній рядок (response_code 20 "порожня адреса доставки").
-        "shipping_address": order.get("np_branch", "") if not shipping_fields else "",
+        # shipping_address порожній ЛИШЕ коли віддаємо ТОЧНИЙ CityRef (тоді адреса однозначна
+        # структурно). Немає CityRef (Rozetka-реф не резолвнувся / Prom-текст) → кладемо ПОВНИЙ
+        # np_branch клієнта (місто+область+№), щоб Toysi мав МАКСИМУМ даних для резолву, а не менше,
+        # ніж дав клієнт (аудит #553: інакше «Дмитрівка» без області → чуже село). Номер відділення
+        # все одно йде структурно у shipping_warehouse_id.
+        "shipping_address": "" if shipping_fields.get("shipping_city_id") else order.get("np_branch", ""),
         "moneyback": moneyback,
         "comment": comment,
         **shipping_fields,

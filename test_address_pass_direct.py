@@ -14,10 +14,15 @@ test_address_pass_direct.py — регрес-тест «передаємо ад�
      міста за назвою НЕ гадаємо (find_city прибрано — його імпорту в модулі більше нема).
   4. shipping_address порожній, коли є структурний номер (не текст-фолбек).
 
-Мережа не потрібна (find_city усунено). `python test_address_pass_direct.py` → exit 0/1.
+Мережа не потрібна (find_city усунено; settlement_raion замокано нижче).
+`python test_address_pass_direct.py` → exit 0/1.
 """
 import sys
 import order_router as orr
+
+# settlement_raion робить живі виклики НП (район у comment) — мокаємо, щоб тест був офлайн
+# і не з'їдав rate-limit НП (аудит #553, nit).
+orr.settlement_raion = lambda *a, **k: ""
 
 _FAILS = []
 
@@ -47,12 +52,19 @@ _chk("є ref: місто=Харків", to.get("shipping_city_name") == "Хар�
 _chk("є ref: city_id проставлено", to.get("shipping_city_id") == "db5c88e0-391c-11dd-90d9-001a92567626")
 _chk("є ref: адреса-текст порожня", to.get("shipping_address") == "")
 
-# 3: np_city_ref ПОРОЖНІЙ (НП недоступна) → номер+місто йдуть, city_id ВІДСУТНІЙ, БЕЗ гадання
+# 3: np_city_ref ПОРОЖНІЙ (НП недоступна) → номер+місто йдуть, city_id ВІДСУТНІЙ, БЕЗ гадання,
+#    але ПОВНИЙ текст адреси клієнта (з областю) йде в shipping_address + область у comment (аудит #553)
 to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref=""))
 _chk("нема ref: warehouse=65 ВСЕ ОДНО", to.get("shipping_warehouse_id") == "65")
 _chk("нема ref: місто=Харків ВСЕ ОДНО", to.get("shipping_city_name") == "Харків")
 _chk("нема ref: city_id ВІДСУТНІЙ (не гадаємо)", "shipping_city_id" not in to)
-_chk("нема ref: адреса-текст порожня (є структурний номер)", to.get("shipping_address") == "")
+_chk("нема ref: ПОВНИЙ текст адреси (з областю) у shipping_address",
+     to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
+_chk("нема ref: область у comment", "Харківська обл." in to.get("comment", ""))
+
+# 3в: коли CityRef Є — адреса-текст порожня (структурно однозначно)
+to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="db5c88e0"))
+_chk("є ref: shipping_address порожня", to.get("shipping_address") == "")
 
 # 3b: find_city прибрано з модуля — гадання за назвою фізично неможливе
 _chk("find_city не імпортовано в order_router", not hasattr(orr, "find_city"))

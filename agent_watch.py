@@ -272,6 +272,15 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     Для періодичної задачі бере `periodic_prompt` (якщо є), інакше — звичайний `wake_prompt`."""
     base = cfg.get("periodic_prompt") if (periodic and cfg.get("periodic_prompt")) else cfg["wake_prompt"]
     prompt = f"{base}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
+    # ⚠️ CMD.EXE-МЕТАСИМВОЛИ: claude на Windows — це `claude.CMD`, тож subprocess запускає його
+    # ЧЕРЕЗ cmd.exe, який трактує `<`/`>` як перенаправлення вводу/виводу ЩЕ ДО старту сесії —
+    # навіть усередині лапок аргументу → «The system cannot find the file specified», exit=1,
+    # агент НЕ будиться. Тихо валило ВСІ 4 вотчери ~26 днів (last_wake 21-22.08; інцидент виявив
+    # Продажник/Консультант 2026-09-17, exit=1 у SELLER_CHANNEL). Кутові дужки в промпті — це лише
+    # текстові плейсхолдери (`<тема>`, `<суть…>`), без семантики для агента → міняємо на не-
+    # метасимвольні гільмети (‹ ›). Робимо в ТОЧЦІ ЗАПУСКУ, щоб і майбутні промпти не могли знову
+    # тихо вбити пробудження (звірено живо: `"<тема>"` → exit=1; `"‹тема›"` → exit=0, аргумент цілий).
+    prompt = prompt.replace("<", "‹").replace(">", "›")
     # cwd визначає, ДЕ агент передусім читає/пише файли. УСІ три агенти (SEO/SMM/Код з 2026-08-21)
     # стартують у папці каналів (cfg["cwd"]=COWORK) — інакше НЕ бачать MARKETING_CHANNEL.md/
     # SEO_CHANNEL.md (доступ через --add-dir у headless упирається в дозвіл-промпт, перевірено живо).

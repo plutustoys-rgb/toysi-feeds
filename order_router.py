@@ -12,7 +12,7 @@ from orders_db import (
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
 from meta_conversions_client import send_purchase_event
-from nova_poshta import find_city, settlement_raion, NovaPoshtaAPIError
+from nova_poshta import settlement_raion
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message, send_throttled_alert
 import rozetka_client
@@ -213,24 +213,17 @@ def build_toysi_order(order: dict) -> dict:
     # У НП резолвимо ЛИШЕ місто (назва→CityRef), і лише коли площадка не дала CityRef напряму.
     wh_number = (order.get("np_warehouse_number") or "").strip() or (warehouse_query or "").strip()
     if is_np and city and wh_number:
-        city_ref = (order.get("np_city_ref") or "").strip()   # EVA/сайт дають CityRef напряму
-        if not city_ref:
-            # Rozetka/Prom CityRef не дають — резолвимо ТІЛЬКИ місто (find_city з area_hint для
-            # міст-тезок). Відділення НЕ шукаємо. НП недоступна → city_ref="" → адреса піде текстом.
-            try:
-                _c = find_city(city, area_hint=area_hint)
-                city_ref = (_c or {}).get("ref") or ""
-            except NovaPoshtaAPIError as e:
-                print(
-                    f"[order_router] НП find_city для {order['internal_order_id']}: {e}",
-                    file=sys.stderr,
-                )
-                city_ref = ""
+        # ПЕРЕДАЄМО ВИБІР КЛІЄНТА НАПРЯМУ, БЕЗ пошуку/гадання в НП: номер відділення (з площадки
+        # або розпарсений з тексту) + назва міста (shipping_city_name нижче) — обидва як їх дав
+        # клієнт. shipping_city_id (CityRef) у Toysi ОПЦІОНАЛЬНИЙ (toysi_order_submit.py:120):
+        # додаємо ЛИШЕ якщо площадка дала його НАПРЯМУ (np_city_ref — EVA структурно; Rozetka з
+        # delivery.ref_id через warehouse_by_ref). find_city ПРИБРАНО: резолв міста за назвою слав
+        # посилку в чуже однойменне село (Дмитрівка→Бородянський), а при збої НП ще й губив номер.
+        # Тепер номер клієнта йде в Toysi ЗАВЖДИ (коли є місто+номер); CityRef — лише коли точний.
+        shipping_fields["shipping_warehouse_id"] = wh_number
+        city_ref = (order.get("np_city_ref") or "").strip()
         if city_ref:
-            shipping_fields = {
-                "shipping_city_id": city_ref,
-                "shipping_warehouse_id": wh_number,
-            }
+            shipping_fields["shipping_city_id"] = city_ref
 
     first_name, last_name, middle_name = _split_recipient_name(
         order.get("customer_name", ""), order.get("platform", ""))

@@ -40,31 +40,28 @@ def _order(**kw):
 
 
 def main():
-    calls = {"find_city": 0}
-    orr.find_city = lambda name, area_hint="": (calls.__setitem__("find_city", calls["find_city"] + 1)
-                                                or {"ref": f"CITYREF::{name}"})
     orr.settlement_raion = lambda *a, **k: ""
 
-    # 1) EVA: CityRef + номер з площадки → напряму, find_city НЕ викликається.
-    calls["find_city"] = 0
+    # 1) EVA: CityRef + номер з площадки → обидва напряму.
     r = orr.build_toysi_order(_order(platform="eva", np_branch="Мукачево, Відділення №3",
                                      np_city_ref="EVA-CITYREF", np_warehouse_number="3"))
     _check("EVA warehouse=клієнтів №3", r.get("shipping_warehouse_id"), "3")
-    _check("EVA city=реф напряму", r.get("shipping_city_id"), "EVA-CITYREF")
-    _check("EVA find_city не викликано", calls["find_city"], 0)
+    _check("EVA city_id=реф напряму", r.get("shipping_city_id"), "EVA-CITYREF")
 
-    # 2) Rozetka: номер (place_number) з площадки, CityRef немає → номер напряму, місто резолвимо.
-    calls["find_city"] = 0
+    # 2) Rozetka БЕЗ np_city_ref (НП-реф не резолвнувся) → номер клієнта ВСЕ ОДНО йде;
+    #    міста за назвою НЕ гадаємо (find_city прибрано) → shipping_city_id відсутній,
+    #    назва міста — як дав клієнт. Money-safe: чужого однойменного села не буде.
     r = orr.build_toysi_order(_order(platform="rozetka", np_branch="Мукачево, Відділення №3",
                                      np_warehouse_number="3"))
     _check("Rozetka warehouse=клієнтів №3", r.get("shipping_warehouse_id"), "3")
-    _check("Rozetka city резолвнуто за назвою", r.get("shipping_city_id"), "CITYREF::Мукачево")
-    _check("Rozetka find_city викликано (місто)", calls["find_city"], 1)
+    _check("Rozetka без гадання: city_id відсутній", "shipping_city_id" in r, False)
+    _check("Rozetka місто=Мукачево (назва клієнта)", r.get("shipping_city_name"), "Мукачево")
 
-    # 3) Prom: лише вільний текст → номер розпарсений з тексту, місто з area_hint.
+    # 3) Prom (вільний текст): номер розпарсений; city_id відсутній (find_city прибрано).
     r = orr.build_toysi_order(_order(platform="prom", np_branch="Київ (Київська обл.), Відділення №5"))
     _check("Prom warehouse=розпарсений №5", r.get("shipping_warehouse_id"), "5")
-    _check("Prom city=Київ", r.get("shipping_city_id"), "CITYREF::Київ")
+    _check("Prom без гадання: city_id відсутній", "shipping_city_id" in r, False)
+    _check("Prom місто=Київ", r.get("shipping_city_name"), "Київ")
 
     # 4) КЛЮЧОВИЙ РЕГРЕС: однозначний №3 → саме 3 (раніше find_warehouse давав 2).
     r = orr.build_toysi_order(_order(platform="prom", np_branch="Мукачево, Відділення №3"))
@@ -76,15 +73,17 @@ def main():
     _check("Укрпошта без НП-рефа", "shipping_warehouse_id" in r, False)
     _check("Укрпошта адреса текстом", r.get("shipping_address"), "Львів, Відділення №1")
 
-    # 6) Немає номера → без рефа, текст-фолбек.
+    # 6) Немає номера → без структурного відділення, текст-фолбек.
     r = orr.build_toysi_order(_order(platform="prom", np_branch="Просто вулиця без номера"))
     _check("Без номера → без рефа", "shipping_warehouse_id" in r, False)
 
-    # 7) НП недоступна (find_city кидає) → без рефа, текст-фолбек (Toysi-менеджер обробить вручну).
-    import nova_poshta
-    orr.find_city = lambda *a, **k: (_ for _ in ()).throw(nova_poshta.NovaPoshtaAPIError("НП down"))
+    # 7) Реф не резолвнувся / НП недоступна: номер+місто клієнта ВСЕ ОДНО йдуть СТРУКТУРНО
+    #    (не текст-фолбек, не гадання) — shipping_city_id відсутній, адреса-текст порожня.
+    #    Раніше було навпаки (текст-фолбек + ручна обробка) — тепер клієнтські дані йдуть напряму.
     r = orr.build_toysi_order(_order(platform="prom", np_branch="Київ, Відділення №5"))
-    _check("НП down → без рефа, текст", r.get("shipping_address"), "Київ, Відділення №5")
+    _check("Реф-fail: warehouse=5 структурно", r.get("shipping_warehouse_id"), "5")
+    _check("Реф-fail: city_id відсутній (без гадання)", "shipping_city_id" in r, False)
+    _check("Реф-fail: адреса-текст порожня (є номер)", r.get("shipping_address"), "")
 
     print()
     if _FAILS:

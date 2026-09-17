@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: nightly trigger for np-warehouse-sync
+
+[Timer]
+# Раз на добу о 03:00 (системний час VPS) — низьке навантаження, задовго до ранкового
+# order-pipeline-трафіку. Точна хвилина не критична. RandomizedDelaySec розводить пік з
+# іншими нічними таймерами (promo-margin-guard о 08:30 — не конфліктує).
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

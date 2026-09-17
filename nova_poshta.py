@@ -170,6 +170,20 @@ def warehouse_by_ref(warehouse_ref: str) -> dict | None:
     ref = (warehouse_ref or "").strip()
     if not ref:
         return None
+    # ЛОКАЛЬНИЙ КЕШ ПЕРШИЙ (nova_poshta_warehouse_cache.py, 2026-09-17) — за офіційною
+    # рекомендацією НП (developers.novaposhta.ua/getWarehouses: "рекомендовано... оновлювати
+    # довідник ЩОНОЧІ", а не запитувати живо на кожне замовлення). Кеш прибирає throttle-ризик
+    # структурно для Ref, які вже в довіднику: читання локальне, мілісекунди, без мережі. Лише
+    # коли Ref немає в кеші (нове відділення / кеш ще не синхронізовано вперше) — фолбек на
+    # живий запит нижче, як і раніше. Локальний import — уникає циклічного імпорту (кеш-модуль
+    # сам імпортує _call/NovaPoshtaAPIError з ЦЬОГО модуля).
+    try:
+        import nova_poshta_warehouse_cache as _wh_cache
+        cached = _wh_cache.lookup_ref(ref)
+        if cached:
+            return cached
+    except Exception as e:  # noqa: BLE001 — кеш best-effort, збій не має валити резолв
+        print(f"[nova_poshta] Кеш відділень недоступний ({e}) — фолбек на живий запит", file=sys.stderr)
     # РЕТРАЙ на throttle НП: getWarehouses(Ref=) під навантаженням (пул опитує кілька НП-замовлень
     # щоцикл) віддає ПОРОЖНЄ/помилку на 2-3-му швидкому виклику (звірено живо 2026-09-17: burst 4×
     # → [ok, None, None, None], відновлення за ~3с). Без ретраю city_ref губився мовчки → адреса

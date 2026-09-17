@@ -130,7 +130,12 @@ def _status_payload():
         to_me, by_me = _last_channel_activity(a)
         agents.append({"name": a["name"], "label": a["label"],
                        "channels": a["channels"], "to_me": to_me, "by_me": by_me})
-    crit = _read_json(BASE_DIR / "reports" / "critical_status.json")
+    # critical_watch.py пише critical_status.json у AUDIT_REPORT_DIR (задача ставить його на
+    # Cowork/reports — там живі balance_history/heartbeats), НЕ в репо. Панель має читати ту саму
+    # живу копію, інакше показує застарілий стан (репо-копія лишалась на 25.08). Фолбек на репо —
+    # якщо монітор колись прогнали без env.
+    _crit_dir = Path(os.environ.get("AUDIT_REPORT_DIR") or (COWORK_DIR / "reports"))
+    crit = _read_json(_crit_dir / "critical_status.json") or _read_json(BASE_DIR / "reports" / "critical_status.json")
     return {"agents": agents, "critical": crit, "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 

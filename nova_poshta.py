@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 import requests
 from dotenv import load_dotenv
@@ -166,20 +167,28 @@ def warehouse_by_ref(warehouse_ref: str) -> dict | None:
     його CityRef і Number → передаємо Toysi напряму (shipping_city_id+shipping_warehouse_id),
     БЕЗ гадання міста за назвою. Це усуває клас «однойменних сіл» (інцидент 906224962:
     4 «Дмитрівки» в Київській обл. — посилка йшла в чуже село через find_city за назвою)."""
-    if not (warehouse_ref or "").strip():
+    ref = (warehouse_ref or "").strip()
+    if not ref:
         return None
-    try:
-        data = _call("AddressGeneral", "getWarehouses", {"Ref": warehouse_ref.strip()})
-    except NovaPoshtaAPIError:
-        return None
-    if not data:
-        return None
-    w = data[0]
-    return {
-        "city_ref": w.get("CityRef"),
-        "number": (w.get("Number") or "").strip(),
-        "description": w.get("Description") or "",
-    }
+    # РЕТРАЙ на throttle НП: getWarehouses(Ref=) під навантаженням (пул опитує кілька НП-замовлень
+    # щоцикл) віддає ПОРОЖНЄ/помилку на 2-3-му швидкому виклику (звірено живо 2026-09-17: burst 4×
+    # → [ok, None, None, None], відновлення за ~3с). Без ретраю city_ref губився мовчки → адреса
+    # падала в гадання за назвою → чуже село. Кілька спроб із паузою роблять клієнтський Ref надійним.
+    for attempt in range(3):
+        try:
+            data = _call("AddressGeneral", "getWarehouses", {"Ref": ref})
+        except NovaPoshtaAPIError:
+            data = None
+        if data:
+            w = data[0]
+            city_ref = w.get("CityRef")
+            number = (w.get("Number") or "").strip()
+            if city_ref and number:
+                return {"city_ref": city_ref, "number": number,
+                        "description": w.get("Description") or ""}
+        if attempt < 2:
+            time.sleep(1.5)
+    return None
 
 
 def search_cities(query: str, limit: int = 8) -> list:

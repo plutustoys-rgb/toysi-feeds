@@ -12,7 +12,7 @@ from orders_db import (
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
 from meta_conversions_client import send_purchase_event
-from nova_poshta import find_city, settlement_raion, NovaPoshtaAPIError
+from nova_poshta import settlement_raion
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message, send_throttled_alert
 import rozetka_client
@@ -213,24 +213,17 @@ def build_toysi_order(order: dict) -> dict:
     # У НП резолвимо ЛИШЕ місто (назва→CityRef), і лише коли площадка не дала CityRef напряму.
     wh_number = (order.get("np_warehouse_number") or "").strip() or (warehouse_query or "").strip()
     if is_np and city and wh_number:
-        city_ref = (order.get("np_city_ref") or "").strip()   # EVA/сайт дають CityRef напряму
-        if not city_ref:
-            # Rozetka/Prom CityRef не дають — резолвимо ТІЛЬКИ місто (find_city з area_hint для
-            # міст-тезок). Відділення НЕ шукаємо. НП недоступна → city_ref="" → адреса піде текстом.
-            try:
-                _c = find_city(city, area_hint=area_hint)
-                city_ref = (_c or {}).get("ref") or ""
-            except NovaPoshtaAPIError as e:
-                print(
-                    f"[order_router] НП find_city для {order['internal_order_id']}: {e}",
-                    file=sys.stderr,
-                )
-                city_ref = ""
+        # ПЕРЕДАЄМО ВИБІР КЛІЄНТА НАПРЯМУ, БЕЗ пошуку/гадання в НП: номер відділення (з площадки
+        # або розпарсений з тексту) + назва міста (shipping_city_name нижче) — обидва як їх дав
+        # клієнт. shipping_city_id (CityRef) у Toysi ОПЦІОНАЛЬНИЙ (toysi_order_submit.py:120):
+        # додаємо ЛИШЕ якщо площадка дала його НАПРЯМУ (np_city_ref — EVA структурно; Rozetka з
+        # delivery.ref_id через warehouse_by_ref). find_city ПРИБРАНО: резолв міста за назвою слав
+        # посилку в чуже однойменне село (Дмитрівка→Бородянський), а при збої НП ще й губив номер.
+        # Тепер номер клієнта йде в Toysi ЗАВЖДИ (коли є місто+номер); CityRef — лише коли точний.
+        shipping_fields["shipping_warehouse_id"] = wh_number
+        city_ref = (order.get("np_city_ref") or "").strip()
         if city_ref:
-            shipping_fields = {
-                "shipping_city_id": city_ref,
-                "shipping_warehouse_id": wh_number,
-            }
+            shipping_fields["shipping_city_id"] = city_ref
 
     first_name, last_name, middle_name = _split_recipient_name(
         order.get("customer_name", ""), order.get("platform", ""))
@@ -254,9 +247,17 @@ def build_toysi_order(order: dict) -> dict:
         except Exception:  # noqa: BLE001 — район необов'язковий, не валимо передачу замовлення
             raion = ""
 
+    # ЛОКАЦІЯ в comment (звірка менеджером Toysi): місто + район (якщо однозначно) + ОБЛАСТЬ.
+    # Область кладемо ЗАВЖДИ, коли вона є — щоб при відсутньому CityRef Toysi-менеджер мав за чим
+    # розрізнити однойменні міста/села (аудит #553: раніше без району область губилась зовсім).
     comment = f"Автоматично: {order['platform']} #{order['order_id']}"
-    if raion:
-        comment += f" · {city}, {raion} р-н" + (f", {area_hint} обл." if area_hint else "")
+    if order.get("carrier", "nova_poshta") == "nova_poshta" and city:
+        loc = city
+        if raion:
+            loc += f", {raion} р-н"
+        if area_hint:
+            loc += f", {area_hint} обл."
+        comment += f" · {loc}"
 
     return {
         "internal_order_id": order["internal_order_id"][:25],
@@ -266,9 +267,12 @@ def build_toysi_order(order: dict) -> dict:
         "middle_name": middle_name,
         "phone": _normalize_phone_for_toysi(order.get("phone", "")),
         "shipping_city_name": city or "Київ",  # Toysi вимагає непорожнє місто
-        # Без NP-резолву адреса лишається вільним текстом np_branch — бажано,
-        # ніж порожній рядок (response_code 20 "порожня адреса доставки").
-        "shipping_address": order.get("np_branch", "") if not shipping_fields else "",
+        # shipping_address порожній ЛИШЕ коли віддаємо ТОЧНИЙ CityRef (тоді адреса однозначна
+        # структурно). Немає CityRef (Rozetka-реф не резолвнувся / Prom-текст) → кладемо ПОВНИЙ
+        # np_branch клієнта (місто+область+№), щоб Toysi мав МАКСИМУМ даних для резолву, а не менше,
+        # ніж дав клієнт (аудит #553: інакше «Дмитрівка» без області → чуже село). Номер відділення
+        # все одно йде структурно у shipping_warehouse_id.
+        "shipping_address": "" if shipping_fields.get("shipping_city_id") else order.get("np_branch", ""),
         "moneyback": moneyback,
         "comment": comment,
         **shipping_fields,

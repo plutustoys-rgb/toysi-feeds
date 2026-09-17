@@ -77,11 +77,12 @@ PANEL_EXTRA_AGENTS = [
 _AGENT_DEF = {
     "Код": "plutus-kod", "SEO": "plutus-seo", "SMM": "plutus-smm",
     "Консультант": "plutus-consultant", "Бухгалтер": "plutus-kodv",
+    "Продажник": "plutus-seller",
 }
 
 
 def _agents():
-    """Агенти панелі: з agent_watch (Код/SEO/SMM) + PANEL_EXTRA (консультант/бухгалтер)."""
+    """Агенти панелі: з agent_watch (Код/SEO/SMM/Продажник) + PANEL_EXTRA (консультант/бухгалтер)."""
     out = []
     for w in list(WATCHERS) + PANEL_EXTRA_AGENTS:
         out.append({"name": w["name"], "label": w.get("target_label", w["name"]),

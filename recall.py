@@ -38,6 +38,8 @@ _CONFIGS = {
             COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "archive" / "seo"],
     "smm": [COWORK_DIR / "MARKETING_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
             COWORK_DIR / "archive" / "smm"],
+    "seller": [COWORK_DIR / "SELLER_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
+               COWORK_DIR / "archive" / "seller"],
     "consultant": [COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
                    COWORK_DIR / "онбординг_консультанта_відповіді_Код.md", COWORK_DIR / "STATUS.md",
                    COWORK_DIR / "archive" / "consultant"],

@@ -528,9 +528,10 @@ def _convert_rozetka_order(order: dict) -> dict:
     # недоступна) — place_number як номер, місто резолвиться далі як раніше (не гіршає).
     _rz_wh = None
     _rz_city_ref = None
+    _wh_ref = None
     if _rozetka_carrier(order) == "nova_poshta":
         _wh = None
-        _wh_ref = (delivery.get("ref_id") or "").strip()
+        _wh_ref = (delivery.get("ref_id") or "").strip() or None
         if _wh_ref:
             try:
                 _wh = nova_poshta.warehouse_by_ref(_wh_ref)
@@ -551,6 +552,12 @@ def _convert_rozetka_order(order: dict) -> dict:
         "customer_name": _rozetka_customer_name(order),
         "np_warehouse_number": _rz_wh,  # точний № відділення НП → build_toysi_order віддає напряму
         "np_city_ref": _rz_city_ref,    # точний CityRef із рефа відділення (delivery.ref_id) → без гадання міста
+        # Сирий Ref persisted ЗАВЖДИ (навіть коли резолв щойно впав, _rz_city_ref лишився None) —
+        # інцидент 906260104 (2026-09-17): єдина спроба резолву на інжесті зловила throttling НП
+        # (burst → None), Ref ніде не зберігався → build_toysi_order при форварді вже не мав ЧИМ
+        # ретраїти й губив city_id/warehouse_id НАЗАВЖДИ (замовлення пішло в Toysi без відділення).
+        # Тепер Ref завжди в БД → build_toysi_order пробує резолв ЩЕ РАЗ, іншим моментом часу.
+        "np_ref_id": _wh_ref,
 
         # ОТРИМУВАЧ (order.recipient_phone) ПЕРШИМ, не замовник (order.user_phone): для доставки НП
         # телефон — це кого повідомляють/кому віддають посилку. Інцидент 904295184 (2026-08-30):
@@ -882,6 +889,7 @@ def normalize_order(raw_order: dict) -> dict:
         "np_branch":         raw_order.get("np_branch", ""),
         "np_city_ref":       raw_order.get("np_city_ref"),          # структурний NP CityRef (EVA), якщо є
         "np_warehouse_number": raw_order.get("np_warehouse_number"), # точний № відділення з площадки, якщо є
+        "np_ref_id":         raw_order.get("np_ref_id"),            # сирий Ref (Rozetka) — на ретрай резолву при форварді
         "carrier":           raw_order.get("carrier", "nova_poshta"),
         "items":             raw_order["items"],
     }

@@ -12,7 +12,7 @@ from orders_db import (
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order
 from meta_conversions_client import send_purchase_event
-from nova_poshta import settlement_raion
+from nova_poshta import settlement_raion, warehouse_by_ref
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message, send_throttled_alert
 import rozetka_client
@@ -222,8 +222,37 @@ def build_toysi_order(order: dict) -> dict:
         # Тепер номер клієнта йде в Toysi ЗАВЖДИ (коли є місто+номер); CityRef — лише коли точний.
         shipping_fields["shipping_warehouse_id"] = wh_number
         city_ref = (order.get("np_city_ref") or "").strip()
+        # РЕТРАЙ РЕЗОЛВУ ПРИ ФОРВАРДІ (2026-09-17, інцидент 906260104 — money-risk, знайдений
+        # живо через скрін Toysi-кабінету, НЕ вигаданий): np_city_ref резолвиться ОДИН раз при
+        # інжесті (orders_watcher._convert_rozetka_order, всередині вже є ретрай 3×1.5с на
+        # throttle НП) — якщо саме ТОЙ момент потрапив під throttle довше за ці ~4.5с, city_ref
+        # губиться НАЗАВЖДИ (форвард раніше не мав чим ретраїти: сирий Ref ніде не зберігався).
+        # Тепер np_ref_id persisted у orders.db (окремо від успіху резолву) — форвард, який
+        # відбувається ІНШИМ моментом часу (після bank_check у order_pipeline), пробує резолв
+        # ЩЕ РАЗ. Це другий, рознесений у часі шанс — набагато надійніше за один заряд 3 спроб
+        # поспіль (nova_poshta.warehouse_by_ref вже сам ретраїть+чекає всередині).
+        if not city_ref and order.get("np_ref_id"):
+            try:
+                _wh = warehouse_by_ref(order["np_ref_id"])
+            except Exception as e:  # noqa: BLE001 — ретрай best-effort, не валимо форвард
+                _wh = None
+                print(f"[order_router] Ретрай warehouse_by_ref для {order['internal_order_id']}: {e}",
+                      file=sys.stderr)
+            if _wh and _wh.get("city_ref") and _wh.get("number"):
+                city_ref = _wh["city_ref"]
+                shipping_fields["shipping_warehouse_id"] = _wh["number"]  # звіряємо номер тим самим резолвом
         if city_ref:
             shipping_fields["shipping_city_id"] = city_ref
+        elif order.get("np_ref_id"):
+            # ОБИДВІ спроби (інжест + форвард) не резолвнули CityRef — замовлення все одно йде
+            # (warehouse_id + повний текстовий np_branch, як і раніше), але це вже РІДКІСНИЙ,
+            # вартий уваги випадок (не штатний потік) — алертимо, щоб хтось звірив з Toysi
+            # ВРУЧНУ до відвантаження, а не випадково через скрін, як 906260104.
+            send_telegram_message(
+                f"⚠️ {order['internal_order_id']}: CityRef Нової Пошти не резолвнувся ДВІЧІ "
+                f"(інжест + форвард) для Ref {order['np_ref_id']} — Toysi отримає адресу вільним "
+                f"текстом без структурного відділення. Звір із Toysi-кабінетом до відвантаження."
+            )
 
     first_name, last_name, middle_name = _split_recipient_name(
         order.get("customer_name", ""), order.get("platform", ""))

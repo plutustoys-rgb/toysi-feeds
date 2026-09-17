@@ -4,6 +4,10 @@
   "use strict";
   var CART_KEY = "pt_cart_v1";
   var DELIVERY_HINT = 70;           // орієнтир доставки НП для підсумку (уточнюється при оформленні)
+  // Поріг безкоштовної доставки — CONSULTANT_CHANNEL.md 2026-09-14/16, число Консультанта
+  // (OWNER_INBOX 13.09), підтверджене двічі. Орієнтир у підсумку кошика, як і DELIVERY_HINT —
+  // фактична вартість завжди рахується на кроці оформлення.
+  var FREE_SHIPPING_THRESHOLD = 1000;
 
   function read(){ try{ return JSON.parse(localStorage.getItem(CART_KEY)) || {}; }catch(e){ return {}; } }
   function write(c){ try{ localStorage.setItem(CART_KEY, JSON.stringify(c)); }catch(e){} updateBadge(); }
@@ -178,10 +182,25 @@
   }
   function renderSummary(){
     var goods=total();
+    var freeShip=goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
-    if(d) d.textContent="≈ "+PT.DELIVERY_HINT+" ₴";
-    if(t) t.textContent=(goods+PT.DELIVERY_HINT)+" ₴";
+    if(d) d.textContent=freeShip ? "Безкоштовно" : ("≈ "+PT.DELIVERY_HINT+" ₴");
+    if(t) t.textContent=(freeShip ? goods : goods+PT.DELIVERY_HINT)+" ₴";
+    var note=document.getElementById("free-ship-note");
+    if(note){
+      if(freeShip){
+        note.textContent="🎉 Вітаємо — у вас безкоштовна доставка Новою Поштою!";
+        note.classList.add("free-ship-done");
+      } else {
+        var left=FREE_SHIPPING_THRESHOLD-goods;
+        note.textContent="Додайте ще "+left+" ₴ до безкоштовної доставки";
+        note.classList.remove("free-ship-done");
+      }
+      var pct=Math.min(100, Math.round(goods/FREE_SHIPPING_THRESHOLD*100));
+      var bar=document.getElementById("free-ship-bar");
+      if(bar) bar.style.width=pct+"%";
+    }
   }
 
   // ── Ініціалізація на кожній сторінці ──

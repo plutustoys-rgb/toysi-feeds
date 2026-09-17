@@ -15,12 +15,16 @@ test_address_pass_direct.py — регрес-тест «передаємо ад�
   4. shipping_address порожній, коли є структурний номер (не текст-фолбек).
   5. np_city_ref порожній, АЛЕ np_ref_id є (сирий Ref persisted, інцидент 906260104) → build_toysi_order
      ретраїть warehouse_by_ref ще раз при форварді: успіх → city_id/warehouse_id з retry; провал
-     ОБОХ спроб → текст-фолбек як і раніше, ПЛЮС Telegram-алерт (не мовчазна деградація).
+     ОБОХ спроб + замовлення ще СВІЖЕ (< CITY_REF_WAIT_LIMIT) → повертає None, форвард
+     ВІДКЛАДАЄТЬСЯ до наступного циклу (чекаємо точні дані клієнта, не здогадуємо — власник
+     2026-09-17: жодних алертів-як-рішення); час вичерпано (чи created_at відсутній) →
+     форвардимо тим, що маємо (текст np_branch — реальні дані клієнта, не вигадка).
 
 Мережа не потрібна (find_city усунено; settlement_raion + warehouse_by_ref замокано нижче).
 `python test_address_pass_direct.py` → exit 0/1.
 """
 import sys
+from datetime import datetime, timedelta
 import order_router as orr
 
 # settlement_raion робить живі виклики НП (район у comment) — мокаємо, щоб тест був офлайн
@@ -99,42 +103,58 @@ def _mock_warehouse_by_ref_fail(ref):
     return None
 
 
-_alerts = []
-orr.send_throttled_alert = lambda dedup_key, msg, **kw: (_alerts.append((dedup_key, msg)) or True)
-
-# 6a: ретрай УСПІШНИЙ → city_id проставлено з retry, БЕЗ алерту
+# 6a: ретрай УСПІШНИЙ → city_id проставлено з retry
 orr.warehouse_by_ref = _mock_warehouse_by_ref_ok
 _calls.clear()
-_alerts.clear()
 to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="",
                                   np_ref_id="b7fab5aa-a62c-11e4-a77a-005056887b8d"))
 _chk("ретрай успішний: warehouse_by_ref викликано з тим Ref", _calls == ["b7fab5aa-a62c-11e4-a77a-005056887b8d"])
+_chk("ретрай успішний: не None (форвардимо одразу)", to is not None)
 _chk("ретрай успішний: city_id з retry", to.get("shipping_city_id") == "db5c88e0-391c-11dd-90d9-001a92567626")
 _chk("ретрай успішний: warehouse_id з retry", to.get("shipping_warehouse_id") == "65")
 _chk("ретрай успішний: адреса-текст порожня (структурно однозначно)", to.get("shipping_address") == "")
-_chk("ретрай успішний: БЕЗ алерту", _alerts == [])
 
-# 6b: ретрай ТЕЖ провалився → фолбек як і раніше, АЛЕ з алертом (не мовчазна деградація)
+# 6b: ретрай ТЕЖ провалився, СВІЖЕ замовлення (created_at=щойно) → ВІДКЛАДАЄМО форвард
+# (власник 2026-09-17: «не треба алертів, роби так щоб цих багів не було» — чекаємо на ТОЧНІ
+# дані клієнта замість здогаду). build_toysi_order повертає None, route_order() пропускає цикл.
 orr.warehouse_by_ref = _mock_warehouse_by_ref_fail
 _calls.clear()
-_alerts.clear()
+to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="",
+                                  np_ref_id="b7fab5aa-a62c-11e4-a77a-005056887b8d",
+                                  created_at=datetime.now().isoformat(timespec="seconds")))
+_chk("ретрай провалено, свіже: warehouse_by_ref усе одно викликано", len(_calls) == 1)
+_chk("ретрай провалено, свіже: ВІДКЛАДАЄМО (None), не здогадуємо", to is None)
+
+# 6c: ретрай ТЕЖ провалився, замовлення СТАРЕ (> CITY_REF_WAIT_LIMIT від created_at) → час
+# очікування вичерпано, форвардимо з тим, що маємо (warehouse_id структурно + повний текст
+# np_branch клієнта — РЕАЛЬНІ дані, не вигадка, просто без CityRef-структури).
+orr.warehouse_by_ref = _mock_warehouse_by_ref_fail
+_calls.clear()
+_old_created = (datetime.now() - orr.CITY_REF_WAIT_LIMIT - timedelta(minutes=1)).isoformat(timespec="seconds")
+to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="",
+                                  np_ref_id="b7fab5aa-a62c-11e4-a77a-005056887b8d",
+                                  created_at=_old_created))
+_chk("ретрай провалено, старе: не None (час вичерпано, форвардимо)", to is not None)
+_chk("ретрай провалено, старе: city_id ВІДСУТНІЙ", "shipping_city_id" not in to)
+_chk("ретрай провалено, старе: warehouse_id все одно клієнтів №65", to.get("shipping_warehouse_id") == "65")
+_chk("ретрай провалено, старе: повний текст адреси клієнта (не вигадка, просто текст)",
+     to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
+
+# 6d: без created_at узагалі (синтетичний виклик поза orders.db) → як «час вичерпано»,
+# форвардимо одразу (build_toysi_order завжди повертає dict, коли контексту з orders.db нема)
+orr.warehouse_by_ref = _mock_warehouse_by_ref_fail
+_calls.clear()
 to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="",
                                   np_ref_id="b7fab5aa-a62c-11e4-a77a-005056887b8d"))
-_chk("ретрай провалено: warehouse_by_ref усе одно викликано", len(_calls) == 1)
-_chk("ретрай провалено: city_id ВІДСУТНІЙ", "shipping_city_id" not in to)
-_chk("ретрай провалено: warehouse_id все одно клієнтів №65", to.get("shipping_warehouse_id") == "65")
-_chk("ретрай провалено: повний текст адреси (фолбек як і раніше)",
-     to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
-_chk("ретрай провалено: throttled-алерт надіслано з internal_order_id (дедуп-ключ + текст)",
-     len(_alerts) == 1 and "t_1" in _alerts[0][0] and "t_1" in _alerts[0][1])
+_chk("без created_at: не None (нема на що чекати)", to is not None)
 
-# 6c: np_ref_id ВІДСУТНІЙ (Prom/EVA — нема чим ретраїти) → warehouse_by_ref НЕ викликається, без алерту
+# 6e: np_ref_id ВІДСУТНІЙ (Prom/EVA — нема чим ретраїти) → warehouse_by_ref НЕ викликається,
+# форвардимо одразу текстом (як і завжди для Prom/без структурного рефа)
 orr.warehouse_by_ref = _mock_warehouse_by_ref_fail
 _calls.clear()
-_alerts.clear()
 to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="", np_ref_id=None))
 _chk("без np_ref_id: warehouse_by_ref НЕ викликається", _calls == [])
-_chk("без np_ref_id: без алерту", _alerts == [])
+_chk("без np_ref_id: не None", to is not None)
 _chk("без np_ref_id: city_id відсутній (як і раніше)", "shipping_city_id" not in to)
 
 

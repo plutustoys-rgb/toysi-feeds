@@ -196,8 +196,42 @@ ROZETKA_DELIVERY_TOYSI_CARRIER = os.environ.get("TOYSI_ROZETKA_CARRIER", "Rozetk
 MAX_MARKING_ATTEMPTS = int(os.environ.get("RZ_MARKING_MAX_ATTEMPTS", "5"))
 
 
-def build_toysi_order(order: dict) -> dict:
-    """Перетворює запис orders_db на структуру для toysi_order_submit.submit_order()."""
+# Скільки чекати на CityRef Нової Пошти (throttling НП), перш ніж здатися й віддати Toysi
+# текстову адресу замість подальшого відкладання форварду (власник 2026-09-17: «не треба
+# алертів, роби так щоб цих багів не було» — замість сповіщення про здогад ЧЕКАЄМО на точні
+# дані клієнта). Throttle НП історично минає за секунди (burst 4× → відновлення ~3с,
+# інцидент 906260104); один пропущений цикл order_pipeline (~15 хв) — уже величезний запас,
+# зазвичай вистачає одного.
+# ⚠️ МЕЖА НАВМИСНО < STALE_ORDER_THRESHOLD_MINUTES=25 (service_watchdog.py) — інакше
+# «замовлення все ще непередане» саме по собі спрацювало б як застрягле й вистрелило б ТИМ
+# САМИМ Telegram-алертом, якого власник щойно відхилив (service_watchdog не знає ПРИЧИНИ
+# затримки, лише вік). Даємо один повний зайвий цикл пайплайна (15 хв) понад типове
+# відновлення throttle і все одно встигаємо форварднути ДО того, як спрацює сторонній вотчдог.
+CITY_REF_WAIT_LIMIT = timedelta(minutes=20)
+
+
+def _city_ref_wait_expired(order: dict) -> bool:
+    """True — час здатися й віддати Toysi текстову адресу (без CityRef), а не відкладати
+    форвард ще на цикл. Немає created_at (напр. синтетичний виклик поза orders.db) —
+    вважаємо, що чекати нічого: build_toysi_order одразу повертає dict, а не None."""
+    created_at = order.get("created_at")
+    if not created_at:
+        return True
+    try:
+        created = datetime.fromisoformat(created_at)
+    except ValueError:
+        return True
+    return datetime.now() - created > CITY_REF_WAIT_LIMIT
+
+
+def build_toysi_order(order: dict) -> dict | None:
+    """Перетворює запис orders_db на структуру для toysi_order_submit.submit_order().
+
+    Повертає None, якщо замовлення ЩЕ НЕ готове до форварду: НП CityRef не резолвнувся ні при
+    інжесті, ні при форварді, і час очікування (CITY_REF_WAIT_LIMIT) ще не вичерпано — route_order()
+    тоді НЕ передає це замовлення ЦЬОГО циклу; наступний прогін order_pipeline (~15 хв) спробує
+    знову (замовлення лишається серед get_orders_ready_to_forward(), forwarded_to_toysi_at не
+    проставлений). Це навмисно: краще зачекати на ТОЧНІ дані клієнта, ніж здогадуватись."""
     city, warehouse_query, area_hint = parse_np_branch(order.get("np_branch", ""))
 
     shipping_fields = {}
@@ -243,21 +277,23 @@ def build_toysi_order(order: dict) -> dict:
                 shipping_fields["shipping_warehouse_id"] = _wh["number"]  # звіряємо номер тим самим резолвом
         if city_ref:
             shipping_fields["shipping_city_id"] = city_ref
-        elif order.get("np_ref_id"):
-            # ОБИДВІ спроби (інжест + форвард) не резолвнули CityRef — замовлення все одно йде
-            # (warehouse_id + повний текстовий np_branch, як і раніше), але це вже РІДКІСНИЙ,
-            # вартий уваги випадок (не штатний потік) — алертимо, щоб хтось звірив з Toysi
-            # ВРУЧНУ до відвантаження, а не випадково через скрін, як 906260104.
-            # send_throttled_alert (не send_telegram_message, аудит #555 nit): якщо замовлення
-            # лишається непереданим з НЕЗАЛЕЖНОЇ причини (напр. Toysi API тимчасово недоступний),
-            # build_toysi_order викликається повторно щоцикл (~15 хв, order_pipeline) і додатково
-            # з service_watchdog — без тротлінгу це був би спам того самого алерту щоразу.
-            send_throttled_alert(
-                f"np_city_ref_unresolved:{order['internal_order_id']}",
-                f"⚠️ {order['internal_order_id']}: CityRef Нової Пошти не резолвнувся ДВІЧІ "
-                f"(інжест + форвард) для Ref {order['np_ref_id']} — Toysi отримає адресу вільним "
-                f"текстом без структурного відділення. Звір із Toysi-кабінетом до відвантаження."
+        elif order.get("np_ref_id") and not _city_ref_wait_expired(order):
+            # ОБИДВІ спроби (інжест + форвард) не резолвнули CityRef, але час очікування ще не
+            # вичерпано (< CITY_REF_WAIT_LIMIT від created_at) — НЕ здогадуємось текстом, а
+            # ВІДКЛАДАЄМО форвард: повертаємо None, route_order() пропускає цей цикл, наступний
+            # прогін order_pipeline спробує резолв ЗНОВУ (throttle НП минає за секунди-хвилини,
+            # цикл — ~15 хв, величезний запас). Toysi отримає структурні дані клієнта, коли вони
+            # будуть, а не наш текстовий здогад раніше часу (власник 2026-09-17).
+            print(
+                f"[order_router] {order['internal_order_id']}: CityRef ще не резолвнувся — "
+                "відкладаю форвард до наступного циклу (чекаю точні дані клієнта, не здогадую).",
+                file=sys.stderr,
             )
+            return None
+        # Інакше (city_ref так і не резолвнувся, час очікування вичерпано АБО np_ref_id
+        # відсутній — Prom-текст) — форвардимо з тим, що маємо: warehouse_id структурно +
+        # повний текст np_branch у shipping_address нижче. Це РЕАЛЬНІ дані клієнта (не
+        # вигадка), просто без CityRef-структури.
 
     first_name, last_name, middle_name = _split_recipient_name(
         order.get("customer_name", ""), order.get("platform", ""))
@@ -750,6 +786,11 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
             return
 
     toysi_order = build_toysi_order(order)
+    if toysi_order is None:
+        # НП CityRef ще не резолвнувся, час очікування не вичерпано (build_toysi_order сама
+        # залогувала причину) — замовлення лишається неформардженим, наступний цикл
+        # order_pipeline (route_pending_orders) спробує знову.
+        return
     if carrier == "ukrposhta":
         # Прийнято Toysi без помилки (перевірено емпірично 2026-07-10), але
         # НЕ створює реальне відправлення на боці Toysi — Укрпошта в них не

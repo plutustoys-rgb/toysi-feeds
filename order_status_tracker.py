@@ -8,6 +8,7 @@ from orders_db import (
     mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
     mark_prom_ttn_pushed, mark_eva_ttn_pushed, update_delivery_status,
     mark_rozetka_cancel_ticket_sent, mark_np_return_created, mark_np_return_dryrun_notified,
+    mark_payment_confirmed, mark_cancelled,
 )
 import nova_poshta
 from orders_watcher import (
@@ -703,6 +704,47 @@ def _maybe_return_prom_eva_cancelled(conn, order: dict) -> None:
                       reason=f"{platform.upper()} #{order.get('order_id')} — покупець скасував у кабінеті")
 
 
+def _maybe_sync_eva_status(conn, order: dict) -> None:
+    """Читає АВТОРИТЕТНИЙ статус із самої EVA назад у orders.db. Раніше трекер лише ПУШив у
+    EVA (ТТН), але НЕ читав назад → дві сліпі зони (звірено живо 2026-09-17 на 15 COD-замовленнях):
+      • статус 7 (Отримано) — накладений видано+оплачено на пункті → payment_confirmed=1 +
+        delivery_status='delivered'. Без цього orders.db не бачив реалізацію EVA-COD (9 з 15
+        COD були отримані, а стояли payment_confirmed=0 → realized-виручка занижувалась).
+      • статус 9/10 (Скасовано покупцем/продавцем) → mark_cancelled (раніше висіли
+        'forwarded_to_supplier' як активні; 4 з 15 були скасовані на EVA, а ми не знали).
+
+    Fail-open: помилка EVA API → тихо виходимо, ретрай наступним циклом (як
+    _maybe_return_prom_eva_cancelled). Ідемпотентно: перед записом звіряємо поточний стан,
+    а вже врегульовані (наш cancelled / delivered+оплачено) НЕ смикають EVA API щоцикл.
+    Лише platform=eva. NP-повернення ВІДПРАВЛЕНОЇ скасованої посилки лишається окремим
+    ідемпотентним тригером (_maybe_return_prom_eva_cancelled) — цю функцію не дублює."""
+    if order.get("platform") != "eva":
+        return
+    # Уже врегульоване в нас → не смикаємо EVA API щоцикл (економія + без зайвих записів).
+    if order.get("status") == "cancelled":
+        return
+    if order.get("delivery_status") == "delivered" and order.get("payment_confirmed"):
+        return
+    try:
+        live = eva_orders_client.get_order(order["order_id"]) or {}
+    except eva_orders_client.EvaAPIError as e:  # fail-open — не валимо трекінг інших замовлень
+        print(f"[order_status_tracker] EVA-статус {order['internal_order_id']} не зчитано "
+              f"(fail-open): {e}", file=sys.stderr)
+        return
+    st = live.get("status")
+    iid = order["internal_order_id"]
+    if st == eva_orders_client.EVA_STATUS_RECEIVED:            # 7 — отримано (COD оплачено на пункті)
+        if not order.get("payment_confirmed"):
+            mark_payment_confirmed(conn, iid)
+        if order.get("delivery_status") != "delivered":
+            update_delivery_status(conn, iid, delivery_status="delivered")
+        print(f"[order_status_tracker] EVA {iid}: статус 7 (Отримано) → оплачено+доставлено")
+    elif st in _EVA_CANCELLED_STATUSES:                        # 9/10 — скасовано покупцем/продавцем
+        mark_cancelled(conn, iid,
+                       f"EVA статус {st} — скасовано {'покупцем' if st == 9 else 'продавцем'}")
+        print(f"[order_status_tracker] EVA {iid}: статус {st} → cancelled")
+
+
 def track_orders() -> None:
     with get_connection() as conn:
         active = get_active_toysi_orders(conn)
@@ -760,6 +802,11 @@ def track_orders() -> None:
             # Автоповернення НП: покупець скасував ВІДПРАВЛЕНУ посилку → створити зворотну ТТН
             # (dry-run за дефолтом, NP_RETURN_APPLY=1 вмикає реальне створення). Ідемпотентно.
             _maybe_create_np_return(conn, order, delivery_status, ttn)
+            # Вхідна синхронізація EVA-статусу назад у orders.db: 7(Отримано)→оплачено+доставлено,
+            # 9/10(Скасовано)→cancelled. Закриває сліпі зони COD-реалізації й скасувань покупцем EVA.
+            # ДО _maybe_return_prom_eva_cancelled: спершу проставляємо стан, далі окремий тригер
+            # (ідемпотентно) створює NP-повернення для скасованої ВІДПРАВЛЕНОЇ посилки того ж циклу.
+            _maybe_sync_eva_status(conn, order)
             # Post-forward кабінетне скасування Prom/EVA (Rozetka вже в _maybe_ticket_rozetka_cancelled).
             _maybe_return_prom_eva_cancelled(conn, order)
 

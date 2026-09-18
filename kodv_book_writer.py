@@ -34,6 +34,18 @@
 НЕ вставка/зсув рядків (вставка зламала б `РАЗОМ` у рядку 128:
 `=SUM(B7:B126)` не адаптується автоматично при `ws.insert_rows`).
 
+ВІДОМІ МЕЖІ (задокументовано аудитом PR #572, свідомо не усунено — прийнятний компроміс):
+- Короткі номери документів (менше 5 цифр, напр. «№17», «№1287») порівнюються СИРИМ рядком
+  (casefold), не нормалізованими цифрами — той самий клас проблеми, що спричинив інцидент
+  рядка 7/80 (різні префікси того самого номера), теоретично міг би пройти непоміченим для
+  короткого номера з іншим префіксом. Наразі в книзі короткі номери не мають такої колізії.
+- Немає файлового блокування: два одночасні запуски `append` можуть обчислити той самий
+  цільовий рядок, другий `save()` мовчки перепише перший запис. Прийнятно за дисципліною
+  "один агент — один запис одночасно"; якщо колись зʼявиться паралельний доступ — переглянути.
+- Стовпець L ("робочі примітки") використовується для причини `--confirm-duplicate`, тоді як
+  історично книга веде повну історію правок УСЕРЕДИНІ Графи 5 (E) — стилістична, не функціональна
+  розбіжність; на перевірку дублів (яка дивиться на E) це не впливає.
+
 ЗАПУСК:
   python kodv_book_writer.py append --date 2026-09-18 --graph9 123.45 \
       --graph5 "Опис + номер документа" [--graph2 N] [--note "..."] \
@@ -110,10 +122,23 @@ def extract_doc_numbers(text: str) -> dict:
     return out
 
 
+# Перевірка "рядок зайнятий" МАЄ дивитись на всі змістовні колонки, не лише на дату (Графа 1) —
+# аудит PR #572 живо відтворив: рядок з реальними даними в Графі 5/9, але випадково стертою датою
+# (реалістично для книги, яку постійно правлять вручну), інакше сприймався б як "порожній" і був
+# би ТИХО перезаписаний без жодної помилки/попередження. COL_NOTE включено теж — навіть сама
+# лише примітка на рядку означає, що з ним уже щось робили.
+_DATA_COLS = (COL_DATE, COL_INCOME, COL_RETURNS, COL_DOC, COL_COGS,
+              COL_LABOR, COL_TAXES, COL_OTHER_EXP, COL_AMORT, COL_NOTE)
+
+
+def _row_has_data(ws, row: int) -> bool:
+    return any(ws.cell(row, c).value is not None for c in _DATA_COLS)
+
+
 def _find_last_data_row(ws) -> int:
     last = FIRST_DATA_ROW - 1
     for r in range(FIRST_DATA_ROW, LAST_TEMPLATE_ROW + 1):
-        if ws.cell(r, COL_DATE).value is not None:
+        if _row_has_data(ws, r):
             last = r
     return last
 
@@ -137,6 +162,7 @@ def find_duplicates(new_text: str, index: dict) -> list:
 
 
 def check_duplicates(text: str, book_path: Path = BOOK_PATH) -> list:
+    book_path = Path(book_path)
     wb = openpyxl.load_workbook(book_path, data_only=False)
     ws = wb[SHEET_NAME]
     last_row = _find_last_data_row(ws)
@@ -146,6 +172,7 @@ def check_duplicates(text: str, book_path: Path = BOOK_PATH) -> list:
 
 def scan_book_for_internal_duplicates(book_path: Path = BOOK_PATH) -> dict:
     """Номери документів, що зустрічаються В КНИЗІ вже зараз більш ніж в одному рядку."""
+    book_path = Path(book_path)
     wb = openpyxl.load_workbook(book_path, data_only=False)
     ws = wb[SHEET_NAME]
     last_row = _find_last_data_row(ws)
@@ -166,6 +193,7 @@ def append_row(
 ) -> dict:
     if not graph5 or not graph5.strip():
         raise ValueError("graph5 (Реквізити підтвердного документа) обов'язковий — без опису немає за чим звіряти дублі.")
+    book_path = Path(book_path)
     wb = openpyxl.load_workbook(book_path, data_only=False)
     ws = wb[SHEET_NAME]
     last_row = _find_last_data_row(ws)
@@ -175,10 +203,10 @@ def append_row(
             f"Рядок {target_row} за межами підготовленого шаблону (до {LAST_TEMPLATE_ROW}). "
             "Форму треба розширити вручну (формули Графи 4/11 + діапазон РАЗОМ) — не пишу наосліп."
         )
-    if ws.cell(target_row, COL_DATE).value is not None:
+    if _row_has_data(ws, target_row):
         raise RuntimeError(
-            f"Рядок {target_row} вже має дані в Графі 1 — розбіжність із очікуваним шаблоном, "
-            "не пишу без ручної перевірки книги."
+            f"Рядок {target_row} уже має дані (перевірено по всіх колонках A/B/C/E/F/G/H/I/J/L) — "
+            "розбіжність із очікуваним шаблоном, не пишу без ручної перевірки книги."
         )
 
     index = build_doc_index(ws, last_row)

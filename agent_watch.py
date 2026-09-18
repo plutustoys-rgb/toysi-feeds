@@ -54,8 +54,8 @@ RUN_LOG = STATE_DIR / "run_log.jsonl"
 
 
 def _log_run(name: str, outcome: str, reason: str | None = None) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
     try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
         with RUN_LOG.open("a", encoding="utf-8") as f:
             f.write(json.dumps({
                 "ts": _now().isoformat(timespec="seconds"),

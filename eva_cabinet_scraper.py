@@ -157,10 +157,12 @@ def keepalive() -> None:
         try:
             page.goto(MERCHANT_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
             page.wait_for_timeout(3000)
-            if "login" in page.url.lower() or "seller.eva.ua" not in page.url:
-                raise EvaCabinetError(
-                    f"сесію НЕ прийнято: після переходу на {MERCHANT_URL} опинились на "
-                    f"{page.url} (редірект на логін = сесія протухла, треба --login)")
+            # Перевикористовуємо _ensure_session() (не власну вужчу перевірку) — аудит PR #567:
+            # голий `"login" in url or domain not in url` не ловить oauth/auth/sign_in-редірект
+            # без слова "login" у шляху (той самий клас бага, що вже спіймано на ALLO 2026-08-31,
+            # докстрінг _ensure_session нижче). Своя перевірка тут дублювала й звужувала те,
+            # що вже виправлено в одному спільному місці.
+            _ensure_session(page)
             ctx.storage_state(path=str(STATE_FILE))  # пересохраняємо → оновлює сесію (теплою)
             print("[EvaCabinet] keepalive: сесію оновлено.")
         except (PlaywrightTimeoutError, EvaCabinetError) as e:

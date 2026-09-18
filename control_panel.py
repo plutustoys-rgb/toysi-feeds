@@ -77,7 +77,7 @@ PANEL_EXTRA_AGENTS = [
 _AGENT_DEF = {
     "Код": "plutus-kod", "SEO": "plutus-seo", "SMM": "plutus-smm",
     "Консультант": "plutus-consultant", "Бухгалтер": "plutus-kodv",
-    "Продажник": "plutus-seller",
+    "Продажник": "plutus-seller", "Виконавець": "plutus-executor",
 }
 
 

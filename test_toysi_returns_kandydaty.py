@@ -86,10 +86,15 @@ _ONE_ROW = [{
     "date": "2026-08-05", "sum_debet": -213.7, "period": "test_period",
 }]
 
+_TMP_DOCS_DIR = Path(tempfile.mkdtemp())
+
 with patch.object(tr, "_book_narrative_text", return_value=""), \
      patch.object(tr.kandydaty_registry, "sync_open_candidates", _mock_sync), \
      patch.object(tr.kandydaty_registry, "write_open_report", _mock_report), \
-     patch.object(tr, "_notify", lambda msg: None):
+     patch.object(tr, "_notify", lambda msg: None), \
+     patch.object(tr, "DOCS_DIR", _TMP_DOCS_DIR):  # НЕ писати в реальну документи_КОДВ/ —
+                                                     # аудит PR #568: попередня версія тесту
+                                                     # затерла справжній звіт дня фікстурою
 
     with patch.object(tr, "fetch_return_rows", return_value=(_ONE_ROW, False)):
         _calls["sync"].clear()
@@ -101,6 +106,9 @@ with patch.object(tr, "_book_narrative_text", return_value=""), \
         tr.main()
         _chk("any_period_failed=True: resolve=False передано (не закриваємо хибно)",
              _calls["sync"] and _calls["sync"][0][2] is False)
+
+_written = list(_TMP_DOCS_DIR.rglob("*_toysi_povernennya_kandydaty.md"))
+_chk("звіт написано в ТИМЧАСОВУ теку, не в реальну документи_КОДВ/", len(_written) >= 1)
 
 
 if _FAILS:

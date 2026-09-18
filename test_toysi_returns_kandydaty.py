@@ -61,6 +61,47 @@ _chk("_already_in_book: немає ідентифікаторів — не па�
 _chk("формат ключа книги: 'toysi-100449926' міститься в реальному нараті",
      "toysi-100449926" in _BOOK_TEXT)
 
+# 4: АУДИТ PR #568 — обрізана вибірка (any_period_failed=True) НЕ закриває кандидатів
+#    (той самий клас бага, що вже фіксили для checkbox_registry_sync: resolve=True за
+#    замовчуванням хибно "закрило" б реальне повернення, яке просто випало з прогону).
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+_calls = {"sync": [], "report": 0}
+
+
+def _mock_sync(source, current, resolve=True):
+    _calls["sync"].append((source, current, resolve))
+    return {"newly_opened": [c["key"] for c in current], "still_open": [], "resolved": []}
+
+
+def _mock_report():
+    _calls["report"] += 1
+    return Path(tempfile.mktemp())
+
+
+_ONE_ROW = [{
+    "doc": _REAL_DOC, "toysi_order_id": 100447294, "tc_number": "ТС000000860",
+    "date": "2026-08-05", "sum_debet": -213.7, "period": "test_period",
+}]
+
+with patch.object(tr, "_book_narrative_text", return_value=""), \
+     patch.object(tr.kandydaty_registry, "sync_open_candidates", _mock_sync), \
+     patch.object(tr.kandydaty_registry, "write_open_report", _mock_report), \
+     patch.object(tr, "_notify", lambda msg: None):
+
+    with patch.object(tr, "fetch_return_rows", return_value=(_ONE_ROW, False)):
+        _calls["sync"].clear()
+        tr.main()
+        _chk("any_period_failed=False: resolve=True передано", _calls["sync"] and _calls["sync"][0][2] is True)
+
+    with patch.object(tr, "fetch_return_rows", return_value=(_ONE_ROW, True)):
+        _calls["sync"].clear()
+        tr.main()
+        _chk("any_period_failed=True: resolve=False передано (не закриваємо хибно)",
+             _calls["sync"] and _calls["sync"][0][2] is False)
+
 
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")

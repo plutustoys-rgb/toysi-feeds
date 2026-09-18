@@ -89,10 +89,17 @@ def _discover_period_links(page) -> list:
     return sorted(set(hrefs))
 
 
-def fetch_return_rows() -> list:
-    """Заходить у кабінет, читає ВСІ доступні періоди «Взаєморозрахунки», повертає рядки
-    з «Повернення товарів» у графі «Документ»: [{"doc": str, "toysi_order_id": int|None,
-    "tc_number": str|None, "date": "YYYY-MM-DD"|None, "sum_debet": float|None, "period": str}]."""
+def fetch_return_rows() -> tuple:
+    """Заходить у кабінет, читає ВСІ доступні періоди «Взаєморозрахунки». Повертає (rows,
+    any_period_failed). rows — рядки з «Повернення товарів» у графі «Документ»:
+    [{"doc": str, "toysi_order_id": int|None, "tc_number": str|None, "date": "YYYY-MM-DD"|None,
+    "sum_debet": float|None, "period": str}].
+
+    `any_period_failed=True` — якщо бодай ОДИН період не завантажився/не прочитався: тоді
+    `rows` НЕ гарантовано повний список усіх актуальних повернень (аудит 2026-09-18,
+    той самий клас бага, що вже фіксили для checkbox_registry_sync — обрізана вибірка НЕ
+    має закривати реєстр відкритих кандидатів, інакше реальне повернення, яке просто
+    випало з цього прогону, хибно позначиться "resolved")."""
     if not STATE_FILE.exists():
         raise ToysiReturnsError(f"нема сесії ({STATE_FILE.name}) — `python toysi_cabinet_scraper.py --login`")
 
@@ -100,6 +107,7 @@ def fetch_return_rows() -> list:
     from io import BytesIO
 
     rows_out = []
+    any_period_failed = False
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(storage_state=str(STATE_FILE))
@@ -124,10 +132,12 @@ def fetch_return_rows() -> list:
                     resp = page.request.get(url, timeout=NAV_TIMEOUT_MS)
                     if resp.status != 200:
                         _log(f"⚠️ {period}: HTTP {resp.status} — пропускаю.")
+                        any_period_failed = True
                         continue
                     wb = openpyxl.load_workbook(BytesIO(resp.body()), data_only=True)
                 except Exception as e:  # noqa: BLE001 — один період не має валити решту
                     _log(f"⚠️ {period}: не вдалось прочитати ({e}) — пропускаю.")
+                    any_period_failed = True
                     continue
                 ws = wb.active
                 for row in ws.iter_rows(min_row=6, values_only=True):
@@ -147,7 +157,7 @@ def fetch_return_rows() -> list:
                     })
         finally:
             browser.close()
-    return rows_out
+    return rows_out, any_period_failed
 
 
 def _book_narrative_text() -> str:
@@ -185,7 +195,7 @@ def _already_in_book(row: dict, book_text: str) -> bool:
 
 def main() -> None:
     try:
-        rows = fetch_return_rows()
+        rows, any_period_failed = fetch_return_rows()
     except ToysiReturnsError as e:
         _log(f"помилка: {e}")
         _notify(f"🚨 toysi_returns_kandydaty: {e}")
@@ -196,7 +206,13 @@ def main() -> None:
         sys.exit(1)
 
     if not rows:
-        _log("Повернень у доступних періодах не знайдено.")
+        if any_period_failed:
+            _log("Повернень не знайдено, АЛЕ хоч один період не прочитався — "
+                 "результат НЕ довіряю, реєстр не чіпаю цим прогоном.")
+            _notify("⚠️ toysi_returns_kandydaty: жоден період не дав жодного повернення, "
+                    "але бодай один період не завантажився — прогін пропущено, спробує знову.")
+        else:
+            _log("Повернень у доступних періодах не знайдено.")
         return
 
     book_text = _book_narrative_text()
@@ -212,10 +228,19 @@ def main() -> None:
         }
         for r in rows if not r["in_book"]
     ]
-    sync_result = kandydaty_registry.sync_open_candidates("toysi_returns", unresolved)
+    # resolve=not any_period_failed (аудит PR #568): якщо бодай один період не прочитався,
+    # rows НЕ гарантовано повний — реєстр цим прогоном лише ВІДКРИВАЄ нових/оновлює
+    # still_open, нікого НЕ закриває (інакше повернення, яке просто випало з обрізаної
+    # вибірки, хибно позначилось б "resolved").
+    sync_result = kandydaty_registry.sync_open_candidates(
+        "toysi_returns", unresolved, resolve=not any_period_failed)
     if sync_result["newly_opened"] or sync_result["resolved"]:
         _log(f"Реєстр відкритих кандидатів: +{len(sync_result['newly_opened'])} нових, "
              f"-{len(sync_result['resolved'])} закритих, {len(sync_result['still_open'])} досі відкриті.")
+    if any_period_failed:
+        _log("⚠️ бодай один період не прочитався — закриття кандидатів пропущено цим прогоном.")
+        _notify("⚠️ toysi_returns_kandydaty: сторінка/період не прочитались повністю — "
+                "закриття кандидатів у реєстрі пропущено (щоб не закрити хибно).")
     kandydaty_registry.write_open_report()
 
     today = datetime.now().strftime("%Y-%m-%d")

@@ -4,10 +4,23 @@
   "use strict";
   var CART_KEY = "pt_cart_v1";
   var DELIVERY_HINT = 70;           // орієнтир доставки НП для підсумку (уточнюється при оформленні)
-  // Поріг безкоштовної доставки — CONSULTANT_CHANNEL.md 2026-09-14/16, число Консультанта
-  // (OWNER_INBOX 13.09), підтверджене двічі. Орієнтир у підсумку кошика, як і DELIVERY_HINT —
-  // фактична вартість завжди рахується на кроці оформлення.
+  // Поріг безкоштовної доставки — число Консультанта (рекомендація CONSULTANT_CHANNEL.md
+  // 2026-09-14/16, економічно перевірене 2026-09-18: ~3.1х середнього чека, floor витримує).
+  // ⚠️ ВИПРАВЛЕННЯ АТРИБУЦІЇ (2026-09-18): попередній коментар посилався на "OWNER_INBOX 13.09" —
+  // Консультант живо перевірив (grep) і власник живо перевірив (мною, зараз) — цього рядка
+  // там НЕМА. Джерело числа — рекомендація Консультанта, не рішення власника; не приписувати
+  // далі неіснуюче джерело.
   var FREE_SHIPPING_THRESHOLD = 1000;
+  // 🔴 ВИМКНЕНО (2026-09-18, знахідка Консультанта + жива перевірка): обіцянка "безкоштовна
+  // доставка" НІЧИМ не забезпечена — toysi_order_submit.py не має ЖОДНОГО поля для платника
+  // доставки (grep підтвердив), а Toysi створює ТТН під СВОЇМ акаунтом НП, не нашим. Живий ТТН
+  // реального замовлення (20451538255399, ClientBarcode eva_8-081403816/100451714) показав
+  // PayerType="Recipient", FreeShipping="" — клієнт ЗАРАЗ платить доставку сам, незалежно від
+  // суми замовлення. Показувати "Безкоштовно" клієнту, з якого потім спишуть на відділенні —
+  // це гарантована відмова від COD-посилки (той самий клас ризику, що й 32% скасувань EVA).
+  // Прогрес-бар лишається як несплачена обіцянка в коді — увімкнути (true) можна ЛИШЕ після
+  // підтвердження з Toysi, що платник — відправник (ми) для замовлень сайту.
+  var FREE_SHIPPING_ENABLED = false;
 
   function read(){ try{ return JSON.parse(localStorage.getItem(CART_KEY)) || {}; }catch(e){ return {}; } }
   function write(c){ try{ localStorage.setItem(CART_KEY, JSON.stringify(c)); }catch(e){} updateBadge(); }
@@ -182,13 +195,18 @@
   }
   function renderSummary(){
     var goods=total();
-    var freeShip=goods>=FREE_SHIPPING_THRESHOLD;
+    // FREE_SHIPPING_ENABLED=false (2026-09-18, поки платник доставки не з'ясований з Toysi) —
+    // freeShip завжди false, поведінка ідентична до PR #560 (завжди показуємо орієнтовну
+    // вартість доставки, ніякої обіцянки).
+    var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
     if(d) d.textContent=freeShip ? "Безкоштовно" : ("≈ "+PT.DELIVERY_HINT+" ₴");
     if(t) t.textContent=(freeShip ? goods : goods+PT.DELIVERY_HINT)+" ₴";
+    var block=document.getElementById("free-ship-block");
+    if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
     var note=document.getElementById("free-ship-note");
-    if(note){
+    if(note && FREE_SHIPPING_ENABLED){
       if(freeShip){
         note.textContent="🎉 Вітаємо — у вас безкоштовна доставка Новою Поштою!";
         note.classList.add("free-ship-done");

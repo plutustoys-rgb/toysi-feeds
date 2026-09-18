@@ -28,6 +28,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import source_freshness
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -258,6 +260,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Детектор сторно/еквайрингу з реєстру RozetkaPay.")
     ap.add_argument("--file", help="Конкретний xlsx (для тесту); без нього — найновіший у документи_КОДВ.")
     args = ap.parse_args()
+
+    # Детектор тиші (аудит Д3, 2026-09-18): найновіший файл теки старіший за поріг — окремий
+    # видимий сигнал незалежно від того, чи знайшовся файл для читання нижче. RozetkaPay кладе
+    # реєстр ЩОДНЯ (kodv_mail_archiver.py) — 3 дні мовчання вже означає, що вхід зупинився.
+    source_freshness.check_and_record(
+        "RozetkaPay", str(DOCS_DIR / "*" / "RozetkaPay" / "*.xlsx"), max_stale_days=3)
+    source_freshness.write_report()
 
     src = Path(args.file) if args.file else _newest_registry()
     if not src or not src.exists():

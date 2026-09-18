@@ -209,7 +209,10 @@
 - **ALLO:** `allo_cabinet_scraper`, `generate_allo_feed` → Код.
 - **Toysi / RoyalToys (постачальник):** `toysi_cabinet_scraper`, `parser` (fetch_toysi_catalog),
   `royaltoys_parser`, `compare_royaltoys_toysi`, `generate_royaltoys_feed` → Код.
-- **КОДВ (фінанси):** `checkbox_client`, `novapay_statement`, `weekly_balance_digest`, `daily_report`
+- **КОДВ (фінанси):** `checkbox_client`, `novapay_statement`, `weekly_balance_digest`, `daily_report`,
+  `kodv_book_writer.py` (єдина точка запису НОВОГО рядка книги — механічно перевіряє дубль номера
+  документа в Графі 5 ПЕРЕД записом, PR #572; замінює ad-hoc openpyxl-виклики для нових рядків,
+  правки існуючих рядків лишаються ручними)
   → **КОДВ/власник**.
 - **Telegram / сповіщення (спільна інфра):** `telegram_notify`, `telegram_outbox_processor`,
   `telegram_userbot_client`, `telegram_userbot_login` → Код.

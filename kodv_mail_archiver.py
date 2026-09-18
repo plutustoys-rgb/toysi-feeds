@@ -86,7 +86,7 @@ _NP_AKT_MARKERS = ("акт звірки", "акт сверки", "акт зві�
 # MIME-вкладення. Файл роздається через підписане посилання Google Cloud Storage у тілі листа
 # (`https://storage.googleapis.com/.../Реєстр платежів….xlsx?Expires=…&Signature=…`), яке треба
 # ЗАВАНТАЖИТИ окремим HTTP-запитом — _iter_attachments() тут завжди дасть 0, це не сигнал
-# «листа нема». Обробляється в archive() через _extract_rozetkapay_link().
+# «листа нема». Обробляється в archive() через _find_rozetkapay_link() + _download().
 _ROZETKAPAY_MARKERS = ("реєстр платежів", "реестр платежей")
 _ROZETKAPAY_LINK_HOST = "storage.googleapis.com"
 # ПриватБанк — щоденна виписка (PDF) на ту саму скриньку. Запит бухгалтера 2026-08-31: завести
@@ -178,13 +178,13 @@ def _iter_attachments(msg):
             yield filename, payload
 
 
-def _extract_rozetkapay_link(msg) -> tuple[str, bytes] | None:
+def _find_rozetkapay_link(msg) -> str | None:
     """RozetkaPay «Реєстр платежів» не додає файл MIME-вкладенням — роздає підписаним
     посиланням Google Cloud Storage у HTML-тілі листа (перевірено живо 2026-09-18, лист
     UID 1392 за 17.09). Шукає `https://storage.googleapis.com/....xlsx?...` у text/html-
-    частинах, ЗАВАНТАЖУЄ файл (окремий HTTP GET, не залежить від IMAP), повертає
-    (ім'я_файлу, байти) або None, якщо посилання не знайдено чи завантаження не вдалось
-    (best-effort — не валить прогін решти листів)."""
+    частинах. ЛИШЕ regex, БЕЗ мережі — виклик ізольовано від завантаження, щоб дедуп-
+    перевірка (уже збережено?) могла відсіяти вже архівовані листи ДО зайвого HTTP-запиту
+    (аудит #566: спершу було навпаки — качало кожен лист щоразу, включно з dry-run)."""
     for part in msg.walk():
         if part.get_content_type() != "text/html":
             continue
@@ -195,21 +195,27 @@ def _extract_rozetkapay_link(msg) -> tuple[str, bytes] | None:
         m = re.search(
             r'href=["\'](' + re.escape(f"https://{_ROZETKAPAY_LINK_HOST}") + r'[^"\']+\.xlsx\?[^"\']+)["\']',
             html, re.IGNORECASE)
-        if not m:
-            continue
-        url = m.group(1)
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=LINK_DOWNLOAD_TIMEOUT) as resp:
-                data = resp.read()
-        except Exception as e:  # noqa: BLE001 — мережевий збій не має валити весь прогін
-            print(f"[KODVmail] посилання RozetkaPay знайдено, завантаження не вдалось: {e}", file=sys.stderr)
-            return None
-        # Ім'я файлу — декодований шлях URL до '?' (query — підпис/термін дії, не частина імені).
-        path = urllib.parse.unquote(url.split("?", 1)[0])
-        filename = path.rsplit("/", 1)[-1]
-        return filename, data
+        if m:
+            return m.group(1)
     return None
+
+
+def _link_filename(url: str) -> str:
+    """Ім'я файлу — декодований шлях URL до '?' (query — підпис/термін дії, не частина імені)."""
+    path = urllib.parse.unquote(url.split("?", 1)[0])
+    return path.rsplit("/", 1)[-1]
+
+
+def _download(url: str) -> bytes | None:
+    """Best-effort HTTP GET — мережевий збій/протухле посилання не має валити прогін решти
+    листів, лише цей кандидат пропускається з повідомленням у stderr."""
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=LINK_DOWNLOAD_TIMEOUT) as resp:
+            return resp.read()
+    except Exception as e:  # noqa: BLE001
+        print(f"[KODVmail] посилання RozetkaPay знайдено, завантаження не вдалось: {e}", file=sys.stderr)
+        return None
 
 
 def archive(dry_run: bool = False) -> dict:
@@ -279,24 +285,39 @@ def archive(dry_run: bool = False) -> dict:
                 # RozetkaPay «Реєстр платежів» не має MIME-вкладення (перевірено живо 2026-09-18) —
                 # без цього кожен такий лист впав би тут у "unclassified" і виглядав би мертвим входом.
                 if not had_doc and _classify("", subject_l, sender_l) == "RozetkaPay":
-                    link_result = _extract_rozetkapay_link(msg)
-                    if link_result:
-                        filename, payload = link_result
-                        had_doc = True
+                    link_url = _find_rozetkapay_link(msg)  # лише regex, без мережі
+                    if link_url:
+                        filename = _link_filename(link_url)
                         key = f"{month}/RozetkaPay/{filename}"
                         if key in saved_cursor:
+                            # Уже архівовано раніше — НЕ качаємо повторно (аудит #566: до
+                            # цього фіксу завантаження йшло ДО дедуп-перевірки, тож кожен
+                            # прогін тягнув ~усі листи 60-денного вікна з мережі знову,
+                            # включно з dry-run, попри те що файли вже на диску).
+                            had_doc = True
                             skipped_dupe += 1
                         else:
-                            saved_cursor.add(key)
-                            newly["RozetkaPay"] += 1
                             if dry_run:
+                                # dry-run НЕ якає мережу — посилання вже знайдене регексом,
+                                # цього досить, щоб показати «було б завантажено».
+                                had_doc = True
+                                saved_cursor.add(key)
+                                newly["RozetkaPay"] += 1
                                 _log(f"[dry-run] БУЛО Б завантажено-збережено → {key}  "
                                      f"(тема: «{subject_l[:50]}»)")
                             else:
-                                dest_dir = KODV_DOCS_DIR / month / "RozetkaPay"
-                                dest_dir.mkdir(parents=True, exist_ok=True)
-                                (dest_dir / filename).write_bytes(payload)
-                                _log(f"завантажено з посилання → {key}")
+                                payload = _download(link_url)
+                                if payload is not None:
+                                    had_doc = True
+                                    saved_cursor.add(key)
+                                    newly["RozetkaPay"] += 1
+                                    dest_dir = KODV_DOCS_DIR / month / "RozetkaPay"
+                                    dest_dir.mkdir(parents=True, exist_ok=True)
+                                    (dest_dir / filename).write_bytes(payload)
+                                    _log(f"завантажено з посилання → {key}")
+                                # payload is None: завантаження не вдалось (_download уже
+                                # залогувала причину) — had_doc лишається False, лист
+                                # спробується знову наступного прогону (курсор не просунуто).
 
                 if not had_doc and any(m in f"{subject_l} {sender_l}"
                                        for m in ("пошт", "novapay", "novaposhta", "звірк")):

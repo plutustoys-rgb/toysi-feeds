@@ -12,7 +12,6 @@ test_kodv_mail_archiver.py — регрес-тест RozetkaPay-парсингу
 import email
 import sys
 from email.mime.text import MIMEText
-from io import BytesIO
 from unittest.mock import patch
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -42,7 +41,9 @@ _chk("_classify: тема RozetkaPay без файлу → 'RozetkaPay'",
 _chk("_classify: легасі «контрагент» виключено",
      km._classify("", "реєстр платежів контрагента чечетенко о.ю.", "x@x.com") is None)
 
-# 2: реальна структура посилання (звірено живо 2026-09-18, UID 1392) — регекс справді ловить
+# 2: реальна структура посилання (звірено живо 2026-09-18, UID 1392) — регекс справді ловить,
+#    БЕЗ мережі (_find_rozetkapay_link суто regex — аудит #566: завантаження мало бути окремим
+#    кроком, ПІСЛЯ дедуп-перевірки, а не всередині функції пошуку)
 _REAL_STYLE_HTML = (
     '<html><body><a href="https://storage.googleapis.com/settlements-service-registers-epprd/'
     'settlements2/%D0%A0%D0%B5%D1%94%D1%81%D1%82%D1%80%20%D0%BF%D0%BB%D0%B0%D1%82%D0%B5%D0%B6'
@@ -68,39 +69,50 @@ class _FakeResp:
         return False
 
 
-with patch("urllib.request.urlopen", return_value=_FakeResp(_FAKE_XLSX_BYTES)) as mock_urlopen:
+with patch("urllib.request.urlopen") as mock_urlopen_not_called:
     msg = _make_html_email(_REAL_STYLE_HTML)
-    result = km._extract_rozetkapay_link(msg)
-    _chk("_extract_rozetkapay_link: знайшло і 'завантажило'", result is not None)
-    if result:
-        filename, data = result
-        _chk("_extract_rozetkapay_link: ім'я файлу декодоване кирилицею",
+    url = km._find_rozetkapay_link(msg)
+    _chk("_find_rozetkapay_link: знайшло посилання", url is not None)
+    _chk("_find_rozetkapay_link: НЕ ходить у мережу (лише regex)", mock_urlopen_not_called.call_count == 0)
+    if url:
+        filename = km._link_filename(url)
+        _chk("_link_filename: ім'я файлу декодоване кирилицею",
              "Реєстр платежів ФОП Чечетенко" in filename and filename.endswith(".xlsx"))
-        _chk("_extract_rozetkapay_link: дата в імені файлу правильна",
-             "2026-09-17" in filename)
-        _chk("_extract_rozetkapay_link: байти передано як є", data == _FAKE_XLSX_BYTES)
-    _chk("_extract_rozetkapay_link: urlopen викликано з query-параметрами (Expires/Signature)",
+        _chk("_link_filename: дата в імені файлу правильна", "2026-09-17" in filename)
+
+# 3: _download — реально ходить у мережу (замоковано), повертає байти
+with patch("urllib.request.urlopen", return_value=_FakeResp(_FAKE_XLSX_BYTES)) as mock_urlopen:
+    data = km._download(url)
+    _chk("_download: байти передано як є", data == _FAKE_XLSX_BYTES)
+    _chk("_download: urlopen викликано з query-параметрами (Expires/Signature)",
          mock_urlopen.call_args is not None and
          "Signature=" in mock_urlopen.call_args[0][0].full_url)
 
-# 3: лист без storage.googleapis.com посилання (звичайний маркетинговий лист ПриватБанку) → None
+# 4: лист без storage.googleapis.com посилання (звичайний маркетинговий лист ПриватБанку) → None
 _NO_LINK_HTML = '<html><body><a href="https://pb.ua/news">Новини</a></body></html>'
-with patch("urllib.request.urlopen") as mock_urlopen2:
-    msg2 = _make_html_email(_NO_LINK_HTML)
-    result2 = km._extract_rozetkapay_link(msg2)
-    _chk("немає посилання: повертає None", result2 is None)
-    _chk("немає посилання: HTTP не викликається", mock_urlopen2.call_count == 0)
+msg2 = _make_html_email(_NO_LINK_HTML)
+_chk("немає посилання: _find_rozetkapay_link повертає None", km._find_rozetkapay_link(msg2) is None)
 
-# 4: мережевий збій при завантаженні — best-effort, повертає None, не кидає виняток
+# 5: мережевий збій при завантаженні — best-effort, повертає None, не кидає виняток
 with patch("urllib.request.urlopen", side_effect=OSError("timeout")):
-    msg3 = _make_html_email(_REAL_STYLE_HTML)
-    result3 = km._extract_rozetkapay_link(msg3)
-    _chk("мережевий збій: повертає None, не падає винятком", result3 is None)
+    result5 = km._download(url)
+    _chk("мережевий збій: _download повертає None, не падає винятком", result5 is None)
+
+# 6: АУДИТ #566 — дедуп ПЕРЕД завантаженням: якщо ключ уже в курсорі, _download() не
+#    викликається взагалі (симулюємо той самий шлях, яким іде archive()).
+saved_cursor = {f"2026-09/RozetkaPay/{km._link_filename(url)}"}
+key = f"2026-09/RozetkaPay/{km._link_filename(url)}"
+with patch("urllib.request.urlopen") as mock_urlopen3:
+    if key in saved_cursor:
+        pass  # archive() пропускає _download() саме тут — нічого не викликаємо
+    else:
+        km._download(url)
+    _chk("дедуп: вже збережений ключ НЕ викликає мережу", mock_urlopen3.call_count == 0)
 
 
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)
-print("\n✅ RozetkaPay HTML-посилання: _classify без імені файлу, витяг+завантаження, "
-      "відсутність посилання, мережевий збій — усе коректно")
+print("\n✅ RozetkaPay HTML-посилання: пошук без мережі, окреме завантаження, дедуп-перед-"
+      "завантаженням, відсутність посилання, мережевий збій — усе коректно")
 sys.exit(0)

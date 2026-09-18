@@ -103,6 +103,7 @@
 | `PlutusToys_RozetkaKeepalive` | `rozetka_price_monitor.py --keepalive` | Rozetka: тримати сесію вітрини теплою |
 | `PlutusToys_PromCatalogHistory` | `prom_cabinet_catalog.py --summary` | Prom: денний знімок каталогу (+ лічильники повноти) |
 | `PlutusToys_PromCabinetKeepalive` | `prom_notifications_scraper.py --keepalive` | Prom: тримати кабінетну сесію теплою |
+| `PlutusToys_EvaCabinetKeepalive` | `eva_cabinet_scraper.py --keepalive` | EVA: тримати кабінетну сесію теплою (той самий патерн — сесія падала, бо `scrape()` лише читав, ніколи не пересохраняв storageState; закрив після 3+ днів мертвого входу, 2026-09-18) |
 | `PlutusToys_PromConvergenceMonitor` | `prom_convergence_monitor.py` | Prom: контроль збіжності каталогу до 6000 |
 | `PlutusToys_MarketplaceActions` | `run_marketplace_actions.py` (кожні 6 год) | EVA/ALLO: періодичний автоцикл ДІЙ — EVA повний імпорт «через посилання» (нові товари→модерація) + ALLO авто-зіставлення майстра «Зіставлення даних» + подача «Нових» на модерацію (`eva_cabinet_scraper.py --full-import --apply`, `allo_cabinet_scraper.py --auto-cycle --apply`). Best-effort; на протухлій сесії скрейпери сигналять (Telegram) і пропускають, не діють наосліп. Разовий `--login` власником per-платформа. Закрив прогалину: Rozetka/Prom мали автоцикл, EVA/ALLO — ні (наказ власника 2026-08-31) |
 | `PlutusToys-TelegramOutbox` | `telegram_outbox_processor.py` | інфра: черга вихідних Telegram |
@@ -292,6 +293,7 @@
     "PlutusToys_AgentWatch", "PlutusToys_SystemMapDriftCheck",
     "PlutusToys_RozetkaLocalChain", "PlutusToys_RozetkaPricePull",
     "PlutusToys_RozetkaKeepalive", "PlutusToys_PromCatalogHistory", "PlutusToys_PromCabinetKeepalive",
+    "PlutusToys_EvaCabinetKeepalive",
     "PlutusToys_PromConvergenceMonitor", "PlutusToys_CriticalCalendar",
     "PlutusToys_MarketplaceActions",
     "PlutusToys-TelegramOutbox", "PlutusToys-CabinetAudit",

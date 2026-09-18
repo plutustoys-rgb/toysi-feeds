@@ -48,25 +48,72 @@ _chk("_already_in_book: знаходить за toysi-id", tr._already_in_book(r
 r_found_by_tc = {"toysi_order_id": None, "tc_number": "ТС000001089"}
 _chk("_already_in_book: знаходить за ТС-номером", tr._already_in_book(r_found_by_tc, _BOOK_TEXT))
 
-r_missing = {"toysi_order_id": 100447294, "tc_number": "ТС000000860"}
-_chk("_already_in_book: РЕАЛЬНА прогалина (перевірено живо в книзі) — не знаходить",
+r_missing = {"toysi_order_id": 999999999, "tc_number": "ТС999999999"}
+_chk("_already_in_book: справді відсутній id/ТС у наративі — не знаходить",
      not tr._already_in_book(r_missing, _BOOK_TEXT))
 
 r_empty = {"toysi_order_id": None, "tc_number": None}
 _chk("_already_in_book: немає ідентифікаторів — не падає, повертає False",
      tr._already_in_book(r_empty, _BOOK_TEXT) is False)
 
+# 2b: РЕГРЕС — знахідка незалежного аудитора 2026-09-18 (рядки книги 26/39): наратив із
+# toysi-id/ТС-номером НЕ завжди в графі 5 — інколи графа 5 має лише короткий підпис, а
+# повний наратив (з id) — у графі 12 ("Розшифровка, примітки"). До фіксу _book_narrative_text
+# читала лише графу 5 → хибне "НЕ в книзі" для реально внесених рядків. Текст нижче — РЕАЛЬНИЙ,
+# звірений живо з КОДВ_PlutusToys_2026.xlsx, рядок 26 (графа 5 коротка, графа 12 повна).
+_BOOK_TEXT_SPLIT_NARRATIVE = (
+    "Toysi — невідшкодована Збірка, повернене замовлення №419272444. \n"  # графа 5 (коротка)
+    "№419272444 (Prom) — НЕ дохід... Живо перевірено Toysi «Взаєморозрахунки»... рядок "
+    "«Повернення товарів від покупця ТС000000860 від 05.08.2026 17:40:09», кредит 213.70 "
+    "грн... (order 100447294 від 03.08.2026)..."  # графа 12 (повна, з id)
+)
+r_split = {"toysi_order_id": 100447294, "tc_number": "ТС000000860"}
+_chk("_already_in_book: наратив розділений між графою 5 і графою 12 — все одно знаходить",
+     tr._already_in_book(r_split, _BOOK_TEXT_SPLIT_NARRATIVE))
+
 # 3: toysi-order-id регекс (для повноти — використовується непрямо через f-рядок у коді,
 #    але формат "toysi-<id>" мусить лишатись консистентним з тим, що пишуть інші kandydaty-скрипти)
 _chk("формат ключа книги: 'toysi-100449926' міститься в реальному нараті",
      "toysi-100449926" in _BOOK_TEXT)
 
-# 4: АУДИТ PR #568 — обрізана вибірка (any_period_failed=True) НЕ закриває кандидатів
-#    (той самий клас бага, що вже фіксили для checkbox_registry_sync: resolve=True за
-#    замовчуванням хибно "закрило" б реальне повернення, яке просто випало з прогону).
+# 3b: _book_narrative_text() на СИНТЕТИЧНІЙ книзі реальної структури (12 колонок, дані з
+# рядка 7) — регрес-тест на знахідку аудитора: читає ОБИДВІ графа5/графа12, не лише графу 5.
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+import openpyxl
+
+_tmp_book = Path(tempfile.mktemp(suffix=".xlsx"))
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "КОДВ"
+for _ in range(6):
+    ws.append([None] * 12)  # рядки 1-6 — шапка, дані з рядка 7
+# рядок 7: наратив ЛИШЕ в графі 5 (як рядок 106, Куровська)
+ws.append([None, None, None, None, "toysi-111111111 повний наратив тут"] + [None] * 7)
+# рядок 8: наратив ЛИШЕ в графі 12 (як рядки 26/39) — графа 5 коротка, без id
+ws.append([None, None, None, None, "короткий підпис без id"] + [None] * 6 + ["toysi-222222222 повний наратив у графі 12"])
+wb.save(_tmp_book)
+wb.close()
+
+_orig_kodv_xlsx = tr.KODV_XLSX
+tr.KODV_XLSX = _tmp_book
+_synthetic_text = tr._book_narrative_text()
+tr.KODV_XLSX = _orig_kodv_xlsx
+os_remove_ok = True
+try:
+    import os
+    os.remove(_tmp_book)
+except OSError:
+    os_remove_ok = False
+
+_chk("_book_narrative_text: знаходить id з графи 5", "toysi-111111111" in _synthetic_text)
+_chk("_book_narrative_text: знаходить id з графи 12 (не лише графа 5)",
+     "toysi-222222222" in _synthetic_text)
+
+# 4: АУДИТ PR #568 — обрізана вибірка (any_period_failed=True) НЕ закриває кандидатів
+#    (той самий клас бага, що вже фіксили для checkbox_registry_sync: resolve=True за
+#    замовчуванням хибно "закрило" б реальне повернення, яке просто випало з прогону).
 
 _calls = {"sync": [], "report": 0}
 

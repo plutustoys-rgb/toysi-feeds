@@ -55,6 +55,13 @@ try {
 # 3b. Toysi deposit (same pattern). One-time: `python toysi_cabinet_scraper.py --login`.
 & $py toysi_cabinet_scraper.py
 
+# 3b-2. Toysi product-return candidates for KODV (independent audit 2026-09-18, Priority #3:
+#       returns were the ONLY candidate class at 0/7 accuracy - nobody read the "settlements"
+#       ledger, one return sat unknown to the book for 20 days). Reuses the same Toysi session
+#       as toysi_cabinet_scraper.py above - no separate login. Writes candidates into
+#       документи_КОДВ/Toysi, never the book itself.
+& $py toysi_returns_kandydaty.py
+
 # 3c. Rozetka catalog health (counts + block reasons). One-time: `--login`.
 & $py rozetka_cabinet_scraper.py
 

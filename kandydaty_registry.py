@@ -123,6 +123,7 @@ def write_open_report(path: Path = None, out_path: Path = None) -> Path:
     reg = _load_registry(path)
     out_path = out_path or REPORT_PATH
     today = date.today()
+    sources = sorted({e.get("source", "?") for e in reg.values()}) or ["ще жодного"]
     open_entries = []
     for full_key, entry in reg.items():
         if entry.get("status") != "open":
@@ -139,8 +140,9 @@ def write_open_report(path: Path = None, out_path: Path = None) -> Path:
         f"# Відкриті кандидати КОДВ — ще не в книзі, {today.isoformat()}",
         "",
         "Автоматично зведено з усіх kandydaty-джерел, які інтегровані з `kandydaty_registry.py`",
-        "(поки що: Checkbox). Кандидат зникає звідси, лише коли джерело САМЕ підтвердить, що він",
-        "більше не unresolved (пройшов власну звірку з книгою) — не за курсором джерела.",
+        f"(зараз: {', '.join(sources)}). Кандидат зникає звідси, лише коли джерело САМЕ",
+        "підтвердить, що він більше не unresolved (пройшов власну звірку з книгою) — не за",
+        "курсором джерела.",
         "",
         "| Днів висить | Джерело | Ключ | Сума | Дата | Опис |",
         "|---|---|---|---|---|---|",

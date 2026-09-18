@@ -25,12 +25,13 @@ READ-ONLY по касі: лише GET /receipts/search і авторизація
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import requests
 
 import checkbox_client as cb
+import kandydaty_registry
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -126,45 +127,106 @@ def fetch_receipts() -> list:
     return receipts
 
 
-def _book_amount_index() -> dict:
-    """READ-ONLY: {сума_доходу(грн, 2 знаки) → к-сть рядків графи 2 книги з такою сумою}.
-    Легкий хінт для бухгалтера (0 = чек майже напевно ще не в книзі). Книгу НЕ пише."""
+def _coerce_date(value):
+    """openpyxl віддає datetime/date для дат книги, зрідка рядок. Приводимо до date або None
+    (None — дата не розпізнана, НЕ вважається збігом ні з чим)."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value[:10]).date()
+        except ValueError:
+            return None
+    return None
+
+
+def _book_date_sum_index() -> dict:
+    """READ-ONLY: {сума_доходу(грн, 2 знаки) → [дата рядка, ...]} з графи 1(дата)/графа 2(сума)
+    книги. Книгу НЕ пише.
+
+    АУДИТ Д2 (незалежний аудитор, КОДВ_журнал «ДОПОВНЕННЯ 5», 2026-09-18): раніше індекс брав
+    ЛИШЕ суму — рядок з правильною сумою й ХИБНОЮ датою (напр. 194,00 ₴ від 10.09, а в книзі
+    стояло 30.08 — 11 днів різниці, через межу місяця) читався як «збігів: 1» → «уже внесено».
+    Автоматика не просто пропустила помилку — вона ВИДАЛА підтвердження хибному рядку. Дата
+    тепер обов'язкова частина звірки (див. _match_book нижче): «сума збігається, дата ні» —
+    окремий, видимий сигнал, не тихе «ОК»."""
     index: dict = {}
     if not KODV_XLSX.exists():
         return index
     try:
         import openpyxl
         wb = openpyxl.load_workbook(str(KODV_XLSX), data_only=True, read_only=True)
-        ws = wb["КОДВ"]
-        for row in ws.iter_rows(min_row=7):
-            b = row[1].value if len(row) > 1 else None            # графа 2 — сума доходу
-            if isinstance(b, (int, float)) and b:
+        try:
+            ws = wb["КОДВ"]
+            for row in ws.iter_rows(min_row=7):
+                if len(row) < 2:
+                    continue
+                a, b = row[0].value, row[1].value      # графа 1 — дата, графа 2 — сума доходу
+                if not isinstance(b, (int, float)) or not b:
+                    continue
                 key = round(float(b), 2)
-                index[key] = index.get(key, 0) + 1
+                index.setdefault(key, []).append(_coerce_date(a))
+        finally:
+            wb.close()  # read_only-книга тримає файловий дескриптор відкритим, поки не закрити явно
     except Exception as e:  # noqa: BLE001 — хінт не критичний
         print(f"[CheckboxSync] книжковий хінт не побудовано (не критично): {e}", file=sys.stderr)
     return index
 
 
+def _match_book(by_sum: dict, sum_uah: float, created_at_utc: str) -> dict:
+    """Порівнює чек з книгою за (сума, дата ±1 день, Київ = UTC+3). Повертає
+    {"exact": N, "sum_only": N, "kyiv_date": "YYYY-MM-DD"|None}.
+
+    Чому ±1 день, не точний збіг: касовий чек і рядок книги можуть різнитись на добу через
+    момент фіксації (вечірній чек проти ранкового запису) — це нормальна похибка, не помилка.
+    Різниця, БІЛЬША за 1 день (як інцидент 11 днів через межу місяця) — уже НЕ похибка.
+
+    Чому UTC+3: Checkbox `created_at` — UTC (перевірено живо); чек після 21:00 UTC належить
+    НАСТУПНІЙ київській календарній даті. Раніше звіт друкував голий UTC під написом
+    «Дата (UTC)» — технічно чесно, але дата графи 1 книги — київська, тож звіряти напряму
+    без конвертації означало систематично помилятись на чеках із вечора."""
+    dates = by_sum.get(sum_uah, [])
+    try:
+        kyiv_date = (datetime.fromisoformat(created_at_utc) + timedelta(hours=3)).date()
+    except ValueError:
+        return {"exact": 0, "sum_only": len(dates), "kyiv_date": None}
+    exact = sum(1 for d in dates if d is not None and abs((d - kyiv_date).days) <= 1)
+    return {"exact": exact, "sum_only": len(dates) - exact, "kyiv_date": kyiv_date.isoformat()}
+
+
 def collect() -> tuple:
+    """Повертає (new_for_report, max_serial, is_baseline, all_matched).
+    `new_for_report` — лише СЕРІАЛ-нові (стара поведінка, для щоденного .md/.json звіту).
+    `all_matched` — УСІ отримані чеки (останні FETCH_LIMIT, незалежно від курсора джерела) зі
+    звіркою з книгою — для kandydaty_registry (аудит Д1: реєстр НЕ довіряє курсору джерела,
+    бо саме курсор губив кандидатів, яких не встигли внести). На базовій лінії — порожньо
+    (перший запуск свідомо НЕ трактує всю історію як «нове», той самий принцип поширюється на
+    реєстр — не заводимо сотні історичних чеків як «щойно відкриті кандидати»)."""
     cursor = _load_cursor()
     last_serial = cursor.get("last_serial")
     receipts = fetch_receipts()
     if not receipts:
-        return [], last_serial, True
+        return [], last_serial, True, []
     max_serial = max(r["serial"] for r in receipts)
 
     if last_serial is None:
         # Базова лінія: історія вже в книзі — не дампимо як «нове».
         _log(f"Перший запуск — базова лінія за серіалом ≤{max_serial}, кандидатів не шукаю.")
-        return [], max_serial, True
+        return [], max_serial, True, []
 
-    book_idx = _book_amount_index()
+    book_idx = _book_date_sum_index()
+    for r in receipts:
+        m = _match_book(book_idx, r["sum_uah"], r["created_at"])
+        r["book_exact_matches"] = m["exact"]
+        r["book_sum_only_matches"] = m["sum_only"]
+        r["book_same_sum_rows"] = m["exact"] + m["sum_only"]  # зворотна сумісність зі старим полем
+        r["kyiv_date"] = m["kyiv_date"]
+
     new = [r for r in receipts if r["serial"] > last_serial]
     new.sort(key=lambda r: r["serial"])
-    for r in new:
-        r["book_same_sum_rows"] = book_idx.get(r["sum_uah"], 0)
-    return new, max(max_serial, last_serial), False
+    return new, max(max_serial, last_serial), False, receipts
 
 
 def _write_report(candidates: list) -> Path:
@@ -180,14 +242,17 @@ def _write_report(candidates: list) -> Path:
              "",
              "Джерело: Checkbox API `GET /receipts/search` (наша каса). Це КАНДИДАТИ доходу —",
              "звірити з книгою за сумою+датою+типом оплати перед записом. Книгу НЕ змінено.",
-             "«Збігів суми в графі 2»: скільки рядків доходу книги вже мають таку суму (0 = майже",
-             "напевно ще не в книзі; ≥1 = можливо вже внесено, перевірити щоб не задвоїти).",
+             "«Точний збіг»: рядків книги з ТАКОЮ Ж сумою й датою ±1 день (Київ) — 0 = майже",
+             "напевно ще не в книзі. «Лише сума»: сума збігається, АЛЕ дата ні (⚠️ перевірити",
+             "уважно — саме такий рядок хибно виглядав «уже внесеним», аудит 2026-09-18, Д2).",
              "",
-             "| Серіал | Дата (UTC) | Сума, грн | Тип | Оплата | Фіскальний код | Збігів суми в графі 2 |",
-             "|---|---|---|---|---|---|---|"]
+             "| Серіал | Дата (Київ) | Дата (UTC) | Сума, грн | Тип | Оплата | Фіскальний код | Точний збіг | ⚠️ Лише сума (дата не збіглась) |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for c in candidates:
-        lines.append(f"| {c['serial']} | {c['created_at']} | {c['sum_uah']} | {c['type']} | "
-                     f"{c['pay_label']} | {c['fiscal_code']} | {c['book_same_sum_rows']} |")
+        warn = "⚠️" if c.get("book_sum_only_matches", 0) > 0 else ""
+        lines.append(f"| {c['serial']} | {c.get('kyiv_date', '?')} | {c['created_at']} | {c['sum_uah']} | {c['type']} | "
+                     f"{c['pay_label']} | {c['fiscal_code']} | {c.get('book_exact_matches', '?')} | "
+                     f"{warn} {c.get('book_sum_only_matches', 0)} |")
     (month_dir / f"{stem}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return month_dir / f"{stem}.md"
 
@@ -198,7 +263,7 @@ def main() -> None:
         return
     dry_run = "--dry-run" in sys.argv
     try:
-        candidates, new_serial, is_baseline = collect()
+        candidates, new_serial, is_baseline, all_matched = collect()
     except (cb.CheckboxAPIError, OSError) as e:
         _notify(f"🚨 checkbox_registry_sync: помилка збору чеків Checkbox: {e}")
         _log(f"помилка: {e}")
@@ -214,6 +279,28 @@ def main() -> None:
         _log("Базова лінія встановлена — нових кандидатів нема.")
         return
 
+    # РЕЄСТР ВІДКРИТИХ КАНДИДАТІВ (аудит Д1+Д4, 2026-09-18): незалежно від курсора джерела
+    # (last_serial) — синхронізуємо ВСІ щойно отримані чеки, чия сума не має точного збігу в
+    # книзі (book_exact_matches==0), як "ще не в книзі". Це той самий клас чеків, що раніше
+    # губився назавжди після першого показу: тепер вони лишаються "open" у реєстрі, доки книга
+    # не покаже точний збіг — незалежно від того, чи курсор джерела вже пройшов повз них.
+    # dry-run НЕ чіпає реєстр (як і курсор) — узгоджено з рештою скрипта.
+    if not dry_run and all_matched:
+        unresolved = [
+            {
+                "key": str(r["serial"]),
+                "summary": f"{r['sum_uah']} грн {r['pay_label']} {r.get('kyiv_date') or r['created_at']}",
+                "sum": r["sum_uah"],
+                "date": r.get("kyiv_date") or r["created_at"],
+            }
+            for r in all_matched if r.get("book_exact_matches", 0) == 0
+        ]
+        sync_result = kandydaty_registry.sync_open_candidates("checkbox", unresolved)
+        if sync_result["newly_opened"] or sync_result["resolved"]:
+            _log(f"Реєстр відкритих кандидатів: +{len(sync_result['newly_opened'])} нових, "
+                 f"-{len(sync_result['resolved'])} закритих, {len(sync_result['still_open'])} досі відкриті.")
+        kandydaty_registry.write_open_report()
+
     if not candidates:
         if not dry_run:
             _save_cursor(new_serial)
@@ -225,7 +312,8 @@ def main() -> None:
              f"{candidates[0]['serial']}–{candidates[-1]['serial']}); курсор не рухаю, файли не пишу.")
         for c in candidates:
             _log(f"  [dry-run] чек {c['serial']}: {c['sum_uah']} грн {c['pay_label']} "
-                 f"{c['created_at']} (збігів суми в книзі: {c['book_same_sum_rows']})")
+                 f"{c['created_at']} (точний збіг: {c.get('book_exact_matches', '?')}, "
+                 f"лише сума: {c.get('book_sum_only_matches', '?')})")
         return
 
     path = _write_report(candidates)

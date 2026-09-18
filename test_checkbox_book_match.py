@@ -90,8 +90,8 @@ os.remove(_tmp_xlsx)
 _calls = {"sync": [], "report": 0}
 
 
-def _mock_sync(source, current):
-    _calls["sync"].append((source, current))
+def _mock_sync(source, current, resolve=True):
+    _calls["sync"].append((source, current, resolve))
     return {"newly_opened": [c["key"] for c in current], "still_open": [], "resolved": []}
 
 
@@ -100,6 +100,7 @@ def _mock_report():
     return Path(tempfile.mktemp())
 
 
+_real_sync_open_candidates = kr.sync_open_candidates
 kr.sync_open_candidates = _mock_sync
 kr.write_open_report = _mock_report
 cs.kandydaty_registry = kr  # той самий модуль (bare-name lookup у checkbox_registry_sync)
@@ -110,12 +111,12 @@ cs.COWORK_DIR = Path(tempfile.mkdtemp())  # НЕ писати _write_report() у
 cs._load_cursor = lambda: {"last_serial": 100}
 _saved_cursor = []
 cs._save_cursor = lambda s: _saved_cursor.append(s)
-cs.fetch_receipts = lambda: [
+cs.fetch_receipts = lambda: ([
     {"serial": 101, "fiscal_code": "F101", "sum_uah": 194.0, "type": "SELL", "pay_type": "CASH",
      "pay_label": "Готівка", "created_at": "2026-09-10T12:00:00"},   # exact=0 (рядок-70-подібний)
     {"serial": 102, "fiscal_code": "F102", "sum_uah": 100.0, "type": "SELL", "pay_type": "CASH",
      "pay_label": "Готівка", "created_at": "2026-09-09T12:00:00"},   # exact=1 (точний збіг)
-]
+], False)
 # Порожня книга (файл узагалі відсутній): жоден чек не матиме exact-збігу → ОБИДВА йдуть у реєстр.
 cs.KODV_XLSX = Path(tempfile.mktemp(suffix=".xlsx"))
 
@@ -126,12 +127,39 @@ cs.main()
 
 _chk("main(): sync_open_candidates викликано рівно раз", len(_calls["sync"]) == 1)
 if _calls["sync"]:
-    src, current = _calls["sync"][0]
+    src, current, resolve = _calls["sync"][0]
     _chk("main(): source='checkbox'", src == "checkbox")
     _chk("main(): обидва чеки пішли в реєстр (порожня книга → exact=0 для обох)", len(current) == 2)
     _chk("main(): ключі — серіали рядками", {c["key"] for c in current} == {"101", "102"})
+    _chk("main(): сторінка НЕ обрізана → resolve=True", resolve is True)
 _chk("main(): write_open_report викликано", _calls["report"] == 1)
 _chk("main(): курсор просунуто", _saved_cursor == [102])
+
+# ── 5: сторінка обрізана (truncated=True) → main() передає resolve=False, щоб НЕ закрити хибно
+#      старого кандидата, який випав за межу вибірки (аудит 2026-09-18, рецидив Д1/Д4) ──
+cs.fetch_receipts = lambda: ([
+    {"serial": 103, "fiscal_code": "F103", "sum_uah": 50.0, "type": "SELL", "pay_type": "CASH",
+     "pay_label": "Готівка", "created_at": "2026-09-10T12:00:00"},
+], True)  # truncated=True
+cs._load_cursor = lambda: {"last_serial": 102}
+_calls["sync"].clear()
+_calls["report"] = 0
+_saved_cursor.clear()
+cs.main()
+_chk("truncated: sync_open_candidates усе одно викликано (відкриває нових)", len(_calls["sync"]) == 1)
+if _calls["sync"]:
+    _, _, resolve = _calls["sync"][0]
+    _chk("truncated: resolve=False (закриття пропущено цим прогоном)", resolve is False)
+
+# ── 6: sync_open_candidates(resolve=False) — реальний виклик (не мок) — не закриває "open" ──
+_reg_path = Path(tempfile.mktemp())
+_real_sync_open_candidates("checkbox", [{"key": "1", "summary": "s", "sum": 1.0, "date": "x"}], path=_reg_path)
+r_trunc = _real_sync_open_candidates("checkbox", [], path=_reg_path, resolve=False)
+_chk("resolve=False: нічого не закрито, хоч current порожній", r_trunc["resolved"] == [])
+reg_after = kr._load_registry(_reg_path)
+_chk("resolve=False: запис лишився open у реєстрі", reg_after["checkbox:1"]["status"] == "open")
+r_resolve_true = _real_sync_open_candidates("checkbox", [], path=_reg_path, resolve=True)
+_chk("resolve=True (наступний повний прогін): тепер закрито", r_resolve_true["resolved"] == ["checkbox:1"])
 
 
 if _FAILS:

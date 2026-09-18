@@ -93,7 +93,19 @@ _chk("звіт: старий кандидат ВИЩЕ нового", content.in
 _chk("звіт: resolved НЕ у звіті", "закритий" not in content)
 _chk("звіт: 10 днів показано", "| 10 |" in content)
 
-# 7: порожній реєстр → звіт не падає
+# 7: resolve=False (аудит 2026-09-18, рецидив Д1/Д4: обрізана сторінка API) — не закриває
+#    "open", навіть якщо current не містить ключ; still_open лишається пустим (не заявлений
+#    у current цього разу), але статус реєстру не змінюється на "resolved"
+_TMP2 = Path(tempfile.mkdtemp()) / "_vidkryti_kandydaty.json"
+kr.sync_open_candidates("src", [_c("1")], path=_TMP2)
+r7 = kr.sync_open_candidates("src", [], path=_TMP2, resolve=False)
+_chk("resolve=False: resolved порожній, хоч current порожній", r7["resolved"] == [])
+reg7 = kr._load_registry(_TMP2)
+_chk("resolve=False: запис лишився status=open", reg7["src:1"]["status"] == "open")
+r7b = kr.sync_open_candidates("src", [], path=_TMP2, resolve=True)
+_chk("resolve=True (за замовчуванням) наступного разу: закрито", r7b["resolved"] == ["src:1"])
+
+# 8: порожній реєстр → звіт не падає
 empty_path = Path(tempfile.mktemp())
 kr._save_registry({}, path=empty_path)
 empty_report = kr.write_open_report(path=empty_path, out_path=Path(tempfile.mktemp()))

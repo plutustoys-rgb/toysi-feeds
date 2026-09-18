@@ -57,10 +57,17 @@ def _save_registry(reg: dict, path: Path = None) -> None:
     path.write_text(json.dumps(reg, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
 
 
-def sync_open_candidates(source: str, current: list, path: Path = None) -> dict:
+def sync_open_candidates(source: str, current: list, path: Path = None, resolve: bool = True) -> dict:
     """`current` — список dict {"key": str, "summary": str, "sum": float, "date": str},
     кандидати джерела `source`, які САМЕ ЗАРАЗ, за логікою джерела-скрипта, ще НЕ в книзі.
     `key` — стабільний ідентифікатор у межах джерела (напр. serial чека, order_id).
+
+    `resolve=False` — цей прогін НЕ закриває жодного "open"-запису, навіть якщо його немає в
+    `current` (лише відкриває нові/оновлює still_open). Використовувати, коли викликач НЕ
+    впевнений, що `current` — це справді ПОВНИЙ список усіх актуальних unresolved-кандидатів
+    джерела за цей прогін (напр. відповідь API обрізана лімітом сторінки) — інакше кандидат,
+    що просто випав за межу вибірки, хибно позначився б "resolved" (той самий клас бага, що
+    цей реєстр і покликаний закрити, див. докстрінг модуля).
 
     Повертає {"newly_opened": [...], "still_open": [...], "resolved": [...]} (ключі).
     Ідемпотентно: повторний виклик з тим самим `current` не змінює вже-"open" записів
@@ -94,13 +101,16 @@ def sync_open_candidates(source: str, current: list, path: Path = None) -> dict:
             newly_opened.append(full_key)
 
     # Закриваємо те, що БУЛО "open" для цього source, але сьогодні джерело його більше не
-    # пропонує (пройшло власну звірку джерела з книгою).
+    # пропонує (пройшло власну звірку джерела з книгою) — ЛИШЕ якщо викликач підтверджує, що
+    # `current` цього разу повний (resolve=True за замовчуванням; False — напр. обрізана
+    # сторінка API, див. докстрінг вище).
     resolved = []
-    for full_key, entry in reg.items():
-        if entry.get("source") == source and entry.get("status") == "open" and full_key not in current_keys:
-            entry["status"] = "resolved"
-            entry["resolved_at"] = today
-            resolved.append(full_key)
+    if resolve:
+        for full_key, entry in reg.items():
+            if entry.get("source") == source and entry.get("status") == "open" and full_key not in current_keys:
+                entry["status"] = "resolved"
+                entry["resolved_at"] = today
+                resolved.append(full_key)
 
     _save_registry(reg, path)
     return {"newly_opened": newly_opened, "still_open": still_open, "resolved": resolved}

@@ -25,8 +25,9 @@ READ-ONLY по касі: лише GET /receipts/search і авторизація
 import json
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -80,8 +81,9 @@ def _save_cursor(last_serial: int) -> None:
     )
 
 
-def fetch_receipts() -> list:
-    """GET /receipts/search (desc) → список валідних фіскальних чеків (DONE, не тестові).
+def fetch_receipts() -> tuple:
+    """GET /receipts/search (desc) → (список валідних фіскальних чеків (DONE, не тестові), truncated).
+    `truncated=True` — сторінка заповнена вщент (можуть бути старіші чеки поза вибіркою).
     READ-ONLY: лише авторизація касира + GET. Зміну не відкриваємо, чеків не створюємо."""
     token = cb._authenticate_cashier()
     headers = {"X-License-Key": cb.CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
@@ -96,10 +98,14 @@ def fetch_receipts() -> list:
         results = (resp.json() or {}).get("results") or []
     except ValueError:
         raise cb.CheckboxAPIError(f"невалідна відповідь (не JSON) /receipts/search: {resp.text[:300]}")
-    if len(results) >= FETCH_LIMIT:
+    truncated = len(results) >= FETCH_LIMIT
+    if truncated:
         # Сторінка заповнена вщент — між прогонами могло з'явитись >FETCH_LIMIT чеків, і найстаріші
         # «нові» випали б за межу вибірки, а курсор стрибнув би повз них (латентна втрата). Каса
-        # низькооборотна, тож малоймовірно, але сигналимо, щоб не пройшло тихо.
+        # низькооборотна, тож малоймовірно, але сигналимо, щоб не пройшло тихо. `truncated` також
+        # НЕ дає main() закривати "open"-кандидатів у kandydaty_registry цим прогоном (аудит,
+        # 2026-09-18) — інакше кандидат старший за межу сторінки випав би зі списку "unresolved" і
+        # хибно позначився б "resolved", хоча насправді просто не потрапив у вибірку.
         _log(f"⚠️ отримано {len(results)} чеків = ліміт сторінки {FETCH_LIMIT}: можливо є ще старіші "
              f"нові чеки поза вибіркою — за потреби додати пагінацію по meta.offset.")
         _notify(f"⚠️ checkbox_registry_sync: сторінка чеків заповнена ({FETCH_LIMIT}) — перевір, чи "
@@ -124,7 +130,7 @@ def fetch_receipts() -> list:
             "pay_label": pay_label,
             "created_at": (it.get("created_at") or "")[:19],
         })
-    return receipts
+    return receipts, truncated
 
 
 def _coerce_date(value):
@@ -175,21 +181,25 @@ def _book_date_sum_index() -> dict:
     return index
 
 
+_KYIV_TZ = ZoneInfo("Europe/Kyiv")
+
+
 def _match_book(by_sum: dict, sum_uah: float, created_at_utc: str) -> dict:
-    """Порівнює чек з книгою за (сума, дата ±1 день, Київ = UTC+3). Повертає
+    """Порівнює чек з книгою за (сума, дата ±1 день, Київ). Повертає
     {"exact": N, "sum_only": N, "kyiv_date": "YYYY-MM-DD"|None}.
 
     Чому ±1 день, не точний збіг: касовий чек і рядок книги можуть різнитись на добу через
     момент фіксації (вечірній чек проти ранкового запису) — це нормальна похибка, не помилка.
     Різниця, БІЛЬША за 1 день (як інцидент 11 днів через межу місяця) — уже НЕ похибка.
 
-    Чому UTC+3: Checkbox `created_at` — UTC (перевірено живо); чек після 21:00 UTC належить
-    НАСТУПНІЙ київській календарній даті. Раніше звіт друкував голий UTC під написом
-    «Дата (UTC)» — технічно чесно, але дата графи 1 книги — київська, тож звіряти напряму
-    без конвертації означало систематично помилятись на чеках із вечора."""
+    Чому через zoneinfo, не фіксований timedelta(hours=3): Checkbox `created_at` — UTC (перевірено
+    живо), а Київ EEST=UTC+3 лише з 29.03 по 25.10; решту року EET=UTC+2 (аудит 2026-09-18 —
+    попередня версія мала захардкоджений +3, що стало б систематичною похибкою на годину для
+    кожного вечірнього чека з 26.10). `ZoneInfo` рахує правильний зсув на кожну конкретну дату."""
     dates = by_sum.get(sum_uah, [])
     try:
-        kyiv_date = (datetime.fromisoformat(created_at_utc) + timedelta(hours=3)).date()
+        kyiv_date = (datetime.fromisoformat(created_at_utc)
+                     .replace(tzinfo=timezone.utc).astimezone(_KYIV_TZ)).date()
     except ValueError:
         return {"exact": 0, "sum_only": len(dates), "kyiv_date": None}
     exact = sum(1 for d in dates if d is not None and abs((d - kyiv_date).days) <= 1)
@@ -197,24 +207,30 @@ def _match_book(by_sum: dict, sum_uah: float, created_at_utc: str) -> dict:
 
 
 def collect() -> tuple:
-    """Повертає (new_for_report, max_serial, is_baseline, all_matched).
+    """Повертає (new_for_report, max_serial, is_baseline, all_matched, window_truncated).
     `new_for_report` — лише СЕРІАЛ-нові (стара поведінка, для щоденного .md/.json звіту).
     `all_matched` — УСІ отримані чеки (останні FETCH_LIMIT, незалежно від курсора джерела) зі
     звіркою з книгою — для kandydaty_registry (аудит Д1: реєстр НЕ довіряє курсору джерела,
     бо саме курсор губив кандидатів, яких не встигли внести). На базовій лінії — порожньо
     (перший запуск свідомо НЕ трактує всю історію як «нове», той самий принцип поширюється на
-    реєстр — не заводимо сотні історичних чеків як «щойно відкриті кандидати»)."""
+    реєстр — не заводимо сотні історичних чеків як «щойно відкриті кандидати»).
+    `window_truncated` — True, якщо fetch_receipts() отримав рівно FETCH_LIMIT чеків (сторінка
+    могла не показати ВСІ фактично актуальні чеки). main() тоді НЕ закриває "open"-кандидатів
+    у kandydaty_registry цим прогоном (аудит 2026-09-18, Д1/Д4-рецидив) — інакше кандидат
+    старший за межу сторінки випав би зі списку unresolved і хибно позначився б "resolved"."""
     cursor = _load_cursor()
     last_serial = cursor.get("last_serial")
-    receipts = fetch_receipts()
+    receipts, truncated = fetch_receipts()
     if not receipts:
-        return [], last_serial, True, []
+        # last_serial уже задано, а цей прогін просто не отримав жодного валідного чека
+        # (фільтр status/is_test тощо) — це НЕ базова лінія, курсор рухати нема куди.
+        return [], last_serial, last_serial is None, [], truncated
     max_serial = max(r["serial"] for r in receipts)
 
     if last_serial is None:
         # Базова лінія: історія вже в книзі — не дампимо як «нове».
         _log(f"Перший запуск — базова лінія за серіалом ≤{max_serial}, кандидатів не шукаю.")
-        return [], max_serial, True, []
+        return [], max_serial, True, [], truncated
 
     book_idx = _book_date_sum_index()
     for r in receipts:
@@ -226,7 +242,7 @@ def collect() -> tuple:
 
     new = [r for r in receipts if r["serial"] > last_serial]
     new.sort(key=lambda r: r["serial"])
-    return new, max(max_serial, last_serial), False, receipts
+    return new, max(max_serial, last_serial), False, receipts, truncated
 
 
 def _write_report(candidates: list) -> Path:
@@ -263,7 +279,7 @@ def main() -> None:
         return
     dry_run = "--dry-run" in sys.argv
     try:
-        candidates, new_serial, is_baseline, all_matched = collect()
+        candidates, new_serial, is_baseline, all_matched, window_truncated = collect()
     except (cb.CheckboxAPIError, OSError) as e:
         _notify(f"🚨 checkbox_registry_sync: помилка збору чеків Checkbox: {e}")
         _log(f"помилка: {e}")
@@ -285,6 +301,12 @@ def main() -> None:
     # губився назавжди після першого показу: тепер вони лишаються "open" у реєстрі, доки книга
     # не покаже точний збіг — незалежно від того, чи курсор джерела вже пройшов повз них.
     # dry-run НЕ чіпає реєстр (як і курсор) — узгоджено з рештою скрипта.
+    #
+    # `resolve=not window_truncated` (аудит 2026-09-18, рецидив Д1/Д4): якщо сторінка API
+    # заповнена вщент, `all_matched` НЕ показує гарантовано ВСІ актуальні чеки — старий "open"
+    # кандидат, що випав за межу сторінки, виглядав би "відсутній у current" і хибно закрився б
+    # "resolved", хоча насправді просто не потрапив у вибірку цього прогону. Тому при truncated
+    # реєстр лише ВІДКРИВАЄ нових/оновлює still_open, але НІКОГО не закриває цим прогоном.
     if not dry_run and all_matched:
         unresolved = [
             {
@@ -295,10 +317,14 @@ def main() -> None:
             }
             for r in all_matched if r.get("book_exact_matches", 0) == 0
         ]
-        sync_result = kandydaty_registry.sync_open_candidates("checkbox", unresolved)
+        sync_result = kandydaty_registry.sync_open_candidates(
+            "checkbox", unresolved, resolve=not window_truncated)
         if sync_result["newly_opened"] or sync_result["resolved"]:
             _log(f"Реєстр відкритих кандидатів: +{len(sync_result['newly_opened'])} нових, "
                  f"-{len(sync_result['resolved'])} закритих, {len(sync_result['still_open'])} досі відкриті.")
+        if window_truncated:
+            _log("⚠️ сторінка чеків заповнена — закриття кандидатів у реєстрі пропущено цим "
+                 "прогоном (щоб не закрити хибно того, хто просто випав за межу вибірки).")
         kandydaty_registry.write_open_report()
 
     if not candidates:

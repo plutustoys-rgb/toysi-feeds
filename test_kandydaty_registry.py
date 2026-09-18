@@ -92,6 +92,8 @@ content = report_path.read_text(encoding="utf-8")
 _chk("звіт: старий кандидат ВИЩЕ нового", content.index("старий") < content.index("новий"))
 _chk("звіт: resolved НЕ у звіті", "закритий" not in content)
 _chk("звіт: 10 днів показано", "| 10 |" in content)
+_chk("звіт: шапка динамічна за реєстром ('checkbox'), не хардкод старого джерела",
+     "checkbox" in content and "поки що: Checkbox" not in content)
 
 # 7: resolve=False (аудит 2026-09-18, рецидив Д1/Д4: обрізана сторінка API) — не закриває
 #    "open", навіть якщо current не містить ключ; still_open лишається пустим (не заявлений
@@ -110,6 +112,8 @@ empty_path = Path(tempfile.mktemp())
 kr._save_registry({}, path=empty_path)
 empty_report = kr.write_open_report(path=empty_path, out_path=Path(tempfile.mktemp()))
 _chk("порожній реєстр: звіт сформовано без винятку", empty_report.exists())
+_chk("порожній реєстр: шапка каже 'ще жодного', не падає на порожній множині джерел",
+     "ще жодного" in empty_report.read_text(encoding="utf-8"))
 
 
 if _FAILS:

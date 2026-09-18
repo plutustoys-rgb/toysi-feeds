@@ -29,7 +29,10 @@ import email
 import imaplib
 import json
 import os
+import re
 import sys
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
@@ -65,6 +68,7 @@ IMAP_TIMEOUT = int(os.environ.get("KODV_MAIL_IMAP_TIMEOUT", "60"))
 
 CURSOR_FILE = BASE_DIR / ".local_secrets" / "kodv_mail_archiver_cursor.json"
 _NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
+LINK_DOWNLOAD_TIMEOUT = int(os.environ.get("KODV_MAIL_LINK_TIMEOUT", "30"))
 
 # Класифікація вкладень за джерелом. Маркери в НИЖНЬОМУ регістрі; перевіряємо і в імені
 # файлу, і в темі листа, і у відправнику — стійкіше до варіацій експорту.
@@ -76,7 +80,15 @@ _NP_AKT_MARKERS = ("акт звірки", "акт сверки", "акт зві�
 # процесор). Ім'я файлу: «Реєстр платежів ФОП Чечетенко Олександр Юрійович_YYYY-MM-DD (0).xlsx».
 # Відрізняється від NovaPay «реєстр ПЕРЕказів» словом «ПЛАтежів». Запит бухгалтера 2026-08-31
 # (сторно 17 днів висіло непоміченим). НЕ дублювати старою назвою «Rozetka» — окрема тека RozetkaPay.
+#
+# ⚠️ ЖИВО ПЕРЕВІРЕНО 2026-09-18 (аудит Д3 — «0 файлів за вересень» виявився НЕ мертвим входом,
+# а прогалиною парсингу): лист RozetkaPay `is_multipart=False`, ОДНА частина text/html, жодного
+# MIME-вкладення. Файл роздається через підписане посилання Google Cloud Storage у тілі листа
+# (`https://storage.googleapis.com/.../Реєстр платежів….xlsx?Expires=…&Signature=…`), яке треба
+# ЗАВАНТАЖИТИ окремим HTTP-запитом — _iter_attachments() тут завжди дасть 0, це не сигнал
+# «листа нема». Обробляється в archive() через _extract_rozetkapay_link().
 _ROZETKAPAY_MARKERS = ("реєстр платежів", "реестр платежей")
+_ROZETKAPAY_LINK_HOST = "storage.googleapis.com"
 # ПриватБанк — щоденна виписка (PDF) на ту саму скриньку. Запит бухгалтера 2026-08-31: завести
 # заздалегідь, email ще не тече. Маркери BEST-GUESS (відправник @privatbank.ua/@privat24.ua або
 # «Приват24 для бізнесу»/«виписка»); ⚠ ЗВІРИТИ за ПЕРШИМ реальним листом (точний формат невідомий —
@@ -166,6 +178,40 @@ def _iter_attachments(msg):
             yield filename, payload
 
 
+def _extract_rozetkapay_link(msg) -> tuple[str, bytes] | None:
+    """RozetkaPay «Реєстр платежів» не додає файл MIME-вкладенням — роздає підписаним
+    посиланням Google Cloud Storage у HTML-тілі листа (перевірено живо 2026-09-18, лист
+    UID 1392 за 17.09). Шукає `https://storage.googleapis.com/....xlsx?...` у text/html-
+    частинах, ЗАВАНТАЖУЄ файл (окремий HTTP GET, не залежить від IMAP), повертає
+    (ім'я_файлу, байти) або None, якщо посилання не знайдено чи завантаження не вдалось
+    (best-effort — не валить прогін решти листів)."""
+    for part in msg.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        html = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        m = re.search(
+            r'href=["\'](' + re.escape(f"https://{_ROZETKAPAY_LINK_HOST}") + r'[^"\']+\.xlsx\?[^"\']+)["\']',
+            html, re.IGNORECASE)
+        if not m:
+            continue
+        url = m.group(1)
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=LINK_DOWNLOAD_TIMEOUT) as resp:
+                data = resp.read()
+        except Exception as e:  # noqa: BLE001 — мережевий збій не має валити весь прогін
+            print(f"[KODVmail] посилання RozetkaPay знайдено, завантаження не вдалось: {e}", file=sys.stderr)
+            return None
+        # Ім'я файлу — декодований шлях URL до '?' (query — підпис/термін дії, не частина імені).
+        path = urllib.parse.unquote(url.split("?", 1)[0])
+        filename = path.rsplit("/", 1)[-1]
+        return filename, data
+    return None
+
+
 def archive(dry_run: bool = False) -> dict:
     saved_cursor = _load_cursor()
     newly = {"RozetkaPay": 0, "ПриватБанк": 0, "NovaPay": 0, "НоваПошта": 0}
@@ -229,6 +275,29 @@ def archive(dry_run: bool = False) -> dict:
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     (dest_dir / filename).write_bytes(payload)
                     _log(f"збережено → {key}")
+
+                # RozetkaPay «Реєстр платежів» не має MIME-вкладення (перевірено живо 2026-09-18) —
+                # без цього кожен такий лист впав би тут у "unclassified" і виглядав би мертвим входом.
+                if not had_doc and _classify("", subject_l, sender_l) == "RozetkaPay":
+                    link_result = _extract_rozetkapay_link(msg)
+                    if link_result:
+                        filename, payload = link_result
+                        had_doc = True
+                        key = f"{month}/RozetkaPay/{filename}"
+                        if key in saved_cursor:
+                            skipped_dupe += 1
+                        else:
+                            saved_cursor.add(key)
+                            newly["RozetkaPay"] += 1
+                            if dry_run:
+                                _log(f"[dry-run] БУЛО Б завантажено-збережено → {key}  "
+                                     f"(тема: «{subject_l[:50]}»)")
+                            else:
+                                dest_dir = KODV_DOCS_DIR / month / "RozetkaPay"
+                                dest_dir.mkdir(parents=True, exist_ok=True)
+                                (dest_dir / filename).write_bytes(payload)
+                                _log(f"завантажено з посилання → {key}")
+
                 if not had_doc and any(m in f"{subject_l} {sender_l}"
                                        for m in ("пошт", "novapay", "novaposhta", "звірк")):
                     unclassified_msgs += 1  # схоже на релевантний лист без розпізнаного вкладення

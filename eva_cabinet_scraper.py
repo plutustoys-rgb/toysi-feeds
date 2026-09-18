@@ -133,6 +133,46 @@ def create_state() -> None:
     print("[EvaCabinet] Тепер щоденний прогін `python eva_cabinet_scraper.py` працюватиме headless.")
 
 
+def keepalive() -> None:
+    """Тримає EVA-кабінетну сесію ТЕПЛОЮ (той самий патерн, що prom_notifications_scraper.py
+    --keepalive, PR #290/#292) — заходить у кабінет під збереженою сесією й ПЕРЕСОХРАНЯЄ
+    storageState (оновлює cookies/токени), щоб не протухала.
+
+    ПРИЧИНА, ЧОМУ СЕСІЯ ПАДАЛА (розслідування 2026-09-18, аудит Д3 «EVA мертва з 15.09»):
+    `scrape()`/`read_balance()` лише ЧИТАЮТЬ сторінку, ніколи не пересохраняють stateFile —
+    той самий корінь, що вже виправляли для Prom. Кукі, збережені РАЗ під час `--login`,
+    поступово протухають незалежно від того, наскільки часто headless-прогін їх ЧИТАЄ —
+    читання не оновлює сесію на сервері. Запускати по таймеру (~30 хв), окрема Windows-
+    задача (аналог PlutusToys_PromCabinetKeepalive)."""
+    if not STATE_FILE.exists():
+        msg = (f"🚨 eva_cabinet_scraper keepalive: нема сесії ({STATE_FILE.name}). "
+               f"Запусти раз `python eva_cabinet_scraper.py --login`.")
+        print(f"[EvaCabinet] {msg}", file=sys.stderr)
+        _notify(msg)
+        sys.exit(1)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(storage_state=str(STATE_FILE))
+        page = ctx.new_page()
+        try:
+            page.goto(MERCHANT_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+            if "login" in page.url.lower() or "seller.eva.ua" not in page.url:
+                raise EvaCabinetError(
+                    f"сесію НЕ прийнято: після переходу на {MERCHANT_URL} опинились на "
+                    f"{page.url} (редірект на логін = сесія протухла, треба --login)")
+            ctx.storage_state(path=str(STATE_FILE))  # пересохраняємо → оновлює сесію (теплою)
+            print("[EvaCabinet] keepalive: сесію оновлено.")
+        except (PlaywrightTimeoutError, EvaCabinetError) as e:
+            msg = (f"🚨 eva_cabinet_scraper keepalive: сесія протухла/збій ({e}). "
+                   f"Перелогінься: `python eva_cabinet_scraper.py --login`.")
+            print(f"[EvaCabinet] {msg}", file=sys.stderr)
+            _notify(msg)
+            sys.exit(1)
+        finally:
+            browser.close()
+
+
 def _parse_amount(text: str, label: str):
     """Витягує суму після мітки (напр. 'Разом', 'роялті', 'платформи'). EVA
     показує число з пробілом як роздільником тисяч і '₴' після нього, часто на
@@ -373,9 +413,13 @@ def main() -> None:
                         help="Повний імпорт EVA за посиланням (нові товари → модерація) — автоцикл.")
     parser.add_argument("--apply", action="store_true",
                         help="Реально подати ('Почати'). Без нього — DRY-RUN: заповнити форму, не подавати.")
+    parser.add_argument("--keepalive", action="store_true",
+                        help="Тримати сесію теплою (пересохранити storageState) — по таймеру ~30 хв.")
     args = parser.parse_args()
     if args.login:
         create_state()
+    elif args.keepalive:
+        keepalive()
     elif args.full_import:
         run_full_import(apply=args.apply)
     else:

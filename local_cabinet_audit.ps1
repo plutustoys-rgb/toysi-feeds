@@ -84,6 +84,15 @@ try {
 #       документи_КОДВ/*/NovaPay/*.XLSX, flags payments NOT in the book (READ-ONLY). Candidates only.
 & $py novapay_registry_kandydaty.py
 
+# 3c-5. Vchasno.EDO act numbers -> KODV book candidates (independent bookkeeping audit
+#       2026-09-17/18: two real gaps - double-counted Prom act, missing 178.97 royalty act -
+#       sat unnoticed a month because act-number-vs-book matching was manual only). No live
+#       edo.vchasno.ua access needed (KEP/personal-signature auth, not scriptable) - reads
+#       already-downloaded act files under документи_КОДВ/*/*/*_akt_*, extracts the doc
+#       number from the FILENAME (stable, no PDF parsing), cross-checks against the book
+#       (READ-ONLY). Candidates only, never the book.
+& $py vchasno_akty_kandydaty.py
+
 # 3d. Prom notifications (top of /cms/notifications, money signals). One-time: `--login`.
 & $py prom_notifications_scraper.py
 

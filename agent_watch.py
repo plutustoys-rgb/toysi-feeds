@@ -43,6 +43,28 @@ if hasattr(sys.stdout, "reconfigure"):
 BASE_DIR = Path(__file__).parent
 STATE_DIR = BASE_DIR / ".local_secrets" / "agent_watch"
 LOCK_FILE = STATE_DIR / "poller.lock"
+# Персистентний лог КОЖНОГО прогону (не лише пробуджень) — знахідка власника 2026-09-18:
+# файл стану (wakes_today/last_wake_at) НЕ розрізняє, чи пробудження прийшло від самої задачі
+# планувальника, чи від ручного запуску `python agent_watch.py` власником — обидва однаково
+# оновлюють ті самі поля. `run_hidden.vbs` (обгортка Windows-задачі) нічого не логує, весь
+# stdout іде в нікуди. RUN_LOG — незалежний слід: кожен виклик process_one() дописує рядок,
+# незалежно від результату, тож регулярні записи що ~30 хв (включно з часом, коли ніхто не
+# сидить за клавіатурою) — це і є доказ автономної роботи, а не файл стану сам по собі.
+RUN_LOG = STATE_DIR / "run_log.jsonl"
+
+
+def _log_run(name: str, outcome: str, reason: str | None = None) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with RUN_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": _now().isoformat(timespec="seconds"),
+                "agent": name,
+                "outcome": outcome,
+                "reason": reason,
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass  # лог — діагностика, не має валити прогін
 LOCK_STALE_MIN = 25          # лок, старший за це, вважаємо покинутим
 CLAUDE_TIMEOUT_SEC = 900     # стеля на одне пробудження агента
 # Модель для headless-ТРІАЖУ. Пробудження монітора — низькоризикова робота (прочитати новий запис
@@ -371,6 +393,7 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
 
     # анти-runaway: денна стеля
     if st.get("wakes_today", 0) >= cfg.get("max_wakes_per_day", 12) and not force:
+        _log_run(cfg["name"], "capped")
         return
 
     # 1) новий вхідний запис у будь-якому з каналів?
@@ -398,6 +421,7 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
         periodic = True
 
     if reason is None and not force:
+        _log_run(cfg["name"], "no_reason")
         return
     if force and reason is None:
         reason = "примусове пробудження (--force)"
@@ -438,6 +462,9 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
                 _notify(f"⚠️ AgentWatch: '{cfg['name']}' прокинувся на запит, але НІЧОГО не написав у "
                         f"канал:\n{new_sig[1][:120]}\n→ якщо це був запит — можливо, загубилось (глянь "
                         f"вручну); якщо підтвердження — ігноруй.")
+        _log_run(cfg["name"], "woke_ok", reason)
+    else:
+        _log_run(cfg["name"], "woke_failed", reason)
     w.save_state(st)
 
 

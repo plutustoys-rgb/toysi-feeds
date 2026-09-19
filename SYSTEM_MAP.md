@@ -102,7 +102,7 @@
 
 | Task | Що запускає | Домен |
 |---|---|---|
-| `PlutusToys_AgentWatch` | `agent_watch.py` (30 хв) | координація (будить SEO/SMM/Код/Продажник/Виконавець на нові записи каналів) |
+| `PlutusToys_AgentWatch` | `agent_watch.py` (30 хв) | координація (будить SEO/SMM/Код/Продажник/Виконавець на нові записи каналів; Консультант — так само + періодично раз на 3 год 09:00-21:00 Київ) |
 | `PlutusToys_SystemMapDriftCheck` | `system_map_driftcheck.py --alert` (щодня 08:40) | сам звіряє цей SSOT із живими тасками, Telegram-алерт при дрейфі |
 | `PlutusToys_CriticalCalendar` | `critical_watch.py` (візуальне вікно) | світлофор термінів ключів/балансів/абонплат (критичний календар) |
 | `PlutusToys_RozetkaLocalChain` | `run_rozetka_local.py` | Rozetka: pull цін → **товарознавець** → commit membership → фід |
@@ -124,7 +124,7 @@
 > захищені антиботом, який пропускає лише справжній Chrome із профілем (bundled chromium → 403/500);
 > agent_watch будить сесії через локальний `claude`. VPS — headless, туди це не переноситься.
 >
-> **Панель керування (on-demand, НЕ таска):** `control_panel.py` — локальний сервер `127.0.0.1:8787` (запуск `run_panel.bat` або `python control_panel.py` з теки репо). Дає: статуси 5 агентів (Код/SEO/SMM/Консультант/Бухгалтер) + telegram-дайджест (`telegram_digest.py`, по запиту з `reports/telegram_alerts.md`) + критичні плитки; по кожному агенту — чат (`claude -p`), задача-в-канал (agent_watch підхопить), термінал (shell у теці репо), **«відкрити сесію» = ПОВНИЙ агент** (`claude --agent plutus-<роль>` у теці репо: роль+правила з `.claude/agents/plutus-{seo,smm,kod,consultant,kodv}.md` + навичка через `skills:` — seo-agent/plutustoys-smm/business-consultant/accountant; канали Cowork через --add-dir). Синк-скіли завантажуються раз: `CLAUDE_CODE_SYNC_SKILLS=1 claude -p ...` → `~/.claude/skills/synced/`. localhost-only + CSRF (`X-Panel`). Запускає власник, не cron.
+> **Панель керування (on-demand, НЕ таска):** `control_panel.py` — локальний сервер `127.0.0.1:8787` (запуск `run_panel.bat` або `python control_panel.py` з теки репо). Дає: статуси 7 агентів (Код/SEO/SMM/Продажник/Виконавець/Консультант/Бухгалтер) + telegram-дайджест (`telegram_digest.py`, по запиту з `reports/telegram_alerts.md`) + критичні плитки; по кожному агенту — чат (`claude -p`), задача-в-канал (agent_watch підхопить), термінал (shell у теці репо), **«відкрити сесію» = ПОВНИЙ агент** (`claude --agent plutus-<роль>` у теці репо: роль+правила з `.claude/agents/plutus-{seo,smm,kod,consultant,kodv}.md` + навичка через `skills:` — seo-agent/plutustoys-smm/business-consultant/accountant; канали Cowork через --add-dir). Синк-скіли завантажуються раз: `CLAUDE_CODE_SYNC_SKILLS=1 claude -p ...` → `~/.claude/skills/synced/`. localhost-only + CSRF (`X-Panel`). Запускає власник, не cron.
 
 ### 2Б. VPS (45.94.157.4, `/opt/plutustoys`, systemd `.timer`+`.service`, venv-python) — знято живо 2026-08-20
 
@@ -266,14 +266,18 @@
    переказ правил, без автоматичної звірки з джерелом істини). Headless-Код додатково НЕ має доступу до
    репо (пісочниця) — лише тріаж у чергу, код/PR не пише. **Лише ручний запуск** (панель керування
    `control_panel.py`, `--agent <slug>` + `cwd=BASE_DIR`) вантажить повну персону+`CLAUDE.md`+скіл.
-   КОДВ/Консультант СВОГО запису у `WATCHERS` взагалі нема (не мають власної headless-сесії, що
-   будиться на щось адресоване ЇМ) — вони йдуть лише ручним шляхом. **АЛЕ** (знахідка Консультанта,
-   виправлено 2026-09-17, PR #561): вотчер «Код» тепер ДОДАТКОВО слухає `CONSULTANT_CHANNEL.md`/
-   `КОДВ_CHANNEL.md` (раніше лише `SEO_CHANNEL.md`/`MARKETING_CHANNEL.md`) — інакше запис `## [X →
-   Код]` у цих двох каналах НІКОЛИ не будив headless-Код (канал, де Консультант/КОДВ звертаються
-   до Кода, взагалі не був тригером). Продажник — Є в `agent_watch.py` (додано 2026-09-17):
-   будиться на `## [X → Продажник]` у `SELLER_CHANNEL.md`, як SEO/SMM (headless, лише
-   інлайн-`wake_prompt`, без повної персони).
+   КОДВ (Бухгалтер) свого запису у `WATCHERS` НЕМАЄ (не має власної headless-сесії, що будиться на
+   щось адресоване ЇЙ) — йде лише ручним шляхом (панель). **Консультант — Є в `WATCHERS`
+   (додано 2026-09-19, замовлення CONSULTANT_CHANNEL.md 18.09 (5)):** подієво на `## [X →
+   Консультант]` у `SELLER_CHANNEL.md`/`CONSULTANT_CHANNEL.md`/`КОДВ_CHANNEL.md` + періодично раз
+   на 3 год у вікні 09:00-21:00 Київ (`schedule={"every_hours":3,"hour_start":9,"hour_end":21}`,
+   новий параметр `_periodic_due()`), той самий headless-ліміт — без браузера, без повної персони
+   `plutus-consultant.md`, лише inline `wake_prompt`/`periodic_prompt`. **АЛЕ** (знахідка
+   Консультанта, виправлено 2026-09-17, PR #561): вотчер «Код» тепер ДОДАТКОВО слухає
+   `CONSULTANT_CHANNEL.md`/`КОДВ_CHANNEL.md` (раніше лише `SEO_CHANNEL.md`/`MARKETING_CHANNEL.md`) —
+   інакше запис `## [X → Код]` у цих двох каналах НІКОЛИ не будив headless-Код. Продажник — Є в
+   `agent_watch.py` (додано 2026-09-17): будиться на `## [X → Продажник]` у `SELLER_CHANNEL.md`,
+   як SEO/SMM (headless, лише інлайн-`wake_prompt`, без повної персони).
 3. **Власність файлів (проти гонок перезапису):** `STATUS.md`→лише Cowork; `CODE_LOG.md`→лише Код;
    канали→теговані записи, чужі не редагувати; `OWNER_INBOX.md`→усі складають розвилки власнику, Cowork зводить.
 4. **Код тільки через PR + незалежний аудит ПЕРЕД мержем** (CLAUDE.md, гейт `.audit_ok`). SEO/SMM код не пишуть —

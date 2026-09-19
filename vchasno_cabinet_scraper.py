@@ -321,7 +321,7 @@ def sync_new_documents(page) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Headless-читання й завантаження нових документів Вчасно (Playwright + storageState).")
+    parser = argparse.ArgumentParser(description="Headless-читання й завантаження нових документів Вчасно (Playwright + справжній Chrome, персистентний профіль).")
     parser.add_argument("--login", action="store_true", help="Раз: відкрити вікно, залогінитись Google-акаунтом, зберегти сесію.")
     parser.add_argument("--keepalive", action="store_true", help="Тримати сесію теплою (по таймеру).")
     args = parser.parse_args()

@@ -49,25 +49,40 @@ REALERT_INTERVAL_HOURS = 3
 _NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
 
 
-def _notify(msg: str) -> None:
+def _notify(msg: str) -> bool:
+    """Повертає True лише якщо повідомлення справді пішло — щоб main() не позначав алерт
+    «відправленим», коли доставка провалилась (маскований best-effort збій, PR #546)."""
     if _NO_TELEGRAM:
-        return
+        return False
     try:
         sys.path.insert(0, str(BASE_DIR))
         from telegram_notify import send_telegram_message
-        send_telegram_message(msg)
+        return bool(send_telegram_message(msg))
     except Exception as e:  # noqa: BLE001
         print(f"[SellerWatchdog] Telegram не надіслано (не критично): {e}", file=sys.stderr)
+        return False
 
 
 def is_alive() -> bool:
-    """Живо (PowerShell) перевіряє, чи є процес із вікном, заголовок якого починається на
-    WINDOW_TITLE_PREFIX. Збій самої перевірки (powershell недоступний, таймаут) трактуємо як
+    """Живо (PowerShell) перевіряє, чи є вікно з заголовком, що починається на
+    WINDOW_TITLE_PREFIX, І чи під ним справді ще живий `claude.exe` (не лише порожня
+    `cmd /k`-оболонка). `/k` (control_panel.py:_launch()) навмисно тримає вікно відкритим
+    ПІСЛЯ завершення команди — якщо claude.exe завершиться нештатно (не hang, а звичайний
+    крах), голе вікно лишиться з тим самим заголовком, і перевірка лише за заголовком дала б
+    хибний «живий» (звірено живо 2026-09-19: реальний запуск має claude.exe прямим child
+    процесом cmd-хоста). Збій самої перевірки (powershell недоступний, таймаут) трактуємо як
     «невідомо» = не мертвий — щоб дефект перевірки не бив у Telegram фальшивою тривогою."""
     ps_cmd = (
-        f"(Get-Process -ErrorAction SilentlyContinue | "
-        f"Where-Object {{ $_.MainWindowTitle -like '{WINDOW_TITLE_PREFIX}*' }} | "
-        f"Measure-Object).Count"
+        f"$h = Get-Process -ErrorAction SilentlyContinue | "
+        f"Where-Object {{ $_.MainWindowTitle -like '{WINDOW_TITLE_PREFIX}*' }};"
+        f"if (-not $h) {{ 0; exit }}"
+        f"$alive = 0;"
+        f"foreach ($p in $h) {{"
+        f"  $c = Get-CimInstance Win32_Process -Filter \"ParentProcessId=$($p.Id)\" -ErrorAction SilentlyContinue |"
+        f"       Where-Object {{ $_.Name -match 'claude' }};"
+        f"  if ($c) {{ $alive = 1 }}"
+        f"}}"
+        f"$alive"
     )
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd],
@@ -93,13 +108,13 @@ def _save_state(st: dict) -> None:
         pass
 
 
-def _post_channel(text: str) -> None:
+def _post_channel(text: str) -> bool:
     """Newest-on-top: вставляє одразу після ПЕРШОГО `---` (кінець блоку протоколу), як і решта
-    записів у SELLER_CHANNEL.md."""
+    записів у SELLER_CHANNEL.md. Повертає True лише якщо запис справді записано на диск."""
     try:
         old = SELLER_CHANNEL.read_text(encoding="utf-8") if SELLER_CHANNEL.exists() else ""
     except OSError:
-        return
+        return False
     marker = "\n---\n"
     idx = old.find(marker)
     if idx == -1:
@@ -109,8 +124,10 @@ def _post_channel(text: str) -> None:
         new = old[:insert_at] + text + "\n---\n" + old[insert_at:]
     try:
         SELLER_CHANNEL.write_text(new, encoding="utf-8")
+        return True
     except OSError as e:
         print(f"[SellerWatchdog] не вдалось дописати в канал: {e}", file=sys.stderr)
+        return False
 
 
 def main() -> int:
@@ -140,7 +157,7 @@ def main() -> int:
         try:
             hours_since = (now - datetime.fromisoformat(last_alert)).total_seconds() / 3600
             should_alert = hours_since >= REALERT_INTERVAL_HOURS
-        except ValueError:
+        except (ValueError, TypeError):
             should_alert = True
 
     if should_alert:
@@ -152,8 +169,8 @@ def main() -> int:
             f"досі стара місія «виробники іграшок», без Upwork/браузера) — відкрий сесію вручну "
             f"(панель control_panel.py → Продажник → 🔗 відкрити сесію, або сайдбар «SELLER»)."
         )
-        _notify(msg)
-        _post_channel(
+        telegram_ok = _notify(msg)
+        channel_ok = _post_channel(
             f"## [Код → Продажник] {now.strftime('%Y-%m-%d %H:%M')} — {header}\n\n"
             f"Вотчер `plutus_seller_watchdog.py` не знайшов вікна консолі з заголовком «Продажник*» "
             f"{'вперше в цьому епізоді' if first_time else f'повторно (попередній алерт {last_alert})'}.\n\n"
@@ -162,8 +179,15 @@ def main() -> int:
             f"(перевірено живо {now.strftime('%Y-%m-%d')}) — сліпий relaunch підняв би не той напрям.\n\n"
             f"Дія: власник відкриває сесію вручну.\n"
         )
-        st["death_alerted_at"] = now.isoformat()
-        _save_state(st)
+        if telegram_ok or channel_ok:
+            # Позначаємо «алерт відправлено» лише коли хоч один канал справді доставив —
+            # інакше збій ОБОХ мовчки продовжив би 3-годинну паузу, ніхто б не дізнався
+            # (маскований best-effort збій, PR #546).
+            st["death_alerted_at"] = now.isoformat()
+            _save_state(st)
+        else:
+            print("[SellerWatchdog] і Telegram, і запис у канал провалились — "
+                  "стан НЕ оновлено, наступний цикл (15 хв) спробує знову", file=sys.stderr)
     else:
         print(f"[SellerWatchdog] мертвий, але алерт уже був о {last_alert} "
               f"(< {REALERT_INTERVAL_HOURS}год тому) — тихо")

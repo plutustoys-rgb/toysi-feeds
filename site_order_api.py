@@ -45,6 +45,8 @@ PORT = int(os.environ.get("SITE_API_PORT", "8901"))
 SITE_DIR = os.environ.get("SITE_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "site"))
 INDEX_PATH = os.path.join(SITE_DIR, "index.json")
 BASE_URL = os.environ.get("SITE_BASE_URL", "https://plutustoys.com.ua").rstrip("/")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COD_BREAKER_STATE_FILE = os.path.join(BASE_DIR, ".local_secrets", "site_cod_breaker_state.json")
 
 MAX_QTY_PER_ITEM = 50
 MAX_ITEMS = 100
@@ -63,6 +65,31 @@ SITE_COD_CEILING = int(os.environ.get("SITE_COD_CEILING", "3000"))
 # замовленню того самого дня (напр. забув товар). Рахуємо ЛИШЕ COD — prepaid самообмежується
 # оплатою наперед, той самий ризик там відсутній.
 SITE_COD_PHONE_DAILY_LIMIT = int(os.environ.get("SITE_COD_PHONE_DAILY_LIMIT", "2"))
+# Глобальний circuit-breaker COD (Консультант, CONSULTANT_CHANNEL.md 2026-09-18: "N=10,
+# деградація на передоплату, не алерт") — на відміну від двох гальм вище (стеля суми, ліміт на
+# телефон), рахує ВЕСЬ сайт, не одного клієнта: EVA-звірка КОДВ виміряла 32% скасувань COD
+# (01.08-05.09, кожне замовлення перевірене окремо), а сайт форвардить COD у Toysi ДО оплати —
+# кожне скасування коштує зворотну логістику. Триггер і скидання — МОЇ рішення (число N=10
+# Консультанта), tunable/скидається через env, не звірено з живими продажами (трафіку нема).
+SITE_COD_CIRCUIT_BREAKER_N = int(os.environ.get("SITE_COD_CIRCUIT_BREAKER_N", "10"))
+# Сталий trip (не самоскидається за часом/вікном) — свідомо: "circuit breaker" означає розмикач,
+# що лишається розімкненим, поки хтось свідомо не проглянув причину й не скинув. Скидання:
+# SITE_COD_CIRCUIT_BREAKER_RESET_AFTER=<ISO-мітка> — лічильник рахує лише скасування ПІСЛЯ неї.
+SITE_COD_CIRCUIT_BREAKER_RESET_AFTER = os.environ.get("SITE_COD_CIRCUIT_BREAKER_RESET_AFTER", "")
+# Ті самі статуси, що order_status_tracker.py:_UNSUCCESSFUL_DELIVERY_STATUSES (P0-2 "неуспішні
+# замовлення") — щоб не тримати другий паралельний список "що вважається відмовою".
+_COD_UNSUCCESSFUL_STATUSES = {"cancelled", "returned"}
+_NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
+
+
+def _notify(msg: str) -> None:
+    if _NO_TELEGRAM:
+        return
+    try:
+        from telegram_notify import send_telegram_message
+        send_telegram_message(msg)
+    except Exception as e:  # noqa: BLE001
+        print(f"[site_order_api] Telegram не надіслано (не критично): {e}", file=sys.stderr)
 
 # ── Ціни з боку сервера (site/index.json: [{id,n,pr,p}, ...]) — НЕ довіряємо кошику клієнта ──
 _price_lock = threading.Lock()
@@ -213,6 +240,63 @@ def _check_cod_phone_limit(conn, phone: str) -> None:
         )
 
 
+def _cod_circuit_breaker_count(conn) -> int:
+    """Скільки COD-замовлень САЙТУ загалом скасовано/повернено — ГЛОБАЛЬНО, не по телефону
+    (на відміну від _check_cod_phone_limit). `delivery_status` оновлює order_status_tracker.py
+    (VPS) для всіх платформ однаково — сайт нового окремого джерела не потребує."""
+    params = ["site"] + sorted(_COD_UNSUCCESSFUL_STATUSES)
+    placeholders = ",".join("?" * len(_COD_UNSUCCESSFUL_STATUSES))
+    sql = (
+        f"SELECT COUNT(*) FROM orders WHERE platform=? AND payment_method='cod' "
+        f"AND delivery_status IN ({placeholders})"
+    )
+    if SITE_COD_CIRCUIT_BREAKER_RESET_AFTER:
+        sql += " AND created_at >= ?"
+        params.append(SITE_COD_CIRCUIT_BREAKER_RESET_AFTER)
+    row = conn.execute(sql, params).fetchone()
+    return row[0] if row else 0
+
+
+def _cod_breaker_already_alerted(count: int) -> bool:
+    """Антиспам для Telegram-алерту (файл стану, той самий патерн, що plutus_seller_watchdog.py —
+    жодної таблиці orders.db для цього не заводимо, це не грошові дані)."""
+    try:
+        with open(COD_BREAKER_STATE_FILE, encoding="utf-8") as f:
+            return json.load(f).get("alerted_count") == count
+    except (OSError, ValueError):
+        return False
+
+
+def _cod_breaker_mark_alerted(count: int) -> None:
+    try:
+        os.makedirs(os.path.dirname(COD_BREAKER_STATE_FILE), exist_ok=True)
+        with open(COD_BREAKER_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"alerted_count": count}, f)
+    except OSError:
+        pass
+
+
+def _check_cod_circuit_breaker(conn) -> None:
+    """Глобальний circuit-breaker: N=10 скасованих/повернених COD-замовлень САЙТУ загалом →
+    COD ЗАКРИТО для ВСІХ наступних замовлень (не лише цього телефону), поки хтось свідомо не
+    скине (SITE_COD_CIRCUIT_BREAKER_RESET_AFTER). Перший заблокований запит після спрацювання
+    шле Telegram-алерт ОДИН раз (доки count не зміниться — нове скасування)."""
+    count = _cod_circuit_breaker_count(conn)
+    if count < SITE_COD_CIRCUIT_BREAKER_N:
+        return
+    if not _cod_breaker_already_alerted(count):
+        _notify(
+            f"🔴 Circuit-breaker COD спрацював: {count} скасованих/повернених COD-замовлень "
+            f"сайту (поріг {SITE_COD_CIRCUIT_BREAKER_N}). COD закрито для ВСІХ нових замовлень "
+            f"сайту, доки хтось свідомо не скине через SITE_COD_CIRCUIT_BREAKER_RESET_AFTER."
+        )
+        _cod_breaker_mark_alerted(count)
+    raise OrderError(
+        "Накладений платіж тимчасово недоступний на сайті. "
+        "Оформіть, будь ласка, замовлення передоплатою карткою."
+    )
+
+
 def recompute_total(items: list) -> int:
     """Перераховує суму збережених items (для звірки з колбеком LiqPay)."""
     pm = price_map()
@@ -312,6 +396,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             with get_connection() as conn:
                 if order["payment_method"] == "cod":
+                    _check_cod_circuit_breaker(conn)   # глобальний гейт — перед per-телефон
                     _check_cod_phone_limit(conn, order["phone"])
                 created = insert_order(conn, order)
                 if created:

@@ -99,8 +99,89 @@ with orders_db.get_connection() as conn:
          not _raises(api._check_cod_phone_limit, conn, "380500000004"))
 
 
+# 3: глобальний circuit-breaker (N=10 скасованих/повернених COD-замовлень сайту, не по телефону)
+os.environ["AUDIT_NO_TELEGRAM"] = "1"
+api.COD_BREAKER_STATE_FILE = tempfile.mktemp(suffix=".json")   # НЕ бойовий .local_secrets
+with orders_db.get_connection() as conn:
+    conn.execute("DELETE FROM orders WHERE order_id LIKE 'PT-BRK-%'")
+    conn.commit()
+
+    def _insert_unsuccessful(n, status, phone_prefix="380509"):
+        for i in range(n):
+            orders_db.insert_order(conn, {
+                "order_id": f"PT-BRK-{status}-{i}", "platform": "site", "payment_method": "cod",
+                "customer_name": "Тест Тестенко", "phone": f"{phone_prefix}{i:06d}",
+                "np_branch": "Київ, Відділення №1",
+                "items": [{"toysi_code": "1", "name": "x", "qty": 1, "price": 10}],
+                "delivery_status": status,
+            })
+        conn.commit()
+
+    _insert_unsuccessful(api.SITE_COD_CIRCUIT_BREAKER_N - 1, "cancelled")
+    _chk(f"брейкер: {api.SITE_COD_CIRCUIT_BREAKER_N - 1} скасованих (нижче порогу) → проходить",
+         not _raises(api._check_cod_circuit_breaker, conn))
+
+    # РІЗНІ статуси зі списку (cancelled + returned) рахуються РАЗОМ до одного порогу
+    _insert_unsuccessful(1, "returned", phone_prefix="380508")
+    _chk(f"брейкер: {api.SITE_COD_CIRCUIT_BREAKER_N} скасованих+повернених (на межі) → відхилено",
+         _raises(api._check_cod_circuit_breaker, conn))
+
+    # delivered/інший статус НЕ рахується до брейкера
+    conn.execute("DELETE FROM orders WHERE order_id LIKE 'PT-BRK-%'")
+    conn.commit()
+    _insert_unsuccessful(api.SITE_COD_CIRCUIT_BREAKER_N + 3, "delivered", phone_prefix="380507")
+    _chk("брейкер: 'delivered' не рахується — проходить попри N+3 записів",
+         not _raises(api._check_cod_circuit_breaker, conn))
+
+    # НЕ-site платформа не рахується
+    conn.execute("DELETE FROM orders WHERE order_id LIKE 'PT-BRK-%'")
+    conn.commit()
+    for i in range(api.SITE_COD_CIRCUIT_BREAKER_N + 2):
+        orders_db.insert_order(conn, {
+            "order_id": f"PT-BRK-rozetka-{i}", "platform": "rozetka", "payment_method": "cod",
+            "customer_name": "Тест Тестенко", "phone": f"380506{i:06d}",
+            "np_branch": "Київ, Відділення №1",
+            "items": [{"toysi_code": "1", "name": "x", "qty": 1, "price": 10}],
+            "delivery_status": "cancelled",
+        })
+    conn.commit()
+    _chk("брейкер: скасування НЕ-site платформ не рахуються",
+         not _raises(api._check_cod_circuit_breaker, conn))
+
+    # RESET_AFTER: старі скасування (ДО мітки) не рахуються, лише нові (ПІСЛЯ)
+    conn.execute("DELETE FROM orders WHERE order_id LIKE 'PT-BRK-%'")
+    conn.commit()
+    old_ts = (datetime.now() - timedelta(days=2)).isoformat(timespec="seconds")
+    for i in range(api.SITE_COD_CIRCUIT_BREAKER_N + 2):
+        orders_db.insert_order(conn, {
+            "order_id": f"PT-BRK-reset-{i}", "platform": "site", "payment_method": "cod",
+            "customer_name": "Тест Тестенко", "phone": f"380505{i:06d}",
+            "np_branch": "Київ, Відділення №1",
+            "items": [{"toysi_code": "1", "name": "x", "qty": 1, "price": 10}],
+            "delivery_status": "cancelled", "created_at": old_ts,
+        })
+    conn.commit()
+    reset_mark = datetime.now().isoformat(timespec="seconds")
+    api.SITE_COD_CIRCUIT_BREAKER_RESET_AFTER = reset_mark
+    try:
+        _chk("брейкер: RESET_AFTER — старі скасування (до мітки) ігноруються, проходить",
+             not _raises(api._check_cod_circuit_breaker, conn))
+        orders_db.insert_order(conn, {
+            "order_id": "PT-BRK-reset-new", "platform": "site", "payment_method": "cod",
+            "customer_name": "Тест Тестенко", "phone": "380504000001",
+            "np_branch": "Київ, Відділення №1",
+            "items": [{"toysi_code": "1", "name": "x", "qty": 1, "price": 10}],
+            "delivery_status": "cancelled",
+            "created_at": (datetime.now() + timedelta(seconds=1)).isoformat(timespec="seconds"),
+        })
+        conn.commit()
+        _chk("брейкер: RESET_AFTER — досі проходить, 1 нове скасування << N",
+             not _raises(api._check_cod_circuit_breaker, conn))
+    finally:
+        api.SITE_COD_CIRCUIT_BREAKER_RESET_AFTER = ""   # не протікає в наступні тести файлу
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)
-print("\n✅ Гардрейли COD сайту (стеля суми + ліміт на телефон/добу) працюють")
+print("\n✅ Гардрейли COD сайту (стеля суми + ліміт на телефон/добу + глобальний circuit-breaker) працюють")
 sys.exit(0)

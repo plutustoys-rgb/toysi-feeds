@@ -271,8 +271,11 @@
    (додано 2026-09-19, замовлення CONSULTANT_CHANNEL.md 18.09 (5)):** подієво на `## [X →
    Консультант]` у `SELLER_CHANNEL.md`/`CONSULTANT_CHANNEL.md`/`КОДВ_CHANNEL.md` + періодично раз
    на 3 год у вікні 09:00-21:00 Київ (`schedule={"every_hours":3,"hour_start":9,"hour_end":21}`,
-   новий параметр `_periodic_due()`), той самий headless-ліміт — без браузера, без повної персони
-   `plutus-consultant.md`, лише inline `wake_prompt`/`periodic_prompt`. **АЛЕ** (знахідка
+   новий параметр `_periodic_due()`), той самий headless-ліміт — без браузера, лише inline
+   `wake_prompt`/`periodic_prompt`. Замовлення (6) «браузер мені ПОТРІБЕН для вибіркової
+   перевірки» закрито ПОВНОЮ сесією, не вотчером: `.claude/agents/plutus-consultant.md:4` тепер
+   має ті самі 9 браузерних `tools:`, що й Виконавець (панель → Консультант → 🔗 відкрити сесію).
+   **АЛЕ** (знахідка
    Консультанта, виправлено 2026-09-17, PR #561): вотчер «Код» тепер ДОДАТКОВО слухає
    `CONSULTANT_CHANNEL.md`/`КОДВ_CHANNEL.md` (раніше лише `SEO_CHANNEL.md`/`MARKETING_CHANNEL.md`) —
    інакше запис `## [X → Код]` у цих двох каналах НІКОЛИ не будив headless-Код. Продажник — Є в

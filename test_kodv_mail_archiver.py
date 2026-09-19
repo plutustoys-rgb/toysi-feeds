@@ -110,9 +110,37 @@ with patch("urllib.request.urlopen") as mock_urlopen3:
     _chk("дедуп: вже збережений ключ НЕ викликає мережу", mock_urlopen3.call_count == 0)
 
 
+# 7: ПриватБанк — реальна структура href (звірено живо 2026-09-19, лист "Виписка за рахунком
+#    ...", awstrack.me-трекер → socauth.privatbank.ua/out_click.php → att.privatbank.ua/efile/…)
+_REAL_PRIVAT_HTML = (
+    '<html><body><a href="https://v084ncpp.r.eu-central-1.awstrack.me/L0/https:%2F%2F'
+    'socauth.privatbank.ua%2Fcp%2Fapi%2Fout_click.php%3Futm_medium=email%26token=abc%26'
+    'resource=https%253A%252F%252Fatt.privatbank.ua%252Fefile%252Fxyz/1/0107-000000/sig=258">'
+    'Отримати виписку</a></body></html>'
+)
+msg_privat = _make_html_email(_REAL_PRIVAT_HTML)
+msg_privat.replace_header("Subject", "Виписка за рахунком Чечетенко Олександр Юрiйович ФОП")
+msg_privat.replace_header("From", "ПриватБанк <info@pb.ua>")
+privat_url = km._find_privat_statement_link(msg_privat)
+_chk("_find_privat_statement_link: знайшло awstrack.me-посилання", privat_url is not None)
+_chk("_find_privat_statement_link: усередині справді att.privatbank.ua/efile",
+     privat_url is not None and "att.privatbank.ua" in privat_url)
+
+# 8: ПОСИЛАННЯ ПРОТУХЛО — сервер повертає HTML-логін Приват24 замість PDF (реальний випадок,
+#    2026-09-19: 11 з 13 листів 60-денного бекфілу дали саме це, не помилку HTTP). Перевіряємо
+#    саме ту перевірку вмісту, яку archive() робить ПІСЛЯ _download() (b"%PDF-" in payload[:4096]).
+_FAKE_LOGIN_HTML = b'<!doctype html>\n<html lang="uk"><head><title>\xd0\x9f\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb0\xd1\x8224</title>'
+_chk("протухле посилання: HTML-логін НЕ містить %PDF- маркера (детектор бачить підміну)",
+     b"%PDF-" not in _FAKE_LOGIN_HTML[:4096])
+_FAKE_REAL_PDF = b"garbage-wrapper-bytes" + b"%PDF-1.5\n%real pdf content"
+_chk("справжній PDF (з обгорткою): %PDF- маркер присутній у перших 4096 байтах",
+     b"%PDF-" in _FAKE_REAL_PDF[:4096])
+
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)
 print("\n✅ RozetkaPay HTML-посилання: пошук без мережі, окреме завантаження, дедуп-перед-"
-      "завантаженням, відсутність посилання, мережевий збій — усе коректно")
+      "завантаженням, відсутність посилання, мережевий збій — усе коректно. "
+      "ПриватБанк: посилання знайдено, протухле-посилання-детектор коректний.")
 sys.exit(0)

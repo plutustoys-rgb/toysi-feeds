@@ -206,16 +206,41 @@ def _link_filename(url: str) -> str:
     return path.rsplit("/", 1)[-1]
 
 
-def _download(url: str) -> bytes | None:
+def _download(url: str, label: str = "RozetkaPay") -> bytes | None:
     """Best-effort HTTP GET — мережевий збій/протухле посилання не має валити прогін решти
-    листів, лише цей кандидат пропускається з повідомленням у stderr."""
+    листів, лише цей кандидат пропускається з повідомленням у stderr. `urlopen` сам іде за
+    редиректами (GET) — для ПриватБанку посилання проходить через awstrack.me-трекер →
+    socauth.privatbank.ua/out_click.php → att.privatbank.ua/efile/<токен>, підписаний PDF
+    (CAdES/PKCS7-обгортка навколо %PDF-…) — перевірено живо 2026-09-19, БЕЗ логіну в Приват24."""
     try:
-        req = urllib.request.Request(url, method="GET")
+        req = urllib.request.Request(url, method="GET", headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=LINK_DOWNLOAD_TIMEOUT) as resp:
             return resp.read()
     except Exception as e:  # noqa: BLE001
-        print(f"[KODVmail] посилання RozetkaPay знайдено, завантаження не вдалось: {e}", file=sys.stderr)
+        print(f"[KODVmail] посилання {label} знайдено, завантаження не вдалось: {e}", file=sys.stderr)
         return None
+
+
+_PRIVAT_LINK_RE = re.compile(
+    r'href=["\'](https://[^"\']*awstrack\.me[^"\']*privatbank\.ua[^"\']*)["\']', re.IGNORECASE)
+
+
+def _find_privat_statement_link(msg) -> str | None:
+    """Лист-нагадування ПриватБанку не містить самої виписки — кнопка «Отримати виписку»
+    веде на awstrack.me-трекер (клік-редиректор), що загортає посилання на
+    socauth.privatbank.ua/out_click.php → att.privatbank.ua/efile/<токен> (сам PDF).
+    ЛИШЕ regex, БЕЗ мережі (той самий принцип, що _find_rozetkapay_link — дедуп ДО завантаження)."""
+    for part in msg.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        html = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        m = _PRIVAT_LINK_RE.search(html)
+        if m:
+            return m.group(1)
+    return None
 
 
 def archive(dry_run: bool = False) -> dict:
@@ -318,6 +343,50 @@ def archive(dry_run: bool = False) -> dict:
                                 # payload is None: завантаження не вдалось (_download уже
                                 # залогувала причину) — had_doc лишається False, лист
                                 # спробується знову наступного прогону (курсор не просунуто).
+
+                # ПриватБанк-нагадування теж без MIME-вкладення статi (лише .vcf-візитка
+                # персонального банкіра) — той самий клас, що RozetkaPay, звірено живо 2026-09-19
+                # на реальному листі "Виписка за рахунком ...".
+                if not had_doc and _classify("", subject_l, sender_l) == "ПриватБанк":
+                    link_url = _find_privat_statement_link(msg)
+                    if link_url:
+                        msg_date = _message_datetime(msg).strftime("%Y-%m-%d")
+                        filename = f"{msg_date}_privat_vypiska.pdf"
+                        key = f"{month}/ПриватБанк/{filename}"
+                        if key in saved_cursor:
+                            had_doc = True
+                            skipped_dupe += 1
+                        else:
+                            if dry_run:
+                                had_doc = True
+                                saved_cursor.add(key)
+                                newly["ПриватБанк"] += 1
+                                _log(f"[dry-run] БУЛО Б завантажено-збережено → {key}  "
+                                     f"(тема: «{subject_l[:50]}»)")
+                            else:
+                                payload = _download(link_url, label="ПриватБанк")
+                                # Підписане посилання діє обмежений час (звірено живо
+                                # 2026-09-19: 60-денний бекфіл — лише 2 з 13 листів дали
+                                # реальний PDF, решта 11 мовчки повернули HTML-сторінку
+                                # логіну Приват24-для-бізнесу, `_download` цього не бачить,
+                                # бо HTTP-статус 200). Без перевірки вмісту чужий HTML
+                                # зберігся б як ".pdf" і виглядав би архівованим документом.
+                                if payload is not None and b"%PDF-" not in payload[:4096]:
+                                    _log(f"посилання ПриватБанку повернуло НЕ PDF (протухле? "
+                                         f"веде на логін) → {key} — не зберігаю")
+                                    payload = None
+                                if payload is not None:
+                                    had_doc = True
+                                    saved_cursor.add(key)
+                                    newly["ПриватБанк"] += 1
+                                    dest_dir = KODV_DOCS_DIR / month / "ПриватБанк"
+                                    dest_dir.mkdir(parents=True, exist_ok=True)
+                                    (dest_dir / filename).write_bytes(payload)
+                                    _log(f"завантажено з посилання → {key}")
+                                # payload is None: спробується знову наступного прогону
+                                # (курсор не просунуто) — той самий принцип, що RozetkaPay.
+                                # Для ВЖЕ протухлого посилання повтор так само не допоможе,
+                                # але це принаймні не залишає хибного "архівовано".
 
                 if not had_doc and any(m in f"{subject_l} {sender_l}"
                                        for m in ("пошт", "novapay", "novaposhta", "звірк")):

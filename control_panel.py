@@ -66,8 +66,9 @@ _HEAD_RE = re.compile(r"^##\s+\[(.+?)\s*→\s*(.+?)\]\s*(\d{4}-\d{2}-\d{2})?")
 # вручну — тож додаємо їх у панель, але СВІДОМО НЕ в auto-wake agent_watch, щоб не вмикати їм
 # автопробудження, поки власник цього не вирішив (панель ≠ зміна набору спостерігачів монітора).
 # label = мітка «до мене» в заголовках каналу (## [X → <label>]); у КОДВ мітка каналу = "КОДВ".
+# Консультант перейшов у WATCHERS (agent_watch.py, 2026-09-19 — замовлення CONSULTANT_CHANNEL.md
+# 18.09 (5)) — лишати тут теж означало б дубль у _agents()/панелі, прибрано.
 PANEL_EXTRA_AGENTS = [
-    {"name": "Консультант", "target_label": "Консультант", "channels": ["CONSULTANT_CHANNEL.md"]},
     {"name": "Бухгалтер", "target_label": "КОДВ", "channels": ["КОДВ_CHANNEL.md"]},
 ]
 
@@ -82,7 +83,7 @@ _AGENT_DEF = {
 
 
 def _agents():
-    """Агенти панелі: з agent_watch (Код/SEO/SMM/Продажник) + PANEL_EXTRA (консультант/бухгалтер)."""
+    """Агенти панелі: з agent_watch (Код/SEO/SMM/Продажник/Виконавець/Консультант) + PANEL_EXTRA (бухгалтер)."""
     out = []
     for w in list(WATCHERS) + PANEL_EXTRA_AGENTS:
         out.append({"name": w["name"], "label": w.get("target_label", w["name"]),

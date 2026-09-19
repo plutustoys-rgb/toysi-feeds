@@ -91,6 +91,15 @@ try {
 #       already-downloaded act files under документи_КОДВ/*/*/*_akt_*, extracts the doc
 #       number from the FILENAME (stable, no PDF parsing), cross-checks against the book
 #       (READ-ONLY). Candidates only, never the book.
+# 3c-6. PrivatBank daily statement -> KODV book candidates (owner 2026-09-19: PDF statements
+#       started arriving daily; the notification email itself has no MIME attachment, just a
+#       signed direct-download link, no Приват24 login needed - kodv_mail_archiver.py extracts
+#       the link and saves the PDF; this script parses it (extract_tables, not extract_text -
+#       column order breaks on wide wrapped tables) and cross-checks EVERY money column of the
+#       book (bank statement covers income/commissions/other write-offs at once, not one
+#       specific graph like Checkbox). READ-ONLY, no login/scraping needed.
+& $py privat_statement_kandydaty.py
+
 & $py vchasno_akty_kandydaty.py
 
 # 3d. Prom notifications (top of /cms/notifications, money signals). One-time: `--login`.

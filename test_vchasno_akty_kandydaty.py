@@ -44,6 +44,10 @@ _cases = [
      {"vendor": "eva", "doc_id": "RU000154242", "amount": None, "date": "2026-09-16"}),
     ("2026-08-13_np_akt_NP-018826846_130.00.xml.json",
      {"vendor": "np", "doc_id": "NP-018826846", "amount": 130.00, "date": "2026-08-13"}),
+    # HostIQ формує номери документів із 1-літерним суфіксом ("1375492H") — знайдено живо
+    # 2026-09-19 (vchasno_cabinet_scraper.py), _ID_RE фіксовано під це.
+    ("2026-09-04_hostiq_akt_1375492H_1013.84.pdf",
+     {"vendor": "hostiq", "doc_id": "1375492H", "amount": 1013.84, "date": "2026-09-04"}),
 ]
 for filename, expected in _cases:
     got = va.parse_akt_filename(filename)

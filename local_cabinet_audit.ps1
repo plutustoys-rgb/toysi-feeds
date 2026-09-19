@@ -84,13 +84,23 @@ try {
 #       документи_КОДВ/*/NovaPay/*.XLSX, flags payments NOT in the book (READ-ONLY). Candidates only.
 & $py novapay_registry_kandydaty.py
 
+# 3c-4b. Vchasno.EDO new documents -> документи_КОДВ (owner 2026-09-19, direct rejection of
+#        "I'll check live when I'm in a session" as non-automation: "автоматизуй процес").
+#        CORRECTED live 2026-09-19: edo.vchasno.ua login is Google OAuth, NOT KEP-gated - the
+#        earlier "not scriptable" note (below) was WRONG, disproven by a live check. Playwright
+#        + storageState (same --login-once pattern as eva/prom/rozetka_price_monitor). Reads
+#        the external-documents list, downloads any not yet in документи_КОДВ by doc number,
+#        routes by counterparty EDRPOU into the right subfolder. Needs one-time
+#        `python vchasno_cabinet_scraper.py --login` (Google account) before this runs headless.
+& $py vchasno_cabinet_scraper.py
+
 # 3c-5. Vchasno.EDO act numbers -> KODV book candidates (independent bookkeeping audit
 #       2026-09-17/18: two real gaps - double-counted Prom act, missing 178.97 royalty act -
-#       sat unnoticed a month because act-number-vs-book matching was manual only). No live
-#       edo.vchasno.ua access needed (KEP/personal-signature auth, not scriptable) - reads
+#       sat unnoticed a month because act-number-vs-book matching was manual only). Reads
 #       already-downloaded act files under документи_КОДВ/*/*/*_akt_*, extracts the doc
 #       number from the FILENAME (stable, no PDF parsing), cross-checks against the book
-#       (READ-ONLY). Candidates only, never the book.
+#       (READ-ONLY). Candidates only, never the book. vchasno_cabinet_scraper.py above (once
+#       logged in) keeps this folder populated automatically - no more manual downloads.
 # 3c-6. PrivatBank daily statement -> KODV book candidates (owner 2026-09-19: PDF statements
 #       started arriving daily; the notification email itself has no MIME attachment, just a
 #       signed direct-download link, no Приват24 login needed - kodv_mail_archiver.py extracts

@@ -7,10 +7,16 @@ vchasno_cabinet_scraper.py — headless-читання й завантаженн
 перевіряв нові документи, автоматизуй процес». Живий перегляд через Claude in Chrome
 довів ЩО можна прочитати (перевірено 2026-09-19: /app/documents?folder_id=6008 — повний
 список 22 зовнішніх документів БЕЗ логіну, сесія жива в браузері власника), але це працює
-ЛИШЕ коли агент фізично в інтерактивній сесії — не автоматизація. Цей скрипт — той самий
-Playwright+storageState патерн, що eva_cabinet_scraper.py/prom_cabinet_scraper.py:
-логін РАЗ інтерактивно власником (`--login`, Google OAuth — Вчасно НЕ КЕП-гейтований на
-вході, перевірено живо 2026-09-05/09-19), далі headless за розкладом.
+ЛИШЕ коли агент фізично в інтерактивній сесії — не автоматизація. Цей скрипт — headless
+Playwright, логін РАЗ інтерактивно власником (`--login`, Google OAuth — Вчасно НЕ
+КЕП-гейтований на вході, перевірено живо 2026-09-05/09-19), далі headless за розкладом.
+
+⚠️ СПРАВЖНІЙ Chrome, не bundled Chromium (виправлено 2026-09-19, живий збій власника:
+«вхід блокується через акаунт хрома» — bundled headless Chromium має автоматизаційний
+відбиток, Google блокує вхід Google-акаунтом як «незахищений браузер», той самий клас
+антибота, що вже обходили для Rozetka — `rozetka_merchant_agent.py`, `channel="chrome"` +
+`launch_persistent_context` замість `launch()+new_context()`. Профіль (кукі сесії) —
+CHROME_PROFILE, секрет, .local_secrets/, persist автоматично (без окремого storageState).
 
 ЩО РОБИТЬ: список зовнішніх документів (дата/тип/номер/статус/контрагент/ЄДРПОУ) →
 для кожного, ще не завантаженого локально (за номером документа, крос-звірка з
@@ -20,7 +26,7 @@ Playwright+storageState патерн, що eva_cabinet_scraper.py/prom_cabinet_s
 
 БЕЗПЕКА: лише навігація + читання + завантаження вже готового файлу за прямим посиланням.
 ЖОДНИХ кліків підпису/погодження/відхилення — це юридично зобов'язуючі дії, не для
-скрипта. storageState — секрет, .local_secrets/ (gitignore), НІКОЛИ в Cowork.
+скрипта. Chrome-профіль — секрет, .local_secrets/ (gitignore), НІКОЛИ в Cowork.
 
 ЗАПУСК:
     python vchasno_cabinet_scraper.py --login   # раз: відкриє вікно, власник логіниться Google-акаунтом
@@ -51,8 +57,12 @@ COWORK_DIR = Path(os.environ.get("PLUTUS_COWORK_DIR",
 DOCS_DIR = COWORK_DIR / "документи_КОДВ"
 _NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
 
-STATE_FILE = Path(
-    os.environ.get("VCHASNO_CABINET_STATE_FILE", str(BASE_DIR / ".local_secrets" / "vchasno_cabinet_state.json")))
+# Персистентний профіль СПРАВЖНЬОГО Chrome (не storageState окремим файлом — launch_persistent_
+# context сам тримає кукі/сесію в цій теці). Той самий шлях, що rozetka_merchant_agent.py:
+# CHROME_PROFILE.
+CHROME_PROFILE = Path(
+    os.environ.get("VCHASNO_CABINET_PROFILE_DIR", str(BASE_DIR / ".local_secrets" / "vchasno_chrome_profile")))
+_CHROME_ARGS = ["--disable-blink-features=AutomationControlled"]
 
 LOGIN_START_URL = "https://edo.vchasno.ua/"
 # Тека "Зовнішні документи" — перевірено живо 2026-09-19 (Claude in Chrome, жива сесія
@@ -88,27 +98,30 @@ def _notify(msg: str) -> None:
 
 
 def create_state() -> None:
-    """--login: відкриває ВИДИМЕ вікно, власник логіниться сам (Google OAuth — Вчасно
-    НЕ КЕП-гейтований на вході, лише на підпис, перевірено живо), тоді Enter — сесія
-    зберігається. Жодного пароля в коді/логах."""
-    print("[VchasnoCabinet] Відкриваю вікно кабінету Вчасно. Залогінься повністю (Google-акаунт),")
+    """--login: відкриває ВИДИМЕ вікно СПРАВЖНЬОГО Chrome (channel="chrome" — bundled
+    Chromium Google блокує на вході як «незахищений браузер», живий збій власника
+    2026-09-19: «вхід блокується через акаунт хрома»; той самий фікс, що
+    rozetka_merchant_agent.py має проти антибота Rozetka), власник логіниться сам
+    (Google OAuth — Вчасно НЕ КЕП-гейтований на вході, лише на підпис, перевірено
+    живо), тоді Enter. Persistent-профіль зберігає сесію автоматично — жодного
+    окремого storage_state()-виклику не треба. Жодного пароля в коді/логах."""
+    print("[VchasnoCabinet] Відкриваю вікно кабінету Вчасно (справжній Chrome). Залогінься повністю (Google-акаунт),")
     print("[VchasnoCabinet] потім повернись сюди й натисни Enter, щоб зберегти сесію...")
+    CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        ctx = browser.new_context()
-        page = ctx.new_page()
+        ctx = p.chromium.launch_persistent_context(
+            str(CHROME_PROFILE), channel="chrome", headless=False, args=_CHROME_ARGS, locale="uk-UA")
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(LOGIN_START_URL, timeout=NAV_TIMEOUT_MS)
         try:
             input()
         except EOFError:
             print("[VchasnoCabinet] Немає інтерактивного вводу — --login треба запускати вручну в терміналі.",
                   file=sys.stderr)
-            browser.close()
+            ctx.close()
             sys.exit(1)
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ctx.storage_state(path=str(STATE_FILE))
-        browser.close()
-    print(f"[VchasnoCabinet] Сесію збережено: {STATE_FILE}")
+        ctx.close()
+    print(f"[VchasnoCabinet] Сесію збережено: {CHROME_PROFILE}")
     print("[VchasnoCabinet] Тепер `python vchasno_cabinet_scraper.py` (без прапорців) працюватиме headless.")
 
 
@@ -122,27 +135,27 @@ def _ensure_session(page) -> None:
         pass
     u = (page.url or "").lower()
     if "login" in u or "oauth" in u or "/auth" in u or "sign_in" in u or "myaccount.vchasno" in u:
-        raise VchasnoCabinetError(f"сесію не прийнято — редірект на {page.url} (storageState протух, треба --login)")
+        raise VchasnoCabinetError(f"сесію не прийнято — редірект на {page.url} (профіль протух, треба --login)")
 
 
 def keepalive() -> None:
     """Тримає сесію теплою (той самий патерн, що eva_cabinet_scraper.py --keepalive,
-    PR #290/#292/#567) — заходить під збереженою сесією й ПЕРЕСОХРАНЯЄ storageState."""
-    if not STATE_FILE.exists():
-        msg = (f"🚨 vchasno_cabinet_scraper keepalive: нема сесії ({STATE_FILE.name}). "
+    PR #290/#292/#567) — заходить під персистентним профілем; сесія оновлюється
+    автоматично самим фактом заходу (persistent context, не окремий storage_state)."""
+    if not CHROME_PROFILE.exists():
+        msg = (f"🚨 vchasno_cabinet_scraper keepalive: нема профілю ({CHROME_PROFILE.name}). "
                f"Запусти раз `python vchasno_cabinet_scraper.py --login`.")
         print(f"[VchasnoCabinet] {msg}", file=sys.stderr)
         _notify(msg)
         sys.exit(1)
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(storage_state=str(STATE_FILE))
-        page = ctx.new_page()
+        ctx = p.chromium.launch_persistent_context(
+            str(CHROME_PROFILE), channel="chrome", headless=True, args=_CHROME_ARGS)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             page.goto(DOCS_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
             page.wait_for_timeout(3000)
             _ensure_session(page)
-            ctx.storage_state(path=str(STATE_FILE))
             print("[VchasnoCabinet] keepalive: сесію оновлено.")
         except (PlaywrightTimeoutError, VchasnoCabinetError) as e:
             msg = (f"🚨 vchasno_cabinet_scraper keepalive: сесія протухла/збій ({e}). "
@@ -151,7 +164,7 @@ def keepalive() -> None:
             _notify(msg)
             sys.exit(1)
         finally:
-            browser.close()
+            ctx.close()
 
 
 # Рядок таблиці на сторінці (перевірено живо 2026-09-19, get_page_text()): дата, [тип
@@ -308,7 +321,7 @@ def sync_new_documents(page) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Headless-читання й завантаження нових документів Вчасно (Playwright + storageState).")
+    parser = argparse.ArgumentParser(description="Headless-читання й завантаження нових документів Вчасно (Playwright + справжній Chrome, персистентний профіль).")
     parser.add_argument("--login", action="store_true", help="Раз: відкрити вікно, залогінитись Google-акаунтом, зберегти сесію.")
     parser.add_argument("--keepalive", action="store_true", help="Тримати сесію теплою (по таймеру).")
     args = parser.parse_args()
@@ -320,17 +333,17 @@ def main() -> int:
         keepalive()
         return 0
 
-    if not STATE_FILE.exists():
-        msg = (f"🚨 vchasno_cabinet_scraper: нема збереженої сесії ({STATE_FILE.name}). "
+    if not CHROME_PROFILE.exists():
+        msg = (f"🚨 vchasno_cabinet_scraper: нема збереженого профілю ({CHROME_PROFILE.name}). "
                f"Запусти раз `python vchasno_cabinet_scraper.py --login` і залогінься.")
         print(f"[VchasnoCabinet] {msg}", file=sys.stderr)
         _notify(msg)
         return 1
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(storage_state=str(STATE_FILE))
-        page = ctx.new_page()
+        ctx = p.chromium.launch_persistent_context(
+            str(CHROME_PROFILE), channel="chrome", headless=True, args=_CHROME_ARGS)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             result = sync_new_documents(page)
         except (PlaywrightTimeoutError, VchasnoCabinetError) as e:
@@ -340,7 +353,7 @@ def main() -> int:
             _notify(msg)
             return 1
         finally:
-            browser.close()
+            ctx.close()
 
     print(f"[VchasnoCabinet] завантажено {len(result['downloaded'])}: {result['downloaded']}")
     if result["failed"]:

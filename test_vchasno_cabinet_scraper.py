@@ -10,6 +10,8 @@ test_vchasno_cabinet_scraper.py — регрес-тест парсера спи�
 `python test_vchasno_cabinet_scraper.py` → exit 0/1.
 """
 import sys
+import tempfile
+from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -124,6 +126,23 @@ _chk("_doc_id_from_href витягує UUID",
      vc._doc_id_from_href("/app/documents/d043d934-3b41-4441-be89-a5fe680c0a30") ==
      "d043d934-3b41-4441-be89-a5fe680c0a30")
 _chk("_doc_id_from_href без UUID → порожній рядок", vc._doc_id_from_href("/app/documents") == "")
+
+# _already_downloaded — аудит PR #581: підрядковий glob "*{number}*" міг би хибно збігти
+# короткий номер із частиною суми/довшого номера в ІНШОМУ файлі. Тепер реюзає
+# vchasno_akty_kandydaty.parse_akt_filename() для ТОЧНОГО doc_id — тимчасова тека, НЕ бойова.
+tmp_docs = Path(tempfile.mkdtemp())
+(tmp_docs / "2026-01").mkdir()
+(tmp_docs / "2026-01" / "Rozetka").mkdir()
+# Реальний ризик з аудиту: файл із сумою "482473.00" МІСТИТЬ підрядок "TA00482473" — ні, але
+# файл із ДОВШИМ номером, що містить цільовий як підрядок, демонструє ту саму колізію:
+# ціль "000482473" — інший файл "TA000482473" містить її як підрядок.
+(tmp_docs / "2026-01" / "Rozetka" / "2026-01-15_rozetka_akt_TA000482473_178.97.pdf").write_text("x")
+vc.DOCS_DIR = tmp_docs
+_chk("номер '000482473' НЕ хибно збігається з довшим 'TA000482473' іншого файлу (підрядкова колізія)",
+     not vc._already_downloaded("000482473"))
+(tmp_docs / "2026-01" / "Rozetka" / "2026-01-16_rozetka_akt_000482473.pdf").write_text("x")
+_chk("номер '000482473' знаходить СВІЙ файл (точний doc_id) після його появи",
+     vc._already_downloaded("000482473"))
 
 
 if _FAILS:

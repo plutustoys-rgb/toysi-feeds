@@ -178,8 +178,12 @@ def parse_document_rows(lines: list) -> list:
     словника) — усе між ними (0-2 рядки) вважає [тип?, номер] із НОМЕРОМ завжди
     останнім перед статусом (єдине, що важливо для sync_new_documents — тип не
     використовується). Після статусу — компанія, тоді найближчий рядок-ЄДРПОУ
-    (8-10 цифр, може бути не одразу — «Помилка розпізнавання» іноді встряє), тоді
-    контакт. Запис, де статус чи ЄДРПОУ не знайдені у вікні пошуку — пропускається
+    (8-10 цифр — на реальних даних завжди одразу після компанії). Контакт — рядок
+    одразу після ЄДРПОУ, best-effort (ніде не використовується у sync_new_documents,
+    лише для діагностики): реальний ALLO-запис іноді вставляє зайвий рядок
+    («Помилка розпізнавання») МІЖ ЄДРПОУ і фактичним email — цей код бере перший
+    рядок після ЄДРПОУ як є, без спроби відрізнити «зайвий» рядок від контакту.
+    Запис, де статус чи ЄДРПОУ не знайдені у вікні пошуку — пропускається
     (не вигадує дані), сканування продовжується з наступного рядка."""
     docs = []
     n = len(lines)
@@ -231,11 +235,17 @@ def list_external_documents(page) -> list:
 
 
 def _already_downloaded(number: str) -> bool:
-    """Крос-звірка з локальним архівом за номером документа в назві файлу (той самий
-    принцип, що vchasno_akty_kandydaty.py читає для kandydaty)."""
-    safe = re.escape(number)
-    pattern = str(DOCS_DIR / "*" / "*" / f"*{number}*")
-    return len(glob.glob(pattern)) > 0
+    """Крос-звірка з локальним архівом за номером документа. РЕЮЗАЄ
+    vchasno_akty_kandydaty.parse_akt_filename() для ТОЧНОГО порівняння doc_id, а не
+    підрядковий `*{number}*` glob (аудит PR #581: короткий номер типу "1287" міг би
+    хибно збігтись як підрядок суми/довшого номера в ІНШОМУ файлі — мовчазна втрата
+    документа, без жодного сигналу помилки)."""
+    import vchasno_akty_kandydaty as vak
+    for path in glob.glob(str(DOCS_DIR / "*" / "*" / "*_akt_*")):
+        parsed = vak.parse_akt_filename(os.path.basename(path))
+        if parsed and parsed["doc_id"] == number:
+            return True
+    return False
 
 
 def _doc_id_from_href(href: str) -> str:
@@ -261,12 +271,14 @@ def sync_new_documents(page) -> dict:
             continue
         subdir, prefix = route
         try:
-            href = page.get_by_text(number, exact=False).first.get_attribute("href") or ""
+            # exact=True (аудит PR #581): підрядковий збіг міг би підхопити ЧУЖИЙ рядок,
+            # чий текст лише МІСТИТЬ цей номер — точний збіг звужує до єдиного, правильного.
+            href = page.get_by_text(number, exact=True).first.get_attribute("href") or ""
             doc_id = _doc_id_from_href(href)
             if not doc_id:
                 # Фолбек: перейти по рядку в UI, взяти doc_id з URL (гілка на випадок,
                 # якщо href недоступний напряму з рядка таблиці).
-                page.get_by_text(number, exact=False).first.click()
+                page.get_by_text(number, exact=True).first.click()
                 page.wait_for_timeout(2000)
                 doc_id = _doc_id_from_href(page.url)
             if not doc_id:

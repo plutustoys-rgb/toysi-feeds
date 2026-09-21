@@ -521,20 +521,6 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
     if force and reason is None:
         reason = "примусове пробудження (--force)"
 
-    # D (2026-08-21): знімок mtime каналів ПЕРЕД пробудженням — щоб перевірити, чи агент реально
-    # щось написав (артефакт), а не просто exit-0. Інакше запит тихо позначався б «seen» і губився.
-    def _chan_mtimes() -> dict:
-        m = {}
-        for ch in cfg["channels"]:
-            p = COWORK_DIR / ch
-            if p.exists():
-                try:
-                    m[ch] = p.stat().st_mtime
-                except OSError:
-                    pass
-        return m
-    mt_before = _chan_mtimes()
-
     ok = _wake(cfg, reason, dry, periodic)
     if dry:
         return
@@ -547,16 +533,6 @@ def process_one(w: Watch, only: str | None, force: bool, dry: bool) -> None:
             st["last_periodic_iso"] = _now().isoformat()
         st["wakes_today"] = st.get("wakes_today", 0) + 1
         st["last_wake_at"] = _now().isoformat()
-        # D: exit-0 БЕЗ артефакту (жоден канал не змінився) на ЗАПИТ (не періодику) → алерт, щоб
-        # запит не зник тихо (правило власника про самодіагностику). seen уже просунуто (не циклимо),
-        # алерт — сигнал людині глянути вручну. Періодику й підтвердження (не-new_sig) не чіпаємо.
-        if new_sig and not periodic:
-            mt_after = _chan_mtimes()
-            wrote = any(mt_after.get(ch) != mt_before.get(ch) for ch in mt_after)
-            if not wrote:
-                _notify(f"⚠️ AgentWatch: '{cfg['name']}' прокинувся на запит, але НІЧОГО не написав у "
-                        f"канал:\n{new_sig[1][:120]}\n→ якщо це був запит — можливо, загубилось (глянь "
-                        f"вручну); якщо підтвердження — ігноруй.")
         _log_run(cfg["name"], "woke_ok", reason)
     else:
         _log_run(cfg["name"], "woke_failed", reason)

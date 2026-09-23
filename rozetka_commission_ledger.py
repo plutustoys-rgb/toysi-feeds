@@ -248,6 +248,7 @@ def collect(page) -> tuple:
     for oid, amounts in sorted(per_order.items()):
         book = _lookup_book_row(oid)
         delta = round(amounts["royalty"] + amounts["logistics"], 2)
+        e_text = book.get("e_text") or ""
         candidates.append({
             "order_id": oid,
             "royalty_new": round(amounts["royalty"], 2),
@@ -260,6 +261,17 @@ def collect(page) -> tuple:
             "book_proposed_i9": (round((book.get("current_i9") or 0) + delta, 2)
                                   if book.get("current_i9") is not None else None),
             "book_e_text": book.get("e_text"),
+            # Черга 2, баг (6) (аудит КОДВ-автоматики 2026-09-22): кабінет пише спершу
+            # "Резервування суми", потім (пізніше, окремим прогоном) "Комісія за продаж" на
+            # ТУ САМУ суму — бухгалтер інколи вже вносить резерв у i9 вручну з приміткою
+            # "(роялті ще «Резервування», НЕ фінал...)" у графі 5 (звірено живо, рядки
+            # 91/92/95/98 книги). Якщо цей скрипт пізніше запропонує додати ФІНАЛІЗОВАНУ
+            # комісію Δ зверху — вийде подвійний облік тієї самої суми. Точний парсинг суми
+            # резерву з вільного тексту графи 5 — крихкий (людська примітка, не структурні
+            # дані); натомість підрядковий сигнал "резервування" — надійний і consервативний:
+            # не вирішує автоматично, лише ПОПЕРЕДЖАЄ роль «агент-бухгалтер» звірити графу 5
+            # ПЕРЕД додаванням Δ, замість мовчки показувати book_proposed_i9 як готове число.
+            "reserve_warning": "резервування" in e_text.lower(),
         })
     return candidates, new_cursor
 
@@ -280,14 +292,22 @@ def _write_report(candidates: list) -> Path:
              "(Спеціальні умови)», лише RMP-ТТН). Крос-звірка з книгою READ-ONLY — рядок",
              "графи 9 книги НЕ змінено, це лише кандидати для ролі «агент-бухгалтер».",
              "",
-             "| Замовлення | Роялті (нове) | Логістика (нове) | Δ графи 9 | Рядок книги | Поточне I9 | Пропоноване I9 |",
-             "|---|---|---|---|---|---|---|"]
+             "| Замовлення | Роялті (нове) | Логістика (нове) | Δ графи 9 | Рядок книги | Поточне I9 | Пропоноване I9 | ⚠️ |",
+             "|---|---|---|---|---|---|---|---|"]
     for c in candidates:
         row = c["book_row"] if c["book_row"] else "❗ НЕ ЗНАЙДЕНО в книзі"
         cur = c["book_current_i9"] if c["book_current_i9"] is not None else "—"
         prop = c["book_proposed_i9"] if c["book_proposed_i9"] is not None else "—"
+        warn = "⚠️ РЕЗЕРВ" if c.get("reserve_warning") else ""
         lines.append(f"| №{c['order_id']} | {c['royalty_new']} | {c['logistics_new']} | "
-                     f"{c['delta_i9']} | {row} | {cur} | {prop} |")
+                     f"{c['delta_i9']} | {row} | {cur} | {prop} | {warn} |")
+    if any(c.get("reserve_warning") for c in candidates):
+        lines.append("")
+        lines.append("⚠️ **РЕЗЕРВ**: графа 5 цього рядка вже згадує «резервування» — можливо, "
+                     "поточне I9 частково або повністю вже враховує цю суму (кабінет пише "
+                     "спершу «Резервування суми», потім, окремим прогоном, фіналізовану "
+                     "«Комісія за продаж» на ТУ САМУ суму). Звір графу 5 ПЕРЕД тим, як додавати "
+                     "Δ поверх поточного I9 — інакше ризик подвійного обліку.")
     if any(c["ttns"] for c in candidates):
         lines.append("")
         lines.append("TTN (для замовлень з логістикою RZ-Delivery): " +

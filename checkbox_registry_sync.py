@@ -25,7 +25,8 @@ READ-ONLY по касі: лише GET /receipts/search і авторизація
 import json
 import os
 import sys
-from datetime import date, datetime, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -81,38 +82,106 @@ def _save_cursor(last_serial: int) -> None:
     )
 
 
+MAX_LOOKBACK_WINDOWS = 20  # ~4.8 років при 89-денних вікнах — з великим запасом на історію каси
+MAX_429_RETRIES = 5        # той самий патерн, що prom_catalog_sync.py::_get_with_retry
+RETRY_BACKOFF_BASE_SECONDS = 2.0
+
+
+def _get_receipts_page(headers: dict, params: dict) -> dict:
+    """GET /receipts/search з retry+backoff на 429 — ЖИВО зловлено (2026-09-22, тестування
+    цього самого фікса): повне сканування MAX_LOOKBACK_WINDOWS вікон дає значно більше
+    запитів поспіль, ніж стара версія (1 запит), і продакшн-прогін раз на добу міг би
+    так само вперся у rate-limit без цього. Той самий патерн, що prom_catalog_sync.py."""
+    for attempt in range(MAX_429_RETRIES + 1):
+        try:
+            resp = requests.get(f"{cb.CHECKBOX_API_URL}/receipts/search", headers=headers,
+                                 params=params, timeout=cb.REQUEST_TIMEOUT)
+        except requests.exceptions.RequestException as e:
+            raise cb.CheckboxAPIError(f"помилка з'єднання (GET /receipts/search): {e}") from e
+        if resp.status_code != 429 or attempt == MAX_429_RETRIES:
+            resp.raise_for_status()
+            try:
+                return resp.json() or {}
+            except ValueError:
+                raise cb.CheckboxAPIError(f"невалідна відповідь (не JSON) /receipts/search: {resp.text[:300]}")
+        retry_after = resp.headers.get("Retry-After")
+        wait = float(retry_after) if retry_after and retry_after.isdigit() else RETRY_BACKOFF_BASE_SECONDS * (2 ** attempt)
+        _log(f"⚠️ 429 Too Many Requests — чекаю {wait:.0f}с (спроба {attempt + 1}/{MAX_429_RETRIES})...")
+        time.sleep(wait)
+    raise AssertionError("unreachable")  # цикл завжди повертає чи кидає на attempt == MAX_429_RETRIES
+
+
+def _fetch_window(headers: dict, from_dt: datetime, to_dt: datetime | None) -> list:
+    """Одне 90-денне вікно, повна пагінація по offset до вичерпання СЕРЕДИНИ вікна."""
+    page_results = []
+    offset = 0
+    while True:
+        params = {"limit": FETCH_LIMIT, "desc": "true", "from_date": from_dt.isoformat(), "offset": offset}
+        if to_dt is not None:
+            params["to_date"] = to_dt.isoformat()
+        data = _get_receipts_page(headers, params)
+        page = data.get("results") or []
+        page_results.extend(page)
+        if len(page) < FETCH_LIMIT:
+            break
+        offset += FETCH_LIMIT
+    return page_results
+
+
 def fetch_receipts() -> tuple:
     """GET /receipts/search (desc) → (список валідних фіскальних чеків (DONE, не тестові), truncated).
-    `truncated=True` — сторінка заповнена вщент (можуть бути старіші чеки поза вибіркою).
-    READ-ONLY: лише авторизація касира + GET. Зміну не відкриваємо, чеків не створюємо."""
+    READ-ONLY: лише авторизація касира + GET. Зміну не відкриваємо, чеків не створюємо.
+
+    ВИПРАВЛЕНО (аудит КОДВ-автоматики, 2026-09-22, знахідка (1) — черга 1, втрата даних
+    щодня): раніше запит не передавав `from_date` взагалі, і `truncated = len(results) >=
+    FETCH_LIMIT` (82 ≥ 100 = False) НІКОЛИ не спрацьовував, попри те, що ендпоінт БЕЗ
+    from_date мовчки обрізає найстаріші чеки — живо звірено: без from_date вибірка дає
+    серіали 8…89, а з `from_date=2026-07-01` та сама вибірка дає серіали 1…12. Чек серіал 1
+    (39,00 ₴, 08.07.2026) жодна звірка не бачила за весь час існування книги через це.
+
+    ⚠️ Пропозиція аудиту "from_date = початок року" НЕ спрацювала на живому виклику
+    (2026-09-22, я сама перевірила, не повірила на слово — `check-docs-recall-before-
+    building`/`kodv-verify-audit-suggestions-before-applying`): API повертає
+    `400 date.wrong_interval — "Період пошуку чеків не може перевищувати 90 днів"`.
+    Це реальне, задокументоване в OpenAPI-спеці (api.checkbox.in.ua/api/openapi.json,
+    /receipts/search, from_date/to_date) обмеження, якого сам аудит не перевіряв.
+
+    Реальний фікс — ЛАНЦЮЖОК 89-денних вікон НАЗАД у часі (89, не 90 — запас на дрейф
+    часових поясів/секунд), кожне з повною пагінацією по offset усередині.
+
+    ВИПРАВЛЕНО (аудит PR #584, живий вердикт НЕ ЧИСТО): раніше зупинявся на ПЕРШОМУ
+    порожньому вікні — хибне припущення для низькооборотної каси: одне порожнє вікно
+    (сезонне затишшя) ≠ початок історії, а СТАРІШІ вікна за ним могли мати реальні
+    чеки. Це відтворило б РІВНО той клас бага, заради якого писався весь PR — і гірше:
+    `truncated` НЕ став би True в цьому сценарії, тож `resolve=not window_truncated`
+    (main(), нижче) мовчки позначив би старий "open"-кандидат "resolved", хоча книга
+    його так і не отримала (той самий клас, що вже одного разу зламав звірку —
+    `kandydaty_registry.py` докстрінг). Тепер СКАНУЄМО УСІ MAX_LOOKBACK_WINDOWS
+    (~4.8 років) незалежно від порожніх вікон по дорозі — порожнє вікно нічого не
+    зупиняє, просто не додає записів. Дорожче (до 20 запитів замість 1-2), але
+    прогін раз на добу (`PlutusToys-ChecboxRegistrySync`, 08:25) — прийнятна ціна за
+    відсутність "мовчки закрив старого кандидата"."""
     token = cb._authenticate_cashier()
     headers = {"X-License-Key": cb.CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
-    try:
-        resp = requests.get(f"{cb.CHECKBOX_API_URL}/receipts/search",
-                            headers=headers, params={"limit": FETCH_LIMIT, "desc": "true"},
-                            timeout=cb.REQUEST_TIMEOUT)
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise cb.CheckboxAPIError(f"помилка з'єднання (GET /receipts/search): {e}") from e
-    try:
-        results = (resp.json() or {}).get("results") or []
-    except ValueError:
-        raise cb.CheckboxAPIError(f"невалідна відповідь (не JSON) /receipts/search: {resp.text[:300]}")
-    truncated = len(results) >= FETCH_LIMIT
-    if truncated:
-        # Сторінка заповнена вщент — між прогонами могло з'явитись >FETCH_LIMIT чеків, і найстаріші
-        # «нові» випали б за межу вибірки, а курсор стрибнув би повз них (латентна втрата). Каса
-        # низькооборотна, тож малоймовірно, але сигналимо, щоб не пройшло тихо. `truncated` також
-        # НЕ дає main() закривати "open"-кандидатів у kandydaty_registry цим прогоном (аудит,
-        # 2026-09-18) — інакше кандидат старший за межу сторінки випав би зі списку "unresolved" і
-        # хибно позначився б "resolved", хоча насправді просто не потрапив у вибірку.
-        _log(f"⚠️ отримано {len(results)} чеків = ліміт сторінки {FETCH_LIMIT}: можливо є ще старіші "
-             f"нові чеки поза вибіркою — за потреби додати пагінацію по meta.offset.")
-        _notify(f"⚠️ checkbox_registry_sync: сторінка чеків заповнена ({FETCH_LIMIT}) — перевір, чи "
-                f"не втрачено старіші нові чеки; можливо потрібна пагінація.")
+
+    all_results = []
+    to_dt = datetime.now(ZoneInfo("Europe/Kyiv"))
+    for _ in range(MAX_LOOKBACK_WINDOWS):
+        from_dt = to_dt.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=89)
+        window = _fetch_window(headers, from_dt, to_dt)
+        all_results.extend(window)
+        to_dt = from_dt
+
+    # `truncated` тепер означає буквально "дійшли до MAX_LOOKBACK_WINDOWS, не знаємо, чи
+    # там справді кінець історії" — консервативний сигнал (завжди True технічно, бо цикл
+    # завжди виконує повні MAX_LOOKBACK_WINDOWS ітерацій зараз). Лишаю прапорець на
+    # майбутнє (якщо колись повернуть ранню зупинку з надійнішим сигналом кінця історії),
+    # а зараз main()/collect() отримують False, бо повне сканування вже й так гарантує
+    # повноту в межах ~4.8 років — жодного "open"-кандидата це не закриє хибно.
+    truncated = False
 
     receipts = []
-    for it in results:
+    for it in all_results:
         if it.get("status") != "DONE" or it.get("is_test") is True:
             continue
         serial = it.get("serial")
@@ -214,10 +283,13 @@ def collect() -> tuple:
     бо саме курсор губив кандидатів, яких не встигли внести). На базовій лінії — порожньо
     (перший запуск свідомо НЕ трактує всю історію як «нове», той самий принцип поширюється на
     реєстр — не заводимо сотні історичних чеків як «щойно відкриті кандидати»).
-    `window_truncated` — True, якщо fetch_receipts() отримав рівно FETCH_LIMIT чеків (сторінка
-    могла не показати ВСІ фактично актуальні чеки). main() тоді НЕ закриває "open"-кандидатів
-    у kandydaty_registry цим прогоном (аудит 2026-09-18, Д1/Д4-рецидив) — інакше кандидат
-    старший за межу сторінки випав би зі списку unresolved і хибно позначився б "resolved"."""
+    `window_truncated` — ОНОВЛЕНО (PR #584, повна пагінація ланцюжком 89-денних вікон
+    замінила одну сторінку без дати): зараз завжди False, бо fetch_receipts() сканує
+    ВЕСЬ MAX_LOOKBACK_WINDOWS діапазон (~4.8 років) кожного прогону, без ранньої
+    зупинки — повнота гарантована структурно, не флагом. Прапорець і механізм
+    `resolve=not window_truncated` нижче лишені на місці (аудит 2026-09-18, Д1/Д4-
+    рецидив: інакше кандидат, якого джерело не показало, хибно позначився б
+    "resolved") — на випадок, якщо колись повернуть часткове сканування."""
     cursor = _load_cursor()
     last_serial = cursor.get("last_serial")
     receipts, truncated = fetch_receipts()

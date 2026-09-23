@@ -43,6 +43,16 @@ _TOTAL_RE = re.compile(r"Сума комісії\s+Всього\s+([\d\s.,]+?)\s
 _TM_RE = re.compile(r"З рахунку ТМ\s+([\d\s.,]+?)\s*₴", re.UNICODE)
 _PLATFORM_RE = re.compile(r"З рахунку платформи\s+([\d\s.,]+?)\s*₴", re.UNICODE)
 
+# Черга 2, баг (7) (аудит КОДВ-автоматики 2026-09-22): картка EVA показує "Сума комісії" НЕЗАЛЕЖНО
+# від фактичного статусу замовлення — живо звірено (2026-09-23) на парі 8-081381904/8-081381964
+# (той самий покупець, той самий товар, та сама сума 72.68₴): 8-081381904 = "Статус замовлення:
+# Скасовано покупцем" / "Статус оплати: Помилка оплати" (невдала спроба), а картка ВСЕ ОДНО
+# показує ту саму "Сума комісії: Всього 72.68₴", що й успішний дубль-order 8-081381964
+# ("Отримано"/"Оплачено"). Старий `if total<=0: continue` (нижче) цей клас НЕ ловить — total тут
+# >0. Тому окремий, явний статусний фільтр, а не покладання на суму.
+_ORDER_STATUS_RE = re.compile(r"Статус замовлення\s*\n([^\n]+)", re.UNICODE)
+_PAYMENT_STATUS_RE = re.compile(r"Статус оплати\s*\n([^\n]+)", re.UNICODE)
+
 
 def _log(msg: str) -> None:
     print(f"[EvaCommission] {msg}")
@@ -88,6 +98,22 @@ def _first(rx, text: str) -> float:
     return _to_float(m.group(1)) if m else 0.0
 
 
+def _order_statuses(txt: str) -> tuple:
+    """Витягує (статус_замовлення, статус_оплати) з innerText картки замовлення."""
+    order_m = _ORDER_STATUS_RE.search(txt)
+    payment_m = _PAYMENT_STATUS_RE.search(txt)
+    return (order_m.group(1).strip() if order_m else "",
+            payment_m.group(1).strip() if payment_m else "")
+
+
+def _is_cancelled_or_failed(order_status: str, payment_status: str) -> bool:
+    """Черга 2, баг (7): скасоване (будь-ким) або невдала спроба оплати — картка ВСЕ ОДНО
+    показує «Сума комісії», але це не реальний дохід (живо звірено на парі 8-081381904
+    (Скасовано покупцем/Помилка оплати) проти 8-081381964 (Отримано/Оплачено), той самий
+    товар+сума+покупець — 904 це невдала спроба, 964 — успішний повторний."""
+    return order_status.startswith("Скасовано") or payment_status == "Помилка оплати"
+
+
 def fetch_commissions() -> list:
     """Список замовлень EVA + фактична комісія з картки кожного. READ-ONLY (лише goto+read).
     Повертає [{order_id, commission_total, commission_tm, commission_platform}]."""
@@ -118,6 +144,23 @@ def fetch_commissions() -> list:
                 page.goto(ORDER_DETAIL.format(oid), timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
                 page.wait_for_timeout(1500)
                 txt = page.inner_text("body")
+
+                # АУДИТ PR #590 (не блокер, зафіксовано явно): .search() бере ПЕРШИЙ збіг у
+                # тексті — сьогодні "Історія замовлення" на картці лише заголовок-посилання
+                # без розгорнутого переліку статусів у innerText (живо звірено), тож ризику
+                # зловити ЗАСТАРІЛИЙ статус нема. Якщо EVA колись почне рендерити історію
+                # інлайн — тут з'явиться >1 збігу, і треба сигналити, а не мовчки брати перший
+                # (той самий self-diagnosing принцип, що TM/Total-попередження нижче).
+                if len(_ORDER_STATUS_RE.findall(txt)) > 1 or len(_PAYMENT_STATUS_RE.findall(txt)) > 1:
+                    _log(f"⚠️ {oid}: кілька збігів 'Статус замовлення'/'Статус оплати' на картці — "
+                         f"можлива зміна розмітки EVA (з'явилась історія статусів інлайн?), "
+                         f".search() бере перший — перевір якорі _ORDER_STATUS_RE/_PAYMENT_STATUS_RE вручну.")
+                order_status, payment_status = _order_statuses(txt)
+                if _is_cancelled_or_failed(order_status, payment_status):
+                    _log(f"пропускаю {oid}: статус «{order_status or '?'}» / оплата «{payment_status or '?'}» "
+                         f"— скасоване/невдала спроба (картка все одно показує «Сума комісії», не рахуємо)")
+                    continue
+
                 total = _first(_TOTAL_RE, txt)
                 if total <= 0:
                     # Захист від тихої втрати (ниточка аудиту): якщо розбивка ТМ Є, а «Всього» не

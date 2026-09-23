@@ -101,6 +101,17 @@ try {
 #       number from the FILENAME (stable, no PDF parsing), cross-checks against the book
 #       (READ-ONLY). Candidates only, never the book. vchasno_cabinet_scraper.py above (once
 #       logged in) keeps this folder populated automatically - no more manual downloads.
+# 3c-5b. Run the mail archiver HERE too, before the PrivatBank parser (КОДВ-audit finding (2),
+#        2026-09-22): the standalone PlutusToys-NovaPayRegistryArchiver task fires at 08:35,
+#        35 minutes AFTER this script's own 08:00 trigger - so privat_statement_kandydaty.py
+#        below was parsing YESTERDAY's PDF every single day (live mtime proof, 21.09: PDF saved
+#        08:37, candidates report generated 08:04 - archiver hadn't run yet). Calling it here
+#        guarantees same-run ordering for the money-critical PrivatBank path specifically,
+#        without touching the standalone task's own schedule (still handles NovaPay/RozetkaPay/
+#        НоваПошта on its own cycle - idempotent cursor-based, a second run here is harmless,
+#        not a duplicate side effect - see kodv_mail_archiver.py's own cursor logic).
+& $py kodv_mail_archiver.py
+
 # 3c-6. PrivatBank daily statement -> KODV book candidates (owner 2026-09-19: PDF statements
 #       started arriving daily; the notification email itself has no MIME attachment, just a
 #       signed direct-download link, no Приват24 login needed - kodv_mail_archiver.py extracts

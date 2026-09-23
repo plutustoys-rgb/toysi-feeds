@@ -145,6 +145,16 @@ def fetch_commissions() -> list:
                 page.wait_for_timeout(1500)
                 txt = page.inner_text("body")
 
+                # АУДИТ PR #590 (не блокер, зафіксовано явно): .search() бере ПЕРШИЙ збіг у
+                # тексті — сьогодні "Історія замовлення" на картці лише заголовок-посилання
+                # без розгорнутого переліку статусів у innerText (живо звірено), тож ризику
+                # зловити ЗАСТАРІЛИЙ статус нема. Якщо EVA колись почне рендерити історію
+                # інлайн — тут з'явиться >1 збігу, і треба сигналити, а не мовчки брати перший
+                # (той самий self-diagnosing принцип, що TM/Total-попередження нижче).
+                if len(_ORDER_STATUS_RE.findall(txt)) > 1 or len(_PAYMENT_STATUS_RE.findall(txt)) > 1:
+                    _log(f"⚠️ {oid}: кілька збігів 'Статус замовлення'/'Статус оплати' на картці — "
+                         f"можлива зміна розмітки EVA (з'явилась історія статусів інлайн?), "
+                         f".search() бере перший — перевір якорі _ORDER_STATUS_RE/_PAYMENT_STATUS_RE вручну.")
                 order_status, payment_status = _order_statuses(txt)
                 if _is_cancelled_or_failed(order_status, payment_status):
                     _log(f"пропускаю {oid}: статус «{order_status or '?'}» / оплата «{payment_status or '?'}» "

@@ -24,6 +24,7 @@ READ-ONLY по касі: лише GET /receipts/search і авторизація
 """
 import json
 import os
+import re
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -217,16 +218,28 @@ def _coerce_date(value):
     return None
 
 
+_BOOK_CHECKBOX_SERIAL_RE = re.compile(r"[Cc]heckbox\s*(?:сер[іi]ал|№)\s*(\d+)", re.IGNORECASE)
+
+
 def _book_date_sum_index() -> dict:
-    """READ-ONLY: {сума_доходу(грн, 2 знаки) → [дата рядка, ...]} з графи 1(дата)/графа 2(сума)
-    книги. Книгу НЕ пише.
+    """READ-ONLY: {сума_доходу(грн, 2 знаки) → [(дата рядка, серіал_чека_або_None), ...]} з графи
+    1(дата)/графа 2(сума)/графа 5(опис, звідки серіал чека Checkbox, якщо згаданий). Книгу НЕ пише.
 
     АУДИТ Д2 (незалежний аудитор, КОДВ_журнал «ДОПОВНЕННЯ 5», 2026-09-18): раніше індекс брав
     ЛИШЕ суму — рядок з правильною сумою й ХИБНОЮ датою (напр. 194,00 ₴ від 10.09, а в книзі
     стояло 30.08 — 11 днів різниці, через межу місяця) читався як «збігів: 1» → «уже внесено».
     Автоматика не просто пропустила помилку — вона ВИДАЛА підтвердження хибному рядку. Дата
     тепер обов'язкова частина звірки (див. _match_book нижче): «сума збігається, дата ні» —
-    окремий, видимий сигнал, не тихе «ОК»."""
+    окремий, видимий сигнал, не тихе «ОК».
+
+    БАГ (4) черги 2 (аудит КОДВ-автоматики, 2026-09-22): суми+дата БЕЗ прив'язки до серіала — чек
+    88 (78,00₴, 20.09, КАРТКА) отримав «Точний збіг 1» на рядок 113, який ЗА ТЕКСТОМ графи 5 сам
+    прив'язаний до серіала 84 (19.09, ГОТІВКА, інший покупець), а не до 88. Живо перевірено
+    (2026-09-23): книга ЯВНО пише серіал у графі 5 («чек Checkbox серіал 84 від 19.09.2026» /
+    «чек Checkbox №35 від…») для 29 з 34 рядків, що згадують Checkbox — тож серіал є чим звіряти
+    напряму, не лише сумою±датою. Рядки без явного серіала (лише дата) лишаються на старій сумі+
+    дата-логіці — там нема з чим звіряти жорсткіше, і саме там ризику подвійного заявлення нема
+    (немає ЧУЖОГО серіала, що міг би хибно застовпити рядок)."""
     index: dict = {}
     if not KODV_XLSX.exists():
         return index
@@ -241,8 +254,11 @@ def _book_date_sum_index() -> dict:
                 a, b = row[0].value, row[1].value      # графа 1 — дата, графа 2 — сума доходу
                 if not isinstance(b, (int, float)) or not b:
                     continue
+                e = row[4].value if len(row) > 4 else None
+                serial_m = _BOOK_CHECKBOX_SERIAL_RE.search(e) if isinstance(e, str) else None
+                row_serial = int(serial_m.group(1)) if serial_m else None
                 key = round(float(b), 2)
-                index.setdefault(key, []).append(_coerce_date(a))
+                index.setdefault(key, []).append((_coerce_date(a), row_serial))
         finally:
             wb.close()  # read_only-книга тримає файловий дескриптор відкритим, поки не закрити явно
     except Exception as e:  # noqa: BLE001 — хінт не критичний
@@ -253,9 +269,9 @@ def _book_date_sum_index() -> dict:
 _KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 
-def _match_book(by_sum: dict, sum_uah: float, created_at_utc: str) -> dict:
-    """Порівнює чек з книгою за (сума, дата ±1 день, Київ). Повертає
-    {"exact": N, "sum_only": N, "kyiv_date": "YYYY-MM-DD"|None}.
+def _match_book(by_sum: dict, sum_uah: float, created_at_utc: str, serial: int | None = None) -> dict:
+    """Порівнює чек з книгою за (сума, дата ±1 день, Київ), З пріоритетом серіала, коли рядок
+    книги його явно називає. Повертає {"exact": N, "sum_only": N, "kyiv_date": "YYYY-MM-DD"|None}.
 
     Чому ±1 день, не точний збіг: касовий чек і рядок книги можуть різнитись на добу через
     момент фіксації (вечірній чек проти ранкового запису) — це нормальна похибка, не помилка.
@@ -264,15 +280,34 @@ def _match_book(by_sum: dict, sum_uah: float, created_at_utc: str) -> dict:
     Чому через zoneinfo, не фіксований timedelta(hours=3): Checkbox `created_at` — UTC (перевірено
     живо), а Київ EEST=UTC+3 лише з 29.03 по 25.10; решту року EET=UTC+2 (аудит 2026-09-18 —
     попередня версія мала захардкоджений +3, що стало б систематичною похибкою на годину для
-    кожного вечірнього чека з 26.10). `ZoneInfo` рахує правильний зсув на кожну конкретну дату."""
-    dates = by_sum.get(sum_uah, [])
+    кожного вечірнього чека з 26.10). `ZoneInfo` рахує правильний зсув на кожну конкретну дату.
+
+    БАГ (4) черги 2, фікс (2026-09-23): рядок книги, що ЯВНО називає ІНШИЙ серіал у графі 5
+    (`row_serial is not None and row_serial != serial`), більше НЕ рахується ні exact, ні
+    sum_only для цього чека — він уже застовпив чужий рядок, показувати його як «можливо цей»
+    активно вводить в оману (саме так серіал 88 «збігся» з рядком серіала 84). Рядок БЕЗ явного
+    серіала (`row_serial is None`) лишається на старій сумі+дата-логіці — звіряти з чим саме
+    нема."""
+    rows = by_sum.get(sum_uah, [])
     try:
         kyiv_date = (datetime.fromisoformat(created_at_utc)
                      .replace(tzinfo=timezone.utc).astimezone(_KYIV_TZ)).date()
     except ValueError:
-        return {"exact": 0, "sum_only": len(dates), "kyiv_date": None}
-    exact = sum(1 for d in dates if d is not None and abs((d - kyiv_date).days) <= 1)
-    return {"exact": exact, "sum_only": len(dates) - exact, "kyiv_date": kyiv_date.isoformat()}
+        kyiv_date = None
+    exact = 0
+    sum_only = 0
+    for d, row_serial in rows:
+        if row_serial is not None and row_serial != serial:
+            continue  # застовплено чужим серіалом — не кандидат для ЦЬОГО чека
+        if kyiv_date is None:
+            sum_only += 1
+            continue
+        if d is not None and abs((d - kyiv_date).days) <= 1:
+            exact += 1
+        else:
+            sum_only += 1
+    return {"exact": exact, "sum_only": sum_only,
+            "kyiv_date": kyiv_date.isoformat() if kyiv_date else None}
 
 
 def collect() -> tuple:
@@ -306,7 +341,7 @@ def collect() -> tuple:
 
     book_idx = _book_date_sum_index()
     for r in receipts:
-        m = _match_book(book_idx, r["sum_uah"], r["created_at"])
+        m = _match_book(book_idx, r["sum_uah"], r["created_at"], serial=r["serial"])
         r["book_exact_matches"] = m["exact"]
         r["book_sum_only_matches"] = m["sum_only"]
         r["book_same_sum_rows"] = m["exact"] + m["sum_only"]  # зворотна сумісність зі старим полем

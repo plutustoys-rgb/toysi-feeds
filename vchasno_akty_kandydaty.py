@@ -124,34 +124,49 @@ def find_akt_files() -> list:
     return sorted(f for f in glob.glob(pattern) if not os.path.basename(f).startswith("~$"))
 
 
-def _book_narrative_text() -> str:
-    """READ-ONLY: графа 5 ТА графа 12 книги (той самий підхід, що toysi_returns_kandydaty.py,
-    аудит 2026-09-18 — наратив буває в різних графах, не лише в графі 5)."""
+# Баг (8) черги 2 (аудит КОДВ-автоматики 2026-09-22): номер документа ЗАВЖДИ з'являється
+# близько до початку клітинки, коли він — ВЛАСНИЙ ідентифікатор рядка («Термінал Розетка, Акт
+# надання послуг №TA00482472 від...», «Prom.ua (Уапром), Акт надання послуг №11865348 від...»,
+# «Нова Пошта, рахунок №НП-018826846 від...» — offset 24-38 у ЖИВІЙ книзі, перевірено скриптом
+# на 5 реальних рядках). Коли номер лише ЗГАДАНИЙ у поясненні до ІНШОГО документа («⚠️ ОКРЕМА
+# стаття від роялті за ТМ (акт №TA00482473...)», «...той самий принцип, застосований до
+# липневого акту №11321442, свідомо НЕ внесеного...») — offset 304-777, на порядок далі. Межа
+# 100 символів дає 8× запас над найбільшим живим "власним" offset (38) і лишається далеко під
+# найменшим живим "згадка деінде" offset (304).
+_DECLARATION_WINDOW = 100
+
+
+def _book_narrative_cells() -> list:
+    """READ-ONLY: графа 5 ТА графа 12 книги — ОКРЕМИМИ клітинками (не одним конкатенованим
+    рядком, той самий підхід, що toysi_returns_kandydaty.py — наратив буває в різних графах),
+    щоб _already_in_book міг звіряти offset у МЕЖАХ ОДНІЄЇ клітинки (див. _DECLARATION_WINDOW
+    вище) — конкатенація губила б межі клітинок і зводила offset нанівець."""
     if not KODV_XLSX.exists():
-        return ""
+        return []
     import openpyxl
     wb = openpyxl.load_workbook(str(KODV_XLSX), data_only=True, read_only=True)
     try:
         ws = wb["КОДВ"]
-        parts = []
+        cells = []
         for row in ws.iter_rows(min_row=7):
             if len(row) < 5:
                 continue
             v = row[4].value
             if v:
-                parts.append(str(v))
+                cells.append(str(v))
             if len(row) > 11:
                 v12 = row[11].value
                 if v12:
-                    parts.append(str(v12))
-        return " \n".join(parts)
+                    cells.append(str(v12))
+        return cells
     finally:
         wb.close()
 
 
-def _already_in_book(doc_id: str, book_text: str) -> bool:
-    """Точний збіг doc_id У ТЕКСТІ книги, а якщо ні — числове ядро (кінцеві цифри doc_id,
-    без провідних нулів) як запасний варіант.
+def _already_in_book(doc_id: str, book_cells: list) -> bool:
+    """Точний збіг doc_id БЛИЗЬКО ДО ПОЧАТКУ клітинки книги (перші _DECLARATION_WINDOW символів
+    — «власний» номер документа рядка), а якщо ні — числове ядро (кінцеві цифри doc_id, без
+    провідних нулів) У ТІЙ САМІЙ межі, як запасний варіант.
 
     ⚠️ ЖИВО ПЕРЕВІРЕНО 2026-09-18 (перший прогін дав 11/14 "НЕ знайдено", хоча аудитор уже
     підтвердив вручну частину з них): бухгалтер НЕ переносить номер документа дослівно з
@@ -162,16 +177,25 @@ def _already_in_book(doc_id: str, book_text: str) -> bool:
         рядок 81, звірено живо.
     Точний збіг ловить Rozetka/Prom (бухгалтер копіює номер дослівно), а НП/ALLO — ні.
     Числове ядро (мін. 5 цифр, щоб не ловити випадкові короткі числа) закриває обидва
-    випадки одним запасним варіантом, не вимагає окремого правила на кожного постачальника."""
-    if doc_id in book_text:
-        return True
+    випадки одним запасним варіантом, не вимагає окремого правила на кожного постачальника.
+
+    ВИПРАВЛЕНО (2026-09-23, живий рецидив рядка 119 книги, підтверджений незалежним аудитором
+    21.09): раніше шукав ПІДРЯДКОМ по всій конкатенованій книзі — номер TA00482473 (справжній
+    акт роялті, свого рядка книги НЕ мав 4+ доби) хибно виглядав «✅ у книзі», бо був ЗГАДАНИЙ
+    у поясненні до ІНШОГО акту (TA00482472, рядок 82) — «⚠️ ОКРЕМА стаття від роялті за ТМ
+    (акт №TA00482473...) — не дублює». Це money-critical напрямок помилки: хибний ✅ ховає
+    реальну прогалину. Тепер збіг рахується ЛИШЕ в перших _DECLARATION_WINDOW символах
+    клітинки — де бухгалтер завжди називає ВЛАСНИЙ номер рядка, не побічну згадку."""
     m = re.search(r"\d+$", doc_id)
-    if not m:
-        return False
-    core = m.group(0).lstrip("0")
-    if len(core) < 5:
-        return False
-    return core in book_text
+    core = m.group(0).lstrip("0") if m else None
+    core = core if core and len(core) >= 5 else None
+    for text in book_cells:
+        window = text[:_DECLARATION_WINDOW]
+        if doc_id in window:
+            return True
+        if core and core in window:
+            return True
+    return False
 
 
 def main() -> None:
@@ -197,9 +221,9 @@ def main() -> None:
         _log(f"⚠️ {len(unparsed)} файл(ів) *_akt_* без розпізнаного номера документа "
              f"(перевір вручну): {', '.join(os.path.basename(f) for f in unparsed)}")
 
-    book_text = _book_narrative_text()
+    book_cells = _book_narrative_cells()
     for info in parsed:
-        info["in_book"] = _already_in_book(info["doc_id"], book_text)
+        info["in_book"] = _already_in_book(info["doc_id"], book_cells)
 
     unresolved = [
         {

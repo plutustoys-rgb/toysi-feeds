@@ -10,9 +10,14 @@ test_kodv_mail_archiver.py — регрес-тест RozetkaPay-парсингу
 від реального (тимчасового) підписаного посилання. `python test_kodv_mail_archiver.py` → exit 0/1.
 """
 import email
+import os
 import sys
+import tempfile
 from email.mime.text import MIMEText
+from pathlib import Path
 from unittest.mock import patch
+
+os.environ.setdefault("AUDIT_NO_TELEGRAM", "1")  # не слати реальний алерт із секції 9
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -137,10 +142,54 @@ _chk("справжній PDF (з обгорткою): %PDF- маркер при�
      b"%PDF-" in _FAKE_REAL_PDF[:4096])
 
 
+# 9: _repair_ghost_cursor_entries — фікс КОДВ-аудиту 2026-09-22 знахідка (3) черги 1 + власний
+#    живий тест 2026-09-23: необмежений ретрай ВСІХ привидів за прогін дав ~20 хв на 11
+#    протухлих посиланнях ПриватБанку (redirect-ланцюг × per-хоп timeout); PR #585 щойно вплів
+#    цей скрипт у щоранковий 08:00 прогін — без ліміту це стало б постійною щоденною затримкою.
+#    Мережа НЕ потрібна: функція чисто працює з set+файловою системою (tmp-дерево).
+_tmp_docs = Path(tempfile.mkdtemp())
+km.KODV_DOCS_DIR = _tmp_docs  # monkeypatch — не чіпати реальну документи_КОДВ/
+
+real_key = "2026-09/ПриватБанк/2026-09-23_privat_vypiska.pdf"
+(_tmp_docs / "2026-09" / "ПриватБанк").mkdir(parents=True, exist_ok=True)
+(_tmp_docs / real_key.replace("/", os.sep)).write_bytes(b"%PDF-fake")
+
+r1 = km._repair_ghost_cursor_entries({real_key})
+_chk("ghost-repair: немає привидів — saved повертається без змін", r1 == {real_key})
+
+ghosts_small = {f"2026-08/ПриватБанк/2026-08-0{i}_privat_vypiska.pdf" for i in range(1, 3)}  # 2 шт
+r2 = km._repair_ghost_cursor_entries(set(ghosts_small) | {real_key})
+_chk(f"ghost-repair: привидів менше ліміту ({km.GHOST_RETRY_BATCH_LIMIT}) — усі {len(ghosts_small)} прибрано",
+     r2 == {real_key})
+
+# живий кейс: 11 привидів на ліміт 3 — прибирається РІВНО ліміт, решта лишається в saved
+ghosts_11 = {f"2026-0{7 if i < 2 else 8}/ПриватБанк/2026-0{7 if i < 2 else 8}-{(i % 28) + 1:02d}_privat_vypiska.pdf"
+             for i in range(11)}
+_chk("ghost-repair: тестова вибірка — рівно 11 унікальних привидів", len(ghosts_11) == 11)
+r3 = km._repair_ghost_cursor_entries(set(ghosts_11) | {real_key})
+removed = ghosts_11 - r3
+kept = ghosts_11 & r3
+_chk(f"ghost-repair: привидів більше ліміту — прибрано РІВНО {km.GHOST_RETRY_BATCH_LIMIT} (не всі 11)",
+     len(removed) == km.GHOST_RETRY_BATCH_LIMIT)
+_chk("ghost-repair: решта (8) лишається в saved — не ретраяться цим прогоном",
+     len(kept) == 11 - km.GHOST_RETRY_BATCH_LIMIT)
+_chk("ghost-repair: реальний файл не зачеплений", real_key in r3)
+_chk("ghost-repair: прибрано САМЕ найстаріші (детермінований, не випадковий порядок)",
+     removed == set(sorted(ghosts_11)[:km.GHOST_RETRY_BATCH_LIMIT]))
+
+# наступний прогін (ті самі 8, що лишились у saved) — бере НАСТУПНИЙ батч, не ті самі 3 знову
+r4 = km._repair_ghost_cursor_entries(r3)
+removed_2 = (ghosts_11 & r3) - r4
+_chk(f"ghost-repair: 2-й прогін прибирає наступні {km.GHOST_RETRY_BATCH_LIMIT} (не повторює 1-й батч)",
+     removed_2 == set(sorted(ghosts_11)[km.GHOST_RETRY_BATCH_LIMIT:2 * km.GHOST_RETRY_BATCH_LIMIT]))
+_chk("ghost-repair: 2-й прогін — реальний файл і далі не зачеплений", real_key in r4)
+
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)
 print("\n✅ RozetkaPay HTML-посилання: пошук без мережі, окреме завантаження, дедуп-перед-"
       "завантаженням, відсутність посилання, мережевий збій — усе коректно. "
-      "ПриватБанк: посилання знайдено, протухле-посилання-детектор коректний.")
+      "ПриватБанк: посилання знайдено, протухле-посилання-детектор коректний. "
+      "Ghost-repair: ліміт/детермінований порядок/прогрес по бэклогу — усі ОК.")
 sys.exit(0)

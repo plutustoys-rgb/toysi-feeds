@@ -128,6 +128,57 @@ def _load_cursor() -> set:
         return set()
 
 
+GHOST_RETRY_BATCH_LIMIT = 3  # див. коментар у _repair_ghost_cursor_entries: чому НЕ всі одразу
+
+
+def _repair_ghost_cursor_entries(saved: set) -> set:
+    """ДОДАНО (аудит КОДВ-автоматики, 2026-09-22, знахідка (3) — черга 1, втрата даних):
+    курсор каже "saved", файлу на диску нема — 11 таких записів прожили до 2 місяців
+    непоміченими (жоден інший механізм цей клас не ловить: source_freshness.py дивиться
+    лише вік НАЙНОВІШОГО файлу теки, не повноту курсора). Походження: бекфіл 19.09 без
+    перевірки `%PDF-` зберіг HTML-сторінку логіну як ".pdf" і просунув курсор; биті файли
+    прибрали, курсор — ні.
+
+    Живо перевірено: 11/11 знайдено, усі — ПриватБанк (2026-07-30/31, 08-04/07/13/17/31,
+    09-01/07/11/15).
+
+    ВИПРАВЛЕНО (живий прогін, 2026-09-23, ДО того, як пішло в продакшн через PR #585):
+    перша версія прибирала з курсора ВСІ привиди одразу — живий тест показав, що кожна
+    спроба протухлого посилання ПриватБанку може займати до ~90с (`_download()` йде за
+    3-хоповим редиректом awstrack.me→socauth→att.privatbank.ua, `LINK_DOWNLOAD_TIMEOUT`
+    застосовується НЕЗАЛЕЖНО на кожен хоп, не на весь ланцюг разом) — 11 привидів дали
+    ~20 хв фактичного прогону замість очікуваних ~6 хв. Оскільки PR #585 щойно вплів
+    цей скрипт у ЩОРАНКОВИЙ 08:00 прогін ПЕРЕД money-critical парсером ПриватБанку —
+    без ліміту це стало б постійним +20 хв КОЖЕН РАНОК, бо підписані посилання
+    ПриватБанку протухають (retry НІКОЛИ не вдасться для старих листів — сам докстрінг
+    нижче це підтверджує).
+
+    Тому: ретраїмо НЕ БІЛЬШЕ GHOST_RETRY_BATCH_LIMIT привидів за прогін (найстаріші
+    першими — детермінований порядок, не залежить від порядку ітерації set), решту
+    просто алертимо (self-diagnosing), не чіпаючи курсор — вони спробуються іншого дня.
+    Обмежує гірший випадок до ~GHOST_RETRY_BATCH_LIMIT×90с, не ростиме з розміром бэклогу.
+
+    Дія на кожен привид з батчу: прибрати з курсора (не файл — файлу й нема) →
+    наступний прогін СПРОБУЄ знову (лист і досі в INBOX, BODY.PEEK не ставить \\Seen —
+    джерело нікуди не ділось). Якщо посилання протухло (PrivatBank-виписки живуть
+    обмежений час) — просто не завантажиться знову, `_download()`'s %PDF-перевірка
+    (money-critical фікс той самої сесії) не дасть зберегти биту сторінку вдруге."""
+    docs_dir = KODV_DOCS_DIR
+    ghosts = sorted(rel for rel in saved if not (docs_dir / rel).is_file())
+    if not ghosts:
+        return saved
+    batch = ghosts[:GHOST_RETRY_BATCH_LIMIT]
+    rest = ghosts[GHOST_RETRY_BATCH_LIMIT:]
+    _log(f"⚠️ виявлено {len(ghosts)} записів курсора без файлу на диску — прибираю {len(batch)} "
+         f"(ліміт {GHOST_RETRY_BATCH_LIMIT}/прогін, найстаріші першими): {batch}"
+         + (f"; ще {len(rest)} чекають наступних прогонів: {rest}" if rest else ""))
+    _notify(f"⚠️ kodv_mail_archiver: {len(ghosts)} 'привидів' у курсорі (курсор каже saved, файлу "
+            f"нема) — цей прогін пробує {len(batch)} з них (ліміт {GHOST_RETRY_BATCH_LIMIT}/прогін), "
+            f"решта {len(rest)} чекають наступних прогонів. Перевір документи_КОДВ вручну, якщо "
+            f"повторюється: {ghosts[:5]}{'…' if len(ghosts) > 5 else ''}")
+    return saved - set(batch)
+
+
 def _save_cursor(saved: set) -> None:
     CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
     CURSOR_FILE.write_text(
@@ -245,6 +296,7 @@ def _find_privat_statement_link(msg) -> str | None:
 
 def archive(dry_run: bool = False) -> dict:
     saved_cursor = _load_cursor()
+    saved_cursor = _repair_ghost_cursor_entries(saved_cursor)
     newly = {"RozetkaPay": 0, "ПриватБанк": 0, "NovaPay": 0, "НоваПошта": 0}
     skipped_dupe = 0
     unclassified_msgs = 0

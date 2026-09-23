@@ -25,7 +25,7 @@ READ-ONLY по касі: лише GET /receipts/search і авторизація
 import json
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -81,38 +81,81 @@ def _save_cursor(last_serial: int) -> None:
     )
 
 
+MAX_LOOKBACK_WINDOWS = 20  # ~4.8 років при 89-денних вікнах — з великим запасом на історію каси
+
+
+def _fetch_window(headers: dict, from_dt: datetime, to_dt: datetime | None) -> list:
+    """Одне 90-денне вікно, повна пагінація по offset до вичерпання СЕРЕДИНИ вікна."""
+    page_results = []
+    offset = 0
+    while True:
+        params = {"limit": FETCH_LIMIT, "desc": "true", "from_date": from_dt.isoformat(), "offset": offset}
+        if to_dt is not None:
+            params["to_date"] = to_dt.isoformat()
+        try:
+            resp = requests.get(f"{cb.CHECKBOX_API_URL}/receipts/search", headers=headers,
+                                 params=params, timeout=cb.REQUEST_TIMEOUT)
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise cb.CheckboxAPIError(f"помилка з'єднання (GET /receipts/search, offset={offset}): {e}") from e
+        try:
+            page = (resp.json() or {}).get("results") or []
+        except ValueError:
+            raise cb.CheckboxAPIError(f"невалідна відповідь (не JSON) /receipts/search: {resp.text[:300]}")
+        page_results.extend(page)
+        if len(page) < FETCH_LIMIT:
+            break
+        offset += FETCH_LIMIT
+    return page_results
+
+
 def fetch_receipts() -> tuple:
     """GET /receipts/search (desc) → (список валідних фіскальних чеків (DONE, не тестові), truncated).
-    `truncated=True` — сторінка заповнена вщент (можуть бути старіші чеки поза вибіркою).
-    READ-ONLY: лише авторизація касира + GET. Зміну не відкриваємо, чеків не створюємо."""
+    READ-ONLY: лише авторизація касира + GET. Зміну не відкриваємо, чеків не створюємо.
+
+    ВИПРАВЛЕНО (аудит КОДВ-автоматики, 2026-09-22, знахідка (1) — черга 1, втрата даних
+    щодня): раніше запит не передавав `from_date` взагалі, і `truncated = len(results) >=
+    FETCH_LIMIT` (82 ≥ 100 = False) НІКОЛИ не спрацьовував, попри те, що ендпоінт БЕЗ
+    from_date мовчки обрізає найстаріші чеки — живо звірено: без from_date вибірка дає
+    серіали 8…89, а з `from_date=2026-07-01` та сама вибірка дає серіали 1…12. Чек серіал 1
+    (39,00 ₴, 08.07.2026) жодна звірка не бачила за весь час існування книги через це.
+
+    ⚠️ Пропозиція аудиту "from_date = початок року" НЕ спрацювала на живому виклику
+    (2026-09-22, я сама перевірила, не повірила на слово — `check-docs-recall-before-
+    building`/`kodv-verify-audit-suggestions-before-applying`): API повертає
+    `400 date.wrong_interval — "Період пошуку чеків не може перевищувати 90 днів"`.
+    Це реальне, задокументоване в OpenAPI-спеці (api.checkbox.in.ua/api/openapi.json,
+    /receipts/search, from_date/to_date) обмеження, якого сам аудит не перевіряв.
+
+    Реальний фікс — ЛАНЦЮЖОК 89-денних вікон НАЗАД у часі (89, не 90 — запас на дрейф
+    часових поясів/секунд), кожне з повною пагінацією по offset усередині. Зупиняється,
+    щойно ціле вікно порожнє (означає: досягли початку історії каси) АБО на
+    MAX_LOOKBACK_WINDOWS (структурний запобіжник, не нескінченний цикл)."""
     token = cb._authenticate_cashier()
     headers = {"X-License-Key": cb.CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
-    try:
-        resp = requests.get(f"{cb.CHECKBOX_API_URL}/receipts/search",
-                            headers=headers, params={"limit": FETCH_LIMIT, "desc": "true"},
-                            timeout=cb.REQUEST_TIMEOUT)
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise cb.CheckboxAPIError(f"помилка з'єднання (GET /receipts/search): {e}") from e
-    try:
-        results = (resp.json() or {}).get("results") or []
-    except ValueError:
-        raise cb.CheckboxAPIError(f"невалідна відповідь (не JSON) /receipts/search: {resp.text[:300]}")
-    truncated = len(results) >= FETCH_LIMIT
-    if truncated:
-        # Сторінка заповнена вщент — між прогонами могло з'явитись >FETCH_LIMIT чеків, і найстаріші
-        # «нові» випали б за межу вибірки, а курсор стрибнув би повз них (латентна втрата). Каса
-        # низькооборотна, тож малоймовірно, але сигналимо, щоб не пройшло тихо. `truncated` також
-        # НЕ дає main() закривати "open"-кандидатів у kandydaty_registry цим прогоном (аудит,
-        # 2026-09-18) — інакше кандидат старший за межу сторінки випав би зі списку "unresolved" і
-        # хибно позначився б "resolved", хоча насправді просто не потрапив у вибірку.
-        _log(f"⚠️ отримано {len(results)} чеків = ліміт сторінки {FETCH_LIMIT}: можливо є ще старіші "
-             f"нові чеки поза вибіркою — за потреби додати пагінацію по meta.offset.")
-        _notify(f"⚠️ checkbox_registry_sync: сторінка чеків заповнена ({FETCH_LIMIT}) — перевір, чи "
-                f"не втрачено старіші нові чеки; можливо потрібна пагінація.")
+
+    all_results = []
+    hit_safety_cap = False
+    to_dt = datetime.now(ZoneInfo("Europe/Kyiv"))
+    for _ in range(MAX_LOOKBACK_WINDOWS):
+        from_dt = to_dt.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=89)
+        window = _fetch_window(headers, from_dt, to_dt)
+        if not window:
+            break   # ціле вікно порожнє — старіших чеків нема, історію вичерпано
+        all_results.extend(window)
+        to_dt = from_dt
+    else:
+        hit_safety_cap = True
+        _notify(f"🚨 checkbox_registry_sync: досягнуто ліміту {MAX_LOOKBACK_WINDOWS} вікон по 89 днів "
+                f"і жодне не було порожнім — перевір вручну, це структурна аномалія.")
+
+    # `truncated` тепер відображає ЛИШЕ реальну неповноту (запобіжник на к-сті вікон
+    # спрацював) — ланцюжок вікон вище гарантує повноту в нормальному випадку. Той самий
+    # прапорець, який collect()/main() читають для resolve=not window_truncated.
+    truncated = hit_safety_cap
 
     receipts = []
-    for it in results:
+    for it in all_results:
         if it.get("status") != "DONE" or it.get("is_test") is True:
             continue
         serial = it.get("serial")

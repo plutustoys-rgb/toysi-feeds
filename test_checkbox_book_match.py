@@ -84,6 +84,58 @@ book_no_serial = {78.0: [(date(2026, 9, 19), None)]}
 m8 = cs._match_book(book_no_serial, 78.0, "2026-09-20T10:00:00", serial=88)
 _chk("рядок без серіала: exact=1 (fallback на суму+дату, як раніше)", m8["exact"] == 1)
 
+# ── 2c: _pair_match_unmatched — баг (5) черги 2, книга об'єднує 2 чеки одного дня/типу
+#       оплати в ОДИН рядок (2026-09-23, живо звірено на 8/8 реальних пар) ──
+def _mk(serial, sum_uah, kyiv_date, pay_type="CASH", exact=0, sum_only=0):
+    return {"serial": serial, "sum_uah": sum_uah, "kyiv_date": kyiv_date, "pay_type": pay_type,
+            "book_exact_matches": exact, "book_sum_only_matches": sum_only}
+
+
+# живий кейс 11+12=834.28→р.23 (той самий день, той самий тип оплати)
+book_pair = {834.28: [(date(2026, 8, 4), None)]}
+r11, r12 = _mk(11, 630.0, "2026-08-04", "CASHLESS"), _mk(12, 204.28, "2026-08-04", "CASHLESS")
+cs._pair_match_unmatched([r11, r12], book_pair)
+_chk("pair-match: пара 11+12 знайдена — обидва exact=1", r11["book_exact_matches"] == 1 and r12["book_exact_matches"] == 1)
+_chk("pair-match: paired_with_serial проставлено взаємно", r11["paired_with_serial"] == 12 and r12["paired_with_serial"] == 11)
+
+# живий кейс 42+43=437.00→р.67: чек 43 МАВ несвязаний sum_only-збіг деінде (сума 121 теж є в
+# іншому рядку іншої дати) — фікс 2026-09-23: sum_only НЕ повинен блокувати участь у парі
+r42 = _mk(42, 316.0, "2026-09-01", "CASH")
+r43 = _mk(43, 121.0, "2026-09-01", "CASH", sum_only=1)  # sum_only=1 від НЕПОВʼЯЗАНОГО рядка
+book_4243 = {437.0: [(date(2026, 9, 1), None)]}
+cs._pair_match_unmatched([r42, r43], book_4243)
+_chk("pair-match: sum_only≠0 у партнера НЕ блокує пару (живий рецидив 42+43)",
+     r42["book_exact_matches"] == 1 and r43["book_exact_matches"] == 1)
+
+# різний тип оплати того самого дня — НЕ пара, навіть якщо сума збігається
+r_cash = _mk(60, 200.0, "2026-09-10", "CASH")
+r_cashless = _mk(61, 200.0, "2026-09-10", "CASHLESS")
+book_diff_pay = {400.0: [(date(2026, 9, 10), None)]}
+cs._pair_match_unmatched([r_cash, r_cashless], book_diff_pay)
+_chk("pair-match: різний тип оплати — НЕ парується", r_cash["book_exact_matches"] == 0 and r_cashless["book_exact_matches"] == 0)
+
+# рядок ЯВНО прив'язаний до ІНШОГО checkbox-серіала — не кандидат для парного збігу
+r_a = _mk(70, 50.0, "2026-09-10")
+r_b = _mk(71, 50.0, "2026-09-10")
+book_claimed = {100.0: [(date(2026, 9, 10), 99)]}  # рядок уже belongs серіалу 99
+cs._pair_match_unmatched([r_a, r_b], book_claimed)
+_chk("pair-match: рядок із чужим явним серіалом — виключено з парного пошуку",
+     r_a["book_exact_matches"] == 0 and r_b["book_exact_matches"] == 0)
+
+# немає відповідного рядка книги — пара НЕ вигадується, лишається «не в книзі»
+r_x = _mk(80, 10.0, "2026-09-10")
+r_y = _mk(81, 20.0, "2026-09-10")
+cs._pair_match_unmatched([r_x, r_y], {})
+_chk("pair-match: немає рядка книги — обидва лишаються exact=0", r_x["book_exact_matches"] == 0 and r_y["book_exact_matches"] == 0)
+
+# той самий рядок НЕ забирають дві різні пари за один прогін (consumed)
+r1a, r1b = _mk(90, 100.0, "2026-09-10"), _mk(91, 100.0, "2026-09-10")   # сума пари 200
+r2a, r2b = _mk(92, 100.0, "2026-09-10"), _mk(93, 100.0, "2026-09-10")   # та сама сума пари
+book_one_row = {200.0: [(date(2026, 9, 10), None)]}  # лише ОДИН такий рядок
+cs._pair_match_unmatched([r1a, r1b, r2a, r2b], book_one_row)
+_matched_count = sum(1 for r in (r1a, r1b, r2a, r2b) if r["book_exact_matches"] == 1)
+_chk("pair-match: один рядок книги забирає РІВНО одну пару (не обидві)", _matched_count == 2)
+
 # ── 3: _book_date_sum_index — на реальній структурі xlsx (openpyxl), як КОДВ_PlutusToys_2026.xlsx ──
 import openpyxl
 _tmp_xlsx = Path(tempfile.mktemp(suffix=".xlsx"))

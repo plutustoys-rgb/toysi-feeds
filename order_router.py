@@ -337,12 +337,15 @@ def build_toysi_order(order: dict) -> dict | None:
         "middle_name": middle_name,
         "phone": _normalize_phone_for_toysi(order.get("phone", "")),
         "shipping_city_name": city or "Київ",  # Toysi вимагає непорожнє місто
-        # shipping_address порожній ЛИШЕ коли віддаємо ТОЧНИЙ CityRef (тоді адреса однозначна
-        # структурно). Немає CityRef (Rozetka-реф не резолвнувся / Prom-текст) → кладемо ПОВНИЙ
-        # np_branch клієнта (місто+область+№), щоб Toysi мав МАКСИМУМ даних для резолву, а не менше,
-        # ніж дав клієнт (аудит #553: інакше «Дмитрівка» без області → чуже село). Номер відділення
-        # все одно йде структурно у shipping_warehouse_id.
-        "shipping_address": "" if shipping_fields.get("shipping_city_id") else order.get("np_branch", ""),
+        # ЗАВЖДИ кладемо повний np_branch клієнта в shipping_address, навіть коли є CityRef
+        # (раніше — лише коли CityRef відсутній, «структурно однозначно» через #553). Інцидент
+        # EVA 8-081747967 (2026-09-24): CityRef+номер+назва міста передались Toysi ПОВНІСТЮ
+        # коректно (звірено живо з orders.db — np_city_ref/np_warehouse_number/np_branch усі
+        # правильні), а ТТН все одно пішла в геть інше місто — тобто структурний CityRef САМ
+        # ПО СОБІ не гарантує коректний резолв на боці Toysi. Повний текст адреси — дешевий
+        # додатковий сигнал (не заміна структурних полів, вони йдуть як і раніше), корисний
+        # і для звірки, і якщо Toysi колись читає адресу як бекап/кросчек.
+        "shipping_address": order.get("np_branch", ""),
         "moneyback": moneyback,
         "comment": comment,
         **shipping_fields,

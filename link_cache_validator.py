@@ -17,23 +17,35 @@
   • РОТАЦІЙНО: за прогін перевіряє лише BATCH_SIZE записів (курсор у стані), обходячи весь
     каталог за ~кілька прогонів. Переслаглення — рідкість, тож щоденний повний обхід не потрібен.
   • ПОСЛІДОВНО з джитером (SEARCH_JITTER_RANGE, ~0.4-0.6с) — не сплеск, а рівний рівчак.
-  • BACKOFF: серія MAX_TRANSIENT_FAILS підряд «невідомих» (None: мережа/блок/капча на prom.ua)
-    → АБОРТ прогону (prom.ua нас глушить) — не пишемо, курсор не рушимо (наступний прогін
-    повторить те саме вікно).
+  • BACKOFF: серія MAX_TRANSIENT_FAILS підряд СПРАВЖНІХ мережевих збоїв (виняток
+    requests — таймаут/DNS/з'єднання, НЕ звичайна відповідь на кшталт 404) → АБОРТ прогону
+    (prom.ua нас глушить) — не пишемо, курсор не рушимо (наступний прогін повторить те саме
+    вікно).
 
-ЩО РОБИТЬ ІЗ КОЖНИМ ЗАПИСОМ ПАРТІЇ:
+ЩО РОБИТЬ ІЗ КОЖНИМ ЗАПИСОМ ПАРТІЇ (3 різні результати, не 2):
   • новий slug є і ВІДРІЗНЯЄТЬСЯ → ОНОВЛЮЄ url_text (переслаглений живий товар полагоджено);
   • новий slug є і той самий → запис коректний, нічого;
-  • None (мережа/блок/зникле оголошення) → лишаємо як є (не тримаємо storefront-сигналу, щоб
-    впевнено видаляти; делістнуті товари фід І ТАК омітить — нема цінового override, тож
-    застарілий запис у кеші для делістнутого товару НЕШКІДЛИВИЙ, бо у фід не потрапляє).
+  • «unexpected» (ЧІТКА відповідь prom.ua — 404 чи редирект НЕ на товарну сторінку — але не
+    мережевий виняток) → товар підтверджено відсутній/переміщений. Лишаємо запис як є (не
+    тримаємо storefront-сигналу, щоб впевнено видаляти), АЛЕ НЕ рахуємо в лічильник аборту —
+    це не ознака блокування, а справжня відповідь сервера.
+  • «transient» (мережевий виняток) → рахується в MAX_TRANSIENT_FAILS.
 
-ЗАПОБІЖНИК ФОРМАТУ: якщо серед РЕЗУЛЬТАТИВНИХ (не-None) записів партії частка «змінених»
-перевищує SAFE_CHANGE_RATIO — АБОРТ без запису (масова «зміна» = радше Prom змінив формат URL,
-а не всі товари раптом переслаглись). Атомарний запис (temp+rename). `--dry-run` — лише звіт.
+🔴 ФІКС (2026-09-25, живий інцидент, звірено journalctl на VPS): ДО цього фіксу «unexpected»
+і «transient» рахувались ОДНАКОВО в лічильник аборту. Кластер ~10 СПРАВДІ делістнутих товарів
+(404/редирект на категорійну сторінку) поспіль у порядку кешу хибно спрацьовував як «prom.ua
+нас блокує» — а абортований прогін НЕ рухає курсор, тож той самий кластер (курсор=1000)
+повторювався ІДЕНТИЧНО 3 доби поспіль (23-25.09), і решта ~14000 записів так і не
+перевірялись. Тепер лічильник рахує ЛИШЕ справжні мережеві збої.
 
-Запуск: раз/добу через systemd link-cache-validator.timer (наразі ВИМКНЕНО власником до
-розкатки цього редизайну — див. CODE_LOG 2026-08-15).
+ЗАПОБІЖНИК ФОРМАТУ: якщо серед РЕЗУЛЬТАТИВНИХ (fixed+unchanged, БЕЗ unexpected/transient)
+записів партії частка «змінених» перевищує SAFE_CHANGE_RATIO — АБОРТ без запису (масова
+«зміна» = радше Prom змінив формат URL, а не всі товари раптом переслаглись). Атомарний запис
+(temp+rename). `--dry-run` — лише звіт.
+
+Запуск: раз/добу через systemd link-cache-validator.timer. Був ВИМКНЕНИЙ 15.08-?.09 (редизайн
+чекав розкатки), але звірено живо 25.09 (journalctl): таймер УЖЕ enabled+active, крутиться
+щоночі ~03:40 — просто застряг на курсорі 1000 через баг вище, не через "вимкнено".
 """
 import argparse
 import json
@@ -43,7 +55,7 @@ import sys
 import time
 from pathlib import Path
 
-from generate_google_feed import (_resolve_url_text, OWN_PRODUCT_LINKS_CACHE_FILE,
+from generate_google_feed import (_resolve_url_text_with_reason, OWN_PRODUCT_LINKS_CACHE_FILE,
                                    SEARCH_JITTER_RANGE)
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -109,23 +121,40 @@ def validate(dry_run: bool = False) -> dict:
     print(f"[link-val] всього {total}, партія {len(batch)} від зсуву {offset} "
           f"(prom.ua ре-резолв, вітрину НЕ чіпаємо).")
 
-    fixed = unchanged = unknown = 0
+    # ФІКС (2026-09-25, живий інцидент): раніше "unknown" (None) рахувалось в transient_streak
+    # НЕЗАЛЕЖНО від причини — і мережевий виняток, і ЧІТКА відповідь prom.ua (404/редирект на
+    # чужу сторінку — товар підтверджено відсутній) трактувались однаково. journalctl підтвердив
+    # 3 доби поспіль (23-25.09) ІДЕНТИЧНИЙ абортований прогін на курсорі 1000 — кластер ~10
+    # СПРАВДІ делістнутих товарів (не мережева проблема) хибно спрацьовував як «prom.ua блокує»,
+    # і абортований прогін НЕ рухає курсор → той самий кластер повторювався щоночі, решта
+    # ~14000 записів так і не перевірялись. Тепер лічильник аборту рахує ЛИШЕ "transient"
+    # (мережевий виняток) — "unexpected" (чітка відповідь, товар підтверджено
+    # відсутній/переміщений) скидає лічильник до 0, як і успіх: сам факт отримання відповіді
+    # від prom.ua доводить, що мережа/сервер ПРАЦЮЮТЬ, просто цей товар недоступний.
+    fixed = unchanged = confirmed_gone = unknown = 0
     transient_streak = 0
     updates = {}   # pid -> новий slug (застосуємо разом після guard-перевірки)
     for pid, entry in batch:
-        new_slug = _resolve_url_text(entry["prom_id"])
+        new_slug, reason = _resolve_url_text_with_reason(entry["prom_id"])
         time.sleep(random.uniform(*SEARCH_JITTER_RANGE))
-        if new_slug is None:
+        if reason == "transient":
             unknown += 1
             transient_streak += 1
             if transient_streak >= MAX_TRANSIENT_FAILS:
-                print(f"[link-val] АБОРТ: {transient_streak} невідомих поспіль — prom.ua схоже "
-                      f"нас глушить/блокує. Кеш і курсор НЕ чіпаю, повторю наступного прогону.",
+                print(f"[link-val] АБОРТ: {transient_streak} мережевих збоїв поспіль — prom.ua "
+                      f"схоже нас глушить/блокує. Кеш і курсор НЕ чіпаю, повторю наступного прогону.",
                       file=sys.stderr)
-                return {"total": total, "checked": fixed + unchanged + unknown,
+                return {"total": total, "checked": fixed + unchanged + confirmed_gone + unknown,
                         "unknown": unknown, "aborted": "transient"}
             continue
         transient_streak = 0
+        if reason == "unexpected":
+            # Товар підтверджено відсутній/переміщений — НЕ мережева проблема. Лишаємо запис
+            # у кеші як є (за дизайном валідатора: делістнутий товар фід і так має відфільтрувати
+            # окремим механізмом — build_feed_items()/select_top_items(); тут лише НЕ рахуємо
+            # це в лічильник аборту, щоб не блокувати перевірку решти каталогу).
+            confirmed_gone += 1
+            continue
         if new_slug != entry["url_text"]:
             updates[pid] = new_slug
             fixed += 1
@@ -139,13 +168,14 @@ def validate(dry_run: bool = False) -> dict:
         print(f"[link-val] АБОРТ: {fixed}/{decisive} ({100*fixed/decisive:.0f}%) «змінених» "
               f"перевищує поріг {int(SAFE_CHANGE_RATIO*100)}% — схоже на зміну формату URL, "
               f"кеш НЕ переписую.", file=sys.stderr)
-        return {"total": total, "checked": decisive + unknown, "fixed": fixed,
-                "unknown": unknown, "aborted": "ratio"}
+        return {"total": total, "checked": decisive + confirmed_gone + unknown, "fixed": fixed,
+                "confirmed_gone": confirmed_gone, "unknown": unknown, "aborted": "ratio"}
 
-    print(f"[link-val] полагоджено (новий slug): {fixed} | без змін: {unchanged} | "
-          f"невідомих (лишено): {unknown}.")
-    stats = {"total": total, "checked": decisive + unknown, "fixed": fixed,
-             "unchanged": unchanged, "unknown": unknown}
+    print(f"[link-val] полагоджено (новий slug, товар ЖИВИЙ, просто переслаглився): {fixed} | "
+          f"без змін: {unchanged} | підтверджено відсутній (товару нема ніде): {confirmed_gone} | "
+          f"невідомих (мережа/блок, лишено): {unknown}.")
+    stats = {"total": total, "checked": decisive + confirmed_gone + unknown, "fixed": fixed,
+             "unchanged": unchanged, "confirmed_gone": confirmed_gone, "unknown": unknown}
 
     if dry_run:
         print("[link-val] --dry-run: кеш і курсор НЕ переписано.")

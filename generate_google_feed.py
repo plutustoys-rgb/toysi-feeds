@@ -271,11 +271,35 @@ def google_product_category(category_name: str) -> str:
 # external_id, не текстовий пошук.
 # ---------------------------------------------------------------------------
 def _resolve_url_text(prom_id: int) -> str | None:
-    """Один детермінований HTTP-запит на товар — без слідування редиректу,
-    парсимо Location. Повертає None (не виняток) на будь-яку мережеву
-    проблему чи неочікуваний формат відповіді — той самий безпечний
-    дефолт, що й скрізь у цьому файлі: пропустити link для товару, а не
-    вигадати його."""
+    """Тонка обгортка над _resolve_url_text_with_reason() для викликачів, яким байдужа
+    причина відмови (generate_google_feed.py, full_catalog_competitor_scan.py) — лишає
+    старий контракт str | None незмінним."""
+    return _resolve_url_text_with_reason(prom_id)[0]
+
+
+def _resolve_url_text_with_reason(prom_id: int) -> tuple[str | None, str]:
+    """Як _resolve_url_text(), але ДРУГИМ значенням повертає причину відмови — потрібно
+    ЛИШЕ link_cache_validator.py, щоб відрізнити «мережа/prom.ua справді недоступні»
+    (transient — рахувати в лічильник аборту) від «отримали ЧІТКУ відповідь, просто не
+    канонічний формат» (unexpected — товар підтверджено делістнутий/переміщений, НЕ ознака
+    блокування).
+
+    ФІКС (2026-09-25, живий інцидент): раніше обидва випадки поверталися як однаковий
+    None, і validate() рахував ОБИДВА в MAX_TRANSIENT_FAILS. Прогін link-cache-validator.timer
+    застряг на курсорі 1000 ТРИ доби поспіль (23-25.09, journalctl підтверджує ідентичний
+    набір prom_id щоразу) — там кластер із ~10 СПРАВДІ делістнутих товарів (404 або 301 на
+    категорійну сторінку "Обучающая и развивающая детская литература", не на товар) поспіль
+    у порядку кешу хибно спрацьовував як «prom.ua нас блокує», і абортований прогін НЕ рухав
+    курсор — той самий кластер повторювався щоночі, решта ~14000 записів так і не
+    перевірялись. Причина: 404/чужий-редирект — це ЧІТКА, впевнена відповідь prom.ua (сервер
+    відповів нормально, просто товару вже нема за цим id) — не мережева проблема, не привід
+    для абортного лічильника.
+
+    Повертає (slug_or_None, reason): reason "ok" (успіх), "transient" (мережевий виняток АБО
+    429/5xx — обидва МАЮТЬ рахуватись у чергу абортів: другий раунд аудиту 2026-09-25 спіймав,
+    що без явної перевірки status_code 429/503 мовчки провалювались би в "unexpected", бо
+    requests НЕ кидає виняток на не-2xx), "unexpected" (чітка відповідь — 404 чи редирект НЕ на
+    канонічний формат товару — товар підтверджено відсутній/переміщений, НЕ транзієнт)."""
     try:
         response = requests.get(
             f"https://prom.ua/ua/p{prom_id}-item.html",
@@ -288,18 +312,33 @@ def _resolve_url_text(prom_id: int) -> str | None:
         )
     except requests.exceptions.RequestException as e:
         print(f"[Google] Не вдалось визначити urlText для prom_id={prom_id}: {e}", file=sys.stderr)
-        return None
+        return None, "transient"
+
+    # ФІКС (аудит 2026-09-25, перший раунд): 429/5xx — це ЩЕ ОДИН мережевий/сервер-сайд
+    # транзієнт (rate-limit/перевантаження), НЕ підтверджена відсутність товару — requests НЕ
+    # кидає виняток на не-2xx (raise_for_status() тут не викликається), тож без ЦІЄЇ перевірки
+    # 429/503 непомітно провалювались би в "unexpected" і НІКОЛИ не рахувались би в лічильник
+    # аборту. Той самий принцип, що вже усталений у social_auto_poster.py::_link_status
+    # («лише 404 = dead; 429/5xx = unsure/транзієнт») і prom_catalog_sync.py (429-ретрай).
+    if response.status_code == 429 or response.status_code >= 500:
+        print(
+            f"[Google] prom.ua rate-limit/перевантаження для prom_id={prom_id} "
+            f"(статус={response.status_code}) — транзієнт, не підтверджена відсутність товару",
+            file=sys.stderr,
+        )
+        return None, "transient"
 
     location = response.headers.get("Location", "")
     match = _URL_TEXT_RE.match(location)
     if not match:
         print(
             f"[Google] Неочікувана відповідь для prom_id={prom_id} "
-            f"(статус={response.status_code}, Location={location!r}) — можлива зміна формату URL на Prom",
+            f"(статус={response.status_code}, Location={location!r}) — товар підтверджено "
+            f"відсутній/переміщений (не мережева проблема)",
             file=sys.stderr,
         )
-        return None
-    return match.group(1)
+        return None, "unexpected"
+    return match.group(1), "ok"
 
 
 def _save_own_product_links_cache(links: dict) -> None:

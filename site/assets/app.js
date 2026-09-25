@@ -257,6 +257,8 @@
 
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";
+  var selectedCityArea = "";  // область обраного міста (НП AreaDescription) → у np_branch, щоб Toysi
+                               // не переплутав однойменні населені пункти різних областей (24.09.2026)
   var selectedWarehouseNumber = "";  // № обраного з автокомпліту відділення НП → віддаємо Toysi напряму
   function debounce(fn, ms){ var t; return function(){ var a=arguments, self=this; clearTimeout(t); t=setTimeout(function(){ fn.apply(self,a); }, ms); }; }
   function renderAc(box, opts, onPick){
@@ -279,13 +281,13 @@
       // оформлення (не влучив пальцем у випадайку → відділення «мертве»). Тап по місту лише
       // додає ref для автопідказок відділення; без тапу — ручний ввід відділення (він і так
       // приймається як вільний текст, order_router розбирає при форварді).
-      selectedCityRef=""; selectedWarehouseNumber=""; wh.value=""; acWh.innerHTML="";
+      selectedCityRef=""; selectedCityArea=""; selectedWarehouseNumber=""; wh.value=""; acWh.innerHTML="";
       wh.disabled=false; wh.placeholder="Оберіть місто зі списку — або введіть відділення";
       var q=city.value.trim(); if(q.length<2){ acCity.innerHTML=""; return; }
       fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
         var cities=(d.cities||[]);
         renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, ref:c.ref, name:c.name}; }),
-          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
+          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; selectedCityArea=pick.sub||""; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
       }).catch(function(){
         // API НП недоступний — не лишаємо форму в глухому куті: підказок нема, ручний ввід уже дозволено.
         acCity.innerHTML="";
@@ -331,6 +333,7 @@
         city_name:(document.getElementById("f-city").value||"").trim(),
         warehouse_name:(document.getElementById("f-warehouse").value||"").trim(),
         np_city_ref:selectedCityRef||"",            // CityRef НП, якщо місто обране з автокомпліту
+        np_city_area:selectedCityArea||"",           // область обраного міста → у np_branch (розрізняє однойменні міста)
         np_warehouse_number:selectedWarehouseNumber||"", // № відділення, якщо обране з автокомпліту → Toysi напряму
         payment_method:payment
       };

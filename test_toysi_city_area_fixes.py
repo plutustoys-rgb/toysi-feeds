@@ -54,6 +54,20 @@ _chk("settlement_raion отримав ТОЙ САМИЙ city_ref (не поро�
      _raion_calls and _raion_calls[0]["settlement_ref"] == "SOME-EXACT-SETTLEMENT-REF")
 _chk("район підхопився в shipping_city_name", "Тестовий р-н" in (to.get("shipping_city_name") or ""))
 
+# 1б: той самий механізм на Rozetka (np_city_ref через warehouse_by_ref, не EVA structural) —
+# спільний код build_toysi_order не розгалужується за платформою, але явна перевірка не зайва
+# (власник, 2026-09-25: «розетка, пром теж перевірили?»).
+_raion_calls.clear()
+to_rz = orr.build_toysi_order(dict(
+    internal_order_id="t_area_rz", order_id="2", platform="rozetka", carrier="nova_poshta",
+    customer_name="Петренко Петро Петрович", phone="+380671112233", payment_method="cod",
+    items=[{"toysi_code": "1", "name": "x", "qty": 1, "price": 100}],
+    np_branch="Троїцьке (Одеська обл., Біляївський р-н), Відділення №1",
+    np_warehouse_number="1", np_city_ref="RZ-EXACT-SETTLEMENT-REF",
+))
+_chk("Rozetka: settlement_raion отримав ref", _raion_calls and _raion_calls[0]["settlement_ref"] == "RZ-EXACT-SETTLEMENT-REF")
+_chk("Rozetka: район підхопився в shipping_city_name", "Тестовий р-н" in (to_rz.get("shipping_city_name") or ""))
+
 
 # ── 2. positions_quantity сумує дублікати toysi_code, не перезаписує ──
 import toysi_order_submit as tos

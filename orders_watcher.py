@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -7,7 +8,7 @@ from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
 
-from orders_db import get_connection, init_db, insert_order, mark_payment_confirmed
+from orders_db import get_connection, init_db, insert_order, mark_payment_confirmed, order_exists
 import rozetka_client
 import eva_orders_client
 import nova_poshta
@@ -256,6 +257,40 @@ def _detect_carrier(delivery_provider_data: dict | None, delivery_option: dict |
 def _convert_prom_order(order: dict) -> dict:
     """Приводить замовлення з реального Prom Orders API до сирої структури,
     яку очікує normalize_order() (той самий формат, що й мок-дані нижче)."""
+    # ДІАГНОСТИКА (наскрізний аудит order→Toysi, 2026-09-25, пропозиція Консультанта): Prom API
+    # (delivery_provider_data.recipient_address.city_id/warehouse_id) дає той самий структурний
+    # NP-реф, що й EVA/Rozetka, — ми його НЕ читаємо, лише вільний текст delivery_address.
+    # Відкрите питання: чи Prom заповнює recipient_address ВЖЕ ПРИ отриманні замовлення (придатне
+    # для маршрутизації), чи лише ЗАДНІМ ЧИСЛОМ, після нашого ж push declaration_number
+    # (order_status_tracker._maybe_push_ttn_to_prom) — тоді непридатне. Ретроспективна вибірка не
+    # відповідає (9/9 замовлень за 30 днів уже мали і те, і те разом — «чисте» вікно ~15 хв і не
+    # лишається в історії). Цей print — ПЕРШИЙ погляд на сире замовлення, ДО будь-якого нашого
+    # запису (insert_order/push) — якщо recipient_address тут уже є, питання закрито: поле раннє
+    # й придатне. Лише лог, жодної зміни поведінки/маршрутизації.
+    # ФІКС (аудит 2026-09-25): fetch_new_orders_prom() перепитує ВСЕ вікно
+    # PROM_ORDER_LOOKBACK_HOURS (72 год) КОЖЕН прогін (~15 хв) — без гейту нижче цей print
+    # спрацював би повторно на 2-му+ прогоні того самого замовлення, коли order_status_tracker.py
+    # (окремий процес) уже міг запушити declaration_number назад у Prom. «Перший погляд» був би
+    # хибним — orders.db.order_exists() з тим самим ключем (order_id, platform), що й insert_order()
+    # нижче, гарантує: друкуємо ЛИШЕ якщо цього замовлення ЩЕ НЕМА в базі (справжній перший раз).
+    _dpd = order.get("delivery_provider_data") or {}
+    if (_dpd.get("provider") or "").strip().lower() == "nova_poshta":
+        try:
+            with get_connection() as _diag_conn:
+                _is_new = not order_exists(_diag_conn, str(order.get("id")), "prom")
+        except Exception as e:  # noqa: BLE001 — best-effort діагностика, не валимо реальну конвертацію
+            _is_new = False
+            print(f"[Prom] діагностика recipient_address: order_exists впав, пропускаю: {e}", file=sys.stderr)
+        if _is_new:
+            _has_addr = bool(_dpd.get("recipient_address"))
+            print(
+                f"[Prom] ДІАГНОСТИКА recipient_address (перший погляд, до наших записів): "
+                f"order={order.get('id')} declaration_number={_dpd.get('declaration_number')!r} "
+                f"recipient_address_присутній={_has_addr}"
+                + (f" recipient_address={json.dumps(_dpd.get('recipient_address'), ensure_ascii=False)}" if _has_addr else ""),
+                file=sys.stderr,
+            )
+
     payment_name = ((order.get("payment_option") or {}).get("name") or "").lower()
     is_cod = any(kw in payment_name for kw in _COD_KEYWORDS)
 

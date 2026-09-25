@@ -236,6 +236,7 @@ def build_toysi_order(order: dict) -> dict | None:
 
     shipping_fields = {}
     is_np = order.get("carrier", "nova_poshta") == "nova_poshta"
+    city_ref = ""  # заповнюється нижче, якщо площадка дала CityRef напряму — читає й раіон-резолв
     # НАДІЙНІСТЬ ДОСТАВКИ (рішення власника 2026-09-13: «передавати Toysi точну адресу від
     # клієнта», «зроби надійно, щоб більше не повертались»). Toysi приймає shipping_warehouse_id
     # як НОМЕР відділення НП. № — це ВИБІР КЛІЄНТА: структурний з площадки (EVA/Rozetka/сайт —
@@ -302,31 +303,44 @@ def build_toysi_order(order: dict) -> dict | None:
     if order["payment_method"] == "cod":
         moneyback = sum(item.get("price", 0) * item.get("qty", 1) for item in order["items"])
 
-    # РАЙОН у comment — Toysi-менеджер звіряє його з ТТН для КОЖНОГО замовлення
-    # (пряме прохання 2026-08-31, не лише EVA). comment завжди йде в Toysi й
-    # видимий на формі («Автоматично: eva #…»). В окреме поле Toysi район не має,
-    # а в назву міста його класти НЕ можна — зламало б Ref-матч перевізника.
-    # Універсально для всіх площадок: район резолвиться з (місто, область) через
-    # nova_poshta.settlement_raion — БЕЗ гадання (лише однозначний збіг в області;
-    # EVA-адреси вже несуть район у np_branch/shipping_address окремо, #447).
-    # Best-effort, лише НП: збій/неоднозначність → комент без району, як раніше.
+    # РАЙОН — Toysi-менеджер звіряє його з ТТН для КОЖНОГО замовлення (пряме прохання
+    # 2026-08-31, не лише EVA). Універсально для всіх площадок: район резолвиться з
+    # (місто, область) через nova_poshta.settlement_raion — БЕЗ гадання (лише однозначний
+    # збіг в області; EVA-адреси вже несуть район у np_branch/shipping_address окремо, #447).
+    # Best-effort, лише НП: збій/неоднозначність → без району, як раніше.
+    # 🔴 ФІКС (аудит 2026-09-25, наскрізна перевірка після інциденту 8-081747967): раніше тут
+    # НЕ передавався settlement_ref, хоча city_ref (точний NP-реф населеного пункту, вище)
+    # уже міг бути відомий — settlement_raion() без ref повертає "" щоразу, як є кілька
+    # однойменних сіл В ОДНІЙ ОБЛАСТІ (власний приклад функції: Троїцьке, Одеська обл. —
+    # Біляївський vs Любашівський р-н), навіть коли МИ вже маємо точний ref і неоднозначності
+    # нема. EVA-інжест (orders_watcher._eva_delivery_address) це вже робив правильно — router
+    # використовував менш точний шлях для ТОГО САМОГО поля, яке тепер керує маршрутизацією.
     raion = ""
     if city and order.get("carrier", "nova_poshta") == "nova_poshta":
         try:
-            raion = settlement_raion(city, area_hint=area_hint)
+            raion = settlement_raion(city, settlement_ref=city_ref, area_hint=area_hint)
         except Exception:  # noqa: BLE001 — район необов'язковий, не валимо передачу замовлення
             raion = ""
 
-    # ЛОКАЦІЯ в comment (звірка менеджером Toysi): місто + район (якщо однозначно) + ОБЛАСТЬ.
-    # Область кладемо ЗАВЖДИ, коли вона є — щоб при відсутньому CityRef Toysi-менеджер мав за чим
-    # розрізнити однойменні міста/села (аудит #553: раніше без району область губилась зовсім).
-    comment = f"Автоматично: {order['platform']} #{order['order_id']}"
+    # ЛОКАЦІЯ (місто + район, якщо однозначно, + область) — спільна для shipping_city ТА comment.
+    loc = city
     if order.get("carrier", "nova_poshta") == "nova_poshta" and city:
-        loc = city
         if raion:
             loc += f", {raion} р-н"
         if area_hint:
             loc += f", {area_hint} обл."
+
+    # ЖИВИЙ апідок Toysi (toysi.ua/api-doc.php, звірено 2026-09-25) для shipping_city:
+    # «Город доставки. Желательно с областью и районом, чтобы исключить ситуации, когда
+    # город клиента может оказаться не тем, что у перевозчика» — дослівний опис інциденту
+    # EVA 8-081747967 (2026-09-24, «Південне» Харківської обл. → «Южное» під Одесою).
+    # СТАРИЙ код клав область/район ЛИШЕ в comment (вільний текст) — Toysi-менеджер живо
+    # підтвердив «маршрутизація йде лише за містом», тобто вільний comment на маршрутизацію
+    # НЕ впливає; попереднє припущення «в назву міста район класти не можна — зламає
+    # Ref-матч перевізника» ніде в апідоку не підтверджене, тож приберене. Тепер shipping_city
+    # несе ПОВНУ локацію (як і раніше — comment теж, для звірки менеджером).
+    comment = f"Автоматично: {order['platform']} #{order['order_id']}"
+    if order.get("carrier", "nova_poshta") == "nova_poshta" and loc:
         comment += f" · {loc}"
 
     return {
@@ -336,7 +350,7 @@ def build_toysi_order(order: dict) -> dict | None:
         "last_name": last_name,
         "middle_name": middle_name,
         "phone": _normalize_phone_for_toysi(order.get("phone", "")),
-        "shipping_city_name": city or "Київ",  # Toysi вимагає непорожнє місто
+        "shipping_city_name": loc or "Київ",  # Toysi вимагає непорожнє місто
         # ЗАВЖДИ кладемо повний np_branch клієнта в shipping_address, навіть коли є CityRef
         # (раніше — лише коли CityRef відсутній, «структурно однозначно» через #553). Інцидент
         # EVA 8-081747967 (2026-09-24): CityRef+номер+назва міста передались Toysi ПОВНІСТЮ

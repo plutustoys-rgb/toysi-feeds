@@ -83,7 +83,15 @@ def build_order_create_payload(order: dict, test_mode: bool = False) -> dict:
       comment                 str, optional, <=500 символів
       declared_value          int, optional, мінімум 500
     """
-    positions_quantity = {str(i["toysi_code"]): int(i["qty"]) for i in order["items"]}
+    # ФІКС (аудит 2026-09-25): звичайна dict-компрегенція з однаковим toysi_code у двох
+    # позиціях мовчки лишала б ЛИШЕ ОСТАННЮ qty (попередні перезаписувались) — а moneyback
+    # (нижче) рахує суму за ВСІМА позиціями, дублі включно. Наслідок: Toysi стягне повний
+    # накладений платіж, але відвантажить менше одиниць, ніж клієнт оплатив. Тепер qty
+    # додається (сумується) за однаковим кодом, а не перезаписується.
+    positions_quantity: dict[str, int] = {}
+    for i in order["items"]:
+        code = str(i["toysi_code"])
+        positions_quantity[code] = positions_quantity.get(code, 0) + int(i["qty"])
 
     delivery_dt = order.get("delivery_dt") or (
         datetime.now() + timedelta(days=1)

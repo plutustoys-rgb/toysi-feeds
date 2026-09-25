@@ -8,7 +8,9 @@ test_address_pass_direct.py — регрес-тест «передаємо ад�
 НОМЕР відділення, якщо city_ref не резолвився (shipping_fields заповнювались лише разом з city_ref).
 
 ІНВАРІАНТИ (order_router.build_toysi_order):
-  1. is_np + місто + номер → shipping_warehouse_id = НОМЕР КЛІЄНТА ЗАВЖДИ; shipping_city_name = місто.
+  1. is_np + місто + номер → shipping_warehouse_id = НОМЕР КЛІЄНТА ЗАВЖДИ; shipping_city_name =
+     ПОВНА локація (місто+район+область, коли є) — апідок Toysi прямо радить область/район У
+     shipping_city (інцидент 8-081747967, 2026-09-25), окремого поля для них нема.
   2. np_city_ref є (площадка дала напряму: EVA / Rozetka-ref) → додається shipping_city_id.
   3. np_city_ref ПОРОЖНІЙ (НП недоступна) → номер+місто ВСЕ ОДНО йдуть; shipping_city_id ВІДСУТНІЙ;
      міста за назвою НЕ гадаємо (find_city прибрано — його імпорту в модулі більше нема).
@@ -57,7 +59,8 @@ def _order(**kw):
 to = orr.build_toysi_order(_order(np_warehouse_number="65",
                                   np_city_ref="db5c88e0-391c-11dd-90d9-001a92567626"))
 _chk("є ref: warehouse=65", to.get("shipping_warehouse_id") == "65")
-_chk("є ref: місто=Харків", to.get("shipping_city_name") == "Харків")
+_chk("є ref: shipping_city_name = повна локація (Toysi апідок радить область у shipping_city)",
+     to.get("shipping_city_name") == "Харків, Харківська обл.")
 _chk("є ref: city_id проставлено", to.get("shipping_city_id") == "db5c88e0-391c-11dd-90d9-001a92567626")
 _chk("є ref: адреса-текст ВСЕ ОДНО повна (інцидент 8-081747967)",
      to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
@@ -66,7 +69,8 @@ _chk("є ref: адреса-текст ВСЕ ОДНО повна (інциден
 #    але ПОВНИЙ текст адреси клієнта (з областю) йде в shipping_address + область у comment (аудит #553)
 to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref=""))
 _chk("нема ref: warehouse=65 ВСЕ ОДНО", to.get("shipping_warehouse_id") == "65")
-_chk("нема ref: місто=Харків ВСЕ ОДНО", to.get("shipping_city_name") == "Харків")
+_chk("нема ref: shipping_city_name = повна локація ВСЕ ОДНО",
+     to.get("shipping_city_name") == "Харків, Харківська обл.")
 _chk("нема ref: city_id ВІДСУТНІЙ (не гадаємо)", "shipping_city_id" not in to)
 _chk("нема ref: ПОВНИЙ текст адреси (з областю) у shipping_address",
      to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")

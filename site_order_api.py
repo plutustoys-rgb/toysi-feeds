@@ -7,6 +7,7 @@ site_order_api.py — HTTP-бекенд власного магазину plutus
   GET  /api/np/city?q=<текст>                 → автокомпліт міста НП        → [{ref,name,area}]
   GET  /api/np/warehouse?city_ref=<ref>&q=<n> → автокомпліт відділення НП   → [{ref,description,number}]
   POST /api/order        {items:[{id,qty}], name, phone, email, city_name, warehouse_name,
+                          np_city_ref, np_city_area, np_warehouse_number,
                           payment_method: "cod"|"prepaid"}
                          → створює замовлення (payment_confirmed=0) → {order_id,total,payment_method,liqpay}
                            cod  → liqpay=null, замовлення прийнято одразу (накладений платіж НП)
@@ -172,6 +173,14 @@ def build_order(payload: dict) -> tuple:
     warehouse = (payload.get("warehouse_name") or "").strip()
     if not city or not warehouse:
         raise OrderError("Оберіть місто та відділення Нової Пошти")
+    # Область обраного міста (НП AreaDescription, з автокомпліту фронта) — щоб Toysi не переплутав
+    # однойменні населені пункти різних областей (інцидент EVA 8-081747967, 24.09.2026: «Південне»
+    # Харківської обл. → «Южное» під Одесою; апідок Toysi прямо радить область/район У shipping_city).
+    # Клієнт-подане значення — санітуємо (обмежена довжина, без дужок/переносів, що зламали б
+    # "(Xобл.)"-формат, який parse_np_branch очікує).
+    _area_raw = (payload.get("np_city_area") or "").strip()[:60]
+    city_area = re.sub(r"[()\r\n]", "", _area_raw).strip()
+    city_area = re.sub(r"\s*обл(?:асть|\.)?\s*$", "", city_area, flags=re.IGNORECASE).strip()
 
     # Email — ОПЦІЙНИЙ (рішення SMM: email опційне). Приймаємо, лише якщо схоже на валідний
     # (@ + крапка в домені); інакше тихо None — не блокуємо замовлення через кривий необовʼязковий
@@ -205,7 +214,9 @@ def build_order(payload: dict) -> tuple:
         "customer_name": name,
         "phone": phone,
         "email": email,
-        "np_branch": f"{city}, {warehouse}",   # людський рядок (фолбек, якщо рефів нема)
+        # людський рядок (фолбек, якщо рефів нема) — "(Xобл.)" одразу після міста, той самий
+        # формат, що й Prom/Rozetka, щоб order_router.parse_np_branch витяг area_hint коректно.
+        "np_branch": f"{city} ({city_area} обл.), {warehouse}" if city_area else f"{city}, {warehouse}",
         "np_city_ref": np_city_ref,            # точний CityRef НП (автокомпліт) → Toysi напряму
         "np_warehouse_number": np_warehouse_number,  # точний № відділення (автокомпліт) → Toysi напряму
         "items": items,

@@ -61,7 +61,8 @@ def main():
     r = orr.build_toysi_order(_order(platform="prom", np_branch="Київ (Київська обл.), Відділення №5"))
     _check("Prom warehouse=розпарсений №5", r.get("shipping_warehouse_id"), "5")
     _check("Prom без гадання: city_id відсутній", "shipping_city_id" in r, False)
-    _check("Prom місто=Київ", r.get("shipping_city_name"), "Київ")
+    _check("Prom shipping_city_name = повна локація (Toysi апідок радить область/район)",
+           r.get("shipping_city_name"), "Київ, Київська обл.")
 
     # 4) КЛЮЧОВИЙ РЕГРЕС: однозначний №3 → саме 3 (раніше find_warehouse давав 2).
     r = orr.build_toysi_order(_order(platform="prom", np_branch="Мукачево, Відділення №3"))
@@ -85,6 +86,15 @@ def main():
     _check("Реф-fail: city_id відсутній (без гадання)", "shipping_city_id" in r, False)
     # Без CityRef → ПОВНИЙ текст адреси клієнта у shipping_address (Toysi має максимум даних), аудит #553
     _check("Реф-fail: повний текст адреси у shipping_address", r.get("shipping_address"), "Київ, Відділення №5")
+
+    # 8) НЕ-НП перевізник (ukrposhta/rozetka_delivery) з областю в np_branch — comment/shipping_city_name
+    #    БЕЗ суфіксу локації, навіть коли area_hint є (наскрізний аудит 2026-09-25, регрес-варта:
+    #    фікс #593-серії спершу випадково додав локацію в comment для НЕ-НП замовлень теж).
+    r = orr.build_toysi_order(_order(platform="rozetka", carrier="ukrposhta",
+                                     np_branch="Харків (Харківська обл.), Відділення №1",
+                                     np_warehouse_number="1"))
+    _check("Укрпошта: shipping_city_name БЕЗ області (не-НП)", r.get("shipping_city_name"), "Харків")
+    _check("Укрпошта: comment БЕЗ суфіксу локації", r.get("comment"), "Автоматично: rozetka #1")
 
     print()
     if _FAILS:

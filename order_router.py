@@ -53,6 +53,30 @@ _CITY_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _CITY_AREA_RE = re.compile(r"\(([^)]*?)\s*обл\.?(?:\s*,[^)]*)?\)\s*$", re.IGNORECASE)
 
 
+def _np_branch_remainder_after_city(np_branch: str) -> str:
+    """Частина np_branch ПІСЛЯ міста+області (перший кома верхнього рівня, поза дужками) —
+    та сама дужко-свідома логіка розрізу, що й parse_np_branch() (див. коментар там), винесена
+    окремо для build_toysi_order(): коли shipping_city_name уже несе ПОВНУ інформацію
+    місто+область (carrier=nova_poshta), shipping_address не повинен її дублювати — досить
+    відділення+вулиці. Порожній np_branch чи без коми верхнього рівня → повертає рядок як є
+    (безпечний фолбек — зайва інформація краще за втрачену)."""
+    if not np_branch:
+        return ""
+    depth = 0
+    cut = None
+    for i, ch in enumerate(np_branch):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            cut = i
+            break
+    if cut is None:
+        return np_branch.strip()
+    return np_branch[cut + 1:].strip()
+
+
 def parse_np_branch(np_branch: str) -> tuple:
     """
     Витягує (місто, запит_відділення, назва_області) з вільнотекстового
@@ -257,24 +281,29 @@ def build_toysi_order(order: dict) -> dict | None:
         # Тепер номер клієнта йде в Toysi ЗАВЖДИ (коли є місто+номер); CityRef — лише коли точний.
         shipping_fields["shipping_warehouse_id"] = wh_number
         city_ref = (order.get("np_city_ref") or "").strip()
-        # РЕТРАЙ РЕЗОЛВУ ПРИ ФОРВАРДІ (2026-09-17, інцидент 906260104 — money-risk, знайдений
-        # живо через скрін Toysi-кабінету, НЕ вигаданий): np_city_ref резолвиться ОДИН раз при
-        # інжесті (orders_watcher._convert_rozetka_order, всередині вже є ретрай 3×1.5с на
-        # throttle НП) — якщо саме ТОЙ момент потрапив під throttle довше за ці ~4.5с, city_ref
-        # губиться НАЗАВЖДИ (форвард раніше не мав чим ретраїти: сирий Ref ніде не зберігався).
-        # Тепер np_ref_id persisted у orders.db (окремо від успіху резолву) — форвард, який
-        # відбувається ІНШИМ моментом часу (після bank_check у order_pipeline), пробує резолв
-        # ЩЕ РАЗ. Це другий, рознесений у часі шанс — набагато надійніше за один заряд 3 спроб
-        # поспіль (nova_poshta.warehouse_by_ref вже сам ретраїть+чекає всередині).
-        if not city_ref and order.get("np_ref_id"):
+        # 🔴 ФІКС (2026-09-26, живий інцидент EVA 8-081850129 — money/довіра-ризик, знайдений
+        # наскрізним аудитом і підтверджений живим викликом NP API, НЕ вигаданий): np_city_ref
+        # від ПЛОЩАДКИ не завжди є валідним NP CityRef для ТОГО САМОГО відділення. Живий доказ:
+        # EVA дала city_id="e718a680-...", а nova_poshta.warehouse_by_ref(EVA-warehouse_id="303")
+        # повернув city_ref="8d5a980d-..." — ІНШИЙ GUID для того самого відділення №303, той
+        # самий опис/номер. Toysi не розпізнав хибний CityRef і показав загальну "Адресна
+        # доставка" замість "Нова Пошта" (номер+текст усе одно довезли правильно — це НЕ
+        # money-loss цього разу, але довіра до city_id площадки як джерела була помилковою).
+        # Раніше ця верифікація запускалась ЛИШЕ коли city_ref від площадки був ПОРОЖНІМ
+        # (ретрай-на-збій throttle, інцидент 906260104, 17.09) — тепер вона запускається ЗАВЖДИ,
+        # коли є np_ref_id, і її результат ЗАВЖДИ ПЕРЕВАЖАЄ значення від площадки (не лише коли
+        # площадка нічого не дала). Живий NP-довідник (getWarehouses за точним Ref) — єдине
+        # авторитетне джерело CityRef; поле площадки — лише фолбек, якщо жива перевірка
+        # недоступна (мережа/throttle), а не навпаки.
+        if order.get("np_ref_id"):
             try:
                 _wh = warehouse_by_ref(order["np_ref_id"])
-            except Exception as e:  # noqa: BLE001 — ретрай best-effort, не валимо форвард
+            except Exception as e:  # noqa: BLE001 — верифікація best-effort, не валимо форвард
                 _wh = None
-                print(f"[order_router] Ретрай warehouse_by_ref для {order['internal_order_id']}: {e}",
+                print(f"[order_router] Верифікація warehouse_by_ref для {order['internal_order_id']}: {e}",
                       file=sys.stderr)
             if _wh and _wh.get("city_ref") and _wh.get("number"):
-                city_ref = _wh["city_ref"]
+                city_ref = _wh["city_ref"]  # ЗАВЖДИ переважає над np_city_ref площадки
                 shipping_fields["shipping_warehouse_id"] = _wh["number"]  # звіряємо номер тим самим резолвом
         if city_ref:
             shipping_fields["shipping_city_id"] = city_ref
@@ -351,15 +380,25 @@ def build_toysi_order(order: dict) -> dict | None:
         "middle_name": middle_name,
         "phone": _normalize_phone_for_toysi(order.get("phone", "")),
         "shipping_city_name": loc or "Київ",  # Toysi вимагає непорожнє місто
-        # ЗАВЖДИ кладемо повний np_branch клієнта в shipping_address, навіть коли є CityRef
-        # (раніше — лише коли CityRef відсутній, «структурно однозначно» через #553). Інцидент
-        # EVA 8-081747967 (2026-09-24): CityRef+номер+назва міста передались Toysi ПОВНІСТЮ
-        # коректно (звірено живо з orders.db — np_city_ref/np_warehouse_number/np_branch усі
-        # правильні), а ТТН все одно пішла в геть інше місто — тобто структурний CityRef САМ
-        # ПО СОБІ не гарантує коректний резолв на боці Toysi. Повний текст адреси — дешевий
-        # додатковий сигнал (не заміна структурних полів, вони йдуть як і раніше), корисний
-        # і для звірки, і якщо Toysi колись читає адресу як бекап/кросчек.
-        "shipping_address": order.get("np_branch", ""),
+        # ЗАВЖДИ кладемо np_branch клієнта в shipping_address, навіть коли є CityRef (раніше —
+        # лише коли CityRef відсутній, «структурно однозначно» через #553). Інцидент EVA
+        # 8-081747967 (2026-09-24): CityRef+номер+назва міста передались Toysi ПОВНІСТЮ коректно,
+        # а ТТН все одно пішла в геть інше місто — структурний CityRef САМ ПО СОБІ не гарантує
+        # коректний резолв на боці Toysi. Текст адреси — дешевий додатковий сигнал.
+        # 🔴 ФІКС (2026-09-26, наскрізний аудит + живий приклад EVA 8-081850129): для NP-замовлень
+        # shipping_city_name (loc, вище) ВЖЕ несе ПОВНЕ місто+область — дублювати їх ЩЕ РАЗ на
+        # початку shipping_address не додає інформації, лише робить адресу в Toysi нечитабельною
+        # (живий приклад: «г. Київ, Київська обл.. Склад #303. Київ (Київська обл.), Відділення
+        # №303...» — місто+область двічі). Тому для carrier=nova_poshta лишаємо в shipping_address
+        # ЛИШЕ частину ПІСЛЯ міста (відділення+вулиця) — саме те, чого shipping_city_name не несе.
+        # Для НЕ-NP перевізників (ukrposhta/rozetka_delivery) shipping_city_name — ГОЛЕ місто (без
+        # області, гейт вище), тож там лишаємо np_branch ПОВНІСТЮ — це єдине місце, де область
+        # взагалі передається.
+        "shipping_address": (
+            _np_branch_remainder_after_city(order.get("np_branch", ""))
+            if order.get("carrier", "nova_poshta") == "nova_poshta"
+            else order.get("np_branch", "")
+        ),
         "moneyback": moneyback,
         "comment": comment,
         **shipping_fields,

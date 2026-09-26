@@ -84,8 +84,9 @@ def main():
     r = orr.build_toysi_order(_order(platform="prom", np_branch="Київ, Відділення №5"))
     _check("Реф-fail: warehouse=5 структурно", r.get("shipping_warehouse_id"), "5")
     _check("Реф-fail: city_id відсутній (без гадання)", "shipping_city_id" in r, False)
-    # Без CityRef → ПОВНИЙ текст адреси клієнта у shipping_address (Toysi має максимум даних), аудит #553
-    _check("Реф-fail: повний текст адреси у shipping_address", r.get("shipping_address"), "Київ, Відділення №5")
+    # [ОНОВЛЕНО 2026-09-26] Без CityRef, carrier=nova_poshta → shipping_address несе лише
+    # залишок ПІСЛЯ міста (shipping_city_name вже несе місто), не дублює його — фікс дедуплікації.
+    _check("Реф-fail: адреса-текст = залишок ПІСЛЯ міста", r.get("shipping_address"), "Відділення №5")
 
     # 8) НЕ-НП перевізник (ukrposhta/rozetka_delivery) з областю в np_branch — comment/shipping_city_name
     #    БЕЗ суфіксу локації, навіть коли area_hint є (наскрізний аудит 2026-09-25, регрес-варта:

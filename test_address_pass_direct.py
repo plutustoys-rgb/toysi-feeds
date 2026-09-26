@@ -14,9 +14,13 @@ test_address_pass_direct.py — регрес-тест «передаємо ад�
   2. np_city_ref є (площадка дала напряму: EVA / Rozetka-ref) → додається shipping_city_id.
   3. np_city_ref ПОРОЖНІЙ (НП недоступна) → номер+місто ВСЕ ОДНО йдуть; shipping_city_id ВІДСУТНІЙ;
      міста за назвою НЕ гадаємо (find_city прибрано — його імпорту в модулі більше нема).
-  4. shipping_address несе ПОВНИЙ np_branch клієнта ЗАВЖДИ (навіть коли CityRef є структурно) —
-     інцидент EVA 8-081747967 (2026-09-24): коректний CityRef+номер самі по собі не вберегли від
-     хибної маршрутизації на боці Toysi, текст-адреса — дешевий додатковий сигнал.
+  4. [ОНОВЛЕНО 2026-09-26, наскрізний аудит] shipping_address для carrier=nova_poshta несе
+     ЛИШЕ ЗАЛИШОК np_branch ПІСЛЯ міста+області (відділення+вулиця) — не дублює те, що вже є
+     в shipping_city_name (місто, район 1). Живий інцидент EVA 8-081850129 (2026-09-26):
+     стара логіка (повний np_branch завжди) при stacked-фіксах #593+#594 давала подвійне
+     місто/область в адресі Toysi ("г. Київ, Київська обл.. Склад #303. Київ (Київська обл.),
+     Відділення №303..."). Для НЕ-НП перевізників (shipping_city_name БЕЗ області) залишається
+     ПОВНИЙ np_branch — єдине місце, де область узагалі передається.
   5. np_city_ref порожній, АЛЕ np_ref_id є (сирий Ref persisted, інцидент 906260104) → build_toysi_order
      ретраїть warehouse_by_ref ще раз при форварді: успіх → city_id/warehouse_id з retry; провал
      ОБОХ спроб + замовлення ще СВІЖЕ (< CITY_REF_WAIT_LIMIT) → повертає None, форвард
@@ -62,8 +66,8 @@ _chk("є ref: warehouse=65", to.get("shipping_warehouse_id") == "65")
 _chk("є ref: shipping_city_name = повна локація (Toysi апідок радить область у shipping_city)",
      to.get("shipping_city_name") == "Харків, Харківська обл.")
 _chk("є ref: city_id проставлено", to.get("shipping_city_id") == "db5c88e0-391c-11dd-90d9-001a92567626")
-_chk("є ref: адреса-текст ВСЕ ОДНО повна (інцидент 8-081747967)",
-     to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
+_chk("є ref: адреса-текст = залишок ПІСЛЯ міста (не дублює shipping_city_name, фікс 2026-09-26)",
+     to.get("shipping_address") == "Відділення №65")
 
 # 3: np_city_ref ПОРОЖНІЙ (НП недоступна) → номер+місто йдуть, city_id ВІДСУТНІЙ, БЕЗ гадання,
 #    але ПОВНИЙ текст адреси клієнта (з областю) йде в shipping_address + область у comment (аудит #553)
@@ -72,13 +76,13 @@ _chk("нема ref: warehouse=65 ВСЕ ОДНО", to.get("shipping_warehouse_id
 _chk("нема ref: shipping_city_name = повна локація ВСЕ ОДНО",
      to.get("shipping_city_name") == "Харків, Харківська обл.")
 _chk("нема ref: city_id ВІДСУТНІЙ (не гадаємо)", "shipping_city_id" not in to)
-_chk("нема ref: ПОВНИЙ текст адреси (з областю) у shipping_address",
-     to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
+_chk("нема ref: адреса-текст = залишок ПІСЛЯ міста (shipping_city_name вже несе місто+область)",
+     to.get("shipping_address") == "Відділення №65")
 _chk("нема ref: область у comment", "Харківська обл." in to.get("comment", ""))
 
 # 3в: коли CityRef Є — адреса-текст ВСЕ ОДНО повна (не порожня — інцидент 8-081747967)
 to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="db5c88e0"))
-_chk("є ref: shipping_address повна", to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
+_chk("є ref: shipping_address = залишок ПІСЛЯ міста", to.get("shipping_address") == "Відділення №65")
 
 # 3b: find_city прибрано з модуля — гадання за назвою фізично неможливе
 _chk("find_city не імпортовано в order_router", not hasattr(orr, "find_city"))
@@ -119,7 +123,7 @@ _chk("ретрай успішний: warehouse_by_ref викликано з ти
 _chk("ретрай успішний: не None (форвардимо одразу)", to is not None)
 _chk("ретрай успішний: city_id з retry", to.get("shipping_city_id") == "db5c88e0-391c-11dd-90d9-001a92567626")
 _chk("ретрай успішний: warehouse_id з retry", to.get("shipping_warehouse_id") == "65")
-_chk("ретрай успішний: адреса-текст ВСЕ ОДНО повна", to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
+_chk("ретрай успішний: адреса-текст = залишок ПІСЛЯ міста", to.get("shipping_address") == "Відділення №65")
 
 # 6b: ретрай ТЕЖ провалився, СВІЖЕ замовлення (created_at=щойно) → ВІДКЛАДАЄМО форвард
 # (власник 2026-09-17: «не треба алертів, роби так щоб цих багів не було» — чекаємо на ТОЧНІ
@@ -144,8 +148,8 @@ to = orr.build_toysi_order(_order(np_warehouse_number="65", np_city_ref="",
 _chk("ретрай провалено, старе: не None (час вичерпано, форвардимо)", to is not None)
 _chk("ретрай провалено, старе: city_id ВІДСУТНІЙ", "shipping_city_id" not in to)
 _chk("ретрай провалено, старе: warehouse_id все одно клієнтів №65", to.get("shipping_warehouse_id") == "65")
-_chk("ретрай провалено, старе: повний текст адреси клієнта (не вигадка, просто текст)",
-     to.get("shipping_address") == "Харків (Харківська обл.), Відділення №65")
+_chk("ретрай провалено, старе: адреса-текст = залишок ПІСЛЯ міста (реальні дані, не вигадка)",
+     to.get("shipping_address") == "Відділення №65")
 
 # 6d: без created_at узагалі (синтетичний виклик поза orders.db) → як «час вичерпано»,
 # форвардимо одразу (build_toysi_order завжди повертає dict, коли контексту з orders.db нема)

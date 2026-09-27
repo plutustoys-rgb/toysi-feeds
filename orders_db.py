@@ -356,6 +356,12 @@ def init_db(db_path: str = DB_PATH) -> None:
         # лише web-замовлення сайту; checkout його збирає, але раніше він відкидався (у orders не було
         # колонки). ADD COLUMN перед міграціями-перебудовами, щоб ті його зберегли.
         _ensure_column(conn, "orders", "email", "email TEXT")
+        # Реально спостережена знижка Toysi зафіксована в персистентний per-SKU кеш
+        # (2026-09-27, наскрізний аудит "ми торгуєм зі збитком" — competitor_pricing.
+        # TOYSI_OBSERVED_DISCOUNT_FILE, order_status_tracker._maybe_record_observed_discount).
+        # Ідемпотентність — той самий підхід, що й prom_ttn_pushed_at/kodv_logged_at: фіксуємо
+        # РІВНО раз на замовлення, не на кожен цикл опитування трекера.
+        _ensure_column(conn, "orders", "discount_recorded_at", "discount_recorded_at TEXT")
         # EVA як платформа (2026-07-31): додати 'eva' у CHECK(platform) на існуючих БД
         # (SQLite не ALTER-ить CHECK — перебудова таблиці). Викликається ПІСЛЯ
         # _ensure_column, щоб перебудова зберегла всі щойно додані колонки.
@@ -649,6 +655,17 @@ def mark_prom_ttn_pushed(conn: sqlite3.Connection, internal_order_id: str) -> No
     підхід, що й mark_rozetka_ttn_pushed()/mark_prom_delivered_pushed()."""
     conn.execute(
         "UPDATE orders SET prom_ttn_pushed_at = ? WHERE internal_order_id = ?",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+
+
+def mark_discount_recorded(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Позначає, що реальну знижку Toysi для ЦЬОГО замовлення вже знято з
+    order_positions і записано в competitor_pricing.TOYSI_OBSERVED_DISCOUNT_FILE
+    (order_status_tracker._maybe_record_observed_discount) — захист від повторного
+    запиту на кожному циклі опитування, той самий підхід, що й mark_prom_ttn_pushed()."""
+    conn.execute(
+        "UPDATE orders SET discount_recorded_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
 

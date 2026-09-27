@@ -8,7 +8,7 @@ from orders_db import (
     mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
     mark_prom_ttn_pushed, mark_eva_ttn_pushed, update_delivery_status,
     mark_rozetka_cancel_ticket_sent, mark_np_return_created, mark_np_return_dryrun_notified,
-    mark_payment_confirmed, mark_cancelled,
+    mark_payment_confirmed, mark_cancelled, mark_discount_recorded,
 )
 import nova_poshta
 from orders_watcher import (
@@ -19,10 +19,12 @@ import eva_orders_client
 from telegram_notify import send_telegram_message
 from toysi_order_submit import (
     fetch_order_statuses,
+    fetch_order_positions,
     describe_order_status,
     TERMINAL_ORDER_STATUSES,
     ToysiAPIError,
 )
+from competitor_pricing import record_observed_discounts, TOYSI_ASSEMBLY_FEE_PID
 
 # Множина delivery_status, що враховуються як "неуспішні" для показника
 # Prom "успішних замовлень" (P0-2, daily_report.py) — той самий набір тут,
@@ -745,6 +747,58 @@ def _maybe_sync_eva_status(conn, order: dict) -> None:
         print(f"[order_status_tracker] EVA {iid}: статус {st} → cancelled")
 
 
+def _maybe_record_observed_discount(conn, order: dict) -> None:
+    """Знімає РЕАЛЬНУ знижку Toysi для КОЖНОГО toysi_code цього замовлення з
+    order_positions і кладе в персистентний per-SKU кеш (competitor_pricing.
+    TOYSI_OBSERVED_DISCOUNT_FILE) — наскрізний аудит 2026-09-27 ("ми торгуєм зі
+    збитком", живий інцидент EVA 8-081895735, «Курчатко» −2.30₴/шт): виняток зі
+    стандартної 15%-знижки НЕ категорійний і НЕ брендовий, а per-SKU (живий доказ:
+    один бренд+категорія+країна, різні SKU — 15% і 5% одночасно, competitor_pricing.py
+    коментар над TOYSI_OBSERVED_DISCOUNT_FILE). Toysi API не дає цей % ДО замовлення —
+    структурне обмеження (той самий висновок, що вже задокументований над
+    real_toysi_cost() з 2026-07-22), тому єдиний спосіб дізнатись — після факту, тут.
+
+    Ідемпотентно (discount_recorded_at) — знімаємо РІВНО раз на замовлення, доступно
+    вже на першому циклі опитування (order_positions віддає ціни одразу після
+    forward, не чекає оплати/відвантаження — перевірено живо на 5+ щойно
+    форвардженних замовленнях). Best-effort: мережева/API помилка НЕ валить
+    track_orders() для інших замовлень (той самий підхід, що й усі інші _maybe_*)."""
+    if order.get("discount_recorded_at"):
+        return
+    toysi_order_id = order.get("toysi_order_id")
+    if not toysi_order_id:
+        return
+    try:
+        positions = fetch_order_positions(toysi_order_id)
+    except Exception as e:  # noqa: BLE001 — best-effort, не валимо реальний трекінг
+        print(f"[order_status_tracker] Знижку для {order['internal_order_id']} не знято "
+              f"(fail-open, ретрай наступним циклом): {e}", file=sys.stderr)
+        return
+    if not positions:
+        return
+    prices = positions.get("positions_price") or {}
+    discounted = positions.get("positions_discount_price") or {}
+    updates = {}
+    for pid, price_raw in prices.items():
+        if pid == TOYSI_ASSEMBLY_FEE_PID:  # "Збірка" — не товар, знижка на неї не діє ніколи
+            continue
+        try:
+            price = float(price_raw)
+            disc = float(discounted.get(pid, price_raw))
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+        updates[pid] = {
+            "pct": round((price - disc) / price, 4),
+            "observed_at": datetime.now().isoformat(timespec="seconds"),
+            "source_order": order["internal_order_id"],
+        }
+    if updates:
+        record_observed_discounts(updates)
+    mark_discount_recorded(conn, order["internal_order_id"])
+
+
 def track_orders() -> None:
     with get_connection() as conn:
         active = get_active_toysi_orders(conn)
@@ -809,6 +863,9 @@ def track_orders() -> None:
             _maybe_sync_eva_status(conn, order)
             # Post-forward кабінетне скасування Prom/EVA (Rozetka вже в _maybe_ticket_rozetka_cancelled).
             _maybe_return_prom_eva_cancelled(conn, order)
+            # Per-SKU знижка Toysi (аудит 2026-09-27, "ми торгуєм зі збитком") — незалежно від
+            # статусу доставки, доступно одразу після forward.
+            _maybe_record_observed_discount(conn, order)
 
             ttn_note = f", ТТН: {ttn}" if ttn else ""
             terminal_note = " [термінальний, більше не опитуємо]" if status_code in TERMINAL_ORDER_STATUSES else ""

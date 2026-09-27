@@ -72,7 +72,7 @@ import csv
 import json
 import re
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import time
@@ -343,6 +343,109 @@ TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS = (
 # одиницю буде трохи меншою за 15₴, не більшою — ризик лише в бік
 # заниженої, не завищеної ціни).
 TOYSI_ASSEMBLY_FEE_UAH = 15.0
+TOYSI_ASSEMBLY_FEE_PID = "33340"  # "Збірка" — окрема позиція в order_positions, не товар
+
+
+# ДОДАНО (2026-09-27, наскрізний аудит "ми торгуєм зі збитком" — живий інцидент EVA
+# 8-081895735, «Курчатко» продано в мінус −2.30₴/шт): TOYSI_DISCOUNT_RATE/UKRAINE_CAP/
+# EXCLUDED_* вище — робоче ПРИПУЩЕННЯ за категорією/брендом/країною. Повний скан 129
+# реальних замовлень (order_positions, живий Toysi API) це припущення СПРОСТУВАВ:
+# виняток НЕ категорійний і НЕ брендовий — він per-SKU. Живий доказ: бренд MIC,
+# категорія «Соски і прорізувачі», країна Китай — «Прорізувач...Білочка» (id 119451)
+# отримав 15%, «Прорізувач...Овечка» (id 119450) — лише 5%. Той самий бренд+категорія
+# в «Мильні бульбашки»: «Бульбашки Пінбол» 15%, «Пістолет з бульбашками» 5%. Жодне
+# правило за метаданими каталогу не відрізнить ці пари — вони структурно ідентичні.
+# Intex (нібито 0%, TOYSI_DISCOUNT_EXCLUDED_BRANDS) реально отримав 15% двічі — те
+# саме "правило" застаріло навіть для вже задокументованого винятку.
+#
+# Єдине надійне джерело — РЕАЛЬНА знижка з order_positions ПІСЛЯ того, як товар уже
+# продавався (Toysi API не дає per-SKU знижку ДО замовлення, лише after-the-fact —
+# структурне обмеження, не наша прогалина). Тому: персистентний кеш спостережень
+# по pid, що поповнюється order_status_tracker.py._maybe_record_observed_discount()
+# з КОЖНОГО нового замовлення (once, ідемпотентно), і toysi_discounted_price()
+# перевіряє його ПЕРШИМ — раніше за всі метадані-правила нижче. Товар, що ще НІКОЛИ
+# не продавався — і далі йде через category/brand/country-оцінку (найкраще, що є
+# без живого прецеденту).
+TOYSI_OBSERVED_DISCOUNT_FILE = Path(__file__).parent / "toysi_observed_discount_state.json"
+# Знижка може змінитись у часі (рівень власника переходив 0.05->0.15 по мірі
+# поповнень) — стара спостережена точка не вважається вічною істиною.
+TOYSI_OBSERVED_DISCOUNT_MAX_AGE_DAYS = 90
+
+_observed_discount_cache: dict | None = None  # лінива, одноразова за процес
+
+
+def _load_observed_discounts() -> dict:
+    global _observed_discount_cache
+    if _observed_discount_cache is not None:
+        return _observed_discount_cache
+    try:
+        _observed_discount_cache = json.loads(
+            TOYSI_OBSERVED_DISCOUNT_FILE.read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ValueError):
+        _observed_discount_cache = {}
+    return _observed_discount_cache
+
+
+def observed_discount_pct(pid) -> float | None:
+    """Реально спостережений % знижки для КОНКРЕТНОГО pid (не категорія/бренд/країна) —
+    з живих замовлень, записаних order_status_tracker.py. None, якщо товар ще ніколи
+    не продавався ЧЕРЕЗ НАС, чи запис застарів (> TOYSI_OBSERVED_DISCOUNT_MAX_AGE_DAYS)."""
+    entry = _load_observed_discounts().get(str(pid))
+    if not entry:
+        return None
+    try:
+        observed_at = datetime.fromisoformat(entry["observed_at"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    if datetime.now() - observed_at > timedelta(days=TOYSI_OBSERVED_DISCOUNT_MAX_AGE_DAYS):
+        return None
+    try:
+        return float(entry["pct"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+# Санітарна межа на спостережений pct (аудит PR перед мержем 2026-09-27): усі відомі РЕАЛЬНІ
+# рівні знижки Toysi — 0%/5%/15% (повний скан 129 замовлень). Без цієї межі один спотворений
+# запис (напр. розсинхрон positions_price/positions_discount_price на боці Toysi чи парсингу)
+# довірявся б СЛІПО на TOYSI_OBSERVED_DISCOUNT_MAX_AGE_DAYS — саме той клас мовчазного money-
+# ризику, що цей кеш і покликаний закрити, лише тепер через ОДНУ "брудну" точку замість
+# застарілого категорійного правила. Запас над 15% (не рівно 15%), бо рівень власника міг би
+# легітимно зрости в майбутньому (уже піднімався 5%->15%, competitor_pricing.py git log).
+TOYSI_OBSERVED_DISCOUNT_SANITY_MAX = 0.20
+
+
+def record_observed_discounts(updates: dict) -> None:
+    """Домішує {pid: {"pct":..., "observed_at":..., "source_order":...}} у персистентний
+    кеш (атомарний запис, той самий підхід, що й link_cache_validator._save_cursor) —
+    останнє спостереження перезаписує попереднє (знижка може змінитись, довіряємо
+    найновішому факту, не історії). Записи з pct поза [0, TOYSI_OBSERVED_DISCOUNT_SANITY_MAX]
+    відкидаються (не записуються) — санітарна межа, не мовчазна довіра аномалії."""
+    if not updates:
+        return
+    clean = {}
+    for pid, entry in updates.items():
+        try:
+            pct = float(entry.get("pct"))
+        except (TypeError, ValueError):
+            print(f"[competitor_pricing] Відкинуто спостереження pid={pid}: pct не число ({entry.get('pct')!r})",
+                  file=sys.stderr)
+            continue
+        if not (0 <= pct <= TOYSI_OBSERVED_DISCOUNT_SANITY_MAX):
+            print(f"[competitor_pricing] Відкинуто спостереження pid={pid}: pct={pct} поза "
+                  f"санітарною межею [0, {TOYSI_OBSERVED_DISCOUNT_SANITY_MAX}]", file=sys.stderr)
+            continue
+        clean[pid] = entry
+    if not clean:
+        return
+    global _observed_discount_cache
+    cache = dict(_load_observed_discounts())
+    cache.update(clean)
+    tmp = TOYSI_OBSERVED_DISCOUNT_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(TOYSI_OBSERVED_DISCOUNT_FILE)
+    _observed_discount_cache = cache
 
 
 def _normalize_for_discount_match(text: str) -> str:
@@ -384,6 +487,13 @@ def toysi_discounted_price(item: dict) -> float:
         return 0.0
     if base_price <= 0:
         return base_price
+
+    # ПЕРШЕ джерело: реально спостережена знижка ЦЬОГО pid (аудит 2026-09-27 — виняток
+    # per-SKU, метадані-правила нижче цього не ловлять, див. коментар над
+    # TOYSI_OBSERVED_DISCOUNT_FILE). Товар без живого прецеденту падає у фолбек нижче.
+    observed = observed_discount_pct(item.get("id") or item.get("vendor_code"))
+    if observed is not None:
+        return base_price * (1 - observed)
 
     vendor_norm = _normalize_for_discount_match(item.get("vendor"))
     category_name = (item.get("category_name") or "").lower()

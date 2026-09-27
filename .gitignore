@@ -69,6 +69,15 @@ prom_competitor_pricer_summary.md
 # гілка публічна й force-push на неї замінив би live-фіди/стан репрайсера).
 full_catalog_scan_state.json
 
+# Персистентний per-SKU кеш РЕАЛЬНО спостережених знижок Toysi (2026-09-27, аудит
+# "ми торгуєм зі збитком") — {pid: {pct, observed_at, source_order}}, пишеться
+# order_status_tracker.py, читає competitor_pricing.py. ЛИШЕ VPS-локальний (той
+# самий принцип, що й full_catalog_scan_state.json вище) — НЕ round-trip через
+# feed-data: розкриває реальну собівартість/знижку, фінтаємниця (як cost/margin_pct
+# у prom_competitor_price_state.json, лише тут навіть редагованої публічної версії
+# нема сенсу робити — значення суто внутрішні).
+toysi_observed_discount_state.json
+
 # ЗАМІНЕНО (2026-07-27) на rozetka_static_selection.json нижче —
 # select_top_items()/грейс-період для Rozetka прибрано повністю (пряме
 # рішення власниці, див. generate_rozetka_feed.py). Код більше не пише

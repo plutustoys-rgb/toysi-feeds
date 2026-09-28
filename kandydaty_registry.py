@@ -28,11 +28,15 @@ Resolved-записи НЕ видаляються (аудиторський сл
 його прогону, ідемпотентно — читає ввесь реєстр, не залежить від того, хто саме її викликав):
 формує `документи_КОДВ/_vidkryti_kandydaty.md` — усі "open" записи, найстарші вгорі.
 """
+import argparse
 import json
 import os
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
+
+from telegram_notify import send_throttled_alert
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -41,6 +45,12 @@ COWORK_DIR = Path(os.environ.get(
     "PLUTUS_COWORK_DIR", r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))
 REGISTRY_PATH = COWORK_DIR / "документи_КОДВ" / "_vidkryti_kandydaty.json"
 REPORT_PATH = COWORK_DIR / "документи_КОДВ" / "_vidkryti_kandydaty.md"
+# Визнані винятки (Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.3): "щоб чеки 1,3,5,8 не висіли
+# шумом і не маскували нові" — кандидати, чию затримку власник/бухгалтер уже пояснили,
+# виключаються зі stale-алерту (acknowledge()), лишаючись "open" у самому звіті (прозорість —
+# видно, що досі не в книзі, просто не сигналить повторно).
+ACK_PATH = COWORK_DIR / "документи_КОДВ" / "_vidkryti_kandydaty_ack.json"
+DEFAULT_STALE_DAYS = 2
 
 
 def _load_registry(path: Path = None) -> dict:
@@ -116,11 +126,13 @@ def sync_open_candidates(source: str, current: list, path: Path = None, resolve:
     return {"newly_opened": newly_opened, "still_open": still_open, "resolved": resolved}
 
 
-def write_open_report(path: Path = None, out_path: Path = None) -> Path:
+def write_open_report(path: Path = None, out_path: Path = None, ack_path: Path = None) -> Path:
     """Формує `_vidkryti_kandydaty.md` — усі "open" записи реєстру, найстарші (найдовше висять)
     вгорі. Можна викликати з будь-якого kandydaty-скрипта наприкінці прогону — читає ввесь
-    реєстр, не лише "свій" source."""
+    реєстр, не лише "свій" source. Визнані винятки (acknowledge()) позначені окремо — досі
+    видно, що не в книзі, але не рахуються в stale-алерт (див. check_stale_candidates)."""
     reg = _load_registry(path)
+    ack = _load_ack(ack_path)
     out_path = out_path or REPORT_PATH
     today = date.today()
     sources = sorted({e.get("source", "?") for e in reg.values()}) or ["ще жодного"]
@@ -144,25 +156,182 @@ def write_open_report(path: Path = None, out_path: Path = None) -> Path:
         "підтвердить, що він більше не unresolved (пройшов власну звірку з книгою) — не за",
         "курсором джерела.",
         "",
-        "| Днів висить | Джерело | Ключ | Сума | Дата | Опис |",
-        "|---|---|---|---|---|---|",
+        "| Днів висить | Джерело | Ключ | Сума | Дата | Опис | Визнаний виняток |",
+        "|---|---|---|---|---|---|---|",
     ]
     for age_days, full_key, entry in open_entries:
         age_str = str(age_days) if age_days is not None and age_days >= 0 else "?"
+        ack_entry = ack.get(full_key)
+        ack_str = f"✅ {ack_entry['reason']}" if ack_entry else ""
         lines.append(
             f"| {age_str} | {entry.get('source', '?')} | {entry.get('key', '?')} | "
-            f"{entry.get('sum', '?')} | {entry.get('date', '?')} | {entry.get('summary', '')} |"
+            f"{entry.get('sum', '?')} | {entry.get('date', '?')} | {entry.get('summary', '')} | {ack_str} |"
         )
     if not open_entries:
-        lines.append("| — | — | — | — | — | Немає відкритих кандидатів. |")
+        lines.append("| — | — | — | — | — | Немає відкритих кандидатів. | |")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out_path
 
 
-if __name__ == "__main__":
+def _load_ack(path: Path = None) -> dict:
+    path = path or ACK_PATH
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def acknowledge(full_key: str, reason: str, path: Path = None) -> None:
+    """Позначає ВІДКРИТОГО кандидата визнаним винятком (Аудитор, КОДВ_CHANNEL.md, 2026-09-28,
+    п.3 — «чеки 1,3,5,8 не мають висіти шумом і маскувати нові»): власник/бухгалтер уже знає
+    причину затримки. Виключається зі stale-алерту (check_stale_candidates/send_stale_alert),
+    лишається "open" у самому звіті — прозорість, не приховування факту, що досі не в книзі."""
+    path = path or ACK_PATH
+    ack = _load_ack(path)
+    ack[full_key] = {"reason": reason, "acknowledged_at": date.today().isoformat()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(ack, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
+
+
+def check_stale_candidates(
+    max_age_days: int = DEFAULT_STALE_DAYS, path: Path = None, ack_path: Path = None,
+) -> list:
+    """Відкриті кандидати, що висять довше `max_age_days` і НЕ визнані винятком (acknowledge()).
+    Повертає [(age_days, full_key, entry), ...], найстаріші спершу — порожній список, якщо
+    нема нічого стривоженого. Сама НЕ шле алерт — окремо send_stale_alert()."""
+    reg = _load_registry(path)
+    ack = _load_ack(ack_path)
+    today = date.today()
+    stale = []
+    for full_key, entry in reg.items():
+        if entry.get("status") != "open" or full_key in ack:
+            continue
+        try:
+            first_seen = date.fromisoformat(entry.get("first_seen", ""))
+        except (ValueError, TypeError):
+            continue
+        age_days = (today - first_seen).days
+        if age_days >= max_age_days:
+            stale.append((age_days, full_key, entry))
+    stale.sort(key=lambda t: t[0], reverse=True)
+    return stale
+
+
+def send_stale_alert(
+    max_age_days: int = DEFAULT_STALE_DAYS, path: Path = None, ack_path: Path = None,
+) -> bool:
+    """«Книга стоїть» — сигнал, якого не було (аудит 2026-09-28, п.3: `source_freshness.py`
+    дивиться лише свіжість ДЖЕРЕЛА, не вік НЕВНЕСЕНОГО кандидата — джерело може оновлюватись
+    щодня, а кандидати все одно накопичуватись, якщо writer/бухгалтер не встигають). Якщо є
+    непідтверджені відкриті кандидати старші `max_age_days` — ОДИН throttled Telegram-алерт
+    (раз на добу, поки стан триває, `telegram_notify.send_throttled_alert`) з переліком.
+    Повертає True, лише якщо алерт реально пішов цього разу (поза вікном тиші throttle) —
+    False і коли стріляти нема чого, і коли throttle-вікно ще не минуло."""
+    stale = check_stale_candidates(max_age_days, path, ack_path)
+    if not stale:
+        return False
+    plural = "ів" if len(stale) != 1 else ""
+    lines = [f"🔴 КОДВ: {len(stale)} відкрит{plural} кандидат{'' if len(stale) == 1 else 'и'} "
+             f"висить{'ь' if len(stale) == 1 else ''} довше {max_age_days} дн (книга не встигає):"]
+    for age_days, full_key, entry in stale[:10]:
+        summary = (entry.get("summary") or "")[:60]
+        lines.append(f"  • {entry.get('source', '?')}:{entry.get('key', '?')} — {age_days} дн, "
+                     f"{entry.get('sum', '?')} — {summary}")
+    if len(stale) > 10:
+        lines.append(f"  ...і ще {len(stale) - 10}")
+    lines.append("Визнаний виняток: kandydaty_registry.acknowledge(full_key, 'причина').")
+    return send_throttled_alert("kodv_stale_candidates", "\n".join(lines), cooldown_sec=24 * 3600)
+
+
+def amount_applied_in_text(text: str, amount) -> bool:
+    """Чи згадує вільний текст (типово Графа 5 книги) конкретну суму — спільний критерій
+    «внесено» для kandydaty-джерел, що звіряються з книгою за текстом, не структурними даними
+    (Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.1: "відкритий, доки розклад i9 у графі 5 рядка
+    цього замовлення не містить суму"). Книга пише суми КОМОЮ ("47,18"), джерела рахують
+    крапкою (float) — приймає обидва формати.
+
+    МЕЖОВА ПЕРЕВІРКА (аудит PR перед мержем, 2026-09-28): голий substring НЕ годиться — сума
+    "10,20" (за регресійними даними Аудитора повторюється щонайменше 11 разів у книзі) є
+    підрядком БУДЬ-ЯКОГО числа з таким хвостом ("110,20", "210,20") — без межі
+    resolve_open_candidates_by_text() хибно закрив би кандидата, чия сума насправді ще НЕ
+    внесена (тихо ховаючи факт — саме той клас бага, що цей кеш і покликаний закрити).
+    Тому: збіг НЕ має цифри/коми/крапки безпосередньо ПЕРЕД собою і цифри БЕЗПОСЕРЕДНЬО
+    ПІСЛЯ (виключає і "110,20", і "10,205")."""
+    if not text or amount is None:
+        return False
+    needle_dot = f"{amount:.2f}"
+    needle_comma = needle_dot.replace(".", ",")
+    for needle in (needle_dot, needle_comma):
+        pattern = r"(?<![\d,.])" + re.escape(needle) + r"(?!\d)"
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+def resolve_open_candidates_by_text(source: str, lookup_text_fn, path: Path = None) -> dict:
+    """Для КОЖНОГО відкритого кандидата цього source — викликає `lookup_text_fn(key)` (типово
+    Графа 5 відповідного рядка книги, READ-ONLY), закриває ("resolved"), якщо
+    amount_applied_in_text() підтверджує суму кандидата (entry["sum"]) у цьому тексті.
+    НЕЗАЛЕЖНО від того, чи джерело САМЕ бачить цього кандидата зараз (на відміну від
+    sync_open_candidates(resolve=True), яка орієнтується на `current` — тут звірка йде проти
+    ЖИВОЇ книги для ВСІХ відкритих, навіть тих, що вже випали з вікна джерела) — саме це
+    закриває клас бага "губить факти назавжди" (курсор джерела рухається незалежно).
+
+    `lookup_text_fn` — відповідальність ВИКЛИКАЧА перехопити мережеві/файлові збої (best-effort,
+    тут лише порівняння тексту); виняток із lookup_text_fn НЕ ловиться навмисно — викликач
+    (kandydaty-скрипт) сам вирішує, чи one order lookup, що впав, має зупинити весь прогін."""
+    reg = _load_registry(path)
+    today = date.today().isoformat()
+    resolved = []
+    for full_key, entry in reg.items():
+        if entry.get("source") != source or entry.get("status") != "open":
+            continue
+        text = lookup_text_fn(entry.get("key", "")) or ""
+        if amount_applied_in_text(text, entry.get("sum")):
+            entry["status"] = "resolved"
+            entry["resolved_at"] = today
+            entry["resolved_reason"] = "сума знайдена в тексті книги"
+            resolved.append(full_key)
+    if resolved:
+        _save_registry(reg, path)
+    return {"resolved": resolved}
+
+
+def _cli() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="cmd")
+
+    p_report = sub.add_parser("report", help="сформувати _vidkryti_kandydaty.md (за замовчуванням)")
+
+    p_stale = sub.add_parser("stale-check", help="перевірити й надіслати throttled-алерт «книга стоїть»")
+    p_stale.add_argument("--max-age-days", type=int, default=DEFAULT_STALE_DAYS)
+
+    p_ack = sub.add_parser("ack", help="визнати відкритого кандидата винятком (не сигналити)")
+    p_ack.add_argument("full_key", help='напр. "checkbox:58"')
+    p_ack.add_argument("reason")
+
+    args = parser.parse_args()
+
+    if args.cmd == "ack":
+        acknowledge(args.full_key, args.reason)
+        print(f"[kandydaty_registry] Визнано винятком: {args.full_key} — {args.reason}")
+        return 0
+
+    if args.cmd == "stale-check":
+        stale = check_stale_candidates(args.max_age_days)
+        sent = send_stale_alert(args.max_age_days)
+        print(f"[kandydaty_registry] Стривожених кандидатів: {len(stale)}"
+              + (f" (алерт надіслано)" if sent else " (алерт у вікні тиші/нема чого слати)"))
+        return 0
+
     p = write_open_report()
     reg = _load_registry()
     n_open = sum(1 for e in reg.values() if e.get("status") == "open")
     print(f"[kandydaty_registry] Звіт сформовано: {p} ({n_open} відкритих кандидатів)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_cli())

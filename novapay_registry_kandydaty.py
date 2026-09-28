@@ -34,6 +34,8 @@ if hasattr(sys.stdout, "reconfigure"):
 from novapay_statement import parse_registry_xlsx  # реюз парсера (обхід SharedStrings-casing)
 
 BASE_DIR = Path(__file__).parent
+sys.path.insert(0, str(BASE_DIR))
+import kandydaty_registry  # noqa: E402
 COWORK_DIR = Path(os.environ.get("PLUTUS_COWORK_DIR",
                                  r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))
 KODV_XLSX = COWORK_DIR / "KODV_PlutusToys_2026.xlsx"
@@ -165,6 +167,42 @@ def collect(rows: list) -> tuple:
     return candidates, this_batch
 
 
+def sync_registry(candidates: list) -> dict:
+    """Реєструє кандидатів у kandydaty_registry.py, ПЕРСИСТЕНТНО, незалежно від курсора `seen_ttn`
+    (Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.1 — "перевірити той самий клас курсора... в
+    NovaPay/RozetkaPay-кандидатах"): `seen_ttn` росте монотонно, тож ТТН, побачений раз і не
+    внесений до наступного прогону, раніше зникав із кожного наступного звіту НАЗАВЖДИ — той
+    самий клас бага, що вже підтверджено й виправлено для Rozetka/EVA-комісій.
+
+    `resolve=False` — цей прогін бачить ЛИШЕ НОВІ (ще не в курсорі) платежі, не повний перелік
+    досі відкритих; auto-resolve через `current` тут так само небезпечний, як обрізана сторінка."""
+    current = [
+        {"key": c["ttn"], "summary": c["note"][:120], "sum": c["sum"], "date": c["date"]}
+        for c in candidates if c.get("ttn")
+    ]
+    return kandydaty_registry.sync_open_candidates("novapay_registry", current, resolve=False)
+
+
+def resolve_against_book() -> dict:
+    """Звіряє ВСІ відкриті кандидати source="novapay_registry" проти ЖИВОЇ книги — закриває ті,
+    чий ТТН тепер ЗНАЙДЕНО в Графі 5 (presence-based, не сума — `_book_has` уже шукає точний
+    №замовлення/ТТН, той самий критерій, що вже вирішує, чи пропонувати кандидата при генерації;
+    на відміну від rozetka/eva_commission_ledger.py, де критерій — сума в тексті)."""
+    reg = kandydaty_registry._load_registry()
+    resolved = []
+    for full_key, entry in reg.items():
+        if entry.get("source") != "novapay_registry" or entry.get("status") != "open":
+            continue
+        if _book_has("", entry.get("key", "")):
+            entry["status"] = "resolved"
+            entry["resolved_at"] = datetime.now().date().isoformat()
+            entry["resolved_reason"] = "ТТН знайдено в Графі 5 книги"
+            resolved.append(full_key)
+    if resolved:
+        kandydaty_registry._save_registry(reg)
+    return {"resolved": resolved}
+
+
 def _write_report(candidates: list, srcs: list) -> Path:
     today = datetime.now()
     month_dir = DOCS_DIR / today.strftime("%Y-%m") / "NovaPay"
@@ -199,14 +237,24 @@ def main() -> int:
     rows = _rows_from(srcs)
     print(f"[NovaPayReg] Реєстрів {len(srcs)}, рядків-платежів {len(rows)}.")
 
+    # Закриваємо ВІДКРИТИХ кандидатів попередніх прогонів, чий ТТН тепер знайдено в книзі —
+    # незалежно від того, чи цей прогін знайшов щось нове.
+    resolved = resolve_against_book()
+    if resolved["resolved"]:
+        print(f"[NovaPayReg] Реєстр: закрито {len(resolved['resolved'])} раніше відкритих "
+              f"(ТТН знайдено в книзі).")
+
     candidates, this_batch = collect(rows)
     if candidates:
+        sync_result = sync_registry(candidates)
         report = _write_report(candidates, srcs)
-        print(f"[NovaPayReg] Кандидатів {len(candidates)} → {report}")
+        print(f"[NovaPayReg] Кандидатів {len(candidates)} → {report} "
+              f"(реєстр: +{len(sync_result['newly_opened'])} нових, {len(sync_result['still_open'])} досі відкриті)")
         _notify(f"📦 NovaPay: {len(candidates)} COD-платіж(ів) БЕЗ запису в книзі — перевір графу 5/6. "
                 f"Див. {report.name}")
     else:
         print("[NovaPayReg] Нових невнесених платежів немає.")
+    kandydaty_registry.write_open_report()
 
     seen = _load_cursor() | this_batch
     _save_cursor(seen)

@@ -77,6 +77,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from telegram_notify import send_telegram_message
+import kandydaty_registry
 
 load_dotenv()
 
@@ -276,6 +277,47 @@ def collect(page) -> tuple:
     return candidates, new_cursor
 
 
+def _delta_applied_in_book(book_e_text: str, delta) -> bool:
+    """Тонка сумісна обгортка над kandydaty_registry.amount_applied_in_text() (спільна
+    реалізація критерію «внесено» — Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.1; та сама
+    логіка потрібна eva_commission_ledger.py й іншим kandydaty-джерелам, тому винесена)."""
+    return kandydaty_registry.amount_applied_in_text(book_e_text, delta)
+
+
+def sync_registry(candidates: list) -> dict:
+    """Реєструє кандидатів у kandydaty_registry.py (persistent, НЕЗАЛЕЖНО від курсора джерела) —
+    прямий фікс "губить факти назавжди" (Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.1): курсор
+    рухається щопрогону (dedup проти ПЕРЕЧИТУВАННЯ тих самих рядків кабінету), тому кандидат,
+    не внесений бухгалтером до наступного прогону, раніше зникав із КОЖНОГО наступного звіту
+    НАЗАВЖДИ (доказ: роялті №906224962/№906267890 — в одному звіті 19.09, і більше ніде).
+
+    `resolve=False` (НЕ resolve=True): кабінетне вікно — ЛИШЕ останні ~20 рядків на вкладку
+    (page=1, глибша пагінація нестабільна — див. докстрінг модуля), тому НІКОЛИ не покриває
+    повну історію відкритих кандидатів. Той самий клас "обрізана сторінка", що вже задокументо-
+    ваний у kandydaty_registry.py (checkbox_registry_sync.py: `resolve=not window_truncated`) —
+    авто-закриття тут неможливе БЕЗ окремого підтвердження. Закриття — окремо, resolve_against_book()."""
+    current = [
+        {
+            "key": c["order_id"],
+            "summary": f"роялті {c['royalty_new']} + логістика {c['logistics_new']} = Δ{c['delta_i9']}",
+            "sum": c["delta_i9"],
+            "date": (c["dates"][0] if c["dates"] else datetime.now().date().isoformat()),
+        }
+        for c in candidates
+    ]
+    return kandydaty_registry.sync_open_candidates("rozetka_commission", current, resolve=False)
+
+
+def resolve_against_book() -> dict:
+    """Звіряє ВСІ ВІДКРИТІ кандидати source="rozetka_commission" (незалежно від того, коли їх
+    вперше побачено — не лише щойно знайдені цим прогоном) проти ЖИВОЇ книги — закриває ті, чия
+    сума вже з'явилась у Графі 5 рядка замовлення. Викликати КОЖЕН прогін, окремо від
+    sync_registry() вище (яка лише ВІДКРИВАЄ/оновлює, ніколи не закриває — кабінетне вікно
+    недостатнє для safe auto-resolve, див. docstring sync_registry)."""
+    return kandydaty_registry.resolve_open_candidates_by_text(
+        "rozetka_commission", lambda oid: _lookup_book_row(oid).get("e_text"))
+
+
 def _write_report(candidates: list) -> Path:
     today = datetime.now()
     month_dir = COWORK_DIR / "документи_КОДВ" / today.strftime("%Y-%m") / "Rozetka"
@@ -340,16 +382,28 @@ def run() -> None:
         finally:
             browser.close()
 
+    # Закриваємо ВІДКРИТИХ кандидатів попередніх прогонів, чия сума вже з'явилась у книзі —
+    # НЕЗАЛЕЖНО від того, чи цей прогін знайшов щось НОВЕ (інакше "тихий" день без нових
+    # нарахувань ніколи не закрив би вже внесене раніше).
+    resolved = resolve_against_book()
+    if resolved["resolved"]:
+        print(f"[RzCommission] Реєстр: закрито {len(resolved['resolved'])} раніше відкрит{'ого' if len(resolved['resolved']) == 1 else 'их'} "
+              f"кандидат{'а' if len(resolved['resolved']) == 1 else 'ів'} (сума знайдена в Графі 5 книги).")
+
     if not candidates:
         print("[RzCommission] Нових нарахувань роялті/логістики немає.")
         _save_cursor(new_cursor)
+        kandydaty_registry.write_open_report()
         return
 
+    sync_result = sync_registry(candidates)
     report_path = _write_report(candidates)
     _save_cursor(new_cursor)
+    kandydaty_registry.write_open_report()
     total_delta = round(sum(c["delta_i9"] for c in candidates), 2)
     summary = (f"💰 Rozetka: {len(candidates)} замовлень з новим роялті/логістикою "
-               f"(разом +{total_delta} грн у графу 9). Звіт: {report_path.name}")
+               f"(разом +{total_delta} грн у графу 9; реєстр: +{len(sync_result['newly_opened'])} нових, "
+               f"{len(sync_result['still_open'])} досі відкриті). Звіт: {report_path.name}")
     print(f"[RzCommission] {summary}")
     _notify(summary)
 

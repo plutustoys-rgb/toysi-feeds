@@ -27,6 +27,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 BASE_DIR = Path(__file__).parent
+sys.path.insert(0, str(BASE_DIR))
+import kandydaty_registry  # noqa: E402
 COWORK_DIR = Path(os.environ.get(
     "PLUTUS_COWORK_DIR", r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))
 KODV_XLSX = COWORK_DIR / "KODV_PlutusToys_2026.xlsx"
@@ -221,6 +223,38 @@ def collect() -> tuple:
     return new, sorted(processed)
 
 
+def sync_registry(candidates: list) -> dict:
+    """Реєструє кандидатів у kandydaty_registry.py, ПЕРСИСТЕНТНО, незалежно від `processed_ids`
+    (той самий клас бага, що вже виправлено в rozetka_commission_ledger.py, Аудитор,
+    КОДВ_CHANNEL.md, 2026-09-28, п.1: "той самий клас курсора... перевірити в
+    eva_commission_ledger.py"). `processed_ids` тут — МОНОТОННО зростаюча множина order_id, тому
+    кандидат, побачений раз і не внесений бухгалтером до наступного прогону, раніше зникав із
+    кожного НАСТУПНОГО звіту НАЗАВЖДИ — та сама причина, що вже підтверджена для Rozetka.
+
+    `resolve=False`: `collect()` бачить лише замовлення з поточної сторінки `fetch_commissions()`
+    (обмежений набір за один прогін, не гарантовано повна історія) — auto-resolve тут так само
+    небезпечний, як і для Rozetka (обрізана вибірка). Закриття — окремо, resolve_against_book()."""
+    current = [
+        {
+            "key": c["order_id"],
+            "summary": f"комісія {c['commission_total']} (ТМ {c['commission_tm']} + "
+                       f"платформа {c['commission_platform']})",
+            "sum": c["commission_total"],
+            "date": datetime.now().date().isoformat(),
+        }
+        for c in candidates
+    ]
+    return kandydaty_registry.sync_open_candidates("eva_commission", current, resolve=False)
+
+
+def resolve_against_book() -> dict:
+    """Звіряє ВСІ відкриті кандидати source="eva_commission" проти ЖИВОЇ книги — закриває ті,
+    чия сума вже з'явилась у Графі 5 рядка замовлення. Викликати КОЖЕН прогін, окремо від
+    sync_registry() (яка лише відкриває/оновлює, ніколи не закриває)."""
+    return kandydaty_registry.resolve_open_candidates_by_text(
+        "eva_commission", lambda oid: _book_lookup(oid).get("book_e_text"))
+
+
 def _write_report(candidates: list) -> Path:
     today = datetime.now()
     month_dir = COWORK_DIR / "документи_КОДВ" / today.strftime("%Y-%m") / "EVA"
@@ -259,22 +293,37 @@ def main() -> None:
         _log(f"несподівана помилка: {e}")
         sys.exit(1)
 
-    if not candidates:
-        if not dry_run:
-            _save_cursor(processed_ids)
-        _log("Нових замовлень з комісією немає (або перший запуск — базова лінія).")
-        return
-
     if dry_run:
-        _log(f"[dry-run] БУЛО Б {len(candidates)} кандидатів комісії EVA; курсор не рухаю, файли не пишу.")
+        if not candidates:
+            _log("Нових замовлень з комісією немає (або перший запуск — базова лінія). [dry-run]")
+            return
+        _log(f"[dry-run] БУЛО Б {len(candidates)} кандидатів комісії EVA; курсор не рухаю, файли не пишу, "
+             f"реєстр не чіпаю.")
         for c in candidates:
             _log(f"  [dry-run] {c['order_id']}: Всього {c['commission_total']} "
                  f"(ТМ {c['commission_tm']} + платформа {c['commission_platform']})")
         return
 
+    # Закриваємо ВІДКРИТИХ кандидатів попередніх прогонів, чия сума вже з'явилась у книзі —
+    # незалежно від того, чи цей прогін знайшов щось нове (інакше "тихий" день ніколи не закрив
+    # би вже внесене раніше — той самий фікс, що rozetka_commission_ledger.py).
+    resolved = resolve_against_book()
+    if resolved["resolved"]:
+        _log(f"Реєстр: закрито {len(resolved['resolved'])} раніше відкритих кандидатів "
+             f"(сума знайдена в Графі 5 книги).")
+
+    if not candidates:
+        _save_cursor(processed_ids)
+        kandydaty_registry.write_open_report()
+        _log("Нових замовлень з комісією немає (або перший запуск — базова лінія).")
+        return
+
+    sync_result = sync_registry(candidates)
     path = _write_report(candidates)
     _save_cursor(processed_ids)
-    _log(f"ГОТОВО: {len(candidates)} кандидатів комісії EVA → {path}")
+    kandydaty_registry.write_open_report()
+    _log(f"ГОТОВО: {len(candidates)} кандидатів комісії EVA → {path} "
+         f"(реєстр: +{len(sync_result['newly_opened'])} нових, {len(sync_result['still_open'])} досі відкриті)")
 
 
 if __name__ == "__main__":

@@ -34,6 +34,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 BASE_DIR = Path(__file__).parent
+sys.path.insert(0, str(BASE_DIR))
+import kandydaty_registry  # noqa: E402
 COWORK_DIR = Path(os.environ.get("PLUTUS_COWORK_DIR",
                                  r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))
 KODV_XLSX = COWORK_DIR / "KODV_PlutusToys_2026.xlsx"
@@ -230,6 +232,42 @@ def collect(rows: list) -> tuple:
     return candidates, this_file
 
 
+def sync_registry(candidates: list) -> dict:
+    """Реєструє кандидатів у kandydaty_registry.py, ПЕРСИСТЕНТНО, незалежно від курсора
+    `seen_finop` (Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.1 — "перевірити той самий клас
+    курсора... в NovaPay/RozetkaPay-кандидатах: їх у реєстрі теж немає"). `seen_finop` росте
+    монотонно — операція, побачена раз і не внесена бухгалтером до наступного прогону, раніше
+    зникала НАЗАВЖДИ. Ключ = "{order_id}:{kind}" (storno/acquiring окремо, те саме замовлення
+    може мати обидва одночасно). `sum` — abs(значення), яке очікуємо побачити в Графі 5 книги
+    (сторно документується як позитивна сума "сторновано N грн", не з мінусом).
+
+    `resolve=False` — цей прогін бачить ЛИШЕ операції одного реєстру, не повний перелік
+    досі відкритих; auto-resolve через `current` тут так само небезпечний, як обрізана сторінка."""
+    current = [
+        {
+            "key": f"{c['order_id']}:{c['kind']}",
+            "summary": c["note"][:120],
+            "sum": abs(c["sum"]) if c["kind"] == "storno" and isinstance(c["sum"], (int, float)) else c.get("acquiring"),
+            "date": c["date"],
+        }
+        for c in candidates if c.get("order_id")
+    ]
+    return kandydaty_registry.sync_open_candidates("rozetkapay_registry", current, resolve=False)
+
+
+def resolve_against_book() -> dict:
+    """Звіряє ВСІ відкриті кандидати source="rozetkapay_registry" проти ЖИВОЇ книги — закриває
+    ті, чия сума вже з'явилась у Графі 5 рядка замовлення (ключ "order_id:kind" — order_id до
+    двокрапки). ВІДОМА МЕЖА (прийнятний компроміс, як і кодв_book_writer.py): сторно, яке
+    бухгалтер задокументував ІНШИМ числом (напр. лише в Графі 3 "повернення", без згадки суми
+    в самій Графі 5), тут не закриється автоматично — лишиться "open" як нагадування, не гірше
+    за попередній стан (взагалі без нагадування)."""
+    def _lookup(key: str):
+        oid = key.split(":", 1)[0]
+        return _lookup_book_row(oid).get("e_text")
+    return kandydaty_registry.resolve_open_candidates_by_text("rozetkapay_registry", _lookup)
+
+
 def _write_report(candidates: list, src: Path) -> Path:
     today = datetime.now()
     month_dir = DOCS_DIR / today.strftime("%Y-%m") / "RozetkaPay"
@@ -275,16 +313,26 @@ def main() -> int:
     rows = _parse_registry(src)
     print(f"[RzPayReg] {src.name}: рядків даних {len(rows)}, сторно {sum(1 for r in rows if _is_storno(r))}.")
 
+    # Закриваємо ВІДКРИТИХ кандидатів попередніх прогонів, чия сума тепер знайдена в книзі —
+    # незалежно від того, чи цей прогін знайшов щось нове.
+    resolved = resolve_against_book()
+    if resolved["resolved"]:
+        print(f"[RzPayReg] Реєстр: закрито {len(resolved['resolved'])} раніше відкритих "
+              f"(сума знайдена в Графі 5 книги).")
+
     candidates, this_file = collect(rows)
     if candidates:
+        sync_result = sync_registry(candidates)
         report = _write_report(candidates, src)
         n_storno = sum(1 for c in candidates if c.get("kind") == "storno")
         n_acq = len(candidates) - n_storno
-        print(f"[RzPayReg] Кандидатів {len(candidates)} (сторно {n_storno}, еквайринг {n_acq}) → {report}")
+        print(f"[RzPayReg] Кандидатів {len(candidates)} (сторно {n_storno}, еквайринг {n_acq}) → {report} "
+              f"(реєстр: +{len(sync_result['newly_opened'])} нових, {len(sync_result['still_open'])} досі відкриті)")
         _notify(f"💳 RozetkaPay: {len(candidates)} кандидат(ів) у реєстрі — сторно {n_storno}, "
                 f"еквайринг-графа9 {n_acq}. Перевір книгу. Див. {report.name}")
     else:
         print("[RzPayReg] Нових кандидатів немає.")
+    kandydaty_registry.write_open_report()
 
     seen = _load_cursor() | this_file
     _save_cursor(seen)

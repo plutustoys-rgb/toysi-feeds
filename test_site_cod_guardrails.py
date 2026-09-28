@@ -21,8 +21,16 @@ os.environ["ORDERS_DB_PATH"] = tempfile.mktemp(suffix=".db")
 
 import orders_db
 import site_order_api as api
+import telegram_notify
 
 _FAILS = []
+
+# ЗАСЛІН (живий інцидент 2026-09-28): `_notify()` у site_order_api.py робить лінивий
+# `from telegram_notify import send_telegram_message` УСЕРЕДИНІ функції — `api._NO_TELEGRAM`
+# нижче МАЄ це перехопити, але цей шпигун ловить БУДЬ-ЯКУ спробу реальної мережевої відправки
+# навіть якщо колись `_NO_TELEGRAM`-гейт зламається знову (той самий клас бага, що вже стався).
+_telegram_calls = []
+telegram_notify.send_telegram_message = lambda *a, **kw: (_telegram_calls.append((a, kw)) or True)
 
 
 def _chk(name, cond):
@@ -100,7 +108,24 @@ with orders_db.get_connection() as conn:
 
 
 # 3: глобальний circuit-breaker (N=10 скасованих/повернених COD-замовлень сайту, не по телефону)
-os.environ["AUDIT_NO_TELEGRAM"] = "1"
+#
+# 🔴 ФІКС (живий інцидент 2026-09-28, знайдено власником через реальний Telegram-алерт):
+# `os.environ["AUDIT_NO_TELEGRAM"] = "1"` тут БУЛО НІЧОГО не вартим — site_order_api._NO_TELEGRAM
+# рахується РІВНО РАЗ, на імпорті модуля (`_NO_TELEGRAM = os.environ.get(...) == "1"`, рядок 83
+# того файлу), а `import site_order_api as api` вище (рядок 23) уже відбувся ДО цього рядка.
+# Отже кожен прогін цього тесту (і будь-якого повного прогону test_*.py) реально слав СПРАВЖНІЙ
+# Telegram-алерт "Circuit-breaker COD спрацював: 10..." у бойовий канал — на 10 повністю
+# синтетичних PT-BRK-* замовленнях з ІЗОЛЬОВАНОЇ тимчасової БД, які ніколи не існували в
+# бойовій orders.db. Підтверджено живо: 3 ідентичні алерти за сесію = рівно 3 повних прогони
+# test-suite цього дня; бойовий стан-файл _cod_breaker_state.json відсутній, бо
+# `api.COD_BREAKER_STATE_FILE` (override нижче) — це ІНШИЙ шлях, не .local_secrets/... —
+# тобто анти-спам теж ніколи не торкався бойового файлу, тому дублі.
+#
+# Правильний спосіб — пряме перезаписування АТРИБУТА модуля (як COD_BREAKER_STATE_FILE вже
+# робить рядком нижче): `_notify()` читає `_NO_TELEGRAM` як глобальне ім'я СВОГО модуля щоразу
+# при виклику, тож `api._NO_TELEGRAM = True` спрацьовує НЕЗАЛЕЖНО від того, коли це виконати —
+# на відміну від os.environ, який діє лише ПЕРЕД імпортом.
+api._NO_TELEGRAM = True
 api.COD_BREAKER_STATE_FILE = tempfile.mktemp(suffix=".json")   # НЕ бойовий .local_secrets
 with orders_db.get_connection() as conn:
     conn.execute("DELETE FROM orders WHERE order_id LIKE 'PT-BRK-%'")
@@ -179,6 +204,11 @@ with orders_db.get_connection() as conn:
              not _raises(api._check_cod_circuit_breaker, conn))
     finally:
         api.SITE_COD_CIRCUIT_BREAKER_RESET_AFTER = ""   # не протікає в наступні тести файлу
+
+# Заслін спрацював: жоден із випадків вище (включно з тим, що РЕАЛЬНО перетнув поріг
+# брейкера, рядок ~130) не мав дійти до справжньої мережевої відправки.
+_chk("жодного РЕАЛЬНОГО виклику send_telegram_message за весь прогін (живий інцидент 2026-09-28)",
+     _telegram_calls == [])
 
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")

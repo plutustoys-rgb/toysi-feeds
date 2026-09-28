@@ -68,7 +68,6 @@ import openpyxl  # noqa: E402
 BOOK_PATH = Path(r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\KODV_PlutusToys_2026.xlsx")
 SHEET_NAME = "КОДВ"
 FIRST_DATA_ROW = 7
-LAST_TEMPLATE_ROW = 126   # РАЗОМ (128) рахує SUM(...7:126) — за межі не виходимо без ручного розширення форми
 COL_DATE, COL_INCOME, COL_RETURNS, COL_DOC, COL_COGS = 1, 2, 3, 5, 6
 COL_LABOR, COL_TAXES, COL_OTHER_EXP, COL_AMORT, COL_NOTE = 7, 8, 9, 10, 12
 
@@ -135,9 +134,26 @@ def _row_has_data(ws, row: int) -> bool:
     return any(ws.cell(row, c).value is not None for c in _DATA_COLS)
 
 
+def _find_template_last_row(ws) -> int:
+    """Останній підготовлений рядок шаблону — рядок ПЕРЕД «РАЗОМ» у стовпці A, не хардкод-
+    константа (аудит 2026-09-28: форму розширили 25.09 з рядка 126 до 300, стару константу
+    `LAST_TEMPLATE_ROW=126` забули оновити — writer відмовлявся писати рядки 127+, і їх
+    довелось вносити вручну, в обхід перевірки дублів цього ж модуля). Шукає ЖИВЕ положення
+    «РАЗОМ» щоразу при відкритті книги — форму можна розширювати без правки коду."""
+    for r in range(FIRST_DATA_ROW, ws.max_row + 1):
+        val = ws.cell(r, COL_DATE).value
+        if isinstance(val, str) and val.strip().casefold() == "разом":
+            return r - 1
+    raise RuntimeError(
+        "Рядок «РАЗОМ» не знайдено в стовпці A книги — структура форми змінилась, "
+        "не можу безпечно визначити межу шаблону."
+    )
+
+
 def _find_last_data_row(ws) -> int:
+    last_template_row = _find_template_last_row(ws)
     last = FIRST_DATA_ROW - 1
-    for r in range(FIRST_DATA_ROW, LAST_TEMPLATE_ROW + 1):
+    for r in range(FIRST_DATA_ROW, last_template_row + 1):
         if _row_has_data(ws, r):
             last = r
     return last
@@ -198,9 +214,10 @@ def append_row(
     ws = wb[SHEET_NAME]
     last_row = _find_last_data_row(ws)
     target_row = last_row + 1
-    if target_row > LAST_TEMPLATE_ROW:
+    last_template_row = _find_template_last_row(ws)
+    if target_row > last_template_row:
         raise RuntimeError(
-            f"Рядок {target_row} за межами підготовленого шаблону (до {LAST_TEMPLATE_ROW}). "
+            f"Рядок {target_row} за межами підготовленого шаблону (до {last_template_row}). "
             "Форму треба розширити вручну (формули Графи 4/11 + діапазон РАЗОМ) — не пишу наосліп."
         )
     if _row_has_data(ws, target_row):

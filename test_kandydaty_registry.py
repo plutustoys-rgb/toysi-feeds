@@ -116,6 +116,98 @@ _chk("порожній реєстр: шапка каже 'ще жодного', 
      "ще жодного" in empty_report.read_text(encoding="utf-8"))
 
 
+# 9: check_stale_candidates / acknowledge / send_stale_alert (аудит 2026-09-28, п.3 — "немає
+# сигналу книга стоїть": source_freshness дивиться лише свіжість ДЖЕРЕЛА, не вік невнесеного
+# кандидата — чеки 1,3,5,8 не мають бути шумом після acknowledge()).
+_TMP9 = Path(tempfile.mktemp())
+kr._save_registry({
+    "checkbox:1": {"source": "checkbox", "key": "1", "summary": "чек 1", "sum": 10.0,
+                   "date": "x", "status": "open",
+                   "first_seen": (date.today() - timedelta(days=5)).isoformat()},
+    "checkbox:2": {"source": "checkbox", "key": "2", "summary": "щойно", "sum": 20.0,
+                   "date": "x", "status": "open", "first_seen": date.today().isoformat()},
+    "checkbox:3": {"source": "checkbox", "key": "3", "summary": "закритий давно", "sum": 30.0,
+                   "date": "x", "status": "resolved",
+                   "first_seen": (date.today() - timedelta(days=20)).isoformat(),
+                   "resolved_at": date.today().isoformat()},
+}, path=_TMP9)
+_ACK9 = Path(tempfile.mktemp())
+
+stale = kr.check_stale_candidates(max_age_days=2, path=_TMP9, ack_path=_ACK9)
+_chk("stale: лише checkbox:1 (5 днів, поріг 2)", [k for _, k, _ in stale] == ["checkbox:1"])
+_chk("stale: checkbox:2 (сьогодні, поріг 2) НЕ потрапив", "checkbox:2" not in [k for _, k, _ in stale])
+_chk("stale: resolved НЕ потрапляє незалежно від віку", "checkbox:3" not in [k for _, k, _ in stale])
+
+kr.acknowledge("checkbox:1", "власник уже пояснив затримку 25.09", path=_ACK9)
+stale_after_ack = kr.check_stale_candidates(max_age_days=2, path=_TMP9, ack_path=_ACK9)
+_chk("acknowledge(): визнаний виняток зникає зі stale-переліку", stale_after_ack == [])
+
+report9 = kr.write_open_report(path=_TMP9, out_path=Path(tempfile.mktemp()), ack_path=_ACK9)
+content9 = report9.read_text(encoding="utf-8")
+_chk("звіт: визнаний виняток ВСЕ ОДНО показаний (прозорість, не приховування)", "чек 1" in content9)
+_chk("звіт: причина визнання видима в звіті", "власник уже пояснив" in content9)
+
+# send_stale_alert() — мокаємо саму мережеву відправку (send_throttled_alert), перевіряємо
+# лише що модуль ВИКЛИКАЄ її з правильним throttle-ключем/переліком, не сам HTTP.
+_sent_calls = []
+kr.send_throttled_alert = lambda dedup_key, text, cooldown_sec=0: (
+    _sent_calls.append((dedup_key, text, cooldown_sec)) or True
+)
+sent = kr.send_stale_alert(max_age_days=2, path=_TMP9, ack_path=_ACK9)
+_chk("send_stale_alert: після acknowledge() нема кого сигналити → не шле", sent is False and _sent_calls == [])
+
+_ACK9_EMPTY = Path(tempfile.mktemp())
+sent2 = kr.send_stale_alert(max_age_days=2, path=_TMP9, ack_path=_ACK9_EMPTY)
+_chk("send_stale_alert: без acknowledge — шле throttled-алерт", sent2 is True and len(_sent_calls) == 1)
+_chk("send_stale_alert: dedup_key стабільний", _sent_calls[0][0] == "kodv_stale_candidates")
+_chk("send_stale_alert: cooldown = 24 год", _sent_calls[0][2] == 24 * 3600)
+_chk("send_stale_alert: перелік містить ключ стривоженого", "checkbox:1" in _sent_calls[0][1])
+
+
+# 10: amount_applied_in_text / resolve_open_candidates_by_text (спільна реалізація —
+# rozetka_commission_ledger.py й eva_commission_ledger.py делегують сюди, аудит 2026-09-28, п.1)
+_chk("amount_applied_in_text: кома у тексті, крапка в amount", kr.amount_applied_in_text("сума 47,18 внесена", 47.18))
+_chk("amount_applied_in_text: крапка в обох", kr.amount_applied_in_text("сума 47.18 внесена", 47.18))
+_chk("amount_applied_in_text: сума відсутня", not kr.amount_applied_in_text("щось інше", 47.18))
+_chk("amount_applied_in_text: amount=None", not kr.amount_applied_in_text("47,18", None))
+_chk("amount_applied_in_text: text порожній", not kr.amount_applied_in_text("", 47.18))
+
+# МЕЖОВА ПЕРЕВІРКА (аудит PR перед мержем 2026-09-28): "10,20" — сума, що за регресійними
+# даними Аудитора повторюється мінімум 11 разів у книзі — НЕ має хибно збігатись як підрядок
+# більшого числа ("110,20", "10,205"). Без межі це тихо приховало б НЕ внесений факт.
+_chk("amount_applied_in_text: '10,20' НЕ збігається всередині '110,20' (більше число попереду)",
+     not kr.amount_applied_in_text("рядок 110,20 щось інше", 10.20))
+_chk("amount_applied_in_text: '10,20' НЕ збігається як префікс '10,205'",
+     not kr.amount_applied_in_text("сума 10,205 внесена", 10.20))
+_chk("amount_applied_in_text: '10,20' ЗБІГАЄТЬСЯ, коли стоїть окремо (реальний позитивний кейс)",
+     kr.amount_applied_in_text("логістика 10,20 внесено 28.09", 10.20))
+_chk("amount_applied_in_text: збіг у кінці рядка (немає символу після) — теж валідний",
+     kr.amount_applied_in_text("сума 10,20", 10.20))
+_chk("amount_applied_in_text: крапка-варіант теж має межову перевірку ('110.20' не збігається з 10.20)",
+     not kr.amount_applied_in_text("110.20 інше", 10.20))
+
+_TMP10 = Path(tempfile.mktemp())
+kr._save_registry({
+    "eva_commission:8-1": {"source": "eva_commission", "key": "8-1", "summary": "комісія 30.99",
+                            "sum": 30.99, "date": "x", "status": "open",
+                            "first_seen": date.today().isoformat()},
+    "eva_commission:8-2": {"source": "eva_commission", "key": "8-2", "summary": "комісія 12.40",
+                            "sum": 12.40, "date": "x", "status": "open",
+                            "first_seen": date.today().isoformat()},
+    "rozetka_commission:900": {"source": "rozetka_commission", "key": "900", "summary": "інше джерело",
+                                "sum": 30.99, "date": "x", "status": "open",
+                                "first_seen": date.today().isoformat()},
+}, path=_TMP10)
+_book_texts = {"8-1": "EVA №8-1, комісія 30,99 внесено.", "8-2": "EVA №8-2, ще не внесено."}
+result10 = kr.resolve_open_candidates_by_text("eva_commission", lambda k: _book_texts.get(k, ""), path=_TMP10)
+_chk("resolve_open_candidates_by_text: закрито лише 8-1 (сума в тексті)", result10["resolved"] == ["eva_commission:8-1"])
+reg10 = kr._load_registry(_TMP10)
+_chk("реєстр: eva_commission:8-1 status=resolved", reg10["eva_commission:8-1"]["status"] == "resolved")
+_chk("реєстр: eva_commission:8-2 усе ще open (сума не знайдена)", reg10["eva_commission:8-2"]["status"] == "open")
+_chk("реєстр: rozetka_commission:900 НЕ зачеплено (інший source, та сама сума 30.99)",
+     reg10["rozetka_commission:900"]["status"] == "open")
+
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)

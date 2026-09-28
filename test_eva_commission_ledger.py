@@ -15,11 +15,14 @@ test_eva_commission_ledger.py — регрес-тест статусного ф�
 `python test_eva_commission_ledger.py` → exit 0/1.
 """
 import sys
+import tempfile
+from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import eva_commission_ledger as ec
+import kandydaty_registry as kr
 
 _FAILS = []
 
@@ -82,6 +85,48 @@ _chk("немає match (порожні рядки): _is_cancelled_or_failed → 
      ec._is_cancelled_or_failed("", "") is False)
 os_none, ps_none = ec._order_statuses("зовсім інша розмітка без відомих міток")
 _chk("_order_statuses на невідомому тексті: обидва порожні, не падає", os_none == "" and ps_none == "")
+
+
+# ── 7-8: реєстр незалежний від processed_ids (Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.1 —
+# "перевірити той самий клас курсора в eva_commission_ledger.py") — той самий фікс, що
+# rozetka_commission_ledger.py: processed_ids росте монотонно, кандидат, не внесений до
+# наступного прогону, раніше зникав НАЗАВЖДИ (жоден інший механізм його не пам'ятав).
+_tmp_reg = Path(tempfile.mktemp())
+kr.REGISTRY_PATH = _tmp_reg
+
+_BOOK = {}
+
+
+def _mock_book_lookup(order_id):
+    return _BOOK.get(order_id, {"book_row": None, "book_e_text": None})
+
+
+ec._load_cursor = lambda: {"processed_ids": []}
+ec._book_lookup = _mock_book_lookup
+ec.fetch_commissions = lambda: [
+    {"order_id": "8-900001", "commission_total": 30.99, "commission_tm": 18.59, "commission_platform": 12.40},
+]
+candidates7, processed7 = ec.collect()
+_chk("collect: новий кандидат знайдено", len(candidates7) == 1)
+sync_result = ec.sync_registry(candidates7)
+_chk("sync_registry: відкрито", sync_result["newly_opened"] == ["eva_commission:8-900001"])
+_chk("реєстр: sum = commission_total", kr._load_registry(_tmp_reg)["eva_commission:8-900001"]["sum"] == 30.99)
+
+# ПРЕ-ФІКС ВІДТВОРЕННЯ: processed_ids тепер містить 8-900001 (курсор "бачив") — collect() його
+# більше НЕ поверне, навіть якщо бухгалтер так і не вніс суму в книгу. Раніше факт зникав тут.
+ec._load_cursor = lambda: {"processed_ids": processed7}
+candidates8, _ = ec.collect()
+_chk("ПРЕ-ФІКС інваріант: наступний прогін дійсно НЕ бачить кандидата (processed_ids уже містить) "
+     "— це й був корінь бага", candidates8 == [])
+_chk("ФІКС: кандидат УСЕ ОДНО 'open' у реєстрі — курсор джерела його не стирає",
+     kr._load_registry(_tmp_reg)["eva_commission:8-900001"]["status"] == "open")
+
+# resolve_against_book(): сума з'явилась у Графі 5 → закрито
+_BOOK["8-900001"] = {"book_row": 50, "book_e_text": "EVA №8-900001, комісія 30,99 внесено."}
+resolved = ec.resolve_against_book()
+_chk("resolve_against_book: закрито (сума 30,99 знайдена в Графі 5)",
+     resolved["resolved"] == ["eva_commission:8-900001"])
+_chk("реєстр: status=resolved", kr._load_registry(_tmp_reg)["eva_commission:8-900001"]["status"] == "resolved")
 
 
 if _FAILS:

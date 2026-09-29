@@ -241,6 +241,31 @@ _chk("реєстр: status=resolved",
 rc.fetch_royalty_rows = lambda page: []
 rc.fetch_logistic_rows = lambda page: []
 
+# ── 11: _reserve_release_alert_text — регрес-тест на баг незалежного аудиту PR #603:
+# rr_sync["newly_opened"] містить ПОВНІ ключі "rozetka_reserve_release:{order_id}:reserve_release"
+# (sync_open_candidates префіксує джерелом), а старий фільтр у run()/backfill() звіряв ГОЛИЙ
+# "{order_id}:reserve_release" — membership-тест НІКОЛИ не збігався, алерт ішов із заголовком,
+# але БЕЗ жодного номера замовлення (рівно та інформація, заради якої алерт існує) ──
+_rr_fresh = [{"order_id": "905484851", "amount": 103.90, "date": "2026-09-23"}]
+_rr_sync_result = {"newly_opened": ["rozetka_reserve_release:905484851:reserve_release"],
+                    "still_open": [], "resolved": []}
+alert_text = rc._reserve_release_alert_text(_rr_fresh, _rr_sync_result)
+_chk("_reserve_release_alert_text: алерт НЕ порожній", alert_text != "")
+_chk("_reserve_release_alert_text: номер замовлення дійсно присутній у тексті (сам баг ховав саме це)",
+     "№905484851" in alert_text)
+_chk("_reserve_release_alert_text: сума присутня", "103.9" in alert_text)
+
+_chk("_reserve_release_alert_text: newly_opened порожній → \"\" (нема кого називати)",
+     rc._reserve_release_alert_text(_rr_fresh, {"newly_opened": [], "still_open": [], "resolved": []}) == "")
+
+_chk("_reserve_release_alert_text: newly_opened про ІНШЕ замовлення → \"\" (жоден рядок не зматчився)",
+     rc._reserve_release_alert_text(
+         _rr_fresh, {"newly_opened": ["rozetka_reserve_release:999999999:reserve_release"],
+                     "still_open": [], "resolved": []}) == "")
+
+_chk("_reserve_release_alert_text: prefix застосовується (--backfill варіант)",
+     rc._reserve_release_alert_text(_rr_fresh, _rr_sync_result, prefix="🚨 X").startswith("🚨 X:"))
+
 
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")

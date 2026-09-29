@@ -395,6 +395,28 @@ def resolve_reserve_releases() -> dict:
     return kandydaty_registry.resolve_open_candidates_by_text("rozetka_reserve_release", _lookup)
 
 
+def _reserve_release_alert_text(reserve_releases: list, rr_sync: dict, prefix: str = "🚨 Rozetka") -> str:
+    """Будує текст прямого алерту на НОВІ (щойно відкриті) зняття резерву — ОКРЕМА функція
+    від run()/backfill(), щоб перевірялась unit-тестом без Playwright. `rr_sync["newly_opened"]`
+    містить ПОВНІ ключі реєстру `"rozetka_reserve_release:{order_id}:reserve_release"`
+    (kandydaty_registry.sync_open_candidates() префіксує ключ джерелом) — фільтр звірений з
+    саме цим форматом, не з голим `"{order_id}:reserve_release"` (баг знайдено незалежним
+    аудитом PR #603: голий фільтр ніколи не збігався, алерт ішов із заголовком, але БЕЗ жодного
+    номера замовлення — рівно та інформація, заради якої алерт існує). Повертає "" якщо
+    новий-нема-кого-називати (немає newly_opened АБО жоден reserve_release не зматчився)."""
+    if not rr_sync["newly_opened"]:
+        return ""
+    new_keys = set(rr_sync["newly_opened"])
+    lines = [f"№{r['order_id']}: {r['amount']} грн ({r['date']})"
+             for r in reserve_releases
+             if f"rozetka_reserve_release:{r['order_id']}:reserve_release" in new_keys]
+    if not lines:
+        return ""
+    return (f"{prefix}: ЗНЯТО РЕЗЕРВ роялті за невиконаним замовленням — товар покупець не "
+            f"отримав, роялті НЕ прийде, покупцю належить повернення (чек RETURN + сторно "
+            f"доходу в книзі):\n" + "\n".join(lines))
+
+
 def _write_report(candidates: list) -> Path:
     today = datetime.now()
     month_dir = COWORK_DIR / "документи_КОДВ" / today.strftime("%Y-%m") / "Rozetka"
@@ -474,14 +496,8 @@ def run() -> None:
 
     if reserve_releases:
         rr_sync = sync_reserve_releases(reserve_releases)
-        if rr_sync["newly_opened"]:
-            new_keys = set(rr_sync["newly_opened"])
-            alert = ("🚨 Rozetka: ЗНЯТО РЕЗЕРВ роялті за невиконаним замовленням — товар покупець "
-                      "не отримав, роялті НЕ прийде, покупцю належить повернення (чек RETURN + "
-                      "сторно доходу в книзі):\n" +
-                      "\n".join(f"№{r['order_id']}: {r['amount']} грн ({r['date']})"
-                                for r in reserve_releases
-                                if f"{r['order_id']}:reserve_release" in new_keys))
+        alert = _reserve_release_alert_text(reserve_releases, rr_sync)
+        if alert:
             print(f"[RzCommission] {alert}")
             _notify(alert)
 
@@ -539,14 +555,8 @@ def backfill() -> None:
                f"{len(resolved_rr['resolved'])} одразу закрито. Курсор НЕ зрушено — звичайний run() і далі щодня.")
     print(summary)
     _notify("📦 " + summary.removeprefix("[RzCommission] "))
-    if rr_sync["newly_opened"]:
-        new_keys = set(rr_sync["newly_opened"])
-        alert = ("🚨 Rozetka (--backfill): ЗНЯТО РЕЗЕРВ роялті за невиконаним замовленням — товар "
-                  "покупець не отримав, роялті НЕ прийде, покупцю належить повернення (чек RETURN "
-                  "+ сторно доходу в книзі):\n" +
-                  "\n".join(f"№{r['order_id']}: {r['amount']} грн ({r['date']})"
-                            for r in reserve_releases
-                            if f"{r['order_id']}:reserve_release" in new_keys))
+    alert = _reserve_release_alert_text(reserve_releases, rr_sync, prefix="🚨 Rozetka (--backfill)")
+    if alert:
         print(f"[RzCommission] {alert}")
         _notify(alert)
 

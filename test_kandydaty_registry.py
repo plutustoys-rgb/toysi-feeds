@@ -163,6 +163,18 @@ _chk("send_stale_alert: dedup_key стабільний", _sent_calls[0][0] == "k
 _chk("send_stale_alert: cooldown = 24 год", _sent_calls[0][2] == 24 * 3600)
 _chk("send_stale_alert: перелік містить ключ стривоженого", "checkbox:1" in _sent_calls[0][1])
 
+# _NO_TELEGRAM-гейт (аудит 2026-09-29): ручний діагностичний запуск НЕ має слати реальний алерт —
+# той самий клас бага, що вже фіксили в test_site_cod_guardrails.py, тепер запобігли заздалегідь.
+_ACK9_EMPTY2 = Path(tempfile.mktemp())
+kr._NO_TELEGRAM = True
+try:
+    _sent_calls.clear()
+    sent3 = kr.send_stale_alert(max_age_days=2, path=_TMP9, ack_path=_ACK9_EMPTY2)
+    _chk("_NO_TELEGRAM=True: send_stale_alert НЕ шле, навіть якщо є що сигналити",
+         sent3 is False and _sent_calls == [])
+finally:
+    kr._NO_TELEGRAM = False
+
 
 # 10: amount_applied_in_text / resolve_open_candidates_by_text (спільна реалізація —
 # rozetka_commission_ledger.py й eva_commission_ledger.py делегують сюди, аудит 2026-09-28, п.1)
@@ -185,6 +197,27 @@ _chk("amount_applied_in_text: збіг у кінці рядка (немає си
      kr.amount_applied_in_text("сума 10,20", 10.20))
 _chk("amount_applied_in_text: крапка-варіант теж має межову перевірку ('110.20' не збігається з 10.20)",
      not kr.amount_applied_in_text("110.20 інше", 10.20))
+
+# ЧИСЛОВЕ порівняння, НЕ текстове (аудит 2026-09-29, живий приклад рядка 118 книги:
+# «стало 10.2 (+10.2)» — книга пише ОДНУ цифру після коми, а не завжди дві).
+_chk("amount_applied_in_text: '10.2' (одна цифра) ЗБІГАЄТЬСЯ з amount=10.20 (числове порівняння)",
+     kr.amount_applied_in_text("стало 10.2 (+10.2)", 10.20))
+_chk("amount_applied_in_text: '10,2' (кома, одна цифра) теж збігається",
+     kr.amount_applied_in_text("логістика: 10,2 внесено", 10.20))
+_chk("amount_applied_in_text: ціле число без копійок ('10') НЕ збігається з amount=10.20",
+     not kr.amount_applied_in_text("сума 10 грн", 10.20))
+
+# НЕГАТИВНИЙ КОНТЕКСТ (аудит 2026-09-29, живий приклад: примітка «бракує 10,20» містить те
+# саме число кандидата, але означає ПРОТИЛЕЖНЕ — досі НЕ внесено).
+_chk("amount_applied_in_text: 'бракує 10,20' НЕ рахується як внесено (негативний контекст)",
+     not kr.amount_applied_in_text("Рядок 71: бракує 10,20 у графі 9.", 10.20))
+_chk("amount_applied_in_text: 'не вистачає 47,18' НЕ рахується",
+     not kr.amount_applied_in_text("не вистачає 47,18 роялті", 47.18))
+_chk("amount_applied_in_text: 'внесено 10,20' (позитивний контекст, той самий число) РАХУЄТЬСЯ",
+     kr.amount_applied_in_text("логістика внесено 10,20 сьогодні", 10.20))
+_far_text = "бракує" + " x" * 20 + " 10,20 внесено тут"  # "бракує" явно за межами 25-символьного вікна
+_chk("amount_applied_in_text: негативний контекст ЗА МЕЖАМИ вікна (>25 символів) не заважає",
+     kr.amount_applied_in_text(_far_text, 10.20))
 
 _TMP10 = Path(tempfile.mktemp())
 kr._save_registry({

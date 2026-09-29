@@ -188,6 +188,49 @@ def _ensure_session(page) -> None:
         raise AlloCabinetError(f"сесію не прийнято — сторінка логіну на {page.url} (треба --login)")
 
 
+def keepalive() -> None:
+    """Тримає ALLO-кабінетну сесію ТЕПЛОЮ (той самий патерн, що eva_cabinet_scraper.py
+    --keepalive, PR #290/#292) — заходить у кабінет під збереженою сесією й ПЕРЕСОХРАНЯЄ
+    storageState (оновлює cookies/токени), щоб не протухала.
+
+    ЖИВИЙ ІНЦИДЕНТ (знайдено власником 2026-09-29, "що по скрайперам?"): сесія ALLO
+    протухла 2026-08-31 і жодного разу відтоді НЕ оновлювалась — automap/moderate-all
+    (4 рази/добу) провалювались МОВЧКИ (лише артефакти в reports/, жоден Telegram-алерт
+    не сигналив про сам факт протухлої сесії окремо від щоразового провалу дії) РІВНО
+    МІСЯЦЬ (82+85 провалів). Корінь той самий, що вже діагностували на ALLO 2026-08-31 і
+    звідти ж перенесли фікс у EVA (див. коментар eva_cabinet_scraper.py::keepalive) —
+    ЧИТАННЯ кабінету ніколи не пересохраняє storageState, лише --login РАЗ, і кукі
+    поступово протухають незалежно від частоти headless-читання. Фікс тоді застосували
+    до EVA (і Prom), але НЕ повернули на сам ALLO, де його вперше й знайшли.
+
+    Запускати по таймеру (~30 хв), окрема Windows-задача (аналог
+    PlutusToys_EvaCabinetKeepalive/PlutusToys_PromCabinetKeepalive)."""
+    if not STATE_FILE.exists():
+        msg = (f"🚨 allo_cabinet_scraper keepalive: нема сесії ({STATE_FILE.name}). "
+               f"Запусти раз `python allo_cabinet_scraper.py --login`.")
+        print(f"[AlloCabinet] {msg}", file=sys.stderr)
+        _notify(msg)
+        sys.exit(1)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(storage_state=str(STATE_FILE))
+        page = ctx.new_page()
+        try:
+            page.goto(DASHBOARD_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+            _ensure_session(page)
+            ctx.storage_state(path=str(STATE_FILE))  # пересохраняємо → оновлює сесію (теплою)
+            print("[AlloCabinet] keepalive: сесію оновлено.")
+        except (PlaywrightTimeoutError, AlloCabinetError) as e:
+            msg = (f"🚨 allo_cabinet_scraper keepalive: сесія протухла/збій ({e}). "
+                   f"Перелогінься: `python allo_cabinet_scraper.py --login`.")
+            print(f"[AlloCabinet] {msg}", file=sys.stderr)
+            _notify(msg)
+            sys.exit(1)
+        finally:
+            browser.close()
+
+
 def _btn_actionable(btn) -> bool:
     """Кнопка існує, видима, увімкнена й не aria-disabled (ALLO дизейблить
     «Автозіставлення...» тултіпом «Триває...» доки async триває — тоді пропускаємо)."""
@@ -440,6 +483,8 @@ def scrape() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Кабінет ALLO (Playwright + storageState): читання балансів/замовлень + автоцикл дій.")
     parser.add_argument("--login", action="store_true", help="Раз: вікно, логін, зберегти сесію.")
+    parser.add_argument("--keepalive", action="store_true",
+                        help="Тримати сесію теплою (headless, пересохраняє storageState). Запускати по таймеру ~30 хв.")
     parser.add_argument("--automap", action="store_true",
                         help="Авто-завершити майстер 'Зіставлення даних' усіх прайс-листів.")
     parser.add_argument("--moderate-all", action="store_true",
@@ -451,6 +496,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.login:
         create_state()
+    elif args.keepalive:
+        keepalive()
     elif args.automap or args.moderate_all or args.auto_cycle:
         run_actions(apply=args.apply,
                     do_automap=args.automap or args.auto_cycle,

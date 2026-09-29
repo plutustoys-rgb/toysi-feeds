@@ -203,7 +203,12 @@ def _book_lookup(order_id: str) -> dict:
     return res
 
 
-def collect() -> tuple:
+def collect(ignore_cursor: bool = False) -> tuple:
+    """`ignore_cursor=True` — РАЗОВИЙ БЕКФІЛ (Аудитор, 2026-09-29, п.1а, той самий клас, що
+    rozetka_commission_ledger.py): `processed_ids` ДО фіксу 2026-09-28 уже "бачив" частину
+    замовлень — звичайний collect() їх більше не поверне як нові. Повертає ВСІ замовлення з
+    ПОТОЧНОЇ сторінки (не лише ще не в `processed_ids`) — не рухає курсор (викликач сам вирішує,
+    чи зберігати повернутий `processed_ids`)."""
     cursor = _load_cursor()
     processed = set(cursor.get("processed_ids", []))
     is_first_run = "processed_ids" not in cursor
@@ -211,12 +216,12 @@ def collect() -> tuple:
     rows = fetch_commissions()
     all_ids = [r["order_id"] for r in rows]
 
-    if is_first_run:
+    if is_first_run and not ignore_cursor:
         _log(f"Перший запуск — базова лінія: {len(all_ids)} замовлень з комісією вважаю опрацьованими "
              f"(історія вже в книзі 15%-оцінкою / вручну), кандидатів не шукаю.")
         return [], all_ids
 
-    new = [r for r in rows if r["order_id"] not in processed]
+    new = rows if ignore_cursor else [r for r in rows if r["order_id"] not in processed]
     for r in new:
         r.update(_book_lookup(r["order_id"]))
         processed.add(r["order_id"])
@@ -326,5 +331,32 @@ def main() -> None:
          f"(реєстр: +{len(sync_result['newly_opened'])} нових, {len(sync_result['still_open'])} досі відкриті)")
 
 
+def backfill() -> None:
+    """Разовий засів реєстру з ПОТОЧНОЇ сторінки замовлень (Аудитор, 2026-09-29, п.1а) — див.
+    docstring collect(ignore_cursor=True). НЕ рухає курсор, НЕ пише daily-звіт."""
+    try:
+        candidates, _ = collect(ignore_cursor=True)
+    except (RuntimeError, OSError) as e:
+        _notify(f"🚨 eva_commission_ledger --backfill: {e}")
+        _log(f"backfill помилка: {e}")
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001
+        _notify(f"🚨 eva_commission_ledger --backfill: несподівана помилка: {e}")
+        _log(f"backfill несподівана помилка: {e}")
+        sys.exit(1)
+    _log(f"--backfill: {len(candidates)} замовлень на поточній сторінці.")
+    sync_result = sync_registry(candidates) if candidates else {"newly_opened": [], "still_open": [], "resolved": []}
+    resolved = resolve_against_book()
+    kandydaty_registry.write_open_report()
+    summary = (f"--backfill ГОТОВО: +{len(sync_result['newly_opened'])} нових у реєстрі, "
+               f"{len(sync_result['still_open'])} уже були там, {len(resolved['resolved'])} одразу закрито "
+               f"(сума вже в Графі 5). Курсор НЕ зрушено.")
+    _log(summary)
+    _notify("📦 EVA " + summary)
+
+
 if __name__ == "__main__":
-    main()
+    if "--backfill" in sys.argv:
+        backfill()
+    else:
+        main()

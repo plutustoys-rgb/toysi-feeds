@@ -38,6 +38,8 @@ from pathlib import Path
 
 from telegram_notify import send_throttled_alert
 
+_NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -228,9 +230,14 @@ def send_stale_alert(
     непідтверджені відкриті кандидати старші `max_age_days` — ОДИН throttled Telegram-алерт
     (раз на добу, поки стан триває, `telegram_notify.send_throttled_alert`) з переліком.
     Повертає True, лише якщо алерт реально пішов цього разу (поза вікном тиші throttle) —
-    False і коли стріляти нема чого, і коли throttle-вікно ще не минуло."""
+    False і коли стріляти нема чого, коли throttle-вікно ще не минуло, і коли AUDIT_NO_TELEGRAM=1
+    (аудит 2026-09-29: ручний діагностичний запуск `stale-check` дав РЕАЛЬНИЙ алерт — цей
+    модуль, на відміну від УСІХ інших kandydaty-скриптів проєкту, не мав власного _NO_TELEGRAM-
+    гейту для тихого ручного тестування)."""
     stale = check_stale_candidates(max_age_days, path, ack_path)
     if not stale:
+        return False
+    if _NO_TELEGRAM:
         return False
     plural = "ів" if len(stale) != 1 else ""
     lines = [f"🔴 КОДВ: {len(stale)} відкрит{plural} кандидат{'' if len(stale) == 1 else 'и'} "
@@ -245,28 +252,53 @@ def send_stale_alert(
     return send_throttled_alert("kodv_stale_candidates", "\n".join(lines), cooldown_sec=24 * 3600)
 
 
+_NUMBER_TOKEN_RE = re.compile(r"(?<![\d,.])\d+(?:[.,]\d+)?(?![\d])")
+# Слова ПЕРЕД числом, що означають «це ЩЕ НЕ внесено» (аудит 2026-09-29, живий приклад
+# з рядка книги: примітка «бракує 10,20» — саме число кандидата, але в НЕГАТИВНОМУ сенсі).
+# Вікно пошуку — 25 символів ПЕРЕД числом (достатньо для «бракує »/«не вистачає » тощо,
+# замалий, щоб зачепити попереднє, непов'язане речення).
+_NEGATIVE_CONTEXT_WORDS = ("бракує", "не вистачає", "недостає", "залишилось внести",
+                           "потрібно ще", "мінус", "відсутньо", "не внесено", "ще не")
+_NEGATIVE_CONTEXT_WINDOW = 25
+
+
 def amount_applied_in_text(text: str, amount) -> bool:
     """Чи згадує вільний текст (типово Графа 5 книги) конкретну суму — спільний критерій
     «внесено» для kandydaty-джерел, що звіряються з книгою за текстом, не структурними даними
     (Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.1: "відкритий, доки розклад i9 у графі 5 рядка
     цього замовлення не містить суму"). Книга пише суми КОМОЮ ("47,18"), джерела рахують
-    крапкою (float) — приймає обидва формати.
+    крапкою (float).
 
-    МЕЖОВА ПЕРЕВІРКА (аудит PR перед мержем, 2026-09-28): голий substring НЕ годиться — сума
-    "10,20" (за регресійними даними Аудитора повторюється щонайменше 11 разів у книзі) є
-    підрядком БУДЬ-ЯКОГО числа з таким хвостом ("110,20", "210,20") — без межі
-    resolve_open_candidates_by_text() хибно закрив би кандидата, чия сума насправді ще НЕ
-    внесена (тихо ховаючи факт — саме той клас бага, що цей кеш і покликаний закрити).
-    Тому: збіг НЕ має цифри/коми/крапки безпосередньо ПЕРЕД собою і цифри БЕЗПОСЕРЕДНЬО
-    ПІСЛЯ (виключає і "110,20", і "10,205")."""
+    ЧИСЛОВЕ порівняння, НЕ текстовий substring (аудит 2026-09-29, живий приклад: книга іноді
+    пише «10.2» замість «10.20», рядок 118 «стало 10.2 (+10.2)» — текстовий пошук «10.20»
+    цього не зловив би, хибне «не внесено»). Витягуємо кожне число з тексту (з тією самою
+    межовою перевіркою, що й раніше — «10,20» НЕ збігається всередині «110,20»), парсимо у
+    float, порівнюємо ЧИСЛА (round до копійки), не рядки — «10.2» і «10.20» тепер РІВНІ.
+
+    НЕГАТИВНИЙ КОНТЕКСТ (аудит 2026-09-29, живий приклад: примітка «бракує 10,20» містить
+    те саме число кандидата, але означає ПРОТИЛЕЖНЕ — досі НЕ внесено): якщо безпосередньо
+    ПЕРЕД числом (у межах _NEGATIVE_CONTEXT_WINDOW символів) стоїть слово з
+    _NEGATIVE_CONTEXT_WORDS — цей збіг НЕ рахується. Прагматичний захист (конкретний
+    словник, не NLP) — краще пропустити межовий випадок, ніж хибно закрити невнесений факт."""
     if not text or amount is None:
         return False
-    needle_dot = f"{amount:.2f}"
-    needle_comma = needle_dot.replace(".", ",")
-    for needle in (needle_dot, needle_comma):
-        pattern = r"(?<![\d,.])" + re.escape(needle) + r"(?!\d)"
-        if re.search(pattern, text):
-            return True
+    try:
+        target = round(float(amount), 2)
+    except (TypeError, ValueError):
+        return False
+    text_lower = text.lower()
+    for m in _NUMBER_TOKEN_RE.finditer(text):
+        raw = m.group(0).replace(",", ".")
+        try:
+            val = round(float(raw), 2)
+        except ValueError:
+            continue
+        if val != target:
+            continue
+        before = text_lower[max(0, m.start() - _NEGATIVE_CONTEXT_WINDOW):m.start()]
+        if any(neg in before for neg in _NEGATIVE_CONTEXT_WORDS):
+            continue
+        return True
     return False
 
 

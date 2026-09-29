@@ -119,6 +119,27 @@
 | `PlutusToys-Graph6Daily` | `graph6_daily.ps1` → `graph6_daily.py` | КОДВ: собівартість реалізованих замовлень Toysi (кабінет «Історія замовлень», лише «Відвантажене») → кандидати графи 6 у документи_КОДВ (read-only, книгу не пише) |
 | `PlutusToys-NovaPayRegistryArchiver` | `novapay_registry_archiver.ps1` → `kodv_mail_archiver.py` | КОДВ: архів реєстрів NovaPay + актів звірки НоваПошта **+ реєстрів FC/RozetkaPay** («реєстр платежів» → тека RozetkaPay) **+ виписок ПриватБанку** (best-guess маркери, тека ПриватБанк — звірити за першим листом) у документи_КОДВ (read-only IMAP, книгу не пише) |
 | `PlutusToys-ChecboxRegistrySync` | `checkbox_registry_sync.ps1` → `checkbox_registry_sync.py` | КОДВ: нові фіскальні чеки Checkbox → кандидати доходу у документи_КОДВ (read-only API, книгу не пише) |
+| `PlutusToys_KandydatyStaleCheck` | `kandydaty_registry.py stale-check` (щодня 08:30) | КОДВ: сигнал «книга стоїть» (Аудитор, 2026-09-29) — відкриті кандидати реєстру старші 2 діб, не визнані винятком → ОДИН throttled Telegram-алерт (раз/добу, `send_throttled_alert`). Читає той самий `_vidkryti_kandydaty.json`, що наповнюють kandydaty-скрипти нижче |
+
+> **`kandydaty_registry.py` — спільний ПЕРСИСТЕНТНИЙ реєстр відкритих кандидатів** (2026-09-18,
+> розширено 2026-09-28/29): незалежний від курсора КОЖНОГО джерела (курсор = «бачили в джерелі»,
+> реєстр = «ще НЕ в книзі» — окремі поняття, щоб незастосований факт не зникав, коли курсор рухається
+> далі). Джерела зараз: `checkbox`, `privat_statement`, `toysi_returns`, `vchasno_akty` (з 2026-09-18)
+> **+ `rozetka_commission`, `eva_commission`, `novapay_registry`, `rozetkapay_registry`** (2026-09-28,
+> той самий клас бага — курсор губив факти назавжди; `rozetka_commission`/`rozetkapay_registry`
+> реєструють роялті/логістику/сторно/еквайринг ОКРЕМИМИ записами `order_id:kind`, не комбінованою
+> сумою — бухгалтер пише компоненти в Графу 5 окремо) **+ `rozetka_reserve_release`** (2026-09-29,
+> §1в: «Зняття резерву за невиконане замовлення» — товар покупець не отримав, роялті НІКОЛИ не
+> прийде, гроші йому належить повернути; `rozetka_commission_ledger.py` шле ПРЯМИЙ Telegram-алерт
+> на кожен НОВИЙ запис цього джерела, окремо від щоденного зведення — це не "бракує рядка в книзі",
+> а "власнику треба знати одразу"). Критерій закриття — `amount_applied_in_text()`
+> (числове порівняння, не текстовий substring; негативний контекст типу «бракує N» виключено) через
+> `resolve_open_candidates_by_text()`. CLI: `python kandydaty_registry.py report|stale-check|ack <key> <причина>`
+> — `ack` пише `_vidkryti_kandydaty_ack.json` (визнаний виняток, лишається видимим у звіті, не сигналить
+> stale-check повторно). Бекфіл (`--backfill`, `collect(ignore_cursor=True)`): зроблено ЖИВО 2026-09-29
+> для `rozetka_commission` (+11 фактів) і `eva_commission` (+23 факти) — best-effort у межах ПОТОЧНОГО
+> вікна кабінету (~20 рядків/вкладку), НЕ повна історія. `novapay_registry`/`rozetkapay_registry` —
+> той самий механізм ще НЕ портовано (нема доказу такого ж класу втрати для цих двох джерел).
 
 > **Чому Rozetka + Prom-кабінет + agent_watch крутяться ЛОКАЛЬНО, а не на VPS:** вітрина/кабінет
 > захищені антиботом, який пропускає лише справжній Chrome із профілем (bundled chromium → 403/500);
@@ -320,7 +341,7 @@
     "PlutusToys_MarketplaceActions",
     "PlutusToys-TelegramOutbox", "PlutusToys-CabinetAudit",
     "PlutusToys-Graph6Daily", "PlutusToys-NovaPayRegistryArchiver",
-    "PlutusToys-ChecboxRegistrySync"
+    "PlutusToys-ChecboxRegistrySync", "PlutusToys_KandydatyStaleCheck"
   ],
   "vps_units": [
     "order-pipeline", "order-router", "orders-watcher", "order-status-tracker",

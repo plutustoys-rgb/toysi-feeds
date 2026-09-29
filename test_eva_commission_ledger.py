@@ -128,6 +128,12 @@ _chk("resolve_against_book: закрито (сума 30,99 знайдена в �
      resolved["resolved"] == ["eva_commission:8-900001"])
 _chk("реєстр: status=resolved", kr._load_registry(_tmp_reg)["eva_commission:8-900001"]["status"] == "resolved")
 
+# collect(ignore_cursor=True) — бекфіл (аудит 2026-09-29, п.1а): та сама умова, "processed_ids
+# уже містить 8-900001", але ignore_cursor=True все одно повертає його.
+backfill_candidates, _ = ec.collect(ignore_cursor=True)
+_chk("collect(ignore_cursor=True): замовлення, вже в processed_ids, ВСЕ ОДНО повертається",
+     any(c["order_id"] == "8-900001" for c in backfill_candidates))
+
 
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")

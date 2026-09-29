@@ -98,6 +98,12 @@ NAV_TIMEOUT_MS = 30000
 
 SALE_COMMISS_TITLE = "Комісія за продаж"
 LOGISTIC_SPECIAL_TITLE = "Організація видачі відправлень (Спеціальні умови)"  # лише RMP-ТТН
+# «Зняття резерву за невиконане замовлення» — Аудитор, КОДВ_журнал.md (запис 28.09, розділ 1),
+# точна цитата з живої вкладки «Роялті»: живий доказ на №905260801 (-23,52, 20.09) і №905484851
+# (-103,90, 23.09) — товар покупець НЕ забрав, Rozetka API статус 11/група 3 «неуспішні»,
+# роялті НІКОЛИ не прийде (резерв знято), а дохід у книзі досі стоїть повним — гроші треба
+# повернути покупцю (чек RETURN + сторно доходу, коли повернення відбудеться).
+RESERVE_RELEASE_TITLE = "Зняття резерву за невиконане замовлення"
 
 
 class RozetkaCommissionError(Exception):
@@ -200,9 +206,21 @@ def _lookup_book_row(order_id: str) -> dict:
     return {}
 
 
-def collect(page) -> tuple:
-    """Повертає (candidates: list, new_cursor: dict). candidates — по одному запису на
-    order_id, де є НОВЕ (з часу останнього курсора) нарахування роялті і/або логістики."""
+def collect(page, ignore_cursor: bool = False) -> tuple:
+    """Повертає (candidates: list, new_cursor: dict, reserve_releases: list). candidates —
+    по одному запису на order_id, де є НОВЕ (з часу останнього курсора) нарахування роялті
+    і/або логістики. reserve_releases — ОКРЕМИЙ список: замовлення, де кабінет зняв резерв
+    роялті через "невиконане" (Аудитор, КОДВ_журнал.md, 2026-09-29, розділ 1 — товар НЕ
+    забрано, роялті НІКОЛИ не прийде, гроші покупцю треба повернути) — семантично інше явище
+    за звичайну "нову комісію", тому окремий канал, не змішується з candidates.
+
+    `ignore_cursor=True` — РАЗОВИЙ БЕКФІЛ (Аудитор, 2026-09-29, п.1а: курсор ДО фіксу
+    2026-09-28 уже пройшов повз частину фактів — sync_registry() з нормального collect()
+    ніколи їх більше не побачить як "нові"). Обробляє ВСЕ, що ЗАРАЗ видно на сторінці 1
+    кабінету (не лише "нове відносно курсора") — best-effort відновлення в межах поточного
+    вікна (~20 рядків на вкладку), НЕ повна історія (глибша пагінація нестабільна, докстрінг
+    модуля). Курсор ПРИ ЦЬОМУ не рухається (виклик сам не зберігає new_cursor) — звичайний
+    щоденний run() і далі працює як завжди."""
     cursor = _load_cursor()
     is_first_run = "last_royalty_log_id" not in cursor and "last_logistics_operation_id" not in cursor
 
@@ -214,14 +232,14 @@ def collect(page) -> tuple:
     new_cursor = {"last_royalty_log_id": max_log_id, "last_logistics_operation_id": max_op_id,
                   "updated_at": datetime.now().isoformat(timespec="seconds")}
 
-    if is_first_run:
+    if is_first_run and not ignore_cursor:
         # Базова лінія: не дампити всю історію як "нове" (вона вже вручну виправлена 2026-08-29).
         print(f"[RzCommission] Перший запуск — беру поточний стан за базову лінію "
               f"(royalty logId≤{max_log_id}, logistics opId≤{max_op_id}), кандидатів не шукаю.")
-        return [], new_cursor
+        return [], new_cursor, []
 
-    last_log_id = cursor.get("last_royalty_log_id", 0)
-    last_op_id = cursor.get("last_logistics_operation_id", 0)
+    last_log_id = 0 if ignore_cursor else cursor.get("last_royalty_log_id", 0)
+    last_op_id = 0 if ignore_cursor else cursor.get("last_logistics_operation_id", 0)
 
     per_order = defaultdict(lambda: {"royalty": 0.0, "logistics": 0.0, "royalty_dates": [],
                                       "logistics_dates": [], "ttns": []})
@@ -244,6 +262,22 @@ def collect(page) -> tuple:
         per_order[oid]["logistics_dates"].append(r["date"])
         if r.get("ttn"):
             per_order[oid]["ttns"].append(r["ttn"])
+
+    reserve_releases = []
+    for r in royalty_rows:
+        if r["type_title"] != RESERVE_RELEASE_TITLE or r["log_id"] <= last_log_id:
+            continue
+        oid = r["order_id"]
+        if not oid or oid == "0":
+            continue
+        book = _lookup_book_row(oid)
+        reserve_releases.append({
+            "order_id": oid,
+            "amount": abs(r["debit"] or 0.0),
+            "date": r["date"],
+            "book_row": book.get("row"),
+            "book_e_text": book.get("e_text"),
+        })
 
     candidates = []
     for oid, amounts in sorted(per_order.items()):
@@ -274,7 +308,7 @@ def collect(page) -> tuple:
             # ПЕРЕД додаванням Δ, замість мовчки показувати book_proposed_i9 як готове число.
             "reserve_warning": "резервування" in e_text.lower(),
         })
-    return candidates, new_cursor
+    return candidates, new_cursor, reserve_releases
 
 
 def _delta_applied_in_book(book_e_text: str, delta) -> bool:
@@ -291,31 +325,74 @@ def sync_registry(candidates: list) -> dict:
     не внесений бухгалтером до наступного прогону, раніше зникав із КОЖНОГО наступного звіту
     НАЗАВЖДИ (доказ: роялті №906224962/№906267890 — в одному звіті 19.09, і більше ніде).
 
+    ОКРЕМІ ЗАПИСИ для роялті й логістики (аудит 2026-09-29, п.1б): ключ "order_id:royalty" /
+    "order_id:logistics" — бухгалтер пише в Графу 5 компоненти ОКРЕМО, не суму Δ; кандидат
+    з sum=104,81 (роялті 94,61+логістика 10,20) міг НІКОЛИ не з'явитись текстом у книзі, хоча
+    обидва компоненти вже давно внесені. Той самий підхід, що вже в rozetkapay_registry_kandydaty
+    (order_id:kind для сторно/еквайрингу). Порожній компонент (0.0) — запис не створюється.
+
     `resolve=False` (НЕ resolve=True): кабінетне вікно — ЛИШЕ останні ~20 рядків на вкладку
     (page=1, глибша пагінація нестабільна — див. докстрінг модуля), тому НІКОЛИ не покриває
     повну історію відкритих кандидатів. Той самий клас "обрізана сторінка", що вже задокументо-
     ваний у kandydaty_registry.py (checkbox_registry_sync.py: `resolve=not window_truncated`) —
     авто-закриття тут неможливе БЕЗ окремого підтвердження. Закриття — окремо, resolve_against_book()."""
-    current = [
-        {
-            "key": c["order_id"],
-            "summary": f"роялті {c['royalty_new']} + логістика {c['logistics_new']} = Δ{c['delta_i9']}",
-            "sum": c["delta_i9"],
-            "date": (c["dates"][0] if c["dates"] else datetime.now().date().isoformat()),
-        }
-        for c in candidates
-    ]
+    current = []
+    for c in candidates:
+        date_ = c["dates"][0] if c["dates"] else datetime.now().date().isoformat()
+        if c["royalty_new"]:
+            current.append({
+                "key": f"{c['order_id']}:royalty",
+                "summary": f"роялті {c['royalty_new']}",
+                "sum": c["royalty_new"],
+                "date": date_,
+            })
+        if c["logistics_new"]:
+            current.append({
+                "key": f"{c['order_id']}:logistics",
+                "summary": f"логістика {c['logistics_new']}"
+                           + (f" (ТТН {', '.join(c['ttns'])})" if c.get("ttns") else ""),
+                "sum": c["logistics_new"],
+                "date": date_,
+            })
     return kandydaty_registry.sync_open_candidates("rozetka_commission", current, resolve=False)
 
 
 def resolve_against_book() -> dict:
     """Звіряє ВСІ ВІДКРИТІ кандидати source="rozetka_commission" (незалежно від того, коли їх
     вперше побачено — не лише щойно знайдені цим прогоном) проти ЖИВОЇ книги — закриває ті, чия
-    сума вже з'явилась у Графі 5 рядка замовлення. Викликати КОЖЕН прогін, окремо від
-    sync_registry() вище (яка лише ВІДКРИВАЄ/оновлює, ніколи не закриває — кабінетне вікно
-    недостатнє для safe auto-resolve, див. docstring sync_registry)."""
-    return kandydaty_registry.resolve_open_candidates_by_text(
-        "rozetka_commission", lambda oid: _lookup_book_row(oid).get("e_text"))
+    сума вже з'явилась у Графі 5 рядка замовлення (ключ "order_id:kind" — order_id до двокрапки,
+    той самий підхід, що rozetkapay_registry_kandydaty.resolve_against_book). Викликати КОЖЕН
+    прогін, окремо від sync_registry() вище (яка лише ВІДКРИВАЄ/оновлює, ніколи не закриває —
+    кабінетне вікно недостатнє для safe auto-resolve, див. docstring sync_registry)."""
+    def _lookup(key: str):
+        oid = key.split(":", 1)[0]
+        return _lookup_book_row(oid).get("e_text")
+    return kandydaty_registry.resolve_open_candidates_by_text("rozetka_commission", _lookup)
+
+
+def sync_reserve_releases(reserve_releases: list) -> dict:
+    """Реєструє «зняття резерву за невиконане замовлення» — ОКРЕМЕ джерело від звичайних
+    комісійних кандидатів (Аудитор, КОДВ_журнал.md, 2026-09-29, розділ 1): семантично інше —
+    не "нова комісія", а "роялті НІКОЛИ не прийде, покупцю належить повернення" (товар не
+    виконано, чек RETURN + сторно доходу в книзі ще не зроблено). Власника треба сповістити
+    ОДРАЗУ (run() шле прямий Telegram-алерт на newly_opened), не лише мовчки покласти в реєстр."""
+    current = [{
+        "key": f"{r['order_id']}:reserve_release",
+        "summary": (f"⚠️ ЗНЯТО РЕЗЕРВ роялті {r['amount']} — товар НЕ виконано, роялті не "
+                    f"прийде, покупцю належить повернення (чек RETURN + сторно доходу)"),
+        "sum": r["amount"],
+        "date": r["date"],
+    } for r in reserve_releases]
+    return kandydaty_registry.sync_open_candidates("rozetka_reserve_release", current, resolve=False)
+
+
+def resolve_reserve_releases() -> dict:
+    """Закриває запис, коли повернення покупцю вже відображено в Графі 5 (та сама сума
+    з'явилась текстом, наприклад сторно) — той самий критерій «внесено», що resolve_against_book()."""
+    def _lookup(key: str):
+        oid = key.split(":", 1)[0]
+        return _lookup_book_row(oid).get("e_text")
+    return kandydaty_registry.resolve_open_candidates_by_text("rozetka_reserve_release", _lookup)
 
 
 def _write_report(candidates: list) -> Path:
@@ -373,7 +450,7 @@ def run() -> None:
         ctx = browser.new_context(storage_state=str(STATE_FILE))
         page = ctx.new_page()
         try:
-            candidates, new_cursor = collect(page)
+            candidates, new_cursor, reserve_releases = collect(page)
         except (PlaywrightTimeoutError, RozetkaCommissionError) as e:
             msg = f"🚨 rozetka_commission_ledger: {e}"
             print(f"[RzCommission] {msg}", file=sys.stderr)
@@ -389,6 +466,24 @@ def run() -> None:
     if resolved["resolved"]:
         print(f"[RzCommission] Реєстр: закрито {len(resolved['resolved'])} раніше відкрит{'ого' if len(resolved['resolved']) == 1 else 'их'} "
               f"кандидат{'а' if len(resolved['resolved']) == 1 else 'ів'} (сума знайдена в Графі 5 книги).")
+
+    resolved_rr = resolve_reserve_releases()
+    if resolved_rr["resolved"]:
+        print(f"[RzCommission] Реєстр (зняття резерву): закрито {len(resolved_rr['resolved'])} "
+              f"— повернення покупцю вже в книзі.")
+
+    if reserve_releases:
+        rr_sync = sync_reserve_releases(reserve_releases)
+        if rr_sync["newly_opened"]:
+            new_keys = set(rr_sync["newly_opened"])
+            alert = ("🚨 Rozetka: ЗНЯТО РЕЗЕРВ роялті за невиконаним замовленням — товар покупець "
+                      "не отримав, роялті НЕ прийде, покупцю належить повернення (чек RETURN + "
+                      "сторно доходу в книзі):\n" +
+                      "\n".join(f"№{r['order_id']}: {r['amount']} грн ({r['date']})"
+                                for r in reserve_releases
+                                if f"{r['order_id']}:reserve_release" in new_keys))
+            print(f"[RzCommission] {alert}")
+            _notify(alert)
 
     if not candidates:
         print("[RzCommission] Нових нарахувань роялті/логістики немає.")
@@ -408,5 +503,56 @@ def run() -> None:
     _notify(summary)
 
 
+def backfill() -> None:
+    """Разовий засів реєстру з ПОТОЧНОГО вікна кабінету (Аудитор, 2026-09-29, п.1а) — див.
+    docstring collect(ignore_cursor=True). НЕ рухає курсор, НЕ пише daily-звіт (це не звичайний
+    прогін) — лише реєструє й одразу звіряє з книгою (частина могла вже бути внесена)."""
+    if not STATE_FILE.exists():
+        msg = (f"🚨 rozetka_commission_ledger --backfill: нема збереженої сесії ({STATE_FILE.name}). "
+               f"Запусти `python rozetka_cabinet_scraper.py --login`.")
+        print(f"[RzCommission] {msg}", file=sys.stderr)
+        _notify(msg)
+        sys.exit(1)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(channel="chrome", headless=True)
+        ctx = browser.new_context(storage_state=str(STATE_FILE))
+        page = ctx.new_page()
+        try:
+            candidates, _, reserve_releases = collect(page, ignore_cursor=True)
+        except (PlaywrightTimeoutError, RozetkaCommissionError) as e:
+            msg = f"🚨 rozetka_commission_ledger --backfill: {e}"
+            print(f"[RzCommission] {msg}", file=sys.stderr)
+            _notify(msg)
+            sys.exit(1)
+        finally:
+            browser.close()
+    print(f"[RzCommission] --backfill: {len(candidates)} замовлень у поточному вікні кабінету, "
+          f"{len(reserve_releases)} зняттів резерву.")
+    sync_result = sync_registry(candidates) if candidates else {"newly_opened": [], "still_open": [], "resolved": []}
+    resolved = resolve_against_book()
+    rr_sync = sync_reserve_releases(reserve_releases) if reserve_releases else {"newly_opened": [], "still_open": [], "resolved": []}
+    resolved_rr = resolve_reserve_releases()
+    kandydaty_registry.write_open_report()
+    summary = (f"[RzCommission] --backfill ГОТОВО: +{len(sync_result['newly_opened'])} нових у реєстрі, "
+               f"{len(sync_result['still_open'])} уже були там, {len(resolved['resolved'])} одразу закрито "
+               f"(сума вже в Графі 5). Зняття резерву: +{len(rr_sync['newly_opened'])} нових, "
+               f"{len(resolved_rr['resolved'])} одразу закрито. Курсор НЕ зрушено — звичайний run() і далі щодня.")
+    print(summary)
+    _notify("📦 " + summary.removeprefix("[RzCommission] "))
+    if rr_sync["newly_opened"]:
+        new_keys = set(rr_sync["newly_opened"])
+        alert = ("🚨 Rozetka (--backfill): ЗНЯТО РЕЗЕРВ роялті за невиконаним замовленням — товар "
+                  "покупець не отримав, роялті НЕ прийде, покупцю належить повернення (чек RETURN "
+                  "+ сторно доходу в книзі):\n" +
+                  "\n".join(f"№{r['order_id']}: {r['amount']} грн ({r['date']})"
+                            for r in reserve_releases
+                            if f"{r['order_id']}:reserve_release" in new_keys))
+        print(f"[RzCommission] {alert}")
+        _notify(alert)
+
+
 if __name__ == "__main__":
-    run()
+    if "--backfill" in sys.argv:
+        backfill()
+    else:
+        run()

@@ -29,6 +29,12 @@ cases = [
     ("You are Code-Agent, an elite Autonomous Software Engineering AI Agent.", ""),
     ("Ось черга завдань для Код (повний текст у PROJECT_STATUS.md)", ""),
     ("ти бізнес консультант і агент-продажник", ""),   # нічия → не вгадуємо
+    # реальні хибні спрацювання з аудиту PR #604: роль лише ЗГАДАНА далі в тексті
+    ("Привіт. Ти — **агент-маркетолог соцмереж PlutusToys**. Ми щойно завели тебе, бо в проєкті є дірка: «Код» уміє "
+     "**постити механічно** (автопостинг Плутуса), SEO-агент відповідає за **пошук/Merchant/GA4**", "smm"),
+    ("Ти — Principal Systems Architect, експерт із розробки мультиагентних систем на базі Anthropic Claude CLI "
+     "(Claude Code) та фреймворку LangGraph. Твоя мета — рефакторинг системи e-commerce (5 агентів: Програміст, СММ, "
+     "SEO, Бізнес-консультант, Бухгалтер)", ""),
 ]
 for i, (first, want) in enumerate(cases):
     chk(f"detect_role[{i}] → {want or 'порожньо'}", recall.detect_role(transcript(first, f"c{i}.jsonl")) == want)
@@ -49,6 +55,15 @@ chk("restore: закритий пункт НЕ показується", "зак�
 chk("restore: чужий пункт НЕ показується", "чуже" not in card)
 chk("restore: невідома роль → порожньо", recall.restore_card("nope") == "")
 chk("restore: cap тримається", len(recall.restore_card("seo", cap=40)) <= 40)
+# бюджет по секціях: багато каналів не з'їдає відкриті пункти й не ріжеться посеред рядка
+for k in range(6):
+    (cw / f"X{k}_CHANNEL.md").write_text("".join(f"## [A → B] 2026-10-0{k} — запис номер {i} " + "я" * 100 + chr(10) for i in range(6)), encoding="utf-8")
+recall._CONFIGS["seo"] = [cw / f"X{k}_CHANNEL.md" for k in range(6)] + [cw / "OWNER_INBOX.md"]
+big = recall.restore_card("seo", cap=1500)
+chk("restore: при тісному бюджеті відкритий пункт лишається", "ВІДКРИТО. питання" in big)
+chk("restore: довжина ≤ cap", len(big) <= 1500)
+chk("restore: жоден рядок не обрізано посеред (усі рядки каналів закінчуються повним заголовком)",
+    all(l.rstrip().endswith("я") for l in big.splitlines() if "запис номер" in l))
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ recall detect_role/restore — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

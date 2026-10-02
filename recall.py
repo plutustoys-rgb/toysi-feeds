@@ -173,13 +173,13 @@ def _memory_hits(terms: list) -> list:
 # Підписи авторів у заголовках OWNER_INBOX (`## [Автор] дата — ...`) для кожної ролі.
 _ROLE_AUTHORS = {
     "seo": ("seo",), "smm": ("smm",), "seller": ("продажник",), "executor": ("виконавець",),
-    "consultant": ("консультант",), "kodv": ("кодв", "бухгалтер", "аудитор"),
+    "consultant": ("консультант",), "kodv": ("кодв", "бухгалтер", "головний бухгалтер", "аудитор"),
 }
 # Ознаки ролі в ПЕРШОМУ повідомленні сесії (єдине місце, де роль названо: cwd у всіх однаковий).
 # Рахуємо збіги по ролях; нічия або нуль → "" (фолбек: хук лишає поведінку без змін).
 _ROLE_MARKERS = {
     "seo": ("seo-агент", "seo агент", "plutus-seo", "агента-seo", "агент-seo", "агент seo", "новий seo"),
-    "smm": ("plutus-smm", "plutustoys-smm", "агента-smm", "агент-smm", "агент smm", "smm-агент", "smm агент"),
+    "smm": ("агент-маркетолог", "маркетолог соцмереж", "plutus-smm", "plutustoys-smm", "агента-smm", "агент-smm", "агент smm", "smm-агент", "smm агент"),
     "seller": ("агент-продажник", "агента-продажника", "агент продажник", "plutus-seller", "plutus-продажник"),
     "executor": ("агент-виконавець", "агента-виконавця", "plutus-executor", "агент виконавець"),
     "consultant": ("бізнес-консультант", "бізнес консультант", "бізнес-консультанта", "plutus-consultant",
@@ -187,6 +187,9 @@ _ROLE_MARKERS = {
     "kodv": ("головний бухгалтер", "агент-бухгалтер", "агента-бухгалтера", "plutus-kodv", "kodv-independent",
              "kodv-legislative", "ти бухгалтер", "агент бухгалтер"),
 }
+
+
+_ID_WINDOW = 140
 
 
 def detect_role(transcript_path: str) -> str:
@@ -209,7 +212,9 @@ def detect_role(transcript_path: str) -> str:
                     break
     except Exception:
         return ""
-    low = first[:4000].lower()
+    # Лише ПЕРШІ _ID_WINDOW символів: там роль названо ("Ти — агент-X"); далі вона лише ЗГАДУЄТЬСЯ
+    # (колега в тексті, перелік ролей) — аудит PR #604: так SMM→seo і архітектор→consultant.
+    low = first[:_ID_WINDOW].lower()
     scores = {r: sum(low.count(m) for m in ms) for r, ms in _ROLE_MARKERS.items()}
     best = max(scores.values(), default=0)
     if best == 0:
@@ -221,11 +226,13 @@ def detect_role(transcript_path: str) -> str:
 def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
     """Картка стану ролі (для «продовжуй/далі» після ущільнення, коли теми для пошуку нема):
     заголовки N останніх записів її каналів (newest-on-top, з датами) + ВІДКРИТІ рядки
-    OWNER_INBOX цієї ролі. Лише заголовки — достатньо, щоб не пропустити запис, якого не читав."""
+    OWNER_INBOX цієї ролі. Лише заголовки — достатньо, щоб не пропустити запис, якого не читав.
+    Бюджет `cap` ділиться по секціях: відкриті пункти (найважливіше) резервуються першими, канали
+    урізаються ЦІЛИМИ рядками з кінця — ніколи посеред рядка (аудит PR #604)."""
     roots = _CONFIGS.get(config)
     if not roots:
         return ""
-    lines = [f"=== СТАН [{config}]: останні записи каналів і відкриті пункти ==="]
+    chan = []
     for r in roots:
         if not (r.is_file() and r.name.upper().endswith("_CHANNEL.MD")):
             continue
@@ -233,30 +240,38 @@ def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
         try:
             for ln in r.read_text(encoding="utf-8", errors="replace").splitlines():
                 if ln.startswith("## ["):
-                    heads.append(ln[3:].strip()[:170])
+                    heads.append(ln[3:].strip()[:130])
                     if len(heads) >= n:
                         break
         except Exception:
             continue
         if heads:
-            lines.append(f"{r.name} (угорі = найновіше):")
-            lines += [f"   • {h}" for h in heads]
-    inbox = COWORK_DIR / "OWNER_INBOX.md"
+            chan.append(f"{r.name} (угорі = найновіше):")
+            chan += [f"   • {h}" for h in heads]
     authors = _ROLE_AUTHORS.get(config, ())
     opened = []
     try:
-        for ln in inbox.read_text(encoding="utf-8", errors="replace").splitlines():
+        for ln in (COWORK_DIR / "OWNER_INBOX.md").read_text(encoding="utf-8", errors="replace").splitlines():
             low = ln.lower()
             if (ln.startswith("## [") and any(f"[{a}" in low for a in authors) and "відкрито" in low
                     and not any(x in low for x in ("зроблено", "закрито", "✅"))):
-                opened.append(ln[3:].strip()[:170])
+                opened.append(f"   • {ln[3:].strip()[:130]}")
     except Exception:
         pass
-    if opened:
-        lines.append("OWNER_INBOX — ВІДКРИТІ пункти цієї ролі:")
-        lines += [f"   • {h}" for h in opened[:5]]
-    out = chr(10).join(lines) if len(lines) > 1 else ""
-    return out[:cap]
+    inbox = (["OWNER_INBOX — ВІДКРИТІ пункти цієї ролі:"] + opened[:5]) if opened else []
+    head = f"=== СТАН [{config}]: останні записи каналів і відкриті пункти ==="
+    budget = cap - len(head) - 1 - sum(len(x) + 1 for x in inbox)
+    kept, used = [], 0
+    for ln in chan:
+        if used + len(ln) + 1 > budget:
+            break
+        kept.append(ln)
+        used += len(ln) + 1
+    lines = [head] + kept + inbox
+    while len(lines) > 1 and len(chr(10).join(lines)) > cap:   # страховка: ціле-рядкове урізання
+        lines.pop()
+    out = chr(10).join(lines)
+    return out if len(lines) > 1 and len(out) <= cap else ""
 
 
 def recall(query: str, file_mode: str = "", config: str = "") -> int:

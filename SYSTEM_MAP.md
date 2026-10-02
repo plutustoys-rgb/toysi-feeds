@@ -120,6 +120,7 @@
 | `PlutusToys-NovaPayRegistryArchiver` | `novapay_registry_archiver.ps1` → `kodv_mail_archiver.py` | КОДВ: архів реєстрів NovaPay + актів звірки НоваПошта **+ реєстрів FC/RozetkaPay** («реєстр платежів» → тека RozetkaPay) **+ виписок ПриватБанку** (best-guess маркери, тека ПриватБанк — звірити за першим листом) у документи_КОДВ (read-only IMAP, книгу не пише) |
 | `PlutusToys-ChecboxRegistrySync` | `checkbox_registry_sync.ps1` → `checkbox_registry_sync.py` | КОДВ: нові фіскальні чеки Checkbox → кандидати доходу у документи_КОДВ (read-only API, книгу не пише) |
 | `PlutusToys_KandydatyStaleCheck` | `kandydaty_registry.py stale-check` (щодня 08:30) | КОДВ: сигнал «книга стоїть» (Аудитор, 2026-09-29) — відкриті кандидати реєстру старші 2 діб, не визнані винятком → ОДИН throttled Telegram-алерт (раз/добу, `send_throttled_alert`). Читає той самий `_vidkryti_kandydaty.json`, що наповнюють kandydaty-скрипти нижче |
+| `PlutusToys_RozetkaReturnsMonitor` | `rozetka_returns_monitor.py` (кожні 4 год) | Rozetka Delivery: незабрані/відмовлені RMP-посилки (замовлення 11/12/19) → Telegram на ПЕРЕХОДІ стадії; «Очікує відправника» = ДІЯ: забрати в Алматинська, 4 («Реєстр повернення відправлень»). NP-автоповернення на RZ-посилки не діє. Читає Orders API + публічний трекінг RZ-Delivery, нічого не змінює |
 
 > **`kandydaty_registry.py` — спільний ПЕРСИСТЕНТНИЙ реєстр відкритих кандидатів** (2026-09-18,
 > розширено 2026-09-28/29): незалежний від курсора КОЖНОГО джерела (курсор = «бачили в джерелі»,
@@ -344,7 +345,7 @@
     "PlutusToys_MarketplaceActions",
     "PlutusToys-TelegramOutbox", "PlutusToys-CabinetAudit",
     "PlutusToys-Graph6Daily", "PlutusToys-NovaPayRegistryArchiver",
-    "PlutusToys-ChecboxRegistrySync", "PlutusToys_KandydatyStaleCheck"
+    "PlutusToys-ChecboxRegistrySync", "PlutusToys_KandydatyStaleCheck", "PlutusToys_RozetkaReturnsMonitor"
   ],
   "vps_units": [
     "order-pipeline", "order-router", "orders-watcher", "order-status-tracker",

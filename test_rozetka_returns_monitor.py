@@ -40,5 +40,42 @@ chk("текст: номер, ТТН, адреса, передоплата, 'Як
 b = case("6", "returned")
 chk("returned без collect: без блоку 'Як забрати'", "Як забрати" not in m.build_message([(b, "returned")]))
 
+# ── виправлення за аудитом PR #605 ──
+from datetime import datetime, timedelta
+import json, tempfile
+from pathlib import Path
+chk("40060 = seller_refused, текст НЕ про відмову покупця",
+    m.stage_of(40060) == "seller_refused" and "покупець" not in m._TEXT["seller_refused"])
+now = datetime(2026, 10, 3, 12, 0)
+old = (now - timedelta(hours=30)).isoformat(); fresh = (now - timedelta(hours=2)).isoformat()
+chk("collect: нагадування через >24 год", len(m.decide([case("1", "collect")], {"1": {"stage": "collect", "notified_at": old}}, False, now)) == 1)
+chk("collect: свіже сповіщення → тиша", m.decide([case("1", "collect")], {"1": {"stage": "collect", "notified_at": fresh}}, False, now) == [])
+chk("старий формат state (рядок) читається", m.decide([case("1", "collect")], {"1": "returning"}, False, now)[0][1] == "collect")
+chk("'other' не потрапляє в сповіщення", m.decide([case("1", "other")], {}, False, now) == [])
+chk("вперше побачений 'returned' → мовчки", m.decide([case("9", "returned")], {}, False, now) == [])
+chk("вперше побачений 'expired' → сповіщає", [s2 for _, s2 in m.decide([case("9", "expired")], {}, False, now)] == ["expired"])
+
+# run(): збій Telegram НЕ губить сповіщення; 'other' не затирає state; успіх — оновлює
+tmp = Path(tempfile.mkdtemp()) / "state.json"
+m.STATE_FILE = tmp
+tmp.write_text(json.dumps({"1": "returning", "2": {"stage": "collect", "notified_at": fresh}}), encoding="utf-8")
+m.collect_cases = lambda: [dict(case("1", "collect"), rz_status=11, status_name="x"),
+                           dict(case("2", "other"), rz_status=11, status_name="y")]
+m._prepaid = lambda oid: None
+m._NO_TELEGRAM = False
+m.send_telegram_message = lambda t: False
+m.run()
+st = json.loads(tmp.read_text(encoding="utf-8"))
+chk("Telegram впав → стадія 'collect' НЕ записана (повтор наступного циклу)", st["1"] == "returning")
+chk("'other' не затер попередній state", st["2"]["stage"] == "collect")
+sent_msgs = []
+m.send_telegram_message = lambda t: sent_msgs.append(t) or True
+m.run()
+st = json.loads(tmp.read_text(encoding="utf-8"))
+chk("повтор: надіслано і стадію записано", st["1"]["stage"] == "collect" and st["1"]["notified_at"] and len(sent_msgs) == 1)
+chk("текст: оплату не вдалось перевірити (prepaid=None)", "не вдалось перевірити" in sent_msgs[0])
+m.run()
+chk("наступний цикл — тиша (дедуп)", len(sent_msgs) == 1)
+
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ rozetka_returns_monitor — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

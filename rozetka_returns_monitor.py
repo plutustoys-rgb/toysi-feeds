@@ -44,7 +44,7 @@ _NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
 _STAGE_BY_STATUS = {
     40040: "waiting", 40030: "waiting", 40080: "waiting",       # у точці покупця
     40050: "refused",                                           # Одержувач відмовився
-    40060: "refused",                                           # Відмова відправника
+    40060: "seller_refused",                                    # Запит на повернення (відмова ВІДПРАВНИКА)
     40070: "expired",                                           # Вийшов термін зберігання
     50010: "returning", 40045: "returning", 50011: "returning", 50012: "returning",
     50013: "returning", 50015: "returning", 50021: "returning", 50030: "returning",
@@ -52,7 +52,8 @@ _STAGE_BY_STATUS = {
     60040: "returned", 60030: "delivered", 60025: "delivered",
     10080: "lost",
 }
-_NOTIFY_STAGES = {"refused", "expired", "collect", "returned", "lost"}
+_NOTIFY_STAGES = {"refused", "seller_refused", "expired", "collect", "returned", "lost"}
+REMIND_AFTER_HOURS = 24      # «collect» лежить у точці днями — нагадуємо раз на добу, поки не заберуть
 
 
 def stage_of(last_status_id) -> str:
@@ -94,20 +95,45 @@ def collect_cases() -> list:
     return cases
 
 
-def decide(cases: list, state: dict, baseline: bool) -> list:
-    """Повертає [(case, stage)] до сповіщення: перехід стадії у _NOTIFY_STAGES; baseline — лише 'collect'."""
+def _prev(state: dict, oid: str):
+    """(стадія, ISO-час останнього сповіщення) зі state; підтримує старий формат «рядок-стадія»."""
+    v = state.get(oid)
+    if isinstance(v, dict):
+        return v.get("stage"), v.get("notified_at")
+    return v, None
+
+
+def decide(cases: list, state: dict, baseline: bool, now: datetime = None) -> list:
+    """[(case, stage)] до сповіщення: перехід у _NOTIFY_STAGES; baseline — лише 'collect'; вперше побачений
+    «returned» — мовчки (закриття нічого не закриває); 'collect' нагадує раз на REMIND_AFTER_HOURS."""
+    now = now or datetime.now()
     out = []
     for c in cases:
-        prev = state.get(c["order_id"])
-        if c["stage"] == "unknown" or prev == c["stage"]:
+        if c["stage"] in ("unknown", "other"):
             continue
-        if c["stage"] in _NOTIFY_STAGES and (not baseline or c["stage"] == "collect"):
-            out.append((c, c["stage"]))
+        prev_stage, notified = _prev(state, c["order_id"])
+        if prev_stage == c["stage"]:
+            if c["stage"] == "collect" and notified:
+                try:
+                    due = now - datetime.fromisoformat(notified) >= timedelta(hours=REMIND_AFTER_HOURS)
+                except ValueError:
+                    due = True
+                if due:
+                    out.append((c, "collect"))
+            continue
+        if c["stage"] not in _NOTIFY_STAGES:
+            continue
+        if baseline and c["stage"] != "collect":
+            continue
+        if prev_stage is None and c["stage"] == "returned":
+            continue
+        out.append((c, c["stage"]))
     return out
 
 
 _TEXT = {
     "refused": "покупець відмовився від отримання",
+    "seller_refused": "запит на повернення (відмова ВІДПРАВНИКА) — перевірити в кабінеті Rozetka Delivery",
     "expired": "вийшов термін зберігання в точці — посилка поїде назад",
     "collect": f"ПОВЕРНУТО В ТОЧКУ ВІДПРАВКИ — забрати: {PICKUP_ADDRESS} («Очікує відправника»)",
     "returned": "статус «Повернено»",
@@ -115,10 +141,21 @@ _TEXT = {
 }
 
 
+def _prepaid(order_id):
+    """True/False; None — Rozetka не відповіла (is_order_paid ховає збій як False — тут розрізняємо)."""
+    try:
+        st = rozetka_client.get_payment_status(order_id)
+        return isinstance(st, dict) and str(st.get("name", "")).lower() == "paid"
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def build_message(items: list) -> str:
     lines = ["📦 Rozetka Delivery — незабрані/повернені посилки:"]
     for c, stage in items:
-        pre = " · ПЕРЕДОПЛАТА: повернути кошти покупцю (кабінет, RETURN-чек, сторно)" if c.get("prepaid") else ""
+        pp = c.get("prepaid")
+        pre = (" · ПЕРЕДОПЛАТА: повернути кошти покупцю (кабінет, RETURN-чек, сторно)" if pp
+               else (" · оплату не вдалось перевірити — перевір, чи це передоплата" if pp is None else ""))
         lines.append(f"№{c['order_id']} ({c['amount']} грн, {c['ttn']}): {_TEXT[stage]}{pre}")
     if any(s == "collect" for _, s in items):
         lines.append("Як забрати: прийти у відділення Алматинська, 4; назвати магазин на маркетплейсі (Plutonix) і "
@@ -150,18 +187,28 @@ def run() -> int:
         return 1
     todo = decide(cases, state, baseline)
     for c, stage in todo:
-        c["prepaid"] = stage in ("refused", "expired", "collect", "lost") and rozetka_client.is_order_paid(c["order_id"])
+        c["prepaid"] = _prepaid(c["order_id"]) if stage in ("refused", "seller_refused", "expired", "collect", "lost") else False
     print(f"[RzReturns] випадків: {len(cases)}; до сповіщення: {len(todo)}" + ("; базова лінія" if baseline else ""))
     for c in cases:
         print(f"  №{c['order_id']} {c['ttn']} rz={c['rz_status']} стадія={c['stage']} ({c['status_name']})")
+    sent = True
     if todo:
         text = build_message(todo)
         print(text)
-        if not _NO_TELEGRAM:
-            send_telegram_message(text)
+        sent = True if _NO_TELEGRAM else bool(send_telegram_message(text))
+        if not sent:
+            print("[RzReturns] ⚠️ Telegram НЕ надіслано — state для цих випадків не оновлюю (повтор наступного циклу)",
+                  file=sys.stderr)
+    notified_ids = {c["order_id"] for c, _ in todo}
+    now_iso = datetime.now().isoformat(timespec="seconds")
     for c in cases:
-        if c["stage"] != "unknown":
-            state[c["order_id"]] = c["stage"]
+        if c["stage"] in ("unknown", "other"):
+            continue
+        oid = c["order_id"]
+        if oid in notified_ids and not sent:
+            continue
+        _, notified = _prev(state, oid)
+        state[oid] = {"stage": c["stage"], "notified_at": now_iso if oid in notified_ids else notified}
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
     return 0

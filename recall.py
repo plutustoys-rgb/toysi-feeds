@@ -42,7 +42,9 @@ _CONFIGS = {
                COWORK_DIR / "archive" / "seller"],
     "executor": [COWORK_DIR / "EXECUTOR_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md",
                  COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "archive" / "executor"],
-    "consultant": [COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
+    "consultant": [COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "SEO_CHANNEL.md",
+                   COWORK_DIR / "SELLER_CHANNEL.md", COWORK_DIR / "КОДВ_CHANNEL.md",
+                   COWORK_DIR / "OWNER_INBOX.md",
                    COWORK_DIR / "онбординг_консультанта_відповіді_Код.md", COWORK_DIR / "STATUS.md",
                    COWORK_DIR / "archive" / "consultant"],
     "kodv": [COWORK_DIR / "КОДВ_CHANNEL.md", COWORK_DIR / "КОДВ_журнал.md",
@@ -168,6 +170,95 @@ def _memory_hits(terms: list) -> list:
     return [h for _, h in scored[:8]]
 
 
+# Підписи авторів у заголовках OWNER_INBOX (`## [Автор] дата — ...`) для кожної ролі.
+_ROLE_AUTHORS = {
+    "seo": ("seo",), "smm": ("smm",), "seller": ("продажник",), "executor": ("виконавець",),
+    "consultant": ("консультант",), "kodv": ("кодв", "бухгалтер", "аудитор"),
+}
+# Ознаки ролі в ПЕРШОМУ повідомленні сесії (єдине місце, де роль названо: cwd у всіх однаковий).
+# Рахуємо збіги по ролях; нічия або нуль → "" (фолбек: хук лишає поведінку без змін).
+_ROLE_MARKERS = {
+    "seo": ("seo-агент", "seo агент", "plutus-seo", "агента-seo", "агент-seo", "агент seo", "новий seo"),
+    "smm": ("plutus-smm", "plutustoys-smm", "агента-smm", "агент-smm", "агент smm", "smm-агент", "smm агент"),
+    "seller": ("агент-продажник", "агента-продажника", "агент продажник", "plutus-seller", "plutus-продажник"),
+    "executor": ("агент-виконавець", "агента-виконавця", "plutus-executor", "агент виконавець"),
+    "consultant": ("бізнес-консультант", "бізнес консультант", "бізнес-консультанта", "plutus-consultant",
+                   "business-consultant"),
+    "kodv": ("головний бухгалтер", "агент-бухгалтер", "агента-бухгалтера", "plutus-kodv", "kodv-independent",
+             "kodv-legislative", "ти бухгалтер", "агент бухгалтер"),
+}
+
+
+def detect_role(transcript_path: str) -> str:
+    """Роль сесії за першим user-повідомленням її транскрипта; "" якщо не визначилась
+    (нуль збігів АБО нічия між ролями — краще нічого, ніж не та роль)."""
+    import json
+    try:
+        with open(transcript_path, encoding="utf-8", errors="replace") as f:
+            first = ""
+            for i, line in enumerate(f):
+                if i > 400:
+                    break
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("type") == "user":
+                    c = (o.get("message") or {}).get("content")
+                    first = c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
+                    break
+    except Exception:
+        return ""
+    low = first[:4000].lower()
+    scores = {r: sum(low.count(m) for m in ms) for r, ms in _ROLE_MARKERS.items()}
+    best = max(scores.values(), default=0)
+    if best == 0:
+        return ""
+    leaders = [r for r, v in scores.items() if v == best]
+    return leaders[0] if len(leaders) == 1 else ""
+
+
+def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
+    """Картка стану ролі (для «продовжуй/далі» після ущільнення, коли теми для пошуку нема):
+    заголовки N останніх записів її каналів (newest-on-top, з датами) + ВІДКРИТІ рядки
+    OWNER_INBOX цієї ролі. Лише заголовки — достатньо, щоб не пропустити запис, якого не читав."""
+    roots = _CONFIGS.get(config)
+    if not roots:
+        return ""
+    lines = [f"=== СТАН [{config}]: останні записи каналів і відкриті пункти ==="]
+    for r in roots:
+        if not (r.is_file() and r.name.upper().endswith("_CHANNEL.MD")):
+            continue
+        heads = []
+        try:
+            for ln in r.read_text(encoding="utf-8", errors="replace").splitlines():
+                if ln.startswith("## ["):
+                    heads.append(ln[3:].strip()[:170])
+                    if len(heads) >= n:
+                        break
+        except Exception:
+            continue
+        if heads:
+            lines.append(f"{r.name} (угорі = найновіше):")
+            lines += [f"   • {h}" for h in heads]
+    inbox = COWORK_DIR / "OWNER_INBOX.md"
+    authors = _ROLE_AUTHORS.get(config, ())
+    opened = []
+    try:
+        for ln in inbox.read_text(encoding="utf-8", errors="replace").splitlines():
+            low = ln.lower()
+            if (ln.startswith("## [") and any(f"[{a}" in low for a in authors) and "відкрито" in low
+                    and not any(x in low for x in ("зроблено", "закрито", "✅"))):
+                opened.append(ln[3:].strip()[:170])
+    except Exception:
+        pass
+    if opened:
+        lines.append("OWNER_INBOX — ВІДКРИТІ пункти цієї ролі:")
+        lines += [f"   • {h}" for h in opened[:5]]
+    out = chr(10).join(lines) if len(lines) > 1 else ""
+    return out[:cap]
+
+
 def recall(query: str, file_mode: str = "", config: str = "") -> int:
     stem = Path(file_mode).stem if file_mode else query
     terms = _terms(stem if file_mode else query)
@@ -260,7 +351,19 @@ def main() -> None:
     ap.add_argument("--file", default="", help="режим дубль-варта для нового файлу (exit 3 якщо схоже вже є)")
     ap.add_argument("--config", default="", choices=["", *_CONFIGS.keys()],
                     help="профіль ролі (seo/smm): шукати в ЇХНІХ джерелах (канали/OWNER_INBOX/архів), не в коді")
+    ap.add_argument("--restore", action="store_true",
+                    help="з --config <роль>: картка стану (заголовки останніх записів каналів + відкрите в OWNER_INBOX)")
+    ap.add_argument("--detect-role", default="", metavar="TRANSCRIPT",
+                    help="надрукувати роль сесії за її транскриптом (порожньо, якщо не визначилась)")
     a = ap.parse_args()
+    if a.detect_role:
+        print(detect_role(a.detect_role))
+        sys.exit(0)
+    if a.restore:
+        if not a.config:
+            ap.error("--restore потребує --config <роль>")
+        print(restore_card(a.config))
+        sys.exit(0)
     if not a.query and not a.file:
         ap.print_help()
         sys.exit(0)

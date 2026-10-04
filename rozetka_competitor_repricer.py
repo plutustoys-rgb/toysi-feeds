@@ -22,7 +22,7 @@ import os
 import sys
 from pathlib import Path
 
-from competitor_pricing import real_toysi_cost, MIN_PROFIT  # MIN_PROFIT = 0.25
+from competitor_pricing import real_toysi_cost, MIN_PROFIT, PAYMENT_COMMISSION  # MIN_PROFIT = 0.25
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -47,6 +47,9 @@ def build_overrides(catalog: dict, state: dict) -> tuple[dict, dict]:
     comm_map = state.get("commission", {}) or {}
     rec_map = state.get("recommended", {}) or {}
     overrides = {}
+    # Еквайринг RozetkaPay (1.5%, підтверджено реєстрами 2026-10-04) — поверх комісії з кабінету; без нього
+    # 5%-флор давав чисту маржу ~3% (аудит PR #607: 95% цін фіду Rozetka йдуть саме через цей репрайсер).
+    payment = PAYMENT_COMMISSION.get("rozetka", 0.0)
     stats = {"competitor": 0, "solo": 0, "clamped_to_floor": 0,
              "skipped_no_item": 0, "skipped_bad_cost": 0, "skipped_bad_commission": 0}
 
@@ -68,8 +71,11 @@ def build_overrides(catalog: dict, state: dict) -> tuple[dict, dict]:
             stats["skipped_bad_commission"] += 1
             continue
 
+        if commission + payment >= 1.0:
+            stats["skipped_bad_commission"] += 1
+            continue
         rec = ((rec_map.get(sku) or {}).get("internal") or {}).get("recommended")
-        floor_comp = _floor(cost, commission, ROZETKA_COMPETITOR_MARGIN)
+        floor_comp = _floor(cost, commission + payment, ROZETKA_COMPETITOR_MARGIN)
         if isinstance(rec, (int, float)) and rec > 0:
             # підбиваємось під рекомендовану, але не нижче 5%-флору
             price = max(float(rec), floor_comp)
@@ -81,7 +87,7 @@ def build_overrides(catalog: dict, state: dict) -> tuple[dict, dict]:
             stats["competitor"] += 1
         else:
             # без конкурента — 25% маржі, але з ТОЧНОЮ комісією
-            price = _floor(cost, commission, MIN_PROFIT)
+            price = _floor(cost, commission + payment, MIN_PROFIT)
             stats["solo"] += 1
         overrides[sku] = round(price, 2)
     return overrides, stats

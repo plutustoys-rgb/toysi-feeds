@@ -241,6 +241,7 @@
   `royaltoys_parser`, `compare_royaltoys_toysi`, `generate_royaltoys_feed` → Код.
   `zoobaza_parser` (ZooBaza, товари для тварин, публічний YML; cost=price/1.4; корми не беремо, одяг за прапорцем) → Код;
   ЛИШЕ парсер — не підключений до фідів/цін/замовлень (комісії по категоріях і ручні замовлення чекають рішень).
+  `zoobaza_competitor_report` — разовий read-only звіт «найдешевший довірений конкурент на Prom по SKU ZooBaza» (та сама `find_best_competitor`, що для іграшок, + варіант із перевіркою розміру без одиниці; підлога параметрична за комісією).
 - **КОДВ (фінанси):** `checkbox_client`, `novapay_statement`, `weekly_balance_digest`, `daily_report`,
   `kodv_book_writer.py` (єдина точка запису НОВОГО рядка книги — механічно перевіряє дубль номера
   документа в Графі 5 ПЕРЕД записом, PR #572; замінює ad-hoc openpyxl-виклики для нових рядків,

@@ -15,7 +15,7 @@ def chk(n, c):
 base = "Плюшевий ведмідь великий 60 см"
 def cands(name2):
     raw = [{"company_id": 1, "name": name2, "price": 300.0, "id": 1, "presence": {"isAvailable": True}}]
-    return pc._rank_competitor_candidates(raw, base, 300.0) if hasattr(pc, "_rank_competitor_candidates") else None
+    return pc._rank_competitor_candidates(raw, base, 300.0)
 
 for bad in ("РАСПРОДАЖА Плюшевий ведмідь великий 60 см", "Розпродаж! Плюшевий ведмідь великий 60 см",
             "Плюшевый медведь большой 60 см распродажа склада", "Плюшевий ведмідь великий 60 см (розпродано)",

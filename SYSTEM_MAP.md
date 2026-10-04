@@ -239,6 +239,8 @@
 - **ALLO:** `allo_cabinet_scraper`, `generate_allo_feed` → Код.
 - **Toysi / RoyalToys (постачальник):** `toysi_cabinet_scraper`, `parser` (fetch_toysi_catalog),
   `royaltoys_parser`, `compare_royaltoys_toysi`, `generate_royaltoys_feed` → Код.
+  `zoobaza_parser` (ZooBaza, товари для тварин, публічний YML; cost=price/1.4; корми не беремо, одяг за прапорцем) → Код;
+  ЛИШЕ парсер — не підключений до фідів/цін/замовлень (комісії по категоріях і ручні замовлення чекають рішень).
 - **КОДВ (фінанси):** `checkbox_client`, `novapay_statement`, `weekly_balance_digest`, `daily_report`,
   `kodv_book_writer.py` (єдина точка запису НОВОГО рядка книги — механічно перевіряє дубль номера
   документа в Графі 5 ПЕРЕД записом, PR #572; замінює ad-hoc openpyxl-виклики для нових рядків,

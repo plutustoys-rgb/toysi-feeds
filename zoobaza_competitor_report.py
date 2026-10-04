@@ -18,6 +18,7 @@
 """
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import date
@@ -31,12 +32,27 @@ import functools
 
 # Кеш phash-ів: наше фото й фото конкурентів завантажувались заново на КОЖЕН виклик (≈0.8 с; ×4 на SKU) —
 # memo лише в цьому звіті (поведінку prom_competitor_pricer для репрайсера не міняємо).
-pc._fetch_image_phash = functools.lru_cache(maxsize=None)(pc._fetch_image_phash)
+_orig_phash = pc._fetch_image_phash
+_phash_cache = {}
+
+
+def _cached_phash(url):
+    """Кеш лише УСПІШНИХ завантажень: None (мережевий збій) НЕ запам'ятовується назавжди (аудит PR #608)."""
+    if url in _phash_cache:
+        return _phash_cache[url]
+    h = _orig_phash(url)
+    if h is not None:
+        _phash_cache[url] = h
+    return h
+
+
+pc._fetch_image_phash = _cached_phash
 import competitor_pricing as cp
 import zoobaza_parser as z
 
 OUT_DIR = Path(__file__).parent / "reports"
-TC_GRID = (0.137, 0.17, 0.20, 0.25)   # сумарна комісія Prom+оплата: припущення Продажника 13.7% і вищі сценарії
+_CLEARANCE_RE = re.compile(r"распродаж|розпродаж|уцін|уценк|брак|пошкодж|вітрин", re.IGNORECASE)
+TC_GRID = (0.117, 0.137, 0.17, 0.20, 0.25)   # сумарна комісія Prom+оплата: припущення Продажника 13.7% і вищі сценарії
 
 
 def floor_for(cost: float, competitor_price: float, tc: float) -> float:
@@ -72,7 +88,8 @@ def _pack(res, name, it, size_ok=None):
          "url": f"https://prom.ua/ua/p{res.get('id')}-{res.get('urlText')}.html" if res.get("id") else None,
          "trusted_score": score >= pc.MATCH_MIN_SCORE_FOR_PRICING,
          "size_conflict": pc._size_tokens_conflict(name, res["name"] or ""),
-         "photo_confirmed": bool(it["pictures"]) and pc._photo_confirms_match(it["pictures"], res.get("image"))}
+         "photo_confirmed": bool(it["pictures"]) and pc._photo_confirms_match(it["pictures"], res.get("image")),
+         "clearance_marker": bool(_CLEARANCE_RE.search(res["name"] or ""))}
     c["trusted"] = c["trusted_score"] and not c["size_conflict"]
     return c
 
@@ -126,6 +143,8 @@ def _stats(rows: list, key: str) -> dict:
 def summarize(rows: list) -> dict:
     sized = [r for r in rows if r["dims"]]
     return {"n": len(rows), "with_dims_in_name": len(sized),
+            "B_trusted_with_clearance_marker": sum(1 for r in sized if r.get("B_sized") and r["B_sized"]["trusted"]
+                                                   and r["B_sized"].get("clearance_marker")),
             "A_raw_all": _stats(rows, "A_raw"), "B_sized_only_skus_with_dims": _stats(sized, "B_sized"),
             "A_raw_only_skus_with_dims": _stats(sized, "A_raw")}
 
@@ -134,10 +153,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--summarize", action="store_true", help="лише звести вже накопичений .jsonl, без запитів")
+    ap.add_argument("--file", default="", help="чекпоінт .jsonl (за замовчуванням: сьогоднішній; для --summarize — найновіший)")
     ap.add_argument("--clothing", action="store_true", help="включити одяг (за замовчуванням НІ — рішення Консультанта)")
     a = ap.parse_args()
     if a.summarize:
-        ckf = OUT_DIR / f"zoobaza_competitors_{date.today().isoformat()}.jsonl"
+        cands = sorted(OUT_DIR.glob("zoobaza_competitors_*.jsonl"), key=lambda p: p.stat().st_mtime)
+        ckf = Path(a.file) if a.file else (cands[-1] if cands else None)
+        if ckf is None or not ckf.exists():
+            print("[ZB-report] чекпоінта нема")
+            return
         rows = [json.loads(l) for l in ckf.read_text(encoding="utf-8").splitlines() if l.strip()]
         print(json.dumps(summarize([r for r in rows if not r.get("error")]), ensure_ascii=False, indent=1))
         return
@@ -148,7 +172,7 @@ def main() -> None:
     print(f"[ZB-report] SKU до аналізу: {len(items)} (одяг={'так' if a.clothing else 'ні'})")
     # Чекпоінт: кожен SKU дописується в .jsonl одразу; повторний запуск продовжує з місця зупинки
     # (довгий прогін упирається в ліміт фонової задачі — без цього втрачався весь результат).
-    ck = OUT_DIR / f"zoobaza_competitors_{date.today().isoformat()}.jsonl"
+    ck = Path(a.file) if a.file else OUT_DIR / f"zoobaza_competitors_{date.today().isoformat()}.jsonl"
     OUT_DIR.mkdir(exist_ok=True)
     rows = [json.loads(l) for l in ck.read_text(encoding="utf-8").splitlines() if l.strip()] if ck.exists() else []
     done = {r["id"] for r in rows}

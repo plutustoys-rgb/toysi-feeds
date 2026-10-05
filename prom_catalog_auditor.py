@@ -240,7 +240,7 @@ def check_price_floor(top_catalog: dict) -> list:
     реальний ризик і концентрується: Шлях 2, коли справжній конкурент
     (floor/undercut рішення репрайсера) притискає нашу ціну до самої межі
     чи нижче. Тепер бере фактично застосовану ціну зі спільного стану
-    репрайсера (prom_competitor_price_state.json, поріг свіжості 30 год —
+    репрайсера (prom_competitor_price_state.json, поріг свіжості override 45 діб (PROM_PRICE_STATE_MAX_AGE_HOURS, з PR #615; було 30 год) —
     той самий, що й у generate_prom_feed.py), і лише за відсутності свіжого
     запису повертається до старої формули Шляху 1.
 

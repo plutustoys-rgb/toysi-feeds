@@ -102,16 +102,31 @@ CATALOG_CACHE_TTL  = 3600  # секунд; --record викликається ~20
 # під обидва майданчики одразу) — окремий, спеціально для цього мосту.
 PROM_PRICE_STATE_FILE = BASE_DIR / "prom_competitor_price_state.json"
 
-# Скільки годин рішення репрайсера лишається чинним у фіді. БУЛО 30 год (розрахунок «цикл репрайсера 24 год»),
-# але ротація репрайсера оновлює лише ~40-535 SKU на добу при ~2250 у фіді Prom → 2026-10-05 живим виміром:
+# Скільки годин рішення репрайсера (override-ціна) лишається чинним у фіді. БУЛО 30 год (розрахунок «цикл репрайсера
+# 24 год»), але ротація репрайсера оновлює лише ~40-535 SKU на добу при ~2250 у фіді Prom → 2026-10-05 живим виміром:
 # свіжий запис (≤30 год) мали 65 з 2252 товарів, решта (97%) відкочувалась на NO_COMPETITOR_MULT ×1.75 і стояла
 # на 18-138% дорожче за конкурента, хоча конкурентну ціну пріцер для них уже раніше рахував (медіана віку запису
-# 12.7 доби; приклад — «Куб універсальний» 2133.11 ₴ замість порахованих 1562.10 ₴). Тепер 30 ДІБ (720 год): остання
-# відома конкурентна ціна тримається до перепідтвердження пріцером. Безпека: generate_prom_feed на КОЖНІЙ генерації
-# піднімає override до floor за СВІЖОЮ собівартістю (суцільний floor-гард) — нижче 3%-маржі не опублікується.
-# Ціна за застарілою інформацією про ринок краща за гарантовано неконкурентну ×1.75. Це ПЕРЕХІДНА міра: справжнє
-# лікування — пропускна здатність ротації пріцера (окрема задача); тому вікно не безмежне.
-PROM_PRICE_STATE_MAX_AGE_HOURS = 24 * 30
+# 12.7 доби; «Куб універсальний» 2133.11 ₴ замість порахованих 1562.10 ₴). Тепер 45 ДІБ: остання відома ціна тримається
+# до перепідтвердження пріцером (аудит PR #615: є кластер ~750 записів віком 25 діб — 30 діб лише відсунули б обрив).
+# ЗАХИСТ: (1) generate_prom_feed на кожній генерації піднімає ціну до floor за СВІЖОЮ собівартістю — гарантовано
+# net ≥ собівартість (min_safe); цільова маржа ≥3% НЕ гарантується для свіжих canonical-рішень (задум власниці 26.07);
+# (2) для ЗАСТАРІЛОГО запису (нема свіжого конкурента) ціна не може бути ВИЩОЮ за дефолтну ×1.75-формулу
+# (cap_stale_prom_override) і floor рахується консервативним division-floor 3% — це ж робить ціну Prom
+# ідентичною Google/Meta/Bing (_prom_page_price). ПЕРЕХІДНА міра: справжнє лікування — пропускна здатність ротації.
+PROM_PRICE_STATE_MAX_AGE_HOURS = 24 * 45
+
+# Скільки годин вважається СВІЖИМ записом конкурента (competitor_price) для canonical-floor. Лишається 30 год
+# (поведінка до PR #615): старший запис конкурента — застарілі дані про ринок, floor тоді консервативний.
+PROM_COMPETITOR_STATE_MAX_AGE_HOURS = 30
+
+
+def cap_stale_prom_override(retail: float, default_price: float, has_fresh_competitor: bool) -> float:
+    """Стеля для override без СВІЖОГО конкурента: ціна за давніми даними про ринок не може бути вищою за дефолтну
+    (NO_COMPETITOR_MULT) — інакше застарілий ДОРОГИЙ конкурент піднімав би нашу ціну (аудит #615, H3: 84 SKU,
+    +32% у середньому). Зниження (конкурентніше) лишається. Свіжий конкурент — без змін."""
+    if has_fresh_competitor:
+        return retail
+    return min(retail, default_price)
 
 
 def load_prom_price_state() -> dict:
@@ -224,13 +239,13 @@ def load_fresh_prom_price_overrides(max_age_hours: float = PROM_PRICE_STATE_MAX_
     return overrides
 
 
-def load_fresh_prom_competitor_prices(max_age_hours: float = PROM_PRICE_STATE_MAX_AGE_HOURS) -> dict:
+def load_fresh_prom_competitor_prices(max_age_hours: float = PROM_COMPETITOR_STATE_MAX_AGE_HOURS) -> dict:
     """{external_id: competitor_price} лише для СВІЖИХ записів із ЖИВИМ конкурентом
     (competitor_alive != False, competitor_price > 0). Використовує floor-гард у
     generate_prom_feed, щоб перерахувати нижню межу ТІЄЮ Ж канонічною формулою власниці
     (canonical_competitor_floor, candidate = competitor - PRICE_STEP), а не завищеним
-    division-floor (compute_floor). Свіжість — той самий поріг, що й
-    load_fresh_prom_price_overrides (щоб пари price/competitor були узгоджені)."""
+    division-floor (compute_floor). Свіжість — PROM_COMPETITOR_STATE_MAX_AGE_HOURS (30 год), КОРОТША за вікно
+    override-цін (45 діб): запис конкурента старший 30 год не є свіжим — тоді floor консервативний (division)."""
     state = load_prom_price_state()
     now = datetime.now()
     out = {}

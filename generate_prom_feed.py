@@ -8,7 +8,7 @@ from datetime import datetime
 from competitor_pricing import (decide_price_for_platform, load_fresh_prom_price_overrides,
                                  load_description_overrides, real_toysi_cost,
                                  compute_floor, compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR,
-                                 canonical_competitor_floor, PRICE_STEP)
+                                 canonical_competitor_floor, PRICE_STEP, cap_stale_prom_override)
 from parser import fetch_toysi_catalog
 from seo_description import description_for
 from telegram_notify import send_telegram_message
@@ -586,10 +586,12 @@ def _build_xml(
     # репрайсерні override — щоб базова ціна не мінялась у вікні акції (інакше Prom
     # викидає товар). Ідуть тією ж override-гілкою нижче, тож floor-гард лишається:
     # збиткову НЕ публікуємо (маржа > участі в акції). Після until — авто-розморозка.
+    frozen_ids: set = set()   # заморожені акцією ціни: стеля застарілих override до них не застосовується
     try:
         from promo_freeze import load_active_freeze
         _frozen = load_active_freeze()
         if _frozen:
+            frozen_ids = set(_frozen)
             overrides = {**overrides, **_frozen}
             print(f"[Prom] promo_freeze: {len(_frozen)} SKU з замороженою ціною (акція)")
     except Exception as e:  # noqa: BLE001 — заморозка best-effort, не валимо фід
@@ -603,6 +605,8 @@ def _build_xml(
     skipped_russian = 0   # рос-мовні товари — виключаємо (наказ власника 2026-08-21)
     overridden_count       = 0  # ціна з pricing_results.csv (конкурент перевірений вручну)
     floor_clamped_count    = 0  # override-ціна БУЛА нижче свіжого floor → підняли до floor (суцільний гард)
+    stale_capped_count     = 0  # застарілий override (нема свіжого конкурента) був ВИЩИЙ за дефолт ×1.75 → стеля
+    stale_override_count   = 0  # override без свіжого конкурента (давнє рішення пріцера) — метрика застарівання
     floor_bound_count      = 0  # ціна за замовчуванням, впирається в нижню межу маржі
     multiplier_bound_count = 0  # ціна за замовчуванням, NO_COMPETITOR_MULT вищий за межу
     russian_missing_count  = 0  # немає rus-варіанту з Toysi — впало назад на українську
@@ -648,6 +652,14 @@ def _build_xml(
         prom_category_id = ((prom_category_cache or {}).get(item_id) or {}).get("category_id")
         if item_id in overrides:
             retail = overrides[item_id]
+            if item_id not in frozen_ids and not (comp_prices.get(item_id) or 0) > 0:
+                stale_override_count += 1
+                _default_price = decide_price_for_platform(cost, None, PLATFORM, item.get("category_name"),
+                                                           prom_category_id=prom_category_id)["price"]
+                _capped = cap_stale_prom_override(retail, _default_price, False)
+                if _capped < retail:
+                    stale_capped_count += 1
+                    retail = _capped
             # СУЦІЛЬНИЙ floor-гард (усі ~6000 SKU, на КОЖНІЙ генерації фіду). Override — це
             # конкурентна ціна репрайсера, яку могло занизити зростання собівартості Toysi ПІСЛЯ
             # ціноутворення (лаг ротації: репрайсер обходить каталог за кілька діб). Тут, у момент
@@ -852,6 +864,8 @@ def _build_xml(
         "skipped_russian": skipped_russian,
         "overridden_count": overridden_count,
         "floor_clamped_count": floor_clamped_count,
+        "stale_override_count": stale_override_count,
+        "stale_capped_count": stale_capped_count,
         "floor_bound_count": floor_bound_count,
         "multiplier_bound_count": multiplier_bound_count,
         "russian_missing_count": russian_missing_count,
@@ -927,6 +941,10 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     print(
         f"[Prom] Суцільний floor-гард: {stats['floor_clamped_count']} override-цін були нижче "
         f"свіжого floor і піднято до нього (захист маржі між ротаціями репрайсера)."
+    )
+    print(
+        f"[Prom] Застарілі рішення пріцера (нема свіжого конкурента ≤30 год): {stats['stale_override_count']} SKU з "
+        f"override, з них {stats['stale_capped_count']} обмежено дефолтною ціною зверху (метрика застарівання ротації)."
     )
     print(
         f"[Prom] Російська назва: {stats['russian_missing_count']} SKU без rus-варіанту в "

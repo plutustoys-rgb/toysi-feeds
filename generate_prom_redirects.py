@@ -78,6 +78,7 @@ def _write_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
+    os.chmod(tmp, 0o644)    # новий inode не успадковує ACL/права старого файла — Apache-користувач має читати
     os.replace(tmp, path)
 
 

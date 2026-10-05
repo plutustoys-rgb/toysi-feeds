@@ -222,12 +222,12 @@
   `z-plutustoys-com-ua.conf` на явній IP → чекає DNS → certbot webroot → HTTPS; відкат + звірка чужих vhost'ів до/після). `deploy/nginx-plutustoys.conf`/
   `activate_site.sh` — лише довідка для хоста з nginx.
   Деплой-артефакти — `deploy/site-order-api.service` (venv-python daemon, :8901), `deploy/site-rebuild.{service,timer}`
-  (ребілд сайту 4×/день — свіжі ціни/наявність + оновлення GMC-редиректів + reload nginx), `deploy/nginx-plutustoys.conf`,
-  `deploy/activate_site.sh` (активація в одну команду), `deploy/DEPLOY_SITE.md`.
-  **GMC-міграція:** `generate_prom_redirects.py` інвертує `own_product_links_cache.json` → nginx-мапа 301
+  (ребілд сайту 4×/день — свіжі ціни/наявність + оновлення GMC-редиректів; Apache перечитує мапу за mtime), `deploy/nginx-plutustoys.conf`,
+  `deploy/activate_site.sh` (nginx-хост), `deploy/DEPLOY_SITE.md`.
+  **GMC-міграція:** `generate_prom_redirects.py` інвертує `own_product_links_cache.json` → мапа 301 (nginx + Apache `RewriteMap txt:`)
   `/ua/p{prom_id}-*.html` → `/product-{toysi_id}.html`, щоб при перенесенні домену з Prom на VPS не пропала
   видимість у Google Merchant (старі Prom-URL з фіда не впали в 404).
-  **Ще НЕ активовано як VPS-юніти** (одноразовий `systemctl enable` + nginx/TLS + LiqPay-компанія — тому не в §2Б/§6;
+  **Ще НЕ активовано як VPS-юніти** (одноразовий запуск `activate_site_apache.sh` власником на VPS + перенос DNS у кабінеті Prom + LiqPay-компанія — тому не в §2Б/§6;
   після активації дописати туди ОБИДВА персистентні юніти — `site-order-api` (daemon) і `site-rebuild.timer` — drift-check це підкаже).
   → Код (механіка) + SMM (дизайн) + власник (LiqPay + активація).
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,

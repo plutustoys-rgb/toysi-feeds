@@ -46,7 +46,7 @@ cd "$APP" || die "нема $APP"
 [ -f "$APP/site_order_api.py" ] || die "нема $APP/site_order_api.py (чи підтягнувся master?)"
 
 echo "=== A. ПЕРЕВІРКИ (read-only) ==="
-for c in curl openssl certbot awk sed sort comm su; do command -v "$c" >/dev/null 2>&1 || die "нема команди '$c' — нічого не змінено"; done
+for c in curl openssl certbot awk sed sort comm su flock pgrep ss xargs timeout; do command -v "$c" >/dev/null 2>&1 || die "нема команди '$c' — нічого не змінено"; done
 MODS=$("$APACHECTL" -M 2>&1)
 for m in rewrite_module proxy_module proxy_http_module alias_module ssl_module; do
     grep -q "$m" <<< "$MODS" || die "Apache без $m — нічого не змінено."
@@ -59,7 +59,8 @@ for p in 80 443; do
 done
 echo "✅ дефолт Webuzo на :80 і :443 — на явній IP $IP; наші vhost'и йдуть тією ж групою"
 
-OTHER=$(grep -rlE "^[[:space:]]*(ServerName|ServerAlias)[[:space:]].*$DOMAIN" "$CONFD" 2>/dev/null | grep -v "$VHOST" || true)
+DOM_RE=${DOMAIN//./\\.}
+OTHER=$(grep -rlE "^[[:space:]]*(ServerName|ServerAlias)[[:space:]]+([^#]*[[:space:]])?(www\.)?${DOM_RE}([[:space:]]|\$)" "$CONFD" 2>/dev/null | grep -v "$VHOST" || true)
 [ -z "$OTHER" ] || die "домен уже описаний в іншому файлі: $OTHER — розберись вручну, нічого не змінено."
 echo "✅ чужих vhost'ів для $DOMAIN нема"
 
@@ -69,10 +70,11 @@ echo "ℹ️  Apache працює від: $APUSER"
 
 # ── знімки стану Apache (множини «ім'я файл» БЕЗ номерів рядків + поведінкові проби) ──
 vh_pairs() { "$APACHECTL" -S 2>&1 | sed -nE 's/.*[[:space:]]([^ ]+) \((\/[^:)]+):[0-9]+\)$/\1 \2/p' | sort -u; }
-vh_defaults() { "$APACHECTL" -S 2>&1 | grep -E 'default server' | sed -nE 's/.*[[:space:]]([^ ]+) \((\/[^:)]+):[0-9]+\)$/\1 \2/p' | sort -u || true; }
+# «default» = рядок "default server …" (розгорнута група) АБО компактний "ip:port  host (file:line)" (група з одним vhost)
+vh_defaults() { "$APACHECTL" -S 2>&1 | grep -E 'default server|^[[:space:]]*[0-9.*]+:(80|443)[[:space:]]+[^ ]+ \(' | sed -nE 's/.*[[:space:]]([^ ]+) \((\/[^:)]+):[0-9]+\)$/\1 \2/p' | sort -u || true; }
 cert_subject() {   # $1 = SNI-ім'я або порожньо
     local out
-    out=$(echo | openssl s_client -connect "$IP:443" ${1:+-servername "$1"} 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null) || out="NOCERT"
+    out=$(echo | timeout 10 openssl s_client -connect "$IP:443" ${1:+-servername "$1"} 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null) || out="NOCERT"
     echo "${out:-NOCERT}" | tr '\n' ' '
 }
 code() { curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || echo "ERR"; }
@@ -241,7 +243,13 @@ write_vhost() {   # $1 = http | https
     if ! "$APACHECTL" graceful; then echo "🚨 graceful провалився"; restore; return 1; fi
     sleep 3
     apache_alive || { echo "🚨 процес Apache не живий після graceful"; restore; return 1; }
-    snapshot "$tag.post"
+    # поведінкова проба може миготіти відразу після graceful (gunicorn, повільний reload) — до 3 спроб
+    local try
+    for try in 1 2 3; do
+        snapshot "$tag.post"
+        cmp -s "$TMPD/$tag.pre.behavior" "$TMPD/$tag.post.behavior" && break
+        echo "ℹ️  поведінка ще не збіглась (спроба $try/3) — чекаю"; sleep 4
+    done
     local bad=0
     [ -s "$TMPD/$tag.post.pairs" ] || { echo "🚨 apachectl -S після зміни порожній"; bad=1; }
     if [ -n "$(comm -23 "$TMPD/$tag.pre.pairs" "$TMPD/$tag.post.pairs")" ]; then
@@ -251,6 +259,9 @@ write_vhost() {   # $1 = http | https
         echo "🚨 змінився default server:"; diff "$TMPD/$tag.pre.defaults" "$TMPD/$tag.post.defaults" || true; bad=1
     fi
     if ! grep -q "^$DOMAIN " "$TMPD/$tag.post.pairs"; then echo "🚨 нашого vhost'а ($DOMAIN) нема в apachectl -S"; bad=1; fi
+    if [ "$mode" = "https" ]; then   # пара «ім'я файл» не доводить, що зареєстровано саме :443 — перевіряємо сертифікат живцем
+        case "$(cert_subject "$DOMAIN")" in *"Let's Encrypt"*) ;; *) echo "🚨 :443 для $DOMAIN не віддає Let's Encrypt"; bad=1;; esac
+    fi
     if ! cmp -s "$TMPD/$tag.pre.behavior" "$TMPD/$tag.post.behavior"; then
         echo "🚨 ПОВЕДІНКА чужих сайтів/дефолту змінилась:"; diff "$TMPD/$tag.pre.behavior" "$TMPD/$tag.post.behavior" || true; bad=1
     fi
@@ -309,7 +320,7 @@ resolvers_a() {   # друкує рядки "resolver<TAB>ip-список" дл�
 has_aaaa() {
     local n="$1" r out
     for r in 8.8.8.8 1.1.1.1; do
-        if command -v dig >/dev/null 2>&1; then out=$(dig +short +time=3 +tries=1 AAAA "$n" "@$r" 2>/dev/null | grep -c ':' || true); [ "${out:-0}" != "0" ] && return 0
+        if command -v dig >/dev/null 2>&1; then out=$(dig +short +time=3 +tries=1 AAAA "$n" "@$r" 2>/dev/null | grep -cE '^[0-9a-fA-F:]+:[0-9a-fA-F:]*$' || true); [ "${out:-0}" != "0" ] && return 0
         fi
     done
     return 1

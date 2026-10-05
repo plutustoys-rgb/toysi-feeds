@@ -671,14 +671,36 @@ def is_weapon_replica(item_id: str, title: str) -> bool:
     return False
 
 
+def load_site_product_ids() -> set | None:
+    """toysi-id товарів, які МАЮТЬ картку на власному сайті (site/index.json, збирає build_site.py на VPS).
+    Посилання Google/Meta/Bing ведуть на старі Prom-URL, які після переносу домену 301-редірект перекидає на
+    /product-<id>.html; товар без картки падав би на /catalog.html — Merchant Center трактує це як невідповідність
+    цільової сторінки (запит Консультанта 2026-10-05). None = індекс недоступний/порожній → НЕ фільтруємо (fail-open:
+    локальна розробка, ще не зібраний сайт, збій збірки не мають обнулити фіди)."""
+    import os
+    site_dir = Path(os.environ.get("SITE_DIR", str(Path(__file__).parent / "site")))
+    try:
+        data = json.loads((site_dir / "index.json").read_text(encoding="utf-8"))
+        ids = {str(p["id"]) for p in data if isinstance(p, dict) and "id" in p}
+    except (OSError, ValueError, TypeError):
+        print("[Feed] site/index.json недоступний — фільтр «є картка на сайті» ВИМКНЕНО (fail-open).", file=sys.stderr)
+        return None
+    if len(ids) < 1000:   # підозріло малий індекс (збій збірки) — не відсікати майже весь фід
+        print(f"[Feed] site/index.json має лише {len(ids)} товарів — фільтр «є картка на сайті» ВИМКНЕНО (fail-open).",
+              file=sys.stderr)
+        return None
+    return ids
+
+
 def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price_overrides: dict,
-                     competitor_prices: dict | None = None) -> tuple[list, dict]:
+                     competitor_prices: dict | None = None, site_ids: set | None = None) -> tuple[list, dict]:
     stats = {
         "total_considered": len(catalog),
         "no_price": 0,
         "no_prom_price": 0,   # застаріле: більше не викидаємо, лишаємо для сумісності друку (=0)
         "computed_price": 0,  # взято порахована ціна (нема свіжого override) — фолбек як у Prom-фіді
         "no_link_skipped": 0,
+        "not_on_site": 0,     # товару нема на власному сайті (site_ids) — не віддаємо Google/Meta/Bing
         "no_image": 0,
         "no_gtin": 0,
         "no_brand_fallback": 0,
@@ -688,6 +710,9 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
     items = []
 
     for pid, item in catalog.items():
+        if site_ids is not None and str(pid) not in site_ids:
+            stats["not_on_site"] += 1
+            continue
         try:
             cost = real_toysi_cost(item)
         except (TypeError, ValueError):
@@ -847,7 +872,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
 
     prom_price_overrides = load_fresh_prom_price_overrides()
     items, stats = build_feed_items(top_catalog, prom_by_external_id, links, prom_price_overrides,
-                                    load_fresh_prom_competitor_prices())
+                                    load_fresh_prom_competitor_prices(), load_site_product_ids())
 
     root = _build_xml(items)
     ET.indent(root, space="  ")
@@ -861,6 +886,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
 
     print(f"[Google] Готово! Збережено: {output_file}")
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
+    print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — без ціни: {stats['no_price']}")
     print(f"[Google] Ціна порахована (нема свіжого override, як на сторінці Prom): {stats['computed_price']}")
     print(f"[Google] Пропущено — не знайдено впевненого посилання на сторінку: {stats['no_link_skipped']}")

@@ -226,7 +226,7 @@ _COMM_RE = re.compile(
 _OWN_RE = re.compile(r"Переказ\s+власних\s+кошт", re.I)
 _TOYSI_DEPOSIT_RE = re.compile(r"Оплата\s+за\s+[iі]грашки", re.I)
 _GUARANTEE_RE = re.compile(r"Гарант[iі]йний\s+плат[iі]ж", re.I)
-_INVOICE_RE = re.compile(r"рахун|накладн|№|видатков", re.I)
+_INVOICE_RE = re.compile(r"рахун|накл|№|видатков|замовл|\bN\s*\d", re.I)
 _DOC_RE = re.compile(r"(?:№|N)\s*([A-Za-zА-Яа-яІіЇїЄєҐґ0-9][A-Za-zА-Яа-яІіЇїЄєҐґ0-9/\-]*)")
 _LEGAL_RE = re.compile(r"^\s*(ТОВ|Товариство|АТ|ПрАТ|ПАТ|ДП)\b", re.I)
 
@@ -307,19 +307,17 @@ def _has_amount(text: str, value: float) -> bool:
     return False
 
 
-# Лише ЯВНІ заперечення запису; не «заглушка»/«оцінка» — р.99 пише «3.91, факт замість заглушки».
-_NEG_RE = re.compile(r"\bне\s+(?:внесен|довнесен|звірен|знайден)|довнести", re.I)
-_ROWREF_RE = re.compile(r"рядк\w*\s+(\d{1,4})\b", re.I)
+# Формат запису бухгалтера (живо: р.97/99/115/129/142/144/168-170/173): «i9 було 43.12, стало 48.73».
+_I9_STEP_RE = re.compile(r"i9\s*було\s*(\d+(?:[.,]\d+)?)[.,]?\s*,?\s*стало\s*(\d+(?:[.,]\d+)?)", re.I)
+# Окремий рядок еквайрингу (живо: р.186 «(112.49 → 111.03 = 1.46, …) і (245.31 → 242.12 = 3.19, …)»).
+_EQ_AMOUNT_RE = re.compile(r"→\s*\d+[.,]\d{2}\s*=\s*(\d+[.,]\d{2})")
 
 
-def _amount_windows(text: str, value: float, before: int = 50, after: int = 70) -> list:
-    """Шматки тексту навколо КОЖНОЇ окремої згадки суми (для перевірки заперечень/посилань)."""
-    v = f"{abs(value):.2f}"
-    out = []
-    for form in (v, v.replace(".", ",")):
-        for m in re.finditer(r"(?<![\d.,])" + re.escape(form) + r"(?!\d)", text or ""):
-            out.append(text[max(0, m.start() - before):m.end() + after])
-    return out
+def _num(s: str):
+    try:
+        return float(str(s).strip().rstrip(".,").replace(",", "."))
+    except ValueError:
+        return None
 
 
 def _id_in(text: str, ident: str) -> bool:
@@ -346,8 +344,9 @@ def _load_book_rows() -> list:
                 text = " ".join(str(vals[c]) for c in (4, 11) if len(vals) > c and vals[c] is not None)
                 if not money and not text:
                     continue
+                e_text = str(vals[4]) if len(vals) > 4 and vals[4] is not None else ""
                 rows.append({"row": i, "date": _coerce_date(vals[0] if vals else None),
-                             "money": money, "text": text})
+                             "money": money, "text": text, "e_text": e_text})
         finally:
             wb.close()
     except Exception as e:  # noqa: BLE001
@@ -387,26 +386,26 @@ def reconcile_liqpay(txn: dict, book_rows: list) -> tuple:
         return "unverified", f"нетто {txn['amount']:.2f} більше за брутто {gross:.2f} (р.{sale['row']}) — перевір"
     if abs(acq) < 0.005:
         return "in_book", f"р.{sale['row']}: брутто = нетто {gross:.2f}, еквайрингу немає"
-    by_row = {r["row"]: r for r in book_rows}
+    # Аудит PR #617, раунди 1-2: згадка суми в тексті ≠ запис суми в графі 9 («еквайринг 1.46 —
+    # довнесу» теж згадка). Вимагати суму САМЕ в гр.9 не можна — бухгалтер веде гр.9 зведеною
+    # (р.142 = комісія EVA 43.12 + 5.61). Тому доказ — АРИФМЕТИКА, прив'язана до гр.9:
     for r in rows:
-        if "еквайринг" not in r["text"].lower():
+        i9 = r["money"].get(8)
+        if not i9 or "еквайринг" not in r["text"].lower():
             continue
-        for win in _amount_windows(r["text"], acq):
-            # Аудит PR #617, п.2: згадка суми ≠ запис суми. Заперечення поруч («ще НЕ внесено»,
-            # «довнести») не рахується. Вимагати суму саме в графі 9 НЕ можна — бухгалтер веде
-            # графу 9 ЗВЕДЕНОЮ (р.142 = комісія EVA + 5.61; р.186 = 1.46 + 3.19), тож доказ — текст.
-            if _NEG_RE.search(win):
-                continue
-            ref = _ROWREF_RE.search(win)
-            if ref:
-                # «внесено ОКРЕМИМ рядком 186» — гроші там, а не тут: той рядок має існувати,
-                # мати непорожню графу 9 і згадувати цей самий SOID.
-                tgt = by_row.get(int(ref.group(1)))
-                if tgt and tgt["money"].get(8) and _id_in(tgt["text"], soid):
-                    return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{tgt['row']}"
-                continue
-            if r["money"].get(8):
+        # (А) у рядку записано «i9 було A, стало B»: B − A = еквайринг, а останнє B = поточна гр.9
+        steps = [(_num(a), _num(b)) for a, b in _I9_STEP_RE.findall(r["text"])]
+        steps = [(a, b) for a, b in steps if a is not None and b is not None]
+        if steps and abs(steps[-1][1] - i9) < 0.005 and any(abs((b - a) - acq) < 0.005 for a, b in steps):
+            return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{r['row']} (i9 +{acq:.2f})"
+        # (Б) окремий рядок еквайрингу (лише гр.9, як р.186): гр.9 = сума перелічених «= X»
+        if set(r["money"]) == {8}:
+            parts = [x for x in (_num(s) for s in _EQ_AMOUNT_RE.findall(r["e_text"])) if x is not None]
+            if any(abs(x - acq) < 0.005 for x in parts) and abs(sum(parts) - i9) < 0.005:
                 return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{r['row']}"
+    if any("еквайринг" in r["text"].lower() and _has_amount(r["text"], acq) for r in rows):
+        return "unverified", (f"еквайринг {acq:.2f} для р.{sale['row']} згадано в тексті, але не підтверджено "
+                              f"графою 9 (нема «i9 було A, стало B» чи окремого рядка з сумою) — перевір")
     return "missing_acquiring", f"еквайринг {acq:.2f} для р.{sale['row']} (брутто {gross:.2f} − нетто {txn['amount']:.2f})"
 
 
@@ -443,15 +442,15 @@ def reconcile_commission(txn: dict, day_total: float, book_rows: list) -> tuple:
         d = datetime.strptime(txn["date"], "%Y-%m-%d").date()
     except ValueError:
         return "unverified", "дата операції не розпізнана"
-    near = [r for r in book_rows if r["date"] is not None and abs((r["date"] - d).days) <= 1
-            and "комісі" in r["text"].lower()]
+    # Аудит PR #617 (раунди 1-2): лише рядок ТІЄЇ САМОЇ дати. З ±1 днем рядок комісії 18.09
+    # «закривав» невнесену комісію 17.09 (і за сумою дня, і за тією ж базою 2000.00). Бухгалтер
+    # датує рядок комісії днем списання — живо: р.106 18.09, р.134 25.09, р.185 02.10.
+    near = [r for r in book_rows if r["date"] == d and "комісі" in r["text"].lower()]
     for r in near:
         if base is not None and _has_amount(r["text"], base):
             return "in_book", f"р.{r['row']} (згадано платіж {base:.2f})"
-    # Аудит PR #617, п.1: «сума комісій за день» — лише рядок ТІЄЇ САМОЇ дати. З ±1 днем рядок
-    # комісії 18.09 (5.00) хибно «закривав» не внесену комісію 17.09 (теж 5.00).
     for r in near:
-        if r["date"] == d and any(abs(v - day_total) < 0.005 for v in r["money"].values()):
+        if any(abs(v - day_total) < 0.005 for v in r["money"].values()):
             return "in_book", f"р.{r['row']} (комісії за день разом {day_total:.2f})"
     return "not_in_book", f"комісію за платіж {base if base is not None else '?'} у книзі не знайдено"
 

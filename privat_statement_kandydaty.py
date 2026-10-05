@@ -49,9 +49,9 @@ socauth.privatbank.ua/out_click.php-редирект) — PDF, ПІДПИСАН�
   • bank_commission — «Комісія за виконання платежів … у сумі N грн від Д»: рядок книги ±1 день,
                     текст якого містить «комісі» і або базову суму N, або значення = сумі всіх
                     комісій банку за цей день (бухгалтер пише їх одним рядком, напр. 3×5.00).
-  • own_transfer / deposit — не P&L (власні кошти ФОП; депозит Toysi; гарантійний платіж Rozetka
-                    = застава, довідник КОДВ §3, рядки 34/60/106): у кандидати не потрапляють,
-                    але видно окремим розділом звіту.
+  • own_transfer / deposit — не P&L (власні кошти ФОП; депозит Toysi — довідник КОДВ §3, лише
+                    «Оплата за іграшки» БЕЗ рахунку/накладної; гарантійний платіж Rozetka = застава —
+                    рядки книги 34/60/106): у кандидати не потрапляють, але видно окремим розділом звіту.
   • other         — стара звірка: сума в будь-якій сирій графі книги ±1 день.
 У звіт .md — лише клас і коротка мітка (номер документа / контрагент-юрособа), без ПІБ фізосіб.
 
@@ -226,6 +226,7 @@ _COMM_RE = re.compile(
 _OWN_RE = re.compile(r"Переказ\s+власних\s+кошт", re.I)
 _TOYSI_DEPOSIT_RE = re.compile(r"Оплата\s+за\s+[iі]грашки", re.I)
 _GUARANTEE_RE = re.compile(r"Гарант[iі]йний\s+плат[iі]ж", re.I)
+_INVOICE_RE = re.compile(r"рахун|накладн|№|видатков", re.I)
 _DOC_RE = re.compile(r"(?:№|N)\s*([A-Za-zА-Яа-яІіЇїЄєҐґ0-9][A-Za-zА-Яа-яІіЇїЄєҐґ0-9/\-]*)")
 _LEGAL_RE = re.compile(r"^\s*(ТОВ|Товариство|АТ|ПрАТ|ПАТ|ДП)\b", re.I)
 
@@ -243,7 +244,12 @@ def classify(txn: dict) -> str:
         return "bank_commission"
     if _OWN_RE.search(p):
         return "own_transfer"
-    if amt < 0 and (_TOYSI_DEPOSIT_RE.search(p) or _GUARANTEE_RE.search(p)):
+    if amt < 0 and _GUARANTEE_RE.search(p):
+        return "deposit"
+    # Аудит PR #617, п.3: «Оплата за іграшки» = депозит Toysi лише БЕЗ рахунку/накладної. З
+    # рахунком це може бути пряма закупівля в іншого постачальника (графа 6) — тоді клас «інше»,
+    # щоб не зникла мовчки з кандидатів.
+    if amt < 0 and _TOYSI_DEPOSIT_RE.search(p) and not _INVOICE_RE.search(p):
         return "deposit"
     return "other"
 
@@ -299,6 +305,21 @@ def _has_amount(text: str, value: float) -> bool:
         if re.search(r"(?<![\d.,])" + re.escape(form) + r"(?!\d)", text or ""):
             return True
     return False
+
+
+# Лише ЯВНІ заперечення запису; не «заглушка»/«оцінка» — р.99 пише «3.91, факт замість заглушки».
+_NEG_RE = re.compile(r"\bне\s+(?:внесен|довнесен|звірен|знайден)|довнести", re.I)
+_ROWREF_RE = re.compile(r"рядк\w*\s+(\d{1,4})\b", re.I)
+
+
+def _amount_windows(text: str, value: float, before: int = 50, after: int = 70) -> list:
+    """Шматки тексту навколо КОЖНОЇ окремої згадки суми (для перевірки заперечень/посилань)."""
+    v = f"{abs(value):.2f}"
+    out = []
+    for form in (v, v.replace(".", ",")):
+        for m in re.finditer(r"(?<![\d.,])" + re.escape(form) + r"(?!\d)", text or ""):
+            out.append(text[max(0, m.start() - before):m.end() + after])
+    return out
 
 
 def _id_in(text: str, ident: str) -> bool:
@@ -366,9 +387,26 @@ def reconcile_liqpay(txn: dict, book_rows: list) -> tuple:
         return "unverified", f"нетто {txn['amount']:.2f} більше за брутто {gross:.2f} (р.{sale['row']}) — перевір"
     if abs(acq) < 0.005:
         return "in_book", f"р.{sale['row']}: брутто = нетто {gross:.2f}, еквайрингу немає"
-    hit = [r for r in rows if "еквайринг" in r["text"].lower() and _has_amount(r["text"], acq)]
-    if hit:
-        return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{hit[0]['row']}"
+    by_row = {r["row"]: r for r in book_rows}
+    for r in rows:
+        if "еквайринг" not in r["text"].lower():
+            continue
+        for win in _amount_windows(r["text"], acq):
+            # Аудит PR #617, п.2: згадка суми ≠ запис суми. Заперечення поруч («ще НЕ внесено»,
+            # «довнести») не рахується. Вимагати суму саме в графі 9 НЕ можна — бухгалтер веде
+            # графу 9 ЗВЕДЕНОЮ (р.142 = комісія EVA + 5.61; р.186 = 1.46 + 3.19), тож доказ — текст.
+            if _NEG_RE.search(win):
+                continue
+            ref = _ROWREF_RE.search(win)
+            if ref:
+                # «внесено ОКРЕМИМ рядком 186» — гроші там, а не тут: той рядок має існувати,
+                # мати непорожню графу 9 і згадувати цей самий SOID.
+                tgt = by_row.get(int(ref.group(1)))
+                if tgt and tgt["money"].get(8) and _id_in(tgt["text"], soid):
+                    return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{tgt['row']}"
+                continue
+            if r["money"].get(8):
+                return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{r['row']}"
     return "missing_acquiring", f"еквайринг {acq:.2f} для р.{sale['row']} (брутто {gross:.2f} − нетто {txn['amount']:.2f})"
 
 
@@ -389,7 +427,9 @@ def reconcile_rozetkapay(txn: dict, ops, book_rows: list) -> tuple:
         return "unverified", (f"реєстр за {m.group(1)[:5]}–{m.group(2)[:5]}: сума {s:.2f}/комісія {c:.2f}, "
                               f"виписка {gross:.2f}/{fee:.2f} — не сходиться")
     orders = [o["order_id"] for o in in_range if float(o["sum"] or 0) > 0]
-    missing = [oid for oid in orders if not any(_id_in(r["text"], oid) for r in book_rows)]
+    # Аудит PR #617, п.4: номер має стояти в РЯДКУ ПРОДАЖУ (графа 2 > 0), не в примітці/поверненні.
+    missing = [oid for oid in orders
+               if not any(r["money"].get(1, 0) > 0 and _id_in(r["text"], oid) for r in book_rows)]
     if missing:
         return "not_in_book", f"замовлення реєстру не знайдено в книзі: {', '.join(missing)}"
     return "in_book", (f"брутто {gross:.2f} = {len(in_range)} оп. реєстру ({', '.join(orders)}); "
@@ -408,8 +448,10 @@ def reconcile_commission(txn: dict, day_total: float, book_rows: list) -> tuple:
     for r in near:
         if base is not None and _has_amount(r["text"], base):
             return "in_book", f"р.{r['row']} (згадано платіж {base:.2f})"
+    # Аудит PR #617, п.1: «сума комісій за день» — лише рядок ТІЄЇ САМОЇ дати. З ±1 днем рядок
+    # комісії 18.09 (5.00) хибно «закривав» не внесену комісію 17.09 (теж 5.00).
     for r in near:
-        if any(abs(v - day_total) < 0.005 for v in r["money"].values()):
+        if r["date"] == d and any(abs(v - day_total) < 0.005 for v in r["money"].values()):
             return "in_book", f"р.{r['row']} (комісії за день разом {day_total:.2f})"
     return "not_in_book", f"комісію за платіж {base if base is not None else '?'} у книзі не знайдено"
 

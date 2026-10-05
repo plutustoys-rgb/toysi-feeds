@@ -241,7 +241,9 @@ def build():
     cats = {}
     for p in prods:
         cats.setdefault(p["category"], []).append(p)
-    cat_list = sorted(cats.keys(), key=lambda c: -len(cats[c]))
+    # «Уцінка» лишається в каталозі (повний каталог Toysi), але НЕ претендує на плитки/чипси/«Новинки» головної:
+    # без цього найбільша категорія (≈20% позицій) ставала б №1 на головній (аудит PR #614, знахідка А).
+    cat_list = sorted(cats.keys(), key=lambda c: ("уцінк" in c.lower() or "уценк" in c.lower(), -len(cats[c])))
     # унікальні слаги: дві різні категорії з однаковим slugify() не перезаписують файл одна одної
     cat_slug, _used = {}, {}
     for c in cat_list:

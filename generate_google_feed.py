@@ -671,6 +671,9 @@ def is_weapon_replica(item_id: str, title: str) -> bool:
     return False
 
 
+SITE_FILTER_MAX_DROP_SHARE = 0.25   # макс. частка каталогу, яку фільтр «є на сайті» має право відсікти
+
+
 def load_site_product_ids() -> set | None:
     """toysi-id товарів, які МАЮТЬ картку на власному сайті (site/index.json, збирає build_site.py на VPS).
     Посилання Google/Meta/Bing ведуть на старі Prom-URL, які після переносу домену 301-редірект перекидає на
@@ -694,6 +697,15 @@ def load_site_product_ids() -> set | None:
 
 def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price_overrides: dict,
                      competitor_prices: dict | None = None, site_ids: set | None = None) -> tuple[list, dict]:
+    # Страховка (аудит PR #618): індекс сайту, який відсікає понад чверть каталогу, — ознака обрізаної/частково зібраної
+    # збірки, а не реальної відсутності карток. Фільтр тоді вимикаємо, а не нищимо фід.
+    if site_ids is not None and catalog:
+        _missing = sum(1 for _pid in catalog if str(_pid) not in site_ids)
+        if _missing / len(catalog) > SITE_FILTER_MAX_DROP_SHARE:
+            print(f"[Feed] Фільтр «є картка на сайті» відсікав би {_missing} з {len(catalog)} "
+                  f"({_missing / len(catalog):.0%} > {SITE_FILTER_MAX_DROP_SHARE:.0%}) — індекс сайту підозрілий, "
+                  "фільтр ВИМКНЕНО (fail-open).", file=sys.stderr)
+            site_ids = None
     stats = {
         "total_considered": len(catalog),
         "no_price": 0,

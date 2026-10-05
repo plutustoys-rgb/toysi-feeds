@@ -38,7 +38,7 @@ from pathlib import Path
 from parser import fetch_toysi_catalog
 from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products
-from competitor_pricing import load_fresh_prom_price_overrides
+from competitor_pricing import load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices
 from generate_google_feed import (
     build_feed_items,
     load_prom_products_cache,
@@ -138,7 +138,8 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
             file=sys.stderr,
         )
 
-    items, stats = build_feed_items(top_catalog, prom_by_external_id, links, load_fresh_prom_price_overrides())
+    items, stats = build_feed_items(top_catalog, prom_by_external_id, links, load_fresh_prom_price_overrides(),
+                                    load_fresh_prom_competitor_prices())
     # Репліки зброї виключає САМ build_feed_items (спільно для google/meta/bing) — тут не дублюємо.
 
     root = _build_xml(items)

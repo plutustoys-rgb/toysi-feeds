@@ -69,8 +69,8 @@ from generate_prom_feed import normalize_vendor
 from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products, fetch_prom_products_by_external_ids
 from prom_competitor_pricer import SEARCH_DELAY
-from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides,
-                                decide_price_for_platform, compute_floor,
+from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices,
+                                decide_price_for_platform, compute_floor, cap_stale_prom_override,
                                 compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
@@ -614,7 +614,7 @@ def _upscale_prom_image(url: str) -> str:
     return _PROM_IMAGE_SIZE_RE.sub("_w1024_h1024_", url, count=1)
 
 
-def _prom_page_price(cost: float, category_name, override) -> float:
+def _prom_page_price(cost: float, category_name, override, has_fresh_competitor: bool = True) -> float:
     """Ціна, ЩО РЕАЛЬНО ЙДЕ НА СТОРІНКУ PROM — точна копія логіки generate_prom_feed.py (ряд. ~611-637).
     Оголошення Google/Meta/Bing ведуть на цю сторінку, тож беруть ТУ САМУ ціну → жодного
     'price mismatch' і ТІ САМІ товари, що на сайті Prom.
@@ -624,6 +624,11 @@ def _prom_page_price(cost: float, category_name, override) -> float:
     ⚠️ МУСИТЬ збігатися з generate_prom_feed.py — якщо там зміниться логіка ціни, синхронізувати тут."""
     if override is not None:
         retail = float(override)
+        if not has_fresh_competitor:
+            # застарілий override (нема свіжого конкурента) — та сама стеля, що в generate_prom_feed (PR #615):
+            # не вище дефолтної ×1.75-формули; інакше ціна оголошення розійшлась би з ціною сторінки Prom.
+            retail = cap_stale_prom_override(
+                retail, decide_price_for_platform(cost, None, "prom", category_name)["price"], False)
         floor = compute_floor(cost, compute_total_commission("prom", category_name, retail),
                               MIN_PROFIT_COMPETITOR_FLOOR)
         if retail < floor:
@@ -666,7 +671,8 @@ def is_weapon_replica(item_id: str, title: str) -> bool:
     return False
 
 
-def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price_overrides: dict) -> tuple[list, dict]:
+def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price_overrides: dict,
+                     competitor_prices: dict | None = None) -> tuple[list, dict]:
     stats = {
         "total_considered": len(catalog),
         "no_price": 0,
@@ -704,7 +710,9 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         # override просто викидався (no_prom_price) → оголошення мали ~600 замість ~6000 сайту.
         # Тепер фолбек на порахувану ціну (ідентична сторінці) через _prom_page_price().
         override = prom_price_overrides.get(pid)
-        retail_price = _prom_page_price(cost, item.get("category_name"), override)
+        # competitor_prices=None (виклик без нього) = стара поведінка без стелі; інакше «свіжий конкурент» = запис у словнику.
+        _fresh_comp = True if competitor_prices is None else ((competitor_prices.get(pid) or 0) > 0)
+        retail_price = _prom_page_price(cost, item.get("category_name"), override, _fresh_comp)
         if override is None:
             stats["computed_price"] += 1
 
@@ -838,7 +846,8 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] Кеш реальних Prom-категорій: {len(category_cache)} товарів.")
 
     prom_price_overrides = load_fresh_prom_price_overrides()
-    items, stats = build_feed_items(top_catalog, prom_by_external_id, links, prom_price_overrides)
+    items, stats = build_feed_items(top_catalog, prom_by_external_id, links, prom_price_overrides,
+                                    load_fresh_prom_competitor_prices())
 
     root = _build_xml(items)
     ET.indent(root, space="  ")

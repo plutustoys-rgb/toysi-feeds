@@ -311,6 +311,7 @@ def _has_amount(text: str, value: float) -> bool:
 _I9_STEP_RE = re.compile(r"i9\s*було\s*(\d+(?:[.,]\d+)?)[.,]?\s*,?\s*стало\s*(\d+(?:[.,]\d+)?)", re.I)
 # Окремий рядок еквайрингу (живо: р.186 «(112.49 → 111.03 = 1.46, …) і (245.31 → 242.12 = 3.19, …)»).
 _EQ_AMOUNT_RE = re.compile(r"→\s*\d+[.,]\d{2}\s*=\s*(\d+[.,]\d{2})")
+_SOID_IN_TEXT_RE = re.compile(r"(?<!\d)(\d-\d{9})(?!\d)")
 
 
 def _num(s: str):
@@ -396,12 +397,24 @@ def reconcile_liqpay(txn: dict, book_rows: list) -> tuple:
         # (А) у рядку записано «i9 було A, стало B»: B − A = еквайринг, а останнє B = поточна гр.9
         steps = [(_num(a), _num(b)) for a, b in _I9_STEP_RE.findall(r["text"])]
         steps = [(a, b) for a, b in steps if a is not None and b is not None]
-        if steps and abs(steps[-1][1] - i9) < 0.005 and any(abs((b - a) - acq) < 0.005 for a, b in steps):
+        # Аудит раунд 3: саме ОСТАННІЙ крок має бути еквайрингом — інакше «додали, потім
+        # відкотили» (15.41→16.87, 16.87→15.41) лишався б «в книзі».
+        if steps and abs(steps[-1][1] - i9) < 0.005 and abs((steps[-1][1] - steps[-1][0]) - acq) < 0.005:
             return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{r['row']} (i9 +{acq:.2f})"
         # (Б) окремий рядок еквайрингу (лише гр.9, як р.186): гр.9 = сума перелічених «= X»
         if set(r["money"]) == {8}:
-            parts = [x for x in (_num(s) for s in _EQ_AMOUNT_RE.findall(r["e_text"])) if x is not None]
-            if any(abs(x - acq) < 0.005 for x in parts) and abs(sum(parts) - i9) < 0.005:
+            # Аудит раунд 3: пара «→ … = X» належить SOID, що стоїть найближче ПЕРЕД нею —
+            # однаковий еквайринг іншого замовлення не має закривати наш.
+            parts, ours = [], False
+            for m in _EQ_AMOUNT_RE.finditer(r["e_text"]):
+                x = _num(m.group(1))
+                if x is None:
+                    continue
+                parts.append(x)
+                prev = _SOID_IN_TEXT_RE.findall(r["e_text"][:m.start()])
+                if prev and prev[-1] == soid and abs(x - acq) < 0.005:
+                    ours = True
+            if ours and abs(sum(parts) - i9) < 0.005:
                 return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{r['row']}"
     if any("еквайринг" in r["text"].lower() and _has_amount(r["text"], acq) for r in rows):
         return "unverified", (f"еквайринг {acq:.2f} для р.{sale['row']} згадано в тексті, але не підтверджено "

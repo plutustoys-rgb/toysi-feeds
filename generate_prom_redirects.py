@@ -72,6 +72,15 @@ def build_map() -> tuple[str, int, int]:
     return header + "\n".join(lines) + "\n", len(lines), skipped
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """tmp + os.replace: Apache/nginx не прочитають напівзаписану мапу (інакше хибний 301 на /catalog.html);
+    LF-кінці незалежно від ОС (мапа читається на Linux)."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
 def build_map_apache() -> str:
     """Apache RewriteMap txt: один рядок = "prom_id /product-<toysi>.html". Викликати ПІСЛЯ build_map()."""
     lines = getattr(build_map, "apache_lines", [])
@@ -81,8 +90,8 @@ def build_map_apache() -> str:
 
 def main() -> None:
     content, n, skipped = build_map()
-    OUT_FILE.write_text(content, encoding="utf-8")
-    OUT_FILE_APACHE.write_text(build_map_apache(), encoding="utf-8")
+    _write_atomic(OUT_FILE, content)
+    _write_atomic(OUT_FILE_APACHE, build_map_apache())
     print(f"[prom_redirects] {OUT_FILE}: {n} редиректів prom_id->/product-*.html "
           f"(пропущено {skipped} — нема сторінки на сайті)")
 

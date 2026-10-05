@@ -218,6 +218,9 @@
   головна/каталог/категорії/картки/кошик/пошук, `site/assets/*`), `liqpay_client` (підпис/колбек LiqPay, sandbox),
   `site_order_api` (HTTP-шар: NP-автокомпліт + `POST /api/order` prepaid+payment_confirmed=0 + колбек LiqPay).
   Веб-замовлення = `platform='site'`, форвард у Toysi через наявний order-pipeline лише по підтвердженій оплаті.
+  **VPS = Apache під Webuzo (nginx немає)**: активація — `deploy/activate_site_apache.sh` (одна команда: збірка → systemd → Apache-vhost
+  `z-plutustoys-com-ua.conf` на явній IP → чекає DNS → certbot webroot → HTTPS; відкат + звірка чужих vhost'ів до/після). `deploy/nginx-plutustoys.conf`/
+  `activate_site.sh` — лише довідка для хоста з nginx.
   Деплой-артефакти — `deploy/site-order-api.service` (venv-python daemon, :8901), `deploy/site-rebuild.{service,timer}`
   (ребілд сайту 4×/день — свіжі ціни/наявність + оновлення GMC-редиректів + reload nginx), `deploy/nginx-plutustoys.conf`,
   `deploy/activate_site.sh` (активація в одну команду), `deploy/DEPLOY_SITE.md`.

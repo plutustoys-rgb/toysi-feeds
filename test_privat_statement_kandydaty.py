@@ -124,6 +124,129 @@ _chk("та сама сума, дата за межею ±1 день — НЕ в�
 
 tmp_xlsx.unlink(missing_ok=True)
 
+# 5: classify() — призначення СЛОВО В СЛОВО з живого дампу 2026-10-05_privat_kandydaty.json
+# (PDF пише кирилицю з латинською "i" — шаблони мають це витримувати).
+_P_LIQ = "LIQPAY ID 2931972741 SOID 8- 081911575 PBK i19473252216 DATE 2026-09-28 TYPE acquiring"
+_P_RZP = ("Переказ коштiв за операцiї 25.09.2026- 27.09.2026 зг.дог.№3001505450-П вiд 10.07.2026 на "
+          "суму 1327.18 грн за виключ. винагор. 21.14 грн за їхпереказ. Без ПДВ.")
+_P_COMM = ("Комiсiя за виконання платежiв в нацiональнiй валютi у сумi 379.91 грн вiд 25.09.2026, "
+           "згiдно з вiдкритою офертою банку N б/н вiд 01.07.2026 та тарифiв банку, без ПДВ.")
+_P_OWN = ("Переказ власних коштiв ФОП Чечетенко О.Ю. з рахунку NovaPay на розрахунковий рахунок у "
+          "ПриватБанку. Без ПДВ.")
+_P_TOYSI = "Оплата за iграшки вiд ФОП Чечетенко О.Ю."
+_P_GUAR = "Гарантiйний платiж Без ПДВ. згiдно рахунку ТP-001037409 вiд 18.09.2026. Без ПДВ"
+_P_HOST = "Оплата за послуги хостингу, згiдно рахунку №1404478h вiд 25.09.2026 р. Без ПДВ."
+
+
+def _t(purpose, amount, date="2026-09-28", cp="", ref="R"):
+    return {"ref": ref, "date": date, "amount": amount, "purpose": purpose, "counterparty": cp}
+
+
+_chk("classify: LiqPay acquiring", ps.classify(_t(_P_LIQ, 425.55)) == "liqpay")
+_chk("classify: виплата RozetkaPay (за контрагентом і за шаблоном)",
+     ps.classify(_t(_P_RZP, 1306.04, cp='ТОВ "РОЗЕТКА ПЕЙ" 43170392')) == "rozetkapay"
+     and ps.classify(_t(_P_RZP, 1306.04)) == "rozetkapay")
+_chk("classify: комісія банку (латинська i в 'Комiсiя')", ps.classify(_t(_P_COMM, -5.0)) == "bank_commission")
+_chk("classify: переказ власних коштів", ps.classify(_t(_P_OWN, 3600.0)) == "own_transfer")
+_chk("classify: депозит Toysi і гарантійний платіж Rozetka — deposit",
+     ps.classify(_t(_P_TOYSI, -5000.0)) == "deposit" and ps.classify(_t(_P_GUAR, -2000.0)) == "deposit")
+_chk("classify: хостинг — other", ps.classify(_t(_P_HOST, -1013.84)) == "other")
+_chk("classify: 'Оплата за iграшки' з ПЛЮСОМ (надходження) — НЕ депозит", ps.classify(_t(_P_TOYSI, 50.0)) == "other")
+_chk("_soid: перенос рядка '8- 081911575' склеюється", ps._soid(_P_LIQ) == "8-081911575")
+
+# 6: _has_amount — межі числа
+_chk("_has_amount: крапка", ps._has_amount("еквайринг = 5.61. i9", 5.61))
+_chk("_has_amount: кома", ps._has_amount("еквайринг 5,61 грн", 5.61))
+_chk("_has_amount: НЕ частина 15.61", not ps._has_amount("сума 15.61", 5.61))
+_chk("_has_amount: НЕ частина 5.612", not ps._has_amount("сума 5.612", 5.61))
+
+
+def _row(n, date, money, text):
+    return {"row": n, "date": date, "money": money, "text": text}
+
+
+from datetime import date as _d  # noqa: E402
+
+# 7: reconcile_liqpay
+_BOOK_LIQ = [
+    _row(142, _d(2026, 9, 27), {1: 431.16, 5: 259.32, 8: 48.73},
+         "EVA.ua 8-081911575 ... LiqPay-еквайринг SOID 8-081911575: замовлення 431.16, зараховано 425.55 = 5.61."),
+]
+liq = _t(_P_LIQ, 425.55)
+_chk("liqpay: еквайринг у тексті рядка продажу → in_book", ps.reconcile_liqpay(liq, _BOOK_LIQ)[0] == "in_book")
+_BOOK_LIQ_NO_ACQ = [_row(142, _d(2026, 9, 27), {1: 431.16}, "EVA.ua 8-081911575, оплата карткою (LiqPay).")]
+st, note = ps.reconcile_liqpay(liq, _BOOK_LIQ_NO_ACQ)
+_chk("liqpay: продаж є, еквайрингу немає → missing_acquiring з сумою 5.61 і рядком",
+     st == "missing_acquiring" and "5.61" in note and "р.142" in note)
+_BOOK_LIQ_NEG = [_row(142, _d(2026, 9, 27), {1: 431.16},
+                      "EVA.ua 8-081911575. LiqPay-еквайринг окремо НЕ знайдено, i9 = 43.12")]
+_chk("liqpay: заперечна згадка «еквайринг НЕ знайдено» без суми 5.61 → НЕ in_book",
+     ps.reconcile_liqpay(liq, _BOOK_LIQ_NEG)[0] == "missing_acquiring")
+_BOOK_LIQ_SEP = _BOOK_LIQ_NO_ACQ + [_row(186, _d(2026, 9, 28), {8: 5.61},
+                                        "LiqPay-еквайринг за EVA 8-081911575 (431.16 → 425.55 = 5.61)")]
+_chk("liqpay: еквайринг ОКРЕМИМ рядком (як р.186) → in_book", ps.reconcile_liqpay(liq, _BOOK_LIQ_SEP)[0] == "in_book")
+_chk("liqpay: продажу в книзі немає → not_in_book", ps.reconcile_liqpay(liq, [])[0] == "not_in_book")
+_chk("liqpay: коротший SOID 8-08191157 НЕ знаходиться всередині 8-081911575",
+     ps.reconcile_liqpay(_t(_P_LIQ.replace("081911575", "08191157"), 425.55), _BOOK_LIQ)[0] == "not_in_book")
+
+# 8: reconcile_rozetkapay — живі числа виплати 28.09 (1327.18 / 21.14 / 1306.04)
+_OPS = [
+    {"date_pay": "25.09.2026 19:48:20", "sum": 365, "commission": -5.48, "order_id": "905912920"},
+    {"date_pay": "25.09.2026 23:00:03", "sum": 142, "commission": -2.13, "order_id": "907059165"},
+    {"date_pay": "26.09.2026 10:34:48", "sum": 211, "commission": -3.17, "order_id": "906155961"},
+    {"date_pay": "27.09.2026 02:41:26", "sum": 609.18, "commission": -10.36, "order_id": "429649730"},
+    {"date_pay": "28.09.2026 19:08:03", "sum": 114, "commission": -1.71, "order_id": "907290403"},
+]
+_BOOK_RZP = [_row(n, _d(2026, 9, 26), {1: 1.0}, f"Замовлення №{oid}")
+             for n, oid in ((1, "905912920"), (2, "907059165"), (3, "906155961"), (4, "429649730"))]
+rzp = _t(_P_RZP, 1306.04)
+_chk("rozetkapay: X/Y = реєстр за 25–27.09, усі 4 замовлення в книзі → in_book",
+     ps.reconcile_rozetkapay(rzp, _OPS, _BOOK_RZP)[0] == "in_book")
+st, note = ps.reconcile_rozetkapay(rzp, _OPS, _BOOK_RZP[:3])
+_chk("rozetkapay: одного замовлення немає в книзі → not_in_book з номером", st == "not_in_book" and "429649730" in note)
+_chk("rozetkapay: реєстр не прочитано (None) → unverified", ps.reconcile_rozetkapay(rzp, None, _BOOK_RZP)[0] == "unverified")
+_chk("rozetkapay: реєстру за діапазон немає → unverified", ps.reconcile_rozetkapay(rzp, _OPS[4:], _BOOK_RZP)[0] == "unverified")
+_chk("rozetkapay: реєстр не сходиться з X (бракує операції) → unverified",
+     ps.reconcile_rozetkapay(rzp, _OPS[1:], _BOOK_RZP)[0] == "unverified")
+_chk("rozetkapay: номер замовлення як частина довшого числа НЕ рахується",
+     ps.reconcile_rozetkapay(rzp, _OPS, _BOOK_RZP[:3] + [_row(9, None, {}, "№4296497301")])[0] == "not_in_book")
+
+# 9: reconcile_commission — живі кейси р.134 (2 перекази в одному рядку) і р.185 (3×5.00)
+_BOOK_COMM = [
+    _row(134, _d(2026, 9, 25), {8: 10.0}, "ПриватБанк, комісія за 2 перекази (депозит Toysi 5000.00 + НП 379.91), 2×5.00 = 10.00"),
+    _row(185, _d(2026, 10, 2), {8: 15.0}, "ПриватБанк, комісія за 3 платежі від 02.10.2026, 3×5.00 = 15.00"),
+]
+_chk("commission: базова сума 379.91 у тексті рядка → in_book",
+     ps.reconcile_commission(_t(_P_COMM, -5.0, "2026-09-25"), 10.0, _BOOK_COMM)[0] == "in_book")
+_P_COMM2 = _P_COMM.replace("379.91", "777.00").replace("25.09.2026", "02.10.2026")
+_chk("commission: базової суми немає, але сума комісій за день 15.00 = графа рядка → in_book",
+     ps.reconcile_commission(_t(_P_COMM2, -5.0, "2026-10-02"), 15.0, _BOOK_COMM)[0] == "in_book")
+_chk("commission: сума за день НЕ збігається і базової суми немає → not_in_book",
+     ps.reconcile_commission(_t(_P_COMM2, -5.0, "2026-10-02"), 20.0, _BOOK_COMM)[0] == "not_in_book")
+_chk("commission: рядок за межею ±1 день не рахується",
+     ps.reconcile_commission(_t(_P_COMM, -5.0, "2026-09-28"), 5.0, _BOOK_COMM)[0] == "not_in_book")
+
+# 10: reconcile_all + label: не P&L не потрапляє в кандидати; ПІБ фізособи не виходить у мітку
+txns5 = [_t(_P_OWN, 3600.0, ref="8"), _t(_P_TOYSI, -5000.0, ref="20"),
+         _t(_P_HOST, -1013.84, date="2026-10-02", cp="ГОРЬОВА ОЛЕНА ОЛЕКСАНДРIВН А ФОП 3344000361", ref="23")]
+ps.reconcile_all(txns5, [], {}, [])
+_chk("reconcile_all: власні кошти і депозит Toysi → not_pnl, in_book=False",
+     [t["status"] for t in txns5[:2]] == ["not_pnl", "not_pnl"] and not txns5[0]["in_book"])
+_chk("reconcile_all: хостинг без книги → not_in_book", txns5[2]["status"] == "not_in_book")
+_chk("label: ПІБ ФОП-контрагента НЕ в мітці, номер документа є",
+     "ГОРЬОВА" not in txns5[2]["label"] and "1404478h" in txns5[2]["label"])
+_chk("label: ПІБ власника з призначення переказу НЕ в мітці", "Чечетенко" not in txns5[0]["label"])
+rep = ps.render_report(txns5, "T")
+_chk("render_report: розділи «Справді не в книзі» і «Не P&L», без ПІБ",
+     "Справді не в книзі — 1" in rep and "Не P&L" in rep and "ГОРЬОВА" not in rep and "Чечетенко" not in rep)
+
+# 11: reconcile_all рахує суму комісій за день по ВСІХ комісіях дня (р.185 = 3×5.00)
+txns3 = [_t(_P_COMM2.replace("777.00", f"{b}"), -5.0, "2026-10-02", ref=str(i))
+         for i, b in enumerate(("101.00", "102.00", "103.00"))]
+ps.reconcile_all(txns3, _BOOK_COMM, {}, [])
+_chk("reconcile_all: 3 комісії 02.10 без базових сум у тексті → in_book через суму дня 15.00",
+     all(t["status"] == "in_book" for t in txns3))
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)

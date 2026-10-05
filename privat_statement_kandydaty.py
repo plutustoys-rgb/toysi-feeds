@@ -33,8 +33,27 @@ socauth.privatbank.ua/out_click.php-редирект) — PDF, ПІДПИСАН�
 
 Кирилична деталізація операцій (призначення платежу, найменування контрагента) з PDF
 екстрактиться КОРЕКТНО (перевірено живо — Windows-консоль просто не вміє її друкувати в
-терміналі, це НЕ дефект PDF/шрифту) — але для звірки з книгою вона й не потрібна: сума+дата
-достатньо, той самий принцип, що Checkbox.
+терміналі, це НЕ дефект PDF/шрифту).
+
+КЛАСИ ОПЕРАЦІЙ (запит головного бухгалтера 2026-10-05, КОДВ_CHANNEL.md): звірка «сума ±1 день»
+структурно не працює там, де банк зараховує НЕТТО, а книга веде БРУТТО — 33 з 34 операцій
+дампу 05.10 були хибним «❗ НЕ в книзі». Тому спершу `classify()` за призначенням платежу, далі
+звірка свого класу:
+  • liqpay        — «LIQPAY ID … SOID 8-0… TYPE acquiring»: шукаємо рядок продажу за номером
+                    замовлення (SOID) у тексті книги; еквайринг = брутто(гр.2) − нетто; вважаємо
+                    внесеним, якщо рядок із тим самим SOID містить слово «еквайринг» і саму суму.
+  • rozetkapay    — виплата ТОВ «РОЗЕТКА ПЕЙ» «за операції Д1–Д2 на суму X за виключ. винагор. Y»:
+                    X/Y звіряємо з реєстрами RozetkaPay (документи_КОДВ/*/RozetkaPay/*.xlsx) за
+                    датою оплати в [Д1, Д2], потім кожне замовлення реєстру шукаємо в книзі.
+                    Еквайринг по замовленнях веде rozetkapay_registry_kandydaty.py — тут не дублюємо.
+  • bank_commission — «Комісія за виконання платежів … у сумі N грн від Д»: рядок книги ±1 день,
+                    текст якого містить «комісі» і або базову суму N, або значення = сумі всіх
+                    комісій банку за цей день (бухгалтер пише їх одним рядком, напр. 3×5.00).
+  • own_transfer / deposit — не P&L (власні кошти ФОП; депозит Toysi; гарантійний платіж Rozetka
+                    = застава, довідник КОДВ §3, рядки 34/60/106): у кандидати не потрапляють,
+                    але видно окремим розділом звіту.
+  • other         — стара звірка: сума в будь-якій сирій графі книги ±1 день.
+У звіт .md — лише клас і коротка мітка (номер документа / контрагент-юрособа), без ПІБ фізосіб.
 
 ЗАПУСК: python privat_statement_kandydaty.py
 """
@@ -194,6 +213,267 @@ def _already_in_book(txn: dict, index: dict) -> bool:
     return any(d is not None and abs((d - txn_date).days) <= 1 for d in dates)
 
 
+# ── Класифікація за призначенням платежу ────────────────────────────────────────────────
+# PDF ПриватБанку пише кирилицю з ЛАТИНСЬКОЮ "i" ("Комiсiя", "операцiї") — тому [iі] у
+# шаблонах, а не нормалізація тексту (вона зіпсувала б латинські "acquiring"/"LIQPAY ID").
+_LIQPAY_RE = re.compile(r"LIQPAY\s*ID\s*(\d+).*?SOID\s*(\S+(?:\s+\d+)?)\s+PBK", re.S)
+_RZP_RE = re.compile(
+    r"операц[iі]\S*\s*(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4}).*?"
+    r"на\s*суму\s*([\d.]+)\s*грн.*?винагор\.?\s*([\d.]+)", re.S | re.I)
+_COMM_RE = re.compile(
+    r"Ком[iі]с[iі]я\s+за\s+виконання\s+платеж.*?у\s+сум[iі]\s+([\d.]+)\s*грн\s+в[iі]д\s+"
+    r"(\d{2}\.\d{2}\.\d{4})", re.S | re.I)
+_OWN_RE = re.compile(r"Переказ\s+власних\s+кошт", re.I)
+_TOYSI_DEPOSIT_RE = re.compile(r"Оплата\s+за\s+[iі]грашки", re.I)
+_GUARANTEE_RE = re.compile(r"Гарант[iі]йний\s+плат[iі]ж", re.I)
+_DOC_RE = re.compile(r"(?:№|N)\s*([A-Za-zА-Яа-яІіЇїЄєҐґ0-9][A-Za-zА-Яа-яІіЇїЄєҐґ0-9/\-]*)")
+_LEGAL_RE = re.compile(r"^\s*(ТОВ|Товариство|АТ|ПрАТ|ПАТ|ДП)\b", re.I)
+
+
+def classify(txn: dict) -> str:
+    """Чиста функція: клас операції за призначенням/контрагентом (див. докстрінг модуля)."""
+    p = txn.get("purpose") or ""
+    cp = (txn.get("counterparty") or "").upper()
+    amt = txn.get("amount") or 0
+    if amt > 0 and "LIQPAY" in p and "acquiring" in p.lower():
+        return "liqpay"
+    if amt > 0 and ("РОЗЕТКА ПЕЙ" in cp or _RZP_RE.search(p)):
+        return "rozetkapay"
+    if amt < 0 and _COMM_RE.search(p):
+        return "bank_commission"
+    if _OWN_RE.search(p):
+        return "own_transfer"
+    if amt < 0 and (_TOYSI_DEPOSIT_RE.search(p) or _GUARANTEE_RE.search(p)):
+        return "deposit"
+    return "other"
+
+
+def _soid(purpose: str) -> str:
+    """'SOID 8- 081911575 PBK' (перенос рядка в PDF) → '8-081911575'."""
+    m = _LIQPAY_RE.search(purpose or "")
+    return re.sub(r"\s+", "", m.group(2)) if m else ""
+
+
+def _parse_dmy(s: str):
+    try:
+        return datetime.strptime(s[:10], "%d.%m.%Y").date()
+    except (ValueError, TypeError):
+        pass
+    try:
+        return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def label(txn: dict) -> str:
+    """Коротка мітка для звіту .md — БЕЗ ПІБ фізосіб (лише номер документа / контрагент-юрособа)."""
+    cls = txn.get("cls") or classify(txn)
+    p = txn.get("purpose") or ""
+    if cls == "liqpay":
+        return f"LiqPay SOID {_soid(p) or '?'}"
+    if cls == "rozetkapay":
+        m = _RZP_RE.search(p)
+        if m:
+            return f"RozetkaPay: операції {m.group(1)[:5]}–{m.group(2)[:5]}, брутто {m.group(3)}, винагорода {m.group(4)}"
+        return "RozetkaPay (призначення не розпізнано)"
+    if cls == "bank_commission":
+        m = _COMM_RE.search(p)
+        return f"Комісія банку за платіж {m.group(1)} від {m.group(2)}" if m else "Комісія банку"
+    if cls == "own_transfer":
+        return "Переказ власних коштів ФОП між рахунками"
+    if cls == "deposit":
+        if _GUARANTEE_RE.search(p):
+            d = _DOC_RE.search(p)
+            return "Гарантійний платіж Rozetka (застава)" + (f", рахунок {d.group(1)}" if d else "")
+        return "Поповнення депозиту Toysi"
+    cp = (txn.get("counterparty") or "").strip()
+    who = cp if _LEGAL_RE.search(cp) else "контрагент — ФОП/фізособа"
+    d = _DOC_RE.search(p)
+    return f"{who}" + (f", документ №{d.group(1)}" if d else "")
+
+
+def _has_amount(text: str, value: float) -> bool:
+    """Сума як окреме число в тексті ('5.61' або '5,61'), не частина іншого числа."""
+    v = f"{abs(value):.2f}"
+    for form in (v, v.replace(".", ",")):
+        if re.search(r"(?<![\d.,])" + re.escape(form) + r"(?!\d)", text or ""):
+            return True
+    return False
+
+
+def _id_in(text: str, ident: str) -> bool:
+    return bool(ident) and re.search(r"(?<![\d])" + re.escape(ident) + r"(?![\d])", text or "") is not None
+
+
+def _load_book_rows() -> list:
+    """READ-ONLY: рядки книги як {row, date, money{col: float}, text (графа 5 + примітка L)}."""
+    rows = []
+    if not KODV_XLSX.exists():
+        return rows
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(str(KODV_XLSX), data_only=True, read_only=True)
+        try:
+            ws = wb["КОДВ"]
+            for i, row in enumerate(ws.iter_rows(min_row=7), start=7):
+                vals = [c.value for c in row]
+                money = {}
+                for col in _BOOK_MONEY_COLS:
+                    v = vals[col] if len(vals) > col else None
+                    if isinstance(v, (int, float)) and v:
+                        money[col] = float(v)
+                text = " ".join(str(vals[c]) for c in (4, 11) if len(vals) > c and vals[c] is not None)
+                if not money and not text:
+                    continue
+                rows.append({"row": i, "date": _coerce_date(vals[0] if vals else None),
+                             "money": money, "text": text})
+        finally:
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[PrivatStmt] рядки книги не прочитано (не критично): {e}", file=sys.stderr)
+    return rows
+
+
+def _load_rozetkapay_ops():
+    """Усі операції з УСІХ реєстрів RozetkaPay (дедуп за фін-номером). None — якщо реєстр не
+    прочитався: тоді виплати RozetkaPay лишаються «не звірено», а не хибно «в книзі»."""
+    try:
+        import rozetkapay_registry_kandydaty as rzp
+        files = sorted(f for f in glob.glob(str(DOCS_DIR / "*" / "RozetkaPay" / "*.xlsx"))
+                       if not os.path.basename(f).startswith("~$"))
+        ops = {}
+        for f in files:
+            for r in rzp._parse_registry(Path(f)):
+                ops[r["finop"] or f"{f}#{r['seq']}"] = r
+        return list(ops.values())
+    except Exception as e:  # noqa: BLE001
+        print(f"[PrivatStmt] реєстри RozetkaPay не прочитано: {e}", file=sys.stderr)
+        return None
+
+
+def reconcile_liqpay(txn: dict, book_rows: list) -> tuple:
+    soid = _soid(txn.get("purpose"))
+    if not soid:
+        return "unverified", "SOID у призначенні не розпізнано"
+    rows = [r for r in book_rows if _id_in(r["text"], soid)]
+    sales = [r for r in rows if r["money"].get(1, 0) > 0]
+    if not sales:
+        return "not_in_book", f"продаж {soid} у книзі не знайдено (зараховано нетто {txn['amount']:.2f})"
+    sale = min(sales, key=lambda r: abs(r["money"][1] - txn["amount"]))
+    gross = sale["money"][1]
+    acq = round(gross - txn["amount"], 2)
+    if acq < -0.005:
+        return "unverified", f"нетто {txn['amount']:.2f} більше за брутто {gross:.2f} (р.{sale['row']}) — перевір"
+    if abs(acq) < 0.005:
+        return "in_book", f"р.{sale['row']}: брутто = нетто {gross:.2f}, еквайрингу немає"
+    hit = [r for r in rows if "еквайринг" in r["text"].lower() and _has_amount(r["text"], acq)]
+    if hit:
+        return "in_book", f"р.{sale['row']}: брутто {gross:.2f}, еквайринг {acq:.2f} у р.{hit[0]['row']}"
+    return "missing_acquiring", f"еквайринг {acq:.2f} для р.{sale['row']} (брутто {gross:.2f} − нетто {txn['amount']:.2f})"
+
+
+def reconcile_rozetkapay(txn: dict, ops, book_rows: list) -> tuple:
+    m = _RZP_RE.search(txn.get("purpose") or "")
+    if not m:
+        return "unverified", "призначення виплати RozetkaPay не розпізнано"
+    if ops is None:
+        return "unverified", "реєстри RozetkaPay не прочитано"
+    d1, d2 = _parse_dmy(m.group(1)), _parse_dmy(m.group(2))
+    gross, fee = float(m.group(3)), float(m.group(4))
+    in_range = [o for o in ops if (dp := _parse_dmy(o.get("date_pay") or "")) and d1 <= dp <= d2]
+    if not in_range:
+        return "unverified", f"реєстру RozetkaPay за {m.group(1)[:5]}–{m.group(2)[:5]} немає"
+    s = round(sum(float(o["sum"] or 0) for o in in_range), 2)
+    c = round(sum(abs(float(o["commission"] or 0)) for o in in_range), 2)
+    if abs(s - gross) > 0.005 or abs(c - fee) > 0.005 or abs(round(gross - fee, 2) - txn["amount"]) > 0.005:
+        return "unverified", (f"реєстр за {m.group(1)[:5]}–{m.group(2)[:5]}: сума {s:.2f}/комісія {c:.2f}, "
+                              f"виписка {gross:.2f}/{fee:.2f} — не сходиться")
+    orders = [o["order_id"] for o in in_range if float(o["sum"] or 0) > 0]
+    missing = [oid for oid in orders if not any(_id_in(r["text"], oid) for r in book_rows)]
+    if missing:
+        return "not_in_book", f"замовлення реєстру не знайдено в книзі: {', '.join(missing)}"
+    return "in_book", (f"брутто {gross:.2f} = {len(in_range)} оп. реєстру ({', '.join(orders)}); "
+                       f"винагорода {fee:.2f} — еквайринг веде rozetkapay_registry_kandydaty")
+
+
+def reconcile_commission(txn: dict, day_total: float, book_rows: list) -> tuple:
+    m = _COMM_RE.search(txn.get("purpose") or "")
+    base = float(m.group(1)) if m else None
+    try:
+        d = datetime.strptime(txn["date"], "%Y-%m-%d").date()
+    except ValueError:
+        return "unverified", "дата операції не розпізнана"
+    near = [r for r in book_rows if r["date"] is not None and abs((r["date"] - d).days) <= 1
+            and "комісі" in r["text"].lower()]
+    for r in near:
+        if base is not None and _has_amount(r["text"], base):
+            return "in_book", f"р.{r['row']} (згадано платіж {base:.2f})"
+    for r in near:
+        if any(abs(v - day_total) < 0.005 for v in r["money"].values()):
+            return "in_book", f"р.{r['row']} (комісії за день разом {day_total:.2f})"
+    return "not_in_book", f"комісію за платіж {base if base is not None else '?'} у книзі не знайдено"
+
+
+def reconcile_all(txns: list, book_rows: list, index: dict, rzp_ops) -> None:
+    """Проставляє кожній операції cls/status/note/in_book. in_book=True лише для 'in_book'."""
+    day_totals: dict = {}
+    for t in txns:
+        t["cls"] = classify(t)
+        if t["cls"] == "bank_commission":
+            day_totals[t["date"]] = round(day_totals.get(t["date"], 0) + abs(t["amount"]), 2)
+    for t in txns:
+        cls = t["cls"]
+        if cls == "liqpay":
+            status, note = reconcile_liqpay(t, book_rows)
+        elif cls == "rozetkapay":
+            status, note = reconcile_rozetkapay(t, rzp_ops, book_rows)
+        elif cls == "bank_commission":
+            status, note = reconcile_commission(t, day_totals[t["date"]], book_rows)
+        elif cls in ("own_transfer", "deposit"):
+            status, note = "not_pnl", "не дохід і не витрата — у книгу не вноситься"
+        else:
+            found = _already_in_book(t, index)
+            status, note = ("in_book" if found else "not_in_book"), "звірка за сумою ±1 день"
+        t["status"], t["note"], t["in_book"] = status, note, status == "in_book"
+        t["label"] = label(t)
+
+
+_CLASS_UA = {
+    "liqpay": "LiqPay", "rozetkapay": "RozetkaPay", "bank_commission": "комісія банку",
+    "own_transfer": "власні кошти", "deposit": "депозит/застава", "other": "інше",
+}
+# Порядок розділів звіту: спершу те, що вимагає дії бухгалтера.
+_SECTIONS = {
+    "not_in_book": "❗ Справді не в книзі",
+    "missing_acquiring": "💳 Внесено, але бракує еквайрингу",
+    "unverified": "⚠️ Не звірено автоматично (перевір вручну)",
+    "not_pnl": "↔️ Не P&L (власні перекази, депозит Toysi, застава Rozetka)",
+    "in_book": "✅ У книзі",
+}
+
+
+def render_report(txns: list, today: str) -> str:
+    lines = [
+        f"# ПриватБанк — звірка виписки з книгою, {today}",
+        "",
+        "Звірка за класом операції (див. докстрінг privat_statement_kandydaty.py): LiqPay — за SOID",
+        "і брутто−нетто; RozetkaPay — з реєстрами RozetkaPay за датами операцій; комісії банку —",
+        "за базовою сумою платежу або сумою комісій за день; решта — за сумою ±1 день.",
+        "Повне призначення платежу — у json поруч; тут лише мітка без ПІБ фізосіб.",
+    ]
+    for status, title in _SECTIONS.items():
+        group = [t for t in txns if t["status"] == status]
+        lines += ["", f"## {title} — {len(group)}", ""]
+        if not group:
+            lines.append("_немає_")
+            continue
+        lines += ["| Дата | Сума | Документ | Клас | Що | Пояснення |", "|---|---|---|---|---|---|"]
+        for t in group:
+            lines.append(f"| {t['date']} | {t['amount']:+.2f} | {t['ref'] or '—'} | {_CLASS_UA[t['cls']]} "
+                         f"| {t['label']} | {t['note']} |")
+    return "\n".join(lines) + "\n"
+
+
 def main() -> None:
     # Детектор тиші (аудит Д3, 2026-09-18): ПриватБанк мовчав з 11.08 і про це не було жодного
     # сигналу — той самий клас, що RozetkaPay мав до PR #566. Лист приходить ЩОДНЯ (підтверджено
@@ -207,7 +487,6 @@ def main() -> None:
         print("[PrivatStmt] жодної виписки в документи_КОДВ/*/ПриватБанк/*.pdf ще немає.")
         return
 
-    index = _book_money_index()
     all_txns = []
     any_file_failed = False
     for path in files:
@@ -220,11 +499,11 @@ def main() -> None:
             continue
         for t in parse_transactions(table):
             t["file"] = os.path.basename(path)
-            t["in_book"] = _already_in_book(t, index)
             all_txns.append(t)
 
     # Дедуп intra-run (та сама операція теоретично може повторитись у двох PDF — напр. якщо
-    # виписку перезапросили за той самий день): за (ref, дата, сума).
+    # виписку перезапросили за той самий день): за (ref, дата, сума). ДО класифікації — інакше
+    # дубль комісії подвоїв би денну суму комісій у reconcile_commission.
     seen_this_run = set()
     txns = []
     for t in all_txns:
@@ -234,14 +513,22 @@ def main() -> None:
         seen_this_run.add(key)
         txns.append(t)
 
+    book_rows = _load_book_rows()
+    index = _book_money_index()
+    rzp_ops = _load_rozetkapay_ops() if any(classify(t) == "rozetkapay" for t in txns) else []
+    reconcile_all(txns, book_rows, index, rzp_ops)
+
+    # У реєстр кандидатів — усе, що НЕ доведено внесеним (і не «не P&L»). Ключ НЕ змінено
+    # ({ref}_{date}_{amount}) — тож 32 хибних «open» з попередніх прогонів закриються самі
+    # (resolve=True), щойно їх тут немає.
     unresolved = [
         {
             "key": f"{t['ref']}_{t['date']}_{t['amount']}",
-            "summary": f"{t['date']} {t['amount']:+.2f}₴ {t['purpose'][:80]}",
+            "summary": f"{t['date']} {t['amount']:+.2f}₴ [{_CLASS_UA[t['cls']]}] {t['label'][:70]} — {t['note'][:90]}",
             "sum": t["amount"],
             "date": t["date"],
         }
-        for t in txns if not t["in_book"]
+        for t in txns if t["status"] in ("not_in_book", "missing_acquiring", "unverified")
     ]
     # resolve=not any_file_failed: якщо бодай один PDF не прочитався, txns НЕ гарантовано повний
     # (той самий принцип, що toysi_returns_kandydaty.py) — не закриваємо кандидатів наосліп.
@@ -258,24 +545,10 @@ def main() -> None:
     (month_dir / f"{today}_privat_kandydaty.json").write_text(
         json.dumps(txns, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-    not_in_book = [t for t in txns if not t["in_book"]]
-    lines = [
-        f"# ПриватБанк — операції з виписки, яких не видно в книзі, {today}",
-        "",
-        "«У книзі» — сума операції знайдена в БУДЬ-ЯКІЙ графі сирих операцій книги (2,3,6,7,8,9,10;",
-        "БЕЗ графи 4/11 — це обчислювані підсумки, не сирі операції) на ту саму дату ±1 день.",
-        "Кирилична деталізація (призначення/контрагент) у файлі кандидатів (json поруч), сюди не",
-        "виносимо — короткий огляд.",
-        "",
-        "| Дата | Сума | Документ | У книзі? |",
-        "|---|---|---|---|",
-    ]
-    for t in txns:
-        mark = "✅" if t["in_book"] else "❗ НЕ в книзі"
-        lines.append(f"| {t['date']} | {t['amount']:+.2f} | {t['ref'] or '—'} | {mark} |")
-    (month_dir / f"{today}_privat_kandydaty.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (month_dir / f"{today}_privat_kandydaty.md").write_text(render_report(txns, today), encoding="utf-8")
 
-    print(f"[PrivatStmt] {len(txns)} операцій усього, {len(not_in_book)} не в книзі.")
+    counts = {s: sum(1 for t in txns if t["status"] == s) for s in _SECTIONS}
+    print(f"[PrivatStmt] {len(txns)} операцій: " + ", ".join(f"{_SECTIONS[s]} {n}" for s, n in counts.items()))
     if any_file_failed:
         print("[PrivatStmt] ⚠️ бодай один PDF не прочитався — закриття кандидатів пропущено цим прогоном.")
 

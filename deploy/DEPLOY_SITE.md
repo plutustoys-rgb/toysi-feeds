@@ -1,5 +1,14 @@
 # Розгортання власного сайту `plutustoys.com.ua` на VPS
 
+> **⚠️ 2026-10-05: ЦЕЙ VPS = Apache під Webuzo, nginx на :80/:443 НЕМАЄ.** Актуальний шлях — **`deploy/activate_site_apache.sh`**
+> (одна команда: збірка → systemd → Apache-vhost `z-plutustoys-com-ua.conf` → чекає DNS → certbot webroot → HTTPS).
+> Розділи нижче про nginx (`activate_site.sh`, `nginx-plutustoys.conf`, certbot `--nginx`) лишені як довідка для хоста з nginx.
+> Порядок перенесення: (1) скрипт піднімає сайт по HTTP і перевіряє локально `curl --resolve`; (2) A-запис `plutustoys.com.ua` та `www`
+> у кабінеті Prom (NS = promdns.net) → `45.94.157.4`; (3) скрипт сам дочекається DNS і випустить сертифікат.
+> **DNS у кабінеті Prom** (`my.prom.ua/cms/domain` → «DNS-записи»): змінити A для `@` і `www` на `45.94.157.4`; будь-які AAAA для них — видалити
+> (Let's Encrypt віддає перевагу IPv6; залишений AAAA на Prom зламає валідацію). Скрипт чекає, поки ВСІ публічні резолвери дадуть лише наш IP.
+> Старі Prom-URL (`/ua/p<id>-…`) → 301 через `RewriteMap txt:` (`prom_redirects_apache.map`, генерує `generate_prom_redirects.py`).
+
 Код автодеплоїться в `/opt/plutustoys` (read-only pull master, `vps_code_sync.sh`), тож ці
 файли вже там. Нижче — **одноразові** привілейовані кроки (systemd/nginx/TLS/DNS + бойові
 ключі LiqPay). Виконувати ключем (без пароля), напр.:

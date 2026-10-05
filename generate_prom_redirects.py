@@ -25,6 +25,8 @@ BASE = Path(__file__).parent
 CACHE_FILE = BASE / "own_product_links_cache.json"          # {toysi_id: {prom_id, url_text}}
 INDEX_FILE = Path(os.environ.get("SITE_DIR", str(BASE / "site"))) / "index.json"  # згенеровані товари
 OUT_FILE = Path(os.environ.get("PROM_REDIRECTS_MAP", str(BASE / "prom_redirects.map")))
+# VPS працює на Apache (Webuzo), не на nginx: RewriteMap txt:<файл> читає "ключ значення" БЕЗ крапки з комою.
+OUT_FILE_APACHE = Path(os.environ.get("PROM_REDIRECTS_MAP_APACHE", str(BASE / "prom_redirects_apache.map")))
 
 
 def load_valid_ids() -> set:
@@ -39,6 +41,7 @@ def load_valid_ids() -> set:
 
 
 def build_map() -> tuple[str, int, int]:
+    """nginx-формат (include у map-блоці). Apache-формат — build_map_apache()."""
     try:
         cache = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -63,14 +66,33 @@ def build_map() -> tuple[str, int, int]:
         lines.append(f"{prom_id} /product-{toysi_id}.html;")
 
     lines.sort()
+    build_map.apache_lines = [l.rstrip(";") for l in lines]   # той самий набір, формат "prom_id /product-X.html"
     header = ("# АВТО-ЗГЕНЕРОВАНО generate_prom_redirects.py — nginx map (prom_id -> наша картка).\n"
               "# Include у map-блоці nginx; default (/catalog.html) — для непокритих.\n")
     return header + "\n".join(lines) + "\n", len(lines), skipped
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """tmp + os.replace: Apache/nginx не прочитають напівзаписану мапу (інакше хибний 301 на /catalog.html);
+    LF-кінці незалежно від ОС (мапа читається на Linux)."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    os.chmod(tmp, 0o644)    # новий inode не успадковує ACL/права старого файла — Apache-користувач має читати
+    os.replace(tmp, path)
+
+
+def build_map_apache() -> str:
+    """Apache RewriteMap txt: один рядок = "prom_id /product-<toysi>.html". Викликати ПІСЛЯ build_map()."""
+    lines = getattr(build_map, "apache_lines", [])
+    header = "# АВТО-ЗГЕНЕРОВАНО generate_prom_redirects.py — Apache RewriteMap txt (prom_id -> наша картка)."
+    return "\n".join([header] + lines) + "\n"
+
+
 def main() -> None:
     content, n, skipped = build_map()
-    OUT_FILE.write_text(content, encoding="utf-8")
+    _write_atomic(OUT_FILE, content)
+    _write_atomic(OUT_FILE_APACHE, build_map_apache())
     print(f"[prom_redirects] {OUT_FILE}: {n} редиректів prom_id->/product-*.html "
           f"(пропущено {skipped} — нема сторінки на сайті)")
 

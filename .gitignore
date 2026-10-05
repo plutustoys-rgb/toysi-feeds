@@ -308,3 +308,4 @@ reels/
 
 # 301-редирект-мапа Prom→сайт (генерується generate_prom_redirects.py на VPS, не в git)
 prom_redirects.map
+prom_redirects_apache.map

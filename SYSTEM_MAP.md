@@ -248,7 +248,9 @@
 - **КОДВ (фінанси):** `checkbox_client`, `novapay_statement`, `weekly_balance_digest`, `daily_report`,
   `kodv_book_writer.py` (єдина точка запису НОВОГО рядка книги — механічно перевіряє дубль номера
   документа в Графі 5 ПЕРЕД записом, PR #572; замінює ad-hoc openpyxl-виклики для нових рядків,
-  правки існуючих рядків лишаються ручними)
+  правки існуючих рядків лишаються ручними),
+  `kodv_return_receipt.py` (ручний CLI: фіскальний чек RETURN Checkbox на повне повернення за серіалом продажу; живий запуск
+  лише з `--expect-fiscal`, замок `.local_secrets/kodv_return_<serial>.lock`, дубль-перевірка; запускає КОДВ після дозволу власника)
   → **КОДВ/власник**.
 - **Telegram / сповіщення (спільна інфра):** `telegram_notify`, `telegram_outbox_processor`,
   `telegram_userbot_client`, `telegram_userbot_login` → Код.

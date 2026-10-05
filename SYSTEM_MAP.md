@@ -215,7 +215,8 @@
   `order_status_tracker`, `toysi_order_submit`, `nova_poshta`, `ukrposhta_client`, `bank_check`,
   `reconcile_revenue` → Код + **КОДВ** (звірка).
 - **Власний сайт-магазин `plutustoys.com.ua`:** `site/build_site.py` (статичний генератор з каталогу Toysi:
-  головна/каталог/категорії/картки/кошик/пошук, `site/assets/*`), `liqpay_client` (підпис/колбек LiqPay, sandbox),
+  головна/каталог/категорії/картки/кошик/пошук, `site/assets/*`; **ціна = знижена ціна Toysi × 1.5 (як EVA), каталог = увесь in-stock Toysi,
+  сайт НЕ залежить від Prom/маркетплейсів — жодних цін конкурентів**), `liqpay_client` (підпис/колбек LiqPay, sandbox),
   `site_order_api` (HTTP-шар: NP-автокомпліт + `POST /api/order` prepaid+payment_confirmed=0 + колбек LiqPay).
   Веб-замовлення = `platform='site'`, форвард у Toysi через наявний order-pipeline лише по підтвердженій оплаті.
   **VPS = Apache під Webuzo (nginx немає)**: активація — `deploy/activate_site_apache.sh` (одна команда: збірка → systemd → Apache-vhost

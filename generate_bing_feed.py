@@ -48,6 +48,7 @@ from prom_catalog_sync import fetch_prom_products
 from competitor_pricing import load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices
 from generate_google_feed import (
     build_feed_items,
+    load_site_product_ids,
     load_prom_products_cache,
     OWN_PRODUCT_LINKS_CACHE_FILE,
     OWN_PRODUCT_LINKS_CACHE_TTL_DAYS,
@@ -134,7 +135,7 @@ def generate_bing_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
         )
 
     items, stats = build_feed_items(top_catalog, prom_by_external_id, links, load_fresh_prom_price_overrides(),
-                                    load_fresh_prom_competitor_prices())
+                                    load_fresh_prom_competitor_prices(), load_site_product_ids())
 
     root = _build_xml(items)
     ET.indent(root, space="  ")

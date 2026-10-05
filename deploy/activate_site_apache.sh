@@ -228,7 +228,9 @@ render_vhost() {   # $1 = http | https  → у stdout
 apache_alive() { pgrep -x httpd >/dev/null 2>&1 || pgrep -x apache2 >/dev/null 2>&1; }
 
 write_vhost() {   # $1 = http | https
-    local mode="$1" tmp="$VHOST.new.$STAMP" bak="" tag="w$mode$(date +%s)"
+    local mode="$1"
+    local tmp="$VHOST.new.$STAMP" bak=""
+    local tag="w${mode}$(date +%s)"   # окремим рядком: у одному `local a=.. b=$a` під set -u bash дає «unbound variable» (знайдено першим живим запуском 05.10)
     render_vhost "$mode" > "$tmp" || { rm -f "$tmp"; return 1; }
     snapshot "$tag.pre"           # СВІЖИЙ знімок прямо перед зміною (не з початку скрипта)
     [ -s "$TMPD/$tag.pre.pairs" ] || { echo "🚨 знімок ПЕРЕД зміною порожній — не чіпаю"; rm -f "$tmp"; return 1; }

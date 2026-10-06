@@ -122,6 +122,7 @@ rozetka_client.py лише тоді, коли з'явиться реальний
 прогонами (ні склад списку, ні заморожена ціна Prom), доки власниця не скаже,
 що модерація АЛЛО завершена (видалення файлу = перебудова з нуля).
 """
+import math
 import os
 import re
 import html
@@ -388,7 +389,9 @@ def _build_xml(
         # (нуль товарів у продажу — блокер, знайдений SEO 28.08). Аналогічно до <description_ua>.
         ET.SubElement(offer, "name_ua").text = name
 
-        ET.SubElement(offer, "price").text          = f"{retail:.2f}"
+        # ALLO вимагає ціни ЦІЛІ, без копійок (FAQ «Ціна та наявність»; Аудитор 2026-10-03, п.1: 43% цін були з копійками) —
+        # округлення ВГОРУ (ceil), щоб не опуститись нижче флору/маржі; відхилення від ціни Prom < 1 грн (≪20% порогу паритету).
+        ET.SubElement(offer, "price").text          = str(math.ceil(round(retail, 2)))
         ET.SubElement(offer, "currencyId").text     = "UAH"
         ET.SubElement(offer, "stock_quantity").text = str(stock)
 

@@ -125,6 +125,13 @@ def main() -> None:
     ap.add_argument("--skip-merchant", action="store_true", help="не запускати товарознавця (пошук+додавання)")
     a = ap.parse_args()
 
+    # 0. Підтягнути змерджений master у робочу копію (десктоп не мав механізму оновлення коду; безпечно, ніколи не падає)
+    try:
+        import desktop_code_sync
+        print(f"[RzLocal] 0) код: {desktop_code_sync.sync()}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[RzLocal] 0) оновлення коду пропущено ({e})")
+
     # 1-2. Свіжі конкурентні дані + override-и (best-effort — збій НЕ валить публікацію фіду).
     if not a.skip_pull:
         print("[RzLocal] 1) пулер конкурентних даних...")

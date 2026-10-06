@@ -96,6 +96,9 @@ def _build_xml(items: list) -> ET.Element:
         ET.SubElement(entry, f"{{{NS}}}brand").text = it["brand"]
         if it.get("gtin"):
             ET.SubElement(entry, f"{{{NS}}}gtin").text = it["gtin"]
+        else:
+            # без валідного GTIN/MPN: явно «no» — інакше GMC/Bing шлють попередження «відсутній ідентифікатор» (Аудитор 2026-10-03, п.8)
+            ET.SubElement(entry, f"{{{NS}}}identifier_exists").text = "no"
         ET.SubElement(entry, f"{{{NS}}}google_product_category").text = it["google_product_category"]
 
     return rss

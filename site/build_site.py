@@ -20,9 +20,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 
 import parser as tp
 import competitor_pricing as cp
+from trademark_filter import is_uno_trademark_blocked
 
 OUT = os.path.dirname(os.path.abspath(__file__))
-PRICE_MULT = 1.5
+PRICE_MULT = cp.SITE_PRICE_MULT   # єдине джерело — competitor_pricing.site_retail_price (збіг з Google/Meta/Bing-фідами)
 # Логістика на ЗАМОВЛЕННЯ (Нова Пошта + Checkbox SMS), яку КОДВ тримає у ЗМІННИХ
 # витратах, а не в собівартості товару: серпень 481,00 ₴ (НП 350 + SMS 131) на 27
 # замовлень із доходом = 17,81 ₴/замовлення (Консультант 2026-09-15, з реєстрів КОДВ).
@@ -88,7 +89,7 @@ def price_of(it):
     «наценка як у EVA»). Округлення вгору до гривні. Сайт НЕ залежить від жодного маркетплейсу: жодних цін
     конкурентів, підрізань і стану чужих кабінетів. EVA-специфічні надбавки (промо-коеф 2.143, підлога під
     15%-комісію EVA) на власному сайті не застосовуються — там нема комісії маркетплейсу."""
-    return int(math.ceil(cp.toysi_discounted_price(it) * PRICE_MULT))
+    return cp.site_retail_price(it)
 
 def esc(s):
     return html.escape(str(s or ""))
@@ -204,6 +205,8 @@ def build():
         name = it.get("name") or ""
         if not pics or not name:
             continue
+        if is_uno_trademark_blocked(name, it.get("vendor") or ""):
+            continue   # ТМ «UNO» (претензія Mattel): не продаємо на власному сайті (SEO-замовлення 2026-10-06)
         catname = it.get("category_name") or "Інше"
         # Каталог ПОВНИЙ відповідно до Toysi (рішення власника 2026-10-05): без відсікань за ціною чи категорією
         # (включно з «Уцінкою»); єдина умова — товар є в наявності й має фото/назву (вище).

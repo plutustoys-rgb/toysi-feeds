@@ -177,7 +177,13 @@ def sync_registry(candidates: list) -> dict:
     `resolve=False` — цей прогін бачить ЛИШЕ НОВІ (ще не в курсорі) платежі, не повний перелік
     досі відкритих; auto-resolve через `current` тут так само небезпечний, як обрізана сторінка."""
     current = [
-        {"key": c["ttn"], "summary": c["note"][:120], "sum": c["sum"], "date": c["date"]}
+        {"key": c["ttn"], "sum": c["sum"], "fee": c.get("fee"), "date": c["date"],
+         # числа — на початку й окремими фрагментами: ніколи не ріжуться посеред копійок (запит бухгалтера 05.10)
+         "summary": kandydaty_registry.compact_summary([
+             f"COD НЕ в книзі, ТТН {c['ttn']}", f"прийнято {c['sum']}",
+             f"винагорода НП {c['fee']}" if c.get("fee") is not None else None,
+             f"зараховано {c['net']}" if c.get("net") is not None else None,
+             f"зам. {c.get('order_id')} ({c.get('platform')})", f"дата {c['date']}"])}
         for c in candidates if c.get("ttn")
     ]
     return kandydaty_registry.sync_open_candidates("novapay_registry", current, resolve=False)

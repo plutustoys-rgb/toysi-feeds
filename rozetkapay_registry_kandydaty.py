@@ -232,6 +232,18 @@ def collect(rows: list) -> tuple:
     return candidates, this_file
 
 
+def _compact_note(c: dict) -> str:
+    """Короткий опис кандидата ЧИСЛАМИ ВПЕРЕД, без обрізання посеред числа (запит бухгалтера 2026-10-05; було note[:120])."""
+    if c.get("kind") == "storno":
+        parts = [f"СТОРНО {c.get('order_id')}", f"сума {c.get('sum')}", f"комісія повернена {c.get('commission_returned')}",
+                 f"дата {c.get('date')}", f"книга р.{c.get('book_row')}" if c.get("book_row") else "у книзі не знайдено"]
+    else:
+        parts = [f"ЕКВАЙРИНГ {c.get('order_id')}", f"еквайринг {c.get('acquiring')}", f"сума {c.get('sum')}",
+                 f"i9 {c['book_current_i9']}" if c.get("book_current_i9") is not None else None, f"дата {c.get('date')}",
+                 f"книга р.{c.get('book_row')}" if c.get("book_row") else "у книзі не знайдено"]
+    return kandydaty_registry.compact_summary(parts)
+
+
 def sync_registry(candidates: list) -> dict:
     """Реєструє кандидатів у kandydaty_registry.py, ПЕРСИСТЕНТНО, незалежно від курсора
     `seen_finop` (Аудитор, КОДВ_CHANNEL.md, 2026-09-28, п.1 — "перевірити той самий клас
@@ -246,7 +258,8 @@ def sync_registry(candidates: list) -> dict:
     current = [
         {
             "key": f"{c['order_id']}:{c['kind']}",
-            "summary": c["note"][:120],
+            "summary": _compact_note(c),
+            "fee": c.get("acquiring") if c["kind"] == "acquiring" else c.get("commission_returned"),
             "sum": abs(c["sum"]) if c["kind"] == "storno" and isinstance(c["sum"], (int, float)) else c.get("acquiring"),
             "date": c["date"],
         }

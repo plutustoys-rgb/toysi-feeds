@@ -69,6 +69,25 @@ def _save_registry(reg: dict, path: Path = None) -> None:
     path.write_text(json.dumps(reg, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
 
 
+_MONTHS_UA = ["січень", "лютий", "березень", "квітень", "травень", "червень", "липень", "серпень", "вересень", "жовтень",
+              "листопад", "грудень"]
+
+
+def month_ua(date_str) -> str:
+    """'26.09.2026' / '2026-09-26' / '25.09.2026 19:48:20' → 'вересень 2026' (для «звір з актом … за <місяць>»);
+    невпізнану дату повертає як є."""
+    t = str(date_str or "")
+    m = re.match(r"^\s*(\d{1,2})\.(\d{2})\.(\d{4})", t)
+    if m:
+        mon, yr = int(m.group(2)), m.group(3)
+    else:
+        m = re.match(r"^\s*(\d{4})-(\d{2})-\d{2}", t)
+        if not m:
+            return t or "?"
+        mon, yr = int(m.group(2)), m.group(1)
+    return f"{_MONTHS_UA[mon - 1]} {yr}" if 1 <= mon <= 12 else t
+
+
 def compact_summary(parts: list, limit: int = 160) -> str:
     """Склеює короткі фрагменти через «; », НІКОЛИ не ріжучи посеред фрагмента. Раніше `note[:120]` обрізав опис
     посеред числа («винагорода НП 0.92» → «0.»; запит бухгалтера 2026-10-05, рядки 146–147 книги лишились без винагороди

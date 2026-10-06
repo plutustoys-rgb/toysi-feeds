@@ -578,7 +578,10 @@ def main() -> None:
     unresolved = [
         {
             "key": f"{t['ref']}_{t['date']}_{t['amount']}",
-            "summary": f"{t['date']} {t['amount']:+.2f}₴ [{_CLASS_UA[t['cls']]}] {t['label'][:70]} — {t['note'][:90]}",
+            # compact_summary ріже лише ЦІЛИМИ фрагментами (раніше label[:70]/note[:90] могли зрізати суму/винагороду посеред числа;
+            # запит бухгалтера 2026-10-06). Числа й клас — на початку; label/note — потім, що не влізло — відкидається цілим.
+            "summary": kandydaty_registry.compact_summary(
+                [f"{t['date']} {t['amount']:+.2f}₴ [{_CLASS_UA[t['cls']]}]", t['note'], t['label']], limit=260),
             "sum": t["amount"],
             "date": t["date"],
         }

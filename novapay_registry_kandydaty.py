@@ -162,7 +162,8 @@ def collect(rows: list) -> tuple:
             "note": (f"COD-платіж НЕ в книзі: замовлення {order} ({plat}), ТТН {ttn}, дата {r.get('date')}, "
                      f"прийнято {r.get('amount_received')}, винагорода НП {r.get('commission')}, "
                      f"зараховано {r.get('amount_net')} ({r.get('buyer_name')}). "
-                     f"Внеси у книгу графу 5/6 (дата = зарахування NovaPay)."),
+                     f"ПРОДАЖ у книзі не знайдено — внести рядок продажу (гр.5/6). Винагороду НП ({r.get('commission')}) у цей рядок НЕ вносити "
+                     f"(«одне правило», довідник §3): звір її з актом НоваПей за {kandydaty_registry.month_ua(r.get('date'))} (звіт `_zvirka_aktiv.md`)."),
         })
     return candidates, this_batch
 

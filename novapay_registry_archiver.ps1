@@ -9,5 +9,7 @@
 $ErrorActionPreference = "Stop"
 $py = "C:\Users\smach\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 Set-Location "C:\Users\smach\rozetka_agent"
+# Pull merged+audited master into this working copy first (no-op if branch/tree is not clean) - desktop_code_sync.py, 2026-10-06
+& "C:\Users\smach\AppData\Local\Python\pythoncore-3.14-64\python.exe" desktop_code_sync.py
 & $py kodv_mail_archiver.py
 exit $LASTEXITCODE

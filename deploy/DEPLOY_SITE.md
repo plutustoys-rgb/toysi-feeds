@@ -79,6 +79,21 @@ LIQPAY_SANDBOX=0
 Потім `systemctl restart site-order-api`. До цього — sandbox (без списань); без ключів
 замовлення приймаються без онлайн-оплати (менеджер підтверджує вручну).
 
+**Разом із бойовими ключами** додай у той самий `.env` `SITE_LIQPAY_LIVE=1` — лише тоді статичні сторінки (футер, кошик, «Про нас»,
+оферта) почнуть пропонувати оплату карткою (без прапорця сайт обіцяє тільки накладений платіж; PR #623). Зміна діє з наступної
+перебудови сайту (таймер раз на 2 год) — для негайної: `systemctl start site-rebuild.service`.
+
+## 5б. Аналітика (GA4 + Meta Pixel) — SMM P1.1
+У `/opt/plutustoys/.env` (підхоплюється `load_dotenv()` у `parser.py` під час збірки):
+```
+SITE_GA4_ID=G-XXXXXXXXXX          # Measurement ID потоку GA4 (формат G-…)
+SITE_META_PIXEL_ID=1234567890123  # ID піксела Meta (лише цифри)
+```
+Без змінних сайт не містить жодних сніпетів. З ними: gtag.js/fbevents.js + події `view_item` (картка товару), `add_to_cart`,
+`begin_checkout` (перший фокус у формі оформлення), `purchase` (thanks.html, один раз на замовлення; значення = сума товарів без
+доставки). Некоректний ID відкидається (захист від ін'єкції в `<script>`). Діє з наступної перебудови (до 2 год) або
+`systemctl start site-rebuild.service`. Сервісна CAPI Meta (`META_DATASET_ID`) — окрема, не цей пункт.
+
 ## Money-safety (нагадування)
 Веб-замовлення пишуться в ту саму `orders.db`, що й order-pipeline, як `platform='site'`,
 `prepaid`, `payment_confirmed=0`. Форвард у Toysi (реальна закупівля) стається ЛИШЕ після

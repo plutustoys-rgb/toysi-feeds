@@ -41,6 +41,12 @@ PAY_ABOUT = ("Накладений платіж при отриманні або
              else "Накладений платіж: платите при отриманні на відділенні Нової Пошти.")
 PAY_OFFER = ("одним зі способів: накладений платіж при отриманні або оплата банківською карткою онлайн" if LIQPAY_LIVE
              else "накладеним платежем при отриманні Товару на відділенні перевізника")
+# Аналітика (SMM P1.1, 2026-10-06): ID задаються змінними середовища під час збірки; без них сніпетів у HTML нема
+# (сайт працює як раніше). Формат перевіряється — ID потрапляє в <script>, довільний рядок не пускаємо.
+_ga = os.environ.get("SITE_GA4_ID", "").strip()
+GA4_ID = _ga if re.fullmatch(r"G-[A-Z0-9]{6,14}", _ga) else ""
+_px = os.environ.get("SITE_META_PIXEL_ID", "").strip()
+META_PIXEL_ID = _px if re.fullmatch(r"[0-9]{8,20}", _px) else ""   # ASCII-цифри: \d приймає й юнікод-цифри (аудит #626)
 LIMIT = int(os.environ.get("LIMIT", "0") or "0")   # 0 = без ліміту
 PER_PAGE = 24            # товарів на сторінку каталогу/категорії (мобільна пагінація: легкий перший екран)
 # Абсолютний домен для canonical/OG/sitemap (SEO). Той самий, що SITE_BASE_URL у site_order_api.
@@ -154,6 +160,25 @@ def footer():
       '</footer>'
     )
 
+def analytics_head() -> str:
+    """Сніпети GA4 (gtag) і Meta Pixel + `window.PT_ANALYTICS` для app.js (події view_item/add_to_cart/begin_checkout/purchase).
+    Порожній рядок, якщо ID не задано."""
+    if not (GA4_ID or META_PIXEL_ID):
+        return ""
+    out = [f'<script>window.PT_ANALYTICS={json.dumps({"ga4": GA4_ID, "fb": META_PIXEL_ID})};</script>\n']
+    if GA4_ID:
+        out.append(f'<script async src="https://www.googletagmanager.com/gtag/js?id={GA4_ID}"></script>\n'
+                   "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
+                   f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n")
+    if META_PIXEL_ID:
+        out.append("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
+                   "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;"
+                   "t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script',"
+                   f"'https://connect.facebook.net/en_US/fbevents.js');fbq('set','autoConfig',false,'{META_PIXEL_ID}');"
+                   f"fbq('init','{META_PIXEL_ID}');fbq('track','PageView');</script>\n")   # autoConfig=false: без Automatic Advanced Matching (PII форми не хешується в Meta)
+    return "".join(out)
+
+
 def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False):
     full_title = f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
@@ -184,7 +209,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
       "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n"
       "<link rel=\"stylesheet\" href=\"assets/styles.css\">\n"
-      f"{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
+      f"{analytics_head()}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
       f"{header()}\n{body}\n{footer()}\n</div>\n"
       f"{search_overlay()}\n"
       "<script src=\"assets/app.js\"></script>\n</body>\n</html>\n"

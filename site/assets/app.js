@@ -27,13 +27,31 @@
   function count(){ var c=read(),n=0; for(var k in c){ n+=c[k].qty; } return n; }
   function total(){ var c=read(),s=0; for(var k in c){ s+=c[k].qty*c[k].price; } return s; }
 
+  // ── Аналітика (GA4 + Meta Pixel; ID підставляє збірка в window.PT_ANALYTICS, без ID — нічого не шле) ──
+  var FB_EVENT = {view_item:"ViewContent", add_to_cart:"AddToCart", begin_checkout:"InitiateCheckout", purchase:"Purchase"};
+  function track(name, items, value, extra){
+    try{
+      var cfg=window.PT_ANALYTICS||{};
+      var ga=items.map(function(i){ return {item_id:String(i.id), item_name:i.name, price:+i.price, quantity:i.qty||1}; });
+      var gp={currency:"UAH", value:+value, items:ga}; for(var k in (extra||{})){ gp[k]=extra[k]; }
+      if(cfg.ga4 && window.gtag){ window.gtag("event", name, gp); }
+      if(cfg.fb && window.fbq && FB_EVENT[name]){
+        var fp={content_type:"product", content_ids:items.map(function(i){ return String(i.id); }), currency:"UAH", value:+value,
+                contents:items.map(function(i){ return {id:String(i.id), quantity:i.qty||1}; }), num_items:items.reduce(function(s,i){ return s+(i.qty||1); },0)};
+        window.fbq("track", FB_EVENT[name], fp);
+      }
+    }catch(e){}
+  }
+
   window.PT = {
     add:function(p){                 // p={id,name,price,photo}
       var c=read();
       if(c[p.id]){ c[p.id].qty++; } else { c[p.id]={id:p.id,name:p.name,price:+p.price,photo:p.photo,qty:1}; }
       write(c);
+      track("add_to_cart", [{id:p.id, name:p.name, price:+p.price, qty:1}], +p.price);
       flash("Додано в кошик");
     },
+    track:track,
     setQty:function(id,q){ var c=read(); if(c[id]){ c[id].qty=Math.max(0,q); if(c[id].qty===0){delete c[id];} write(c); } },
     remove:function(id){ var c=read(); delete c[id]; write(c); },
     clear:function(){ write({}); },
@@ -253,6 +271,22 @@
     // сторінка подяки — підставити номер замовлення
     var oidEl=document.getElementById("thanks-oid");
     if(oidEl){ try{ oidEl.textContent = sessionStorage.getItem("pt_last_order") || ""; }catch(e){} }
+
+    // подія purchase — один раз на замовлення (оновлення сторінки не дублює): дані зберіг checkout у sessionStorage
+    if(oidEl){
+      try{
+        var po=sessionStorage.getItem("pt_last_order"), pj=sessionStorage.getItem("pt_last_order_items");
+        if(po && pj && sessionStorage.getItem("pt_purchase_sent")!==po){
+          var pit=JSON.parse(pj), pv=pit.reduce(function(s,i){ return s+i.price*i.qty; },0);
+          track("purchase", pit, pv, {transaction_id:po});
+          sessionStorage.setItem("pt_purchase_sent", po);
+        }
+      }catch(e){}
+    }
+
+    // подія view_item — на картці товару в наявності (дані з кнопки «У кошик»)
+    var vi=document.querySelector("h1.prod") && document.querySelector("[data-add]");
+    if(vi){ try{ var vp=JSON.parse(vi.getAttribute("data-add")); track("view_item", [{id:vp.id, name:vp.name, price:+vp.price, qty:1}], +vp.price); }catch(e){} }
   });
 
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
@@ -314,6 +348,12 @@
   function initCheckout(){
     var form=document.getElementById("checkout-form");
     if(!form) return;
+    var started=false;   // begin_checkout — один раз, коли покупець почав заповнювати форму
+    form.addEventListener("focusin", function(){
+      if(started) return; started=true;
+      var c=read(), its=Object.keys(c).map(function(id){ return {id:id, name:c[id].name, price:+c[id].price, qty:c[id].qty}; });
+      if(its.length){ track("begin_checkout", its, total()); }
+    });
     form.addEventListener("submit", function(e){
       e.preventDefault();
       var msg=document.getElementById("checkout-msg");
@@ -344,7 +384,15 @@
         .then(function(res){
           if(!res.ok){ fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return; }
           var d=res.j;
-          try{ sessionStorage.setItem("pt_last_order", d.order_id); }catch(e){}
+          try{
+            sessionStorage.setItem("pt_last_order", d.order_id);
+            // purchase лише для накладеного платежу: при prepaid (LiqPay) покупець повертається на thanks.html ще БЕЗ підтвердженої оплати —
+            // подію не шлемо, щоб не завищувати конверсії (аудит #626); для prepaid позиції не зберігаємо
+            if(payment!=="prepaid"){
+              sessionStorage.setItem("pt_last_order_items", JSON.stringify(Object.keys(cart).map(function(id){
+                return {id:id, name:cart[id].name, price:+cart[id].price, qty:cart[id].qty}; })));   // для події purchase на thanks.html
+            } else { sessionStorage.removeItem("pt_last_order_items"); }
+          }catch(e){}
           // Оплата карткою: редірект на LiqPay. Якщо LiqPay не налаштований — НЕ імітуємо «дякуємо»,
           // а чесно кажемо обрати накладений (рев'ю покупця: фейкове «замовлення прийнято» без оплати).
           if(payment==="prepaid"){

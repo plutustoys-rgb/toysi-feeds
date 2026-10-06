@@ -155,10 +155,20 @@ def parse_prom(text: str) -> dict:
         m = re.match(r"^(\d+)\s+(.*?)\s+1\s+грн\s+" + _AMT + r"\s+" + _AMT + r"\s*$", ln.strip())
         if not m:
             continue
-        label = (m.group(2) + " " + (lines[i + 1] if i + 1 < len(lines) else "")).strip()
-        items.append({"n": m.group(1), "label": label[:90], "novat": _num(m.group(4))})
-    commission = [x for x in items if "програмної продукції" not in x["label"]]
-    package = [x for x in items if "програмної продукції" in x["label"]]
+        # мітка = назва + рядки-ПРОДОВЖЕННЯ (до наступної нумерованої позиції) — НЕ будь-який наступний рядок: інакше текст сусіднього
+        # пакета потрапляв у мітку однорядкової комісійної позиції (аудит #625 re-M-1)
+        cont = []
+        for nxt in lines[i + 1:i + 4]:
+            if re.match(r"^\d+(\.\d+)?\s", nxt.strip()) or not nxt.strip():
+                break
+            cont.append(nxt.strip())
+        label = (m.group(2) + " " + " ".join(cont)).strip()
+        items.append({"n": m.group(1), "label": label[:120], "novat": _num(m.group(4))})
+
+    def _is_package(x):   # пакет = ключове слово АБО має підпозиції «N.1 …» (у реальних актах пакет завжди «складається з»)
+        return "програмної продукції" in x["label"] or bool(re.search(r"^" + re.escape(x["n"]) + r"\.\d+\s", text, re.M))
+    commission = [x for x in items if not _is_package(x)]
+    package = [x for x in items if _is_package(x)]
     base = {"stream": "prom", "items": items, "basis": "(без ПДВ)×1,2",
             "package_novat": round(sum(x["novat"] for x in package), 2)}
     t = re.search(r"\nВсього:\s*" + _AMT, text)
@@ -446,7 +456,8 @@ def classify_cell(doc_id: str, cell: str) -> str | None:
     head = cell[:250]
     core = _core(doc_id)
     pat = re.escape(doc_id) + (r"|" + re.escape(core) if core else "")
-    if re.search(r"\(Вчасно\s*№?\s*(?:" + pat + r")", head):
+    first = re.search(r"\(Вчасно\s*№?\s*([A-Za-z0-9\-]+)", head)   # ПЕРШЕ «(Вчасно …)» у клітинці — власний номер рядка
+    if first and re.fullmatch(pat, first.group(1)):
         return "declared"
     if doc_id in cell or (core and core in cell):
         return "mentioned"

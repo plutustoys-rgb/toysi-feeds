@@ -9,6 +9,7 @@
 cd rozetka_agent
 python site/build_site.py          # повний каталог
 LIMIT=120 python site/build_site.py # швидкий демо-зріз
+SITE_GA4_ID=G-XXXXXXXXXX SITE_META_PIXEL_ID=<цифри> python site/build_site.py # аналітика (без ID — без сніпетів; див. deploy/DEPLOY_SITE.md §5б)
 SITE_LIQPAY_LIVE=1 python site/build_site.py # лише коли LiqPay бойовий: показує «оплата карткою» (футер, кошик, оферта); без прапорця сайт обіцяє лише накладений платіж
 ```
 

@@ -25,7 +25,8 @@ parts = ["COD НЕ в книзі, ТТН 20451234567890", "прийнято 1250
 s = kr.compact_summary(parts, limit=160)
 chk("винагорода НП 0.92 ціла в summary", "винагорода НП 0.92" in s)
 chk("довгий хвіст відкинуто цілим фрагментом, не обрізано", "дуже довгий хвіст" not in s and len(s) <= 160)
-chk("порожні фрагменти пропускаються", kr.compact_summary(["", "a", None, "b"]) == "a | b")
+chk("порожні фрагменти пропускаються, роздільник «; »", kr.compact_summary(["", "a", None, "b"]) == "a; b")
+chk("символ | у фрагменті не потрапляє в summary (ламає markdown-таблицю)", "|" not in kr.compact_summary(["a|b", "c"]))
 chk("перший фрагмент довший за ліміт усе одно лишається цілим", kr.compact_summary(["x" * 300, "y"], 100) == "x" * 300)
 
 # 2. NovaPay: fee окремим полем + число в summary
@@ -59,5 +60,11 @@ out = Path(tempfile.mkdtemp()) / "r.md"
 kr.write_open_report(out_path=out)
 txt = out.read_text(encoding="utf-8")
 chk("звіт має колонку «Комісія» і значення 0.92/1.9", "| Комісія |" in txt and "1.9" in txt)
+hdr = next(l for l in txt.splitlines() if l.startswith("| Днів висить"))
+rows = [l for l in txt.splitlines() if l.startswith("| ") and "novapay_registry" in l or "rozetkapay_registry" in l and l.startswith("| ")]
+chk("кожен рядок звіту має РІВНО стільки колонок, скільки шапка", rows and all(l.count("|") == hdr.count("|") for l in rows))
+# fee=None не друкується як «None» у summary
+nr.sync_registry([{"ttn": "20450000000001", "sum": 100.0, "fee": None, "net": None, "date": "2026-10-02", "order_id": "1", "platform": "prom", "note": "x"}])
+chk("fee=None → у summary нема слова None", "None" not in kr._load_registry()["novapay_registry:20450000000001"]["summary"])
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ комісії кандидатів зберігаються числом, summary не ріжеться — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

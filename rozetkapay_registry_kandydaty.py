@@ -239,7 +239,7 @@ def _compact_note(c: dict) -> str:
                  f"дата {c.get('date')}", f"книга р.{c.get('book_row')}" if c.get("book_row") else "у книзі не знайдено"]
     else:
         parts = [f"ЕКВАЙРИНГ {c.get('order_id')}", f"еквайринг {c.get('acquiring')}", f"сума {c.get('sum')}",
-                 f"i9 {c.get('book_current_i9')}", f"дата {c.get('date')}",
+                 f"i9 {c['book_current_i9']}" if c.get("book_current_i9") is not None else None, f"дата {c.get('date')}",
                  f"книга р.{c.get('book_row')}" if c.get("book_row") else "у книзі не знайдено"]
     return kandydaty_registry.compact_summary(parts)
 

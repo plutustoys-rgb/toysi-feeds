@@ -70,7 +70,7 @@ def _save_registry(reg: dict, path: Path = None) -> None:
 
 
 def compact_summary(parts: list, limit: int = 160) -> str:
-    """Склеює короткі фрагменти через « | », НІКОЛИ не ріжучи посеред фрагмента. Раніше `note[:120]` обрізав опис
+    """Склеює короткі фрагменти через «; », НІКОЛИ не ріжучи посеред фрагмента. Раніше `note[:120]` обрізав опис
     посеред числа («винагорода НП 0.92» → «0.»; запит бухгалтера 2026-10-05, рядки 146–147 книги лишились без винагороди
     NovaPay). Тепер: що не влізло в `limit` — відкидається ЦІЛИМИ фрагментами з кінця; числові ставити першими.
     Додатково комісія/винагорода зберігається ЧИСЛОМ у полі `fee` запису (див. sync_open_candidates)."""
@@ -87,7 +87,8 @@ def compact_summary(parts: list, limit: int = 160) -> str:
             break
         out.append(p)
         total += add
-    return " | ".join(out)
+    # роздільник «; », НЕ « | »: summary вставляється в клітинку markdown-таблиці звіту — «|» розвалив би колонки (аудит PR #621)
+    return "; ".join(out).replace("|", "/")
 
 
 def sync_open_candidates(source: str, current: list, path: Path = None, resolve: bool = True) -> dict:
@@ -269,8 +270,9 @@ def send_stale_alert(
              f"висить{'ь' if len(stale) == 1 else ''} довше {max_age_days} дн (книга не встигає):"]
     for age_days, full_key, entry in stale[:10]:
         summary = (entry.get("summary") or "")[:60]
+        fee = f", комісія {entry['fee']}" if entry.get("fee") is not None else ""   # число з поля, не з обрізаного тексту
         lines.append(f"  • {entry.get('source', '?')}:{entry.get('key', '?')} — {age_days} дн, "
-                     f"{entry.get('sum', '?')} — {summary}")
+                     f"{entry.get('sum', '?')}{fee} — {summary}")
     if len(stale) > 10:
         lines.append(f"  ...і ще {len(stale) - 10}")
     lines.append("Визнаний виняток: kandydaty_registry.acknowledge(full_key, 'причина').")

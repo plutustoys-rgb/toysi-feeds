@@ -31,6 +31,16 @@ PRICE_MULT = cp.SITE_PRICE_MULT   # єдине джерело — competitor_pri
 # (знижена ціна Toysi × PRICE_MULT, як у EVA) і від логістики не залежить. ⚠️ Це на ЗАМОВЛЕННЯ, не на товар.
 # Число оновлювати за свіжими даними КОДВ.
 SITE_FULFILL_PER_ORDER = 17.81
+ADDON_MIN_PRICE = 60   # ₴: нижче — не пропонуємо як доповнення (аудит #623: при 30 пул з 80 найдешевших = самі 30–31 ₴)
+# Оплата карткою онлайн показується покупцю ЛИШЕ коли LiqPay реально бойовий (SMM 2026-10-06: футер обіцяв картку, якої нема).
+# Вмикається змінною середовища SITE_LIQPAY_LIVE=1 під час збірки (виставити після появи бойових ключів LiqPay).
+LIQPAY_LIVE = os.environ.get("SITE_LIQPAY_LIVE", "").strip() == "1"
+PAY_HERO = "оплата при отриманні або карткою" if LIQPAY_LIVE else "оплата при отриманні на Новій Пошті"
+PAY_PRODUCT = "Оплата карткою на сайті або накладений платіж." if LIQPAY_LIVE else "Оплата при отриманні (накладений платіж)."
+PAY_ABOUT = ("Накладений платіж при отриманні або оплата карткою онлайн." if LIQPAY_LIVE
+             else "Накладений платіж: платите при отриманні на відділенні Нової Пошти.")
+PAY_OFFER = ("одним зі способів: накладений платіж при отриманні або оплата банківською карткою онлайн" if LIQPAY_LIVE
+             else "накладеним платежем при отриманні Товару на відділенні перевізника")
 LIMIT = int(os.environ.get("LIMIT", "0") or "0")   # 0 = без ліміту
 PER_PAGE = 24            # товарів на сторінку каталогу/категорії (мобільна пагінація: легкий перший екран)
 # Абсолютний домен для canonical/OG/sitemap (SEO). Той самий, що SITE_BASE_URL у site_order_api.
@@ -136,8 +146,11 @@ def footer():
       f'<nav class="fnav">{nav}</nav>'
       '<p class="fphone"><a href="tel:+380730150815">📞 +380 (73) 015-08-15</a> · '
       '<a href="mailto:plutustoys@gmail.com">plutustoys@gmail.com</a></p>'
+      f'<p class="fsoc"><a href="{SOCIAL_URLS[0]}" rel="noopener" target="_blank">Instagram</a> · '
+      f'<a href="{SOCIAL_URLS[1]}" rel="noopener" target="_blank">Facebook</a></p>'
       '<p class="ftag">PlutusToys — іграшки з доставкою Новою Поштою по Україні.<br>'
-      'Оплата карткою (LiqPay) або накладений платіж.</p>'
+      + ('Оплата карткою онлайн або накладений платіж.' if LIQPAY_LIVE else 'Оплата при отриманні на Новій Пошті.') +
+      '</p>'
       '</footer>'
     )
 
@@ -190,6 +203,13 @@ def tile(p):
 
 def grid(prods):
     return '<div class="grid">\n' + "\n".join(tile(p) for p in prods) + '\n</div>'
+
+def _addon_ok(p):
+    """Чи можна пропонувати товар як доповнення (cross-sell): без уцінки/«розпродажу» й копійчаних позицій."""
+    c, nm = p["category"].lower(), p["name"].lower()
+    return (p["stock"] > 0 and p["price"] >= ADDON_MIN_PRICE
+            and "уцінк" not in c and "уценк" not in c
+            and not any(m in nm for m in cp._BAD_NAME_MARKERS))
 
 # ── збірка ─────────────────────────────────────────────────────────────
 def build():
@@ -265,7 +285,9 @@ def build():
     # з інших категорій — класичний add-on до замовлення: додає ПОЗИЦІЮ → росте чек і
     # сукупний внесок. Пул обмежений найдешевшими в наявності (кеп), тож O(n·CAP), не O(n²).
     _ADDON_POOL_CAP = 80
-    _addon_pool = sorted((p for p in prods if p["stock"] > 0),
+    # Пул add-on НЕ бере уцінку, «розпродаж»-назви й копійчані позиції: «Уцінка. Браслет… 12 ₴» як
+    # доповнення до дорогої іграшки виглядає сміттям (SMM 2026-10-06, наслідок PR #614 «каталог повний»).
+    _addon_pool = sorted((p for p in prods if _addon_ok(p)),
                          key=lambda x: x["price"])[:_ADDON_POOL_CAP]
     related_map = {}
     for p in prods:
@@ -479,7 +501,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       '<p>Обираємо іграшки, які роблять дитину щасливою, а маму — спокійною. '
       'Привезе Нова Пошта, а Плутус подбає про решту.</p>'
       '<a class="btn" href="catalog.html">Обрати іграшку</a>'
-      '<p class="hero-note">🚚 Доставка Новою Поштою по Україні · оплата при отриманні або карткою</p></div>'
+      '<p class="hero-note">🚚 Доставка Новою Поштою по Україні · ' + PAY_HERO + '</p></div>'
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
       f'<div class="catrow">{cat_tiles}</div>'
       + ('<div class="sec-title"><h2>Новинки</h2><a href="catalog.html">Дивитись усі →</a></div>'
@@ -487,7 +509,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),
-        description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі — з доставкою Новою Поштою по всій Україні. Оплата при отриманні або карткою.",
+        description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі — з доставкою Новою Поштою по всій Україні. " + PAY_HERO[0].upper() + PAY_HERO[1:] + ".",
         canonical="index.html", og_image=OG_IMAGE))
 
 def _cut(text, n):
@@ -542,7 +564,7 @@ def write_product(p, related=None):
       '</div>'
       '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
       '<div><b>Доставка Новою Поштою</b> — від 65 ₴. Замовлення до 12:00 йдуть того ж дня, '
-      'далі 1–3 робочі дні. Оплата карткою на сайті або накладений платіж.</div></div>'
+      'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
       f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
       '</div></div>'
       + (f'<section class="related"><h2>Додайте до замовлення</h2>{grid(related)}</section>' if related else "")
@@ -599,26 +621,27 @@ def write_cart():
       '</div>'
       # checkout
       '<h1 class="page" style="margin-left:0">Оформлення</h1>'
-      '<form id="checkout-form" autocomplete="off">'
+      '<form id="checkout-form">'
         '<div class="field"><label>Ім’я та прізвище</label>'
-          '<input id="f-name" name="name" required placeholder="Отримувач посилки"></div>'
+          '<input id="f-name" name="name" required autocomplete="name" placeholder="Іван Петренко"></div>'
         '<div class="field"><label>Телефон</label>'
-          '<input id="f-phone" name="phone" type="tel" required placeholder="+380…"></div>'
+          '<input id="f-phone" name="phone" type="tel" inputmode="tel" required autocomplete="tel" placeholder="+380 50 123 45 67"></div>'
         '<div class="field"><label>Email <span style="opacity:.6">(необовʼязково, для чека й статусу)</span></label>'
-          '<input id="f-email" name="email" type="email" placeholder="you@example.com"></div>'
+          '<input id="f-email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"></div>'
         '<div class="field ac-wrap"><label>Місто</label>'
-          '<input id="f-city" name="city" required placeholder="Почніть вводити місто…">'
+          '<input id="f-city" name="city" required autocomplete="off" placeholder="Почніть вводити місто…">'
           '<div class="ac" id="ac-city"></div></div>'
         '<div class="field ac-wrap"><label>Відділення Нової Пошти</label>'
-          '<input id="f-warehouse" name="warehouse" required placeholder="Спершу оберіть місто" disabled>'
+          '<input id="f-warehouse" name="warehouse" required autocomplete="off" placeholder="Спершу оберіть місто" disabled>'
           '<div class="ac" id="ac-warehouse"></div></div>'
         # Спосіб оплати — накладений (оплата при отриманні) за замовчуванням: для незнайомого магазину
         # це головний аргумент довіри (рев'ю), і LiqPay поки sandbox. Вибір явний, у payload іде payment.
         '<div class="field"><label>Спосіб оплати</label>'
           '<label class="pay"><input type="radio" name="payment" value="cod" checked> '
             'Оплата при отриманні (накладений платіж на Новій Пошті)</label>'
-          '<label class="pay"><input type="radio" name="payment" value="prepaid"> '
-            'Оплата карткою онлайн</label></div>'
+          + ('<label class="pay"><input type="radio" name="payment" value="prepaid"> '
+            'Оплата карткою онлайн</label>' if LIQPAY_LIVE else '') +
+        '</div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
         '<div class="note" id="checkout-msg"></div>'
       '</form></div>'
@@ -673,7 +696,7 @@ _ABOUT = """<h1>Про нас</h1>
 <ul>
 <li><b>Швидка відправка.</b> Замовлення, оформлені до 12:00, зазвичай відправляємо того ж дня.</li>
 <li><b>Доставка по всій Україні.</b> Працюємо з Новою Поштою — до відділення або поштомату.</li>
-<li><b>Зручна оплата.</b> Накладений платіж при отриманні або оплата карткою онлайн.</li>
+<li><b>Зручна оплата.</b> {PAY_ABOUT}</li>
 <li><b>Чесність.</b> Ми не обіцяємо того, чого не можемо виконати, і завжди на зв'язку, якщо виникають питання.</li>
 </ul>
 <h2>Наші цінності</h2>
@@ -733,7 +756,7 @@ _OFFER = """<h1>Публічна оферта</h1>
 <h2>4. Ціна та оплата</h2>
 <ul>
 <li>Ціни на Товар вказані на сайті у гривнях.</li>
-<li>Оплата здійснюється одним зі способів: накладений платіж при отриманні або оплата банківською карткою онлайн.</li>
+<li>Оплата здійснюється {PAY_OFFER}.</li>
 <li>Вартість доставки оплачується окремо за тарифами перевізника.</li>
 </ul>
 <h2>5. Доставка</h2>
@@ -748,6 +771,8 @@ _OFFER = """<h1>Публічна оферта</h1>
 </ul>
 <h2>8. Контакти Продавця</h2>
 <p>Інтернет-магазин PlutusToys<br>Телефон: +380 (73) 015-08-15<br>Ел. пошта: plutustoys@gmail.com<br>Сайт: plutustoys.com.ua</p>"""
+_ABOUT = _ABOUT.replace("{PAY_ABOUT}", PAY_ABOUT)
+_OFFER = _OFFER.replace("{PAY_OFFER}", PAY_OFFER)
 
 TRUST_PAGES = [
     ("about.html",    "Про нас",             _ABOUT,

@@ -130,6 +130,8 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .field input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:12px;font-size:15px;background:var(--surface);color:var(--text)}
 .field input:focus{outline:0;border-color:var(--accent)}
 .field.err input{border-color:var(--warn)}
+.field label.pay{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;margin:0 0 8px;border:1px solid var(--line);border-radius:12px;font-size:14px;color:var(--text);cursor:pointer}
+.field label.pay input[type=radio]{width:auto;flex:0 0 auto;margin:2px 0 0;padding:0}
 /* Автокомпліт НП (місто/відділення) */
 .ac-wrap{position:relative}
 .ac{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:30;background:var(--surface);
@@ -202,6 +204,9 @@ footer.foot a{color:var(--accent)}
 .foot .fnav a{color:var(--text);font-size:13px}
 .foot .fnav a:hover{color:var(--accent)}
 .foot .ftag{margin:0}
+.foot .fsoc{margin:0 0 10px;font-size:13px}
+.foot .fsoc a{color:var(--text)}
+.foot .fsoc a:hover{color:var(--accent)}
 
 /* ══ Текстові сторінки довіри (Про нас/Доставка/…) ══ */
 .doc{max-width:720px;margin:0 auto;padding:8px 16px 32px;line-height:1.6;color:var(--text)}

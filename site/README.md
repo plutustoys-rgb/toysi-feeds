@@ -9,6 +9,7 @@
 cd rozetka_agent
 python site/build_site.py          # повний каталог
 LIMIT=120 python site/build_site.py # швидкий демо-зріз
+SITE_LIQPAY_LIVE=1 python site/build_site.py # лише коли LiqPay бойовий: показує «оплата карткою» (футер, кошик, оферта); без прапорця сайт обіцяє лише накладений платіж
 ```
 
 Генерує у `site/`: `index.html` (головна «Новинки» + категорії), `catalog.html`,

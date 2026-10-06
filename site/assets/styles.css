@@ -220,6 +220,8 @@ footer.foot a{color:var(--accent)}
 .trust-badges{display:flex;flex-wrap:wrap;gap:6px 14px;margin:10px 0 4px}
 .trust-badges .tb{font-size:12.5px;color:var(--success);text-decoration:none;font-weight:600}
 .trust-badges a.tb:hover{text-decoration:underline}
+.ask{margin:2px 0 10px;font-size:13px;color:var(--muted)}
+.ask a{color:var(--accent);font-weight:700;text-decoration:none;white-space:nowrap}
 .foot .fphone{margin:0 0 10px;font-size:13px}
 .foot .fphone a{color:var(--accent);font-weight:700}
 
@@ -250,3 +252,6 @@ footer.foot a{color:var(--accent)}
 .delivery .mascot{height:28px}
 .done .mascot{height:96px}
 .empty .mascot{height:44px}
+
+/* десктоп: маскот помітніший (SMM P2.8) — ПІСЛЯ базових .mascot-правил (однакова специфічність → виграє пізніше; аудит #628) */
+@media(min-width:900px){.hero .mascot{height:120px}.logo .mascot{height:32px}.done .mascot{height:130px}}

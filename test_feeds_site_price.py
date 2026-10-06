@@ -47,6 +47,11 @@ chk("дешевий товар: підлога піднімає ціну вищ�
 x = item("9992", price=500.0)
 chk("звичайний товар: ціна лишається ×1.5 (підлога не діє)", cp.site_retail_price(x) == math.ceil(cp.toysi_discounted_price(x) * 1.5))
 
+# ціна ІЗ КАРТКИ (index.json): фід бере pr рівно як на сторінці, навіть якщо формула дала б інше (дрейф каталогу між збірками)
+items, stats = gg.build_feed_items({"1001": it}, {}, {}, {}, None, {"1001": expected + 7})
+chk("ціна фіда = pr з індексу (збіг за побудовою), а не перерахунок", abs(float(items[0]["price"].split()[0]) - (expected + 7)) < 0.005 and stats["price_from_card"] == 1)
+items, stats = gg.build_feed_items({"1001": it}, {}, {}, {}, None, None)
+chk("без індексу — формула сайту (price_from_formula=1)", stats["price_from_formula"] == 1 and abs(float(items[0]["price"].split()[0]) - expected) < 0.005)
 # ТМ UNO
 chk("UNO (vendor ≠ Mattel) заблоковано", tf.is_uno_trademark_blocked("Карткова гра UNO Kids", "MiC"))
 chk("кирилиця «УНО» заблокована", tf.is_uno_trademark_blocked('Гра "УНО"', "Strateg"))

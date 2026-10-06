@@ -677,8 +677,10 @@ def is_weapon_replica(item_id: str, title: str) -> bool:
 SITE_FILTER_MAX_DROP_SHARE = 0.25   # макс. частка каталогу, яку фільтр «є на сайті» має право відсікти
 
 
-def load_site_product_ids() -> set | None:
-    """toysi-id товарів, які МАЮТЬ картку на власному сайті (site/index.json, збирає build_site.py на VPS).
+def load_site_product_ids() -> dict | None:
+    """{toysi-id → ціна картки (pr)} товарів, які МАЮТЬ картку на власному сайті (site/index.json, збирає build_site.py на VPS).
+    Ціна з index.json — це ГАРАНТІЯ збігу ціни фіда з ціною на сторінці (аудит PR #620: каталог Toysi зсувається між
+    перебудовою сайту й генерацією фіда, тож перерахунок за формулою давав розбіжності 0.5-1%).
     Посилання Google/Meta/Bing ведуть на старі Prom-URL, які після переносу домену 301-редірект перекидає на
     /product-<id>.html; товар без картки падав би на /catalog.html — Merchant Center трактує це як невідповідність
     цільової сторінки (запит Консультанта 2026-10-05). None = індекс недоступний/порожній → НЕ фільтруємо (fail-open:
@@ -687,7 +689,7 @@ def load_site_product_ids() -> set | None:
     site_dir = Path(os.environ.get("SITE_DIR", str(Path(__file__).parent / "site")))
     try:
         data = json.loads((site_dir / "index.json").read_text(encoding="utf-8"))
-        ids = {str(p["id"]) for p in data if isinstance(p, dict) and "id" in p}
+        ids = {str(p["id"]): p.get("pr") for p in data if isinstance(p, dict) and "id" in p}
     except (OSError, ValueError, TypeError):
         print("[Feed] site/index.json недоступний — фільтр «є картка на сайті» ВИМКНЕНО (fail-open).", file=sys.stderr)
         return None
@@ -716,6 +718,8 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         "computed_price": 0,  # взято порахована ціна (нема свіжого override) — фолбек як у Prom-фіді
         "no_link_skipped": 0,
         "not_on_site": 0,     # товару нема на власному сайті (site_ids) — не віддаємо Google/Meta/Bing
+        "price_from_card": 0,     # ціна взята з index.json (= ціна картки)
+        "price_from_formula": 0,  # індексу нема/ціни нема — рахуємо site_retail_price
         "trademark_blocked": 0,  # ТМ «UNO» (претензія Mattel) — не віддаємо на сайт/у фіди
         "no_image": 0,
         "no_gtin": 0,
@@ -754,11 +758,14 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         # що й Prom (без 'price mismatch'). ВИПРАВЛЕНО 2026-08-17: раніше товар без свіжого
         # override просто викидався (no_prom_price) → оголошення мали ~600 замість ~6000 сайту.
         # Тепер фолбек на порахувану ціну (ідентична сторінці) через _prom_page_price().
-        override = prom_price_overrides.get(pid)
-        # competitor_prices=None (виклик без нього) = стара поведінка без стелі; інакше «свіжий конкурент» = запис у словнику.
-        _fresh_comp = True if competitor_prices is None else ((competitor_prices.get(pid) or 0) > 0)
-        retail_price = float(site_retail_price(item))
-        stats["computed_price"] += 1   # (лічильник збережено для сумісності друку: тепер = усі позиції з ціною сайту)
+        # для товарів з карткою — РІВНО ціна картки з index.json (збіг за побудовою); інакше (fail-open/нема індексу) — формула сайту
+        _card_price = site_ids.get(str(pid)) if isinstance(site_ids, dict) else None
+        if isinstance(_card_price, (int, float)) and _card_price > 0:
+            retail_price = float(_card_price)
+            stats["price_from_card"] += 1
+        else:
+            retail_price = float(site_retail_price(item))
+            stats["price_from_formula"] += 1
 
         name = (item.get("name") or "").strip()
         if not name:
@@ -908,7 +915,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")
     print(f"[Google] Пропущено — без ціни: {stats['no_price']}")
-    print(f"[Google] Ціна порахована (нема свіжого override, як на сторінці Prom): {stats['computed_price']}")
+    print(f"[Google] Ціна з index.json (= картка сайту): {stats['price_from_card']}; за формулою сайту (нема в індексі): {stats['price_from_formula']}")
     print(f"[Google] Пропущено — не знайдено впевненого посилання на сторінку: {stats['no_link_skipped']}")
     print(f"[Google] Пропущено — без фото: {stats['no_image']}")
     print(f"[Google] Без GTIN (пропущено поле, не весь товар): {stats['no_gtin']}")

@@ -67,37 +67,67 @@ def _num(s) -> float:
     return float(re.sub(r"[\s ]", "", str(s)).replace(",", "."))
 
 
-_AMT = r"(\d[\d\s ]*,\d{2})"
+_AMT = r"(\d[\d  ]*,\d{2})"   # без \s: сума не має склеювати сусідні рядки
 
 
 # ── парсери актів (чисті функції над текстом PDF) ─────────────────────────────────────────────────────────
+def _bad(note: str, **kw) -> dict:
+    return {"total": None, "note": note, **kw}
+
+
 def parse_novapay(text: str) -> dict:
     m = re.search(r"Сума винагороди Платіжної установи за надані\s+послуги\s+" + _AMT + r"\s*грн", text)
-    return {"stream": "novapay", "total": _num(m.group(1)) if m else None, "basis": "без ПДВ"}
+    if not m:
+        return _bad("не знайдено «Сума винагороди … за надані послуги»", stream="novapay", basis="без ПДВ")
+    return {"stream": "novapay", "total": _num(m.group(1)), "basis": "без ПДВ"}
 
 
 def parse_rozetkapay(text: str) -> dict:
+    """«Разом» винагороди таблиці способів оплати. КОНТРОЛЬ: сума рядків таблиці (обох колонок) має дорівнювати «Разом» —
+    інакше (3 колонки, зсув, зайвий рядок) повертаємо None, а не хибне число (аудит #625 M-3)."""
     m = re.search(r"Разом\s+" + _AMT + r"\s+" + _AMT, text)
-    return {"stream": "rozetkapay", "total": _num(m.group(2)) if m else None, "basis": "без ПДВ"}
+    if not m:
+        return _bad("не знайдено рядок «Разом»", stream="rozetkapay", basis="без ПДВ")
+    rows = re.findall(r"^\d+\s+[^\n]*?\s" + _AMT + r"\s+" + _AMT + r"\s*$", text, re.M)
+    if not rows:
+        return _bad("таблицю способів оплати не розпізнано", stream="rozetkapay", basis="без ПДВ")
+    s1 = round(sum(_num(a) for a, _ in rows), 2)
+    s2 = round(sum(_num(b) for _, b in rows), 2)
+    if abs(s1 - _num(m.group(1))) > 0.02 or abs(s2 - _num(m.group(2))) > 0.02:
+        return _bad(f"контрольна сума таблиці ({s1} / {s2}) ≠ «Разом» ({m.group(1)} / {m.group(2)})", stream="rozetkapay", basis="без ПДВ")
+    return {"stream": "rozetkapay", "total": _num(m.group(2)), "basis": "без ПДВ"}
 
 
 def parse_eva(text: str) -> dict:
     """Два різні акти EVA: «використання ТОРГОВЕЛЬНИХ МАРОК» (роялті, не об'єкт ПДВ) і «надання ПОСЛУГИ ДОСТУПУ»
-    (сума вже з ПДВ). Повертає частину потоку `eva`: part=royalty|access."""
+    (сума вже з ПДВ). Повертає частину потоку `eva`: part=royalty|access. КОНТРОЛЬ: підсумок у тексті = рядок таблиці «Всього»."""
     if "ТОРГОВЕЛЬНИХ МАРОК" in text.upper() and "роялті" in text:
+        part, basis = "royalty", "без ПДВ (не об'єкт ПДВ)"
         m = re.search(r"Загальна сума роялті[^\n]*?склала\s+" + _AMT + r"\s*грн", text, re.S)
-        return {"stream": "eva", "part": "royalty", "total": _num(m.group(1)) if m else None, "basis": "без ПДВ (не об'єкт ПДВ)"}
-    m = re.search(r"Загальна сума за послуги складає\s+" + _AMT + r"\s*грн", text)
-    return {"stream": "eva", "part": "access", "total": _num(m.group(1)) if m else None, "basis": "з ПДВ"}
+    else:
+        part, basis = "access", "з ПДВ"
+        m = re.search(r"Загальна сума за послуги складає\s+" + _AMT + r"\s*грн", text)
+    base = {"stream": "eva", "part": part, "basis": basis}
+    if not m:
+        return {**_bad("не знайдено загальну суму акта", **base)}
+    tot = _num(m.group(1))
+    t = re.search(r"Всього\s+[\d,\s]+?-\s*" + _AMT, text)
+    if not t or abs(_num(t.group(1)) - tot) > 0.02:
+        return _bad("контрольна сума: «Всього» таблиці ≠ загальна сума в тексті", **base)
+    return {**base, "total": tot}
 
 
 def parse_rozetka(text: str) -> dict:
     """Два акти Термінал Розетка. Роялті-акт: «Роялті за користування торгової марки» (сума без ПДВ).
     Акт «доступ»: логістика «Організація видачі», щомісячна плата, «доступ ... в зв'язку з обсягом продажу» — усе
-    без ПДВ; у книзі комісії з ПДВ → ×1,2 (журнал 322,13 = 178,97 + 143,16; 61,20)."""
+    без ПДВ; у книзі комісії з ПДВ → ×1,2 (журнал 322,13 = 178,97 + 143,16; 61,20). КОНТРОЛЬ: сума розпізнаних позицій = «Всього»
+    акта; інакше всі позиції None (не показуємо часткове)."""
     if "Роялті за користування" in text:
         m = re.search(r"Роялті за користування[^\n]*?" + _AMT + r"\s+" + _AMT + r"\s*\n", text)
-        return {"doc": "royalty", "royalty_novat": _num(m.group(2)) if m else None}
+        t = re.search(r"Всього без ПДВ:\s*" + _AMT, text)
+        if not m or not t or abs(_num(m.group(2)) - _num(t.group(1))) > 0.02:
+            return {"doc": "royalty", "royalty_novat": None, "note": "роялті-акт: суму не підтверджено рядком «Всього без ПДВ»"}
+        return {"doc": "royalty", "royalty_novat": _num(m.group(2))}
     out = {"doc": "access"}
     m = re.search(r"Організація видачі відправлень[^\n]*?шт\s+[\d,\s]+?\s" + _AMT + r"\s*\n", text)
     out["logistics_novat"] = _num(m.group(1)) if m else None
@@ -106,13 +136,19 @@ def parse_rozetka(text: str) -> dict:
     m = re.search(r"в\s+зв.язку з обсягом продажу", text)
     m2 = re.search(r"\n\s*\d+\s+\d+\s+послуга\s+[\d,\s]+?\s" + _AMT + r"\s*\n[^\n]*обсягом продажу", text)
     out["volume_novat"] = _num(m2.group(1)) if (m and m2) else None
+    t = re.search(r"\nВсього:\s*" + _AMT, text)
+    items = [out["logistics_novat"], out["monthly_novat"], out["volume_novat"]]
+    if not t or any(v is None for v in items) or abs(sum(items) - _num(t.group(1))) > 0.02:
+        return {"doc": "access", "logistics_novat": None, "monthly_novat": None, "volume_novat": None,
+                "note": "акт «доступ»: розпізнані позиції не дають «Всього» (є нерозпізнана/зайва позиція)"}
     return out
 
 
 def parse_prom(text: str) -> dict:
     """Позиції верхнього рівня «N <назва> 1 грн ціна сума» (без крапки в номері). Пакет «програмної продукції» —
     передоплата послуги (виняток §3), НЕ комісія замовлень → виключається. Решта (ProSale, компенсація доставки,
-    «Оплатити частинами» тощо) ×1,2 = порівнюване з кандидатами (cpa Prom — з ПДВ)."""
+    «Оплатити частинами» тощо) ×1,2 = порівнюване з кандидатами (cpa Prom — з ПДВ). КОНТРОЛЬ: сума ВСІХ розпізнаних
+    позицій верхнього рівня (разом із пакетом) = «Всього:» акта (без ПДВ); інакше None."""
     items = []
     lines = text.split("\n")
     for i, ln in enumerate(lines):
@@ -123,10 +159,16 @@ def parse_prom(text: str) -> dict:
         items.append({"n": m.group(1), "label": label[:90], "novat": _num(m.group(4))})
     commission = [x for x in items if "програмної продукції" not in x["label"]]
     package = [x for x in items if "програмної продукції" in x["label"]]
-    nov = round(sum(x["novat"] for x in commission), 2) if commission else None
-    return {"stream": "prom", "items": items, "commission_novat": nov,
-            "total": round(nov * VAT, 2) if nov is not None else None, "basis": "(без ПДВ)×1,2",
+    base = {"stream": "prom", "items": items, "basis": "(без ПДВ)×1,2",
             "package_novat": round(sum(x["novat"] for x in package), 2)}
+    t = re.search(r"\nВсього:\s*" + _AMT, text)
+    if not items or not t:
+        return _bad("позиції акта або «Всього:» не розпізнано", **base, commission_novat=None)
+    if abs(sum(x["novat"] for x in items) - _num(t.group(1))) > 0.02:
+        return _bad(f"контрольна сума позицій ({sum(x['novat'] for x in items):.2f}) ≠ «Всього:» ({t.group(1)}): є нерозпізнана позиція",
+                    **base, commission_novat=None)
+    nov = round(sum(x["novat"] for x in commission), 2)
+    return {**base, "commission_novat": nov, "total": round(nov * VAT, 2)}
 
 
 # ── акти ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -139,6 +181,27 @@ def act_period(date_str: str) -> str:
         if m == 0:
             y, m = y - 1, 12
     return f"{y:04d}-{m:02d}"
+
+
+_MONTH_NOM = {"січень": 1, "лютий": 2, "березень": 3, "квітень": 4, "травень": 5, "червень": 6, "липень": 7, "серпень": 8,
+              "вересень": 9, "жовтень": 10, "листопад": 11, "грудень": 12}
+_MONTH_GEN = {"січня": 1, "лютого": 2, "березня": 3, "квітня": 4, "травня": 5, "червня": 6, "липня": 7, "серпня": 8,
+              "вересня": 9, "жовтня": 10, "листопада": 11, "грудня": 12}
+
+
+def period_from_text(text: str) -> str | None:
+    """Місяць ЗА який акт — із самого тексту (надійніше за дату в імені файлу, яка може бути днем відправки після 20-го):
+    «за Липень 2026 р.» (NovaPay/EVA/Prom) → «від 31 серпня 2026» (Rozetka) → «по 31.08.2026» (RozetkaPay)."""
+    m = re.search(r"за\s+([А-Яа-яІіЇїЄє]+)\s+(\d{4})\s*р", text)
+    if m and m.group(1).lower() in _MONTH_NOM:
+        return f"{m.group(2)}-{_MONTH_NOM[m.group(1).lower()]:02d}"
+    m = re.search(r"від\s+\d{1,2}\s+([А-Яа-яІіЇїЄє]+)\s+(\d{4})", text)
+    if m and m.group(1).lower() in _MONTH_GEN:
+        return f"{m.group(2)}-{_MONTH_GEN[m.group(1).lower()]:02d}"
+    m = re.search(r"по\s+\d{2}\.(\d{2})\.(\d{4})", text)
+    if m:
+        return f"{m.group(2)}-{m.group(1)}"
+    return None
 
 
 def pdf_text(path: str) -> str:
@@ -174,6 +237,8 @@ def collect_acts(text_fn=pdf_text) -> list:
                "path": f, "parsed": None, "error": None}
         try:
             text = text_fn(f)
+            if not (overrides.get(info["doc_id"]) or {}).get("period"):
+                rec["period"] = period_from_text(text) or period
             rec["parsed"] = {"novapay": parse_novapay, "rozetkapay": parse_rozetkapay, "eva": parse_eva,
                              "rozetka": parse_rozetka, "prom": parse_prom}.get(info["vendor"], lambda t: None)(text)
         except Exception as e:  # noqa: BLE001
@@ -207,6 +272,8 @@ def act_streams(acts: list) -> dict:
                 r = put(vendor, period, a["doc_id"], total, p.get("basis", "?"))
                 if total is not None:
                     r["total"] = round((r["total"] or 0) + total, 2)
+                else:
+                    r["missing"].append(f"{a['doc_id']}: {p.get('note') or a.get('error') or 'суму не прочитано'}")
         elif vendor == "eva":
             parts = {}
             for a in group:
@@ -217,12 +284,17 @@ def act_streams(acts: list) -> dict:
             r = res[("eva", period)]
             miss = [k for k in ("royalty", "access") if parts.get(k) is None]
             r["missing"] = [f"немає акта/суми «{'роялті' if k == 'royalty' else 'доступ до платформи'}»" for k in miss]
+            r["missing"] += [f"{a['doc_id']}: {(a['parsed'] or {}).get('note')}" for a in group if (a["parsed"] or {}).get("note")]
             r["total"] = round(sum(v for v in parts.values() if v is not None), 2) if not miss else None
             r["parts"] = parts
         elif vendor == "rozetka":
             roy = acc = None
             for a in group:
-                p = a["parsed"] or {}
+                p = dict(a["parsed"] or {})
+                ov = overrides.get(a["doc_id"]) or {}
+                for k in ("royalty_novat", "volume_novat", "logistics_novat"):   # ручна поправка суми акта (без ПДВ), якщо PDF не прочитано
+                    if k in ov:
+                        p[k] = ov[k]
                 if p.get("doc") == "royalty":
                     roy = p
                 elif p.get("doc") == "access":
@@ -235,8 +307,9 @@ def act_streams(acts: list) -> dict:
                 res[("rozetka_royalty", period)] = {"docs": docs, "total": total, "missing": [],
                                                   "basis": "роялті-акт (без ПДВ) + «доступ за обсягом»×1,2", "parts": {}}
             else:
+                notes = [f"{a['doc_id']}: {(a['parsed'] or {}).get('note')}" for a in group if (a["parsed"] or {}).get("note")]
                 res[("rozetka_royalty", period)] = {"docs": docs, "total": None, "basis": "", "parts": {},
-                                                  "missing": ["потрібні ОБИДВА акти Розетки (роялті + доступ) з прочитаними сумами"]}
+                                                  "missing": ["потрібні ОБИДВА акти Розетки (роялті + доступ) з підтвердженими сумами"] + notes}
             lg = acc.get("logistics_novat") if acc else None
             res[("rozetka_logistics", period)] = {
                 "docs": [a["doc_id"] for a in group if (a["parsed"] or {}).get("doc") == "access"],
@@ -365,14 +438,15 @@ def _core(doc_id: str):
 
 def classify_cell(doc_id: str, cell: str) -> str | None:
     """'declared' — акт названо ВЛАСНИМ номером рядка: у перших 100 символах (логіка vchasno_akty_kandydaty, захист від
-    хибного ✅ через побічну згадку, рядок 119) АБО в перших 250 символах клітинки, що починається з опису акта
-    («…Акт прийому-передачі … (Вчасно BO0000489750)» — формат бухгалтера для НоваПей, рядки 188/190);
-    'mentioned' — номер лише десь далі в тексті; None — нема."""
+    хибного ✅ через побічну згадку, рядок 119) АБО у формі «… (Вчасно <номер>)» у перших 250 символах (формат бухгалтера для
+    НоваПей, рядки 188/190). Слово «Акт» саме по собі НЕ рахується: у приміткових рядках продажів («…вже в Акті Prom №…») воно
+    стоїть у перших 250 символах (аудит #625 M-1). 'mentioned' — номер лише десь далі в тексті; None — нема."""
     if vch._already_in_book(doc_id, [cell]):
         return "declared"
     head = cell[:250]
     core = _core(doc_id)
-    if "Акт" in head and (doc_id in head or (core and core in head)):
+    pat = re.escape(doc_id) + (r"|" + re.escape(core) if core else "")
+    if re.search(r"\(Вчасно\s*№?\s*(?:" + pat + r")", head):
         return "declared"
     if doc_id in cell or (core and core in cell):
         return "mentioned"
@@ -384,12 +458,12 @@ def book_rows_for(doc_ids: list) -> dict:
     порожньо + попередження (тоді «в книзі» невідомо, звіт це не вигадує)."""
     res = {d: {"declared": [], "mentioned": []} for d in doc_ids}
     if not vch.KODV_XLSX.exists():
-        return res
+        return None
     try:
         import openpyxl
         wb = openpyxl.load_workbook(str(vch.KODV_XLSX), data_only=True, read_only=True)
         ws = wb["КОДВ"]
-        for row in ws.iter_rows(min_row=7):
+        for rownum, row in enumerate(ws.iter_rows(min_row=7), start=7):   # номер рядка — з лічильника (EmptyCell у read_only .row не має)
             for col in (4, 11):          # графа 5 (E) і графа 12 (L)
                 v = row[col].value if len(row) > col else None
                 if not v:
@@ -398,9 +472,10 @@ def book_rows_for(doc_ids: list) -> dict:
                 for d in doc_ids:
                     kind = classify_cell(d, cell)
                     if kind:
-                        res[d][kind].append(row[4].row)
+                        res[d][kind].append(rownum)
     except Exception as e:  # noqa: BLE001
         print(f"[AktyZvirka] книгу не прочитано ({e}) — «в книзі» невідомо.", file=sys.stderr)
+        return None
     return {d: {k: sorted(set(v)) for k, v in kinds.items()} for d, kinds in res.items()}
 
 
@@ -432,16 +507,37 @@ def build_rows(acts: list, cands: dict, book: dict, only_month: str = None) -> l
         else:
             status = "⚠️ різниця"
         docs = (a or {}).get("docs", [])
+        book_known = book is not None
+        per_doc = {d: ((book or {}).get(d) or {"declared": [], "mentioned": []}) for d in docs}
+        not_in_book = [d for d in docs if book_known and not per_doc[d]["declared"]]
+        if not_in_book:
+            status += " · 📕 акт НЕ в книзі: " + ", ".join(not_in_book)
         rows.append({
             "stream": stream, "period": ym, "docs": docs, "act_total": total, "act_basis": (a or {}).get("basis", ""),
             "act_missing": (a or {}).get("missing", []), "cand_sum": csum, "cand_n": (c or {}).get("n", 0),
             "complete": stream in COMPLETE_STREAMS, "diff": diff, "status": status,
-            "book_rows": sorted({r for d in docs for r in (book.get(d) or {}).get("declared", [])}),
-            "book_mentions": sorted({r for d in docs for r in (book.get(d) or {}).get("mentioned", [])}
-                                    - {r for d in docs for r in (book.get(d) or {}).get("declared", [])}),
+            "book_known": book_known, "per_doc_book": per_doc, "not_in_book": not_in_book,
+            "book_rows": sorted({r for d in docs for r in per_doc[d]["declared"]}),
+            "book_mentions": sorted({r for d in docs for r in per_doc[d]["mentioned"]} - {r for d in docs for r in per_doc[d]["declared"]}),
             "orders": (c or {}).get("orders", []),
         })
     return rows
+
+
+def _book_cell(r: dict) -> str:
+    """По КОЖНОМУ акту потоку окремо (аудит #625 H-1: об'єднання рядків ховало відсутність одного з двох актів)."""
+    if not r["docs"]:
+        return "—"
+    if not r["book_known"]:
+        return "невідомо (книгу не прочитано)"
+    parts = []
+    for d in r["docs"]:
+        b = r["per_doc_book"][d]
+        txt = ("р." + ", ".join(str(x) for x in b["declared"])) if b["declared"] else "НЕМАЄ"
+        if b["mentioned"]:
+            txt += f" (лише згадано: {', '.join(str(x) for x in b['mentioned'])})"
+        parts.append(txt if len(r["docs"]) == 1 else f"{d}: {txt}")
+    return "; ".join(parts)
 
 
 def _f(x) -> str:
@@ -452,7 +548,9 @@ def render(rows: list, today: str) -> str:
     L = [f"# Звірка місячних актів контрагентів ↔ кандидати комісій ({today})", "",
          "Звіт ЛИШЕ для звірки (правило «одне правило», довідник §3): комісії вносяться ОДНИМ рядком на акт, не в рядки продажів. "
          "Різниця = кандидати − акт. ✅ — збіг до 5 копійок. «Повнота»: **повні** — усі архівні реєстри (NovaPay, RozetkaPay); "
-         "**неповні** — лише те, що бачили кабінет/API (Rozetka, EVA, Prom): різниця тут НЕ доводить помилку, лише підказує. "
+         "**неповні** — лише те, що бачили кабінет/API (Rozetka, EVA, Prom): різниця тут НЕ доводить помилку, лише підказує "
+         "(місяць Prom = дата файлу кандидатів, місяць EVA = перше побачення в реєстрі, а не дата замовлення; перші прогони тягнули "
+         "30-денний lookback — тому такі потоки дають хибні ⚠️ на межі місяців). "
          "Акти не містять переліку замовлень, тому «замовлень поза актом» напряму не видно — при ⚠️ нижче перелік замовлень потоку. "
          "Суму акта можна виправити/задати вручну в `документи_КОДВ/_akty_sumy.json`: "
          '`{"<номер акта>": {"comparable": 12.34, "period": "2026-08"}}`.', ""]
@@ -466,10 +564,9 @@ def render(rows: list, today: str) -> str:
             r["period"], f"{cp}: {STREAM_UA.get(r['stream'], r['stream'])}", ", ".join(r["docs"]) or "—",
             _f(r["act_total"]), r["act_basis"] or "—", str(r["cand_n"]), _f(r["cand_sum"]), _f(r["diff"]),
             "повні (за наявними архівами)" if r["complete"] else "неповні",
-            (", ".join(str(x) for x in r["book_rows"]) or ("нема" if r["docs"] else "—"))
-            + (f" (лише згадано: {', '.join(str(x) for x in r['book_mentions'])})" if r["book_mentions"] else ""),
+            _book_cell(r),
             r["status"] + (f" ({'; '.join(r['act_missing'])})" if r["act_missing"] else "")]) + " |")
-    diffs = [r for r in rows if r["status"] == "⚠️ різниця" and r["orders"]]
+    diffs = [r for r in rows if r["status"].startswith("⚠️ різниця") and r["orders"]]
     if diffs:
         L += ["", "## Замовлення потоків із різницею (для пошуку зайвого/пропущеного)", ""]
         for r in diffs:
@@ -491,7 +588,7 @@ def run(only_month: str = None) -> list:
     (vch.DOCS_DIR / JSON_NAME).write_text(json.dumps(rows, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     unread = [a for a in acts if a["error"] or not a["parsed"]]
     print(f"[AktyZvirka] актів: {len(acts)} (не прочитано: {len(unread)}); рядків звіту: {len(rows)}; "
-          f"⚠️ різниця: {sum(1 for r in rows if r['status'] == '⚠️ різниця')}; звіт: {out_md}")
+          f"⚠️ різниця: {sum(1 for r in rows if r['status'].startswith('⚠️ різниця'))}; звіт: {out_md}")
     return rows
 
 

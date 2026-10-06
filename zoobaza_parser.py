@@ -15,7 +15,9 @@
 description, param[Цвет]. quantity_in_stock = 10 для available і 0 для недоступних, тобто це ПРАПОРЕЦЬ, а не
 залишок — наявність підтверджує менеджер. vendorCode = номер у B2B-каталозі (напр. 305457 «Жилет Барт 35х54»).
 
-СОБІВАРТІСТЬ: `price` у фіді = ОПТ × 1.4 (виведено Продажником з каталогу: 690→966, 1284→1798, 1788→2503;
+СОБІВАРТІСТЬ: ⚠️ КОЕФІЦІЄНТ ЗМІНИВСЯ 2026-10-07 (спіймано гардом assert_cost_constant на живому фіді): до 04.10 `price` = ОПТ × 1.4
+(690→966, 1284→1798), тепер `price` = ОПТ × 1.5 = РРЦ постачальника (690→1035, 1284→1926; усі спостережені SKU ×1.0714; фід виріс 910→1744 offers). Дефолт
+ZOOBAZA_FEED_TO_OPT = 1.5. Було (до 04.10; виведено Продажником з каталогу: 690→966, 1284→1798, 1788→2503;
 перевірено тут на двох позиціях). Ціни у фіді цілі → `cost` має похибку до ±0.5 грн. Справжній B2B-прайс — у
 персональному каталозі з токеном (токен ТІЛЬКИ в .env, у репо не класти).
 
@@ -40,11 +42,11 @@ REQUEST_TIMEOUT = 90
 
 
 def _feed_to_opt() -> float:
-    raw = os.environ.get("ZOOBAZA_FEED_TO_OPT", "1.4").strip()
+    raw = os.environ.get("ZOOBAZA_FEED_TO_OPT", "1.5").strip()
     try:
         v = float(raw)
     except ValueError:
-        raise ValueError(f"ZOOBAZA_FEED_TO_OPT='{raw}' — не число (десяткова ТОЧКА, напр. 1.4)")
+        raise ValueError(f"ZOOBAZA_FEED_TO_OPT='{raw}' — не число (десяткова ТОЧКА, напр. 1.5)")
     if not math.isfinite(v) or v <= 0:
         raise ValueError(f"ZOOBAZA_FEED_TO_OPT={raw} — має бути скінченним числом > 0")
     return v
@@ -110,7 +112,7 @@ def parse_zoobaza_xml(content: bytes) -> Dict[str, dict]:
             "vendor_code": (o.findtext("vendorCode") or "").strip(),
             "name": (o.findtext("name") or "").strip(),
             "description": (o.findtext("description") or "").strip(),
-            "price": price,                                           # ціна у фіді (= ОПТ × 1.4)
+            "price": price,                                           # ціна у фіді (= ОПТ × 1.5 = РРЦ; до 04.10 було ×1.4)
             "cost": round(price / ZOOBAZA_FEED_TO_OPT, 2),            # орієнтовна B2B-собівартість
             "available": (o.get("available") or "").strip().lower() == "true",
             "stock_flag": (o.findtext("quantity_in_stock") or "").strip(),   # прапорець, НЕ залишок

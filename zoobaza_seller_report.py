@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Зведення з reports/zoobaza_sellers_<дата>.jsonl (zoobaza_seller_count.py): SKU з 0/1 продавцем-конкурентом на Prom.
-Маржа нетто = price*(1-TC)/cost-1, TC=0.117 (8% + 3.7%); RRC = ОПТ*1.5, cost = ОПТ (feed/1.4)."""
+Маржа нетто = price*(1-TC)/cost-1, TC=0.117 (8% + 3.7%); RRC = ОПТ*1.5, cost = ОПТ (feed/1.4 до 04.10, feed/1.5 з 07.10)."""
 import csv, json, sys, collections
 from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):

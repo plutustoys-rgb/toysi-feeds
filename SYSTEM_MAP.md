@@ -245,8 +245,9 @@
 - **ALLO:** `allo_cabinet_scraper`, `generate_allo_feed` → Код.
 - **Toysi / RoyalToys (постачальник):** `toysi_cabinet_scraper`, `parser` (fetch_toysi_catalog),
   `royaltoys_parser`, `compare_royaltoys_toysi`, `generate_royaltoys_feed` → Код.
-  `zoobaza_parser` (ZooBaza, товари для тварин, публічний YML; cost=price/1.4; корми не беремо, одяг за прапорцем) → Код;
+  `zoobaza_parser` (ZooBaza, товари для тварин, публічний YML; cost=price/1.5 (до 04.10 було /1.4); корми не беремо, одяг за прапорцем) → Код;
   ЛИШЕ парсер — не підключений до фідів/цін/замовлень (комісії по категоріях і ручні замовлення чекають рішень).
+  **ZooBaza — повністю окремий контур** (рішення власника 06.10; схема `ZooBaza_схема_від_А_до_Я_2026-10-07.md` у Cowork): `zoobaza_prom_feed.py` (окремий Prom-фід пілоту: білий список `zoobaza_pilot_skus.txt`, ВСІ id з префіксом `zb-`, Prom-категорії 181201/181206/181203, ціна = max(РРЦ опт×1,5; підлога чистої маржі після комісії 8% і еквайрингу), fail-closed, атомарний запис, БЕЗ публікації; не імпортує Toysi-модулів) і `zoobaza_intake.py` (claim замовлень з `zb-`-позиціями у статуси `zoobaza_hold`/`zoobaza_mixed_hold` + власний `zoobaza_state.json`; **поки НЕ підключений до `order_pipeline`/`orders_db`** — дві мінімальні точки дотику чекають рішення власника D1). Гард `assert_cost_constant` 2026-10-07 спіймав зміну коефіцієнта фіду постачальника ×1,4→×1,5 (ціна фіду = РРЦ); дефолт `ZOOBAZA_FEED_TO_OPT=1.5`.
   `zoobaza_competitor_report` — разовий read-only звіт «найдешевший довірений конкурент на Prom по SKU ZooBaza» (та сама `find_best_competitor`, що для іграшок, + варіант із перевіркою розміру без одиниці; підлога параметрична за комісією).
 - **КОДВ (фінанси):** `checkbox_client`, `novapay_statement`, `weekly_balance_digest`, `daily_report`,
   `kodv_book_writer.py` (єдина точка запису НОВОГО рядка книги — механічно перевіряє дубль номера

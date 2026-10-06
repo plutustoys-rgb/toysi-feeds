@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Регрес zoobaza_parser.py на уривку РЕАЛЬНОГО фіду (структура/значення з basmati.com.ua/zoobaza_full.php,
 2026-10-04). Мережа не потрібна."""
-import sys
+import os, sys
+os.environ["ZOOBAZA_FEED_TO_OPT"] = "1.4"   # фікстура — з фіду 04.10 (×1.4); живий фід з 07.10 = ×1.5 (дефолт модуля)
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import zoobaza_parser as z

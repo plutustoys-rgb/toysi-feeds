@@ -46,7 +46,7 @@ PAY_OFFER = ("одним зі способів: накладений платі�
 _ga = os.environ.get("SITE_GA4_ID", "").strip()
 GA4_ID = _ga if re.fullmatch(r"G-[A-Z0-9]{6,14}", _ga) else ""
 _px = os.environ.get("SITE_META_PIXEL_ID", "").strip()
-META_PIXEL_ID = _px if re.fullmatch(r"\d{8,20}", _px) else ""
+META_PIXEL_ID = _px if re.fullmatch(r"[0-9]{8,20}", _px) else ""   # ASCII-цифри: \d приймає й юнікод-цифри (аудит #626)
 LIMIT = int(os.environ.get("LIMIT", "0") or "0")   # 0 = без ліміту
 PER_PAGE = 24            # товарів на сторінку каталогу/категорії (мобільна пагінація: легкий перший екран)
 # Абсолютний домен для canonical/OG/sitemap (SEO). Той самий, що SITE_BASE_URL у site_order_api.
@@ -174,7 +174,8 @@ def analytics_head() -> str:
         out.append("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
                    "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;"
                    "t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script',"
-                   f"'https://connect.facebook.net/en_US/fbevents.js');fbq('init','{META_PIXEL_ID}');fbq('track','PageView');</script>\n")
+                   f"'https://connect.facebook.net/en_US/fbevents.js');fbq('set','autoConfig',false,'{META_PIXEL_ID}');"
+                   f"fbq('init','{META_PIXEL_ID}');fbq('track','PageView');</script>\n")   # autoConfig=false: без Automatic Advanced Matching (PII форми не хешується в Meta)
     return "".join(out)
 
 

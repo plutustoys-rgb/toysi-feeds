@@ -386,8 +386,12 @@
           var d=res.j;
           try{
             sessionStorage.setItem("pt_last_order", d.order_id);
-            sessionStorage.setItem("pt_last_order_items", JSON.stringify(Object.keys(cart).map(function(id){
-              return {id:id, name:cart[id].name, price:+cart[id].price, qty:cart[id].qty}; })));   // для події purchase на thanks.html
+            // purchase лише для накладеного платежу: при prepaid (LiqPay) покупець повертається на thanks.html ще БЕЗ підтвердженої оплати —
+            // подію не шлемо, щоб не завищувати конверсії (аудит #626); для prepaid позиції не зберігаємо
+            if(payment!=="prepaid"){
+              sessionStorage.setItem("pt_last_order_items", JSON.stringify(Object.keys(cart).map(function(id){
+                return {id:id, name:cart[id].name, price:+cart[id].price, qty:cart[id].qty}; })));   // для події purchase на thanks.html
+            } else { sessionStorage.removeItem("pt_last_order_items"); }
           }catch(e){}
           // Оплата карткою: редірект на LiqPay. Якщо LiqPay не налаштований — НЕ імітуємо «дякуємо»,
           // а чесно кажемо обрати накладений (рев'ю покупця: фейкове «замовлення прийнято» без оплати).

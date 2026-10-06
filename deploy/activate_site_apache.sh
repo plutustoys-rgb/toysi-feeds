@@ -142,6 +142,7 @@ cp "$APP/deploy/site-rebuild.timer" /etc/systemd/system/site-rebuild.timer
 systemctl daemon-reload
 systemctl enable --now site-order-api
 systemctl enable --now site-rebuild.timer
+systemctl restart site-rebuild.timer   # підхопити ЗМІНЕНИЙ OnCalendar (enable --now на вже активному таймері розклад не оновлює)
 sleep 2
 systemctl is-active site-order-api >/dev/null || { journalctl -u site-order-api -n 30 --no-pager; die "site-order-api не запустився"; }
 APICODE=$(code "http://127.0.0.1:8901/api/np/city?q=%D0%9A%D0%B8%D1%97%D0%B2")
@@ -171,7 +172,11 @@ cat <<'EOF'
     </IfModule>
     RewriteEngine On
     RewriteMap promredir "txt:@MAPFILE@"
-    RewriteRule ^/ua/p([0-9]+)- ${promredir:$1|/catalog.html} [R=301,L]
+    # старі Prom-URL (укр. і рос. версії; SEO-замовлення 2026-10-06, GSC: 5 583 URL у 404) → наша картка / каталог (301)
+    RewriteRule ^/(?:ua|ru)/p([0-9]+)- ${promredir:$1|/catalog.html} [R=301,L]
+    RewriteRule ^/(?:ua|ru)/g[0-9]+- /catalog.html [R=301,L]
+    RewriteRule ^/(?:ua|ru)/product_list(?:/|$) /catalog.html [R=301,L]
+    RewriteRule ^/(?:ua|ru)/?$ / [R=301,L]
     ProxyPreserveHost On
     ProxyPass /api/ http://127.0.0.1:8901/api/ retry=0 timeout=30
     ProxyPassReverse /api/ http://127.0.0.1:8901/api/
@@ -216,6 +221,9 @@ render_vhost() {   # $1 = http | https  → у stdout
         echo "    SSLEngine on"
         echo "    SSLCertificateFile /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
         echo "    SSLCertificateKeyFile /etc/letsencrypt/live/$DOMAIN/privkey.pem"
+        echo "    <IfModule mod_headers.c>"
+        echo "        Header always set Strict-Transport-Security \"max-age=604800\""
+        echo "    </IfModule>"
         acme_tpl | sub
         echo "    RewriteEngine On"
         echo "    RewriteCond %{HTTP_HOST} ^www\\. [NC]"

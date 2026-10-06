@@ -428,6 +428,28 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
         written.add(cur)
     return written
 
+SOCIAL_URLS = ["https://www.instagram.com/plutustoys.ua/", "https://www.facebook.com/profile.php?id=61590292022031"]
+
+
+def home_jsonld() -> str:
+    """JSON-LD головної: Organization + WebSite (SEO-замовлення 2026-10-06, п.4). Контакти/соцмережі — ті самі, що в підвалі й
+    на сторінці «Контакти». WebSite БЕЗ SearchAction: пошук сайту — клієнтський оверлей (index.json), сторінки результатів
+    з URL-шаблоном немає, а Google не приймає SearchAction без неї."""
+    org = {
+        "@context": "https://schema.org", "@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/",
+        "logo": f"{SITE_URL}/assets/plutus_mascot.png", "sameAs": SOCIAL_URLS,
+        "contactPoint": [{"@type": "ContactPoint", "telephone": "+380730150815", "contactType": "customer service",
+                          "email": "plutustoys@gmail.com", "areaServed": "UA", "availableLanguage": ["uk"]}],
+    }
+    web = {"@context": "https://schema.org", "@type": "WebSite", "name": "PlutusToys", "url": f"{SITE_URL}/",
+           "inLanguage": "uk"}
+    out = ""
+    for d in (org, web):
+        # безпечно в <script>: кожен '<' екрануємо (chr(92) + "u003c") — жоден HTML-вектор не вийде літерально
+        out += '<script type="application/ld+json">' + json.dumps(d, ensure_ascii=False).replace("<", chr(92) + "u003c") + "</script>" + chr(10)
+    return out
+
+
 def write_home(prods, cats, cat_list, cat_slug):
     # «Новинки» (назва — домен SMM: не «Хіти продажів») — по 1 товару з топ-категорій.
     # ФІЛЬТР (рішення Консультанта): на головну — лише позиції з внеском ≥ HOME_MIN_CONTRIB,
@@ -461,7 +483,7 @@ def write_home(prods, cats, cat_list, cat_slug):
          + grid(novelties) if novelties else "")
     )
     _write("index.html", page(
-        "Іграшки з доставкою Новою Поштою", body,
+        "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),
         description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі — з доставкою Новою Поштою по всій Україні. Оплата при отриманні або карткою.",
         canonical="index.html", og_image=OG_IMAGE))
 

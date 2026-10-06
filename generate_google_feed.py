@@ -935,6 +935,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     try:
         links = resolve_own_product_links(top_catalog, prom_by_external_id)
     except Exception as e:   # посилання фіда — рідні картки сайту; links потрібні лише мапі 301 → не валимо фід
+        import traceback; traceback.print_exc()
         print(f"[Google] resolve_own_product_links збій ({type(e).__name__}: {str(e)[:120]}) — фід продовжує без них.", file=sys.stderr)
         links = {}
 
@@ -947,6 +948,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
         try:
             category_cache = build_prom_category_cache(top_catalog, prom_by_external_id)
         except Exception as e:
+            import traceback; traceback.print_exc()
             print(f"[Google] build_prom_category_cache збій ({type(e).__name__}: {str(e)[:120]}) — пропущено.", file=sys.stderr)
     print(f"[Google] Кеш реальних Prom-категорій: {len(category_cache)} товарів.")
 

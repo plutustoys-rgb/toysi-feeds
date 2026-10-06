@@ -228,9 +228,11 @@
   **GMC-міграція:** `generate_prom_redirects.py` інвертує `own_product_links_cache.json` → мапа 301 (nginx + Apache `RewriteMap txt:`)
   `/ua/p{prom_id}-*.html` → `/product-{toysi_id}.html`, щоб при перенесенні домену з Prom на VPS не пропала
   видимість у Google Merchant (старі Prom-URL з фіда не впали в 404).
-  **Ще НЕ активовано як VPS-юніти** (одноразовий запуск `activate_site_apache.sh` власником на VPS + перенос DNS у кабінеті Prom + LiqPay-компанія — тому не в §2Б/§6;
-  після активації дописати туди ОБИДВА персистентні юніти — `site-order-api` (daemon) і `site-rebuild.timer` — drift-check це підкаже).
-  → Код (механіка) + SMM (дизайн) + власник (LiqPay + активація).
+  **🟢 АКТИВОВАНО 2026-10-05:** сайт у живу на `https://plutustoys.com.ua` (Apache-vhost `z-plutustoys-com-ua.conf`, сертифікат LE; DNS на
+  **Cloudflare** — NS `anna/kevin.ns.cloudflare.com`, записи DNS only, НЕ Prom; реєстратор imena.ua). VPS-юніти `site-order-api` (daemon) і
+  `site-rebuild.timer` (4×/день) увімкнено `activate_site_apache.sh` — дописати їх у §2Б/§6 (drift-check це підкаже).
+  Онлайн-оплата LiqPay ще НЕ підключена (працює накладений платіж).
+  → Код (механіка) + SMM (дизайн) + власник (LiqPay).
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,
   `plutus_overlay`, `meta_conversions_client`, `publish_reel_video.sh` (хостинг відео у feed-data/media
   → публічний raw-URL для Reels), `social_ledger_report` (ledger→CSV + розклад-vs-факт для SMM),

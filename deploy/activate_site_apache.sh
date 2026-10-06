@@ -142,7 +142,7 @@ cp "$APP/deploy/site-rebuild.timer" /etc/systemd/system/site-rebuild.timer
 systemctl daemon-reload
 systemctl enable --now site-order-api
 systemctl enable --now site-rebuild.timer
-systemctl restart site-rebuild.timer   # підхопити ЗМІНЕНИЙ OnCalendar (enable --now на вже активному таймері розклад не оновлює)
+systemctl restart site-rebuild.timer || echo "⚠️  не вдалося перезапустити site-rebuild.timer — перезапусти вручну"   # підхопити ЗМІНЕНИЙ OnCalendar (enable --now на вже активному таймері розклад не оновлює)
 sleep 2
 systemctl is-active site-order-api >/dev/null || { journalctl -u site-order-api -n 30 --no-pager; die "site-order-api не запустився"; }
 APICODE=$(code "http://127.0.0.1:8901/api/np/city?q=%D0%9A%D0%B8%D1%97%D0%B2")
@@ -398,6 +398,9 @@ if [ "$CERT_OK" = "1" ]; then
     echo "  https /            : $(code "https://$DOMAIN/")"
     echo "  https /api/np/city : $(code "https://$DOMAIN/api/np/city?q=%D0%9A%D0%B8%D1%97%D0%B2")"
     echo "  http  / (редірект) : $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "http://$DOMAIN/" 2>/dev/null || echo ERR)"
+    echo "  HSTS               : $(curl -sI --max-time 10 "https://$DOMAIN/" 2>/dev/null | grep -i '^strict-transport' | tr -d '\r' || true)${HSTS_MISSING_NOTE:-}"
+    echo "  https /ua/ (301 → /): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ua/" 2>/dev/null || echo ERR)"
+    echo "  https /ru/p1-x (301 → каталог/картка): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/p1-x.html" 2>/dev/null || echo ERR)"
     certbot renew --dry-run --cert-name "$DOMAIN" >/dev/null 2>&1 && echo "✅ certbot renew --dry-run для $DOMAIN ОК" || echo "⚠️  certbot renew --dry-run для $DOMAIN НЕ пройшов — перевір /var/log/letsencrypt/letsencrypt.log"
     echo ""
     echo "🎉 ГОТОВО: https://$DOMAIN працює. Далі (не тут): LiqPay-ключі в $APP/.env, SYSTEM_MAP, GMC."

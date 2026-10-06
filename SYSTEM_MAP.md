@@ -223,14 +223,14 @@
   `z-plutustoys-com-ua.conf` на явній IP → чекає DNS → certbot webroot → HTTPS; відкат + звірка чужих vhost'ів до/після). `deploy/nginx-plutustoys.conf`/
   `activate_site.sh` — лише довідка для хоста з nginx.
   Деплой-артефакти — `deploy/site-order-api.service` (venv-python daemon, :8901), `deploy/site-rebuild.{service,timer}`
-  (ребілд сайту 4×/день — свіжі ціни/наявність + оновлення GMC-редиректів; Apache перечитує мапу за mtime), `deploy/nginx-plutustoys.conf`,
+  (ребілд сайту кожні 2 год (з 2026-10-06; було 4×/день) — свіжі ціни/наявність + оновлення GMC-редиректів; Apache перечитує мапу за mtime), `deploy/nginx-plutustoys.conf`,
   `deploy/activate_site.sh` (nginx-хост), `deploy/DEPLOY_SITE.md`.
   **GMC-міграція:** `generate_prom_redirects.py` інвертує `own_product_links_cache.json` → мапа 301 (nginx + Apache `RewriteMap txt:`)
   `/ua/p{prom_id}-*.html` → `/product-{toysi_id}.html`, щоб при перенесенні домену з Prom на VPS не пропала
   видимість у Google Merchant (старі Prom-URL з фіда не впали в 404).
   **🟢 АКТИВОВАНО 2026-10-05:** сайт у живу на `https://plutustoys.com.ua` (Apache-vhost `z-plutustoys-com-ua.conf`, сертифікат LE; DNS на
   **Cloudflare** — NS `anna/kevin.ns.cloudflare.com`, записи DNS only, НЕ Prom; реєстратор imena.ua). VPS-юніти `site-order-api` (daemon) і
-  `site-rebuild.timer` (4×/день) увімкнено `activate_site_apache.sh` — дописати їх у §2Б/§6 (drift-check це підкаже).
+  `site-rebuild.timer` (кожні 2 год) увімкнено `activate_site_apache.sh` — дописати їх у §2Б/§6 (drift-check це підкаже).
   Онлайн-оплата LiqPay ще НЕ підключена (працює накладений платіж).
   → Код (механіка) + SMM (дизайн) + власник (LiqPay).
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,

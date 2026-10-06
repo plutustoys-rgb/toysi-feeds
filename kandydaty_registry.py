@@ -69,6 +69,27 @@ def _save_registry(reg: dict, path: Path = None) -> None:
     path.write_text(json.dumps(reg, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
 
 
+def compact_summary(parts: list, limit: int = 160) -> str:
+    """Склеює короткі фрагменти через « | », НІКОЛИ не ріжучи посеред фрагмента. Раніше `note[:120]` обрізав опис
+    посеред числа («винагорода НП 0.92» → «0.»; запит бухгалтера 2026-10-05, рядки 146–147 книги лишились без винагороди
+    NovaPay). Тепер: що не влізло в `limit` — відкидається ЦІЛИМИ фрагментами з кінця; числові ставити першими.
+    Додатково комісія/винагорода зберігається ЧИСЛОМ у полі `fee` запису (див. sync_open_candidates)."""
+    out = []
+    total = 0
+    for p in parts:
+        if p is None:
+            continue
+        p = str(p).strip()
+        if not p:
+            continue
+        add = len(p) + (3 if out else 0)
+        if out and total + add > limit:
+            break
+        out.append(p)
+        total += add
+    return " | ".join(out)
+
+
 def sync_open_candidates(source: str, current: list, path: Path = None, resolve: bool = True) -> dict:
     """`current` — список dict {"key": str, "summary": str, "sum": float, "date": str},
     кандидати джерела `source`, які САМЕ ЗАРАЗ, за логікою джерела-скрипта, ще НЕ в книзі.
@@ -96,6 +117,8 @@ def sync_open_candidates(source: str, current: list, path: Path = None, resolve:
         if existing and existing.get("status") == "open":
             existing["last_seen"] = today
             existing["summary"] = c.get("summary", existing.get("summary", ""))
+            if c.get("fee") is not None:
+                existing["fee"] = c.get("fee")
             still_open.append(full_key)
         else:
             # Новий АБО раніше "resolved", але знову спливає непокритим — відкриваємо знову
@@ -105,6 +128,7 @@ def sync_open_candidates(source: str, current: list, path: Path = None, resolve:
                 "key": c["key"],
                 "summary": c.get("summary", ""),
                 "sum": c.get("sum"),
+                "fee": c.get("fee"),
                 "date": c.get("date"),
                 "status": "open",
                 "first_seen": (existing or {}).get("first_seen", today),
@@ -158,8 +182,8 @@ def write_open_report(path: Path = None, out_path: Path = None, ack_path: Path =
         "підтвердить, що він більше не unresolved (пройшов власну звірку з книгою) — не за",
         "курсором джерела.",
         "",
-        "| Днів висить | Джерело | Ключ | Сума | Дата | Опис | Визнаний виняток |",
-        "|---|---|---|---|---|---|---|",
+        "| Днів висить | Джерело | Ключ | Сума | Комісія | Дата | Опис | Визнаний виняток |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for age_days, full_key, entry in open_entries:
         age_str = str(age_days) if age_days is not None and age_days >= 0 else "?"
@@ -167,10 +191,11 @@ def write_open_report(path: Path = None, out_path: Path = None, ack_path: Path =
         ack_str = f"✅ {ack_entry['reason']}" if ack_entry else ""
         lines.append(
             f"| {age_str} | {entry.get('source', '?')} | {entry.get('key', '?')} | "
-            f"{entry.get('sum', '?')} | {entry.get('date', '?')} | {entry.get('summary', '')} | {ack_str} |"
+            f"{entry.get('sum', '?')} | {entry.get('fee') if entry.get('fee') is not None else ''} | "
+            f"{entry.get('date', '?')} | {entry.get('summary', '')} | {ack_str} |"
         )
     if not open_entries:
-        lines.append("| — | — | — | — | — | Немає відкритих кандидатів. | |")
+        lines.append("| — | — | — | — | — | — | Немає відкритих кандидатів. | |")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

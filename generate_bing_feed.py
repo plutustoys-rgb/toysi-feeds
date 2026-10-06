@@ -50,6 +50,7 @@ from generate_google_feed import (
     build_feed_items,
     load_site_product_ids,
     load_prom_products_cache,
+    fetch_prom_products_resilient,
     OWN_PRODUCT_LINKS_CACHE_FILE,
     OWN_PRODUCT_LINKS_CACHE_TTL_DAYS,
     SHOP_NAME,
@@ -120,7 +121,7 @@ def generate_bing_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
     prom_products = load_prom_products_cache()
     if prom_products is None:
         print("[Bing] Кеш товарів Prom відсутній/застарів — власний live-фетч.", file=sys.stderr)
-        prom_products = fetch_prom_products()
+        prom_products = fetch_prom_products_resilient()
     prom_by_external_id = {
         str(p.get("external_id")): p for p in prom_products.values()
         if p.get("external_id")

@@ -1,4 +1,5 @@
 import html
+from prom_text_sanitize import sanitize as sanitize_prom_text, dedupe_keywords
 import math
 import os
 import re
@@ -736,8 +737,9 @@ def _build_xml(
             truncated_name_count += 1
         if len(name) > PROM_NAME_MAX_LEN:
             truncated_name_ua_count += 1
-        ET.SubElement(offer, "name").text               = _truncate_name(name_ru)
-        ET.SubElement(offer, "name_ua").text             = _truncate_name(name)
+        # Prom [П2 п.4.2.25]: слова «зброя»/«оружие» у назві/описі/ключових → автовидалення (Аудитор 2026-10-03, п.3) — лише Prom-фід
+        ET.SubElement(offer, "name").text               = _truncate_name(sanitize_prom_text(name_ru))
+        ET.SubElement(offer, "name_ua").text             = _truncate_name(sanitize_prom_text(name))
         ET.SubElement(offer, "price").text               = f"{retail:.2f}"
         ET.SubElement(offer, "currencyId").text          = "UAH"
         # Prom.ua використовує quantity_in_stock (а не stock_quantity, як Rozetka)
@@ -829,17 +831,17 @@ def _build_xml(
             item.get("category_name", ""),
             item.get("category_id", ""),
         )
-        ET.SubElement(offer, "description").text = description_ru
-        ET.SubElement(offer, "description_ua").text = description_ua
+        ET.SubElement(offer, "description").text = sanitize_prom_text(description_ru)
+        ET.SubElement(offer, "description_ua").text = sanitize_prom_text(description_ua)
 
         keywords_ua, keywords_ru = generate_keywords(item)
         if keywords_ua:
-            ET.SubElement(offer, "keywords_ua").text = keywords_ua
+            ET.SubElement(offer, "keywords_ua").text = dedupe_keywords(sanitize_prom_text(keywords_ua))
         if keywords_ru:
-            ET.SubElement(offer, "keywords").text = keywords_ru
+            ET.SubElement(offer, "keywords").text = dedupe_keywords(sanitize_prom_text(keywords_ru))
 
         for param_name, param_val in item.get("params", []):
-            ET.SubElement(offer, "param", name=param_name).text = str(param_val)
+            ET.SubElement(offer, "param", name=sanitize_prom_text(str(param_name))).text = sanitize_prom_text(str(param_val))
 
         # R3 (запит SEO 2026-08-20): «Виробник»/«Країна виробництва» як <param> — Prom мапить у
         # ХАРАКТЕРИСТИКИ картки саме з <param name=...>, а окремі теги <vendor>/<country> у

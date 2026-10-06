@@ -156,20 +156,34 @@ def save_prom_products_cache(prom_products: dict) -> None:
               f"наступні скрипти в цьому прогоні просто зроблять власний live-фетч.", file=sys.stderr)
 
 
-def load_prom_products_cache() -> dict | None:
+def load_prom_products_cache(ignore_ttl: bool = False) -> dict | None:
     """Читає кеш, який щойно (у цьому ж прогоні workflow) записав
     generate_google_feed.py — None (не {}), якщо кеш відсутній/застарів,
     щоб виклик-споживач міг однозначно відрізнити "кеш відсутній,
-    потрібен власний live-фетч" від "кеш є, але каталог порожній"."""
+    потрібен власний live-фетч" від "кеш є, але каталог порожній".
+    ignore_ttl=True — аварійне читання застарілого кешу, коли Prom API недоступний."""
     if not PROM_PRODUCTS_CACHE_FILE.exists():
         return None
     age_hours = (time.time() - PROM_PRODUCTS_CACHE_FILE.stat().st_mtime) / 3600
-    if age_hours >= PROM_PRODUCTS_CACHE_TTL_HOURS:
+    if age_hours >= PROM_PRODUCTS_CACHE_TTL_HOURS and not ignore_ttl:
         return None
     try:
         return json.loads(PROM_PRODUCTS_CACHE_FILE.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return None
+
+
+def fetch_prom_products_resilient() -> dict:
+    """Prom-товари лише для ЧИСТИХ фото (main_image) у фіді. Посилання й ціни фіда від Prom більше не залежать
+    (рідна картка сайту), тож збій Prom API (ReadTimeout my.prom.ua 06.10.2026 о 07:08 валив ВЕСЬ Google-фід, і той
+    лишався зі старими посиланнями) не має зупиняти публікацію: живий фетч → застарілий кеш → {} (фото з Toysi)."""
+    try:
+        return fetch_prom_products()
+    except Exception as e:  # будь-який збій мережі/API Prom — не критично для фіда
+        stale = load_prom_products_cache(ignore_ttl=True)
+        print(f"[Feed] Prom API недоступний ({type(e).__name__}: {str(e)[:120]}) — "
+              f"{'застарілий кеш товарів Prom' if stale else 'без даних Prom, фото з Toysi'}.", file=sys.stderr)
+        return stale if isinstance(stale, dict) else {}
 
 
 def is_valid_gtin(barcode: str) -> bool:
@@ -876,10 +890,11 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     # (prom_competitor_pricer.py та інші кроки), не нова залежність на
     # практиці.
     print("[Google] Завантажуємо реальний список товарів Prom (для фото та self-match)...")
-    prom_products = fetch_prom_products()
+    prom_products = fetch_prom_products_resilient()
     # Кеш для Meta/Bing феєдів того самого прогону (аудит PR #109) —
     # див. докстрінг save_prom_products_cache() вище.
-    save_prom_products_cache(prom_products)
+    if prom_products:
+        save_prom_products_cache(prom_products)
     # Індекс за external_id (vendorCode) — ключ, який реально використовує Prom API
     prom_by_external_id = {
         str(p.get("external_id")): p for p in prom_products.values()
@@ -887,13 +902,22 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     } if isinstance(prom_products, dict) else {}
 
     print(f"[Google] Визначаємо реальні посилання на сторінки товарів ({len(top_catalog)} товарів)...")
-    links = resolve_own_product_links(top_catalog, prom_by_external_id)
+    try:
+        links = resolve_own_product_links(top_catalog, prom_by_external_id)
+    except Exception as e:   # посилання фіда — рідні картки сайту; links потрібні лише мапі 301 → не валимо фід
+        print(f"[Google] resolve_own_product_links збій ({type(e).__name__}: {str(e)[:120]}) — фід продовжує без них.", file=sys.stderr)
+        links = {}
 
     # Autonomy-11/Vis-11: побічний ефект, без додаткових запитів (дані вже
     # в prom_by_external_id) — закриває категорії, що лишались на дефолтній
     # комісії через неоднозначність Toysi category_name (див. коментар над
     # build_prom_category_cache).
-    category_cache = build_prom_category_cache(top_catalog, prom_by_external_id)
+    category_cache = {}
+    if prom_by_external_id:   # без даних Prom (API впав) кеш категорій не будуємо: це лише побічний ефект для репрайсера
+        try:
+            category_cache = build_prom_category_cache(top_catalog, prom_by_external_id)
+        except Exception as e:
+            print(f"[Google] build_prom_category_cache збій ({type(e).__name__}: {str(e)[:120]}) — пропущено.", file=sys.stderr)
     print(f"[Google] Кеш реальних Prom-категорій: {len(category_cache)} товарів.")
 
     prom_price_overrides = load_fresh_prom_price_overrides()

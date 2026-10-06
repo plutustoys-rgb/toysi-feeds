@@ -398,7 +398,8 @@ if [ "$CERT_OK" = "1" ]; then
     echo "  https /            : $(code "https://$DOMAIN/")"
     echo "  https /api/np/city : $(code "https://$DOMAIN/api/np/city?q=%D0%9A%D0%B8%D1%97%D0%B2")"
     echo "  http  / (редірект) : $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "http://$DOMAIN/" 2>/dev/null || echo ERR)"
-    echo "  HSTS               : $(curl -sI --max-time 10 "https://$DOMAIN/" 2>/dev/null | grep -i '^strict-transport' | tr -d '\r' || true)${HSTS_MISSING_NOTE:-}"
+    HSTS_HDR=$(curl -sI --max-time 10 "https://$DOMAIN/" 2>/dev/null | grep -i '^strict-transport' | tr -d '\r' || true)
+    echo "  HSTS               : ${HSTS_HDR:-НЕМАЄ (mod_headers відсутній? — HSTS не ввімкнено, решта працює)}"
     echo "  https /ua/ (301 → /): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ua/" 2>/dev/null || echo ERR)"
     echo "  https /ru/p1-x (301 → каталог/картка): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/p1-x.html" 2>/dev/null || echo ERR)"
     certbot renew --dry-run --cert-name "$DOMAIN" >/dev/null 2>&1 && echo "✅ certbot renew --dry-run для $DOMAIN ОК" || echo "⚠️  certbot renew --dry-run для $DOMAIN НЕ пройшов — перевір /var/log/letsencrypt/letsencrypt.log"

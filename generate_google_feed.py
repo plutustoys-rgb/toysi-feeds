@@ -70,8 +70,10 @@ from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products, fetch_prom_products_by_external_ids
 from prom_competitor_pricer import SEARCH_DELAY
 from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices,
-                                decide_price_for_platform, compute_floor, cap_stale_prom_override,
+                                decide_price_for_platform, compute_floor, cap_stale_prom_override, site_retail_price,
                                 compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
+
+from trademark_filter import is_uno_trademark_blocked
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
 
@@ -84,7 +86,8 @@ FEED_CURRENCY = "UAH"
 # з fetch_prom_products() (реальний Prom id за external_id, не пошук).
 # urlText — одним детермінованим HTTP-запитом (див. resolve_own_product_links
 # нижче), не з відповіді пошуку.
-LINK_TEMPLATE = SHOP_URL + "/ua/p{prom_id}-{url_text}.html"
+LINK_TEMPLATE = SHOP_URL + "/ua/p{prom_id}-{url_text}.html"   # ЗАСТАРІЛЕ (адреси Prom) — лишено лише для генерації мапи 301; фід НЕ використовує
+SITE_LINK_TEMPLATE = SHOP_URL + "/product-{pid}.html"          # рідна сторінка товару на власному сайті (з 2026-10-06 фід веде сюди)
 
 # Той самий джитер-інтервал, що вже усталений у prom_competitor_pricer.py
 # для аналогічних послідовних запитів до prom.ua (SEARCH_DELAY, 0.4с) —
@@ -713,6 +716,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         "computed_price": 0,  # взято порахована ціна (нема свіжого override) — фолбек як у Prom-фіді
         "no_link_skipped": 0,
         "not_on_site": 0,     # товару нема на власному сайті (site_ids) — не віддаємо Google/Meta/Bing
+        "trademark_blocked": 0,  # ТМ «UNO» (претензія Mattel) — не віддаємо на сайт/у фіди
         "no_image": 0,
         "no_gtin": 0,
         "no_brand_fallback": 0,
@@ -733,6 +737,10 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             stats["no_price"] += 1
             continue
 
+        # З 2026-10-06 (сайт відокремлено від Prom, SEO-замовлення + знахідка Коду): ЦІНА ФІДА = ЦІНА НА КАРТЦІ САЙТУ
+        # (site_retail_price) і посилання веде на рідну картку /product-<id>.html — раніше ціна була Prom-ова, а 301 вів на
+        # сайт з іншою ціною → з 2042 порівняних позицій збігалось лише 17 (розбіжність ціни в Merchant Center).
+        # Старий блок нижче (ціна Prom) лишено як неактивний коментар-історію.
         # ЦІНА GOOGLE = ЦІНА PROM (2026-07-23, той самий принцип, що й EVA,
         # PR #141): раніше рахувалась незалежно через default_retail_price()
         # (просту "без конкурента"-формулу, БЕЗ урахування живої
@@ -749,19 +757,18 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         override = prom_price_overrides.get(pid)
         # competitor_prices=None (виклик без нього) = стара поведінка без стелі; інакше «свіжий конкурент» = запис у словнику.
         _fresh_comp = True if competitor_prices is None else ((competitor_prices.get(pid) or 0) > 0)
-        retail_price = _prom_page_price(cost, item.get("category_name"), override, _fresh_comp)
-        if override is None:
-            stats["computed_price"] += 1
+        retail_price = float(site_retail_price(item))
+        stats["computed_price"] += 1   # (лічильник збережено для сумісності друку: тепер = усі позиції з ціною сайту)
 
         name = (item.get("name") or "").strip()
         if not name:
             continue
 
-        link_info = links.get(pid)
-        if link_info is None:
-            stats["no_link_skipped"] += 1
+        # посилання — на рідну картку сайту (Prom-посилання/links більше не потрібні фіду; links лишається в сигнатурі
+        # для сумісності з викликачами та для генерації мапи 301 зі старих Prom-URL)
+        if is_uno_trademark_blocked(name, item.get("vendor") or ""):
+            stats["trademark_blocked"] += 1
             continue
-        prom_id, url_text = link_info["prom_id"], link_info["url_text"]
 
         prom_product = prom_products.get(str(item.get("vendor_code") or pid)) or {}
         image = prom_product.get("main_image") or (item.get("pictures") or [None])[0]
@@ -789,7 +796,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "id": str(item.get("vendor_code") or pid),
             "title": name[:150],
             "description": _clean_description(item.get("description", ""))[:5000] or name,
-            "link": LINK_TEMPLATE.format(prom_id=prom_id, url_text=url_text),
+            "link": SITE_LINK_TEMPLATE.format(pid=pid),
             "image_link": image,
             "price": f"{retail_price:.2f} {FEED_CURRENCY}",
             "availability": "in_stock" if stock > 0 else "out_of_stock",
@@ -899,6 +906,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] Готово! Збережено: {output_file}")
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
+    print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")
     print(f"[Google] Пропущено — без ціни: {stats['no_price']}")
     print(f"[Google] Ціна порахована (нема свіжого override, як на сторінці Prom): {stats['computed_price']}")
     print(f"[Google] Пропущено — не знайдено впевненого посилання на сторінку: {stats['no_link_skipped']}")

@@ -493,6 +493,30 @@ def real_toysi_cost(item: dict) -> float:
     return round(discounted_price + TOYSI_ASSEMBLY_FEE_UAH, 2)
 
 
+# Ціна ВЛАСНОГО САЙТУ plutustoys.com.ua = знижена ціна Toysi × 1.5 (як EVA-фід, рішення власника 2026-10-05), округлена
+# вгору до гривні. ЄДИНЕ джерело: site/build_site.py (ціна на картці й у index.json) і Google/Meta/Bing-фіди (ціна в
+# оголошенні МУСИТЬ збігатись із ціною на цільовій сторінці, інакше Merchant Center відхиляє «розбіжність ціни»).
+SITE_PRICE_MULT = 1.5
+# Підлога (рішення власника 2026-10-06): мінімальної суми замовлення НЕМАЄ, але ціна сайту має покривати реальну
+# собівартість Toysi З ПАКУВАННЯМ («Збірка» 15 ₴/замовлення входить у real_toysi_cost) і давати щонайменше 3%.
+# Без цього дешеві товари (знижена ціна Toysi < ~33 ₴, коли ×1.5 < (ціна+15)×1.03) продавались би в мінус.
+SITE_MIN_MARGIN = 0.03
+
+
+def site_retail_price(item: dict) -> int:
+    """Ціна сайту, грн (ціле, вгору): max(знижена ціна Toysi × 1.5, real_toysi_cost × 1.03).
+    real_toysi_cost = знижена ціна + фіксована «Збірка» Toysi (пакування). Невизначена собівартість → лише ×1.5."""
+    import math as _math
+    base = _math.ceil(toysi_discounted_price(item) * SITE_PRICE_MULT)
+    try:
+        cost = real_toysi_cost(item)
+    except (ValueError, TypeError):
+        return int(base)
+    if not cost or cost <= 0:
+        return int(base)
+    return int(max(base, _math.ceil(cost * (1 + SITE_MIN_MARGIN))))
+
+
 def toysi_discounted_price(item: dict) -> float:
     """Ціна Toysi З НАШОЮ ЗНИЖКОЮ, але БЕЗ фіксованої «Збірки» — саме та знижена
     каталожна ціна, яку показує сторінка Toysi (напр. 257.74 для «Вівці» при

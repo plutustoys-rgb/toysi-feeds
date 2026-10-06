@@ -140,6 +140,7 @@ from pathlib import Path
 from competitor_pricing import decide_price_for_platform, load_description_overrides
 from seo_description import description_for
 from generate_prom_feed import append_clearance_notice
+import rozetka_stop_brands
 from parser import fetch_toysi_catalog
 
 # ЗМІНЕНО 2026-07-14 (вимога Rozetka, передана напряму менеджером по
@@ -389,7 +390,7 @@ def _qualifies_for_feed(item: dict, excluded: set) -> bool:
     vendor = (item.get("vendor") or "").strip()
     if not vendor:
         return False
-    if vendor.lower() in ROZETKA_BRAND_STOP_LIST:
+    if vendor.lower() in ROZETKA_BRAND_STOP_LIST or rozetka_stop_brands.stop_reason(vendor, item.get("category_name")):
         return False
     # ТМ «UNO» Mattel (2026-09-11): «uno»/«уно» цілим словом + vendor не Mattel → виключити.
     if _is_uno_trademark_blocked(item.get("name") or "", vendor):
@@ -701,7 +702,7 @@ def _build_xml(
         # окремі бренди Rozetka відхиляє за власною політикою маркетплейсу
         # (стоп-лист, не помилка даних). Рішення власниці: виключити з
         # фіда Rozetka повністю, ці SKU й далі йдуть на Prom без змін.
-        if vendor.lower() in ROZETKA_BRAND_STOP_LIST:
+        if vendor.lower() in ROZETKA_BRAND_STOP_LIST or rozetka_stop_brands.stop_reason(vendor, item.get("category_name")):
             skipped_stop_brand += 1
             continue
 
@@ -1108,7 +1109,7 @@ def rozetka_feed_preflight(feed_file: str = OUTPUT_FILE) -> dict:
 
         vendor_el = offer.find("vendor")
         vendor = (vendor_el.text or "").strip() if vendor_el is not None else ""
-        if vendor.lower() in ROZETKA_BRAND_STOP_LIST:
+        if vendor.lower() in ROZETKA_BRAND_STOP_LIST or rozetka_stop_brands.stop_reason(vendor):
             warnings.append(f"offer {offer_id}: бренд '{vendor}' у стоп-листі Rozetka")
 
         category_el = offer.find("categoryId")

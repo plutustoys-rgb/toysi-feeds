@@ -12,6 +12,7 @@ kandydaty fee…) на десктоп не потрапляли. VPS має vps_
   • лише `merge --ff-only origin/master` (без merge-комітів/конфліктів).
 Викликається на початку кожної локальної задачі (.ps1 і run_rozetka_local.py).
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,8 +22,10 @@ BASE = Path(__file__).resolve().parent
 
 def sync(base: Path = BASE) -> str:
     """Повертає короткий статус-рядок (для логу задачі)."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}   # жодних діалогів credential-менеджера у фоновій задачі
+
     def _git(*args):
-        return subprocess.run(["git", *args], cwd=base, capture_output=True, text=True, timeout=120)
+        return subprocess.run(["git", *args], cwd=base, capture_output=True, text=True, timeout=120, env=env)
     try:
         if not (base / ".git").is_dir():
             return "пропуск: це не основна копія (worktree або без .git)"
@@ -31,13 +34,14 @@ def sync(base: Path = BASE) -> str:
             return f"пропуск: гілка «{branch}», очікується master — код НЕ оновлено (перемкнути вручну)"
         if _git("diff", "--quiet", "HEAD").returncode != 0:
             return "пропуск: є незакомічені зміни відстежуваних файлів — код НЕ оновлено (щоб нічого не затерти)"
-        f = _git("fetch", "-q", "origin", "master")
+        # lowSpeed*: «живе, але мертве» з'єднання обривається за ~30 с (subprocess timeout на Windows не вбиває дочірній git-remote-https; аудит #632)
+        f = _git("-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30", "fetch", "-q", "origin", "master")
         if f.returncode != 0:
             return f"пропуск: fetch не вдався ({f.stderr.strip()[:120]})"
         before = _git("rev-parse", "--short", "HEAD").stdout.strip()
         m = _git("merge", "-q", "--ff-only", "origin/master")
         if m.returncode != 0:
-            return f"пропуск: fast-forward неможливий ({m.stderr.strip()[:120]})"
+            return f"пропуск: fast-forward неможливий ({' '.join(m.stderr.split())[:300]})"
         after = _git("rev-parse", "--short", "HEAD").stdout.strip()
         return f"актуально: {after}" if before == after else f"оновлено {before} → {after}"
     except Exception as e:  # noqa: BLE001 — синхронізація ніколи не валить задачу

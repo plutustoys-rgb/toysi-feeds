@@ -156,7 +156,7 @@ def save_prom_products_cache(prom_products: dict) -> None:
               f"наступні скрипти в цьому прогоні просто зроблять власний live-фетч.", file=sys.stderr)
 
 
-def load_prom_products_cache(ignore_ttl: bool = False) -> dict | None:
+def load_prom_products_cache(ignore_ttl: bool = False, max_age_days: float | None = None) -> dict | None:
     """Читає кеш, який щойно (у цьому ж прогоні workflow) записав
     generate_google_feed.py — None (не {}), якщо кеш відсутній/застарів,
     щоб виклик-споживач міг однозначно відрізнити "кеш відсутній,
@@ -167,23 +167,53 @@ def load_prom_products_cache(ignore_ttl: bool = False) -> dict | None:
     age_hours = (time.time() - PROM_PRODUCTS_CACHE_FILE.stat().st_mtime) / 3600
     if age_hours >= PROM_PRODUCTS_CACHE_TTL_HOURS and not ignore_ttl:
         return None
+    if max_age_days is not None and age_hours > max_age_days * 24:
+        return None
     try:
         return json.loads(PROM_PRODUCTS_CACHE_FILE.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return None
 
 
+PROM_STALE_CACHE_MAX_AGE_DAYS = 14
+PROM_FETCH_DEGRADED = False   # True, якщо цей прогін працює на застарілих/порожніх даних Prom (не «відмивати» їх у свіжий кеш)
+
+
+def _notify_prom_degraded(reason: str) -> None:
+    """Деградація фото = справжній збій без падіння генератора (run_feed_pipeline_vps.sh глушить код виходу `|| echo`),
+    тож сигналимо ЯВНО (аудит PR #624): Telegram з тротлінгом, best-effort."""
+    try:
+        from telegram_notify import send_throttled_alert
+        send_throttled_alert("feed_prom_degraded", f"⚠️ Фіди Google/Meta/Bing зібрані БЕЗ свіжих даних Prom: {reason}. "
+                             f"Фото — з кешу/Toysi (можливі водяні знаки). Перевірити Prom API/PROM_API_KEY.")
+    except Exception as e:  # noqa: BLE001
+        print(f"[Feed] Telegram про деградацію не надіслано: {e}", file=sys.stderr)
+
+
 def fetch_prom_products_resilient() -> dict:
     """Prom-товари лише для ЧИСТИХ фото (main_image) у фіді. Посилання й ціни фіда від Prom більше не залежать
-    (рідна картка сайту), тож збій Prom API (ReadTimeout my.prom.ua 06.10.2026 о 07:08 валив ВЕСЬ Google-фід, і той
-    лишався зі старими посиланнями) не має зупиняти публікацію: живий фетч → застарілий кеш → {} (фото з Toysi)."""
+    (рідна картка сайту), тож збій МЕРЕЖІ Prom API (ReadTimeout my.prom.ua 06.10.2026 о 07:08 валив ВЕСЬ Google-фід,
+    і той лишався зі старими посиланнями) не має зупиняти публікацію: живий фетч → застарілий кеш (≤14 діб) → {}
+    (фото з Toysi). Ловимо ЛИШЕ мережеві/форматні збої; 401/403 (відкликаний PROM_API_KEY) і баги коду падають гучно."""
+    global PROM_FETCH_DEGRADED
+    PROM_FETCH_DEGRADED = False
+    reason = None
     try:
-        return fetch_prom_products()
-    except Exception as e:  # будь-який збій мережі/API Prom — не критично для фіда
-        stale = load_prom_products_cache(ignore_ttl=True)
-        print(f"[Feed] Prom API недоступний ({type(e).__name__}: {str(e)[:120]}) — "
-              f"{'застарілий кеш товарів Prom' if stale else 'без даних Prom, фото з Toysi'}.", file=sys.stderr)
-        return stale if isinstance(stale, dict) else {}
+        result = fetch_prom_products()
+        if isinstance(result, dict) and result:
+            return result
+        reason = "Prom API повернув порожній список"
+    except (requests.exceptions.RequestException, ValueError, TimeoutError) as e:
+        resp = getattr(e, "response", None)
+        if resp is not None and getattr(resp, "status_code", None) in (401, 403):
+            raise
+        reason = f"{type(e).__name__}: {str(e)[:160]}"
+    PROM_FETCH_DEGRADED = True
+    stale = load_prom_products_cache(ignore_ttl=True, max_age_days=PROM_STALE_CACHE_MAX_AGE_DAYS)
+    print(f"[Feed] Prom недоступний/порожній ({reason}) — "
+          f"{'застарілий кеш товарів Prom' if stale else 'без даних Prom, фото з Toysi'}.", file=sys.stderr)
+    _notify_prom_degraded(reason)
+    return stale if isinstance(stale, dict) else {}
 
 
 def is_valid_gtin(barcode: str) -> bool:
@@ -893,7 +923,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     prom_products = fetch_prom_products_resilient()
     # Кеш для Meta/Bing феєдів того самого прогону (аудит PR #109) —
     # див. докстрінг save_prom_products_cache() вище.
-    if prom_products:
+    if prom_products and not PROM_FETCH_DEGRADED:   # застарілі дані не «відмиваємо» у свіжий mtime
         save_prom_products_cache(prom_products)
     # Індекс за external_id (vendorCode) — ключ, який реально використовує Prom API
     prom_by_external_id = {

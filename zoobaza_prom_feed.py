@@ -25,6 +25,9 @@
 import argparse
 import math
 import os
+import struct
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -86,14 +89,16 @@ def load_whitelist(path: Path = None) -> set:
     return out
 
 
-def compute_price(cost_opt: float, margin: float = None) -> int:
-    """Ціна для Prom, ціла гривня. РРЦ постачальника (опт×1,5) АБО підлога чистої маржі — що більше."""
+def compute_price(cost_opt: float, margin: float = None, feed_price: float = None) -> int:
+    """Ціна для Prom, ціла гривня. РРЦ постачальника (опт×1,5) АБО підлога чистої маржі — що більше.
+    `feed_price` (ціна у фіді постачальника) дає РРЦ без проміжного округлення cost (аудит L-2: round(price/1,5; 2) давав +1 грн)."""
     m = min_margin() if margin is None else margin
     denom = 1.0 - PROM_COMMISSION_PET - PAYMENT_COMMISSION - m
     if denom <= 0:
         raise ValueError(f"маржа {m} + комісії {PROM_COMMISSION_PET + PAYMENT_COMMISSION} ≥ 100%")
     floor = cost_opt / denom
-    return int(math.ceil(max(cost_opt * RRC_FACTOR, floor) - 1e-9))
+    rrc = feed_price * (RRC_FACTOR / zp.ZOOBAZA_FEED_TO_OPT) if feed_price else cost_opt * RRC_FACTOR
+    return int(math.ceil(max(rrc, floor) - 1e-9))
 
 
 def select_offers(catalog: dict, whitelist: set) -> tuple:
@@ -120,8 +125,79 @@ def select_offers(catalog: dict, whitelist: set) -> tuple:
             skip("нема собівартості", pid); continue
         if cost <= 0:
             skip("нульова собівартість", pid); continue
-        offers.append({**it, "zb_id": ID_PREFIX + pid, "prom_category": cat, "price_ua": compute_price(cost)})
+        offers.append({**it, "zb_id": ID_PREFIX + pid, "prom_category": cat, "price_ua": compute_price(cost, feed_price=it.get("price"))})
     return offers, skipped
+
+
+def min_photo_px() -> int:
+    return int(_env_float("ZB_MIN_PHOTO_PX", 500, 0, 5000))
+
+
+def image_size(data: bytes):
+    """(w, h) із заголовка JPEG/PNG/GIF/WebP без сторонніх бібліотек; None — формат не розпізнано."""
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return struct.unpack(">II", data[16:24])
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return struct.unpack("<HH", data[6:10])
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            if data[12:16] == b"VP8X":
+                return 1 + int.from_bytes(data[24:27], "little"), 1 + int.from_bytes(data[27:30], "little")
+            if data[12:16] == b"VP8 ":
+                w, h = struct.unpack("<HH", data[26:30])
+                return w & 0x3FFF, h & 0x3FFF
+            if data[12:16] == b"VP8L":
+                b = int.from_bytes(data[21:25], "little")
+                return (b & 0x3FFF) + 1, ((b >> 14) & 0x3FFF) + 1
+        if data[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                m = data[i + 1]
+                if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7:
+                    i += 2
+                    continue
+                if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+                    h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                    return w, h
+                i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+    except (struct.error, IndexError):
+        pass
+    return None
+
+
+def _fetch_head(url: str, limit: int = 262144) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 PlutusToys-zb-feed", "Range": f"bytes=0-{limit - 1}"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.read(limit)
+
+
+def photo_gate(offers: list, skipped: dict, fetch=_fetch_head, min_px: int = None) -> list:
+    """Лишає offers, чия ПЕРША фото має меншу сторону ≥ min_px (аудит M-2: 58% фото ZooBaza < 500 px, Toysi-фото були ≥ 500).
+    Не вдалося завантажити/розпізнати → відсів (fail-closed: не публікуємо наосліп)."""
+    mp = min_photo_px() if min_px is None else min_px
+    if mp <= 0:
+        return offers
+
+    def side(o):
+        try:
+            sz = image_size(fetch(o["pictures"][0]))
+        except Exception:  # noqa: BLE001 — мережа/HTTP
+            return None
+        return min(sz) if sz else None
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        sides = list(ex.map(side, offers))
+    ok = []
+    for o, sd in zip(offers, sides):
+        if sd is None:
+            skipped.setdefault("фото недоступне/нерозпізнане", []).append(o["id"])
+        elif sd < mp:
+            skipped.setdefault(f"фото менше {mp} px", []).append(o["id"])
+        else:
+            ok.append(o)
+    return ok
 
 
 def build_xml(offers: list) -> ET.Element:
@@ -140,7 +216,9 @@ def build_xml(offers: list) -> ET.Element:
     q = stock_qty()
     for o in offers:
         offer = ET.SubElement(offers_el, "offer", id=o["zb_id"], available="true")
-        ET.SubElement(offer, "vendorCode").text = ID_PREFIX + (o.get("vendor_code") or o["id"])
+        # vendorCode = УНІКАЛЬНИЙ id пропозиції (аудит H-1): код постачальника — EAN, спільний для розмірів/кольорів моделі
+        # (45% offers ділять його), а Prom віддає vendorCode як sku → toysi_code не розрізняв би варіанти. Код постачальника — у param.
+        ET.SubElement(offer, "vendorCode").text = o["zb_id"]
         ET.SubElement(offer, "name").text = o["name"]
         ET.SubElement(offer, "name_ua").text = o["name"]
         ET.SubElement(offer, "price").text = f"{o['price_ua']:.2f}"
@@ -156,6 +234,8 @@ def build_xml(offers: list) -> ET.Element:
         ET.SubElement(offer, "description_ua").text = desc
         if o.get("color"):
             ET.SubElement(offer, "param", name="Колір").text = o["color"]
+        if o.get("vendor_code"):
+            ET.SubElement(offer, "param", name="Код постачальника").text = o["vendor_code"]
     return yml
 
 
@@ -176,20 +256,23 @@ def write_atomic(root: ET.Element, out: Path) -> None:
         raise
 
 
-def run(out: Path = None, dry_run: bool = False, catalog: dict = None, whitelist: set = None) -> int:
+def run(out: Path = None, dry_run: bool = False, catalog: dict = None, whitelist: set = None, photo_fetch=None) -> int:
     out = Path(out or os.environ.get("ZB_FEED_OUT", "") or (BASE / "feeds_zoobaza" / "zoobaza_prom_feed.xml"))
     wl = load_whitelist() if whitelist is None else whitelist
     if not wl:
         print("[ZB-feed] білий список пілоту порожній/відсутній — НІЧОГО не публікуємо (fail-closed), старий файл не чіпаю.", file=sys.stderr)
         return 2
+    live = catalog is None            # живий запуск: перевіряємо роздільність фото (у тестах каталог підставляється)
     try:
         if catalog is None:
             catalog = zp.fetch_zoobaza_catalog()
-            zp.assert_cost_constant(catalog)       # константа опт×1,4 перевірена на контрольних SKU: інакше ціни хибні
+            zp.assert_cost_constant(catalog)       # константа опт×1,5 (з 07.10) перевірена на контрольних SKU: інакше ціни хибні
     except Exception as e:  # noqa: BLE001 — мережа/формат/константа: стара версія лишається
         print(f"[ZB-feed] каталог постачальника недоступний/некоректний ({type(e).__name__}: {e}) — файл НЕ оновлено.", file=sys.stderr)
         return 2
     offers, skipped = select_offers(catalog, wl)
+    if photo_fetch is not None or live:
+        offers = photo_gate(offers, skipped, fetch=photo_fetch or _fetch_head)
     for why, ids in skipped.items():
         print(f"[ZB-feed] пропущено — {why}: {len(ids)} ({', '.join(ids[:8])}{'…' if len(ids) > 8 else ''})")
     if not offers:

@@ -6,13 +6,15 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 TC, RRC_K, STEP = 0.117, 1.5, 3
+import os
+FEED_TO_OPT = float(os.environ.get("ZOOBAZA_FEED_TO_OPT", "1.5"))   # jsonl від 04.10 (×1.4) рахувати з ZOOBAZA_FEED_TO_OPT=1.4
 def net(p, cost): return p * (1 - TC) / cost - 1
 def main(path):
     rows = [json.loads(l) for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip()]
     rows = [r for r in rows if "error" not in r]
     out = []
     for r in rows:
-        cost = round(r["feed_price"] / 1.4, 2); rrc = round(cost * RRC_K)
+        cost = round(r["feed_price"] / FEED_TO_OPT, 2); rrc = round(cost * RRC_K)
         mp = r["min_price_080"]
         r.update(cost=cost, rrc=rrc, net_rrc=net(rrc, cost),
                  net_vs=(net(mp - STEP, cost) if mp else None),

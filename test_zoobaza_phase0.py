@@ -55,11 +55,29 @@ root = pf.build_xml(offers)
 offs = root.find("shop").find("offers").findall("offer")
 o1 = [o for o in offs if o.get("id") == "zb-3487"][0]
 chk("XML: id і vendorCode з префіксом zb-, categoryId = Prom-id (не «загальне»)",
-    o1.findtext("vendorCode") == "zb-303625" and o1.findtext("categoryId") == "181201")
+    o1.findtext("vendorCode") == "zb-3487" and o1.findtext("categoryId") == "181201")
+chk("H-1: vendorCode унікальний (= zb-id), код постачальника — у param, не в vendorCode",
+    len({o.findtext("vendorCode") for o in offs}) == len(offs)
+    and any(p.get("name") == "Код постачальника" and p.text == "303625" for p in o1.findall("param")))
 chk("XML: ціна з крапкою і двома нулями, цілі гривні; кількість = ZB_STOCK_QTY (1), не прапорець 10",
     o1.findtext("price") == "1620.00" and o1.findtext("quantity_in_stock") == "1")
 chk("XML: 2 фото, колір як param, name_ua", len(o1.findall("picture")) == 2 and o1.find("param").get("name") == "Колір" and o1.findtext("name_ua"))
 chk("XML: порожній опис → назва (Prom вимагає description)", [o for o in offs if o.get("id") == "zb-4874"][0].findtext("description") == "Будка Меджік")
+
+# ── L-2: РРЦ береться з ціни фіду, без проміжного округлення cost ──
+chk("L-2: ціна фіду 103 при константі 1.5 → 103 (не 104)", (lambda: (setattr(zp, "ZOOBAZA_FEED_TO_OPT", 1.5), pf.compute_price(round(103 / 1.5, 2), feed_price=103))[1])() == 103)
+zp.ZOOBAZA_FEED_TO_OPT = 1.4
+
+# ── M-2: роздільність фото ──
+import struct as _st
+_png = b"\x89PNG\r\n\x1a\n" + _st.pack(">I", 13) + b"IHDR" + _st.pack(">II", 600, 480) + b"\x08\x02\x00\x00\x00"
+_jpg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"\xff\xc0\x00\x11\x08" + _st.pack(">HH", 235, 316) + b"\x03\x01\x22\x00"
+chk("image_size: PNG 600x480, JPEG 316x235, сміття → None", pf.image_size(_png) == (600, 480) and pf.image_size(_jpg) == (316, 235) and pf.image_size(b"xx") is None)
+_o = [{"id": "a", "pictures": ["u/a"]}, {"id": "b", "pictures": ["u/b"]}, {"id": "c", "pictures": ["u/c"]}]
+_sk = {}
+_ok = pf.photo_gate(_o, _sk, fetch=lambda u: {"u/a": _png, "u/b": _jpg}[u], min_px=450)
+chk("photo_gate: 480 проходить; 235 і недоступне — відсів з причиною",
+    [x["id"] for x in _ok] == ["a"] and _sk.get("фото менше 450 px") == ["b"] and _sk.get("фото недоступне/нерозпізнане") == ["c"])
 
 # ── запуск: fail-closed і атомарність ──
 out = Path(_tmp) / "feed" / "z.xml"
@@ -106,5 +124,16 @@ with orders_db.get_connection() as conn:
     put(conn, "7", ["zb-3487"]); put(conn, "8", ["zb-3487", "1"])
     zi.claim_new(conn); zi.claim_new(conn)
     chk("алерт: рівно по одному на замовлення, змішаний — з позначкою 🔴", len(sent) == 2 and any("ЗМІШАНИЙ" in t for t in sent))
+    # M-1b: оптимістичний замок — роутер змінив статус між SELECT і UPDATE → claim його не перетирає
+    put(conn, "9", ["zb-3487"])
+    _orig = zi.classify_items
+    def _race(items):
+        conn.execute("UPDATE orders SET status='toysi_error' WHERE order_id='9'")
+        return _orig(items)
+    zi.classify_items = _race
+    r3 = zi.claim_new(conn, notify=False)
+    zi.classify_items = _orig
+    chk("claim: статус змінено між SELECT і UPDATE → не перетирається",
+        r3["claimed"] == [] and conn.execute("SELECT status FROM orders WHERE order_id='9'").fetchone()[0] == "toysi_error")
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ ZooBaza Фаза 0 — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

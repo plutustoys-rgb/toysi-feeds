@@ -9,6 +9,11 @@ Telegram «залишок Toysi недостатній» + через 25 хв а
   1. `order_pipeline.py` виконує poll → bank_check → route ПОСЛІДОВНО в одному процесі; між poll і route викликається `claim_new()`.
   2. До списку статусів-виключень `get_orders_ready_to_forward` (патерн є: toysi_error, *_cancelled_before_forward) додаються
      `zoobaza_hold` і `zoobaza_mixed_hold` — той самий відбір бере service_watchdog, тож хибних «застрягло» теж нема.
+  3. `daily_report._open_orders_detail_section` (669-671) має власний список статусів-виключень — додати ті самі два статуси
+     (інакше утримані замовлення дадуть «🔴 застрягло», аудит PR #634 M-1). Усі три правки — ОДНИМ PR, claim_new викликати
+     ЛИШЕ з order_pipeline (послідовно з роутером; оптимістичний замок `status IS ?` закриває і гонку з іншим процесом).
+  ⚠️ Утримане замовлення більше не проходить `_check_*_not_cancelled` (вони в route_order) — скасування покупцем після hold
+     має ловити власний ланцюг ZooBaza (Фаза 1; аудит M-3).
 
 ВПІЗНАННЯ: позиція ZooBaza = `toysi_code` з префіксом `zb-` (генератор фіду `zoobaza_prom_feed.py` ставить його в offer id/vendorCode;
 Prom віддає це як sku/external_id, EVA — offer id, Rozetka — article). Решта — Toysi.
@@ -112,8 +117,8 @@ def claim_new(conn, state_path: Path = None, notify: bool = True) -> dict:
         new_status = STATUS_HOLD if kind == "zoobaza" else STATUS_MIXED
         # UPDATE лише цього рядка й лише поки він не переданий Toysi (захист від гонки з роутером у іншому процесі)
         cur = conn.execute(
-            "UPDATE orders SET status = ? WHERE internal_order_id = ? AND forwarded_to_toysi_at IS NULL",
-            (new_status, order["internal_order_id"]))
+            "UPDATE orders SET status = ? WHERE internal_order_id = ? AND forwarded_to_toysi_at IS NULL AND status IS ?",
+            (new_status, order["internal_order_id"], order.get("status")))   # оптимістичний замок: статус не змінився з моменту SELECT (аудит M-1b)
         if cur.rowcount != 1:
             continue
         rec = state.setdefault(order["internal_order_id"], {

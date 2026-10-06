@@ -309,3 +309,7 @@ reels/
 # 301-редирект-мапа Prom→сайт (генерується generate_prom_redirects.py на VPS, не в git)
 prom_redirects.map
 prom_redirects_apache.map
+
+# ZooBaza: власний стан замовлень (коди товарів) і згенерований фід — не в git (аудит PR #634 L-4)
+zoobaza_state.json
+feeds_zoobaza/

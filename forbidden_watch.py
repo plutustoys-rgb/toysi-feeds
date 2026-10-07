@@ -24,18 +24,19 @@ import forbidden_products as fp
 
 BASE = Path(__file__).resolve().parent
 REVIEWED_FILE = Path(os.environ.get("FORBIDDEN_REVIEWED_FILE", "") or (BASE / "forbidden_products_reviewed.json"))
+MAX_IN_ALERT = 15
 STATE_FILE = Path(os.environ.get("FORBIDDEN_WATCH_STATE", "") or (BASE / "forbidden_watch_state.json"))
 
 # Цілі форми (укр + рос). НЕ підрядки.
 _FORMS = {
     "ніж": {"ніж", "ножа", "ножу", "ножем", "ножі", "ножів", "ножами", "ножах", "ножик", "ножика", "ножики", "нож", "ножи", "ножом"},
-    "кинджал": {"кинджал", "кинджала", "кинджали", "кинджалів", "кинжал", "кинжала", "кинжалы"},
+    "кинджал": {"кинджал", "кинджала", "кинджали", "кинджалів", "кинжал", "кинжала", "кинжалы", "кинджалик", "кинджалика"},
     "викидуха": {"викидуха", "викидуху", "викидухи", "викидух", "выкидуха", "выкидной"},
     "кунай": {"кунай", "куная", "куной", "kunai"},
     "катана": {"катана", "катану", "катани", "катан", "катаны"},
-    "сокира": {"сокира", "сокиру", "сокири", "сокир", "сокирою", "топор", "топоры", "топора"},
+    "сокира": {"сокира", "сокиру", "сокири", "сокир", "сокирою", "топор", "топоры", "топора", "сокирка", "сокирку", "сокирки", "топірець", "топірця", "топорик"},
     "меч": {"меч", "меча", "мечі", "мечів", "мечем", "мечу", "мечи", "мечей"},
-    "шабля": {"шабля", "шаблю", "шаблі", "шабель", "сабля", "сабли", "шаблею"},
+    "шабля": {"шабля", "шаблю", "шаблі", "шабель", "сабля", "сабли", "шаблею", "шпага", "шпагу", "шпаги", "нунчаки"},
     "щит": {"щит", "щита", "щити", "щитів", "щиту", "щиты"},
 }
 _FORM2KEY = {f: k for k, forms in _FORMS.items() for f in forms}
@@ -53,9 +54,10 @@ def tokens(text: str) -> list:
 def matched_keys(name: str) -> list:
     """Ключові слова зброї, знайдені як ЦІЛІ токени в назві, з автоматичними відсіюваннями; порожньо = не кандидат."""
     low = (name or "").lower()
-    if any(re.search(p, low) for p in _NEG_PHRASES):
-        return []
     keys = {_FORM2KEY[t] for t in tokens(name) if t in _FORM2KEY}
+    # канцелярія/кухня/ліплення глушить ЛИШЕ «ніж» (аудит #636 R3): «Кухонний ніж, меч» лишається кандидатом через «меч»
+    if any(re.search(p, low) for p in _NEG_PHRASES):
+        keys.discard("ніж")
     if keys == {"ніж"} and _CONJ.search(low):      # «ніж» лише як сполучник
         return []
     return sorted(keys)
@@ -111,27 +113,35 @@ def alert_new_candidates(catalog: dict, send=None, state_path: Path = None, revi
     seen = _load_state(sp)
     fresh = [c for c in pending if c["pid"] not in seen]
     if fresh:
-        lines = [f"• {c['pid']} [{c['category']}] {c['name'][:80]} (склад {c['stock']}; слова: {', '.join(c['keys'])})" for c in fresh[:15]]
-        more = f"\n…і ще {len(fresh) - 15}" if len(fresh) > 15 else ""
+        shown = fresh[:MAX_IN_ALERT]
+        lines = [f"• {c['pid']} [{c['category']}] {c['name'][:80]} (склад {c['stock']}; слова: {', '.join(c['keys'])})" for c in shown]
+        more = f"\n…і ще {len(fresh) - len(shown)} — прийдуть наступним алертом" if len(fresh) > len(shown) else ""
+        warn = ""
+        if reviewed is None and not load_reviewed():
+            warn = "\n⚠️ forbidden_products_reviewed.json відсутній/порожній/нечитний — тому кандидатів стільки; перевір, що файл задеплоєно."
+            print("[forbidden_watch] УВАГА: forbidden_products_reviewed.json не прочитано.", file=sys.stderr)
         text = (f"🔪 Нові кандидати «клинкова зброя» за словом у назві ({len(fresh)}) — потрібен ПЕРЕГЛЯД людиною, автозаборони НЕМАЄ:\n"
-                + "\n".join(lines) + more +
+                + "\n".join(lines) + more + warn +
                 "\n\nЩо робити: прибрати з усіх вітрин → додати pid у FORBIDDEN_PRODUCT_IDS (forbidden_products.py); "
                 "лишити → додати pid у forbidden_products_reviewed.json (verdict, дата, хто). Поки не вирішено — алерт не повториться, "
                 "але pid лишається в `blade_unreviewed` щоденного монітора.")
         try:
-            (send or _telegram)(text)
+            ok = (send or _telegram)(text)
         except Exception as e:  # noqa: BLE001 — алерт best-effort, монітор не падає
             print(f"[forbidden_watch] Telegram не надіслано: {e}", file=sys.stderr)
             return pending                    # стан не оновлюємо — спробуємо знову наступного дня
-        _save_state(sp, seen | {c["pid"] for c in fresh})
+        if ok is False:                       # send_telegram_message НЕ кидає виняток, а повертає False (аудит #636, блокер)
+            print("[forbidden_watch] Telegram повернув False (токен/мережа/ok:false) — стан не оновлено, повторимо наступного дня.", file=sys.stderr)
+            return pending
+        _save_state(sp, seen | {c["pid"] for c in shown})    # у стан лише ПОКАЗАНІ в алерті pid: решта прийде наступним
     return pending
 
 
-def _telegram(text: str) -> None:
+def _telegram(text: str):
     if os.environ.get("AUDIT_NO_TELEGRAM") == "1":
-        return
+        return None                           # тестовий режим: не збій і не відправка
     from telegram_notify import send_telegram_message
-    send_telegram_message(text)
+    return send_telegram_message(text)
 
 
 if __name__ == "__main__":

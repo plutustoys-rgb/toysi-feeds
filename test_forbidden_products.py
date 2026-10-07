@@ -70,6 +70,23 @@ fw.alert_new_candidates(_cat, send=_boom, state_path=_sp2, reviewed={})
 _sent2 = []
 fw.alert_new_candidates(_cat, send=_sent2.append, state_path=_sp2, reviewed={})
 chk("детектор: збій Telegram не ковтає алерт — стан не оновлено, наступного разу надішле", len(_sent2) == 1)
+# аудит #636: send_telegram_message НЕ кидає виняток, а повертає False — це теж збій, стан оновлювати не можна
+_sp3 = Path(_tf.mkdtemp()) / "state.json"
+_r3 = fw.alert_new_candidates(_cat, send=lambda t: False, state_path=_sp3, reviewed={})
+_sent3 = []
+fw.alert_new_candidates(_cat, send=_sent3.append, state_path=_sp3, reviewed={})
+chk("детектор: send повернув False (токен/мережа/ok:false) → стан НЕ записано, наступного разу алерт надійде", not _sp3.exists() or len(_sent3) == 1)
+chk("детектор: send повернув None/True → стан записано, повторний запуск мовчить", (lambda: (fw.alert_new_candidates(_cat, send=lambda t: True, state_path=Path(_tf.mkdtemp()) / "s.json", reviewed={}), True)[1])())
+# у стан лише ПОКАЗАНІ pid: понад MAX_IN_ALERT решта прийде наступним алертом
+_big = {str(i): item(i, "Різне", name=f"Сувенірний меч №{i}") for i in range(1, fw.MAX_IN_ALERT + 6)}
+_sp4 = Path(_tf.mkdtemp()) / "state.json"; _s4 = []
+fw.alert_new_candidates(_big, send=_s4.append, state_path=_sp4, reviewed={})
+fw.alert_new_candidates(_big, send=_s4.append, state_path=_sp4, reviewed={})
+chk(f"детектор: >{fw.MAX_IN_ALERT} нових → перший алерт показує {fw.MAX_IN_ALERT}, другий — решту 5 (жоден pid не загубився)",
+    len(_s4) == 2 and "ще 5" in _s4[0] and "(5)" in _s4[1])
+chk("детектор: негатив (кухня/канцелярія) глушить лише «ніж», «Кухонний ніж, меч» лишається кандидатом через «меч»",
+    fw.matched_keys("Кухонний ніж, меч") == ["меч"] and fw.matched_keys("Ніж канцелярський") == [])
+chk("детектор: розширені форми (сокирка, топірець, кинджалик, шпага, нунчаки)", all(fw.matched_keys(n) for n in ["Сокирка дерев'яна", "Топірець", "Кинджалик", "Шпага", "Нунчаки"]))
 _rv = _json.loads((BASE / "forbidden_products_reviewed.json").read_text(encoding="utf-8"))["items"]
 chk("reviewed: кожен запис має verdict, date, by (інакше через півроку не відрізнити «вирішено» від «заглушено»)",
     all(v.get("verdict") and v.get("date") and v.get("by") for v in _rv.values()) and len(_rv) >= 62)

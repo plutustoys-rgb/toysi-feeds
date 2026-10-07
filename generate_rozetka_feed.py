@@ -141,6 +141,7 @@ from competitor_pricing import decide_price_for_platform, load_description_overr
 from seo_description import description_for
 from generate_prom_feed import append_clearance_notice
 import rozetka_stop_brands
+from forbidden_products import is_forbidden
 from parser import fetch_toysi_catalog
 
 # ЗМІНЕНО 2026-07-14 (вимога Rozetka, передана напряму менеджером по
@@ -379,6 +380,8 @@ def _qualifies_for_feed(item: dict, excluded: set) -> bool:
     if cost <= 0 or cost < MIN_SUPPLIER_PRICE:
         return False
     if str(item["id"]) in excluded:
+        return False
+    if is_forbidden(item):   # політика «що не продаємо» (forbidden_products); у _build_xml нижче — дубль-гейт
         return False
     # D3 (2026-08-21, фідбек модерації Rozetka): «Уцінка …» (пошкоджена упаковка) — модератор
     # відхиляє як «товар занесено як новий, вкажіть стан used». Ми дропшип, уцінені одиничні позиції
@@ -676,6 +679,10 @@ def _build_xml(
 
         item_id = str(item["id"])
         if item_id in excluded:
+            skipped_unprof += 1
+            continue
+
+        if is_forbidden(item):   # політика «що не продаємо» (forbidden_products) — реальний гейт, як і D3 нижче
             skipped_unprof += 1
             continue
 

@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 import parser as tp
 import competitor_pricing as cp
 from trademark_filter import is_uno_trademark_blocked
+from forbidden_products import is_forbidden
 
 OUT = os.path.dirname(os.path.abspath(__file__))
 PRICE_MULT = cp.SITE_PRICE_MULT   # єдине джерело — competitor_pricing.site_retail_price (збіг з Google/Meta/Bing-фідами)
@@ -250,6 +251,8 @@ def build():
         name = it.get("name") or ""
         if not pics or not name:
             continue
+        if is_forbidden(it):
+            continue   # політика «що не продаємо» (forbidden_products, рішення власника 2026-10-07): ножі/зброя; старі сторінки прибере крок 8 build()
         if is_uno_trademark_blocked(name, it.get("vendor") or ""):
             continue   # ТМ «UNO» (претензія Mattel): не продаємо на власному сайті (SEO-замовлення 2026-10-06)
         catname = it.get("category_name") or "Інше"

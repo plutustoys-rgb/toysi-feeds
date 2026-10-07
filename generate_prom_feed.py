@@ -10,6 +10,7 @@ from competitor_pricing import (decide_price_for_platform, load_fresh_prom_price
                                  load_description_overrides, real_toysi_cost,
                                  compute_floor, compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR,
                                  canonical_competitor_floor, PRICE_STEP, cap_stale_prom_override)
+from forbidden_products import is_forbidden
 from parser import fetch_toysi_catalog
 from seo_description import description_for
 from telegram_notify import send_telegram_message
@@ -631,6 +632,9 @@ def _build_xml(
     derived_prom_category = _derive_toysi_to_prom_category(full_catalog or catalog, prom_category_cache)
 
     for item in catalog.values():
+        if is_forbidden(item):   # політика «що не продаємо» (forbidden_products): _build_xml — спільний для prom_feed і prom_feed_top
+            skipped += 1
+            continue
         cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
         if cost <= 0:
             skipped += 1

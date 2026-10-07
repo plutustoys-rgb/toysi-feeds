@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from parser import fetch_toysi_catalog
+from forbidden_products import is_forbidden
 from generate_prom_feed import default_retail_price, generate_feed, is_clearance_item, MIN_SUPPLIER_PRICE
 from competitor_pricing import decide_price_for_platform, load_delisted_pids, load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices, real_toysi_cost
 
@@ -133,7 +134,9 @@ EXCLUDED_CATEGORIES = {"велосипеди", "термометри та асп
 
 
 def is_excluded_category(item: dict) -> bool:
-    return (item.get("category_name") or "").strip().lower() in EXCLUDED_CATEGORIES
+    # forbidden_products — ЄДИНА політика «що не продаємо» для ВСІХ вітрин (ножі/зброя, рішення власника 07.10.2026);
+    # цей відбір живить також Google/Meta/Bing/ALLO (select_top_items), тож гейт тут закриває їх теж.
+    return (item.get("category_name") or "").strip().lower() in EXCLUDED_CATEGORIES or is_forbidden(item)
 
 
 def _margin(item: dict, pid: str = None, scan_state: dict = None, delisted_pids: dict = None) -> float:

@@ -243,6 +243,7 @@
   → **SMM** (стратегія) + Код (механіка).
 - **EVA:** `eva_cabinet_scraper`, `eva_catalog_auditor`, `eva_orders_client`, `generate_eva_feed` → Код + SEO (якість).
 - **ALLO:** `allo_cabinet_scraper`, `generate_allo_feed` → Код.
+- **Політика «що не продаємо» (усі вітрини):** `forbidden_products.py` → Код. ЄДИНА константа заборонених Toysi-категорій (зараз «мечі, ножі та шаблі», 246 SKU, рішення власника 2026-10-07: дитячий магазин, репутація) + `is_forbidden(item)`. Гейт стоїть у `generate_prom_feed._build_xml`, `generate_prom_feed_top.is_excluded_category` (звідти Google/Meta/Bing/ALLO через `select_top_items`), `generate_eva_feed` (`_qualifies_for_feed` ВИЩЕ за промо-обхід категорій + `_build_xml`), `generate_rozetka_feed` (обидва дубльовані фільтри), `generate_allo_feed` (і заморожений знімок фільтрується при читанні), `site/build_site` (старі `product-<pid>.html` прибирає крок 8 build). НЕ фільтр у `parser.fetch_toysi_catalog`: каталог читають `order_router`/звіти/репрайсер, невідомий SKU = «немає в наявності» (`order_router.py:190-206`) і відкрите замовлення зависло б. `test_forbidden_products.py` (`--live`, `--feeds DIR`) падає, якщо з'явиться генератор вітрини без політики; НОВИЙ генератор мусить викликати `is_forbidden`.
 - **Toysi / RoyalToys (постачальник):** `toysi_cabinet_scraper`, `parser` (fetch_toysi_catalog),
   `royaltoys_parser`, `compare_royaltoys_toysi`, `generate_royaltoys_feed` → Код.
   `zoobaza_parser` (ZooBaza, товари для тварин, публічний YML; cost=price/1.5 (до 04.10 було /1.4); корми не беремо, одяг за прапорцем) → Код;

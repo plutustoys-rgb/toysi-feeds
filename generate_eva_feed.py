@@ -162,6 +162,7 @@ from competitor_pricing import (
     load_description_overrides, real_toysi_cost, toysi_discounted_price,
 )
 from generate_prom_feed import append_clearance_notice, normalize_vendor
+from forbidden_products import is_forbidden
 from parser import fetch_toysi_catalog
 
 SHOP_NAME          = "PlutusToys"
@@ -803,6 +804,8 @@ def _qualifies_for_feed(item: dict, excluded: set = None, prom_price_overrides: 
         return False
     if str(item["id"]) in excluded:
         return False
+    if is_forbidden(item):
+        return False   # політика «що не продаємо» (forbidden_products): вище за промо-обхід категорій нижче, промо її НЕ обходить
     if (item.get("category_id") or "").strip() in EVA_EXCLUDED_CATEGORIES \
             and str(item.get("id")) not in EVA_BIRTHDAY_PROMO_SKUS:
         return False   # промо-SKU обходять виключення категорій (власник: додати у фід)
@@ -955,6 +958,10 @@ def _build_xml(
 
         item_id = str(item["id"])
         if item_id in excluded:
+            skipped_unprof += 1
+            continue
+
+        if is_forbidden(item):   # дубль-гейт політики forbidden_products (як _qualifies_for_feed вище)
             skipped_unprof += 1
             continue
 

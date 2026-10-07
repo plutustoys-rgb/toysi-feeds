@@ -142,6 +142,7 @@ from competitor_pricing import (
 )
 from generate_prom_feed import append_clearance_notice, normalize_vendor
 from generate_prom_feed_top import select_top_items
+from forbidden_products import is_forbidden
 from parser import fetch_toysi_catalog
 
 SHOP_NAME          = "PlutusToys"
@@ -465,7 +466,10 @@ def _build_allo_static_selection(catalog: dict, price_overrides: dict = None) ->
     if ALLO_STATIC_SELECTION_FILE.exists():
         try:
             saved = json.loads(ALLO_STATIC_SELECTION_FILE.read_text(encoding="utf-8"))
-            return saved["items"], saved["prices"]
+            # Заморожений знімок не знає про політику «що не продаємо» (forbidden_products) — фільтруємо при читанні,
+            # інакше заборонені SKU, що потрапили в нього до заборони, лишались би у фіді назавжди.
+            items = {pid: it for pid, it in saved["items"].items() if not is_forbidden(it)}
+            return items, {pid: p for pid, p in saved["prices"].items() if pid in items}
         except (ValueError, OSError, KeyError):
             pass  # пошкоджений/неповний файл — сформувати заново нижче, як при першому запуску
 
@@ -481,6 +485,8 @@ def _build_allo_static_selection(catalog: dict, price_overrides: dict = None) ->
     items: dict = {}
     prices: dict = {}
     for pid, item in top_catalog.items():
+        if is_forbidden(item):
+            continue
         if (item.get("category_id") or "").strip() in EVA_EXCLUDED_CATEGORIES:
             continue
         if not _qualifies_for_feed(item, excluded=set(), prom_price_overrides=price_overrides):

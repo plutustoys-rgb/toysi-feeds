@@ -98,6 +98,15 @@ def main() -> None:
               file=sys.stderr)
         return
 
+    # Детектор «клинкова зброя» (forbidden_watch): нові кандидати за словом → Telegram (не автозаборона). ДО звернення до Prom API, щоб збій
+    # Prom не глушив детектор; сам детектор ніколи не валить монітор. Кількість нерозглянутих — у історію (blade_unreviewed).
+    blade_unreviewed = None
+    try:
+        import forbidden_watch
+        blade_unreviewed = len(forbidden_watch.alert_new_candidates(toysi_catalog))
+    except Exception as e:  # noqa: BLE001
+        print(f"[CatalogHealth] forbidden_watch збій ({type(e).__name__}: {e}) — пропущено.", file=sys.stderr)
+
     top_catalog = select_top_items(toysi_catalog)
     selection_size = len(top_catalog)
     desired_ids = {str(pid) for pid in top_catalog}
@@ -130,6 +139,7 @@ def main() -> None:
         "view_incomplete": bool(view_warning),
         "target": TARGET,
         "alerted": alerted,
+        "blade_unreviewed": blade_unreviewed,
     }
     try:
         with HISTORY_FILE.open("a", encoding="utf-8") as f:

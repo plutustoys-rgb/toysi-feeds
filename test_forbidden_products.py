@@ -39,6 +39,63 @@ BAD, OK = item(1, CAT), item(2, "Різне")
 chk("is_forbidden: категорія → True, інша → False", fp.is_forbidden(BAD) and not fp.is_forbidden(OK))
 chk("is_forbidden: регістр/пробіли/не-dict", fp.is_forbidden(item(3, "  МЕЧІ, НОЖІ ТА ШАБЛІ ")) and not fp.is_forbidden(None) and not fp.is_forbidden({}))
 
+# ── 1б. точкові pid (FORBIDDEN_PRODUCT_IDS) — поза забороненою категорією ──
+chk("FORBIDDEN_PRODUCT_IDS: рівно 6 pid рішення Консультанта 07.10", set(fp.FORBIDDEN_PRODUCT_IDS) == {"181821", "166976", "180570", "293570", "275143", "306414"})
+chk("is_forbidden: pid зі списку → True навіть у невинній категорії; сусідній pid тієї ж категорії → False",
+    fp.is_forbidden(item(166976, "Уцінка")) and fp.is_forbidden(item("306414", "Маскарадні костюми")) and not fp.is_forbidden(item(166977, "Уцінка")))
+
+# ── 1в. детектор-доповідач forbidden_watch (ключ за ЦІЛИМ словом; нічого не забороняє) ──
+import forbidden_watch as fw
+POS = ['Ніж сувенірний "Викидуха Скелетон"', "Сувенірна сокира Череп", "Сувенірний меч Катана міні", "Сувенірний ніж «KUNAI»", "Кинджал дерев'яний", "Щит і Меч набір"]
+NEG = ["Ножиці дитячі", "Ножиці з зайчиком", "Ніж канцелярський 18 мм", "Леза до канцелярського ножа", "Тісто для ліплення (ніж у комплекті для тіста)",
+       "Ніжки для стільця", "Ніжний плюшевий ведмідь", "Лялька ніжна", "Більше ніж гра", "Набір кухонний ніж дитячий", "Мʼячик та ніжка"]
+chk("детектор: позитиви ловить (ніж/сокира/меч/kunai/кинджал/щит)", all(fw.matched_keys(n) for n in POS))
+chk("детектор: НЕГАТИВИ не ловить — ножиці, канцелярський ніж, ніжки, ніжний, «ніж»-сполучник, кухня/ліплення", not any(fw.matched_keys(n) for n in NEG))
+chk("детектор: токени — «ніжки/ніжний/ножиці» не збігаються як підрядок", fw.matched_keys("ніжки ніжний ножиці") == [])
+import tempfile as _tf, os as _os, json as _json
+_cat = {"1": item(1, "Різне", name="Ніж сувенірний Хижак"), "2": item(2, "Різне", name="Ножиці дитячі"), "3": item(3, "Різне", name="Меч-кладенець"),
+        "4": item(166976, "Уцінка", name="Ніж сувенірний Викидуха"), "5": item(5, "Ножиці та канцелярські ножі", name="Ніж канцелярський")}
+_c = fw.candidates(_cat)
+chk("детектор: кандидати = лише 1 і 3 (ножиці, заборонений pid, канцелярська категорія відсіяні)", sorted(c["pid"] for c in _c) == ["1", "3"])
+chk("детектор: нерозглянуті = кандидати мінус reviewed", [c["pid"] for c in fw.unreviewed(_cat, reviewed={"1": {}})] == ["3"])
+_sent = []
+_sp = Path(_tf.mkdtemp()) / "state.json"
+_r1 = fw.alert_new_candidates(_cat, send=_sent.append, state_path=_sp, reviewed={})
+_r2 = fw.alert_new_candidates(_cat, send=_sent.append, state_path=_sp, reviewed={})
+chk("детектор: алерт один раз на pid (повторний запуск мовчить), нерозглянуті повертаються обидва рази, текст самодіагностичний",
+    len(_sent) == 1 and len(_r1) == 2 and len(_r2) == 2 and "FORBIDDEN_PRODUCT_IDS" in _sent[0] and "forbidden_products_reviewed.json" in _sent[0] and "автозаборони НЕМАЄ" in _sent[0])
+def _boom(t): raise RuntimeError("telegram down")
+_sp2 = Path(_tf.mkdtemp()) / "state.json"
+fw.alert_new_candidates(_cat, send=_boom, state_path=_sp2, reviewed={})
+_sent2 = []
+fw.alert_new_candidates(_cat, send=_sent2.append, state_path=_sp2, reviewed={})
+chk("детектор: збій Telegram не ковтає алерт — стан не оновлено, наступного разу надішле", len(_sent2) == 1)
+# аудит #636: send_telegram_message НЕ кидає виняток, а повертає False — це теж збій, стан оновлювати не можна
+_sp3 = Path(_tf.mkdtemp()) / "state.json"
+_r3 = fw.alert_new_candidates(_cat, send=lambda t: False, state_path=_sp3, reviewed={})
+_sent3 = []
+fw.alert_new_candidates(_cat, send=_sent3.append, state_path=_sp3, reviewed={})
+chk("детектор: send повернув False (токен/мережа/ok:false) → стан НЕ записано, наступного разу алерт надійде", not _sp3.exists() or len(_sent3) == 1)
+chk("детектор: send повернув None/True → стан записано, повторний запуск мовчить", (lambda: (fw.alert_new_candidates(_cat, send=lambda t: True, state_path=Path(_tf.mkdtemp()) / "s.json", reviewed={}), True)[1])())
+# у стан лише ПОКАЗАНІ pid: понад MAX_IN_ALERT решта прийде наступним алертом
+_big = {str(i): item(i, "Різне", name=f"Сувенірний меч №{i}") for i in range(1, fw.MAX_IN_ALERT + 6)}
+_sp4 = Path(_tf.mkdtemp()) / "state.json"; _s4 = []
+fw.alert_new_candidates(_big, send=_s4.append, state_path=_sp4, reviewed={})
+fw.alert_new_candidates(_big, send=_s4.append, state_path=_sp4, reviewed={})
+chk(f"детектор: >{fw.MAX_IN_ALERT} нових → перший алерт показує {fw.MAX_IN_ALERT}, другий — решту 5 (жоден pid не загубився)",
+    len(_s4) == 2 and "ще 5" in _s4[0] and "(5)" in _s4[1])
+chk("детектор: негатив (кухня/канцелярія) глушить лише «ніж», «Кухонний ніж, меч» лишається кандидатом через «меч»",
+    fw.matched_keys("Кухонний ніж, меч") == ["меч"] and fw.matched_keys("Ніж канцелярський") == [])
+chk("детектор: розширені форми (сокирка, топірець, кинджалик, шпага, нунчаки)", all(fw.matched_keys(n) for n in ["Сокирка дерев'яна", "Топірець", "Кинджалик", "Шпага", "Нунчаки"]))
+_rv = _json.loads((BASE / "forbidden_products_reviewed.json").read_text(encoding="utf-8"))["items"]
+chk("reviewed: кожен запис має verdict, date, by (інакше через півроку не відрізнити «вирішено» від «заглушено»)",
+    all(v.get("verdict") and v.get("date") and v.get("by") for v in _rv.values()) and len(_rv) >= 62)
+chk("reviewed: verdict «заборонено» збігається з FORBIDDEN_PRODUCT_IDS (без розсинхрону)",
+    {p for p, v in _rv.items() if v["verdict"].startswith("заборонено")} == set(fp.FORBIDDEN_PRODUCT_IDS))
+_mon = (BASE / "catalog_health_monitor.py").read_text(encoding="utf-8")
+chk("детектор підключений до щоденного монітора (catalog_health_monitor викликає forbidden_watch.alert_new_candidates, пише blade_unreviewed в історію)",
+    "forbidden_watch.alert_new_candidates" in _mon and "blade_unreviewed" in _mon)
+
 # ── 2. Prom (+Google/Meta/Bing/ALLO через select_top_items) ──
 import generate_prom_feed_top as top
 chk("Prom top: is_excluded_category ловить заборонену категорію, не чіпає звичайну", top.is_excluded_category(BAD) and not top.is_excluded_category(OK))
@@ -112,6 +169,9 @@ if "--live" in sys.argv or "--feeds" in sys.argv:
     chk("live: Prom-відбір не містить жодного з них", not (set(top.select_top_items(live)) & set(bad_live)))
     chk("live: EVA _qualifies_for_feed відсікає всі", not any(eva._qualifies_for_feed(it) for it in bad_live.values()))
     chk("live: Rozetka _qualifies_for_feed відсікає всі", not any(roz._qualifies_for_feed(it, set()) for it in bad_live.values()))
+    _unrev = fw.unreviewed(live)
+    print(f"[live] детектор: кандидатів за словом {len(fw.candidates(live))}, нерозглянутих {len(_unrev)}: {[(c['pid'], c['name'][:40]) for c in _unrev][:10]}")
+    chk("live: детектор — нерозглянутих кандидатів 0 (нові — у алерт монітора; тут лише інформація)", True)
     if "--feeds" in sys.argv:
         d = Path(sys.argv[sys.argv.index("--feeds") + 1])
         for fn in sorted(d.glob("*.xml")):

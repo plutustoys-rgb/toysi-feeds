@@ -60,7 +60,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -78,7 +78,7 @@ from generate_prom_feed import fetch_russian_text
 from competitor_pricing import (
     decide_price_for_platform, load_prom_price_state, save_prom_price_state,
     PROM_CATEGORY_COMMISSION, PROM_CATEGORY_ID_COMMISSION, PROM_COMMISSION_DEFAULT, _BAD_NAME_MARKERS,
-    is_bundle_listing, MIN_PROFIT_COMPETITOR_FLOOR, real_toysi_cost,
+    is_bundle_listing, MIN_PROFIT_COMPETITOR_FLOOR, real_toysi_cost, effective_delisted,
 )
 from telegram_notify import send_telegram_message
 from prom_api_client import PromEditError, apply_price, delist
@@ -1660,6 +1660,108 @@ def _decide_from_scan_entry(cost: float, category_name: str | None, prom_categor
 # Імпортовано на початку файлу.
 
 
+READD_GRACE_HOURS = 72            # Prom імпортує price-лист не частіше разу на добу; 72 год — запас, поки повернений SKU має шанс бути створений
+READD_GIVEUP_HOURS = 120          # через скільки годин без появи на Prom повернення вважається невдалим (детерміновано підтверджуємо й ставимо свіжу позначку)
+READD_CLEAR_CAP_PER_RUN = 300     # скільки позицій «відсутніх на Prom» повертаємо за прогін (стеля шкоди, якщо припущення про створення хибне)
+RECHECK_TIME_BUDGET_SECONDS = 90 * 60   # recheck не забирає весь 5-год бюджет прогону в основного циклу
+RECHECK_ZERO_STREAK_ALERT = 3     # стільки прогонів поспіль «перевірено ≥ RECHECK_ZERO_MIN_CHECKED, знято 0» → Telegram із причинами
+RECHECK_ZERO_MIN_CHECKED = 100
+READD_POLICY_FILE = Path(__file__).parent / "prom_readd_policy.json"
+
+
+def _load_readd_policy(path: Path = None) -> dict:
+    """Політика Фази 2 (повернення ever_live-позицій, які ми колись створили/видаляли): {"ever_live": "off"|"canary"|"all", "canary_pids": [...]}.
+    За замовчуванням — off: код приїздить разом із тестом, вмикається лише після результату тесту одного SKU (звіт імпорту Prom). Файл у git,
+    тож зміна проходить PR, а не правку на VPS."""
+    try:
+        d = json.loads(Path(path or READD_POLICY_FILE).read_text(encoding="utf-8"))
+        mode = str(d.get("ever_live", "off")).lower()
+        return {"ever_live": mode if mode in ("off", "canary", "all") else "off",
+                "canary_pids": {str(p) for p in d.get("canary_pids", [])}}
+    except (OSError, ValueError, AttributeError):
+        return {"ever_live": "off", "canary_pids": set()}
+
+
+def _ever_live_readd_allowed(pid: str, policy: dict) -> bool:
+    return policy["ever_live"] == "all" or (policy["ever_live"] == "canary" and str(pid) in policy["canary_pids"])
+
+
+def _select_recheck_batch(delisted: dict, recheck_at: dict, toysi_catalog: dict, limit: int, scan_hint=None) -> tuple:
+    """Партія recheck: (batch, counters). Черга — за «найдавніше ПЕРЕВІРЕНО» (`_recheck_at` на записі), а НЕ за датою позначки: дата позначки не
+    змінюється, поки позначку не знято, тож стара версія щоразу брала ті самі найстаріші 2 500 і решту ~10 000 не перевіряла ніколи (голодування).
+    Мертві записи (нема в каталозі Toysi / нема залишку / негодна собівартість) партію НЕ їдять: відкидаються до зрізу й рахуються окремо.
+    scan_hint(pid) → True (скан каже «не floor» — найімовірніше повернеться), False, None; такі йдуть першими всередині однакової давності."""
+    c = {"marks_effective": len(delisted), "dead_not_in_catalog": 0, "dead_stock0": 0, "dead_bad_cost": 0}
+    alive = []
+    for pid in delisted:
+        item = toysi_catalog.get(pid)
+        if item is None:
+            c["dead_not_in_catalog"] += 1
+            continue
+        try:
+            cost = real_toysi_cost(item)
+        except (TypeError, ValueError):
+            c["dead_bad_cost"] += 1
+            continue
+        if cost <= 0:
+            c["dead_bad_cost"] += 1
+            continue
+        if item.get("stock", 0) <= 0:
+            c["dead_stock0"] += 1
+            continue
+        alive.append(pid)
+    c["alive"] = len(alive)
+    alive.sort(key=lambda p: ((recheck_at.get(p) or ""), 0 if (scan_hint and scan_hint(p)) else 1, delisted[p]))
+    batch = alive[:limit]
+    c["selected"] = len(batch)
+    c["never_rechecked_in_queue"] = sum(1 for p in alive if not recheck_at.get(p))
+    return batch, c
+
+
+def _classify_recheck_candidate(pid: str, found: dict, indeterminate: set, ever_live: dict, pushed: set, policy: dict) -> tuple:
+    """Для кандидата, що став знову конкурентним: (clear: bool, reason). Гейт живості 60c91aa змішував ТРИ різні стани — тут вони розділені:
+      • живий на Prom (200, status != deleted) → знімаємо (як і було);
+      • запис є, але status=deleted → тримаємо (саме він дав 688 «Позиція недоступна для оновлення»);
+      • відсутній (404): ніколи не створювався (немає в ever_live і в журналі штовхнутих) → ФАЗА 1, знімаємо: оновлювати нічого, Prom створить при
+        імпорті прайс-листа (так вітрина росла 847→3216→6000, 0175329); колись існував (ever_live/журнал) → ФАЗА 2, лише за політикою (off/canary/all);
+      • indeterminate (мережа) → тримаємо, повторимо."""
+    if pid in indeterminate:
+        return False, "kept_indeterminate"
+    prod = found.get(pid)
+    if prod is not None:
+        if prod.get("status") != "deleted":
+            return True, "cleared_live"
+        return False, "kept_status_deleted"
+    if pid not in ever_live and pid not in pushed:
+        return True, "cleared_never_created"
+    if _ever_live_readd_allowed(pid, policy):
+        return True, "cleared_ever_live_flag"
+    return False, "kept_ever_live_flag_off"
+
+
+def _ghost_check_candidates(price_state: dict, top_catalog: dict, live_prom_ids: set, ever_live: dict, now: datetime = None) -> tuple:
+    """Кандидати на детерміновану перевірку відсутності (ghost-блок main) + облік повернень. Повертає (to_check, stats).
+    ГРАЦІЯ: SKU, повернений recheck-ом (`_readded_at`), ще не встиг у імпорт Prom (раз на добу) — «немає в live_prom_ids» для нього очікуваний стан, а
+    не привид; без грації блок позначив би його delisted уже наступного прогону (осциляція, що тричі ламала коло: #98 → 688 помилок, гейт 60c91aa).
+    ВІДМОВА: повернений SKU, який за READD_GIVEUP_HOURS так і не з'явився на Prom (навіть never-created, на яких звичайний ghost-блок не діє) не тримає слот
+    вічно: потрапляє в to_check, де відсутність підтверджується детерміновано, і ставиться СВІЖА позначка (effective_delisted → знову виключений)."""
+    now = now or datetime.now()
+    readded = price_state.setdefault("_readded_at", {})
+    grace_cut = (now - timedelta(hours=READD_GRACE_HOURS)).isoformat()
+    giveup_cut = (now - timedelta(hours=READD_GIVEUP_HOURS)).isoformat()
+    in_grace = {p for p, t in readded.items() if t > grace_cut}
+    eff = effective_delisted(price_state)
+    ghost = [pid for pid in top_catalog if pid not in live_prom_ids and pid in ever_live]
+    to_check = [pid for pid in ghost if pid not in eff and pid not in in_grace]
+    giveup = [p for p, t in readded.items() if t <= giveup_cut and p not in live_prom_ids and p in top_catalog and p not in eff and p not in to_check]
+    created = [p for p in readded if p in live_prom_ids]
+    failed = [p for p, t in readded.items() if t <= grace_cut and p not in live_prom_ids and p in top_catalog and p not in eff]
+    stats = {"total": len(readded), "created_on_prom": len(created), "in_grace_waiting": len([p for p in in_grace if p not in live_prom_ids]),
+             "not_created_after_grace": len(failed), "giveup_to_confirm": len(giveup),
+             "ghost_deferred_by_grace": len([p for p in ghost if p in in_grace and p not in eff]), "ts": now.isoformat()}
+    return to_check + giveup, stats
+
+
 def _recheck_delisted_pids(
     delisted_since: dict,
     toysi_catalog: dict,
@@ -1667,51 +1769,61 @@ def _recheck_delisted_pids(
     own_product_links: dict,
     prom_category_cache: dict,
     limit: int = RECHECK_DELISTED_BATCH_LIMIT,
+    price_state: dict = None,
+    scan_state: dict = None,
+    now: datetime = None,
 ) -> int:
-    """ДОДАНО (2026-07-18, знахідка незалежного аудиту PR #97 —
-    code_report_2026-07-18_pt9.md): заявлене "самоочищення" delisted_since
-    (запис прибирається, щойно SKU знову потрапляє в to_adjust) НІКОЛИ не
-    спрацьовує на практиці — select_top_items() вже виключає позначені
-    SKU РАНІШЕ, ніж вони можуть дістатись до основного циклу нижче, тож
-    цикл, який мав прибирати позначку, ніколи їх знову не бачить. Напрямок
-    помилки безпечний (забагато виключень, не хибне повернення
-    неконкурентного товару), але без цієї функції позначка де-факто стає
-    ПОСТІЙНОЮ — навіть коли конкурент згодом подорожчає чи зникне.
+    """Самоочищення delisted (історія: #97 заборонив повертатись, #98 дозволив «за ціною» без перевірки існування → 688 помилок імпорту, 0175329 —
+    ever_live проти chicken-and-egg, 60c91aa — гейт живості, що знову закрив коло: 0 із 2500 щоразу).
 
-    Ця функція — окрема, ЦІЛЕСПРЯМОВАНА перевірка САМЕ delisted-множини
-    (типово в рази менша за весь топ-970), НЕ частина основного циклу:
-    бере товар напряму з toysi_catalog (не top_catalog, бо delisted SKU
-    там структурно відсутній), рахує ту саму decide_price_for_platform()
-    з тим самим кешем buyBox/категорій, і прибирає позначку, якщо
-    результат більше НЕ "floor" (конкурент подешевшав/зник, чи ми
-    подешевшали через нижчу собівартість Toysi). Мутує delisted_since
-    на місці (той самий патерн, що й основний цикл: pop() на
-    посилання, яке зрештою зберігається як price_state["_delisted_since"]).
+    Що змінено (цей PR, рішення Консультанта/власника 08.10.2026):
+      1. Позначка — ФАКТ ІСТОРІЇ, не перемикач: повернення пишеться в `price_state["_readded_at"][pid]`, `_delisted_since` НЕ чіпається
+         (`competitor_pricing.effective_delisted`). Повернення має власну дату → грація проти ever_live-блоку (див. main).
+      2. Фаза 1: «відсутній на Prom і ніколи не створювався» знімається без гейту живості (`_classify_recheck_candidate`). Фаза 2 (ever_live) — лише за
+         `prom_readd_policy.json` (за замовчуванням off).
+      3. Черга за `_recheck_at` на записі + мертві не їдять партію (`_select_recheck_batch`).
+      4. Лічильники «чому нуль»: рядок у журнал + `_meta.delisted_recheck` + Telegram, якщо кілька прогонів поспіль «перевірено багато, знято 0».
+    Повертає кількість повернених (live + Фаза 1/2). Мутує price_state на місці."""
+    ps = price_state if price_state is not None else {}
+    now = now or datetime.now()
+    now_iso = now.isoformat()
+    delisted = effective_delisted(ps) if price_state is not None else dict(delisted_since)
+    recheck_at = ps.setdefault("_recheck_at", {}) if price_state is not None else {}
+    readded_at = ps.setdefault("_readded_at", {}) if price_state is not None else {}
+    ever_live = ps.get("_ever_live", {}) or {}
+    try:
+        from prom_pushed_ledger import load_ledger
+        pushed = set(load_ledger())
+    except Exception:  # noqa: BLE001 — журнал допоміжний; без нього лишаємо лише ever_live-критерій
+        pushed = set()
+    policy = _load_readd_policy()
 
-    Повертає кількість прибраних позначок (для логу/дайджесту)."""
-    cleared = 0
-    pids_to_check = sorted(delisted_since.keys(), key=lambda p: delisted_since[p])[:limit]
-    candidates = []  # знову ціново-конкурентні — КАНДИДАТИ на зняття позначки (перед гейтом живості)
+    def scan_hint(pid):
+        e = (scan_state or {}).get(pid)
+        item = toysi_catalog.get(pid)
+        if not e or item is None:
+            return None
+        try:
+            cost = real_toysi_cost(item)
+            cp = e.get("competitor_price") if e.get("competitor_alive") else None
+            return decide_price_for_platform(cost, cp, "prom", item.get("category_name"))["category"] != "floor"
+        except (TypeError, ValueError):
+            return None
+
+    pids_to_check, c = _select_recheck_batch(delisted, recheck_at, toysi_catalog, limit, scan_hint)
+    c.update({"checked": 0, "competitor_floor": 0, "competitor_ok": 0, "no_competitor": 0, "candidates": 0,
+              "cleared_live": 0, "cleared_never_created": 0, "cleared_ever_live_flag": 0,
+              "kept_status_deleted": 0, "kept_ever_live_flag_off": 0, "kept_indeterminate": 0,
+              "clear_cap_hit": 0, "time_budget_hit": 0})
+    deadline = time.monotonic() + RECHECK_TIME_BUDGET_SECONDS
+    candidates = []  # знову ціново-конкурентні — КАНДИДАТИ на зняття (перед класифікацією за існуванням на Prom)
     for pid in pids_to_check:
-        if _time_budget_exceeded():
-            print(f"[Pricer] Часовий бюджет вичерпано — зупиняю перевірку delisted достроково "
-                  f"({len(candidates)} кандидатів зібрано з {len(pids_to_check)} у цій партії).")
+        if _time_budget_exceeded() or time.monotonic() >= deadline:
+            c["time_budget_hit"] = 1
+            print(f"[Pricer] Часовий бюджет recheck вичерпано — зупиняю достроково ({len(candidates)} кандидатів з {len(pids_to_check)} у партії).")
             break
         item = toysi_catalog.get(pid)
-        if item is None:
-            # SKU більше немає в каталозі Toysi взагалі (закінчився
-            # назавжди чи товар знято) — позначка неактуальна, але й
-            # питання "чи знову конкурентний" не стоїть; лишаємо як є,
-            # наступний прогін просто пропустить (той самий safe-default,
-            # що й скрізь у цьому файлі: не гадаємо, коли даних нема).
-            continue
-        try:
-            cost = real_toysi_cost(item)  # 2026-07-22: реальна собівартість з урахуванням знижки Toysi, не сира каталожна ціна
-        except (TypeError, ValueError):
-            continue
-        if cost <= 0 or item.get("stock", 0) <= 0:
-            continue
-
+        cost = real_toysi_cost(item)
         name_ukr = (item.get("name") or "").strip()
         name_rus = (russian_text.get(pid, {}) or {}).get("name") or name_ukr
         category_name = item.get("category_name")
@@ -1722,28 +1834,67 @@ def _recheck_delisted_pids(
         time.sleep(SEARCH_DELAY)
         decision = decide_price_for_platform(cost, competitor["price"] if competitor else None,
                                               "prom", category_name, prom_category_id)
+        c["checked"] += 1
+        recheck_at[pid] = now_iso[:16]            # мітка НА ЗАПИСІ: голова черги більше не вічна
+        if competitor is None:
+            c["no_competitor"] += 1
+        elif decision["category"] == "floor":
+            c["competitor_floor"] += 1
+        else:
+            c["competitor_ok"] += 1
         if decision["category"] != "floor":
             candidates.append((pid, name_ukr))
+    c["candidates"] = len(candidates)
 
-    # ГЕЙТ ЖИВОСТІ (2026-08-12, root-cause 688 «Поле status: Позиція недоступна для
-    # оновлення» на Prom-імпорті): цінова конкурентність — НЕ підстава знімати позначку
-    # delisted. Якщо SKU ВИДАЛЕНИЙ на Prom (status=deleted чи 404), зняття позначки
-    # поверне його у prom_feed_top.xml, а Prom не може ОНОВИТИ видалену позицію → саме та
-    # import-помилка. Тож знімаємо позначку ЛИШЕ для кандидатів, ПІДТВЕРДЖЕНО живих на
-    # Prom (200 + status != "deleted"). Відсутні (справжній ghost) / невизначені (мережа) /
-    # знайдені-але-deleted — ЛИШАЄМО позначку. Це робить _recheck таким самим self-
-    # verifying, як головний adjust-цикл (той знімає позначку лише ПІСЛЯ живого apply_price).
-    # Той самий by_external_id-шлях, що вже вживає ever_live-блок нижче.
+    cleared = 0
     if candidates:
         from prom_catalog_sync import fetch_prom_products_by_external_ids
-        found, _indeterminate = fetch_prom_products_by_external_ids({pid for pid, _ in candidates})
+        found, indeterminate = fetch_prom_products_by_external_ids({pid for pid, _ in candidates})
+        absent_cleared = 0
         for pid, name_ukr in candidates:
-            prod = found.get(pid)
-            if prod is not None and prod.get("status") != "deleted":
-                delisted_since.pop(pid, None)
+            ok, reason = _classify_recheck_candidate(pid, found, indeterminate, ever_live, pushed, policy)
+            if ok and reason != "cleared_live":
+                if absent_cleared >= READD_CLEAR_CAP_PER_RUN:
+                    c["clear_cap_hit"] += 1
+                    continue
+                absent_cleared += 1
+            if ok:
+                if price_state is not None:
+                    readded_at[pid] = now_iso
+                else:
+                    delisted_since.pop(pid, None)
                 cleared += 1
-                print(f"[Pricer] Знову конкурентний І живий на Prom — знято позначку delisted: {pid} {name_ukr[:40]}")
-
+            c[reason] += 1
+    c["cleared_total"] = cleared
+    print(f"[Pricer] Recheck delisted — підсумок: позначок (ефективних) {c['marks_effective']}; мертвих не взято: "
+          f"нема в каталозі {c['dead_not_in_catalog']}, склад 0 {c['dead_stock0']}, негодна собівартість {c['dead_bad_cost']}; "
+          f"у партію {c['selected']} (ніколи не перевірених у черзі: {c['never_rechecked_in_queue']}); перевірено {c['checked']}: "
+          f"конкурент нижче межі {c['competitor_floor']}, конкурент ок {c['competitor_ok']}, конкурента нема {c['no_competitor']}; "
+          f"кандидатів {c['candidates']} → знято {cleared} (живі {c['cleared_live']}, ніколи-не-створені Ф1 {c['cleared_never_created']}, "
+          f"ever_live за політикою {c['cleared_ever_live_flag']}); відмовлено: status=deleted {c['kept_status_deleted']}, "
+          f"ever_live і політика off {c['kept_ever_live_flag_off']}, мережа {c['kept_indeterminate']}, кап {READD_CLEAR_CAP_PER_RUN} спрацював на {c['clear_cap_hit']}"
+          + ("; ЧАСОВИЙ БЮДЖЕТ ВИЧЕРПАНО" if c["time_budget_hit"] else "") + ".")
+    if price_state is not None:
+        meta = ps.setdefault("_meta", {})
+        prev = meta.get("delisted_recheck") or {}
+        streak = (prev.get("zero_streak", 0) + 1) if (c["checked"] >= RECHECK_ZERO_MIN_CHECKED and cleared == 0) else 0
+        c["zero_streak"] = streak
+        c["ts"] = now_iso
+        meta["delisted_recheck"] = c
+        if streak >= RECHECK_ZERO_STREAK_ALERT and streak % RECHECK_ZERO_STREAK_ALERT == 0:
+            try:
+                send_telegram_message(
+                    f"🟠 Prom delisted-recheck: {streak} прогони поспіль перевірено ≥{RECHECK_ZERO_MIN_CHECKED}, знято 0. Причини останнього: "
+                    f"кандидатів {c['candidates']} (конкурент ок {c['competitor_ok']}, нема конкурента {c['no_competitor']}), "
+                    f"відмовлено: status=deleted {c['kept_status_deleted']}, ever_live за політикою off {c['kept_ever_live_flag_off']}, "
+                    f"мережа {c['kept_indeterminate']}; мертвих не взято {c['dead_not_in_catalog'] + c['dead_stock0'] + c['dead_bad_cost']}. "
+                    f"Це не «норма» — перевір політику prom_readd_policy.json і гейти в _classify_recheck_candidate.")
+            except Exception as e:  # noqa: BLE001 — сигнал best-effort
+                print(f"[Pricer] Telegram (recheck zero-streak) не надіслано: {e}", file=sys.stderr)
+        # чистимо _recheck_at від pid, яких уже нема в _delisted_since (щоб не росло вічно)
+        if len(recheck_at) > 2 * max(len(ps.get("_delisted_since", {})), 1):
+            for p in [p for p in recheck_at if p not in ps.get("_delisted_since", {})]:
+                recheck_at.pop(p, None)
     return cleared
 
 
@@ -1902,8 +2053,12 @@ def main() -> None:
         # зникли з live_prom_ids. Товари, яких ніколи не створювали (не в
         # ever_live), свідомо НЕ позначаємо: їх треба дослати в прайс-лист, щоб
         # Prom їх створив, а не виключати назавжди.
-        _ghost_candidates = [pid for pid in top_catalog if pid not in live_prom_ids and pid in _ever_live]
-        _to_check = [pid for pid in _ghost_candidates if pid not in _delisted_since_early]
+        # ГРАЦІЯ ПОВЕРНЕННЯ (_readded_at) і облік повернень — див. _ghost_check_candidates.
+        _to_check, _readd_stats = _ghost_check_candidates(price_state, top_catalog, live_prom_ids, _ever_live)
+        price_state.setdefault("_meta", {})["readd_stats"] = _readd_stats
+        print(f"[Pricer] Повернені з delisted: {_readd_stats['total']} усього; створено/видно на Prom {_readd_stats['created_on_prom']}; у грації "
+              f"({READD_GRACE_HOURS} год) чекають імпорту {_readd_stats['in_grace_waiting']}; НЕ створено після грації {_readd_stats['not_created_after_grace']} "
+              f"(з них на підтвердження відмови: {_readd_stats['giveup_to_confirm']}); блоком привидів відкладено через грацію {_readd_stats['ghost_deferred_by_grace']}.")
         if _to_check:
             from prom_catalog_sync import fetch_prom_products_by_external_ids  # лінивий імпорт, той самий патерн, що й нижче
             _found, _indeterminate = fetch_prom_products_by_external_ids(set(_to_check))
@@ -1966,14 +2121,14 @@ def main() -> None:
     # items() вже виключає ці SKU з top_catalog/items) — окрема,
     # цілеспрямована перевірка САМЕ delisted-множини, до основного циклу.
     delisted_since = price_state.get("_delisted_since", {})
-    if delisted_since:
-        print(f"[Pricer] Перевіряю до {RECHECK_DELISTED_BATCH_LIMIT} найстаріших позначок з "
-              f"{len(delisted_since)} раніше видалених SKU — чи не подешевшав конкурент...")
-        cleared = _recheck_delisted_pids(delisted_since, toysi_catalog, russian_text, own_product_links, prom_category_cache)
-        print(f"[Pricer] Знято позначку delisted: {cleared}/{min(RECHECK_DELISTED_BATCH_LIMIT, len(delisted_since))} "
-              f"перевірених (з {len(delisted_since)} загалом).")
-        if cleared:
-            save_prom_price_state(price_state)
+    _eff_delisted = effective_delisted(price_state)
+    if _eff_delisted:
+        print(f"[Pricer] Перевіряю до {RECHECK_DELISTED_BATCH_LIMIT} найдавніше-перевірених із {len(_eff_delisted)} "
+              f"ефективно виключених SKU (всього позначок в історії {len(delisted_since)}) — чи не подешевшав конкурент...")
+        cleared = _recheck_delisted_pids(delisted_since, toysi_catalog, russian_text, own_product_links, prom_category_cache,
+                                         price_state=price_state, scan_state=scan_state)
+        print(f"[Pricer] Повернено з delisted: {cleared} (деталі і причини відмов — у рядку «Recheck delisted — підсумок» вище).")
+        save_prom_price_state(price_state)      # _recheck_at/_readded_at/_meta.delisted_recheck оновлюються на КОЖНОМУ прогоні
 
     # ЗМІНЕНО (2026-07-24, ротаційні партії): раніше — завжди перші N
     # top_catalog.items() (стабільний, рангований зріз). Тепер, коли
@@ -2469,7 +2624,8 @@ def main() -> None:
             # конкурентний (opinion "adjust", не "delist") — прибираємо
             # позначку, інакше select_top_items() назавжди виключав би
             # товар, який РЕАЛЬНО повернувся до конкурентності.
-            delisted_since.pop(pid, None)
+            if pid in delisted_since:     # позначка лишається ФАКТОМ ІСТОРІЇ; повернення має власну дату (effective_delisted)
+                price_state.setdefault("_readded_at", {})[pid] = datetime.now().isoformat()
             applied_count += 1
             if applied_count % SAVE_EVERY == 0:
                 save_prom_price_state(price_state)

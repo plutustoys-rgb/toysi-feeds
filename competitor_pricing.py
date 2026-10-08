@@ -162,7 +162,18 @@ def load_delisted_pids() -> dict:
     (prom_competitor_pricer.py), щойно SKU знову потрапляє в to_adjust
     (конкурент подешевшав/зник) — тому тут НЕМАЄ TTL за віком, на відміну
     від load_fresh_prom_price_overrides()."""
-    return load_prom_price_state().get("_delisted_since", {})
+    return effective_delisted(load_prom_price_state())
+
+
+def effective_delisted(state: dict) -> dict:
+    """{pid: iso} — pid, які ЗАРАЗ виключені з вітрини. `_delisted_since[pid]` — ФАКТ ІСТОРІЇ («колись видаляли», дата останнього
+    видалення), а НЕ перемикач: SKU знову дозволений, коли для нього є `_readded_at[pid]` НЕ РАНІШЕ за дату позначки. Нове видалення
+    ставить свіжішу `_delisted_since` → знову виключений. Так позначка не зникає (історія лишається), а повернення має власну дату
+    — на ній тримається грація проти ever_live-блоку (prom_competitor_pricer, «привиди») і облік «повернено / створено / не створено».
+    Порівняння ISO-рядків лексикографічне (обидва — datetime.isoformat())."""
+    ds = (state or {}).get("_delisted_since", {}) or {}
+    ra = (state or {}).get("_readded_at", {}) or {}
+    return {pid: ts for pid, ts in ds.items() if not (pid in ra and ra[pid] >= ts)}
 
 
 # ---------------------------------------------------------------------------

@@ -799,11 +799,15 @@ PROM_COMMISSION_DEFAULT = 0.20  # орієнтовний fallback, ПОКИ ка
 # із живої ProSale-таблиці), і залишити його як є — безпечний напрямок
 # (завищена комісія -> вищий floor, ніж по факту треба, ніколи не нижчий
 # за реальний мінімум прибутку).
-PROSALE_TIER = "standard"  # "econom" | "standard" — поточний рівень у кабінеті Prom.
+PROSALE_TIER = "off"  # "off" | "econom" | "standard" — поточний стан ProSale у кабінеті Prom.
+# 2026-10-08 (пряма дія власника, скріншот кабінету «Каталог ProSale»): кампанію «Товари з комісією за замовлення» (858 товарів, 175 категорій) ВИМКНЕНО повністю
+# («Вимкнено»); лишилась лише «за перехід» (4 товари, «Звичайний» — комісія за клік, не за продаж). Отже комісії ЗА ЗАМОВЛЕННЯ Prom не стягує → "off": комісія категорій = 0
+# для УСІХ товарів (включно з PROM_COMMISSION_DEFAULT — інакше невідомі категорії лишились би з вигаданими 20%). Лишається комісія оплати (PAYMENT_COMMISSION["prom"]).
+# Повернути "standard", якщо кампанію знову ввімкнуть: інакше ціни рахуватимуться без комісії і продажі підуть у мінус.
 # 2026-09-11: стартовий «Економ» згорів 09.09 → перейшли на ЗВИЧАЙНИЙ тариф (комісія ×1.0).
 # Тримали "econom" (×0.5) → флор/undercut рахувалися з ПОЛОВИННОЮ комісією → з'явилися ЗБИТКОВІ
 # продажі. Повертаємо "standard" (наказ власника): повна комісія в маржі → ціни захищають прибуток.
-PROSALE_TIER_MULTIPLIER: dict[str, float] = {"standard": 1.0, "econom": 0.5}
+PROSALE_TIER_MULTIPLIER: dict[str, float] = {"standard": 1.0, "econom": 0.5, "off": 0.0}
 
 # 2026-07-17 (Autonomy-11/Vis-11): PROM_CATEGORY_COMMISSION вище прив'язаний
 # до НАЗВИ категорії Toysi — точний, лише коли Toysi-категорія семантично
@@ -1415,6 +1419,8 @@ def get_platform_commission(
     категорії. PROM_COMMISSION_DEFAULT — окремий, неточний fallback,
     множник свідомо НЕ зачіпає (див. коментар над PROSALE_TIER)."""
     if platform == "prom":
+        if PROSALE_TIER == "off":
+            return 0.0   # кампанію ProSale «за замовлення» вимкнено → комісії за замовлення нема ні в таблицях, ні в fallback
         tier_mult = PROSALE_TIER_MULTIPLIER[PROSALE_TIER]
         if prom_category_id is not None and prom_category_id in PROM_CATEGORY_ID_COMMISSION:
             return PROM_CATEGORY_ID_COMMISSION[prom_category_id] * tier_mult

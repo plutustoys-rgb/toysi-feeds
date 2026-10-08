@@ -80,8 +80,10 @@ with tempfile.TemporaryDirectory() as d:
     chk("політика: файл читається (canary_pids → рядки)", pc["ever_live"] == "canary" and pc["canary_pids"] == {"777", "778"})
     chk("політика: відсутній/битий файл → off", pp._load_readd_policy(Path(d) / "нема.json")["ever_live"] == "off" and (p.write_text("{x", encoding="utf-8") or pp._load_readd_policy(p)["ever_live"] == "off"))
 _pol_repo = pp._load_readd_policy()
-chk("політика в репо: ніколи не «all» без результату тесту; canary — не більше ОДНОГО pid (тест одного SKU)",
-    _pol_repo["ever_live"] in ("off", "canary") and (_pol_repo["ever_live"] == "off" or len(_pol_repo["canary_pids"]) == 1))
+chk("політика в репо коректна: режим із трійки; «all» лише з приміткою про наказ власника (_all_note); canary — не більше ОДНОГО pid",
+    _pol_repo["ever_live"] in ("off", "canary", "all")
+    and (_pol_repo["ever_live"] != "all" or "ВЛАСНИКА" in json.loads((Path(__file__).resolve().parent / "prom_readd_policy.json").read_text(encoding="utf-8")).get("_all_note", ""))
+    and (_pol_repo["ever_live"] != "canary" or len(_pol_repo["canary_pids"]) == 1))
 
 # ── 4. _recheck_delisted_pids end-to-end (мережа замінена) ──
 import prom_catalog_sync as pcs
@@ -248,6 +250,20 @@ pcs.fetch_prom_products_by_external_ids = lambda ids: ({"1": {"status": "deleted
 ledger.load_ledger = lambda: set(); pp._load_readd_policy = lambda path=None: pol_off
 pp._recheck_delisted_pids(stM["_delisted_since"], mk_cat(3), {}, {}, {}, limit=50, price_state=stM, scan_state={}, now=T0)
 chk("R-E: змішаний нуль (1 status=deleted + 2 політика off) — НЕ «пояснено політикою» (рівність, а не >0)", stM["_meta"]["delisted_recheck"]["zero_explained_by_policy"] is False)
+
+# ── 5г. невдале повернення пам'ятається (політика all не крутить цикл) ──
+psF = {"_delisted_since": {"1": iso(T0 - timedelta(days=30)), "2": iso(T0 - timedelta(days=30))}, "_readded_at": {"1": iso(T0 - timedelta(hours=130))}}
+dsF = psF["_delisted_since"]
+nF = pp._mark_ghosts(psF, dsF, ["1", "2"], iso(T0))
+chk("_mark_ghosts: pid 1 (останньою подією було повернення) → невдале повернення записано; pid 2 (повернення не було) — ні; обидва отримали свіжу позначку",
+    nF == 1 and set(psF["_readd_failed"]) == {"1"} and dsF["1"] == iso(T0) and dsF["2"] == iso(T0))
+chk("докази: readd_failed", pp._existence_evidence("1", {}, {}, set(), {}, {}, {}, {"1": "t"}) == ["readd_failed"])
+chk("класифікація: readd_failed блокує повернення за ВСІХ політик, навіть all",
+    all(cl("1", {}, set(), ["readd_failed"], pol) == (False, "kept_readd_failed") for pol in (pol_off, pol_can, pol_all)))
+stG = {"_delisted_since": {str(i): iso(T0 - timedelta(days=30)) for i in range(1, 4)}, "_ever_live": {str(i): "x" for i in range(1, 4)}, "_meta": {},
+       "_readd_failed": {"1": "t", "2": "t"}}
+nG, mG = run_with_caches(stG, mk_cat(3), {}, {}, policy=pol_all)
+chk("recheck при політиці all: невдалі (1,2) НЕ повертаються, pid 3 — повертається", nG == 1 and set(stG["_readded_at"]) == {"3"} and mG["kept_readd_failed"] == 2 and mG["evidence_readd_failed"] == 2)
 
 # ── 6. select_top_items бачить ЕФЕКТИВНІ позначки (повернений SKU знову претендує на вітрину) ──
 import generate_prom_feed_top as top_mod

@@ -1722,7 +1722,7 @@ def _select_recheck_batch(delisted: dict, recheck_at: dict, toysi_catalog: dict,
 def _existence_evidence(pid: str, ps: dict, ever_live: dict, pushed: set, own_product_links: dict, prom_category_cache: dict, readded_at: dict) -> list:
     """Докази, що SKU КОЛИСЬ існував на Prom (аудит PR #638, B1/B2). `_ever_live` будується з /groups/list, який не бачить «невидимих груп» (≈2 400 із
     5 800), а журнал штовхнутих прунить кожен id, підтверджений як 404 → видалені НАМИ товари з обох зникають. Тому «ніколи не створювався» вимагає
-    відсутності ВСІХ незалежних ознак існування: запис `price_state[pid]` з ціною (пише лише apply_price — він проходить тільки для існуючого товару),
+    відсутності ВСІХ незалежних ознак існування: запис `price_state[pid]` з ціною (пише apply_price — він проходить тільки для існуючого товару — та гілка feed_only_price_updates; для критерію це безпечна надмірна строгість),
     prom_id у own_product_links_cache, запис у prom_category_cache (категорію Prom призначає лише існуючому товару), ever_live, журнал штовхнутих,
     і «вже повертали» (`_readded_at`: цикл «повернули → не створився → знову повернули» заборонений без політики)."""
     ev = []
@@ -1758,9 +1758,22 @@ def _classify_recheck_candidate(pid: str, found: dict, indeterminate: set, evide
         return False, "kept_status_deleted"
     if not evidence:
         return True, "cleared_never_created"
+    if policy["ever_live"] == "canary" and "readded_before" in evidence:
+        return False, "kept_existed_flag_off"          # canary ОДНОРАЗОВИЙ: вже повертали й не створився → не повторювати кожні ~3 доби (аудит #638 R-A); далі — лише PR зі зміною політики
     if _ever_live_readd_allowed(pid, policy):
         return True, "cleared_ever_live_flag"
     return False, "kept_existed_flag_off"
+
+
+def _note_readded(price_state: dict, pid: str, now_iso: str = None) -> bool:
+    """Записує повернення pid у `_readded_at`, лише якщо позначка про видалення НОВІША за наявне повернення (інакше грація перезапускалась би на
+    кожному успішному коригуванні ціни будь-якого колись позначеного SKU — аудит #638 R1). Повертає True, якщо записано."""
+    ds = price_state.get("_delisted_since", {})
+    ra = price_state.setdefault("_readded_at", {})
+    if pid in ds and ra.get(pid, "") < ds[pid]:
+        ra[pid] = now_iso or datetime.now().isoformat()
+        return True
+    return False
 
 
 def _ghost_check_candidates(price_state: dict, top_catalog: dict, live_prom_ids: set, ever_live: dict, now: datetime = None) -> tuple:
@@ -1905,10 +1918,15 @@ def _recheck_delisted_pids(
           f"існував раніше і політика Фази 2 off {c['kept_existed_flag_off']} (докази існування серед кандидатів: ever_live {c['evidence_ever_live']}, "
           f"журнал {c['evidence_ledger']}, запис ціни {c['evidence_price_record']}, own_link {c['evidence_own_link']}, категорія {c['evidence_category_cache']}, вже повертали {c['evidence_readded_before']}), мережа {c['kept_indeterminate']}, кап {READD_CLEAR_CAP_PER_RUN} спрацював на {c['clear_cap_hit']}"
           + ("; ЧАСОВИЙ БЮДЖЕТ ВИЧЕРПАНО" if c["time_budget_hit"] else "") + ".")
+    if cleared == 0 and c["candidates"] > 0 and c["kept_existed_flag_off"] == c["candidates"]:
+        print("[Pricer] Нуль повернень ПОЯСНЕНО: усі кандидати існували раніше, а політика Фази 2 (prom_readd_policy.json) = off/canary без їхнього pid.")
     if price_state is not None:
         meta = ps.setdefault("_meta", {})
         prev = meta.get("delisted_recheck") or {}
-        streak = (prev.get("zero_streak", 0) + 1) if (c["checked"] >= RECHECK_ZERO_MIN_CHECKED and cleared == 0) else 0
+        # «Нуль пояснений політикою»: УСІ кандидати відмовлені лише через політику Фази 2 off — це очікуваний сталий стан, а не збій; він видимий у рядку
+        # підсумку й _meta, але Telegram-streak не росте (аудит #638 R-E: інакше алерт летів би кожні ~15 год вічно).
+        c["zero_explained_by_policy"] = bool(cleared == 0 and c["candidates"] > 0 and c["kept_existed_flag_off"] == c["candidates"])
+        streak = (prev.get("zero_streak", 0) + 1) if (c["checked"] >= RECHECK_ZERO_MIN_CHECKED and cleared == 0 and not c["zero_explained_by_policy"]) else 0
         c["zero_streak"] = streak
         c["ts"] = now_iso
         meta["delisted_recheck"] = c
@@ -2655,9 +2673,7 @@ def main() -> None:
             # конкурентний (opinion "adjust", не "delist") — прибираємо
             # позначку, інакше select_top_items() назавжди виключав би
             # товар, який РЕАЛЬНО повернувся до конкурентності.
-            _ra = price_state.setdefault("_readded_at", {})
-            if pid in delisted_since and _ra.get(pid, "") < delisted_since[pid]:     # позначка лишається ФАКТОМ ІСТОРІЇ; повернення має власну дату
-                _ra[pid] = datetime.now().isoformat()                                  # (лише коли воно ще не записане: інакше грація перезапускалась би щоразу)
+            _note_readded(price_state, pid)     # позначка лишається ФАКТОМ ІСТОРІЇ; повернення має власну дату (лише якщо ще не записане/позначка новіша)
             applied_count += 1
             if applied_count % SAVE_EVERY == 0:
                 save_prom_price_state(price_state)

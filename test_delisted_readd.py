@@ -130,10 +130,10 @@ pp.RECHECK_ZERO_MIN_CHECKED = 3
 st0 = {"_delisted_since": {str(i): iso(T0 - timedelta(days=30)) for i in range(1, 5)}, "_ever_live": {str(i): "x" for i in range(1, 5)}, "_meta": {}}
 allsent = []
 for k in range(3):
-    n, sent = run_recheck(st0, mk_cat(4), lambda nm: 10000.0, found={}, policy=pol_off, now=T0 + timedelta(hours=5 * k))
+    n, sent = run_recheck(st0, mk_cat(4), lambda nm: 10000.0, found={str(i): {"status": "deleted"} for i in range(1, 5)}, policy=pol_off, now=T0 + timedelta(hours=5 * k))
     allsent += sent
-chk("«перевірено ≥ N, знято 0» 3 прогони поспіль → ОДИН самодіагностичний Telegram із причиною (існував раніше і політика off)",
-    len(allsent) == 1 and "існував раніше і політика off 4" in allsent[0] and "prom_readd_policy.json" in allsent[0] and st0["_meta"]["delisted_recheck"]["zero_streak"] == 3)
+chk("«перевірено ≥ N, знято 0» 3 прогони поспіль (НЕ пояснено політикою: status=deleted) → ОДИН самодіагностичний Telegram із причиною",
+    len(allsent) == 1 and "status=deleted 4" in allsent[0] and "prom_readd_policy.json" in allsent[0] and st0["_meta"]["delisted_recheck"]["zero_streak"] == 3)
 pp.RECHECK_ZERO_MIN_CHECKED = 100
 
 # ── 5. грація проти ever_live-блоку + облік повернень ──
@@ -187,13 +187,14 @@ stS = {"_delisted_since": {str(i): iso(T0 - timedelta(days=30)) for i in range(1
 sent6 = []
 for k in range(6):
     pp.find_best_competitor = lambda name, cost, link, pics: {"price": 10000.0}
-    pp.SEARCH_DELAY = 0; pcs.fetch_prom_products_by_external_ids = lambda ids: ({}, set()); ledger.load_ledger = lambda: set()
+    pp.SEARCH_DELAY = 0; pcs.fetch_prom_products_by_external_ids = lambda ids: ({str(i): {"status": "deleted"} for i in range(1, 5)}, set()); ledger.load_ledger = lambda: set()
     pp._load_readd_policy = lambda path=None: pol_off
     pp.send_telegram_message = sent6.append
     pp._recheck_delisted_pids(stS["_delisted_since"], mk_cat(4), {}, {}, {}, limit=50, price_state=stS, scan_state={}, now=T0 + timedelta(hours=5 * k))
 chk("zero-streak: 6 прогонів поспіль нуль → рівно 2 Telegram (на 3-му і 6-му), не щоразу", len(sent6) == 2 and stS["_meta"]["delisted_recheck"]["zero_streak"] == 6)
 pp.send_telegram_message = lambda t: None
 pp._load_readd_policy = lambda path=None: {"ever_live": "all", "canary_pids": set()}
+pcs.fetch_prom_products_by_external_ids = lambda ids: ({}, set())
 pp._recheck_delisted_pids(stS["_delisted_since"], mk_cat(4), {}, {}, {}, limit=50, price_state=stS, scan_state={}, now=T0 + timedelta(days=2))
 chk("zero-streak скидається після прогону, де щось знято", stS["_meta"]["delisted_recheck"]["zero_streak"] == 0)
 pp.RECHECK_ZERO_MIN_CHECKED = 100
@@ -201,6 +202,39 @@ pp.RECHECK_ZERO_MIN_CHECKED = 100
 psE = {"_delisted_since": {"20": iso(T0 - timedelta(days=2))}, "_readded_at": {}}
 tcE, _ = pp._ghost_check_candidates(psE, {"20": {}, "21": {}}, set(), {"20": "x", "21": "x"}, now=T0)
 chk("ghost-блок: уже ефективно виключений (20) не перевіряється повторно; 21 — перевіряється", "20" not in tcE and "21" in tcE)
+
+# ── 5в. аудит #638 (повторний): R-A canary одноразовий, R-B apply-loop, R-D проводка canary, R-E шум алерту ──
+chk("R-A: canary ОДНОРАЗОВИЙ — pid, якого вже повертали, за canary повторно НЕ знімається; політика all — знімається",
+    cl("777", {}, set(), ["own_link", "readded_before"], pol_can) == (False, "kept_existed_flag_off")
+    and cl("777", {}, set(), ["own_link", "readded_before"], pol_all) == (True, "cleared_ever_live_flag"))
+# повна послідовність canary: повернули → грація → відмова (нова позначка) → recheck знову НЕ повертає
+stC = {"_delisted_since": {"777": iso(T0 - timedelta(days=30))}, "_ever_live": {"777": "x"}, "_meta": {}, "777": {"price": 50.0}}
+catC = mk_cat(1); catC["777"] = catC.pop("1"); catC["777"]["id"] = "777"
+r1, _ = run_with_caches(stC, catC, {}, {}, policy=pol_can)
+chk("canary: перше повернення — знято", r1 == 1 and "777" in stC["_readded_at"])
+stC["_delisted_since"]["777"] = iso(T0 + timedelta(hours=130))     # відмова після грації → свіжа позначка
+pp_now = T0 + timedelta(hours=135)
+pp.find_best_competitor = lambda name, cost, link, pics: {"price": 10000.0}
+r2 = pp._recheck_delisted_pids(stC["_delisted_since"], catC, {}, {}, {}, limit=50, price_state=stC, scan_state={}, now=pp_now)
+chk("canary: після відмови (свіжа позначка) повторного повернення НЕМАЄ — цикл кожні ~3 доби закрито", r2 == 0 and "777" in cp.effective_delisted(stC))
+chk("R-E: нуль, пояснений політикою (усі кандидати існували раніше, pid не в canary), НЕ рахується в zero_streak",
+    stC["_meta"]["delisted_recheck"]["zero_explained_by_policy"] is True and stC["_meta"]["delisted_recheck"]["zero_streak"] == 0)
+# R-B: _note_readded
+psN = {"_delisted_since": {"5": iso(T0 - timedelta(days=3))}}
+chk("R-B: _note_readded пише повернення, коли позначка є й повернення ще нема", pp._note_readded(psN, "5", iso(T0)) is True and psN["_readded_at"]["5"] == iso(T0))
+chk("R-B: повторний виклик НЕ перезаписує (грація не перезапускається щоразу)", pp._note_readded(psN, "5", iso(T0 + timedelta(hours=9))) is False and psN["_readded_at"]["5"] == iso(T0))
+chk("R-B: після НОВОЇ позначки (свіжіша за повернення) — пише знову; pid без позначки — не пише",
+    (psN["_delisted_since"].__setitem__("5", iso(T0 + timedelta(days=1))) or pp._note_readded(psN, "5", iso(T0 + timedelta(days=2)))) is True and pp._note_readded(psN, "999", iso(T0)) is False)
+# R-D: проводка canary в _recheck_delisted_pids — при малому limit перевіряється ПЕРШИМ
+stD = {"_delisted_since": {str(i): iso(T0 - timedelta(days=30)) for i in range(1, 9)}, "_ever_live": {str(i): "x" for i in range(1, 9)}, "_meta": {},
+       "_recheck_at": {}}
+seen_names = []
+pp.find_best_competitor = lambda name, cost, link, pics: (seen_names.append(name) or {"price": 10000.0})
+pp.SEARCH_DELAY = 0; pcs.fetch_prom_products_by_external_ids = lambda ids: ({}, set()); ledger.load_ledger = lambda: set()
+pp._load_readd_policy = lambda path=None: {"ever_live": "canary", "canary_pids": {"8"}}
+pp.send_telegram_message = lambda t: None
+pp._recheck_delisted_pids(stD["_delisted_since"], mk_cat(8), {}, {}, {}, limit=1, price_state=stD, scan_state={}, now=T0)
+chk("R-D: canary-pid (8) перевіряється ПЕРШИМ при limit=1 серед ніколи-не-перевірених (проводка policy→priority)", seen_names == ["Т8"] and "8" in stD["_readded_at"])
 
 # ── 6. select_top_items бачить ЕФЕКТИВНІ позначки (повернений SKU знову претендує на вітрину) ──
 import generate_prom_feed_top as top_mod

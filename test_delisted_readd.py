@@ -236,6 +236,19 @@ pp.send_telegram_message = lambda t: None
 pp._recheck_delisted_pids(stD["_delisted_since"], mk_cat(8), {}, {}, {}, limit=1, price_state=stD, scan_state={}, now=T0)
 chk("R-D: canary-pid (8) перевіряється ПЕРШИМ при limit=1 серед ніколи-не-перевірених (проводка policy→priority)", seen_names == ["Т8"] and "8" in stD["_readded_at"])
 
+# R-E: межі «пояснено політикою» (аудит #638): без кандидатів — НЕ пояснено; змішаний нуль (status=deleted + політика) — НЕ пояснено
+stZ = {"_delisted_since": {str(i): iso(T0 - timedelta(days=30)) for i in range(1, 4)}, "_ever_live": {str(i): "x" for i in range(1, 4)}, "_meta": {}}
+_, mZ = run_with_caches(stZ, mk_cat(3), {}, {}, policy=pol_off)
+pp.find_best_competitor = lambda name, cost, link, pics: {"price": 1.0}      # усі конкуренти нижче межі → кандидатів 0
+pp._recheck_delisted_pids(stZ["_delisted_since"], mk_cat(3), {}, {}, {}, limit=50, price_state=stZ, scan_state={}, now=T0 + timedelta(hours=5))
+chk("R-E: нуль БЕЗ кандидатів (усі конкуренти нижче межі) — НЕ «пояснено політикою»", stZ["_meta"]["delisted_recheck"]["candidates"] == 0 and stZ["_meta"]["delisted_recheck"]["zero_explained_by_policy"] is False)
+stM = {"_delisted_since": {str(i): iso(T0 - timedelta(days=30)) for i in range(1, 4)}, "_ever_live": {str(i): "x" for i in range(1, 4)}, "_meta": {}}
+pp.find_best_competitor = lambda name, cost, link, pics: {"price": 10000.0}
+pcs.fetch_prom_products_by_external_ids = lambda ids: ({"1": {"status": "deleted"}}, set())
+ledger.load_ledger = lambda: set(); pp._load_readd_policy = lambda path=None: pol_off
+pp._recheck_delisted_pids(stM["_delisted_since"], mk_cat(3), {}, {}, {}, limit=50, price_state=stM, scan_state={}, now=T0)
+chk("R-E: змішаний нуль (1 status=deleted + 2 політика off) — НЕ «пояснено політикою» (рівність, а не >0)", stM["_meta"]["delisted_recheck"]["zero_explained_by_policy"] is False)
+
 # ── 6. select_top_items бачить ЕФЕКТИВНІ позначки (повернений SKU знову претендує на вітрину) ──
 import generate_prom_feed_top as top_mod
 with tempfile.TemporaryDirectory() as d:

@@ -15,6 +15,7 @@ from meta_conversions_client import send_purchase_event
 from nova_poshta import settlement_raion, warehouse_by_ref
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message, send_throttled_alert
+from cod_amount import collected_cod_amount
 import rozetka_client
 import eva_orders_client
 from orders_watcher import update_prom_order_status, check_prom_order_status, PromAPIError
@@ -331,6 +332,10 @@ def build_toysi_order(order: dict) -> dict | None:
     moneyback = 0.0
     if order["payment_method"] == "cod":
         moneyback = sum(item.get("price", 0) * item.get("qty", 1) for item in order["items"])
+        if is_np:
+            # НП приймає накладений платіж ЦІЛИМИ гривнями й відкидає копійки (підлога). Передаємо вже ціле число — Toysi/ТТН/чек Checkbox мають одну
+            # суму (cod_amount.py; запит головного бухгалтера 06–07.10.2026: 39,23 в чеку проти 39,00 в НП). Укрпошта/RZ Delivery — без змін.
+            moneyback = collected_cod_amount(moneyback)
 
     # РАЙОН — Toysi-менеджер звіряє його з ТТН для КОЖНОГО замовлення (пряме прохання
     # 2026-08-31, не лише EVA). Універсально для всіх площадок: район резолвиться з

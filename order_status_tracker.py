@@ -3,6 +3,7 @@ import sys
 from datetime import datetime, timedelta
 
 from checkbox_client import create_receipt, CheckboxAPIError
+from cod_amount import collected_cod_amount, fit_goods_to_total
 from orders_db import (
     get_connection, get_active_toysi_orders, mark_checkbox_ettn_registered,
     mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
@@ -191,8 +192,14 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = Non
 
     try:
         total_amount = sum(item.get("price", 0) * item.get("qty", 1) for item in order["items"])
+        goods = _receipt_goods_from_order(order)
+        if payment_type == "CASH" and order.get("carrier", "nova_poshta") == "nova_poshta":
+            # НП збирає накладений платіж ЦІЛИМИ гривнями (відкидає копійки): сума чека = сума, яку ФАКТИЧНО отримано (cod_amount.py; запит головного бухгалтера
+            # 06–07.10.2026). Рядки чека підганяються під цю суму до копійки, create_receipt перевіряє збіг goods↔total_amount як і раніше.
+            total_amount = collected_cod_amount(total_amount)
+            goods = fit_goods_to_total(goods, total_amount)
         result = create_receipt(
-            goods=_receipt_goods_from_order(order),
+            goods=goods,
             payment_type=payment_type,
             total_amount=total_amount,
             order_id=order["internal_order_id"],

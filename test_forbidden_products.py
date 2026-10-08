@@ -156,9 +156,22 @@ found = {p.name for p in BASE.glob("generate_*.py")} | {"site/build_site.py"}
 chk(f"структура: НЕМАЄ невідомого генератора вітрини (додали новий? — внесіть у DIRECT/VIA_TOP/EXEMPT цього тесту): {sorted(found - known)}", not (found - known))
 
 # ── 8. живий каталог / готові фіди ──
+# Мертва копія повного Prom-фіду (генерація прибрана, споживача нема: логи Apache 30.08–08.10 без жодного GET, generate_prom_feed.py:987-988) — не перевіряємо.
+DEAD_FEEDS = {"prom_feed.xml"}
+
+
 def ids_of(path):
+    """ID АКТИВНИХ пропозицій фіду. EVA-деактиваційні заглушки (`available="false"`, generate_eva_feed._compute_eva_deactivations) — це якраз
+    правильний спосіб прибрати вже листований товар з EVA, тому їх НЕ рахуємо порушенням."""
     t = Path(path).read_text(encoding="utf-8", errors="replace")
-    return set(re.findall(r'<offer id="(\d+)"', t)) | set(re.findall(r"<g:id>(\d+)", t))
+    ids = {m.group(1) for m in re.finditer(r'<offer id="(\d+)"([^>]*)>', t) if 'available="false"' not in m.group(2)}
+    return ids | set(re.findall(r"<g:id>(\d+)", t))
+
+
+# ids_of: EVA-заглушка деактивації (available="false") НЕ порушення; активний заборонений офер — порушення
+_tf2 = Path(tempfile.mkdtemp()) / "eva.xml"
+_tf2.write_text('<yml_catalog><offers><offer id="11" available="false"><name>x</name></offer><offer id="12" available="true"><name>y</name></offer></offers></yml_catalog>', encoding="utf-8")
+chk("ids_of: заглушка деактивації (available=false) не рахується, активний офер — рахується", ids_of(_tf2) == {"12"})
 
 if "--live" in sys.argv or "--feeds" in sys.argv:
     from parser import fetch_toysi_catalog
@@ -175,6 +188,9 @@ if "--live" in sys.argv or "--feeds" in sys.argv:
     if "--feeds" in sys.argv:
         d = Path(sys.argv[sys.argv.index("--feeds") + 1])
         for fn in sorted(d.glob("*.xml")):
+            if fn.name in DEAD_FEEDS:
+                print(f"[skip] {fn.name}: мертва копія, споживача нема")
+                continue
             hit = ids_of(fn) & set(bad_live)
             chk(f"готовий фід {fn.name}: заборонених SKU {len(hit)}", not hit)
 

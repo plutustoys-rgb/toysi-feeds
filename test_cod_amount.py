@@ -57,6 +57,15 @@ for bad, why in ((250.0, "ціль більша за суму"), (36.0, "різ�
         ok = True
     chk(f"ValueError, а не мовчазна підгонка: {why}", ok)
 
+# вижилі мутанти аудиту #640: (а) ціна одиниці після заокруглення < 1 ₴ → ValueError; (б) diff==0 при qty>1 → без розщеплення
+try:
+    ca.fit_goods_to_total([{"code": "c", "name": "c", "price": 1.40, "qty": 1}, {"code": "d", "name": "d", "price": 1.40, "qty": 1}], 2.0); ok2 = False   # 2,80 → 2,00: найдорожча 1,40−0,80 = 0,60 < 1 ₴
+except ValueError:
+    ok2 = True
+chk("ValueError, коли ціна одиниці після заокруглення впала б нижче 1 ₴ (2×1,40 → 2,00)", ok2)
+rq = ca.fit_goods_to_total([{"code": "q", "name": "q", "price": 40.0, "qty": 3}], 120.0)
+chk("diff==0 і qty>1: рядок НЕ розщеплюється (одна позиція qty=3)", len(rq) == 1 and rq[0]["qty"] == 3 and rq[0]["price"] == 40.0)
+
 # ── 3. build_toysi_order: moneyback ціле лише для НП+COD ──
 def _order(**kw):
     base = dict(internal_order_id="t_1", order_id="1", platform="prom", carrier="nova_poshta", customer_name="Іваненко Іван Іванович",
@@ -120,6 +129,25 @@ b = bodies[-1]
 chk("справжній create_receipt, qty=3: 20800 коп., два рядки (qty 2 і 1), кількості в тисячних частках",
     b["payments"][0]["value"] == 20800 and sorted(g["quantity"] for g in b["goods"]) == [1000, 2000]
     and sum(g["good"]["price"] * g["quantity"] // 1000 for g in b["goods"]) == 20800)
+
+# ── 6. збій видачі чека більше не мовчазний (аудит #640): throttled-алерт із причиною ──
+alerts = []
+ost.send_throttled_alert = lambda key, text, cooldown_sec=0: alerts.append((key, text, cooldown_sec)) or True
+def _boom(**kw): raise cbc.CheckboxAPIError("422 тест: невірне значення")
+ost.create_receipt = _boom
+calls.clear()
+ost._maybe_issue_receipt(None, _order(internal_order_id="prom_fail_1"), "2045")
+chk("CheckboxAPIError → throttled-алерт: ключ по замовленню, причина в тексті, ліміт 24 год, чек не позначено виданим",
+    len(alerts) == 1 and alerts[0][0] == "receipt_fail_prom_fail_1" and "422 тест" in alerts[0][1] and alerts[0][2] == 24 * 3600
+    and not any(c[0] == "mark" for c in calls if isinstance(c, tuple)))
+def _boom2(**kw): raise RuntimeError("несподіване")
+ost.create_receipt = _boom2
+alerts.clear()
+ost._maybe_issue_receipt(None, _order(internal_order_id="prom_fail_2"), "2045")
+chk("неочікуваний виняток → теж алерт", len(alerts) == 1 and "несподіване" in alerts[0][1])
+ost.send_throttled_alert = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("telegram down"))
+ost._maybe_issue_receipt(None, _order(internal_order_id="prom_fail_3"), "2045")
+chk("збій самого алерту не валить трекер", True)
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ COD цілі гривні — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

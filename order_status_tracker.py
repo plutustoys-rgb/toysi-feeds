@@ -17,7 +17,7 @@ from orders_watcher import (
 )
 import rozetka_client
 import eva_orders_client
-from telegram_notify import send_telegram_message
+from telegram_notify import send_telegram_message, send_throttled_alert
 from toysi_order_submit import (
     fetch_order_statuses,
     fetch_order_positions,
@@ -123,6 +123,21 @@ def _receipt_goods_from_order(order: dict) -> list:
     ]
 
 
+def _alert_receipt_failed(order: dict, payment_type: str, err) -> None:
+    """Фіскальний чек не видано — це НЕ може бути мовчазним (раніше — лише stderr, повтор кожен цикл без жодного сигналу; аудит PR #640). Telegram не частіше
+    разу на добу на замовлення; текст самодіагностичний (що, чому, що робити). Помилка самого алерту не валить трекер."""
+    try:
+        send_throttled_alert(
+            f"receipt_fail_{order.get('internal_order_id')}",
+            f"🔴 Чек Checkbox НЕ видано для {order.get('internal_order_id')} ({payment_type}): {str(err)[:300]}\n"
+            f"Трекер повторить спробу наступного циклу (~15 хв). Якщо повторюється — перевір тіло запиту/зміну в Checkbox; "
+            f"для COD+НП сума чека має бути ЦІЛОЮ гривнею (cod_amount.py), ручний чек — у кабінеті Checkbox.",
+            cooldown_sec=24 * 60 * 60,
+        )
+    except Exception as ae:  # noqa: BLE001 — сигнал best-effort
+        print(f"[order_status_tracker] алерт про збій чека не надіслано: {ae}", file=sys.stderr)
+
+
 def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = None) -> None:
     """Видає фіскальний чек напряму (checkbox_client.create_receipt) —
     замінює колишню ЕТТН-прив'язку (_maybe_register_ettn, ЗАКРИТО
@@ -211,6 +226,7 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = Non
             f"{order['internal_order_id']} ({payment_type}): {e}",
             file=sys.stderr,
         )
+        _alert_receipt_failed(order, payment_type, e)
         return
     except Exception as e:
         print(
@@ -218,6 +234,7 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = Non
             f"{order['internal_order_id']}: {e}",
             file=sys.stderr,
         )
+        _alert_receipt_failed(order, payment_type, e)
         return
 
     receipt_id = result.get("id") if isinstance(result, dict) else None

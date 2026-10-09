@@ -15,6 +15,8 @@ import csv
 import random
 import re
 import sys
+import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -39,9 +41,16 @@ AVAIL_DROP_MAX_PCT = 15.0    # падіння «В наявності» за д�
 
 def page_buyable(url: str):
     """(InStock?, є кнопка?) для публічної сторінки; (None, None) — збій мережі (у вибірку не рахується)."""
-    try:
-        h = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=25).read().decode("utf-8", "ignore")
-    except Exception:  # noqa: BLE001 — мережевий збій ≠ «недоступний»
+    h = None
+    for attempt in range(2):   # один повтор лише на мережевий збій/таймаут; 404 (свіжа картка ще не публічна) повторювати марно
+        try:
+            h = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=25).read().decode("utf-8", "ignore")
+            break
+        except urllib.error.HTTPError:
+            return None, None
+        except Exception:  # noqa: BLE001 — мережевий збій ≠ «недоступний»
+            time.sleep(1.5)
+    if h is None:
         return None, None
     m = re.search(r'"availability":"http://schema.org/(\w+)"', h)
     if not m:
@@ -94,7 +103,7 @@ def record(cat: dict, sample_n: int = SAMPLE_N, alert: bool = True) -> dict:
     avail_items = [v for v in items if v.get("presence") == "avail"]
     in_cpa = sum(1 for v in avail_items if v.get("in_running_cpa"))
     sample = random.sample(avail_items, min(sample_n, len(avail_items))) if avail_items else []
-    with ThreadPoolExecutor(8) as ex:
+    with ThreadPoolExecutor(3) as ex:   # 8 потоків під навантаженням (інший скан з тієї ж IP) давали 42 з 60 таймаутів → хибне «не читаються»
         res = [r for r in ex.map(lambda v: page_buyable(v["view_catalog_url"]), sample) if r[0] is not None]
     buy_ok = sum(1 for instock, btn in res if instock and btn)
     feed = feed_offer_count()

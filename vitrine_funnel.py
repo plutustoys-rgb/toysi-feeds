@@ -280,7 +280,8 @@ def _rotate_csv_if_header_changed() -> bool:
     (інакше дані лягли б під чужий заголовок, аудит #655)."""
     try:
         if CSV_FILE.exists():
-            first = CSV_FILE.read_text(encoding="utf-8").splitlines()[0]
+            lines = CSV_FILE.read_text(encoding="utf-8").splitlines()
+            first = lines[0] if lines else ""   # порожній файл (0 байт після збою) не повинен кидати IndexError
             if first != ",".join(COLUMNS):
                 CSV_FILE.rename(CSV_FILE.with_name(f"vitrine_funnel.{datetime.now():%Y%m%d%H%M%S}.old.csv"))
         return True

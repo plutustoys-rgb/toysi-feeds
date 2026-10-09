@@ -509,7 +509,19 @@ def _rozetka_delivery_address(order: dict) -> str:
         # За норми (NP резолвиться) Toysi бере Ref номера пункту, текст не йде. parse_np_branch витягує
         # номер і з «Поштомат №N» (гілка «№» у _WAREHOUSE_RE), тож резолв від зміни ярлика не ламається.
         label = "Поштомат" if "поштомат" in (d.get("delivery_service_name") or "").lower() else "Відділення"
-        return (f"{city_out}, {label} №{wh}".strip(", ") if wh else city_out)
+        if wh:
+            return f"{city_out}, {label} №{wh}".strip(", ")
+        # КУР'ЄРСЬКА доставка НП за адресою (delivery_method_id=2, ref_id=null, place_number=""):
+        # клієнт дав вулицю/будинок/квартиру, а не відділення. Раніше віддавали ГОЛЕ місто —
+        # Toysi-менеджер питав «який тип доставки та адресу» (Rozetka 908234237 від 08.10 і 905803580
+        # від 11.09, обидва Харків, вул. Сумська). «№» вирізаємо: _WAREHOUSE_RE прийняв би його за номер відділення.
+        street = (d.get("place_street") or "").replace("№", "").strip()
+        house = str(d.get("place_house") or "").replace("№", "").strip()
+        flat = str(d.get("place_flat") or "").replace("№", "").strip()
+        if street:
+            addr = street + (f", буд. {house}" if house else "") + (f", кв. {flat}" if flat else "")
+            return f"{city_out}, {addr}"
+        return city_out
     # RZ Delivery / інше: адреса пункту видачі вільним текстом (вулиця/будинок/номер).
     street = " ".join(p for p in (d.get("place_street"), d.get("place_house"), place_number) if p).strip()
     warehouse = (d.get("warehouse_name") or d.get("warehouse") or "").strip()

@@ -10,6 +10,8 @@ test_vitrine_funnel.py — воронка Prom-вітрини (vitrine_funnel.py
 Самодостатній: мережа/Telegram підмінені.
 """
 import csv
+import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -107,6 +109,11 @@ alerts = []
 import telegram_notify as tn
 tn.send_throttled_alert = lambda key, text, cooldown_sec=0: alerts.append((key, text)) or True
 vf.feed_offer_count = lambda: 100
+_NO_ORD = {"last_order_at": "", "days_since_order": None, "orders_14d": None, "orders_note": "нема даних: тест"}
+_NO_RET = {"ret_total": None, "ret_in_cab": None, "ret72_total": None, "ret72_in_cab": None, "ret_failed": None,
+           "ret_pub_buy": None, "ret_pub_404": None, "ret_pub_n": None, "ret_note": "нема даних: тест"}
+vf.last_orders = lambda: dict(_NO_ORD)
+vf.returned_fate = lambda cat: dict(_NO_RET)
 cat_ok = {str(i): {"presence": "avail", "in_running_cpa": True, "view_catalog_url": "https://x/ok"} for i in range(100)}
 vf.page_buyable = lambda url: (True, True)
 r = vf.record(cat_ok, sample_n=10)
@@ -135,6 +142,103 @@ importlib.reload(vf)  # повернути справжній page_buyable (ви
 vf.urllib.request.urlopen = lambda req, timeout=0: _R("<html>без схеми</html>")
 _check("сторінка без schema.org/availability → (None, None), не «недоступний»", vf.page_buyable("https://x/y"), (None, None))
 vf.urllib.request.urlopen = _orig2
+
+# ── 5. Замовлення Prom і доля повернених (запит Консультанта 09.10) ───────────
+# 5a. evaluate_orders: тиша ≥14 діб, подія «перше замовлення», None не вигадується
+_s, _e = vf.evaluate_orders({"days_since_order": 15, "last_order_at": "2026-09-24 10:00", "orders_14d": 0}, None)
+_check("5a. 15 діб тиші → тривога тиші, події нема", (len(_s), _e), (1, []))
+_s, _e = vf.evaluate_orders({"days_since_order": 3, "last_order_at": "2026-10-12 10:00", "orders_14d": 2}, {"avail": 100, "days_since_order": 18})
+_check("5b. після розриву 18 діб прийшло замовлення → подія, тиші нема", (_s, len(_e)), ([], 1))
+_s, _e = vf.evaluate_orders({"days_since_order": None}, {"avail": 1, "days_since_order": 20})
+_check("5c. немає даних про замовлення → нічого не вигадуємо", (_s, _e), ([], []))
+_s, _e = vf.evaluate_orders({"days_since_order": 5}, {"avail": 1, "days_since_order": 3})
+_check("5d. розрив 3→5 діб (замовлень нема, але <14) — ні тиші, ні події", (_s, _e), ([], []))
+# 5e. evaluate_returns
+_r = vf.evaluate_returns({"ret72_total": 1000, "ret72_in_cab": 300, "ret_pub_n": 15, "ret_pub_buy": 14, "ret_pub_404": 1})
+_check("5e. з 1000 повернених >72 год лише 300 у кабінеті (30%) → «паперовий» приріст", any("паперовий" in x for x in _r), True)
+_r = vf.evaluate_returns({"ret72_total": 1000, "ret72_in_cab": 900, "ret_pub_n": 15, "ret_pub_buy": 5, "ret_pub_404": 10})
+_check("5f. у кабінеті 90%, але публічні з кнопкою 5/15 → окреме порушення", (len(_r), "лише 5/15" in _r[0]), (1, True))
+_check("5g. дані відсутні (None) → без порушень", vf.evaluate_returns(dict(_NO_RET)), [])
+_check("5h. мало повернених (<100) → не робимо висновків", vf.evaluate_returns({"ret72_total": 40, "ret72_in_cab": 1}), [])
+
+
+# 5i. last_orders: мок requests.get
+class _Resp:
+    def __init__(self, code, data):
+        self.status_code, self._d = code, data
+
+    def json(self):
+        return self._d
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+import requests as _rq
+_orig_get = _rq.get
+_now = vf.datetime(2026, 10, 9, 12, 0, 0)
+os.environ["PROM_API_KEY"] = "t"
+_rq.get = lambda *a, **k: _Resp(200, {"orders": [{"id": 2, "date_created": "2026-09-24T08:30:00.123"}, {"id": 1, "date_created": "2026-09-01T10:00:00"}]})
+_o = vf.last_orders(_now)
+_check("5i. останнє 24.09 → 15 діб розриву, 0 за 14 діб", (_o["last_order_at"], _o["days_since_order"], _o["orders_14d"]), ("2026-09-24 08:30", 15, 0))
+_rq.get = lambda *a, **k: _Resp(401, {})
+_check("5j. 401 → «нема даних», діб None", (vf.last_orders(_now)["days_since_order"], vf.last_orders(_now)["orders_note"].startswith("нема даних")), (None, True))
+_rq.get = lambda *a, **k: _Resp(200, {"orders": []})
+_o = vf.last_orders(_now)
+_check("5k. жодного замовлення за 60 діб → days_since = 60 і примітка", (_o["days_since_order"], "жодного" in _o["orders_note"]), (60, True))
+_rq.get = _orig_get
+_old_key = os.environ.pop("PROM_API_KEY", None)
+vf.BASE_DIR = Path(tempfile.mkdtemp())   # щоб load_dotenv не підтягнув справжній .env
+_check("5l. нема PROM_API_KEY → «нема даних»", vf.last_orders(_now)["orders_note"].startswith("нема даних"), True)
+
+# 5m. returned_fate: мок публічного price_state і сторінок
+_state = {"_readded_at": {**{f"a{i}": "2026-10-08T10:00:00" for i in range(120)}, **{f"n{i}": "2026-10-09T11:30:00" for i in range(10)}},
+          "_readd_failed": {"z1": "x"}}
+_cat = {f"a{i}": {"view_catalog_url": f"https://x/a{i}"} for i in range(60)}   # 60 з 120 «старих» повернених є в кабінеті
+
+
+class _RS:
+    def __init__(self, t):
+        self._t = t
+
+    def read(self):
+        return self._t
+
+
+_orig_open = vf.urllib.request.urlopen
+vf.urllib.request.urlopen = lambda req, timeout=0: _RS(json.dumps(_state).encode("utf-8"))
+_ps = vf.page_state
+_seq = iter(["buy"] * 10 + ["404"] * 5)
+vf.page_state = lambda url: next(_seq)
+datetime_now = vf.datetime(2026, 10, 9, 12, 0, 0)
+_f = vf.returned_fate(_cat, datetime_now, sample_n=15)
+_check("5m. повернені >24 год 120, у кабінеті 60; >72 год — ті самі 120 (8.10 10:00 — це ~26 год)", (_f["ret_total"], _f["ret_in_cab"]), (120, 60))
+_check("5n. >72 год: повернених 0 (усі 8.10 10:00 — лише ~26 год), failed=1", (_f["ret72_total"], _f["ret_failed"]), (0, 1))
+_check("5o. вибірка сторінок: 10 купити, 5 — 404, n=15", (_f["ret_pub_buy"], _f["ret_pub_404"], _f["ret_pub_n"]), (10, 5, 15))
+vf.page_state = _ps
+vf.urllib.request.urlopen = _boom
+_f = vf.returned_fate(_cat, datetime_now)
+_check("5p. price_state недоступний → «нема даних», числа None", (_f["ret_total"], _f["ret_note"].startswith("нема даних")), (None, True))
+vf.urllib.request.urlopen = _orig_open
+
+# 5q. page_state: розрізняє купити / не купити / 404 / збій
+vf.urllib.request.urlopen = lambda req, timeout=0: _R(_pages["ok"])
+_check("5q1. page_state: InStock+кнопка → buy", vf.page_state("https://x/ok"), "buy")
+vf.urllib.request.urlopen = lambda req, timeout=0: _R(_pages["oos"])
+_check("5q2. page_state: OutOfStock → nobuy", vf.page_state("https://x/oos"), "nobuy")
+vf.urllib.request.urlopen = _gone
+_check("5q3. page_state: 404 → '404'", vf.page_state("https://x/gone"), "404")
+vf.urllib.request.urlopen = _boom
+_check("5q4. page_state: мережа → 'err'", vf.page_state("https://x/net"), "err")
+vf.urllib.request.urlopen = _orig_open
+
+# 5r. ротація CSV при зміні заголовка
+_tmp2 = Path(tempfile.mkdtemp())
+vf.CSV_FILE = _tmp2 / "vitrine_funnel.csv"
+vf.CSV_FILE.write_text("at,total\n2026-10-09,1\n", encoding="utf-8")
+vf._rotate_csv_if_header_changed()
+_check("5r. старий заголовок → файл відкладено (.old.csv), нового ще нема", (vf.CSV_FILE.exists(), len(list(_tmp2.glob("*.old.csv")))), (False, 1))
 
 print()
 if _FAILS:

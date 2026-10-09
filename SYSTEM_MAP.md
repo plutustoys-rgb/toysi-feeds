@@ -180,9 +180,9 @@
 | `daily-report` | `daily_report.py` | зведення в Telegram |
 | `deadline-reminder` | `deadline_reminder.py` | дедлайни/платежі |
 | `service-watchdog` | `service_watchdog.py` | алерти застою + дрейф автодеплою |
-| `promo-margin-guard` | `promo_margin_guard.py` (oneshot, щодня 08:30, `Persistent=true`) | Prom-промо: звірка маржі АКТИВНИХ промо-SKU (заморожені ціни × 0.95) із живою собівартістю Toysi; нічого не змінює, лише сигналить у критичний календар (`promo_margin`). Знайдено drift-check на VPS 2026-10-09 як «живе, у мапі нема» |
+| `promo-margin-guard` | `promo_margin_guard.py` (oneshot, щодня 08:30 + до 10 хв випадкової затримки `RandomizedDelaySec=600`, `Persistent=true`) | Prom-промо: звірка маржі АКТИВНИХ промо-SKU (заморожені ціни × 0.95) із живою собівартістю Toysi; не змінює ні цін, ні даних каталогу — лише пише звіти (`reports/balance_history.jsonl`, `promo_margin_guard_status.json`) і сигналить у критичний календар (`promo_margin`). Знайдено drift-check на VPS 2026-10-09 як «живе, у мапі нема» |
 | `site-order-api` | `site_order_api.py` (daemon, `Restart=on-failure`) | сайт plutustoys.com.ua: приймання веб-замовлень + LiqPay. Знайдено drift-check на VPS 2026-10-09 як «живе, у мапі нема» |
-| `site-rebuild` | `site/build_site.py` + `generate_prom_redirects.py` (oneshot, `.timer` `*-*-* 00/2:20:00` — кожні 2 год о :20) | сайт: регенерація статичного магазину з живого каталогу Toysi + GMC-редіректи. Drift-check його НЕ БАЧИВ (ключового слова `site-` не було в фільтрі юнітів) — додано 2026-10-09 |
+| `site-rebuild` | `site/build_site.py` + `generate_prom_redirects.py` (крок редіректів не фатальний — `ExecStartPost=-`; oneshot, `.timer` `*-*-* 00/2:20:00` — кожні 2 год о :20) | сайт: регенерація статичного магазину з живого каталогу Toysi + GMC-редіректи. Drift-check його НЕ БАЧИВ (ключового слова `site-` не було в фільтрі юнітів) — додано 2026-10-09 |
 
 > **✅ ДРЕЙФ order-flow РОЗВ'ЯЗАНО (звірено живо 2026-08-20):** `order-router` і `orders-watcher` на VPS
 > **DISABLED + inactive** — це мертві файли-юніти, поглинуті `order-pipeline` (він робить poll_once+

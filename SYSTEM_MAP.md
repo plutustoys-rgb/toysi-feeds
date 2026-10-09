@@ -261,7 +261,10 @@
   лише з `--expect-fiscal`, замок `.local_secrets/kodv_return_<serial>.lock`, дубль-перевірка; запускає КОДВ після дозволу власника)
   → **КОДВ/власник**.
 - **Telegram / сповіщення (спільна інфра):** `telegram_notify`, `telegram_outbox_processor`,
-  `telegram_userbot_client`, `telegram_userbot_login` → Код.
+  `telegram_userbot_client`, `telegram_userbot_login`, `telegram_triage` → Код. **`telegram_triage` (09.10.2026, власник: «Telegram — смітник»):** сито в `send_telegram_message` —
+  у Telegram НЕ йдуть (лишаються в `reports/telegram_alerts.md` з позначкою) лише точні інформаційні шаблони: ✅ «автодеплой: підтягнуто commit», чистий звіт прайсера (Помилок: 0, <100 видалень),
+  нічний скан, соцпостинг без помилок, імпорт EVA з модерацією; повторювані стани/збої сесій (EVA/ALLO/Prom, «нижче підлогового порога» по майданчику, те саме непідтверджене замовлення, ЗАБЛОКОВАНО прайсера) —
+  раз на добу на ключ; усе інше (🛑/📉 вітрини, збої watchdog, нові замовлення, фіскалізація, КОДВ, масові видалення, помилки, невідоме) іде одразу. Новий шумний клас = рядок у `RULES` (лише allow-list).
 - **Координація / інфра / деплой:** `agent_watch`, `service_watchdog`, `vps_code_sync_report`,
   `deadline_reminder`, `system_map_driftcheck`,
   `recall.py` (антидубль/пам'ять: «що вже зроблено про X» з git+коду+SYSTEM_MAP+CODE_LOG;

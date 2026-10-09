@@ -84,7 +84,9 @@ chk("реєстр: юніти, знайдені drift-check на VPS 09.10, за
 # Інакше нова автоматика, додана PR-ом, лишається поза SSOT і невидима перевірці (так було з
 # system-map-driftcheck, link-cache-validator, np-warehouse-sync — знайдено 09.10.2026).
 import glob, os
-root_units = sorted({os.path.splitext(f)[0] for f in glob.glob("*.service") + glob.glob("*.timer")})
+_here = os.path.dirname(os.path.abspath(__file__))   # корінь репо незалежно від cwd запуску
+root_units = sorted({os.path.splitext(os.path.basename(f))[0]
+                     for f in glob.glob(os.path.join(_here, "*.service")) + glob.glob(os.path.join(_here, "*.timer"))})
 chk(f"у корені репо є юніти для перевірки ({len(root_units)})", len(root_units) >= 9)
 not_in_reg = [u for u in root_units if u not in set(reg["vps_units"])]
 chk(f"кожен юніт із кореня репо є в реєстрі vps_units (нема в реєстрі: {not_in_reg})", not not_in_reg)

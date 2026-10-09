@@ -52,7 +52,7 @@ def _log_alert_to_shared_folder(text: str, note: str = "") -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(ALERTS_LOG_FILE, "a", encoding="utf-8") as f:
             if note:
-                text = f"{note}\n\n{text}"
+                text = f"{text}\n\n{note}"  # позначка ПІСЛЯ тексту: telegram_digest класифікує за першим рядком (аудит #643 M1)
             f.write(f"## {timestamp} — {source}\n\n{text}\n\n---\n\n")
     except OSError as e:
         print(f"[telegram] Не вдалося дописати у {ALERTS_LOG_FILE}: {e}", file=sys.stderr)

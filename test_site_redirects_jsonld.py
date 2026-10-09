@@ -16,12 +16,12 @@ def chk(n, c):
     if not c: F.append(n)
 
 sh = (HERE / "deploy" / "activate_site_apache.sh").read_text(encoding="utf-8")
-rules = [l.strip() for l in sh.splitlines() if l.strip().startswith("RewriteRule ^/(?:ua|ru)")]
+rules = [l.strip() for l in sh.splitlines() if l.strip().startswith("RewriteRule ^/(?:")]
 pats = []
 for r in rules:
     m = re.match(r"RewriteRule (\S+) (\S+) \[R=301,L\]", r)
     pats.append((m.group(1), m.group(2)) if m else None)
-chk("4 правила старих Prom-URL у скрипті, усі 301", len(rules) == 4 and all(pats))
+chk("5 правил старих Prom-URL у скрипті (p/g/product_list/site_/корінь мови), усі 301", len(rules) == 5 and all(pats))
 def hit(path):
     for p, tgt in pats:
         if re.search(p, path):
@@ -34,6 +34,12 @@ chk("/ua/product_list → /catalog.html", hit("/ua/product_list") == "/catalog.h
 chk("/ua, /ua/, /ru/ → /", hit("/ua/") == "/" and hit("/ru/") == "/" and hit("/ru") == "/")
 chk("НЕ чіпає наші адреси", all(hit(p) is None for p in ("/product-1.html", "/catalog.html", "/category-x.html", "/api/np/city", "/ua/other-page.html", "/index.html")))
 chk("мапа відповідає лише цифровому prom_id (не плутає /ua/page)", hit("/ua/page12-x") is None)
+# 09.10.2026: мовний префікс опційний — Google тримає й старі Prom-URL БЕЗ /ua/ (GMC «Не указана цена»; було 404)
+chk("/p…-slug БЕЗ /ua/ → та сама мапа промід", hit("/p3138857147-nabor-dlya-tvorchestva.html") == "${promredir:$1|/catalog.html}")
+chk("/g… і /product_list БЕЗ префікса → /catalog.html", hit("/g155144964-vodnyj.html") == "/catalog.html" and hit("/product_list") == "/catalog.html")
+chk("/site_… (сторінки Prom) з префіксом і без → /", hit("/site_3517399-oplata.html") == "/" and hit("/ua/site_3517399-oplata.html") == "/" and hit("/ru/site_1-x") == "/")
+chk("НЕ чіпає наші: /product-168072.html, /p.html, /products.html, /page1.html, /privacy.html, /sitemap.xml, /site.webmanifest",
+    all(hit(p) is None for p in ("/product-168072.html", "/p.html", "/products.html", "/page1.html", "/privacy.html", "/sitemap.xml", "/site.webmanifest", "/g.html")))
 
 # HSTS: тільки в https-гілці render_vhost (в :80 і http-режимі його нема)
 http_part = sh.split('if [ "$mode" = "http" ]; then', 1)[1].split("else", 1)[0]

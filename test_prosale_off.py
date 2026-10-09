@@ -11,7 +11,8 @@ def chk(n, c):
     print(f"[{'OK ' if c else 'FAIL'}] {n}")
     if not c: F.append(n)
 
-chk("у коді PROSALE_TIER = off, множник off = 0", cp.PROSALE_TIER == "off" and cp.PROSALE_TIER_MULTIPLIER["off"] == 0.0)
+chk("у коді PROSALE_TIER = standard (09.10: off вимикає кнопку покупки на Prom), множник off = 0", cp.PROSALE_TIER == "standard" and cp.PROSALE_TIER_MULTIPLIER["off"] == 0.0)
+cp.PROSALE_TIER = "off"   # далі перевіряємо САМ режим off (він лишається в коді); у проді тир = standard
 chk("Prom: комісія 0 для категорії з таблиці id (антистрес 2656), для категорії за назвою і для невідомої (fallback 0,20 НЕ діє)",
     cp.get_platform_commission("prom", None, None, 2656) == 0.0 and cp.get_platform_commission("prom", "пазли g-toys") == 0.0
     and cp.get_platform_commission("prom", "якась невідома категорія") == 0.0 and cp.get_platform_commission("prom") == 0.0)

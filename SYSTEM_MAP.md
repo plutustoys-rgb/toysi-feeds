@@ -242,6 +242,7 @@
   **Cloudflare** — NS `anna/kevin.ns.cloudflare.com`, записи DNS only, НЕ Prom; реєстратор imena.ua). VPS-юніти `site-order-api` (daemon) і
   `site-rebuild.timer` (кожні 2 год) увімкнено `activate_site_apache.sh` — внесено в §2Б/§6 (2026-10-09: drift-check на VPS показав, що `site-order-api` у мапі не було, а `site-rebuild` перевірка взагалі не бачила).
   Онлайн-оплата LiqPay ще НЕ підключена (працює накладений платіж).
+  **09.10.2026:** відомості про продавця (ФОП Чечетенко О.Ю., м. Київ, просп. Берестейський, 89а — доручення власника; РНОКПП береться з `SITE_SELLER_TAXID` у `.env` VPS, у git НЕ кладемо) на «Контакти»/оферті/політиці; нова сторінка `privacy.html` (+футер, sitemap), розділ «Оплата» на «Доставка» (вимоги LiqPay п.3/п.7, ст.7 Закону про е-комерцію; `технічні_вимоги_маркетплейсів/liqpay.md`). Старі Prom-URL: мовний префікс `/ua|ru/` ОПЦІЙНИЙ (`/p…`, `/g…`, `/product_list`, `/site_…` без `/ua/` → 301; правка шаблону vhost у `deploy/activate_site_apache.sh`, застосовується повторним запуском скрипта на VPS).
   → Код (механіка) + SMM (дизайн) + власник (LiqPay).
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,
   `plutus_overlay`, `meta_conversions_client`, `publish_reel_video.sh` (хостинг відео у feed-data/media

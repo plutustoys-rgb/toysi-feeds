@@ -173,9 +173,11 @@ cat <<'EOF'
     RewriteEngine On
     RewriteMap promredir "txt:@MAPFILE@"
     # старі Prom-URL (укр. і рос. версії; SEO-замовлення 2026-10-06, GSC: 5 583 URL у 404) → наша картка / каталог (301)
-    RewriteRule ^/(?:ua|ru)/p([0-9]+)- ${promredir:$1|/catalog.html} [R=301,L]
-    RewriteRule ^/(?:ua|ru)/g[0-9]+- /catalog.html [R=301,L]
-    RewriteRule ^/(?:ua|ru)/product_list(?:/|$) /catalog.html [R=301,L]
+    # 09.10.2026: мовний префікс ОПЦІЙНИЙ — Google (GMC «Интернет-магазин», «Не указана цена» 1 564) тримає й старі Prom-URL БЕЗ /ua/ (/p3138857147-….html → було 404). Наші сторінки (/product-…, /catalog.html…) цим правилам не відповідають.
+    RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- ${promredir:$1|/catalog.html} [R=301,L]
+    RewriteRule ^/(?:(?:ua|ru)/)?g[0-9]+- /catalog.html [R=301,L]
+    RewriteRule ^/(?:(?:ua|ru)/)?product_list(?:/|$) /catalog.html [R=301,L]
+    RewriteRule ^/(?:(?:ua|ru)/)?site_[0-9]+- / [R=301,L]
     RewriteRule ^/(?:ua|ru)/?$ / [R=301,L]
     ProxyPreserveHost On
     ProxyPass /api/ http://127.0.0.1:8901/api/ retry=0 timeout=30

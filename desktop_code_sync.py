@@ -48,8 +48,30 @@ def sync(base: Path = BASE) -> str:
         return f"збій синхронізації ({type(e).__name__}: {str(e)[:120]}) — задача працює з наявним кодом"
 
 
+# Пропуски, після яких код десктопа ЗАСТРЯГАЄ (потрібна дія), на відміну від разового збою мережі / worktree. Інцидент 06–09.10.2026: щоденний архіватор лишав
+# CODE_LOG.md зміненим → «незакомічені зміни» → 3 доби мовчазних пропусків (вікна задач приховані), десктоп без forbidden_products/cod_amount/… на 23 коміти.
+_STUCK_MARKERS = ("незакомічені зміни", "очікується master", "fast-forward неможливий", "збій синхронізації")
+
+
+def needs_alert(result: str) -> bool:
+    return any(m in (result or "") for m in _STUCK_MARKERS)
+
+
+def _alert(result: str) -> None:
+    """Раз на добу (send_throttled_alert) — тихо, без спаму; будь-який збій алерта не валить задачу."""
+    try:
+        from telegram_notify import send_throttled_alert
+        send_throttled_alert("desktop_code_sync_stuck",
+                             f"🚨 Десктоп-копія коду НЕ оновлюється: {result}\nЛокальні задачі (Rozetka-фід, кабінети) працюють зі старим кодом.")
+    except Exception as e:  # noqa: BLE001
+        print(f"[DesktopCodeSync] алерт не надіслано: {e}", file=sys.stderr)
+
+
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    print(f"[DesktopCodeSync] {sync()}")
+    _result = sync()
+    print(f"[DesktopCodeSync] {_result}")
+    if needs_alert(_result):
+        _alert(_result)
     sys.exit(0)

@@ -274,7 +274,7 @@
   `--detect-role <транскрипт>` = роль сесії з її 1-го повідомлення (cwd у всіх ролей однаковий); хук
   `recall-inject.sh` [локальний] підключає їх окремо — зміна самого хука за власником),
   `archive_channels.py` (auto-archiver проти розпухання: SEO_CHANNEL/КОДВ_CHANNEL/MARKETING_CHANNEL/
-  CONSULTANT_CHANNEL.md [Cowork] + `STATUS.md`[Cowork] + `CODE_LOG.md`[репо] за віком/лімітом кількості
+  CONSULTANT_CHANNEL.md [Cowork] + `STATUS.md`[Cowork] (`CODE_LOG.md`[репо] з 09.10.2026 ВИВЕДЕНО: git-трекований, обрізання без коміту блокувало desktop_code_sync) за віком/лімітом кількості
   запису в `archive/<роль>/`; `OWNER_INBOX.md`[Cowork] — лише явно ЗАКРИТІ записи, ВІДКРИТІ/неоднозначні
   ніколи не архівуються. Запускає `PlutusToys-CabinetAudit` через `local_cabinet_audit.ps1 --apply`
   щодня — виконує ЖИВУ робочу копію файла в теці репо незалежно від git-гілки/мержу, тому недомерджені

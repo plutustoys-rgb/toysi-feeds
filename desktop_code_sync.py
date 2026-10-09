@@ -62,7 +62,8 @@ def _alert(result: str) -> None:
     try:
         from telegram_notify import send_throttled_alert
         send_throttled_alert("desktop_code_sync_stuck",
-                             f"🚨 Десктоп-копія коду НЕ оновлюється: {result}\nЛокальні задачі (Rozetka-фід, кабінети) працюють зі старим кодом.")
+                             f"🚨 Десктоп-копія коду НЕ оновлюється: {result}\nЛокальні задачі (Rozetka-фід, кабінети) працюють зі старим кодом.",
+                             cooldown_sec=24 * 3600)
     except Exception as e:  # noqa: BLE001
         print(f"[DesktopCodeSync] алерт не надіслано: {e}", file=sys.stderr)
 

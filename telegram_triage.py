@@ -25,7 +25,7 @@ RULES = [
     # --- MUTE: інформаційне ---
     # ЛИШЕ рядок успіху «підтягнуто commit …» (allow-list). Збої/відновлення/фід-пайплайн — завжди send (аудит #643 B1, F3).
     ("watchdog_autodeploy_ok", r"service_watchdog",
-     r"^🚀 Watchdog PlutusToys: автодеплой\n\n✅ Автодеплой: підтягнуто commit \w+ о [^\n]+\s*$", "mute"),
+     r"^🚀 Watchdog PlutusToys: автодеплой\n\n✅ Автодеплой: підтягнуто commit \w+ о [^\n(]+ (?:\(\d+ файл\(ів\) змінено\)|\(без змін коду\))\s*$", "mute"),
     # чистий звіт прайсера: цін скориговано N, видалено <100, без виключень через комісію, Помилок: 0 (B3)
     ("pricer_apply_report", r"prom_competitor_pricer",
      r"^💰 prom_competitor_pricer\.py --apply: скориговано цін — \d+, видалено як неконкурентні — \d{1,2} товарів"

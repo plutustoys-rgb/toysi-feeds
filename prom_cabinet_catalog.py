@@ -171,6 +171,12 @@ def summary() -> None:
     print(f"[PromCat] presence: {dict(pres)}")
     print(f"[PromCat] underpriced (неконкурентні за оцінкою Prom): {underpriced}")
     print(f"[PromCat] причини 'не в каталозі' (unadvertised_reasons): {dict(unadv.most_common(15))}")
+    # Воронка «що бачить покупець» (кампанія/кнопка покупки/фід) — best-effort, збій не валить денний знімок (vitrine_funnel.py, 09.10.2026)
+    try:
+        import vitrine_funnel
+        vitrine_funnel.record(cat)
+    except Exception as e:  # noqa: BLE001
+        print(f"[PromCat] WARN воронка не записана: {e}", file=sys.stderr)
 
 
 def main() -> None:

@@ -67,5 +67,18 @@ chk("реєстр: списки «діє» і «вимкнено» не пере
 chk("реєстр: вимкнені 22.09 вотчери записані як вимкнені, не як діючі",
     {"PlutusToys_AgentWatch", "PlutusToys_SellerWatchdog"} <= dis and not ({"PlutusToys_AgentWatch", "PlutusToys_SellerWatchdog"} & act))
 
+# --- фільтр юнітів VPS (09.10.2026: site-rebuild був невидимий — слова "site-" не було) ---
+seen = d.filter_vps_units(["site-rebuild.timer", "site-order-api.service", "promo-margin-guard.timer",
+                           "order-pipeline.service", "systemd-journald.service", "apt-daily.timer",
+                           "ssh.service", "snap.lxd.daemon.service", ""])
+chk("фільтр VPS бачить site-rebuild, site-order-api, promo-margin-guard, order-pipeline",
+    {"site-rebuild.timer", "site-order-api.service", "promo-margin-guard.timer", "order-pipeline.service"} <= seen)
+chk("фільтр VPS ігнорує системні й чужі юніти",
+    not ({"systemd-journald.service", "apt-daily.timer", "ssh.service", "snap.lxd.daemon.service", ""} & seen))
+blind = [u for u in reg["vps_units"] if not d.filter_vps_units([u + ".service"])]
+chk(f"кожен юніт реєстру vps_units видимий фільтру — сліпих плям нема (сліпі: {blind})", not blind)
+chk("реєстр: юніти, знайдені drift-check на VPS 09.10, записані",
+    {"promo-margin-guard", "site-order-api", "site-rebuild"} <= set(reg["vps_units"]))
+
 print("\nРЕЗУЛЬТАТ:", "УСЕ ОК" if not F else f"{len(F)} FAIL: {F}")
 sys.exit(0 if not F else 1)

@@ -190,10 +190,10 @@
 
 > **✅ ДРЕЙФ order-flow РОЗВ'ЯЗАНО (звірено живо 2026-08-20):** `order-router` і `orders-watcher` на VPS
 > **DISABLED + inactive** — це мертві файли-юніти, поглинуті `order-pipeline` (він робить poll_once+
-> bank_check+route послідовно в одному процесі, щоб не було гонки). Активні лише `order-pipeline` +
-> `order-status-tracker`. Подвійної обробки/гонки НЕМА. Косметичний хвіст: файли-юніти `order-router`/
+> bank_check+route послідовно в одному процесі, щоб не було гонки). Серед юнітів ОБРОБКИ ЗАМОВЛЕНЬ активні лише
+> `order-pipeline` + `order-status-tracker` (станом на 2026-08-20; повний стан усіх таймерів VPS на 2026-10-09 — `deploy/vps_units_snapshot_2026-10-09/README.md`). Подвійної обробки/гонки НЕМА. Косметичний хвіст: файли-юніти `order-router`/
 > `orders-watcher` можна прибрати (`systemctl disable` вже стоїть; видалення `.timer/.service` — за бажанням,
-> не критично). `vps-code-sync` — у видимому виводі бандла не потрапив; підтвердити drift-check на VPS.
+> не критично). `vps-code-sync` — з 2026-10-09 у реєстрі й таблиці вище (раніше фільтр його не бачив); VPS-перезняття drift-check після цього PR — за Code-Agent.
 
 ### 2В. GitHub Actions (`plutustoys-rgb/toysi-feeds`)
 - `update-feeds.yml` — cron 4 год: генерує ЛИШЕ `feeds/rozetka_feed.xml` (відокремлено від VPS, щоб не було гонки orphan-force-push).

@@ -49,7 +49,8 @@ def page_buyable(url: str):
         except urllib.error.HTTPError:
             return None, None
         except Exception:  # noqa: BLE001 — мережевий збій ≠ «недоступний»
-            time.sleep(1.5)
+            if attempt == 0:
+                time.sleep(1.5)
     if h is None:
         return None, None
     m = re.search(r'"availability":"http://schema.org/(\w+)"', h)

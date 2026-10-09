@@ -183,6 +183,8 @@
 | `promo-margin-guard` | `promo_margin_guard.py` (oneshot, щодня 08:30 + до 10 хв випадкової затримки `RandomizedDelaySec=600`, `Persistent=true`) | Prom-промо: звірка маржі АКТИВНИХ промо-SKU (заморожені ціни × 0.95) із живою собівартістю Toysi; не змінює ні цін, ні даних каталогу — лише пише звіти (`reports/balance_history.jsonl`, `promo_margin_guard_status.json`) і сигналить у критичний календар (`promo_margin`). Знайдено drift-check на VPS 2026-10-09 як «живе, у мапі нема» |
 | `site-order-api` | `site_order_api.py` (daemon, `Restart=on-failure`) | сайт plutustoys.com.ua: приймання веб-замовлень + LiqPay. Знайдено drift-check на VPS 2026-10-09 як «живе, у мапі нема» |
 | `site-rebuild` | `site/build_site.py` + `generate_prom_redirects.py` (крок редіректів не фатальний — `ExecStartPost=-`; oneshot, `.timer` `*-*-* 00/2:20:00` — кожні 2 год о :20) | сайт: регенерація статичного магазину з живого каталогу Toysi + GMC-редіректи. Drift-check його НЕ БАЧИВ (ключового слова `site-` не було в фільтрі юнітів) — додано 2026-10-09 |
+| `system-map-driftcheck` | `system_map_driftcheck.py --alert` (oneshot, `.timer` щодня 08:45, `Persistent=true`) | сторож цієї мапи: звіряє її з живими systemd-юнітами VPS; при дрейфі — Telegram-алерт (сито `telegram_triage.py`, правило `sysmap_drift`, throttle раз на добу). Створений вручну на сервері ПОЗА git; з 2026-10-09 файли в корені репо → керується `deploy_systemd_units.sh` як решта. Раніше був невидимий власному фільтру |
+| `link-cache-validator` | `link_cache_validator.py` (oneshot, щодня 03:40 + до 10 хв `RandomizedDelaySec=600`, `Persistent=true`) | переперевірка `own_product_links_cache`: виправляє слаги переіменованих ЖИВИХ товарів (оновлює `url_text`); записи зниклих товарів лишає як є й лише рахує у звіті (`confirmed_gone`) — кеш НЕ чистить. У мапі його НЕ БУЛО — знайдено архітектурним аудитом 2026-10-09 (юніт у корені репо розгортається автоматично) |
 
 > **✅ ДРЕЙФ order-flow РОЗВ'ЯЗАНО (звірено живо 2026-08-20):** `order-router` і `orders-watcher` на VPS
 > **DISABLED + inactive** — це мертві файли-юніти, поглинуті `order-pipeline` (він робить poll_once+
@@ -394,7 +396,8 @@
     "prom-competitor-pricer", "prom-review-requester", "prom-chat-bot",
     "social-poster-fb", "social-poster-ig", "social-dead-post-cleaner",
     "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog",
-    "promo-margin-guard", "site-order-api", "site-rebuild"
+    "promo-margin-guard", "site-order-api", "site-rebuild",
+    "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync"
   ],
   "gh_workflows": ["update-feeds.yml"]
 }

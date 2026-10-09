@@ -515,12 +515,12 @@ def _rozetka_delivery_address(order: dict) -> str:
         # клієнт дав вулицю/будинок/квартиру, а не відділення. Раніше віддавали ГОЛЕ місто —
         # Toysi-менеджер питав «який тип доставки та адресу» (Rozetka 908234237 від 08.10 і 905803580
         # від 11.09, обидва Харків, вул. Сумська). «№» вирізаємо: _WAREHOUSE_RE прийняв би його за номер відділення.
-        street = (d.get("place_street") or "").replace("№", "").strip()
+        street = str(d.get("place_street") or "").replace("№", "").strip()
         house = str(d.get("place_house") or "").replace("№", "").strip()
         flat = str(d.get("place_flat") or "").replace("№", "").strip()
         if street:
             addr = street + (f", буд. {house}" if house else "") + (f", кв. {flat}" if flat else "")
-            return f"{city_out}, {addr}"
+            return f"{city_out}, {addr}".strip(", ")
         return city_out
     # RZ Delivery / інше: адреса пункту видачі вільним текстом (вулиця/будинок/номер).
     street = " ".join(p for p in (d.get("place_street"), d.get("place_house"), place_number) if p).strip()

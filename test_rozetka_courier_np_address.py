@@ -49,6 +49,15 @@ _check("2. «№» у вулиці не дає номера відділення
        orr.parse_np_branch(ow._rozetka_delivery_address(
            {"delivery": dict(_DELIVERY, place_street="вул. №5 Лісова", place_house="№7")}))[1], "")
 
+_check("1c. вулиця з комою/дужками не ламає розбір міста й адреси",
+       orr.parse_np_branch(ow._rozetka_delivery_address(
+           {"delivery": dict(_DELIVERY, place_street="вул. Сумська (стара), 5-А")}))[:1], ("Харків",))
+_check("1d. place_street не рядок (int) — без винятку",
+       ow._rozetka_delivery_address({"delivery": dict(_DELIVERY, place_street=12345)}),
+       "Харків (Харківська обл.), 12345, буд. 39")
+_check("1e. порожнє місто + вулиця — без ведучої коми",
+       ow._rozetka_delivery_address({"delivery": dict(_DELIVERY, city={})}),
+       "вул. Сумська, буд. 39")
 _br = ow._rozetka_delivery_address({"delivery": dict(_DELIVERY)})
 _o = orr.build_toysi_order({
     "internal_order_id": "rozetka_908234237", "order_id": "908234237", "platform": "rozetka",

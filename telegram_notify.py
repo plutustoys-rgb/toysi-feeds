@@ -8,6 +8,8 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+import telegram_triage
+
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -40,7 +42,7 @@ REQUEST_TIMEOUT     = 15
 ALERTS_LOG_FILE = Path(__file__).parent / "reports" / "telegram_alerts.md"
 
 
-def _log_alert_to_shared_folder(text: str) -> None:
+def _log_alert_to_shared_folder(text: str, note: str = "") -> None:
     """Best-effort — збій запису у файл НІКОЛИ не повинен зламати виклик,
     що надсилає реальний Telegram-алерт (той самий принцип, що й
     continue-on-error для допоміжних кроків в update-feeds.yml)."""
@@ -49,6 +51,8 @@ def _log_alert_to_shared_folder(text: str) -> None:
         source = os.path.basename(sys.argv[0]) if sys.argv else "?"
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(ALERTS_LOG_FILE, "a", encoding="utf-8") as f:
+            if note:
+                text = f"{note}\n\n{text}"
             f.write(f"## {timestamp} — {source}\n\n{text}\n\n---\n\n")
     except OSError as e:
         print(f"[telegram] Не вдалося дописати у {ALERTS_LOG_FILE}: {e}", file=sys.stderr)
@@ -58,7 +62,17 @@ def send_telegram_message(text: str) -> bool:
     """Надсилає повідомлення власнику через PlutusToysBot. Повертає True при успіху.
 
     Дублює КОЖЕН виклик (незалежно від успіху самого надсилання) у
-    reports/telegram_alerts.md — див. коментар над ALERTS_LOG_FILE вище."""
+    reports/telegram_alerts.md — див. коментар над ALERTS_LOG_FILE вище.
+
+    Сито (telegram_triage.py): інформаційні повідомлення НЕ йдуть у Telegram (лишаються в журналі з позначкою), повторювані збої — раз на добу.
+    Для заглушених повертає True — «доставку не вимагали» (виклики з ретраєм не зациклюються)."""
+    source = os.path.basename(sys.argv[0]) if sys.argv else "?"
+    rule_id, action = telegram_triage.classify(source, text)
+    if action == "throttle" and _triage_in_cooldown(rule_id):
+        action = "mute"
+    if action == "mute":
+        _log_alert_to_shared_folder(text, note=f"[не надіслано в Telegram: правило {rule_id}]")
+        return True
     _log_alert_to_shared_folder(text)
 
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -89,6 +103,8 @@ def send_telegram_message(text: str) -> bool:
         print(f"[telegram] Telegram API відхилив повідомлення: {data}", file=sys.stderr)
         return False
 
+    if action == "throttle":
+        _triage_mark_sent(rule_id)  # вікно тиші стартує лише від РЕАЛЬНО доставленого
     return True
 
 
@@ -131,3 +147,31 @@ def send_throttled_alert(dedup_key: str, text: str, cooldown_sec: int = 3 * 60 *
     except OSError as e:
         print(f"[telegram] не вдалося зберегти стан тротлінгу {ALERT_THROTTLE_FILE}: {e}", file=sys.stderr)
     return sent
+
+
+def _triage_in_cooldown(rule_id: str) -> bool:
+    """True, якщо для правила сита (THROTTLE) уже надсилали менше ніж COOLDOWN тому. Помилка читання стану → НЕ в вікні (краще зайве, ніж пропущене)."""
+    try:
+        with open(ALERT_THROTTLE_FILE, encoding="utf-8") as f:
+            last = (json.load(f) or {}).get("triage:" + rule_id)
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(last, (int, float)) and (time.time() - last) < telegram_triage.COOLDOWN_SEC
+
+
+def _triage_mark_sent(rule_id: str) -> None:
+    state = {}
+    try:
+        with open(ALERT_THROTTLE_FILE, encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            state = loaded
+    except (OSError, ValueError):
+        state = {}
+    state["triage:" + rule_id] = time.time()
+    try:
+        ALERT_THROTTLE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(ALERT_THROTTLE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except OSError as e:
+        print(f"[telegram] не вдалося зберегти стан сита {ALERT_THROTTLE_FILE}: {e}", file=sys.stderr)

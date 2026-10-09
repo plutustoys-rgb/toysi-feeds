@@ -31,8 +31,8 @@ enforcement, не пам'ять). Принцип: РОБИТЬ роботу, а 
 
 БЕЗПЕКА даних: переносить, НЕ видаляє (спершу дописує в архів, тоді переписує гарячий). --apply гейт:
 без нього DRY-RUN (лише звіт, скільки і що архівувалося б). Секрети/cost/margin у каналах не фігурують
-публічно (Cowork локальний, не git); архів теж локальний. `CODE_LOG.md`(репо) — git-трекований, тому
-його архів комітиться звичайним PR-процесом, як і сам скрипт.
+публічно (Cowork локальний, не git); архів теж локальний. `CODE_LOG.md`(репо) — git-трекований: з 09.10.2026 у TARGETS його НЕМАЄ
+(щоденне обрізання без коміту блокувало desktop_code_sync); обрізається лише вручну через PR.
 
 ЗАПУСК: python archive_channels.py [--apply] [--keep-days N] [--max-entries N]
 """
@@ -61,7 +61,9 @@ TARGETS = {
     "CONSULTANT_CHANNEL.md":{"dir": COWORK_DIR, "role": "consultant"},
     "STATUS.md":            {"dir": COWORK_DIR, "role": "status", "entry_re": _PLAIN_ENTRY_RE},
     "OWNER_INBOX.md":       {"dir": COWORK_DIR, "role": "owner_inbox", "require_closed": True},
-    "CODE_LOG.md":          {"dir": REPO_DIR, "role": "code_log", "entry_re": _PLAIN_ENTRY_RE},
+    # CODE_LOG.md ВИВЕДЕНО з автоархівації (09.10.2026): файл git-трекований, а щоденний --apply на десктопі лишав його ЗМІНЕНИМ і не закоміченим →
+    # desktop_code_sync бачив «незакомічені зміни» і мовчки пропускав оновлення (десктоп застряг на 06.10, 23 коміти позаду, без forbidden_products/cod_amount/…).
+    # Трекований файл обрізається лише вручну через PR разом з архівом (archive/code_log/…).
 }
 DEFAULT_KEEP_DAYS = 30
 DEFAULT_MAX_ENTRIES = 40   # файл розпухає й від ОБСЯГУ (170 записів за 11 днів), не лише віку

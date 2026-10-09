@@ -51,5 +51,15 @@ chk("не git-тека → рядок-статус, без винятку", isin
 (pusher / "c.txt").write_text("y", encoding="utf-8"); g(pusher, "add", "c.txt"); g(pusher, "commit", "-qm", "c3"); g(pusher, "push", "-q", "origin", "master")
 r = dcs.sync(work)
 chk("розбіжна історія → «fast-forward неможливий», дерево не зламане", "fast-forward неможливий" in r and (work / "b.txt").exists())
+# 8. які пропуски означають «застрягли» (алерт раз на добу), а які — ні
+chk("алерт: незакомічені зміни", dcs.needs_alert("пропуск: є незакомічені зміни відстежуваних файлів — код НЕ оновлено"))
+chk("алерт: не master", dcs.needs_alert("пропуск: гілка «x», очікується master — код НЕ оновлено"))
+chk("алерт: fast-forward неможливий", dcs.needs_alert("пропуск: fast-forward неможливий (…)"))
+chk("алерт: збій синхронізації", dcs.needs_alert("збій синхронізації (OSError: x) — …"))
+chk("без алерта: оновлено / актуально / worktree / збій мережі",
+    not any(dcs.needs_alert(s) for s in ("оновлено a → b", "актуально: abc", "пропуск: це не основна копія (worktree або без .git)", "пропуск: fetch не вдався (x)")))
+# 9. CODE_LOG.md не в автоархіваторі (інакше щодня брудне дерево → синхронізація стоїть)
+import archive_channels as ac
+chk("archive_channels не чіпає відстежуваний CODE_LOG.md", "CODE_LOG.md" not in ac.TARGETS)
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ desktop_code_sync — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

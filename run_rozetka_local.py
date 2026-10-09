@@ -128,7 +128,10 @@ def main() -> None:
     # 0. Підтягнути змерджений master у робочу копію (десктоп не мав механізму оновлення коду; безпечно, ніколи не падає)
     try:
         import desktop_code_sync
-        print(f"[RzLocal] 0) код: {desktop_code_sync.sync()}")
+        _sync_result = desktop_code_sync.sync()
+        print(f"[RzLocal] 0) код: {_sync_result}")
+        if desktop_code_sync.needs_alert(_sync_result):
+            desktop_code_sync._alert(_sync_result)   # раз на добу (cooldown 24 год), як у .ps1-задач
     except Exception as e:  # noqa: BLE001
         print(f"[RzLocal] 0) оновлення коду пропущено ({e})")
 

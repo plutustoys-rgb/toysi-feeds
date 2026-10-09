@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys full_catalog_competitor_scan - one-time full-catalog competitor scan (dry-run, no --apply) + publish state to scan-state-data
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStartPre=/bin/bash /opt/plutustoys/refresh_scan_deps.sh
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/full_catalog_competitor_scan.py
+ExecStart=/bin/bash /opt/plutustoys/publish_scan_state.sh
+StandardOutput=journal
+StandardError=journal

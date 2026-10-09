@@ -1,0 +1,9 @@
+[Unit]
+Description=Run full-catalog-scan daily at 01:00 Kyiv (best fixed slot; also gated at runtime by _repricer_gate_is_open() since GH Actions cron drift makes fixed-time alone unreliable, see pt25/pt1-2026-07-16)
+
+[Timer]
+OnCalendar=*-*-* 01:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

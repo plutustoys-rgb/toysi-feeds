@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys order_pipeline - fetch/save/forward orders as one sequential process (merged 2026-07-16, closes the orders-watcher/order-router timer race from pt8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/order_pipeline.py
+StandardOutput=journal
+StandardError=journal

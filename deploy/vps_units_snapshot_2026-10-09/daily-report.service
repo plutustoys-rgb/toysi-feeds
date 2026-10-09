@@ -1,0 +1,12 @@
+[Unit]
+Description=PlutusToys daily_report - summarize orders_watcher/bank_check to Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/daily_report.py
+ExecStart=-/bin/bash /opt/plutustoys/publish_kodv_ledger_private.sh
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys prom_competitor_pricer - Prom competitor search + hybrid pricing (--apply enabled)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/prom_competitor_pricer.py --apply
+StandardOutput=journal
+StandardError=journal

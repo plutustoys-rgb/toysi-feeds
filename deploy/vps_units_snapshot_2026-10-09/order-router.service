@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys order_router - forward cod/confirmed-prepaid orders to Toysi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/order_router.py
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=60

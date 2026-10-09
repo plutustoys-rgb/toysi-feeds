@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys bank_check - reconcile prepaid orders against bank statement
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/bank_check.py
+StandardOutput=journal
+StandardError=journal

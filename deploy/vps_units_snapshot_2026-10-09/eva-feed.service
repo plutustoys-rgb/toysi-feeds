@@ -1,0 +1,10 @@
+[Unit]
+Description=EVA feed hourly (generate + publish only eva_feed.xml to feed-data)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+Environment=PATH=/opt/plutustoys/venv/bin:/usr/bin:/bin
+ExecStart=/bin/bash /opt/plutustoys/run_eva_feed_vps.sh

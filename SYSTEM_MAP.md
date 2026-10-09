@@ -185,6 +185,8 @@
 | `site-rebuild` | `site/build_site.py` + `generate_prom_redirects.py` (крок редіректів не фатальний — `ExecStartPost=-`; oneshot, `.timer` `*-*-* 00/2:20:00` — кожні 2 год о :20) | сайт: регенерація статичного магазину з живого каталогу Toysi + GMC-редіректи. Drift-check його НЕ БАЧИВ (ключового слова `site-` не було в фільтрі юнітів) — додано 2026-10-09 |
 | `system-map-driftcheck` | `system_map_driftcheck.py --alert` (oneshot, `.timer` щодня 08:45, `Persistent=true`) | сторож цієї мапи: звіряє її з живими systemd-юнітами VPS; при дрейфі — Telegram-алерт (сито `telegram_triage.py`, правило `sysmap_drift`, throttle раз на добу). Створений вручну на сервері ПОЗА git; з 2026-10-09 файли в корені репо → керується `deploy_systemd_units.sh` як решта. Раніше був невидимий власному фільтру |
 | `link-cache-validator` | `link_cache_validator.py` (oneshot, щодня 03:40 + до 10 хв `RandomizedDelaySec=600`, `Persistent=true`) | переперевірка `own_product_links_cache`: виправляє слаги переіменованих ЖИВИХ товарів (оновлює `url_text`); записи зниклих товарів лишає як є й лише рахує у звіті (`confirmed_gone`) — кеш НЕ чистить. У мапі його НЕ БУЛО — знайдено архітектурним аудитом 2026-10-09 (юніт у корені репо розгортається автоматично) |
+| `bank-check` | `bank_check.py` (oneshot; `OnBootSec=3min`, `OnUnitActiveSec=15min`, `Persistent=true`) | звірка передоплачених замовлень із банківською випискою. Файли є в `/etc/systemd/system` (дамп 2026-10-09, `deploy/vps_units_snapshot_2026-10-09/`); **стан enabled/active НЕ знято**. ⚠️ Відкрите питання: `order_pipeline.py:54` сам викликає `bank_check.check_pending_prepayments()` — якщо цей таймер активний, перевірка йде ще й окремо, паралельно з order-pipeline. У мапі його НЕ БУЛО — знайдено при читанні дампа |
+| `vps-code-sync` | `vps_code_sync.sh` (oneshot; `OnBootSec=2min`, `OnUnitActiveSec=15min`, `Persistent=true`) | деплоєр: `git merge --ff-only origin/master` у `/opt/plutustoys`, далі `deploy_systemd_units.sh` (розгортає `*.service`/`*.timer` З КОРЕНЯ репо). Раніше згадувався лише приміткою «підтвердити drift-check на VPS»; у реєстрі його НЕ БУЛО |
 
 > **✅ ДРЕЙФ order-flow РОЗВ'ЯЗАНО (звірено живо 2026-08-20):** `order-router` і `orders-watcher` на VPS
 > **DISABLED + inactive** — це мертві файли-юніти, поглинуті `order-pipeline` (він робить poll_once+
@@ -365,6 +367,7 @@
   Публічні фіди/стан — гілка `feed-data` (orphan force-push; фінполя редагуються `price_state_redact`).
 - **Координаційні доки (Cowork-папка `PlutusToys_avtonomiya/`):** STATUS, CODE_LOG, канали, OWNER_INBOX,
   BOOTSTRAP, COORDINATOR_LOG, GOTCHAS, `технічні_вимоги_маркетплейсів/`, `документи_КОДВ/`.
+- **systemd-юніти VPS:** корінь репо = розгортається автоматично (`vps-code-sync` → `deploy_systemd_units.sh`); `deploy/site-*` = ручна активація; `deploy/vps_units_snapshot_2026-10-09/` = ДОКУМЕНТАЦІЯ знімка 18 пар, які існували лише на сервері (НЕ розгортається, див. README там).
 - **Цей SSOT:** у РЕПО (версіонується, синхриться на VPS і локаль, звіряється скриптом). BOOTSTRAP/CLAUDE.md → сюди.
 
 ---
@@ -397,7 +400,8 @@
     "social-poster-fb", "social-poster-ig", "social-dead-post-cleaner",
     "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog",
     "promo-margin-guard", "site-order-api", "site-rebuild",
-    "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync"
+    "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync",
+    "bank-check", "vps-code-sync"
   ],
   "gh_workflows": ["update-feeds.yml"]
 }

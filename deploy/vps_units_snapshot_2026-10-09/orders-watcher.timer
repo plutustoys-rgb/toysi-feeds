@@ -1,0 +1,9 @@
+[Unit]
+Description=Run orders_watcher every 15 minutes (fixed OnCalendar slots, not OnUnitActiveSec - see pt8: relative timers drifted into exact alignment with order-router, causing a commit-order race)
+
+[Timer]
+OnCalendar=*-*-* *:09,24,39,54:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

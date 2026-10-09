@@ -1,0 +1,8 @@
+[Unit]
+Description=NovaPay — автоматична звірка COD-надходжень через IMAP-реєстри
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/novapay_statement.py

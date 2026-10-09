@@ -32,8 +32,8 @@ chk("конкурент 150: при off можна підрізати (undercut)
 chk("floor при off лишається ВИЩИМ за собівартість з урахуванням оплати+3% (захист від збитку)", d_off["floor"] > 100.0 * (1 + 0.03))
 
 import json
-chk("політика повернення delisted при тарифі standard = off (аудит #646: поставлений файл треба пінити)",
-    json.load(open("prom_readd_policy.json", encoding="utf-8"))["ever_live"] == "off")
+chk("політика повернення delisted = all (пінимо поставлений файл; повертаються ЛИШЕ кандидати, конкурентні за ПОТОЧНИМ тарифом — recheck відсікає floor)",
+    json.load(open("prom_readd_policy.json", encoding="utf-8"))["ever_live"] == "all")
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ ProSale off — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

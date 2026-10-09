@@ -11,7 +11,8 @@ def chk(n, c):
     print(f"[{'OK ' if c else 'FAIL'}] {n}")
     if not c: F.append(n)
 
-chk("у коді PROSALE_TIER = off, множник off = 0", cp.PROSALE_TIER == "off" and cp.PROSALE_TIER_MULTIPLIER["off"] == 0.0)
+chk("у коді PROSALE_TIER = standard (09.10: off вимикає кнопку покупки на Prom), множник off = 0", cp.PROSALE_TIER == "standard" and cp.PROSALE_TIER_MULTIPLIER["off"] == 0.0)
+cp.PROSALE_TIER = "off"   # далі перевіряємо САМ режим off (він лишається в коді); у проді тир = standard
 chk("Prom: комісія 0 для категорії з таблиці id (антистрес 2656), для категорії за назвою і для невідомої (fallback 0,20 НЕ діє)",
     cp.get_platform_commission("prom", None, None, 2656) == 0.0 and cp.get_platform_commission("prom", "пазли g-toys") == 0.0
     and cp.get_platform_commission("prom", "якась невідома категорія") == 0.0 and cp.get_platform_commission("prom") == 0.0)
@@ -29,6 +30,10 @@ d_c_std = cp.decide_price_for_platform(100.0, 135.0, "prom", "пазли g-toys"
 cp.PROSALE_TIER = "off"
 chk("конкурент 150: при off можна підрізати (undercut), при standard конкурент 135 — вже floor/інша категорія", d_c_off["category"] == "undercut" and d_c_std["category"] in ("floor", "undercut"))
 chk("floor при off лишається ВИЩИМ за собівартість з урахуванням оплати+3% (захист від збитку)", d_off["floor"] > 100.0 * (1 + 0.03))
+
+import json
+chk("політика повернення delisted при тарифі standard = off (аудит #646: поставлений файл треба пінити)",
+    json.load(open("prom_readd_policy.json", encoding="utf-8"))["ever_live"] == "off")
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ ProSale off — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

@@ -180,6 +180,9 @@
 | `daily-report` | `daily_report.py` | зведення в Telegram |
 | `deadline-reminder` | `deadline_reminder.py` | дедлайни/платежі |
 | `service-watchdog` | `service_watchdog.py` | алерти застою + дрейф автодеплою |
+| `promo-margin-guard` | `promo_margin_guard.py` (oneshot, щодня 08:30, `Persistent=true`) | Prom-промо: звірка маржі АКТИВНИХ промо-SKU (заморожені ціни × 0.95) із живою собівартістю Toysi; нічого не змінює, лише сигналить у критичний календар (`promo_margin`). Знайдено drift-check на VPS 2026-10-09 як «живе, у мапі нема» |
+| `site-order-api` | `site_order_api.py` (daemon, `Restart=on-failure`) | сайт plutustoys.com.ua: приймання веб-замовлень + LiqPay. Знайдено drift-check на VPS 2026-10-09 як «живе, у мапі нема» |
+| `site-rebuild` | `site/build_site.py` + `generate_prom_redirects.py` (oneshot, `.timer` `*-*-* 00/2:20:00` — кожні 2 год о :20) | сайт: регенерація статичного магазину з живого каталогу Toysi + GMC-редіректи. Drift-check його НЕ БАЧИВ (ключового слова `site-` не було в фільтрі юнітів) — додано 2026-10-09 |
 
 > **✅ ДРЕЙФ order-flow РОЗВ'ЯЗАНО (звірено живо 2026-08-20):** `order-router` і `orders-watcher` на VPS
 > **DISABLED + inactive** — це мертві файли-юніти, поглинуті `order-pipeline` (він робить poll_once+
@@ -233,7 +236,7 @@
   видимість у Google Merchant (старі Prom-URL з фіда не впали в 404).
   **🟢 АКТИВОВАНО 2026-10-05:** сайт у живу на `https://plutustoys.com.ua` (Apache-vhost `z-plutustoys-com-ua.conf`, сертифікат LE; DNS на
   **Cloudflare** — NS `anna/kevin.ns.cloudflare.com`, записи DNS only, НЕ Prom; реєстратор imena.ua). VPS-юніти `site-order-api` (daemon) і
-  `site-rebuild.timer` (кожні 2 год) увімкнено `activate_site_apache.sh` — дописати їх у §2Б/§6 (drift-check це підкаже).
+  `site-rebuild.timer` (кожні 2 год) увімкнено `activate_site_apache.sh` — внесено в §2Б/§6 (2026-10-09: drift-check на VPS показав, що `site-order-api` у мапі не було, а `site-rebuild` перевірка взагалі не бачила).
   Онлайн-оплата LiqPay ще НЕ підключена (працює накладений платіж).
   → Код (механіка) + SMM (дизайн) + власник (LiqPay).
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,
@@ -390,7 +393,8 @@
     "catalog-health-monitor", "full-catalog-scan", "prom-catalog-sync", "prom-catalog-auditor",
     "prom-competitor-pricer", "prom-review-requester", "prom-chat-bot",
     "social-poster-fb", "social-poster-ig", "social-dead-post-cleaner",
-    "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog"
+    "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog",
+    "promo-margin-guard", "site-order-api", "site-rebuild"
   ],
   "gh_workflows": ["update-feeds.yml"]
 }

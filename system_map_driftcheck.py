@@ -38,7 +38,8 @@ BASE_DIR = Path(__file__).parent
 MAP_FILE = BASE_DIR / "SYSTEM_MAP.md"
 # ключові слова для фільтра юнітів VPS (ті самі, що в бандлі знаття)
 VPS_UNIT_KEYWORDS = ("plutus", "feed", "order", "prom", "rozetka", "novapay",
-                     "daily", "deadline", "watchdog", "catalog", "scan", "social")
+                     "daily", "deadline", "watchdog", "catalog", "scan", "social",
+                     "site-")   # "site-" (з дефісом): site-rebuild перевірка не бачила, поки слова не було (09.10.2026)
 # СИСТЕМНІ юніти Ubuntu, які збігаються з keyword'ами (daily→apt-daily, catalog→systemd-journal-
 # catalog-update) — це НЕ наші, drift-check їх ігнорує (інакше хибний «дрейф»; знайдено живо на VPS).
 VPS_UNIT_EXCLUDE_PREFIX = ("apt-", "apt.", "systemd-", "fwupd", "logrotate", "man-db", "dpkg",
@@ -89,6 +90,20 @@ def live_windows_task_states() -> dict | None:
     return parse_task_states(r.stdout)
 
 
+def filter_vps_units(unit_files) -> set:
+    """Імена unit-файлів → наші: за ключовими словами, без системних Ubuntu-юнітів. Тримає і .timer,
+    і .service (базове ім'я без суфікса береться пізніше, при звірці з мапою). Окрема чиста функція —
+    щоб фільтр тестувався без сервера: юніт, якого фільтр не бачить, дає хибне «У МАПІ Є, ЖИВОГО НЕМА»."""
+    units = set()
+    for name in unit_files:
+        low = name.lower()
+        if not name or low.startswith(VPS_UNIT_EXCLUDE_PREFIX):
+            continue   # системні Ubuntu-юніти — не наші
+        if any(k in low for k in VPS_UNIT_KEYWORDS):
+            units.add(name)
+    return units
+
+
 def live_vps_units() -> set | None:
     """Живі systemd-юніти (unit-files) за ключовими словами. None — не вдалося зняти."""
     try:
@@ -100,16 +115,7 @@ def live_vps_units() -> set | None:
     if r.returncode != 0:
         print(f"[drift] systemctl впав: {r.stderr[:200]}", file=sys.stderr)
         return None
-    units = set()
-    for ln in r.stdout.splitlines():
-        name = ln.split()[0] if ln.split() else ""
-        low = name.lower()
-        if not name or low.startswith(VPS_UNIT_EXCLUDE_PREFIX):
-            continue   # системні Ubuntu-юніти — не наші
-        if any(k in low for k in VPS_UNIT_KEYWORDS):
-            # тримаємо і .timer, і .service — але для звірки з мапою беремо базове ім'я без суфікса
-            units.add(name)
-    return units
+    return filter_vps_units([ln.split()[0] for ln in r.stdout.splitlines() if ln.split()])
 
 
 def _diff(declared: set, live: set, label: str) -> tuple:

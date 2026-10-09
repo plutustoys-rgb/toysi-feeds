@@ -76,6 +76,28 @@ def _boom(req, timeout=0):
 
 vf.urllib.request.urlopen = _boom
 _check("збій мережі → (None, None), не «недоступний»", vf.page_buyable("https://x/ok"), (None, None))
+_calls = []
+
+
+def _flaky(req, timeout=0):
+    _calls.append(1)
+    if len(_calls) == 1:
+        raise OSError("timeout")
+    return _R(_pages["ok"])
+
+
+vf.urllib.request.urlopen = _flaky
+_check("один повтор: перший таймаут, другий успіх → результат є", (vf.page_buyable("https://x/ok"), len(_calls)), ((True, True), 2))
+_calls.clear()
+
+
+def _gone(req, timeout=0):
+    _calls.append(1)
+    raise vf.urllib.error.HTTPError("https://x", 404, "nf", None, None)
+
+
+vf.urllib.request.urlopen = _gone
+_check("HTTP 404 (свіжа картка) — без повтору, (None, None)", (vf.page_buyable("https://x/y"), len(_calls)), ((None, None), 1))
 vf.urllib.request.urlopen = _orig
 
 # 3. record(): CSV + алерт

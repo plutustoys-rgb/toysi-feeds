@@ -168,7 +168,11 @@ def _triage_mark_sent(rule_id: str) -> None:
             state = loaded
     except (OSError, ValueError):
         state = {}
-    state["triage:" + rule_id] = time.time()
+    now = time.time()
+    state["triage:" + rule_id] = now
+    for k in [k for k, v in state.items()
+              if k.startswith("triage:") and isinstance(v, (int, float)) and now - v > 7 * 24 * 3600]:
+        del state[k]  # ключі за id замовлень не мають накопичуватись вічно (аудит #643 F5)
     try:
         ALERT_THROTTLE_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(ALERT_THROTTLE_FILE, "w", encoding="utf-8") as f:

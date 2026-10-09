@@ -27,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
@@ -52,6 +52,8 @@ FEED_UNDER_MAX_PCT = 10.0
 AVAIL_DROP_MAX_PCT = 15.0    # падіння «В наявності» за добу
 NO_ORDERS_DAYS = 14          # діб без замовлення Prom → алерт (раз на 7 діб)
 ORDERS_LOOKBACK_DAYS = 60
+ORDERS_MAX_PAGES = 50        # захист від зациклення пагінації (100 замовлень на сторінку)
+ORDERS_IGNORED_STATUSES = ("canceled", "cancelled", "draft")   # скасовані/чернетки — НЕ «замовлення» для перевірки ланцюга (аудит #655)
 RET_MIN_HOURS = 24           # «повернена» рахується в долі, лише коли минуло ≥ стільки годин (лаг створення на Prom 12–15 год)
 RET_CHECK_HOURS = 72         # поріг «мали б уже бути створені» (грація повернення READD_GRACE_HOURS = 72)
 RET_IN_CAB_MIN_PCT = 50.0    # частка повернених >72 год тому, що мають бути в кабінеті
@@ -102,6 +104,15 @@ def feed_offer_count():
         return None
 
 
+def _parse_prom_dt(s):
+    """date_created Prom — із поясом (UTC, напр. 2026-09-24T13:23:56+00:00) → локальний наївний час (Київ); без поясу — як є. Не розібрати → None (аудит #655: раніше UTC порівнювали з Києвом)."""
+    try:
+        dt = datetime.fromisoformat(str(s))
+    except (ValueError, TypeError):
+        return None
+    return dt.astimezone().replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
 def last_orders(now: datetime = None) -> dict:
     """Замовлення Prom за ORDERS_LOOKBACK_DAYS через API (токен PROM_API_KEY): дата останнього, діб розриву, скільки за 14 діб.
     Немає токена/401/мережа → поля порожні, orders_note каже чому («нема даних: …»)."""
@@ -119,8 +130,8 @@ def last_orders(now: datetime = None) -> dict:
     try:
         import requests
         date_from = (now - timedelta(days=ORDERS_LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%S")
-        dates, last_id = [], None
-        while True:
+        rows, last_id = [], None
+        for _page in range(ORDERS_MAX_PAGES):
             params = {"date_from": date_from, "limit": 100}
             if last_id is not None:
                 params["last_id"] = last_id
@@ -132,7 +143,7 @@ def last_orders(now: datetime = None) -> dict:
             page = (r.json() or {}).get("orders", [])
             if not page:
                 break
-            dates.extend(str(o.get("date_created") or "")[:19] for o in page)
+            rows.extend((o.get("date_created"), o.get("status")) for o in page)
             if len(page) < 100:
                 break
             last_id = page[-1]["id"]
@@ -140,11 +151,12 @@ def last_orders(now: datetime = None) -> dict:
         out["orders_note"] = f"нема даних: {type(e).__name__}: {str(e)[:80]}"
         return out
     parsed = []
-    for d in dates:
-        try:
-            parsed.append(datetime.fromisoformat(d))
-        except ValueError:
+    for d, status in rows:
+        if str(status or "").lower() in ORDERS_IGNORED_STATUSES:
             continue
+        dt = _parse_prom_dt(d)
+        if dt is not None:
+            parsed.append(dt)
     out["orders_14d"] = sum(1 for d in parsed if d >= now - timedelta(days=14))
     if parsed:
         last = max(parsed)
@@ -156,7 +168,20 @@ def last_orders(now: datetime = None) -> dict:
     return out
 
 
+RET_KEYS = ("ret_total", "ret_in_cab", "ret72_total", "ret72_in_cab", "ret_failed", "ret_pub_buy", "ret_pub_404", "ret_pub_n")
+
+
 def returned_fate(cat: dict, now: datetime = None, sample_n: int = RET_SAMPLE_N) -> dict:
+    """Будь-яка несподівана форма даних/збій → «нема даних», а не виняток, що валить record() (аудит #655)."""
+    try:
+        return _returned_fate(cat, now, sample_n)
+    except Exception as e:  # noqa: BLE001
+        out = {k: None for k in RET_KEYS}
+        out["ret_note"] = f"нема даних: помилка розбору ({type(e).__name__}: {str(e)[:60]})"
+        return out
+
+
+def _returned_fate(cat: dict, now: datetime = None, sample_n: int = RET_SAMPLE_N) -> dict:
     """Доля повернених позицій (дані `_readded_at`/`_readd_failed` з публічного price_state): у кабінеті / публічні з кнопкою / 404 / відмови."""
     now = now or datetime.now()
     out = {"ret_total": None, "ret_in_cab": None, "ret72_total": None, "ret72_in_cab": None, "ret_failed": None,
@@ -232,7 +257,7 @@ def evaluate_orders(row: dict, prev: dict | None):
         silence.append(f"на Prom {d} діб без замовлення (останнє: {row.get('last_order_at') or 'за ' + str(ORDERS_LOOKBACK_DAYS) + ' діб жодного'}), за 14 діб: {row.get('orders_14d')}")
     pd = (prev or {}).get("days_since_order")
     if d is not None and pd is not None and pd >= NO_ORDERS_DAYS and d < pd and d < NO_ORDERS_DAYS:
-        event.append(f"Prom: ПЕРШЕ замовлення після розриву {pd} діб (останнє: {row.get('last_order_at')}). Ланцюг кампанія → вітрина → покупка працює.")
+        event.append(f"Prom: ПЕРШЕ (не скасоване) замовлення після розриву {pd} діб (останнє: {row.get('last_order_at')}). Це може бути і власний тестовий — перевір картку замовлення; якщо справжнє, ланцюг кампанія → вітрина → покупка працює.")
     return silence, event
 
 
@@ -240,21 +265,28 @@ def _prev_row():
     try:
         rows = list(csv.DictReader(open(CSV_FILE, encoding="utf-8")))
         r = rows[-1]
-        dso = r.get("days_since_order")
-        return {"avail": int(r["avail"]), "days_since_order": int(dso) if dso not in (None, "") else None}
+        dso = None   # останнє ВІДОМЕ значення розриву (якщо в останньому запуску API мовчало — беремо з попередніх 5 рядків, щоб не втратити подію «перше замовлення»)
+        for x in reversed(rows[-5:]):
+            if x.get("days_since_order") not in (None, ""):
+                dso = int(x["days_since_order"])
+                break
+        return {"avail": int(r["avail"]), "days_since_order": dso}
     except Exception:  # noqa: BLE001
         return None
 
 
-def _rotate_csv_if_header_changed():
-    """Колонки змінилися (нові рядки воронки) — старий файл відкладаємо, щоб заголовок не розійшовся з даними."""
+def _rotate_csv_if_header_changed() -> bool:
+    """Колонки змінилися (нові рядки воронки) — старий файл відкладаємо, щоб заголовок не розійшовся з даними. False = ротація не вдалась → рядок НЕ дописуємо
+    (інакше дані лягли б під чужий заголовок, аудит #655)."""
     try:
         if CSV_FILE.exists():
             first = CSV_FILE.read_text(encoding="utf-8").splitlines()[0]
             if first != ",".join(COLUMNS):
                 CSV_FILE.rename(CSV_FILE.with_name(f"vitrine_funnel.{datetime.now():%Y%m%d%H%M%S}.old.csv"))
+        return True
     except OSError as e:
-        print(f"[Funnel] ротація CSV не вдалась: {e}", file=sys.stderr)
+        print(f"[Funnel] ротація CSV не вдалась, рядок не записано: {e}", file=sys.stderr)
+        return False
 
 
 def _send(key, text, cooldown_sec):
@@ -306,7 +338,8 @@ def record(cat: dict, sample_n: int = SAMPLE_N, alert: bool = True) -> dict:
         if first_order:
             _send("vitrine_first_order", "🟢 " + first_order[0], 3 * 24 * 3600)
     try:
-        _rotate_csv_if_header_changed()
+        if not _rotate_csv_if_header_changed():
+            return row
         CSV_FILE.parent.mkdir(parents=True, exist_ok=True)
         new = not CSV_FILE.exists()
         with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:

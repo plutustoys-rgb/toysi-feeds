@@ -240,6 +240,98 @@ vf.CSV_FILE.write_text("at,total\n2026-10-09,1\n", encoding="utf-8")
 vf._rotate_csv_if_header_changed()
 _check("5r. старий заголовок → файл відкладено (.old.csv), нового ще нема", (vf.CSV_FILE.exists(), len(list(_tmp2.glob("*.old.csv")))), (False, 1))
 
+# ── 6. Фікси аудиту #655: межі, часовий пояс, скасовані, збійна форма даних, ротація, пагінація ─────────────
+for _d, _exp in ((13, 0), (14, 1), (15, 1)):
+    _s, _e = vf.evaluate_orders({"days_since_order": _d, "last_order_at": "x", "orders_14d": 0}, None)
+    _check(f"6a. межа тиші: {_d} діб → тривог {_exp}", len(_s), _exp)
+_s, _e = vf.evaluate_orders({"days_since_order": 13}, {"days_since_order": 14})
+_check("6b. подія: prev 14 → cur 13 → є", len(_e), 1)
+_s, _e = vf.evaluate_orders({"days_since_order": 0}, {"days_since_order": 14})
+_check("6c. подія: prev 14 → cur 0 → є", len(_e), 1)
+_s, _e = vf.evaluate_orders({"days_since_order": 0}, {"days_since_order": 13})
+_check("6d. prev 13 (розриву ще не було) → події нема", len(_e), 0)
+_s, _e = vf.evaluate_orders({"days_since_order": 15}, {"days_since_order": 20})
+_check("6e. 20 → 15 (усе ще ≥14) → події нема, тиша є", (len(_e), len(_s)), (0, 1))
+_s, _e = vf.evaluate_orders({"days_since_order": 5}, {"days_since_order": 5})
+_check("6f. cur не менший за prev → події нема", len(_e), 0)
+_r = vf.evaluate_returns({"ret72_total": 100, "ret72_in_cab": 49})
+_check("6g. 100 повернених, 49 у кабінеті (49%) → порушення", len(_r), 1)
+_r = vf.evaluate_returns({"ret72_total": 100, "ret72_in_cab": 50})
+_check("6h. 100 повернених, 50 у кабінеті (50%) → норма", len(_r), 0)
+_r = vf.evaluate_returns({"ret_pub_n": 9, "ret_pub_buy": 0})
+_check("6i. вибірка 9 (<10) → висновків нема", len(_r), 0)
+_r = vf.evaluate_returns({"ret_pub_n": 10, "ret_pub_buy": 6})
+_check("6j. вибірка 10, кнопка 6/10 (<70%) → порушення", len(_r), 1)
+
+# часовий пояс і скасовані
+_utc = vf._parse_prom_dt("2026-09-24T13:23:56.878746+00:00")
+_local = vf.datetime(2026, 9, 24, 13, 23, 56, tzinfo=vf.timezone.utc).astimezone().replace(tzinfo=None)
+_check("6k. date_created у UTC → переведено в локальний час (не обрізано до [:19])", _utc.replace(microsecond=0), _local)
+_check("6l. дата без поясу — як є; сміття → None", (vf._parse_prom_dt("2026-09-24T13:23:56"), vf._parse_prom_dt("xx")), (vf.datetime(2026, 9, 24, 13, 23, 56), None))
+
+os.environ["PROM_API_KEY"] = "t"
+_now2 = vf.datetime(2026, 10, 9, 12, 0, 0)
+_rq.get = lambda *a, **k: _Resp(200, {"orders": [
+    {"id": 3, "date_created": "2026-10-08T09:00:00", "status": "canceled"},      # скасоване — ігнорується
+    {"id": 2, "date_created": "2026-09-26T10:00:00", "status": "delivered"},      # 13 діб тому → у вікні 14 діб
+    {"id": 1, "date_created": "2026-09-24T10:00:00", "status": "paid"}]})        # 15 діб → поза вікном
+_o = vf.last_orders(_now2)
+_check("6m. скасоване ігнорується; останнє — 26.09 (13 діб), у вікні 14 діб 1 замовлення", (_o["last_order_at"], _o["days_since_order"], _o["orders_14d"]), ("2026-09-26 10:00", 13, 1))
+
+_pages_n = []
+
+
+def _endless(*a, **k):
+    _pages_n.append(1)
+    return _Resp(200, {"orders": [{"id": len(_pages_n) * 1000 + i, "date_created": "2026-10-01T10:00:00", "status": "paid"} for i in range(100)]})
+
+
+_rq.get = _endless
+vf.last_orders(_now2)
+_check("6n. пагінація має стелю ORDERS_MAX_PAGES (не нескінченний цикл)", len(_pages_n), vf.ORDERS_MAX_PAGES)
+_rq.get = _orig_get
+os.environ.pop("PROM_API_KEY", None)
+
+# returned_fate: збійна форма даних → «нема даних», а не виняток
+vf.urllib.request.urlopen = lambda req, timeout=0: _RS(json.dumps({"_readded_at": ["не", "словник"]}).encode("utf-8"))
+_f = vf.returned_fate({"a": {}}, vf.datetime(2026, 10, 9, 12, 0, 0))
+_check("6o. _readded_at не словник → «нема даних: помилка розбору», числа None", (_f["ret_total"], _f["ret_note"].startswith("нема даних")), (None, True))
+vf.urllib.request.urlopen = lambda req, timeout=0: _RS(json.dumps([1, 2]).encode("utf-8"))
+_f = vf.returned_fate({"a": {}}, vf.datetime(2026, 10, 9, 12, 0, 0))
+_check("6p. state — список → «нема даних»", (_f["ret_total"], _f["ret_note"].startswith("нема даних")), (None, True))
+vf.urllib.request.urlopen = _orig_open
+
+# вікно «>24 год» (RET_MIN_HOURS): 23 год ще не рахуємо, 25 — вже
+_st24 = {"_readded_at": {"a": "2026-10-08T13:00:00", "b": "2026-10-08T11:00:00"}, "_readd_failed": {}}   # 23 год і 25 год до 2026-10-09 12:00
+vf.urllib.request.urlopen = lambda req, timeout=0: _RS(json.dumps(_st24).encode("utf-8"))
+_f = vf.returned_fate({}, vf.datetime(2026, 10, 9, 12, 0, 0))
+_check("6q. повернена 23 год тому не рахується, 25 год — рахується (RET_MIN_HOURS=24)", _f["ret_total"], 1)
+vf.urllib.request.urlopen = _orig_open
+
+# ротація: якщо rename не вдався — рядок НЕ дописується під чужий заголовок
+_tmp3 = Path(tempfile.mkdtemp())
+vf.CSV_FILE = _tmp3 / "vitrine_funnel.csv"
+vf.CSV_FILE.write_text("at,total\n2026-10-09,1\n", encoding="utf-8")
+_orig_rename = Path.rename
+Path.rename = lambda self, target: (_ for _ in ()).throw(PermissionError("locked"))
+vf.last_orders = lambda: dict(_NO_ORD)
+vf.returned_fate = lambda cat: dict(_NO_RET)
+vf.feed_offer_count = lambda: 100
+vf.page_buyable = lambda url: (True, True)
+vf.record({"1": {"presence": "avail", "in_running_cpa": True, "view_catalog_url": "https://x"}}, sample_n=1, alert=False)
+Path.rename = _orig_rename
+_check("6r. ротація впала → файл не змінено (дані не лягли під старий заголовок)", vf.CSV_FILE.read_text(encoding="utf-8"), "at,total\n2026-10-09,1\n")
+
+# prev: розрив беремо з останнього ВІДОМОГО рядка (якщо останній запуск без даних про замовлення)
+_tmp4 = Path(tempfile.mkdtemp())
+vf.CSV_FILE = _tmp4 / "vitrine_funnel.csv"
+with open(vf.CSV_FILE, "w", encoding="utf-8", newline="") as _fh:
+    _w = csv.DictWriter(_fh, fieldnames=vf.COLUMNS)
+    _w.writeheader()
+    _w.writerow({"at": "a", "avail": 10, "days_since_order": 16})
+    _w.writerow({"at": "b", "avail": 10, "days_since_order": ""})
+_check("6s. prev.days_since_order = 16 з попереднього рядка (останній — без даних)", vf._prev_row()["days_since_order"], 16)
+
 print()
 if _FAILS:
     print("FAILED:", _FAILS)

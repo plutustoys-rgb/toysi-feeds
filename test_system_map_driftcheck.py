@@ -80,5 +80,16 @@ chk(f"кожен юніт реєстру vps_units видимий фільтру
 chk("реєстр: юніти, знайдені drift-check на VPS 09.10, записані",
     {"promo-margin-guard", "site-order-api", "site-rebuild"} <= set(reg["vps_units"]))
 
+# --- юніти, що розгортає vps_code_sync (корінь репо), МАЮТЬ бути в реєстрі й видимі фільтру ---
+# Інакше нова автоматика, додана PR-ом, лишається поза SSOT і невидима перевірці (так було з
+# system-map-driftcheck, link-cache-validator, np-warehouse-sync — знайдено 09.10.2026).
+import glob, os
+root_units = sorted({os.path.splitext(f)[0] for f in glob.glob("*.service") + glob.glob("*.timer")})
+chk(f"у корені репо є юніти для перевірки ({len(root_units)})", len(root_units) >= 9)
+not_in_reg = [u for u in root_units if u not in set(reg["vps_units"])]
+chk(f"кожен юніт із кореня репо є в реєстрі vps_units (нема в реєстрі: {not_in_reg})", not not_in_reg)
+blind_root = [u for u in root_units if not d.filter_vps_units([u + ".service"])]
+chk(f"кожен юніт із кореня репо видимий фільтру VPS (невидимі: {blind_root})", not blind_root)
+
 print("\nРЕЗУЛЬТАТ:", "УСЕ ОК" if not F else f"{len(F)} FAIL: {F}")
 sys.exit(0 if not F else 1)

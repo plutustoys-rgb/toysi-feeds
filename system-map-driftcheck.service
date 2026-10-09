@@ -1,0 +1,6 @@
+[Unit]
+Description=SYSTEM_MAP drift check
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/system_map_driftcheck.py --alert

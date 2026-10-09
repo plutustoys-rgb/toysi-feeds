@@ -30,7 +30,7 @@ def _check(name, got, exp):
 
 
 def _row(**kw):
-    base = dict(total=3468, avail=3131, not_avail=337, in_cpa=3125, in_cpa_pct=99.8, buy_ok=29, buy_n=30, buy_pct=96.7, feed_offers=3764, feed_delta_pct=20.2)
+    base = dict(total=3468, avail=3131, not_avail=337, in_cpa=3125, in_cpa_pct=99.8, buy_ok=29, buy_n=30, buy_pct=96.7, sample_n=30, buy_err=0, feed_offers=3764, feed_delta_pct=20.2)
     base.update(kw)
     return base
 
@@ -44,6 +44,12 @@ _check("кнопка покупки 5 з 30 → порушення", any("кно
 _check("падіння «В наявності» 3131 → 2000 → порушення", any("впало" in p for p in vf.evaluate(_row(avail=2000), {"avail": 3131})), True)
 _check("падіння 3131 → 2900 (−7%) — норма", any("впало" in p for p in vf.evaluate(_row(avail=2900, feed_delta_pct=0.0), {"avail": 3131})), False)
 _check("без вибірки сторінок (мережа) — порушення по кнопці не вигадується", any("кнопка" in p for p in vf.evaluate(_row(buy_n=0, buy_ok=0, buy_pct=0.0, feed_delta_pct=0.0), None)), False)
+# аудит #648: Д1 — порожня вітрина мовчала; Д2 — сторінки не читаються мовчали
+_check("Д1: total>0, avail=0 → порушення НАВІТЬ без попереднього рядка", any("= 0" in p for p in vf.evaluate(_row(total=50, avail=0, in_cpa=0, in_cpa_pct=0.0, feed_delta_pct=None), None)), True)
+_check("Д1: і на наступну добу (prev.avail=0) — теж", any("= 0" in p for p in vf.evaluate(_row(total=50, avail=0, in_cpa=0, in_cpa_pct=0.0, feed_delta_pct=None), {"avail": 0})), True)
+_check("Д1: порожній кабінет (total=0) — не вигадуємо порушення", vf.evaluate(_row(total=0, avail=0, in_cpa=0, in_cpa_pct=0.0, buy_n=0, buy_err=0, sample_n=0, feed_delta_pct=None), None), [])
+_check("Д2: 20 з 30 сторінок без відповіді → порушення «не читаються»", any("не читаються" in p for p in vf.evaluate(_row(buy_n=10, buy_err=20, buy_ok=10, buy_pct=100.0), None)), True)
+_check("Д2: 5 з 30 без відповіді (свіжі позиції 404) — норма", any("не читаються" in p for p in vf.evaluate(_row(buy_n=25, buy_err=5, buy_ok=25, buy_pct=100.0), None)), False)
 
 # 2. розбір сторінки
 class _R:
@@ -90,6 +96,23 @@ rows = list(csv.DictReader(open(vf.CSV_FILE, encoding="utf-8")))
 _check("кампанія вимкнена + кнопки нема: другий рядок, один алерт з обома причинами",
        (len(rows), len(alerts), "у кампанії" in alerts[0][1] and "кнопка покупки" in alerts[0][1]), (2, 1, True))
 _check("заголовок CSV один раз", open(vf.CSV_FILE, encoding="utf-8").read().count("at,total"), 1)
+
+# аудит #648: Д3 — алерт іде ДО запису CSV (заблокований файл не ковтає сигнал); cooldown 24 год; схема відсутня → (None, None)
+alerts.clear()
+_cd = []
+tn.send_throttled_alert = lambda key, text, cooldown_sec=0: (alerts.append((key, text)), _cd.append(cooldown_sec)) and True
+vf.CSV_FILE = tmp  # каталог замість файлу: open(..., "a") → PermissionError/IsADirectoryError (OSError)
+vf.page_buyable = lambda url: (False, False)
+r = vf.record(cat_bad, sample_n=10)
+_check("Д3: CSV недоступний — алерт усе одно надіслано, виняток не піднято", (len(alerts), _cd[0]), (1, 24 * 3600))
+
+_orig2 = vf.urllib.request.urlopen
+vf.urllib.request.urlopen = lambda req, timeout=0: _R("<html>без схеми</html>")
+import importlib
+importlib.reload(vf)  # повернути справжній page_buyable (вище підмінений)
+vf.urllib.request.urlopen = lambda req, timeout=0: _R("<html>без схеми</html>")
+_check("сторінка без schema.org/availability → (None, None), не «недоступний»", vf.page_buyable("https://x/y"), (None, None))
+vf.urllib.request.urlopen = _orig2
 
 print()
 if _FAILS:

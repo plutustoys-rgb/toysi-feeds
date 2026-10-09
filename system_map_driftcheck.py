@@ -6,9 +6,14 @@
 і кричить, ЩО саме розійшлось — щоб мапа сама казала, коли збрехала (а не ми дізнавались постфактум).
 
 ЩО ЗВІРЯЄ (за середовищем):
-  • Windows (локальна машина) — таски `Get-ScheduledTask` проти `local_tasks`.
-  • Linux (VPS) — systemd-юніти проти `vps_units`.
-Друкує: у мапі-але-не-живе (зникла автоматика?) і живе-але-не-в-мапі (додали, не вписали в SSOT).
+  • Windows (локальна машина) — таски `Get-ScheduledTask` проти `local_tasks` (мають ДІЯТИ) і
+    `local_tasks_disabled` (навмисно вимкнені — код лишено, вмикається однією командою). Звіряється і
+    ІМ'Я, і СТАН: таск, що в мапі «діє», а в системі `Disabled` (або навпаки), — це дрейф. Раніше
+    перевірка бачила лише імена, тому вимкнений 22.09.2026 `PlutusToys_AgentWatch` лишався в мапі
+    «робочим» і перевірка казала «збіг» (знайдено архітектурним аудитом 09.10.2026).
+  • Linux (VPS) — systemd-юніти проти `vps_units` (лише імена).
+Друкує: у мапі-але-не-живе (зникла автоматика?), живе-але-не-в-мапі (додали, не вписали в SSOT) і
+розбіжність стану (мапа каже «діє», а таск вимкнений, чи навпаки).
 
 ЗАПУСК:
     python system_map_driftcheck.py            # звірка поточного середовища
@@ -56,13 +61,24 @@ def load_registry() -> dict:
         raise SystemExit(f"[drift] JSON-реєстр у SYSTEM_MAP.md не парситься: {e}")
 
 
-def live_windows_tasks() -> set | None:
-    """Живі Windows-таски PlutusToys* через PowerShell. None — не вдалося зняти."""
+def parse_task_states(stdout: str) -> dict:
+    """Рядки виду `Ім'я|Стан` → {ім'я: стан}. Порожні й без роздільника — пропускає."""
+    states = {}
+    for ln in stdout.splitlines():
+        name, sep, state = ln.strip().partition("|")
+        if sep and name.strip():
+            states[name.strip()] = state.strip()
+    return states
+
+
+def live_windows_task_states() -> dict | None:
+    """Живі Windows-таски PlutusToys* з їхнім СТАНОМ ({ім'я: Ready/Running/Disabled/…}) через
+    PowerShell. None — не вдалося зняти."""
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
              "Get-ScheduledTask | Where-Object { $_.TaskName -match 'Plutus' } "
-             "| Select-Object -ExpandProperty TaskName"],
+             "| ForEach-Object { $_.TaskName + '|' + $_.State }"],
             capture_output=True, text=True, timeout=60)
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         print(f"[drift] не зняв Windows-таски: {e}", file=sys.stderr)
@@ -70,7 +86,7 @@ def live_windows_tasks() -> set | None:
     if r.returncode != 0:
         print(f"[drift] Get-ScheduledTask впав: {r.stderr[:200]}", file=sys.stderr)
         return None
-    return {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}
+    return parse_task_states(r.stdout)
 
 
 def live_vps_units() -> set | None:
@@ -113,6 +129,35 @@ def _diff(declared: set, live: set, label: str) -> tuple:
     return True, msgs
 
 
+def _diff_local_tasks(active: set, disabled: set, states: dict, label: str = "Локальні таски") -> tuple:
+    """Звіряє ІМЕНА і СТАН. `active` — мапа каже «діє», `disabled` — «навмисно вимкнено».
+    Дрейф: нема в системі; є в системі, але не в мапі; мапа «діє», а таск Disabled; мапа «вимкнено»,
+    а таск діє; ім'я в обох списках реєстру. Повертає (є_дрейф, повідомлення)."""
+    live = set(states)
+    msgs = []
+    both = active & disabled
+    if both:
+        msgs.append(f"{label}: В РЕЄСТРІ В ОБОХ СПИСКАХ (діє І вимкнено) ({len(both)}): {sorted(both)}")
+    missing = (active | disabled) - live
+    if missing:
+        msgs.append(f"{label}: У МАПІ Є, ЖИВОГО НЕМА ({len(missing)}): {sorted(missing)}")
+    extra = live - (active | disabled)
+    if extra:
+        msgs.append(f"{label}: ЖИВЕ Є, У МАПІ НЕМА ({len(extra)}): {sorted(extra)}")
+    wrong_off = sorted(n for n in (active & live) if states[n] == "Disabled")
+    if wrong_off:
+        msgs.append(f"{label}: МАПА КАЖЕ «ДІЄ», А ТАСК ВИМКНЕНО ({len(wrong_off)}): {wrong_off}")
+    wrong_on = sorted(n for n in (disabled & live) if states[n] != "Disabled")
+    if wrong_on:
+        msgs.append(f"{label}: МАПА КАЖЕ «ВИМКНЕНО», А ТАСК ДІЄ ({len(wrong_on)}): {wrong_on}")
+    if not msgs:
+        print(f"[drift] {label}: ✅ збіг ({len(active)} діють + {len(disabled)} навмисно вимкнені = реєстр)")
+        return False, []
+    for m in msgs:
+        print(f"[drift] ⚠️ {m}")
+    return True, msgs
+
+
 def _alert(text: str) -> None:
     """Best-effort Telegram-алерт (щоб дрейф сам казав про себе). Збій алерту не валить перевірку."""
     try:
@@ -134,13 +179,14 @@ def main() -> None:
     msgs = []
 
     if is_windows:
-        declared = set(reg.get("local_tasks", []))
-        live = live_windows_tasks()
-        if live is None:
+        active = set(reg.get("local_tasks", []))
+        disabled = set(reg.get("local_tasks_disabled", []))
+        states = live_windows_task_states()
+        if states is None:
             result["error"] = "не зняв Windows-таски"
         else:
             result["checked"] = "local_tasks"
-            result["drift"], msgs = _diff(declared, live, "Локальні таски")
+            result["drift"], msgs = _diff_local_tasks(active, disabled, states)
     else:
         declared = set(reg.get("vps_units", []))
         if any("__PROVISIONAL__" in d for d in declared):

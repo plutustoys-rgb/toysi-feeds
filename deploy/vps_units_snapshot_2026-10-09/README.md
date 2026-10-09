@@ -14,6 +14,14 @@
 з КОРЕНЯ репо. Ці файли свідомо лежать у підпапці: якби їх покласти в корінь, `vps-code-sync` почав би
 ними керувати — копіювати, робити `enable --now` і знімати їх із сервера при видаленні з репо.
 
+## Стан таймерів на VPS (2026-10-09 ~17:30, Code-Agent, read-only `systemctl is-enabled` / `is-active`)
+- **enabled + active (12):** daily-report, deadline-reminder, eva-feed, feed-pipeline, full-catalog-scan, order-pipeline,
+  order-status-tracker, prom-catalog-auditor, prom-catalog-sync, prom-chat-bot, service-watchdog, vps-code-sync.
+- **disabled + inactive (6):** `bank-check` (bank_check іде всередині order-pipeline), `order-router` і `orders-watcher`
+  (злиті в order-pipeline, pt8), `prom-competitor-pricer` (репрайсер запускає feed-pipeline, `run_feed_pipeline_vps.sh:83`),
+  **`eva-catalog-auditor` і `novapay-statement` — чи вимкнено навмисно, НЕ з'ясовано** (питання власнику/Аудитору/КОДВ).
+Файли вимкнених юнітів лишаються в `/etc/systemd/system/` — вони тут для документації все одно.
+
 ## Що НЕ входить у знімок
 - юніти з кореня репо (авто-деплой): `catalog-health-monitor`, `link-cache-validator`, `meta-feed-coverage-monitor`,
   `np-warehouse-sync`, `prom-review-requester`, `promo-margin-guard`, `social-*`, `system-map-driftcheck`;
@@ -22,8 +30,7 @@
 
 ## Обмеження (читай перед використанням)
 1. **Знімок на дату.** Сервер міг змінитись; істина — `systemctl cat <unit>` на VPS.
-2. **Не показує стан** (enabled/active) — лише вміст файлів. Що з цих юнітів свідомо вимкнено
-   (`order-router`, `orders-watcher` — «DISABLED leftover» у SYSTEM_MAP §2Б) — дивись SYSTEM_MAP.
+2. **Файли не показують стан** (enabled/active) — його зафіксовано вище на дату знімка й у SYSTEM_MAP §2Б.
 3. **`vps-code-sync.service/.timer`** у дампі мають порожній рядок між кожним рядком. Збережено як у дампі;
    чи так виглядають файли на сервері, чи це артефакт копіювання — невідомо.
 4. Описи в деяких юнітах застарілі (напр. `full-catalog-scan` згадує `scan-state-data` — ту гілку вилучено,

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run daily_report every day at 09:00 Kyiv time
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

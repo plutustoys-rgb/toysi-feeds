@@ -1,0 +1,15 @@
+
+[Unit]
+
+Description=Pull latest master into /opt/plutustoys
+
+
+
+[Service]
+
+Type=oneshot
+
+WorkingDirectory=/opt/plutustoys
+
+ExecStart=/bin/bash /opt/plutustoys/vps_code_sync.sh
+

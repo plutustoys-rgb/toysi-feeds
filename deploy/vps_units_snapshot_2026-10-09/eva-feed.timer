@@ -1,0 +1,10 @@
+[Unit]
+Description=Run eva-feed hourly (at :30)
+
+[Timer]
+OnCalendar=*-*-* *:30:00
+Persistent=true
+RandomizedDelaySec=90
+
+[Install]
+WantedBy=timers.target

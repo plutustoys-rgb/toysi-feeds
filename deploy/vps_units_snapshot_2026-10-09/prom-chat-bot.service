@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys prom_chat_bot - auto-answer Prom chat messages
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/prom_chat_bot.py
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run prom_competitor_pricer daily at 06:00 Kyiv time (before prom-catalog-auditor's 08:00)
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

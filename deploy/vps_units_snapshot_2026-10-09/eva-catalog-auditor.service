@@ -1,0 +1,6 @@
+[Unit]
+Description=EVA catalog auditor (щоденний, read-only)
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/eva_catalog_auditor.py

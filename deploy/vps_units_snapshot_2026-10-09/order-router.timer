@@ -1,0 +1,9 @@
+[Unit]
+Description=Run order_router 2 min after orders-watcher (fixed OnCalendar offset - pt8 fix, guarantees order_router always sees orders_watcher's already-committed rows)
+
+[Timer]
+OnCalendar=*-*-* *:11,26,41,56:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

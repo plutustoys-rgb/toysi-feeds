@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys deadline_reminder - check deadlines.md, notify Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/deadline_reminder.py
+StandardOutput=journal
+StandardError=journal

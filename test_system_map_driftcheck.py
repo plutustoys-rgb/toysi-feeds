@@ -93,5 +93,22 @@ chk(f"кожен юніт із кореня репо є в реєстрі vps_un
 blind_root = [u for u in root_units if not d.filter_vps_units([u + ".service"])]
 chk(f"кожен юніт із кореня репо видимий фільтру VPS (невидимі: {blind_root})", not blind_root)
 
+# --- знімок VPS-юнітів і юніти deploy/: теж мають бути в реєстрі й видимі фільтру ---
+snap_dir = os.path.join(_here, "deploy", "vps_units_snapshot_2026-10-09")
+snap_units = sorted({os.path.splitext(f)[0] for f in os.listdir(snap_dir) if f.endswith((".service", ".timer"))})
+chk(f"знімок VPS: 18 пар юнітів (є {len(snap_units)})", len(snap_units) == 18)
+snap_files = [f for f in os.listdir(snap_dir) if f.endswith((".service", ".timer"))]
+chk("знімок VPS: кожен юніт має і .service, і .timer", len(snap_files) == 2 * len(snap_units))
+not_in_reg_snap = [u for u in snap_units if u not in set(reg["vps_units"])]
+chk(f"кожен юніт знімка є в реєстрі vps_units (нема: {not_in_reg_snap})", not not_in_reg_snap)
+blind_snap = [u for u in snap_units if not d.filter_vps_units([u + ".service"])]
+chk(f"кожен юніт знімка видимий фільтру VPS (невидимі: {blind_snap})", not blind_snap)
+deploy_units = sorted({os.path.splitext(f)[0] for f in os.listdir(os.path.join(_here, "deploy")) if f.endswith((".service", ".timer"))})
+bad_deploy = [u for u in deploy_units if u not in set(reg["vps_units"]) or not d.filter_vps_units([u + ".service"])]
+chk(f"кожен юніт deploy/ ({deploy_units}) є в реєстрі й видимий (проблемні: {bad_deploy})", deploy_units and not bad_deploy)
+dup_in_root = [f for f in snap_files if os.path.exists(os.path.join(_here, f))]
+chk(f"жоден файл знімка не лежить у КОРЕНІ репо — інакше vps-code-sync почав би ним керувати (є в корені: {dup_in_root})",
+    not dup_in_root)
+
 print("\nРЕЗУЛЬТАТ:", "УСЕ ОК" if not F else f"{len(F)} FAIL: {F}")
 sys.exit(0 if not F else 1)

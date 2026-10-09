@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys prom_catalog_sync --apply - deactivate stale Prom listings
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStartPre=/bin/bash /opt/plutustoys/refresh_scan_deps.sh
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/prom_catalog_sync.py --apply
+ExecStartPost=/bin/bash /opt/plutustoys/publish_catalog_sync_delisted.sh
+StandardOutput=journal
+StandardError=journal

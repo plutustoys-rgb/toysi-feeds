@@ -40,7 +40,8 @@ MAP_FILE = BASE_DIR / "SYSTEM_MAP.md"
 VPS_UNIT_KEYWORDS = ("plutus", "feed", "order", "prom", "rozetka", "novapay",
                      "daily", "deadline", "watchdog", "catalog", "scan", "social",
                      "site-",   # "site-" (з дефісом): site-rebuild перевірка не бачила, поки слова не було (09.10.2026)
-                     "driftcheck", "link-cache", "np-warehouse")   # сторож схеми, link-cache-validator, np-warehouse-sync — теж були невидимі
+                     "driftcheck", "link-cache", "np-warehouse",
+                     "bank-check", "code-sync")   # сторож схеми, link-cache-validator, np-warehouse-sync — теж були невидимі
 # СИСТЕМНІ юніти Ubuntu, які збігаються з keyword'ами (daily→apt-daily, catalog→systemd-journal-
 # catalog-update) — це НЕ наші, drift-check їх ігнорує (інакше хибний «дрейф»; знайдено живо на VPS).
 VPS_UNIT_EXCLUDE_PREFIX = ("apt-", "apt.", "systemd-", "fwupd", "logrotate", "man-db", "dpkg",

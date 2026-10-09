@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys prom_catalog_auditor - 6-check daily Prom catalog audit report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/prom_catalog_auditor.py
+StandardOutput=journal
+StandardError=journal

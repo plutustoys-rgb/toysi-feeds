@@ -1,0 +1,8 @@
+[Unit]
+Description=Full feed generation + competitor repricer pipeline
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+Environment=PATH=/opt/plutustoys/venv/bin:/usr/bin:/bin
+ExecStart=/bin/bash /opt/plutustoys/run_feed_pipeline_vps.sh

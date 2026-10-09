@@ -1,0 +1,9 @@
+[Unit]
+Description=Run prom_catalog_auditor daily at 08:00 Kyiv time (after the 07:30 sync, before the 09:07 owner check-in)
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

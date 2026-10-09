@@ -164,19 +164,19 @@
 | `np-warehouse-sync` | `nova_poshta_warehouse_cache.py` | замовлення: нічна (03:00) синхронізація локального кешу довідника відділень/поштоматів НП (`np_warehouses_cache.db`, посторінково `AddressGeneral.getWarehouses`) — за офіційною рекомендацією НП («оновлювати щоночі»). `nova_poshta.warehouse_by_ref()` читає кеш ПЕРШИМ (мілісекунди, без throttle-ризику), фолбек на живий запит лише при кеш-місі. Закриває структурно throttle-клас, що спричинив інцидент 906260104 (PR #553-556 закрили ретраєм; це — корінь). Read-only до НП, пише лише у власний файл, orders.db не чіпає |
 | `feed-pipeline` | (генерація фідів + репрайсер) | фіди Prom-top/Google/Meta/Bing, публікація `feed-data` |
 | `eva-feed` | (генерація EVA-фіда) | EVA-фід окремим юнітом |
-| `eva-catalog-auditor` | `eva_catalog_auditor.py` | аудит каталогу EVA |
+| `eva-catalog-auditor` | `eva_catalog_auditor.py` | аудит каталогу EVA. ⚠️ **таймер ВИМКНЕНО** (disabled/inactive, VPS 2026-10-09, Code-Agent); чи навмисно — НЕ з'ясовано (питання власнику/Аудитору) |
 | `meta-feed-coverage-monitor` | `meta_feed_coverage_monitor.py` | покриття Meta-фіда |
 | `catalog-health-monitor` | `catalog_health_monitor.py` | здоров'я каталогу |
 | `full-catalog-scan` | `full_catalog_competitor_scan.py` | нічний скан цін конкурентів |
 | `prom-catalog-sync` | `refresh_scan_deps.sh` (ExecStartPre) → `prom_catalog_sync.py` | Prom: деактивація неконкурентних лістингів |
 | `prom-catalog-auditor` | `prom_catalog_auditor.py` | Prom: щоденний аудит каталогу |
-| `prom-competitor-pricer` | `prom_competitor_pricer.py --apply` | Prom: репрайсер конкурентних цін |
+| `prom-competitor-pricer` | `prom_competitor_pricer.py --apply` | Prom: репрайсер конкурентних цін. ⛔ **окремий таймер ВИМКНЕНО** (disabled/inactive, VPS 2026-10-09): репрайсер запускає `run_feed_pipeline_vps.sh:83` у складі `feed-pipeline` (кожні 6 год) |
 | `prom-review-requester` | `prom_review_requester.py --send` | Prom: запити відгуків (домен SMM) |
 | `prom-chat-bot` | `prom_chat_bot.py` | Prom: автовідповіді в чаті |
 | `social-poster-fb` | `social_auto_poster.py` (fb) | Соцмережі: автопост FB 1×/день 11:00 (домен SMM) |
 | `social-poster-ig` | `social_auto_poster.py` (ig) | Соцмережі: автопост IG 1×/день (домен SMM) |
 | `social-dead-post-cleaner` | `social_dead_post_cleaner.py` | Соцмережі: чистка мертвих FB-постів (404 товар) — знайдено re-drift-check 2026-08-21 |
-| `novapay-statement` | `novapay_statement.py` | КОДВ: звірка COD через IMAP NovaPay |
+| `novapay-statement` | `novapay_statement.py` | КОДВ: звірка COD через IMAP NovaPay. ⚠️ **таймер ВИМКНЕНО** (disabled/inactive, VPS 2026-10-09, Code-Agent) — автоматичної звірки через цей юніт зараз нема; чи навмисно — НЕ з'ясовано (питання власнику/КОДВ) |
 | `daily-report` | `daily_report.py` | зведення в Telegram |
 | `deadline-reminder` | `deadline_reminder.py` | дедлайни/платежі |
 | `service-watchdog` | `service_watchdog.py` | алерти застою + дрейф автодеплою |
@@ -185,13 +185,15 @@
 | `site-rebuild` | `site/build_site.py` + `generate_prom_redirects.py` (крок редіректів не фатальний — `ExecStartPost=-`; oneshot, `.timer` `*-*-* 00/2:20:00` — кожні 2 год о :20) | сайт: регенерація статичного магазину з живого каталогу Toysi + GMC-редіректи. Drift-check його НЕ БАЧИВ (ключового слова `site-` не було в фільтрі юнітів) — додано 2026-10-09 |
 | `system-map-driftcheck` | `system_map_driftcheck.py --alert` (oneshot, `.timer` щодня 08:45, `Persistent=true`) | сторож цієї мапи: звіряє її з живими systemd-юнітами VPS; при дрейфі — Telegram-алерт (сито `telegram_triage.py`, правило `sysmap_drift`, throttle раз на добу). Створений вручну на сервері ПОЗА git; з 2026-10-09 файли в корені репо → керується `deploy_systemd_units.sh` як решта. Раніше був невидимий власному фільтру |
 | `link-cache-validator` | `link_cache_validator.py` (oneshot, щодня 03:40 + до 10 хв `RandomizedDelaySec=600`, `Persistent=true`) | переперевірка `own_product_links_cache`: виправляє слаги переіменованих ЖИВИХ товарів (оновлює `url_text`); записи зниклих товарів лишає як є й лише рахує у звіті (`confirmed_gone`) — кеш НЕ чистить. У мапі його НЕ БУЛО — знайдено архітектурним аудитом 2026-10-09 (юніт у корені репо розгортається автоматично) |
+| `bank-check` | `bank_check.py` (oneshot; `OnBootSec=3min`, `OnUnitActiveSec=15min`, `Persistent=true`) | звірка передоплачених замовлень із банківською випискою. Файли є в `/etc/systemd/system` (дамп 2026-10-09, `deploy/vps_units_snapshot_2026-10-09/`); **таймер ВИМКНЕНО (enabled=disabled, active=inactive; VPS 2026-10-09 ~17:30, Code-Agent)**; `bank_check` виконується лише всередині `order_pipeline.py:54` — окремого паралельного запуску нема (питання «двічі» закрите). У мапі його НЕ БУЛО — знайдено при читанні дампа |
+| `vps-code-sync` | `vps_code_sync.sh` (oneshot; `OnBootSec=2min`, `OnUnitActiveSec=15min`, `Persistent=true`) | деплоєр: `git merge --ff-only origin/master` у `/opt/plutustoys`, далі `deploy_systemd_units.sh` (розгортає `*.service`/`*.timer` З КОРЕНЯ репо). Раніше згадувався лише приміткою «підтвердити drift-check на VPS»; у реєстрі його НЕ БУЛО |
 
 > **✅ ДРЕЙФ order-flow РОЗВ'ЯЗАНО (звірено живо 2026-08-20):** `order-router` і `orders-watcher` на VPS
 > **DISABLED + inactive** — це мертві файли-юніти, поглинуті `order-pipeline` (він робить poll_once+
-> bank_check+route послідовно в одному процесі, щоб не було гонки). Активні лише `order-pipeline` +
-> `order-status-tracker`. Подвійної обробки/гонки НЕМА. Косметичний хвіст: файли-юніти `order-router`/
+> bank_check+route послідовно в одному процесі, щоб не було гонки). Серед юнітів ОБРОБКИ ЗАМОВЛЕНЬ активні лише
+> `order-pipeline` + `order-status-tracker` (станом на 2026-08-20; повний стан усіх таймерів VPS на 2026-10-09 — `deploy/vps_units_snapshot_2026-10-09/README.md`). Подвійної обробки/гонки НЕМА. Косметичний хвіст: файли-юніти `order-router`/
 > `orders-watcher` можна прибрати (`systemctl disable` вже стоїть; видалення `.timer/.service` — за бажанням,
-> не критично). `vps-code-sync` — у видимому виводі бандла не потрапив; підтвердити drift-check на VPS.
+> не критично). `vps-code-sync` — з 2026-10-09 у реєстрі й таблиці вище (раніше фільтр його не бачив); VPS-перезняття drift-check після цього PR — за Code-Agent.
 
 ### 2В. GitHub Actions (`plutustoys-rgb/toysi-feeds`)
 - `update-feeds.yml` — cron 4 год: генерує ЛИШЕ `feeds/rozetka_feed.xml` (відокремлено від VPS, щоб не було гонки orphan-force-push).
@@ -365,6 +367,7 @@
   Публічні фіди/стан — гілка `feed-data` (orphan force-push; фінполя редагуються `price_state_redact`).
 - **Координаційні доки (Cowork-папка `PlutusToys_avtonomiya/`):** STATUS, CODE_LOG, канали, OWNER_INBOX,
   BOOTSTRAP, COORDINATOR_LOG, GOTCHAS, `технічні_вимоги_маркетплейсів/`, `документи_КОДВ/`.
+- **systemd-юніти VPS:** корінь репо = розгортається автоматично (`vps-code-sync` → `deploy_systemd_units.sh`); `deploy/site-*` = ручна активація; `deploy/vps_units_snapshot_2026-10-09/` = ДОКУМЕНТАЦІЯ знімка 18 пар, які існували лише на сервері (НЕ розгортається, див. README там).
 - **Цей SSOT:** у РЕПО (версіонується, синхриться на VPS і локаль, звіряється скриптом). BOOTSTRAP/CLAUDE.md → сюди.
 
 ---
@@ -397,7 +400,8 @@
     "social-poster-fb", "social-poster-ig", "social-dead-post-cleaner",
     "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog",
     "promo-margin-guard", "site-order-api", "site-rebuild",
-    "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync"
+    "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync",
+    "bank-check", "vps-code-sync"
   ],
   "gh_workflows": ["update-feeds.yml"]
 }

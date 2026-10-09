@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys watchdog - alert via Telegram if orders-watcher/bank-check stall
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/service_watchdog.py
+StandardOutput=journal
+StandardError=journal

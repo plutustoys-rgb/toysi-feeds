@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys order_status_tracker - poll Toysi order_status, update delivery_status/TTN
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/order_status_tracker.py
+StandardOutput=journal
+StandardError=journal

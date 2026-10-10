@@ -3,7 +3,7 @@
 (function(){
   "use strict";
   var CART_KEY = "pt_cart_v1";
-  var DELIVERY_HINT = 65;           // нижня межа доставки НП («від 65 ₴» — як на картці й у «Доставці»; build_site.SHIP_FROM_UAH, звіряє test_site_seo_meta); уточнюється при оформленні
+  // Суму доставки покупцю НЕ друкуємо (10.10.2026, рішення Консультанта: «65/70 ₴» нічим не підкріплене) — доки нема виміряної цифри з книги КОДВ.
   // Поріг безкоштовної доставки — число Консультанта (рекомендація CONSULTANT_CHANNEL.md
   // 2026-09-14/16, економічно перевірене 2026-09-18: ~3.1х середнього чека, floor витримує).
   // ⚠️ ВИПРАВЛЕННЯ АТРИБУЦІЇ (2026-09-18): попередній коментар посилався на "OWNER_INBOX 13.09" —
@@ -55,7 +55,7 @@
     setQty:function(id,q){ var c=read(); if(c[id]){ c[id].qty=Math.max(0,q); if(c[id].qty===0){delete c[id];} write(c); } },
     remove:function(id){ var c=read(); delete c[id]; write(c); },
     clear:function(){ write({}); },
-    read:read, count:count, total:total, DELIVERY_HINT:DELIVERY_HINT
+    read:read, count:count, total:total
   };
 
   function updateBadge(){
@@ -214,13 +214,12 @@
   function renderSummary(){
     var goods=total();
     // FREE_SHIPPING_ENABLED=false (2026-09-18, поки платник доставки не з'ясований з Toysi) —
-    // freeShip завжди false, поведінка ідентична до PR #560 (завжди показуємо орієнтовну
-    // вартість доставки, ніякої обіцянки).
+    // freeShip завжди false: сума доставки не друкується (вартість визначає Нова Пошта, сплачується при отриманні).
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
-    if(d) d.textContent=freeShip ? "Безкоштовно" : ("від "+PT.DELIVERY_HINT+" ₴");
-    if(t) t.textContent=(freeShip ? goods+" ₴" : "від "+(goods+PT.DELIVERY_HINT)+" ₴");
+    if(d) d.textContent=freeShip ? "Безкоштовно" : "за тарифами НП";
+    if(t) t.textContent=goods+" ₴";
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
     var note=document.getElementById("free-ship-note");

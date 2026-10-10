@@ -463,7 +463,7 @@ def _catalog_controls():
 
 # ── SEO-замовлення 2026-10-10 (п.2–3, фінальні шаблони — SEO_CHANNEL.md): title/description, хлібні крихти, розмітка Product/ItemList ──
 PRICE_VALID_DAYS = 7     # ціни/наявність перебудовуються кожні 2 год (site-rebuild.timer); якщо збірка стане >7 діб — розмітка сама «протухне»
-SHIP_FROM_UAH = 65       # як у тексті картки/«Доставка»: «від 65 ₴» (Нова Пошта); тариф — за перевізником
+# Суму доставки НЕ друкуємо (рішення Консультанта 10.10.2026): «від 65/70 ₴» нічим не підкріплене; повернути конкретику — коли бухгалтер дасть виміряну цифру (фактичні тарифи НП у книзі КОДВ).
 PAY_SHORT = "оплата карткою або при отриманні" if LIQPAY_LIVE else "оплата при отриманні"
 TITLE_MAX = 65
 DESC_MAX = 160
@@ -586,14 +586,7 @@ def offer_extras(p) -> dict:
     from datetime import date, timedelta
     extra = {
         "priceValidUntil": (date.today() + timedelta(days=PRICE_VALID_DAYS)).isoformat(),
-        "shippingDetails": {
-            "@type": "OfferShippingDetails",
-            "shippingRate": {"@type": "MonetaryAmount", "value": str(SHIP_FROM_UAH), "currency": "UAH"},
-            "shippingDestination": {"@type": "DefinedRegion", "addressCountry": "UA"},
-            "deliveryTime": {"@type": "ShippingDeliveryTime",
-                             "handlingTime": {"@type": "QuantitativeValue", "minValue": 0, "maxValue": 1, "unitCode": "DAY"},
-                             "transitTime": {"@type": "QuantitativeValue", "minValue": 1, "maxValue": 3, "unitCode": "DAY"}},
-        },
+        # shippingDetails без виміряної ставки не пишемо (shippingRate обов'язковий, вигадане число — розбіжність розмітки зі сторінкою); повернемо разом із цифрою.
         "hasMerchantReturnPolicy": {
             "@type": "MerchantReturnPolicy", "applicableCountry": "UA",
             "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
@@ -758,7 +751,7 @@ def write_product(p, related=None, cat_slug=None):
       '</div>'
       '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
       '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
-      '<div><b>Доставка Новою Поштою</b> — від 65 ₴. Замовлення до 12:00 йдуть того ж дня, '
+      '<div><b>Доставка Новою Поштою</b> — вартість за тарифами перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
       'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
       f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
       '</div></div>'
@@ -812,11 +805,11 @@ def write_cart():
       '<div style="padding:0 16px"><div id="cart-body"></div>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'
-        '<div class="row"><span>Доставка Новою Поштою</span><span id="sum-delivery">від 65 ₴</span></div>'
-        '<div class="row total"><span>Разом</span><span id="sum-total">0 ₴</span></div>'
+        '<div class="row"><span>Доставка Новою Поштою</span><span id="sum-delivery">за тарифами НП</span></div>'
+        '<div class="row total"><span>Разом за товари</span><span id="sum-total">0 ₴</span></div>'
         '<div class="free-ship" id="free-ship-block"><div class="free-ship-track"><div class="free-ship-fill" id="free-ship-bar"></div></div>'
           '<div class="note" id="free-ship-note"></div></div>'
-        '<div class="note">Точну вартість доставки НП порахуємо на кроці оформлення за обраним відділенням.</div>'
+        '<div class="note">Вартість доставки визначає Нова Пошта за своїми тарифами, вона сплачується при отриманні посилки.</div>'
       '</div>'
       # checkout
       '<h1 class="page" style="margin-left:0">Оформлення</h1>'
@@ -913,7 +906,7 @@ _DELIVERY = """<h1>Доставка</h1>
 <h2>Терміни</h2>
 <p>Замовлення, оформлені <b>до 12:00</b>, ми зазвичай відправляємо того ж дня. Далі доставка Новою Поштою займає <b>1–3 дні</b> залежно від вашого міста.</p>
 <h2>Вартість</h2>
-<p>Доставка оплачується <b>за тарифами перевізника</b> (Нової Пошти) під час отримання посилки. Орієнтовно — <b>від 65 ₴</b>; точну суму визначає Нова Пошта відповідно до ваги та напрямку відправлення.</p>
+<p>Доставка оплачується <b>за тарифами перевізника</b> (Нової Пошти) під час отримання посилки. Точну суму визначає Нова Пошта відповідно до ваги та напрямку відправлення.</p>
 <h2>Оплата</h2>
 {PAY_DELIVERY}
 <h2>Як відстежити замовлення</h2>

@@ -855,6 +855,9 @@ def write_cart():
           '<input id="f-email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"></div>'
         '<div class="field ac-wrap"><label>Місто</label>'
           '<input id="f-city" name="city" required autocomplete="off" placeholder="Почніть вводити місто…">'
+          # Довідник НП може не відповісти (реальний інцидент на телефоні). Ручний ввід приймається наскрізь: поле відділення не блокується
+          # (assets/app.js, initNpAutocomplete), сервер вимагає лише непорожні тексти міста й відділення (site_order_api.py:171-175).
+          '<div class="note">Не бачите міста у списку? Впишіть назву самі — а нижче номер або адресу відділення.</div>'
           '<div class="ac" id="ac-city"></div></div>'
         '<div class="field ac-wrap"><label>Відділення Нової Пошти</label>'
           '<input id="f-warehouse" name="warehouse" required autocomplete="off" placeholder="Спершу оберіть місто" disabled>'

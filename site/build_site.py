@@ -812,7 +812,7 @@ def write_cart():
       '<div style="padding:0 16px"><div id="cart-body"></div>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'
-        '<div class="row"><span>Доставка Новою Поштою</span><span id="sum-delivery">≈ 70 ₴</span></div>'
+        '<div class="row"><span>Доставка Новою Поштою</span><span id="sum-delivery">від 65 ₴</span></div>'
         '<div class="row total"><span>Разом</span><span id="sum-total">0 ₴</span></div>'
         '<div class="free-ship" id="free-ship-block"><div class="free-ship-track"><div class="free-ship-fill" id="free-ship-bar"></div></div>'
           '<div class="note" id="free-ship-note"></div></div>'

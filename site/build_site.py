@@ -398,6 +398,13 @@ def build():
     print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, "
           "+index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
+    # 9) детектор «тихого зникнення фото» (Консультант 10.10.2026): вибірка фото з нашим Referer; best-effort, не валить збірку
+    try:
+        import site_photo_probe
+        site_photo_probe.run(idx)
+    except Exception as e:  # noqa: BLE001
+        print(f"[build] photo_probe пропущено: {type(e).__name__}: {e}")
+
 def chips(cat_list, cat_slug, active):
     out = [f'<a class="chip{"" if active else " active"}" href="catalog.html">Усі</a>']
     for c in cat_list[:12]:

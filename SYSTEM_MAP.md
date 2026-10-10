@@ -244,6 +244,7 @@
   Онлайн-оплата LiqPay ще НЕ підключена (працює накладений платіж).
   **09.10.2026:** відомості про продавця (ФОП Чечетенко О.Ю., м. Київ, просп. Берестейський, 89а — доручення власника; РНОКПП береться з `SITE_SELLER_TAXID` у `.env` VPS, у git НЕ кладемо) на «Контакти»/оферті/політиці; нова сторінка `privacy.html` (+футер, sitemap), розділ «Оплата» на «Доставка» (вимоги LiqPay п.3/п.7, ст.7 Закону про е-комерцію; `технічні_вимоги_маркетплейсів/liqpay.md`). Старі Prom-URL: мовний префікс `/ua|ru/` ОПЦІЙНИЙ (`/p…`, `/g…`, `/product_list`, `/site_…` без `/ua/` → 301; правка шаблону vhost у `deploy/activate_site_apache.sh`, застосовується повторним запуском скрипта на VPS).
   → Код (механіка) + SMM (дизайн) + власник (LiqPay).
+- **Фото сайту — детектор зникнення (10.10.2026, Консультант):** `site_photo_probe.py` (викликається в кінці `site/build_site.py`, тобто кожні 2 год у `site-rebuild.service`, best-effort) — вибірка 20 фото з index.json з нашим Referer; будь-що, крім 200+image/*+непорожнє → самодіагностичний алерт `send_throttled_alert("site_photo_probe", …, 6 год)`. Усі фото сайту — хотлінк на toysi.ua; дзеркалення (~715 МБ) — окреме рішення. Власник: Код.
 - **Соцмережі/SMM:** `social_auto_poster` (вкл. IG-Reels `--reel`), `social_dead_post_cleaner`,
   `plutus_overlay`, `meta_conversions_client`, `publish_reel_video.sh` (хостинг відео у feed-data/media
   → публічний raw-URL для Reels), `social_ledger_report` (ledger→CSV + розклад-vs-факт для SMM),

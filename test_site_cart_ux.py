@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """test_site_cart_ux.py — кошик: «−» при кількості 1 НЕ видаляє товар (видалення лише явним «Прибрати»), цілі дотику ≥44 px (зауваження Тестувальника 10.10).
-Статична перевірка app.js/styles.css + `node` для логіки dec (якщо node є). Самодостатній."""
+Статична перевірка app.js/styles.css (збіг підрядків) + `node --check` синтаксису (якщо node є). Самодостатній."""
 import os
 import re
 import shutil

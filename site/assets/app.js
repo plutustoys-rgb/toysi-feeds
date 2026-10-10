@@ -205,7 +205,7 @@
         '<img src="'+it.photo+'" loading="lazy" alt="">'+
         '<div style="flex:1"><div class="ci-nm">'+esc(it.name)+'</div>'+
         '<div class="ci-pr">'+it.price+' ₴</div>'+
-        '<div class="qty"><button data-act="dec">−</button><span class="q">'+it.qty+'</span><button data-act="inc">+</button></div>'+
+        '<div class="qty"><button data-act="dec" aria-label="Менше"'+(it.qty<=1?' disabled':'')+'>−</button><span class="q">'+it.qty+'</span><button data-act="inc" aria-label="Більше">+</button></div>'+
         '</div><button class="ci-rm" data-act="rm">Прибрати</button></div>';
     });
     box.innerHTML=html;
@@ -253,7 +253,7 @@
         var wrap=ci.closest(".cart-item"), id=wrap.getAttribute("data-id"), act=ci.getAttribute("data-act");
         var c=read();
         if(act==="inc") PT.setQty(id, (c[id]?c[id].qty:0)+1);
-        else if(act==="dec") PT.setQty(id, (c[id]?c[id].qty:0)-1);
+        else if(act==="dec"){ var cur=c[id]?c[id].qty:0; if(cur>1) PT.setQty(id, cur-1); }   // «−» при кількості 1 НЕ видаляє товар (видалення — лише явне «Прибрати»)
         else if(act==="rm") PT.remove(id);
         renderCart();
       }

@@ -168,6 +168,10 @@ cat <<'EOF'
         Require all denied
     </DirectoryMatch>
     <IfModule mod_headers.c>
+        # заголовки безпеки (10.10.2026, зауваження Тестувальника): сторінки збирають ПІБ/телефон/адресу. CSP свідомо НЕ ставимо: у сторінках inline-скрипти й GA4/Pixel — спершу Report-Only окремим кроком.
+        Header always set X-Content-Type-Options "nosniff"
+        Header always set X-Frame-Options "SAMEORIGIN"
+        Header always set Referrer-Policy "strict-origin-when-cross-origin"
         # статика змінюється рідко, імена без хешів → добовий кеш (LCP/повторні візити); HTML кешується браузером за замовчуванням евристикою, не чіпаємо
         <LocationMatch "^/assets/">
             Header set Cache-Control "public, max-age=86400"

@@ -3,7 +3,7 @@
 (function(){
   "use strict";
   var CART_KEY = "pt_cart_v1";
-  var DELIVERY_HINT = 70;           // орієнтир доставки НП для підсумку (уточнюється при оформленні)
+  var DELIVERY_HINT = 65;           // нижня межа доставки НП («від 65 ₴» — як на картці й у «Доставці»; build_site.SHIP_FROM_UAH, звіряє test_site_seo_meta); уточнюється при оформленні
   // Поріг безкоштовної доставки — число Консультанта (рекомендація CONSULTANT_CHANNEL.md
   // 2026-09-14/16, економічно перевірене 2026-09-18: ~3.1х середнього чека, floor витримує).
   // ⚠️ ВИПРАВЛЕННЯ АТРИБУЦІЇ (2026-09-18): попередній коментар посилався на "OWNER_INBOX 13.09" —
@@ -219,8 +219,8 @@
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
-    if(d) d.textContent=freeShip ? "Безкоштовно" : ("≈ "+PT.DELIVERY_HINT+" ₴");
-    if(t) t.textContent=(freeShip ? goods : goods+PT.DELIVERY_HINT)+" ₴";
+    if(d) d.textContent=freeShip ? "Безкоштовно" : ("від "+PT.DELIVERY_HINT+" ₴");
+    if(t) t.textContent=(freeShip ? goods+" ₴" : "від "+(goods+PT.DELIVERY_HINT)+" ₴");
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
     var note=document.getElementById("free-ship-note");

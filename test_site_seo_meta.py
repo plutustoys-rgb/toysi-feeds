@@ -142,6 +142,13 @@ b.write_cart()
 cart = open(os.path.join(tmp, "cart.html"), encoding="utf-8").read()
 chk("кошик: згода з офертою й політикою біля кнопки замовлення", 'href="privacy.html"' in cart and 'href="offer.html"' in cart and cart.index("checkout-submit") < cart.index('class="note consent"'))
 
+# ── доставка: одне число з одного джерела (картка «від 65 ₴» = кошик = JSON-LD)
+appjs = open(os.path.join(HERE, "site", "assets", "app.js"), encoding="utf-8").read()
+chk("app.js: DELIVERY_HINT == build_site.SHIP_FROM_UAH (кошик не розходиться з карткою)", re.search(r"var DELIVERY_HINT = (\d+);", appjs).group(1) == str(b.SHIP_FROM_UAH))
+chk("кошик: «від 65 ₴», без «≈ 70»", "від 65 ₴" in cart and "≈ 70" not in cart and "від \"+PT.DELIVERY_HINT" in appjs)
+sh = open(os.path.join(HERE, "deploy", "activate_site_apache.sh"), encoding="utf-8").read()
+chk("Apache: заголовки безпеки nosniff/SAMEORIGIN/Referrer-Policy під mod_headers", all(x in sh for x in ('X-Content-Type-Options "nosniff"', 'X-Frame-Options "SAMEORIGIN"', 'Referrer-Policy "strict-origin-when-cross-origin"')) and sh.index("mod_headers.c") < sh.index("X-Content-Type-Options"))
+
 print()
 if F:
     print("FAILED:", F)

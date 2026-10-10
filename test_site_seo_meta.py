@@ -77,9 +77,16 @@ C = {
                                              "Уцінка. Валіза ТехноК, рожевий - тріщина на кришці валізи",
                                              "Уцінка. Шкатулка заводна \"Сердечко\" - балерина зламана",
                                              "Уцінка. Мильні бульбашки - уцінка: неповна баночка з розчином"],
+    "https://schema.org/DamagedCondition#2": ["Уценка. Акула на радіокеруванні – не працює", "Уцінка. МУЗИЧНА ІГРАШКА «КАЧЕНЯ» Не ходить. Пошкоджена упаковка.",
+                                               "Уцінка. Автомат Не стріляє присосками - пошкоджена упаковка", "Уцінка. Крейда біла - Пошкоджена упаковка та поломана крейда",
+                                               "Уцінка. Трансформер «Робокар Поли» Здерта краска, помʼята упаковка", "Уцінка. Електронна гра Не коректно працює електроніка та пошкоджена упаковка",
+                                               "Уцінка. Мильні бульбашки «FIGHTER GIANT» Мутні та пошкоджена упаковка", "Уценка. Пупс нема одного ока"],
+    "#unsure": ["Уцінка. Блокатор Закінчився термін придатності, брудна упаковка"],
     "https://schema.org/UsedCondition": ["Уцінка. Самокат триколісний (чорно-білий) - вітринний варіант, не товарний вигляд"],
     "": ["Уцінка. Іграшка - щось невідоме", "Уцінка Іграшка без опису"],
 }
+C["https://schema.org/DamagedCondition"] += C.pop("https://schema.org/DamagedCondition#2")
+C[""] += C.pop("#unsure")
 for exp, names in C.items():
     for nm in names:
         chk(f"itemCondition[{exp.split('/')[-1] or 'пропущено'}] ← {nm[:55]}", b.item_condition(nm) == exp)
@@ -91,9 +98,9 @@ p = {"id": "4242", "name": "Уцінка. Валіза ТехноК, рожев�
      "photo": "https://example.com/1.jpg", "stock": 3, "desc": "Бренд: Deddy Bears", "contribution": 10.0}
 b.write_product(p, related=None, cat_slug={"Валізи <b>": "valizi"})
 h = open(os.path.join(tmp, "product-4242.html"), encoding="utf-8").read()
-chk("картка: <title> за шаблоном, ≤65", re.search(r"<title>(.*?)</title>", h).group(1).endswith("— купити | PlutusToys") and len(re.search(r"<title>(.*?)</title>", h).group(1)) <= 66 + 12)
+chk("картка: <title> за шаблоном, ≤65", re.search(r"<title>(.*?)</title>", h).group(1).endswith("— купити | PlutusToys") and len(__import__("html").unescape(re.search(r"<title>(.*?)</title>", h).group(1))) <= 65)
 m = re.search(r'<meta name="description" content="(.*?)">', h)
-chk("картка: description не «Бренд: …», ≤160", m is not None and not m.group(1).startswith("Бренд") and len(m.group(1)) <= 160 + 40)
+chk("картка: description не «Бренд: …», ≤160", m is not None and not m.group(1).startswith("Бренд") and len(__import__("html").unescape(m.group(1))) <= 160)
 blocks = ld_blocks(h)
 types = [x["@type"] for x in blocks]
 chk("картка: є Product і BreadcrumbList", "Product" in types and "BreadcrumbList" in types)

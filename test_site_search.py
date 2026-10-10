@@ -44,10 +44,10 @@ const items=[
  {n:"Мʼяка іграшка Зайчик",c:"Мʼякі іграшки"},{n:"М'яка іграшка Ведмідь",c:"Мʼякі іграшки"},{n:"Мя’ка іграшка Кіт",c:"Мʼякі іграшки"},
  {n:"Конструктор для хлопчика",c:"Конструктори"},{n:"Машина на радіокеруванні",c:"Радіокеровані машини"},
  {n:"Barbie Dreamhouse",c:"Ляльки"},{n:"Funko POP Marvel Spider-Man",c:"Фігурки"},{n:"Фанко Поп Людина-павук",c:"Фігурки"},
- {n:"Hot Wheels набір треку",c:"Машинки"},{n:"Хот Вілс Монстер",c:"Машинки"},{n:"Солодкий лол набір",c:"Різне"},{n:"L.O.L. Surprise лялька",c:"Ляльки"},{n:"Людина-павук костюм",c:"Костюми"}];
+ {n:"Hot Wheels набір треку",c:"Машинки"},{n:"Хот Вілс Монстер",c:"Машинки"},{n:"Солодкий лол набір",c:"Різне"},{n:"L.O.L. Surprise лялька",c:"Ляльки"},{n:"Людина-павук костюм",c:"Костюми"},{n:"Кішка Лоліта",c:"Різне"},{n:"Машинка Hot Wheel",c:"Машинки"},{n:"Принцеса Діснея",c:"Ляльки"},{n:"Sonic фігурка",c:"Фігурки"},{n:"Сонік плюш",c:"Плюш"},{n:"Transformers Бамблбі",c:"Роботи"},{n:"Трансформер Оптимус",c:"Роботи"}];
 const f=q=>{const t=S.tokens(q);return items.filter(it=>S.match(S.hay(it),t)).length;};
 console.log(JSON.stringify({a:f("лялька барбі"),b:f("барбі лялька"),c:f("машинка поліція"),d:f("мʼяка іграшка"),e:f("м'яка іграшка"),g:f("мяка іграшка"),h:f("іграшка для хлопчика"),i:f("ЛЯЛЬКА  БАРБІ "),j:f("лялька барбі драконів"),k:f("конструктор хлопчика"),
- cat:f("радіокерована машина"),emp:S.tokens("''").length,funkoL:f("funko"),funkoC:f("фанко"),barL:f("barbie"),barC:f("барбі"),hwL:f("hot wheels"),hwC:f("хот вілс"),spC:f("павук"),spL:f("spider"),lolC:f("лол"),lolL:f("lol"),lolD:f("l.o.l")}));
+ cat:f("радіокерована машина"),emp:S.tokens("''").length,funkoL:f("funko"),funkoC:f("фанко"),barL:f("barbie"),barC:f("барбі"),hwL:f("hot wheels"),hwC:f("хот вілс"),spC:f("павук"),spL:f("spider"),lolC:f("лол"),lolL:f("lol"),lolD:f("l.o.l"),lolly:f("lolly"),lolita:f("лоліта"),hwS:f("hot wheel"),hwH:f("hot-wheels"),hwSp:f("hot   wheels"),disC:f("дисней"),disL:f("disney"),disG:f("діснея"),soL:f("sonic"),soC:f("сонік"),soR:f("соник"),trL:f("transformers"),trS:f("transformer"),trC:f("трансформери"),pavD:f("павук-"),lolE:f("LOL!")}));
 '''
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as fh:
         fh.write(harness)
@@ -68,8 +68,14 @@ console.log(JSON.stringify({a:f("лялька барбі"),b:f("барбі ля�
         chk("КАТЕГОРІЯ в haystack: «радіокерована машина» знаходить товар із категорії «Радіокеровані машини» (було 0)", o["cat"] == 1)
         chk("запит лише з апострофів → нуль токенів (не «весь каталог»)", o["emp"] == 0)
         chk("теги брендів не колізять префіксом (#b1 ≠ #b10…): «фанко» не підтягує «Людина-павук костюм»", o["funkoC"] == 2)
+        chk("«лол» не перехоплює чужих слів: «lolly» → 0, «лоліта» знаходить лише Лоліту (1), а LOL-товарів лишається 2", o["lolly"] == 0 and o["lolita"] == 1 and o["lolC"] == 2)
+        chk("«hot wheel» (однина), «hot-wheels», «hot   wheels» = «хот вілс» (3)", o["hwS"] == o["hwH"] == o["hwSp"] == 3)
+        chk("Disney/дисней/діснея (родовий) — однаково 1", o["disC"] == o["disL"] == o["disG"] == 1)
+        chk("Sonic = Соник = Сонік (обидві кирилиці) → 2", o["soL"] == o["soC"] == o["soR"] == 2)
+        chk("transformers = transformer = трансформери (слово замінюється ЦІЛКОМ, не лишається «s»)", o["trL"] == o["trS"] == o["trC"] == 2)
+        chk("пунктуація в запиті не лишає сміттєвих токенів: «павук-», «LOL!»", o["pavD"] == 3 and o["lolE"] == 2)
         chk("бренд обома абетками: funko↔фанко, barbie↔барбі, hot wheels↔хот вілс, spider↔павук, lol↔лол↔l.o.l — однакові результати",
-            o["funkoL"] == o["funkoC"] == 2 and o["barL"] == o["barC"] == 3 and o["hwL"] == o["hwC"] == 2 and o["spL"] == o["spC"] == 3 and o["lolC"] == o["lolL"] == o["lolD"] == 2)
+            o["funkoL"] == o["funkoC"] == 2 and o["barL"] == o["barC"] == 3 and o["hwL"] == o["hwC"] == 3 and o["spL"] == o["spC"] == 3 and o["lolC"] == o["lolL"] == o["lolD"] == 2)
 else:
     print("(node не знайдено — логіку перевірено лише статично)")
 print()

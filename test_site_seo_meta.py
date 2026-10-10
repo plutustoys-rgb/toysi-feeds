@@ -105,11 +105,11 @@ blocks = ld_blocks(h)
 types = [x["@type"] for x in blocks]
 chk("картка: є Product і BreadcrumbList", "Product" in types and "BreadcrumbList" in types)
 prod = next(x for x in blocks if x["@type"] == "Product")["offers"]
-for key in ("priceValidUntil", "shippingDetails", "hasMerchantReturnPolicy", "itemCondition"):
+for key in ("priceValidUntil", "hasMerchantReturnPolicy", "itemCondition"):
     chk(f"картка: offers.{key}", key in prod)
 chk("картка: itemCondition=Damaged (тріщина)", prod["itemCondition"].endswith("DamagedCondition"))
 chk("картка: priceValidUntil — дата ISO", re.fullmatch(r"\d{4}-\d{2}-\d{2}", prod["priceValidUntil"]) is not None)
-chk("картка: повернення 14 днів, доставка від 65 UAH", prod["hasMerchantReturnPolicy"]["merchantReturnDays"] == 14 and prod["shippingDetails"]["shippingRate"]["value"] == "65")
+chk("картка: повернення 14 днів; shippingDetails НЕ пишемо (нема виміряної ставки)", prod["hasMerchantReturnPolicy"]["merchantReturnDays"] == 14 and "shippingDetails" not in prod)
 bc = next(x for x in blocks if x["@type"] == "BreadcrumbList")["itemListElement"]
 chk("крихти: Головна → Категорія → Товар, позиції 1..3", [i["position"] for i in bc] == [1, 2, 3] and bc[0]["name"] == "Головна"
     and bc[1]["item"].endswith("/category-valizi.html") and "item" not in bc[2])
@@ -142,10 +142,11 @@ b.write_cart()
 cart = open(os.path.join(tmp, "cart.html"), encoding="utf-8").read()
 chk("кошик: згода з офертою й політикою біля кнопки замовлення", 'href="privacy.html"' in cart and 'href="offer.html"' in cart and cart.index("checkout-submit") < cart.index('class="note consent"'))
 
-# ── доставка: одне число з одного джерела (картка «від 65 ₴» = кошик = JSON-LD)
+# ── доставка: суму НЕ друкуємо ніде (рішення Консультанта 10.10: «65/70 ₴» нічим не підкріплене)
 appjs = open(os.path.join(HERE, "site", "assets", "app.js"), encoding="utf-8").read()
-chk("app.js: DELIVERY_HINT == build_site.SHIP_FROM_UAH (кошик не розходиться з карткою)", re.search(r"var DELIVERY_HINT = (\d+);", appjs).group(1) == str(b.SHIP_FROM_UAH))
-chk("кошик: «від 65 ₴», без «≈ 70»", "від 65 ₴" in cart and "≈ 70" not in cart and "від \"+PT.DELIVERY_HINT" in appjs)
+chk("app.js: DELIVERY_HINT прибрано, кошик показує «за тарифами НП», Разом = товари", "DELIVERY_HINT" not in appjs.replace("// ", "").split("прибрано")[0] and 'd.textContent=freeShip ? "Безкоштовно" : "за тарифами НП"' in appjs and 't.textContent=goods+" ₴"' in appjs)
+chk("кошик/картка/«Доставка»: жодного «65 ₴»/«70 ₴»", all(x not in blob for x in ("65 ₴", "70 ₴")) if (blob := cart + h + b._DELIVERY + b._ABOUT) else False)
+chk("кошик: «за тарифами НП» і «Разом за товари»", "за тарифами НП" in cart and "Разом за товари" in cart)
 sh = open(os.path.join(HERE, "deploy", "activate_site_apache.sh"), encoding="utf-8").read()
 chk("Apache: заголовки безпеки nosniff/SAMEORIGIN/Referrer-Policy під mod_headers", all(x in sh for x in ('X-Content-Type-Options "nosniff"', 'X-Frame-Options "SAMEORIGIN"', 'Referrer-Policy "strict-origin-when-cross-origin"')) and sh.index("mod_headers.c") < sh.index("X-Content-Type-Options"))
 

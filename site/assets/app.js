@@ -104,7 +104,9 @@
   // показуємо «Показано N з M» і сортування (раніше мовчазна стеля 40 за порядком файлу).
   var SEARCH_SHOW=40, searchSort="rec", lastMatches=[], lastQuery="";
   function normText(s){ return String(s==null?"":s).toLowerCase().replace(/[\u02bc\u02b9\u2019\u2018\u2032\u0027\u0060]/g,""); }
-  function searchTokens(q){ return normText(q).split(/\s+/).filter(function(t){return t.length>0;}); }
+  // закінчення відкидаємо (≥5 літер: лишається max(4, довжина−2)), щоб «хлопчика»/«поліція» знаходили «хлопчиків»/«поліцейська»
+  function stemTok(t){ return t.length>=5 ? t.slice(0, Math.max(4, t.length-2)) : t; }
+  function searchTokens(q){ return normText(q).split(/\s+/).filter(function(t){return t.length>0;}).map(stemTok); }
   function searchMatch(nn, toks){ for(var i=0;i<toks.length;i++){ if(nn.indexOf(toks[i])<0) return false; } return true; }
   function sortedMatches(list, mode){
     var a=list.slice();

@@ -56,7 +56,7 @@
     remove:function(id){ var c=read(); delete c[id]; write(c); },
     clear:function(){ write({}); },
     read:read, count:count, total:total,
-    search:{norm:normText, tokens:searchTokens, match:searchMatch}
+    search:{norm:normText, tokens:searchTokens, match:searchMatch, hay:buildHay}
   };
 
   function updateBadge(){
@@ -106,8 +106,61 @@
   function normText(s){ return String(s==null?"":s).toLowerCase().replace(/[\u02bc\u02b9\u2019\u2018\u2032\u0027\u0060]/g,""); }
   // закінчення відкидаємо (≥5 літер: лишається max(4, довжина−2)), щоб «хлопчика»/«поліція» знаходили «хлопчиків»/«поліцейська»
   function stemTok(t){ return t.length>=5 ? t.slice(0, Math.max(4, t.length-2)) : t; }
-  function searchTokens(q){ return normText(q).split(/\s+/).filter(function(t){return t.length>0;}).map(stemTok); }
-  function searchMatch(nn, toks){ for(var i=0;i<toks.length;i++){ if(nn.indexOf(toks[i])<0) return false; } return true; }
+  // Словник брендів (Консультант 10.10.2026): той самий бренд у каталозі Toysi пишеться обома абетками (L.O.L 65 лат./7 кирил., Funko 30/0, ...),
+  // тож запит будь-якою абеткою мусить знаходити обидві. Це ЯВНИЙ обмежений словник (не транслітерація): кожна група — варіанти одного бренду
+  // (уже в нормалізованому вигляді: нижній регістр, без апострофів). Назва/запит, що містить варіант (збіг з ПОЧАТКУ слова), отримує тег #bN.
+  var BRANDS=[
+    ["лол","l.o.l","lol"], ["фанко","funko"], ["майнкрафт","minecraft"], ["барбі","barbie"],
+    ["хот вілс","хот вілз","хот вилз","хотвілс","hot wheel","hotwheel"], ["щенячий патруль","paw patrol","pawpatrol"], ["пепа","пеппа","peppa"],
+    ["холодне серце","холодное сердце","frozen"], ["марвел","marvel"], ["дісне","дисне","disney"], ["соник","сонік","sonic"], ["покемон","pokemon"],
+    ["гаррі поттер","гарри поттер","harry potter"], ["павук","spider"], ["трансформер","transformer"]
+  ];
+  var WORDCH=/[a-z\u0430-\u044f\u0456\u0457\u0454\u0491\u0027\u02bc0-9]/;
+  // Позиція збігу варіанта бренду з ПОЧАТКУ слова; для КОРОТКИХ варіантів (≤4 літер: «лол», «lol») після нього допустимо не більше 1 літери
+  // (лолі — ок; «лоліта», «lolly» — ні). Повертає {i,end} (end — кінець СЛОВА, щоб видаляти слово цілком) або null.
+  function findBrand(s, v){
+    var i=s.indexOf(v);
+    while(i>=0){
+      if(i===0 || !WORDCH.test(s.charAt(i-1))){
+        var end=i+v.length, j=end;
+        while(j<s.length && WORDCH.test(s.charAt(j))) j++;
+        if(v.length>4 || (j-end)<=1) return {i:i, end:j};
+      }
+      i=s.indexOf(v, i+1);
+    }
+    return null;
+  }
+  function brandNorm(s){ return s.replace(/[-_]+/g," ").replace(/\s+/g," "); }   // «hot-wheels»/«hot  wheels» = «hot wheels»
+  function brandTags(nn){
+    var t="", sn=brandNorm(nn);
+    for(var g=0; g<BRANDS.length; g++){
+      for(var k=0; k<BRANDS[g].length; k++){ if(findBrand(sn, BRANDS[g][k])){ t+=" #b"+g+"_"; break; } }
+    }
+    return t;
+  }
+  // haystack: {n: назва + теги брендів, c: КАТЕГОРІЯ}; категорія враховується лише для токенів ≥4 літер (аудит #665: «гра» не повинна тягнути «Іграшки…»)
+  function buildHay(p){ var nn=normText(p.n); return {n:nn+brandTags(nn), c:normText(p.c)}; }
+  function searchTokens(q){
+    var nq=brandNorm(normText(q)), tags=[];
+    for(var g=0; g<BRANDS.length; g++){
+      var vs=BRANDS[g].slice().sort(function(a,b){return b.length-a.length;});   // довші варіанти першими
+      for(var k=0; k<vs.length; k++){
+        var m=findBrand(nq, vs[k]);
+        if(m){ tags.push("#b"+g+"_"); nq=nq.slice(0,m.i)+" "+nq.slice(m.end); break; }   // видаляємо слово цілком, а не лише префікс
+      }
+    }
+    return nq.split(/\s+/).map(function(t){return t.replace(/^[^a-z\u0430-\u044f\u0456\u0457\u0454\u0491\u0027\u02bc0-9]+|[^a-z\u0430-\u044f\u0456\u0457\u0454\u0491\u0027\u02bc0-9]+$/g,"");})
+      .filter(function(t){return t.length>0;}).map(stemTok).concat(tags);
+  }
+  function searchMatch(h, toks){
+    for(var i=0;i<toks.length;i++){
+      var t=toks[i];
+      if(h.n.indexOf(t)>=0) continue;
+      if(t.length>=4 && t.charAt(0)!=="#" && h.c.indexOf(t)>=0) continue;
+      return false;
+    }
+    return true;
+  }
   function sortedMatches(list, mode){
     var a=list.slice();
     if(mode==="cheap") a.sort(function(x,y){return x.pr-y.pr;});
@@ -138,11 +191,12 @@
     q=(q||"").trim();
     if(q.length<2){ res.innerHTML=""; lastMatches=[]; return; }
     var toks=searchTokens(q);
+    if(!toks.length){ res.innerHTML=""; lastMatches=[]; return; }   // запит лише з апострофів/розділових → не показуємо «весь каталог»
     ensureIndex(function(data){
       var all=[];
       for(var i=0;i<data.length;i++){
         var p=data[i];
-        if(p._nn===undefined) p._nn=normText(p.n);
+        if(p._nn===undefined) p._nn=buildHay(p);   // раз на елемент індексу (кеш)
         if(searchMatch(p._nn, toks)) all.push(p);
       }
       lastMatches=all; lastQuery=q;
@@ -296,7 +350,7 @@
     });
 
     var so=document.querySelector("#search-overlay input");
-    if(so){ so.addEventListener("input", function(){ runSearch(so.value); }); }
+    if(so){ var sTimer=null; so.addEventListener("input", function(){ clearTimeout(sTimer); sTimer=setTimeout(function(){ runSearch(so.value); }, 200); }); }   // debounce 200 мс: не перераховуємо 21 тис. на кожне натискання
 
     renderCart();
     initCheckout();

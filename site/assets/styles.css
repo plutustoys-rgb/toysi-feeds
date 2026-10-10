@@ -255,3 +255,6 @@ footer.foot a{color:var(--accent)}
 
 /* десктоп: маскот помітніший (SMM P2.8) — ПІСЛЯ базових .mascot-правил (однакова специфічність → виграє пізніше; аудит #628) */
 @media(min-width:900px){.hero .mascot{height:120px}.logo .mascot{height:32px}.done .mascot{height:130px}}
+.crumbs{font-size:13px;color:var(--muted);padding:8px 16px 4px;line-height:1.4}
+.crumbs a{color:inherit;text-decoration:underline}
+.crumbs .sep{opacity:.6}

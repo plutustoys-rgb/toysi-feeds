@@ -106,6 +106,7 @@ def run(idx, notify=None, get=None, rng=None, n=PROBE_N):
     """Повертає (results, bad). notify(dedup_key, text, cooldown) — за замовчуванням telegram_notify.send_throttled_alert."""
     urls = pick_sample(idx, n, rng)
     if not urls:
+        print("[photo_probe] вибірка порожня: у index.json нема фото з дозволених хостів (toysi.ua, images.prom.ua) — зонд нічого не перевірив")
         return [], []
     with ThreadPoolExecutor(4) as ex:
         results = list(ex.map(lambda u: probe_one(u, get), urls))

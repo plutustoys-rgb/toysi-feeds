@@ -128,7 +128,7 @@ def esc(s):
 def header():
     return (
       '<header class="top">'
-      '<a class="logo" href="index.html">Plutus<span>Toys</span>'
+      '<a class="logo" href="/">Plutus<span>Toys</span>'
       ' <img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="24" height="22" decoding="async"></a>'
       '<div class="search" id="open-search">'
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
@@ -193,7 +193,7 @@ def analytics_head() -> str:
     return "".join(out)
 
 
-def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full=""):
+def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False):
     full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
     if canonical == "index.html":
@@ -218,6 +218,8 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<!doctype html>\n<html lang=\"uk\">\n<head>\n"
       "<meta charset=\"utf-8\">\n"
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+      # base_root лише для 404: її віддають за БУДЬ-ЯКОЇ адреси (/a/b/c), а шляхи в шаблоні відносні (assets/…, index.json, api/…)
+      + ("<base href=\"/\">\n" if base_root else "") +
       f"<title>{esc(full_title)}</title>\n"
       f"{head_meta}"
       "<link rel=\"icon\" href=\"assets/favicon.ico\" sizes=\"any\">\n"
@@ -364,6 +366,7 @@ def build():
     # 5) кошик + checkout + сторінка подяки
     write_cart()
     write_thanks()
+    write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
     write_categories_index(cat_list, cat_slug, cats)
     trust = write_trust_pages()
@@ -489,7 +492,7 @@ def crumbs_html(trail) -> str:
     for i, (name, href) in enumerate(trail):
         last = i == len(trail) - 1
         out.append(f'<span aria-current="page">{esc(name)}</span>' if (last or not href)
-                   else f'<a href="{esc(href)}">{esc(name)}</a>')
+                   else f'<a href="{"/" if href == "index.html" else esc(href)}">{esc(name)}</a>')   # «/» а не index.html: /index.html віддає 301 на корінь
     return '<nav class="crumbs" aria-label="Хлібні крихти">' + ' <span class="sep">›</span> '.join(out) + '</nav>' + chr(10)
 
 
@@ -758,7 +761,9 @@ def write_product(p, related=None, cat_slug=None):
     desc_html = f"<p>{lead}</p>" if lead else ""
     if specs:
         desc_html += "<ul>" + "".join(f"<li>{s}</li>" for s in specs) + "</ul>"
-    photo = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}">'
+    # Головне фото = LCP картки: fetchpriority=high кажe браузеру тягнути його першим (решта фото сторінки — loading=lazy).
+    # width/height не ставимо: розмір оригіналу toysi.ua невідомий, а місце під кадр вже резервує `.photo img{aspect-ratio:1/1}` у styles.css.
+    photo = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" fetchpriority="high" decoding="async">'
              if p["photo"] else '<div class="ph">Фото готуємо</div>')
     avail = "У наявності" if p["stock"] > 0 else "Немає в наявності"
     oos = "" if p["stock"] > 0 else "oos"
@@ -882,10 +887,25 @@ def write_thanks():
       '<h2>Дякуємо за замовлення!</h2>'
       '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
       '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'
-      '<p style="margin-top:20px"><a class="btn ghost" href="index.html" style="display:inline-block;max-width:260px">На головну</a></p>'
+      '<p style="margin-top:20px"><a class="btn ghost" href="/" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )
     _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True))
+
+def write_404():
+    """Власна сторінка 404 (Apache: `ErrorDocument 404 /404.html` у deploy/activate_site_apache.sh). Без неї покупець
+    з помилковою/застарілою адресою бачив дефолт Webuzo: логотип Softaculous з чужого домену по http:// (mixed content)
+    і клікабельне посилання на сайт хостинг-панелі. Статус лишається 404 (ErrorDocument зі шляхом, не URL)."""
+    body = (
+      '<div class="done"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="105" height="96" decoding="async"></div>'
+      '<h2>Такої сторінки немає</h2>'
+      '<p>Можливо, товар уже розпродано або адресу набрано з помилкою.</p>'
+      '<p>Скористайтеся пошуком угорі або перейдіть до каталогу.</p>'
+      '<p style="margin-top:20px"><a class="btn" href="catalog.html" style="display:inline-block;max-width:260px">До каталогу</a></p>'
+      '<p style="margin-top:10px"><a class="btn ghost" href="categories.html" style="display:inline-block;max-width:260px">Усі категорії</a></p>'
+      '</div>'
+    )
+    _write("404.html", page("Сторінку не знайдено", body, noindex=True, base_root=True))
 
 def write_categories_index(cat_list, cat_slug, cats):
     """Сторінка «Усі категорії» — закриває проблему orphan-категорій (усі 259 доступні

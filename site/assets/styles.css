@@ -259,3 +259,7 @@ footer.foot a{color:var(--accent)}
 .crumbs{font-size:13px;color:var(--muted);padding:8px 16px 4px;line-height:1.4}
 .crumbs a{color:inherit;text-decoration:underline}
 .crumbs .sep{opacity:.6}
+.sr-meta{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0 10px;font-size:13px;color:var(--muted)}
+.sr-sort{display:inline-flex;gap:6px}
+.sr-sort button{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer;color:inherit}
+.sr-sort button.on{background:var(--accent);border-color:var(--accent);color:#fff}

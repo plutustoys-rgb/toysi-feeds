@@ -55,7 +55,8 @@
     setQty:function(id,q){ var c=read(); if(c[id]){ c[id].qty=Math.max(0,q); if(c[id].qty===0){delete c[id];} write(c); } },
     remove:function(id){ var c=read(); delete c[id]; write(c); },
     clear:function(){ write({}); },
-    read:read, count:count, total:total
+    read:read, count:count, total:total,
+    search:{norm:normText, tokens:searchTokens, match:searchMatch}
   };
 
   function updateBadge(){
@@ -98,21 +99,52 @@
     ensureIndex(function(){});
   }
   function closeSearch(){ var o=document.getElementById("search-overlay"); if(o){ o.classList.remove("on"); } }
+  // ── Пошук (зауваження Тестувальника/Консультанта 10.10.2026): токени через AND у БУДЬ-ЯКОМУ порядку (було: літеральний підрядок —
+  // «лялька барбі» давало 0); апострофи U+02BC/U+2019/U+2018/U+0027/U+0060 прибираються з ОБОХ боків («мʼяка»=«м'яка»=«мяка»);
+  // показуємо «Показано N з M» і сортування (раніше мовчазна стеля 40 за порядком файлу).
+  var SEARCH_SHOW=40, searchSort="rec", lastMatches=[], lastQuery="";
+  function normText(s){ return String(s==null?"":s).toLowerCase().replace(/[\u02bc\u02b9\u2019\u2018\u2032\u0027\u0060]/g,""); }
+  function searchTokens(q){ return normText(q).split(/\s+/).filter(function(t){return t.length>0;}); }
+  function searchMatch(nn, toks){ for(var i=0;i<toks.length;i++){ if(nn.indexOf(toks[i])<0) return false; } return true; }
+  function sortedMatches(list, mode){
+    var a=list.slice();
+    if(mode==="cheap") a.sort(function(x,y){return x.pr-y.pr;});
+    else if(mode==="dear") a.sort(function(x,y){return y.pr-x.pr;});
+    return a;   // rec = порядок index.json (рекомендовані)
+  }
+  function renderSearch(){
+    var res=document.querySelector("#search-overlay .results");
+    if(!res) return;
+    if(!lastMatches.length){
+      res.innerHTML='<div class="empty" style="padding:40px 0">Нічого не знайдено за «'+esc(lastQuery)+'»</div>';
+      return;
+    }
+    var out=sortedMatches(lastMatches, searchSort).slice(0, SEARCH_SHOW);
+    var meta='<div class="sr-meta"><span>Показано '+out.length+' з '+lastMatches.length+'</span><span class="sr-sort">'+
+      [["rec","Рекомендовані"],["cheap","Дешевші"],["dear","Дорожчі"]].map(function(m){
+        return '<button type="button" data-sort="'+m[0]+'"'+(searchSort===m[0]?' class="on"':'')+'>'+m[1]+'</button>';
+      }).join("")+'</span></div>';
+    res.innerHTML = meta + out.map(function(p){
+      return '<a class="sr" href="product-'+p.id+'.html">'+
+        '<img src="'+p.p+'" loading="lazy" alt="">'+
+        '<div><div class="srn">'+esc(p.n)+'</div><div class="srp">'+p.pr+' ₴</div></div></a>';
+    }).join("");
+  }
   function runSearch(q){
     var res=document.querySelector("#search-overlay .results");
     if(!res) return;
-    q=(q||"").trim().toLowerCase();
-    if(q.length<2){ res.innerHTML=""; return; }
+    q=(q||"").trim();
+    if(q.length<2){ res.innerHTML=""; lastMatches=[]; return; }
+    var toks=searchTokens(q);
     ensureIndex(function(data){
-      var out=[];
-      for(var i=0;i<data.length && out.length<40;i++){
-        if(data[i].n.toLowerCase().indexOf(q)>=0) out.push(data[i]);
+      var all=[];
+      for(var i=0;i<data.length;i++){
+        var p=data[i];
+        if(p._nn===undefined) p._nn=normText(p.n);
+        if(searchMatch(p._nn, toks)) all.push(p);
       }
-      res.innerHTML = out.length ? out.map(function(p){
-        return '<a class="sr" href="product-'+p.id+'.html">'+
-          '<img src="'+p.p+'" loading="lazy" alt="">'+
-          '<div><div class="srn">'+esc(p.n)+'</div><div class="srp">'+p.pr+' ₴</div></div></a>';
-      }).join("") : '<div class="empty" style="padding:40px 0">Нічого не знайдено за «'+esc(q)+'»</div>';
+      lastMatches=all; lastQuery=q;
+      renderSearch();
     });
   }
   function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
@@ -248,6 +280,8 @@
       if(t){ e.preventDefault(); PT.add(JSON.parse(t.getAttribute("data-add"))); return; }
       if(e.target.closest("#open-search")){ e.preventDefault(); openSearch(); return; }
       if(e.target.closest("#close-search")){ e.preventDefault(); closeSearch(); return; }
+      var sb=e.target.closest("#search-overlay [data-sort]");
+      if(sb){ e.preventDefault(); searchSort=sb.getAttribute("data-sort"); renderSearch(); return; }
       var ci=e.target.closest(".cart-item [data-act]");
       if(ci){
         var wrap=ci.closest(".cart-item"), id=wrap.getAttribute("data-id"), act=ci.getAttribute("data-act");

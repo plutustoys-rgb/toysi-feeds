@@ -193,8 +193,8 @@ def analytics_head() -> str:
     return "".join(out)
 
 
-def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False):
-    full_title = f"{title} — PlutusToys"
+def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full=""):
+    full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
     if canonical == "index.html":
         url = f"{SITE_URL}/"
@@ -348,7 +348,7 @@ def build():
     n = 0
     # 1) картки товарів
     for p in prods:
-        write_product(p, related=related_map.get(p["id"]))
+        write_product(p, related=related_map.get(p["id"]), cat_slug=cat_slug)
         n += 1
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
@@ -458,6 +458,152 @@ def _catalog_controls():
       '<div id="cat-more-wrap" hidden><button id="cat-more" class="btn ghost">Показати ще</button></div>'
     )
 
+# ── SEO-замовлення 2026-10-10 (п.2–3, фінальні шаблони — SEO_CHANNEL.md): title/description, хлібні крихти, розмітка Product/ItemList ──
+PRICE_VALID_DAYS = 7     # ціни/наявність перебудовуються кожні 2 год (site-rebuild.timer); якщо збірка стане >7 діб — розмітка сама «протухне»
+SHIP_FROM_UAH = 65       # як у тексті картки/«Доставка»: «від 65 ₴» (Нова Пошта); тариф — за перевізником
+PAY_SHORT = "оплата карткою або при отриманні" if LIQPAY_LIVE else "оплата при отриманні"
+TITLE_MAX = 65
+DESC_MAX = 160
+_PROD_SUFFIX = " — купити | PlutusToys"
+
+
+def _ld_script(d) -> str:
+    # безпечно в <script>: кожен '<' екрануємо (chr(92) + "u003c") — жоден HTML-вектор не вийде літерально
+    return '<script type="application/ld+json">' + json.dumps(d, ensure_ascii=False).replace("<", chr(92) + "u003c") + "</script>" + chr(10)
+
+
+def crumbs_html(trail) -> str:
+    """Видимі хлібні крихти. trail = [(назва, href|None)], останній елемент — поточна сторінка (без посилання)."""
+    out = []
+    for i, (name, href) in enumerate(trail):
+        last = i == len(trail) - 1
+        out.append(f'<span aria-current="page">{esc(name)}</span>' if (last or not href)
+                   else f'<a href="{esc(href)}">{esc(name)}</a>')
+    return '<nav class="crumbs" aria-label="Хлібні крихти">' + ' <span class="sep">›</span> '.join(out) + '</nav>' + chr(10)
+
+
+def breadcrumb_ld(trail) -> str:
+    """JSON-LD BreadcrumbList: ті самі крихти, що й видимі; href → абсолютний URL; поточна сторінка — без item (допускається)."""
+    items = []
+    for i, (name, href) in enumerate(trail):
+        it = {"@type": "ListItem", "position": i + 1, "name": name}
+        if href and i < len(trail) - 1:
+            it["item"] = f"{SITE_URL}/" if href == "index.html" else f"{SITE_URL}/{href}"
+        items.append(it)
+    return _ld_script({"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": items})
+
+
+# Стан товару за НАЗВОЮ (SEO п.3б: «не вигадуй — перевір по назві»). «Уцінка» у Toysi = нетоварний вигляд
+# (пошкодження упаковки АБО самого товару). Дефект самого товару → DamagedCondition; лише упаковка → NewCondition;
+# «вітринний» → UsedCondition; незрозуміло → поле НЕ ставимо (краще пропустити, ніж збрехати).
+_PACK_WORD = r"(?:упаков|коробк|коробц|пакуван|віконц|блістер|ярлик|етикет|плівк)\w*"
+_PACK_DMG = r"(?:пошкоджен|пом.ят|м.ят|деформован|надірван|порван|розірван|подряпан|потерт|брудн|мнут|стерт|відсутн|подерт)\w*"
+# фрази про шкоду САМЕ упаковці: «пошкоджена упаковка» / «упаковка пошкоджена» / «потертості на коробці»
+_PACK_PHRASE_RE = re.compile(rf"{_PACK_DMG}\s+(?:на\s+|у\s+|в\s+)?{_PACK_WORD}(?:\s+(?:і|та|й)\s+{_PACK_WORD})*|{_PACK_WORD}\s+{_PACK_DMG}", re.I)
+_DEFECT_RE = re.compile(r"подряп|тріщ|трещ|трісну|тріскан|треснут|зламан|зломан|поламан|полом|сломан|відлам|(?<!\w)не\s+\w|(?<!\w)ні\s+склада|"
+                        r"дефект|потерт|відсутн|немає|нема(?!\w)|неповн|відірван|відпал|відпав|розбит|побит|погнут|сліди?(?!\w)|слід\s+від|вм.ят|"
+                        r"протіка|пропуска|здува|стерт|здер|брудн|розірван|брак|несправн|відклеїв|подерт|пошкодж|"
+                        r"відбит|битий|бите(?!\w)|заклин|засох|затверд|погано|рве(?!\w)|рветьс|рвана|мутн|ржав|"
+                        r"відкривал|відходить|відійшов|пляма|плями|работа", re.I)
+_UNSURE_RE = re.compile(r"без(?!\w)|стали(?!\w)|закінч|термін|придатн|уцінк\w*\s*:|уц[еі]нк", re.I)   # слова, що ще не дефект, але New вже не гарантують
+_PREFIX_RE = re.compile(r"^\s*(?:уц[еі]нк\w*\.?\s*)+", re.I)
+
+
+def item_condition(name) -> str:
+    """Стан за НАЗВОЮ. NewCondition — лише за ВУЗЬКИМ білим списком: уся назва після префікса «Уцінка/Уценка» = оригінальна назва
+    товару + РІВНО фраза про упаковку в кінці (без жодного іншого слова-описувача). Будь-який дефект → Damaged; решта → поле не ставимо
+    (аудит PR #657: краще пропустити, ніж позначити товар із дефектом як новий)."""
+    n = (name or "").strip()
+    if not re.search(r"уц[еі]нк", n, re.I):
+        return "https://schema.org/NewCondition"       # не уцінка → звичайний новий товар
+    if not _PREFIX_RE.match(n):
+        return ""                                       # «уцінка» не на початку — незвична назва, не вгадуємо
+    if "вітрин" in n.lower():
+        return "https://schema.org/UsedCondition"
+    body = _PREFIX_RE.sub("", n)
+    rest, nsub = _PACK_PHRASE_RE.subn(" ", body)       # прибираємо фрази про шкоду упаковці й дивимось, що лишилось
+    if _DEFECT_RE.search(rest):
+        return "https://schema.org/DamagedCondition"
+    if nsub == 1 and not _UNSURE_RE.search(rest) and re.search(_PACK_PHRASE_RE.pattern + r"[\s.,;!]*$", body, re.I):
+        tail = re.split(r"\s[-–—]\s", body, maxsplit=1)
+        if len(tail) == 1 or not re.sub(r"[\s.,;!]|(?:та|і|й|на|у|в)(?!\w)|" + _PACK_WORD, "", _PACK_PHRASE_RE.sub("", tail[1]), flags=re.I):
+            return "https://schema.org/NewCondition"
+    return ""
+
+
+def _fmt_int(n) -> str:
+    return f"{int(n):,}".replace(",", " ")
+
+
+def product_title(name) -> str:
+    """{назва} — купити | PlutusToys; якщо довше за 65 — обрізаємо НАЗВУ по межі слова + «…», суфікс лишаємо."""
+    name = (name or "").strip()
+    if len(name) + len(_PROD_SUFFIX) <= TITLE_MAX:
+        return name + _PROD_SUFFIX
+    room = TITLE_MAX - len(_PROD_SUFFIX) - 1
+    cut = name[:room].rsplit(" ", 1)[0].rstrip(" ,.;:—–-") if " " in name[:room] else name[:room]
+    return cut + "…" + _PROD_SUFFIX
+
+
+def product_description(name, price, plain) -> str:
+    """(1) реальний опис Toysi ≥40 симв. і не «Бренд: …» → ~110 симв. по межі слова + ціна/доставка; (2) інакше — шаблон із назвою."""
+    t = html.unescape((plain or "").strip())
+    if len(t) >= 40 and not re.match(r"бренд\s*:", t, re.I):
+        tail = f" Ціна {price} ₴, доставка Новою Поштою."
+        lead = _cut(t, 110)
+        if len(lead) + len(tail) > DESC_MAX:
+            lead = _cut(t, max(40, DESC_MAX - len(tail) - 1))
+        if lead and lead[-1] not in ".!?…":
+            lead += "."
+        return (lead + tail)[:DESC_MAX]
+    fb = f"{name} — {price} ₴. Доставка Новою Поштою по Україні, {PAY_SHORT}, повернення 14 днів."
+    if len(fb) > DESC_MAX:   # дуже довга назва: ріжемо назву, хвіст лишаємо
+        tailf = f" — {price} ₴. Доставка Новою Поштою по Україні, {PAY_SHORT}, повернення 14 днів."
+        fb = _cut(name, DESC_MAX - len(tailf) - 1).rstrip("…") + "…" + tailf
+    return fb
+
+
+def category_meta(name, total, min_price, page_no=1, pages=1):
+    """(title, description) категорії/каталогу за шаблоном SEO; множина «товар/товари/товарів»."""
+    cnt = f"{_fmt_int(total)} товар{_plural(total)}"
+    if name is None:   # повний каталог
+        base = "Каталог іграшок"
+        title = f"{base} — купити в Україні | PlutusToys" if page_no == 1 else f"{base} — сторінка {page_no} | PlutusToys"
+        desc = f"Каталог іграшок PlutusToys: {cnt}, ціни від {min_price} ₴, доставка Новою Поштою, {PAY_SHORT}."
+    else:
+        title = f"{name} — купити в Україні | PlutusToys" if page_no == 1 else f"{name} — сторінка {page_no} | PlutusToys"
+        desc = f"{cnt} у категорії «{name}»: ціни від {min_price} ₴, доставка Новою Поштою, {PAY_SHORT}."
+    if page_no > 1:
+        desc = f"Сторінка {page_no} з {pages}. " + desc
+    return title, desc[:DESC_MAX]
+
+
+def offer_extras(p) -> dict:
+    """Поля Product.offers для Merchant free listings (SEO п.3б). Значення — з текстів сторінок «Доставка»/«Повернення»."""
+    from datetime import date, timedelta
+    extra = {
+        "priceValidUntil": (date.today() + timedelta(days=PRICE_VALID_DAYS)).isoformat(),
+        "shippingDetails": {
+            "@type": "OfferShippingDetails",
+            "shippingRate": {"@type": "MonetaryAmount", "value": str(SHIP_FROM_UAH), "currency": "UAH"},
+            "shippingDestination": {"@type": "DefinedRegion", "addressCountry": "UA"},
+            "deliveryTime": {"@type": "ShippingDeliveryTime",
+                             "handlingTime": {"@type": "QuantitativeValue", "minValue": 0, "maxValue": 1, "unitCode": "DAY"},
+                             "transitTime": {"@type": "QuantitativeValue", "minValue": 1, "maxValue": 3, "unitCode": "DAY"}},
+        },
+        "hasMerchantReturnPolicy": {
+            "@type": "MerchantReturnPolicy", "applicableCountry": "UA",
+            "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
+            "merchantReturnDays": 14, "returnMethod": "https://schema.org/ReturnByMail",
+            "returnFees": "https://schema.org/ReturnShippingFees",
+        },
+    }
+    cond = item_condition(p["name"])
+    if cond:
+        extra["itemCondition"] = cond
+    return extra
+
+
 def write_catalog(title, prods, cat_list, cat_slug, fname, active):
     """Пише каталог/категорію З ПАГІНАЦІЄЮ (PER_PAGE/стор.). Повертає set імен усіх
     записаних сторінок (для valid-набору прибирання й sitemap)."""
@@ -468,10 +614,12 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
         chunk = prods[(k - 1) * PER_PAGE : k * PER_PAGE]
         cur = _page_fname(fname, k)
         ptitle = title if k == 1 else f"{title} — сторінка {k}"
-        desc = f"{title} — {total} іграшок з доставкою Новою Поштою по Україні. Ціни, наявність, купити онлайн у PlutusToys."
-        if k > 1:
-            desc = f"Сторінка {k} з {pages}. " + desc
-        head = ""
+        full_t, desc = category_meta(active, total, min((x["price"] for x in prods), default=0), k, pages)
+        trail = [("Головна", "index.html")] + ([("Каталог", "catalog.html")] if active else []) + [(active or "Каталог", None)]
+        head = breadcrumb_ld(trail)
+        head += _ld_script({"@context": "https://schema.org", "@type": "ItemList",
+                            "itemListElement": [{"@type": "ListItem", "position": (k - 1) * PER_PAGE + i + 1,
+                                                 "url": f"{SITE_URL}/product-{x['id']}.html"} for i, x in enumerate(chunk)]})
         if k > 1:
             head += f'<link rel="prev" href="{_page_fname(fname, k - 1)}">\n'
         if k < pages:
@@ -484,13 +632,14 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
         body = (
+            crumbs_html(trail) +
             chips(cat_list, cat_slug, active) +
             f'\n<h1 class="page">{esc(title)}</h1>\n' +
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
             controls +
             static_grid
         )
-        _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE))
+        _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
         written.add(cur)
     return written
 
@@ -569,7 +718,7 @@ def _clean_desc(html):
     return html.strip()
 
 
-def write_product(p, related=None):
+def write_product(p, related=None, cat_slug=None):
     raw = p["desc"]
     parts = [x.strip() for x in re.split(r"<br\s*/?>", raw) if x.strip()]
     lead = _clean_desc(parts[0]) if parts else ""
@@ -618,7 +767,7 @@ def write_product(p, related=None):
     )
     # SEO: опис для сніпета (без HTML, ОБРІЗАНИЙ ПО СЛОВУ) + JSON-LD Product для Google Rich Results
     plain = re.sub(r"<[^>]+>", "", lead).strip()
-    meta_desc = _cut(plain, 155) or f'{p["name"]} — купити з доставкою Новою Поштою по Україні. PlutusToys.'
+    meta_desc = product_description(p["name"], p["price"], plain)
     # brand зі специфікацій «<b>Бренд:</b> X» — Google Rich Results цінує brand у Product.
     brand = ""
     for s in specs:
@@ -637,6 +786,7 @@ def write_product(p, related=None):
             "price": str(p["price"]), "priceCurrency": "UAH",
             "availability": "https://schema.org/InStock" if p["stock"] > 0 else "https://schema.org/OutOfStock",
             "url": f'{SITE_URL}/product-{p["id"]}.html',
+            **offer_extras(p),
         },
     }
     if brand:
@@ -645,9 +795,12 @@ def write_product(p, related=None):
     # (</script>, <!--, <script) не може вийти літерально, навіть із назви товару.
     # chr(92) = '\' — однозначно, без крихкого backslash-літерала.
     ld_json = json.dumps(ld, ensure_ascii=False).replace("<", chr(92) + "u003c")
-    extra = f'<script type="application/ld+json">{ld_json}</script>\n'
+    cat_href = f"category-{cat_slug[p['category']]}.html" if (cat_slug and p.get("category") in cat_slug) else None
+    trail = [("Головна", "index.html")] + ([(p["category"], cat_href)] if cat_href else []) + [(p["name"], None)]
+    extra = f'<script type="application/ld+json">{ld_json}</script>' + chr(10) + breadcrumb_ld(trail)
+    body = crumbs_html(trail) + body
     _write(f"product-{p['id']}.html", page(
-        p["name"], body, extra_head=extra, description=meta_desc,
+        p["name"], body, extra_head=extra, title_full=product_title(p["name"]), description=meta_desc,
         canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product"))
 
 def write_cart():
@@ -755,7 +908,7 @@ _DELIVERY = """<h1>Доставка</h1>
 <h2>Терміни</h2>
 <p>Замовлення, оформлені <b>до 12:00</b>, ми зазвичай відправляємо того ж дня. Далі доставка Новою Поштою займає <b>1–3 дні</b> залежно від вашого міста.</p>
 <h2>Вартість</h2>
-<p>Доставка оплачується <b>за тарифами перевізника</b> (Нової Пошти) під час отримання посилки. Точну суму визначає Нова Пошта відповідно до ваги та напрямку відправлення.</p>
+<p>Доставка оплачується <b>за тарифами перевізника</b> (Нової Пошти) під час отримання посилки. Орієнтовно — <b>від 65 ₴</b>; точну суму визначає Нова Пошта відповідно до ваги та напрямку відправлення.</p>
 <h2>Оплата</h2>
 {PAY_DELIVERY}
 <h2>Як відстежити замовлення</h2>

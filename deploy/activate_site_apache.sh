@@ -167,6 +167,12 @@ cat <<'EOF'
     <DirectoryMatch "/__pycache__">
         Require all denied
     </DirectoryMatch>
+    <IfModule mod_headers.c>
+        # статика змінюється рідко, імена без хешів → добовий кеш (LCP/повторні візити); HTML кешується браузером за замовчуванням евристикою, не чіпаємо
+        <LocationMatch "^/assets/">
+            Header set Cache-Control "public, max-age=86400"
+        </LocationMatch>
+    </IfModule>
     <IfModule mod_deflate.c>
         AddOutputFilterByType DEFLATE text/html text/css text/plain application/javascript application/json image/svg+xml
     </IfModule>
@@ -177,7 +183,11 @@ cat <<'EOF'
     RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- ${promredir:$1|/catalog.html} [R=301,L]
     RewriteRule ^/(?:(?:ua|ru)/)?g[0-9]+- /catalog.html [R=301,L]
     RewriteRule ^/(?:(?:ua|ru)/)?product_list(?:/|$) /catalog.html [R=301,L]
-    RewriteRule ^/(?:(?:ua|ru)/)?site_[0-9]+- / [R=301,L]
+    RewriteRule ^/(?:(?:ua|ru)/)?site_contacts(?:\.html)?$ /contacts.html [R=301,L]
+    RewriteRule ^/(?:(?:ua|ru)/)?site_ / [R=301,L]
+    # 10.10.2026 (SEO п.4): браузери/боти просять ці URL у корені — віддаємо наші файли внутрішнім rewrite (не редірект)
+    RewriteRule ^/favicon\.ico$ /assets/favicon.ico [L]
+    RewriteRule ^/apple-touch-icon(?:-precomposed)?\.png$ /assets/apple-touch-icon.png [L]
     RewriteRule ^/(?:ua|ru)/?$ / [R=301,L]
     ProxyPreserveHost On
     ProxyPass /api/ http://127.0.0.1:8901/api/ retry=0 timeout=30

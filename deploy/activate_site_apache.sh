@@ -318,7 +318,10 @@ write_vhost() {   # $1 = http | https
     [ "$own_root" = "200" ] || { echo "🚨 головна не віддається (/=$own_root) — можливий цикл редіректів"; bad=1; }
     case "$own_idx" in "301 $sch://$DOMAIN/") ;; *) echo "🚨 /index.html не веде 301 на «/» ($own_idx)"; bad=1;; esac
     [ "$own_404" = "404" ] || { echo "🚨 неіснуюча адреса віддає $own_404, а не 404"; bad=1; }
-    if [ -f "$APP/site/404.html" ] && ! curl -sS --max-time 10 --resolve "$DOMAIN:$prt:$IP" "$sch://$DOMAIN/__probe_404_$STAMP.html" 2>/dev/null | grep -q "Такої сторінки немає"; then
+    # тіло — у змінну, а не `curl | grep -q` під pipefail: grep -q виходить на першому збігу, curl ловить EPIPE (код 23) → хибний збій → відкат робочого vhost'а (аудит #668)
+    local own_404_body=""
+    own_404_body=$(curl -sS --max-time 10 --resolve "$DOMAIN:$prt:$IP" "$sch://$DOMAIN/__probe_404_$STAMP.html" 2>/dev/null || true)
+    if [ -f "$APP/site/404.html" ] && ! grep -q "Такої сторінки немає" <<< "$own_404_body"; then
         echo "🚨 404 віддає не нашу сторінку (ErrorDocument не діє?)"; bad=1
     fi
     if [ "$bad" = "1" ]; then restore; return 1; fi

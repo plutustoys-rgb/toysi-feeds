@@ -51,7 +51,7 @@ chk("404: без canonical (сторінка віддається за будь-
 chk("404: є посилання на каталог і категорії", 'href="catalog.html"' in h404 and 'href="categories.html"' in h404)
 chk("404: є <base> (віддається за довільним шляхом)", '<base href="/">' in h404)
 foreign = [u for u in re.findall(r'(?:src|href)="(https?://[^"]+)"', h404) if "plutustoys.com.ua" not in u]
-chk("404: жодного посилання/картинки на чужий домен (softaculous/webuzo)", not any(x in h404 for x in ("softaculous", "webuzo")))
+chk("404: немає слідів хостинг-панелі (softaculous/webuzo) — зовнішні адреси лише наші власні й аналітика/соцмережі, див. друк нижче", not any(x in h404 for x in ("softaculous", "webuzo")))
 print("      (зовнішні адреси у 404 лише:", sorted(set(foreign)), ")")
 
 # ── посилання на головну

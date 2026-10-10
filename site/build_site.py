@@ -761,7 +761,7 @@ def write_product(p, related=None, cat_slug=None):
     desc_html = f"<p>{lead}</p>" if lead else ""
     if specs:
         desc_html += "<ul>" + "".join(f"<li>{s}</li>" for s in specs) + "</ul>"
-    # Головне фото = LCP картки: fetchpriority=high кажe браузеру тягнути його першим (решта фото сторінки — loading=lazy).
+    # Головне фото = LCP картки: fetchpriority=high каже браузеру тягнути його першим (решта фото сторінки — loading=lazy).
     # width/height не ставимо: розмір оригіналу toysi.ua невідомий, а місце під кадр вже резервує `.photo img{aspect-ratio:1/1}` у styles.css.
     photo = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" fetchpriority="high" decoding="async">'
              if p["photo"] else '<div class="ph">Фото готуємо</div>')

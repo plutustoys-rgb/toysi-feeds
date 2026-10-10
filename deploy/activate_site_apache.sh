@@ -102,6 +102,7 @@ echo "=== B. ЗБІРКА + systemd ==="
 "$PY" "$APP/site/build_site.py"
 "$PY" "$APP/generate_prom_redirects.py" || echo "  (генератор мапи редиректів завершився з помилкою)"
 [ -f "$APP/site/index.html" ] || die "build_site.py не створив $APP/site/index.html"
+[ -f "$APP/site/404.html" ] || echo "⚠️  $APP/site/404.html нема (стара збірка?) — ErrorDocument 404 нижче без нього віддасть дефолтну сторінку Apache; перезбери сайт і повтори"
 MAPLINES=$(grep -c '^[0-9]' "$MAPFILE" 2>/dev/null || true)
 MAPLINES=${MAPLINES:-0}
 echo "ℹ️  рядків у мапі 301: $MAPLINES"
@@ -178,8 +179,11 @@ cat <<'EOF'
         </LocationMatch>
     </IfModule>
     <IfModule mod_deflate.c>
-        AddOutputFilterByType DEFLATE text/html text/css text/plain application/javascript application/json image/svg+xml
+        # + xml: sitemap.xml ≈3,5 МБ віддавався без стиснення (Google тягне його часто)
+        AddOutputFilterByType DEFLATE text/html text/css text/plain application/javascript application/json image/svg+xml application/xml text/xml
     </IfModule>
+    # власна 404 (шлях, не URL → статус лишається 404). Без неї — дефолт Webuzo з логотипом Softaculous по http:// і посиланням на чужий сайт
+    ErrorDocument 404 /404.html
     RewriteEngine On
     RewriteMap promredir "txt:@MAPFILE@"
     # старі Prom-URL (укр. і рос. версії; SEO-замовлення 2026-10-06, GSC: 5 583 URL у 404) → наша картка / каталог (301)
@@ -193,6 +197,10 @@ cat <<'EOF'
     RewriteRule ^/favicon\.ico$ /assets/favicon.ico [L]
     RewriteRule ^/apple-touch-icon(?:-precomposed)?\.png$ /assets/apple-touch-icon.png [L]
     RewriteRule ^/(?:ua|ru)/?$ / [R=301,L]
+    # /index.html = дубль головної (canonical уже «/»). Умова THE_REQUEST обов'язкова: лише те, що клієнт ЗАПРОСИВ сам; без неї внутрішній
+    # перехід DirectoryIndex «/» → /index.html теж потрапив би під правило → нескінченний цикл редіректів.
+    RewriteCond %{THE_REQUEST} ^[A-Z]+\s/index\.html(?:\?\S*)?\sHTTP/
+    RewriteRule ^/index\.html$ / [R=301,L]
     ProxyPreserveHost On
     ProxyPass /api/ http://127.0.0.1:8901/api/ retry=0 timeout=30
     ProxyPassReverse /api/ http://127.0.0.1:8901/api/
@@ -290,6 +298,31 @@ write_vhost() {   # $1 = http | https
     fi
     if ! cmp -s "$TMPD/$tag.pre.behavior" "$TMPD/$tag.post.behavior"; then
         echo "🚨 ПОВЕДІНКА чужих сайтів/дефолту змінилась:"; diff "$TMPD/$tag.pre.behavior" "$TMPD/$tag.post.behavior" || true; bad=1
+    fi
+    # власна проба нових правил (10.10.2026): «/» не зациклився на редіректі /index.html → /; /index.html → 301 на «/»; неіснуюча адреса → 404 (не 500).
+    # Перевірка чужих сайтів вище цього НЕ бачить, а помилка в нашому правилі клала б саму головну.
+    local sch="http"
+    local prt=80
+    if [ "$mode" = "https" ]; then sch="https"; prt=443; fi
+    local own_root="ERR"
+    local own_idx="ERR"
+    local own_404="ERR"
+    for try in 1 2 3; do
+        own_root=$(code --resolve "$DOMAIN:$prt:$IP" "$sch://$DOMAIN/")
+        own_idx=$(curl -sS --max-time 10 --resolve "$DOMAIN:$prt:$IP" -o /dev/null -w '%{http_code} %{redirect_url}' "$sch://$DOMAIN/index.html" 2>/dev/null || echo "ERR")
+        own_404=$(code --resolve "$DOMAIN:$prt:$IP" "$sch://$DOMAIN/__probe_404_$STAMP.html")
+        [ "$own_root" = "200" ] && [ "$own_404" = "404" ] && case "$own_idx" in "301 $sch://$DOMAIN/") break;; esac
+        echo "ℹ️  власна проба ще не збіглась (спроба $try/3): / = $own_root, /index.html = $own_idx, неіснуюча = $own_404 — чекаю"; sleep 4
+    done
+    echo "  / = $own_root (очікую 200); /index.html = $own_idx (очікую 301 → $sch://$DOMAIN/); неіснуюча адреса = $own_404 (очікую 404)"
+    [ "$own_root" = "200" ] || { echo "🚨 головна не віддається (/=$own_root) — можливий цикл редіректів"; bad=1; }
+    case "$own_idx" in "301 $sch://$DOMAIN/") ;; *) echo "🚨 /index.html не веде 301 на «/» ($own_idx)"; bad=1;; esac
+    [ "$own_404" = "404" ] || { echo "🚨 неіснуюча адреса віддає $own_404, а не 404"; bad=1; }
+    # тіло — у змінну, а не `curl | grep -q` під pipefail: grep -q виходить на першому збігу, curl ловить EPIPE (код 23) → хибний збій → відкат робочого vhost'а (аудит #668)
+    local own_404_body=""
+    own_404_body=$(curl -sS --max-time 10 --resolve "$DOMAIN:$prt:$IP" "$sch://$DOMAIN/__probe_404_$STAMP.html" 2>/dev/null || true)
+    if [ -f "$APP/site/404.html" ] && ! grep -q "Такої сторінки немає" <<< "$own_404_body"; then
+        echo "🚨 404 віддає не нашу сторінку (ErrorDocument не діє?)"; bad=1
     fi
     if [ "$bad" = "1" ]; then restore; return 1; fi
     echo "✅ vhost ($mode) застосовано; чужі vhost'и, default server і поведінка (shopify, vartov.app, сертифікати) — без змін"

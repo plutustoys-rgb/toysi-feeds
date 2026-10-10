@@ -132,6 +132,16 @@ chk("ItemList: перша сторінка = PER_PAGE елементів, поз
 chk("друга сторінка: title «— сторінка 2 | PlutusToys», позиції продовжуються",
     "— сторінка 2 | PlutusToys</title>" in g2 and next(x for x in ld_blocks(g2) if x["@type"] == "ItemList")["itemListElement"][0]["position"] == b.PER_PAGE + 1)
 
+# ── п.4: favicon, маленький маскот, згода біля кнопки замовлення
+for f in ("favicon.ico", "favicon-32.png", "apple-touch-icon.png", "plutus_mascot_s.png"):
+    chk(f"site/assets/{f} існує і непорожній", os.path.getsize(os.path.join(HERE, "site", "assets", f)) > 500)
+chk("маленький маскот ≤ 60 КБ (було 299 КБ на кожній сторінці)", os.path.getsize(os.path.join(HERE, "site", "assets", "plutus_mascot_s.png")) <= 60 * 1024)
+chk("у <head> є icon/apple-touch-icon", all(x in h for x in ('rel="icon" href="assets/favicon.ico"', 'rel="apple-touch-icon" href="assets/apple-touch-icon.png"')))
+chk("картка/сторінки: важкий plutus_mascot.png не підвантажується (лише _s)", 'assets/plutus_mascot.png"' not in h.replace(b.SITE_URL + "/assets/plutus_mascot.png", ""))
+b.write_cart()
+cart = open(os.path.join(tmp, "cart.html"), encoding="utf-8").read()
+chk("кошик: згода з офертою й політикою біля кнопки замовлення", 'href="privacy.html"' in cart and 'href="offer.html"' in cart and cart.index("checkout-submit") < cart.index('class="note consent"'))
+
 print()
 if F:
     print("FAILED:", F)

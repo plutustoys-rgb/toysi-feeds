@@ -21,7 +21,7 @@ pats = []
 for r in rules:
     m = re.match(r"RewriteRule (\S+) (\S+) \[R=301,L\]", r)
     pats.append((m.group(1), m.group(2)) if m else None)
-chk("5 правил старих Prom-URL у скрипті (p/g/product_list/site_/корінь мови), усі 301", len(rules) == 5 and all(pats))
+chk("6 правил старих Prom-URL у скрипті (p/g/product_list/site_contacts/site_/корінь мови), усі 301", len(rules) == 6 and all(pats))
 def hit(path):
     for p, tgt in pats:
         if re.search(p, path):
@@ -38,6 +38,11 @@ chk("мапа відповідає лише цифровому prom_id (не п�
 chk("/p…-slug БЕЗ /ua/ → та сама мапа промід", hit("/p3138857147-nabor-dlya-tvorchestva.html") == "${promredir:$1|/catalog.html}")
 chk("/g… і /product_list БЕЗ префікса → /catalog.html", hit("/g155144964-vodnyj.html") == "/catalog.html" and hit("/product_list") == "/catalog.html")
 chk("/site_… (сторінки Prom) з префіксом і без → /", hit("/site_3517399-oplata.html") == "/" and hit("/ua/site_3517399-oplata.html") == "/" and hit("/ru/site_1-x") == "/")
+# 10.10.2026 (SEO п.4): /site_contacts.html був 404 (немає числового id) → контакти; будь-який інший /site_* → /
+chk("/site_contacts.html з префіксом і без → /contacts.html", hit("/site_contacts.html") == "/contacts.html" and hit("/ua/site_contacts.html") == "/contacts.html" and hit("/ru/site_contacts") == "/contacts.html")
+chk("/site_about.html, /ua/site_delivery.html → /", hit("/site_about.html") == "/" and hit("/ua/site_delivery.html") == "/")
+chk("favicon/apple-touch-icon: внутрішній rewrite (не редірект) на /assets/…", "RewriteRule ^/favicon\.ico$ /assets/favicon.ico [L]" in sh and "apple-touch-icon" in sh and "/assets/apple-touch-icon.png [L]" in sh)
+chk("Cache-Control для /assets/ лише під mod_headers, 1 доба", 'LocationMatch "^/assets/"' in sh and "max-age=86400" in sh and sh.index("mod_headers.c") < sh.index('LocationMatch "^/assets/"'))
 chk("НЕ чіпає наші: /product-168072.html, /p.html, /products.html, /page1.html, /privacy.html, /sitemap.xml, /site.webmanifest",
     all(hit(p) is None for p in ("/product-168072.html", "/p.html", "/products.html", "/page1.html", "/privacy.html", "/sitemap.xml", "/site.webmanifest", "/g.html")))
 

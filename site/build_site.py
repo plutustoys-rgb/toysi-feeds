@@ -129,7 +129,7 @@ def header():
     return (
       '<header class="top">'
       '<a class="logo" href="index.html">Plutus<span>Toys</span>'
-      ' <img class="mascot" src="assets/plutus_mascot.png" alt="Плутус" width="24" height="22" decoding="async"></a>'
+      ' <img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="24" height="22" decoding="async"></a>'
       '<div class="search" id="open-search">'
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
         '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'
@@ -220,6 +220,9 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
       f"<title>{esc(full_title)}</title>\n"
       f"{head_meta}"
+      "<link rel=\"icon\" href=\"assets/favicon.ico\" sizes=\"any\">\n"
+      "<link rel=\"icon\" type=\"image/png\" sizes=\"32x32\" href=\"assets/favicon-32.png\">\n"
+      "<link rel=\"apple-touch-icon\" href=\"assets/apple-touch-icon.png\">\n"
       "<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
       "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n"
       "<link rel=\"stylesheet\" href=\"assets/styles.css\">\n"
@@ -686,7 +689,7 @@ def write_home(prods, cats, cat_list, cat_slug):
         for c in cat_list[:10]
     )
     body = (
-      '<div class="hero"><div class="fox"><img class="mascot" src="assets/plutus_mascot.png" alt="Плутус — маскот PlutusToys" width="70" height="64" decoding="async"></div>'
+      '<div class="hero"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус — маскот PlutusToys" width="70" height="64" decoding="async"></div>'
       '<h1>Іграшки, що радують</h1>'
       '<p>Обираємо іграшки, які роблять дитину щасливою, а маму — спокійною. '
       'Привезе Нова Пошта, а Плутус подбає про решту.</p>'
@@ -754,7 +757,7 @@ def write_product(p, related=None, cat_slug=None):
         '<span class="tb">✓ Фіскальний чек</span>'
       '</div>'
       '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
-      '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
+      '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
       '<div><b>Доставка Новою Поштою</b> — від 65 ₴. Замовлення до 12:00 йдуть того ж дня, '
       'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
       f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
@@ -839,6 +842,8 @@ def write_cart():
             'Оплата карткою онлайн</label>' if LIQPAY_LIVE else '') +
         '</div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
+        '<p class="note consent">Оформлюючи замовлення, ви погоджуєтесь з <a href="offer.html">публічною офертою</a> '
+        'та <a href="privacy.html">політикою конфіденційності</a>.</p>'
         '<div class="note" id="checkout-msg"></div>'
       '</form></div>'
     )
@@ -847,7 +852,7 @@ def write_cart():
 
 def write_thanks():
     body = (
-      '<div class="done"><div class="fox"><img class="mascot" src="assets/plutus_mascot.png" alt="Плутус" width="105" height="96" decoding="async"></div>'
+      '<div class="done"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="105" height="96" decoding="async"></div>'
       '<h2>Дякуємо за замовлення!</h2>'
       '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
       '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'

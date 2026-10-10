@@ -214,8 +214,7 @@
   function renderSummary(){
     var goods=total();
     // FREE_SHIPPING_ENABLED=false (2026-09-18, поки платник доставки не з'ясований з Toysi) —
-    // freeShip завжди false, поведінка ідентична до PR #560 (завжди показуємо орієнтовну
-    // вартість доставки, ніякої обіцянки).
+    // freeShip завжди false: сума доставки не друкується (вартість визначає Нова Пошта, сплачується при отриманні).
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";

@@ -751,7 +751,7 @@ def write_product(p, related=None, cat_slug=None):
       '</div>'
       '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
       '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
-      '<div><b>Доставка Новою Поштою</b> — за тарифами перевізника, вартість порахуємо при оформленні. Замовлення до 12:00 йдуть того ж дня, '
+      '<div><b>Доставка Новою Поштою</b> — вартість за тарифами перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
       'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
       f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
       '</div></div>'
@@ -809,7 +809,7 @@ def write_cart():
         '<div class="row total"><span>Разом за товари</span><span id="sum-total">0 ₴</span></div>'
         '<div class="free-ship" id="free-ship-block"><div class="free-ship-track"><div class="free-ship-fill" id="free-ship-bar"></div></div>'
           '<div class="note" id="free-ship-note"></div></div>'
-        '<div class="note">Точну вартість доставки НП порахуємо на кроці оформлення за обраним відділенням.</div>'
+        '<div class="note">Вартість доставки визначає Нова Пошта за своїми тарифами, вона сплачується при отриманні посилки.</div>'
       '</div>'
       # checkout
       '<h1 class="page" style="margin-left:0">Оформлення</h1>'

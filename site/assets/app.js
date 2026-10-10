@@ -56,7 +56,7 @@
     remove:function(id){ var c=read(); delete c[id]; write(c); },
     clear:function(){ write({}); },
     read:read, count:count, total:total,
-    search:{norm:normText, tokens:searchTokens, match:searchMatch}
+    search:{norm:normText, tokens:searchTokens, match:searchMatch, hay:buildHay}
   };
 
   function updateBadge(){
@@ -106,7 +106,42 @@
   function normText(s){ return String(s==null?"":s).toLowerCase().replace(/[\u02bc\u02b9\u2019\u2018\u2032\u0027\u0060]/g,""); }
   // закінчення відкидаємо (≥5 літер: лишається max(4, довжина−2)), щоб «хлопчика»/«поліція» знаходили «хлопчиків»/«поліцейська»
   function stemTok(t){ return t.length>=5 ? t.slice(0, Math.max(4, t.length-2)) : t; }
-  function searchTokens(q){ return normText(q).split(/\s+/).filter(function(t){return t.length>0;}).map(stemTok); }
+  // Словник брендів (Консультант 10.10.2026): той самий бренд у каталозі Toysi пишеться обома абетками (L.O.L 65 лат./7 кирил., Funko 30/0, ...),
+  // тож запит будь-якою абеткою мусить знаходити обидві. Це ЯВНИЙ обмежений словник (не транслітерація): кожна група — варіанти одного бренду
+  // (уже в нормалізованому вигляді: нижній регістр, без апострофів). Назва/запит, що містить варіант (збіг з ПОЧАТКУ слова), отримує тег #bN.
+  var BRANDS=[
+    ["лол","l.o.l","lol"], ["фанко","funko"], ["майнкрафт","minecraft"], ["барбі","barbie"],
+    ["хот вілс","хотвілс","hot wheels","hotwheels"], ["щенячий патруль","paw patrol","pawpatrol"], ["пепа","пеппа","peppa"],
+    ["холодне серце","frozen"], ["марвел","marvel"], ["дісней","disney"], ["соник","sonic"], ["покемон","pokemon"],
+    ["гаррі поттер","harry potter"], ["павук","spider"], ["трансформер","transformer"]
+  ];
+  function hasWordStart(s, v){
+    var i=s.indexOf(v);
+    while(i>=0){
+      if(i===0 || !/[a-z\u0430-\u044f\u0456\u0457\u0454\u0491\u0430-\u044f0-9]/.test(s.charAt(i-1))) return true;
+      i=s.indexOf(v, i+1);
+    }
+    return false;
+  }
+  function brandTags(nn){
+    var t="";
+    for(var g=0; g<BRANDS.length; g++){
+      for(var k=0; k<BRANDS[g].length; k++){ if(hasWordStart(nn, BRANDS[g][k])){ t+=" #b"+g+"_"; break; } }
+    }
+    return t;
+  }
+  // haystack одного товару: назва + КАТЕГОРІЯ (поле c вже є в індексі: «радіокерована машина» 0→6) + теги брендів
+  function buildHay(p){ var nn=normText(p.n)+" "+normText(p.c); return nn+brandTags(nn); }
+  function searchTokens(q){
+    var nq=normText(q), tags=[];
+    for(var g=0; g<BRANDS.length; g++){
+      var vs=BRANDS[g].slice().sort(function(a,b){return b.length-a.length;});   // довші варіанти першими («hot wheels» до «wheels»)
+      for(var k=0; k<vs.length; k++){
+        if(hasWordStart(nq, vs[k])){ tags.push("#b"+g+"_"); nq=nq.replace(vs[k], " "); break; }
+      }
+    }
+    return nq.split(/\s+/).filter(function(t){return t.length>0;}).map(stemTok).concat(tags);
+  }
   function searchMatch(nn, toks){ for(var i=0;i<toks.length;i++){ if(nn.indexOf(toks[i])<0) return false; } return true; }
   function sortedMatches(list, mode){
     var a=list.slice();
@@ -138,11 +173,12 @@
     q=(q||"").trim();
     if(q.length<2){ res.innerHTML=""; lastMatches=[]; return; }
     var toks=searchTokens(q);
+    if(!toks.length){ res.innerHTML=""; lastMatches=[]; return; }   // запит лише з апострофів/розділових → не показуємо «весь каталог»
     ensureIndex(function(data){
       var all=[];
       for(var i=0;i<data.length;i++){
         var p=data[i];
-        if(p._nn===undefined) p._nn=normText(p.n);
+        if(p._nn===undefined) p._nn=buildHay(p);   // раз на елемент індексу (кеш)
         if(searchMatch(p._nn, toks)) all.push(p);
       }
       lastMatches=all; lastQuery=q;
@@ -296,7 +332,7 @@
     });
 
     var so=document.querySelector("#search-overlay input");
-    if(so){ so.addEventListener("input", function(){ runSearch(so.value); }); }
+    if(so){ var sTimer=null; so.addEventListener("input", function(){ clearTimeout(sTimer); sTimer=setTimeout(function(){ runSearch(so.value); }, 200); }); }   // debounce 200 мс: не перераховуємо 21 тис. на кожне натискання
 
     renderCart();
     initCheckout();

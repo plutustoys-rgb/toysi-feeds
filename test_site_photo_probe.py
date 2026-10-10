@@ -11,6 +11,7 @@ sys.path.insert(0, HERE)
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import site_photo_probe as sp  # noqa: E402
+sp.RETRY_DELAY_SEC = 0
 
 F = []
 
@@ -62,11 +63,42 @@ u = sp.pick_sample(idx, 20, random.Random(3))
 g = getter({u[0]: R(403, "text/html"), u[1]: R(200, "text/html; charset=utf-8", b"<html>"), u[2]: R(200, "image/png", b""), u[3]: TimeoutError("t"), u[4]: R(404, "text/html")})
 alerts.clear()
 res, bad = sp.run(idx, notify=lambda k, t, c: alerts.append((k, t, c)), get=g, rng=random.Random(3))
-chk("5 різних порушень (403, 200-не-image, порожнє тіло, таймаут, 404) → 5 поганих", len(bad) == 5)
+chk("5 різних порушень (403, 200-не-image, порожнє тіло, таймаут, 404) → 5 поганих і після повтору", len(bad) == 5)
 chk("алерт один, ключ site_photo_probe, cooldown 6 год", len(alerts) == 1 and alerts[0][0] == "site_photo_probe" and alerts[0][2] == 6 * 3600)
 t = alerts[0][1]
 chk("текст самодіагностичний: скільки з вибірки, коди, приклад URL, що робити", "5 з 20" in t and "HTTP 403" in t and "HTTP 404" in t and "TimeoutError" in t and "toysi.ua/p/" in t and "Що робити" in t)
-chk("«200, але не image» і «порожнє тіло» названо окремо", "не image" in t and "порожнє тіло" in t)
+chk("«200, але не image» і «порожнє тіло» названо окремо; є ознаки блокування → «hotlink»", "не image" in t and "порожнє тіло" in t and "hotlink" in t)
+
+# одиничні збої після повтору → ЛИШЕ лог, без алерта
+for lone in (R(404, "text/html"), R(503, "text/html"), TimeoutError("t")):
+    alerts.clear()
+    res, bad = sp.run(idx, notify=lambda k, t, c: alerts.append((k, t, c)), get=getter({u[0]: lone}), rng=random.Random(3))
+    chk(f"одиничний збій ({getattr(lone, 'status_code', type(lone).__name__)}) без ознак блокування → нема алерта", len(bad) == 1 and not alerts)
+alerts.clear()
+res, bad = sp.run(idx, notify=lambda k, t, c: alerts.append((k, t, c)), get=getter({u[0]: R(403, "text/html")}), rng=random.Random(3))
+chk("одиничний 403 (ознака блокування) → алерт", len(alerts) == 1 and "hotlink" in alerts[0][1])
+alerts.clear()
+res, bad = sp.run(idx, notify=lambda k, t, c: alerts.append((k, t, c)), get=getter({u[0]: R(404, "text/html"), u[1]: R(404, "text/html")}), rng=random.Random(3))
+chk("два 404 → алерт, але БЕЗ слова «hotlink» (це збій, не блокування)", len(alerts) == 1 and "hotlink" not in alerts[0][1] and "збій" in alerts[0][1])
+
+# повтор знімає разовий збій
+calls = {}
+
+
+def flaky(url, headers=None, timeout=None, stream=None):
+    calls[url] = calls.get(url, 0) + 1
+    if url == u[0] and calls[url] == 1:
+        return R(403, "text/html")
+    return R()
+
+
+alerts.clear()
+res, bad = sp.run(idx, notify=lambda k, t, c: alerts.append((k, t, c)), get=flaky, rng=random.Random(3))
+chk("разовий 403, що минув на повторі → нема алерта", not bad and not alerts and calls[u[0]] == 2)
+
+# allowlist хостів
+bad_idx = [{"p": "http://127.0.0.1/x.jpg"}, {"p": "file:///etc/passwd"}, {"p": "https://evil.example/x.jpg"}, {"p": "https://toysi.ua/p/1.jpg"}, {"p": "https://images.prom.ua/2.jpg"}, {"p": "https://toysi.ua.evil.com/3.jpg"}]
+chk("лише toysi.ua/images.prom.ua (без SSRF на 127.0.0.1, file://, чужі хости, toysi.ua.evil.com)", sorted(sp.pick_sample(bad_idx, 20)) == ["https://images.prom.ua/2.jpg", "https://toysi.ua/p/1.jpg"])
 
 g = getter({}, default=R(403, "text/html"))
 alerts.clear()

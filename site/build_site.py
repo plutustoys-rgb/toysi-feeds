@@ -15,7 +15,7 @@ PlutusToys — статичний генератор власного магаз
 Ціна = real_toysi_discounted × 1.5 (без комісії маркетплейсу — сенс власного сайту).
 LIMIT (env) обмежує к-ть карток для швидкого демо-прогону; порожній = увесь in-stock+фото.
 """
-import os, re, sys, json, html, math, unicodedata
+import os, re, sys, json, html, math, unicodedata, hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 
 import parser as tp
@@ -356,8 +356,9 @@ def build():
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
     for c in cat_list:
-        paged |= write_catalog(f"Каталог • {c}", cats[c], cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
-    paged |= write_catalog("Каталог іграшок", prods, cat_list, cat_slug, "catalog.html", active=None)
+        paged |= write_catalog(f"Каталог • {c}", rec_order(cats[c]), cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
+    prods_rec = rec_order(prods)
+    paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
     # 5) кошик + checkout + сторінка подяки
@@ -369,7 +370,7 @@ def build():
     # 6) індекс пошуку
     # index.json — клієнтський пошук + фільтр/сорт каталогу. c=категорія, s=наявність(1/0).
     idx = [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"],
-            "c": p["category"], "s": 1 if p["stock"] > 0 else 0} for p in prods]
+            "c": p["category"], "s": 1 if p["stock"] > 0 else 0} for p in prods_rec]
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap + robots
@@ -598,6 +599,31 @@ def offer_extras(p) -> dict:
     if cond:
         extra["itemCondition"] = cond
     return extra
+
+
+# ── Порядок «Рекомендовані» для КАТАЛОГУ/категорій/index.json (рішення Консультанта 10.10.2026; зауваження Тестувальника) ──
+# Було: за внеском спадно → перший екран = велосипед за 10 434 ₴, найдешевше на стор.1 — 3 426 ₴ (99,9% асортименту дешевше). Тепер:
+#   кошик A (першим): є фото, у наявності, НЕ уцінка, внесок відомий і >0, ціна в міжквартильному діапазоні індексу 97–381 ₴;
+#   кошик B: усе інше. Усередині кошика — «перемішування» з ФІКСОВАНИМ зерном (SHA-1 від id): порядок однаковий між перебудовами
+#   (статичні сторінки, пагінація й індексація не плавають). Дорогі позиції нікуди не зникають: сортування/фільтр ціни лишаються.
+# Головна («Новинки»), крос-сел і внутрішні розрахунки далі користуються порядком за внеском — вони НЕ чіпаються.
+REC_PRICE_LO, REC_PRICE_HI = 97, 381
+REC_SEED = "plutus-rec-v1"
+
+
+def _is_markdown_item(p) -> bool:
+    return bool(re.search(r"уц[еі]нк", (p.get("category") or "") + " " + (p.get("name") or ""), re.I))
+
+
+def _rec_bucket(p) -> int:
+    c = p.get("contribution")
+    ok = (p.get("photo") and p.get("stock", 0) > 0 and not _is_markdown_item(p)
+          and c is not None and c > 0 and REC_PRICE_LO <= p["price"] <= REC_PRICE_HI)
+    return 0 if ok else 1
+
+
+def rec_order(items):
+    return sorted(items, key=lambda p: (_rec_bucket(p), hashlib.sha1(f"{REC_SEED}:{p['id']}".encode()).hexdigest()))
 
 
 def write_catalog(title, prods, cat_list, cat_slug, fname, active):

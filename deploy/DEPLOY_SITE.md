@@ -55,7 +55,7 @@ nginx -t && systemctl reload nginx
 ## 3.1 GMC / Google Shopping — щоб не пропала видимість
 GMC-фід віддає посилання за Prom-структурою `https://plutustoys.com.ua/ua/p{prom_id}-slug.html`.
 Активація вже генерує `prom_redirects.map` і nginx робить **301** зі старих Prom-URL на наші картки
-`/product-{toysi_id}.html` (непокриті → `/catalog.html`). Тож при перенесенні DNS старі посилання з
+`/product-{toysi_id}.html` (nginx: непокриті → `/catalog.html`; на проді Apache — 410 Gone з 11.10.2026). Тож при перенесенні DNS старі посилання з
 фіда/індексу Google не впадуть у 404, а перекинуться на наш сайт — видимість зберігається.
 - **Твоя частина в кабінеті GMC:** переконатися, що домен `plutustoys.com.ua` лишається верифікованим
   після зміни хостингу (можливо, підтвердити наново meta-тегом/DNS-записом).

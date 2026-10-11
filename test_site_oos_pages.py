@@ -51,10 +51,16 @@ catalog["504"] = item(504, "Без фото і без залишку", "Маши
 catalog["505"] = item(505, "Сувенірний меч без залишку", "Мечі, ножі та шаблі", stock=0)             # forbidden_products
 catalog["506"] = item(506, "Карткова гра UNO Kids", "Машинки", stock=0, vendor="MiC")                  # ТМ UNO
 catalog["507"] = item(507, "Назва <b>&\"</b> зі спецсимволами", "Машинки", stock=0)
+catalog["508"] = item(508, "Без залишку і без ціни", "Машинки", stock=0, price="")                   # Offer price 0 + OutOfStock — помилка Rich Results/GMC
 
 out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)
 bs.tp.fetch_toysi_catalog = lambda: catalog
+_real_size_check = bs.tp.assert_catalog_size_sane
+bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None       # синтетичний каталог малий; перевірку розміру тестуємо окремо нижче
+import telegram_notify  # noqa: E402
+_alerts = []
+telegram_notify.send_throttled_alert = lambda *a, **k: (_alerts.append((a, k)) or True)   # НІКОЛИ не слати реальні алерти з тесту
 bs.LIMIT = 0
 import site_photo_probe  # noqa: E402
 site_photo_probe.run = lambda idx: None                        # без мережі
@@ -76,7 +82,13 @@ chk("OOS: «Немає в наявності» в блоці ціни", 'class="
 chk("OOS: кнопка вимкнена і без data-add (покласти в кошик не можна)", '<button class="btn" disabled>Немає в наявності</button>' in h and "data-add" not in h)
 chk("OOS: блок oos-note з посиланням на категорію (є товари в наявності)", 'class="oos-note"' in h and 'Подивитися схожі в категорії «Машинки»' in h and 'href="category-' in h)
 chk("OOS: title «— немає в наявності»", re.search(r"<title>[^<]*немає в наявності \| PlutusToys</title>", h) is not None)
-chk("OOS: meta description починається «Немає в наявності.»", re.search(r'<meta name="description" content="Немає в наявності\.', h) is not None)
+_md = re.search(r'<meta name="description" content="([^"]*)"', h)
+chk("OOS: meta description «Немає в наявності: …», ≤160, без ціни й оплати", _md is not None and _md.group(1).startswith("Немає в наявності:") and len(_md.group(1)) <= 160
+    and "Ціна" not in _md.group(1) and "оплата" not in _md.group(1).lower())
+chk("OOS: НЕ обіцяє оплату/доставку/повернення (бейджі й блок доставки приховано), але є телефон",
+    all(x not in h.split("<footer")[0] for x in ("Оплата при отриманні", "Повернення 14 днів", "Замовлення до 12:00", "Фіскальний чек")) and "tel:+380730150815" in h)
+chk("OOS: блок «Схожі товари в наявності» з товарами тієї ж категорії (Машинки)", "Схожі товари в наявності" in h and len(re.findall(r'class="card" href="product-\d+\.html"', h)) >= 1
+    and all(int(i) % 2 == 1 for i in re.findall(r'class="card" href="product-(\d+)\.html"', h) if int(i) < 100))
 chk("OOS: canonical на себе і індексується (немає noindex)", 'rel="canonical" href="https://plutustoys.com.ua/product-501.html"' in h and "noindex" not in h)
 chk("OOS: без блоку крос-селу «Додайте до замовлення»", "Додайте до замовлення" not in h)
 h503 = (out / "product-503.html").read_text(encoding="utf-8")
@@ -84,7 +96,10 @@ chk("OOS у категорії без наявних: посилання вед�
 h507 = (out / "product-507.html").read_text(encoding="utf-8")
 chk("спецсимволи в назві екрановані (немає літерального <b> у тілі й JSON-LD)", "<b>&\"</b>" not in h507 and "\\u003cb>" in h507)
 h1 = (out / "product-1.html").read_text(encoding="utf-8")
-chk("товар у наявності: InStock, кнопка активна, title «купити»", "schema.org/InStock" in h1 and "data-add" in h1 and "— купити | PlutusToys" in h1 and 'class="oos-note"' not in h1)
+chk("товар у наявності: InStock, кнопка активна, title «купити», бейджі оплати/доставки на місці", "schema.org/InStock" in h1 and "data-add" in h1 and "— купити | PlutusToys" in h1
+    and 'class="oos-note"' not in h1 and "Оплата при отриманні" in h1.split("<footer")[0] and "Замовлення до 12:00" in h1)
+chk("OOS без ціни (508) сторінки НЕ має (не публікуємо Offer price 0)", not (out / "product-508.html").exists())
+chk("503 (категорія без наявних) — блоку «Схожі товари» нема", "Схожі товари в наявності" not in h503)
 
 # ── index.json / каталог / головна / sitemap
 idx = json.loads((out / "index.json").read_text(encoding="utf-8"))
@@ -104,6 +119,34 @@ chk("sitemap: OOS-сторінки є з priority 0.3", all(f"/product-{i}.html<
     and re.search(r"product-501\.html</loc>[^\n]*<priority>0\.3</priority>", sm) is not None)
 chk("sitemap: товари в наявності лишились з priority 0.6", re.search(r"product-1\.html</loc>[^\n]*<priority>0\.6</priority>", sm) is not None)
 chk("sitemap: немає сторінок без фото/заборонених/UNO", not re.search(r"product-50[456]\.html", sm))
+
+# ── усічений каталог Toysi: збірка зупиняється ДО будь-якого запису (аудит #675, ВАЖЛИВО-1)
+bs.tp.assert_catalog_size_sane = _real_size_check
+out2 = Path(tempfile.mkdtemp())
+bs.OUT = str(out2)
+(out2 / "product-1.html").write_text("живий товар попередньої збірки", encoding="utf-8")
+(out2 / "product-501.html").write_text("жива OOS-сторінка попередньої збірки", encoding="utf-8")
+(out2 / "index.json").write_text("[1]", encoding="utf-8")
+bs.tp.fetch_toysi_catalog = lambda: {}                          # порожній/усічений фід Toysi
+_alerts.clear()
+try:
+    bs.build()
+    raised = False
+except Exception as e:  # CatalogSizeError
+    raised = type(e).__name__ == "CatalogSizeError"
+chk("порожній каталог Toysi → збірка падає CatalogSizeError", raised)
+chk("…і НЕ чіпає чинні сторінки/index.json (нічого не видалено й не переписано)",
+    (out2 / "product-1.html").read_text(encoding="utf-8") == "живий товар попередньої збірки"
+    and (out2 / "product-501.html").exists() and (out2 / "index.json").read_text(encoding="utf-8") == "[1]")
+chk("…і шле (тротлений) алерт про підозріло малий каталог", len(_alerts) == 1 and "site_build_catalog_size" in _alerts[0][0])
+bs.tp.fetch_toysi_catalog = lambda: {str(i): item(i, f"Т{i}", "Машинки") for i in range(1, 30)}      # 29 << 25 000
+_alerts.clear()
+try:
+    bs.build()
+    raised = False
+except Exception as e:
+    raised = type(e).__name__ == "CatalogSizeError"
+chk("обрізаний (29 товарів) каталог теж зупиняє збірку", raised and (out2 / "product-1.html").read_text(encoding="utf-8") == "живий товар попередньої збірки")
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ OOS-сторінки — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

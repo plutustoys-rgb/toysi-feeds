@@ -257,12 +257,26 @@ def _addon_ok(p):
 def build():
     print("[build] тягну каталог Toysi…")
     cat = tp.fetch_toysi_catalog()
+    # Захист (аудит #675, ВАЖЛИВО-1): порожній/усічений каталог Toysi (структурно валідний XML без HTTP-помилки) раніше давав index.json=[] і прибирання
+    # ВСІХ product-*.html (а з OOS-сторінками — ще ~7 тис.). Тепер збірка зупиняється ДО будь-якого запису: чинний сайт лишається як є, таймер спробує за 2 год.
+    try:
+        tp.assert_catalog_size_sane(cat)
+    except Exception as e:  # noqa: BLE001 — CatalogSizeError; без запису й без прибирання
+        print(f"[build] 🚨 ЗБІРКУ ЗУПИНЕНО, сайт не чіпаю: {e}", file=sys.stderr)
+        try:
+            from telegram_notify import send_throttled_alert
+            send_throttled_alert("site_build_catalog_size", f"🚨 site-rebuild: збірку зупинено, каталог Toysi підозріло малий. {str(e)[:300]} Чинні сторінки сайту НЕ чіпано.",
+                                 cooldown_sec=6 * 3600)
+        except Exception:  # noqa: BLE001 — алерт best-effort
+            pass
+        raise
     prods = []
     # Товари БЕЗ залишку (рішення Консультанта 11.10.2026, GSC: 7 605 адрес «404» з 8 960 непроіндексованих — це самі зниклі зі складу товари):
     # їхня сторінка НЕ зникає, а лишається живою з «Немає в наявності» + schema.org/OutOfStock. Збираємо окремо: у каталог, категорії, пошук
     # (index.json), головну, крос-сел і фіди Google/Meta/Bing (вони читають index.json) ці позиції НЕ потрапляють; замовити їх теж не можна
     # (site_order_api бере ціни лише з index.json).
     oos_prods = []
+    oos_skipped_no_price = 0
     for it in cat.values():
         is_oos = str(it.get("stock") or "0") in ("0", "")
         pics = it.get("pictures")
@@ -279,6 +293,9 @@ def build():
         # Каталог ПОВНИЙ відповідно до Toysi (рішення власника 2026-10-05): без відсікань за ціною чи категорією
         # (включно з «Уцінкою»); єдина умова — товар є в наявності й має фото/назву (вище).
         price = price_of(it)
+        if is_oos and not price > 0:
+            oos_skipped_no_price += 1   # Offer із price 0 + OutOfStock — помилка Rich Results/GMC («Не указана цена»): такий OOS не публікуємо
+            continue
         # ВНЕСОК (маржа на замовлення) для ранжування «Рекомендовані» + home-floor:
         # ціна − собівартість − еквайринг(ціна·site-payment) − логістика/замовлення.
         # Комісії маркетплейсу на власному сайті НЕМА (у цьому й сенс сайту). Невідома
@@ -308,7 +325,7 @@ def build():
     if LIMIT:
         prods = prods[:LIMIT]
         oos_prods = oos_prods[:LIMIT]
-    print(f"[build] карток до генерації: {len(prods)} (+ без залишку, сторінка жива: {len(oos_prods)})")
+    print(f"[build] карток до генерації: {len(prods)} (+ без залишку, сторінка жива: {len(oos_prods)}; без залишку й без ціни — пропущено: {oos_skipped_no_price})")
 
     # категорії
     cats = {}
@@ -361,7 +378,8 @@ def build():
         n += 1
     # 1б) сторінки товарів без залишку: адреса жива (OutOfStock), без кошика/крос-селу
     for p in oos_prods:
-        write_product(p, related=None, cat_slug=cat_slug)
+        # внутрішні посилання з OOS-сторінки на товари в наявності тієї ж категорії: шлях покупця і проти soft-404 (сторінка не «глухий кут»)
+        write_product(p, related=(cats.get(p["category"], [])[:4] or None), cat_slug=cat_slug, related_title="Схожі товари в наявності")
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
     for c in cat_list:
@@ -760,7 +778,7 @@ def _clean_desc(html):
     return html.strip()
 
 
-def write_product(p, related=None, cat_slug=None):
+def write_product(p, related=None, cat_slug=None, related_title="Додайте до замовлення"):
     raw = p["desc"]
     parts = [x.strip() for x in re.split(r"<br\s*/?>", raw) if x.strip()]
     lead = _clean_desc(parts[0]) if parts else ""
@@ -778,6 +796,19 @@ def write_product(p, related=None, cat_slug=None):
     in_stock = p["stock"] > 0
     # Без залишку: чесний текст + шлях далі (категорія, якщо вона є в каталозі; інакше повний каталог). Кнопка «У кошик» вимкнена нижче.
     _oos_cat_href = f"category-{cat_slug[p['category']]}.html" if (cat_slug and p.get("category") in cat_slug) else "catalog.html"
+    _phone_line = '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
+    # Без залишку: НЕ обіцяємо оплату/доставку/повернення на сторінці з вимкненою кнопкою (аудит #675, Д2) — лише телефон.
+    buy_info = (
+        '<div class="trust-badges">'
+          '<span class="tb">✓ Оплата при отриманні</span>'
+          '<a class="tb" href="returns.html">✓ Повернення 14 днів</a>'
+          '<span class="tb">✓ Доставка Новою Поштою</span>'
+          '<span class="tb">✓ Фіскальний чек</span>'
+        '</div>' + _phone_line +
+        '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
+        '<div><b>Доставка Новою Поштою</b> — вартість за тарифами перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
+        'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
+    ) if in_stock else _phone_line
     oos_note = ("" if in_stock else
                 f'<div class="oos-note"><b>Зараз цього товару немає в наявності.</b> '
                 f'<a href="{_oos_cat_href}">Подивитися схожі{(" в категорії «" + esc(p["category"]) + "»") if _oos_cat_href != "catalog.html" else " в каталозі"} →</a></div>')
@@ -794,20 +825,10 @@ def write_product(p, related=None, cat_slug=None):
       f'<h1 class="prod">{esc(p["name"])}</h1>'
       f'<div class="price-row"><div class="price">{p["price"]} ₴</div>'
       f'<div class="avail {oos}">{avail}</div></div>'
-      + oos_note +
-      '<div class="trust-badges">'
-        '<span class="tb">✓ Оплата при отриманні</span>'
-        '<a class="tb" href="returns.html">✓ Повернення 14 днів</a>'
-        '<span class="tb">✓ Доставка Новою Поштою</span>'
-        '<span class="tb">✓ Фіскальний чек</span>'
-      '</div>'
-      '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
-      '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
-      '<div><b>Доставка Новою Поштою</b> — вартість за тарифами перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
-      'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
+      + oos_note + buy_info +
       f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
       '</div></div>'
-      + (f'<section class="related"><h2>Додайте до замовлення</h2>{grid(related)}</section>' if related else "")
+      + (f'<section class="related"><h2>{esc(related_title)}</h2>{grid(related)}</section>' if related else "")
       + '<div class="buybar"><div class="buybar-inner">'
       f'<div class="p">{p["price"]} ₴</div>'
       f'{buy_btn}'
@@ -817,7 +838,7 @@ def write_product(p, related=None, cat_slug=None):
     plain = re.sub(r"<[^>]+>", "", lead).strip()
     meta_desc = product_description(p["name"], p["price"], plain)
     if not in_stock:
-        meta_desc = ("Немає в наявності. " + meta_desc)[:DESC_MAX]
+        meta_desc = _cut(f"Немає в наявності: {p['name']}. Подивіться схожі іграшки в каталозі PlutusToys.", DESC_MAX)
     # brand зі специфікацій «<b>Бренд:</b> X» — Google Rich Results цінує brand у Product.
     brand = ""
     for s in specs:

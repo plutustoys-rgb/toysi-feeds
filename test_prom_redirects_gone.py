@@ -19,6 +19,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(HERE))
 import generate_prom_redirects as gpr  # noqa: E402
+import telegram_notify  # noqa: E402
+_alerts = []
+telegram_notify.send_throttled_alert = lambda *a, **k: (_alerts.append((a, k)) or True)    # з тесту реальних алертів не слати
 
 F = []
 
@@ -61,6 +64,7 @@ try:
 except SystemExit as e:
     chk("гард: різке скорочення (3 проти 200) → SystemExit(2)", e.code == 2)
 chk("гард: стара мапа лишилась без змін", gpr.OUT_FILE_APACHE.read_text(encoding="utf-8") == before)
+chk("гард: шле (тротлений) алерт у Telegram — не мовчить у journal", len(_alerts) == 1 and _alerts[0][0][0] == "prom_redirects_shrink" and "410" in _alerts[0][0][1])
 os.environ["PROM_REDIRECTS_ALLOW_SHRINK"] = "1"
 gpr.main()
 chk("PROM_REDIRECTS_ALLOW_SHRINK=1 дозволяє свідоме скорочення", len([l for l in gpr.OUT_FILE_APACHE.read_text(encoding="utf-8").splitlines() if l[:1].isdigit()]) == 3)

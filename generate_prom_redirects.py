@@ -115,8 +115,14 @@ def main() -> None:
     # дав би малу мапу → масове 410 замість 301 на картки → втрата видимості в Google/GMC. Тому різке скорочення мапи НЕ записуємо (стара лишається).
     prev = _count_apache_lines(OUT_FILE_APACHE)
     if prev >= SHRINK_GUARD_MIN_PREV and n < prev * SHRINK_GUARD_FRACTION and os.environ.get("PROM_REDIRECTS_ALLOW_SHRINK") != "1":
-        print(f"[prom_redirects] 🚨 нова мапа має {n} редиректів проти {prev} (< {SHRINK_GUARD_FRACTION:.0%}) — НЕ перезаписую "
-              "(збій кешу/індексу? якщо скорочення свідоме — PROM_REDIRECTS_ALLOW_SHRINK=1).", file=sys.stderr)
+        msg = (f"нова мапа має {n} редиректів проти {prev} (< {SHRINK_GUARD_FRACTION:.0%}) — НЕ перезаписую "
+               "(збій кешу/індексу? якщо скорочення свідоме — PROM_REDIRECTS_ALLOW_SHRINK=1).")
+        print(f"[prom_redirects] 🚨 {msg}", file=sys.stderr)
+        try:
+            from telegram_notify import send_throttled_alert
+            send_throttled_alert("prom_redirects_shrink", f"🚨 site-rebuild/prom_redirects: {msg} Стара мапа лишилась; Prom-URL поза нею віддають 410.", cooldown_sec=6 * 3600)
+        except Exception:  # noqa: BLE001 — алерт best-effort (у тестах/без токена мовчить)
+            pass
         sys.exit(2)
     _write_atomic(OUT_FILE, content)
     _write_atomic(OUT_FILE_APACHE, build_map_apache())

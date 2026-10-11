@@ -51,7 +51,7 @@ def first_map_entry(path: Path = MAP_FILE):
             parts = line.split()
             if len(parts) == 2 and parts[0].isdigit() and parts[1].startswith("/product-"):
                 return parts[0], parts[1]
-    except OSError:
+    except (OSError, ValueError):   # ValueError ⊃ UnicodeDecodeError: бінарна/зіпсована мапа теж = «мапа нечитна»
         return None
     return None
 

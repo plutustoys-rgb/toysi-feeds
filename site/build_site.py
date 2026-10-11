@@ -254,13 +254,22 @@ def _addon_ok(p):
             and not any(m in nm for m in cp._BAD_NAME_MARKERS))
 
 # ── збірка ─────────────────────────────────────────────────────────────
+SHRINK_GUARD_MIN_PREV = 1000     # попередня збірка менша за це — гард не діє (перший запуск/демо)
+SHRINK_GUARD_FRACTION = 0.7      # нова збірка менша за цю частку попередньої → стоп до запису
+
+
+class CatalogShrinkError(RuntimeError):
+    """Каталог «в наявності» різко зменшився проти попередньої збірки — не пишемо й не прибираємо сторінки."""
+
+
 def build():
     print("[build] тягну каталог Toysi…")
     cat = tp.fetch_toysi_catalog()
     # Захист (аудит #675, ВАЖЛИВО-1): порожній/усічений каталог Toysi (структурно валідний XML без HTTP-помилки) раніше давав index.json=[] і прибирання
     # ВСІХ product-*.html (а з OOS-сторінками — ще ~7 тис.). Тепер збірка зупиняється ДО будь-якого запису: чинний сайт лишається як є, таймер спробує за 2 год.
     try:
-        tp.assert_catalog_size_sane(cat)
+        _min_cat = int(os.environ.get("SITE_MIN_CATALOG", "") or tp.TOYSI_EXPECTED_MIN_SIZE)   # свідоме зниження порога (Toysi законно зменшився) — без правки коду
+        tp.assert_catalog_size_sane(cat, min_expected=_min_cat)
     except Exception as e:  # noqa: BLE001 — CatalogSizeError; без запису й без прибирання
         print(f"[build] 🚨 ЗБІРКУ ЗУПИНЕНО, сайт не чіпаю: {e}", file=sys.stderr)
         try:
@@ -325,6 +334,23 @@ def build():
     if LIMIT:
         prods = prods[:LIMIT]
         oos_prods = oos_prods[:LIMIT]
+    # Відносний гард (аудит #675 (a)): абсолютний поріг не ловить помірно усічений фід (26 тис. проходить), а це ~2,5 тис. сторінок → 404.
+    # Порівнюємо з index.json ПОПЕРЕДНЬОЇ збірки (те саме «в наявності»): різке падіння → стоп ДО запису. Свідоме — SITE_ALLOW_SHRINK=1.
+    try:
+        with open(os.path.join(OUT, "index.json"), encoding="utf-8") as _f:
+            _old_n = len(json.load(_f))
+    except (OSError, ValueError):
+        _old_n = 0
+    if _old_n >= SHRINK_GUARD_MIN_PREV and len(prods) < _old_n * SHRINK_GUARD_FRACTION and os.environ.get("SITE_ALLOW_SHRINK") != "1" and not LIMIT:
+        _msg = (f"товарів у наявності {len(prods)} проти {_old_n} у попередній збірці (< {SHRINK_GUARD_FRACTION:.0%}) — схоже на усічений фід Toysi; "
+                "якщо падіння справжнє — SITE_ALLOW_SHRINK=1. Чинні сторінки сайту НЕ чіпано.")
+        print(f"[build] 🚨 ЗБІРКУ ЗУПИНЕНО: {_msg}", file=sys.stderr)
+        try:
+            from telegram_notify import send_throttled_alert
+            send_throttled_alert("site_build_shrink", f"🚨 site-rebuild: збірку зупинено, {_msg}", cooldown_sec=6 * 3600)
+        except Exception:  # noqa: BLE001 — алерт best-effort
+            pass
+        raise CatalogShrinkError(_msg)
     print(f"[build] карток до генерації: {len(prods)} (+ без залишку, сторінка жива: {len(oos_prods)}; без залишку й без ціни — пропущено: {oos_skipped_no_price})")
 
     # категорії

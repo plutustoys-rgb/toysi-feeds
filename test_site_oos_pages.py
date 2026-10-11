@@ -148,5 +148,50 @@ except Exception as e:
     raised = type(e).__name__ == "CatalogSizeError"
 chk("обрізаний (29 товарів) каталог теж зупиняє збірку", raised and (out2 / "product-1.html").read_text(encoding="utf-8") == "живий товар попередньої збірки")
 
+# ── відносний гард: різке падіння «в наявності» проти попередньої збірки (абсолютний поріг не ловить помірно усічений фід)
+out3 = Path(tempfile.mkdtemp())
+bs.OUT = str(out3)
+bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None       # абсолютний поріг вимкнено — перевіряємо ВІДНОСНИЙ
+(out3 / "index.json").write_text(json.dumps([{"id": str(i)} for i in range(1500)]), encoding="utf-8")   # попередня збірка: 1500 у наявності
+(out3 / "product-7.html").write_text("чинна сторінка", encoding="utf-8")
+bs.tp.fetch_toysi_catalog = lambda: {str(i): item(i, f"Т{i}", "Машинки") for i in range(1, 41)}          # тепер 40 (< 70% від 1500)
+_alerts.clear()
+try:
+    bs.build()
+    raised = False
+except Exception as e:
+    raised = type(e).__name__ == "CatalogShrinkError"
+chk("різке падіння (40 проти 1500 у попередній збірці) → CatalogShrinkError до запису", raised and (out3 / "product-7.html").read_text(encoding="utf-8") == "чинна сторінка"
+    and not (out3 / "product-1.html").exists())
+chk("…і шле алерт site_build_shrink", len(_alerts) == 1 and _alerts[0][0][0] == "site_build_shrink")
+os.environ["SITE_ALLOW_SHRINK"] = "1"
+bs.build()
+chk("SITE_ALLOW_SHRINK=1 дозволяє свідоме скорочення (збірка проходить, сторінки записано)", (out3 / "product-1.html").exists())
+del os.environ["SITE_ALLOW_SHRINK"]
+out4 = Path(tempfile.mkdtemp())
+bs.OUT = str(out4)
+(out4 / "index.json").write_text(json.dumps([{"id": str(i)} for i in range(100)]), encoding="utf-8")      # мала попередня (<1000) — гард не діє
+bs.build()
+chk("мала попередня збірка (<1000): гард не діє", (out4 / "product-1.html").exists())
+
+# ── SITE_MIN_CATALOG: свідоме зниження абсолютного порога без правки коду
+bs.tp.assert_catalog_size_sane = _real_size_check
+out5 = Path(tempfile.mkdtemp())
+bs.OUT = str(out5)
+try:
+    bs.build()
+    raised = False
+except Exception as e:
+    raised = type(e).__name__ == "CatalogSizeError"
+chk("без SITE_MIN_CATALOG малий каталог зупиняє збірку", raised)
+os.environ["SITE_MIN_CATALOG"] = "10"
+try:
+    bs.build()
+    ok = (out5 / "product-1.html").exists()
+except Exception:
+    ok = False
+del os.environ["SITE_MIN_CATALOG"]
+chk("SITE_MIN_CATALOG=10 → збірка проходить (поріг можна змінити без правки коду)", ok)
+
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ OOS-сторінки — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

@@ -139,32 +139,44 @@ class OrderError(Exception):
 # np_branch, розпізнаємо номер у ДВОХ однозначних випадках і віддаємо його так само, як при виборі з автокомпліту
 # (np_warehouse_number):
 #   1) у тексті лишається ЛИШЕ номер + службові слова («369», «№369», «НП 369», «Нової пошти 369», «369 відділення», «369-е відділення»);
-#   2) у тексті РІВНО ОДНА група цифр, і вона впритул до слова-ключа: «…відділення/№/НП/Нова пошта 369» (ключ ПЕРЕД числом) або
+#   2) у тексті РІВНО ОДНА група цифр, і вона впритул до слова-ключа відділення («відділення/відд./НП/Нова пошта/поштомат 369», ключ ПЕРЕД числом) або
 #      «369 відділення…» (число НА ПОЧАТКУ, ключ одразу після) — тоді решта тексту (місто, «біля метро») номера не змінює.
 # Усе інше (вулиця з номером будинку, кілька чисел, число не біля ключа, «0») НЕ вгадуємо. Голе 5-цифрове число без слова
 # «поштомат» теж не беремо: це може бути поштовий індекс. Загальний _WAREHOUSE_RE у order_router навмисно вузький
 # (для Prom-тексту «№3» збігалось з чужим відділенням) — його не змінюємо.
-_MANUAL_WH_KEYWORD = (
-    r"в[іи]дд?[іи]ле?н\w*|відділ(?!\w)|відд\.?(?!\w)|отделен\w*|отд\.?(?!\w)|(?<!\w)нп(?!\w)|(?<!\w)н\.\s?п\.?"
-    r"|нов\w*\s+п(?:ошт|очт)\w*|поштомат\w*|номер|[№#]|(?<!\w)n(?!\w)"
+# Слова-ключі, що САМІ по собі означають «відділення/поштомат Нової пошти» (цілими словами: lookbehind (?<!\w) відсікає «автономер»,
+# «мономер», «Новоселівка»; «Нова Поштова» вулиця НЕ збігається — форма «пошта» лише в закінченнях називного/родового/…).
+_MANUAL_WH_BRANCH_KEYWORD = (
+    r"(?<!\w)(?:в[іи]дд?[іи]ле?н\w*|відділ(?!\w)|відд\.?(?!\w)|отделен\w*|отд\.?(?!\w)|нп(?!\w)|н\.\s?п\.?"
+    r"|нов(?:а|ої|ою|ую|ая|ой|ой)\s+п(?:ошта|ошти|ошті|оштою|ошту|очта|очты|очте|очтой|очту)(?!\w)|поштомат\w*)"
 )
-_MANUAL_WH_KEYWORD_RE = re.compile(_MANUAL_WH_KEYWORD, re.IGNORECASE)
+# Службові символи/слова, які можуть стояти поруч із номером, коли в тексті НЕ лишається нічого іншого (правило 1): «№369», «#369», «N 369», «номер 369».
+_MANUAL_WH_NOISE = _MANUAL_WH_BRANCH_KEYWORD + r"|[№#]|(?<!\w)номер(?!\w)|(?<!\w)n(?!\w)"
+_MANUAL_WH_NOISE_RE = re.compile(_MANUAL_WH_NOISE, re.IGNORECASE)
 _MANUAL_WH_ORDINAL_RE = re.compile(r"(?<=\d)\s*-?\s*(?:е|є)(?!\w)", re.IGNORECASE)          # «369-е відділення»
 _MANUAL_WH_PUNCT_RE = re.compile(r"[^\w\s№#.]")                                                 # «369!», «(369)», ««369»», «-»
-_MANUAL_WH_BEFORE_RE = re.compile(rf"(?:{_MANUAL_WH_KEYWORD})\s*[№#]?\s*(\d+)(?!\d)", re.IGNORECASE)
-_MANUAL_WH_AFTER_RE = re.compile(rf"^\s*(\d+)\s*(?:{_MANUAL_WH_KEYWORD})", re.IGNORECASE)
+# Правило 2 — ТІЛЬКИ слова-ключі відділення (БЕЗ «#», «номер», «n» і голого «№»: «домофон #1234», «кв. №5», «будинок номер 5» — це адреса).
+_MANUAL_WH_BEFORE_RE = re.compile(rf"{_MANUAL_WH_BRANCH_KEYWORD}\s*[№#]?\s*(\d+)(?!\d)", re.IGNORECASE)
+_MANUAL_WH_AFTER_RE = re.compile(rf"^\s*(\d+)\s*{_MANUAL_WH_BRANCH_KEYWORD}", re.IGNORECASE)
+# Інший перевізник у тексті («5 відділення Укрпошти», «Justin відділення 5») — номер не наш, нічого не вгадуємо.
+_MANUAL_WH_OTHER_CARRIER_RE = re.compile(
+    r"укр\.?\s*пошт|justin|джастін|meest|міст\s*експрес|делів|delivery|ін\s*тайм|intime|rozetka|розетка|(?<!\w)сат(?!\w)|(?<!\w)sat(?!\w)",
+    re.IGNORECASE,
+)
 
 
 def _manual_warehouse_number(text: str):
-    """Номер відділення/поштомата з ручного вводу (див. коментар вище) або None. «0», кілька чисел, число не біля ключа → None;
-    5 цифр лише разом зі словом «поштомат»."""
+    """Номер відділення/поштомата з ручного вводу (див. коментар вище) або None. «0», кілька чисел, число не біля ключа,
+    інший перевізник → None; 5 цифр лише разом зі словом «поштомат»."""
     raw = text or ""
+    if len(raw) > 300 or _MANUAL_WH_OTHER_CARRIER_RE.search(raw):
+        return None
     norm = " ".join(_MANUAL_WH_ORDINAL_RE.sub(" ", _MANUAL_WH_PUNCT_RE.sub(" ", raw)).split())
     groups = re.findall(r"\d+", norm)
-    if len(groups) != 1:
+    if len(groups) != 1 or len(groups[0]) > 5:
         return None
     num = groups[0]
-    only_digits = _MANUAL_WH_KEYWORD_RE.sub(" ", norm).strip(" \t.")
+    only_digits = _MANUAL_WH_NOISE_RE.sub(" ", norm).strip(" \t.")
     if only_digits == num:
         ok = True                                                    # правило 1: лишився тільки номер
     else:
@@ -174,7 +186,7 @@ def _manual_warehouse_number(text: str):
     if not ok:
         return None
     value = int(num)
-    if value <= 0 or len(num) > 5:
+    if value <= 0:
         return None
     if len(num) == 5 and not re.search(r"поштомат", norm, re.IGNORECASE):
         return None                                                  # голе 5-цифрове — можливо індекс, не гадаємо

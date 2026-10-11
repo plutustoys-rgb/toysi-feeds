@@ -848,10 +848,10 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             stats["excluded_category"] += 1
             continue
         try:
-            _in_stock = float(item.get("stock", 0) or 0) > 0
+            _stock_num = float(item.get("stock", 0) or 0)
         except (TypeError, ValueError):
-            _in_stock = False
-        if not _in_stock:
+            _stock_num = 0.0
+        if not _stock_num > 0:   # (not >) а не (<=): nan теж відсікається
             stats["out_of_stock"] += 1
             continue
         if is_clearance_item(item.get("name") or "", item.get("category_name") or "", str(item.get("category_id") or "")):
@@ -917,7 +917,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             continue
         image = _upscale_prom_image(image)
 
-        stock = item.get("stock", 0)
+        stock = _stock_num   # число, перевірене гейтом вище (рядок '5' раніше проходив гейт, а нижче падав на stock > 0)
 
         brand = normalize_vendor(item.get("vendor") or "")
         if not brand:

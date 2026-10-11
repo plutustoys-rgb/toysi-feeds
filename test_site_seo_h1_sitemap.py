@@ -82,16 +82,62 @@ chk("вступний текст: стоїть між H1 і списком то�
 other = (out / f"category-{bs.slugify('Кат05')}.html").read_text(encoding="utf-8")
 chk("категорія без тексту (і з порожнім значенням) — блоку нема", "cat-intro" not in other and "cat-intro" not in (out / "category-kat00.html").read_text(encoding="utf-8"))
 chk("текст для неіснуючої категорії нічого не створює і не падає", not (out / "category-nonexistent.html").exists())
-bs._CATEGORY_TEXTS_FILE = str(out / "nope.json")
-chk("нема файлу / битий JSON → порожньо, без винятку", bs._load_category_texts() == {})
-(out / "bad.json").write_text("{not json", encoding="utf-8")
-bs._CATEGORY_TEXTS_FILE = str(out / "bad.json")
-chk("битий JSON → порожньо, без винятку", bs._load_category_texts() == {})
+import io  # noqa: E402
+import contextlib  # noqa: E402
+
+
+def load_with(content, name, binary=False):
+    f = out / name
+    if content is not None:
+        (f.write_bytes if binary else f.write_text)(content, **({} if binary else {"encoding": "utf-8"}))
+    bs._CATEGORY_TEXTS_FILE = str(f)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        res = bs._load_category_texts()
+    return res, err.getvalue()
+
+
+r, e = load_with(None, "nope.json")
+chk("нема файлу → порожньо БЕЗ попередження (так і задумано)", r == {} and e == "")
+r, e = load_with("{not json", "bad.json")
+chk("битий JSON → порожньо, але ГОЛОСНО: stderr називає причину", r == {} and "category_texts.json" in e and "невалідний JSON" in e)
+r, e = load_with('{"a": "p1\n\np2"}'.replace("\\n", "\n"), "enter.json")                      # справжній Enter усередині рядка
+chk("справжній Enter усередині рядка → голосне попередження з підказкою про \\n\\n", r == {} and "Enter" in e)
+r, e = load_with(b"\xef\xbb\xbf" + json.dumps({"kartyny": "Текст"}, ensure_ascii=False).encode("utf-8"), "bom.json", binary=True)
+chk("BOM (Блокнот/Windows) читається нормально", r == {"kartyny": "Текст"} and e == "")
+r, e = load_with(json.dumps({"a": "ok", "b": 5, "c": None, "d": ["x"], "e": "   "}), "mixed.json")
+chk("не-рядкові значення відкидаються ГОЛОСНО, порожній/пробільний рядок — мовчки; лишається лише валідне", r == {"a": "ok"} and "b" in e and "відкинуто" in e)
+r, e = load_with('["a"]', "list.json")
+chk("корінь-список → голосне попередження", r == {} and "очікується об'єкт" in e)
+r, e = load_with("", "empty.json")
+chk("порожній файл → голосне попередження (невалідний JSON)", r == {} and "category_texts.json" in e)
+(out / "cp1251.json").write_bytes('{"a": "Текст"}'.encode("cp1251"))
+bs._CATEGORY_TEXTS_FILE = str(out / "cp1251.json")
+_e = io.StringIO()
+with contextlib.redirect_stderr(_e):
+    _r = bs._load_category_texts()
+chk("файл у cp1251 → порожньо, ГОЛОСНО (не мовчки)", _r == {} and "НЕ прочитано" in _e.getvalue())
+
+# slug без сторінки категорії → попередження наприкінці build()
+(out / "typo.json").write_text(json.dumps({"kartyny-za-nomeramy": "Ок", "kartyni-za-nomeramy": "Друкарська помилка"}, ensure_ascii=False), encoding="utf-8")
+bs._CATEGORY_TEXTS_FILE = str(out / "typo.json")
+_e2 = io.StringIO()
+with contextlib.redirect_stderr(_e2):
+    bs.build()
+chk("slug без сторінки категорії (друкарська помилка) → попередження у stderr збірки", "kartyni-za-nomeramy" in _e2.getvalue() and "slug без сторінки" in _e2.getvalue())
+chk("…а коректний slug не згадується як невідповідний", "'kartyny-za-nomeramy'" not in _e2.getvalue())
+
+# файл, що реально лежить у репо (пілот SEO)
+shipped = json.loads((HERE / "site" / "category_texts.json").read_text(encoding="utf-8-sig"))
+chk("site/category_texts.json у репо: об'єкт, усі значення — непорожні рядки без HTML-символів < >", isinstance(shipped, dict) and shipped and all(isinstance(v, str) and v.strip() and "<" not in v and ">" not in v for v in shipped.values()))
+chk("site/category_texts.json: ключі — slug-и [a-z0-9-]+", all(re.fullmatch(r"[a-z0-9-]+", k) for k in shipped))
 
 # eager у списках
 imgs = re.findall(r'<a class="card" href="product-\d+\.html"><div class="ph"><img ([^>]*)>', p1)
 chk("список: перші 4 картки без lazy, решта — lazy", len(imgs) == 24 and all("lazy" not in x for x in imgs[:4]) and all("lazy" in x for x in imgs[4:]))
 chk("список: fetchpriority=high лише в першої картки", 'fetchpriority="high"' in imgs[0] and sum(1 for x in imgs if "fetchpriority" in x) == 1)
+imgs2 = re.findall(r'<a class="card" href="product-\d+\.html"><div class="ph"><img ([^>]*)>', p2)
+chk("пагінація (стор.2): усі картки lazy — eager лише на стор.1", imgs2 and all("lazy" in x for x in imgs2) and not any("fetchpriority" in x for x in imgs2))
 
 # sitemap
 sm = (out / "sitemap.xml").read_text(encoding="utf-8")
@@ -105,7 +151,7 @@ chk("пагінація лишилась доступною: rel=next на ст�
 # головна: популярні категорії
 home = (out / "index.html").read_text(encoding="utf-8")
 m = re.search(r'<nav class="catlinks" aria-label="Популярні категорії">(.*?)</nav>', home, re.S)
-links = re.findall(r'<a href="(category-[^"]+\.html)">([^<]*) <span>(\d+)</span></a>', m.group(1)) if m else []
+links = re.findall(r'<a href="(category-[^"]+\.html)">([^<]*)</a><span>(\d+)</span>', m.group(1)) if m else []
 chk("головна: блок «Популярні категорії» з 30 посиланнями", m is not None and len(links) == 30 and "<h2>Популярні категорії</h2>" in home)
 chk("головна: «Уцінки» серед популярних нема", not any("Уцінк" in t for _, t, _ in links))
 chk("головна: посилання ведуть на ІСНУЮЧІ сторінки категорій", all((out / h).exists() for h, _, _ in links))
@@ -117,11 +163,14 @@ def _mk(i, cat):
     return {"id": str(9000 + i), "name": f"Т{i}", "price": 300, "category": cat, "photo": "https://x/1.jpg", "stock": 3, "desc": "", "contribution": 150.0}
 
 
-few = {"Ляльки": [_mk(1, "Ляльки"), _mk(2, "Ляльки")], "Пазли": [_mk(3, "Пазли")], "Уцінка": [_mk(i, "Уцінка") for i in range(10, 15)]}
-bs.write_home([p for v in few.values() for p in v], few, ["Ляльки", "Пазли", "Уцінка"], {c: bs.slugify(c) for c in few})
+odd = 'Кубики & пазли <b>"Ціна"</b> «Розумні»'
+few = {"Ляльки": [_mk(1, "Ляльки"), _mk(2, "Ляльки")], "Пазли": [_mk(3, "Пазли")], odd: [_mk(4, odd)], "Уценка": [_mk(i, "Уценка") for i in range(20, 25)], "Уцінка": [_mk(i, "Уцінка") for i in range(10, 15)]}
+bs.write_home([p for v in few.values() for p in v], few, ["Ляльки", "Пазли", odd, "Уценка", "Уцінка"], {c: bs.slugify(c) for c in few})
 h3 = (out / "index.html").read_text(encoding="utf-8")
 m3 = re.search(r'<nav class="catlinks"[^>]*>(.*?)</nav>', h3, re.S)
-chk("мало категорій: у «Популярних» лише звичайні, «Уцінки» нема, рахунок правильний", m3 is not None and "Уцінк" not in m3.group(1) and ">Ляльки <span>2</span>" in m3.group(1) and ">Пазли <span>1</span>" in m3.group(1))
+chk("назви в «Популярних» екрануються (& < > \") — жодного літерального <b> у блоці", m3 is not None and "<b>" not in m3.group(1) and "&lt;b&gt;" in m3.group(1) and "&amp;" in m3.group(1))
+chk("і «Уцінка», і варіант «Уценка» не потрапляють у популярні", m3 is not None and "Уцінк" not in m3.group(1) and "Уценк" not in m3.group(1))
+chk("мало категорій: у «Популярних» лише звичайні, «Уцінки» нема, рахунок правильний", m3 is not None and "Уцінк" not in m3.group(1) and ">Ляльки</a><span>2</span>" in m3.group(1) and ">Пазли</a><span>1</span>" in m3.group(1))
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ SEO: H1/слот тексту/eager/sitemap/популярні категорії — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

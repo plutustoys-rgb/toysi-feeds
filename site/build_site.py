@@ -476,6 +476,10 @@ def build():
             except OSError:
                 pass
 
+    _written_slugs = {m.group(1) for m in (re.fullmatch(r"category-(.+)\.html", f) for f in paged if not re.search(r"_\d+\.html$", f)) if m}
+    _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)
+    if _unmatched:
+        print(f"[build] ⚠ category_texts.json: slug без сторінки категорії (друкарська помилка? текст не з'явиться): {_unmatched[:10]}", file=sys.stderr)
     print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, сторінок без залишку (OutOfStock) {len(oos_prods)}, "
           "+index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
@@ -723,14 +727,30 @@ _CATEGORY_TEXTS = {}
 
 
 def _load_category_texts():
-    """site/category_texts.json: {slug: "абзац 1\n\nабзац 2"} — унікальні вступні тексти категорій від SEO (11.10.2026). Нема файлу/биттий JSON — порожньо (сайт без вступів)."""
+    """site/category_texts.json: {slug: "абзац 1\\n\\nабзац 2"} — унікальні вступні тексти категорій від SEO (11.10.2026). Нема файлу — порожньо (так і задумано).
+    ГОЛОСНО (stderr), а не мовчки, коли файл ЄСТЬ, але не прочитався (BOM читаємо як utf-8-sig; битий JSON, не-словник) або в ньому відкинуто значення: тоді SEO бачить причину в журналі збірки."""
     global _CATEGORY_TEXTS
+    _CATEGORY_TEXTS = {}
     try:
-        with open(_CATEGORY_TEXTS_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        _CATEGORY_TEXTS = {str(k): str(v) for k, v in data.items() if isinstance(v, str) and v.strip()} if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        _CATEGORY_TEXTS = {}
+        with open(_CATEGORY_TEXTS_FILE, encoding="utf-8-sig") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return _CATEGORY_TEXTS
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"[build] ⚠ category_texts.json НЕ прочитано ({type(e).__name__}: {e}) — вступів категорій на сайті не буде", file=sys.stderr)
+        return _CATEGORY_TEXTS
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        print(f"[build] ⚠ category_texts.json — невалідний JSON ({e}); частий випадок: справжній Enter усередині рядка (пиши \\n\\n) — вступів категорій на сайті не буде", file=sys.stderr)
+        return _CATEGORY_TEXTS
+    if not isinstance(data, dict):
+        print(f"[build] ⚠ category_texts.json — очікується об'єкт {{slug: текст}}, отримано {type(data).__name__} — вступів не буде", file=sys.stderr)
+        return _CATEGORY_TEXTS
+    bad = [k for k, v in data.items() if not isinstance(v, str)]
+    if bad:
+        print(f"[build] ⚠ category_texts.json: значення НЕ рядок, відкинуто: {bad[:10]}", file=sys.stderr)
+    _CATEGORY_TEXTS = {str(k): v for k, v in data.items() if isinstance(v, str) and v.strip()}
     return _CATEGORY_TEXTS
 
 
@@ -768,7 +788,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
         # (усі товари), тож фільтрує/сортує ВЕСЬ каталог, не лише сторінку. Прогресивне покращення:
         # без JS лишається статична пагінована сітка (SEO), контроли сховані (hidden) до ініціалізації.
         controls = _catalog_controls() if (active is None and k == 1) else ""
-        static_grid = grid(chunk, eager_n=4) + _pager(fname, k, pages)
+        static_grid = grid(chunk, eager_n=(4 if k == 1 else 0)) + _pager(fname, k, pages)
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
         body = (
@@ -902,7 +922,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     if pop:
         popular = ('<div class="sec-title"><h2>Популярні категорії</h2><a href="categories.html">Усі категорії →</a></div>'
                    '<nav class="catlinks" aria-label="Популярні категорії">'
-                   + "".join(f'<a href="category-{cat_slug[c]}.html">{esc(c)} <span>{len(cats[c])}</span></a>' for c in pop)
+                   + "".join(f'<a href="category-{cat_slug[c]}.html">{esc(c)}</a><span>{len(cats[c])}</span>' for c in pop)
                    + '</nav>')
     carousel = ""
     if picks:

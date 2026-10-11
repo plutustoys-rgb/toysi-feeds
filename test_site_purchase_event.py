@@ -67,7 +67,8 @@ async function run(opts){
     console.log(JSON.stringify({loc:r.loc.href, order:r.ss.getItem("pt_last_order"), items:JSON.parse(r.ss.getItem("pt_last_order_items")||"null"), cart:ls.getItem("pt_cart_v1")}));
   } else if(scenario==="submit_prepaid"){
     const ls=store(); ls.setItem("pt_cart_v1", JSON.stringify(cartItem));
-    const r=await run({ls, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge"], payment:"prepaid", liqpay:{data:"d",signature:"s",action_url:"https://www.liqpay.ua/api/3/checkout"}});
+    const ss0=store(); ss0.setItem("pt_last_order_items", JSON.stringify([{id:"1",name:"Старе COD-замовлення",price:100,qty:1}]));   // у тій самій вкладці раніше було COD
+    const r=await run({ls, ss:ss0, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge"], payment:"prepaid", liqpay:{data:"d",signature:"s",action_url:"https://www.liqpay.ua/api/3/checkout"}});
     const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
     await new Promise(x=>setTimeout(x,50));
     console.log(JSON.stringify({order:r.ss.getItem("pt_last_order"), items:r.ss.getItem("pt_last_order_items")}));
@@ -100,7 +101,7 @@ async function run(opts){
     chk("COD: позиції замовлення збережено для purchase (id, name, price, qty)", a is not None and a["items"] == [{"id": "235193", "name": "Картина за номерами", "price": 468, "qty": 2}])
     chk("COD: кошик очищено", a is not None and json.loads(a["cart"] or "{}") == {})
     p = run("submit_prepaid")
-    chk("prepaid: номер замовлення збережено, а позиції для purchase НЕ зберігаються (оплата ще не підтверджена)", p is not None and p["order"] == "PT-TEST-1" and p["items"] is None)
+    chk("prepaid: СТАРІ позиції попереднього COD-замовлення у вкладці стерто (інакше purchase піде за неоплаченим prepaid)", p is not None and p["order"] == "PT-TEST-1" and p["items"] is None)
     t = run("thanks")
     gt = [e for e in (t or {}).get("gt1", []) if e[:2] == ["event", "purchase"]]
     chk("thanks: рівно ОДИН gtag('event','purchase')", t is not None and len(gt) == 1)

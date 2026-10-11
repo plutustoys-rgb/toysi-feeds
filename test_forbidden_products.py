@@ -156,7 +156,7 @@ chk("структура: generate_google_feed.py імпортує forbidden_prod
 for f in VIA_TOP:
     src = (BASE / f).read_text(encoding="utf-8")
     chk(f"структура: {f} будує фід через select_feed_catalog + build_feed_items (політика в build_feed_items)",
-        "select_feed_catalog(catalog)" in src and "build_feed_items(" in src)
+        "select_feed_catalog(catalog" in src and "build_feed_items(" in src)
 known = set(DIRECT) | set(VIA_TOP) | set(EXEMPT)
 found = {p.name for p in BASE.glob("generate_*.py")} | {"site/build_site.py"}
 chk(f"структура: НЕМАЄ невідомого генератора вітрини (додали новий? — внесіть у DIRECT/VIA_TOP/EXEMPT цього тесту): {sorted(found - known)}", not (found - known))

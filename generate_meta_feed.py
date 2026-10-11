@@ -136,7 +136,7 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
     links = _load_own_product_links_cache()
     if not links:
         print(
-            "[Meta] own_product_links_cache.json відсутній/застарів — фід матиме 0 товарів "
+            "[Meta] own_product_links_cache.json відсутній/застарів — на фід це НЕ впливає (посилання беруться з картки сайту), "
             "(generate_google_feed.py має відпрацювати ПЕРШИМ у цьому ж прогоні).",
             file=sys.stderr,
         )

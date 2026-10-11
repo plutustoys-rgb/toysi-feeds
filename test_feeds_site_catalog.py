@@ -75,7 +75,6 @@ chosen, mode = gg.select_feed_catalog(catalog)
 chk("індекс недоступний → запасний відбір Prom-топом (НЕ весь каталог Toysi)", mode == "prom_top" and list(chosen) == ["1"] and called)
 # fallback: індекс є, але збігів < FEED_MIN_SITE_CATALOG
 called.clear()
-set_index({str(i): 100 for i in range(1, 1100)})                 # індекс валідний (≥1000), але з каталогом перетинається ЛИШЕ 1100 > 1000
 set_index({**{str(i): 100 for i in range(5000, 6200)}, "1": 100})   # 1201 id в індексі, збіг з каталогом = 1 << 1000
 chosen, mode = gg.select_feed_catalog(catalog)
 chk("збігів каталогу з індексом < межі → запасний відбір", mode == "prom_top" and called)
@@ -112,10 +111,44 @@ site_ids = gg.load_site_product_ids()
 its, st = gg.build_feed_items({"9100": probe}, {}, {}, {}, None, site_ids)
 chk(f"позиція з внеском {c_site:.1f} ₴ > 0 проходить (формула фіда збігається з build_site)", c_site > 0 and len(its) == 1)
 
+# ── аудит #672: кривий поріг у .env не валить імпорт; обрізаний індекс не стискає фід; порядок; категорії; залишок
+chk("поріг: '', '0', 'abc', 'nan', 'inf', '1,5', '-1000' → 0, 0, 0, 0, 0, 1.5, -1000",
+    [gg._parse_feed_min_contribution(x) for x in ("", "0", "abc", "nan", "inf", "1,5", "-1000")] == [0.0, 0.0, 0.0, 0.0, 0.0, 1.5, -1000.0])
+chk("поріг: None → 0", gg._parse_feed_min_contribution(None) == 0.0)
+import subprocess  # noqa: E402
+r = subprocess.run([sys.executable, "-c", "import generate_google_feed"], capture_output=True, text=True, encoding="utf-8",
+                   env={**os.environ, "FEED_MIN_SITE_CONTRIBUTION": "abc", "PYTHONIOENCODING": "utf-8"}, cwd=str(Path(__file__).parent))
+chk("імпорт generate_google_feed з FEED_MIN_SITE_CONTRIBUTION=abc НЕ падає (інакше лягли б усі три фіди)", r.returncode == 0)
+
+set_index(index)
+big_top = {str(i): catalog[str(i)] for i in range(1, 1501)}
+big_top.update({f"t{i}": item(f"t{i}") for i in range(1, 2501)})     # «Prom-топ» 4000, а збігів із сайтом ≈1508 (< 50% від 4000)
+chosen, mode = gg.select_feed_catalog(catalog, big_top)
+chk("множина сайту < 50% від Prom-топу (обрізаний індекс?) → запасний відбір, фід не стискається мовчки", mode == "prom_top" and chosen is big_top)
+small_top = {str(i): catalog[str(i)] for i in (5, 3, 9)}
+chosen, mode = gg.select_feed_catalog(catalog, small_top)
+chk("режим 'site' і порядок: спершу позиції Prom-топу в його ранзі (5, 3, 9), далі решта", mode == "site" and list(chosen)[:3] == ["5", "3", "9"] and len(chosen) == len(catalog) - 1)
+
+zero_stock = item(9201, stock=0)
+bike = item(9202, name="Велосипед дитячий", category="Велосипеди")
+mask = item(9203, name="Маска захисна", category="Маски захисні")
+therm = item(9204, name="Термометр", category="Термометри та аспіратори")
+for it in (zero_stock, bike, mask, therm, item(9205)):
+    index[it["id"]] = float(bs.price_of(it))
+set_index(index)
+site_ids = gg.load_site_product_ids()
+its, st = gg.build_feed_items({it["id"]: it for it in (zero_stock, bike, mask, therm, item(9205))}, {}, {}, {}, None, site_ids)
+got = {i["id"] for i in its}
+chk("без залишку (stock=0) не у фіді, лічильник out_of_stock", "9201" not in got and st["out_of_stock"] == 1)
+chk("категорії велосипеди / маски захисні / термометри та аспіратори не у фіді", not ({"9202", "9203", "9204"} & got) and st["excluded_category"] == 3)
+chk("звичайний товар поруч проходить", "9205" in got)
+its, st = gg.build_feed_items({"9206": item(9206, stock="abc"), "9207": item(9207, stock=None)}, {}, {}, {}, None, None)
+chk("stock = сміття/None → не у фіді, без падіння", not its and st["out_of_stock"] == 2)
+
 # ── структурно: фіди Google/Meta/Bing беруть select_feed_catalog, а не select_top_items напряму
 for f in ("generate_google_feed.py", "generate_meta_feed.py", "generate_bing_feed.py"):
     src = (Path(__file__).parent / f).read_text(encoding="utf-8")
-    chk(f"структура: {f} будує фід із select_feed_catalog", "select_feed_catalog(catalog)" in src)
+    chk(f"структура: {f} будує фід із select_feed_catalog", "select_feed_catalog(catalog" in src)
 for f in ("generate_meta_feed.py", "generate_bing_feed.py"):
     src = (Path(__file__).parent / f).read_text(encoding="utf-8")
     chk(f"структура: {f} не викликає select_top_items напряму", "select_top_items(" not in src)

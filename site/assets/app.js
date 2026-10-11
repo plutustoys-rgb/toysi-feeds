@@ -403,15 +403,22 @@
     var listName=car.getAttribute("data-list")||"Добірка Плутуса";
     var slides=Array.prototype.slice.call(car.querySelectorAll("a.card"));
     function items(){ return slides.map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
+    car.classList.add("js");   // стрілки показуємо лише коли JS працює (без нього вони були б «мертвими»; нативний скрол/свайп лишається)
     function sync(){
       if(!track||!left||!right) return;
-      left.disabled = track.scrollLeft <= 2;
-      right.disabled = track.scrollLeft + track.clientWidth >= track.scrollWidth - 2;
+      // допуск ±6 px: padding .track + scroll-snap лишають scrollLeft ≈2,4 у стані спокою (аудит #678)
+      left.disabled = track.scrollLeft <= 6;
+      right.disabled = track.scrollLeft + track.clientWidth >= track.scrollWidth - 6;
     }
-    function scrollBy(dir){ if(track) track.scrollBy({left:dir*Math.max(160, track.clientWidth*0.8), behavior:"smooth"}); }
+    function scrollBy(dir){
+      var reduce = typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if(track) track.scrollBy({left:dir*Math.max(160, track.clientWidth*0.8), behavior: reduce ? "auto" : "smooth"});
+    }
     if(left) left.addEventListener("click", function(){ scrollBy(-1); });
     if(right) right.addEventListener("click", function(){ scrollBy(1); });
     if(track){ track.addEventListener("scroll", sync); sync(); }
+    window.addEventListener("resize", sync);   // ширина вікна/поворот екрана міняють «край»
+    window.addEventListener("orientationchange", sync);
     // view_item_list: один раз, коли карусель реально потрапила на екран (без IntersectionObserver — одразу)
     var sent=false;
     function fireList(){

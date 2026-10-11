@@ -15,13 +15,14 @@ PlutusToys — статичний генератор власного магаз
 Ціна = real_toysi_discounted × 1.5 (без комісії маркетплейсу — сенс власного сайту).
 LIMIT (env) обмежує к-ть карток для швидкого демо-прогону; порожній = увесь in-stock+фото.
 """
-import os, re, sys, json, html, math, unicodedata, hashlib
+import os, re, sys, json, html, math, unicodedata, hashlib, random
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 
 import parser as tp
 import competitor_pricing as cp
 from trademark_filter import is_uno_trademark_blocked
 from forbidden_products import is_forbidden
+from weapon_policy import is_weapon_replica
 
 OUT = os.path.dirname(os.path.abspath(__file__))
 PRICE_MULT = cp.SITE_PRICE_MULT   # єдине джерело — competitor_pricing.site_retail_price (збіг з Google/Meta/Bing-фідами)
@@ -252,10 +253,10 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
     )
 
-def tile(p, cls="", eager=False):
+def tile(p, cls="", eager=False, prio=False):
     """Картка товару. cls — додатковий клас (напр. «slide» у каруселі); eager=True — без loading=lazy (перші слайди каруселі = кандидат на LCP)."""
     av = '<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>'
-    lazy = "" if eager else ' loading="lazy"'
+    lazy = (' fetchpriority="high"' if prio else "") if eager else ' loading="lazy"'
     img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}"{lazy}>'
            if p["photo"] else '<div class="ph"></div>')
     klass = ("card " + cls) if cls else "card"
@@ -783,30 +784,65 @@ HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2
 HOME_PICK_EXCLUDED_CATS = frozenset({"картини за номерами", "брелоки", "автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя"})
 
 
+HOME_PICK_SEED = 20261011           # фіксоване зерно: перемішування добірки стабільне (не стрибає між збірками, поки не змінились дані)
+_PICK_STOP = frozenset({"для", "та", "від", "дитячий", "дитяча", "дитяче", "дитячі", "дитячих", "іграшка", "іграшки", "мʼяка", "м'яка", "мя",
+                        "набір", "набори", "гра", "великий", "великі", "маленький", "новий", "nbsp"})
+_PICK_LATIN_STOP = frozenset({"kids", "baby", "toys", "toy", "game", "games", "with", "set"})
+
+
+def _pick_key(name):
+    """Ключ «основи назви» для дедуплікації добірки (SMM 11.10: не більше 1 картки на лінійку/модель): текст у лапках (перші 2 слова) → перше латинське слово-бренд (≥4 літер)
+    → перші 2 значущі слова. Колір/розмір у дужках відкидаємо; префікси «Мʼяка іграшка»/«Набір» — у стоп-списку."""
+    n = html.unescape(name or "").lower().replace("ʼ", "'").replace("’", "'")
+    n = re.sub(r"\([^)]*\)", " ", n)
+    q = re.search(r'["«“„]([^"»”“]{3,}?)["»”“]', n)
+    if q:
+        words = re.findall(r"[a-zа-яіїєґ0-9']+", q.group(1))
+        if words:
+            return " ".join(words[:2])
+    lat = [w for w in re.findall(r"[a-z][a-z0-9]{3,}", n) if w not in _PICK_LATIN_STOP]
+    if lat:
+        return lat[0]
+    words = [w for w in re.findall(r"[а-яіїєґ0-9']{3,}", n) if w not in _PICK_STOP]
+    return " ".join(words[:2]) or n.strip()
+
+
 def home_pick(prods):
-    """Відбір для каруселі: у наявності (prods), ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка», не з HOME_PICK_EXCLUDED_CATS, не більше 2 з категорії;
-    порядок — за внеском спадно (детермінований: тай-брейк id), перші HOME_PICK_COUNT. «Знижок» і «Хітів продажів» нема: старої ціни й власних продажів немає."""
-    cand = []
+    """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
+    HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
+    round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
+    на реальних даних усі 10 коштували 695–700 ₴, медіанний вибір дає ≈470–650 ₴), далі перемішування з фіксованим зерном. «Знижок» і «Хітів продажів» нема."""
+    elig = []
     for p in prods:
         c = p.get("contribution")
         cat = (p.get("category") or "").strip().lower()
-        if c is None or c < HOME_MIN_CONTRIB or not p.get("photo") or p.get("stock", 0) <= 0:
+        name = p.get("name") or ""
+        if c is None or c < HOME_MIN_CONTRIB or not p.get("photo") or (p.get("stock") or 0) <= 0:
             continue
         if not (HOME_PICK_PRICE_MIN <= p["price"] <= HOME_PICK_PRICE_MAX):
             continue
-        if cat in HOME_PICK_EXCLUDED_CATS or "уцінк" in cat or "уценк" in cat:
+        if cat in HOME_PICK_EXCLUDED_CATS or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
             continue
-        cand.append((-c, str(p["id"]), p))
-    cand.sort(key=lambda t: (t[0], t[1]))
-    out, per = [], {}
-    for _, _, p in cand:
-        k = p["category"]
-        if per.get(k, 0) >= HOME_PICK_MAX_PER_CAT:
+        if is_weapon_replica(str(p["id"]), name):
             continue
-        per[k] = per.get(k, 0) + 1
-        out.append(p)
-        if len(out) >= HOME_PICK_COUNT:
-            break
+        elig.append(p)
+    by = {}
+    for p in sorted(elig, key=lambda p: (-p["contribution"], str(p["id"]))):
+        by.setdefault(p["category"], []).append(p)
+    order = sorted(by, key=lambda c: (-by[c][0]["contribution"], c))
+    out, used = [], set()
+    for _ in range(HOME_PICK_MAX_PER_CAT):
+        for c in order:
+            if len(out) >= HOME_PICK_COUNT:
+                break
+            lst = [p for p in by[c] if _pick_key(p["name"]) not in used]
+            if not lst:
+                continue
+            p = lst[len(lst) // 2]
+            used.add(_pick_key(p["name"]))
+            out.append(p)
+            by[c] = [x for x in by[c] if x is not p]
+    random.Random(HOME_PICK_SEED).shuffle(out)
     return out
 
 
@@ -830,10 +866,11 @@ def write_home(prods, cats, cat_list, cat_slug):
     )
     carousel = ""
     if picks:
-        slides = "".join(tile(p, cls="slide", eager=(i < 3)) for i, p in enumerate(picks))
+        # перші 5 слайдів без lazy (на десктопі на першому екрані 5; SMM 11.10), перший — fetchpriority=high (кандидат на LCP)
+        slides = "".join(tile(p, cls="slide", eager=(i < 5), prio=(i == 0)) for i, p in enumerate(picks))
         carousel = (
           '<div class="sec-title"><h2>Добірка Плутуса</h2><a href="catalog.html">Дивитись усі →</a></div>'
-          '<div class="car" id="home-car" data-list="Добірка Плутуса">'
+          '<div class="car" id="home-car" role="region" aria-label="Добірка Плутуса" data-list="Добірка Плутуса">'
             '<button class="arrow l" type="button" aria-label="Попередні товари">‹</button>'
             f'<div class="track">{slides}</div>'
             '<button class="arrow r" type="button" aria-label="Наступні товари">›</button>'

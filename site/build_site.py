@@ -252,12 +252,15 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
     )
 
-def tile(p):
+def tile(p, cls="", eager=False):
+    """Картка товару. cls — додатковий клас (напр. «slide» у каруселі); eager=True — без loading=lazy (перші слайди каруселі = кандидат на LCP)."""
     av = '<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>'
-    img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" loading="lazy">'
+    lazy = "" if eager else ' loading="lazy"'
+    img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}"{lazy}>'
            if p["photo"] else '<div class="ph"></div>')
+    klass = ("card " + cls) if cls else "card"
     return (
-      f'<a class="card" href="product-{esc(p["id"])}.html">'
+      f'<a class="{klass}" href="product-{esc(p["id"])}.html">'
       f'<div class="ph">{img}</div>'
       f'<div class="info"><div class="nm">{esc(p["name"])}</div>'
       f'<div class="foot"><span class="pr">{p["price"]} ₴</span>{av}</div></div></a>'
@@ -772,17 +775,50 @@ def home_jsonld() -> str:
     return out
 
 
+# ── Головна: «Добірка Плутуса» (SMM 09.10.2026, рішення власника «герой крінж, зверху карусель») ──
+HOME_MIN_CONTRIB = 100.0           # внесок на замовлення, ₴ (рішення Консультанта: не ведемо вітрину позицією без маржі) — існуючий поріг «Новинок»
+HOME_PICK_PRICE_MIN, HOME_PICK_PRICE_MAX = 150, 700    # ₴: імпульсна ціна (SMM): рамка, не мірило
+HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2
+# Категорії, яких у каруселі не буде: картини за номерами й брелоки (SMM: перші 10 не вони), зброя/репліки (як у фідах Google/Meta — перша вітрина не місце для спірного).
+HOME_PICK_EXCLUDED_CATS = frozenset({"картини за номерами", "брелоки", "автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя"})
+
+
+def home_pick(prods):
+    """Відбір для каруселі: у наявності (prods), ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка», не з HOME_PICK_EXCLUDED_CATS, не більше 2 з категорії;
+    порядок — за внеском спадно (детермінований: тай-брейк id), перші HOME_PICK_COUNT. «Знижок» і «Хітів продажів» нема: старої ціни й власних продажів немає."""
+    cand = []
+    for p in prods:
+        c = p.get("contribution")
+        cat = (p.get("category") or "").strip().lower()
+        if c is None or c < HOME_MIN_CONTRIB or not p.get("photo") or p.get("stock", 0) <= 0:
+            continue
+        if not (HOME_PICK_PRICE_MIN <= p["price"] <= HOME_PICK_PRICE_MAX):
+            continue
+        if cat in HOME_PICK_EXCLUDED_CATS or "уцінк" in cat or "уценк" in cat:
+            continue
+        cand.append((-c, str(p["id"]), p))
+    cand.sort(key=lambda t: (t[0], t[1]))
+    out, per = [], {}
+    for _, _, p in cand:
+        k = p["category"]
+        if per.get(k, 0) >= HOME_PICK_MAX_PER_CAT:
+            continue
+        per[k] = per.get(k, 0) + 1
+        out.append(p)
+        if len(out) >= HOME_PICK_COUNT:
+            break
+    return out
+
+
 def write_home(prods, cats, cat_list, cat_slug):
-    # «Новинки» (назва — домен SMM: не «Хіти продажів») — по 1 товару з топ-категорій.
-    # ФІЛЬТР (рішення Консультанта): на головну — лише позиції з внеском ≥ HOME_MIN_CONTRIB,
-    # щоб не вести вітрину товаром, що майже не приносить маржі. Серед прохідних беремо
-    # медіанний за списком (різноманітність, не лише найвищий внесок); cats[c] уже
-    # відсортований за внеском спадно. Категорії без прохідних — пропускаємо.
-    HOME_MIN_CONTRIB = 100.0
+    picks = home_pick(prods)
+    pick_ids = {p["id"] for p in picks}
+    # Секція нижче каруселі: по 1 товару з топ-категорій з внеском ≥ HOME_MIN_CONTRIB (як і було), без повторів із каруселлю. Назва НЕ «Новинки»:
+    # ми не знаємо, що нове (SMM 09.10) — «Більше іграшок».
     novelties = []
     for c in cat_list[:12]:
-        lst = [p for p in cats[c]
-               if p.get("contribution") is not None and p["contribution"] >= HOME_MIN_CONTRIB]
+        lst = [p for p in cats[c] if p["id"] not in pick_ids
+               and p.get("contribution") is not None and p["contribution"] >= HOME_MIN_CONTRIB]
         if lst:
             novelties.append(lst[len(lst) // 2])
         if len(novelties) >= 8:
@@ -792,16 +828,27 @@ def write_home(prods, cats, cat_list, cat_slug):
         f'<div class="emo">{cat_emoji(c)}</div><div class="t">{esc(c)}</div></a>'
         for c in cat_list[:10]
     )
+    carousel = ""
+    if picks:
+        slides = "".join(tile(p, cls="slide", eager=(i < 3)) for i, p in enumerate(picks))
+        carousel = (
+          '<div class="sec-title"><h2>Добірка Плутуса</h2><a href="catalog.html">Дивитись усі →</a></div>'
+          '<div class="car" id="home-car" data-list="Добірка Плутуса">'
+            '<button class="arrow l" type="button" aria-label="Попередні товари">‹</button>'
+            f'<div class="track">{slides}</div>'
+            '<button class="arrow r" type="button" aria-label="Наступні товари">›</button>'
+          '</div>'
+        )
     body = (
-      '<div class="hero"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус — маскот PlutusToys" width="70" height="64" decoding="async"></div>'
-      '<h1>Іграшки, що радують</h1>'
-      '<p>Обираємо іграшки, які роблять дитину щасливою, а маму — спокійною. '
-      'Привезе Нова Пошта, а Плутус подбає про решту.</p>'
-      '<a class="btn" href="catalog.html">Обрати іграшку</a>'
-      '<p class="hero-note">🚚 Доставка Новою Поштою по Україні · ' + PAY_HERO + '</p></div>'
+      # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
+      '<div class="hero2"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус — маскот PlutusToys" width="109" height="100" decoding="async">'
+      '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину, а маму робить спокійною.</p></div>'
+      '<div class="act"><a class="btn" href="catalog.html">Обрати іграшку</a>'
+      '<div class="chip">🚚 Нова Пошта · ' + PAY_SHORT + '</div></div></div>'
+      + carousel +
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
       f'<div class="catrow">{cat_tiles}</div>'
-      + ('<div class="sec-title"><h2>Новинки</h2><a href="catalog.html">Дивитись усі →</a></div>'
+      + ('<div class="sec-title"><h2>Більше іграшок</h2><a href="catalog.html">Дивитись усі →</a></div>'
          + grid(novelties) if novelties else "")
     )
     _write("index.html", page(

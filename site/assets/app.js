@@ -359,6 +359,8 @@
     initCheckout();
     initNpAutocomplete();
     initCatalog();
+    initHomeCarousel();
+    initContactTracking();
 
     // сторінка подяки — підставити номер замовлення
     var oidEl=document.getElementById("thanks-oid");
@@ -380,6 +382,65 @@
     var vi=document.querySelector("h1.prod") && document.querySelector("[data-add]");
     if(vi){ try{ var vp=JSON.parse(vi.getAttribute("data-add")); track("view_item", [{id:vp.id, name:vp.name, price:+vp.price, qty:1}], +vp.price); }catch(e){} }
   });
+
+  // ── Головна: карусель «Добірка Плутуса» — стрілки, view_item_list / select_item (GA4) ──
+  function trackRaw(name, params, fbName, fbParams, fbCustom){
+    try{
+      var cfg=window.PT_ANALYTICS||{};
+      if(cfg.ga4 && window.gtag){ window.gtag("event", name, params); }
+      if(cfg.fb && window.fbq && fbName){ window.fbq(fbCustom?"trackCustom":"track", fbName, fbParams||{}); }
+    }catch(e){}
+  }
+  function slideData(a, idx){
+    var m=/product-(\d+)\.html/.exec(a.getAttribute("href")||"");
+    var nm=a.querySelector(".nm"), pr=a.querySelector(".pr");
+    return {item_id:m?m[1]:"", item_name:nm?nm.textContent.trim():"", price:pr?parseFloat(pr.textContent):0, index:idx, item_list_name:""};
+  }
+  function initHomeCarousel(){
+    var car=document.getElementById("home-car");
+    if(!car) return;
+    var track=car.querySelector(".track"), left=car.querySelector(".arrow.l"), right=car.querySelector(".arrow.r");
+    var listName=car.getAttribute("data-list")||"Добірка Плутуса";
+    var slides=Array.prototype.slice.call(car.querySelectorAll("a.card"));
+    function items(){ return slides.map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
+    function sync(){
+      if(!track||!left||!right) return;
+      left.disabled = track.scrollLeft <= 2;
+      right.disabled = track.scrollLeft + track.clientWidth >= track.scrollWidth - 2;
+    }
+    function scrollBy(dir){ if(track) track.scrollBy({left:dir*Math.max(160, track.clientWidth*0.8), behavior:"smooth"}); }
+    if(left) left.addEventListener("click", function(){ scrollBy(-1); });
+    if(right) right.addEventListener("click", function(){ scrollBy(1); });
+    if(track){ track.addEventListener("scroll", sync); sync(); }
+    // view_item_list: один раз, коли карусель реально потрапила на екран (без IntersectionObserver — одразу)
+    var sent=false;
+    function fireList(){
+      if(sent) return; sent=true;
+      trackRaw("view_item_list", {item_list_id:"home_pick", item_list_name:listName, items:items()});
+    }
+    if(typeof IntersectionObserver==="function"){
+      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ fireList(); io.disconnect(); } }); }, {threshold:0.4});
+      io.observe(car);
+    } else { fireList(); }
+    car.addEventListener("click", function(e){
+      var a=e.target.closest("a.card"); if(!a) return;
+      var i=slides.indexOf(a); var d=slideData(a, i<0?0:i); d.item_list_name=listName;
+      trackRaw("select_item", {item_list_id:"home_pick", item_list_name:listName, items:[d]});
+    });
+  }
+  // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──
+  function initContactTracking(){
+    document.addEventListener("click", function(e){
+      var t=e.target.closest ? e.target.closest("a[href]") : null; if(!t) return;
+      var href=t.getAttribute("href")||"";
+      if(href.indexOf("tel:")===0){
+        trackRaw("phone_click", {link_url:href, page_path:location.pathname}, "Contact", {method:"phone"}, false);
+      } else if(t.closest(".fsoc")){
+        var net=/instagram\.com/.test(href)?"instagram":(/facebook\.com/.test(href)?"facebook":"other");
+        trackRaw("social_click", {network:net, link_url:href, page_path:location.pathname}, "SocialClick", {network:net}, true);
+      }
+    });
+  }
 
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";

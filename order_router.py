@@ -46,7 +46,7 @@ UKRPOSHTA_STICKERS_DIR = "ukrposhta_stickers"
 # 11.10.2026 (аудит PR #671, Shopify-code): слово «відділення» — ЛИШЕ літери (раніше \w* з'їдало цифри: «відділення166» → №6).
 _WAREHOUSE_RE = re.compile(r"(?:відділенн[а-яіїєґ]*|відд\.?|№)\s*№?\s*(\d+)", re.IGNORECASE)
 # контекст ПЕРЕД збігом, що означає «це не відділення»: «кв.», «квартира», «оф.», «офіс», «буд.», «будинок», «під'їзд», «кімн.» (до 14 символів ліворуч)
-_NOT_BRANCH_CTX_RE = re.compile(r"(?:кв\.?|квартир\w*|оф\.?|офіс\w*|буд\.?|будин\w*|під.?їзд\w*|кімн?\.?|кімнат\w*)\s*$", re.IGNORECASE)
+_NOT_BRANCH_CTX_RE = re.compile(r"(?<![а-яіїєґА-ЯІЇЄҐ])(?:кв\.?|квартир\w*|оф\.?|офіс\w*|буд\.?|будин\w*|під.?їзд\w*|кімн?\.?|кімнат\w*)\s*$", re.IGNORECASE)
 _CITY_PREFIX_RE = re.compile(r"^(м\.|с\.|смт\.?)\s*", re.IGNORECASE)
 _CITY_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 # Витягує область із «(Xобл.)» — область для area_hint (розрізнення міст-тезок при
@@ -274,7 +274,7 @@ def site_np_hold_reason(order: dict, toysi_order) -> str:
     if _NON_NP_RE.search(branch):
         return f"у відділенні вказано іншого перевізника/самовивіз («{branch[:80]}»)"
     num = (order.get("np_warehouse_number") or "").strip()
-    if not re.fullmatch(r"\d{1,6}", num):
+    if not re.fullmatch(r"\d{1,6}", num, re.ASCII):
         return f"нема валідного номера відділення НП (np_branch=«{branch[:80]}»)"
     return ""
 
@@ -302,7 +302,7 @@ def build_toysi_order(order: dict) -> dict | None:
     # чуже відділення стає фізично неможливо: Toysi отримує рівно той номер, що обрав клієнт.
     # У НП резолвимо ЛИШЕ місто (назва→CityRef), і лише коли площадка не дала CityRef напряму.
     wh_number = (order.get("np_warehouse_number") or "").strip() or (warehouse_query or "").strip()
-    if wh_number and not re.fullmatch(r"\d{1,6}", wh_number):
+    if wh_number and not re.fullmatch(r"\d{1,6}", wh_number, re.ASCII):
         wh_number = ""   # не номер відділення НП (стіна цифр/сміття) — не передаємо як shipping_warehouse_id
     if is_np and city and wh_number:
         # ПЕРЕДАЄМО ВИБІР КЛІЄНТА НАПРЯМУ, БЕЗ пошуку/гадання в НП: номер відділення (з площадки
@@ -883,7 +883,7 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         # НЕ передаємо в Toysi (там воно стане «адресною доставкою» невідомо куди): лишаємо в черзі, алертимо власника (тротлінг 6 год на замовлення).
         # Звільнити: виправити np_branch/np_warehouse_number у orders.db (або скасувати замовлення) — наступний цикл підхопить.
         _msg = (f"🛑 {order['internal_order_id']}: замовлення сайту НЕ передано в Toysi — {_hold}. "
-                "Уточніть відділення НП у клієнта (телефон у замовленні) і виправіть np_branch/np_warehouse_number, або скасуйте.")
+                "Уточніть відділення НП у клієнта (телефон у замовленні) і виправіть np_branch/np_warehouse_number, або скасуйте (оплачену передоплату — з поверненням коштів).")
         print(f"[order_router] {_msg}", file=sys.stderr)
         try:
             send_throttled_alert(f"site_np_hold:{order['internal_order_id']}", _msg, cooldown_sec=6 * 60 * 60)

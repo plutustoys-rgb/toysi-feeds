@@ -49,6 +49,8 @@ chk("«кв. №12, відділення №15» → 15", orr.parse_np_branch("�
 chk("Поштомат №7921: …, під'їзд №1 → 7921 (перший збіг — справжній)", orr.parse_np_branch("Бровари, Поштомат №7921: вул. Мудрого, 28а, під'їзд №1 (ТІЛЬКИ ДЛЯ МЕШКАНЦІВ)")[1] == "7921")
 chk("«№47 (до 10 кг): вул. Чукаріна, оф. 3» → 47", orr.parse_np_branch("Львів, №47 (до 10 кг): вул. Чукаріна В., 14, оф. 3")[1] == "47")
 
+chk("ліва межа слова: «пров. Лісобуд №7» — «буд» усередині слова НЕ контекст будинку (номер лишається)", orr.parse_np_branch("Київ, пров. Лісобуд №7")[1] == "7")
+chk("юнікодні цифри (٣٦٩) не вважаються валідним номером відділення (hold)", orr.site_np_hold_reason(order(np_warehouse_number="٣٦٩"), None) != "")
 # ── wh_number: стіна цифр не стає shipping_warehouse_id
 orr.settlement_raion = lambda *a, **k: ""
 big = orr.build_toysi_order(order(platform="prom", np_warehouse_number=None, np_branch="м. Київ, відділення " + "1" * 4301))

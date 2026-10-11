@@ -193,6 +193,24 @@ def analytics_head() -> str:
     return "".join(out)
 
 
+_ASSET_VER = {}
+
+
+def asset_url(rel):
+    """`assets/app.js` -> `assets/app.js?v=<8 hex sha1 вмісту>`. Браузер кешує /assets/ на добу (Cache-Control max-age=86400, деплой Apache), а імена файлів без хешів:
+    після деплою фіксу HTML новий, а app.js/styles.css у відвідувача ще старі до доби (так 10.10 браузер виконував старий app.js при новому HTML). Версія в URL змінюється
+    лише коли змінився вміст → фікс доїжджає одразу. Хеш по вмісту з нормалізованими кінцями рядків (CRLF/LF не змінює версію). Нема файлу (тест/тека без assets) — URL без версії."""
+    if rel not in _ASSET_VER:
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), rel), "rb") as f:
+                data = f.read().replace(b"\r\n", b"\n")
+            _ASSET_VER[rel] = hashlib.sha1(data).hexdigest()[:8]
+        except OSError:
+            _ASSET_VER[rel] = ""
+    v = _ASSET_VER[rel]
+    return f"{rel}?v={v}" if v else rel
+
+
 def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False):
     full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
@@ -227,11 +245,11 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<link rel=\"apple-touch-icon\" href=\"assets/apple-touch-icon.png\">\n"
       "<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
       "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n"
-      "<link rel=\"stylesheet\" href=\"assets/styles.css\">\n"
+      f"<link rel=\"stylesheet\" href=\"{asset_url('assets/styles.css')}\">\n"
       f"{analytics_head()}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
       f"{header()}\n{body}\n{footer()}\n</div>\n"
       f"{search_overlay()}\n"
-      "<script src=\"assets/app.js\"></script>\n</body>\n</html>\n"
+      f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
     )
 
 def tile(p):

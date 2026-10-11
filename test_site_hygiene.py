@@ -38,7 +38,7 @@ plain = b.page("Тест", "<p>x</p>")
 based = b.page("Тест", "<p>x</p>", base_root=True)
 chk("звичайна сторінка БЕЗ <base>", "<base" not in plain)
 chk("base_root=True: <base href=\"/\"> є", '<base href="/">' in based)
-chk("<base> раніше за перший відносний шлях (stylesheet)", based.index('<base href="/">') < based.index('href="assets/styles.css"'))
+chk("<base> раніше за перший відносний шлях (stylesheet)", based.index('<base href="/">') < based.index('href="assets/styles.css'))
 
 # ── 404.html
 tmp = tempfile.mkdtemp()

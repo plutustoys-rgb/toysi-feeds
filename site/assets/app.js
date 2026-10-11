@@ -403,6 +403,10 @@
     var listName=car.getAttribute("data-list")||"Добірка Плутуса";
     var slides=Array.prototype.slice.call(car.querySelectorAll("a.card"));
     function items(){ return slides.map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
+    // Широкий екран (десктоп/планшет) показує 5 слайдів одразу — їх 4-й і 5-й не мають лишатись lazy (порожні картки на першому екрані); на мобільному вони лишаються lazy (≈ −60 КБ до першого свайпу).
+    if(typeof matchMedia==="function" && matchMedia("(min-width: 700px)").matches){
+      slides.slice(3,5).forEach(function(a){ var im=a.querySelector("img"); if(im){ im.loading="eager"; } });
+    }
     car.classList.add("js");   // стрілки показуємо лише коли JS працює (без нього вони були б «мертвими»; нативний скрол/свайп лишається)
     function sync(){
       if(!track||!left||!right) return;

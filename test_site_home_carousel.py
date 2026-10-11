@@ -123,7 +123,7 @@ chk("карусель: секція «Добірка Плутуса», #home-car
 slides = re.findall(r'<a class="card slide" href="product-(\d+)\.html">', h)
 chk("карусель: рівно 10 слайдів у порядку відбору", slides == ids)
 imgs = re.findall(r'<a class="card slide".*?<img ([^>]*)>', h, re.S)
-chk("карусель: перші 5 зображень без loading=lazy, решта — lazy", all("lazy" not in x for x in imgs[:5]) and all("lazy" in x for x in imgs[5:]))
+chk("карусель: перші 3 зображення без loading=lazy, решта — lazy (4–5 на широкому екрані переводить JS)", all("lazy" not in x for x in imgs[:3]) and all("lazy" in x for x in imgs[3:]))
 chk("карусель: першому слайду fetchpriority=high (кандидат на LCP), іншим — ні", 'fetchpriority="high"' in imgs[0] and sum(1 for x in imgs if "fetchpriority" in x) == 1)
 chk("«Новинок» нема, є «Більше іграшок»", "Новинки" not in h and "<h2>Більше іграшок</h2>" in h)
 tail = h.split("<h2>Більше іграшок</h2>", 1)[1] if "<h2>Більше іграшок</h2>" in h else ""
@@ -155,8 +155,8 @@ function mkEl(o){ const h={}; const cls=new Set(); const e=Object.assign({h, sty
   e.scrollBy=function(a){ e.scrollByCalls.push(a); }; return e; }
 (async()=>{
   const gt=[], fb=[]; const doc_h={}, win_h={};
-  const cards=[1,2,3].map(i=>{ const nm=mkEl({textContent:"Товар "+i}), pr=mkEl({textContent:(100*i)+" ₴"});
-    const a=mkEl({attrs:{href:"product-"+(10+i)+".html"}}); a.querySelector=s=>s===".nm"?nm:(s===".pr"?pr:null); a.closest=s=>s==="a.card"?a:null; return a; });
+  const NC=(scenario==="wide"||scenario==="narrow6")?6:3; const cards=Array.from({length:NC},(_,k)=>k+1).map(i=>{ const nm=mkEl({textContent:"Товар "+i}), pr=mkEl({textContent:(100*i)+" ₴"});
+    const im=mkEl({}); im.loading="lazy"; const a=mkEl({attrs:{href:"product-"+(10+i)+".html"}}); a.img=im; a.querySelector=s=>s===".nm"?nm:(s===".pr"?pr:(s==="img"?im:null)); a.closest=s=>s==="a.card"?a:null; return a; });
   const left=mkEl({}), right=mkEl({}), track=mkEl({});
   const car=mkEl({attrs: scenario==="nodatalist"?{}:{"data-list":"Добірка Плутуса"}});
   car.querySelector=s=>s===".track"?track:(s===".arrow.l"?left:(s===".arrow.r"?right:null));
@@ -167,7 +167,7 @@ function mkEl(o){ const h={}; const cls=new Set(); const e=Object.assign({h, sty
   const ctx={document:doc, localStorage:store(), sessionStorage:store(), console, fetch:()=>Promise.reject(), navigator:{}, location:{pathname:"/", href:"/"}, setTimeout, clearTimeout,
     addEventListener(t,f){ (win_h[t]=win_h[t]||[]).push(f); }};
   ctx.window=ctx; ctx.self=ctx;
-  ctx.matchMedia=function(q){ return {matches: scenario==="reduce" && /reduce/.test(q)}; };
+  ctx.matchMedia=function(q){ return {matches: (scenario==="reduce" && /reduce/.test(q)) || (scenario==="wide" && /min-width: 700px/.test(q))}; };
   if(scenario!=="noid"){ ctx.PT_ANALYTICS={ga4:"G-T", fb:"1"}; ctx.gtag=function(){gt.push(Array.from(arguments))}; ctx.fbq=function(){fb.push(Array.from(arguments))}; }
   if(scenario==="noid_gtag_only"){ ctx.PT_ANALYTICS=undefined; ctx.gtag=function(){gt.push(Array.from(arguments))}; ctx.fbq=function(){fb.push(Array.from(arguments))}; }
   if(scenario==="io"){ ctx.IntersectionObserver=function(cb){ ioCb=cb; this.observe=function(){}; this.disconnect=function(){}; }; }
@@ -185,6 +185,7 @@ function mkEl(o){ const h={}; const cls=new Set(); const e=Object.assign({h, sty
     out.phone=gt.filter(e=>e[1]==="phone_click").length; console.log(JSON.stringify(out)); return;
   }
   out.jsClass=car.cls.has("js");
+  out.imgLoading=cards.map(c=>c.img.loading);
   // sync(): стан спокою (scrollLeft 2.4) → ліва disabled; після прокрутки — активна; край справа — права disabled
   const scrollH=track.h.scroll||[];
   track.scrollLeft=2.4; scrollH.forEach(f=>f()); out.leftRest=left.disabled; out.rightRest=right.disabled;
@@ -232,6 +233,10 @@ function mkEl(o){ const h={}; const cls=new Set(); const e=Object.assign({h, sty
     chk("phone_click по tel: (+ Meta Contact); звичайне посилання подій не дає", a is not None and len(a["phone"]) == 1 and a["phone"][0][2]["link_url"].startswith("tel:") and any(x[:2] == ["track", "Contact"] for x in a["fb"]))
     chk("social_click: instagram і facebook (+ Meta trackCustom SocialClick); лише з .fsoc",
         a is not None and [e[2]["network"] for e in a["social"]] == ["instagram", "facebook"] and sum(1 for x in a["fb"] if x[:2] == ["trackCustom", "SocialClick"]) == 2)
+    n6 = run("narrow6")
+    chk("мобільний (matchMedia не wide): усі слайди лишаються lazy (4–5 НЕ переводяться в eager — економія ваги до першого свайпу)", n6 is not None and n6["imgLoading"] == ["lazy"] * 6)
+    wd = run("wide")
+    chk("широкий екран (≥700 px): JS переводить рівно слайди 4 і 5 в eager, решта lazy", wd is not None and wd["threw"] is None and wd["imgLoading"] == ["lazy", "lazy", "lazy", "eager", "eager", "lazy"])
     rd = run("reduce")
     chk("prefers-reduced-motion: reduce → скрол без плавності (behavior=auto)", rd is not None and all(c["behavior"] == "auto" for c in rd["scroll"]) and len(rd["scroll"]) == 2)
     dl = run("nodatalist")

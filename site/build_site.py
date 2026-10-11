@@ -866,8 +866,8 @@ def write_home(prods, cats, cat_list, cat_slug):
     )
     carousel = ""
     if picks:
-        # перші 5 слайдів без lazy (на десктопі на першому екрані 5; SMM 11.10), перший — fetchpriority=high (кандидат на LCP)
-        slides = "".join(tile(p, cls="slide", eager=(i < 5), prio=(i == 0)) for i, p in enumerate(picks))
+        # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
+        slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0)) for i, p in enumerate(picks))
         carousel = (
           '<div class="sec-title"><h2>Добірка Плутуса</h2><a href="catalog.html">Дивитись усі →</a></div>'
           '<div class="car" id="home-car" role="region" aria-label="Добірка Плутуса" data-list="Добірка Плутуса">'

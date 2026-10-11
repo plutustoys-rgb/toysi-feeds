@@ -134,24 +134,60 @@ class OrderError(Exception):
 
 # Ручний ввід відділення (довідник НП мертвий або покупець не торкнувся підказки — ЦЕ ДОЗВОЛЕНО, див. assets/app.js
 # initNpAutocomplete). Реальний інцидент 10.10.2026 (замовлення PT-20261010-142322-afbf46): покупець вписав голе «369» →
-# np_branch «м. Київ, 369» → order_router.parse_np_branch (_WAREHOUSE_RE вимагає «відділення»/«відд.»/«№» перед цифрами) не
+# np_branch «м. Київ, 369» → order_router.parse_np_branch (_WAREHOUSE_RE вимагає «відділення»/«відд.»/«№» ПЕРЕД цифрами) не
 # витяг номер → shipping_warehouse_id не виставлено → Toysi прийняв замовлення як АДРЕСНУ доставку. Тому тут, ДО складання
-# np_branch, розпізнаємо ТІЛЬКИ однозначні форми «лише номер (+службові слова)» і віддаємо номер так само, як при виборі з
-# автокомпліту (np_warehouse_number). Усе, де крім номера є ще слова (вулиця, «і», кілька номерів), НЕ чіпаємо — гадати не можна.
-# Загальний _WAREHOUSE_RE у order_router навмисно вузький (для Prom-тексту «№3» збігалось з чужим відділенням) — його не змінюємо.
-_MANUAL_WH_NOISE_RE = re.compile(
-    r"нова\s+пошта|відділенн\w*|відділ(?!\w)|відд\.?|(?<!\w)нп(?!\w)|(?<!\w)н\.\s?п\.?|номер|поштомат\w*|[№#]|(?<!\w)n(?!\w)",
-    re.IGNORECASE,
+# np_branch, розпізнаємо номер у ДВОХ однозначних випадках і віддаємо його так само, як при виборі з автокомпліту
+# (np_warehouse_number):
+#   1) у тексті лишається ЛИШЕ номер + службові слова («369», «№369», «НП 369», «Нової пошти 369», «369 відділення», «369-е відділення»);
+#   2) у тексті РІВНО ОДНА група цифр, і вона впритул до слова-ключа: «…відділення/№/НП/Нова пошта 369» (ключ ПЕРЕД числом) або
+#      «369 відділення…» (число НА ПОЧАТКУ, ключ одразу після) — тоді решта тексту (місто, «біля метро») номера не змінює.
+# Усе інше (вулиця з номером будинку, кілька чисел, число не біля ключа, «0») НЕ вгадуємо. Голе 5-цифрове число без слова
+# «поштомат» теж не беремо: це може бути поштовий індекс. Загальний _WAREHOUSE_RE у order_router навмисно вузький
+# (для Prom-тексту «№3» збігалось з чужим відділенням) — його не змінюємо.
+_MANUAL_WH_KEYWORD = (
+    r"в[іи]дд?[іи]ле?н\w*|відділ(?!\w)|відд\.?(?!\w)|отделен\w*|отд\.?(?!\w)|(?<!\w)нп(?!\w)|(?<!\w)н\.\s?п\.?"
+    r"|нов\w*\s+п(?:ошт|очт)\w*|поштомат\w*|номер|[№#]|(?<!\w)n(?!\w)"
 )
+_MANUAL_WH_KEYWORD_RE = re.compile(_MANUAL_WH_KEYWORD, re.IGNORECASE)
+_MANUAL_WH_ORDINAL_RE = re.compile(r"(?<=\d)\s*-?\s*(?:е|є)(?!\w)", re.IGNORECASE)          # «369-е відділення»
+_MANUAL_WH_PUNCT_RE = re.compile(r"[^\w\s№#.]")                                                 # «369!», «(369)», ««369»», «-»
+_MANUAL_WH_BEFORE_RE = re.compile(rf"(?:{_MANUAL_WH_KEYWORD})\s*[№#]?\s*(\d+)(?!\d)", re.IGNORECASE)
+_MANUAL_WH_AFTER_RE = re.compile(rf"^\s*(\d+)\s*(?:{_MANUAL_WH_KEYWORD})", re.IGNORECASE)
 
 
 def _manual_warehouse_number(text: str):
-    """«369», «№369», «відділення 369», «Відділення №369», «відд. 369», «НП 369», «369 відділення», «Поштомат №55902» → '369'/'55902'.
-    Усе інше (вулиця, кілька чисел, порожньо, «0») → None."""
-    rest = _MANUAL_WH_NOISE_RE.sub(" ", text or "").strip(" \t.,:;-–—")
-    if re.fullmatch(r"\d{1,5}", rest) and int(rest) > 0:
-        return str(int(rest))
-    return None
+    """Номер відділення/поштомата з ручного вводу (див. коментар вище) або None. «0», кілька чисел, число не біля ключа → None;
+    5 цифр лише разом зі словом «поштомат»."""
+    raw = text or ""
+    norm = " ".join(_MANUAL_WH_ORDINAL_RE.sub(" ", _MANUAL_WH_PUNCT_RE.sub(" ", raw)).split())
+    groups = re.findall(r"\d+", norm)
+    if len(groups) != 1:
+        return None
+    num = groups[0]
+    only_digits = _MANUAL_WH_KEYWORD_RE.sub(" ", norm).strip(" \t.")
+    if only_digits == num:
+        ok = True                                                    # правило 1: лишився тільки номер
+    else:
+        before = _MANUAL_WH_BEFORE_RE.search(norm)
+        after = _MANUAL_WH_AFTER_RE.search(norm)
+        ok = bool((before and before.group(1) == num) or (after and after.group(1) == num))   # правило 2
+    if not ok:
+        return None
+    value = int(num)
+    if value <= 0 or len(num) > 5:
+        return None
+    if len(num) == 5 and not re.search(r"поштомат", norm, re.IGNORECASE):
+        return None                                                  # голе 5-цифрове — можливо індекс, не гадаємо
+    return str(value)
+
+
+def _manual_warehouse_label(original: str, number: str) -> str:
+    """Текст відділення для np_branch: «Відділення №N» (формат, який знає parse_np_branch) + ОРИГІНАЛ покупця в дужках —
+    щоб при суперечці з покупцем чи Toysi було видно, що саме він вписав (аудит #671: початковий текст не губимо)."""
+    kind = "Поштомат №" if re.search(r"поштомат", original or "", re.IGNORECASE) else "Відділення №"
+    shown = re.sub(r"[()«»\"\x00-\x1f]", " ", original or "")
+    shown = " ".join(shown.split())[:40]
+    return f"{kind}{number} (введено вручну: «{shown}»)"
 
 
 def build_order(payload: dict) -> tuple:
@@ -226,12 +262,12 @@ def build_order(payload: dict) -> tuple:
     _wnum = (payload.get("np_warehouse_number") or "").strip()
     np_warehouse_number = _wnum if _wnum.isdigit() else None
     # Ручний ввід («369», «№369», «відд. 369»…) без вибору з автокомпліту: рефа нема, а голе число order_router не розпізнає
-    # (див. _manual_warehouse_number) → виставляємо № відділення самі й нормалізуємо текст до формату, який парсер знає.
+    # (див. _manual_warehouse_number) → виставляємо № відділення самі; текст — «Відділення №N (введено вручну: «оригінал»)».
     if np_warehouse_number is None:
         _manual_num = _manual_warehouse_number(warehouse)
         if _manual_num:
             np_warehouse_number = _manual_num
-            warehouse = ("Поштомат №" if re.search(r"поштомат", warehouse, re.IGNORECASE) else "Відділення №") + _manual_num
+            warehouse = _manual_warehouse_label(warehouse, _manual_num)
 
     order_id = "PT-" + time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
     order = {

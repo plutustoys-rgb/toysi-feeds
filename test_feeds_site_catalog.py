@@ -142,6 +142,15 @@ got = {i["id"] for i in its}
 chk("без залишку (stock=0) не у фіді, лічильник out_of_stock", "9201" not in got and st["out_of_stock"] == 1)
 chk("категорії велосипеди / маски захисні / термометри та аспіратори не у фіді", not ({"9202", "9203", "9204"} & got) and st["excluded_category"] == 3)
 chk("звичайний товар поруч проходить", "9205" in got)
+weapons = [item(9301 + i, name=n, category=c) for i, (n, c) in enumerate([("Помпова рушниця з патронами", "Автомати і пістолети"), ("Набір мушкетера", "Набори зі зброєю"),
+                                                                           ("Лук дитячий", "Арбалети і луки"), ("Пістолет", "Зброя"), ("Водяний пістолет", "Водна зброя")])]
+for it in weapons:
+    index[it["id"]] = float(bs.price_of(it))
+set_index(index)
+its, st = gg.build_feed_items({it["id"]: it for it in weapons}, {}, {}, {}, None, gg.load_site_product_ids())
+got_w = {i["id"] for i in its}
+chk("зброя (Автомати і пістолети / Набори зі зброєю / Арбалети і луки / Зброя) НЕ йде у фіди, «Водна зброя» поки лишається (рішення не ухвалено)",
+    got_w == {"9305"} and st["excluded_category"] == 4)
 its, st = gg.build_feed_items({"9206": item(9206, stock="abc"), "9207": item(9207, stock=None)}, {}, {}, {}, None, None)
 chk("stock = сміття/None → не у фіді, без падіння", not its and st["out_of_stock"] == 2)
 

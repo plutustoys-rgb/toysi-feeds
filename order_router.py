@@ -43,7 +43,10 @@ order_status після цього повертає порожній TTN) — т
 
 UKRPOSHTA_STICKERS_DIR = "ukrposhta_stickers"
 
-_WAREHOUSE_RE = re.compile(r"(?:відділенн\w*|відд\.?|№)\s*№?\s*(\d+)", re.IGNORECASE)
+# 11.10.2026 (аудит PR #671, Shopify-code): слово «відділення» — ЛИШЕ літери (раніше \w* з'їдало цифри: «відділення166» → №6).
+_WAREHOUSE_RE = re.compile(r"(?:відділенн[а-яіїєґ]*|відд\.?|№)\s*№?\s*(\d+)", re.IGNORECASE)
+# контекст ПЕРЕД збігом, що означає «це не відділення»: «кв.», «квартира», «оф.», «офіс», «буд.», «будинок», «під'їзд», «кімн.» (до 14 символів ліворуч)
+_NOT_BRANCH_CTX_RE = re.compile(r"(?:кв\.?|квартир\w*|оф\.?|офіс\w*|буд\.?|будин\w*|під.?їзд\w*|кім\.?|кімнат\w*)\s*$", re.IGNORECASE)
 _CITY_PREFIX_RE = re.compile(r"^(м\.|с\.|смт\.?)\s*", re.IGNORECASE)
 _CITY_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 # Витягує область із «(Xобл.)» — область для area_hint (розрізнення міст-тезок при
@@ -98,8 +101,14 @@ def parse_np_branch(np_branch: str) -> tuple:
     if not np_branch:
         return "", "", ""
 
-    warehouse_match = _WAREHOUSE_RE.search(np_branch)
-    warehouse_query = warehouse_match.group(1) if warehouse_match else ""
+    # Перший збіг, що НЕ є номером квартири/офісу/будинку/під'їзду («кв. №162», «оф. 301», «під'їзд №1» — аудит #671, 11.10.2026):
+    # на історії 183 замовлень усі справжні тексти відділень мають маркер «Відділення/Поштомат/№N (до X кг)» ПЕРШИМ, тож поведінка для них не змінюється.
+    warehouse_query = ""
+    for _m in _WAREHOUSE_RE.finditer(np_branch):
+        if _NOT_BRANCH_CTX_RE.search(np_branch[max(0, _m.start() - 14):_m.start()]):
+            continue
+        warehouse_query = _m.group(1)
+        break
 
     # city_part = усе до ПЕРШОЇ коми ВЕРХНЬОГО рівня (поза дужками). Проста
     # np_branch.split(",")[0] ламалась би на EVA-адресах сіл, де район додає кому
@@ -249,6 +258,27 @@ def _city_ref_wait_expired(order: dict) -> bool:
     return datetime.now() - created > CITY_REF_WAIT_LIMIT
 
 
+# Текст, що вказує на ІНШОГО перевізника/самовивіз у полі «відділення» (аудит #671: «Укрпошта №9», «Justin №733» шлялись би як відділення НП)
+_NON_NP_RE = re.compile(r"укрпошт|justin|джастін|meest|міст\s*експрес|самовивіз|rozetka\s*delivery|делів?[еі]рі|нова\s*лінія\b|ін-?тайм|in-?time", re.IGNORECASE)
+
+
+def site_np_hold_reason(order: dict, toysi_order) -> str:
+    """FAIL-CLOSED для замовлень САЙТУ через Нову Пошту (11.10.2026, перше реальне замовлення PT-20261010-142322-afbf46 пішло в Toysi як «адресна доставка»,
+    бо клієнт вписав «369» руками). Повертає ПРИЧИНУ, чому замовлення НЕ можна передавати в Toysi автоматично, або "" (можна).
+    Лише platform == "site" і carrier == nova_poshta. Для Prom/Rozetka/EVA поведінка не змінюється.
+    Умови утримання: (а) у np_branch є інший перевізник/самовивіз; (б) немає ВАЛІДНОГО номера відділення (1–6 цифр), який дав сайт структурно
+    (np_warehouse_number — або автокомпліт, або однозначний ручний ввід за PR #671); текстовий здогад з «кв. №162»/«під'їзд №1» довіри не має."""
+    if order.get("platform") != "site" or order.get("carrier", "nova_poshta") != "nova_poshta":
+        return ""
+    branch = order.get("np_branch") or ""
+    if _NON_NP_RE.search(branch):
+        return f"у відділенні вказано іншого перевізника/самовивіз («{branch[:80]}»)"
+    num = (order.get("np_warehouse_number") or "").strip()
+    if not re.fullmatch(r"\d{1,6}", num):
+        return f"нема валідного номера відділення НП (np_branch=«{branch[:80]}»)"
+    return ""
+
+
 def build_toysi_order(order: dict) -> dict | None:
     """Перетворює запис orders_db на структуру для toysi_order_submit.submit_order().
 
@@ -272,6 +302,8 @@ def build_toysi_order(order: dict) -> dict | None:
     # чуже відділення стає фізично неможливо: Toysi отримує рівно той номер, що обрав клієнт.
     # У НП резолвимо ЛИШЕ місто (назва→CityRef), і лише коли площадка не дала CityRef напряму.
     wh_number = (order.get("np_warehouse_number") or "").strip() or (warehouse_query or "").strip()
+    if wh_number and not re.fullmatch(r"\d{1,6}", wh_number):
+        wh_number = ""   # не номер відділення НП (стіна цифр/сміття) — не передаємо як shipping_warehouse_id
     if is_np and city and wh_number:
         # ПЕРЕДАЄМО ВИБІР КЛІЄНТА НАПРЯМУ, БЕЗ пошуку/гадання в НП: номер відділення (з площадки
         # або розпарсений з тексту) + назва міста (shipping_city_name нижче) — обидва як їх дав
@@ -845,6 +877,19 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
         ukrposhta_shipment = _create_ukrposhta_shipment(order)
         if ukrposhta_shipment is None:
             return
+
+    _hold = site_np_hold_reason(order, None)
+    if _hold:
+        # НЕ передаємо в Toysi (там воно стане «адресною доставкою» невідомо куди): лишаємо в черзі, алертимо власника (тротлінг 6 год на замовлення).
+        # Звільнити: виправити np_branch/np_warehouse_number у orders.db (або скасувати замовлення) — наступний цикл підхопить.
+        _msg = (f"🛑 {order['internal_order_id']}: замовлення сайту НЕ передано в Toysi — {_hold}. "
+                "Уточніть відділення НП у клієнта (телефон у замовленні) і виправіть np_branch/np_warehouse_number, або скасуйте.")
+        print(f"[order_router] {_msg}", file=sys.stderr)
+        try:
+            send_throttled_alert(f"site_np_hold:{order['internal_order_id']}", _msg, cooldown_sec=6 * 60 * 60)
+        except Exception as e:  # noqa: BLE001
+            print(f"[order_router] алерт про утримання не надіслано: {type(e).__name__}", file=sys.stderr)
+        return
 
     toysi_order = build_toysi_order(order)
     if toysi_order is None:

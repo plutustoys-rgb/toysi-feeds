@@ -132,6 +132,28 @@ class OrderError(Exception):
     """Валідаційна помилка замовлення — повертаємо клієнту 400 з поясненням."""
 
 
+# Ручний ввід відділення (довідник НП мертвий або покупець не торкнувся підказки — ЦЕ ДОЗВОЛЕНО, див. assets/app.js
+# initNpAutocomplete). Реальний інцидент 10.10.2026 (замовлення PT-20261010-142322-afbf46): покупець вписав голе «369» →
+# np_branch «м. Київ, 369» → order_router.parse_np_branch (_WAREHOUSE_RE вимагає «відділення»/«відд.»/«№» перед цифрами) не
+# витяг номер → shipping_warehouse_id не виставлено → Toysi прийняв замовлення як АДРЕСНУ доставку. Тому тут, ДО складання
+# np_branch, розпізнаємо ТІЛЬКИ однозначні форми «лише номер (+службові слова)» і віддаємо номер так само, як при виборі з
+# автокомпліту (np_warehouse_number). Усе, де крім номера є ще слова (вулиця, «і», кілька номерів), НЕ чіпаємо — гадати не можна.
+# Загальний _WAREHOUSE_RE у order_router навмисно вузький (для Prom-тексту «№3» збігалось з чужим відділенням) — його не змінюємо.
+_MANUAL_WH_NOISE_RE = re.compile(
+    r"нова\s+пошта|відділенн\w*|відділ(?!\w)|відд\.?|(?<!\w)нп(?!\w)|(?<!\w)н\.\s?п\.?|номер|поштомат\w*|[№#]|(?<!\w)n(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _manual_warehouse_number(text: str):
+    """«369», «№369», «відділення 369», «Відділення №369», «відд. 369», «НП 369», «369 відділення», «Поштомат №55902» → '369'/'55902'.
+    Усе інше (вулиця, кілька чисел, порожньо, «0») → None."""
+    rest = _MANUAL_WH_NOISE_RE.sub(" ", text or "").strip(" \t.,:;-–—")
+    if re.fullmatch(r"\d{1,5}", rest) and int(rest) > 0:
+        return str(int(rest))
+    return None
+
+
 def build_order(payload: dict) -> tuple:
     """Валідує вхід і будує dict замовлення. Повертає (order, total). Кидає OrderError."""
     pm = price_map()
@@ -203,6 +225,13 @@ def build_order(payload: dict) -> tuple:
     np_city_ref = _cref if re.fullmatch(r"[0-9a-fA-F-]{10,}", _cref) else None
     _wnum = (payload.get("np_warehouse_number") or "").strip()
     np_warehouse_number = _wnum if _wnum.isdigit() else None
+    # Ручний ввід («369», «№369», «відд. 369»…) без вибору з автокомпліту: рефа нема, а голе число order_router не розпізнає
+    # (див. _manual_warehouse_number) → виставляємо № відділення самі й нормалізуємо текст до формату, який парсер знає.
+    if np_warehouse_number is None:
+        _manual_num = _manual_warehouse_number(warehouse)
+        if _manual_num:
+            np_warehouse_number = _manual_num
+            warehouse = ("Поштомат №" if re.search(r"поштомат", warehouse, re.IGNORECASE) else "Відділення №") + _manual_num
 
     order_id = "PT-" + time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
     order = {

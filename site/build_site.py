@@ -258,9 +258,13 @@ def build():
     print("[build] тягну каталог Toysi…")
     cat = tp.fetch_toysi_catalog()
     prods = []
+    # Товари БЕЗ залишку (рішення Консультанта 11.10.2026, GSC: 7 605 адрес «404» з 8 960 непроіндексованих — це самі зниклі зі складу товари):
+    # їхня сторінка НЕ зникає, а лишається живою з «Немає в наявності» + schema.org/OutOfStock. Збираємо окремо: у каталог, категорії, пошук
+    # (index.json), головну, крос-сел і фіди Google/Meta/Bing (вони читають index.json) ці позиції НЕ потрапляють; замовити їх теж не можна
+    # (site_order_api бере ціни лише з index.json).
+    oos_prods = []
     for it in cat.values():
-        if str(it.get("stock") or "0") in ("0", ""):
-            continue
+        is_oos = str(it.get("stock") or "0") in ("0", "")
         pics = it.get("pictures")
         if isinstance(pics, str):
             pics = [pics]
@@ -286,7 +290,7 @@ def build():
             cost = 0.0
         contribution = (price - cost - price * cp.PAYMENT_COMMISSION.get("site", 0.0)
                         - SITE_FULFILL_PER_ORDER) if cost > 0 else None
-        prods.append({
+        (oos_prods if is_oos else prods).append({
             "id": str(it.get("id")), "name": name, "price": price,
             "category": it.get("category_name") or "Інше",
             "photo": pics[0], "stock": int(it.get("stock") or 0),
@@ -300,9 +304,11 @@ def build():
         c = p["contribution"] if p["contribution"] is not None else -1e9
         return (-c, -p["price"], p["name"])
     prods.sort(key=_rank_key)
+    oos_prods.sort(key=lambda p: p["id"])
     if LIMIT:
         prods = prods[:LIMIT]
-    print(f"[build] карток до генерації: {len(prods)}")
+        oos_prods = oos_prods[:LIMIT]
+    print(f"[build] карток до генерації: {len(prods)} (+ без залишку, сторінка жива: {len(oos_prods)})")
 
     # категорії
     cats = {}
@@ -353,6 +359,9 @@ def build():
     for p in prods:
         write_product(p, related=related_map.get(p["id"]), cat_slug=cat_slug)
         n += 1
+    # 1б) сторінки товарів без залишку: адреса жива (OutOfStock), без кошика/крос-селу
+    for p in oos_prods:
+        write_product(p, related=None, cat_slug=cat_slug)
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
     for c in cat_list:
@@ -375,7 +384,7 @@ def build():
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap + robots
     static_urls = [("categories.html", "0.6", "weekly")] + [(f, "0.4", "monthly") for f in trust]
-    write_sitemap(prods, paged, static_urls)
+    write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
     write_robots()
 
     # 8) ПРИБИРАННЯ ЗАСТАРІЛИХ сторінок від попередніх білдів: build пише лише поточний вибір,
@@ -384,7 +393,7 @@ def build():
     # вище ДО цього кроку, тож видаляємо лише справжні залишки). `paged` містить усі сторінки
     # каталогу/категорій (вкл. пагіновані catalog_N/category-slug_N), тож застарілі сторінки
     # пагінації від більшого попереднього білда теж приберуться.
-    valid = {f"product-{p['id']}.html" for p in prods} | paged
+    valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
         if (fn.startswith(("product-", "category-", "catalog")) and fn.endswith(".html")
@@ -395,7 +404,7 @@ def build():
             except OSError:
                 pass
 
-    print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, "
+    print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, сторінок без залишку (OutOfStock) {len(oos_prods)}, "
           "+index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
     # 9) детектор «тихого зникнення фото» (Консультант 10.10.2026): вибірка фото з нашим Referer; best-effort, не валить збірку
@@ -546,14 +555,18 @@ def _fmt_int(n) -> str:
     return f"{int(n):,}".replace(",", " ")
 
 
-def product_title(name) -> str:
-    """{назва} — купити | PlutusToys; якщо довше за 65 — обрізаємо НАЗВУ по межі слова + «…», суфікс лишаємо."""
+_PROD_SUFFIX_OOS = " — немає в наявності | PlutusToys"
+
+
+def product_title(name, in_stock=True) -> str:
+    """{назва} — купити | PlutusToys (без залишку: «— немає в наявності | PlutusToys»); якщо довше за 65 — обрізаємо НАЗВУ по межі слова + «…», суфікс лишаємо."""
     name = (name or "").strip()
-    if len(name) + len(_PROD_SUFFIX) <= TITLE_MAX:
-        return name + _PROD_SUFFIX
-    room = TITLE_MAX - len(_PROD_SUFFIX) - 1
+    suffix = _PROD_SUFFIX if in_stock else _PROD_SUFFIX_OOS
+    if len(name) + len(suffix) <= TITLE_MAX:
+        return name + suffix
+    room = TITLE_MAX - len(suffix) - 1
     cut = name[:room].rsplit(" ", 1)[0].rstrip(" ,.;:—–-") if " " in name[:room] else name[:room]
-    return cut + "…" + _PROD_SUFFIX
+    return cut + "…" + suffix
 
 
 def product_description(name, price, plain) -> str:
@@ -763,6 +776,11 @@ def write_product(p, related=None, cat_slug=None):
     avail = "У наявності" if p["stock"] > 0 else "Немає в наявності"
     oos = "" if p["stock"] > 0 else "oos"
     in_stock = p["stock"] > 0
+    # Без залишку: чесний текст + шлях далі (категорія, якщо вона є в каталозі; інакше повний каталог). Кнопка «У кошик» вимкнена нижче.
+    _oos_cat_href = f"category-{cat_slug[p['category']]}.html" if (cat_slug and p.get("category") in cat_slug) else "catalog.html"
+    oos_note = ("" if in_stock else
+                f'<div class="oos-note"><b>Зараз цього товару немає в наявності.</b> '
+                f'<a href="{_oos_cat_href}">Подивитися схожі{(" в категорії «" + esc(p["category"]) + "»") if _oos_cat_href != "catalog.html" else " в каталозі"} →</a></div>')
     add = json.dumps({"id": p["id"], "name": p["name"], "price": p["price"], "photo": p["photo"]},
                      ensure_ascii=False)
     # OOS: кнопку деактивуємо (немає data-add) — не даємо покласти в кошик те, чого нема (баг рев'ю).
@@ -776,6 +794,7 @@ def write_product(p, related=None, cat_slug=None):
       f'<h1 class="prod">{esc(p["name"])}</h1>'
       f'<div class="price-row"><div class="price">{p["price"]} ₴</div>'
       f'<div class="avail {oos}">{avail}</div></div>'
+      + oos_note +
       '<div class="trust-badges">'
         '<span class="tb">✓ Оплата при отриманні</span>'
         '<a class="tb" href="returns.html">✓ Повернення 14 днів</a>'
@@ -797,6 +816,8 @@ def write_product(p, related=None, cat_slug=None):
     # SEO: опис для сніпета (без HTML, ОБРІЗАНИЙ ПО СЛОВУ) + JSON-LD Product для Google Rich Results
     plain = re.sub(r"<[^>]+>", "", lead).strip()
     meta_desc = product_description(p["name"], p["price"], plain)
+    if not in_stock:
+        meta_desc = ("Немає в наявності. " + meta_desc)[:DESC_MAX]
     # brand зі специфікацій «<b>Бренд:</b> X» — Google Rich Results цінує brand у Product.
     brand = ""
     for s in specs:
@@ -829,7 +850,7 @@ def write_product(p, related=None, cat_slug=None):
     extra = f'<script type="application/ld+json">{ld_json}</script>' + chr(10) + breadcrumb_ld(trail)
     body = crumbs_html(trail) + body
     _write(f"product-{p['id']}.html", page(
-        p["name"], body, extra_head=extra, title_full=product_title(p["name"]), description=meta_desc,
+        p["name"], body, extra_head=extra, title_full=product_title(p["name"], in_stock), description=meta_desc,
         canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product"))
 
 def write_cart():
@@ -1064,7 +1085,7 @@ def write_trust_pages():
         written.append(fname)
     return written
 
-def write_sitemap(prods, paged, static_urls=None):
+def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
     """paged = усі сторінки каталогу/категорій (з пагінацією). Стор.≥2 (мають '_N' перед .html)
     ідуть з нижчим пріоритетом; catalog.html — найвищий серед лістингів."""
     from datetime import date
@@ -1083,6 +1104,8 @@ def write_sitemap(prods, paged, static_urls=None):
             pr, cf = "0.7", "weekly"
         urls.append((fn, pr, cf))
     urls += [(f"product-{p['id']}.html", "0.6", "weekly") for p in prods]
+    # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий
+    urls += [(f"product-{p['id']}.html", "0.3", "monthly") for p in oos_prods]
     items = "\n".join(
         f"  <url><loc>{SITE_URL}/{u}</loc><lastmod>{today}</lastmod>"
         f"<changefreq>{cf}</changefreq><priority>{pr}</priority></url>"

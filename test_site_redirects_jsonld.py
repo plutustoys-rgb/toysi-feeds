@@ -17,25 +17,45 @@ def chk(n, c):
 
 sh = (HERE / "deploy" / "activate_site_apache.sh").read_text(encoding="utf-8")
 rules = [l.strip() for l in sh.splitlines() if l.strip().startswith("RewriteRule ^/(?:")]
-pats = []
+pats = []        # 301-правила (pattern, target)
+gone_pats = []   # 410-правила [G,L] (pattern)
 for r in rules:
     m = re.match(r"RewriteRule (\S+) (\S+) \[R=301,L\]", r)
-    pats.append((m.group(1), m.group(2)) if m else None)
-chk("6 правил старих Prom-URL у скрипті (p/g/product_list/site_contacts/site_/корінь мови), усі 301", len(rules) == 6 and all(pats))
+    g = re.match(r"RewriteRule (\S+) - \[G,L\]", r)
+    if m:
+        pats.append((m.group(1), m.group(2)))
+    elif g:
+        gone_pats.append(g.group(1))
+    else:
+        pats.append(None)
+chk("7 правил старих Prom-URL у скрипті: 6 з 301 (p/g/product_list/site_contacts/site_/корінь мови) + 1 з 410 Gone для p<id> без запису в мапі",
+    len(rules) == 7 and len(gone_pats) == 1 and all(pats))
 def hit(path):
     for p, tgt in pats:
         if re.search(p, path):
             return tgt
     return None
-chk("/ua/p… → мапа промід", hit("/ua/p3122611441-vodnyj-pistolet.html") == "${promredir:$1|/catalog.html}")
-chk("/ru/p… (рос. версія) → та сама мапа", hit("/ru/p3122611441-vodnyj-pistolet.html") == "${promredir:$1|/catalog.html}")
+def gone(path):
+    return any(re.search(p, path) for p in gone_pats)
+# 410 стоїть ПЕРЕД 301-правилом p<id> і захищене умовою «ключа нема в мапі» (11.10.2026, Консультант: 301 на /catalog.html = soft-404 у Google)
+_i_cond = sh.find("RewriteCond ${promredir:$1|-} =-")
+_i_gone = sh.find("- [G,L]")
+_i_301 = sh.find("${promredir:$1} [R=301,L]")
+chk("410-правило p<id> іде безпосередньо після RewriteCond ${promredir:$1|-} =- і ПЕРЕД 301-правилом із мапи",
+    -1 < _i_cond < _i_gone < _i_301 and sh[_i_cond:_i_gone].count("RewriteRule") == 1 and sh[_i_cond:_i_gone].count("RewriteCond") == 1)
+chk("мапа БЕЗ дефолту /catalog.html (непокритий ключ більше не веде на каталог)", "${promredir:$1|/catalog.html}" not in sh)
+chk("410: /ua/p…, /ru/p…, /p… без префікса підпадають під [G]; /product-1.html, /ua/g…, /catalog.html — ні",
+    gone("/ua/p3122611441-x.html") and gone("/ru/p3122611441-x.html") and gone("/p3138857147-x.html")
+    and not gone("/product-1.html") and not gone("/ua/g155144964-x.html") and not gone("/catalog.html") and not gone("/privacy.html"))
+chk("/ua/p… → мапа промід (покритий ключ → 301 на картку)", hit("/ua/p3122611441-vodnyj-pistolet.html") == "${promredir:$1}")
+chk("/ru/p… (рос. версія) → та сама мапа", hit("/ru/p3122611441-vodnyj-pistolet.html") == "${promredir:$1}")
 chk("/ua/g… і /ru/g… (групи) → /catalog.html", hit("/ua/g155144964-vodnyj.html") == "/catalog.html" and hit("/ru/g1-x") == "/catalog.html")
 chk("/ua/product_list → /catalog.html", hit("/ua/product_list") == "/catalog.html" and hit("/ru/product_list/") == "/catalog.html")
 chk("/ua, /ua/, /ru/ → /", hit("/ua/") == "/" and hit("/ru/") == "/" and hit("/ru") == "/")
 chk("НЕ чіпає наші адреси", all(hit(p) is None for p in ("/product-1.html", "/catalog.html", "/category-x.html", "/api/np/city", "/ua/other-page.html", "/index.html")))
 chk("мапа відповідає лише цифровому prom_id (не плутає /ua/page)", hit("/ua/page12-x") is None)
 # 09.10.2026: мовний префікс опційний — Google тримає й старі Prom-URL БЕЗ /ua/ (GMC «Не указана цена»; було 404)
-chk("/p…-slug БЕЗ /ua/ → та сама мапа промід", hit("/p3138857147-nabor-dlya-tvorchestva.html") == "${promredir:$1|/catalog.html}")
+chk("/p…-slug БЕЗ /ua/ → та сама мапа промід", hit("/p3138857147-nabor-dlya-tvorchestva.html") == "${promredir:$1}")
 chk("/g… і /product_list БЕЗ префікса → /catalog.html", hit("/g155144964-vodnyj.html") == "/catalog.html" and hit("/product_list") == "/catalog.html")
 chk("/site_… (сторінки Prom) з префіксом і без → /", hit("/site_3517399-oplata.html") == "/" and hit("/ua/site_3517399-oplata.html") == "/" and hit("/ru/site_1-x") == "/")
 # 10.10.2026 (SEO п.4): /site_contacts.html був 404 (немає числового id) → контакти; будь-який інший /site_* → /

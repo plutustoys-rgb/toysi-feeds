@@ -13,8 +13,8 @@ plutustoys.com.ua з Prom на власний сайт НЕ пропала ви�
 Рішення: nginx `location ~ ^/ua/p(\\d+)-` → 301 на нашу картку. Цей скрипт генерує мапу
 `prom_id → /product-{toysi_id}.html`, інвертуючи `own_product_links_cache.json`
 ({toysi_id: {prom_id, url_text}}, який наповнює generate_google_feed/full_catalog_scan).
-Редиректимо ЛИШЕ на товари, що реально згенеровані на сайті (є в site/index.json) — решта
-падає в nginx-`default` (/catalog.html), тобто без жорсткого 404.
+Редиректимо ЛИШЕ на товари, що реально мають сторінку на сайті (в наявності — site/index.json; без залишку — сторінка OutOfStock,
+product-<id>.html у site/) — решта: nginx-`default` (/catalog.html); в Apache (прод) — 410 Gone (рішення Консультанта 11.10.2026).
 """
 import os
 import json
@@ -30,14 +30,23 @@ OUT_FILE_APACHE = Path(os.environ.get("PROM_REDIRECTS_MAP_APACHE", str(BASE / "p
 
 
 def load_valid_ids() -> set:
-    """toysi-id, що реально мають сторінку product-<id>.html (із site/index.json)."""
+    """toysi-id, що реально мають сторінку product-<id>.html: товари в наявності (site/index.json) + сторінки БЕЗ залишку
+    (build_site.py з 11.10.2026 лишає їх живими з OutOfStock) — їх знаходимо за файлами product-<id>.html у теці сайту."""
+    ids = set()
     try:
         data = json.loads(INDEX_FILE.read_text(encoding="utf-8"))
-        return {str(p["id"]) for p in data if "id" in p}
+        ids = {str(p["id"]) for p in data if "id" in p}
     except Exception as e:
         print(f"[prom_redirects] УВАГА: index.json недоступний ({e}) — мапа буде без гейту наявності",
               file=sys.stderr)
         return set()
+    try:
+        for fn in os.listdir(INDEX_FILE.parent):
+            if fn.startswith("product-") and fn.endswith(".html"):
+                ids.add(fn[len("product-"):-len(".html")])
+    except OSError:
+        pass
+    return ids
 
 
 def build_map() -> tuple[str, int, int]:
@@ -89,12 +98,30 @@ def build_map_apache() -> str:
     return "\n".join([header] + lines) + "\n"
 
 
+SHRINK_GUARD_MIN_PREV = 100      # попередня мапа менша за це — гард не діє (перший запуск/мала мапа)
+SHRINK_GUARD_FRACTION = 0.5      # нова мапа менша за цю частку попередньої → не перезаписуємо
+
+
+def _count_apache_lines(path: Path) -> int:
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line[:1].isdigit())
+    except OSError:
+        return 0
+
+
 def main() -> None:
     content, n, skipped = build_map()
+    # Мапа тепер керує і 410: прод-Apache віддає 410 Gone для КОЖНОГО prom_id, якого в мапі нема. Збій (порожній кеш, битий індекс, обрізана збірка)
+    # дав би малу мапу → масове 410 замість 301 на картки → втрата видимості в Google/GMC. Тому різке скорочення мапи НЕ записуємо (стара лишається).
+    prev = _count_apache_lines(OUT_FILE_APACHE)
+    if prev >= SHRINK_GUARD_MIN_PREV and n < prev * SHRINK_GUARD_FRACTION and os.environ.get("PROM_REDIRECTS_ALLOW_SHRINK") != "1":
+        print(f"[prom_redirects] 🚨 нова мапа має {n} редиректів проти {prev} (< {SHRINK_GUARD_FRACTION:.0%}) — НЕ перезаписую "
+              "(збій кешу/індексу? якщо скорочення свідоме — PROM_REDIRECTS_ALLOW_SHRINK=1).", file=sys.stderr)
+        sys.exit(2)
     _write_atomic(OUT_FILE, content)
     _write_atomic(OUT_FILE_APACHE, build_map_apache())
     print(f"[prom_redirects] {OUT_FILE}: {n} редиректів prom_id->/product-*.html "
-          f"(пропущено {skipped} — нема сторінки на сайті)")
+          f"(пропущено {skipped} — нема сторінки на сайті; ці Prom-URL на проді віддають 410 Gone)")
 
 
 if __name__ == "__main__":

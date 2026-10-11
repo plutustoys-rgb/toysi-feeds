@@ -54,6 +54,7 @@ listings), за аналогією з generate_prom_feed_top.py, але ОКРЕ
 """
 import json
 import math
+import os
 import random
 import re
 import sys
@@ -65,13 +66,15 @@ from xml.sax.saxutils import escape
 import requests
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed import normalize_vendor
+from generate_prom_feed import normalize_vendor, is_clearance_item
+from forbidden_products import is_forbidden
 from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products, fetch_prom_products_by_external_ids
 from prom_competitor_pricer import SEARCH_DELAY
 from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices,
                                 decide_price_for_platform, compute_floor, cap_stale_prom_override, site_retail_price,
-                                compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
+                                compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR,
+                                PAYMENT_COMMISSION, SITE_FULFILL_PER_ORDER)
 
 from trademark_filter import is_uno_trademark_blocked
 
@@ -720,6 +723,33 @@ def is_weapon_replica(item_id: str, title: str) -> bool:
 
 SITE_FILTER_MAX_DROP_SHARE = 0.25   # макс. частка каталогу, яку фільтр «є на сайті» має право відсікти
 
+# Мінімальний ВНЕСОК позиції на замовлення за економікою САЙТУ (ціна картки − собівартість − еквайринг − логістика/замовлення,
+# та сама формула, що site/build_site.py::contribution). Позиція з внеском ≤ цього порогу НЕ йде у безкоштовні лістинги Google/Meta/Bing:
+# кожне замовлення з неї — збиток. Це НЕ межа Prom (комісія майданчика, конкурент): на сайті комісії майданчика нема. 0 = лише відсів
+# збиткових; від'ємне значення (напр. -1000) практично вимикає відсів. Рішення про поріг — Консультанта/власника.
+FEED_MIN_SITE_CONTRIBUTION = float(os.environ.get("FEED_MIN_SITE_CONTRIBUTION", "0") or 0)
+FEED_MIN_SITE_CATALOG = 1000   # менше збігів каталогу з індексом сайту — підозра на збій індексу → відбір Prom-топом, не мізерний фід
+
+
+def select_feed_catalog(catalog: dict) -> tuple[dict, str]:
+    """Каталог для фідів Google/Meta/Bing = МНОЖИНА ВЛАСНОГО САЙТУ (товари, що мають картку в site/index.json), а не Prom-топ.
+
+    Раніше фіди брали `select_top_items` — відбір під ліміт підписки Prom (6000 SKU), з маржею/конкурентом/delisted Prom і двома
+    категоріями, виключеними лише через відсутні характеристики в Prom («велосипеди», «термометри та аспіратори»). Ця межа не має
+    стосунку до Google: на сайті є картки на ~21 тис. товарів, а фід віддавав п'яту частину. Тепер межу задає сам сайт
+    (в наявності, є фото/назва, не заборонене, не UNO — build_site.build) + фільтри фіда в build_feed_items (див. там).
+
+    Повертає (каталог, режим): 'site' — множина сайту; 'prom_top' — запасний шлях, коли індекс сайту недоступний або підозріло
+    малий (fail-open build_feed_items НЕ має означати «увесь каталог Toysi, вкл. нестандартні позиції»)."""
+    site_ids = load_site_product_ids()
+    if site_ids is not None:
+        chosen = {pid: it for pid, it in catalog.items() if str(pid) in site_ids}
+        if len(chosen) >= FEED_MIN_SITE_CATALOG:
+            return chosen, "site"
+        print(f"[Feed] збігів каталогу з індексом сайту лише {len(chosen)} (< {FEED_MIN_SITE_CATALOG}) — запасний відбір Prom-топом.",
+              file=sys.stderr)
+    return select_top_items(catalog), "prom_top"
+
 
 def load_site_product_ids() -> dict | None:
     """{toysi-id → ціна картки (pr)} товарів, які МАЮТЬ картку на власному сайті (site/index.json, збирає build_site.py на VPS).
@@ -765,6 +795,9 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         "price_from_card": 0,     # ціна взята з index.json (= ціна картки)
         "price_from_formula": 0,  # індексу нема/ціни нема — рахуємо site_retail_price
         "trademark_blocked": 0,  # ТМ «UNO» (претензія Mattel) — не віддаємо на сайт/у фіди
+        "forbidden": 0,          # політика «що не продаємо» (forbidden_products: ножі/зброя) — власний гейт фіда, не залежить від свіжості індексу сайту
+        "clearance": 0,          # «Уцінка»: condition у фіді жорстко «new», для уцінки з дефектом це хибне твердження про товар
+        "site_unprofitable": 0,  # внесок за економікою сайту ≤ FEED_MIN_SITE_CONTRIBUTION — кожне замовлення збиткове
         "no_image": 0,
         "no_gtin": 0,
         "no_brand_fallback": 0,
@@ -776,6 +809,12 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
     for pid, item in catalog.items():
         if site_ids is not None and str(pid) not in site_ids:
             stats["not_on_site"] += 1
+            continue
+        if is_forbidden(item):
+            stats["forbidden"] += 1
+            continue
+        if is_clearance_item(item.get("name") or "", item.get("category_name") or "", str(item.get("category_id") or "")):
+            stats["clearance"] += 1
             continue
         try:
             cost = real_toysi_cost(item)
@@ -810,6 +849,12 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         else:
             retail_price = float(site_retail_price(item))
             stats["price_from_formula"] += 1
+        # Збиткова за економікою сайту (та сама формула, що site/build_site.py::contribution) — не просимо Google/Meta/Bing вести
+        # покупців саме на неї. Межа Prom (комісія майданчика, конкурент) тут свідомо НЕ застосовується.
+        _contribution = retail_price - cost - retail_price * PAYMENT_COMMISSION.get("site", 0.0) - SITE_FULFILL_PER_ORDER
+        if _contribution <= FEED_MIN_SITE_CONTRIBUTION:
+            stats["site_unprofitable"] += 1
+            continue
 
         name = (item.get("name") or "").strip()
         if not name:
@@ -907,10 +952,14 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
         print("[Google] Каталог порожній — файл не створено.")
         return
 
+    # top_catalog (Prom-відбір під ліміт підписки) далі потрібен ЛИШЕ побічним ефектам для Prom/репрайсера: мапі 301 зі старих
+    # Prom-URL (resolve_own_product_links) і кешу категорій. САМ ФІД Google будується з feed_catalog = множини сайту.
     top_catalog = select_top_items(catalog)
+    feed_catalog, feed_mode = select_feed_catalog(catalog)
     if limit:
         top_catalog = dict(list(top_catalog.items())[:limit])
-    print(f"[Google] У відборі (ціль топ-{SELECT_COUNT}): {len(top_catalog)} товарів для обробки.")
+        feed_catalog = dict(list(feed_catalog.items())[:limit])
+    print(f"[Google] Відбір для фіда: {len(feed_catalog)} товарів (режим '{feed_mode}'); для порівняння, Prom-топ (ціль {SELECT_COUNT}): {len(top_catalog)}.")
 
     # ЗМІНЕНО 2026-07-17 (Autonomy-6): fetch_prom_products() тепер
     # ВИКЛИКАЄТЬСЯ ПЕРШИМ і НАВМИСНО — на відміну від попередньої версії,
@@ -956,7 +1005,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] Кеш реальних Prom-категорій: {len(category_cache)} товарів.")
 
     prom_price_overrides = load_fresh_prom_price_overrides()
-    items, stats = build_feed_items(top_catalog, prom_by_external_id, links, prom_price_overrides,
+    items, stats = build_feed_items(feed_catalog, prom_by_external_id, links, prom_price_overrides,
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())
 
     root = _build_xml(items)
@@ -973,6 +1022,8 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")
+    print(f"[Google] Пропущено — заборонені (ножі/зброя): {stats['forbidden']}; «Уцінка»: {stats['clearance']}; "
+          f"збиткові за економікою сайту (внесок ≤ {FEED_MIN_SITE_CONTRIBUTION:g} ₴): {stats['site_unprofitable']}")
     print(f"[Google] Пропущено — без ціни: {stats['no_price']}")
     print(f"[Google] Ціна з index.json (= картка сайту): {stats['price_from_card']}; за формулою сайту (нема в індексі): {stats['price_from_formula']}")
     print(f"[Google] Пропущено — не знайдено впевненого посилання на сторінку: {stats['no_link_skipped']}")

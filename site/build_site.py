@@ -787,7 +787,7 @@ HOME_PICK_EXCLUDED_CATS = frozenset({"картини за номерами", "б
 HOME_PICK_SEED = 20261011           # фіксоване зерно: перемішування добірки стабільне (не стрибає між збірками, поки не змінились дані)
 _PICK_STOP = frozenset({"для", "та", "від", "дитячий", "дитяча", "дитяче", "дитячі", "дитячих", "іграшка", "іграшки", "мʼяка", "м'яка", "мя",
                         "набір", "набори", "гра", "великий", "великі", "маленький", "новий", "nbsp"})
-_PICK_LATIN_STOP = frozenset({"kids", "baby", "toys", "toy", "game", "games", "with", "set"})
+_PICK_LATIN_STOP = frozenset({"kids", "baby", "toys", "toy", "game", "games", "with", "set", "super", "mini", "play", "girl", "girls", "boys", "pink", "blue", "big", "little"})   # загальні англійські слова — не бренд
 
 
 def _pick_key(name):
@@ -803,7 +803,7 @@ def _pick_key(name):
     lat = [w for w in re.findall(r"[a-z][a-z0-9]{3,}", n) if w not in _PICK_LATIN_STOP]
     if lat:
         return lat[0]
-    words = [w for w in re.findall(r"[а-яіїєґ0-9']{3,}", n) if w not in _PICK_STOP]
+    words = [w for w in re.findall(r"[а-яіїєґё0-9']{3,}", n) if w not in _PICK_STOP]
     return " ".join(words[:2]) or n.strip()
 
 
@@ -829,7 +829,7 @@ def home_pick(prods):
     by = {}
     for p in sorted(elig, key=lambda p: (-p["contribution"], str(p["id"]))):
         by.setdefault(p["category"], []).append(p)
-    order = sorted(by, key=lambda c: (-by[c][0]["contribution"], c))
+    order = sorted(by, key=lambda c: (-by[c][0]["contribution"], str(c)))   # str(c): категорія None не ламає порівняння при однаковому внеску
     out, used = [], set()
     for _ in range(HOME_PICK_MAX_PER_CAT):
         for c in order:

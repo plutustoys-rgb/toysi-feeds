@@ -90,6 +90,16 @@ chk("відбір: stock=None не падає (трактується як бе�
 tie = [prod(1, cat="A", contrib=150.0, name="Однаковий внесок Альфа"), prod(2, cat="B", contrib=150.0, name="Однаковий внесок Бета"), prod(3, cat="C", contrib=150.0, name="Однаковий внесок Гамма")]
 chk("відбір: однакові внески — порядок детермінований за id (тай-брейк) незалежно від входу", [p["id"] for p in bs.home_pick(tie)] == [p["id"] for p in bs.home_pick(list(reversed(tie)))])
 
+# ── додаткові відбір-інваріанти (аудит #678, раунд 2)
+big2 = [prod(2000 + i, cat="Одна", price=300, contrib=150.0 + i, name=f"Ключ{chr(1072 + i)}Один{i}Тест") for i in range(30)] +        [prod(3000 + i, cat="Друга", price=300, contrib=150.0 + i, name=f"Інший{chr(1072 + i)}Два{i}Тест") for i in range(30)]
+chk("відбір: дві категорії по 30 позицій → рівно 4 (≤2 з кожної), а не 10", len(bs.home_pick(big2)) == 4)
+chk("відбір: категорія None поряд з рядковою при однаковому внеску НЕ падає", len(bs.home_pick([prod(1, cat="A", contrib=150.0, name="Альфа"), dict(prod(2, cat=None, contrib=150.0, name="Бета"))])) == 2)
+seq = [p["id"] for p in bs.home_pick(allp)]
+chk("відбір: порядок у каруселі ПЕРЕМІШАНИЙ (не збігається з порядком round-robin за внеском)", seq != [p["id"] for p in sorted(bs.home_pick(allp), key=lambda p: -p["contribution"])])
+chk("ключ: дужки відкидаються, апостроф нормалізується (мʼяка/м'яка), 1 слово ≠ 2 слова: «Рюкзак» ≠ «Рюкзак шкільний»? (2 значущі слова беруться)",
+    k("Рюкзак (рожевий)") == k("Рюкзак (синій)") and k("М'яка іграшка Зайчик") == k("Мʼяка іграшка Зайчик") and k("Рюкзак шкільний") != k("Рюкзак туристичний"))
+chk("ключ: загальні англійські слова (Super/Mini/Play) НЕ бренд: «Super Mario» ≠ «Super Wings»", k("Super Mario фігурка") != k("Super Wings літак"))
+
 # ── weapon_policy ≡ generate_google_feed.is_weapon_replica
 try:
     import generate_google_feed as gg
@@ -98,6 +108,7 @@ try:
               "Револьвер пістони", "Карабін брелок", "Мильні бульбашки пістолет", "Автомат на батарейках", "Гвинтівка 6мм кульки", "Снайпер набір поролон"]
     ok = all(gg.is_weapon_replica("1", t) == wp.is_weapon_replica("1", t) for t in corpus) and all(gg.is_weapon_replica(i, "x") == wp.is_weapon_replica(i, "x") for i in ("276019", "1"))
     chk("weapon_policy.is_weapon_replica ≡ generate_google_feed.is_weapon_replica (корпус назв + ID)", ok)
+    chk("weapon_policy: водяний пістолет із кульками НЕ репліка; числовий ID у списку розпізнається (str(id))", not wp.is_weapon_replica("1", "Водяний пістолет з кульками") and wp.is_weapon_replica(276019, "x"))
     chk("списки слів/ID збігаються (дрейф копії ловиться тут)", set(gg._WEAPON_REPLICA_IDS) == set(wp.WEAPON_REPLICA_IDS) and tuple(gg._WEAPON_WORDS) == tuple(wp.WEAPON_WORDS)
         and tuple(gg._WATER_WORDS) == tuple(wp.WATER_WORDS) and tuple(gg._PROJECTILE_WORDS) == tuple(wp.PROJECTILE_WORDS))
 except Exception as e:  # noqa: BLE001

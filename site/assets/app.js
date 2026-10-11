@@ -403,7 +403,8 @@
     var listName=car.getAttribute("data-list")||"Добірка Плутуса";
     var slides=Array.prototype.slice.call(car.querySelectorAll("a.card"));
     function items(){ return slides.map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
-    // Широкий екран (десктоп/планшет) показує 5 слайдів одразу — їх 4-й і 5-й не мають лишатись lazy (порожні картки на першому екрані); на мобільному вони лишаються lazy (≈ −60 КБ до першого свайпу).
+    // Широкий екран показує 5 слайдів одразу — 4-й і 5-й не мають лишатись lazy (порожні картки на першому екрані). У Chromium вони й так у зоні lazy-порога (≈1250 px) — виміряно аудитом #678;
+    // це страхування для браузерів із меншим порогом (Safari/Firefox), без претензії на економію ваги.
     if(typeof matchMedia==="function" && matchMedia("(min-width: 700px)").matches){
       slides.slice(3,5).forEach(function(a){ var im=a.querySelector("img"); if(im){ im.loading="eager"; } });
     }

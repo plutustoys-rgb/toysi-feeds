@@ -54,6 +54,7 @@ listings), за аналогією з generate_prom_feed_top.py, але ОКРЕ
 """
 import json
 import math
+import os
 import random
 import re
 import sys
@@ -65,13 +66,15 @@ from xml.sax.saxutils import escape
 import requests
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed import normalize_vendor
+from generate_prom_feed import normalize_vendor, is_clearance_item
+from forbidden_products import is_forbidden
 from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products, fetch_prom_products_by_external_ids
 from prom_competitor_pricer import SEARCH_DELAY
 from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices,
                                 decide_price_for_platform, compute_floor, cap_stale_prom_override, site_retail_price,
-                                compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
+                                compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR,
+                                PAYMENT_COMMISSION, SITE_FULFILL_PER_ORDER)
 
 from trademark_filter import is_uno_trademark_blocked
 
@@ -720,6 +723,67 @@ def is_weapon_replica(item_id: str, title: str) -> bool:
 
 SITE_FILTER_MAX_DROP_SHARE = 0.25   # макс. частка каталогу, яку фільтр «є на сайті» має право відсікти
 
+# Мінімальний ВНЕСОК позиції на замовлення за економікою САЙТУ (ціна картки − собівартість − еквайринг − логістика/замовлення,
+# та сама формула, що site/build_site.py::contribution). Позиція з внеском ≤ цього порогу НЕ йде у безкоштовні лістинги Google/Meta/Bing:
+# кожне замовлення з неї — збиток. Це НЕ межа Prom (комісія майданчика, конкурент): на сайті комісії майданчика нема. 0 = лише відсів
+# збиткових; від'ємне значення (напр. -1000) практично вимикає відсів. Рішення про поріг — Консультанта/власника (11.10.2026: дефолт 0 підтверджено,
+# без окремого рішення НЕ підвищувати). Логістика 17,81 ₴ — на замовлення, а віднімається з кожної позиції — див. застереження в build_feed_items.
+def _parse_feed_min_contribution(raw) -> float:
+    """float із середовища; порожнє → 0; сміття/nan/inf → 0 із попередженням (модуль імпортують усі три фіди й full_catalog_competitor_scan —
+    ValueError на імпорті поклав би їх усіх, а пайплайн мовчки публікував би старі файли)."""
+    text = ("" if raw is None else str(raw)).strip().replace(",", ".")
+    if not text:
+        return 0.0
+    try:
+        value = float(text)
+    except ValueError:
+        print(f"[Feed] УВАГА: FEED_MIN_SITE_CONTRIBUTION={raw!r} не число — беру 0.", file=sys.stderr)
+        return 0.0
+    if math.isnan(value) or math.isinf(value):
+        print(f"[Feed] УВАГА: FEED_MIN_SITE_CONTRIBUTION={raw!r} (nan/inf) — беру 0.", file=sys.stderr)
+        return 0.0
+    return value
+
+
+FEED_MIN_SITE_CONTRIBUTION = _parse_feed_min_contribution(os.environ.get("FEED_MIN_SITE_CONTRIBUTION", "0"))
+FEED_MIN_SITE_CATALOG = 1000   # менше збігів каталогу з індексом сайту — підозра на збій індексу → відбір Prom-топом, не мізерний фід
+FEED_MIN_SITE_VS_TOP = 0.5     # множина сайту менша за цю частку Prom-топу → індекс обрізаний (норма: сайт ≫ топ) → запасний відбір
+
+# Категорії, які ЛИШАЮТЬСЯ поза фідами (було виключено й раніше; на Google/Meta вони не іграшки або без надійних даних): раніше це тримала
+# Prom-межа EXCLUDED_CATEGORIES (+ «Маски захисні» просто не доходили). Фід віддає їм загальну категорію 1239 «Toys & Games» → ризик відхилень.
+# Повернути можна лише з правильним мапінгом google_product_category / рішенням власника (аудит #672, ВАЖЛИВО-3).
+# + ЗБРОЯ/РЕПЛІКИ (рішення Консультанта 11.10.2026): Google і Meta забороняють зброю та її репліки й застосовують це автоматично; у нашому GMC уже є
+# 3 відхилення «Огнестрельное оружие и его детали», тобто їхній класифікатор спрацьовує на наш асортимент незалежно від нашого фільтра реплік. Позиції
+# ЛИШАЮТЬСЯ на сайті й на маркетплейсах — лише не йдуть у фіди Google/Meta/Bing (асиметрія: +≈83 позицій проти ризику страйків по політиках на каналі).
+# «Водна зброя» (водяні пістолети) свідомо НЕ виключено — рішення про неї не ухвалено.
+FEED_EXCLUDED_CATEGORIES = frozenset({"велосипеди", "термометри та аспіратори", "маски захисні",
+                                      "автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя"})
+
+
+def select_feed_catalog(catalog: dict, top_catalog: dict | None = None) -> tuple[dict, str]:
+    """Каталог для фідів Google/Meta/Bing = МНОЖИНА ВЛАСНОГО САЙТУ (товари, що мають картку в site/index.json), а не Prom-топ.
+
+    Раніше фіди брали `select_top_items` — відбір під ліміт підписки Prom (6000 SKU), з маржею/конкурентом/delisted Prom і двома
+    категоріями, виключеними лише через відсутні характеристики в Prom («велосипеди», «термометри та аспіратори»). Ця межа не має
+    стосунку до Google: на сайті є картки на ~21 тис. товарів, а фід віддавав п'яту частину. Тепер межу задає сам сайт
+    (в наявності, є фото/назва, не заборонене, не UNO — build_site.build) + фільтри фіда в build_feed_items (див. там).
+
+    Повертає (каталог, режим): 'site' — множина сайту; 'prom_top' — запасний шлях, коли індекс сайту недоступний, підозріло малий
+    (< FEED_MIN_SITE_CATALOG) або менший за FEED_MIN_SITE_VS_TOP від Prom-топу (fail-open build_feed_items НЕ має означати «увесь каталог Toysi»,
+    а обрізаний індекс не має мовчки стискати фід). Порядок у режимі 'site': спершу позиції Prom-топу в його ранзі (так фід віддавав
+    social_auto_poster.py — він бере перші N з meta_feed.xml), далі решта за id."""
+    top = top_catalog if top_catalog is not None else select_top_items(catalog)
+    site_ids = load_site_product_ids()
+    if site_ids is not None:
+        chosen = {pid: it for pid, it in catalog.items() if str(pid) in site_ids}
+        if len(chosen) >= FEED_MIN_SITE_CATALOG and len(chosen) >= FEED_MIN_SITE_VS_TOP * len(top):
+            ordered = {pid: chosen[pid] for pid in top if pid in chosen}
+            ordered.update({pid: chosen[pid] for pid in sorted(chosen, key=str) if pid not in ordered})
+            return ordered, "site"
+        print(f"[Feed] збігів каталогу з індексом сайту {len(chosen)} (межа {FEED_MIN_SITE_CATALOG} і {FEED_MIN_SITE_VS_TOP:.0%} від Prom-топу {len(top)}) — "
+              "індекс обрізаний? Запасний відбір Prom-топом.", file=sys.stderr)
+    return top, "prom_top"
+
 
 def load_site_product_ids() -> dict | None:
     """{toysi-id → ціна картки (pr)} товарів, які МАЮТЬ картку на власному сайті (site/index.json, збирає build_site.py на VPS).
@@ -765,6 +829,11 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         "price_from_card": 0,     # ціна взята з index.json (= ціна картки)
         "price_from_formula": 0,  # індексу нема/ціни нема — рахуємо site_retail_price
         "trademark_blocked": 0,  # ТМ «UNO» (претензія Mattel) — не віддаємо на сайт/у фіди
+        "forbidden": 0,          # політика «що не продаємо» (forbidden_products: ножі/зброя) — власний гейт фіда, не залежить від свіжості індексу сайту
+        "excluded_category": 0,  # FEED_EXCLUDED_CATEGORIES (не іграшки/без надійних даних — раніше теж не йшли у фіди)
+        "out_of_stock": 0,       # stock ≤ 0 — у фіди не йдуть (сторінка сайту жива з OutOfStock, але трафік на неї не просимо)
+        "clearance": 0,          # «Уцінка»: condition у фіді жорстко «new», для уцінки з дефектом це хибне твердження про товар
+        "site_unprofitable": 0,  # внесок за економікою сайту ≤ FEED_MIN_SITE_CONTRIBUTION — кожне замовлення збиткове
         "no_image": 0,
         "no_gtin": 0,
         "no_brand_fallback": 0,
@@ -776,6 +845,22 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
     for pid, item in catalog.items():
         if site_ids is not None and str(pid) not in site_ids:
             stats["not_on_site"] += 1
+            continue
+        if is_forbidden(item):
+            stats["forbidden"] += 1
+            continue
+        if (item.get("category_name") or "").strip().lower() in FEED_EXCLUDED_CATEGORIES:
+            stats["excluded_category"] += 1
+            continue
+        try:
+            _stock_num = float(item.get("stock", 0) or 0)
+        except (TypeError, ValueError):
+            _stock_num = 0.0
+        if not _stock_num > 0:   # (not >) а не (<=): nan теж відсікається
+            stats["out_of_stock"] += 1
+            continue
+        if is_clearance_item(item.get("name") or "", item.get("category_name") or "", str(item.get("category_id") or "")):
+            stats["clearance"] += 1
             continue
         try:
             cost = real_toysi_cost(item)
@@ -810,6 +895,15 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         else:
             retail_price = float(site_retail_price(item))
             stats["price_from_formula"] += 1
+        # Збиткова за економікою сайту (та сама формула, що site/build_site.py::contribution) — не просимо Google/Meta/Bing вести
+        # покупців саме на неї. Межа Prom (комісія майданчика, конкурент) тут свідомо НЕ застосовується.
+        # ⚠️ ЧИТАТИ ЯК КОНСЕРВАТИВНУ ОЦІНКУ, А НЕ ТОЧНУ ВЕЛИЧИНУ (Консультант 11.10.2026): SITE_FULFILL_PER_ORDER (17,81 ₴) — логістика на ЗАМОВЛЕННЯ,
+        # а тут її віднято від КОЖНОЇ позиції окремо. Для кошика з одного товару це точно; для кошика з трьох — утричі завищена витрата, тобто
+        # відсів «збиткових» ширший, ніж треба. Це свідомо в безпечний бік. Якщо середній кошик виявиться більшим за одну позицію — перерахувати поріг.
+        _contribution = retail_price - cost - retail_price * PAYMENT_COMMISSION.get("site", 0.0) - SITE_FULFILL_PER_ORDER
+        if _contribution <= FEED_MIN_SITE_CONTRIBUTION:
+            stats["site_unprofitable"] += 1
+            continue
 
         name = (item.get("name") or "").strip()
         if not name:
@@ -828,7 +922,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             continue
         image = _upscale_prom_image(image)
 
-        stock = item.get("stock", 0)
+        stock = _stock_num   # число, перевірене гейтом вище (рядок '5' раніше проходив гейт, а нижче падав на stock > 0)
 
         brand = normalize_vendor(item.get("vendor") or "")
         if not brand:
@@ -907,10 +1001,14 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
         print("[Google] Каталог порожній — файл не створено.")
         return
 
+    # top_catalog (Prom-відбір під ліміт підписки) далі потрібен ЛИШЕ побічним ефектам для Prom/репрайсера: мапі 301 зі старих
+    # Prom-URL (resolve_own_product_links) і кешу категорій. САМ ФІД Google будується з feed_catalog = множини сайту.
     top_catalog = select_top_items(catalog)
+    feed_catalog, feed_mode = select_feed_catalog(catalog, top_catalog)
     if limit:
         top_catalog = dict(list(top_catalog.items())[:limit])
-    print(f"[Google] У відборі (ціль топ-{SELECT_COUNT}): {len(top_catalog)} товарів для обробки.")
+        feed_catalog = dict(list(feed_catalog.items())[:limit])
+    print(f"[Google] Відбір для фіда: {len(feed_catalog)} товарів (режим '{feed_mode}'); для порівняння, Prom-топ (ціль {SELECT_COUNT}): {len(top_catalog)}.")
 
     # ЗМІНЕНО 2026-07-17 (Autonomy-6): fetch_prom_products() тепер
     # ВИКЛИКАЄТЬСЯ ПЕРШИМ і НАВМИСНО — на відміну від попередньої версії,
@@ -956,7 +1054,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] Кеш реальних Prom-категорій: {len(category_cache)} товарів.")
 
     prom_price_overrides = load_fresh_prom_price_overrides()
-    items, stats = build_feed_items(top_catalog, prom_by_external_id, links, prom_price_overrides,
+    items, stats = build_feed_items(feed_catalog, prom_by_external_id, links, prom_price_overrides,
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())
 
     root = _build_xml(items)
@@ -973,6 +1071,9 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")
+    print(f"[Google] Пропущено — заборонені (ножі/зброя): {stats['forbidden']}; «Уцінка»: {stats['clearance']}; "
+          f"виключені категорії: {stats['excluded_category']}; без залишку: {stats['out_of_stock']}; "
+          f"збиткові за економікою сайту (внесок ≤ {FEED_MIN_SITE_CONTRIBUTION:g} ₴): {stats['site_unprofitable']}")
     print(f"[Google] Пропущено — без ціни: {stats['no_price']}")
     print(f"[Google] Ціна з index.json (= картка сайту): {stats['price_from_card']}; за формулою сайту (нема в індексі): {stats['price_from_formula']}")
     print(f"[Google] Пропущено — не знайдено впевненого посилання на сторінку: {stats['no_link_skipped']}")

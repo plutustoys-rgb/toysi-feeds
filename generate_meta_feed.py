@@ -36,11 +36,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from parser import fetch_toysi_catalog
-from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from prom_catalog_sync import fetch_prom_products
 from competitor_pricing import load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices
 from generate_google_feed import (
     build_feed_items,
+    select_feed_catalog,
     load_site_product_ids,
     load_prom_products_cache,
     fetch_prom_products_resilient,
@@ -108,10 +108,11 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
         print("[Meta] Каталог порожній — файл не створено.")
         return
 
-    top_catalog = select_top_items(catalog)
+    # Каталог фіда = множина власного сайту (а не Prom-топ під ліміт підписки Prom) — див. generate_google_feed.select_feed_catalog.
+    feed_catalog, feed_mode = select_feed_catalog(catalog)
     if limit:
-        top_catalog = dict(list(top_catalog.items())[:limit])
-    print(f"[Meta] У відборі (ціль топ-{SELECT_COUNT}): {len(top_catalog)} товарів для обробки.")
+        feed_catalog = dict(list(feed_catalog.items())[:limit])
+    print(f"[Meta] Відбір для фіда: {len(feed_catalog)} товарів (режим '{feed_mode}').")
 
     # ВИПРАВЛЕНО (2026-07-20, аудит PR #109 — code_report_2026-07-20_pt11.md):
     # раніше цей крок робив ВЛАСНИЙ live-виклик fetch_prom_products() —
@@ -135,12 +136,12 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
     links = _load_own_product_links_cache()
     if not links:
         print(
-            "[Meta] own_product_links_cache.json відсутній/застарів — фід матиме 0 товарів "
+            "[Meta] own_product_links_cache.json відсутній/застарів — на фід це НЕ впливає (посилання беруться з картки сайту), "
             "(generate_google_feed.py має відпрацювати ПЕРШИМ у цьому ж прогоні).",
             file=sys.stderr,
         )
 
-    items, stats = build_feed_items(top_catalog, prom_by_external_id, links, load_fresh_prom_price_overrides(),
+    items, stats = build_feed_items(feed_catalog, prom_by_external_id, links, load_fresh_prom_price_overrides(),
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())
     # Репліки зброї виключає САМ build_feed_items (спільно для google/meta/bing) — тут не дублюємо.
 
@@ -156,6 +157,8 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
 
     print(f"[Meta] Готово! Збережено: {output_file}")
     print(f"[Meta] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
+    print(f"[Meta] Пропущено — заборонені: {stats['forbidden']}; «Уцінка»: {stats['clearance']}; збиткові за економікою сайту: {stats['site_unprofitable']}; "
+          f"нема картки на сайті: {stats['not_on_site']}; ТМ «UNO»: {stats['trademark_blocked']}; без фото: {stats['no_image']}")
 
 
 if __name__ == "__main__":

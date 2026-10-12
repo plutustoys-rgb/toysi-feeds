@@ -1279,6 +1279,12 @@ PAYMENT_COMMISSION: dict[str, float] = {
     "site": 0.028,
 }
 
+# Логістика на ЗАМОВЛЕННЯ сайту (Нова Пошта + Checkbox SMS), яку КОДВ тримає у змінних витратах, а не в собівартості товару:
+# серпень 481,00 ₴ (НП 350 + SMS 131) на 27 замовлень = 17,81 ₴/замовлення (Консультант 2026-09-15, реєстри КОДВ). ЄДИНЕ джерело:
+# site/build_site.py (внесок для «Рекомендовані»/головної) і generate_google_feed.build_feed_items (відсів збиткових позицій фідів
+# Google/Meta/Bing) беруть число ЗВІДСИ, щоб дві копії не розійшлись. ⚠️ Це на ЗАМОВЛЕННЯ, не на товар. Оновлювати за свіжими даними КОДВ.
+SITE_FULFILL_PER_ORDER = 17.81
+
 FIELDNAMES = [
     "id", "name", "cost", "min_competitor_prom", "min_competitor_rozetka",
     "floor_prom", "price_prom", "margin_pct_prom", "category_prom",

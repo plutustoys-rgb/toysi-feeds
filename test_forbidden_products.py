@@ -148,12 +148,24 @@ EXEMPT = {"generate_prom_redirects.py": "лише редирект-мапа, н�
 for f in DIRECT:
     src = (BASE / f).read_text(encoding="utf-8")
     chk(f"структура: {f} імпортує forbidden_products і викликає is_forbidden(", "from forbidden_products import is_forbidden" in src and "is_forbidden(" in src)
+# Google/Meta/Bing з 11.10.2026 будуються з каталогу САЙТУ (select_feed_catalog), а не з Prom-топу; політика «що не продаємо» тепер — ВЛАСНИЙ гейт
+# спільного build_feed_items (generate_google_feed.py), який не залежить від свіжості індексу сайту.
+_gsrc = (BASE / "generate_google_feed.py").read_text(encoding="utf-8")
+chk("структура: generate_google_feed.py імпортує forbidden_products і викликає is_forbidden( у build_feed_items",
+    "from forbidden_products import is_forbidden" in _gsrc and "if is_forbidden(item):" in _gsrc)
 for f in VIA_TOP:
     src = (BASE / f).read_text(encoding="utf-8")
-    chk(f"структура: {f} бере відбір через select_top_items (політика в is_excluded_category)", "select_top_items" in src)
+    chk(f"структура: {f} будує фід через select_feed_catalog + build_feed_items (політика в build_feed_items)",
+        "select_feed_catalog(catalog" in src and "build_feed_items(" in src)
 known = set(DIRECT) | set(VIA_TOP) | set(EXEMPT)
 found = {p.name for p in BASE.glob("generate_*.py")} | {"site/build_site.py"}
 chk(f"структура: НЕМАЄ невідомого генератора вітрини (додали новий? — внесіть у DIRECT/VIA_TOP/EXEMPT цього тесту): {sorted(found - known)}", not (found - known))
+
+# ── 7б. спільний build_feed_items (Google/Meta/Bing) відсікає заборонений SKU, навіть якщо індекс сайту (застарілий) його містить ──
+import generate_google_feed as ggf
+_it, _st = ggf.build_feed_items({"1": BAD, "2": OK}, {}, {}, {}, None, {"1": 300, "2": 300})
+_ids = {i["id"] for i in _it}
+chk("build_feed_items: заборонений SKU не у фіді навіть з карткою в індексі сайту (власний гейт), звичайний — може бути", "1" not in _ids and _st["forbidden"] == 1)
 
 # ── 8. живий каталог / готові фіди ──
 # Мертва копія повного Prom-фіду (генерація прибрана, споживача нема: логи Apache 30.08–08.10 без жодного GET, generate_prom_feed.py:987-988) — не перевіряємо.

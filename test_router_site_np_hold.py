@@ -8,6 +8,8 @@ import sys
 
 import order_router as orr
 
+orr.count_cities_named = lambda *a, **k: 1   # мережа НП не потрібна: місто вважається унікальним (перевірку тезок тестує test_site_name_city_hold.py)
+
 F = []
 
 

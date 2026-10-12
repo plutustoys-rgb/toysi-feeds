@@ -136,7 +136,8 @@ try {
 
 # 3d-3. Monthly-act reconciliation report (KODV chief accountant 2026-10-06, 'one rule' sec.3): per counterparty and
 #       month: act sum (from the Vchasno PDF) vs the sum of candidate commissions, + 'act already in book at row N'.
-#       READ-ONLY for the book/registries; writes only документи_КОДВ/_zvirka_aktiv.md/.json. Runs AFTER all candidate
+#       READ-ONLY for the book/registries; writes документи_КОДВ/_zvirka_aktiv.md/.json, _zvirka_ochikuvannya.json and the single
+#       field закрито_актом in _ochikuvani_v_aktakh.json (accountant expectations check, 2026-10-08). Runs AFTER all candidate
 #       producers above so it sees today's registries.
 & $py akty_zvirka.py
 

@@ -102,6 +102,7 @@ echo "=== B. ЗБІРКА + systemd ==="
 "$PY" "$APP/site/build_site.py"
 "$PY" "$APP/generate_prom_redirects.py" || echo "  (генератор мапи редиректів завершився з помилкою)"
 [ -f "$APP/site/index.html" ] || die "build_site.py не створив $APP/site/index.html"
+[ -f "$APP/site/404.html" ] || echo "⚠️  $APP/site/404.html нема (стара збірка?) — ErrorDocument 404 нижче без нього віддасть дефолтну сторінку Apache; перезбери сайт і повтори"
 MAPLINES=$(grep -c '^[0-9]' "$MAPFILE" 2>/dev/null || true)
 MAPLINES=${MAPLINES:-0}
 echo "ℹ️  рядків у мапі 301: $MAPLINES"
@@ -178,13 +179,21 @@ cat <<'EOF'
         </LocationMatch>
     </IfModule>
     <IfModule mod_deflate.c>
-        AddOutputFilterByType DEFLATE text/html text/css text/plain application/javascript application/json image/svg+xml
+        # + xml: sitemap.xml ≈3,5 МБ віддавався без стиснення (Google тягне його часто)
+        AddOutputFilterByType DEFLATE text/html text/css text/plain application/javascript application/json image/svg+xml application/xml text/xml
     </IfModule>
+    # власна 404 (шлях, не URL → статус лишається 404). Без неї — дефолт Webuzo з логотипом Softaculous по http:// і посиланням на чужий сайт
+    ErrorDocument 404 /404.html
     RewriteEngine On
     RewriteMap promredir "txt:@MAPFILE@"
     # старі Prom-URL (укр. і рос. версії; SEO-замовлення 2026-10-06, GSC: 5 583 URL у 404) → наша картка / каталог (301)
     # 09.10.2026: мовний префікс ОПЦІЙНИЙ — Google (GMC «Интернет-магазин», «Не указана цена» 1 564) тримає й старі Prom-URL БЕЗ /ua/ (/p3138857147-….html → було 404). Наші сторінки (/product-…, /catalog.html…) цим правилам не відповідають.
-    RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- ${promredir:$1|/catalog.html} [R=301,L]
+    # Prom-товар, якого НЕМА в мапі (картки більше нема), → 410 Gone, а не 301 на /catalog.html (Консультант 11.10.2026: Google трактує такий 301 як soft-404 —
+    # у GMC «Не указана цена товара» ≈2,46 тис. позицій — і не припиняє переобхід; 410 прямо каже «цього більше немає»). Товар Є в мапі → 301 на його картку (у т.ч.
+    # на сторінку «немає в наявності»). Порожня мапа дала б 410 для всіх: захист — generate_prom_redirects.py (не перезаписує мапу вдвічі меншою) + MIN_MAP_LINES нижче.
+    RewriteCond ${promredir:$1|-} =-
+    RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- - [G,L]
+    RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- ${promredir:$1} [R=301,L]
     RewriteRule ^/(?:(?:ua|ru)/)?g[0-9]+- /catalog.html [R=301,L]
     RewriteRule ^/(?:(?:ua|ru)/)?product_list(?:/|$) /catalog.html [R=301,L]
     RewriteRule ^/(?:(?:ua|ru)/)?site_contacts(?:\.html)?$ /contacts.html [R=301,L]
@@ -193,6 +202,10 @@ cat <<'EOF'
     RewriteRule ^/favicon\.ico$ /assets/favicon.ico [L]
     RewriteRule ^/apple-touch-icon(?:-precomposed)?\.png$ /assets/apple-touch-icon.png [L]
     RewriteRule ^/(?:ua|ru)/?$ / [R=301,L]
+    # /index.html = дубль головної (canonical уже «/»). Умова THE_REQUEST обов'язкова: лише те, що клієнт ЗАПРОСИВ сам; без неї внутрішній
+    # перехід DirectoryIndex «/» → /index.html теж потрапив би під правило → нескінченний цикл редіректів.
+    RewriteCond %{THE_REQUEST} ^[A-Z]+\s/index\.html(?:\?\S*)?\sHTTP/
+    RewriteRule ^/index\.html$ / [R=301,L]
     ProxyPreserveHost On
     ProxyPass /api/ http://127.0.0.1:8901/api/ retry=0 timeout=30
     ProxyPassReverse /api/ http://127.0.0.1:8901/api/
@@ -291,6 +304,55 @@ write_vhost() {   # $1 = http | https
     if ! cmp -s "$TMPD/$tag.pre.behavior" "$TMPD/$tag.post.behavior"; then
         echo "🚨 ПОВЕДІНКА чужих сайтів/дефолту змінилась:"; diff "$TMPD/$tag.pre.behavior" "$TMPD/$tag.post.behavior" || true; bad=1
     fi
+    # проба правил старих Prom-URL (11.10.2026): непокритий → 410; покритий (перший рядок мапи) → 301 на свою картку. Хибний 410 для мапованих
+    # губив би видимість у GMC, тому відкат, якщо поведінка не така.
+    local sch2="http"
+    local prt2=80
+    if [ "$mode" = "https" ]; then sch2="https"; prt2=443; fi
+    local pk_key
+    local pk_val
+    pk_key=$(awk '/^[0-9]/{print $1; exit}' "$MAPFILE" 2>/dev/null || true)
+    pk_val=$(awk '/^[0-9]/{print $2; exit}' "$MAPFILE" 2>/dev/null || true)
+    local pk_gone="ERR"
+    local pk_map="ERR"
+    for try in 1 2 3; do
+        pk_gone=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/ua/p999999999999-gone-probe.html")
+        if [ -n "$pk_key" ]; then
+            pk_map=$(curl -sS --max-time 10 --resolve "$DOMAIN:$prt2:$IP" -o /dev/null -w '%{http_code} %{redirect_url}' "$sch2://$DOMAIN/ua/p${pk_key}-probe.html" 2>/dev/null || echo "ERR")
+        else
+            pk_map="301 (мапа порожня — пропуск)"
+        fi
+        [ "$pk_gone" = "410" ] && case "$pk_map" in "301 "*) break;; esac
+        echo "ℹ️  проба правил Prom ще не збіглась (спроба $try/3): непокритий = $pk_gone, покритий = $pk_map — чекаю"; sleep 4
+    done
+    echo "  Prom-URL: непокритий = $pk_gone (очікую 410); покритий p${pk_key:-?} = $pk_map (очікую 301 …${pk_val:-?})"
+    [ "$pk_gone" = "410" ] || { echo "🚨 непокритий Prom-URL віддає $pk_gone, а не 410"; bad=1; }
+    case "$pk_map" in "301 "*) ;; *) echo "🚨 покритий Prom-URL не веде 301 на картку ($pk_map)"; bad=1;; esac
+    # власна проба нових правил (10.10.2026): «/» не зациклився на редіректі /index.html → /; /index.html → 301 на «/»; неіснуюча адреса → 404 (не 500).
+    # Перевірка чужих сайтів вище цього НЕ бачить, а помилка в нашому правилі клала б саму головну.
+    local sch="http"
+    local prt=80
+    if [ "$mode" = "https" ]; then sch="https"; prt=443; fi
+    local own_root="ERR"
+    local own_idx="ERR"
+    local own_404="ERR"
+    for try in 1 2 3; do
+        own_root=$(code --resolve "$DOMAIN:$prt:$IP" "$sch://$DOMAIN/")
+        own_idx=$(curl -sS --max-time 10 --resolve "$DOMAIN:$prt:$IP" -o /dev/null -w '%{http_code} %{redirect_url}' "$sch://$DOMAIN/index.html" 2>/dev/null || echo "ERR")
+        own_404=$(code --resolve "$DOMAIN:$prt:$IP" "$sch://$DOMAIN/__probe_404_$STAMP.html")
+        [ "$own_root" = "200" ] && [ "$own_404" = "404" ] && case "$own_idx" in "301 $sch://$DOMAIN/") break;; esac
+        echo "ℹ️  власна проба ще не збіглась (спроба $try/3): / = $own_root, /index.html = $own_idx, неіснуюча = $own_404 — чекаю"; sleep 4
+    done
+    echo "  / = $own_root (очікую 200); /index.html = $own_idx (очікую 301 → $sch://$DOMAIN/); неіснуюча адреса = $own_404 (очікую 404)"
+    [ "$own_root" = "200" ] || { echo "🚨 головна не віддається (/=$own_root) — можливий цикл редіректів"; bad=1; }
+    case "$own_idx" in "301 $sch://$DOMAIN/") ;; *) echo "🚨 /index.html не веде 301 на «/» ($own_idx)"; bad=1;; esac
+    [ "$own_404" = "404" ] || { echo "🚨 неіснуюча адреса віддає $own_404, а не 404"; bad=1; }
+    # тіло — у змінну, а не `curl | grep -q` під pipefail: grep -q виходить на першому збігу, curl ловить EPIPE (код 23) → хибний збій → відкат робочого vhost'а (аудит #668)
+    local own_404_body=""
+    own_404_body=$(curl -sS --max-time 10 --resolve "$DOMAIN:$prt:$IP" "$sch://$DOMAIN/__probe_404_$STAMP.html" 2>/dev/null || true)
+    if [ -f "$APP/site/404.html" ] && ! grep -q "Такої сторінки немає" <<< "$own_404_body"; then
+        echo "🚨 404 віддає не нашу сторінку (ErrorDocument не діє?)"; bad=1
+    fi
     if [ "$bad" = "1" ]; then restore; return 1; fi
     echo "✅ vhost ($mode) застосовано; чужі vhost'и, default server і поведінка (shopify, vartov.app, сертифікати) — без змін"
 }
@@ -314,18 +376,18 @@ if [ "$CERT_OK" = "0" ]; then
     MAPKEY=$(awk '/^[0-9]/{print $1; exit}' "$MAPFILE")
     MAPVAL=$(awk '/^[0-9]/{print $2; exit}' "$MAPFILE")
     HR=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code} %{redirect_url}' "http://$DOMAIN/ua/p${MAPKEY}-test.html" 2>/dev/null || echo "ERR")
-    HR0=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code} %{redirect_url}' "http://$DOMAIN/ua/p1-test.html" 2>/dev/null || echo "ERR")
+    HR0=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code} %{redirect_url}' "http://$DOMAIN/ua/p999999999999-gone-probe.html" 2>/dev/null || echo "ERR")
     echo "  /                  : $HP (очікую 200)"
     echo "  /catalog.html      : $HC (очікую 200)"
     echo "  /api/np/city       : $HA (очікую 200)"
     echo "  /build_site.py     : $HX (очікую 403/404, не 200)"
     echo "  /ua/p${MAPKEY}-test: $HR (очікую 301 …$MAPVAL)"
-    echo "  /ua/p1-test        : $HR0 (очікую 301 …/catalog.html)"
+    echo "  /ua/p999999999999  : $HR0 (очікую 410 Gone — непокритий Prom-URL)"
     [ "$HP" = "200" ] && [ "$HC" = "200" ] || die "сайт локально не віддається (/=$HP, /catalog.html=$HC). DNS НЕ переводити! Дивись: tail /usr/local/apps/apache2/logs/error_log"
     [ "$HA" = "200" ] || die "/api/np/city=$HA — API не проксіюється. DNS НЕ переводити! (journalctl -u site-order-api)"
     [ "$HX" != "200" ] || die "build_site.py віддається по HTTP (DocumentRoot) — DNS НЕ переводити!"
     case "$HR" in "301 "*"$MAPVAL") ;; *) die "301 з мапи не працює ($HR) — DNS НЕ переводити!";; esac
-    case "$HR0" in "301 "*"/catalog.html") ;; *) die "непокритий Prom-URL не веде на /catalog.html ($HR0) — DNS НЕ переводити!";; esac
+    case "$HR0" in "410 "*) ;; *) die "непокритий Prom-URL не віддає 410 ($HR0) — DNS НЕ переводити!";; esac
     echo ""
     echo "✅ ФАЗА C ГОТОВА: сайт працює на VPS по HTTP (чужі vhost'и не зачеплено). МОЖНА ПЕРЕВОДИТИ DNS:"
     echo "   у кабінеті Prom: A для @ та www -> $IP, AAAA (якщо є) — видалити. Онлайн-оплата (LiqPay) ще не підключена: prepaid покаже"
@@ -417,7 +479,7 @@ if [ "$CERT_OK" = "1" ]; then
     HSTS_HDR=$(curl -sI --max-time 10 "https://$DOMAIN/" 2>/dev/null | grep -i '^strict-transport' | tr -d '\r' || true)
     echo "  HSTS               : ${HSTS_HDR:-НЕМАЄ (mod_headers відсутній? — HSTS не ввімкнено, решта працює)}"
     echo "  https /ua/ (301 → /): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ua/" 2>/dev/null || echo ERR)"
-    echo "  https /ru/p1-x (301 → каталог/картка): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/p1-x.html" 2>/dev/null || echo ERR)"
+    echo "  https /ru/p999999999999-x (очікую 410 Gone): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/p999999999999-x.html" 2>/dev/null || echo ERR)"
     certbot renew --dry-run --cert-name "$DOMAIN" >/dev/null 2>&1 && echo "✅ certbot renew --dry-run для $DOMAIN ОК" || echo "⚠️  certbot renew --dry-run для $DOMAIN НЕ пройшов — перевір /var/log/letsencrypt/letsencrypt.log"
     echo ""
     echo "🎉 ГОТОВО: https://$DOMAIN працює. Далі (не тут): LiqPay-ключі в $APP/.env, SYSTEM_MAP, GMC."

@@ -128,7 +128,7 @@ def esc(s):
 def header():
     return (
       '<header class="top">'
-      '<a class="logo" href="index.html">Plutus<span>Toys</span>'
+      '<a class="logo" href="/">Plutus<span>Toys</span>'
       ' <img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="24" height="22" decoding="async"></a>'
       '<div class="search" id="open-search">'
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
@@ -193,7 +193,7 @@ def analytics_head() -> str:
     return "".join(out)
 
 
-def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full=""):
+def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False):
     full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
     if canonical == "index.html":
@@ -218,6 +218,8 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<!doctype html>\n<html lang=\"uk\">\n<head>\n"
       "<meta charset=\"utf-8\">\n"
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+      # base_root лише для 404: її віддають за БУДЬ-ЯКОЇ адреси (/a/b/c), а шляхи в шаблоні відносні (assets/…, index.json, api/…)
+      + ("<base href=\"/\">\n" if base_root else "") +
       f"<title>{esc(full_title)}</title>\n"
       f"{head_meta}"
       "<link rel=\"icon\" href=\"assets/favicon.ico\" sizes=\"any\">\n"
@@ -254,13 +256,40 @@ def _addon_ok(p):
             and not any(m in nm for m in cp._BAD_NAME_MARKERS))
 
 # ── збірка ─────────────────────────────────────────────────────────────
+SHRINK_GUARD_MIN_PREV = 1000     # попередня збірка менша за це — гард не діє (перший запуск/демо)
+SHRINK_GUARD_FRACTION = 0.7      # нова збірка менша за цю частку попередньої → стоп до запису
+
+
+class CatalogShrinkError(RuntimeError):
+    """Каталог «в наявності» різко зменшився проти попередньої збірки — не пишемо й не прибираємо сторінки."""
+
+
 def build():
     print("[build] тягну каталог Toysi…")
     cat = tp.fetch_toysi_catalog()
+    # Захист (аудит #675, ВАЖЛИВО-1): порожній/усічений каталог Toysi (структурно валідний XML без HTTP-помилки) раніше давав index.json=[] і прибирання
+    # ВСІХ product-*.html (а з OOS-сторінками — ще ~7 тис.). Тепер збірка зупиняється ДО будь-якого запису: чинний сайт лишається як є, таймер спробує за 2 год.
+    try:
+        _min_cat = int(os.environ.get("SITE_MIN_CATALOG", "") or tp.TOYSI_EXPECTED_MIN_SIZE)   # свідоме зниження порога (Toysi законно зменшився) — без правки коду
+        tp.assert_catalog_size_sane(cat, min_expected=_min_cat)
+    except Exception as e:  # noqa: BLE001 — CatalogSizeError; без запису й без прибирання
+        print(f"[build] 🚨 ЗБІРКУ ЗУПИНЕНО, сайт не чіпаю: {e}", file=sys.stderr)
+        try:
+            from telegram_notify import send_throttled_alert
+            send_throttled_alert("site_build_catalog_size", f"🚨 site-rebuild: збірку зупинено, каталог Toysi підозріло малий. {str(e)[:300]} Чинні сторінки сайту НЕ чіпано.",
+                                 cooldown_sec=6 * 3600)
+        except Exception:  # noqa: BLE001 — алерт best-effort
+            pass
+        raise
     prods = []
+    # Товари БЕЗ залишку (рішення Консультанта 11.10.2026, GSC: 7 605 адрес «404» з 8 960 непроіндексованих — це самі зниклі зі складу товари):
+    # їхня сторінка НЕ зникає, а лишається живою з «Немає в наявності» + schema.org/OutOfStock. Збираємо окремо: у каталог, категорії, пошук
+    # (index.json), головну, крос-сел і фіди Google/Meta/Bing (вони читають index.json) ці позиції НЕ потрапляють; замовити їх теж не можна
+    # (site_order_api бере ціни лише з index.json).
+    oos_prods = []
+    oos_skipped_no_price = 0
     for it in cat.values():
-        if str(it.get("stock") or "0") in ("0", ""):
-            continue
+        is_oos = str(it.get("stock") or "0") in ("0", "")
         pics = it.get("pictures")
         if isinstance(pics, str):
             pics = [pics]
@@ -275,6 +304,9 @@ def build():
         # Каталог ПОВНИЙ відповідно до Toysi (рішення власника 2026-10-05): без відсікань за ціною чи категорією
         # (включно з «Уцінкою»); єдина умова — товар є в наявності й має фото/назву (вище).
         price = price_of(it)
+        if is_oos and not price > 0:
+            oos_skipped_no_price += 1   # Offer із price 0 + OutOfStock — помилка Rich Results/GMC («Не указана цена»): такий OOS не публікуємо
+            continue
         # ВНЕСОК (маржа на замовлення) для ранжування «Рекомендовані» + home-floor:
         # ціна − собівартість − еквайринг(ціна·site-payment) − логістика/замовлення.
         # Комісії маркетплейсу на власному сайті НЕМА (у цьому й сенс сайту). Невідома
@@ -286,7 +318,7 @@ def build():
             cost = 0.0
         contribution = (price - cost - price * cp.PAYMENT_COMMISSION.get("site", 0.0)
                         - SITE_FULFILL_PER_ORDER) if cost > 0 else None
-        prods.append({
+        (oos_prods if is_oos else prods).append({
             "id": str(it.get("id")), "name": name, "price": price,
             "category": it.get("category_name") or "Інше",
             "photo": pics[0], "stock": int(it.get("stock") or 0),
@@ -300,9 +332,28 @@ def build():
         c = p["contribution"] if p["contribution"] is not None else -1e9
         return (-c, -p["price"], p["name"])
     prods.sort(key=_rank_key)
+    oos_prods.sort(key=lambda p: p["id"])
     if LIMIT:
         prods = prods[:LIMIT]
-    print(f"[build] карток до генерації: {len(prods)}")
+        oos_prods = oos_prods[:LIMIT]
+    # Відносний гард (аудит #675 (a)): абсолютний поріг не ловить помірно усічений фід (26 тис. проходить), а це ~2,5 тис. сторінок → 404.
+    # Порівнюємо з index.json ПОПЕРЕДНЬОЇ збірки (те саме «в наявності»): різке падіння → стоп ДО запису. Свідоме — SITE_ALLOW_SHRINK=1.
+    try:
+        with open(os.path.join(OUT, "index.json"), encoding="utf-8") as _f:
+            _old_n = len(json.load(_f))
+    except (OSError, ValueError):
+        _old_n = 0
+    if _old_n >= SHRINK_GUARD_MIN_PREV and len(prods) < _old_n * SHRINK_GUARD_FRACTION and os.environ.get("SITE_ALLOW_SHRINK") != "1" and not LIMIT:
+        _msg = (f"товарів у наявності {len(prods)} проти {_old_n} у попередній збірці (< {SHRINK_GUARD_FRACTION:.0%}) — схоже на усічений фід Toysi; "
+                "якщо падіння справжнє — SITE_ALLOW_SHRINK=1. Чинні сторінки сайту НЕ чіпано.")
+        print(f"[build] 🚨 ЗБІРКУ ЗУПИНЕНО: {_msg}", file=sys.stderr)
+        try:
+            from telegram_notify import send_throttled_alert
+            send_throttled_alert("site_build_shrink", f"🚨 site-rebuild: збірку зупинено, {_msg}", cooldown_sec=6 * 3600)
+        except Exception:  # noqa: BLE001 — алерт best-effort
+            pass
+        raise CatalogShrinkError(_msg)
+    print(f"[build] карток до генерації: {len(prods)} (+ без залишку, сторінка жива: {len(oos_prods)}; без залишку й без ціни — пропущено: {oos_skipped_no_price})")
 
     # категорії
     cats = {}
@@ -353,6 +404,10 @@ def build():
     for p in prods:
         write_product(p, related=related_map.get(p["id"]), cat_slug=cat_slug)
         n += 1
+    # 1б) сторінки товарів без залишку: адреса жива (OutOfStock), без кошика/крос-селу
+    for p in oos_prods:
+        # внутрішні посилання з OOS-сторінки на товари в наявності тієї ж категорії: шлях покупця і проти soft-404 (сторінка не «глухий кут»)
+        write_product(p, related=(cats.get(p["category"], [])[:4] or None), cat_slug=cat_slug, related_title="Схожі товари в наявності")
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
     for c in cat_list:
@@ -364,6 +419,7 @@ def build():
     # 5) кошик + checkout + сторінка подяки
     write_cart()
     write_thanks()
+    write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
     write_categories_index(cat_list, cat_slug, cats)
     trust = write_trust_pages()
@@ -375,7 +431,7 @@ def build():
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap + robots
     static_urls = [("categories.html", "0.6", "weekly")] + [(f, "0.4", "monthly") for f in trust]
-    write_sitemap(prods, paged, static_urls)
+    write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
     write_robots()
 
     # 8) ПРИБИРАННЯ ЗАСТАРІЛИХ сторінок від попередніх білдів: build пише лише поточний вибір,
@@ -384,7 +440,7 @@ def build():
     # вище ДО цього кроку, тож видаляємо лише справжні залишки). `paged` містить усі сторінки
     # каталогу/категорій (вкл. пагіновані catalog_N/category-slug_N), тож застарілі сторінки
     # пагінації від більшого попереднього білда теж приберуться.
-    valid = {f"product-{p['id']}.html" for p in prods} | paged
+    valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
         if (fn.startswith(("product-", "category-", "catalog")) and fn.endswith(".html")
@@ -395,7 +451,7 @@ def build():
             except OSError:
                 pass
 
-    print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, "
+    print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, сторінок без залишку (OutOfStock) {len(oos_prods)}, "
           "+index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
     # 9) детектор «тихого зникнення фото» (Консультант 10.10.2026): вибірка фото з нашим Referer; best-effort, не валить збірку
@@ -489,7 +545,7 @@ def crumbs_html(trail) -> str:
     for i, (name, href) in enumerate(trail):
         last = i == len(trail) - 1
         out.append(f'<span aria-current="page">{esc(name)}</span>' if (last or not href)
-                   else f'<a href="{esc(href)}">{esc(name)}</a>')
+                   else f'<a href="{"/" if href == "index.html" else esc(href)}">{esc(name)}</a>')   # «/» а не index.html: /index.html віддає 301 на корінь
     return '<nav class="crumbs" aria-label="Хлібні крихти">' + ' <span class="sep">›</span> '.join(out) + '</nav>' + chr(10)
 
 
@@ -546,14 +602,18 @@ def _fmt_int(n) -> str:
     return f"{int(n):,}".replace(",", " ")
 
 
-def product_title(name) -> str:
-    """{назва} — купити | PlutusToys; якщо довше за 65 — обрізаємо НАЗВУ по межі слова + «…», суфікс лишаємо."""
+_PROD_SUFFIX_OOS = " — немає в наявності | PlutusToys"
+
+
+def product_title(name, in_stock=True) -> str:
+    """{назва} — купити | PlutusToys (без залишку: «— немає в наявності | PlutusToys»); якщо довше за 65 — обрізаємо НАЗВУ по межі слова + «…», суфікс лишаємо."""
     name = (name or "").strip()
-    if len(name) + len(_PROD_SUFFIX) <= TITLE_MAX:
-        return name + _PROD_SUFFIX
-    room = TITLE_MAX - len(_PROD_SUFFIX) - 1
+    suffix = _PROD_SUFFIX if in_stock else _PROD_SUFFIX_OOS
+    if len(name) + len(suffix) <= TITLE_MAX:
+        return name + suffix
+    room = TITLE_MAX - len(suffix) - 1
     cut = name[:room].rsplit(" ", 1)[0].rstrip(" ,.;:—–-") if " " in name[:room] else name[:room]
-    return cut + "…" + _PROD_SUFFIX
+    return cut + "…" + suffix
 
 
 def product_description(name, price, plain) -> str:
@@ -747,7 +807,7 @@ def _clean_desc(html):
     return html.strip()
 
 
-def write_product(p, related=None, cat_slug=None):
+def write_product(p, related=None, cat_slug=None, related_title="Додайте до замовлення"):
     raw = p["desc"]
     parts = [x.strip() for x in re.split(r"<br\s*/?>", raw) if x.strip()]
     lead = _clean_desc(parts[0]) if parts else ""
@@ -758,11 +818,31 @@ def write_product(p, related=None, cat_slug=None):
     desc_html = f"<p>{lead}</p>" if lead else ""
     if specs:
         desc_html += "<ul>" + "".join(f"<li>{s}</li>" for s in specs) + "</ul>"
-    photo = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}">'
+    # Головне фото = LCP картки: fetchpriority=high каже браузеру тягнути його першим (решта фото сторінки — loading=lazy).
+    # width/height не ставимо: розмір оригіналу toysi.ua невідомий, а місце під кадр вже резервує `.photo img{aspect-ratio:1/1}` у styles.css.
+    photo = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" fetchpriority="high" decoding="async">'
              if p["photo"] else '<div class="ph">Фото готуємо</div>')
     avail = "У наявності" if p["stock"] > 0 else "Немає в наявності"
     oos = "" if p["stock"] > 0 else "oos"
     in_stock = p["stock"] > 0
+    # Без залишку: чесний текст + шлях далі (категорія, якщо вона є в каталозі; інакше повний каталог). Кнопка «У кошик» вимкнена нижче.
+    _oos_cat_href = f"category-{cat_slug[p['category']]}.html" if (cat_slug and p.get("category") in cat_slug) else "catalog.html"
+    _phone_line = '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
+    # Без залишку: НЕ обіцяємо оплату/доставку/повернення на сторінці з вимкненою кнопкою (аудит #675, Д2) — лише телефон.
+    buy_info = (
+        '<div class="trust-badges">'
+          '<span class="tb">✓ Оплата при отриманні</span>'
+          '<a class="tb" href="returns.html">✓ Повернення 14 днів</a>'
+          '<span class="tb">✓ Доставка Новою Поштою</span>'
+          '<span class="tb">✓ Фіскальний чек</span>'
+        '</div>' + _phone_line +
+        '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
+        '<div><b>Доставка Новою Поштою</b> — вартість за тарифами перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
+        'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
+    ) if in_stock else _phone_line
+    oos_note = ("" if in_stock else
+                f'<div class="oos-note"><b>Зараз цього товару немає в наявності.</b> '
+                f'<a href="{_oos_cat_href}">Подивитися схожі{(" в категорії «" + esc(p["category"]) + "»") if _oos_cat_href != "catalog.html" else " в каталозі"} →</a></div>')
     add = json.dumps({"id": p["id"], "name": p["name"], "price": p["price"], "photo": p["photo"]},
                      ensure_ascii=False)
     # OOS: кнопку деактивуємо (немає data-add) — не даємо покласти в кошик те, чого нема (баг рев'ю).
@@ -776,19 +856,10 @@ def write_product(p, related=None, cat_slug=None):
       f'<h1 class="prod">{esc(p["name"])}</h1>'
       f'<div class="price-row"><div class="price">{p["price"]} ₴</div>'
       f'<div class="avail {oos}">{avail}</div></div>'
-      '<div class="trust-badges">'
-        '<span class="tb">✓ Оплата при отриманні</span>'
-        '<a class="tb" href="returns.html">✓ Повернення 14 днів</a>'
-        '<span class="tb">✓ Доставка Новою Поштою</span>'
-        '<span class="tb">✓ Фіскальний чек</span>'
-      '</div>'
-      '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
-      '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
-      '<div><b>Доставка Новою Поштою</b> — вартість за тарифами перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
-      'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
+      + oos_note + buy_info +
       f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
       '</div></div>'
-      + (f'<section class="related"><h2>Додайте до замовлення</h2>{grid(related)}</section>' if related else "")
+      + (f'<section class="related"><h2>{esc(related_title)}</h2>{grid(related)}</section>' if related else "")
       + '<div class="buybar"><div class="buybar-inner">'
       f'<div class="p">{p["price"]} ₴</div>'
       f'{buy_btn}'
@@ -797,6 +868,8 @@ def write_product(p, related=None, cat_slug=None):
     # SEO: опис для сніпета (без HTML, ОБРІЗАНИЙ ПО СЛОВУ) + JSON-LD Product для Google Rich Results
     plain = re.sub(r"<[^>]+>", "", lead).strip()
     meta_desc = product_description(p["name"], p["price"], plain)
+    if not in_stock:
+        meta_desc = _cut(f"Немає в наявності: {p['name']}. Подивіться схожі іграшки в каталозі PlutusToys.", DESC_MAX)
     # brand зі специфікацій «<b>Бренд:</b> X» — Google Rich Results цінує brand у Product.
     brand = ""
     for s in specs:
@@ -829,7 +902,7 @@ def write_product(p, related=None, cat_slug=None):
     extra = f'<script type="application/ld+json">{ld_json}</script>' + chr(10) + breadcrumb_ld(trail)
     body = crumbs_html(trail) + body
     _write(f"product-{p['id']}.html", page(
-        p["name"], body, extra_head=extra, title_full=product_title(p["name"]), description=meta_desc,
+        p["name"], body, extra_head=extra, title_full=product_title(p["name"], in_stock), description=meta_desc,
         canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product"))
 
 def write_cart():
@@ -882,10 +955,25 @@ def write_thanks():
       '<h2>Дякуємо за замовлення!</h2>'
       '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
       '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'
-      '<p style="margin-top:20px"><a class="btn ghost" href="index.html" style="display:inline-block;max-width:260px">На головну</a></p>'
+      '<p style="margin-top:20px"><a class="btn ghost" href="/" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )
     _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True))
+
+def write_404():
+    """Власна сторінка 404 (Apache: `ErrorDocument 404 /404.html` у deploy/activate_site_apache.sh). Без неї покупець
+    з помилковою/застарілою адресою бачив дефолт Webuzo: логотип Softaculous з чужого домену по http:// (mixed content)
+    і клікабельне посилання на сайт хостинг-панелі. Статус лишається 404 (ErrorDocument зі шляхом, не URL)."""
+    body = (
+      '<div class="done"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="105" height="96" decoding="async"></div>'
+      '<h2>Такої сторінки немає</h2>'
+      '<p>Можливо, товар уже розпродано або адресу набрано з помилкою.</p>'
+      '<p>Скористайтеся пошуком угорі або перейдіть до каталогу.</p>'
+      '<p style="margin-top:20px"><a class="btn" href="catalog.html" style="display:inline-block;max-width:260px">До каталогу</a></p>'
+      '<p style="margin-top:10px"><a class="btn ghost" href="categories.html" style="display:inline-block;max-width:260px">Усі категорії</a></p>'
+      '</div>'
+    )
+    _write("404.html", page("Сторінку не знайдено", body, noindex=True, base_root=True))
 
 def write_categories_index(cat_list, cat_slug, cats):
     """Сторінка «Усі категорії» — закриває проблему orphan-категорій (усі 259 доступні
@@ -1064,7 +1152,7 @@ def write_trust_pages():
         written.append(fname)
     return written
 
-def write_sitemap(prods, paged, static_urls=None):
+def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
     """paged = усі сторінки каталогу/категорій (з пагінацією). Стор.≥2 (мають '_N' перед .html)
     ідуть з нижчим пріоритетом; catalog.html — найвищий серед лістингів."""
     from datetime import date
@@ -1083,6 +1171,8 @@ def write_sitemap(prods, paged, static_urls=None):
             pr, cf = "0.7", "weekly"
         urls.append((fn, pr, cf))
     urls += [(f"product-{p['id']}.html", "0.6", "weekly") for p in prods]
+    # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий
+    urls += [(f"product-{p['id']}.html", "0.3", "monthly") for p in oos_prods]
     items = "\n".join(
         f"  <url><loc>{SITE_URL}/{u}</loc><lastmod>{today}</lastmod>"
         f"<changefreq>{cf}</changefreq><priority>{pr}</priority></url>"

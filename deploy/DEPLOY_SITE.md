@@ -7,7 +7,7 @@
 > у кабінеті Prom (NS = promdns.net) → `45.94.157.4`; (3) скрипт сам дочекається DNS і випустить сертифікат.
 > **DNS у кабінеті Prom** (`my.prom.ua/cms/domain` → «DNS-записи»): змінити A для `@` і `www` на `45.94.157.4`; будь-які AAAA для них — видалити
 > (Let's Encrypt віддає перевагу IPv6; залишений AAAA на Prom зламає валідацію). Скрипт чекає, поки ВСІ публічні резолвери дадуть лише наш IP.
-> Старі Prom-URL (`/ua/p<id>-…`) → 301 через `RewriteMap txt:` (`prom_redirects_apache.map`, генерує `generate_prom_redirects.py`).
+> Старі Prom-URL (`/ua/p<id>-…`) → 301 через `RewriteMap txt:` (`prom_redirects_apache.map`, генерує `generate_prom_redirects.py`). Prom-ID, якого немає в мапі → **410 Gone** (з 11.10.2026; не 301 на каталог). Правила Apache змінюються лише повторним запуском `activate_site_apache.sh` власником.
 
 Код автодеплоїться в `/opt/plutustoys` (read-only pull master, `vps_code_sync.sh`), тож ці
 файли вже там. Нижче — **одноразові** привілейовані кроки (systemd/nginx/TLS/DNS + бойові
@@ -55,7 +55,7 @@ nginx -t && systemctl reload nginx
 ## 3.1 GMC / Google Shopping — щоб не пропала видимість
 GMC-фід віддає посилання за Prom-структурою `https://plutustoys.com.ua/ua/p{prom_id}-slug.html`.
 Активація вже генерує `prom_redirects.map` і nginx робить **301** зі старих Prom-URL на наші картки
-`/product-{toysi_id}.html` (непокриті → `/catalog.html`). Тож при перенесенні DNS старі посилання з
+`/product-{toysi_id}.html` (nginx: непокриті → `/catalog.html`; на проді Apache — 410 Gone з 11.10.2026). Тож при перенесенні DNS старі посилання з
 фіда/індексу Google не впадуть у 404, а перекинуться на наш сайт — видимість зберігається.
 - **Твоя частина в кабінеті GMC:** переконатися, що домен `plutustoys.com.ua` лишається верифікованим
   після зміни хостингу (можливо, підтвердити наново meta-тегом/DNS-записом).

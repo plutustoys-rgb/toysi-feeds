@@ -245,6 +245,7 @@
   Деплой-артефакти — `deploy/site-order-api.service` (venv-python daemon, :8901), `deploy/site-rebuild.{service,timer}`
   (ребілд сайту кожні 2 год (з 2026-10-06; було 4×/день) — свіжі ціни/наявність + оновлення GMC-редиректів; Apache перечитує мапу за mtime), `deploy/nginx-plutustoys.conf`,
   `deploy/activate_site.sh` (nginx-хост), `deploy/DEPLOY_SITE.md`.
+  **Товар без залишку (11.10.2026, Консультант за Search Console: 7 605 «404» з 8 960 непроіндексованих):** `build_site.py` більше не викидає його зі збірки — сторінка `product-<id>.html` лишається живою (schema.org/OutOfStock, кнопка вимкнена, блок «немає в наявності» + посилання в категорію, `<title>` «— немає в наявності»), лишається в sitemap (priority 0.3); у каталог, категорії, головну, крос-сел, `index.json` (пошук/ціни замовлень/фіди) НЕ потрапляє. Старі Prom-URL `p<id>-…`: є в мапі → 301 на картку (у т.ч. на сторінку без залишку); немає → **410 Gone** (було 301 на /catalog.html = soft-404 для Google, GMC «Не указана цена» ≈2,46 тис.). `generate_prom_redirects.py` не перезаписує мапу, якщо вона скоротилась удвічі (410 для всіх було б катастрофою). Тести: `test_site_oos_pages.py`, `test_prom_redirects_gone.py`.
   **GMC-міграція:** `generate_prom_redirects.py` інвертує `own_product_links_cache.json` → мапа 301 (nginx + Apache `RewriteMap txt:`)
   `/ua/p{prom_id}-*.html` → `/product-{toysi_id}.html`, щоб при перенесенні домену з Prom на VPS не пропала
   видимість у Google Merchant (старі Prom-URL з фіда не впали в 404).

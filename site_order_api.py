@@ -118,14 +118,18 @@ def _alert_liqpay_status(res: dict) -> None:
 def _test_order_preview(order: dict, total) -> str:
     """Тестове (sandbox) замовлення НЕ йде в Toysi (рішення власника 12.10: «замість Тойсі направ тестове замовлення у Telegram до нас»): показуємо, ЩО пішло б у Toysi, —
     позиції, доставку, оплату. Без ПІБ/телефону/email (лише те, що потрібно перевірити: склад, місто/відділення, суму)."""
-    lines = ["", "Що пішло б у Toysi (у Toysi НЕ передано):"]
-    for it in (order.get("items") or [])[:10]:
-        lines.append(f"• {str(it.get('name') or it.get('toysi_code') or '?')[:60]} × {it.get('qty')} · {it.get('price')} грн")
-    if len(order.get("items") or []) > 10:
-        lines.append(f"• … ще {len(order['items']) - 10} поз.")
-    lines.append(f"Доставка: {str(order.get('np_branch') or '—')[:120]}")
-    lines.append(f"Оплата: {order.get('payment_method') or '—'} · разом {total} грн")
-    return "\n".join(lines)
+    try:
+        lines = ["", "Що пішло б у Toysi (у Toysi НЕ передано):"]
+        for it in (order.get("items") or [])[:10]:
+            lines.append(f"• {str(it.get('name') or it.get('toysi_code') or '?')[:60]} × {it.get('qty')} · {it.get('price')} грн")
+        if len(order.get("items") or []) > 10:
+            lines.append(f"• … ще {len(order['items']) - 10} поз.")
+        lines.append(f"Доставка: {str(order.get('np_branch') or '—')[:120]}")
+        lines.append(f"Оплата: {order.get('payment_method') or '—'} · разом {total} грн")
+        return "\n".join(lines)
+    except Exception as e:  # noqa: BLE001  # сповіщення не має валити колбек LiqPay (оплата вже зафіксована)
+        print(f"[site_order_api] прев'ю тестового замовлення не побудовано: {type(e).__name__}", file=sys.stderr)
+        return ""
 
 
 def _notify_new_order(order: dict, total, test: bool = False, note: str = "") -> None:

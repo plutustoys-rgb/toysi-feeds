@@ -142,11 +142,14 @@ b.write_cart()
 cart = open(os.path.join(tmp, "cart.html"), encoding="utf-8").read()
 chk("кошик: згода з офертою й політикою біля кнопки замовлення", 'href="privacy.html"' in cart and 'href="offer.html"' in cart and cart.index("checkout-submit") < cart.index('class="note consent"'))
 
-# ── доставка: суму НЕ друкуємо ніде (рішення Консультанта 10.10: «65/70 ₴» нічим не підкріплене)
+# ── доставка: друкуємо ЛИШЕ виміряне (SEO 12.10: НП getDocumentPrice із нашого акаунту: Київ→Київ 70, інші великі міста 90, +23,8 накладений; до 2 кг). Невиміряного («від 65/70 ₴», >2 кг) — ніде.
 appjs = open(os.path.join(HERE, "site", "assets", "app.js"), encoding="utf-8").read()
-chk("app.js: DELIVERY_HINT прибрано, кошик показує «за тарифами НП», Разом = товари", "DELIVERY_HINT" not in appjs.replace("// ", "").split("прибрано")[0] and 'd.textContent=freeShip ? "Безкоштовно" : "за тарифами НП"' in appjs and 't.textContent=goods+" ₴"' in appjs)
-chk("кошик/картка/«Доставка»: жодного «65 ₴»/«70 ₴»", all(x not in blob for x in ("65 ₴", "70 ₴")) if (blob := cart + h + b._DELIVERY + b._ABOUT) else False)
-chk("кошик: «за тарифами НП» і «Разом за товари»", "за тарифами НП" in cart and "Разом за товари" in cart)
+chk("app.js: кошик показує виміряне «70–90 ₴ до 2 кг» (не «за тарифами НП»), Разом = товари", 'd.textContent=freeShip ? "Безкоштовно" : "70–90 ₴ до 2 кг"' in appjs and 't.textContent=goods+" ₴"' in appjs and "DELIVERY_HINT" not in appjs.replace("// ", "").split("прибрано")[0])
+blob = cart + h + b._DELIVERY + b._ABOUT
+chk("жодного НЕВИМІРЯНОГО орієнтиру («від 65», «≈ 70», «від 70»)", all(x not in blob for x in ("від 65", "≈ 70", "≈70", "від 70")))
+chk("кошик: «70–90 ₴ до 2 кг» і «Разом за товари»; пояснення з накладеним ≈24 ₴", "70–90 ₴ до 2 кг" in cart and "Разом за товари" in cart and "≈24 ₴" in cart)
+chk("сторінка «Доставка»: виміряна вартість (70–90 ₴ до 2 кг, Київ 70, великі міста 90, накладений ≈24) і застереження для >2 кг БЕЗ суми", "70–90 ₴ до 2 кг" in b._DELIVERY and "по Києву — 70 ₴" in b._DELIVERY and "в інші великі міста — 90 ₴" in b._DELIVERY and "≈24 ₴" in b._DELIVERY and "важчих за 2 кг суму визначає Нова Пошта" in b._DELIVERY)
+chk("shippingDetails у розмітці НЕ ставимо (рішення SEO)", "shippingDetails" not in blob)
 sh = open(os.path.join(HERE, "deploy", "activate_site_apache.sh"), encoding="utf-8").read()
 chk("Apache: заголовки безпеки nosniff/SAMEORIGIN/Referrer-Policy під mod_headers", all(x in sh for x in ('X-Content-Type-Options "nosniff"', 'X-Frame-Options "SAMEORIGIN"', 'Referrer-Policy "strict-origin-when-cross-origin"')) and sh.index("mod_headers.c") < sh.index("X-Content-Type-Options"))
 

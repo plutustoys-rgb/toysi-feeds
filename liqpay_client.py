@@ -58,6 +58,23 @@ def is_configured() -> bool:
     return bool(LIQPAY_PUBLIC_KEY and LIQPAY_PRIVATE_KEY)
 
 
+def mode_problem() -> str:
+    """Порожній рядок — режим і ключі узгоджені; інакше причина розбіжності. LiqPay (офіційна сторінка «Тестування», звірено аудитом #690) видає ТЕСТОВІ ключі з префіксом `sandbox_`,
+    БОЙОВІ без нього. Розбіжність (бойовий режим LIQPAY_SANDBOX=0 з тестовими ключами; тестовий режим LIQPAY_SANDBOX=1 з бойовими; публічний і приватний ключ з різних наборів) —
+    це помилка налаштування .env, при якій чекаут НЕ будується (замість «тихо працює не так»)."""
+    pub, prv = LIQPAY_PUBLIC_KEY.strip(), LIQPAY_PRIVATE_KEY.strip()
+    if not (pub and prv):
+        return ""
+    pub_test, prv_test = pub.startswith("sandbox_"), prv.startswith("sandbox_")
+    if pub_test != prv_test:
+        return "публічний і приватний ключ LiqPay з різних наборів (один тестовий, другий бойовий)"
+    if not LIQPAY_SANDBOX and pub_test:
+        return "увімкнено БОЙОВИЙ режим (LIQPAY_SANDBOX=0), але ключі ТЕСТОВІ (sandbox_…)"
+    if LIQPAY_SANDBOX and not pub_test:
+        return "увімкнено ТЕСТОВИЙ режим (LIQPAY_SANDBOX=1), але ключі БОЙОВІ (без sandbox_)"
+    return ""
+
+
 def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode("ascii")
 

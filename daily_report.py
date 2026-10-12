@@ -669,7 +669,7 @@ def _open_orders_detail_section(conn) -> str:
         "WHERE forwarded_to_toysi_at IS NULL "
         "AND (delivery_status IS NULL OR delivery_status NOT IN ('cancelled', 'returned')) "
         "AND (status IS NULL OR status NOT IN "
-        "('prom_cancelled_before_forward', 'eva_cancelled_before_forward', 'cancelled'))"
+        "('prom_cancelled_before_forward', 'eva_cancelled_before_forward', 'cancelled', 'sandbox_test'))"
     ).fetchall()
     if not rows:
         return "\n\n📦 Відкритих (не переданих у Toysi) замовлень немає."

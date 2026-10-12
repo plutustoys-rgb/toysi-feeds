@@ -110,7 +110,7 @@ chk("повторний success ідемпотентний", code == 200 and sta
 # ── sandbox у пісочниці
 new_order("PT-T2")
 code, _ = callback(signed("sandbox", order_id="PT-T2"))
-chk("sandbox у пісочниці підтверджує (тестовий платіж)", code == 200 and state("site_PT-T2") == (1, True))
+chk("sandbox у пісочниці: оплату зафіксовано (payment_confirmed=1), але замовлення НЕ йде у форвард (status sandbox_test: тестовий платіж не має потрапляти в Toysi й під чек)", code == 200 and state("site_PT-T2") == (1, False))
 
 # ── словник статусів
 chk("PAID_STATUSES = лише success + sandbox", liqpay_client.PAID_STATUSES == {"success", "sandbox"})

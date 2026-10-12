@@ -115,6 +115,19 @@ def _alert_liqpay_status(res: dict) -> None:
         print(f"[site_order_api] алерт LiqPay-статусу не надіслано (не критично): {e}", file=sys.stderr)
 
 
+def _test_order_preview(order: dict, total) -> str:
+    """Тестове (sandbox) замовлення НЕ йде в Toysi (рішення власника 12.10: «замість Тойсі направ тестове замовлення у Telegram до нас»): показуємо, ЩО пішло б у Toysi, —
+    позиції, доставку, оплату. Без ПІБ/телефону/email (лише те, що потрібно перевірити: склад, місто/відділення, суму)."""
+    lines = ["", "Що пішло б у Toysi (у Toysi НЕ передано):"]
+    for it in (order.get("items") or [])[:10]:
+        lines.append(f"• {str(it.get('name') or it.get('toysi_code') or '?')[:60]} × {it.get('qty')} · {it.get('price')} грн")
+    if len(order.get("items") or []) > 10:
+        lines.append(f"• … ще {len(order['items']) - 10} поз.")
+    lines.append(f"Доставка: {str(order.get('np_branch') or '—')[:120]}")
+    lines.append(f"Оплата: {order.get('payment_method') or '—'} · разом {total} грн")
+    return "\n".join(lines)
+
+
 def _notify_new_order(order: dict, total, test: bool = False, note: str = "") -> None:
     """Єдине повідомлення власнику в Telegram (режим «лише замовлення»): надходження замовлення сайту. Без персональних даних; збій не ламає прийом."""
     if _NO_TELEGRAM:
@@ -621,7 +634,7 @@ class Handler(SimpleHTTPRequestHandler):
                     conn.execute("UPDATE orders SET status = 'sandbox_test' WHERE internal_order_id = ? AND forwarded_to_toysi_at IS NULL", (internal,))
                 conn.commit()
                 if newly_confirmed:
-                    _notify_new_order(order, expected, test=is_test)   # перше підтвердження оплати = надходження передоплаченого замовлення
+                    _notify_new_order(order, expected, test=is_test, note=_test_order_preview(order, expected) if is_test else "")   # перше підтвердження оплати = надходження передоплаченого замовлення
         except Exception as e:
             print(f"[site_order_api] callback помилка: {e}", file=sys.stderr)
             return self._text(500, "internal error")

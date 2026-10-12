@@ -182,15 +182,22 @@ def save_prom_price_state(state: dict) -> None:
     """АТОМАРНИЙ запис: tmp-файл у тому ж каталозі + os.replace (на POSIX атомарно), попередній добрий файл лишається як `.json.bak`. Перерваний запис (SIGTERM/SIGKILL/збій) НЕ залишає
     обрізаного JSON: у гіршому разі лишається повний попередній стан. Раніше `write_text` напряму (аудит питання Консультанта 12.10: чи безпечно вбивати репрайсер посеред --apply)."""
     data = json.dumps(state, ensure_ascii=False, indent=1)
-    tmp = PROM_PRICE_STATE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(data, encoding="utf-8")
-    if PROM_PRICE_STATE_FILE.exists():
+    # унікальне імʼя tmp (pid): стан пишуть два незалежні процеси (репрайсер і prom-catalog-sync без flock); спільне .json.tmp дало б гонку «replace забрав чужий tmp» (аудит PR #705)
+    tmp = PROM_PRICE_STATE_FILE.with_name(f"{PROM_PRICE_STATE_FILE.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(data, encoding="utf-8")
+        if PROM_PRICE_STATE_FILE.exists():
+            try:
+                json.loads(PROM_PRICE_STATE_FILE.read_text(encoding="utf-8"))      # у бекап лише ВАЛІДНИЙ попередній стан
+                shutil.copyfile(PROM_PRICE_STATE_FILE, _price_state_backup_path())
+            except (ValueError, OSError):
+                pass
+        os.replace(tmp, PROM_PRICE_STATE_FILE)
+    finally:
         try:
-            json.loads(PROM_PRICE_STATE_FILE.read_text(encoding="utf-8"))      # у бекап лише ВАЛІДНИЙ попередній стан
-            shutil.copyfile(PROM_PRICE_STATE_FILE, _price_state_backup_path())
-        except (ValueError, OSError):
+            tmp.unlink()        # після успішного replace файлу вже нема; після збою не лишаємо сміття
+        except OSError:
             pass
-    os.replace(tmp, PROM_PRICE_STATE_FILE)
 
 
 def load_delisted_pids() -> dict:

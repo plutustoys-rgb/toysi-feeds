@@ -30,17 +30,18 @@ def chk(n, c):
 
 f = cp.PROM_PRICE_STATE_FILE
 bak = f.with_suffix(".json.bak")
-tmpf = f.with_suffix(".json.tmp")
+def tmps():
+    return [x for x in tmp.iterdir() if ".tmp" in x.name]
 
 chk("файлу нема → {} без шуму", cp.load_prom_price_state() == {} and not alerts)
 
 s1 = {"_delisted_since": {"1": "2026-10-01T00:00:00"}, "2": {"price": 100}}
 cp.save_prom_price_state(s1)
-chk("перший запис: файл повний, .tmp не лишився, бекапу ще нема", json.loads(f.read_text(encoding="utf-8")) == s1 and not tmpf.exists() and not bak.exists())
+chk("перший запис: файл повний, .tmp не лишився, бекапу ще нема", json.loads(f.read_text(encoding="utf-8")) == s1 and not tmps() and not bak.exists())
 
 s2 = {**s1, "3": {"price": 200}}
 cp.save_prom_price_state(s2)
-chk("другий запис: файл = s2, бекап = попередній валідний s1, .tmp нема", json.loads(f.read_text(encoding="utf-8")) == s2 and json.loads(bak.read_text(encoding="utf-8")) == s1 and not tmpf.exists())
+chk("другий запис: файл = s2, бекап = попередній валідний s1, .tmp нема", json.loads(f.read_text(encoding="utf-8")) == s2 and json.loads(bak.read_text(encoding="utf-8")) == s1 and not tmps())
 
 # перерваний запис: виняток у момент os.replace (як SIGKILL між записом tmp і підміною)
 real_replace = cp.os.replace
@@ -52,7 +53,7 @@ except OSError:
 finally:
     cp.os.replace = real_replace
 chk("перерваний запис: основний файл ЛИШИВСЯ повним s2 (не обрізаний)", json.loads(f.read_text(encoding="utf-8")) == s2)
-tmpf.unlink(missing_ok=True)
+chk("після перерваного запису tmp-сміття не лишилось", not tmps())
 
 # битий основний файл → відновлення з бекапу
 f.write_text('{"_delisted_since": {"1": "2026-10', encoding="utf-8")      # обрізаний JSON

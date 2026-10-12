@@ -38,7 +38,8 @@ function store(){ const m={}; return {getItem:k=>(k in m?m[k]:null), setItem:(k,
 function el(id){ const h={}; const e={id,value:"",textContent:"",disabled:false,placeholder:"",classList:{add(){},remove(){},toggle(){}},style:{},
   addEventListener(t,f){(h[t]=h[t]||[]).push(f)},h, _inner:"", focus(){ e._focused=true; },
   querySelectorAll(sel){ if(sel!==".opt") return []; const idx=[...e._inner.matchAll(/data-i="(-?\d+)"/g)].map(m=>m[1]); const out=[];
-    idx.forEach(v=>{ const hh={}; out.push({getAttribute:()=>v, addEventListener(t,f){hh[t]=f}, _h:hh}); }); e._opts=out; return out; },
+    idx.forEach(v=>{ const hh={}; out.push({getAttribute:()=>v, addEventListener(t,f){hh[t]=f}, _h:hh, focus(){ this._focused=true; }}); }); e._opts=out; return out; },
+  querySelector(sel){ if(sel!==".opt") return null; const o=e.querySelectorAll(".opt"); return o.length?o[0]:null; },
   closest(){return null},setAttribute(k,v){ (e._attrs=e._attrs||{})[k]=v; },getAttribute(){return null}};
   Object.defineProperty(e,"innerHTML",{get(){return e._inner}, set(v){e._inner=v; e._opts=null;}}); return e; }
 const CITIES=[{name:"Іванівка",area:"Харківська",ref:"aaaaaaaa-1111-2222-3333-444444444444"},{name:"Іванівка (Чугуївський р-н)",area:"Харківська",ref:"bbbbbbbb-1111-2222-3333-444444444444"}];
@@ -146,6 +147,15 @@ const state=r=>({posts:r.posts.length, msg:r.E["checkout-msg"].textContent, list
     await typeCity(r,"Львів");                                                              // змінили місто → whSeq++, wh очищено
     r.pendWh[0].res([{description:"Відділення 77 (Іванівка)", number:"77"}]); await sleep(30);   // запізніла відповідь міста A
     o={acWh:r.E["ac-warehouse"].innerHTML.length};
+  } else if(scenario==="none_late_response"){
+    r=await run("controlled"); await typeCity(r,"Іва"); r.pend[0].res(CITIES); await sleep(20);          // список показано
+    r.E["f-city"].value="Іван"; fire(r.E["f-city"],"input"); await sleep(320);                           // новий ввід: lookup #2 у польоті, стара випадайка ще в DOM
+    pick(r, opts(r).length-1);                                                                           // «Мого міста немає» зі старого списку
+    r.pend[1].res(CITIES); await sleep(20);                                                              // запізніла відповідь #2 НЕ повертає ні список, ні блок
+    fill(r); await submit(r); o={posts:r.posts.length, list:r.E["ac-city"].innerHTML.length>0};
+  } else if(scenario==="arrow_down"){
+    r=await run("list"); await typeCity(r,"Іванівка");
+    fire(r.E["f-city"],"keydown",{key:"ArrowDown", preventDefault(){}}); o={focused:!!opts(r)[0]._focused};
   } else if(scenario==="one_char"){
     r=await run("list"); await typeCity(r,"І"); fill(r); await submit(r); o={posts:r.posts.length};
   } else if(scenario==="nothing_typed"){
@@ -213,6 +223,10 @@ const state=r=>({posts:r.posts.length, msg:r.E["checkout-msg"].textContent, list
     chk("S17 Esc закриває список; пробіл на «Мого міста немає» → ручний вхід, submit проходить", ke is not None and ke["afterEsc"] == 0 and ke["posts"] == 1)
     wl = run("wh_late_other_city")
     chk("S18 запізніла відповідь складів міста A після зміни на місто B не малюється (склад чужого міста не пропонуємо)", wl is not None and wl["acWh"] == 0)
+    nl = run("none_late_response")
+    chk("S19 «Мого міста немає» під час pending + запізніла відповідь: ні списку, ні блоку, submit проходить (citySeq++ у «none»)", nl is not None and nl["posts"] == 1 and nl["list"] is False)
+    ad = run("arrow_down")
+    chk("S20 ArrowDown з поля міста переводить фокус на першу опцію (клавіатурний вихід без Tab по всіх)", ad is not None and ad["focused"] is True)
     oc = run("one_char")
     chk("S12 один символ у місті → пошуку нема, pending не висить, submit не блокується фронтом", oc is not None and oc["posts"] == 1)
     nt = run("nothing_typed")
@@ -234,7 +248,9 @@ o2, _ = so.build_order(dict(base, city_name="  Львів  "))
 chk("сервер: пробіли по краях міста обрізані", o2["np_branch"].startswith("Львів,"))
 
 css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
-chk("CSS: список МІСТ у потоці (#ac-city.ac{position:static}) — не накриває відділення, оплату й кнопку «Оформити»", re.search(r"#ac-city\.ac\{[^}]*position:static", css) is not None)
+chk("CSS: списки МІСТ і ВІДДІЛЕНЬ у потоці (#ac-city.ac,#ac-warehouse.ac{position:static}) — не накривають оплату й кнопку «Оформити»", re.search(r"#ac-city\.ac,#ac-warehouse\.ac\{[^}]*position:static", css) is not None)
+chk("CSS: scroll-padding-bottom для sticky «Мого міста немає» (не ховає сфокусовану опцію)", re.search(r"\.ac\{scroll-padding-bottom", css) is not None)
+chk("форма: #checkout-msg має role=alert (пояснення блоку озвучується)", 'id="checkout-msg" role="alert"' in (HERE / "site" / "build_site.py").read_text(encoding="utf-8"))
 chk("CSS: «Мого міста немає» sticky внизу списку (при 38 рядках досяжна без прокрутки до кінця) і видимий :focus-visible", re.search(r"\.ac \.opt-none\{[^}]*position:sticky", css) is not None and ".ac .opt:focus-visible" in css)
 
 # форма: підказки покупцю

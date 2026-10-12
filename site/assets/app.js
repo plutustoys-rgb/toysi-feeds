@@ -530,7 +530,7 @@
   function renderAc(box, opts, onPick, extra){
     if(!opts.length){ box.innerHTML=""; return; }
     // Опції — role=option з tabindex=0: вибір і з клавіатури (Tab/Enter/Space, стрілки, Esc), а не лише вказівником (аудит #682 р.2: інакше клавіатурний/скрінрідер-покупець застрягав).
-    if(box.setAttribute) box.setAttribute("role","listbox");
+    if(box.setAttribute){ box.setAttribute("role","listbox"); box.setAttribute("aria-label","Підказки"); }
     box.innerHTML = opts.map(function(o,i){
       return '<div class="opt" role="option" tabindex="0" data-i="'+i+'">'+esc(o.label)+(o.sub?'<small>'+esc(o.sub)+'</small>':'')+'</div>';
     }).join("") + (extra ? '<div class="opt opt-none" role="option" tabindex="0" data-i="-1">'+esc(extra.label)+'</div>' : "");
@@ -560,6 +560,12 @@
 
     // Місто: СКИДАННЯ ref/області — негайно на кожен ввід (а не в debounce: інакше submit/тап у вікні 250 мс ніс би застарілий ref іншого міста), пошук — з debounce.
     // citySeq відсікає запізнілі/невпорядковані відповіді довідника; cityPending блокує submit, поки відповідь не прийшла (fail-closed), але не довше 6 с.
+    function arrowToList(input, box){
+      input.addEventListener("keydown", function(ev){
+        if(ev.key==="ArrowDown"){ var f=box.querySelector ? box.querySelector(".opt") : null; if(f && f.focus){ ev.preventDefault(); f.focus(); } }
+      });
+    }
+    arrowToList(city, acCity); arrowToList(wh, acWh);
     var citySeq=0, whSeq=0, pendingTimer=null;
     function lookupCity(){
       var q=city.value.trim(), my=citySeq;

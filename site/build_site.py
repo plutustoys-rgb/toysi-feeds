@@ -1116,7 +1116,7 @@ def write_cart():
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
         '<p class="note consent">Оформлюючи замовлення, ви погоджуєтесь з <a href="offer.html">публічною офертою</a> '
         'та <a href="privacy.html">політикою конфіденційності</a>.</p>'
-        '<div class="note" id="checkout-msg"></div>'
+        '<div class="note" id="checkout-msg" role="alert" aria-live="polite"></div>'
       '</form></div>'
     )
     _write("cart.html", page("Кошик і оформлення", body,

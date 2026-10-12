@@ -136,10 +136,11 @@ def _price_state_backup_path() -> Path:
 
 
 def _alert_price_state(key: str, text: str) -> None:
-    """Best-effort сигнал (у Telegram за режимом «лише замовлення» піде лише в журнал); збій сигналу не ламає завантаження стану."""
+    """Best-effort сигнал; збій сигналу не ламає завантаження стану. У Telegram за режимом «лише замовлення» проходить ЛИШЕ 🔴-варіант («стан порожній», не частіше разу на добу;
+    telegram_triage.is_owner_critical); ⚠️-варіант (відновлено з резервної копії) іде в журнал."""
     try:
         from telegram_notify import send_throttled_alert
-        send_throttled_alert(key, text, cooldown_sec=6 * 60 * 60)
+        send_throttled_alert(key, text, cooldown_sec=24 * 60 * 60 if key == "price_state_corrupt_lost" else 6 * 60 * 60)
     except Exception as e:  # noqa: BLE001
         print(f"[PriceState] сигнал не надіслано: {type(e).__name__}", file=sys.stderr)
 

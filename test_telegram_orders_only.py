@@ -113,5 +113,19 @@ chk("TELEGRAM_ORDERS_ONLY=0: невідоме йде як раніше (стар
 os.environ.pop("TELEGRAM_ORDERS_ONLY", None)
 chk("is_order_arrival: тільки початок «🛒 Нове замовлення»", tt.is_order_arrival("🛒 Нове замовлення · x") and not tt.is_order_arrival("текст 🛒 Нове замовлення") and not tt.is_order_arrival(""))
 
+# ── (5) єдиний виняток: стан репрайсера порожній (пропозиція Консультанта 12.10; критерій: рідкісне + катастрофічне + потребує людини)
+reset()
+tn.send_telegram_message("🔴 prom_competitor_price_state.json пошкоджений (JSONDecodeError; розмір 9 байт, змінено 2026-10-12 14:45:14) і резервної копії нема: стан репрайсера ПОРОЖНІЙ.")
+chk("стан репрайсера ПОРОЖНІЙ → ЙДЕ в Telegram (єдиний виняток)", len(posts) == 1)
+reset()
+for txt in ("⚠️ prom_competitor_price_state.json пошкоджений (JSONDecodeError); відновлено з резервної копії", "🔴 Чек Checkbox НЕ видано для prom_1", "🔴 інший_файл.json пошкоджений",
+            "текст 🔴 prom_competitor_price_state.json пошкоджений"):
+    tn.send_telegram_message(txt)
+chk("схожі, але інші повідомлення (відновлено з копії; інші 🔴; не на початку) НЕ проходять", not posts)
+reset()
+tn.send_throttled_alert("k_lost", "🔴 prom_competitor_price_state.json пошкоджений A", cooldown_sec=86400)
+tn.send_throttled_alert("k_lost", "🔴 prom_competitor_price_state.json пошкоджений A", cooldown_sec=86400)
+chk("повторний виклик через send_throttled_alert у межах доби не шле вдруге", len(posts) == 1)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

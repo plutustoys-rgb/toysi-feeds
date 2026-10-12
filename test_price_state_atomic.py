@@ -59,6 +59,7 @@ chk("після перерваного запису tmp-сміття не лиш
 f.write_text('{"_delisted_since": {"1": "2026-10', encoding="utf-8")      # обрізаний JSON
 alerts.clear()
 got = cp.load_prom_price_state()
+chk("⚠️-алерт «відновлено з копії» крізь сито НЕ проходить (автоматика полагодила)", not __import__("telegram_triage").is_owner_critical(alerts[0][1]) if alerts else True)
 chk("битий основний файл → відновлено з бекапу (останній валідний стан s2: перерваний запис лишив бекап = s2) і є попередження", got == s2 and len(alerts) == 1 and "відновлено з резервної копії" in alerts[0][1] and "байт, змінено" in alerts[0][1])
 
 # битий основний НЕ перезаписує бекап добрим-збитим
@@ -71,6 +72,8 @@ bak.write_text("теж не json", encoding="utf-8")
 alerts.clear()
 chk("основний і бекап биті → {} і гучний алерт «стан ПОРОЖНІЙ»", cp.load_prom_price_state() == {} and len(alerts) == 1 and "ПОРОЖНІЙ" in alerts[0][1] and "байт, змінено" in alerts[0][1])
 
+import telegram_triage as _tt
+chk("🔴-алерт «стан порожній» проходить крізь сито «лише замовлення»", _tt.is_owner_critical(alerts[0][1]))
 # основний битий, бекапу нема
 bak.unlink()
 alerts.clear()

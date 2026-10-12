@@ -12,7 +12,7 @@ from orders_db import (
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order, toysi_internal_id
 from meta_conversions_client import send_purchase_event
-from nova_poshta import settlement_raion, warehouse_by_ref
+from nova_poshta import settlement_raion, warehouse_by_ref, count_cities_named
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
 from telegram_notify import send_telegram_message, send_throttled_alert
 from cod_amount import collected_cod_amount
@@ -152,6 +152,7 @@ def _split_name(customer_name: str) -> tuple:
 # застрягає у прізвищі (реальний інцидент: замовлення Toysi 100449125 — «Олександр Юрійович» у
 # полі «Фамилия», «Чечетенко» у полі «Имя»).
 _SURNAME_FIRST_PLATFORMS = {"rozetka", "eva"}
+_PATRONYMIC_RE = re.compile(r"(?:ович|евич|йович|ьович|івна|ївна|ична|ич|ілліч)$", re.IGNORECASE)
 
 
 def _split_recipient_name(customer_name: str, platform: str = "") -> tuple:
@@ -160,7 +161,10 @@ def _split_recipient_name(customer_name: str, platform: str = "") -> tuple:
     parts = (customer_name or "").split()
     if not parts:
         return "Клієнт", "Невідомо", ""
-    if platform in _SURNAME_FIRST_PLATFORMS:
+    # Сайт: форма просить «ім'я, прізвище», але покупці, що вказують по батькові, пишуть офіційним порядком «Прізвище Ім'я По-батькові» (Shopify-code 12.10: «Петренко Іван
+    # Олексійович» йшло як ім'я «Петренко», прізвище «Іван Олексійович» — клас Toysi 100449125). Рівно 3 слова І останнє схоже на по-батькові → офіційний порядок;
+    # 2 слова або інша кількість — як було (ім'я, прізвище).
+    if platform in _SURNAME_FIRST_PLATFORMS or (platform == "site" and len(parts) == 3 and _PATRONYMIC_RE.search(parts[2])):
         last_name = parts[0]
         first_name = parts[1] if len(parts) > 1 else "Невідомо"
         middle_name = " ".join(parts[2:]) if len(parts) > 2 else ""
@@ -276,6 +280,18 @@ def site_np_hold_reason(order: dict, toysi_order) -> str:
     num = (order.get("np_warehouse_number") or "").strip()
     if not re.fullmatch(r"\d{1,6}", num, re.ASCII):
         return f"нема валідного номера відділення НП (np_branch=«{branch[:80]}»)"
+    # Місто введено руками (довідник НП був недоступний на фронті): без CityRef і без області Toysi отримає лише назву, а для тезок («Іванівка»
+    # у кількох областях) це відправка в чуже село (інцидент 906224962 Бородянський / EVA «Південне»→«Южное»). Утримуємо, лише якщо назва НЕ унікальна в довіднику НП
+    # або НП недоступна (fail-closed; наступний цикл перевірить знову). Унікальне місто («Київ») і вибір з автокомпліту (np_city_ref) проходять.
+    if not (order.get("np_city_ref") or "").strip():
+        _city, _wh, _area = parse_np_branch(branch)
+        if _city and not _area:
+            try:
+                _n = count_cities_named(_city)
+            except Exception as e:  # noqa: BLE001
+                return f"місто «{_city}» введено вручну без області, а довідник НП недоступний ({type(e).__name__}) — не можу виключити тезок"
+            if _n != 1:
+                return (f"місто «{_city}» введено вручну без області, у довіднику НП збігів за назвою: {_n} (тезки або не знайдено) — уточніть місто й область у клієнта")
     return ""
 
 

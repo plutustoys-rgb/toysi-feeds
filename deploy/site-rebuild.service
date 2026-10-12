@@ -13,4 +13,7 @@ ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site/build_site.py
 # Apache RewriteMap txt: сам перечитує файл за зміною mtime — reload НЕ потрібен.
 # '-' → не-фатально: збій цього кроку не валить ребілд сайту.
 ExecStartPost=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/generate_prom_redirects.py
+# канарка старих Prom-URL на ЖИВОМУ сайті (11.10.2026): покритий prom_id → 301 на картку, вигаданий → 410 (порожня/зіпсована мапа дала б 410 для всіх) →
+# тротлений алерт у Telegram. '-' → не-фатально. Має сенс лише після застосування Apache-правил 410 (activate_site_apache.sh) — разом із цим юнітом.
+ExecStartPost=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_redirect_canary.py
 Nice=10

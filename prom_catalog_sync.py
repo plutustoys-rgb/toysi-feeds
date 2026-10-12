@@ -545,19 +545,35 @@ LEDGER_SWEEP_CHECKED_FILE = Path(__file__).parent / "prom_ledger_sweep_checked.j
 GONE_SEEN_FILE = Path(__file__).parent / "prom_gone_seen.json"   # «зниклі з Toysi» минулого прогону (підтвердження у двох прогонах)
 
 
-def _load_gone_seen() -> set:
+GONE_MIN_AGE_HOURS = 20          # «зниклий з Toysi» картка видаляється лише якщо була зниклою БЕЗПЕРЕРВНО ≥ 20 год (перекриває ніч і ≥4 прогони таймера 07/11/15/19:30; аудит PR #680 р.3)
+
+
+def _load_gone_seen() -> dict:
+    """{external_id: ISO-час, коли вперше побачили «зниклим»}. Відсутній/битий/старого формату (список) файл → {} (безпечний напрямок: нічого не підтверджено)."""
     try:
         data = json.loads(GONE_SEEN_FILE.read_text(encoding="utf-8"))
-        return set(data) if isinstance(data, list) else set()
-    except (OSError, ValueError):
-        return set()
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
-def _save_gone_seen(ids: set) -> None:
+def _save_gone_seen(state: dict) -> bool:
+    """Атомарний запис (tmp + os.replace). False + лог при збої — тоді «підтвердження» не накопичується (безпечно), а не мовчки."""
+    tmp = GONE_SEEN_FILE.with_suffix(".tmp")
     try:
-        GONE_SEEN_FILE.write_text(json.dumps(sorted(ids), ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, GONE_SEEN_FILE)
+        return True
     except OSError as e:
-        print(f"[Sync] Не вдалось зберегти {GONE_SEEN_FILE.name} ({e})", file=sys.stderr)
+        print(f"[Sync] 🚨 Не вдалось зберегти {GONE_SEEN_FILE.name} ({e}) — «зниклі з Toysi» НЕ підтверджуватимуться, доки запис не відновиться", file=sys.stderr)
+        return False
+
+
+def _gone_age_hours(first_seen_iso: str, now: datetime) -> float:
+    try:
+        return (now - datetime.fromisoformat(first_seen_iso)).total_seconds() / 3600
+    except ValueError:
+        return 0.0
 
 
 def _load_ledger_checked() -> set:
@@ -576,7 +592,7 @@ def _save_ledger_checked(checked: set) -> None:
         print(f"[Sync] Не вдалось зберегти {LEDGER_SWEEP_CHECKED_FILE.name} ({e})", file=sys.stderr)
 
 
-def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict) -> tuple:
+def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict, persist: bool = False, now: datetime = None) -> tuple:
     """Знаходить застарілі товари в «невидимих групах» через журнал штовхнутих.
 
     Кандидати = журнал − поточний_топ − вже_видимий_зріз (тобто наші лістинги, які випали
@@ -623,14 +639,20 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
         except Exception as e:  # noqa: BLE001
             print(f"[Sync] алерт не надіслано: {type(e).__name__}", file=sys.stderr)
         candidates = [e for e in candidates if e in toysi_ids]
-        _save_gone_seen(set())                             # guard спрацював → попереднє «бачили зниклим» не накопичуємо
+        if persist:
+            _save_gone_seen({})                            # guard спрацював → попереднє «бачили зниклим» не накопичуємо
     else:
         # ПІДТВЕРДЖЕННЯ У ДВОХ ПРОГОНАХ (аудит PR #680, раунд 2): «зниклий» видаляється лише якщо був «зниклим» і в ПОПЕРЕДНЬОМУ прогоні (~6 год раніше) — разове
         # усічення каталогу Toysi (1–6% не ловиться порогом 600) самовиліковується, бо наступний прогін бачить повний каталог і ці картки перестають бути «зниклими».
+        now = now or datetime.now()
         prev_gone = _load_gone_seen()
         gone_set = set(gone)
-        confirmed = gone_set & prev_gone
-        _save_gone_seen(gone_set)
+        # {id: коли вперше побачили зниклим}; хто перестав бути зниклим (каталог відновився) — випадає зі стану, лічильник скидається
+        new_state = {e: prev_gone.get(e, now.isoformat(timespec="seconds")) for e in gone_set}
+        confirmed = {e for e in gone_set if e in prev_gone and _gone_age_hours(prev_gone[e], now) >= GONE_MIN_AGE_HOURS}
+        if persist:                                        # dry-run (дефолт без --apply) стан НЕ пише — інакше діагностичний прогін + --apply «підтвердять» за хвилини
+            if not _save_gone_seen(new_state):
+                confirmed = set()                          # запис не вдався → ніхто не підтверджений (безпечно)
         candidates = [e for e in candidates if e in toysi_ids or e in confirmed]
         candidates.sort(key=lambda e: e in toysi_ids)    # стабільне сортування: підтверджені зниклі з Toysi (False) — першими
     if not candidates:
@@ -638,8 +660,10 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
 
     cand_set = set(candidates)
     checked = _load_ledger_checked() & cand_set   # лише актуальні кандидати
-    pool = [e for e in candidates if e not in checked]
-    if not pool:                                  # весь поточний пул пройдено — новий цикл
+    confirmed_gone = {e for e in candidates if e not in toysi_ids}
+    # підтверджені зниклі ЗАВЖДИ в пулі (поза sweep-курсором): ні перевірені раніше, ні ті, що не влізли в кап 200 минулого прогону, не ховаються до кінця циклу (аудит #680 р.3, діра C)
+    pool = [e for e in candidates if e in confirmed_gone or e not in checked]
+    if not [e for e in pool if e not in confirmed_gone]:   # весь поточний пул (крім зниклих) пройдено — новий цикл
         checked = set()
         pool = candidates
     batch = pool[:LEDGER_SWEEP_LOOKUP_LIMIT]
@@ -650,7 +674,7 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
     to_prune = [e for e in batch if e not in found and e not in indeterminate]   # підтверджено 404
     to_prune += [e for e, p in found.items() if p.get("status") == "deleted"]    # надгробки
 
-    checked.update(batch)                         # sweep-курсор (як supplement_cabinet_view)
+    checked.update(e for e in batch if e not in confirmed_gone)   # sweep-курсор (як supplement_cabinet_view); зниклі в курсор не заносимо
     _save_ledger_checked(checked)
 
     print(f"[Sync] Журнал OOS (усі поза топ, live-звірка): {len(candidates)} кандидатів (журнал−топ), "
@@ -757,7 +781,7 @@ def main() -> None:
     # безпечні навіть коли /groups/list неповний (той самий принцип, що supplement_cabinet_
     # view). Замінює РУЧНИЙ clear_invisible_oos.py (Phase 3). Виконується ЗАВЖДИ (навіть якщо
     # видимий find_stale нижче порожній чи заблокований view-guard), бо це різний клас даних.
-    ledger_delist, ledger_prune = find_stale_via_ledger(desired_ids, toysi_ids, prom_products)
+    ledger_delist, ledger_prune = find_stale_via_ledger(desired_ids, toysi_ids, prom_products, persist=bool(args.apply))
     if ledger_prune:
         removed = _prune_ledger(ledger_prune)
         print(f"[Sync] Журнал: прибрано {removed} відсутніх/видалених external_id (самоочищення).")

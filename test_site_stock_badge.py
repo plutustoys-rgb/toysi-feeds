@@ -25,8 +25,13 @@ def chk(n, c):
         F.append(n)
 
 
+def prod(stock):
+    return {"id": "1", "name": "Тест <b>", "price": 200, "photo": "https://x/1.jpg", "stock": stock, "category": "Іграшки"}
+
+
 def card(stock, **kw):
-    return bs.tile({"id": "1", "name": "Тест <b>", "price": 200, "photo": "https://x/1.jpg", "stock": stock, "category": "Іграшки"}, **kw)
+    kw.setdefault("badge", True)
+    return bs.tile(prod(stock), **kw)
 
 
 for st in (1, 2, 3):
@@ -39,6 +44,10 @@ for st in (4, 5, 10, 100):
 h0 = card(0)
 chk("залишок 0: бейджа нема, «Немає»", "stock-badge" not in h0 and "Немає" in h0 and "Залишилось" not in h0)
 chk("межа налаштована константою STOCK_BADGE_MAX = 3", bs.STOCK_BADGE_MAX == 3)
+chk("за замовчуванням (каталог, категорії, «схожі», пошук) бейджа НЕМАЄ навіть при залишку 1–3: лишається зелений «У наявності» (рішення SMM 12.10)", all("stock-badge" not in bs.tile(prod(s)) and "У наявності" in bs.tile(prod(s)) for s in (1, 2, 3)) and all("stock-badge" not in bs.grid([prod(s)]) for s in (1, 2, 3)))
+chk("grid(badge=True) пропускає бейдж у плитки (для /ig.html і /nabory.html)", "stock-badge" in bs.grid([prod(2)], badge=True) and "stock-badge" not in bs.grid([prod(2)]))
+_src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
+chk("карусель головної і /ig.html викликають плитки з badge=True; каталог/категорії/схожі/новинки — ні", 'tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True)' in _src and "grid(shown, eager_n=min(3, len(shown)), badge=True)" in _src and "grid(chunk, eager_n=(4 if k == 1 else 0))" in _src and "grid(similar)" in _src and "grid(related)" in _src)
 chk("лише точний цілий залишок у тексті (без «останній», «лише», таймерів, «у місті»)", all(w not in card(1).lower() for w in ("останній", "лише", "таймер", "у місті", "поспіш", "встигни")))
 chk("назва товару екранується поруч із бейджем (нема сирого <b>)", "<b>" not in card(2).replace("<b>Тест", "") and "&lt;b&gt;" in card(2))
 chk("карусельна картка (cls=slide, eager, prio): бейдж зберігається", 'class="card slide"' in card(1, cls="slide", eager=True, prio=True) and "stock-badge" in card(1, cls="slide", eager=True, prio=True))

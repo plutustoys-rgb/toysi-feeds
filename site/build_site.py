@@ -836,6 +836,9 @@ def home_jsonld() -> str:
 
 
 # ── Головна: «Добірка Плутуса» (SMM 09.10.2026, рішення власника «герой крінж, зверху карусель») ──
+# Анімований Плутус у герої (SMM 09.10/12.10): poster + кліпи ЛИШЕ з хвостом праворуч (tail_right у manifest креатива: tailtrip, ear_scratch), тривалість у мс
+HERO_MASCOT_POSTER = "assets/mascot/plutus_hero_poster.webp"
+HERO_MASCOT_CLIPS = (("tailtrip", 3170), ("ear_scratch", 4000))
 HOME_MIN_CONTRIB = 100.0           # внесок на замовлення, ₴ (рішення Консультанта: не ведемо вітрину позицією без маржі) — існуючий поріг «Новинок»
 HOME_PICK_PRICE_MIN, HOME_PICK_PRICE_MAX = 150, 700    # ₴: імпульсна ціна (SMM): рамка, не мірило
 HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2
@@ -947,7 +950,10 @@ def write_home(prods, cats, cat_list, cat_slug):
         )
     body = (
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
-      '<div class="hero2"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус — маскот PlutusToys" width="109" height="100" decoding="async">'
+      # poster завжди під низом, кліп кросфейдом поверх (див. initMascot): обидва <img> із width/height — CLS 0
+      f'<div class="hero2"><span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async" '
+      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(ms) for _, ms in HERO_MASCOT_CLIPS)}">'
+      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину, а маму робить спокійною.</p></div>'
       '<div class="act"><a class="btn" href="catalog.html">Обрати іграшку</a>'
       '<div class="chip">🚚 Нова Пошта · ' + PAY_SHORT + '</div></div></div>'

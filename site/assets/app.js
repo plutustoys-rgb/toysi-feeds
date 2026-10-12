@@ -282,6 +282,16 @@
     try{ var el=document.getElementById("cart-addons"); cartAddonPool=el ? JSON.parse(el.textContent||"[]") : []; }catch(e){ cartAddonPool=[]; }
     return cartAddonPool;
   }
+  // Орієнтовна вартість доставки НП для кошика (Код, getDocumentPrice із акаунту НП, 12.10): тариф 70 ₴ Київ / 90 ₴ інші великі міста (оголошена вартість 500, вага ≤2 кг)
+  // + комісія за накладений платіж 20 ₴ + 2% від суми (точно на 190/400/1000/3000). Місто на цьому етапі невідоме → діапазон. Понад DELIV_COD_MAX накладеного платежу немає → лише тариф.
+  // Хто платить комісію — не доведено, тому текст говорить лише «орієнтовно» і «оплачується при отриманні», без обіцянки, що комісію платить саме одержувач.
+  var DELIV_TARIFF_MIN=70, DELIV_TARIFF_MAX=90, DELIV_COD_FIXED=20, DELIV_COD_RATE=0.02, DELIV_COD_MAX=3000;
+  function deliveryEstimate(goods){
+    if(!(goods>0) || goods>DELIV_COD_MAX) return "орієнтовно 70–90 ₴ до 2 кг";
+    var fee=DELIV_COD_FIXED+DELIV_COD_RATE*goods;
+    return "орієнтовно "+Math.round(DELIV_TARIFF_MIN+fee)+"–"+Math.round(DELIV_TARIFF_MAX+fee)+" ₴";
+  }
+
   function renderAside(c, ids){
     var aside=document.getElementById("cart-aside");
     if(!aside) return;
@@ -296,6 +306,7 @@
     var g=document.getElementById("aside-goods"), t=document.getElementById("aside-total");
     if(g) g.textContent=goods+" ₴";
     if(t) t.textContent=goods+" ₴";
+    var ad=document.getElementById("aside-delivery"); if(ad) ad.textContent=deliveryEstimate(goods);
     var picks=addonPool().filter(function(a){ return !c[a.id]; }).slice(0,3);
     Array.prototype.forEach.call(document.querySelectorAll("[data-addon]"), function(box){
       if(!picks.length){ box.innerHTML=""; box.style.display="none"; return; }
@@ -354,7 +365,7 @@
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
-    if(d) d.textContent=freeShip ? "Безкоштовно" : "орієнтовно 70–90 ₴ до 2 кг";
+    if(d) d.textContent=freeShip ? "Безкоштовно" : deliveryEstimate(goods);
     if(t) t.textContent=goods+" ₴";
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";

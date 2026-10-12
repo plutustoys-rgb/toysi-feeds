@@ -142,6 +142,10 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .ac .opt:last-child{border-bottom:0}
 .ac .opt:hover,.ac .opt.on{background:var(--bg)}
 .ac .opt small{display:block;color:var(--muted);font-size:12px}
+.ac .opt-none{color:var(--accent);font-weight:600;position:sticky;bottom:0;background:var(--surface)}
+.ac .opt:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;background:var(--bg)}
+#ac-city.ac,#ac-warehouse.ac{position:static;margin-top:4px}   /* списки МІСТ і ВІДДІЛЕНЬ у потоці (не поверх): інакше накривають наступні поля, оплату й кнопку «Оформити», і клік по кнопці обирав місто/відділення (аудит #682 р.2–3) */
+.ac{scroll-padding-bottom:48px}   /* sticky «Мого міста немає» внизу не ховає сфокусовану опцію (аудит #682 р.3) */
 /* Повідомлення checkout + успіх */
 #checkout-msg{min-height:1em}
 #checkout-msg.err{color:var(--warn)}
@@ -151,6 +155,11 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .hero2{margin:4px clamp(12px,3vw,24px) 6px;display:flex;align-items:center;gap:22px;padding:14px 26px;border-radius:20px;
   background:linear-gradient(100deg,#fdeede 0%,#fbe3cf 60%,#f8d7bd 100%);border:1px solid #f0d3bb}
 .hero2 .mascot{height:104px;width:auto;flex:none;margin:-6px 0 -10px}
+.hero2 .mascot-wrap{position:relative;display:block;flex:none;line-height:0;margin:-6px 0 -10px}
+.hero2 .mascot-wrap .mascot{display:block;margin:0}
+.hero2 .mascot-wrap .mascot-clip{position:absolute;left:0;top:0;opacity:0;transition:opacity .25s ease;pointer-events:none}
+.hero2 .mascot-wrap .mascot-clip.on{opacity:1}
+@media (prefers-reduced-motion:reduce){.hero2 .mascot-wrap .mascot-clip{transition:none}}
 .hero2 .txt{flex:1;min-width:0}
 .hero2 h1{margin:0 0 4px;font-size:clamp(22px,3.4vw,32px);line-height:1.15}
 .hero2 p{margin:0;color:#6b5547;font-size:14px}
@@ -170,6 +179,7 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 @media(max-width:700px){
   .hero2{flex-wrap:wrap;gap:4px 12px;padding:8px 14px}
   .hero2 .mascot{height:68px;margin:-2px 0 -4px}
+  .hero2 .mascot-wrap{margin:-2px 0 -4px}
   .hero2 .txt{flex:1}
   .hero2 h1{font-size:21px;margin:0}
   .hero2 p{display:none}
@@ -321,3 +331,37 @@ footer.foot a{color:var(--accent)}
 .ig-lead{margin:0 clamp(12px,3vw,24px) 14px;color:var(--muted)}
 .ig-list{margin-bottom:8px}
 .ig-all{margin:18px clamp(12px,3vw,24px) 28px}
+
+/* ── кошик: двоколонково на десктопі (SMM 12.10) ── */
+.cart-grid{padding:0 16px}
+.cart-aside .aside-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin:14px 0}
+.cart-aside h2,.cart-aside h3{margin:0 0 8px;font-size:16px}
+.cart-aside .row{display:flex;justify-content:space-between;font-size:14px;color:var(--muted);margin:6px 0}
+.cart-aside .row.total{color:var(--text);font-weight:800;border-top:1px solid var(--line);padding-top:8px}
+.ai{display:flex;align-items:center;gap:10px;margin:8px 0}
+.ai img{width:44px;height:44px;object-fit:contain;background:var(--bg);border-radius:10px;flex:none}
+.ai-nm{flex:1;min-width:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ai-q{font-size:12px;color:var(--muted);white-space:nowrap}
+.trust-list{list-style:none;margin:0;padding:0;font-size:14px}
+.trust-list li{margin:7px 0}
+.trust-list .trust-pay{font-weight:700}
+.trust-list a{color:inherit}
+.addon-box h3{margin:0 0 6px}
+.ao{display:grid;grid-template-columns:48px 1fr auto;grid-template-areas:"img nm pr" "img nm btn";gap:2px 10px;align-items:center;margin:10px 0}
+.ao img{grid-area:img;width:48px;height:48px;object-fit:contain;background:var(--bg);border-radius:10px}
+.ao-nm{grid-area:nm;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ao-pr{grid-area:pr;font-weight:800;font-size:14px;justify-self:end}
+.ao-add{grid-area:btn;justify-self:end;border:1px solid var(--accent);background:var(--surface);color:var(--accent);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer}
+.ao-add:hover{background:var(--accent);color:#fff}
+.addon-m{margin:14px 0 4px}
+.pack-card{display:flex;align-items:center;gap:12px;font-weight:700}
+.pack-card img{flex:none;height:73px;width:80px}
+#aside-order,.addon-d{display:none}
+@media (min-width:960px){
+  .cart-grid{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:28px;align-items:start;padding:0 clamp(12px,3vw,24px)}
+  .cart-aside{position:sticky;top:84px;max-height:calc(100vh - 100px);overflow-y:auto;overscroll-behavior:contain}
+  #aside-items{max-height:220px;overflow-y:auto}
+  .cart-aside .aside-card:first-child{margin-top:0}
+  #aside-order,.addon-d{display:block}
+  .addon-m,#cart-summary{display:none !important}
+}

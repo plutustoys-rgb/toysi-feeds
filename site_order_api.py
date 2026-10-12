@@ -20,7 +20,8 @@ MONEY-SAFETY:
   (накладений — гроші беруться при отриманні), prepaid форвардиться ЛИШЕ після підтвердженого
   колбека LiqPay (get_orders_ready_to_forward). Тестовий/несплачений prepaid закупівлю не запускає.
 - payment_method невідоме/відсутнє → cod (консервативно; не запускає передоплатну гілку помилково).
-- Колбек: підпис (verify_callback) + звірка суми з перерахованою + відсів sandbox-статусу в бою.
+- Колбек: підпис (verify_callback) + відсів sandbox-статусу в бою + оплата лише для success/sandbox (wait_accept та інші pending/reversed НЕ підтверджують, лише алерт) +
+  валюта == UAH + звірка суми з перерахованою.
 - Тест: ORDERS_DB_PATH=<тимчасова БД> ДО запуску (не бойова orders.db).
 
 Конфіг (env): SITE_API_HOST/PORT, SITE_DIR (де index.json + сторінки), SITE_BASE_URL
@@ -81,6 +82,37 @@ SITE_COD_CIRCUIT_BREAKER_RESET_AFTER = os.environ.get("SITE_COD_CIRCUIT_BREAKER_
 # замовлення") — щоб не тримати другий паралельний список "що вважається відмовою".
 _COD_UNSUCCESSFUL_STATUSES = {"cancelled", "returned"}
 _NO_TELEGRAM = os.environ.get("AUDIT_NO_TELEGRAM") == "1"
+
+
+_LIQPAY_STATUS_HINT = {
+    "wait_accept": "кошти списані, але магазин ще не пройшов перевірку LiqPay (без активації за 60 днів платежі автоматично скасовуються)",
+    "hold_wait": "сума заблокована на рахунку відправника (не списана)",
+    "wait_secure": "платіж на перевірці LiqPay",
+    "wait_compensation": "платіж успішний, буде зарахований у щодобовій проводці",
+    "wait_card": "не встановлений спосіб відшкодування в одержувача (магазину)",
+    "wait_lc": "акредитив: кошти списані, очікується підтвердження доставки товару",
+    "wait_reserve": "кошти зарезервовані для проведення повернення за раніше поданою заявкою",
+    "reversed": "платіж повернений",
+}
+
+
+def _alert_liqpay_status(res: dict) -> None:
+    """Непідтверджений/повернений статус LiqPay: замовлення НЕ передаємо в Toysi й чек НЕ виписуємо (payment_confirmed лишається 0) — сповіщаємо власника,
+    самодіагностично (що, чому, що робити). Тротлінг: раз на 12 год на пару замовлення+статус. Збій алерту не валить колбек."""
+    if _NO_TELEGRAM:
+        return
+    status = res.get("status")
+    oid = f"site_{res.get('order_id')}"
+    extra = ("Якщо замовлення вже відправлене чи чек видано, потрібне повернення чека (kodv_return_receipt.py) і рішення по посилці."
+             if status == "reversed" else
+             "Замовлення НЕ підтверджено: у Toysi не передаємо, чек не виписуємо. Звір статус платежу в кабінеті LiqPay (LiqPay не документує повторну відправку колбека після активації магазину: не очікуй, що замовлення підтвердиться само).")
+    try:
+        from telegram_notify import send_throttled_alert
+        send_throttled_alert(f"liqpay_status:{oid}:{status}",
+                             f"💳 LiqPay: {oid} має статус {status} ({_LIQPAY_STATUS_HINT.get(status, 'див. документацію LiqPay')}). {extra}",
+                             cooldown_sec=12 * 60 * 60)
+    except Exception as e:  # noqa: BLE001
+        print(f"[site_order_api] алерт LiqPay-статусу не надіслано (не критично): {e}", file=sys.stderr)
 
 
 def _notify(msg: str) -> None:
@@ -449,7 +481,8 @@ class Handler(SimpleHTTPRequestHandler):
         q = parse_qs(parsed.query)
         try:
             if parsed.path == "/api/np/city":
-                cities = nova_poshta.search_cities((q.get("q") or [""])[0])
+                # limit 50: у «Іванівка» 37 збігів, «Михайлівка» 40 — з 8 покупець зі свого села його не бачив би (аудит #682); випадайка скролиться (.ac max-height)
+                cities = nova_poshta.search_cities((q.get("q") or [""])[0], limit=50)
                 return self._json(200, {"cities": cities})
             if parsed.path == "/api/np/warehouse":
                 city_ref = (q.get("city_ref") or [""])[0]
@@ -536,7 +569,12 @@ class Handler(SimpleHTTPRequestHandler):
         if res["status"] == "sandbox" and not liqpay_client.LIQPAY_SANDBOX:
             return self._text(400, "sandbox status rejected in production")
         if not res["paid"]:
+            if res.get("pending") or res.get("reversed"):
+                _alert_liqpay_status(res)
             return self._text(200, f"ok (status={res['status']})")  # не оплачено — просто підтверджуємо прийом
+        # валюта: чекаут будується в UAH; інша (або відсутня) = розбіжність, не підтверджуємо (money-safety, як і суму нижче)
+        if str(res.get("currency") or "").upper() != liqpay_client.CURRENCY:
+            return self._text(400, f"currency mismatch: got {res.get('currency')}, expected {liqpay_client.CURRENCY}")
 
         internal = f"site_{res['order_id']}"
         try:

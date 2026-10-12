@@ -35,7 +35,7 @@
   function track(name, items, value, extra){
     try{
       var cfg=window.PT_ANALYTICS||{};
-      var ga=items.map(function(i){ return {item_id:String(i.id), item_name:i.name, price:+i.price, quantity:i.qty||1}; });
+      var ga=items.map(function(i){ var o={item_id:String(i.id), item_name:i.name, price:+i.price, quantity:i.qty||1}; if(i.list){ o.item_list_name=i.list; } return o; });
       var gp={currency:"UAH", value:+value, items:ga}; for(var k in (extra||{})){ gp[k]=extra[k]; }
       if(cfg.ga4 && window.gtag){ window.gtag("event", name, gp); }
       if(cfg.fb && window.fbq && FB_EVENT[name]){
@@ -47,11 +47,11 @@
   }
 
   window.PT = {
-    add:function(p){                 // p={id,name,price,photo}
+    add:function(p, listName){       // p={id,name,price,photo}; listName — звідки додано (item_list_name у GA4, напр. cart_addon)
       var c=read();
       if(c[p.id]){ c[p.id].qty++; } else { c[p.id]={id:p.id,name:p.name,price:+p.price,photo:p.photo,qty:1}; }
       write(c);
-      track("add_to_cart", [{id:p.id, name:p.name, price:+p.price, qty:1}], +p.price);
+      track("add_to_cart", [{id:p.id, name:p.name, price:+p.price, qty:1, list:listName||""}], +p.price);
       flash("Додано в кошик");
     },
     track:track,
@@ -206,7 +206,7 @@
       renderSearch();
     });
   }
-  function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function esc(s){ return String(s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }   // ' теж: назви в data-add='…' (аудит #691: «М'яка іграшка» ламала кнопку й давала ін'єкцію атрибута)
 
   // ── Каталог: сортування + фільтри (клієнтом з index.json, весь каталог) ──
   function catCard(p){
@@ -275,11 +275,56 @@
     if(elReset) elReset.addEventListener("click",doReset);
   }
 
+  // ── Права колонка кошика (SMM 12.10): «Ваше замовлення», «Додайте до замовлення» (3 позиції з пулу cart.html, яких ще нема в кошику), динамічний рядок про відправку ──
+  var cartAddonPool=null;
+  function addonPool(){
+    if(cartAddonPool) return cartAddonPool;
+    try{ var el=document.getElementById("cart-addons"); cartAddonPool=el ? JSON.parse(el.textContent||"[]") : []; }catch(e){ cartAddonPool=[]; }
+    return cartAddonPool;
+  }
+  function renderAside(c, ids){
+    var aside=document.getElementById("cart-aside");
+    if(!aside) return;
+    aside.style.display = ids.length ? "" : "none";
+    if(!ids.length) return;
+    var goods=ids.reduce(function(s,id){ return s+c[id].price*c[id].qty; },0);
+    var items=document.getElementById("aside-items");
+    if(items) items.innerHTML=ids.map(function(id){
+      var it=c[id];
+      return '<div class="ai"><img src="'+esc(it.photo)+'" alt="" loading="lazy"><div class="ai-nm">'+esc(it.name)+'</div><div class="ai-q">'+it.qty+' × '+it.price+' ₴</div></div>';
+    }).join("");
+    var g=document.getElementById("aside-goods"), t=document.getElementById("aside-total");
+    if(g) g.textContent=goods+" ₴";
+    if(t) t.textContent=goods+" ₴";
+    var picks=addonPool().filter(function(a){ return !c[a.id]; }).slice(0,3);
+    Array.prototype.forEach.call(document.querySelectorAll("[data-addon]"), function(box){
+      if(!picks.length){ box.innerHTML=""; box.style.display="none"; return; }
+      box.style.display="";
+      box.innerHTML='<h3>Додайте до замовлення</h3>'+picks.map(function(a){
+        return '<div class="ao"><img src="'+esc(a.photo)+'" alt="" loading="lazy"><div class="ao-nm">'+esc(a.name)+'</div><div class="ao-pr">'+a.price+' ₴</div>'+
+          '<button type="button" class="ao-add" data-add=\''+esc(JSON.stringify({id:a.id,name:a.name,price:a.price,photo:a.photo}))+'\' data-list="cart_addon" aria-label="Додати до замовлення: '+esc(a.name)+'">+ Додати</button></div>';
+      }).join("");
+    });
+  }
+  function initShipToday(){
+    // Політика сайту каже лише «замовлення до 12:00 зазвичай відправляємо того ж дня» (сторінки «Доставка», «Про нас»). Нових обіцянок не додаємо (аудит #691): рядок «відправимо сьогодні» показуємо ТІЛЬКИ коли зараз
+    // у Києві будній день і до 12:00; після 12:00, у суботу/неділю, без Intl або з невідомою зоною лишається статичний текст політики. Обчислюється один раз при завантаженні.
+    var el=document.getElementById("ship-today");
+    if(!el) return;
+    try{
+      var f=new Intl.DateTimeFormat("en-GB",{hour:"numeric",hour12:false,weekday:"short",timeZone:"Europe/Kyiv"}).formatToParts(new Date());
+      var hh=0, wd="";
+      f.forEach(function(p){ if(p.type==="hour") hh=+p.value; if(p.type==="weekday") wd=p.value; });
+      if(wd && wd!=="Sat" && wd!=="Sun" && hh<12) el.textContent="🚚 Замовте до 12:00 — зазвичай відправимо сьогодні";
+    }catch(e){}
+  }
+
   // ── Рендер кошика (сторінка cart.html) ──
   function renderCart(){
     var box=document.getElementById("cart-body");
     if(!box) return;
     var c=read(), ids=Object.keys(c);
+    renderAside(c, ids);
     var form=document.getElementById("checkout-form");
     if(ids.length===0){
       box.innerHTML='<div class="empty"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="48" height="44" decoding="async"></div>Кошик порожній.<br>Оберіть іграшки в <a href="catalog.html" style="color:var(--accent)">каталозі</a>.</div>';
@@ -309,7 +354,7 @@
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
-    if(d) d.textContent=freeShip ? "Безкоштовно" : "за тарифами НП";
+    if(d) d.textContent=freeShip ? "Безкоштовно" : "орієнтовно 70–90 ₴ до 2 кг";
     if(t) t.textContent=goods+" ₴";
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
@@ -336,7 +381,7 @@
     // делеговані кліки: додати в кошик, пошук, кошик-керування
     document.body.addEventListener("click", function(e){
       var t=e.target.closest("[data-add]");
-      if(t){ e.preventDefault(); PT.add(JSON.parse(t.getAttribute("data-add"))); return; }
+      if(t){ e.preventDefault(); PT.add(JSON.parse(t.getAttribute("data-add")), t.getAttribute("data-list")||""); if(document.getElementById("cart-body")) renderCart(); return; }
       if(e.target.closest("#open-search")){ e.preventDefault(); openSearch(); return; }
       if(e.target.closest("#close-search")){ e.preventDefault(); closeSearch(); return; }
       var sb=e.target.closest("#search-overlay [data-sort]");
@@ -356,11 +401,13 @@
     if(so){ var sTimer=null; so.addEventListener("input", function(){ clearTimeout(sTimer); sTimer=setTimeout(function(){ runSearch(so.value); }, 200); }); }   // debounce 200 мс: не перераховуємо 21 тис. на кожне натискання
 
     renderCart();
+    initShipToday();
     initCheckout();
     initNpAutocomplete();
     initCatalog();
     initHomeCarousel();
     initListTracking();
+    initMascot();
     initContactTracking();
 
     // сторінка подяки — підставити номер замовлення
@@ -502,6 +549,60 @@
       trackRaw("select_item", {item_list_id:"ig_landing", item_list_name:listName, items:[d]});
     });
   }
+  // ── Анімований Плутус у герої головної (SMM 09.10 + 12.10): poster (idle-кадр) завжди під низом; раз на 12–20 с поверх нього КРОСФЕЙДОМ з'являється один кліп із хвостом праворуч (tailtrip/ear_scratch),
+  // програється ОДИН раз і розчиняється назад (кадри кліпів не збігаються з poster за позою — аудит #688: кросфейд ховає «стрибок»). Не безперервний луп. Нічого не вантажимо й не граємо: prefers-reduced-motion,
+  // Save-Data, 2g/slow-2g; кліп тягнемо ПІСЛЯ load + 3 с; не більше одного в польоті; пауза: прихована вкладка (кліп гасимо одразу й ПЛАНУЄМО наступний — аудит #688), Плутус поза екраном (гасимо й плануємо).
+  // Розмір задано атрибутами width/height обох <img> — CLS нуль. src кліпу знімаємо після розчинення: наступний показ стартує з першого кадру. В аналітику не пише.
+  function initMascot(){
+    var img=document.getElementById("hero-mascot"), clipImg=document.getElementById("hero-mascot-clip");
+    if(!img || !clipImg) return;
+    var clips=(img.getAttribute("data-clips")||"").split("|").filter(Boolean);
+    var durs=(img.getAttribute("data-ms")||"").split(",").map(Number);
+    if(!clips.length) return;
+    function reduced(){ return typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches; }
+    var conn=navigator.connection||{};
+    if(reduced() || conn.saveData || /(^|-)2g$/.test(conn.effectiveType||"")) return;
+    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null, fadeTimer=null;
+    function wait(){ return 12000 + Math.floor(Math.random()*8000); }
+    function schedule(ms){ clearTimeout(timer); timer=setTimeout(play, ms); }
+    function stop(){
+      clearTimeout(endTimer);
+      if(!playing) return;
+      playing=false; clipImg.classList.remove("on");
+      clearTimeout(fadeTimer);
+      fadeTimer=setTimeout(function(){ if(!playing) clipImg.removeAttribute("src"); }, 350);      // після розчинення: наступний показ стартує з першого кадру
+    }
+    if(typeof IntersectionObserver==="function"){
+      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ visible=!!e.isIntersecting; if(!visible && playing){ stop(); schedule(wait()); } }); }, {threshold:0.3});
+      io.observe(img);
+      visible=false;   // до першого повідомлення IntersectionObserver вважаємо «не видно»
+    }
+    function canPlay(){ return !document.hidden && visible && !reduced(); }
+    function next(){
+      if(!order.length){
+        order=clips.map(function(_,i){ return i; });
+        for(var i=order.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=order[i]; order[i]=order[j]; order[j]=t; }
+        if(order.length>1 && order[0]===last){ order.push(order.shift()); }   // не повторюємо той самий кліп підряд на стику циклів
+      }
+      last=order.shift(); return last;
+    }
+    function play(){
+      if(playing) return;
+      if(!canPlay()){ schedule(wait()); return; }
+      var idx=next(), url=clips[idx], ms=(durs[idx]>0?durs[idx]:4000)+400;      // запас 400 мс: декодування перших кадрів на слабкому телефоні не зрізає хвіст
+      var pre=new Image();
+      pre.onload=function(){
+        if(!canPlay()){ schedule(wait()); return; }      // поки вантажився — вкладка сховалась / Плутус зник з екрана
+        playing=true; clearTimeout(fadeTimer); clipImg.src=url; clipImg.classList.add("on");
+        endTimer=setTimeout(function(){ stop(); schedule(wait()); }, ms);
+      };
+      pre.onerror=function(){ schedule(wait()); };
+      pre.src=url;
+    }
+    document.addEventListener("visibilitychange", function(){ if(document.hidden){ var was=playing; stop(); if(was) schedule(wait()); } });
+    function start(){ schedule(3000); }      // перший кліп — не раніше ніж через 3 с після load
+    if(document.readyState==="complete") start(); else window.addEventListener("load", start);
+  }
   // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──
   function initContactTracking(){
     document.addEventListener("click", function(e){
@@ -518,17 +619,39 @@
 
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";
+  var cityListShown = false;   // довідник міст відповів непорожнім списком для поточного тексту
+  var cityPending = false;     // текст міста змінено, відповідь довідника ще не прийшла (fail-closed до таймауту 6 с)
+  var lastCityList = null;     // останній список — щоб повернути його, коли клік повз прибрав випадайку, а submit заблоковано
+  var cityRerender = function(){};
+  function cityNeedsPick(){ return !selectedCityRef && (cityPending || cityListShown); }
   var selectedCityArea = "";  // область обраного міста (НП AreaDescription) → у np_branch, щоб Toysi
                                // не переплутав однойменні населені пункти різних областей (24.09.2026)
   var selectedWarehouseNumber = "";  // № обраного з автокомпліту відділення НП → віддаємо Toysi напряму
   function debounce(fn, ms){ var t; return function(){ var a=arguments, self=this; clearTimeout(t); t=setTimeout(function(){ fn.apply(self,a); }, ms); }; }
-  function renderAc(box, opts, onPick){
+  function renderAc(box, opts, onPick, extra){
     if(!opts.length){ box.innerHTML=""; return; }
+    // Опції — role=option з tabindex=0: вибір і з клавіатури (Tab/Enter/Space, стрілки, Esc), а не лише вказівником (аудит #682 р.2: інакше клавіатурний/скрінрідер-покупець застрягав).
+    if(box.setAttribute){ box.setAttribute("role","listbox"); box.setAttribute("aria-label","Підказки"); }
     box.innerHTML = opts.map(function(o,i){
-      return '<div class="opt" data-i="'+i+'">'+esc(o.label)+(o.sub?'<small>'+esc(o.sub)+'</small>':'')+'</div>';
-    }).join("");
+      return '<div class="opt" role="option" tabindex="0" data-i="'+i+'">'+esc(o.label)+(o.sub?'<small>'+esc(o.sub)+'</small>':'')+'</div>';
+    }).join("") + (extra ? '<div class="opt opt-none" role="option" tabindex="0" data-i="-1">'+esc(extra.label)+'</div>' : "");
+    function choose(el){
+      var i=+el.getAttribute("data-i");
+      if(i<0){ if(extra) extra.onPick(); } else { onPick(opts[i]); }
+      box.innerHTML="";
+    }
     Array.prototype.forEach.call(box.querySelectorAll(".opt"), function(el){
-      el.addEventListener("mousedown", function(ev){ ev.preventDefault(); onPick(opts[+el.getAttribute("data-i")]); box.innerHTML=""; });
+      el.addEventListener("mousedown", function(ev){ ev.preventDefault(); choose(el); });
+      el.addEventListener("keydown", function(ev){
+        var k=ev.key;
+        if(k==="Enter" || k===" "){ ev.preventDefault(); choose(el); }
+        else if(k==="ArrowDown" || k==="ArrowUp"){
+          ev.preventDefault();
+          var sib = k==="ArrowDown" ? el.nextElementSibling : el.previousElementSibling;
+          if(sib && sib.focus) sib.focus();
+        }
+        else if(k==="Escape"){ box.innerHTML=""; }
+      });
     });
   }
   function initNpAutocomplete(){
@@ -536,30 +659,58 @@
     var wh=document.getElementById("f-warehouse"), acWh=document.getElementById("ac-warehouse");
     if(!city || !wh) return;
 
-    city.addEventListener("input", debounce(function(){
+    // Місто: СКИДАННЯ ref/області — негайно на кожен ввід (а не в debounce: інакше submit/тап у вікні 250 мс ніс би застарілий ref іншого міста), пошук — з debounce.
+    // citySeq відсікає запізнілі/невпорядковані відповіді довідника; cityPending блокує submit, поки відповідь не прийшла (fail-closed), але не довше 6 с.
+    function arrowToList(input, box){
+      input.addEventListener("keydown", function(ev){
+        if(ev.key==="ArrowDown"){ var f=box.querySelector ? box.querySelector(".opt") : null; if(f && f.focus){ ev.preventDefault(); f.focus(); } }
+      });
+    }
+    arrowToList(city, acCity); arrowToList(wh, acWh);
+    var citySeq=0, whSeq=0, pendingTimer=null;
+    function lookupCity(){
+      var q=city.value.trim(), my=citySeq;
+      if(q.length<2){ cityPending=false; acCity.innerHTML=""; return; }
+      fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
+        if(my!==citySeq || selectedCityRef) return;      // застаріла відповідь або місто вже обране — не перемальовуємо
+        var cities=(d && Array.isArray(d.cities)) ? d.cities : [];
+        cityPending=false; cityListShown=cities.length>0; lastCityList=cities; cityRerender();
+      }).catch(function(){
+        // API НП недоступний — не лишаємо форму в глухому куті: підказок нема, ручний ввід уже дозволено.
+        if(my!==citySeq) return;
+        cityPending=false; cityListShown=false; lastCityList=null; acCity.innerHTML="";
+      });
+    }
+    var lookupTimer=null;
+    function lookupDebounced(){ clearTimeout(lookupTimer); lookupTimer=setTimeout(lookupCity, 250); }   // власний таймер: вибір / «Мого міста немає» його СКАСОВУЮТЬ (інакше відкладений пошук повертав блок)
+    cityRerender=function(){
+      var cities=lastCityList||[];
+      renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, area:c.area||"", ref:c.ref, name:c.name}; }),
+        function(pick){ citySeq++; clearTimeout(lookupTimer); whSeq++; city.value=pick.name; selectedCityRef=pick.ref||""; selectedCityArea=pick.area||""; cityListShown=false; cityPending=false; wh.placeholder="Номер або адреса відділення"; wh.focus(); },
+        {label:"Мого міста немає в списку", onPick:function(){ citySeq++; clearTimeout(lookupTimer); cityListShown=false; cityPending=false; wh.placeholder="Номер відділення"; wh.focus(); }});   // citySeq++: запізнілі відповіді довідника вже не повернуть блок
+    };
+    city.addEventListener("input", function(){
+      citySeq++; whSeq++;
       // Щойно користувач торкнувся міста — РОЗБЛОКОВУЄМО відділення й БІЛЬШЕ не вимикаємо його.
       // Раніше поле лишалось disabled, доки не тапнеш підказку міста — на телефоні це зривало
       // оформлення (не влучив пальцем у випадайку → відділення «мертве»). Тап по місту лише
       // додає ref для автопідказок відділення; без тапу — ручний ввід відділення (він і так
       // приймається як вільний текст, order_router розбирає при форварді).
       selectedCityRef=""; selectedCityArea=""; selectedWarehouseNumber=""; wh.value=""; acWh.innerHTML="";
+      cityListShown=false; lastCityList=null;
       wh.disabled=false; wh.placeholder="Оберіть місто зі списку — або введіть відділення";
-      var q=city.value.trim(); if(q.length<2){ acCity.innerHTML=""; return; }
-      fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
-        var cities=(d.cities||[]);
-        renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, ref:c.ref, name:c.name}; }),
-          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; selectedCityArea=pick.sub||""; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
-      }).catch(function(){
-        // API НП недоступний — не лишаємо форму в глухому куті: підказок нема, ручний ввід уже дозволено.
-        acCity.innerHTML="";
-      });
-    }, 250));
+      cityPending = city.value.trim().length>=2;
+      clearTimeout(pendingTimer);
+      if(cityPending){ var my=citySeq; pendingTimer=setTimeout(function(){ if(my===citySeq) cityPending=false; }, 6000); }
+      lookupDebounced();
+    });
 
     wh.addEventListener("input", debounce(function(){
       selectedWarehouseNumber="";  // ввід руками скидає обраний № — щоб не лишити стале значення
       if(!selectedCityRef) return;
-      var q=wh.value.trim();
+      var q=wh.value.trim(), myWh=++whSeq, myCity=selectedCityRef;
       fetch("api/np/warehouse?city_ref="+encodeURIComponent(selectedCityRef)+"&q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
+        if(myWh!==whSeq || myCity!==selectedCityRef) return;     // запізніла відповідь іншого міста/запиту (аудит #682 р.2, F5): склад чужого міста не пропонуємо
         renderAc(acWh, (d.warehouses||[]).map(function(w){ return {label:w.description, name:w.description, number:w.number}; }),
           function(pick){ wh.value=pick.name; selectedWarehouseNumber=pick.number||""; acWh.innerHTML=""; });
       }).catch(function(){ acWh.innerHTML=""; });
@@ -590,6 +741,14 @@
 
       var cart=read(), items=Object.keys(cart).map(function(id){ return {id:id, qty:cart[id].qty}; });
       if(!items.length){ fail("Кошик порожній."); return; }
+      // Довідник НП показав міста, а покупець жодного не обрав → у Toysi пішла б лише НАЗВА міста без області/CityRef, і посилка могла б поїхати в однойменне село
+      // (інциденти Бородянський 906224962 і «Південне»→«Южное» EVA 8-081747967). Виходи: довідник мертвий/мовчить >6 с, міста нема в ньому, або кнопка «Мого міста немає в списку».
+      if(cityNeedsPick()){
+        fail("Оберіть своє місто зі списку підказок — так посилка точно піде у ваше місто, а не в однойменне. Немає у списку? Натисніть «Мого міста немає в списку».");
+        if(lastCityList && lastCityList.length) cityRerender();   // клік повз прибрав випадайку — повертаємо список
+        var fc=document.getElementById("f-city"); if(fc && fc.focus) fc.focus();
+        return;
+      }
       var payEl=document.querySelector('input[name="payment"]:checked');
       var payment=payEl ? payEl.value : "cod";
       var payload={

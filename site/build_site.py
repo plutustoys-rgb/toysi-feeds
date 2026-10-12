@@ -37,16 +37,19 @@ ADDON_MIN_PRICE = 60   # ₴: нижче — не пропонуємо як до
 # Оплата карткою онлайн показується покупцю ЛИШЕ коли LiqPay реально бойовий (SMM 2026-10-06: футер обіцяв картку, якої нема).
 # Вмикається змінною середовища SITE_LIQPAY_LIVE=1 під час збірки (виставити після появи бойових ключів LiqPay).
 LIQPAY_LIVE = os.environ.get("SITE_LIQPAY_LIVE", "").strip() == "1"
+# Вартість доставки НП — ВИМІРЯНА (SEO 12.10.2026: Нова Пошта getDocumentPrice із нашого акаунту; Київ→Київ 70 ₴, інші великі міста 90 ₴, накладений платіж +23,8 ₴; лише до 2 кг).
+# Для посилок >2 кг суму НЕ пишемо (не міряли); shippingDetails у розмітці НЕ ставимо (рішення SEO). Аудит #689: вимір зроблено з НАШОГО акаунту НП, а ТТН для замовлень сайту створює Toysi під СВОЇМ — тому лише «орієнтовно»;
+# комісія НП за накладений платіж залежить від суми замовлення — числа не пишемо.
+DELIVERY_COST = "орієнтовно 70–90 ₴ до 2 кг"
 PAY_HERO = "оплата при отриманні або карткою" if LIQPAY_LIVE else "оплата при отриманні на Новій Пошті"
-PAY_PRODUCT = "Оплата карткою на сайті або накладений платіж." if LIQPAY_LIVE else "Оплата при отриманні (накладений платіж)."
 PAY_ABOUT = ("Накладений платіж при отриманні або оплата карткою онлайн." if LIQPAY_LIVE
              else "Накладений платіж: платите при отриманні на відділенні Нової Пошти.")
 PAY_OFFER = ("одним зі способів: накладений платіж при отриманні або оплата банківською карткою онлайн" if LIQPAY_LIVE
              else "накладеним платежем при отриманні Товару на відділенні перевізника")
 PAY_DELIVERY = ("<p>Оплатити замовлення можна <b>банківською карткою онлайн</b> на сайті або <b>накладеним платежем</b> при отриманні на відділенні чи в поштоматі Нової Пошти (накладений платіж — для замовлень до 3 000 ₴). "
-                "Вартість доставки сплачується за тарифами перевізника.</p>" if LIQPAY_LIVE else
-                "<p>Оплата — <b>накладеним платежем</b> при отриманні замовлення на відділенні або в поштоматі Нової Пошти: розраховуєтесь на місці. "
-                "Вартість доставки сплачується за тарифами перевізника. Передоплати на сайті немає. Накладений платіж доступний для замовлень на суму до 3 000 ₴, вище — лише за передоплатою (зв'яжіться з нами).</p>")
+                "</p>" if LIQPAY_LIVE else
+                "<p>Оплата — <b>накладеним платежем</b>: розраховуєтесь при отриманні замовлення на відділенні або в поштоматі Нової Пошти. "
+                "Накладений платіж доступний для замовлень на суму до 3 000 ₴, вище — лише за передоплатою (зв'яжіться з нами).</p>")
 # Відомості про продавця (Закон «Про електронну комерцію», ст. 7 ч.1: ПІБ ФОП, місце реєстрації/проживання, e-mail, реєстраційний номер; LiqPay «Вимоги до мерчанта» п.7).
 # 09.10.2026, пряме доручення власника: адреса — м. Київ, просп. Берестейський, 89а. РНОКПП у ПУБЛІЧНИЙ git не кладемо: береться зі змінної SITE_SELLER_TAXID під час збірки (.env VPS);
 # не задано — рядок РНОКПП просто не показується (сторінка не ламається).
@@ -169,28 +172,54 @@ def footer():
       '<a href="mailto:plutustoys@gmail.com">plutustoys@gmail.com</a></p>'
       f'<p class="fsoc"><a href="{_footer_utm(SOCIAL_URLS[0])}" rel="noopener" target="_blank">Instagram</a> · '
       f'<a href="{_footer_utm(SOCIAL_URLS[1])}" rel="noopener" target="_blank">Facebook</a></p>'
-      '<p class="ftag">PlutusToys — іграшки з доставкою Новою Поштою по Україні.<br>'
-      + ('Оплата карткою онлайн або накладений платіж.' if LIQPAY_LIVE else 'Оплата при отриманні на Новій Пошті.') +
+      '<p class="ftag">PlutusToys — іграшки з доставкою Новою Поштою по Україні.'
+      + ('<br>Оплата карткою онлайн або накладений платіж.' if LIQPAY_LIVE else '') +
       '</p>'
       '</footer>'
     )
 
-def analytics_head() -> str:
-    """Сніпети GA4 (gtag) і Meta Pixel + `window.PT_ANALYTICS` для app.js (події view_item/add_to_cart/begin_checkout/purchase).
-    Порожній рядок, якщо ID не задано."""
+def analytics_head(defer=True) -> str:
+    """Сніпети GA4 (gtag) і Meta Pixel + `window.PT_ANALYTICS` для app.js (події view_item/add_to_cart/begin_checkout/purchase). Порожній рядок, якщо ID не задано.
+    defer=True (усі сторінки, КРІМ «Дякуємо»; рішення Консультанта 12.10: Lighthouse mobile TBT 1,4–3,3 с майже весь від трекерів — Pixel ≈1,3 с, gtag ≈0,7–1,2 с): стаби gtag/fbq (черга) ставимо ОДРАЗУ —
+    події app.js не губляться, — а САМІ СКРИПТИ (gtag.js, fbevents.js) підвантажуємо через 3 с після load або на першу взаємодію (pointerdown/keydown/scroll/touchstart), що раніше. Втрата: хто пішов раніше —
+    це відмови, нам не потрібні. thanks.html — defer=False: подія `purchase` вантажиться без затримки (єдине замовлення втрачати в аналітиці неприпустимо).
+    ВІДОМЕ ОБМЕЖЕННЯ (аудит #693, виміряно): якщо перша взаємодія — «У кошик» і покупець за <≈1,8 с (slow 4G; ≈0,5 с на швидкій) одразу переходить на іншу сторінку, події цієї сторінки
+    (page_view/view_item/add_to_cart) і fbclid/gclid не доходять. Пом'якшення rel=preload через 1 с після load ВИМІРЯНО й ВІДХИЛЕНО: Lighthouse чекає мережу довше й втягує виконання трекерів
+    у вікно виміру (TBT назад 1,8–3,3 с) заради рідкісного випадку."""
     if not (GA4_ID or META_PIXEL_ID):
         return ""
     out = [f'<script>window.PT_ANALYTICS={json.dumps({"ga4": GA4_ID, "fb": META_PIXEL_ID})};</script>\n']
+    gtag_src = f"https://www.googletagmanager.com/gtag/js?id={GA4_ID}"
+    fb_src = "https://connect.facebook.net/en_US/fbevents.js"
+    if not defer:
+        if GA4_ID:
+            out.append(f'<script async src="{gtag_src}"></script>\n'
+                       "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
+                       f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n")
+        if META_PIXEL_ID:
+            out.append("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
+                       "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;"
+                       "t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script',"
+                       f"'{fb_src}');fbq('set','autoConfig',false,'{META_PIXEL_ID}');"
+                       f"fbq('init','{META_PIXEL_ID}');fbq('track','PageView');</script>\n")   # autoConfig=false: без Automatic Advanced Matching (PII форми не хешується в Meta)
+        return "".join(out)
+    js = []
     if GA4_ID:
-        out.append(f'<script async src="https://www.googletagmanager.com/gtag/js?id={GA4_ID}"></script>\n'
-                   "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
-                   f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n")
+        js.append("window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
+                  f"gtag('js',new Date());gtag('config','{GA4_ID}');")
     if META_PIXEL_ID:
-        out.append("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
-                   "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;"
-                   "t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script',"
-                   f"'https://connect.facebook.net/en_US/fbevents.js');fbq('set','autoConfig',false,'{META_PIXEL_ID}');"
-                   f"fbq('init','{META_PIXEL_ID}');fbq('track','PageView');</script>\n")   # autoConfig=false: без Automatic Advanced Matching (PII форми не хешується в Meta)
+        js.append("(function(f){var n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];})(window);"
+                  f"fbq('set','autoConfig',false,'{META_PIXEL_ID}');fbq('init','{META_PIXEL_ID}');fbq('track','PageView');")   # autoConfig=false: без Automatic Advanced Matching
+    loads = []
+    if GA4_ID:
+        loads.append(f"a('{gtag_src}');")
+    if META_PIXEL_ID:
+        loads.append(f"a('{fb_src}');")
+    js.append("(function(){var d=document,w=window,go=0;function a(u){var s=d.createElement('script');s.async=!0;s.src=u;d.head.appendChild(s);}"
+              "function load(){if(go)return;go=1;" + "".join(loads) + "}"
+              "['pointerdown','keydown','scroll','touchstart'].forEach(function(e){w.addEventListener(e,load,{once:!0,passive:!0});});"
+              "function t(){setTimeout(load,3000);}if(d.readyState==='complete')t();else w.addEventListener('load',t);})();")
+    out.append("<script>" + "".join(js) + "</script>\n")
     return "".join(out)
 
 
@@ -212,7 +241,7 @@ def asset_url(rel):
     return f"{rel}?v={v}" if v else rel
 
 
-def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False):
+def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False, defer_trackers=True):
     full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
     if canonical == "index.html":
@@ -247,7 +276,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
       "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n"
       f"<link rel=\"stylesheet\" href=\"{asset_url('assets/styles.css')}\">\n"
-      f"{analytics_head()}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
+      f"{analytics_head(defer_trackers)}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
       f"{header()}\n{body}\n{footer()}\n</div>\n"
       f"{search_overlay()}\n"
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
@@ -447,7 +476,7 @@ def build():
     write_home(prods, cats, cat_list, cat_slug)
     write_ig(prods)
     # 5) кошик + checkout + сторінка подяки
-    write_cart()
+    write_cart(_cart_addons(prods))
     write_thanks()
     write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
@@ -604,7 +633,7 @@ def _catalog_controls():
 
 # ── SEO-замовлення 2026-10-10 (п.2–3, фінальні шаблони — SEO_CHANNEL.md): title/description, хлібні крихти, розмітка Product/ItemList ──
 PRICE_VALID_DAYS = 7     # ціни/наявність перебудовуються кожні 2 год (site-rebuild.timer); якщо збірка стане >7 діб — розмітка сама «протухне»
-# Суму доставки НЕ друкуємо (рішення Консультанта 10.10.2026): «від 65/70 ₴» нічим не підкріплене; повернути конкретику — коли бухгалтер дасть виміряну цифру (фактичні тарифи НП у книзі КОДВ).
+# (до 12.10.2026 суму доставки НЕ друкували — рішення Консультанта 10.10: «нічим не підкріплене»; тепер лише виміряне й «орієнтовно», див. DELIVERY_COST) — стара примітка: (рішення Консультанта 10.10.2026): «від 65/70 ₴» нічим не підкріплене; повернути конкретику — коли бухгалтер дасть виміряну цифру (фактичні тарифи НП у книзі КОДВ).
 PAY_SHORT = "оплата карткою або при отриманні" if LIQPAY_LIVE else "оплата при отриманні"
 TITLE_MAX = 65
 DESC_MAX = 160
@@ -704,9 +733,9 @@ def product_description(name, price, plain) -> str:
         if lead and lead[-1] not in ".!?…":
             lead += "."
         return (lead + tail)[:DESC_MAX]
-    fb = f"{name} — {price} ₴. Доставка Новою Поштою по Україні, {PAY_SHORT}, повернення 14 днів."
+    fb = f"{name} — {price} ₴. Доставка Новою Поштою по Україні, повернення 14 днів."
     if len(fb) > DESC_MAX:   # дуже довга назва: ріжемо назву, хвіст лишаємо
-        tailf = f" — {price} ₴. Доставка Новою Поштою по Україні, {PAY_SHORT}, повернення 14 днів."
+        tailf = f" — {price} ₴. Доставка Новою Поштою по Україні, повернення 14 днів."
         fb = _cut(name, DESC_MAX - len(tailf) - 1).rstrip("…") + "…" + tailf
     return fb
 
@@ -717,10 +746,10 @@ def category_meta(name, total, min_price, page_no=1, pages=1):
     if name is None:   # повний каталог
         base = "Каталог іграшок"
         title = f"{base} — купити в Україні | PlutusToys" if page_no == 1 else f"{base} — сторінка {page_no} | PlutusToys"
-        desc = f"Каталог іграшок PlutusToys: {cnt}, ціни від {min_price} ₴, доставка Новою Поштою, {PAY_SHORT}."
+        desc = f"Каталог іграшок PlutusToys: {cnt}, ціни від {min_price} ₴, доставка Новою Поштою по Україні."
     else:
         title = f"{name} — купити в Україні | PlutusToys" if page_no == 1 else f"{name} — сторінка {page_no} | PlutusToys"
-        desc = f"{cnt} у категорії «{name}»: ціни від {min_price} ₴, доставка Новою Поштою, {PAY_SHORT}."
+        desc = f"{cnt} у категорії «{name}»: ціни від {min_price} ₴, доставка Новою Поштою по Україні."
     if page_no > 1:
         desc = f"Сторінка {page_no} з {pages}. " + desc
     return title, desc[:DESC_MAX]
@@ -1061,6 +1090,9 @@ def home_jsonld() -> str:
 
 
 # ── Головна: «Добірка Плутуса» (SMM 09.10.2026, рішення власника «герой крінж, зверху карусель») ──
+# Анімований Плутус у герої (SMM 09.10/12.10): poster + кліпи ЛИШЕ з хвостом праворуч (tail_right у manifest креатива: tailtrip, ear_scratch), тривалість у мс
+HERO_MASCOT_POSTER = "assets/mascot/plutus_hero_poster.webp"
+HERO_MASCOT_CLIPS = (("tailtrip", 3170), ("ear_scratch", 4000))
 HOME_MIN_CONTRIB = 100.0           # внесок на замовлення, ₴ (рішення Консультанта: не ведемо вітрину позицією без маржі) — існуючий поріг «Новинок»
 HOME_PICK_PRICE_MIN, HOME_PICK_PRICE_MAX = 150, 700    # ₴: імпульсна ціна (SMM): рамка, не мірило
 HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2
@@ -1172,7 +1204,10 @@ def write_home(prods, cats, cat_list, cat_slug):
         )
     body = (
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
-      '<div class="hero2"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус — маскот PlutusToys" width="109" height="100" decoding="async">'
+      # poster завжди під низом, кліп кросфейдом поверх (див. initMascot): обидва <img> із width/height — CLS 0
+      f'<div class="hero2"><span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async" '
+      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(ms) for _, ms in HERO_MASCOT_CLIPS)}">'
+      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину, а маму робить спокійною.</p></div>'
       '<div class="act"><a class="btn" href="catalog.html">Обрати іграшку</a>'
       '<div class="chip">🚚 Нова Пошта · ' + PAY_SHORT + '</div></div></div>'
@@ -1185,7 +1220,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),
-        description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі — з доставкою Новою Поштою по всій Україні. " + PAY_HERO[0].upper() + PAY_HERO[1:] + ".",
+        description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі та творчі набори — з доставкою Новою Поштою по всій Україні, повернення 14 днів.",
         canonical="index.html", og_image=OG_IMAGE))
 
 def _cut(text, n):
@@ -1240,8 +1275,8 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
           '<span class="tb">✓ Фіскальний чек</span>'
         '</div>' + _phone_line +
         '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
-        '<div><b>Доставка Новою Поштою</b> — вартість за тарифами перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
-        'далі 1–3 робочі дні. ' + PAY_PRODUCT + '</div></div>'
+        '<div><b>Доставка Новою Поштою</b> — ' + DELIVERY_COST + ' за тарифом перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
+        'далі 1–3 робочі дні.</div></div>'
     ) if in_stock else _phone_line
     oos_note = ("" if in_stock else
                 f'<div class="oos-note"><b>Зараз цього товару немає в наявності.</b> '
@@ -1309,23 +1344,45 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
         p["name"], body, extra_head=extra, title_full=product_title(p["name"], in_stock), description=meta_desc,
         canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product"))
 
-def write_cart():
+CART_ADDONS_MAX = 12     # пул «Додайте до замовлення» у кошику (на сторінці показуємо 3, яких ще нема в кошику)
+
+
+def _cart_addons(prods):
+    """Пул add-on для кошика (SMM 12.10): той самий критерій, що в картці (_addon_ok: в наявності, ≥ADDON_MIN_PRICE, без уцінки/«розпродажу»), по одному з категорії, детермінізм:
+    спершу дорожчі з дешевого пулу (цінніший add-on), далі за id. Повертає [{id,name,price,photo}] — вбудовується JSON-ом у cart.html, вибір 3 «яких нема в кошику» робить app.js."""
+    pool = sorted((p for p in prods if _addon_ok(p)), key=lambda x: (x["price"], x["id"]))[:80]
+    out, seen = [], set()
+    for p in sorted(pool, key=lambda x: (-x["price"], x["id"])):
+        if p["category"] in seen or not p["photo"]:
+            continue
+        seen.add(p["category"])
+        out.append({"id": p["id"], "name": p["name"], "price": p["price"], "photo": p["photo"]})
+        if len(out) >= CART_ADDONS_MAX:
+            break
+    return out
+
+
+def write_cart(addons=None):
+    # двоколонково на десктопі (SMM 12.10: права половина була порожня): ліворуч кошик + форма, праворуч sticky-колонка (А «Ваше замовлення», Б довіра, В «Додайте до замовлення», Г Плутус);
+    # на мобільному — одна колонка: підсумок над формою (як було), «Додайте до замовлення» над кнопкою «Оформити», довіра й Плутус нижче форми.
+    addons_json = json.dumps(addons or [], ensure_ascii=False).replace("</", "<\\/")
     body = (
       '<h1 class="page">Кошик</h1>'
-      '<div style="padding:0 16px"><div id="cart-body"></div>'
+      '<div class="cart-grid"><div class="cart-main"><div id="cart-body"></div>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'
-        '<div class="row"><span>Доставка Новою Поштою</span><span id="sum-delivery">за тарифами НП</span></div>'
+        '<div class="row"><span>Доставка Новою Поштою</span><span id="sum-delivery">' + DELIVERY_COST + '</span></div>'
         '<div class="row total"><span>Разом за товари</span><span id="sum-total">0 ₴</span></div>'
         '<div class="free-ship" id="free-ship-block"><div class="free-ship-track"><div class="free-ship-fill" id="free-ship-bar"></div></div>'
           '<div class="note" id="free-ship-note"></div></div>'
-        '<div class="note">Вартість доставки визначає Нова Пошта за своїми тарифами, вона сплачується при отриманні посилки.</div>'
+        '<div class="note">Доставка за тарифом Нової Пошти — ' + DELIVERY_COST + ' (для важчих посилок сума вища), плюс комісія НП за накладений платіж (залежить від суми замовлення). Оплачується при отриманні посилки.</div>'
       '</div>'
       # checkout
       '<h1 class="page" style="margin-left:0">Оформлення</h1>'
       '<form id="checkout-form">'
         '<div class="field"><label>Ім’я та прізвище</label>'
-          '<input id="f-name" name="name" required autocomplete="name" placeholder="Іван Петренко"></div>'
+          '<input id="f-name" name="name" required autocomplete="name" placeholder="Іван Петренко">'
+          '<div class="note">Спершу ім’я, потім прізвище — без по батькові.</div></div>'
         '<div class="field"><label>Телефон</label>'
           '<input id="f-phone" name="phone" type="tel" inputmode="tel" required autocomplete="tel" placeholder="+380 50 123 45 67"></div>'
         '<div class="field"><label>Email <span style="opacity:.6">(необовʼязково, для чека й статусу)</span></label>'
@@ -1334,7 +1391,7 @@ def write_cart():
           '<input id="f-city" name="city" required autocomplete="off" placeholder="Почніть вводити місто…">'
           # Довідник НП може не відповісти (реальний інцидент на телефоні). Ручний ввід приймається наскрізь: поле відділення не блокується
           # (assets/app.js, initNpAutocomplete), сервер вимагає лише непорожні тексти міста й відділення (site_order_api.py:171-175).
-          '<div class="note">Не бачите міста у списку? Впишіть назву самі — а нижче номер або адресу відділення.</div>'
+          '<div class="note">Оберіть своє місто зі списку підказок (так посилка не потрапить в однойменне). Довідник не працює або міста в ньому нема? Впишіть назву самі — а нижче номер відділення.</div>'
           '<div class="ac" id="ac-city"></div></div>'
         '<div class="field ac-wrap"><label>Відділення Нової Пошти</label>'
           '<input id="f-warehouse" name="warehouse" required autocomplete="off" placeholder="Спершу оберіть місто" disabled>'
@@ -1347,11 +1404,29 @@ def write_cart():
           + ('<label class="pay"><input type="radio" name="payment" value="prepaid"> '
             'Оплата карткою онлайн</label>' if LIQPAY_LIVE else '') +
         '</div>'
+        '<div class="addon-box addon-m" data-addon></div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
         '<p class="note consent">Оформлюючи замовлення, ви погоджуєтесь з <a href="offer.html">публічною офертою</a> '
         'та <a href="privacy.html">політикою конфіденційності</a>.</p>'
-        '<div class="note" id="checkout-msg"></div>'
+        '<div class="note" id="checkout-msg" role="alert" aria-live="polite"></div>'
       '</form></div>'
+      '<aside class="cart-aside" id="cart-aside" aria-label="Інформація про замовлення">'
+        '<div class="aside-card" id="aside-order"><h2>Ваше замовлення</h2><div id="aside-items"></div>'
+          '<div class="row"><span>Товари</span><span id="aside-goods">0 ₴</span></div>'
+          '<div class="row"><span>Доставка Новою Поштою</span><span>' + DELIVERY_COST + '</span></div>'
+          '<div class="row total"><span>Разом за товари</span><span id="aside-total">0 ₴</span></div>'
+          '<div class="note">Доставка за тарифом Нової Пошти — ' + DELIVERY_COST + ' (для важчих посилок сума вища), плюс комісія НП за накладений платіж (залежить від суми замовлення). Оплачується при отриманні посилки.</div></div>'
+        '<div class="aside-card trust-card"><ul class="trust-list">'
+          '<li>🧾 Фіскальний чек на кожне замовлення</li>'
+          '<li><a href="returns.html">↩ Повернення протягом 14 днів</a></li>'
+          '<li class="trust-pay">💳 Оплата при отриманні — розраховуєтесь на відділенні</li>'
+          '<li id="ship-today">🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня</li>'
+        '</ul></div>'
+        '<div class="aside-card addon-box addon-d" data-addon></div>'
+        '<div class="aside-card pack-card"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="80" height="73" decoding="async">'
+          '<span>Плутус пакує вашу посилку 🎁</span></div>'
+      '</aside></div>'
+      '<script type="application/json" id="cart-addons">' + addons_json + '</script>'
     )
     _write("cart.html", page("Кошик і оформлення", body,
         description="Ваш кошик і оформлення замовлення в PlutusToys.", noindex=True))
@@ -1365,7 +1440,7 @@ def write_thanks():
       '<p style="margin-top:20px"><a class="btn ghost" href="/" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )
-    _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True))
+    _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True, defer_trackers=False))   # purchase — без відкладання (рішення Консультанта 12.10)
 
 # ── /ig.html: посадкова сторінка для bio-посилання Instagram (SMM 12.10.2026: у підписах IG посилання не клікабельні, єдине клікабельне місце — шапка профілю) ──
 IG_FEATURED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ig_featured.json")
@@ -1485,7 +1560,7 @@ _ABOUT = """<h1>Про нас</h1>
 <ul>
 <li><b>Швидка відправка.</b> Замовлення, оформлені до 12:00, зазвичай відправляємо того ж дня.</li>
 <li><b>Доставка по всій Україні.</b> Працюємо з Новою Поштою — до відділення або поштомату.</li>
-<li><b>Зручна оплата.</b> {PAY_ABOUT}</li>
+<li><b>Прозорі умови.</b> Повернення протягом 14 днів і фіскальний чек на кожне замовлення.</li>
 <li><b>Чесність.</b> Ми не обіцяємо того, чого не можемо виконати, і завжди на зв'язку, якщо виникають питання.</li>
 </ul>
 <h2>Наші цінності</h2>
@@ -1501,7 +1576,7 @@ _DELIVERY = """<h1>Доставка</h1>
 <h2>Терміни</h2>
 <p>Замовлення, оформлені <b>до 12:00</b>, ми зазвичай відправляємо того ж дня. Далі доставка Новою Поштою займає <b>1–3 дні</b> залежно від вашого міста.</p>
 <h2>Вартість</h2>
-<p>Доставка оплачується <b>за тарифами перевізника</b> (Нової Пошти) під час отримання посилки. Точну суму визначає Нова Пошта відповідно до ваги та напрямку відправлення.</p>
+<p>Доставка Новою Поштою за тарифом перевізника — <b>орієнтовно 70–90 ₴ до 2 кг</b>; точна сума залежить від міста та оголошеної вартості. Для посилок важчих за 2 кг сума вища й визначається Новою Поштою за вагою та напрямком відправлення. До цього додається комісія Нової Пошти за накладений платіж (залежить від суми замовлення). Оплачує одержувач при отриманні посилки.</p>
 <h2>Оплата</h2>
 {PAY_DELIVERY}
 <h2>Як відстежити замовлення</h2>

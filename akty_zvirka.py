@@ -7,7 +7,7 @@ akty_zvirka.py — звіт-звірка «місячні акти контра�
 звірку 05.10 робив вручну агент; тут вона автоматична: для кожного контрагента й місяця —
 «акт є/нема», сума акта (із PDF), сума кандидатів (замовлення/реєстри), різниця, «акт уже в книзі рядком №…».
 
-ЩО ВОНО РОБИТЬ (READ-ONLY щодо книги й реєстрів; пише лише `документи_КОДВ/_zvirka_aktiv.md/.json`):
+ЩО ВОНО РОБИТЬ (READ-ONLY щодо книги й реєстрів; пише `документи_КОДВ/_zvirka_aktiv.md/.json`, `_zvirka_ochikuvannya.json` і єдине поле `закрито_актом` у `_ochikuvani_v_aktakh.json`):
  1. Бере акти `документи_КОДВ/*/*/*_akt_*.pdf` (контрагенти: Prom, НоваПей, Розетка Пей, Термінал Розетка, РУШ/EVA, АЛЛО).
  2. З тексту PDF (pdfplumber) дістає ПОРІВНЮВАНУ суму потоку за правилами, звіреними з довідником/журналом (див. parse_*):
     NovaPay — «Сума винагороди» (без ПДВ); RozetkaPay — «Разом» винагороди (без ПДВ);
@@ -19,6 +19,8 @@ akty_zvirka.py — звіт-звірка «місячні акти контра�
     Rozetka/EVA/Prom — з `_vidkryti_kandydaty.json` / щоденних `*_prom_komisiya_kandydaty.json` (⚠️ НЕПОВНО: лише те,
     що бачив кабінет/API за вікно; дата EVA = перше побачення; звіт це явно позначає).
  4. Знаходить, у якому рядку книги акт уже згаданий (номер у перших 100 символах графи 5/12).
+ 5. Очікування бухгалтера (`_ochikuvani_v_aktakh.json`, запит 2026-10-08): для кожної суми, прибраної з продажів, перевіряє, що вона є в акті
+    відповідного контрагента й місяця (докази й обмеження — у блоці «очікування бухгалтера» нижче); у звіт іде розділ «Очікування бухгалтера».
 
 ЧОГО ВОНО НЕ РОБИТЬ: не знає складу замовлень в акті (акти — агрегати за категоріями/способами оплати, переліку
 замовлень не містять), тому «замовлень, яких нема в акті» напряму не обчислює; при розбіжності друкує перелік замовлень
@@ -247,6 +249,7 @@ def collect_acts(text_fn=pdf_text) -> list:
                "path": f, "parsed": None, "error": None}
         try:
             text = text_fn(f)
+            rec["text"] = text      # для перевірки очікувань бухгалтера (номери замовлень у тексті акта)
             if not (overrides.get(info["doc_id"]) or {}).get("period"):
                 rec["period"] = period_from_text(text) or period
             rec["parsed"] = {"novapay": parse_novapay, "rozetkapay": parse_rozetkapay, "eva": parse_eva,
@@ -588,6 +591,192 @@ def render(rows: list, today: str) -> str:
     return "\n".join(L) + "\n"
 
 
+# ── очікування бухгалтера (запит КОДВ_CHANNEL.md 2026-10-08) ───────────────────────────────────────────────────
+# `документи_КОДВ/_ochikuvani_v_aktakh.json`: суми, ПРИБРАНІ з рядків продажів «одним правилом», що МАЮТЬ з'явитися в місячному акті.
+# Мета бухгалтера: жодна сума не губиться між «прибрано з продажу» і «внесено актом», і це не тримається на її пам'яті.
+# Реальні акти НЕ містять переліку замовлень (перевірено 12.10.2026 на 11 актах: жоден з номерів очікувань у тексті PDF не зустрівся),
+# тому доказ — трьох ступенів, і звіт ЗАВЖДИ каже, який саме:
+#   1. «номер замовлення в тексті акта» — усі номери очікування є в тексті акта (на випадок, коли контрагент колись додасть перелік);
+#   2. «акт = сума кандидатів потоку» — потік (контрагент × місяць) має статус «✅ збіг» (акт == Σ кандидатів до 5 коп), а замовлення
+#      очікування входить у кандидати цього потоку з тією самою сумою (композиція: якщо акт дорівнює Σ кандидатів, то вона містить цей рядок);
+#      (⚠️ для НЕповних потоків — Rozetka/EVA/Prom — «✅ збіг» теоретично може бути випадковим; на практиці малоймовірно, але це лише непряма композиція)
+#   3. інакше — НЕ закрито: «❗ очікувана сума не підтверджена актом» з причиною (акт без переліку, потік ⚠️ різниця, замовлення нема
+#      в кандидатах…). Ручне «✅» бухгалтера (поле `статус`, напр. звірка з кабінетом продавця) НЕ перетирається й не дає ❗: це «ℹ️ закрито вручну».
+# Закриті автоматично (1, 2) отримують поле `закрито_актом` у файлі очікувань (тільки це поле, решта файлу не чіпається; запис атомарний).
+EXPECT_NAME = "_ochikuvani_v_aktakh.json"
+EXPECT_REPORT_NAME = "_zvirka_ochikuvannya.json"
+_ORDER_TOKEN_RE = re.compile(r"(?:[A-Za-z]{2,4}-)?\d[\d-]{5,}")
+
+
+def _vendor_of(counterparty: str):
+    c = (counterparty or "").lower()
+    if "розетка пей" in c or "rozetkapay" in c:
+        return "rozetkapay"
+    if "розетк" in c:
+        return "rozetka"
+    if "руш" in c or "eva" in c:
+        return "eva"
+    if "prom" in c or "промо" in c or "уапром" in c:
+        return "prom"
+    if "новапей" in c or "novapay" in c or "нова пей" in c:
+        return "novapay"
+    if "алло" in c or "allo" in c:
+        return "allo"
+    return None
+
+
+def _stream_of(vendor, composition: str):
+    if vendor == "rozetka":
+        return "rozetka_logistics" if "логіст" in (composition or "").lower() else "rozetka_royalty"
+    return vendor
+
+
+def _order_tokens(orders_field) -> list:
+    """«904621035 / RMP-283162840», «906402279, 906412447, 905840122» → унікальні токени-номери у порядку появи."""
+    seen, out = set(), []
+    for t in _ORDER_TOKEN_RE.findall(str(orders_field or "")):
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def check_expectation(exp: dict, acts: list, rows: list, cands: dict) -> dict:
+    """Повертає {"verdict": closed|manual|pending|unproven, "evidence": str, "detail": str, "docs": [..]}. Чиста функція (без I/O)."""
+    vendor = _vendor_of(exp.get("контрагент"))
+    stream = _stream_of(vendor, exp.get("склад"))
+    period = exp.get("акт_за")
+    manual = str(exp.get("статус") or "").lstrip().startswith("✅")
+    if vendor is None or not period:
+        return {"verdict": "unproven", "evidence": "", "docs": [],
+                "detail": f"не вдалось визначити контрагента/місяць акта («{exp.get('контрагент')}», акт_за={period})"}
+    docs_acts = [a for a in acts if a["vendor"] == vendor and a["period"] == period]
+    if not docs_acts:
+        return {"verdict": "manual" if manual else "pending", "evidence": "", "docs": [],
+                "detail": f"акта {COUNTERPARTY_UA.get(vendor, vendor)} за {period} ще немає в `документи_КОДВ` — очікування лишається відкритим"
+                          + (" (бухгалтер уже позначила ✅ вручну)" if manual else "")}
+    doc_ids = [a["doc_id"] for a in docs_acts]
+    tokens = _order_tokens(exp.get("замовлення"))
+    try:
+        amount = _num(exp.get("сума") or 0)     # «30,52» рядком теж читається; сміття → не валимо звіт
+    except (ValueError, TypeError):
+        return {"verdict": "unproven", "evidence": "", "docs": doc_ids, "detail": f"сума очікування не число: {exp.get('сума')!r}"}
+    # 1. номери замовлень у тексті акта
+    texts = [a.get("text") or "" for a in docs_acts]
+    # номер — ціле «слово»: не частина довшого числа (IBAN, ЄДРПОУ, суми) — аудит #687
+    if tokens and all(any(re.search(r"(?<![\d-])" + re.escape(t) + r"(?![\d])", tx) for tx in texts) for t in tokens):
+        return {"verdict": "closed", "evidence": "номер замовлення в тексті акта", "docs": doc_ids,
+                "detail": f"усі номери ({', '.join(tokens)}) є в тексті {', '.join(doc_ids)}"}
+    # 2. композиція: потік «✅ збіг» + замовлення входить у кандидати з тією самою сумою
+    row = next((r for r in rows if r["stream"] == stream and r["period"] == period), None)
+    c_orders = ((cands.get(stream) or {}).get(period) or {}).get("orders", [])
+    by_id = {}
+    for o, amt in c_orders:
+        by_id.setdefault(str(o).split(":")[0], []).append(float(amt))
+    matched = [t for t in tokens if t in by_id]
+    cand_sum = round(sum(by_id[t][0] for t in matched), 2) if matched else 0.0
+    row_ok = bool(row) and str(row["status"]).startswith("✅ збіг")
+    amount_ok = bool(matched) and abs(cand_sum - amount) <= TOLERANCE
+    # сума очікування має збігатися з кандидатами ТІЛЬКИ по тих токенах, що є в реєстрі; якщо токенів більше (напр. «замовлення / RMP-…» —
+    # той самий платіж двома номерами) — достатньо, що збіглася сума по знайдених
+    if row_ok and amount_ok:
+        return {"verdict": "closed", "evidence": "акт = сума кандидатів потоку, замовлення входить у кандидати", "docs": doc_ids,
+                "detail": f"потік {STREAM_UA.get(stream, stream)} за {period}: акт {row['act_total']} = кандидати {row['cand_sum']} (✅ збіг); "
+                          f"замовлення {', '.join(matched)} у кандидатах = {cand_sum}"}
+    reasons = ["акт не містить переліку замовлень (номерів немає в тексті PDF)"]
+    if row is None:
+        reasons.append("потоку немає у звіті")
+    elif not row_ok:
+        reasons.append(f"потік {STREAM_UA.get(stream, stream)} за {period}: {row['status'].split(' · ')[0]}"
+                       + (f" (акт {_f(row['act_total'])} / кандидати {_f(row['cand_sum'])}, неповні дані)" if not row["complete"] else ""))
+    if not matched:
+        reasons.append(f"замовлення ({', '.join(tokens) or '—'}) нема серед кандидатів потоку")
+    elif not amount_ok:
+        reasons.append(f"сума кандидатів по замовленню {cand_sum} ≠ очікувана {amount}")
+    return {"verdict": "manual" if manual else "unproven", "evidence": "", "docs": doc_ids, "detail": "; ".join(reasons)}
+
+
+def evaluate_expectations(acts: list, rows: list, cands: dict, path=None) -> tuple:
+    """Читає файл очікувань → (список результатів, шлях|None). Файл відсутній/битий → ([], None) (не помилка)."""
+    p = Path(path) if path else vch.DOCS_DIR / EXPECT_NAME
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], None
+    out = []
+    items = data.get("очікування") if isinstance(data, dict) else None
+    for i, e in enumerate(items if isinstance(items, list) else []):
+        if not isinstance(e, dict):
+            continue
+        res = check_expectation(e, acts, rows, cands)
+        res.update({"index": i, "книга_рядок": e.get("книга_рядок"), "контрагент": e.get("контрагент"), "акт_за": e.get("акт_за"),
+                    "замовлення": e.get("замовлення"), "склад": e.get("склад"), "сума": e.get("сума"),
+                    "вже_закрито": bool(e.get("закрито_актом"))})
+        out.append(res)
+    return out, p
+
+
+def apply_closures(results: list, path, today: str) -> int:
+    """Проставляє `закрито_актом` ЛИШЕ для автоматично доведених (closed) очікувань, яких ще не закрито. Файл перечитується безпосередньо
+    перед записом (бухгалтер могла його змінити за час прогону), чіпається тільки це поле, запис атомарний (tmp + replace).
+    Повертає кількість нових закриттів."""
+    todo = {r["index"]: r for r in results if r["verdict"] == "closed" and not r["вже_закрито"]}
+    if not todo or path is None:
+        return 0
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    items = data.get("очікування") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return 0
+    n = 0
+    for i, r in todo.items():
+        if i >= len(items) or not isinstance(items[i], dict):
+            continue
+        if i >= len(items) or items[i].get("закрито_актом"):
+            continue
+        key = lambda e: (str(e.get("замовлення")), e.get("сума"), e.get("акт_за"))   # не закриваємо «не той» запис, якщо файл змінили між читаннями
+        if key(items[i]) != (str(r["замовлення"]), r["сума"], r["акт_за"]):
+            continue
+        items[i]["закрито_актом"] = {"доказ": r["evidence"], "акти": r["docs"], "перевірено": today}
+        n += 1
+    if n:
+        tmp = Path(str(path) + ".tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as e:     # файл відкритий у редакторі / нема прав: закриття не записано, наступний прогін спробує знову
+            print(f"[AktyZvirka] ⚠️ не вдалось записати закрито_актом у {path}: {type(e).__name__} — залишено без змін", file=sys.stderr)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return 0
+    return n
+
+
+def render_expectations(results: list) -> str:
+    if not results:
+        return ""
+    L = ["", "## Очікування бухгалтера (суми, прибрані з рядків продажів; мають бути в акті) — `_ochikuvani_v_aktakh.json`", "",
+         "Реальні акти не містять номерів замовлень, тому доказ — або номер у тексті акта, або «акт = Σ кандидатів потоку, і замовлення в кандидатах». "
+         "❗ означає «автоматично не підтверджено», а НЕ «суми в акті немає»; ручне ✅ бухгалтера (звірка з кабінетом) не перетирається.", "",
+         "| Рядок книги | Контрагент | Акт за | Замовлення | Склад | Сума | Статус | Пояснення |", "|---|---|---|---|---|---|---|---|"]
+    mark = {"closed": "✅ закрито актом", "manual": "ℹ️ закрито вручну (авто-доказу нема)", "pending": "⏳ акта ще нема", "unproven": "❗ очікувана сума не підтверджена актом"}
+    for r in results:
+        rn = r["книга_рядок"]
+        rn = ", ".join(str(x) for x in rn) if isinstance(rn, list) else str(rn)
+        st = mark[r["verdict"]] + (f" — {r['evidence']}" if r["evidence"] else "")
+        if r["verdict"] == "closed" and r["вже_закрито"]:
+            st += " (раніше закрито)"
+        L.append(f"| {rn} | {r['контрагент']} | {r['акт_за']} | {r['замовлення']} | {r['склад']} | {r['сума']} | {st} | {r['detail']} |")
+    open_ = [r for r in results if r["verdict"] == "unproven"]
+    if open_:
+        L += ["", f"**❗ Не підтверджено автоматично: {len(open_)}** — " + "; ".join(f"р.{r['книга_рядок']} {r['замовлення']} {r['сума']}" for r in open_)]
+    return "\n".join(L) + "\n"
+
+
 def run(only_month: str = None) -> list:
     acts = collect_acts()
     cands = {"novapay": candidates_novapay(), "rozetkapay": candidates_rozetkapay(), "prom": candidates_prom()}
@@ -595,11 +784,28 @@ def run(only_month: str = None) -> list:
     book = book_rows_for(sorted({a["doc_id"] for a in acts}))
     rows = build_rows(acts, cands, book, only_month)
     out_md = vch.DOCS_DIR / REPORT_NAME
-    out_md.write_text(render(rows, datetime.now().strftime("%Y-%m-%d")), encoding="utf-8")
+    today = datetime.now().strftime("%Y-%m-%d")
+    main_md = render(rows, today)
+    out_md.write_text(main_md, encoding="utf-8")        # основний звіт пишеться ЗАВЖДИ першим: збій блоку очікувань його не зачіпає
+    exp_results, newly = [], 0
+    try:
+        all_rows = rows if not only_month else build_rows(acts, cands, book, None)    # очікування не залежать від фільтра --month
+        exp_results, exp_path = evaluate_expectations(acts, all_rows, cands)
+        newly = apply_closures(exp_results, exp_path, today)
+        out_md.write_text(main_md + render_expectations(exp_results), encoding="utf-8")
+        if exp_results:
+            (vch.DOCS_DIR / EXPECT_REPORT_NAME).write_text(json.dumps(exp_results, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        print(f"[AktyZvirka] ⚠️ блок «очікування бухгалтера» пропущено: {type(e).__name__}: {str(e)[:120]} (основний звіт записано)", file=sys.stderr)
+        exp_results = []
     (vch.DOCS_DIR / JSON_NAME).write_text(json.dumps(rows, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     unread = [a for a in acts if a["error"] or not a["parsed"]]
     print(f"[AktyZvirka] актів: {len(acts)} (не прочитано: {len(unread)}); рядків звіту: {len(rows)}; "
           f"⚠️ різниця: {sum(1 for r in rows if r['status'].startswith('⚠️ різниця'))}; звіт: {out_md}")
+    if exp_results:
+        cnt = {v: sum(1 for r in exp_results if r["verdict"] == v) for v in ("closed", "manual", "pending", "unproven")}
+        print(f"[AktyZvirka] очікування бухгалтера: {len(exp_results)} (закрито актом: {cnt['closed']}, нових закриттів записано: {newly}; "
+              f"закрито вручну: {cnt['manual']}; акта ще нема: {cnt['pending']}; ❗ не підтверджено: {cnt['unproven']})")
     return rows
 
 

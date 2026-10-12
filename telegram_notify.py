@@ -78,7 +78,7 @@ def _redact(text: str) -> str:
     return _BEARER_RE.sub(lambda m: f"{m.group(1)} [прибрано]", out)
 
 
-def notify_new_order(platform: str, order_id, total, items_count: int, payment: str = "") -> None:
+def notify_new_order(platform: str, order_id, total, items_count: int, payment: str = "", test: bool = False) -> None:
     """Єдине повідомлення, яке йде власнику в Telegram (режим «лише замовлення», telegram_triage): надходження нового замовлення. БЕЗ персональних даних
     (ім'я, телефон, адреса не включаємо). Ніколи не кидає виняток: збій сповіщення не повинен зламати прийом замовлення."""
     try:
@@ -87,7 +87,8 @@ def notify_new_order(platform: str, order_id, total, items_count: int, payment: 
             amount = f"{float(total):.0f} грн"
         except (TypeError, ValueError):
             amount = "сума невідома"
-        send_telegram_message(f"🛒 Нове замовлення · {platform} №{order_id} · {amount} · {items_count} поз." + (f" · {pay}" if pay else ""))
+        send_telegram_message(f"🛒 Нове замовлення · {platform} №{order_id} · {amount} · {items_count} поз." + (f" · {pay}" if pay else "")
+                              + (" · ТЕСТ LiqPay (пісочниця): у Toysi НЕ передається, чек НЕ видається" if test else ""))
     except Exception as e:  # noqa: BLE001
         print(f"[telegram] сповіщення про нове замовлення не надіслано: {type(e).__name__}", file=sys.stderr)
 

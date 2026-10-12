@@ -115,13 +115,13 @@ def _alert_liqpay_status(res: dict) -> None:
         print(f"[site_order_api] алерт LiqPay-статусу не надіслано (не критично): {e}", file=sys.stderr)
 
 
-def _notify_new_order(order: dict, total) -> None:
+def _notify_new_order(order: dict, total, test: bool = False) -> None:
     """Єдине повідомлення власнику в Telegram (режим «лише замовлення»): надходження замовлення сайту. Без персональних даних; збій не ламає прийом."""
     if _NO_TELEGRAM:
         return
     try:
         from telegram_notify import notify_new_order
-        notify_new_order("site", order.get("order_id"), total, len(order.get("items") or []), order.get("payment_method", ""))
+        notify_new_order("site", order.get("order_id"), total, len(order.get("items") or []), order.get("payment_method", ""), test=test)
     except Exception as e:  # noqa: BLE001
         print(f"[site_order_api] сповіщення про нове замовлення не надіслано: {type(e).__name__}", file=sys.stderr)
 
@@ -561,7 +561,11 @@ class Handler(SimpleHTTPRequestHandler):
             resp["message"] = "Замовлення прийнято. Оплата при отриманні на Новій Пошті."
             return self._json(200, resp)
         # prepaid: форма LiqPay, якщо ключі задані; інакше — фронт покаже, що онлайн-оплата недоступна
-        if liqpay_client.is_configured():
+        _mp = liqpay_client.mode_problem() if liqpay_client.is_configured() else ""
+        if _mp:
+            print(f"[site_order_api] ⚠️ LiqPay: чекаут НЕ побудовано: {_mp}", file=sys.stderr)
+            _notify(f"💳 LiqPay: чекаут для site_{order['order_id']} НЕ побудовано: {_mp}. Виправ LIQPAY_* у .env на VPS і перезапусти site-order-api.")
+        if liqpay_client.is_configured() and not _mp:
             desc = f"Замовлення {order['order_id']} на PlutusToys"
             ck = liqpay_client.build_checkout(
                 order_id=order["order_id"], amount=total, description=desc,
@@ -610,9 +614,13 @@ class Handler(SimpleHTTPRequestHandler):
                     return self._text(400, f"amount mismatch: got {amount}, expected {expected}")
                 newly_confirmed = mark_payment_confirmed(conn, internal)  # ідемпотентно; 1 лише при атомарному переході 0→1
                 set_liqpay_payment_id(conn, internal, (res.get("data") or {}).get("payment_id"))   # для тексту чека (номер платежу LiqPay)
+                is_test = res["status"] == "sandbox"
+                if is_test:
+                    # ТЕСТОВИЙ платіж (пісочниця): гроші не рухались, тож замовлення НЕ має йти в Toysi й під фіскальний чек (раніше sandbox-оплата підтверджувалась і форвардилась як справжня)
+                    conn.execute("UPDATE orders SET status = 'sandbox_test' WHERE internal_order_id = ? AND forwarded_to_toysi_at IS NULL", (internal,))
                 conn.commit()
                 if newly_confirmed:
-                    _notify_new_order(order, expected)   # перше підтвердження оплати = надходження передоплаченого замовлення
+                    _notify_new_order(order, expected, test=is_test)   # перше підтвердження оплати = надходження передоплаченого замовлення
         except Exception as e:
             print(f"[site_order_api] callback помилка: {e}", file=sys.stderr)
             return self._text(500, "internal error")
@@ -624,7 +632,8 @@ def run():
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     mode = "SANDBOX" if liqpay_client.LIQPAY_SANDBOX else "LIVE"
     configured = "ключі є" if liqpay_client.is_configured() else "БЕЗ ключів (заглушка)"
-    print(f"[site_order_api] http://{HOST}:{PORT}  SITE_DIR={SITE_DIR}  LiqPay={mode} ({configured})")
+    _mp = liqpay_client.mode_problem()
+    print(f"[site_order_api] http://{HOST}:{PORT}  SITE_DIR={SITE_DIR}  LiqPay={mode} ({configured})" + (f"  ⚠️ РОЗБІЖНІСТЬ РЕЖИМУ/КЛЮЧІВ: {_mp}" if _mp else ""))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

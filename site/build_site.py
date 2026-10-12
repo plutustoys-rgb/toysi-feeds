@@ -741,7 +741,7 @@ def _load_category_texts():
         return _CATEGORY_TEXTS
     try:
         data = json.loads(raw)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         print(f"[build] ⚠ category_texts.json — невалідний JSON ({e}); частий випадок: справжній Enter усередині рядка (пиши \\n\\n) — вступів категорій на сайті не буде", file=sys.stderr)
         return _CATEGORY_TEXTS
     if not isinstance(data, dict):
@@ -922,7 +922,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     if pop:
         popular = ('<div class="sec-title"><h2>Популярні категорії</h2><a href="categories.html">Усі категорії →</a></div>'
                    '<nav class="catlinks" aria-label="Популярні категорії">'
-                   + "".join(f'<a href="category-{cat_slug[c]}.html">{esc(c)}</a><span>{len(cats[c])}</span>' for c in pop)
+                   + "".join(f'<span class="cl"><a href="category-{cat_slug[c]}.html">{esc(c)}</a><span>{len(cats[c])}</span></span>' for c in pop)
                    + '</nav>')
     carousel = ""
     if picks:

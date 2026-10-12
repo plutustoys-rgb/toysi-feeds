@@ -73,7 +73,9 @@ chk("H1 категорії = лише назва, стор.2 (title/canonical п
     and f'rel="canonical" href="https://plutustoys.com.ua/category-{slug}_2.html"' in p2 and "сторінка 2" in re.search(r"<title>(.*?)</title>", p2).group(1))
 cat_html = (out / "catalog.html").read_text(encoding="utf-8")
 chk("повний каталог: H1 «Каталог іграшок»", '<h1 class="page">Каталог іграшок</h1>' in cat_html)
-chk("крихти «Каталог ›» на сторінці категорії лишились", 'href="catalog.html">Каталог</a>' in p1)
+_cr = re.search(r'<nav class="crumbs"[^>]*>(.*?)</nav>', p1, re.S)
+chk("крихти «Каталог ›» на сторінці категорії лишились (саме в <nav class=crumbs>, а не в шапці/підвалі)",
+    _cr is not None and 'href="catalog.html">Каталог</a>' in _cr.group(1) and "Картини за номерами" in _cr.group(1))
 
 # вступний текст
 chk("вступний текст: на 1-й сторінці, 2 абзаци, HTML екрановано", p1.count('<div class="cat-intro">') == 1 and p1.count("<p>Перший абзац &lt;b&gt;з тегом&lt;/b&gt; &amp; амперсандом.</p>") == 1 and "<p>Другий абзац про картини.</p>" in p1)
@@ -153,6 +155,8 @@ home = (out / "index.html").read_text(encoding="utf-8")
 m = re.search(r'<nav class="catlinks" aria-label="Популярні категорії">(.*?)</nav>', home, re.S)
 links = re.findall(r'<a href="(category-[^"]+\.html)">([^<]*)</a><span>(\d+)</span>', m.group(1)) if m else []
 chk("головна: блок «Популярні категорії» з 30 посиланнями", m is not None and len(links) == 30 and "<h2>Популярні категорії</h2>" in home)
+chk("головна: кожна пігулка = ОДИН елемент <span class=\"cl\"> з <a> і лічильником (інакше на вузькому екрані число відривається від назви)",
+    m is not None and len(re.findall(r'<span class="cl"><a href="category-[^"]+\.html">[^<]*</a><span>\d+</span></span>', m.group(1))) == 30 == m.group(1).count('<span class="cl">'))
 chk("головна: «Уцінки» серед популярних нема", not any("Уцінк" in t for _, t, _ in links))
 chk("головна: посилання ведуть на ІСНУЮЧІ сторінки категорій", all((out / h).exists() for h, _, _ in links))
 counts = [int(c) for _, _, c in links]
@@ -171,6 +175,18 @@ m3 = re.search(r'<nav class="catlinks"[^>]*>(.*?)</nav>', h3, re.S)
 chk("назви в «Популярних» екрануються (& < > \") — жодного літерального <b> у блоці", m3 is not None and "<b>" not in m3.group(1) and "&lt;b&gt;" in m3.group(1) and "&amp;" in m3.group(1))
 chk("і «Уцінка», і варіант «Уценка» не потрапляють у популярні", m3 is not None and "Уцінк" not in m3.group(1) and "Уценк" not in m3.group(1))
 chk("мало категорій: у «Популярних» лише звичайні, «Уцінки» нема, рахунок правильний", m3 is not None and "Уцінк" not in m3.group(1) and ">Ляльки</a><span>2</span>" in m3.group(1) and ">Пазли</a><span>1</span>" in m3.group(1))
+
+# порядок «Популярних» = порядок cat_list (за кількістю), а НЕ алфавітний: імена навмисно в зворотному порядку до кількості
+ord_ = {"Яблука": [_mk(100 + i, "Яблука") for i in range(5)], "Ляльки": [_mk(200 + i, "Ляльки") for i in range(2)], "Азбука": [_mk(300, "Азбука")]}
+bs.write_home([p for v in ord_.values() for p in v], ord_, ["Яблука", "Ляльки", "Азбука"], {c: bs.slugify(c) for c in ord_})
+h4 = (out / "index.html").read_text(encoding="utf-8")
+m4 = re.search(r'<nav class="catlinks"[^>]*>(.*?)</nav>', h4, re.S)
+names4 = re.findall(r'<a href="category-[^"]+\.html">([^<]*)</a>', m4.group(1)) if m4 else []
+chk("«Популярні»: порядок за кількістю (Яблука 5 > Ляльки 2 > Азбука 1), не алфавітний", names4 == ["Яблука", "Ляльки", "Азбука"])
+
+# глибоко вкладений JSON не валить збірку (RecursionError ловиться як невалідний JSON)
+r, e = load_with("[" * 100000, "deep.json")
+chk("глибоко вкладений JSON → порожньо, ГОЛОСНО, без винятку", r == {} and "category_texts.json" in e)
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ SEO: H1/слот тексту/eager/sitemap/популярні категорії — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

@@ -503,27 +503,35 @@
       trackRaw("select_item", {item_list_id:"ig_landing", item_list_name:listName, items:[d]});
     });
   }
-  // ── Анімований Плутус у герої головної (SMM 09.10 + 12.10): poster (idle-кадр), раз на 12–20 с один кліп із хвостом праворуч (tailtrip/ear_scratch) програється ОДИН раз і повертається до poster ──
-  // Не безперервний луп. Нічого не вантажимо й не граємо: prefers-reduced-motion, Save-Data, 2g/slow-2g; кліп тягнемо ПІСЛЯ load + 3 с; не більше одного в польоті; пауза, коли вкладка
-  // прихована (visibilitychange) або Плутус поза екраном (IntersectionObserver); перемішаний цикл без повтору підряд. Розмір <img> фіксований атрибутами width/height — CLS нуль. В аналітику не пише.
+  // ── Анімований Плутус у герої головної (SMM 09.10 + 12.10): poster (idle-кадр) завжди під низом; раз на 12–20 с поверх нього КРОСФЕЙДОМ з'являється один кліп із хвостом праворуч (tailtrip/ear_scratch),
+  // програється ОДИН раз і розчиняється назад (кадри кліпів не збігаються з poster за позою — аудит #688: кросфейд ховає «стрибок»). Не безперервний луп. Нічого не вантажимо й не граємо: prefers-reduced-motion,
+  // Save-Data, 2g/slow-2g; кліп тягнемо ПІСЛЯ load + 3 с; не більше одного в польоті; пауза: прихована вкладка (кліп гасимо одразу й ПЛАНУЄМО наступний — аудит #688), Плутус поза екраном (гасимо й плануємо).
+  // Розмір задано атрибутами width/height обох <img> — CLS нуль. src кліпу знімаємо після розчинення: наступний показ стартує з першого кадру. В аналітику не пише.
   function initMascot(){
-    var img=document.getElementById("hero-mascot");
-    if(!img) return;
+    var img=document.getElementById("hero-mascot"), clipImg=document.getElementById("hero-mascot-clip");
+    if(!img || !clipImg) return;
     var clips=(img.getAttribute("data-clips")||"").split("|").filter(Boolean);
     var durs=(img.getAttribute("data-ms")||"").split(",").map(Number);
     if(!clips.length) return;
-    var poster=img.getAttribute("src");
     function reduced(){ return typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches; }
     var conn=navigator.connection||{};
     if(reduced() || conn.saveData || /(^|-)2g$/.test(conn.effectiveType||"")) return;
-    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null;
+    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null, fadeTimer=null;
+    function wait(){ return 12000 + Math.floor(Math.random()*8000); }
+    function schedule(ms){ clearTimeout(timer); timer=setTimeout(play, ms); }
+    function stop(){
+      clearTimeout(endTimer);
+      if(!playing) return;
+      playing=false; clipImg.classList.remove("on");
+      clearTimeout(fadeTimer);
+      fadeTimer=setTimeout(function(){ if(!playing) clipImg.removeAttribute("src"); }, 350);      // після розчинення: наступний показ стартує з першого кадру
+    }
     if(typeof IntersectionObserver==="function"){
-      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ visible=!!e.isIntersecting; }); }, {threshold:0.3});
+      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ visible=!!e.isIntersecting; if(!visible && playing){ stop(); schedule(wait()); } }); }, {threshold:0.3});
       io.observe(img);
       visible=false;   // до першого повідомлення IntersectionObserver вважаємо «не видно»
     }
     function canPlay(){ return !document.hidden && visible && !reduced(); }
-    function wait(){ return 12000 + Math.floor(Math.random()*8000); }
     function next(){
       if(!order.length){
         order=clips.map(function(_,i){ return i; });
@@ -532,25 +540,20 @@
       }
       last=order.shift(); return last;
     }
-    function schedule(ms){ clearTimeout(timer); timer=setTimeout(play, ms); }
-    function stop(){
-      clearTimeout(endTimer);
-      if(playing){ playing=false; img.src=poster; }
-    }
     function play(){
       if(playing) return;
       if(!canPlay()){ schedule(wait()); return; }
-      var idx=next(), url=clips[idx], ms=(durs[idx]>0?durs[idx]:4000)+150;
+      var idx=next(), url=clips[idx], ms=(durs[idx]>0?durs[idx]:4000)+400;      // запас 400 мс: декодування перших кадрів на слабкому телефоні не зрізає хвіст
       var pre=new Image();
       pre.onload=function(){
         if(!canPlay()){ schedule(wait()); return; }      // поки вантажився — вкладка сховалась / Плутус зник з екрана
-        playing=true; img.src=url;
+        playing=true; clearTimeout(fadeTimer); clipImg.src=url; clipImg.classList.add("on");
         endTimer=setTimeout(function(){ stop(); schedule(wait()); }, ms);
       };
       pre.onerror=function(){ schedule(wait()); };
       pre.src=url;
     }
-    document.addEventListener("visibilitychange", function(){ if(document.hidden) stop(); });
+    document.addEventListener("visibilitychange", function(){ if(document.hidden){ var was=playing; stop(); if(was) schedule(wait()); } });
     function start(){ schedule(3000); }      // перший кліп — не раніше ніж через 3 с після load
     if(document.readyState==="complete") start(); else window.addEventListener("load", start);
   }

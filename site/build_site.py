@@ -950,8 +950,10 @@ def write_home(prods, cats, cat_list, cat_slug):
         )
     body = (
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
-      f'<div class="hero2"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async" '
+      # poster завжди під низом, кліп кросфейдом поверх (див. initMascot): обидва <img> із width/height — CLS 0
+      f'<div class="hero2"><span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async" '
       f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(ms) for _, ms in HERO_MASCOT_CLIPS)}">'
+      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину, а маму робить спокійною.</p></div>'
       '<div class="act"><a class="btn" href="catalog.html">Обрати іграшку</a>'
       '<div class="chip">🚚 Нова Пошта · ' + PAY_SHORT + '</div></div></div>'

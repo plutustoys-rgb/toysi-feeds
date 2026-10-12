@@ -44,6 +44,7 @@ LIQPAY_LIVE = os.environ.get("SITE_LIQPAY_LIVE", "").strip() == "1"
 #   у 2 реальних ТТН вагою >2 кг було +25 ₴, а ваги в каталозі Toysi немає — тому цифри лише «орієнтовно», а точну суму називає Нова Пошта.
 # Оголошену вартість НЕ передаємо ми (toysi_order_submit.py:146 — поле необов'язкове): це рішення Toysi, воно може змінитись без попередження. Оголошена вартість для ПЕРЕДОПЛАТИ (LiqPay) не міряна — сайтових передоплат ще не було.
 # Накладений платіж лише до SITE_COD_CEILING=3000 ₴ (комісія там 80 ₴). Хто платить саме комісію — не доведено (PayerType=Recipient у 3/3 ТТН стосується доставки): текст так не стверджує.
+STOCK_BADGE_MAX = 3   # бейдж «Залишилось N шт» на картках, коли залишок Toysi ≤ цього (SMM 12.10)
 DELIVERY_COST = "орієнтовно 70–90 ₴ до 2 кг"
 DELIVERY_FEE_FORMULA = "комісія за накладений платіж: 20 ₴ + 2% від суми замовлення"
 DELIVERY_FEE_FORMULA_SHORT = "20 ₴ + 2% від суми замовлення"
@@ -292,14 +293,18 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
 
 def tile(p, cls="", eager=False, prio=False):
     """Картка товару. cls — додатковий клас (напр. «slide» у каруселі); eager=True — без loading=lazy (перші слайди каруселі = кандидат на LCP)."""
-    av = '<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>'
+    # Бейдж «Залишилось N шт» (SMM 12.10): лише коли залишок Toysi 1–3 («1 шт.»/«2 шт.»/«3 шт.» — ТОЧНІ числа з <ostatok>, перевірено на VPS: діапазонів «1…5» у цій зоні немає; значення береться на момент збірки, раз на ~2 год).
+    # Без вигаданих «останній у місті»/таймерів. Де є бейдж — зелений «У наявності» не дублюємо.
+    low = 0 < p["stock"] <= STOCK_BADGE_MAX
+    badge = f'<span class="stock-badge">Залишилось {int(p["stock"])} шт</span>' if low else ""
+    av = "" if low else ('<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>')
     lazy = (' fetchpriority="high"' if prio else "") if eager else ' loading="lazy"'
     img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}"{lazy}>'
            if p["photo"] else '<div class="ph"></div>')
     klass = ("card " + cls) if cls else "card"
     return (
       f'<a class="{klass}" href="product-{esc(p["id"])}.html">'
-      f'<div class="ph">{img}</div>'
+      f'<div class="ph">{img}{badge}</div>'
       f'<div class="info"><div class="nm">{esc(p["name"])}</div>'
       f'<div class="foot"><span class="pr">{p["price"]} ₴</span>{av}</div></div></a>'
     )

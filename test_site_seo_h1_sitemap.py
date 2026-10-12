@@ -176,6 +176,11 @@ chk("назви в «Популярних» екрануються (& < > \") �
 chk("і «Уцінка», і варіант «Уценка» не потрапляють у популярні", m3 is not None and "Уцінк" not in m3.group(1) and "Уценк" not in m3.group(1))
 chk("мало категорій: у «Популярних» лише звичайні, «Уцінки» нема, рахунок правильний", m3 is not None and "Уцінк" not in m3.group(1) and ">Ляльки</a><span>2</span>" in m3.group(1) and ">Пазли</a><span>1</span>" in m3.group(1))
 
+# CSS пігулки: усередині .cl нема gap, тож від'ємний margin-left у лічильника наїжджав би на останню літеру назви (аудит #679 р.2)
+_css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
+_rule = re.search(r"\.catlinks a\+span\{([^}]*)\}", _css)
+chk("CSS: лічильник пігулки (.catlinks a+span) без від'ємного margin — не перекриває назву", _rule is not None and not re.search(r"margin[^:;]*:[^;]*-\d", _rule.group(1)))
+
 # порядок «Популярних» = порядок cat_list (за кількістю), а НЕ алфавітний: імена навмисно в зворотному порядку до кількості
 ord_ = {"Яблука": [_mk(100 + i, "Яблука") for i in range(5)], "Ляльки": [_mk(200 + i, "Ляльки") for i in range(2)], "Азбука": [_mk(300, "Азбука")]}
 bs.write_home([p for v in ord_.values() for p in v], ord_, ["Яблука", "Ляльки", "Азбука"], {c: bs.slugify(c) for c in ord_})

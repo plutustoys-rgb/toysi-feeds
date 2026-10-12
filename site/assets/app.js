@@ -459,7 +459,7 @@
     // ── Безкінечний цикл (SMM 12.10, власник: «карусель не йде по колу»): по N клонів перших карток у кінці й останніх на початку; коли прокрутка ЗУПИНИЛАСЬ у зоні клонів — тихо (без анімації)
     //   повертаємо scrollLeft на оригінал: клон візуально ідентичний, тож стрибка немає. Клони: aria-hidden + tabindex=-1 (скрін-рідер і Tab їх не бачать), у `slides`/аналітику НЕ входять (клік по клону = його оригінал).
     //   Менше 6 слайдів або немає DOM-API клонування — старий лінійний режим.
-    var loopOn=false, loopTimer=null, LOOP_N=0;
+    var loopOn=false, loopTimer=null, resizeTimer=null, LOOP_N=0, loopFrac=0, loopW=0;   // loopFrac — прокручена частка кола (0..1), loopW — остання ширина вікна каруселі
     function trackPad(){ var cs=window.getComputedStyle ? getComputedStyle(track) : null; return cs ? (parseFloat(cs.paddingLeft)||0) : 0; }
     function loopOffset(){ return slides[0].getBoundingClientRect().left - track.getBoundingClientRect().left - trackPad(); }   // >0: оригінал-перший правіше за «вирівняне» положення
     function loopPeriod(){ return track.children[LOOP_N + slides.length].getBoundingClientRect().left - slides[0].getBoundingClientRect().left; }   // ширина повного кола (з проміжками)
@@ -477,12 +477,23 @@
       for(var j=n-LOOP_N;j<n;j++) track.insertBefore(mk(slides[j]), slides[0]);
       loopOn=true;
       loopAlign();
+      loopW=track.clientWidth; loopFrac=0;
     }
     function loopAlign(){ if(loopOn) track.scrollLeft += loopOffset(); }   // стати на оригінал-перший (початкове положення й після зміни розміру вікна)
     function loopNormalize(force){
       if(!loopOn || (auto.touch && !force)) return;
       var off=-loopOffset(), P=loopPeriod();                                  // off = скільки прокручено від оригіналу-першого
-      if(off >= P-2) track.scrollLeft -= P; else if(off < -2) track.scrollLeft += P;
+      if(off >= P-2){ track.scrollLeft -= P; off -= P; } else if(off < -2){ track.scrollLeft += P; off += P; }
+      loopFrac = off / P;                                                       // запам'ятовуємо логічну позицію — для відновлення після зміни ширини
+    }
+    // Зміна ШИРИНИ (поворот екрана, ресайз): довжина кола змінилась — відновлюємо ту саму ЛОГІЧНУ позицію (частку кола), а не скидаємо на першу картку.
+    // Зміна лише ВИСОТИ (адресний рядок/клавіатура на телефоні при вертикальному скролі) карусель не чіпає (аудит #701: раніше скидало на першу картку).
+    function loopRestore(){
+      if(!loopOn) return;
+      var w=track.clientWidth;
+      if(w===loopW) return;
+      loopW=w;
+      track.scrollLeft += loopFrac*loopPeriod() + loopOffset();
     }
     car.classList.add("js");   // стрілки показуємо лише коли JS працює (без нього вони були б «мертвими»; нативний скрол/свайп лишається)
     function sync(){
@@ -505,7 +516,7 @@
       track.addEventListener("scroll", function(){ sync(); if(loopOn){ clearTimeout(loopTimer); loopTimer=setTimeout(loopNormalize, 140); } });
       sync();
     }
-    function onResize(){ sync(); if(loopOn){ clearTimeout(loopTimer); loopTimer=setTimeout(loopAlign, 150); } }
+    function onResize(){ sync(); if(loopOn){ clearTimeout(resizeTimer); resizeTimer=setTimeout(loopRestore, 150); } }
     window.addEventListener("resize", onResize);   // ширина вікна/поворот екрана міняють «край» (і довжину кола)
     window.addEventListener("orientationchange", onResize);
     // ── Автопрокрутка (SMM 12.10: власник бачить нерухому карусель як «не крутиться»): по 1 картці кожні ~4 с зі scroll-snap. НЕ крутимо, коли:

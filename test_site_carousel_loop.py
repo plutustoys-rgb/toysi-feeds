@@ -34,7 +34,7 @@ chk("період кола = відстань першого оригіналу 
 chk("краї зникли: стрілки не disabled у режимі циклу; автопрокрутка не «відлітає на початок» (atEnd лише без циклу)", "if(loopOn){ left.disabled=false; right.disabled=false; return; }" in car and "var atEnd = !loopOn &&" in car)
 chk("менше 6 слайдів або немає DOM-API клонування — лінійний режим (n<6 → return)", "if(n<6 || !track || !track.appendChild || !track.insertBefore || !slides[0].cloneNode) return;" in car)
 chk("пауза hover/focus/touch і reduced-motion збережені (автопрокрутка)", all(x in car for x in ("auto.hover", "auto.focus", "auto.touch", "reducedMotion()")))
-chk("resize/orientationchange: вирівнюємо на оригінал (loopAlign), довжина кола змінюється разом із шириною", "loopTimer=setTimeout(loopAlign, 150)" in car and 'addEventListener("resize", onResize)' in car)
+chk("resize: loopAlign ЛИШЕ при ініціалізації; зміна ширини відновлює ЛОГІЧНУ позицію (частка кола loopFrac), зміна лише висоти карусель не чіпає (аудит #701: раніше скидало на першу картку при згортанні адресного рядка)", "setTimeout(loopRestore, 150)" in car and "setTimeout(loopAlign" not in car and "if(w===loopW) return;" in car and "track.scrollLeft += loopFrac*loopPeriod() + loopOffset();" in car and "loopFrac = off / P;" in car and 'addEventListener("resize", onResize)' in car)
 
 # ── Плутус ──
 chk("кросфейд прибрано: у CSS кліпа немає opacity/transition; кліп ховається visibility, poster ховається на час кліпу (.clip-on)", ".mascot-clip{position:absolute;left:0;top:0;visibility:hidden" in css and ".mascot-clip.on{visibility:visible}" in css and ".mascot-wrap.clip-on #hero-mascot{visibility:hidden}" in css

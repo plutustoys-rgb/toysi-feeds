@@ -166,6 +166,7 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .hero2 p{margin:0;color:#6b5547;font-size:14px}
 .hero2 .act{display:flex;flex-direction:column;gap:8px;align-items:stretch;min-width:210px}
 .hero2 .btn{width:auto;padding:12px 22px;font-size:15px}
+.hero2 .hero-all{font-size:12.5px;color:var(--accent);text-align:center;margin:-2px 0 0;text-decoration:underline;text-underline-offset:2px}
 .hero2 .chip{font-size:12px;color:#6b5547;text-align:center;white-space:normal;min-width:0;padding:0;border:0;background:none;border-radius:0}
 .car{position:relative;margin:0 clamp(12px,3vw,24px)}
 .car .track{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding:4px 2px 10px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
@@ -371,3 +372,10 @@ footer.foot a{color:var(--accent)}
 input,select,textarea{scroll-margin-top:84px}                                   /* липкий хедер не ховає сфокусоване поле */
 body:has(.buybar) footer.foot{margin-bottom:84px}                                      /* нижній рядок футера не ховається під фіксованою панеллю «У кошик» */
 .cod-limit{margin:8px 0}
+/* /nabory.html (SMM 12.10) */
+.nb-lead{margin:-6px 16px 12px;color:var(--muted);font-size:14px}
+.nb-chips{display:none}
+.nb-chips.js{display:flex}
+.nb-chips button.chip{cursor:pointer;font-family:inherit}
+.nb-list a.card[hidden]{display:none}
+.nb-more{margin:18px 16px 4px;text-align:center}

@@ -352,6 +352,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         # site_order_api звіряє її з сумою колбека LiqPay, щоб дрейф ціни в каталозі між checkout
         # і оплатою не провалював звірку реально оплаченого замовлення. Простий ADD COLUMN (не CHECK).
         _ensure_column(conn, "orders", "site_charged_total", "site_charged_total INTEGER")
+        _ensure_column(conn, "orders", "receipt_claim_at", "receipt_claim_at TEXT")   # атомарний claim виписування чека передоплати сайту (захист від дубля фіскального чека)
+        _ensure_column(conn, "orders", "liqpay_payment_id", "liqpay_payment_id TEXT")   # payment_id LiqPay (колбек success) → текст фіскального чека (рішення бухгалтера 12.10)
         # Email покупця (2026-09-12, задача SMM «провести email через order-pipeline»): опційний,
         # лише web-замовлення сайту; checkout його збирає, але раніше він відкидався (у orders не було
         # колонки). ADD COLUMN перед міграціями-перебудовами, щоб ті його зберегли.
@@ -553,6 +555,37 @@ def clear_stock_alert(conn: sqlite3.Connection, internal_order_id: str) -> None:
     conn.execute(
         "UPDATE orders SET stock_alert_sent_at = NULL WHERE internal_order_id = ?",
         (internal_order_id,),
+    )
+
+
+def claim_receipt(conn: sqlite3.Connection, internal_order_id: str) -> bool:
+    """Атомарно «займає» виписування чека: True лише для ОДНОГО виклику (проти паралельних order-pipeline/watchdog). Якщо чек уже видано (checkbox_ettn_registered_at)
+    або claim уже взято — False. Викликач ОБОВ'ЯЗКОВО робить commit одразу."""
+    cur = conn.execute(
+        "UPDATE orders SET receipt_claim_at = ? WHERE internal_order_id = ? AND checkbox_ettn_registered_at IS NULL AND receipt_claim_at IS NULL",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+    return cur.rowcount == 1
+
+
+def release_receipt_claim(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Знімає claim, лише коли ВІДОМО, що чек НЕ створено (відмова до створення). Не чіпає вже виданий чек."""
+    conn.execute("UPDATE orders SET receipt_claim_at = NULL WHERE internal_order_id = ? AND checkbox_ettn_registered_at IS NULL", (internal_order_id,))
+
+
+def get_receipt_state(conn: sqlite3.Connection, internal_order_id: str):
+    """(checkbox_ettn_registered_at, receipt_claim_at) ЗІ СВІЖОГО читання БД (а не зі знімка order, зробленого до довгих кроків циклу)."""
+    row = conn.execute("SELECT checkbox_ettn_registered_at, receipt_claim_at FROM orders WHERE internal_order_id = ?", (internal_order_id,)).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def set_liqpay_payment_id(conn: sqlite3.Connection, internal_order_id: str, payment_id) -> None:
+    """Зберігає payment_id LiqPay з колбека (лише перший; повторні колбеки не перезаписують)."""
+    if payment_id in (None, ""):
+        return
+    conn.execute(
+        "UPDATE orders SET liqpay_payment_id = ? WHERE internal_order_id = ? AND (liqpay_payment_id IS NULL OR liqpay_payment_id = '')",
+        (str(payment_id), internal_order_id),
     )
 
 

@@ -40,7 +40,7 @@ from urllib.parse import urlparse, parse_qs
 
 import nova_poshta
 import liqpay_client
-from orders_db import get_connection, init_db, insert_order, get_order, mark_payment_confirmed
+from orders_db import get_connection, init_db, insert_order, get_order, mark_payment_confirmed, set_liqpay_payment_id
 
 HOST = os.environ.get("SITE_API_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SITE_API_PORT", "8901"))
@@ -609,6 +609,7 @@ class Handler(SimpleHTTPRequestHandler):
                     # сума не збігається — НЕ підтверджуємо (money-safety), лишаємо для розбору
                     return self._text(400, f"amount mismatch: got {amount}, expected {expected}")
                 newly_confirmed = mark_payment_confirmed(conn, internal)  # ідемпотентно; 1 лише при атомарному переході 0→1
+                set_liqpay_payment_id(conn, internal, (res.get("data") or {}).get("payment_id"))   # для тексту чека (номер платежу LiqPay)
                 conn.commit()
                 if newly_confirmed:
                     _notify_new_order(order, expected)   # перше підтвердження оплати = надходження передоплаченого замовлення

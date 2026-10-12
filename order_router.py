@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 
 from orders_db import (
@@ -8,6 +9,7 @@ from orders_db import (
     mark_ukrposhta_shipment, update_delivery_status,
     mark_stock_alert_sent, clear_stock_alert, mark_rozetka_delivery_ttn,
     init_db, mark_rz_marking_sent, bump_rz_marking_attempt, get_rz_markings_to_retry,
+    mark_checkbox_ettn_registered, claim_receipt, release_receipt_claim, get_receipt_state,
 )
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order, toysi_internal_id
@@ -826,7 +828,97 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
     return sent
 
 
+def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> bool:
+    """Сайт + передоплата (LiqPay): фіскальний чек ПРРО Checkbox SELL/CASHLESS виписується одразу після підтвердженої оплати (колбек success) і ДО передачі в Toysi/НП
+    (рішення головного бухгалтера 12.10.2026, КОДВ_CHANNEL: розрахунковий документ — не пізніше передачі товару; Закон №265/95-ВР ст.3). Місце — тут, на початку route_order:
+    гроші вже отримано, тож чек не залежить ні від залишку Toysi, ні від hold-гейтів адреси. Повертає True — можна рухатись далі (не наш випадок / чек уже є / видано щойно);
+    False — чек НЕ видано (замовлення в Toysi НЕ передається; алерт). Текст чека: номер платежу LiqPay і номер замовлення; сума = позиції замовлення й мусить збігатися з
+    site_charged_total (None = fail-closed). ЗАХИСТ ВІД ДУБЛЯ РЕАЛЬНОГО ЧЕКА (аудит #698): (1) стан читається ЗІ СВІЖОЇ БД, не зі знімка order (знімок міг бути зроблений
+    до 70-МБ фетчу каталогу, коли паралельний процес уже видав чек); (2) АТОМАРНИЙ claim (orders.receipt_claim_at) перед викликом Checkbox: другий процес отримує False; (3) claim знімається ЛИШЕ
+    коли відомо, що чек НЕ створено (відмова до POST або HTTP 4xx); при невідомому результаті (таймаут/обрив/5xx/нечитабельна відповідь — `maybe_created`) claim ЛИШАЄТЬСЯ й іде алерт
+    «звір у кабінеті Checkbox»: другого чека автоматично не буде; (4) збій запису прапорця ПІСЛЯ успішного чека не губить чек: ретрай + алерт, замовлення продовжує шлях (чек є).
+    Sandbox LiqPay: реальний фіскальний чек на тестовий платіж не видається (SITE_RECEIPT_IN_SANDBOX=1 вмикає свідомо)."""
+    if test_mode or order.get("platform") != "site" or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
+        return True
+    oid = order["internal_order_id"]
+    import liqpay_client
+    if liqpay_client.LIQPAY_SANDBOX and os.environ.get("SITE_RECEIPT_IN_SANDBOX", "0") != "1":
+        print(f"[order_router] LiqPay у sandbox: реальний фіскальний чек для {oid} НЕ видається (SITE_RECEIPT_IN_SANDBOX=1 вмикає)", file=sys.stderr)
+        return True
+
+    def _alert(key_suffix: str, text: str) -> None:
+        try:
+            send_throttled_alert(f"site_prepaid_receipt:{oid}:{key_suffix}", text, cooldown_sec=6 * 60 * 60)
+        except Exception as ae:  # noqa: BLE001
+            print(f"[order_router] алерт про чек не надіслано: {type(ae).__name__}", file=sys.stderr)
+
+    registered_at, claim_at = get_receipt_state(conn, oid)        # свіже читання БД
+    if registered_at:
+        order["checkbox_ettn_registered_at"] = registered_at
+        return True
+    if claim_at:                                                    # чек уже виписує інший процес, або результат невідомий
+        _alert("claim", f"🔴 Чек на онлайн-оплату {oid}: claim виписування взято {claim_at}, але прапорця «чек видано» нема. Або чек виписує інший процес зараз, або результат невідомий "
+                        "(таймаут/обрив). Другий чек автоматично НЕ видається. Звір у кабінеті Checkbox, чи є чек із footer «замовлення …»; якщо є, проставити checkbox_ettn_registered_at, "
+                        "якщо нема, зняти receipt_claim_at. Замовлення в Toysi не передається.")
+        return False
+
+    try:
+        from checkbox_client import create_receipt
+        from order_status_tracker import _receipt_goods_from_order
+        goods = _receipt_goods_from_order(order)
+        total = round(sum(float(g["price"]) * g.get("qty", 1) for g in goods), 2)
+        charged = order.get("site_charged_total")
+        if charged is None:
+            raise ValueError("немає зафіксованої при оформленні суми (site_charged_total): чек НЕ видано (money-safety)")
+        if abs(total - float(charged)) > 0.01:
+            raise ValueError(f"сума позицій {total} ≠ зафіксована при оформленні {charged}: чек НЕ видано (money-safety), розберіть вручну")
+        pid = (order.get("liqpay_payment_id") or "").strip()
+        footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('order_id')}"
+    except Exception as e:  # noqa: BLE001 — до claim: чек точно не створювався
+        print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
+        _alert("prep", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {oid}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
+                       "Наступний цикл (~15 хв) повторить; якщо повторюється, розберіть суму/дані замовлення.")
+        return False
+
+    if not claim_receipt(conn, oid):
+        return False                                                # інший процес виграв claim між читанням і UPDATE
+    conn.commit()                                                   # claim має бути видимий іншим процесам ДО виклику Checkbox
+    try:
+        result = create_receipt(goods=goods, payment_type="CASHLESS", total_amount=total, order_id=oid,
+                                customer_phone=order.get("phone"), footer=footer, customer_email=order.get("email"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
+        if getattr(e, "maybe_created", False):
+            _alert("unknown", f"🔴 Чек на онлайн-оплату {oid}: відповідь Checkbox не отримано чи нечитабельна ({str(e)[:200]}); чек МІГ бути створений. Автоматичного повтору НЕ буде (щоб не було дубля "
+                              "фіскального чека): звір у кабінеті Checkbox (footer «замовлення …»); якщо чек є, проставити checkbox_ettn_registered_at, якщо нема, зняти receipt_claim_at. "
+                              "Замовлення в Toysi не передається.")
+        else:
+            release_receipt_claim(conn, oid)
+            conn.commit()
+            _alert("fail", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {oid}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
+                           "Наступний цикл (~15 хв) повторить; якщо повторюється, перевір зміну/ключ Checkbox; ручний чек у кабінеті Checkbox, далі позначити checkbox_ettn_registered_at.")
+        return False
+
+    receipt_id = result.get("id") if isinstance(result, dict) else None
+    for attempt in range(3):                                        # чек ВЖЕ видано: прапорець мусить записатися (ретрай), інакше наступний цикл не знатиме про чек
+        try:
+            mark_checkbox_ettn_registered(conn, oid, receipt_id)
+            conn.commit()
+            break
+        except Exception as me:  # noqa: BLE001
+            print(f"[order_router] прапорець чека для {oid} не записано (спроба {attempt + 1}): {type(me).__name__}: {me}", file=sys.stderr)
+            time.sleep(0.5)
+    else:
+        _alert("flag", f"🔴 Чек на онлайн-оплату {oid} ВИДАНО (receipt_id={receipt_id}), але прапорець у БД не записано (БД заблокована?). Другий чек не буде видано (claim лишився). "
+                       f"Проставити checkbox_ettn_registered_at/checkbox_receipt_id вручну.")
+    order["checkbox_ettn_registered_at"] = "set"
+    print(f"[order_router] Чек Checkbox (CASHLESS) видано до передачі в Toysi: {oid} (receipt_id={receipt_id})")
+    return True
+
+
 def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict = None) -> None:
+    if not _ensure_site_prepaid_receipt(conn, order, test_mode):
+        return
     if not _check_prom_not_cancelled(conn, order):
         return
     if not _check_eva_not_cancelled(conn, order):

@@ -167,6 +167,10 @@ def _maybe_issue_receipt(conn, order: dict, ttn: str, delivery_status: str = Non
     if payment_method == "prepaid":
         if not order.get("payment_confirmed"):
             return
+        if order.get("platform") == "site":
+            # Чек передоплати САЙТУ виписує ЛИШЕ order_router._ensure_site_prepaid_receipt (до форварду, з атомарним claim; рішення бухгалтера 12.10). Трекер тут нічого не робить:
+            # інакше (а) після збою запису прапорця він би видав ДРУГИЙ чек, (б) у sandbox LiqPay (де роутер чек свідомо не видає) трекер видав би реальний чек на тестовий платіж (аудит #698).
+            return
         payment_type = "CASHLESS"
     elif payment_method == "cod":
         # COD-чек CASH: гроші отримані у МОМЕНТ видачі. Сигнал видачі — РІЗНИЙ за перевізником:

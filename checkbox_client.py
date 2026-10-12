@@ -227,6 +227,8 @@ def create_receipt(
     total_amount: float,
     order_id: str | None = None,
     customer_phone: str | None = None,
+    footer: str | None = None,
+    customer_email: str | None = None,
 ) -> dict:
     """POST /api/v1/receipts/sell (підтверджено офіційним Swagger,
     api.checkbox.in.ua/api/docs) — прямий чек продажу, БЕЗ жодної залежності
@@ -279,8 +281,18 @@ def create_receipt(
     # Якщо номер кривий/порожній → delivery не додаємо (чек усе одно фіскалізується).
     # ⚠️ Примітка Swagger: надсилання на SMS може бути ПЛАТНИМ (Viber — безкоштовно).
     delivery_phone = _normalize_delivery_phone(customer_phone)
+    delivery = {}
     if delivery_phone:
-        body["delivery"] = {"phone": delivery_phone}
+        delivery["phone"] = delivery_phone
+    # e-mail покупця (DeliveryPayload.emails, звірено OpenAPI 12.10.2026): рішення бухгалтера 12.10 — чек онлайн-оплати надсилається електронно (e-mail/SMS)
+    _email = (customer_email or "").strip()
+    if _email and re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}", _email) and ".." not in _email:   # суворо: один сміттєвий e-mail дав би 422 на весь чек
+        delivery["emails"] = [_email]
+    if delivery:
+        body["delivery"] = delivery
+    # footer (ReceiptSellPayload.footer, OpenAPI 12.10.2026): текст у чеку, напр. номер платежу LiqPay й номер замовлення — для зіставлення із зарахуванням у виписці
+    if footer:
+        body["footer"] = footer[:250]
     # ВИПРАВЛЕНО (2026-07-22, живий крах усіх 6 замовлень на першому
     # реальному прогоні після активації ключів — 422 Unprocessable Entity):
     # Checkbox вимагає, щоб order_id був СПРАВЖНІМ UUID
@@ -307,17 +319,24 @@ def create_receipt(
         # Entity for url: ...") — БЕЗ тіла відповіді, де Checkbox реально
         # пояснює ЩО невалідне (detail/loc/msg). Без цього перше живе
         # розслідування зайняло окремий ручний запит поза журналом.
-        raise CheckboxAPIError(
+        err = CheckboxAPIError(
             f"POST /receipts/sell відхилено (замовлення {order_id}): {e} — "
             f"тіло відповіді: {response.text[:500]}"
-        ) from e
+        )
+        # 4xx = Checkbox відхилив ДО створення (чека нема); 5xx = результат невідомий (чек міг бути створений)
+        err.maybe_created = response.status_code >= 500
+        raise err from e
     except requests.exceptions.RequestException as e:
-        raise CheckboxAPIError(f"помилка з'єднання (POST /receipts/sell, замовлення {order_id}): {e}") from e
+        err = CheckboxAPIError(f"помилка з'єднання (POST /receipts/sell, замовлення {order_id}): {e}")
+        err.maybe_created = True      # таймаут/обрив після відправки запиту: чек міг бути створений, відповідь не дійшла
+        raise err from e
 
     try:
         return response.json()
     except ValueError:
-        raise CheckboxAPIError(f"невалідна відповідь (не JSON) для /receipts/sell: {response.text[:300]}")
+        err = CheckboxAPIError(f"невалідна відповідь (не JSON) для /receipts/sell: {response.text[:300]}")
+        err.maybe_created = True      # HTTP 2xx, але тіло нечитабельне: чек, найімовірніше, створено
+        raise err
 
 
 def register_ettn(

@@ -44,6 +44,7 @@ LIQPAY_LIVE = os.environ.get("SITE_LIQPAY_LIVE", "").strip() == "1"
 # Накладений платіж лише до SITE_COD_CEILING=3000 ₴ (комісія там 80 ₴). Хто платить саме комісію — не доведено (PayerType=Recipient у 3/3 ТТН стосується доставки): текст так не стверджує.
 DELIVERY_COST = "орієнтовно 70–90 ₴ до 2 кг"
 DELIVERY_FEE_FORMULA = "комісія за накладений платіж: 20 ₴ + 2% від суми замовлення"
+DELIVERY_FEE_FORMULA_SHORT = "20 ₴ + 2% від суми замовлення"
 DELIVERY_NOTE = ("Доставка за тарифом Нової Пошти — " + DELIVERY_COST + " (для важчих посилок сума вища), плюс " + DELIVERY_FEE_FORMULA
                  + ". Суму в рядку «Доставка» ми розраховуємо орієнтовно для вашого кошика; точну покаже Нова Пошта. Оплачується при отриманні посилки.")
 PAY_HERO = "оплата при отриманні або карткою" if LIQPAY_LIVE else "оплата при отриманні на Новій Пошті"
@@ -1321,7 +1322,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
           '<span class="tb">✓ Фіскальний чек</span>'
         '</div>' + _phone_line +
         '<div class="delivery"><span class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="31" height="28" decoding="async"></span>'
-        '<div><b>Доставка Новою Поштою</b> — ' + DELIVERY_COST + ' за тарифом перевізника, сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
+        '<div><b>Доставка Новою Поштою</b> — ' + DELIVERY_COST + ' за тарифом перевізника; при накладеному платежі додається комісія НП: ' + DELIVERY_FEE_FORMULA_SHORT + '. Доставка сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
         'далі 1–3 робочі дні.</div></div>'
     ) if in_stock else _phone_line
     oos_note = ("" if in_stock else
@@ -1417,7 +1418,7 @@ def write_cart(addons=None):
       '<div class="cart-grid"><div class="cart-main"><div id="cart-body"></div>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'
-        '<div class="row"><span>Доставка Новою Поштою</span><span id="sum-delivery">' + DELIVERY_COST + '</span></div>'
+        '<div class="row"><span>Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="sum-delivery">' + DELIVERY_COST + '</span></div>'
         '<div class="row total"><span>Разом за товари</span><span id="sum-total">0 ₴</span></div>'
         '<div class="free-ship" id="free-ship-block"><div class="free-ship-track"><div class="free-ship-fill" id="free-ship-bar"></div></div>'
           '<div class="note" id="free-ship-note"></div></div>'
@@ -1459,7 +1460,7 @@ def write_cart(addons=None):
       '<aside class="cart-aside" id="cart-aside" aria-label="Інформація про замовлення">'
         '<div class="aside-card" id="aside-order"><h2>Ваше замовлення</h2><div id="aside-items"></div>'
           '<div class="row"><span>Товари</span><span id="aside-goods">0 ₴</span></div>'
-          '<div class="row"><span>Доставка Новою Поштою</span><span id="aside-delivery">' + DELIVERY_COST + '</span></div>'
+          '<div class="row"><span>Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="aside-delivery">' + DELIVERY_COST + '</span></div>'
           '<div class="row total"><span>Разом за товари</span><span id="aside-total">0 ₴</span></div>'
           '<div class="note">' + DELIVERY_NOTE + '</div></div>'
         '<div class="aside-card trust-card"><ul class="trust-list">'

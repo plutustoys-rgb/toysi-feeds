@@ -349,7 +349,8 @@ footer.foot a{color:var(--accent)}
 #aside-order,.addon-d{display:none}
 @media (min-width:960px){
   .cart-grid{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:28px;align-items:start;padding:0 clamp(12px,3vw,24px)}
-  .cart-aside{position:sticky;top:84px}
+  .cart-aside{position:sticky;top:84px;max-height:calc(100vh - 100px);overflow-y:auto;overscroll-behavior:contain}
+  #aside-items{max-height:220px;overflow-y:auto}
   .cart-aside .aside-card:first-child{margin-top:0}
   #aside-order,.addon-d{display:block}
   .addon-m,#cart-summary{display:none !important}

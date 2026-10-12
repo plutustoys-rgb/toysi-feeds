@@ -71,7 +71,8 @@ chk("колонка: «Ваше замовлення» (А), довіра (Б), 
 chk("довіра: фіскальний чек, повернення 14 днів (посилання на returns.html), оплата при отриманні, рядок про 12:00 — без нових обіцянок («зазвичай»)", "Фіскальний чек" in aside and 'href="returns.html"' in aside and "Повернення протягом 14 днів" in aside
     and "Оплата при отриманні" in aside and 'id="ship-today">🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня' in aside and "знижк" not in aside.lower() and "безкоштовн" not in aside.lower())
 chk("Плутус: статичний ≈80 px із підписом «Плутус пакує вашу посилку»", 'class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="80" height="73"' in aside and "Плутус пакує вашу посилку" in aside)
-chk("підсумок доставки в колонці — виміряне «70–90 ₴ до 2 кг»", "70–90 ₴ до 2 кг" in aside)
+chk("підсумок доставки в колонці — «орієнтовно 70–90 ₴ до 2 кг» І застереження (важчі посилки, комісія НП за накладений) — десктопний #cart-summary сховано, тож примітка має бути в колонці (аудит #691 F2)", "орієнтовно 70–90 ₴ до 2 кг" in aside and "для важчих посилок сума вища" in aside and "комісія НП за накладений платіж (залежить від суми замовлення)" in aside)
+chk("aside aria-label не вводить в оману на мобільному («Інформація про замовлення»)", 'aria-label="Інформація про замовлення"' in aside)
 
 m = re.search(r'<script type="application/json" id="cart-addons">(.*?)</script>', cart, re.S)
 pool = json.loads(m.group(1)) if m else None
@@ -92,6 +93,7 @@ css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
 chk("CSS: ≥960 px — дві колонки (1fr + 380px), sticky-колонка; десктопний підсумок і мобільний add-on сховано", re.search(r"@media \(min-width:960px\)\{[^@]*\.cart-grid\{display:grid;grid-template-columns:minmax\(0,1fr\) 380px", css) is not None
     and "position:sticky;top:84px" in css and re.search(r"\.addon-m,#cart-summary\{display:none !important\}", css) is not None)
 chk("CSS: на мобільному «Ваше замовлення» і десктопний add-on за замовчуванням сховані (#aside-order,.addon-d{display:none})", "#aside-order,.addon-d{display:none}" in css)
+chk("CSS: колонка вища за вікно прокручується всередині (max-height + overflow-y), список позицій обмежено — add-on і Плутус досяжні (аудит #691 F3)", re.search(r"\.cart-aside\{position:sticky;top:84px;max-height:calc\(100vh - 100px\);overflow-y:auto", css) is not None and "#aside-items{max-height:220px;overflow-y:auto}" in css)
 
 node = shutil.which("node")
 if not node:
@@ -108,13 +110,14 @@ function el(id){ const h={}; return {id,value:"",textContent:"",_inner:"",style:
   const cartItems={"1":{id:"1",name:"Картина",price:468,photo:"https://x/1.jpg",qty:2},"2":{id:"2",name:"Дрібничка <b>",price:150,photo:"https://x/2.jpg",qty:1}};
   if(scenario!=="empty") ls.setItem("pt_cart_v1", JSON.stringify(scenario==="inpool"?Object.assign({}, cartItems, {"__": null}) && cartItems : cartItems));
   const E={}; ["cart-body","cart-summary","checkout-form","cart-aside","aside-items","aside-goods","aside-total","ship-today","cart-badge","sum-goods","sum-delivery","sum-total"].forEach(i=>E[i]=el(i));
-  E["cart-addons"]=el("cart-addons"); E["cart-addons"].textContent=poolJson;
+  E["ship-today"].textContent="🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня"; E["cart-addons"]=el("cart-addons"); E["cart-addons"].textContent=poolJson;
   const boxes=[el("m"), el("d")];
   const docH={}; const ready=[];
   const doc={addEventListener(t,f){ if(t==="DOMContentLoaded") ready.push(f); }, getElementById(id){return E[id]||null}, querySelector(){return null}, querySelectorAll(sel){ return sel==="[data-addon]"?boxes:[]; },
     body:{addEventListener(t,f){ (docH[t]=docH[t]||[]).push(f); },appendChild(){}}, createElement(){return {style:{},appendChild(){}}}};
-  const hour = scenario==="evening" ? 15 : 9;
-  const FIXED=new Date(Date.UTC(2026,9,12,hour-3,30,0));      // Київ = UTC+3 у жовтні 2026
+  const HM={morning:[9,30], evening:[15,30], noon:[12,5], weekend:[9,30]}[scenario]||[9,30];
+  const day = scenario==="weekend" ? 17 : 12;                 // 12.10.2026 — понеділок; 17.10.2026 — субота
+  const FIXED=new Date(Date.UTC(2026,9,day,HM[0]-3,HM[1],0));      // Київ = UTC+3 у жовтні 2026
   class FD extends Date{ constructor(...a){ super(...(a.length?a:[FIXED.getTime()])); } static now(){ return FIXED.getTime(); } }
   const ctx={document:doc, localStorage:ls, sessionStorage:ss, console, fetch:()=>Promise.reject(), navigator:{}, location:{pathname:"/cart.html",href:"/cart.html"}, setTimeout, clearTimeout, setInterval:function(){return 1;}, addEventListener(){}, Date:FD, Intl};
   ctx.window=ctx; ctx.self=ctx; ctx.matchMedia=function(){ return {matches:false}; };
@@ -137,6 +140,7 @@ function el(id){ const h={}; return {id,value:"",textContent:"",_inner:"",style:
     hf.write_text(harness, encoding="utf-8")
     pf = tmp / "pool.json"
     pool_test = [{"id": str(i), "name": f"Add{i}", "price": 100 + i, "photo": f"https://x/{i}.jpg"} for i in (1, 2, 3, 4, 5, 6)]     # 1 і 2 уже в кошику
+    pool_test[3]["name"] = "М'яка іграшка \"ведмедик\" a' onmouseover='x'"          # апостроф/лапки/ін'єкція атрибута
     pf.write_text(json.dumps(pool_test, ensure_ascii=False), encoding="utf-8")
     app = str(HERE / "site" / "assets" / "app.js")
 
@@ -154,11 +158,18 @@ function el(id){ const h={}; return {id,value:"",textContent:"",_inner:"",style:
     chk("render: товари і «Разом за товари» = 468×2+150 = 1086 ₴", a is not None and a["goods"] == "1086 ₴" and a["total"] == "1086 ₴")
     adds = re.findall(r'data-add=', a["boxD"]) if a else []
     chk("add-on: РІВНО 3 позиції, жодної з уже наявних у кошику (1, 2), порядок пулу (3, 4, 5); в обох контейнерах (десктоп і мобільний)", a is not None and len(adds) == 3
-        and all(f"Add{i}" in a["boxD"] for i in (3, 4, 5)) and "Add1" not in a["boxD"] and "Add2" not in a["boxD"] and a["boxM"] == a["boxD"])
+        and all(x in a["boxD"] for x in ("Add3", "ведмедик", "Add5")) and "Add1" not in a["boxD"] and "Add2" not in a["boxD"] and a["boxM"] == a["boxD"])
     chk("add-on: кнопка «+ Додати» з data-list=cart_addon та JSON товару", a is not None and 'data-list="cart_addon"' in a["boxD"] and "+ Додати" in a["boxD"])
-    chk("рядок відправки до 12:00 за Києвом: «Замовте до 12:00 — зазвичай відправимо сьогодні»", a is not None and a["ship"] == "🚚 Замовте до 12:00 — зазвичай відправимо сьогодні")
+    STATIC = "🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня"
+    chk("будній день до 12:00 за Києвом: «Замовте до 12:00 — зазвичай відправимо сьогодні»", a is not None and a["ship"] == "🚚 Замовте до 12:00 — зазвичай відправимо сьогодні")
     ev = run("evening")
-    chk("рядок після 12:00: «зазвичай відправляємо наступного робочого дня» (без обіцянки «завтра»)", ev is not None and ev["ship"] == "🚚 Замовлення після 12:00 зазвичай відправляємо наступного робочого дня")
+    chk("після 12:00: лишається СТАТИЧНИЙ текст політики (нової обіцянки «наступного робочого дня» немає — аудит #691)", ev is not None and ev["ship"] == "🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня" and "наступного" not in ev["ship"])
+    nn = run("noon")
+    chk("межа: 12:05 вже НЕ «до 12:00» → статичний текст (мутація hh<=12 червоніє)", nn is not None and nn["ship"] == "🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня")
+    we = run("weekend")
+    chk("субота 9:30 за Києвом → статичний текст (не обіцяємо «сьогодні» у вихідні)", we is not None and we["ship"] == "🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня")
+    chk("апостроф у назві add-on екранується (&#39;), сирого «М'яка» в атрибуті нема (аудит #691 F1: ламало кнопку й давало ін'єкцію)", a is not None and "&#39;" in a["boxD"] and "М'яка" not in a["boxD"])
+    chk("кнопка «+ Додати» має aria-label з назвою товару", a is not None and 'aria-label="Додати до замовлення: Add3"' in a["boxD"])
     ck = run("click")
     chk("клік «+ Додати»: товар у кошику (qty 1), рівно ОДИН add_to_cart з item_list_name «cart_addon», підсумок оновлено (1086+90=1176), доданий зникає з add-on",
         ck is not None and ck["cart"]["5"]["qty"] == 1 and len(ck["ev"]) == 1 and ck["ev"][0][2]["items"][0]["item_list_name"] == "cart_addon" and ck["goodsAfter"] == "1176 ₴" and "Add5" not in ck["boxAfter"] and "Add6" in ck["boxAfter"])

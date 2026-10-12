@@ -206,7 +206,7 @@
       renderSearch();
     });
   }
-  function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function esc(s){ return String(s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }   // ' теж: назви в data-add='…' (аудит #691: «М'яка іграшка» ламала кнопку й давала ін'єкцію атрибута)
 
   // ── Каталог: сортування + фільтри (клієнтом з index.json, весь каталог) ──
   function catCard(p){
@@ -302,16 +302,20 @@
       box.style.display="";
       box.innerHTML='<h3>Додайте до замовлення</h3>'+picks.map(function(a){
         return '<div class="ao"><img src="'+esc(a.photo)+'" alt="" loading="lazy"><div class="ao-nm">'+esc(a.name)+'</div><div class="ao-pr">'+a.price+' ₴</div>'+
-          '<button type="button" class="ao-add" data-add=\''+esc(JSON.stringify({id:a.id,name:a.name,price:a.price,photo:a.photo}))+'\' data-list="cart_addon">+ Додати</button></div>';
+          '<button type="button" class="ao-add" data-add=\''+esc(JSON.stringify({id:a.id,name:a.name,price:a.price,photo:a.photo}))+'\' data-list="cart_addon" aria-label="Додати до замовлення: '+esc(a.name)+'">+ Додати</button></div>';
       }).join("");
     });
   }
   function initShipToday(){
+    // Політика сайту каже лише «замовлення до 12:00 зазвичай відправляємо того ж дня» (сторінки «Доставка», «Про нас»). Нових обіцянок не додаємо (аудит #691): рядок «відправимо сьогодні» показуємо ТІЛЬКИ коли зараз
+    // у Києві будній день і до 12:00; після 12:00, у суботу/неділю, без Intl або з невідомою зоною лишається статичний текст політики. Обчислюється один раз при завантаженні.
     var el=document.getElementById("ship-today");
     if(!el) return;
     try{
-      var hh=+new Intl.DateTimeFormat("en-GB",{hour:"numeric",hour12:false,timeZone:"Europe/Kyiv"}).format(new Date());
-      el.textContent = hh<12 ? "🚚 Замовте до 12:00 — зазвичай відправимо сьогодні" : "🚚 Замовлення після 12:00 зазвичай відправляємо наступного робочого дня";
+      var f=new Intl.DateTimeFormat("en-GB",{hour:"numeric",hour12:false,weekday:"short",timeZone:"Europe/Kyiv"}).formatToParts(new Date());
+      var hh=0, wd="";
+      f.forEach(function(p){ if(p.type==="hour") hh=+p.value; if(p.type==="weekday") wd=p.value; });
+      if(wd && wd!=="Sat" && wd!=="Sun" && hh<12) el.textContent="🚚 Замовте до 12:00 — зазвичай відправимо сьогодні";
     }catch(e){}
   }
 

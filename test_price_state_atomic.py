@@ -58,7 +58,7 @@ tmpf.unlink(missing_ok=True)
 f.write_text('{"_delisted_since": {"1": "2026-10', encoding="utf-8")      # обрізаний JSON
 alerts.clear()
 got = cp.load_prom_price_state()
-chk("битий основний файл → відновлено з бекапу (останній валідний стан s2: перерваний запис лишив бекап = s2) і є попередження", got == s2 and len(alerts) == 1 and "відновлено з резервної копії" in alerts[0][1])
+chk("битий основний файл → відновлено з бекапу (останній валідний стан s2: перерваний запис лишив бекап = s2) і є попередження", got == s2 and len(alerts) == 1 and "відновлено з резервної копії" in alerts[0][1] and "байт, змінено" in alerts[0][1])
 
 # битий основний НЕ перезаписує бекап добрим-збитим
 cp.save_prom_price_state(got)
@@ -68,7 +68,7 @@ chk("після відновлення новий запис: бекап не з
 f.write_text("не json", encoding="utf-8")
 bak.write_text("теж не json", encoding="utf-8")
 alerts.clear()
-chk("основний і бекап биті → {} і гучний алерт «стан ПОРОЖНІЙ»", cp.load_prom_price_state() == {} and len(alerts) == 1 and "ПОРОЖНІЙ" in alerts[0][1])
+chk("основний і бекап биті → {} і гучний алерт «стан ПОРОЖНІЙ»", cp.load_prom_price_state() == {} and len(alerts) == 1 and "ПОРОЖНІЙ" in alerts[0][1] and "байт, змінено" in alerts[0][1])
 
 # основний битий, бекапу нема
 bak.unlink()

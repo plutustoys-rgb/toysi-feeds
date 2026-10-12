@@ -144,6 +144,15 @@ def _alert_price_state(key: str, text: str) -> None:
         print(f"[PriceState] сигнал не надіслано: {type(e).__name__}", file=sys.stderr)
 
 
+def _price_state_file_info() -> str:
+    """Розмір і час зміни файлу стану для сповіщення: одразу видно, обрив запису це (малий розмір, свіжий час) чи щось інше."""
+    try:
+        st = PROM_PRICE_STATE_FILE.stat()
+        return f"розмір {st.st_size} байт, змінено {datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S')}"
+    except OSError:
+        return "розмір/час невідомі"
+
+
 def load_prom_price_state() -> dict:
     """Стан репрайсера. Файл є, але ПОШКОДЖЕНИЙ (обрізаний записом, перерваним SIGTERM/питанням живлення): раніше мовчки повертався {} — губилися `_delisted_since`, ціни-перевизначення,
     `_readded_at`, і фід знову включав видалені SKU (клас інциденту 18.07). Тепер: пробуємо резервну копію попереднього доброго запису (`.json.bak`), у обох випадках голосно попереджаємо.
@@ -156,13 +165,13 @@ def load_prom_price_state() -> dict:
         bak = _price_state_backup_path()
         try:
             data = json.loads(bak.read_text(encoding="utf-8"))
-            msg = (f"⚠️ {PROM_PRICE_STATE_FILE.name} пошкоджений ({type(e).__name__}); відновлено з резервної копії {bak.name} (попередній добрий запис). "
+            msg = (f"⚠️ {PROM_PRICE_STATE_FILE.name} пошкоджений ({type(e).__name__}; {_price_state_file_info()}); відновлено з резервної копії {bak.name} (попередній добрий запис). "
                    "Дані від останнього збереження могли загубитись; перевір прогін репрайсера.")
             print(f"[PriceState] {msg}", file=sys.stderr)
             _alert_price_state("price_state_corrupt_bak", msg)
             return data
         except (ValueError, OSError):
-            msg = (f"🔴 {PROM_PRICE_STATE_FILE.name} пошкоджений ({type(e).__name__}) і резервної копії нема/вона теж пошкоджена: стан репрайсера ПОРОЖНІЙ. Губляться _delisted_since, ціни-перевизначення, "
+            msg = (f"🔴 {PROM_PRICE_STATE_FILE.name} пошкоджений ({type(e).__name__}; {_price_state_file_info()}) і резервної копії нема/вона теж пошкоджена: стан репрайсера ПОРОЖНІЙ. Губляться _delisted_since, ціни-перевизначення, "
                    "_readded_at: фід може знову включити видалені SKU. Не запускай --apply, доки стан не відновлено (feed-data/prom_competitor_price_state.json редагована копія без cost/margin).")
             print(f"[PriceState] {msg}", file=sys.stderr)
             _alert_price_state("price_state_corrupt_lost", msg)

@@ -49,7 +49,7 @@ try:
     P = np.asarray(Image.open(HERE / "site/assets/mascot/plutus_hero_poster.webp").convert("RGBA")).astype(int)
     ok = True
     worst = 0.0
-    for n in ("tailtrip", "ear_scratch"):
+    for n in ("tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff"):
         im = Image.open(HERE / f"site/assets/mascot/plutus_{n}.webp")
         for k in (0, im.n_frames - 1):
             im.seek(k)
@@ -57,6 +57,21 @@ try:
             worst = max(worst, d)
             ok = ok and d < 9.0
     chk(f"кліпи: перший і останній кадр збігаються з poster (середня різниця ≤ 9/255, найгірше {worst:.1f}; шум стиснення ≈6; до виправлення ear_scratch давав ≈28)", ok)
+    # напрямок СЕРЕДНІХ кадрів (аудит #704: дзеркало не ловилось, бо кінці змішані з poster): маска альфи кадру ближча до маски poster, ніж до її дзеркала
+    A = (P[..., 3] > 128)
+    Am = A[:, ::-1]
+    okdir = True
+    for n in ("tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff"):
+        im = Image.open(HERE / f"site/assets/mascot/plutus_{n}.webp")
+        for k in (im.n_frames // 4, im.n_frames // 2, (3 * im.n_frames) // 4):
+            im.seek(k)
+            fa = np.asarray(im.convert("RGBA"))[..., 3] > 128
+            iou = (fa & A).sum() / max(1, (fa | A).sum())
+            iou_m = (fa & Am).sum() / max(1, (fa | Am).sum())
+            if iou <= iou_m:
+                okdir = False
+                print(f"   ⚠ {n} кадр {k}: IoU з poster {iou:.2f} ≤ з дзеркалом {iou_m:.2f}")
+    chk("напрямок середніх кадрів усіх 5 кліпів збігається з poster (хвіст праворуч): маска ближча до poster, ніж до його дзеркала", okdir)
 except ImportError:
     chk("PIL/numpy доступні для перевірки кадрів кліпів", False)
 

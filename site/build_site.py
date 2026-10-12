@@ -1148,7 +1148,10 @@ def home_jsonld() -> str:
 # ── Головна: «Добірка Плутуса» (SMM 09.10.2026, рішення власника «герой крінж, зверху карусель») ──
 # Анімований Плутус у герої (SMM 09.10/12.10): poster + кліпи ЛИШЕ з хвостом праворуч (tail_right у manifest креатива: tailtrip, ear_scratch), тривалість у мс
 HERO_MASCOT_POSTER = "assets/mascot/plutus_hero_poster.webp"
-HERO_MASCOT_CLIPS = (("tailtrip", 3170), ("ear_scratch", 4000))
+# П'ять рухів (SMM 12.10: «усі готові», не два). grooming/sniff/shakeoff мають хвіст ЛІВОРУЧ (manifest.facing=tail_left) — їх дзеркалено ПРИ КОДУВАННІ (PIL), щоб усі дивились в один бік із poster; CSS-дзеркала нема, тож накладання poster/кліп не ламається.
+# stretch_yawn НЕ в героя: manifest safe_for_hero=false (широко відкритий рот на піку, власник міг би не схвалити) + бюджет ваги (6 кліпів ≈1,52 МБ > 1,5 МБ). Додати: перекодувати разом із рештою (≈286 КБ) і дописати ("stretch_yawn", 4400).
+# Мілісекунди = сума тривалостей кадрів файлу (data-ms; +400 мс запасу додає JS).
+HERO_MASCOT_CLIPS = (("tailtrip", 3154), ("ear_scratch", 4000), ("grooming", 4400), ("sniff", 4400), ("shakeoff", 1992))
 HOME_MIN_CONTRIB = 100.0           # внесок на замовлення, ₴ (рішення Консультанта: не ведемо вітрину позицією без маржі) — існуючий поріг «Новинок»
 HOME_PICK_PRICE_MIN, HOME_PICK_PRICE_MAX = 150, 700    # ₴: імпульсна ціна (SMM): рамка, не мірило
 HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2

@@ -64,7 +64,7 @@ def process_outbox(path: str = OUTBOX_FILE) -> None:
             marker = f"\n\n📋 лише в журналі {timestamp} (Telegram: режим «лише замовлення»)"   # не вводимо в оману «відправлено»
         else:
             marker = f"\n\n✅ відправлено {timestamp}"
-        marks.append((block["end"], marker))
+        marks.append((block["end"], marker + chr(10)))   # маркер завершуємо переносом рядка: інакше він приклеюється до заголовка наступного блоку («…12:48:49## Повідомлення 2»), той перестає розпізнаватись і повідомлення губиться при збої відправки
         print(f"[telegram_outbox] Оброблено: {block['header']}")
 
     for insert_at, marker in sorted(marks, key=lambda m: m[0], reverse=True):

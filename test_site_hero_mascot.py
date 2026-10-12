@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """test_site_hero_mascot.py — 12.10.2026, SMM (09.10 + 12.10): Плутус у герої головної ОЖИВАЄ. Перевіряє:
   • збірка: poster <img id=hero-mascot> (webp, width/height — без CLS) + накладений <img id=hero-mascot-clip> без src (кросфейд, аудит #688: кадри кліпів не збігаються з poster за позою);
-    data-clips лише з кліпами «хвіст праворуч» (tailtrip, ear_scratch), data-ms; файли існують; poster ≤ 30 КБ і легший за PNG, який у герої замінив (у хедері лишається PNG 24 px, тож головна важчає
+    data-clips: 5 рухів (tailtrip, ear_scratch + дзеркальні grooming, sniff, shakeoff; stretch_yawn не в героя), data-ms; файли існують; poster ≤ 30 КБ і легший за PNG, який у герої замінив (у хедері лишається PNG 24 px, тож головна важчає
     лише на poster — ≤ 30 КБ за критерієм SMM);
   • поведінка (node, керований годинник, Image, IO): перший кліп не раніше ніж через 3 с після load; раз на 12–20 с; один у польоті; кліп з'являється на clip-<img> (клас on) і розчиняється, poster не чіпаємо;
     src кліпу знімається після розчинення (наступний показ з першого кадру); запас до кінця ≥ 300 мс; перемішаний цикл без повтору підряд (і на стику циклів); не граємо й не вантажимо при prefers-reduced-motion /
@@ -62,17 +62,31 @@ if m:
     poster, w, h, clips, ms = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"), m.group(5).split(",")
     chk("poster — webp зі сталою версією ?v=хеш, розміри 130×100 задані атрибутами (CLS 0)", re.fullmatch(r"assets/mascot/plutus_hero_poster\.webp\?v=[0-9a-f]{8}", poster) is not None and (w, h) == (130, 100))
     names = sorted(re.search(r"plutus_(\w+)\.webp", c).group(1) for c in clips)
-    chk("у кліпах ЛИШЕ «хвіст праворуч» (tailtrip, ear_scratch) — інші сцени в героя не потрапляють (рішення SMM)", names == ["ear_scratch", "tailtrip"])
+    chk("у героя 5 рухів (SMM 12.10: усі готові): tailtrip, ear_scratch + дзеркальні grooming, sniff, shakeoff; stretch_yawn НЕ в героя (manifest safe_for_hero=false)", names == ["ear_scratch", "grooming", "shakeoff", "sniff", "tailtrip"] and "stretch_yawn" not in home)
     chk("data-ms: тривалість кожного кліпу в мс, число на кліп", len(ms) == len(clips) and all(x.isdigit() and 1000 <= int(x) <= 8000 for x in ms))
     ps = (HERE / "site/assets/mascot/plutus_hero_poster.webp").stat().st_size
-    chk("файли існують у site/assets/mascot, кліпи ≤ 250 КБ, poster ≤ 30 КБ і легший за PNG 14,6 КБ, який у герої замінив", ps <= 30 * 1024 and ps < (HERE / "site/assets/plutus_mascot_s.png").stat().st_size
-        and all((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size <= 250 * 1024 for n in names))
+    chk("файли існують у site/assets/mascot, кліпи ≤ 300 КБ (після перекодування з вирівняними кінцями 12.10: ≈283 КБ), poster ≤ 30 КБ і легший за PNG 14,6 КБ, який у герої замінив", ps <= 30 * 1024 and ps < (HERE / "site/assets/plutus_mascot_s.png").stat().st_size
+        and all((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size <= 300 * 1024 for n in names))
+    tot = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in names) + ps
+    chk(f"загальна вага рухів у репо ≤ 1,5 МБ (SMM): {tot/1024:.0f} КБ", tot <= 1.5 * 1024 * 1024)
+    from PIL import Image as _Im, ImageSequence as _Seq
+    dur = {}
+    for n in names:
+        im = _Im.open(HERE / f"site/assets/mascot/plutus_{n}.webp")
+        tot_ms = 0
+        for k in range(im.n_frames):
+            im.seek(k)
+            im.load()                       # без load() Pillow не заповнює info["duration"]
+            tot_ms += im.info.get("duration", 0)
+        dur[n] = tot_ms
+    ms_by = {re.search(r"plutus_(\w+)\.webp", c).group(1): int(x) for c, x in zip(clips, ms)}
+    chk(f"data-ms збігається з реальною тривалістю кадрів кожного файлу (±60 мс): {dur}", all(abs(dur[n] - ms_by[n]) <= 60 for n in names))
     chk("старий статичний PNG у герої замінено на poster (у .hero2 нема plutus_mascot_s.png)", "plutus_mascot_s.png" not in re.search(r'<div class="hero2">(.*?)<div class="txt">', home, re.S).group(1))
 chk("у хедері лишається статичний 24px PNG (SMM: анімація лише в герої) — головна важчає лише на poster", 'src="assets/plutus_mascot_s.png" alt="Плутус" width="24" height="22"' in home)
 chk("розмітка не додає жодного <video>/<script> для кліпів (вантажаться з app.js після load)", "<video" not in home)
 css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
-chk("CSS: clip-<img> накладений (absolute, opacity 0 → .on 1, transition); для reduced-motion transition вимкнено", re.search(r"\.mascot-clip\{position:absolute;left:0;top:0;opacity:0;transition:opacity", css) is not None and ".mascot-clip.on{opacity:1}" in css
-    and "prefers-reduced-motion:reduce){.hero2 .mascot-wrap .mascot-clip{transition:none}" in css)
+chk("CSS: кліп ховається visibility (не opacity/transition — кросфейд давав двійника), на час кліпу poster схований (.clip-on #hero-mascot{visibility:hidden})", re.search(r"\.mascot-clip\{position:absolute;left:0;top:0;visibility:hidden", css) is not None and ".mascot-clip.on{visibility:visible}" in css
+    and ".hero2 .mascot-wrap.clip-on #hero-mascot{visibility:hidden}" in css and "opacity" not in css[css.index(".hero2 .mascot-wrap .mascot-clip"):css.index(".hero2 .mascot-wrap.clip-on")])
 
 node = shutil.which("node")
 if not node:
@@ -83,7 +97,7 @@ const fs=require("fs"), vm=require("vm");
 const code=fs.readFileSync(process.argv[2],"utf8"); const scenario=process.argv[3];
 function store(){ const m={}; return {getItem:k=>(k in m?m[k]:null), setItem:(k,v)=>{m[k]=String(v)}, removeItem:k=>{delete m[k]}}; }
 (async()=>{
-  const attrs={ "src":"assets/mascot/plutus_hero_poster.webp?v=aaaaaaaa", "data-clips": scenario==="noclips"?"":"assets/mascot/plutus_tailtrip.webp?v=1|assets/mascot/plutus_ear_scratch.webp?v=2", "data-ms":"3170,4000" };
+  const attrs={ "src":"assets/mascot/plutus_hero_poster.webp?v=aaaaaaaa", "data-clips": scenario==="noclips"?"":"assets/mascot/plutus_tailtrip.webp?v=1|assets/mascot/plutus_ear_scratch.webp?v=2|assets/mascot/plutus_grooming.webp?v=3|assets/mascot/plutus_sniff.webp?v=4|assets/mascot/plutus_shakeoff.webp?v=5", "data-ms":"3154,4000,4400,4400,1992" };
   const posterLog=[]; const clipLog=[]; const timers=[]; const imgs=[]; const docH={}, winH={}; const gt=[]; const ioOpts=[];
   const img={id:"hero-mascot", get src(){return attrs.src}, set src(v){ posterLog.push(v); attrs.src=v; }, getAttribute(k){return attrs[k]===undefined?null:attrs[k]}, addEventListener(){}};
   const clipAttrs={}; let clsOn=false;
@@ -168,7 +182,7 @@ function store(){ const m={}; return {getItem:k=>(k in m?m[k]:null), setItem:(k,
     chk("IntersectionObserver з threshold 0,3", b is not None and b["ioThreshold"] == 0.3)
     chk("тік: кліп спершу ПЕРЕДЗАВАНТАЖУЄТЬСЯ (Image), clip-<img> не чіпаємо до onload", b is not None and b["imgsAfterFire"] == 1 and b["clipBeforeLoad"] == 0)
     chk("onload → clip-<img>.src = кліп (з ?v) і клас «on» (кросфейд), таймер кінця = тривалість + 400 мс (запас на декодування)", b is not None and len(b["clipAfterLoad"]) == 1 and b["clipAfterLoad"][0][0] == "set"
-        and b["clipAfterLoad"][0][1].endswith(("?v=1", "?v=2")) and b["onAfterLoad"] is True and b["endMs"] in ([3570], [4400]))
+        and b["clipAfterLoad"][0][1].endswith(("?v=1", "?v=2", "?v=3", "?v=4", "?v=5")) and b["onAfterLoad"] is True and b["endMs"] in ([3554], [4400], [4800], [2392]))
     chk("кінець кліпу: клас «on» знято (розчинення), poster-<img> НЕ чіпали (завжди під низом), наступний показ через 12–20 с", b is not None and b["onAfterEnd"] is False and b["posterLog"] == [] and len(b["nextMs"]) == 1 and 12000 <= b["nextMs"][0] <= 20000)
     chk("після розчинення (350 мс) src кліпу знімається — наступний показ стартує з першого кадру", b is not None and b["clipAfterFade"][-1] == ["rm", "src"])
     chk("аналітика не отримала жодної події від анімації", b is not None and b["gt"] == 0)
@@ -195,7 +209,7 @@ function store(){ const m={}; return {getItem:k=>(k in m?m[k]:null), setItem:(k,
     fl = run("one_inflight")
     chk("під час відтворення: один Image, один таймер кінця, наступний показ не заплановано (ланцюжок єдиний)", fl is not None and fl["imgs"] == 1 and fl["endTimers"] == 1 and fl["nextWhilePlaying"] == 0)
     cy = run("cycle")
-    chk("8 відтворень: кліпи чергуються, жодного повтору підряд; обидва кліпи використано", cy is not None and all(cy["seq"][i] != cy["seq"][i + 1] for i in range(len(cy["seq"]) - 1)) and len(set(cy["seq"])) == 2)
+    chk("8 відтворень: кліпи чергуються, жодного повтору підряд; у 8 відтворень використано всі 5 кліпів (мішок із 5, потім 3 з нового)", cy is not None and all(cy["seq"][i] != cy["seq"][i + 1] for i in range(len(cy["seq"]) - 1)) and len(set(cy["seq"])) == 5)
     bd = run("boundary")
     chk("стик циклів: новий цикл не починається з кліпу, яким закінчився попередній (3 відтворення без повтору підряд)", bd is not None and bd["seq"][1] != bd["seq"][2] and bd["seq"][0] != bd["seq"][1])
     dl = run("delays")

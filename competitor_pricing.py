@@ -70,7 +70,9 @@ Prom.ua), поки не побудований — прапорець готов
 import argparse
 import csv
 import json
+import os
 import re
+import shutil
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -129,19 +131,73 @@ def cap_stale_prom_override(retail: float, default_price: float, has_fresh_compe
     return min(retail, default_price)
 
 
+def _price_state_backup_path() -> Path:
+    return PROM_PRICE_STATE_FILE.with_suffix(".json.bak")
+
+
+def _alert_price_state(key: str, text: str) -> None:
+    """Best-effort сигнал (у Telegram за режимом «лише замовлення» піде лише в журнал); збій сигналу не ламає завантаження стану."""
+    try:
+        from telegram_notify import send_throttled_alert
+        send_throttled_alert(key, text, cooldown_sec=6 * 60 * 60)
+    except Exception as e:  # noqa: BLE001
+        print(f"[PriceState] сигнал не надіслано: {type(e).__name__}", file=sys.stderr)
+
+
+def _price_state_file_info() -> str:
+    """Розмір і час зміни файлу стану для сповіщення: одразу видно, обрив запису це (малий розмір, свіжий час) чи щось інше."""
+    try:
+        st = PROM_PRICE_STATE_FILE.stat()
+        return f"розмір {st.st_size} байт, змінено {datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S')}"
+    except OSError:
+        return "розмір/час невідомі"
+
+
 def load_prom_price_state() -> dict:
+    """Стан репрайсера. Файл є, але ПОШКОДЖЕНИЙ (обрізаний записом, перерваним SIGTERM/питанням живлення): раніше мовчки повертався {} — губилися `_delisted_since`, ціни-перевизначення,
+    `_readded_at`, і фід знову включав видалені SKU (клас інциденту 18.07). Тепер: пробуємо резервну копію попереднього доброго запису (`.json.bak`), у обох випадках голосно попереджаємо.
+    Файлу нема взагалі — {} без шуму (перший прогін)."""
     if not PROM_PRICE_STATE_FILE.exists():
         return {}
     try:
         return json.loads(PROM_PRICE_STATE_FILE.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {}
+    except (ValueError, OSError) as e:
+        bak = _price_state_backup_path()
+        try:
+            data = json.loads(bak.read_text(encoding="utf-8"))
+            msg = (f"⚠️ {PROM_PRICE_STATE_FILE.name} пошкоджений ({type(e).__name__}; {_price_state_file_info()}); відновлено з резервної копії {bak.name} (попередній добрий запис). "
+                   "Дані від останнього збереження могли загубитись; перевір прогін репрайсера.")
+            print(f"[PriceState] {msg}", file=sys.stderr)
+            _alert_price_state("price_state_corrupt_bak", msg)
+            return data
+        except (ValueError, OSError):
+            msg = (f"🔴 {PROM_PRICE_STATE_FILE.name} пошкоджений ({type(e).__name__}; {_price_state_file_info()}) і резервної копії нема/вона теж пошкоджена: стан репрайсера ПОРОЖНІЙ. Губляться _delisted_since, ціни-перевизначення, "
+                   "_readded_at: фід може знову включити видалені SKU. Не запускай --apply, доки стан не відновлено (feed-data/prom_competitor_price_state.json редагована копія без cost/margin).")
+            print(f"[PriceState] {msg}", file=sys.stderr)
+            _alert_price_state("price_state_corrupt_lost", msg)
+            return {}
 
 
 def save_prom_price_state(state: dict) -> None:
-    PROM_PRICE_STATE_FILE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8"
-    )
+    """АТОМАРНИЙ запис: tmp-файл у тому ж каталозі + os.replace (на POSIX атомарно), попередній добрий файл лишається як `.json.bak`. Перерваний запис (SIGTERM/SIGKILL/збій) НЕ залишає
+    обрізаного JSON: у гіршому разі лишається повний попередній стан. Раніше `write_text` напряму (аудит питання Консультанта 12.10: чи безпечно вбивати репрайсер посеред --apply)."""
+    data = json.dumps(state, ensure_ascii=False, indent=1)
+    # унікальне імʼя tmp (pid): стан пишуть два незалежні процеси (репрайсер і prom-catalog-sync без flock); спільне .json.tmp дало б гонку «replace забрав чужий tmp» (аудит PR #705)
+    tmp = PROM_PRICE_STATE_FILE.with_name(f"{PROM_PRICE_STATE_FILE.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(data, encoding="utf-8")
+        if PROM_PRICE_STATE_FILE.exists():
+            try:
+                json.loads(PROM_PRICE_STATE_FILE.read_text(encoding="utf-8"))      # у бекап лише ВАЛІДНИЙ попередній стан
+                shutil.copyfile(PROM_PRICE_STATE_FILE, _price_state_backup_path())
+            except (ValueError, OSError):
+                pass
+        os.replace(tmp, PROM_PRICE_STATE_FILE)
+    finally:
+        try:
+            tmp.unlink()        # після успішного replace файлу вже нема; після збою не лишаємо сміття
+        except OSError:
+            pass
 
 
 def load_delisted_pids() -> dict:

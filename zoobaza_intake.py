@@ -105,7 +105,7 @@ def claim_new(conn, state_path: Path = None, notify: bool = True) -> dict:
         """
         SELECT * FROM orders
         WHERE forwarded_to_toysi_at IS NULL
-          AND (status IS NULL OR (status NOT IN (?, ?) AND status NOT LIKE '%cancel%' AND status != 'toysi_error'))
+          AND (status IS NULL OR (status NOT IN (?, ?) AND status NOT LIKE '%cancel%' AND status NOT IN ('toysi_error', 'sandbox_test')))
         """, (STATUS_HOLD, STATUS_MIXED)).fetchall()
     state = load_state(state_path)
     claimed, mixed = [], []

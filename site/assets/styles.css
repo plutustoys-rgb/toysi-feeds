@@ -158,9 +158,9 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .hero2 .mascot{height:104px;width:auto;flex:none;margin:-6px 0 -10px}
 .hero2 .mascot-wrap{position:relative;display:block;flex:none;line-height:0;margin:-6px 0 -10px}
 .hero2 .mascot-wrap .mascot{display:block;margin:0}
-.hero2 .mascot-wrap .mascot-clip{position:absolute;left:0;top:0;opacity:0;transition:opacity .25s ease;pointer-events:none}
-.hero2 .mascot-wrap .mascot-clip.on{opacity:1}
-@media (prefers-reduced-motion:reduce){.hero2 .mascot-wrap .mascot-clip{transition:none}}
+.hero2 .mascot-wrap .mascot-clip{position:absolute;left:0;top:0;visibility:hidden;pointer-events:none}
+.hero2 .mascot-wrap .mascot-clip.on{visibility:visible}
+.hero2 .mascot-wrap.clip-on #hero-mascot{visibility:hidden}   /* на час кліпу poster ховаємо — інакше крізь прозорий кліп видно двійника (SMM 12.10) */
 .hero2 .txt{flex:1;min-width:0}
 .hero2 h1{margin:0 0 4px;font-size:clamp(22px,3.4vw,32px);line-height:1.15}
 .hero2 p{margin:0;color:#6b5547;font-size:14px}

@@ -240,8 +240,7 @@ def build_order(payload: dict) -> tuple:
     phone = _norm_phone(payload.get("phone"))
     if not phone:
         raise OrderError("Вкажіть коректний номер телефону (+380…)")
-    # Кома в назві міста розрізала б np_branch (parse_np_branch ріже за ПЕРШОЮ комою верхнього рівня): «Київ, Оболонь» → місто «Київ» + «Оболонь…» у адресі.
-    city = " ".join((payload.get("city_name") or "").replace(",", " ").split())
+    city = (payload.get("city_name") or "").strip()
     warehouse = (payload.get("warehouse_name") or "").strip()
     if not city or not warehouse:
         raise OrderError("Оберіть місто та відділення Нової Пошти")
@@ -450,7 +449,8 @@ class Handler(SimpleHTTPRequestHandler):
         q = parse_qs(parsed.query)
         try:
             if parsed.path == "/api/np/city":
-                cities = nova_poshta.search_cities((q.get("q") or [""])[0])
+                # limit 50: у «Іванівка» 37 збігів, «Михайлівка» 40 — з 8 покупець зі свого села його не бачив би (аудит #682); випадайка скролиться (.ac max-height)
+                cities = nova_poshta.search_cities((q.get("q") or [""])[0], limit=50)
                 return self._json(200, {"cities": cities})
             if parsed.path == "/api/np/warehouse":
                 city_ref = (q.get("city_ref") or [""])[0]

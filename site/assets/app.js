@@ -454,7 +454,8 @@
       trackRaw("view_item_list", {item_list_id:"ig_landing", item_list_name:listName, items:items()});
     }
     if(typeof IntersectionObserver==="function"){
-      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ fireList(); io.disconnect(); } }); }, {threshold:0.4});
+      // поріг 0.1, а не 0.4: на 320 px сітка в 1 колонку (≈2250 px заввишки) — 40% її висоти у вікні не бувають, і view_item_list не слався б ніколи (аудит #686)
+      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ fireList(); io.disconnect(); } }); }, {threshold:0.1});
       io.observe(box);
     } else { fireList(); }
     box.addEventListener("click", function(e){

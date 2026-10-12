@@ -1167,7 +1167,9 @@ def _load_ig_featured():
         sx = str(x).strip()
         if sx and sx not in out:
             out.append(sx)
-    return out[:IG_MAX_IDS]
+            if len(out) >= IG_MAX_IDS:
+                break         # O(n²) дедуп на гігантському файлі гальмував би збірку (аудит #686): читаємо рівно стільки, скільки потрібно
+    return out
 
 
 def write_ig(prods):

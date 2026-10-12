@@ -107,6 +107,15 @@ o, e = build_with(b"\xef\xbb\xbf" + json.dumps({"ids": ["5"]}).encode("utf-8"), 
 chk("BOM (Блокнот/Windows) читається нормально", cards((o / "ig.html").read_text(encoding="utf-8")) == ["5"] and e.count("⚠ ig_featured") == 0)
 o, e = build_with(json.dumps({"ids": [True, None, ["x"], "8"]}))
 chk("не рядкові/не числові id (bool/null/список) пропускаються голосно, валідний лишається", cards((o / "ig.html").read_text(encoding="utf-8")) == ["8"] and "пропущено" in e)
+o, e = build_with(json.dumps({"ids": [7, 8, 9]}))
+chk("id ЛИШЕ числами ([7, 8, 9]) приймаються (без сусіднього рядка-дубля, який маскує втрату str())", cards((o / "ig.html").read_text(encoding="utf-8")) == ["7", "8", "9"])
+o, e = build_with("[" * 100000)
+chk("глибоко вкладений JSON → «невалідний JSON» голосно, збірка не падає (RecursionError ловиться)", "невалідний JSON" in e and 'id="ig-list"' not in (o / "ig.html").read_text(encoding="utf-8"))
+import time as _t
+big = json.dumps({"ids": [str(i) for i in range(200000)]})
+_t0 = _t.time()
+o, e = build_with(big)
+chk("файл на 200 тис. id: збірка швидка (зупиняємось на 50 id, дедуп не O(n²)) і показує перші 6 наявних", _t.time() - _t0 < 60 and len(cards((o / "ig.html").read_text(encoding="utf-8")) or []) == 6)
 o, e = build_with(json.dumps({"ids": ["900"]}))
 chk("усі товари не в наявності → без сітки, лише кнопка каталогу, попередження «жодного товару в наявності»", 'id="ig-list"' not in (o / "ig.html").read_text(encoding="utf-8") and "жодного товару" in e)
 
@@ -173,6 +182,7 @@ function mkEl(o){ const h={}; return Object.assign({h, style:{}, classList:{add(
         and a["vil"][0][2]["item_list_name"] == "ig_landing" and len(a["vil"][0][2]["items"]) == 3)
     chk("select_item лише на клік: рівно один, item_list_name «ig_landing», це 2-га картка (item_id 12, index 1)", a is not None and len(a["sel"]) == 1
         and a["sel"][0][2]["item_list_name"] == "ig_landing" and a["sel"][0][2]["items"][0]["item_id"] == "12" and a["sel"][0][2]["items"][0]["index"] == 1)
+    chk("view_item_list несе item_list_id «ig_landing» (а не home_pick)", a is not None and a["vil"][0][2]["item_list_id"] == "ig_landing" and a["sel"][0][2]["item_list_id"] == "ig_landing")
     io = run("io")
     chk("з IntersectionObserver: до появи/поза екраном — нічого; побачили → один view_item_list (повтори не множать)", io is not None and io["before"] == 0 and io["afterNo"] == 0 and len(io["vil"]) == 1)
     nb = run("nobox")

@@ -361,6 +361,7 @@
     initCatalog();
     initHomeCarousel();
     initListTracking();
+    initMascot();
     initContactTracking();
 
     // сторінка подяки — підставити номер замовлення
@@ -501,6 +502,57 @@
       var i=cards.indexOf(a); var d=slideData(a, i<0?0:i); d.item_list_name=listName;
       trackRaw("select_item", {item_list_id:"ig_landing", item_list_name:listName, items:[d]});
     });
+  }
+  // ── Анімований Плутус у герої головної (SMM 09.10 + 12.10): poster (idle-кадр), раз на 12–20 с один кліп із хвостом праворуч (tailtrip/ear_scratch) програється ОДИН раз і повертається до poster ──
+  // Не безперервний луп. Нічого не вантажимо й не граємо: prefers-reduced-motion, Save-Data, 2g/slow-2g; кліп тягнемо ПІСЛЯ load + 3 с; не більше одного в польоті; пауза, коли вкладка
+  // прихована (visibilitychange) або Плутус поза екраном (IntersectionObserver); перемішаний цикл без повтору підряд. Розмір <img> фіксований атрибутами width/height — CLS нуль. В аналітику не пише.
+  function initMascot(){
+    var img=document.getElementById("hero-mascot");
+    if(!img) return;
+    var clips=(img.getAttribute("data-clips")||"").split("|").filter(Boolean);
+    var durs=(img.getAttribute("data-ms")||"").split(",").map(Number);
+    if(!clips.length) return;
+    var poster=img.getAttribute("src");
+    function reduced(){ return typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches; }
+    var conn=navigator.connection||{};
+    if(reduced() || conn.saveData || /(^|-)2g$/.test(conn.effectiveType||"")) return;
+    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null;
+    if(typeof IntersectionObserver==="function"){
+      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ visible=!!e.isIntersecting; }); }, {threshold:0.3});
+      io.observe(img);
+      visible=false;   // до першого повідомлення IntersectionObserver вважаємо «не видно»
+    }
+    function canPlay(){ return !document.hidden && visible && !reduced(); }
+    function wait(){ return 12000 + Math.floor(Math.random()*8000); }
+    function next(){
+      if(!order.length){
+        order=clips.map(function(_,i){ return i; });
+        for(var i=order.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=order[i]; order[i]=order[j]; order[j]=t; }
+        if(order.length>1 && order[0]===last){ order.push(order.shift()); }   // не повторюємо той самий кліп підряд на стику циклів
+      }
+      last=order.shift(); return last;
+    }
+    function schedule(ms){ clearTimeout(timer); timer=setTimeout(play, ms); }
+    function stop(){
+      clearTimeout(endTimer);
+      if(playing){ playing=false; img.src=poster; }
+    }
+    function play(){
+      if(playing) return;
+      if(!canPlay()){ schedule(wait()); return; }
+      var idx=next(), url=clips[idx], ms=(durs[idx]>0?durs[idx]:4000)+150;
+      var pre=new Image();
+      pre.onload=function(){
+        if(!canPlay()){ schedule(wait()); return; }      // поки вантажився — вкладка сховалась / Плутус зник з екрана
+        playing=true; img.src=url;
+        endTimer=setTimeout(function(){ stop(); schedule(wait()); }, ms);
+      };
+      pre.onerror=function(){ schedule(wait()); };
+      pre.src=url;
+    }
+    document.addEventListener("visibilitychange", function(){ if(document.hidden) stop(); });
+    function start(){ schedule(3000); }      // перший кліп — не раніше ніж через 3 с після load
+    if(document.readyState==="complete") start(); else window.addEventListener("load", start);
   }
   // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──
   function initContactTracking(){

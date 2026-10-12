@@ -144,11 +144,13 @@ chk("кошик: згода з офертою й політикою біля к�
 
 # ── доставка: друкуємо ЛИШЕ виміряне (SEO 12.10: НП getDocumentPrice із нашого акаунту: Київ→Київ 70, інші великі міста 90, +23,8 накладений; до 2 кг). Невиміряного («від 65/70 ₴», >2 кг) — ніде.
 appjs = open(os.path.join(HERE, "site", "assets", "app.js"), encoding="utf-8").read()
-chk("app.js: кошик показує виміряне «70–90 ₴ до 2 кг» (не «за тарифами НП»), Разом = товари", 'd.textContent=freeShip ? "Безкоштовно" : "70–90 ₴ до 2 кг"' in appjs and 't.textContent=goods+" ₴"' in appjs and "DELIVERY_HINT" not in appjs.replace("// ", "").split("прибрано")[0])
+chk("app.js: кошик показує «орієнтовно 70–90 ₴ до 2 кг» (не «за тарифами НП»), Разом = товари", 'd.textContent=freeShip ? "Безкоштовно" : "орієнтовно 70–90 ₴ до 2 кг"' in appjs and 't.textContent=goods+" ₴"' in appjs and "DELIVERY_HINT" not in appjs.replace("// ", "").split("прибрано")[0])
 blob = cart + h + b._DELIVERY + b._ABOUT
 chk("жодного НЕВИМІРЯНОГО орієнтиру («від 65», «≈ 70», «від 70»)", all(x not in blob for x in ("від 65", "≈ 70", "≈70", "від 70")))
-chk("кошик: «70–90 ₴ до 2 кг» і «Разом за товари»; пояснення з накладеним ≈24 ₴", "70–90 ₴ до 2 кг" in cart and "Разом за товари" in cart and "≈24 ₴" in cart)
-chk("сторінка «Доставка»: виміряна вартість (70–90 ₴ до 2 кг, Київ 70, великі міста 90, накладений ≈24) і застереження для >2 кг БЕЗ суми", "70–90 ₴ до 2 кг" in b._DELIVERY and "по Києву — 70 ₴" in b._DELIVERY and "в інші великі міста — 90 ₴" in b._DELIVERY and "≈24 ₴" in b._DELIVERY and "важчих за 2 кг суму визначає Нова Пошта" in b._DELIVERY)
+chk("кошик: «орієнтовно 70–90 ₴ до 2 кг», «Разом за товари», застереження про важчі посилки й комісію НП за накладений (без цифри)", "орієнтовно 70–90 ₴ до 2 кг" in cart and "Разом за товари" in cart and "для важчих посилок сума вища" in cart and "комісія НП за накладений платіж (залежить від суми замовлення)" in cart and "≈24" not in cart)
+chk("сторінка «Доставка»: «орієнтовно 70–90 ₴ до 2 кг», залежність від міста/оголошеної вартості, важчі посилки БЕЗ суми, комісія за накладений БЕЗ цифри; розбивки «Київ 70 / великі міста 90» і «≈24» нема (виміряно з нашого акаунту НП, а ТТН створює Toysi — аудит #689)",
+    "орієнтовно 70–90 ₴ до 2 кг" in b._DELIVERY and "залежить від міста та оголошеної вартості" in b._DELIVERY and "Для посилок важчих за 2 кг сума вища" in b._DELIVERY and "комісія Нової Пошти за накладений платіж (залежить від суми замовлення)" in b._DELIVERY
+    and "по Києву" not in b._DELIVERY and "≈24" not in b._DELIVERY)
 chk("shippingDetails у розмітці НЕ ставимо (рішення SEO)", "shippingDetails" not in blob)
 sh = open(os.path.join(HERE, "deploy", "activate_site_apache.sh"), encoding="utf-8").read()
 chk("Apache: заголовки безпеки nosniff/SAMEORIGIN/Referrer-Policy під mod_headers", all(x in sh for x in ('X-Content-Type-Options "nosniff"', 'X-Frame-Options "SAMEORIGIN"', 'Referrer-Policy "strict-origin-when-cross-origin"')) and sh.index("mod_headers.c") < sh.index("X-Content-Type-Options"))

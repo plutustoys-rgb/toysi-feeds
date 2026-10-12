@@ -244,7 +244,7 @@ def brute(p, k=6):
     if "уцінк" in p["category"].lower() or "уценк" in p["category"].lower():
         return []
     c = [q for q in pool if q["category"] == p["category"] and q["stock"] > 0 and q["id"] != p["id"]]
-    c.sort(key=lambda q: (abs(q["price"] - p["price"]), bs._id_key(q["id"])))
+    c.sort(key=lambda q: (abs(q["price"] - p["price"]), bs._tie_key(q, p)))
     return [q["id"] for q in c[:k]]
 
 
@@ -410,6 +410,22 @@ for n in (42, 1170):
     sz = max(len(bs._pager_pages(k, n)) for k in range(1, n + 1))
     chk(f"Г: {n} стор.: найбільше номерів у пейджері {sz} (≤45 — розумно для мобільного)", sz <= 45)
 chk("Г: вікно ±2 на k=500 з 1170: 498 499 [500] 501 502 і 1, 1170", {498, 499, 500, 501, 502, 1, 1170} <= bs._pager_pages(500, 1170))
+
+
+# ═══ Д. Аудит #692: хаби на однакових цінах і одинокий сурогат ═══
+serie = [{"id": str(1000 + i), "name": f"s{i}", "price": 94, "category": "Серія", "stock": 3} for i in range(195)]      # «Пазли G-Toys»: 195 карток з ОДНАКОВОЮ ціною
+idx_s = bs.build_similar_index(serie)
+indeg = {}
+for p_ in serie:
+    for q_ in bs.similar_products(idx_s, p_):
+        indeg[q_["id"]] = indeg.get(q_["id"], 0) + 1
+chk(f"Д: серія з 195 карток на однаковій ціні: вхідних «схожих» максимум {max(indeg.values())} (було 196 у п'яти товарів), без хабів — циклічно від id картки", max(indeg.values()) <= 8 and len(indeg) == 195)
+chk("Д: кожна картка серії отримує рівно 6 «схожих», без себе, детерміновано (дві збірки індексу однакові)", all(len(bs.similar_products(idx_s, p_)) == 6 and p_["id"] not in [q_["id"] for q_ in bs.similar_products(idx_s, p_)] for p_ in serie)
+    and [q["id"] for q in bs.similar_products(idx_s, serie[7])] == [q["id"] for q in bs.similar_products(bs.build_similar_index(serie), serie[7])])
+chk("Д: «схожі» картки id 1007 — наступні за id (1008…1013), а не 1000…1005 для всіх", [q["id"] for q in bs.similar_products(idx_s, serie[7])] == ["1008", "1009", "1010", "1011", "1012", "1013"])
+chk("Д: остання картка серії огортається по колу (1194 → 1000…1005)", [q["id"] for q in bs.similar_products(idx_s, serie[-1])] == ["1000", "1001", "1002", "1003", "1004", "1005"])
+o_s, e_s = build_with({"_PRODUCT_TEXTS_FILE": r'{"5": "abc \ud800 def", "6": "нормальний текст", "7": "з NUL \u0000 всередині"}'})
+chk("Д: одинокий сурогат і NUL у product_texts.json: збірка НЕ падає (sitemap записано), значення відкинуто голосно", "сурогат" in e_s and (o_s / "sitemap.xml").exists())
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ Внутрішня перелінковка: текст картки / схожі товари / схожі категорії / пагінація — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

@@ -873,6 +873,15 @@ def _read_json_loud(path, label, consequence):
         return _MISSING
 
 
+def _utf8_clean(v):
+    """Текст можна безпечно записати в UTF-8 HTML: без одиноких сурогатів (\\ud800 → UnicodeEncodeError) і NUL (сирий NUL у HTML)."""
+    try:
+        v.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return "\x00" not in v
+
+
 def _load_product_texts():
     """site/product_texts.json: {"<toysi_id>": "абзац 1\\n\\nабзац 2"}. Не довіряємо даним: корінь — об'єкт; ключ — лише ASCII-цифри; значення — непорожній рядок
     (інше відкидається ГОЛОСНО); довше PRODUCT_TEXT_WARN_LEN або з символами < > — попередження (текст усе одно екранується й показується)."""
@@ -891,6 +900,10 @@ def _load_product_texts():
     if bad_id:
         print(f"[build] ⚠ product_texts.json: id не з цифр, відкинуто: {bad_id[:10]}", file=sys.stderr)
     out = {k: v for k, v in data.items() if isinstance(v, str) and v.strip() and re.fullmatch(r"[0-9]+", k)}
+    unenc = [k for k, v in out.items() if not _utf8_clean(v)]
+    if unenc:
+        print(f"[build] ⚠ product_texts.json: одинокий сурогат/NUL у тексті — відкинуто (інакше збірка падала б під час запису HTML): {unenc[:10]}", file=sys.stderr)
+        out = {k: v for k, v in out.items() if k not in set(unenc)}
     too_long = [k for k, v in out.items() if len(v.strip()) > PRODUCT_TEXT_WARN_LEN]
     if too_long:
         print(f"[build] ⚠ product_texts.json: текст довший за {PRODUCT_TEXT_WARN_LEN} символів (показано, але скоротіть): {too_long[:10]}", file=sys.stderr)
@@ -975,9 +988,24 @@ def _is_markdown_category(c):
     return "уцінк" in c or "уценк" in c
 
 
+_TIE_MOD = 1 << 64
+
+
+def _tie_key(q, p):
+    """Тай-брейк «схожих» на ОДНАКОВІЙ відстані за ціною (аудит #692: за id від найменшого ВСІ товари серії на однаковій ціні лінкували на одні й ті самі 6 id — п'ять «хабів» по 196 вхідних,
+    «Пазли G-Toys» 94 ₴ × 195 карток): ЦИКЛІЧНО від id самої картки p — перші ті, чий id одразу за id p (далі по колу), тож вхідні посилання розподіляються рівномірно.
+    Детерміновано. Числові id: (id_q − id_p) mod 2^64; нечислові — після числових, за рядком."""
+    kq = _id_key(q["id"])
+    if kq[0] != 0:
+        return kq
+    kp = _id_key(p["id"])
+    base = kp[1] if kp[0] == 0 else -1
+    return (0, (kq[1] - base) % _TIE_MOD, "")
+
+
 def build_similar_index(prods):
-    """{категорія: (відсортовані унікальні ціни, [товари з цією ціною, відсортовані за id])} лише для товарів В НАЯВНОСТІ й не з «Уцінки». Одна побудова на збірку;
-    пошук найближчих по ціні — bisect, тож на ~28 тис. сторінок немає O(n²)."""
+    """{категорія: (відсортовані унікальні ціни, [(товари з цією ціною за id, числові id для bisect, кількість числових)])} лише для товарів В НАЯВНОСТІ, не з «Уцінки» (картка-«Уцінка» блоку не має).
+    Пошук найближчих по ціні — bisect, тож на ~28 тис. сторінок немає O(n²)."""
     by = {}
     for p in prods:
         if p.get("stock", 0) > 0 and not _is_markdown_category(p.get("category")):
@@ -985,13 +1013,26 @@ def build_similar_index(prods):
     idx = {}
     for c, runs in by.items():
         prices = sorted(runs)
-        idx[c] = (prices, [sorted(runs[x], key=lambda q: _id_key(q["id"])) for x in prices])
+        packed = []
+        for x in prices:
+            items = sorted(runs[x], key=lambda q: _id_key(q["id"]))
+            nums = [_id_key(q["id"])[1] for q in items if _id_key(q["id"])[0] == 0]
+            packed.append((items, nums, len(nums)))
+        idx[c] = (prices, packed)
     return idx
 
 
+def _rotated(group, p):
+    """Група однакової ціни в циклічному порядку від id картки p (див. _tie_key)."""
+    items, nums, nn = group
+    kp = _id_key(p["id"])
+    j = bisect.bisect_right(nums, kp[1]) if kp[0] == 0 else 0
+    return items[j:nn] + items[:j] + items[nn:]
+
+
 def similar_products(idx, p, k=SIMILAR_PRODUCTS_MAX):
-    """До k товарів в наявності з ТІЄЇ Ж категорії, найближчих за ціною до p: порядок (|ціна − ціна p|, id), без самого p. «Уцінка» (категорія p) — порожньо.
-    Іде від позиції p у списку цін двома вказівниками (ліворуч/праворуч) за зростанням відстані; рівні відстані з двох боків зливаються за id."""
+    """До k товарів в наявності з ТІЄЇ Ж категорії, найближчих за ціною до p: порядок (|ціна − ціна p|, _tie_key), без самого p і без OOS. «Уцінка»/«Уценка» — порожньо.
+    Іде від позиції p у списку цін двома вказівниками (ліворуч/праворуч) за зростанням відстані; рівні відстані з обох боків зливаються за _tie_key (heapq.merge)."""
     if _is_markdown_category(p.get("category")):
         return []
     ent = idx.get(p.get("category"))
@@ -1007,12 +1048,12 @@ def similar_products(idx, p, k=SIMILAR_PRODUCTS_MAX):
         d = dl if dr is None else (dr if dl is None else min(dl, dr))
         groups = []
         if dl is not None and dl == d:
-            groups.append(runs[left])
+            groups.append(_rotated(runs[left], p))
             left -= 1
         if dr is not None and dr == d:
-            groups.append(runs[right])
+            groups.append(_rotated(runs[right], p))
             right += 1
-        for q in heapq.merge(*groups, key=lambda q: _id_key(q["id"])):
+        for q in heapq.merge(*groups, key=lambda q: _tie_key(q, p)):
             if q["id"] == p["id"]:
                 continue
             out.append(q)

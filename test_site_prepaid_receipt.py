@@ -50,6 +50,7 @@ def fake_receipt(**kw):
     return {"id": "rcpt-1"}
 
 
+liqpay_client.LIQPAY_SANDBOX = False      # бойовий режим для тесту (за замовчуванням sandbox і реальний чек там не видається — окремий тест нижче)
 checkbox_client.create_receipt = fake_receipt
 ost.create_receipt = fake_receipt
 submits = []
@@ -167,6 +168,113 @@ callback("PT-R6", "667788")
 reset()
 route("PT-R6")
 chk("без e-mail: чек видано, customer_email=None", events == ["receipt", "submit"] and receipt_calls[0]["customer_email"] in (None, ""))
+
+# ── 8. аудит #698: гонка, збій прапорця, невідомий результат, форвард упав, sandbox, site_charged_total=None
+import sqlite3
+
+
+def stale(oid):
+    return get(oid)       # «знімок» без прапорця, зроблений ДО того, як інший процес видав чек
+
+
+new_order("PT-G1")
+callback("PT-G1", "900001")
+snap1, snap2 = stale("PT-G1"), stale("PT-G1")
+reset()
+with orders_db.get_connection() as c:
+    r1 = orr._ensure_site_prepaid_receipt(c, snap1)
+with orders_db.get_connection() as c:
+    r2 = orr._ensure_site_prepaid_receipt(c, snap2)     # застарілий знімок: прапорець уже в БД
+chk("гонка: два процеси зі застарілими знімками → РІВНО один чек, обидва йдуть далі", len(receipt_calls) == 1 and r1 is True and r2 is True)
+
+new_order("PT-G2")
+callback("PT-G2", "900002")
+reset()
+with orders_db.get_connection() as c:
+    orders_db.claim_receipt(c, "site_PT-G2"); c.commit()       # інший процес уже тримає claim
+    chk("claim іншого процесу: чек НЕ видається, повертає False, алерт про claim", orr._ensure_site_prepaid_receipt(c, get("PT-G2")) is False and not receipt_calls and len(alerts) == 1 and "claim" in alerts[0][1])
+
+new_order("PT-G3")
+callback("PT-G3", "900003")
+reset()
+
+
+class _Unknown(checkbox_client.CheckboxAPIError):
+    maybe_created = True
+
+
+def fake_unknown(**kw):
+    receipt_calls.append(kw)
+    raise _Unknown("таймаут POST /receipts/sell")
+
+
+checkbox_client.create_receipt = fake_unknown
+route("PT-G3")
+chk("невідомий результат (таймаут): чек був у спробі, замовлення НЕ передано, алерт «МІГ бути створений»", len(receipt_calls) == 1 and not get("PT-G3")["forwarded_to_toysi_at"] and any("МІГ бути створений" in t for _, t in alerts))
+route("PT-G3")
+chk("невідомий результат: автоматичного повтору НЕМАЄ (claim лишився), другого чека не буде", len(receipt_calls) == 1 and get("PT-G3")["receipt_claim_at"])
+checkbox_client.create_receipt = fake_receipt
+
+new_order("PT-G4")
+callback("PT-G4", "900004")
+reset()
+real_mark, real_sleep = orr.mark_checkbox_ettn_registered, orr.time.sleep
+
+
+def bad_mark(*a, **k):
+    raise sqlite3.OperationalError("database is locked")
+
+
+orr.mark_checkbox_ettn_registered = bad_mark
+orr.time.sleep = lambda s: None
+route("PT-G4")
+orr.mark_checkbox_ettn_registered, orr.time.sleep = real_mark, real_sleep
+chk("збій запису прапорця ПІСЛЯ чека: чек є (1), замовлення продовжило шлях, алерт «ВИДАНО, прапорець не записано»",
+    len(receipt_calls) == 1 and "submit" in events and any("ВИДАНО" in t and "прапорець" in t for _, t in alerts))
+with orders_db.get_connection() as c:
+    chk("після збою прапорця наступна спроба НЕ видає другий чек (claim)", orr._ensure_site_prepaid_receipt(c, get("PT-G4")) is False and len(receipt_calls) == 1)
+
+new_order("PT-G5")
+callback("PT-G5", "900005")
+reset()
+orr.submit_order, real_submit = (lambda toysi_order, test_mode=False: {"accepted": False, "should_retry": True, "response_code": 3, "message": "тимчасово", "toysi_order_id": None, "is_duplicate": False}), orr.submit_order
+route("PT-G5")
+route("PT-G5")
+chk("чек видано, форвард упав двічі: чек РІВНО один (раннє повернення за прапорцем)", len(receipt_calls) == 1)
+orr.submit_order = real_submit
+
+new_order("PT-G6", charged=None)
+with orders_db.get_connection() as c:
+    orders_db.mark_payment_confirmed(c, "site_PT-G6"); c.commit()
+reset()
+route("PT-G6")
+chk("site_charged_total=None: чек НЕ видано (fail-closed), замовлення не передано", not receipt_calls and "submit" not in events)
+
+new_order("PT-G7")
+callback("PT-G7", "900007")
+reset()
+liqpay_client.LIQPAY_SANDBOX = True
+route("PT-G7")
+chk("sandbox LiqPay: реальний фіскальний чек НЕ видається", not receipt_calls)
+os.environ["SITE_RECEIPT_IN_SANDBOX"] = "1"
+with orders_db.get_connection() as c:
+    orr._ensure_site_prepaid_receipt(c, get("PT-G7"))
+chk("SITE_RECEIPT_IN_SANDBOX=1 вмикає чек свідомо", len(receipt_calls) == 1)
+os.environ.pop("SITE_RECEIPT_IN_SANDBOX", None)
+liqpay_client.LIQPAY_SANDBOX = False
+
+# справжня гонка: ОБИДВА процеси прочитали «чека нема» ДО того, як будь-хто взяв claim (інтерливінг між читанням і UPDATE) — друге виписування має провалити атомарний claim
+new_order("PT-G8")
+callback("PT-G8", "900008")
+reset()
+real_state = orr.get_receipt_state
+orr.get_receipt_state = lambda conn, oid: (None, None)
+with orders_db.get_connection() as c:
+    ra = orr._ensure_site_prepaid_receipt(c, get("PT-G8"))
+with orders_db.get_connection() as c:
+    rb = orr._ensure_site_prepaid_receipt(c, get("PT-G8"))
+orr.get_receipt_state = real_state
+chk("інтерливінг читання→claim: чек РІВНО один, другий процес отримує False (атомарний claim)", len(receipt_calls) == 1 and ra is True and rb is False)
 
 # ── 7. checkbox_client: footer і e-mail потрапляють у тіло запиту
 posted = {}

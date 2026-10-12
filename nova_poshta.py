@@ -76,6 +76,16 @@ def find_city(city_name: str, area_hint: str = "", limit: int = 5) -> dict:
     return {"ref": top.get("Ref"), "name": top.get("Description")}
 
 
+def count_cities_named(city_name: str, limit: int = 20) -> int:
+    """Скільки населених пунктів у довіднику НП мають ТОЧНО цю назву (Description, без регістру) — ознака тезок («Іванівка» у 20 областях).
+    Піднімає NovaPoshtaAPIError, якщо запит не вдався (викликач сам вирішує, що робити: для fail-closed утримання — вважати неоднозначним)."""
+    name = (city_name or "").strip().lower()
+    if not name:
+        return 0
+    results = _call("Address", "getCities", {"FindByString": city_name.strip(), "Limit": str(limit)})
+    return sum(1 for c in (results or []) if (c.get("Description") or "").strip().lower() == name)
+
+
 def settlement_raion(city_name: str, settlement_ref: str = "", area_hint: str = "") -> str:
     """Район (`getSettlements.RegionsDescription`) населеного пункту. Потрібен, бо
     Toysi-менеджер звіряє район з ТТН для КОЖНОГО замовлення (пряме прохання

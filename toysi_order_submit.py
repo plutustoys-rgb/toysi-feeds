@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -60,6 +61,21 @@ ORDER_STATUS_MESSAGES = {
 # скасовано, повернуто, застаріло.
 TERMINAL_ORDER_STATUSES = {10, 80, 503}
 
+TOYSI_INTERNAL_ID_MAX = 25   # ліміт Toysi order_create.internal_order_id (api-doc: «до 25 символів»)
+_SITE_ID_RE = re.compile(r"^site_PT-(\d{8})-(\d{6})-([0-9a-f]{6})$")
+
+
+def toysi_internal_id(internal_order_id: str) -> str:
+    """internal_order_id для Toysi (<=25). Сайтовий id «site_PT-YYYYMMDD-HHMMSS-xxxxxx» = 30 символів: голе [:25] різало випадковий суфікс xxxxxx →
+    унікальність лише до секунди; два замовлення в одну секунду дали б ОДНАКОВИЙ id → Toysi code 2, який submit_order вважає успіхом
+    (друге замовлення мовчки не створюється). Тому для сайту стискаємо до «site_YYYYMMDDHHMMSSxxxxxx» (25 символів, суфікс збережено).
+    Інші площадки (prom_/rozetka_/eva_ ≤ 25) — без змін; невпізнане довге — як раніше [:25]. Ідемпотентна (повторний виклик на вже короткому — той самий)."""
+    iid = internal_order_id or ""
+    m = _SITE_ID_RE.match(iid)
+    if m:
+        return "site_" + "".join(m.groups())
+    return iid[:TOYSI_INTERNAL_ID_MAX]
+
 
 def describe_order_status(status_code: int) -> str:
     return ORDER_STATUS_MESSAGES.get(status_code, f"Невідомий status: {status_code}")
@@ -102,7 +118,7 @@ def build_order_create_payload(order: dict, test_mode: bool = False) -> dict:
         "auth_key":              TOYSI_API_KEY,
         "api_version":           1,
         "api_method":            "order_create",
-        "internal_order_id":     order["internal_order_id"][:25],
+        "internal_order_id":     toysi_internal_id(order["internal_order_id"]),
         "positions_count":       len(positions_quantity),
         # ВАЖЛИВО: Toysi приймає лише точний рядок "Новая почта" (рос., як у їх
         # тестовій формі toysi.ua/api-test.html) — "Нова Пошта" відхиляється як

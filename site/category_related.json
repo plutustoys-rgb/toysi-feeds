@@ -1,0 +1,861 @@
+{
+ "description": "Для кожної категорії (slug без category-/.html) — до 6 тематично близьких категорій за кількістю товарів; для блоку «Схожі категорії» на сторінці категорії",
+ "related": {
+  "pazly-trefl": [
+   "inshi-pazly",
+   "pazly-g-toys",
+   "pazly-dlia-maliukiv",
+   "pazly-castorland",
+   "pazly-dankotoys",
+   "pazly-i-vkladyshi"
+  ],
+  "pazly-castorland": [
+   "pazly-trefl",
+   "inshi-pazly",
+   "pazly-g-toys",
+   "pazly-dlia-maliukiv",
+   "pazly-dankotoys",
+   "pazly-i-vkladyshi"
+  ],
+  "pazly-g-toys": [
+   "pazly-trefl",
+   "inshi-pazly",
+   "pazly-dlia-maliukiv",
+   "pazly-castorland",
+   "pazly-dankotoys",
+   "pazly-i-vkladyshi"
+  ],
+  "pazly-dankotoys": [
+   "pazly-trefl",
+   "inshi-pazly",
+   "pazly-g-toys",
+   "pazly-dlia-maliukiv",
+   "pazly-castorland",
+   "pazly-i-vkladyshi"
+  ],
+  "inshi-pazly": [
+   "pazly-trefl",
+   "pazly-g-toys",
+   "pazly-dlia-maliukiv",
+   "pazly-castorland",
+   "pazly-dankotoys",
+   "pazly-i-vkladyshi"
+  ],
+  "pazly-dlia-maliukiv": [
+   "pazly-trefl",
+   "inshi-pazly",
+   "pazly-g-toys",
+   "pazly-castorland",
+   "pazly-dankotoys",
+   "pazly-i-vkladyshi"
+  ],
+  "pazly-i-vkladyshi": [
+   "pazly-trefl",
+   "inshi-pazly",
+   "pazly-g-toys",
+   "pazly-dlia-maliukiv",
+   "pazly-castorland",
+   "pazly-dankotoys"
+  ],
+  "pazly-pidlohovi": [
+   "pazly-trefl",
+   "inshi-pazly",
+   "pazly-g-toys",
+   "pazly-dlia-maliukiv",
+   "pazly-castorland",
+   "pazly-dankotoys"
+  ],
+  "pazly": [
+   "pazly-trefl",
+   "inshi-pazly",
+   "pazly-g-toys",
+   "pazly-dlia-maliukiv",
+   "pazly-castorland",
+   "pazly-dankotoys"
+  ],
+  "plastykovi-konstruktory": [
+   "konstruktory-typu-leho",
+   "dereviani-konstruktory",
+   "nezvychay-ni-konstruktory",
+   "metalevi-konstruktory",
+   "mahnitni-konstruktory",
+   "konstruktory"
+  ],
+  "metalevi-konstruktory": [
+   "plastykovi-konstruktory",
+   "konstruktory-typu-leho",
+   "dereviani-konstruktory",
+   "nezvychay-ni-konstruktory",
+   "mahnitni-konstruktory",
+   "konstruktory"
+  ],
+  "dereviani-konstruktory": [
+   "plastykovi-konstruktory",
+   "konstruktory-typu-leho",
+   "nezvychay-ni-konstruktory",
+   "metalevi-konstruktory",
+   "mahnitni-konstruktory",
+   "konstruktory"
+  ],
+  "konstruktory-typu-leho": [
+   "plastykovi-konstruktory",
+   "dereviani-konstruktory",
+   "nezvychay-ni-konstruktory",
+   "metalevi-konstruktory",
+   "mahnitni-konstruktory",
+   "konstruktory"
+  ],
+  "nezvychay-ni-konstruktory": [
+   "plastykovi-konstruktory",
+   "konstruktory-typu-leho",
+   "dereviani-konstruktory",
+   "metalevi-konstruktory",
+   "mahnitni-konstruktory",
+   "konstruktory"
+  ],
+  "mahnitni-konstruktory": [
+   "plastykovi-konstruktory",
+   "konstruktory-typu-leho",
+   "dereviani-konstruktory",
+   "nezvychay-ni-konstruktory",
+   "metalevi-konstruktory",
+   "konstruktory"
+  ],
+  "konstruktory": [
+   "plastykovi-konstruktory",
+   "konstruktory-typu-leho",
+   "dereviani-konstruktory",
+   "nezvychay-ni-konstruktory",
+   "metalevi-konstruktory",
+   "mahnitni-konstruktory"
+  ],
+  "kartyny-za-nomeramy": [
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera",
+   "vodni-rozmalovky"
+  ],
+  "almazna-mozai-ka": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera",
+   "vodni-rozmalovky"
+  ],
+  "kartyny-z-pisku-blyskitok-hlittera": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "vodni-rozmalovky"
+  ],
+  "insha-tvorchist": [
+   "kartyny-za-nomeramy",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera",
+   "vodni-rozmalovky"
+  ],
+  "tisto-dlia-liplennia-i-plastylin": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera",
+   "vodni-rozmalovky"
+  ],
+  "klasychni-rozmalovky": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "kartyny-z-pisku-blyskitok-hlittera",
+   "vodni-rozmalovky"
+  ],
+  "vodni-rozmalovky": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera"
+  ],
+  "rozmalovky-ta-rozpys": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera"
+  ],
+  "nezvychay-ni-rozmalovky": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera"
+  ],
+  "hraviury-i-karbuvannia": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera"
+  ],
+  "farby-ta-penzlyky": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera"
+  ],
+  "aplikatsii-ta-orihami": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera"
+  ],
+  "biser-i-namystyny": [
+   "kartyny-za-nomeramy",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "almazna-mozai-ka",
+   "klasychni-rozmalovky",
+   "kartyny-z-pisku-blyskitok-hlittera"
+  ],
+  "plastykovi-mashynky": [
+   "spetstekhnika",
+   "zaliznytsi-i-treky",
+   "mashynky-na-batarey-kakh",
+   "mashynky-ru",
+   "litaky-i-vertoloty",
+   "mashynky"
+  ],
+  "mashynky-na-batarey-kakh": [
+   "plastykovi-mashynky",
+   "spetstekhnika",
+   "zaliznytsi-i-treky",
+   "mashynky-ru",
+   "litaky-i-vertoloty",
+   "mashynky"
+  ],
+  "mashynky-ru": [
+   "plastykovi-mashynky",
+   "spetstekhnika",
+   "zaliznytsi-i-treky",
+   "mashynky-na-batarey-kakh",
+   "litaky-i-vertoloty",
+   "mashynky"
+  ],
+  "spetstekhnika": [
+   "plastykovi-mashynky",
+   "zaliznytsi-i-treky",
+   "mashynky-na-batarey-kakh",
+   "mashynky-ru",
+   "litaky-i-vertoloty",
+   "mashynky"
+  ],
+  "mashyny-hihanty": [
+   "plastykovi-mashynky",
+   "spetstekhnika",
+   "zaliznytsi-i-treky",
+   "mashynky-na-batarey-kakh",
+   "mashynky-ru",
+   "litaky-i-vertoloty"
+  ],
+  "mashynky": [
+   "plastykovi-mashynky",
+   "spetstekhnika",
+   "zaliznytsi-i-treky",
+   "mashynky-na-batarey-kakh",
+   "mashynky-ru",
+   "litaky-i-vertoloty"
+  ],
+  "zaliznytsi-i-treky": [
+   "plastykovi-mashynky",
+   "spetstekhnika",
+   "mashynky-na-batarey-kakh",
+   "mashynky-ru",
+   "litaky-i-vertoloty",
+   "mashynky"
+  ],
+  "litaky-i-vertoloty": [
+   "plastykovi-mashynky",
+   "spetstekhnika",
+   "zaliznytsi-i-treky",
+   "mashynky-na-batarey-kakh",
+   "mashynky-ru",
+   "mashynky"
+  ],
+  "pisochni-nabory": [
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety",
+   "naduvni-kulky"
+  ],
+  "vidertsia": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety",
+   "naduvni-kulky"
+  ],
+  "lopatky-i-hrabli": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety"
+  ],
+  "kinetychnyy-pisok": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kruhy-i-zhylety",
+   "naduvni-kulky"
+  ],
+  "pasochky": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety"
+  ],
+  "mylni-bulbashky": [
+   "pisochni-nabory",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety",
+   "naduvni-kulky"
+  ],
+  "vodna-zbroia": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety",
+   "naduvni-kulky"
+  ],
+  "ihrashky-dlia-vannoi": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety"
+  ],
+  "kruhy-i-zhylety": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "naduvni-kulky"
+  ],
+  "basey-ny": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety"
+  ],
+  "naduvni-matrasy": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety"
+  ],
+  "naduvni-kulky": [
+   "pisochni-nabory",
+   "mylni-bulbashky",
+   "vodna-zbroia",
+   "vidertsia",
+   "kinetychnyy-pisok",
+   "kruhy-i-zhylety"
+  ],
+  "dlia-maliukiv": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "briazkaltsia",
+   "dytiachyy-posud",
+   "poi-lnyky"
+  ],
+  "briazkaltsia": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "dytiachyy-posud",
+   "poi-lnyky"
+  ],
+  "dereviani-vkladyshi": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud",
+   "poi-lnyky"
+  ],
+  "piramidky": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "sortery": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "kubyky": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "sosky-i-prorizuvachi": [
+   "knyhy-dlia-maliat",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud",
+   "poi-lnyky"
+  ],
+  "dytiachyy-posud": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "poi-lnyky"
+  ],
+  "poi-lnyky": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "stilchyky-dlia-hoduvannia": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "horshchyky-i-vannochky": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "nahrudnyky-ta-slyniavchyky": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "khodunky": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "rozvyvaiuchi-kylymky": [
+   "knyhy-dlia-maliat",
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud"
+  ],
+  "knyhy-dlia-maliat": [
+   "sosky-i-prorizuvachi",
+   "dereviani-vkladyshi",
+   "dlia-maliukiv",
+   "briazkaltsia",
+   "dytiachyy-posud",
+   "poi-lnyky"
+  ],
+  "lialky": [
+   "kukhni-i-posud",
+   "supermarket",
+   "mebli-dlia-lialok",
+   "pupsy",
+   "lialkovi-nabory",
+   "likarski-nabory"
+  ],
+  "lialky-miaki": [
+   "lialky",
+   "kukhni-i-posud",
+   "supermarket",
+   "mebli-dlia-lialok",
+   "pupsy",
+   "lialkovi-nabory"
+  ],
+  "pupsy": [
+   "lialky",
+   "kukhni-i-posud",
+   "supermarket",
+   "mebli-dlia-lialok",
+   "lialkovi-nabory",
+   "likarski-nabory"
+  ],
+  "mebli-dlia-lialok": [
+   "lialky",
+   "kukhni-i-posud",
+   "supermarket",
+   "pupsy",
+   "lialkovi-nabory",
+   "likarski-nabory"
+  ],
+  "koliasky-dlia-lialok": [
+   "lialky",
+   "kukhni-i-posud",
+   "supermarket",
+   "mebli-dlia-lialok",
+   "pupsy",
+   "lialkovi-nabory"
+  ],
+  "lialkovi-nabory": [
+   "lialky",
+   "kukhni-i-posud",
+   "supermarket",
+   "mebli-dlia-lialok",
+   "pupsy",
+   "likarski-nabory"
+  ],
+  "kukhni-i-posud": [
+   "lialky",
+   "supermarket",
+   "mebli-dlia-lialok",
+   "pupsy",
+   "lialkovi-nabory",
+   "likarski-nabory"
+  ],
+  "perukarski-nabory": [
+   "lialky",
+   "kukhni-i-posud",
+   "supermarket",
+   "mebli-dlia-lialok",
+   "pupsy",
+   "lialkovi-nabory"
+  ],
+  "likarski-nabory": [
+   "lialky",
+   "kukhni-i-posud",
+   "supermarket",
+   "mebli-dlia-lialok",
+   "pupsy",
+   "lialkovi-nabory"
+  ],
+  "supermarket": [
+   "lialky",
+   "kukhni-i-posud",
+   "mebli-dlia-lialok",
+   "pupsy",
+   "lialkovi-nabory",
+   "likarski-nabory"
+  ],
+  "tvaryny-i-ptakhy": [
+   "breloky",
+   "personazhi-ihor-ta-multfilmiv",
+   "ihrashky-antystres",
+   "skvishi",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk",
+   "vedmedi"
+  ],
+  "miaki-ihrashky": [
+   "breloky",
+   "tvaryny-i-ptakhy",
+   "personazhi-ihor-ta-multfilmiv",
+   "ihrashky-antystres",
+   "skvishi",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk"
+  ],
+  "vedmedi": [
+   "breloky",
+   "tvaryny-i-ptakhy",
+   "personazhi-ihor-ta-multfilmiv",
+   "ihrashky-antystres",
+   "skvishi",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk"
+  ],
+  "personazhi-ihor-ta-multfilmiv": [
+   "breloky",
+   "tvaryny-i-ptakhy",
+   "ihrashky-antystres",
+   "skvishi",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk",
+   "vedmedi"
+  ],
+  "breloky": [
+   "tvaryny-i-ptakhy",
+   "personazhi-ihor-ta-multfilmiv",
+   "ihrashky-antystres",
+   "skvishi",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk",
+   "vedmedi"
+  ],
+  "skvishi": [
+   "breloky",
+   "tvaryny-i-ptakhy",
+   "personazhi-ihor-ta-multfilmiv",
+   "ihrashky-antystres",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk",
+   "vedmedi"
+  ],
+  "ihrashky-antystres": [
+   "breloky",
+   "tvaryny-i-ptakhy",
+   "personazhi-ihor-ta-multfilmiv",
+   "skvishi",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk",
+   "vedmedi"
+  ],
+  "antystres-ta-slay-my": [
+   "breloky",
+   "tvaryny-i-ptakhy",
+   "personazhi-ihor-ta-multfilmiv",
+   "ihrashky-antystres",
+   "skvishi",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk"
+  ],
+  "tiahuchky-ta-stretchi": [
+   "breloky",
+   "tvaryny-i-ptakhy",
+   "personazhi-ihor-ta-multfilmiv",
+   "ihrashky-antystres",
+   "skvishi",
+   "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk"
+  ],
+  "lyzuny-slay-my-ta-zhuy-ky-dlia-ruk": [
+   "breloky",
+   "tvaryny-i-ptakhy",
+   "personazhi-ihor-ta-multfilmiv",
+   "ihrashky-antystres",
+   "skvishi",
+   "vedmedi"
+  ],
+  "rozvazhalni": [
+   "nabory-dlia-navchannia",
+   "rozvazhalni-interaktyvni-ihrashky",
+   "naukovi-ihry",
+   "ihrova-literatura",
+   "lohichni",
+   "holovolomky"
+  ],
+  "nastilni-ihry": [
+   "rozvazhalni",
+   "nabory-dlia-navchannia",
+   "rozvazhalni-interaktyvni-ihrashky",
+   "naukovi-ihry",
+   "ihrova-literatura",
+   "lohichni"
+  ],
+  "naukovi-ihry": [
+   "rozvazhalni",
+   "nabory-dlia-navchannia",
+   "rozvazhalni-interaktyvni-ihrashky",
+   "ihrova-literatura",
+   "lohichni",
+   "holovolomky"
+  ],
+  "holovolomky": [
+   "rozvazhalni",
+   "nabory-dlia-navchannia",
+   "rozvazhalni-interaktyvni-ihrashky",
+   "naukovi-ihry",
+   "ihrova-literatura",
+   "lohichni"
+  ],
+  "lohichni": [
+   "rozvazhalni",
+   "nabory-dlia-navchannia",
+   "rozvazhalni-interaktyvni-ihrashky",
+   "naukovi-ihry",
+   "ihrova-literatura",
+   "holovolomky"
+  ],
+  "nabory-dlia-navchannia": [
+   "rozvazhalni",
+   "rozvazhalni-interaktyvni-ihrashky",
+   "naukovi-ihry",
+   "ihrova-literatura",
+   "lohichni",
+   "holovolomky"
+  ],
+  "ihrova-literatura": [
+   "rozvazhalni",
+   "nabory-dlia-navchannia",
+   "rozvazhalni-interaktyvni-ihrashky",
+   "naukovi-ihry",
+   "lohichni",
+   "holovolomky"
+  ],
+  "rozvazhalni-interaktyvni-ihrashky": [
+   "rozvazhalni",
+   "nabory-dlia-navchannia",
+   "naukovi-ihry",
+   "ihrova-literatura",
+   "lohichni",
+   "holovolomky"
+  ],
+  "samokaty-trykolisni": [
+   "skey-ty-i-penibordy",
+   "rolyky",
+   "samokaty-chotyrykolisni",
+   "bihovely",
+   "velosypedy",
+   "samokaty-dvokolisni"
+  ],
+  "samokaty-chotyrykolisni": [
+   "skey-ty-i-penibordy",
+   "rolyky",
+   "samokaty-trykolisni",
+   "bihovely",
+   "velosypedy",
+   "samokaty-dvokolisni"
+  ],
+  "samokaty-dvokolisni": [
+   "skey-ty-i-penibordy",
+   "rolyky",
+   "samokaty-trykolisni",
+   "samokaty-chotyrykolisni",
+   "bihovely",
+   "velosypedy"
+  ],
+  "bihovely": [
+   "skey-ty-i-penibordy",
+   "rolyky",
+   "samokaty-trykolisni",
+   "samokaty-chotyrykolisni",
+   "velosypedy",
+   "samokaty-dvokolisni"
+  ],
+  "rolyky": [
+   "skey-ty-i-penibordy",
+   "samokaty-trykolisni",
+   "samokaty-chotyrykolisni",
+   "bihovely",
+   "velosypedy",
+   "samokaty-dvokolisni"
+  ],
+  "skey-ty-i-penibordy": [
+   "rolyky",
+   "samokaty-trykolisni",
+   "samokaty-chotyrykolisni",
+   "bihovely",
+   "velosypedy",
+   "samokaty-dvokolisni"
+  ],
+  "velosypedy": [
+   "skey-ty-i-penibordy",
+   "rolyky",
+   "samokaty-trykolisni",
+   "samokaty-chotyrykolisni",
+   "bihovely",
+   "samokaty-dvokolisni"
+  ],
+  "penaly-ta-papky": [
+   "riukzaky",
+   "bloknoty",
+   "pidhotovka-do-shkoly",
+   "ruchky-i-korektory",
+   "olivtsi-ta-flomastery",
+   "zoshyty"
+  ],
+  "riukzaky": [
+   "penaly-ta-papky",
+   "bloknoty",
+   "pidhotovka-do-shkoly",
+   "ruchky-i-korektory",
+   "olivtsi-ta-flomastery",
+   "zoshyty"
+  ],
+  "bloknoty": [
+   "penaly-ta-papky",
+   "riukzaky",
+   "pidhotovka-do-shkoly",
+   "ruchky-i-korektory",
+   "olivtsi-ta-flomastery",
+   "zoshyty"
+  ],
+  "zoshyty": [
+   "penaly-ta-papky",
+   "riukzaky",
+   "bloknoty",
+   "pidhotovka-do-shkoly",
+   "ruchky-i-korektory",
+   "olivtsi-ta-flomastery"
+  ],
+  "ruchky-i-korektory": [
+   "penaly-ta-papky",
+   "riukzaky",
+   "bloknoty",
+   "pidhotovka-do-shkoly",
+   "olivtsi-ta-flomastery",
+   "zoshyty"
+  ],
+  "olivtsi-ta-flomastery": [
+   "penaly-ta-papky",
+   "riukzaky",
+   "bloknoty",
+   "pidhotovka-do-shkoly",
+   "ruchky-i-korektory",
+   "zoshyty"
+  ],
+  "pidhotovka-do-shkoly": [
+   "penaly-ta-papky",
+   "riukzaky",
+   "bloknoty",
+   "ruchky-i-korektory",
+   "olivtsi-ta-flomastery",
+   "zoshyty"
+  ],
+  "kantstovary": [
+   "penaly-ta-papky",
+   "riukzaky",
+   "bloknoty",
+   "pidhotovka-do-shkoly",
+   "ruchky-i-korektory",
+   "olivtsi-ta-flomastery"
+  ]
+ }
+}

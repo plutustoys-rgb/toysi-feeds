@@ -380,3 +380,4 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .nb-chips button.chip{cursor:pointer;font-family:inherit}
 .nb-list a.card[hidden]{display:none}
 .nb-more{margin:18px 16px 4px;text-align:center}
+.pay[hidden]{display:none}

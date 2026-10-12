@@ -408,6 +408,7 @@
   // ── Ініціалізація на кожній сторінці ──
   document.addEventListener("DOMContentLoaded", function(){
     updateBadge();
+    initLiqpayTestEntry();
 
     // делеговані кліки: додати в кошик, пошук, кошик-керування
     document.body.addEventListener("click", function(e){
@@ -711,6 +712,14 @@
       btns.forEach(function(x){ var on=(x===b); x.classList.toggle("active", on); x.setAttribute("aria-pressed", on ? "true" : "false"); });
       cards.forEach(function(a){ a.hidden = !(g==="all" || a.getAttribute("data-g")===g); });
     });
+  }
+  // ── Прихований вхід для тестової оплати LiqPay (запит Коду 12.10): ?liqpay_test=1 розкриває радіо «Оплата карткою онлайн (ТЕСТОВИЙ РЕЖИМ)» на кошику; прапорець живе в sessionStorage лише цієї вкладки.
+  //   Покупці адреси не знають; бекенд у sandbox не передає такі замовлення в Toysi й не фіскалізує. Без елемента #pay-test (збірка з SITE_LIQPAY_LIVE=1) нічого не робить. ──
+  function initLiqpayTestEntry(){
+    var el=document.getElementById("pay-test"); if(!el) return;
+    var on=false;
+    try{ if(/[?&]liqpay_test=1(&|$)/.test(location.search)){ sessionStorage.setItem("pt_liqpay_test","1"); } on = sessionStorage.getItem("pt_liqpay_test")==="1"; }catch(e){ on = /[?&]liqpay_test=1(&|$)/.test(location.search); }
+    if(on) el.hidden=false;
   }
   // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──
   function initContactTracking(){

@@ -1463,7 +1463,11 @@ def write_cart(addons=None):
           '<label class="pay"><input type="radio" name="payment" value="cod" checked> '
             'Оплата при отриманні (накладений платіж на Новій Пошті)</label>'
           + ('<label class="pay"><input type="radio" name="payment" value="prepaid"> '
-            'Оплата карткою онлайн</label>' if LIQPAY_LIVE else '') +
+            'Оплата карткою онлайн</label>' if LIQPAY_LIVE else
+            # Прихований вхід для ТЕСТОВОЇ оплати (запит Коду 12.10): до карти LiqPay live покупці її не бачать; радіо розкривається лише з ?liqpay_test=1 (пам'ятається в sessionStorage, див. app.js).
+            # Бекенд у sandbox не передає такі замовлення в Toysi й не фіскалізує, тож випадковий клік шкоди не завдасть; тексти для всіх покупців не змінюємо.
+            '<label class="pay" id="pay-test" hidden><input type="radio" name="payment" value="prepaid"> '
+            'Оплата карткою онлайн (ТЕСТОВИЙ РЕЖИМ — реальних списань немає)</label>') +
         '</div>'
         '<div class="addon-box addon-m" data-addon></div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
@@ -1644,7 +1648,7 @@ def write_nabory(prods):
         cards.append(tile(p, eager=(i < 3), prio=(i == 0), badge=True).replace('<a class="card"', f'<a class="card" data-g="{g}"', 1))
     body = (
         '<h1 class="page">Набори, які займуть дитину надовго</h1>'
-        '<p class="nb-lead">Усе вже в коробці — відкрив і граєш.</p>'
+        '<p class="nb-lead">Готові набори — усе потрібне в комплекті.</p>'
         '<noscript><style>.nb-chips{display:none}</style></noscript>'
         f'<div class="chips nb-chips" id="nb-chips" role="group" aria-label="Тип набору">{"".join(chips)}</div>'
         f'<div class="nb-list" id="nabory-list" data-list="{NABORY_LIST_NAME}" data-limit="{NABORY_VIEW_LIMIT}"><div class="grid">\n' + "\n".join(cards) + '\n</div></div>'

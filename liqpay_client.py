@@ -46,7 +46,7 @@ CURRENCY = "UAH"
 #   зарахований в щодобовій проводці»), 'wait_card' («Не встановлений спосіб відшкодування у одержувача») — розбирає людина.
 # 'subscribed' («Підписка успішно оформлена») — це підписка, а не оплата замовлення: не рахуємо.
 PAID_STATUSES = {"success", "sandbox"}
-PENDING_STATUSES = {"wait_accept", "hold_wait", "wait_secure", "wait_compensation", "wait_card"}
+PENDING_STATUSES = {"wait_accept", "hold_wait", "wait_secure", "wait_compensation", "wait_card", "wait_lc", "wait_reserve"}
 
 
 class LiqPayNotConfigured(Exception):

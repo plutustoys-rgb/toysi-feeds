@@ -109,6 +109,7 @@ with orders_db.get_connection() as c:
     ready = [x["internal_order_id"] for x in orders_db.get_orders_ready_to_forward(c)]
 chk("sandbox-оплата: payment_confirmed=1, status=sandbox_test, у черзі форварду НЕМАЄ", code == 200 and o["payment_confirmed"] == 1 and o["status"] == "sandbox_test" and f"site_{oid_test}" not in ready)
 chk("сповіщення власнику: одне, з позначкою «ТЕСТ LiqPay … у Toysi НЕ передається, чек НЕ видається»", len(posts) == 1 and "ТЕСТ LiqPay" in posts[0] and posts[0].startswith("🛒 Нове замовлення"))
+chk("тестове замовлення: у Telegram видно, що пішло б у Toysi (позиції, доставка, оплата), без телефону/ПІБ", "Що пішло б у Toysi" in posts[0] and "• " in posts[0] and "Доставка:" in posts[0] and "Оплата:" in posts[0] and "+380" not in posts[0])
 
 # ── (3) справжній success у бойовому режимі йде у форвард
 set_keys("i123456", "private123", False)

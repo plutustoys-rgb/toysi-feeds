@@ -46,7 +46,7 @@ from dotenv import load_dotenv
 
 from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
-from telegram_notify import send_telegram_message
+from telegram_notify import send_telegram_message, send_throttled_alert
 from prom_api_client import PromEditError, delist as _prom_delist
 from competitor_pricing import load_prom_price_state, save_prom_price_state
 from prom_pushed_ledger import load_ledger, prune as _prune_ledger
@@ -542,6 +542,22 @@ LEDGER_SWEEP_LOOKUP_LIMIT = 800   # by_external_id-звірок за прогі�
 GONE_MASS_GUARD = 600              # >600 «зниклих з Toysi» в журналі = підозра на усічений каталог, а не справжнє зникнення (на 12.10 їх 343)
 LEDGER_MAX_DELIST_PER_RUN = 200   # кап на деактивації з цього шляху (дзеркало MAX_DEACTIVATIONS_PER_RUN)
 LEDGER_SWEEP_CHECKED_FILE = Path(__file__).parent / "prom_ledger_sweep_checked.json"
+GONE_SEEN_FILE = Path(__file__).parent / "prom_gone_seen.json"   # «зниклі з Toysi» минулого прогону (підтвердження у двох прогонах)
+
+
+def _load_gone_seen() -> set:
+    try:
+        data = json.loads(GONE_SEEN_FILE.read_text(encoding="utf-8"))
+        return set(data) if isinstance(data, list) else set()
+    except (OSError, ValueError):
+        return set()
+
+
+def _save_gone_seen(ids: set) -> None:
+    try:
+        GONE_SEEN_FILE.write_text(json.dumps(sorted(ids), ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        print(f"[Sync] Не вдалось зберегти {GONE_SEEN_FILE.name} ({e})", file=sys.stderr)
 
 
 def _load_ledger_checked() -> set:
@@ -603,12 +619,20 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
                "чистку зниклих пропущено (лише старий шлях e in toysi_ids). Перевір фетч каталогу Toysi.")
         print(f"[Sync] {msg}", file=sys.stderr)
         try:
-            send_telegram_message(msg)
+            send_throttled_alert("prom_gone_mass_guard", msg, cooldown_sec=12 * 60 * 60)
         except Exception as e:  # noqa: BLE001
             print(f"[Sync] алерт не надіслано: {type(e).__name__}", file=sys.stderr)
         candidates = [e for e in candidates if e in toysi_ids]
+        _save_gone_seen(set())                             # guard спрацював → попереднє «бачили зниклим» не накопичуємо
     else:
-        candidates.sort(key=lambda e: e in toysi_ids)    # стабільне сортування: зниклі з Toysi (False) — першими
+        # ПІДТВЕРДЖЕННЯ У ДВОХ ПРОГОНАХ (аудит PR #680, раунд 2): «зниклий» видаляється лише якщо був «зниклим» і в ПОПЕРЕДНЬОМУ прогоні (~6 год раніше) — разове
+        # усічення каталогу Toysi (1–6% не ловиться порогом 600) самовиліковується, бо наступний прогін бачить повний каталог і ці картки перестають бути «зниклими».
+        prev_gone = _load_gone_seen()
+        gone_set = set(gone)
+        confirmed = gone_set & prev_gone
+        _save_gone_seen(gone_set)
+        candidates = [e for e in candidates if e in toysi_ids or e in confirmed]
+        candidates.sort(key=lambda e: e in toysi_ids)    # стабільне сортування: підтверджені зниклі з Toysi (False) — першими
     if not candidates:
         return [], []
 

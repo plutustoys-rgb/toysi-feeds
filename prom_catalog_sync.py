@@ -539,6 +539,7 @@ def supplement_cabinet_view(prom_products: dict, desired_ids: set) -> dict:
 # принцип свіжої звірки, що й supplement_cabinet_view). Bounded lookup + delist-кап +
 # sweep-курсор — як у супплементі вище.
 LEDGER_SWEEP_LOOKUP_LIMIT = 800   # by_external_id-звірок за прогін (як CABINET_SUPPLEMENT_LOOKUP_LIMIT)
+GONE_MASS_GUARD = 600              # >600 «зниклих з Toysi» в журналі = підозра на усічений каталог, а не справжнє зникнення (на 12.10 їх 343)
 LEDGER_MAX_DELIST_PER_RUN = 200   # кап на деактивації з цього шляху (дзеркало MAX_DEACTIVATIONS_PER_RUN)
 LEDGER_SWEEP_CHECKED_FILE = Path(__file__).parent / "prom_ledger_sweep_checked.json"
 
@@ -591,8 +592,23 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
     # (332+11 карток «Немає в наявності» висіли в слотах безстроково: 5 878/6 000, 123 нові відхилено «понад допустимі ліміти»). Журнал штовхнутих (`ledger`) — це САМЕ
     # наші картки (ownership відомий без toysi_ids), а кожного кандидата все одно звіряємо НАЖИВО (to_delist = лише підтверджено живі, не deleted). Тож зниклі з Toysi
     # беремо теж і ставимо ПЕРШИМИ: ці картки продати неможливо, видалення нічого не коштує. Кап LEDGER_MAX_DELIST_PER_RUN не змінено.
+    if not toysi_ids:
+        return [], []      # порожній каталог Toysi (збій фетчу) → «усе зниклe»: НЕ видаляємо нічого (аудит PR #680: безпека не лише на assert у main)
     candidates = [e for e in ledger if e not in desired_ids]
-    candidates.sort(key=lambda e: e in toysi_ids)        # стабільне сортування: зниклі з Toysi (False) — першими
+    gone = [e for e in candidates if e not in toysi_ids]
+    if len(gone) > GONE_MASS_GUARD:
+        # УСІЧЕНИЙ, але структурно коректний каталог Toysi (25–29 тис. проходить assert_catalog_size_sane) зробив би «зниклими» тисячі ЖИВИХ карток (аудит PR #680):
+        # нормальне накопичення — сотні (343 на 12.10), тисячі = збій фетчу. Тоді шлях «зниклих» НЕ виконуємо (стара поведінка: лише e in toysi_ids) і кричимо.
+        msg = (f"🚨 prom_catalog_sync: «зниклих з Toysi» карток у журналі {len(gone)} > {GONE_MASS_GUARD} — схоже на УСІЧЕНИЙ каталог Toysi, а не справжнє зникнення; "
+               "чистку зниклих пропущено (лише старий шлях e in toysi_ids). Перевір фетч каталогу Toysi.")
+        print(f"[Sync] {msg}", file=sys.stderr)
+        try:
+            send_telegram_message(msg)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Sync] алерт не надіслано: {type(e).__name__}", file=sys.stderr)
+        candidates = [e for e in candidates if e in toysi_ids]
+    else:
+        candidates.sort(key=lambda e: e in toysi_ids)    # стабільне сортування: зниклі з Toysi (False) — першими
     if not candidates:
         return [], []
 
@@ -692,8 +708,8 @@ def main() -> None:
         # Успішний HTTP-запит + валідний XML, але Toysi віддав менше офферів,
         # ніж реально є (усічений, але структурно коректний фід) — на відміну
         # від повної мережевої/HTTP-помилки (тоді fetch_toysi_catalog() сам
-        # повертає {} і toysi_ids виходить порожнім, що вже безпечно саме по
-        # собі), цей випадок інакше пройшов би непоміченим і призвів би до
+        # повертає {} і toysi_ids виходить порожнім — find_stale_via_ledger тоді
+        # явно нічого не видаляє (PR #680)), цей випадок інакше пройшов би непоміченим і призвів би до
         # масового хибного видалення живих товарів, чий external_id просто не
         # потрапив у цей конкретний усічений фетч.
         print(f"[Sync] {e}", file=sys.stderr)

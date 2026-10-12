@@ -40,6 +40,25 @@ chk("мережевий збій (indeterminate) → нічого не вида�
 # порожній журнал
 pcs.load_ledger = lambda: []
 chk("порожній журнал → ([], [])", pcs.find_stale_via_ledger(desired, toysi, {}) == ([], []))
+# ── запобіжники (аудит PR #680)
+alerts = []
+pcs.send_telegram_message = lambda m: alerts.append(m) or True
+pcs.load_ledger = lambda: ledger
+pcs.fetch_prom_products_by_external_ids = lambda ids: ({k: v for k, v in live.items() if k in ids}, set())
+chk("ПОРОЖНІЙ toysi_ids (збій фетчу) → нічого не видаляємо (було б «усе зникло»)", pcs.find_stale_via_ledger(desired, set(), {}) == ([], []))
+big_ledger = [str(i) for i in range(2, 2 + 700)]            # 700 «зниклих» > GONE_MASS_GUARD=600 — схоже на усічений каталог
+pcs.load_ledger = lambda: big_ledger
+pcs.fetch_prom_products_by_external_ids = lambda ids: ({k: {"status": "on_display"} for k in ids}, set())
+alerts.clear()
+td, tp = pcs.find_stale_via_ledger({"1"}, {"2", "3"}, {})
+chk("масовий guard: >600 зниклих → шлях зниклих НЕ виконується, лишається старий (лише e in toysi_ids)", set(td) <= {"2", "3"})
+chk("масовий guard кричить 🚨 у Telegram з поясненням «усічений каталог»", len(alerts) == 1 and "УСІЧЕНИЙ" in alerts[0])
+small = [str(i) for i in range(2, 2 + 343)]                   # реальне накопичення 343 ≤ 600 — працює
+pcs.load_ledger = lambda: small
+alerts.clear()
+td, tp = pcs.find_stale_via_ledger({"1"}, {"2", "3"}, {})
+chk("343 зниклих (реальний випадок) ≤ guard → усі стають to_delist, без алерта", len(td) == 343 and not alerts)
+chk("to_delist може бути >200 — кап 200 застосовується вище по стеку (LEDGER_MAX_DELIST_PER_RUN, не змінено)", pcs.LEDGER_MAX_DELIST_PER_RUN == 200 and pcs.GONE_MASS_GUARD == 600)
 print()
 if F:
     print("FAILED:", F)

@@ -92,7 +92,9 @@ def callback(status, order_id, currency="UAH"):
 
 # ── чекаут: розбіжність → не будується; узгоджено → будується
 set_keys("sandbox_i1", "sandbox_k1", False)          # бойовий режим з тестовими ключами
+posts.clear()
 code, resp = post_order(phone="+380671110001")
+chk("розбіжність: власник отримує в Telegram «Нове замовлення … ОЧІКУЄ ОПЛАТУ, чекаут недоступний» (інакше покупець лишився б без відповіді)", len(posts) == 1 and posts[0].startswith("🛒 Нове замовлення") and "ОЧІКУЄ ОПЛАТУ" in posts[0])
 chk("розбіжність режиму/ключів: замовлення прийнято, але чекаут НЕ побудовано (liqpay=None) і покупцю кажуть «менеджер звʼяжеться»", code == 200 and resp["liqpay"] is None and "менеджер" in resp["message"])
 set_keys("sandbox_i1", "sandbox_k1", True)
 code, resp = post_order(phone="+380671110002")
@@ -119,6 +121,14 @@ with orders_db.get_connection() as c:
     ready = [x["internal_order_id"] for x in orders_db.get_orders_ready_to_forward(c)]
 chk("бойовий success: payment_confirmed=1, у черзі форварду Є, сповіщення БЕЗ позначки ТЕСТ",
     code == 200 and o["payment_confirmed"] == 1 and o["status"] != "sandbox_test" and f"site_{oid_live}" in ready and len(posts) == 1 and "ТЕСТ" not in posts[0])
+
+# ── щоденний звіт: тестова оплата не «застрягло»
+import daily_report
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET created_at = '2026-01-01T00:00:00' WHERE internal_order_id = ?", (f"site_{oid_test}",))
+    c.commit()
+    sec = daily_report._open_orders_detail_section(c)
+chk("щоденний звіт: тестове (sandbox_test) замовлення НЕ показується як «застрягло»", oid_test not in sec)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -115,13 +115,13 @@ def _alert_liqpay_status(res: dict) -> None:
         print(f"[site_order_api] алерт LiqPay-статусу не надіслано (не критично): {e}", file=sys.stderr)
 
 
-def _notify_new_order(order: dict, total, test: bool = False) -> None:
+def _notify_new_order(order: dict, total, test: bool = False, note: str = "") -> None:
     """Єдине повідомлення власнику в Telegram (режим «лише замовлення»): надходження замовлення сайту. Без персональних даних; збій не ламає прийом."""
     if _NO_TELEGRAM:
         return
     try:
         from telegram_notify import notify_new_order
-        notify_new_order("site", order.get("order_id"), total, len(order.get("items") or []), order.get("payment_method", ""), test=test)
+        notify_new_order("site", order.get("order_id"), total, len(order.get("items") or []), order.get("payment_method", ""), test=test, note=note)
     except Exception as e:  # noqa: BLE001
         print(f"[site_order_api] сповіщення про нове замовлення не надіслано: {type(e).__name__}", file=sys.stderr)
 
@@ -565,6 +565,7 @@ class Handler(SimpleHTTPRequestHandler):
         if _mp:
             print(f"[site_order_api] ⚠️ LiqPay: чекаут НЕ побудовано: {_mp}", file=sys.stderr)
             _notify(f"💳 LiqPay: чекаут для site_{order['order_id']} НЕ побудовано: {_mp}. Виправ LIQPAY_* у .env на VPS і перезапусти site-order-api.")
+            _notify_new_order(order, total, note="ОЧІКУЄ ОПЛАТУ, чекаут LiqPay недоступний (розбіжність режиму/ключів): звʼяжіться з покупцем")   # єдиний канал, що доходить у Telegram за режимом «лише замовлення»
         if liqpay_client.is_configured() and not _mp:
             desc = f"Замовлення {order['order_id']} на PlutusToys"
             ck = liqpay_client.build_checkout(

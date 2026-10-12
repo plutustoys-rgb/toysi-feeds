@@ -44,6 +44,7 @@ LIQPAY_LIVE = os.environ.get("SITE_LIQPAY_LIVE", "").strip() == "1"
 #   у 2 реальних ТТН вагою >2 кг було +25 ₴, а ваги в каталозі Toysi немає — тому цифри лише «орієнтовно», а точну суму називає Нова Пошта.
 # Оголошену вартість НЕ передаємо ми (toysi_order_submit.py:146 — поле необов'язкове): це рішення Toysi, воно може змінитись без попередження. Оголошена вартість для ПЕРЕДОПЛАТИ (LiqPay) не міряна — сайтових передоплат ще не було.
 # Накладений платіж лише до SITE_COD_CEILING=3000 ₴ (комісія там 80 ₴). Хто платить саме комісію — не доведено (PayerType=Recipient у 3/3 ТТН стосується доставки): текст так не стверджує.
+STOCK_BADGE_MAX = 3   # бейдж «Залишилось N шт» у добірках (карусель, /nabory.html, /ig.html), коли залишок Toysi ≤ цього (SMM 12.10)
 DELIVERY_COST = "орієнтовно 70–90 ₴ до 2 кг"
 DELIVERY_FEE_FORMULA = "комісія за накладений платіж: 20 ₴ + 2% від суми замовлення"
 DELIVERY_FEE_FORMULA_SHORT = "20 ₴ + 2% від суми замовлення"
@@ -290,24 +291,30 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
     )
 
-def tile(p, cls="", eager=False, prio=False):
+def tile(p, cls="", eager=False, prio=False, badge=False):
     """Картка товару. cls — додатковий клас (напр. «slide» у каруселі); eager=True — без loading=lazy (перші слайди каруселі = кандидат на LCP)."""
-    av = '<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>'
+    # Бейдж «Залишилось N шт» (SMM 12.10): лише коли залишок Toysi 1–3 («1 шт.»/«2 шт.»/«3 шт.» — ТОЧНІ числа з <ostatok>, перевірено на VPS: діапазонів «1…5» у цій зоні немає; значення береться на момент збірки, раз на ~2 год).
+    # Без вигаданих «останній у місті»/таймерів. Де є бейдж — зелений «У наявності» не дублюємо.
+    # Лише там, де tile(badge=True): карусель головної, /nabory.html, /ig.html (рішення SMM 12.10: залишок 1–3 у 12 448 з ~21 тис. позицій — у каталозі/категоріях/«схожих» бейдж був би на більшості карток
+    # і перестав би бути правдивим сигналом). Не в каталозі, категоріях, «схожих», пошуку.
+    low = badge and 0 < p["stock"] <= STOCK_BADGE_MAX
+    badge = f'<span class="stock-badge">Залишилось {int(p["stock"])} шт</span>' if low else ""
+    av = "" if low else ('<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>')
     lazy = (' fetchpriority="high"' if prio else "") if eager else ' loading="lazy"'
     img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}"{lazy}>'
            if p["photo"] else '<div class="ph"></div>')
     klass = ("card " + cls) if cls else "card"
     return (
       f'<a class="{klass}" href="product-{esc(p["id"])}.html">'
-      f'<div class="ph">{img}</div>'
+      f'<div class="ph">{img}{badge}</div>'
       f'<div class="info"><div class="nm">{esc(p["name"])}</div>'
       f'<div class="foot"><span class="pr">{p["price"]} ₴</span>{av}</div></div></a>'
     )
 
-def grid(prods, eager_n=0):
+def grid(prods, eager_n=0, badge=False):
     """Сітка карток. eager_n — скільки ПЕРШИХ карток без loading=lazy (перша — fetchpriority=high): на сторінках списків перше фото було lazy,
     і воно ж є LCP-елементом (Lighthouse mobile 11.10.2026: LCP 5,3–6,5 с на категорії)."""
-    return '<div class="grid">\n' + "\n".join(tile(p, eager=(i < eager_n), prio=(i == 0 and eager_n > 0)) for i, p in enumerate(prods)) + '\n</div>'
+    return '<div class="grid">\n' + "\n".join(tile(p, eager=(i < eager_n), prio=(i == 0 and eager_n > 0), badge=badge) for i, p in enumerate(prods)) + '\n</div>'
 
 def _addon_ok(p):
     """Чи можна пропонувати товар як доповнення (cross-sell): без уцінки/«розпродажу» й копійчаних позицій."""
@@ -1242,7 +1249,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     carousel = ""
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
-        slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0)) for i, p in enumerate(picks))
+        slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True) for i, p in enumerate(picks))
         carousel = (
           '<div class="sec-title"><h2>Добірка Плутуса</h2><a href="catalog.html">Дивитись усі →</a></div>'
           '<div class="car" id="home-car" role="region" aria-label="Добірка Плутуса" data-list="Добірка Плутуса">'
@@ -1544,7 +1551,7 @@ def write_ig(prods):
     if want and not shown:
         print("[build] ⚠ ig_featured.json: жодного товару в наявності — /ig.html показує лише кнопку каталогу", file=sys.stderr)
     if shown:
-        grid_html = (f'<div class="ig-list" id="ig-list" data-list="{IG_LIST_NAME}">' + grid(shown, eager_n=min(3, len(shown))) + '</div>')
+        grid_html = (f'<div class="ig-list" id="ig-list" data-list="{IG_LIST_NAME}">' + grid(shown, eager_n=min(3, len(shown)), badge=True) + '</div>')
         lead = "Ці товари з нашого останнього відео."
     else:
         grid_html = ""

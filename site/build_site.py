@@ -1090,7 +1090,8 @@ def write_cart():
       '<h1 class="page" style="margin-left:0">Оформлення</h1>'
       '<form id="checkout-form">'
         '<div class="field"><label>Ім’я та прізвище</label>'
-          '<input id="f-name" name="name" required autocomplete="name" placeholder="Іван Петренко"></div>'
+          '<input id="f-name" name="name" required autocomplete="name" placeholder="Іван Петренко">'
+          '<div class="note">Спершу ім’я, потім прізвище — без по батькові.</div></div>'
         '<div class="field"><label>Телефон</label>'
           '<input id="f-phone" name="phone" type="tel" inputmode="tel" required autocomplete="tel" placeholder="+380 50 123 45 67"></div>'
         '<div class="field"><label>Email <span style="opacity:.6">(необовʼязково, для чека й статусу)</span></label>'
@@ -1099,7 +1100,7 @@ def write_cart():
           '<input id="f-city" name="city" required autocomplete="off" placeholder="Почніть вводити місто…">'
           # Довідник НП може не відповісти (реальний інцидент на телефоні). Ручний ввід приймається наскрізь: поле відділення не блокується
           # (assets/app.js, initNpAutocomplete), сервер вимагає лише непорожні тексти міста й відділення (site_order_api.py:171-175).
-          '<div class="note">Не бачите міста у списку? Впишіть назву самі — а нижче номер або адресу відділення.</div>'
+          '<div class="note">Оберіть своє місто зі списку підказок (так посилка не потрапить в однойменне). Довідник не працює або міста в ньому нема? Впишіть назву самі — а нижче номер відділення.</div>'
           '<div class="ac" id="ac-city"></div></div>'
         '<div class="field ac-wrap"><label>Відділення Нової Пошти</label>'
           '<input id="f-warehouse" name="warehouse" required autocomplete="off" placeholder="Спершу оберіть місто" disabled>'
@@ -1115,7 +1116,7 @@ def write_cart():
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
         '<p class="note consent">Оформлюючи замовлення, ви погоджуєтесь з <a href="offer.html">публічною офертою</a> '
         'та <a href="privacy.html">політикою конфіденційності</a>.</p>'
-        '<div class="note" id="checkout-msg"></div>'
+        '<div class="note" id="checkout-msg" role="alert" aria-live="polite"></div>'
       '</form></div>'
     )
     _write("cart.html", page("Кошик і оформлення", body,

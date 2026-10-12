@@ -1149,10 +1149,12 @@ def home_jsonld() -> str:
 # ── Головна: «Добірка Плутуса» (SMM 09.10.2026, рішення власника «герой крінж, зверху карусель») ──
 # Анімований Плутус у герої (SMM 09.10/12.10): poster + кліпи ЛИШЕ з хвостом праворуч (tail_right у manifest креатива: tailtrip, ear_scratch), тривалість у мс
 HERO_MASCOT_POSTER = "assets/mascot/plutus_hero_poster.webp"
-# П'ять рухів (SMM 12.10: «усі готові», не два). grooming/sniff/shakeoff мають хвіст ЛІВОРУЧ (manifest.facing=tail_left) — їх дзеркалено ПРИ КОДУВАННІ (PIL), щоб усі дивились в один бік із poster; CSS-дзеркала нема, тож накладання poster/кліп не ламається.
-# stretch_yawn НЕ в героя: manifest safe_for_hero=false (широко відкритий рот на піку, власник міг би не схвалити) + бюджет ваги (6 кліпів ≈1,52 МБ > 1,5 МБ). Додати: перекодувати разом із рештою (≈286 КБ) і дописати ("stretch_yawn", 4400).
-# Мілісекунди = сума тривалостей кадрів файлу (data-ms; +400 мс запасу додає JS).
-HERO_MASCOT_CLIPS = (("tailtrip", 3154), ("ear_scratch", 4000), ("grooming", 4400), ("sniff", 4400), ("shakeoff", 1992))
+# Десять рухів (SMM 12.10; власник схвалив і чотири з дефектами — manifest note owner_approved_with_defects). tail_left (grooming, sniff, shakeoff) дзеркалено ПРИ КОДУВАННІ (make_mascot_clips.py), CSS-дзеркала нема.
+# Вага в ротації: 2 — «чисті» рухи, 1 — sneeze/tailchase/sleep/rolljump (відомі дефекти: sneeze не чхає, tailchase розмита пляма, sleep «знепритомнів», rolljump нерухомий) — рідше, щоб не домінували; stretch_yawn не ПЕРШИМ
+# (широко відкритий рот; прибрати з ротації одним рядком — видалити запис). Ms = сума тривалостей кадрів файлу (+400 мс запасу додає JS). Вага в репо ≈2,5 МБ (Q=32 у make_mascot_clips.py), клипи вантажаться по одному перед показом.
+# (name, ms, weight, first_ok)
+HERO_MASCOT_CLIPS = (("tailtrip", 3154, 2, True), ("ear_scratch", 4000, 2, True), ("grooming", 4400, 2, True), ("sniff", 4400, 2, True), ("shakeoff", 1992, 2, True),
+                     ("stretch_yawn", 4400, 2, False), ("sneeze", 3500, 1, True), ("tailchase", 5976, 1, True), ("sleep", 4980, 1, True), ("rolljump", 4316, 1, True))
 HOME_MIN_CONTRIB = 100.0           # внесок на замовлення, ₴ (рішення Консультанта: не ведемо вітрину позицією без маржі) — існуючий поріг «Новинок»
 HOME_PICK_PRICE_MIN, HOME_PICK_PRICE_MAX = 150, 700    # ₴: імпульсна ціна (SMM): рамка, не мірило
 HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2
@@ -1298,7 +1300,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
       # poster завжди під низом, кліп кросфейдом поверх (див. initMascot): обидва <img> із width/height — CLS 0
       f'<div class="hero2"><span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async" '
-      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(ms) for _, ms in HERO_MASCOT_CLIPS)}">'
+      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ms, _w, _f in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(c[1]) for c in HERO_MASCOT_CLIPS)}" data-w="{",".join(str(c[2]) for c in HERO_MASCOT_CLIPS)}" data-nofirst="{",".join(str(i) for i, c in enumerate(HERO_MASCOT_CLIPS) if not c[3])}">'
       '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину, а маму робить спокійною.</p></div>'
       '<div class="act"><a class="btn" href="nabory.html">Набори в подарунок</a><a class="hero-all" href="catalog.html">Усі іграшки</a>'

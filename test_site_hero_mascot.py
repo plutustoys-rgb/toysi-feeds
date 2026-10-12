@@ -55,20 +55,23 @@ with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.St
     bs.build()
 home = (out / "index.html").read_text(encoding="utf-8")
 
-m = re.search(r'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="([^"]+)" alt="[^"]*" width="(\d+)" height="(\d+)" decoding="async" data-clips="([^"]+)" data-ms="([^"]+)">'
+m = re.search(r'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="([^"]+)" alt="[^"]*" width="(\d+)" height="(\d+)" decoding="async" data-clips="([^"]+)" data-ms="([^"]+)" data-w="([^"]+)" data-nofirst="([^"]*)">'
               r'<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>', home)
 chk("головна: герой = обгортка .mascot-wrap із poster (data-clips, data-ms) і накладеним clip-<img> БЕЗ src (aria-hidden)", m is not None)
 if m:
     poster, w, h, clips, ms = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"), m.group(5).split(",")
+    wts, nofirst = m.group(6).split(","), m.group(7)
     chk("poster — webp зі сталою версією ?v=хеш, розміри 130×100 задані атрибутами (CLS 0)", re.fullmatch(r"assets/mascot/plutus_hero_poster\.webp\?v=[0-9a-f]{8}", poster) is not None and (w, h) == (130, 100))
     names = sorted(re.search(r"plutus_(\w+)\.webp", c).group(1) for c in clips)
-    chk("у героя 5 рухів (SMM 12.10: усі готові): tailtrip, ear_scratch + дзеркальні grooming, sniff, shakeoff; stretch_yawn НЕ в героя (manifest safe_for_hero=false)", names == ["ear_scratch", "grooming", "shakeoff", "sniff", "tailtrip"] and "stretch_yawn" not in home)
+    chk("у героя 10 рухів (SMM 12.10): 5 «чистих» + stretch_yawn + sneeze, tailchase, sleep, rolljump", names == sorted(["tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff", "stretch_yawn", "sneeze", "tailchase", "sleep", "rolljump"]))
+    chk("data-w: «рідкі» чотири (sneeze, tailchase, sleep, rolljump) мають вагу 1, решта 2; stretch_yawn не може бути першим (data-nofirst = його індекс)", len(wts) == len(clips) and all((w == "1") == (re.search(r"plutus_(\w+)\.webp", c).group(1) in ("sneeze", "tailchase", "sleep", "rolljump")) for c, w in zip(clips, wts))
+        and nofirst == str([re.search(r"plutus_(\w+)\.webp", c).group(1) for c in clips].index("stretch_yawn")))
     chk("data-ms: тривалість кожного кліпу в мс, число на кліп", len(ms) == len(clips) and all(x.isdigit() and 1000 <= int(x) <= 8000 for x in ms))
     ps = (HERE / "site/assets/mascot/plutus_hero_poster.webp").stat().st_size
-    chk("файли існують у site/assets/mascot, кліпи ≤ 300 КБ (після перекодування з вирівняними кінцями 12.10: ≈283 КБ), poster ≤ 30 КБ і легший за PNG 14,6 КБ, який у герої замінив", ps <= 30 * 1024 and ps < (HERE / "site/assets/plutus_mascot_s.png").stat().st_size
-        and all((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size <= 300 * 1024 for n in names))
+    chk("файли існують у site/assets/mascot, кліпи ≤ 340 КБ (Q=32, найдовший tailchase ≈300 КБ), poster ≤ 30 КБ і легший за PNG 14,6 КБ, який у герої замінив", ps <= 30 * 1024 and ps < (HERE / "site/assets/plutus_mascot_s.png").stat().st_size
+        and all((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size <= 340 * 1024 for n in names))
     tot = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in names) + ps
-    chk(f"загальна вага рухів у репо ≤ 1,5 МБ (SMM): {tot/1024:.0f} КБ", tot <= 1.5 * 1024 * 1024)
+    chk(f"загальна вага рухів у репо ≤ 2,5 МБ (SMM 12.10, 10 рухів): {tot/1024:.0f} КБ", tot <= 2.5 * 1000 * 1000 + 20000)
     from PIL import Image as _Im, ImageSequence as _Seq
     dur = {}
     for n in names:

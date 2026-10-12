@@ -698,13 +698,23 @@
       visible=false;   // до першого повідомлення IntersectionObserver вважаємо «не видно»
     }
     function canPlay(){ return !document.hidden && visible && !reduced(); }
+    // Мішок із вагами (data-w: 2 — звичайні, 1 — «рідші» рухи): кожен рух у мішку стільки разів, яка вага; тягнемо випадково БЕЗ повтору попереднього (і на стику мішків); data-nofirst — індекси, які не можуть бути
+    // найпершим показом (stretch_yawn). Мішок вичерпується повністю перед наступним: за цикл кожен рух зʼявляється, рідкі — рідше.
+    var weights=(img.getAttribute("data-w")||"").split(",").map(Number);
+    var noFirst=(img.getAttribute("data-nofirst")||"").split(",").filter(function(x){ return x!==""; }).map(Number);
+    var started=false;
     function next(){
       if(!order.length){
-        order=clips.map(function(_,i){ return i; });
-        for(var i=order.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=order[i]; order[i]=order[j]; order[j]=t; }
-        if(order.length>1 && order[0]===last){ order.push(order.shift()); }   // не повторюємо той самий кліп підряд на стику циклів
+        var pool=[]; clips.forEach(function(_,i){ for(var k=0;k<(weights[i]>0?weights[i]:1);k++) pool.push(i); });
+        var prev=last, first=!started;
+        while(pool.length){
+          var cand=[]; pool.forEach(function(v,idx){ if(v!==prev && !(first && noFirst.indexOf(v)>=0)) cand.push(idx); });
+          if(!cand.length) pool.forEach(function(v,idx){ cand.push(idx); });             // лишились лише однакові — неминучий повтор, беремо що є
+          var pick=cand[Math.floor(Math.random()*cand.length)];
+          prev=pool[pick]; order.push(prev); pool.splice(pick,1); first=false;
+        }
       }
-      last=order.shift(); return last;
+      started=true; last=order.shift(); return last;
     }
     function play(){
       if(playing) return;

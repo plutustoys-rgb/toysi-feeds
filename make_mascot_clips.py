@@ -12,7 +12,7 @@ OUT = sys.argv[1]   # python make_mascot_clips.py <тека-виходу> [Q]
 Q = int(sys.argv[2]) if len(sys.argv) > 2 else 40   # якість WebP; файли в репо кодовані з Q=40 (5 кліпів + poster ≈1,23 МБ при бюджеті SMM ≤1,5 МБ)
 W, H = 234, 180
 K = 7
-CLIPS = [("tailtrip", False), ("ear_scratch", False), ("grooming", True), ("sniff", True), ("shakeoff", True)]   # stretch_yawn: manifest safe_for_hero=false + бюджет → НЕ в героя (додати: ("stretch_yawn", False), ≈286 КБ)
+CLIPS = [("tailtrip", False), ("ear_scratch", False), ("grooming", True), ("sniff", True), ("shakeoff", True), ("stretch_yawn", False), ("sneeze", False), ("tailchase", False), ("sleep", False), ("rolljump", False)]   # 10 рухів (SMM 12.10; власник схвалив і ті, що з дефектами в manifest note)
 
 
 def frames(name, flip):

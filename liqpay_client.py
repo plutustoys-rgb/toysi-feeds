@@ -34,9 +34,19 @@ LIQPAY_SANDBOX = os.environ.get("LIQPAY_SANDBOX", "1").strip() != "0"
 CHECKOUT_URL = "https://www.liqpay.ua/api/3/checkout"
 API_VERSION = 3
 CURRENCY = "UAH"
-# Статуси LiqPay, що означають отриману/зарезервовану оплату (підтверджуємо замовлення).
-# 'sandbox' — успішний тестовий платіж у пісочниці; 'wait_accept' — гроші списано, чекають підтвердження продавцем.
-PAID_STATUSES = {"success", "sandbox", "wait_accept", "subscribed"}
+# Статуси платежу LiqPay — ПЕРШОДЖЕРЕЛО https://www.liqpay.ua/en/doc/api/callback (звірено 12.10.2026; детально й з наслідками: технічні_вимоги_маркетплейсів/liqpay.md).
+# Оплаченим (підтверджуємо замовлення, передаємо в Toysi, виписуємо чек) вважаємо ЛИШЕ:
+#   'success'  — «Успішний платіж»;
+#   'sandbox'  — тестовий платіж у пісочниці (на сторінці callback-статусів його НЕМАЄ; site_order_api відхиляє його в бойовому режимі).
+# НЕ оплачені (чекаємо / алертимо власника, без форварду й чека):
+#   'wait_accept' — «Кошти з клієнта списані, але магазин ще не пройшов перевірку. Якщо магазин не пройде активацію протягом 60 днів, платежі будуть
+#                   автоматично скасовані» — перевірку проходить МАГАЗИН (ми), а не продавець-за-замовленням; раніше тут помилково стояло «чекають підтвердження
+#                   продавцем» і статус рахувався оплатою → товар поїхав би покупцю, а гроші могли б бути скасовані;
+#   'hold_wait' («Сума успішно заблокована на рахунку відправника»), 'wait_secure' («Платіж на перевірці»), 'wait_compensation' («Платіж успішний, буде
+#   зарахований в щодобовій проводці»), 'wait_card' («Не встановлений спосіб відшкодування у одержувача») — розбирає людина.
+# 'subscribed' («Підписка успішно оформлена») — це підписка, а не оплата замовлення: не рахуємо.
+PAID_STATUSES = {"success", "sandbox"}
+PENDING_STATUSES = {"wait_accept", "hold_wait", "wait_secure", "wait_compensation", "wait_card"}
 
 
 class LiqPayNotConfigured(Exception):
@@ -124,6 +134,9 @@ def verify_callback(data_b64: str, signature: str) -> dict:
     return {
         "valid": valid,
         "paid": bool(valid and status in PAID_STATUSES),
+        "pending": bool(valid and status in PENDING_STATUSES),
+        "reversed": bool(valid and status == "reversed"),
+        "currency": payload.get("currency"),
         "order_id": payload.get("order_id"),
         "status": status,
         "amount": payload.get("amount"),

@@ -10,7 +10,7 @@ from orders_db import (
     init_db, mark_rz_marking_sent, bump_rz_marking_attempt, get_rz_markings_to_retry,
 )
 from parser import fetch_toysi_catalog
-from toysi_order_submit import submit_order
+from toysi_order_submit import submit_order, toysi_internal_id
 from meta_conversions_client import send_purchase_event
 from nova_poshta import settlement_raion, warehouse_by_ref
 from ukrposhta_client import create_shipment_with_label, UkrposhtaAPIError
@@ -410,7 +410,7 @@ def build_toysi_order(order: dict) -> dict | None:
         comment += f" · {loc}"
 
     return {
-        "internal_order_id": order["internal_order_id"][:25],
+        "internal_order_id": toysi_internal_id(order["internal_order_id"]),
         "items": order["items"],
         "first_name": first_name,
         "last_name": last_name,

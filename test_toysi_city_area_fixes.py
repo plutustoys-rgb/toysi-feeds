@@ -102,7 +102,7 @@ order, total = soa.build_order({
     "warehouse_name": "Відділення №1",
     "np_city_ref": "",
     "np_city_area": "Харківська",
-    "np_warehouse_number": "",
+    "np_warehouse_number": "1",   # вибір з автокомпліту: ручний «Відділення №1» після PR #671 отримує суфікс «(введено вручну…)» (інша гілка, test_site_manual_warehouse)
     "payment_method": "cod",
 })
 _chk("np_branch несе область у форматі (Xобл.)",
@@ -115,6 +115,7 @@ order2, _ = soa.build_order({
     "phone": "+380671112233",
     "city_name": "Південне",
     "warehouse_name": "Відділення №1",
+    "np_warehouse_number": "1",
     "payment_method": "cod",
 })
 _chk("без np_city_area: старий фолбек без дужок", order2.get("np_branch") == "Південне, Відділення №1")
@@ -127,6 +128,7 @@ order3, _ = soa.build_order({
     "city_name": "Київ",
     "warehouse_name": "Відділення №1",
     "np_city_area": "Зле)(значення\nобласть",
+    "np_warehouse_number": "1",
     "payment_method": "cod",
 })
 _chk("санітизація area: рівно 1 пара дужок у np_branch (клієнтський '(' ')'/перенос не проліз)",

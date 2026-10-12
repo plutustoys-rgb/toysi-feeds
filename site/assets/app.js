@@ -64,7 +64,7 @@
   window.PT = {
     add:function(p, listName){       // p={id,name,price,photo}; listName — звідки додано (item_list_name у GA4, напр. cart_addon)
       var c=read();
-      if(c[p.id]){ c[p.id].qty++; } else { c[p.id]={id:p.id,name:p.name,price:+p.price,photo:p.photo,qty:1}; }
+      if(c[p.id]){ if(c[p.id].qty>=MAX_QTY){ flash("Максимум "+MAX_QTY+" шт. одного товару"); return; } c[p.id].qty++; } else { c[p.id]={id:p.id,name:p.name,price:+p.price,photo:p.photo,qty:1}; }
       write(c);
       track("add_to_cart", [{id:p.id, name:p.name, price:+p.price, qty:1, list:listName||""}], +p.price);
       flash("Додано в кошик");
@@ -704,10 +704,13 @@
     function lookupDebounced(){ clearTimeout(lookupTimer); lookupTimer=setTimeout(lookupCity, 250); }   // власний таймер: вибір / «Мого міста немає» його СКАСОВУЮТЬ (інакше відкладений пошук повертав блок)
     cityRerender=function(){
       var cities=lastCityList||[];
-      if(cities.length && acCity.scrollIntoView){ try{ acCity.scrollIntoView({block:"nearest", behavior:"smooth"}); }catch(e){} }   // тестувальник 12.10: на телефоні список з'являвся нижче видимої зони
       renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, area:c.area||"", ref:c.ref, name:c.name}; }),
         function(pick){ citySeq++; clearTimeout(lookupTimer); whSeq++; city.value=pick.name; selectedCityRef=pick.ref||""; selectedCityArea=pick.area||""; cityListShown=false; cityPending=false; wh.placeholder="Номер або адреса відділення"; wh.focus(); },
         {label:"Мого міста немає в списку", onPick:function(){ citySeq++; clearTimeout(lookupTimer); cityListShown=false; cityPending=false; wh.placeholder="Номер відділення"; wh.focus(); }});   // citySeq++: запізнілі відповіді довідника вже не повернуть блок
+      if(cities.length && acCity.scrollIntoView){   // тестувальник 12.10 + аудит #697 F2: на телефоні список з'являвся нижче видимої зони; скрол — ПІСЛЯ renderAc (раніше список порожній і схований) і після розкладки
+        var raf=window.requestAnimationFrame||function(f){ return setTimeout(f,0); };
+        raf(function(){ try{ acCity.scrollIntoView({block:"nearest", behavior:"smooth"}); }catch(e){} });
+      }
     };
     city.addEventListener("input", function(){
       citySeq++; whSeq++;
@@ -763,7 +766,7 @@
       if(!items.length){ fail("Кошик порожній."); return; }
       // тестувальник 12.10: type=tel/required пропускали «123», «abcdefghij», «   » — сервер відсікав би, але покупець бачить помилку лише після відправки. Та сама перевірка, що в site_order_api.
       var nm=(document.getElementById("f-name").value||"").trim();
-      if(nm.length<3 || nm.indexOf(" ")<0){ fail("Вкажіть ім’я та прізвище отримувача (через пробіл)."); var fn_=document.getElementById("f-name"); if(fn_ && fn_.focus) fn_.focus(); return; }
+      if(nm.length<3 || !/\s/.test(nm)){ fail("Вкажіть ім’я та прізвище отримувача (через пробіл)."); var fn_=document.getElementById("f-name"); if(fn_ && fn_.focus) fn_.focus(); return; }
       var dg=(document.getElementById("f-phone").value||"").replace(/\D/g,""); if(dg.length===10 && dg.charAt(0)==="0") dg="38"+dg;
       if(!(dg.length===12 && dg.indexOf("380")===0)){ fail("Вкажіть коректний номер телефону (+380…)."); var fp_=document.getElementById("f-phone"); if(fp_ && fp_.focus) fp_.focus(); return; }
       // Довідник НП показав міста, а покупець жодного не обрав → у Toysi пішла б лише НАЗВА міста без області/CityRef, і посилка могла б поїхати в однойменне село

@@ -358,5 +358,5 @@ footer.foot a{color:var(--accent)}
 /* тестувальник 12.10 */
 #cf-cat{max-width:100%;min-width:0;text-overflow:ellipsis}                       /* catalog.html: select із довгою опцією давав горизонтальний скрол на 360 px */
 input,select,textarea{scroll-margin-top:84px}                                   /* липкий хедер не ховає сфокусоване поле */
-body:has(.buybar) .foot{margin-bottom:84px}                                      /* нижній рядок футера не ховається під фіксованою панеллю «У кошик» */
+body:has(.buybar) footer.foot{margin-bottom:84px}                                      /* нижній рядок футера не ховається під фіксованою панеллю «У кошик» */
 .cod-limit{margin:8px 0}

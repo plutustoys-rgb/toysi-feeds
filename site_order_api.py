@@ -267,7 +267,7 @@ def build_order(payload: dict) -> tuple:
         raise OrderError("Кошик порожній")
 
     name = (payload.get("name") or "").strip()
-    if len(name) < 3 or " " not in name:
+    if len(name) < 3 or len(name.split()) < 2:
         raise OrderError("Вкажіть імʼя та прізвище отримувача")
     phone = _norm_phone(payload.get("phone"))
     if not phone:
@@ -491,7 +491,7 @@ class Handler(SimpleHTTPRequestHandler):
         except nova_poshta.NovaPoshtaAPIError as e:
             # внутрішні подробності НП («FindByString is not specified» тощо) — лише в лог, не покупцеві (тестувальник 12.10); «не задано параметр» = порожній результат, не збій НП
             print(f"[site_order_api] {self.command} {self.path}: NP: {e}", file=sys.stderr)
-            if "is not specified" in str(e):
+            if "is not specified" in str(e) and ("FindByString" in str(e) or "CityRef" in str(e)):
                 return self._json(200, {"cities": []} if parsed.path == "/api/np/city" else {"warehouses": []})
             return self._json(502, {"error": "Нова Пошта тимчасово недоступна"})
         except Exception as e:

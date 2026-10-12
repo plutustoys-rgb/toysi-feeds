@@ -138,6 +138,9 @@ chk("/api/np/warehouse: «CityRef is not specified» → 200 і порожній
 so.nova_poshta.search_cities = raising("API повернув помилку: ['Internal error 500 secret-detail']")
 st, body = get("/api/np/city?q=%D0%9A%D0%B8%D1%97%D0%B2")
 chk("інші збої НП → 502 БЕЗ поля detail (внутрішній текст не віддається покупцеві)", st == 502 and "detail" not in body and "secret" not in json.dumps(body, ensure_ascii=False) and body.get("error"))
+so.nova_poshta.search_cities = raising("API повернув помилку: ['Something else is not specified']")
+st, body = get("/api/np/city?q=Kyiv")
+chk("F3: «is not specified» про ІНШИЙ параметр (не FindByString/CityRef) лишається 502, а не мовчки порожнім 200", st == 502)
 so.nova_poshta.search_cities, so.nova_poshta.search_warehouses = orig_c, orig_w
 httpd.shutdown()
 
@@ -146,10 +149,19 @@ css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
 src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
 chk("CSS: #cf-cat не ширший за екран (max-width:100%)", re.search(r"#cf-cat\{[^}]*max-width:100%", css) is not None)
 chk("CSS: scroll-margin-top для полів (липкий хедер не ховає поле)", re.search(r"input,select,textarea\{scroll-margin-top:84px\}", css) is not None)
-chk("CSS: нижній рядок футера не під панеллю «У кошик» (body:has(.buybar) .foot margin-bottom)", re.search(r"body:has\(\.buybar\) \.foot\{margin-bottom:\d+px\}", css) is not None)
+chk("CSS: нижній рядок футера не під панеллю «У кошик» (body:has(.buybar) footer.foot margin-bottom)", re.search(r"body:has\(\.buybar\) footer\.foot\{margin-bottom:\d+px\}", css) is not None)
 chk("форма: #checkout-title і #cod-limit-note в розмітці кошика", 'id="checkout-title"' in src and 'id="cod-limit-note"' in src and "до 3 000 ₴" in src)
 chk("опечатка «від першої брязкальця» виправлена → «від першого брязкальця»", "від першої брязкальця" not in src and "від першого брязкальця" in src)
 chk("description «Контакти» не обіцяє месенджери й графік роботи (їх на сторінці нема)", "месенджери" not in src.split("Контакти інтернет-магазину PlutusToys")[1][:120] and "графік роботи" not in src.split("Контакти інтернет-магазину PlutusToys")[1][:120])
+
+# ═══ Аудит #697 (12.10): знахідки F1–F6 ═══
+appjs = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
+chk("F1 CSS: відступ лише для підвалу САЙТУ (footer.foot), а не для .card .foot (інакше 4 картки «схожих» на картці товару +84 px)", re.search(r"body:has\(\.buybar\) footer\.foot\{margin-bottom:\d+px\}", css) is not None and not re.search(r"body:has\(\.buybar\) \.foot\{", css))
+_ci = appjs.index("cityRerender=function(){"); _blk = appjs[_ci:_ci + 3000]
+chk("F2 app.js: scrollIntoView списку міст викликається ПІСЛЯ renderAc (а не до — тоді список порожній і схований)", "scrollIntoView" in _blk and _blk.index("renderAc(acCity") < _blk.index("scrollIntoView") and "requestAnimationFrame" in _blk)
+chk("F4: константи фронту = серверні (MAX_QTY=50 ↔ MAX_QTY_PER_ITEM; COD_CEILING=3000 ↔ SITE_COD_CEILING за замовчуванням)", "MAX_QTY=50" in appjs and so.MAX_QTY_PER_ITEM == 50 and "COD_CEILING=3000" in appjs and re.search(r'"SITE_COD_CEILING", "3000"', Path(__file__).with_name("site_order_api.py").read_text(encoding="utf-8")) is not None)
+chk("F5: PT.add при qty=MAX_QTY не збільшує й не шле add_to_cart", "if(c[p.id].qty>=MAX_QTY)" in appjs and appjs.index("if(c[p.id].qty>=MAX_QTY)") < appjs.index('track("add_to_cart"'))
+chk("F6: ім'я з nbsp/табом між словами проходить і на клієнті (/\\s/), і на сервері (split())", "!/\\s/.test(nm)" in appjs and "len(name.split()) < 2" in Path(__file__).with_name("site_order_api.py").read_text(encoding="utf-8"))
 
 print()
 if F:

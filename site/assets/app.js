@@ -297,6 +297,18 @@
     try{ var el=document.getElementById("cart-addons"); cartAddonPool=el ? JSON.parse(el.textContent||"[]") : []; }catch(e){ cartAddonPool=[]; }
     return cartAddonPool;
   }
+  // Орієнтовна вартість доставки НП для кошика (Код, 12.10: getDocumentPrice + реальні ТТН 704/881/982 — збіг до копійки): Toysi ставить оголошену вартість = сумі накладеного (мінімум 500), тож
+  //   доставка до 2 кг = база (Київ 70 / інші великі міста 90) + 0,5% × S, якщо S > 500, інакше база; комісія за накладений платіж = 20 ₴ + 2% × S (точно на 190/400/1000/3000). Місто невідоме → діапазон Київ…інші.
+  //   Понад DELIV_COD_MAX накладеного платежу немає → лише тариф. НЕ ВРАХОВАНО: вага >2 кг (у 2 реальних ТТН +25 ₴; ваги в каталозі Toysi немає) — тому в тексті «орієнтовно» і «точну суму назве Нова Пошта».
+  //   Хто платить комісію — не доведено: текст говорить лише «орієнтовно» і «оплачується при отриманні».
+  var DELIV_TARIFF_MIN=70, DELIV_TARIFF_MAX=90, DELIV_COD_FIXED=20, DELIV_COD_RATE=0.02, DELIV_COD_MAX=3000, DELIV_DECL_FREE=500, DELIV_DECL_RATE=0.005;
+  function deliveryEstimate(goods){
+    if(!(goods>0) || goods>DELIV_COD_MAX) return "орієнтовно 70–90 ₴ до 2 кг";
+    var extra=goods>DELIV_DECL_FREE ? DELIV_DECL_RATE*goods : 0;
+    var fee=DELIV_COD_FIXED+DELIV_COD_RATE*goods+extra;
+    return "орієнтовно "+Math.round(DELIV_TARIFF_MIN+fee)+"–"+Math.round(DELIV_TARIFF_MAX+fee)+" ₴";
+  }
+
   function renderAside(c, ids){
     var aside=document.getElementById("cart-aside");
     if(!aside) return;
@@ -311,6 +323,7 @@
     var g=document.getElementById("aside-goods"), t=document.getElementById("aside-total");
     if(g) g.textContent=goods+" ₴";
     if(t) t.textContent=goods+" ₴";
+    var ad=document.getElementById("aside-delivery"); if(ad) ad.textContent=deliveryEstimate(goods);
     var picks=addonPool().filter(function(a){ return !c[a.id]; }).slice(0,3);
     Array.prototype.forEach.call(document.querySelectorAll("[data-addon]"), function(box){
       if(!picks.length){ box.innerHTML=""; box.style.display="none"; return; }
@@ -372,7 +385,7 @@
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
-    if(d) d.textContent=freeShip ? "Безкоштовно" : "орієнтовно 70–90 ₴ до 2 кг";
+    if(d) d.textContent=freeShip ? "Безкоштовно" : deliveryEstimate(goods);
     if(t) t.textContent=goods+" ₴";
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";

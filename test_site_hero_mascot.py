@@ -65,14 +65,14 @@ if m:
     chk("у кліпах ЛИШЕ «хвіст праворуч» (tailtrip, ear_scratch) — інші сцени в героя не потрапляють (рішення SMM)", names == ["ear_scratch", "tailtrip"])
     chk("data-ms: тривалість кожного кліпу в мс, число на кліп", len(ms) == len(clips) and all(x.isdigit() and 1000 <= int(x) <= 8000 for x in ms))
     ps = (HERE / "site/assets/mascot/plutus_hero_poster.webp").stat().st_size
-    chk("файли існують у site/assets/mascot, кліпи ≤ 250 КБ, poster ≤ 30 КБ і легший за PNG 14,6 КБ, який у герої замінив", ps <= 30 * 1024 and ps < (HERE / "site/assets/plutus_mascot_s.png").stat().st_size
-        and all((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size <= 250 * 1024 for n in names))
+    chk("файли існують у site/assets/mascot, кліпи ≤ 300 КБ (після перекодування з вирівняними кінцями 12.10: ≈283 КБ), poster ≤ 30 КБ і легший за PNG 14,6 КБ, який у герої замінив", ps <= 30 * 1024 and ps < (HERE / "site/assets/plutus_mascot_s.png").stat().st_size
+        and all((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size <= 300 * 1024 for n in names))
     chk("старий статичний PNG у герої замінено на poster (у .hero2 нема plutus_mascot_s.png)", "plutus_mascot_s.png" not in re.search(r'<div class="hero2">(.*?)<div class="txt">', home, re.S).group(1))
 chk("у хедері лишається статичний 24px PNG (SMM: анімація лише в герої) — головна важчає лише на poster", 'src="assets/plutus_mascot_s.png" alt="Плутус" width="24" height="22"' in home)
 chk("розмітка не додає жодного <video>/<script> для кліпів (вантажаться з app.js після load)", "<video" not in home)
 css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
-chk("CSS: clip-<img> накладений (absolute, opacity 0 → .on 1, transition); для reduced-motion transition вимкнено", re.search(r"\.mascot-clip\{position:absolute;left:0;top:0;opacity:0;transition:opacity", css) is not None and ".mascot-clip.on{opacity:1}" in css
-    and "prefers-reduced-motion:reduce){.hero2 .mascot-wrap .mascot-clip{transition:none}" in css)
+chk("CSS: кліп ховається visibility (не opacity/transition — кросфейд давав двійника), на час кліпу poster схований (.clip-on #hero-mascot{visibility:hidden})", re.search(r"\.mascot-clip\{position:absolute;left:0;top:0;visibility:hidden", css) is not None and ".mascot-clip.on{visibility:visible}" in css
+    and ".hero2 .mascot-wrap.clip-on #hero-mascot{visibility:hidden}" in css and "opacity" not in css[css.index(".hero2 .mascot-wrap .mascot-clip"):css.index(".hero2 .mascot-wrap.clip-on")])
 
 node = shutil.which("node")
 if not node:

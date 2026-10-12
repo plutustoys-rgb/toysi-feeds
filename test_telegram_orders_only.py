@@ -84,7 +84,9 @@ tn.send_telegram_message("🛒 Нове замовлення · site №T1 · 10
 chk("секрет усередині дозволеного повідомлення прибирається і з відправки", posts and "abc123secret" not in posts[0] and "abcdefghijklmnop" not in posts[0])
 red = tn._redact
 chk("redact: api_key=…, password=…, csrf_token=…", all(v not in red(f"x {k}={v} y") for k, v in (("api_key", "SEKRET1"), ("password", "hunter2"), ("csrf_token", "01adae092c"))))
-chk("redact: Set-Cookie і Authorization-рядки з продовженням", "AAAA" not in red("Set-Cookie: sid=AAAA; Path=/\n  BBBB\nok") and "BBBB" not in red("Set-Cookie: sid=AAAA; Path=/\n  BBBB\nok") and red("ok\nnext").endswith("next"))
+chk("redact: Set-Cookie/Authorization-рядок прибирається, наступні рядки call log (з відступом) лишаються", "AAAA" not in red("Set-Cookie: sid=AAAA; Path=/" + NL + "  ← 200 OK" + NL + "next") and "← 200 OK" in red("Set-Cookie: sid=AAAA; Path=/" + NL + "  ← 200 OK" + NL + "next") and red("ok" + NL + "next").endswith("next"))
+chk("redact: JSON-пара token прибирається", "abc123" not in red('{"access_token": "abc123", "ok": 1}') and '"ok": 1' in red('{"access_token": "abc123", "ok": 1}'))
+chk("redact: 1 МБ пробілів обробляється швидко (без квадратичного backtracking)", __import__("time").time() - (lambda t0=__import__("time").time(): (red(" " * 1000000 + "x"), t0)[1])() < 5)
 chk("redact: звичайний текст не чіпається", red("Замовлення prom_414634349: сума 39,00 грн; ТТН 20450000000000") == "Замовлення prom_414634349: сума 39,00 грн; ТТН 20450000000000")
 chk("redact: порожнє/None", red("") == "" and red(None) is None)
 

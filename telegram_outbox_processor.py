@@ -3,6 +3,7 @@ import re
 import sys
 from datetime import datetime
 
+import telegram_triage
 from telegram_notify import send_telegram_message
 
 # Файл живе у спільній папці PlutusToys_avtonomiya (Cowork і automation-сесія
@@ -58,7 +59,10 @@ def process_outbox(path: str = OUTBOX_FILE) -> None:
             continue
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        marker = f"\n\n✅ відправлено {timestamp}"
+        if telegram_triage.orders_only_enabled() and not telegram_triage.is_order_arrival(text):
+            marker = f"\n\n📋 лише в журналі {timestamp} (Telegram: режим «лише замовлення»)"   # не вводимо в оману «відправлено»
+        else:
+            marker = f"\n\n✅ відправлено {timestamp}"
         insert_at = block["end"]
         content = content[:insert_at] + marker + content[insert_at:]
         print(f"[telegram_outbox] Надіслано: {block['header']}")

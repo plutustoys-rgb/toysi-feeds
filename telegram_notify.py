@@ -61,17 +61,19 @@ def _log_alert_to_shared_folder(text: str, note: str = "") -> None:
 
 # РЕДАКЦІЯ СЕКРЕТІВ (12.10.2026: у Telegram потрапив сирий заголовок cookie кабінету Prom — текст виключення Playwright «Call log» несе заголовки запиту).
 # Єдина точка: кожне повідомлення проходить _redact ДО журналу й ДО відправки. Не покладаємось на те, що джерело саме не вставить секрет у {e}.
-_SECRET_HEADER_RE = re.compile(r"(?im)^([ \t]*-?[ \t]*(?:set-)?(?:cookie|authorization|proxy-authorization|x-api-key|x-auth-token)[ \t]*:)[^\n]*(?:\n[ \t]+[^\n]*)*")
+_SECRET_HEADER_RE = re.compile(r"(?im)^([ \t]*(?:-[ \t]*)?(?:set-)?(?:cookie|authorization|proxy-authorization|x-api-key|x-auth-token)[ \t]*:)[^\n]*")
+_SECRET_JSON_RE = re.compile(r"(?i)(\"(?:(?:access_|refresh_|csrf_)?token|password|secret|api_?key|authorization|cookie)\"[ \t]*:[ \t]*)\"[^\"\n]*\"")
 _SECRET_KV_RE = re.compile(r"(?i)\b((?:evo)?auth|access[_-]?token|refresh[_-]?token|api[_-]?key|apikey|secret|password|passwd|csrf[_-]?token|session[_-]?id|sessionid|sid|token)=([^\s;&\"']+)")
 _BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{12,}")
 
 
 def _redact(text: str) -> str:
-    """Прибирає секрети з тексту повідомлення: заголовки Cookie/Authorization (разом із рядками-продовженнями), пари ім'я=значення для токенів/ключів/паролів,
+    """Прибирає секрети з тексту повідомлення: рядки заголовків Cookie/Authorization (значення однорядкове; наступні рядки call log НЕ чіпаємо), JSON-пари "token": "…", пари ім'я=значення для токенів/ключів/паролів,
     Bearer/Basic. Решту тексту не чіпає."""
     if not text:
         return text
     out = _SECRET_HEADER_RE.sub(lambda m: f"{m.group(1)} [прибрано]", text)
+    out = _SECRET_JSON_RE.sub(lambda m: f'{m.group(1)}"[прибрано]"', out)
     out = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}=[прибрано]", out)
     return _BEARER_RE.sub(lambda m: f"{m.group(1)} [прибрано]", out)
 

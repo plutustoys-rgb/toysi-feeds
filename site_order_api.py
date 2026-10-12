@@ -604,10 +604,9 @@ class Handler(SimpleHTTPRequestHandler):
                 if amount is not None and abs(float(amount) - float(expected)) > 0.01:
                     # сума не збігається — НЕ підтверджуємо (money-safety), лишаємо для розбору
                     return self._text(400, f"amount mismatch: got {amount}, expected {expected}")
-                was_confirmed = bool(order.get("payment_confirmed"))
-                mark_payment_confirmed(conn, internal)  # ідемпотентно
+                newly_confirmed = mark_payment_confirmed(conn, internal)  # ідемпотентно; 1 лише при атомарному переході 0→1
                 conn.commit()
-                if not was_confirmed:
+                if newly_confirmed:
                     _notify_new_order(order, expected)   # перше підтвердження оплати = надходження передоплаченого замовлення
         except Exception as e:
             print(f"[site_order_api] callback помилка: {e}", file=sys.stderr)

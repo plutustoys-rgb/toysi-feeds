@@ -62,14 +62,14 @@ async function run(opts){
   if(scenario==="submit_cod"){
     const ls=store(); ls.setItem("pt_cart_v1", JSON.stringify(cartItem));
     const r=await run({ls, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge"], payment:"cod"});
-    const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
+    r.E["f-name"].value="Іван Петренко"; r.E["f-phone"].value="0501234567"; const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
     await new Promise(x=>setTimeout(x,50));
     console.log(JSON.stringify({loc:r.loc.href, order:r.ss.getItem("pt_last_order"), items:JSON.parse(r.ss.getItem("pt_last_order_items")||"null"), cart:ls.getItem("pt_cart_v1")}));
   } else if(scenario==="submit_prepaid"){
     const ls=store(); ls.setItem("pt_cart_v1", JSON.stringify(cartItem));
     const ss0=store(); ss0.setItem("pt_last_order_items", JSON.stringify([{id:"1",name:"Старе COD-замовлення",price:100,qty:1}]));   // у тій самій вкладці раніше було COD
     const r=await run({ls, ss:ss0, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge"], payment:"prepaid", liqpay:{data:"d",signature:"s",action_url:"https://www.liqpay.ua/api/3/checkout"}});
-    const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
+    r.E["f-name"].value="Іван Петренко"; r.E["f-phone"].value="0501234567"; const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
     await new Promise(x=>setTimeout(x,50));
     console.log(JSON.stringify({order:r.ss.getItem("pt_last_order"), items:r.ss.getItem("pt_last_order_items")}));
   } else if(scenario==="thanks" || scenario==="thanks_noid"){

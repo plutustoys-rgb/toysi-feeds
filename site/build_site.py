@@ -1574,7 +1574,9 @@ NABORY_MIN_CONTRIB = 50.0
 NABORY_PER_GROUP, NABORY_OTHER_MAX = 30, 24
 NABORY_LIST_NAME = "nabory_page"
 NABORY_VIEW_LIMIT = 24
-NABORY_EXCLUDED_CATS = frozenset({"автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя"})
+NABORY_EXCLUDED_CATS = frozenset({"автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя", "солдатики", "військова техніка", "спецтехніка"})
+# Аудит #706: is_weapon_replica ловить не все — «набір військового з пістолетом», «Людина Павук … механічна зброя», БТР/військові самоскиди. Тримаємо добірку «подарунок дитині» без мілітарі/зброї за назвою.
+NABORY_BAD_WORDS = ("пістолет", "зброя", "зброї", "військов", "солдат", "swat", "бтр", "автомат", "гранат", "армі")
 NABORY_GROUPS = (
     ("tvorchist", "Творчість", frozenset({"інша творчість", "картини за номерами", "бісер і намистини", "розмальовки та розпис", "набори для вишивання, в'язання, плетіння"})),
     ("lipl", "Ліплення", frozenset({"тісто для ліплення і пластилін"})),
@@ -1599,7 +1601,7 @@ def nabory_pick(prods):
             continue
         if not (NABORY_PRICE_MIN <= p["price"] <= NABORY_PRICE_MAX):
             continue
-        if cat in NABORY_EXCLUDED_CATS or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name):
+        if cat in NABORY_EXCLUDED_CATS or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name) or any(w in name.lower() for w in NABORY_BAD_WORDS):
             continue
         pools.setdefault(cat2g.get(cat, "other"), []).append(p)
     picked = {}
@@ -1640,6 +1642,7 @@ def write_nabory(prods):
     body = (
         '<h1 class="page">Набори, які займуть дитину надовго</h1>'
         '<p class="nb-lead">Усе вже в коробці — відкрив і граєш.</p>'
+        '<noscript><style>.nb-chips{display:none}</style></noscript>'
         f'<div class="chips nb-chips" id="nb-chips" role="group" aria-label="Тип набору">{"".join(chips)}</div>'
         f'<div class="nb-list" id="nabory-list" data-list="{NABORY_LIST_NAME}" data-limit="{NABORY_VIEW_LIMIT}"><div class="grid">\n' + "\n".join(cards) + '\n</div></div>'
         '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'

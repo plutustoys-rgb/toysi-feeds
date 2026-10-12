@@ -89,7 +89,12 @@ chk("картки несуть data-g, group «other» без чипа", html.co
 chk("список: id=nabory-list, data-list=nabory_page, data-limit=24; бейдж залишку лише на stock 1–3 (badge=True)", 'id="nabory-list" data-list="nabory_page" data-limit="24"' in html and "Залишилось 1 шт" in html and "Залишилось 5 шт" not in html)
 chk("перші 3 картки без lazy, перша fetchpriority=high (LCP)", html.count('fetchpriority="high"') == 1)
 chk("SEO: canonical nabory.html, title з назвою, description без обіцянки безкоштовної доставки, не noindex", 'rel="canonical" href="https://plutustoys.com.ua/nabory.html"' in html and "noindex" not in html and "<title>Набори, які займуть дитину надовго" in html and "безкоштовн" not in html.lower())
-chk("чипи без JS сховані (CSS .nb-chips{display:none}, .js — flex), решта карток видима", ".nb-chips{display:none}" in (HERE / "site/assets/styles.css").read_text(encoding="utf-8") and ".nb-chips.js{display:flex}" in (HERE / "site/assets/styles.css").read_text(encoding="utf-8"))
+_css = (HERE / "site/assets/styles.css").read_text(encoding="utf-8")
+chk("чипи: місце зарезервовано до JS (visibility, без CLS), .js — visible; без JS ховає <noscript><style>; решта карток видима", ".nb-chips{visibility:hidden}" in _css and ".nb-chips.js{visibility:visible}" in _css and "<noscript><style>.nb-chips{display:none}</style></noscript>" in html)
+_app = (HERE / "site/assets/app.js").read_text(encoding="utf-8")
+chk("view_item_list: IO спостерігає ПЕРШУ картку (не весь список 11–23 тис. px, інакше поріг 0.1 не досягається — аудит #706)", "io.observe(cards[0] || box);" in _app and "io.observe(box);" not in _app[_app.index("function initListTracking"):_app.index("function initNaboryChips")])
+chk("мілітарі/зброя за назвою відсіюються (пістолет, військов, солдат, БТР…) і категорії солдатики/військова техніка", all(bs.nabory_pick([P(n, "Інша творчість")]) == [] for n in ("Набір військового з пістолетом", "Набір «Військова техніка»", "Набір солдатиків", "Набір героя, механічна зброя", "Набір БТР")) and bs.nabory_pick([P("Набір фігурок", "Солдатики")]) == [] and len(bs.nabory_pick([P("Набір для творчості", "Інша творчість")])) == 1)
+chk("герой: мобільний рядок обгорнутий (flex-wrap), «Усі іграшки» окремим рядком — не вилазить за край на 320 px", "flex-wrap:wrap;align-items:center;gap:6px 10px" in _css and ".hero2 .hero-all{flex:0 0 100%;order:3" in _css)
 
 # герой головної
 src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")

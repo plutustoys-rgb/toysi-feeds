@@ -166,7 +166,7 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .hero2 p{margin:0;color:#6b5547;font-size:14px}
 .hero2 .act{display:flex;flex-direction:column;gap:8px;align-items:stretch;min-width:210px}
 .hero2 .btn{width:auto;padding:12px 22px;font-size:15px}
-.hero2 .hero-all{font-size:12.5px;color:var(--accent);text-align:center;margin:-2px 0 0;text-decoration:underline;text-underline-offset:2px}
+.hero2 .hero-all{font-size:13px;color:#a8431f;text-align:center;margin:-2px 0 0;padding:4px 0;text-decoration:underline;text-underline-offset:2px}   /* контраст ≥4.5:1 на персиковому тлі (аудит #706) */
 .hero2 .chip{font-size:12px;color:#6b5547;text-align:center;white-space:normal;min-width:0;padding:0;border:0;background:none;border-radius:0}
 .car{position:relative;margin:0 clamp(12px,3vw,24px)}
 .car .track{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding:4px 2px 10px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
@@ -185,9 +185,10 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
   .hero2 .txt{flex:1}
   .hero2 h1{font-size:21px;margin:0}
   .hero2 p{display:none}
-  .hero2 .act{flex:0 0 100%;min-width:100%;flex-direction:row;align-items:center;gap:10px}
-  .hero2 .btn{flex:1 1 52%;padding:11px 12px;white-space:nowrap}
-  .hero2 .chip{flex:1 1 48%;font-size:11.5px;line-height:1.25;text-align:center}
+  .hero2 .act{flex:0 0 100%;min-width:100%;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px 10px}
+  .hero2 .btn{flex:1 1 52%;padding:11px 12px;white-space:nowrap;order:1}
+  .hero2 .chip{flex:1 1 40%;font-size:11.5px;line-height:1.25;text-align:center;order:2}
+  .hero2 .hero-all{flex:0 0 100%;order:3;margin:0;padding:2px 0}   /* «Усі іграшки» окремим рядком: на 320–350 px чип і кнопка не вилазять за край (аудит #706) */
 }
 @media(max-width:600px){
   .car .arrow{display:none}
@@ -374,8 +375,8 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .cod-limit{margin:8px 0}
 /* /nabory.html (SMM 12.10) */
 .nb-lead{margin:-6px 16px 12px;color:var(--muted);font-size:14px}
-.nb-chips{display:none}
-.nb-chips.js{display:flex}
+.nb-chips{visibility:hidden}   /* місце під чипи зарезервовано до JS — без зсуву списку (CLS, аудит #706); без JS нижче ховаємо через <noscript> */
+.nb-chips.js{visibility:visible}
 .nb-chips button.chip{cursor:pointer;font-family:inherit}
 .nb-list a.card[hidden]{display:none}
 .nb-more{margin:18px 16px 4px;text-align:center}

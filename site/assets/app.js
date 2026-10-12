@@ -577,7 +577,8 @@
     if(typeof IntersectionObserver==="function"){
       // поріг 0.1, а не 0.4: на 320 px сітка в 1 колонку (≈2250 px заввишки) — 40% її висоти у вікні не бувають, і view_item_list не слався б ніколи (аудит #686)
       var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ fireList(); io.disconnect(); } }); }, {threshold:0.1});
-      io.observe(box);
+      // спостерігаємо ПЕРШУ картку, а не весь список: на /nabory.html список на 11–23 тис. px, і частка його видимості < 10% — подія не спрацьовувала б ніколи (аудит #706, той самий клас, що #686)
+      io.observe(cards[0] || box);
     } else { fireList(); }
     box.addEventListener("click", function(e){
       var a=e.target.closest("a.card"); if(!a) return;

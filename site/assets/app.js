@@ -360,6 +360,7 @@
     initNpAutocomplete();
     initCatalog();
     initHomeCarousel();
+    initListTracking();
     initContactTracking();
 
     // сторінка подяки — підставити номер замовлення
@@ -476,6 +477,29 @@
       var a=e.target.closest("a.card"); if(!a) return;
       var i=slides.indexOf(a); var d=slideData(a, i<0?0:i); d.item_list_name=listName;
       trackRaw("select_item", {item_list_id:"home_pick", item_list_name:listName, items:[d]});
+    });
+  }
+  // ── Посадкова /ig.html: сітка карток з item_list_name «ig_landing» — view_item_list один раз (коли сітка видна), select_item лише на клік ──
+  function initListTracking(){
+    var box=document.getElementById("ig-list");
+    if(!box) return;
+    var listName=box.getAttribute("data-list")||"ig_landing";
+    var cards=Array.prototype.slice.call(box.querySelectorAll("a.card"));
+    function items(){ return cards.map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
+    var sent=false;
+    function fireList(){
+      if(sent) return; sent=true;
+      trackRaw("view_item_list", {item_list_id:"ig_landing", item_list_name:listName, items:items()});
+    }
+    if(typeof IntersectionObserver==="function"){
+      // поріг 0.1, а не 0.4: на 320 px сітка в 1 колонку (≈2250 px заввишки) — 40% її висоти у вікні не бувають, і view_item_list не слався б ніколи (аудит #686)
+      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ fireList(); io.disconnect(); } }); }, {threshold:0.1});
+      io.observe(box);
+    } else { fireList(); }
+    box.addEventListener("click", function(e){
+      var a=e.target.closest("a.card"); if(!a) return;
+      var i=cards.indexOf(a); var d=slideData(a, i<0?0:i); d.item_list_name=listName;
+      trackRaw("select_item", {item_list_id:"ig_landing", item_list_name:listName, items:[d]});
     });
   }
   // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──

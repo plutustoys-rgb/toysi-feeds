@@ -35,7 +35,7 @@
   function track(name, items, value, extra){
     try{
       var cfg=window.PT_ANALYTICS||{};
-      var ga=items.map(function(i){ return {item_id:String(i.id), item_name:i.name, price:+i.price, quantity:i.qty||1}; });
+      var ga=items.map(function(i){ var o={item_id:String(i.id), item_name:i.name, price:+i.price, quantity:i.qty||1}; if(i.list){ o.item_list_name=i.list; } return o; });
       var gp={currency:"UAH", value:+value, items:ga}; for(var k in (extra||{})){ gp[k]=extra[k]; }
       if(cfg.ga4 && window.gtag){ window.gtag("event", name, gp); }
       if(cfg.fb && window.fbq && FB_EVENT[name]){
@@ -47,11 +47,11 @@
   }
 
   window.PT = {
-    add:function(p){                 // p={id,name,price,photo}
+    add:function(p, listName){       // p={id,name,price,photo}; listName — звідки додано (item_list_name у GA4, напр. cart_addon)
       var c=read();
       if(c[p.id]){ c[p.id].qty++; } else { c[p.id]={id:p.id,name:p.name,price:+p.price,photo:p.photo,qty:1}; }
       write(c);
-      track("add_to_cart", [{id:p.id, name:p.name, price:+p.price, qty:1}], +p.price);
+      track("add_to_cart", [{id:p.id, name:p.name, price:+p.price, qty:1, list:listName||""}], +p.price);
       flash("Додано в кошик");
     },
     track:track,
@@ -206,7 +206,7 @@
       renderSearch();
     });
   }
-  function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function esc(s){ return String(s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }   // ' теж: назви в data-add='…' (аудит #691: «М'яка іграшка» ламала кнопку й давала ін'єкцію атрибута)
 
   // ── Каталог: сортування + фільтри (клієнтом з index.json, весь каталог) ──
   function catCard(p){
@@ -275,11 +275,56 @@
     if(elReset) elReset.addEventListener("click",doReset);
   }
 
+  // ── Права колонка кошика (SMM 12.10): «Ваше замовлення», «Додайте до замовлення» (3 позиції з пулу cart.html, яких ще нема в кошику), динамічний рядок про відправку ──
+  var cartAddonPool=null;
+  function addonPool(){
+    if(cartAddonPool) return cartAddonPool;
+    try{ var el=document.getElementById("cart-addons"); cartAddonPool=el ? JSON.parse(el.textContent||"[]") : []; }catch(e){ cartAddonPool=[]; }
+    return cartAddonPool;
+  }
+  function renderAside(c, ids){
+    var aside=document.getElementById("cart-aside");
+    if(!aside) return;
+    aside.style.display = ids.length ? "" : "none";
+    if(!ids.length) return;
+    var goods=ids.reduce(function(s,id){ return s+c[id].price*c[id].qty; },0);
+    var items=document.getElementById("aside-items");
+    if(items) items.innerHTML=ids.map(function(id){
+      var it=c[id];
+      return '<div class="ai"><img src="'+esc(it.photo)+'" alt="" loading="lazy"><div class="ai-nm">'+esc(it.name)+'</div><div class="ai-q">'+it.qty+' × '+it.price+' ₴</div></div>';
+    }).join("");
+    var g=document.getElementById("aside-goods"), t=document.getElementById("aside-total");
+    if(g) g.textContent=goods+" ₴";
+    if(t) t.textContent=goods+" ₴";
+    var picks=addonPool().filter(function(a){ return !c[a.id]; }).slice(0,3);
+    Array.prototype.forEach.call(document.querySelectorAll("[data-addon]"), function(box){
+      if(!picks.length){ box.innerHTML=""; box.style.display="none"; return; }
+      box.style.display="";
+      box.innerHTML='<h3>Додайте до замовлення</h3>'+picks.map(function(a){
+        return '<div class="ao"><img src="'+esc(a.photo)+'" alt="" loading="lazy"><div class="ao-nm">'+esc(a.name)+'</div><div class="ao-pr">'+a.price+' ₴</div>'+
+          '<button type="button" class="ao-add" data-add=\''+esc(JSON.stringify({id:a.id,name:a.name,price:a.price,photo:a.photo}))+'\' data-list="cart_addon" aria-label="Додати до замовлення: '+esc(a.name)+'">+ Додати</button></div>';
+      }).join("");
+    });
+  }
+  function initShipToday(){
+    // Політика сайту каже лише «замовлення до 12:00 зазвичай відправляємо того ж дня» (сторінки «Доставка», «Про нас»). Нових обіцянок не додаємо (аудит #691): рядок «відправимо сьогодні» показуємо ТІЛЬКИ коли зараз
+    // у Києві будній день і до 12:00; після 12:00, у суботу/неділю, без Intl або з невідомою зоною лишається статичний текст політики. Обчислюється один раз при завантаженні.
+    var el=document.getElementById("ship-today");
+    if(!el) return;
+    try{
+      var f=new Intl.DateTimeFormat("en-GB",{hour:"numeric",hour12:false,weekday:"short",timeZone:"Europe/Kyiv"}).formatToParts(new Date());
+      var hh=0, wd="";
+      f.forEach(function(p){ if(p.type==="hour") hh=+p.value; if(p.type==="weekday") wd=p.value; });
+      if(wd && wd!=="Sat" && wd!=="Sun" && hh<12) el.textContent="🚚 Замовте до 12:00 — зазвичай відправимо сьогодні";
+    }catch(e){}
+  }
+
   // ── Рендер кошика (сторінка cart.html) ──
   function renderCart(){
     var box=document.getElementById("cart-body");
     if(!box) return;
     var c=read(), ids=Object.keys(c);
+    renderAside(c, ids);
     var form=document.getElementById("checkout-form");
     if(ids.length===0){
       box.innerHTML='<div class="empty"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="48" height="44" decoding="async"></div>Кошик порожній.<br>Оберіть іграшки в <a href="catalog.html" style="color:var(--accent)">каталозі</a>.</div>';
@@ -336,7 +381,7 @@
     // делеговані кліки: додати в кошик, пошук, кошик-керування
     document.body.addEventListener("click", function(e){
       var t=e.target.closest("[data-add]");
-      if(t){ e.preventDefault(); PT.add(JSON.parse(t.getAttribute("data-add"))); return; }
+      if(t){ e.preventDefault(); PT.add(JSON.parse(t.getAttribute("data-add")), t.getAttribute("data-list")||""); if(document.getElementById("cart-body")) renderCart(); return; }
       if(e.target.closest("#open-search")){ e.preventDefault(); openSearch(); return; }
       if(e.target.closest("#close-search")){ e.preventDefault(); closeSearch(); return; }
       var sb=e.target.closest("#search-overlay [data-sort]");
@@ -356,6 +401,7 @@
     if(so){ var sTimer=null; so.addEventListener("input", function(){ clearTimeout(sTimer); sTimer=setTimeout(function(){ runSearch(so.value); }, 200); }); }   // debounce 200 мс: не перераховуємо 21 тис. на кожне натискання
 
     renderCart();
+    initShipToday();
     initCheckout();
     initNpAutocomplete();
     initCatalog();

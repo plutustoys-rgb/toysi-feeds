@@ -587,10 +587,12 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
     # Знято фільтр безпечно, бо кожен кандидат тут ОКРЕМО звіряється НАЖИВО через
     # by_external_id (to_delist = лише підтверджено живі, не deleted) — це не залежить від
     # повноти /groups/list, тож обходить cap-guard без ризику видалити небачене.
-    candidates = [
-        e for e in ledger
-        if e in toysi_ids and e not in desired_ids
-    ]
+    # 12.10.2026 (знайдено при аналізі «слоти 5 878/6 000»): раніше кандидатом був лише `e in toysi_ids` — тобто товар, що ЗНИК з каталогу Toysi, НІКОЛИ не потрапляв у чистку
+    # (332+11 карток «Немає в наявності» висіли в слотах безстроково: 5 878/6 000, 123 нові відхилено «понад допустимі ліміти»). Журнал штовхнутих (`ledger`) — це САМЕ
+    # наші картки (ownership відомий без toysi_ids), а кожного кандидата все одно звіряємо НАЖИВО (to_delist = лише підтверджено живі, не deleted). Тож зниклі з Toysi
+    # беремо теж і ставимо ПЕРШИМИ: ці картки продати неможливо, видалення нічого не коштує. Кап LEDGER_MAX_DELIST_PER_RUN не змінено.
+    candidates = [e for e in ledger if e not in desired_ids]
+    candidates.sort(key=lambda e: e in toysi_ids)        # стабільне сортування: зниклі з Toysi (False) — першими
     if not candidates:
         return [], []
 
@@ -604,6 +606,7 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
 
     found, indeterminate = fetch_prom_products_by_external_ids(set(batch))
     to_delist = [e for e, p in found.items() if p.get("status") != "deleted"]
+    to_delist.sort(key=lambda e: e in toysi_ids)         # під кап 200 — спершу зниклі з Toysi
     to_prune = [e for e in batch if e not in found and e not in indeterminate]   # підтверджено 404
     to_prune += [e for e, p in found.items() if p.get("status") == "deleted"]    # надгробки
 

@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # природно ідемпотентний і сам "доганяє" все неопрацьоване незалежно від
 # того, скільки повідомлень назбиралось між перевірками.
 _HEADER_RE = re.compile(r"^## Повідомлення \d+.*$", re.MULTILINE)
-_SENT_MARKER_RE = re.compile(r"^✅ відправлено", re.MULTILINE)
+_SENT_MARKER_RE = re.compile(r"^(?:✅ відправлено|📋 лише в журналі)", re.MULTILINE)   # обидві позначки = блок оброблено (📋 — режим «лише замовлення», рішення власника 12.10)
 
 
 def find_unprocessed_messages(path: str = OUTBOX_FILE) -> list:
@@ -51,6 +51,7 @@ def process_outbox(path: str = OUTBOX_FILE) -> None:
     with open(path, encoding="utf-8") as f:
         content = f.read()
 
+    marks = []   # (позиція вставки, маркер): вставляємо ПІСЛЯ циклу й від кінця до початку — інакше зсув від попередньої вставки переносив маркер короткого блоку в сусідній
     for block in unprocessed:
         text = block["body"]
         sent = send_telegram_message(text)
@@ -63,9 +64,11 @@ def process_outbox(path: str = OUTBOX_FILE) -> None:
             marker = f"\n\n📋 лише в журналі {timestamp} (Telegram: режим «лише замовлення»)"   # не вводимо в оману «відправлено»
         else:
             marker = f"\n\n✅ відправлено {timestamp}"
-        insert_at = block["end"]
+        marks.append((block["end"], marker))
+        print(f"[telegram_outbox] Оброблено: {block['header']}")
+
+    for insert_at, marker in sorted(marks, key=lambda m: m[0], reverse=True):
         content = content[:insert_at] + marker + content[insert_at:]
-        print(f"[telegram_outbox] Надіслано: {block['header']}")
 
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)

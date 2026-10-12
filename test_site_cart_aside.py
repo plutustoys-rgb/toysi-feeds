@@ -156,7 +156,7 @@ function el(id){ const h={}; return {id,value:"",textContent:"",_inner:"",style:
     chk("render: колонка видима; «Ваше замовлення» — мініатюри, «2 × 468 ₴», «1 × 150 ₴», екранована назва", a is not None and a["threw"] is None and a["aside"] == ""
         and "2 × 468 ₴" in a["items"] and "1 × 150 ₴" in a["items"] and "&lt;b&gt;" in a["items"] and "<b>" not in a["items"])
     chk("render: товари і «Разом за товари» = 468×2+150 = 1086 ₴", a is not None and a["goods"] == "1086 ₴" and a["total"] == "1086 ₴")
-    chk("доставка в колонці рахується від суми: 1086 ₴ → 70+20+21,72 … 90+20+21,72 = «орієнтовно 112–132 ₴» (аудит #699 F1: renderAside писав aside-delivery, тест цього не бачив)", a is not None and a["deliv"] == "орієнтовно 112–132 ₴")
+    chk("доставка в колонці рахується від суми: 1086 ₴ → 70+5,43+20+21,72 … 90+… = «орієнтовно 117–137 ₴» (аудит #699 F1: renderAside писав aside-delivery, тест цього не бачив)", a is not None and a["deliv"] == "орієнтовно 117–137 ₴")
     adds = re.findall(r'data-add=', a["boxD"]) if a else []
     chk("add-on: РІВНО 3 позиції, жодної з уже наявних у кошику (1, 2), порядок пулу (3, 4, 5); в обох контейнерах (десктоп і мобільний)", a is not None and len(adds) == 3
         and all(x in a["boxD"] for x in ("Add3", "ведмедик", "Add5")) and "Add1" not in a["boxD"] and "Add2" not in a["boxD"] and a["boxM"] == a["boxD"])
@@ -172,7 +172,7 @@ function el(id){ const h={}; return {id,value:"",textContent:"",_inner:"",style:
     chk("апостроф у назві add-on екранується (&#39;), сирого «М'яка» в атрибуті нема (аудит #691 F1: ламало кнопку й давало ін'єкцію)", a is not None and "&#39;" in a["boxD"] and "М'яка" not in a["boxD"])
     chk("кнопка «+ Додати» має aria-label з назвою товару", a is not None and 'aria-label="Додати до замовлення: Add3"' in a["boxD"])
     ck = run("click")
-    chk("клік «+ Додати»: доставка в колонці перерахована (1176 ₴ → «орієнтовно 114–134 ₴»)", ck is not None and ck["delivAfter"] == "орієнтовно 114–134 ₴")
+    chk("клік «+ Додати»: доставка в колонці перерахована (1176 ₴ → «орієнтовно 119–139 ₴»)", ck is not None and ck["delivAfter"] == "орієнтовно 119–139 ₴")
     chk("клік «+ Додати»: товар у кошику (qty 1), рівно ОДИН add_to_cart з item_list_name «cart_addon», підсумок оновлено (1086+90=1176), доданий зникає з add-on",
         ck is not None and ck["cart"]["5"]["qty"] == 1 and len(ck["ev"]) == 1 and ck["ev"][0][2]["items"][0]["item_list_name"] == "cart_addon" and ck["goodsAfter"] == "1176 ₴" and "Add5" not in ck["boxAfter"] and "Add6" in ck["boxAfter"])
     em = run("empty")

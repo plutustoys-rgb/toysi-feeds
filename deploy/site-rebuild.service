@@ -16,4 +16,7 @@ ExecStartPost=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/generate_prom_re
 # канарка старих Prom-URL на ЖИВОМУ сайті (11.10.2026): покритий prom_id → 301 на картку, вигаданий → 410 (порожня/зіпсована мапа дала б 410 для всіх) →
 # тротлений алерт у Telegram. '-' → не-фатально. Має сенс лише після застосування Apache-правил 410 (activate_site_apache.sh) — разом із цим юнітом.
 ExecStartPost=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_redirect_canary.py
+# 12.10.2026: канарка додатково перевіряє правило груп Prom (/g<gid>-… → /category-<slug>.html). Цей юніт ставить ЛИШЕ activate_site_apache.sh (deploy/ не входить у
+# авто-синхронізацію юнітів deploy_systemd_units.sh, що бере тільки ./*.service з кореня репо) — тобто прапорець вмикається разом із самим правилом Apache, не раніше.
+Environment=SITE_CANARY_GROUPS=1
 Nice=10

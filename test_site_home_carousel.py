@@ -175,7 +175,7 @@ function mkEl(o){ const h={}; const cls=new Set(); const e=Object.assign({h, sty
   const ready=[]; let ioCb=null;
   const doc={addEventListener(t,f){ if(t==="DOMContentLoaded") ready.push(f); else (doc_h[t]=doc_h[t]||[]).push(f); },
     getElementById(id){ return (id==="home-car" && scenario!=="nocar")?car:null; }, querySelector(){return null}, querySelectorAll(){return []}, body:{addEventListener(){}}, createElement(){return {style:{}}}};
-  const ctx={document:doc, localStorage:store(), sessionStorage:store(), console, fetch:()=>Promise.reject(), navigator:{}, location:{pathname:"/", href:"/"}, setTimeout, clearTimeout,
+  const ctx={document:doc, localStorage:store(), sessionStorage:store(), console, fetch:()=>Promise.reject(), navigator:{}, location:{pathname:"/", href:"/"}, setTimeout, clearTimeout, setInterval:function(){ return 1; },
     addEventListener(t,f){ (win_h[t]=win_h[t]||[]).push(f); }};
   ctx.window=ctx; ctx.self=ctx;
   ctx.matchMedia=function(q){ return {matches: (scenario==="reduce" && /reduce/.test(q)) || (scenario==="wide" && /min-width: 700px/.test(q))}; };

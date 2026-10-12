@@ -15,8 +15,16 @@ plutustoys.com.ua з Prom на власний сайт НЕ пропала ви�
 ({toysi_id: {prom_id, url_text}}, який наповнює generate_google_feed/full_catalog_scan).
 Редиректимо ЛИШЕ на товари, що реально мають сторінку на сайті (в наявності — site/index.json; без залишку — сторінка OutOfStock,
 product-<id>.html у site/) — решта: nginx-`default` (/catalog.html); в Apache (прод) — 410 Gone (рішення Консультанта 11.10.2026).
+
+ГРУПИ PROM (12.10.2026, SEO-замовлення; GSC: 88 старих URL груп `/g{gid}-{slug}` дають ≈40% показів, а вони вели 301 на /catalog.html):
+друга мапа `prom_group_redirects_apache.map` (Apache RewriteMap txt:, "gid /category-<slug>.html") з джерела правди
+`prom_group_to_category.json` ({"<gid>": {"g_slug", "impressions_90d", "category": "<slug без category- і .html>" | null}}).
+Дані SEO — НЕ довірений вхід: gid — лише цифри, slug — лише [a-z0-9-]+, а сторінка site/category-<slug>.html мусить існувати у зібраному
+сайті; інакше запис пропускається з гучним попередженням у stderr (генератор не падає — gid лишається на /catalog.html, як було).
+Перший рядок мапи — gid з найбільшою кількістю показів: його беруть проби activate_site_apache.sh і канарка.
 """
 import os
+import re
 import json
 import sys
 from pathlib import Path
@@ -27,6 +35,13 @@ INDEX_FILE = Path(os.environ.get("SITE_DIR", str(BASE / "site"))) / "index.json"
 OUT_FILE = Path(os.environ.get("PROM_REDIRECTS_MAP", str(BASE / "prom_redirects.map")))
 # VPS працює на Apache (Webuzo), не на nginx: RewriteMap txt:<файл> читає "ключ значення" БЕЗ крапки з комою.
 OUT_FILE_APACHE = Path(os.environ.get("PROM_REDIRECTS_MAP_APACHE", str(BASE / "prom_redirects_apache.map")))
+# групи Prom (12.10.2026): джерело правди (SEO) → мапа Apache gid -> /category-<slug>.html
+GROUP_JSON = Path(os.environ.get("PROM_GROUP_CATEGORY_JSON", str(BASE / "prom_group_to_category.json")))
+OUT_FILE_GROUPS_APACHE = Path(os.environ.get("PROM_GROUP_REDIRECTS_MAP_APACHE", str(BASE / "prom_group_redirects_apache.map")))
+GID_RE = re.compile(r"[0-9]{1,20}")                 # fullmatch; явний клас, а не \d (той приймає арабсько-індійські цифри)
+SLUG_RE = re.compile(r"[a-z0-9-]{1,200}")
+GROUP_LINE_RE = re.compile(r"[0-9]{1,20} /category-[a-z0-9-]{1,200}\.html")   # формат рядка мапи груп (перевіряється перед записом і в тесті)
+GROUP_HEADER = "# АВТО-ЗГЕНЕРОВАНО generate_prom_redirects.py — Apache RewriteMap txt (gid групи Prom -> /category-<slug>.html; перший рядок = найбільше показів)."
 
 
 def load_valid_ids() -> set:
@@ -98,6 +113,109 @@ def build_map_apache() -> str:
     return "\n".join([header] + lines) + "\n"
 
 
+_DUP = object()   # маркер дубльованого ключа в JSON (json.loads мовчки лишає останній)
+
+
+def _warn(msg: str) -> None:
+    print(f"[prom_redirects] УВАГА (групи Prom): {msg}", file=sys.stderr)
+
+
+def _pairs_hook(pairs):
+    d = {}
+    for k, v in pairs:
+        d[k] = _DUP if k in d else v
+    return d
+
+
+def load_group_source(path: Path = None):
+    """JSON джерела груп -> dict або None (файл відсутній/зіпсований/не об'єкт — з гучним попередженням)."""
+    path = path or GROUP_JSON
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_pairs_hook)
+    except FileNotFoundError:
+        _warn(f"{path} нема — мапу груп не оновлюю")
+        return None
+    except (OSError, ValueError) as e:     # ValueError ⊃ JSONDecodeError, UnicodeDecodeError
+        _warn(f"{path} нечитний ({type(e).__name__}: {str(e)[:120]}) — мапу груп не оновлюю")
+        return None
+    if not isinstance(raw, dict):
+        _warn(f"{path}: очікую JSON-об'єкт {{gid: {{...}}}}, отримано {type(raw).__name__} — мапу груп не оновлюю")
+        return None
+    return raw
+
+
+def build_group_lines(raw: dict, site_dir: Path) -> tuple[list[str], dict]:
+    """Рядки мапи груп "gid /category-<slug>.html" (відсортовані: найбільше показів першим) + статистика.
+    Ніколи не падає на поганих даних: кожен відхилений запис — рядок у stderr. Вихід валідний за GROUP_LINE_RE."""
+    stats = {"null": 0, "invalid": 0, "no_page": 0, "conflict": 0}
+    cand = {}          # gid -> (impressions, slug)
+    conflict = set()
+    for key, rec in raw.items():
+        gid = key.strip() if isinstance(key, str) else ""
+        if not GID_RE.fullmatch(gid):
+            _warn(f"ключ {str(key)[:40]!r} — не gid (лише цифри); пропущено")
+            stats["invalid"] += 1
+            continue
+        if rec is _DUP:
+            conflict.add(gid)
+            continue
+        if not isinstance(rec, dict):
+            _warn(f"gid {gid}: значення не об'єкт; пропущено")
+            stats["invalid"] += 1
+            continue
+        cat = rec.get("category")
+        if cat is None:
+            stats["null"] += 1                 # свідомо без категорії (SEO) — лишається /catalog.html, без шуму
+            continue
+        slug = cat.strip() if isinstance(cat, str) else ""
+        if not SLUG_RE.fullmatch(slug):
+            _warn(f"gid {gid}: category {str(cat)[:60]!r} не відповідає [a-z0-9-]+; пропущено")
+            stats["invalid"] += 1
+            continue
+        impr = rec.get("impressions_90d")
+        impr = impr if (type(impr) is int and impr > 0) else 0
+        if gid in cand:                        # " 123" і "123" — той самий gid: однакова категорія = дубль, різна = неоднозначність
+            if cand[gid][1] != slug:
+                conflict.add(gid)
+            continue
+        cand[gid] = (impr, slug)
+    for gid in sorted(conflict):
+        cand.pop(gid, None)
+        _warn(f"gid {gid}: суперечливі записи (дубль ключа в JSON або різні категорії) — неоднозначно, пропущено (лишається /catalog.html)")
+        stats["conflict"] += 1
+    rows = []
+    for gid, (impr, slug) in cand.items():
+        if not (site_dir / f"category-{slug}.html").is_file():
+            _warn(f"gid {gid}: сторінки site/category-{slug}.html НЕМАЄ у зібраному сайті — пропущено (gid лишається на /catalog.html)")
+            stats["no_page"] += 1
+            continue
+        line = f"{gid} /category-{slug}.html"
+        if not GROUP_LINE_RE.fullmatch(line):   # останній рубіж: у мапу Apache не потрапить нічого поза форматом
+            _warn(f"gid {gid}: рядок {line!r} поза форматом; пропущено")
+            stats["invalid"] += 1
+            continue
+        rows.append((-impr, len(gid), gid, line))
+    rows.sort()
+    if cand and not rows:
+        _warn(f"жоден із {len(cand)} gid не має сторінки категорії в {site_dir} — сайт ще не зібрано? Мапа груп порожня (усе -> /catalog.html)")
+    return [r[3] for r in rows], stats
+
+
+def write_group_map() -> int:
+    """Будує й атомарно пише мапу груп. Повертає кількість рядків (-1 — джерело непридатне, мапа не оновлена).
+    Файл мапи мусить існувати завжди (Apache RewriteMap з відсутнім файлом валить configtest) — якщо його нема, пишемо порожню."""
+    raw = load_group_source()
+    if raw is None:
+        if not OUT_FILE_GROUPS_APACHE.exists():
+            _write_atomic(OUT_FILE_GROUPS_APACHE, GROUP_HEADER + "\n")
+        return -1
+    lines, stats = build_group_lines(raw, INDEX_FILE.parent)
+    _write_atomic(OUT_FILE_GROUPS_APACHE, "\n".join([GROUP_HEADER] + lines) + "\n")
+    print(f"[prom_redirects] {OUT_FILE_GROUPS_APACHE}: {len(lines)} редиректів gid->/category-*.html "
+          f"(null-категорія {stats['null']}, без сторінки на сайті {stats['no_page']}, суперечливих {stats['conflict']}, невалідних {stats['invalid']}; решта gid -> /catalog.html)")
+    return len(lines)
+
+
 SHRINK_GUARD_MIN_PREV = 100      # попередня мапа менша за це — гард не діє (перший запуск/мала мапа)
 SHRINK_GUARD_FRACTION = 0.5      # нова мапа менша за цю частку попередньої → не перезаписуємо
 
@@ -128,6 +246,10 @@ def main() -> None:
     _write_atomic(OUT_FILE_APACHE, build_map_apache())
     print(f"[prom_redirects] {OUT_FILE}: {n} редиректів prom_id->/product-*.html "
           f"(пропущено {skipped} — нема сторінки на сайті; ці Prom-URL на проді віддають 410 Gone)")
+    try:
+        write_group_map()       # окрема мапа; її збій не чіпає мапу товарів вище (вона вже записана)
+    except Exception as e:  # noqa: BLE001
+        _warn(f"мапу груп не записано ({type(e).__name__}: {str(e)[:150]})")
 
 
 if __name__ == "__main__":

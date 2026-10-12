@@ -30,6 +30,7 @@ VHOST="$CONFD/z-plutustoys-com-ua.conf"      # z- префікс: вантажи
 WEBUZO_VH="$CONFD/webuzoVH.conf"
 WEBROOT=/var/webuzo-data/www                  # той самий webroot ACME, що в прецеденті Vartov
 MAPFILE="$APP/prom_redirects_apache.map"
+GROUPMAP="$APP/prom_group_redirects_apache.map"   # старі URL груп Prom /g<gid>-… → /category-<slug>.html (generate_prom_redirects.py; 12.10.2026)
 MIN_MAP_LINES="${MIN_MAP_LINES:-500}"
 WAIT_DNS_MIN="${WAIT_DNS_MIN:-180}"
 LE_EMAIL="${LE_EMAIL:-plutustoys@gmail.com}"
@@ -78,6 +79,7 @@ cert_subject() {   # $1 = SNI-ім'я або порожньо
     echo "${out:-NOCERT}" | tr '\n' ' '
 }
 code() { curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || echo "ERR"; }
+redir() { curl -sS --max-time 10 -o /dev/null -w '%{http_code} %{redirect_url}' "$@" 2>/dev/null || echo "ERR"; }
 behavior() {
     echo "bare80=$(code "http://$IP/")"
     echo "shopify80=$(code -H 'Host: shopify.plutustoys.com.ua' "http://$IP/")"
@@ -109,6 +111,15 @@ echo "ℹ️  рядків у мапі 301: $MAPLINES"
 if [ "$MAPLINES" -lt "$MIN_MAP_LINES" ] && [ "${ALLOW_SMALL_MAP:-0}" != "1" ]; then
     die "мапа 301 має лише $MAPLINES рядків (< $MIN_MAP_LINES): own_product_links_cache.json порожній/відсутній? Усі старі Prom-URL пішли б 301 на /catalog.html, а Google кешує 301. Apache НЕ чіпано. (Свідомо? ALLOW_SMALL_MAP=1)"
 fi
+# мапа груп Prom (12.10.2026): файл МУСИТЬ існувати (RewriteMap txt: з відсутнім файлом валить configtest). Порожня мапа — не помилка: усі /g<gid>-… лишаються на /catalog.html, як було.
+if [ ! -e "$GROUPMAP" ]; then
+    printf '# порожня мапа груп Prom (generate_prom_redirects.py не створив: нема prom_group_to_category.json?) — усі /g<gid>-... -> /catalog.html\n' > "$GROUPMAP"
+    chmod 644 "$GROUPMAP"
+    echo "⚠️  $GROUPMAP не створено генератором — поклав порожню (групи Prom підуть на /catalog.html, як було)"
+fi
+GRPLINES=$(grep -c '^[0-9]' "$GROUPMAP" 2>/dev/null || true)
+GRPLINES=${GRPLINES:-0}
+echo "ℹ️  рядків у мапі груп Prom (gid -> /category-*.html): $GRPLINES"
 
 can_read() { su -s /bin/sh "$APUSER" -c "test -r '$1'" 2>/dev/null; }
 if ! can_read "$APP/site/index.html"; then
@@ -129,7 +140,11 @@ if [ ! -e "$MAPFILE" ] || ! can_read "$MAPFILE"; then
     command -v setfacl >/dev/null 2>&1 && setfacl -m "u:$APUSER:r--" "$MAPFILE" || true
     can_read "$MAPFILE" || die "$APUSER не читає $MAPFILE — Apache НЕ чіпано"
 fi
-echo "✅ $APUSER читає $APP/site і мапу"
+if ! can_read "$GROUPMAP"; then
+    command -v setfacl >/dev/null 2>&1 && setfacl -m "u:$APUSER:r--" "$GROUPMAP" || true
+    can_read "$GROUPMAP" || die "$APUSER не читає $GROUPMAP — Apache НЕ чіпано"
+fi
+echo "✅ $APUSER читає $APP/site і мапи"
 for f in "$APP/.env" "$APP/orders.db"; do
     if [ -e "$f" ] && can_read "$f"; then echo "⚠️  УВАГА: $APUSER може читати $f ще ДО нас (існуюче право файла) — не наша зміна, але закрий: chmod o-r"; fi
 done
@@ -194,6 +209,12 @@ cat <<'EOF'
     RewriteCond ${promredir:$1|-} =-
     RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- - [G,L]
     RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- ${promredir:$1} [R=301,L]
+    # 12.10.2026 (SEO-замовлення, GSC: 88 старих URL груп Prom /g<gid>-<slug> ≈40% показів): gid Є в prom_group_redirects_apache.map → 301 на /category-<slug>.html
+    # (мовний префікс опційний, хвіст після «g<gid>-» довільний; QSD — ?query Prom не переноситься на сторінку категорії). gid поза мапою (null-категорія SEO, невідомий,
+    # сторінка категорії зникла) → правило нижче, як було: /catalog.html. Мапа без дефолту: RewriteCond ... !=- пропускає лише знайдені ключі.
+    RewriteMap grpredir "txt:@GROUPMAPFILE@"
+    RewriteCond ${grpredir:$1|-} !=-
+    RewriteRule ^/(?:(?:ua|ru)/)?g([0-9]+)- ${grpredir:$1} [R=301,L,QSD]
     RewriteRule ^/(?:(?:ua|ru)/)?g[0-9]+- /catalog.html [R=301,L]
     RewriteRule ^/(?:(?:ua|ru)/)?product_list(?:/|$) /catalog.html [R=301,L]
     RewriteRule ^/(?:(?:ua|ru)/)?site_contacts(?:\.html)?$ /contacts.html [R=301,L]
@@ -221,7 +242,7 @@ cat <<'EOF'
     </Directory>
 EOF
 }
-sub() { sed -e "s#@APP@#$APP#g" -e "s#@MAPFILE@#$MAPFILE#g" -e "s#@WEBROOT@#$WEBROOT#g"; }
+sub() { sed -e "s#@APP@#$APP#g" -e "s#@MAPFILE@#$MAPFILE#g" -e "s#@GROUPMAPFILE@#$GROUPMAP#g" -e "s#@WEBROOT@#$WEBROOT#g"; }
 
 render_vhost() {   # $1 = http | https  → у stdout
     local mode="$1"
@@ -328,6 +349,32 @@ write_vhost() {   # $1 = http | https
     echo "  Prom-URL: непокритий = $pk_gone (очікую 410); покритий p${pk_key:-?} = $pk_map (очікую 301 …${pk_val:-?})"
     [ "$pk_gone" = "410" ] || { echo "🚨 непокритий Prom-URL віддає $pk_gone, а не 410"; bad=1; }
     case "$pk_map" in "301 "*) ;; *) echo "🚨 покритий Prom-URL не веде 301 на картку ($pk_map)"; bad=1;; esac
+    # проба правила груп Prom (12.10.2026): gid з мапи (перший рядок = найбільше показів) → 301 на СВОЮ категорію — і з /ua/, і без префікса (з ?query, який QSD має відкинути);
+    # gid поза мапою → 301 на /catalog.html, як було. Хибний напрям (не та категорія / каталог для мапованого) = відкат.
+    local gp_key=""
+    local gp_val=""
+    local gp_exp=""
+    local gp_ua="ERR"
+    local gp_bare="ERR"
+    local gp_out="ERR"
+    gp_key=$(awk '/^[0-9]/{print $1; exit}' "$GROUPMAP" 2>/dev/null || true)
+    gp_val=$(awk '/^[0-9]/{print $2; exit}' "$GROUPMAP" 2>/dev/null || true)
+    gp_exp="301 $sch2://$DOMAIN$gp_val"
+    for try in 1 2 3; do
+        gp_out=$(redir --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/ua/g99999999999999-gone-probe")
+        if [ -n "$gp_key" ]; then
+            gp_ua=$(redir --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/ua/g${gp_key}-probe")
+            gp_bare=$(redir --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/g${gp_key}-probe/page_2?utm_probe=1")
+        else
+            gp_ua="$gp_exp"; gp_bare="$gp_exp"    # мапа груп порожня — нема що пробувати (лишається лише контроль «поза мапою»)
+        fi
+        [ "$gp_out" = "301 $sch2://$DOMAIN/catalog.html" ] && [ "$gp_ua" = "$gp_exp" ] && [ "$gp_bare" = "$gp_exp" ] && break
+        echo "ℹ️  проба правила груп Prom ще не збіглась (спроба $try/3): поза мапою = $gp_out, /ua/g… = $gp_ua, /g… = $gp_bare — чекаю"; sleep 4
+    done
+    echo "  групи Prom: поза мапою = $gp_out (очікую 301 $sch2://$DOMAIN/catalog.html); g${gp_key:-?} з /ua/ = $gp_ua, без префікса (+?query) = $gp_bare (очікую $gp_exp)"
+    [ "$gp_out" = "301 $sch2://$DOMAIN/catalog.html" ] || { echo "🚨 gid групи Prom поза мапою не веде 301 на /catalog.html ($gp_out)"; bad=1; }
+    [ "$gp_ua" = "$gp_exp" ] || { echo "🚨 gid групи Prom з мапи (/ua/g${gp_key}-…) веде не на свою категорію ($gp_ua, очікую $gp_exp)"; bad=1; }
+    [ "$gp_bare" = "$gp_exp" ] || { echo "🚨 gid групи Prom з мапи (/g${gp_key}-… без префікса, з ?query) веде не на свою категорію ($gp_bare, очікую $gp_exp; QSD не діє?)"; bad=1; }
     # власна проба нових правил (10.10.2026): «/» не зациклився на редіректі /index.html → /; /index.html → 301 на «/»; неіснуюча адреса → 404 (не 500).
     # Перевірка чужих сайтів вище цього НЕ бачить, а помилка в нашому правилі клала б саму головну.
     local sch="http"
@@ -383,11 +430,19 @@ if [ "$CERT_OK" = "0" ]; then
     echo "  /build_site.py     : $HX (очікую 403/404, не 200)"
     echo "  /ua/p${MAPKEY}-test: $HR (очікую 301 …$MAPVAL)"
     echo "  /ua/p999999999999  : $HR0 (очікую 410 Gone — непокритий Prom-URL)"
+    GRPKEY=$(awk '/^[0-9]/{print $1; exit}' "$GROUPMAP" 2>/dev/null || true)
+    GRPVAL=$(awk '/^[0-9]/{print $2; exit}' "$GROUPMAP" 2>/dev/null || true)
+    HG=$(redir $R "http://$DOMAIN/ua/g${GRPKEY:-0}-test")
+    HG0=$(redir $R "http://$DOMAIN/ua/g99999999999999-gone-probe")
+    echo "  /ua/g${GRPKEY:-?}-test : $HG (очікую 301 …${GRPVAL:-/catalog.html} — група Prom з мапи)"
+    echo "  /ua/g99999999999999: $HG0 (очікую 301 …/catalog.html — gid поза мапою)"
     [ "$HP" = "200" ] && [ "$HC" = "200" ] || die "сайт локально не віддається (/=$HP, /catalog.html=$HC). DNS НЕ переводити! Дивись: tail /usr/local/apps/apache2/logs/error_log"
     [ "$HA" = "200" ] || die "/api/np/city=$HA — API не проксіюється. DNS НЕ переводити! (journalctl -u site-order-api)"
     [ "$HX" != "200" ] || die "build_site.py віддається по HTTP (DocumentRoot) — DNS НЕ переводити!"
     case "$HR" in "301 "*"$MAPVAL") ;; *) die "301 з мапи не працює ($HR) — DNS НЕ переводити!";; esac
     case "$HR0" in "410 "*) ;; *) die "непокритий Prom-URL не віддає 410 ($HR0) — DNS НЕ переводити!";; esac
+    case "$HG0" in "301 "*"/catalog.html") ;; *) die "gid групи Prom поза мапою не веде 301 на /catalog.html ($HG0) — DNS НЕ переводити!";; esac
+    if [ -n "$GRPKEY" ]; then case "$HG" in "301 "*"$GRPVAL") ;; *) die "301 групи Prom на категорію не працює ($HG) — DNS НЕ переводити!";; esac; fi
     echo ""
     echo "✅ ФАЗА C ГОТОВА: сайт працює на VPS по HTTP (чужі vhost'и не зачеплено). МОЖНА ПЕРЕВОДИТИ DNS:"
     echo "   у кабінеті Prom: A для @ та www -> $IP, AAAA (якщо є) — видалити. Онлайн-оплата (LiqPay) ще не підключена: prepaid покаже"
@@ -480,6 +535,8 @@ if [ "$CERT_OK" = "1" ]; then
     echo "  HSTS               : ${HSTS_HDR:-НЕМАЄ (mod_headers відсутній? — HSTS не ввімкнено, решта працює)}"
     echo "  https /ua/ (301 → /): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ua/" 2>/dev/null || echo ERR)"
     echo "  https /ru/p999999999999-x (очікую 410 Gone): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/p999999999999-x.html" 2>/dev/null || echo ERR)"
+    FGK=$(awk '/^[0-9]/{print $1; exit}' "$GROUPMAP" 2>/dev/null || true)
+    echo "  https /ru/g${FGK:-?}-x (група Prom → 301 на свою категорію): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/g${FGK:-0}-x" 2>/dev/null || echo ERR)"
     certbot renew --dry-run --cert-name "$DOMAIN" >/dev/null 2>&1 && echo "✅ certbot renew --dry-run для $DOMAIN ОК" || echo "⚠️  certbot renew --dry-run для $DOMAIN НЕ пройшов — перевір /var/log/letsencrypt/letsencrypt.log"
     echo ""
     echo "🎉 ГОТОВО: https://$DOMAIN працює. Далі (не тут): LiqPay-ключі в $APP/.env, SYSTEM_MAP, GMC."

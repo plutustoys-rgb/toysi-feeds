@@ -360,6 +360,7 @@
     initNpAutocomplete();
     initCatalog();
     initHomeCarousel();
+    initListTracking();
     initContactTracking();
 
     // сторінка подяки — підставити номер замовлення
@@ -419,11 +420,49 @@
       var reduce = typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
       if(track) track.scrollBy({left:dir*Math.max(160, track.clientWidth*0.8), behavior: reduce ? "auto" : "smooth"});
     }
-    if(left) left.addEventListener("click", function(){ scrollBy(-1); });
-    if(right) right.addEventListener("click", function(){ scrollBy(1); });
+    if(left) left.addEventListener("click", function(){ userAction(); scrollBy(-1); });
+    if(right) right.addEventListener("click", function(){ userAction(); scrollBy(1); });
     if(track){ track.addEventListener("scroll", sync); sync(); }
     window.addEventListener("resize", sync);   // ширина вікна/поворот екрана міняють «край»
     window.addEventListener("orientationchange", sync);
+    // ── Автопрокрутка (SMM 12.10: власник бачить нерухому карусель як «не крутиться»): по 1 картці кожні ~4 с зі scroll-snap. НЕ крутимо, коли:
+    //   курсор мишею над каруселлю (pointerType touch не рахується: після тапу «наведення» на телефоні залипає), клавіатурний фокус всередині (:focus-visible — клік мишею по стрілці фокус
+    //   не «тримає»), палець на екрані, вкладка прихована (document.hidden), карусель менше ніж на 40% у вікні (IntersectionObserver), prefers-reduced-motion, або щойно була дія
+    //   покупця (стрілка/свайп/колесо/клавіша — пауза 10 с, щоб не відбирати керування). На краю — плавно на початок (без клонів слайдів, але далі крутиться по колу, поки нема паузи; кнопки паузи нема — лише hover/фокус/дія). Нових зображень не підвантажуємо: порядок
+    //   і набір слайдів ті самі; в аналітику автопрокрутку НЕ пишемо (select_item лише на клік, view_item_list — як було).
+    var AUTO_MS = 4000, USER_GRACE_MS = 10000;
+    var auto = {hover:false, focus:false, touch:false, touchAt:0, visible:true, until:0};
+    function reducedMotion(){ return typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches; }
+    function userAction(){ auto.until = Date.now() + USER_GRACE_MS; }
+    function autoStep(){
+      if(auto.touch && Date.now() - auto.touchAt > 30000) auto.touch = false;   // запобіжник: touchend/touchcancel не прийшли (системний жест iOS) — не стоїмо вічно
+      if(!track || reducedMotion() || document.hidden || !auto.visible || auto.hover || auto.focus || auto.touch || Date.now() < auto.until) return;
+      var atEnd = track.scrollLeft + track.clientWidth >= track.scrollWidth - 6;
+      if(atEnd){ if(track.scrollTo) track.scrollTo({left:0, behavior:"smooth"}); return; }
+      var step = slides.length > 1 ? (slides[1].offsetLeft - slides[0].offsetLeft) : 0;
+      if(!(step > 0)) step = Math.max(160, track.clientWidth * 0.8);
+      track.scrollBy({left:step, behavior:"smooth"});
+    }
+    if(track && slides.length > 1){
+      car.addEventListener("pointerenter", function(e){ if(e.pointerType !== "touch") auto.hover = true; });
+      car.addEventListener("pointerleave", function(e){ if(e.pointerType !== "touch") auto.hover = false; });
+      car.addEventListener("focusin", function(e){
+        var vis = true; try{ vis = e.target && e.target.matches ? e.target.matches(":focus-visible") : true; }catch(err){}
+        if(vis) auto.focus = true;
+      });
+      car.addEventListener("focusout", function(){ auto.focus = false; });
+      car.addEventListener("touchstart", function(){ auto.touch = true; auto.touchAt = Date.now(); }, {passive:true});
+      car.addEventListener("touchend", function(e){ if(!e || !e.touches || e.touches.length === 0) auto.touch = false; userAction(); }, {passive:true});   // мультитач: поки лишився хоч один палець — стоїмо
+      car.addEventListener("touchcancel", function(){ auto.touch = false; userAction(); }, {passive:true});
+      car.addEventListener("wheel", userAction, {passive:true});
+      car.addEventListener("keydown", userAction);
+      if(typeof IntersectionObserver === "function"){
+        var vio = new IntersectionObserver(function(es){ es.forEach(function(e){ auto.visible = !!e.isIntersecting; }); }, {threshold:0.4});
+        vio.observe(car);
+        auto.visible = false;   // до першого повідомлення від IntersectionObserver вважаємо «не видно» — карусель нижче першого екрана не крутиться вхолосту
+      }
+      setInterval(autoStep, AUTO_MS);
+    }
     // view_item_list: один раз, коли карусель реально потрапила на екран (без IntersectionObserver — одразу)
     var sent=false;
     function fireList(){
@@ -438,6 +477,29 @@
       var a=e.target.closest("a.card"); if(!a) return;
       var i=slides.indexOf(a); var d=slideData(a, i<0?0:i); d.item_list_name=listName;
       trackRaw("select_item", {item_list_id:"home_pick", item_list_name:listName, items:[d]});
+    });
+  }
+  // ── Посадкова /ig.html: сітка карток з item_list_name «ig_landing» — view_item_list один раз (коли сітка видна), select_item лише на клік ──
+  function initListTracking(){
+    var box=document.getElementById("ig-list");
+    if(!box) return;
+    var listName=box.getAttribute("data-list")||"ig_landing";
+    var cards=Array.prototype.slice.call(box.querySelectorAll("a.card"));
+    function items(){ return cards.map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
+    var sent=false;
+    function fireList(){
+      if(sent) return; sent=true;
+      trackRaw("view_item_list", {item_list_id:"ig_landing", item_list_name:listName, items:items()});
+    }
+    if(typeof IntersectionObserver==="function"){
+      // поріг 0.1, а не 0.4: на 320 px сітка в 1 колонку (≈2250 px заввишки) — 40% її висоти у вікні не бувають, і view_item_list не слався б ніколи (аудит #686)
+      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ fireList(); io.disconnect(); } }); }, {threshold:0.1});
+      io.observe(box);
+    } else { fireList(); }
+    box.addEventListener("click", function(e){
+      var a=e.target.closest("a.card"); if(!a) return;
+      var i=cards.indexOf(a); var d=slideData(a, i<0?0:i); d.item_list_name=listName;
+      trackRaw("select_item", {item_list_id:"ig_landing", item_list_name:listName, items:[d]});
     });
   }
   // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──

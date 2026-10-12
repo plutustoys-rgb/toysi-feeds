@@ -45,6 +45,9 @@ gpr.CACHE_FILE = tmp / "cache.json"
 gpr.INDEX_FILE = site / "index.json"
 gpr.OUT_FILE = tmp / "prom.map"
 gpr.OUT_FILE_APACHE = tmp / "prom_apache.map"
+(tmp / "groups.json").write_text("{}", encoding="utf-8")        # мапа груп Prom (12.10.2026) тут не предмет — окремий test_prom_group_redirects.py; але в репо нічого не пишемо
+gpr.GROUP_JSON = tmp / "groups.json"
+gpr.OUT_FILE_GROUPS_APACHE = tmp / "groups_apache.map"
 
 valid = gpr.load_valid_ids()
 chk("валідні id = індекс (1,2,3) + сторінки без залишку (77,88); catalog.html не рахується", valid == {"1", "2", "3", "77", "88"})

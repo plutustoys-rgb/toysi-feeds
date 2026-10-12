@@ -167,8 +167,8 @@ def footer():
       f'<nav class="fnav">{nav}</nav>'
       '<p class="fphone"><a href="tel:+380730150815">📞 +380 (73) 015-08-15</a> · '
       '<a href="mailto:plutustoys@gmail.com">plutustoys@gmail.com</a></p>'
-      f'<p class="fsoc"><a href="{SOCIAL_URLS[0]}" rel="noopener" target="_blank">Instagram</a> · '
-      f'<a href="{SOCIAL_URLS[1]}" rel="noopener" target="_blank">Facebook</a></p>'
+      f'<p class="fsoc"><a href="{_footer_utm(SOCIAL_URLS[0])}" rel="noopener" target="_blank">Instagram</a> · '
+      f'<a href="{_footer_utm(SOCIAL_URLS[1])}" rel="noopener" target="_blank">Facebook</a></p>'
       '<p class="ftag">PlutusToys — іграшки з доставкою Новою Поштою по Україні.<br>'
       + ('Оплата карткою онлайн або накладений платіж.' if LIQPAY_LIVE else 'Оплата при отриманні на Новій Пошті.') +
       '</p>'
@@ -441,6 +441,7 @@ def build():
     paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
+    write_ig(prods)
     # 5) кошик + checkout + сторінка подяки
     write_cart()
     write_thanks()
@@ -807,6 +808,11 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
 SOCIAL_URLS = ["https://www.instagram.com/plutustoys.ua/", "https://www.facebook.com/profile.php?id=61590292022031"]
 
 
+def _footer_utm(url):
+    """Посилання на соцмережі з футера несуть utm (SMM 12.10: бачити зворотний трафік сайт→соцмережі). У JSON-LD sameAs лишаються чисті SOCIAL_URLS."""
+    return url + ("&" if "?" in url else "?") + "utm_source=site&utm_medium=footer&utm_campaign=social_link"
+
+
 def home_jsonld() -> str:
     """JSON-LD головної: Organization + WebSite (SEO-замовлення 2026-10-06, п.4). Контакти/соцмережі — ті самі, що в підвалі й
     на сторінці «Контакти». WebSite БЕЗ SearchAction: пошук сайту — клієнтський оверлей (index.json), сторінки результатів
@@ -1126,6 +1132,73 @@ def write_thanks():
       '</div>'
     )
     _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True))
+
+# ── /ig.html: посадкова сторінка для bio-посилання Instagram (SMM 12.10.2026: у підписах IG посилання не клікабельні, єдине клікабельне місце — шапка профілю) ──
+IG_FEATURED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ig_featured.json")
+IG_MAX_ITEMS = 6      # скільки карток показуємо (після відсіву товарів не в наявності)
+IG_MAX_IDS = 50       # скільки id читаємо з файлу (запас: закінчені товари не мають «з’їдати» слоти)
+IG_LIST_NAME = "ig_landing"
+
+
+def _load_ig_featured():
+    """site/ig_featured.json: {"date": "2026-10-12", "ids": ["196937", ...]} — товари з ОСТАННЬОГО рілса/допису; заповнює SMM. Повертає список id (рядки, без дублів, до IG_MAX_ITEMS).
+    Нема файлу — порожньо без шуму; файл є, але не прочитався/не той формат — ГОЛОСНО (stderr), сторінка збирається з повідомленням «скоро»."""
+    try:
+        with open(IG_FEATURED_FILE, encoding="utf-8-sig") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"[build] ⚠ ig_featured.json НЕ прочитано ({type(e).__name__}: {e}) — /ig.html без товарів", file=sys.stderr)
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as e:
+        print(f"[build] ⚠ ig_featured.json — невалідний JSON ({e}) — /ig.html без товарів", file=sys.stderr)
+        return []
+    ids = data.get("ids") if isinstance(data, dict) else None
+    if not isinstance(ids, list):
+        print("[build] ⚠ ig_featured.json: очікується {\"date\": ..., \"ids\": [...]} — /ig.html без товарів", file=sys.stderr)
+        return []
+    out = []
+    for x in ids:
+        if isinstance(x, bool) or not isinstance(x, (str, int)):
+            print(f"[build] ⚠ ig_featured.json: id {x!r} не рядок/число — пропущено", file=sys.stderr)
+            continue
+        sx = str(x).strip()
+        if sx and sx not in out:
+            out.append(sx)
+            if len(out) >= IG_MAX_IDS:
+                break         # O(n²) дедуп на гігантському файлі гальмував би збірку (аудит #686): читаємо рівно стільки, скільки потрібно
+    return out
+
+
+def write_ig(prods):
+    """Сторінка /ig.html: сітка з товарів ig_featured.json, ЛИШЕ в наявності (нема — не показуємо, у лог іде попередження). noindex (кампанійна сторінка), canonical без параметрів
+    (utm не плодять дублів). Не в sitemap (noindex). Трекінг: view_item_list/select_item з item_list_name «ig_landing» (assets/app.js, initListTracking)."""
+    by_id = {p["id"]: p for p in prods}
+    want = _load_ig_featured()
+    shown = [by_id[i] for i in want if i in by_id and by_id[i]["stock"] > 0][:IG_MAX_ITEMS]
+    missing = [i for i in want if i not in by_id or by_id[i]["stock"] <= 0]
+    if missing:
+        print(f"[build] ⚠ ig_featured.json: нема в наявності/каталозі — не показано: {missing}", file=sys.stderr)
+    if want and not shown:
+        print("[build] ⚠ ig_featured.json: жодного товару в наявності — /ig.html показує лише кнопку каталогу", file=sys.stderr)
+    if shown:
+        grid_html = (f'<div class="ig-list" id="ig-list" data-list="{IG_LIST_NAME}">' + grid(shown, eager_n=min(3, len(shown))) + '</div>')
+        lead = "Ці товари з нашого останнього відео."
+    else:
+        grid_html = ""
+        lead = "Добірка з нашого останнього відео скоро з\u2019явиться. А поки — увесь каталог."
+    body = (
+        '<h1 class="page">З Instagram: що показали Плутус</h1>'
+        f'<p class="ig-lead">{esc(lead)}</p>'
+        f'{grid_html}'
+        '<p class="ig-all"><a class="btn" href="catalog.html">Усі іграшки</a></p>'
+    )
+    _write("ig.html", page("З Instagram: що показали Плутус", body, canonical="ig.html", noindex=True,
+                           description="Товари з нашого останнього відео в Instagram — PlutusToys."))
+
 
 def write_404():
     """Власна сторінка 404 (Apache: `ErrorDocument 404 /404.html` у deploy/activate_site_apache.sh). Без неї покупець

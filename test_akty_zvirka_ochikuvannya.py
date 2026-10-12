@@ -101,6 +101,67 @@ with tempfile.TemporaryDirectory() as d:
     (Path(d) / "битий.json").write_text("{не json", encoding="utf-8")
     chk("битий файл → ([], None)", az.evaluate_expectations([], [], {}, path=Path(d) / "битий.json") == ([], None))
 
+# ── аудит #687: межі числа, інший місяць акта, нечислова сума, нестандартна структура, збій запису, ізоляція run()
+r = az.check_expectation(exp(), [act(text="IBAN UA2330528400000260090123904295184777 ЄДРПОУ 1")], [], {})
+chk("номер усередині довшого числа (IBAN) НЕ вважається згадкою замовлення", r["verdict"] == "unproven")
+r = az.check_expectation(exp(), [act(text="замовлення №904295184, комісія")], [], {})
+chk("номер з розділювачем (№…,) — згадка є", r["verdict"] == "closed")
+r = az.check_expectation(exp(), [act(period="2026-08", text="904295184")], [], {})
+chk("акт ІНШОГО місяця не береться до уваги (pending, а не closed)", r["verdict"] == "pending")
+r = az.check_expectation(exp(), [act(vendor="prom", text="904295184")], [], {})
+chk("акт ІНШОГО контрагента не береться до уваги", r["verdict"] == "pending")
+r = az.check_expectation(exp(сума="30,52"), [act()], [row("rozetka_royalty", "2026-09", "✅ збіг")], {"rozetka_royalty": {"2026-09": {"orders": [("904295184", 30.52)]}}})
+chk("сума рядком з комою читається", r["verdict"] == "closed")
+r = az.check_expectation(exp(сума="багато"), [act()], [], {})
+chk("сума не число → unproven з поясненням, без винятку", r["verdict"] == "unproven" and "не число" in r["detail"])
+
+with tempfile.TemporaryDirectory() as d:
+    bad = Path(d) / "list.json"
+    bad.write_text("[1, 2]", encoding="utf-8")
+    chk("верхній рівень файлу — список → ([], без винятку)", az.evaluate_expectations([act()], [], {}, path=bad)[0] == [])
+    mixed = Path(d) / "mixed.json"
+    mixed.write_text(json.dumps({"очікування": ["рядок", exp()]}, ensure_ascii=False), encoding="utf-8")
+    chk("елемент-рядок серед очікувань пропускається, решта обробляється", len(az.evaluate_expectations([act()], [], {}, path=mixed)[0]) == 1)
+    # збій запису (OSError) не валить: закриття не записано, tmp прибрано
+    p2 = Path(d) / "_ochikuvani_v_aktakh.json"
+    p2.write_text(json.dumps({"очікування": [exp()]}, ensure_ascii=False), encoding="utf-8")
+    res3, _ = az.evaluate_expectations([act()], [row("rozetka_royalty", "2026-09", "✅ збіг")], {"rozetka_royalty": {"2026-09": {"orders": [("904295184", 30.52)]}}}, path=p2)
+    real_replace = az.os.replace
+
+    def boom(*a, **k):
+        raise PermissionError("Access is denied")
+    az.os.replace = boom
+    try:
+        n_fail = az.apply_closures(res3, p2, "2026-10-12")
+    finally:
+        az.os.replace = real_replace
+    chk("PermissionError при записі → 0 закриттів, без винятку, файл не змінено, tmp не лишився",
+        n_fail == 0 and "закрито_актом" not in json.loads(p2.read_text(encoding="utf-8"))["очікування"][0] and not Path(str(p2) + ".tmp").exists())
+
+# run(): збій блоку очікувань не вбиває основний звіт
+with tempfile.TemporaryDirectory() as d:
+    saved = (az.collect_acts, az.candidates_novapay, az.candidates_rozetkapay, az.candidates_prom, az.candidates_from_registry,
+             az.kandydaty_registry._load_registry, az.book_rows_for, az.vch.DOCS_DIR, az.evaluate_expectations)
+    try:
+        az.collect_acts = lambda: []
+        az.candidates_novapay = az.candidates_rozetkapay = az.candidates_prom = lambda: {}
+        az.candidates_from_registry = lambda reg: {}
+        az.kandydaty_registry._load_registry = lambda: {}
+        az.book_rows_for = lambda ids: {}
+        az.vch.DOCS_DIR = Path(d)
+
+        def explode(*a, **k):
+            raise ValueError("зламаний файл очікувань")
+        az.evaluate_expectations = explode
+        az.run()
+        chk("run(): evaluate кинув виняток → основний звіт _zvirka_aktiv.md усе одно записано", (Path(d) / az.REPORT_NAME).exists())
+        az.evaluate_expectations = saved[8]
+        az.run(only_month="2026-09")
+        chk("run(--month): без файлу очікувань теж працює", (Path(d) / az.REPORT_NAME).exists())
+    finally:
+        (az.collect_acts, az.candidates_novapay, az.candidates_rozetkapay, az.candidates_prom, az.candidates_from_registry,
+         az.kandydaty_registry._load_registry, az.book_rows_for, az.vch.DOCS_DIR, az.evaluate_expectations) = saved
+
 # ── звіт
 txt = az.render_expectations(res)
 chk("звіт: розділ, ❗ у третьому, ✅ у першому, ℹ️ у другому", "## Очікування бухгалтера" in txt and "❗ очікувана сума не підтверджена" in txt and "✅ закрито актом" in txt and "ℹ️ закрито вручну" in txt)

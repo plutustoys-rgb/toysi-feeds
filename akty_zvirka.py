@@ -599,6 +599,7 @@ def render(rows: list, today: str) -> str:
 #   1. «номер замовлення в тексті акта» — усі номери очікування є в тексті акта (на випадок, коли контрагент колись додасть перелік);
 #   2. «акт = сума кандидатів потоку» — потік (контрагент × місяць) має статус «✅ збіг» (акт == Σ кандидатів до 5 коп), а замовлення
 #      очікування входить у кандидати цього потоку з тією самою сумою (композиція: якщо акт дорівнює Σ кандидатів, то вона містить цей рядок);
+#      (⚠️ для НЕповних потоків — Rozetka/EVA/Prom — «✅ збіг» теоретично може бути випадковим; на практиці малоймовірно, але це лише непряма композиція)
 #   3. інакше — НЕ закрито: «❗ очікувана сума не підтверджена актом» з причиною (акт без переліку, потік ⚠️ різниця, замовлення нема
 #      в кандидатах…). Ручне «✅» бухгалтера (поле `статус`, напр. звірка з кабінетом продавця) НЕ перетирається й не дає ❗: це «ℹ️ закрито вручну».
 # Закриті автоматично (1, 2) отримують поле `закрито_актом` у файлі очікувань (тільки це поле, решта файлу не чіпається; запис атомарний).
@@ -656,10 +657,14 @@ def check_expectation(exp: dict, acts: list, rows: list, cands: dict) -> dict:
                           + (" (бухгалтер уже позначила ✅ вручну)" if manual else "")}
     doc_ids = [a["doc_id"] for a in docs_acts]
     tokens = _order_tokens(exp.get("замовлення"))
-    amount = float(exp.get("сума") or 0)
+    try:
+        amount = _num(exp.get("сума") or 0)     # «30,52» рядком теж читається; сміття → не валимо звіт
+    except (ValueError, TypeError):
+        return {"verdict": "unproven", "evidence": "", "docs": doc_ids, "detail": f"сума очікування не число: {exp.get('сума')!r}"}
     # 1. номери замовлень у тексті акта
     texts = [a.get("text") or "" for a in docs_acts]
-    if tokens and all(any(t in tx for tx in texts) for t in tokens):
+    # номер — ціле «слово»: не частина довшого числа (IBAN, ЄДРПОУ, суми) — аудит #687
+    if tokens and all(any(re.search(r"(?<![\d-])" + re.escape(t) + r"(?![\d])", tx) for tx in texts) for t in tokens):
         return {"verdict": "closed", "evidence": "номер замовлення в тексті акта", "docs": doc_ids,
                 "detail": f"усі номери ({', '.join(tokens)}) є в тексті {', '.join(doc_ids)}"}
     # 2. композиція: потік «✅ збіг» + замовлення входить у кандидати з тією самою сумою
@@ -699,7 +704,10 @@ def evaluate_expectations(acts: list, rows: list, cands: dict, path=None) -> tup
     except (OSError, ValueError):
         return [], None
     out = []
-    for i, e in enumerate(data.get("очікування") or []):
+    items = data.get("очікування") if isinstance(data, dict) else None
+    for i, e in enumerate(items if isinstance(items, list) else []):
+        if not isinstance(e, dict):
+            continue
         res = check_expectation(e, acts, rows, cands)
         res.update({"index": i, "книга_рядок": e.get("книга_рядок"), "контрагент": e.get("контрагент"), "акт_за": e.get("акт_за"),
                     "замовлення": e.get("замовлення"), "склад": e.get("склад"), "сума": e.get("сума"),
@@ -719,9 +727,13 @@ def apply_closures(results: list, path, today: str) -> int:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return 0
-    items = data.get("очікування") or []
+    items = data.get("очікування") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return 0
     n = 0
     for i, r in todo.items():
+        if i >= len(items) or not isinstance(items[i], dict):
+            continue
         if i >= len(items) or items[i].get("закрито_актом"):
             continue
         key = lambda e: (str(e.get("замовлення")), e.get("сума"), e.get("акт_за"))   # не закриваємо «не той» запис, якщо файл змінили між читаннями
@@ -731,8 +743,16 @@ def apply_closures(results: list, path, today: str) -> int:
         n += 1
     if n:
         tmp = Path(str(path) + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, path)
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as e:     # файл відкритий у редакторі / нема прав: закриття не записано, наступний прогін спробує знову
+            print(f"[AktyZvirka] ⚠️ не вдалось записати закрито_актом у {path}: {type(e).__name__} — залишено без змін", file=sys.stderr)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return 0
     return n
 
 
@@ -765,11 +785,19 @@ def run(only_month: str = None) -> list:
     rows = build_rows(acts, cands, book, only_month)
     out_md = vch.DOCS_DIR / REPORT_NAME
     today = datetime.now().strftime("%Y-%m-%d")
-    exp_results, exp_path = evaluate_expectations(acts, rows, cands)
-    newly = apply_closures(exp_results, exp_path, today)
-    out_md.write_text(render(rows, today) + render_expectations(exp_results), encoding="utf-8")
-    if exp_results:
-        (vch.DOCS_DIR / EXPECT_REPORT_NAME).write_text(json.dumps(exp_results, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    main_md = render(rows, today)
+    out_md.write_text(main_md, encoding="utf-8")        # основний звіт пишеться ЗАВЖДИ першим: збій блоку очікувань його не зачіпає
+    exp_results, newly = [], 0
+    try:
+        all_rows = rows if not only_month else build_rows(acts, cands, book, None)    # очікування не залежать від фільтра --month
+        exp_results, exp_path = evaluate_expectations(acts, all_rows, cands)
+        newly = apply_closures(exp_results, exp_path, today)
+        out_md.write_text(main_md + render_expectations(exp_results), encoding="utf-8")
+        if exp_results:
+            (vch.DOCS_DIR / EXPECT_REPORT_NAME).write_text(json.dumps(exp_results, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        print(f"[AktyZvirka] ⚠️ блок «очікування бухгалтера» пропущено: {type(e).__name__}: {str(e)[:120]} (основний звіт записано)", file=sys.stderr)
+        exp_results = []
     (vch.DOCS_DIR / JSON_NAME).write_text(json.dumps(rows, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     unread = [a for a in acts if a["error"] or not a["parsed"]]
     print(f"[AktyZvirka] актів: {len(acts)} (не прочитано: {len(unread)}); рядків звіту: {len(rows)}; "

@@ -729,11 +729,13 @@ def mark_cancelled(conn: sqlite3.Connection, internal_order_id: str, reason: str
     )
 
 
-def mark_payment_confirmed(conn: sqlite3.Connection, internal_order_id: str) -> None:
-    conn.execute(
-        "UPDATE orders SET payment_confirmed = 1 WHERE internal_order_id = ?",
+def mark_payment_confirmed(conn: sqlite3.Connection, internal_order_id: str) -> int:
+    """Ідемпотентно. Повертає 1, якщо ЦІЄЮ дією оплату підтверджено вперше (перехід 0→1), інакше 0 (вже було) — атомарно (UPDATE … WHERE payment_confirmed = 0)."""
+    cur = conn.execute(
+        "UPDATE orders SET payment_confirmed = 1 WHERE internal_order_id = ? AND payment_confirmed = 0",
         (internal_order_id,),
     )
+    return cur.rowcount
 
 
 def mark_forwarded_to_toysi(conn: sqlite3.Connection, internal_order_id: str, toysi_order_id: str) -> None:

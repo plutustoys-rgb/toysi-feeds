@@ -14,10 +14,13 @@ test_telegram_triage.py — сито Telegram (telegram_triage.py + хук у te
 Самодостатній: мережа/журнал/стан — підмінені тимчасовими файлами.
 """
 import json
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+os.environ["TELEGRAM_ORDERS_ONLY"] = "0"   # цей тест перевіряє СТАРЕ allow-list-сито (fallback); режим «лише замовлення» — test_telegram_orders_only.py
 
 import telegram_notify as tn
 import telegram_triage as tt

@@ -3,6 +3,7 @@ import re
 import sys
 from datetime import datetime
 
+import telegram_triage
 from telegram_notify import send_telegram_message
 
 # Файл живе у спільній папці PlutusToys_avtonomiya (Cowork і automation-сесія
@@ -22,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # природно ідемпотентний і сам "доганяє" все неопрацьоване незалежно від
 # того, скільки повідомлень назбиралось між перевірками.
 _HEADER_RE = re.compile(r"^## Повідомлення \d+.*$", re.MULTILINE)
-_SENT_MARKER_RE = re.compile(r"^✅ відправлено", re.MULTILINE)
+_SENT_MARKER_RE = re.compile(r"^(?:✅ відправлено|📋 лише в журналі)", re.MULTILINE)   # обидві позначки = блок оброблено (📋 — режим «лише замовлення», рішення власника 12.10)
 
 
 def find_unprocessed_messages(path: str = OUTBOX_FILE) -> list:
@@ -50,6 +51,7 @@ def process_outbox(path: str = OUTBOX_FILE) -> None:
     with open(path, encoding="utf-8") as f:
         content = f.read()
 
+    marks = []   # (позиція вставки, маркер): вставляємо ПІСЛЯ циклу й від кінця до початку — інакше зсув від попередньої вставки переносив маркер короткого блоку в сусідній
     for block in unprocessed:
         text = block["body"]
         sent = send_telegram_message(text)
@@ -58,10 +60,15 @@ def process_outbox(path: str = OUTBOX_FILE) -> None:
             continue
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        marker = f"\n\n✅ відправлено {timestamp}"
-        insert_at = block["end"]
+        if telegram_triage.orders_only_enabled() and not telegram_triage.is_order_arrival(text):
+            marker = f"\n\n📋 лише в журналі {timestamp} (Telegram: режим «лише замовлення»)"   # не вводимо в оману «відправлено»
+        else:
+            marker = f"\n\n✅ відправлено {timestamp}"
+        marks.append((block["end"], marker + chr(10)))   # маркер завершуємо переносом рядка: інакше він приклеюється до заголовка наступного блоку («…12:48:49## Повідомлення 2»), той перестає розпізнаватись і повідомлення губиться при збої відправки
+        print(f"[telegram_outbox] Оброблено: {block['header']}")
+
+    for insert_at, marker in sorted(marks, key=lambda m: m[0], reverse=True):
         content = content[:insert_at] + marker + content[insert_at:]
-        print(f"[telegram_outbox] Надіслано: {block['header']}")
 
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)

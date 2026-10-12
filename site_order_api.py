@@ -115,6 +115,17 @@ def _alert_liqpay_status(res: dict) -> None:
         print(f"[site_order_api] алерт LiqPay-статусу не надіслано (не критично): {e}", file=sys.stderr)
 
 
+def _notify_new_order(order: dict, total) -> None:
+    """Єдине повідомлення власнику в Telegram (режим «лише замовлення»): надходження замовлення сайту. Без персональних даних; збій не ламає прийом."""
+    if _NO_TELEGRAM:
+        return
+    try:
+        from telegram_notify import notify_new_order
+        notify_new_order("site", order.get("order_id"), total, len(order.get("items") or []), order.get("payment_method", ""))
+    except Exception as e:  # noqa: BLE001
+        print(f"[site_order_api] сповіщення про нове замовлення не надіслано: {type(e).__name__}", file=sys.stderr)
+
+
 def _notify(msg: str) -> None:
     if _NO_TELEGRAM:
         return
@@ -535,6 +546,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(500, {"error": "не вдалося зберегти замовлення"})
         if not created:
             return self._json(409, {"error": "замовлення вже існує"})
+        if order["payment_method"] == "cod":
+            _notify_new_order(order, total)     # передоплата — після підтвердження оплати в колбеку (неоплачене не є «надходженням»)
 
         resp = {"order_id": order["order_id"], "total": total,
                 "payment_method": order["payment_method"]}
@@ -591,8 +604,10 @@ class Handler(SimpleHTTPRequestHandler):
                 if amount is not None and abs(float(amount) - float(expected)) > 0.01:
                     # сума не збігається — НЕ підтверджуємо (money-safety), лишаємо для розбору
                     return self._text(400, f"amount mismatch: got {amount}, expected {expected}")
-                mark_payment_confirmed(conn, internal)  # ідемпотентно
+                newly_confirmed = mark_payment_confirmed(conn, internal)  # ідемпотентно; 1 лише при атомарному переході 0→1
                 conn.commit()
+                if newly_confirmed:
+                    _notify_new_order(order, expected)   # перше підтвердження оплати = надходження передоплаченого замовлення
         except Exception as e:
             print(f"[site_order_api] callback помилка: {e}", file=sys.stderr)
             return self._text(500, "internal error")

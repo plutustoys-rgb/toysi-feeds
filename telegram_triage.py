@@ -15,6 +15,7 @@
 а виклики з ретраєм (`service_watchdog`) інакше зациклились би на повторах.
 """
 import hashlib
+import os
 import re
 
 COOLDOWN_SEC = 24 * 60 * 60
@@ -61,6 +62,20 @@ RULES = [
     ("watchdog_toysi_recovered", r"service_watchdog", r"^✅ Watchdog PlutusToys: звірка з Toysi відновлена", "throttle"),
 ]
 _COMPILED = [(i, re.compile(s), re.compile(t, re.S), a) for i, s, t, a in RULES]
+
+# РЕЖИМ «ЛИШЕ ЗАМОВЛЕННЯ» (рішення власника 12.10.2026: «видали усе, залиш лише інформацію о надходженні замовлень»): у Telegram іде ТІЛЬКИ повідомлення
+# про надходження нового замовлення; будь-що інше (збої, сесії, звіти, алерти) у Telegram НЕ йде, а лишається в reports/telegram_alerts.md з позначкою
+# (агенти й аудитор читають журнал). Це default-deny, на відміну від allow-list-сита вище («невідоме = показати»). Вимкнути: TELEGRAM_ORDERS_ONLY=0.
+ORDER_ARRIVAL_RE = re.compile(r"^🛒 Нове замовлення\b")
+
+
+def orders_only_enabled() -> bool:
+    return os.environ.get("TELEGRAM_ORDERS_ONLY", "1").strip() != "0"
+
+
+def is_order_arrival(text: str) -> bool:
+    return bool(ORDER_ARRIVAL_RE.search((text or "").lstrip()))
+
 
 _ORDER_ID_RE = re.compile(r"\b(?:prom|rozetka|eva|allo|site)_[\w-]+")
 _MARKET_RE = re.compile(r"🔻 (\w+):")

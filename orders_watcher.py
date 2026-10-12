@@ -969,6 +969,14 @@ def poll_once() -> None:
                 internal_id = f"{order['platform']}_{order['order_id']}"
                 if insert_order(conn, order):
                     print(f"[orders_watcher] Нове замовлення збережено: {internal_id}")
+                    try:      # єдине повідомлення власнику в Telegram (режим «лише замовлення»); без ПІБ/телефону/адреси; збій не зупиняє прогін
+                        from telegram_notify import notify_new_order
+                        _items = order.get("items") or []
+                        notify_new_order(order["platform"], order["order_id"],
+                                         sum(float(i.get("price") or 0) * int(i.get("qty") or 1) for i in _items),
+                                         len(_items), order.get("payment_method", ""))
+                    except Exception as _ne:  # noqa: BLE001
+                        print(f"[orders_watcher] сповіщення про нове замовлення не надіслано: {type(_ne).__name__}", file=sys.stderr)
                     continue
 
                 # ВИПРАВЛЕНО (2026-07-15): insert_order() НЕ оновлює вже наявний

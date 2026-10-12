@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -58,6 +59,39 @@ def _log_alert_to_shared_folder(text: str, note: str = "") -> None:
         print(f"[telegram] Не вдалося дописати у {ALERTS_LOG_FILE}: {e}", file=sys.stderr)
 
 
+# РЕДАКЦІЯ СЕКРЕТІВ (12.10.2026: у Telegram потрапив сирий заголовок cookie кабінету Prom — текст виключення Playwright «Call log» несе заголовки запиту).
+# Єдина точка: кожне повідомлення проходить _redact ДО журналу й ДО відправки. Не покладаємось на те, що джерело саме не вставить секрет у {e}.
+_SECRET_HEADER_RE = re.compile(r"(?im)^([ \t]*(?:-[ \t]*)?(?:set-)?(?:cookie|authorization|proxy-authorization|x-api-key|x-auth-token)[ \t]*:)[^\n]*")
+_SECRET_JSON_RE = re.compile(r"(?i)(\"(?:(?:access_|refresh_|csrf_)?token|password|secret|api_?key|authorization|cookie)\"[ \t]*:[ \t]*)\"[^\"\n]*\"")
+_SECRET_KV_RE = re.compile(r"(?i)\b((?:evo)?auth|access[_-]?token|refresh[_-]?token|api[_-]?key|apikey|secret|password|passwd|csrf[_-]?token|session[_-]?id|sessionid|sid|token)=([^\s;&\"']+)")
+_BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{12,}")
+
+
+def _redact(text: str) -> str:
+    """Прибирає секрети з тексту повідомлення: рядки заголовків Cookie/Authorization (значення однорядкове; наступні рядки call log НЕ чіпаємо), JSON-пари "token": "…", пари ім'я=значення для токенів/ключів/паролів,
+    Bearer/Basic. Решту тексту не чіпає."""
+    if not text:
+        return text
+    out = _SECRET_HEADER_RE.sub(lambda m: f"{m.group(1)} [прибрано]", text)
+    out = _SECRET_JSON_RE.sub(lambda m: f'{m.group(1)}"[прибрано]"', out)
+    out = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}=[прибрано]", out)
+    return _BEARER_RE.sub(lambda m: f"{m.group(1)} [прибрано]", out)
+
+
+def notify_new_order(platform: str, order_id, total, items_count: int, payment: str = "") -> None:
+    """Єдине повідомлення, яке йде власнику в Telegram (режим «лише замовлення», telegram_triage): надходження нового замовлення. БЕЗ персональних даних
+    (ім'я, телефон, адреса не включаємо). Ніколи не кидає виняток: збій сповіщення не повинен зламати прийом замовлення."""
+    try:
+        pay = {"cod": "накладений платіж", "prepaid": "передоплата"}.get(payment or "", payment or "")
+        try:
+            amount = f"{float(total):.0f} грн"
+        except (TypeError, ValueError):
+            amount = "сума невідома"
+        send_telegram_message(f"🛒 Нове замовлення · {platform} №{order_id} · {amount} · {items_count} поз." + (f" · {pay}" if pay else ""))
+    except Exception as e:  # noqa: BLE001
+        print(f"[telegram] сповіщення про нове замовлення не надіслано: {type(e).__name__}", file=sys.stderr)
+
+
 def send_telegram_message(text: str) -> bool:
     """Надсилає повідомлення власнику через PlutusToysBot. Повертає True при успіху.
 
@@ -66,6 +100,10 @@ def send_telegram_message(text: str) -> bool:
 
     Сито (telegram_triage.py): інформаційні повідомлення НЕ йдуть у Telegram (лишаються в журналі з позначкою), повторювані збої — раз на добу.
     Для заглушених повертає True — «доставку не вимагали» (виклики з ретраєм не зациклюються)."""
+    text = _redact(text)   # секрети не потрапляють ні в Telegram, ні в журнал
+    if telegram_triage.orders_only_enabled() and not telegram_triage.is_order_arrival(text):
+        _log_alert_to_shared_folder(text, note="[не надіслано в Telegram: режим «лише замовлення»]")
+        return True        # «доставку не вимагали» (як і для заглушених ситом): виклики з ретраєм не зациклюються
     source = os.path.basename(sys.argv[0]) if sys.argv else "?"
     rule_id, action = telegram_triage.classify(source, text)
     if action == "throttle" and _triage_in_cooldown(rule_id):

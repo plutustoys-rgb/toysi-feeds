@@ -32,6 +32,7 @@ def P(price, contrib, cat, name=None, stock=5):
 
 prods = [P(60 + i * 20, 55 + i, f"Кат{i % 12}") for i in range(12)]           # 60..280 ₴, внесок 55+
 prods += [P(320 + i * 30, 105 + i, f"Кат{i % 12}") for i in range(12)]          # 320..650 ₴, внесок 105+
+prods += [P(750 + i, 150, f"Дорога{i}") for i in range(3)] + [P(299.9 + i, 150, f"Межа{i}") for i in range(2)]   # >700 і межа 300: мають відсіюватись/потрапляти правильно
 prods += [P(200 + i, 60, "Інша творчість", name=f"Набір для творчості \"Серія{i}\"") for i in range(5)]
 sets = bs.home_chip_sets(prods)
 chk("є всі три набори: u300, m700, nab", set(sets) == {"u300", "m700", "nab"})

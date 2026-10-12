@@ -456,36 +456,72 @@
     if(typeof matchMedia==="function" && matchMedia("(min-width: 700px)").matches){
       slides.slice(3,5).forEach(function(a){ var im=a.querySelector("img"); if(im){ im.loading="eager"; } });
     }
+    // ── Безкінечний цикл (SMM 12.10, власник: «карусель не йде по колу»): по N клонів перших карток у кінці й останніх на початку; коли прокрутка ЗУПИНИЛАСЬ у зоні клонів — тихо (без анімації)
+    //   повертаємо scrollLeft на оригінал: клон візуально ідентичний, тож стрибка немає. Клони: aria-hidden + tabindex=-1 (скрін-рідер і Tab їх не бачать), у `slides`/аналітику НЕ входять (клік по клону = його оригінал).
+    //   Менше 6 слайдів або немає DOM-API клонування — старий лінійний режим.
+    var loopOn=false, loopTimer=null, LOOP_N=0;
+    function trackPad(){ var cs=window.getComputedStyle ? getComputedStyle(track) : null; return cs ? (parseFloat(cs.paddingLeft)||0) : 0; }
+    function loopOffset(){ return slides[0].getBoundingClientRect().left - track.getBoundingClientRect().left - trackPad(); }   // >0: оригінал-перший правіше за «вирівняне» положення
+    function loopPeriod(){ return track.children[LOOP_N + slides.length].getBoundingClientRect().left - slides[0].getBoundingClientRect().left; }   // ширина повного кола (з проміжками)
+    function setupLoop(){
+      var n=slides.length;
+      if(n<6 || !track || !track.appendChild || !track.insertBefore || !slides[0].cloneNode) return;
+      LOOP_N=Math.min(n,10);   // буфер: вікно (до 5 карток) + крок стрілки (≈4 картки) з запасом
+      function mk(src){
+        var c=src.cloneNode(true);
+        c.setAttribute("data-clone", String(slides.indexOf(src))); c.setAttribute("aria-hidden","true"); c.setAttribute("tabindex","-1");
+        Array.prototype.forEach.call(c.querySelectorAll("img"), function(im){ im.loading="lazy"; im.removeAttribute("fetchpriority"); });
+        return c;
+      }
+      for(var i=0;i<LOOP_N;i++) track.appendChild(mk(slides[i]));
+      for(var j=n-LOOP_N;j<n;j++) track.insertBefore(mk(slides[j]), slides[0]);
+      loopOn=true;
+      loopAlign();
+    }
+    function loopAlign(){ if(loopOn) track.scrollLeft += loopOffset(); }   // стати на оригінал-перший (початкове положення й після зміни розміру вікна)
+    function loopNormalize(force){
+      if(!loopOn || (auto.touch && !force)) return;
+      var off=-loopOffset(), P=loopPeriod();                                  // off = скільки прокручено від оригіналу-першого
+      if(off >= P-2) track.scrollLeft -= P; else if(off < -2) track.scrollLeft += P;
+    }
     car.classList.add("js");   // стрілки показуємо лише коли JS працює (без нього вони були б «мертвими»; нативний скрол/свайп лишається)
     function sync(){
       if(!track||!left||!right) return;
+      if(loopOn){ left.disabled=false; right.disabled=false; return; }   // цикл: країв немає
       // допуск ±6 px: padding .track + scroll-snap лишають scrollLeft ≈2,4 у стані спокою (аудит #678)
       left.disabled = track.scrollLeft <= 6;
       right.disabled = track.scrollLeft + track.clientWidth >= track.scrollWidth - 6;
     }
     function scrollBy(dir){
+      loopNormalize(true);   // перед кроком — тихо повернути на оригінал, щоб буфер клонів завжди був попереду (швидкі кліки)
       var reduce = typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
       if(track) track.scrollBy({left:dir*Math.max(160, track.clientWidth*0.8), behavior: reduce ? "auto" : "smooth"});
     }
     if(left) left.addEventListener("click", function(){ userAction(); scrollBy(-1); });
     if(right) right.addEventListener("click", function(){ userAction(); scrollBy(1); });
-    if(track){ track.addEventListener("scroll", sync); sync(); }
-    window.addEventListener("resize", sync);   // ширина вікна/поворот екрана міняють «край»
-    window.addEventListener("orientationchange", sync);
+    var auto = {hover:false, focus:false, touch:false, touchAt:0, visible:true, until:0};
+    if(track){
+      setupLoop();
+      track.addEventListener("scroll", function(){ sync(); if(loopOn){ clearTimeout(loopTimer); loopTimer=setTimeout(loopNormalize, 140); } });
+      sync();
+    }
+    function onResize(){ sync(); if(loopOn){ clearTimeout(loopTimer); loopTimer=setTimeout(loopAlign, 150); } }
+    window.addEventListener("resize", onResize);   // ширина вікна/поворот екрана міняють «край» (і довжину кола)
+    window.addEventListener("orientationchange", onResize);
     // ── Автопрокрутка (SMM 12.10: власник бачить нерухому карусель як «не крутиться»): по 1 картці кожні ~4 с зі scroll-snap. НЕ крутимо, коли:
     //   курсор мишею над каруселлю (pointerType touch не рахується: після тапу «наведення» на телефоні залипає), клавіатурний фокус всередині (:focus-visible — клік мишею по стрілці фокус
     //   не «тримає»), палець на екрані, вкладка прихована (document.hidden), карусель менше ніж на 40% у вікні (IntersectionObserver), prefers-reduced-motion, або щойно була дія
     //   покупця (стрілка/свайп/колесо/клавіша — пауза 10 с, щоб не відбирати керування). На краю — плавно на початок (без клонів слайдів, але далі крутиться по колу, поки нема паузи; кнопки паузи нема — лише hover/фокус/дія). Нових зображень не підвантажуємо: порядок
     //   і набір слайдів ті самі; в аналітику автопрокрутку НЕ пишемо (select_item лише на клік, view_item_list — як було).
     var AUTO_MS = 4000, USER_GRACE_MS = 10000;
-    var auto = {hover:false, focus:false, touch:false, touchAt:0, visible:true, until:0};
     function reducedMotion(){ return typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches; }
     function userAction(){ auto.until = Date.now() + USER_GRACE_MS; }
     function autoStep(){
       if(auto.touch && Date.now() - auto.touchAt > 30000) auto.touch = false;   // запобіжник: touchend/touchcancel не прийшли (системний жест iOS) — не стоїмо вічно
       if(!track || reducedMotion() || document.hidden || !auto.visible || auto.hover || auto.focus || auto.touch || Date.now() < auto.until) return;
-      var atEnd = track.scrollLeft + track.clientWidth >= track.scrollWidth - 6;
+      var atEnd = !loopOn && track.scrollLeft + track.clientWidth >= track.scrollWidth - 6;
       if(atEnd){ if(track.scrollTo) track.scrollTo({left:0, behavior:"smooth"}); return; }
+      loopNormalize(false);
       var step = slides.length > 1 ? (slides[1].offsetLeft - slides[0].offsetLeft) : 0;
       if(!(step > 0)) step = Math.max(160, track.clientWidth * 0.8);
       track.scrollBy({left:step, behavior:"smooth"});
@@ -522,7 +558,9 @@
     } else { fireList(); }
     car.addEventListener("click", function(e){
       var a=e.target.closest("a.card"); if(!a) return;
-      var i=slides.indexOf(a); var d=slideData(a, i<0?0:i); d.item_list_name=listName;
+      var i=slides.indexOf(a);
+      if(i<0 && a.getAttribute && a.getAttribute("data-clone")!==null){ i=+a.getAttribute("data-clone"); }   // клон = свій оригінал (індекс у списку)
+      var d=slideData(a, i<0?0:i); d.item_list_name=listName;
       trackRaw("select_item", {item_list_id:"home_pick", item_list_name:listName, items:[d]});
     });
   }
@@ -562,15 +600,16 @@
     function reduced(){ return typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches; }
     var conn=navigator.connection||{};
     if(reduced() || conn.saveData || /(^|-)2g$/.test(conn.effectiveType||"")) return;
-    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null, fadeTimer=null;
+    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null;
     function wait(){ return 12000 + Math.floor(Math.random()*8000); }
     function schedule(ms){ clearTimeout(timer); timer=setTimeout(play, ms); }
+    var wrap=img.parentNode;
     function stop(){
       clearTimeout(endTimer);
       if(!playing) return;
       playing=false; clipImg.classList.remove("on");
-      clearTimeout(fadeTimer);
-      fadeTimer=setTimeout(function(){ if(!playing) clipImg.removeAttribute("src"); }, 350);      // після розчинення: наступний показ стартує з першого кадру
+      if(wrap && wrap.classList) wrap.classList.remove("clip-on");      // poster повертається ВІДРАЗУ (останній кадр кліпу = poster)
+      clipImg.removeAttribute("src");                                   // наступний показ стартує з першого кадру
     }
     if(typeof IntersectionObserver==="function"){
       var io=new IntersectionObserver(function(es){ es.forEach(function(e){ visible=!!e.isIntersecting; if(!visible && playing){ stop(); schedule(wait()); } }); }, {threshold:0.3});
@@ -593,8 +632,16 @@
       var pre=new Image();
       pre.onload=function(){
         if(!canPlay()){ schedule(wait()); return; }      // поки вантажився — вкладка сховалась / Плутус зник з екрана
-        playing=true; clearTimeout(fadeTimer); clipImg.src=url; clipImg.classList.add("on");
-        endTimer=setTimeout(function(){ stop(); schedule(wait()); }, ms);
+        playing=true; clipImg.src=url;
+        // Жорстка заміна, не кросфейд (SMM 12.10: крізь прозорий кліп просвічував poster → двійник): poster ховаємо ТІЛЬКИ коли перший кадр кліпу вже декодовано
+        // (інакше блимне порожнє місце); перший і останній кадри кліпів = poster, тож стик непомітний.
+        function go(){
+          if(!playing) return;
+          if(wrap && wrap.classList) wrap.classList.add("clip-on");
+          clipImg.classList.add("on");
+          endTimer=setTimeout(function(){ stop(); schedule(wait()); }, ms);
+        }
+        if(clipImg.decode){ clipImg.decode().then(go, go); } else { go(); }
       };
       pre.onerror=function(){ schedule(wait()); };
       pre.src=url;

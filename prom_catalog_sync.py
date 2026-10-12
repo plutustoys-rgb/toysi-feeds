@@ -46,7 +46,7 @@ from dotenv import load_dotenv
 
 from generate_prom_feed_top import select_top_items, SELECT_COUNT
 from parser import fetch_toysi_catalog, assert_catalog_size_sane, CatalogSizeError
-from telegram_notify import send_telegram_message
+from telegram_notify import send_telegram_message, send_throttled_alert
 from prom_api_client import PromEditError, delist as _prom_delist
 from competitor_pricing import load_prom_price_state, save_prom_price_state
 from prom_pushed_ledger import load_ledger, prune as _prune_ledger
@@ -539,8 +539,41 @@ def supplement_cabinet_view(prom_products: dict, desired_ids: set) -> dict:
 # принцип свіжої звірки, що й supplement_cabinet_view). Bounded lookup + delist-кап +
 # sweep-курсор — як у супплементі вище.
 LEDGER_SWEEP_LOOKUP_LIMIT = 800   # by_external_id-звірок за прогін (як CABINET_SUPPLEMENT_LOOKUP_LIMIT)
+GONE_MASS_GUARD = 600              # >600 «зниклих з Toysi» в журналі = підозра на усічений каталог, а не справжнє зникнення (на 12.10 їх 343)
 LEDGER_MAX_DELIST_PER_RUN = 200   # кап на деактивації з цього шляху (дзеркало MAX_DEACTIVATIONS_PER_RUN)
 LEDGER_SWEEP_CHECKED_FILE = Path(__file__).parent / "prom_ledger_sweep_checked.json"
+GONE_SEEN_FILE = Path(__file__).parent / "prom_gone_seen.json"   # «зниклі з Toysi» минулого прогону (підтвердження у двох прогонах)
+
+
+GONE_MIN_AGE_HOURS = 20          # «зниклий з Toysi» картка видаляється лише якщо була зниклою БЕЗПЕРЕРВНО ≥ 20 год (перекриває ніч і ≥4 прогони таймера 07/11/15/19:30; аудит PR #680 р.3)
+
+
+def _load_gone_seen() -> dict:
+    """{external_id: ISO-час, коли вперше побачили «зниклим»}. Відсутній/битий/старого формату (список) файл → {} (безпечний напрямок: нічого не підтверджено)."""
+    try:
+        data = json.loads(GONE_SEEN_FILE.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _save_gone_seen(state: dict) -> bool:
+    """Атомарний запис (tmp + os.replace). False + лог при збої — тоді «підтвердження» не накопичується (безпечно), а не мовчки."""
+    tmp = GONE_SEEN_FILE.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, GONE_SEEN_FILE)
+        return True
+    except OSError as e:
+        print(f"[Sync] 🚨 Не вдалось зберегти {GONE_SEEN_FILE.name} ({e}) — «зниклі з Toysi» НЕ підтверджуватимуться, доки запис не відновиться", file=sys.stderr)
+        return False
+
+
+def _gone_age_hours(first_seen_iso: str, now: datetime) -> float:
+    try:
+        return (now - datetime.fromisoformat(first_seen_iso)).total_seconds() / 3600
+    except ValueError:
+        return 0.0
 
 
 def _load_ledger_checked() -> set:
@@ -559,7 +592,7 @@ def _save_ledger_checked(checked: set) -> None:
         print(f"[Sync] Не вдалось зберегти {LEDGER_SWEEP_CHECKED_FILE.name} ({e})", file=sys.stderr)
 
 
-def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict) -> tuple:
+def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict, persist: bool = False, now: datetime = None) -> tuple:
     """Знаходить застарілі товари в «невидимих групах» через журнал штовхнутих.
 
     Кандидати = журнал − поточний_топ − вже_видимий_зріз (тобто наші лістинги, які випали
@@ -587,27 +620,61 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict)
     # Знято фільтр безпечно, бо кожен кандидат тут ОКРЕМО звіряється НАЖИВО через
     # by_external_id (to_delist = лише підтверджено живі, не deleted) — це не залежить від
     # повноти /groups/list, тож обходить cap-guard без ризику видалити небачене.
-    candidates = [
-        e for e in ledger
-        if e in toysi_ids and e not in desired_ids
-    ]
+    # 12.10.2026 (знайдено при аналізі «слоти 5 878/6 000»): раніше кандидатом був лише `e in toysi_ids` — тобто товар, що ЗНИК з каталогу Toysi, НІКОЛИ не потрапляв у чистку
+    # (332+11 карток «Немає в наявності» висіли в слотах безстроково: 5 878/6 000, 123 нові відхилено «понад допустимі ліміти»). Журнал штовхнутих (`ledger`) — це САМЕ
+    # наші картки (ownership відомий без toysi_ids), а кожного кандидата все одно звіряємо НАЖИВО (to_delist = лише підтверджено живі, не deleted). Тож зниклі з Toysi
+    # беремо теж і ставимо ПЕРШИМИ: ці картки продати неможливо, видалення нічого не коштує. Кап LEDGER_MAX_DELIST_PER_RUN не змінено.
+    if not toysi_ids:
+        return [], []      # порожній каталог Toysi (збій фетчу) → «усе зниклe»: НЕ видаляємо нічого (аудит PR #680: безпека не лише на assert у main)
+    candidates = [e for e in ledger if e not in desired_ids]
+    gone = [e for e in candidates if e not in toysi_ids]
+    if len(gone) > GONE_MASS_GUARD:
+        # УСІЧЕНИЙ, але структурно коректний каталог Toysi (25–29 тис. проходить assert_catalog_size_sane) зробив би «зниклими» тисячі ЖИВИХ карток (аудит PR #680):
+        # нормальне накопичення — сотні (343 на 12.10), тисячі = збій фетчу. Тоді шлях «зниклих» НЕ виконуємо (стара поведінка: лише e in toysi_ids) і кричимо.
+        msg = (f"🚨 prom_catalog_sync: «зниклих з Toysi» карток у журналі {len(gone)} > {GONE_MASS_GUARD} — схоже на УСІЧЕНИЙ каталог Toysi, а не справжнє зникнення; "
+               "чистку зниклих пропущено (лише старий шлях e in toysi_ids). Перевір фетч каталогу Toysi.")
+        print(f"[Sync] {msg}", file=sys.stderr)
+        try:
+            send_throttled_alert("prom_gone_mass_guard", msg, cooldown_sec=12 * 60 * 60)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Sync] алерт не надіслано: {type(e).__name__}", file=sys.stderr)
+        candidates = [e for e in candidates if e in toysi_ids]
+        if persist:
+            _save_gone_seen({})                            # guard спрацював → попереднє «бачили зниклим» не накопичуємо
+    else:
+        # ПІДТВЕРДЖЕННЯ У ДВОХ ПРОГОНАХ (аудит PR #680, раунд 2): «зниклий» видаляється лише якщо був «зниклим» і в ПОПЕРЕДНЬОМУ прогоні (~6 год раніше) — разове
+        # усічення каталогу Toysi (1–6% не ловиться порогом 600) самовиліковується, бо наступний прогін бачить повний каталог і ці картки перестають бути «зниклими».
+        now = now or datetime.now()
+        prev_gone = _load_gone_seen()
+        gone_set = set(gone)
+        # {id: коли вперше побачили зниклим}; хто перестав бути зниклим (каталог відновився) — випадає зі стану, лічильник скидається
+        new_state = {e: prev_gone.get(e, now.isoformat(timespec="seconds")) for e in gone_set}
+        confirmed = {e for e in gone_set if e in prev_gone and _gone_age_hours(prev_gone[e], now) >= GONE_MIN_AGE_HOURS}
+        if persist:                                        # dry-run (дефолт без --apply) стан НЕ пише — інакше діагностичний прогін + --apply «підтвердять» за хвилини
+            if not _save_gone_seen(new_state):
+                confirmed = set()                          # запис не вдався → ніхто не підтверджений (безпечно)
+        candidates = [e for e in candidates if e in toysi_ids or e in confirmed]
+        candidates.sort(key=lambda e: e in toysi_ids)    # стабільне сортування: підтверджені зниклі з Toysi (False) — першими
     if not candidates:
         return [], []
 
     cand_set = set(candidates)
     checked = _load_ledger_checked() & cand_set   # лише актуальні кандидати
-    pool = [e for e in candidates if e not in checked]
-    if not pool:                                  # весь поточний пул пройдено — новий цикл
+    confirmed_gone = {e for e in candidates if e not in toysi_ids}
+    # підтверджені зниклі ЗАВЖДИ в пулі (поза sweep-курсором): ні перевірені раніше, ні ті, що не влізли в кап 200 минулого прогону, не ховаються до кінця циклу (аудит #680 р.3, діра C)
+    pool = [e for e in candidates if e in confirmed_gone or e not in checked]
+    if not [e for e in pool if e not in confirmed_gone]:   # весь поточний пул (крім зниклих) пройдено — новий цикл
         checked = set()
         pool = candidates
     batch = pool[:LEDGER_SWEEP_LOOKUP_LIMIT]
 
     found, indeterminate = fetch_prom_products_by_external_ids(set(batch))
     to_delist = [e for e, p in found.items() if p.get("status") != "deleted"]
+    to_delist.sort(key=lambda e: e in toysi_ids)         # під кап 200 — спершу зниклі з Toysi
     to_prune = [e for e in batch if e not in found and e not in indeterminate]   # підтверджено 404
     to_prune += [e for e, p in found.items() if p.get("status") == "deleted"]    # надгробки
 
-    checked.update(batch)                         # sweep-курсор (як supplement_cabinet_view)
+    checked.update(e for e in batch if e not in confirmed_gone)   # sweep-курсор (як supplement_cabinet_view); зниклі в курсор не заносимо
     _save_ledger_checked(checked)
 
     print(f"[Sync] Журнал OOS (усі поза топ, live-звірка): {len(candidates)} кандидатів (журнал−топ), "
@@ -689,8 +756,8 @@ def main() -> None:
         # Успішний HTTP-запит + валідний XML, але Toysi віддав менше офферів,
         # ніж реально є (усічений, але структурно коректний фід) — на відміну
         # від повної мережевої/HTTP-помилки (тоді fetch_toysi_catalog() сам
-        # повертає {} і toysi_ids виходить порожнім, що вже безпечно саме по
-        # собі), цей випадок інакше пройшов би непоміченим і призвів би до
+        # повертає {} і toysi_ids виходить порожнім — find_stale_via_ledger тоді
+        # явно нічого не видаляє (PR #680)), цей випадок інакше пройшов би непоміченим і призвів би до
         # масового хибного видалення живих товарів, чий external_id просто не
         # потрапив у цей конкретний усічений фетч.
         print(f"[Sync] {e}", file=sys.stderr)
@@ -714,7 +781,7 @@ def main() -> None:
     # безпечні навіть коли /groups/list неповний (той самий принцип, що supplement_cabinet_
     # view). Замінює РУЧНИЙ clear_invisible_oos.py (Phase 3). Виконується ЗАВЖДИ (навіть якщо
     # видимий find_stale нижче порожній чи заблокований view-guard), бо це різний клас даних.
-    ledger_delist, ledger_prune = find_stale_via_ledger(desired_ids, toysi_ids, prom_products)
+    ledger_delist, ledger_prune = find_stale_via_ledger(desired_ids, toysi_ids, prom_products, persist=bool(args.apply))
     if ledger_prune:
         removed = _prune_ledger(ledger_prune)
         print(f"[Sync] Журнал: прибрано {removed} відсутніх/видалених external_id (самоочищення).")

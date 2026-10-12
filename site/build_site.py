@@ -15,7 +15,7 @@ PlutusToys — статичний генератор власного магаз
 Ціна = real_toysi_discounted × 1.5 (без комісії маркетплейсу — сенс власного сайту).
 LIMIT (env) обмежує к-ть карток для швидкого демо-прогону; порожній = увесь in-stock+фото.
 """
-import os, re, sys, json, html, math, unicodedata, hashlib, random
+import os, re, sys, json, html, math, unicodedata, hashlib, random, bisect, heapq, functools
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 
 import parser as tp
@@ -319,6 +319,8 @@ class CatalogShrinkError(RuntimeError):
 
 def build():
     _load_category_texts()
+    _load_product_texts()
+    _load_category_related()
     print("[build] тягну каталог Toysi…")
     cat = tp.fetch_toysi_catalog()
     # Захист (аудит #675, ВАЖЛИВО-1): порожній/усічений каталог Toysi (структурно валідний XML без HTTP-помилки) раніше давав index.json=[] і прибирання
@@ -455,13 +457,15 @@ def build():
 
     n = 0
     # 1) картки товарів
+    # Внутрішня перелінковка (SEO 12.10.2026): «Схожі товари» = до 6 товарів В НАЯВНОСТІ з тієї ж категорії, найближчих за ціною (індекс по категорії + bisect, не O(n²)); «Уцінка» — без блоку.
+    sim_idx = build_similar_index(prods)
     for p in prods:
-        write_product(p, related=related_map.get(p["id"]), cat_slug=cat_slug)
+        write_product(p, related=related_map.get(p["id"]), cat_slug=cat_slug, similar=similar_products(sim_idx, p))
         n += 1
     # 1б) сторінки товарів без залишку: адреса жива (OutOfStock), без кошика/крос-селу
     for p in oos_prods:
         # внутрішні посилання з OOS-сторінки на товари в наявності тієї ж категорії: шлях покупця і проти soft-404 (сторінка не «глухий кут»)
-        write_product(p, related=(cats.get(p["category"], [])[:4] or None), cat_slug=cat_slug, related_title="Схожі товари в наявності")
+        write_product(p, related=None, cat_slug=cat_slug, similar=similar_products(sim_idx, p), similar_title="Схожі товари в наявності")
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
     for c in cat_list:
@@ -510,6 +514,17 @@ def build():
     _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)
     if _unmatched:
         print(f"[build] ⚠ category_texts.json: slug без сторінки категорії (друкарська помилка? текст не з'явиться): {_unmatched[:10]}", file=sys.stderr)
+    _prod_ids = {p["id"] for p in prods} | {p["id"] for p in oos_prods}
+    _pt_unmatched = sorted(set(_PRODUCT_TEXTS) - _prod_ids, key=_id_key)
+    if _pt_unmatched:
+        print(f"[build] ⚠ product_texts.json: {len(_pt_unmatched)} id без картки в цій збірці (товару нема/зник/LIMIT; текст не з'явиться): {_pt_unmatched[:10]}", file=sys.stderr)
+    _rel_unmatched = sorted(set(_CATEGORY_RELATED) - _written_slugs)
+    if _rel_unmatched:
+        print(f"[build] ⚠ category_related.json: ключ-slug без сторінки категорії (друкарська помилка? блок не з'явиться): {_rel_unmatched[:10]}", file=sys.stderr)
+    _rel_targets = sorted({t for v in _CATEGORY_RELATED.values() for t in v} - _written_slugs)
+    if _rel_targets:
+        print(f"[build] ⚠ category_related.json: slug-цілі без сторінки категорії (посилання не показуємо): {_rel_targets[:10]}", file=sys.stderr)
+    print(f"[build] внутрішня перелінковка: текстів карток показано {len(_prod_ids & set(_PRODUCT_TEXTS))}, категорій із блоком «Схожі категорії» {len(set(_CATEGORY_RELATED) & _written_slugs)}")
     print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, сторінок без залишку (OutOfStock) {len(oos_prods)}, "
           "+index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
@@ -537,8 +552,45 @@ def _page_fname(fname, k):
     stem = fname[:-5] if fname.endswith(".html") else fname
     return f"{stem}_{k}.html"
 
+PAGER_ALL_MAX = 7        # до цієї кількості сторінок показуємо ВСІ номери
+PAGER_MAX_CLICKS = 3     # будь-яка сторінка листингу досяжна з першої не більше ніж за стільки кліків
+
+
+@functools.lru_cache(maxsize=None)
+def _pager_plan(pages):
+    """(l, m, c): розмір «локального» блоку, кількість «середніх» блоків у «великому», кількість «великих» блоків. c·m·l ≥ pages, мінімум c+m+l (≈ ∛pages кожне):
+    саме стільки посилань треба показувати, щоб із першої сторінки будь-яка була за 3 кліки (великий → середній → локальний)."""
+    best = None
+    for l in range(1, 61):
+        for m in range(1, 61):
+            c = -(-pages // (l * m))
+            if c > 60:
+                continue
+            key = (c + m + l, -l, -m)
+            if best is None or key < best[0]:
+                best = (key, (l, m, c))
+    return best[1] if best else (60, 60, -(-pages // 3600))
+
+
+def _pager_pages(k, pages):
+    """Номери, що показуються в пейджері сторінки k з pages. ≤7 — усі. Інакше: 1 … k-2 k-1 k k+1 k+2 … остання (як було) ПЛЮС «орієнтири», бо одного віконця ±2
+    замало: з 1-ї сторінки до 21-ї з 42 було б ~10 кліків. Орієнтири (3 рівні): перші сторінки всіх «великих» блоків; перші сторінки «середніх» блоків у ПОТОЧНОМУ великому;
+    усі сторінки ПОТОЧНОГО середнього блоку. Шлях з 1-ї до t: 1 → початок великого блоку t → початок середнього → t = ≤3 кліки."""
+    if pages <= PAGER_ALL_MAX:
+        return set(range(1, pages + 1))
+    show = {1, pages} | set(range(max(1, k - 2), min(pages, k + 2) + 1))
+    l, m, c = _pager_plan(pages)
+    big, i = l * m, k - 1
+    show |= {j * big + 1 for j in range(c) if j * big + 1 <= pages}
+    cb = (i // big) * big
+    show |= {cb + j * l + 1 for j in range(m) if cb + j * l + 1 <= pages}
+    mb = (i // l) * l
+    show |= {mb + j + 1 for j in range(l) if mb + j + 1 <= pages}
+    return show
+
+
 def _pager(fname, k, pages):
-    """Навігація сторінками (вікно ±2 + перша/остання). Порожньо, якщо сторінка одна."""
+    """Навігація сторінками: вікно ±2 + перша/остання + орієнтири (_pager_pages), щоб будь-яка сторінка була ≤3 кліків від першої. Порожньо, якщо сторінка одна."""
     if pages <= 1:
         return ""
     def lnk(i, txt, cls="pg"):
@@ -546,17 +598,12 @@ def _pager(fname, k, pages):
     out = ['<nav class="pager" aria-label="Сторінки">']
     if k > 1:
         out.append(lnk(k - 1, "← Назад", "pg nav"))
-    lo, hi = max(1, k - 2), min(pages, k + 2)
-    if lo > 1:
-        out.append(lnk(1, "1"))
-        if lo > 2:
+    prev = 0
+    for i in sorted(_pager_pages(k, pages)):
+        if i - prev > 1:
             out.append('<span class="pg gap">…</span>')
-    for i in range(lo, hi + 1):
         out.append(f'<span class="pg cur">{i}</span>' if i == k else lnk(i, str(i)))
-    if hi < pages:
-        if hi < pages - 1:
-            out.append('<span class="pg gap">…</span>')
-        out.append(lnk(pages, str(pages)))
+        prev = i
     if k < pages:
         out.append(lnk(k + 1, "Далі →", "pg nav"))
     out.append('</nav>')
@@ -794,6 +841,227 @@ def _category_intro_html(fname):
     return '<div class="cat-intro">' + "".join(f"<p>{esc(p)}</p>" for p in paras) + "</div>\n"
 
 
+# ── Внутрішня перелінковка (SEO-замовлення 12.10.2026) ──────────────────────────────────────────────────────────
+# А) текст картки: site/product_texts.json {"<toysi_id>": "абзац\n\nабзац"} — plain text, esc(), абзаци за порожнім рядком;
+# Б) «Схожі товари» на картці; В) «Схожі категорії» на 1-й сторінці категорії: site/category_related.json {"related": {"<slug>": ["<slug>", …]}}.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PRODUCT_TEXTS_FILE = os.path.join(_HERE, "product_texts.json")
+_PRODUCT_TEXTS = {}
+PRODUCT_TEXT_WARN_LEN = 900          # довший текст — попередження (SEO: абзац-«простирадло» виштовхує характеристики)
+_CATEGORY_RELATED_FILE = os.path.join(_HERE, "category_related.json")
+_CATEGORY_RELATED = {}
+RELCATS_MAX = 6
+SIMILAR_PRODUCTS_MAX = 6
+_MISSING = object()
+
+
+def _read_json_loud(path, label, consequence):
+    """JSON-файл, який ПОВИНЕН читатися, коли він є. Нема файлу — _MISSING без шуму (так і задумано). Є, але не прочитався (BOM читаємо як utf-8-sig; не-UTF-8; битий JSON;
+    RecursionError на глибоко вкладеному) — _MISSING і ГОЛОСНО в stderr: SEO бачить причину в журналі збірки, а не «блоку чомусь нема»."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return _MISSING
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"[build] ⚠ {label} НЕ прочитано ({type(e).__name__}: {e}) — {consequence}", file=sys.stderr)
+        return _MISSING
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError) as e:
+        print(f"[build] ⚠ {label} — невалідний JSON ({e}); частий випадок: справжній Enter усередині рядка (пиши \\n\\n) — {consequence}", file=sys.stderr)
+        return _MISSING
+
+
+def _utf8_clean(v):
+    """Текст можна безпечно записати в UTF-8 HTML: без одиноких сурогатів (\\ud800 → UnicodeEncodeError) і NUL (сирий NUL у HTML)."""
+    try:
+        v.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return "\x00" not in v
+
+
+def _load_product_texts():
+    """site/product_texts.json: {"<toysi_id>": "абзац 1\\n\\nабзац 2"}. Не довіряємо даним: корінь — об'єкт; ключ — лише ASCII-цифри; значення — непорожній рядок
+    (інше відкидається ГОЛОСНО); довше PRODUCT_TEXT_WARN_LEN або з символами < > — попередження (текст усе одно екранується й показується)."""
+    global _PRODUCT_TEXTS
+    _PRODUCT_TEXTS = {}
+    data = _read_json_loud(_PRODUCT_TEXTS_FILE, "product_texts.json", "текстів карток на сайті не буде")
+    if data is _MISSING:
+        return _PRODUCT_TEXTS
+    if not isinstance(data, dict):
+        print(f"[build] ⚠ product_texts.json — очікується об'єкт {{id: текст}}, отримано {type(data).__name__} — текстів карток не буде", file=sys.stderr)
+        return _PRODUCT_TEXTS
+    bad_val = [k for k, v in data.items() if not isinstance(v, str)]
+    if bad_val:
+        print(f"[build] ⚠ product_texts.json: значення НЕ рядок, відкинуто: {bad_val[:10]}", file=sys.stderr)
+    bad_id = [k for k in data if not re.fullmatch(r"[0-9]+", k)]
+    if bad_id:
+        print(f"[build] ⚠ product_texts.json: id не з цифр, відкинуто: {bad_id[:10]}", file=sys.stderr)
+    out = {k: v for k, v in data.items() if isinstance(v, str) and v.strip() and re.fullmatch(r"[0-9]+", k)}
+    unenc = [k for k, v in out.items() if not _utf8_clean(v)]
+    if unenc:
+        print(f"[build] ⚠ product_texts.json: одинокий сурогат/NUL у тексті — відкинуто (інакше збірка падала б під час запису HTML): {unenc[:10]}", file=sys.stderr)
+        out = {k: v for k, v in out.items() if k not in set(unenc)}
+    too_long = [k for k, v in out.items() if len(v.strip()) > PRODUCT_TEXT_WARN_LEN]
+    if too_long:
+        print(f"[build] ⚠ product_texts.json: текст довший за {PRODUCT_TEXT_WARN_LEN} символів (показано, але скоротіть): {too_long[:10]}", file=sys.stderr)
+    angle = [k for k, v in out.items() if "<" in v or ">" in v]
+    if angle:
+        print(f"[build] ⚠ product_texts.json: у тексті є < або > (екранується як звичайний текст, розмітка НЕ спрацює): {angle[:10]}", file=sys.stderr)
+    _PRODUCT_TEXTS = out
+    return _PRODUCT_TEXTS
+
+
+def _product_text_html(pid):
+    """Блок тексту картки (plain text → esc(), абзаци за порожнім рядком). Нема тексту для id — порожньо (блоку нема)."""
+    text = _PRODUCT_TEXTS.get(str(pid))
+    if not text:
+        return ""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text.replace("\r\n", "\n")) if p.strip()]
+    if not paras:
+        return ""
+    return '<div class="prod-text">' + "".join(f"<p>{esc(p)}</p>" for p in paras) + "</div>"
+
+
+def _load_category_related():
+    """site/category_related.json: {"related": {"<slug>": ["<slug>", …]}} (ключ "description" ігнорується). slug = ім'я файлу категорії без «category-» і «.html».
+    Ключ і цілі — лише [a-z0-9-]+ (інше відкидається ГОЛОСНО); значення — список. Існування сторінок перевіряється під час збірки (_relcats_html + попередження наприкінці build())."""
+    global _CATEGORY_RELATED
+    _CATEGORY_RELATED = {}
+    data = _read_json_loud(_CATEGORY_RELATED_FILE, "category_related.json", "блоків «Схожі категорії» не буде")
+    if data is _MISSING:
+        return _CATEGORY_RELATED
+    rel = data.get("related") if isinstance(data, dict) else None
+    if not isinstance(rel, dict):
+        print("[build] ⚠ category_related.json — очікується {\"related\": {slug: [slug, …]}} — блоків «Схожі категорії» не буде", file=sys.stderr)
+        return _CATEGORY_RELATED
+    bad = []
+    out = {}
+    for k, v in rel.items():
+        if not re.fullmatch(r"[a-z0-9-]+", k) or not isinstance(v, list):
+            bad.append(k)
+            continue
+        good = [x for x in v if isinstance(x, str) and re.fullmatch(r"[a-z0-9-]+", x)]
+        if len(good) != len(v):
+            bad.append(f"{k}: {[x for x in v if x not in good][:3]}")
+        if good:
+            out[k] = good
+    if bad:
+        print(f"[build] ⚠ category_related.json: некоректні ключі/значення відкинуто: {bad[:10]}", file=sys.stderr)
+    _CATEGORY_RELATED = out
+    return _CATEGORY_RELATED
+
+
+def _relcats_html(fname, cat_slug, active):
+    """«Схожі категорії» (nav.relcats): до RELCATS_MAX посилань із category_related.json для slug цієї категорії; лише slug-и, сторінка яких є в збірці, без самої категорії й без дублів.
+    Лише 1-ша сторінка категорії (пагінація не дублює) — це викликається тільки з k == 1."""
+    if not active:
+        return ""
+    m = re.fullmatch(r"category-(.+)\.html", fname or "")
+    targets = _CATEGORY_RELATED.get(m.group(1)) if m else None
+    if not targets:
+        return ""
+    by_slug = {sl: c for c, sl in cat_slug.items()}
+    links, seen = [], {m.group(1)}
+    for sl in targets:
+        if sl in seen or sl not in by_slug:
+            continue
+        seen.add(sl)
+        links.append(f'<a href="category-{esc(sl)}.html">{esc(by_slug[sl])}</a>')
+        if len(links) >= RELCATS_MAX:
+            break
+    if not links:
+        return ""
+    return '<nav class="relcats" aria-label="Схожі категорії"><h2>Схожі категорії</h2>' + "".join(links) + '</nav>\n'
+
+
+def _id_key(pid):
+    """Детермінований порядок id: числові — за значенням (9 < 10), решта — після них за рядком."""
+    s = str(pid)
+    return (0, int(s), s) if re.fullmatch(r"[0-9]+", s) else (1, 0, s)
+
+
+def _is_markdown_category(c):
+    c = (c or "").lower()
+    return "уцінк" in c or "уценк" in c
+
+
+_TIE_MOD = 1 << 64
+
+
+def _tie_key(q, p):
+    """Тай-брейк «схожих» на ОДНАКОВІЙ відстані за ціною (аудит #692: за id від найменшого ВСІ товари серії на однаковій ціні лінкували на одні й ті самі 6 id — п'ять «хабів» по 196 вхідних,
+    «Пазли G-Toys» 94 ₴ × 195 карток): ЦИКЛІЧНО від id самої картки p — перші ті, чий id одразу за id p (далі по колу), тож вхідні посилання розподіляються рівномірно.
+    Детерміновано. Числові id: (id_q − id_p) mod 2^64; нечислові — після числових, за рядком."""
+    kq = _id_key(q["id"])
+    if kq[0] != 0:
+        return kq
+    kp = _id_key(p["id"])
+    base = kp[1] if kp[0] == 0 else -1
+    return (0, (kq[1] - base) % _TIE_MOD, "")
+
+
+def build_similar_index(prods):
+    """{категорія: (відсортовані унікальні ціни, [(товари з цією ціною за id, числові id для bisect, кількість числових)])} лише для товарів В НАЯВНОСТІ, не з «Уцінки» (картка-«Уцінка» блоку не має).
+    Пошук найближчих по ціні — bisect, тож на ~28 тис. сторінок немає O(n²)."""
+    by = {}
+    for p in prods:
+        if p.get("stock", 0) > 0 and not _is_markdown_category(p.get("category")):
+            by.setdefault(p["category"], {}).setdefault(p["price"], []).append(p)
+    idx = {}
+    for c, runs in by.items():
+        prices = sorted(runs)
+        packed = []
+        for x in prices:
+            items = sorted(runs[x], key=lambda q: _id_key(q["id"]))
+            nums = [_id_key(q["id"])[1] for q in items if _id_key(q["id"])[0] == 0]
+            packed.append((items, nums, len(nums)))
+        idx[c] = (prices, packed)
+    return idx
+
+
+def _rotated(group, p):
+    """Група однакової ціни в циклічному порядку від id картки p (див. _tie_key)."""
+    items, nums, nn = group
+    kp = _id_key(p["id"])
+    j = bisect.bisect_right(nums, kp[1]) if kp[0] == 0 else 0
+    return items[j:nn] + items[:j] + items[nn:]
+
+
+def similar_products(idx, p, k=SIMILAR_PRODUCTS_MAX):
+    """До k товарів в наявності з ТІЄЇ Ж категорії, найближчих за ціною до p: порядок (|ціна − ціна p|, _tie_key), без самого p і без OOS. «Уцінка»/«Уценка» — порожньо.
+    Іде від позиції p у списку цін двома вказівниками (ліворуч/праворуч) за зростанням відстані; рівні відстані з обох боків зливаються за _tie_key (heapq.merge)."""
+    if _is_markdown_category(p.get("category")):
+        return []
+    ent = idx.get(p.get("category"))
+    if not ent:
+        return []
+    prices, runs = ent
+    price, n = p["price"], len(prices)
+    left, right = bisect.bisect_left(prices, price) - 1, bisect.bisect_left(prices, price)
+    out = []
+    while len(out) < k and (left >= 0 or right < n):
+        dl = price - prices[left] if left >= 0 else None
+        dr = prices[right] - price if right < n else None
+        d = dl if dr is None else (dr if dl is None else min(dl, dr))
+        groups = []
+        if dl is not None and dl == d:
+            groups.append(_rotated(runs[left], p))
+            left -= 1
+        if dr is not None and dr == d:
+            groups.append(_rotated(runs[right], p))
+            right += 1
+        for q in heapq.merge(*groups, key=lambda q: _tie_key(q, p)):
+            if q["id"] == p["id"]:
+                continue
+            out.append(q)
+            if len(out) >= k:
+                break
+    return out
+
+
 def write_catalog(title, prods, cat_list, cat_slug, fname, active):
     """Пише каталог/категорію З ПАГІНАЦІЄЮ (PER_PAGE/стор.). Повертає set імен усіх
     записаних сторінок (для valid-набору прибирання й sitemap)."""
@@ -828,7 +1096,8 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
             (_category_intro_html(fname) if (active and k == 1) else "") +
             controls +
-            static_grid
+            static_grid +
+            (_relcats_html(fname, cat_slug, active) if (active and k == 1) else "")
         )
         _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
         written.add(cur)
@@ -1011,7 +1280,7 @@ def _clean_desc(html):
     return html.strip()
 
 
-def write_product(p, related=None, cat_slug=None, related_title="Додайте до замовлення"):
+def write_product(p, related=None, cat_slug=None, related_title="Додайте до замовлення", similar=None, similar_title="Схожі товари"):
     raw = p["desc"]
     parts = [x.strip() for x in re.split(r"<br\s*/?>", raw) if x.strip()]
     lead = _clean_desc(parts[0]) if parts else ""
@@ -1020,8 +1289,14 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     specs = [_clean_desc(x) for x in parts[1:] if x.startswith("<b>") and "</b>" in x and ":" in x
              and not x.rstrip().endswith("</b>")][:6]
     desc_html = f"<p>{lead}</p>" if lead else ""
-    if specs:
-        desc_html += "<ul>" + "".join(f"<li>{s}</li>" for s in specs) + "</ul>"
+    specs_html = ("<ul>" + "".join(f"<li>{s}</li>" for s in specs) + "</ul>") if specs else ""
+    # Текст картки від SEO (site/product_texts.json): під описом Toysi, ПЕРЕД його характеристиками (якщо вони є — вони йдуть окремим блоком нижче), лише після блоку ціни/оплати/доставки,
+    # тож перший екран мобільного (фото, ціна, бейджі, закріплена панель «У кошик») не зміщується. Нема тексту — розмітка рівно як була.
+    prod_text_html = _product_text_html(p["id"])
+    if prod_text_html and specs_html:
+        desc_block = (f'<div class="desc"><h2>Опис</h2>{desc_html}</div>' + prod_text_html + f'<div class="desc specs">{specs_html}</div>')
+    else:
+        desc_block = f'<div class="desc"><h2>Опис</h2>{desc_html}{specs_html}</div>' + prod_text_html
     # Головне фото = LCP картки: fetchpriority=high каже браузеру тягнути його першим (решта фото сторінки — loading=lazy).
     # width/height не ставимо: розмір оригіналу toysi.ua невідомий, а місце під кадр вже резервує `.photo img{aspect-ratio:1/1}` у styles.css.
     photo = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" fetchpriority="high" decoding="async">'
@@ -1061,9 +1336,10 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
       f'<div class="price-row"><div class="price">{p["price"]} ₴</div>'
       f'<div class="avail {oos}">{avail}</div></div>'
       + oos_note + buy_info +
-      f'<div class="desc"><h2>Опис</h2>{desc_html}</div>'
+      desc_block +
       '</div></div>'
       + (f'<section class="related"><h2>{esc(related_title)}</h2>{grid(related)}</section>' if related else "")
+      + (f'<section class="related"><h2>{esc(similar_title)}</h2>{grid(similar)}</section>' if similar else "")
       + '<div class="buybar"><div class="buybar-inner">'
       f'<div class="p">{p["price"]} ₴</div>'
       f'{buy_btn}'

@@ -299,6 +299,16 @@ footer.foot a{color:var(--accent)}
 .related{margin-top:24px}
 .related>h2{font-size:18px;margin:0 16px 8px}
 
+/* ══ Внутрішня перелінковка (SEO 12.10): текст картки, характеристики окремим блоком, «Схожі категорії» ══ */
+.prod-text{font-size:15px;line-height:1.55;color:rgba(20,20,19,.8);margin:12px 0}
+.prod-text p{margin:0 0 10px}
+.prod-text p:last-child{margin-bottom:0}
+.desc.specs{margin-top:12px}
+.relcats{margin:18px 16px 8px}
+.relcats h2{font-size:15px;font-weight:700;margin:0 0 8px}
+.relcats a{display:inline-block;margin:0 6px 6px 0;padding:7px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--text);font-size:13px;text-decoration:none}
+.relcats a:hover{color:var(--accent)}
+
 /* ══ Маскот Плутус (PNG замість емодзі 🦊) ══ */
 /* Відступи дають обгортки .fox/.hero/.done — .mascot лише розмір, без свого margin-bottom
    (інакше подвійний нижній відступ). */

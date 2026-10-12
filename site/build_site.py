@@ -182,7 +182,10 @@ def analytics_head(defer=True) -> str:
     """Сніпети GA4 (gtag) і Meta Pixel + `window.PT_ANALYTICS` для app.js (події view_item/add_to_cart/begin_checkout/purchase). Порожній рядок, якщо ID не задано.
     defer=True (усі сторінки, КРІМ «Дякуємо»; рішення Консультанта 12.10: Lighthouse mobile TBT 1,4–3,3 с майже весь від трекерів — Pixel ≈1,3 с, gtag ≈0,7–1,2 с): стаби gtag/fbq (черга) ставимо ОДРАЗУ —
     події app.js не губляться, — а САМІ СКРИПТИ (gtag.js, fbevents.js) підвантажуємо через 3 с після load або на першу взаємодію (pointerdown/keydown/scroll/touchstart), що раніше. Втрата: хто пішов раніше —
-    це відмови, нам не потрібні. thanks.html — defer=False: подія `purchase` вантажиться без затримки (єдине замовлення втрачати в аналітиці неприпустимо)."""
+    це відмови, нам не потрібні. thanks.html — defer=False: подія `purchase` вантажиться без затримки (єдине замовлення втрачати в аналітиці неприпустимо).
+    ВІДОМЕ ОБМЕЖЕННЯ (аудит #693, виміряно): якщо перша взаємодія — «У кошик» і покупець за <≈1,8 с (slow 4G; ≈0,5 с на швидкій) одразу переходить на іншу сторінку, події цієї сторінки
+    (page_view/view_item/add_to_cart) і fbclid/gclid не доходять. Пом'якшення rel=preload через 1 с після load ВИМІРЯНО й ВІДХИЛЕНО: Lighthouse чекає мережу довше й втягує виконання трекерів
+    у вікно виміру (TBT назад 1,8–3,3 с) заради рідкісного випадку."""
     if not (GA4_ID or META_PIXEL_ID):
         return ""
     out = [f'<script>window.PT_ANALYTICS={json.dumps({"ga4": GA4_ID, "fb": META_PIXEL_ID})};</script>\n']

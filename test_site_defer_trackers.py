@@ -88,7 +88,7 @@ ctx.window=ctx; ctx.self=ctx;
 vm.createContext(ctx);
 scripts.forEach(s=>vm.runInContext(s,ctx));
 const out={nScripts:scripts.length, appended0:appended.length, timers0:timers.map(t=>t.ms), listeners:Object.keys(winH).sort()};
-out.dataLayer=(ctx.dataLayer||[]).map(a=>Array.from(a)[0]); out.fbqQueue=(ctx.fbq&&ctx.fbq.queue||[]).map(a=>Array.from(a).slice(0,2)); out.hasGtag=typeof ctx.gtag; out.hasFbq=typeof ctx.fbq;
+out.dataLayer=(ctx.dataLayer||[]).map(a=>Array.from(a)[0]); out.dlTypes=(ctx.dataLayer||[]).map(a=>Object.prototype.toString.call(a)); out.fbqQueue=(ctx.fbq&&ctx.fbq.queue||[]).map(a=>Array.from(a).slice(0,2)); out.hasGtag=typeof ctx.gtag; out.hasFbq=typeof ctx.fbq;
 const fireTimers=()=>timers.filter(t=>!t.done).forEach(t=>{ t.done=true; t.f(); });
 if(scenario==="timer"){ fireTimers(); out.afterTimer=appended.slice(); fireTimers(); (winH.pointerdown||[]).forEach(h=>h.f()); out.afterMore=appended.length; }
 else if(scenario==="interaction"){ (winH.pointerdown||[]).forEach(h=>h.f()); out.afterInteraction=appended.slice(); (winH.keydown||[]).forEach(h=>h.f()); fireTimers(); out.afterMore=appended.length; out.once=(winH.scroll||[]).every(h=>h.o&&h.o.once===true&&h.o.passive===true); }
@@ -110,6 +110,7 @@ console.log(JSON.stringify(out));
 
     i = run(out / "index.html", "idle")
     chk("після виконання head: нічого не підвантажено; один таймер на 3000 мс; слухачі pointerdown/keydown/scroll/touchstart/", i is not None and i["appended0"] == 0 and i["timers0"] == [3000] and {"pointerdown", "keydown", "scroll", "touchstart"} <= set(i["listeners"]))
+    chk("dataLayer: записи — справжні Arguments-об'єкти (gtag.js не читає масиви; мутація dataLayer.push(Array.from(arguments)) ламає GA — аудит #693 M1)", i is not None and i["dlTypes"] == ["[object Arguments]", "[object Arguments]"])
     chk("стаби: gtag і fbq — функції; у черзі gtag js+config, fbq set+init+track(PageView)", i is not None and i["hasGtag"] == "function" and i["hasFbq"] == "function" and i["dataLayer"] == ["js", "config"] and i["fbqQueue"] == [["set", "autoConfig"], ["init", FB], ["track", "PageView"]])
     t = run(out / "index.html", "timer")
     chk("через 3 с після load: РІВНО два скрипти (gtag.js з id і fbevents.js); повторні тригери нічого не додають", t is not None and t["afterTimer"] == [f"https://www.googletagmanager.com/gtag/js?id={GA}", "https://connect.facebook.net/en_US/fbevents.js"] and t["afterMore"] == 2)

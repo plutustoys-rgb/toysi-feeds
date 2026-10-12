@@ -22,7 +22,22 @@
   // підтвердження з Toysi, що платник — відправник (ми) для замовлень сайту.
   var FREE_SHIPPING_ENABLED = false;
 
-  function read(){ try{ return JSON.parse(localStorage.getItem(CART_KEY)) || {}; }catch(e){ return {}; } }
+  var MAX_QTY=50, COD_CEILING=3000;   // = site_order_api.MAX_QTY_PER_ITEM і SITE_COD_CEILING (сервер усе одно перевіряє)
+  function read(){
+    var raw; try{ raw=JSON.parse(localStorage.getItem(CART_KEY)) || {}; }catch(e){ return {}; }
+    if(!raw || typeof raw!=="object" || Array.isArray(raw)) return {};
+    // тестувальник 12.10: qty=-5 → «-50 ₴», price="abc" → «NaN ₴» (лише ручним втручанням у DevTools) — чистимо при читанні
+    var out={};
+    Object.keys(raw).forEach(function(id){
+      var it=raw[id]; if(!it || typeof it!=="object") return;
+      var price=+it.price, qty=Math.floor(+it.qty);
+      if(!isFinite(price) || price<0) return;
+      if(!isFinite(qty) || qty<1) qty=1;
+      if(qty>MAX_QTY) qty=MAX_QTY;
+      out[id]={id:String(it.id!==undefined?it.id:id), name:String(it.name||""), price:price, photo:String(it.photo||""), qty:qty};
+    });
+    return out;
+  }
   function write(c){ try{ localStorage.setItem(CART_KEY, JSON.stringify(c)); }catch(e){} updateBadge(); }
   function count(){ var c=read(),n=0; for(var k in c){ n+=c[k].qty; } return n; }
   function total(){ var c=read(),s=0; for(var k in c){ s+=c[k].qty*c[k].price; } return s; }
@@ -49,13 +64,13 @@
   window.PT = {
     add:function(p, listName){       // p={id,name,price,photo}; listName — звідки додано (item_list_name у GA4, напр. cart_addon)
       var c=read();
-      if(c[p.id]){ c[p.id].qty++; } else { c[p.id]={id:p.id,name:p.name,price:+p.price,photo:p.photo,qty:1}; }
+      if(c[p.id]){ if(c[p.id].qty>=MAX_QTY){ flash("Максимум "+MAX_QTY+" шт. одного товару"); return; } c[p.id].qty++; } else { c[p.id]={id:p.id,name:p.name,price:+p.price,photo:p.photo,qty:1}; }
       write(c);
       track("add_to_cart", [{id:p.id, name:p.name, price:+p.price, qty:1, list:listName||""}], +p.price);
       flash("Додано в кошик");
     },
     track:track,
-    setQty:function(id,q){ var c=read(); if(c[id]){ c[id].qty=Math.max(0,q); if(c[id].qty===0){delete c[id];} write(c); } },
+    setQty:function(id,q){ var c=read(); if(c[id]){ c[id].qty=Math.min(MAX_QTY, Math.max(0,q)); if(c[id].qty===0){delete c[id];} write(c); } },
     remove:function(id){ var c=read(); delete c[id]; write(c); },
     clear:function(){ write({}); },
     read:read, count:count, total:total,
@@ -325,6 +340,9 @@
     if(!box) return;
     var c=read(), ids=Object.keys(c);
     renderAside(c, ids);
+    var codn=document.getElementById("cod-limit-note");
+    if(codn) codn.style.display = total()>COD_CEILING ? "" : "none";
+    var ct=document.getElementById("checkout-title"); if(ct) ct.style.display = ids.length ? "" : "none";
     var form=document.getElementById("checkout-form");
     if(ids.length===0){
       box.innerHTML='<div class="empty"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="48" height="44" decoding="async"></div>Кошик порожній.<br>Оберіть іграшки в <a href="catalog.html" style="color:var(--accent)">каталозі</a>.</div>';
@@ -341,7 +359,7 @@
         '<img src="'+it.photo+'" loading="lazy" alt="">'+
         '<div style="flex:1"><div class="ci-nm">'+esc(it.name)+'</div>'+
         '<div class="ci-pr">'+it.price+' ₴</div>'+
-        '<div class="qty"><button data-act="dec" aria-label="Менше"'+(it.qty<=1?' disabled':'')+'>−</button><span class="q">'+it.qty+'</span><button data-act="inc" aria-label="Більше">+</button></div>'+
+        '<div class="qty"><button data-act="dec" aria-label="Менше"'+(it.qty<=1?' disabled':'')+'>−</button><span class="q">'+it.qty+'</span><button data-act="inc" aria-label="Більше"'+(it.qty>=MAX_QTY?' disabled':'')+'>+</button></div>'+
         '</div><button class="ci-rm" data-act="rm">Прибрати</button></div>';
     });
     box.innerHTML=html;
@@ -663,6 +681,7 @@
     // citySeq відсікає запізнілі/невпорядковані відповіді довідника; cityPending блокує submit, поки відповідь не прийшла (fail-closed), але не довше 6 с.
     function arrowToList(input, box){
       input.addEventListener("keydown", function(ev){
+        if(ev.key==="Escape"){ box.innerHTML=""; return; }
         if(ev.key==="ArrowDown"){ var f=box.querySelector ? box.querySelector(".opt") : null; if(f && f.focus){ ev.preventDefault(); f.focus(); } }
       });
     }
@@ -688,6 +707,10 @@
       renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, area:c.area||"", ref:c.ref, name:c.name}; }),
         function(pick){ citySeq++; clearTimeout(lookupTimer); whSeq++; city.value=pick.name; selectedCityRef=pick.ref||""; selectedCityArea=pick.area||""; cityListShown=false; cityPending=false; wh.placeholder="Номер або адреса відділення"; wh.focus(); },
         {label:"Мого міста немає в списку", onPick:function(){ citySeq++; clearTimeout(lookupTimer); cityListShown=false; cityPending=false; wh.placeholder="Номер відділення"; wh.focus(); }});   // citySeq++: запізнілі відповіді довідника вже не повернуть блок
+      if(cities.length && acCity.scrollIntoView){   // тестувальник 12.10 + аудит #697 F2: на телефоні список з'являвся нижче видимої зони; скрол — ПІСЛЯ renderAc (раніше список порожній і схований) і після розкладки
+        var raf=window.requestAnimationFrame||function(f){ return setTimeout(f,0); };
+        raf(function(){ try{ acCity.scrollIntoView({block:"nearest", behavior:"smooth"}); }catch(e){} });
+      }
     };
     city.addEventListener("input", function(){
       citySeq++; whSeq++;
@@ -741,6 +764,11 @@
 
       var cart=read(), items=Object.keys(cart).map(function(id){ return {id:id, qty:cart[id].qty}; });
       if(!items.length){ fail("Кошик порожній."); return; }
+      // тестувальник 12.10: type=tel/required пропускали «123», «abcdefghij», «   » — сервер відсікав би, але покупець бачить помилку лише після відправки. Та сама перевірка, що в site_order_api.
+      var nm=(document.getElementById("f-name").value||"").trim();
+      if(nm.length<3 || !/\s/.test(nm)){ fail("Вкажіть ім’я та прізвище отримувача (через пробіл)."); var fn_=document.getElementById("f-name"); if(fn_ && fn_.focus) fn_.focus(); return; }
+      var dg=(document.getElementById("f-phone").value||"").replace(/\D/g,""); if(dg.length===10 && dg.charAt(0)==="0") dg="38"+dg;
+      if(!(dg.length===12 && dg.indexOf("380")===0)){ fail("Вкажіть коректний номер телефону (+380…)."); var fp_=document.getElementById("f-phone"); if(fp_ && fp_.focus) fp_.focus(); return; }
       // Довідник НП показав міста, а покупець жодного не обрав → у Toysi пішла б лише НАЗВА міста без області/CityRef, і посилка могла б поїхати в однойменне село
       // (інциденти Бородянський 906224962 і «Південне»→«Южное» EVA 8-081747967). Виходи: довідник мертвий/мовчить >6 с, міста нема в ньому, або кнопка «Мого міста немає в списку».
       if(cityNeedsPick()){

@@ -309,7 +309,7 @@
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
-    if(d) d.textContent=freeShip ? "Безкоштовно" : "за тарифами НП";
+    if(d) d.textContent=freeShip ? "Безкоштовно" : "орієнтовно 70–90 ₴ до 2 кг";
     if(t) t.textContent=goods+" ₴";
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
@@ -570,17 +570,39 @@
 
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";
+  var cityListShown = false;   // довідник міст відповів непорожнім списком для поточного тексту
+  var cityPending = false;     // текст міста змінено, відповідь довідника ще не прийшла (fail-closed до таймауту 6 с)
+  var lastCityList = null;     // останній список — щоб повернути його, коли клік повз прибрав випадайку, а submit заблоковано
+  var cityRerender = function(){};
+  function cityNeedsPick(){ return !selectedCityRef && (cityPending || cityListShown); }
   var selectedCityArea = "";  // область обраного міста (НП AreaDescription) → у np_branch, щоб Toysi
                                // не переплутав однойменні населені пункти різних областей (24.09.2026)
   var selectedWarehouseNumber = "";  // № обраного з автокомпліту відділення НП → віддаємо Toysi напряму
   function debounce(fn, ms){ var t; return function(){ var a=arguments, self=this; clearTimeout(t); t=setTimeout(function(){ fn.apply(self,a); }, ms); }; }
-  function renderAc(box, opts, onPick){
+  function renderAc(box, opts, onPick, extra){
     if(!opts.length){ box.innerHTML=""; return; }
+    // Опції — role=option з tabindex=0: вибір і з клавіатури (Tab/Enter/Space, стрілки, Esc), а не лише вказівником (аудит #682 р.2: інакше клавіатурний/скрінрідер-покупець застрягав).
+    if(box.setAttribute){ box.setAttribute("role","listbox"); box.setAttribute("aria-label","Підказки"); }
     box.innerHTML = opts.map(function(o,i){
-      return '<div class="opt" data-i="'+i+'">'+esc(o.label)+(o.sub?'<small>'+esc(o.sub)+'</small>':'')+'</div>';
-    }).join("");
+      return '<div class="opt" role="option" tabindex="0" data-i="'+i+'">'+esc(o.label)+(o.sub?'<small>'+esc(o.sub)+'</small>':'')+'</div>';
+    }).join("") + (extra ? '<div class="opt opt-none" role="option" tabindex="0" data-i="-1">'+esc(extra.label)+'</div>' : "");
+    function choose(el){
+      var i=+el.getAttribute("data-i");
+      if(i<0){ if(extra) extra.onPick(); } else { onPick(opts[i]); }
+      box.innerHTML="";
+    }
     Array.prototype.forEach.call(box.querySelectorAll(".opt"), function(el){
-      el.addEventListener("mousedown", function(ev){ ev.preventDefault(); onPick(opts[+el.getAttribute("data-i")]); box.innerHTML=""; });
+      el.addEventListener("mousedown", function(ev){ ev.preventDefault(); choose(el); });
+      el.addEventListener("keydown", function(ev){
+        var k=ev.key;
+        if(k==="Enter" || k===" "){ ev.preventDefault(); choose(el); }
+        else if(k==="ArrowDown" || k==="ArrowUp"){
+          ev.preventDefault();
+          var sib = k==="ArrowDown" ? el.nextElementSibling : el.previousElementSibling;
+          if(sib && sib.focus) sib.focus();
+        }
+        else if(k==="Escape"){ box.innerHTML=""; }
+      });
     });
   }
   function initNpAutocomplete(){
@@ -588,30 +610,58 @@
     var wh=document.getElementById("f-warehouse"), acWh=document.getElementById("ac-warehouse");
     if(!city || !wh) return;
 
-    city.addEventListener("input", debounce(function(){
+    // Місто: СКИДАННЯ ref/області — негайно на кожен ввід (а не в debounce: інакше submit/тап у вікні 250 мс ніс би застарілий ref іншого міста), пошук — з debounce.
+    // citySeq відсікає запізнілі/невпорядковані відповіді довідника; cityPending блокує submit, поки відповідь не прийшла (fail-closed), але не довше 6 с.
+    function arrowToList(input, box){
+      input.addEventListener("keydown", function(ev){
+        if(ev.key==="ArrowDown"){ var f=box.querySelector ? box.querySelector(".opt") : null; if(f && f.focus){ ev.preventDefault(); f.focus(); } }
+      });
+    }
+    arrowToList(city, acCity); arrowToList(wh, acWh);
+    var citySeq=0, whSeq=0, pendingTimer=null;
+    function lookupCity(){
+      var q=city.value.trim(), my=citySeq;
+      if(q.length<2){ cityPending=false; acCity.innerHTML=""; return; }
+      fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
+        if(my!==citySeq || selectedCityRef) return;      // застаріла відповідь або місто вже обране — не перемальовуємо
+        var cities=(d && Array.isArray(d.cities)) ? d.cities : [];
+        cityPending=false; cityListShown=cities.length>0; lastCityList=cities; cityRerender();
+      }).catch(function(){
+        // API НП недоступний — не лишаємо форму в глухому куті: підказок нема, ручний ввід уже дозволено.
+        if(my!==citySeq) return;
+        cityPending=false; cityListShown=false; lastCityList=null; acCity.innerHTML="";
+      });
+    }
+    var lookupTimer=null;
+    function lookupDebounced(){ clearTimeout(lookupTimer); lookupTimer=setTimeout(lookupCity, 250); }   // власний таймер: вибір / «Мого міста немає» його СКАСОВУЮТЬ (інакше відкладений пошук повертав блок)
+    cityRerender=function(){
+      var cities=lastCityList||[];
+      renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, area:c.area||"", ref:c.ref, name:c.name}; }),
+        function(pick){ citySeq++; clearTimeout(lookupTimer); whSeq++; city.value=pick.name; selectedCityRef=pick.ref||""; selectedCityArea=pick.area||""; cityListShown=false; cityPending=false; wh.placeholder="Номер або адреса відділення"; wh.focus(); },
+        {label:"Мого міста немає в списку", onPick:function(){ citySeq++; clearTimeout(lookupTimer); cityListShown=false; cityPending=false; wh.placeholder="Номер відділення"; wh.focus(); }});   // citySeq++: запізнілі відповіді довідника вже не повернуть блок
+    };
+    city.addEventListener("input", function(){
+      citySeq++; whSeq++;
       // Щойно користувач торкнувся міста — РОЗБЛОКОВУЄМО відділення й БІЛЬШЕ не вимикаємо його.
       // Раніше поле лишалось disabled, доки не тапнеш підказку міста — на телефоні це зривало
       // оформлення (не влучив пальцем у випадайку → відділення «мертве»). Тап по місту лише
       // додає ref для автопідказок відділення; без тапу — ручний ввід відділення (він і так
       // приймається як вільний текст, order_router розбирає при форварді).
       selectedCityRef=""; selectedCityArea=""; selectedWarehouseNumber=""; wh.value=""; acWh.innerHTML="";
+      cityListShown=false; lastCityList=null;
       wh.disabled=false; wh.placeholder="Оберіть місто зі списку — або введіть відділення";
-      var q=city.value.trim(); if(q.length<2){ acCity.innerHTML=""; return; }
-      fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
-        var cities=(d.cities||[]);
-        renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, ref:c.ref, name:c.name}; }),
-          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; selectedCityArea=pick.sub||""; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
-      }).catch(function(){
-        // API НП недоступний — не лишаємо форму в глухому куті: підказок нема, ручний ввід уже дозволено.
-        acCity.innerHTML="";
-      });
-    }, 250));
+      cityPending = city.value.trim().length>=2;
+      clearTimeout(pendingTimer);
+      if(cityPending){ var my=citySeq; pendingTimer=setTimeout(function(){ if(my===citySeq) cityPending=false; }, 6000); }
+      lookupDebounced();
+    });
 
     wh.addEventListener("input", debounce(function(){
       selectedWarehouseNumber="";  // ввід руками скидає обраний № — щоб не лишити стале значення
       if(!selectedCityRef) return;
-      var q=wh.value.trim();
+      var q=wh.value.trim(), myWh=++whSeq, myCity=selectedCityRef;
       fetch("api/np/warehouse?city_ref="+encodeURIComponent(selectedCityRef)+"&q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
+        if(myWh!==whSeq || myCity!==selectedCityRef) return;     // запізніла відповідь іншого міста/запиту (аудит #682 р.2, F5): склад чужого міста не пропонуємо
         renderAc(acWh, (d.warehouses||[]).map(function(w){ return {label:w.description, name:w.description, number:w.number}; }),
           function(pick){ wh.value=pick.name; selectedWarehouseNumber=pick.number||""; acWh.innerHTML=""; });
       }).catch(function(){ acWh.innerHTML=""; });
@@ -642,6 +692,14 @@
 
       var cart=read(), items=Object.keys(cart).map(function(id){ return {id:id, qty:cart[id].qty}; });
       if(!items.length){ fail("Кошик порожній."); return; }
+      // Довідник НП показав міста, а покупець жодного не обрав → у Toysi пішла б лише НАЗВА міста без області/CityRef, і посилка могла б поїхати в однойменне село
+      // (інциденти Бородянський 906224962 і «Південне»→«Южное» EVA 8-081747967). Виходи: довідник мертвий/мовчить >6 с, міста нема в ньому, або кнопка «Мого міста немає в списку».
+      if(cityNeedsPick()){
+        fail("Оберіть своє місто зі списку підказок — так посилка точно піде у ваше місто, а не в однойменне. Немає у списку? Натисніть «Мого міста немає в списку».");
+        if(lastCityList && lastCityList.length) cityRerender();   // клік повз прибрав випадайку — повертаємо список
+        var fc=document.getElementById("f-city"); if(fc && fc.focus) fc.focus();
+        return;
+      }
       var payEl=document.querySelector('input[name="payment"]:checked');
       var payment=payEl ? payEl.value : "cod";
       var payload={

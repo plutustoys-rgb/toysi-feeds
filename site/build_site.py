@@ -1184,19 +1184,23 @@ def _pick_key(name):
     return " ".join(words[:2]) or n.strip()
 
 
-def home_pick(prods):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
     на реальних даних усі 10 коштували 695–700 ₴, медіанний вибір дає ≈470–650 ₴), далі перемішування з фіксованим зерном. «Знижок» і «Хітів продажів» нема."""
+    # pmin/pmax/min_contrib — для наборів чипів над каруселлю (SMM 12.10); за замовчуванням — основна добірка.
+    pmin = HOME_PICK_PRICE_MIN if pmin is None else pmin
+    pmax = HOME_PICK_PRICE_MAX if pmax is None else pmax
+    min_contrib = HOME_MIN_CONTRIB if min_contrib is None else min_contrib
     elig = []
     for p in prods:
         c = p.get("contribution")
         cat = (p.get("category") or "").strip().lower()
         name = p.get("name") or ""
-        if c is None or c < HOME_MIN_CONTRIB or not p.get("photo") or (p.get("stock") or 0) <= 0:
+        if c is None or c < min_contrib or not p.get("photo") or (p.get("stock") or 0) <= 0:
             continue
-        if not (HOME_PICK_PRICE_MIN <= p["price"] <= HOME_PICK_PRICE_MAX):
+        if not (pmin <= p["price"] <= pmax):
             continue
         if cat in HOME_PICK_EXCLUDED_CATS or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
             continue
@@ -1221,6 +1225,23 @@ def home_pick(prods):
             by[c] = [x for x in by[c] if x is not p]
     random.Random(HOME_PICK_SEED).shuffle(out)
     return out
+
+
+# Чипи над каруселлю головної (SMM 12.10): «До 300 ₴» (внесок ≥50), «300–700 ₴» (внесок ≥100, як основна добірка), «Набори» (відбір /nabory.html, перші 10 по колах груп). Набори — у <template> (інертні: фото не вантажаться,
+# поки чип не натиснуто), у кожному ≤10 карток із бейджем залишку ≤3; перші картки НЕ eager. Ключі латиницею — у назвах подій home_chip_<key>.
+HOME_CHIPS = (("u300", "До 300 ₴"), ("m700", "300–700 ₴"), ("nab", "Набори"))
+HOME_CHIP_U300_MAX, HOME_CHIP_U300_MIN = 299.99, 50
+HOME_CHIP_U300_CONTRIB = 50.0
+
+
+def home_chip_sets(prods):
+    """{key: [товари]} для чипів; порожні набори не повертаємо (чип не показуємо)."""
+    sets = {
+        "u300": home_pick(prods, pmin=HOME_CHIP_U300_MIN, pmax=HOME_CHIP_U300_MAX, min_contrib=HOME_CHIP_U300_CONTRIB),
+        "m700": home_pick(prods, pmin=300, pmax=700),
+        "nab": [p for _g, p in nabory_pick(prods)[:HOME_PICK_COUNT]],
+    }
+    return {k: v for k, v in sets.items() if v}
 
 
 def write_home(prods, cats, cat_list, cat_slug):
@@ -1254,8 +1275,19 @@ def write_home(prods, cats, cat_list, cat_slug):
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
         slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True) for i, p in enumerate(picks))
+        chip_sets = home_chip_sets(prods)
+        chips_html = ""
+        if chip_sets:
+            chips_html = (
+              '<noscript><style>.home-chips{display:none}</style></noscript>'
+              '<div class="chips home-chips" id="home-chips" role="group" aria-label="Підбір іграшок">'
+              '<button type="button" class="chip active" data-set="all" aria-pressed="true">Усі</button>'
+              + "".join(f'<button type="button" class="chip" data-set="{k}" aria-pressed="false">{esc(t)}</button>' for k, t in HOME_CHIPS if k in chip_sets)
+              + '</div>'
+              + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
         carousel = (
           '<div class="sec-title"><h2>Добірка Плутуса</h2><a href="catalog.html">Дивитись усі →</a></div>'
+          + chips_html +
           '<div class="car" id="home-car" role="region" aria-label="Добірка Плутуса" data-list="Добірка Плутуса">'
             '<button class="arrow l" type="button" aria-label="Попередні товари">‹</button>'
             f'<div class="track">{slides}</div>'

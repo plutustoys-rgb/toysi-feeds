@@ -381,3 +381,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .nb-list a.card[hidden]{display:none}
 .nb-more{margin:18px 16px 4px;text-align:center}
 .pay[hidden]{display:none}
+/* чипи над каруселлю головної (SMM 12.10): місце зарезервовано до JS (без CLS); без JS ховає <noscript> */
+.home-chips{visibility:hidden}
+.home-chips.js{visibility:visible}
+.home-chips button.chip{cursor:pointer;font-family:inherit}

@@ -528,6 +528,38 @@
       loopW=w;
       track.scrollLeft += loopFrac*loopPeriod() + loopOffset();
     }
+    // Чипи над каруселлю (SMM 12.10): «Усі» (основна добірка) / «До 300 ₴» / «300–700 ₴» / «Набори» міняють набір з 10 карток БЕЗ перезавантаження. Набори лежать у <template id="car-set-<ключ>"> (інертні, фото не вантажаться
+    //   до кліку). Перемикання: прибрати клони циклу → підставити картки → перерахувати slides/loop → на початок. Аналітика: view_item_list і select_item з item_list_name «home_chip_<ключ>» (для «Усі» — як було).
+    var baseHTML = track ? track.innerHTML : "", baseName = listName;
+    function teardownLoop(){
+      if(!loopOn) return;
+      Array.prototype.slice.call(track.querySelectorAll("[data-clone]")).forEach(function(c){ c.parentNode.removeChild(c); });
+      loopOn=false; clearTimeout(loopTimer);
+    }
+    function setCarouselSet(html, name){
+      teardownLoop();
+      track.innerHTML=html;
+      slides=Array.prototype.slice.call(car.querySelectorAll("a.card"));
+      listName=name;
+      track.scrollLeft=0;
+      setupLoop();
+      sync();
+      userAction();
+      trackRaw("view_item_list", {item_list_id:listName, item_list_name:listName, items:items()});
+    }
+    var chipBar=document.getElementById("home-chips");
+    if(chipBar && track){
+      chipBar.classList.add("js");
+      var chipBtns=Array.prototype.slice.call(chipBar.querySelectorAll("button[data-set]"));
+      chipBar.addEventListener("click", function(e){
+        var b=e.target.closest ? e.target.closest("button[data-set]") : null; if(!b) return;
+        var key=b.getAttribute("data-set"), html, name;
+        if(key==="all"){ html=baseHTML; name=baseName; }
+        else { var tpl=document.getElementById("car-set-"+key); if(!tpl) return; html=tpl.innerHTML; name="home_chip_"+key; }
+        chipBtns.forEach(function(x){ var on=(x===b); x.classList.toggle("active", on); x.setAttribute("aria-pressed", on ? "true" : "false"); });
+        setCarouselSet(html, name);
+      });
+    }
     car.classList.add("js");   // стрілки показуємо лише коли JS працює (без нього вони були б «мертвими»; нативний скрол/свайп лишається)
     function sync(){
       if(!track||!left||!right) return;

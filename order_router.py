@@ -8,6 +8,7 @@ from orders_db import (
     mark_ukrposhta_shipment, update_delivery_status,
     mark_stock_alert_sent, clear_stock_alert, mark_rozetka_delivery_ttn,
     init_db, mark_rz_marking_sent, bump_rz_marking_attempt, get_rz_markings_to_retry,
+    mark_checkbox_ettn_registered,
 )
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order, toysi_internal_id
@@ -826,7 +827,52 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
     return sent
 
 
+def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> bool:
+    """Сайт + передоплата (LiqPay): фіскальний чек ПРРО Checkbox SELL/CASHLESS виписується одразу після підтвердженої оплати (колбек success) і ДО передачі в Toysi/НП
+    (рішення головного бухгалтера 12.10.2026, КОДВ_CHANNEL: розрахунковий документ — не пізніше передачі товару; Закон №265/95-ВР ст.3). Місце — тут, на початку route_order:
+    гроші вже отримано, тож чек не залежить ні від залишку Toysi, ні від hold-гейтів адреси. Повертає True — можна рухатись далі (не наш випадок / чек уже є / видано щойно);
+    False — чек НЕ видано (алерт, повтор наступного циклу), замовлення в Toysi НЕ передається. Текст чека: номер платежу LiqPay і номер замовлення (зіставлення з випискою);
+    сума = позиції замовлення (доставку на сайті не оплачують: її платить одержувач при отриманні). Ідемпотентність: checkbox_ettn_registered_at (трекер для цього ж замовлення
+    чек повторно не видасть). Сума чека обов'язково дорівнює зафіксованій при оформленні site_charged_total — інакше чек НЕ видається."""
+    if test_mode or order.get("platform") != "site" or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
+        return True
+    if order.get("checkbox_ettn_registered_at"):
+        return True
+    oid = order["internal_order_id"]
+    try:
+        from checkbox_client import create_receipt
+        from order_status_tracker import _receipt_goods_from_order
+        goods = _receipt_goods_from_order(order)
+        total = round(sum(float(g["price"]) * g.get("qty", 1) for g in goods), 2)
+        charged = order.get("site_charged_total")
+        if charged is not None and abs(total - float(charged)) > 0.01:
+            raise ValueError(f"сума позицій {total} ≠ зафіксована при оформленні {charged}: чек НЕ видано (money-safety), розберіть вручну")
+        pid = (order.get("liqpay_payment_id") or "").strip()
+        footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('order_id')}"
+        result = create_receipt(goods=goods, payment_type="CASHLESS", total_amount=total, order_id=oid,
+                                customer_phone=order.get("phone"), footer=footer, customer_email=order.get("email"))
+    except Exception as e:  # noqa: BLE001 — будь-який збій: чек не видано, замовлення не передаємо
+        print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
+        try:
+            send_throttled_alert(
+                f"site_prepaid_receipt:{oid}",
+                f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {oid}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
+                "Наступний цикл (~15 хв) повторить; якщо повторюється, перевір зміну/ключ Checkbox і суму замовлення; ручний чек у кабінеті Checkbox, далі позначити checkbox_ettn_registered_at.",
+                cooldown_sec=6 * 60 * 60)
+        except Exception as ae:  # noqa: BLE001
+            print(f"[order_router] алерт про чек не надіслано: {type(ae).__name__}", file=sys.stderr)
+        return False
+    receipt_id = result.get("id") if isinstance(result, dict) else None
+    mark_checkbox_ettn_registered(conn, oid, receipt_id)
+    conn.commit()    # прапорець ідемпотентності має пережити будь-який збій далі в цьому циклі: інакше дубль РЕАЛЬНОГО фіскального чека
+    order["checkbox_ettn_registered_at"] = "set"
+    print(f"[order_router] Чек Checkbox (CASHLESS) видано до передачі в Toysi: {oid} (receipt_id={receipt_id})")
+    return True
+
+
 def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict = None) -> None:
+    if not _ensure_site_prepaid_receipt(conn, order, test_mode):
+        return
     if not _check_prom_not_cancelled(conn, order):
         return
     if not _check_eva_not_cancelled(conn, order):

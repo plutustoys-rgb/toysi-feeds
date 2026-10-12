@@ -227,6 +227,8 @@ def create_receipt(
     total_amount: float,
     order_id: str | None = None,
     customer_phone: str | None = None,
+    footer: str | None = None,
+    customer_email: str | None = None,
 ) -> dict:
     """POST /api/v1/receipts/sell (підтверджено офіційним Swagger,
     api.checkbox.in.ua/api/docs) — прямий чек продажу, БЕЗ жодної залежності
@@ -279,8 +281,18 @@ def create_receipt(
     # Якщо номер кривий/порожній → delivery не додаємо (чек усе одно фіскалізується).
     # ⚠️ Примітка Swagger: надсилання на SMS може бути ПЛАТНИМ (Viber — безкоштовно).
     delivery_phone = _normalize_delivery_phone(customer_phone)
+    delivery = {}
     if delivery_phone:
-        body["delivery"] = {"phone": delivery_phone}
+        delivery["phone"] = delivery_phone
+    # e-mail покупця (DeliveryPayload.emails, звірено OpenAPI 12.10.2026): рішення бухгалтера 12.10 — чек онлайн-оплати надсилається електронно (e-mail/SMS)
+    _email = (customer_email or "").strip()
+    if _email and re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", _email):
+        delivery["emails"] = [_email]
+    if delivery:
+        body["delivery"] = delivery
+    # footer (ReceiptSellPayload.footer, OpenAPI 12.10.2026): текст у чеку, напр. номер платежу LiqPay й номер замовлення — для зіставлення із зарахуванням у виписці
+    if footer:
+        body["footer"] = footer[:250]
     # ВИПРАВЛЕНО (2026-07-22, живий крах усіх 6 замовлень на першому
     # реальному прогоні після активації ключів — 422 Unprocessable Entity):
     # Checkbox вимагає, щоб order_id був СПРАВЖНІМ UUID

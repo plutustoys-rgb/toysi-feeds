@@ -62,11 +62,25 @@ if m:
     poster, w, h, clips, ms = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"), m.group(5).split(",")
     chk("poster — webp зі сталою версією ?v=хеш, розміри 130×100 задані атрибутами (CLS 0)", re.fullmatch(r"assets/mascot/plutus_hero_poster\.webp\?v=[0-9a-f]{8}", poster) is not None and (w, h) == (130, 100))
     names = sorted(re.search(r"plutus_(\w+)\.webp", c).group(1) for c in clips)
-    chk("у кліпах ЛИШЕ «хвіст праворуч» (tailtrip, ear_scratch) — інші сцени в героя не потрапляють (рішення SMM)", names == ["ear_scratch", "tailtrip"])
+    chk("у героя 5 рухів (SMM 12.10: усі готові): tailtrip, ear_scratch + дзеркальні grooming, sniff, shakeoff; stretch_yawn НЕ в героя (manifest safe_for_hero=false)", names == ["ear_scratch", "grooming", "shakeoff", "sniff", "tailtrip"] and "stretch_yawn" not in home)
     chk("data-ms: тривалість кожного кліпу в мс, число на кліп", len(ms) == len(clips) and all(x.isdigit() and 1000 <= int(x) <= 8000 for x in ms))
     ps = (HERE / "site/assets/mascot/plutus_hero_poster.webp").stat().st_size
     chk("файли існують у site/assets/mascot, кліпи ≤ 300 КБ (після перекодування з вирівняними кінцями 12.10: ≈283 КБ), poster ≤ 30 КБ і легший за PNG 14,6 КБ, який у герої замінив", ps <= 30 * 1024 and ps < (HERE / "site/assets/plutus_mascot_s.png").stat().st_size
         and all((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size <= 300 * 1024 for n in names))
+    tot = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in names) + ps
+    chk(f"загальна вага рухів у репо ≤ 1,5 МБ (SMM): {tot/1024:.0f} КБ", tot <= 1.5 * 1024 * 1024)
+    from PIL import Image as _Im, ImageSequence as _Seq
+    dur = {}
+    for n in names:
+        im = _Im.open(HERE / f"site/assets/mascot/plutus_{n}.webp")
+        tot_ms = 0
+        for k in range(im.n_frames):
+            im.seek(k)
+            im.load()                       # без load() Pillow не заповнює info["duration"]
+            tot_ms += im.info.get("duration", 0)
+        dur[n] = tot_ms
+    ms_by = {re.search(r"plutus_(\w+)\.webp", c).group(1): int(x) for c, x in zip(clips, ms)}
+    chk(f"data-ms збігається з реальною тривалістю кадрів кожного файлу (±60 мс): {dur}", all(abs(dur[n] - ms_by[n]) <= 60 for n in names))
     chk("старий статичний PNG у герої замінено на poster (у .hero2 нема plutus_mascot_s.png)", "plutus_mascot_s.png" not in re.search(r'<div class="hero2">(.*?)<div class="txt">', home, re.S).group(1))
 chk("у хедері лишається статичний 24px PNG (SMM: анімація лише в герої) — головна важчає лише на poster", 'src="assets/plutus_mascot_s.png" alt="Плутус" width="24" height="22"' in home)
 chk("розмітка не додає жодного <video>/<script> для кліпів (вантажаться з app.js після load)", "<video" not in home)

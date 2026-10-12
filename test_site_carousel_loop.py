@@ -49,7 +49,7 @@ try:
     P = np.asarray(Image.open(HERE / "site/assets/mascot/plutus_hero_poster.webp").convert("RGBA")).astype(int)
     ok = True
     worst = 0.0
-    for n in ("tailtrip", "ear_scratch"):
+    for n in ("tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff"):
         im = Image.open(HERE / f"site/assets/mascot/plutus_{n}.webp")
         for k in (0, im.n_frames - 1):
             im.seek(k)

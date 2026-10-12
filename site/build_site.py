@@ -178,22 +178,45 @@ def footer():
       '</footer>'
     )
 
-def analytics_head() -> str:
-    """Сніпети GA4 (gtag) і Meta Pixel + `window.PT_ANALYTICS` для app.js (події view_item/add_to_cart/begin_checkout/purchase).
-    Порожній рядок, якщо ID не задано."""
+def analytics_head(defer=True) -> str:
+    """Сніпети GA4 (gtag) і Meta Pixel + `window.PT_ANALYTICS` для app.js (події view_item/add_to_cart/begin_checkout/purchase). Порожній рядок, якщо ID не задано.
+    defer=True (усі сторінки, КРІМ «Дякуємо»; рішення Консультанта 12.10: Lighthouse mobile TBT 1,4–3,3 с майже весь від трекерів — Pixel ≈1,3 с, gtag ≈0,7–1,2 с): стаби gtag/fbq (черга) ставимо ОДРАЗУ —
+    події app.js не губляться, — а САМІ СКРИПТИ (gtag.js, fbevents.js) підвантажуємо через 3 с після load або на першу взаємодію (pointerdown/keydown/scroll/touchstart), що раніше. Втрата: хто пішов раніше —
+    це відмови, нам не потрібні. thanks.html — defer=False: подія `purchase` вантажиться без затримки (єдине замовлення втрачати в аналітиці неприпустимо)."""
     if not (GA4_ID or META_PIXEL_ID):
         return ""
     out = [f'<script>window.PT_ANALYTICS={json.dumps({"ga4": GA4_ID, "fb": META_PIXEL_ID})};</script>\n']
+    gtag_src = f"https://www.googletagmanager.com/gtag/js?id={GA4_ID}"
+    fb_src = "https://connect.facebook.net/en_US/fbevents.js"
+    if not defer:
+        if GA4_ID:
+            out.append(f'<script async src="{gtag_src}"></script>\n'
+                       "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
+                       f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n")
+        if META_PIXEL_ID:
+            out.append("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
+                       "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;"
+                       "t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script',"
+                       f"'{fb_src}');fbq('set','autoConfig',false,'{META_PIXEL_ID}');"
+                       f"fbq('init','{META_PIXEL_ID}');fbq('track','PageView');</script>\n")   # autoConfig=false: без Automatic Advanced Matching (PII форми не хешується в Meta)
+        return "".join(out)
+    js = []
     if GA4_ID:
-        out.append(f'<script async src="https://www.googletagmanager.com/gtag/js?id={GA4_ID}"></script>\n'
-                   "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
-                   f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n")
+        js.append("window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
+                  f"gtag('js',new Date());gtag('config','{GA4_ID}');")
     if META_PIXEL_ID:
-        out.append("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
-                   "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;"
-                   "t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script',"
-                   f"'https://connect.facebook.net/en_US/fbevents.js');fbq('set','autoConfig',false,'{META_PIXEL_ID}');"
-                   f"fbq('init','{META_PIXEL_ID}');fbq('track','PageView');</script>\n")   # autoConfig=false: без Automatic Advanced Matching (PII форми не хешується в Meta)
+        js.append("(function(f){var n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];})(window);"
+                  f"fbq('set','autoConfig',false,'{META_PIXEL_ID}');fbq('init','{META_PIXEL_ID}');fbq('track','PageView');")   # autoConfig=false: без Automatic Advanced Matching
+    loads = []
+    if GA4_ID:
+        loads.append(f"a('{gtag_src}');")
+    if META_PIXEL_ID:
+        loads.append(f"a('{fb_src}');")
+    js.append("(function(){var d=document,w=window,go=0;function a(u){var s=d.createElement('script');s.async=!0;s.src=u;d.head.appendChild(s);}"
+              "function load(){if(go)return;go=1;" + "".join(loads) + "}"
+              "['pointerdown','keydown','scroll','touchstart'].forEach(function(e){w.addEventListener(e,load,{once:!0,passive:!0});});"
+              "function t(){setTimeout(load,3000);}if(d.readyState==='complete')t();else w.addEventListener('load',t);})();")
+    out.append("<script>" + "".join(js) + "</script>\n")
     return "".join(out)
 
 
@@ -215,7 +238,7 @@ def asset_url(rel):
     return f"{rel}?v={v}" if v else rel
 
 
-def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False):
+def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False, defer_trackers=True):
     full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
     if canonical == "index.html":
@@ -250,7 +273,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
       "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n"
       f"<link rel=\"stylesheet\" href=\"{asset_url('assets/styles.css')}\">\n"
-      f"{analytics_head()}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
+      f"{analytics_head(defer_trackers)}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
       f"{header()}\n{body}\n{footer()}\n</div>\n"
       f"{search_overlay()}\n"
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
@@ -1140,7 +1163,7 @@ def write_thanks():
       '<p style="margin-top:20px"><a class="btn ghost" href="/" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )
-    _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True))
+    _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True, defer_trackers=False))   # purchase — без відкладання (рішення Консультанта 12.10)
 
 # ── /ig.html: посадкова сторінка для bio-посилання Instagram (SMM 12.10.2026: у підписах IG посилання не клікабельні, єдине клікабельне місце — шапка профілю) ──
 IG_FEATURED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ig_featured.json")

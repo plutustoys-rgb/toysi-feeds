@@ -92,6 +92,15 @@ const sleep=ms=>new Promise(x=>setTimeout(x,ms));
     now+=10100; T(); res.afterGrace=moves.length-b0;
     fire(car,"wheel"); b0=moves.length; T(); res.afterWheel=moves.length-b0;
     now+=10100; fire(car,"keydown"); b0=moves.length; T(); res.afterKey=moves.length-b0;
+  } else if(scenario==="left_arrow"){
+    visible(); fire(left,"click"); let b0=moves.length; T(); res.afterLeft=moves.length-b0;      // ліва стрілка теж = дія покупця
+  } else if(scenario==="touchcancel"){
+    visible(); fire(car,"touchstart"); fire(car,"touchcancel"); let b0=moves.length; T(); res.right=moves.length-b0; now+=10100; T(); res.later=moves.length-b0;
+  } else if(scenario==="multitouch"){
+    visible(); fire(car,"touchstart"); fire(car,"touchstart"); fire(car,"touchend",{touches:[{}]}); now+=10100; T(); res.oneFingerLeft=moves.length;     // один палець піднято, інший ще на екрані
+    fire(car,"touchend",{touches:[]}); now+=10100; T(); res.allUp=moves.length;
+  } else if(scenario==="stuck_touch"){
+    visible(); fire(car,"touchstart"); T(); res.early=moves.length; now+=31000; T(); res.afterSafety=moves.length;                  // touchend так і не прийшов
   } else if(scenario==="hidden"){
     visible(); doc.hidden=true; T(); res.hidden=moves.length; doc.hidden=false; T(); res.shown=moves.length;
   } else if(scenario==="offscreen"){
@@ -140,6 +149,14 @@ const sleep=ms=>new Promise(x=>setTimeout(x,ms));
     u = run("user")
     chk("клік по стрілці → 10 с тиші, потім крутиться", u is not None and u["afterArrow"] == 0 and u["afterGrace"] == 1)
     chk("колесо / клавіша → ті самі 10 с тиші", u is not None and u["afterWheel"] == 0 and u["afterKey"] == 0)
+    la = run("left_arrow")
+    chk("клік по ЛІВІЙ стрілці → теж 10 с тиші", la is not None and la["afterLeft"] == 0)
+    tc = run("touchcancel")
+    chk("touchcancel → як touchend: 10 с тиші, потім хід", tc is not None and tc["right"] == 0 and tc["later"] == 1)
+    mt = run("multitouch")
+    chk("мультитач: поки лишився хоч один палець — автопрокрутка стоїть; усі підняті → через 10 с хід", mt is not None and mt["oneFingerLeft"] == 0 and mt["allUp"] == 1)
+    st = run("stuck_touch")
+    chk("touchend так і не прийшов → запобіжник 30 с знімає залипання", st is not None and st["early"] == 0 and st["afterSafety"] == 1)
     hd = run("hidden")
     chk("вкладка прихована (document.hidden) → не крутиться; повернувся → крутиться", hd is not None and hd["hidden"] == 0 and hd["shown"] == 1)
     o = run("offscreen")

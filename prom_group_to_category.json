@@ -1,0 +1,442 @@
+{
+ "155145045": {
+  "g_slug": "samokati-trikolisni",
+  "impressions_90d": 638,
+  "category": "samokaty-trykolisni"
+ },
+ "155145323": {
+  "g_slug": "dityachij-posud",
+  "impressions_90d": 443,
+  "category": "dytiachyy-posud"
+ },
+ "155145036": {
+  "g_slug": "plastikovi-konstruktori",
+  "impressions_90d": 270,
+  "category": "plastykovi-konstruktory"
+ },
+ "155145338": {
+  "g_slug": "pazli-trefl",
+  "impressions_90d": 153,
+  "category": "pazly-trefl"
+ },
+ "155467429": {
+  "g_slug": "igrashki-dlya-vannoyi",
+  "impressions_90d": 130,
+  "category": "ihrashky-dlia-vannoi"
+ },
+ "155145318": {
+  "g_slug": "supermarket",
+  "impressions_90d": 116,
+  "category": "supermarket"
+ },
+ "155145339": {
+  "g_slug": "perukarski-nabori",
+  "impressions_90d": 107,
+  "category": "perukarski-nabory"
+ },
+ "155145042": {
+  "g_slug": "bigoveli",
+  "impressions_90d": 93,
+  "category": "bihovely"
+ },
+ "155144998": {
+  "g_slug": "lol",
+  "impressions_90d": 84,
+  "category": "lol"
+ },
+ "155144992": {
+  "g_slug": "igrashki-antistres",
+  "impressions_90d": 73,
+  "category": "ihrashky-antystres"
+ },
+ "155145004": {
+  "g_slug": "muzichni-instrumenti",
+  "impressions_90d": 67,
+  "category": "muzychni-instrumenty"
+ },
+ "155145334": {
+  "g_slug": "ratsiyi-binokli",
+  "impressions_90d": 63,
+  "category": "ratsii-i-binokli"
+ },
+ "155145326": {
+  "g_slug": "derevyani-igrashki",
+  "impressions_90d": 61,
+  "category": "dereviani-ihrashky"
+ },
+ "155145029": {
+  "g_slug": "inshi-pazli",
+  "impressions_90d": 58,
+  "category": "inshi-pazly"
+ },
+ "155145330": {
+  "g_slug": "likarski-nabori",
+  "impressions_90d": 58,
+  "category": "likarski-nabory"
+ },
+ "155145316": {
+  "g_slug": "kubiki",
+  "impressions_90d": 54,
+  "category": "kubyky"
+ },
+ "155145018": {
+  "g_slug": "katalki-tolokar",
+  "impressions_90d": 54,
+  "category": "katalky-tolokar"
+ },
+ "155145026": {
+  "g_slug": "stilchiki-dlya-goduvannya",
+  "impressions_90d": 54,
+  "category": "stilchyky-dlia-hoduvannia"
+ },
+ "155439953": {
+  "g_slug": "lyalki-myaki",
+  "impressions_90d": 51,
+  "category": "lialky-miaki"
+ },
+ "155144965": {
+  "g_slug": "vodna-zbroya",
+  "impressions_90d": 50,
+  "category": "vodna-zbroia"
+ },
+ "155144997": {
+  "g_slug": "tvarini",
+  "impressions_90d": 48,
+  "category": "tvaryny"
+ },
+ "155145328": {
+  "g_slug": "derevyani-vkladishi",
+  "impressions_90d": 43,
+  "category": "dereviani-vkladyshi"
+ },
+ "155145310": {
+  "g_slug": "poni-koni",
+  "impressions_90d": 40,
+  "category": "poni-ta-koni"
+ },
+ "155145010": {
+  "g_slug": "kosmetika",
+  "impressions_90d": 40,
+  "category": "kosmetyka"
+ },
+ "155145319": {
+  "g_slug": "metalevi-konstruktori",
+  "impressions_90d": 38,
+  "category": "metalevi-konstruktory"
+ },
+ "155145057": {
+  "g_slug": "trenazheri",
+  "impressions_90d": 33,
+  "category": "trenazhery-ta-masazhery"
+ },
+ "155145324": {
+  "g_slug": "gorschiki-vannochki",
+  "impressions_90d": 32,
+  "category": "horshchyky-i-vannochky"
+ },
+ "155145335": {
+  "g_slug": "boks",
+  "impressions_90d": 30,
+  "category": "boks"
+ },
+ "155144983": {
+  "g_slug": "plastikovi-mashinki",
+  "impressions_90d": 27,
+  "category": "plastykovi-mashynky"
+ },
+ "155145007": {
+  "g_slug": "igrashki-katalki",
+  "impressions_90d": 26,
+  "category": "ihrashky-katalky"
+ },
+ "155145002": {
+  "g_slug": "kolyaski-dlya-lyalok",
+  "impressions_90d": 26,
+  "category": "koliasky-dlia-lialok"
+ },
+ "155145047": {
+  "g_slug": "sanki",
+  "impressions_90d": 24,
+  "category": null
+ },
+ "155145023": {
+  "g_slug": "pazli-toys",
+  "impressions_90d": 23,
+  "category": "pazly-g-toys"
+ },
+ "155145337": {
+  "g_slug": "samokati-chotirikolisni",
+  "impressions_90d": 22,
+  "category": "samokaty-chotyrykolisni"
+ },
+ "155145321": {
+  "g_slug": "hodunki",
+  "impressions_90d": 21,
+  "category": "khodunky"
+ },
+ "155145336": {
+  "g_slug": "mashinki-batarejkah",
+  "impressions_90d": 19,
+  "category": "mashynky-na-batarey-kakh"
+ },
+ "155144981": {
+  "g_slug": "roboti",
+  "impressions_90d": 19,
+  "category": "roboty"
+ },
+ "155145314": {
+  "g_slug": "mebli-dlya-lyalok",
+  "impressions_90d": 18,
+  "category": "mebli-dlia-lialok"
+ },
+ "155399988": {
+  "g_slug": "pazli-castorland",
+  "impressions_90d": 17,
+  "category": "pazly-castorland"
+ },
+ "155145019": {
+  "g_slug": "roliki",
+  "impressions_90d": 17,
+  "category": "rolyky"
+ },
+ "155412281": {
+  "g_slug": "derevyani-konstruktori",
+  "impressions_90d": 17,
+  "category": "dereviani-konstruktory"
+ },
+ "155145013": {
+  "g_slug": "konstruktori",
+  "impressions_90d": 17,
+  "category": "konstruktory"
+ },
+ "155144978": {
+  "g_slug": "karemati-kilimki",
+  "impressions_90d": 16,
+  "category": "karematy-i-kylymky"
+ },
+ "155144987": {
+  "g_slug": "tisto-dlya-liplennya",
+  "impressions_90d": 15,
+  "category": "tisto-dlia-liplennia-i-plastylin"
+ },
+ "155145032": {
+  "g_slug": "nezvichajni-konstruktori",
+  "impressions_90d": 15,
+  "category": "nezvychay-ni-konstruktory"
+ },
+ "155144980": {
+  "g_slug": "zaliznitsi-treki",
+  "impressions_90d": 14,
+  "category": "zaliznytsi-i-treky"
+ },
+ "155144995": {
+  "g_slug": "tvarini-ptahi",
+  "impressions_90d": 14,
+  "category": "tvaryny-i-ptakhy"
+ },
+ "155145058": {
+  "g_slug": "dityachi-kolyaski",
+  "impressions_90d": 14,
+  "category": null
+ },
+ "155145033": {
+  "g_slug": "avtomati-pistoleti",
+  "impressions_90d": 13,
+  "category": "avtomaty-i-pistolety"
+ },
+ "155145000": {
+  "g_slug": "lyalki",
+  "impressions_90d": 12,
+  "category": "lialky"
+ },
+ "155144990": {
+  "g_slug": "spinneri",
+  "impressions_90d": 12,
+  "category": "spinnery"
+ },
+ "155145022": {
+  "g_slug": "golovolomki",
+  "impressions_90d": 12,
+  "category": "holovolomky"
+ },
+ "155144986": {
+  "g_slug": "antistres-slajmi",
+  "impressions_90d": 12,
+  "category": "antystres-ta-slay-my"
+ },
+ "155145320": {
+  "g_slug": "skejti-penibordi",
+  "impressions_90d": 11,
+  "category": "skey-ty-i-penibordy"
+ },
+ "155144975": {
+  "g_slug": "ryukzaki",
+  "impressions_90d": 10,
+  "category": "riukzaky"
+ },
+ "155145333": {
+  "g_slug": "soldatiki",
+  "impressions_90d": 9,
+  "category": "soldatyky"
+ },
+ "155490007": {
+  "g_slug": "figurki-geroyiv",
+  "impressions_90d": 9,
+  "category": "fihurky-heroi-v"
+ },
+ "155144973": {
+  "g_slug": "aksesuari-dlya-naduvki",
+  "impressions_90d": 8,
+  "category": "aksesuary-dlia-naduvky"
+ },
+ "155144996": {
+  "g_slug": "podushki",
+  "impressions_90d": 8,
+  "category": "podushky"
+ },
+ "155145015": {
+  "g_slug": "konstruktori-tipu-lego",
+  "impressions_90d": 8,
+  "category": "konstruktory-typu-leho"
+ },
+ "155144993": {
+  "g_slug": "vedmedi",
+  "impressions_90d": 8,
+  "category": "vedmedi"
+ },
+ "155467426": {
+  "g_slug": "pazli-vkladishi",
+  "impressions_90d": 7,
+  "category": "pazly-i-vkladyshi"
+ },
+ "155145048": {
+  "g_slug": "lodyanki",
+  "impressions_90d": 7,
+  "category": "lodianky"
+ },
+ "155145034": {
+  "g_slug": "nabori-zbroyeyu",
+  "impressions_90d": 7,
+  "category": "nabory-zi-zbroieiu"
+ },
+ "155145304": {
+  "g_slug": "naduvni-myachi",
+  "impressions_90d": 7,
+  "category": "naduvni-miachi"
+ },
+ "155145031": {
+  "g_slug": "rozvazhalni-interaktivni-igrashki",
+  "impressions_90d": 7,
+  "category": "rozvazhalni-interaktyvni-ihrashky"
+ },
+ "155145035": {
+  "g_slug": "transformeri",
+  "impressions_90d": 7,
+  "category": "transformery"
+ },
+ "155145024": {
+  "g_slug": "nichniki",
+  "impressions_90d": 7,
+  "category": "nichnyky"
+ },
+ "155145041": {
+  "g_slug": "mashini-giganti",
+  "impressions_90d": 7,
+  "category": "mashyny-hihanty"
+ },
+ "155490010": {
+  "g_slug": "termosumki",
+  "impressions_90d": 6,
+  "category": "termosumky"
+ },
+ "155145308": {
+  "g_slug": "myaki-igrashki",
+  "impressions_90d": 6,
+  "category": "miaki-ihrashky"
+ },
+ "155412279": {
+  "g_slug": "sad-gorod",
+  "impressions_90d": 5,
+  "category": "sad-i-horod"
+ },
+ "155144988": {
+  "g_slug": "kartini-nomerami",
+  "impressions_90d": 5,
+  "category": "kartyny-za-nomeramy"
+ },
+ "155145051": {
+  "g_slug": "tyaguchki-stretchi",
+  "impressions_90d": 5,
+  "category": "tiahuchky-ta-stretchi"
+ },
+ "155144966": {
+  "g_slug": "milni-bulbashki",
+  "impressions_90d": 5,
+  "category": "mylni-bulbashky"
+ },
+ "155467424": {
+  "g_slug": "pidgotovka-shkoli",
+  "impressions_90d": 5,
+  "category": "pidhotovka-do-shkoly"
+ },
+ "155412274": {
+  "g_slug": "biser-namistini",
+  "impressions_90d": 5,
+  "category": "biser-i-namystyny"
+ },
+ "155145053": {
+  "g_slug": "sumochki-gamantsi",
+  "impressions_90d": 5,
+  "category": "sumochky-ta-hamantsi"
+ },
+ "155145003": {
+  "g_slug": "nabori-dlya-navchannya",
+  "impressions_90d": 5,
+  "category": "nabory-dlia-navchannia"
+ },
+ "155412278": {
+  "g_slug": "piramidki",
+  "impressions_90d": 5,
+  "category": "piramidky"
+ },
+ "155145001": {
+  "g_slug": "pupsi",
+  "impressions_90d": 4,
+  "category": "pupsy"
+ },
+ "155145325": {
+  "g_slug": "termometri-aspiratori",
+  "impressions_90d": 4,
+  "category": "termometry-ta-aspiratory"
+ },
+ "155145052": {
+  "g_slug": "almazna-mozayika",
+  "impressions_90d": 4,
+  "category": "almazna-mozai-ka"
+ },
+ "155145028": {
+  "g_slug": "bloknoti",
+  "impressions_90d": 4,
+  "category": "bloknoty"
+ },
+ "155145056": {
+  "g_slug": "dityachi-gadzheti",
+  "impressions_90d": 4,
+  "category": "dytiachi-hadzhety"
+ },
+ "155145027": {
+  "g_slug": "doglyad-ditinoyu",
+  "impressions_90d": 3,
+  "category": "dohliad-za-dytynoiu"
+ },
+ "155145049": {
+  "g_slug": "pop-simple-dimple",
+  "impressions_90d": 3,
+  "category": null
+ },
+ "155144964": {
+  "g_slug": "igrovi-kompleksi",
+  "impressions_90d": 3,
+  "category": "ihrovi-kompleksy"
+ }
+}

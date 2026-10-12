@@ -438,6 +438,7 @@
     initCatalog();
     initHomeCarousel();
     initListTracking();
+    initNaboryChips();
     initMascot();
     initContactTracking();
 
@@ -608,25 +609,30 @@
   }
   // ── Посадкова /ig.html: сітка карток з item_list_name «ig_landing» — view_item_list один раз (коли сітка видна), select_item лише на клік ──
   function initListTracking(){
-    var box=document.getElementById("ig-list");
+    var box=document.getElementById("ig-list") || document.getElementById("nabory-list");   // /ig.html («ig_landing») і /nabory.html («nabory_page»)
     if(!box) return;
     var listName=box.getAttribute("data-list")||"ig_landing";
     var cards=Array.prototype.slice.call(box.querySelectorAll("a.card"));
-    function items(){ return cards.map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
+    // view_item_list: лише картки, видимі в поточному фільтрі (на /nabory.html чипи ховають решту), не більше data-limit (GA4: розумний розмір події)
+    function items(){
+      var lim=+box.getAttribute("data-limit")||cards.length;
+      return cards.filter(function(a){ return !a.hidden; }).slice(0,lim).map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; });
+    }
     var sent=false;
     function fireList(){
       if(sent) return; sent=true;
-      trackRaw("view_item_list", {item_list_id:"ig_landing", item_list_name:listName, items:items()});
+      trackRaw("view_item_list", {item_list_id:listName, item_list_name:listName, items:items()});
     }
     if(typeof IntersectionObserver==="function"){
       // поріг 0.1, а не 0.4: на 320 px сітка в 1 колонку (≈2250 px заввишки) — 40% її висоти у вікні не бувають, і view_item_list не слався б ніколи (аудит #686)
       var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ fireList(); io.disconnect(); } }); }, {threshold:0.1});
-      io.observe(box);
+      // спостерігаємо ПЕРШУ картку, а не весь список: на /nabory.html список на 11–23 тис. px, і частка його видимості < 10% — подія не спрацьовувала б ніколи (аудит #706, той самий клас, що #686)
+      io.observe(cards[0] || box);
     } else { fireList(); }
     box.addEventListener("click", function(e){
       var a=e.target.closest("a.card"); if(!a) return;
       var i=cards.indexOf(a); var d=slideData(a, i<0?0:i); d.item_list_name=listName;
-      trackRaw("select_item", {item_list_id:"ig_landing", item_list_name:listName, items:[d]});
+      trackRaw("select_item", {item_list_id:listName, item_list_name:listName, items:[d]});
     });
   }
   // ── Анімований Плутус у герої головної (SMM 09.10 + 12.10): poster (idle-кадр) і кліп ЗАМІНЮЮТЬ один одного (жорстка заміна, не кросфейд — крізь прозорий кліп просвічував poster → двійник): раз на 12–20 с poster ховається й
@@ -691,6 +697,20 @@
     document.addEventListener("visibilitychange", function(){ if(document.hidden){ var was=playing; stop(); if(was) schedule(wait()); } });
     function start(){ schedule(3000); }      // перший кліп — не раніше ніж через 3 с після load
     if(document.readyState==="complete") start(); else window.addEventListener("load", start);
+  }
+  // ── /nabory.html: чипи-фільтри за типом набору (SMM 12.10). Усі картки вже в HTML (data-g), чип лише ховає/показує — без запитів і без перезавантаження; без JS чипи сховані, сітка повна ──
+  function initNaboryChips(){
+    var box=document.getElementById("nabory-list"), bar=document.getElementById("nb-chips");
+    if(!box || !bar) return;
+    bar.classList.add("js");
+    var cards=Array.prototype.slice.call(box.querySelectorAll("a.card"));
+    var btns=Array.prototype.slice.call(bar.querySelectorAll("button[data-g]"));
+    bar.addEventListener("click", function(e){
+      var b=e.target.closest ? e.target.closest("button[data-g]") : null; if(!b) return;
+      var g=b.getAttribute("data-g");
+      btns.forEach(function(x){ var on=(x===b); x.classList.toggle("active", on); x.setAttribute("aria-pressed", on ? "true" : "false"); });
+      cards.forEach(function(a){ a.hidden = !(g==="all" || a.getAttribute("data-g")===g); });
+    });
   }
   // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──
   function initContactTracking(){

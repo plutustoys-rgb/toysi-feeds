@@ -127,7 +127,7 @@ bs.OUT = str(tmp)
 bs.write_home(allp, cats, cat_list, cat_slug)
 h = (tmp / "index.html").read_text(encoding="utf-8")
 chk("герой: компактний .hero2 (ніяких старих .hero/.fox, hero-note)", 'class="hero2"' in h and 'class="hero"' not in h and "hero-note" not in h)
-chk("герой: h1 «Іграшки, що радують», кнопка на каталог, чип доставки з оплатою", "<h1>Іграшки, що радують</h1>" in h and 'class="btn" href="catalog.html">Обрати іграшку' in h and 'class="chip">🚚 Нова Пошта · оплата при отриманні' in h)
+chk("герой: h1 «Іграшки, що радують», кнопка «Набори в подарунок» → nabory.html + «Усі іграшки» → каталог (SMM 12.10), чип доставки з оплатою", "<h1>Іграшки, що радують</h1>" in h and 'class="btn" href="nabory.html">Набори в подарунок</a><a class="hero-all" href="catalog.html">Усі іграшки' in h and 'class="chip">🚚 Нова Пошта · оплата при отриманні' in h)
 chk("герой: підзаголовок ≤100 символів", len(re.search(r'<div class="txt"><h1>.*?</h1><p>(.*?)</p>', h).group(1)) <= 100)
 chk("карусель: секція «Добірка Плутуса», #home-car з role=region і aria-label, 2 стрілки — <button type=button> з aria-label",
     'id="home-car" role="region" aria-label="Добірка Плутуса"' in h and "<h2>Добірка Плутуса</h2>" in h and h.count('<button class="arrow') == 2 and h.count('type="button" aria-label=') == 2)

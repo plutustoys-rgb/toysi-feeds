@@ -490,6 +490,7 @@ def build():
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
     write_ig(prods)
+    has_nabory = write_nabory(prods)
     # 5) кошик + checkout + сторінка подяки
     write_cart(_cart_addons(prods))
     write_thanks()
@@ -504,7 +505,7 @@ def build():
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap + robots
-    static_urls = [("categories.html", "0.6", "weekly")] + [(f, "0.4", "monthly") for f in trust]
+    static_urls = [("categories.html", "0.6", "weekly")] + ([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
     write_robots()
 
@@ -1268,7 +1269,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(ms) for _, ms in HERO_MASCOT_CLIPS)}">'
       '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину, а маму робить спокійною.</p></div>'
-      '<div class="act"><a class="btn" href="catalog.html">Обрати іграшку</a>'
+      '<div class="act"><a class="btn" href="nabory.html">Набори в подарунок</a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
       '<div class="chip">🚚 Нова Пошта · ' + PAY_SHORT + '</div></div></div>'
       + carousel +
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
@@ -1567,6 +1568,91 @@ def write_ig(prods):
     )
     _write("ig.html", page("З Instagram: що показали Плутус", body, canonical="ig.html", noindex=True,
                            description="Товари з нашого останнього відео в Instagram — PlutusToys."))
+
+# ── /nabory.html: «Набори, які займуть дитину надовго» (SMM 12.10) ──
+# Відбір (SMM): у назві «набір», в наявності, фото, ціна 150–700 ₴, внесок ≥ 50 ₴ (нижчий за поріг каруселі 100 — це окрема добірка), не «Уцінка»/«пошкоджено…», не репліка зброї, не зброя за категорією.
+# Чипи — групи категорій; невідомі категорії лишаються лише у «Усі». Усередині групи: перемішування з фіксованим зерном (стабільне між збірками, поки не змінились дані), ≤1 картка на «основу назви» (_pick_key), ≤ NABORY_PER_GROUP.
+NABORY_PRICE_MIN, NABORY_PRICE_MAX = 150, 700
+NABORY_MIN_CONTRIB = 50.0
+NABORY_PER_GROUP, NABORY_OTHER_MAX = 30, 24
+NABORY_LIST_NAME = "nabory_page"
+NABORY_VIEW_LIMIT = 24
+NABORY_EXCLUDED_CATS = frozenset({"автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя", "солдатики", "військова техніка", "спецтехніка"})
+# Аудит #706: is_weapon_replica ловить не все — «набір військового з пістолетом», «Людина Павук … механічна зброя», БТР/військові самоскиди. Тримаємо добірку «подарунок дитині» без мілітарі/зброї за назвою.
+NABORY_BAD_WORDS = ("пістолет", "зброя", "зброї", "військов", "солдат", "swat", "бтр", "автомат", "гранат", "армі")
+NABORY_GROUPS = (
+    ("tvorchist", "Творчість", frozenset({"інша творчість", "картини за номерами", "бісер і намистини", "розмальовки та розпис", "набори для вишивання, в'язання, плетіння"})),
+    ("lipl", "Ліплення", frozenset({"тісто для ліплення і пластилін"})),
+    ("nauka", "Наукові ігри", frozenset({"наукові ігри"})),
+    ("kuhni", "Кухні й посуд", frozenset({"кухні і посуд", "дитячий посуд"})),
+    ("prykrasy", "Прикраси", frozenset({"прикраси"})),
+    ("fokusy", "Фокуси", frozenset({"набори для фокусів"})),
+    ("likarski", "Лікарські", frozenset({"лікарські набори"})),
+)
+
+
+def nabory_pick(prods):
+    """[(group_key, product)] у порядку round-robin по групах (перший екран різноманітний); group_key «other» — лише у «Усі»."""
+    cat2g = {c: k for k, _t, cs in NABORY_GROUPS for c in cs}
+    rng = random.Random(HOME_PICK_SEED)
+    pools = {}
+    for p in sorted(prods, key=lambda p: str(p["id"])):
+        c = p.get("contribution")
+        cat = (p.get("category") or "").strip().lower().replace("’", "'").replace("ʼ", "'")
+        name = p.get("name") or ""
+        if "набір" not in name.lower() or c is None or c < NABORY_MIN_CONTRIB or not p.get("photo") or (p.get("stock") or 0) <= 0:
+            continue
+        if not (NABORY_PRICE_MIN <= p["price"] <= NABORY_PRICE_MAX):
+            continue
+        if cat in NABORY_EXCLUDED_CATS or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name) or any(w in name.lower() for w in NABORY_BAD_WORDS):
+            continue
+        pools.setdefault(cat2g.get(cat, "other"), []).append(p)
+    picked = {}
+    for g, lst in pools.items():
+        rng.shuffle(lst)
+        used, out = set(), []
+        for p in lst:
+            k = _pick_key(p["name"])
+            if k in used:
+                continue
+            used.add(k)
+            out.append(p)
+            if len(out) >= (NABORY_OTHER_MAX if g == "other" else NABORY_PER_GROUP):
+                break
+        picked[g] = out
+    order = [k for k, _t, _c in NABORY_GROUPS] + ["other"]
+    res, i = [], 0
+    while any(i < len(picked.get(g, [])) for g in order):
+        for g in order:
+            if i < len(picked.get(g, [])):
+                res.append((g, picked[g][i]))
+        i += 1
+    return res
+
+
+def write_nabory(prods):
+    """Сторінка /nabory.html: заголовок, чипи за типом набору (JS ховає/показує, усі картки вже в HTML), сітка з бейджем залишку 1–3 (badge=True), аналітика item_list «nabory_page»."""
+    picked = nabory_pick(prods)
+    if not picked:
+        print("[build] ⚠ nabory: жодного товару за відбором — /nabory.html не пишемо", file=sys.stderr)
+        return False
+    present = {g for g, _p in picked}
+    chips = ['<button type="button" class="chip active" data-g="all" aria-pressed="true">Усі</button>'] + [
+        f'<button type="button" class="chip" data-g="{k}" aria-pressed="false">{esc(t)}</button>' for k, t, _c in NABORY_GROUPS if k in present]
+    cards = []
+    for i, (g, p) in enumerate(picked):
+        cards.append(tile(p, eager=(i < 3), prio=(i == 0), badge=True).replace('<a class="card"', f'<a class="card" data-g="{g}"', 1))
+    body = (
+        '<h1 class="page">Набори, які займуть дитину надовго</h1>'
+        '<p class="nb-lead">Усе вже в коробці — відкрив і граєш.</p>'
+        '<noscript><style>.nb-chips{display:none}</style></noscript>'
+        f'<div class="chips nb-chips" id="nb-chips" role="group" aria-label="Тип набору">{"".join(chips)}</div>'
+        f'<div class="nb-list" id="nabory-list" data-list="{NABORY_LIST_NAME}" data-limit="{NABORY_VIEW_LIMIT}"><div class="grid">\n' + "\n".join(cards) + '\n</div></div>'
+        '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'
+    )
+    _write("nabory.html", page("Набори, які займуть дитину надовго", body, canonical="nabory.html",
+                               description="Готові набори для дітей: творчість, ліплення, наукові ігри, кухні й посуд, прикраси, фокуси. Усе в коробці — відкрив і граєш. Доставка Новою Поштою."))
+    return True
 
 
 def write_404():

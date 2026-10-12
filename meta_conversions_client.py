@@ -66,6 +66,9 @@ def _normalize_phone(phone: str) -> str:
 # (продубльовано, щоб уникнути циклічного імпорту: order_router імпортує цей модуль). Тримати в
 # синхроні з order_router.
 _SURNAME_FIRST_PLATFORMS = {"rozetka", "eva"}
+# site: рівно 3 слова і останнє схоже на по-батькові → «Прізвище Ім'я По-батькові» (Дзеркалить order_router._PATRONYMIC_RE; Код-Агент 12.10: інакше fn/ln у хешах Meta для таких покупців сайту переставлені)
+import re as _re
+_PATRONYMIC_RE = _re.compile(r"(?:ович|евич|йович|ьович|івна|ївна|ична|ич|ілліч)$", _re.IGNORECASE)
 
 
 def _split_name(full_name: str, platform: str = "") -> tuple:
@@ -77,7 +80,7 @@ def _split_name(full_name: str, platform: str = "") -> tuple:
     parts = (full_name or "").strip().split()
     if not parts:
         return "", ""
-    if platform in _SURNAME_FIRST_PLATFORMS:
+    if platform in _SURNAME_FIRST_PLATFORMS or (platform == "site" and len(parts) == 3 and _PATRONYMIC_RE.search(parts[2])):
         last = parts[0]
         first = parts[1] if len(parts) > 1 else ""
         return first, last

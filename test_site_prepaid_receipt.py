@@ -276,6 +276,32 @@ with orders_db.get_connection() as c:
 orr.get_receipt_state = real_state
 chk("інтерливінг читання→claim: чек РІВНО один, другий процес отримує False (атомарний claim)", len(receipt_calls) == 1 and ra is True and rb is False)
 
+# ── 9. аудит #698 р.2: трекер НЕ виписує чек передоплати сайту (ні при claim без прапорця, ні після sandbox-пропуску роутера); маркетплейсна передоплата як раніше
+new_order("PT-T1")
+callback("PT-T1", "910001")
+with orders_db.get_connection() as c:
+    orders_db.claim_receipt(c, "site_PT-T1"); c.commit()       # claim є, прапорця «чек видано» нема (збій запису прапорця)
+reset()
+with orders_db.get_connection() as c:
+    ost._maybe_issue_receipt(c, get("PT-T1"), "20450000000001", "shipped")
+chk("трекер: site prepaid з claim без прапорця → ДРУГИЙ чек НЕ видається", not receipt_calls)
+new_order("PT-T2")
+callback("PT-T2", "910002")
+reset()
+liqpay_client.LIQPAY_SANDBOX = True
+route("PT-T2")                      # роутер у sandbox чек не видав і передав замовлення
+liqpay_client.LIQPAY_SANDBOX = False
+with orders_db.get_connection() as c:
+    ost._maybe_issue_receipt(c, get("PT-T2"), "20450000000002", "shipped")
+chk("sandbox: роутер не видав чек, трекер теж НЕ видає реальний чек на тестовий платіж", not receipt_calls and "submit" in events)
+new_order("429000001", platform="prom")
+with orders_db.get_connection() as c:
+    orders_db.mark_payment_confirmed(c, "prom_429000001"); c.commit()
+reset()
+with orders_db.get_connection() as c:
+    ost._maybe_issue_receipt(c, get("429000001", "prom"), "20450000000003", "shipped")
+chk("Prom передоплата: трекер видає чек як раніше (без змін)", len(receipt_calls) == 1 and receipt_calls[0]["payment_type"] == "CASHLESS")
+
 # ── 7. checkbox_client: footer і e-mail потрапляють у тіло запиту
 posted = {}
 

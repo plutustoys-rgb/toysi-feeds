@@ -267,8 +267,10 @@ def tile(p, cls="", eager=False, prio=False):
       f'<div class="foot"><span class="pr">{p["price"]} ₴</span>{av}</div></div></a>'
     )
 
-def grid(prods):
-    return '<div class="grid">\n' + "\n".join(tile(p) for p in prods) + '\n</div>'
+def grid(prods, eager_n=0):
+    """Сітка карток. eager_n — скільки ПЕРШИХ карток без loading=lazy (перша — fetchpriority=high): на сторінках списків перше фото було lazy,
+    і воно ж є LCP-елементом (Lighthouse mobile 11.10.2026: LCP 5,3–6,5 с на категорії)."""
+    return '<div class="grid">\n' + "\n".join(tile(p, eager=(i < eager_n), prio=(i == 0 and eager_n > 0)) for i, p in enumerate(prods)) + '\n</div>'
 
 def _addon_ok(p):
     """Чи можна пропонувати товар як доповнення (cross-sell): без уцінки/«розпродажу» й копійчаних позицій."""
@@ -287,6 +289,7 @@ class CatalogShrinkError(RuntimeError):
 
 
 def build():
+    _load_category_texts()
     print("[build] тягну каталог Toysi…")
     cat = tp.fetch_toysi_catalog()
     # Захист (аудит #675, ВАЖЛИВО-1): порожній/усічений каталог Toysi (структурно валідний XML без HTTP-помилки) раніше давав index.json=[] і прибирання
@@ -473,6 +476,10 @@ def build():
             except OSError:
                 pass
 
+    _written_slugs = {m.group(1) for m in (re.fullmatch(r"category-(.+)\.html", f) for f in paged if not re.search(r"_\d+\.html$", f)) if m}
+    _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)
+    if _unmatched:
+        print(f"[build] ⚠ category_texts.json: slug без сторінки категорії (друкарська помилка? текст не з'явиться): {_unmatched[:10]}", file=sys.stderr)
     print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, сторінок без залишку (OutOfStock) {len(oos_prods)}, "
           "+index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
@@ -715,6 +722,48 @@ def rec_order(items):
     return sorted(items, key=lambda p: (_rec_bucket(p), hashlib.sha1(f"{REC_SEED}:{p['id']}".encode()).hexdigest()))
 
 
+_CATEGORY_TEXTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "category_texts.json")
+_CATEGORY_TEXTS = {}
+
+
+def _load_category_texts():
+    """site/category_texts.json: {slug: "абзац 1\\n\\nабзац 2"} — унікальні вступні тексти категорій від SEO (11.10.2026). Нема файлу — порожньо (так і задумано).
+    ГОЛОСНО (stderr), а не мовчки, коли файл ЄСТЬ, але не прочитався (BOM читаємо як utf-8-sig; битий JSON, не-словник) або в ньому відкинуто значення: тоді SEO бачить причину в журналі збірки."""
+    global _CATEGORY_TEXTS
+    _CATEGORY_TEXTS = {}
+    try:
+        with open(_CATEGORY_TEXTS_FILE, encoding="utf-8-sig") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return _CATEGORY_TEXTS
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"[build] ⚠ category_texts.json НЕ прочитано ({type(e).__name__}: {e}) — вступів категорій на сайті не буде", file=sys.stderr)
+        return _CATEGORY_TEXTS
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as e:
+        print(f"[build] ⚠ category_texts.json — невалідний JSON ({e}); частий випадок: справжній Enter усередині рядка (пиши \\n\\n) — вступів категорій на сайті не буде", file=sys.stderr)
+        return _CATEGORY_TEXTS
+    if not isinstance(data, dict):
+        print(f"[build] ⚠ category_texts.json — очікується об'єкт {{slug: текст}}, отримано {type(data).__name__} — вступів не буде", file=sys.stderr)
+        return _CATEGORY_TEXTS
+    bad = [k for k, v in data.items() if not isinstance(v, str)]
+    if bad:
+        print(f"[build] ⚠ category_texts.json: значення НЕ рядок, відкинуто: {bad[:10]}", file=sys.stderr)
+    _CATEGORY_TEXTS = {str(k): v for k, v in data.items() if isinstance(v, str) and v.strip()}
+    return _CATEGORY_TEXTS
+
+
+def _category_intro_html(fname):
+    """Вступний текст категорії (лише 1-ша сторінка; на пагінації не дублюємо). slug = ім'я файлу без «category-» і «.html». HTML у тексті екранується, абзаци — за порожнім рядком."""
+    m = re.fullmatch(r"category-(.+)\.html", fname or "")
+    text = _CATEGORY_TEXTS.get(m.group(1)) if m else None
+    if not text:
+        return ""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text.replace("\r\n", "\n")) if p.strip()]
+    return '<div class="cat-intro">' + "".join(f"<p>{esc(p)}</p>" for p in paras) + "</div>\n"
+
+
 def write_catalog(title, prods, cat_list, cat_slug, fname, active):
     """Пише каталог/категорію З ПАГІНАЦІЄЮ (PER_PAGE/стор.). Повертає set імен усіх
     записаних сторінок (для valid-набору прибирання й sitemap)."""
@@ -739,14 +788,15 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
         # (усі товари), тож фільтрує/сортує ВЕСЬ каталог, не лише сторінку. Прогресивне покращення:
         # без JS лишається статична пагінована сітка (SEO), контроли сховані (hidden) до ініціалізації.
         controls = _catalog_controls() if (active is None and k == 1) else ""
-        static_grid = grid(chunk) + _pager(fname, k, pages)
+        static_grid = grid(chunk, eager_n=(4 if k == 1 else 0)) + _pager(fname, k, pages)
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
         body = (
             crumbs_html(trail) +
             chips(cat_list, cat_slug, active) +
-            f'\n<h1 class="page">{esc(title)}</h1>\n' +
+            f'\n<h1 class="page">{esc(active or title)}</h1>\n' +   # SEO 11.10: H1 категорії = лише назва («Каталог •» — у title/крихтах); повний каталог — «Каталог іграшок»
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
+            (_category_intro_html(fname) if (active and k == 1) else "") +
             controls +
             static_grid
         )
@@ -784,6 +834,7 @@ HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2
 HOME_PICK_EXCLUDED_CATS = frozenset({"картини за номерами", "брелоки", "автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя"})
 
 
+HOME_POPULAR_CATS = 30             # «Популярні категорії» на головній (SEO 11.10: 24–30 посилань)
 HOME_PICK_SEED = 20261011           # фіксоване зерно: перемішування добірки стабільне (не стрибає між збірками, поки не змінились дані)
 _PICK_STOP = frozenset({"для", "та", "від", "дитячий", "дитяча", "дитяче", "дитячі", "дитячих", "іграшка", "іграшки", "мʼяка", "м'яка", "мя",
                         "набір", "набори", "гра", "великий", "великі", "маленький", "новий", "nbsp"})
@@ -864,6 +915,15 @@ def write_home(prods, cats, cat_list, cat_slug):
         f'<div class="emo">{cat_emoji(c)}</div><div class="t">{esc(c)}</div></a>'
         for c in cat_list[:10]
     )
+    # «Популярні категорії» (SEO 11.10: на головній було 10 посилань на категорії з 286 → розподіл внутрішньої ваги й коротший шлях до карток):
+    # топ за кількістю товарів, без «Уцінки»; cat_list уже відсортований за кількістю (Уцінка в кінці).
+    pop = [c for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:HOME_POPULAR_CATS]
+    popular = ""
+    if pop:
+        popular = ('<div class="sec-title"><h2>Популярні категорії</h2><a href="categories.html">Усі категорії →</a></div>'
+                   '<nav class="catlinks" aria-label="Популярні категорії">'
+                   + "".join(f'<span class="cl"><a href="category-{cat_slug[c]}.html">{esc(c)}</a><span>{len(cats[c])}</span></span>' for c in pop)
+                   + '</nav>')
     carousel = ""
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
@@ -887,6 +947,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       f'<div class="catrow">{cat_tiles}</div>'
       + ('<div class="sec-title"><h2>Більше іграшок</h2><a href="catalog.html">Дивитись усі →</a></div>'
          + grid(novelties) if novelties else "")
+      + popular
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),
@@ -1265,10 +1326,10 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
     urls += list(static_urls or [])            # categories.html + сторінки довіри
     for fn in sorted(paged):
         secondary = bool(re.search(r"_\d+\.html$", fn))   # сторінка ≥2
+        if secondary:
+            continue   # SEO 11.10.2026: у sitemap лише 1-ша сторінка категорії/каталогу; пагінація лишається доступною через посилання, canonical і rel=prev/next не змінено; усі картки перелічені нижче напряму
         if fn == "catalog.html":
             pr, cf = "0.9", "daily"
-        elif secondary:
-            pr, cf = "0.5", "weekly"
         else:                                             # page-1 категорії/каталогу
             pr, cf = "0.7", "weekly"
         urls.append((fn, pr, cf))

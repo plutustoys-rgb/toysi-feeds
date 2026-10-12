@@ -446,7 +446,7 @@ def build():
     write_home(prods, cats, cat_list, cat_slug)
     write_ig(prods)
     # 5) кошик + checkout + сторінка подяки
-    write_cart()
+    write_cart(_cart_addons(prods))
     write_thanks()
     write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
@@ -1083,10 +1083,31 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
         p["name"], body, extra_head=extra, title_full=product_title(p["name"], in_stock), description=meta_desc,
         canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product"))
 
-def write_cart():
+CART_ADDONS_MAX = 12     # пул «Додайте до замовлення» у кошику (на сторінці показуємо 3, яких ще нема в кошику)
+
+
+def _cart_addons(prods):
+    """Пул add-on для кошика (SMM 12.10): той самий критерій, що в картці (_addon_ok: в наявності, ≥ADDON_MIN_PRICE, без уцінки/«розпродажу»), по одному з категорії, детермінізм:
+    спершу дорожчі з дешевого пулу (цінніший add-on), далі за id. Повертає [{id,name,price,photo}] — вбудовується JSON-ом у cart.html, вибір 3 «яких нема в кошику» робить app.js."""
+    pool = sorted((p for p in prods if _addon_ok(p)), key=lambda x: (x["price"], x["id"]))[:80]
+    out, seen = [], set()
+    for p in sorted(pool, key=lambda x: (-x["price"], x["id"])):
+        if p["category"] in seen or not p["photo"]:
+            continue
+        seen.add(p["category"])
+        out.append({"id": p["id"], "name": p["name"], "price": p["price"], "photo": p["photo"]})
+        if len(out) >= CART_ADDONS_MAX:
+            break
+    return out
+
+
+def write_cart(addons=None):
+    # двоколонково на десктопі (SMM 12.10: права половина була порожня): ліворуч кошик + форма, праворуч sticky-колонка (А «Ваше замовлення», Б довіра, В «Додайте до замовлення», Г Плутус);
+    # на мобільному — одна колонка: підсумок над формою (як було), «Додайте до замовлення» над кнопкою «Оформити», довіра й Плутус нижче форми.
+    addons_json = json.dumps(addons or [], ensure_ascii=False).replace("</", "<\\/")
     body = (
       '<h1 class="page">Кошик</h1>'
-      '<div style="padding:0 16px"><div id="cart-body"></div>'
+      '<div class="cart-grid"><div class="cart-main"><div id="cart-body"></div>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'
         '<div class="row"><span>Доставка Новою Поштою</span><span id="sum-delivery">' + DELIVERY_COST + '</span></div>'
@@ -1122,11 +1143,28 @@ def write_cart():
           + ('<label class="pay"><input type="radio" name="payment" value="prepaid"> '
             'Оплата карткою онлайн</label>' if LIQPAY_LIVE else '') +
         '</div>'
+        '<div class="addon-box addon-m" data-addon></div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
         '<p class="note consent">Оформлюючи замовлення, ви погоджуєтесь з <a href="offer.html">публічною офертою</a> '
         'та <a href="privacy.html">політикою конфіденційності</a>.</p>'
         '<div class="note" id="checkout-msg" role="alert" aria-live="polite"></div>'
       '</form></div>'
+      '<aside class="cart-aside" id="cart-aside" aria-label="Ваше замовлення">'
+        '<div class="aside-card" id="aside-order"><h2>Ваше замовлення</h2><div id="aside-items"></div>'
+          '<div class="row"><span>Товари</span><span id="aside-goods">0 ₴</span></div>'
+          '<div class="row"><span>Доставка Новою Поштою</span><span>' + DELIVERY_COST + '</span></div>'
+          '<div class="row total"><span>Разом за товари</span><span id="aside-total">0 ₴</span></div></div>'
+        '<div class="aside-card trust-card"><ul class="trust-list">'
+          '<li>🧾 Фіскальний чек на кожне замовлення</li>'
+          '<li><a href="returns.html">↩ Повернення протягом 14 днів</a></li>'
+          '<li class="trust-pay">💳 Оплата при отриманні — розраховуєтесь на відділенні</li>'
+          '<li id="ship-today">🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня</li>'
+        '</ul></div>'
+        '<div class="aside-card addon-box addon-d" data-addon></div>'
+        '<div class="aside-card pack-card"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="80" height="73" decoding="async">'
+          '<span>Плутус пакує вашу посилку 🎁</span></div>'
+      '</aside></div>'
+      '<script type="application/json" id="cart-addons">' + addons_json + '</script>'
     )
     _write("cart.html", page("Кошик і оформлення", body,
         description="Ваш кошик і оформлення замовлення в PlutusToys.", noindex=True))

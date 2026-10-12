@@ -489,7 +489,11 @@ class Handler(SimpleHTTPRequestHandler):
                 whs = nova_poshta.search_warehouses(city_ref, (q.get("q") or [""])[0])
                 return self._json(200, {"warehouses": whs})
         except nova_poshta.NovaPoshtaAPIError as e:
-            return self._json(502, {"error": "Нова Пошта тимчасово недоступна", "detail": str(e)})
+            # внутрішні подробності НП («FindByString is not specified» тощо) — лише в лог, не покупцеві (тестувальник 12.10); «не задано параметр» = порожній результат, не збій НП
+            print(f"[site_order_api] {self.command} {self.path}: NP: {e}", file=sys.stderr)
+            if "is not specified" in str(e):
+                return self._json(200, {"cities": []} if parsed.path == "/api/np/city" else {"warehouses": []})
+            return self._json(502, {"error": "Нова Пошта тимчасово недоступна"})
         except Exception as e:
             print(f"[site_order_api] {self.command} {self.path}: {e}", file=sys.stderr)
             return self._json(500, {"error": "внутрішня помилка"})

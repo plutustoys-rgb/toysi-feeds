@@ -22,6 +22,7 @@ SITE_LIQPAY_LIVE=1 python site/build_site.py # лише коли LiqPay бойо
 
 - `build_site.py` — генератор.
 - `assets/styles.css` — спільна палітра/компоненти (тепла палітра з дизайну SMM).
+  Підключення з `?v=<sha1 вмісту, 8 hex>` (`build_site.asset_url`): /assets/ кешується браузером на добу, версія в URL змінюється лише з вмістом — фікс доїжджає до тих, хто вже був на сайті.
 - `assets/app.js` — кошик (localStorage), лічильник, пошуковий оверлей, checkout.
 
 ## Ціноутворення

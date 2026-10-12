@@ -52,6 +52,8 @@ ln -sf /etc/nginx/sites-available/plutustoys.com.ua /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
 ```
 
+> **Після зміни `site/assets/*` — запустити ребілд** (`systemctl start site-rebuild.service`, інакше до 2 год HTML посилається на старий `?v=` хеш статики; під час самої збірки 1,5–3 хв частина сторінок може мати старий хеш).
+
 ## 3.1 GMC / Google Shopping — щоб не пропала видимість
 GMC-фід віддає посилання за Prom-структурою `https://plutustoys.com.ua/ua/p{prom_id}-slug.html`.
 Активація вже генерує `prom_redirects.map` і nginx робить **301** зі старих Prom-URL на наші картки

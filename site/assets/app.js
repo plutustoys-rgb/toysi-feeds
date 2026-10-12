@@ -456,6 +456,7 @@
 
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";
+  var cityListShown = false;   // довідник міст відповів непорожнім списком для поточного тексту (див. initCheckout)
   var selectedCityArea = "";  // область обраного міста (НП AreaDescription) → у np_branch, щоб Toysi
                                // не переплутав однойменні населені пункти різних областей (24.09.2026)
   var selectedWarehouseNumber = "";  // № обраного з автокомпліту відділення НП → віддаємо Toysi напряму
@@ -475,6 +476,7 @@
     if(!city || !wh) return;
 
     city.addEventListener("input", debounce(function(){
+      cityListShown=false;
       // Щойно користувач торкнувся міста — РОЗБЛОКОВУЄМО відділення й БІЛЬШЕ не вимикаємо його.
       // Раніше поле лишалось disabled, доки не тапнеш підказку міста — на телефоні це зривало
       // оформлення (не влучив пальцем у випадайку → відділення «мертве»). Тап по місту лише
@@ -485,11 +487,12 @@
       var q=city.value.trim(); if(q.length<2){ acCity.innerHTML=""; return; }
       fetch("api/np/city?q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
         var cities=(d.cities||[]);
+        cityListShown=cities.length>0;   // довідник відповів списком → на сабміті вимагаємо вибір (див. initCheckout)
         renderAc(acCity, cities.map(function(c){ return {label:c.name, sub:c.area, ref:c.ref, name:c.name}; }),
-          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; selectedCityArea=pick.sub||""; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
+          function(pick){ city.value=pick.name; selectedCityRef=pick.ref; selectedCityArea=pick.sub||""; cityListShown=false; wh.placeholder="Номер або адреса відділення"; wh.focus(); });
       }).catch(function(){
         // API НП недоступний — не лишаємо форму в глухому куті: підказок нема, ручний ввід уже дозволено.
-        acCity.innerHTML="";
+        acCity.innerHTML=""; cityListShown=false;
       });
     }, 250));
 
@@ -528,6 +531,13 @@
 
       var cart=read(), items=Object.keys(cart).map(function(id){ return {id:id, qty:cart[id].qty}; });
       if(!items.length){ fail("Кошик порожній."); return; }
+      // Довідник НП показав міста, а покупець жодного не обрав → у Toysi пішла б лише НАЗВА міста без області/CityRef, і посилка могла б поїхати в однойменне село
+      // (інциденти Бородянський 906224962 і «Південне»→«Южное» EVA 8-081747967). Якщо довідник мертвий або міста нема в ньому — ручний ввід лишається дозволеним.
+      if(cityListShown && !selectedCityRef){
+        fail("Оберіть місто зі списку підказок — так посилка точно піде у ваше місто, а не в однойменне.");
+        var fc=document.getElementById("f-city"); if(fc && fc.focus) fc.focus();
+        return;
+      }
       var payEl=document.querySelector('input[name="payment"]:checked');
       var payment=payEl ? payEl.value : "cod";
       var payload={

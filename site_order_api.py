@@ -240,7 +240,8 @@ def build_order(payload: dict) -> tuple:
     phone = _norm_phone(payload.get("phone"))
     if not phone:
         raise OrderError("Вкажіть коректний номер телефону (+380…)")
-    city = (payload.get("city_name") or "").strip()
+    # Кома в назві міста розрізала б np_branch (parse_np_branch ріже за ПЕРШОЮ комою верхнього рівня): «Київ, Оболонь» → місто «Київ» + «Оболонь…» у адресі.
+    city = " ".join((payload.get("city_name") or "").replace(",", " ").split())
     warehouse = (payload.get("warehouse_name") or "").strip()
     if not city or not warehouse:
         raise OrderError("Оберіть місто та відділення Нової Пошти")

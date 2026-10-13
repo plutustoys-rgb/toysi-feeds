@@ -50,6 +50,10 @@ DELIVERY_FEE_FORMULA = "комісія за накладений платіж: 2
 DELIVERY_FEE_FORMULA_SHORT = "20 ₴ + 2% від суми замовлення"
 DELIVERY_NOTE = ("Доставка за тарифом Нової Пошти — " + DELIVERY_COST + " (для замовлень понад 500 ₴ тариф трохи зростає, для важчих посилок сума вища), плюс " + DELIVERY_FEE_FORMULA
                  + ". Суму в рядку «Доставка» ми розраховуємо орієнтовно для вашого кошика; точну суму назве Нова Пошта при отриманні посилки (для великих і важких замовлень вона може бути вищою). Оплачується при отриманні посилки.")
+# Оплата карткою онлайн (prepaid): комісії накладеного платежу НЕМАЄ, тож підсумок доставки без неї (тест. 13.10: кошик показував COD-івські 99–119 ₴ для платника карткою — завищено ≈29 ₴). Для передоплати оголошена вартість/тариф НЕ міряні
+# (Код: сайтових передоплат ще не було) — друкуємо лише базовий тариф «орієнтовно 70–90 ₴ до 2 кг» без надбавки 0,5% і без твердження про платника.
+DELIVERY_LABEL_PREPAID = "Доставка Новою Поштою"
+DELIVERY_NOTE_PREPAID = "Доставка за тарифом Нової Пошти — " + DELIVERY_COST + " (для важчих посилок сума вища). Точну суму назве Нова Пошта."
 PAY_HERO = "оплата при отриманні або карткою" if LIQPAY_LIVE else "оплата при отриманні на Новій Пошті"
 PAY_ABOUT = ("Накладений платіж при отриманні або оплата карткою онлайн." if LIQPAY_LIVE
              else "Накладений платіж: платите при отриманні на відділенні Нової Пошти.")
@@ -1468,11 +1472,11 @@ def write_cart(addons=None):
       '<div class="cart-grid"><div class="cart-main"><div id="cart-body"></div>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'
-        '<div class="row"><span>Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="sum-delivery">' + DELIVERY_COST + '</span></div>'
+        '<div class="row"><span id="sum-delivery-label" data-prepaid="' + DELIVERY_LABEL_PREPAID + '">Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="sum-delivery">' + DELIVERY_COST + '</span></div>'
         '<div class="row total"><span>Разом за товари</span><span id="sum-total">0 ₴</span></div>'
         '<div class="free-ship" id="free-ship-block"><div class="free-ship-track"><div class="free-ship-fill" id="free-ship-bar"></div></div>'
           '<div class="note" id="free-ship-note"></div></div>'
-        '<div class="note">' + DELIVERY_NOTE + '</div>'
+        '<div class="note" id="delivery-note-sum" data-prepaid="' + esc(DELIVERY_NOTE_PREPAID) + '">' + DELIVERY_NOTE + '</div>'
       '</div>'
       # checkout
       '<h1 class="page" id="checkout-title" style="margin-left:0">Оформлення</h1>'
@@ -1515,9 +1519,9 @@ def write_cart(addons=None):
       '<aside class="cart-aside" id="cart-aside" aria-label="Інформація про замовлення">'
         '<div class="aside-card" id="aside-order"><h2>Ваше замовлення</h2><div id="aside-items"></div>'
           '<div class="row"><span>Товари</span><span id="aside-goods">0 ₴</span></div>'
-          '<div class="row"><span>Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="aside-delivery">' + DELIVERY_COST + '</span></div>'
+          '<div class="row"><span id="aside-delivery-label" data-prepaid="' + DELIVERY_LABEL_PREPAID + '">Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="aside-delivery">' + DELIVERY_COST + '</span></div>'
           '<div class="row total"><span>Разом за товари</span><span id="aside-total">0 ₴</span></div>'
-          '<div class="note">' + DELIVERY_NOTE + '</div></div>'
+          '<div class="note" id="delivery-note-aside" data-prepaid="' + esc(DELIVERY_NOTE_PREPAID) + '">' + DELIVERY_NOTE + '</div></div>'
         '<div class="aside-card trust-card"><ul class="trust-list">'
           '<li>🧾 Фіскальний чек на кожне замовлення</li>'
           '<li><a href="returns.html">↩ Повернення протягом 14 днів</a></li>'

@@ -114,6 +114,32 @@ with sync_playwright() as p:
     chk("?liqpay_test=0 не розкриває", c[0] is False)
     ctx.close()
 
+    # ── доставка залежить від способу оплати (тестувальник 13.10): для картки — без комісії накладеного платежу ──
+    ctx, pg = page(init="localStorage.setItem('pt_cart_v1', JSON.stringify({'1':{id:'1',name:'T',price:468,photo:'',qty:1}}))")
+    for w_, h_ in ((1280, 900), (390, 800)):
+        pg.set_viewport_size({"width": w_, "height": h_})
+        pg.goto(f"{BASE}/cart.html?liqpay_test=1", wait_until="load")
+        pg.wait_for_timeout(600)
+        view = lambda: pg.evaluate("(()=>{const t=id=>{const e=document.getElementById(id); return e? e.textContent.trim():null}; return {sum:t('sum-delivery'), aside:t('aside-delivery'), lbl:t('sum-delivery-label'), albl:t('aside-delivery-label'), note:t('delivery-note-sum'), anote:t('delivery-note-aside')}})()")  # noqa: E731
+        cod = view()
+        chk(f"{w_}px, накладений платіж, 468 ₴: «орієнтовно 99–119 ₴», підпис про комісію й формула 20 ₴ + 2% у примітці", cod["sum"] == "орієнтовно 99–119 ₴" and cod["aside"] == "орієнтовно 99–119 ₴" and "з комісією за накладений платіж" in cod["lbl"] and "20 ₴ + 2%" in cod["note"])
+        pg.evaluate("document.querySelector('input[name=payment][value=prepaid]').click()")
+        pg.wait_for_timeout(200)
+        pre = view()
+        chk(f"{w_}px, картка онлайн: доставка «орієнтовно 70–90 ₴ до 2 кг», БЕЗ підпису й примітки про комісію накладеного платежу", pre["sum"] == "орієнтовно 70–90 ₴ до 2 кг" and pre["aside"] == pre["sum"] and "комісі" not in (pre["lbl"] + pre["albl"] + pre["note"] + pre["anote"]) and pre["lbl"] == "Доставка Новою Поштою")
+        # зміна кошика ПРИ вибраному prepaid не повертає COD-івський текст (аудит #715: мутація «renderSummary/renderAside без applyDeliveryView» виживала)
+        pg.evaluate("(()=>{const b=document.querySelector('[data-act=inc]'); if(b) b.click();})()")
+        pg.wait_for_timeout(300)
+        after_inc = view()
+        chk(f"{w_}px: картка онлайн + зміна кількості: доставка лишається prepaid-варіантом (підсумок і колонка), без «комісі»", after_inc["sum"] == "орієнтовно 70–90 ₴ до 2 кг" and after_inc["aside"] == after_inc["sum"] and "комісі" not in (after_inc["lbl"] + after_inc["albl"] + after_inc["note"] + after_inc["anote"]))
+        pg.evaluate("document.querySelector('[data-act=dec]').click()")
+        pg.wait_for_timeout(200)
+        pg.evaluate("document.querySelector('input[name=payment][value=cod]').click()")
+        pg.wait_for_timeout(200)
+        back = view()
+        chk(f"{w_}px: повернення на накладений платіж відновлює підсумок, підпис і примітку", back == cod)
+    ctx.close()
+
     # ── чипи головної ──
     for w in (1280, 390):
         ctx, pg = page(w=w, h=800)

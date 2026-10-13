@@ -953,7 +953,8 @@
         np_city_ref:selectedCityRef||"",            // CityRef НП, якщо місто обране з автокомпліту
         np_city_area:selectedCityArea||"",           // область обраного міста → у np_branch (розрізняє однойменні міста)
         np_warehouse_number:selectedWarehouseNumber||"", // № відділення, якщо обране з автокомпліту → Toysi напряму
-        payment_method:payment
+        payment_method:payment,
+        comment:(document.getElementById("f-comment") ? (document.getElementById("f-comment").value||"").trim().slice(0,300) : "")
       };
       if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }
 

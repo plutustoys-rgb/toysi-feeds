@@ -1516,6 +1516,10 @@ def write_cart(addons=None):
         # Спосіб оплати — накладений (оплата при отриманні) за замовчуванням: для незнайомого магазину
         # це головний аргумент довіри (рев'ю), і LiqPay поки sandbox. Вибір явний, у payload іде payment.
         '<div class="note cod-limit" id="cod-limit-note" style="display:none">Накладений платіж доступний для замовлень до 3 000 ₴; для більших сум — лише за передоплатою (зв’яжіться з нами).</div>'
+        # Коментар покупця (запит власника 13.10): до 300 символів, необов'язково; йде в замовлення (order["customer_comment"]) і в коментар для Toysi (Код: orders_db/order_router). Не вмикати без її PR.
+        '<div class="field"><label for="f-comment">Коментар до замовлення <span style="opacity:.6">(необовʼязково)</span></label>'
+          '<textarea id="f-comment" name="comment" rows="3" maxlength="300" placeholder="Наприклад: це подарунок, зателефонуйте перед відправкою"></textarea>'
+          '<div class="note" id="f-comment-count" style="margin:4px 0 0">до 300 символів</div></div>'
         '<div class="field"><label>Спосіб оплати</label>'
           '<label class="pay"><input type="radio" name="payment" value="cod" checked> '
             'Оплата при отриманні (накладений платіж на Новій Пошті)</label>'

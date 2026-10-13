@@ -1227,7 +1227,7 @@ def _pick_day():
     return (datetime.now(timezone.utc) + timedelta(hours=3)).date().toordinal()
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=()):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1252,6 +1252,10 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
         if name_re is not None and not name_re.search(name):
             continue   # тематичний набір (сезонні чипи): лише назви за ключовими словами
         if bad_words and any(w in name.lower() for w in bad_words):
+            continue
+        if bad_cat_re is not None and bad_cat_re.search(p.get("category") or ""):
+            continue
+        if bad_name_re is not None and bad_name_re.search(name):
             continue
         elig.append(p)
     by = {}
@@ -1291,6 +1295,9 @@ HOME_SEASONAL = (
     ("ny", "Миколай і Новий рік", "Подарунки на Миколая і під ялинку", r"новорічн|ялинк|сніговик|санта|різдв|дід мороз|сніг|санки|зимов", (11, 25), (12, 31)),
 )
 HOME_SEASONAL_MIN = 6
+# SMM 13.10: з сезонних чипів прибрати книжки й мангу (категорія книг/манга/комікс/художн/літератур або «манга»/«роман» у назві), ключові слова лишаються (привид, відьм — доречні на іграшках).
+HOME_SEASONAL_BAD_CAT = re.compile(r"книг|манга|комікс|художн|літератур", re.I)
+HOME_SEASONAL_BAD_NAME = re.compile(r"манга|роман", re.I)
 HOME_SEASONAL_MIN_CONTRIB = 30.0
 
 
@@ -1314,7 +1321,8 @@ def home_chip_sets(prods):
     for key, _label, _sub, rx, first, last in HOME_SEASONAL:
         if seasonal_active(first, last):
             pk = home_pick(prods, pmin=100, pmax=700, min_contrib=HOME_SEASONAL_MIN_CONTRIB, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
-                           name_re=re.compile(rx, re.I), bad_words=NABORY_BAD_WORDS)
+                           name_re=re.compile(rx, re.I), bad_words=NABORY_BAD_WORDS,
+                           bad_cat_re=HOME_SEASONAL_BAD_CAT, bad_name_re=HOME_SEASONAL_BAD_NAME)
             if len(pk) >= HOME_SEASONAL_MIN:
                 sets[key] = pk
     return {k: v for k, v in sets.items() if v}

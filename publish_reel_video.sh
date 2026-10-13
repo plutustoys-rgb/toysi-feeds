@@ -41,6 +41,8 @@ git config user.email "reel-publish-bot@users.noreply.github.com"
 git fetch --depth 1 origin feed-data 2>/dev/null || true
 git checkout --orphan feed-data -q
 git checkout origin/feed-data -- . 2>/dev/null || true
+# ЗАХИСТ: якщо fetch/checkout тихо впали, дерево порожнє, і force-push з одним media/<file> СТЕР би усі фіди в feed-data. Дерево має містити фіди.
+[ -s feeds/prom_feed_top.xml ] || { echo "[PublishReel] дерево feed-data НЕ відновлено (нема feeds/prom_feed_top.xml) — вихід без push, фіди не чіпаю." >&2; exit 1; }
 
 mkdir -p media
 cp "$SRC" "media/$FNAME"

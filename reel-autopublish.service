@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: автопублікація IG-Reels з черги (reel_autopublish.py, 1 Reel за запуск, з перевіркою цін на живому сайті)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Черга: /opt/plutustoys/reels_queue/ (mp4 + caption.txt + json-маніфест).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/reel_autopublish.py
+# Хостинг відео + обробка Reel у Instagram можуть тривати кілька хвилин.
+TimeoutStartSec=1500

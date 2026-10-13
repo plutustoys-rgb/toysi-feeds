@@ -185,6 +185,7 @@
 | `prom-chat-bot` | `prom_chat_bot.py` | Prom: автовідповіді в чаті |
 | `social-poster-fb` | `social_auto_poster.py` (fb) | Соцмережі: автопост FB 1×/день 11:00 (домен SMM) |
 | `social-poster-ig` | `social_auto_poster.py` (ig) | Соцмережі: автопост IG 1×/день (домен SMM) |
+| `reel-autopublish` | `reel_autopublish.py` | Соцмережі: автопублікація IG-Reels з черги `/opt/plutustoys/reels_queue/` (mp4 + caption.txt + json-маніфест), вт і пт 18:30, ОДИН Reel за запуск (рішення власника 13.10.2026). Перед публікацією перевіряє ФАКТИ на живому сайті (товари з маніфесту в каталозі й ціна = ціні з підпису, підпис ≤2200, відео не порожнє); не пройшло → не публікує й бере наступний; claim-файл `.publishing` проти дубля; media_id у `published.json`. Файли на партію кладе власник одним scp, маніфест пише SMM. Тест `test_reel_autopublish.py` |
 | `social-dead-post-cleaner` | `social_dead_post_cleaner.py` | Соцмережі: чистка мертвих FB-постів (404 товар) — знайдено re-drift-check 2026-08-21 |
 | `novapay-statement` | `novapay_statement.py` | КОДВ: звірка COD через IMAP NovaPay. ⚠️ **таймер ВИМКНЕНО** (disabled/inactive, VPS 2026-10-09, Code-Agent) — автоматичної звірки через цей юніт зараз нема; чи навмисно — НЕ з'ясовано (питання власнику/КОДВ) |
 | `daily-report` | `daily_report.py` | зведення в Telegram |
@@ -415,7 +416,7 @@
     "feed-pipeline", "eva-feed", "eva-catalog-auditor", "meta-feed-coverage-monitor",
     "catalog-health-monitor", "full-catalog-scan", "prom-catalog-sync", "prom-catalog-auditor",
     "prom-competitor-pricer", "prom-review-requester", "prom-chat-bot",
-    "social-poster-fb", "social-poster-ig", "social-dead-post-cleaner",
+    "social-poster-fb", "social-poster-ig", "reel-autopublish", "social-dead-post-cleaner",
     "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog",
     "promo-margin-guard", "site-order-api", "site-rebuild",
     "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync",

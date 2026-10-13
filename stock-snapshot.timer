@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys: знімок залишків Toysi кожні 15 хв (рішення власника 13.10.2026: відставання наявності — критично)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

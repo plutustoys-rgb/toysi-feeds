@@ -197,6 +197,57 @@ class OrderError(Exception):
     """Валідаційна помилка замовлення — повертаємо клієнту 400 з поясненням."""
 
 
+class StockChanged(Exception):
+    """Залишок Toysi за свіжим знімком (site/stock.json) менший за замовлене: замовлення НЕ створюється, клієнт отримує 409 {code: stock_changed, lines: [...]}."""
+
+    def __init__(self, lines):
+        super().__init__("stock_changed")
+        self.lines = lines
+
+
+STOCK_FILE = os.path.join(SITE_DIR, "stock.json")
+STOCK_MAX_AGE = timedelta(minutes=45)      # знімок пишеться кожні 15 хв (stock-snapshot.timer); 3 інтервали без оновлення = знімок застарів → перевірку пропускаємо (fail-open)
+_stock_cache = {"mtime": None, "data": None}
+
+
+def stock_snapshot():
+    """({id: залишок}, datetime ts) зі свіжого знімка залишків, інакше (None, None). Збій читання/застарілий знімок = «невідомо» (політика Консультанта 13.10: збій перевірки залишку НЕ блокує замовлення)."""
+    try:
+        mtime = os.path.getmtime(STOCK_FILE)
+        if mtime != _stock_cache["mtime"]:
+            with open(STOCK_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            _stock_cache["data"] = (d["s"], datetime.fromisoformat(d["ts"]))
+            _stock_cache["mtime"] = mtime
+        s, ts = _stock_cache["data"]
+        if not isinstance(s, dict) or datetime.now() - ts > STOCK_MAX_AGE:
+            return None, None
+        return s, ts
+    except Exception:  # noqa: BLE001 — відсутній/пошкоджений файл
+        return None, None
+
+
+def check_stock(items: list) -> list:
+    """Рядки, яких за свіжим знімком уже нема або менше, ніж замовлено: [{id, name, requested, available}]. Невідомий залишок (нема знімка/старий/id немає у знімку) → рядок НЕ чіпаємо."""
+    snap, _ts = stock_snapshot()
+    if snap is None:
+        return []
+    need = {}
+    for it in items:
+        need.setdefault(it["toysi_code"], {"name": it["name"], "requested": 0})["requested"] += it["qty"]
+    bad = []
+    for pid, v in need.items():
+        if pid not in snap:
+            continue
+        try:
+            avail = int(snap[pid])
+        except (TypeError, ValueError):
+            continue
+        if avail < v["requested"]:
+            bad.append({"id": pid, "name": v["name"], "requested": v["requested"], "available": max(0, avail)})
+    return bad
+
+
 # Ручний ввід відділення (довідник НП мертвий або покупець не торкнувся підказки — ЦЕ ДОЗВОЛЕНО, див. assets/app.js
 # initNpAutocomplete). Реальний інцидент 10.10.2026 (замовлення PT-20261010-142322-afbf46): покупець вписав голе «369» →
 # np_branch «м. Київ, 369» → order_router.parse_np_branch (_WAREHOUSE_RE вимагає «відділення»/«відд.»/«№» ПЕРЕД цифрами) не
@@ -298,6 +349,9 @@ def build_order(payload: dict) -> tuple:
         items.append({"toysi_code": pid, "name": pm[pid]["name"], "qty": qty, "price": pm[pid]["price"]})
     if not items:
         raise OrderError("Кошик порожній")
+    unavailable = check_stock(items)
+    if unavailable:
+        raise StockChanged(unavailable)
 
     name = (payload.get("name") or "").strip()
     if len(name) < 3 or len(name.split()) < 2:
@@ -562,6 +616,9 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             order, total = build_order(payload)
             _check_cod_ceiling(order["payment_method"], total)
+        except StockChanged as e:
+            # НЕ створюємо замовлення: UI (Shopify-code) показує «щойно закінчилось», прибирає/зменшує лише ці рядки й просить підтвердити решту
+            return self._json(409, {"code": "stock_changed", "error": "Деяких товарів уже немає в такій кількості: оновіть кошик.", "lines": e.lines})
         except OrderError as e:
             return self._json(400, {"error": str(e)})
         except Exception as e:

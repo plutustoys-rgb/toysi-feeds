@@ -65,11 +65,36 @@ for day in ("2026-10-20", "2026-10-21"):
     shutil.copytree(HERE / "site" / "assets", d / "assets")
     html = (d / "index.html").read_text(encoding="utf-8")
     import re
-    m = re.search(r'<a class="card slide banner"[^>]*data-banner="(\w+)"', html)
+    m = re.search(r'<a class="card slide banner[^"]*"[^>]*data-banner="(\w+)"', html)
     built[day] = m.group(1) if m else None
 chk(f"два сусідні дні дають різні теми банера (hel і nab): {built}", set(built.values()) == {"hel", "nab"})
 chk("без активних тем (немає ні сезонного чипа, ні сторінки наборів) банера нема", bs.home_banner_html({}, False) == "" and "banner" not in bs.home_banner_html({"hel": []}, False).replace("card slide banner", "") or bs.home_banner_html({}, False) == "")
 os.environ.pop("SITE_PICK_DATE", None)
+
+
+def lum(h):
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4  # noqa: E731
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+
+def ratio(a, b):
+    la, lb = sorted((lum(a), lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
+pairs = {  # (текст, фон) із CSS тем: чипи, CTA, банери (SMM 13.10 бриф; WCAG ≥ 4.5:1)
+    "chip hel": ("#FFF3E0", "#2A1647"), "chip ny": ("#FFFFFF", "#C62F2F"), "chip nab": ("#3A2A1E", "#FFD9A8"),
+    "banner hel текст": ("#FFF3E0", "#3A1D5C"), "banner hel CTA": ("#1B1030", "#FF7A1A"),
+    "banner ny текст": ("#FFFFFF", "#1E5A8A"), "banner ny CTA": ("#FFFFFF", "#D93A3A"),
+    "banner nab текст": ("#3A2A1E", "#FFD9A8"), "banner nab CTA": ("#FFFFFF", "#C93A26"),
+}
+chk("кольори пар у CSS присутні: " + ", ".join(sorted({c for p_ in pairs.values() for c in p_})[:3]) + "…", all(c.lower() in css.lower().replace("#fff;", "#ffffff;").replace("#fff ", "#ffffff ") for p_ in pairs.values() for c in p_))
+low = {k: round(ratio(*v), 2) for k, v in pairs.items() if ratio(*v) < 4.5}
+chk(f"контраст усіх тематичних пар ≥ 4.5:1 (WCAG AA): {low or 'ок'}", not low)
+chk("prefers-reduced-motion вимикає анімації тематичних чипів і банера, нахил знято", "@media (prefers-reduced-motion:reduce)" in css and "animation:none!important" in css)
+chk("лише системні шрифти (без @font-face/веб-шрифтів у темах), емодзі в банері нема (інлайн-SVG)", "@font-face" not in css and "b-emoji" not in css)
 
 os.chdir(root)
 
@@ -83,7 +108,7 @@ srv = socketserver.TCPServer(("127.0.0.1", 0), H)
 port = srv.server_address[1]
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 BASE = f"http://127.0.0.1:{port}"
-VIS = "(()=>{const t=document.querySelector('#home-car .track'); const tr=t.getBoundingClientRect(); const vis=[...t.children].filter(k=>{const r=k.getBoundingClientRect(); return r.right>tr.left+20 && r.left<tr.right-20;}); return vis.length})()"
+VIS = "(()=>{const t=document.querySelector('#home-car .track'); const tr=t.getBoundingClientRect(); let cov=0, last=tr.left; [...t.children].filter(k=>{const r=k.getBoundingClientRect(); return r.right>tr.left && r.left<tr.right;}).sort((a,b)=>a.getBoundingClientRect().left-b.getBoundingClientRect().left).forEach(k=>{const r=k.getBoundingClientRect(); const l=Math.max(r.left,last), rr=Math.min(r.right,tr.right); if(rr>l){cov+=rr-l; last=rr;} }); return Math.round(100*cov/tr.width)})()"
 EV = "(window.dataLayer||[]).map(a=>Array.from(a)).filter(a=>a[1]==='view_item_list'||a[1]==='select_item').map(a=>[a[1],a[2].item_list_id,a[2].item_list_name,a[2].items.length,a[2].items[0].index,a[2].items[0].item_name])"
 
 with sync_playwright() as p:
@@ -99,7 +124,8 @@ with sync_playwright() as p:
             pg.wait_for_timeout(900)
             pg.evaluate("document.addEventListener('click', e => { if (e.target.closest('a.card')) e.preventDefault(); }, true)")
             first = pg.evaluate("(()=>{const t=document.querySelector('#home-car .track'); const f=[...t.children].find(k=>!k.hasAttribute('data-clone')); return [f.className, f.getAttribute('data-banner'), f.querySelector('.nm').textContent, f.querySelector('.b-cta')? f.querySelector('.b-cta').textContent:'', t.children.length, t.querySelectorAll('[data-clone]').length]})()")
-            chk(f"{day} {w}px: першим слайдом банер теми «{theme}» (емодзі/заголовок/CTA), 11 слайдів + 20 клонів", first[0].startswith("card slide banner") and first[1] == theme and first[3] == "Дивитись →" and first[4] == 31 and first[5] == 20)
+            CTA = {"hel": "Обрати страшилки →", "nab": "Відкрити набори →", "ny": "Подарунки під ялинку →"}
+            chk(f"{day} {w}px: першим слайдом тематичний банер «{theme}» (клас theme-{theme}, заголовок/підзаголовок/CTA за брифом SMM), 11 слайдів + 20 клонів", first[0].startswith("card slide banner") and f"theme-{theme}" in first[0] and first[1] == theme and first[3] == CTA[theme] and first[4] == 31 and first[5] == 20)
             lst = pg.evaluate(EV)
             chk(f"{day} {w}px: view_item_list рівно один і лише з 10 ТОВАРІВ (банер не рахується)", len(lst) == 1 and lst[0][3] == 10 and lst[0][1] == "home_pick")
             # цикл: 8 кроків стрілкою, вікно завжди заповнене
@@ -108,7 +134,7 @@ with sync_playwright() as p:
                 pg.evaluate("document.querySelector('#home-car .arrow.r').click()")
                 pg.wait_for_timeout(600)
                 vis.append(pg.evaluate(VIS))
-            chk(f"{day} {w}px: цикл із банером: 8 кроків без порожніх зон ({vis})", min(vis) >= (3 if w < 700 else 5) and errs == [])
+            chk(f"{day} {w}px: цикл із банером: 8 кроків, вікно покрите плитками ≥ 90% ширини (порожніх зон нема; банер удвічі ширший, тому рахуємо покриття, а не кількість) {vis}", min(vis) >= 90 and errs == [])
             # повернутись на початок і перевірити індекс першого товару (банер не зсуває)
             pg.evaluate("document.querySelector('#home-car .track').scrollLeft = 0")
             pg.wait_for_timeout(400)

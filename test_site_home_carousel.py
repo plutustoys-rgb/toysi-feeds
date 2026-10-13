@@ -155,7 +155,7 @@ chk("CSS: мобільна розкладка героя до 700 px (абзац
     "@media(max-width:700px){" in css and ".hero2 p{display:none}" in css and ".hero2 .act{flex:0 0 100%" in css and ".car .arrow{display:none}" in css and ".car .slide{flex-basis:44%}" in css)
 chk("CSS: чип героя без nowrap/рамки (глобальний .chip{white-space:nowrap} перекрито) — інакше на 320–360 px вилазить за картку", re.search(r"\.hero2 \.chip\{[^}]*white-space:normal[^}]*min-width:0", css) is not None)
 chk("CSS: стрілки без JS приховано (.car:not(.js) .arrow{display:none})", ".car:not(.js) .arrow{display:none}" in css)
-chk("CSS: без автопрокрутки/анімації каруселі", not re.search(r"\.car[^{}]*\{[^}]*animation", css))
+chk("CSS: без автопрокрутки/анімації каруселі", not re.search(r"\.car[^{}]*\{[^}]*animation", css))
 
 # ── поведінка app.js
 node = shutil.which("node")

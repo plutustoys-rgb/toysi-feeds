@@ -1761,6 +1761,20 @@ def _cart_addons(prods):
     return out
 
 
+def _pay_radios():
+    """Спосіб оплати (власник 13.10): коли онлайн-оплата ввімкнена (LIQPAY_LIVE) — «Оплата карткою онлайн» ПЕРША й обрана за замовчуванням, накладений платіж другий; інакше — як було (накладений обраний, слот тестового входу)."""
+    cod = ('<label class="pay"><input type="radio" name="payment" value="cod"' + ("" if LIQPAY_LIVE else " checked") + '> '
+           'Оплата при отриманні (накладений платіж на Новій Пошті)</label>')
+    if LIQPAY_LIVE:
+        card = ('<label class="pay"><input type="radio" name="payment" value="prepaid" checked> '
+                'Оплата карткою онлайн ' + LIQPAY_LOGO_HTML.format(src=asset_url('assets/liqpay-logo.svg'), w=70, h=15) + '</label>')
+        return card + cod
+    # Прихований вхід для ТЕСТОВОЇ оплати (запит Коду 12.10): до карти LiqPay live покупці її не бачать; радіо розкривається лише з ?liqpay_test=1 (пам'ятається в sessionStorage, див. app.js).
+    # Бекенд у sandbox не передає такі замовлення в Toysi й не фіскалізує, тож випадковий клік шкоди не завдасть; тексти для всіх покупців не змінюємо.
+    # Радіо НЕ рендериться в HTML (аудит 13.10: hidden програвав `.field label.pay{display:flex}` — тестове радіо було видно всім): порожній слот, радіо створює JS лише з ?liqpay_test=1.
+    return cod + '<div id="pay-test-slot"></div>'
+
+
 def write_cart(addons=None):
     # двоколонково на десктопі (SMM 12.10: права половина була порожня): ліворуч кошик + форма, праворуч sticky-колонка (А «Ваше замовлення», Б довіра, В «Додайте до замовлення», Г Плутус);
     # на мобільному — одна колонка: підсумок над формою (як було), «Додайте до замовлення» над кнопкою «Оформити», довіра й Плутус нижче форми.
@@ -1803,14 +1817,7 @@ def write_cart(addons=None):
           '<textarea id="f-comment" name="comment" rows="3" maxlength="300" placeholder="Наприклад: це подарунок, зателефонуйте перед відправкою"></textarea>'
           '<div class="note" id="f-comment-count" style="margin:4px 0 0">до 300 символів</div></div>'
         '<div class="field"><label>Спосіб оплати</label>'
-          '<label class="pay"><input type="radio" name="payment" value="cod" checked> '
-            'Оплата при отриманні (накладений платіж на Новій Пошті)</label>'
-          + ('<label class="pay"><input type="radio" name="payment" value="prepaid"> '
-            'Оплата карткою онлайн ' + LIQPAY_LOGO_HTML.format(src=asset_url('assets/liqpay-logo.svg'), w=70, h=15) + '</label>' if LIQPAY_LIVE else
-            # Прихований вхід для ТЕСТОВОЇ оплати (запит Коду 12.10): до карти LiqPay live покупці її не бачать; радіо розкривається лише з ?liqpay_test=1 (пам'ятається в sessionStorage, див. app.js).
-            # Бекенд у sandbox не передає такі замовлення в Toysi й не фіскалізує, тож випадковий клік шкоди не завдасть; тексти для всіх покупців не змінюємо.
-            # Радіо НЕ рендериться в HTML (аудит 13.10: hidden програвав `.field label.pay{display:flex}` — тестове радіо було видно всім): порожній слот, радіо створює JS лише з ?liqpay_test=1.
-            '<div id="pay-test-slot"></div>') +
+          + _pay_radios() +
         '</div>'
         '<div class="addon-box addon-m" data-addon></div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'

@@ -37,7 +37,7 @@ for live in (False, True):
     chk(f"{tag}: футер містить логотип LiqPay з посиланням на liqpay.ua (alt «LiqPay»), розмір ≥ 100×21", 'href="https://www.liqpay.ua/"' in foot and 'alt="LiqPay"' in foot and (live or "карт" not in foot) and 'width="100" height="21"' in foot and "liqpay-logo.svg" in foot)
     chk(f"{tag}: футер із логотипом є на кошику (усі сторінки мають footer())", "liqpay-logo.svg" in cart)
     if live:
-        chk("live: біля вибору «Оплата карткою онлайн» теж логотип", 'value="prepaid"> Оплата карткою онлайн <a href="https://www.liqpay.ua/"' in cart)
+        chk("live: біля вибору «Оплата карткою онлайн» теж логотип", 'value="prepaid" checked> Оплата карткою онлайн <a href="https://www.liqpay.ua/"' in cart)
     else:
         chk("не live: біля вибору оплати логотипа/радіо немає (картку покупцям ще не пропонуємо)", 'value="prepaid"' not in cart)
     # тексти (трюк: _DELIVERY/_RETURNS/_OFFER збираються при імпорті модуля → перезавантажуємо з потрібним LIQPAY_LIVE)

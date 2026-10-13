@@ -213,6 +213,30 @@ for i in range(4):
 res = run()
 chk("3 збої LiqPay підряд → прохід зупинено (не 4 звернення)", res["checked"] == 3)
 
+# ── прогалини з аудиту: реальний атомарний claim, валюта, свіжий claim не алертить
+make_order("Z1")
+with orders_db.get_connection() as c:
+    first = orders_db.claim_refund_receipt(c, "site_Z1")
+    c.commit()
+with orders_db.get_connection() as c:
+    second = orders_db.claim_refund_receipt(c, "site_Z1")
+chk("реальний claim: перший виклик True, другий False (атомарно в БД)", first is True and second is False)
+
+make_order("V1")
+STATUS["V1"] = {"status": "reversed", "amount": 23.0, "refund_amount": 23.0, "currency": "USD"}
+SELLS["r-V1"] = sell_receipt("r-V1")
+alerts.clear()
+n0 = len(posted)
+res = run()
+chk("відповідь LiqPay з валютою не UAH → чека нема, сигнал", len(posted) == n0 and any("не збігається" in t_ for _, t_ in alerts))
+
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET refund_receipt_claim_at = ? WHERE internal_order_id = 'site_Z1'", (__import__("datetime").datetime.now().isoformat(timespec="seconds"),))
+    c.commit()
+alerts.clear()
+run()
+chk("СВІЖИЙ claim (щойно взятий) НЕ дає сигналу «завислий»", not any(k == "refund_stuck:site_Z1" for k, _ in alerts))
+
 # ── без чека продажу / без підтвердженої оплати
 make_order("N1", receipt=None)
 make_order("N2", payment_confirmed=0)

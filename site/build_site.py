@@ -1294,6 +1294,12 @@ HOME_SEASONAL = (
     ("hel", "Хелловін", "Страшно весело — до Гелловіну", r"хелловін|гелловін|halloween|привид|гарбуз|скелет|вампір|відьм", (10, 1), (10, 31)),
     ("ny", "Миколай і Новий рік", "Подарунки на Миколая і під ялинку", r"новорічн|ялинк|сніговик|санта|різдв|дід мороз|сніг|санки|зимов", (11, 25), (12, 31)),
 )
+# Інлайн-SVG іконки тематичних чипів (SMM 13.10: без картинок і емодзі, лише векторні; aria-hidden, текст чипа — окремо)
+CHIP_ICONS = {
+    "hel": '<svg class="chip-ico ico-hel" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M12 5.2c.2-1.2.9-2 2-2.4" fill="none" stroke="#7BC043" stroke-width="2" stroke-linecap="round"/><ellipse cx="12" cy="14" rx="9" ry="7.6" fill="#FF7A1A"/><path d="M8 11.4l2 1.8-2.2.2zM16 11.4l-2 1.8 2.2.2zM8.6 16.4q3.4 2.6 6.8 0l-.8 1.7-1.4-.9-1.2 1-1.2-1-1.4.9z" fill="#1B1030"/></svg>',
+    "ny": '<svg class="chip-ico ico-ny" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><g stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7"/><path d="M9.5 3.6L12 6l2.5-2.4M9.5 20.4L12 18l2.5 2.4" fill="none" stroke-width="1.6"/></g></svg>',
+    "nab": '<svg class="chip-ico ico-nab" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M12 12c-4-5-9-3-8 0s6 2 8 0zm0 0c4-5 9-3 8 0s-6 2-8 0z" fill="#E04E39"/><path d="M12 12l-3 8M12 12l3 8" stroke="#E8B04A" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="12" r="2.2" fill="#E8B04A"/></svg>',
+}
 HOME_SEASONAL_MIN = 6
 # «Популярне зараз» — чип за ПОПИТОМ Google (власник 13.10: «чому не маркетинг за попитом»): список id від SEO у site/demand_featured.json
 # {"date": "YYYY-MM-DD", "source": "Search Console 28d", "ids": ["..."], "categories": ["..."]}. Нема файлу / застарів (> DEMAND_MAX_AGE_DAYS) / менше DEMAND_MIN карток у наявності — чипа нема (не вигадуємо).
@@ -1421,9 +1427,12 @@ def home_chip_defs(chip_sets):
 # Перший слайд каруселі — плитка-банер (SMM 13.10): не товар, а тема дня (щодня інша серед активних): текст + емодзі + помаранчевий CTA, без картинки й без знижки.
 # (key, емодзі, заголовок, підпис, куди: «chip:<ключ чипа>» — розкриває чип на місці, або URL; умова показу)
 HOME_BANNERS = (
-    ("hel", "🎃", "Хелловін-добірка", "Страшно весело — до Гелловіну", "chip:hel"),
-    ("nab", "🎁", "Набори в подарунок", "Готові набори — усе потрібне в комплекті", "nabory.html"),
+    # (key, заголовок, підзаголовок, CTA, куди)
+    ("hel", "Страшно весело", "Іграшки до Гелловіну", "Обрати страшилки →", "chip:hel"),
+    ("ny", "Миколай і Новий рік", "Миколай — 19.12", "Подарунки під ялинку →", "chip:ny"),
+    ("nab", "Набори в подарунок", "Усе потрібне в комплекті", "Відкрити набори →", "nabory.html"),
 )
+BANNER_ART = ("hel", "ny", "nab")   # для цих тем у site/assets/banners/<key>.webp може лежати ілюстрація Плутуса (300×300, прозорий фон, ≤40 КБ): є файл — показуємо, нема — лише векторний декор
 
 
 def home_banner_html(chip_sets, has_nabory):
@@ -1431,12 +1440,16 @@ def home_banner_html(chip_sets, has_nabory):
     active = [b for b in HOME_BANNERS if (b[4] == "nabory.html" and has_nabory) or (b[4].startswith("chip:") and b[4][5:] in chip_sets)]
     if not active:
         return ""
-    key, emoji, title, sub, dest = active[_pick_day() % len(active)]
+    key, title, sub, cta, dest = active[_pick_day() % len(active)]
     chip = dest[5:] if dest.startswith("chip:") else ""
     href = "#home-chips" if chip else dest
-    return (f'<a class="card slide banner" href="{esc(href)}" data-banner="{key}"' + (f' data-chip="{chip}"' if chip else "") + '>'
-            f'<div class="ph banner-ph"><span class="b-emoji" aria-hidden="true">{emoji}</span></div>'
-            f'<div class="info"><div class="nm">{esc(title)}</div><div class="b-sub">{esc(sub)}</div><span class="b-cta">Дивитись →</span></div></a>')
+    art_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "banners", f"{key}.webp")
+    art = (f'<img class="b-art" src="{asset_url(f"assets/banners/{key}.webp")}" alt="" width="120" height="120" loading="lazy" decoding="async">' if os.path.exists(art_file) else "")
+    deco = {"hel": '<svg class="b-deco b-web" viewBox="0 0 80 80" aria-hidden="true" focusable="false"><g stroke="#FFB066" fill="none" stroke-width="1"><path d="M80 0L0 80M80 0L28 80M80 0L80 80M80 0L0 28M80 0L0 0"/><path d="M80 12Q62 18 56 38M80 26Q56 30 42 52M80 42Q60 44 48 64" /></g></svg>',
+            "ny": '<svg class="b-deco b-snow" viewBox="0 0 120 40" aria-hidden="true" focusable="false"><g fill="#fff"><circle cx="10" cy="10" r="2.2"/><circle cx="34" cy="26" r="1.6"/><circle cx="58" cy="8" r="2.6"/><circle cx="84" cy="22" r="1.8"/><circle cx="108" cy="9" r="2.2"/></g></svg>',
+            "nab": '<svg class="b-deco b-ribbon" viewBox="0 0 80 80" aria-hidden="true" focusable="false"><path d="M0 28L52 80H72L0 8z" fill="#E8B04A" opacity=".45"/><path d="M28 0L80 52V28L52 0z" fill="#E04E39" opacity=".22"/></svg>'}[key]
+    return (f'<a class="card slide banner theme-{key}" href="{esc(href)}" data-banner="{key}"' + (f' data-chip="{chip}"' if chip else "") + '>'
+            f'{deco}<div class="b-text"><div class="nm">{esc(title)}</div><div class="b-sub">{esc(sub)}</div><span class="b-cta">{esc(cta)}</span></div>{art}</a>')
 
 
 def write_home(prods, cats, cat_list, cat_slug):
@@ -1477,7 +1490,7 @@ def write_home(prods, cats, cat_list, cat_slug):
               '<noscript><style>.home-chips{display:none}</style></noscript>'
               '<div class="chips home-chips" id="home-chips" role="group" aria-label="Підбір іграшок">'
               '<button type="button" class="chip active" data-set="all" aria-pressed="true">Усі</button>'
-              + "".join(f'<button type="button" class="chip" data-set="{k}" data-sub="{esc(sb)}" aria-pressed="false">{esc(t)}</button>' for k, t, sb in home_chip_defs(chip_sets))
+              + "".join(f'<button type="button" class="chip{" chip-theme" if k in CHIP_ICONS else ""}" data-set="{k}" data-sub="{esc(sb)}" aria-pressed="false">{CHIP_ICONS.get(k, "")}<span>{esc(t)}</span></button>' for k, t, sb in home_chip_defs(chip_sets))
               + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p>'
               + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
         carousel = (

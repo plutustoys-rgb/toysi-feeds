@@ -131,7 +131,7 @@ bs.OUT = str(tmp)
 bs.write_home(allp, cats, cat_list, cat_slug)
 h = (tmp / "index.html").read_text(encoding="utf-8")
 chk("герой: компактний .hero2 (ніяких старих .hero/.fox, hero-note)", 'class="hero2"' in h and 'class="hero"' not in h and "hero-note" not in h)
-chk("герой: h1 «Іграшки, що радують», кнопка «Набори в подарунок» → nabory.html + «Усі іграшки» → каталог (SMM 12.10), чип доставки з оплатою", "<h1>Іграшки, що радують</h1>" in h and 'class="btn" href="nabory.html">Набори в подарунок</a><a class="hero-all" href="catalog.html">Усі іграшки' in h and 'class="chip">🚚 Нова Пошта · оплата при отриманні' in h)
+chk("герой: h1 «Іграшки, що радують», кнопка «Нехай Плутус вибере» (#plutus-pick, пул у data-pool) + «Усі іграшки» → каталог (SMM 13.10); «Набори» і рядка про доставку/оплату в героєві нема", "<h1>Іграшки, що радують</h1>" in h and 'id="plutus-pick" href="catalog.html" data-pool="' in h and '>Нехай Плутус вибере</a><a class="hero-all" href="catalog.html">Усі іграшки</a>' in h and "Нова Пошта ·" not in h and 'href="nabory.html">Набори в подарунок' not in h)
 chk("герой: підзаголовок ≤100 символів", len(re.search(r'<div class="txt"><h1>.*?</h1><p>(.*?)</p>', h).group(1)) <= 100)
 chk("карусель: секція «Добірка Плутуса», #home-car з role=region і aria-label, 2 стрілки — <button type=button> з aria-label",
     'id="home-car" role="region" aria-label="Добірка Плутуса"' in h and "<h2>Добірка Плутуса</h2>" in h and h.count('<button class="arrow') == 2 and h.count('type="button" aria-label=') == 2)
@@ -153,7 +153,7 @@ css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
 chk("CSS: .hero2, .car .track (scroll-snap)", ".hero2{" in css and "scroll-snap-type:x mandatory" in css)
 chk("CSS: мобільна розкладка героя до 700 px (абзац ховається, .act на всю ширину), стрілки/слайди — до 600 px",
     "@media(max-width:700px){" in css and ".hero2 p{display:none}" in css and ".hero2 .act{flex:0 0 100%" in css and ".car .arrow{display:none}" in css and ".car .slide{flex-basis:44%}" in css)
-chk("CSS: чип героя без nowrap/рамки (глобальний .chip{white-space:nowrap} перекрито) — інакше на 320–360 px вилазить за картку", re.search(r"\.hero2 \.chip\{[^}]*white-space:normal[^}]*min-width:0", css) is not None)
+chk("CSS: рядок доставки в героєві прибрано (нема .hero2 .chip)", ".hero2 .chip" not in css)
 chk("CSS: стрілки без JS приховано (.car:not(.js) .arrow{display:none})", ".car:not(.js) .arrow{display:none}" in css)
 chk("CSS: без автопрокрутки/анімації каруселі", not re.search(r"\.car[^{}]*\{[^}]*animation", css))
 

@@ -214,6 +214,8 @@ res = run()
 chk("3 збої LiqPay підряд → прохід зупинено (не 4 звернення)", res["checked"] == 3)
 
 # ── прогалини з аудиту: реальний атомарний claim, валюта, свіжий claim не алертить
+for i in range(4):                 # збійні Q-замовлення з попереднього тесту більше не збійні (інакше 3 збої підряд зупиняють прохід до наступних кандидатів)
+    STATUS[f"Q{i}"] = {"status": "success", "amount": 23.0}
 make_order("Z1")
 with orders_db.get_connection() as c:
     first = orders_db.claim_refund_receipt(c, "site_Z1")

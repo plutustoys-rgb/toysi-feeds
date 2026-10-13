@@ -427,3 +427,9 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .promo-card .btn{width:auto;padding:10px 18px}
 .ret-line{margin:8px 0;font-size:14px;line-height:1.4;color:#4b3b30}
 .ret-cart{margin:12px 0 0}
+.promo-field[hidden],.discount-row[hidden]{display:none!important}
+.promo-row{display:flex;gap:8px;align-items:stretch}
+.promo-row input{flex:1;min-width:0}
+.promo-row .btn{width:auto;padding:0 16px;white-space:nowrap}
+.discount-row span:last-child{color:#1b7a3a;font-weight:700}
+.ci-pr s{opacity:.6;margin-right:2px}

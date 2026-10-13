@@ -359,9 +359,10 @@
       var it=c[id];
       return '<div class="ai"><img src="'+esc(it.photo)+'" alt="" loading="lazy"><div class="ai-nm">'+esc(it.name)+'</div><div class="ai-q">'+it.qty+' × '+it.price+' ₴</div></div>';
     }).join("");
+    var gva=goodsView();
     var g=document.getElementById("aside-goods"), t=document.getElementById("aside-total");
-    if(g) g.textContent=goods+" ₴";
-    if(t) t.textContent=goods+" ₴";
+    if(g) g.textContent=gva.list+" ₴";
+    if(t) t.textContent=gva.total+" ₴";
     applyDeliveryView(goods);
     var picks=addonPool().filter(function(a){ return !c[a.id]; }).slice(0,3);
     Array.prototype.forEach.call(document.querySelectorAll("[data-addon]"), function(box){
@@ -418,16 +419,19 @@
     box.innerHTML=html;
     renderSummary();
     markCartStock();
+    renderPromo();
+    scheduleQuote();
   }
   function renderSummary(){
     var goods=total();
     // FREE_SHIPPING_ENABLED=false (2026-09-18, поки платник доставки не з'ясований з Toysi) —
     // freeShip завжди false: сума доставки не друкується (вартість визначає Нова Пошта, сплачується при отриманні).
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
+    var gv=goodsView();
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
-    if(g) g.textContent=goods+" ₴";
+    if(g) g.textContent=gv.list+" ₴";
     if(d && freeShip) d.textContent="Безкоштовно"; else applyDeliveryView(goods);
-    if(t) t.textContent=goods+" ₴";
+    if(t) t.textContent=gv.total+" ₴";
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
     var note=document.getElementById("free-ship-note");
@@ -547,6 +551,105 @@
     msg.appendChild(t); msg.appendChild(b);
   }
 
+  // ── Знижки (Code-Agent 13.10): POST api/promo/quote {items:[{id,qty}], promo_code?, phone?} → {applied:"PLUTUS5"|"TWO10"|null, code_status, message, discount_total, list_total, total, lines:[{id,qty,list_price,unit_price}]}.
+  // PLUTUS5 = −5% (1 раз на телефон), авто −10% при ≥2 різних товарах; НЕ складаються (береться більша); знижка лише там, де лишається покриття витрат (lines). Сервер — єдиний авторитет суми: UI показує рівно його відповідь;
+  // застарілу відповідь (кошик/код змінились після запиту) не показуємо; нема бекенду/помилка — знижок і поля промокоду нема, ціни за каталогом.
+  var promo={quote:null, quoteKey:"", code:"", seq:0, timer:null, available:false};
+  function promoKey(){ var c=read(); return Object.keys(c).sort().map(function(id){ return id+":"+c[id].qty; }).join(",")+"|"+promo.code.toLowerCase(); }
+  function promoPhone(){
+    var el=document.getElementById("f-phone"); var d=el ? (el.value||"").replace(/\D/g,"") : "";
+    if(d.length===10 && d.charAt(0)==="0") d="38"+d;
+    return (d.length===12 && d.indexOf("380")===0) ? "+"+d : "";
+  }
+  function liveQuote(){ return (promo.quote && promo.quoteKey===promoKey()) ? promo.quote : null; }
+  function goodsView(){   // що показати в підсумку: {list, disc, total, q}
+    var g=total(), q=liveQuote();
+    if(q && q.discount_total>0 && isFinite(q.total) && isFinite(q.list_total)) return {list:q.list_total, disc:q.discount_total, total:q.total, q:q};
+    return {list:g, disc:0, total:g, q:null};
+  }
+  function unitPriceOf(id, fallback){
+    var q=liveQuote(); if(!q || !Array.isArray(q.lines)) return fallback;
+    for(var i=0;i<q.lines.length;i++){ if(String(q.lines[i].id)===String(id) && isFinite(q.lines[i].unit_price)) return +q.lines[i].unit_price; }
+    return fallback;
+  }
+  function promoLabel(q){ return q.applied==="PLUTUS5" ? "Знижка −5% (PLUTUS5)" : q.applied==="TWO10" ? "Знижка −10% (2 різні товари)" : "Знижка"; }
+  function renderPromo(){
+    var field=document.getElementById("promo-field"); if(field) field.hidden=!promo.available;
+    var gv=goodsView();
+    [["sum-discount-row","sum-discount-label","sum-discount"],["aside-discount-row","aside-discount-label","aside-discount"]].forEach(function(ids){
+      var row=document.getElementById(ids[0]); if(!row) return;
+      row.hidden=!(gv.disc>0);
+      if(gv.disc>0){ var lb=document.getElementById(ids[1]), v=document.getElementById(ids[2]); if(lb) lb.textContent=promoLabel(gv.q); if(v) v.textContent="−"+gv.disc+" ₴"; }
+    });
+    [["sum-goods","sum-total"],["aside-goods","aside-total"]].forEach(function(ids){
+      var g=document.getElementById(ids[0]), t=document.getElementById(ids[1]);
+      if(g) g.textContent=gv.list+" ₴"; if(t) t.textContent=gv.total+" ₴";
+    });
+    // ціна біля рядків кошика: старa закреслена, нова — після знижки
+    Array.prototype.forEach.call(document.querySelectorAll("#cart-body .cart-item"), function(row){
+      var id=row.getAttribute("data-id"), pr=row.querySelector(".ci-pr"), c=read(); if(!pr || !c[id]) return;
+      var u=gv.q ? unitPriceOf(id, c[id].price) : c[id].price;
+      pr.textContent="";
+      if(u<c[id].price){ var s=document.createElement("s"); s.textContent=c[id].price+" ₴"; pr.appendChild(s); pr.appendChild(document.createTextNode(" "+u+" ₴")); } else { pr.textContent=c[id].price+" ₴"; }
+    });
+    var msg=document.getElementById("promo-msg");
+    if(msg){
+      var q=liveQuote(), t="";
+      if(q && promo.code){
+        t = q.code_status==="ok" ? "Код застосовано." : (q.message || "Код не діє.");
+        if(q.applied && q.discount_total>0 && Array.isArray(q.lines) && q.lines.length){
+          var n=q.lines.filter(function(l){ return +l.unit_price<+l.list_price; }).length;
+          t+=" Знижка застосована до "+n+" із "+q.lines.length+" позицій.";
+        }
+      } else if(q && q.applied==="TWO10" && Array.isArray(q.lines) && q.lines.length){
+        var n2=q.lines.filter(function(l){ return +l.unit_price<+l.list_price; }).length;
+        t="Знижка −10% за 2 різні товари застосована до "+n2+" із "+q.lines.length+" позицій.";
+      }
+      msg.textContent=t;
+    }
+    var ts=document.getElementById("sum-total"); if(ts && gv.q) ts.setAttribute("data-quote","1");
+  }
+  function requestQuote(){
+    var c=read(), ids=Object.keys(c);
+    if(!document.getElementById("cart-summary")) return;
+    if(!ids.length){ promo.quote=null; renderPromo(); return; }
+    var mySeq=++promo.seq, key=promoKey();
+    var body={items:ids.map(function(id){ return {id:id, qty:c[id].qty}; })};
+    if(promo.code) body.promo_code=promo.code;
+    var ph=promoPhone(); if(ph) body.phone=ph;
+    fetch("api/promo/quote", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)})
+      .then(function(r){ if(!r.ok) throw new Error("quote "+r.status); return r.json(); })
+      .then(function(j){
+        if(mySeq!==promo.seq) return;   // відповідь на застарілий запит
+        if(!j || typeof j!=="object" || !isFinite(j.total) || !isFinite(j.list_total)) throw new Error("bad quote");
+        promo.available=true; promo.quote=j; promo.quoteKey=key; renderPromo(); renderSummary(); renderAside(read(), Object.keys(read()));
+      })
+      .catch(function(){ if(mySeq!==promo.seq) return; promo.quote=null; renderPromo(); });
+  }
+  function scheduleQuote(){ clearTimeout(promo.timer); promo.timer=setTimeout(requestQuote, 200); }
+  function promoRejected(j){   // 400 {code:"promo_*", error} на /api/order: замовлення НЕ створено — показуємо причину й пропонуємо продовжити без коду
+    var msg=document.getElementById("checkout-msg"), btn=document.getElementById("checkout-submit");
+    if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; }
+    if(!msg) return;
+    msg.classList.add("err"); msg.textContent="";
+    var t=document.createElement("div"); t.textContent=(j && j.error) ? j.error : "Промокод не діє."; msg.appendChild(t);
+    var b=document.createElement("button"); b.type="button"; b.className="btn ghost"; b.textContent="Продовжити без коду";
+    b.addEventListener("click", function(){
+      promo.code=""; var inp=document.getElementById("f-promo"); if(inp) inp.value="";
+      msg.classList.remove("err"); msg.textContent="Код прибрано. Перевірте суму й підтвердьте замовлення.";
+      requestQuote();
+    });
+    msg.appendChild(b);
+  }
+  function initPromo(){
+    var apply=document.getElementById("promo-apply"), inp=document.getElementById("f-promo"); if(!apply || !inp) return;
+    function doApply(){ promo.code=(inp.value||"").trim(); requestQuote(); }
+    apply.addEventListener("click", doApply);
+    inp.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); doApply(); } });
+    var ph=document.getElementById("f-phone"); if(ph) ph.addEventListener("change", function(){ if(promo.code) scheduleQuote(); });
+    requestQuote();
+  }
+
   // ── Ініціалізація на кожній сторінці ──
   document.addEventListener("DOMContentLoaded", function(){
     updateBadge();
@@ -599,6 +702,7 @@
     renderCart();
     initStockProduct();
     initStockCards();
+    initPromo();
     initShipToday();
     initCheckout();
     initNpAutocomplete();
@@ -1106,6 +1210,7 @@
         payment_method:payment,
         comment:(document.getElementById("f-comment") ? (document.getElementById("f-comment").value||"").trim().slice(0,300) : "")
       };
+      if(promo.code) payload.promo_code=promo.code;
       if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }
 
       fetch("api/order", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)})
@@ -1113,6 +1218,7 @@
         .then(function(res){
           if(!res.ok){
             if(res.status===409 && res.j && res.j.code==="stock_changed" && Array.isArray(res.j.lines)){ stockConflict(res.j.lines); return; }
+            if(res.status===400 && res.j && /^promo_/.test(String(res.j.code||""))){ promoRejected(res.j); return; }
             fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return;
           }
           var d=res.j;
@@ -1122,7 +1228,7 @@
             // подію не шлемо, щоб не завищувати конверсії (аудит #626); для prepaid позиції не зберігаємо
             if(payment!=="prepaid"){
               sessionStorage.setItem("pt_last_order_items", JSON.stringify(Object.keys(cart).map(function(id){
-                return {id:id, name:cart[id].name, price:+cart[id].price, qty:cart[id].qty}; })));   // для події purchase на thanks.html
+                return {id:id, name:cart[id].name, price:unitPriceOf(id, +cart[id].price), qty:cart[id].qty}; })));   // для події purchase на thanks.html (ціни ПІСЛЯ знижки)
             } else { sessionStorage.removeItem("pt_last_order_items"); }
           }catch(e){}
           // Оплата карткою: редірект на LiqPay. Якщо LiqPay не налаштований — НЕ імітуємо «дякуємо»,

@@ -1793,6 +1793,7 @@ def write_cart(addons=None):
       f'<p class="ret-line ret-cart">{RETURN_LINE}</p>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'
+        '<div class="row discount-row" id="sum-discount-row" hidden><span id="sum-discount-label">Знижка</span><span id="sum-discount">−0 ₴</span></div>'
         '<div class="row"><span id="sum-delivery-label" data-prepaid="' + DELIVERY_LABEL_PREPAID + '">Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="sum-delivery">' + DELIVERY_COST + '</span></div>'
         '<div class="row total"><span>Разом за товари</span><span id="sum-total">0 ₴</span></div>'
         '<div class="free-ship" id="free-ship-block"><div class="free-ship-track"><div class="free-ship-fill" id="free-ship-bar"></div></div>'
@@ -1825,6 +1826,11 @@ def write_cart(addons=None):
         '<div class="field"><label for="f-comment">Коментар до замовлення <span style="opacity:.6">(необовʼязково)</span></label>'
           '<textarea id="f-comment" name="comment" rows="3" maxlength="300" placeholder="Наприклад: це подарунок, зателефонуйте перед відправкою"></textarea>'
           '<div class="note" id="f-comment-count" style="margin:4px 0 0">до 300 символів</div></div>'
+        # Промокод (Code-Agent 13.10: POST api/promo/quote). Поле ховається, поки сервер знижок не відповів (feature-detect): нема бекенду — нема й поля.
+        '<div class="field promo-field" id="promo-field" hidden><label for="f-promo">Промокод</label>'
+          '<div class="promo-row"><input id="f-promo" name="promo" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Введіть промокод">'
+          '<button type="button" class="btn ghost" id="promo-apply">Застосувати</button></div>'
+          '<div class="note" id="promo-msg" role="status" aria-live="polite"></div></div>'
         '<div class="field"><label>Спосіб оплати</label>'
           + _pay_radios() +
         '</div>'
@@ -1837,6 +1843,7 @@ def write_cart(addons=None):
       '<aside class="cart-aside" id="cart-aside" aria-label="Інформація про замовлення">'
         '<div class="aside-card" id="aside-order"><h2>Ваше замовлення</h2><div id="aside-items"></div>'
           '<div class="row"><span>Товари</span><span id="aside-goods">0 ₴</span></div>'
+          '<div class="row discount-row" id="aside-discount-row" hidden><span id="aside-discount-label">Знижка</span><span id="aside-discount">−0 ₴</span></div>'
           '<div class="row"><span id="aside-delivery-label" data-prepaid="' + DELIVERY_LABEL_PREPAID + '">Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="aside-delivery">' + DELIVERY_COST + '</span></div>'
           '<div class="row total"><span>Разом за товари</span><span id="aside-total">0 ₴</span></div>'
           '<div class="note" id="delivery-note-aside" data-prepaid="' + esc(DELIVERY_NOTE_PREPAID) + '">' + DELIVERY_NOTE + '</div></div>'

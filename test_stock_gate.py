@@ -39,6 +39,10 @@ ss._alert = lambda key, text: alerts.append((key, text))
 cat = {str(i): {"stock": i % 4} for i in range(30000)}      # 30 000 позицій: вище порога «усічений каталог»
 snap = ss.build_snapshot(cat, datetime(2026, 10, 13, 17, 0, 0))
 chk("build_snapshot: ts, n, залишки цілі й невід'ємні", snap["ts"] == "2026-10-13T17:00:00" and snap["n"] == 30000 and snap["s"]["7"] == 3 and snap["s"]["8"] == 0)
+chk("діапазон залишку «5...10»: у знімок іде ВЕРХНЯ межа (10), а не мінімум", ss.build_snapshot({"1": {"stock": 5, "stock_max": 10}, "2": {"stock": 1}})["s"] == {"1": 10, "2": 1})
+import parser as tp
+chk("parser: _parse_ostatok_max('5...10 шт.')=10, '10...50 шт.'=50, '1 шт.'=1, ''=0", (tp._parse_ostatok_max("5...10 шт."), tp._parse_ostatok_max("10...50 шт."), tp._parse_ostatok_max("1 шт."), tp._parse_ostatok_max("")) == (10, 50, 1, 0))
+chk("parser: _parse_ostatok (мінімум) не змінився: '5...10 шт.'=5", tp._parse_ostatok("5...10 шт.") == 5)
 chk("залишок не число → 0, мінус → 0", ss.build_snapshot({"1": {"stock": "abc"}, "2": {"stock": -5}})["s"] == {"1": 0, "2": 0})
 out = tmp / "stock.json"
 ok = ss.run_once(fetch=lambda: cat, out=out, now=datetime(2026, 10, 13, 17, 0, 0))

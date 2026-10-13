@@ -135,6 +135,13 @@ def _parse_ostatok(raw: str) -> int:
     return int(nums[0]) if nums else 0
 
 
+def _parse_ostatok_max(raw: str) -> int:
+    """Верхня межа залишку Toysi: "10...50 шт." -> 50, "1 шт." -> 1, "" -> 0. Для перевірки залишку при оформленні (відмовляємо лише коли замовлено БІЛЬШЕ за верхню межу діапазону)."""
+    import re
+    nums = [int(n) for n in re.findall(r"\d+", raw)]
+    return max(nums) if nums else 0
+
+
 _VENDOR_PARAM_NAMES = {"бренд", "торгова марка", "виробник", "марка", "brand"}
 
 def _extract_vendor_from_params(params: list) -> str:
@@ -187,6 +194,7 @@ def _parse_xml(xml_content: bytes, lang: str = "ukr") -> Dict[str, dict]:
 
         ostatok_raw = offer.findtext("ostatok", "0").strip()
         stock       = _parse_ostatok(ostatok_raw)
+        stock_max   = _parse_ostatok_max(ostatok_raw)
 
         pictures    = [p.text.strip() for p in offer.findall("picture") if p.text and p.text.strip()]
         description = offer.findtext("description", "").strip()
@@ -211,6 +219,7 @@ def _parse_xml(xml_content: bytes, lang: str = "ukr") -> Dict[str, dict]:
             "name":          name,
             "price":         price,
             "stock":         stock,
+            "stock_max":     stock_max,   # верхня межа діапазону залишку («5...10 шт.» → 10); для перевірки при оформленні (stock_snapshot)
             "pictures":      pictures,
             "description":   description,
             "vendor":        vendor,

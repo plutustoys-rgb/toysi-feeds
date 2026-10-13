@@ -28,11 +28,12 @@ def _alert(key: str, text: str) -> None:
 
 
 def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
-    """{"ts", "n", "s": {id: залишок(int)}} з каталогу Toysi (parser.fetch_toysi_catalog)."""
+    """{"ts", "n", "s": {id: залишок(int)}} з каталогу Toysi (parser.fetch_toysi_catalog). Для діапазонних залишків Toysi («5...10 шт.», ≈21% каталогу) пишемо ВЕРХНЮ межу (stock_max):
+    сайт відмовляє лише коли замовлено більше за те, що Toysi МОЖЕ мати; нижня межа дала б хибні відмови (клієнт хоче 7 шт. із «5...10»)."""
     s = {}
     for pid, it in catalog.items():
         try:
-            s[str(pid)] = max(0, int(it.get("stock") or 0))
+            s[str(pid)] = max(0, int(it.get("stock_max", it.get("stock")) or 0))
         except (TypeError, ValueError):
             s[str(pid)] = 0
     return {"ts": (now or datetime.now()).isoformat(timespec="seconds"), "n": len(s), "s": s}

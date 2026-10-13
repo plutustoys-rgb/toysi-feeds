@@ -1227,7 +1227,7 @@ def _pick_day():
     return (datetime.now(timezone.utc) + timedelta(hours=3)).date().toordinal()
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, count=None):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1270,7 +1270,7 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
     out, used = [], set()
     for _ in range(HOME_PICK_MAX_PER_CAT):
         for c in order:
-            if len(out) >= HOME_PICK_COUNT:
+            if len(out) >= (HOME_PICK_COUNT if count is None else count):
                 break
             lst = [p for p in by[c] if _pick_key(p["name"]) not in used]
             if not lst:
@@ -1429,6 +1429,17 @@ def home_chip_defs(chip_sets):
 
 
 
+HOME_PLUTUS_POOL = 40   # «Нехай Плутус вибере» (SMM 13.10): випадковий товар із сьогоднішнього пулу добірки, лише в наявності
+
+
+def plutus_pool_attr(prods):
+    """JSON для data-pool кнопки героя: [[url, id, назва, ціна, категорія], ...] (той самий відбір, що й добірка каруселі, але до 40 позицій) або ''."""
+    pool = home_pick(prods, count=HOME_PLUTUS_POOL)
+    if not pool:
+        return ""
+    return esc(json.dumps([[f"product-{p['id']}.html", str(p["id"]), p["name"], p["price"], p.get("category") or ""] for p in pool], ensure_ascii=False, separators=(",", ":")))
+
+
 def write_home(prods, cats, cat_list, cat_slug):
     picks = home_pick(prods)
     pick_ids = {p["id"] for p in picks}
@@ -1479,6 +1490,9 @@ def write_home(prods, cats, cat_list, cat_slug):
             '<button class="arrow r" type="button" aria-label="Наступні товари">›</button>'
           '</div>'
         )
+    # кнопка героя (SMM 13.10): «Нехай Плутус вибере» — JS відкриває випадковий товар із пулу; без JS/пулу — каталог
+    _pool = plutus_pool_attr(prods)
+    hero_btn = ('<a class="btn" id="plutus-pick" href="catalog.html"' + (f' data-pool="{_pool}"' if _pool else "") + '>Нехай Плутус вибере</a>')
     body = (
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
       # poster завжди під низом, кліп кросфейдом поверх (див. initMascot): обидва <img> із width/height — CLS 0
@@ -1486,8 +1500,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ms, _w, _f in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(c[1]) for c in HERO_MASCOT_CLIPS)}" data-w="{",".join(str(c[2]) for c in HERO_MASCOT_CLIPS)}" data-nofirst="{",".join(str(i) for i, c in enumerate(HERO_MASCOT_CLIPS) if not c[3])}">'
       '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину, а маму робить спокійною.</p></div>'
-      '<div class="act"><a class="btn" href="nabory.html">Набори в подарунок</a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
-      '<div class="chip">🚚 Нова Пошта · ' + PAY_SHORT + '</div></div></div>'
+      '<div class="act">' + hero_btn + '<a class="hero-all" href="catalog.html">Усі іграшки</a></div></div>'
       + carousel +
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
       f'<div class="catrow">{cat_tiles}</div>'

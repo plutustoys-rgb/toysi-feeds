@@ -1499,7 +1499,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       f'<div class="hero2"><span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async" '
       f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ms, _w, _f in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(c[1]) for c in HERO_MASCOT_CLIPS)}" data-w="{",".join(str(c[2]) for c in HERO_MASCOT_CLIPS)}" data-nofirst="{",".join(str(i) for i, c in enumerate(HERO_MASCOT_CLIPS) if not c[3])}">'
       '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
-      '<div class="txt"><h1>Іграшки, що радують</h1><p>Не знаєте, що обрати? Нехай Плутус підкаже</p></div>'
+      '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
       '<div class="act">' + hero_btn + '<a class="hero-all" href="catalog.html">Усі іграшки</a></div></div>'
       + carousel +
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
@@ -1510,7 +1510,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),
-        description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі та творчі набори — з доставкою Новою Поштою по всій Україні, повернення 14 днів.",
+        description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі та творчі набори. Іграшки для дітей від 1 року, повернення 14 днів.",
         canonical="index.html", og_image=OG_IMAGE))
 
 def _cut(text, n):

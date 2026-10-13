@@ -393,50 +393,15 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips + .chip-sub:empty{display:none}
 /* ══ Тематичні чипи й банери (SMM 13.10 бриф; власник: «креатив дизайну кнопки — 0») ══
    «Наліпка»: нахил −1.5° (hover 0°), рамка 2px, жорстка тінь 3px 3px 0 у другому кольорі теми, вага 800, letter-spacing .02em; мікроанімація «дихання» + блиск раз на 6 с; усе вимикається при prefers-reduced-motion. Лише векторні іконки. */
-.home-chips .chip.chip-theme{position:relative;display:inline-flex;align-items:center;gap:7px;font-weight:800;letter-spacing:.02em;border-width:2px;border-style:solid;transform:rotate(-1.5deg);transition:transform .18s ease,box-shadow .18s ease;overflow:hidden;animation:chip-breathe 3.2s ease-in-out infinite}
+.home-chips .chip.chip-theme{position:relative;display:inline-flex;align-items:center;gap:7px;font-weight:800;letter-spacing:.02em;border-width:2px;border-style:solid;transform:rotate(-1.5deg);transition:transform .18s ease,box-shadow .18s ease;overflow:hidden}
 .home-chips .chip.chip-theme:hover,.home-chips .chip.chip-theme:focus-visible{transform:rotate(0deg) scale(1.03)}
-.home-chips .chip.chip-theme::after{content:"";position:absolute;top:-20%;left:-60%;width:30%;height:140%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent);transform:skewX(-18deg);animation:chip-shine 6s ease-in-out infinite}
 .home-chips .chip.chip-theme .chip-ico{flex:none}
 .home-chips .chip.chip-theme.active{transform:rotate(0deg) scale(1.05);filter:saturate(1.15);outline:2px solid currentColor;outline-offset:2px}
-@keyframes chip-breathe{0%,100%{scale:1}50%{scale:1.03}}
-@keyframes chip-shine{0%,70%{left:-60%}100%{left:130%}}
 /* Хелловін */
-.home-chips .chip[data-set=hel]{background:#2A1647;color:#FFF3E0;border-color:#FF7A1A;box-shadow:3px 3px 0 #FF7A1A,0 0 0 rgba(255,122,26,0);animation:chip-breathe 3.2s ease-in-out infinite,chip-glow 3s ease-in-out infinite}
-@keyframes chip-glow{0%,100%{box-shadow:3px 3px 0 #FF7A1A,0 0 0 rgba(255,122,26,0)}50%{box-shadow:3px 3px 0 #FF7A1A,0 0 12px rgba(255,122,26,.5)}}
+.home-chips .chip[data-set=hel]{background:#2A1647;color:#FFF3E0;border-color:#FF7A1A;box-shadow:3px 3px 0 #FF7A1A}
 /* Миколай і Новий рік: червоний «хутряний комір» зверху, сніжинка мерехтить */
 .home-chips .chip[data-set=ny]{background:#C62F2F;color:#fff;border-color:#8E1F1F;border-top:5px dotted #fff;box-shadow:3px 3px 0 #0F2A4A}
-.home-chips .chip[data-set=ny] .chip-ico{animation:ico-twinkle 2.4s ease-in-out infinite}
-@keyframes ico-twinkle{0%,100%{opacity:.5}50%{opacity:1}}
 /* Набори в подарунок: бантик хитається ±3° */
+.home-chips .chip[data-set=ukr]{background:#EAF2FF;color:#0B2447;border-color:#1F6FD6 #FFD43B #FFD43B #1F6FD6;box-shadow:3px 3px 0 #FFD43B}
 .home-chips .chip[data-set=nab]{background:#FFD9A8;color:#3A2A1E;border-color:#E04E39;box-shadow:3px 3px 0 #E8B04A}
-.home-chips .chip[data-set=nab] .chip-ico{transform-origin:50% 60%;animation:ico-sway 4s ease-in-out infinite}
-@keyframes ico-sway{0%,100%{transform:rotate(-3deg)}50%{transform:rotate(3deg)}}
 
-/* Банер-слайд: горизонтальна плитка завширшки у ДВІ картки, висота як у карток */
-.car .slide.banner{flex:0 0 calc(2 * clamp(150px,19%,230px) + 12px)}
-@media(max-width:700px){.car .slide.banner{flex:0 0 calc(88% + 12px)}}
-.card.banner{position:relative;overflow:hidden;flex-direction:row;align-items:stretch;border-width:2px;padding:0;text-decoration:none;box-shadow:3px 3px 0 var(--b-shadow,#f1b878);transform:rotate(-1deg);transition:transform .18s ease}
-.card.banner:hover,.card.banner:focus-visible{transform:rotate(0)}
-.card.banner .b-text{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:center;gap:6px;padding:14px 12px 14px 16px;min-width:0;flex:1}
-.card.banner .nm{font-size:clamp(22px,4.2vw,30px);line-height:1.1;font-weight:800;letter-spacing:.02em;color:inherit;display:block;-webkit-line-clamp:unset;overflow:visible}
-.card.banner .b-sub{font-size:16px;line-height:1.25;color:inherit;opacity:.92}
-.card.banner .b-cta{align-self:flex-start;margin-top:4px;border-radius:12px;padding:8px 14px;font-size:15px;font-weight:800;letter-spacing:.02em;border:2px solid transparent;position:relative;overflow:hidden}
-.card.banner .b-cta::after{content:"";position:absolute;top:-30%;left:-60%;width:30%;height:160%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.6),transparent);transform:skewX(-18deg);animation:chip-shine 6s ease-in-out infinite}
-.card.banner .b-art{position:relative;z-index:1;align-self:flex-end;flex:none;width:clamp(72px,32%,120px);height:auto;margin-right:6px;object-fit:contain}
-.card.banner .b-deco{position:absolute;pointer-events:none;z-index:0}
-.card.banner.theme-hel{background:linear-gradient(135deg,#1B1030,#3A1D5C);color:#FFF3E0;border-color:#FF7A1A;--b-shadow:#FF7A1A}
-.card.banner.theme-hel .nm{text-shadow:0 0 14px #FF7A1A55}
-.card.banner.theme-hel .b-cta{background:#FF7A1A;color:#1B1030;border-color:#FFB066}
-.card.banner.theme-hel .b-web{top:0;right:0;width:84px;height:84px;opacity:.25}
-.card.banner.theme-ny{background:linear-gradient(135deg,#0F2A4A,#1E5A8A);color:#fff;border-color:#F2C14E;--b-shadow:#D93A3A}
-.card.banner.theme-ny .b-cta{background:#D93A3A;color:#fff;border-color:#F2C14E}
-.card.banner.theme-ny .b-snow{top:4px;right:6px;width:120px;height:40px;opacity:.9;animation:ico-twinkle 2.4s ease-in-out infinite}
-.card.banner.theme-nab{background:linear-gradient(135deg,#FFF1DC,#FFD9A8);color:#3A2A1E;border-color:#E04E39;--b-shadow:#E8B04A}
-.card.banner.theme-nab .b-cta{background:#C93A26;color:#fff;border-color:#E8B04A}
-.card.banner.theme-nab .b-ribbon{top:0;right:0;width:88px;height:88px}
-@media(max-width:360px){.card.banner .b-art{width:60px}.card.banner .nm{font-size:22px}.card.banner .b-sub{font-size:15px}}
-@media (prefers-reduced-motion:reduce){
-  .home-chips .chip.chip-theme,.home-chips .chip.chip-theme::after,.home-chips .chip[data-set=hel],.home-chips .chip .chip-ico,.card.banner .b-cta::after,.card.banner .b-snow{animation:none!important}
-  .home-chips .chip.chip-theme,.card.banner{transform:none}
-  .home-chips .chip.chip-theme:hover,.card.banner:hover{transform:none}
-}

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""test_feed_publish_gate.py — гейт розміру фіду перед публікацією + мітка генерації (feed_publish_gate.sh, feed_meta.py).
-Інваріанти: (1) порожній/обрізаний фід НЕ пускається (абсолютний мінімум і просідання >30% проти опублікованого); (2) нормальне зростання/невелике просідання пускається;
-(3) FEED_GATE_OVERRIDE=1 пропускає свідоме скорочення; (4) feed_meta.json: generated_at = час ВИХІДНОГО файлу, не час публікації; не опублікований цього разу фід лишає ПОПЕРЕДНІЙ запис;
-(5) ГОЛОВНЕ (запит Консультанта): публікація, що не містить файлів попередньої, НЕ затирає їх — на справжньому git: дві послідовні «публікації» в орфан-гілку по схемі
-publish_feed_pipeline_vps.sh (`git checkout origin/feed-data -- .` + умовний перезапис), файли першої лишаються в дереві другої.
+"""test_feed_publish_gate.py — гейт фіду перед публікацією на ФАКТАХ (без довільних порогів, рішення власника 13.10.2026) + мітка генерації (feed_publish_gate.sh, feed_meta.py).
+Інваріанти: (1) відсутній/порожній файл, нечитабельний або ОБРІЗАНИЙ XML, XML без жодної позиції → блокує з причиною; (2) валідний XML з будь-якою кількістю позицій (навіть малою чи меншою, ніж було) → пускає
+(жодних порогів 3000/30%); (3) FEED_GATE_OVERRIDE=1 пропускає; (4) feed_meta.json: generated_at = час ВИХІДНОГО файлу, не час публікації; не опублікований цього разу фід лишає ПОПЕРЕДНІЙ запис;
+(5) ГОЛОВНЕ (запит Консультанта): публікація, що не містить файлів попередньої, НЕ затирає їх — на справжньому git: дві послідовні «публікації» в орфан-гілку по схемі publish_feed_pipeline_vps.sh
+(`git checkout origin/feed-data -- .` + умовний перезапис), файли першої лишаються в дереві другої.
 Потрібні bash і git у PATH. `python test_feed_publish_gate.py` → exit 0/1."""
 import json
 import os
@@ -34,46 +34,55 @@ def chk(n, c):
 tmp = tempfile.mkdtemp()
 
 
-def feed(name, n, tag="item"):
+def feed(name, n, tag="item", truncate=False):
     p = os.path.join(tmp, name)
     open_t = f"<{tag}>" if tag == "item" else f"<{tag} id=\"1\">"
+    body = "<root>" + "".join(f"{open_t}x</{tag}>" for _ in range(n)) + "</root>"
+    if truncate:
+        body = body[: len(body) - 20]            # обрізаний: немає закриваючих тегів
     with open(p, "w", encoding="utf-8") as f:
-        f.write("<root>" + "".join(f"{open_t}x</{tag}>" for _ in range(n)) + "</root>")
+        f.write(body)
     return p
 
 
-def gate(new, old, mn, env=None):
+def gate(new, env=None):
     e = dict(os.environ)
     e.pop("FEED_GATE_OVERRIDE", None)
+    e["PLUTUS_PY"] = sys.executable.replace("\\", "/")
     e.update(env or {})
-    r = subprocess.run(["bash", "-c", f'. "{GATE}"; feed_gate_ok "$1" "$2" "$3"', "x", new.replace("\\", "/"), old.replace("\\", "/"), str(mn)],
+    r = subprocess.run(["bash", "-c", f'. "{GATE}"; feed_gate_ok "$1"', "x", new.replace("\\", "/")],
                        capture_output=True, text=True, encoding="utf-8", errors="replace", env=e)
     return r.returncode, r.stdout.strip()
 
 
-old_ok = feed("old.xml", 100)
-rc, _ = gate(feed("n_same.xml", 100), old_ok, 10)
-chk("той самий розмір → пускає", rc == 0)
-rc, _ = gate(feed("n_grow.xml", 300), old_ok, 10)
-chk("зростання (11837 проти 5980 на практиці) → пускає", rc == 0)
-rc, _ = gate(feed("n_minus20.xml", 80), old_ok, 10)
-chk("просідання на 20% → пускає", rc == 0)
-rc, msg = gate(feed("n_minus40.xml", 60), old_ok, 10)
-chk("просідання на 40% → БЛОКУЄ з причиною", rc == 1 and "30%" in msg)
-rc, msg = gate(feed("n_zero.xml", 0), old_ok, 10)
-chk("порожній фід → БЛОКУЄ (нижче абсолютного мінімуму)", rc == 1 and "мінімум" in msg)
-rc, msg = gate(os.path.join(tmp, "нема.xml"), old_ok, 10)
+rc, msg = gate(feed("n_big.xml", 300))
+chk("валідний фід 300 позицій → пускає", rc == 0 and "300" in msg)
+rc, msg = gate(feed("n_one.xml", 1))
+chk("валідний фід з ОДНІЄЮ позицією → пускає (жодного мінімуму)", rc == 0)
+rc, msg = gate(feed("n_small.xml", 7))
+chk("валідний, але малий/менший за попередній фід → пускає (це правда про каталог, не поломка)", rc == 0)
+rc, msg = gate(feed("n_zero.xml", 0))
+chk("XML без жодної позиції → БЛОКУЄ з причиною", rc == 1 and "жодної позиції" in msg)
+rc, msg = gate(feed("n_trunc.xml", 50, truncate=True))
+chk("ОБРІЗАНИЙ XML → БЛОКУЄ з причиною", rc == 1 and "обрізаний" in msg)
+trash = os.path.join(tmp, "trash.xml")
+open(trash, "w", encoding="utf-8").write("це не xml <<<")
+rc, msg = gate(trash)
+chk("сміття замість XML → БЛОКУЄ", rc == 1)
+empty = os.path.join(tmp, "empty.xml")
+open(empty, "w").close()
+rc, msg = gate(empty)
+chk("порожній файл → БЛОКУЄ", rc == 1 and "порожній" in msg)
+rc, msg = gate(os.path.join(tmp, "нема.xml"))
 chk("файлу нема → БЛОКУЄ", rc == 1)
-rc, _ = gate(feed("first.xml", 50), os.path.join(tmp, "нема_раніше.xml"), 10)
-chk("перша публікація (опублікованого ще нема) → пускає, якщо вище мінімуму", rc == 0)
-rc, _ = gate(feed("n_tiny_first.xml", 5), os.path.join(tmp, "нема_раніше.xml"), 10)
-chk("перша публікація нижче абсолютного мінімуму → блокує", rc == 1)
-rc, msg = gate(feed("n_cut.xml", 20), old_ok, 10, {"FEED_GATE_OVERRIDE": "1"})
-chk("FEED_GATE_OVERRIDE=1 пропускає свідоме скорочення", rc == 0 and "override" in msg)
-rc, _ = gate(feed("offers_new.xml", 80, "offer"), feed("offers_old.xml", 100, "offer"), 10)
-chk("YML-формат (<offer id=…>) рахується так само", rc == 0)
-rc, _ = gate(feed("offers_cut.xml", 50, "offer"), os.path.join(tmp, "offers_old.xml"), 10)
-chk("YML: просідання 50% → блокує", rc == 1)
+rc, msg = gate(feed("n_cut.xml", 0), {"FEED_GATE_OVERRIDE": "1"})
+chk("FEED_GATE_OVERRIDE=1 пропускає свідомо", rc == 0 and "override" in msg)
+rc, msg = gate(feed("offers_new.xml", 80, "offer"))
+chk("YML-формат (<offer id=…>) рахується так само", rc == 0 and "80" in msg)
+rc, msg = gate(feed("offers_trunc.xml", 80, "offer", truncate=True))
+chk("YML обрізаний → БЛОКУЄ", rc == 1)
+chk("жодних довільних порогів у скрипті гейта (немає 'min_abs', '70' і «30%»)", not any(x in open(os.path.join(HERE, "feed_publish_gate.sh"), encoding="utf-8").read().replace("0.70", "") for x in ("min_abs", "* 70", "понад 30%")))
+
 
 # ── feed_meta
 work = os.path.join(tmp, "work")

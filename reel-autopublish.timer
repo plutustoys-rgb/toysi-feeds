@@ -1,0 +1,12 @@
+[Unit]
+Description=PlutusToys: розклад автопублікації IG-Reels (вівторок і п'ятниця 18:30 Київ, рішення власника 13.10.2026)
+
+[Timer]
+# 2 Reels на тиждень. IG-фото таймер публікує о 18:00 (social-poster-ig.timer), тож Reel виходить через пів години.
+OnCalendar=Tue,Fri *-*-* 18:30:00
+# Наздогнати пропущене, якщо VPS був вимкнений (черга й claim-файл не дадуть дубля).
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

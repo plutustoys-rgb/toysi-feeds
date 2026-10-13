@@ -1295,6 +1295,86 @@ HOME_SEASONAL = (
     ("ny", "Миколай і Новий рік", "Подарунки на Миколая і під ялинку", r"новорічн|ялинк|сніговик|санта|різдв|дід мороз|сніг|санки|зимов", (11, 25), (12, 31)),
 )
 HOME_SEASONAL_MIN = 6
+# «Популярне зараз» — чип за ПОПИТОМ Google (власник 13.10: «чому не маркетинг за попитом»): список id від SEO у site/demand_featured.json
+# {"date": "YYYY-MM-DD", "source": "Search Console 28d", "ids": ["..."], "categories": ["..."]}. Нема файлу / застарів (> DEMAND_MAX_AGE_DAYS) / менше DEMAND_MIN карток у наявності — чипа нема (не вигадуємо).
+DEMAND_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demand_featured.json")
+DEMAND_MAX_IDS = 40
+DEMAND_MAX_AGE_DAYS = 21
+DEMAND_MIN = 6
+
+
+def _load_demand_featured(today=None):
+    """({'ids': [...], 'categories': [...], 'date': date|None, 'source': str}) або None. Нема файлу — None без шуму; є, але зламаний/застарілий — None ГОЛОСНО (stderr)."""
+    try:
+        with open(DEMAND_FILE, encoding="utf-8-sig") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"[build] ⚠ demand_featured.json НЕ прочитано ({type(e).__name__}: {e}) — чипа «Популярне зараз» нема", file=sys.stderr)
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as e:
+        print(f"[build] ⚠ demand_featured.json — невалідний JSON ({e}) — чипа нема", file=sys.stderr)
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("ids"), list):
+        print('[build] ⚠ demand_featured.json: очікується {"date":..., "ids":[...]} — чипа нема', file=sys.stderr)
+        return None
+    dt = None
+    m = re.fullmatch(r"([0-9]{4})-([0-9]{2})-([0-9]{2})", str(data.get("date") or "").strip())
+    if m:
+        try:
+            dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        except ValueError:
+            dt = None
+    if dt is None:
+        print("[build] ⚠ demand_featured.json: нема коректної date (YYYY-MM-DD) — чипа нема (без дати свіжість невідома)", file=sys.stderr)
+        return None
+    if ((today or _today()) - dt).days > DEMAND_MAX_AGE_DAYS:
+        print(f"[build] ⚠ demand_featured.json застарів ({dt}, > {DEMAND_MAX_AGE_DAYS} днів) — чипа нема", file=sys.stderr)
+        return None
+    ids = []
+    for x in data["ids"]:
+        if isinstance(x, bool) or not isinstance(x, (str, int)):
+            continue
+        sx = str(x).strip()
+        if sx and sx not in ids:
+            ids.append(sx)
+            if len(ids) >= DEMAND_MAX_IDS:
+                break
+    cats = [str(c).strip() for c in (data.get("categories") or []) if isinstance(c, str) and c.strip()][:DEMAND_MAX_IDS] if isinstance(data.get("categories"), list) else []
+    return {"ids": ids, "categories": cats, "date": dt, "source": str(data.get("source") or "")[:80]}
+
+
+def demand_pick(prods, demand=None):
+    """До HOME_PICK_COUNT карток із списку попиту: у наявності, внесок відомий і ≥ 0, не «Уцінка»/зброя/мілітарі; щодня інший зріз серед топ-списку (стабільний у добі)."""
+    d = demand if demand is not None else _load_demand_featured()
+    if not d or not d["ids"]:
+        return []
+    by_id = {str(p["id"]): p for p in prods}
+    ok = []
+    for i in d["ids"]:
+        p = by_id.get(i)
+        if not p or (p.get("stock") or 0) <= 0 or not p.get("photo"):
+            continue
+        c = p.get("contribution")
+        if c is None or c < 0:
+            continue
+        name = p.get("name") or ""
+        if _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name) or any(w in name.lower() for w in NABORY_BAD_WORDS):
+            continue
+        ok.append(p)
+    if len(ok) < DEMAND_MIN:
+        return []
+    rng = random.Random(HOME_PICK_SEED * 7 + _pick_day() * 104729)
+    head = ok[:DEMAND_MAX_IDS]
+    if len(head) > HOME_PICK_COUNT:
+        # перші 4 найвищого попиту — завжди; решта слотів — щоденний зріз із решти списку (різноманітність без втрати топу)
+        top, rest = head[:4], head[4:]
+        rng.shuffle(rest)
+        head = top + rest[:HOME_PICK_COUNT - 4]
+    return head[:HOME_PICK_COUNT]
 # SMM 13.10: з сезонних чипів прибрати книжки й мангу (категорія книг/манга/комікс/художн/літератур або «манга»/«роман» у назві), ключові слова лишаються (привид, відьм — доречні на іграшках).
 HOME_SEASONAL_BAD_CAT = re.compile(r"книг|манга|комікс|художн|літератур", re.I)
 HOME_SEASONAL_BAD_NAME = re.compile(r"манга|роман", re.I)
@@ -1318,6 +1398,9 @@ def home_chip_sets(prods):
         "m700": home_pick(prods, pmin=300, pmax=700, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS),
         "nab": [p for _g, p in nabory_pick(prods)[:HOME_PICK_COUNT]],
     }
+    dp = demand_pick(prods)
+    if dp:
+        sets["pop"] = dp
     for key, _label, _sub, rx, first, last in HOME_SEASONAL:
         if seasonal_active(first, last):
             pk = home_pick(prods, pmin=100, pmax=700, min_contrib=HOME_SEASONAL_MIN_CONTRIB, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
@@ -1331,7 +1414,8 @@ def home_chip_sets(prods):
 def home_chip_defs(chip_sets):
     """[(key, label, sub)] у порядку показу: активні сезонні (з наборами) → «До 300 ₴», «300–700 ₴», «Набори»."""
     seasonal = [(k, lb, sb) for k, lb, sb, _rx, f, l in HOME_SEASONAL if k in chip_sets]
-    return seasonal + [(k, t, "") for k, t in HOME_CHIPS if k in chip_sets]
+    pop = [("pop", "Популярне зараз", "Те, що зараз шукають найчастіше")] if "pop" in chip_sets else []
+    return seasonal + pop + [(k, t, "") for k, t in HOME_CHIPS if k in chip_sets]
 
 
 # Перший слайд каруселі — плитка-банер (SMM 13.10): не товар, а тема дня (щодня інша серед активних): текст + емодзі + помаранчевий CTA, без картинки й без знижки.

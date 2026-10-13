@@ -229,6 +229,7 @@ def create_receipt(
     customer_phone: str | None = None,
     footer: str | None = None,
     customer_email: str | None = None,
+    header: str | None = None,
 ) -> dict:
     """POST /api/v1/receipts/sell (підтверджено офіційним Swagger,
     api.checkbox.in.ua/api/docs) — прямий чек продажу, БЕЗ жодної залежності
@@ -293,6 +294,9 @@ def create_receipt(
     # footer (ReceiptSellPayload.footer, OpenAPI 12.10.2026): текст у чеку, напр. номер платежу LiqPay й номер замовлення — для зіставлення із зарахуванням у виписці
     if footer:
         body["footer"] = footer[:250]
+    # header (ReceiptSellPayload.header, OpenAPI 13.10.2026): текст у шапці чека. Власник 13.10: у чеку онлайн-оплати нема назви магазину (шапка каси: ФОП, «Інтернет-магазин», адреса).
+    if header:
+        body["header"] = header[:250]
     # ВИПРАВЛЕНО (2026-07-22, живий крах усіх 6 замовлень на першому
     # реальному прогоні після активації ключів — 422 Unprocessable Entity):
     # Checkbox вимагає, щоб order_id був СПРАВЖНІМ UUID

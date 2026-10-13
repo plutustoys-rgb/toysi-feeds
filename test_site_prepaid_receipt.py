@@ -112,6 +112,7 @@ chk("порядок: спершу чек, потім передача в Toysi",
 rc = receipt_calls[0]
 chk("чек: CASHLESS, сума 100, номер замовлення в order_id", rc["payment_type"] == "CASHLESS" and rc["total_amount"] == 100 and rc["order_id"] == "site_PT-R1")
 chk("чек: footer містить номер платежу LiqPay і номер замовлення", rc["footer"] == "LiqPay payment_id 123456; замовлення PT-R1")
+chk("чек: header = назва магазину (PlutusToys · plutustoys.com.ua)", rc.get("header") == "PlutusToys · plutustoys.com.ua")
 chk("чек: телефон і e-mail покупця передані для електронного надсилання", rc["customer_phone"] == "380671112233" and rc["customer_email"] == "buyer@example.com")
 chk("чек: позиції з ціною й кількістю", rc["goods"] == [{"code": "1", "name": "Тестовий товар", "price": 100, "qty": 1}])
 o = get("PT-R1")
@@ -323,6 +324,10 @@ chk("тіло Checkbox: footer, delivery.phone і delivery.emails", posted.get("
 posted.clear()
 checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASH", total_amount=100, customer_email="не-пошта")
 chk("некоректний e-mail ігнорується, без footer поле не додається", "footer" not in posted and "delivery" not in posted)
+checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASHLESS", total_amount=100, order_id="site_X", header="PlutusToys · plutustoys.com.ua")
+chk("тіло Checkbox: header потрапляє в запит; без header поля нема", posted.get("header") == "PlutusToys · plutustoys.com.ua")
+checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASH", total_amount=100)
+chk("без header поле header не додається", "header" not in posted)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

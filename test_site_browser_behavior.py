@@ -198,7 +198,8 @@ with sync_playwright() as p:
         chk(f"{w}x{h}: чип натиснуто до появи каруселі у вікні → view_item_list РІВНО один (без дубля від IntersectionObserver): {lists}", lists == [["home_chip_nab", "home_chip_nab"]])
         if w == 320:
             m = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const r=[...b.querySelectorAll('button')].map(x=>x.getBoundingClientRect()); return [Math.max(...r.map(x=>x.right)), innerWidth, document.documentElement.scrollWidth]})()")
-            chk(f"320px: чипи переносяться — усі в межах вікна, без горизонтального скролу {m}", m[0] <= m[1] + 1 and m[2] <= m[1])
+            row = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const cs=getComputedStyle(b); const bt=[...b.querySelectorAll('.chip')].map(x=>x.getBoundingClientRect().top); const car=document.getElementById('home-car').getBoundingClientRect(); return [Math.max(...bt)-Math.min(...bt), cs.flexWrap, cs.overflowX, document.documentElement.scrollWidth<=innerWidth, Math.round(car.top)]})()")
+            chk(f"320px: чипи в ОДИН рядок (nowrap, overflow-x auto — горизонтальний скрол, не перенесення), сторінка без горизонтального скролу, карусель починається вище 330 px {row}", row[0] < 14 and row[1] == "nowrap" and row[2] == "auto" and row[3] and row[4] < 330)
         ctx.close()
 
     # ── Плутус: ротація ──

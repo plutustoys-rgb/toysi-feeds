@@ -390,7 +390,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips{visibility:hidden}
 .home-chips.js{visibility:visible}
 .home-chips button.chip{cursor:pointer;font-family:inherit}
-@media(max-width:380px){.home-chips{flex-wrap:wrap;overflow:visible}}   /* 320–380 px: усі чипи видно, без прихованого горизонтального скролу (аудит 13.10) */
+/* 320–380 px: чипи — ОДИН рядок із горизонтальним скролом, як на 390 px (SMM 13.10 за ретро-аудитом: перенесення 11–12 чипів у 4–5 рядків з'їдало ≈270 px — перший екран без карток) */
 .home-chips + .chip-sub{margin:-4px 16px 8px;font-size:13px;color:var(--muted)}
 .home-chips + .chip-sub:empty{display:none}
 /* ══ Тематичні чипи й банери (SMM 13.10 бриф; власник: «креатив дизайну кнопки — 0») ══

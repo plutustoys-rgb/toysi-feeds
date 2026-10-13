@@ -1208,6 +1208,15 @@ def _pick_key(name):
     return " ".join(words[:2]) or n.strip()
 
 
+def _today():
+    """Сьогодні за Києвом (UTC+3); env SITE_PICK_DATE=YYYY-MM-DD — для тестів і відтворення (той самий, що для ротації добірки)."""
+    raw = os.environ.get("SITE_PICK_DATE", "").strip()
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", raw):
+        y, m, d = (int(x) for x in raw.split("-"))
+        return datetime(y, m, d).date()
+    return (datetime.now(timezone.utc) + timedelta(hours=3)).date()
+
+
 def _pick_day():
     """Номер дня для щоденної ротації добірки (власник 13.10: «в каруселі крутяться одні й ті самі товари»). Київ (UTC+3), env SITE_PICK_DATE=YYYY-MM-DD — для тестів/відтворення.
     Добірка стабільна ПРОТЯГОМ доби (збірка кожні 2 год дає ту саму), а наступного дня — інша."""
@@ -1218,7 +1227,7 @@ def _pick_day():
     return (datetime.now(timezone.utc) + timedelta(hours=3)).date().toordinal()
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset()):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=()):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1239,6 +1248,10 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
         if cat in HOME_PICK_EXCLUDED_CATS or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
             continue
         if is_weapon_replica(str(p["id"]), name):
+            continue
+        if name_re is not None and not name_re.search(name):
+            continue   # тематичний набір (сезонні чипи): лише назви за ключовими словами
+        if bad_words and any(w in name.lower() for w in bad_words):
             continue
         elig.append(p)
     by = {}
@@ -1270,6 +1283,20 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
 # Чипи над каруселлю головної (SMM 12.10): «До 300 ₴» (внесок ≥50), «300–700 ₴» (внесок ≥100, як основна добірка), «Набори» (відбір /nabory.html, перші 10 по колах груп). Набори — у <template> (інертні: фото не вантажаться,
 # поки чип не натиснуто), у кожному ≤10 карток із бейджем залишку ≤3; перші картки НЕ eager. Ключі латиницею — у назвах подій home_chip_<key>.
 HOME_CHIPS = (("u300", "До 300 ₴"), ("m700", "300–700 ₴"), ("nab", "Набори"))
+# Сезонні чипи (SMM 13.10; правила й підписи — її): показуються лише в своє вікно дат (за Києвом, на момент збірки; збірка кожні 2 год), для кожного — ключові слова в назві, stock ≥ 3 (як у плані SMM:
+# build бере лише товари в наявності, окремого порога залишку нема), ціна 100–700, внесок ≥ 30; мілітарі/зброя (NABORY_BAD_WORDS) відсіюється. Менше HOME_SEASONAL_MIN карток — чип не показуємо.
+# (key, назва чипа, підпис під чипами, ключові слова (regex, регістр ігнорується), перший день, останній день) — дні у вигляді (місяць, день).
+HOME_SEASONAL = (
+    ("hel", "Хелловін", "Страшно весело — до Гелловіну", r"хелловін|гелловін|halloween|привид|гарбуз|скелет|вампір|відьм", (10, 1), (10, 31)),
+    ("ny", "Миколай і Новий рік", "Подарунки на Миколая і під ялинку", r"новорічн|ялинк|сніговик|санта|різдв|дід мороз|сніг|санки|зимов", (11, 25), (12, 31)),
+)
+HOME_SEASONAL_MIN = 6
+HOME_SEASONAL_MIN_CONTRIB = 30.0
+
+
+def seasonal_active(first, last, today=None):
+    t = today or _today()
+    return (first[0], first[1]) <= (t.month, t.day) <= (last[0], last[1])
 HOME_CHIP_U300_MAX, HOME_CHIP_U300_MIN = 299.99, 50
 HOME_CHIP_U300_CONTRIB = 50.0
 # Не іграшки (аудит 13.10: перша картка «До 300 ₴» на живих даних — «Тренировочні трусики…» з категорії «Клейонки, килимки і підгузники») — з чипів прибираємо.
@@ -1284,7 +1311,19 @@ def home_chip_sets(prods):
         "m700": home_pick(prods, pmin=300, pmax=700, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS),
         "nab": [p for _g, p in nabory_pick(prods)[:HOME_PICK_COUNT]],
     }
+    for key, _label, _sub, rx, first, last in HOME_SEASONAL:
+        if seasonal_active(first, last):
+            pk = home_pick(prods, pmin=100, pmax=700, min_contrib=HOME_SEASONAL_MIN_CONTRIB, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
+                           name_re=re.compile(rx, re.I), bad_words=NABORY_BAD_WORDS)
+            if len(pk) >= HOME_SEASONAL_MIN:
+                sets[key] = pk
     return {k: v for k, v in sets.items() if v}
+
+
+def home_chip_defs(chip_sets):
+    """[(key, label, sub)] у порядку показу: активні сезонні (з наборами) → «До 300 ₴», «300–700 ₴», «Набори»."""
+    seasonal = [(k, lb, sb) for k, lb, sb, _rx, f, l in HOME_SEASONAL if k in chip_sets]
+    return seasonal + [(k, t, "") for k, t in HOME_CHIPS if k in chip_sets]
 
 
 def write_home(prods, cats, cat_list, cat_slug):
@@ -1325,8 +1364,8 @@ def write_home(prods, cats, cat_list, cat_slug):
               '<noscript><style>.home-chips{display:none}</style></noscript>'
               '<div class="chips home-chips" id="home-chips" role="group" aria-label="Підбір іграшок">'
               '<button type="button" class="chip active" data-set="all" aria-pressed="true">Усі</button>'
-              + "".join(f'<button type="button" class="chip" data-set="{k}" aria-pressed="false">{esc(t)}</button>' for k, t in HOME_CHIPS if k in chip_sets)
-              + '</div>'
+              + "".join(f'<button type="button" class="chip" data-set="{k}" data-sub="{esc(sb)}" aria-pressed="false">{esc(t)}</button>' for k, t, sb in home_chip_defs(chip_sets))
+              + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p>'
               + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
         carousel = (
           '<div class="sec-title"><h2>Добірка Плутуса</h2><a href="catalog.html">Дивитись усі →</a></div>'

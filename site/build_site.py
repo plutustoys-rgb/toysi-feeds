@@ -1334,6 +1334,27 @@ def home_chip_defs(chip_sets):
     return seasonal + [(k, t, "") for k, t in HOME_CHIPS if k in chip_sets]
 
 
+# Перший слайд каруселі — плитка-банер (SMM 13.10): не товар, а тема дня (щодня інша серед активних): текст + емодзі + помаранчевий CTA, без картинки й без знижки.
+# (key, емодзі, заголовок, підпис, куди: «chip:<ключ чипа>» — розкриває чип на місці, або URL; умова показу)
+HOME_BANNERS = (
+    ("hel", "🎃", "Хелловін-добірка", "Страшно весело — до Гелловіну", "chip:hel"),
+    ("nab", "🎁", "Набори в подарунок", "Готові набори — усе потрібне в комплекті", "nabory.html"),
+)
+
+
+def home_banner_html(chip_sets, has_nabory):
+    """HTML плитки-банера на сьогодні або '' (немає активних тем). Тема дня = індекс за номером дня серед активних (hel — лише коли є сезонний чип; nab — лише коли є сторінка /nabory.html)."""
+    active = [b for b in HOME_BANNERS if (b[4] == "nabory.html" and has_nabory) or (b[4].startswith("chip:") and b[4][5:] in chip_sets)]
+    if not active:
+        return ""
+    key, emoji, title, sub, dest = active[_pick_day() % len(active)]
+    chip = dest[5:] if dest.startswith("chip:") else ""
+    href = "#home-chips" if chip else dest
+    return (f'<a class="card slide banner" href="{esc(href)}" data-banner="{key}"' + (f' data-chip="{chip}"' if chip else "") + '>'
+            f'<div class="ph banner-ph"><span class="b-emoji" aria-hidden="true">{emoji}</span></div>'
+            f'<div class="info"><div class="nm">{esc(title)}</div><div class="b-sub">{esc(sub)}</div><span class="b-cta">Дивитись →</span></div></a>')
+
+
 def write_home(prods, cats, cat_list, cat_slug):
     picks = home_pick(prods)
     pick_ids = {p["id"] for p in picks}
@@ -1364,8 +1385,8 @@ def write_home(prods, cats, cat_list, cat_slug):
     carousel = ""
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
-        slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True) for i, p in enumerate(picks))
         chip_sets = home_chip_sets(prods)
+        slides = home_banner_html(chip_sets, bool(nabory_pick(prods))) + "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True) for i, p in enumerate(picks))
         chips_html = ""
         if chip_sets:
             chips_html = (

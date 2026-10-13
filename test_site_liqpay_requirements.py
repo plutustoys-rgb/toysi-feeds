@@ -34,7 +34,7 @@ for live in (False, True):
     cart = (out / "cart.html").read_text(encoding="utf-8")
     foot = bs.footer()
     tag = "live" if live else "не live"
-    chk(f"{tag}: футер містить логотип LiqPay з посиланням на liqpay.ua (alt «LiqPay»), розмір ≥ 100×21", 'href="https://www.liqpay.ua/"' in foot and 'alt="LiqPay — оплата карткою"' in foot and 'width="100" height="21"' in foot and "liqpay-logo.svg" in foot)
+    chk(f"{tag}: футер містить логотип LiqPay з посиланням на liqpay.ua (alt «LiqPay»), розмір ≥ 100×21", 'href="https://www.liqpay.ua/"' in foot and 'alt="LiqPay"' in foot and (live or "карт" not in foot) and 'width="100" height="21"' in foot and "liqpay-logo.svg" in foot)
     chk(f"{tag}: футер із логотипом є на кошику (усі сторінки мають footer())", "liqpay-logo.svg" in cart)
     if live:
         chk("live: біля вибору «Оплата карткою онлайн» теж логотип", 'value="prepaid"> Оплата карткою онлайн <a href="https://www.liqpay.ua/"' in cart)
@@ -44,7 +44,9 @@ for live in (False, True):
     os.environ["SITE_LIQPAY_LIVE"] = "1" if live else ""
     m = importlib.reload(bs)
     d, r, o = m._DELIVERY, m._RETURNS, m._OFFER
-    chk(f"{tag}: «Доставка» — оплата карткою через LiqPay, дані картки не зберігаємо, повернення на ту саму картку за 7 робочих днів", "через сервіс LiqPay" in d and "не передаються та не зберігаються на нашому сайті" in d and "ту саму картку" in d and "протягом <b>7 робочих днів</b>" in d)
+    pay_ok = ("не передаються та не зберігаються на нашому сайті" in d) if live else ("не передаватимуться та не зберігатимуться на нашому сайті" in d and "Після запуску онлайн-оплати замовлення можна буде оплатити" in d)
+    chk(f"{tag}: «Доставка» — оплата карткою через LiqPay, дані картки не зберігаємо (до запуску — майбутній час), повернення на ту саму картку за 7 робочих днів", "через сервіс LiqPay" in d and pay_ok and "ту саму картку" in d and "протягом <b>7 робочих днів</b>" in d and "погодження — після отримання й перевірки товару" in d)
+    chk(f"{tag}: теперішній час «Оплатити замовлення можна банківською карткою» лише в live (до запуску картки не обіцяємо)", ("Оплатити замовлення можна банківською карткою онлайн через сервіс LiqPay" in d) == live)
     chk(f"{tag}: «Повернення» — правило повернення коштів на картку (7 робочих днів, залежить від банку)", "ту саму картку" in r and "протягом <b>7 робочих днів</b>" in r and "залежить від банку" in r)
     chk(f"{tag}: оферта — картка через LiqPay і повернення коштів на картку", "через сервіс LiqPay" in o and "протягом <b>7 робочих днів</b>" in o)
     if live:

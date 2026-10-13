@@ -28,7 +28,7 @@ chk("немає в наявності відсікається", not b._addon_ok
 chk("без LiqPay футер не обіцяє картку", "карт" not in b.footer())
 chk("без LiqPay футер має Instagram і Facebook", "instagram.com/plutustoys.ua" in b.footer() and "facebook.com" in b.footer())
 chk("без LiqPay тексти про оплату без картки", all("карт" not in x for x in (b.PAY_HERO, b.PAY_ABOUT, b.PAY_OFFER)))
-chk("без LiqPay «Про нас»/оферта без картки", "карт" not in b._ABOUT and "карт" not in b._OFFER)
+chk("без LiqPay «Про нас» без картки; оферта згадує картку ЛИШЕ з застереженням «(після її запуску на сайті)» (13.10: вимога LiqPay — правила оплати карткою на сайті; рішення власника)", "карт" not in b._ABOUT and ("карт" not in b._OFFER or "(після її запуску на сайті)" in b._OFFER))
 b = load(True)
 chk("з LiqPay футер згадує картку", "карт" in b.footer())
 chk("з LiqPay оферта згадує картку", "карт" in b._OFFER)

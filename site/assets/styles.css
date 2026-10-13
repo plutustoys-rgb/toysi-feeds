@@ -264,7 +264,7 @@ footer.foot a{color:var(--accent)}
 .foot .fnav a:hover{color:var(--accent)}
 .foot .ftag{margin:0}
 .foot .flp{margin:0 0 10px;line-height:0;text-align:center}
-.foot .flp img{height:21px;width:auto}
+.foot .flp img{height:21px;width:auto;display:inline-block}   /* глобальне img{display:block} інакше притискає логотип ліворуч (аудит #717) */
 .pay img{height:15px;width:auto;vertical-align:middle;margin-left:4px}
 .foot .fsoc{margin:0 0 10px;font-size:13px}
 .foot .fsoc a{color:var(--text)}

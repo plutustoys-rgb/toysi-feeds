@@ -94,6 +94,9 @@ chk("кольори пар у CSS присутні: " + ", ".join(sorted({c for 
 low = {k: round(ratio(*v), 2) for k, v in pairs.items() if ratio(*v) < 4.5}
 chk(f"контраст усіх тематичних пар ≥ 4.5:1 (WCAG AA): {low or 'ок'}", not low)
 chk("prefers-reduced-motion вимикає анімації тематичних чипів і банера, нахил знято", "@media (prefers-reduced-motion:reduce)" in css and "animation:none!important" in css)
+from PIL import Image  # noqa: E402
+_art = {k: HERE / "site" / "assets" / "banners" / f"{k}.webp" for k in ("hel", "ny", "nab", "ukr")}
+chk("ілюстрації Плутуса від SMM (theme_banners): 4 файли, 300×300 з прозорістю, кожен ≤ 40 КБ, сумарно легко", all(f.exists() and f.stat().st_size <= 40 * 1024 and Image.open(f).size == (300, 300) and Image.open(f).mode == "RGBA" for f in _art.values()))
 chk("лише системні шрифти (без @font-face/веб-шрифтів у темах), емодзі в банері нема (інлайн-SVG)", "@font-face" not in css and "b-emoji" not in css)
 
 os.chdir(root)

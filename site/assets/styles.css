@@ -434,7 +434,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .card.banner.theme-nab{background:linear-gradient(135deg,#FFF1DC,#FFD9A8);color:#3A2A1E;border-color:#E04E39;--b-shadow:#E8B04A}
 .card.banner.theme-nab .b-cta{background:#C93A26;color:#fff;border-color:#E8B04A}
 .card.banner.theme-nab .b-ribbon{top:0;right:0;width:88px;height:88px}
-@media(max-width:360px){.card.banner .b-art{display:none}.card.banner .nm{font-size:22px}.card.banner .b-sub{font-size:15px}}
+@media(max-width:360px){.card.banner .b-art{width:60px}.card.banner .nm{font-size:22px}.card.banner .b-sub{font-size:15px}}
 @media (prefers-reduced-motion:reduce){
   .home-chips .chip.chip-theme,.home-chips .chip.chip-theme::after,.home-chips .chip[data-set=hel],.home-chips .chip .chip-ico,.card.banner .b-cta::after,.card.banner .b-snow{animation:none!important}
   .home-chips .chip.chip-theme,.card.banner{transform:none}

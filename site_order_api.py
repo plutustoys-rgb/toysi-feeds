@@ -344,6 +344,7 @@ def build_order(payload: dict) -> tuple:
             warehouse = _manual_warehouse_label(warehouse, _manual_num)
 
     order_id = "PT-" + time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+    customer_comment = _clean_comment(payload.get("comment"))
     order = {
         "order_id": order_id,
         "platform": "site",
@@ -360,8 +361,23 @@ def build_order(payload: dict) -> tuple:
         "np_warehouse_number": np_warehouse_number,  # точний № відділення (автокомпліт) → Toysi напряму
         "items": items,
         "carrier": "nova_poshta",
+        "customer_comment": customer_comment,   # коментар покупця (≤300, очищений); Код зберігає в orders.customer_comment і додає в comment для Toysi
     }
     return order, total
+
+
+MAX_COMMENT_LEN = 300
+_COMMENT_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+
+
+def _clean_comment(raw) -> str:
+    """Коментар покупця: лише рядок; керуючі символи й розриви рядків → пробіл, пробіли стиснуто, обрізано до MAX_COMMENT_LEN. Невалідний тип (не рядок) → порожньо.
+    Це текст для людини (менеджер Toysi, власник): без HTML-довіри — екранування робить споживач (Telegram тощо)."""
+    if not isinstance(raw, str):
+        return ""
+    s = _COMMENT_CTRL_RE.sub(" ", raw)
+    s = " ".join(s.split())
+    return s[:MAX_COMMENT_LEN].strip()
 
 
 def _check_cod_ceiling(payment_method: str, total: int) -> None:

@@ -158,16 +158,34 @@ with sync_playwright() as p:
         chk(f"{w}px: після 60 перемикань клонів рівно 20, помилок консолі 0", state()[:2] == [30, 20] and errs == [])
         ctx.close()
 
+    # ── карусель поза вікном (короткий екран): чип натиснули до появи каруселі — view_item_list один раз; чипи на 320 px переносяться ──
+    for w, h in ((1280, 330), (320, 400)):
+        ctx, pg = page(w=w, h=h)
+        pg.goto(f"{BASE}/index.html", wait_until="load")
+        pg.wait_for_timeout(600)
+        pg.evaluate("document.querySelector('#home-chips button[data-set=u300]').click()")
+        pg.wait_for_timeout(300)
+        pg.evaluate("document.getElementById('home-car').scrollIntoView({block:'center'})")
+        pg.wait_for_timeout(900)
+        lists = pg.evaluate("(window.dataLayer||[]).map(a=>Array.from(a)).filter(a=>a[1]==='view_item_list').map(a=>[a[2].item_list_id,a[2].item_list_name])")
+        chk(f"{w}x{h}: чип натиснуто до появи каруселі у вікні → view_item_list РІВНО один (без дубля від IntersectionObserver): {lists}", lists == [["home_chip_u300", "home_chip_u300"]])
+        if w == 320:
+            m = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const r=[...b.querySelectorAll('button')].map(x=>x.getBoundingClientRect()); return [Math.max(...r.map(x=>x.right)), innerWidth, document.documentElement.scrollWidth]})()")
+            chk(f"320px: чипи переносяться — усі в межах вікна, без горизонтального скролу {m}", m[0] <= m[1] + 1 and m[2] <= m[1])
+        ctx.close()
+
     # ── Плутус: ротація ──
     NAMES = ["tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff", "stretch_yawn", "sneeze", "tailchase", "sleep", "rolljump"]
     OBS = """window.__srcs=[]; new MutationObserver(()=>{const c=document.getElementById('hero-mascot-clip'); if(c && c.getAttribute('src')) { const n=c.getAttribute('src').split('/').pop().split('?')[0].replace('plutus_','').replace('.webp',''); const l=window.__srcs; if(l[l.length-1]!==n+'#'+window.__t) l.push(n+'#'+window.__t);} }).observe(document, {subtree:true, attributes:true, attributeFilter:['src']}); window.__t=0;"""
 
-    def run_plays(n_plays, max_steps=4000):
+    def run_plays(n_plays, max_steps=4000, fixed_random=None):
         ctx = br.new_context(viewport={"width": 1280, "height": 800})
         pg = ctx.new_page()
         pg.route("**/googletagmanager.com/**", lambda r: r.abort())
         pg.route("**/facebook.net/**", lambda r: r.abort())
         pg.add_init_script(OBS)
+        if fixed_random is not None:
+            pg.add_init_script(f"Math.random = () => {fixed_random};")   # детермінізм: без data-nofirst це дало б stretch_yawn першим
         pg.clock.install()
         pg.goto(f"{BASE}/index.html", wait_until="load")
         both = neither = 0
@@ -195,8 +213,11 @@ with sync_playwright() as p:
     chk("ротація: повторів підряд ≤ 1 (вимушений повтор у мішку можливий, ≈4%)", sum(1 for a, b in zip(first14, first14[1:]) if a == b) <= 1)
     chk(f"Плутус: жодного відліку «обидва видимі»/«жоден» (both={both}, neither={neither})", both == 0 and neither == 0)
     firsts = []
-    for _ in range(8):
+    for _ in range(3):
         s, _b, _n2 = run_plays(1, max_steps=60)
+        firsts.append(s[0] if s else None)
+    for fr in (0.65, 0.7):   # Math.random фіксовано так, що без data-nofirst перше падає на stretch_yawn
+        s, _b, _n2 = run_plays(1, max_steps=60, fixed_random=fr)
         firsts.append(s[0] if s else None)
     chk(f"stretch_yawn НЕ першим показом (8 завантажень: {firsts})", None not in firsts and "stretch_yawn" not in firsts)
     br.close()

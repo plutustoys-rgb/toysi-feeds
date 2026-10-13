@@ -44,7 +44,7 @@
 
   // ── Аналітика (GA4 + Meta Pixel; ID підставляє збірка в window.PT_ANALYTICS, без ID — нічого не шле) ──
   // ⚠ ТЕСТОВІ ПОДІЇ В GA4/Meta (не покупці; при трафіку ~2 відвідувачі/добу вони спотворюють воронку): 11.10.2026 ~13:27 — add_to_cart (самокат 6349 ₴, SMM);
-  // 11.10.2026 ~16:27 — view_item, add_to_cart, begin_checkout (товар 235193, 468 ₴, Shopify-code, перевірка доставки подій). Тестове замовлення власника, коли
+  // 11.10.2026 ~16:27 — view_item, add_to_cart, begin_checkout (товар 235193, 468 ₴, Shopify-code, перевірка доставки подій). 12.10.2026 ~14:30 EEST — page_view, view_item, add_to_cart, begin_checkout (товар 221946, Shopify-code, перевірка доставки подій після відкладання трекерів; не покупець). Тестове замовлення власника, коли
   // буде, дасть purchase — його теж позначити тут (дата/товар/«не покупець»). Дописувати сюди кожну наступну тестову подію.
   var FB_EVENT = {view_item:"ViewContent", add_to_cart:"AddToCart", begin_checkout:"InitiateCheckout", purchase:"Purchase"};
   function track(name, items, value, extra){

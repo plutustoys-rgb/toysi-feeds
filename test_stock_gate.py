@@ -153,5 +153,15 @@ write_stock(None, raw=json.dumps({"ts": (datetime.now().astimezone() - timedelta
 code, resp = post([{"id": "2", "qty": 1}])
 chk("ts з поясом, але старий (3 год) → знімок застарів, замовлення приймається (fail-open)", code == 200)
 
+# файл собівартості для знижок: за замовчуванням НЕ пишеться (рішення власника 13.10), вмикається PROMO_COST_WRITE=1
+_cf = tmp / "cost_gate.json"
+os.environ.pop("PROMO_COST_WRITE", None)
+ss.run_once(fetch=lambda: cat, out=tmp / "g1.json", cost_out=_cf)
+chk("PROMO_COST_WRITE не задано -> promo_cost.json НЕ створюється, знімок залишків записано", not _cf.exists() and (tmp / "g1.json").exists())
+os.environ["PROMO_COST_WRITE"] = "1"
+ss.run_once(fetch=lambda: cat, out=tmp / "g2.json", cost_out=_cf)
+chk("PROMO_COST_WRITE=1 -> файл собівартості пишеться", _cf.exists())
+os.environ.pop("PROMO_COST_WRITE", None)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

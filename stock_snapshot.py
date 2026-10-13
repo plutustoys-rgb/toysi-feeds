@@ -99,7 +99,8 @@ def run_once(fetch=None, out=None, now=None, cost_out=None) -> bool:
         tmp = out.with_name(out.name + ".tmp")
         tmp.write_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp, out)                     # атомарно: відвідувач/бекенд ніколи не бачить напівзаписаний файл
-        write_cost_file(catalog, cost_out, now)
+        if os.environ.get("PROMO_COST_WRITE") == "1":   # рішення власника 13.10: знижки не погоджені → приватний файл собівартості НЕ пишемо, доки він не скаже (вмикається змінною в .env)
+            write_cost_file(catalog, cost_out, now)
         print(f"[stock_snapshot] ✅ {snap['n']} позицій, ts={snap['ts']}")
         return True
     except Exception as e:  # noqa: BLE001

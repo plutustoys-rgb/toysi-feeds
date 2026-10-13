@@ -87,7 +87,7 @@ with sync_playwright() as p:
     br = p.chromium.launch()
 
     def page(ctx=None, w=1280, h=800, init=None):
-        ctx = ctx or br.new_context(viewport={"width": w, "height": h})
+        ctx = ctx or br.new_context(viewport={"width": w, "height": h}, reduced_motion="reduce")   # безкінечні CSS-анімації тематичних чипів (дихання) не дають Playwright «стабільного» елемента для click; анімації окремо вимикаються reduced-motion (перевіряється в test_site_banner_slide)
         pg = ctx.new_page()
         pg.route("**/googletagmanager.com/**", lambda r: r.abort())
         pg.route("**/facebook.net/**", lambda r: r.abort())

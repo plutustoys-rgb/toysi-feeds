@@ -1500,8 +1500,8 @@ def write_cart(addons=None):
             'Оплата карткою онлайн</label>' if LIQPAY_LIVE else
             # Прихований вхід для ТЕСТОВОЇ оплати (запит Коду 12.10): до карти LiqPay live покупці її не бачать; радіо розкривається лише з ?liqpay_test=1 (пам'ятається в sessionStorage, див. app.js).
             # Бекенд у sandbox не передає такі замовлення в Toysi й не фіскалізує, тож випадковий клік шкоди не завдасть; тексти для всіх покупців не змінюємо.
-            '<label class="pay" id="pay-test" hidden><input type="radio" name="payment" value="prepaid"> '
-            'Оплата карткою онлайн (ТЕСТОВИЙ РЕЖИМ — реальних списань немає)</label>') +
+            # Радіо НЕ рендериться в HTML (аудит 13.10: hidden програвав `.field label.pay{display:flex}` — тестове радіо було видно всім): порожній слот, радіо створює JS лише з ?liqpay_test=1.
+            '<div id="pay-test-slot"></div>') +
         '</div>'
         '<div class="addon-box addon-m" data-addon></div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'

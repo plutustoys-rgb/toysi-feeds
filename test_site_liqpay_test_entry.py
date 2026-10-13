@@ -32,13 +32,13 @@ def cart(live):
 
 
 h = cart(False)
-chk("не live: тестове радіо є в розмітці, але hidden, з value=prepaid і чесним підписом «ТЕСТОВИЙ РЕЖИМ — реальних списань немає»", '<label class="pay" id="pay-test" hidden><input type="radio" name="payment" value="prepaid"> Оплата карткою онлайн (ТЕСТОВИЙ РЕЖИМ — реальних списань немає)</label>' in h)
-chk("не live: видимого радіо prepaid без «ТЕСТОВИЙ» нема; тексти для покупців не змінено (PAY_HERO/PAY_SHORT лише про накладений платіж)", 'value="prepaid"> Оплата карткою онлайн</label>' not in h and bs.PAY_HERO == "оплата при отриманні на Новій Пошті" and bs.PAY_SHORT == "оплата при отриманні")
+chk("не live: у HTML НЕМАЄ тестового радіо (аудит 13.10: hidden програвав display:flex у `.field label.pay` — радіо було видно всім): лише порожній слот #pay-test-slot", 'id="pay-test-slot"></div>' in h and 'id="pay-test"' not in h and "ТЕСТОВИЙ" not in h and h.count('value="prepaid"') == 0)
+chk("тексти для покупців не змінено (PAY_HERO/PAY_SHORT лише про накладений платіж)", bs.PAY_HERO == "оплата при отриманні на Новій Пошті" and bs.PAY_SHORT == "оплата при отриманні")
 hl = cart(True)
-chk("live: звичайне радіо «Оплата карткою онлайн» без тестового, #pay-test нема", 'id="pay-test"' not in hl and hl.count('value="prepaid"') == 1 and "ТЕСТОВИЙ" not in hl)
+chk("live: звичайне радіо «Оплата карткою онлайн» без тестового, слота нема", 'id="pay-test-slot"' not in hl and 'id="pay-test"' not in hl and hl.count('value="prepaid"') == 1 and "ТЕСТОВИЙ" not in hl)
 bs.LIQPAY_LIVE = False
 css = (HERE / "site/assets/styles.css").read_text(encoding="utf-8")
-chk("CSS: .pay[hidden]{display:none} (hidden не перебивається display у .pay)", ".pay[hidden]{display:none}" in css)
+chk("JS: тестове радіо створюється з ?liqpay_test=1 (data-test=1) і веде на LiqPay лише при sandbox===true у відповіді бекенду", all(x in (HERE / "site/assets/app.js").read_text(encoding="utf-8") for x in ('getElementById("pay-test-slot")', 'data-test="1"', 'payEl.getAttribute("data-test")==="1" && !(d.liqpay && d.liqpay.sandbox===true)')))
 
 node = shutil.which("node")
 if not node:
@@ -48,13 +48,13 @@ else:
 const fs=require("fs"), vm=require("vm"); const code=fs.readFileSync(process.argv[2],"utf8"); const search=process.argv[3]; const ssMode=process.argv[4];
 function mk(){ const ss={}; const store={getItem:k=>(k in ss?ss[k]:null), setItem:(k,v)=>{ss[k]=String(v)}}; return {ss,store}; }
 (async()=>{
-  const el={hidden:true, id:"pay-test"}; const ready=[]; const {ss,store}=mk();
-  const doc={hidden:false, addEventListener(t,f){ if(t==="DOMContentLoaded") ready.push(f); }, getElementById(id){ return id==="pay-test"?(process.argv[5]==="noel"?null:el):null; }, querySelector(){return null}, querySelectorAll(){return []}, body:{addEventListener(){},appendChild(){}}};
+  const el={innerHTML:"", id:"pay-test-slot"}; const ready=[]; const {ss,store}=mk();
+  const doc={hidden:false, addEventListener(t,f){ if(t==="DOMContentLoaded") ready.push(f); }, getElementById(id){ return id==="pay-test-slot"?(process.argv[5]==="noel"?null:el):null; }, querySelector(){return null}, querySelectorAll(){return []}, body:{addEventListener(){},appendChild(){}}};
   const ctx={document:doc, localStorage:{getItem(){return null},setItem(){}}, sessionStorage: ssMode==="throw"?{getItem(){throw new Error("x")},setItem(){throw new Error("x")}}:store, console, fetch:()=>Promise.reject(), navigator:{}, location:{pathname:"/cart.html",search:search,href:"/cart.html"+search}, setTimeout, clearTimeout, Date, setInterval:()=>1, addEventListener(){}};
   ctx.window=ctx; ctx.self=ctx; ctx.matchMedia=()=>({matches:false});
   vm.createContext(ctx); vm.runInContext(code,ctx);
   let threw=null; try{ ready.forEach(f=>f()); }catch(e){ threw=String(e); }
-  console.log(JSON.stringify({threw, hidden:el.hidden, flag:ss["pt_liqpay_test"]||null}));
+  console.log(JSON.stringify({threw, hidden:el.innerHTML==="", flag:ss["pt_liqpay_test"]||null, html:el.innerHTML}));
 })();
 '''
     hf = Path(tempfile.mkdtemp()) / "h.js"

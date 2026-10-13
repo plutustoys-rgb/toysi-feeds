@@ -443,12 +443,18 @@ def _clean_comment(raw) -> str:
 
 def _promo_code_allowed(conn, phone: str) -> bool:
     """PLUTUS5: 1 використання на телефон. Рахуємо замовлення сайту з promo_code=PLUTUS5, не скасовані; передоплатні НЕОПЛАЧЕНІ (покупець не дійшов до оплати) не рахуються."""
+    since = (datetime.now() - timedelta(hours=24)).isoformat(timespec="seconds")
     row = conn.execute(
         """SELECT 1 FROM orders WHERE platform = 'site' AND promo_code = ? AND phone = ? AND (status IS NULL OR status NOT LIKE '%cancel%')
-             AND (payment_method != 'prepaid' OR payment_confirmed = 1) LIMIT 1""",
-        (site_promo.LABEL_CODE, phone),
+             AND (payment_method != 'prepaid' OR payment_confirmed = 1 OR created_at >= ?) LIMIT 1""",
+        (site_promo.LABEL_CODE, phone, since),
     ).fetchone()
     return row is None
+
+
+def _clean_code(code) -> str:
+    """Нерядковий промокод (число/об'єкт) не має валити запит 500: це просто «нема коду»."""
+    return code.strip() if isinstance(code, str) else ""
 
 
 PROMO_MESSAGES = {
@@ -459,15 +465,19 @@ PROMO_MESSAGES = {
 }
 
 
-def quote_promo(items: list, code, phone) -> dict:
-    """Розрахунок знижки для кошика БЕЗ створення замовлення (читання БД: ліміт по телефону). items: [{toysi_code, qty, price}] каталожні. Повертає (res, new_items, new_total)."""
+def quote_promo(items: list, code, phone, strict: bool = False) -> dict:
+    """Розрахунок знижки для кошика БЕЗ створення замовлення (читання БД: ліміт по телефону). items: [{toysi_code, qty, price}] каталожні. Повертає (res, new_items, new_total).
+    strict=True (шлях /api/order): збій перевірки ліміту → код недоступний (fail-closed); quote для UI толерантний (показує знижку, а замовлення все одно перевірить)."""
+    code = _clean_code(code)
     allowed = True
-    if (code or "").strip() and phone:
+    if code and phone:
         try:
             with get_connection() as conn:
                 allowed = _promo_code_allowed(conn, phone)
         except Exception as e:  # noqa: BLE001
             print(f"[site_order_api] promo limit check: {e}", file=sys.stderr)
+            if strict:
+                return {"applied": None, "lines": {}, "discount_total": 0, "code_status": "unavailable", "costs_available": True}, items, sum(int(i["price"]) * int(i["qty"]) for i in items)
     res = site_promo.compute(items, site_promo.load_cost_map(), code, allowed)
     new_items, new_total = site_promo.apply_to_items(items, res)
     return res, new_items, new_total
@@ -668,7 +678,7 @@ class Handler(SimpleHTTPRequestHandler):
                     raise OrderError(f"Некоректна позиція {pid}")
                 items.append({"toysi_code": pid, "name": pm[pid]["name"], "qty": qty, "price": pm[pid]["price"]})
             phone = _norm_phone(payload.get("phone") or "")
-            res, new_items, new_total = quote_promo(items, payload.get("promo_code"), phone)
+            res, new_items, new_total = quote_promo(items, payload.get("promo_code"), phone)       # _clean_code всередині
         except OrderError as e:
             return self._json(400, {"error": str(e)})
         except Exception as e:  # noqa: BLE001
@@ -683,9 +693,9 @@ class Handler(SimpleHTTPRequestHandler):
         payload = self._read_json()
         try:
             order, total = build_order(payload)
-            code = payload.get("promo_code")
-            res, new_items, new_total = quote_promo(order["items"], code, order.get("phone"))
-            if (code or "").strip() and res["code_status"] in ("unknown", "used", "not_applicable", "unavailable"):
+            code = _clean_code(payload.get("promo_code"))
+            res, new_items, new_total = quote_promo(order["items"], code, order.get("phone"), strict=True)
+            if code and res["code_status"] in ("unknown", "used", "not_applicable", "unavailable"):
                 # покупець ввів код, але знижки НЕ буде: не створюємо замовлення, щоб сума не стала сюрпризом (UI показує причину й пропонує продовжити без коду)
                 return self._json(400, {"code": "promo_" + res["code_status"], "error": PROMO_MESSAGES[res["code_status"]]})
             if res["applied"]:
@@ -704,6 +714,11 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             with get_connection() as conn:
+                if order.get("promo_code") == site_promo.LABEL_CODE:
+                    conn.execute("BEGIN IMMEDIATE")      # блокування запису: перевірка ліміту й вставка атомарні (проти гонки двох замовлень з одним телефоном)
+                    if not _promo_code_allowed(conn, order["phone"]):
+                        conn.rollback()
+                        return self._json(400, {"code": "promo_used", "error": PROMO_MESSAGES["used"]})
                 if order["payment_method"] == "cod":
                     _check_cod_circuit_breaker(conn)   # глобальний гейт — перед per-телефон
                     _check_cod_phone_limit(conn, order["phone"])

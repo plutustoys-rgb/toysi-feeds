@@ -319,3 +319,5 @@ feeds_zoobaza/
 forbidden_watch_state.json
 # prom_gone_seen.json — «зниклі з Toysi» минулого прогону prom_catalog_sync (підтвердження у двох прогонах, PR #680); runtime-стан VPS
 prom_gone_seen.json
+promo_cost.json
+promo_cost.json.tmp

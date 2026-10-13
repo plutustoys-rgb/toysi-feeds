@@ -64,6 +64,7 @@ def write_cost_file(catalog: dict, out=None, now: datetime | None = None) -> boo
         return True
     except Exception as e:  # noqa: BLE001
         print(f"[stock_snapshot] файл собівартості не записано: {type(e).__name__}: {e}", file=sys.stderr)
+        _alert("promo_cost_write", f"⚠️ stock_snapshot: файл собівартості для знижок не записано ({type(e).__name__}); через 6 год знижки сайту тихо зникнуть (fail-closed).")
         return False
 
 

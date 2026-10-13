@@ -157,5 +157,60 @@ code, q = post("/api/promo/quote", {"items": [{"id": "ZZZ", "qty": 1}]})
 chk("quote: невідомий товар → 400", code == 400)
 chk("quote нічого не пише в БД", len(db_rows()) == n1)
 
+# ═══ ДОПОВНЕННЯ після аудиту PR #738 ═══
+# рівні знижки → код (X: 21×5 дає код 5, −10% не береться (<20); Z: 100×1 дає код 5, −10% 10 → da=10, db=10)
+eq_items = [{"toysi_code": "X", "qty": 5, "price": 21, "name": "X"}, {"toysi_code": "Z", "qty": 1, "price": 100, "name": "Z"}]
+r = sp.compute(eq_items, {"X": 1.0, "Z": 50.0}, "PLUTUS5")
+chk("рівні суми знижок (10 = 10) → перемагає промокод", r["applied"] == "PLUTUS5" and r["discount_total"] == 10 and r["code_status"] == "ok")
+
+# нерядковий промокод не валить запит
+fresh_costs()
+for k, bad in enumerate((123, {"a": 1}, ["PLUTUS5"], True)):
+    code, resp = post("/api/order", order_body([{"id": "A", "qty": 1}], "+3806711200" + str(10 + k), bad))
+    chk(f"нерядковий promo_code {bad!r} → замовлення без коду (не 500)", code == 200 and resp["total"] == 100)
+
+# ліміт: неоплачені передоплатні (свіжі) теж рахуються; покинуті >24 год — ні
+import orders_db as odb
+for i in range(3):
+    odb_row = dict(order_id=f"PT-LIM{i}", platform="site", payment_method="prepaid", payment_confirmed=False, customer_name="Т", phone="380671131001", np_branch="Київ, №1",
+                   items=[{"toysi_code": "A", "name": "A", "qty": 1, "price": 95, "list_price": 100}], promo_code="PLUTUS5", promo_discount_total=5)
+    with odb.get_connection() as c:
+        odb.insert_order(c, odb_row)
+        c.commit()
+with odb.get_connection() as c:
+    chk("свіжі НЕОПЛАЧЕНІ передоплатні з PLUTUS5 тепер рахуються (ліміт не обійти серією замовлень)", api._promo_code_allowed(c, "380671131001") is False)
+    c.execute("UPDATE orders SET created_at = ? WHERE phone = '380671131001'", ((datetime.now() - timedelta(hours=30)).isoformat(timespec="seconds"),))
+    c.commit()
+    chk("покинуті неоплачені >24 год — не рахуються (чесний покупець може повторити)", api._promo_code_allowed(c, "380671131001") is True)
+
+# fail-closed в /api/order при збої БД ліміту; quote толерантний
+real_allowed = api._promo_code_allowed
+api._promo_code_allowed = lambda conn, phone: (_ for _ in ()).throw(RuntimeError("database is locked"))
+n1 = len(db_rows())
+code, resp = post("/api/order", order_body([{"id": "A", "qty": 1}], "+380671130001", "PLUTUS5"))
+chk("збій перевірки ліміту в /api/order → 400 promo_unavailable (fail-closed), замовлення нема", code == 400 and resp["code"] == "promo_unavailable" and len(db_rows()) == n1)
+code, q = post("/api/promo/quote", {"items": [{"id": "A", "qty": 1}], "promo_code": "PLUTUS5", "phone": "+380671130002"})
+chk("quote при збої БД ліміту не падає (показує знижку; замовлення все одно перевірить)", code == 200 and q["applied"] == "PLUTUS5")
+api._promo_code_allowed = real_allowed
+
+# гонка: повторна перевірка ліміту всередині транзакції вставки (перша перевірка пройшла, між нею і вставкою з'явилось замовлення)
+calls = {"n": 0}
+
+
+def racy_allowed(conn, phone):
+    calls["n"] += 1
+    return True if calls["n"] == 1 else real_allowed(conn, phone)      # 1-ша (quote) пройшла; 2-га (у транзакції вставки) бачить уже зайнятий код
+
+
+with odb.get_connection() as c:                                         # «конкурент» уже вставив замовлення з кодом для цього телефону
+    odb.insert_order(c, dict(order_id="PT-RACE0", platform="site", payment_method="cod", payment_confirmed=False, customer_name="Т", phone="380671140001", np_branch="Київ, №1",
+                             items=[{"toysi_code": "A", "name": "A", "qty": 1, "price": 95, "list_price": 100}], promo_code="PLUTUS5", promo_discount_total=5))
+    c.commit()
+api._promo_code_allowed = racy_allowed
+n1 = len(db_rows())
+code, resp = post("/api/order", order_body([{"id": "A", "qty": 1}], "+380671140001", "PLUTUS5"))
+api._promo_code_allowed = real_allowed
+chk("гонка: друге замовлення з тим самим телефоном відхилено повторною перевіркою в транзакції (promo_used), нове НЕ створено", code == 400 and resp["code"] == "promo_used" and len(db_rows()) == n1)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

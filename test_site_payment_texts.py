@@ -64,7 +64,7 @@ pages = {"index.html": rd("index.html"), "product-5.html": rd("product-5.html"),
 for f, h in pages.items():
     d = descs(h)
     chk(f"{f}: meta/og description є і БЕЗ способу оплати", len(d) >= 2 and all(not re.search(r"оплат|накладен|при отриманні|карткою", x, re.I) for x in d))
-chk("головна: у description — асортимент і доставка", "Конструктори, ляльки" in descs(pages["index.html"])[0] and "доставкою Новою Поштою" in descs(pages["index.html"])[0])
+chk("головна: у description — асортимент і «для дітей від 1 року», Нова Пошта як селл-пойнт прибрана (SMM/власник 13.10)", "Конструктори, ляльки" in descs(pages["index.html"])[0] and "Іграшки для дітей від 1 року" in descs(pages["index.html"])[0] and "Пошт" not in descs(pages["index.html"])[0])
 vis = lambda h: re.sub(r"<script.*?</script>", "", h, flags=re.S)
 chk("футер (поки LiqPay не бойовий): без способу оплати", all(not re.search(r"оплат|накладен|при отриманні", re.sub(r"<[^>]+>", " ", vis(h).split("<footer")[1]), re.I) for h in pages.values()))
 prod = vis(pages["product-5.html"]).split("<footer")[0]

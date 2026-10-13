@@ -75,6 +75,8 @@ export PATH="/opt/plutustoys/venv/bin:$PATH"
 echo "[FeedPipeline] $(date -u +'%Y-%m-%d %H:%M UTC') — старт повного циклу."
 
 FAIL_REASON=""
+# файли, ВІДНОВЛЕНІ з feed-data замість свіжої генерації (mtime у них «зараз», хоч вміст старий) — publish не оновлює для них мітку генерації в feed_meta.json
+: > /opt/plutustoys/.feed_restored
 
 python3 generate_google_feed.py || echo "[FeedPipeline] generate_google_feed.py провалився (best-effort, buyBox-кеш лишається попереднім)"
 python3 generate_meta_feed.py || echo "[FeedPipeline] generate_meta_feed.py провалився (best-effort)"
@@ -102,6 +104,7 @@ if [ ! -s feeds/allo_feed.xml ]; then
     echo "[FeedPipeline] feeds/allo_feed.xml відсутній/порожній — відновлюю останню версію з feed-data перед публікацією (перший прогін може ще не мати чого відновлювати)."
     git fetch origin feed-data 2>/dev/null || true
     git show origin/feed-data:feeds/allo_feed.xml > feeds/allo_feed.xml 2>/dev/null || true
+    echo "allo_feed.xml" >> /opt/plutustoys/.feed_restored
 fi
 
 # Rozetka навмисно ВІДСУТНЯ тут (2026-07-28, пряме рішення власниці) —
@@ -114,6 +117,7 @@ if ! python3 generate_prom_feed_top.py; then
     echo "[FeedPipeline] ПОПЕРЕДЖЕННЯ: генерація prom_feed_top.xml провалилась — відновлюю останню робочу версію з feed-data (публічний репозиторій, читання без ключа) перед публікацією."
     git fetch origin feed-data 2>/dev/null || true
     git show origin/feed-data:feeds/prom_feed_top.xml > feeds/prom_feed_top.xml 2>/dev/null || true
+    echo "prom_feed_top.xml" >> /opt/plutustoys/.feed_restored
 fi
 
 for f in feeds/prom_feed_top.xml; do
@@ -134,7 +138,14 @@ done
 # суттєве просідання. Best-effort — помилка трекера НЕ зриває публікацію фідів.
 python3 catalog_size_tracker.py || echo "[FeedPipeline] catalog_size_tracker.py провалився (best-effort)"
 
+rm -f /opt/plutustoys/.feed_gate_blocked      # не читати причини з попереднього прогону, якщо publish не дійшов до гейта (lock не взято/збій раніше)
 bash publish_feed_pipeline_vps.sh
+
+# Гейт розміру фіду (feed_publish_gate.sh) щось заблокував → прогін degraded, причина в звіті (watchdog повідомляє; фід лишився попередній).
+if [ -s /opt/plutustoys/.feed_gate_blocked ]; then
+    FAIL_REASON="${FAIL_REASON:+$FAIL_REASON; }гейт розміру заблокував публікацію: $(tr '
+' '; ' < /opt/plutustoys/.feed_gate_blocked)"
+fi
 
 if [ -z "$FAIL_REASON" ]; then
     python3 feed_pipeline_report.py --status ok

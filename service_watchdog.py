@@ -159,10 +159,12 @@ DEPENDENCY_DRIFT_CHECK_INTERVAL_HOURS = 24
 # feed_pipeline_report.py, викликається з run_feed_pipeline_vps.sh) —
 # той самий патерн, що й check_autodeploy_status()/vps_code_sync_state.json.
 FEED_PIPELINE_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_pipeline_state.json")
-# 2x очікуваний інтервал feed-pipeline.timer (OnUnitActiveSec=6h за
-# runbook) — та сама логіка порогу "2x інтервал таймера", що й
-# MONITORED_SERVICES/AUTODEPLOY_STALE_THRESHOLD_MINUTES вище.
-FEED_PIPELINE_STALE_THRESHOLD_HOURS = 12
+# Поріг = найгірший ЗАВЕРШЕНИЙ інтервал між двома успішними прогонами + запас. feed_pipeline_state.json пишеться в КІНЦІ прогону, тож вік рахується від
+# завершення, а не від старту. Виміряно 12–13.10.2026 (journalctl): таймер кожні 6 год (старти 01:09/07:09/13:09/19:09), але прогін триває 3 год 11 хв – 4 год 30 хв
+# (01:09→04:20, 07:09→11:39, 13:09→17:18, 19:09→23:09), отже інтервали між ЗАВЕРШЕННЯМИ були 5 год 11 хв, 7 год 19 хв (04:20→11:39), 5 год 39 хв, 5 год 51 хв. Теоретичний
+# максимум: 6 год + (5 год власний бюджет репрайсера MAX_RUNTIME_SECONDS + решта кроків − ~3 год мінімум) ≈ 8–8,3 год. Поріг 6,5 год (пропозиція «6:30») давав би хибну тривогу вже
+# на спостереженому 7 год 19 хв; 10 год — вище теоретичного максимуму із запасом, нижче попереднього 12 (таймер, що став, помічаємо за 10 год, а не за 12).
+FEED_PIPELINE_STALE_THRESHOLD_HOURS = 10
 # Той самий принцип, що й AUTODEPLOY_REMINDER_INTERVAL_HOURS — нагадувати
 # про триваючу невдачу/degraded-стан варто, щоб не загубити непоміченим
 # (P0-1, 2026-07-18), але не на кожному циклі watchdog.

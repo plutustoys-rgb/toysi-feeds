@@ -131,7 +131,7 @@ bs.OUT = str(tmp)
 bs.write_home(allp, cats, cat_list, cat_slug)
 h = (tmp / "index.html").read_text(encoding="utf-8")
 chk("герой: компактний .hero2 (ніяких старих .hero/.fox, hero-note)", 'class="hero2"' in h and 'class="hero"' not in h and "hero-note" not in h)
-chk("герой: h1 «Іграшки, що радують», кнопка «Нехай Плутус вибере» (#plutus-pick, пул у data-pool) + «Усі іграшки» → каталог (SMM 13.10); «Набори» і рядка про доставку/оплату в героєві нема", "<h1>Іграшки, що радують</h1>" in h and 'id="plutus-pick" href="catalog.html" data-pool="' in h and '>Нехай Плутус вибере</a><a class="hero-all" href="catalog.html">Усі іграшки</a>' in h and "Нова Пошта ·" not in h and 'href="nabory.html">Набори в подарунок' not in h)
+chk("герой: h1 «Іграшки, що радують», кнопка «Уцінка» → utsinka.html + «Усі іграшки» → каталог (власник 13.10); «Нехай Плутус вибере», «Набори» і рядка про доставку/оплату в героєві нема", "<h1>Іграшки, що радують</h1>" in h and '<a class="btn" href="utsinka.html">Уцінка</a><a class="hero-all" href="catalog.html">Усі іграшки</a>' in h and "Плутус вибере" not in h and "Нова Пошта ·" not in h and 'href="nabory.html">Набори в подарунок' not in h)
 chk("герой: підзаголовок ≤100 символів", len(re.search(r'<div class="txt"><h1>.*?</h1><p>(.*?)</p>', h).group(1)) <= 100)
 chk("герой: підзаголовок рівно «Обираємо те, що радує дитину.» (власник 13.10), фрази про «маму спокійною» ніде на головній нема", re.search(r'<div class="txt"><h1>.*?</h1><p>(.*?)</p>', h).group(1) == "Обираємо те, що радує дитину." and "спокійною" not in h)
 chk("карусель: секція «Добірка Плутуса», #home-car з role=region і aria-label, 2 стрілки — <button type=button> з aria-label",

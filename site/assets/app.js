@@ -460,7 +460,6 @@
     initListTracking();
     initNaboryChips();
     initMascot();
-    initPlutusPick();
     initContactTracking();
 
     // сторінка подяки — підставити номер замовлення
@@ -698,20 +697,6 @@
   // ОДИН раз грає один із 5 кліпів (tailtrip, ear_scratch + дзеркальні grooming, sniff, shakeoff — усі з хвостом праворуч, як poster; перший і останній кадр кожного змішано з poster), потім poster повертається. Не безперервний луп.
   // Нічого не вантажимо й не граємо: prefers-reduced-motion, Save-Data, 2g/slow-2g; кліп тягнемо ПІСЛЯ load + 3 с по одному; не більше одного в польоті; пауза: прихована вкладка (кліп гасимо одразу й ПЛАНУЄМО наступний — аудит #688),
   // Плутус поза екраном (гасимо й плануємо). Розмір задано атрибутами width/height обох <img> — CLS нуль. src кліпу знімаємо після показу: наступний стартує з першого кадру. В аналітику не пише.
-  // «Нехай Плутус вибере» (SMM 13.10): випадковий товар із сьогоднішнього пулу (data-pool на кнопці героя) → картка з ?pick=plutus; подія select_item «plutus_pick»
-  function initPlutusPick(){
-    var b=document.getElementById("plutus-pick");
-    if(!b || !b.getAttribute("data-pool")) return;
-    var pool=[]; try{ pool=JSON.parse(b.getAttribute("data-pool")); }catch(e){}
-    if(!pool.length) return;
-    b.addEventListener("click", function(e){
-      var p=pool[Math.floor(Math.random()*pool.length)];
-      if(!p || !p[0]) return;
-      e.preventDefault();
-      trackRaw("select_item", {item_list_id:"plutus_pick", item_list_name:"plutus_pick", items:[{item_id:p[1], item_name:p[2], item_category:p[4], price:p[3], index:0}]});
-      setTimeout(function(){ location.href=p[0]+"?pick=plutus"; }, 120);
-    });
-  }
   function initMascot(){
     var img=document.getElementById("hero-mascot"), clipImg=document.getElementById("hero-mascot-clip");
     if(!img || !clipImg) return;

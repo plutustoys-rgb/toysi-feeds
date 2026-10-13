@@ -321,13 +321,14 @@ def tile(p, cls="", eager=False, prio=False, badge=False):
     low = badge and 0 < p["stock"] <= STOCK_BADGE_MAX
     badge = f'<span class="stock-badge">Залишилось {int(p["stock"])} шт</span>' if low else ""
     av = "" if low else ('<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>')
+    md = '<span class="md-badge">Уцінка</span>' if _is_markdown_item(p) else ""
     lazy = (' fetchpriority="high"' if prio else "") if eager else ' loading="lazy"'
     img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}"{lazy}>'
            if p["photo"] else '<div class="ph"></div>')
     klass = ("card " + cls) if cls else "card"
     return (
       f'<a class="{klass}" href="product-{esc(p["id"])}.html">'
-      f'<div class="ph">{img}{badge}</div>'
+      f'<div class="ph">{img}{badge}{md}</div>'
       f'<div class="info"><div class="nm">{esc(p["name"])}</div>'
       f'<div class="foot"><span class="pr">{p["price"]} ₴</span>{av}</div></div></a>'
     )
@@ -508,6 +509,7 @@ def build():
         paged |= write_catalog(f"Каталог • {c}", rec_order(cats[c]), cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
     prods_rec = rec_order(prods)
     paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
+    paged |= write_utsinka(prods, cat_list, cat_slug)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
     write_ig(prods)
@@ -539,7 +541,7 @@ def build():
     valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
-        if (fn.startswith(("product-", "category-", "catalog")) and fn.endswith(".html")
+        if (fn.startswith(("product-", "category-", "catalog", "utsinka")) and fn.endswith(".html")
                 and fn not in valid):
             try:
                 os.remove(os.path.join(OUT, fn))
@@ -1099,7 +1101,32 @@ def similar_products(idx, p, k=SIMILAR_PRODUCTS_MAX):
     return out
 
 
-def write_catalog(title, prods, cat_list, cat_slug, fname, active):
+UTSINKA_FILE = "utsinka.html"
+UTSINKA_NOTICE = ('<div class="md-notice" role="note"><b>Уцінений товар:</b> має дефект або неповну комплектацію — це вказано в назві/описі. '
+                  'Перед покупкою прочитайте опис. <a href="returns.html">Умови повернення</a></div>')
+
+
+def utsinka_pick(prods):
+    """Сторінка /utsinka.html (SMM/власник 13.10): УСІ уцінені товари (категорія «Уцінка/Уценка» або «Уцінка.» в назві) у наявності, з фото і ВІДОМИМ внеском ≥ 0
+    (збиткові на замовлення позиції не показуємо: власник — збитковість не планувалась); не репліки зброї. Сортування: ціна зростаюче (усі в наявності)."""
+    out = [p for p in prods if _is_markdown_item(p) and p.get("photo") and (p.get("stock") or 0) > 0
+           and p.get("contribution") is not None and p["contribution"] >= 0 and not is_weapon_replica(str(p["id"]), p["name"])]
+    return sorted(out, key=lambda p: (p["price"], str(p["id"])))
+
+
+def write_utsinka(prods, cat_list, cat_slug):
+    """Пише /utsinka.html (+ пагінація як у каталозі). Повертає set імен записаних сторінок (порожній, якщо уцінених придатних нема)."""
+    picked = utsinka_pick(prods)
+    if not picked:
+        print("[build] ⚠ utsinka: жодного придатного уціненого товару — /utsinka.html не пишемо", file=sys.stderr)
+        return set()
+    n = len(picked)
+    desc = f"Уцінені іграшки PlutusToys: {_fmt_int(n)} товар{_plural(n)}, ціни від {picked[0]['price']} ₴. Дефект чи неповна комплектація вказані в назві й описі."
+    return write_catalog("Уцінені іграшки", picked, cat_list, cat_slug, UTSINKA_FILE, active=None,
+                         special={"h1": "Уцінені іграшки", "title": "Уцінені іграшки — знижені ціни | PlutusToys", "desc": desc, "notice": UTSINKA_NOTICE})
+
+
+def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None):
     """Пише каталог/категорію З ПАГІНАЦІЄЮ (PER_PAGE/стор.). Повертає set імен усіх
     записаних сторінок (для valid-набору прибирання й sitemap)."""
     total = len(prods)
@@ -1111,6 +1138,10 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
         ptitle = title if k == 1 else f"{title} — сторінка {k}"
         full_t, desc = category_meta(active, total, min((x["price"] for x in prods), default=0), k, pages)
         trail = [("Головна", "index.html")] + ([("Каталог", "catalog.html")] if active else []) + [(active or "Каталог", None)]
+        if special:   # службова сторінка зі своїм H1/title/description (напр. /utsinka.html)
+            full_t = special["title"] if k == 1 else special["title"].replace(" | PlutusToys", f" — сторінка {k} | PlutusToys")
+            desc = (special["desc"] if k == 1 else f"Сторінка {k} з {pages}. " + special["desc"])[:DESC_MAX]
+            trail = [("Головна", "index.html"), (special["h1"], None)]
         head = breadcrumb_ld(trail)
         head += _ld_script({"@context": "https://schema.org", "@type": "ItemList",
                             "itemListElement": [{"@type": "ListItem", "position": (k - 1) * PER_PAGE + i + 1,
@@ -1122,14 +1153,15 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active):
         # Панель сорт/фільтр — лише на головному каталозі (стор.1). Працює клієнтом з index.json
         # (усі товари), тож фільтрує/сортує ВЕСЬ каталог, не лише сторінку. Прогресивне покращення:
         # без JS лишається статична пагінована сітка (SEO), контроли сховані (hidden) до ініціалізації.
-        controls = _catalog_controls() if (active is None and k == 1) else ""
+        controls = _catalog_controls() if (active is None and k == 1 and not special) else ""
         static_grid = grid(chunk, eager_n=(4 if k == 1 else 0)) + _pager(fname, k, pages)
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
         body = (
             crumbs_html(trail) +
-            chips(cat_list, cat_slug, active) +
-            f'\n<h1 class="page">{esc(active or title)}</h1>\n' +   # SEO 11.10: H1 категорії = лише назва («Каталог •» — у title/крихтах); повний каталог — «Каталог іграшок»
+            ("" if special else chips(cat_list, cat_slug, active)) +
+            f'\n<h1 class="page">{esc(special["h1"] if special else (active or title))}</h1>\n' +
+            (special["notice"] if special else "") +   # SEO 11.10: H1 категорії = лише назва («Каталог •» — у title/крихтах); повний каталог — «Каталог іграшок»
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
             (_category_intro_html(fname) if (active and k == 1) else "") +
             controls +
@@ -1227,7 +1259,7 @@ def _pick_day():
     return (datetime.now(timezone.utc) + timedelta(hours=3)).date().toordinal()
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, count=None):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1270,7 +1302,7 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
     out, used = [], set()
     for _ in range(HOME_PICK_MAX_PER_CAT):
         for c in order:
-            if len(out) >= (HOME_PICK_COUNT if count is None else count):
+            if len(out) >= HOME_PICK_COUNT:
                 break
             lst = [p for p in by[c] if _pick_key(p["name"]) not in used]
             if not lst:
@@ -1429,16 +1461,6 @@ def home_chip_defs(chip_sets):
 
 
 
-HOME_PLUTUS_POOL = 40   # «Нехай Плутус вибере» (SMM 13.10): випадковий товар із сьогоднішнього пулу добірки, лише в наявності
-
-
-def plutus_pool_attr(prods):
-    """JSON для data-pool кнопки героя: [[url, id, назва, ціна, категорія], ...] (той самий відбір, що й добірка каруселі, але до 40 позицій) або ''."""
-    pool = home_pick(prods, count=HOME_PLUTUS_POOL)
-    if not pool:
-        return ""
-    return esc(json.dumps([[f"product-{p['id']}.html", str(p["id"]), p["name"], p["price"], p.get("category") or ""] for p in pool], ensure_ascii=False, separators=(",", ":")))
-
 
 def write_home(prods, cats, cat_list, cat_slug):
     picks = home_pick(prods)
@@ -1490,9 +1512,11 @@ def write_home(prods, cats, cat_list, cat_slug):
             '<button class="arrow r" type="button" aria-label="Наступні товари">›</button>'
           '</div>'
         )
-    # кнопка героя (SMM 13.10): «Нехай Плутус вибере» — JS відкриває випадковий товар із пулу; без JS/пулу — каталог
-    _pool = plutus_pool_attr(prods)
-    hero_btn = ('<a class="btn" id="plutus-pick" href="catalog.html"' + (f' data-pool="{_pool}"' if _pool else "") + '>Нехай Плутус вибере</a>')
+    # кнопка героя (власник 13.10): «Уцінка» → /utsinka.html (є придатні уцінені товари), інакше «Усі іграшки»
+    if utsinka_pick(prods):
+        hero_act = '<a class="btn" href="utsinka.html">Уцінка</a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
+    else:
+        hero_act = '<a class="btn" href="catalog.html">Усі іграшки</a>'
     body = (
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
       # poster завжди під низом, кліп кросфейдом поверх (див. initMascot): обидва <img> із width/height — CLS 0
@@ -1500,7 +1524,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ms, _w, _f in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(c[1]) for c in HERO_MASCOT_CLIPS)}" data-w="{",".join(str(c[2]) for c in HERO_MASCOT_CLIPS)}" data-nofirst="{",".join(str(i) for i, c in enumerate(HERO_MASCOT_CLIPS) if not c[3])}">'
       '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
-      '<div class="act">' + hero_btn + '<a class="hero-all" href="catalog.html">Усі іграшки</a></div></div>'
+      '<div class="act">' + hero_act + '</div></div>'
       + carousel +
       '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
       f'<div class="catrow">{cat_tiles}</div>'

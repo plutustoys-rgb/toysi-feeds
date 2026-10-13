@@ -46,6 +46,9 @@ h1.page{font-size:18px;font-weight:700;margin:4px 16px 12px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
   overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--shadow)}
 .card .ph{aspect-ratio:1/1;background:var(--bg);position:relative}
+.card .md-badge{position:absolute;top:8px;right:8px;z-index:1;background:#efe6dc;color:#7a3a00;border:1px solid #c9ad92;border-radius:8px;padding:2px 8px;font-size:11.5px;font-weight:700;line-height:1.4;pointer-events:none}
+.md-notice{margin:0 0 14px;padding:12px 14px;background:#fff1de;color:#6b3300;border:2px solid #f1b878;border-radius:12px;font-size:15px;line-height:1.45}
+.md-notice a{color:#8a3b00;font-weight:700;text-decoration:underline}
 .card .stock-badge{position:absolute;top:8px;left:8px;z-index:1;background:#fff1de;color:#9a4300;border:1px solid #f1b878;border-radius:8px;padding:2px 8px;font-size:11.5px;font-weight:700;line-height:1.4;pointer-events:none}
 .card .ph img{width:100%;height:100%;object-fit:contain;padding:10px}
 .card .info{padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1}

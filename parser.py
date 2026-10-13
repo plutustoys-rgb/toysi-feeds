@@ -192,7 +192,9 @@ def _parse_xml(xml_content: bytes, lang: str = "ukr") -> Dict[str, dict]:
         name        = apply_name_override(product_id, name, ukr_spelling=(lang != "rus"))
         price       = offer.findtext("price", "").strip()
 
-        ostatok_raw = offer.findtext("ostatok", "0").strip()
+        ostatok_node = offer.findtext("ostatok")
+        ostatok_raw = (ostatok_node if ostatok_node is not None else "0").strip()
+        stock_known = ostatok_node is not None and any(ch.isdigit() for ch in ostatok_node)   # поля нема або без жодної цифри = залишок НЕВІДОМИЙ (для сайту: «0» не писати)
         stock       = _parse_ostatok(ostatok_raw)
         stock_max   = _parse_ostatok_max(ostatok_raw)
 
@@ -219,6 +221,7 @@ def _parse_xml(xml_content: bytes, lang: str = "ukr") -> Dict[str, dict]:
             "name":          name,
             "price":         price,
             "stock":         stock,
+            "stock_known":   stock_known,
             "stock_max":     stock_max,   # верхня межа діапазону залишку («5...10 шт.» → 10); для перевірки при оформленні (stock_snapshot)
             "pictures":      pictures,
             "description":   description,

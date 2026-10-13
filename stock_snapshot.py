@@ -27,16 +27,23 @@ def _alert(key: str, text: str) -> None:
         print(f"[stock_snapshot] сигнал не надіслано: {type(e).__name__}", file=sys.stderr)
 
 
+def _ts(now: datetime | None) -> str:
+    """ISO-час З ПОЯСОМ (…+03:00): наївний час неоднозначний для сторонніх читачів. Читач у site_order_api приводить до локального наївного часу."""
+    return (now or datetime.now()).astimezone().isoformat(timespec="seconds")
+
+
 def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
     """{"ts", "n", "s": {id: залишок(int)}} з каталогу Toysi (parser.fetch_toysi_catalog). Для діапазонних залишків Toysi («5...10 шт.», ≈21% каталогу) пишемо ВЕРХНЮ межу (stock_max):
     сайт відмовляє лише коли замовлено більше за те, що Toysi МОЖЕ мати; нижня межа дала б хибні відмови (клієнт хоче 7 шт. із «5...10»)."""
     s = {}
     for pid, it in catalog.items():
+        if it.get("stock_known") is False:      # залишок у XML відсутній/без цифр: «невідомо», у знімок НЕ пишемо (клієнт не повинен ховати товар через нерозпізнане поле)
+            continue
         try:
             s[str(pid)] = max(0, int(it.get("stock_max", it.get("stock")) or 0))
         except (TypeError, ValueError):
-            s[str(pid)] = 0
-    return {"ts": (now or datetime.now()).isoformat(timespec="seconds"), "n": len(s), "s": s}
+            continue                             # нечислове значення — теж «невідомо», не «0»
+    return {"ts": _ts(now), "n": len(s), "s": s}
 
 
 def write_cost_file(catalog: dict, out=None, now: datetime | None = None) -> bool:

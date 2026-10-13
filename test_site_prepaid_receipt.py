@@ -326,6 +326,7 @@ checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 
 chk("некоректний e-mail ігнорується, без footer поле не додається", "footer" not in posted and "delivery" not in posted)
 checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASHLESS", total_amount=100, order_id="site_X", header="PlutusToys · plutustoys.com.ua")
 chk("тіло Checkbox: header потрапляє в запит; без header поля нема", posted.get("header") == "PlutusToys · plutustoys.com.ua")
+posted.clear()
 checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASH", total_amount=100)
 chk("без header поле header не додається", "header" not in posted)
 

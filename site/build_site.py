@@ -1353,13 +1353,24 @@ def _pick_day():
 HOME_MILITARY_RE = re.compile(r"пістолет|зброя|зброї|військов|солдат|swat|бтр|автомат|гранат|армі|револьвер|рушниц|гвинтівк|кулемет|снайпер|дробовик|калаш|піхот|винищувач|\bтанк(?:и|а|у|ів|ом|ами|овий)?\b|\bппо\b|\bзсу\b", re.I)
 
 
-def is_home_excluded(p) -> bool:
+# Водні бластери/пістолети («Водний автомат», «водний бластер») — водні іграшки, не зброя (SMM 13.10): скрізь відсіяні, КРІМ чипа «Активні ігри» (water_ok=True); решта військових слів і реплік зброї діє й там
+HOME_WATER_RE = re.compile(r"водн|водян|бластер|water", re.I)
+HOME_MILITARY_NOWATER_RE = re.compile(HOME_MILITARY_RE.pattern.replace("пістолет|", "").replace("автомат|", ""), re.I)
+
+
+def is_home_water_toy(p) -> bool:
+    return bool(HOME_WATER_RE.search(p.get("name") or ""))
+
+
+def is_home_excluded(p, water_ok=False) -> bool:
     cat = (p.get("category") or "").strip().lower()
     name = p.get("name") or ""
+    if water_ok and HOME_WATER_RE.search(name):
+        return bool(HOME_MILITARY_NOWATER_RE.search(name) or is_weapon_replica(str(p["id"]), name))
     return bool(cat in HOME_PICK_EXCLUDED_CATS or cat in NABORY_EXCLUDED_CATS or HOME_MILITARY_RE.search(name) or is_weapon_replica(str(p["id"]), name))
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None, water_ok=False):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1377,13 +1388,14 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
             continue
         if not (pmin <= p["price"] <= pmax):
             continue
-        if cat in HOME_PICK_EXCLUDED_CATS or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
+        water = water_ok and HOME_WATER_RE.search(name)   # водний бластер у чипі «Активні ігри» (SMM 13.10) — не зброя
+        if (cat in HOME_PICK_EXCLUDED_CATS and not water) or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
             continue
-        if is_home_excluded(p):
+        if is_home_excluded(p, water_ok=water_ok):
             continue   # мілітарі/зброя/спецтехніка за назвою й категорією (єдина політика вітрин головної)
         if name_re is not None and not (name_re.search(name) or (alt_cat_re is not None and alt_cat_re.search(p.get("category") or ""))):
             continue   # тематичний набір (сезонні чипи): лише назви за ключовими словами
-        if bad_words and any(w in name.lower() for w in bad_words):
+        if bad_words and not water and any(w in name.lower() for w in bad_words):
             continue
         if bad_cat_re is not None and bad_cat_re.search(p.get("category") or ""):
             continue
@@ -1579,7 +1591,7 @@ def home_chip_sets(prods):
     for key, _label, _sub, rx, first, last, pmin, pmax, mc, alt in HOME_THEMED:
         if themed_active(first, last):
             pk = home_pick(prods, pmin=pmin, pmax=pmax, min_contrib=mc, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
-                           name_re=re.compile(rx, re.I), alt_cat_re=(re.compile(alt, re.I) if alt else None), bad_words=NABORY_BAD_WORDS,
+                           name_re=re.compile(rx, re.I), alt_cat_re=(re.compile(alt, re.I) if alt else None), water_ok=(key == "active"), bad_words=NABORY_BAD_WORDS,
                            bad_cat_re=HOME_SEASONAL_BAD_CAT, bad_name_re=HOME_SEASONAL_BAD_NAME)
             if len(pk) >= HOME_SEASONAL_MIN:
                 sets[key] = pk

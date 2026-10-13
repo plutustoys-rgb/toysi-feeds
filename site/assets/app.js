@@ -118,6 +118,8 @@
     var o=document.getElementById("search-overlay");
     if(!o) return;
     var wasOn=o.classList.contains("on");
+    var hd=document.querySelector("header.top");
+    o.style.setProperty("--sp-top", Math.max(0, Math.round(hd ? hd.getBoundingClientRect().bottom : 0)) + "px");   // панель починається під шапкою
     o.classList.add("on");
     if(!wasOn){ try{ history.pushState({ptSearch:1}, "", location.href); searchPushed=true; }catch(e){ searchPushed=false; } }
     var inp=o.querySelector("input");
@@ -577,8 +579,7 @@
       if(e.target.closest("#close-search")){ e.preventDefault(); closeSearch(); return; }
       var ov=document.getElementById("search-overlay");
       if(ov && ov.classList.contains("on")){
-        var rs=ov.querySelector(".results");
-        if(e.target===ov || e.target===ov.querySelector(".obar") || (e.target===rs && !rs.querySelector(".sr"))){ closeSearch(); return; }   // клік по фону (порожній екран/смуга)
+        if(e.target===ov){ closeSearch(); return; }   // клік по затемненню за панеллю (не по самій панелі)
         var lk=e.target.closest("#search-overlay a[href]");
         if(lk && searchPushed && !(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.button)){
           // перехід із пошуку: спершу знімаємо свій запис, потім переходимо — інакше «Назад» зі сторінки товару повертав би на сторінку з порожнім записом (подвійний «Назад»)

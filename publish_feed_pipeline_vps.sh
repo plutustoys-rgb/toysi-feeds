@@ -75,7 +75,7 @@ mkdir -p feeds
 BLOCKED_FILE=/opt/plutustoys/.feed_gate_blocked
 : > "$BLOCKED_FILE"
 PUBLISHED_FEEDS=""
-if gate_msg=$(feed_gate_ok /opt/plutustoys/feeds/prom_feed_top.xml feeds/prom_feed_top.xml 3000); then
+if gate_msg=$(feed_gate_ok /opt/plutustoys/feeds/prom_feed_top.xml); then
     cp /opt/plutustoys/feeds/prom_feed_top.xml feeds/
     grep -qx "prom_feed_top.xml" /opt/plutustoys/.feed_restored 2>/dev/null || PUBLISHED_FEEDS="prom_feed_top.xml"
     echo "[PublishFeedPipeline] prom_feed_top.xml: $gate_msg"
@@ -106,9 +106,8 @@ git add -f feeds/prom_feed_top.xml \
 # публікується в циклі нижче; при порожньому прогоні попередня версія зберігається
 # автоматично через `git checkout origin/feed-data -- .` вище (рядок ~57).
 for f in google_merchant_feed.xml meta_feed.xml bing_feed.xml eva_feed.xml allo_feed.xml; do
-    case "$f" in eva_feed.xml) min_abs=1000;; allo_feed.xml) min_abs=100;; *) min_abs=3000;; esac
     if [ -s "/opt/plutustoys/feeds/$f" ]; then
-        if gate_msg=$(feed_gate_ok "/opt/plutustoys/feeds/$f" "feeds/$f" "$min_abs"); then
+        if gate_msg=$(feed_gate_ok "/opt/plutustoys/feeds/$f"); then
             cp "/opt/plutustoys/feeds/$f" "feeds/$f"
             git add -f "feeds/$f"
             grep -qx "$f" /opt/plutustoys/.feed_restored 2>/dev/null || PUBLISHED_FEEDS="$PUBLISHED_FEEDS $f"

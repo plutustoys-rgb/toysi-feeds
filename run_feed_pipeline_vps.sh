@@ -136,6 +136,12 @@ python3 catalog_size_tracker.py || echo "[FeedPipeline] catalog_size_tracker.py 
 
 bash publish_feed_pipeline_vps.sh
 
+# Гейт розміру фіду (feed_publish_gate.sh) щось заблокував → прогін degraded, причина в звіті (watchdog повідомляє; фід лишився попередній).
+if [ -s /opt/plutustoys/.feed_gate_blocked ]; then
+    FAIL_REASON="${FAIL_REASON:+$FAIL_REASON; }гейт розміру заблокував публікацію: $(tr '
+' '; ' < /opt/plutustoys/.feed_gate_blocked)"
+fi
+
 if [ -z "$FAIL_REASON" ]; then
     python3 feed_pipeline_report.py --status ok
 else

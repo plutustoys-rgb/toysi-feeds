@@ -69,7 +69,20 @@ git checkout --orphan feed-data -q
 git checkout origin/feed-data -- . 2>/dev/null || true
 
 mkdir -p feeds
-cp /opt/plutustoys/feeds/prom_feed_top.xml feeds/
+# ГЕЙТ РОЗМІРУ (feed_publish_gate.sh): порожній/обрізаний фід не перезаписує робочий. Заблокований → лишається попередня опублікована версія (з `git checkout origin/feed-data` вище).
+# Причини блокувань пишемо в BLOCKED_FILE — run_feed_pipeline_vps.sh бачить його й позначає прогін degraded (watchdog повідомить).
+. /opt/plutustoys/feed_publish_gate.sh
+BLOCKED_FILE=/opt/plutustoys/.feed_gate_blocked
+: > "$BLOCKED_FILE"
+PUBLISHED_FEEDS=""
+if gate_msg=$(feed_gate_ok /opt/plutustoys/feeds/prom_feed_top.xml feeds/prom_feed_top.xml 3000); then
+    cp /opt/plutustoys/feeds/prom_feed_top.xml feeds/
+    PUBLISHED_FEEDS="prom_feed_top.xml"
+    echo "[PublishFeedPipeline] prom_feed_top.xml: $gate_msg"
+else
+    echo "[PublishFeedPipeline] 🔴 prom_feed_top.xml НЕ опубліковано (гейт розміру): $gate_msg — лишається попередня версія." >&2
+    echo "prom_feed_top.xml: $gate_msg" >> "$BLOCKED_FILE"
+fi
 # prom_competitor_price_state.json — публікуємо РЕДАГОВАНУ копію (без cost/margin_pct/_meta.
 # last_avg_margin_pct): feed-data публічна, а ці поля — фінансова таємниця (витік 2026-08-10,
 # price_state_redact.py). Локальний файл лишається повним. Restore-фолбек: якщо редактор упав/
@@ -93,13 +106,25 @@ git add -f feeds/prom_feed_top.xml \
 # публікується в циклі нижче; при порожньому прогоні попередня версія зберігається
 # автоматично через `git checkout origin/feed-data -- .` вище (рядок ~57).
 for f in google_merchant_feed.xml meta_feed.xml bing_feed.xml eva_feed.xml allo_feed.xml; do
+    case "$f" in eva_feed.xml) min_abs=1000;; allo_feed.xml) min_abs=100;; *) min_abs=3000;; esac
     if [ -s "/opt/plutustoys/feeds/$f" ]; then
-        cp "/opt/plutustoys/feeds/$f" "feeds/$f"
-        git add -f "feeds/$f"
+        if gate_msg=$(feed_gate_ok "/opt/plutustoys/feeds/$f" "feeds/$f" "$min_abs"); then
+            cp "/opt/plutustoys/feeds/$f" "feeds/$f"
+            git add -f "feeds/$f"
+            PUBLISHED_FEEDS="$PUBLISHED_FEEDS $f"
+            echo "[PublishFeedPipeline] $f: $gate_msg"
+        else
+            echo "[PublishFeedPipeline] 🔴 $f НЕ опубліковано (гейт розміру): $gate_msg — лишається попередня версія." >&2
+            echo "$f: $gate_msg" >> "$BLOCKED_FILE"
+        fi
     else
         echo "[PublishFeedPipeline] feeds/$f відсутній/порожній цього прогону — НЕ опубліковано (решта фідів публікуються як завжди)."
     fi
 done
+
+# Мітка ГЕНЕРАЦІЇ кожного фіду (feeds/feed_meta.json): час коміту гілки брехливий (eva-feed.timer комітить щогодини); тут — час вихідного файлу й кількість позицій.
+/opt/plutustoys/venv/bin/python3 /opt/plutustoys/feed_meta.py "$WORKDIR" /opt/plutustoys/feeds $PUBLISHED_FEEDS || echo "[PublishFeedPipeline] feed_meta.py впав (best-effort, попередній feed_meta.json лишається)" >&2
+[ -f feeds/feed_meta.json ] && git add -f feeds/feed_meta.json
 
 git commit -q -m "Feed pipeline update (VPS) $(date -u +'%Y-%m-%d %H:%M UTC')"
 git push --force git@github.com:plutustoys-rgb/toysi-feeds.git feed-data:feed-data

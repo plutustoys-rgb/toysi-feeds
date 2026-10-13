@@ -308,6 +308,9 @@ posted = {}
 
 
 class _R:
+    status_code = 200
+    text = "ok"
+
     def raise_for_status(self): pass
     def json(self): return {"id": "x"}
 
@@ -329,6 +332,53 @@ chk("тіло Checkbox: header потрапляє в запит; без header �
 posted.clear()
 checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASH", total_amount=100)
 chk("без header поле header не додається", "header" not in posted)
+
+# header відхилено 4xx → повтор БЕЗ header (чек не має зупинитись через шапку); 5xx/інша 4xx без header — як було
+calls = []
+
+
+class _R422:
+    status_code = 422
+    text = "bad header"
+
+    def raise_for_status(self):
+        raise requests.exceptions.HTTPError("422")
+
+
+class _R200:
+    status_code = 200
+    text = "ok"
+
+    def raise_for_status(self): pass
+    def json(self): return {"id": "retry-ok"}
+
+
+def post_422_on_header(url, headers=None, json=None, timeout=0):
+    calls.append(dict(json))
+    return _R422() if "header" in json else _R200()
+
+
+checkbox_client_real.requests.post = post_422_on_header
+res = checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASHLESS", total_amount=100, order_id="site_X", header="PlutusToys")
+chk("header відхилено 422 → другий запит БЕЗ header, чек видано", len(calls) == 2 and "header" in calls[0] and "header" not in calls[1] and res == {"id": "retry-ok"})
+calls.clear()
+
+
+def post_always_422(url, headers=None, json=None, timeout=0):
+    calls.append(dict(json))
+    return _R422()
+
+
+checkbox_client_real.requests.post = post_always_422
+try:
+    checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASHLESS", total_amount=100, order_id="site_X", header="PlutusToys")
+    chk("422 і без header → помилка з maybe_created=False", False)
+except checkbox_client_real.CheckboxAPIError as e:
+    chk("422 і без header → помилка з maybe_created=False, рівно 2 спроби", getattr(e, "maybe_created", None) is False and len(calls) == 2)
+calls.clear()
+checkbox_client_real.requests.post = lambda url, headers=None, json=None, timeout=0: (calls.append(dict(json)) or _R200())
+checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASH", total_amount=100)
+chk("без header одна спроба, як і раніше", len(calls) == 1)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

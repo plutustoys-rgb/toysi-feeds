@@ -309,13 +309,16 @@ def create_receipt(
     # збережене в orders_db.py), не потребує окремого поля в запиті.
 
     headers = {"X-License-Key": CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
+    def _post(b: dict):
+        return requests.post(f"{CHECKBOX_API_URL}/receipts/sell", headers=headers, json=b, timeout=REQUEST_TIMEOUT)
+
     try:
-        response = requests.post(
-            f"{CHECKBOX_API_URL}/receipts/sell",
-            headers=headers,
-            json=body,
-            timeout=REQUEST_TIMEOUT,
-        )
+        response = _post(body)
+        if "header" in body and 400 <= response.status_code < 500:
+            # 4xx = Checkbox відхилив ДО створення (чека нема). Якщо причина в декоративній шапці — не блокуємо фіскалізацію всіх замовлень: повтор БЕЗ header (поведінка до 13.10).
+            print(f"[Checkbox] header відхилено ({response.status_code}: {response.text[:200]}) — повтор без header", file=sys.stderr)
+            body = {k: v for k, v in body.items() if k != "header"}
+            response = _post(body)
         response.raise_for_status()
     except requests.exceptions.HTTPError as e:
         # ВИПРАВЛЕНО (2026-07-22, той самий інцидент): попередня версія

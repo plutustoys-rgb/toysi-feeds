@@ -552,6 +552,12 @@
     updateBadge();
     // зміна способу оплати перераховує доставку, підпис і примітку (див. applyDeliveryView)
     document.addEventListener("change", function(e){ if(e.target && e.target.name==="payment" && document.getElementById("cart-summary")) applyDeliveryView(total()); });
+    // браузер (Firefox/bfcache) може відновити ІНШИЙ вибраний спосіб оплати вже після першого рендера — підсумок доставки перераховуємо на pageshow, щоб показане відповідало обраному
+    if(typeof window.addEventListener==="function"){
+      var resyncDelivery=function(){ if(document.getElementById("cart-summary")) applyDeliveryView(total()); };
+      window.addEventListener("pageshow", resyncDelivery); window.addEventListener("load", resyncDelivery);   // + load: pageshow приходить після всіх картинок/GTM, а Firefox відновлює форму раніше (аудит)
+      setTimeout(resyncDelivery, 0);
+    }
     initLiqpayTestEntry();
 
     // делеговані кліки: додати в кошик, пошук, кошик-керування

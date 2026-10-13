@@ -1,5 +1,6 @@
-"""П'ять кліпів Плутуса для героя (SMM 12.10; stretch_yawn не в героя): перший/останній кадр = hero-poster (змішування K кадрів), кліпи з хвостом ліворуч (grooming, sniff, shakeoff) дзеркалимо ПРИ КОДУВАННІ,
-щоб усі дивились в один бік із poster (CSS-дзеркала не потрібне, накладання poster/кліп не ламається). Вихід: файли + друк тривалості мс (для data-ms) і розмірів."""
+"""Рухи Плутуса для героя (SMM 12.10; 10 кліпів): перший/останній кадр кожного = hero-poster (змішування K кадрів), кліпи з хвостом ліворуч (grooming, sniff, shakeoff) дзеркалимо ПРИ КОДУВАННІ,
+щоб усі дивились в один бік із poster (CSS-дзеркала не потрібне, накладання poster/кліп не ламається). Вихід: файли + друк тривалості мс (для data-ms у build_site.HERO_MASCOT_CLIPS) і розмірів.
+Файли в репо кодовані з Q=32 (дефолт); при Q=40 вага 10 рухів ≈2,66 МБ — понад бюджет SMM 2,5 МБ."""
 import json
 import os
 import sys
@@ -9,7 +10,7 @@ from PIL import Image, ImageOps, ImageSequence
 
 SRC = os.environ.get("MASCOT_SRC", r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\mascot_site")   # тека creative: manifest.json + plutus_<id>.webp (поза репо; інше місце — через MASCOT_SRC)
 OUT = sys.argv[1]   # python make_mascot_clips.py <тека-виходу> [Q]
-Q = int(sys.argv[2]) if len(sys.argv) > 2 else 40   # якість WebP; файли в репо кодовані з Q=40 (5 кліпів + poster ≈1,23 МБ при бюджеті SMM ≤1,5 МБ)
+Q = int(sys.argv[2]) if len(sys.argv) > 2 else 32   # якість WebP; файли в репо кодовані з Q=32 (10 кліпів + poster ≈2,5 МБ при бюджеті SMM ≤2,5 МБ)
 W, H = 234, 180
 K = 7
 CLIPS = [("tailtrip", False), ("ear_scratch", False), ("grooming", True), ("sniff", True), ("shakeoff", True), ("stretch_yawn", False), ("sneeze", False), ("tailchase", False), ("sleep", False), ("rolljump", False)]   # 10 рухів (SMM 12.10; власник схвалив і ті, що з дефектами в manifest note)

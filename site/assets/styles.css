@@ -385,3 +385,4 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips{visibility:hidden}
 .home-chips.js{visibility:visible}
 .home-chips button.chip{cursor:pointer;font-family:inherit}
+@media(max-width:380px){.home-chips{flex-wrap:wrap;overflow:visible}}   /* 320–380 px: усі чипи видно, без прихованого горизонтального скролу (аудит 13.10) */

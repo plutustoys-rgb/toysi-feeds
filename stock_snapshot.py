@@ -1,0 +1,72 @@
+# -*- coding: utf-8 -*-
+"""stock_snapshot.py — свіжий знімок залишків Toysi для сайту: site/stock.json (рішення власника 13.10.2026: «відставання наявності — критично»).
+
+ПРОБЛЕМА (виміряно 13.10): XML Toysi генерується на запит (Last-Modified = час запиту, Cache-Control max-age=0), тож лаг НАШ: сайт перебудовується раз на 2 год, а залишок у index.json — із моменту збірки.
+Цей модуль (таймер кожні 15 хв, ~18 с і 70 МБ) качає XML і АТОМАРНО пише у DocumentRoot сайту site/stock.json = {"ts": "<ISO>", "n": <к-ть позицій>, "s": {"<id>": <залишок>}}.
+Файл ПУБЛІЧНИЙ (лише id і залишок, без цін/собівартості). Його читають: (1) бекенд замовлень site_order_api — відмовляє на рядки, яких уже нема (409 stock_changed); (2) сторінки сайту (Shopify-code) — ховають «Купити».
+Захист: порожній чи явно усічений каталог (parser.assert_catalog_size_sane — існуючий поріг Toysi) НЕ перезаписує останній добрий файл, сигнал throttled раз на добу.
+"""
+import json
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+SITE_DIR = Path(os.environ.get("SITE_DIR", str(Path(__file__).resolve().parent / "site")))
+STOCK_FILE = SITE_DIR / "stock.json"
+
+
+def _alert(key: str, text: str) -> None:
+    try:
+        from telegram_notify import send_throttled_alert
+        send_throttled_alert(key, text, cooldown_sec=24 * 60 * 60)
+    except Exception as e:  # noqa: BLE001
+        print(f"[stock_snapshot] сигнал не надіслано: {type(e).__name__}", file=sys.stderr)
+
+
+def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
+    """{"ts", "n", "s": {id: залишок(int)}} з каталогу Toysi (parser.fetch_toysi_catalog). Для діапазонних залишків Toysi («5...10 шт.», ≈21% каталогу) пишемо ВЕРХНЮ межу (stock_max):
+    сайт відмовляє лише коли замовлено більше за те, що Toysi МОЖЕ мати; нижня межа дала б хибні відмови (клієнт хоче 7 шт. із «5...10»)."""
+    s = {}
+    for pid, it in catalog.items():
+        try:
+            s[str(pid)] = max(0, int(it.get("stock_max", it.get("stock")) or 0))
+        except (TypeError, ValueError):
+            s[str(pid)] = 0
+    return {"ts": (now or datetime.now()).isoformat(timespec="seconds"), "n": len(s), "s": s}
+
+
+def run_once(fetch=None, out=None, now=None) -> bool:
+    """True — знімок записано. Не кидає назовні."""
+    out = Path(out or STOCK_FILE)
+    try:
+        if fetch is None:
+            import parser as tp
+            fetch = tp.fetch_toysi_catalog
+        catalog = fetch()
+        if not catalog:
+            _alert("stock_snapshot_empty", "⚠️ stock_snapshot: каталог Toysi порожній або недоступний — site/stock.json НЕ оновлено (лишається попередній).")
+            return False
+        try:
+            import parser as tp
+            tp.assert_catalog_size_sane(catalog)
+        except Exception as e:  # noqa: BLE001 (CatalogSizeError)
+            _alert("stock_snapshot_small", f"⚠️ stock_snapshot: {e} site/stock.json НЕ оновлено (лишається попередній).")
+            return False
+        snap = build_snapshot(catalog, now)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(out.name + ".tmp")
+        tmp.write_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, out)                     # атомарно: відвідувач/бекенд ніколи не бачить напівзаписаний файл
+        print(f"[stock_snapshot] ✅ {snap['n']} позицій, ts={snap['ts']}")
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[stock_snapshot] збій: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
+
+
+if __name__ == "__main__":
+    sys.exit(0 if run_once() else 1)

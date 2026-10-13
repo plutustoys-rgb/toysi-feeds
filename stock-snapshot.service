@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: свіжий знімок залишків Toysi → site/stock.json (stock_snapshot.py, кожні 15 хв)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Файл пишеться у DocumentRoot сайту /opt/plutustoys/site/stock.json (публічний, лише id і залишок).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/stock_snapshot.py
+TimeoutStartSec=300
+# Файл читає Apache-користувач сайту: права -rw-r--r-- (umask за замовчуванням) достатньо.

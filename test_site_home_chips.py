@@ -35,9 +35,7 @@ prods += [P(320 + i * 30, 105 + i, f"Кат{i % 12}") for i in range(12)]       
 prods += [P(750 + i, 150, f"Дорога{i}") for i in range(3)] + [P(299.9 + i, 150, f"Межа{i}") for i in range(2)]   # >700 і межа 300: мають відсіюватись/потрапляти правильно
 prods += [P(200 + i, 60, "Інша творчість", name=f"Набір для творчості \"Серія{i}\"") for i in range(5)]
 sets = bs.home_chip_sets(prods)
-chk("є всі три набори: u300, m700, nab", set(sets) == {"u300", "m700", "nab"})
-chk("«До 300 ₴»: 50 ≤ ціна < 300, внесок ≥ 50, ≤10 карток", all(50 <= p["price"] <= 299.99 and p["contribution"] >= 50 for p in sets["u300"]) and 0 < len(sets["u300"]) <= 10)
-chk("«300–700 ₴»: 300 ≤ ціна ≤ 700, внесок ≥ 100", all(300 <= p["price"] <= 700 and p["contribution"] >= 100 for p in sets["m700"]) and len(sets["m700"]) > 0)
+chk("є лише набір nab (чипи «До 300 ₴»/«300–700 ₴» прибрано, власник 13.10; тематичні — менше 6 карток → нема)", set(sets) == {"nab"})
 chk("«Набори»: лише з «набір» у назві (відбір /nabory.html), ≤10", all("набір" in p["name"].lower() for p in sets["nab"]) and 0 < len(sets["nab"]) <= 10)
 chk("основна добірка не змінилась: home_pick() без параметрів тримає 150–700 і внесок ≥100", all(150 <= p["price"] <= 700 and p["contribution"] >= 100 for p in bs.home_pick(prods)))
 chk("порожній набір не повертається (немає «набір» → чипа «Набори» нема)", "nab" not in bs.home_chip_sets([P(60, 55, "К"), P(400, 120, "К2")]))

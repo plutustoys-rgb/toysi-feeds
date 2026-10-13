@@ -548,7 +548,7 @@
       loopW=w;
       track.scrollLeft += loopFrac*loopPeriod() + loopOffset();
     }
-    // Чипи над каруселлю (SMM 12.10): «Усі» (основна добірка) / «До 300 ₴» / «300–700 ₴» / «Набори» міняють набір з 10 карток БЕЗ перезавантаження. Набори лежать у <template id="car-set-<ключ>"> (інертні, фото не вантажаться
+    // Чипи над каруселлю (SMM 12.10): «Усі» (основна добірка) / «Набори» міняють набір з 10 карток БЕЗ перезавантаження. Набори лежать у <template id="car-set-<ключ>"> (інертні, фото не вантажаться
     //   до кліку). Перемикання: прибрати клони циклу → підставити картки → перерахувати slides/loop → на початок. Аналітика: view_item_list і select_item з item_list_name «home_chip_<ключ>» (для «Усі» — як було).
     var baseHTML = track ? track.innerHTML : "", baseName = listName;
     function listId(){ return listName===baseName ? "home_pick" : listName; }   // id списку в GA4: основна добірка — як було, чипи — home_chip_<ключ>

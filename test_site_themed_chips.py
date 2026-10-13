@@ -95,6 +95,28 @@ chk(f"порядок: «До Різдва» (дата-вікно) першим �
 chk("підпис «Різдвяний настрій», назви чипів за SMM", next(d for d in defs if d[0] == "xmas")[2] == "Різдвяний настрій" and {d[0]: d[1] for d in defs}["bday"] == "День народження" and {d[0]: d[1] for d in defs}["school"] == "У садок і школу" and {d[0]: d[1] for d in defs}["duo"] == "Для двох гравців" and {d[0]: d[1] for d in defs}["quiet"] == "Тихі ігри" and {d[0]: d[1] for d in defs}["active"] == "Активні ігри")
 chk("менше 6 карток — чипа нема", "quiet" not in bs.home_chip_sets([p for p in allp if "Пазл" not in p["name"]] + [p for p in allp if "Пазл" in p["name"]][:5]))
 
+# Оформлення чипів (SMM 13.10, макет chips_unique_design.jpg): кольори (фон / рамка=тінь / текст), іконка 18px, форми чергуються, без анімацій; контраст тексту ≥ 4.5:1
+DESIGN = {"pop": ("#FFF0E6", "#FF5A36", "#B3260E", "999px"), "bday": ("#FFE3F1", "#E8449A", "#8A1C57", "14px"), "school": ("#E3F0FF", "#2F7DE1", "#174B94", "10px 18px"), "duo": ("#E5F7EA", "#2FA35A", "#17693A", "999px"),
+          "quiet": ("#EFE6FF", "#7C4DDB", "#4B2A99", "14px"), "active": ("#FFF1CF", "#F59E0B", "#8A4B00", "10px 18px"), "sale": ("#EEE9E4", "#6B5B50", "#3A2E27", "999px"), "xmas": ("#123F2C", "#D93A3A", "#FFFFFF", "14px")}
+
+
+def _lum(h):
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4  # noqa: E731
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+
+def _ratio(a_, b_):
+    la, lb = sorted((_lum(a_), _lum(b_)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+_css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
+_low = {k: round(_ratio(v[2], v[0]), 2) for k, v in DESIGN.items() if _ratio(v[2], v[0]) < 4.5}
+chk(f"оформлення чипів: контраст тексту на фоні ≥ 4.5:1 для всіх 8 {_low or 'ок'}", not _low)
+chk("CSS чипів: у кожного власні колір/рамка/тінь 3px 3px 0 кольору рамки та форма за макетом", all((f".home-chips a.chip.chip-sale{{" if k == "sale" else f".home-chips .chip[data-set={k}]{{") + f"background:{v[0]};color:{v[2]};border-color:{v[1]};box-shadow:3px 3px 0 {v[1]};border-radius:{v[3]}}}" in _css for k, v in DESIGN.items()))
+chk("іконки 18px (inline-SVG, aria-hidden) для pop/bday/school/duo/quiet/active/xmas і для чипа «Уцінка»; чипи без анімацій", all(k in bs.CHIP_ICONS and 'width="18"' in bs.CHIP_ICONS[k] and 'aria-hidden="true"' in bs.CHIP_ICONS[k] for k in ("pop", "bday", "school", "duo", "quiet", "active", "xmas")) and 'width="18"' in bs.CHIP_ICON_SALE and "animation" not in _css)
+
 # Chromium: активний стан
 try:
     from playwright.sync_api import sync_playwright
@@ -138,6 +160,12 @@ if sync_playwright:
             chk(f"{w}px: чипи на сторінці: {chips}", chips[0] == "all" and "xmas" in chips and "bday" in chips and "u300" not in chips)
             lk = pg.evaluate("(()=>{const a=document.querySelector('#home-chips a.chip-link'); return a? [a.getAttribute('href'), a.textContent.trim(), getComputedStyle(a).textDecorationLine]:null})()")
             chk(f"{w}px: чип-посилання «Уцінка» → utsinka.html (посилання, не набір; без підкреслення) {lk}", lk == ["utsinka.html", "Уцінка", "none"])
+            sty = pg.evaluate("(()=>{const o={}; document.querySelectorAll('#home-chips .chip-theme').forEach(b=>{const k=b.dataset.set||'sale'; const c=getComputedStyle(b); o[k]=[c.backgroundColor, c.borderTopColor, c.color, c.boxShadow.indexOf('3px 3px 0px')>=0 || c.boxShadow.indexOf('3px 3px 0')>=0, c.borderTopLeftRadius, b.querySelectorAll('svg.chip-ico').length, c.animationName]}); return o})()")
+            def _rgb(h):
+                return "rgb(%d, %d, %d)" % tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+            bad = [k for k, v in DESIGN.items() if k in sty and not (sty[k][0] == _rgb(v[0]) and sty[k][1] == _rgb(v[1]) and sty[k][2] == _rgb(v[2]) and sty[k][3] and sty[k][5] == 1 and sty[k][6] == "none")]
+            chk(f"{w}px: у Chromium кожен чип має свої колір/рамку/текст/тінь/іконку, без анімації (є: {sorted(k for k in DESIGN if k in sty)}; не збіглося: {bad})", len([k for k in DESIGN if k in sty]) >= 5 and not bad)
+            chk(f"{w}px: чипи тематичні візуально різні — 8+ унікальних фонів", len({v[0] for v in sty.values()}) == len(sty))
             a0 = pg.evaluate(f"{ACT}('all')")
             chk(f"{w}px: «Усі» активний: контур 3px solid + галочка ✓ {a0}", a0[0] == "true" and a0[1] == "solid" and a0[2] == "3px" and "✓" in a0[4])
             for k in ("hel", "xmas", "bday", "nab"):

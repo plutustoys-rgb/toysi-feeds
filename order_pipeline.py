@@ -44,6 +44,7 @@ import sys
 import bank_check
 import order_router
 import orders_watcher
+import site_refund_receipts
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -53,6 +54,10 @@ def run_once() -> None:
     orders_watcher.poll_once()
     bank_check.check_pending_prepayments()
     order_router.route_pending_orders()
+    try:    # чек повернення за статусом LiqPay: best-effort, збій НЕ зриває забір/роутинг замовлень (сам не кидає, але страхуємось)
+        site_refund_receipts.run_once()
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_pipeline] site_refund_receipts: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

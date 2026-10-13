@@ -253,7 +253,7 @@
     function apply(){
       var min=parseInt(elMin.value,10), max=parseInt(elMax.value,10);
       if(isNaN(min)) min=null; if(isNaN(max)) max=null;
-      var cat=elCat.value, ins=elStock.checked, sort=elSort.value;
+      var cat=elCat.value, ins=elStock ? elStock.checked : false, sort=elSort.value;
       filtered=(idx||[]).filter(function(p){
         if(cat && p.c!==cat) return false;
         if(ins && !p.s) return false;
@@ -282,7 +282,7 @@
       count.textContent="Знайдено: "+filtered.length+" · показано "+shown;
       moreWrap.hidden = shown>=filtered.length;
     }
-    function doReset(){ elSort.value="rec"; elCat.value=""; elMin.value=""; elMax.value=""; elStock.checked=false; apply(); }
+    function doReset(){ elSort.value="rec"; elCat.value=""; elMin.value=""; elMax.value=""; if(elStock) elStock.checked=false; apply(); }
     var deb=debounce(apply,250);
     [elSort,elCat,elStock].forEach(function(e){ if(e) e.addEventListener("change",apply); });
     [elMin,elMax].forEach(function(e){ if(e) e.addEventListener("input",deb); });

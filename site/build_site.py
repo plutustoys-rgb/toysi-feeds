@@ -639,7 +639,7 @@ def _catalog_controls():
         '<select id="cf-cat" aria-label="Категорія"><option value="">Усі категорії</option></select>'
         '<span class="cf-price"><input id="cf-min" type="number" inputmode="numeric" min="0" placeholder="ціна від">'
           '<input id="cf-max" type="number" inputmode="numeric" min="0" placeholder="до"></span>'
-        '<label class="cf-stock"><input id="cf-instock" type="checkbox"> лише в наявності</label>'
+        # Чекбокс «лише в наявності» прибрано (тестувальник 13.10): index.json лишає лише товари В НАЯВНОСТІ (s завжди 1), тож фільтр нічого не міняв. Повернути — коли в index.json з'являться позиції без залишку.
         '<button id="cf-reset" class="cf-reset" type="button">Скинути</button>'
       '</div>'
       '<p id="cat-count" class="pagenote" hidden></p>'

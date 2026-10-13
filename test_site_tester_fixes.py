@@ -163,6 +163,12 @@ chk("F4: константи фронту = серверні (MAX_QTY=50 ↔ MAX_
 chk("F5: PT.add при qty=MAX_QTY не збільшує й не шле add_to_cart", "if(c[p.id].qty>=MAX_QTY)" in appjs and appjs.index("if(c[p.id].qty>=MAX_QTY)") < appjs.index('track("add_to_cart"'))
 chk("F6: ім'я з nbsp/табом між словами проходить і на клієнті (/\\s/), і на сервері (split())", "!/\\s/.test(nm)" in appjs and "len(name.split()) < 2" in Path(__file__).with_name("site_order_api.py").read_text(encoding="utf-8"))
 
+# ═══ 13.10 (тестувальник, знахідка 14): чекбокс «лише в наявності» нічого не фільтрував — index.json не містить товарів без залишку ═══
+_src13 = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
+_app13 = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
+chk("каталог: чекбокса «лише в наявності» (cf-instock) у розмітці немає — він був безрезультатний (s завжди 1)", 'id="cf-instock"' not in _src13 and "лише в наявності</label>" not in _src13)
+chk("фільтр каталогу без чекбокса не падає: elStock може бути null (apply і doReset)", "ins=elStock ? elStock.checked : false" in _app13 and "if(elStock) elStock.checked=false;" in _app13)
+
 print()
 if F:
     print(f"FAILED ({len(F)}):")

@@ -28,8 +28,8 @@ def _alert(key: str, text: str) -> None:
 
 
 def _ts(now: datetime | None) -> str:
-    """ISO-час З ПОЯСОМ (…+03:00): наївний час неоднозначний для сторонніх читачів. Читач у site_order_api приводить до локального наївного часу."""
-    return (now or datetime.now()).astimezone().isoformat(timespec="seconds")
+    """ISO-час НАЇВНИЙ локальний (як і був). Пишемо без пояса свідомо: старий читач site_order_api на час з поясом мовчки вимикав перевірку залишку (TypeError → fail-open без сліду), тож перехід на пояс можливий лише ПІСЛЯ того, як усі читачі (нова версія site_order_api вже вміє aware-ts) розгорнуто й перезапущено."""
+    return (now or datetime.now()).isoformat(timespec="seconds")
 
 
 def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
@@ -93,6 +93,8 @@ def run_once(fetch=None, out=None, now=None, cost_out=None) -> bool:
             _alert("stock_snapshot_small", f"⚠️ stock_snapshot: {e} site/stock.json НЕ оновлено (лишається попередній).")
             return False
         snap = build_snapshot(catalog, now)
+        if snap["n"] < len(catalog):          # факт, не поріг: частина позицій з невідомим залишком (формат Toysi змінився?) — у знімок їх немає, сайт їх не чіпає
+            _alert("stock_snapshot_unknown", f"⚠️ stock_snapshot: у {len(catalog) - snap['n']} із {len(catalog)} позицій залишок Toysi не розпізнано (поле відсутнє/без цифр) — їх немає у stock.json (сайт не ховає й не відмовляє). Перевірити формат <ostatok>.")
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(out.name + ".tmp")
         tmp.write_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

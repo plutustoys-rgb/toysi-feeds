@@ -38,7 +38,7 @@ ss._alert = lambda key, text: alerts.append((key, text))
 # ── stock_snapshot
 cat = {str(i): {"stock": i % 4} for i in range(30000)}      # 30 000 позицій: вище порога «усічений каталог»
 snap = ss.build_snapshot(cat, datetime(2026, 10, 13, 17, 0, 0))
-chk("build_snapshot: ts З ПОЯСОМ, n, залишки цілі й невід'ємні", snap["ts"].startswith("2026-10-13T17:00:00") and datetime.fromisoformat(snap["ts"]).tzinfo is not None and snap["n"] == 30000 and snap["s"]["7"] == 3 and snap["s"]["8"] == 0)
+chk("build_snapshot: ts (наївний, як і був), n, залишки цілі й невід'ємні", snap["ts"] == "2026-10-13T17:00:00" and snap["n"] == 30000 and snap["s"]["7"] == 3 and snap["s"]["8"] == 0)
 chk("діапазон залишку «5...10»: у знімок іде ВЕРХНЯ межа (10), а не мінімум", ss.build_snapshot({"1": {"stock": 5, "stock_max": 10}, "2": {"stock": 1}})["s"] == {"1": 10, "2": 1})
 import parser as tp
 chk("parser: _parse_ostatok_max('5...10 шт.')=10, '10...50 шт.'=50, '1 шт.'=1, ''=0", (tp._parse_ostatok_max("5...10 шт."), tp._parse_ostatok_max("10...50 шт."), tp._parse_ostatok_max("1 шт."), tp._parse_ostatok_max("")) == (10, 50, 1, 0))
@@ -56,6 +56,14 @@ _x = ("<yml_catalog><shop><offers>"
 _cat = tp._parse_xml(_x)
 chk("parser stock_known: «0» і «3 шт.» відомі; «багато», порожнє, відсутнє — невідомі", [_cat[i]["stock_known"] for i in "12345"] == [True, True, False, False, False])
 chk("snapshot з цього XML: лише 1 (0) і 2 (3)", ss.build_snapshot(_cat)["s"] == {"1": 0, "2": 3})
+_big = {str(i): {"stock": 1, "stock_known": True} for i in range(30000)}
+_big["x"] = {"stock": 0, "stock_known": False}
+alerts.clear()
+ss.run_once(fetch=lambda: _big, out=tmp / "unk.json", cost_out=tmp / "cost_stub2.json")
+chk("позиції з невідомим залишком → фактичний алерт stock_snapshot_unknown (без порогів), знімок усе одно записано", any(k == "stock_snapshot_unknown" for k, _ in alerts) and (tmp / "unk.json").exists())
+alerts.clear()
+ss.run_once(fetch=lambda: cat, out=tmp / "unk2.json", cost_out=tmp / "cost_stub2.json")
+chk("усі залишки відомі → алерту нема", not any(k == "stock_snapshot_unknown" for k, _ in alerts))
 out = tmp / "stock.json"
 ok = ss.run_once(fetch=lambda: cat, out=out, now=datetime(2026, 10, 13, 17, 0, 0), cost_out=tmp / "cost_stub.json")
 d = json.loads(out.read_text(encoding="utf-8"))

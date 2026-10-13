@@ -16,6 +16,7 @@ PlutusToys — статичний генератор власного магаз
 LIMIT (env) обмежує к-ть карток для швидкого демо-прогону; порожній = увесь in-stock+фото.
 """
 import os, re, sys, json, html, math, unicodedata, hashlib, random, bisect, heapq, functools
+from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 
 import parser as tp
@@ -1183,6 +1184,7 @@ HOME_PICK_EXCLUDED_CATS = frozenset({"картини за номерами", "б
 
 
 HOME_POPULAR_CATS = 30             # «Популярні категорії» на головній (SEO 11.10: 24–30 посилань)
+HOME_PICK_CAT_POOL = 40           # з скількох найкращих за внеском категорій щодня обираємо (решта — лише якщо не вистачило до 10)
 HOME_PICK_SEED = 20261011           # фіксоване зерно: перемішування добірки стабільне (не стрибає між збірками, поки не змінились дані)
 _PICK_STOP = frozenset({"для", "та", "від", "дитячий", "дитяча", "дитяче", "дитячі", "дитячих", "іграшка", "іграшки", "мʼяка", "м'яка", "мя",
                         "набір", "набори", "гра", "великий", "великі", "маленький", "новий", "nbsp"})
@@ -1204,6 +1206,16 @@ def _pick_key(name):
         return lat[0]
     words = [w for w in re.findall(r"[а-яіїєґё0-9']{3,}", n) if w not in _PICK_STOP]
     return " ".join(words[:2]) or n.strip()
+
+
+def _pick_day():
+    """Номер дня для щоденної ротації добірки (власник 13.10: «в каруселі крутяться одні й ті самі товари»). Київ (UTC+3), env SITE_PICK_DATE=YYYY-MM-DD — для тестів/відтворення.
+    Добірка стабільна ПРОТЯГОМ доби (збірка кожні 2 год дає ту саму), а наступного дня — інша."""
+    raw = os.environ.get("SITE_PICK_DATE", "").strip()
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", raw):
+        y, m, d = (int(x) for x in raw.split("-"))
+        return datetime(y, m, d).toordinal()
+    return (datetime.now(timezone.utc) + timedelta(hours=3)).date().toordinal()
 
 
 def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset()):
@@ -1232,7 +1244,12 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
     by = {}
     for p in sorted(elig, key=lambda p: (-p["contribution"], str(p["id"]))):
         by.setdefault(p["category"], []).append(p)
-    order = sorted(by, key=lambda c: (-by[c][0]["contribution"], str(c)))   # str(c): категорія None не ламає порівняння при однаковому внеску
+    ranked = sorted(by, key=lambda c: (-by[c][0]["contribution"], str(c)))   # str(c): категорія None не ламає порівняння при однаковому внеску
+    # Щоденна ротація: серед HOME_PICK_CAT_POOL найкращих за внеском категорій порядок щодня інший (детермінований від дня й параметрів набору), позиція в категорії — з середньої смуги (25–75% за внеском), не завжди медіана.
+    rng = random.Random(HOME_PICK_SEED * 1000003 + _pick_day() * 7919 + int(pmin) * 31 + int(pmax))
+    head = ranked[:HOME_PICK_CAT_POOL]
+    rng.shuffle(head)
+    order = head + ranked[HOME_PICK_CAT_POOL:]
     out, used = [], set()
     for _ in range(HOME_PICK_MAX_PER_CAT):
         for c in order:
@@ -1241,11 +1258,12 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
             lst = [p for p in by[c] if _pick_key(p["name"]) not in used]
             if not lst:
                 continue
-            p = lst[len(lst) // 2]
+            lo, hi = len(lst) // 4, max(len(lst) // 4 + 1, (3 * len(lst)) // 4 + 1)
+            p = lst[rng.randrange(lo, min(hi, len(lst)))]
             used.add(_pick_key(p["name"]))
             out.append(p)
             by[c] = [x for x in by[c] if x is not p]
-    random.Random(HOME_PICK_SEED).shuffle(out)
+    rng.shuffle(out)
     return out
 
 

@@ -81,7 +81,11 @@ chk("відбір: детермінований і НЕ залежить від 
 chk("відбір: другий виклик дає той самий результат (стабільне зерно)", [p["id"] for p in bs.home_pick(allp)] == ids)
 medians = {p["id"] for c in cats7 for p in [sorted([x for x in good if x["category"] == c], key=lambda x: (-x["contribution"], x["id"]))[4]]}
 top1 = {sorted([x for x in good if x["category"] == c], key=lambda x: (-x["contribution"], x["id"]))[0]["id"] for c in cats7}
-chk("відбір: з категорії береться МЕДІАННИЙ внесок (а не найвищий): серед результату є медіанні, найвищих із 7 категорій нема", len(medians & set(ids)) >= 5 and not (top1 & set(ids)))
+def _band_ok(c):
+    lst = sorted([x for x in good if x["category"] == c], key=lambda x: (-x["contribution"], x["id"]))
+    got = [i for i, x in enumerate(lst) if x["id"] in set(ids)]
+    return all(len(lst) // 4 <= i <= (3 * len(lst)) // 4 for i in got)
+chk("відбір: з категорії береться позиція із СЕРЕДНЬОЇ смуги за внеском (25–75%, щоденна ротація 13.10; раніше строго медіана), найвищих із 7 категорій нема", all(_band_ok(c) for c in cats7) and not (top1 & set(ids)))
 chk("відбір: ціновий розкид — не всі біля стелі (макс−мін ≥ 100 ₴ на синтетиці з різними цінами)", max(p["price"] for p in pick) - min(p["price"] for p in pick) >= 100)
 chk("відбір: внесок рівно 100.0 і ціни 150/700 включно проходять", {p["id"] for p in bs.home_pick([prod(1, price=150, cat="A", contrib=100.0, name="Альфа"), prod(2, price=700, cat="B", contrib=100.0, name="Бета")])} == {"1", "2"})
 chk("відбір: порожній вхід / нічого прохідного → []", bs.home_pick([]) == [] and bs.home_pick(bad) == [])

@@ -1129,7 +1129,7 @@ def utsinka_pick(prods):
     """Сторінка /utsinka.html (SMM/власник 13.10): УСІ уцінені товари (категорія «Уцінка/Уценка» або «Уцінка.» в назві) у наявності, з фото і ВІДОМИМ внеском ≥ 0
     (збиткові на замовлення позиції не показуємо: власник — збитковість не планувалась); не репліки зброї. Сортування: ціна зростаюче (усі в наявності)."""
     out = [p for p in prods if _is_markdown_item(p) and p.get("photo") and (p.get("stock") or 0) > 0
-           and p.get("contribution") is not None and p["contribution"] >= 0 and not is_weapon_replica(str(p["id"]), p["name"])]
+           and p.get("contribution") is not None and p["contribution"] >= 0 and not is_home_excluded(p)]
     return sorted(out, key=lambda p: (p["price"], str(p["id"])))
 
 
@@ -1306,23 +1306,57 @@ def _pick_key(name):
     return " ".join(words[:2]) or n.strip()
 
 
-def _today():
-    """Сьогодні за Києвом (UTC+3); env SITE_PICK_DATE=YYYY-MM-DD — для тестів і відтворення (той самий, що для ротації добірки)."""
+def _eu_dst_hours(now_utc):
+    """Київ без бази часових поясів: UTC+3 влітку (остання неділя березня 01:00 UTC … остання неділя жовтня 01:00 UTC), UTC+2 взимку."""
+    def last_sunday(y, m):
+        d = (datetime(y, m + 1, 1, tzinfo=timezone.utc) - timedelta(days=1))
+        return d - timedelta(days=(d.weekday() + 1) % 7)
+    y = now_utc.year
+    start = last_sunday(y, 3).replace(hour=1)
+    end = last_sunday(y, 10).replace(hour=1)
+    return 3 if start <= now_utc < end else 2
+
+
+def _kyiv_now():
+    """Зараз за Києвом: Europe/Kyiv (зимовий час UTC+2 з 25.10, літній UTC+3), а якщо бази часових поясів нема (Windows без tzdata) — правило ЄС вручну (аудит 13.10: жорсткий UTC+3 зсував межі доби на годину взимку)."""
+    now = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now.astimezone(ZoneInfo("Europe/Kyiv"))
+    except Exception:  # noqa: BLE001 — немає tzdata
+        return now + timedelta(hours=_eu_dst_hours(now))
+
+
+def _env_pick_date():
     raw = os.environ.get("SITE_PICK_DATE", "").strip()
     if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", raw):
-        y, m, d = (int(x) for x in raw.split("-"))
-        return datetime(y, m, d).date()
-    return (datetime.now(timezone.utc) + timedelta(hours=3)).date()
+        try:
+            y, m, d = (int(x) for x in raw.split("-"))
+            return datetime(y, m, d).date()
+        except ValueError:
+            return None   # «2026-02-30», «0000-01-01»: сміття в тестовій змінній не валить збірку
+    return None
+
+
+def _today():
+    """Сьогодні за Києвом (з урахуванням зимового часу); env SITE_PICK_DATE=YYYY-MM-DD — для тестів і відтворення (той самий, що для ротації добірки)."""
+    return _env_pick_date() or _kyiv_now().date()
 
 
 def _pick_day():
-    """Номер дня для щоденної ротації добірки (власник 13.10: «в каруселі крутяться одні й ті самі товари»). Київ (UTC+3), env SITE_PICK_DATE=YYYY-MM-DD — для тестів/відтворення.
+    """Номер дня для щоденної ротації добірки (власник 13.10: «в каруселі крутяться одні й ті самі товари»). Київ, env SITE_PICK_DATE — лише для тестів.
     Добірка стабільна ПРОТЯГОМ доби (збірка кожні 2 год дає ту саму), а наступного дня — інша."""
-    raw = os.environ.get("SITE_PICK_DATE", "").strip()
-    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", raw):
-        y, m, d = (int(x) for x in raw.split("-"))
-        return datetime(y, m, d).toordinal()
-    return (datetime.now(timezone.utc) + timedelta(hours=3)).date().toordinal()
+    return _today().toordinal()
+
+
+# Єдина політика «без мілітарі/зброї/книжок» для ВСІХ вітрин головної (home_pick усіх чипів і «Усі», «Популярне зараз», /utsinka, /aktsii; аудит 13.10: фільтри були різні — у «Усі» проходили «Танк Т-34», «Солдатики», «Снайпер гвинтівка з м'якими кулями»)
+HOME_MILITARY_RE = re.compile(r"пістолет|зброя|зброї|військов|солдат|swat|бтр|автомат|гранат|армі|револьвер|рушниц|гвинтівк|кулемет|снайпер|дробовик|калаш|піхот|винищувач|\bтанк(?:и|а|у|ів|ом|ами|овий)?\b|\bппо\b|\bзсу\b", re.I)
+
+
+def is_home_excluded(p) -> bool:
+    cat = (p.get("category") or "").strip().lower()
+    name = p.get("name") or ""
+    return bool(cat in HOME_PICK_EXCLUDED_CATS or cat in NABORY_EXCLUDED_CATS or HOME_MILITARY_RE.search(name) or is_weapon_replica(str(p["id"]), name))
 
 
 def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None):
@@ -1345,8 +1379,8 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
             continue
         if cat in HOME_PICK_EXCLUDED_CATS or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
             continue
-        if is_weapon_replica(str(p["id"]), name):
-            continue
+        if is_home_excluded(p):
+            continue   # мілітарі/зброя/спецтехніка за назвою й категорією (єдина політика вітрин головної)
         if name_re is not None and not (name_re.search(name) or (alt_cat_re is not None and alt_cat_re.search(p.get("category") or ""))):
             continue   # тематичний набір (сезонні чипи): лише назви за ключовими словами
         if bad_words and any(w in name.lower() for w in bad_words):
@@ -1480,8 +1514,10 @@ def demand_pick(prods, demand=None):
         name = p.get("name") or ""
         if _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name) or any(w in name.lower() for w in NABORY_BAD_WORDS):
             continue
-        if (p.get("category") or "").strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name):
-            continue   # не іграшки (косметика/побутова хімія, 13.10: «Green Pharmacy» у «Популярне зараз») і воєнна тематика (ППО/ЗСУ), манга/романи
+        if (p.get("category") or "").strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name) or HOME_SEASONAL_BAD_CAT.search(p.get("category") or "") or is_home_excluded(p):
+            continue   # не іграшки (косметика/побутова хімія, 13.10: «Green Pharmacy» у «Популярне зараз»), мілітарі/зброя (єдиний фільтр), книжки/манга
+        if any(_pick_key(q["name"]) == _pick_key(name) for q in ok):
+            continue   # одна «основа назви» — одна картка (кілька однакових Trefl-пазлів поспіль)
         ok.append(p)
     if len(ok) < DEMAND_MIN:
         return []
@@ -1494,8 +1530,8 @@ def demand_pick(prods, demand=None):
         head = top + rest[:HOME_PICK_COUNT - 4]
     return head[:HOME_PICK_COUNT]
 # SMM 13.10: з сезонних чипів прибрати книжки й мангу (категорія книг/манга/комікс/художн/літератур або «манга»/«роман» у назві), ключові слова лишаються (привид, відьм — доречні на іграшках).
-HOME_SEASONAL_BAD_CAT = re.compile(r"книг|манга|комікс|художн|літератур", re.I)
-HOME_SEASONAL_BAD_NAME = re.compile(r"манга|роман|молотов|\bппо\b|\bзсу\b", re.I)   # слова на межі слова: «ППО»/«ЗСУ» (воєнна тематика) відсіюємо, «гіппопотам» — ні
+HOME_SEASONAL_BAD_CAT = re.compile(r"книг|книж|манга|комікс|художн|літератур", re.I)
+HOME_SEASONAL_BAD_NAME = re.compile(r"манга|роман|молотов|pok[eé]mon|покемон|колекційн|\bппо\b|\bзсу\b", re.I)   # слова на межі слова: «ППО»/«ЗСУ» (воєнна тематика) відсіюємо, «гіппопотам» — ні
 HOME_SEASONAL_MIN_CONTRIB = 30.0
 
 
@@ -1511,12 +1547,12 @@ HOME_CHIP_EXCLUDED_CATS = frozenset({"клейонки, килимки і під
 # (або категорією alt_cat), власні межі ціни й внеску; не більше 2 з категорії (як у добірці), щоденна ротація; без мілітарі/зброї/книжок/манги, у наявності; менше HOME_SEASONAL_MIN — чипа нема.
 # (key, назва, підпис, regex назви, перший день, останній день, ціна від, ціна до, внесок від, regex категорії-альтернативи; чип ідуть ПЕРЕД «Популярне зараз», якщо є дати — «front»).
 HOME_THEMED = (
-    ("xmas", "До Різдва", "Різдвяний настрій", r"різдв|ялинк|янгол|вертеп|зірк|гірлянд|прикрас", (12, 1), (12, 25), 50, 700, 0.0, None),
-    ("bday", "День народження", "", r"набір|конструктор|лялька|м[ʼ'’]яка іграшка|подарунк", None, None, 150, 700, 50.0, None),
+    ("xmas", "До Різдва", "Різдвяний настрій", r"різдв|ялинк|янгол|вертеп|\bзірк[аиуі]\b|гірлянд|новорічн\w* прикрас|ялинков\w* прикрас", (12, 1), (12, 25), 50, 700, 0.0, None),
+    ("bday", "День народження", "", r"набір|конструктор|лялька|м[ʼ'’‘´`]?яка іграшка|подарунк", None, None, 150, 700, 50.0, None),
     ("school", "У садок і школу", "", r"рюкзак|пенал|канцел|фломастер|олівц|розмальов|пластилін|навчальн|картки|абетка|лічба", None, None, 100, 600, 30.0, None),
-    ("duo", "Для двох гравців", "", r"\bнастільна гра\b|\bкарткова гра\b|\bмафія\b|\bшахи\b|\bдоміно\b|\bлото\b|\bтвістер", None, None, 50, 600, 0.0, r"настільн"),
+    ("duo", "Для двох гравців", "", r"\bнастільна гра\b|\bкарткова гра\b|\bшахи\b|\bдоміно\b|\bлото\b|\bтвістер", None, None, 50, 600, 0.0, r"настільн"),
     ("quiet", "Тихі ігри", "", r"пазл|розмальов|пластилін|тісто|мозаїка|наліпк|бісер|малюв|творчість", None, None, 100, 600, 30.0, None),
-    ("active", "Активні ігри", "", r"м[ʼ'’]яч|скакалк|обруч|самокат|кегл|бадмінтон|боулінг|мильні бульбашки|літак|планер|санки|водний бластер", None, None, 50, 700, 0.0, None),
+    ("active", "Активні ігри", "", r"м[ʼ'’‘´`]?яч|скакалк|\bобруч(?:і|ів|ем)?\b(?!\s+для\s+волосся)|самокат|кегл|бадмінтон|боулінг|мильні бульбашки|літак|планер|санки|водний бластер", None, None, 50, 700, 0.0, None),
 )
 
 

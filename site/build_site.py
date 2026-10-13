@@ -188,6 +188,10 @@ def search_empty_html():
             + '<p class="sr-all"><a href="catalog.html">Усі іграшки →</a></p></div>')
 
 
+# Рядок про повернення біля кнопки «У кошик» на картці й у кошику (SMM/власник 13.10): рівно умови зі сторінки «Повернення» (14 днів, товар належної якості; зворотна пересилка — коштом покупця), зміст не міняти.
+RETURN_LINE = "Повернення якісного товару — 14 днів; зворотна пересилка за рахунок покупця"
+
+
 def search_overlay():
     return (
       '<div class="overlay" id="search-overlay" role="dialog" aria-label="Пошук">'
@@ -1670,6 +1674,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     _phone_line = '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
     # Без залишку: НЕ обіцяємо оплату/доставку/повернення на сторінці з вимкненою кнопкою (аудит #675, Д2) — лише телефон.
     buy_info = (
+        f'<p class="ret-line">{RETURN_LINE}</p>'
         '<div class="trust-badges">'
           '<span class="tb">✓ Оплата при отриманні</span>'
           '<a class="tb" href="returns.html">✓ Повернення 14 днів</a>'
@@ -1785,6 +1790,7 @@ def write_cart(addons=None):
     body = (
       '<h1 class="page">Кошик</h1>'
       '<div class="cart-grid"><div class="cart-main"><div id="cart-body"></div>'
+      f'<p class="ret-line ret-cart">{RETURN_LINE}</p>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'
         '<div class="row"><span id="sum-delivery-label" data-prepaid="' + DELIVERY_LABEL_PREPAID + '">Доставка Новою Поштою (з комісією за накладений платіж)</span><span id="sum-delivery">' + DELIVERY_COST + '</span></div>'

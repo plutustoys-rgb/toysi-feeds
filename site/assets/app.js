@@ -758,10 +758,10 @@
   // ── Прихований вхід для тестової оплати LiqPay (запит Коду 12.10): ?liqpay_test=1 розкриває радіо «Оплата карткою онлайн (ТЕСТОВИЙ РЕЖИМ)» на кошику; прапорець живе в sessionStorage лише цієї вкладки.
   //   Покупці адреси не знають; бекенд у sandbox не передає такі замовлення в Toysi й не фіскалізує. Без елемента #pay-test (збірка з SITE_LIQPAY_LIVE=1) нічого не робить. ──
   function initLiqpayTestEntry(){
-    var el=document.getElementById("pay-test"); if(!el) return;
+    var el=document.getElementById("pay-test-slot"); if(!el) return;
     var on=false;
     try{ if(/[?&]liqpay_test=1(&|$)/.test(location.search)){ sessionStorage.setItem("pt_liqpay_test","1"); } on = sessionStorage.getItem("pt_liqpay_test")==="1"; }catch(e){ on = /[?&]liqpay_test=1(&|$)/.test(location.search); }
-    if(on) el.hidden=false;
+    if(on) el.innerHTML='<label class="pay" id="pay-test"><input type="radio" name="payment" value="prepaid" data-test="1"> Оплата карткою онлайн (ТЕСТОВИЙ РЕЖИМ — реальних списань немає)</label>';
   }
   // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──
   function initContactTracking(){
@@ -952,6 +952,8 @@
           // Оплата карткою: редірект на LiqPay. Якщо LiqPay не налаштований — НЕ імітуємо «дякуємо»,
           // а чесно кажемо обрати накладений (рев'ю покупця: фейкове «замовлення прийнято» без оплати).
           if(payment==="prepaid"){
+            // тестове радіо веде на LiqPay лише коли бекенд відповів sandbox=true: у бойовому режимі під написом «без списань» реальних грошей не береться (аудит 13.10)
+            if(payEl && payEl.getAttribute("data-test")==="1" && !(d.liqpay && d.liqpay.sandbox===true)){ fail("Тестову оплату вимкнено. Оберіть «Оплата при отриманні»."); return; }
             if(d.liqpay && d.liqpay.data){ PT.clear(); redirectToLiqPay(d.liqpay); return; }
             fail("Онлайн-оплата тимчасово недоступна. Оберіть «Оплата при отриманні».");
             return;

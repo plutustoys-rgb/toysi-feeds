@@ -10,6 +10,7 @@ from orders_db import (
     mark_stock_alert_sent, clear_stock_alert, mark_rozetka_delivery_ttn,
     init_db, mark_rz_marking_sent, bump_rz_marking_attempt, get_rz_markings_to_retry,
     mark_checkbox_ettn_registered, claim_receipt, release_receipt_claim, get_receipt_state,
+    clean_customer_comment,
 )
 from parser import fetch_toysi_catalog
 from toysi_order_submit import submit_order, toysi_internal_id
@@ -428,6 +429,10 @@ def build_toysi_order(order: dict) -> dict | None:
     comment = f"Автоматично: {order['platform']} #{order['order_id']}"
     if order.get("carrier", "nova_poshta") == "nova_poshta" and loc:
         comment += f" · {loc}"
+    # Коментар покупця (чекаут сайту) — ПЕРШИМ: toysi_order_submit обрізає comment до 500, тож обрізатись має автоматична частина, а не текст покупця (≤300).
+    _cc = clean_customer_comment(order.get("customer_comment"))
+    if _cc:
+        comment = f"Коментар покупця: {_cc} · {comment}"
 
     return {
         "internal_order_id": toysi_internal_id(order["internal_order_id"]),

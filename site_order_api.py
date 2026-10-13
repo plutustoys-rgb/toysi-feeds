@@ -138,6 +138,10 @@ def _notify_new_order(order: dict, total, test: bool = False, note: str = "") ->
     if _NO_TELEGRAM:
         return
     try:
+        from orders_db import clean_customer_comment
+        _cc = clean_customer_comment(order.get("customer_comment"))
+        if _cc:
+            note = (f"{note} · " if note else "") + f"Коментар покупця: {_cc}"
         from telegram_notify import notify_new_order
         notify_new_order("site", order.get("order_id"), total, len(order.get("items") or []), order.get("payment_method", ""), test=test, note=note)
     except Exception as e:  # noqa: BLE001

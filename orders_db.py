@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- захист від повторного тікета щоцикл опитування
     np_return_created_at  TEXT,                -- коли створено зворотну ТТН НП при скасуванні покупцем
                                                -- (order_status_tracker._maybe_create_np_return); ідемпотентність
+    customer_comment      TEXT,                -- коментар покупця з чекауту сайту (≤300, очищений clean_customer_comment); йде в comment Toysi
     np_return_ttn         TEXT,                -- номер створеної зворотної ТТН НП
     np_return_dryrun_notified_at TEXT,         -- коли в DRY-RUN уже слали FYI про потрібне повернення
                                                -- (NP_RETURN_APPLY=0) — щоб не спамити щоцикл, поки не ввімкнено
@@ -305,6 +306,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rozetka_cancel_ticket_sent_at", "rozetka_cancel_ticket_sent_at TEXT")
         _ensure_column(conn, "orders", "np_return_created_at", "np_return_created_at TEXT")
         _ensure_column(conn, "orders", "np_return_ttn", "np_return_ttn TEXT")
+        _ensure_column(conn, "orders", "customer_comment", "customer_comment TEXT")
         _ensure_column(conn, "orders", "np_return_dryrun_notified_at", "np_return_dryrun_notified_at TEXT")
         _ensure_column(conn, "orders", "cancelled_at", "cancelled_at TEXT")
         _ensure_column(conn, "orders", "cancel_reason", "cancel_reason TEXT")
@@ -398,8 +400,8 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             payment_confirmed, customer_name, phone, email, np_branch,
             np_city_ref, np_warehouse_number, np_ref_id, items,
             created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status,
-            carrier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            carrier, customer_comment
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             internal_order_id,
@@ -422,9 +424,23 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             order.get("toysi_ttn"),
             order.get("delivery_status"),
             order.get("carrier", "nova_poshta"),
+            clean_customer_comment(order.get("customer_comment")),
         ),
     )
     return True
+
+
+CUSTOMER_COMMENT_MAX = 300
+
+
+def clean_customer_comment(text) -> str | None:
+    """Коментар покупця з чекауту: прибирає керуючі символи, склеює пробіли/переноси в один пробіл, ≤300. Порожнє → None.
+    Сайт (site_order_api.build_order) уже чистить так само; це друга лінія захисту на межі БД (текст потрапляє в comment Toysi й у Telegram)."""
+    if text is None:
+        return None
+    s = "".join(ch if (ch.isprintable() or ch in "\n\t") else " " for ch in str(text))
+    s = " ".join(s.split())
+    return s[:CUSTOMER_COMMENT_MAX] or None
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:

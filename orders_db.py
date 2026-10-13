@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- захист від повторного тікета щоцикл опитування
     np_return_created_at  TEXT,                -- коли створено зворотну ТТН НП при скасуванні покупцем
                                                -- (order_status_tracker._maybe_create_np_return); ідемпотентність
+    promo_code            TEXT,                -- застосована знижка сайту: PLUTUS5 (промокод) або TWO10 (авто −10% за дві різні позиції); NULL = без знижки
+    promo_discount_total  REAL,                -- сума знижки по замовленню, грн (ціни в items уже ПІСЛЯ знижки; items[].list_price = каталожна)
     refund_receipt_claim_at TEXT,              -- claim виписування чека ПОВЕРНЕННЯ (site_refund_receipts): лишається, якщо результат невідомий
     refund_receipt_at     TEXT,                -- коли чек повернення створено (або знайдено вже існуючий)
     refund_receipt_id     TEXT,                -- id чека повернення Checkbox
@@ -315,6 +317,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "refund_receipt_at", "refund_receipt_at TEXT")
         _ensure_column(conn, "orders", "refund_receipt_id", "refund_receipt_id TEXT")
         _ensure_column(conn, "orders", "refund_checked_at", "refund_checked_at TEXT")
+        _ensure_column(conn, "orders", "promo_code", "promo_code TEXT")
+        _ensure_column(conn, "orders", "promo_discount_total", "promo_discount_total REAL")
         _ensure_column(conn, "orders", "np_return_dryrun_notified_at", "np_return_dryrun_notified_at TEXT")
         _ensure_column(conn, "orders", "cancelled_at", "cancelled_at TEXT")
         _ensure_column(conn, "orders", "cancel_reason", "cancel_reason TEXT")
@@ -408,8 +412,8 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             payment_confirmed, customer_name, phone, email, np_branch,
             np_city_ref, np_warehouse_number, np_ref_id, items,
             created_at, forwarded_to_toysi_at, toysi_order_id, toysi_ttn, delivery_status,
-            carrier, customer_comment
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            carrier, customer_comment, promo_code, promo_discount_total
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             internal_order_id,
@@ -433,6 +437,8 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             order.get("delivery_status"),
             order.get("carrier", "nova_poshta"),
             clean_customer_comment(order.get("customer_comment")),
+            order.get("promo_code"),
+            order.get("promo_discount_total"),
         ),
     )
     return True

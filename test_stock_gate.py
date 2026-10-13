@@ -45,15 +45,15 @@ chk("parser: _parse_ostatok_max('5...10 шт.')=10, '10...50 шт.'=50, '1 шт.
 chk("parser: _parse_ostatok (мінімум) не змінився: '5...10 шт.'=5", tp._parse_ostatok("5...10 шт.") == 5)
 chk("залишок не число → 0, мінус → 0", ss.build_snapshot({"1": {"stock": "abc"}, "2": {"stock": -5}})["s"] == {"1": 0, "2": 0})
 out = tmp / "stock.json"
-ok = ss.run_once(fetch=lambda: cat, out=out, now=datetime(2026, 10, 13, 17, 0, 0))
+ok = ss.run_once(fetch=lambda: cat, out=out, now=datetime(2026, 10, 13, 17, 0, 0), cost_out=tmp / "cost_stub.json")
 d = json.loads(out.read_text(encoding="utf-8"))
 chk("run_once пише файл атомарно (без .tmp), вміст коректний", ok and d["n"] == 30000 and not list(tmp.glob("*.tmp")))
 good = out.read_text(encoding="utf-8")
-ok = ss.run_once(fetch=lambda: {}, out=out)
+ok = ss.run_once(fetch=lambda: {}, out=out, cost_out=tmp / "cost_stub.json")
 chk("порожній каталог → файл НЕ перезаписано, сигнал", ok is False and out.read_text(encoding="utf-8") == good and any(k == "stock_snapshot_empty" for k, _ in alerts))
-ok = ss.run_once(fetch=lambda: {str(i): {"stock": 1} for i in range(100)}, out=out)
+ok = ss.run_once(fetch=lambda: {str(i): {"stock": 1} for i in range(100)}, out=out, cost_out=tmp / "cost_stub.json")
 chk("усічений каталог (100 позицій) → файл НЕ перезаписано, сигнал", ok is False and out.read_text(encoding="utf-8") == good and any(k == "stock_snapshot_small" for k, _ in alerts))
-chk("збій fetch (виняток) → False, файл цілий, без винятку назовні", ss.run_once(fetch=lambda: (_ for _ in ()).throw(RuntimeError("мережа")), out=out) is False and out.read_text(encoding="utf-8") == good)
+chk("збій fetch (виняток) → False, файл цілий, без винятку назовні", ss.run_once(fetch=lambda: (_ for _ in ()).throw(RuntimeError("мережа")), out=out, cost_out=tmp / "cost_stub.json") is False and out.read_text(encoding="utf-8") == good)
 
 # ── бекенд
 orders_db.init_db()

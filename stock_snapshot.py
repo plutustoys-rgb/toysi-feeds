@@ -39,7 +39,35 @@ def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
     return {"ts": (now or datetime.now()).isoformat(timespec="seconds"), "n": len(s), "s": s}
 
 
-def run_once(fetch=None, out=None, now=None) -> bool:
+def write_cost_file(catalog: dict, out=None, now: datetime | None = None) -> bool:
+    """ПРИВАТНИЙ файл собівартості для знижок сайту (site_promo): {"ts", "c": {id: собівартість}} ПОЗА DocumentRoot (/opt/plutustoys/promo_cost.json, права 0600). Збій тут НЕ ламає знімок залишків:
+    без файлу знижок просто нема (fail-closed). Собівартість = competitor_pricing.real_toysi_cost (та сама, що в закритій формулі ціни сайту)."""
+    try:
+        import competitor_pricing as cp
+        import site_promo
+        out = Path(out or site_promo.COST_FILE)
+        costs = {}
+        for pid, it in catalog.items():
+            try:
+                c = cp.real_toysi_cost(it)
+            except (ValueError, TypeError, KeyError):
+                continue
+            if c and c > 0:
+                costs[str(pid)] = round(float(c), 2)
+        tmp = out.with_name(out.name + ".tmp")
+        tmp.write_text(json.dumps({"ts": (now or datetime.now()).isoformat(timespec="seconds"), "c": costs}, separators=(",", ":")), encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, out)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[stock_snapshot] файл собівартості не записано: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
+
+
+def run_once(fetch=None, out=None, now=None, cost_out=None) -> bool:
     """True — знімок записано. Не кидає назовні."""
     out = Path(out or STOCK_FILE)
     try:
@@ -61,6 +89,7 @@ def run_once(fetch=None, out=None, now=None) -> bool:
         tmp = out.with_name(out.name + ".tmp")
         tmp.write_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp, out)                     # атомарно: відвідувач/бекенд ніколи не бачить напівзаписаний файл
+        write_cost_file(catalog, cost_out, now)
         print(f"[stock_snapshot] ✅ {snap['n']} позицій, ts={snap['ts']}")
         return True
     except Exception as e:  # noqa: BLE001

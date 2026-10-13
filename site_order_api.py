@@ -40,6 +40,7 @@ from urllib.parse import urlparse, parse_qs
 
 import nova_poshta
 import liqpay_client
+import site_promo
 from orders_db import get_connection, init_db, insert_order, get_order, mark_payment_confirmed, set_liqpay_payment_id
 
 HOST = os.environ.get("SITE_API_HOST", "127.0.0.1")
@@ -142,6 +143,8 @@ def _notify_new_order(order: dict, total, test: bool = False, note: str = "") ->
         _cc = clean_customer_comment(order.get("customer_comment"))
         if _cc:
             note = (f"{note} · " if note else "") + f"Коментар покупця: {_cc}"
+        if order.get("promo_code"):
+            note = (f"{note} · " if note else "") + f"Знижка {order['promo_code']}: −{order.get('promo_discount_total')} грн"
         from telegram_notify import notify_new_order
         notify_new_order("site", order.get("order_id"), total, len(order.get("items") or []), order.get("payment_method", ""), test=test, note=note)
     except Exception as e:  # noqa: BLE001
@@ -438,6 +441,38 @@ def _clean_comment(raw) -> str:
     return s[:MAX_COMMENT_LEN].strip()
 
 
+def _promo_code_allowed(conn, phone: str) -> bool:
+    """PLUTUS5: 1 використання на телефон. Рахуємо замовлення сайту з promo_code=PLUTUS5, не скасовані; передоплатні НЕОПЛАЧЕНІ (покупець не дійшов до оплати) не рахуються."""
+    row = conn.execute(
+        """SELECT 1 FROM orders WHERE platform = 'site' AND promo_code = ? AND phone = ? AND (status IS NULL OR status NOT LIKE '%cancel%')
+             AND (payment_method != 'prepaid' OR payment_confirmed = 1) LIMIT 1""",
+        (site_promo.LABEL_CODE, phone),
+    ).fetchone()
+    return row is None
+
+
+PROMO_MESSAGES = {
+    "unknown": "Такого промокоду не існує.",
+    "used": "Цей промокод уже використано з цього номера телефону.",
+    "not_applicable": "Промокод дійсний, але до цього кошика знижка не застосовується (товари дешеві, або діє більша автоматична знижка).",
+    "unavailable": "Знижки тимчасово недоступні, спробуйте пізніше.",
+}
+
+
+def quote_promo(items: list, code, phone) -> dict:
+    """Розрахунок знижки для кошика БЕЗ створення замовлення (читання БД: ліміт по телефону). items: [{toysi_code, qty, price}] каталожні. Повертає (res, new_items, new_total)."""
+    allowed = True
+    if (code or "").strip() and phone:
+        try:
+            with get_connection() as conn:
+                allowed = _promo_code_allowed(conn, phone)
+        except Exception as e:  # noqa: BLE001
+            print(f"[site_order_api] promo limit check: {e}", file=sys.stderr)
+    res = site_promo.compute(items, site_promo.load_cost_map(), code, allowed)
+    new_items, new_total = site_promo.apply_to_items(items, res)
+    return res, new_items, new_total
+
+
 def _check_cod_ceiling(payment_method: str, total: int) -> None:
     """Стеля суми COD (Консультант 13.09). Вище стелі не відмовляємо в купівлі повністю —
     просимо передоплату, як і для будь-якого дорогого замовлення."""
@@ -605,16 +640,58 @@ class Handler(SimpleHTTPRequestHandler):
     # ── POST: замовлення + колбек LiqPay ──
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/promo/quote":
+            return self._handle_promo_quote()
         if parsed.path == "/api/order":
             return self._handle_order()
         if parsed.path == "/api/liqpay/callback":
             return self._handle_callback()
         return self._json(404, {"error": "невідомий ендпоінт"})
 
+    def _handle_promo_quote(self):
+        """POST /api/promo/quote {items:[{id,qty}], promo_code?, phone?} → розрахунок знижки для UI (без створення замовлення). Нічого не пише в БД."""
+        payload = self._read_json()
+        try:
+            pm = price_map()
+            raw = payload.get("items")
+            if not pm or not isinstance(raw, list) or not raw or len(raw) > MAX_ITEMS:
+                raise OrderError("Кошик порожній або каталог тимчасово недоступний")
+            items = []
+            for it in raw:
+                it = it if isinstance(it, dict) else {}
+                pid = str(it.get("id", "")).strip()
+                try:
+                    qty = int(it.get("qty", 0))
+                except (TypeError, ValueError):
+                    qty = 0
+                if pid not in pm or qty < 1 or qty > MAX_QTY_PER_ITEM:
+                    raise OrderError(f"Некоректна позиція {pid}")
+                items.append({"toysi_code": pid, "name": pm[pid]["name"], "qty": qty, "price": pm[pid]["price"]})
+            phone = _norm_phone(payload.get("phone") or "")
+            res, new_items, new_total = quote_promo(items, payload.get("promo_code"), phone)
+        except OrderError as e:
+            return self._json(400, {"error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            print(f"[site_order_api] promo quote: {e}", file=sys.stderr)
+            return self._json(500, {"error": "внутрішня помилка"})
+        return self._json(200, {
+            "applied": res["applied"], "code_status": res["code_status"], "message": PROMO_MESSAGES.get(res["code_status"], ""),
+            "discount_total": res["discount_total"], "list_total": sum(i["price"] * i["qty"] for i in items), "total": new_total,
+            "lines": [{"id": i["toysi_code"], "qty": i["qty"], "list_price": i["list_price"], "unit_price": i["price"]} for i in new_items]})
+
     def _handle_order(self):
         payload = self._read_json()
         try:
             order, total = build_order(payload)
+            code = payload.get("promo_code")
+            res, new_items, new_total = quote_promo(order["items"], code, order.get("phone"))
+            if (code or "").strip() and res["code_status"] in ("unknown", "used", "not_applicable", "unavailable"):
+                # покупець ввів код, але знижки НЕ буде: не створюємо замовлення, щоб сума не стала сюрпризом (UI показує причину й пропонує продовжити без коду)
+                return self._json(400, {"code": "promo_" + res["code_status"], "error": PROMO_MESSAGES[res["code_status"]]})
+            if res["applied"]:
+                order["items"], total = new_items, new_total
+                order["promo_code"] = res["applied"]
+                order["promo_discount_total"] = res["discount_total"]
             _check_cod_ceiling(order["payment_method"], total)
         except StockChanged as e:
             # НЕ створюємо замовлення: UI (Shopify-code) показує «щойно закінчилось», прибирає/зменшує лише ці рядки й просить підтвердити решту

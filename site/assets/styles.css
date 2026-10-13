@@ -320,7 +320,8 @@ footer.foot a{color:var(--accent)}
 .mascot{display:inline-block;vertical-align:middle;height:auto;max-width:100%}
 .logo .mascot{height:22px}
 .hero .mascot{height:64px}
-.delivery .mascot{height:28px}
+.delivery .fox{flex:none}
+.delivery .mascot{height:28px;width:auto;flex:none}   /* flex-елемент стискався по ширині (width=31 з атрибута + shrink) — Плутус виходив «здавленим по боках» (скарга власника 13.10) */
 .done .mascot{height:96px}
 .empty .mascot{height:44px}
 

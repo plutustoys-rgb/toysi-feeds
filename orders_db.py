@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS orders (
                                                -- захист від повторного тікета щоцикл опитування
     np_return_created_at  TEXT,                -- коли створено зворотну ТТН НП при скасуванні покупцем
                                                -- (order_status_tracker._maybe_create_np_return); ідемпотентність
+    refund_receipt_claim_at TEXT,              -- claim виписування чека ПОВЕРНЕННЯ (site_refund_receipts): лишається, якщо результат невідомий
+    refund_receipt_at     TEXT,                -- коли чек повернення створено (або знайдено вже існуючий)
+    refund_receipt_id     TEXT,                -- id чека повернення Checkbox
+    refund_checked_at     TEXT,                -- остання перевірка статусу платежу в LiqPay (не частіше разу на годину)
     customer_comment      TEXT,                -- коментар покупця з чекауту сайту (≤300, очищений clean_customer_comment); йде в comment Toysi
     np_return_ttn         TEXT,                -- номер створеної зворотної ТТН НП
     np_return_dryrun_notified_at TEXT,         -- коли в DRY-RUN уже слали FYI про потрібне повернення
@@ -307,6 +311,10 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "np_return_created_at", "np_return_created_at TEXT")
         _ensure_column(conn, "orders", "np_return_ttn", "np_return_ttn TEXT")
         _ensure_column(conn, "orders", "customer_comment", "customer_comment TEXT")
+        _ensure_column(conn, "orders", "refund_receipt_claim_at", "refund_receipt_claim_at TEXT")
+        _ensure_column(conn, "orders", "refund_receipt_at", "refund_receipt_at TEXT")
+        _ensure_column(conn, "orders", "refund_receipt_id", "refund_receipt_id TEXT")
+        _ensure_column(conn, "orders", "refund_checked_at", "refund_checked_at TEXT")
         _ensure_column(conn, "orders", "np_return_dryrun_notified_at", "np_return_dryrun_notified_at TEXT")
         _ensure_column(conn, "orders", "cancelled_at", "cancelled_at TEXT")
         _ensure_column(conn, "orders", "cancel_reason", "cancel_reason TEXT")
@@ -587,6 +595,52 @@ def claim_receipt(conn: sqlite3.Connection, internal_order_id: str) -> bool:
 def release_receipt_claim(conn: sqlite3.Connection, internal_order_id: str) -> None:
     """Знімає claim, лише коли ВІДОМО, що чек НЕ створено (відмова до створення). Не чіпає вже виданий чек."""
     conn.execute("UPDATE orders SET receipt_claim_at = NULL WHERE internal_order_id = ? AND checkbox_ettn_registered_at IS NULL", (internal_order_id,))
+
+
+def get_refund_receipt_candidates(conn: sqlite3.Connection, since_iso: str, checked_before_iso: str) -> list:
+    """Передоплачені ОПЛАЧЕНІ замовлення сайту з чеком продажу, для яких чека повернення ще нема. Тестові (sandbox_test) виключені.
+    refund_checked_at: перевіряємо статус у LiqPay не частіше разу на годину (checked_before_iso)."""
+    rows = conn.execute(
+        """SELECT * FROM orders WHERE platform = 'site' AND payment_method = 'prepaid' AND payment_confirmed = 1
+             AND (status IS NULL OR status != 'sandbox_test') AND checkbox_receipt_id IS NOT NULL AND checkbox_receipt_id != ''
+             AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL
+             AND created_at >= ? AND (refund_checked_at IS NULL OR refund_checked_at < ?)
+           ORDER BY created_at""",
+        (since_iso, checked_before_iso),
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_stuck_refund_claims(conn: sqlite3.Connection, older_than_iso: str) -> list:
+    """Замовлення, де claim чека повернення взято, а чека нема (refund_receipt_at порожній) давніше за older_than_iso: вбитий процес чи невідомий результат — потрібна людина."""
+    rows = conn.execute(
+        "SELECT internal_order_id, refund_receipt_claim_at FROM orders WHERE refund_receipt_claim_at IS NOT NULL AND refund_receipt_at IS NULL AND refund_receipt_claim_at < ?",
+        (older_than_iso,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_refund_checked(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    conn.execute("UPDATE orders SET refund_checked_at = ? WHERE internal_order_id = ?", (datetime.now().isoformat(timespec="seconds"), internal_order_id))
+
+
+def claim_refund_receipt(conn: sqlite3.Connection, internal_order_id: str) -> bool:
+    """Атомарний claim виписування чека повернення: True лише для ОДНОГО виклику. Викликач ОБОВ'ЯЗКОВО робить commit одразу."""
+    cur = conn.execute(
+        "UPDATE orders SET refund_receipt_claim_at = ? WHERE internal_order_id = ? AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL",
+        (datetime.now().isoformat(timespec="seconds"), internal_order_id),
+    )
+    return cur.rowcount == 1
+
+
+def release_refund_receipt_claim(conn: sqlite3.Connection, internal_order_id: str) -> None:
+    """Знімає claim лише коли ВІДОМО, що чек повернення НЕ створено (відмова до відправки POST)."""
+    conn.execute("UPDATE orders SET refund_receipt_claim_at = NULL WHERE internal_order_id = ? AND refund_receipt_at IS NULL", (internal_order_id,))
+
+
+def mark_refund_receipt_done(conn: sqlite3.Connection, internal_order_id: str, receipt_id: str | None) -> None:
+    conn.execute("UPDATE orders SET refund_receipt_at = ?, refund_receipt_id = ? WHERE internal_order_id = ?",
+                 (datetime.now().isoformat(timespec="seconds"), receipt_id, internal_order_id))
 
 
 def get_receipt_state(conn: sqlite3.Connection, internal_order_id: str):

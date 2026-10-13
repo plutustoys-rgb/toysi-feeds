@@ -12,6 +12,7 @@ import tempfile
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+os.environ["ORDERS_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "orders.db")   # ізоляція ДО імпорту orders_db: DB_PATH береться з env при імпорті (інакше тест писав би в локальний orders.db)
 import orders_db
 import order_router as orr
 
@@ -34,7 +35,6 @@ chk("звичайний текст не змінюється", cc("Подару�
 
 # ── БД: нова + міграція старої
 tmp = tempfile.mkdtemp()
-orders_db.DB_PATH = os.path.join(tmp, "orders.db")
 orders_db.init_db()
 with orders_db.get_connection() as c:
     cols = [r[1] for r in c.execute("PRAGMA table_info(orders)")]

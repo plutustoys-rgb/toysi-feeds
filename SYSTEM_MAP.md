@@ -167,7 +167,7 @@
 
 | Unit (`.service`, є парний `.timer`) | ExecStart | Домен |
 |---|---|---|
-| `order-pipeline` | `order_pipeline.py` | замовлення: ЄДИНИЙ процесор — забір(poll_once)+bank_check+роутинг послідовно. enabled+active ~15хв |
+| `order-pipeline` | `order_pipeline.py` | замовлення: ЄДИНИЙ процесор — забір(poll_once)+bank_check+роутинг послідовно. enabled+active ~15хв. **+ крок `site_refund_receipts.run_once()` (13.10.2026):** автоматичний фіскальний чек ПОВЕРНЕННЯ для онлайн-оплат сайту: сигнал = повернення грошей у кабінеті LiqPay (платіж `reversed`, LiqPay API `status`, ≤1 перевірка/год на замовлення); видає RETURN перевіреними функціями `kodv_return_receipt` (одна позиція, сума, дубль), часткові/багатопозиційні лишає людині з сигналом; claim у БД, при невідомому результаті автоповтору нема. Тест `test_site_refund_receipts.py` |
 | `order-router` | `order_router.py` | ⛔ **DISABLED leftover** — поглинуто order-pipeline (звірено 2026-08-20: enabled=disabled, inactive) |
 | `orders-watcher` | `orders_watcher.py` | ⛔ **DISABLED leftover** — поглинуто order-pipeline (звірено 2026-08-20: enabled=disabled, inactive) |
 | `order-status-tracker` | `order_status_tracker.py` | замовлення: статуси доставки/ТТН + **автоповернення НП** при скасуванні покупцем (`_maybe_create_np_return` → `nova_poshta.create_return_order` orderCargoReturn; гейт `NP_RETURN_APPLY`, дефолт DRY-RUN; ідемпотентно `np_return_created_at`; довідник `технічні_вимоги_маркетплейсів/nova_poshta.md`). enabled+active |

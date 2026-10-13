@@ -100,12 +100,16 @@
 
   // ── Пошуковий оверлей (індекс index.json) ──
   var idx=null, idxLoading=false;
-  function ensureIndex(cb){
+  var idxWaiters=[];
+  function ensureIndex(cb, onFail){
+    // черга: запит, набраний ПОКИ індекс ще вантажиться, раніше губився (callback відкидався) — результати не з'являлись, доки не наберуть ще літеру
     if(idx){ cb(idx); return; }
+    idxWaiters.push({ok:cb, fail:onFail});
     if(idxLoading) return;
     idxLoading=true;
-    fetch("index.json").then(function(r){return r.json();}).then(function(d){ idx=d; idxLoading=false; cb(idx); })
-      .catch(function(){ idxLoading=false; });
+    fetch("index.json").then(function(r){ if(!r.ok) throw new Error("index "+r.status); return r.json(); })
+      .then(function(d){ idx=d; idxLoading=false; var w=idxWaiters; idxWaiters=[]; w.forEach(function(x){ try{ x.ok(idx); }catch(e){} }); })
+      .catch(function(){ idxLoading=false; var w=idxWaiters; idxWaiters=[]; w.forEach(function(x){ if(x.fail){ try{ x.fail(); }catch(e){} } }); });
   }
   // Оверлей пошуку кладе свій запис в історію (тестувальник #16: «Назад» виводив із САЙТУ): відкриття = pushState, «Назад» (popstate) / Escape / клік по фону / «Готово» закривають оверлей і лишають на сторінці.
   var searchPushed=false, searchLeaveHref=null;
@@ -142,7 +146,7 @@
   // ── Пошук (зауваження Тестувальника/Консультанта 10.10.2026): токени через AND у БУДЬ-ЯКОМУ порядку (було: літеральний підрядок —
   // «лялька барбі» давало 0); апострофи U+02BC/U+2019/U+2018/U+0027/U+0060 прибираються з ОБОХ боків («мʼяка»=«м'яка»=«мяка»);
   // показуємо «Показано N з M» і сортування (раніше мовчазна стеля 40 за порядком файлу).
-  var SEARCH_SHOW=40, searchSort="rec", lastMatches=[], lastQuery="";
+  var SEARCH_SHOW=40, searchSort="rec", lastMatches=[], lastQuery="", searchSeq=0;
   function normText(s){ return String(s==null?"":s).toLowerCase().replace(/[\u02bc\u02b9\u2019\u2018\u2032\u0027\u0060]/g,""); }
   // закінчення відкидаємо (≥5 літер: лишається max(4, довжина−2)), щоб «хлопчика»/«поліція» знаходили «хлопчиків»/«поліцейська»
   function stemTok(t){ return t.length>=5 ? t.slice(0, Math.max(4, t.length-2)) : t; }
@@ -229,10 +233,12 @@
     var res=document.querySelector("#search-overlay .results");
     if(!res) return;
     q=(q||"").trim();
-    if(q.length<2){ res.innerHTML=searchEmptyHtml(); lastMatches=[]; return; }
+    if(q.length<2){ searchSeq++; res.innerHTML=searchEmptyHtml(); lastMatches=[]; return; }
     var toks=searchTokens(q);
-    if(!toks.length){ res.innerHTML=searchEmptyHtml(); lastMatches=[]; return; }   // запит лише з апострофів/розділових → не показуємо «весь каталог»
+    if(!toks.length){ searchSeq++; res.innerHTML=searchEmptyHtml(); lastMatches=[]; return; }   // запит лише з апострофів/розділових → не показуємо «весь каталог»
+    var mySeq=++searchSeq;
     ensureIndex(function(data){
+      if(mySeq!==searchSeq) return;   // новіший запит уже набрано
       var all=[];
       for(var i=0;i<data.length;i++){
         var p=data[i];
@@ -241,6 +247,9 @@
       }
       lastMatches=all; lastQuery=q;
       renderSearch();
+    }, function(){
+      if(mySeq!==searchSeq) return;
+      res.innerHTML='<div class="empty" style="padding:40px 0">Не вдалося завантажити пошук. Перевірте звʼязок і спробуйте ще раз.</div>';
     });
   }
   function esc(s){ return String(s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }   // ' теж: назви в data-add='…' (аудит #691: «М'яка іграшка» ламала кнопку й давала ін'єкцію атрибута)

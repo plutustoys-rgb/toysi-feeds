@@ -523,6 +523,7 @@ def build():
     prods_rec = rec_order(prods)
     paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
     paged |= write_utsinka(prods, cat_list, cat_slug)
+    paged |= write_aktsii(prods)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
     write_ig(prods)
@@ -1116,6 +1117,7 @@ def similar_products(idx, p, k=SIMILAR_PRODUCTS_MAX):
 
 UTSINKA_FILE = "utsinka.html"
 UTSINKA_NOTICE = ('<div class="md-notice" role="note"><b>Уцінений товар:</b> має дефект або неповну комплектацію — це вказано в назві/описі. '
+                  'Дефект, указаний у назві чи описі, є умовою продажу за зниженою ціною. '
                   'Перед покупкою прочитайте опис. <a href="returns.html">Умови повернення</a></div>')
 
 
@@ -1137,6 +1139,53 @@ def write_utsinka(prods, cat_list, cat_slug):
     desc = f"Уцінені іграшки PlutusToys: {_fmt_int(n)} товар{_plural(n)}, ціни від {picked[0]['price']} ₴. Дефект чи неповна комплектація вказані в назві й описі."
     return write_catalog("Уцінені іграшки", picked, cat_list, cat_slug, UTSINKA_FILE, active=None,
                          special={"h1": "Уцінені іграшки", "title": "Уцінені іграшки — знижені ціни | PlutusToys", "desc": desc, "notice": UTSINKA_NOTICE})
+
+
+AKTSII_FILE = "aktsii.html"
+AKTSII_COUNT = 12
+AKTSII_MIN = 4   # менше придатних карток — сторінки й кнопки героя нема
+# Картка «−5% за підписку на Instagram» (SMM/власник 13.10): показується ЛИШЕ коли промокод PLUTUS5 реально працює (бекенд Code-Agent + UI кошика ввімкнені). Без коду обіцяти знижку не можна — вмикати (True) разом із UI промокоду.
+PROMO_PLUTUS5_LIVE = False
+AKTSII_PROMO_CARD = ('<div class="promo-card"><div class="pc-txt"><b>−5% за підписку на Instagram</b>'
+                     '<span>Підпишіться на @plutustoys.ua та введіть код PLUTUS5 у кошику.</span></div>'
+                     '<a class="btn" href="https://www.instagram.com/plutustoys.ua/" target="_blank" rel="noopener">Підписатися</a></div>')
+
+
+def aktsii_pick(prods):
+    """12 карток уцінки для /aktsii.html (власник 13.10): ті самі придатні, що на /utsinka.html (у наявності, фото, внесок ≥ 0), ціна від 100 ₴, різні «основи назв»; щоденна ротація (стабільна протягом доби)."""
+    pool = [p for p in utsinka_pick(prods) if p["price"] >= 100]
+    rng = random.Random(HOME_PICK_SEED * 7919 + _pick_day() * 104729)
+    rng.shuffle(pool)
+    out, used = [], set()
+    for p in pool:   # уцінка вся в одній категорії «Уцінка» — різноманітність за «основою назви» (_pick_key), не за категорією
+        k = _pick_key(p["name"])
+        if k in used:
+            continue
+        used.add(k)
+        out.append(p)
+        if len(out) >= AKTSII_COUNT:
+            break
+    return out if len(out) >= AKTSII_MIN else []
+
+
+def write_aktsii(prods):
+    """Пише /aktsii.html (картка підписки — лише коли PROMO_PLUTUS5_LIVE; блок про уцінку; 12 карток; «Усі уцінені →»). Повертає set записаних сторінок."""
+    picks = aktsii_pick(prods)
+    if not picks:
+        print("[build] ⚠ aktsii: замало придатних уцінених товарів — /aktsii.html не пишемо", file=sys.stderr)
+        return set()
+    body = (
+        crumbs_html([("Головна", "index.html"), ("Акції", None)]) +
+        '\n<h1 class="page">Акції</h1>\n' +
+        (AKTSII_PROMO_CARD if PROMO_PLUTUS5_LIVE else "") +
+        UTSINKA_NOTICE +
+        grid(picks, eager_n=4) +
+        '<p class="nb-more"><a class="btn ghost" href="utsinka.html" style="display:inline-block;max-width:260px">Усі уцінені →</a></p>'
+    )
+    head = breadcrumb_ld([("Головна", "index.html"), ("Акції", None)])
+    _write(AKTSII_FILE, page("Акції", body, extra_head=head, description="Акції PlutusToys: уцінені іграшки за зниженими цінами. Дефект чи неповна комплектація вказані в назві й описі.",
+                             canonical=AKTSII_FILE, og_image=OG_IMAGE, title_full="Акції — знижені ціни на іграшки | PlutusToys"))
+    return {AKTSII_FILE}
 
 
 def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None):
@@ -1548,9 +1597,9 @@ def write_home(prods, cats, cat_list, cat_slug):
             '<button class="arrow r" type="button" aria-label="Наступні товари">›</button>'
           '</div>'
         )
-    # кнопка героя (власник 13.10): «Уцінка» → /utsinka.html (є придатні уцінені товари), інакше «Усі іграшки»
-    if utsinka_pick(prods):
-        hero_act = '<a class="btn" href="utsinka.html">Уцінка</a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
+    # кнопка героя (власник 13.10): «Акції» → /aktsii.html (є придатні уцінені товари), інакше «Усі іграшки»; «Уцінка» — чип-посилання над каруселлю
+    if aktsii_pick(prods):
+        hero_act = '<a class="btn" href="aktsii.html">Акції</a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
     else:
         hero_act = '<a class="btn" href="catalog.html">Усі іграшки</a>'
     body = (

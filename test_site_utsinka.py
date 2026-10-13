@@ -69,7 +69,7 @@ chk(f"записано utsinka.html + пагінація (31 товар → 2 с
 h1 = (root / "utsinka.html").read_text(encoding="utf-8")
 h2 = (root / "utsinka_2.html").read_text(encoding="utf-8")
 chk("H1 «Уцінені іграшки», title/description без Нової Пошти, canonical = utsinka.html", '<h1 class="page">Уцінені іграшки</h1>' in h1 and "Уцінені іграшки — знижені ціни | PlutusToys" in h1 and "Пошт" not in re.search(r'<meta name="description" content="([^"]*)"', h1).group(1) and 'rel="canonical" href="https://plutustoys.com.ua/utsinka.html"' in h1)
-chk("блок над сіткою: рівно текст SMM + лінк «Умови повернення» → returns.html", 'Уцінений товар:</b> має дефект або неповну комплектацію — це вказано в назві/описі. Перед покупкою прочитайте опис. <a href="returns.html">Умови повернення</a>' in h1)
+chk("блок над сіткою: рівно текст SMM (з реченням «Дефект, указаний у назві чи описі, є умовою продажу за зниженою ціною.») + лінк «Умови повернення» → returns.html", 'Уцінений товар:</b> має дефект або неповну комплектацію — це вказано в назві/описі. Дефект, указаний у назві чи описі, є умовою продажу за зниженою ціною. Перед покупкою прочитайте опис. <a href="returns.html">Умови повернення</a>' in h1)
 chk("блок над сіткою є й на сторінці 2", "md-notice" in h2 and "Сторінка 2 з 2" in h2)
 chk("у блоці НЕМАЄ тверджень про відмову в поверненні («не є підставою», «не підлягає»)", not re.search(r"не є підстав|не підлягає|без права", h1, re.I))
 chk("перша сторінка — 24 картки, друга — решта 7; у кожної бейдж «Уцінка»", len(re.findall(r'<a class="card"', h1)) == 24 and len(re.findall(r'<a class="card"', h2)) == 7 and h1.count('class="md-badge">Уцінка</span>') == 24)
@@ -108,8 +108,9 @@ cl = sorted(cats_h, key=lambda c: -len(cats_h[c]))
 cs = {c: f"c{i}" for i, c in enumerate(cl)}
 bs.OUT = str(root)
 bs.write_home(allp, cats_h, cl, cs)
+bs.write_aktsii(allp)
 home = (root / "index.html").read_text(encoding="utf-8")
-chk("герой: кнопка «Уцінка» → utsinka.html + «Усі іграшки»; «Нехай Плутус вибере» нема", '<div class="act"><a class="btn" href="utsinka.html">Уцінка</a><a class="hero-all" href="catalog.html">Усі іграшки</a></div>' in home and "Плутус вибере" not in home)
+chk("герой: кнопка «Акції» → aktsii.html + «Усі іграшки»; «Нехай Плутус вибере» нема; «Уцінка» — чип-посилання над каруселлю", '<div class="act"><a class="btn" href="aktsii.html">Акції</a><a class="hero-all" href="catalog.html">Усі іграшки</a></div>' in home and "Плутус вибере" not in home)
 bs.OUT = str(root2)
 cn = {}
 for p in normal:
@@ -118,6 +119,26 @@ cln = sorted(cn, key=lambda c: -len(cn[c]))
 bs.write_home(normal, cn, cln, {c: f"c{i}" for i, c in enumerate(cln)})
 home2 = (root2 / "index.html").read_text(encoding="utf-8")
 chk("герой без уцінених: лише кнопка «Усі іграшки» (посилання на неіснуючу сторінку нема)", '<div class="act"><a class="btn" href="catalog.html">Усі іграшки</a></div>' in home2 and "utsinka" not in home2)
+
+# /aktsii.html (власник 13.10): 12 карток уцінки, блок про уцінку, «Усі уцінені →»; картка Instagram лише коли промокод працює (PROMO_PLUTUS5_LIVE)
+ak = bs.aktsii_pick(prods)
+chk(f"/aktsii: рівно 12 карток із придатних (ціна ≥100, внесок ≥0, різні основи назв), жодної відсіяної {len(ak)}", len(ak) == 12 and all(p["price"] >= 100 and p["contribution"] >= 0 for p in ak) and not ({p["id"] for p in ak} & {b["id"] for b in bad.values()}) and len({bs._pick_key(p["name"]) for p in ak}) == 12)
+os.environ["SITE_PICK_DATE"] = "2026-10-13"
+a1 = [p["id"] for p in bs.aktsii_pick(prods)]
+chk("/aktsii: стабільно протягом доби, наступного дня склад інший (ротація)", a1 == [p["id"] for p in bs.aktsii_pick(prods)] and a1 != [p["id"] for p in (os.environ.__setitem__("SITE_PICK_DATE", "2026-10-14"), bs.aktsii_pick(prods))[1]])
+os.environ["SITE_PICK_DATE"] = "2026-10-13"
+chk("/aktsii: менше 4 придатних — сторінки нема", bs.aktsii_pick(good[:3]) == [] and bs.write_aktsii(normal) == set())
+root3 = Path(tempfile.mkdtemp())
+bs.OUT = str(root3)
+chk("write_aktsii записує aktsii.html", bs.write_aktsii(prods) == {"aktsii.html"})
+ah = (root3 / "aktsii.html").read_text(encoding="utf-8")
+chk("/aktsii: H1 «Акції», блок про уцінку (з реченням про умову продажу), 12 карток із бейджем, «Усі уцінені →» → utsinka.html; метаопис без Нової Пошти", '<h1 class="page">Акції</h1>' in ah and "є умовою продажу за зниженою ціною" in ah and len(re.findall(r'<a class="card"', ah)) == 12 and ah.count("md-badge") == 12 and 'href="utsinka.html"' in ah and "Усі уцінені →" in ah and "Пошт" not in re.search(r'<meta name="description" content="([^"]*)"', ah).group(1))
+chk("/aktsii: картки підписки на Instagram НЕМАЄ, поки PROMO_PLUTUS5_LIVE=False (без обіцянки знижки без коду)", "promo-card" not in ah and "PLUTUS5" not in ah and "−5%" not in ah)
+bs.PROMO_PLUTUS5_LIVE = True
+bs.write_aktsii(prods)
+ah2 = (root3 / "aktsii.html").read_text(encoding="utf-8")
+bs.PROMO_PLUTUS5_LIVE = False
+chk("/aktsii: при PROMO_PLUTUS5_LIVE=True зверху картка «−5% за підписку на Instagram» + кнопка «Підписатися» на @plutustoys.ua", ah2.index("promo-card") < ah2.index("md-notice") and "−5% за підписку на Instagram" in ah2 and "instagram.com/plutustoys.ua" in ah2 and ">Підписатися<" in ah2)
 
 # Chromium
 try:
@@ -146,10 +167,13 @@ if sync_playwright:
             pg.goto(f"{base}/index.html", wait_until="load")
             pg.wait_for_timeout(500)
             pg.click(".hero2 .btn")
+            pg.wait_for_url(re.compile(r"/aktsii\.html$"), timeout=5000)
+            pg.wait_for_timeout(300)
+            pg.click(".nb-more a.btn")
             pg.wait_for_url(re.compile(r"/utsinka\.html$"), timeout=5000)
             pg.wait_for_timeout(300)
             info = pg.evaluate("(()=>{const n=document.querySelector('.md-notice'); const r=n.getBoundingClientRect(); const b=document.querySelector('.card .md-badge'); const br=b.getBoundingClientRect(); return [r.width>200, r.top<500, getComputedStyle(n).display, br.width>20 && br.height>10, document.documentElement.scrollWidth<=window.innerWidth, document.querySelectorAll('.grid .card').length]})()")
-            chk(f"{w}px: клік по кнопці героя відкриває /utsinka.html; блок видно у першому екрані, бейдж видно, горизонтального скролу нема, 24 картки {info}", info[0] and info[1] and info[2] != "none" and info[3] and info[4] and info[5] == 24 and errs == [])
+            chk(f"{w}px: клік по кнопці героя «Акції» → /aktsii.html, «Усі уцінені →» → /utsinka.html; блок видно у першому екрані, бейдж видно, горизонтального скролу нема, 24 картки {info}", info[0] and info[1] and info[2] != "none" and info[3] and info[4] and info[5] == 24 and errs == [])
             pg.close()
         br.close()
 

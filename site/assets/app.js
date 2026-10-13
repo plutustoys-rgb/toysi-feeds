@@ -502,7 +502,10 @@
     var track=car.querySelector(".track"), left=car.querySelector(".arrow.l"), right=car.querySelector(".arrow.r");
     var listName=car.getAttribute("data-list")||"Добірка Плутуса";
     var slides=Array.prototype.slice.call(car.querySelectorAll("a.card"));
-    function items(){ return slides.map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
+    // Плитка-банер (a.card.banner) — не товар: у view_item_list/select_item як товар НЕ йде, але лишається в `slides` (цикл рахує позиції за всіма дітьми треку)
+    function isBanner(a){ return !!(a && a.classList && a.classList.contains("banner")); }
+    function productSlides(){ return slides.filter(function(a){ return !isBanner(a); }); }
+    function items(){ return productSlides().map(function(a,i){ var d=slideData(a,i); d.item_list_name=listName; return d; }); }
     // Широкий екран показує 5 слайдів одразу — 4-й і 5-й не мають лишатись lazy (порожні картки на першому екрані). У Chromium вони й так у зоні lazy-порога (≈1250 px) — виміряно аудитом #678;
     // це страхування для браузерів із меншим порогом (Safari/Firefox), без претензії на економію ваги.
     if(typeof matchMedia==="function" && matchMedia("(min-width: 700px)").matches){
@@ -657,8 +660,16 @@
     } else { fireList(); }
     car.addEventListener("click", function(e){
       var a=e.target.closest("a.card"); if(!a) return;
-      var i=slides.indexOf(a);
-      if(i<0 && a.getAttribute && a.getAttribute("data-clone")!==null){ i=+a.getAttribute("data-clone"); }   // клон = свій оригінал (індекс у списку)
+      if(isBanner(a)){
+        // клік по банеру: подія home_banner_<тема>, а для «chip:» — розкриваємо відповідний чип на місці (без переходу)
+        var th=a.getAttribute("data-banner")||"", ch=a.getAttribute("data-chip")||"";
+        trackRaw("select_item", {item_list_id:"home_banner_"+th, item_list_name:"home_banner_"+th, items:[{item_id:"banner_"+th, item_name:((a.querySelector(".nm")||{}).textContent||"").trim(), index:0, price:0}]});
+        if(ch){ var btn=document.querySelector('#home-chips button[data-set="'+ch+'"]'); if(btn){ e.preventDefault(); btn.click(); } }
+        return;
+      }
+      var orig=a;
+      if(slides.indexOf(a)<0 && a.getAttribute && a.getAttribute("data-clone")!==null){ orig=slides[+a.getAttribute("data-clone")] || a; }   // клон = свій оригінал
+      var i=productSlides().indexOf(orig);
       var d=slideData(a, i<0?0:i); d.item_list_name=listName;
       trackRaw("select_item", {item_list_id:listId(), item_list_name:listName, items:[d]});
     });

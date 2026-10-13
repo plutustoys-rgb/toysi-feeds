@@ -391,3 +391,10 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 @media(max-width:380px){.home-chips{flex-wrap:wrap;overflow:visible}}   /* 320–380 px: усі чипи видно, без прихованого горизонтального скролу (аудит 13.10) */
 .home-chips + .chip-sub{margin:-4px 16px 8px;font-size:13px;color:var(--muted)}
 .home-chips + .chip-sub:empty{display:none}
+/* перший слайд каруселі — плитка-банер теми дня (SMM 13.10) */
+.card.banner{background:linear-gradient(160deg,#fff1e6,#ffe0cc);border-color:#f1b878;text-decoration:none}
+.card.banner .banner-ph{display:flex;align-items:center;justify-content:center;background:transparent}
+.card.banner .b-emoji{font-size:64px;line-height:1}
+.card.banner .nm{font-size:15px}
+.card.banner .b-sub{font-size:12.5px;color:var(--muted);line-height:1.3}
+.card.banner .b-cta{align-self:flex-start;margin-top:auto;background:var(--accent);color:#fff;border-radius:999px;padding:6px 12px;font-size:13px;font-weight:700}

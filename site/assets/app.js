@@ -369,6 +369,7 @@
     var box=document.getElementById("cart-body");
     if(!box) return;
     var c=read(), ids=Object.keys(c);
+    var staleNote=document.getElementById("cart-stock-note"); if(staleNote && staleNote.parentNode) staleNote.parentNode.removeChild(staleNote);   // порожній кошик не має мати попередження (аудит)
     renderAside(c, ids);
     var codn=document.getElementById("cod-limit-note");
     if(codn) codn.style.display = total()>COD_CEILING ? "" : "none";
@@ -428,12 +429,12 @@
   var STOCK_MAX_AGE_MS=45*60*1000, stockP=null;
   function stockSnapshot(){
     if(stockP) return stockP;
-    stockP=fetch("stock.json?"+Date.now(), {cache:"no-store"}).then(function(r){
+    stockP=fetch("stock.json", {cache:"no-cache"}).then(function(r){   // no-cache = умовний GET (If-Modified-Since → 304): великий файл не тягнемо на кожній сторінці
       if(!r.ok) return null;
       var d=r.headers.get("Date"), lm=r.headers.get("Last-Modified");
       return r.json().then(function(j){
-        if(!j || typeof j.s!=="object" || !j.s) return null;
-        var age=new Date(d).getTime()-new Date(lm).getTime();
+        if(!j || typeof j.s!=="object" || !j.s || Array.isArray(j.s)) return null;
+        var age=(d && lm) ? new Date(d).getTime()-new Date(lm).getTime() : NaN;   // без обох заголовків свіжість невідома (аудит: new Date(null)=0 давав «свіжий»)
         return {fresh:(isFinite(age) && age>=0 && age<=STOCK_MAX_AGE_MS), s:j.s};
       });
     }).catch(function(){ return null; });
@@ -476,10 +477,10 @@
     });
   }
   function initStockCards(){   // списки/каталог/головна: «У наявності» → «Немає» для позицій, що вже закінчились (сторінки збираються раз на 2 год)
-    var cards=document.querySelectorAll("a.card[href^='product-']");
-    if(!cards.length) return;
+    if(!document.querySelector("a.card[href^='product-']")) return;
     stockSnapshot().then(function(snap){
       if(!snap || !snap.fresh) return;
+      var cards=document.querySelectorAll("a.card[href^='product-']");   // ПІСЛЯ відповіді: у цей час уже є клони каруселі (аудит: клони лишались «У наявності»)
       Array.prototype.forEach.call(cards, function(a){
         var m=/product-(\d+)\.html/.exec(a.getAttribute("href")||""); if(!m || stockOf(snap, m[1])!==0) return;
         var av=a.querySelector(".av"); if(av){ av.textContent="Немає"; av.className="av oos"; }
@@ -495,7 +496,8 @@
       var issues=stockIssues(read(), snap);
       if(!issues.length) return;
       issues.forEach(function(x){
-        var nm=box.querySelector('.cart-item[data-id="'+x.id+'"] .ci-nm'); if(!nm) return;
+        var nm=null; Array.prototype.forEach.call(box.querySelectorAll(".cart-item"), function(row){ if(row.getAttribute("data-id")===String(x.id)) nm=row.querySelector(".ci-nm"); });
+        if(!nm) return;
         var s=document.createElement("div"); s.className="ci-stock"; s.textContent=x.available>0 ? "Доступно не більше "+x.available+" шт." : "Щойно закінчився";
         nm.parentNode.insertBefore(s, nm.nextSibling);
       });
@@ -511,7 +513,8 @@
     var msg=document.getElementById("checkout-msg"), btn=document.getElementById("checkout-submit");
     if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; }
     if(!msg) return;
-    var issues=lines.map(function(l){ return {id:String(l.id), name:String(l.name||""), requested:+l.requested||0, available:Math.max(0, +l.available||0)}; });
+    var issues=lines.filter(function(l){ return l && typeof l==="object" && l.id!==undefined; }).map(function(l){ return {id:String(l.id), name:String(l.name||""), requested:+l.requested||0, available:Math.max(0, +l.available||0)}; });
+    if(!issues.length){ msg.classList.add("err"); msg.textContent="Деяких товарів уже немає в такій кількості. Перегляньте кошик і спробуйте ще раз."; return; }
     msg.classList.add("err"); msg.textContent="";
     var t=document.createElement("div"); t.textContent="Щойно закінчилось: "+issues.map(stockLine).join("; ")+". Замовлення не створено.";
     var b=document.createElement("button"); b.type="button"; b.className="btn ghost"; b.textContent="Прибрати / зменшити ці позиції і продовжити";

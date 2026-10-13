@@ -68,15 +68,15 @@ PID = prods[0]["id"]
 PURL = f"{BASE}/product-{PID}.html"
 
 
-def stock_route(snapshot, age_min=1, status=200):
+def stock_route(snapshot, age_min=1, status=200, nohdr=False):
     now = datetime.now(timezone.utc)
 
     def handler(route):
         if status != 200:
             route.fulfill(status=status, body="nope")
             return
-        route.fulfill(status=200, content_type="application/json",
-                      headers={"Date": format_datetime(now, usegmt=True), "Last-Modified": format_datetime(now - timedelta(minutes=age_min), usegmt=True), "Cache-Control": "no-cache"},
+        hdr = {"Cache-Control": "no-cache"} if nohdr else {"Date": format_datetime(now, usegmt=True), "Last-Modified": format_datetime(now - timedelta(minutes=age_min), usegmt=True), "Cache-Control": "no-cache"}
+        route.fulfill(status=200, content_type="application/json", headers=hdr,
                       body=json.dumps({"ts": "2026-10-13T17:17:02", "n": len(snapshot), "s": snapshot}))
     return handler
 
@@ -84,13 +84,13 @@ def stock_route(snapshot, age_min=1, status=200):
 with sync_playwright() as pw:
     br = pw.chromium.launch()
 
-    def newpage(snapshot=None, age_min=1, status=200, cart=None, w=1280):
+    def newpage(snapshot=None, age_min=1, status=200, cart=None, w=1280, nohdr=False):
         ctx = br.new_context(viewport={"width": w, "height": 900}, reduced_motion="reduce")
         pg = ctx.new_page()
         errs = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
         pg.route("**/googletagmanager.com/**", lambda r: r.abort())
-        pg.route("**/stock.json*", stock_route(snapshot or {}, age_min, status))
+        pg.route("**/stock.json*", stock_route(snapshot or {}, age_min, status, nohdr))
         if cart is not None:
             pg.add_init_script("localStorage.setItem('pt_cart_v1', JSON.stringify(%s))" % json.dumps(cart, ensure_ascii=False))
         return ctx, pg, errs
@@ -106,12 +106,20 @@ with sync_playwright() as pw:
             ((r[0] == "none" and r[1] is True and r[2] is True and r[3] == "Немає в наявності") if want_hidden else (r[0] != "none" and r[1] is False and r[2] is False)) and errs == [])
         ctx.close()
 
+    # без заголовків Date/Last-Modified свіжість невідома — кнопку НЕ ховаємо (аудит: new Date(null)=0 давав «свіжий»)
+    ctx, pg, errs = newpage({PID: 0}, nohdr=True)
+    pg.goto(PURL, wait_until="load")
+    pg.wait_for_timeout(500)
+    r = pg.evaluate(BTN)
+    chk(f"stock.json без Date/Last-Modified (свіжість невідома): «У кошик» видима {r}", r[0] != "none" and r[1] is False and r[2] is False and errs == [])
+    ctx.close()
+
     # картки на головній
-    ctx, pg, errs = newpage({prods[1]["id"]: 0, prods[2]["id"]: 7})
+    ctx, pg, errs = newpage({p["id"]: 0 for p in prods})
     pg.goto(f"{BASE}/index.html", wait_until="load")
-    pg.wait_for_timeout(600)
-    r = pg.evaluate("(id=>{const a=document.querySelector('a.card:not([data-clone])[href=\"product-'+id+'.html\"]'); return a? a.querySelector('.av').textContent : null})(%s)" % json.dumps(prods[1]["id"]))
-    chk(f"головна/списки: картка зі свіжим нулем показує «Немає» (замість «У наявності»): {r}", r in ("Немає", None) and errs == [])
+    pg.wait_for_timeout(900)
+    r = pg.evaluate("(()=>{const all=[...document.querySelectorAll('a.card[href^=\"product-\"]')]; return [all.length, all.filter(a=>a.hasAttribute('data-clone')).length, all.filter(a=>{const v=a.querySelector('.av'); return v && v.textContent.trim()==='У наявності'}).length, all.filter(a=>{const v=a.querySelector('.av'); return v && v.textContent.trim()==='Немає'}).length]})()")
+    chk(f"головна: УСІ картки зі свіжим нулем (включно з клонами каруселі) показують «Немає», жодної «У наявності» {r}", r[0] > 10 and r[1] > 0 and r[2] == 0 and r[3] == r[0] and errs == [])
     ctx.close()
 
     # кошик
@@ -128,17 +136,32 @@ with sync_playwright() as pw:
     chk(f"«Прибрати / зменшити»: A прибрано, B зменшено до 2, C лишилась (qty 2); сповіщення зникло {({k: v['qty'] for k, v in ls.items()})}", A["id"] not in ls and ls[B["id"]]["qty"] == 2 and ls[C["id"]]["qty"] == 2 and pg.evaluate("!document.getElementById('cart-stock-note')") and errs == [])
     ctx.close()
 
+    # кошик з одним рядком: після «Прибрати / зменшити» кошик порожній — попередження зникає (аудит); назва з HTML не виконується
+    XSS = "<img src=x onerror=window.__xss=1>Іграшка"
+    one = {A["id"]: {"id": A["id"], "name": XSS, "price": A["price"], "photo": "", "qty": 1}}
+    ctx, pg, errs = newpage({A["id"]: 0}, cart=one)
+    pg.goto(f"{BASE}/cart.html", wait_until="load")
+    pg.wait_for_timeout(600)
+    note = pg.evaluate("[(document.getElementById('cart-stock-note')||{}).textContent, !!window.__xss, document.querySelectorAll('#cart-stock-note img, .ci-stock img').length]")
+    chk(f"назва з HTML-ін'єкцією показується текстом, не виконується {note}", note[0] and "<img" in note[0] and note[1] is False and note[2] == 0)
+    pg.click("[data-act=stock-fix]")
+    pg.wait_for_timeout(500)
+    chk("кошик спорожнів: попередження «Щойно закінчилось» зникло, localStorage порожній", pg.evaluate("!document.getElementById('cart-stock-note')") and pg.evaluate("JSON.parse(localStorage.getItem('pt_cart_v1')||'{}')") == {} and errs == [])
+    ctx.close()
+
     # оформлення: 409 stock_changed
     def fill_and_submit(pg):
         pg.evaluate("""(()=>{const set=(id,v)=>{const e=document.getElementById(id); if(e){ e.disabled=false; e.value=v; }};
             set('f-name','Іван Тестовий'); set('f-phone','+380501112233'); set('f-city','Київ'); set('f-warehouse','Відділення №1');
             const f=document.getElementById('checkout-form'); f.noValidate=true; f.requestSubmit();})()""")
 
-    for kind in ("stock", "other409"):
+    for kind in ("stock", "other409", "junk409"):
         ctx, pg, errs = newpage({}, cart=cart)
         calls = []
         if kind == "stock":
             body = {"code": "stock_changed", "error": "Деяких товарів уже немає в такій кількості.", "lines": [{"id": A["id"], "name": A["name"], "requested": 1, "available": 0}, {"id": B["id"], "name": B["name"], "requested": 3, "available": 2}]}
+        elif kind == "junk409":
+            body = {"code": "stock_changed", "error": "x", "lines": [None, 5, {}]}
         else:
             body = {"error": "Замовлення вже існує."}
         pg.route("**/api/order", lambda r, _rq, b=body: (calls.append(1), r.fulfill(status=409, content_type="application/json", body=json.dumps(b, ensure_ascii=False))))
@@ -155,6 +178,8 @@ with sync_playwright() as pw:
             ls = pg.evaluate("JSON.parse(localStorage.getItem('pt_cart_v1'))")
             m2 = pg.evaluate("document.getElementById('checkout-msg').textContent")
             chk(f"кнопка: лише A прибрано, B → 2, C без змін; повідомлення «Кошик оновлено…» {m2}", A["id"] not in ls and ls[B["id"]]["qty"] == 2 and ls[C["id"]]["qty"] == 2 and "Кошик оновлено" in m2)
+        elif kind == "junk409":
+            chk(f"409 stock_changed зі сміттям у lines: загальне повідомлення без винятку й без марної кнопки {msg}", "уже немає" in msg[0] and msg[1] is False and msg[2] and msg[3] is False)
         else:
             chk(f"інший 409 (без code): звичайна помилка без кнопки {msg}", "Замовлення вже існує." in msg[0] and msg[1] is False and msg[2])
         chk("без помилок JS", errs == [])

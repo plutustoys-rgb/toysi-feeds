@@ -77,7 +77,7 @@ BLOCKED_FILE=/opt/plutustoys/.feed_gate_blocked
 PUBLISHED_FEEDS=""
 if gate_msg=$(feed_gate_ok /opt/plutustoys/feeds/prom_feed_top.xml feeds/prom_feed_top.xml 3000); then
     cp /opt/plutustoys/feeds/prom_feed_top.xml feeds/
-    PUBLISHED_FEEDS="prom_feed_top.xml"
+    grep -qx "prom_feed_top.xml" /opt/plutustoys/.feed_restored 2>/dev/null || PUBLISHED_FEEDS="prom_feed_top.xml"
     echo "[PublishFeedPipeline] prom_feed_top.xml: $gate_msg"
 else
     echo "[PublishFeedPipeline] 🔴 prom_feed_top.xml НЕ опубліковано (гейт розміру): $gate_msg — лишається попередня версія." >&2
@@ -111,7 +111,7 @@ for f in google_merchant_feed.xml meta_feed.xml bing_feed.xml eva_feed.xml allo_
         if gate_msg=$(feed_gate_ok "/opt/plutustoys/feeds/$f" "feeds/$f" "$min_abs"); then
             cp "/opt/plutustoys/feeds/$f" "feeds/$f"
             git add -f "feeds/$f"
-            PUBLISHED_FEEDS="$PUBLISHED_FEEDS $f"
+            grep -qx "$f" /opt/plutustoys/.feed_restored 2>/dev/null || PUBLISHED_FEEDS="$PUBLISHED_FEEDS $f"
             echo "[PublishFeedPipeline] $f: $gate_msg"
         else
             echo "[PublishFeedPipeline] 🔴 $f НЕ опубліковано (гейт розміру): $gate_msg — лишається попередня версія." >&2

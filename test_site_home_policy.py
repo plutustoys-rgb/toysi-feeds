@@ -59,6 +59,23 @@ chk("demand_pick: одна «основа назви» — одна картка
 ut = {p["id"] for p in bs.utsinka_pick([dict(p, name="Уцінка. " + p["name"]) for p in bad + good])}
 chk("utsinka_pick/aktsii: мілітарі в уцінці відсіюються, безпечні лишаються", len(ut) == len(good))
 
+# водні бластери (SMM 13.10): водні іграшки, не зброя; відсіяні скрізь, КРІМ чипа «Активні ігри»
+W = ["Калина", "Мальви", "Барвінок", "Соняшник", "Лелека", "Журавель", "Ромашка", "Волошка"]
+blasters = [P(f"Водний бластер «{w}»", f"Вода{i}", 250, 40) for i, w in enumerate(W)]
+water_auto = P("Водний автомат «Потік»", "Автомати і пістолети", 250, 40)
+water_mil = P("Водний бластер військовий «Дельта»", "Вода9", 250, 40)
+plain_auto = P("Автомат іграшковий звуковий", "Вода10", 250, 40)
+os.environ["SITE_PICK_DATE"] = "2026-03-05"
+sets = bs.home_chip_sets(blasters + [water_auto, water_mil, plain_auto])
+act_ids = {p["id"] for p in sets.get("active", [])}
+chk(f"«Активні ігри»: водні бластери ПОКАЗУЮТЬСЯ ({len(act_ids)} з 8), військовий водний бластер і «Автомат іграшковий» — ні", len(act_ids) >= 6 and not (act_ids & {water_mil["id"], plain_auto["id"], water_auto["id"]}) and act_ids <= {b["id"] for b in blasters})
+wa = dict(water_auto, contribution=150)
+sets2 = bs.home_chip_sets(blasters + [wa])
+chk("«Водний автомат» (слово «автомат» + категорія «Автомати і пістолети») ВІДСІЯНИЙ в «Усі» і в усіх чипах, крім «Активні ігри»", wa["id"] not in {p["id"] for p in bs.home_pick([wa] + many)} and all(wa["id"] not in {p["id"] for p in v} for k, v in sets2.items() if k != "active"))
+chk("«Водний бластер» без слів зброї фільтром не чіпається (не зброя), військовий водний бластер відсіяний завжди", not bs.is_home_excluded(blasters[0]) and bs.is_home_excluded(water_mil) and bs.is_home_excluded(water_mil, water_ok=True))
+chk("water_ok дозволяє «Водний автомат» (категорія «Автомати і пістолети»), але не «Автомат іграшковий» без «водн»", not bs.is_home_excluded(water_auto, water_ok=True) and bs.is_home_excluded(plain_auto, water_ok=True) and bs.is_home_excluded(water_mil, water_ok=True) and bs.is_home_excluded(water_auto))
+os.environ.pop("SITE_PICK_DATE", None)
+
 # ── Б. regex чипів ──
 th = {k: re.compile(rx, re.I) for k, _l, _s, rx, _f, _la, _p1, _p2, _mc, _ac in bs.HOME_THEMED}
 chk("«Для двох гравців»: «Настільна гра», «Шахи», «Доміно» — так; «Мафія», «Золото», «лотос» — ні", all(th["duo"].search(x) for x in ("Настільна гра «Вежа»", "Шахи дерев'яні", "Доміно «Ферма»", "Лото")) and not any(th["duo"].search(x) for x in ("Гра «Мафія»", "Гірлянда Золото", "Тату Лотоси")))

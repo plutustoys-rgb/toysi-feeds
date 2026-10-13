@@ -611,6 +611,15 @@ def get_refund_receipt_candidates(conn: sqlite3.Connection, since_iso: str, chec
     return [_row_to_dict(r) for r in rows]
 
 
+def get_stuck_refund_claims(conn: sqlite3.Connection, older_than_iso: str) -> list:
+    """Замовлення, де claim чека повернення взято, а чека нема (refund_receipt_at порожній) давніше за older_than_iso: вбитий процес чи невідомий результат — потрібна людина."""
+    rows = conn.execute(
+        "SELECT internal_order_id, refund_receipt_claim_at FROM orders WHERE refund_receipt_claim_at IS NOT NULL AND refund_receipt_at IS NULL AND refund_receipt_claim_at < ?",
+        (older_than_iso,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def mark_refund_checked(conn: sqlite3.Connection, internal_order_id: str) -> None:
     conn.execute("UPDATE orders SET refund_checked_at = ? WHERE internal_order_id = ?", (datetime.now().isoformat(timespec="seconds"), internal_order_id))
 

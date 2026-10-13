@@ -161,6 +161,58 @@ STATUS["L1"] = RuntimeError("LiqPay 500")
 res = run()
 chk("збій статусу LiqPay не валить прохід, перевірку не відмічено (повтор у наступному циклі)", res["checked"] == 1 and row("L1")["refund_checked_at"] is None)
 
+# ── додаткові: програш claim, невідповідність суми, sandbox-гейт, звірка відповіді LiqPay, завислий claim, зупинка після збоїв LiqPay
+make_order("C1")
+STATUS["C1"] = {"status": "reversed", "amount": 23.0, "refund_amount": 23.0}
+SELLS["r-C1"] = sell_receipt("r-C1")
+n0 = len(posted)
+real_claim = orders_db.claim_refund_receipt
+orders_db.claim_refund_receipt = lambda conn, oid: False
+res = run()
+orders_db.claim_refund_receipt = real_claim
+chk("claim програно (інший процес) → чека не створюємо", len(posted) == n0 and res["created"] == 0)
+reset_check("C1")
+res = run()
+chk("після програного claim наступний цикл створює (claim не було взято)", res["created"] == 1)
+
+make_order("S1", total=25)
+STATUS["S1"] = {"status": "reversed", "amount": 25.0, "refund_amount": 25.0}
+SELLS["r-S1"] = sell_receipt("r-S1", 23)             # чек продажу на 23, оплата замовлення 25
+alerts.clear()
+n0 = len(posted)
+res = run()
+chk("сума чека продажу ≠ сумі замовлення → відмова, чека нема, сигнал", len(posted) == n0 and res["human"] == 1 and any("НЕ створено" in t_ for _, t_ in alerts))
+
+make_order("X1")
+STATUS["X1"] = {"status": "reversed", "amount": 23.0, "refund_amount": 23.0, "order_id": "ІНШЕ"}
+SELLS["r-X1"] = sell_receipt("r-X1")
+alerts.clear()
+n0 = len(posted)
+res = run()
+chk("відповідь LiqPay з іншим order_id → чека нема, сигнал", len(posted) == n0 and res["human"] == 1 and any("не збігається" in t_ for _, t_ in alerts))
+
+lp.LIQPAY_SANDBOX = True
+make_order("B1")
+STATUS["B1"] = {"status": "reversed", "amount": 23.0, "refund_amount": 23.0}
+SELLS["r-B1"] = sell_receipt("r-B1")
+n0 = len(posted)
+res = srr.run_once(None)          # без status_fn у sandbox-режимі: нічого
+lp.LIQPAY_SANDBOX = False
+chk("sandbox-режим без підміни → вихід без викликів LiqPay і без чеків", res["checked"] == 0 and len(posted) == n0)
+
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET refund_receipt_claim_at = '2020-01-01T00:00:00' WHERE internal_order_id = 'site_B1'")
+    c.commit()
+alerts.clear()
+run()
+chk("завислий claim (>1 год, без чека) → сигнал людині", any(k == "refund_stuck:site_B1" for k, _ in alerts))
+
+for i in range(4):
+    make_order(f"Q{i}")
+    STATUS[f"Q{i}"] = RuntimeError("LiqPay лежить")
+res = run()
+chk("3 збої LiqPay підряд → прохід зупинено (не 4 звернення)", res["checked"] == 3)
+
 # ── без чека продажу / без підтвердженої оплати
 make_order("N1", receipt=None)
 make_order("N2", payment_confirmed=0)

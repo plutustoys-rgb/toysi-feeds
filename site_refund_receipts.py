@@ -74,7 +74,10 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
         now_k = now or datetime.now(krr.KYIV)
         cands = orders_db.get_refund_receipt_candidates(
             conn, (datetime.now() - timedelta(days=LOOKBACK_DAYS)).isoformat(timespec="seconds"), (datetime.now() - RECHECK_AFTER).isoformat(timespec="seconds"))
+        for st in orders_db.get_stuck_refund_claims(conn, (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")):
+            _alert(f"refund_stuck:{st['internal_order_id']}", f"🔴 Чек повернення для {st['internal_order_id']}: claim від {st['refund_receipt_claim_at']} без результату (процес перервано чи результат невідомий). Перевір касу Checkbox: якщо RETURN до чека продажу є, познач refund_receipt_at у БД; якщо нема, зніми refund_receipt_claim_at, і наступний цикл створить.")
         token = None
+        liq_fails = 0
         for o in cands:
             oid = o["internal_order_id"]
             out["checked"] += 1
@@ -82,10 +85,19 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
                 liq = status_fn(o["order_id"])
             except Exception as e:  # noqa: BLE001
                 print(f"[refund_receipts] {oid}: статус LiqPay не отримано ({type(e).__name__}: {e})", file=sys.stderr)
+                liq_fails += 1
+                if liq_fails >= 3:
+                    print("[refund_receipts] LiqPay недоступний (3 збої підряд) — прохід зупинено, наступний цикл повторить", file=sys.stderr)
+                    break                                 # не тримати order-pipeline 30 с × N замовлень
                 continue                                  # refund_checked_at не ставимо: наступний цикл спробує знову
+            liq_fails = 0
             orders_db.mark_refund_checked(conn, oid)
             conn.commit()
             if (liq or {}).get("status") != "reversed":
+                continue
+            if str(liq.get("order_id") or o["order_id"]) != str(o["order_id"]) or str(liq.get("currency") or lp.CURRENCY).upper() != lp.CURRENCY:
+                out["human"] += 1
+                _alert(f"refund_mismatch:{oid}", f"🔴 LiqPay: відповідь по {oid} не збігається із замовленням (order_id={liq.get('order_id')}, валюта={liq.get('currency')}) — чек повернення автоматично НЕ створено.")
                 continue
             total = o.get("site_charged_total")
             refunded = liq.get("refund_amount")
@@ -118,6 +130,7 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
             except Exception as e:  # noqa: BLE001
                 out["failed"] += 1
                 print(f"[refund_receipts] {oid}: підготовка чека повернення не вдалась ({type(e).__name__}: {e}); повтор у наступному циклі", file=sys.stderr)
+                _alert(f"refund_prepare:{oid}", f"🔴 LiqPay повернув платіж {oid}, але чек повернення не вдалось підготувати ({type(e).__name__}: {str(e)[:200]}); повтор щогодини. Якщо повторюється, створи вручну.")
                 continue
             if not orders_db.claim_refund_receipt(conn, oid):
                 continue                                  # інший процес виграв claim
@@ -137,7 +150,7 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
             except Exception as e:  # noqa: BLE001
                 out["failed"] += 1
                 if sent:
-                    _alert(f"refund_unknown:{oid}", f"🔴 Чек повернення для {oid}: запит у Checkbox ВІДПРАВЛЕНО, результат невідомий ({type(e).__name__}: {e}). Автоповтору нема. Перевір касу Checkbox, чи існує RETURN до цього чека, і створи/позначи вручну.")
+                    _alert(f"refund_unknown:{oid}", f"🔴 Чек повернення для {oid}: запит у Checkbox ВІДПРАВЛЕНО, результат невідомий ({type(e).__name__}: {e}). Автоповтору нема. Перевір касу Checkbox, чи існує RETURN до цього чека: якщо є, познач refund_receipt_at у БД; якщо нема, зніми refund_receipt_claim_at (наступний цикл створить) або створи вручну.")
                 else:
                     orders_db.release_refund_receipt_claim(conn, oid)
                     conn.commit()

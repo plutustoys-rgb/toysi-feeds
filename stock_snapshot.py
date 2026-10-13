@@ -27,16 +27,23 @@ def _alert(key: str, text: str) -> None:
         print(f"[stock_snapshot] сигнал не надіслано: {type(e).__name__}", file=sys.stderr)
 
 
+def _ts(now: datetime | None) -> str:
+    """ISO-час НАЇВНИЙ локальний (як і був). Пишемо без пояса свідомо: старий читач site_order_api на час з поясом мовчки вимикав перевірку залишку (TypeError → fail-open без сліду), тож перехід на пояс можливий лише ПІСЛЯ того, як усі читачі (нова версія site_order_api вже вміє aware-ts) розгорнуто й перезапущено."""
+    return (now or datetime.now()).isoformat(timespec="seconds")
+
+
 def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
     """{"ts", "n", "s": {id: залишок(int)}} з каталогу Toysi (parser.fetch_toysi_catalog). Для діапазонних залишків Toysi («5...10 шт.», ≈21% каталогу) пишемо ВЕРХНЮ межу (stock_max):
     сайт відмовляє лише коли замовлено більше за те, що Toysi МОЖЕ мати; нижня межа дала б хибні відмови (клієнт хоче 7 шт. із «5...10»)."""
     s = {}
     for pid, it in catalog.items():
+        if it.get("stock_known") is False:      # залишок у XML відсутній/без цифр: «невідомо», у знімок НЕ пишемо (клієнт не повинен ховати товар через нерозпізнане поле)
+            continue
         try:
             s[str(pid)] = max(0, int(it.get("stock_max", it.get("stock")) or 0))
         except (TypeError, ValueError):
-            s[str(pid)] = 0
-    return {"ts": (now or datetime.now()).isoformat(timespec="seconds"), "n": len(s), "s": s}
+            continue                             # нечислове значення — теж «невідомо», не «0»
+    return {"ts": _ts(now), "n": len(s), "s": s}
 
 
 def write_cost_file(catalog: dict, out=None, now: datetime | None = None) -> bool:
@@ -86,6 +93,8 @@ def run_once(fetch=None, out=None, now=None, cost_out=None) -> bool:
             _alert("stock_snapshot_small", f"⚠️ stock_snapshot: {e} site/stock.json НЕ оновлено (лишається попередній).")
             return False
         snap = build_snapshot(catalog, now)
+        if snap["n"] < len(catalog):          # факт, не поріг: частина позицій з невідомим залишком (формат Toysi змінився?) — у знімок їх немає, сайт їх не чіпає
+            _alert("stock_snapshot_unknown", f"⚠️ stock_snapshot: у {len(catalog) - snap['n']} із {len(catalog)} позицій залишок Toysi не розпізнано (поле відсутнє/без цифр) — їх немає у stock.json (сайт не ховає й не відмовляє). Перевірити формат <ostatok>.")
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(out.name + ".tmp")
         tmp.write_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

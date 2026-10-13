@@ -38,12 +38,32 @@ ss._alert = lambda key, text: alerts.append((key, text))
 # ── stock_snapshot
 cat = {str(i): {"stock": i % 4} for i in range(30000)}      # 30 000 позицій: вище порога «усічений каталог»
 snap = ss.build_snapshot(cat, datetime(2026, 10, 13, 17, 0, 0))
-chk("build_snapshot: ts, n, залишки цілі й невід'ємні", snap["ts"] == "2026-10-13T17:00:00" and snap["n"] == 30000 and snap["s"]["7"] == 3 and snap["s"]["8"] == 0)
+chk("build_snapshot: ts (наївний, як і був), n, залишки цілі й невід'ємні", snap["ts"] == "2026-10-13T17:00:00" and snap["n"] == 30000 and snap["s"]["7"] == 3 and snap["s"]["8"] == 0)
 chk("діапазон залишку «5...10»: у знімок іде ВЕРХНЯ межа (10), а не мінімум", ss.build_snapshot({"1": {"stock": 5, "stock_max": 10}, "2": {"stock": 1}})["s"] == {"1": 10, "2": 1})
 import parser as tp
 chk("parser: _parse_ostatok_max('5...10 шт.')=10, '10...50 шт.'=50, '1 шт.'=1, ''=0", (tp._parse_ostatok_max("5...10 шт."), tp._parse_ostatok_max("10...50 шт."), tp._parse_ostatok_max("1 шт."), tp._parse_ostatok_max("")) == (10, 50, 1, 0))
 chk("parser: _parse_ostatok (мінімум) не змінився: '5...10 шт.'=5", tp._parse_ostatok("5...10 шт.") == 5)
-chk("залишок не число → 0, мінус → 0", ss.build_snapshot({"1": {"stock": "abc"}, "2": {"stock": -5}})["s"] == {"1": 0, "2": 0})
+chk("залишок не число → «невідомо» (id НЕ в знімку), мінус → 0", ss.build_snapshot({"1": {"stock": "abc"}, "2": {"stock": -5}})["s"] == {"2": 0})
+chk("stock_known=False → id не пишемо; stock_known=True і 0 → пишемо 0", ss.build_snapshot({"1": {"stock": 0, "stock_known": False}, "2": {"stock": 0, "stock_known": True}})["s"] == {"2": 0})
+import xml.etree.ElementTree as _ET
+_x = ("<yml_catalog><shop><offers>"
+      "<offer id='1'><name>a</name><price>10</price><ostatok>0</ostatok></offer>"
+      "<offer id='2'><name>b</name><price>10</price><ostatok>3 шт.</ostatok></offer>"
+      "<offer id='3'><name>c</name><price>10</price><ostatok>багато</ostatok></offer>"
+      "<offer id='4'><name>d</name><price>10</price><ostatok></ostatok></offer>"
+      "<offer id='5'><name>e</name><price>10</price></offer>"
+      "</offers></shop></yml_catalog>").encode("utf-8")
+_cat = tp._parse_xml(_x)
+chk("parser stock_known: «0» і «3 шт.» відомі; «багато», порожнє, відсутнє — невідомі", [_cat[i]["stock_known"] for i in "12345"] == [True, True, False, False, False])
+chk("snapshot з цього XML: лише 1 (0) і 2 (3)", ss.build_snapshot(_cat)["s"] == {"1": 0, "2": 3})
+_big = {str(i): {"stock": 1, "stock_known": True} for i in range(30000)}
+_big["x"] = {"stock": 0, "stock_known": False}
+alerts.clear()
+ss.run_once(fetch=lambda: _big, out=tmp / "unk.json", cost_out=tmp / "cost_stub2.json")
+chk("позиції з невідомим залишком → фактичний алерт stock_snapshot_unknown (без порогів), знімок усе одно записано", any(k == "stock_snapshot_unknown" for k, _ in alerts) and (tmp / "unk.json").exists())
+alerts.clear()
+ss.run_once(fetch=lambda: cat, out=tmp / "unk2.json", cost_out=tmp / "cost_stub2.json")
+chk("усі залишки відомі → алерту нема", not any(k == "stock_snapshot_unknown" for k, _ in alerts))
 out = tmp / "stock.json"
 ok = ss.run_once(fetch=lambda: cat, out=out, now=datetime(2026, 10, 13, 17, 0, 0), cost_out=tmp / "cost_stub.json")
 d = json.loads(out.read_text(encoding="utf-8"))
@@ -122,6 +142,16 @@ code, resp = post([])
 chk("порожній кошик → 400 як раніше", code == 400)
 code, resp = post([{"id": "999", "qty": 1}])
 chk("невідомий товар → 400 як раніше", code == 400)
+
+# знімок з часовим поясом (+03:00 / Z): читач НЕ має мовчки вимкнути перевірку
+from datetime import timezone
+for label, tsv in (("локальний пояс", datetime.now().astimezone().isoformat(timespec="seconds")), ("UTC (Z-еквівалент)", datetime.now(timezone.utc).isoformat(timespec="seconds"))):
+    write_stock(None, raw=json.dumps({"ts": tsv, "n": 2, "s": {"1": 5, "2": 0}}))
+    code, resp = post([{"id": "2", "qty": 1}])
+    chk(f"ts з поясом ({label}): перевірка діє (409), а не мовчки вимкнена", code == 409)
+write_stock(None, raw=json.dumps({"ts": (datetime.now().astimezone() - timedelta(hours=3)).isoformat(timespec="seconds"), "n": 2, "s": {"1": 5, "2": 0}}))
+code, resp = post([{"id": "2", "qty": 1}])
+chk("ts з поясом, але старий (3 год) → знімок застарів, замовлення приймається (fail-open)", code == 200)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -220,7 +220,10 @@ def stock_snapshot():
         if mtime != _stock_cache["mtime"]:
             with open(STOCK_FILE, encoding="utf-8") as f:
                 d = json.load(f)
-            _stock_cache["data"] = (d["s"], datetime.fromisoformat(d["ts"]))
+            ts = datetime.fromisoformat(d["ts"])
+            if ts.tzinfo is not None:            # знімок з поясом (+03:00) → локальний наївний час сервера, як datetime.now()
+                ts = ts.astimezone().replace(tzinfo=None)
+            _stock_cache["data"] = (d["s"], ts)
             _stock_cache["mtime"] = mtime
         s, ts = _stock_cache["data"]
         if not isinstance(s, dict) or datetime.now() - ts > STOCK_MAX_AGE:

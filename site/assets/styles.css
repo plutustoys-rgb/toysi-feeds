@@ -411,6 +411,11 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips .chip[data-set=ukr]{background:#EAF2FF;color:#0B2447;border-color:#1F6FD6 #FFD43B #FFD43B #1F6FD6;box-shadow:3px 3px 0 #FFD43B}
 .home-chips .chip[data-set=nab]{background:#FFD9A8;color:#3A2A1E;border-color:#E04E39;box-shadow:3px 3px 0 #E8B04A}
 
+
+.btn[hidden]{display:none!important}
+.stock-now{margin:10px 0;border-color:#e8b4a8;background:#fff1ee;color:#7a1f10}
+.ci-stock{margin-top:4px;color:#b3261e;font-size:13px;font-weight:700}
+#checkout-msg button{margin-top:8px}
 .sr-empty{padding:18px 0}
 .sr-hint{margin:0 0 12px;color:var(--muted);font-size:15px}
 .sr-pills{display:flex;flex-wrap:wrap;gap:8px}

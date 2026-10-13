@@ -391,6 +391,7 @@
     var box=document.getElementById("cart-body");
     if(!box) return;
     var c=read(), ids=Object.keys(c);
+    var staleNote=document.getElementById("cart-stock-note"); if(staleNote && staleNote.parentNode) staleNote.parentNode.removeChild(staleNote);   // порожній кошик не має мати попередження (аудит)
     renderAside(c, ids);
     var codn=document.getElementById("cod-limit-note");
     if(codn) codn.style.display = total()>COD_CEILING ? "" : "none";
@@ -416,6 +417,7 @@
     });
     box.innerHTML=html;
     renderSummary();
+    markCartStock();
   }
   function renderSummary(){
     var goods=total();
@@ -442,6 +444,107 @@
       var bar=document.getElementById("free-ship-bar");
       if(bar) bar.style.width=pct+"%";
     }
+  }
+
+  // ── Свіжий залишок Toysi (власник 13.10, «критично»): /stock.json від Code-Agent, оновлюється кожні 15 хв (сторінки сайту збираються раз на 2 год).
+  // s[id]==0 — точно нема; s[id]>0 — верхня межа («5...10 шт.» → 10); id нема — невідомо. Знімок старший за 45 хв (за Date − Last-Modified) вважаємо «невідомо»: кнопки не ховаємо.
+  var STOCK_MAX_AGE_MS=45*60*1000, stockP=null;
+  function stockSnapshot(){
+    if(stockP) return stockP;
+    stockP=fetch("stock.json", {cache:"no-cache"}).then(function(r){   // no-cache = умовний GET (If-Modified-Since → 304): великий файл не тягнемо на кожній сторінці
+      if(!r.ok) return null;
+      var d=r.headers.get("Date"), lm=r.headers.get("Last-Modified");
+      return r.json().then(function(j){
+        if(!j || typeof j.s!=="object" || !j.s || Array.isArray(j.s)) return null;
+        var age=(d && lm) ? new Date(d).getTime()-new Date(lm).getTime() : NaN;   // без обох заголовків свіжість невідома (аудит: new Date(null)=0 давав «свіжий»)
+        return {fresh:(isFinite(age) && age>=0 && age<=STOCK_MAX_AGE_MS), s:j.s};
+      });
+    }).catch(function(){ return null; });
+    return stockP;
+  }
+  function stockOf(snap, id){
+    if(!snap || !snap.fresh) return null;
+    var v=snap.s[String(id)];
+    return (typeof v==="number" && isFinite(v)) ? v : null;
+  }
+  function stockIssues(c, snap){
+    var out=[];
+    Object.keys(c).forEach(function(id){
+      var st=stockOf(snap, id); if(st===null) return;
+      if(st<=0) out.push({id:id, name:c[id].name, requested:c[id].qty, available:0});
+      else if(c[id].qty>st) out.push({id:id, name:c[id].name, requested:c[id].qty, available:st});
+    });
+    return out;
+  }
+  function applyStockFix(issues){   // лише названі позиції: зменшити до наявного або прибрати; решта кошика не чіпається
+    var c=read();
+    issues.forEach(function(x){
+      if(!c[x.id]) return;
+      if(x.available>0) c[x.id].qty=Math.min(c[x.id].qty, x.available); else delete c[x.id];
+    });
+    write(c);
+  }
+  function stockLine(x){ return x.name+(x.available>0 ? " (доступно "+x.available+" шт., у кошику "+x.requested+")" : " (немає в наявності)"); }
+  function initStockProduct(){
+    var btn=document.querySelector("h1.prod") && document.querySelector(".btn[data-add]");
+    if(!btn) return;
+    var p; try{ p=JSON.parse(btn.getAttribute("data-add")); }catch(e){ return; }
+    stockSnapshot().then(function(snap){
+      if(stockOf(snap, p.id)!==0) return;
+      btn.hidden=true; btn.disabled=true;
+      var n=document.createElement("div"); n.className="oos-note stock-now"; n.setAttribute("role","status");
+      n.innerHTML="<b>Щойно закінчився.</b> Подивіться схожі товари нижче.";
+      btn.parentNode.insertBefore(n, btn.nextSibling);
+      var av=document.querySelector(".avail"); if(av){ av.textContent="Немає в наявності"; av.classList.add("oos"); }
+    });
+  }
+  function initStockCards(){   // списки/каталог/головна: «У наявності» → «Немає» для позицій, що вже закінчились (сторінки збираються раз на 2 год)
+    if(!document.querySelector("a.card[href^='product-']")) return;
+    stockSnapshot().then(function(snap){
+      if(!snap || !snap.fresh) return;
+      var cards=document.querySelectorAll("a.card[href^='product-']");   // ПІСЛЯ відповіді: у цей час уже є клони каруселі (аудит: клони лишались «У наявності»)
+      Array.prototype.forEach.call(cards, function(a){
+        var m=/product-(\d+)\.html/.exec(a.getAttribute("href")||""); if(!m || stockOf(snap, m[1])!==0) return;
+        var av=a.querySelector(".av"); if(av){ av.textContent="Немає"; av.className="av oos"; }
+        var sb=a.querySelector(".stock-badge"); if(sb && sb.parentNode) sb.parentNode.removeChild(sb);
+      });
+    });
+  }
+  function markCartStock(){
+    var box=document.getElementById("cart-body"); if(!box) return;
+    stockSnapshot().then(function(snap){
+      var old=document.getElementById("cart-stock-note"); if(old && old.parentNode) old.parentNode.removeChild(old);
+      Array.prototype.forEach.call(box.querySelectorAll(".ci-stock"), function(el){ el.parentNode.removeChild(el); });
+      var issues=stockIssues(read(), snap);
+      if(!issues.length) return;
+      issues.forEach(function(x){
+        var nm=null; Array.prototype.forEach.call(box.querySelectorAll(".cart-item"), function(row){ if(row.getAttribute("data-id")===String(x.id)) nm=row.querySelector(".ci-nm"); });
+        if(!nm) return;
+        var s=document.createElement("div"); s.className="ci-stock"; s.textContent=x.available>0 ? "Доступно не більше "+x.available+" шт." : "Щойно закінчився";
+        nm.parentNode.insertBefore(s, nm.nextSibling);
+      });
+      var n=document.createElement("div"); n.id="cart-stock-note"; n.className="oos-note stock-now"; n.setAttribute("role","alert");
+      var b=document.createElement("b"); b.textContent="Щойно закінчилось: "; n.appendChild(b);
+      n.appendChild(document.createTextNode(issues.map(stockLine).join("; ")+". "));
+      var fix=document.createElement("button"); fix.type="button"; fix.className="btn ghost"; fix.setAttribute("data-act","stock-fix"); fix.textContent="Прибрати / зменшити ці позиції";
+      n.appendChild(fix);
+      box.parentNode.insertBefore(n, box);
+    });
+  }
+  function stockConflict(lines){   // відповідь /api/order 409 {code:"stock_changed", lines:[{id,name,requested,available}]}: замовлення НЕ створено
+    var msg=document.getElementById("checkout-msg"), btn=document.getElementById("checkout-submit");
+    if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; }
+    if(!msg) return;
+    var issues=lines.filter(function(l){ return l && typeof l==="object" && l.id!==undefined; }).map(function(l){ return {id:String(l.id), name:String(l.name||""), requested:+l.requested||0, available:Math.max(0, +l.available||0)}; });
+    if(!issues.length){ msg.classList.add("err"); msg.textContent="Деяких товарів уже немає в такій кількості. Перегляньте кошик і спробуйте ще раз."; return; }
+    msg.classList.add("err"); msg.textContent="";
+    var t=document.createElement("div"); t.textContent="Щойно закінчилось: "+issues.map(stockLine).join("; ")+". Замовлення не створено.";
+    var b=document.createElement("button"); b.type="button"; b.className="btn ghost"; b.textContent="Прибрати / зменшити ці позиції і продовжити";
+    b.addEventListener("click", function(){
+      applyStockFix(issues); renderCart();
+      msg.classList.remove("err"); msg.textContent="Кошик оновлено. Перевірте склад і суму та підтвердьте замовлення.";
+    });
+    msg.appendChild(t); msg.appendChild(b);
   }
 
   // ── Ініціалізація на кожній сторінці ──
@@ -471,6 +574,8 @@
       }
       var sb=e.target.closest("#search-overlay [data-sort]");
       if(sb){ e.preventDefault(); searchSort=sb.getAttribute("data-sort"); renderSearch(); return; }
+      var sf=e.target.closest("[data-act=stock-fix]");
+      if(sf){ e.preventDefault(); stockSnapshot().then(function(snap){ applyStockFix(stockIssues(read(), snap)); renderCart(); }); return; }
       var ci=e.target.closest(".cart-item [data-act]");
       if(ci){
         var wrap=ci.closest(".cart-item"), id=wrap.getAttribute("data-id"), act=ci.getAttribute("data-act");
@@ -486,6 +591,8 @@
     if(so){ var sTimer=null; so.addEventListener("input", function(){ clearTimeout(sTimer); sTimer=setTimeout(function(){ runSearch(so.value); }, 200); }); }   // debounce 200 мс: не перераховуємо 21 тис. на кожне натискання
 
     renderCart();
+    initStockProduct();
+    initStockCards();
     initShipToday();
     initCheckout();
     initNpAutocomplete();
@@ -996,9 +1103,12 @@
       if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }
 
       fetch("api/order", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)})
-        .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+        .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, j:j}; }); })
         .then(function(res){
-          if(!res.ok){ fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return; }
+          if(!res.ok){
+            if(res.status===409 && res.j && res.j.code==="stock_changed" && Array.isArray(res.j.lines)){ stockConflict(res.j.lines); return; }
+            fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return;
+          }
           var d=res.j;
           try{
             sessionStorage.setItem("pt_last_order", d.order_id);

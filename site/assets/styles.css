@@ -398,7 +398,11 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips .chip.chip-theme{position:relative;display:inline-flex;align-items:center;gap:7px;font-weight:800;letter-spacing:.02em;border-width:2px;border-style:solid;transform:rotate(-1.5deg);transition:transform .18s ease,box-shadow .18s ease;overflow:hidden}
 .home-chips .chip.chip-theme:hover,.home-chips .chip.chip-theme:focus-visible{transform:rotate(0deg) scale(1.03)}
 .home-chips .chip.chip-theme .chip-ico{flex:none}
-.home-chips .chip.chip-theme.active{transform:rotate(0deg) scale(1.05);filter:saturate(1.15);outline:2px solid currentColor;outline-offset:2px}
+.home-chips .chip.chip-theme.active{transform:rotate(0deg) scale(1.05);filter:saturate(1.15)}
+/* Активний чип видно ВСІМ (тестувальник #15: контур currentColor у світлих на темних чипів зливався зі сторінкою): темний контур + галочка */
+.home-chips a.chip{text-decoration:none;display:inline-flex;align-items:center;color:inherit}
+.home-chips .chip.active{outline:3px solid #222;outline-offset:2px}
+.home-chips .chip.active::before{content:"✓";font-weight:900;margin-right:2px}
 /* Хелловін */
 .home-chips .chip[data-set=hel]{background:#2A1647;color:#FFF3E0;border-color:#FF7A1A;box-shadow:3px 3px 0 #FF7A1A}
 /* Миколай і Новий рік: червоний «хутряний комір» зверху, сніжинка мерехтить */

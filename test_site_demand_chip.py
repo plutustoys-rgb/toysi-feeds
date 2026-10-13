@@ -65,7 +65,7 @@ os.environ["SITE_PICK_DATE"] = "2026-10-13"
 chk("стабільно протягом доби", [p["id"] for p in bs.demand_pick(prods)] == [p["id"] for p in pk])
 cs = bs.home_chip_sets(prods)
 defs = bs.home_chip_defs(cs)
-chk("чип «Популярне зараз» є, порядок: сезонні → «Популярне зараз» → «До 300 ₴»…, підпис", "pop" in cs and [x[0] for x in defs].index("pop") < [x[0] for x in defs].index("u300") and any(x[1] == "Популярне зараз" and x[2] for x in defs))
+chk("чип «Популярне зараз» є, порядок: сезонні → «Популярне зараз» → «До 300 ₴»…, підпис", "pop" in cs and [x[0] for x in defs][0] == "pop" and "u300" not in [x[0] for x in defs] and any(x[1] == "Популярне зараз" and x[2] for x in defs))
 os.environ["SITE_PICK_DATE"] = "2026-11-10"
 chk("застарілий файл (> 21 дня) ігнорується голосно, чипа нема", bs._load_demand_featured() is None and "pop" not in bs.home_chip_sets(prods))
 os.environ["SITE_PICK_DATE"] = "2026-10-13"

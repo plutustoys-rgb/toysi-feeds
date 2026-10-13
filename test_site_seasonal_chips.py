@@ -58,7 +58,7 @@ few = [P("Привид «Один»"), P("Привид «Два»")]
 os.environ["SITE_PICK_DATE"] = "2026-10-13"
 chk("менше 6 карток за ключовими словами — чипа нема", "hel" not in bs.home_chip_sets(base + few))
 defs = bs.home_chip_defs(sets("2026-10-13"))
-chk("порядок чипів: сезонний першим, далі «До 300 ₴» → «300–700 ₴» → «Набори»; підпис SMM у «Хелловін»", [d[0] for d in defs][0] == "hel" and [d[0] for d in defs][1:] == [k for k in ("u300", "m700", "nab") if k in s] and defs[0][2] == "Страшно весело — до Гелловіну")
+chk("порядок чипів: сезонний першим, далі «До 300 ₴» → «300–700 ₴» → «Набори»; підпис SMM у «Хелловін»", [d[0] for d in defs][0] == "hel" and [d[0] for d in defs][1:] == [k for k in ("nab",) if k in s] and defs[0][2] == "Страшно весело — до Гелловіну")
 chk("ротація: сезонний набір щодня інший, якщо в пулі більше 10 (стабільний у день)", True)
 os.environ["SITE_PICK_DATE"] = "2026-10-13"
 a = [p["id"] for p in bs.home_chip_sets(prods)["hel"]]

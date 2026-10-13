@@ -1259,7 +1259,7 @@ def _pick_day():
     return (datetime.now(timezone.utc) + timedelta(hours=3)).date().toordinal()
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1281,7 +1281,7 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
             continue
         if is_weapon_replica(str(p["id"]), name):
             continue
-        if name_re is not None and not name_re.search(name):
+        if name_re is not None and not (name_re.search(name) or (alt_cat_re is not None and alt_cat_re.search(p.get("category") or ""))):
             continue   # тематичний набір (сезонні чипи): лише назви за ключовими словами
         if bad_words and any(w in name.lower() for w in bad_words):
             continue
@@ -1318,7 +1318,7 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
 
 # Чипи над каруселлю головної (SMM 12.10): «До 300 ₴» (внесок ≥50), «300–700 ₴» (внесок ≥100, як основна добірка), «Набори» (відбір /nabory.html, перші 10 по колах груп). Набори — у <template> (інертні: фото не вантажаться,
 # поки чип не натиснуто), у кожному ≤10 карток із бейджем залишку ≤3; перші картки НЕ eager. Ключі латиницею — у назвах подій home_chip_<key>.
-HOME_CHIPS = (("u300", "До 300 ₴"), ("m700", "300–700 ₴"), ("nab", "Набори"))
+HOME_CHIPS = (("nab", "Набори"),)
 # Сезонні чипи (SMM 13.10; правила й підписи — її): показуються лише в своє вікно дат (за Києвом, на момент збірки; збірка кожні 2 год), для кожного — ключові слова в назві, stock ≥ 3 (як у плані SMM:
 # build бере лише товари в наявності, окремого порога залишку нема), ціна 100–700, внесок ≥ 30; мілітарі/зброя (NABORY_BAD_WORDS) відсіюється. Менше HOME_SEASONAL_MIN карток — чип не показуємо.
 # (key, назва чипа, підпис під чипами, ключові слова (regex, регістр ігнорується), перший день, останній день, додатковий regex виключень або None) — дні у вигляді (місяць, день).
@@ -1425,18 +1425,31 @@ HOME_SEASONAL_MIN_CONTRIB = 30.0
 def seasonal_active(first, last, today=None):
     t = today or _today()
     return (first[0], first[1]) <= (t.month, t.day) <= (last[0], last[1])
-HOME_CHIP_U300_MAX, HOME_CHIP_U300_MIN = 299.99, 50
-HOME_CHIP_U300_CONTRIB = 50.0
 # Не іграшки (аудит 13.10: перша картка «До 300 ₴» на живих даних — «Тренировочні трусики…» з категорії «Клейонки, килимки і підгузники») — з чипів прибираємо.
 HOME_CHIP_EXCLUDED_CATS = frozenset({"клейонки, килимки і підгузники", "гігієнічні вироби", "догляд за тілом", "догляд за тілом та волоссям", "догляд за волоссям", "косметичні засоби",
                                      "засоби для прання", "засоби для миття посуду", "прання та миття посуду", "догляд за будинком", "new: побутова хімія", "батарейки"})   # точні назви з index.json (аудит #714); не іграшки
 
 
+# Тематичні чипи (SMM/власник 13.10): «До 300 ₴» і «300–700 ₴» прибрано (це сортування, не чипи). Evergreen (first/last = None) і дата-вікно («До Різдва» 01.12–25.12): ключові слова за НАЗВОЮ
+# (або категорією alt_cat), власні межі ціни й внеску; не більше 2 з категорії (як у добірці), щоденна ротація; без мілітарі/зброї/книжок/манги, у наявності; менше HOME_SEASONAL_MIN — чипа нема.
+# (key, назва, підпис, regex назви, перший день, останній день, ціна від, ціна до, внесок від, regex категорії-альтернативи; чип ідуть ПЕРЕД «Популярне зараз», якщо є дати — «front»).
+HOME_THEMED = (
+    ("xmas", "До Різдва", "Різдвяний настрій", r"різдв|ялинк|янгол|вертеп|зірк|гірлянд|прикрас", (12, 1), (12, 25), 50, 700, 0.0, None),
+    ("bday", "День народження", "", r"набір|конструктор|лялька|м[ʼ'’]яка іграшка|подарунк", None, None, 150, 700, 50.0, None),
+    ("school", "У садок і школу", "", r"рюкзак|пенал|канцел|фломастер|олівц|розмальов|пластилін|навчальн|картки|абетка|лічба", None, None, 100, 600, 30.0, None),
+    ("duo", "Для двох гравців", "", r"настільна гра|карткова гра|мафія|шахи|доміно|лото|твістер", None, None, 50, 600, 0.0, r"настільн"),
+    ("quiet", "Тихі ігри", "", r"пазл|розмальов|пластилін|тісто|мозаїка|наліпк|бісер|малюв|творчість", None, None, 100, 600, 30.0, None),
+    ("active", "Активні ігри", "", r"м[ʼ'’]яч|скакалк|обруч|самокат|кегл|бадмінтон|боулінг|мильні бульбашки|літак|планер|санки|водний бластер", None, None, 50, 700, 0.0, None),
+)
+
+
+def themed_active(first, last):
+    return first is None or seasonal_active(first, last)
+
+
 def home_chip_sets(prods):
     """{key: [товари]} для чипів; порожні набори не повертаємо (чип не показуємо)."""
     sets = {
-        "u300": home_pick(prods, pmin=HOME_CHIP_U300_MIN, pmax=HOME_CHIP_U300_MAX, min_contrib=HOME_CHIP_U300_CONTRIB, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS),
-        "m700": home_pick(prods, pmin=300, pmax=700, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS),
         "nab": [p for _g, p in nabory_pick(prods)[:HOME_PICK_COUNT]],
     }
     dp = demand_pick(prods)
@@ -1450,14 +1463,23 @@ def home_chip_sets(prods):
                            bad_name_re=(re.compile(HOME_SEASONAL_BAD_NAME.pattern + "|" + extra_bad, re.I) if extra_bad else HOME_SEASONAL_BAD_NAME))
             if len(pk) >= HOME_SEASONAL_MIN:
                 sets[key] = pk
+    for key, _label, _sub, rx, first, last, pmin, pmax, mc, alt in HOME_THEMED:
+        if themed_active(first, last):
+            pk = home_pick(prods, pmin=pmin, pmax=pmax, min_contrib=mc, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
+                           name_re=re.compile(rx, re.I), alt_cat_re=(re.compile(alt, re.I) if alt else None), bad_words=NABORY_BAD_WORDS,
+                           bad_cat_re=HOME_SEASONAL_BAD_CAT, bad_name_re=HOME_SEASONAL_BAD_NAME)
+            if len(pk) >= HOME_SEASONAL_MIN:
+                sets[key] = pk
     return {k: v for k, v in sets.items() if v}
 
 
 def home_chip_defs(chip_sets):
-    """[(key, label, sub)] у порядку показу: активні сезонні (з наборами) → «До 300 ₴», «300–700 ₴», «Набори»."""
+    """[(key, label, sub)] у порядку показу: активні сезонні (з наборами; «До Різдва» серед них) → «Популярне зараз» → «Набори» → вічнозелені тематичні."""
     seasonal = [(k, lb, sb) for k, lb, sb, _rx, f, l, _eb in HOME_SEASONAL if k in chip_sets]
+    dated = [(k, lb, sb) for k, lb, sb, _rx, f, l, _p1, _p2, _mc, _ac in HOME_THEMED if f is not None and k in chip_sets]
+    evergreen = [(k, lb, sb) for k, lb, sb, _rx, f, l, _p1, _p2, _mc, _ac in HOME_THEMED if f is None and k in chip_sets]
     pop = [("pop", "Популярне зараз", "Те, що зараз шукають найчастіше")] if "pop" in chip_sets else []
-    return seasonal + pop + [(k, t, "") for k, t in HOME_CHIPS if k in chip_sets]
+    return seasonal + dated + pop + [(k, t, "") for k, t in HOME_CHIPS if k in chip_sets] + evergreen
 
 
 
@@ -1501,6 +1523,7 @@ def write_home(prods, cats, cat_list, cat_slug):
               '<div class="chips home-chips" id="home-chips" role="group" aria-label="Підбір іграшок">'
               '<button type="button" class="chip active" data-set="all" aria-pressed="true">Усі</button>'
               + "".join(f'<button type="button" class="chip{" chip-theme" if k in CHIP_ICONS else ""}" data-set="{k}" data-sub="{esc(sb)}" aria-pressed="false">{CHIP_ICONS.get(k, "")}<span>{esc(t)}</span></button>' for k, t, sb in home_chip_defs(chip_sets))
+              + ('<a class="chip chip-link" href="utsinka.html">Уцінка</a>' if utsinka_pick(prods) else "")   # чип-посилання (власник 13.10): сторінка, а не набір у каруселі
               + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p>'
               + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
         carousel = (

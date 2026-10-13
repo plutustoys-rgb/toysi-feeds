@@ -32,8 +32,13 @@ import xml.etree.ElementTree as ET
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")      # причина блокування — українською в UTF-8 на будь-якій ОС
 n = 0
+root_tag = None
 try:
-    for _ev, el in ET.iterparse(sys.argv[1], events=("end",)):
+    for ev, el in ET.iterparse(sys.argv[1], events=("start", "end")):
+        if ev == "start":
+            if root_tag is None:
+                root_tag = el.tag
+            continue
         if el.tag in ("item", "offer"):
             n += 1
             el.clear()
@@ -43,6 +48,9 @@ except ET.ParseError as e:
 except Exception as e:
     print("файл не вдалось прочитати: %s: %s" % (type(e).__name__, e))
     sys.exit(2)
+if root_tag not in ("rss", "yml_catalog"):
+    print("корінь файлу %r: це не фід (очікується rss або yml_catalog), схоже на сторінку помилки" % root_tag)
+    sys.exit(4)
 if n == 0:
     print("у файлі немає жодної позиції")
     sys.exit(3)
@@ -50,6 +58,7 @@ print("ok: %d позицій" % n)
 PY
 )
     rc=$?
+    [ "$rc" -ne 0 ] && [ -z "$msg" ] && msg="гейт не зміг виконатись (код $rc, інтерпретатор $py): файл НЕ опубліковано"
     echo "$msg"
     [ "$rc" -eq 0 ]
 }

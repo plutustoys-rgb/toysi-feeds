@@ -37,7 +37,8 @@ tmp = tempfile.mkdtemp()
 def feed(name, n, tag="item", truncate=False):
     p = os.path.join(tmp, name)
     open_t = f"<{tag}>" if tag == "item" else f"<{tag} id=\"1\">"
-    body = "<root>" + "".join(f"{open_t}x</{tag}>" for _ in range(n)) + "</root>"
+    root = "rss" if tag == "item" else "yml_catalog"
+    body = f"<{root}>" + "".join(f"{open_t}x</{tag}>" for _ in range(n)) + f"</{root}>"
     if truncate:
         body = body[: len(body) - 20]            # обрізаний: немає закриваючих тегів
     with open(p, "w", encoding="utf-8") as f:
@@ -81,6 +82,12 @@ rc, msg = gate(feed("offers_new.xml", 80, "offer"))
 chk("YML-формат (<offer id=…>) рахується так само", rc == 0 and "80" in msg)
 rc, msg = gate(feed("offers_trunc.xml", 80, "offer", truncate=True))
 chk("YML обрізаний → БЛОКУЄ", rc == 1)
+html = os.path.join(tmp, "page.html")
+open(html, "w", encoding="utf-8").write("<html><body><item>x</item></body></html>")
+rc, msg = gate(html)
+chk("HTML-сторінка з випадковим <item> (не фід) → БЛОКУЄ: корінь не rss/yml_catalog", rc == 1 and "не фід" in msg)
+rc, msg = gate(feed("n_ok.xml", 3), {"PLUTUS_PY": "/нема/такого/python"})
+chk("збій самого гейта (нема інтерпретатора) → БЛОКУЄ з видимою причиною, не порожнім повідомленням", rc == 1 and "не зміг виконатись" in msg)
 chk("жодних довільних порогів у скрипті гейта (немає 'min_abs', '70' і «30%»)", not any(x in open(os.path.join(HERE, "feed_publish_gate.sh"), encoding="utf-8").read().replace("0.70", "") for x in ("min_abs", "* 70", "понад 30%")))
 
 

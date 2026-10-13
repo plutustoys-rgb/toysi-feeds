@@ -32,7 +32,7 @@ def chk(name, ok):
 
 
 app = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
-m = re.search(r"(var DELIV_TARIFF_MIN=.*?function deliveryEstimate\(goods\)\{.*?\n  \})", app, re.S)
+m = re.search(r"(var DELIV_TARIFF_MIN=.*?function deliveryEstimate\(goods, prepaid\)\{.*?\n  \})", app, re.S)
 chk("app.js: блок deliveryEstimate знайдено", bool(m))
 
 if m:

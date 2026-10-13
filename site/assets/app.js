@@ -302,11 +302,28 @@
   //   Понад DELIV_COD_MAX накладеного платежу немає → лише тариф. НЕ ВРАХОВАНО: вага >2 кг (у 2 реальних ТТН +25 ₴; ваги в каталозі Toysi немає) — тому в тексті «орієнтовно» і «точну суму назве Нова Пошта».
   //   Хто платить комісію — не доведено: текст говорить лише «орієнтовно» і «оплачується при отриманні».
   var DELIV_TARIFF_MIN=70, DELIV_TARIFF_MAX=90, DELIV_COD_FIXED=20, DELIV_COD_RATE=0.02, DELIV_COD_MAX=3000, DELIV_DECL_FREE=500, DELIV_DECL_RATE=0.005;
-  function deliveryEstimate(goods){
-    if(!(goods>0) || goods>DELIV_COD_MAX) return "орієнтовно 70–90 ₴ до 2 кг";
+  function isPrepaid(){ var r=document.querySelector('input[name="payment"]:checked'); return !!r && r.value==="prepaid"; }
+  function deliveryEstimate(goods, prepaid){
+    // оплата карткою онлайн: комісії накладеного платежу нема, надбавка тарифу для передоплати не міряна → лише базовий тариф
+    if(prepaid || !(goods>0) || goods>DELIV_COD_MAX) return "орієнтовно 70–90 ₴ до 2 кг";
     var extra=goods>DELIV_DECL_FREE ? DELIV_DECL_RATE*goods : 0;
     var fee=DELIV_COD_FIXED+DELIV_COD_RATE*goods+extra;
     return "орієнтовно "+Math.round(DELIV_TARIFF_MIN+fee)+"–"+Math.round(DELIV_TARIFF_MAX+fee)+" ₴";
+  }
+
+  // Рядок доставки, підпис і примітка залежать від способу оплати (тестувальник 13.10: при «карткою онлайн» лишався COD-івський підсумок 99–119 ₴ і підпис про комісію).
+  // Оригінальний (накладений платіж) текст запам'ятовуємо при першому виклику; prepaid-версії — з data-prepaid розмітки (єдине джерело в build_site.py).
+  function applyDeliveryView(goods){
+    var pre=isPrepaid();
+    [["sum-delivery","sum-delivery-label","delivery-note-sum"],["aside-delivery","aside-delivery-label","delivery-note-aside"]].forEach(function(ids){
+      var v=document.getElementById(ids[0]), lb=document.getElementById(ids[1]), nt=document.getElementById(ids[2]);
+      if(v) v.textContent=deliveryEstimate(goods, pre);
+      [lb, nt].forEach(function(el){
+        if(!el) return;
+        if(el.getAttribute("data-cod")===null) el.setAttribute("data-cod", el.textContent);
+        el.textContent = pre ? (el.getAttribute("data-prepaid")||el.textContent) : el.getAttribute("data-cod");
+      });
+    });
   }
 
   function renderAside(c, ids){
@@ -323,7 +340,7 @@
     var g=document.getElementById("aside-goods"), t=document.getElementById("aside-total");
     if(g) g.textContent=goods+" ₴";
     if(t) t.textContent=goods+" ₴";
-    var ad=document.getElementById("aside-delivery"); if(ad) ad.textContent=deliveryEstimate(goods);
+    applyDeliveryView(goods);
     var picks=addonPool().filter(function(a){ return !c[a.id]; }).slice(0,3);
     Array.prototype.forEach.call(document.querySelectorAll("[data-addon]"), function(box){
       if(!picks.length){ box.innerHTML=""; box.style.display="none"; return; }
@@ -385,7 +402,7 @@
     var freeShip=FREE_SHIPPING_ENABLED && goods>=FREE_SHIPPING_THRESHOLD;
     var g=document.getElementById("sum-goods"), d=document.getElementById("sum-delivery"), t=document.getElementById("sum-total");
     if(g) g.textContent=goods+" ₴";
-    if(d) d.textContent=freeShip ? "Безкоштовно" : deliveryEstimate(goods);
+    if(d && freeShip) d.textContent="Безкоштовно"; else applyDeliveryView(goods);
     if(t) t.textContent=goods+" ₴";
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
@@ -408,6 +425,8 @@
   // ── Ініціалізація на кожній сторінці ──
   document.addEventListener("DOMContentLoaded", function(){
     updateBadge();
+    // зміна способу оплати перераховує доставку, підпис і примітку (див. applyDeliveryView)
+    document.addEventListener("change", function(e){ if(e.target && e.target.name==="payment" && document.getElementById("cart-summary")) applyDeliveryView(total()); });
     initLiqpayTestEntry();
 
     // делеговані кліки: додати в кошик, пошук, кошик-керування

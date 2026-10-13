@@ -220,8 +220,10 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .free-ship .note.free-ship-done{color:var(--success)}
 
 /* ── Пошуковий оверлей ── */
-.overlay{position:fixed;inset:0;background:var(--bg);z-index:50;display:none;flex-direction:column}
+/* Пошук — ПАНЕЛЬ під шапкою, а не окремий екран (власник 13.10: суцільний оверлей на весь сайт виглядав як «інша сторінка»): шапка лишається видимою, сторінка за панеллю затемнена; клік по затемненню закриває. Верх панелі (--sp-top) виставляє JS за нижнім краєм шапки. */
+.overlay{position:fixed;left:0;right:0;bottom:0;top:var(--sp-top,64px);background:rgba(30,20,10,.38);z-index:50;display:none;justify-content:center;align-items:flex-start}
 .overlay.on{display:flex}
+.overlay .sp{width:100%;max-width:760px;background:var(--bg);display:flex;flex-direction:column;max-height:calc(100dvh - var(--sp-top,64px) - 12px);border-radius:0 0 18px 18px;box-shadow:0 14px 34px rgba(30,20,10,.28);overflow:hidden}
 .overlay .obar{display:flex;gap:8px;padding:12px 16px;align-items:center}
 .overlay .obar input{flex:1;padding:11px 14px;border:1px solid var(--line);border-radius:12px;font-size:15px;background:var(--surface);color:var(--text)}
 .overlay .obar .x{background:none;border:0;font-size:15px;color:var(--accent);font-weight:600;cursor:pointer}

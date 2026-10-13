@@ -195,11 +195,12 @@ RETURN_LINE = "Повернення якісного товару — 14 дні�
 def search_overlay():
     return (
       '<div class="overlay" id="search-overlay" role="dialog" aria-label="Пошук">'
+      '<div class="sp">'
       '<div class="obar">'
         '<input type="search" placeholder="Що шукаємо?" aria-label="Пошук">'
         '<button class="x" id="close-search">Готово</button>'
       '</div><div class="results"></div>'
-      f'<template id="search-empty">{search_empty_html()}</template></div>'
+      f'<template id="search-empty">{search_empty_html()}</template></div></div>'
     )
 
 FOOTER_LINKS = [

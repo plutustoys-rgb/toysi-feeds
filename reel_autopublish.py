@@ -14,6 +14,7 @@
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -46,12 +47,15 @@ def fetch_site_index() -> dict:
     """{id(str): {'price': int, 'name': str}} з публічного каталогу сайту (він містить лише товари в наявності)."""
     r = requests.get(SITE_INDEX_URL, timeout=60)
     r.raise_for_status()
-    return {str(p["id"]): {"price": int(p["pr"]), "name": p.get("n", "")} for p in r.json() if "id" in p and "pr" in p}
+    return {str(p["id"]): {"price": float(p["pr"]), "name": p.get("n", "")} for p in r.json() if "id" in p and "pr" in p}
 
 
 def host_video(mp4: Path) -> str:
     """publish_reel_video.sh → публічний raw-URL (останній рядок виводу). Кидає виняток, якщо URL нема."""
-    r = subprocess.run(["bash", str(HERE / "publish_reel_video.sh"), str(mp4)], capture_output=True, text=True, timeout=600)
+    try:
+        r = subprocess.run(["bash", str(HERE / "publish_reel_video.sh"), str(mp4)], capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired as e:
+        raise HostingError(f"хостинг відео: таймаут {e.timeout} с") from e
     url = (r.stdout.strip().splitlines() or [""])[-1].strip()
     if r.returncode != 0 or not url.startswith("https://raw.githubusercontent.com/"):
         raise HostingError(f"хостинг відео не дав URL (код {r.returncode}): {r.stderr.strip()[-300:] or r.stdout.strip()[-300:]}")
@@ -78,15 +82,26 @@ def check_item(name: str, manifest: dict, mp4: Path, caption_path: Path, index: 
     if not isinstance(ver, list) or not ver:
         problems.append("у маніфесті немає списку verify (товари й ціни з підпису)")
         ver = []
+    cap_text = caption_path.read_text(encoding="utf-8") if caption_path.is_file() else ""
     for v in ver:
-        pid, price = str((v or {}).get("id", "")), (v or {}).get("price")
+        if not isinstance(v, dict):
+            problems.append(f"некоректний запис verify: {v!r}")
+            continue
+        pid, price = str(v.get("id", "")), v.get("price")
         item = index.get(pid)
-        if not pid or price is None:
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError):
+            problems.append(f"некоректна ціна у verify: {v!r}")
+            continue
+        if not pid:
             problems.append(f"некоректний запис verify: {v!r}")
         elif item is None:
             problems.append(f"товару {pid} немає в каталозі сайту (нема в наявності)")
-        elif int(item["price"]) != int(price):
-            problems.append(f"ціна товару {pid} на сайті {item['price']} ≠ {price} у підписі")
+        elif abs(float(item["price"]) - price_f) > 0.005:
+            problems.append(f"ціна товару {pid} на сайті {item['price']:g} ≠ {price_f:g} у підписі")
+        elif not re.search(rf"(?<!\d){re.escape(format(price_f, 'g'))}(?!\d)", cap_text):
+            problems.append(f"ціни {price_f:g} (товар {pid}) немає в тексті підпису")
     return problems
 
 
@@ -114,6 +129,10 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
             name = mpath.stem
             if name in done:
                 continue
+            if not re.fullmatch(r"[a-z0-9_-]+", name):
+                out["held"].append(name)
+                _alert(f"reel_hold:{name}", f"⚠️ Reel «{name}»: ім'я файлу має бути лише a-z, 0-9, _ і - (інакше публічний URL відео може не прийняти Instagram). Перейменуй три файли й перезалий.")
+                continue
             mp4, cap = queue / f"{name}.mp4", queue / f"{name}.caption.txt"
             if (queue / f"{name}.publishing").exists():
                 out["unknown"].append(name)
@@ -130,44 +149,72 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
             nb = manifest.get("not_before")
             if nb:
                 try:
-                    if datetime.fromisoformat(str(nb)) > now:
-                        continue                                  # ще не настав час цього Reel
+                    nb_dt = datetime.fromisoformat(str(nb))
+                    if nb_dt.tzinfo is not None:
+                        nb_dt = nb_dt.astimezone().replace(tzinfo=None)   # місцевий час VPS (Київ), як і now
                 except ValueError:
-                    pass
+                    out["held"].append(name)                      # fail-closed: нечитабельна дата НЕ означає «публікуй зараз»
+                    _alert(f"reel_hold:{name}", f"⚠️ Reel {name}: not_before «{nb}» нечитабельний (потрібно РРРР-ММ-ДДTГГ:ХХ); не публікую.")
+                    continue
+                if nb_dt > now:
+                    continue                                      # ще не настав час цього Reel
             if index is None:
                 try:
                     index = fetch_index()
                 except Exception as e:  # noqa: BLE001
                     print(f"[reel_autopublish] каталог сайту недоступний ({type(e).__name__}: {e}) — публікація відкладена", file=sys.stderr)
+                    _alert("reel_infra", f"⚠️ Автопублікація Reels відкладена: каталог сайту недоступний ({type(e).__name__}); без перевірки цін не публікую, повтор наступного запуску.")
                     return out                                    # без перевірки цін не публікуємо
-            problems = check_item(name, manifest, mp4, cap, index)
+            try:
+                problems = check_item(name, manifest, mp4, cap, index)
+            except Exception as e:  # noqa: BLE001
+                problems = [f"перевірка не вдалась ({type(e).__name__}: {e})"]   # fail-closed: зіпсований маніфест не глушить чергу мовчки
             if problems:
                 out["held"].append(name)
                 _alert(f"reel_hold:{name}", f"⚠️ Reel {name} НЕ опубліковано, поки: " + "; ".join(problems) + ". SMM: онови підпис/ціни й маніфест, власник: перезалий файли.")
                 continue
             claim = queue / f"{name}.publishing"
-            claim.write_text(now.isoformat(timespec="seconds"), encoding="utf-8")   # claim ДО виклику Instagram
+            try:
+                fd = os.open(str(claim), os.O_CREAT | os.O_EXCL | os.O_WRONLY)          # АТОМАРНИЙ claim ДО виклику Instagram: другий процес не пройде
+            except FileExistsError:
+                out["unknown"].append(name)
+                continue
+            with os.fdopen(fd, "w") as fh:
+                fh.write(now.isoformat(timespec="seconds"))
             try:
                 url = host(mp4)
                 res = publish(url, cap.read_text(encoding="utf-8").strip())
             except HostingError as e:
                 claim.unlink(missing_ok=True)                     # збій ДО відправки в Instagram: Reel точно не вийшов, повтор наступного запуску
                 print(f"[reel_autopublish] {name}: {e}", file=sys.stderr)
+                _alert("reel_infra", f"⚠️ Автопублікація Reels: хостинг відео не вдався для {name} ({e}); повтор наступного запуску.")
                 out["held"].append(name)
-                continue
+                return out                                        # не каскадувати спроби по всій черзі
             except Exception as e:  # noqa: BLE001
                 # збій під час/після виклику Instagram — стан невідомий: claim ЛИШАЄТЬСЯ, автоповтору нема
                 out["unknown"].append(name)
                 _alert(f"reel_unknown:{name}", f"🔴 Reel {name}: збій під час публікації ({type(e).__name__}: {e}); результат невідомий, автоповтору нема. Перевір Instagram.")
                 return out
             if not (res or {}).get("ok"):
-                claim.unlink(missing_ok=True)                     # Instagram прямо повідомив про помилку: Reel не вийшов, повтор наступного запуску
+                if (res or {}).get("dryrun"):
+                    claim.unlink(missing_ok=True)                 # нема IG-токенів у .env: нічого не було відправлено
+                    out["held"].append(name)
+                    _alert("reel_infra", "⚠️ Автопублікація Reels: у .env нема IG_USER_ID/FB_PAGE_ACCESS_TOKEN — публікація неможлива; черга чекає.")
+                    return out
+                if (res or {}).get("unknown"):
+                    # запит media_publish пішов, а результат невідомий (таймаут/обрив/5xx): Instagram міг опублікувати — claim ЛИШАЄТЬСЯ, автоповтору нема
+                    out["unknown"].append(name)
+                    _alert(f"reel_unknown:{name}", f"🔴 Reel {name}: запит публікації надіслано, але результат невідомий ({(res or {}).get('error')}). Автоповтору нема: перевір Instagram; якщо Reel вийшов, перенеси файли в reels_queue/published/ і додай запис у published.json; якщо ні, видали {name}.publishing.")
+                    return out
+                claim.unlink(missing_ok=True)                     # Instagram ВИЗНАЧЕНО відхилив (або збій до media_publish): Reel не вийшов, повтор наступного запуску
                 out["held"].append(name)
                 print(f"[reel_autopublish] {name}: Instagram: {(res or {}).get('error')}", file=sys.stderr)
                 _alert(f"reel_fail:{name}", f"⚠️ Reel {name}: Instagram відхилив публікацію ({(res or {}).get('error')}); повтор наступного запуску.")
                 continue
             published = _load_published(queue) + [{"name": name, "media_id": res.get("id"), "at": now.isoformat(timespec="seconds"), "url": url}]
-            (queue / "published.json").write_text(json.dumps(published, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp_pub = queue / "published.json.tmp"
+            tmp_pub.write_text(json.dumps(published, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp_pub, queue / "published.json")      # атомарно: обрізаний published.json не втратить історію
             (queue / "published").mkdir(exist_ok=True)
             for f in (mp4, cap, mpath, claim):
                 if f.exists():

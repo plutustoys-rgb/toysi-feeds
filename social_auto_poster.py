@@ -461,12 +461,18 @@ def _ig_create_reel(video_url: str, caption: str):
     )
 
 
+def _mask_secrets(text: str) -> str:
+    """Прибирає access_token=… з тексту винятку (URL запиту потрапляє в str(e), а звідти в журнал/Telegram)."""
+    return re.sub(r"access_token=[^&\s\"')]+", "access_token=[прибрано]", str(text))
+
+
 def _publish_ig_reel(video_url: str, caption: str) -> dict:
     """IG-Reels публікація — ДВА кроки (як фото-IG, але для відео): (1) media-контейнер
     media_type=REELS з публічним video_url, (2) media_publish за creation_id, МІЖ ними
     чекаємо status_code=FINISHED (відео обробляється довше → щедріший поллінг). Токен —
     FB_PAGE_ACCESS_TOKEN. Product-мітки для Reels не чіпляємо. Не кидає — повертає {ok,id|error}."""
     base = f"https://graph.facebook.com/{GRAPH_VERSION}"
+    publish_sent = False       # ставимо ПЕРЕД media_publish: після цього збій дає «unknown» (Instagram міг уже опублікувати) — автоповтор заборонений
     try:
         c = _ig_create_reel(video_url, caption)
         cj = c.json() if c.content else {}
@@ -484,15 +490,19 @@ def _publish_ig_reel(video_url: str, caption: str) -> dict:
             time.sleep(IG_REEL_POLL_SLEEP)
         else:
             return {"ok": False, "error": "reel media не дійшов до FINISHED (ще обробляється?)"}
+        publish_sent = True
         pub = requests.post(f"{base}/{IG_USER_ID}/media_publish",
                             data={"creation_id": creation_id, "access_token": FB_PAGE_ACCESS_TOKEN},
                             timeout=REQUEST_TIMEOUT)
         pj = pub.json() if pub.content else {}
         if pub.ok and pj.get("id"):
             return {"ok": True, "id": pj["id"]}
-        return {"ok": False, "error": pj.get("error", {}).get("message", f"reel publish HTTP {pub.status_code}")}
+        # 4xx з JSON-помилкою = Instagram ВИЗНАЧЕНО відхилив; 5xx чи відповідь без помилки = результат невідомий
+        definite = 400 <= pub.status_code < 500 and bool(pj.get("error"))
+        return {"ok": False, "error": _mask_secrets(pj.get("error", {}).get("message", f"reel publish HTTP {pub.status_code}")), "unknown": not definite}
     except (requests.RequestException, ValueError, AttributeError, TypeError) as e:
-        return {"ok": False, "error": str(e)}
+        # виняток ДО media_publish → Reel точно не вийшов; ПІСЛЯ (таймаут/обрив на media_publish) → невідомо
+        return {"ok": False, "error": _mask_secrets(e), "unknown": publish_sent}
 
 
 def post_single_reel(video_url: str, caption: str, publish: bool) -> dict:

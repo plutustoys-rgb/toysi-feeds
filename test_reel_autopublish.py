@@ -113,5 +113,120 @@ n0 = len(published)
 res = run()
 chk(".publishing блокує автоповтор (не публікуємо вдруге)", res["published"] is None and len(published) == n0 and "i1" in res["unknown"])
 
+
+# ═══ ДОПОВНЕННЯ після аудиту PR #733 ═══
+import os
+import requests
+import social_auto_poster as sap
+
+# (A) невідомий результат media_publish (unknown=True) → claim ЛИШЕНО, автоповтору нема
+make("u1", age=400)
+alerts.clear()
+res = run(publish=lambda url, cap: {"ok": False, "error": "ReadTimeout", "unknown": True})
+chk("publish повернув unknown → claim лишено, сигнал «перевір Instagram», запуск зупинено", (q / "u1.publishing").exists() and "u1" in res["unknown"] and any("результат невідомий" in t_ for _, t_ in alerts))
+n0 = len(published)
+res = run()
+chk("наступний запуск не публікує u1 повторно (.publishing тримає)", len(published) == n0 and "u1" in res["unknown"])
+for ext in (".mp4", ".caption.txt", ".json", ".publishing"):
+    (q / f"u1{ext}").unlink(missing_ok=True)
+
+# (B) dry-run (нема IG-токенів) → зупинка, claim знято, сигнал про токени, наступні Reel не пушаться у feed-data
+make("d1", age=400)
+make("d2", age=390)
+hosted.clear()
+alerts.clear()
+res = run(publish=lambda url, cap: {"ok": False, "dryrun": True})
+chk("dryrun → claim знято, зупинено після ПЕРШОГО (host викликано раз), сигнал про токени", not (q / "d1.publishing").exists() and hosted == ["d1.mp4"] and any("нема IG_USER_ID" in t_ for _, t_ in alerts))
+for f in ("d1", "d2"):
+    for ext in (".mp4", ".caption.txt", ".json"):
+        (q / f"{f}{ext}").unlink(missing_ok=True)
+
+# (C) ціна з маніфесту має бути в тексті підпису
+make("t1", verify=[{"id": "1", "price": 100}], caption="Тут ціна 999 грн", age=400)
+alerts.clear()
+n0 = len(published)
+res = run()
+chk("ціни з verify немає в тексті підпису → не публікується", len(published) == n0 and "t1" in res["held"] and any("немає в тексті підпису" in t_ for _, t_ in alerts))
+for ext in (".mp4", ".caption.txt", ".json"):
+    (q / f"t1{ext}").unlink(missing_ok=True)
+
+# (D) ім'я файлу лише [a-z0-9_-]
+make("Bad Name", age=400)
+alerts.clear()
+res = run()
+chk("ім'я з великою літерою/пробілом → held з поясненням, не публікується", "Bad Name" in res["held"] and any("a-z, 0-9" in t_ for _, t_ in alerts))
+for ext in (".mp4", ".caption.txt", ".json"):
+    (q / f"Bad Name{ext}").unlink(missing_ok=True)
+
+# (E) not_before: невалідний → held (fail-closed); aware з поясом коректно порівнюється
+make("n1", extra={"not_before": "14 жовтня"}, age=400)
+alerts.clear()
+res = run()
+chk("not_before нечитабельний → НЕ публікується (fail-closed), сигнал", res["published"] is None and "n1" in res["held"] and any("нечитабельний" in t_ for _, t_ in alerts))
+(q / "n1.json").write_text(json.dumps({"verify": [{"id": "1", "price": 100}], "not_before": "2020-01-01T00:00:00+03:00"}), encoding="utf-8")
+res = run()
+chk("not_before з поясом (aware) у минулому → публікується, без винятку", res["published"] == "n1")
+
+# (F) зіпсований маніфест не глушить чергу
+make("z1", verify=[{"id": "1", "price": "376 грн"}], age=500)
+make("z2", verify=["196937"], age=490)
+make("z3", age=480)
+alerts.clear()
+res = run()
+chk("price='376 грн' і verify=[рядок] → held із сигналом; наступний нормальний Reel публікується", res["published"] == "z3" and {"z1", "z2"} <= set(res["held"]))
+for f in ("z1", "z2"):
+    for ext in (".mp4", ".caption.txt", ".json"):
+        (q / f"{f}{ext}").unlink(missing_ok=True)
+
+# (G) атомарний claim: гонка (файл .publishing з'явився між перевіркою і створенням)
+make("g1", age=400)
+real_open = os.open
+os.open = lambda path, flags, *a, **k: (_ for _ in ()).throw(FileExistsError()) if str(path).endswith(".publishing") else real_open(path, flags, *a, **k)
+n0 = len(published)
+res = run()
+os.open = real_open
+chk("гонка за claim (O_EXCL програно) → не публікуємо, unknown", len(published) == n0 and "g1" in res["unknown"])
+for ext in (".mp4", ".caption.txt", ".json"):
+    (q / f"g1{ext}").unlink(missing_ok=True)
+
+chk("published.json пишеться атомарно (без .tmp у черзі)", not list(q.glob("published.json.tmp")))
+
+# (H) social_auto_poster._publish_ig_reel: «визначена відмова» проти «невідомого результату», токен маскується
+sap.IG_USER_ID, sap.FB_PAGE_ACCESS_TOKEN, sap.IG_REEL_POLL_SLEEP = "1", "SECRET_TOKEN_123", 0
+
+
+class _Resp:
+    def __init__(self, status=200, js=None, ok=None):
+        self.status_code, self._js, self.content = status, js or {}, b"x"
+        self.ok = (status < 400) if ok is None else ok
+
+    def json(self):
+        return self._js
+
+
+def run_ig(post_seq, get_resp=None):
+    calls = iter(post_seq)
+
+    def fake_post(url, **kw):
+        v = next(calls)
+        if isinstance(v, Exception):
+            raise v
+        return v
+    sap.requests.post = fake_post
+    sap.requests.get = lambda url, **kw: get_resp or _Resp(200, {"status_code": "FINISHED"})
+    return sap._publish_ig_reel("https://x/v.mp4", "cap")
+
+
+r = run_ig([_Resp(200, {"id": "c1"}), requests.exceptions.ReadTimeout("read timed out url=...access_token=SECRET_TOKEN_123&x=1")])
+chk("таймаут НА media_publish → unknown=True, токен у помилці замасковано", r["ok"] is False and r["unknown"] is True and "SECRET_TOKEN_123" not in r["error"])
+r = run_ig([requests.exceptions.ConnectionError("conn url=...access_token=SECRET_TOKEN_123")])
+chk("збій ДО media_publish (створення контейнера) → unknown=False, токен замасковано", r["ok"] is False and not r.get("unknown") and "SECRET_TOKEN_123" not in r["error"])
+r = run_ig([_Resp(200, {"id": "c1"}), _Resp(400, {"error": {"message": "Невалідне відео"}}, ok=False)])
+chk("4xx з JSON-помилкою на media_publish → визначена відмова (unknown=False)", r["ok"] is False and r["unknown"] is False)
+r = run_ig([_Resp(200, {"id": "c1"}), _Resp(502, {}, ok=False)])
+chk("5xx на media_publish → unknown=True", r["ok"] is False and r["unknown"] is True)
+r = run_ig([_Resp(200, {"id": "c1"}), _Resp(200, {"id": "m9"})])
+chk("успіх → ok і id", r == {"ok": True, "id": "m9"})
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

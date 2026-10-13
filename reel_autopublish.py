@@ -163,7 +163,7 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
                     index = fetch_index()
                 except Exception as e:  # noqa: BLE001
                     print(f"[reel_autopublish] каталог сайту недоступний ({type(e).__name__}: {e}) — публікація відкладена", file=sys.stderr)
-                    _alert("reel_infra", f"⚠️ Автопублікація Reels відкладена: каталог сайту недоступний ({type(e).__name__}); без перевірки цін не публікую, повтор наступного запуску.")
+                    _alert("reel_infra_index", f"⚠️ Автопублікація Reels відкладена: каталог сайту недоступний ({type(e).__name__}); без перевірки цін не публікую, повтор наступного запуску.")
                     return out                                    # без перевірки цін не публікуємо
             try:
                 problems = check_item(name, manifest, mp4, cap, index)
@@ -187,7 +187,7 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
             except HostingError as e:
                 claim.unlink(missing_ok=True)                     # збій ДО відправки в Instagram: Reel точно не вийшов, повтор наступного запуску
                 print(f"[reel_autopublish] {name}: {e}", file=sys.stderr)
-                _alert("reel_infra", f"⚠️ Автопублікація Reels: хостинг відео не вдався для {name} ({e}); повтор наступного запуску.")
+                _alert("reel_infra_hosting", f"⚠️ Автопублікація Reels: хостинг відео не вдався для {name} ({e}); повтор наступного запуску.")
                 out["held"].append(name)
                 return out                                        # не каскадувати спроби по всій черзі
             except Exception as e:  # noqa: BLE001
@@ -199,7 +199,7 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
                 if (res or {}).get("dryrun"):
                     claim.unlink(missing_ok=True)                 # нема IG-токенів у .env: нічого не було відправлено
                     out["held"].append(name)
-                    _alert("reel_infra", "⚠️ Автопублікація Reels: у .env нема IG_USER_ID/FB_PAGE_ACCESS_TOKEN — публікація неможлива; черга чекає.")
+                    _alert("reel_infra_tokens", "⚠️ Автопублікація Reels: у .env нема IG_USER_ID/FB_PAGE_ACCESS_TOKEN — публікація неможлива; черга чекає.")
                     return out
                 if (res or {}).get("unknown"):
                     # запит media_publish пішов, а результат невідомий (таймаут/обрив/5xx): Instagram міг опублікувати — claim ЛИШАЄТЬСЯ, автоповтору нема

@@ -37,6 +37,7 @@ good = [P() for _ in range(30)]
 bad = {
     "oos": P(stock=0), "nofoto": P(photo=""), "loss": P(contrib=-1.0), "nocost": P(contrib=None),
     "markdown": P(name="Уцінка. Ліхтарик «U1»"), "weapon": P(name="Пістолет водяний «W1»"), "mil": P(name="Військовий танк «M1»"),
+    "ppo": P(name="Гра «ППО на захисті країни»"), "zsu": P(name="Пазл «Котики ЗСУ та ППО»"), "cosm": P(name="Скраб для ніг «Green Pharmacy»", cat="Догляд за тілом"),
 }
 prods = good + list(bad.values())
 tmp = Path(tempfile.mkdtemp()) / "demand_featured.json"
@@ -55,7 +56,7 @@ chk("нема файлу: чипа «Популярне зараз» нема, �
 ids_ok = [p["id"] for p in good]
 write({"date": "2026-10-12", "source": "Search Console 28d", "ids": ids_ok + [b["id"] for b in bad.values()]})
 d = bs._load_demand_featured()
-chk("валідний файл: id читаються (до 40), дата й джерело", d is not None and len(d["ids"]) == 37 and str(d["date"]) == "2026-10-12" and d["source"] == "Search Console 28d")
+chk("валідний файл: id читаються (до 40), дата й джерело", d is not None and len(d["ids"]) == 40 and str(d["date"]) == "2026-10-12" and d["source"] == "Search Console 28d")
 pk = bs.demand_pick(prods)
 chk("добірка попиту: 10 карток, жодної неприйдатної (нема залишку/фото, збиткова, невідома собівартість, «Уцінка», зброя, мілітарі)", len(pk) == 10 and not any(p["id"] in {b["id"] for b in bad.values()} for p in pk))
 chk("топ-4 id списку (найвищий попит) завжди в добірці", all(i in {p["id"] for p in pk} for i in ids_ok[:4]))

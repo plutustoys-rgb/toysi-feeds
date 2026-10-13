@@ -1468,6 +1468,8 @@ def demand_pick(prods, demand=None):
         name = p.get("name") or ""
         if _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name) or any(w in name.lower() for w in NABORY_BAD_WORDS):
             continue
+        if (p.get("category") or "").strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name):
+            continue   # не іграшки (косметика/побутова хімія, 13.10: «Green Pharmacy» у «Популярне зараз») і воєнна тематика (ППО/ЗСУ), манга/романи
         ok.append(p)
     if len(ok) < DEMAND_MIN:
         return []
@@ -1481,7 +1483,7 @@ def demand_pick(prods, demand=None):
     return head[:HOME_PICK_COUNT]
 # SMM 13.10: з сезонних чипів прибрати книжки й мангу (категорія книг/манга/комікс/художн/літератур або «манга»/«роман» у назві), ключові слова лишаються (привид, відьм — доречні на іграшках).
 HOME_SEASONAL_BAD_CAT = re.compile(r"книг|манга|комікс|художн|літератур", re.I)
-HOME_SEASONAL_BAD_NAME = re.compile(r"манга|роман|молотов", re.I)
+HOME_SEASONAL_BAD_NAME = re.compile(r"манга|роман|молотов|\bппо\b|\bзсу\b", re.I)   # слова на межі слова: «ППО»/«ЗСУ» (воєнна тематика) відсіюємо, «гіппопотам» — ні
 HOME_SEASONAL_MIN_CONTRIB = 30.0
 
 

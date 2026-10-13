@@ -833,6 +833,9 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
     return sent
 
 
+SITE_RECEIPT_HEADER = "PlutusToys · plutustoys.com.ua"   # шапка чека онлайн-оплати: назва магазину (власник 13.10)
+
+
 def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> bool:
     """Сайт + передоплата (LiqPay): фіскальний чек ПРРО Checkbox SELL/CASHLESS виписується одразу після підтвердженої оплати (колбек success) і ДО передачі в Toysi/НП
     (рішення головного бухгалтера 12.10.2026, КОДВ_CHANNEL: розрахунковий документ — не пізніше передачі товару; Закон №265/95-ВР ст.3). Місце — тут, на початку route_order:
@@ -890,7 +893,8 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> 
     conn.commit()                                                   # claim має бути видимий іншим процесам ДО виклику Checkbox
     try:
         result = create_receipt(goods=goods, payment_type="CASHLESS", total_amount=total, order_id=oid,
-                                customer_phone=order.get("phone"), footer=footer, customer_email=order.get("email"))
+                                customer_phone=order.get("phone"), footer=footer, customer_email=order.get("email"),
+                                header=SITE_RECEIPT_HEADER)
     except Exception as e:  # noqa: BLE001
         print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
         if getattr(e, "maybe_created", False):

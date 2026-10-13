@@ -229,6 +229,7 @@ def create_receipt(
     customer_phone: str | None = None,
     footer: str | None = None,
     customer_email: str | None = None,
+    header: str | None = None,
 ) -> dict:
     """POST /api/v1/receipts/sell (підтверджено офіційним Swagger,
     api.checkbox.in.ua/api/docs) — прямий чек продажу, БЕЗ жодної залежності
@@ -293,6 +294,9 @@ def create_receipt(
     # footer (ReceiptSellPayload.footer, OpenAPI 12.10.2026): текст у чеку, напр. номер платежу LiqPay й номер замовлення — для зіставлення із зарахуванням у виписці
     if footer:
         body["footer"] = footer[:250]
+    # header (ReceiptSellPayload.header, OpenAPI 13.10.2026): текст у шапці чека. Власник 13.10: у чеку онлайн-оплати нема назви магазину (шапка каси: ФОП, «Інтернет-магазин», адреса).
+    if header:
+        body["header"] = header[:250]
     # ВИПРАВЛЕНО (2026-07-22, живий крах усіх 6 замовлень на першому
     # реальному прогоні після активації ключів — 422 Unprocessable Entity):
     # Checkbox вимагає, щоб order_id був СПРАВЖНІМ UUID
@@ -305,13 +309,16 @@ def create_receipt(
     # збережене в orders_db.py), не потребує окремого поля в запиті.
 
     headers = {"X-License-Key": CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
+    def _post(b: dict):
+        return requests.post(f"{CHECKBOX_API_URL}/receipts/sell", headers=headers, json=b, timeout=REQUEST_TIMEOUT)
+
     try:
-        response = requests.post(
-            f"{CHECKBOX_API_URL}/receipts/sell",
-            headers=headers,
-            json=body,
-            timeout=REQUEST_TIMEOUT,
-        )
+        response = _post(body)
+        if "header" in body and 400 <= response.status_code < 500:
+            # 4xx = Checkbox відхилив ДО створення (чека нема). Якщо причина в декоративній шапці — не блокуємо фіскалізацію всіх замовлень: повтор БЕЗ header (поведінка до 13.10).
+            print(f"[Checkbox] header відхилено ({response.status_code}: {response.text[:200]}) — повтор без header", file=sys.stderr)
+            body = {k: v for k, v in body.items() if k != "header"}
+            response = _post(body)
         response.raise_for_status()
     except requests.exceptions.HTTPError as e:
         # ВИПРАВЛЕНО (2026-07-22, той самий інцидент): попередня версія

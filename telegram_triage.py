@@ -77,6 +77,17 @@ def is_order_arrival(text: str) -> bool:
     return bool(ORDER_ARRIVAL_RE.search((text or "").lstrip()))
 
 
+# ЄДИНИЙ виняток із режиму «лише замовлення» (пропозиція Консультанта 12.10, ЧЕКАЄ рішення власника). Критерій, за яким подія проходить крізь сито, і він же межа для майбутніх:
+# одночасно (1) РІДКІСНА — у здоровій системі не трапляється, (2) КАТАСТРОФІЧНА — наслідок незворотний або коштує тижнів, (3) ПОТРЕБУЄ ДІЇ ЛЮДИНИ — автоматика не полагодить.
+# Тут: стан репрайсера пошкоджений І резервної копії нема (competitor_pricing.load_prom_price_state): губляться `_delisted_since`/ціни/`_readded_at`, фід знову включає
+# видалені SKU (клас інциденту 18.07). Випадок «відновлено з резервної копії» (⚠️) сюди НЕ входить: автоматика його вже полагодила (критерій 3).
+OWNER_CRITICAL_RE = re.compile(r"^🔴 prom_competitor_price_state\.json пошкоджений")
+
+
+def is_owner_critical(text: str) -> bool:
+    return bool(OWNER_CRITICAL_RE.search((text or "").lstrip()))
+
+
 _ORDER_ID_RE = re.compile(r"\b(?:prom|rozetka|eva|allo|site)_[\w-]+")
 _MARKET_RE = re.compile(r"🔻 (\w+):")
 # rule_id → витягувач ключа з тексту (порожній набір → send: ключа нема, не ховаємо)

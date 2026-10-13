@@ -1186,7 +1186,7 @@ def _pick_key(name):
     return " ".join(words[:2]) or n.strip()
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset()):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1204,7 +1204,7 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None):
             continue
         if not (pmin <= p["price"] <= pmax):
             continue
-        if cat in HOME_PICK_EXCLUDED_CATS or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
+        if cat in HOME_PICK_EXCLUDED_CATS or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
             continue
         if is_weapon_replica(str(p["id"]), name):
             continue
@@ -1234,13 +1234,16 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None):
 HOME_CHIPS = (("u300", "До 300 ₴"), ("m700", "300–700 ₴"), ("nab", "Набори"))
 HOME_CHIP_U300_MAX, HOME_CHIP_U300_MIN = 299.99, 50
 HOME_CHIP_U300_CONTRIB = 50.0
+# Не іграшки (аудит 13.10: перша картка «До 300 ₴» на живих даних — «Тренировочні трусики…» з категорії «Клейонки, килимки і підгузники») — з чипів прибираємо.
+HOME_CHIP_EXCLUDED_CATS = frozenset({"клейонки, килимки і підгузники", "гігієнічні вироби", "догляд за тілом", "догляд за тілом та волоссям", "догляд за волоссям", "косметичні засоби",
+                                     "засоби для прання", "засоби для миття посуду", "прання та миття посуду", "догляд за будинком", "new: побутова хімія", "батарейки"})   # точні назви з index.json (аудит #714); не іграшки
 
 
 def home_chip_sets(prods):
     """{key: [товари]} для чипів; порожні набори не повертаємо (чип не показуємо)."""
     sets = {
-        "u300": home_pick(prods, pmin=HOME_CHIP_U300_MIN, pmax=HOME_CHIP_U300_MAX, min_contrib=HOME_CHIP_U300_CONTRIB),
-        "m700": home_pick(prods, pmin=300, pmax=700),
+        "u300": home_pick(prods, pmin=HOME_CHIP_U300_MIN, pmax=HOME_CHIP_U300_MAX, min_contrib=HOME_CHIP_U300_CONTRIB, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS),
+        "m700": home_pick(prods, pmin=300, pmax=700, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS),
         "nab": [p for _g, p in nabory_pick(prods)[:HOME_PICK_COUNT]],
     }
     return {k: v for k, v in sets.items() if v}

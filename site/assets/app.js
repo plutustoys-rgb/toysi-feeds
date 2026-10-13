@@ -44,7 +44,7 @@
 
   // ── Аналітика (GA4 + Meta Pixel; ID підставляє збірка в window.PT_ANALYTICS, без ID — нічого не шле) ──
   // ⚠ ТЕСТОВІ ПОДІЇ В GA4/Meta (не покупці; при трафіку ~2 відвідувачі/добу вони спотворюють воронку): 11.10.2026 ~13:27 — add_to_cart (самокат 6349 ₴, SMM);
-  // 11.10.2026 ~16:27 — view_item, add_to_cart, begin_checkout (товар 235193, 468 ₴, Shopify-code, перевірка доставки подій). Тестове замовлення власника, коли
+  // 11.10.2026 ~16:27 — view_item, add_to_cart, begin_checkout (товар 235193, 468 ₴, Shopify-code, перевірка доставки подій). 12.10.2026 ~14:30 EEST — page_view, view_item, add_to_cart, begin_checkout (товар 221946, Shopify-code, перевірка доставки подій після відкладання трекерів; не покупець). Тестове замовлення власника, коли
   // буде, дасть purchase — його теж позначити тут (дата/товар/«не покупець»). Дописувати сюди кожну наступну тестову подію.
   var FB_EVENT = {view_item:"ViewContent", add_to_cart:"AddToCart", begin_checkout:"InitiateCheckout", purchase:"Purchase"};
   function track(name, items, value, extra){
@@ -531,6 +531,7 @@
     // Чипи над каруселлю (SMM 12.10): «Усі» (основна добірка) / «До 300 ₴» / «300–700 ₴» / «Набори» міняють набір з 10 карток БЕЗ перезавантаження. Набори лежать у <template id="car-set-<ключ>"> (інертні, фото не вантажаться
     //   до кліку). Перемикання: прибрати клони циклу → підставити картки → перерахувати slides/loop → на початок. Аналітика: view_item_list і select_item з item_list_name «home_chip_<ключ>» (для «Усі» — як було).
     var baseHTML = track ? track.innerHTML : "", baseName = listName;
+    function listId(){ return listName===baseName ? "home_pick" : listName; }   // id списку в GA4: основна добірка — як було, чипи — home_chip_<ключ>
     function teardownLoop(){
       if(!loopOn) return;
       Array.prototype.slice.call(track.querySelectorAll("[data-clone]")).forEach(function(c){ c.parentNode.removeChild(c); });
@@ -545,7 +546,8 @@
       setupLoop();
       sync();
       userAction();
-      trackRaw("view_item_list", {item_list_id:listName, item_list_name:listName, items:items()});
+      sent=true;   // IO-подія основного набору більше не потрібна (шлемо власну нижче)
+      trackRaw("view_item_list", {item_list_id:listId(), item_list_name:listName, items:items()});
     }
     var chipBar=document.getElementById("home-chips");
     if(chipBar && track){
@@ -553,6 +555,7 @@
       var chipBtns=Array.prototype.slice.call(chipBar.querySelectorAll("button[data-set]"));
       chipBar.addEventListener("click", function(e){
         var b=e.target.closest ? e.target.closest("button[data-set]") : null; if(!b) return;
+        if(b.classList.contains("active")) return;   // повторний клік по активному чипу: ні події, ні скидання позиції
         var key=b.getAttribute("data-set"), html, name;
         if(key==="all"){ html=baseHTML; name=baseName; }
         else { var tpl=document.getElementById("car-set-"+key); if(!tpl) return; html=tpl.innerHTML; name="home_chip_"+key; }
@@ -626,7 +629,7 @@
     var sent=false;
     function fireList(){
       if(sent) return; sent=true;
-      trackRaw("view_item_list", {item_list_id:"home_pick", item_list_name:listName, items:items()});
+      trackRaw("view_item_list", {item_list_id:listId(), item_list_name:listName, items:items()});
     }
     if(typeof IntersectionObserver==="function"){
       var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ fireList(); io.disconnect(); } }); }, {threshold:0.4});
@@ -637,7 +640,7 @@
       var i=slides.indexOf(a);
       if(i<0 && a.getAttribute && a.getAttribute("data-clone")!==null){ i=+a.getAttribute("data-clone"); }   // клон = свій оригінал (індекс у списку)
       var d=slideData(a, i<0?0:i); d.item_list_name=listName;
-      trackRaw("select_item", {item_list_id:"home_pick", item_list_name:listName, items:[d]});
+      trackRaw("select_item", {item_list_id:listId(), item_list_name:listName, items:[d]});
     });
   }
   // ── Посадкова /ig.html: сітка карток з item_list_name «ig_landing» — view_item_list один раз (коли сітка видна), select_item лише на клік ──

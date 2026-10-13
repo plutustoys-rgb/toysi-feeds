@@ -579,6 +579,7 @@
         if(key==="all"){ html=baseHTML; name=baseName; }
         else { var tpl=document.getElementById("car-set-"+key); if(!tpl) return; html=tpl.innerHTML; name="home_chip_"+key; }
         chipBtns.forEach(function(x){ var on=(x===b); x.classList.toggle("active", on); x.setAttribute("aria-pressed", on ? "true" : "false"); });
+        var subEl=document.getElementById("home-chip-sub"); if(subEl) subEl.textContent = b.getAttribute("data-sub") || "";   // підпис сезонного чипа (SMM)
         setCarouselSet(html, name);
       });
     }

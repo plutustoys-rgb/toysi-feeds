@@ -177,13 +177,25 @@ def header():
       '</header>'
     )
 
+SEARCH_POPULAR = []   # [(назва, файл)] популярних категорій для порожнього стану пошуку; заповнює build() до запису сторінок
+
+
+def search_empty_html():
+    """Порожній стан пошуку (власник 13.10, тестувальник #16: екран із одним словом «Готово» виглядав як «сторінка не завантажилась»): підказка + популярні категорії + «Усі іграшки»."""
+    pills = "".join(f'<a class="sr-pill" href="{esc(u)}">{esc(t)}</a>' for t, u in SEARCH_POPULAR)
+    return ('<div class="sr-empty"><p class="sr-hint">Почніть вводити назву іграшки (від 2 літер) або оберіть категорію:</p>'
+            + (f'<div class="sr-pills">{pills}</div>' if pills else "")
+            + '<p class="sr-all"><a href="catalog.html">Усі іграшки →</a></p></div>')
+
+
 def search_overlay():
     return (
-      '<div class="overlay" id="search-overlay">'
+      '<div class="overlay" id="search-overlay" role="dialog" aria-label="Пошук">'
       '<div class="obar">'
         '<input type="search" placeholder="Що шукаємо?" aria-label="Пошук">'
         '<button class="x" id="close-search">Готово</button>'
-      '</div><div class="results"></div></div>'
+      '</div><div class="results"></div>'
+      f'<template id="search-empty">{search_empty_html()}</template></div>'
     )
 
 FOOTER_LINKS = [
@@ -465,6 +477,7 @@ def build():
         else:
             _used[base] = 1
             cat_slug[c] = base
+    SEARCH_POPULAR[:] = [(c, f"category-{cat_slug[c]}.html") for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:8]
 
     # крос-сел як ДОПОВНЕННЯ (add-on), НЕ замінник: до 4 ДЕШЕВШИХ товарів з ІНШОЇ
     # категорії. Стара логіка брала ту саму категорію за близькою ціною → на картці

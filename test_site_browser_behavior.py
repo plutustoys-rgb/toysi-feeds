@@ -153,7 +153,7 @@ with sync_playwright() as p:
         chips = pg.evaluate("[...document.querySelectorAll('#home-chips button')].map(b=>b.dataset.set)")
         chk(f"{w}px: чипи Усі, u300, m700, nab", chips == ["all", "u300", "m700", "nab"])
         base_state = state()
-        chk(f"{w}px: початково банер + 10 оригіналів + 20 клонів (31 дитина)", base_state[0] == 31 and base_state[1] == 20)
+        chk(f"{w}px: початково 10 оригіналів + 20 клонів (30 дітей, банера нема)", base_state[0] == 30 and base_state[1] == 20)
         seen = {}
         for key in ("u300", "m700", "nab"):
             before = len(ev())
@@ -168,20 +168,20 @@ with sync_playwright() as p:
         pg.click("#home-chips button[data-set=nab]")
         pg.wait_for_timeout(200)
         chk(f"{w}px: повторний клік по активному чипу — без події й без зміни", len(ev()) == before)
-        pg.evaluate("document.querySelector('#home-car .track a.card:not(.banner):not([data-clone])').click()")
+        pg.evaluate("document.querySelector('#home-car .track a.card:not([data-clone])').click()")
         pg.wait_for_timeout(200)
         sel = [e for e in ev() if e[0] == "select_item"]
         chk(f"{w}px: select_item у наборі «Набори» несе item_list_id/name home_chip_nab", sel and sel[-1][1] == "home_chip_nab" and sel[-1][2] == "home_chip_nab")
         pg.click("#home-chips button[data-set=all]")
         pg.wait_for_timeout(250)
-        pg.evaluate("document.querySelector('#home-car .track a.card:not(.banner):not([data-clone])').click()")
+        pg.evaluate("document.querySelector('#home-car .track a.card:not([data-clone])').click()")
         pg.wait_for_timeout(200)
         sel = [e for e in ev() if e[0] == "select_item"]
         chk(f"{w}px: після повернення на «Усі» select_item знову home_pick / «Добірка Плутуса»", sel[-1][1] == "home_pick" and sel[-1][2] == "Добірка Плутуса")
         for i in range(60):
             pg.evaluate(f"document.querySelector('#home-chips button[data-set={['u300','m700','nab','all'][i % 4]}]').click()")
         pg.wait_for_timeout(300)
-        chk(f"{w}px: після 60 перемикань клонів рівно 20, помилок консолі 0", state()[:2] == [31, 20] and errs == [])
+        chk(f"{w}px: після 60 перемикань клонів рівно 20, помилок консолі 0", state()[:2] == [30, 20] and errs == [])
         ctx.close()
 
     # ── карусель поза вікном (короткий екран): чип натиснули до появи каруселі — view_item_list один раз; чипи на 320 px переносяться ──

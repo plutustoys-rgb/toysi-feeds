@@ -107,16 +107,38 @@
     fetch("index.json").then(function(r){return r.json();}).then(function(d){ idx=d; idxLoading=false; cb(idx); })
       .catch(function(){ idxLoading=false; });
   }
+  // Оверлей пошуку кладе свій запис в історію (тестувальник #16: «Назад» виводив із САЙТУ): відкриття = pushState, «Назад» (popstate) / Escape / клік по фону / «Готово» закривають оверлей і лишають на сторінці.
+  var searchPushed=false, searchLeaveHref=null;
+  function searchEmptyHtml(){ var t=document.getElementById("search-empty"); return t ? t.innerHTML : ""; }
   function openSearch(){
     var o=document.getElementById("search-overlay");
     if(!o) return;
+    var wasOn=o.classList.contains("on");
     o.classList.add("on");
+    if(!wasOn){ try{ history.pushState({ptSearch:1}, "", location.href); searchPushed=true; }catch(e){ searchPushed=false; } }
     var inp=o.querySelector("input");
     inp.value=""; inp.focus();
-    o.querySelector(".results").innerHTML="";
+    o.querySelector(".results").innerHTML=searchEmptyHtml();
     ensureIndex(function(){});
   }
-  function closeSearch(){ var o=document.getElementById("search-overlay"); if(o){ o.classList.remove("on"); } }
+  function closeSearch(fromPop){
+    var o=document.getElementById("search-overlay");
+    if(!o || !o.classList.contains("on")) return;
+    o.classList.remove("on");
+    if(searchPushed && fromPop!==true){ searchPushed=false; try{ history.back(); }catch(e){} }   // прибираємо власний запис; при «Назад» (popstate) браузер уже зняв його
+    searchPushed=false;
+  }
+  if(typeof window!=="undefined" && typeof window.addEventListener==="function"){
+    window.addEventListener("popstate", function(){
+      closeSearch(true);
+      if(searchLeaveHref){ var h=searchLeaveHref; searchLeaveHref=null; location.href=h; }
+    });
+  }
+  if(typeof document!=="undefined" && typeof document.addEventListener==="function"){
+    document.addEventListener("keydown", function(e){
+      if(e.key==="Escape" || e.key==="Esc"){ var o=document.getElementById("search-overlay"); if(o && o.classList.contains("on")){ e.preventDefault(); closeSearch(); } }
+    });
+  }
   // ── Пошук (зауваження Тестувальника/Консультанта 10.10.2026): токени через AND у БУДЬ-ЯКОМУ порядку (було: літеральний підрядок —
   // «лялька барбі» давало 0); апострофи U+02BC/U+2019/U+2018/U+0027/U+0060 прибираються з ОБОХ боків («мʼяка»=«м'яка»=«мяка»);
   // показуємо «Показано N з M» і сортування (раніше мовчазна стеля 40 за порядком файлу).
@@ -207,9 +229,9 @@
     var res=document.querySelector("#search-overlay .results");
     if(!res) return;
     q=(q||"").trim();
-    if(q.length<2){ res.innerHTML=""; lastMatches=[]; return; }
+    if(q.length<2){ res.innerHTML=searchEmptyHtml(); lastMatches=[]; return; }
     var toks=searchTokens(q);
-    if(!toks.length){ res.innerHTML=""; lastMatches=[]; return; }   // запит лише з апострофів/розділових → не показуємо «весь каталог»
+    if(!toks.length){ res.innerHTML=searchEmptyHtml(); lastMatches=[]; return; }   // запит лише з апострофів/розділових → не показуємо «весь каталог»
     ensureIndex(function(data){
       var all=[];
       for(var i=0;i<data.length;i++){
@@ -538,6 +560,18 @@
       if(t){ e.preventDefault(); PT.add(JSON.parse(t.getAttribute("data-add")), t.getAttribute("data-list")||""); if(document.getElementById("cart-body")) renderCart(); return; }
       if(e.target.closest("#open-search")){ e.preventDefault(); openSearch(); return; }
       if(e.target.closest("#close-search")){ e.preventDefault(); closeSearch(); return; }
+      var ov=document.getElementById("search-overlay");
+      if(ov && ov.classList.contains("on")){
+        var rs=ov.querySelector(".results");
+        if(e.target===ov || e.target===ov.querySelector(".obar") || (e.target===rs && !rs.querySelector(".sr"))){ closeSearch(); return; }   // клік по фону (порожній екран/смуга)
+        var lk=e.target.closest("#search-overlay a[href]");
+        if(lk && searchPushed && !(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.button)){
+          // перехід із пошуку: спершу знімаємо свій запис, потім переходимо — інакше «Назад» зі сторінки товару повертав би на сторінку з порожнім записом (подвійний «Назад»)
+          e.preventDefault(); searchLeaveHref=lk.getAttribute("href"); closeSearch();
+          var hh=searchLeaveHref; setTimeout(function(){ if(searchLeaveHref===hh){ searchLeaveHref=null; location.href=hh; } }, 400);
+          return;
+        }
+      }
       var sb=e.target.closest("#search-overlay [data-sort]");
       if(sb){ e.preventDefault(); searchSort=sb.getAttribute("data-sort"); renderSearch(); return; }
       var sf=e.target.closest("[data-act=stock-fix]");

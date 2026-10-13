@@ -416,3 +416,9 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .stock-now{margin:10px 0;border-color:#e8b4a8;background:#fff1ee;color:#7a1f10}
 .ci-stock{margin-top:4px;color:#b3261e;font-size:13px;font-weight:700}
 #checkout-msg button{margin-top:8px}
+.sr-empty{padding:18px 0}
+.sr-hint{margin:0 0 12px;color:var(--muted);font-size:15px}
+.sr-pills{display:flex;flex-wrap:wrap;gap:8px}
+.sr-pill{display:inline-block;padding:9px 14px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--text);font-size:14px;text-decoration:none}
+.sr-all{margin:16px 0 0}
+.sr-all a{color:var(--accent);font-weight:600}

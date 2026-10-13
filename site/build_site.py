@@ -1400,6 +1400,7 @@ CHIP_ICONS = {
 HOME_SEASONAL_MIN = 6
 # «Популярне зараз» — чип за ПОПИТОМ Google (власник 13.10: «чому не маркетинг за попитом»): список id від SEO у site/demand_featured.json
 # {"date": "YYYY-MM-DD", "source": "Search Console 28d", "ids": ["..."], "categories": ["..."]}. Нема файлу / застарів (> DEMAND_MAX_AGE_DAYS) / менше DEMAND_MIN карток у наявності — чипа нема (не вигадуємо).
+# Файл site/demand_featured.json від SEO: ПОТОЧНА версія date=2026-10-13 (Search Console, покази за 90 днів, 40 id; SEO оновлює щотижня; журнал змін і вимірів — SEO_ЖУРНАЛ_ЗМІН_І_ВИМІРІВ.md). Зрушення метрик відносити до дати зміни цього файлу (прохання SEO).
 DEMAND_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demand_featured.json")
 DEMAND_MAX_IDS = 40
 DEMAND_MAX_AGE_DAYS = 21

@@ -1,0 +1,12 @@
+[Unit]
+Description=PlutusToys: історія цін сайту (з якої дати ціна не мінялась) для «Знижки тижня» — site_sale.py history
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Читає site/index.json, пише приватний site_price_history.json поруч із кодом (не в DocumentRoot).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_sale.py history
+TimeoutStartSec=120
+Nice=10

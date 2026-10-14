@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: набір «Знижки тижня −15%» на наступний тиждень — site_sale.py plan
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Тягне каталог Toysi (~70 МБ), пише site/sale_week.json (публічний: id, стара й нова ціна, дати; без собівартості) і приватний site_sale_picks.json.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_sale.py plan
+TimeoutStartSec=600
+Nice=10

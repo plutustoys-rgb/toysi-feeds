@@ -1,0 +1,9 @@
+[Unit]
+Description=PlutusToys: щонеділі 18:00 складаємо набір «Знижки тижня» на наступні пн–нд (рішення власника 14.10.2026)
+
+[Timer]
+OnCalendar=Sun *-*-* 18:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

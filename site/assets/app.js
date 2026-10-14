@@ -228,7 +228,7 @@
     res.innerHTML = meta + out.map(function(p){
       return '<a class="sr" href="product-'+p.id+'.html">'+
         '<img src="'+p.p+'" loading="lazy" alt="">'+
-        '<div><div class="srn">'+esc(p.n)+'</div><div class="srp">'+p.pr+' ₴</div></div></a>';
+        '<div><div class="srn">'+esc(p.n)+'</div><div class="srp">'+p.pr+' ₴'+(p.op ? ' <s class="pr-old">'+p.op+' ₴</s>' : '')+'</div></div></a>';
     }).join("");
   }
   function runSearch(q){
@@ -637,6 +637,7 @@
     initNaboryChips();
     initMascot();
     initContactTracking();
+    initSaleTimer();
 
     // сторінка подяки — підставити номер замовлення
     var oidEl=document.getElementById("thanks-oid");
@@ -843,7 +844,7 @@
   }
   // ── Посадкова /ig.html: сітка карток з item_list_name «ig_landing» — view_item_list один раз (коли сітка видна), select_item лише на клік ──
   function initListTracking(){
-    var box=document.getElementById("ig-list") || document.getElementById("nabory-list");   // /ig.html («ig_landing») і /nabory.html («nabory_page»)
+    var box=document.getElementById("ig-list") || document.getElementById("nabory-list") || document.getElementById("sale-list");   // /ig.html («ig_landing») і /nabory.html («nabory_page»)
     if(!box) return;
     var listName=box.getAttribute("data-list")||"ig_landing";
     var cards=Array.prototype.slice.call(box.querySelectorAll("a.card"));
@@ -978,6 +979,22 @@
     });
   }
 
+  // ── Знижка тижня: зворотний відлік «залишилось …» до кінця акції (дата з site/sale_week.json через data-sale-until; без JS лишається статичний підпис «до неділі 23:59») ──
+  function initSaleTimer(){
+    var els=document.querySelectorAll("[data-sale-until]");
+    if(!els.length) return;
+    function pad(n){ return (n<10?"0":"")+n; }
+    function tick(){
+      Array.prototype.forEach.call(els, function(el){
+        var end=Date.parse(el.getAttribute("data-sale-until")||""); if(!isFinite(end)) return;
+        var ms=end-Date.now();
+        if(ms<=0){ el.textContent="акцію завершено"; return; }
+        var d=Math.floor(ms/86400000), h=Math.floor(ms%86400000/3600000), m=Math.floor(ms%3600000/60000);
+        el.textContent="залишилось "+(d>0 ? d+" д " : "")+h+" год "+pad(m)+" хв";
+      });
+    }
+    tick(); setInterval(tick, 30000);
+  }
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";
   var cityListShown = false;   // довідник міст відповів непорожнім списком для поточного тексту

@@ -439,3 +439,17 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .promo-card .btn{width:auto;padding:10px 18px}
 .ret-line{margin:8px 0;font-size:14px;line-height:1.4;color:#4b3b30}
 .ret-cart{margin:12px 0 0}
+/* Знижка тижня (власник 14.10, «Червона наліпка» SMM): бейдж −N%, стара ціна перекреслена, нова червона, таймер, кнопка героя */
+.sale-badge{position:absolute;top:8px;left:8px;z-index:1;background:#D93A3A;color:#fff;border:2px solid #7A1313;border-radius:8px;padding:2px 8px;font-size:12.5px;font-weight:800;line-height:1.35;box-shadow:2px 2px 0 #7A1313;pointer-events:none}
+.card .pr-sale,.price.sale-price{color:#D93A3A;font-weight:800}
+.pr-old{margin-left:6px;color:#6b5b50;font-size:.82em;font-weight:500;text-decoration:line-through}
+.price-row .pr-old{font-size:18px;align-self:center}
+.price-row .sale-badge{position:static;align-self:center;margin-left:8px}
+.sale-until{margin:6px 0 10px;padding:8px 12px;background:#fff1ee;border:2px solid #D93A3A;border-radius:12px;color:#7a1313;font-size:15px}
+.sale-until b{font-weight:800}
+.sale-left{font-weight:700}
+.sale-lead{margin:0 0 10px;color:var(--muted)}
+.hero2 .btn.btn-sale{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:#D93A3A;color:#fff;border:2px solid #7A1313;box-shadow:3px 3px 0 #7A1313;font-weight:800;transform:rotate(-1.5deg);transition:transform .18s ease}
+.hero2 .btn.btn-sale:hover,.hero2 .btn.btn-sale:focus-visible{transform:rotate(0deg)}
+.hero2 .btn.btn-sale .btn-ico{flex:none}
+.card .ph .sale-badge{left:auto;right:8px}

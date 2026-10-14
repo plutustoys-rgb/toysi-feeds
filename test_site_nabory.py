@@ -98,7 +98,7 @@ chk("герой: мобільний рядок обгорнутий (flex-wrap),
 
 # герой головної
 src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
-chk("герой: кнопка «Акції» (aktsii.html), під нею «Усі іграшки» → catalog.html; «Набори» з героя прибрано (дубль із чипом)", '<a class="btn" href="aktsii.html">Акції</a><a class="hero-all" href="catalog.html">Усі іграшки</a>' in src and "Обрати іграшку" not in src and "Набори в подарунок</a><a class=\"hero-all\"" not in src)
+chk("герой: червона кнопка «Акції» (btn-sale → aktsii.html, лише під час акції), під нею «Усі іграшки» → catalog.html; «Набори» з героя прибрано (дубль із чипом)", 'class="btn btn-sale" href="aktsii.html"' in src and '<a class="hero-all" href="catalog.html">Усі іграшки</a>' in src and "Обрати іграшку" not in src and "Набори в подарунок</a><a class=\"hero-all\"" not in src)
 chk("sitemap: nabory.html додається лише коли сторінка записана", '[("nabory.html", "0.7", "weekly")] if has_nabory else []' in src and "has_nabory = write_nabory(prods)" in src)
 
 # node: аналітика й чипи

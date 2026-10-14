@@ -36,7 +36,7 @@ NS = {"g": "http://base.google.com/ns/1.0"}
 tmp = Path(tempfile.mkdtemp())
 sale_path = tmp / "sale_week.json"
 FROM, UNTIL = "2026-10-26T00:00:00+02:00", "2026-11-01T23:59:59+02:00"
-sale_path.write_text(json.dumps({"week": "2026-W44", "pct": 15, "from": FROM, "until": UNTIL, "items": {"1001": {"old": 400, "new": 340}, "1002": {"old": 100, "new": 100}, "1003": {"old": 50, "new": 60}}}), encoding="utf-8")
+sale_path.write_text(json.dumps({"weeks": [{"week": "2026-W44", "pct": 15, "from": FROM, "until": UNTIL, "items": {"1001": {"old": 400, "new": 340}, "1002": {"old": 100, "new": 100}, "1003": {"old": 50, "new": 60}}}]}), encoding="utf-8")
 DATES = "2026-10-26T00:00+0200/2026-11-01T23:59+0200"
 
 before_start = datetime.fromisoformat("2026-10-25T20:00:00+02:00")
@@ -51,9 +51,20 @@ bad = tmp / "bad.json"
 bad.write_text("не json", encoding="utf-8")
 chk("зіпсований файл → {}", ss.load_feed_sale(path=bad) == {})
 nz = tmp / "nz.json"
-nz.write_text(json.dumps({"from": "2026-10-26T00:00:00", "until": "2026-11-01T23:59:59", "items": {"1": {"old": 10, "new": 5}}}), encoding="utf-8")
+nz.write_text(json.dumps({"weeks": [{"from": "2026-10-26T00:00:00", "until": "2026-11-01T23:59:59", "items": {"1": {"old": 10, "new": 5}}}]}), encoding="utf-8")
 chk("дати без пояса (наївні) → {} (двозначно, не публікуємо)", ss.load_feed_sale(now=datetime.fromisoformat("2026-10-25T20:00:00+02:00"), path=nz) == {})
-chk("ключ items відсутній / нечислові ціни → {} без винятку", ss.load_feed_sale(now=before_start, path=(lambda p: (p.write_text(json.dumps({"from": FROM, "until": UNTIL, "items": {"1": {"old": "x"}}}), encoding="utf-8"), p)[1])(tmp / "x.json")) == {})
+chk("ключ items відсутній / нечислові ціни → {} без винятку", ss.load_feed_sale(now=before_start, path=(lambda p: (p.write_text(json.dumps({"weeks": [{"from": FROM, "until": UNTIL, "items": {"1": {"old": "x"}}}]}), encoding="utf-8"), p)[1])(tmp / "x.json")) == {})
+# два тижні: чинний + наступний; id беруться з обох; плоский (старий) формат теж читається
+two = tmp / "two.json"
+W2F, W2U = "2026-11-02T00:00:00+02:00", "2026-11-08T23:59:59+02:00"
+two.write_text(json.dumps({"weeks": [{"week": "2026-W44", "from": FROM, "until": UNTIL, "items": {"1001": {"old": 400, "new": 340}}}, {"week": "2026-W45", "from": W2F, "until": W2U, "items": {"2002": {"old": 200, "new": 170}}}]}), encoding="utf-8")
+mm = ss.load_feed_sale(now=datetime.fromisoformat("2026-10-31T18:30:00+02:00"), path=two)
+chk("два тижні: у мапі id обох тижнів, кожен зі СВОЇМИ датами", set(mm) == {"1001", "2002"} and mm["1001"]["dates"] == DATES and mm["2002"]["dates"].startswith("2026-11-02T00:00+0200/2026-11-08T23:59+0200"))
+mm2 = ss.load_feed_sale(now=datetime.fromisoformat("2026-11-03T12:00:00+02:00"), path=two)
+chk("коли перший тиждень минув, лишається лише другий", set(mm2) == {"2002"})
+flatp = tmp / "flat.json"
+flatp.write_text(json.dumps({"week": "2026-W44", "from": FROM, "until": UNTIL, "items": {"1001": {"old": 400, "new": 340}}}), encoding="utf-8")
+chk("плоский (старий) формат читається як один тиждень", set(ss.load_feed_sale(now=before_start, path=flatp)) == {"1001"})
 
 
 def item(pid, price=200.0):

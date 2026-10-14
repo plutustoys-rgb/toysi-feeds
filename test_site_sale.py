@@ -123,15 +123,31 @@ chk("plan: набір 10, вікно пн 26.10 +02:00 … нд 01.11, файл 
 few_hist = {k: v for k, v in list(history.items())[:5]}
 sale2, rep2 = ss.plan(at(2026, 10, 25, 18), index, catalog, few_hist, set(), set())
 chk("менше 8 придатних → None", sale2 is None and rep2["chosen"] < ss.N_MIN)
+# плоский (старий) формат файлу читається як один тиждень
+flat = tmpd / "flat.json"
+flat.write_text(json.dumps({"week": "2026-W44", "from": "2026-10-26T00:00:00+02:00", "until": "2026-11-01T23:59:59+02:00", "items": {"1": {"old": 100, "new": 85}}}), encoding="utf-8")
+chk("_read_weeks: плоский формат → 1 тиждень; прострочений → []", len(ss._read_weeks(flat, at(2026, 10, 28))) == 1 and ss._read_weeks(flat, at(2026, 11, 3)) == [])
 
 (tmpd / "index.json").write_text(json.dumps(index), encoding="utf-8")
 Path(os.environ["SITE_PRICE_HISTORY_FILE"]).write_text(json.dumps(history), encoding="utf-8")
 (tmpd / "demand_featured.json").write_text(json.dumps({"ids": list(demand)}), encoding="utf-8")
 rc = ss.cmd_plan(now=at(2026, 10, 25, 18), catalog=catalog)
-written = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
+doc = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
 picks = json.loads((tmpd / "picks.json").read_text(encoding="utf-8"))
-chk("cmd_plan: файл sale_week.json записано, picks.json містить id і маржі (приватно), без .tmp", rc == 0 and len(written["items"]) == 10 and picks[-1]["ids"] and picks[-1]["margins"] and not list(tmpd.glob("*.tmp")))
-chk("наступний тиждень: ті самі товари не повторюються (last_ids із picks.json)", (ss.cmd_plan(now=at(2026, 11, 1, 18), catalog=catalog) == 0) and not (set(json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["items"]) & set(written["items"])))
+written = doc["weeks"][-1]
+chk("cmd_plan: файл sale_week.json = {weeks:[1 тиждень]}, picks.json містить id і маржі (приватно), без .tmp", rc == 0 and len(doc["weeks"]) == 1 and len(written["items"]) == 10 and picks[-1]["ids"] and picks[-1]["margins"] and not list(tmpd.glob("*.tmp")))
+doc_a = (tmpd / "sale_week.json").read_text(encoding="utf-8")
+rc = ss.cmd_plan(now=at(2026, 10, 25, 19), catalog=catalog)
+doc_b = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
+picks_b = json.loads((tmpd / "picks.json").read_text(encoding="utf-8"))
+chk("повторний запуск того ж тижня: той самий набір (не перетасовано), без дубля в picks, у файлі той самий 1 тиждень", rc == 0 and len(doc_b["weeks"]) == 1 and doc_b["weeks"][0]["items"] == written["items"] and len(picks_b) == 1)
+rc = ss.cmd_plan(now=at(2026, 11, 1, 18), catalog=catalog)
+doc2 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
+chk("наступна неділя 18:00: у файлі ДВА тижні — чинний (until 01.11 23:59 ще не минув) + новий; чинну акцію не знято", rc == 0 and [w["week"] for w in doc2["weeks"]] == ["2026-W44", "2026-W45"])
+chk("новий тиждень не повторює товари минулого (last_ids із picks.json)", not (set(doc2["weeks"][1]["items"]) & set(doc2["weeks"][0]["items"])))
+rc = ss.cmd_plan(now=at(2026, 11, 8, 18), catalog=catalog)
+doc3 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
+chk("через тиждень: прострочений W44 прибраний, лишилось W45 + W46 (≤2 тижні)", rc == 0 and [w["week"] for w in doc3["weeks"]] == ["2026-W45", "2026-W46"])
 old_file = (tmpd / "sale_week.json").read_text(encoding="utf-8")
 alerts.clear()
 young = {k: {"price": v["price"], "since": (at(2026, 11, 8, 18) - timedelta(days=3)).isoformat()} for k, v in history.items()}
@@ -142,6 +158,12 @@ alerts.clear()
 Path(os.environ["SITE_PRICE_HISTORY_FILE"]).write_text(json.dumps(few_hist), encoding="utf-8")
 rc = ss.cmd_plan(now=at(2026, 11, 8, 18), catalog=catalog)
 chk("мало кандидатів: код 1, алерт, попередній sale_week.json НЕ перезаписано", rc == 1 and "site_sale_few" in alerts and (tmpd / "sale_week.json").read_text(encoding="utf-8") == old_file)
+
+# зіпсований файл історії → алерт, а не мовчазний перезапуск відліку
+alerts.clear()
+Path(os.environ["SITE_PRICE_HISTORY_FILE"]).write_text("{не json", encoding="utf-8")
+rc = ss.cmd_plan(now=at(2026, 11, 15, 18), catalog=catalog)
+chk("файл історії існує, але зіпсований → код 1 і алерт site_sale_history_lost", rc == 1 and "site_sale_history_lost" in alerts)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -35,6 +35,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import site_sale
 from parser import fetch_toysi_catalog
 from prom_catalog_sync import fetch_prom_products
 from competitor_pricing import load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices
@@ -91,6 +92,7 @@ def _build_xml(items: list) -> ET.Element:
         ET.SubElement(entry, "link").text = it["link"]
         ET.SubElement(entry, f"{{{NS}}}image_link").text = it["image_link"]
         ET.SubElement(entry, f"{{{NS}}}price").text = it["price"]
+        site_sale.add_sale_tags(entry, NS, it)
         ET.SubElement(entry, f"{{{NS}}}availability").text = _AVAILABILITY_MAP[it["availability"]]
         ET.SubElement(entry, f"{{{NS}}}condition").text = it["condition"]
         ET.SubElement(entry, f"{{{NS}}}brand").text = it["brand"]

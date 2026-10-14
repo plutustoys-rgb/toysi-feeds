@@ -228,6 +228,41 @@ def plan(now: datetime, index: list, catalog: dict, history: dict, demand_ids: s
     return sale, rep
 
 
+def _fmt_dt(iso: str) -> str:
+    """ISO → формат Google/Meta/Bing для sale_price_effective_date: 2026-10-26T00:00+0200."""
+    d = datetime.fromisoformat(iso)
+    return d.strftime("%Y-%m-%dT%H:%M%z")
+
+
+def load_feed_sale(now: datetime | None = None, path: Path | None = None) -> dict:
+    """{id: {"old": int, "new": int, "dates": "from/until"}} для фідів: файл акції ПОТОЧНОГО чи МАЙБУТНЬОГО тижня (until ще не минув). Нема файлу, він зіпсований, прострочений або без потрібних полів → {} (фід без акції, нічого не ламається).
+    Фід, згенерований ДО старту акції, вже містить майбутню sale_price з датами: Google вмикає й вимикає знижку точно за датою, без щілини між ребілдом сайту й фідом."""
+    now = now or datetime.now(KYIV)
+    try:
+        d = json.loads(Path(path or SALE_FILE).read_text(encoding="utf-8-sig"))
+        until = datetime.fromisoformat(d["until"])
+        start = datetime.fromisoformat(d["from"])
+        if until.tzinfo is None or start.tzinfo is None or until <= now:
+            return {}
+        dates = f"{_fmt_dt(d['from'])}/{_fmt_dt(d['until'])}"
+        out = {}
+        for pid, v in (d.get("items") or {}).items():
+            old, new = int(v["old"]), int(v["new"])
+            if 0 < new < old:
+                out[str(pid)] = {"old": old, "new": new, "dates": dates}
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def add_sale_tags(entry, ns: str, it: dict) -> None:
+    """Дописує g:sale_price і g:sale_price_effective_date в <item>, якщо позиція має акцію (спільне для Google/Meta/Bing)."""
+    import xml.etree.ElementTree as ET
+    if it.get("sale_price") and it.get("sale_dates"):
+        ET.SubElement(entry, f"{{{ns}}}sale_price").text = it["sale_price"]
+        ET.SubElement(entry, f"{{{ns}}}sale_price_effective_date").text = it["sale_dates"]
+
+
 def _alert(key: str, text: str) -> None:
     try:
         from telegram_notify import send_throttled_alert

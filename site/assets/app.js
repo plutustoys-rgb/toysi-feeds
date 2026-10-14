@@ -637,6 +637,7 @@
     initNaboryChips();
     initMascot();
     initContactTracking();
+    initChatMenu();
 
     // сторінка подяки — підставити номер замовлення
     var oidEl=document.getElementById("thanks-oid");
@@ -978,6 +979,19 @@
     });
   }
 
+  // ── Кнопка «Написати» (меню месенджерів у шапці, власник 14.10) ──
+  function initChatMenu(){
+    var btn=document.getElementById("chat-toggle"), menu=document.getElementById("chat-menu");
+    if(!btn || !menu) return;
+    function setOpen(on){ menu.hidden=!on; btn.setAttribute("aria-expanded", on ? "true" : "false"); }
+    btn.addEventListener("click", function(e){ e.stopPropagation(); setOpen(menu.hidden); });
+    document.addEventListener("click", function(e){
+      var it=e.target.closest ? e.target.closest("a.chat-item") : null;
+      if(it){ trackRaw("contact_click", {method:it.getAttribute("data-chat")||"chat", link_url:it.getAttribute("href")||"", page_path:location.pathname}, "Contact", {method:it.getAttribute("data-chat")||"chat"}, false); setOpen(false); return; }
+      if(!menu.hidden && !(e.target.closest && e.target.closest(".chatwrap"))) setOpen(false);
+    });
+    document.addEventListener("keydown", function(e){ if((e.key==="Escape" || e.key==="Esc") && !menu.hidden){ setOpen(false); btn.focus(); } });
+  }
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";
   var cityListShown = false;   // довідник міст відповів непорожнім списком для поточного тексту

@@ -195,11 +195,12 @@ RETURN_LINE = "Повернення якісного товару — 14 дні�
 def search_overlay():
     return (
       '<div class="overlay" id="search-overlay" role="dialog" aria-label="Пошук">'
+      '<div class="sp">'
       '<div class="obar">'
         '<input type="search" placeholder="Що шукаємо?" aria-label="Пошук">'
         '<button class="x" id="close-search">Готово</button>'
       '</div><div class="results"></div>'
-      f'<template id="search-empty">{search_empty_html()}</template></div>'
+      f'<template id="search-empty">{search_empty_html()}</template></div></div>'
     )
 
 FOOTER_LINKS = [
@@ -1129,7 +1130,7 @@ def utsinka_pick(prods):
     """Сторінка /utsinka.html (SMM/власник 13.10): УСІ уцінені товари (категорія «Уцінка/Уценка» або «Уцінка.» в назві) у наявності, з фото і ВІДОМИМ внеском ≥ 0
     (збиткові на замовлення позиції не показуємо: власник — збитковість не планувалась); не репліки зброї. Сортування: ціна зростаюче (усі в наявності)."""
     out = [p for p in prods if _is_markdown_item(p) and p.get("photo") and (p.get("stock") or 0) > 0
-           and p.get("contribution") is not None and p["contribution"] >= 0 and not is_weapon_replica(str(p["id"]), p["name"])]
+           and p.get("contribution") is not None and p["contribution"] >= 0 and not is_home_excluded(p)]
     return sorted(out, key=lambda p: (p["price"], str(p["id"])))
 
 
@@ -1306,26 +1307,71 @@ def _pick_key(name):
     return " ".join(words[:2]) or n.strip()
 
 
-def _today():
-    """Сьогодні за Києвом (UTC+3); env SITE_PICK_DATE=YYYY-MM-DD — для тестів і відтворення (той самий, що для ротації добірки)."""
+def _eu_dst_hours(now_utc):
+    """Київ без бази часових поясів: UTC+3 влітку (остання неділя березня 01:00 UTC … остання неділя жовтня 01:00 UTC), UTC+2 взимку."""
+    def last_sunday(y, m):
+        d = (datetime(y, m + 1, 1, tzinfo=timezone.utc) - timedelta(days=1))
+        return d - timedelta(days=(d.weekday() + 1) % 7)
+    y = now_utc.year
+    start = last_sunday(y, 3).replace(hour=1)
+    end = last_sunday(y, 10).replace(hour=1)
+    return 3 if start <= now_utc < end else 2
+
+
+def _kyiv_now():
+    """Зараз за Києвом: Europe/Kyiv (зимовий час UTC+2 з 25.10, літній UTC+3), а якщо бази часових поясів нема (Windows без tzdata) — правило ЄС вручну (аудит 13.10: жорсткий UTC+3 зсував межі доби на годину взимку)."""
+    now = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now.astimezone(ZoneInfo("Europe/Kyiv"))
+    except Exception:  # noqa: BLE001 — немає tzdata
+        return now + timedelta(hours=_eu_dst_hours(now))
+
+
+def _env_pick_date():
     raw = os.environ.get("SITE_PICK_DATE", "").strip()
     if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", raw):
-        y, m, d = (int(x) for x in raw.split("-"))
-        return datetime(y, m, d).date()
-    return (datetime.now(timezone.utc) + timedelta(hours=3)).date()
+        try:
+            y, m, d = (int(x) for x in raw.split("-"))
+            return datetime(y, m, d).date()
+        except ValueError:
+            return None   # «2026-02-30», «0000-01-01»: сміття в тестовій змінній не валить збірку
+    return None
+
+
+def _today():
+    """Сьогодні за Києвом (з урахуванням зимового часу); env SITE_PICK_DATE=YYYY-MM-DD — для тестів і відтворення (той самий, що для ротації добірки)."""
+    return _env_pick_date() or _kyiv_now().date()
 
 
 def _pick_day():
-    """Номер дня для щоденної ротації добірки (власник 13.10: «в каруселі крутяться одні й ті самі товари»). Київ (UTC+3), env SITE_PICK_DATE=YYYY-MM-DD — для тестів/відтворення.
+    """Номер дня для щоденної ротації добірки (власник 13.10: «в каруселі крутяться одні й ті самі товари»). Київ, env SITE_PICK_DATE — лише для тестів.
     Добірка стабільна ПРОТЯГОМ доби (збірка кожні 2 год дає ту саму), а наступного дня — інша."""
-    raw = os.environ.get("SITE_PICK_DATE", "").strip()
-    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", raw):
-        y, m, d = (int(x) for x in raw.split("-"))
-        return datetime(y, m, d).toordinal()
-    return (datetime.now(timezone.utc) + timedelta(hours=3)).date().toordinal()
+    return _today().toordinal()
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None):
+# Єдина політика «без мілітарі/зброї/книжок» для ВСІХ вітрин головної (home_pick усіх чипів і «Усі», «Популярне зараз», /utsinka, /aktsii; аудит 13.10: фільтри були різні — у «Усі» проходили «Танк Т-34», «Солдатики», «Снайпер гвинтівка з м'якими кулями»)
+HOME_MILITARY_RE = re.compile(r"пістолет|зброя|зброї|військов|солдат|swat|бтр|автомат|гранат|армі|револьвер|рушниц|гвинтівк|кулемет|снайпер|дробовик|калаш|піхот|винищувач|\bтанк(?:и|а|у|ів|ом|ами|овий)?\b|\bппо\b|\bзсу\b", re.I)
+
+
+# Водні бластери/пістолети («Водний автомат», «водний бластер») — водні іграшки, не зброя (SMM 13.10): скрізь відсіяні, КРІМ чипа «Активні ігри» (water_ok=True); решта військових слів і реплік зброї діє й там
+HOME_WATER_RE = re.compile(r"водн|водян|бластер|water", re.I)
+HOME_MILITARY_NOWATER_RE = re.compile(HOME_MILITARY_RE.pattern.replace("пістолет|", "").replace("автомат|", ""), re.I)
+
+
+def is_home_water_toy(p) -> bool:
+    return bool(HOME_WATER_RE.search(p.get("name") or ""))
+
+
+def is_home_excluded(p, water_ok=False) -> bool:
+    cat = (p.get("category") or "").strip().lower()
+    name = p.get("name") or ""
+    if water_ok and HOME_WATER_RE.search(name):
+        return bool(HOME_MILITARY_NOWATER_RE.search(name) or is_weapon_replica(str(p["id"]), name))
+    return bool(cat in HOME_PICK_EXCLUDED_CATS or cat in NABORY_EXCLUDED_CATS or HOME_MILITARY_RE.search(name) or is_weapon_replica(str(p["id"]), name))
+
+
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None, water_ok=False):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1343,13 +1389,14 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
             continue
         if not (pmin <= p["price"] <= pmax):
             continue
-        if cat in HOME_PICK_EXCLUDED_CATS or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
+        water = water_ok and HOME_WATER_RE.search(name)   # водний бластер у чипі «Активні ігри» (SMM 13.10) — не зброя
+        if (cat in HOME_PICK_EXCLUDED_CATS and not water) or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
             continue
-        if is_weapon_replica(str(p["id"]), name):
-            continue
+        if is_home_excluded(p, water_ok=water_ok):
+            continue   # мілітарі/зброя/спецтехніка за назвою й категорією (єдина політика вітрин головної)
         if name_re is not None and not (name_re.search(name) or (alt_cat_re is not None and alt_cat_re.search(p.get("category") or ""))):
             continue   # тематичний набір (сезонні чипи): лише назви за ключовими словами
-        if bad_words and any(w in name.lower() for w in bad_words):
+        if bad_words and not water and any(w in name.lower() for w in bad_words):
             continue
         if bad_cat_re is not None and bad_cat_re.search(p.get("category") or ""):
             continue
@@ -1398,10 +1445,18 @@ HOME_SEASONAL = (
 CHIP_ICONS = {
     "hel": '<svg class="chip-ico ico-hel" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M12 5.2c.2-1.2.9-2 2-2.4" fill="none" stroke="#7BC043" stroke-width="2" stroke-linecap="round"/><ellipse cx="12" cy="14" rx="9" ry="7.6" fill="#FF7A1A"/><path d="M8 11.4l2 1.8-2.2.2zM16 11.4l-2 1.8 2.2.2zM8.6 16.4q3.4 2.6 6.8 0l-.8 1.7-1.4-.9-1.2 1-1.2-1-1.4.9z" fill="#1B1030"/></svg>',
     "ny": '<svg class="chip-ico ico-ny" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><g stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7"/><path d="M9.5 3.6L12 6l2.5-2.4M9.5 20.4L12 18l2.5 2.4" fill="none" stroke-width="1.6"/></g></svg>',
+    "pop": '<svg class="chip-ico ico-pop" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12.5 2c.6 3.6-2.8 4.8-4 8.2-.5 1.4-.2 2.7.5 3.7-1.7-.4-2.9-2-2.9-4 0 0-3 2.4-3 6.3A7.9 7.9 0 0 0 11.9 22 7.9 7.9 0 0 0 20 14.2c0-4.2-3.3-6.1-4.6-8.7-.6 1.2-.7 2.3-.6 3.2-1.8-1-3.1-3.4-2.3-6.7z"/></svg>',
+    "bday": '<svg class="chip-ico ico-bday" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><ellipse cx="12" cy="9" rx="5.6" ry="7" fill="currentColor"/><path fill="currentColor" d="M12 16.2l-2 2.6h4z"/><path d="M12 18.8c-1.2 1.3-1.2 2.6 0 3.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    "school": '<svg class="chip-ico ico-school" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M9 5.5V4.8A1.8 1.8 0 0 1 10.8 3h2.4A1.8 1.8 0 0 1 15 4.8v.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="4.5" y="5.5" width="15" height="16" rx="4" fill="currentColor"/><rect x="8" y="14" width="8" height="5" rx="1.6" fill="#fff" opacity=".55"/></svg>',
+    "duo": '<svg class="chip-ico ico-duo" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><rect x="3" y="3" width="11.5" height="11.5" rx="2.4" fill="currentColor"/><rect x="9.5" y="9.5" width="11.5" height="11.5" rx="2.4" fill="currentColor" stroke="#fff" stroke-width="1.6"/></svg>',
+    "quiet": '<svg class="chip-ico ico-quiet" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 14.8A8.5 8.5 0 0 1 9.2 4 8.6 8.6 0 1 0 20 14.8z"/></svg>',
+    "active": '<svg class="chip-ico ico-active" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M13.5 2L5 13.4h5.6L9.5 22 19 10.2h-5.7z"/></svg>',
+    "xmas": '<svg class="chip-ico ico-xmas" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 2l4.6 6.2h-2.6L18 13.6h-3l3.6 4.9H5.4L9 13.6H6L10 8.2H7.4z"/><rect x="10.6" y="18.4" width="2.8" height="3.6" rx=".6" fill="currentColor"/></svg>',
     "ukr": '<svg class="chip-ico ico-ukr" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><g fill="#FFD43B" stroke="#C99A00" stroke-width=".6"><ellipse cx="12" cy="4" rx="2" ry="3.2"/><ellipse cx="12" cy="20" rx="2" ry="3.2"/><ellipse cx="4" cy="12" rx="3.2" ry="2"/><ellipse cx="20" cy="12" rx="3.2" ry="2"/><ellipse cx="6.3" cy="6.3" rx="2" ry="3.2" transform="rotate(-45 6.3 6.3)"/><ellipse cx="17.7" cy="17.7" rx="2" ry="3.2" transform="rotate(-45 17.7 17.7)"/><ellipse cx="17.7" cy="6.3" rx="2" ry="3.2" transform="rotate(45 17.7 6.3)"/><ellipse cx="6.3" cy="17.7" rx="2" ry="3.2" transform="rotate(45 6.3 17.7)"/></g><circle cx="12" cy="12" r="4" fill="#5A3A12"/></svg>',
     "nab": '<svg class="chip-ico ico-nab" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M12 12c-4-5-9-3-8 0s6 2 8 0zm0 0c4-5 9-3 8 0s-6 2-8 0z" fill="#E04E39"/><path d="M12 12l-3 8M12 12l3 8" stroke="#E8B04A" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="12" r="2.2" fill="#E8B04A"/></svg>',
 }
 HOME_SEASONAL_MIN = 6
+CHIP_ICON_SALE = '<svg class="chip-ico ico-sale" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M3 12.2V4.6A1.6 1.6 0 0 1 4.6 3h7.6l8.4 8.4a1.6 1.6 0 0 1 0 2.3l-6.9 6.9a1.6 1.6 0 0 1-2.3 0z"/><circle cx="8" cy="8" r="1.7" fill="#fff"/></svg>'   # іконка чипа-посилання «Уцінка» (це не набір, ключа в CHIP_ICONS нема)
 # «Популярне зараз» — чип за ПОПИТОМ Google (власник 13.10: «чому не маркетинг за попитом»): список id від SEO у site/demand_featured.json
 # {"date": "YYYY-MM-DD", "source": "Search Console 28d", "ids": ["..."], "categories": ["..."]}. Нема файлу / застарів (> DEMAND_MAX_AGE_DAYS) / менше DEMAND_MIN карток у наявності — чипа нема (не вигадуємо).
 # Файл site/demand_featured.json від SEO: ПОТОЧНА версія date=2026-10-13 (Search Console, покази за 90 днів, 40 id; SEO оновлює щотижня; журнал змін і вимірів — SEO_ЖУРНАЛ_ЗМІН_І_ВИМІРІВ.md). Зрушення метрик відносити до дати зміни цього файлу (прохання SEO).
@@ -1472,8 +1527,10 @@ def demand_pick(prods, demand=None):
         name = p.get("name") or ""
         if _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name) or any(w in name.lower() for w in NABORY_BAD_WORDS):
             continue
-        if (p.get("category") or "").strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name):
-            continue   # не іграшки (косметика/побутова хімія, 13.10: «Green Pharmacy» у «Популярне зараз») і воєнна тематика (ППО/ЗСУ), манга/романи
+        if (p.get("category") or "").strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name) or HOME_SEASONAL_BAD_CAT.search(p.get("category") or "") or is_home_excluded(p):
+            continue   # не іграшки (косметика/побутова хімія, 13.10: «Green Pharmacy» у «Популярне зараз»), мілітарі/зброя (єдиний фільтр), книжки/манга
+        if any(_pick_key(q["name"]) == _pick_key(name) for q in ok):
+            continue   # одна «основа назви» — одна картка (кілька однакових Trefl-пазлів поспіль)
         ok.append(p)
     if len(ok) < DEMAND_MIN:
         return []
@@ -1486,8 +1543,8 @@ def demand_pick(prods, demand=None):
         head = top + rest[:HOME_PICK_COUNT - 4]
     return head[:HOME_PICK_COUNT]
 # SMM 13.10: з сезонних чипів прибрати книжки й мангу (категорія книг/манга/комікс/художн/літератур або «манга»/«роман» у назві), ключові слова лишаються (привид, відьм — доречні на іграшках).
-HOME_SEASONAL_BAD_CAT = re.compile(r"книг|манга|комікс|художн|літератур", re.I)
-HOME_SEASONAL_BAD_NAME = re.compile(r"манга|роман|молотов|\bппо\b|\bзсу\b", re.I)   # слова на межі слова: «ППО»/«ЗСУ» (воєнна тематика) відсіюємо, «гіппопотам» — ні
+HOME_SEASONAL_BAD_CAT = re.compile(r"книг|книж|манга|комікс|художн|літератур", re.I)
+HOME_SEASONAL_BAD_NAME = re.compile(r"манга|роман|молотов|pok[eé]mon|покемон|колекційн|\bппо\b|\bзсу\b", re.I)   # слова на межі слова: «ППО»/«ЗСУ» (воєнна тематика) відсіюємо, «гіппопотам» — ні
 HOME_SEASONAL_MIN_CONTRIB = 30.0
 
 
@@ -1503,12 +1560,12 @@ HOME_CHIP_EXCLUDED_CATS = frozenset({"клейонки, килимки і під
 # (або категорією alt_cat), власні межі ціни й внеску; не більше 2 з категорії (як у добірці), щоденна ротація; без мілітарі/зброї/книжок/манги, у наявності; менше HOME_SEASONAL_MIN — чипа нема.
 # (key, назва, підпис, regex назви, перший день, останній день, ціна від, ціна до, внесок від, regex категорії-альтернативи; чип ідуть ПЕРЕД «Популярне зараз», якщо є дати — «front»).
 HOME_THEMED = (
-    ("xmas", "До Різдва", "Різдвяний настрій", r"різдв|ялинк|янгол|вертеп|зірк|гірлянд|прикрас", (12, 1), (12, 25), 50, 700, 0.0, None),
-    ("bday", "День народження", "", r"набір|конструктор|лялька|м[ʼ'’]яка іграшка|подарунк", None, None, 150, 700, 50.0, None),
+    ("xmas", "До Різдва", "Різдвяний настрій", r"різдв|ялинк|янгол|вертеп|\bзірк[аиуі]\b|гірлянд|новорічн\w* прикрас|ялинков\w* прикрас", (12, 1), (12, 25), 50, 700, 0.0, None),
+    ("bday", "День народження", "", r"набір|конструктор|лялька|м[ʼ'’‘´`]?яка іграшка|подарунк", None, None, 150, 700, 50.0, None),
     ("school", "У садок і школу", "", r"рюкзак|пенал|канцел|фломастер|олівц|розмальов|пластилін|навчальн|картки|абетка|лічба", None, None, 100, 600, 30.0, None),
-    ("duo", "Для двох гравців", "", r"\bнастільна гра\b|\bкарткова гра\b|\bмафія\b|\bшахи\b|\bдоміно\b|\bлото\b|\bтвістер", None, None, 50, 600, 0.0, r"настільн"),
+    ("duo", "Для двох гравців", "", r"\bнастільна гра\b|\bкарткова гра\b|\bшахи\b|\bдоміно\b|\bлото\b|\bтвістер", None, None, 50, 600, 0.0, r"настільн"),
     ("quiet", "Тихі ігри", "", r"пазл|розмальов|пластилін|тісто|мозаїка|наліпк|бісер|малюв|творчість", None, None, 100, 600, 30.0, None),
-    ("active", "Активні ігри", "", r"м[ʼ'’]яч|скакалк|обруч|самокат|кегл|бадмінтон|боулінг|мильні бульбашки|літак|планер|санки|водний бластер", None, None, 50, 700, 0.0, None),
+    ("active", "Активні ігри", "", r"м[ʼ'’‘´`]?яч|скакалк|\bобруч(?:і|ів|ем)?\b(?!\s+для\s+волосся)|самокат|кегл|бадмінтон|боулінг|мильні бульбашки|літак|планер|санки|водний бластер", None, None, 50, 700, 0.0, None),
 )
 
 
@@ -1535,7 +1592,7 @@ def home_chip_sets(prods):
     for key, _label, _sub, rx, first, last, pmin, pmax, mc, alt in HOME_THEMED:
         if themed_active(first, last):
             pk = home_pick(prods, pmin=pmin, pmax=pmax, min_contrib=mc, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
-                           name_re=re.compile(rx, re.I), alt_cat_re=(re.compile(alt, re.I) if alt else None), bad_words=NABORY_BAD_WORDS,
+                           name_re=re.compile(rx, re.I), alt_cat_re=(re.compile(alt, re.I) if alt else None), water_ok=(key == "active"), bad_words=NABORY_BAD_WORDS,
                            bad_cat_re=HOME_SEASONAL_BAD_CAT, bad_name_re=HOME_SEASONAL_BAD_NAME)
             if len(pk) >= HOME_SEASONAL_MIN:
                 sets[key] = pk
@@ -1592,7 +1649,7 @@ def write_home(prods, cats, cat_list, cat_slug):
               '<div class="chips home-chips" id="home-chips" role="group" aria-label="Підбір іграшок">'
               '<button type="button" class="chip active" data-set="all" aria-pressed="true">Усі</button>'
               + "".join(f'<button type="button" class="chip{" chip-theme" if k in CHIP_ICONS else ""}" data-set="{k}" data-sub="{esc(sb)}" aria-pressed="false">{CHIP_ICONS.get(k, "")}<span>{esc(t)}</span></button>' for k, t, sb in home_chip_defs(chip_sets))
-              + ('<a class="chip chip-link" href="utsinka.html">Уцінка</a>' if utsinka_pick(prods) else "")   # чип-посилання (власник 13.10): сторінка, а не набір у каруселі
+              + (f'<a class="chip chip-theme chip-link chip-sale" href="utsinka.html">{CHIP_ICON_SALE}<span>Уцінка</span></a>' if utsinka_pick(prods) else "")   # чип-посилання (власник 13.10): сторінка, а не набір у каруселі
               + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p>'
               + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
         carousel = (

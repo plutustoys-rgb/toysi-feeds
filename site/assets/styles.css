@@ -220,8 +220,10 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .free-ship .note.free-ship-done{color:var(--success)}
 
 /* ── Пошуковий оверлей ── */
-.overlay{position:fixed;inset:0;background:var(--bg);z-index:50;display:none;flex-direction:column}
+/* Пошук — ПАНЕЛЬ під шапкою, а не окремий екран (власник 13.10: суцільний оверлей на весь сайт виглядав як «інша сторінка»): шапка лишається видимою, сторінка за панеллю затемнена; клік по затемненню закриває. Верх панелі (--sp-top) виставляє JS за нижнім краєм шапки. */
+.overlay{position:fixed;left:0;right:0;bottom:0;top:var(--sp-top,64px);background:rgba(30,20,10,.38);z-index:50;display:none;justify-content:center;align-items:flex-start}
 .overlay.on{display:flex}
+.overlay .sp{width:100%;max-width:760px;background:var(--bg);display:flex;flex-direction:column;max-height:calc(100dvh - var(--sp-top,64px) - 12px);border-radius:0 0 18px 18px;box-shadow:0 14px 34px rgba(30,20,10,.28);overflow:hidden}
 .overlay .obar{display:flex;gap:8px;padding:12px 16px;align-items:center}
 .overlay .obar input{flex:1;padding:11px 14px;border:1px solid var(--line);border-radius:12px;font-size:15px;background:var(--surface);color:var(--text)}
 .overlay .obar .x{background:none;border:0;font-size:15px;color:var(--accent);font-weight:600;cursor:pointer}
@@ -390,7 +392,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips{visibility:hidden}
 .home-chips.js{visibility:visible}
 .home-chips button.chip{cursor:pointer;font-family:inherit}
-@media(max-width:380px){.home-chips{flex-wrap:wrap;overflow:visible}}   /* 320–380 px: усі чипи видно, без прихованого горизонтального скролу (аудит 13.10) */
+/* 320–380 px: чипи — ОДИН рядок із горизонтальним скролом, як на 390 px (SMM 13.10 за ретро-аудитом: перенесення 11–12 чипів у 4–5 рядків з'їдало ≈270 px — перший екран без карток) */
 .home-chips + .chip-sub{margin:-4px 16px 8px;font-size:13px;color:var(--muted)}
 .home-chips + .chip-sub:empty{display:none}
 /* ══ Тематичні чипи й банери (SMM 13.10 бриф; власник: «креатив дизайну кнопки — 0») ══
@@ -401,6 +403,16 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips .chip.chip-theme.active{transform:rotate(0deg) scale(1.05);filter:saturate(1.15)}
 /* Активний чип видно ВСІМ (тестувальник #15: контур currentColor у світлих на темних чипів зливався зі сторінкою): темний контур + галочка */
 .home-chips a.chip{text-decoration:none;display:inline-flex;align-items:center;color:inherit}
+/* Оформлення решти чипів (SMM 13.10, макет chips_unique_design.jpg): статичні «наліпки» без анімацій, кожен зі своїм кольором, іконкою й формою (пігулка / прямокутник 14px / «ярлик» 10px 18px); нахил −1,5° → 0° на hover (базове правило chip-theme) */
+.home-chips .chip[data-set=pop]{background:#FFF0E6;color:#B3260E;border-color:#FF5A36;box-shadow:3px 3px 0 #FF5A36;border-radius:999px}
+.home-chips .chip[data-set=bday]{background:#FFE3F1;color:#8A1C57;border-color:#E8449A;box-shadow:3px 3px 0 #E8449A;border-radius:14px}
+.home-chips .chip[data-set=school]{background:#E3F0FF;color:#174B94;border-color:#2F7DE1;box-shadow:3px 3px 0 #2F7DE1;border-radius:10px 18px}
+.home-chips .chip[data-set=duo]{background:#E5F7EA;color:#17693A;border-color:#2FA35A;box-shadow:3px 3px 0 #2FA35A;border-radius:999px}
+.home-chips .chip[data-set=quiet]{background:#EFE6FF;color:#4B2A99;border-color:#7C4DDB;box-shadow:3px 3px 0 #7C4DDB;border-radius:14px}
+.home-chips .chip[data-set=active]{background:#FFF1CF;color:#8A4B00;border-color:#F59E0B;box-shadow:3px 3px 0 #F59E0B;border-radius:10px 18px}
+.home-chips a.chip.chip-sale{background:#EEE9E4;color:#3A2E27;border-color:#6B5B50;box-shadow:3px 3px 0 #6B5B50;border-radius:999px}
+.home-chips .chip[data-set=xmas]{background:#123F2C;color:#FFFFFF;border-color:#D93A3A;box-shadow:3px 3px 0 #D93A3A;border-radius:14px}
+.home-chips .chip.chip-theme .chip-ico{flex:none;width:18px;height:18px}
 .home-chips .chip.active{outline:3px solid #222;outline-offset:2px}
 .home-chips .chip.active::before{content:"✓";font-weight:900;margin-right:2px}
 /* Хелловін */

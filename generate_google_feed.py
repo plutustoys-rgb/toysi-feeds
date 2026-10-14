@@ -77,6 +77,7 @@ from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides
                                 PAYMENT_COMMISSION, SITE_FULFILL_PER_ORDER)
 
 from trademark_filter import is_uno_trademark_blocked
+from feed_title_norm import normalize_title
 import site_sale
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
@@ -957,7 +958,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         items.append({
             "pid": str(pid),   # id каталогу Toysi (ключ російського тексту); у XML не пишеться
             "id": str(item.get("vendor_code") or pid),
-            "title": name[:150],
+            "title": normalize_title(name),   # правило SEO 14.10: регістр без «крику» (feed_title_norm), ≤150 без обрізання слова
             "description": _clean_description(item.get("description", ""))[:5000] or name,
             "link": SITE_LINK_TEMPLATE.format(pid=pid),
             "image_link": image,
@@ -1029,7 +1030,7 @@ def build_ru_items(items: list, russian_text: dict) -> tuple[list, dict]:
         if ru_name == (it.get("title") or "").strip():
             same += 1    # назва збіглась з українською (нейтральні слова/бренди) — це нормально, лише лічильник
         c = dict(it)
-        c["title"] = ru_name[:150]
+        c["title"] = normalize_title(ru_name)
         c["description"] = _clean_description(ru.get("description", ""))[:5000] or ru_name
         out.append(c)
     return out, {"ru_included": len(out), "ru_missing_skipped": no_ru, "ru_same_as_ukr": same}

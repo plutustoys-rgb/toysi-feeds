@@ -443,6 +443,12 @@ def build():
         return (-c, -p["price"], p["name"])
     prods.sort(key=_rank_key)
     oos_prods.sort(key=lambda p: p["id"])
+    try:   # історія цін для «Знижки тижня» (лише запис; збій не валить збірку)
+        _ps = update_price_state(prods + oos_prods)
+        if _ps:
+            print(f"[build] історія цін: {_ps['total']} товарів, нових {_ps['new']}, змінилась ціна {_ps['changed']}, зникло {_ps['dropped']}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[build] ⚠ історія цін: {type(e).__name__}: {e}", file=sys.stderr)
     if LIMIT:
         prods = prods[:LIMIT]
         oos_prods = oos_prods[:LIMIT]
@@ -1346,6 +1352,73 @@ def _env_pick_date():
 def _today():
     """Сьогодні за Києвом (з урахуванням зимового часу); env SITE_PICK_DATE=YYYY-MM-DD — для тестів і відтворення (той самий, що для ротації добірки)."""
     return _env_pick_date() or _kyiv_now().date()
+
+
+# ── Історія цін (власник 14.10, «Знижка тижня»: стара ціна має бути РЕАЛЬНОЮ) ──
+# Приватний стан поза публічним site/: {id: [ціна, «з якої дати (Київ) не змінювалась»]}. Лише запис (збір історії); на сайт/замовлення/ціни НЕ впливає.
+# Ключ id, що зник із каталогу, видаляється (повернеться — відлік заново: ціна під час відсутності невідома). Збій запису не валить збірку.
+PRICE_STATE_FILE = os.environ.get("SITE_PRICE_STATE_FILE") or os.path.join(os.path.dirname(OUT), "site_price_state.json")
+
+
+def update_price_state(items, today=None, path=None):
+    """Оновлює файл стану цін за поточним каталогом; повертає {"new","changed","dropped","total"} або None (стан не прочитано/не записано — файл не чіпаємо)."""
+    path = path or PRICE_STATE_FILE
+    day = (today or _today()).isoformat()
+    state = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict) or not isinstance(raw.get("p"), dict):
+            raise ValueError("очікується {\"p\": {...}}")
+        state = raw["p"]
+    except FileNotFoundError:
+        state = {}
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        print(f"[build] ⚠ site_price_state.json НЕ прочитано ({type(e).__name__}: {e}) — історію цін не оновлюю й файл не перезаписую", file=sys.stderr)
+        return None
+    cur_ids, new, changed = set(), 0, 0
+    out = {}
+    for it in items:
+        pid = str(it["id"])
+        price = it.get("price")
+        if not isinstance(price, (int, float)) or price <= 0:
+            continue
+        cur_ids.add(pid)
+        old = state.get(pid)
+        if isinstance(old, list) and len(old) == 2 and old[0] == price and isinstance(old[1], str):
+            out[pid] = old
+        else:
+            out[pid] = [price, day]
+            if old is None:
+                new += 1
+            else:
+                changed += 1
+    dropped = sum(1 for k in state if k not in cur_ids)
+    tmp = path + f".tmp{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"v": 1, "updated": day, "p": out}, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"[build] ⚠ site_price_state.json НЕ записано ({e})", file=sys.stderr)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return None
+    return {"new": new, "changed": changed, "dropped": dropped, "total": len(out)}
+
+
+def price_unchanged_days(state_p, pid, today=None):
+    """Скільки повних днів ціна товару не змінювалась (за станом {id: [ціна, дата]}); None — товару нема в стані."""
+    rec = state_p.get(str(pid))
+    if not (isinstance(rec, list) and len(rec) == 2):
+        return None
+    try:
+        since = datetime.strptime(rec[1], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    return ((today or _today()) - since).days
 
 
 def _pick_day():

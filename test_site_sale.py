@@ -165,5 +165,19 @@ Path(os.environ["SITE_PRICE_HISTORY_FILE"]).write_text("{не json", encoding="u
 rc = ss.cmd_plan(now=at(2026, 11, 15, 18), catalog=catalog)
 chk("файл історії існує, але зіпсований → код 1 і алерт site_sale_history_lost", rc == 1 and "site_sale_history_lost" in alerts)
 
+# check_applied: чинний тиждень, а на сайті акція не застосована → алерт; застосована → тиша; нема чинного тижня → тиша
+sw = tmpd / "sw_check.json"
+sw.write_text(json.dumps({"weeks": [{"week": "2026-W44", "from": "2026-10-26T00:00:00+02:00", "until": "2026-11-01T23:59:59+02:00", "items": {str(i): {"old": 100, "new": 85} for i in range(10)}},
+                                     {"week": "2026-W45", "from": "2026-11-02T00:00:00+02:00", "until": "2026-11-08T23:59:59+02:00", "items": {"99": {"old": 100, "new": 85}}}]}), encoding="utf-8")
+idx_ok = [{"id": str(i), "pr": 85, "op": 100} for i in range(10)]
+idx_bad = [{"id": str(i), "pr": 100} for i in range(10)]
+alerts.clear()
+chk("перевірка: чинний W44, на сайті застосовано 10 з 10 → без алерту", ss.check_applied(at(2026, 10, 28, 12), idx_ok, sw) == (10, 10) and not alerts)
+chk("перевірка: чинний W44, index без op (збій понеділкової збірки) → алерт site_sale_not_applied", ss.check_applied(at(2026, 10, 27, 12), idx_bad, sw) == (10, 0) and "site_sale_not_applied" in alerts)
+alerts.clear()
+chk("перевірка: до старту (неділя) чинного тижня нема → (0,0) без алерту", ss.check_applied(at(2026, 10, 25, 12), idx_bad, sw) == (0, 0) and not alerts)
+chk("перевірка: файл відсутній → (0,0) без алерту", ss.check_applied(at(2026, 10, 28, 12), idx_bad, tmpd / "nofile.json") == (0, 0) and not alerts)
+chk("перевірка: застосовано 2 із 10 (<3) → алерт; 3 з 10 → ні", (ss.check_applied(at(2026, 10, 28, 12), idx_ok[:2] + idx_bad[2:], sw)[1] == 2 and "site_sale_not_applied" in alerts) and (alerts.clear() or ss.check_applied(at(2026, 10, 28, 12), idx_ok[:3] + idx_bad[3:], sw)[1] == 3 and not alerts))
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

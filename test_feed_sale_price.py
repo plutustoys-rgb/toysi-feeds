@@ -120,5 +120,34 @@ chk("reel_build: акція не діє → звичайна 400 грн", (lambd
 chk("_sale_is_active: усередині вікна так, до старту ні, сміття/порожнє ні, формат з двокрапкою теж", _orig_active(DATES, datetime.fromisoformat("2026-10-28T12:00:00+00:00")) and not _orig_active(DATES, datetime.fromisoformat("2026-10-25T12:00:00+00:00"))
     and not _orig_active("") and not _orig_active("x/y") and _orig_active(DATES_C, datetime.fromisoformat("2026-10-28T12:00:00+00:00")))
 
+# фід не рекламує акцію для позицій, яких build_site скине (внесок після знижки < 25 ₴): критерій той самий (sale_still_eligible)
+import competitor_pricing as cp
+_it = item("1001")
+_cost = cp.real_toysi_cost(_it)
+_old = 400
+_new = ss.sale_ceil(_old)
+_ceiling_cost = _new * (1 - cp.PAYMENT_COMMISSION["site"]) - cp.SITE_FULFILL_PER_ORDER
+chk("sale_still_eligible: собівартість 100 → так; собівартість, що лишає 24,99 ₴ внеску → ні; невірний new (new+1) → ні",
+    ss.sale_still_eligible(_old, _new, 100.0) is True and ss.sale_still_eligible(_old, _new, _ceiling_cost - 24.99) is False and ss.sale_still_eligible(_old, _new + 1, 100.0) is False)
+# рівно 25,00 проходить
+_c_edge = _new * (1 - cp.PAYMENT_COMMISSION["site"]) - cp.SITE_FULFILL_PER_ORDER - ss.RESERVE_UAH
+chk("рівно 25,00 ₴ внеску проходить, на копійку менше — ні", ss.sale_still_eligible(_old, _new, _c_edge) and not ss.sale_still_eligible(_old, _new, _c_edge + 0.01))
+# у фіді: позиція з собівартістю, що не лишає 25 ₴, акцію НЕ отримує (ціна картки = old)
+_hi = item("1001", price=300.0)             # собівартість ≈ 300×0,85+15 = 270 → при ціні 400 внесок після знижки малий
+_cst = cp.real_toysi_cost(_hi)
+_sm = {"1001": {"old": 400, "new": 340, "dates": DATES, "dates_colon": DATES_C}}
+ss.load_feed_sale = lambda now=None, path=None: _sm
+its_g, st_g = gg.build_feed_items({"1001": _hi}, {}, {}, {}, None, {"1001": 400})
+_elig = ss.sale_still_eligible(400, 340, _cst)
+chk("у фіді акція показується ТІЛЬКИ коли sale_still_eligible (узгоджено з build_site): " + ("так" if _elig else "ні"), (its_g[0]["sale_price"] is not None) == _elig and st_g["on_sale"] == (1 if _elig else 0))
+_cheap = item("1001", price=100.0)          # собівартість ≈ 100: внесок великий
+ss_cost_cheap = cp.real_toysi_cost(_cheap)
+its_c, _ = gg.build_feed_items({"1001": _cheap}, {}, {}, {}, None, {"1001": 400})
+chk("дешева собівартість (внесок ≥25) → акція в фіді є", ss.sale_still_eligible(400, 340, ss_cost_cheap) and its_c[0]["sale_price"] == "340.00 UAH")
+
+_neg = item("1001", price=480.0)           # собівартість ≈ 423: після знижки до 340 внесок від'ємний → build_site акцію скине, фід її рекламувати не має
+its_n, st_n = gg.build_feed_items({"1001": _neg}, {}, {}, {}, None, {"1001": 400})
+chk("позиція, яку build_site скине (внесок після знижки <25): у фіді БЕЗ sale_price, price = ціна картки", not ss.sale_still_eligible(400, 340, cp.real_toysi_cost(_neg)) and its_n[0]["sale_price"] is None and its_n[0]["price"] == "400.00 UAH" and st_n["on_sale"] == 0)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

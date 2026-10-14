@@ -948,7 +948,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         # «Знижка тижня»: у фіді price = звичайна (стара) ціна, sale_price = акційна + дати дії; лише якщо ціна картки зараз = стара АБО нова (інакше ціна змінилась, акцію не показуємо, щоб не розійтись зі сторінкою)
         price_str, sale_price, sale_dates, sale_dates_colon = f"{retail_price:.2f} {FEED_CURRENCY}", None, None, None
         _sale = sale_map.get(str(pid))
-        if _sale and int(round(retail_price)) in (_sale["old"], _sale["new"]):
+        if _sale and int(round(retail_price)) in (_sale["old"], _sale["new"]) and site_sale.sale_still_eligible(_sale["old"], _sale["new"], cost):
             price_str = f"{_sale['old']:.2f} {FEED_CURRENCY}"
             sale_price = f"{_sale['new']:.2f} {FEED_CURRENCY}"
             sale_dates = _sale["dates"]

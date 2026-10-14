@@ -120,5 +120,26 @@ wr = [g.product_row(p, "d") for p in weird]
 chk("порожні/неповні/None-поля не валять, статус unknown", all(r["status"] == "unknown" for r in wr) and len(wr) == 4)
 chk("MAX_PAGES: нескінченна пагінація обривається", len(list(g.fetch_products(FakeSession([{"products": [prod("1")], "nextPageToken": "0"}]), "1", max_pages=5))) == 5)
 
+# register_gcp / check_access
+class PostSession:
+    def __init__(self, code=200, body=None):
+        self.code, self.body, self.sent = code, body or {}, []
+
+    def post(self, url, json=None, timeout=None):
+        self.sent.append((url, json))
+        return type("R", (), {"status_code": self.code, "json": lambda s: self.body})()
+
+    def get(self, url, params=None, timeout=None):
+        return type("R", (), {"status_code": self.code, "json": lambda s: self.body})()
+
+
+ps = PostSession(200, {"name": "accounts/5824264949/developerRegistration", "gcpIds": ["proj-1"]})
+ok, msg = g.register_gcp(ps, "owner@gmail.com", "5824264949")
+chk("register_gcp: POST на .../developerRegistration:registerGcp з developerEmail, ok", ok and ps.sent[0][0].endswith("/accounts/5824264949/developerRegistration:registerGcp") and ps.sent[0][1] == {"developerEmail": "owner@gmail.com"} and "proj-1" in msg)
+ps2 = PostSession()
+chk("register_gcp відхиляє email сервіс-акаунта і порожній без запиту", g.register_gcp(ps2, "sa@proj.iam.gserviceaccount.com")[0] is False and g.register_gcp(ps2, "")[0] is False and not ps2.sent)
+chk("register_gcp: 403 → False з кодом і текстом помилки, без винятку", g.register_gcp(PostSession(403, {"error": {"message": "caller does not have ADMIN"}}), "o@gmail.com")[0] is False)
+chk("check_access: 200 → ok; 403 → False", g.check_access(PostSession(200, {"products": [{}]}))[0] is True and g.check_access(PostSession(403, {"error": {"message": "x"}}))[0] is False)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

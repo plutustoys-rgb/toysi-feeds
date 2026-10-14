@@ -323,3 +323,7 @@ promo_cost.json
 promo_cost.json.tmp
 # Історія цін сайту (приватний runtime-стан збірки, 14.10): не комітити
 site_price_state.json
+site_price_history.json
+site_price_history.json.tmp
+site_sale_picks.json
+site_sale_picks.json.tmp

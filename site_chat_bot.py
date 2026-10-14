@@ -39,19 +39,45 @@ GREETING = ("Вітаємо в PlutusToys! Напишіть своє питан�
             "Будь ласка, не надсилайте дані банківської картки, паролі та коди з SMS.\n\n"
             f"Доставка: {BASE_URL}/delivery.html\n"
             f"Повернення і обмін: {BASE_URL}/returns.html\n"
-            f"Контакти: {BASE_URL}/contacts.html")
+            f"Контакти: {BASE_URL}/contacts.html" + chr(10) + chr(10) +
+            "Ваші повідомлення зберігаються лише для обробки звернення.")
 ACK = "Дякуємо, повідомлення отримано. Ми прочитаємо його й відповімо тут."
 NON_TEXT = "Поки що ми приймаємо лише текстові повідомлення. Напишіть, будь ласка, питання словами."
 RATE_NOTICE = "Забагато повідомлень за короткий час. Ми їх бачимо, зачекайте, будь ласка, на відповідь."
 OWNER_HELP = "Режим власника: відповідайте РЕПЛАЄМ на повідомлення клієнта, і я перешлю відповідь клієнту."
 
-_PHONE_RE = re.compile(r"\+?\d[\d ()-]{8,}\d")
-_CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+# український номер телефону (0XXXXXXXXX, +380…); решту довгих чисел (ТТН 14 цифр, номери замовлень) НЕ чіпаємо
+_PHONE_RE = re.compile(r"(?<![\w-])(?:\+?38)?0\d{9}(?![\w-])")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# кандидат у номер картки: 13–19 цифр, дозволені роздільники пробіл/дефіс/крапка між цифрами; не частина слова/ідентифікатора (PT-20261010-142322-…)
+_CARD_RE = re.compile(r"(?<![\w-])\d(?:[ .-]?\d){12,18}(?![\w-])")
+
+
+def _luhn(digits: str) -> bool:
+    total, alt = 0, False
+    for ch in reversed(digits):
+        d = int(ch)
+        if alt:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+        alt = not alt
+    return total % 10 == 0
 
 
 def mask_cards(text: str) -> str:
-    """Послідовності з 13–19 цифр (з пробілами/дефісами) → [номер приховано]: у чергу картки не потрапляють."""
-    return _CARD_RE.sub("[номер приховано]", text or "")
+    """Номери банківських карток → [номер приховано]: кандидат 13–19 цифр, що проходить Luhn. 14-значне число БЕЗ роздільників (ТТН Нової Пошти) і довгі ідентифікатори (PT-…-…) не чіпаємо:
+    власнику потрібен ТТН/номер замовлення клієнта, а маскувати хибно означало б сліпе «де моя посилка»."""
+    def repl(m):
+        raw = m.group(0)
+        digits = re.sub(r"\D", "", raw)
+        if not 13 <= len(digits) <= 19 or not _luhn(digits):
+            return raw
+        if len(digits) == 14 and digits == raw:           # ТТН НП: 14 цифр підряд
+            return raw
+        return "[номер приховано]"
+    return _CARD_RE.sub(repl, text or "")
 
 
 class ChatDB:
@@ -64,6 +90,10 @@ class ChatDB:
             CREATE INDEX IF NOT EXISTS idx_msg_chat ON messages(chat_id, ts);
             CREATE INDEX IF NOT EXISTS idx_msg_owner ON messages(owner_msg_id);
             CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);""")
+        try:
+            os.chmod(self.path, 0o600)       # у черзі чужі ПІБ/телефони: лише власник процесу
+        except OSError:
+            pass
 
     def _c(self):
         c = sqlite3.connect(self.path, timeout=10)
@@ -100,17 +130,24 @@ class TelegramAPI:
 
     def call(self, method: str, **params):
         import requests
-        r = requests.post(f"{self.base}/{method}", json=params, timeout=40)
-        d = r.json()
+        try:
+            r = requests.post(f"{self.base}/{method}", json=params, timeout=40)
+            d = r.json()
+        except Exception as e:  # noqa: BLE001 — повідомлення requests містить URL з токеном: у лог/виняток його НЕ пускаємо
+            raise RuntimeError(f"{type(e).__name__} (telegram {method})") from None
         if not d.get("ok"):
-            raise RuntimeError(f"telegram {method}: {d.get('description')}")
+            raise RuntimeError(f"telegram {method}: {str(d.get('description'))[:100]}")
         return d["result"]
 
 
 class Bot:
     def __init__(self, api, db: ChatDB, owner_chat_id=None, now_fn=None):
         self.api, self.db = api, db
-        self.owner = int(owner_chat_id) if owner_chat_id not in (None, "") else None
+        try:
+            self.owner = int(owner_chat_id) if owner_chat_id not in (None, "") else None
+        except (TypeError, ValueError):
+            print("[site_chat_bot] SITE_CHAT_OWNER_CHAT_ID не число — режим власника вимкнено", file=sys.stderr)
+            self.owner = None
         self.now = now_fn or datetime.now
 
     def _send(self, chat_id, text, **kw):
@@ -208,7 +245,8 @@ class Bot:
         if not r:
             self._send(self.owner, "Не знайшов клієнта для цього повідомлення (відповідайте реплаєм саме на копію від бота).")
             return
-        self.reply_to(r[0]["chat_id"], text.strip()[:MAX_LEN])
+        ok = self.reply_to(r[0]["chat_id"], text.strip()[:MAX_LEN])
+        self._send(self.owner, "✅ Надіслано клієнту." if ok else "⚠️ Не вдалося надіслати клієнту (він міг заблокувати бота).")
 
     def reply_to(self, chat_id: int, text: str) -> bool:
         ok = self._send(chat_id, text)
@@ -231,7 +269,7 @@ class Bot:
 
 
 def digest(db: ChatDB, days: int = 1, now: datetime | None = None) -> str:
-    """Збірка без особистих даних: кількість клієнтів/повідомлень і тексти (без імен, username і chat_id) для Аудитора."""
+    """Збірка для Аудитора: кількість клієнтів/повідомлень і тексти БЕЗ імен, username, chat_id, телефонів і e-mail (вільний текст може містити інші дані, напр. адресу; ТТН і номери замовлень лишаються — вони потрібні для відповіді)."""
     now = now or datetime.now()
     since = (now - timedelta(days=days)).replace(microsecond=0).isoformat()
     rows = db.q("SELECT chat_id, text FROM messages WHERE direction='in' AND ts>=? ORDER BY id", (since,))
@@ -240,7 +278,7 @@ def digest(db: ChatDB, days: int = 1, now: datetime | None = None) -> str:
     out = [f"Запити клієнтів сайту за {days} добу: повідомлень {len(rows)}, клієнтів {len({r['chat_id'] for r in rows})}, клієнтам відповіли {answered}."]
     for r in rows:
         k = ids.setdefault(r["chat_id"], len(ids) + 1)
-        masked = _PHONE_RE.sub("[телефон]", r["text"])[:300]
+        masked = _EMAIL_RE.sub("[e-mail]", _PHONE_RE.sub("[телефон]", r["text"]))[:300]
         out.append(f"  К{k}: {masked}")
     return "\n".join(out)
 

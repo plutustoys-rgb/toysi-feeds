@@ -91,7 +91,12 @@ chk("через 7 год підтвердження прийому знову", 
 # відповідь власника
 api.sent.clear()
 bot.handle_update(upd(OWNER, "Вітаю, перевіряємо, напишемо номер ТТН.", reply_to=owner_msg_id))
-chk("відповідь власника реплаєм → клієнту, збережена як out", api.sent == [(C1, "Вітаю, перевіряємо, напишемо номер ТТН.")] and db.q("SELECT count(*) AS n FROM messages WHERE direction='out'")[0]["n"] == 1)
+chk("відповідь власника реплаєм → клієнту, збережена як out; власнику «✅ Надіслано клієнту»", api.sent == [(C1, "Вітаю, перевіряємо, напишемо номер ТТН."), (OWNER, "✅ Надіслано клієнту.")] and db.q("SELECT count(*) AS n FROM messages WHERE direction='out'")[0]["n"] == 1)
+api.fail_for = {C1}
+api.sent.clear()
+bot.handle_update(upd(OWNER, "ще раз", reply_to=owner_msg_id))
+chk("клієнт недоступний (заблокував бота): власнику «⚠️ Не вдалося», у чергу out не пишемо", api.sent == [(OWNER, "⚠️ Не вдалося надіслати клієнту (він міг заблокувати бота).")] and db.q("SELECT count(*) AS n FROM messages WHERE direction='out'")[0]["n"] == 1)
+api.fail_for = set()
 api.sent.clear()
 bot.handle_update(upd(OWNER, "просто текст без реплая"))
 chk("текст власника без реплая → підказка власнику, клієнту нічого", [c for c, _ in api.sent] == [OWNER] and "РЕПЛАЄМ" in api.sent[0][1])
@@ -101,6 +106,34 @@ chk("реплай на чуже повідомлення → власнику «
 api.sent.clear()
 bot.handle_update(upd(C2, "Я теж хочу відповісти як власник", reply_to=owner_msg_id))
 chk("інший чат із реплаєм на копію власника НЕ відповідає клієнту (це просто повідомлення клієнта C2)", all(c != C1 for c, _ in api.sent) and db.q("SELECT count(*) AS n FROM messages WHERE chat_id=? AND direction='in'", (C2,))[0]["n"] == 1)
+
+# маскування карток: НЕ ламає ТТН, номери замовлень, суми; ловить реальні картки
+M = sb.mask_cards
+chk("ТТН Нової Пошти (14 цифр підряд) НЕ маскується", M("ТТН 20450123456789 де посилка") == "ТТН 20450123456789 де посилка")
+chk("номер замовлення PT-20261010-142322-afbf46 НЕ маскується", M("моє замовлення PT-20261010-142322-afbf46") == "моє замовлення PT-20261010-142322-afbf46")
+chk("13-значна сума/число без Luhn не маскується", M("сума 1000000000000") == "сума 1000000000000")
+chk("картки з пробілами, дефісами, крапками, без роздільників (Luhn) маскуються", all(M(x) == "[номер приховано]" for x in ("4111 1111 1111 1111", "4111-1111-1111-1111", "4111.1111.1111.1111", "378282246310005", "5500005555555559")))
+chk("картка всередині речення маскується, текст довкола цілий", M("ось картка 4111 1111 1111 1111 дякую") == "ось картка [номер приховано] дякую")
+chk("телефон 0671234567 і +380671234567 не маскується як картка", M("тел 0671234567 / +380671234567") == "тел 0671234567 / +380671234567")
+
+# токен не потрапляє у виняток/лог
+import requests
+_real_post = requests.post
+requests.post = lambda url, **kw: (_ for _ in ()).throw(requests.exceptions.ConnectionError(f"HTTPSConnectionPool: Max retries exceeded with url: /bot123456:SECRETTOKEN/getUpdates"))
+try:
+    sb.TelegramAPI("123456:SECRETTOKEN").call("getUpdates")
+    leak = True
+except RuntimeError as e:
+    leak = "SECRETTOKEN" in str(e) or "123456" in str(e)
+requests.post = _real_post
+chk("збій мережі: виняток TelegramAPI.call НЕ містить токен (ні URL)", leak is False)
+
+# права БД і нечисловий власник
+import stat
+dbp = Path(tempfile.mkdtemp()) / "perm.db"
+sb.ChatDB(dbp)
+chk("site_chat.db створюється з правами 600 (на Windows chmod ігнорується)", os.name == "nt" or (dbp.stat().st_mode & 0o777) == 0o600)
+chk("SITE_CHAT_OWNER_CHAT_ID не число → режим власника вимкнено без винятку", sb.Bot(FakeAPI(), sb.ChatDB(Path(tempfile.mkdtemp()) / "x.db"), "abc").owner is None)
 
 # захисти
 api.sent.clear()
@@ -141,6 +174,11 @@ chk("retry після відновлення доставляє", bot4.retry_unf
 # digest
 d = sb.digest(db, 1, now=clock["t"])
 chk("digest: кількості є, без імен/username/chat_id, телефон замасковано", "Олена" not in d and "olena" not in d and "501" not in d and "0671234567" not in d and "[телефон]" in d and "Запити клієнтів сайту" in d)
+b5, a5, d5 = mk()
+b5.handle_update(upd(C1, "Моя пошта test.user@gmail.com, ТТН 20450123456789, замовлення PT-20261010-142322-afbf46"))
+dg = sb.digest(d5, 1, now=clock["t"])
+chk("digest: e-mail замасковано, ТТН і номер замовлення ЛИШИЛИСЬ (потрібні для відповіді)", "test.user@gmail.com" not in dg and "[e-mail]" in dg and "20450123456789" in dg and "PT-20261010-142322-afbf46" in dg)
+chk("привітання містить рядок про зберігання даних", "зберігаються лише для обробки звернення" in sb.GREETING)
 
 # CLI без токена
 rc = sb.main(["site_chat_bot.py", "run"])

@@ -9,8 +9,11 @@
 Merchant Center → Налаштування → Люди й доступ (роль лише читання). Merchant API вимагає ОДНОРАЗОВОЇ реєстрації GCP-проєкту (POST accounts/v1/accounts/{id}/developerRegistration:registerGcp з developerEmail) і ввімкненого Merchant API в проєкті; без цього перший прогін дасть 401/403 і алерт. Без ключа скрипт пише підказку й завершується кодом 0. Потрібен пакет google-auth (`/opt/plutustoys/venv/bin/pip install google-auth`).
 ВИХІД (приватна папка reports/gmc/, не публікується): gmc_status_YYYY-MM-DD.csv (рядок на товар: offerId, мова, мітка, джерело, статус, коди й описи причин, країни, дата) і gmc_summary_YYYY-MM-DD.txt (кількості за статусом і топ причин).
 Статус товару: disapproved — є destination з disapprovedCountries АБО issue із severity DISAPPROVED; pending — немає approved, але є pending; approved — є approved і немає disapproved; unknown — нема даних.
-CLI: python gmc_status_report.py            # зібрати звіт
-     python gmc_status_report.py --summary  # надрукувати останнє summary
+CLI: python gmc_status_report.py                      # зібрати звіт
+     python gmc_status_report.py --summary            # надрукувати останнє summary
+     python gmc_status_report.py --check              # перевірити доступ: один запит products.list (pageSize=1), нічого не змінює
+     python gmc_status_report.py --register EMAIL     # ОДНОРАЗОВО: зареєструвати GCP-проєкт у Merchant API (POST developerRegistration:registerGcp). Єдиний запис у Google; потребує, щоб
+                                                      # сервіс-акаунт мав у Merchant Center доступ ADMIN (на час реєстрації; після неї понизити до STANDARD). EMAIL — звичайний акаунт Google, НЕ сервіс-акаунт.
 """
 import csv
 import os
@@ -179,7 +182,48 @@ def run(session=None, out_dir: Path | None = None, now: datetime | None = None) 
     return 0
 
 
+def register_gcp(session, developer_email: str, account_id: str = ACCOUNT_ID):
+    """POST accounts/v1/accounts/{id}/developerRegistration:registerGcp {developerEmail}. Повертає (ok, текст без секретів)."""
+    if not developer_email or "@" not in developer_email or developer_email.lower().endswith("iam.gserviceaccount.com"):
+        return False, "developerEmail має бути звичайним Google-акаунтом (не сервіс-акаунтом)"
+    url = f"https://merchantapi.googleapis.com/accounts/v1/accounts/{account_id}/developerRegistration:registerGcp"
+    r = session.post(url, json={"developerEmail": developer_email}, timeout=60)
+    if getattr(r, "status_code", 200) >= 400:
+        try:
+            msg = r.json().get("error", {}).get("message", "")
+        except Exception:  # noqa: BLE001
+            msg = ""
+        return False, f"HTTP {r.status_code}: {str(msg)[:200]}"
+    d = r.json()
+    return True, f"зареєстровано: {d.get('name', '')}, gcpIds={d.get('gcpIds')}"
+
+
+def check_access(session, account_id: str = ACCOUNT_ID):
+    """Один запит products.list (pageSize=1): (ok, текст)."""
+    r = session.get(f"{API}/accounts/{account_id}/products", params={"pageSize": 1}, timeout=60)
+    if getattr(r, "status_code", 200) >= 400:
+        try:
+            msg = r.json().get("error", {}).get("message", "")
+        except Exception:  # noqa: BLE001
+            msg = ""
+        return False, f"HTTP {r.status_code}: {str(msg)[:200]}"
+    n = len(r.json().get("products") or [])
+    return True, f"доступ є, products.list відповів ({n} товар у пробному запиті)"
+
+
 if __name__ == "__main__":
+    if "--register" in sys.argv or "--check" in sys.argv:
+        if not KEY_FILE.exists():
+            print(f"[gmc_status_report] нема ключа {KEY_FILE}")
+            sys.exit(1)
+        sess = make_session()
+        if "--register" in sys.argv:
+            i = sys.argv.index("--register")
+            ok, msg = register_gcp(sess, sys.argv[i + 1] if len(sys.argv) > i + 1 else "")
+        else:
+            ok, msg = check_access(sess)
+        print(("OK: " if ok else "ПОМИЛКА: ") + msg)
+        sys.exit(0 if ok else 1)
     if "--summary" in sys.argv:
         files = sorted(OUT_DIR.glob("gmc_summary_*.txt"))
         print(files[-1].read_text(encoding="utf-8") if files else "звітів ще нема")

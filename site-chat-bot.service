@@ -1,0 +1,17 @@
+[Unit]
+Description=PlutusToys: Telegram-бот «Написати» сайту (бот-приймальня + черга, site_chat_bot.py run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Токен SITE_CHAT_BOT_TOKEN і SITE_CHAT_OWNER_CHAT_ID — ТІЛЬКИ в /opt/plutustoys/.env (load_dotenv). Без токена процес пише підказку й завершується кодом 0 (Restart=on-failure не крутить цикл).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_chat_bot.py run
+Restart=on-failure
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

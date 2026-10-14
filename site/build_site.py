@@ -1364,7 +1364,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             static_grid = f'<div id="cat-static">{static_grid}</div>'
         body = (
             crumbs_html(trail) +
-            ("" if special else chips(cat_list, cat_slug, active)) +
+            ("" if (special or active is None) else chips(cat_list, cat_slug, active)) +   # власник 14.10: у повному каталозі рядок чипів-категорій прибрано (є панель «Категорія» в сортуванні/фільтрах); на сторінках категорій чипи лишаються (навігація між категоріями)
             f'\n<h1 class="page">{esc(special["h1"] if special else (active or title))}</h1>\n' +
             (special["notice"] if special else "") +   # SEO 11.10: H1 категорії = лише назва («Каталог •» — у title/крихтах); повний каталог — «Каталог іграшок»
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +

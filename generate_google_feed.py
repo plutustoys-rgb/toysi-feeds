@@ -946,12 +946,13 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             stats["category_fallback"] += 1
 
         # «Знижка тижня»: у фіді price = звичайна (стара) ціна, sale_price = акційна + дати дії; лише якщо ціна картки зараз = стара АБО нова (інакше ціна змінилась, акцію не показуємо, щоб не розійтись зі сторінкою)
-        price_str, sale_price, sale_dates = f"{retail_price:.2f} {FEED_CURRENCY}", None, None
+        price_str, sale_price, sale_dates, sale_dates_colon = f"{retail_price:.2f} {FEED_CURRENCY}", None, None, None
         _sale = sale_map.get(str(pid))
         if _sale and int(round(retail_price)) in (_sale["old"], _sale["new"]):
             price_str = f"{_sale['old']:.2f} {FEED_CURRENCY}"
             sale_price = f"{_sale['new']:.2f} {FEED_CURRENCY}"
             sale_dates = _sale["dates"]
+            sale_dates_colon = _sale["dates_colon"]
             stats["on_sale"] += 1
         items.append({
             "pid": str(pid),   # id каталогу Toysi (ключ російського тексту); у XML не пишеться
@@ -963,6 +964,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "price": price_str,
             "sale_price": sale_price,
             "sale_dates": sale_dates,
+            "sale_dates_colon": sale_dates_colon,
             "availability": "in_stock" if stock > 0 else "out_of_stock",
             "condition": "new",
             "brand": brand,

@@ -38,10 +38,11 @@ sale_path = tmp / "sale_week.json"
 FROM, UNTIL = "2026-10-26T00:00:00+02:00", "2026-11-01T23:59:59+02:00"
 sale_path.write_text(json.dumps({"weeks": [{"week": "2026-W44", "pct": 15, "from": FROM, "until": UNTIL, "items": {"1001": {"old": 400, "new": 340}, "1002": {"old": 100, "new": 100}, "1003": {"old": 50, "new": 60}}}]}), encoding="utf-8")
 DATES = "2026-10-26T00:00+0200/2026-11-01T23:59+0200"
+DATES_C = "2026-10-26T00:00+02:00/2026-11-01T23:59+02:00"     # Meta/Bing: офсет з двокрапкою (документація)
 
 before_start = datetime.fromisoformat("2026-10-25T20:00:00+02:00")
 m = ss.load_feed_sale(now=before_start, path=sale_path)
-chk("до старту: мапа з дат, формат дат Google (без секунд, офсет +0200)", set(m) == {"1001"} and m["1001"] == {"old": 400, "new": 340, "dates": DATES})
+chk("до старту: мапа з дат, формат Google (без секунд, +0200) і Meta/Bing (+02:00)", set(m) == {"1001"} and m["1001"] == {"old": 400, "new": 340, "dates": DATES, "dates_colon": DATES_C})
 chk("new ≥ old (1002: 100→100, 1003: 50→60) відкидається", "1002" not in m and "1003" not in m)
 during = datetime.fromisoformat("2026-10-28T12:00:00+02:00")
 chk("під час акції мапа та сама", ss.load_feed_sale(now=during, path=sale_path) == m)
@@ -95,7 +96,8 @@ for label, mod in (("Google", gg), ("Meta", gm), ("Bing", gb)):
     root = mod._build_xml(its)
     e = root.find("channel/item")
     p, sp, sd = e.find("g:price", NS), e.find("g:sale_price", NS), e.find("g:sale_price_effective_date", NS)
-    chk(f"{label}: XML має price=400.00 UAH, sale_price=340.00 UAH, sale_price_effective_date={DATES}", p is not None and p.text == "400.00 UAH" and sp is not None and sp.text == "340.00 UAH" and sd is not None and sd.text == DATES)
+    want = DATES if label == "Google" else DATES_C
+    chk(f"{label}: XML має price=400.00 UAH, sale_price=340.00 UAH, sale_price_effective_date={want}", p is not None and p.text == "400.00 UAH" and sp is not None and sp.text == "340.00 UAH" and sd is not None and sd.text == want)
 its_plain, _ = gg.build_feed_items({"1001": item("1001")}, {}, {}, {}, None, {"1001": 500})
 for label, mod in (("Google", gg), ("Meta", gm), ("Bing", gb)):
     raw = ET.tostring(mod._build_xml(its_plain), encoding="unicode")
@@ -108,6 +110,15 @@ chk("sale_price і дати йдуть одразу за price", tags[tags.index
 ru_items, _ = gg.build_ru_items(its, {its[0]["pid"]: {"name": "Плюшевый мишка", "description": "Описание"}})
 rraw = ET.tostring(gg._build_xml(ru_items), encoding="unicode")
 chk("російський фід: sale_price та дати збережено", "340.00 UAH" in rraw and DATES in rraw)
+
+# підпис рілса: акційна ціна, коли акція діє ЗАРАЗ
+import reel_build as rb
+_orig_active = rb._sale_is_active
+_feed = {"1": {"price": "400.00 UAH", "sale_price": "340.00 UAH", "sale_dates": DATES, "avail": "in stock", "title": "т", "image": ""}}
+chk("reel_build: акція діє зараз → підпис 340 грн (а не 400)", (lambda: (setattr(rb, "_sale_is_active", lambda d, now=None: True), rb.check_live(_feed, "1")[0])[1])() == "340 грн")
+chk("reel_build: акція не діє → звичайна 400 грн", (lambda: (setattr(rb, "_sale_is_active", lambda d, now=None: False), rb.check_live(_feed, "1")[0])[1])() == "400 грн")
+chk("_sale_is_active: усередині вікна так, до старту ні, сміття/порожнє ні, формат з двокрапкою теж", _orig_active(DATES, datetime.fromisoformat("2026-10-28T12:00:00+00:00")) and not _orig_active(DATES, datetime.fromisoformat("2026-10-25T12:00:00+00:00"))
+    and not _orig_active("") and not _orig_active("x/y") and _orig_active(DATES_C, datetime.fromisoformat("2026-10-28T12:00:00+00:00")))
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

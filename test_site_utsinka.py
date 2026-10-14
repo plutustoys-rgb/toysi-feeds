@@ -22,6 +22,8 @@ sys.path.insert(0, str(HERE))
 import build_site as bs  # noqa: E402
 
 F = []
+DEFAULT_AKTSII = bs.AKTSII_ENABLED   # за замовчуванням ВИМКНЕНО (власник 14.10: уцінку з «Акцій» прибрано); механізм перевіряємо з увімкненим прапором
+bs.AKTSII_ENABLED = True
 
 
 def chk(n, c):
@@ -139,6 +141,17 @@ bs.write_aktsii(prods)
 ah2 = (root3 / "aktsii.html").read_text(encoding="utf-8")
 bs.PROMO_PLUTUS5_LIVE = False
 chk("/aktsii: при PROMO_PLUTUS5_LIVE=True зверху картка «−5% за підписку на Instagram» + кнопка «Підписатися» на @plutustoys.ua", ah2.index("promo-card") < ah2.index("md-notice") and "−5% за підписку на Instagram" in ah2 and "instagram.com/plutustoys.ua" in ah2 and ">Підписатися<" in ah2)
+
+# «Акції» без уцінки (власник 14.10): за замовчуванням вимкнено — сторінки нема, кнопки героя «Акції» нема, у sitemap/посиланнях aktsii.html не лишається
+bs.AKTSII_ENABLED = DEFAULT_AKTSII
+root4 = Path(tempfile.mkdtemp())
+bs.OUT = str(root4)
+bs.write_home(prods, cats, cat_list, cat_slug)
+home_off = (root4 / "index.html").read_text(encoding="utf-8")
+chk("AKTSII_ENABLED за замовчуванням False; aktsii_pick пустий; сторінка не пишеться", DEFAULT_AKTSII is False and bs.aktsii_pick(prods) == [] and bs.write_aktsii(prods) == set() and not (root4 / "aktsii.html").exists())
+chk("герой без «Акцій» (навіть коли є уцінка): лише «Усі іграшки», без посилань на aktsii.html; (чип «Уцінка» → /utsinka.html перевіряє test_site_themed_chips)", '<div class="act"><a class="btn" href="catalog.html">Усі іграшки</a></div>' in home_off and "aktsii.html" not in home_off)
+bs.AKTSII_ENABLED = True
+bs.OUT = str(root)
 
 # Chromium
 try:

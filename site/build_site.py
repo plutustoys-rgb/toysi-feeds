@@ -1805,7 +1805,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     in_stock = p["stock"] > 0
     # Без залишку: чесний текст + шлях далі (категорія, якщо вона є в каталозі; інакше повний каталог). Кнопка «У кошик» вимкнена нижче.
     _oos_cat_href = f"category-{cat_slug[p['category']]}.html" if (cat_slug and p.get("category") in cat_slug) else "catalog.html"
-    _phone_line = '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
+    _phone_line = ""   # власник 14.10: рядок «Є питання? + телефон» на картці прибрано («не навантажуй»); контакти — у футері й на сторінці «Контакти»
     # Без залишку: НЕ обіцяємо оплату/доставку/повернення на сторінці з вимкненою кнопкою (аудит #675, Д2) — лише телефон.
     buy_info = (
         f'<p class="ret-line">{RETURN_LINE}</p>'

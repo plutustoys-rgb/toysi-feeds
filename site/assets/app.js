@@ -542,6 +542,25 @@
       box.parentNode.insertBefore(n, box);
     });
   }
+  function priceChanged(j){   // відповідь /api/order 409 {code:"price_changed", expected_total, total, lines:[{id,name,qty,price}]}: замовлення НЕ створено; кошик показує те, що сервер бачить ТЕПЕР
+    var msg=document.getElementById("checkout-msg"), btn=document.getElementById("checkout-submit");
+    if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; }
+    var c=read(), diffs=[];
+    (Array.isArray(j.lines) ? j.lines : []).forEach(function(l){
+      if(!l || typeof l!=="object" || l.id===undefined || !c[String(l.id)]) return;
+      var np=+l.price; if(!isFinite(np) || np<0) return;
+      var it=c[String(l.id)];
+      if(it.price!==np){ diffs.push({name:it.name, was:it.price, now:np}); it.price=np; }
+    });
+    if(diffs.length){ write(c); }
+    renderCart();
+    if(!msg) return;
+    msg.classList.add("err"); msg.textContent="";
+    var t=document.createElement("div");
+    var tot=(typeof j.total==="number" && isFinite(j.total)) ? j.total : total();
+    t.textContent="Ціни змінились, поки ви оформлювали замовлення"+(diffs.length ? ": "+diffs.map(function(d){ return d.name+" — було "+d.was+" ₴, тепер "+d.now+" ₴"; }).join("; ") : "")+". Нова сума: "+tot+" ₴. Замовлення не створено — перевірте кошик і підтвердьте ще раз.";
+    msg.appendChild(t);
+  }
   function stockConflict(lines){   // відповідь /api/order 409 {code:"stock_changed", lines:[{id,name,requested,available}]}: замовлення НЕ створено
     var msg=document.getElementById("checkout-msg"), btn=document.getElementById("checkout-submit");
     if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; }
@@ -1116,6 +1135,8 @@
         payment_method:payment,
         comment:(document.getElementById("f-comment") ? (document.getElementById("f-comment").value||"").trim().slice(0,300) : "")
       };
+      // сума, яку ПОКАЗАВ кошик у момент сабміту (ціле грн): якщо index.json змінився між «У кошик» і оплатою, сервер відповість 409 price_changed і НЕ створить замовлення (Code-Agent #759); без поля — поведінка як раніше
+      var shownTotal=total(); if(isFinite(shownTotal)){ payload.expected_total=Math.round(shownTotal); }
       if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }
 
       fetch("api/order", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)})
@@ -1123,6 +1144,7 @@
         .then(function(res){
           if(!res.ok){
             if(res.status===409 && res.j && res.j.code==="stock_changed" && Array.isArray(res.j.lines)){ stockConflict(res.j.lines); return; }
+            if(res.status===409 && res.j && res.j.code==="price_changed"){ priceChanged(res.j); return; }
             fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return;
           }
           var d=res.j;

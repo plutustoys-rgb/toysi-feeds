@@ -329,3 +329,5 @@ site_sale_picks.json
 site_sale_picks.json.tmp
 site_chat.db
 site_chat.db-journal
+.secrets/
+gmc_service_account*.json

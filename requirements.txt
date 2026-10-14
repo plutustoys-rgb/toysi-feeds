@@ -10,3 +10,4 @@ imageio
 imageio-ffmpeg
 scipy
 numpy
+google-auth>=2.30

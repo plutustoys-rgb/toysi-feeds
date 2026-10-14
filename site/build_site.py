@@ -354,6 +354,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
 SALE_FILE = os.path.join(OUT, "sale_week.json")
 SALE_WEEK_ENABLED = True
 SALE_RESERVE_UAH = 25.0
+SALE_MIN_APPLIED_ALERT = 3   # менше застосованих позицій при діючій акції — алерт у Telegram
 SALE_ACTIVE = None   # виставляє build(): {"week","pct","from","until","items":{id:(old,new)}} або None
 
 
@@ -384,6 +385,8 @@ def _parse_sale_week(raw, now):
     start, end = _aware_dt(raw.get("from")), _aware_dt(raw.get("until"))
     if start is None or end is None or not start < end:
         return bad("from/until мають бути ISO із поясом і from < until")
+    if (end - start) > timedelta(days=8):
+        return bad("вікно акції довше 8 днів (очікується тиждень пн–нд)")
     if not (start <= now <= end):
         return None   # поза вікном цього тижня: ігноруємо
     items = {}
@@ -436,7 +439,7 @@ def apply_sale(pid, price, sale, cost):
     if price != old or not (0 < new < price) or not cost or cost <= 0:
         return price, None
     margin = new - cost - new * cp.PAYMENT_COMMISSION.get("site", 0.0) - SITE_FULFILL_PER_ORDER
-    if margin < SALE_RESERVE_UAH:
+    if round(margin, 2) < SALE_RESERVE_UAH:   # до копійок: похибка float не має відкидати внесок «рівно 25,00»
         return price, None
     return new, old
 
@@ -593,6 +596,12 @@ def build():
     if SALE_ACTIVE:
         _applied = sum(1 for p in prods if p.get("old_price"))
         print(f"[build] акція: застосовано {_applied} з {len(SALE_ACTIVE['items'])} позицій файлу (решта випала: ціна ≠ old / нема в наявності / внесок < запасу)")
+        if _applied < SALE_MIN_APPLIED_ALERT:   # акція ідe, а позицій майже нема (ціни змінились/собівартість зросла): тихо не лишаємо
+            try:
+                from telegram_notify import send_throttled_alert
+                send_throttled_alert("site_sale_few_applied", f"⚠️ site-rebuild: «Знижка тижня» {SALE_ACTIVE['week']}: застосовано лише {_applied} з {len(SALE_ACTIVE['items'])} позицій файлу (ціна ≠ old, нема в наявності або внесок < {SALE_RESERVE_UAH:.0f} ₴).", cooldown_sec=6 * 3600)
+            except Exception:  # noqa: BLE001 — алерт best-effort
+                pass
     prods.sort(key=_rank_key)
     oos_prods.sort(key=lambda p: p["id"])
     if LIMIT:

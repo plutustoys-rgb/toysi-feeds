@@ -95,6 +95,8 @@ bads = {
 for label, obj in bads.items():
     write(obj)
     chk(f"зламаний файл ({label}): акції нема, без винятку", bs.load_sale_week(NOW, path) is None)
+write(sale_file(until=(START + timedelta(days=30)).isoformat(), **{"from": START.isoformat()}))
+chk("вікно акції довше 8 днів (помилка в плані → акція «на місяці») — відхилено", bs.load_sale_week(NOW, path) is None)
 write(None, raw="{не json")
 chk("невалідний JSON — акції нема", bs.load_sale_week(NOW, path) is None)
 write(sale_file(items={}))
@@ -105,6 +107,8 @@ SALE = {"week": "w", "pct": 15, "from": START, "until": END, "items": {"111": (4
 com = bs.cp.PAYMENT_COMMISSION.get("site", 0.0)
 cost_ok = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - 30          # внесок після знижки ≈ 30 ≥ 25
 cost_low = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - 20         # внесок ≈ 20 < 25
+cost_edge = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - 25.0           # внесок ТОЧНО 25 → застосовується
+chk("apply_sale: внесок рівно 25,00 ₴ — знижка діє; 24,99 — ні (межа запасу)", bs.apply_sale("111", 400, SALE, cost_edge) == (340, 400) and bs.apply_sale("111", 400, SALE, cost_edge + 0.01) == (400, None))
 chk("apply_sale: ціна == old, внесок ≥ 25 → (340, 400)", bs.apply_sale("111", 400, SALE, cost_ok) == (340, 400))
 chk("apply_sale: внесок після знижки < 25 ₴ — без знижки (збитку/тонкої маржі нема)", bs.apply_sale("111", 400, SALE, cost_low) == (400, None))
 chk("apply_sale: ціна сайту змінилась (≠ old) — без знижки (стара ціна має бути реальною)", bs.apply_sale("111", 401, SALE, cost_ok) == (401, None) and bs.apply_sale("111", 399, SALE, cost_ok) == (399, None))
@@ -137,7 +141,6 @@ chk("звичайний товар: без акційних елементів, 
 
 # ── 5. /aktsii.html і кнопка героя ──
 prods = [p_sale, dict(p_sale, id="112", name="Акційна «Машинка»", price=290, old_price=340, category="Кат3")] + [dict(p_norm, id=str(500 + i), name=f"Звичайна «Іграшка{i}»", category=f"К{i}", price=300 + i, contribution=120) for i in range(12)]
-bs.AKTSII_ENABLED = True
 pk = bs.aktsii_pick(prods)
 chk("aktsii_pick: лише акційні позиції, ціна зростаюче (290, 340)", [p["id"] for p in pk] == ["112", "111"])
 chk("write_aktsii пише aktsii.html", bs.write_aktsii(prods) == {"aktsii.html"})
@@ -187,6 +190,12 @@ if sync_playwright:
     bs.SALE_ACTIVE = dict(SALE, until=real_now + timedelta(days=1, hours=2, minutes=30))
     bs.write_aktsii(prods)
     bs.write_product(p_sale, related=None, cat_slug={}, similar=[])
+    cats_c = {}
+    for p in prods:
+        cats_c.setdefault(p["category"], []).append(p)
+    cl_c = sorted(cats_c, key=lambda c: -len(cats_c[c]))
+    bs.write_catalog("Каталог іграшок", prods, cl_c, {c: f"c{i}" for i, c in enumerate(cl_c)}, "catalog.html", active=None)
+    (out / "index.json").write_text(json.dumps(bs.index_entries(prods), ensure_ascii=False), encoding="utf-8")
     shutil.copytree(HERE / "site" / "assets", out / "assets")
     os.chdir(out)
 
@@ -210,10 +219,18 @@ if sync_playwright:
             pg.wait_for_timeout(500)
             v = pg.evaluate("(()=>{const l=document.querySelector('.sale-left').textContent; const pr=document.querySelector('.card .pr-sale'); const old=document.querySelector('.card .pr-old'); const bd=document.querySelector('.card .sale-badge'); return [l, getComputedStyle(pr).color, getComputedStyle(old).textDecorationLine, getComputedStyle(bd).backgroundColor, document.documentElement.scrollWidth<=innerWidth, document.querySelectorAll('.sale-list .card').length]})()")
             chk(f"{w}px: відлік «залишилось 1 д 2 год …», нова ціна червона, стара перекреслена (line-through), бейдж червоний, без горизонтального скролу {v}", v[0].startswith("залишилось 1 д 2 год") and v[1] == "rgb(217, 58, 58)" and "line-through" in v[2] and v[3] == "rgb(217, 58, 58)" and v[4] and v[5] == 2)
-            pg.evaluate("document.querySelector('.sale-left').setAttribute('data-sale-until', new Date(Date.now()-60000).toISOString()); ")
-            pg.wait_for_timeout(100)
-            pg.evaluate("window.dispatchEvent(new Event('focus'))")
+            pg.evaluate("document.querySelector('.sale-left').setAttribute('data-sale-until', new Date(Date.now()-60000).toISOString()); window.PT_saleTick();")
+            chk(f"{w}px: після кінця акції відлік пише «акцію завершено»", pg.evaluate("document.querySelector('.sale-left').textContent") == "акцію завершено")
             chk(f"{w}px: без помилок JS", errs == [])
+            # каталог (клієнтський рендер з index.json): акційна ціна ЗІ старою перекресленою і бейджем, як на /aktsii (аудит: каталог показував просто нижчу ціну)
+            pg2 = ctx.new_page()
+            pg2.route("**/googletagmanager.com/**", lambda r: r.abort())
+            pg2.route("**/stock.json*", lambda r: r.abort())
+            pg2.goto(f"{base}/catalog.html", wait_until="load")
+            pg2.wait_for_timeout(900)
+            cv = pg2.evaluate("(()=>{const vis=e=>{const r=e.getBoundingClientRect(); return r.width>0&&r.height>0&&getComputedStyle(e).visibility!=='hidden'}; const b=[...document.querySelectorAll('.card .sale-badge')].filter(vis); const o=[...document.querySelectorAll('.card s.pr-old')].filter(vis); return [b.length, o.length, b[0]?b[0].textContent:'', o[0]?o[0].textContent:'']})()")
+            chk(f"{w}px: каталог: видимі картки акційних товарів мають бейдж «−15%» і перекреслену стару ціну {cv}", cv[0] >= 1 and cv[1] >= 1 and cv[2] == "−15%" and cv[3].endswith("₴"))
+            pg2.close()
             ctx.close()
         br.close()
 

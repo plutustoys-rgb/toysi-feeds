@@ -444,7 +444,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 /* Знижка тижня (власник 14.10, «Червона наліпка» SMM): бейдж −N%, стара ціна перекреслена, нова червона, таймер, кнопка героя */
 .sale-badge{position:absolute;top:8px;left:8px;z-index:1;background:#D93A3A;color:#fff;border:2px solid #7A1313;border-radius:8px;padding:2px 8px;font-size:12.5px;font-weight:800;line-height:1.35;box-shadow:2px 2px 0 #7A1313;pointer-events:none}
 .card .pr-sale,.price.sale-price{color:#D93A3A;font-weight:800}
-.pr-old{margin-left:6px;color:#6b5b50;font-size:.82em;font-weight:500;text-decoration:line-through}
+.pr-old{margin-left:6px;color:#6b5b50;font-size:.82em;font-weight:500;text-decoration:line-through;white-space:nowrap}
 .price-row .pr-old{font-size:18px;align-self:center}
 .price-row .sale-badge{position:static;align-self:center;margin-left:8px}
 .sale-until{margin:6px 0 10px;padding:8px 12px;background:#fff1ee;border:2px solid #D93A3A;border-radius:12px;color:#7a1313;font-size:15px}

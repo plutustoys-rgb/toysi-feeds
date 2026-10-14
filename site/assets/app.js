@@ -260,9 +260,12 @@
   function catCard(p){
     var av = p.s ? '<span class="av">У наявності</span>' : '<span class="av oos">Немає</span>';
     var img = p.p ? '<img src="'+esc(p.p)+'" loading="lazy" alt="'+esc(p.n)+'">' : '<div class="ph"></div>';
-    return '<a class="card" href="product-'+esc(p.id)+'.html"><div class="ph">'+img+'</div>'+
+    var sale = p.op && p.op>p.pr;   // «Знижка тижня»: op — стара ціна (аудит 14.10: каталог показував акційну ціну без перекресленої старої й бейджа)
+    var badge = sale ? '<span class="sale-badge">−'+Math.round((1-p.pr/p.op)*100)+'%</span>' : '';
+    var price = sale ? '<span class="pr pr-sale">'+p.pr+' ₴</span><s class="pr-old">'+p.op+' ₴</s>' : '<span class="pr">'+p.pr+' ₴</span>';
+    return '<a class="card" href="product-'+esc(p.id)+'.html"><div class="ph">'+img+badge+'</div>'+
       '<div class="info"><div class="nm">'+esc(p.n)+'</div>'+
-      '<div class="foot"><span class="pr">'+p.pr+' ₴</span>'+av+'</div></div></a>';
+      '<div class="foot">'+price+av+'</div></div></a>';
   }
   function initCatalog(){
     var controls=document.getElementById("cat-controls");
@@ -995,6 +998,7 @@
       });
     }
     tick(); setInterval(tick, 30000);
+    window.PT_saleTick=tick;   // для тесту: примусове оновлення відліку
   }
 
   // ── Кнопка «Написати» (меню месенджерів у шапці, власник 14.10) ──

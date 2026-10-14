@@ -92,7 +92,7 @@ def _build_xml(items: list) -> ET.Element:
         ET.SubElement(entry, "link").text = it["link"]
         ET.SubElement(entry, f"{{{NS}}}image_link").text = it["image_link"]
         ET.SubElement(entry, f"{{{NS}}}price").text = it["price"]
-        site_sale.add_sale_tags(entry, NS, it)
+        site_sale.add_sale_tags(entry, NS, it, colon=True)
         ET.SubElement(entry, f"{{{NS}}}availability").text = it["availability"]
         ET.SubElement(entry, f"{{{NS}}}condition").text = it["condition"]
         ET.SubElement(entry, f"{{{NS}}}brand").text = it["brand"]

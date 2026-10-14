@@ -463,7 +463,7 @@ def sale_until_html() -> str:
     """Рядок «Акція до неділі 23:59» + зворотний відлік (JS заповнює [data-sale-until]); без JS лишається статичний текст."""
     if not SALE_ACTIVE:
         return ""
-    return (f'<div class="sale-until">Акція до <b>{sale_until_label()}</b> · <span class="sale-left" data-sale-until="{esc(SALE_ACTIVE["until"].isoformat())}"></span></div>')
+    return (f'<div class="sale-until">Акція до <b>{sale_until_label()}</b><span class="sale-left" data-sale-until="{esc(SALE_ACTIVE["until"].isoformat())}"></span></div>')
 
 
 def index_entries(prods):
@@ -1328,7 +1328,7 @@ def write_aktsii(prods):
     body = (
         crumbs_html([("Головна", "index.html"), ("Акції", None)]) +
         f'\n<h1 class="page">Знижка тижня −{pct}%</h1>\n'
-        f'<p class="sale-lead">Акційна ціна вже в ціні товару — нічого вводити не треба. Стара ціна перекреслена.</p>' +
+        f'<p class="sale-lead">Щопонеділка — нова добірка іграшок зі знижкою −{pct}%. Ціна вже знижена: нічого вводити не треба. Діє до {sale_until_label()}.</p>' +
         sale_until_html() +
         '<div class="sale-list" id="sale-list" data-list="sale_week">' + grid(picks, eager_n=4) + '</div>'
         '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'

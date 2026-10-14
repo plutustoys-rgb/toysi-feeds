@@ -994,7 +994,7 @@
         var ms=end-Date.now();
         if(ms<=0){ el.textContent="акцію завершено"; return; }
         var d=Math.floor(ms/86400000), h=Math.floor(ms%86400000/3600000), m=Math.floor(ms%3600000/60000);
-        el.textContent="залишилось "+(d>0 ? d+" д " : "")+h+" год "+pad(m)+" хв";
+        el.textContent="До кінця акції: "+(d>0 ? d+" д " : "")+h+" год "+pad(m)+" хв";
       });
     }
     tick(); setInterval(tick, 30000);

@@ -142,10 +142,14 @@ def is_stable(rec, price: int, now: datetime, days: int = STABLE_DAYS) -> bool:
 
 
 # ───────────────────────── відбір ─────────────────────────
-def margin_after(price: int, cost: float) -> float:
+def _contribution(new: int, cost: float) -> float:
+    """Внесок після знижки до копійок: ТОЙ САМИЙ вираз і порядок операцій, що в build_site.apply_sale (new − cost − new×2,8% − 17,81, round 2): похибка float не має відкидати «рівно 25,00»; фід, планувальник і сайт обов'язково збігаються (тест звіряє з build_site)."""
     import competitor_pricing as cp
-    new = sale_ceil(price)
-    return new * (1 - cp.PAYMENT_COMMISSION["site"]) - cost - cp.SITE_FULFILL_PER_ORDER
+    return round(new - cost - new * cp.PAYMENT_COMMISSION.get("site", 0.0) - cp.SITE_FULFILL_PER_ORDER, 2)
+
+
+def margin_after(price: int, cost: float) -> float:
+    return _contribution(sale_ceil(price), cost)
 
 
 def _ok_item(item: dict) -> bool:
@@ -304,11 +308,41 @@ def _history_age_days(hist: dict, now: datetime) -> float:
     return 0.0 if oldest is None else (now - oldest).total_seconds() / 86400
 
 
+def sale_still_eligible(old: int, new: int, cost: float) -> bool:
+    """Той самий критерій, що застосовує build_site при кожній збірці: new == ceil(old×0,85) і внесок після знижки (new − cost − 2,8%·new − 17,81) ≥ RESERVE_UAH. Фіди рекламують sale_price лише для позицій, які пройшли б цю перевірку."""
+    import competitor_pricing as cp
+    return new == sale_ceil(old) and _contribution(new, cost) >= RESERVE_UAH
+
+
+def check_applied(now: datetime, index: list, path: Path | None = None) -> tuple[int, int]:
+    """(позицій у чинному тижні, застосованих на сайті). «Застосована» = у index.json є поле op (build_site ставить op=стара ціна лише для акційних). Якщо чинний тиждень є, а застосовано <3 (або менше за кількість позицій) —
+    алерт site_sale_not_applied: ловить і збій понеділкової збірки (index без op), і масове випадання позицій. Нема чинного тижня → (0, 0), без алерту."""
+    ids = set()
+    for w in _read_weeks(Path(path or SALE_FILE), now):
+        try:
+            if datetime.fromisoformat(w["from"]) <= now < datetime.fromisoformat(w["until"]):
+                ids |= {str(k) for k in (w.get("items") or {})}
+        except (KeyError, ValueError, TypeError):
+            continue
+    if not ids:
+        return 0, 0
+    applied = sum(1 for it in index if isinstance(it, dict) and str(it.get("id")) in ids and it.get("op"))
+    if applied < min(3, len(ids)):
+        _alert("site_sale_not_applied", f"⚠️ site_sale: «Знижка тижня» чинна за розкладом ({len(ids)} позицій у файлі), але на сайті (index.json) застосовано лише {applied} — збірка сайту не підхопила акцію (збій ребілду чи масове випадання позицій). Перевірити site-rebuild.")
+    return len(ids), applied
+
+
 def cmd_history(now: datetime | None = None) -> int:
     now = now or datetime.now(KYIV)
     index = _load_json(INDEX_FILE, [])
     ok = update_price_history(index, now)
     print(f"[site_sale] історія цін: {'оновлено' if ok else 'НЕ оновлено'} ({len(index) if isinstance(index, list) else 0} товарів в індексі)")
+    try:
+        total, applied = check_applied(now, index if isinstance(index, list) else [])
+        if total:
+            print(f"[site_sale] акція чинна: у файлі {total}, на сайті застосовано {applied}")
+    except Exception as e:  # noqa: BLE001 — перевірка допоміжна: не валить оновлення історії
+        print(f"[site_sale] check_applied: {type(e).__name__}: {str(e)[:100]}", file=sys.stderr)
     return 0 if ok else 1
 
 

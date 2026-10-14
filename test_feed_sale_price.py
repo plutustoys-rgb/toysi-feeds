@@ -145,7 +145,7 @@ ss_cost_cheap = cp.real_toysi_cost(_cheap)
 its_c, _ = gg.build_feed_items({"1001": _cheap}, {}, {}, {}, None, {"1001": 400})
 chk("дешева собівартість (внесок ≥25) → акція в фіді є", ss.sale_still_eligible(400, 340, ss_cost_cheap) and its_c[0]["sale_price"] == "340.00 UAH")
 
-_neg = item("1001", price=480.0)           # собівартість ≈ 423: після знижки до 340 внесок від'ємний → build_site акцію скине, фід її рекламувати не має
+_neg = item("1001", price=350.0)           # собівартість ≈ 312: при ціні 400 позиція прибуткова (лишається у фіді), але після знижки до 340 внесок <25 → build_site акцію скине, фід її рекламувати не має
 its_n, st_n = gg.build_feed_items({"1001": _neg}, {}, {}, {}, None, {"1001": 400})
 chk("позиція, яку build_site скине (внесок після знижки <25): у фіді БЕЗ sale_price, price = ціна картки", not ss.sale_still_eligible(400, 340, cp.real_toysi_cost(_neg)) and its_n[0]["sale_price"] is None and its_n[0]["price"] == "400.00 UAH" and st_n["on_sale"] == 0)
 

@@ -306,13 +306,18 @@
       grid.hidden=false; count.hidden=false;
       renderMore();
     }
+    function gridCols(){
+      try{ var t=getComputedStyle(grid).gridTemplateColumns; var n=t && t!=="none" ? t.trim().split(/\s+/).length : 0; return n>0 ? n : 1; }catch(e){ return 1; }
+    }
     function renderMore(){
       if(!filtered.length){
         grid.innerHTML='<div class="empty" style="padding:40px 0">Нічого не знайдено за фільтром. <a href="#" id="cf-reset2">Скинути</a></div>';
         var r2=document.getElementById("cf-reset2"); if(r2) r2.addEventListener("click",function(e){e.preventDefault();doReset();});
         count.textContent="Знайдено: 0"; moreWrap.hidden=true; return;
       }
-      var slice=filtered.slice(shown, shown+PER);
+      // порція кратна числу колонок сітки (власник 14.10: 24 карток у 5 колонок лишали неповний останній рядок після кожного «Показати ще»)
+      var cols=gridCols(), upto=Math.max(shown+cols, Math.floor((shown+PER)/cols)*cols);
+      var slice=filtered.slice(shown, upto);
       grid.insertAdjacentHTML("beforeend", slice.map(catCard).join(""));
       shown+=slice.length;
       count.textContent="Знайдено: "+filtered.length+" · показано "+shown;

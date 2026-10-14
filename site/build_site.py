@@ -829,7 +829,8 @@ def offer_extras(p) -> dict:
             "@type": "MerchantReturnPolicy", "applicableCountry": "UA",
             "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
             "merchantReturnDays": 14, "returnMethod": "https://schema.org/ReturnByMail",
-            "returnFees": "https://schema.org/ReturnShippingFees",
+            # SEO 14.10: ReturnShippingFees без returnShippingFeesAmount Google читав як «безкоштовно» (100% товарів у Merchant Center); тариф НП залежить від міста — суму не вказуємо, тож «фактична вартість — на покупці» (як на сторінці «Повернення» для товару належної якості)
+            "returnFees": "https://schema.org/ReturnFeesCustomerResponsibility",
         },
     }
     cond = item_condition(p["name"])

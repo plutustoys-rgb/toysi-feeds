@@ -12,7 +12,7 @@ def chk(n, c):
 src = (H / "site" / "build_site.py").read_text(encoding="utf-8")
 css = (H / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
 chk("картка товару: «✓ Фіскальний чек» у trust-рядку", '<span class="tb">✓ Фіскальний чек</span>' in src)
-chk("картка товару: клікабельний tel: біля кнопки", 'class="ask">Є питання? <a href="tel:+380730150815">' in src)
+chk("картка товару: рядка «Є питання? + телефон» НЕМАЄ (власник 14.10: прибрано, контакти у футері/«Контакти»)", 'class="ask">Є питання?' not in src and '_phone_line = ""' in src)
 chk("CSS: .ask і десктопний маскот (min-width:900px)", ".ask{" in css and "@media(min-width:900px){.hero .mascot{height:120px}" in css)
 chk("CSS: media-правило маскота стоїть ПІСЛЯ базових .mascot-правил (інакше перебивається)", css.index("@media(min-width:900px){.hero .mascot") > css.index(".hero .mascot{height:64px}") and css.index("@media(min-width:900px){.hero .mascot") > css.index(".done .mascot{height:96px}"))
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ SMM P2 — усі перевірки коректні.'}")

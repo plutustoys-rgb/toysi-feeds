@@ -79,6 +79,7 @@ from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides
 from trademark_filter import is_uno_trademark_blocked
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
+OUTPUT_FILE_RU = "feeds/google_merchant_feed_ru.xml"   # російськомовний фід (те саме з тими самими українськими посиланнями; рішення власника 14.10)
 
 SHOP_NAME  = "PlutusToys"
 SHOP_URL   = "https://plutustoys.com.ua"
@@ -942,6 +943,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             stats["category_fallback"] += 1
 
         items.append({
+            "pid": str(pid),   # id каталогу Toysi (ключ російського тексту); у XML не пишеться
             "id": str(item.get("vendor_code") or pid),
             "title": name[:150],
             "description": _clean_description(item.get("description", ""))[:5000] or name,
@@ -996,6 +998,62 @@ def _build_xml(items: list) -> ET.Element:
         ET.SubElement(entry, f"{{{NS}}}google_product_category").text = it["google_product_category"]
 
     return rss
+
+
+def build_ru_items(items: list, russian_text: dict) -> tuple[list, dict]:
+    """Російськомовна копія ТІЄЇ САМОЇ множини позицій: title/description — російські з Toysi lang=rus, решта полів (id, link на УКРАЇНСЬКУ сторінку, ціна, наявність, бренд,
+    фото, condition, категорія, gtin) без змін. Позиція БЕЗ російської назви в ru-фід НЕ потрапляє (українську не підставляємо). Порожній російський опис → назва."""
+    out, no_ru, same = [], 0, 0
+    for it in items:
+        ru = (russian_text or {}).get(it.get("pid")) or {}
+        ru_name = (ru.get("name") or "").strip()
+        if not ru_name:
+            no_ru += 1
+            continue
+        if ru_name == (it.get("title") or "").strip():
+            same += 1    # назва збіглась з українською (нейтральні слова/бренди) — це нормально, лише лічильник
+        c = dict(it)
+        c["title"] = ru_name[:150]
+        c["description"] = _clean_description(ru.get("description", ""))[:5000] or ru_name
+        out.append(c)
+    return out, {"ru_included": len(out), "ru_missing_skipped": no_ru, "ru_same_as_ukr": same}
+
+
+def write_ru_feed(items: list, output_file: str = OUTPUT_FILE_RU, russian_text: dict | None = None) -> bool:
+    """Best-effort: збій російського тексту/порожній результат НЕ чіпає основний фід і НЕ перезаписує вже опублікований ru-файл (restore-фолбек публікації).
+    True — файл записано. Застарілий ru-файл з попереднього прогону видаляємо ПЕРЕД спробою: збій не має лишити старий файл, який публікація проштампує як свіжий (тоді він просто відсутній
+    і лишається попередня опублікована версія з feed-data)."""
+    try:
+        try:
+            os.remove(output_file)
+        except FileNotFoundError:
+            pass
+        if russian_text is None:
+            from generate_prom_feed import fetch_russian_text
+            russian_text = fetch_russian_text()
+        if not russian_text:
+            print("[Google-RU] російський каталог порожній/недоступний — ru-фід НЕ оновлено.", file=sys.stderr)
+            return False
+        ru_items, ru_stats = build_ru_items(items, russian_text)
+        if not ru_items:
+            print("[Google-RU] жодної позиції з російським текстом — ru-фід НЕ оновлено.", file=sys.stderr)
+            return False
+        root = _build_xml(ru_items)
+        root.find("channel/description").text = "Игрушки для детей — PlutusToys"   # опис каналу російською (мова джерела даних у Merchant Center — російська)
+        root.find("channel/title").text = f"{SHOP_NAME} — товарный фид Google Merchant (RU)"
+        ET.indent(root, space="  ")
+        xml_str = '<?xml version="1.0" encoding="UTF-8"?>' + chr(10) + ET.tostring(root, encoding="unicode")
+        os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+        tmp = output_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(xml_str)
+        os.replace(tmp, output_file)             # атомарно
+        print(f"[Google-RU] Готово: {output_file} — {ru_stats['ru_included']} позицій з {len(items)} "
+              f"(без російського тексту пропущено {ru_stats['ru_missing_skipped']}; назва збіглась з українською {ru_stats['ru_same_as_ukr']}).")
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[Google-RU] збій ({type(e).__name__}: {str(e)[:160]}) — ru-фід НЕ оновлено, основний не зачеплено.", file=sys.stderr)
+        return False
 
 
 def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> None:
@@ -1072,6 +1130,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
         f.write(xml_str)
 
     print(f"[Google] Готово! Збережено: {output_file}")
+    write_ru_feed(items, OUTPUT_FILE_RU if output_file == OUTPUT_FILE else output_file.replace(".xml", "_ru.xml"))
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")

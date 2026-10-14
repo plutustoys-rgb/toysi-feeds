@@ -5,8 +5,8 @@
 оброблений товар разом з productStatus: destinationStatuses[] (approved/pending/disapprovedCountries по reportingContext) і itemLevelIssues[] (code, severity, attribute, description…). Content API for Shopping Google вимкнув 18.08.2026
 (сторінка developers.google.com/merchant/api/guides/products/overview), тому лише Merchant API. Форми полів звірені з довідником лише за назвами; код читає їх захисно (.get), перший живий прогін покаже точну форму.
 
-АВТОРИЗАЦІЯ: сервіс-акаунт Google Cloud (JSON-ключ), який створює ВЛАСНИК і кладе на VPS (права 600, поза репо): GMC_SERVICE_ACCOUNT_FILE (за замовчуванням /opt/plutustoys/.secrets/gmc_service_account.json). Email акаунта додається в
-Merchant Center → Налаштування → Люди й доступ (роль лише читання). Без ключа скрипт пише підказку й завершується кодом 0. Потрібен пакет google-auth (`/opt/plutustoys/venv/bin/pip install google-auth`).
+АВТОРИЗАЦІЯ: сервіс-акаунт Google Cloud (JSON-ключ), який створює ВЛАСНИК і кладе на VPS (права 600; /opt/plutustoys — git-клон, тому `.secrets/` і `gmc_service_account*.json` в .gitignore): GMC_SERVICE_ACCOUNT_FILE (за замовчуванням /opt/plutustoys/.secrets/gmc_service_account.json). Email акаунта додається в
+Merchant Center → Налаштування → Люди й доступ (роль лише читання). Merchant API вимагає ОДНОРАЗОВОЇ реєстрації GCP-проєкту (POST accounts/v1/accounts/{id}/developerRegistration:registerGcp з developerEmail) і ввімкненого Merchant API в проєкті; без цього перший прогін дасть 401/403 і алерт. Без ключа скрипт пише підказку й завершується кодом 0. Потрібен пакет google-auth (`/opt/plutustoys/venv/bin/pip install google-auth`).
 ВИХІД (приватна папка reports/gmc/, не публікується): gmc_status_YYYY-MM-DD.csv (рядок на товар: offerId, мова, мітка, джерело, статус, коди й описи причин, країни, дата) і gmc_summary_YYYY-MM-DD.txt (кількості за статусом і топ причин).
 Статус товару: disapproved — є destination з disapprovedCountries АБО issue із severity DISAPPROVED; pending — немає approved, але є pending; approved — є approved і немає disapproved; unknown — нема даних.
 CLI: python gmc_status_report.py            # зібрати звіт
@@ -31,7 +31,7 @@ SCOPE = "https://www.googleapis.com/auth/content"
 PAGE_SIZE = 1000
 MAX_PAGES = 200            # запобіжник від нескінченної пагінації (200×1000 товарів)
 
-CSV_FIELDS = ["date", "offerId", "contentLanguage", "feedLabel", "dataSource", "status", "issue_codes", "issue_descriptions", "disapproved_countries", "approved_countries", "pending_countries"]
+CSV_FIELDS = ["date", "offerId", "contentLanguage", "feedLabel", "dataSource", "status", "issue_codes", "issue_severities", "issue_descriptions", "disapproved_countries", "approved_countries", "pending_countries"]
 
 
 def _alert(key: str, text: str) -> None:
@@ -77,6 +77,13 @@ def product_row(p: dict, today: str) -> dict:
     issues = ps.get("itemLevelIssues") or []
     dis, app, pen = _countries(dests, "disapprovedCountries"), _countries(dests, "approvedCountries"), _countries(dests, "pendingCountries")
     sev_dis = any(str(i.get("severity", "")).upper() == "DISAPPROVED" for i in issues)
+    # одна причина (код+серйозність) може йти окремо для кількох reportingContext: у звіті дедуплікуємо за товаром, щоб топ причин не двоїв
+    uniq, seen = [], set()
+    for i in issues:
+        key = (str(i.get("code", "")), str(i.get("severity", "")))
+        if key not in seen:
+            seen.add(key)
+            uniq.append((key[0], key[1], str(i.get("description", ""))))
     if dis or sev_dis:
         status = "disapproved"
     elif app:
@@ -92,8 +99,9 @@ def product_row(p: dict, today: str) -> dict:
         "feedLabel": p.get("feedLabel", ""),
         "dataSource": str(p.get("dataSource", "")).split("/")[-1],
         "status": status,
-        "issue_codes": " | ".join(str(i.get("code", "")) for i in issues),
-        "issue_descriptions": " | ".join(str(i.get("description", "")) for i in issues),
+        "issue_codes": " | ".join(c for c, _, _ in uniq),
+        "issue_severities": " | ".join(sv for _, sv, _ in uniq),
+        "issue_descriptions": " | ".join(d for _, _, d in uniq),
         "disapproved_countries": ",".join(dis),
         "approved_countries": ",".join(app),
         "pending_countries": ",".join(pen),

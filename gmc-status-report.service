@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 User=root
 WorkingDirectory=/opt/plutustoys
-# КРИТИЧНО (CLAUDE.md): venv-python. Потрібні ключ /opt/plutustoys/.secrets/gmc_service_account.json (створює власник) і пакет google-auth у venv. Без ключа скрипт пише підказку й завершується кодом 0.
+# КРИТИЧНО (CLAUDE.md): venv-python. Потрібні ключ /opt/plutustoys/.secrets/gmc_service_account.json (створює власник; .secrets/ у .gitignore), одноразова реєстрація GCP-проєкту в Merchant API і пакет google-auth у venv. Без ключа скрипт пише підказку й завершується кодом 0.
 ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/gmc_status_report.py
 TimeoutStartSec=900
 Nice=10

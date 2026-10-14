@@ -106,6 +106,14 @@ with tempfile.TemporaryDirectory() as td:
     rc = g.run(session=FakeSession([{"products": []}]), out_dir=out2, now=datetime(2026, 10, 14))
     chk("порожня відповідь: код 1, алерт gmc_report_empty, файл НЕ записано (вчорашній звіт не затираємо)", rc == 1 and "gmc_report_empty" in alerts and not out2.exists())
 
+# дедуплікація причин за товаром (одна причина на кілька reportingContext) + колонка серйозності
+dup = prod("20", "disapproved", [dict(iss_price, reportingContext="SHOPPING_ADS"), dict(iss_price, reportingContext="FREE_LISTINGS"), {"code": "w", "severity": "NOT_IMPACTED", "description": "попередження"}])
+rd = g.product_row(dup, "d")
+chk("причина, що повторюється для кількох reportingContext, у рядку товару одна; серйозності в окремій колонці", rd["issue_codes"] == "missing_price | w" and rd["issue_severities"] == "DISAPPROVED | NOT_IMPACTED" and rd["issue_descriptions"].count("Не указана цена") == 1)
+chk("CSV_FIELDS містить issue_severities", "issue_severities" in g.CSV_FIELDS)
+gi = open(Path(__file__).parent / ".gitignore", encoding="utf-8").read()
+chk(".gitignore містить .secrets/ і gmc_service_account*.json (/opt/plutustoys — git-клон)", ".secrets/" in gi.splitlines() and "gmc_service_account*.json" in gi.splitlines())
+
 # захисне читання
 weird = [{}, {"offerId": "9"}, {"offerId": "10", "productStatus": {"destinationStatuses": [{}], "itemLevelIssues": [{}, {"severity": None}]}}, {"offerId": "11", "productStatus": None}]
 wr = [g.product_row(p, "d") for p in weird]

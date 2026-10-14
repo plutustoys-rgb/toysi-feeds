@@ -149,5 +149,26 @@ _neg = item("1001", price=350.0)           # собівартість ≈ 312: �
 its_n, st_n = gg.build_feed_items({"1001": _neg}, {}, {}, {}, None, {"1001": 400})
 chk("позиція, яку build_site скине (внесок після знижки <25): у фіді БЕЗ sale_price, price = ціна картки", not ss.sale_still_eligible(400, 340, cp.real_toysi_cost(_neg)) and its_n[0]["sale_price"] is None and its_n[0]["price"] == "400.00 UAH" and st_n["on_sale"] == 0)
 
+# критерій фіду == критерій build_site (apply_sale) на широкій сітці, включно з межею рівно 25,00 (аудит #769: float-розбіжність)
+import build_site as _bs
+_diff = 0
+_n = 0
+for _o in range(100, 3000, 3):
+    _nw = ss.sale_ceil(_o)
+    _base = _nw - cp.SITE_FULFILL_PER_ORDER - _nw * cp.PAYMENT_COMMISSION["site"]
+    for _d in (-0.02, -0.01, -0.005, 0.0, 0.004, 0.005, 0.01, 0.02, 0.5):
+        _c = _base - ss.RESERVE_UAH + _d
+        if _c <= 0:
+            continue
+        _n += 1
+        _sale_bs = {"items": {"1": (_o, _nw)}}
+        _site = _bs.apply_sale("1", _o, _sale_bs, _c)[1] is not None
+        if _site != ss.sale_still_eligible(_o, _nw, _c):
+            _diff += 1
+chk(f"sale_still_eligible збігається з build_site.apply_sale на {_n} комбінаціях навколо межі 25,00 (розбіжностей {_diff})", _n > 5000 and _diff == 0)
+_o = 2999
+_nw = ss.sale_ceil(_o)
+chk("контрприклад аудиту (old=2999, cost=2435.79): фід і сайт однаково", ss.sale_still_eligible(_o, _nw, 2435.79) == (_bs.apply_sale("1", _o, {"items": {"1": (_o, _nw)}}, 2435.79)[1] is not None))
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

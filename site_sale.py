@@ -142,10 +142,14 @@ def is_stable(rec, price: int, now: datetime, days: int = STABLE_DAYS) -> bool:
 
 
 # ───────────────────────── відбір ─────────────────────────
-def margin_after(price: int, cost: float) -> float:
+def _contribution(new: int, cost: float) -> float:
+    """Внесок після знижки до копійок: ТОЙ САМИЙ вираз і порядок операцій, що в build_site.apply_sale (new − cost − new×2,8% − 17,81, round 2): похибка float не має відкидати «рівно 25,00»; фід, планувальник і сайт обов'язково збігаються (тест звіряє з build_site)."""
     import competitor_pricing as cp
-    new = sale_ceil(price)
-    return new * (1 - cp.PAYMENT_COMMISSION["site"]) - cost - cp.SITE_FULFILL_PER_ORDER
+    return round(new - cost - new * cp.PAYMENT_COMMISSION.get("site", 0.0) - cp.SITE_FULFILL_PER_ORDER, 2)
+
+
+def margin_after(price: int, cost: float) -> float:
+    return _contribution(sale_ceil(price), cost)
 
 
 def _ok_item(item: dict) -> bool:
@@ -307,7 +311,7 @@ def _history_age_days(hist: dict, now: datetime) -> float:
 def sale_still_eligible(old: int, new: int, cost: float) -> bool:
     """Той самий критерій, що застосовує build_site при кожній збірці: new == ceil(old×0,85) і внесок після знижки (new − cost − 2,8%·new − 17,81) ≥ RESERVE_UAH. Фіди рекламують sale_price лише для позицій, які пройшли б цю перевірку."""
     import competitor_pricing as cp
-    return new == sale_ceil(old) and new * (1 - cp.PAYMENT_COMMISSION["site"]) - cost - cp.SITE_FULFILL_PER_ORDER >= RESERVE_UAH
+    return new == sale_ceil(old) and _contribution(new, cost) >= RESERVE_UAH
 
 
 def check_applied(now: datetime, index: list, path: Path | None = None) -> tuple[int, int]:

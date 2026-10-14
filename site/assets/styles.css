@@ -374,7 +374,10 @@ footer.foot a{color:var(--accent)}
   .cart-aside .aside-card:first-child{margin-top:0}
   #aside-order,.addon-d{display:block}
   .addon-m,#cart-summary{display:none !important}
+  .cart-grid.is-empty{grid-template-columns:minmax(0,1fr)}
 }
+.cart-grid.is-empty .ret-line{text-align:center}
+.cart-grid.is-empty #cart-body{margin-left:auto;margin-right:auto}   /* #cart-body має max-width 640 і стояв ліворуч у колонці */
 /* тестувальник 12.10 */
 #cf-cat{max-width:100%;min-width:0;text-overflow:ellipsis}                       /* catalog.html: select із довгою опцією давав горизонтальний скрол на 360 px */
 input,select,textarea{scroll-margin-top:84px}                                   /* липкий хедер не ховає сфокусоване поле */

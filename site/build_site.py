@@ -560,7 +560,7 @@ def build():
     valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
-        if (fn.startswith(("product-", "category-", "catalog", "utsinka")) and fn.endswith(".html")
+        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii")) and fn.endswith(".html")
                 and fn not in valid):
             try:
                 os.remove(os.path.join(OUT, fn))
@@ -1147,6 +1147,8 @@ def write_utsinka(prods, cat_list, cat_slug):
 
 
 AKTSII_FILE = "aktsii.html"
+# ВИМКНЕНО (власник 14.10: «прибери уцінку з акцій»): раніше сторінка складалася з 12 карток уцінки. Уцінка живе на /utsinka.html (чип «Уцінка»). «Акції» повернемо, коли буде НОВЕ наповнення (варіанти готує SMM; потрібні реальні акційні ціни від Коду/Консультанта) — тоді AKTSII_ENABLED=True і aktsii_pick переписати під нове джерело. Вимкнено: сторінки /aktsii.html нема (стару видаляє прибирання застарілих), кнопка героя — «Усі іграшки».
+AKTSII_ENABLED = False
 AKTSII_COUNT = 12
 AKTSII_MIN = 4   # менше придатних карток — сторінки й кнопки героя нема
 # Картка «−5% за підписку на Instagram» (SMM/власник 13.10): показується ЛИШЕ коли промокод PLUTUS5 реально працює (бекенд Code-Agent + UI кошика ввімкнені). Без коду обіцяти знижку не можна — вмикати (True) разом із UI промокоду.
@@ -1158,6 +1160,8 @@ AKTSII_PROMO_CARD = ('<div class="promo-card"><div class="pc-txt"><b>−5% за 
 
 def aktsii_pick(prods):
     """12 карток уцінки для /aktsii.html (власник 13.10): ті самі придатні, що на /utsinka.html (у наявності, фото, внесок ≥ 0), ціна від 100 ₴, різні «основи назв»; щоденна ротація (стабільна протягом доби)."""
+    if not AKTSII_ENABLED:
+        return []
     pool = [p for p in utsinka_pick(prods) if p["price"] >= 100]
     rng = random.Random(HOME_PICK_SEED * 7919 + _pick_day() * 104729)
     rng.shuffle(pool)

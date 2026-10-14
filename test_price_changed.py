@@ -68,6 +68,18 @@ n2 = count()
 for bad in (None, "abc", {"a": 1}, [100], True, 99.5, ""):
     code, resp = post([{"id": "B", "qty": 1}], expected=bad)
     chk(f"некоректне expected_total {bad!r} → ігнорується (200, не 500/409)", code == 200)
+# входи, на яких попередня версія кидала виняток (аудит #759): мають давати None, а не 500
+for label, bad in (("ціле з 400 цифр", 10 ** 400), ("'²'", "²"), ("'²³'", "²³"), ("рядок із 5000 цифр", "9" * 5000), ("арабські цифри '٢٠٠'", "٢٠٠"), ("' 200 ' з пробілами", " 200 "), ("'-12'", "-12"),
+                   ("inf", float("inf")), ("nan", float("nan")), ("12.5", 12.5), ("1e308", 1e308)):
+    try:
+        v = api._expected_total(bad)
+        ok = v is None
+    except Exception:
+        ok = False
+    chk(f"_expected_total({label}) → None без винятку", ok)
+chk("_expected_total: '1200' → 1200, 1200 → 1200, 1200.0 → 1200", (api._expected_total("1200"), api._expected_total(1200), api._expected_total(1200.0)) == (1200, 1200, 1200))
+code, resp = post([{"id": "B", "qty": 1}], expected=10 ** 400)
+chk("expected_total = ціле з 400 цифр → 200 (ігнорується), а не 500", code == 200)
 chk("рядкове число '120' приймається і збігається", post([{"id": "B", "qty": 1}], expected="120")[0] == 200)
 chk("float 120.0 збігається", post([{"id": "B", "qty": 1}], expected=120.0)[0] == 200)
 n3 = count()

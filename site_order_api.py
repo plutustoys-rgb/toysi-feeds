@@ -201,13 +201,16 @@ class OrderError(Exception):
 
 
 def _expected_total(raw):
-    """Сума, яку ПОКАЗАВ покупцю кошик (ціле, грн); необов'язкове поле: нема/не число → None (поведінка як раніше, без перевірки)."""
+    """Сума, яку ПОКАЗАВ покупцю кошик (ціле, грн); необов'язкове поле: нема/некоректне → None (поведінка як раніше, без перевірки). Ніколи не кидає виняток:
+    приймаємо лише int, float із цілим значенням і рядок із 1–12 ASCII-цифр (юнікод-цифри '²', арабські, дуже довгі числа → None)."""
     if isinstance(raw, bool) or raw is None:
         return None
-    if isinstance(raw, (int, float)):
-        return int(raw) if float(raw).is_integer() else None
-    if isinstance(raw, str) and raw.strip().isdigit():
-        return int(raw.strip())
+    if isinstance(raw, int):
+        return raw if abs(raw) < 10**12 else None
+    if isinstance(raw, float):
+        return int(raw) if raw == raw and abs(raw) < 1e12 and raw.is_integer() else None
+    if isinstance(raw, str) and re.fullmatch(r"[0-9]{1,12}", raw):
+        return int(raw)
     return None
 
 

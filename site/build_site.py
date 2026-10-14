@@ -169,10 +169,10 @@ def chat_menu_html():
     links = "".join(f'<a class="chat-item" role="menuitem" data-chat="{k}" href="{esc(u)}" target="_blank" rel="noopener">{t}</a>' for k, t, u in items if u)
     if not links:
         return ""
-    return ('<div class="chatwrap"><button type="button" class="chatbtn" id="chat-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="chat-menu" aria-label="Написати нам">'
+    return ('<div class="chatwrap"><button type="button" class="chatbtn" id="chat-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="chat-menu" aria-label="Підтримка: написати нам">'
             '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.5A8 8 0 1 1 21 12z"/></svg>'
-            '<span class="chat-lbl">Написати</span></button>'
-            f'<div class="chat-menu" id="chat-menu" role="menu" aria-label="Написати нам" hidden>{links}</div></div>')
+            '<span class="chat-lbl">Підтримка</span></button>'
+            f'<div class="chat-menu" id="chat-menu" role="menu" aria-label="Підтримка: написати нам" hidden>{links}</div></div>')
 
 
 def header():

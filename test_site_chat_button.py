@@ -44,6 +44,7 @@ h = _cart.read_text(encoding="utf-8")
 chk("меню: Viber (за номером) і Telegram (бот t.me/plutustoys_support_bot), БЕЗ Instagram (власник 14.10); посилання target=_blank rel=noopener", 'data-chat="viber" href="viber://chat?number=%2B380730150815" target="_blank" rel="noopener"' in h and 'data-chat="telegram" href="https://t.me/plutustoys_support_bot" target="_blank" rel="noopener"' in h and 'data-chat="instagram"' not in h and "ig.me" not in h)
 bs.CHAT_TELEGRAM_URL = ""
 bs.write_cart([])
+chk("кнопка в шапці підписана «Підтримка» (власник 14.10), не «Написати»", '<span class="chat-lbl">Підтримка</span>' in h and '<span class="chat-lbl">Написати</span>' not in h)
 chk("порожній CHAT_TELEGRAM_URL — пункт Telegram не показується", 'data-chat="telegram"' not in _cart.read_text(encoding="utf-8"))
 bs.CHAT_TELEGRAM_URL = "https://t.me/plutustoys_support_bot"
 bs.write_cart([])
@@ -74,7 +75,7 @@ with sync_playwright() as pw:
         g = pg.evaluate(GEO)
         chk(f"{w}px: кнопка «Написати» — у правому верхньому куті шапки (правіше кошика, біля правого краю), меню закрите, aria-expanded=false, без горизонтального скролу {g}",
             g["right"] > g["cartRight"] and g["vw"] - g["right"] <= 70 and g["top"] < g["headerBottom"] and g["menuDisplay"] == "none" and g["exp"] == "false" and g["sw"])
-        chk(f"{w}px: підпис «Написати» видно на широких, на ≤560 px лише іконка (aria-label лишається) {g['lblDisplay']}/{g['w']}px", (g["lblDisplay"] != "none") == (w > 560))
+        chk(f"{w}px: підпис «Підтримка» видно на широких, на ≤560 px лише іконка (aria-label лишається) {g['lblDisplay']}/{g['w']}px", (g["lblDisplay"] != "none") == (w > 560))
         pg.click("#chat-toggle")
         pg.wait_for_timeout(150)
         o = pg.evaluate("(()=>{const m=document.getElementById('chat-menu'); const r=m.getBoundingClientRect(); return [getComputedStyle(m).display, document.getElementById('chat-toggle').getAttribute('aria-expanded'), [...m.querySelectorAll('a')].map(a=>a.dataset.chat), r.right<=innerWidth+1, r.left>=0]})()")

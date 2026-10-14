@@ -412,6 +412,7 @@
     var c=read(), ids=Object.keys(c);
     var staleNote=document.getElementById("cart-stock-note"); if(staleNote && staleNote.parentNode) staleNote.parentNode.removeChild(staleNote);   // порожній кошик не має мати попередження (аудит)
     renderAside(c, ids);
+    var cg=document.querySelector(".cart-grid"); if(cg) cg.classList.toggle("is-empty", ids.length===0);   // порожній кошик: одна колонка, по центру (власник 14.10: на ПК блок стояв лівіше центру)
     var codn=document.getElementById("cod-limit-note");
     if(codn) codn.style.display = total()>COD_CEILING ? "" : "none";
     var ct=document.getElementById("checkout-title"); if(ct) ct.style.display = ids.length ? "" : "none";

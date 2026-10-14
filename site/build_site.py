@@ -158,6 +158,39 @@ def esc(s):
     return html.escape(str(s or ""))
 
 # ── спільні шматки розмітки ─────────────────────────────────────────────
+# Кнопка «Написати» у шапці (власник 14.10, варіант А): меню месенджерів. Viber — за номером загального телефону; Telegram з'явиться, коли буде бот (CHAT_TELEGRAM_URL — посилання t.me/<бот>; порожньо = пункт не показуємо; запит ботом спрямовується на Аудитора — це частина Code-Agent); Instagram — особисті повідомлення.
+CHAT_VIBER_URL = "viber://chat?number=%2B380730150815"
+CHAT_TELEGRAM_URL = "https://t.me/plutustoys_support_bot"   # бот підтримки (Code-Agent 14.10): повідомлення клієнта іде власнику, відповідь повертається в той самий чат; часу відповіді в UI не обіцяємо
+CHAT_INSTAGRAM_URL = ""   # власник 14.10: «Instagram не треба» — пункт не показуємо (повернути: https://ig.me/m/plutustoys.ua)
+
+
+def chat_menu_html():
+    items = [("viber", "Viber", CHAT_VIBER_URL), ("telegram", "Telegram", CHAT_TELEGRAM_URL), ("instagram", "Instagram", CHAT_INSTAGRAM_URL)]
+    links = "".join(f'<a class="chat-item" role="menuitem" data-chat="{k}" href="{esc(u)}" target="_blank" rel="noopener">{t}</a>' for k, t, u in items if u)
+    if not links:
+        return ""
+    return ('<div class="chatwrap"><button type="button" class="chatbtn" id="chat-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="chat-menu" aria-label="Підтримка: написати нам">'
+            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.5A8 8 0 1 1 21 12z"/></svg>'
+            '<span class="chat-lbl">Підтримка</span></button>'
+            f'<div class="chat-menu" id="chat-menu" role="menu" aria-label="Підтримка: написати нам" hidden>{links}</div></div>')
+
+
+def header_socials_html():
+    """Значки Instagram / Facebook / пошта у шапці (власник 14.10: «це поле пустує»): на ПК заповнюють проміжок між кошиком і кнопкою «Підтримка»; на вузьких екранах приховані (там вони в підвалі). Посилання — ті самі, що в підвалі, utm_medium=header."""
+    ig, fb = (_footer_utm(u).replace("utm_medium=footer", "utm_medium=header") for u in SOCIAL_URLS)
+    ico = 'width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"'
+    return (
+      '<div class="hsoc">'
+      f'<a class="hsoc-a" href="{ig}" target="_blank" rel="noopener" aria-label="Instagram" data-hsoc="instagram">'
+        f'<svg {ico}><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".6" fill="currentColor"/></svg></a>'
+      f'<a class="hsoc-a" href="{fb}" target="_blank" rel="noopener" aria-label="Facebook" data-hsoc="facebook">'
+        f'<svg {ico}><path d="M14 8h2.5V4.5H14a4 4 0 0 0-4 4V11H7.5v3.5H10V21h3.5v-6.5H16L16.5 11h-3V8.8c0-.5.3-.8.8-.8Z"/></svg></a>'
+      '<a class="hsoc-a" href="mailto:plutustoys@gmail.com" aria-label="Написати на пошту plutustoys@gmail.com" data-hsoc="email">'
+        f'<svg {ico}><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg></a>'
+      '</div>'
+    )
+
+
 def header():
     return (
       '<header class="top">'
@@ -174,6 +207,8 @@ def header():
         '<path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>'
         '<span class="badge" id="cart-badge">0</span>'
       '</a>'
+      + header_socials_html() +
+      chat_menu_html() +
       '</header>'
     )
 
@@ -329,6 +364,131 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
     )
 
+# ── «Знижка тижня −15%» (власник 14.10, варіант «а»; бекенд Code-Agent: site_sale.py пише site/sale_week.json щонеділі) ──
+# КОНТРАКТ: {"week","pct","from","until","created_at","items":{"<id>":{"old":int,"new":int}}}; from/until — ISO із поясом; new = ceil(old × (100−pct)/100).
+# build_site у вікні from…until ставить ціну pr=new і op=old (index.json) для id з файлу; ПОЗА вікном файл ігнорується (навіть якщо лишився). Ціна — єдине джерело для замовлення/LiqPay/чека (site_order_api читає pr, op ігнорує).
+# Захисні перевірки на КОЖНІЙ збірці (стара ціна має бути РЕАЛЬНОЮ, збитку нема): поточна ціна сайту == old; new < old; внесок після знижки ≥ SALE_RESERVE_UAH (запас 25 ₴); невідома собівартість — без знижки. Товар, що не пройшов, випадає з акції (ціна лишається звичайною).
+SALE_FILE = os.path.join(OUT, "sale_week.json")
+SALE_WEEK_ENABLED = True
+SALE_RESERVE_UAH = 25.0
+SALE_MIN_APPLIED_ALERT = 3   # менше застосованих позицій при діючій акції — алерт у Telegram
+SALE_ACTIVE = None   # виставляє build(): {"week","pct","from","until","items":{id:(old,new)}} або None
+
+
+def _aware_dt(s):
+    try:
+        d = datetime.fromisoformat(str(s))
+    except (ValueError, TypeError):
+        return None
+    return d if d.tzinfo else None
+
+
+def _sale_now():
+    raw = os.environ.get("SITE_SALE_NOW", "").strip()   # лише для тестів
+    return _aware_dt(raw) if raw else None
+
+
+def _parse_sale_week(raw, now):
+    """Один тиждень контракту → dict або None (поза вікном — тихо; зламаний — None з попередженням у stderr)."""
+    def bad(why):
+        print(f"[build] ⚠ sale_week.json: тиждень відхилено: {why}", file=sys.stderr)
+        return None
+
+    if not isinstance(raw, dict) or not isinstance(raw.get("items"), dict):
+        return bad("очікується {\"items\": {...}}")
+    pct = raw.get("pct")
+    if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 50):
+        return bad(f"pct={pct!r}")
+    start, end = _aware_dt(raw.get("from")), _aware_dt(raw.get("until"))
+    if start is None or end is None or not start < end:
+        return bad("from/until мають бути ISO із поясом і from < until")
+    if (end - start) > timedelta(days=8):
+        return bad("вікно акції довше 8 днів (очікується тиждень пн–нд)")
+    if not (start <= now <= end):
+        return None   # поза вікном цього тижня: ігноруємо
+    items = {}
+    for pid, v in raw["items"].items():
+        if not isinstance(v, dict):
+            return bad(f"позиція {pid}")
+        old, new = v.get("old"), v.get("new")
+        if not all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in (old, new)):
+            return bad(f"позиція {pid}: old/new не цілі додатні")
+        if new != -(-old * (100 - pct) // 100) or new >= old:
+            return bad(f"позиція {pid}: new={new} ≠ ceil(old×{100 - pct}/100) (old={old})")
+        items[str(pid)] = (old, new)
+    if not items:
+        return None
+    return {"week": str(raw.get("week") or ""), "pct": pct, "from": start, "until": end, "items": items}
+
+
+def load_sale_week(now=None, path=None):
+    """Дійсний набір акції на ЗАРАЗ або None. Файл — {"weeks":[чинний, наступний]} (до 2 тижнів; Code-Agent: щонеділі 18:00 план дописує наступний, чинний не знімається); плоский формат (один тиждень без weeks) теж читаємо.
+    Діє лише той тиждень, у чиє вікно from…until потрапляє «зараз»; прострочені/майбутні/зламані тижні ігноруємо (свіжості файлу не довіряємо). Нема файлу — тихо None; зламаний файл — None із попередженням."""
+    path = path or SALE_FILE
+    now = now or _sale_now() or datetime.now(timezone.utc)
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        print(f"[build] ⚠ sale_week.json НЕ прочитано ({type(e).__name__}: {e}) — акції нема", file=sys.stderr)
+        return None
+    if isinstance(raw, dict) and "weeks" in raw:
+        weeks = raw["weeks"]
+        if not isinstance(weeks, list):
+            print("[build] ⚠ sale_week.json: weeks має бути списком — акції нема", file=sys.stderr)
+            return None
+    else:
+        weeks = [raw]
+    for w in weeks:
+        got = _parse_sale_week(w, now)
+        if got:
+            return got
+    return None
+
+
+def apply_sale(pid, price, sale, cost):
+    """(ціна, стара ціна|None): акційна ціна лише коли поточна ціна сайту == old, new < price і внесок після знижки ≥ SALE_RESERVE_UAH (невідома собівартість — без знижки)."""
+    if not sale or str(pid) not in sale["items"]:
+        return price, None
+    old, new = sale["items"][str(pid)]
+    if price != old or not (0 < new < price) or not cost or cost <= 0:
+        return price, None
+    margin = new - cost - new * cp.PAYMENT_COMMISSION.get("site", 0.0) - SITE_FULFILL_PER_ORDER
+    if round(margin, 2) < SALE_RESERVE_UAH:   # до копійок: похибка float не має відкидати внесок «рівно 25,00»
+        return price, None
+    return new, old
+
+
+_WEEKDAY_GEN = ("понеділка", "вівторка", "середи", "четверга", "пʼятниці", "суботи", "неділі")
+
+
+def sale_until_label():
+    """«неділі 23:59» (за поясом з файлу) для підпису «Акція до …»."""
+    if not SALE_ACTIVE:
+        return ""
+    u = SALE_ACTIVE["until"]
+    return f"{_WEEKDAY_GEN[u.weekday()]} {u:%H:%M}"
+
+
+def sale_badge_html(p) -> str:
+    return f'<span class="sale-badge">−{SALE_ACTIVE["pct"] if SALE_ACTIVE else 15}%</span>' if p.get("old_price") else ""
+
+
+def sale_until_html() -> str:
+    """Рядок «Акція до неділі 23:59» + зворотний відлік (JS заповнює [data-sale-until]); без JS лишається статичний текст."""
+    if not SALE_ACTIVE:
+        return ""
+    return (f'<div class="sale-until">Акція до <b>{sale_until_label()}</b><span class="sale-left" data-sale-until="{esc(SALE_ACTIVE["until"].isoformat())}"></span></div>')
+
+
+def index_entries(prods):
+    """Записи index.json (клієнтський пошук/сорт, site_order_api): pr — ціна, за якою ПРОДАЄМО (акційна під час «Знижки тижня»), op — стара ціна акції (лише інформація: замовлення її ігнорує)."""
+    return [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"],
+             "c": p["category"], "s": 1 if p["stock"] > 0 else 0, **({"op": p["old_price"]} if p.get("old_price") else {})} for p in prods]
+
+
 def tile(p, cls="", eager=False, prio=False, badge=False):
     """Картка товару. cls — додатковий клас (напр. «slide» у каруселі); eager=True — без loading=lazy (перші слайди каруселі = кандидат на LCP)."""
     # Бейдж «Залишилось N шт» (SMM 12.10): лише коли залишок Toysi 1–3 («1 шт.»/«2 шт.»/«3 шт.» — ТОЧНІ числа з <ostatok>, перевірено на VPS: діапазонів «1…5» у цій зоні немає; значення береться на момент збірки, раз на ~2 год).
@@ -339,15 +499,17 @@ def tile(p, cls="", eager=False, prio=False, badge=False):
     badge = f'<span class="stock-badge">Залишилось {int(p["stock"])} шт</span>' if low else ""
     av = "" if low else ('<span class="av">У наявності</span>' if p["stock"] > 0 else '<span class="av oos">Немає</span>')
     md = '<span class="md-badge">Уцінка</span>' if _is_markdown_item(p) else ""
+    sb = sale_badge_html(p)
+    price_html = (f'<span class="pr pr-sale">{p["price"]} ₴</span><s class="pr-old">{p["old_price"]} ₴</s>' if p.get("old_price") else f'<span class="pr">{p["price"]} ₴</span>')
     lazy = (' fetchpriority="high"' if prio else "") if eager else ' loading="lazy"'
     img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}"{lazy}>'
            if p["photo"] else '<div class="ph"></div>')
     klass = ("card " + cls) if cls else "card"
     return (
       f'<a class="{klass}" href="product-{esc(p["id"])}.html">'
-      f'<div class="ph">{img}{badge}{md}</div>'
+      f'<div class="ph">{img}{badge}{md}{sb}</div>'
       f'<div class="info"><div class="nm">{esc(p["name"])}</div>'
-      f'<div class="foot"><span class="pr">{p["price"]} ₴</span>{av}</div></div></a>'
+      f'<div class="foot">{price_html}{av}</div></div></a>'
     )
 
 def grid(prods, eager_n=0, badge=False):
@@ -372,6 +534,10 @@ class CatalogShrinkError(RuntimeError):
 
 
 def build():
+    global SALE_ACTIVE
+    SALE_ACTIVE = load_sale_week() if SALE_WEEK_ENABLED else None
+    if SALE_ACTIVE:
+        print(f"[build] акція {SALE_ACTIVE['week']}: −{SALE_ACTIVE['pct']}%, {len(SALE_ACTIVE['items'])} позицій у файлі, до {SALE_ACTIVE['until'].isoformat()}")
     _load_category_texts()
     _load_product_texts()
     _load_category_related()
@@ -426,10 +592,13 @@ def build():
             cost = cp.real_toysi_cost(it)
         except (ValueError, TypeError):
             cost = 0.0
+        _old_price = None
+        if SALE_ACTIVE and not is_oos:
+            price, _old_price = apply_sale(str(it.get("id")), price, SALE_ACTIVE, cost)   # акційна ціна (перевірки: ціна==old, внесок ≥ запасу)
         contribution = (price - cost - price * cp.PAYMENT_COMMISSION.get("site", 0.0)
                         - SITE_FULFILL_PER_ORDER) if cost > 0 else None
         (oos_prods if is_oos else prods).append({
-            "id": str(it.get("id")), "name": name, "price": price,
+            "id": str(it.get("id")), "name": name, "price": price, "old_price": _old_price,
             "category": it.get("category_name") or "Інше",
             "photo": pics[0], "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
@@ -441,6 +610,15 @@ def build():
     def _rank_key(p):
         c = p["contribution"] if p["contribution"] is not None else -1e9
         return (-c, -p["price"], p["name"])
+    if SALE_ACTIVE:
+        _applied = sum(1 for p in prods if p.get("old_price"))
+        print(f"[build] акція: застосовано {_applied} з {len(SALE_ACTIVE['items'])} позицій файлу (решта випала: ціна ≠ old / нема в наявності / внесок < запасу)")
+        if _applied < SALE_MIN_APPLIED_ALERT:   # акція ідe, а позицій майже нема (ціни змінились/собівартість зросла): тихо не лишаємо
+            try:
+                from telegram_notify import send_throttled_alert
+                send_throttled_alert("site_sale_few_applied", f"⚠️ site-rebuild: «Знижка тижня» {SALE_ACTIVE['week']}: застосовано лише {_applied} з {len(SALE_ACTIVE['items'])} позицій файлу (ціна ≠ old, нема в наявності або внесок < {SALE_RESERVE_UAH:.0f} ₴).", cooldown_sec=6 * 3600)
+            except Exception:  # noqa: BLE001 — алерт best-effort
+                pass
     prods.sort(key=_rank_key)
     oos_prods.sort(key=lambda p: p["id"])
     if LIMIT:
@@ -542,8 +720,7 @@ def build():
     trust = write_trust_pages()
     # 6) індекс пошуку
     # index.json — клієнтський пошук + фільтр/сорт каталогу. c=категорія, s=наявність(1/0).
-    idx = [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"],
-            "c": p["category"], "s": 1 if p["stock"] > 0 else 0} for p in prods_rec]
+    idx = index_entries(prods_rec)
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap + robots
@@ -560,7 +737,7 @@ def build():
     valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
-        if (fn.startswith(("product-", "category-", "catalog", "utsinka")) and fn.endswith(".html")
+        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii")) and fn.endswith(".html")
                 and fn not in valid):
             try:
                 os.remove(os.path.join(OUT, fn))
@@ -817,13 +994,14 @@ def offer_extras(p) -> dict:
     """Поля Product.offers для Merchant free listings (SEO п.3б). Значення — з текстів сторінок «Доставка»/«Повернення»."""
     from datetime import date, timedelta
     extra = {
-        "priceValidUntil": (date.today() + timedelta(days=PRICE_VALID_DAYS)).isoformat(),
+        "priceValidUntil": ((SALE_ACTIVE["until"].date() if (SALE_ACTIVE and p.get("old_price")) else date.today() + timedelta(days=PRICE_VALID_DAYS))).isoformat(),
         # shippingDetails без виміряної ставки не пишемо (shippingRate обов'язковий, вигадане число — розбіжність розмітки зі сторінкою); повернемо разом із цифрою.
         "hasMerchantReturnPolicy": {
             "@type": "MerchantReturnPolicy", "applicableCountry": "UA",
             "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
             "merchantReturnDays": 14, "returnMethod": "https://schema.org/ReturnByMail",
-            "returnFees": "https://schema.org/ReturnShippingFees",
+            # SEO 14.10: ReturnShippingFees без returnShippingFeesAmount Google читав як «безкоштовно» (100% товарів у Merchant Center); тариф НП залежить від міста — суму не вказуємо, тож «фактична вартість — на покупці» (як на сторінці «Повернення» для товару належної якості)
+            "returnFees": "https://schema.org/ReturnFeesCustomerResponsibility",
         },
     }
     cond = item_condition(p["name"])
@@ -1147,49 +1325,35 @@ def write_utsinka(prods, cat_list, cat_slug):
 
 
 AKTSII_FILE = "aktsii.html"
-AKTSII_COUNT = 12
-AKTSII_MIN = 4   # менше придатних карток — сторінки й кнопки героя нема
-# Картка «−5% за підписку на Instagram» (SMM/власник 13.10): показується ЛИШЕ коли промокод PLUTUS5 реально працює (бекенд Code-Agent + UI кошика ввімкнені). Без коду обіцяти знижку не можна — вмикати (True) разом із UI промокоду.
-PROMO_PLUTUS5_LIVE = False
-AKTSII_PROMO_CARD = ('<div class="promo-card"><div class="pc-txt"><b>−5% за підписку на Instagram</b>'
-                     '<span>Підпишіться на @plutustoys.ua та введіть код PLUTUS5 у кошику.</span></div>'
-                     '<a class="btn" href="https://www.instagram.com/plutustoys.ua/" target="_blank" rel="noopener">Підписатися</a></div>')
+AKTSII_MIN = 1   # хоч одна придатна акційна картка; жодної (усі випали за перевірками) — сторінки й кнопки героя нема
 
 
 def aktsii_pick(prods):
-    """12 карток уцінки для /aktsii.html (власник 13.10): ті самі придатні, що на /utsinka.html (у наявності, фото, внесок ≥ 0), ціна від 100 ₴, різні «основи назв»; щоденна ротація (стабільна протягом доби)."""
-    pool = [p for p in utsinka_pick(prods) if p["price"] >= 100]
-    rng = random.Random(HOME_PICK_SEED * 7919 + _pick_day() * 104729)
-    rng.shuffle(pool)
-    out, used = [], set()
-    for p in pool:   # уцінка вся в одній категорії «Уцінка» — різноманітність за «основою назви» (_pick_key), не за категорією
-        k = _pick_key(p["name"])
-        if k in used:
-            continue
-        used.add(k)
-        out.append(p)
-        if len(out) >= AKTSII_COUNT:
-            break
+    """Картки «Знижки тижня» для /aktsii.html: товари з акційною ціною (old_price) у наявності; порядок — ціна зростаюче. Нема акції/нема придатних — []."""
+    if not SALE_WEEK_ENABLED or not SALE_ACTIVE:
+        return []
+    out = sorted((p for p in prods if p.get("old_price") and p["stock"] > 0 and p.get("photo")), key=lambda p: (p["price"], str(p["id"])))
     return out if len(out) >= AKTSII_MIN else []
 
 
 def write_aktsii(prods):
-    """Пише /aktsii.html (картка підписки — лише коли PROMO_PLUTUS5_LIVE; блок про уцінку; 12 карток; «Усі уцінені →»). Повертає set записаних сторінок."""
+    """Пише /aktsii.html «Знижка тижня −N%»: підпис «Акція до неділі 23:59» + зворотний відлік, сітка карток (події select_item «sale_week»). Повертає set записаних сторінок."""
     picks = aktsii_pick(prods)
     if not picks:
-        print("[build] ⚠ aktsii: замало придатних уцінених товарів — /aktsii.html не пишемо", file=sys.stderr)
         return set()
+    pct = SALE_ACTIVE["pct"]
     body = (
         crumbs_html([("Головна", "index.html"), ("Акції", None)]) +
-        '\n<h1 class="page">Акції</h1>\n' +
-        (AKTSII_PROMO_CARD if PROMO_PLUTUS5_LIVE else "") +
-        UTSINKA_NOTICE +
-        grid(picks, eager_n=4) +
-        '<p class="nb-more"><a class="btn ghost" href="utsinka.html" style="display:inline-block;max-width:260px">Усі уцінені →</a></p>'
+        f'\n<h1 class="page">Знижка тижня −{pct}%</h1>\n'
+        f'<p class="sale-lead">Щопонеділка — нова добірка іграшок зі знижкою −{pct}%. Ціна вже знижена: нічого вводити не треба. Діє до {sale_until_label()}.</p>' +
+        sale_until_html() +
+        '<div class="sale-list" id="sale-list" data-list="sale_week">' + grid(picks, eager_n=4) + '</div>'
+        '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'
     )
     head = breadcrumb_ld([("Головна", "index.html"), ("Акції", None)])
-    _write(AKTSII_FILE, page("Акції", body, extra_head=head, description="Акції PlutusToys: уцінені іграшки за зниженими цінами. Дефект чи неповна комплектація вказані в назві й описі.",
-                             canonical=AKTSII_FILE, og_image=OG_IMAGE, title_full="Акції — знижені ціни на іграшки | PlutusToys"))
+    _write(AKTSII_FILE, page(f"Знижка тижня −{pct}%", body, extra_head=head,
+                             description=f"Знижка тижня −{pct}% у PlutusToys: добірка іграшок за акційними цінами до {sale_until_label()}. Стара ціна перекреслена, знижка вже в ціні.",
+                             canonical=AKTSII_FILE, og_image=OG_IMAGE, title_full=f"Знижка тижня −{pct}% на іграшки | PlutusToys"))
     return {AKTSII_FILE}
 
 
@@ -1226,7 +1390,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             static_grid = f'<div id="cat-static">{static_grid}</div>'
         body = (
             crumbs_html(trail) +
-            ("" if special else chips(cat_list, cat_slug, active)) +
+            ("" if (special or active is None) else chips(cat_list, cat_slug, active)) +   # власник 14.10: у повному каталозі рядок чипів-категорій прибрано (є панель «Категорія» в сортуванні/фільтрах); на сторінках категорій чипи лишаються (навігація між категоріями)
             f'\n<h1 class="page">{esc(special["h1"] if special else (active or title))}</h1>\n' +
             (special["notice"] if special else "") +   # SEO 11.10: H1 категорії = лише назва («Каталог •» — у title/крихтах); повний каталог — «Каталог іграшок»
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
@@ -1456,6 +1620,7 @@ CHIP_ICONS = {
     "nab": '<svg class="chip-ico ico-nab" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M12 12c-4-5-9-3-8 0s6 2 8 0zm0 0c4-5 9-3 8 0s-6 2-8 0z" fill="#E04E39"/><path d="M12 12l-3 8M12 12l3 8" stroke="#E8B04A" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="12" r="2.2" fill="#E8B04A"/></svg>',
 }
 HOME_SEASONAL_MIN = 6
+CHIP_ICON_SALE_TAG = ('<svg class="btn-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M3 12.2V4.6A1.6 1.6 0 0 1 4.6 3h7.6l8.4 8.4a1.6 1.6 0 0 1 0 2.3l-6.9 6.9a1.6 1.6 0 0 1-2.3 0z"/><circle cx="8" cy="8" r="1.7" fill="#D93A3A"/></svg>')
 CHIP_ICON_SALE = '<svg class="chip-ico ico-sale" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M3 12.2V4.6A1.6 1.6 0 0 1 4.6 3h7.6l8.4 8.4a1.6 1.6 0 0 1 0 2.3l-6.9 6.9a1.6 1.6 0 0 1-2.3 0z"/><circle cx="8" cy="8" r="1.7" fill="#fff"/></svg>'   # іконка чипа-посилання «Уцінка» (це не набір, ключа в CHIP_ICONS нема)
 # «Популярне зараз» — чип за ПОПИТОМ Google (власник 13.10: «чому не маркетинг за попитом»): список id від SEO у site/demand_featured.json
 # {"date": "YYYY-MM-DD", "source": "Search Console 28d", "ids": ["..."], "categories": ["..."]}. Нема файлу / застарів (> DEMAND_MAX_AGE_DAYS) / менше DEMAND_MIN карток у наявності — чипа нема (не вигадуємо).
@@ -1663,7 +1828,7 @@ def write_home(prods, cats, cat_list, cat_slug):
         )
     # кнопка героя (власник 13.10): «Акції» → /aktsii.html (є придатні уцінені товари), інакше «Усі іграшки»; «Уцінка» — чип-посилання над каруселлю
     if aktsii_pick(prods):
-        hero_act = '<a class="btn" href="aktsii.html">Акції</a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
+        hero_act = f'<a class="btn btn-sale" href="aktsii.html">{CHIP_ICON_SALE_TAG}<span>Акції</span></a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
     else:
         hero_act = '<a class="btn" href="catalog.html">Усі іграшки</a>'
     body = (
@@ -1728,7 +1893,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     in_stock = p["stock"] > 0
     # Без залишку: чесний текст + шлях далі (категорія, якщо вона є в каталозі; інакше повний каталог). Кнопка «У кошик» вимкнена нижче.
     _oos_cat_href = f"category-{cat_slug[p['category']]}.html" if (cat_slug and p.get("category") in cat_slug) else "catalog.html"
-    _phone_line = '<p class="ask">Є питання? <a href="tel:+380730150815">📞 +380 (73) 015-08-15</a></p>'
+    _phone_line = ""   # власник 14.10: рядок «Є питання? + телефон» на картці прибрано («не навантажуй»); контакти — у футері й на сторінці «Контакти»
     # Без залишку: НЕ обіцяємо оплату/доставку/повернення на сторінці з вимкненою кнопкою (аудит #675, Д2) — лише телефон.
     buy_info = (
         f'<p class="ret-line">{RETURN_LINE}</p>'
@@ -1756,9 +1921,9 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
       '<div class="body">'
       f'<div class="cat">{esc(p["category"])}</div>'
       f'<h1 class="prod">{esc(p["name"])}</h1>'
-      f'<div class="price-row"><div class="price">{p["price"]} ₴</div>'
+      + (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +
       f'<div class="avail {oos}">{avail}</div></div>'
-      + oos_note + buy_info +
+      + (sale_until_html() if p.get("old_price") else "") + oos_note + buy_info +
       desc_block +
       '</div></div>'
       + (f'<section class="related"><h2>{esc(related_title)}</h2>{grid(related)}</section>' if related else "")

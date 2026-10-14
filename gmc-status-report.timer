@@ -1,0 +1,9 @@
+[Unit]
+Description=PlutusToys: щоденний звіт про відхилення Merchant Center (06:30 за Києвом)
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

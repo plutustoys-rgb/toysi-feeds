@@ -78,6 +78,7 @@ from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides
 
 from trademark_filter import is_uno_trademark_blocked
 from feed_title_norm import normalize_title
+import site_sale
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
 OUTPUT_FILE_RU = "feeds/google_merchant_feed_ru.xml"   # російськомовний фід (те саме з тими самими українськими посиланнями; рішення власника 14.10)
@@ -843,6 +844,8 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         "included": 0,
     }
     items = []
+    stats["on_sale"] = 0       # позицій із sale_price (акція «Знижка тижня», файл site/sale_week.json)
+    sale_map = site_sale.load_feed_sale()
 
     for pid, item in catalog.items():
         if site_ids is not None and str(pid) not in site_ids:
@@ -943,6 +946,15 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         if cat_id == GOOGLE_CATEGORY_FALLBACK:
             stats["category_fallback"] += 1
 
+        # «Знижка тижня»: у фіді price = звичайна (стара) ціна, sale_price = акційна + дати дії; лише якщо ціна картки зараз = стара АБО нова (інакше ціна змінилась, акцію не показуємо, щоб не розійтись зі сторінкою)
+        price_str, sale_price, sale_dates, sale_dates_colon = f"{retail_price:.2f} {FEED_CURRENCY}", None, None, None
+        _sale = sale_map.get(str(pid))
+        if _sale and int(round(retail_price)) in (_sale["old"], _sale["new"]) and site_sale.sale_still_eligible(_sale["old"], _sale["new"], cost):
+            price_str = f"{_sale['old']:.2f} {FEED_CURRENCY}"
+            sale_price = f"{_sale['new']:.2f} {FEED_CURRENCY}"
+            sale_dates = _sale["dates"]
+            sale_dates_colon = _sale["dates_colon"]
+            stats["on_sale"] += 1
         items.append({
             "pid": str(pid),   # id каталогу Toysi (ключ російського тексту); у XML не пишеться
             "id": str(item.get("vendor_code") or pid),
@@ -950,7 +962,10 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "description": _clean_description(item.get("description", ""))[:5000] or name,
             "link": SITE_LINK_TEMPLATE.format(pid=pid),
             "image_link": image,
-            "price": f"{retail_price:.2f} {FEED_CURRENCY}",
+            "price": price_str,
+            "sale_price": sale_price,
+            "sale_dates": sale_dates,
+            "sale_dates_colon": sale_dates_colon,
             "availability": "in_stock" if stock > 0 else "out_of_stock",
             "condition": "new",
             "brand": brand,
@@ -988,6 +1003,7 @@ def _build_xml(items: list) -> ET.Element:
         ET.SubElement(entry, "link").text = it["link"]
         ET.SubElement(entry, f"{{{NS}}}image_link").text = it["image_link"]
         ET.SubElement(entry, f"{{{NS}}}price").text = it["price"]
+        site_sale.add_sale_tags(entry, NS, it)
         ET.SubElement(entry, f"{{{NS}}}availability").text = it["availability"]
         ET.SubElement(entry, f"{{{NS}}}condition").text = it["condition"]
         ET.SubElement(entry, f"{{{NS}}}brand").text = it["brand"]

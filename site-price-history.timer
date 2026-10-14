@@ -1,0 +1,9 @@
+[Unit]
+Description=PlutusToys: історія цін сайту кожні 2 год (через ~15 хв після ребілду сайту о :20)
+
+[Timer]
+OnCalendar=*-*-* 00/2:35:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

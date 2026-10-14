@@ -200,6 +200,20 @@ class OrderError(Exception):
     """Валідаційна помилка замовлення — повертаємо клієнту 400 з поясненням."""
 
 
+def _expected_total(raw):
+    """Сума, яку ПОКАЗАВ покупцю кошик (ціле, грн); необов'язкове поле: нема/некоректне → None (поведінка як раніше, без перевірки). Ніколи не кидає виняток:
+    приймаємо лише int, float із цілим значенням і рядок із 1–12 ASCII-цифр (юнікод-цифри '²', арабські, дуже довгі числа → None)."""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw if abs(raw) < 10**12 else None
+    if isinstance(raw, float):
+        return int(raw) if raw == raw and abs(raw) < 1e12 and raw.is_integer() else None
+    if isinstance(raw, str) and re.fullmatch(r"[0-9]{1,12}", raw):
+        return int(raw)
+    return None
+
+
 class StockChanged(Exception):
     """Залишок Toysi за свіжим знімком (site/stock.json) менший за замовлене: замовлення НЕ створюється, клієнт отримує 409 {code: stock_changed, lines: [...]}."""
 
@@ -705,6 +719,11 @@ class Handler(SimpleHTTPRequestHandler):
                 order["items"], total = new_items, new_total
                 order["promo_code"] = res["applied"]
                 order["promo_discount_total"] = res["discount_total"]
+            _exp = _expected_total(payload.get("expected_total"))
+            if _exp is not None and _exp != total:
+                # ціни змінились між кошиком і оформленням (ребілд сайту, акція почалась/закінчилась, Toysi підняв ціну): НЕ створюємо замовлення й НЕ списуємо суму, якої покупець не бачив
+                return self._json(409, {"code": "price_changed", "error": "Ціни в кошику змінились: перевірте оновлену суму.", "expected_total": _exp, "total": total,
+                                        "lines": [{"id": i["toysi_code"], "name": i["name"], "qty": i["qty"], "price": i["price"]} for i in order["items"]]})
             _check_cod_ceiling(order["payment_method"], total)
         except StockChanged as e:
             # НЕ створюємо замовлення: UI (Shopify-code) показує «щойно закінчилось», прибирає/зменшує лише ці рядки й просить підтвердити решту

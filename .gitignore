@@ -321,3 +321,13 @@ forbidden_watch_state.json
 prom_gone_seen.json
 promo_cost.json
 promo_cost.json.tmp
+# Історія цін сайту (приватний runtime-стан збірки, 14.10): не комітити
+site_price_state.json
+site_price_history.json
+site_price_history.json.tmp
+site_sale_picks.json
+site_sale_picks.json.tmp
+site_chat.db
+site_chat.db-journal
+.secrets/
+gmc_service_account*.json

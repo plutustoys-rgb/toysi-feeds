@@ -107,16 +107,31 @@ def live_feed(feed_path=FEED):
         if gid is None or not gid.text:
             continue
         price = it.find("g:price", NS)
+        sale = it.find("g:sale_price", NS)
+        sale_dates = it.find("g:sale_price_effective_date", NS)
         avail = it.find("g:availability", NS)
         img = it.find("g:image_link", NS)
         title = it.find("title")
         out[gid.text] = {
             "price": (price.text if price is not None else "") or "",
+            "sale_price": (sale.text if sale is not None else "") or "",
+            "sale_dates": (sale_dates.text if sale_dates is not None else "") or "",
             "avail": (avail.text if avail is not None else "") or "",
             "image": (img.text if img is not None else "") or "",
             "title": ((title.text if title is not None else "") or "").strip(),
         }
     return out
+
+
+def _sale_is_active(dates: str, now=None) -> bool:
+    """'2026-10-26T00:00+0200/2026-11-01T23:59+0200' (або з +02:00) містить now? Некоректний/порожній формат → False (беремо звичайну ціну)."""
+    from datetime import datetime, timezone
+    try:
+        a, b = dates.split("/")
+        fmt = "%Y-%m-%dT%H:%M%z"
+        return datetime.strptime(a.strip(), fmt) <= (now or datetime.now(timezone.utc)) <= datetime.strptime(b.strip(), fmt)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def check_live(feed, gid):
@@ -126,7 +141,11 @@ def check_live(feed, gid):
     e = feed[gid]
     if e["avail"] != "in stock":
         sys.exit(f"[reel] СТОП: {gid} має availability={e['avail']} — не рендеримо")
-    raw = e["price"].split()[0] if e["price"] else "0"
+    # «Знижка тижня»: у фіді price = звичайна ціна, sale_price = акційна з датами; підпис рілса має нести ту, що діє ЗАРАЗ (інакше підпис завищений)
+    eff = e["price"]
+    if e.get("sale_price") and _sale_is_active(e.get("sale_dates", "")):
+        eff = e["sale_price"]
+    raw = eff.split()[0] if eff else "0"
     try:
         price = f"{round(float(raw))} грн"
     except ValueError:

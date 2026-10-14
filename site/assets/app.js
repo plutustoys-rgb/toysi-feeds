@@ -228,7 +228,7 @@
     res.innerHTML = meta + out.map(function(p){
       return '<a class="sr" href="product-'+p.id+'.html">'+
         '<img src="'+p.p+'" loading="lazy" alt="">'+
-        '<div><div class="srn">'+esc(p.n)+'</div><div class="srp">'+p.pr+' ₴</div></div></a>';
+        '<div><div class="srn">'+esc(p.n)+'</div><div class="srp">'+p.pr+' ₴'+(p.op ? ' <s class="pr-old">'+p.op+' ₴</s>' : '')+'</div></div></a>';
     }).join("");
   }
   function runSearch(q){
@@ -260,9 +260,12 @@
   function catCard(p){
     var av = p.s ? '<span class="av">У наявності</span>' : '<span class="av oos">Немає</span>';
     var img = p.p ? '<img src="'+esc(p.p)+'" loading="lazy" alt="'+esc(p.n)+'">' : '<div class="ph"></div>';
-    return '<a class="card" href="product-'+esc(p.id)+'.html"><div class="ph">'+img+'</div>'+
+    var sale = p.op && p.op>p.pr;   // «Знижка тижня»: op — стара ціна (аудит 14.10: каталог показував акційну ціну без перекресленої старої й бейджа)
+    var badge = sale ? '<span class="sale-badge">−'+Math.round((1-p.pr/p.op)*100)+'%</span>' : '';
+    var price = sale ? '<span class="pr pr-sale">'+p.pr+' ₴</span><s class="pr-old">'+p.op+' ₴</s>' : '<span class="pr">'+p.pr+' ₴</span>';
+    return '<a class="card" href="product-'+esc(p.id)+'.html"><div class="ph">'+img+badge+'</div>'+
       '<div class="info"><div class="nm">'+esc(p.n)+'</div>'+
-      '<div class="foot"><span class="pr">'+p.pr+' ₴</span>'+av+'</div></div></a>';
+      '<div class="foot">'+price+av+'</div></div></a>';
   }
   function initCatalog(){
     var controls=document.getElementById("cat-controls");
@@ -303,13 +306,18 @@
       grid.hidden=false; count.hidden=false;
       renderMore();
     }
+    function gridCols(){
+      try{ var t=getComputedStyle(grid).gridTemplateColumns; var n=t && t!=="none" ? t.trim().split(/\s+/).length : 0; return n>0 ? n : 1; }catch(e){ return 1; }
+    }
     function renderMore(){
       if(!filtered.length){
         grid.innerHTML='<div class="empty" style="padding:40px 0">Нічого не знайдено за фільтром. <a href="#" id="cf-reset2">Скинути</a></div>';
         var r2=document.getElementById("cf-reset2"); if(r2) r2.addEventListener("click",function(e){e.preventDefault();doReset();});
         count.textContent="Знайдено: 0"; moreWrap.hidden=true; return;
       }
-      var slice=filtered.slice(shown, shown+PER);
+      // порція кратна числу колонок сітки (власник 14.10: 24 карток у 5 колонок лишали неповний останній рядок після кожного «Показати ще»)
+      var cols=gridCols(), upto=Math.max(shown+cols, Math.floor((shown+PER)/cols)*cols);
+      var slice=filtered.slice(shown, upto);
       grid.insertAdjacentHTML("beforeend", slice.map(catCard).join(""));
       shown+=slice.length;
       count.textContent="Знайдено: "+filtered.length+" · показано "+shown;
@@ -404,6 +412,7 @@
     var c=read(), ids=Object.keys(c);
     var staleNote=document.getElementById("cart-stock-note"); if(staleNote && staleNote.parentNode) staleNote.parentNode.removeChild(staleNote);   // порожній кошик не має мати попередження (аудит)
     renderAside(c, ids);
+    var cg=document.querySelector(".cart-grid"); if(cg) cg.classList.toggle("is-empty", ids.length===0);   // порожній кошик: одна колонка, по центру (власник 14.10: на ПК блок стояв лівіше центру)
     var codn=document.getElementById("cod-limit-note");
     if(codn) codn.style.display = total()>COD_CEILING ? "" : "none";
     var ct=document.getElementById("checkout-title"); if(ct) ct.style.display = ids.length ? "" : "none";
@@ -542,6 +551,25 @@
       box.parentNode.insertBefore(n, box);
     });
   }
+  function priceChanged(j){   // відповідь /api/order 409 {code:"price_changed", expected_total, total, lines:[{id,name,qty,price}]}: замовлення НЕ створено; кошик показує те, що сервер бачить ТЕПЕР
+    var msg=document.getElementById("checkout-msg"), btn=document.getElementById("checkout-submit");
+    if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; }
+    var c=read(), diffs=[];
+    (Array.isArray(j.lines) ? j.lines : []).forEach(function(l){
+      if(!l || typeof l!=="object" || l.id===undefined || !c[String(l.id)]) return;
+      var np=+l.price; if(!isFinite(np) || np<0) return;
+      var it=c[String(l.id)];
+      if(it.price!==np){ diffs.push({name:it.name, was:it.price, now:np}); it.price=np; }
+    });
+    if(diffs.length){ write(c); }
+    renderCart();
+    if(!msg) return;
+    msg.classList.add("err"); msg.textContent="";
+    var t=document.createElement("div");
+    var tot=(typeof j.total==="number" && isFinite(j.total)) ? j.total : total();
+    t.textContent="Ціни змінились, поки ви оформлювали замовлення"+(diffs.length ? ": "+diffs.map(function(d){ return d.name+" — було "+d.was+" ₴, тепер "+d.now+" ₴"; }).join("; ") : "")+". Нова сума: "+tot+" ₴. Замовлення не створено — перевірте кошик і підтвердьте ще раз.";
+    msg.appendChild(t);
+  }
   function stockConflict(lines){   // відповідь /api/order 409 {code:"stock_changed", lines:[{id,name,requested,available}]}: замовлення НЕ створено
     var msg=document.getElementById("checkout-msg"), btn=document.getElementById("checkout-submit");
     if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; }
@@ -618,6 +646,8 @@
     initNaboryChips();
     initMascot();
     initContactTracking();
+    initSaleTimer();
+    initChatMenu();
 
     // сторінка подяки — підставити номер замовлення
     var oidEl=document.getElementById("thanks-oid");
@@ -824,7 +854,7 @@
   }
   // ── Посадкова /ig.html: сітка карток з item_list_name «ig_landing» — view_item_list один раз (коли сітка видна), select_item лише на клік ──
   function initListTracking(){
-    var box=document.getElementById("ig-list") || document.getElementById("nabory-list");   // /ig.html («ig_landing») і /nabory.html («nabory_page»)
+    var box=document.getElementById("ig-list") || document.getElementById("nabory-list") || document.getElementById("sale-list");   // /ig.html («ig_landing») і /nabory.html («nabory_page»)
     if(!box) return;
     var listName=box.getAttribute("data-list")||"ig_landing";
     var cards=Array.prototype.slice.call(box.querySelectorAll("a.card"));
@@ -959,6 +989,37 @@
     });
   }
 
+  // ── Знижка тижня: зворотний відлік «залишилось …» до кінця акції (дата з site/sale_week.json через data-sale-until; без JS лишається статичний підпис «до неділі 23:59») ──
+  function initSaleTimer(){
+    var els=document.querySelectorAll("[data-sale-until]");
+    if(!els.length) return;
+    function pad(n){ return (n<10?"0":"")+n; }
+    function tick(){
+      Array.prototype.forEach.call(els, function(el){
+        var end=Date.parse(el.getAttribute("data-sale-until")||""); if(!isFinite(end)) return;
+        var ms=end-Date.now();
+        if(ms<=0){ el.textContent="акцію завершено"; return; }
+        var d=Math.floor(ms/86400000), h=Math.floor(ms%86400000/3600000), m=Math.floor(ms%3600000/60000);
+        el.textContent="До кінця акції: "+(d>0 ? d+" д " : "")+h+" год "+pad(m)+" хв";
+      });
+    }
+    tick(); setInterval(tick, 30000);
+    window.PT_saleTick=tick;   // для тесту: примусове оновлення відліку
+  }
+
+  // ── Кнопка «Написати» (меню месенджерів у шапці, власник 14.10) ──
+  function initChatMenu(){
+    var btn=document.getElementById("chat-toggle"), menu=document.getElementById("chat-menu");
+    if(!btn || !menu) return;
+    function setOpen(on){ menu.hidden=!on; btn.setAttribute("aria-expanded", on ? "true" : "false"); }
+    btn.addEventListener("click", function(e){ e.stopPropagation(); setOpen(menu.hidden); });
+    document.addEventListener("click", function(e){
+      var it=e.target.closest ? e.target.closest("a.chat-item") : null;
+      if(it){ trackRaw("contact_click", {method:it.getAttribute("data-chat")||"chat", link_url:it.getAttribute("href")||"", page_path:location.pathname}, "Contact", {method:it.getAttribute("data-chat")||"chat"}, false); setOpen(false); return; }
+      if(!menu.hidden && !(e.target.closest && e.target.closest(".chatwrap"))) setOpen(false);
+    });
+    document.addEventListener("keydown", function(e){ if((e.key==="Escape" || e.key==="Esc") && !menu.hidden){ setOpen(false); btn.focus(); } });
+  }
   // ── Автокомпліт міста/відділення Нової Пошти (через site_order_api) ──
   var selectedCityRef = "";
   var cityListShown = false;   // довідник міст відповів непорожнім списком для поточного тексту
@@ -1116,6 +1177,8 @@
         payment_method:payment,
         comment:(document.getElementById("f-comment") ? (document.getElementById("f-comment").value||"").trim().slice(0,300) : "")
       };
+      // сума, яку ПОКАЗАВ кошик у момент сабміту (ціле грн): якщо index.json змінився між «У кошик» і оплатою, сервер відповість 409 price_changed і НЕ створить замовлення (Code-Agent #759); без поля — поведінка як раніше
+      var shownTotal=total(); if(isFinite(shownTotal)){ payload.expected_total=Math.round(shownTotal); }
       if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }
 
       fetch("api/order", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)})
@@ -1123,6 +1186,7 @@
         .then(function(res){
           if(!res.ok){
             if(res.status===409 && res.j && res.j.code==="stock_changed" && Array.isArray(res.j.lines)){ stockConflict(res.j.lines); return; }
+            if(res.status===409 && res.j && res.j.code==="price_changed"){ priceChanged(res.j); return; }
             fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return;
           }
           var d=res.j;

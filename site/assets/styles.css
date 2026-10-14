@@ -468,3 +468,9 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .chat-item{padding:11px 14px;border-radius:10px;color:var(--text);text-decoration:none;font-weight:600;font-size:15px}
 .chat-item:hover,.chat-item:focus-visible{background:var(--surface)}
 @media(max-width:560px){.chatbtn{width:40px;padding:0;justify-content:center}.chat-lbl{display:none}}
+/* значки соцмереж і пошти в шапці (власник 14.10): між кошиком і «Підтримка»; на ≤900 px ховаємо (є в підвалі) */
+.hsoc{display:none;align-items:center;gap:8px;margin-left:auto;margin-right:12px}
+.hsoc + .chatwrap{margin-left:0}
+.hsoc-a{display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:var(--surface);border:1px solid var(--line);border-radius:12px;color:var(--text)}
+.hsoc-a:hover,.hsoc-a:focus-visible{color:var(--accent);border-color:var(--accent)}
+@media(min-width:900px){.hsoc{display:flex}}

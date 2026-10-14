@@ -175,6 +175,22 @@ def chat_menu_html():
             f'<div class="chat-menu" id="chat-menu" role="menu" aria-label="Підтримка: написати нам" hidden>{links}</div></div>')
 
 
+def header_socials_html():
+    """Значки Instagram / Facebook / пошта у шапці (власник 14.10: «це поле пустує»): на ПК заповнюють проміжок між кошиком і кнопкою «Підтримка»; на вузьких екранах приховані (там вони в підвалі). Посилання — ті самі, що в підвалі, utm_medium=header."""
+    ig, fb = (_footer_utm(u).replace("utm_medium=footer", "utm_medium=header") for u in SOCIAL_URLS)
+    ico = 'width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"'
+    return (
+      '<div class="hsoc">'
+      f'<a class="hsoc-a" href="{ig}" target="_blank" rel="noopener" aria-label="Instagram" data-hsoc="instagram">'
+        f'<svg {ico}><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".6" fill="currentColor"/></svg></a>'
+      f'<a class="hsoc-a" href="{fb}" target="_blank" rel="noopener" aria-label="Facebook" data-hsoc="facebook">'
+        f'<svg {ico}><path d="M14 8h2.5V4.5H14a4 4 0 0 0-4 4V11H7.5v3.5H10V21h3.5v-6.5H16L16.5 11h-3V8.8c0-.5.3-.8.8-.8Z"/></svg></a>'
+      '<a class="hsoc-a" href="mailto:plutustoys@gmail.com" aria-label="Написати на пошту plutustoys@gmail.com" data-hsoc="email">'
+        f'<svg {ico}><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg></a>'
+      '</div>'
+    )
+
+
 def header():
     return (
       '<header class="top">'
@@ -191,7 +207,8 @@ def header():
         '<path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>'
         '<span class="badge" id="cart-badge">0</span>'
       '</a>'
-      + chat_menu_html() +
+      + header_socials_html() +
+      chat_menu_html() +
       '</header>'
     )
 

@@ -145,7 +145,7 @@ pk = bs.aktsii_pick(prods)
 chk("aktsii_pick: лише акційні позиції, ціна зростаюче (290, 340)", [p["id"] for p in pk] == ["112", "111"])
 chk("write_aktsii пише aktsii.html", bs.write_aktsii(prods) == {"aktsii.html"})
 ah = (out / "aktsii.html").read_text(encoding="utf-8")
-chk("/aktsii: H1 «Знижка тижня −15%», «Акція до неділі 23:59», сітка з бейджами, список для аналітики data-list=sale_week, без промокодів/підписок", '<h1 class="page">Знижка тижня −15%</h1>' in ah and "Акція до <b>неділі 23:59</b>" in ah and "Щопонеділка — нова добірка іграшок зі знижкою −15%. Ціна вже знижена: нічого вводити не треба. Діє до неділі 23:59." in ah and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("<footer")[0])
+chk("/aktsii: H1 «Знижка тижня −15%», «Акція до неділі 23:59», сітка з бейджами, список для аналітики data-list=sale_week, без промокодів/підписок", '<h1 class="page">Знижка тижня −15%</h1>' in ah and "Акція до <b>неділі 23:59</b>" in ah and "Щопонеділка — нова добірка іграшок зі знижкою −15%. Ціна вже знижена: нічого вводити не треба. Діє до неділі 23:59." in ah and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("</header>")[1].split("<footer")[0])
 cats = {}
 for p in prods:
     cats.setdefault(p["category"], []).append(p)

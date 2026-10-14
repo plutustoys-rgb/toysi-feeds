@@ -158,6 +158,23 @@ def esc(s):
     return html.escape(str(s or ""))
 
 # ── спільні шматки розмітки ─────────────────────────────────────────────
+# Кнопка «Написати» у шапці (власник 14.10, варіант А): меню месенджерів. Viber — за номером загального телефону; Telegram з'явиться, коли буде бот (CHAT_TELEGRAM_URL — посилання t.me/<бот>; порожньо = пункт не показуємо; запит ботом спрямовується на Аудитора — це частина Code-Agent); Instagram — особисті повідомлення.
+CHAT_VIBER_URL = "viber://chat?number=%2B380730150815"
+CHAT_TELEGRAM_URL = "https://t.me/+380730150815"   # звичайний Telegram загального телефону (власник 14.10); спрацює, якщо в приватності Telegram дозволено пошук за номером; бот — після рішення власника
+CHAT_INSTAGRAM_URL = ""   # власник 14.10: «Instagram не треба» — пункт не показуємо (повернути: https://ig.me/m/plutustoys.ua)
+
+
+def chat_menu_html():
+    items = [("viber", "Viber", CHAT_VIBER_URL), ("telegram", "Telegram", CHAT_TELEGRAM_URL), ("instagram", "Instagram", CHAT_INSTAGRAM_URL)]
+    links = "".join(f'<a class="chat-item" role="menuitem" data-chat="{k}" href="{esc(u)}" target="_blank" rel="noopener">{t}</a>' for k, t, u in items if u)
+    if not links:
+        return ""
+    return ('<div class="chatwrap"><button type="button" class="chatbtn" id="chat-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="chat-menu" aria-label="Написати нам">'
+            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.5A8 8 0 1 1 21 12z"/></svg>'
+            '<span class="chat-lbl">Написати</span></button>'
+            f'<div class="chat-menu" id="chat-menu" role="menu" aria-label="Написати нам" hidden>{links}</div></div>')
+
+
 def header():
     return (
       '<header class="top">'
@@ -174,6 +191,7 @@ def header():
         '<path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>'
         '<span class="badge" id="cart-badge">0</span>'
       '</a>'
+      + chat_menu_html() +
       '</header>'
     )
 

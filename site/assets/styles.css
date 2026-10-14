@@ -453,3 +453,12 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .hero2 .btn.btn-sale:hover,.hero2 .btn.btn-sale:focus-visible{transform:rotate(0deg)}
 .hero2 .btn.btn-sale .btn-ico{flex:none}
 .card .ph .sale-badge{left:auto;right:8px}
+/* Кнопка «Написати» у правому верхньому куті шапки (власник 14.10) */
+.chatwrap{position:relative;flex:none;margin-left:auto}
+.chatbtn{display:flex;align-items:center;gap:7px;height:40px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--text);font-weight:700;font-size:14px;cursor:pointer}
+.chatbtn:hover,.chatbtn:focus-visible{border-color:var(--accent)}
+.chat-menu{position:absolute;right:0;top:calc(100% + 8px);min-width:190px;background:var(--bg);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 28px rgba(30,20,10,.22);padding:6px;display:flex;flex-direction:column;z-index:30}
+.chat-menu[hidden]{display:none!important}
+.chat-item{padding:11px 14px;border-radius:10px;color:var(--text);text-decoration:none;font-weight:600;font-size:15px}
+.chat-item:hover,.chat-item:focus-visible{background:var(--surface)}
+@media(max-width:560px){.chatbtn{width:40px;padding:0;justify-content:center}.chat-lbl{display:none}}

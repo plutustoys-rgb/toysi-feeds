@@ -145,7 +145,7 @@ pk = bs.aktsii_pick(prods)
 chk("aktsii_pick: лише акційні позиції, ціна зростаюче (290, 340)", [p["id"] for p in pk] == ["112", "111"])
 chk("write_aktsii пише aktsii.html", bs.write_aktsii(prods) == {"aktsii.html"})
 ah = (out / "aktsii.html").read_text(encoding="utf-8")
-chk("/aktsii: H1 «Знижка тижня −15%», «Акція до неділі 23:59», сітка з бейджами, список для аналітики data-list=sale_week, без промокодів/підписок", '<h1 class="page">Знижка тижня −15%</h1>' in ah and "Акція до <b>неділі 23:59</b>" in ah and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("<footer")[0])
+chk("/aktsii: H1 «Знижка тижня −15%», «Акція до неділі 23:59», сітка з бейджами, список для аналітики data-list=sale_week, без промокодів/підписок", '<h1 class="page">Знижка тижня −15%</h1>' in ah and "Акція до <b>неділі 23:59</b>" in ah and "Щопонеділка — нова добірка іграшок зі знижкою −15%. Ціна вже знижена: нічого вводити не треба. Діє до неділі 23:59." in ah and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("<footer")[0])
 cats = {}
 for p in prods:
     cats.setdefault(p["category"], []).append(p)
@@ -218,7 +218,7 @@ if sync_playwright:
             pg.goto(f"{base}/aktsii.html", wait_until="load")
             pg.wait_for_timeout(500)
             v = pg.evaluate("(()=>{const l=document.querySelector('.sale-left').textContent; const pr=document.querySelector('.card .pr-sale'); const old=document.querySelector('.card .pr-old'); const bd=document.querySelector('.card .sale-badge'); return [l, getComputedStyle(pr).color, getComputedStyle(old).textDecorationLine, getComputedStyle(bd).backgroundColor, document.documentElement.scrollWidth<=innerWidth, document.querySelectorAll('.sale-list .card').length]})()")
-            chk(f"{w}px: відлік «залишилось 1 д 2 год …», нова ціна червона, стара перекреслена (line-through), бейдж червоний, без горизонтального скролу {v}", v[0].startswith("залишилось 1 д 2 год") and v[1] == "rgb(217, 58, 58)" and "line-through" in v[2] and v[3] == "rgb(217, 58, 58)" and v[4] and v[5] == 2)
+            chk(f"{w}px: відлік «До кінця акції: 1 д 2 год …», нова ціна червона, стара перекреслена (line-through), бейдж червоний, без горизонтального скролу {v}", v[0].startswith("До кінця акції: 1 д 2 год") and v[1] == "rgb(217, 58, 58)" and "line-through" in v[2] and v[3] == "rgb(217, 58, 58)" and v[4] and v[5] == 2)
             pg.evaluate("document.querySelector('.sale-left').setAttribute('data-sale-until', new Date(Date.now()-60000).toISOString()); window.PT_saleTick();")
             chk(f"{w}px: після кінця акції відлік пише «акцію завершено»", pg.evaluate("document.querySelector('.sale-left').textContent") == "акцію завершено")
             chk(f"{w}px: без помилок JS", errs == [])

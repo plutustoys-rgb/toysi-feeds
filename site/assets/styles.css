@@ -450,6 +450,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .sale-until{margin:6px 0 10px;padding:8px 12px;background:#fff1ee;border:2px solid #D93A3A;border-radius:12px;color:#7a1313;font-size:15px}
 .sale-until b{font-weight:800}
 .sale-left{font-weight:700}
+.sale-left:not(:empty)::before{content:" · ";font-weight:400}
 .sale-lead{margin:0 0 10px;color:var(--muted)}
 .hero2 .btn.btn-sale{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:#D93A3A;color:#fff;border:2px solid #7A1313;box-shadow:3px 3px 0 #7A1313;font-weight:800;transform:rotate(-1.5deg);transition:transform .18s ease}
 .hero2 .btn.btn-sale:hover,.hero2 .btn.btn-sale:focus-visible{transform:rotate(0deg)}

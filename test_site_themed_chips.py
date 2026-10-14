@@ -176,6 +176,11 @@ if sync_playwright:
                 a = pg.evaluate(f"{ACT}('{k}')")
                 o = pg.evaluate(f"{ACT}('all')")
                 chk(f"{w}px: «{k}» активний видно (контур 3px solid + ✓), «Усі» вже НЕ активний {a} / {o}", a[0] == "true" and a[1] == "solid" and a[2] == "3px" and "✓" in a[4] and o[0] == "false" and o[1] == "none" and a[5] == "none")
+            wrap = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const cs=getComputedStyle(b); const r=[...b.querySelectorAll('.chip')].map(x=>x.getBoundingClientRect()); return [cs.flexWrap, cs.overflowX, Math.max(...r.map(x=>x.right)) <= innerWidth + 1, b.scrollWidth <= b.clientWidth + 1]})()")
+            if w >= 701:
+                chk(f"{w}px (десктоп): чипи головної переносяться, ВСІ видно без горизонтального скролу {wrap}", wrap[0] == "wrap" and wrap[1] == "visible" and wrap[2] and wrap[3])
+            else:
+                chk(f"{w}px (телефон): один рядок зі свайпом {wrap}", wrap[0] == "nowrap" and wrap[1] == "auto")
             chk(f"{w}px: без помилок JS, без горизонтального скролу", errs == [] and pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth"))
             ctx.close()
         br.close()

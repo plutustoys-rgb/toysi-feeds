@@ -321,3 +321,5 @@ forbidden_watch_state.json
 prom_gone_seen.json
 promo_cost.json
 promo_cost.json.tmp
+# Історія цін сайту (приватний runtime-стан збірки, 14.10): не комітити
+site_price_state.json

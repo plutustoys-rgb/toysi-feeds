@@ -995,6 +995,8 @@
       });
     }
     tick(); setInterval(tick, 30000);
+  }
+
   // ── Кнопка «Написати» (меню месенджерів у шапці, власник 14.10) ──
   function initChatMenu(){
     var btn=document.getElementById("chat-toggle"), menu=document.getElementById("chat-menu");

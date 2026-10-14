@@ -41,11 +41,11 @@ bs.write_cart([])
 _cart = (out / "cart.html")
 bs.write_cart([])
 h = _cart.read_text(encoding="utf-8")
-chk("меню: Viber (за номером) і Telegram (t.me/+380730150815), БЕЗ Instagram (власник 14.10); посилання target=_blank rel=noopener", 'data-chat="viber" href="viber://chat?number=%2B380730150815" target="_blank" rel="noopener"' in h and 'data-chat="telegram" href="https://t.me/+380730150815" target="_blank" rel="noopener"' in h and 'data-chat="instagram"' not in h and "ig.me" not in h)
+chk("меню: Viber (за номером) і Telegram (бот t.me/plutustoys_support_bot), БЕЗ Instagram (власник 14.10); посилання target=_blank rel=noopener", 'data-chat="viber" href="viber://chat?number=%2B380730150815" target="_blank" rel="noopener"' in h and 'data-chat="telegram" href="https://t.me/plutustoys_support_bot" target="_blank" rel="noopener"' in h and 'data-chat="instagram"' not in h and "ig.me" not in h)
 bs.CHAT_TELEGRAM_URL = ""
 bs.write_cart([])
 chk("порожній CHAT_TELEGRAM_URL — пункт Telegram не показується", 'data-chat="telegram"' not in _cart.read_text(encoding="utf-8"))
-bs.CHAT_TELEGRAM_URL = "https://t.me/+380730150815"
+bs.CHAT_TELEGRAM_URL = "https://t.me/plutustoys_support_bot"
 bs.write_cart([])
 shutil.copytree(HERE / "site" / "assets", out / "assets")
 os.chdir(out)

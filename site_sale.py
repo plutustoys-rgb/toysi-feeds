@@ -9,7 +9,8 @@
     є фото, ціна НЕ мінялась ≥7 днів (стара ціна має бути РЕАЛЬНОЮ), після знижки маржа ≥25 ₴ з урахуванням еквайрингу 2,8% і витрат 17,81 ₴ на замовлення. Ранг: спершу товари з попитом (site/demand_featured.json від SEO),
     потім з більшим залишком, далі детермінований «жереб» за номером тижня; товари минулого тижня не повторюються.
   Нова ціна = ceil(стара × 0,85) цілими гривнями (без копійок у чеку/LiqPay/накладеному).
-КОНТРАКТ site/sale_week.json: {"week":"2026-W44","pct":15,"from":"…+02:00","until":"…+02:00","items":{"<id>":{"old":int,"new":int}}} — читають build_site (ціна pr=new, op=old у вікні from…until) і фіди (sale_price + дати).
+КОНТРАКТ site/sale_week.json: {"weeks":[{"week":"2026-W44","pct":15,"from":"…+02:00","until":"…+02:00","items":{"<id>":{"old":int,"new":int}}}, …]} — до ДВОХ тижнів (чинний + наступний, прострочені прибираються);
+спожива build_site (ціна pr=new, op=old у вікні from…until КОЖНОГО тижня, лише коли old == поточна ціна) і фіди (sale_price + дати). Споживач сам перевіряє вікно: файл може лишатись на диску й після тижня.
 Без звернень до мережі в чистих функціях; `plan` тягне каталог Toysi (parser.fetch_toysi_catalog) раз на тиждень.
 """
 import json
@@ -228,6 +229,20 @@ def plan(now: datetime, index: list, catalog: dict, history: dict, demand_ids: s
     return sale, rep
 
 
+def _read_weeks(path: Path, now: datetime) -> list:
+    """Тижні з файлу акції, що ще НЕ закінчились (until > now). Підтримує й плоский (старий) формат одного тижня. Зіпсований/відсутній файл → []."""
+    d = _load_json(path, {})
+    weeks = d.get("weeks") if isinstance(d, dict) and isinstance(d.get("weeks"), list) else ([d] if isinstance(d, dict) and d.get("items") else [])
+    out = []
+    for w in weeks:
+        try:
+            if isinstance(w, dict) and datetime.fromisoformat(w["until"]) > now and w.get("items"):
+                out.append(w)
+        except (KeyError, ValueError, TypeError):
+            continue
+    return out
+
+
 def _alert(key: str, text: str) -> None:
     try:
         from telegram_notify import send_throttled_alert
@@ -273,8 +288,15 @@ def cmd_plan(now: datetime | None = None, catalog: dict | None = None) -> int:
     demand = _load_json(DEMAND_FILE, {})
     demand_ids = {str(x) for x in (demand.get("ids") if isinstance(demand, dict) else []) or []}
     picks = _load_json(PICKS_FILE, [])
-    last_ids = set(picks[-1]["ids"]) if isinstance(picks, list) and picks and isinstance(picks[-1], dict) else set()
+    if not isinstance(picks, list):
+        picks = []
+    _w = next_week_window(now)[2]
+    picks = [p for p in picks if isinstance(p, dict) and p.get("week") != _w]       # повторний запуск ТОГО САМОГО тижня не виключає власний щойно записаний набір і не дублює запис
+    last_ids = set(picks[-1].get("ids") or []) if picks else set()
     hist = load_history()
+    if not hist and HISTORY_FILE.exists() and HISTORY_FILE.stat().st_size > 2:
+        _alert("site_sale_history_lost", "⚠️ site_sale: файл історії цін існує, але нечитабельний/порожній — відлік «ціна не мінялась 7 днів» піде з нуля, «Знижку тижня» не складено. Перевірити site_price_history.json.")
+        return 1
     if _history_age_days(hist, now) < STABLE_DAYS:
         print(f"[site_sale] історія цін накопичується менше {STABLE_DAYS} днів — набір ще неможливий (без алерту); перший можливий тиждень — коли найстаріший запис сягне {STABLE_DAYS} днів")
         return 1
@@ -283,12 +305,12 @@ def cmd_plan(now: datetime | None = None, catalog: dict | None = None) -> int:
     if sale is None:
         _alert("site_sale_few", f"⚠️ site_sale: на {rep['week']} придатних товарів лише {rep['candidates']} (потрібно ≥{N_MIN}: ціна не мінялась ≥{STABLE_DAYS} дн., маржа після −{PCT}% ≥{RESERVE_UAH} ₴) — «Знижку тижня» не опубліковано.")
         return 1
-    _atomic_write(SALE_FILE, sale)
-    if not isinstance(picks, list):
-        picks = []
     picks.append({"week": sale["week"], "ids": list(sale["items"]), "margins": rep.get("margins", {})})
-    _atomic_write(PICKS_FILE, picks[-12:])
-    print(f"[site_sale] записано {SALE_FILE}: {len(sale['items'])} товарів, {sale['from']} … {sale['until']}")
+    _atomic_write(PICKS_FILE, picks[-12:])                    # спершу приватний журнал (збій другого запису не губить виключення «минулого тижня»)
+    # файл акції тримає ДВА тижні: чинний (until ще не минув) + наступний; інакше щонедільний план о 18:00 знімав би чинну акцію до понеділка
+    kept = [w for w in _read_weeks(SALE_FILE, now) if w.get("week") != sale["week"]]
+    _atomic_write(SALE_FILE, {"weeks": kept + [sale]})
+    print(f"[site_sale] записано {SALE_FILE}: тижнів у файлі {len(kept) + 1}; новий {sale['week']}: {len(sale['items'])} товарів, {sale['from']} … {sale['until']}")
     return 0
 
 

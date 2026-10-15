@@ -94,9 +94,7 @@ chk(f"«Усі категорії» (/catalog.html): сайдбар «Катег
 g_side = (out / "group-tovary-dlia-tvorchosti.html").read_text(encoding="utf-8").split('<aside class="sb"')[1].split("</aside>")[0]
 chk("сторінка групи: надпису «Підкатегорії» нема, перший пункт «Усі товари»", "Підкатегорії</div>" not in g_side and 'class="sb-h"' not in g_side and g_side.split("<span>")[1].startswith("Усі товари"))
 home_html = (out / "index.html").read_text(encoding="utf-8")
-catrow = re.search(r'<div class="catrow">(.*?)</div></a></div>', home_html, re.S)
-rows = re.findall(r'<a class="cattile" href="([^"]+)">', catrow.group(1) + "</div></a>") if catrow else []
-chk(f"головна: блок «Категорії» = плитки ГРУП (власник 15.10: «не бачу змін за скетчем»), посилання на group-*.html: {rows}", rows[:2] == ["group-tovary-dlia-tvorchosti.html", "group-transport.html"] and all(r.startswith("group-") for r in rows))
+chk("головна: блоку плиток «Категорії» нема (власник 15.10: «це прибираєм»); у героєві «Каталог товарів» → catalog.html", 'class="catrow"' not in home_html and "<h2>Категорії</h2>" not in home_html and '<a class="btn" href="catalog.html">Каталог товарів</a>' in home_html)
 sm = (out / "sitemap-categories.xml").read_text(encoding="utf-8")
 chk("групи в sitemap (сегмент categories)", "/group-tovary-dlia-tvorchosti.html</loc>" in sm and "/group-transport.html</loc>" in sm)
 shipped = json.loads((HERE / "site" / "category_groups.json").read_text(encoding="utf-8"))
@@ -165,7 +163,8 @@ with sync_playwright() as pw:
         pg.evaluate("window.scrollTo(0, 1200)")
         pg.wait_for_timeout(300)
         ctl2 = pg.evaluate(R + "('#cat-controls')")
-        chk(f"{w}px: після прокрутки фільтри лишились під шапкою (top {ctl2['t']} ≈ {h1.get('hdr', 64)})", 60 <= ctl2["t"] <= 80)
+        h1_2 = pg.evaluate(R + "('.cat-h1')")
+        chk(f"{w}px: після прокрутки НАЗВА (top {h1_2['t']}) і фільтри (top {ctl2['t']}) лишились під шапкою — власник 15.10: «назва категорії не має уходити»", 60 <= h1_2["t"] <= 84 and h1_2["b"] <= ctl2["t"] + 2 and ctl2["t"] < 200)
         if wide:
             sb2 = pg.evaluate(R + "('.sb')")
             chk(f"{w}px: після прокрутки сайдбар лишився на екрані (top {sb2['t']}, у межах вікна)", 0 < sb2["t"] < 200)

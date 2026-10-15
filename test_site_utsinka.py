@@ -109,7 +109,7 @@ cs = {c: f"c{i}" for i, c in enumerate(cl)}
 bs.OUT = str(root)
 bs.write_home(allp, cats_h, cl, cs)
 home = (root / "index.html").read_text(encoding="utf-8")
-chk("герой без акції (SALE_ACTIVE=None; «Акції» — лише під час «Знижки тижня», див. test_site_sale_week): лише «Усі іграшки», без aktsii.html", '<div class="act"><a class="btn" href="catalog.html">Усі іграшки</a></div>' in home and "aktsii.html" not in home and "Плутус вибере" not in home)
+chk("герой без акції (SALE_ACTIVE=None; «Акції» — лише під час «Знижки тижня», див. test_site_sale_week): лише «Каталог товарів», без aktsii.html", '<div class="act"><a class="btn" href="catalog.html">Каталог товарів</a></div>' in home and "aktsii.html" not in home and "Плутус вибере" not in home)
 bs.OUT = str(root2)
 cn = {}
 for p in normal:
@@ -117,7 +117,7 @@ for p in normal:
 cln = sorted(cn, key=lambda c: -len(cn[c]))
 bs.write_home(normal, cn, cln, {c: f"c{i}" for i, c in enumerate(cln)})
 home2 = (root2 / "index.html").read_text(encoding="utf-8")
-chk("герой без уцінених: лише кнопка «Усі іграшки» (посилання на неіснуючу сторінку нема)", '<div class="act"><a class="btn" href="catalog.html">Усі іграшки</a></div>' in home2 and "utsinka" not in home2)
+chk("герой без уцінених: лише кнопка «Каталог товарів» (посилання на неіснуючу сторінку нема)", '<div class="act"><a class="btn" href="catalog.html">Каталог товарів</a></div>' in home2 and "utsinka" not in home2)
 
 # Chromium
 try:

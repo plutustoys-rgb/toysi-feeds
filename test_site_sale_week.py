@@ -180,12 +180,12 @@ cl = sorted(cats, key=lambda c: -len(cats[c]))
 os.environ["SITE_PICK_DATE"] = "2026-10-21"
 bs.write_home(prods, cats, cl, {c: f"c{i}" for i, c in enumerate(cl)})
 home = (out / "index.html").read_text(encoding="utf-8")
-chk("герой: червона кнопка «Акції» (btn-sale, іконка-цінник) → aktsii.html + «Усі іграшки»", '<a class="btn btn-sale" href="aktsii.html">' in home and "<span>Акції</span>" in home and 'class="hero-all" href="catalog.html">Усі іграшки' in home)
+chk("герой: червона кнопка «Акції» (btn-sale, іконка-цінник) → aktsii.html + «Усі іграшки»", '<a class="btn btn-sale" href="aktsii.html">' in home and "<span>Акції</span>" in home and '<a class="btn" href="catalog.html">Каталог товарів</a><a class="btn btn-sale"' in home)
 bs.SALE_ACTIVE = None
-chk("нема акції (SALE_ACTIVE=None): aktsii_pick пустий, сторінка не пишеться, на головній кнопка «Усі іграшки» без «Акцій»", bs.aktsii_pick(prods) == [] and bs.write_aktsii(prods) == set())
+chk("нема акції (SALE_ACTIVE=None): aktsii_pick пустий, сторінка не пишеться, на головній кнопка «Каталог товарів» без «Акцій»", bs.aktsii_pick(prods) == [] and bs.write_aktsii(prods) == set())
 bs.write_home(prods, cats, cl, {c: f"c{i}" for i, c in enumerate(cl)})
 home2 = (out / "index.html").read_text(encoding="utf-8")
-chk("головна без акції: «<div class=act><a class=btn href=catalog.html>Усі іграшки</a></div>», без aktsii.html", '<div class="act"><a class="btn" href="catalog.html">Усі іграшки</a></div>' in home2 and "aktsii.html" not in home2)
+chk("головна без акції: «<div class=act><a class=btn href=catalog.html>Усі іграшки</a></div>», без aktsii.html", '<div class="act"><a class="btn" href="catalog.html">Каталог товарів</a></div>' in home2 and "aktsii.html" not in home2)
 bs.SALE_ACTIVE = SALE
 bs.SALE_WEEK_ENABLED = False
 chk("прапор SALE_WEEK_ENABLED=False вимикає сторінку навіть при наявному наборі", bs.aktsii_pick(prods) == [])

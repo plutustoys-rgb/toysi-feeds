@@ -96,17 +96,17 @@ with sync_playwright() as pw:
         g = {k: pg.evaluate(R + f"('{s}')") for k, s in (("hdr", "header.top"), ("h1", ".cat-h1"), ("sort", "#cf-sort"), ("cat", "#cf-cat"), ("tog", "#cf-price-toggle"), ("pan", "#cf-price-panel"), ("min", "#cf-min"), ("rst", "#cf-reset"), ("cnt", "#cat-count"))}
         hh = g["hdr"]["h"]
         if wide:
-            row = [g["h1"], g["sort"], g["cat"], g["min"], g["rst"]]
-            chk(f"{w}px: «Каталог», сортування, категорія, ціна від, «Скинути» — в ОДНІЙ лінії (центри по вертикалі в межах 6 px) {[ (x['t'] + x['b']) // 2 for x in row]}", max((x["t"] + x["b"]) / 2 for x in row) - min((x["t"] + x["b"]) / 2 for x in row) <= 6)
-            chk(f"{w}px: порядок зліва направо: Каталог → сортування → категорія → ціна → Скинути; кнопка «Ціна» схована", g["h1"]["r"] <= g["sort"]["l"] and g["sort"]["r"] <= g["cat"]["l"] and g["cat"]["r"] <= g["min"]["l"] and g["min"]["r"] <= g["rst"]["l"] and g["tog"]["d"] == "none")
+            chk(f"{w}px: назва окремим рядком, фільтри під нею (як на скетчі): h1 низ {g['h1']['b']} ≤ верх фільтрів {g['sort']['t']}; порядок сортування → категорія → ціна → «Скинути», кнопка «Ціна» схована",
+                g["h1"]["b"] <= g["sort"]["t"] + 2 and g["sort"]["r"] <= g["cat"]["l"] and g["cat"]["r"] <= g["min"]["l"] and g["min"]["r"] <= g["rst"]["l"] and g["tog"]["d"] == "none")
         else:
             chk(f"{w}px: ряд [сортування][категорія][Ціна] в одній лінії, ціна від/до схована до натискання «Ціна»", abs((g["sort"]["t"] + g["sort"]["b"]) - (g["cat"]["t"] + g["cat"]["b"])) <= 6 and abs((g["sort"]["t"] + g["sort"]["b"]) - (g["tog"]["t"] + g["tog"]["b"])) <= 6 and g["tog"]["d"] != "none" and g["pan"]["d"] == "none")
-        # прокрутка: сортування й категорія лишаються на екрані прямо під шапкою
+        # прокрутка: НАЗВА і фільтри — одна липка панель, лишаються на екрані прямо під шапкою (власник 15.10: «при скролінгу не треба щоб назва категорії уходила»)
         pg.evaluate("window.scrollTo(0, 1500)")
         pg.wait_for_timeout(300)
-        s2 = {k: pg.evaluate(R + f"('{s}')") for k, s in (("sort", "#cf-sort"), ("cat", "#cf-cat"), ("hdr", "header.top"))}
+        s2 = {k: pg.evaluate(R + f"('{s}')") for k, s in (("h1", ".cat-h1"), ("sort", "#cf-sort"), ("cat", "#cf-cat"), ("hdr", "header.top"))}
         ys = pg.evaluate("window.scrollY")
-        chk(f"{w}px: після прокрутки на {ys} px сортування й категорія ЛИШИЛИСЬ під шапкою (top {s2['sort']['t']} ≥ {hh}, у межах екрана), шапка теж на місці", ys > 500 and hh <= s2["sort"]["t"] <= hh + 24 and s2["cat"]["t"] == s2["sort"]["t"] or (abs(s2["cat"]["t"] - s2["sort"]["t"]) <= 4 and ys > 500 and hh <= s2["sort"]["t"] <= hh + 24 and s2["hdr"]["t"] == 0))
+        chk(f"{w}px: після прокрутки на {ys} px НАЗВА (top {s2['h1']['t']}) і сортування (top {s2['sort']['t']}) лишились під шапкою ({hh}), у межах екрана, назва над фільтрами",
+            ys > 500 and hh <= s2["h1"]["t"] <= hh + 16 and s2["h1"]["b"] <= s2["sort"]["t"] + 2 and s2["sort"]["b"] < 200)
         hit = pg.evaluate("(()=>{const e=document.getElementById('cf-sort'); const b=e.getBoundingClientRect(); const t=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2); return e===t||e.contains(t)})()")
         chk(f"{w}px: прикріплене сортування клікабельне (його не перекриває ні шапка, ні картки)", hit)
         pg.select_option("#cf-sort", "cheap")
@@ -147,7 +147,8 @@ with sync_playwright() as pw:
         pg.evaluate("window.scrollTo(0, 1500)")
         pg.wait_for_timeout(300)
         t_ = pg.evaluate("document.getElementById('cf-sort').getBoundingClientRect().top")
-        chk(f"{w}px категорія: після прокрутки сортування лишилось під шапкою (top {t_:.0f})", 64 <= t_ <= 90)
+        h_ = pg.evaluate("document.querySelector('.cat-h1').getBoundingClientRect().top")
+        chk(f"{w}px категорія: після прокрутки назва (top {h_:.0f}) і сортування (top {t_:.0f}) лишились під шапкою", 60 <= h_ <= 84 and h_ < t_ <= 130)
         pg.select_option("#cf-sort", "dear")
         pg.wait_for_timeout(300)
         pr = pg.evaluate("[...document.querySelectorAll('#cat-js .card .pr')].slice(0,3).map(e=>parseInt(e.textContent))")

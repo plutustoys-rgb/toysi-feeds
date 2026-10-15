@@ -79,6 +79,7 @@ chk("HSTS обережний: max-age = 7 діб без includeSubDomains/preloa
 # таймер
 timer = (HERE / "deploy" / "site-rebuild.timer").read_text(encoding="utf-8")
 chk("таймер кожні 2 год", "OnCalendar=*-*-* 00/2:20:00" in timer)
+chk("щоденний ребілд о 00:00:30 за Києвом (партії знижки змінюються щодня; Код 15.10), а не лише в понеділок", "OnCalendar=*-*-* 00:00:30 Europe/Kyiv" in timer and "OnCalendar=Mon" not in timer)
 chk("скрипт активації перезапускає таймер після enable (підхопити новий розклад)", "systemctl restart site-rebuild.timer" in sh)
 
 # JSON-LD головної

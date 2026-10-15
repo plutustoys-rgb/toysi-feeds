@@ -279,11 +279,15 @@
     var PER=24, shown=0, filtered=[];
     // сторінка категорії (data-cat): та сама панель, категорія вибрана; зміна категорії = перехід на її сторінку, «Усі категорії» = /catalog.html
     var preset=controls.getAttribute("data-cat")||"", catUrls={};
+    // сторінка ГРУПИ (data-group = JSON підкатегорій): працюємо лише з їхніми товарами; підкатегорія — з сайдбару (клік фільтрує на місці) або зі списку (телефон)
+    var groupSet=null, sideLinks=[];
+    try{ var gs=controls.getAttribute("data-group"); if(gs){ groupSet={}; JSON.parse(gs).forEach(function(c){ groupSet[c]=1; }); sideLinks=Array.prototype.slice.call(document.querySelectorAll(".sb-i")); } }catch(e){ groupSet=null; }
+    function syncSide(){ sideLinks.forEach(function(a){ a.classList.toggle("on", (a.getAttribute("data-sub")||"")===elCat.value); }); }
     if(preset){ try{ catUrls=JSON.parse((document.getElementById("cat-urls")||{}).textContent||"{}"); }catch(e){ catUrls={}; } }
     ensureIndex(function(data){
       var cats={};
-      for(var i=0;i<data.length;i++){ if(data[i].c) cats[data[i].c]=(cats[data[i].c]||0)+1; }
-      Object.keys(cats).sort(function(a,b){return a.localeCompare(b,"uk");}).forEach(function(c){
+      for(var i=0;i<data.length;i++){ if(data[i].c && (!groupSet || groupSet[data[i].c])) cats[data[i].c]=(cats[data[i].c]||0)+1; }
+      Object.keys(cats).sort(function(a,b){ return groupSet ? (cats[b]-cats[a] || a.localeCompare(b,"uk")) : a.localeCompare(b,"uk"); }).forEach(function(c){
         var o=document.createElement("option"); o.value=c; o.textContent=c+" ("+cats[c]+")"; elCat.appendChild(o);
       });
       if(preset) elCat.value=preset;
@@ -295,6 +299,7 @@
       if(isNaN(min)) min=null; if(isNaN(max)) max=null;
       var cat=elCat.value, ins=elStock ? elStock.checked : false, sort=elSort.value;
       filtered=(idx||[]).filter(function(p){
+        if(groupSet && !groupSet[p.c]) return false;
         if(cat && p.c!==cat) return false;
         if(ins && !p.s) return false;
         if(min!=null && p.pr<min) return false;
@@ -306,6 +311,7 @@
       else if(sort==="az") filtered.sort(function(a,b){return String(a.n).localeCompare(String(b.n),"uk");});
       // rec = природний порядок index.json (рекомендовані, за замовчуванням)
       shown=0; grid.innerHTML="";
+      syncSide();
       if(statik) statik.hidden=true;
       grid.hidden=false; count.hidden=false;
       renderMore();
@@ -337,6 +343,13 @@
     [elMin,elMax].forEach(function(e){ if(e) e.addEventListener("input",deb); });
     if(moreBtn) moreBtn.addEventListener("click",renderMore);
     if(elReset) elReset.addEventListener("click",doReset);
+    sideLinks.forEach(function(a){
+      a.addEventListener("click",function(e){
+        if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.button) return;   // відкриття в новій вкладці/вікні — звичайний перехід
+        e.preventDefault(); elCat.value=a.getAttribute("data-sub")||""; apply();
+        var top=count.getBoundingClientRect().top+(window.pageYOffset||0)-140; if(top<(window.pageYOffset||0)) window.scrollTo(0,Math.max(0,top));
+      });
+    });
     // вузький екран: кнопка «Ціна» розкриває від/до (на широкому панель завжди розгорнута, кнопка схована CSS)
     var pt=document.getElementById("cf-price-toggle"), pp=document.getElementById("cf-price-panel");
     if(pt && pp){

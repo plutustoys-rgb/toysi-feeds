@@ -523,3 +523,29 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
   .cat-top{display:block;padding:0}
   .cat-aside{margin:6px 16px 14px;max-width:360px}
 }
+/* Сторінка групи (власник 15.10, скетч затверджено): сайдбар підкатегорій зліва, назва окремим рядком, ФІЛЬТРИ ПІД НЕЮ і липкі; на ПК список категорій у фільтрах не потрібен (його замінює сайдбар) */
+.sec-h{font-size:18px;margin:22px 16px 10px}
+.gp{display:grid;grid-template-columns:250px minmax(0,1fr);gap:0 22px;padding:0 16px;align-items:start}
+.gp .gmain{min-width:0}
+.gp .grid{padding:0}
+.sb{position:sticky;top:calc(var(--hdr-h,64px) + 12px);background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px 8px;max-height:calc(100vh - 92px);overflow:auto;overscroll-behavior:contain}
+.sb-h{font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);padding:2px 8px 8px}
+.sb-i{display:flex;justify-content:space-between;gap:8px;padding:7px 8px;border-radius:9px;font-size:13.5px;color:var(--text)}
+.sb-i em{font-style:normal;color:var(--muted);font-size:12px}
+.sb-i:hover{background:var(--bg)}
+.sb-i.on{background:var(--accent);color:#fff;font-weight:700}
+.sb-i.on em{color:#fff}
+.sb-i.all{font-weight:800;border-bottom:1px solid var(--line);border-radius:9px 9px 0 0;margin-bottom:4px}
+.gp .cat-bar{display:contents}
+.gp .cat-bar h1.cat-h1{width:100%;margin:2px 0 8px;font-size:32px;line-height:1.15;padding:0}
+.gp .cat-bar .cat-controls{position:sticky;top:var(--hdr-h,64px);z-index:15;background:var(--bg);padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap;width:100%}
+.gp .cat-count{padding:6px 0}
+@media(min-width:1000px){.gp #cf-cat,.gp .cf-price-toggle{display:none}.gp .cat-controls .cf-price{display:inline-flex;position:static;margin:0;padding:0;border:0;box-shadow:none;background:none}}
+@media(max-width:999px){
+  .gp{display:block;padding:0}
+  .gp .sb{display:none}
+  .gp .cat-bar h1.cat-h1{padding:4px 16px 0;font-size:28px}
+  .gp .cat-bar .cat-controls{padding:6px 16px 8px;flex-wrap:nowrap}
+  .gp .cat-count{padding:0 16px 8px}
+  .gp .grid{padding:0 clamp(12px,3vw,24px)}
+}

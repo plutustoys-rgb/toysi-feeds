@@ -1,5 +1,5 @@
 [Unit]
-Description=PlutusToys: набір «Знижки тижня −15%» на наступний тиждень — site_sale.py plan
+Description=PlutusToys: нова партія постійної «Знижки −15%» — site_sale.py plan
 After=network-online.target
 Wants=network-online.target
 

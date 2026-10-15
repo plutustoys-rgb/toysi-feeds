@@ -44,12 +44,12 @@ chk("офсет Києва: 19.10.2026 +03:00 (літній), 26.10.2026 +02:00 
     (at(2026, 10, 19).utcoffset(), at(2026, 10, 26).utcoffset(), at(2026, 3, 25).utcoffset(), at(2026, 3, 29).utcoffset()) == (timedelta(hours=3), timedelta(hours=2), timedelta(hours=2), timedelta(hours=3)))
 utc = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)
 chk("astimezone(KYIV): 14.10 10:00 UTC → 13:00 Київ", utc.astimezone(ss.KYIV).hour == 13)
-s, e, wk = ss.next_week_window(at(2026, 10, 14))
-chk("з середи 14.10 → вікно пн 19.10 00:00 … нд 25.10 23:59:59, тиждень 2026-W43", s.isoformat() == "2026-10-19T00:00:00+03:00" and wk == "2026-W43" and e.date().isoformat() == "2026-10-25" and (e.hour, e.minute, e.second) == (23, 59, 59))
-s, e, wk = ss.next_week_window(at(2026, 10, 25, 18))
-chk("з неділі 25.10 18:00 → пн 26.10 00:00 з ЗИМОВИМ офсетом +02:00, до нд 01.11 23:59:59 +02:00", s.isoformat() == "2026-10-26T00:00:00+02:00" and e.isoformat() == "2026-11-01T23:59:59+02:00" and wk == "2026-W44")
-s, e, wk = ss.next_week_window(at(2026, 10, 19, 0, 30))
-chk("у понеділок після 00:00 → наступний понеділок (поточний тиждень уже йде)", s.date().isoformat() == "2026-10-26")
+s, e, wk = ss.next_batch_window(at(2026, 10, 15, 18))
+chk("з четверга 15.10 18:00 → партія з пт 16.10 00:00 до 23.10 23:59:59 (8 діб, +03:00), мітка = дата старту", s.isoformat() == "2026-10-16T00:00:00+03:00" and e.isoformat() == "2026-10-23T23:59:59+03:00" and wk == "2026-10-16" and (e - s) < timedelta(days=8))
+s, e, wk = ss.next_batch_window(at(2026, 10, 24, 18))
+chk("з суботи 24.10 18:00 → партія з неділі 25.10 (літній +03:00) до 01.11 23:59:59 вже з ЗИМОВИМ +02:00", s.isoformat() == "2026-10-25T00:00:00+03:00" and e.isoformat() == "2026-11-01T23:59:59+02:00" and wk == "2026-10-25")
+s, e, wk = ss.next_batch_window(at(2026, 10, 19, 0, 30))
+chk("о 00:30 понеділка → партія завтрашнього дня (сьогоднішня вже йде)", s.date().isoformat() == "2026-10-20")
 
 # (3) історія
 now = at(2026, 10, 14, 14)
@@ -109,20 +109,22 @@ chk("уцінка → не кандидат", all(c["id"] != "1007" for c in ss.
 # (5) добір
 cands = ss.candidates(index, catalog, history, NOW)
 demand = {c["id"] for c in cands[:3]}
-ch1 = ss.pick(cands, demand, set(), "2026-W44")
-chk("добір ≤10, попит першим", len(ch1) == 10 and demand <= {c["id"] for c in ch1[:3]})
-chk("детермінований для одного тижня, інший тиждень — інший порядок", [c["id"] for c in ss.pick(cands, demand, set(), "2026-W44")] == [c["id"] for c in ch1] and [c["id"] for c in ss.pick(cands, set(), set(), "2026-W45")] != [c["id"] for c in ss.pick(cands, set(), set(), "2026-W46")])
+ch1 = ss.pick(cands, demand, set(), "2026-10-26")
+chk("добір рівно N_ITEMS=6, попит першим", len(ch1) == ss.N_ITEMS == 6 and demand <= {c["id"] for c in ch1[:3]})
+chk("детермінований для однієї партії, інша дата — інший порядок", [c["id"] for c in ss.pick(cands, demand, set(), "2026-10-26")] == [c["id"] for c in ch1] and [c["id"] for c in ss.pick(cands, set(), set(), "2026-10-27")] != [c["id"] for c in ss.pick(cands, set(), set(), "2026-10-28")])
 last = {c["id"] for c in ch1}
-ch2 = ss.pick(cands, demand, last, "2026-W45")
-chk("товари минулого тижня виключені", not (last & {c["id"] for c in ch2}))
+ch2 = ss.pick(cands, demand, last, "2026-10-27")
+chk("товари діючих партій виключені", not (last & {c["id"] for c in ch2}))
 
 # (6)(7) plan і CLI
 sale, rep = ss.plan(at(2026, 10, 25, 18), index, catalog, history, demand, set())
-chk("plan: набір 10, вікно пн 26.10 +02:00 … нд 01.11, файл без cost/margin", sale and len(sale["items"]) == 10 and sale["from"] == "2026-10-26T00:00:00+02:00" and sale["until"] == "2026-11-01T23:59:59+02:00"
+chk("plan: партія 6, вікно пн 26.10 +02:00 … 02.11 23:59:59 +02:00 (8 діб), файл без cost/margin", sale and len(sale["items"]) == 6 and sale["week"] == "2026-10-26" and sale["from"] == "2026-10-26T00:00:00+02:00" and sale["until"] == "2026-11-02T23:59:59+02:00"
     and all(set(v) == {"old", "new"} for v in sale["items"].values()) and "margin" not in json.dumps(sale) and "cost" not in json.dumps(sale).lower())
-few_hist = {k: v for k, v in list(history.items())[:5]}
+few_hist = {c["id"]: history[c["id"]] for c in cands[:5]}
 sale2, rep2 = ss.plan(at(2026, 10, 25, 18), index, catalog, few_hist, set(), set())
-chk("менше 8 придатних → None", sale2 is None and rep2["chosen"] < ss.N_MIN)
+chk("мало придатних (5) → партія неповна (5 < 6), але публікується", sale2 is not None and rep2["chosen"] == 5 < rep2["want"])
+sale3, rep3 = ss.plan(at(2026, 10, 25, 18), index, catalog, {}, set(), set())
+chk("жодного придатного → None", sale3 is None and rep3["chosen"] == 0)
 # плоский (старий) формат файлу читається як один тиждень
 flat = tmpd / "flat.json"
 flat.write_text(json.dumps({"week": "2026-W44", "from": "2026-10-26T00:00:00+02:00", "until": "2026-11-01T23:59:59+02:00", "items": {"1": {"old": 100, "new": 85}}}), encoding="utf-8")
@@ -135,19 +137,20 @@ rc = ss.cmd_plan(now=at(2026, 10, 25, 18), catalog=catalog)
 doc = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
 picks = json.loads((tmpd / "picks.json").read_text(encoding="utf-8"))
 written = doc["weeks"][-1]
-chk("cmd_plan: файл sale_week.json = {weeks:[1 тиждень]}, picks.json містить id і маржі (приватно), без .tmp", rc == 0 and len(doc["weeks"]) == 1 and len(written["items"]) == 10 and picks[-1]["ids"] and picks[-1]["margins"] and not list(tmpd.glob("*.tmp")))
-doc_a = (tmpd / "sale_week.json").read_text(encoding="utf-8")
+chk("cmd_plan: файл sale_week.json = {weeks:[1 партія]}, picks.json містить id і маржі (приватно), без .tmp", rc == 0 and len(doc["weeks"]) == 1 and len(written["items"]) == 6 and picks[-1]["ids"] and picks[-1]["margins"] and not list(tmpd.glob("*.tmp")))
 rc = ss.cmd_plan(now=at(2026, 10, 25, 19), catalog=catalog)
 doc_b = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
 picks_b = json.loads((tmpd / "picks.json").read_text(encoding="utf-8"))
-chk("повторний запуск того ж тижня: той самий набір (не перетасовано), без дубля в picks, у файлі той самий 1 тиждень", rc == 0 and len(doc_b["weeks"]) == 1 and doc_b["weeks"][0]["items"] == written["items"] and len(picks_b) == 1)
-rc = ss.cmd_plan(now=at(2026, 11, 1, 18), catalog=catalog)
+chk("повторний запуск тієї ж дати: той самий набір (не перетасовано, власна партія не виключає себе), без дубля в picks, у файлі та сама 1 партія", rc == 0 and len(doc_b["weeks"]) == 1 and doc_b["weeks"][0]["items"] == written["items"] and len(picks_b) == 1)
+rc = ss.cmd_plan(now=at(2026, 10, 26, 18), catalog=catalog)
+rc2 = ss.cmd_plan(now=at(2026, 10, 27, 18), catalog=catalog)
 doc2 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
-chk("наступна неділя 18:00: у файлі ДВА тижні — чинний (until 01.11 23:59 ще не минув) + новий; чинну акцію не знято", rc == 0 and [w["week"] for w in doc2["weeks"]] == ["2026-W44", "2026-W45"])
-chk("новий тиждень не повторює товари минулого (last_ids із picks.json)", not (set(doc2["weeks"][1]["items"]) & set(doc2["weeks"][0]["items"])))
-rc = ss.cmd_plan(now=at(2026, 11, 8, 18), catalog=catalog)
+ids_all = [set(w["items"]) for w in doc2["weeks"]]
+chk("щодня по партії: 3 партії одночасно (26.10, 27.10, 28.10), діючі не знято", rc == 0 and rc2 == 0 and [w["week"] for w in doc2["weeks"]] == ["2026-10-26", "2026-10-27", "2026-10-28"])
+chk("партії не перетинаються (жоден товар у двох партіях одночасно) і усього 18 різних", len(set().union(*ids_all)) == 18 and sum(len(x) for x in ids_all) == 18)
+rc = ss.cmd_plan(now=at(2026, 11, 4, 18), catalog=catalog)
 doc3 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
-chk("через тиждень: прострочений W44 прибраний, лишилось W45 + W46 (≤2 тижні)", rc == 0 and [w["week"] for w in doc3["weeks"]] == ["2026-W45", "2026-W46"])
+chk("04.11 18:00: прострочені партії 26.10 і 27.10 прибрані; 28.10 (до 04.11 23:59:59) ще діє + нова 05.11", rc == 0 and [w["week"] for w in doc3["weeks"]] == ["2026-10-28", "2026-11-05"])
 old_file = (tmpd / "sale_week.json").read_text(encoding="utf-8")
 alerts.clear()
 young = {k: {"price": v["price"], "since": (at(2026, 11, 8, 18) - timedelta(days=3)).isoformat()} for k, v in history.items()}
@@ -156,8 +159,8 @@ rc = ss.cmd_plan(now=at(2026, 11, 8, 18), catalog=catalog)
 chk("історія молодша за 7 днів: код 1 БЕЗ алерту й без перезапису файлу (очікувана ситуація, не збій)", rc == 1 and not alerts and (tmpd / "sale_week.json").read_text(encoding="utf-8") == old_file)
 alerts.clear()
 Path(os.environ["SITE_PRICE_HISTORY_FILE"]).write_text(json.dumps(few_hist), encoding="utf-8")
-rc = ss.cmd_plan(now=at(2026, 11, 8, 18), catalog=catalog)
-chk("мало кандидатів: код 1, алерт, попередній sale_week.json НЕ перезаписано", rc == 1 and "site_sale_few" in alerts and (tmpd / "sale_week.json").read_text(encoding="utf-8") == old_file)
+rc = ss.cmd_plan(now=at(2026, 11, 8, 18), catalog={})
+chk("каталог порожній: код 1, алерт, попередній sale_week.json НЕ перезаписано", rc == 1 and "site_sale_no_catalog" in alerts and (tmpd / "sale_week.json").read_text(encoding="utf-8") == old_file)
 
 # зіпсований файл історії → алерт, а не мовчазний перезапуск відліку
 alerts.clear()
@@ -177,7 +180,7 @@ chk("перевірка: чинний W44, index без op (збій понед�
 alerts.clear()
 chk("перевірка: до старту (неділя) чинного тижня нема → (0,0) без алерту", ss.check_applied(at(2026, 10, 25, 12), idx_bad, sw) == (0, 0) and not alerts)
 chk("перевірка: файл відсутній → (0,0) без алерту", ss.check_applied(at(2026, 10, 28, 12), idx_bad, tmpd / "nofile.json") == (0, 0) and not alerts)
-chk("перевірка: застосовано 2 із 10 (<3) → алерт; 3 з 10 → ні", (ss.check_applied(at(2026, 10, 28, 12), idx_ok[:2] + idx_bad[2:], sw)[1] == 2 and "site_sale_not_applied" in alerts) and (alerts.clear() or ss.check_applied(at(2026, 10, 28, 12), idx_ok[:3] + idx_bad[3:], sw)[1] == 3 and not alerts))
+chk("перевірка: застосовано 4 із 10 (<половини) → алерт; 5 з 10 → ні", (ss.check_applied(at(2026, 10, 28, 12), idx_ok[:4] + idx_bad[4:], sw)[1] == 4 and "site_sale_not_applied" in alerts) and (alerts.clear() or ss.check_applied(at(2026, 10, 28, 12), idx_ok[:5] + idx_bad[5:], sw)[1] == 5 and not alerts))
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

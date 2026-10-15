@@ -3,7 +3,7 @@
 
 Search Console «Crawl stats» запізнюється й агрегований; лог дає той самий факт щодня й показує реакцію Google на зміни (sitemap, lastmod, 410) уже наступної доби. Рахує ЛИШЕ рядки з UA «Googlebot» (IP відвідувачів у вихід не потрапляють).
 Вихід (приватна папка reports/gmc/, не публікується): googlebot_daily_YYYY-MM-DD.csv (по добах: запити, коди 200/301/302/304/404/410/5xx, частки /product-, /category-, /catalog, старих /p… і /g… Prom, sitemap, robots…) і googlebot_summary_YYYY-MM-DD.txt (таблиця по добах, РАЗОМ, топ-20 шляхів, топ-15 404/410).
-Час відповіді в журналі НЕ логується (формат combined без %D): у звіті це зазначено. Запуск: `python googlebot_log_report.py [днів=14] [csv] [txt]`; щодня в службі gmc-status-report (ExecStartPost, той самий таймер 06:30).
+Час відповіді в журналі НЕ логується (формат combined без %D): у звіті це зазначено. Запуск: `python googlebot_log_report.py [днів=14] [csv] [txt]`; щодня в службі gmc-status-report (другий ExecStart, той самий таймер 06:30).
 """
 import csv
 import glob
@@ -11,6 +11,7 @@ import gzip
 import io
 import re
 import sys
+import zlib
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
@@ -54,37 +55,43 @@ paths_404 = Counter()
 paths_by_day = defaultdict(Counter)
 variants = Counter()
 files = sorted(glob.glob(LOGDIR + "access_log*"))
+bad_files = []
 for p in files:
     try:
         f = open_log(p)
     except OSError:
         continue
-    with f:
-        for line in f:
-            if "Googlebot" not in line:
-                continue
-            m = LINE.match(line)
-            if not m:
-                continue
-            _ip, d, mon, y, method, path, code, size, ua = m.groups()
-            try:
-                day = datetime(int(y), MONTHS[mon], int(d)).date()
-            except (KeyError, ValueError):
-                continue
-            if day < since:
-                continue
-            path = path.split("?")[0]
-            k = day.isoformat()
-            c = daily[k]
-            c["requests"] += 1
-            c[code if code in ("200", "301", "302", "304", "404", "410") else ("5xx" if code.startswith("5") else "other_code")] += 1
-            c["cat_" + cat(path)] += 1
-            paths_all[path] += 1
-            paths_by_day[k][path] += 1
-            if code in ("404", "410"):
-                paths_404[(code, path)] += 1
-            v = re.search(r"Googlebot[-\w]*", ua)
-            variants[v.group(0) if v else "Googlebot"] += 1
+    try:
+        with f:
+            for line in f:
+                if "Googlebot" not in line:
+                    continue
+                m = LINE.match(line)
+                if not m:
+                    continue
+                _ip, d, mon, y, method, path, code, size, ua = m.groups()
+                if "Googlebot" not in ua:
+                    continue
+                try:
+                    day = datetime(int(y), MONTHS[mon], int(d)).date()
+                except (KeyError, ValueError):
+                    continue
+                if day < since:
+                    continue
+                path = path.split("?")[0]
+                k = day.isoformat()
+                c = daily[k]
+                c["requests"] += 1
+                c[code if code in ("200", "301", "302", "304", "404", "410") else ("5xx" if code.startswith("5") else "other_code")] += 1
+                c["cat_" + cat(path)] += 1
+                paths_all[path] += 1
+                paths_by_day[k][path] += 1
+                if code in ("404", "410"):
+                    paths_404[(code, path)] += 1
+                v = re.search(r"Googlebot[-\w]*", ua)
+                variants[v.group(0) if v else "Googlebot"] += 1
+    except (OSError, EOFError, zlib.error, gzip.BadGzipFile):
+        bad_files.append(os.path.basename(p))  # обрізаний .gz при ротації: беремо прочитане, не валимо звіт
 
 cols = ["date", "requests", "200", "301", "302", "304", "404", "410", "5xx", "other_code", "cat_product", "cat_category", "cat_catalog", "cat_old_prom_p", "cat_old_prom_g", "cat_sitemap/xml", "cat_robots", "cat_home", "cat_assets", "cat_other_html", "cat_other"]
 with open(OUT_CSV, "w", encoding="utf-8-sig", newline="") as f:
@@ -94,7 +101,7 @@ with open(OUT_CSV, "w", encoding="utf-8-sig", newline="") as f:
         w.writerow([k] + [daily[k].get(c, 0) for c in cols[1:]])
 
 lines = []
-lines.append(f"Googlebot за {DAYS} діб з Apache access_log (повний день = доба 00:00–24:00 за часом сервера; поточна доба неповна). Файлів: {len(files)}. Час відповіді в журналі НЕ логується (формат combined без %D).")
+lines.append(f"Запити з UA Googlebot (без rDNS-перевірки) за {DAYS} діб з Apache access_log (повний день = доба 00:00–24:00 за часом сервера; поточна доба неповна). Файлів: {len(files)}. Час відповіді в журналі НЕ логується (формат combined без %D).")
 lines.append("Варіанти UA: " + ", ".join(f"{k} {v}" for k, v in variants.most_common()))
 lines.append("")
 lines.append("Доба      запити   200   301   304   404  410  5xx | частки: product category catalog /p-мертві /g-мертві sitemap")
@@ -107,13 +114,15 @@ for c in daily.values():
     tot.update(c)
 n = tot["requests"] or 1
 lines.append("")
-lines.append(f"РАЗОМ {tot['requests']} запитів: 200 {100*tot['200']/n:.1f}%, 301 {100*tot['301']/n:.1f}%, 304 {100*tot['304']/n:.1f}%, 404 {100*tot['404']/n:.1f}%, 410 {100*tot['410']/n:.1f}%, 5xx {100*tot['5xx']/n:.2f}%; /product- {100*tot['cat_product']/n:.1f}%, /category- {100*tot['cat_category']/n:.1f}%, старі /p… {100*tot['cat_old_prom_p']/n:.1f}%, старі /g… {100*tot['cat_old_prom_g']/n:.1f}%")
+lines.append(f"РАЗОМ {tot['requests']} запитів: 200 {100*tot['200']/n:.1f}%, 301 {100*tot['301']/n:.1f}%, 304 {100*tot['304']/n:.1f}%, 404 {100*tot['404']/n:.1f}%, 410 {100*tot['410']/n:.1f}%, 5xx {100*tot['5xx']/n:.2f}%; /product- {100*tot['cat_product']/n:.1f}%, /category- {100*tot['cat_category']/n:.1f}%, старі /p… {100*tot['cat_old_prom_p']/n:.1f}%, старі /g… {100*tot['cat_old_prom_g']/n:.1f}%; інші коди (302/403/429/…) {tot['302'] + tot['other_code']} запитів")
+if bad_files:
+    lines.append("УВАГА: файли, прочитані не повністю (обрізаний/пошкоджений архів): " + ", ".join(bad_files))
 lines.append("")
 lines.append("ТОП-20 шляхів за період:")
 for pth, cnt in paths_all.most_common(20):
     lines.append(f"  {cnt:6d}  {pth[:110]}")
 if daily:
-    last_full = sorted(daily)[-2] if len(daily) > 1 else sorted(daily)[-1]
+    last_full = (now.date() - timedelta(days=1)).isoformat()
     lines.append("")
     lines.append(f"ТОП-20 шляхів за останню повну добу {last_full}:")
     for pth, cnt in paths_by_day[last_full].most_common(20):

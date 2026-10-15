@@ -233,6 +233,16 @@ def hero_attrs(day):
     return mm and ([re.search(r"plutus_(\w+)\.webp", c).group(1) for c in mm.group(1).split("|")], mm.group(2).split(","), mm.group(3).split(","), mm.group(6))
 
 
+SNOW = {"2026-11-24": False, "2026-11-25": True, "2026-12-31": True, "2027-01-02": False}
+for day, inseason in SNOW.items():
+    r = hero_attrs(day)
+    names2 = r[0] if r else []
+    if inseason:
+        i = names2.index("snowflake") if "snowflake" in names2 else -1
+        chk(f"{day}: Сніжинка в ротації (вага 2, data-dip = її індекс, ≈3818 мс), tailchase тимчасово виходить, Гелловіну нема, усього 10 рухів",
+            i >= 0 and r[2][i] == "2" and r[3] == str(i) and abs(int(r[1][i]) - 3818) <= 60 and "tailchase" not in names2 and "halloween" not in names2 and len(names2) == 10)
+    else:
+        chk(f"{day}: поза 25.11–31.12 Сніжинки нема, tailchase на місці, data-dip відсутній", r and "snowflake" not in names2 and "tailchase" in names2 and len(names2) == 10 and r[3] is None)
 for day, inseason in (("2026-10-14", False), ("2026-10-15", True), ("2026-10-31", True), ("2026-11-01", False)):
     r = hero_attrs(day)
     names2 = r[0] if r else []
@@ -241,6 +251,11 @@ for day, inseason in (("2026-10-14", False), ("2026-10-15", True), ("2026-10-31"
         chk(f"{day}: Гелловін у ротації (вага 2, data-dip = його індекс), tailchase тимчасово виходить, усього 10 рухів", i >= 0 and r[2][i] == "2" and r[3] == str(i) and "tailchase" not in names2 and len(names2) == 10 and abs(int(r[1][i]) - 3320) <= 60)
     else:
         chk(f"{day}: поза 15–31.10 Гелловіна нема, tailchase на місці, data-dip відсутній", r and "halloween" not in names2 and "tailchase" in names2 and len(names2) == 10 and r[3] is None)
+sf = HERE / "site/assets/mascot/plutus_snowflake.webp"
+chk(f"файл Сніжинки в репо ({sf.stat().st_size // 1024} КБ ≤ 250, ліміт SMM)", sf.exists() and sf.stat().st_size <= 250 * 1024)
+act_s = [c[0] for c in bs.hero_mascot_clips(__import__("datetime").date(2026, 12, 1))]
+tot_s = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in act_s) + ps
+chk(f"вага рухів у ротації під час Сніжинки ≤ 2,5 МБ: {tot_s/1024:.0f} КБ", tot_s <= 2.5 * 1000 * 1000 + 20000)
 hw = HERE / "site/assets/mascot/plutus_halloween.webp"
 chk(f"файл Гелловіну в репо ({hw.stat().st_size // 1024} КБ ≤ 250, ліміт SMM): 12 fps, loop=1", hw.exists() and hw.stat().st_size <= 250 * 1024)
 act = [n for n in (c[0] for c in bs.hero_mascot_clips(__import__("datetime").date(2026, 10, 20)))]

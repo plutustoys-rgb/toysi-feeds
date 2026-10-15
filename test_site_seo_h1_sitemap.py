@@ -5,7 +5,7 @@
   • вступний текст категорії (site/category_texts.json, слот під H1 над списком): лише 1-ша сторінка, абзаци за порожнім рядком, HTML екранується, нема тексту — нема блоку;
   • перші 4 картки списку без loading=lazy, першій fetchpriority=high (LCP-елемент списку був lazy: Lighthouse LCP 5,3–6,5 с);
   • sitemap: лише 1-ша сторінка категорії/каталогу (без `_N`), усі картки на місці; canonical і rel=prev/next на пагінації не змінено;
-  • головна: «Популярні категорії» 24–30 посилань на існуючі сторінки категорій, без «Уцінки», у порядку кількості товарів.
+  • головна: блоку «Популярні категорії» нема (власник 15.10).
 Повний build() на синтетичному каталозі; мережа не потрібна."""
 import json
 import os
@@ -150,48 +150,15 @@ prods_in = {x for x in locs if x.startswith("product-")}
 chk(f"sitemap: усі {len(catalog)} карток на місці (шлях до карток не залежить від пагінації)", len(prods_in) == len(catalog))
 chk("пагінація лишилась доступною: rel=next на стор.1 і rel=prev на стор.2", f'rel="next" href="category-{slug}_2.html"' in p1 and f'rel="prev" href="category-{slug}.html"' in p2)
 
-# головна: популярні категорії
+# головна: блоку «Популярні категорії» (пігулки з лічильниками) нема — власник 15.10: «це все теж лишня інфа»
 home = (out / "index.html").read_text(encoding="utf-8")
-m = re.search(r'<nav class="catlinks" aria-label="Популярні категорії">(.*?)</nav>', home, re.S)
-links = re.findall(r'<a href="(category-[^"]+\.html)">([^<]*)</a><span>(\d+)</span>', m.group(1)) if m else []
-chk("головна: блок «Популярні категорії» з 30 посиланнями", m is not None and len(links) == 30 and "<h2>Популярні категорії</h2>" in home)
-chk("головна: кожна пігулка = ОДИН елемент <span class=\"cl\"> з <a> і лічильником (інакше на вузькому екрані число відривається від назви)",
-    m is not None and len(re.findall(r'<span class="cl"><a href="category-[^"]+\.html">[^<]*</a><span>\d+</span></span>', m.group(1))) == 30 == m.group(1).count('<span class="cl">'))
-chk("головна: «Уцінки» серед популярних нема", not any("Уцінк" in t for _, t, _ in links))
-chk("головна: посилання ведуть на ІСНУЮЧІ сторінки категорій", all((out / h).exists() for h, _, _ in links))
-counts = [int(c) for _, _, c in links]
-chk("головна: порядок за кількістю товарів (спадно), лічильник правильний (Картини за номерами = 60 першою)", counts == sorted(counts, reverse=True) and links[0][1] == "Картини за номерами" and counts[0] == 60)
-
-# «Уцінка» не потрапляє в популярні й тоді, коли звичайних категорій МАЛО (інакше сортування «Уцінка в кінці» її б не ховало)
-def _mk(i, cat):
-    return {"id": str(9000 + i), "name": f"Т{i}", "price": 300, "category": cat, "photo": "https://x/1.jpg", "stock": 3, "desc": "", "contribution": 150.0}
-
-
-odd = 'Кубики & пазли <b>"Ціна"</b> «Розумні»'
-few = {"Ляльки": [_mk(1, "Ляльки"), _mk(2, "Ляльки")], "Пазли": [_mk(3, "Пазли")], odd: [_mk(4, odd)], "Уценка": [_mk(i, "Уценка") for i in range(20, 25)], "Уцінка": [_mk(i, "Уцінка") for i in range(10, 15)]}
-bs.write_home([p for v in few.values() for p in v], few, ["Ляльки", "Пазли", odd, "Уценка", "Уцінка"], {c: bs.slugify(c) for c in few})
-h3 = (out / "index.html").read_text(encoding="utf-8")
-m3 = re.search(r'<nav class="catlinks"[^>]*>(.*?)</nav>', h3, re.S)
-chk("назви в «Популярних» екрануються (& < > \") — жодного літерального <b> у блоці", m3 is not None and "<b>" not in m3.group(1) and "&lt;b&gt;" in m3.group(1) and "&amp;" in m3.group(1))
-chk("і «Уцінка», і варіант «Уценка» не потрапляють у популярні", m3 is not None and "Уцінк" not in m3.group(1) and "Уценк" not in m3.group(1))
-chk("мало категорій: у «Популярних» лише звичайні, «Уцінки» нема, рахунок правильний", m3 is not None and "Уцінк" not in m3.group(1) and ">Ляльки</a><span>2</span>" in m3.group(1) and ">Пазли</a><span>1</span>" in m3.group(1))
-
-# CSS пігулки: усередині .cl нема gap, тож від'ємний margin-left у лічильника наїжджав би на останню літеру назви (аудит #679 р.2)
+chk("головна: блоку «Популярні категорії» (catlinks, «Усі категорії →» під сіткою) нема", 'class="catlinks"' not in home and "<h2>Популярні категорії</h2>" not in home)
 _css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
-_rule = re.search(r"\.catlinks a\+span\{([^}]*)\}", _css)
-chk("CSS: лічильник пігулки (.catlinks a+span) без від'ємного margin — не перекриває назву", _rule is not None and not re.search(r"margin[^:;]*:[^;]*-\d", _rule.group(1)))
-
-# порядок «Популярних» = порядок cat_list (за кількістю), а НЕ алфавітний: імена навмисно в зворотному порядку до кількості
-ord_ = {"Яблука": [_mk(100 + i, "Яблука") for i in range(5)], "Ляльки": [_mk(200 + i, "Ляльки") for i in range(2)], "Азбука": [_mk(300, "Азбука")]}
-bs.write_home([p for v in ord_.values() for p in v], ord_, ["Яблука", "Ляльки", "Азбука"], {c: bs.slugify(c) for c in ord_})
-h4 = (out / "index.html").read_text(encoding="utf-8")
-m4 = re.search(r'<nav class="catlinks"[^>]*>(.*?)</nav>', h4, re.S)
-names4 = re.findall(r'<a href="category-[^"]+\.html">([^<]*)</a>', m4.group(1)) if m4 else []
-chk("«Популярні»: порядок за кількістю (Яблука 5 > Ляльки 2 > Азбука 1), не алфавітний", names4 == ["Яблука", "Ляльки", "Азбука"])
+chk("CSS: правил .catlinks більше нема", ".catlinks" not in _css)
 
 # глибоко вкладений JSON не валить збірку (RecursionError ловиться як невалідний JSON)
 r, e = load_with("[" * 100000, "deep.json")
 chk("глибоко вкладений JSON → порожньо, ГОЛОСНО, без винятку", r == {} and "category_texts.json" in e)
 
-print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ SEO: H1/слот тексту/eager/sitemap/популярні категорії — усі перевірки коректні.'}")
+print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ SEO: H1/слот тексту/eager/sitemap — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

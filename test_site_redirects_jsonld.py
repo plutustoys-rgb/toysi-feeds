@@ -28,8 +28,8 @@ for r in rules:
         gone_pats.append(g.group(1))
     else:
         pats.append(None)
-chk("8 правил старих Prom-URL у скрипті: 7 з 301 (p/g з мапи груп/g-решта/product_list/site_contacts/site_/корінь мови) + 1 з 410 Gone для p<id> без запису в мапі",
-    len(rules) == 8 and len(gone_pats) == 1 and all(pats))
+chk("9 правил старих Prom-URL у скрипті: 7 з 301 (p/g з мапи груп/g-решта/product_list/site_contacts/site_/корінь мови) + 2 з 410 Gone (p<id> без запису в мапі; /create_order_mobile)",
+    len(rules) == 9 and len(gone_pats) == 2 and all(pats))
 def hit(path):
     for p, tgt in pats:
         if re.search(p, path):
@@ -43,6 +43,7 @@ _i_gone = sh.find("- [G,L]")
 _i_301 = sh.find("${promredir:$1} [R=301,L]")
 chk("410-правило p<id> іде безпосередньо після RewriteCond ${promredir:$1|-} =- і ПЕРЕД 301-правилом із мапи",
     -1 < _i_cond < _i_gone < _i_301 and sh[_i_cond:_i_gone].count("RewriteRule") == 1 and sh[_i_cond:_i_gone].count("RewriteCond") == 1)
+chk("410: /create_order_mobile, /ua/create_order_mobile (SEO/Код 15.10: 647 запитів Googlebot) → Gone; наші сторінки — ні", gone("/create_order_mobile") and gone("/ua/create_order_mobile") and not gone("/cart.html") and not gone("/checkout.html"))
 chk("мапа БЕЗ дефолту /catalog.html (непокритий ключ більше не веде на каталог)", "${promredir:$1|/catalog.html}" not in sh)
 chk("410: /ua/p…, /ru/p…, /p… без префікса підпадають під [G]; /product-1.html, /ua/g…, /catalog.html — ні",
     gone("/ua/p3122611441-x.html") and gone("/ru/p3122611441-x.html") and gone("/p3138857147-x.html")

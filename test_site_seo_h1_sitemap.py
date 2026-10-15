@@ -68,7 +68,7 @@ bs.build()
 slug = bs.slugify(big)
 p1 = (out / f"category-{slug}.html").read_text(encoding="utf-8")
 p2 = (out / f"category-{slug}_2.html").read_text(encoding="utf-8")
-chk("H1 категорії = лише назва (без «Каталог •»), стор.1", re.search(r'<h1 class="page">Картини за номерами</h1>', p1) is not None and "Каталог •" not in p1)
+chk("H1 категорії = лише назва (без «Каталог •»), стор.1", re.search(r'<h1 class="page cat-h1">Картини за номерами</h1>', p1) is not None and "Каталог •" not in p1)
 chk("H1 категорії = лише назва, стор.2 (title/canonical пагінації не змінено)", re.search(r'<h1 class="page">Картини за номерами</h1>', p2) is not None
     and f'rel="canonical" href="https://plutustoys.com.ua/category-{slug}_2.html"' in p2 and "сторінка 2" in re.search(r"<title>(.*?)</title>", p2).group(1))
 cat_html = (out / "catalog.html").read_text(encoding="utf-8")

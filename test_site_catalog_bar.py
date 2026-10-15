@@ -57,6 +57,13 @@ chk("розмітка стор.1: панель .cat-bar з H1 «Каталог»
 chk("сторінка 2 (статична, для SEO): «Сторінка 2 з N» лишається, крихт нема, панелі нема", "Сторінка 2 з" in html2 and 'id="cat-controls"' not in html2 and 'class="crumbs"' not in html2.split('<div class="wrap">')[1].split("<footer")[0])
 chk("порядок контролів: сортування → категорія → «Ціна» → ціна від/до → «Скинути»; «Скинути» всередині панелі ціни", html.index('id="cf-sort"') < html.index('id="cf-cat"') < html.index('id="cf-price-toggle"') < html.index('id="cf-min"') < html.index('id="cf-max"') < html.index('id="cf-reset"') and html.index('id="cf-price-panel"') < html.index('id="cf-reset"'))
 
+# ── сторінка категорії (власник 15.10: «треба робити і в категоріях»): та сама панель, категорія вибрана, крихти лишаються, «Сторінка 1 з N» нема ──
+cat_file = sorted(f.name for f in out.glob("category-*.html") if "_" not in f.name)[0]
+chtml = (out / cat_file).read_text(encoding="utf-8")
+cbody = chtml.split('<div class="wrap">')[1].split("<footer")[0]
+chk("категорія: панель .cat-bar з H1 = назва категорії + контроли з data-cat, мапа назва→сторінка, крихти лишились, «Сторінка 1 з N» нема",
+    '<div class="cat-bar"><h1 class="page cat-h1">' in chtml and 'id="cat-controls" class="cat-controls" hidden data-cat="' in chtml and 'id="cat-urls"' in chtml and 'class="crumbs"' in cbody and "Сторінка 1 з" not in cbody and 'id="cat-static"' in chtml)
+
 H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out))
 H.log_message = lambda *a, **k: None
 
@@ -117,6 +124,47 @@ with sync_playwright() as pw:
             pg.wait_for_timeout(300)
             chk(f"{w}px: Escape закриває панель, кнопка «Ціна» підсвічена, коли фільтр ціни активний", pg.evaluate("getComputedStyle(document.getElementById('cf-price-panel')).display") == "none" and pg.evaluate("document.getElementById('cf-price-toggle').classList.contains('on')"))
         chk(f"{w}px: без горизонтального скролу й помилок JS", pg.evaluate("document.documentElement.scrollWidth <= innerWidth") and errs == [])
+        ctx.close()
+    br.close()
+# ── поведінка на сторінці категорії ──
+with sync_playwright() as pw:
+    br = pw.chromium.launch()
+    for w, h in ((1400, 800), (390, 800)):
+        ctx = br.new_context(viewport={"width": w, "height": h})
+        pg = ctx.new_page()
+        errs = []
+        pg.on("pageerror", lambda e: errs.append(str(e)))
+        pg.route("**/googletagmanager.com/**", lambda r: r.abort())
+        pg.route("https://toysi.ua/**", lambda r: r.abort())
+        pg.goto(f"{base}/{cat_file}", wait_until="load")
+        pg.wait_for_selector("#cat-js .card")
+        pg.wait_for_timeout(300)
+        name = pg.evaluate("document.querySelector('.cat-h1').textContent")
+        sel = pg.evaluate("document.getElementById('cf-cat').value")
+        n = pg.evaluate("document.querySelectorAll('#cat-js .card').length")
+        chk(f"{w}px категорія «{name}»: у панелі вибрана ця ж категорія ({sel!r}), JS-сітка показує лише її товари ({n} карток)", sel == name and n > 0 and pg.evaluate("[...document.querySelectorAll('#cat-js .card .nm')].every(e=>e.textContent.indexOf(%r)>=0)" % name))
+        pg.evaluate("window.scrollTo(0, 1500)")
+        pg.wait_for_timeout(300)
+        t_ = pg.evaluate("document.getElementById('cf-sort').getBoundingClientRect().top")
+        chk(f"{w}px категорія: після прокрутки сортування лишилось під шапкою (top {t_:.0f})", 64 <= t_ <= 90)
+        pg.select_option("#cf-sort", "dear")
+        pg.wait_for_timeout(300)
+        pr = pg.evaluate("[...document.querySelectorAll('#cat-js .card .pr')].slice(0,3).map(e=>parseInt(e.textContent))")
+        chk(f"{w}px категорія: сортування «Спершу дорожчі» працює у межах категорії ({pr})", pr == sorted(pr, reverse=True))
+        pg.click("#cf-reset") if w >= 1000 else None
+        if w >= 1000:
+            pg.wait_for_timeout(200)
+            chk(f"{w}px категорія: «Скинути» повертає сортування, але лишається в цій категорії", pg.evaluate("document.getElementById('cf-sort').value") == "rec" and pg.evaluate("document.getElementById('cf-cat').value") == name)
+        other = pg.evaluate("[...document.querySelectorAll('#cf-cat option')].map(o=>o.value).filter(v=>v && v!==%r)[0]" % name)
+        with pg.expect_navigation():
+            pg.select_option("#cf-cat", other)
+        chk(f"{w}px категорія: вибір іншої категорії («{other}») веде на її сторінку, а не фільтрує тут ({pg.url.split('/')[-1]})", pg.url.split("/")[-1].startswith("category-") and pg.url.split("/")[-1] != cat_file)
+        pg.goto(f"{base}/{cat_file}", wait_until="load")
+        pg.wait_for_selector("#cat-js .card")
+        with pg.expect_navigation():
+            pg.select_option("#cf-cat", "")
+        chk(f"{w}px категорія: «Усі категорії» веде в повний каталог ({pg.url.split('/')[-1]})", pg.url.split("/")[-1] == "catalog.html")
+        chk(f"{w}px категорія: без горизонтального скролу й помилок JS", errs == [])
         ctx.close()
     br.close()
 print()

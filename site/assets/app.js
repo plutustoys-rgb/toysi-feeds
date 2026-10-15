@@ -277,12 +277,16 @@
         moreWrap=document.getElementById("cat-more-wrap"), moreBtn=document.getElementById("cat-more"),
         statik=document.getElementById("cat-static");
     var PER=24, shown=0, filtered=[];
+    // сторінка категорії (data-cat): та сама панель, категорія вибрана; зміна категорії = перехід на її сторінку, «Усі категорії» = /catalog.html
+    var preset=controls.getAttribute("data-cat")||"", catUrls={};
+    if(preset){ try{ catUrls=JSON.parse((document.getElementById("cat-urls")||{}).textContent||"{}"); }catch(e){ catUrls={}; } }
     ensureIndex(function(data){
       var cats={};
       for(var i=0;i<data.length;i++){ if(data[i].c) cats[data[i].c]=(cats[data[i].c]||0)+1; }
       Object.keys(cats).sort(function(a,b){return a.localeCompare(b,"uk");}).forEach(function(c){
         var o=document.createElement("option"); o.value=c; o.textContent=c+" ("+cats[c]+")"; elCat.appendChild(o);
       });
+      if(preset) elCat.value=preset;
       controls.hidden=false;
       apply();
     });
@@ -323,9 +327,13 @@
       count.textContent="Знайдено: "+filtered.length+" · показано "+shown;
       moreWrap.hidden = shown>=filtered.length;
     }
-    function doReset(){ elSort.value="rec"; elCat.value=""; elMin.value=""; elMax.value=""; if(elStock) elStock.checked=false; apply(); }
+    function doReset(){ elSort.value="rec"; elCat.value=preset; elMin.value=""; elMax.value=""; if(elStock) elStock.checked=false; apply(); }
     var deb=debounce(apply,250);
-    [elSort,elCat,elStock].forEach(function(e){ if(e) e.addEventListener("change",apply); });
+    [elSort,elStock].forEach(function(e){ if(e) e.addEventListener("change",apply); });
+    elCat.addEventListener("change",function(){
+      if(preset){ var u=elCat.value ? catUrls[elCat.value] : "catalog.html"; if(u){ location.href=u; return; } elCat.value=preset; return; }
+      apply();
+    });
     [elMin,elMax].forEach(function(e){ if(e) e.addEventListener("input",deb); });
     if(moreBtn) moreBtn.addEventListener("click",renderMore);
     if(elReset) elReset.addEventListener("click",doReset);

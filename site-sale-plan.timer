@@ -1,8 +1,8 @@
 [Unit]
-Description=PlutusToys: щонеділі 18:00 складаємо набір «Знижки тижня» на наступні пн–нд (рішення власника 14.10.2026)
+Description=PlutusToys: щодня 18:00 складаємо нову партію постійної «Знижки» (6 товарів на 8 діб, ≈48 одночасно; рішення власника 15.10.2026)
 
 [Timer]
-OnCalendar=Sun *-*-* 18:00:00 Europe/Kyiv
+OnCalendar=*-*-* 18:00:00 Europe/Kyiv
 Persistent=true
 
 [Install]

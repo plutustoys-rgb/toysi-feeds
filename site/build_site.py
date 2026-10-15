@@ -366,7 +366,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
     )
 
-# ── «Знижка тижня −15%» (власник 14.10, варіант «а»; бекенд Code-Agent: site_sale.py пише site/sale_week.json щонеділі) ──
+# ── «Знижка тижня −15%» (власник 14.10, варіант «а»; з 15.10 ПОСТІЙНА: щодня нова партія на 8 діб, ≈48 товарів одночасно; бекенд Code-Agent: site_sale.py пише site/sale_week.json щодня) ──
 # КОНТРАКТ: {"week","pct","from","until","created_at","items":{"<id>":{"old":int,"new":int}}}; from/until — ISO із поясом; new = ceil(old × (100−pct)/100).
 # build_site у вікні from…until ставить ціну pr=new і op=old (index.json) для id з файлу; ПОЗА вікном файл ігнорується (навіть якщо лишився). Ціна — єдине джерело для замовлення/LiqPay/чека (site_order_api читає pr, op ігнорує).
 # Захисні перевірки на КОЖНІЙ збірці (стара ціна має бути РЕАЛЬНОЮ, збитку нема): поточна ціна сайту == old; new < old; внесок після знижки ≥ SALE_RESERVE_UAH (запас 25 ₴); невідома собівартість — без знижки. Товар, що не пройшов, випадає з акції (ціна лишається звичайною).
@@ -424,8 +424,8 @@ def _parse_sale_week(raw, now):
 
 
 def load_sale_week(now=None, path=None):
-    """Дійсний набір акції на ЗАРАЗ або None. Файл — {"weeks":[чинний, наступний]} (до 2 тижнів; Code-Agent: щонеділі 18:00 план дописує наступний, чинний не знімається); плоский формат (один тиждень без weeks) теж читаємо.
-    Діє лише той тиждень, у чиє вікно from…until потрапляє «зараз»; прострочені/майбутні/зламані тижні ігноруємо (свіжості файлу не довіряємо). Нема файлу — тихо None; зламаний файл — None із попередженням."""
+    """Дійсний набір акції на ЗАРАЗ або None. Файл — {"weeks":[партія, партія, …]} (Code-Agent з 15.10: ЩОДНЯ о 18:00 дописує партію на 8 діб; одночасно діє до ~8 партій = «постійна акція»); плоский формат (одна партія без weeks) теж читаємо.
+    Діють усі партії, у чиє вікно from…until потрапляє «зараз», результат — їх об'єднання (items; until_by_id = кінець партії кожного товару); прострочені/майбутні/зламані ігноруємо (свіжості файлу не довіряємо). Нема файлу — тихо None; зламаний файл — None із попередженням."""
     path = path or SALE_FILE
     now = now or _sale_now() or datetime.now(timezone.utc)
     try:
@@ -443,11 +443,23 @@ def load_sale_week(now=None, path=None):
             return None
     else:
         weeks = [raw]
-    for w in weeks:
+    merged = None
+    for w in weeks:                       # ПОСТІЙНА акція: діють УСІ партії, чиє вікно містить «зараз» (щодня нова партія на 8 днів); об'єднуємо
         got = _parse_sale_week(w, now)
-        if got:
-            return got
-    return None
+        if not got:
+            continue
+        if merged is None:
+            merged = {"week": got["week"], "pct": got["pct"], "from": got["from"], "until": got["until"], "items": {}, "until_by_id": {}}
+        elif got["pct"] != merged["pct"]:
+            print(f"[build] ⚠ sale_week.json: партія {got['week']} має pct={got['pct']} ≠ {merged['pct']} — пропущена", file=sys.stderr)
+            continue
+        merged["from"] = min(merged["from"], got["from"])
+        merged["until"] = max(merged["until"], got["until"])
+        for pid, v in got["items"].items():
+            if pid not in merged["items"]:          # той самий товар у двох партіях (не мало б бути): діє перша, кінець — за нею
+                merged["items"][pid] = v
+                merged["until_by_id"][pid] = got["until"]
+    return merged
 
 
 def apply_sale(pid, price, sale, cost):
@@ -466,23 +478,28 @@ def apply_sale(pid, price, sale, cost):
 _WEEKDAY_GEN = ("понеділка", "вівторка", "середи", "четверга", "пʼятниці", "суботи", "неділі")
 
 
-def sale_until_label():
-    """«неділі 23:59» (за поясом з файлу) для підпису «Акція до …»."""
+def _sale_until_of(pid):
     if not SALE_ACTIVE:
-        return ""
-    u = SALE_ACTIVE["until"]
-    return f"{_WEEKDAY_GEN[u.weekday()]} {u:%H:%M}"
+        return None
+    return (SALE_ACTIVE.get("until_by_id") or {}).get(str(pid), SALE_ACTIVE["until"]) if pid is not None else SALE_ACTIVE["until"]
+
+
+def sale_until_label(pid=None):
+    """«22.10 23:59» (за поясом з файлу): коли закінчується знижка товару pid (без pid — найпізніша партія)."""
+    u = _sale_until_of(pid)
+    return f"{u:%d.%m} {u:%H:%M}" if u else ""
 
 
 def sale_badge_html(p) -> str:
     return f'<span class="sale-badge">−{SALE_ACTIVE["pct"] if SALE_ACTIVE else 15}%</span>' if p.get("old_price") else ""
 
 
-def sale_until_html() -> str:
-    """Рядок «Акція до неділі 23:59» + зворотний відлік (JS заповнює [data-sale-until]); без JS лишається статичний текст."""
-    if not SALE_ACTIVE:
+def sale_until_html(pid=None) -> str:
+    """Рядок «Акція до 22.10 23:59» + зворотний відлік (JS заповнює [data-sale-until]) для товару pid; без pid або без знижки — порожньо (на сторінці акцій кінець у кожного товару свій)."""
+    u = _sale_until_of(pid)
+    if not u:
         return ""
-    return (f'<div class="sale-until">Акція до <b>{sale_until_label()}</b><span class="sale-left" data-sale-until="{esc(SALE_ACTIVE["until"].isoformat())}"></span></div>')
+    return (f'<div class="sale-until">Акція до <b>{sale_until_label(pid)}</b><span class="sale-left" data-sale-until="{esc(u.isoformat())}"></span></div>')
 
 
 def index_entries(prods):
@@ -1005,7 +1022,7 @@ def offer_extras(p) -> dict:
     """Поля Product.offers для Merchant free listings (SEO п.3б). Значення — з текстів сторінок «Доставка»/«Повернення»."""
     from datetime import date, timedelta
     extra = {
-        "priceValidUntil": ((SALE_ACTIVE["until"].date() if (SALE_ACTIVE and p.get("old_price")) else date.today() + timedelta(days=PRICE_VALID_DAYS))).isoformat(),
+        "priceValidUntil": ((_sale_until_of(p["id"]).date() if (SALE_ACTIVE and p.get("old_price") and _sale_until_of(p["id"])) else date.today() + timedelta(days=PRICE_VALID_DAYS))).isoformat(),
         # shippingDetails без виміряної ставки не пишемо (shippingRate обов'язковий, вигадане число — розбіжність розмітки зі сторінкою); повернемо разом із цифрою.
         "hasMerchantReturnPolicy": {
             "@type": "MerchantReturnPolicy", "applicableCountry": "UA",
@@ -1348,7 +1365,7 @@ def aktsii_pick(prods):
 
 
 def write_aktsii(prods):
-    """Пише /aktsii.html «Знижка тижня −N%»: підпис «Акція до неділі 23:59» + зворотний відлік, сітка карток (події select_item «sale_week»). Повертає set записаних сторінок."""
+    """Пише /aktsii.html «Знижка тижня −N%»: сітка карток (термін — на кожній картці товару) (події select_item «sale_week»). Повертає set записаних сторінок."""
     picks = aktsii_pick(prods)
     if not picks:
         return set()
@@ -1356,14 +1373,13 @@ def write_aktsii(prods):
     body = (
         crumbs_html([("Головна", "index.html"), ("Акції", None)]) +
         f'\n<h1 class="page">Знижка тижня −{pct}%</h1>\n'
-        f'<p class="sale-lead">Щопонеділка — нова добірка іграшок зі знижкою −{pct}%. Ціна вже знижена: нічого вводити не треба. Діє до {sale_until_label()}.</p>' +
-        sale_until_html() +
+        f'<p class="sale-lead">Щодня — нові іграшки зі знижкою −{pct}%. Ціна вже знижена: нічого вводити не треба. Термін знижки вказано на картці товару.</p>' +
         '<div class="sale-list" id="sale-list" data-list="sale_week">' + grid(picks, eager_n=4) + '</div>'
         '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'
     )
     head = breadcrumb_ld([("Головна", "index.html"), ("Акції", None)])
     _write(AKTSII_FILE, page(f"Знижка тижня −{pct}%", body, extra_head=head,
-                             description=f"Знижка тижня −{pct}% у PlutusToys: добірка іграшок за акційними цінами до {sale_until_label()}. Стара ціна перекреслена, знижка вже в ціні.",
+                             description=f"Знижка тижня −{pct}% у PlutusToys: іграшки за акційними цінами, добірка оновлюється щодня. Стара ціна перекреслена, знижка вже в ціні.",
                              canonical=AKTSII_FILE, og_image=OG_IMAGE, title_full=f"Знижка тижня −{pct}% на іграшки | PlutusToys"))
     return {AKTSII_FILE}
 
@@ -1971,7 +1987,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
       f'<h1 class="prod">{esc(p["name"])}</h1>'
       + (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +
       f'<div class="avail {oos}">{avail}</div></div>'
-      + (sale_until_html() if p.get("old_price") else "") + oos_note + buy_info +
+      + (sale_until_html(p["id"]) if p.get("old_price") else "") + oos_note + buy_info +
       desc_block +
       '</div></div>'
       + (f'<section class="related"><h2>{esc(related_title)}</h2>{grid(related)}</section>' if related else "")

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """test_site_sale_week.py — 14.10.2026 («Знижка тижня −15%», варіант «а», рішення власника; бекенд Code-Agent site_sale.py → site/sale_week.json): наш бік.
 (1) load_sale_week: лише ДІЙСНИЙ файл у вікні from…until (ISO із поясом, new = ceil(old×0,85)); поза вікном/зламаний/нема — акції нема; (2) apply_sale: ціна pr=new, op=old ЛИШЕ коли поточна ціна == old, new < price і внесок після знижки ≥ запасу 25 ₴;
-(3) index.json несе pr (акційна) і op; (4) картка: бейдж −15%, стара ціна перекреслена, нова червона; сторінка товару: «Акція до неділі 23:59», JSON-LD priceValidUntil = кінець акції; (5) /aktsii.html і кнопка героя «Акції» (червона наліпка) лише коли є придатні акційні позиції;
+(3) index.json несе pr (акційна) і op; (4) картка: бейдж −15%, стара ціна перекреслена, нова червона; сторінка товару: «Акція до 25.10 23:59» (кінець партії товару), JSON-LD priceValidUntil = кінець акції; (5) /aktsii.html і кнопка героя «Акції» (червона наліпка) лише коли є придатні акційні позиції;
 (6) зворотний відлік у браузері; (7) контраст білого тексту на #D93A3A ≥ 4.5:1."""
 import json
 import math
@@ -102,6 +102,20 @@ chk("невалідний JSON — акції нема", bs.load_sale_week(NOW, 
 write(sale_file(items={}))
 chk("порожній items — акції нема", bs.load_sale_week(NOW, path) is None)
 
+# ── 1б. ПОСТІЙНА акція: кілька партій одночасно (щоденна ротація, 15.10) ──
+def batch(label, d0, items, pct=15):
+    st = datetime(2026, 10, d0, 0, 0, 0, tzinfo=KY)
+    return {"week": label, "pct": pct, "from": st.isoformat(), "until": (st + timedelta(days=8) - timedelta(seconds=1)).isoformat(), "items": {k: {"old": 400, "new": new_of(400, pct)} for k in items}}
+write({"weeks": [batch("2026-10-19", 19, ["1", "2"]), batch("2026-10-20", 20, ["3", "4"]), batch("2026-10-21", 21, ["5"]), batch("2026-10-22", 22, ["6"])]})
+m = bs.load_sale_week(NOW, path)
+chk("кілька партій: діють ВСІ, чиє вікно містить «зараз» (19, 20, 21), завтрашня (22) ще ні — об'єднано 5 позицій", m and set(m["items"]) == {"1", "2", "3", "4", "5"} and m["week"] == "2026-10-19")
+chk("кінець знижки — свій у кожного товару (партія 19 → 26.10 23:59:59, партія 21 → 28.10 23:59:59)", m["until_by_id"]["1"].isoformat() == "2026-10-26T23:59:59+03:00" and m["until_by_id"]["5"].isoformat() == "2026-10-28T23:59:59+03:00" and m["until"].isoformat() == "2026-10-28T23:59:59+03:00")
+m2 = bs.load_sale_week(datetime(2026, 10, 27, 12, 0, 0, tzinfo=KY), path)
+chk("через 6 днів: партія 19 вже закінчилась (26.10) — лишились 3, 4, 5, 6", set(m2["items"]) == {"3", "4", "5", "6"})
+write({"weeks": [batch("2026-10-19", 19, ["1"]), batch("2026-10-20", 20, ["2"], pct=20)]})
+m3 = bs.load_sale_week(NOW, path)
+chk("партія з іншим pct не змішується (пропущена з попередженням), перша діє", set(m3["items"]) == {"1"} and m3["pct"] == 15)
+
 # ── 2. apply_sale: перевірки на кожній збірці ──
 SALE = {"week": "w", "pct": 15, "from": START, "until": END, "items": {"111": (400, 340)}}
 com = bs.cp.PAYMENT_COMMISSION.get("site", 0.0)
@@ -134,7 +148,7 @@ bs.write_product(p_sale, related=None, cat_slug={}, similar=[])
 bs.write_product(p_norm, related=None, cat_slug={}, similar=[])
 ph = (out / "product-111.html").read_text(encoding="utf-8")
 pn = (out / "product-333.html").read_text(encoding="utf-8")
-chk("сторінка акційного товару: ціна 340 ₴ червона, стара 400 ₴ перекреслена, бейдж −15%, «Акція до неділі 23:59» з відліком; кнопка «У кошик» несе ціну 340", 'class="price sale-price">340 ₴' in ph and '<s class="pr-old">400 ₴</s>' in ph and "sale-badge" in ph and "Акція до <b>неділі 23:59</b>" in ph and 'data-sale-until="2026-10-25T23:59:59+03:00"' in ph and '&quot;price&quot;: 340' in ph)
+chk("сторінка акційного товару: ціна 340 ₴ червона, стара 400 ₴ перекреслена, бейдж −15%, «Акція до 25.10 23:59» з відліком; кнопка «У кошик» несе ціну 340", 'class="price sale-price">340 ₴' in ph and '<s class="pr-old">400 ₴</s>' in ph and "sale-badge" in ph and "Акція до <b>25.10 23:59</b>" in ph and 'data-sale-until="2026-10-25T23:59:59+03:00"' in ph and '&quot;price&quot;: 340' in ph)
 ld = re.search(r'<script type="application/ld\+json">(.*?)</script>', ph.replace("\\u003c", "<"), re.S)
 chk("JSON-LD Offer: price=340, priceValidUntil = кінець акції (2026-10-25)", '"price": "340"' in ph and '"priceValidUntil": "2026-10-25"' in ph)
 chk("звичайний товар: без акційних елементів, priceValidUntil — стандартний", "sale-until" not in pn and "sale-badge" not in pn and '"priceValidUntil": "2026-10-25"' not in pn)
@@ -145,7 +159,7 @@ pk = bs.aktsii_pick(prods)
 chk("aktsii_pick: лише акційні позиції, ціна зростаюче (290, 340)", [p["id"] for p in pk] == ["112", "111"])
 chk("write_aktsii пише aktsii.html", bs.write_aktsii(prods) == {"aktsii.html"})
 ah = (out / "aktsii.html").read_text(encoding="utf-8")
-chk("/aktsii: H1 «Знижка тижня −15%», «Акція до неділі 23:59», сітка з бейджами, список для аналітики data-list=sale_week, без промокодів/підписок", '<h1 class="page">Знижка тижня −15%</h1>' in ah and "Акція до <b>неділі 23:59</b>" in ah and "Щопонеділка — нова добірка іграшок зі знижкою −15%. Ціна вже знижена: нічого вводити не треба. Діє до неділі 23:59." in ah and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("</header>")[1].split("<footer")[0])
+chk("/aktsii: H1 «Знижка тижня −15%», без загального терміну (він на картках), «Щодня — нові іграшки», сітка з бейджами, список для аналітики data-list=sale_week, без промокодів/підписок", '<h1 class="page">Знижка тижня −15%</h1>' in ah and "Акція до <b>" not in ah and "Щодня — нові іграшки зі знижкою −15%. Ціна вже знижена: нічого вводити не треба. Термін знижки вказано на картці товару." in ah and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("</header>")[1].split("<footer")[0])
 cats = {}
 for p in prods:
     cats.setdefault(p["category"], []).append(p)
@@ -217,8 +231,11 @@ if sync_playwright:
             pg.route("**/stock.json*", lambda r: r.abort())
             pg.goto(f"{base}/aktsii.html", wait_until="load")
             pg.wait_for_timeout(500)
-            v = pg.evaluate("(()=>{const l=document.querySelector('.sale-left').textContent; const pr=document.querySelector('.card .pr-sale'); const old=document.querySelector('.card .pr-old'); const bd=document.querySelector('.card .sale-badge'); return [l, getComputedStyle(pr).color, getComputedStyle(old).textDecorationLine, getComputedStyle(bd).backgroundColor, document.documentElement.scrollWidth<=innerWidth, document.querySelectorAll('.sale-list .card').length]})()")
-            chk(f"{w}px: відлік «До кінця акції: 1 д 2 год …», нова ціна червона, стара перекреслена (line-through), бейдж червоний, без горизонтального скролу {v}", v[0].startswith("До кінця акції: 1 д 2 год") and v[1] == "rgb(217, 58, 58)" and "line-through" in v[2] and v[3] == "rgb(217, 58, 58)" and v[4] and v[5] == 2)
+            v = pg.evaluate("(()=>{const l=String(document.querySelector('.sale-left')); const pr=document.querySelector('.card .pr-sale'); const old=document.querySelector('.card .pr-old'); const bd=document.querySelector('.card .sale-badge'); return [l, getComputedStyle(pr).color, getComputedStyle(old).textDecorationLine, getComputedStyle(bd).backgroundColor, document.documentElement.scrollWidth<=innerWidth, document.querySelectorAll('.sale-list .card').length]})()")
+            chk(f"{w}px: на /aktsii немає спільного відліку, нова ціна червона, стара перекреслена (line-through), бейдж червоний, без горизонтального скролу {v}", v[0] == "null" and v[1] == "rgb(217, 58, 58)" and "line-through" in v[2] and v[3] == "rgb(217, 58, 58)" and v[4] and v[5] == 2)
+            pg.goto(f"{base}/product-111.html", wait_until="load")
+            pg.wait_for_timeout(300)
+            chk(f"{w}px: на сторінці товару відлік «До кінця акції: 4 д …» (кінець партії 25.10 23:59, зараз 21.10 12:00 за SITE_SALE_NOW)", pg.evaluate("document.querySelector('.sale-left').textContent").startswith("До кінця акц"))
             pg.evaluate("document.querySelector('.sale-left').setAttribute('data-sale-until', new Date(Date.now()-60000).toISOString()); window.PT_saleTick();")
             chk(f"{w}px: після кінця акції відлік пише «акцію завершено»", pg.evaluate("document.querySelector('.sale-left').textContent") == "акцію завершено")
             chk(f"{w}px: без помилок JS", errs == [])

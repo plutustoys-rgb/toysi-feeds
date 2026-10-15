@@ -556,7 +556,5 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .sb-subs[hidden]{display:none}
 .sb-sub{font-size:13px}
 .sb-grp.open > .sb-gh{background:var(--bg)}
-.sb-grp.open > .sb-gh.on,.sb-gh.on{background:var(--accent);color:#fff}   /* активна група: білий напис на акценті (специфічність вища за .open, інакше напис не видно — 15.10 перевірка на проді) */
+.sb-gh.on{background:var(--accent);color:#fff}
 .sb-gh.on em{color:#fff}
-/* єдиний шаблон: основний стовпець вужчий за сторінку (праворуч від сайдбару) — вступний текст і колонка «Рекомендуємо» поруч лише на ≥1200 px, нижче колонка під текстом */
-@media(max-width:1199px){.gp .cat-top{display:block;padding:0 0 8px}.gp .cat-aside{margin:6px 0 14px;max-width:360px}}

@@ -281,7 +281,7 @@ chk("В: catalog.html і головна без relcats; глобальні «П�
 n0 = re.search(r'<nav class="relcats".*?</nav>', rd("category-nabir0.html"), re.S).group(0)
 chk("В: дубль у файлі (nabir1 двічі) — одне посилання", n0.count('href="category-nabir1.html"') == 1 and "category-nabir0.html" not in n0)
 chk("В: попередження: ключ без сторінки (ghost-key) і ціль без сторінки (nonexistent)", "ghost-key" in err and "nonexistent" in err and "category_related.json" in err)
-chk("В: сторінка категорії не отримала зайвого H2-стану: H1/title/canonical не змінено", f'<h1 class="page">{BIG}</h1>' in hb1 and f'rel="canonical" href="https://plutustoys.com.ua/category-{slug_big}.html"' in hb1)
+chk("В: сторінка категорії не отримала зайвого H2-стану: H1/title/canonical не змінено", f'<h1 class="page cat-h1">{BIG}</h1>' in hb1 and f'rel="canonical" href="https://plutustoys.com.ua/category-{slug_big}.html"' in hb1)
 
 
 def load_rel(content, name, binary=False):

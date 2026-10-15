@@ -857,11 +857,11 @@ def _catalog_js_grid():
     )
 
 
-def _catalog_controls():
+def _catalog_controls(preset=None):
     """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
     hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
     return (
-      '<div id="cat-controls" class="cat-controls" hidden>'
+      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}>'
         '<select id="cf-sort" aria-label="Сортування">'
           '<option value="rec">Рекомендовані</option>'
           '<option value="cheap">Спершу дешевші</option>'
@@ -1407,6 +1407,21 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 (_catalog_js_grid() if controls else "") +
                 (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if k > 1 else "") +
                 static_grid
+            )
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            written.add(cur)
+            continue
+        if active and not special and k == 1:
+            urls = json.dumps({c: f"category-{cat_slug[c]}.html" for c in cat_list}, ensure_ascii=False).replace("</", "<\\/")
+            body = (
+                crumbs_html(trail) +   # на сторінці категорії крихти лишаємо (навігація «Головна › Каталог › Категорія» + внутрішні посилання для SEO), «Сторінку 1 з N» прибрано
+                f'<div class="cat-bar"><h1 class="page cat-h1">{esc(active)}</h1>' + _catalog_controls(preset=active) + '</div>\n' +
+                f'<script type="application/json" id="cat-urls">{urls}</script>\n' +
+                chips(cat_list, cat_slug, active) +
+                _category_intro_html(fname) +
+                _catalog_js_grid() +
+                f'<div id="cat-static">{static_grid}</div>' +
+                _relcats_html(fname, cat_slug, active)
             )
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
             written.add(cur)

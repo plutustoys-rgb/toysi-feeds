@@ -38,7 +38,7 @@ DAILY_DAYS = 90
 ROW_LIMIT = 25000            # максимум API на сторінку
 ROWS_MAX = int(os.environ.get("GSC_ROWS_MAX", "100000"))     # запобіжник пагінації
 INSPECT_N = 100
-INSPECT_BUDGET_SEC = int(os.environ.get("GSC_INSPECT_BUDGET_SEC", "400"))      # загальний бюджет часу inspect: служба має TimeoutStartSec=900 на всі кроки; повільний Google не повинен вбити сусідні кроки
+INSPECT_BUDGET_SEC = int(os.environ.get("GSC_INSPECT_BUDGET_SEC", "700"))      # загальний бюджет часу inspect: служба має TimeoutStartSec=1500 на всі кроки (GMC ≈2–3 хв + Googlebot ≈1 хв + inspect ≈6 с на URL → 100 URL ≈600 с, виміряно живо 15.10); повільний Google не повинен вбити сусідні кроки
 
 QP_FIELDS = ["date", "query", "page", "clicks", "impressions", "ctr", "position"]
 DAILY_FIELDS = ["date", "clicks", "impressions", "ctr", "position"]

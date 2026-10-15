@@ -8,6 +8,8 @@ Type=oneshot
 User=root
 WorkingDirectory=/opt/plutustoys
 # КРИТИЧНО (CLAUDE.md): venv-python. Потрібні ключ /opt/plutustoys/.secrets/gmc_service_account.json (створює власник; .secrets/ у .gitignore), одноразова реєстрація GCP-проєкту в Merchant API і пакет google-auth у venv. Без ключа скрипт пише підказку й завершується кодом 0.
-ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/gmc_status_report.py
+ExecStart=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/gmc_status_report.py
+# Щоденне зведення Googlebot з Apache-логів (читання, запит SEO 15.10): ДРУГИЙ незалежний крок (обидва з «-»: збій звіту Merchant Center не блокує зведення Googlebot і навпаки; кожен скрипт сам шле алерт про збій).
+ExecStart=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/googlebot_log_report.py 14
 TimeoutStartSec=900
 Nice=10

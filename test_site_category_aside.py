@@ -138,8 +138,8 @@ with sync_playwright() as pw:
         pg.wait_for_timeout(300)
         txt, asd = pg.evaluate(R + "('.cat-top .cat-intro')"), pg.evaluate(R + "('.cat-aside')")
         if w >= 1000:
-            chk(f"{w}px: текст ліворуч, колонка праворуч у ТОМУ Ж ряду (текст {txt['l']}–{txt['r']}, колонка {asd['l']}–{asd['r']}, верхи {txt['t']}/{asd['t']}), колонка ~280 px, текст ширший за 400 px",
-                txt["r"] <= asd["l"] and abs(txt["t"] - asd["t"]) <= 6 and 250 <= asd["w"] <= 300 and txt["w"] > 400)
+            chk(f"{w}px: текст ліворуч, колонка праворуч у ТОМУ Ж ряду (текст {txt['l']}–{txt['r']}, колонка {asd['l']}–{asd['r']}, верхи {txt['t']}/{asd['t']}), колонка ~340 px, текст ширший за 400 px",
+                txt["r"] <= asd["l"] and abs(txt["t"] - asd["t"]) <= 6 and 320 <= asd["w"] <= 360 and txt["w"] > 400)
         else:
             chk(f"{w}px: вузький екран — колонка ПІД текстом, у межах екрана ({asd['l']}–{asd['r']} із {w})", asd["t"] >= txt["b"] - 2 and asd["l"] >= 0 and asd["r"] <= w)
         chk(f"{w}px: без горизонтального скролу й помилок JS", pg.evaluate("document.documentElement.scrollWidth <= innerWidth") and errs == [])

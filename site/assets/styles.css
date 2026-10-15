@@ -511,13 +511,15 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
   .cat-controls .cf-reset{flex:none}
 }
 /* Вступний текст категорії зліва + права колонка «Знижка тижня»/«Рекомендуємо» (власник 15.10: праву сторону заповнити товаром або акцією) */
-.cat-top{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:8px 24px;align-items:start;padding:0 16px 8px}
+.cat-top{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:8px 24px;align-items:start;padding:0 16px 8px}
 .cat-top .cat-intro{margin:0}
 .cat-aside{min-width:0}
 .cat-aside-lbl{margin:0 0 6px;font-size:13px;font-weight:800;color:var(--accent);text-transform:uppercase;letter-spacing:.04em}
-.cat-aside .card{width:100%}
+.cat-aside .card{width:100%;flex-direction:row;align-items:stretch}   /* компактна горизонтальна картка: фото ліворуч, назва й ціна праворуч — висота ≈ висоті тексту, без порожнього місця під ним (15.10) */
+.cat-aside .card .ph{flex:0 0 120px;aspect-ratio:1/1;align-self:center}
+.cat-aside .card .info{justify-content:center}
 .cat-aside-more{display:block;margin-top:8px;font-size:14px;font-weight:700;color:var(--accent)}
 @media(max-width:999px){
   .cat-top{display:block;padding:0}
-  .cat-aside{margin:6px 16px 14px;max-width:300px}
+  .cat-aside{margin:6px 16px 14px;max-width:360px}
 }

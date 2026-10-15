@@ -880,11 +880,11 @@ def _catalog_js_grid():
     )
 
 
-def _catalog_controls(preset=None, group=None, own=None, groups_json=None):
+def _catalog_controls(preset=None, group=None, own=None, groups_json=None, others=None):
     """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
     hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
     return (
-      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}{(" data-groups=" + chr(39) + esc(groups_json) + chr(39)) if groups_json else ""}>'
+      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}{(" data-groups=" + chr(39) + esc(groups_json) + chr(39)) if groups_json else ""}{(" data-others=" + chr(39) + esc(others) + chr(39)) if others else ""}>'
         '<select id="cf-sort" aria-label="Сортування">'
           '<option value="rec">Рекомендовані</option>'
           '<option value="cheap">Спершу дешевші</option>'
@@ -2446,6 +2446,8 @@ def write_404():
 # «Усі категорії» = лише групи. Розкладка — site/category_groups.json (знято з фіду 15.10; name = Toysi, display = підпис на сайті, hide = не показувати: Уцінка й Геловін мають власні сторінки). Підкатегорія без групи не губиться: її плитка на «Усіх категоріях» у «Окремих розділах».
 CATEGORY_GROUPS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "category_groups.json")
 GROUP_MIN_PRODUCTS = 6
+GROUP_SUB_MIN = 20     # власник 15.10: «таку щільну розбивку по підкатегоріям хто зробив? ущільніть» — підкатегорії, де менше ніж стільки товарів, зводимо в одну «Інше» (на сайті з наявності їх 135 із 284 мають < 20)
+GROUP_SUB_MAX = 12     # і не більше стільки окремих підкатегорій у сайдбарі групи (решта — «Інше»)
 
 
 def load_category_groups():
@@ -2478,7 +2480,10 @@ def site_groups(cats):
             k += 1
             slug = f"{base}-{k}"
         used.add(slug)
-        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own})
+        main = [(c, n) for c, n in subs if c != own and n >= GROUP_SUB_MIN][:GROUP_SUB_MAX]
+        _m = {c for c, _n in main}
+        other = [(c, n) for c, n in subs if c not in _m]
+        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own, "main": main, "other": other})
     out.sort(key=lambda g: -g["total"])
     return out
 
@@ -2502,7 +2507,11 @@ def write_groups(groups, cats, cat_slug):
     for g in groups:
         items = rec_order([p for c, _n in g["subs"] for p in cats[c]])
         side = "".join(
-            f'<a class="sb-i" href="category-{cat_slug[c]}.html" data-sub="{esc(c)}"><span>{"Інше" if c == g["own"] else esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
+            f'<a class="sb-i" href="category-{cat_slug[c]}.html" data-sub="{esc(c)}"><span>{esc(c)}</span><em>{n}</em></a>' for c, n in g["main"])
+        n_other = sum(n for _c, n in g["other"])
+        if g["other"]:   # дрібні підкатегорії зведено в «Інше» (клік фільтрує на місці); їхні сторінки лишаються доступними краулеру через приховані посилання
+            side += (f'<a class="sb-i" href="{g["file"]}" data-sub="__other"><span>Інше</span><em>{n_other}</em></a>'
+                     '<div class="sb-hid" hidden>' + "".join(f'<a href="category-{cat_slug[c]}.html">{esc(c)}</a>' for c, _n in g["other"]) + '</div>')
         sidebar = (f'<aside class="sb" aria-label="Підкатегорії">'
                    f'<a class="sb-i all on" href="{g["file"]}" data-sub=""><span>Усі товари</span><em>{g["total"]}</em></a>{side}</aside>')
         trail = [("Головна", "index.html"), ("Усі категорії", "catalog.html"), (g["display"], None)]
@@ -2510,7 +2519,7 @@ def write_groups(groups, cats, cat_slug):
         body = (
             crumbs_html(trail) +
             '<div class="gp">' + sidebar + '<div class="gmain">'
-            f'<div class="cat-bar"><h1 class="page cat-h1">{esc(g["display"])}</h1>' + _catalog_controls(group=subs_json, own=g["own"]) + '</div>\n' +
+            f'<div class="cat-bar"><h1 class="page cat-h1">{esc(g["display"])}</h1>' + _catalog_controls(group=subs_json, own=g["own"], others=json.dumps([c for c, _n in g["other"]], ensure_ascii=False) if g["other"] else None) + '</div>\n' +
             _catalog_js_grid() +
             f'<div id="cat-static">{grid(items[:PER_PAGE], eager_n=4)}</div>'
             '</div></div>'

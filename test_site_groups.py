@@ -66,6 +66,7 @@ gj.write_text(json.dumps({"groups": [
     {"name": "Уцінка", "subs": ["Уцінені товари"], "hide": True},
     {"name": "Порожня", "subs": ["Нема такої"]}]}, ensure_ascii=False), encoding="utf-8")
 bs.CATEGORY_GROUPS_FILE = str(gj)
+bs.GROUP_SUB_MIN = 1   # цей тест перевіряє повні списки; зведення дрібних підкатегорій — у test_site_group_compact
 out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -105,9 +106,9 @@ chk(f"site/category_groups.json у репо: {len(shipped['groups'])} груп, 
 chk("«Роботи, Машини та Зброя» показується як «Роботи та машини» (підпис; категорії зброї не змінені)", any(g["name"] == "Роботи, Машини та Зброя" and g.get("display") == "Роботи та машини" for g in shipped["groups"]))
 
 g2 = (out / "group-transport.html").read_text(encoding="utf-8")
-subs2 = re.findall(r'<a class="sb-i" href="(category-[a-z0-9-]+\.html)" data-sub="([^"]+)"><span>([^<]+)</span><em>(\d+)</em>', g2)
-chk(f"власна категорія групи (товари прямо в корені «Транспорт») — остання підкатегорія «Інше», до загального числа й не в «Окремих розділах»: {[(x[2], x[3]) for x in subs2]}",
-    [x[2] for x in subs2][-1] == "Інше" and subs2[-1][1] == "Транспорт" and subs2[-1][3] == "5" and "category-transport.html" not in tiles and re.search(r'<a class="sb-i all on"[^>]*><span>Усі товари</span><em>(\d+)</em>', g2).group(1) == str(sum(int(x[3]) for x in subs2)))
+subs2 = re.findall(r'<a class="sb-i" href="(?:category-[a-z0-9-]+|group-[a-z0-9-]+)\.html" data-sub="([^"]+)"><span>([^<]+)</span><em>(\d+)</em>', g2)
+chk(f"власна категорія групи (товари прямо в корені «Транспорт») — у підсумковій «Інше» (5), а не окрема плитка; сума пунктів = «Усі товари»: {[(x[1], x[2]) for x in subs2]}",
+    subs2[-1][0] == "__other" and subs2[-1][1] == "Інше" and subs2[-1][2] == "5" and "category-transport.html" not in tiles and re.search(r'<a class="sb-i all on"[^>]*><span>Усі товари</span><em>(\d+)</em>', g2).group(1) == str(sum(int(x[2]) for x in subs2)))
 
 # ── Chromium ──
 shutil.copytree(HERE / "site" / "assets", out / "assets", dirs_exist_ok=True)

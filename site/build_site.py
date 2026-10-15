@@ -727,6 +727,7 @@ def build():
     paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
     paged |= write_utsinka(prods, cat_list, cat_slug)
     paged |= write_aktsii(prods)
+    paged |= write_helovin(prods)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
     write_ig(prods)
@@ -757,7 +758,7 @@ def build():
     valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
-        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii")) and fn.endswith(".html")
+        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin")) and fn.endswith(".html")
                 and fn not in valid):
             try:
                 os.remove(os.path.join(OUT, fn))
@@ -1375,6 +1376,54 @@ def write_utsinka(prods, cat_list, cat_slug):
 
 
 AKTSII_FILE = "aktsii.html"
+
+# ── /helovin.html «Геловін» (власник 15.10: «це вкладка в Toysi, чому у нас немає цих товарів?» — вони в каталозі, але не зібрані: чип головної шукав «гелловін» (Toysi пише «Геловін»), не брав «маски/грим/помаду» і відсікав ціну < 100 ₴) ──
+# Склад: id з вкладки Toysi (site/seasonal_halloween.json, 52 на 15.10) + товари в наявності, назва яких збігається з HELOVIN_RE. Вікно 1.10–2.11 за датою збірки; поза вікном сторінки нема (стара прибирається).
+HELOVIN_FILE = "helovin.html"
+HELOVIN_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seasonal_halloween.json")
+HELOVIN_WINDOW = ((10, 1), (11, 2))
+HELOVIN_MIN = 6
+HELOVIN_RE = re.compile(r"ге?л+овін|halloween|гарбуз|привид|скелет|павук|павуч|відьм|вампір|грим для|помада карнавальна|карнавальна маска|маска карнавальна", re.I)
+
+
+def helovin_pick(prods):
+    """Товари для /helovin.html: спершу id з вкладки Toysi (її порядок), далі збіги за назвою; лише в наявності, з фото, не уцінка, не мілітарі/зброя. Ціни нижче порога вітрини (46–90 ₴) НЕ відсікаємо: це повний перелік, а не вітрина."""
+    try:
+        with open(HELOVIN_JSON, encoding="utf-8") as f:
+            ids = [str(x) for x in (json.load(f).get("ids") or [])]
+    except (OSError, ValueError, AttributeError):
+        ids = []
+    by = {p["id"]: p for p in prods}
+    ok = lambda p: p.get("stock", 0) > 0 and p.get("photo") and not _is_markdown_item(p) and not is_home_excluded(p)   # noqa: E731
+    out = [by[i] for i in ids if i in by and ok(by[i])]
+    seen = {p["id"] for p in out}
+    for p in prods:
+        name = p.get("name") or ""
+        if p["id"] in seen or not HELOVIN_RE.search(name) or HOME_SEASONAL_BAD_NAME.search(name) or HOME_SEASONAL_BAD_CAT.search(p.get("category") or "") or not ok(p):
+            continue
+        out.append(p)
+    return out
+
+
+def write_helovin(prods):
+    """Пише /helovin.html «Геловін» у вікні 1.10–2.11; повертає set записаних сторінок (порожній — сторінки нема, стару прибере крок прибирання)."""
+    if not seasonal_active(HELOVIN_WINDOW[0], HELOVIN_WINDOW[1]):
+        return set()
+    picks = helovin_pick(prods)
+    if len(picks) < HELOVIN_MIN:
+        return set()
+    trail = [("Головна", "index.html"), ("Геловін", None)]
+    body = (
+        crumbs_html(trail) +
+        '\n<h1 class="page">Геловін</h1>\n'
+        '<p class="sale-lead">Маски, грим, костюми, декор і світильники до Геловіну. Усе в наявності, відправляємо Новою Поштою по Україні.</p>'
+        '<div class="sale-list" id="helovin-list" data-list="helovin">' + grid(picks, eager_n=4) + '</div>'
+        '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'
+    )
+    _write(HELOVIN_FILE, page("Геловін — маски, грим, костюми, декор", body, extra_head=breadcrumb_ld(trail),
+                              description="Все для Геловіну в PlutusToys: карнавальні маски, грим для обличчя, костюми й крила, світильники, павуки та декор. Є в наявності, доставка Новою Поштою."[:DESC_MAX],
+                              canonical=HELOVIN_FILE, og_image=OG_IMAGE, title_full="Геловін: маски, грим, костюми, декор | PlutusToys"))
+    return {HELOVIN_FILE}
 AKTSII_MIN = 1   # хоч одна придатна акційна картка; жодної (усі випали за перевірками) — сторінки й кнопки героя нема
 
 
@@ -1708,7 +1757,7 @@ HOME_CHIPS = (("nab", "Набори"),)
 # build бере лише товари в наявності, окремого порога залишку нема), ціна 100–700, внесок ≥ 30; мілітарі/зброя (NABORY_BAD_WORDS) відсіюється. Менше HOME_SEASONAL_MIN карток — чип не показуємо.
 # (key, назва чипа, підпис під чипами, ключові слова (regex, регістр ігнорується), перший день, останній день, додатковий regex виключень або None) — дні у вигляді (місяць, день).
 HOME_SEASONAL = (
-    ("hel", "Хелловін", "Страшно весело — до Гелловіну", r"хелловін|гелловін|halloween|привид|гарбуз|скелет|вампір|відьм", (10, 1), (10, 31), None),
+    ("hel", "Хелловін", "Страшно весело — до Гелловіну", r"хелловін|ге?л+овін|halloween|привид|гарбуз|скелет|павук|павуч|вампір|відьм|грим|карнавальн", (10, 1), (10, 31), None),
     ("ny", "Миколай і Новий рік", "Подарунки на Миколая і під ялинку", r"новорічн|ялинк|сніговик|санта|різдв|дід мороз|сніг|санки|зимов", (11, 25), (12, 31), None),
     # «Українське для дітей» (SMM 13.10): evergreen (весь рік). Додаткові виключення: війна/політика/обсценне, «фрази/гасла/слава» (невідомий зміст), англійська абетка, військові образи
     ("ukr", "Українське для дітей", "Своє, рідне", r"українськ|вишиван|патріот|тризуб|абетка", (1, 1), (12, 31), r"воєн|рус{1,2}ь?к|російськ|іди на|англійськ|фрази|гасл|слава|захисник|воїн|козак|зсу|герої|героям"),
@@ -1914,6 +1963,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
         chip_sets = home_chip_sets(prods)
+        helovin_on = seasonal_active(HELOVIN_WINDOW[0], HELOVIN_WINDOW[1]) and len(helovin_pick(prods)) >= HELOVIN_MIN
         slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True) for i, p in enumerate(picks))
         chips_html = ""
         if chip_sets:
@@ -1921,12 +1971,12 @@ def write_home(prods, cats, cat_list, cat_slug):
               '<noscript><style>.home-chips{display:none}</style></noscript>'
               '<div class="chips home-chips" id="home-chips" role="group" aria-label="Підбір іграшок">'
               '<button type="button" class="chip active" data-set="all" aria-pressed="true">Усі</button>'
-              + "".join(f'<button type="button" class="chip{" chip-theme" if k in CHIP_ICONS else ""}" data-set="{k}" data-sub="{esc(sb)}" aria-pressed="false">{CHIP_ICONS.get(k, "")}<span>{esc(t)}</span></button>' for k, t, sb in home_chip_defs(chip_sets))
+              + "".join(f'<button type="button" class="chip{" chip-theme" if k in CHIP_ICONS else ""}" data-set="{k}" data-sub="{esc(sb)}"{(" data-all=" + chr(34) + HELOVIN_FILE + chr(34) + " data-all-label=" + chr(34) + "Усі товари для Геловіна →" + chr(34)) if (k == "hel" and helovin_on) else ""} aria-pressed="false">{CHIP_ICONS.get(k, "")}<span>{esc(t)}</span></button>' for k, t, sb in home_chip_defs(chip_sets))
               + (f'<a class="chip chip-theme chip-link chip-sale" href="utsinka.html">{CHIP_ICON_SALE}<span>Уцінка</span></a>' if utsinka_pick(prods) else "")   # чип-посилання (власник 13.10): сторінка, а не набір у каруселі
               + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p>'
               + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
         carousel = (
-          '<div class="sec-title"><h2>Добірка Плутуса</h2><a href="catalog.html">Дивитись усі →</a></div>'
+          '<div class="sec-title"><h2>Добірка Плутуса</h2><a id="home-car-all" href="catalog.html">Дивитись усі →</a></div>'
           + chips_html +
           '<div class="car" id="home-car" role="region" aria-label="Добірка Плутуса" data-list="Добірка Плутуса">'
             '<button class="arrow l" type="button" aria-label="Попередні товари">‹</button>'

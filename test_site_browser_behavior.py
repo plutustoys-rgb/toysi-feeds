@@ -21,6 +21,7 @@ os.environ["AUDIT_NO_TELEGRAM"] = "1"
 os.environ["SITE_GA4_ID"] = "G-TEST123456"
 os.environ["SITE_META_PIXEL_ID"] = "12345678901"
 os.environ.pop("SITE_LIQPAY_LIVE", None)
+os.environ["SITE_PICK_DATE"] = "2026-10-10"   # поза сезонними рухами маскота (Гелловін 15–31.10 міняє вагу мішка): тест ротації міряє базові 10; сезонні — у test_site_hero_mascot / test_site_mascot_halloween_dip
 HERE = Path(__file__).parent
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")

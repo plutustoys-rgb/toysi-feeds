@@ -94,11 +94,11 @@ chk("чипи: місце зарезервовано до JS (visibility, без
 _app = (HERE / "site/assets/app.js").read_text(encoding="utf-8")
 chk("view_item_list: IO спостерігає ПЕРШУ картку (не весь список 11–23 тис. px, інакше поріг 0.1 не досягається — аудит #706)", "io.observe(cards[0] || box);" in _app and "io.observe(box);" not in _app[_app.index("function initListTracking"):_app.index("function initNaboryChips")])
 chk("мілітарі/зброя за назвою відсіюються (пістолет, військов, солдат, БТР…) і категорії солдатики/військова техніка", all(bs.nabory_pick([P(n, "Інша творчість")]) == [] for n in ("Набір військового з пістолетом", "Набір «Військова техніка»", "Набір солдатиків", "Набір героя, механічна зброя", "Набір БТР")) and bs.nabory_pick([P("Набір фігурок", "Солдатики")]) == [] and len(bs.nabory_pick([P("Набір для творчості", "Інша творчість")])) == 1)
-chk("герой: мобільний рядок обгорнутий (flex-wrap), «Усі іграшки» окремим рядком — не вилазить за край на 320 px", "flex-wrap:wrap;align-items:center;gap:6px 10px" in _css and ".hero2 .hero-all{flex:0 0 100%;order:3" in _css)
+chk("герой: мобільний рядок обгорнутий (flex-wrap), кнопки героя («Каталог товарів», «Акції») не вилазять за край на 320 px", "flex-wrap:wrap;align-items:center;gap:6px 10px" in _css and ".hero2 .btn:only-child{flex-basis:100%}" in _css)
 
 # герой головної
 src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
-chk("герой: червона кнопка «Акції» (btn-sale → aktsii.html, лише під час акції), під нею «Усі іграшки» → catalog.html; «Набори» з героя прибрано (дубль із чипом)", 'class="btn btn-sale" href="aktsii.html"' in src and '<a class="hero-all" href="catalog.html">Усі іграшки</a>' in src and "Обрати іграшку" not in src and "Набори в подарунок</a><a class=\"hero-all\"" not in src)
+chk("герой: червона кнопка «Акції» (btn-sale → aktsii.html, лише під час акції), ліворуч «Каталог товарів» → catalog.html; «Набори» з героя прибрано (дубль із чипом)", 'class="btn btn-sale" href="aktsii.html"' in src and 'Каталог товарів</a><a class=\"btn btn-sale\"' in src and "Обрати іграшку" not in src and "Набори в подарунок</a><a class=\"hero-all\"" not in src)
 chk("sitemap: nabory.html додається лише коли сторінка записана", '[("nabory.html", "0.7", "weekly")] if has_nabory else []' in src and "has_nabory = write_nabory(prods)" in src)
 
 # node: аналітика й чипи

@@ -2012,9 +2012,9 @@ def write_home(prods, cats, cat_list, cat_slug):
         )
     # кнопка героя (власник 13.10): «Акції» → /aktsii.html (є придатні уцінені товари), інакше «Усі іграшки»; «Уцінка» — чип-посилання над каруселлю
     if aktsii_pick(prods):
-        hero_act = f'<a class="btn btn-sale" href="aktsii.html">{CHIP_ICON_SALE_TAG}<span>Акції</span></a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
+        hero_act = f'<a class="btn" href="catalog.html">Каталог товарів</a><a class="btn btn-sale" href="aktsii.html">{CHIP_ICON_SALE_TAG}<span>Акції</span></a>'
     else:
-        hero_act = '<a class="btn" href="catalog.html">Усі іграшки</a>'
+        hero_act = '<a class="btn" href="catalog.html">Каталог товарів</a>'
     hero_clips = hero_mascot_clips()
     body = (
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
@@ -2025,9 +2025,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
       '<div class="act">' + hero_act + '</div></div>'
-      + carousel +
-      '<div class="sec-title"><h2>Категорії</h2><a href="catalog.html">Усі →</a></div>'
-      f'<div class="catrow">{cat_tiles}</div>'
+      + carousel
       + ('<div class="sec-title"><h2>Більше іграшок</h2><a href="catalog.html">Дивитись усі →</a></div>'
          + grid(novelties) if novelties else "")
       + popular

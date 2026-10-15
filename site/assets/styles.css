@@ -246,7 +246,6 @@ footer.foot a{color:var(--accent)}
 /* Кошик/оформлення не розтягуємо на всю ширину монітора */
 #cart-body,#cart-summary,#checkout-form{max-width:640px}
 /* Поле пошуку не робимо надмірно широким на великих екранах */
-.search{max-width:640px}
 /* Одне-єдине уточнення для дуже широких моніторів: трохи ширша колонка */
 @media (min-width:1500px){ .wrap{max-width:1320px} }
 
@@ -462,7 +461,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .hero2 .btn.btn-sale .btn-ico{flex:none}
 .card .ph .sale-badge{left:auto;right:8px}
 /* Кнопка «Написати» у правому верхньому куті шапки (власник 14.10) */
-.chatwrap{position:relative;flex:none;margin-left:auto}
+.chatwrap{position:relative;flex:none}
 .chatbtn{display:flex;align-items:center;gap:7px;height:40px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--text);font-weight:700;font-size:14px;cursor:pointer}
 .chatbtn:hover,.chatbtn:focus-visible{border-color:var(--accent)}
 .chat-menu{position:absolute;right:0;top:calc(100% + 8px);min-width:190px;background:var(--bg);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 28px rgba(30,20,10,.22);padding:6px;display:flex;flex-direction:column;z-index:30}
@@ -471,8 +470,14 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .chat-item:hover,.chat-item:focus-visible{background:var(--surface)}
 @media(max-width:560px){.chatbtn{width:40px;padding:0;justify-content:center}.chat-lbl{display:none}}
 /* значки соцмереж і пошти в шапці (власник 14.10): між кошиком і «Підтримка»; на ≤900 px ховаємо (є в підвалі) */
-.hsoc{display:none;align-items:center;gap:8px;margin-left:auto;margin-right:12px}
-.hsoc + .chatwrap{margin-left:0}
+.hsoc{display:none;align-items:center;gap:8px}
 .hsoc-a{display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:var(--surface);border:1px solid var(--line);border-radius:12px;color:var(--text)}
 .hsoc-a:hover,.hsoc-a:focus-visible{color:var(--accent);border-color:var(--accent)}
 @media(min-width:900px){.hsoc{display:flex}}
+/* кошик — акцентна «пігулка» крайня праворуч (власник 15.10, варіант Б); на телефоні (≤560 px) — іконка з лічильником */
+@media(min-width:561px){
+  .cartbtn{width:auto;padding:0 16px 0 14px;gap:8px;border-radius:999px;background:var(--accent);border-color:var(--accent);color:#fff;font-weight:800;font-size:14px;box-shadow:0 2px 0 rgba(0,0,0,.12)}
+  .cartbtn:hover,.cartbtn:focus-visible{background:var(--accent-hover);border-color:var(--accent-hover)}
+  .cartbtn .badge{position:static;margin-left:2px;min-width:20px;height:20px;line-height:20px;background:#fff;color:var(--accent);border-radius:10px;font-size:12px}
+}
+@media(max-width:560px){.cart-lbl{display:none}}

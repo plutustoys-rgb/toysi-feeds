@@ -201,14 +201,16 @@ def header():
         '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'
         '<input type="search" placeholder="Пошук іграшки…" readonly aria-label="Пошук">'
       '</div>'
+      + chat_menu_html()
+      + header_socials_html() +
+      # кошик — крайній праворуч, акцентна «пігулка» (власник 15.10, варіант Б; ≤560 px — лише іконка з лічильником)
       '<a class="cartbtn" href="cart.html" aria-label="Кошик">'
         '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
         '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>'
         '<path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>'
+        '<span class="cart-lbl">Кошик</span>'
         '<span class="badge" id="cart-badge">0</span>'
       '</a>'
-      + header_socials_html() +
-      chat_menu_html() +
       '</header>'
     )
 

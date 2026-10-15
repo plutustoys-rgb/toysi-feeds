@@ -469,6 +469,8 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .chat-item{padding:11px 14px;border-radius:10px;color:var(--text);text-decoration:none;font-weight:600;font-size:15px}
 .chat-item:hover,.chat-item:focus-visible{background:var(--surface)}
 @media(max-width:560px){.chatbtn{width:40px;padding:0;justify-content:center}.chat-lbl{display:none}}
+.chat-ava{flex:none;width:28px;height:28px;border-radius:50%;display:block;margin-left:-6px}
+@media(max-width:560px){.chat-ava{margin-left:0}}
 /* значки соцмереж і пошти в шапці (власник 14.10): між кошиком і «Підтримка»; на ≤900 px ховаємо (є в підвалі) */
 .hsoc{display:none;align-items:center;gap:8px}
 .hsoc-a{display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:var(--surface);border:1px solid var(--line);border-radius:12px;color:var(--text)}
@@ -481,3 +483,6 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
   .cartbtn .badge{position:static;margin-left:2px;min-width:20px;height:20px;line-height:20px;background:#fff;color:var(--accent);border-radius:10px;font-size:12px}
 }
 @media(max-width:560px){.cart-lbl{display:none}}
+/* тост «адресу скопійовано» (клік по пошті, коли поштового клієнта нема — власник 15.10: «нічого не відбувається») */
+.pt-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;max-width:calc(100vw - 32px);padding:11px 16px;border-radius:12px;background:#2b2118;color:#fff;font-size:14px;font-weight:600;box-shadow:0 10px 26px rgba(30,20,10,.3);pointer-events:none}
+.pt-toast[hidden]{display:none}

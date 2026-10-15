@@ -44,6 +44,7 @@ cats = ["Конструктори", "Ляльки", "Машинки", "Наст�
 catalog = {str(i): item(i, f"Іграшка «{cats[i % 6]}» номер {i}", cats[i % 6], 150 + (i * 7) % 500) for i in range(1, 260)}
 bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
 bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None
+bs.CATEGORY_GROUPS_FILE = str(Path(tempfile.mkdtemp()) / "none.json")   # без груп: запасний макет каталогу (назва й фільтри в одному ряду); макет із деревом груп — у test_site_groups
 out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

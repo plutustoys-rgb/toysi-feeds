@@ -549,3 +549,12 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
   .gp .cat-count{padding:0 16px 8px}
   .gp .grid{padding:0 clamp(12px,3vw,24px)}
 }
+/* Сайдбар повного каталогу (група → підкатегорії): активна група розкривається */
+.sb-grp{margin:1px 0}
+.sb-gh{font-weight:700}
+.sb-subs{margin:2px 0 6px 10px;padding-left:8px;border-left:2px solid var(--line)}
+.sb-subs[hidden]{display:none}
+.sb-sub{font-size:13px}
+.sb-grp.open > .sb-gh{background:var(--bg)}
+.sb-gh.on{background:var(--accent);color:#fff}
+.sb-gh.on em{color:#fff}

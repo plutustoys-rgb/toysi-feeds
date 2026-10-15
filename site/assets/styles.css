@@ -41,7 +41,7 @@ h1.page{font-size:18px;font-weight:700;margin:4px 16px 12px}
 /* ── Сітка плиток ── */
 /* Плинна сітка: колонки додаються/зникають самі; мінімум тайла масштабується під в'юпорт
    (2 колонки на телефонах 320–500, далі 3→5→6 на планшетах/моніторах) — без порогів. */
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(clamp(140px,42vw,210px),1fr));
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(clamp(140px,42vw,210px),1fr));
   gap:clamp(10px,2vw,18px);padding:0 clamp(12px,3vw,24px)}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
   overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--shadow)}
@@ -558,3 +558,4 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .sb-grp.open > .sb-gh{background:var(--bg)}
 .sb-gh.on{background:var(--accent);color:#fff}
 .sb-gh.on em{color:#fff}
+.sb-hid{display:none}

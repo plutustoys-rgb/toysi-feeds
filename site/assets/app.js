@@ -280,7 +280,8 @@
     // сторінка категорії (data-cat): та сама панель, категорія вибрана; зміна категорії = перехід на її сторінку, «Усі категорії» = /catalog.html
     var preset=controls.getAttribute("data-cat")||"", catUrls={};
     // сторінка ГРУПИ (data-group = JSON підкатегорій): працюємо лише з їхніми товарами; підкатегорія — з сайдбару (клік фільтрує на місці) або зі списку (телефон)
-    var groupSet=null, sideLinks=[], ownCat=controls.getAttribute("data-own")||"";
+    var groupSet=null, sideLinks=[], ownCat=controls.getAttribute("data-own")||"", otherSet=null;
+    try{ var go=controls.getAttribute("data-others"); if(go){ otherSet={}; JSON.parse(go).forEach(function(c){ otherSet[c]=1; }); } }catch(e){ otherSet=null; }
     try{ var gs=controls.getAttribute("data-group"); if(gs){ groupSet={}; JSON.parse(gs).forEach(function(c){ groupSet[c]=1; }); sideLinks=Array.prototype.slice.call(document.querySelectorAll(".sb-i")); } }catch(e){ groupSet=null; }
     function syncSide(){ sideLinks.forEach(function(a){ a.classList.toggle("on", (a.getAttribute("data-sub")||"")===elCat.value); }); }
     // ПОВНИЙ КАТАЛОГ із деревом (data-groups = [{n,s:[підкатегорії],o:власна}]): сайдбар «Усі товари / група / підкатегорія» фільтрує на місці; на вузьких екранах список категорій — з групами (optgroup)
@@ -313,7 +314,9 @@
         var rest=Object.keys(cats).filter(function(c){ return !placed[c]; }).sort(function(a,b){ return a.localeCompare(b,"uk"); });
         if(rest.length){ var og2=document.createElement("optgroup"); og2.label="Окремі розділи"; rest.forEach(function(c){ addOpt(og2,c); }); elCat.appendChild(og2); }
       } else {
-        Object.keys(cats).sort(function(a,b){ return groupSet ? (cats[b]-cats[a] || a.localeCompare(b,"uk")) : a.localeCompare(b,"uk"); }).forEach(function(c){ addOpt(elCat, c, c===ownCat ? "Інше" : c); });
+        var otherN=0;
+        Object.keys(cats).sort(function(a,b){ return groupSet ? (cats[b]-cats[a] || a.localeCompare(b,"uk")) : a.localeCompare(b,"uk"); }).forEach(function(c){ if(otherSet && otherSet[c]){ otherN+=cats[c]; return; } addOpt(elCat, c, c===ownCat ? "Інше" : c); });
+        if(otherSet && otherN){ var oo=document.createElement("option"); oo.value="__other"; oo.textContent="Інше ("+otherN+")"; elCat.appendChild(oo); }
       }
       if(preset) elCat.value=preset;
       controls.hidden=false;
@@ -326,7 +329,8 @@
       filtered=(idx||[]).filter(function(p){
         if(groupSet && !groupSet[p.c]) return false;
         if(selSet && !cat && !selSet[p.c]) return false;
-        if(cat && p.c!==cat) return false;
+        if(cat==="__other"){ if(!otherSet || !otherSet[p.c]) return false; }
+        else if(cat && p.c!==cat) return false;
         if(ins && !p.s) return false;
         if(min!=null && p.pr<min) return false;
         if(max!=null && p.pr>max) return false;

@@ -15,7 +15,7 @@ PlutusToys — статичний генератор власного магаз
 Ціна = real_toysi_discounted × 1.5 (без комісії маркетплейсу — сенс власного сайту).
 LIMIT (env) обмежує к-ть карток для швидкого демо-прогону; порожній = увесь in-stock+фото.
 """
-import os, re, sys, json, html, math, unicodedata, hashlib, random, bisect, heapq, functools
+import os, re, sys, json, html, math, unicodedata, hashlib, random, bisect, heapq, functools, time
 from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 
@@ -537,6 +537,7 @@ class CatalogShrinkError(RuntimeError):
 
 def build():
     global SALE_ACTIVE
+    _lastmod_reset()
     SALE_ACTIVE = load_sale_week() if SALE_WEEK_ENABLED else None
     if SALE_ACTIVE:
         print(f"[build] акція {SALE_ACTIVE['week']}: −{SALE_ACTIVE['pct']}%, {len(SALE_ACTIVE['items'])} позицій у файлі, до {SALE_ACTIVE['until'].isoformat()}")
@@ -725,7 +726,7 @@ def build():
     idx = index_entries(prods_rec)
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
-    # 7) SEO: sitemap + robots
+    # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
     static_urls = [("categories.html", "0.6", "weekly")] + ([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
     write_robots()
@@ -762,6 +763,7 @@ def build():
     if _rel_targets:
         print(f"[build] ⚠ category_related.json: slug-цілі без сторінки категорії (посилання не показуємо): {_rel_targets[:10]}", file=sys.stderr)
     print(f"[build] внутрішня перелінковка: текстів карток показано {len(_prod_ids & set(_PRODUCT_TEXTS))}, категорій із блоком «Схожі категорії» {len(set(_CATEGORY_RELATED) & _written_slugs)}")
+    _lastmod_flush(keep=_current_html_files())
     print(f"[build] готово: {n} карток, {len(cat_list)} категорій, прибрано застарілих {removed}, сторінок без залишку (OutOfStock) {len(oos_prods)}, "
           "+index/catalog/cart/index.json/sitemap.xml/robots.txt")
 
@@ -2463,36 +2465,163 @@ def write_trust_pages():
         written.append(fname)
     return written
 
+# ── Правдивий lastmod і Last-Modified (SEO 15.10.2026: усі 28 595 URL мали одну дату — Google такому lastmod не довіряє; файли переписувались щозбірки → і Last-Modified/304 жили до наступної збірки) ──
+# Стан .htlastmod_state.json у каталозі сайту (.ht* Apache не віддає назовні): {файл: {"h": sha1 відрендереного HTML БЕЗ плаваючих полів, "t": епоха останньої РЕАЛЬНОЇ зміни}}.
+# «Плаваючі» поля, що самі по собі змінюються при кожній збірці/добі й НЕ є зміною сторінки: priceValidUntil (сьогодні+7), версії асетів ?v=<hex8> і глобальний «хром» (див. нижче). Їх файл отримує (щоб на диску був актуальний HTML), але lastmod від них не рухається.
+# Після запису mtime файла = t, тож Apache віддає Last-Modified = дата реальної зміни й відповідає 304 на If-Modified-Since між збірками.
+LASTMOD_STATE_FILE = ".htlastmod_state.json"
+# + «хром» сторінки, що залежить від рейтингу категорій УСЬОГО каталогу, а не від самої сторінки: популярні категорії в оверлеї пошуку (sr-pill) і рядок чипів-категорій (div.chips) — інакше будь-яка зміна ціни десь у каталозі пересувала б lastmod УСІХ 28 тис. сторінок.
+_LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0-9a-f]{8}|<a class="sr-pill" href="[^"]*">[^<]*</a>|<div class="chips">.*?</div>', re.S)
+# На КАРТЦІ товару додатково не рахуємо сітки інших товарів («Додайте до замовлення», «Схожі товари» — підбір залежить від стану всього каталогу): lastmod картки = зміна ЇЇ власних даних (назва, ціна, наявність, фото, текст), а не чужих.
+_LASTMOD_GRID_RX = re.compile(r'<h2>[^<]*</h2><div class="grid">(?:\s*<a class="card".*?</a>)*\s*</div>', re.S)
+_lm = {"out": None, "state": {}}
+
+
+def _lm_state():
+    if _lm["out"] != OUT:
+        _lm["out"] = OUT
+        try:
+            with open(os.path.join(OUT, LASTMOD_STATE_FILE), encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            raw = {}
+        raw = raw if isinstance(raw, dict) else {}
+        _lm["state"] = {k: v for k, v in raw.items() if isinstance(v, dict) and isinstance(v.get("h"), str) and isinstance(v.get("t"), (int, float))}
+    return _lm["state"]
+
+
+def _lastmod_reset():
+    _lm["out"] = None   # новий build() перечитує стан з диска
+
+
+def _current_html_files():
+    try:
+        return {fn for fn in os.listdir(OUT) if fn.endswith(".html")}
+    except OSError:
+        return set()
+
+
+def _lastmod_flush(keep):
+    st = _lm_state()
+    for fn in [k for k in st if k not in keep]:
+        del st[fn]   # сторінки, яких уже нема, зі стану прибираємо
+    try:
+        tmp = os.path.join(OUT, LASTMOD_STATE_FILE + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(st, f, separators=(",", ":"))
+        os.replace(tmp, os.path.join(OUT, LASTMOD_STATE_FILE))
+    except OSError as e:
+        print(f"[build] ⚠ стан lastmod не записано ({e}) — наступна збірка вважатиме всі сторінки зміненими", file=sys.stderr)
+
+
+def _lastmod_date(fname):
+    ent = _lm_state().get(fname)
+    t = ent["t"] if ent else time.time()
+    return time.strftime("%Y-%m-%d", time.gmtime(t))
+
+
+def _write(fname, content):
+    path = os.path.join(OUT, fname)
+    if fname.endswith(".html"):
+        st = _lm_state()
+        masked = _LASTMOD_FLOAT_RX.sub("", content)
+        if fname.startswith("product-"):
+            masked = _LASTMOD_GRID_RX.sub("", masked)
+        h = hashlib.sha1(masked.encode("utf-8")).hexdigest()
+        ent = st.get(fname)
+        t = ent["t"] if (ent and ent["h"] == h) else time.time()
+        try:
+            with open(path, encoding="utf-8") as f:
+                same = f.read() == content
+        except OSError:
+            same = False
+        if not same:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        try:
+            os.utime(path, (t, t))
+        except OSError:
+            pass
+        st[fname] = {"h": h, "t": t}
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+SITEMAP_PRIORITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitemap_priority.json")
+PROM_GROUP_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prom_group_to_category.json")
+SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static")
+
+
+def _sitemap_priority():
+    """(id товарів, файли категорій) для sitemap-priority.xml: картки з текстами (product_texts.json), demand_featured, топ за показами GSC (sitemap_priority.json від SEO) і категорії з текстами + цільові категорії старих груп Prom."""
+    ids = set(_PRODUCT_TEXTS)
+    cats = {f"category-{slug}.html" for slug in _CATEGORY_TEXTS}
+    for path, key in ((DEMAND_FILE, "ids"), (SITEMAP_PRIORITY_FILE, "product_ids")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                ids |= {str(x) for x in (json.load(f).get(key) or [])}
+        except (OSError, ValueError, AttributeError):
+            pass
+    try:
+        with open(PROM_GROUP_CATEGORY_FILE, encoding="utf-8") as f:
+            for v in json.load(f).values():
+                slug = (v or {}).get("category") if isinstance(v, dict) else None
+                if isinstance(slug, str) and re.fullmatch(r"[a-z0-9-]+", slug):
+                    cats.add(f"category-{slug}.html")
+    except (OSError, ValueError):
+        pass
+    return ids, cats
+
+
 def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
-    """paged = усі сторінки каталогу/категорій (з пагінацією). Стор.≥2 (мають '_N' перед .html)
-    ідуть з нижчим пріоритетом; catalog.html — найвищий серед лістингів."""
-    from datetime import date
-    today = date.today().isoformat()
+    """sitemap.xml = ІНДЕКС п'яти сегментів (SEO 15.10.2026: GSC рахує виявлені/проіндексовані по кожному sitemap окремо — швидкий вимір): priority / products (в наявності) / oos / categories / static.
+    Кожен URL рівно в одному сегменті. lastmod — дата реальної зміни сторінки (див. _write). paged = усі сторінки каталогу/категорій; стор.≥2 не потрапляють у sitemap."""
+    pri_ids, pri_cats = _sitemap_priority()
+    exist = {p["id"] for p in prods} | {p["id"] for p in oos_prods}
+    seg = {k: [] for k in SITEMAP_SEGMENTS}
     # головна — КОРІНЬ '/', а не '/index.html': збігається з canonical головної (page()),
     # інакше конфліктний сигнал каноніку (loc {SITE_URL}/{u} з u='' дає {SITE_URL}/).
-    urls = [("", "1.0", "daily")]
-    urls += list(static_urls or [])            # categories.html + сторінки довіри
+    seg["priority"].append(("", "index.html", "1.0", "daily"))
+    seg["static"] += [(u, u, pr, cf) for u, pr, cf in (static_urls or [])]   # categories.html + сторінки довіри
     for fn in sorted(paged):
-        secondary = bool(re.search(r"_\d+\.html$", fn))   # сторінка ≥2
-        if secondary:
-            continue   # SEO 11.10.2026: у sitemap лише 1-ша сторінка категорії/каталогу; пагінація лишається доступною через посилання, canonical і rel=prev/next не змінено; усі картки перелічені нижче напряму
-        if fn == "catalog.html":
-            pr, cf = "0.9", "daily"
+        if re.search(r"_\d+\.html$", fn):
+            continue   # SEO 11.10.2026: у sitemap лише 1-ша сторінка категорії/каталогу; пагінація лишається доступною через посилання, canonical і rel=prev/next
+        if fn in pri_cats:
+            seg["priority"].append((fn, fn, "0.7", "weekly"))
+        elif fn == "catalog.html":
+            seg["categories"].append((fn, fn, "0.9", "daily"))
         else:                                             # page-1 категорії/каталогу
-            pr, cf = "0.7", "weekly"
-        urls.append((fn, pr, cf))
-    urls += [(f"product-{p['id']}.html", "0.6", "weekly") for p in prods]
+            seg["categories"].append((fn, fn, "0.7", "weekly"))
+    for p in prods:
+        f = f"product-{p['id']}.html"
+        (seg["priority"] if p["id"] in pri_ids else seg["products"]).append((f, f, "0.6", "weekly"))
     # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий
-    urls += [(f"product-{p['id']}.html", "0.3", "monthly") for p in oos_prods]
-    items = "\n".join(
-        f"  <url><loc>{SITE_URL}/{u}</loc><lastmod>{today}</lastmod>"
-        f"<changefreq>{cf}</changefreq><priority>{pr}</priority></url>"
-        for u, pr, cf in urls
-    )
+    for p in oos_prods:
+        f = f"product-{p['id']}.html"
+        (seg["priority"] if p["id"] in pri_ids else seg["oos"]).append((f, f, "0.6" if p["id"] in pri_ids else "0.3", "weekly" if p["id"] in pri_ids else "monthly"))
+    index_items = []
+    for name in SITEMAP_SEGMENTS:
+        fname = f"sitemap-{name}.xml"
+        urls = seg[name]
+        if not urls:
+            try:
+                os.remove(os.path.join(OUT, fname))   # порожній сегмент не лишаємо від попередньої збірки
+            except OSError:
+                pass
+            continue
+        dates = [_lastmod_date(src) for _u, src, _pr, _cf in urls]
+        items = "\n".join(
+            f"  <url><loc>{SITE_URL}/{u}</loc><lastmod>{d}</lastmod><changefreq>{cf}</changefreq><priority>{pr}</priority></url>"
+            for (u, _src, pr, cf), d in zip(urls, dates)
+        )
+        _write(fname, '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + items + "\n</urlset>\n")
+        index_items.append(f"  <sitemap><loc>{SITE_URL}/{fname}</loc><lastmod>{max(dates)}</lastmod></sitemap>")
     _write("sitemap.xml",
            '<?xml version="1.0" encoding="UTF-8"?>\n'
-           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-           f"{items}\n</urlset>\n")
+           '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+           + "\n".join(index_items) + "\n</sitemapindex>\n")
+
 
 def write_robots():
     _write("robots.txt",
@@ -2502,9 +2631,6 @@ def write_robots():
            "Disallow: /thanks.html\n"
            f"Sitemap: {SITE_URL}/sitemap.xml\n")
 
-def _write(fname, content):
-    with open(os.path.join(OUT, fname), "w", encoding="utf-8") as f:
-        f.write(content)
 
 if __name__ == "__main__":
     build()

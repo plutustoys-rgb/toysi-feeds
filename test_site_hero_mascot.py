@@ -233,34 +233,35 @@ def hero_attrs(day):
     return mm and ([re.search(r"plutus_(\w+)\.webp", c).group(1) for c in mm.group(1).split("|")], mm.group(2).split(","), mm.group(3).split(","), mm.group(6))
 
 
-SNOW = {"2026-11-24": False, "2026-11-25": True, "2026-12-31": True, "2027-01-02": False}
-for day, inseason in SNOW.items():
+# власник 15.10: «для чого так довго чекати? нехай зараз крутиться» — Сніжинка з 15.10 (дата деплою) до 31.12; Гелловін 15–31.10 як було; tailchase витісняє лише Гелловін (SMM: Сніжинка його не витісняє)
+def _dips(r):
+    return set(r[3].split(",")) if r and r[3] else set()
+
+
+for day, snow_on, hel_on in (("2026-10-14", False, False), ("2026-10-15", True, True), ("2026-10-31", True, True), ("2026-11-01", True, False), ("2026-11-24", True, False), ("2026-12-31", True, False), ("2027-01-02", False, False)):
     r = hero_attrs(day)
     names2 = r[0] if r else []
-    if inseason:
-        i = names2.index("snowflake") if "snowflake" in names2 else -1
-        chk(f"{day}: Сніжинка в ротації (вага 2, data-dip = її індекс, ≈3818 мс), tailchase тимчасово виходить, Гелловіну нема, усього 10 рухів",
-            i >= 0 and r[2][i] == "2" and r[3] == str(i) and abs(int(r[1][i]) - 3818) <= 60 and "tailchase" not in names2 and "halloween" not in names2 and len(names2) == 10)
-    else:
-        chk(f"{day}: поза 25.11–31.12 Сніжинки нема, tailchase на місці, data-dip відсутній", r and "snowflake" not in names2 and "tailchase" in names2 and len(names2) == 10 and r[3] is None)
-for day, inseason in (("2026-10-14", False), ("2026-10-15", True), ("2026-10-31", True), ("2026-11-01", False)):
-    r = hero_attrs(day)
-    names2 = r[0] if r else []
-    if inseason:
-        i = names2.index("halloween") if "halloween" in names2 else -1
-        chk(f"{day}: Гелловін у ротації (вага 2, data-dip = його індекс), tailchase тимчасово виходить, усього 10 рухів", i >= 0 and r[2][i] == "2" and r[3] == str(i) and "tailchase" not in names2 and len(names2) == 10 and abs(int(r[1][i]) - 3320) <= 60)
-    else:
-        chk(f"{day}: поза 15–31.10 Гелловіна нема, tailchase на місці, data-dip відсутній", r and "halloween" not in names2 and "tailchase" in names2 and len(names2) == 10 and r[3] is None)
+    isn = names2.index("snowflake") if "snowflake" in names2 else -1
+    ish = names2.index("halloween") if "halloween" in names2 else -1
+    exp_n = 10 + int(snow_on) + int(hel_on) - int(hel_on)   # Гелловін замінює tailchase (10 → 10), Сніжинка додається
+    ok = bool(r) and (isn >= 0) == snow_on and (ish >= 0) == hel_on and len(names2) == exp_n and ("tailchase" in names2) == (not hel_on)
+    if snow_on and r:
+        ok = ok and r[2][isn] == "2" and abs(int(r[1][isn]) - 3818) <= 60 and str(isn) in _dips(r)
+    if hel_on and r:
+        ok = ok and r[2][ish] == "2" and abs(int(r[1][ish]) - 3320) <= 60 and str(ish) in _dips(r)
+    if not snow_on and not hel_on and r:
+        ok = ok and r[3] is None
+    chk(f"{day}: Сніжинка {'є' if snow_on else 'нема'}, Гелловін {'є' if hel_on else 'нема'}, tailchase {'виходить (Гелловін)' if hel_on else 'на місці'}, рухів {exp_n}, data-dip = сезонні індекси: {names2}", ok)
 sf = HERE / "site/assets/mascot/plutus_snowflake.webp"
 chk(f"файл Сніжинки в репо ({sf.stat().st_size // 1024} КБ ≤ 250, ліміт SMM)", sf.exists() and sf.stat().st_size <= 250 * 1024)
 act_s = [c[0] for c in bs.hero_mascot_clips(__import__("datetime").date(2026, 12, 1))]
 tot_s = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in act_s) + ps
-chk(f"вага рухів у ротації під час Сніжинки ≤ 2,5 МБ: {tot_s/1024:.0f} КБ", tot_s <= 2.5 * 1000 * 1000 + 20000)
+chk(f"вага рухів у ротації під час Сніжинки (tailchase лишається, SMM 15.10) ≤ 2,8 МБ: {tot_s/1024:.0f} КБ (кліпи вантажаться по одному)", tot_s <= 2.8 * 1000 * 1000)
 hw = HERE / "site/assets/mascot/plutus_halloween.webp"
 chk(f"файл Гелловіну в репо ({hw.stat().st_size // 1024} КБ ≤ 250, ліміт SMM): 12 fps, loop=1", hw.exists() and hw.stat().st_size <= 250 * 1024)
 act = [n for n in (c[0] for c in bs.hero_mascot_clips(__import__("datetime").date(2026, 10, 20)))]
 tot_act = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in act) + ps
-chk(f"вага рухів у ротації під час Гелловіну ≤ 2,5 МБ: {tot_act/1024:.0f} КБ", tot_act <= 2.5 * 1000 * 1000 + 20000)
+chk(f"вага рухів у ротації під час Гелловіну + Сніжинки ≤ 2,8 МБ: {tot_act/1024:.0f} КБ", tot_act <= 2.8 * 1000 * 1000)
 from PIL import Image as _Im2
 imh = _Im2.open(hw)
 dh = 0

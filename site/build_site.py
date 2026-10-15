@@ -901,7 +901,15 @@ def _catalog_controls(preset=None, group=None, own=None, groups_json=None, other
     )
 
 # ── SEO-замовлення 2026-10-10 (п.2–3, фінальні шаблони — SEO_CHANNEL.md): title/description, хлібні крихти, розмітка Product/ItemList ──
-PRICE_VALID_DAYS = 7     # ціни/наявність перебудовуються кожні 2 год (site-rebuild.timer); якщо збірка стане >7 діб — розмітка сама «протухне»
+def price_valid_until(today=None):
+    """priceValidUntil (SEO 15.10): ОСТАННІЙ ДЕНЬ НАСТУПНОГО календарного місяця — змінюється раз на місяць, запас ≥ 1 міс. (було сьогодні+7: збій збірки → прострочене значення = попередження Merchant/rich results)."""
+    from datetime import date
+    t = today or date.today()
+    y, m = (t.year + (t.month == 12), t.month % 12 + 1)      # наступний місяць
+    ny, nm = (y + (m == 12), m % 12 + 1)                      # місяць після нього
+    return date(ny, nm, 1) - timedelta(days=1)
+
+
 # (до 12.10.2026 суму доставки НЕ друкували — рішення Консультанта 10.10: «нічим не підкріплене»; тепер лише виміряне й «орієнтовно», див. DELIVERY_COST) — стара примітка: (рішення Консультанта 10.10.2026): «від 65/70 ₴» нічим не підкріплене; повернути конкретику — коли бухгалтер дасть виміряну цифру (фактичні тарифи НП у книзі КОДВ).
 PAY_SHORT = "оплата карткою або при отриманні" if LIQPAY_LIVE else "оплата при отриманні"
 TITLE_MAX = 65
@@ -1028,7 +1036,7 @@ def offer_extras(p) -> dict:
     """Поля Product.offers для Merchant free listings (SEO п.3б). Значення — з текстів сторінок «Доставка»/«Повернення»."""
     from datetime import date, timedelta
     extra = {
-        "priceValidUntil": ((_sale_until_of(p["id"]).date() if (SALE_ACTIVE and p.get("old_price") and _sale_until_of(p["id"])) else date.today() + timedelta(days=PRICE_VALID_DAYS))).isoformat(),
+        "priceValidUntil": ((_sale_until_of(p["id"]).date() if (SALE_ACTIVE and p.get("old_price") and _sale_until_of(p["id"])) else price_valid_until())).isoformat(),
         # shippingDetails без виміряної ставки не пишемо (shippingRate обов'язковий, вигадане число — розбіжність розмітки зі сторінкою); повернемо разом із цифрою.
         "hasMerchantReturnPolicy": {
             "@type": "MerchantReturnPolicy", "applicableCountry": "UA",
@@ -1597,7 +1605,7 @@ HERO_MASCOT_CLIPS = (("tailtrip", 3154, 2, True), ("ear_scratch", 4000, 2, True)
 # кросфейд дав би двійника крізь прозорий кліп. Вага рухів у репо ≤ 2,5 МБ: на час Гелловіну з ротації виходить слабкий tailchase (розмита пляма; рішення SMM), після 31.10 він повертається сам.
 # (name, ms, weight, first_ok, dip, перший день (м, д), останній день, що замінює)
 HERO_MASCOT_SEASONAL = (("halloween", 3320, 2, True, True, (10, 15), (10, 31), "tailchase"),
-                        ("snowflake", 3818, 2, True, True, (11, 25), (12, 31), "tailchase"))   # «Сніжинка» (SMM 15.10): червона шапка, ловить сніжинку; разом із чипом «Миколай і Новий рік»; вікна не перетинаються
+                        ("snowflake", 3818, 2, True, True, (10, 15), (12, 31), None))   # «Сніжинка» (SMM 15.10): червона шапка, ловить сніжинку; власник 15.10: «для чого так довго чекати? нехай зараз крутиться» — з дати деплою (15.10) до 31.12, а не з 25.11; tailchase НЕ витісняє (SMM: лишити в ротації); із Гелловіном 15–31.10 граються разом
 
 
 def hero_mascot_clips(today=None):

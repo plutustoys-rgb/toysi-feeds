@@ -1095,6 +1095,8 @@ def _load_category_texts():
     return _CATEGORY_TEXTS
 
 
+# Не-зброя категорії, яких немає у вітрині ГОЛОВНОЇ (SMM: «перші 10 не вони»), але на СВОЇЙ сторінці рекомендація з них доречна (15.10: сторінка «Картини за номерами» лишалась із порожньою правою колонкою). Зброя/репліки залишаються виключеними.
+CATEGORY_ASIDE_ALLOW_CATS = frozenset({"картини за номерами", "брелоки"})
 CATEGORY_ASIDE_MIN_CONTRIB = 30.0   # внесок на замовлення, ₴: запасний поріг рекомендації в категорії
 
 
@@ -1108,7 +1110,7 @@ def _category_aside_html(cat_prods):
         more = '<a class="cat-aside-more" href="aktsii.html">Усі знижки →</a>'
     else:
         # спершу правила вітрини головної; у дешевих категоріях (внесок < 100 ₴, ціна < 150 ₴) вони нічого не дають і права колонка лишалась би порожньою (15.10, перевірка на проді) → пом'якшена драбина: ціна 50–1500, внесок ≥ 30 ₴ (поріг сезонних чипів); мілітарі/зброя/OOS/без фото відсіюються так само
-        picks = home_pick(cat_prods) or home_pick(cat_prods, pmin=50, pmax=1500, min_contrib=CATEGORY_ASIDE_MIN_CONTRIB)
+        picks = home_pick(cat_prods, allow_cats=CATEGORY_ASIDE_ALLOW_CATS) or home_pick(cat_prods, pmin=50, pmax=1500, min_contrib=CATEGORY_ASIDE_MIN_CONTRIB, allow_cats=CATEGORY_ASIDE_ALLOW_CATS)
         if not picks:
             return ""
         p, label, more = picks[0], "Рекомендуємо", ""
@@ -1625,15 +1627,15 @@ def is_home_water_toy(p) -> bool:
     return bool(HOME_WATER_RE.search(p.get("name") or ""))
 
 
-def is_home_excluded(p, water_ok=False) -> bool:
+def is_home_excluded(p, water_ok=False, allow_cats=frozenset()) -> bool:
     cat = (p.get("category") or "").strip().lower()
     name = p.get("name") or ""
     if water_ok and HOME_WATER_RE.search(name):
         return bool(HOME_MILITARY_NOWATER_RE.search(name) or is_weapon_replica(str(p["id"]), name))
-    return bool(cat in HOME_PICK_EXCLUDED_CATS or cat in NABORY_EXCLUDED_CATS or HOME_MILITARY_RE.search(name) or is_weapon_replica(str(p["id"]), name))
+    return bool((cat in HOME_PICK_EXCLUDED_CATS and cat not in allow_cats) or cat in NABORY_EXCLUDED_CATS or HOME_MILITARY_RE.search(name) or is_weapon_replica(str(p["id"]), name))
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None, water_ok=False):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), allow_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None, water_ok=False):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1652,9 +1654,9 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
         if not (pmin <= p["price"] <= pmax):
             continue
         water = water_ok and HOME_WATER_RE.search(name)   # водний бластер у чипі «Активні ігри» (SMM 13.10) — не зброя
-        if (cat in HOME_PICK_EXCLUDED_CATS and not water) or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
+        if (cat in HOME_PICK_EXCLUDED_CATS and cat not in allow_cats and not water) or cat in extra_excluded_cats or _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS):
             continue
-        if is_home_excluded(p, water_ok=water_ok):
+        if is_home_excluded(p, water_ok=water_ok, allow_cats=allow_cats):
             continue   # мілітарі/зброя/спецтехніка за назвою й категорією (єдина політика вітрин головної)
         if name_re is not None and not (name_re.search(name) or (alt_cat_re is not None and alt_cat_re.search(p.get("category") or ""))):
             continue   # тематичний набір (сезонні чипи): лише назви за ключовими словами

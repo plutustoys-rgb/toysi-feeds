@@ -135,7 +135,7 @@ chk("site/category_texts.json у репо: об'єкт, усі значення 
 chk("site/category_texts.json: ключі — slug-и [a-z0-9-]+", all(re.fullmatch(r"[a-z0-9-]+", k) for k in shipped))
 
 # eager у списках
-imgs = re.findall(r'<a class="card" href="product-\d+\.html"><div class="ph"><img ([^>]*)>', p1)
+imgs = re.findall(r'<a class="card" href="product-\d+\.html"><div class="ph"><img ([^>]*)>', re.sub(r'<aside class="cat-aside".*?</aside>', "", p1, flags=re.S))   # права колонка «Рекомендуємо» (15.10) — не частина списку
 chk("список: перші 4 картки без lazy, решта — lazy", len(imgs) == 24 and all("lazy" not in x for x in imgs[:4]) and all("lazy" in x for x in imgs[4:]))
 chk("список: fetchpriority=high лише в першої картки", 'fetchpriority="high"' in imgs[0] and sum(1 for x in imgs if "fetchpriority" in x) == 1)
 imgs2 = re.findall(r'<a class="card" href="product-\d+\.html"><div class="ph"><img ([^>]*)>', p2)

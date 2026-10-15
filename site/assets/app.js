@@ -646,6 +646,7 @@
     initNaboryChips();
     initMascot();
     initContactTracking();
+    initMailCopy();
     initSaleTimer();
     initChatMenu();
 
@@ -990,6 +991,28 @@
     var on=false;
     try{ if(/[?&]liqpay_test=1(&|$)/.test(location.search)){ sessionStorage.setItem("pt_liqpay_test","1"); } on = sessionStorage.getItem("pt_liqpay_test")==="1"; }catch(e){ on = /[?&]liqpay_test=1(&|$)/.test(location.search); }
     if(on) el.innerHTML='<label class="pay" id="pay-test"><input type="radio" name="payment" value="prepaid" data-test="1"> Оплата карткою онлайн (ТЕСТОВИЙ РЕЖИМ — реальних списань немає)</label>';
+  }
+  // ── Клік по пошті (mailto): на комп'ютері без поштового клієнта браузер «нічого не робить» (власник 15.10). Лишаємо mailto (де клієнт є — відкриється), а адресу додатково копіюємо в буфер і показуємо підтвердження ──
+  function initMailCopy(){
+    var toast=null, tm=null;
+    function show(msg){
+      if(!toast){ toast=document.createElement("div"); toast.className="pt-toast"; toast.setAttribute("role","status"); toast.hidden=true; document.body.appendChild(toast); }
+      toast.textContent=msg; toast.hidden=false; clearTimeout(tm); tm=setTimeout(function(){ toast.hidden=true; }, 3500);
+    }
+    function copy(text, done){
+      try{
+        if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(function(){ done(true); }, function(){ done(fallback()); }); return; }
+      }catch(e){}
+      done(fallback());
+      function fallback(){
+        try{ var ta=document.createElement("textarea"); ta.value=text; ta.setAttribute("readonly",""); ta.style.position="fixed"; ta.style.opacity="0"; document.body.appendChild(ta); ta.select(); var ok=document.execCommand && document.execCommand("copy"); document.body.removeChild(ta); return !!ok; }catch(e){ return false; }
+      }
+    }
+    document.addEventListener("click", function(e){
+      var a=e.target.closest ? e.target.closest('a[href^="mailto:"]') : null; if(!a) return;
+      var addr=(a.getAttribute("href")||"").replace(/^mailto:/i,"").split("?")[0]; if(!addr) return;
+      copy(addr, function(ok){ show(ok ? "Адресу "+addr+" скопійовано" : "Пошта: "+addr); });
+    });
   }
   // ── Контакти/соцмережі: клік по телефону й IG/FB у футері (SMM: міряти соцтрафік) ──
   function initContactTracking(){

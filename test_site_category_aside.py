@@ -83,6 +83,9 @@ ah2 = bs._category_aside_html(prods_k)
 chk("акції нема (SALE_ACTIVE=None) — колонка «Рекомендуємо», без «Усі знижки»", "Рекомендуємо" in ah2 and "aktsii.html" not in ah2)
 cheap = [{"id": "1", "name": "Дешевий", "price": 90, "stock": 3, "photo": "x.jpg", "category": "К", "contribution": 45.0}]
 chk("дешева категорія (ціна 90 ₴, внесок 45 ₴): правила вітрини нічого не дають, але пом'якшена драбина дає «Рекомендуємо» (15.10: на проді права колонка була порожньою)", "Рекомендуємо" in bs._category_aside_html(cheap) and "product-1.html" in bs._category_aside_html(cheap))
+paint = [{"id": "7", "name": "Картина за номерами", "price": 300, "stock": 3, "photo": "x.jpg", "category": "Картини за номерами", "contribution": 120.0}]
+weapon = [{"id": "8", "name": "Іграшка", "price": 300, "stock": 3, "photo": "x.jpg", "category": "Зброя", "contribution": 120.0}]
+chk("«Картини за номерами» (виключена з вітрини головної) на СВОЇЙ сторінці отримує рекомендацію; категорія зброї — ні (політика виключення лишилась)", "product-7.html" in bs._category_aside_html(paint) and bs._category_aside_html(weapon) == "" and bs.home_pick(paint) == [])
 chk("внесок нижче запасного порога (20 ₴), нема в наявності або без фото → колонки нема, текст займає все", bs._category_aside_html([dict(cheap[0], contribution=20.0)]) == "" and bs._category_aside_html([dict(cheap[0], stock=0)]) == "" and bs._category_aside_html([dict(cheap[0], photo="")]) == "")
 
 # ── lastmod: колонка не рухає lastmod ──

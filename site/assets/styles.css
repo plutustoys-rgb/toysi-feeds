@@ -486,3 +486,27 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 /* тост «адресу скопійовано» (клік по пошті, коли поштового клієнта нема — власник 15.10: «нічого не відбувається») */
 .pt-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;max-width:calc(100vw - 32px);padding:11px 16px;border-radius:12px;background:#2b2118;color:#fff;font-size:14px;font-weight:600;box-shadow:0 10px 26px rgba(30,20,10,.3);pointer-events:none}
 .pt-toast[hidden]{display:none}
+/* Каталог (власник 15.10): «Каталог» в одну лінію з сортуванням, панель липка під шапкою (сортування й категорії не зникають при прокрутці) */
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+:root{--hdr-h:64px}
+.cat-bar{position:sticky;top:var(--hdr-h,64px);z-index:15;background:var(--bg);display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding:6px 16px 8px;border-bottom:1px solid var(--line)}
+.cat-bar h1.cat-h1{margin:0;font-size:22px;line-height:1.2}
+.cat-bar .cat-controls{padding:0;flex:1 1 auto;gap:8px;min-width:0}
+.cat-count{margin:0;padding:0 2px;white-space:nowrap}
+.cf-price-toggle{display:none;height:38px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--text);font-size:14px;padding:0 12px;cursor:pointer}
+.cf-price-toggle[aria-expanded="true"],.cf-price-toggle.on{border-color:var(--accent);color:var(--accent)}
+.cat-controls .cf-price{display:inline-flex}
+@media(max-width:999px){
+  /* вузький екран: сортуванням і категорією липнемо лише ряд контролів; «Каталог» і лічильник прокручуються, ціна — у випадайці за кнопкою «Ціна» */
+  .cat-bar{display:contents}
+  .cat-bar h1.cat-h1{width:100%;padding:4px 16px 0}
+  .cat-count{padding:0 16px 8px}
+  .cat-bar .cat-controls{position:sticky;top:var(--hdr-h,64px);z-index:15;background:var(--bg);padding:6px 16px 8px;border-bottom:1px solid var(--line);flex-wrap:nowrap}
+  .cat-controls select{min-width:0;flex:1 1 0}
+  .cf-price-toggle{display:inline-flex;align-items:center;flex:none}
+  .cat-controls select{font-size:13px;padding:0 24px 0 8px;text-overflow:ellipsis}
+  .cat-controls .cf-price{display:none;position:absolute;left:16px;right:16px;top:100%;margin-top:6px;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 28px rgba(30,20,10,.22);gap:8px}
+  .cat-controls .cf-price.open{display:flex}
+  .cat-controls .cf-price input[type=number]{flex:1 1 0;width:0;min-width:0}
+  .cat-controls .cf-reset{flex:none}
+}

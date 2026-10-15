@@ -329,6 +329,16 @@
     [elMin,elMax].forEach(function(e){ if(e) e.addEventListener("input",deb); });
     if(moreBtn) moreBtn.addEventListener("click",renderMore);
     if(elReset) elReset.addEventListener("click",doReset);
+    // вузький екран: кнопка «Ціна» розкриває від/до (на широкому панель завжди розгорнута, кнопка схована CSS)
+    var pt=document.getElementById("cf-price-toggle"), pp=document.getElementById("cf-price-panel");
+    if(pt && pp){
+      function setOpen(o){ pp.classList.toggle("open",o); pt.setAttribute("aria-expanded",o?"true":"false"); }
+      pt.addEventListener("click",function(e){ e.stopPropagation(); setOpen(!pp.classList.contains("open")); });
+      document.addEventListener("click",function(e){ if(pp.classList.contains("open") && !pp.contains(e.target)) setOpen(false); });
+      document.addEventListener("keydown",function(e){ if(e.key==="Escape" && pp.classList.contains("open")){ setOpen(false); pt.focus(); } });
+      var mark=function(){ pt.classList.toggle("on", !!(elMin.value||elMax.value)); };
+      [elMin,elMax].forEach(function(e){ e.addEventListener("input",mark); }); if(elReset) elReset.addEventListener("click",function(){ setOpen(false); mark(); });
+    }
   }
 
   // ── Права колонка кошика (SMM 12.10): «Ваше замовлення», «Додайте до замовлення» (3 позиції з пулу cart.html, яких ще нема в кошику), динамічний рядок про відправку ──

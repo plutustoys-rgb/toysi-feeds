@@ -848,6 +848,15 @@ def _pager(fname, k, pages):
     out.append('</nav>')
     return "".join(out)
 
+def _catalog_js_grid():
+    """Лічильник «Знайдено…» і JS-сітка каталогу (керує app.js initCatalog); hidden до ініціалізації."""
+    return (
+      '<p id="cat-count" class="pagenote cat-count" hidden></p>'
+      '<div id="cat-js" class="grid" hidden></div>'
+      '<div id="cat-more-wrap" hidden><button id="cat-more" class="btn ghost">Показати ще</button></div>'
+    )
+
+
 def _catalog_controls():
     """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
     hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
@@ -860,14 +869,12 @@ def _catalog_controls():
           '<option value="az">За назвою А–Я</option>'
         '</select>'
         '<select id="cf-cat" aria-label="Категорія"><option value="">Усі категорії</option></select>'
-        '<span class="cf-price"><input id="cf-min" type="number" inputmode="numeric" min="0" placeholder="ціна від">'
-          '<input id="cf-max" type="number" inputmode="numeric" min="0" placeholder="до"></span>'
+        '<button id="cf-price-toggle" class="cf-price-toggle" type="button" aria-expanded="false" aria-controls="cf-price-panel">Ціна</button>'
+        '<span id="cf-price-panel" class="cf-price"><input id="cf-min" type="number" inputmode="numeric" min="0" placeholder="ціна від" aria-label="Ціна від">'
+          '<input id="cf-max" type="number" inputmode="numeric" min="0" placeholder="до" aria-label="Ціна до">'
         # Чекбокс «лише в наявності» прибрано (тестувальник 13.10): index.json лишає лише товари В НАЯВНОСТІ (s завжди 1), тож фільтр нічого не міняв. Повернути — коли в index.json з'являться позиції без залишку.
-        '<button id="cf-reset" class="cf-reset" type="button">Скинути</button>'
+        '<button id="cf-reset" class="cf-reset" type="button">Скинути</button></span>'
       '</div>'
-      '<p id="cat-count" class="pagenote" hidden></p>'
-      '<div id="cat-js" class="grid" hidden></div>'
-      '<div id="cat-more-wrap" hidden><button id="cat-more" class="btn ghost">Показати ще</button></div>'
     )
 
 # ── SEO-замовлення 2026-10-10 (п.2–3, фінальні шаблони — SEO_CHANNEL.md): title/description, хлібні крихти, розмітка Product/ItemList ──
@@ -1388,10 +1395,22 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         # Панель сорт/фільтр — лише на головному каталозі (стор.1). Працює клієнтом з index.json
         # (усі товари), тож фільтрує/сортує ВЕСЬ каталог, не лише сторінку. Прогресивне покращення:
         # без JS лишається статична пагінована сітка (SEO), контроли сховані (hidden) до ініціалізації.
-        controls = _catalog_controls() if (active is None and k == 1 and not special) else ""
+        is_full = active is None and not special   # повний каталог (catalog.html і його сторінки)
+        controls = _catalog_controls() if (is_full and k == 1) else ""
         static_grid = grid(chunk, eager_n=(4 if k == 1 else 0)) + _pager(fname, k, pages)
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
+        if is_full:
+            # власник 15.10: «залиш тільки слово Каталог, в 1 лінію з сортуванням, сортування й категорії не мають зникати при прокрутці» → липка панель .cat-bar (H1 + контроли); крихти й «Сторінка 1 з N» на стор.1 не показуємо (BreadcrumbList лишається в <head>)
+            body = (
+                '<div class="cat-bar"><h1 class="page cat-h1">Каталог<span class="sr-only"> іграшок</span></h1>' + controls + '</div>\n' +
+                (_catalog_js_grid() if controls else "") +
+                (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if k > 1 else "") +
+                static_grid
+            )
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            written.add(cur)
+            continue
         body = (
             crumbs_html(trail) +
             ("" if (special or active is None) else chips(cat_list, cat_slug, active)) +   # власник 14.10: у повному каталозі рядок чипів-категорій прибрано (є панель «Категорія» в сортуванні/фільтрах); на сторінках категорій чипи лишаються (навігація між категоріями)

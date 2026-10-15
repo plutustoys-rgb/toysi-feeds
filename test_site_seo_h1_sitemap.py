@@ -72,7 +72,7 @@ chk("H1 категорії = лише назва (без «Каталог •»)
 chk("H1 категорії = лише назва, стор.2 (title/canonical пагінації не змінено)", re.search(r'<h1 class="page">Картини за номерами</h1>', p2) is not None
     and f'rel="canonical" href="https://plutustoys.com.ua/category-{slug}_2.html"' in p2 and "сторінка 2" in re.search(r"<title>(.*?)</title>", p2).group(1))
 cat_html = (out / "catalog.html").read_text(encoding="utf-8")
-chk("повний каталог: H1 «Каталог іграшок»", '<h1 class="page">Каталог іграшок</h1>' in cat_html)
+chk("повний каталог: H1 видимо «Каталог», для читачів екрана/SEO — «Каталог іграшок» (власник 15.10: «залиш тільки слово Каталог»)", '<h1 class="page cat-h1">Каталог<span class="sr-only"> іграшок</span></h1>' in cat_html)
 _cr = re.search(r'<nav class="crumbs"[^>]*>(.*?)</nav>', p1, re.S)
 chk("крихти «Каталог ›» на сторінці категорії лишились (саме в <nav class=crumbs>, а не в шапці/підвалі)",
     _cr is not None and 'href="catalog.html">Каталог</a>' in _cr.group(1) and "Картини за номерами" in _cr.group(1))

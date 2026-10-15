@@ -737,7 +737,9 @@ def build():
     write_thanks()
     write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
-    write_categories_index(cat_list, cat_slug, cats)
+    groups = site_groups(cats)
+    paged |= write_groups(groups, cats, cat_slug)
+    write_categories_index(cat_list, cat_slug, cats, groups)
     trust = write_trust_pages()
     # 6) індекс пошуку
     # index.json — клієнтський пошук + фільтр/сорт каталогу. c=категорія, s=наявність(1/0).
@@ -758,7 +760,7 @@ def build():
     valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
-        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin")) and fn.endswith(".html")
+        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "group-")) and fn.endswith(".html")
                 and fn not in valid):
             try:
                 os.remove(os.path.join(OUT, fn))
@@ -875,11 +877,11 @@ def _catalog_js_grid():
     )
 
 
-def _catalog_controls(preset=None):
+def _catalog_controls(preset=None, group=None):
     """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
     hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
     return (
-      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}>'
+      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}>'
         '<select id="cf-sort" aria-label="Сортування">'
           '<option value="rec">Рекомендовані</option>'
           '<option value="cheap">Спершу дешевші</option>'
@@ -2417,9 +2419,94 @@ def write_404():
     )
     _write("404.html", page("Сторінку не знайдено", body, noindex=True, base_root=True))
 
-def write_categories_index(cat_list, cat_slug, cats):
+# ── Групи категорій за розкладкою Toysi (власник 15.10: «у Toysi гарна розкладка за категоріями, чому ми нею не користуємось?») ──
+# Фід Toysi має ієрархію (<category parentId>): 24 групи → підкатегорії. Раніше брали лише назви листків (плоский список із 287). Тепер: сторінки груп group-<slug>.html (сайдбар підкатегорій зліва, фільтри під назвою, липкі),
+# «Усі категорії» = лише групи. Розкладка — site/category_groups.json (знято з фіду 15.10; name = Toysi, display = підпис на сайті, hide = не показувати: Уцінка й Геловін мають власні сторінки). Підкатегорія без групи не губиться: її плитка на «Усіх категоріях» у «Окремих розділах».
+CATEGORY_GROUPS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "category_groups.json")
+GROUP_MIN_PRODUCTS = 6
+
+
+def load_category_groups():
+    try:
+        with open(CATEGORY_GROUPS_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for g in (raw.get("groups") if isinstance(raw, dict) else None) or []:
+        if isinstance(g, dict) and isinstance(g.get("name"), str) and isinstance(g.get("subs"), list) and not g.get("hide"):
+            out.append({"name": g["name"], "display": str(g.get("display") or g["name"]), "subs": [s for s in g["subs"] if isinstance(s, str)]})
+    return out
+
+
+def site_groups(cats):
+    """[{name, display, file, subs:[(категорія, к-сть)], total}] лише для груп, у яких на сайті ≥ GROUP_MIN_PRODUCTS товарів; підкатегорії — за кількістю товарів (спадання)."""
+    out, used = [], set()
+    for g in load_category_groups():
+        subs = sorted(((c, len(cats[c])) for c in dict.fromkeys(g["subs"]) if c in cats), key=lambda x: (-x[1], x[0]))
+        total = sum(n for _, n in subs)
+        if not subs or total < GROUP_MIN_PRODUCTS:
+            continue
+        base = f"group-{slugify(g['display'])}"
+        slug, k = base, 1
+        while slug in used:
+            k += 1
+            slug = f"{base}-{k}"
+        used.add(slug)
+        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total})
+    out.sort(key=lambda g: -g["total"])
+    return out
+
+
+def write_groups(groups, cats, cat_slug):
+    """Сторінки груп: H1 + фільтри під ним (липкі) + сайдбар підкатегорій (клік фільтрує на місці, а href веде на сторінку підкатегорії — для краулера) + сітка (JS з index.json; статична перша сторінка для SEO). Повертає set імен."""
+    written = set()
+    for g in groups:
+        items = rec_order([p for c, _n in g["subs"] for p in cats[c]])
+        side = "".join(
+            f'<a class="sb-i" href="category-{cat_slug[c]}.html" data-sub="{esc(c)}"><span>{esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
+        sidebar = (f'<aside class="sb" aria-label="Підкатегорії"><div class="sb-h">Підкатегорії</div>'
+                   f'<a class="sb-i all on" href="{g["file"]}" data-sub=""><span>Усі в групі</span><em>{g["total"]}</em></a>{side}</aside>')
+        trail = [("Головна", "index.html"), ("Усі категорії", "categories.html"), (g["display"], None)]
+        subs_json = json.dumps([c for c, _n in g["subs"]], ensure_ascii=False)
+        body = (
+            crumbs_html(trail) +
+            '<div class="gp">' + sidebar + '<div class="gmain">'
+            f'<div class="cat-bar"><h1 class="page cat-h1">{esc(g["display"])}</h1>' + _catalog_controls(group=subs_json) + '</div>\n' +
+            _catalog_js_grid() +
+            f'<div id="cat-static">{grid(items[:PER_PAGE], eager_n=4)}</div>'
+            '</div></div>'
+        )
+        head = breadcrumb_ld(trail) + _ld_script({"@context": "https://schema.org", "@type": "ItemList", "itemListElement": [
+            {"@type": "ListItem", "position": i + 1, "url": f"{SITE_URL}/product-{x['id']}.html"} for i, x in enumerate(items[:PER_PAGE])]})
+        n_sub = len(g["subs"])
+        desc = f"{g['display']} у PlutusToys: {g['total']} товарів у {n_sub} підкатегоріях. Є в наявності, доставка Новою Поштою по Україні."[:DESC_MAX]
+        _write(g["file"], page(g["display"], body, extra_head=head, description=desc, canonical=g["file"], og_image=OG_IMAGE, title_full=f"{g['display']} — іграшки в наявності | PlutusToys"))
+        written.add(g["file"])
+    return written
+
+
+def write_categories_index(cat_list, cat_slug, cats, groups=None):
     """Сторінка «Усі категорії» — закриває проблему orphan-категорій (усі 259 доступні
     з одного індексу + футера, а не лише з sitemap). Повертає ім'я файлу."""
+    if groups:   # власник 15.10: показуємо лише групи Toysi (без списків підкатегорій); категорії поза видимими групами (Уцінка, Геловін, нові) — «Окремі розділи», щоб жодна не лишилась без посилання
+        in_group = {c for g in groups for c, _n in g["subs"]}
+        gtiles = "".join(
+            f'<a class="cattile" href="{g["file"]}"><div class="emo">{cat_emoji(g["name"])}</div><div class="t">{esc(g["display"])}</div>'
+            f'<div class="cnt">{g["total"]} товар{_plural(g["total"])}</div></a>' for g in groups)
+        rest = [c for c in cat_list if c not in in_group]
+        rtiles = "".join(
+            f'<a class="cattile" href="category-{cat_slug[c]}.html"><div class="emo">{cat_emoji(c)}</div><div class="t">{esc(c)}</div>'
+            f'<div class="cnt">{len(cats[c])} товар{_plural(len(cats[c]))}</div></a>' for c in rest)
+        body = (
+            '<h1 class="page">Усі категорії</h1>\n'
+            f'<p class="pagenote">{len(groups)} груп іграшок</p>\n'
+            f'<div class="catgrid">{gtiles}</div>' +
+            (f'<h2 class="sec-h">Окремі розділи</h2><div class="catgrid">{rtiles}</div>' if rest else "")
+        )
+        desc = (f"Усі групи іграшок PlutusToys: {', '.join(g['display'] for g in groups[:4])} та інші. Доставка Новою Поштою по всій Україні.")[:DESC_MAX]
+        _write("categories.html", page("Усі категорії", body, description=desc, canonical="categories.html", og_image=OG_IMAGE))
+        return "categories.html"
     tiles = "".join(
         f'<a class="cattile" href="category-{cat_slug[c]}.html">'
         f'<div class="emo">{cat_emoji(c)}</div>'

@@ -51,6 +51,9 @@ for g, subs in LAYOUT.items():
         for j in range(10 + 6 * k):
             catalog[str(pid)] = item(pid, f"{sub} модель {pid}", sub, 200 + (pid * 13) % 300)
             pid += 1
+for j in range(5):
+    catalog[str(pid)] = item(pid, f"Транспортна дрібниця {pid}", "Транспорт", 150 + j)   # власна категорія групи (товари прямо в корені) -> «Інше»
+    pid += 1
 for j in range(7):
     catalog[str(pid)] = item(pid, f"Сирота {pid}", "Сирота", 300 + j)
     pid += 1
@@ -91,6 +94,11 @@ sg = [g for g in shipped["groups"] if not g.get("hide")]
 chk(f"site/category_groups.json у репо: {len(shipped['groups'])} груп, {sum(len(g['subs']) for g in shipped['groups'])} підкатегорій, у видимих — назви й підписи непорожні, без дублів підкатегорій між групами",
     len(shipped["groups"]) >= 20 and all(g["name"] and g["subs"] for g in shipped["groups"]) and len({s for g in shipped["groups"] for s in g["subs"]}) == sum(len(g["subs"]) for g in shipped["groups"]))
 chk("«Роботи, Машини та Зброя» показується як «Роботи та машини» (підпис; категорії зброї не змінені)", any(g["name"] == "Роботи, Машини та Зброя" and g.get("display") == "Роботи та машини" for g in shipped["groups"]))
+
+g2 = (out / "group-transport.html").read_text(encoding="utf-8")
+subs2 = re.findall(r'<a class="sb-i" href="(category-[a-z0-9-]+\.html)" data-sub="([^"]+)"><span>([^<]+)</span><em>(\d+)</em>', g2)
+chk(f"власна категорія групи (товари прямо в корені «Транспорт») — остання підкатегорія «Інше», до загального числа й не в «Окремих розділах»: {[(x[2], x[3]) for x in subs2]}",
+    [x[2] for x in subs2][-1] == "Інше" and subs2[-1][1] == "Транспорт" and subs2[-1][3] == "5" and "category-transport.html" not in tiles and re.search(r'<a class="sb-i all on"[^>]*><span>Усі в групі</span><em>(\d+)</em>', g2).group(1) == str(sum(int(x[3]) for x in subs2)))
 
 # ── Chromium ──
 shutil.copytree(HERE / "site" / "assets", out / "assets", dirs_exist_ok=True)

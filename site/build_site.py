@@ -877,11 +877,11 @@ def _catalog_js_grid():
     )
 
 
-def _catalog_controls(preset=None, group=None):
+def _catalog_controls(preset=None, group=None, own=None):
     """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
     hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
     return (
-      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}>'
+      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}>'
         '<select id="cf-sort" aria-label="Сортування">'
           '<option value="rec">Рекомендовані</option>'
           '<option value="cheap">Спершу дешевші</option>'
@@ -2443,7 +2443,10 @@ def site_groups(cats):
     """[{name, display, file, subs:[(категорія, к-сть)], total}] лише для груп, у яких на сайті ≥ GROUP_MIN_PRODUCTS товарів; підкатегорії — за кількістю товарів (спадання)."""
     out, used = [], set()
     for g in load_category_groups():
-        subs = sorted(((c, len(cats[c])) for c in dict.fromkeys(g["subs"]) if c in cats), key=lambda x: (-x[1], x[0]))
+        own = g["name"] if g["name"] in cats else None   # товари, віднесені прямо до кореня групи (у Toysi так буває: «Канцтовари» 17 шт.) -> остання підкатегорія «Інше»
+        subs = sorted(((c, len(cats[c])) for c in dict.fromkeys(g["subs"]) if c in cats and c != own), key=lambda x: (-x[1], x[0]))
+        if own:
+            subs.append((own, len(cats[own])))
         total = sum(n for _, n in subs)
         if not subs or total < GROUP_MIN_PRODUCTS:
             continue
@@ -2453,7 +2456,7 @@ def site_groups(cats):
             k += 1
             slug = f"{base}-{k}"
         used.add(slug)
-        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total})
+        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own})
     out.sort(key=lambda g: -g["total"])
     return out
 
@@ -2464,7 +2467,7 @@ def write_groups(groups, cats, cat_slug):
     for g in groups:
         items = rec_order([p for c, _n in g["subs"] for p in cats[c]])
         side = "".join(
-            f'<a class="sb-i" href="category-{cat_slug[c]}.html" data-sub="{esc(c)}"><span>{esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
+            f'<a class="sb-i" href="category-{cat_slug[c]}.html" data-sub="{esc(c)}"><span>{"Інше" if c == g["own"] else esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
         sidebar = (f'<aside class="sb" aria-label="Підкатегорії"><div class="sb-h">Підкатегорії</div>'
                    f'<a class="sb-i all on" href="{g["file"]}" data-sub=""><span>Усі в групі</span><em>{g["total"]}</em></a>{side}</aside>')
         trail = [("Головна", "index.html"), ("Усі категорії", "categories.html"), (g["display"], None)]
@@ -2472,7 +2475,7 @@ def write_groups(groups, cats, cat_slug):
         body = (
             crumbs_html(trail) +
             '<div class="gp">' + sidebar + '<div class="gmain">'
-            f'<div class="cat-bar"><h1 class="page cat-h1">{esc(g["display"])}</h1>' + _catalog_controls(group=subs_json) + '</div>\n' +
+            f'<div class="cat-bar"><h1 class="page cat-h1">{esc(g["display"])}</h1>' + _catalog_controls(group=subs_json, own=g["own"]) + '</div>\n' +
             _catalog_js_grid() +
             f'<div id="cat-static">{grid(items[:PER_PAGE], eager_n=4)}</div>'
             '</div></div>'

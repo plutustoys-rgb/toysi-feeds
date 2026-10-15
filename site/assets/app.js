@@ -283,13 +283,38 @@
     var groupSet=null, sideLinks=[], ownCat=controls.getAttribute("data-own")||"";
     try{ var gs=controls.getAttribute("data-group"); if(gs){ groupSet={}; JSON.parse(gs).forEach(function(c){ groupSet[c]=1; }); sideLinks=Array.prototype.slice.call(document.querySelectorAll(".sb-i")); } }catch(e){ groupSet=null; }
     function syncSide(){ sideLinks.forEach(function(a){ a.classList.toggle("on", (a.getAttribute("data-sub")||"")===elCat.value); }); }
+    // ПОВНИЙ КАТАЛОГ із деревом (data-groups = [{n,s:[підкатегорії],o:власна}]): сайдбар «Усі товари / група / підкатегорія» фільтрує на місці; на вузьких екранах список категорій — з групами (optgroup)
+    var tree=null, treeSets=[], selSet=null, curG=-1, treeEls=[], treeGrp=[];
+    try{ var gd=controls.getAttribute("data-groups"); if(gd && !groupSet){ tree=JSON.parse(gd); tree.forEach(function(g){ var m={}; g.s.forEach(function(c){ m[c]=1; }); treeSets.push(m); }); treeEls=Array.prototype.slice.call(document.querySelectorAll(".sb .sb-i")); treeGrp=Array.prototype.slice.call(document.querySelectorAll(".sb-grp")); } }catch(e){ tree=null; }
+    function groupOf(c){ for(var i=0;i<treeSets.length;i++){ if(treeSets[i][c]) return i; } return -1; }
+    function syncTree(){
+      if(!tree) return;
+      treeEls.forEach(function(a){
+        var g=+a.getAttribute("data-g"), sub=a.getAttribute("data-sub")||"", on=false;
+        if(a.classList.contains("all")) on = curG<0 && !elCat.value;
+        else if(a.classList.contains("sb-gh")) on = g===curG && !elCat.value;
+        else on = sub===elCat.value && sub!=="";
+        a.classList.toggle("on", on);
+      });
+      treeGrp.forEach(function(d){ var open=(+d.getAttribute("data-g")===curG); d.classList.toggle("open", open); var s=d.querySelector(".sb-subs"); if(s) s.hidden=!open; });
+    }
     if(preset){ try{ catUrls=JSON.parse((document.getElementById("cat-urls")||{}).textContent||"{}"); }catch(e){ catUrls={}; } }
     ensureIndex(function(data){
       var cats={};
       for(var i=0;i<data.length;i++){ if(data[i].c && (!groupSet || groupSet[data[i].c])) cats[data[i].c]=(cats[data[i].c]||0)+1; }
-      Object.keys(cats).sort(function(a,b){ return groupSet ? (cats[b]-cats[a] || a.localeCompare(b,"uk")) : a.localeCompare(b,"uk"); }).forEach(function(c){
-        var o=document.createElement("option"); o.value=c; o.textContent=(c===ownCat ? "Інше" : c)+" ("+cats[c]+")"; elCat.appendChild(o);
-      });
+      function addOpt(parent, c, label){ var o=document.createElement("option"); o.value=c; o.textContent=(label||c)+" ("+cats[c]+")"; parent.appendChild(o); }
+      if(tree){
+        var placed={};
+        tree.forEach(function(g){
+          var og=document.createElement("optgroup"); og.label=g.n; var any=false;
+          g.s.slice().sort(function(a,b){ return (a===g.o)-(b===g.o) || (cats[b]||0)-(cats[a]||0) || a.localeCompare(b,"uk"); }).forEach(function(c){ if(cats[c]){ addOpt(og,c, c===g.o ? "Інше · "+g.n : c); placed[c]=1; any=true; } });
+          if(any) elCat.appendChild(og);
+        });
+        var rest=Object.keys(cats).filter(function(c){ return !placed[c]; }).sort(function(a,b){ return a.localeCompare(b,"uk"); });
+        if(rest.length){ var og2=document.createElement("optgroup"); og2.label="Окремі розділи"; rest.forEach(function(c){ addOpt(og2,c); }); elCat.appendChild(og2); }
+      } else {
+        Object.keys(cats).sort(function(a,b){ return groupSet ? (cats[b]-cats[a] || a.localeCompare(b,"uk")) : a.localeCompare(b,"uk"); }).forEach(function(c){ addOpt(elCat, c, c===ownCat ? "Інше" : c); });
+      }
       if(preset) elCat.value=preset;
       controls.hidden=false;
       apply();
@@ -300,6 +325,7 @@
       var cat=elCat.value, ins=elStock ? elStock.checked : false, sort=elSort.value;
       filtered=(idx||[]).filter(function(p){
         if(groupSet && !groupSet[p.c]) return false;
+        if(selSet && !cat && !selSet[p.c]) return false;
         if(cat && p.c!==cat) return false;
         if(ins && !p.s) return false;
         if(min!=null && p.pr<min) return false;
@@ -311,7 +337,7 @@
       else if(sort==="az") filtered.sort(function(a,b){return String(a.n).localeCompare(String(b.n),"uk");});
       // rec = природний порядок index.json (рекомендовані, за замовчуванням)
       shown=0; grid.innerHTML="";
-      syncSide();
+      syncSide(); syncTree();
       if(statik) statik.hidden=true;
       grid.hidden=false; count.hidden=false;
       renderMore();
@@ -333,16 +359,26 @@
       count.textContent="Знайдено: "+filtered.length+" · показано "+shown;
       moreWrap.hidden = shown>=filtered.length;
     }
-    function doReset(){ elSort.value="rec"; elCat.value=preset; elMin.value=""; elMax.value=""; if(elStock) elStock.checked=false; apply(); }
+    function doReset(){ selSet=null; curG=-1; elSort.value="rec"; elCat.value=preset; elMin.value=""; elMax.value=""; if(elStock) elStock.checked=false; apply(); }
     var deb=debounce(apply,250);
     [elSort,elStock].forEach(function(e){ if(e) e.addEventListener("change",apply); });
     elCat.addEventListener("change",function(){
       if(preset){ var u=elCat.value ? catUrls[elCat.value] : "catalog.html"; if(u){ location.href=u; return; } elCat.value=preset; return; }
+      if(tree){ selSet=null; curG=elCat.value ? groupOf(elCat.value) : -1; }
       apply();
     });
     [elMin,elMax].forEach(function(e){ if(e) e.addEventListener("input",deb); });
     if(moreBtn) moreBtn.addEventListener("click",renderMore);
     if(elReset) elReset.addEventListener("click",doReset);
+    treeEls.forEach(function(a){
+      a.addEventListener("click",function(e){
+        if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.button) return;
+        e.preventDefault();
+        var g=+a.getAttribute("data-g"), sub=a.getAttribute("data-sub")||"";
+        curG=g; selSet = g>=0 ? treeSets[g] : null; elCat.value=sub; apply();
+        var top=count.getBoundingClientRect().top+(window.pageYOffset||0)-140; if(top<(window.pageYOffset||0)) window.scrollTo(0,Math.max(0,top));
+      });
+    });
     sideLinks.forEach(function(a){
       a.addEventListener("click",function(e){
         if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.button) return;   // відкриття в новій вкладці/вікні — звичайний перехід

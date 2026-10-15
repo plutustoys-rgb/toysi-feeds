@@ -721,6 +721,9 @@ def build():
         write_product(p, related=None, cat_slug=cat_slug, similar=similar_products(sim_idx, p), similar_title="Схожі товари в наявності")
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
+    SITE_GROUPS[:] = site_groups(cats)
+    for g in SITE_GROUPS:
+        g["slugs"] = cat_slug
     for c in cat_list:
         paged |= write_catalog(f"Каталог • {c}", rec_order(cats[c]), cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
     prods_rec = rec_order(prods)
@@ -737,7 +740,7 @@ def build():
     write_thanks()
     write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
-    groups = site_groups(cats)
+    groups = SITE_GROUPS
     paged |= write_groups(groups, cats, cat_slug)
     write_categories_index(cat_list, cat_slug, cats, groups)
     trust = write_trust_pages()
@@ -877,11 +880,11 @@ def _catalog_js_grid():
     )
 
 
-def _catalog_controls(preset=None, group=None, own=None):
+def _catalog_controls(preset=None, group=None, own=None, groups_json=None):
     """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
     hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
     return (
-      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}>'
+      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}{(" data-groups=" + chr(39) + esc(groups_json) + chr(39)) if groups_json else ""}>'
         '<select id="cf-sort" aria-label="Сортування">'
           '<option value="rec">Рекомендовані</option>'
           '<option value="cheap">Спершу дешевші</option>'
@@ -1500,6 +1503,16 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         static_grid = grid(chunk, eager_n=(4 if k == 1 else 0)) + _pager(fname, k, pages)
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
+        if is_full and k == 1 and SITE_GROUPS and controls:
+            gj = json.dumps([{"n": g["display"], "s": [c for c, _n in g["subs"]], "o": g["own"] or ""} for g in SITE_GROUPS], ensure_ascii=False)
+            body = (
+                '<div class="gp">' + catalog_tree_sidebar(SITE_GROUPS, total) + '<div class="gmain">'
+                '<div class="cat-bar"><h1 class="page cat-h1">Каталог<span class="sr-only"> іграшок</span></h1>' + _catalog_controls(groups_json=gj) + '</div>\n' +
+                _catalog_js_grid() + static_grid + '</div></div>'
+            )
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            written.add(cur)
+            continue
         if is_full:
             # власник 15.10: «залиш тільки слово Каталог, в 1 лінію з сортуванням, сортування й категорії не мають зникати при прокрутці» → липка панель .cat-bar (H1 + контроли); крихти й «Сторінка 1 з N» на стор.1 не показуємо (BreadcrumbList лишається в <head>)
             body = (
@@ -2464,6 +2477,19 @@ def site_groups(cats):
         out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own})
     out.sort(key=lambda g: -g["total"])
     return out
+
+
+SITE_GROUPS = []   # групи поточної збірки (заповнює build() до запису сторінок; потрібні й каталогу, і сторінкам груп)
+
+
+def catalog_tree_sidebar(groups, total):
+    """Сайдбар повного каталогу (власник 15.10: «і скетч з підкатегоріями» — каталог теж із сайдбаром): «Усі товари» + групи Toysi; активна група розкриває підкатегорії. Усі пункти — справжні посилання (група → її сторінка, підкатегорія → сторінка категорії), JS фільтрує на місці."""
+    parts = [f'<a class="sb-i all on" href="catalog.html" data-g="-1" data-sub=""><span>Усі товари</span><em>{total}</em></a>']
+    for i, g in enumerate(groups):
+        subs = "".join(
+            f'<a class="sb-i sb-sub" href="category-{g["slugs"][c]}.html" data-g="{i}" data-sub="{esc(c)}"><span>{"Інше" if c == g["own"] else esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
+        parts.append(f'<div class="sb-grp" data-g="{i}"><a class="sb-i sb-gh" href="{g["file"]}" data-g="{i}" data-sub=""><span>{esc(g["display"])}</span><em>{g["total"]}</em></a><div class="sb-subs" hidden>{subs}</div></div>')
+    return '<aside class="sb" aria-label="Категорії"><div class="sb-h">Категорії</div>' + "".join(parts) + '</aside>'
 
 
 def write_groups(groups, cats, cat_slug):

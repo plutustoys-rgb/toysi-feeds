@@ -209,6 +209,8 @@ cat <<'EOF'
     RewriteCond ${promredir:$1|-} =-
     RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- - [G,L]
     RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- ${promredir:$1} [R=301,L]
+    # 15.10.2026 (SEO/Код, лог Googlebot): 647 запитів до старих Prom-шляхів оформлення /create_order_mobile та /ua/create_order_mobile (були 404) → 410 Gone, як і решта мертвих Prom-URL
+    RewriteRule ^/(?:(?:ua|ru)/)?create_order_mobile - [G,L]
     # 12.10.2026 (SEO-замовлення, GSC: 88 старих URL груп Prom /g<gid>-<slug> ≈40% показів): gid Є в prom_group_redirects_apache.map → 301 на /category-<slug>.html
     # (мовний префікс опційний, хвіст після «g<gid>-» довільний; QSD — ?query Prom не переноситься на сторінку категорії). gid поза мапою (null-категорія SEO, невідомий,
     # сторінка категорії зникла) → правило нижче, як було: /catalog.html. Мапа без дефолту: RewriteCond ... !=- пропускає лише знайдені ключі.
@@ -430,6 +432,9 @@ if [ "$CERT_OK" = "0" ]; then
     echo "  /build_site.py     : $HX (очікую 403/404, не 200)"
     echo "  /ua/p${MAPKEY}-test: $HR (очікую 301 …$MAPVAL)"
     echo "  /ua/p999999999999  : $HR0 (очікую 410 Gone — непокритий Prom-URL)"
+    HO1=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code}' "http://$DOMAIN/create_order_mobile" 2>/dev/null || echo "ERR")
+    HO2=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code}' "http://$DOMAIN/ua/create_order_mobile" 2>/dev/null || echo "ERR")
+    echo "  /create_order_mobile, /ua/create_order_mobile: $HO1, $HO2 (очікую 410 Gone — старі Prom-шляхи оформлення)"
     GRPKEY=$(awk '/^[0-9]/{print $1; exit}' "$GROUPMAP" 2>/dev/null || true)
     GRPVAL=$(awk '/^[0-9]/{print $2; exit}' "$GROUPMAP" 2>/dev/null || true)
     HG=$(redir $R "http://$DOMAIN/ua/g${GRPKEY:-0}-test")
@@ -441,6 +446,7 @@ if [ "$CERT_OK" = "0" ]; then
     [ "$HX" != "200" ] || die "build_site.py віддається по HTTP (DocumentRoot) — DNS НЕ переводити!"
     case "$HR" in "301 "*"$MAPVAL") ;; *) die "301 з мапи не працює ($HR) — DNS НЕ переводити!";; esac
     case "$HR0" in "410 "*) ;; *) die "непокритий Prom-URL не віддає 410 ($HR0) — DNS НЕ переводити!";; esac
+    [ "$HO1" = "410" ] && [ "$HO2" = "410" ] || die "старі Prom-шляхи /create_order_mobile не віддають 410 ($HO1, $HO2) — DNS НЕ переводити!"
     case "$HG0" in "301 "*"/catalog.html") ;; *) die "gid групи Prom поза мапою не веде 301 на /catalog.html ($HG0) — DNS НЕ переводити!";; esac
     if [ -n "$GRPKEY" ]; then case "$HG" in "301 "*"$GRPVAL") ;; *) die "301 групи Prom на категорію не працює ($HG) — DNS НЕ переводити!";; esac; fi
     echo ""

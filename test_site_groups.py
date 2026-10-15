@@ -75,18 +75,23 @@ chk(f"сторінки груп: лише видимі групи з ≥ {bs.GRO
 g1 = (out / "group-tovary-dlia-tvorchosti.html").read_text(encoding="utf-8")
 body = g1.split('<div class="wrap">')[1].split("<footer")[0]
 n_group = 10 + 16 + 22
-chk(f"сайдбар: «Усі в групі ({n_group})» активна + 3 підкатегорії за кількістю (спадання), кожна — посилання на свою сторінку категорії з data-sub; «Немає на сайті» не показано",
-    f'<a class="sb-i all on" href="group-tovary-dlia-tvorchosti.html" data-sub=""><span>Усі в групі</span><em>{n_group}</em></a>' in g1
+chk(f"сайдбар: «Усі товари ({n_group})» активна + 3 підкатегорії за кількістю (спадання), кожна — посилання на свою сторінку категорії з data-sub; «Немає на сайті» не показано",
+    f'<a class="sb-i all on" href="group-tovary-dlia-tvorchosti.html" data-sub=""><span>Усі товари</span><em>{n_group}</em></a>' in g1
     and re.findall(r'<a class="sb-i" href="(category-[a-z0-9-]+\.html)" data-sub="([^"]+)"><span>[^<]+</span><em>(\d+)</em>', g1) == [(f"category-{bs.slugify(n)}.html", n, str(c)) for n, c in (("Пісок", 22), ("Розмальовки", 16), ("Картини", 10))]
     and "Немає на сайті" not in g1)
 chk("H1 = назва групи (display), панель .cat-bar з контролами data-group (JSON підкатегорій), крихти «Головна › Усі категорії › Група», статична перша сторінка (≤ PER_PAGE карток) у #cat-static",
     '<h1 class="page cat-h1">Товари для творчості</h1>' in g1 and 'data-group=' in g1 and "Пісок" in re.search(r"data-group='([^']+)'", g1).group(1).replace("&quot;", '"') and 'class="crumbs"' in body
     and 0 < len(re.findall(r'<a class="card"', g1.split('id="cat-static"')[1])) <= bs.PER_PAGE)
 cats_html = (out / "categories.html").read_text(encoding="utf-8")
-tiles = re.findall(r'<a class="cattile" href="([^"]+)"', cats_html)
-chk(f"«Усі категорії»: плитки лише груп (підкатегорії «Картини/Розмальовки» як плитки НЕ показано); «Окремі розділи» — категорії поза видимими групами (Сирота, Уцінені товари): {tiles}",
-    tiles[:2] == ["group-tovary-dlia-tvorchosti.html", "group-transport.html"] and "category-kartyny.html" not in tiles and "Окремі розділи" in cats_html
-    and "category-syrota.html" in tiles and "category-" + bs.slugify("Уцінені товари") + ".html" in tiles and len(tiles) == 4)
+tiles = []
+chk("стара «Усі категорії» (categories.html) = перехід на /catalog.html: meta refresh, noindex, canonical catalog.html; у sitemap її нема", 'http-equiv="refresh" content="0; url=catalog.html"' in cats_html and "noindex" in cats_html and 'rel="canonical" href="https://plutustoys.com.ua/catalog.html"' in cats_html and "/categories.html</loc>" not in (out / "sitemap-static.xml").read_text(encoding="utf-8"))
+cat_page = (out / "catalog.html").read_text(encoding="utf-8")
+navs = re.findall(r'<a class="sb-i sb-nav" href="([^"]+)"><span>([^<]+)</span><em>(\d+)</em>', cat_page)
+chk(f"«Усі категорії» (/catalog.html): сайдбар «Категорії» лише з групами (кожна веде на свою сторінку; без «Усі товари», без підкатегорій), H1 «Усі категорії», крихти «Головна › Усі категорії», слова «Каталог» як пункту нема: {[(n[1], n[2]) for n in navs]}",
+    [n[1] for n in navs] == ["Товари для творчості", "Транспорт"] and all(n[0].startswith("group-") for n in navs) and '<div class="sb-h">Категорії</div>' in cat_page and "Усі товари" not in cat_page.split('<footer')[0].split('<aside class="sb"')[1].split("</aside>")[0]
+    and '<h1 class="page cat-h1">Усі категорії<span class="sr-only"> — каталог іграшок</span></h1>' in cat_page and 'class="crumbs"' in cat_page)
+g_side = (out / "group-tovary-dlia-tvorchosti.html").read_text(encoding="utf-8").split('<aside class="sb"')[1].split("</aside>")[0]
+chk("сторінка групи: надпису «Підкатегорії» нема, перший пункт «Усі товари»", "Підкатегорії</div>" not in g_side and 'class="sb-h"' not in g_side and g_side.split("<span>")[1].startswith("Усі товари"))
 home_html = (out / "index.html").read_text(encoding="utf-8")
 catrow = re.search(r'<div class="catrow">(.*?)</div></a></div>', home_html, re.S)
 rows = re.findall(r'<a class="cattile" href="([^"]+)">', catrow.group(1) + "</div></a>") if catrow else []
@@ -102,12 +107,7 @@ chk("«Роботи, Машини та Зброя» показується як 
 g2 = (out / "group-transport.html").read_text(encoding="utf-8")
 subs2 = re.findall(r'<a class="sb-i" href="(category-[a-z0-9-]+\.html)" data-sub="([^"]+)"><span>([^<]+)</span><em>(\d+)</em>', g2)
 chk(f"власна категорія групи (товари прямо в корені «Транспорт») — остання підкатегорія «Інше», до загального числа й не в «Окремих розділах»: {[(x[2], x[3]) for x in subs2]}",
-    [x[2] for x in subs2][-1] == "Інше" and subs2[-1][1] == "Транспорт" and subs2[-1][3] == "5" and "category-transport.html" not in tiles and re.search(r'<a class="sb-i all on"[^>]*><span>Усі в групі</span><em>(\d+)</em>', g2).group(1) == str(sum(int(x[3]) for x in subs2)))
-
-cat_html = (out / "catalog.html").read_text(encoding="utf-8")
-heads = re.findall(r'<a class="sb-i sb-gh" href="(group-[^"]+)" data-g="(\d+)" data-sub=""><span>([^<]+)</span><em>(\d+)</em>', cat_html)
-chk(f"каталог: сайдбар «Усі товари» + групи (до підкатегорій розкриваються), кожна група — посилання на свою сторінку, підкатегорія — на сторінку категорії; опис груп data-groups: {[(h[2], h[3]) for h in heads]}",
-    [h[2] for h in heads] == ["Товари для творчості", "Транспорт"] and 'class="sb-i all on" href="catalog.html"' in cat_html and "data-groups=" in cat_html and 'class="sb-subs" hidden' in cat_html and 'data-sub="Пісок"' in cat_html)
+    [x[2] for x in subs2][-1] == "Інше" and subs2[-1][1] == "Транспорт" and subs2[-1][3] == "5" and "category-transport.html" not in tiles and re.search(r'<a class="sb-i all on"[^>]*><span>Усі товари</span><em>(\d+)</em>', g2).group(1) == str(sum(int(x[3]) for x in subs2)))
 
 # ── Chromium ──
 shutil.copytree(HERE / "site" / "assets", out / "assets", dirs_exist_ok=True)
@@ -153,7 +153,7 @@ with sync_playwright() as pw:
             chk(f"{w}px: клік «Розмальовки» в сайдбарі фільтрує НА МІСЦІ (без переходу): {cnt}, активна лише вона {on}, URL лишився {pg.url.split('/')[-1]}", "Знайдено: 16" in cnt and ok_names and on == ["Розмальовки"] and pg.url.endswith("group-tovary-dlia-tvorchosti.html"))
             pg.click('.sb-i.all')
             pg.wait_for_timeout(300)
-            chk(f"{w}px: «Усі в групі» повертає всі {n_group}", f"Знайдено: {n_group}" in pg.evaluate("document.getElementById('cat-count').textContent") and pg.evaluate("[...document.querySelectorAll('.sb-i.on')].length") == 1)
+            chk(f"{w}px: «Усі товари» повертає всі {n_group}", f"Знайдено: {n_group}" in pg.evaluate("document.getElementById('cat-count').textContent") and pg.evaluate("[...document.querySelectorAll('.sb-i.on')].length") == 1)
         else:
             chk(f"{w}px: сайдбару нема, підкатегорія вибирається зі списку у фільтрах ({sel['d']})", sb["d"] == "none" and sel["d"] != "none")
             pg.select_option("#cf-cat", "Пісок")
@@ -171,7 +171,7 @@ with sync_playwright() as pw:
         chk(f"{w}px: без горизонтального скролу й помилок JS", pg.evaluate("document.documentElement.scrollWidth <= innerWidth") and errs == [])
         ctx.close()
     br.close()
-# ── каталог із деревом (власник 15.10: «і скетч з підкатегоріями» — і для каталогу) ──
+# ── «Усі категорії» (/catalog.html): група веде на свою сторінку; на телефоні список категорій згруповано ──
 with sync_playwright() as pw:
     br = pw.chromium.launch()
     for w in (1400, 390):
@@ -186,33 +186,20 @@ with sync_playwright() as pw:
         pg.wait_for_selector("#cat-js .card")
         pg.wait_for_timeout(300)
         cnt0 = pg.evaluate("document.getElementById('cat-count').textContent")
-        chk(f"каталог {w}px: усього товарів у каталозі: {cnt0}", re.search(r"Знайдено: (\d+)", cnt0) is not None)
+        h1b, ctl = pg.evaluate(R + "('.cat-h1')"), pg.evaluate(R + "('#cat-controls')")
+        chk(f"/catalog.html {w}px: «Усі категорії» — усі товари ({cnt0}), назва окремим рядком, фільтри під нею", pg.evaluate("document.querySelector('.cat-h1').textContent").startswith("Усі категорії") and h1b["b"] <= ctl["t"] + 2 and re.search(r"Знайдено: (\d+)", cnt0) is not None)
         if wide:
-            h1b, ctl = pg.evaluate(R + "('.cat-h1')"), pg.evaluate(R + "('#cat-controls')")
-            sb_, gr_ = pg.evaluate(R + "('.sb')"), pg.evaluate(R + "('#cat-js')")
-            chk(f"каталог {w}px: назва окремим рядком, фільтри ПІД нею (як на скетчі), сайдбар зліва, список категорії схований", h1b["b"] <= ctl["t"] + 2 and sb_["r"] <= gr_["l"] and pg.evaluate(R + "('#cf-cat')")["d"] == "none")
-            subs_hidden = pg.evaluate("[...document.querySelectorAll('.sb-subs')].every(e=>e.hidden)")
-            pg.click('.sb-gh[data-g="0"]')
-            pg.wait_for_timeout(300)
-            c1 = pg.evaluate("document.getElementById('cat-count').textContent")
-            names = pg.evaluate("[...document.querySelectorAll('#cat-js .card .nm')].every(e=>/^(Картини|Розмальовки|Пісок) модель/.test(e.textContent))")
-            opened = pg.evaluate("[...document.querySelectorAll('.sb-grp')].map(d=>!d.querySelector('.sb-subs').hidden)")
-            chk(f"каталог {w}px: клік по групі «Товари для творчості» фільтрує на місці ({c1}), розкриває лише її підкатегорії {opened} (до кліку всі згорнуті: {subs_hidden}), URL лишився catalog.html",
-                f"Знайдено: {n_group}" in c1 and names and opened == [True, False] and subs_hidden and pg.url.endswith("catalog.html"))
-            pg.click('.sb-sub[data-sub="Пісок"]')
-            pg.wait_for_timeout(300)
-            chk(f"каталог {w}px: клік по підкатегорії «Пісок» — лише вона: {pg.evaluate('document.getElementById(\"cat-count\").textContent')}, активна підкатегорія, група лишається розкритою",
-                "Знайдено: 22" in pg.evaluate("document.getElementById('cat-count').textContent") and pg.evaluate("[...document.querySelectorAll('.sb-i.on')].map(a=>a.getAttribute('data-sub'))") == ["Пісок"] and pg.evaluate("!document.querySelector('.sb-grp[data-g=\"0\"] .sb-subs').hidden"))
-            pg.click('.sb-i.all')
-            pg.wait_for_timeout(300)
-            chk(f"каталог {w}px: «Усі товари» повертає весь каталог ({pg.evaluate('document.getElementById(\"cat-count\").textContent')}), усі групи згорнуті", pg.evaluate("document.getElementById('cat-count').textContent").split("·")[0] == cnt0.split("·")[0] and pg.evaluate("[...document.querySelectorAll('.sb-subs')].every(e=>e.hidden)"))
+            pg.click('.sb-nav[href="group-transport.html"]')
+            pg.wait_for_url("**/group-transport.html")
+            pg.wait_for_selector("#cat-js .card")
+            chk(f"/catalog.html {w}px: клік по категорії «Транспорт» відкриває сторінку групи ({pg.url.split('/')[-1]}), а не фільтрує на місці; там сайдбар підкатегорій і «Усі товари»", pg.evaluate("document.querySelector('.cat-h1').textContent") == "Транспорт" and pg.evaluate("document.querySelector('.sb .sb-i.all span').textContent") == "Усі товари")
         else:
             groups_opt = pg.evaluate("[...document.querySelectorAll('#cf-cat optgroup')].map(g=>g.label)")
-            chk(f"каталог {w}px: сайдбару нема, список категорій у фільтрах згруповано (optgroup): {groups_opt}", pg.evaluate(R + "('.sb')")["d"] == "none" and groups_opt[:2] == ["Товари для творчості", "Транспорт"])
+            chk(f"/catalog.html {w}px: сайдбару нема, список категорій у фільтрах згруповано (optgroup): {groups_opt}", pg.evaluate(R + "('.sb')")["d"] == "none" and groups_opt[:2] == ["Товари для творчості", "Транспорт"])
             pg.select_option("#cf-cat", "Самокати")
             pg.wait_for_timeout(300)
-            chk(f"каталог {w}px: вибір підкатегорії «Самокати» зі списку: {pg.evaluate('document.getElementById(\"cat-count\").textContent')}", "Знайдено: 10" in pg.evaluate("document.getElementById('cat-count').textContent"))
-        chk(f"каталог {w}px: без горизонтального скролу й помилок JS", pg.evaluate("document.documentElement.scrollWidth <= innerWidth") and errs == [])
+            chk(f"/catalog.html {w}px: вибір підкатегорії «Самокати» зі списку: {pg.evaluate('document.getElementById(\"cat-count\").textContent')}", "Знайдено: 10" in pg.evaluate("document.getElementById('cat-count').textContent"))
+        chk(f"/catalog.html {w}px: без горизонтального скролу й помилок JS", pg.evaluate("document.documentElement.scrollWidth <= innerWidth") and errs == [])
         ctx.close()
     br.close()
 print()

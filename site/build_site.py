@@ -241,7 +241,7 @@ def search_overlay():
     )
 
 FOOTER_LINKS = [
-    ("catalog.html", "Каталог"), ("categories.html", "Усі категорії"),
+    ("catalog.html", "Усі категорії"),
     ("about.html", "Про нас"), ("delivery.html", "Доставка"),
     ("returns.html", "Повернення"), ("contacts.html", "Контакти"),
     ("offer.html", "Публічна оферта"), ("privacy.html", "Політика конфіденційності"),
@@ -750,7 +750,7 @@ def build():
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
-    static_urls = [("categories.html", "0.6", "weekly")] + ([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
+    static_urls = ([] if SITE_GROUPS else [("categories.html", "0.6", "weekly")]) + ([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
     write_robots()
 
@@ -1482,7 +1482,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         cur = _page_fname(fname, k)
         ptitle = title if k == 1 else f"{title} — сторінка {k}"
         full_t, desc = category_meta(active, total, min((x["price"] for x in prods), default=0), k, pages)
-        trail = [("Головна", "index.html")] + ([("Каталог", "catalog.html")] if active else []) + [(active or "Каталог", None)]
+        trail = [("Головна", "index.html")] + ([("Усі категорії", "catalog.html")] if active else []) + [(active or "Усі категорії", None)]
         if special:   # службова сторінка зі своїм H1/title/description (напр. /utsinka.html)
             full_t = special["title"] if k == 1 else special["title"].replace(" | PlutusToys", f" — сторінка {k} | PlutusToys")
             desc = (special["desc"] if k == 1 else f"Сторінка {k} з {pages}. " + special["desc"])[:DESC_MAX]
@@ -1504,10 +1504,13 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
         if is_full and k == 1 and SITE_GROUPS and controls:
+            # власник 15.10 (схема з двох кроків): «Усі категорії» = сайдбар КАТЕГОРІЙ (групи Toysi, кожна веде на свою сторінку), назва окремим рядком, фільтри під нею (липкі), усі товари; слова «Каталог» і пункту «Усі товари» тут нема
             gj = json.dumps([{"n": g["display"], "s": [c for c, _n in g["subs"]], "o": g["own"] or ""} for g in SITE_GROUPS], ensure_ascii=False)
+            side = "".join(f'<a class="sb-i sb-nav" href="{g["file"]}"><span>{esc(g["display"])}</span><em>{g["total"]}</em></a>' for g in SITE_GROUPS)
+            trail1 = [("Головна", "index.html"), ("Усі категорії", None)]
             body = (
-                '<div class="gp">' + catalog_tree_sidebar(SITE_GROUPS, total) + '<div class="gmain">'
-                '<div class="cat-bar"><h1 class="page cat-h1">Каталог<span class="sr-only"> іграшок</span></h1>' + _catalog_controls(groups_json=gj) + '</div>\n' +
+                crumbs_html(trail1) + '<div class="gp"><aside class="sb" aria-label="Категорії"><div class="sb-h">Категорії</div>' + side + '</aside><div class="gmain">'
+                '<div class="cat-bar"><h1 class="page cat-h1">Усі категорії<span class="sr-only"> — каталог іграшок</span></h1>' + _catalog_controls(groups_json=gj) + '</div>\n' +
                 _catalog_js_grid() + static_grid + '</div></div>'
             )
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
@@ -1978,7 +1981,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     pop = [c for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:HOME_POPULAR_CATS]
     popular = ""
     if pop:
-        popular = ('<div class="sec-title"><h2>Популярні категорії</h2><a href="categories.html">Усі категорії →</a></div>'
+        popular = ('<div class="sec-title"><h2>Популярні категорії</h2><a href="catalog.html">Усі категорії →</a></div>'
                    '<nav class="catlinks" aria-label="Популярні категорії">'
                    + "".join(f'<span class="cl"><a href="category-{cat_slug[c]}.html">{esc(c)}</a><span>{len(cats[c])}</span></span>' for c in pop)
                    + '</nav>')
@@ -2500,9 +2503,9 @@ def write_groups(groups, cats, cat_slug):
         items = rec_order([p for c, _n in g["subs"] for p in cats[c]])
         side = "".join(
             f'<a class="sb-i" href="category-{cat_slug[c]}.html" data-sub="{esc(c)}"><span>{"Інше" if c == g["own"] else esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
-        sidebar = (f'<aside class="sb" aria-label="Підкатегорії"><div class="sb-h">Підкатегорії</div>'
-                   f'<a class="sb-i all on" href="{g["file"]}" data-sub=""><span>Усі в групі</span><em>{g["total"]}</em></a>{side}</aside>')
-        trail = [("Головна", "index.html"), ("Усі категорії", "categories.html"), (g["display"], None)]
+        sidebar = (f'<aside class="sb" aria-label="Підкатегорії">'
+                   f'<a class="sb-i all on" href="{g["file"]}" data-sub=""><span>Усі товари</span><em>{g["total"]}</em></a>{side}</aside>')
+        trail = [("Головна", "index.html"), ("Усі категорії", "catalog.html"), (g["display"], None)]
         subs_json = json.dumps([c for c, _n in g["subs"]], ensure_ascii=False)
         body = (
             crumbs_html(trail) +
@@ -2524,7 +2527,10 @@ def write_groups(groups, cats, cat_slug):
 def write_categories_index(cat_list, cat_slug, cats, groups=None):
     """Сторінка «Усі категорії» — закриває проблему orphan-категорій (усі 259 доступні
     з одного індексу + футера, а не лише з sitemap). Повертає ім'я файлу."""
-    if groups:   # власник 15.10: показуємо лише групи Toysi (без списків підкатегорій); категорії поза видимими групами (Уцінка, Геловін, нові) — «Окремі розділи», щоб жодна не лишилась без посилання
+    if groups:   # «Усі категорії» тепер на /catalog.html (сайдбар категорій); стара адреса лишається як перехід, без індексації
+        _write("categories.html", page("Усі категорії", '<p class="pagenote">Усі категорії — <a href="catalog.html">тут</a>.</p><meta http-equiv="refresh" content="0; url=catalog.html">', noindex=True, canonical="catalog.html", og_image=OG_IMAGE))
+        return "categories.html"
+    if False:   # (стара сторінка з плитками груп — не використовується) (без списків підкатегорій); категорії поза видимими групами (Уцінка, Геловін, нові) — «Окремі розділи», щоб жодна не лишилась без посилання
         in_group = {c for g in groups for c, _n in g["subs"]}
         gtiles = "".join(
             f'<a class="cattile" href="{g["file"]}"><div class="emo">{cat_emoji(g["name"])}</div><div class="t">{esc(g["display"])}</div>'

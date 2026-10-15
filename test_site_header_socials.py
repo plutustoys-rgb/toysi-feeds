@@ -35,7 +35,7 @@ hrefs = re.findall(r'<a class="hsoc-a" href="([^"]+)"', hs)
 chk("шапка: рівно 3 значки — Instagram, Facebook, пошта (aria-label, без тексту-плейсхолдера)", len(hrefs) == 3 and 'aria-label="Instagram"' in hs and 'aria-label="Facebook"' in hs and "mailto:plutustoys@gmail.com" in hs)
 chk("Instagram/Facebook — ті самі адреси, що в SOCIAL_URLS, з utm_medium=header (не footer); у Facebook один «?»", hrefs[0].startswith(bs.SOCIAL_URLS[0]) and hrefs[1].startswith(bs.SOCIAL_URLS[1]) and all("utm_source=site&utm_medium=header&utm_campaign=social_link" in x for x in hrefs[:2]) and hrefs[1].count("?") == 1 and "utm_medium=footer" not in hs)
 chk("зовнішні посилання відкриваються в новій вкладці з rel=noopener", hs.count('target="_blank" rel="noopener"') == 2)
-chk("порядок у шапці: кошик → значки → кнопка «Підтримка»", h.index('class="cartbtn"') < h.index('class="hsoc"') < h.index('class="chatwrap"'))
+chk("порядок у шапці (власник 15.10): пошук → «Підтримка» → значки → кошик крайній праворуч", h.index('class="search"') < h.index('class="chatwrap"') < h.index('class="hsoc"') < h.index('class="cartbtn"'))
 
 out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)
@@ -65,9 +65,9 @@ with sync_playwright() as pw:
         g = pg.evaluate(GEO)
         if w >= 900:
             ok = (g["soc"][4] == "flex" and len(g["as"]) == 3 and all(a[2] == 40 and a[3] == 40 for a in g["as"])
-                  and g["cart"][1] <= g["soc"][0] and g["soc"][1] <= g["chat"][0]
+                  and g["chat"][1] <= g["soc"][0] and g["soc"][1] <= g["cart"][0]
                   and abs(g["soc"][2] - g["chat"][2]) <= 8 and g["sw"] <= g["cw"])
-            chk(f"{w}px: значки видно, 40×40, в одному рядку між кошиком ({g['cart'][1]}) і кнопкою «Підтримка» ({g['chat'][0]}): {g['soc']}", ok)
+            chk(f"{w}px: значки видно, 40×40, в одному рядку: «Підтримка» ({g['chat'][1]}) → значки {g['soc']} → кошик ({g['cart'][0]})", ok)
         else:
             chk(f"{w}px: значки приховані (місце під шапку; вони є в підвалі), без горизонтального скролу ({g['sw']}/{g['cw']})", g["soc"][4] == "none" and g["sw"] <= g["cw"])
         ctx.close()

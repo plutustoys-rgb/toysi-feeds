@@ -60,7 +60,7 @@ class H(http.server.SimpleHTTPRequestHandler):
 srv = socketserver.TCPServer(("127.0.0.1", 0), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 BASE = f"http://127.0.0.1:{srv.server_address[1]}"
-GEO = "(()=>{const b=document.getElementById('chat-toggle').getBoundingClientRect(); const c=document.querySelector('.cartbtn').getBoundingClientRect(); const h=document.querySelector('header.top').getBoundingClientRect(); const m=document.getElementById('chat-menu'); return {right:Math.round(b.right), vw:innerWidth, cartRight:Math.round(c.right), top:Math.round(b.top), headerBottom:Math.round(h.bottom), menuDisplay:getComputedStyle(m).display, exp:document.getElementById('chat-toggle').getAttribute('aria-expanded'), lblDisplay:getComputedStyle(document.querySelector('.chat-lbl')).display, sw:document.documentElement.scrollWidth<=innerWidth, w:Math.round(b.width)}})()"
+GEO = "(()=>{const b=document.getElementById('chat-toggle').getBoundingClientRect(); const c=document.querySelector('.cartbtn').getBoundingClientRect(); const h=document.querySelector('header.top').getBoundingClientRect(); const m=document.getElementById('chat-menu'); return {right:Math.round(b.right), vw:innerWidth, cartLeft:Math.round(c.left), cartRight:Math.round(c.right), top:Math.round(b.top), headerRight:Math.round(h.right), headerBottom:Math.round(h.bottom), menuDisplay:getComputedStyle(m).display, exp:document.getElementById('chat-toggle').getAttribute('aria-expanded'), lblDisplay:getComputedStyle(document.querySelector('.chat-lbl')).display, sw:document.documentElement.scrollWidth<=innerWidth, w:Math.round(b.width)}})()"
 with sync_playwright() as pw:
     br = pw.chromium.launch()
     for w in (1280, 390, 320):
@@ -73,8 +73,8 @@ with sync_playwright() as pw:
         pg.goto(f"{BASE}/cart.html", wait_until="load")
         pg.wait_for_timeout(500)
         g = pg.evaluate(GEO)
-        chk(f"{w}px: кнопка «Написати» — у правому верхньому куті шапки (правіше кошика, біля правого краю), меню закрите, aria-expanded=false, без горизонтального скролу {g}",
-            g["right"] > g["cartRight"] and g["vw"] - g["right"] <= 70 and g["top"] < g["headerBottom"] and g["menuDisplay"] == "none" and g["exp"] == "false" and g["sw"])
+        chk(f"{w}px: кнопка «Підтримка» — у шапці в одному рядку з кошиком, ЛІВІШЕ нього (порядок власника 15.10: пошук → підтримка → ІГ/ФБ/пошта → кошик крайній праворуч), меню закрите, aria-expanded=false, без горизонтального скролу {g}",
+            g["right"] <= g["cartLeft"] and g["headerRight"] - g["cartRight"] <= 24 and g["top"] < g["headerBottom"] and g["menuDisplay"] == "none" and g["exp"] == "false" and g["sw"])
         chk(f"{w}px: підпис «Підтримка» видно на широких, на ≤560 px лише іконка (aria-label лишається) {g['lblDisplay']}/{g['w']}px", (g["lblDisplay"] != "none") == (w > 560))
         pg.click("#chat-toggle")
         pg.wait_for_timeout(150)

@@ -280,7 +280,7 @@
     // сторінка категорії (data-cat): та сама панель, категорія вибрана; зміна категорії = перехід на її сторінку, «Усі категорії» = /catalog.html
     var preset=controls.getAttribute("data-cat")||"", catUrls={};
     // сторінка ГРУПИ (data-group = JSON підкатегорій): працюємо лише з їхніми товарами; підкатегорія — з сайдбару (клік фільтрує на місці) або зі списку (телефон)
-    var groupSet=null, sideLinks=[];
+    var groupSet=null, sideLinks=[], ownCat=controls.getAttribute("data-own")||"";
     try{ var gs=controls.getAttribute("data-group"); if(gs){ groupSet={}; JSON.parse(gs).forEach(function(c){ groupSet[c]=1; }); sideLinks=Array.prototype.slice.call(document.querySelectorAll(".sb-i")); } }catch(e){ groupSet=null; }
     function syncSide(){ sideLinks.forEach(function(a){ a.classList.toggle("on", (a.getAttribute("data-sub")||"")===elCat.value); }); }
     if(preset){ try{ catUrls=JSON.parse((document.getElementById("cat-urls")||{}).textContent||"{}"); }catch(e){ catUrls={}; } }
@@ -288,7 +288,7 @@
       var cats={};
       for(var i=0;i<data.length;i++){ if(data[i].c && (!groupSet || groupSet[data[i].c])) cats[data[i].c]=(cats[data[i].c]||0)+1; }
       Object.keys(cats).sort(function(a,b){ return groupSet ? (cats[b]-cats[a] || a.localeCompare(b,"uk")) : a.localeCompare(b,"uk"); }).forEach(function(c){
-        var o=document.createElement("option"); o.value=c; o.textContent=c+" ("+cats[c]+")"; elCat.appendChild(o);
+        var o=document.createElement("option"); o.value=c; o.textContent=(c===ownCat ? "Інше" : c)+" ("+cats[c]+")"; elCat.appendChild(o);
       });
       if(preset) elCat.value=preset;
       controls.hidden=false;

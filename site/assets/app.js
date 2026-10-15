@@ -286,7 +286,19 @@
     // ПОВНИЙ КАТАЛОГ із деревом (data-groups = [{n,s:[підкатегорії],o:власна}]): сайдбар «Усі товари / група / підкатегорія» фільтрує на місці; на вузьких екранах список категорій — з групами (optgroup)
     var tree=null, treeSets=[], selSet=null, curG=-1, treeEls=[], treeGrp=[];
     try{ var gd=controls.getAttribute("data-groups"); if(gd && !groupSet){ tree=JSON.parse(gd); tree.forEach(function(g){ var m={}; g.s.forEach(function(c){ m[c]=1; }); treeSets.push(m); }); treeEls=Array.prototype.slice.call(document.querySelectorAll(".sb .sb-i")); treeGrp=Array.prototype.slice.call(document.querySelectorAll(".sb-grp")); } }catch(e){ tree=null; }
+    var selG0=-1, selSub0="", h1El=document.querySelector(".cat-h1"), h1Orig=h1El?h1El.innerHTML:"", topBlock=document.getElementById("cat-top-block");
+    if(tree){ selG0=parseInt(controls.getAttribute("data-sel-g"),10); if(isNaN(selG0)) selG0=-1; selSub0=controls.getAttribute("data-sel-sub")||""; }
     function groupOf(c){ for(var i=0;i<treeSets.length;i++){ if(treeSets[i][c]) return i; } return -1; }
+    // назва й вступний текст відповідають вибраному: початкова сторінка — як у HTML, інакше назва вибраної групи/підкатегорії, вступний текст ховаємо
+    function setView(){
+      if(!tree) return;
+      var same=(curG===selG0 && elCat.value===selSub0);
+      if(h1El){ if(same) h1El.innerHTML=h1Orig; else h1El.textContent = elCat.value ? (curG>=0 && tree[curG].o===elCat.value ? tree[curG].n : elCat.value) : (curG>=0 ? tree[curG].n : "Каталог"); }
+      if(topBlock) topBlock.hidden=!same;
+    }
+    function pushUrl(href){ try{ if(href && window.history && history.pushState) history.pushState(null,"",href); }catch(e){} }
+    function applyHref(href){ var p=(href||"").split("#")[0].split("/").pop()||"catalog.html"; var hit=null; treeEls.forEach(function(a){ if(!hit && a.getAttribute("href")===p) hit=a; }); if(hit){ curG=+hit.getAttribute("data-g"); selSet = curG>=0 ? treeSets[curG] : null; elCat.value=hit.getAttribute("data-sub")||""; apply(); } }
+    if(tree){ window.addEventListener("popstate", function(){ applyHref(location.pathname); }); }
     function syncTree(){
       if(!tree) return;
       treeEls.forEach(function(a){
@@ -316,6 +328,7 @@
         Object.keys(cats).sort(function(a,b){ return groupSet ? (cats[b]-cats[a] || a.localeCompare(b,"uk")) : a.localeCompare(b,"uk"); }).forEach(function(c){ addOpt(elCat, c, c===ownCat ? "Інше" : c); });
       }
       if(preset) elCat.value=preset;
+      if(tree){ curG=selG0; selSet = curG>=0 ? treeSets[curG] : null; elCat.value=selSub0; }
       controls.hidden=false;
       apply();
     });
@@ -337,7 +350,7 @@
       else if(sort==="az") filtered.sort(function(a,b){return String(a.n).localeCompare(String(b.n),"uk");});
       // rec = природний порядок index.json (рекомендовані, за замовчуванням)
       shown=0; grid.innerHTML="";
-      syncSide(); syncTree();
+      syncSide(); syncTree(); setView();
       if(statik) statik.hidden=true;
       grid.hidden=false; count.hidden=false;
       renderMore();
@@ -364,7 +377,7 @@
     [elSort,elStock].forEach(function(e){ if(e) e.addEventListener("change",apply); });
     elCat.addEventListener("change",function(){
       if(preset){ var u=elCat.value ? catUrls[elCat.value] : "catalog.html"; if(u){ location.href=u; return; } elCat.value=preset; return; }
-      if(tree){ selSet=null; curG=elCat.value ? groupOf(elCat.value) : -1; }
+      if(tree){ selSet=null; curG=elCat.value ? groupOf(elCat.value) : -1; var lk=null; treeEls.forEach(function(a){ if(!lk && elCat.value && a.getAttribute("data-sub")===elCat.value) lk=a; }); pushUrl(lk ? lk.getAttribute("href") : "catalog.html"); }
       apply();
     });
     [elMin,elMax].forEach(function(e){ if(e) e.addEventListener("input",deb); });
@@ -375,7 +388,7 @@
         if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.button) return;
         e.preventDefault();
         var g=+a.getAttribute("data-g"), sub=a.getAttribute("data-sub")||"";
-        curG=g; selSet = g>=0 ? treeSets[g] : null; elCat.value=sub; apply();
+        curG=g; selSet = g>=0 ? treeSets[g] : null; elCat.value=sub; apply(); pushUrl(a.getAttribute("href"));
         var top=count.getBoundingClientRect().top+(window.pageYOffset||0)-140; if(top<(window.pageYOffset||0)) window.scrollTo(0,Math.max(0,top));
       });
     });

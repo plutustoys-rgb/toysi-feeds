@@ -719,9 +719,18 @@ def is_weapon_replica(item_id: str, title: str) -> bool:
         return True
     if "страйкбол" in t:
         return True
-    if ("6 мм" in t or "6мм" in t) and ("кульк" in t or "пульк" in t):
+    if ("6 мм" in t or "6мм" in t) and ("кульк" in t or "кульок" in t or "пульк" in t):
         return True
     return False
+
+
+# Доросла тематика (Правила Google/Meta: «Restricted adult content», звіт Merchant Center 15.10: 235167, 289261 і под.): настільні/карткові ігри «18+», еротичне.
+# Мітка «18+» не плутається з віком «від 12-18+ міс.» чи артикулом «XZ-H18 +».
+_ADULT_RE = re.compile(r"(?<![\w-])18\s*\+(?!\s*(?:міс|мес|м\b))|еротич|\bsex\b", re.IGNORECASE)
+
+
+def is_adult_product(title: str) -> bool:
+    return bool(_ADULT_RE.search(title or ""))
 
 
 SITE_FILTER_MAX_DROP_SHARE = 0.25   # макс. частка каталогу, яку фільтр «є на сайті» має право відсікти
@@ -982,6 +991,15 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         stats["weapon_replicas_excluded"] = excluded
         stats["included"] -= excluded
         print(f"[feed] Виключено реплік зброї (Правила торгівлі): {excluded}")
+
+    # Доросла тематика («18+»): Google/Meta відхиляють (Restricted adult content), а повторні порушення шкодять здоров'ю акаунта Merchant Center.
+    before = len(items)
+    items = [it for it in items if not is_adult_product(it["title"])]
+    adult = before - len(items)
+    if adult:
+        stats["adult_excluded"] = adult
+        stats["included"] -= adult
+        print(f"[feed] Виключено дорослу тематику (18+): {adult}")
 
     return items, stats
 

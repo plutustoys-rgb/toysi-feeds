@@ -722,7 +722,10 @@ def build():
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
     SITE_GROUPS[:] = site_groups(cats)
-    for g in SITE_GROUPS:
+    _in_group = {c for g in SITE_GROUPS for c, _n in g["subs"]}
+    _rest = sorted(((c, len(cats[c])) for c in cat_list if c not in _in_group), key=lambda x: (-x[1], x[0]))
+    SITE_TREE[:] = list(SITE_GROUPS) + ([{"name": "Окремі розділи", "display": "Окремі розділи", "file": "catalog.html", "subs": _rest, "total": sum(n for _, n in _rest), "own": None, "pseudo": True}] if (SITE_GROUPS and _rest) else [])
+    for g in SITE_TREE:
         g["slugs"] = cat_slug
     for c in cat_list:
         paged |= write_catalog(f"Каталог • {c}", rec_order(cats[c]), cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
@@ -750,7 +753,7 @@ def build():
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
-    static_urls = [("categories.html", "0.6", "weekly")] + ([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
+    static_urls = ([] if SITE_TREE else [("categories.html", "0.6", "weekly")]) + ([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
     write_robots()
 
@@ -880,11 +883,11 @@ def _catalog_js_grid():
     )
 
 
-def _catalog_controls(preset=None, group=None, own=None, groups_json=None):
+def _catalog_controls(preset=None, group=None, own=None, groups_json=None, sel_g=None, sel_sub=None):
     """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
     hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
     return (
-      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}{(" data-groups=" + chr(39) + esc(groups_json) + chr(39)) if groups_json else ""}>'
+      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}{(" data-groups=" + chr(39) + esc(groups_json) + chr(39)) if groups_json else ""}{(" data-sel-g=" + chr(34) + str(sel_g) + chr(34) + " data-sel-sub=" + chr(34) + esc(sel_sub or "") + chr(34)) if (groups_json and sel_g is not None) else ""}>'
         '<select id="cf-sort" aria-label="Сортування">'
           '<option value="rec">Рекомендовані</option>'
           '<option value="cheap">Спершу дешевші</option>'
@@ -1501,15 +1504,11 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         is_full = active is None and not special   # повний каталог (catalog.html і його сторінки)
         controls = _catalog_controls() if (is_full and k == 1) else ""
         static_grid = grid(chunk, eager_n=(4 if k == 1 else 0)) + _pager(fname, k, pages)
+        static_raw = static_grid
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
-        if is_full and k == 1 and SITE_GROUPS and controls:
-            gj = json.dumps([{"n": g["display"], "s": [c for c, _n in g["subs"]], "o": g["own"] or ""} for g in SITE_GROUPS], ensure_ascii=False)
-            body = (
-                '<div class="gp">' + catalog_tree_sidebar(SITE_GROUPS, total) + '<div class="gmain">'
-                '<div class="cat-bar"><h1 class="page cat-h1">Каталог<span class="sr-only"> іграшок</span></h1>' + _catalog_controls(groups_json=gj) + '</div>\n' +
-                _catalog_js_grid() + static_grid + '</div></div>'
-            )
+        if is_full and k == 1 and SITE_TREE and controls:
+            body = tree_body(total, -1, "", 'Каталог<span class="sr-only"> іграшок</span>', static_html=static_raw)
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
             written.add(cur)
             continue
@@ -1521,6 +1520,15 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if k > 1 else "") +
                 static_grid
             )
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            written.add(cur)
+            continue
+        if active and not special and k == 1 and SITE_TREE:
+            gi = _tree_pos(active)
+            trail2 = [("Головна", "index.html"), ("Каталог", "catalog.html")] + ([(SITE_TREE[gi]["display"], SITE_TREE[gi]["file"])] if 0 <= gi < len(SITE_TREE) and not SITE_TREE[gi].get("pseudo") else []) + [(active, None)]
+            body = tree_body(sum(t["total"] for t in SITE_GROUPS) + sum(t["total"] for t in SITE_TREE if t.get("pseudo")), gi, active, esc(active), crumbs=crumbs_html(trail2),
+                             top_html=_category_top_html(fname, prods), static_html=static_grid, after_html=_relcats_html(fname, cat_slug, active))
+            head = breadcrumb_ld(trail2) + head.split(breadcrumb_ld(trail), 1)[-1] if breadcrumb_ld(trail) in head else head
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
             written.add(cur)
             continue
@@ -1977,7 +1985,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     pop = [c for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:HOME_POPULAR_CATS]
     popular = ""
     if pop:
-        popular = ('<div class="sec-title"><h2>Популярні категорії</h2><a href="categories.html">Усі категорії →</a></div>'
+        popular = ('<div class="sec-title"><h2>Популярні категорії</h2><a href="catalog.html">Усі категорії →</a></div>'
                    '<nav class="catlinks" aria-label="Популярні категорії">'
                    + "".join(f'<span class="cl"><a href="category-{cat_slug[c]}.html">{esc(c)}</a><span>{len(cats[c])}</span></span>' for c in pop)
                    + '</nav>')
@@ -2479,17 +2487,40 @@ def site_groups(cats):
     return out
 
 
-SITE_GROUPS = []   # групи поточної збірки (заповнює build() до запису сторінок; потрібні й каталогу, і сторінкам груп)
+SITE_GROUPS = []   # групи поточної збірки (заповнює build() до запису сторінок)
+SITE_TREE = []     # SITE_GROUPS + «Окремі розділи» (категорії поза видимими групами) — єдине дерево сайдбару для ВСІХ сторінок каталогу
 
 
-def catalog_tree_sidebar(groups, total):
-    """Сайдбар повного каталогу (власник 15.10: «і скетч з підкатегоріями» — каталог теж із сайдбаром): «Усі товари» + групи Toysi; активна група розкриває підкатегорії. Усі пункти — справжні посилання (група → її сторінка, підкатегорія → сторінка категорії), JS фільтрує на місці."""
-    parts = [f'<a class="sb-i all on" href="catalog.html" data-g="-1" data-sub=""><span>Усі товари</span><em>{total}</em></a>']
-    for i, g in enumerate(groups):
+def catalog_tree_sidebar(tree, total, sel_g=-1, sel_sub=""):
+    """ЄДИНИЙ сайдбар каталогу (власник 15.10: «оберемо единий шаблон… вибір категорій, а після підкатегорій — на одній сторінці»): «Усі товари» + групи Toysi; вибрана група розкрита й показує підкатегорії.
+    Усі пункти — справжні посилання (група → її сторінка, підкатегорія → сторінка категорії); JS фільтрує на місці й оновлює адресу. Початковий стан (активне/розкрите) виставлено в HTML — працює й без JS."""
+    parts = [f'<a class="sb-i all{" on" if sel_g < 0 and not sel_sub else ""}" href="catalog.html" data-g="-1" data-sub=""><span>Усі товари</span><em>{total}</em></a>']
+    for i, g in enumerate(tree):
         subs = "".join(
-            f'<a class="sb-i sb-sub" href="category-{g["slugs"][c]}.html" data-g="{i}" data-sub="{esc(c)}"><span>{"Інше" if c == g["own"] else esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
-        parts.append(f'<div class="sb-grp" data-g="{i}"><a class="sb-i sb-gh" href="{g["file"]}" data-g="{i}" data-sub=""><span>{esc(g["display"])}</span><em>{g["total"]}</em></a><div class="sb-subs" hidden>{subs}</div></div>')
+            f'<a class="sb-i sb-sub{" on" if c == sel_sub else ""}" href="category-{g["slugs"][c]}.html" data-g="{i}" data-sub="{esc(c)}"><span>{"Інше" if c == g["own"] else esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
+        op = (i == sel_g)
+        parts.append(f'<div class="sb-grp{" open" if op else ""}" data-g="{i}"><a class="sb-i sb-gh{" on" if op and not sel_sub else ""}" href="{g["file"]}" data-g="{i}" data-sub=""><span>{esc(g["display"])}</span><em>{g["total"]}</em></a>'
+                     f'<div class="sb-subs"{"" if op else " hidden"}>{subs}</div></div>')
     return '<aside class="sb" aria-label="Категорії"><div class="sb-h">Категорії</div>' + "".join(parts) + '</aside>'
+
+
+def tree_body(total, sel_g, sel_sub, h1_html, crumbs="", top_html="", static_html="", after_html=""):
+    """Тіло ЄДИНОГО шаблону сторінок каталогу (повний каталог, група, категорія): [крихти] + сайдбар-дерево зліва + (назва окремим рядком, фільтри під нею, липкі, лічильник, сітка). top_html — вступний текст категорії з правою колонкою."""
+    gj = json.dumps([{"n": g["display"], "s": [c for c, _n in g["subs"]], "o": g["own"] or ""} for g in SITE_TREE], ensure_ascii=False)
+    return (
+        crumbs + '<div class="gp">' + catalog_tree_sidebar(SITE_TREE, total, sel_g, sel_sub) + '<div class="gmain">'
+        f'<div class="cat-bar"><h1 class="page cat-h1">{h1_html}</h1>' + _catalog_controls(groups_json=gj, sel_g=sel_g, sel_sub=sel_sub) + '</div>\n' +
+        (f'<div id="cat-top-block">{top_html}</div>\n' if top_html else "") +
+        _catalog_js_grid() + f'<div id="cat-static">{static_html}</div>' + '</div></div>' + after_html
+    )
+
+
+def _tree_pos(c):
+    """(індекс групи в SITE_TREE, назва) для категорії; (-1, c) якщо дерева нема."""
+    for i, g in enumerate(SITE_TREE):
+        if any(c == s for s, _n in g["subs"]):
+            return i
+    return -1
 
 
 def write_groups(groups, cats, cat_slug):
@@ -2497,20 +2528,9 @@ def write_groups(groups, cats, cat_slug):
     written = set()
     for g in groups:
         items = rec_order([p for c, _n in g["subs"] for p in cats[c]])
-        side = "".join(
-            f'<a class="sb-i" href="category-{cat_slug[c]}.html" data-sub="{esc(c)}"><span>{"Інше" if c == g["own"] else esc(c)}</span><em>{n}</em></a>' for c, n in g["subs"])
-        sidebar = (f'<aside class="sb" aria-label="Підкатегорії"><div class="sb-h">Підкатегорії</div>'
-                   f'<a class="sb-i all on" href="{g["file"]}" data-sub=""><span>Усі в групі</span><em>{g["total"]}</em></a>{side}</aside>')
-        trail = [("Головна", "index.html"), ("Усі категорії", "categories.html"), (g["display"], None)]
-        subs_json = json.dumps([c for c, _n in g["subs"]], ensure_ascii=False)
-        body = (
-            crumbs_html(trail) +
-            '<div class="gp">' + sidebar + '<div class="gmain">'
-            f'<div class="cat-bar"><h1 class="page cat-h1">{esc(g["display"])}</h1>' + _catalog_controls(group=subs_json, own=g["own"]) + '</div>\n' +
-            _catalog_js_grid() +
-            f'<div id="cat-static">{grid(items[:PER_PAGE], eager_n=4)}</div>'
-            '</div></div>'
-        )
+        trail = [("Головна", "index.html"), ("Каталог", "catalog.html"), (g["display"], None)]
+        gi = next(i for i, t in enumerate(SITE_TREE) if t["file"] == g["file"])
+        body = tree_body(sum(t["total"] for t in SITE_GROUPS), gi, "", esc(g["display"]), crumbs=crumbs_html(trail), static_html=grid(items[:PER_PAGE], eager_n=4))
         head = breadcrumb_ld(trail) + _ld_script({"@context": "https://schema.org", "@type": "ItemList", "itemListElement": [
             {"@type": "ListItem", "position": i + 1, "url": f"{SITE_URL}/product-{x['id']}.html"} for i, x in enumerate(items[:PER_PAGE])]})
         n_sub = len(g["subs"])
@@ -2523,6 +2543,9 @@ def write_groups(groups, cats, cat_slug):
 def write_categories_index(cat_list, cat_slug, cats, groups=None):
     """Сторінка «Усі категорії» — закриває проблему orphan-категорій (усі 259 доступні
     з одного індексу + футера, а не лише з sitemap). Повертає ім'я файлу."""
+    if SITE_TREE:   # власник 15.10: єдиний шаблон — «Усі категорії» = повний каталог із деревом у сайдбарі; стара адреса лишається як перехід (без індексації)
+        _write("categories.html", page("Усі категорії", '<p class="pagenote">Усі категорії — у <a href="catalog.html">каталозі</a>.</p><meta http-equiv="refresh" content="0; url=catalog.html">', noindex=True, canonical="catalog.html", og_image=OG_IMAGE))
+        return "categories.html"
     if groups:   # власник 15.10: показуємо лише групи Toysi (без списків підкатегорій); категорії поза видимими групами (Уцінка, Геловін, нові) — «Окремі розділи», щоб жодна не лишилась без посилання
         in_group = {c for g in groups for c, _n in g["subs"]}
         gtiles = "".join(

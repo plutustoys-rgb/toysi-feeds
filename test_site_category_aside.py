@@ -137,7 +137,7 @@ with sync_playwright() as pw:
         pg.wait_for_selector("#cat-js .card")
         pg.wait_for_timeout(300)
         txt, asd = pg.evaluate(R + "('.cat-top .cat-intro')"), pg.evaluate(R + "('.cat-aside')")
-        if w >= 1000:
+        if w >= 1200:   # єдиний шаблон: основний стовпець вужчий (сайдбар зліва) → поруч лише на ≥1200 px
             chk(f"{w}px: текст ліворуч, колонка праворуч у ТОМУ Ж ряду (текст {txt['l']}–{txt['r']}, колонка {asd['l']}–{asd['r']}, верхи {txt['t']}/{asd['t']}), колонка ~340 px, текст ширший за 400 px",
                 txt["r"] <= asd["l"] and abs(txt["t"] - asd["t"]) <= 6 and 320 <= asd["w"] <= 360 and txt["w"] > 400)
         else:

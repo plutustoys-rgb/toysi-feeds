@@ -7,7 +7,7 @@
 ВИХІД (приватна папка reports/gmc/, не публікується; YYYY-MM-DD = дата запуску):
   • gsc_query_page_YYYY-MM-DD.csv — searchanalytics.query за ОДНУ добу з відставанням 3 дні (дані GSC фінальні з ~2–3 днів): dimensions=query,page; clicks, impressions, ctr, position. До GSC_ROWS_MAX рядків.
   • gsc_daily_YYYY-MM-DD.csv — searchanalytics.query dimensions=date за 90 днів (до «сьогодні−3»): clicks, impressions, ctr, position.
-  • gsc_sitemaps_YYYY-MM-DD.csv — sitemaps.list: path, lastSubmitted, lastDownloaded, isPending, errors, warnings, type, submitted, indexed (по кожному з 5 sitemap).
+  • gsc_sitemaps_YYYY-MM-DD.csv — sitemaps.list: path, lastSubmitted, lastDownloaded, isPending, errors, warnings, type, submitted (по кожному з 5 sitemap). Поле `indexed` Google позначив deprecated (завжди порожнє/0) — НЕ збираємо: індексацію дивитись у gsc_inspect (coverageState).
   • gsc_inspect_YYYY-MM-DD.csv — URL Inspection API (urlInspection.index.inspect) для перших INSPECT_N URL з sitemap-priority.xml: coverageState, indexingState, lastCrawlTime, googleCanonical, pageFetchState, robotsTxtState. Лише читання, без «запитів на індексацію».
 Кожна частина незалежна: збій однієї не скасовує інших. Збій (не «API вимкнено») — Telegram-алерт з throttle. Код виходу: 0, якщо хоч одна частина записана або API вимкнено; 1 — якщо жодна частина не вдалась через помилку.
 CLI: python gsc_report.py [--check]    # --check: один запит sites.list, нічого не пише
@@ -16,6 +16,7 @@ import csv
 import os
 import re
 import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,10 +38,11 @@ DAILY_DAYS = 90
 ROW_LIMIT = 25000            # максимум API на сторінку
 ROWS_MAX = int(os.environ.get("GSC_ROWS_MAX", "100000"))     # запобіжник пагінації
 INSPECT_N = 100
+INSPECT_BUDGET_SEC = int(os.environ.get("GSC_INSPECT_BUDGET_SEC", "400"))      # загальний бюджет часу inspect: служба має TimeoutStartSec=900 на всі кроки; повільний Google не повинен вбити сусідні кроки
 
 QP_FIELDS = ["date", "query", "page", "clicks", "impressions", "ctr", "position"]
 DAILY_FIELDS = ["date", "clicks", "impressions", "ctr", "position"]
-SITEMAP_FIELDS = ["path", "lastSubmitted", "lastDownloaded", "isPending", "isSitemapsIndex", "errors", "warnings", "type", "submitted", "indexed"]
+SITEMAP_FIELDS = ["path", "lastSubmitted", "lastDownloaded", "isPending", "isSitemapsIndex", "errors", "warnings", "type", "submitted"]
 INSPECT_FIELDS = ["url", "verdict", "coverageState", "indexingState", "lastCrawlTime", "googleCanonical", "userCanonical", "pageFetchState", "robotsTxtState"]
 
 
@@ -143,7 +145,7 @@ def part_sitemaps(session, today: datetime, out_dir: Path, site_url: str = SITE_
     for s in d.get("sitemap") or []:
         contents = s.get("contents") or [{}]
         for c in contents:
-            data.append([s.get("path", ""), s.get("lastSubmitted", ""), s.get("lastDownloaded", ""), s.get("isPending", ""), s.get("isSitemapsIndex", ""), s.get("errors", 0), s.get("warnings", 0), c.get("type", ""), c.get("submitted", ""), c.get("indexed", "")])
+            data.append([s.get("path", ""), s.get("lastSubmitted", ""), s.get("lastDownloaded", ""), s.get("isPending", ""), s.get("isSitemapsIndex", ""), s.get("errors", 0), s.get("warnings", 0), c.get("type", ""), c.get("submitted", "")])
     p = out_dir / f"gsc_sitemaps_{today:%Y-%m-%d}.csv"
     write_csv(p, SITEMAP_FIELDS, data)
     return p, len(data)
@@ -166,21 +168,28 @@ def inspect_url(session, url: str, site_url: str = SITE_URL) -> list:
     return [url, ix.get("verdict", ""), ix.get("coverageState", ""), ix.get("indexingState", ""), ix.get("lastCrawlTime", ""), ix.get("googleCanonical", ""), ix.get("userCanonical", ""), ix.get("pageFetchState", ""), ix.get("robotsTxtState", "")]
 
 
-def part_inspect(session, today: datetime, out_dir: Path, urls=None):
+def part_inspect(session, today: datetime, out_dir: Path, urls=None, budget_sec: int = INSPECT_BUDGET_SEC):
     urls = priority_urls() if urls is None else urls
     if not urls:
         raise RuntimeError("порожній перелік URL із priority-sitemap")
-    data, errs = [], 0
-    for u in urls:
+    data, errs, first_err = [], 0, ""
+    t0 = time.monotonic()
+    for i, u in enumerate(urls):
+        if time.monotonic() - t0 > budget_sec:
+            print(f"[gsc_report] inspect: бюджет {budget_sec} с вичерпано, перевірено {i} з {len(urls)} URL", file=sys.stderr)
+            break
         try:
             data.append(inspect_url(session, u))
         except ApiDisabled:
             raise
         except Exception as e:  # noqa: BLE001 — один URL не валить решту
             errs += 1
+            first_err = first_err or f"{type(e).__name__}: {str(e)[:120]}"
             data.append([u, f"ERROR {type(e).__name__}", "", "", "", "", "", "", ""])
-    if errs == len(urls):
-        raise RuntimeError(f"URL Inspection: усі {errs} запитів із помилкою")
+    if data and errs == len(data):
+        raise RuntimeError(f"URL Inspection: усі {errs} запитів із помилкою; перша: {first_err}")
+    if not data:
+        raise RuntimeError("URL Inspection: бюджет часу вичерпано до першого запиту")
     p = out_dir / f"gsc_inspect_{today:%Y-%m-%d}.csv"
     write_csv(p, INSPECT_FIELDS, data)
     return p, len(data)
@@ -214,7 +223,7 @@ def run(session=None, out_dir: Path | None = None, now: datetime | None = None) 
             print("[gsc_report] Search Console API не ввімкнено в GCP-проєкті: APIs & Services → Library → «Google Search Console API» → Enable (дія власника). Знімок не зібрано.")
             return 0
         except Exception as e:  # noqa: BLE001
-            failed.append(name)
+            failed.append(f"{name} ({type(e).__name__}: {str(e)[:140]})")
             print(f"[gsc_report] {name}: збій {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
     if failed:
         _alert("gsc_report_part", f"⚠️ gsc_report: частини знімка Search Console не зібрано: {', '.join(failed)} (зібрано: {', '.join(ok) or 'нічого'}).")

@@ -326,8 +326,8 @@ def check_applied(now: datetime, index: list, path: Path | None = None) -> tuple
     if not ids:
         return 0, 0
     applied = sum(1 for it in index if isinstance(it, dict) and str(it.get("id")) in ids and it.get("op"))
-    if applied < min(3, len(ids)):
-        _alert("site_sale_not_applied", f"⚠️ site_sale: «Знижка тижня» чинна за розкладом ({len(ids)} позицій у файлі), але на сайті (index.json) застосовано лише {applied} — збірка сайту не підхопила акцію (збій ребілду чи масове випадання позицій). Перевірити site-rebuild.")
+    if applied < min(len(ids), max(3, len(ids) // 2)):      # при ~48 позиціях сліпий поріг «<3» не бачить часткового випадання партій: алерт, коли застосовано менше половини
+        _alert("site_sale_not_applied", f"⚠️ site_sale: «Знижка тижня» чинна за розкладом ({len(ids)} позицій у файлі), але на сайті (index.json) застосовано лише {applied} (норма — не менше половини) — збірка сайту не підхопила акцію (збій ребілду чи масове випадання позицій). Перевірити site-rebuild.")
     return len(ids), applied
 
 

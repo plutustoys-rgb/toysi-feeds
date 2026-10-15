@@ -116,6 +116,19 @@ write({"weeks": [batch("2026-10-19", 19, ["1"]), batch("2026-10-20", 20, ["2"], 
 m3 = bs.load_sale_week(NOW, path)
 chk("партія з іншим pct не змішується (пропущена з попередженням), перша діє", set(m3["items"]) == {"1"} and m3["pct"] == 15)
 
+# ── 1в. КОЖНА дата плану 15–30.10 (у т.ч. партії через перехід на зимовий час 25.10) проходить крізь _parse_sale_week (блокер аудиту #786) ──
+import site_sale as _ss
+_bad = []
+for _d in range(15, 31):
+    _run = datetime(2026, 10, _d, 18, 0, 0, tzinfo=_ss.KYIV)
+    _st, _en, _lab = _ss.next_batch_window(_run)
+    _raw = {"week": _lab, "pct": 15, "from": _st.isoformat(), "until": _en.isoformat(), "items": {"1": {"old": 400, "new": new_of(400)}}}
+    if bs._parse_sale_week(_raw, _st + timedelta(hours=12)) is None:
+        _bad.append(_lab)
+chk(f"усі партії плану 15–30.10 (також через DST 25.10) приймає build_site (відхилені: {_bad})", not _bad)
+_raw_long = {"week": "x", "pct": 15, "from": datetime(2026, 10, 19, tzinfo=KY).isoformat(), "until": datetime(2026, 10, 29, 23, 59, 59, tzinfo=KY).isoformat(), "items": {"1": {"old": 400, "new": new_of(400)}}}
+chk("вікно 11 діб (помилка плану) як і раніше відхиляється", bs._parse_sale_week(_raw_long, datetime(2026, 10, 21, tzinfo=KY)) is None)
+
 # ── 2. apply_sale: перевірки на кожній збірці ──
 SALE = {"week": "w", "pct": 15, "from": START, "until": END, "items": {"111": (400, 340)}}
 com = bs.cp.PAYMENT_COMMISSION.get("site", 0.0)

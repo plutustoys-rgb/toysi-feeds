@@ -404,8 +404,8 @@ def _parse_sale_week(raw, now):
     start, end = _aware_dt(raw.get("from")), _aware_dt(raw.get("until"))
     if start is None or end is None or not start < end:
         return bad("from/until мають бути ISO із поясом і from < until")
-    if (end - start) > timedelta(days=8):
-        return bad("вікно акції довше 8 днів (очікується тиждень пн–нд)")
+    if (end - start) > timedelta(days=8, hours=1):   # партія = 8 календарних діб 00:00…23:59:59 (Київ): при переході на зимовий час це 8 діб 0:59:59 за UTC, тож запас +1 год; місяць/помилка плану відхиляються
+        return bad("вікно акції довше 8 діб (очікується партія на 8 календарних діб)")
     if not (start <= now <= end):
         return None   # поза вікном цього тижня: ігноруємо
     items = {}

@@ -180,7 +180,7 @@ chk("перевірка: чинний W44, index без op (збій понед�
 alerts.clear()
 chk("перевірка: до старту (неділя) чинного тижня нема → (0,0) без алерту", ss.check_applied(at(2026, 10, 25, 12), idx_bad, sw) == (0, 0) and not alerts)
 chk("перевірка: файл відсутній → (0,0) без алерту", ss.check_applied(at(2026, 10, 28, 12), idx_bad, tmpd / "nofile.json") == (0, 0) and not alerts)
-chk("перевірка: застосовано 2 із 10 (<3) → алерт; 3 з 10 → ні", (ss.check_applied(at(2026, 10, 28, 12), idx_ok[:2] + idx_bad[2:], sw)[1] == 2 and "site_sale_not_applied" in alerts) and (alerts.clear() or ss.check_applied(at(2026, 10, 28, 12), idx_ok[:3] + idx_bad[3:], sw)[1] == 3 and not alerts))
+chk("перевірка: застосовано 4 із 10 (<половини) → алерт; 5 з 10 → ні", (ss.check_applied(at(2026, 10, 28, 12), idx_ok[:4] + idx_bad[4:], sw)[1] == 4 and "site_sale_not_applied" in alerts) and (alerts.clear() or ss.check_applied(at(2026, 10, 28, 12), idx_ok[:5] + idx_bad[5:], sw)[1] == 5 and not alerts))
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

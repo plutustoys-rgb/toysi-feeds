@@ -87,6 +87,10 @@ tiles = re.findall(r'<a class="cattile" href="([^"]+)"', cats_html)
 chk(f"«Усі категорії»: плитки лише груп (підкатегорії «Картини/Розмальовки» як плитки НЕ показано); «Окремі розділи» — категорії поза видимими групами (Сирота, Уцінені товари): {tiles}",
     tiles[:2] == ["group-tovary-dlia-tvorchosti.html", "group-transport.html"] and "category-kartyny.html" not in tiles and "Окремі розділи" in cats_html
     and "category-syrota.html" in tiles and "category-" + bs.slugify("Уцінені товари") + ".html" in tiles and len(tiles) == 4)
+home_html = (out / "index.html").read_text(encoding="utf-8")
+catrow = re.search(r'<div class="catrow">(.*?)</div></a></div>', home_html, re.S)
+rows = re.findall(r'<a class="cattile" href="([^"]+)">', catrow.group(1) + "</div></a>") if catrow else []
+chk(f"головна: блок «Категорії» = плитки ГРУП (власник 15.10: «не бачу змін за скетчем»), посилання на group-*.html: {rows}", rows[:2] == ["group-tovary-dlia-tvorchosti.html", "group-transport.html"] and all(r.startswith("group-") for r in rows))
 sm = (out / "sitemap-categories.xml").read_text(encoding="utf-8")
 chk("групи в sitemap (сегмент categories)", "/group-tovary-dlia-tvorchosti.html</loc>" in sm and "/group-transport.html</loc>" in sm)
 shipped = json.loads((HERE / "site" / "category_groups.json").read_text(encoding="utf-8"))

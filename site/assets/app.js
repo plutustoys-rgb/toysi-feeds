@@ -787,6 +787,7 @@
         else { var tpl=document.getElementById("car-set-"+key); if(!tpl) return; html=tpl.innerHTML; name="home_chip_"+key; }
         chipBtns.forEach(function(x){ var on=(x===b); x.classList.toggle("active", on); x.setAttribute("aria-pressed", on ? "true" : "false"); });
         var subEl=document.getElementById("home-chip-sub"); if(subEl) subEl.textContent = b.getAttribute("data-sub") || "";   // підпис сезонного чипа (SMM)
+        var allEl=document.getElementById("home-car-all"); if(allEl){ allEl.setAttribute("href", b.getAttribute("data-all") || "catalog.html"); allEl.textContent = b.getAttribute("data-all-label") || "Дивитись усі →"; }   // чип «Хелловін» → повна сторінка /helovin.html
         setCarouselSet(html, name);
       });
     }

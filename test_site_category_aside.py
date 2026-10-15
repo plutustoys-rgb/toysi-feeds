@@ -81,7 +81,9 @@ chk("є акційні товари і діє акція: «Знижка тиж�
 bs.SALE_ACTIVE = None
 ah2 = bs._category_aside_html(prods_k)
 chk("акції нема (SALE_ACTIVE=None) — колонка «Рекомендуємо», без «Усі знижки»", "Рекомендуємо" in ah2 and "aktsii.html" not in ah2)
-chk("товар не з відбору (ціна поза 150–700) → колонки нема, текст займає все", bs._category_aside_html([{"id": "1", "name": "Дешевий", "price": 90, "stock": 3, "photo": "x.jpg", "category": "К", "contribution": 100}]) == "")
+cheap = [{"id": "1", "name": "Дешевий", "price": 90, "stock": 3, "photo": "x.jpg", "category": "К", "contribution": 45.0}]
+chk("дешева категорія (ціна 90 ₴, внесок 45 ₴): правила вітрини нічого не дають, але пом'якшена драбина дає «Рекомендуємо» (15.10: на проді права колонка була порожньою)", "Рекомендуємо" in bs._category_aside_html(cheap) and "product-1.html" in bs._category_aside_html(cheap))
+chk("внесок нижче запасного порога (20 ₴), нема в наявності або без фото → колонки нема, текст займає все", bs._category_aside_html([dict(cheap[0], contribution=20.0)]) == "" and bs._category_aside_html([dict(cheap[0], stock=0)]) == "" and bs._category_aside_html([dict(cheap[0], photo="")]) == "")
 
 # ── lastmod: колонка не рухає lastmod ──
 import json  # noqa: E402

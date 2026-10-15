@@ -156,7 +156,7 @@ alerts.clear()
 young = {k: {"price": v["price"], "since": (at(2026, 11, 8, 18) - timedelta(days=3)).isoformat()} for k, v in history.items()}
 Path(os.environ["SITE_PRICE_HISTORY_FILE"]).write_text(json.dumps(young), encoding="utf-8")
 rc = ss.cmd_plan(now=at(2026, 11, 8, 18), catalog=catalog)
-chk("історія молодша за 7 днів: код 1 БЕЗ алерту й без перезапису файлу (очікувана ситуація, не збій)", rc == 1 and not alerts and (tmpd / "sale_week.json").read_text(encoding="utf-8") == old_file)
+chk("історія молодша за 7 днів: код 0 (очікуваний стан, служба не «failed») БЕЗ алерту й без перезапису файлу", rc == 0 and not alerts and (tmpd / "sale_week.json").read_text(encoding="utf-8") == old_file)
 alerts.clear()
 Path(os.environ["SITE_PRICE_HISTORY_FILE"]).write_text(json.dumps(few_hist), encoding="utf-8")
 rc = ss.cmd_plan(now=at(2026, 11, 8, 18), catalog={})

@@ -1616,7 +1616,6 @@ HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2
 HOME_PICK_EXCLUDED_CATS = frozenset({"картини за номерами", "брелоки", "автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя"})
 
 
-HOME_POPULAR_CATS = 30             # «Популярні категорії» на головній (SEO 11.10: 24–30 посилань)
 HOME_PICK_CAT_POOL = 40           # з скількох найкращих за внеском категорій щодня обираємо (решта — лише якщо не вистачило до 10)
 HOME_PICK_SEED = 20261011           # фіксоване зерно: перемішування добірки стабільне (не стрибає між збірками, поки не змінились дані)
 _PICK_STOP = frozenset({"для", "та", "від", "дитячий", "дитяча", "дитяче", "дитячі", "дитячих", "іграшка", "іграшки", "мʼяка", "м'яка", "мя",
@@ -1966,25 +1965,6 @@ def write_home(prods, cats, cat_list, cat_slug):
             novelties.append(lst[len(lst) // 2])
         if len(novelties) >= 8:
             break
-    home_groups = site_groups(cats)
-    if home_groups:   # власник 15.10: «не бачу змін за скетчем» — головна показувала плоскі листки; тепер плитки ГРУП Toysi (до 10 найбільших) → сторінки груп
-        cat_tiles = "".join(
-            f'<a class="cattile" href="{g["file"]}"><div class="emo">{cat_emoji(g["name"])}</div><div class="t">{esc(g["display"])}</div></a>' for g in home_groups[:10])
-    else:
-        cat_tiles = "".join(
-            f'<a class="cattile" href="category-{cat_slug[c]}.html">'
-            f'<div class="emo">{cat_emoji(c)}</div><div class="t">{esc(c)}</div></a>'
-            for c in cat_list[:10]
-        )
-    # «Популярні категорії» (SEO 11.10: на головній було 10 посилань на категорії з 286 → розподіл внутрішньої ваги й коротший шлях до карток):
-    # топ за кількістю товарів, без «Уцінки»; cat_list уже відсортований за кількістю (Уцінка в кінці).
-    pop = [c for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:HOME_POPULAR_CATS]
-    popular = ""
-    if pop:
-        popular = ('<div class="sec-title"><h2>Популярні категорії</h2><a href="catalog.html">Усі категорії →</a></div>'
-                   '<nav class="catlinks" aria-label="Популярні категорії">'
-                   + "".join(f'<span class="cl"><a href="category-{cat_slug[c]}.html">{esc(c)}</a><span>{len(cats[c])}</span></span>' for c in pop)
-                   + '</nav>')
     carousel = ""
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
@@ -2028,7 +2008,6 @@ def write_home(prods, cats, cat_list, cat_slug):
       + carousel
       + ('<div class="sec-title"><h2>Більше іграшок</h2><a href="catalog.html">Дивитись усі →</a></div>'
          + grid(novelties) if novelties else "")
-      + popular
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),

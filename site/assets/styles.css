@@ -202,12 +202,6 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 
 .cat-intro{margin:0 16px 14px;font-size:14px;line-height:1.55;color:var(--muted)}
 .cat-intro p{margin:0 0 8px}
-.catlinks{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:0 16px 16px}
-.catlinks .cl{display:inline-flex;max-width:100%}
-.catlinks .cl a{min-width:0;overflow-wrap:anywhere}
-.catlinks a{padding:7px 4px 7px 12px;border:1px solid var(--line);border-right:0;border-radius:999px 0 0 999px;background:var(--surface);color:var(--text);font-size:13px}
-.catlinks a+span{flex:none;padding:7px 12px 7px 6px;border:1px solid var(--line);border-left:0;border-radius:0 999px 999px 0;background:var(--surface);font-size:11px;color:var(--muted)}
-.catlinks a:hover{color:var(--accent)}
 .done{text-align:center;padding:48px 24px}
 .done .fox{font-size:52px;margin-bottom:12px}
 .done h2{margin:0 0 8px;font-size:22px}

@@ -372,8 +372,8 @@ def cmd_plan(now: datetime | None = None, catalog: dict | None = None) -> int:
         _alert("site_sale_history_lost", "⚠️ site_sale: файл історії цін існує, але нечитабельний/порожній — відлік «ціна не мінялась 7 днів» піде з нуля, «Знижку тижня» не складено. Перевірити site_price_history.json.")
         return 1
     if _history_age_days(hist, now) < STABLE_DAYS:
-        print(f"[site_sale] історія цін накопичується менше {STABLE_DAYS} днів — набір ще неможливий (без алерту); перший можливий тиждень — коли найстаріший запис сягне {STABLE_DAYS} днів")
-        return 1
+        print(f"[site_sale] історія цін накопичується менше {STABLE_DAYS} днів — набір ще неможливий (без алерту); перша можлива партія — коли найстаріший запис сягне {STABLE_DAYS} днів")
+        return 0                # очікуваний стан, не збій: код 1 щодня позначав би службу «failed» (systemctl --failed) аж до 7-го дня
     sale, rep = plan(now, index, catalog, hist, demand_ids, last_ids)
     print(f"[site_sale] партія {rep['week']}: придатних кандидатів {rep['candidates']}, обрано {rep['chosen']} (треба {rep['want']})")
     if sale is None:

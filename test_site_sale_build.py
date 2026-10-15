@@ -95,7 +95,7 @@ ph = (out / f"product-{pid}.html").read_text(encoding="utf-8")
 chk(f"сторінка товару {pid}: ціна = акційна, стара перекреслена, JSON-LD price і priceValidUntil = кінець акції, data-add несе акційну ціну", f'class="price sale-price">{wk_items[pid]["new"]} ₴' in ph and f'<s class="pr-old">{price[pid]} ₴</s>' in ph and f'"price": "{wk_items[pid]["new"]}"' in ph and '"priceValidUntil": "2026-10-25"' in ph and f"&quot;price&quot;: {wk_items[pid]['new']}" in ph)
 ak = (out / "aktsii.html").read_text(encoding="utf-8")
 chk(f"/aktsii.html перезаписано свіжою збіркою ({len(ok_ids)} карток), без «stale»", "stale aktsii" not in ak and ak.count('class="sale-badge">−15%</span>') == len(ok_ids))
-sm = (out / "sitemap.xml").read_text(encoding="utf-8")
+sm = chr(10).join(f.read_text(encoding="utf-8") for f in sorted(out.glob("sitemap-*.xml")))   # SEO 15.10: sitemap.xml — індекс, URL у сегментах sitemap-*.xml
 chk("sitemap містить /aktsii.html", "/aktsii.html</loc>" in sm)
 home = (out / "index.html").read_text(encoding="utf-8")
 chk("головна: червона кнопка «Акції» (btn-sale) → aktsii.html", 'class="btn btn-sale" href="aktsii.html"' in home)

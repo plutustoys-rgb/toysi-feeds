@@ -142,7 +142,7 @@ imgs2 = re.findall(r'<a class="card" href="product-\d+\.html"><div class="ph"><i
 chk("пагінація (стор.2): усі картки lazy — eager лише на стор.1", imgs2 and all("lazy" in x for x in imgs2) and not any("fetchpriority" in x for x in imgs2))
 
 # sitemap
-sm = (out / "sitemap.xml").read_text(encoding="utf-8")
+sm = chr(10).join(f.read_text(encoding="utf-8") for f in sorted(out.glob("sitemap-*.xml")))   # SEO 15.10: sitemap.xml — індекс, URL у сегментах sitemap-*.xml
 locs = re.findall(r"<loc>https://plutustoys.com.ua/([^<]*)</loc>", sm)
 chk("sitemap: 1-ша сторінка категорії є, `_2`/`_3` немає", f"category-{slug}.html" in locs and not any(re.search(r"_\d+\.html$", x) for x in locs))
 chk("sitemap: catalog.html є, catalog_2.html нема", "catalog.html" in locs and "catalog_2.html" not in locs)

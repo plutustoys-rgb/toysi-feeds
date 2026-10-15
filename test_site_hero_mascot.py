@@ -51,6 +51,7 @@ bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
 bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None
 import site_photo_probe  # noqa: E402
 site_photo_probe.run = lambda idx: None
+os.environ["SITE_PICK_DATE"] = "2026-10-10"     # поза сезоном «Гелловін» (15–31.10): основні перевірки — на базових 10 рухах
 with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
     bs.build()
 home = (out / "index.html").read_text(encoding="utf-8")
@@ -219,6 +220,41 @@ function store(){ const m={}; return {getItem:k=>(k in m?m[k]:null), setItem:(k,
     chk("пауза між відтвореннями у межах 12–20 с на краях генератора (0 → 12000, 0.999 → <20000)", dl is not None and dl["ds"][0] == 12000 and 19900 <= dl["ds"][1] < 20000 and 12000 <= dl["ds"][2] <= 20000)
     nio = run("noio")
     chk("без IntersectionObserver (старий браузер) Плутус вважається видимим → грає", nio is not None and len(nio["clipAfterLoad"]) == 1)
+
+# ── сезонний рух «Гелловін» (SMM 15.10): 15–31.10, вага 2, замість tailchase (вага репо), data-dip; поза сезоном — зникає ──
+def hero_attrs(day):
+    os.environ["SITE_PICK_DATE"] = day
+    o = Path(tempfile.mkdtemp())
+    bs.OUT = str(o)
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        bs.build()
+    h = (o / "index.html").read_text(encoding="utf-8")
+    mm = re.search(r'id="hero-mascot"[^>]*?data-clips="([^"]+)" data-ms="([^"]+)" data-w="([^"]+)" data-nofirst="([^"]*)"( data-dip="([^"]*)")?>', h)
+    return mm and ([re.search(r"plutus_(\w+)\.webp", c).group(1) for c in mm.group(1).split("|")], mm.group(2).split(","), mm.group(3).split(","), mm.group(6))
+
+
+for day, inseason in (("2026-10-14", False), ("2026-10-15", True), ("2026-10-31", True), ("2026-11-01", False)):
+    r = hero_attrs(day)
+    names2 = r[0] if r else []
+    if inseason:
+        i = names2.index("halloween") if "halloween" in names2 else -1
+        chk(f"{day}: Гелловін у ротації (вага 2, data-dip = його індекс), tailchase тимчасово виходить, усього 10 рухів", i >= 0 and r[2][i] == "2" and r[3] == str(i) and "tailchase" not in names2 and len(names2) == 10 and abs(int(r[1][i]) - 3320) <= 60)
+    else:
+        chk(f"{day}: поза 15–31.10 Гелловіна нема, tailchase на місці, data-dip відсутній", r and "halloween" not in names2 and "tailchase" in names2 and len(names2) == 10 and r[3] is None)
+hw = HERE / "site/assets/mascot/plutus_halloween.webp"
+chk(f"файл Гелловіну в репо ({hw.stat().st_size // 1024} КБ ≤ 250, ліміт SMM): 12 fps, loop=1", hw.exists() and hw.stat().st_size <= 250 * 1024)
+act = [n for n in (c[0] for c in bs.hero_mascot_clips(__import__("datetime").date(2026, 10, 20)))]
+tot_act = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in act) + ps
+chk(f"вага рухів у ротації під час Гелловіну ≤ 2,5 МБ: {tot_act/1024:.0f} КБ", tot_act <= 2.5 * 1000 * 1000 + 20000)
+from PIL import Image as _Im2
+imh = _Im2.open(hw)
+dh = 0
+for k in range(imh.n_frames):
+    imh.seek(k); imh.load(); dh += imh.info.get("duration", 0)
+chk(f"data-ms Гелловіну ({[c for c in bs.HERO_MASCOT_SEASONAL][0][1]}) = реальна тривалість кадрів файлу ({dh} мс, ±60)", abs(dh - bs.HERO_MASCOT_SEASONAL[0][1]) <= 60)
+css2 = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
+js2 = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
+chk("CSS/JS: «занурення» для сезонних рухів — .mascot-wrap.dip{opacity:0} з transition, JS читає data-dip; для звичайних рухів підміна без opacity (twin-захист SMM 12.10 лишається)", ".hero2 .mascot-wrap.dip{opacity:0}" in css2 and 'getAttribute("data-dip")' in js2 and 'classList.add("dip")' in js2)
 
 print()
 if F:

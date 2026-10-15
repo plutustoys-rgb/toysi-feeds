@@ -86,6 +86,20 @@ def _band_ok(c):
     got = [i for i, x in enumerate(lst) if x["id"] in set(ids)]
     return all(len(lst) // 4 <= i <= (3 * len(lst)) // 4 for i in got)
 chk("відбір: з категорії береться позиція із СЕРЕДНЬОЇ смуги за внеском (25–75%, щоденна ротація 13.10; раніше строго медіана), найвищих із 7 категорій нема", all(_band_ok(c) for c in cats7) and not (top1 & set(ids)))
+# 15.10: перевірка лише «на сьогодні» пропустила день, коли другий вибір з категорії опускався нижче смуги (тест червоніє за календарем) — міряємо 60 послідовних днів
+import datetime as _dt
+_bad_days = []
+_old_env = os.environ.get("SITE_PICK_DATE")
+for _k in range(60):
+    os.environ["SITE_PICK_DATE"] = (_dt.date(2026, 10, 1) + _dt.timedelta(days=_k)).isoformat()
+    _ids = {p["id"] for p in bs.home_pick(allp)}
+    if not (all(len(lst_) // 4 <= i <= (3 * len(lst_)) // 4 for lst_ in [sorted([x for x in good if x["category"] == c], key=lambda x: (-x["contribution"], x["id"])) for c in cats7] for i, x in enumerate(lst_) if x["id"] in _ids) and not (top1 & _ids)):
+        _bad_days.append(os.environ["SITE_PICK_DATE"])
+if _old_env is None:
+    os.environ.pop("SITE_PICK_DATE", None)
+else:
+    os.environ["SITE_PICK_DATE"] = _old_env
+chk(f"відбір: смуга 25–75% за внеском і відсутність найвищих тримаються ВСІ 60 послідовних днів (не лише сьогодні); порушення: {_bad_days}", not _bad_days)
 chk("відбір: ціновий розкид — не всі біля стелі (макс−мін ≥ 100 ₴ на синтетиці з різними цінами)", max(p["price"] for p in pick) - min(p["price"] for p in pick) >= 100)
 chk("відбір: внесок рівно 100.0 і ціни 150/700 включно проходять", {p["id"] for p in bs.home_pick([prod(1, price=150, cat="A", contrib=100.0, name="Альфа"), prod(2, price=700, cat="B", contrib=100.0, name="Бета")])} == {"1", "2"})
 chk("відбір: порожній вхід / нічого прохідного → []", bs.home_pick([]) == [] and bs.home_pick(bad) == [])

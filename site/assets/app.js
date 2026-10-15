@@ -893,16 +893,25 @@
     function reduced(){ return typeof matchMedia==="function" && matchMedia("(prefers-reduced-motion: reduce)").matches; }
     var conn=navigator.connection||{};
     if(reduced() || conn.saveData || /(^|-)2g$/.test(conn.effectiveType||"")) return;
-    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null;
+    var dips=(img.getAttribute("data-dip")||"").split(",").filter(function(x){ return x!==""; }).map(Number);   // сезонні рухи, кадр спокою яких ≠ спільний poster: підміна через «занурення»
+    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null, dipNow=false;
     function wait(){ return 12000 + Math.floor(Math.random()*8000); }
     function schedule(ms){ clearTimeout(timer); timer=setTimeout(play, ms); }
     var wrap=img.parentNode;
-    function stop(){
+    function stop(soft){
       clearTimeout(endTimer);
       if(!playing) return;
-      playing=false; clipImg.classList.remove("on");
-      if(wrap && wrap.classList) wrap.classList.remove("clip-on");      // poster повертається ВІДРАЗУ (останній кадр кліпу = poster)
-      clipImg.removeAttribute("src");                                   // наступний показ стартує з першого кадру
+      playing=false;
+      function undo(){
+        clipImg.classList.remove("on");
+        if(wrap && wrap.classList) wrap.classList.remove("clip-on");    // poster повертається ВІДРАЗУ (останній кадр кліпу = poster)
+        clipImg.removeAttribute("src");                                 // наступний показ стартує з першого кадру
+      }
+      if(soft && dipNow && wrap && wrap.classList){                     // кінець «сезонного» руху: гасимо → poster → проявляємо (без двійника і без стрибка шапки/гарбуза)
+        wrap.classList.add("dip");
+        setTimeout(function(){ undo(); wrap.classList.remove("dip"); }, 170);
+      } else { if(wrap && wrap.classList) wrap.classList.remove("dip"); undo(); }
+      dipNow=false;
     }
     if(typeof IntersectionObserver==="function"){
       var io=new IntersectionObserver(function(es){ es.forEach(function(e){ visible=!!e.isIntersecting; if(!visible && playing){ stop(); schedule(wait()); } }); }, {threshold:0.3});
@@ -938,11 +947,18 @@
         playing=true; clipImg.src=url;
         // Жорстка заміна, не кросфейд (SMM 12.10: крізь прозорий кліп просвічував poster → двійник): poster ховаємо ТІЛЬКИ коли перший кадр кліпу вже декодовано
         // (інакше блимне порожнє місце); перший і останній кадри кліпів = poster, тож стик непомітний.
-        function go(){
-          if(!playing) return;
+        function show(){
           if(wrap && wrap.classList) wrap.classList.add("clip-on");
           clipImg.classList.add("on");
-          endTimer=setTimeout(function(){ stop(); schedule(wait()); }, ms);
+        }
+        function go(){
+          if(!playing) return;
+          dipNow = dips.indexOf(idx)>=0;
+          if(dipNow && wrap && wrap.classList){
+            wrap.classList.add("dip");                                  // гасимо poster, під «нулем» міняємо на кліп, проявляємо — час кліпу стартує з підміни
+            setTimeout(function(){ if(playing){ show(); } wrap.classList.remove("dip"); }, 170);
+          } else { show(); }
+          endTimer=setTimeout(function(){ stop(true); schedule(wait()); }, ms);
         }
         if(clipImg.decode){ clipImg.decode().then(go, go); } else { go(); }
       };

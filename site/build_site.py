@@ -1439,6 +1439,21 @@ HERO_MASCOT_POSTER = "assets/mascot/plutus_hero_poster.webp"
 # (name, ms, weight, first_ok)
 HERO_MASCOT_CLIPS = (("tailtrip", 3154, 2, True), ("ear_scratch", 4000, 2, True), ("grooming", 4400, 2, True), ("sniff", 4400, 2, True), ("shakeoff", 1992, 2, True),
                      ("stretch_yawn", 4400, 2, False), ("sneeze", 3500, 1, True), ("tailchase", 5976, 1, True), ("sleep", 4980, 1, True), ("rolljump", 4316, 1, True))
+# Сезонний рух «Гелловін» (SMM 15.10): відьомська шапка, гарбуз; діє 15–31.10 за датою збірки (як чип «Хелловін»), вага 2. Його кадр спокою ≠ спільний poster (шапка, гарбуз), тому підміна poster↔кліп іде через «занурення» (data-dip: обгортка гасне на 0,17 с, підміна, повертається) —
+# кросфейд дав би двійника крізь прозорий кліп. Вага рухів у репо ≤ 2,5 МБ: на час Гелловіну з ротації виходить слабкий tailchase (розмита пляма; рішення SMM), після 31.10 він повертається сам.
+# (name, ms, weight, first_ok, dip, перший день (м, д), останній день, що замінює)
+HERO_MASCOT_SEASONAL = (("halloween", 3320, 2, True, True, (10, 15), (10, 31), "tailchase"),)
+
+
+def hero_mascot_clips(today=None):
+    """Рухи героя на ЗАРАЗ: базові 10 (HERO_MASCOT_CLIPS) + сезонні в межах дат (із витісненням слабшого). Кортеж: (name, ms, weight, first_ok, dip)."""
+    clips = [(n, ms, w, f, False) for n, ms, w, f in HERO_MASCOT_CLIPS]
+    for n, ms, w, f, dip, first, last, replaces in HERO_MASCOT_SEASONAL:
+        if seasonal_active(first, last, today):
+            clips = [c for c in clips if c[0] != replaces] + [(n, ms, w, f, dip)]
+    return clips
+
+
 HOME_MIN_CONTRIB = 100.0           # внесок на замовлення, ₴ (рішення Консультанта: не ведемо вітрину позицією без маржі) — існуючий поріг «Новинок»
 HOME_PICK_PRICE_MIN, HOME_PICK_PRICE_MAX = 150, 700    # ₴: імпульсна ціна (SMM): рамка, не мірило
 HOME_PICK_COUNT, HOME_PICK_MAX_PER_CAT = 10, 2
@@ -1576,6 +1591,7 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
     head = ranked[:HOME_PICK_CAT_POOL]
     rng.shuffle(head)
     order = head + ranked[HOME_PICK_CAT_POOL:]
+    orig = {c: list(v) for c, v in by.items()}   # смуга 25–75% — за ПОВНИМ списком категорії, а не за залишком після першої вибраної позиції (15.10: другий вибір опускався до 2-го з 8 за внеском)
     out, used = [], set()
     for _ in range(HOME_PICK_MAX_PER_CAT):
         for c in order:
@@ -1584,8 +1600,15 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
             lst = [p for p in by[c] if _pick_key(p["name"]) not in used]
             if not lst:
                 continue
-            lo, hi = len(lst) // 4, max(len(lst) // 4 + 1, (3 * len(lst)) // 4 + 1)
-            p = lst[rng.randrange(lo, min(hi, len(lst)))]
+            o = orig[c]
+            lo0, hi0 = len(o) // 4, max(len(o) // 4 + 1, (3 * len(o)) // 4 + 1)
+            ok = {id(x) for x in lst}
+            band = [x for x in o[lo0:hi0] if id(x) in ok]
+            if band:
+                p = band[rng.randrange(len(band))]
+            else:   # смуга порожня (вибрана/дубль за назвою) — як раніше, за залишком
+                lo, hi = len(lst) // 4, max(len(lst) // 4 + 1, (3 * len(lst)) // 4 + 1)
+                p = lst[rng.randrange(lo, min(hi, len(lst)))]
             used.add(_pick_key(p["name"]))
             out.append(p)
             by[c] = [x for x in by[c] if x is not p]
@@ -1831,11 +1854,13 @@ def write_home(prods, cats, cat_list, cat_slug):
         hero_act = f'<a class="btn btn-sale" href="aktsii.html">{CHIP_ICON_SALE_TAG}<span>Акції</span></a><a class="hero-all" href="catalog.html">Усі іграшки</a>'
     else:
         hero_act = '<a class="btn" href="catalog.html">Усі іграшки</a>'
+    hero_clips = hero_mascot_clips()
     body = (
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
       # poster завжди під низом, кліп кросфейдом поверх (див. initMascot): обидва <img> із width/height — CLS 0
       f'<div class="hero2"><span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async" '
-      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{n}.webp")) for n, _ms, _w, _f in HERO_MASCOT_CLIPS)}" data-ms="{",".join(str(c[1]) for c in HERO_MASCOT_CLIPS)}" data-w="{",".join(str(c[2]) for c in HERO_MASCOT_CLIPS)}" data-nofirst="{",".join(str(i) for i, c in enumerate(HERO_MASCOT_CLIPS) if not c[3])}">'
+      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{c[0]}.webp")) for c in hero_clips)}" data-ms="{",".join(str(c[1]) for c in hero_clips)}" data-w="{",".join(str(c[2]) for c in hero_clips)}" data-nofirst="{",".join(str(i) for i, c in enumerate(hero_clips) if not c[3])}"'
+      + (f' data-dip="{",".join(str(i) for i, c in enumerate(hero_clips) if c[4])}"' if any(c[4] for c in hero_clips) else "") + '>'
       '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
       '<div class="act">' + hero_act + '</div></div>'

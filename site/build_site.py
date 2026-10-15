@@ -1078,6 +1078,22 @@ def _load_category_texts():
     return _CATEGORY_TEXTS
 
 
+def _category_aside_html(cat_prods):
+    """Права колонка біля вступного тексту категорії (власник 15.10: «права сторона повинна заповнитися рекомендацією товару або акцією»):
+    є акційні товари цієї категорії («Знижка тижня», сайт показує лише чинну акцію) → найдешевший з них + посилання на всі знижки; інакше «Рекомендуємо» — один товар категорії з щоденною ротацією (home_pick: той самий відбір і правила, що у вітрині головної — ціна, внесок, без мілітарі/зброї)."""
+    sale = [p for p in cat_prods if p.get("old_price") and p.get("stock", 0) > 0]
+    if sale and SALE_ACTIVE:
+        p = min(sale, key=lambda x: (x["price"], str(x["id"])))
+        label = f'Знижка тижня −{SALE_ACTIVE["pct"]}%'
+        more = '<a class="cat-aside-more" href="aktsii.html">Усі знижки →</a>'
+    else:
+        picks = home_pick(cat_prods)
+        if not picks:
+            return ""
+        p, label, more = picks[0], "Рекомендуємо", ""
+    return f'<aside class="cat-aside" aria-label="{esc(label)}"><div class="cat-aside-lbl">{esc(label)}</div>{tile(p)}{more}</aside>'
+
+
 def _category_intro_html(fname):
     """Вступний текст категорії (лише 1-ша сторінка; на пагінації не дублюємо). slug = ім'я файлу без «category-» і «.html». HTML у тексті екранується, абзаци — за порожнім рядком."""
     m = re.fullmatch(r"category-(.+)\.html", fname or "")
@@ -1368,6 +1384,15 @@ def write_aktsii(prods):
     return {AKTSII_FILE}
 
 
+def _category_top_html(fname, cat_prods):
+    """Вступний текст категорії зліва + (є текст) права колонка «Знижка тижня»/«Рекомендуємо»; на вузьких екранах колонка під текстом."""
+    intro = _category_intro_html(fname)
+    if not intro:
+        return ""
+    aside = _category_aside_html(cat_prods)
+    return f'<div class="cat-top">{intro}{aside}</div>\n' if aside else intro
+
+
 def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None):
     """Пише каталог/категорію З ПАГІНАЦІЄЮ (PER_PAGE/стор.). Повертає set імен усіх
     записаних сторінок (для valid-набору прибирання й sitemap)."""
@@ -1418,7 +1443,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 f'<div class="cat-bar"><h1 class="page cat-h1">{esc(active)}</h1>' + _catalog_controls(preset=active) + '</div>\n' +
                 f'<script type="application/json" id="cat-urls">{urls}</script>\n' +
                 chips(cat_list, cat_slug, active) +
-                _category_intro_html(fname) +
+                _category_top_html(fname, prods) +
                 _catalog_js_grid() +
                 f'<div id="cat-static">{static_grid}</div>' +
                 _relcats_html(fname, cat_slug, active)
@@ -2508,6 +2533,8 @@ LASTMOD_STATE_FILE = ".htlastmod_state.json"
 _LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0-9a-f]{8}|<a class="sr-pill" href="[^"]*">[^<]*</a>|<div class="chips">.*?</div>', re.S)
 # На КАРТЦІ товару додатково не рахуємо сітки інших товарів («Додайте до замовлення», «Схожі товари» — підбір залежить від стану всього каталогу): lastmod картки = зміна ЇЇ власних даних (назва, ціна, наявність, фото, текст), а не чужих.
 _LASTMOD_GRID_RX = re.compile(r'<h2>[^<]*</h2><div class="grid">(?:\s*<a class="card".*?</a>)*\s*</div>', re.S)
+# На сторінці категорії не рахуємо права колонка «Рекомендуємо»/«Знижка тижня» (ротація щодня, акція щотижня — це не зміна самої сторінки).
+_LASTMOD_ASIDE_RX = re.compile(r'<aside class="cat-aside".*?</aside>', re.S)
 _lm = {"out": None, "state": {}}
 
 
@@ -2561,6 +2588,8 @@ def _write(fname, content):
         masked = _LASTMOD_FLOAT_RX.sub("", content)
         if fname.startswith("product-"):
             masked = _LASTMOD_GRID_RX.sub("", masked)
+        elif fname.startswith("category-"):
+            masked = _LASTMOD_ASIDE_RX.sub("", masked)
         h = hashlib.sha1(masked.encode("utf-8")).hexdigest()
         ent = st.get(fname)
         t = ent["t"] if (ent and ent["h"] == h) else time.time()

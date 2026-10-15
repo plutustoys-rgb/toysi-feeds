@@ -51,6 +51,9 @@ catalog["41"] = item(41, "Гарбуз декоративний великий",
 catalog["42"] = item(42, "Конструктор «Місто» 500 дет.", "Конструктори", price=400)     # не Геловін
 catalog["43"] = item(43, "Маска карнавальна Вампір", price=90, stock=0)                 # немає в наявності
 catalog["44"] = item(44, "Автомат іграшковий «Скелет»", "Автомати і пістолети", price=300)   # зброя → не показувати
+catalog["46"] = item(46, "Рюкзак «Людина Павук» 33 см", "Рюкзаки", price=300)                # хибний збіг: Spider-Man
+catalog["47"] = item(47, "Пазл «Привид Києва» 271 дет.", "Пазли", price=200)                  # хибний збіг: патріотичне
+catalog["48"] = item(48, "Фігурка супергероя «Людина-павук: Додому шляху нема»", "Фігурки", price=250)
 catalog["45"] = item(45, "Павук скакунчик на аркуші, 6 см", price=50)                    # збіг за назвою (павук), дешевий
 for i in range(100, 112):                               # щоб чип головної мав ≥6 товарів: ціна ≥100 і внесок ≥30
     catalog[str(i)] = item(i, NAMES[i % 8], f"Святкові набори {i % 4}", price=240 + i)
@@ -76,7 +79,7 @@ h = hp.read_text(encoding="utf-8") if hp.exists() else ""
 ids = re.findall(r'<a class="card" href="product-(\d+)\.html"', h)
 chk(f"усі 12 «курованих» (ціни 47–58 ₴, нижче порога вітрини) на сторінці, у порядку вкладки Toysi: {ids[:5]}…", ids[:12] == [str(i) for i in range(1, 13)])
 chk("збіги за назвою додані після куратора: світильник «Геловіна» (40), гарбуз (41), дешевий павук (45) і набори «Геловіна»", {"40", "41", "45", "100", "101"} <= set(ids) and ids.index("40") > 11)
-chk("не потрапили: «Конструктор» (42), без залишку (43), зброя «Автомат… Скелет» (44), id якого нема в каталозі", not ({"42", "43", "44"} & set(ids)))
+chk("не потрапили: «Конструктор» (42), без залишку (43), зброя «Автомат… Скелет» (44), «Людина-павук»/«Привид Києва» (46–48: хибні збіги за назвою), id якого нема в каталозі", not ({"42", "43", "44", "46", "47", "48"} & set(ids)))
 chk("сторінка: H1 «Геловін», крихти, title, canonical, список для аналітики data-list=helovin, посилання в каталог", '<h1 class="page">Геловін</h1>' in h and 'class="crumbs"' in h and 'rel="canonical" href="https://plutustoys.com.ua/helovin.html"' in h and 'data-list="helovin"' in h and 'href="catalog.html"' in h)
 sm = "\n".join(f.read_text(encoding="utf-8") for f in sorted(out.glob("sitemap-*.xml")))
 chk("/helovin.html є в sitemap (сегмент categories)", "/helovin.html</loc>" in (out / "sitemap-categories.xml").read_text(encoding="utf-8"))

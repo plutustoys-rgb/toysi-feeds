@@ -1949,11 +1949,16 @@ def write_home(prods, cats, cat_list, cat_slug):
             novelties.append(lst[len(lst) // 2])
         if len(novelties) >= 8:
             break
-    cat_tiles = "".join(
-        f'<a class="cattile" href="category-{cat_slug[c]}.html">'
-        f'<div class="emo">{cat_emoji(c)}</div><div class="t">{esc(c)}</div></a>'
-        for c in cat_list[:10]
-    )
+    home_groups = site_groups(cats)
+    if home_groups:   # власник 15.10: «не бачу змін за скетчем» — головна показувала плоскі листки; тепер плитки ГРУП Toysi (до 10 найбільших) → сторінки груп
+        cat_tiles = "".join(
+            f'<a class="cattile" href="{g["file"]}"><div class="emo">{cat_emoji(g["name"])}</div><div class="t">{esc(g["display"])}</div></a>' for g in home_groups[:10])
+    else:
+        cat_tiles = "".join(
+            f'<a class="cattile" href="category-{cat_slug[c]}.html">'
+            f'<div class="emo">{cat_emoji(c)}</div><div class="t">{esc(c)}</div></a>'
+            for c in cat_list[:10]
+        )
     # «Популярні категорії» (SEO 11.10: на головній було 10 посилань на категорії з 286 → розподіл внутрішньої ваги й коротший шлях до карток):
     # топ за кількістю товарів, без «Уцінки»; cat_list уже відсортований за кількістю (Уцінка в кінці).
     pop = [c for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:HOME_POPULAR_CATS]

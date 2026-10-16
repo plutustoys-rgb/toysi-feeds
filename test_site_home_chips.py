@@ -42,13 +42,13 @@ chk("порожній набір не повертається (немає «н�
 chk("не в наявності/без фото відсіюються з чипів", bs.home_chip_sets([dict(P(100, 80, "К"), stock=0), dict(P(100, 80, "К2"), photo="")]) == {})
 
 src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
-chk("розмітка: чипи (чипа «Усі» нема — власник 16.10; aria-pressed), набори в <template id=car-set-*>, плитки НЕ eager, з бейджем; без JS чипи сховані (noscript)", 'data-set="all"' not in src and '<template id="car-set-{k}">' in src and 'tile(p, cls="slide", badge=True) for p in chip_sets[k]' in src and "<noscript><style>.home-chips{display:none}</style></noscript>" in src)
+chk("розмітка: чипи — посилання <a data-set href=окрема сторінка> (власник 16.10), без «Усі», без <template car-set-*>, без noscript-приховування", 'data-set="all"' not in src and '<template id="car-set-{k}">' not in src and 'data-set="{k}" href="{CHIP_PAGE_FILES[k]}"' in src and "<noscript><style>.home-chips{display:none}</style></noscript>" not in src)
 app = (HERE / "site/assets/app.js").read_text(encoding="utf-8")
 car = app[app.index("function initHomeCarousel()"):app.index("function initListTracking()")]
 chk("JS: перемикання прибирає клони, підставляє картки з <template>, перераховує slides/loop, скидає на початок, шле view_item_list home_chip_<ключ>", all(x in car for x in ("function teardownLoop()", 'querySelectorAll("[data-clone]")', "tpl.innerHTML", 'name="home_chip_"+key', "slides=Array.prototype.slice.call(car.querySelectorAll(\"a.card\"))", "track.scrollLeft=0;", "setupLoop();")))
 chk("«Усі» повертає збережену основну добірку (baseHTML, зняту ДО клонування) і її item_list_name", "var baseHTML = track ? track.innerHTML" in car and "html=baseHTML; name=baseName;" in car and car.index("var baseHTML") < car.index("setupLoop();\n      track.addEventListener"))
 css = (HERE / "site/assets/styles.css").read_text(encoding="utf-8")
-chk("CSS: місце під чипи зарезервовано (visibility), .js — visible (без CLS)", ".home-chips{visibility:hidden}" in css and ".home-chips.js{visibility:visible}" in css)
+chk("CSS: чипи — звичайні посилання, приховування до JS нема (серверна розмітка)", ".home-chips{visibility:hidden}" not in css and ".home-chips.js{visibility:visible}" not in css)
 
 print()
 if F:

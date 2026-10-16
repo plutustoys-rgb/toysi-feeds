@@ -391,10 +391,8 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .nb-more{margin:18px 16px 4px;text-align:center}
 .pay[hidden]{display:none}
 /* чипи над каруселлю головної (SMM 12.10): місце зарезервовано до JS (без CLS); без JS ховає <noscript> */
-.home-chips{visibility:hidden}
 /* Десктоп/планшет (≥701 px): чипи головної переносяться на другий рядок — усі видно без горизонтального скролу (мишею до правих чипів не дістатися; власник 14.10). Телефон: один рядок зі свайпом. */
 @media(min-width:701px){.home-chips{flex-wrap:wrap;overflow:visible}}
-.home-chips.js{visibility:visible}
 .home-chips button.chip{cursor:pointer;font-family:inherit}
 /* 320–380 px: чипи — ОДИН рядок із горизонтальним скролом, як на 390 px (SMM 13.10 за ретро-аудитом: перенесення 11–12 чипів у 4–5 рядків з'їдало ≈270 px — перший екран без карток) */
 .home-chips + .chip-sub{margin:-4px 16px 8px;font-size:13px;color:var(--muted)}

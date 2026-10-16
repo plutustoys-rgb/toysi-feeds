@@ -185,7 +185,7 @@ chk("aktsii_pick: лише акційні позиції, ціна зроста�
 chk("write_aktsii пише aktsii.html", bs.write_aktsii(prods) == {"aktsii.html"})
 ah = (out / "aktsii.html").read_text(encoding="utf-8")
 chk("/aktsii: H1 лише для структури (sr-only «Акції», видимого заголовка нема — власник 16.10), title «Акції | PlutusToys», без «Знижка тижня»/«Знижки −N%»/лід-абзацу, сітка з бейджами (−N% у кутку картки), data-list=sale_week, без промокодів/підписок",
-    '<h1 class="page sr-only">Акції</h1>' in ah and "<title>Акції | PlutusToys</title>" in ah and "Знижка тижня" not in ah and "Знижки −" not in ah and 'class="sale-lead"' not in ah and "Щодня — нові іграшки" not in ah and "Акція до <b>" not in ah
+    '<h1 class="page cat-h1 sr-only">Акції</h1>' in ah and "<title>Акції | PlutusToys</title>" in ah and "Знижка тижня" not in ah and "Знижки −" not in ah and 'class="sale-lead"' not in ah and "Щодня — нові іграшки" not in ah and "Акція до <b>" not in ah
     and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and 'id="sale-list"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("</header>")[1].split("<footer")[0])
 chk("/aktsii: у мета-описі й title немає відсотків (знижка в кожного товару своя 5–15%)", "−15%" not in re.search(r'<title>.*?</title>', ah).group(0) and "−15%" not in re.search(r'<meta name="description" content="([^"]*)"', ah).group(1) and "%" not in re.search(r'<meta name="description" content="([^"]*)"', ah).group(1))
 # 3 сторінки по 24 (власник 16.10): 60 акційних → aktsii.html, aktsii_2.html, aktsii_3.html (24+24+12), пагінація/canonical/rel як у каталозі

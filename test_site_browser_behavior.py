@@ -173,7 +173,7 @@ with sync_playwright() as p:
         ctx.close()
 
     # ── Плутус: ротація ──
-    NAMES = ["tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff", "stretch_yawn", "sneeze", "tailchase", "sleep", "rolljump", "nod", "heart", "think", "jump", "gift"]
+    NAMES = ["tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff", "stretch_yawn", "sneeze", "tailchase", "sleep", "rolljump", "nod", "heart", "think", "jump", "gift", "wink"]
     OBS = """window.__srcs=[]; new MutationObserver(()=>{const c=document.getElementById('hero-mascot-clip'); if(c && c.getAttribute('src')) { const n=c.getAttribute('src').split('/').pop().split('?')[0].replace('plutus_','').replace('.webp',''); const l=window.__srcs; if(l[l.length-1]!==n+'#'+window.__t) l.push(n+'#'+window.__t);} }).observe(document, {subtree:true, attributes:true, attributeFilter:['src']}); window.__t=0;"""
 
     def run_plays(n_plays, max_steps=4000, fixed_random=None):
@@ -202,12 +202,12 @@ with sync_playwright() as p:
         ctx.close()
         return seq, both, neither
 
-    seq, both, neither = run_plays(24)
-    first14 = seq[:24]
+    seq, both, neither = run_plays(26)
+    first14 = seq[:26]
     from collections import Counter
     cnt = Counter(first14)
     expected = {n: (1 if n in ("sneeze", "tailchase", "sleep", "rolljump", "think", "gift") else 2) for n in NAMES}
-    chk(f"ротація: перший мішок із 24 показів (9×2 + 6×1, з «Киває» і 4 сценками) = точно вагам (по 2 «звичайних», по 1 «рідких»): {dict(cnt)}", len(first14) == 24 and dict(cnt) == expected)
+    chk(f"ротація: перший мішок із 26 показів (10×2 + 6×1, з «Киває», 4 сценками і «Підморгує») = точно вагам (по 2 «звичайних», по 1 «рідких»): {dict(cnt)}", len(first14) == 26 and dict(cnt) == expected)
     chk("ротація: повторів підряд ≤ 1 (вимушений повтор у мішку можливий, ≈4%)", sum(1 for a, b in zip(first14, first14[1:]) if a == b) <= 1)
     chk(f"Плутус: жодного відліку «обидва видимі»/«жоден» (both={both}, neither={neither})", both == 0 and neither == 0)
     firsts = []

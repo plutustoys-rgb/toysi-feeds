@@ -1,117 +1,71 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-test_np_warehouse_cache.py — регрес-тест локального кешу довідника відділень НП
-(nova_poshta_warehouse_cache.py, 2026-09-17, за офіційною рекомендацією developers.novaposhta.ua
-"оновлювати довідник щоночі").
-
-Мережа НЕ потрібна: nova_poshta_warehouse_cache._call замокано (сторінки заздалегідь задані).
-Усе на ТИМЧАСОВОМУ файлі БД (NP_WAREHOUSE_CACHE_PATH), не в репо.
-`python test_np_warehouse_cache.py` → exit 0/1.
-"""
-import sys
+"""test_np_warehouse_cache.py — кеш відділень НП для автокомпліту (nova_poshta.search_warehouses, 16.10.2026: ~15% 502 через «To many requests»).
+Інваріанти: (1) кілька запитів з різними q для одного міста = ОДИН виклик getWarehouses; фільтр q працює на кеші; (2) інше місто — окремий виклик; (3) після TTL — новий виклик; (4) помилка НП при наявному (навіть застарілому) кеші → віддаємо кеш без винятку;
+(5) помилка без кешу: одна повторна спроба, далі NovaPoshtaAPIError; повтор успішний → результат; (6) порожній city_ref → [] без викликів. `python test_np_warehouse_cache.py` → exit 0/1."""
 import os
-import tempfile
+import sys
+from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+os.environ.setdefault("NP_API_KEY", "x")
+sys.path.insert(0, str(Path(__file__).parent))
+import nova_poshta as np_  # noqa: E402
 
-import nova_poshta_warehouse_cache as cache
-from nova_poshta import NovaPoshtaAPIError
-
-_FAILS = []
-
-
-def _chk(name, cond):
-    print(f"[{'OK ' if cond else 'FAIL'}] {name}")
-    if not cond:
-        _FAILS.append(name)
+F = []
 
 
-_DB = tempfile.mktemp(suffix=".db")
-cache.PAGE_DELAY_SEC = 0       # без реальних пауз у тесті
-cache.PAGE_RETRY_DELAY_SEC = 0
-
-# --- 1: lookup_ref на порожньому/неіснуючому кеші → None, без винятку ---
-_chk("lookup_ref на неіснуючому файлі кешу → None", cache.lookup_ref("будь-який-ref", db_path=_DB) is None)
-_chk("cache_age_hours на неіснуючому файлі → None", cache.cache_age_hours(db_path=_DB) is None)
-
-# --- 2: успішна синхронізація (2 повні сторінки + 1 неповна = кінець) ---
-_PAGE1 = [{"Ref": f"ref-{i}", "CityRef": "city-A", "Number": str(i), "Description": f"Відділення №{i}"}
-          for i in range(1, 4)]
-_PAGE2 = [{"Ref": f"ref-{i}", "CityRef": "city-B", "Number": str(i), "Description": f"Відділення №{i}"}
-          for i in range(4, 7)]
-_PAGE3 = []  # порожня — умова завершення
-
-_calls = []
+def chk(n, c):
+    print(f"[{'OK ' if c else 'FAIL'}] {n}")
+    if not c:
+        F.append(n)
 
 
-def _mock_call_ok(model, method, props):
-    _calls.append(props.get("Page"))
-    page = int(props.get("Page"))
-    return {"1": _PAGE1, "2": _PAGE2, "3": _PAGE3}.get(str(page), [])
+np_.time.sleep = lambda s: None
+calls = {"n": 0, "fail": 0}
+DATA = [{"Ref": f"r{i}", "Number": str(i), "Description": f"Відділення №{i}: вул. Тестова {i}"} for i in range(1, 40)]
 
 
-cache._call = _mock_call_ok
-cache.PAGE_LIMIT = 3  # маленький ліміт, щоб _PAGE1/_PAGE2 (по 3) вважались "повними" сторінками
-result = cache.sync_full_directory(db_path=_DB, page_limit=3)
-_chk("sync: 6 записів завантажено", result["records"] == 6)
-_chk("sync: без помилок", result["errors"] == [])
-_chk("sync: пройшло 3 сторінки (2 повні + порожня)", _calls == ["1", "2", "3"])
-
-# --- 3: lookup_ref після синхронізації — реальні дані з кешу ---
-w = cache.lookup_ref("ref-2", db_path=_DB)
-_chk("lookup ref-2: city_ref=city-A", w is not None and w["city_ref"] == "city-A")
-_chk("lookup ref-2: number=2", w is not None and w["number"] == "2")
-w5 = cache.lookup_ref("ref-5", db_path=_DB)
-_chk("lookup ref-5 (з другої сторінки): city_ref=city-B", w5 is not None and w5["city_ref"] == "city-B")
-_chk("lookup неіснуючого ref → None", cache.lookup_ref("ref-999", db_path=_DB) is None)
-
-# --- 4: cache_age_hours після успішної синхронізації — маленьке додатне число ---
-age = cache.cache_age_hours(db_path=_DB)
-_chk("cache_age_hours після sync: 0 <= age < 0.01 год", age is not None and 0 <= age < 0.01)
-
-# --- 5: UPSERT — повторна синхронізація ОНОВЛЮЄ запис, не дублює ---
-_PAGE1_UPDATED = [{"Ref": "ref-1", "CityRef": "city-A-NEW", "Number": "1", "Description": "Оновлено"}]
+def fake_call(model, method, props):
+    calls["n"] += 1
+    if calls["fail"] > 0:
+        calls["fail"] -= 1
+        raise np_.NovaPoshtaAPIError("API повернув помилку: ['To many requests']")
+    return list(DATA)
 
 
-def _mock_call_updated(model, method, props):
-    page = int(props.get("Page"))
-    return {"1": _PAGE1_UPDATED}.get(str(page), [])
-
-
-cache._call = _mock_call_updated
-cache.sync_full_directory(db_path=_DB, page_limit=3)
-w_upd = cache.lookup_ref("ref-1", db_path=_DB)
-_chk("UPSERT: city_ref оновлено", w_upd is not None and w_upd["city_ref"] == "city-A-NEW")
-import sqlite3
-with sqlite3.connect(_DB) as conn:
-    count = conn.execute("SELECT COUNT(*) FROM warehouses WHERE ref='ref-1'").fetchone()[0]
-_chk("UPSERT: жодного дубля рядка", count == 1)
-
-# --- 6: збій сторінки (усі ретраї вичерпано) → sync зупиняється, last_full_sync_at НЕ оновлюється ---
-_DB2 = tempfile.mktemp(suffix=".db")
-
-
-def _mock_call_fail_page2(model, method, props):
-    page = int(props.get("Page"))
-    if page == 1:
-        return _PAGE1
-    raise NovaPoshtaAPIError("To many requests")
-
-
-cache._call = _mock_call_fail_page2
-result2 = cache.sync_full_directory(db_path=_DB2, page_limit=3)
-_chk("збій сторінки: помилка зафіксована", len(result2["errors"]) == 1)
-_chk("збій сторінки: 3 записи з успішної page1 усе одно збережені", result2["records"] == 3)
-_chk("збій сторінки: last_full_sync_at НЕ проставлено (чесний вік кешу)",
-     cache.cache_age_hours(db_path=_DB2) is None)
-_chk("збій сторінки: page1-дані все одно читаються з lookup_ref",
-     cache.lookup_ref("ref-1", db_path=_DB2) is not None)
-
-
-if _FAILS:
-    print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
-    sys.exit(1)
-print("\n✅ Локальний кеш довідника відділень НП — синхронізація+lookup+UPSERT+часткова помилка")
-sys.exit(0)
+np_._call = fake_call
+np_._WH_CACHE.clear()
+r1 = np_.search_warehouses("kyiv", "2")
+r2 = np_.search_warehouses("kyiv", "10")
+r3 = np_.search_warehouses("kyiv", "25")
+chk("3 запити (q=2/10/25) для одного міста = ОДИН виклик НП; фільтр за номером працює на кеші", calls["n"] == 1 and r2 and r2[0]["number"] == "10" and r3[0]["number"] == "25" and r1[0]["number"] == "2")
+np_.search_warehouses("lviv", "1")
+chk("інше місто — окремий виклик", calls["n"] == 2)
+ts, data = np_._WH_CACHE["kyiv"]
+np_._WH_CACHE["kyiv"] = (ts - np_._WH_TTL - 5, data)
+calls["fail"] = 5
+r = np_.search_warehouses("kyiv", "7")
+chk("TTL минув, НП відповідає помилкою (обидві спроби) → віддаємо ЗАСТАРІЛИЙ кеш без винятку", r and r[0]["number"] == "7" and calls["n"] == 4)
+calls["fail"] = 0
+np_._WH_CACHE["kyiv"] = (ts - np_._WH_TTL - 5, data)
+n0 = calls["n"]
+np_.search_warehouses("kyiv", "7")
+chk("TTL минув, НП ок → оновлення кешу (1 виклик)", calls["n"] == n0 + 1 and np_._WH_CACHE["kyiv"][0] > ts)
+np_._WH_CACHE.clear()
+calls["n"], calls["fail"] = 0, 1
+r = np_.search_warehouses("odesa", "3")
+chk("без кешу: перша спроба — помилка, друга успішна → результат (2 виклики)", r and r[0]["number"] == "3" and calls["n"] == 2)
+np_._WH_CACHE.clear()
+calls["n"], calls["fail"] = 0, 9
+try:
+    np_.search_warehouses("dnipro", "3")
+    ok = False
+except np_.NovaPoshtaAPIError:
+    ok = True
+chk("без кешу і НП лежить: рівно 2 спроби, далі NovaPoshtaAPIError (сайт покаже 502, як і було)", ok and calls["n"] == 2 and "dnipro" not in np_._WH_CACHE)
+calls["n"] = 0
+chk("порожній city_ref → [] без викликів", np_.search_warehouses("", "1") == [] and np_.search_warehouses("  ", "1") == [] and calls["n"] == 0)
+print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
+sys.exit(1 if F else 0)

@@ -228,13 +228,49 @@ def search_cities(query: str, limit: int = 8) -> list:
     ]
 
 
+_WH_CACHE: dict = {}          # {city_ref: (час, повний список відділень міста)}
+_WH_TTL = 6 * 3600            # відділення міняються рідко; свіжість 6 год достатня
+_WH_LOCK = None
+
+
+def _city_warehouses(city_ref: str) -> list:
+    """Повний список відділень міста з кешем (TTL 6 год) і «single-flight» на місто. 16.10 тестувальник: ~15% запитів /api/np/warehouse давали 502 — НП відповідала «To many requests» (кожне натискання клавіші в полі відділення тягло getWarehouses Limit=500) і разовий Read timeout. Тепер НП питаємо раз на місто за TTL; помилка НП → віддаємо ЗАСТАРІЛИЙ кеш (краще, ніж порожнеча), без кешу — одна повторна спроба, далі виняток."""
+    import threading
+    import time as _t
+    global _WH_LOCK
+    if _WH_LOCK is None:
+        _WH_LOCK = threading.Lock()
+    now = _t.time()
+    hit = _WH_CACHE.get(city_ref)
+    if hit and now - hit[0] < _WH_TTL:
+        return hit[1]
+    with _WH_LOCK:                                   # один запит до НП на місто за раз: паралельні натискання не множать запитів
+        hit = _WH_CACHE.get(city_ref)
+        if hit and _t.time() - hit[0] < _WH_TTL:
+            return hit[1]
+        last = None
+        for attempt in range(2):
+            try:
+                data = _call("AddressGeneral", "getWarehouses", {"CityRef": city_ref, "Limit": "500"}) or []
+                _WH_CACHE[city_ref] = (_t.time(), data)
+                return data
+            except NovaPoshtaAPIError as e:
+                last = e
+                if attempt == 0:
+                    _t.sleep(1.5)
+        if hit:
+            print(f"[nova_poshta] getWarehouses {city_ref}: {last}; віддаю застарілий кеш ({int(_t.time() - hit[0])} с)", file=sys.stderr)
+            return hit[1]
+        raise last
+
+
 def search_warehouses(city_ref: str, query: str = "", limit: int = 12) -> list:
     """Список відділень/поштоматів міста для АВТОКОМПЛІТУ. Кожен елемент — {ref, description, number}.
     query (частина назви/номер) фільтрує на нашому боці (як find_warehouse). Порожній city_ref → [].
-    Піднімає NovaPoshtaAPIError, якщо запит до API не вдався."""
+    Піднімає NovaPoshtaAPIError, якщо запит до API не вдався і кешу нема."""
     if not (city_ref or "").strip():
         return []
-    warehouses = _call("AddressGeneral", "getWarehouses", {"CityRef": city_ref, "Limit": "500"})
+    warehouses = _city_warehouses(city_ref.strip())
     q = (query or "").strip().lower()
     out = []
     for wh in (warehouses or []):

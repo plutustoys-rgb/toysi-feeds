@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""site_sale.py — ПОСТІЙНА «Знижка −15%» власного сайту (рішення власника 14.10: «червона, варіант а… автоматизація», «не мінялась 7 днів», запас маржі 25 ₴; 15.10: «акції повинні бути постійно… товарів на 2 сторінки» → варіант 1, щоденна ротація).
-Ціна на картці = ціна, за якою продаємо (index.json pr); акція підміняє її на термін партії.
+"""site_sale.py — ПОСТІЙНА знижка власного сайту «Акції» (власник 16.10: «на кожен товар знижка рандомно від 5 до 15%, змінюється кожен день, 3 сторінки»; «стару ціну ніхто не знає: фіксуєш як побачив у Toysi, рахуєш нашу вигоду, ставиш знижку; тримаєш 1 день, на наступний нова партія»).
+Ціна на картці = ціна, за якою продаємо (index.json pr); акція підміняє її на добу. Стара ціна = ЗВИЧАЙНА ціна сайту (для товару, що зараз у знижці, це op), перевірки «ціна не мінялась N днів» немає (STABLE_DAYS=0; механізм збережено).
 
 ЩО РОБИТЬ МОДУЛЬ (чисті функції + два CLI):
-  • `python site_sale.py history` — після кожного ребілду сайту фіксує «з якої дати ціна товару не змінюється» (site_price_history.json, приватний runtime-файл поруч з кодом). Лише факти:
-    ціна товару змінилась → since = зараз; не змінилась → лишається. Урізаний/порожній index.json історію НЕ чіпає.
-  • `python site_sale.py plan` — ЩОДНЯ о 18:00 обирає нову ПАРТІЮ з N_ITEMS=9 товарів на 8 діб (від 00:00 завтра, Київ) і дописує її в site/sale_week.json (без собівартості й маржі): одночасно діє ≈9×8 = 72 товари (3 сторінки по 24); знижка КОЖНОГО товару випадкова 5–15% (item_pct: хеш від дати партії й id; якщо маржа після неї <25 ₴ — % знижується до 5, інакше товар не кандидат).
-    Кандидат: є на сайті, в наявності ≥3, не заборонений/не уцінка/не UNO, є фото, ціна НЕ мінялась ≥7 днів (стара ціна має бути РЕАЛЬНОЮ), після знижки маржа ≥25 ₴ з урахуванням еквайрингу 2,8% і витрат 17,81 ₴ на замовлення.
-    Ранг: спершу товари з попитом (site/demand_featured.json від SEO), потім з більшим залишком, далі детермінований «жереб» за датою партії; товар, що вже діє у будь-якій партії файлу чи був у 8 останніх партіях, не повторюється.
-  Нова ціна = ceil(стара × (100−pct)/100) цілими гривнями, pct товару 5…15 (без копійок у чеку/LiqPay/накладеному).
-КОНТРАКТ site/sale_week.json: {"weeks":[{"week":"2026-10-16","pct":15,"from":"…+03:00","until":"…+03:00","items":{"<id>":{"old":int,"new":int}}}, …]} — усі партії, що ще не закінчились (діючі + завтрашня; прострочені прибираються); поле "week" = дата старту партії.
-Споживач build_site об'єднує всі діючі партії (ціна pr=new, op=old, кінець знижки — свій у кожного товару, лише коли old == поточна ціна), фіди додають sale_price + дати партії. Споживач сам перевіряє вікно: файл може лишатись на диску й після терміну.
+  • `python site_sale.py history` — після кожного ребілду сайту фіксує «з якої дати ціна товару не змінюється» (site_price_history.json) і перевіряє, що чинна акція застосована на сайті (алерт site_sale_not_applied). Історія цін для відбору більше не потрібна.
+  • `python site_sale.py plan` — ЩОДНЯ о 18:00 обирає партію з N_ITEMS=72 товарів на ЗАВТРА (00:00:00…23:59:59, Київ; WINDOW_DAYS=1) і дописує її в site/sale_week.json (без собівартості): 72 = 3 сторінки по 24. Партія діє добу, наступної ночі ребілд (00:00:30) вмикає нову й прибирає стару.
+    Кандидат: є на сайті, в наявності ≥3, не заборонений/не уцінка/не UNO, не репліка зброї, є фото, після знижки маржа ≥25 ₴ з урахуванням еквайрингу 2,8% і витрат 17,81 ₴ на замовлення.
+    Знижка КОЖНОГО товару випадкова 5–15% (item_pct: хеш від дати партії й id); якщо маржа після неї <25 ₴ — % знижується до 5, а не проходить і 5% — товар не кандидат. Ранг: спершу товари з попитом (site/demand_featured.json від SEO), потім з більшим залишком, далі детермінований «жереб» за датою; товар із партій останніх REPEAT_DAYS=7 днів і з діючих партій файлу не повторюється.
+  Нова ціна = ceil(стара × (100−pct)/100) цілими гривнями (без копійок у чеку/LiqPay/накладеному).
+КОНТРАКТ site/sale_week.json: {"weeks":[{"week":"2026-10-17","pct":15,"from":"…+03:00","until":"…+03:00","items":{"<id>":{"old":int,"new":int,"pct":int 5..15}}}, …]} — усі партії, що ще не закінчились (діюча + завтрашня); "week" = дата старту.
+Споживач build_site об'єднує діючі партії (ціна pr=new, op=old, кінець знижки — свій у кожного товару, лише коли old == поточна ціна), фіди додають sale_price + дати партії. Споживач сам перевіряє вікно: файл може лишатись на диску й після доби.
 Без звернень до мережі в чистих функціях; `plan` тягне каталог Toysi (parser.fetch_toysi_catalog) раз на добу.
 """
 import json
@@ -33,10 +32,11 @@ PICKS_FILE = Path(os.environ.get("SITE_SALE_PICKS_FILE", str(HERE / "site_sale_p
 
 PCT = 15                      # відсоток знижки (рішення власника, варіант «а»)
 RESERVE_UAH = 25              # запас маржі з одиниці після знижки (політика, власник погодив 14.10)
-STABLE_DAYS = 7               # ціна не мінялась щонайменше стільки днів (рішення власника 14.10)
-N_ITEMS = 9                   # нових товарів у щоденній партії; партія діє WINDOW_DAYS діб → одночасно 9×8 = 72 товари (3 сторінки по 24; рішення власника 16.10 «кількість товарів на 3 сторінки»)
+STABLE_DAYS = 0               # 0 = без вимоги стабільності ціни (власник 16.10: «ніхто не знає стару ціну: фіксуєш як побачив у Toysi, рахуєш нашу вигоду, ставиш знижку»; стара ціна = звичайна ціна сайту). >0 вмикає перевірку «ціна не мінялась N днів» (було 7 з 14.10)
+N_ITEMS = 72                  # товарів у щоденній партії = 3 сторінки по 24 (власник 16.10: «тримаєш 1 день, на наступний нова партія»)
+REPEAT_DAYS = 7               # товар не повторюється в партіях останніх REPEAT_DAYS днів
 PCT_MIN = 5                   # знижка КОЖНОГО товару — випадкова від PCT_MIN до PCT (власник 16.10: «рандомно від 5 до 15%»), детермінована від дати партії й id
-WINDOW_DAYS = 8               # вікно партії: від 00:00 завтра до 23:59:59 на 8-й день (build_site приймає вікно <8 діб)
+WINDOW_DAYS = 1               # вікно партії: від 00:00 завтра до 23:59:59 того ж дня (1 доба; build_site приймає вікно ≤8 діб)
 MIN_STOCK = 3                 # залишок Toysi не менше (щоб тижнева акція не вичерпалась за годину)
 
 
@@ -136,7 +136,8 @@ def update_price_history(index: list, now: datetime, path: Path | None = None) -
     return True
 
 
-def is_stable(rec, price: int, now: datetime, days: int = STABLE_DAYS) -> bool:
+def is_stable(rec, price: int, now: datetime, days: int | None = None) -> bool:
+    days = 7 if days is None else days            # перевірка «ціна не мінялась N днів» (з 16.10 вимкнена STABLE_DAYS=0; механізм збережено)
     if not isinstance(rec, dict) or rec.get("price") != price:
         return False
     try:
@@ -182,7 +183,7 @@ def candidates(index: list, catalog: dict, history: dict, now: datetime, label: 
     for it in index:
         pid = str(it.get("id"))
         try:
-            price = int(it["pr"])
+            price = int(it.get("op") or it["pr"])        # звичайна ціна сайту: для товару, що ЗАРАЗ у знижці, pr — акційна, op — звичайна
         except (KeyError, TypeError, ValueError):
             continue
         item = catalog.get(pid)
@@ -194,7 +195,7 @@ def candidates(index: list, catalog: dict, history: dict, now: datetime, label: 
             continue
         if stock < MIN_STOCK or not _ok_item(item):
             continue
-        if not is_stable(history.get(pid), price, now):
+        if STABLE_DAYS and not is_stable(history.get(pid), price, now, STABLE_DAYS):
             continue
         try:
             cost = cp.real_toysi_cost(item)
@@ -212,14 +213,14 @@ def candidates(index: list, catalog: dict, history: dict, now: datetime, label: 
     return out
 
 
-def pick(cands: list, demand_ids: set, last_ids: set, week_label: str, n: int = N_ITEMS) -> list:
+def pick(cands: list, demand_ids: set, last_ids: set, week_label: str, n: int | None = None) -> list:
     """Детермінований добір: спершу попит (SEO), потім більший залишок, потім «жереб» від номера тижня; минулотижневі виключені."""
     import hashlib
     pool = [c for c in cands if c["id"] not in last_ids]
     def key(c):
         h = hashlib.sha256(f"{week_label}:{c['id']}".encode()).hexdigest()
         return (0 if c["id"] in demand_ids else 1, 0 if c["stock"] >= 10 else 1, h)
-    return sorted(pool, key=key)[:n]
+    return sorted(pool, key=key)[:(N_ITEMS if n is None else n)]
 
 
 def _load_json(path: Path, default):
@@ -375,20 +376,20 @@ def cmd_plan(now: datetime | None = None, catalog: dict | None = None) -> int:
         picks = []
     _w = next_batch_window(now)[2]
     picks = [p for p in picks if isinstance(p, dict) and p.get("week") != _w]       # повторний запуск ТОГО САМОГО тижня не виключає власний щойно записаний набір і не дублює запис
-    last_ids = {str(i) for p in picks[-WINDOW_DAYS:] for i in (p.get("ids") or [])}          # діють/діяли протягом вікна (8 останніх щоденних партій)
+    last_ids = {str(i) for p in picks[-REPEAT_DAYS:] for i in (p.get("ids") or [])}          # були в партіях останніх REPEAT_DAYS днів
     for w in (x for x in _read_weeks(SALE_FILE, now) if x.get("week") != _w):                  # і все, що вже стоїть у файлі й не закінчилось (інакше товар у двох партіях одночасно)
         last_ids |= {str(i) for i in (w.get("items") or {})}
-    hist = load_history()
-    if not hist and HISTORY_FILE.exists() and HISTORY_FILE.stat().st_size > 2:
+    hist = load_history() if STABLE_DAYS else {}
+    if STABLE_DAYS and not hist and HISTORY_FILE.exists() and HISTORY_FILE.stat().st_size > 2:
         _alert("site_sale_history_lost", "⚠️ site_sale: файл історії цін існує, але нечитабельний/порожній — відлік «ціна не мінялась 7 днів» піде з нуля, «Знижку тижня» не складено. Перевірити site_price_history.json.")
         return 1
-    if _history_age_days(hist, now) < STABLE_DAYS:
+    if STABLE_DAYS and _history_age_days(hist, now) < STABLE_DAYS:
         print(f"[site_sale] історія цін накопичується менше {STABLE_DAYS} днів — набір ще неможливий (без алерту); перша можлива партія — коли найстаріший запис сягне {STABLE_DAYS} днів")
         return 0                # очікуваний стан, не збій: код 1 щодня позначав би службу «failed» (systemctl --failed) аж до 7-го дня
     sale, rep = plan(now, index, catalog, hist, demand_ids, last_ids)
     print(f"[site_sale] партія {rep['week']}: придатних кандидатів {rep['candidates']}, обрано {rep['chosen']} (треба {rep['want']})")
     if sale is None:
-        _alert("site_sale_few", f"⚠️ site_sale: на партію {rep['week']} не знайдено жодного нового придатного товару (ціна не мінялась ≥{STABLE_DAYS} дн., маржа ≥{RESERVE_UAH} ₴ навіть при мінімальній знижці −{PCT_MIN}%, не в діючих партіях) — партію не опубліковано.")
+        _alert("site_sale_few", f"⚠️ site_sale: на партію {rep['week']} не знайдено жодного нового придатного товару (маржа ≥{RESERVE_UAH} ₴ навіть при мінімальній знижці −{PCT_MIN}%, не повтор останніх {REPEAT_DAYS} днів) — партію не опубліковано.")
         return 1
     if rep["chosen"] < rep["want"]:
         _alert("site_sale_short", f"⚠️ site_sale: партія {rep['week']} неповна: {rep['chosen']} з {rep['want']} (нових придатних лишилось мало: {rep['candidates']} у пулі, частина вже в діючих партіях).")

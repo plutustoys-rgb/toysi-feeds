@@ -1,5 +1,5 @@
 [Unit]
-Description=PlutusToys: нова партія постійної «Знижки −15%» — site_sale.py plan
+Description=PlutusToys: партія «Акцій» на завтра (72 товари, 5–15%) — site_sale.py plan
 After=network-online.target
 Wants=network-online.target
 

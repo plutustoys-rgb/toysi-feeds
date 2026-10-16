@@ -1,0 +1,9 @@
+[Unit]
+Description=PlutusToys: перезапуск site-chat-bot, якщо змінився його код (restart_if_changed.sh)
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+ExecStart=/bin/bash /opt/plutustoys/deploy/restart_if_changed.sh
+TimeoutStartSec=120

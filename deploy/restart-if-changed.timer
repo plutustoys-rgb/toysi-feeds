@@ -1,0 +1,10 @@
+[Unit]
+Description=PlutusToys: кожні 5 хв перевіряти, чи змінився код site-chat-bot
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

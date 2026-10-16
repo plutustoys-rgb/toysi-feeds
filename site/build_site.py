@@ -636,7 +636,7 @@ def build():
         if _applied < SALE_MIN_APPLIED_ALERT:   # акція ідe, а позицій майже нема (ціни змінились/собівартість зросла): тихо не лишаємо
             try:
                 from telegram_notify import send_throttled_alert
-                send_throttled_alert("site_sale_few_applied", f"⚠️ site-rebuild: «Знижка тижня» {SALE_ACTIVE['week']}: застосовано лише {_applied} з {len(SALE_ACTIVE['items'])} позицій файлу (ціна ≠ old, нема в наявності або внесок < {SALE_RESERVE_UAH:.0f} ₴).", cooldown_sec=6 * 3600)
+                send_throttled_alert("site_sale_few_applied", f"⚠️ site-rebuild: «Знижки» {SALE_ACTIVE['week']}: застосовано лише {_applied} з {len(SALE_ACTIVE['items'])} позицій файлу (ціна ≠ old, нема в наявності або внесок < {SALE_RESERVE_UAH:.0f} ₴).", cooldown_sec=6 * 3600)
             except Exception:  # noqa: BLE001 — алерт best-effort
                 pass
     prods.sort(key=_rank_key)
@@ -1120,7 +1120,7 @@ def _category_aside_html(cat_prods):
     sale = [p for p in cat_prods if p.get("old_price") and p.get("stock", 0) > 0]
     if sale and SALE_ACTIVE:
         p = min(sale, key=lambda x: (x["price"], str(x["id"])))
-        label = f'Знижка тижня −{SALE_ACTIVE["pct"]}%'
+        label = f'Знижки −{SALE_ACTIVE["pct"]}%'
         more = '<a class="cat-aside-more" href="aktsii.html">Усі знижки →</a>'
     else:
         # спершу правила вітрини головної; у дешевих категоріях (внесок < 100 ₴, ціна < 150 ₴) вони нічого не дають і права колонка лишалась би порожньою (15.10, перевірка на проді) → пом'якшена драбина: ціна 50–1500, внесок ≥ 30 ₴ (поріг сезонних чипів); мілітарі/зброя/OOS/без фото відсіюються так само
@@ -1458,15 +1458,15 @@ def write_aktsii(prods):
     pct = SALE_ACTIVE["pct"]
     body = (
         crumbs_html([("Головна", "index.html"), ("Акції", None)]) +
-        f'\n<h1 class="page">Знижка тижня −{pct}%</h1>\n'
+        f'\n<h1 class="page">Знижки −{pct}%</h1>\n'
         f'<p class="sale-lead">Щодня — нові іграшки зі знижкою −{pct}%. Ціна вже знижена: нічого вводити не треба. Термін знижки вказано на картці товару.</p>' +
         '<div class="sale-list" id="sale-list" data-list="sale_week">' + grid(picks, eager_n=4) + '</div>'
         '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'
     )
     head = breadcrumb_ld([("Головна", "index.html"), ("Акції", None)])
-    _write(AKTSII_FILE, page(f"Знижка тижня −{pct}%", body, extra_head=head,
-                             description=f"Знижка тижня −{pct}% у PlutusToys: іграшки за акційними цінами, добірка оновлюється щодня. Стара ціна перекреслена, знижка вже в ціні.",
-                             canonical=AKTSII_FILE, og_image=OG_IMAGE, title_full=f"Знижка тижня −{pct}% на іграшки | PlutusToys"))
+    _write(AKTSII_FILE, page(f"Знижки −{pct}%", body, extra_head=head,
+                             description=f"Знижки −{pct}% у PlutusToys: іграшки за акційними цінами, добірка оновлюється щодня. Стара ціна перекреслена, знижка вже в ціні.",
+                             canonical=AKTSII_FILE, og_image=OG_IMAGE, title_full=f"Знижки −{pct}% на іграшки | PlutusToys"))
     return {AKTSII_FILE}
 
 

@@ -141,65 +141,35 @@ with sync_playwright() as p:
         chk(f"{w_}px: повернення на накладений платіж відновлює підсумок, підпис і примітку", back == cod)
     ctx.close()
 
-    # ── чипи головної ──
-    for w in (1280, 390):
-        ctx, pg = page(w=w, h=800)
+    bs_chip_files = {"ukr": "podibrka-ukrainske.html", "pop": "podibrka-populiarne.html", "bday": "podibrka-den-narodzhennia.html", "ny": "podibrka-mykolai-novyi-rik.html", "xmas": "podibrka-do-rizdva.html", "hel": "helovin.html"}
+    # ── чипи головної: посилання на окремі сторінки (власник 16.10), карусель ними не перемикається ──
+    for w, h in ((1280, 800), (390, 800), (320, 300)):
+        ctx, pg = page(w=w, h=h)
         errs = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
         pg.goto(f"{BASE}/index.html", wait_until="load")
         pg.wait_for_timeout(800)
-        pg.evaluate("document.addEventListener('click', e => { if (e.target.closest('a.card')) e.preventDefault(); }, true)")
+        chips = pg.evaluate("[...document.querySelectorAll('#home-chips a.chip[data-set]')].map(b=>[b.dataset.set, b.getAttribute('href')])")
+        keys = [c[0] for c in chips]
+        chk(f"{w}px: чипи — посилання <a> на свої сторінки («День народження» є; Усі/Набори/Тихі/Активні/Для двох/Школа нема; кнопок нема) {chips}",
+            "bday" in keys and not ({"all", "nab", "school", "duo", "quiet", "active", "u300", "m700"} & set(keys)) and all(c[1] == bs_chip_files[c[0]] for c in chips) and pg.evaluate("document.querySelectorAll('#home-chips button').length") == 0)
+        base_state = pg.evaluate("(()=>{const t=document.querySelector('#home-car .track'); return [t.children.length, t.querySelectorAll('[data-clone]').length]})()")
+        chk(f"{w}px: початково 10 оригіналів + 20 клонів (30 дітей, банера нема) {base_state}", base_state == [30, 20])
         ev = lambda: pg.evaluate("(window.dataLayer||[]).map(a=>Array.from(a)).filter(a=>a[1]==='view_item_list'||a[1]==='select_item').map(a=>[a[1],a[2].item_list_id,a[2].item_list_name,a[2].items.length])")  # noqa: E731
-        state = lambda: pg.evaluate("(()=>{const t=document.querySelector('#home-car .track'); return [t.children.length, t.querySelectorAll('[data-clone]').length, [...t.querySelectorAll('a.card:not([data-clone]) .pr')].map(e=>parseFloat(e.textContent))]})()")  # noqa: E731
-        chips = pg.evaluate("[...document.querySelectorAll('#home-chips button')].map(b=>b.dataset.set)")
-        chk(f"{w}px: чипи: «День народження» є, чипа «Усі» і чипів-«категорій» Набори/Тихі/Активні/Для двох/Школа нема — власник 16.10 {chips}", "all" not in chips and "bday" in chips and not ({"nab", "school", "duo", "quiet", "active", "u300", "m700"} & set(chips)))
-        keys = list(chips)
-        base_state = state()
-        chk(f"{w}px: початково 10 оригіналів + 20 клонів (30 дітей, банера нема)", base_state[0] == 30 and base_state[1] == 20)
-        seen = {}
-        for key in keys:
-            before = len(ev())
-            pg.click(f"#home-chips button[data-set={key}]")
-            pg.wait_for_timeout(250)
-            new = ev()[before:]
-            stt = state()
-            seen[key] = (new, stt)
-        chk(f"{w}px: кожне перемикання → РІВНО один view_item_list з id=name=home_chip_<ключ>, 10 позицій", all(len(seen[k][0]) == 1 and seen[k][0][0][:3] == ["view_item_list", f"home_chip_{k}", f"home_chip_{k}"] and 1 <= seen[k][0][0][3] <= 10 for k in seen))
-        chk(f"{w}px: цикл (клонів рівно 2×min(n,10)) після кожного перемикання", all(seen[k][1][1] == 2 * min(seen[k][1][0] - seen[k][1][1], 10) for k in seen))
-        pg.evaluate("document.querySelector('#home-car .track a.card:not([data-clone])').click()")
-        pg.wait_for_timeout(200)
-        sel = [e for e in ev() if e[0] == "select_item"]
-        chk(f"{w}px: select_item у наборі «День народження» несе item_list_id/name home_chip_bday", sel and sel[-1][1] == "home_chip_bday" and sel[-1][2] == "home_chip_bday")
-        before = len(ev())
-        pg.click("#home-chips button[data-set=bday]")   # повторний клік по активному чипу знімає вибір (чипа «Усі» нема — власник 16.10)
-        pg.wait_for_timeout(250)
-        new = ev()[before:]
-        chk(f"{w}px: повторний клік по активному чипу вертає основну добірку: РІВНО один view_item_list home_pick / «Добірка Плутуса», клони 20 {new}", len(new) == 1 and new[0][:3] == ["view_item_list", "home_pick", "Добірка Плутуса"] and state()[:2] == [30, 20] and pg.evaluate("document.querySelectorAll('#home-chips .chip.active').length") == 0)
-        pg.evaluate("document.querySelector('#home-car .track a.card:not([data-clone])').click()")
-        pg.wait_for_timeout(200)
-        sel = [e for e in ev() if e[0] == "select_item"]
-        chk(f"{w}px: після повернення select_item знову home_pick / «Добірка Плутуса»", sel[-1][1] == "home_pick" and sel[-1][2] == "Добірка Плутуса")
-        for i in range(60):
-            pg.evaluate(f"document.querySelector('#home-chips button[data-set={keys[i % len(keys)]}]').click()")
-        pg.wait_for_timeout(300)
-        chk(f"{w}px: після 60 перемикань клонів рівно 20, помилок консолі 0", state()[:2] == [30, 20] and errs == [])
-        ctx.close()
-
-    # ── карусель поза вікном (короткий екран): чип натиснули до появи каруселі — view_item_list один раз; чипи на 320 px переносяться ──
-    for w, h in ((1280, 330), (320, 300)):
-        ctx, pg = page(w=w, h=h)
-        pg.goto(f"{BASE}/index.html", wait_until="load")
-        pg.wait_for_timeout(600)
-        pg.evaluate("document.querySelector('#home-chips button[data-set=bday]').click()")
-        pg.wait_for_timeout(300)
+        pg.evaluate("document.addEventListener('click', e => { if (e.target.closest('a.card')) e.preventDefault(); }, true)")
         pg.evaluate("document.getElementById('home-car').scrollIntoView({block:'center'})")
         pg.wait_for_timeout(900)
-        lists = pg.evaluate("(window.dataLayer||[]).map(a=>Array.from(a)).filter(a=>a[1]==='view_item_list').map(a=>[a[2].item_list_id,a[2].item_list_name])")
-        chk(f"{w}x{h}: чипи тепер ПІД каруселлю (власник 16.10) — карусель видно одразу: один view_item_list основної добірки на завантаженні + РІВНО один після чипа (без дублів від IntersectionObserver): {lists}", lists == [["home_pick", "Добірка Плутуса"], ["home_chip_bday", "home_chip_bday"]])
+        lists = [e for e in ev() if e[0] == "view_item_list"]
+        chk(f"{w}x{h}: карусель видно → РІВНО один view_item_list основної добірки (home_pick / «Добірка Плутуса»): {lists}", len(lists) == 1 and lists[0][1] == "home_pick" and lists[0][2] == "Добірка Плутуса")
+        pg.evaluate("document.querySelector('#home-car .track a.card:not([data-clone])').click()")
+        pg.wait_for_timeout(200)
+        sel = [e for e in ev() if e[0] == "select_item"]
+        chk(f"{w}x{h}: select_item несе home_pick / «Добірка Плутуса»", sel and sel[-1][1] == "home_pick" and sel[-1][2] == "Добірка Плутуса")
         if w == 320:
-            m = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const r=[...b.querySelectorAll('button')].map(x=>x.getBoundingClientRect()); return [Math.max(...r.map(x=>x.right)), innerWidth, document.documentElement.scrollWidth]})()")
-            row = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const cs=getComputedStyle(b); const bt=[...b.querySelectorAll('.chip')].map(x=>x.getBoundingClientRect().top); const car=document.getElementById('home-car').getBoundingClientRect(); return [Math.max(...bt)-Math.min(...bt), cs.flexWrap, cs.overflowX, document.documentElement.scrollWidth<=innerWidth, Math.round(car.top)]})()")
-            chk(f"320px: чипи в ОДИН рядок (nowrap, overflow-x auto — горизонтальний скрол, не перенесення), сторінка без горизонтального скролу, карусель починається вище 330 px {row}", row[0] < 14 and row[1] == "nowrap" and row[2] == "auto" and row[3] and row[4] < 330)
+            m = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const r=[...b.querySelectorAll('.chip')].map(x=>x.getBoundingClientRect()); return [Math.max(...r.map(x=>x.right)), innerWidth, document.documentElement.scrollWidth]})()")
+            row = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const cs=getComputedStyle(b); return [cs.flexWrap, cs.overflowX]})()")
+            chk(f"320px: чипи в ОДИН рядок (nowrap + горизонтальний скрол), сторінка без горизонтального скролу {m} {row}", row == ["nowrap", "auto"] and m[2] <= m[1])
+        chk(f"{w}x{h}: без помилок консолі", errs == [])
         ctx.close()
 
     # ── Плутус: ротація ──

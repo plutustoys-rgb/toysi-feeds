@@ -76,22 +76,22 @@ build("2026-10-20")
 hp = out / "helovin.html"
 chk("у вікні 1.10–2.11 сторінка /helovin.html є", hp.exists())
 h = hp.read_text(encoding="utf-8") if hp.exists() else ""
-ids = re.findall(r'<a class="card" href="product-(\d+)\.html"', h)
+ids = json.loads(re.search(r'<script type="application/json" id="cat-ids">(.*?)</script>', h).group(1)) if 'id="cat-ids"' in h else []   # усі товари сторінки (панель сортування, власник 16.10)
 chk(f"усі 12 «курованих» (ціни 47–58 ₴, нижче порога вітрини) на сторінці, у порядку вкладки Toysi: {ids[:5]}…", ids[:12] == [str(i) for i in range(1, 13)])
 chk("збіги за назвою додані після куратора: світильник «Геловіна» (40), гарбуз (41), дешевий павук (45) і набори «Геловіна»", {"40", "41", "45", "100", "101"} <= set(ids) and ids.index("40") > 11)
 chk("не потрапили: «Конструктор» (42), без залишку (43), зброя «Автомат… Скелет» (44), «Людина-павук»/«Привид Києва» (46–48: хибні збіги за назвою), id якого нема в каталозі", not ({"42", "43", "44", "46", "47", "48"} & set(ids)))
-chk("сторінка: H1 «Геловін», крихти, title, canonical, список для аналітики data-list=helovin, посилання в каталог", '<h1 class="page">Геловін</h1>' in h and 'class="crumbs"' in h and 'rel="canonical" href="https://plutustoys.com.ua/helovin.html"' in h and 'data-list="helovin"' in h and 'href="catalog.html"' in h)
+chk("сторінка: H1 «Геловін», крихти, title, canonical, список для аналітики data-list=helovin, посилання в каталог", '<h1 class="page cat-h1">Геловін</h1>' in h and 'id="cat-controls"' in h and 'class="crumbs"' in h and 'rel="canonical" href="https://plutustoys.com.ua/helovin.html"' in h and 'data-list="helovin"' in h and 'href="catalog.html"' in h)
 sm = "\n".join(f.read_text(encoding="utf-8") for f in sorted(out.glob("sitemap-*.xml")))
 chk("/helovin.html є в sitemap (сегмент categories)", "/helovin.html</loc>" in (out / "sitemap-categories.xml").read_text(encoding="utf-8"))
 home = (out / "index.html").read_text(encoding="utf-8")
-chk("головна: чип «Хелловін» з data-all=helovin.html і підписом «Усі товари для Геловіна →»; посилання carousel має id home-car-all",
-    re.search(r'data-set="hel"[^>]*data-all="helovin\.html" data-all-label="Усі товари для Геловіна →"', home) is not None and 'id="home-car-all"' in home)
+chk("головна: чип «Хелловін» — посилання на /helovin.html (власник 16.10: чип веде на окрему сторінку)",
+    re.search(r'<a class="chip chip-theme" data-set="hel" href="helovin\.html">', home) is not None and 'data-all=' not in home)
 # чип ловить «Геловін» (одна л): набори «Геловіна» мають потрапити в сет hel
 chk("чип «Хелловін» бачить написання «Геловін» і «павук/грим/карнавальн» у регулярці", bool(re.search(bs.HOME_SEASONAL[0][3], "Набір для Геловіна", re.I)) and bool(re.search(bs.HOME_SEASONAL[0][3], "Грим для обличчя", re.I)) and bool(re.search(bs.HOME_SEASONAL[0][3], "Павук скакунчик", re.I)))
 
 # ── поза вікном ──
 build("2026-11-10")
-chk("поза вікном (10.11) сторінки нема, стара прибрана, у sitemap її нема, чип без data-all", not hp.exists() and "/helovin.html</loc>" not in (out / "sitemap-categories.xml").read_text(encoding="utf-8") and "data-all=" not in (out / "index.html").read_text(encoding="utf-8"))
+chk("поза вікном (10.11) сторінки нема, стара прибрана, у sitemap її нема, чипа «Хелловін» на головній нема", not hp.exists() and "/helovin.html</loc>" not in (out / "sitemap-categories.xml").read_text(encoding="utf-8") and 'data-set="hel"' not in (out / "index.html").read_text(encoding="utf-8"))
 # мало товарів → сторінки нема
 tmpj.write_text(json.dumps({"ids": ["1", "2"]}), encoding="utf-8")
 for k in [k for k in list(catalog) if k in {"40", "41", "45"} or k.startswith("10") and len(k) == 3 or k in {"43", "44"}]:
@@ -130,18 +130,11 @@ with sync_playwright() as pw:
     pg.route("https://toysi.ua/**", lambda r: r.abort())
     pg.goto(f"{base}/index.html", wait_until="load")
     pg.wait_for_selector('#home-chips [data-set="hel"]')
-    G = "(()=>{const a=document.getElementById('home-car-all'); return [a.getAttribute('href'), a.textContent, a.hidden]})()"
-    a0 = pg.evaluate(G)
-    pg.click('#home-chips [data-set="hel"]')
-    pg.wait_for_timeout(300)
-    a1 = pg.evaluate(G)
-    pg.click('#home-chips [data-set="hel"]')   # чипа «Усі» нема (власник 16.10): повторний клік знімає вибір
-    pg.wait_for_timeout(300)
-    a2 = pg.evaluate(G)
-    chk(f"Chromium: спершу посилання під чипами приховане {a0}; чип «Хелловін» → видиме helovin.html «Усі товари для Геловіна →» {a1}; повторний клік ховає його знову {a2}",
-        a0[2] is True and a1 == ["helovin.html", "Усі товари для Геловіна →", False] and a2[2] is True and errs == [])
+    a1 = pg.evaluate("(()=>{const a=document.querySelector('#home-chips a.chip[data-set=hel]'); return [a.tagName, a.getAttribute('href')]})()")
+    chk(f"Chromium: чип «Хелловін» — посилання на helovin.html {a1}", a1 == ["A", "helovin.html"] and errs == [])
     pg.goto(f"{base}/helovin.html", wait_until="load")
-    chk("Chromium: сторінка /helovin.html відкривається, є картки, без помилок JS", pg.evaluate("document.querySelectorAll('#helovin-list .card').length") >= 6 and errs == [])
+    pg.wait_for_selector("#cat-js .card")
+    chk("Chromium: сторінка /helovin.html відкривається, є картки, без помилок JS", pg.evaluate("document.querySelectorAll('#cat-js .card').length") >= 6 and errs == [])
     br.close()
 print()
 if F:

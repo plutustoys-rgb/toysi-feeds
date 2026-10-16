@@ -738,7 +738,8 @@ def build():
     paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
     paged |= write_utsinka(prods, cat_list, cat_slug)
     paged |= write_aktsii(prods, cat_list, cat_slug)
-    paged |= write_helovin(prods)
+    paged |= write_helovin(prods, cat_list, cat_slug)
+    paged |= write_chip_pages(prods, cat_list, cat_slug)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
     write_ig(prods)
@@ -771,7 +772,7 @@ def build():
     valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
-        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "group-")) and fn.endswith(".html")
+        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "podibrka", "group-")) and fn.endswith(".html")
                 and fn not in valid):
             try:
                 os.remove(os.path.join(OUT, fn))
@@ -1428,25 +1429,19 @@ def helovin_pick(prods):
     return out
 
 
-def write_helovin(prods):
-    """Пише /helovin.html «Геловін» у вікні 1.10–2.11; повертає set записаних сторінок (порожній — сторінки нема, стару прибере крок прибирання)."""
+def write_helovin(prods, cat_list=None, cat_slug=None):
+    """Пише /helovin.html «Геловін» у вікні 1.10–2.11 (власник 16.10: шаблон як «Уцінка» — крупна назва + сортування серед товарів сторінки, пагінація); повертає set записаних сторінок (порожній — сторінки нема, стару прибере крок прибирання)."""
     if not seasonal_active(HELOVIN_WINDOW[0], HELOVIN_WINDOW[1]):
         return set()
     picks = helovin_pick(prods)
     if len(picks) < HELOVIN_MIN:
         return set()
-    trail = [("Головна", "index.html"), ("Геловін", None)]
-    body = (
-        crumbs_html(trail) +
-        '\n<h1 class="page">Геловін</h1>\n'
-        '<p class="sale-lead">Маски, грим, костюми, декор і світильники до Геловіну. Усе в наявності, відправляємо Новою Поштою по Україні.</p>'
-        '<div class="sale-list" id="helovin-list" data-list="helovin">' + grid(picks, eager_n=4) + '</div>'
-        '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'
-    )
-    _write(HELOVIN_FILE, page("Геловін — маски, грим, костюми, декор", body, extra_head=breadcrumb_ld(trail),
-                              description="Все для Геловіну в PlutusToys: карнавальні маски, грим для обличчя, костюми й крила, світильники, павуки та декор. Є в наявності, доставка Новою Поштою."[:DESC_MAX],
-                              canonical=HELOVIN_FILE, og_image=OG_IMAGE, title_full="Геловін: маски, грим, костюми, декор | PlutusToys"))
-    return {HELOVIN_FILE}
+    return write_catalog("Геловін", picks, cat_list or [], cat_slug or {}, HELOVIN_FILE, active=None,
+                         special={"h1": "Геловін", "title": "Геловін: маски, грим, костюми, декор | PlutusToys",
+                                  "desc": "Все для Геловіну в PlutusToys: карнавальні маски, грим для обличчя, костюми й крила, світильники, павуки та декор. Є в наявності, доставка Новою Поштою.",
+                                  "notice": '<p class="sale-lead">Маски, грим, костюми, декор і світильники до Геловіну. Усе в наявності, відправляємо Новою Поштою по Україні.</p>', "filters": True, "list": "helovin"})
+
+
 AKTSII_MIN = 1   # хоч одна придатна акційна картка; жодної (усі випали за перевірками) — сторінки й кнопки героя нема
 
 
@@ -1728,7 +1723,7 @@ def is_home_excluded(p, water_ok=False, allow_cats=frozenset()) -> bool:
     return bool((cat in HOME_PICK_EXCLUDED_CATS and cat not in allow_cats) or cat in NABORY_EXCLUDED_CATS or HOME_MILITARY_RE.search(name) or is_weapon_replica(str(p["id"]), name))
 
 
-def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), allow_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None, water_ok=False):
+def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats=frozenset(), allow_cats=frozenset(), name_re=None, bad_words=(), bad_cat_re=None, bad_name_re=None, alt_cat_re=None, water_ok=False, count=None, per_cat=None):
     """Відбір для каруселі: у наявності, фото, ціна 150–700 ₴, внесок ≥ HOME_MIN_CONTRIB, не «Уцінка»/«пошкоджено…» (ні за категорією, ні за назвою), не з
     HOME_PICK_EXCLUDED_CATS, не репліка зброї (за назвою — weapon_policy). Різноманітність (SMM 11.10): не більше 1 картки на «основу назви» (_pick_key), ≤2 з категорії,
     round-robin по категоріях (порядок — за кращим внеском категорії), з кожної категорії — ПОЗИЦІЯ З МЕДІАННИМ внеском (а не найвищим: найвищий внесок упирається в стелю діапазону —
@@ -1771,9 +1766,10 @@ def home_pick(prods, pmin=None, pmax=None, min_contrib=None, extra_excluded_cats
     order = head + ranked[HOME_PICK_CAT_POOL:]
     orig = {c: list(v) for c, v in by.items()}   # смуга 25–75% — за ПОВНИМ списком категорії, а не за залишком після першої вибраної позиції (15.10: другий вибір опускався до 2-го з 8 за внеском)
     out, used = [], set()
-    for _ in range(HOME_PICK_MAX_PER_CAT):
+    cnt_max, cat_max = (count or HOME_PICK_COUNT), (per_cat or HOME_PICK_MAX_PER_CAT)
+    for _ in range(cat_max):
         for c in order:
-            if len(out) >= HOME_PICK_COUNT:
+            if len(out) >= cnt_max:
                 break
             lst = [p for p in by[c] if _pick_key(p["name"]) not in used]
             if not lst:
@@ -1945,19 +1941,23 @@ def themed_active(first, last):
     return first is None or seasonal_active(first, last)
 
 
-def home_chip_sets(prods):
+def home_chip_sets(prods, count=None, per_cat=None):
     """{key: [товари]} для чипів; порожні набори не повертаємо (чип не показуємо)."""
     sets = {
         "nab": [p for _g, p in nabory_pick(prods)[:HOME_PICK_COUNT]],
     }
-    dp = demand_pick(prods)
+    if count:   # окрема сторінка чипа: увесь придатний список попиту (до count), а не добірка з 10
+        okd = _demand_ok(prods)
+        dp = okd[:count] if len(okd) >= DEMAND_MIN else []
+    else:
+        dp = demand_pick(prods)
     if dp:
         sets["pop"] = dp
     for key, _label, _sub, rx, first, last, extra_bad in HOME_SEASONAL:
         if seasonal_active(first, last):
             pk = home_pick(prods, pmin=100, pmax=700, min_contrib=HOME_SEASONAL_MIN_CONTRIB, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
                            name_re=re.compile(rx, re.I), bad_words=NABORY_BAD_WORDS,
-                           bad_cat_re=HOME_SEASONAL_BAD_CAT,
+                           bad_cat_re=HOME_SEASONAL_BAD_CAT, count=count, per_cat=per_cat,
                            bad_name_re=(re.compile(HOME_SEASONAL_BAD_NAME.pattern + "|" + extra_bad, re.I) if extra_bad else HOME_SEASONAL_BAD_NAME))
             if len(pk) >= HOME_SEASONAL_MIN:
                 sets[key] = pk
@@ -1965,7 +1965,7 @@ def home_chip_sets(prods):
         if themed_active(first, last):
             pk = home_pick(prods, pmin=pmin, pmax=pmax, min_contrib=mc, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
                            name_re=re.compile(rx, re.I), alt_cat_re=(re.compile(alt, re.I) if alt else None), water_ok=(key == "active"), bad_words=NABORY_BAD_WORDS,
-                           bad_cat_re=HOME_SEASONAL_BAD_CAT, bad_name_re=HOME_SEASONAL_BAD_NAME)
+                           bad_cat_re=HOME_SEASONAL_BAD_CAT, bad_name_re=HOME_SEASONAL_BAD_NAME, count=count, per_cat=per_cat)
             if len(pk) >= HOME_SEASONAL_MIN:
                 sets[key] = pk
     return {k: v for k, v in sets.items() if v}
@@ -2014,6 +2014,33 @@ def home_sale_picks(prods):
     return out if len(out) >= HOME_SALE_CAR_MIN else []
 
 
+# власник 16.10: «коли нажимаєш на чіп — перекидає на окрему сторінку, як при Уцінці, зі своїми сортувальниками». Чип → файл сторінки (Хелловін — наявний /helovin.html).
+CHIP_PAGE_FILES = {"ukr": "podibrka-ukrainske.html", "pop": "podibrka-populiarne.html", "bday": "podibrka-den-narodzhennia.html",
+                   "ny": "podibrka-mykolai-novyi-rik.html", "xmas": "podibrka-do-rizdva.html", "hel": "helovin.html"}
+CHIP_PAGE_N = 72           # до 3 сторінок по PER_PAGE
+CHIP_PAGE_PER_CAT = 4      # різноманітність: не більше стількох з однієї категорії
+
+
+def chip_page_sets(prods):
+    """{key: [товари]} для окремих сторінок чипів (без Хелловіну — його сторінка зі своїм складом): ті самі правила, що в чипів, але до CHIP_PAGE_N карток."""
+    sets = home_chip_sets(prods, count=CHIP_PAGE_N, per_cat=CHIP_PAGE_PER_CAT)
+    return {k: v for k, v in sets.items() if k in CHIP_PAGE_FILES and k != "hel" and k not in HOME_CHIPS_DROPPED}
+
+
+def write_chip_pages(prods, cat_list=None, cat_slug=None):
+    """Пише сторінки чипів (podibrka-*.html + _2/_3): шаблон «Уцінки» — крупна назва, сортування/категорія/ціна лише серед товарів сторінки, пагінація. Повертає set файлів."""
+    written = set()
+    sets = chip_page_sets(prods)
+    defs = {k: (lb, sb) for k, lb, sb in home_chip_defs(sets)}
+    for k, items in sets.items():
+        label, sub = defs[k]
+        n = len(items)
+        desc = f"{label}: добірка іграшок PlutusToys — {_fmt_int(n)} товар{_plural(n)} у наявності. " + (sub.rstrip(".") + ". " if sub else "") + "Відправляємо Новою Поштою по Україні."
+        written |= write_catalog(label, items, cat_list or [], cat_slug or {}, CHIP_PAGE_FILES[k], active=None,
+                                 special={"h1": label, "title": f"{label} — іграшки | PlutusToys", "desc": desc, "notice": "", "filters": True})
+    return written
+
+
 def home_chip_defs(chip_sets):
     """[(key, label, sub)] у порядку показу: активні сезонні (з наборами; «До Різдва» серед них) → «Популярне зараз» → «Набори» → вічнозелені тематичні."""
     seasonal = [(k, lb, sb) for k, lb, sb, _rx, f, l, _eb in HOME_SEASONAL if k in chip_sets]
@@ -2032,18 +2059,19 @@ def write_home(prods, cats, cat_list, cat_slug):
     carousel = ""
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
-        chip_sets = {k: v for k, v in home_chip_sets(prods).items() if k not in HOME_CHIPS_DROPPED}   # набори для чипів-«категорій» не будуємо в HTML (власник 16.10)
+        chip_sets = {k: v for k, v in home_chip_sets(prods, count=CHIP_PAGE_N, per_cat=CHIP_PAGE_PER_CAT).items() if k in CHIP_PAGE_FILES and k not in HOME_CHIPS_DROPPED}
         helovin_on = seasonal_active(HELOVIN_WINDOW[0], HELOVIN_WINDOW[1]) and len(helovin_pick(prods)) >= HELOVIN_MIN
+        if not helovin_on:
+            chip_sets.pop("hel", None)   # чип «Хелловін» веде на /helovin.html — нема сторінки, нема чипа
         slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True) for i, p in enumerate(picks))
         chips_html = ""
-        if chip_sets:
+        if chip_sets or utsinka_pick(prods):
+            # власник 16.10: чип = посилання на окрему сторінку (як «Уцінка»); карусель чипами не перемикається
             chips_html = (
-              '<noscript><style>.home-chips{display:none}</style></noscript>'
               '<div class="chips home-chips" id="home-chips" role="group" aria-label="Підбір іграшок">'
-              + "".join(f'<button type="button" class="chip{" chip-theme" if k in CHIP_ICONS else ""}" data-set="{k}" data-sub="{esc(sb)}"{(" data-all=" + chr(34) + HELOVIN_FILE + chr(34) + " data-all-label=" + chr(34) + "Усі товари для Геловіна →" + chr(34)) if (k == "hel" and helovin_on) else ""} aria-pressed="false">{CHIP_ICONS.get(k, "")}<span>{esc(t)}</span></button>' for k, t, sb in home_chip_defs(chip_sets))
-              + (f'<a class="chip chip-theme chip-link chip-sale" href="utsinka.html">{CHIP_ICON_SALE}<span>Уцінка</span></a>' if utsinka_pick(prods) else "")   # чип-посилання (власник 13.10): сторінка, а не набір у каруселі
-              + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p><a class="chip-all" id="home-car-all" href="catalog.html" hidden></a>'
-              + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
+              + "".join(f'<a class="chip{" chip-theme" if k in CHIP_ICONS else ""}" data-set="{k}" href="{CHIP_PAGE_FILES[k]}">{CHIP_ICONS.get(k, "")}<span>{esc(t)}</span></a>' for k, t, sb in home_chip_defs(chip_sets))
+              + (f'<a class="chip chip-theme chip-link chip-sale" href="utsinka.html">{CHIP_ICON_SALE}<span>Уцінка</span></a>' if utsinka_pick(prods) else "")
+              + '</div>')
         car_title = "Акції" if sale_picks else "Добірка Плутуса"
         carousel = (   # власник 16.10: чипи — ПІД каруселлю; карусель — з акційних товарів (поки акції нема — звична «Добірка Плутуса»)
           f'<h2 class="sr-only">{car_title}</h2>'

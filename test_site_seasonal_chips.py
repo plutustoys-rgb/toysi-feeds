@@ -65,9 +65,9 @@ a = [p["id"] for p in bs.home_chip_sets(prods)["hel"]]
 b = [p["id"] for p in bs.home_chip_sets(prods)["hel"]]
 chk("стабільно протягом доби", a == b)
 src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
-chk("розмітка: data-sub у кнопках і порожній <p id=home-chip-sub> під чипами", 'data-sub="{esc(sb)}"' in src and 'id="home-chip-sub" aria-live="polite"' in src)
+chk("розмітка: чипи — посилання <a data-set href=сторінка чипа>; підпис-<p home-chip-sub> більше не потрібен (власник 16.10)", 'data-set="{k}" href="{CHIP_PAGE_FILES[k]}"' in src and 'id="home-chip-sub"' not in src)
 app = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
-chk("JS: підпис чипа виводиться при перемиканні (home-chip-sub), «Усі» очищає", 'getElementById("home-chip-sub")' in app and 'b.getAttribute("data-sub") || ""' in app)
+
 os.environ.pop("SITE_PICK_DATE", None)
 
 print()

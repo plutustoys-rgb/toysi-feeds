@@ -156,7 +156,7 @@ if sync_playwright:
             pg.route("**/googletagmanager.com/**", lambda r: r.abort())
             pg.goto(f"{base}/index.html", wait_until="load")
             pg.wait_for_timeout(500)
-            chips = pg.evaluate("[...document.querySelectorAll('#home-chips button')].map(b=>b.dataset.set)")
+            chips = pg.evaluate("[...document.querySelectorAll('#home-chips a.chip[data-set]')].map(b=>b.dataset.set)")
             chk(f"{w}px: чипи на сторінці: {chips}", "all" not in chips and "xmas" in chips and "bday" in chips and "u300" not in chips)   # чипа «Усі» нема — власник 16.10
             lk = pg.evaluate("(()=>{const a=document.querySelector('#home-chips a.chip-link'); return a? [a.getAttribute('href'), a.textContent.trim(), getComputedStyle(a).textDecorationLine]:null})()")
             chk(f"{w}px: чип-посилання «Уцінка» → utsinka.html (посилання, не набір; без підкреслення) {lk}", lk == ["utsinka.html", "Уцінка", "none"])
@@ -166,16 +166,8 @@ if sync_playwright:
             bad = [k for k, v in DESIGN.items() if k in sty and not (sty[k][0] == _rgb(v[0]) and sty[k][1] == _rgb(v[1]) and sty[k][2] == _rgb(v[2]) and sty[k][3] and sty[k][5] == 1 and sty[k][6] == "none")]
             chk(f"{w}px: у Chromium кожен чип має свої колір/рамку/текст/тінь/іконку, без анімації (є: {sorted(k for k in DESIGN if k in sty)}; не збіглося: {bad})", len([k for k in DESIGN if k in sty]) >= 3 and not bad)   # 16.10: на головній лишились лише НЕ-категорійні чипи (bday, xmas у вікно, sale); school/duo/quiet/active/nab з розмітки прибрано
             chk(f"{w}px: чипи тематичні візуально різні — 8+ унікальних фонів", len({v[0] for v in sty.values()}) == len(sty))
-            for k in ("hel", "xmas", "bday"):
-                if k not in chips:
-                    continue
-                pg.click(f"#home-chips button[data-set={k}]")
-                pg.wait_for_timeout(250)
-                a = pg.evaluate(f"{ACT}('{k}')")
-                pg.click(f"#home-chips button[data-set={k}]")   # повторний клік знімає вибір (чипа «Усі» нема)
-                pg.wait_for_timeout(250)
-                o = pg.evaluate(f"{ACT}('{k}')")
-                chk(f"{w}px: «{k}» активний видно (контур 3px solid + ✓), повторний клік знімає вибір {a} / {o}", a[0] == "true" and a[1] == "solid" and a[2] == "3px" and "✓" in a[4] and o[0] == "false" and o[1] == "none" and a[5] == "none")
+            hrefs = pg.evaluate("Object.fromEntries([...document.querySelectorAll('#home-chips a.chip[data-set]')].map(b=>[b.dataset.set, b.getAttribute('href')]))")
+            chk(f"{w}px: чипи — ПОСИЛАННЯ на окремі сторінки (власник 16.10: «перекидає на окрему сторінку, як Уцінка»), кнопок нема: {hrefs}", all(hrefs[k] == bs.CHIP_PAGE_FILES[k] for k in hrefs) and not pg.evaluate("document.querySelectorAll('#home-chips button').length") and {"xmas", "bday"} <= set(hrefs))
             wrap = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const cs=getComputedStyle(b); const r=[...b.querySelectorAll('.chip')].map(x=>x.getBoundingClientRect()); return [cs.flexWrap, cs.overflowX, Math.max(...r.map(x=>x.right)) <= innerWidth + 1, b.scrollWidth <= b.clientWidth + 1]})()")
             if w >= 701:
                 chk(f"{w}px (десктоп): чипи головної переносяться, ВСІ видно без горизонтального скролу {wrap}", wrap[0] == "wrap" and wrap[1] == "visible" and wrap[2] and wrap[3])

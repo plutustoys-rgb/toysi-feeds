@@ -73,7 +73,9 @@ chk("видимого заголовка «Знижки −15%» і посила
 chk("чипа «Усі» нема (власник 16.10), жоден чип не активний на старті; посилання home-car-all приховане", 'data-set="all"' not in h1 and 'class="chip active"' not in h1 and 'class="chip chip-theme active"' not in h1 and '<a class="chip-all" id="home-car-all" href="catalog.html" hidden></a>' in h1)
 chk("слайди каруселі мають бейдж знижки", 'class="sale-badge"' in h1[h1.index('id="home-car"'):h1.index('id="home-chips"')])
 chk("чипи ПІД каруселлю: блок чипів іде після каруселі в HTML", h1.index('id="home-car"') < h1.index('id="home-chips"'))
-chk("секції «Більше іграшок» нема, замість неї кнопка «Усі товари» → catalog.html", "Більше іграшок" not in h1 and '<p class="home-more"><a class="btn" href="catalog.html">Усі товари</a></p>' in h1)
+chk("секції «Більше іграшок» нема, замість неї посилання «Усі товари →» зліва (вигляд «Усі знижки →»), без великої кнопки", "Більше іграшок" not in h1 and '<div class="sec-title more-title"><a href="catalog.html">Усі товари →</a></div>' in h1 and 'class="home-more"' not in h1)
+more1 = re.findall(r'href="product-(\d+)\.html"', h1.split('more-title', 1)[1].split('<footer', 1)[0])
+chk(f"під посиланням — до 10 карток, без повторів із каруселлю ({len(more1)})", 1 <= len(more1) <= 10 and not (set(more1) & set(ids)) and len(set(more1)) == len(more1))
 for k in ("nab", "school", "duo", "quiet", "active"):
     assert f'data-set="{k}"' not in h1, k
 chk("чипів-«категорій» (nab/school/duo/quiet/active) у розмітці нема, шаблонів car-set- для них теж", all(f'data-set="{k}"' not in h1 and f'id="car-set-{k}"' not in h1 for k in ("nab", "school", "duo", "quiet", "active")))
@@ -86,6 +88,17 @@ chk("акції нема: звична «Добірка Плутуса» (h2 sr-
 few = {"week": "w", "pct": 15, "from": START, "until": END, "items": {p["id"]: (p["old_price"], p["price"]) for p in sale[:3]}}
 h3 = home(few, [dict(p, old_price=(p["old_price"] if p["id"] in few["items"] else None)) for p in prods])
 chk("акційних карток менше 4 → карусель лишається звичайною «Добірка Плутуса» (але кнопка «Акції» є)", '<h2 class="sr-only">Добірка Плутуса</h2>' in h3 and "Знижки −" not in h3 and 'href="aktsii.html">' in h3)
+# «Популярне зараз»: під посиланням — випадкові (від дати) з списку попиту, щодня інший склад
+dem_ids = [p["id"] for p in normal if p["id"] not in {x for x in ids}][:24]
+bs._load_demand_featured = lambda today=None: {"ids": dem_ids, "categories": [], "date": None, "source": "test"}
+def more_for(day):
+    os.environ["SITE_PICK_DATE"] = day
+    hh = home(SALE)
+    return re.findall(r'href="product-(\d+)\.html"', hh.split('more-title', 1)[1].split('<footer', 1)[0])
+ma, mb = more_for("2026-10-21"), more_for("2026-10-22")
+chk(f"під посиланням — картки зі списку «Популярне зараз» (усі {len(ma)} у списку попиту), 10 штук, без повторів із каруселлю", len(ma) == 10 and set(ma) <= set(dem_ids) and not (set(ma) & set(ids)))
+chk("випадковість щодня: наступного дня склад/порядок інший, у межах дня стабільний", ma != mb and ma == more_for("2026-10-21"))
+os.environ["SITE_PICK_DATE"] = "2026-10-21"
 bs.SALE_ACTIVE = None
 print()
 if F:

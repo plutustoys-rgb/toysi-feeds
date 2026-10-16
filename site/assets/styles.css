@@ -570,3 +570,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
   .cat-bar .cat-controls,.gp .cat-bar .cat-controls{flex-wrap:nowrap}
   .cat-count,.gp .cat-count{padding:6px 16px 0}
 }
+.home-more{display:flex;justify-content:center;margin:20px 16px 8px}
+.home-more .btn{min-width:220px;text-align:center}
+.home-chips ~ .chip-all{display:inline-block;margin:-2px 16px 10px;font-size:13px;color:var(--accent)}
+.chip-all[hidden]{display:none}

@@ -149,17 +149,14 @@ chk("герой: h1 «Іграшки, що радують», у фікстурі
 chk("герой: підзаголовок ≤100 символів", len(re.search(r'<div class="txt"><h1>.*?</h1><p>(.*?)</p>', h).group(1)) <= 100)
 chk("герой: підзаголовок рівно «Обираємо те, що радує дитину.» (власник 13.10), фрази про «маму спокійною» ніде на головній нема", re.search(r'<div class="txt"><h1>.*?</h1><p>(.*?)</p>', h).group(1) == "Обираємо те, що радує дитину." and "спокійною" not in h)
 chk("карусель: секція «Добірка Плутуса», #home-car з role=region і aria-label, 2 стрілки — <button type=button> з aria-label",
-    'id="home-car" role="region" aria-label="Добірка Плутуса"' in h and "<h2>Добірка Плутуса</h2>" in h and h.count('<button class="arrow') == 2 and h.count('type="button" aria-label=') == 2)
+    'id="home-car" role="region" aria-label="Добірка Плутуса"' in h and '<h2 class="sr-only">Добірка Плутуса</h2>' in h and "<h2>Добірка Плутуса</h2>" not in h and h.count('<button class="arrow') == 2 and h.count('type="button" aria-label=') == 2)
 h_main = re.sub(r'<template id="car-set-.*?</template>', '', h, flags=re.S)   # чипи (SMM 12.10): набори в <template> — не слайди основної каруселі
 slides = re.findall(r'<a class="card slide" href="product-(\d+)\.html">', h_main)
 chk("карусель: рівно 10 слайдів у порядку відбору", slides == ids)
 imgs = re.findall(r'<a class="card slide".*?<img ([^>]*)>', h_main, re.S)
 chk("карусель: перші 3 зображення без loading=lazy, решта — lazy (4–5 на широкому екрані переводить JS)", all("lazy" not in x for x in imgs[:3]) and all("lazy" in x for x in imgs[3:]))
 chk("карусель: першому слайду fetchpriority=high (кандидат на LCP), іншим — ні", 'fetchpriority="high"' in imgs[0] and sum(1 for x in imgs if "fetchpriority" in x) == 1)
-chk("«Новинок» нема, є «Більше іграшок»", "Новинки" not in h and "<h2>Більше іграшок</h2>" in h)
-tail = h.split("<h2>Більше іграшок</h2>", 1)[1] if "<h2>Більше іграшок</h2>" in h else ""
-more = re.findall(r'href="product-(\d+)\.html"', tail)
-chk("«Більше іграшок»: без повторів із каруселлю", not (set(more) & set(ids)))
+chk("«Новинок» нема; секції «Більше іграшок» нема — замість неї кнопка «Усі товари» → catalog.html (власник 16.10)", "Новинки" not in h and "Більше іграшок" not in h and '<p class="home-more"><a class="btn" href="catalog.html">Усі товари</a></p>' in h)
 chk("в усій розмітці немає «Знижок»/«Хітів продажів» (немає старої ціни й власних продажів)", "Знижки" not in h and "Хіти продажів" not in h)
 bs.write_home(bad, {c: [p for p in v if p in bad] for c, v in cats.items() if any(p in bad for p in v)}, [c for c in cat_list if any(p in bad for p in cats[c])], cat_slug)
 h2 = (tmp / "index.html").read_text(encoding="utf-8")

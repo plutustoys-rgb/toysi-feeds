@@ -1955,6 +1955,26 @@ def home_chip_sets(prods):
     return {k: v for k, v in sets.items() if v}
 
 
+# власник 16.10 («погоджуюсь»): чипи, що дублюють категорії, з головної прибрано — лишаються тематичні/сезонні (Хелловін/Миколай, Українське, Популярне зараз, День народження, До Різдва) і посилання «Уцінка»
+HOME_CHIPS_DROPPED = frozenset({"nab", "school", "duo", "quiet", "active"})
+HOME_SALE_CAR_MIN = 4      # карусель з акційних товарів вмикається, коли придатних акційних карток ≥ стільки (інакше — звична «Добірка Плутуса»)
+HOME_SALE_CAR_PER_CAT = 2  # не більше стількох з однієї категорії (інакше найдешевші 10 — одна категорія)
+
+
+def home_sale_picks(prods):
+    """Наповнення каруселі з акційних товарів (власник 16.10): придатні акційні картки (aktsii_pick), по ≤ 2 з категорії, до HOME_PICK_COUNT, у порядку ціни. Менше HOME_SALE_CAR_MIN — [] (карусель лишається звичайною)."""
+    per, out = {}, []
+    for p in aktsii_pick(prods):
+        c = (p.get("category") or "").strip().lower()
+        if per.get(c, 0) >= HOME_SALE_CAR_PER_CAT:
+            continue
+        per[c] = per.get(c, 0) + 1
+        out.append(p)
+        if len(out) >= HOME_PICK_COUNT:
+            break
+    return out if len(out) >= HOME_SALE_CAR_MIN else []
+
+
 def home_chip_defs(chip_sets):
     """[(key, label, sub)] у порядку показу: активні сезонні (з наборами; «До Різдва» серед них) → «Популярне зараз» → «Набори» → вічнозелені тематичні."""
     seasonal = [(k, lb, sb) for k, lb, sb, _rx, f, l, _eb in HOME_SEASONAL if k in chip_sets]
@@ -1967,22 +1987,12 @@ def home_chip_defs(chip_sets):
 
 
 def write_home(prods, cats, cat_list, cat_slug):
-    picks = home_pick(prods)
-    pick_ids = {p["id"] for p in picks}
-    # Секція нижче каруселі: по 1 товару з топ-категорій з внеском ≥ HOME_MIN_CONTRIB (як і було), без повторів із каруселлю. Назва НЕ «Новинки»:
-    # ми не знаємо, що нове (SMM 09.10) — «Більше іграшок».
-    novelties = []
-    for c in cat_list[:12]:
-        lst = [p for p in cats[c] if p["id"] not in pick_ids
-               and p.get("contribution") is not None and p["contribution"] >= HOME_MIN_CONTRIB]
-        if lst:
-            novelties.append(lst[len(lst) // 2])
-        if len(novelties) >= 8:
-            break
+    sale_picks = home_sale_picks(prods)
+    picks = sale_picks or home_pick(prods)
     carousel = ""
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
-        chip_sets = home_chip_sets(prods)
+        chip_sets = {k: v for k, v in home_chip_sets(prods).items() if k not in HOME_CHIPS_DROPPED}   # набори для чипів-«категорій» не будуємо в HTML (власник 16.10)
         helovin_on = seasonal_active(HELOVIN_WINDOW[0], HELOVIN_WINDOW[1]) and len(helovin_pick(prods)) >= HELOVIN_MIN
         slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True) for i, p in enumerate(picks))
         chips_html = ""
@@ -1990,19 +2000,19 @@ def write_home(prods, cats, cat_list, cat_slug):
             chips_html = (
               '<noscript><style>.home-chips{display:none}</style></noscript>'
               '<div class="chips home-chips" id="home-chips" role="group" aria-label="Підбір іграшок">'
-              '<button type="button" class="chip active" data-set="all" aria-pressed="true">Усі</button>'
               + "".join(f'<button type="button" class="chip{" chip-theme" if k in CHIP_ICONS else ""}" data-set="{k}" data-sub="{esc(sb)}"{(" data-all=" + chr(34) + HELOVIN_FILE + chr(34) + " data-all-label=" + chr(34) + "Усі товари для Геловіна →" + chr(34)) if (k == "hel" and helovin_on) else ""} aria-pressed="false">{CHIP_ICONS.get(k, "")}<span>{esc(t)}</span></button>' for k, t, sb in home_chip_defs(chip_sets))
               + (f'<a class="chip chip-theme chip-link chip-sale" href="utsinka.html">{CHIP_ICON_SALE}<span>Уцінка</span></a>' if utsinka_pick(prods) else "")   # чип-посилання (власник 13.10): сторінка, а не набір у каруселі
-              + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p>'
+              + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p><a class="chip-all" id="home-car-all" href="catalog.html" hidden></a>'
               + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
-        carousel = (
-          '<div class="sec-title"><h2>Добірка Плутуса</h2><a id="home-car-all" href="catalog.html">Дивитись усі →</a></div>'
-          + chips_html +
-          '<div class="car" id="home-car" role="region" aria-label="Добірка Плутуса" data-list="Добірка Плутуса">'
+        car_title = f'Знижки −{SALE_ACTIVE["pct"]}%' if sale_picks else "Добірка Плутуса"
+        carousel = (   # власник 16.10: чипи — ПІД каруселлю; карусель — з акційних товарів (поки акції нема — звична «Добірка Плутуса»)
+          f'<h2 class="sr-only">{car_title}</h2>'
+          f'<div class="car" id="home-car" role="region" aria-label="{car_title}" data-list="{car_title}">'
             '<button class="arrow l" type="button" aria-label="Попередні товари">‹</button>'
             f'<div class="track">{slides}</div>'
             '<button class="arrow r" type="button" aria-label="Наступні товари">›</button>'
           '</div>'
+          + chips_html
         )
     # кнопка героя (власник 13.10): «Акції» → /aktsii.html (є придатні уцінені товари), інакше «Усі іграшки»; «Уцінка» — чип-посилання над каруселлю
     if aktsii_pick(prods):
@@ -2020,8 +2030,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
       '<div class="act">' + hero_act + '</div></div>'
       + carousel
-      + ('<div class="sec-title"><h2>Більше іграшок</h2><a href="catalog.html">Дивитись усі →</a></div>'
-         + grid(novelties) if novelties else "")
+      + '<p class="home-more"><a class="btn" href="catalog.html">Усі товари</a></p>'   # власник 16.10: замість секції «Більше іграшок» — кнопка переходу до всіх товарів
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),

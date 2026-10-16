@@ -56,7 +56,7 @@ def P(price, contrib, cat, name=None, stock=5):
 
 prods = [P(60 + i * 18, 55 + i, f"Кат{i % 12}") for i in range(14)]
 prods += [P(320 + i * 25, 105 + i, f"Кат{i % 12}") for i in range(14)]
-prods += [P(220 + i, 60, "Інша творчість", name=f"Набір для творчості \"Серія{i}\"") for i in range(12)]
+prods += [P(220 + i, 60, f"Набори{i % 6}", name=f"Набір для творчості \"Серія{i}\"") for i in range(12)]   # 16.10: чипи-«категорії» (у т.ч. «Набори») прибрано; для перевірки UI чипів лишається «День народження» (≤2 з категорії → потрібно ≥3 категорій)
 cats = {}
 for p in prods:
     cats.setdefault(p["category"], []).append(p)
@@ -152,8 +152,8 @@ with sync_playwright() as p:
         ev = lambda: pg.evaluate("(window.dataLayer||[]).map(a=>Array.from(a)).filter(a=>a[1]==='view_item_list'||a[1]==='select_item').map(a=>[a[1],a[2].item_list_id,a[2].item_list_name,a[2].items.length])")  # noqa: E731
         state = lambda: pg.evaluate("(()=>{const t=document.querySelector('#home-car .track'); return [t.children.length, t.querySelectorAll('[data-clone]').length, [...t.querySelectorAll('a.card:not([data-clone]) .pr')].map(e=>parseFloat(e.textContent))]})()")  # noqa: E731
         chips = pg.evaluate("[...document.querySelectorAll('#home-chips button')].map(b=>b.dataset.set)")
-        chk(f"{w}px: чипи Усі + Набори (чипи «До 300 ₴»/«300–700 ₴» прибрано, власник 13.10) {chips}", chips[0] == "all" and "nab" in chips and "u300" not in chips and "m700" not in chips)
-        keys = [c for c in chips if c != "all"]
+        chk(f"{w}px: чипи: «День народження» є, чипа «Усі» і чипів-«категорій» Набори/Тихі/Активні/Для двох/Школа нема — власник 16.10 {chips}", "all" not in chips and "bday" in chips and not ({"nab", "school", "duo", "quiet", "active", "u300", "m700"} & set(chips)))
+        keys = list(chips)
         base_state = state()
         chk(f"{w}px: початково 10 оригіналів + 20 клонів (30 дітей, банера нема)", base_state[0] == 30 and base_state[1] == 20)
         seen = {}
@@ -166,22 +166,21 @@ with sync_playwright() as p:
             seen[key] = (new, stt)
         chk(f"{w}px: кожне перемикання → РІВНО один view_item_list з id=name=home_chip_<ключ>, 10 позицій", all(len(seen[k][0]) == 1 and seen[k][0][0][:3] == ["view_item_list", f"home_chip_{k}", f"home_chip_{k}"] and 1 <= seen[k][0][0][3] <= 10 for k in seen))
         chk(f"{w}px: цикл (клонів рівно 2×min(n,10)) після кожного перемикання", all(seen[k][1][1] == 2 * min(seen[k][1][0] - seen[k][1][1], 10) for k in seen))
+        pg.evaluate("document.querySelector('#home-car .track a.card:not([data-clone])').click()")
+        pg.wait_for_timeout(200)
+        sel = [e for e in ev() if e[0] == "select_item"]
+        chk(f"{w}px: select_item у наборі «День народження» несе item_list_id/name home_chip_bday", sel and sel[-1][1] == "home_chip_bday" and sel[-1][2] == "home_chip_bday")
         before = len(ev())
-        pg.click("#home-chips button[data-set=nab]")
-        pg.wait_for_timeout(200)
-        chk(f"{w}px: повторний клік по активному чипу — без події й без зміни", len(ev()) == before)
-        pg.evaluate("document.querySelector('#home-car .track a.card:not([data-clone])').click()")
-        pg.wait_for_timeout(200)
-        sel = [e for e in ev() if e[0] == "select_item"]
-        chk(f"{w}px: select_item у наборі «Набори» несе item_list_id/name home_chip_nab", sel and sel[-1][1] == "home_chip_nab" and sel[-1][2] == "home_chip_nab")
-        pg.click("#home-chips button[data-set=all]")
+        pg.click("#home-chips button[data-set=bday]")   # повторний клік по активному чипу знімає вибір (чипа «Усі» нема — власник 16.10)
         pg.wait_for_timeout(250)
+        new = ev()[before:]
+        chk(f"{w}px: повторний клік по активному чипу вертає основну добірку: РІВНО один view_item_list home_pick / «Добірка Плутуса», клони 20 {new}", len(new) == 1 and new[0][:3] == ["view_item_list", "home_pick", "Добірка Плутуса"] and state()[:2] == [30, 20] and pg.evaluate("document.querySelectorAll('#home-chips .chip.active').length") == 0)
         pg.evaluate("document.querySelector('#home-car .track a.card:not([data-clone])').click()")
         pg.wait_for_timeout(200)
         sel = [e for e in ev() if e[0] == "select_item"]
-        chk(f"{w}px: після повернення на «Усі» select_item знову home_pick / «Добірка Плутуса»", sel[-1][1] == "home_pick" and sel[-1][2] == "Добірка Плутуса")
+        chk(f"{w}px: після повернення select_item знову home_pick / «Добірка Плутуса»", sel[-1][1] == "home_pick" and sel[-1][2] == "Добірка Плутуса")
         for i in range(60):
-            pg.evaluate(f"document.querySelector('#home-chips button[data-set={(keys + ['all'])[i % (len(keys) + 1)]}]').click()")
+            pg.evaluate(f"document.querySelector('#home-chips button[data-set={keys[i % len(keys)]}]').click()")
         pg.wait_for_timeout(300)
         chk(f"{w}px: після 60 перемикань клонів рівно 20, помилок консолі 0", state()[:2] == [30, 20] and errs == [])
         ctx.close()
@@ -191,12 +190,12 @@ with sync_playwright() as p:
         ctx, pg = page(w=w, h=h)
         pg.goto(f"{BASE}/index.html", wait_until="load")
         pg.wait_for_timeout(600)
-        pg.evaluate("document.querySelector('#home-chips button[data-set=nab]').click()")
+        pg.evaluate("document.querySelector('#home-chips button[data-set=bday]').click()")
         pg.wait_for_timeout(300)
         pg.evaluate("document.getElementById('home-car').scrollIntoView({block:'center'})")
         pg.wait_for_timeout(900)
         lists = pg.evaluate("(window.dataLayer||[]).map(a=>Array.from(a)).filter(a=>a[1]==='view_item_list').map(a=>[a[2].item_list_id,a[2].item_list_name])")
-        chk(f"{w}x{h}: чип натиснуто до появи каруселі у вікні → view_item_list РІВНО один (без дубля від IntersectionObserver): {lists}", lists == [["home_chip_nab", "home_chip_nab"]])
+        chk(f"{w}x{h}: чипи тепер ПІД каруселлю (власник 16.10) — карусель видно одразу: один view_item_list основної добірки на завантаженні + РІВНО один після чипа (без дублів від IntersectionObserver): {lists}", lists == [["home_pick", "Добірка Плутуса"], ["home_chip_bday", "home_chip_bday"]])
         if w == 320:
             m = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const r=[...b.querySelectorAll('button')].map(x=>x.getBoundingClientRect()); return [Math.max(...r.map(x=>x.right)), innerWidth, document.documentElement.scrollWidth]})()")
             row = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const cs=getComputedStyle(b); const bt=[...b.querySelectorAll('.chip')].map(x=>x.getBoundingClientRect().top); const car=document.getElementById('home-car').getBoundingClientRect(); return [Math.max(...bt)-Math.min(...bt), cs.flexWrap, cs.overflowX, document.documentElement.scrollWidth<=innerWidth, Math.round(car.top)]})()")

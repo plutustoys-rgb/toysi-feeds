@@ -157,25 +157,25 @@ if sync_playwright:
             pg.goto(f"{base}/index.html", wait_until="load")
             pg.wait_for_timeout(500)
             chips = pg.evaluate("[...document.querySelectorAll('#home-chips button')].map(b=>b.dataset.set)")
-            chk(f"{w}px: чипи на сторінці: {chips}", chips[0] == "all" and "xmas" in chips and "bday" in chips and "u300" not in chips)
+            chk(f"{w}px: чипи на сторінці: {chips}", "all" not in chips and "xmas" in chips and "bday" in chips and "u300" not in chips)   # чипа «Усі» нема — власник 16.10
             lk = pg.evaluate("(()=>{const a=document.querySelector('#home-chips a.chip-link'); return a? [a.getAttribute('href'), a.textContent.trim(), getComputedStyle(a).textDecorationLine]:null})()")
             chk(f"{w}px: чип-посилання «Уцінка» → utsinka.html (посилання, не набір; без підкреслення) {lk}", lk == ["utsinka.html", "Уцінка", "none"])
             sty = pg.evaluate("(()=>{const o={}; document.querySelectorAll('#home-chips .chip-theme').forEach(b=>{const k=b.dataset.set||'sale'; const c=getComputedStyle(b); o[k]=[c.backgroundColor, c.borderTopColor, c.color, c.boxShadow.indexOf('3px 3px 0px')>=0 || c.boxShadow.indexOf('3px 3px 0')>=0, c.borderTopLeftRadius, b.querySelectorAll('svg.chip-ico').length, c.animationName]}); return o})()")
             def _rgb(h):
                 return "rgb(%d, %d, %d)" % tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
             bad = [k for k, v in DESIGN.items() if k in sty and not (sty[k][0] == _rgb(v[0]) and sty[k][1] == _rgb(v[1]) and sty[k][2] == _rgb(v[2]) and sty[k][3] and sty[k][5] == 1 and sty[k][6] == "none")]
-            chk(f"{w}px: у Chromium кожен чип має свої колір/рамку/текст/тінь/іконку, без анімації (є: {sorted(k for k in DESIGN if k in sty)}; не збіглося: {bad})", len([k for k in DESIGN if k in sty]) >= 5 and not bad)
+            chk(f"{w}px: у Chromium кожен чип має свої колір/рамку/текст/тінь/іконку, без анімації (є: {sorted(k for k in DESIGN if k in sty)}; не збіглося: {bad})", len([k for k in DESIGN if k in sty]) >= 3 and not bad)   # 16.10: на головній лишились лише НЕ-категорійні чипи (bday, xmas у вікно, sale); school/duo/quiet/active/nab з розмітки прибрано
             chk(f"{w}px: чипи тематичні візуально різні — 8+ унікальних фонів", len({v[0] for v in sty.values()}) == len(sty))
-            a0 = pg.evaluate(f"{ACT}('all')")
-            chk(f"{w}px: «Усі» активний: контур 3px solid + галочка ✓ {a0}", a0[0] == "true" and a0[1] == "solid" and a0[2] == "3px" and "✓" in a0[4])
-            for k in ("hel", "xmas", "bday", "nab"):
+            for k in ("hel", "xmas", "bday"):
                 if k not in chips:
                     continue
                 pg.click(f"#home-chips button[data-set={k}]")
                 pg.wait_for_timeout(250)
                 a = pg.evaluate(f"{ACT}('{k}')")
-                o = pg.evaluate(f"{ACT}('all')")
-                chk(f"{w}px: «{k}» активний видно (контур 3px solid + ✓), «Усі» вже НЕ активний {a} / {o}", a[0] == "true" and a[1] == "solid" and a[2] == "3px" and "✓" in a[4] and o[0] == "false" and o[1] == "none" and a[5] == "none")
+                pg.click(f"#home-chips button[data-set={k}]")   # повторний клік знімає вибір (чипа «Усі» нема)
+                pg.wait_for_timeout(250)
+                o = pg.evaluate(f"{ACT}('{k}')")
+                chk(f"{w}px: «{k}» активний видно (контур 3px solid + ✓), повторний клік знімає вибір {a} / {o}", a[0] == "true" and a[1] == "solid" and a[2] == "3px" and "✓" in a[4] and o[0] == "false" and o[1] == "none" and a[5] == "none")
             wrap = pg.evaluate("(()=>{const b=document.getElementById('home-chips'); const cs=getComputedStyle(b); const r=[...b.querySelectorAll('.chip')].map(x=>x.getBoundingClientRect()); return [cs.flexWrap, cs.overflowX, Math.max(...r.map(x=>x.right)) <= innerWidth + 1, b.scrollWidth <= b.clientWidth + 1]})()")
             if w >= 701:
                 chk(f"{w}px (десктоп): чипи головної переносяться, ВСІ видно без горизонтального скролу {wrap}", wrap[0] == "wrap" and wrap[1] == "visible" and wrap[2] and wrap[3])

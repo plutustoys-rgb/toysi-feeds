@@ -356,5 +356,39 @@ bs5.handle_update(upd(C1, "/start PT-20261016-100000-aaaaaa"))
 chk("orders.db недоступна при /start: звичайне вітання, без винятку", to(as5, C1) == [sb.GREETING])
 sb.ORDERS_DB = Path(sdb)
 
+
+# ── (10б) правки аудиту #816 ──
+bf1, af1, df1 = mk()
+for i in range(sb.START_FAIL_LIMIT + 5):
+    bf1.handle_update(upd(C1, f"/start PT-20990101-0000{i:02d}-ffffff"))
+chk(f"хибні /start PT-… обмежено: після {sb.START_FAIL_LIMIT} за годину чат отримує тишу (відповідей рівно {sb.START_FAIL_LIMIT})", len(to(af1, C1)) == sb.START_FAIL_LIMIT)
+bf1.handle_update(upd(C2, "/start PT-20261016-100000-aaaaaa"))
+chk("ліміт по чату: інший чат підписується нормально", "PT-20261016-100000-aaaaaa" in to(af1, C2)[-1])
+set_order(delivery_status="delivered", toysi_ttn="20451561497392")
+bf2, af2, df2 = mk()
+bf2.handle_update(upd(C1, "/start PT-20261016-100000-aaaaaa"))
+chk("підписка на вже ДОСТАВЛЕНЕ замовлення закривається одразу (done=1) і не опитується вічно", "доставлено" in to(af2, C1)[-1] and df2.q("SELECT done FROM subscriptions")[0]["done"] == 1)
+set_order(delivery_status="processing", toysi_ttn=None)
+bf3, af3, df3 = mk()
+bf3.handle_update(upd(C1, "/start PT-20261016-100000-aaaaaa"))
+
+
+class Flaky(FakeAPI):
+    def call(self, method, **p):
+        if method == "sendMessage" and getattr(self, "mode", "") == "429":
+            raise RuntimeError("telegram sendMessage: Too Many Requests: retry after 5")
+        return super().call(method, **p)
+
+
+bf3.api = Flaky()
+bf3.api.mode = "429"
+for i in range(sb.SUB_FAIL_LIMIT + 3):
+    set_order(delivery_status=("shipped" if i % 2 == 0 else "packed"), toysi_ttn="20451561497392")
+    bf3.notify_changes()
+chk("тимчасова помилка Telegram (429) НЕ зараховується як «заблокував бота»: fails=0, підписка жива", df3.q("SELECT fails, done FROM subscriptions")[0]["fails"] == 0 and df3.q("SELECT done FROM subscriptions")[0]["done"] == 0)
+bf3.api.mode = ""
+set_order(delivery_status="shipped")
+chk("429 минув → клієнт отримує актуальний стан (оновлення не втрачено)", bf3.notify_changes() == 1 and "відправлено" in bf3.api.sent[-1][1])
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

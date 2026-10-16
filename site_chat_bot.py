@@ -48,9 +48,10 @@ GREETING = ("Вітаємо в PlutusToys! Напишіть своє питан�
             "Ваші повідомлення зберігаються лише для обробки звернення.")
 SUB_PER_ORDER = 3                # чатів на одне замовлення (покупець + родина), далі «підписку» не додаємо
 SUB_PER_CHAT = 10                # активних підписок на один чат
-SUB_FAIL_LIMIT = 5               # невдалих відправок підряд (клієнт заблокував бота) → підписку закрито
+SUB_FAIL_LIMIT = 5               # невдалих відправок підряд (клієнт заблокував бота) → підписку закрито; тимчасові помилки Telegram (429/мережа) не рахуються
+START_FAIL_LIMIT = 10            # хибних «/start PT-…» з одного чату за годину; далі мовчимо
 NOTIFY_EVERY = 60                # секунд між перевірками змін статусів підписаних замовлень
-SUB_WELCOME = "Дякуємо! Тут ми повідомлятимемо вас про статус замовлення {oid}: комплектація, відправлення (ТТН), доставка."
+SUB_WELCOME = "Дякуємо! Тут ми повідомлятимемо вас про зміни статусу замовлення {oid}."
 STATUS_NEED_PHONE = "Щоб показати статус замовлення, надішліть в ОДНОМУ повідомленні номер замовлення (PT-…) і рівно одне число з останніх 4 цифр телефону, на який воно оформлено."
 STATUS_NOT_FOUND = "Не вдалося знайти замовлення за цими даними. Перевірте номер (PT-…) і останні 4 цифри телефону; ми також прочитаємо ваше повідомлення й відповімо тут."
 ACK = "Дякуємо, повідомлення отримано. Ми прочитаємо його й відповімо тут."
@@ -225,6 +226,7 @@ class Bot:
         try:
             return self.api.call("sendMessage", chat_id=chat_id, text=text, **kw)
         except Exception as e:  # noqa: BLE001
+            self._last_send_error = str(e)
             print(f"[site_chat_bot] sendMessage → {chat_id} не вдалось: {type(e).__name__}: {str(e)[:120]}", file=sys.stderr)
             return None
 
@@ -290,6 +292,9 @@ class Bot:
 
     def _subscribe(self, chat_id, oid: str, now) -> None:
         """Прив'язує чат до замовлення (клієнт сам натиснув «Старт» за посиланням зі сторінки «Дякуємо»): далі notify_changes() пише про кожну зміну стану."""
+        since = (now - timedelta(hours=1)).replace(microsecond=0).isoformat()
+        if self.db.q("SELECT count(*) AS n FROM status_fails WHERE order_id=? AND ts>=?", (f"start:{chat_id}", since))[0]["n"] >= START_FAIL_LIMIT:
+            return                  # забагато хибних /start PT-… з цього чату за годину: мовчимо (захист від добору номерів і флуду)
         try:
             row = fetch_order_row(oid)
         except Exception as e:  # noqa: BLE001
@@ -297,6 +302,7 @@ class Bot:
             self._send(chat_id, GREETING)
             return
         if row is None or (row["status"] or "").lower() == "sandbox_test":
+            self.db.run("INSERT INTO status_fails(order_id, ts) VALUES(?,?)", (f"start:{chat_id}", now.replace(microsecond=0).isoformat()))
             self._send(chat_id, STATUS_NOT_FOUND)
             return
         iso = now.replace(microsecond=0).isoformat()
@@ -311,7 +317,8 @@ class Bot:
         txt = order_status_text(row)
         msg = SUB_WELCOME.format(oid=oid) + (chr(10) + chr(10) + "Зараз: " + txt if txt else "")
         if self._send(chat_id, msg) and txt:
-            self.db.run("UPDATE subscriptions SET last_text=?, done=0, fails=0 WHERE order_id=? AND chat_id=?", (txt, oid, chat_id))
+            final = (row["delivery_status"] or "").lower() in ("delivered", "cancelled") or "cancel" in (row["status"] or "").lower() or bool(row["cancelled_at"])
+            self.db.run("UPDATE subscriptions SET last_text=?, done=?, fails=0 WHERE order_id=? AND chat_id=?", (txt, 1 if final else 0, oid, chat_id))
 
     def notify_changes(self) -> int:
         """Для кожної активної підписки: стан замовлення змінився (текст статусу інший, ніж востаннє надісланий) → пишемо клієнту. Невідомий стан (None) нічого не шле. Доставлено/скасовано → підписку закрито. Повертає кількість надісланих."""
@@ -332,8 +339,9 @@ class Bot:
                 final = (row["delivery_status"] or "").lower() == "delivered" or "cancel" in (row["status"] or "").lower() or (row["delivery_status"] or "").lower() == "cancelled" or bool(row["cancelled_at"])
                 self.db.run("UPDATE subscriptions SET last_text=?, fails=0, done=? WHERE order_id=? AND chat_id=?", (txt, 1 if final else 0, s["order_id"], s["chat_id"]))
                 sent += 1
-            else:
-                self.db.run("UPDATE subscriptions SET fails=fails+1 WHERE order_id=? AND chat_id=?", (s["order_id"], s["chat_id"]))
+            elif any(k in str(getattr(self, "_last_send_error", "")).lower() for k in ("forbidden", "blocked", "chat not found", "deactivated")):
+                self.db.run("UPDATE subscriptions SET fails=fails+1 WHERE order_id=? AND chat_id=?", (s["order_id"], s["chat_id"]))      # клієнт заблокував бота / чат зник: остаточно
+            # інакше (429, мережа, 5xx) — тимчасово: без лічильника, повтор через хвилину
         return sent
 
     def _auto_status(self, chat_id, text: str, now) -> tuple:

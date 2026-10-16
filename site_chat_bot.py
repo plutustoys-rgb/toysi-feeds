@@ -5,6 +5,7 @@
   • /start → привітання з фактами (посилання на сторінки «Доставка», «Повернення», «Контакти»); /id → клієнт бачить свій chat_id (потрібно лише власнику, щоб прописати SITE_CHAT_OWNER_CHAT_ID).
   • Кожне текстове повідомлення клієнта: зберігається у ПРИВАТНУ чергу site_chat.db (номери карток маскуються), клієнту один раз за 6 год — підтвердження прийому, власнику (SITE_CHAT_OWNER_CHAT_ID) — копія з міткою клієнта.
   • Власник відповідає РЕПЛАЄМ на копію → бот пересилає текст клієнту (відповідь зберігається). Відповіді від інших чатів на «режим власника» не діють.
+  • АВТОВІДПОВІДЬ ПРО СТАТУС (16.10, рішення власника «статус треба віддавати клієнту»): повідомлення з номером замовлення сайту PT-YYYYMMDD-HHMMSS-xxxxxx І останніми 4 цифрами телефону замовлення → бот читає orders.db (mode=ro, platform='site') і відповідає станом (передано на комплектацію / укомплектовано / відправлено / доставлено / скасовано / очікуємо оплату) + ТТН НП із посиланням відстеження; без ПІБ, адреси, телефону, сум. Хибні/відсутні 4 цифри і неіснуюче замовлення — однакова відповідь; ≥5 невдалих звірок на замовлення за добу → автовідповідь по ньому вимкнена; невідомий стан (expired, sandbox) → відповідь дає людина. Копія власнику з міткою «🤖».
   • Захист: лише приватні чати, текст ≤2000 символів, ≤20 повідомлень/год на клієнта (далі мовчки ігноруємо, раз повідомляємо), не-текст (фото/файли) не зберігаємо, номери карток 13–19 цифр маскуємо перед записом.
   • Аудитор (plutus-executor) не має каналу до VPS: щоденну збірку запитів (без особистих даних) передає Код за вимогою — `python site_chat_bot.py digest`.
 ЗАПУСК: systemd site-chat-bot.service (Type=simple, long-polling getUpdates). Без SITE_CHAT_BOT_TOKEN у .env сервіс просто завершується (код 0) — токен створює власник у @BotFather і кладе ТІЛЬКИ в .env на VPS.
@@ -29,7 +30,9 @@ try:                                  # .env на VPS (SITE_CHAT_BOT_TOKEN, SITE
 except Exception:  # noqa: BLE001
     pass
 DB_PATH = Path(os.environ.get("SITE_CHAT_DB", str(HERE / "site_chat.db")))
+ORDERS_DB = Path(os.environ.get("SITE_CHAT_ORDERS_DB", str(HERE / "orders.db")))   # лише читання (mode=ro): статус замовлення для автовідповіді
 BASE_URL = "https://plutustoys.com.ua"
+STATUS_FAIL_LIMIT = 5            # невдалих звірок (номер + 4 цифри телефону) на одне замовлення за добу; далі автовідповідь про статус вимкнено (захист від добору 4 цифр)
 MAX_LEN = 2000
 RATE_N = 20                      # повідомлень від одного клієнта за RATE_WINDOW
 RATE_WINDOW = timedelta(hours=1)
@@ -40,7 +43,10 @@ GREETING = ("Вітаємо в PlutusToys! Напишіть своє питан�
             f"Доставка: {BASE_URL}/delivery.html\n"
             f"Повернення і обмін: {BASE_URL}/returns.html\n"
             f"Контакти: {BASE_URL}/contacts.html" + chr(10) + chr(10) +
+            "Щоб дізнатися статус замовлення, надішліть його номер (PT-…) і останні 4 цифри телефону, на який оформлено замовлення." + chr(10) + chr(10) +
             "Ваші повідомлення зберігаються лише для обробки звернення.")
+STATUS_NEED_PHONE = "Щоб показати статус замовлення, надішліть в ОДНОМУ повідомленні номер замовлення (PT-…) і рівно одне число з останніх 4 цифр телефону, на який воно оформлено."
+STATUS_NOT_FOUND = "Не вдалося знайти замовлення за цими даними. Перевірте номер (PT-…) і останні 4 цифри телефону; ми також прочитаємо ваше повідомлення й відповімо тут."
 ACK = "Дякуємо, повідомлення отримано. Ми прочитаємо його й відповімо тут."
 NON_TEXT = "Поки що ми приймаємо лише текстові повідомлення. Напишіть, будь ласка, питання словами."
 RATE_NOTICE = "Забагато повідомлень за короткий час. Ми їх бачимо, зачекайте, будь ласка, на відповідь."
@@ -89,7 +95,8 @@ class ChatDB:
             CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, direction TEXT, text TEXT, ts TEXT, forwarded INTEGER DEFAULT 0, owner_msg_id INTEGER);
             CREATE INDEX IF NOT EXISTS idx_msg_chat ON messages(chat_id, ts);
             CREATE INDEX IF NOT EXISTS idx_msg_owner ON messages(owner_msg_id);
-            CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);""")
+            CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);
+            CREATE TABLE IF NOT EXISTS status_fails (order_id TEXT, ts TEXT);""")
         try:
             os.chmod(self.path, 0o600)       # у черзі чужі ПІБ/телефони: лише власник процесу
         except OSError:
@@ -138,6 +145,52 @@ class TelegramAPI:
         if not d.get("ok"):
             raise RuntimeError(f"telegram {method}: {str(d.get('description'))[:100]}")
         return d["result"]
+
+
+_ORDER_RE = re.compile(r"(?<![\w-])PT-\d{8}-\d{6}-[0-9a-f]{6}(?![\w-])", re.I)
+_LAST4_RE = re.compile(r"(?<![\w+-])(\d{4})(?![\w-])")
+_TTN_RE = re.compile(r"^\d{10,20}$")
+
+
+def order_status_request(text: str):
+    """(номер замовлення, набір кандидатів «останні 4 цифри») із тексту клієнта, або None, якщо номера PT-… нема. Кандидати: окремі 4-значні числа поза номером замовлення і останні 4 цифри повного українського номера."""
+    m = _ORDER_RE.search(text or "")
+    if not m:
+        return None
+    rest = text[:m.start()] + " " + text[m.end():]
+    cands = set(_LAST4_RE.findall(rest))
+    for pm in _PHONE_RE.finditer(rest):
+        d = re.sub(r"\D", "", pm.group(0))
+        if len(d) >= 4:
+            cands.add(d[-4:])
+    return "PT-" + m.group(0)[3:].lower(), cands          # у БД номер у форматі PT-YYYYMMDD-HHMMSS-<hex малими>
+
+
+def order_status_text(row) -> str | None:
+    """Текст статусу замовлення сайту для клієнта (лише стан і ТТН, без ПІБ/адреси/телефону/сум); None — стан невідомий, автовідповіді не даємо (відповість людина)."""
+    st = (row["status"] or "").lower()
+    ds = (row["delivery_status"] or "").lower()
+    if st == "sandbox_test":
+        return None
+    if "cancel" in st or ds == "cancelled" or row["cancelled_at"]:
+        return "Замовлення скасовано. Якщо це сталося не за вашим бажанням, напишіть нам тут."
+    if (row["payment_method"] or "") == "prepaid" and not row["payment_confirmed"]:
+        return "Замовлення прийнято, очікуємо підтвердження оплати."
+    if st == "new":
+        return "Замовлення прийнято й обробляється."
+    if st != "forwarded_to_supplier":
+        return None             # toysi_error / escalated / awaiting_manual_confirmation / deleted…: відповідає людина, не «обробляється»
+    ttn = str(row["toysi_ttn"] or "").strip()
+    link = (chr(10) + f"ТТН Нової Пошти: {ttn}" + chr(10) + f"Відстежити: https://novaposhta.ua/tracking/?cargo_number={ttn}") if _TTN_RE.match(ttn) else ""
+    if ds == "delivered":
+        return "Замовлення доставлено." + link
+    if ds == "shipped":
+        return "Замовлення відправлено Новою Поштою." + link
+    if ds == "packed":
+        return "Замовлення укомплектовано, чекає відправлення." + link
+    if ds in ("processing", "assembling", ""):
+        return "Замовлення передано на комплектацію."
+    return None
 
 
 class Bot:
@@ -201,13 +254,55 @@ class Bot:
         clean = mask_cards(text.strip())[:MAX_LEN]
         cur = self.db.run("INSERT INTO messages(chat_id, direction, text, ts) VALUES(?,?,?,?)", (chat_id, "in", clean, iso))
         mid = cur.lastrowid
+        try:
+            note, replied = self._auto_status(chat_id, clean, now)
+        except Exception as e:  # noqa: BLE001 — збій автовідповіді не має забрати ACK і копію власнику
+            print(f"[site_chat_bot] автовідповідь про статус: {type(e).__name__}: {str(e)[:100]}", file=sys.stderr)
+            note, replied = "🤖 автовідповідь про статус не спрацювала: відповісти вручну", False
         cust = self.db.q("SELECT last_ack FROM customers WHERE chat_id=?", (chat_id,))[0]
-        if not cust["last_ack"] or cust["last_ack"] < (now - ACK_EVERY).replace(microsecond=0).isoformat():
+        if not replied and (not cust["last_ack"] or cust["last_ack"] < (now - ACK_EVERY).replace(microsecond=0).isoformat()):
             if self._send(chat_id, ACK):
                 self.db.run("UPDATE customers SET last_ack=? WHERE chat_id=?", (iso, chat_id))
-        self._forward(mid)
+        self._forward(mid, note)
 
-    def _forward(self, mid: int) -> bool:
+    def _auto_status(self, chat_id, text: str, now) -> tuple:
+        """Автовідповідь про статус замовлення сайту → (мітка для копії власнику або '', чи надіслано відповідь клієнту)."""
+        req = order_status_request(text)
+        if not req:
+            return "", False
+        oid, cands = req
+        if len(cands) != 1:          # 0 — нема цифр; >1 — це добір (кожне 4-значне число було б окремою спробою): звіряємо лише ОДНЕ число
+            self.reply_to(chat_id, STATUS_NEED_PHONE, kind="auto")
+            return "🤖 просила номер + рівно одне число з 4 цифр", True
+        since = (now - timedelta(days=1)).replace(microsecond=0).isoformat()
+        fails = self.db.q("SELECT count(*) AS n FROM status_fails WHERE order_id=? AND ts>=?", (oid, since))[0]["n"]
+        if fails >= STATUS_FAIL_LIMIT:
+            return "🤖 автовідповідь вимкнена (забагато невдалих звірок по цьому замовленню)", False
+        row = None
+        try:
+            import sqlite3 as _sq
+            oc = _sq.connect(Path(ORDERS_DB).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+            oc.row_factory = _sq.Row
+            try:
+                row = oc.execute("SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone FROM orders WHERE internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
+            finally:
+                oc.close()
+        except Exception as e:  # noqa: BLE001
+            print(f"[site_chat_bot] orders.db не прочитано: {type(e).__name__}", file=sys.stderr)
+            return "🤖 статус не перевірено (orders.db недоступна): відповісти вручну", False
+        last4 = re.sub(r"\D", "", (row["phone"] if row else "") or "")[-4:]
+        if row is None or len(last4) < 4 or last4 not in cands:
+            self.db.run("DELETE FROM status_fails WHERE ts<?", ((now - timedelta(days=2)).replace(microsecond=0).isoformat(),))
+            self.db.run("INSERT INTO status_fails(order_id, ts) VALUES(?,?)", (oid, now.replace(microsecond=0).isoformat()))
+            self.reply_to(chat_id, STATUS_NOT_FOUND, kind="auto")
+            return "🤖 замовлення не знайдено / 4 цифри не збіглися", True
+        msg = order_status_text(row)
+        if not msg:
+            return "🤖 стан замовлення невідомий для автовідповіді: відповісти вручну", False
+        self.reply_to(chat_id, f"Замовлення {oid}: {msg}", kind="auto")
+        return "🤖 надіслала клієнту статус замовлення", True
+
+    def _forward(self, mid: int, note: str = "") -> bool:
         """Копія клієнтського повідомлення власнику (з міткою клієнта). Без SITE_CHAT_OWNER_CHAT_ID — лишається в черзі (forwarded=0)."""
         if self.owner is None:
             return False
@@ -216,7 +311,7 @@ class Bot:
             return False
         r = r[0]
         who = (r["first_name"] or "клієнт") + (f" @{r['username']}" if r["username"] else "")
-        res = self._send(self.owner, f"💬 {who} (чат {r['chat_id']}):\n{r['text']}\n\n↩️ Відповідайте РЕПЛАЄМ на це повідомлення.")
+        res = self._send(self.owner, f"💬 {who} (чат {r['chat_id']}):\n{r['text']}\n\n" + (note + "\n" if note else "") + "↩️ Відповідайте РЕПЛАЄМ на це повідомлення.")
         if not res:
             return False
         self.db.run("UPDATE messages SET forwarded=1, owner_msg_id=? WHERE id=?", (res.get("message_id"), mid))
@@ -248,10 +343,11 @@ class Bot:
         ok = self.reply_to(r[0]["chat_id"], text.strip()[:MAX_LEN])
         self._send(self.owner, "✅ Надіслано клієнту." if ok else "⚠️ Не вдалося надіслати клієнту (він міг заблокувати бота).")
 
-    def reply_to(self, chat_id: int, text: str) -> bool:
+    def reply_to(self, chat_id: int, text: str, kind: str = "out") -> bool:
+        """kind='out' — відповідь людини (рахується в digest/list-new як «відповіли»); kind='auto' — автовідповідь бота (не рахується: чат лишається в черзі, поки не відповість людина)."""
         ok = self._send(chat_id, text)
         if ok:
-            self.db.run("INSERT INTO messages(chat_id, direction, text, ts, forwarded) VALUES(?,?,?,?,1)", (chat_id, "out", text, self.now().replace(microsecond=0).isoformat()))
+            self.db.run("INSERT INTO messages(chat_id, direction, text, ts, forwarded) VALUES(?,?,?,?,1)", (chat_id, kind, text, self.now().replace(microsecond=0).isoformat()))
         return bool(ok)
 
     # ── цикл
@@ -278,7 +374,10 @@ def digest(db: ChatDB, days: int = 1, now: datetime | None = None) -> str:
     out = [f"Запити клієнтів сайту за {days} добу: повідомлень {len(rows)}, клієнтів {len({r['chat_id'] for r in rows})}, клієнтам відповіли {answered}."]
     for r in rows:
         k = ids.setdefault(r["chat_id"], len(ids) + 1)
-        masked = _EMAIL_RE.sub("[e-mail]", _PHONE_RE.sub("[телефон]", r["text"]))[:300]
+        txt = r["text"]
+        if _ORDER_RE.search(txt):            # пара «номер замовлення + 4 цифри телефону» = ключ до статусу: у збірці лишаємо номер, 4-значні числа ховаємо
+            txt = _LAST4_RE.sub("[4 цифри]", txt)
+        masked = _EMAIL_RE.sub("[e-mail]", _PHONE_RE.sub("[телефон]", txt))[:300]
         out.append(f"  К{k}: {masked}")
     return "\n".join(out)
 

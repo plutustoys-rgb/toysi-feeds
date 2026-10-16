@@ -190,5 +190,107 @@ b6.handle_update(upd(C1, "Мій тел 067 123 45 67, ще +38 (067) 123-45-67 
 dg6 = sb.digest(d6, 1, now=clock["t"])
 chk("digest: усі формати телефону замасковано (3 шт.), ТТН і PT-номер лишились", dg6.count("[телефон]") == 3 and "20450123456789" in dg6 and "PT-20261010-142322-afbf46" in dg6 and "123 45 67" not in dg6 and "123-45-67" not in dg6)
 
+
+# ── (9) автовідповідь про статус замовлення сайту (номер PT-… + останні 4 цифри телефону; лише читання orders.db) ──
+import sqlite3
+odb = os.path.join(tempfile.mkdtemp(), "orders.db")
+oc = sqlite3.connect(odb)
+oc.execute("CREATE TABLE orders (internal_order_id TEXT, platform TEXT, status TEXT, delivery_status TEXT, payment_method TEXT, payment_confirmed INTEGER, toysi_ttn TEXT, cancelled_at TEXT, phone TEXT, customer_name TEXT)")
+
+
+def add_order(oid, status="forwarded_to_supplier", ds="shipped", pm="cod", paid=0, ttn="20451561497392", canc=None, phone="+380501234567", platform="site"):
+    oc.execute("INSERT INTO orders VALUES(?,?,?,?,?,?,?,?,?,?)", (oid, platform, status, ds, pm, paid, ttn, canc, phone, "Секретне Імя"))
+
+
+add_order("site_PT-20261013-114919-85fd5b")
+add_order("site_PT-20261013-114919-aaaaaa", ds="processing", ttn=None)
+add_order("site_PT-20261013-114919-bbbbbb", ds="packed")
+add_order("site_PT-20261013-114919-cccccc", status="pending", ds=None, pm="prepaid", paid=0, ttn=None)
+add_order("site_PT-20261013-114919-dddddd", status="cancelled", ds="cancelled")
+add_order("site_PT-20261013-114919-eeeeee", status="sandbox_test", ds=None, pm="prepaid", paid=1, ttn=None)
+add_order("site_PT-20261013-114919-ffffff", ds="delivered")
+add_order("site_PT-20261013-114919-0123ab", ds="expired")
+add_order("prom_PT-20261013-114919-abcabc", platform="prom")
+oc.commit()
+oc.close()
+sb.ORDERS_DB = Path(odb)
+
+
+def to(a, chat):
+    return [t for c, t in a.sent if c == chat]
+
+
+b9, a9, d9 = mk()
+b9.handle_update(upd(C1, "Статус PT-20261013-114919-85fd5b, телефон 4567"))
+rep = to(a9, C1)
+chk("статус: shipped + ТТН і посилання відстеження, без ПІБ/телефону/адреси/суми у відповіді; ACK не надсилається", len(rep) == 1 and "відправлено Новою Поштою" in rep[0] and "20451561497392" in rep[0] and "novaposhta.ua/tracking/?cargo_number=20451561497392" in rep[0] and "Секретне" not in rep[0] and "4567" not in rep[0] and sb.ACK not in rep[0])
+own = to(a9, OWNER)
+chk("копія власнику з міткою «🤖 надіслала клієнту статус»", len(own) == 1 and "🤖 надіслала клієнту статус" in own[0] and "↩️" in own[0])
+chk("автовідповідь збережена як auto (не out)", d9.q("SELECT count(*) AS n FROM messages WHERE chat_id=? AND direction='auto'", (C1,))[0]["n"] == 1)
+b9.handle_update(upd(C1, "pt-20261013-114919-85FD5B +380 50 123 45 67"))
+chk("номер в іншому регістрі й повний телефон: збіг по останніх 4 цифрах", sum(1 for t in to(a9, C1) if "відправлено" in t) == 2)
+b9.handle_update(upd(C1, "PT-20261013-114919-85fd5b"))
+chk("номер без 4 цифр → просимо 4 цифри (нічого про замовлення не кажемо)", to(a9, C1)[-1] == sb.STATUS_NEED_PHONE)
+b9.handle_update(upd(C1, "PT-20261013-114919-85fd5b 9999"))
+nf1 = to(a9, C1)[-1]
+b9.handle_update(upd(C1, "PT-20990101-000000-123456 9999"))
+nf2 = to(a9, C1)[-1]
+chk("хибні 4 цифри і неіснуюче замовлення: ОДНАКОВА відповідь (не розкриваємо, що замовлення існує)", nf1 == nf2 == sb.STATUS_NOT_FOUND)
+for i in range(4):
+    b9.handle_update(upd(C1, f"PT-20261013-114919-85fd5b 000{i}"))
+b9.handle_update(upd(C1, "PT-20261013-114919-85fd5b 4567"))
+last = to(a9, C1)[-1]
+chk("після 5 невдалих звірок автовідповідь вимкнена навіть для правильних 4 цифр (захист від добору): статусу нема", "відправлено" not in last and last != sb.STATUS_NOT_FOUND)
+b8, a8, d8 = mk()
+for oid, want in (("aaaaaa", "передано на комплектацію"), ("bbbbbb", "укомплектовано"), ("cccccc", "очікуємо підтвердження оплати"), ("dddddd", "скасовано"), ("ffffff", "доставлено")):
+    b8.handle_update(upd(C2, f"PT-20261013-114919-{oid} 4567"))
+    chk(f"стан {oid}: «{want}»", want in to(a8, C2)[-1])
+cnt = len(to(a8, C2))
+b8.handle_update(upd(C2, "PT-20261013-114919-eeeeee 4567"))
+b8.handle_update(upd(C2, "PT-20261013-114919-0123ab 4567"))
+tail = to(a8, C2)[cnt:]
+own8 = to(a8, OWNER)[-2:]
+chk("sandbox_test і невідомий delivery_status (expired): автовідповіді нема (лише ACK), власнику мітка «відповісти вручну»", all("відправлено" not in t and "доставлено" not in t for t in tail) and all("відповісти вручну" in t for t in own8))
+b8.handle_update(upd(C2, "PT-20261013-114919-abcabc 4567"))
+chk("замовлення іншої платформи (prom_PT-…) через бот не віддається", to(a8, C2)[-1] == sb.STATUS_NOT_FOUND)
+sb.ORDERS_DB = Path(tempfile.mkdtemp()) / "нема.db"
+b7, a7, d7 = mk()
+b7.handle_update(upd(C1, "PT-20261013-114919-85fd5b 4567"))
+chk("orders.db недоступна: без винятку, клієнт отримує звичайне підтвердження, власнику мітка", to(a7, C1) == [sb.ACK] and any("orders.db недоступна" in t for t in to(a7, OWNER)))
+src = Path(sb.__file__).read_text(encoding="utf-8")
+chk("статус — лише читання: connect mode=ro, у коді нема UPDATE/INSERT у orders", "mode=ro" in src and "UPDATE orders" not in src and "INSERT INTO orders" not in src)
+
+
+# ── (9б) правки аудиту #809 ──
+sb.ORDERS_DB = Path(odb)
+b6, a6, d6b = mk()
+many = " ".join(str(n) for n in range(4167, 4568))
+b6.handle_update(upd(C1, f"PT-20261013-114919-85fd5b {many}"))
+chk("добір: повідомлення з сотнею 4-значних чисел НЕ звіряється (статусу нема), клієнт отримує підказку про ОДНЕ число", sb.STATUS_NEED_PHONE in to(a6, C1) and not any("відправлено" in t for t in to(a6, C1)))
+b6.handle_update(upd(C1, "PT-20261013-114919-85fd5b 4567 4568"))
+chk("два кандидати (4567 і 4568) теж не звіряються", not any("відправлено" in t for t in to(a6, C1)) and d6b.q("SELECT count(*) AS n FROM status_fails")[0]["n"] == 0)
+b6.handle_update(upd(C2, "PT-20261013-114919-85fd5b 4567"))
+chk("рівно одне число: звірка проходить", any("відправлено" in t for t in to(a6, C2)))
+b5, a5, d5 = mk()
+b5.handle_update(upd(C1, "PT-20261013-114919-85fd5b 1111 де моя посилка"))
+chk("автовідповідь зберігається як 'auto', не 'out'", d5.q("SELECT count(*) AS n FROM messages WHERE chat_id=? AND direction='auto'", (C1,))[0]["n"] == 1 and d5.q("SELECT count(*) AS n FROM messages WHERE chat_id=? AND direction='out'", (C1,))[0]["n"] == 0)
+lq = d5.q("SELECT m.id FROM messages m WHERE m.direction='in' AND m.chat_id NOT IN (SELECT chat_id FROM messages WHERE direction='out')")
+chk("чат після автовідповіді «не знайдено» ЛИШАЄТЬСЯ в list-new (чекає відповіді людини)", len(lq) == 1)
+dg5 = sb.digest(d5, 1, now=clock["t"])
+chk("digest: «клієнтам відповіли 0» (автовідповіді не рахуються), 4-значне число поруч із PT-номером сховано", "клієнтам відповіли 0" in dg5 and "1111" not in dg5 and "[4 цифри]" in dg5 and "PT-20261013-114919-85fd5b" in dg5)
+oc3 = sqlite3.connect(odb)
+for oid_, st_, ds_ in (("111111", "toysi_error", None), ("222222", "new", None), ("333333", "forwarded_to_supplier", "assembling")):
+    oc3.execute("INSERT INTO orders VALUES(?,?,?,?,?,?,?,?,?,?)", (f"site_PT-20261013-114919-{oid_}", "site", st_, ds_, "cod", 0, None, None, "+380501234567", "Х"))
+oc3.commit()
+oc3.close()
+b4, a4, d4 = mk()
+for oid_ in ("111111", "222222", "333333"):
+    b4.handle_update(upd(C2, f"PT-20261013-114919-{oid_} 4567"))
+t4 = to(a4, C2)
+chk("toysi_error → автовідповіді про «обробляється» НЕМА (лише ACK, відповість людина); new → «прийнято й обробляється»; assembling → «передано на комплектацію»", t4[0] == sb.ACK and "обробляється" not in t4[0] and any("прийнято й обробляється" in t for t in t4) and any("передано на комплектацію" in t for t in t4))
+b3, a3, d3 = mk()
+b3._auto_status = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("database is locked"))
+b3.handle_update(upd(C1, "PT-20261013-114919-85fd5b 4567"))
+chk("збій автовідповіді (виняток) не губить ACK клієнту і копію власнику з міткою «відповісти вручну»", to(a3, C1) == [sb.ACK] and any("відповісти вручну" in t for t in to(a3, OWNER)))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

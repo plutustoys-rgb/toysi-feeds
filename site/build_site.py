@@ -410,7 +410,7 @@ def _parse_sale_week(raw, now):
     if start is None or end is None or not start < end:
         return bad("from/until мають бути ISO із поясом і from < until")
     if (end - start) > timedelta(days=8, hours=1):   # партія = 8 календарних діб 00:00…23:59:59 (Київ): при переході на зимовий час це 8 діб 0:59:59 за UTC, тож запас +1 год; місяць/помилка плану відхиляються
-        return bad("вікно акції довше 8 діб (очікується партія на 8 календарних діб)")
+        return bad("вікно акції довше 8 діб (партії акцій — одна доба; запас до 8 діб лишено для старого формату)")
     if not (start <= now <= end):
         return None   # поза вікном цього тижня: ігноруємо
     items = {}

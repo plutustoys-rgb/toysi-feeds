@@ -20,6 +20,8 @@ os.environ["SITE_PRICE_HISTORY_FILE"] = str(tmpd / "hist.json")
 os.environ["SITE_SALE_PICKS_FILE"] = str(tmpd / "picks.json")
 
 import site_sale as ss  # noqa: E402
+# Режим «партія на 8 діб по 9 товарів, ціна стабільна 7 днів» (до 16.10) — механізм збережено константами; тести нижче перевіряють його; щоденний режим 16.10 — у кінці файла
+ss.STABLE_DAYS, ss.N_ITEMS, ss.WINDOW_DAYS = 7, 9, 8
 
 F = []
 
@@ -196,6 +198,59 @@ alerts.clear()
 chk("перевірка: до старту (неділя) чинного тижня нема → (0,0) без алерту", ss.check_applied(at(2026, 10, 25, 12), idx_bad, sw) == (0, 0) and not alerts)
 chk("перевірка: файл відсутній → (0,0) без алерту", ss.check_applied(at(2026, 10, 28, 12), idx_bad, tmpd / "nofile.json") == (0, 0) and not alerts)
 chk("перевірка: застосовано 4 із 10 (<половини) → алерт; 5 з 10 → ні", (ss.check_applied(at(2026, 10, 28, 12), idx_ok[:4] + idx_bad[4:], sw)[1] == 4 and "site_sale_not_applied" in alerts) and (alerts.clear() or ss.check_applied(at(2026, 10, 28, 12), idx_ok[:5] + idx_bad[5:], sw)[1] == 5 and not alerts))
+
+# ── ЩОДЕННИЙ режим 16.10 (власник: «тримаєш 1 день, на наступний нова партія»; стару ціну не доводимо 7 днями): 72 товари, вікно 1 доба, без історії цін ──
+ss.STABLE_DAYS, ss.N_ITEMS, ss.WINDOW_DAYS = 0, 72, 1
+s_, e_, wk_ = ss.next_batch_window(at(2026, 10, 16, 18))
+chk("щоденна партія: з 18:00 16.10 → доба 17.10 00:00:00 … 23:59:59 (+03:00), мітка 2026-10-17", s_.isoformat() == "2026-10-17T00:00:00+03:00" and e_.isoformat() == "2026-10-17T23:59:59+03:00" and wk_ == "2026-10-17")
+s_, e_, wk_ = ss.next_batch_window(at(2026, 10, 24, 18))
+chk("доба переходу на зимовий час 25.10: 00:00 +03:00 … 23:59:59 +02:00 (<8 діб+1 год, build_site приймає)", s_.isoformat() == "2026-10-25T00:00:00+03:00" and e_.isoformat() == "2026-10-25T23:59:59+02:00")
+_idx = [dict(x) for x in index]
+_op_id = _idx[9]["id"]
+_idx[9].update(pr=340, op=400)           # товар ЗАРАЗ у знижці: pr акційна, op звичайна
+(tmpd / "index.json").write_text(json.dumps(_idx), encoding="utf-8")
+for _f in ("sale_week.json", "picks.json"):
+    (tmpd / _f).unlink(missing_ok=True)
+Path(os.environ["SITE_PRICE_HISTORY_FILE"]).write_text("{}", encoding="utf-8")
+alerts.clear()
+rc = ss.cmd_plan(now=at(2026, 10, 16, 18), catalog=catalog)
+d1 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"][-1]
+chk("без історії цін (порожній файл): партія складається одразу (код 0); фікстура має лише ~26 придатних < 72 → алерт «партія неповна»; вікно доба 17.10", rc == 0 and alerts == ["site_sale_short"] and d1["from"] == "2026-10-17T00:00:00+03:00" and d1["until"] == "2026-10-17T23:59:59+03:00" and len(d1["items"]) >= 15)
+chk("кожен товар партії: pct 5–15, new = ceil(old×(100−pct)/100)", all(5 <= v["pct"] <= 15 and v["new"] == ss.sale_ceil(v["old"], v["pct"]) for v in d1["items"].values()))
+chk("товар, що зараз у знижці (pr=340, op=400): стара ціна партії = ЗВИЧАЙНА 400, не акційна 340", _op_id in d1["items"] and d1["items"][_op_id]["old"] == 400)
+ss.N_ITEMS = 10
+for _f in ("sale_week.json", "picks.json"):
+    (tmpd / _f).unlink(missing_ok=True)
+rc1 = ss.cmd_plan(now=at(2026, 10, 16, 18), catalog=catalog)
+rc2 = ss.cmd_plan(now=at(2026, 10, 17, 18), catalog=catalog)
+dd = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
+chk("наступна доба: нова партія 18.10 з ДРУГИХ 10 товарів (повтор протягом 7 днів виключено), партія 17.10 ще у файлі до кінця доби", rc1 == rc2 == 0 and [w["week"] for w in dd] == ["2026-10-17", "2026-10-18"] and not (set(dd[0]["items"]) & set(dd[1]["items"])) and len(dd[1]["items"]) == 10)
+rc3 = ss.cmd_plan(now=at(2026, 10, 18, 18), catalog=catalog)
+dd3 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
+chk("через добу: партія 17.10 (закінчилась 17.10 23:59:59) прибрана, лишились 18.10 і 19.10", [w["week"] for w in dd3] == ["2026-10-18", "2026-10-19"])
+ss.N_ITEMS = 72
+
+# пропущений запуск 18:00: наздоганяння о 00:05 складає партії і на СЬОГОДНІ, і на завтра; увечері (18:00) і в першому запуску — лише на завтра
+for _f in ("sale_week.json", "picks.json"):
+    (tmpd / _f).unlink(missing_ok=True)
+ss.N_ITEMS = 8
+rc = ss.cmd_plan(now=at(2026, 10, 16, 9, 0), catalog=catalog)
+w0 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
+chk("перший запуск вранці (акцій ще не було): лише завтрашня партія, наздоганяння НЕ вмикається", [w["week"] for w in w0] == ["2026-10-17"])
+(tmpd / "sale_week.json").unlink()
+rc = ss.cmd_plan(now=at(2026, 10, 17, 0, 5), catalog=catalog)
+w1 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
+chk("запуск 18:00 пропущено, о 00:05 17.10 наздоганяння: у файлі і сьогоднішня (17.10), і завтрашня (18.10), перша вже діє о 00:05", rc == 0 and [w["week"] for w in w1] == ["2026-10-17", "2026-10-18"] and datetime.fromisoformat(w1[0]["from"]) <= at(2026, 10, 17, 0, 5) < datetime.fromisoformat(w1[0]["until"]) and not (set(w1[0]["items"]) & set(w1[1]["items"])))
+rc = ss.cmd_plan(now=at(2026, 10, 17, 18, 0), catalog=catalog)
+w2 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
+chk("о 18:00 звичайний запуск: переплановується лише партія на завтра (18.10, ідемпотентно), файл [17.10, 18.10], без наздоганяння", [w["week"] for w in w2] == ["2026-10-17", "2026-10-18"])
+# алерт «немає чинної партії»: акції запускались (є picks), а сьогодні чинної нема
+(tmpd / "sale_week.json").write_text(json.dumps({"weeks": []}), encoding="utf-8")
+alerts.clear()
+(tmpd / "index.json").write_text(json.dumps(index), encoding="utf-8")
+ss.cmd_history(now=at(2026, 10, 20, 3, 0))
+chk("cmd_history: акції запускались, чинної партії нема → алерт site_sale_no_active_batch", "site_sale_no_active_batch" in alerts)
+ss.N_ITEMS = 72
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

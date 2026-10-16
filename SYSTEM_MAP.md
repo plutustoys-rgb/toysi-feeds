@@ -432,7 +432,7 @@
     "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog",
     "promo-margin-guard", "site-order-api", "site-rebuild", "stock-snapshot", "site-price-history", "site-sale-plan", "site-chat-bot", "gmc-status-report",
     "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync",
-    "bank-check", "vps-code-sync"
+    "bank-check", "vps-code-sync", "toysi-top", "demand-featured-auto", "restart-if-changed"
   ],
   "gh_workflows": ["update-feeds.yml"]
 }

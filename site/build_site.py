@@ -1375,6 +1375,10 @@ UTSINKA_FILE = "utsinka.html"
 UTSINKA_NOTICE = ('<div class="md-notice" role="note"><b>Уцінений товар:</b> має дефект або неповну комплектацію — це вказано в назві/описі. '
                   'Дефект, указаний у назві чи описі, є умовою продажу за зниженою ціною. '
                   'Перед покупкою прочитайте опис. <a href="returns.html">Умови повернення</a></div>')
+# власник 16.10 (скетч підтверджено: «так»): на сторінці Уцінки примітка — у закріпленій панелі (назва + сортування + примітка не йдуть за прокруткою); повний текст на ПК, на телефоні — один рядок
+UTSINKA_NOTICE_BAR = ('<div class="md-notice md-notice-bar" role="note"><span class="md-full"><b>Уцінений товар:</b> має дефект або неповну комплектацію — це вказано в назві/описі. '
+                      'Дефект, указаний у назві чи описі, є умовою продажу за зниженою ціною. Перед покупкою прочитайте опис. </span>'
+                      '<span class="md-short"><b>Уцінка:</b> дефект вказано в описі товару. </span><a href="returns.html">Умови повернення</a></div>')
 
 
 def utsinka_pick(prods):
@@ -1394,7 +1398,7 @@ def write_utsinka(prods, cat_list, cat_slug):
     n = len(picked)
     desc = f"Уцінені іграшки PlutusToys: {_fmt_int(n)} товар{_plural(n)}, ціни від {picked[0]['price']} ₴. Дефект чи неповна комплектація вказані в назві й описі."
     return write_catalog("Уцінені іграшки", picked, cat_list, cat_slug, UTSINKA_FILE, active=None,
-                         special={"h1": "Уцінені іграшки", "title": "Уцінені іграшки — знижені ціни | PlutusToys", "desc": desc, "notice": UTSINKA_NOTICE, "filters": True})
+                         special={"h1": "Уцінені іграшки", "title": "Уцінені іграшки — знижені ціни | PlutusToys", "desc": desc, "notice": UTSINKA_NOTICE, "notice_bar": UTSINKA_NOTICE_BAR, "filters": True})
 
 
 AKTSII_FILE = "aktsii.html"
@@ -1527,9 +1531,9 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             h1cls = "page cat-h1" + (" sr-only" if special.get("h1_hidden") else "")
             body = (
                 crumbs_html(trail) +
-                f'<div class="cat-bar"><h1 class="{h1cls}">{esc(special["h1"])}</h1>' + _catalog_controls() + '</div>\n' +
+                f'<div class="cat-bar"><h1 class="{h1cls}">{esc(special["h1"])}</h1>' + _catalog_controls() + (special.get("notice_bar") or "") + '</div>\n' +
                 f'<script type="application/json" id="cat-ids">{ids_json}</script>\n' +
-                (special.get("notice") or "") + _catalog_js_grid() + f'<div id="cat-static">{static_grid}</div>'
+                ((special.get("notice") or "") if not special.get("notice_bar") else "") + _catalog_js_grid() + f'<div id="cat-static">{static_grid}</div>'
             )
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
             written.add(cur)
@@ -1807,6 +1811,7 @@ HOME_SEASONAL = (
 )
 # Інлайн-SVG іконки тематичних чипів (SMM 13.10: без картинок і емодзі, лише векторні; aria-hidden, текст чипа — окремо)
 CHIP_ICONS = {
+    "new": '<svg class="chip-ico ico-new" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 2l2.2 6.3L21 9l-5 4.2 1.7 6.8L12 16.4 6.3 20l1.7-6.8L3 9l6.8-.7z"/></svg>',
     "hel": '<svg class="chip-ico ico-hel" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M12 5.2c.2-1.2.9-2 2-2.4" fill="none" stroke="#7BC043" stroke-width="2" stroke-linecap="round"/><ellipse cx="12" cy="14" rx="9" ry="7.6" fill="#FF7A1A"/><path d="M8 11.4l2 1.8-2.2.2zM16 11.4l-2 1.8 2.2.2zM8.6 16.4q3.4 2.6 6.8 0l-.8 1.7-1.4-.9-1.2 1-1.2-1-1.4.9z" fill="#1B1030"/></svg>',
     "ny": '<svg class="chip-ico ico-ny" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><g stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7"/><path d="M9.5 3.6L12 6l2.5-2.4M9.5 20.4L12 18l2.5 2.4" fill="none" stroke-width="1.6"/></g></svg>',
     "pop": '<svg class="chip-ico ico-pop" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12.5 2c.6 3.6-2.8 4.8-4 8.2-.5 1.4-.2 2.7.5 3.7-1.7-.4-2.9-2-2.9-4 0 0-3 2.4-3 6.3A7.9 7.9 0 0 0 11.9 22 7.9 7.9 0 0 0 20 14.2c0-4.2-3.3-6.1-4.6-8.7-.6 1.2-.7 2.3-.6 3.2-1.8-1-3.1-3.4-2.3-6.7z"/></svg>',
@@ -1876,6 +1881,48 @@ def _read_demand_file(path, today=None, label="demand_featured.json"):
 
 
 DEMAND_AUTO_NAME = "demand_featured_auto.json"
+TOYSI_TOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toysi_top.json")
+TOYSI_TOP_MAX_AGE_DAYS = 3     # файл оновлюється двічі на добу (08:05/16:05); старіший за це — чип «Новинки» ховаємо (не показуємо застаріле)
+
+
+def _load_toysi_top(today=None):
+    """{"ids": [...], "date": date} з site/toysi_top.json (власник 16.10: «Новинка — створіть чіп і покладіть туди ТОП відвантажень»). ids = lists.shipments, далі week (без повторів, порядок Toysi).
+    Нема файлу — None без шуму (чип прихований); зламаний/без дати/старіший за TOYSI_TOP_MAX_AGE_DAYS — None голосно."""
+    try:
+        with open(TOYSI_TOP_FILE, encoding="utf-8-sig") as f:
+            data = json.loads(f.read())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError) as e:
+        print(f"[build] ⚠ toysi_top.json НЕ прочитано ({type(e).__name__}) — чипа «Новинки» нема", file=sys.stderr)
+        return None
+    lists = data.get("lists") if isinstance(data, dict) else None
+    if not isinstance(lists, dict):
+        print('[build] ⚠ toysi_top.json: очікується {"date":..., "lists": {"shipments": [...]}} — чипа «Новинки» нема', file=sys.stderr)
+        return None
+    raw = str(data.get("date") or str(data.get("fetched_at") or "")[:10]).strip()
+    m = re.fullmatch(r"([0-9]{4})-([0-9]{2})-([0-9]{2})", raw)
+    dt = None
+    if m:
+        try:
+            dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        except ValueError:
+            dt = None
+    if dt is None:
+        print("[build] ⚠ toysi_top.json: нема коректної date/fetched_at — чипа «Новинки» нема", file=sys.stderr)
+        return None
+    if ((today or _today()) - dt).days > TOYSI_TOP_MAX_AGE_DAYS:
+        print(f"[build] ⚠ toysi_top.json застарів ({dt}, > {TOYSI_TOP_MAX_AGE_DAYS} днів) — чипа «Новинки» нема", file=sys.stderr)
+        return None
+    ids = []
+    for key in ("shipments", "week"):
+        for x in (lists.get(key) or []):
+            if isinstance(x, bool) or not isinstance(x, (str, int)):
+                continue
+            sx = str(x).strip()
+            if sx and sx not in ids:
+                ids.append(sx)
+    return {"ids": ids, "date": dt} if ids else None
 
 
 def _load_demand_featured(today=None):
@@ -1970,6 +2017,11 @@ def home_chip_sets(prods, count=None, per_cat=None):
         dp = demand_pick(prods)
     if dp:
         sets["pop"] = dp
+    top = _load_toysi_top()
+    if top:   # «Новинки» = ТОП відвантажень Toysi (за фактом переважно свіжі надходження; власник 16.10) — ті самі правила придатності, що й попит
+        nl = _demand_ok(prods, {"ids": top["ids"]})
+        if len(nl) >= DEMAND_MIN:
+            sets["new"] = nl[:count] if count else nl[:HOME_PICK_COUNT]
     for key, _label, _sub, rx, first, last, extra_bad in HOME_SEASONAL:
         if seasonal_active(first, last):
             pk = home_pick(prods, pmin=100, pmax=700, min_contrib=HOME_SEASONAL_MIN_CONTRIB, extra_excluded_cats=HOME_CHIP_EXCLUDED_CATS,
@@ -2033,7 +2085,7 @@ def home_sale_picks(prods):
 
 # власник 16.10: «коли нажимаєш на чіп — перекидає на окрему сторінку, як при Уцінці, зі своїми сортувальниками». Чип → файл сторінки (Хелловін — наявний /helovin.html).
 CHIP_PAGE_FILES = {"ukr": "podibrka-ukrainske.html", "pop": "podibrka-populiarne.html", "bday": "podibrka-den-narodzhennia.html",
-                   "ny": "podibrka-mykolai-novyi-rik.html", "xmas": "podibrka-do-rizdva.html", "hel": "helovin.html"}
+                   "ny": "podibrka-mykolai-novyi-rik.html", "xmas": "podibrka-do-rizdva.html", "hel": "helovin.html", "new": "podibrka-novynky.html"}
 CHIP_PAGE_N = 72           # до 3 сторінок по PER_PAGE
 CHIP_PAGE_PER_CAT = 4      # різноманітність: не більше стількох з однієї категорії
 
@@ -2064,6 +2116,7 @@ def home_chip_defs(chip_sets):
     dated = [(k, lb, sb) for k, lb, sb, _rx, f, l, _p1, _p2, _mc, _ac in HOME_THEMED if f is not None and k in chip_sets]
     evergreen = [(k, lb, sb) for k, lb, sb, _rx, f, l, _p1, _p2, _mc, _ac in HOME_THEMED if f is None and k in chip_sets]
     pop = [("pop", "Популярне зараз", "Те, що зараз шукають найчастіше")] if "pop" in chip_sets else []
+    pop += [("new", "Новинки", "Свіжі надходження: ТОП відвантажень Toysi")] if "new" in chip_sets else []
     return seasonal + dated + pop + [(k, t, "") for k, t in HOME_CHIPS if k in chip_sets] + evergreen
 
 

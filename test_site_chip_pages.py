@@ -3,6 +3,7 @@
 """test_site_chip_pages.py — 16.10.2026 (власник: «коли нажимаєш на чіп повинно перекидати на окрему сторінку, як при нажиманні Уцінки. Зі своїми сортувальниками»).
 Чип головної = посилання на свою сторінку (podibrka-*.html; Halloween — /helovin.html); сторінка — шаблон «Уцінки»: крупна назва + панель сортування/категорії/ціни (cat-controls + cat-ids), до 72 карток на 3 сторінки,
 пагінація як у каталозі; сезонні сторінки (Миколай, До Різдва, Halloween) існують лише у своє вікно; стару сторінку прибирає крок прибирання."""
+import json
 import os
 import re
 import sys
@@ -46,7 +47,9 @@ prods += many("Українська абетка «{}»", 40, 220, 60, "Укр{}
 prods += many("Новорічна ялинка «{}»", 40, 250, 60, "Ялинки{}")            # ny (11.25–12.31), xmas (12.1–12.25)
 prods += many("Гарбуз декоративний «{}»", 30, 200, 60, "Гарб{}")           # hel (10.1–10.31)
 prods += [P(f"Популярна іграшка «{W[i % 20]}{i}»", 300 + i, 90, f"Поп{i}") for i in range(30)]
-dem = [p["id"] for p in prods[-30:]]
+newp = [P(f"Свіжа іграшка «{W[i % 20]}{i}»", 260 + i, 70, f"Нов{i}") for i in range(30)]   # ТОП Toysi (toysi_top.json): чип «Новинки»
+prods += newp
+dem = [p["id"] for p in prods[-60:-30]]
 prods += [P(f"Звичайна іграшка «{W[i % 20]}{i}»", 300 + i, 150, f"Звич{i}") for i in range(14)]   # основна добірка каруселі (внесок ≥100) — без неї чипів на головній нема
 bs._load_demand_featured = lambda today=None: {"ids": dem, "categories": [], "date": None, "source": "test"}
 bs.HELOVIN_JSON = str(Path(tempfile.mkdtemp()) / "none.json")
@@ -67,6 +70,9 @@ def build_day(day):
     return w
 
 
+TOP = Path(tempfile.mkdtemp()) / "toysi_top.json"
+bs.TOYSI_TOP_FILE = str(TOP)
+TOP.write_text(json.dumps({"date": "2026-12-10", "fetched_at": "2026-12-10T16:05:00", "lists": {"shipments": [p["id"] for p in newp[:20]], "week": [p["id"] for p in newp[10:]], "yesterday": [], "month": []}}), encoding="utf-8")
 w1 = build_day("2026-12-10")
 chk(f"10.12: сторінки Українське/Популярне/День народження/Миколай/До Різдва є (24 + решта на стор. 2), Геловіну нема: {sorted(w1)}",
     {"podibrka-ukrainske.html", "podibrka-populiarne.html", "podibrka-den-narodzhennia.html", "podibrka-mykolai-novyi-rik.html", "podibrka-do-rizdva.html"} <= w1 and "helovin.html" not in w1 and "podibrka-ukrainske_2.html" in w1)
@@ -85,6 +91,18 @@ hrefs = dict(re.findall(r'<a class="chip(?: chip-theme)?" data-set="(\w+)" href=
 chk(f"головна: чипи — посилання на свої сторінки {hrefs}", {"ukr", "pop", "bday", "ny", "xmas"} <= set(hrefs) and all(hrefs[k] == bs.CHIP_PAGE_FILES[k] and (out / hrefs[k]).exists() for k in hrefs) and "hel" not in hrefs)
 chk("кожен чип головної має живу сторінку (нема чипів-«сиріт»)", all((out / v).exists() for v in hrefs.values()))
 sm = bs.write_sitemap  # sitemap сегменти беруться з paged: файли мають бути в наборі, який віддає write_chip_pages
+chk("«Новинки» (ТОП Toysi, власник 16.10): сторінка podibrka-novynky.html є, чип на головній веде на неї", "podibrka-novynky.html" in w1 and hrefs.get("new") == "podibrka-novynky.html" and "Новинки" in home)
+nv = (out / "podibrka-novynky.html").read_text(encoding="utf-8")
+nv_ids = [x.strip().strip('"') for x in re.search(r'<script type="application/json" id="cat-ids">(.*?)</script>', nv).group(1).strip("[]").split(",")]
+chk(f"склад «Новинок»: спершу shipments у порядку Toysi, далі week без повторів ({len(nv_ids)} id, перші збігаються)", nv_ids[:20] == [p["id"] for p in newp[:20]] and len(nv_ids) == len(set(nv_ids)) == 30)
+TOP.write_text(json.dumps({"date": "2026-11-01", "lists": {"shipments": [p["id"] for p in newp]}}), encoding="utf-8")
+w_old = build_day("2026-12-10")
+chk("застарілий toysi_top.json (> 3 днів) — чипа «Новинки» і сторінки нема, решта чипів на місці", "podibrka-novynky.html" not in w_old and 'data-set="new"' not in (out / "index.html").read_text(encoding="utf-8") and "podibrka-ukrainske.html" in w_old)
+TOP.unlink()
+w_none = build_day("2026-12-10")
+chk("нема toysi_top.json — чип «Новинки» прихований без помилки", "podibrka-novynky.html" not in w_none and 'data-set="new"' not in (out / "index.html").read_text(encoding="utf-8"))
+TOP.write_text(json.dumps({"date": "2026-12-10", "lists": {"shipments": [p["id"] for p in newp]}}), encoding="utf-8")
+w1 = build_day("2026-12-10")
 chk("файли сторінок чипів починаються з «podibrka» (префікс у кроці прибирання застарілих сторінок)", all(f.startswith("podibrka") for f in w1))
 
 w2 = build_day("2026-10-20")

@@ -724,6 +724,9 @@
     // сторінка подяки — підставити номер замовлення
     var oidEl=document.getElementById("thanks-oid");
     if(oidEl){ try{ oidEl.textContent = sessionStorage.getItem("pt_last_order") || ""; }catch(e){} }
+    // кнопка «Отримувати статус у Telegram»: бот дізнається номер із ?start=<номер замовлення> (допустимі символи payload Telegram [A-Za-z0-9_-], ≤64; наш PT-YYYYMMDD-HHMMSS-xxxxxx підходить)
+    var tgEl=document.getElementById("thanks-tg");
+    if(tgEl){ try{ var tgo=(sessionStorage.getItem("pt_last_order")||"").trim(); if(/^[A-Za-z0-9_-]{1,64}$/.test(tgo)){ tgEl.setAttribute("href","https://t.me/plutustoys_support_bot?start="+encodeURIComponent(tgo)); var tw=document.getElementById("thanks-tg-wrap"); if(tw) tw.hidden=false; } }catch(e){} }
 
     // подія purchase — один раз на замовлення (оновлення сторінки не дублює): дані зберіг checkout у sessionStorage
     if(oidEl){

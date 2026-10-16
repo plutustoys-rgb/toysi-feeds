@@ -69,7 +69,7 @@ ids = car_ids(h1)
 sale_ids = {p["id"] for p in sale}
 chk(f"є акція: карусель з акційних товарів (усі {len(ids)} слайдів — акційні), ≥4, ≤10", 4 <= len(ids) <= 10 and set(ids) <= sale_ids)
 chk("не більше 2 акційних з однієї категорії (різноманітність)", max(sum(1 for i in ids if next(p for p in prods if p["id"] == i)["category"] == c) for c in {p["category"] for p in sale}) <= 2)
-chk("видимого заголовка «Знижки −15%» і посилання «Усі знижки →» нема (власник 16.10: відсоток видно на картках); h2 лишився для структури (sr-only)", '<h2 class="sr-only">Знижки −15%</h2>' in h1 and "<h2>Знижки" not in h1 and "Усі знижки" not in h1 and "Добірка Плутуса" not in h1)
+chk("видимого заголовка і посилання «Усі знижки →» нема (власник 16.10: відсоток видно на картках); h2 лишився для структури (sr-only)", '<h2 class="sr-only">Акції</h2>' in h1 and "Знижки −" not in h1 and "Знижка тижня" not in h1 and "Усі знижки" not in h1 and "Добірка Плутуса" not in h1)
 chk("чипа «Усі» нема (власник 16.10), жоден чип не активний на старті; посилання home-car-all приховане", 'data-set="all"' not in h1 and 'class="chip active"' not in h1 and 'class="chip chip-theme active"' not in h1 and '<a class="chip-all" id="home-car-all" href="catalog.html" hidden></a>' in h1)
 chk("слайди каруселі мають бейдж знижки", 'class="sale-badge"' in h1[h1.index('id="home-car"'):h1.index('id="home-chips"')])
 chk("чипи ПІД каруселлю: блок чипів іде після каруселі в HTML", h1.index('id="home-car"') < h1.index('id="home-chips"'))

@@ -76,8 +76,8 @@ prods_k = [{"id": "3", "name": "Акційний А", "price": 340, "old_price":
            {"id": "9", "name": "Звичайний", "price": 250, "stock": 3, "photo": "x.jpg", "category": "Конструктори", "contribution": 100}]
 bs.SALE_ACTIVE = sale
 ah = bs._category_aside_html(prods_k)
-chk("є акційні товари і діє акція: «Знижки −15%», найдешевший акційний (Б, 255 ₴ зі старою 300 ₴), посилання «Усі знижки →» на aktsii.html",
-    'aria-label="Знижки −15%"' in ah and "product-6.html" in ah and '<s class="pr-old">300 ₴</s>' in ah and 'href="aktsii.html">Усі знижки' in ah and "product-3.html" not in ah)
+chk("є акційні товари і діє акція: «Акції», найдешевший акційний (Б, 255 ₴ зі старою 300 ₴), посилання «Усі знижки →» на aktsii.html",
+    'aria-label="Акції"' in ah and "product-6.html" in ah and '<s class="pr-old">300 ₴</s>' in ah and 'href="aktsii.html">Усі знижки' in ah and "product-3.html" not in ah)
 bs.SALE_ACTIVE = None
 ah2 = bs._category_aside_html(prods_k)
 chk("акції нема (SALE_ACTIVE=None) — колонка «Рекомендуємо», без «Усі знижки»", "Рекомендуємо" in ah2 and "aktsii.html" not in ah2)

@@ -263,6 +263,13 @@ _check("6i. вибірка 9 (<10) → висновків нема", len(_r), 0)
 _r = vf.evaluate_returns({"ret_pub_n": 10, "ret_pub_buy": 6})
 _check("6j. вибірка 10, кнопка 6/10 (<70%) → порушення", len(_r), 1)
 
+# «здані» повернення (_readd_failed): ростуть два зрізи поспіль → порушення (факт, не поріг)
+_r = vf.evaluate_given_up({"ret_failed": 379}, [227, 302])
+_check("7a. 227 → 302 → 379 (росте двічі поспіль) → порушення з числами", (len(_r), "227 → 302 → 379" in _r[0]), (1, True))
+_check("7b. 302 → 302 → 379 (перша пауза в рості) → не порушення", len(vf.evaluate_given_up({"ret_failed": 379}, [302, 302])), 0)
+_check("7c. зменшується 400 → 380 → 379 → не порушення", len(vf.evaluate_given_up({"ret_failed": 379}, [400, 380])), 0)
+_check("7d. історії <2 точок або None → не вигадуємо", (len(vf.evaluate_given_up({"ret_failed": 5}, [3])), len(vf.evaluate_given_up({"ret_failed": None}, [1, 2]))), (0, 0))
+
 # часовий пояс і скасовані
 _utc = vf._parse_prom_dt("2026-09-24T13:23:56.878746+00:00")
 _local = vf.datetime(2026, 9, 24, 13, 23, 56, tzinfo=vf.timezone.utc).astimezone().replace(tzinfo=None)

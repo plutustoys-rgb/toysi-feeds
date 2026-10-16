@@ -249,6 +249,17 @@ def evaluate_returns(row: dict) -> list:
     return out
 
 
+def evaluate_given_up(row: dict, hist: list) -> list:
+    """«Здані» повернення (`_readd_failed`: позицію повернули у фід, а Prom не створив її за READD_GIVEUP_HOURS і ми перестали чекати) — це товари, які втрачено для вітрини. Факт, а не поріг: число росте ДВА зрізи поспіль (hist — попередні значення від старішого до новішого). 16.10 було 10 → 47 → 227 → 302 → 379 без жодного сигналу."""
+    now = row.get("ret_failed")
+    if now is None or len(hist) < 2:
+        return []
+    a, b = hist[-2], hist[-1]
+    if a is not None and b is not None and now > b > a:
+        return [f"«здані» повернення ростуть: {a} → {b} → {now} (Prom не створює повернуті позиції, ми перестали чекати) — розбір причин: Код"]
+    return []
+
+
 def evaluate_orders(row: dict, prev: dict | None):
     """(тиша_замовлень: список, подія_першого_замовлення: список). None → не вигадуємо."""
     silence, event = [], []
@@ -259,6 +270,21 @@ def evaluate_orders(row: dict, prev: dict | None):
     if d is not None and pd is not None and pd >= NO_ORDERS_DAYS and d < pd and d < NO_ORDERS_DAYS:
         event.append(f"Prom: ПЕРШЕ (не скасоване) замовлення після розриву {pd} діб (останнє: {row.get('last_order_at')}). Це може бути і власний тестовий — перевір картку замовлення; якщо справжнє, ланцюг кампанія → вітрина → покупка працює.")
     return silence, event
+
+
+def _prev_failed(n: int = 2) -> list:
+    """Останні n значень ret_failed з CSV (від старішого до новішого); порожні/нечислові пропускаються."""
+    try:
+        rows = list(csv.DictReader(open(CSV_FILE, encoding="utf-8")))
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for r in rows:
+        try:
+            out.append(int(r.get("ret_failed")))
+        except (TypeError, ValueError):
+            continue
+    return out[-n:]
 
 
 def _prev_row():
@@ -321,7 +347,7 @@ def record(cat: dict, sample_n: int = SAMPLE_N, alert: bool = True) -> dict:
     row.update(returned_fate(cat))
     prev = _prev_row()
     problems = evaluate(row, prev)
-    ret_problems = evaluate_returns(row)
+    ret_problems = evaluate_returns(row) + evaluate_given_up(row, _prev_failed())
     silence, first_order = evaluate_orders(row, prev)
     row["alerts"] = " | ".join(problems + ret_problems + silence)
     print(f"[Funnel] усього {row['total']} · в наявності {row['avail']} · в кампанії {in_cpa} ({row['in_cpa_pct']:.0f}%) · "

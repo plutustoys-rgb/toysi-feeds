@@ -246,11 +246,16 @@ FOOTER_LINKS = [
     ("returns.html", "Повернення"), ("contacts.html", "Контакти"),
     ("offer.html", "Публічна оферта"), ("privacy.html", "Політика конфіденційності"),
 ]
+FOOTER_CATS = []          # [(назва, "category-….html")] — заповнює build(); порожній (тести без збірки) → блоку нема
+FOOTER_CATS_MAX = 30      # SEO 16.10: ≥30 видимих текстових посилань на /category-… (внутрішня вага категоріям; на головному екрані нічого не з'являється)
 def footer():
     nav = " · ".join(f'<a href="{u}">{esc(t)}</a>' for u, t in FOOTER_LINKS)
+    fcats = ('<nav class="fcats" aria-label="Категорії іграшок">'
+             + " · ".join(f'<a href="{u}">{esc(t)}</a>' for t, u in FOOTER_CATS) + '</nav>') if FOOTER_CATS else ""
     return (
       '<footer class="foot">'
       f'<nav class="fnav">{nav}</nav>'
+      + fcats +
       '<p class="fphone"><a href="tel:+380730150815">📞 +380 (73) 015-08-15</a> · '
       '<a href="mailto:plutustoys@gmail.com">plutustoys@gmail.com</a></p>'
       '<p class="flp">' + LIQPAY_LOGO_HTML.format(src=asset_url('assets/liqpay-logo.svg'), w=100, h=21) + '</p>'
@@ -681,6 +686,7 @@ def build():
             _used[base] = 1
             cat_slug[c] = base
     SEARCH_POPULAR[:] = [(c, f"category-{cat_slug[c]}.html") for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:8]
+    FOOTER_CATS[:] = [(c, f"category-{cat_slug[c]}.html") for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:FOOTER_CATS_MAX]
 
     # крос-сел як ДОПОВНЕННЯ (add-on), НЕ замінник: до 4 ДЕШЕВШИХ товарів з ІНШОЇ
     # категорії. Стара логіка брала ту саму категорію за близькою ціною → на картці
@@ -2726,7 +2732,7 @@ def write_trust_pages():
 # Після запису mtime файла = t, тож Apache віддає Last-Modified = дата реальної зміни й відповідає 304 на If-Modified-Since між збірками.
 LASTMOD_STATE_FILE = ".htlastmod_state.json"
 # + «хром» сторінки, що залежить від рейтингу категорій УСЬОГО каталогу, а не від самої сторінки: популярні категорії в оверлеї пошуку (sr-pill) і рядок чипів-категорій (div.chips) — інакше будь-яка зміна ціни десь у каталозі пересувала б lastmod УСІХ 28 тис. сторінок.
-_LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0-9a-f]{8}|<a class="sr-pill" href="[^"]*">[^<]*</a>|<div class="chips">.*?</div>', re.S)
+_LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0-9a-f]{8}|<a class="sr-pill" href="[^"]*">[^<]*</a>|<div class="chips">.*?</div>|<nav class="fcats".*?</nav>', re.S)   # + перелік категорій у футері (глобальний «хром»: топ-30 за кількістю рухається від наявності — це не зміна сторінки)
 # На КАРТЦІ товару додатково не рахуємо сітки інших товарів («Додайте до замовлення», «Схожі товари» — підбір залежить від стану всього каталогу): lastmod картки = зміна ЇЇ власних даних (назва, ціна, наявність, фото, текст), а не чужих.
 _LASTMOD_GRID_RX = re.compile(r'<h2>[^<]*</h2><div class="grid">(?:\s*<a class="card".*?</a>)*\s*</div>', re.S)
 # На сторінці категорії не рахуємо права колонка «Рекомендуємо»/«Знижка тижня» (ротація щодня, акція щотижня — це не зміна самої сторінки).

@@ -1831,23 +1831,23 @@ DEMAND_MAX_AGE_DAYS = 21
 DEMAND_MIN = 6
 
 
-def _load_demand_featured(today=None):
+def _read_demand_file(path, today=None, label="demand_featured.json"):
     """({'ids': [...], 'categories': [...], 'date': date|None, 'source': str}) або None. Нема файлу — None без шуму; є, але зламаний/застарілий — None ГОЛОСНО (stderr)."""
     try:
-        with open(DEMAND_FILE, encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             raw = f.read()
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as e:
-        print(f"[build] ⚠ demand_featured.json НЕ прочитано ({type(e).__name__}: {e}) — чипа «Популярне зараз» нема", file=sys.stderr)
+        print(f"[build] ⚠ {label} НЕ прочитано ({type(e).__name__}: {e}) — чипа «Популярне зараз» нема", file=sys.stderr)
         return None
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError) as e:
-        print(f"[build] ⚠ demand_featured.json — невалідний JSON ({e}) — чипа нема", file=sys.stderr)
+        print(f"[build] ⚠ {label} — невалідний JSON ({e}) — чипа нема", file=sys.stderr)
         return None
     if not isinstance(data, dict) or not isinstance(data.get("ids"), list):
-        print('[build] ⚠ demand_featured.json: очікується {"date":..., "ids":[...]} — чипа нема', file=sys.stderr)
+        print("[build] ⚠ " + label + ': очікується {"date":..., "ids":[...]} — чипа нема', file=sys.stderr)
         return None
     dt = None
     m = re.fullmatch(r"([0-9]{4})-([0-9]{2})-([0-9]{2})", str(data.get("date") or "").strip())
@@ -1857,10 +1857,10 @@ def _load_demand_featured(today=None):
         except ValueError:
             dt = None
     if dt is None:
-        print("[build] ⚠ demand_featured.json: нема коректної date (YYYY-MM-DD) — чипа нема (без дати свіжість невідома)", file=sys.stderr)
+        print(f"[build] ⚠ {label}: нема коректної date (YYYY-MM-DD) — чипа нема (без дати свіжість невідома)", file=sys.stderr)
         return None
     if ((today or _today()) - dt).days > DEMAND_MAX_AGE_DAYS:
-        print(f"[build] ⚠ demand_featured.json застарів ({dt}, > {DEMAND_MAX_AGE_DAYS} днів) — чипа нема", file=sys.stderr)
+        print(f"[build] ⚠ {label} застарів ({dt}, > {DEMAND_MAX_AGE_DAYS} днів) — чипа нема", file=sys.stderr)
         return None
     ids = []
     for x in data["ids"]:
@@ -1873,6 +1873,20 @@ def _load_demand_featured(today=None):
                 break
     cats = [str(c).strip() for c in (data.get("categories") or []) if isinstance(c, str) and c.strip()][:DEMAND_MAX_IDS] if isinstance(data.get("categories"), list) else []
     return {"ids": ids, "categories": cats, "date": dt, "source": str(data.get("source") or "")[:80]}
+
+
+DEMAND_AUTO_NAME = "demand_featured_auto.json"
+
+
+def _load_demand_featured(today=None):
+    """Список попиту для «Популярне зараз»: ручний від SEO (demand_featured.json, у git) і автоматичний від Code (demand_featured_auto.json, щоденно з Search Console, лише на VPS, не в git) — береться ТОЙ,
+    у якого свіжіша date (при рівності — ручний). Застарілий/зламаний файл ігнорується голосно; обидва непридатні — None (чипа нема, не вигадуємо)."""
+    manual = _read_demand_file(DEMAND_FILE, today, "demand_featured.json")
+    auto = _read_demand_file(os.path.join(os.path.dirname(DEMAND_FILE), DEMAND_AUTO_NAME), today, DEMAND_AUTO_NAME)
+    cands = [c for c in (manual, auto) if c]
+    if not cands:
+        return None
+    return max(cands, key=lambda c: (c["date"], c is manual))
 
 
 def _demand_ok(prods, demand=None):

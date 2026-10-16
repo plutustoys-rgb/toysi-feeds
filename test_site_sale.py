@@ -230,5 +230,27 @@ dd3 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
 chk("через добу: партія 17.10 (закінчилась 17.10 23:59:59) прибрана, лишились 18.10 і 19.10", [w["week"] for w in dd3] == ["2026-10-18", "2026-10-19"])
 ss.N_ITEMS = 72
 
+# пропущений запуск 18:00: наздоганяння о 00:05 складає партії і на СЬОГОДНІ, і на завтра; увечері (18:00) і в першому запуску — лише на завтра
+for _f in ("sale_week.json", "picks.json"):
+    (tmpd / _f).unlink(missing_ok=True)
+ss.N_ITEMS = 8
+rc = ss.cmd_plan(now=at(2026, 10, 16, 9, 0), catalog=catalog)
+w0 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
+chk("перший запуск вранці (акцій ще не було): лише завтрашня партія, наздоганяння НЕ вмикається", [w["week"] for w in w0] == ["2026-10-17"])
+(tmpd / "sale_week.json").unlink()
+rc = ss.cmd_plan(now=at(2026, 10, 17, 0, 5), catalog=catalog)
+w1 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
+chk("запуск 18:00 пропущено, о 00:05 17.10 наздоганяння: у файлі і сьогоднішня (17.10), і завтрашня (18.10), перша вже діє о 00:05", rc == 0 and [w["week"] for w in w1] == ["2026-10-17", "2026-10-18"] and datetime.fromisoformat(w1[0]["from"]) <= at(2026, 10, 17, 0, 5) < datetime.fromisoformat(w1[0]["until"]) and not (set(w1[0]["items"]) & set(w1[1]["items"])))
+rc = ss.cmd_plan(now=at(2026, 10, 17, 18, 0), catalog=catalog)
+w2 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))["weeks"]
+chk("о 18:00 звичайний запуск: переплановується лише партія на завтра (18.10, ідемпотентно), файл [17.10, 18.10], без наздоганяння", [w["week"] for w in w2] == ["2026-10-17", "2026-10-18"])
+# алерт «немає чинної партії»: акції запускались (є picks), а сьогодні чинної нема
+(tmpd / "sale_week.json").write_text(json.dumps({"weeks": []}), encoding="utf-8")
+alerts.clear()
+(tmpd / "index.json").write_text(json.dumps(index), encoding="utf-8")
+ss.cmd_history(now=at(2026, 10, 20, 3, 0))
+chk("cmd_history: акції запускались, чинної партії нема → алерт site_sale_no_active_batch", "site_sale_no_active_batch" in alerts)
+ss.N_ITEMS = 72
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

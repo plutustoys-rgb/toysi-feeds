@@ -85,10 +85,10 @@ def item_pct(label: str, pid: str) -> int:
     return PCT_MIN + h % (PCT - PCT_MIN + 1)
 
 
-def next_batch_window(now: datetime) -> tuple[datetime, datetime, str]:
-    """Вікно щоденної партії: ЗАВТРА 00:00 … 23:59:59 на WINDOW_DAYS-й день (Київ; now — aware). Мітка = дата старту (YYYY-MM-DD) — унікальна для партії."""
+def next_batch_window(now: datetime, offset: int = 1) -> tuple[datetime, datetime, str]:
+    """Вікно щоденної партії: ЗАВТРА (offset=1; 0 = сьогодні, для наздоганяння пропущеного запуску) 00:00 … 23:59:59 на WINDOW_DAYS-й день (Київ; now — aware). Мітка = дата старту (YYYY-MM-DD) — унікальна для партії."""
     local = now.astimezone(KYIV)
-    d0 = (local + timedelta(days=1)).date()
+    d0 = (local + timedelta(days=offset)).date()
     start = datetime(d0.year, d0.month, d0.day, 0, 0, 0, tzinfo=KYIV)
     last = d0 + timedelta(days=WINDOW_DAYS - 1)
     end = datetime(last.year, last.month, last.day, 23, 59, 59, tzinfo=KYIV)
@@ -230,9 +230,9 @@ def _load_json(path: Path, default):
         return default
 
 
-def plan(now: datetime, index: list, catalog: dict, history: dict, demand_ids: set, last_ids: set) -> tuple[dict | None, dict]:
+def plan(now: datetime, index: list, catalog: dict, history: dict, demand_ids: set, last_ids: set, offset: int = 1) -> tuple[dict | None, dict]:
     """(sale_dict або None, звіт). None, лише якщо не обрано жодного товару; менше N_ITEMS — партія публікується, а cmd_plan шле алерт. last_ids — товари, що вже діють/діяли протягом вікна (не повторюються)."""
-    start, end, week = next_batch_window(now)
+    start, end, week = next_batch_window(now, offset)
     cands = candidates(index, catalog, history, now, label=week)
     chosen = pick(cands, demand_ids, last_ids, week)
     rep = {"week": week, "candidates": len(cands), "chosen": len(chosen), "want": N_ITEMS}
@@ -339,7 +339,7 @@ def check_applied(now: datetime, index: list, path: Path | None = None) -> tuple
         return 0, 0
     applied = sum(1 for it in index if isinstance(it, dict) and str(it.get("id")) in ids and it.get("op"))
     if applied < min(len(ids), max(3, len(ids) // 2)):      # при ~48 позиціях сліпий поріг «<3» не бачить часткового випадання партій: алерт, коли застосовано менше половини
-        _alert("site_sale_not_applied", f"⚠️ site_sale: «Знижка тижня» чинна за розкладом ({len(ids)} позицій у файлі), але на сайті (index.json) застосовано лише {applied} (норма — не менше половини) — збірка сайту не підхопила акцію (збій ребілду чи масове випадання позицій). Перевірити site-rebuild.")
+        _alert("site_sale_not_applied", f"⚠️ site_sale: акція чинна за розкладом ({len(ids)} позицій у файлі), але на сайті (index.json) застосовано лише {applied} (норма — не менше половини) — збірка сайту не підхопила акцію (збій ребілду чи масове випадання позицій). Перевірити site-rebuild.")
     return len(ids), applied
 
 
@@ -350,6 +350,8 @@ def cmd_history(now: datetime | None = None) -> int:
     print(f"[site_sale] історія цін: {'оновлено' if ok else 'НЕ оновлено'} ({len(index) if isinstance(index, list) else 0} товарів в індексі)")
     try:
         total, applied = check_applied(now, index if isinstance(index, list) else [])
+        if not total and _load_json(PICKS_FILE, []) and now.astimezone(KYIV).hour >= 1:
+            _alert("site_sale_no_active_batch", "⚠️ site_sale: акції вже запускались, але чинної партії на сьогодні в sale_week.json немає — «Акції» на сайті порожні (пропущений запуск plan о 18:00 або збій). Перевірити site-sale-plan.service.")
         if total:
             print(f"[site_sale] акція чинна: у файлі {total}, на сайті застосовано {applied}")
     except Exception as e:  # noqa: BLE001 — перевірка допоміжна: не валить оновлення історії
@@ -371,35 +373,44 @@ def cmd_plan(now: datetime | None = None, catalog: dict | None = None) -> int:
         return 1
     demand = _load_json(DEMAND_FILE, {})
     demand_ids = {str(x) for x in (demand.get("ids") if isinstance(demand, dict) else []) or []}
-    picks = _load_json(PICKS_FILE, [])
-    if not isinstance(picks, list):
-        picks = []
-    _w = next_batch_window(now)[2]
-    picks = [p for p in picks if isinstance(p, dict) and p.get("week") != _w]       # повторний запуск ТОГО САМОГО тижня не виключає власний щойно записаний набір і не дублює запис
-    last_ids = {str(i) for p in picks[-REPEAT_DAYS:] for i in (p.get("ids") or [])}          # були в партіях останніх REPEAT_DAYS днів
-    for w in (x for x in _read_weeks(SALE_FILE, now) if x.get("week") != _w):                  # і все, що вже стоїть у файлі й не закінчилось (інакше товар у двох партіях одночасно)
-        last_ids |= {str(i) for i in (w.get("items") or {})}
-    hist = load_history() if STABLE_DAYS else {}
-    if STABLE_DAYS and not hist and HISTORY_FILE.exists() and HISTORY_FILE.stat().st_size > 2:
-        _alert("site_sale_history_lost", "⚠️ site_sale: файл історії цін існує, але нечитабельний/порожній — відлік «ціна не мінялась 7 днів» піде з нуля, «Знижку тижня» не складено. Перевірити site_price_history.json.")
-        return 1
-    if STABLE_DAYS and _history_age_days(hist, now) < STABLE_DAYS:
-        print(f"[site_sale] історія цін накопичується менше {STABLE_DAYS} днів — набір ще неможливий (без алерту); перша можлива партія — коли найстаріший запис сягне {STABLE_DAYS} днів")
-        return 0                # очікуваний стан, не збій: код 1 щодня позначав би службу «failed» (systemctl --failed) аж до 7-го дня
-    sale, rep = plan(now, index, catalog, hist, demand_ids, last_ids)
-    print(f"[site_sale] партія {rep['week']}: придатних кандидатів {rep['candidates']}, обрано {rep['chosen']} (треба {rep['want']})")
-    if sale is None:
-        _alert("site_sale_few", f"⚠️ site_sale: на партію {rep['week']} не знайдено жодного нового придатного товару (маржа ≥{RESERVE_UAH} ₴ навіть при мінімальній знижці −{PCT_MIN}%, не повтор останніх {REPEAT_DAYS} днів) — партію не опубліковано.")
-        return 1
-    if rep["chosen"] < rep["want"]:
-        _alert("site_sale_short", f"⚠️ site_sale: партія {rep['week']} неповна: {rep['chosen']} з {rep['want']} (нових придатних лишилось мало: {rep['candidates']} у пулі, частина вже в діючих партіях).")
-    picks.append({"week": sale["week"], "ids": list(sale["items"]), "margins": rep.get("margins", {})})
-    _atomic_write(PICKS_FILE, picks[-30:])                    # спершу приватний журнал (збій другого запису не губить виключення «минулого тижня»)
-    # файл акції тримає всі партії, що ще не закінчились (до ~9: діючі + завтрашня); прострочені прибираються
-    kept = [w for w in _read_weeks(SALE_FILE, now) if w.get("week") != sale["week"]]
-    _atomic_write(SALE_FILE, {"weeks": kept + [sale]})
-    print(f"[site_sale] записано {SALE_FILE}: партій у файлі {len(kept) + 1}; нова {sale['week']}: {len(sale['items'])} товарів, {sale['from']} … {sale['until']}")
-    return 0
+    def one(offset: int) -> int:
+        picks = _load_json(PICKS_FILE, [])
+        if not isinstance(picks, list):
+            picks = []
+        _w = next_batch_window(now, offset)[2]
+        picks = [p for p in picks if isinstance(p, dict) and p.get("week") != _w]       # повторний запуск тієї ж дати не виключає власний щойно записаний набір і не дублює запис
+        last_ids = {str(i) for p in picks[-REPEAT_DAYS:] for i in (p.get("ids") or [])}          # були в партіях останніх REPEAT_DAYS днів
+        for w in (x for x in _read_weeks(SALE_FILE, now) if x.get("week") != _w):                  # і все, що вже стоїть у файлі й не закінчилось (інакше товар у двох партіях одночасно)
+            last_ids |= {str(i) for i in (w.get("items") or {})}
+        hist = load_history() if STABLE_DAYS else {}
+        if STABLE_DAYS and not hist and HISTORY_FILE.exists() and HISTORY_FILE.stat().st_size > 2:
+            _alert("site_sale_history_lost", "⚠️ site_sale: файл історії цін існує, але нечитабельний/порожній — відлік «ціна не мінялась N днів» піде з нуля, партію акцій не складено. Перевірити site_price_history.json.")
+            return 1
+        if STABLE_DAYS and _history_age_days(hist, now) < STABLE_DAYS:
+            print(f"[site_sale] історія цін накопичується менше {STABLE_DAYS} днів — набір ще неможливий (без алерту); перша можлива партія — коли найстаріший запис сягне {STABLE_DAYS} днів")
+            return 0                # очікуваний стан, не збій: код 1 щодня позначав би службу «failed»
+        sale, rep = plan(now, index, catalog, hist, demand_ids, last_ids, offset)
+        print(f"[site_sale] партія {rep['week']}: придатних кандидатів {rep['candidates']}, обрано {rep['chosen']} (треба {rep['want']})")
+        if sale is None:
+            _alert("site_sale_few", f"⚠️ site_sale: на партію {rep['week']} не знайдено жодного нового придатного товару (маржа ≥{RESERVE_UAH} ₴ навіть при мінімальній знижці −{PCT_MIN}%, не повтор останніх {REPEAT_DAYS} днів) — партію не опубліковано.")
+            return 1
+        if rep["chosen"] < rep["want"]:
+            _alert("site_sale_short", f"⚠️ site_sale: партія {rep['week']} неповна: {rep['chosen']} з {rep['want']} (нових придатних лишилось мало: {rep['candidates']} у пулі, частина вже в діючих партіях).")
+        picks.append({"week": sale["week"], "ids": list(sale["items"]), "margins": rep.get("margins", {})})
+        _atomic_write(PICKS_FILE, picks[-30:])                    # спершу приватний журнал (збій другого запису не губить виключення «минулих днів»)
+        # файл акції тримає всі партії, що ще не закінчились (діюча + завтрашня); прострочені прибираються
+        kept = [w for w in _read_weeks(SALE_FILE, now) if w.get("week") != sale["week"]]
+        _atomic_write(SALE_FILE, {"weeks": sorted(kept + [sale], key=lambda w: w.get("from", ""))})
+        print(f"[site_sale] записано {SALE_FILE}: партій у файлі {len(kept) + 1}; нова {sale['week']}: {len(sale['items'])} товарів, {sale['from']} … {sale['until']}")
+        return 0
+
+    started = bool(_load_json(PICKS_FILE, []))        # акції вже запускались раніше (до цього запуску)
+    rc = one(1)                                   # партія на ЗАВТРА (основний запуск о 18:00)
+    # Пропущений вчорашній запуск (VPS/мережа; Persistent=true доганяє його вже після півночі): якщо СЬОГОДНІ чинної партії немає, а акції вже запускались (є журнал) і зараз ще ранок — складаємо й партію на СЬОГОДНІ, інакше доба лишилась би без акцій
+    covered = any(datetime.fromisoformat(w["from"]) <= now < datetime.fromisoformat(w["until"]) for w in _read_weeks(SALE_FILE, now) if w.get("from") and w.get("until"))
+    if started and not covered and now.astimezone(KYIV).hour < 12:
+        rc = min(rc, one(0))
+    return rc
 
 
 if __name__ == "__main__":

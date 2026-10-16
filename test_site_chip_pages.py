@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """test_site_chip_pages.py — 16.10.2026 (власник: «коли нажимаєш на чіп повинно перекидати на окрему сторінку, як при нажиманні Уцінки. Зі своїми сортувальниками»).
-Чип головної = посилання на свою сторінку (podibrka-*.html; Хелловін — /helovin.html); сторінка — шаблон «Уцінки»: крупна назва + панель сортування/категорії/ціни (cat-controls + cat-ids), до 72 карток на 3 сторінки,
-пагінація як у каталозі; сезонні сторінки (Миколай, До Різдва, Хелловін) існують лише у своє вікно; стару сторінку прибирає крок прибирання."""
+Чип головної = посилання на свою сторінку (podibrka-*.html; Halloween — /helovin.html); сторінка — шаблон «Уцінки»: крупна назва + панель сортування/категорії/ціни (cat-controls + cat-ids), до 72 карток на 3 сторінки,
+пагінація як у каталозі; сезонні сторінки (Миколай, До Різдва, Halloween) існують лише у своє вікно; стару сторінку прибирає крок прибирання."""
 import os
 import re
 import sys
@@ -88,12 +88,12 @@ sm = bs.write_sitemap  # sitemap сегменти беруться з paged: ф�
 chk("файли сторінок чипів починаються з «podibrka» (префікс у кроці прибирання застарілих сторінок)", all(f.startswith("podibrka") for f in w1))
 
 w2 = build_day("2026-10-20")
-chk(f"20.10: Хелловін = /helovin.html з панеллю, Миколай/До Різдва нема; Українське/Популярне/День народження лишились: {sorted(w2)}",
+chk(f"20.10: Halloween = /helovin.html з панеллю, Миколай/До Різдва нема; Українське/Популярне/День народження лишились: {sorted(w2)}",
     "helovin.html" in w2 and "podibrka-mykolai-novyi-rik.html" not in w2 and "podibrka-do-rizdva.html" not in w2 and {"podibrka-ukrainske.html", "podibrka-populiarne.html", "podibrka-den-narodzhennia.html"} <= w2)
 hv = (out / "helovin.html").read_text(encoding="utf-8")
-chk("/helovin.html — шаблон з панеллю (cat-controls, крупна назва) і data-list=helovin", 'id="cat-controls"' in hv and '<h1 class="page cat-h1">Геловін</h1>' in hv and 'data-list="helovin"' in hv)
+chk("/helovin.html — шаблон з панеллю (cat-controls, крупна назва) і data-list=helovin", 'id="cat-controls"' in hv and '<h1 class="page cat-h1">Halloween</h1>' in hv and 'data-list="helovin"' in hv)
 home2 = (out / "index.html").read_text(encoding="utf-8")
-chk("головна 20.10: чип «Хелловін» → helovin.html", re.search(r'data-set="hel" href="helovin\.html"', home2) is not None)
+chk("головна 20.10: чип «Halloween» → helovin.html", re.search(r'data-set="hel" href="helovin\.html"', home2) is not None)
 print()
 if F:
     print(f"FAILED ({len(F)}):")

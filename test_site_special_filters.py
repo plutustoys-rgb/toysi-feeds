@@ -92,8 +92,8 @@ with sync_playwright() as pw:
         cnt = pg.evaluate("document.getElementById('cat-count').textContent")
         cards = pg.evaluate(CARDS)
         chk(f"{w}px: у JS-сітці лише уцінені ({cnt}), жодного звичайного товару", f"Знайдено: {len(ids)}" in cnt and cards and all(c[0] in ids for c in cards))
-        opts = pg.evaluate("[...document.querySelectorAll('#cf-cat option')].map(o=>o.textContent)")
-        chk(f"{w}px: категорії у списку — лише з уцінених ({opts})", len(opts) == 2 and opts[1].startswith(f"Уцінка ({len(ids)})"))
+        catvis = pg.evaluate("(()=>{const e=document.getElementById('cf-cat'); const r=e.getBoundingClientRect(); return [e.hidden, getComputedStyle(e).display, r.width]})()")
+        chk(f"{w}px: списку категорій на службовій сторінці нема (власник 16.10: «підкатегорії по 1 товару — для чого?»), лишились сортування й ціна {catvis}", catvis[0] is True and catvis[1] == "none" and catvis[2] == 0 and pg.evaluate("!!document.getElementById('cf-sort') && !!document.getElementById('cf-min')"))
         if w >= 1000:
             pg.select_option("#cf-sort", "dear")
             pg.wait_for_timeout(300)

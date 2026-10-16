@@ -154,18 +154,21 @@ def compare_with_previous(rows: list, out_dir: Path, today: str) -> tuple:
     seen_file = out_dir / "gmc_seen_codes.json"
     cur_st, cur_codes = _stats_from_rows(rows)
     prev = _previous_csv(out_dir, today)
-    seen = None
+    seen = None            # {код причини: дата ПЕРШОЇ появи}; повторний запуск того ж дня не стирає прапорець «нова» (first_seen == today)
     try:
-        seen = set(json.loads(seen_file.read_text(encoding="utf-8")))
-    except (OSError, ValueError):
+        raw = json.loads(seen_file.read_text(encoding="utf-8"))
+        seen = {c: "0000-00-00" for c in raw} if isinstance(raw, list) else {str(k): str(v) for k, v in raw.items()}
+    except (OSError, ValueError, AttributeError):
         seen = None
     if seen is None:
-        seen = set()
-        for p in out_dir.glob("gmc_status_*.csv"):
-            if p.stem.replace("gmc_status_", "") < today:
+        seen = {}
+        for p in sorted(out_dir.glob("gmc_status_*.csv")):
+            d = p.stem.replace("gmc_status_", "")
+            if d < today:
                 try:
                     with open(p, encoding="utf-8-sig", newline="") as f:
-                        seen |= set(_stats_from_rows(list(csv.DictReader(f)))[1])
+                        for c in _stats_from_rows(list(csv.DictReader(f)))[1]:
+                            seen.setdefault(c, d)
                 except OSError:
                     continue
     lines, flags = [], []
@@ -178,15 +181,18 @@ def compare_with_previous(rows: list, out_dir: Path, today: str) -> tuple:
         pst, pcodes = _stats_from_rows(prev_rows)
         lines.append(f"Порівняння з {pd}: " + ", ".join(f"{k} {pst.get(k, 0)}→{cur_st.get(k, 0)} ({cur_st.get(k, 0) - pst.get(k, 0):+d})" for k in ("approved", "disapproved", "unknown")))
         ch = sorted(((cur_codes.get(c, 0) - pcodes.get(c, 0), c) for c in set(cur_codes) | set(pcodes)), key=lambda x: -abs(x[0]))[:6]
-        lines.append("Найбільші зміни причин: " + "; ".join(f"{c} {pcodes.get(c, 0)}→{cur_codes.get(c, 0)} ({d:+d})" for d, c in ch if d))
+        if any(d for d, _ in ch):
+            lines.append("Найбільші зміни причин: " + "; ".join(f"{c} {pcodes.get(c, 0)}→{cur_codes.get(c, 0)} ({d:+d})" for d, c in ch if d))
         if cur_st.get("approved", 0) < pst.get("approved", 0):
-            flags.append(f"🚩 approved ВПАВ: {pst.get('approved', 0)} → {cur_st.get('approved', 0)} ({cur_st.get('approved', 0) - pst.get('approved', 0):+d})")
-    new = sorted(c for c, n in cur_codes.items() if n > 0 and c not in seen)
+            flags.append(f"🚩 approved ВПАВ: {pst.get('approved', 0)} → {cur_st.get('approved', 0)} ({cur_st.get('approved', 0) - pst.get('approved', 0):+d}); усього товарів {sum(pst.values())} → {sum(cur_st.values())}, disapproved {pst.get('disapproved', 0)} → {cur_st.get('disapproved', 0)}, unknown {pst.get('unknown', 0)} → {cur_st.get('unknown', 0)} (щоб відрізнити падіння якості від скорочення фіду)")
+    new = sorted(c for c, n in cur_codes.items() if n > 0 and (c not in seen or seen[c] == today))
     if new and (prev is not None or seen):
         flags.append("🚩 НОВА причина (раніше в звітах не було): " + ", ".join(f"{c} ({cur_codes[c]})" for c in new))
     try:
         tmp = seen_file.with_name(seen_file.name + ".tmp")
-        tmp.write_text(json.dumps(sorted(seen | set(cur_codes))), encoding="utf-8")
+        for c in cur_codes:
+            seen.setdefault(c, today)
+        tmp.write_text(json.dumps(seen, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         os.replace(tmp, seen_file)
     except OSError:
         pass

@@ -2,7 +2,7 @@
 """daily_files_to_shared.py — щоденна доставка файлів VPS → спільна тека для SEO (лише читання з VPS; замість ручного копіювання Кодом; запит SEO 16.10).
 
 З /opt/plutustoys/reports/gmc/ беремо НАЙНОВІШИЙ набір кожного типу (gmc_status_*.csv, gmc_summary_*.txt, gmc_account_settings_*.json, gmc_settings_changes_*.txt, googlebot_daily_*.csv, googlebot_summary_*.txt, gsc_*.csv) і кладемо в
-`SEO_метрики/<дата>/` спільної теки (не перезаписуємо наявні однакового розміру). Якщо в gmc_summary є рядок «🚩» (approved упав / нова причина) — один запис `## [Автомат → SEO] GMC: прапорець <дата>` угорі SEO_CHANNEL.md (вставка перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »; один на добу; без Telegram).
+`SEO_метрики/<дата>/` спільної теки (перекачуємо щоразу: файли невеликі, актуальність важливіша). Якщо в gmc_summary є рядок «🚩» (approved упав / нова причина) — один запис `## [Автомат → SEO] GMC: прапорець <дата>` угорі SEO_CHANNEL.md (вставка перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »; один на добу; без Telegram).
 Доступ: ssh-ключ плутустойс (як у сесій Коду), BatchMode, timeout; недоступно → повідомлення й код 0 (не валить MarketplaceActions). Крок 5 у run_marketplace_actions.py."""
 import os
 import re
@@ -27,7 +27,7 @@ def latest_per_pattern(names: list) -> list:
     best = {}
     for n in names:
         for p in PATTERNS:
-            m = re.match(re.escape(p) + r"(\d{4}-\d{2}-\d{2})\.", n)
+            m = re.fullmatch(re.escape(p) + r"(\d{4}-\d{2}-\d{2})\.(?:csv|txt|json)", n)           # лише справжні файли: без .tmp, пробілів, ;
             if m and (p not in best or m.group(1) > best[p][0]):
                 best[p] = (m.group(1), n)
     return [v[1] for v in best.values()]

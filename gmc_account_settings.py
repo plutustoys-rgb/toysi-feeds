@@ -76,6 +76,9 @@ def main() -> int:
         print(f"[gmc_account_settings] нема ключа {g.KEY_FILE}")
         return 0
     res = fetch_all(g.make_session())
+    if not any(v.get("status") == 200 for v in res.values()):
+        print("[gmc_account_settings] жоден розділ не прочитано (мережа/доступ): знімок не записано, щоб не отруїти порівняння", file=sys.stderr)
+        return 0
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     today = f"{datetime.now():%Y-%m-%d}"
     path = OUT_DIR / f"gmc_account_settings_{today}.json"

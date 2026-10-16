@@ -106,11 +106,26 @@ chk("заборонена політикою (зброя) → не кандид�
 catalog["1007"]["name"] = "Уцінка. Іграшка"
 chk("уцінка → не кандидат", all(c["id"] != "1007" for c in ss.candidates(index, catalog, history, NOW)))
 
+# (4б) випадкова знижка товару 5–15%
+pcts = [ss.item_pct("2026-10-26", str(i)) for i in range(1, 2001)]
+chk("item_pct: усі в межах 5…15, усі 11 значень трапляються, детермінований", min(pcts) == 5 and max(pcts) == 15 and len(set(pcts)) == 11 and ss.item_pct("2026-10-26", "7") == ss.item_pct("2026-10-26", "7") and any(ss.item_pct("2026-10-27", str(i)) != ss.item_pct("2026-10-26", str(i)) for i in range(1, 50)))
+cl = ss.candidates(index, catalog, history, NOW, label="2026-10-26")
+chk("candidates з датою партії: pct на кожному, new = ceil(old×(100−pct)/100), маржа ≥25, різні відсотки", cl and all(5 <= c["pct"] <= 15 and c["new"] == ss.sale_ceil(c["old"], c["pct"]) and c["margin"] >= 25 for c in cl) and len({c["pct"] for c in cl}) > 1)
+_it = {"id": "9001", "pr": 300, "n": "тонка маржа", "p": "u"}
+catalog["9001"] = cat_item(220)
+_h = dict(history); _h["9001"] = {"price": 300, "since": STABLE}
+import competitor_pricing as _cp
+_cost = _cp.real_toysi_cost(catalog["9001"])
+_fit = [p for p in range(5, 16) if ss.margin_after(300, _cost, p) >= 25]
+_c9 = [c for c in ss.candidates(index + [_it], catalog, _h, NOW, label="2026-10-26") if c["id"] == "9001"]
+chk(f"тонка маржа: випадковий % знижується до дозволеного маржею (дозволені {_fit}), якщо не проходить жоден — не кандидат", (not _fit and not _c9) or (_fit and _c9 and _c9[0]["pct"] <= max(_fit)))
+del catalog["9001"]
+
 # (5) добір
 cands = ss.candidates(index, catalog, history, NOW)
 demand = {c["id"] for c in cands[:3]}
 ch1 = ss.pick(cands, demand, set(), "2026-10-26")
-chk("добір рівно N_ITEMS=6, попит першим", len(ch1) == ss.N_ITEMS == 6 and demand <= {c["id"] for c in ch1[:3]})
+chk("добір рівно N_ITEMS=9 (9×8 діб = 72 = 3 сторінки), попит першим", len(ch1) == ss.N_ITEMS == 9 and demand <= {c["id"] for c in ch1[:3]})
 chk("детермінований для однієї партії, інша дата — інший порядок", [c["id"] for c in ss.pick(cands, demand, set(), "2026-10-26")] == [c["id"] for c in ch1] and [c["id"] for c in ss.pick(cands, set(), set(), "2026-10-27")] != [c["id"] for c in ss.pick(cands, set(), set(), "2026-10-28")])
 last = {c["id"] for c in ch1}
 ch2 = ss.pick(cands, demand, last, "2026-10-27")
@@ -118,8 +133,8 @@ chk("товари діючих партій виключені", not (last & {c[
 
 # (6)(7) plan і CLI
 sale, rep = ss.plan(at(2026, 10, 25, 18), index, catalog, history, demand, set())
-chk("plan: партія 6, вікно пн 26.10 +02:00 … 02.11 23:59:59 +02:00 (8 діб), файл без cost/margin", sale and len(sale["items"]) == 6 and sale["week"] == "2026-10-26" and sale["from"] == "2026-10-26T00:00:00+02:00" and sale["until"] == "2026-11-02T23:59:59+02:00"
-    and all(set(v) == {"old", "new"} for v in sale["items"].values()) and "margin" not in json.dumps(sale) and "cost" not in json.dumps(sale).lower())
+chk("plan: партія 9, вікно пн 26.10 +02:00 … 02.11 23:59:59 +02:00 (8 діб), файл без cost/margin", sale and len(sale["items"]) == 9 and sale["week"] == "2026-10-26" and sale["from"] == "2026-10-26T00:00:00+02:00" and sale["until"] == "2026-11-02T23:59:59+02:00"
+    and all(set(v) == {"old", "new", "pct"} and 5 <= v["pct"] <= 15 and v["new"] == ss.sale_ceil(v["old"], v["pct"]) for v in sale["items"].values()) and "margin" not in json.dumps(sale) and "cost" not in json.dumps(sale).lower())
 few_hist = {c["id"]: history[c["id"]] for c in cands[:5]}
 sale2, rep2 = ss.plan(at(2026, 10, 25, 18), index, catalog, few_hist, set(), set())
 chk("мало придатних (5) → партія неповна (5 < 6), але публікується", sale2 is not None and rep2["chosen"] == 5 < rep2["want"])
@@ -137,7 +152,7 @@ rc = ss.cmd_plan(now=at(2026, 10, 25, 18), catalog=catalog)
 doc = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
 picks = json.loads((tmpd / "picks.json").read_text(encoding="utf-8"))
 written = doc["weeks"][-1]
-chk("cmd_plan: файл sale_week.json = {weeks:[1 партія]}, picks.json містить id і маржі (приватно), без .tmp", rc == 0 and len(doc["weeks"]) == 1 and len(written["items"]) == 6 and picks[-1]["ids"] and picks[-1]["margins"] and not list(tmpd.glob("*.tmp")))
+chk("cmd_plan: файл sale_week.json = {weeks:[1 партія]}, picks.json містить id і маржі (приватно), без .tmp", rc == 0 and len(doc["weeks"]) == 1 and len(written["items"]) == 9 and picks[-1]["ids"] and picks[-1]["margins"] and not list(tmpd.glob("*.tmp")))
 rc = ss.cmd_plan(now=at(2026, 10, 25, 19), catalog=catalog)
 doc_b = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
 picks_b = json.loads((tmpd / "picks.json").read_text(encoding="utf-8"))
@@ -147,7 +162,7 @@ rc2 = ss.cmd_plan(now=at(2026, 10, 27, 18), catalog=catalog)
 doc2 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
 ids_all = [set(w["items"]) for w in doc2["weeks"]]
 chk("щодня по партії: 3 партії одночасно (26.10, 27.10, 28.10), діючі не знято", rc == 0 and rc2 == 0 and [w["week"] for w in doc2["weeks"]] == ["2026-10-26", "2026-10-27", "2026-10-28"])
-chk("партії не перетинаються (жоден товар у двох партіях одночасно) і усього 18 різних", len(set().union(*ids_all)) == 18 and sum(len(x) for x in ids_all) == 18)
+chk("партії не перетинаються (жоден товар у двох партіях одночасно) і перші дві по 9 (останню обмежує пул фікстури)", sum(len(x) for x in ids_all) == len(set().union(*ids_all)) and [len(x) for x in ids_all][:2] == [9, 9])
 rc = ss.cmd_plan(now=at(2026, 11, 4, 18), catalog=catalog)
 doc3 = json.loads((tmpd / "sale_week.json").read_text(encoding="utf-8"))
 chk("04.11 18:00: прострочені партії 26.10 і 27.10 прибрані; 28.10 (до 04.11 23:59:59) ще діє + нова 05.11", rc == 0 and [w["week"] for w in doc3["weeks"]] == ["2026-10-28", "2026-11-05"])

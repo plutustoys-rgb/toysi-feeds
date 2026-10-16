@@ -371,8 +371,8 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
     )
 
-# ── «Знижка тижня −15%» (власник 14.10, варіант «а»; з 15.10 ПОСТІЙНА: щодня нова партія на 8 діб, ≈48 товарів одночасно; бекенд Code-Agent: site_sale.py пише site/sale_week.json щодня) ──
-# КОНТРАКТ: {"week","pct","from","until","created_at","items":{"<id>":{"old":int,"new":int}}}; from/until — ISO із поясом; new = ceil(old × (100−pct)/100).
+# ── Постійна акція (власник 14.10; з 15.10 ПОСТІЙНА: щодня нова партія на 8 діб; з 16.10 ≈72 товари, знижка КОЖНОГО товару випадкова 5–15%; бекенд Code-Agent: site_sale.py пише site/sale_week.json щодня) ──
+# КОНТРАКТ: {"week","pct","from","until","created_at","items":{"<id>":{"old":int,"new":int,"pct":int 5..15}}}; from/until — ISO із поясом; new = ceil(old × (100−pct)/100).
 # build_site у вікні from…until ставить ціну pr=new і op=old (index.json) для id з файлу; ПОЗА вікном файл ігнорується (навіть якщо лишився). Ціна — єдине джерело для замовлення/LiqPay/чека (site_order_api читає pr, op ігнорує).
 # Захисні перевірки на КОЖНІЙ збірці (стара ціна має бути РЕАЛЬНОЮ, збитку нема): поточна ціна сайту == old; new < old; внесок після знижки ≥ SALE_RESERVE_UAH (запас 25 ₴); невідома собівартість — без знижки. Товар, що не пройшов, випадає з акції (ціна лишається звичайною).
 SALE_FILE = os.path.join(OUT, "sale_week.json")
@@ -420,8 +420,11 @@ def _parse_sale_week(raw, now):
         old, new = v.get("old"), v.get("new")
         if not all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in (old, new)):
             return bad(f"позиція {pid}: old/new не цілі додатні")
-        if new != -(-old * (100 - pct) // 100) or new >= old:
-            return bad(f"позиція {pid}: new={new} ≠ ceil(old×{100 - pct}/100) (old={old})")
+        ipct = v.get("pct", pct)          # відсоток товару (з 16.10 випадковий 5–15%); нема — відсоток партії
+        if not isinstance(ipct, int) or isinstance(ipct, bool) or not (1 <= ipct <= 50):
+            return bad(f"позиція {pid}: pct={ipct!r}")
+        if new != -(-old * (100 - ipct) // 100) or new >= old:
+            return bad(f"позиція {pid}: new={new} ≠ ceil(old×{100 - ipct}/100) (old={old})")
         items[str(pid)] = (old, new)
     if not items:
         return None
@@ -455,9 +458,7 @@ def load_sale_week(now=None, path=None):
             continue
         if merged is None:
             merged = {"week": got["week"], "pct": got["pct"], "from": got["from"], "until": got["until"], "items": {}, "until_by_id": {}}
-        elif got["pct"] != merged["pct"]:
-            print(f"[build] ⚠ sale_week.json: партія {got['week']} має pct={got['pct']} ≠ {merged['pct']} — пропущена", file=sys.stderr)
-            continue
+
         merged["from"] = min(merged["from"], got["from"])
         merged["until"] = max(merged["until"], got["until"])
         for pid, v in got["items"].items():
@@ -496,7 +497,9 @@ def sale_until_label(pid=None):
 
 
 def sale_badge_html(p) -> str:
-    return f'<span class="sale-badge">−{SALE_ACTIVE["pct"] if SALE_ACTIVE else 15}%</span>' if p.get("old_price") else ""
+    if not p.get("old_price"):
+        return ""
+    return f'<span class="sale-badge">−{max(1, round(100 * (p["old_price"] - p["price"]) / p["old_price"]))}%</span>'      # реальний відсоток товару з його цін (знижка у кожного своя)
 
 
 def sale_until_html(pid=None) -> str:

@@ -154,7 +154,8 @@ import build_site as _bs
 _diff = 0
 _n = 0
 for _o in range(100, 3000, 3):
-    _nw = ss.sale_ceil(_o)
+  for _p in range(ss.PCT_MIN, ss.PCT + 1):          # з 16.10 знижка товару 5…15%
+    _nw = ss.sale_ceil(_o, _p)
     _base = _nw - cp.SITE_FULFILL_PER_ORDER - _nw * cp.PAYMENT_COMMISSION["site"]
     for _d in (-0.02, -0.01, -0.005, 0.0, 0.004, 0.005, 0.01, 0.02, 0.5):
         _c = _base - ss.RESERVE_UAH + _d

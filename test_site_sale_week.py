@@ -114,7 +114,7 @@ m2 = bs.load_sale_week(datetime(2026, 10, 27, 12, 0, 0, tzinfo=KY), path)
 chk("через 6 днів: партія 19 вже закінчилась (26.10) — лишились 3, 4, 5, 6", set(m2["items"]) == {"3", "4", "5", "6"})
 write({"weeks": [batch("2026-10-19", 19, ["1"]), batch("2026-10-20", 20, ["2"], pct=20)]})
 m3 = bs.load_sale_week(NOW, path)
-chk("партія з іншим pct не змішується (пропущена з попередженням), перша діє", set(m3["items"]) == {"1"} and m3["pct"] == 15)
+chk("партії з різним pct партії (15 і 20) об'єднуються: відсоток тепер на товарі, обидва діють", set(m3["items"]) == {"1", "2"} and m3["pct"] == 15)
 
 # ── 1в. КОЖНА дата плану 15–30.10 (у т.ч. партії через перехід на зимовий час 25.10) проходить крізь _parse_sale_week (блокер аудиту #786) ──
 import site_sale as _ss
@@ -128,6 +128,18 @@ for _d in range(15, 31):
 chk(f"усі партії плану 15–30.10 (також через DST 25.10) приймає build_site (відхилені: {_bad})", not _bad)
 _raw_long = {"week": "x", "pct": 15, "from": datetime(2026, 10, 19, tzinfo=KY).isoformat(), "until": datetime(2026, 10, 29, 23, 59, 59, tzinfo=KY).isoformat(), "items": {"1": {"old": 400, "new": new_of(400)}}}
 chk("вікно 11 діб (помилка плану) як і раніше відхиляється", bs._parse_sale_week(_raw_long, datetime(2026, 10, 21, tzinfo=KY)) is None)
+
+# ── 1г. знижка КОЖНОГО товару своя (5–15%), бейдж = реальний відсоток ──
+_st = datetime(2026, 10, 21, 0, 0, 0, tzinfo=KY)
+_raw = {"week": "2026-10-21", "pct": 15, "from": _st.isoformat(), "until": (_st + timedelta(days=8) - timedelta(seconds=1)).isoformat(),
+        "items": {"1": {"old": 400, "new": new_of(400, 5), "pct": 5}, "2": {"old": 400, "new": new_of(400, 12), "pct": 12}, "3": {"old": 400, "new": new_of(400, 15), "pct": 15}, "4": {"old": 400, "new": new_of(400, 15)}}}
+_ok = bs._parse_sale_week(_raw, NOW)
+chk("pct на товар: 5/12/15 і без pct (= pct партії 15) приймаються, ціни new відповідають своєму %", _ok and _ok["items"]["1"] == (400, 380) and _ok["items"]["2"] == (400, 352) and _ok["items"]["3"] == (400, 340) and _ok["items"]["4"] == (400, 340))
+_bad = dict(_raw, items={"1": {"old": 400, "new": new_of(400, 15), "pct": 5}})
+chk("pct товару не збігається з new → партія відхилена (захист від хибної ціни)", bs._parse_sale_week(_bad, NOW) is None)
+_bad2 = dict(_raw, items={"1": {"old": 400, "new": new_of(400, 5), "pct": 0}})
+chk("pct товару поза 1..50 → відхилено", bs._parse_sale_week(_bad2, NOW) is None)
+chk("бейдж картки = реальний відсоток із цін (380/400 → −5%, 352 → −12%, 340 → −15%)", all(f'−{n}%' in bs.sale_badge_html({"old_price": 400, "price": pr}) for pr, n in ((380, 5), (352, 12), (340, 15))) and bs.sale_badge_html({"old_price": None, "price": 300}) == "")
 
 # ── 2. apply_sale: перевірки на кожній збірці ──
 SALE = {"week": "w", "pct": 15, "from": START, "until": END, "items": {"111": (400, 340)}}

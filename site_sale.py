@@ -5,7 +5,7 @@
 ЩО РОБИТЬ МОДУЛЬ (чисті функції + два CLI):
   • `python site_sale.py history` — після кожного ребілду сайту фіксує «з якої дати ціна товару не змінюється» (site_price_history.json, приватний runtime-файл поруч з кодом). Лише факти:
     ціна товару змінилась → since = зараз; не змінилась → лишається. Урізаний/порожній index.json історію НЕ чіпає.
-  • `python site_sale.py plan` — ЩОДНЯ о 18:00 обирає нову ПАРТІЮ з N_ITEMS=6 товарів на 8 діб (від 00:00 завтра, Київ) і дописує її в site/sale_week.json (без собівартості й маржі): одночасно діє ≈6×8 = 48 товарів (2 сторінки по 24).
+  • `python site_sale.py plan` — ЩОДНЯ о 18:00 обирає нову ПАРТІЮ з N_ITEMS=9 товарів на 8 діб (від 00:00 завтра, Київ) і дописує її в site/sale_week.json (без собівартості й маржі): одночасно діє ≈9×8 = 72 товари (3 сторінки по 24); знижка КОЖНОГО товару випадкова 5–15% (item_pct: хеш від дати партії й id; якщо маржа після неї <25 ₴ — % знижується до 5, інакше товар не кандидат).
     Кандидат: є на сайті, в наявності ≥3, не заборонений/не уцінка/не UNO, є фото, ціна НЕ мінялась ≥7 днів (стара ціна має бути РЕАЛЬНОЮ), після знижки маржа ≥25 ₴ з урахуванням еквайрингу 2,8% і витрат 17,81 ₴ на замовлення.
     Ранг: спершу товари з попитом (site/demand_featured.json від SEO), потім з більшим залишком, далі детермінований «жереб» за датою партії; товар, що вже діє у будь-якій партії файлу чи був у 8 останніх партіях, не повторюється.
   Нова ціна = ceil(стара × 0,85) цілими гривнями (без копійок у чеку/LiqPay/накладеному).
@@ -34,7 +34,8 @@ PICKS_FILE = Path(os.environ.get("SITE_SALE_PICKS_FILE", str(HERE / "site_sale_p
 PCT = 15                      # відсоток знижки (рішення власника, варіант «а»)
 RESERVE_UAH = 25              # запас маржі з одиниці після знижки (політика, власник погодив 14.10)
 STABLE_DAYS = 7               # ціна не мінялась щонайменше стільки днів (рішення власника 14.10)
-N_ITEMS = 6                   # нових товарів у щоденній партії; партія діє WINDOW_DAYS діб → одночасно 6×8 = 48 товарів (2 сторінки каталогу по 24; рішення власника 15.10 «товарів на 2 сторінки»)
+N_ITEMS = 9                   # нових товарів у щоденній партії; партія діє WINDOW_DAYS діб → одночасно 9×8 = 72 товари (3 сторінки по 24; рішення власника 16.10 «кількість товарів на 3 сторінки»)
+PCT_MIN = 5                   # знижка КОЖНОГО товару — випадкова від PCT_MIN до PCT (власник 16.10: «рандомно від 5 до 15%»), детермінована від дати партії й id
 WINDOW_DAYS = 8               # вікно партії: від 00:00 завтра до 23:59:59 на 8-й день (build_site приймає вікно <8 діб)
 MIN_STOCK = 3                 # залишок Toysi не менше (щоб тижнева акція не вичерпалась за годину)
 
@@ -72,9 +73,16 @@ class KyivTZ(tzinfo):
 KYIV = KyivTZ()
 
 
-def sale_ceil(price: int) -> int:
-    """ceil(price × (100−PCT)/100) цілочисельно (без плаваючої крапки)."""
-    return -(-int(price) * (100 - PCT) // 100)
+def sale_ceil(price: int, pct: int = PCT) -> int:
+    """ceil(price × (100−pct)/100) цілочисельно (без плаваючої крапки)."""
+    return -(-int(price) * (100 - int(pct)) // 100)
+
+
+def item_pct(label: str, pid: str) -> int:
+    """Випадкова (детермінована від мітки партії й id) знижка товару в межах PCT_MIN…PCT."""
+    import hashlib
+    h = int(hashlib.sha256(f"pct:{label}:{pid}".encode()).hexdigest()[:8], 16)
+    return PCT_MIN + h % (PCT - PCT_MIN + 1)
 
 
 def next_batch_window(now: datetime) -> tuple[datetime, datetime, str]:
@@ -147,8 +155,8 @@ def _contribution(new: int, cost: float) -> float:
     return round(new - cost - new * cp.PAYMENT_COMMISSION.get("site", 0.0) - cp.SITE_FULFILL_PER_ORDER, 2)
 
 
-def margin_after(price: int, cost: float) -> float:
-    return _contribution(sale_ceil(price), cost)
+def margin_after(price: int, cost: float, pct: int = PCT) -> float:
+    return _contribution(sale_ceil(price, pct), cost)
 
 
 def _ok_item(item: dict) -> bool:
@@ -167,8 +175,8 @@ def _ok_item(item: dict) -> bool:
     return True
 
 
-def candidates(index: list, catalog: dict, history: dict, now: datetime) -> list:
-    """[{id, old, new, stock, margin}] придатні кандидати (див. правила в докстрінгу модуля)."""
+def candidates(index: list, catalog: dict, history: dict, now: datetime, label: str | None = None) -> list:
+    """[{id, old, new, pct, stock, margin}] придатні кандидати (див. правила в докстрінгу модуля). label (дата партії) → випадкова знижка товару PCT_MIN…PCT: якщо маржа після неї <запасу, % знижується до PCT_MIN, а не проходить і PCT_MIN — не кандидат. Без label — фіксована PCT."""
     import competitor_pricing as cp
     out = []
     for it in index:
@@ -194,10 +202,13 @@ def candidates(index: list, catalog: dict, history: dict, now: datetime) -> list
             continue
         if not cost or cost <= 0:
             continue
-        m = margin_after(price, cost)
-        if m < RESERVE_UAH:
+        pct = item_pct(label, pid) if label else PCT
+        low = PCT_MIN if label else PCT
+        while pct >= low and (sale_ceil(price, pct) >= price or margin_after(price, cost, pct) < RESERVE_UAH):
+            pct -= 1
+        if pct < low:
             continue
-        out.append({"id": pid, "old": price, "new": sale_ceil(price), "stock": stock, "margin": round(m, 2)})
+        out.append({"id": pid, "old": price, "new": sale_ceil(price, pct), "pct": pct, "stock": stock, "margin": round(margin_after(price, cost, pct), 2)})
     return out
 
 
@@ -221,13 +232,13 @@ def _load_json(path: Path, default):
 def plan(now: datetime, index: list, catalog: dict, history: dict, demand_ids: set, last_ids: set) -> tuple[dict | None, dict]:
     """(sale_dict або None, звіт). None, лише якщо не обрано жодного товару; менше N_ITEMS — партія публікується, а cmd_plan шле алерт. last_ids — товари, що вже діють/діяли протягом вікна (не повторюються)."""
     start, end, week = next_batch_window(now)
-    cands = candidates(index, catalog, history, now)
+    cands = candidates(index, catalog, history, now, label=week)
     chosen = pick(cands, demand_ids, last_ids, week)
     rep = {"week": week, "candidates": len(cands), "chosen": len(chosen), "want": N_ITEMS}
     if not chosen:
         return None, rep
     sale = {"week": week, "pct": PCT, "from": start.isoformat(), "until": end.isoformat(), "created_at": now.replace(microsecond=0).isoformat(),
-            "items": {c["id"]: {"old": c["old"], "new": c["new"]} for c in chosen}}
+            "items": {c["id"]: {"old": c["old"], "new": c["new"], "pct": c["pct"]} for c in chosen}}
     rep["margins"] = {c["id"]: c["margin"] for c in chosen}
     return sale, rep
 
@@ -310,7 +321,7 @@ def _history_age_days(hist: dict, now: datetime) -> float:
 def sale_still_eligible(old: int, new: int, cost: float) -> bool:
     """Той самий критерій, що застосовує build_site при кожній збірці: new == ceil(old×0,85) і внесок після знижки (new − cost − 2,8%·new − 17,81) ≥ RESERVE_UAH. Фіди рекламують sale_price лише для позицій, які пройшли б цю перевірку."""
     import competitor_pricing as cp
-    return new == sale_ceil(old) and _contribution(new, cost) >= RESERVE_UAH
+    return any(new == sale_ceil(old, p) for p in range(PCT_MIN, PCT + 1)) and _contribution(new, cost) >= RESERVE_UAH
 
 
 def check_applied(now: datetime, index: list, path: Path | None = None) -> tuple[int, int]:

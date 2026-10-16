@@ -3,9 +3,10 @@
 
 ЧОМУ: сайт перевіряв лише Аудитор вручну раз на день (САЙТ_ЩОДЕННО.md); між обходами збій (сертифікат, 5xx, зламаний index.json, мертві картки, розбіжність ціни) ніхто не бачив. Це дублює щоденний ручний обхід машинним мінімумом, який крутиться кожні 6 годин.
 ЩО РОБИТЬ (кожна умова бінарна, без вгаданих порогів): головна / каталог / sitemap.xml / robots.txt / index.json → 200; сертифікат ≥14 днів (факт із правил §3.6); N=10 випадкових карток із index.json (зерно = дата) → 200, JSON-LD Product з price і availability, ціна на сторінці = ціна в index.json (±1 ₴: округлення),
-http→https редірект, api/np/city відповідає 200. Рядок на запуск у reports/site_health.csv. Є порушення → запис `## [Автомат → Код] Сайт: … <дата>` у EXECUTOR_CHANNEL.md (не частіше раз на 1 добу на набір порушень; Telegram власнику НЕ шле).
+api/np/city відповідає 200. Рядок на запуск у reports/site_health.csv. Є порушення → запис `## [Автомат → Код] Сайт: … <дата> [відбиток набору]` у EXECUTOR_CHANNEL.md (один запис на добу на ОДНАКОВИЙ набір порушень; інший набір того ж дня — новий запис; Telegram власнику НЕ шле). Невдалий запит повторюється раз через 5 с; якщо не відповідає навіть нейтральний хост — «немає мережі на десктопі»: у CSV примітка, у канал НЕ пишемо (інакше збій мережі десктопа виглядав би як падіння сайту).
 Запускається кроком у run_marketplace_actions.py (таск PlutusToys_MarketplaceActions, кожні 6 год, десктоп = «зовнішній» погляд на сайт)."""
 import csv
+import hashlib
 import json
 import os
 import random
@@ -100,8 +101,20 @@ def check_cards(index: list, today: date, fetcher=fetch, n: int = SAMPLE_N) -> l
     return out
 
 
-def run_checks(today: date, fetcher=fetch, certfn=cert_days) -> tuple:
-    """(рядок для CSV, список порушень). Чиста щодо мережі (fetcher/certfn підміняються в тестах)."""
+NEUTRAL_URL = "https://www.google.com/generate_204"
+
+
+def run_checks(today: date, fetcher=fetch, certfn=cert_days, retry_sleep: float = 5.0) -> tuple:
+    """(рядок для CSV, список порушень). Чиста щодо мережі (fetcher/certfn підміняються в тестах). Невдалий (код 0 або 5xx) запит повторюється раз; якщо головна й index.json мовчать (код 0) І нейтральний хост теж — це немає мережі на десктопі, порушень не фіксуємо."""
+    raw_fetcher = fetcher
+
+    def fetcher(url, timeout=25):          # noqa: F811 — обгортка з одним повтором
+        r = raw_fetcher(url, timeout)
+        if r[0] == 0 or r[0] >= 500:
+            time.sleep(retry_sleep)
+            r = raw_fetcher(url, timeout)
+        return r
+
     problems, info = [], {}
     for path in ("/", "/catalog.html", "/sitemap.xml", "/robots.txt"):
         code, _, t = fetcher(SITE + path)
@@ -122,6 +135,9 @@ def run_checks(today: date, fetcher=fetch, certfn=cert_days) -> tuple:
             problems.append("/index.json не JSON")
     if index:
         problems += check_cards(index, today, fetcher)
+    if info.get("/", (None,))[0] == 0 and code == 0 and raw_fetcher(NEUTRAL_URL, 15)[0] == 0:
+        row = {"at": datetime.now().strftime("%Y-%m-%d %H:%M"), "home": 0, "home_s": "", "cert_days": "", "index_n": 0, "problems": 0, "detail": "немає мережі на десктопі (нейтральний хост теж не відповідає): перевірку пропущено"}
+        return row, []
     days = certfn(HOST)
     if days is None:
         problems.append("сертифікат: не вдалось прочитати")
@@ -147,15 +163,16 @@ def write_row(row: dict, path: Path | None = None) -> None:
 
 
 def post_to_channel(problems: list, now: datetime, channel: Path | None = None) -> bool:
-    """Запис угорі каналу (перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »); дедуп: за добу не більше одного запису; атомарно; недоступний канал → False."""
+    """Запис угорі каналу (перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »); дедуп: однаковий набір порушень за добу — один запис; атомарно; недоступний канал → False."""
     channel = Path(channel or CHANNEL_FILE)
     try:
         s = channel.read_text(encoding="utf-8")
     except OSError:
         return False
-    head = f"## {MARK} {len(problems)} порушень {now:%Y-%m-%d}"
-    if re.search(r"(?m)^## " + re.escape(MARK) + r" \d+ порушень " + now.strftime("%Y-%m-%d"), s):
-        return False
+    fp = hashlib.md5("|".join(sorted(problems)).encode("utf-8")).hexdigest()[:6]
+    head = f"## {MARK} {len(problems)} порушень {now:%Y-%m-%d} [{fp}]"
+    if head in s:
+        return False                      # той самий набір порушень за цю добу вже записано
     nl = "\r\n" if "\r\n" in s else "\n"
     entry = (head + "\n" + "; ".join(problems[:8]) + (f"; … ще {len(problems) - 8}" if len(problems) > 8 else "") + "\n"
              + "Перевірка очима покупця (кожні 6 год); Код розбирає, Аудитор підтверджує зі свого боку.\n\n").replace("\n", nl)

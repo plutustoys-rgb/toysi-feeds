@@ -23,6 +23,7 @@ def chk(n, c):
         F.append(n)
 
 
+sh.time.sleep = lambda x: None      # без реальних пауз повтору
 INDEX = [{"id": str(i), "pr": 100 + i, "n": f"т{i}"} for i in range(1, 40)]
 
 
@@ -76,9 +77,39 @@ ch = Path(tempfile.mkdtemp()) / "EXECUTOR_CHANNEL.md"
 ch.write_text("<!-- шапка -->" + chr(10) + "> ## 📇 Як написати" + chr(10) + ">" + chr(10) + chr(10) + "## [Аудитор → Код] старе" + chr(10) + "текст" + chr(10), encoding="utf-8")
 now = datetime(2026, 10, 16, 12, 0)
 a1 = sh.post_to_channel(["/: HTTP 503"], now, ch)
-a2 = sh.post_to_channel(["/: HTTP 503", "ще"], datetime(2026, 10, 16, 18, 0), ch)
+a2 = sh.post_to_channel(["/: HTTP 503"], datetime(2026, 10, 16, 18, 0), ch)
+a3 = sh.post_to_channel(["/: HTTP 503", "сертифікат спливає за 10 днів (<14)"], datetime(2026, 10, 16, 19, 0), ch)
 t = ch.read_text(encoding="utf-8")
-chk("один запис на добу; над першим рядком «## »; блок-цитата «> ## 📇» ціла", a1 and not a2 and t.count(sh.MARK) == 1 and t.index(sh.MARK) < t.index("## [Аудитор → Код] старе") and "> ## 📇 Як написати" in t and "> ## [Автомат" not in t)
+chk("той самий набір за добу — один запис; ІНШИЙ набір того ж дня — новий запис; над першим «## »; блок-цитата «> ## 📇» ціла", a1 and not a2 and a3 and t.count(sh.MARK) == 2 and t.index(sh.MARK) < t.index("## [Аудитор → Код] старе") and "> ## 📇 Як написати" in t and "> ## [Автомат" not in t)
+# повтор і «немає мережі»
+calls = {"n": 0}
+
+
+def flaky(url, timeout=25):
+    if url.endswith("/robots.txt"):
+        calls["n"] += 1
+        return (503, None, 0.1) if calls["n"] == 1 else (200, "ok", 0.1)
+    return make_fetcher()(url, timeout)
+
+
+_, p = sh.run_checks(today, flaky, lambda h: 79)
+chk("разовий збій (503 → 200 після повтору) НЕ є порушенням", p == [] and calls["n"] == 2)
+
+
+def dead(url, timeout=25):
+    return 0, None, 0.1
+
+
+row, p = sh.run_checks(today, dead, lambda h: None)
+chk("немає мережі на десктопі (усе код 0, нейтральний хост теж): порушень 0, примітка в CSV-рядку", p == [] and "немає мережі" in row["detail"])
+
+
+def site_down(url, timeout=25):
+    return (0, None, 0.1) if url.startswith(sh.SITE) else (204, "", 0.1)
+
+
+_, p = sh.run_checks(today, site_down, lambda h: None)
+chk("сайт мовчить, а нейтральний хост відповідає → ПОРУШЕННЯ (сайт справді недоступний)", len(p) >= 2 and "/: HTTP 0" in p)
 chk("нема каналу → False без винятку", sh.post_to_channel(["x"], now, Path(tempfile.mkdtemp()) / "нема.md") is False)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

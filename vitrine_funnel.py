@@ -260,6 +260,38 @@ def evaluate_given_up(row: dict, hist: list) -> list:
     return []
 
 
+GIVEN_UP_MARK = "[Автомат → Код] Prom: «здані» повернення"
+GIVEN_UP_RECENT_DAYS = 3
+
+
+def post_given_up_to_channel(text: str, now, channel=None) -> bool:
+    """Запис [Автомат → Код] у спільний канал (власнику Telegram НЕ шлемо — рішення 16.10): не частіше раз на GIVEN_UP_RECENT_DAYS днів, вставка перед першим рядком, що ПОЧИНАЄТЬСЯ з «## », атомарно; недоступний канал → False."""
+    import re as _re
+    from datetime import date as _date
+    path = Path(channel or os.environ.get("VITRINE_CHANNEL_FILE") or r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\EXECUTOR_CHANNEL.md")
+    try:
+        s = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for m in _re.finditer(r"(?m)^## " + _re.escape(GIVEN_UP_MARK) + r" (\d{4}-\d{2}-\d{2})", s):
+        try:
+            if (now.date() - _date.fromisoformat(m.group(1))).days < GIVEN_UP_RECENT_DAYS:
+                return False
+        except ValueError:
+            continue
+    nl = "\r\n" if "\r\n" in s else "\n"
+    entry = f"## {GIVEN_UP_MARK} {now:%Y-%m-%d}\n{text}\nДжерело: reports/vitrine_funnel.csv (колонка ret_failed), prom_competitor_price_state.json `_readd_failed`. Дія — Коду: розібрати причини, чому Prom не створює повернені позиції.\n\n".replace("\n", nl)
+    m = _re.search(r"(?m)^## ", s)
+    new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(new, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
 def evaluate_orders(row: dict, prev: dict | None):
     """(тиша_замовлень: список, подія_першого_замовлення: список). None → не вигадуємо."""
     silence, event = [], []
@@ -347,9 +379,12 @@ def record(cat: dict, sample_n: int = SAMPLE_N, alert: bool = True) -> dict:
     row.update(returned_fate(cat))
     prev = _prev_row()
     problems = evaluate(row, prev)
-    ret_problems = evaluate_returns(row) + evaluate_given_up(row, _prev_failed())
+    ret_problems = evaluate_returns(row)
+    given_up = evaluate_given_up(row, _prev_failed())      # лише колонка alerts + канал для Коду (БЕЗ Telegram власнику)
     silence, first_order = evaluate_orders(row, prev)
-    row["alerts"] = " | ".join(problems + ret_problems + silence)
+    row["alerts"] = " | ".join(problems + ret_problems + given_up + silence)
+    if given_up and alert:
+        post_given_up_to_channel(given_up[0], datetime.now())
     print(f"[Funnel] усього {row['total']} · в наявності {row['avail']} · в кампанії {in_cpa} ({row['in_cpa_pct']:.0f}%) · "
           f"кнопка {buy_ok}/{len(res)} (без відповіді {row['buy_err']}) · фід {feed} · останнє замовлення: {row['last_order_at'] or row['orders_note'] or '—'} "
           f"({row['days_since_order']} діб) · повернені >24 год {row['ret_total']} (у кабінеті {row['ret_in_cab']}; публічні з кнопкою {row['ret_pub_buy']}/{row['ret_pub_n']}, 404: {row['ret_pub_404']}) {row['ret_note']}")

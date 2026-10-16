@@ -130,15 +130,16 @@ with sync_playwright() as pw:
     pg.route("https://toysi.ua/**", lambda r: r.abort())
     pg.goto(f"{base}/index.html", wait_until="load")
     pg.wait_for_selector('#home-chips [data-set="hel"]')
-    a0 = pg.evaluate("[document.getElementById('home-car-all').getAttribute('href'), document.getElementById('home-car-all').textContent]")
+    G = "(()=>{const a=document.getElementById('home-car-all'); return [a.getAttribute('href'), a.textContent, a.hidden]})()"
+    a0 = pg.evaluate(G)
     pg.click('#home-chips [data-set="hel"]')
     pg.wait_for_timeout(300)
-    a1 = pg.evaluate("[document.getElementById('home-car-all').getAttribute('href'), document.getElementById('home-car-all').textContent]")
-    pg.click('#home-chips [data-set="all"]')
+    a1 = pg.evaluate(G)
+    pg.click('#home-chips [data-set="hel"]')   # чипа «Усі» нема (власник 16.10): повторний клік знімає вибір
     pg.wait_for_timeout(300)
-    a2 = pg.evaluate("[document.getElementById('home-car-all').getAttribute('href'), document.getElementById('home-car-all').textContent]")
-    chk(f"Chromium: за замовчуванням «Дивитись усі» → catalog.html {a0}; чип «Хелловін» → helovin.html «Усі товари для Геловіна →» {a1}; «Усі» повертає каталог {a2}",
-        a0 == ["catalog.html", "Дивитись усі →"] and a1 == ["helovin.html", "Усі товари для Геловіна →"] and a2 == ["catalog.html", "Дивитись усі →"] and errs == [])
+    a2 = pg.evaluate(G)
+    chk(f"Chromium: спершу посилання під чипами приховане {a0}; чип «Хелловін» → видиме helovin.html «Усі товари для Геловіна →» {a1}; повторний клік ховає його знову {a2}",
+        a0[2] is True and a1 == ["helovin.html", "Усі товари для Геловіна →", False] and a2[2] is True and errs == [])
     pg.goto(f"{base}/helovin.html", wait_until="load")
     chk("Chromium: сторінка /helovin.html відкривається, є картки, без помилок JS", pg.evaluate("document.querySelectorAll('#helovin-list .card').length") >= 6 and errs == [])
     br.close()

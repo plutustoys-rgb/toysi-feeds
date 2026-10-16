@@ -834,13 +834,12 @@
       var chipBtns=Array.prototype.slice.call(chipBar.querySelectorAll("button[data-set]"));
       chipBar.addEventListener("click", function(e){
         var b=e.target.closest ? e.target.closest("button[data-set]") : null; if(!b) return;
-        if(b.classList.contains("active")) return;   // повторний клік по активному чипу: ні події, ні скидання позиції
-        var key=b.getAttribute("data-set"), html, name;
-        if(key==="all"){ html=baseHTML; name=baseName; }
+        var was=b.classList.contains("active"), key=b.getAttribute("data-set"), html, name;   // повторний клік по активному чипу знімає вибір і вертає основну карусель (чипа «Усі» нема — власник 16.10)
+        if(was){ html=baseHTML; name=baseName; }
         else { var tpl=document.getElementById("car-set-"+key); if(!tpl) return; html=tpl.innerHTML; name="home_chip_"+key; }
-        chipBtns.forEach(function(x){ var on=(x===b); x.classList.toggle("active", on); x.setAttribute("aria-pressed", on ? "true" : "false"); });
-        var subEl=document.getElementById("home-chip-sub"); if(subEl) subEl.textContent = b.getAttribute("data-sub") || "";   // підпис сезонного чипа (SMM)
-        var allEl=document.getElementById("home-car-all"); if(allEl){ allEl.setAttribute("href", b.getAttribute("data-all") || "catalog.html"); allEl.textContent = b.getAttribute("data-all-label") || "Дивитись усі →"; }   // чип «Хелловін» → повна сторінка /helovin.html
+        chipBtns.forEach(function(x){ var on=(!was && x===b); x.classList.toggle("active", on); x.setAttribute("aria-pressed", on ? "true" : "false"); });
+        var subEl=document.getElementById("home-chip-sub"); if(subEl) subEl.textContent = was ? "" : (b.getAttribute("data-sub") || "");   // підпис сезонного чипа (SMM)
+        var allEl=document.getElementById("home-car-all"); if(allEl){ var da = was ? "" : b.getAttribute("data-all"); if(da){ allEl.setAttribute("href", da); allEl.textContent = b.getAttribute("data-all-label") || "Дивитись усі →"; allEl.hidden=false; } else { allEl.hidden=true; } }   // чип «Хелловін» → посилання на /helovin.html під чипами
         setCarouselSet(html, name);
       });
     }

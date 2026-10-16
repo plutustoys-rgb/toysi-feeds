@@ -42,7 +42,7 @@ chk("порожній набір не повертається (немає «н�
 chk("не в наявності/без фото відсіюються з чипів", bs.home_chip_sets([dict(P(100, 80, "К"), stock=0), dict(P(100, 80, "К2"), photo="")]) == {})
 
 src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
-chk("розмітка: чипи (Усі активний, aria-pressed), набори в <template id=car-set-*>, плитки НЕ eager, з бейджем; без JS чипи сховані (noscript)", 'data-set="all" aria-pressed="true">Усі</button>' in src and '<template id="car-set-{k}">' in src and 'tile(p, cls="slide", badge=True) for p in chip_sets[k]' in src and "<noscript><style>.home-chips{display:none}</style></noscript>" in src)
+chk("розмітка: чипи (чипа «Усі» нема — власник 16.10; aria-pressed), набори в <template id=car-set-*>, плитки НЕ eager, з бейджем; без JS чипи сховані (noscript)", 'data-set="all"' not in src and '<template id="car-set-{k}">' in src and 'tile(p, cls="slide", badge=True) for p in chip_sets[k]' in src and "<noscript><style>.home-chips{display:none}</style></noscript>" in src)
 app = (HERE / "site/assets/app.js").read_text(encoding="utf-8")
 car = app[app.index("function initHomeCarousel()"):app.index("function initListTracking()")]
 chk("JS: перемикання прибирає клони, підставляє картки з <template>, перераховує slides/loop, скидає на початок, шле view_item_list home_chip_<ключ>", all(x in car for x in ("function teardownLoop()", 'querySelectorAll("[data-clone]")', "tpl.innerHTML", 'name="home_chip_"+key', "slides=Array.prototype.slice.call(car.querySelectorAll(\"a.card\"))", "track.scrollLeft=0;", "setupLoop();")))

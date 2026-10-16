@@ -1,0 +1,9 @@
+[Unit]
+Description=PlutusToys: щодня 07:20 за Києвом оновлюємо «Популярне зараз» за Search Console
+
+[Timer]
+OnCalendar=*-*-* 07:20:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

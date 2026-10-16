@@ -1,0 +1,6 @@
+{
+ "_comment": "Правила відбору «Популярне зараз» (demand_featured_auto.py). Редагує SEO через PR: blacklist_ids — id, які не показувати (наприклад, невдалі за змістом); max_ids — скільки id у файлі; min_impressions — мінімум показів сторінки за 90 діб (1 = будь-який показ).",
+ "blacklist_ids": [],
+ "max_ids": 40,
+ "min_impressions": 1
+}

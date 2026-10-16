@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: «Популярне зараз» за попитом Google автоматично → site/demand_featured_auto.json (demand_featured_auto.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Search Console API (сервіс-акаунт, лише читання) → публічний site/demand_featured_auto.json (id товарів, без цін/собівартості).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/demand_featured_auto.py
+TimeoutStartSec=300
+Nice=10

@@ -6,6 +6,7 @@
   • Кожне текстове повідомлення клієнта: зберігається у ПРИВАТНУ чергу site_chat.db (номери карток маскуються), клієнту один раз за 6 год — підтвердження прийому, власнику (SITE_CHAT_OWNER_CHAT_ID) — копія з міткою клієнта.
   • Власник відповідає РЕПЛАЄМ на копію → бот пересилає текст клієнту (відповідь зберігається). Відповіді від інших чатів на «режим власника» не діють.
   • АВТОВІДПОВІДЬ ПРО СТАТУС (16.10, рішення власника «статус треба віддавати клієнту»): повідомлення з номером замовлення сайту PT-YYYYMMDD-HHMMSS-xxxxxx І останніми 4 цифрами телефону замовлення → бот читає orders.db (mode=ro, platform='site') і відповідає станом (передано на комплектацію / укомплектовано / відправлено / доставлено / скасовано / очікуємо оплату) + ТТН НП із посиланням відстеження; без ПІБ, адреси, телефону, сум. Хибні/відсутні 4 цифри і неіснуюче замовлення — однакова відповідь; ≥5 невдалих звірок на замовлення за добу → автовідповідь по ньому вимкнена; невідомий стан (expired, sandbox) → відповідь дає людина. Копія власнику з міткою «🤖».
+  • ПІДПИСКА НА СТАТУС (16.10, варіант «2» власника): кнопка «Статус у Telegram» на сторінці «Дякуємо» веде на https://t.me/<бот>?start=PT-… ; клієнт натискає «Старт» → бот прив'язує чат до замовлення (≤3 чатів на замовлення, ≤10 активних підписок на чат) і щохвилини (notify_changes у poll_once) пише клієнту про кожну ЗМІНУ стану: комплектація / ТТН / відправлено / доставлено / скасовано. Джерело — orders.db (mode=ro, platform='site'); невідомий стан нічого не шле; доставлено/скасовано закриває підписку; 5 невдалих відправок підряд (клієнт заблокував бота) закривають її. Без ПІБ/адреси/сум.
   • Захист: лише приватні чати, текст ≤2000 символів, ≤20 повідомлень/год на клієнта (далі мовчки ігноруємо, раз повідомляємо), не-текст (фото/файли) не зберігаємо, номери карток 13–19 цифр маскуємо перед записом.
   • Аудитор (plutus-executor) не має каналу до VPS: щоденну збірку запитів (без особистих даних) передає Код за вимогою — `python site_chat_bot.py digest`.
 ЗАПУСК: systemd site-chat-bot.service (Type=simple, long-polling getUpdates). Без SITE_CHAT_BOT_TOKEN у .env сервіс просто завершується (код 0) — токен створює власник у @BotFather і кладе ТІЛЬКИ в .env на VPS.
@@ -45,6 +46,11 @@ GREETING = ("Вітаємо в PlutusToys! Напишіть своє питан�
             f"Контакти: {BASE_URL}/contacts.html" + chr(10) + chr(10) +
             "Щоб дізнатися статус замовлення, надішліть його номер (PT-…) і останні 4 цифри телефону, на який оформлено замовлення." + chr(10) + chr(10) +
             "Ваші повідомлення зберігаються лише для обробки звернення.")
+SUB_PER_ORDER = 3                # чатів на одне замовлення (покупець + родина), далі «підписку» не додаємо
+SUB_PER_CHAT = 10                # активних підписок на один чат
+SUB_FAIL_LIMIT = 5               # невдалих відправок підряд (клієнт заблокував бота) → підписку закрито
+NOTIFY_EVERY = 60                # секунд між перевірками змін статусів підписаних замовлень
+SUB_WELCOME = "Дякуємо! Тут ми повідомлятимемо вас про статус замовлення {oid}: комплектація, відправлення (ТТН), доставка."
 STATUS_NEED_PHONE = "Щоб показати статус замовлення, надішліть в ОДНОМУ повідомленні номер замовлення (PT-…) і рівно одне число з останніх 4 цифр телефону, на який воно оформлено."
 STATUS_NOT_FOUND = "Не вдалося знайти замовлення за цими даними. Перевірте номер (PT-…) і останні 4 цифри телефону; ми також прочитаємо ваше повідомлення й відповімо тут."
 ACK = "Дякуємо, повідомлення отримано. Ми прочитаємо його й відповімо тут."
@@ -96,7 +102,8 @@ class ChatDB:
             CREATE INDEX IF NOT EXISTS idx_msg_chat ON messages(chat_id, ts);
             CREATE INDEX IF NOT EXISTS idx_msg_owner ON messages(owner_msg_id);
             CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);
-            CREATE TABLE IF NOT EXISTS status_fails (order_id TEXT, ts TEXT);""")
+            CREATE TABLE IF NOT EXISTS status_fails (order_id TEXT, ts TEXT);
+            CREATE TABLE IF NOT EXISTS subscriptions (order_id TEXT, chat_id INTEGER, created_at TEXT, last_text TEXT, fails INTEGER DEFAULT 0, done INTEGER DEFAULT 0, PRIMARY KEY(order_id, chat_id));""")
         try:
             os.chmod(self.path, 0o600)       # у черзі чужі ПІБ/телефони: лише власник процесу
         except OSError:
@@ -193,6 +200,17 @@ def order_status_text(row) -> str | None:
     return None
 
 
+def fetch_order_row(oid: str):
+    """Рядок замовлення сайту з orders.db (лише читання) або None; виняток — якщо база недоступна."""
+    import sqlite3 as _sq
+    oc = _sq.connect(Path(ORDERS_DB).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    oc.row_factory = _sq.Row
+    try:
+        return oc.execute("SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone FROM orders WHERE internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
+    finally:
+        oc.close()
+
+
 class Bot:
     def __init__(self, api, db: ChatDB, owner_chat_id=None, now_fn=None):
         self.api, self.db = api, db
@@ -238,7 +256,12 @@ class Bot:
                     (chat_id, str(frm.get("first_name") or "")[:60], str(frm.get("username") or "")[:60], iso, iso))
         text = msg.get("text")
         if isinstance(text, str) and text.strip().startswith("/start"):
-            self._send(chat_id, GREETING)
+            parts = text.strip().split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            if payload and _ORDER_RE.fullmatch(payload):
+                self._subscribe(chat_id, "PT-" + payload[3:].lower(), now)       # кнопка «Статус у Telegram» на сторінці «Дякуємо»: t.me/<бот>?start=PT-…
+            else:
+                self._send(chat_id, GREETING)
             return
         if not isinstance(text, str) or not text.strip():
             self._send(chat_id, NON_TEXT)
@@ -264,6 +287,54 @@ class Bot:
             if self._send(chat_id, ACK):
                 self.db.run("UPDATE customers SET last_ack=? WHERE chat_id=?", (iso, chat_id))
         self._forward(mid, note)
+
+    def _subscribe(self, chat_id, oid: str, now) -> None:
+        """Прив'язує чат до замовлення (клієнт сам натиснув «Старт» за посиланням зі сторінки «Дякуємо»): далі notify_changes() пише про кожну зміну стану."""
+        try:
+            row = fetch_order_row(oid)
+        except Exception as e:  # noqa: BLE001
+            print(f"[site_chat_bot] orders.db не прочитано (підписка): {type(e).__name__}", file=sys.stderr)
+            self._send(chat_id, GREETING)
+            return
+        if row is None or (row["status"] or "").lower() == "sandbox_test":
+            self._send(chat_id, STATUS_NOT_FOUND)
+            return
+        iso = now.replace(microsecond=0).isoformat()
+        have = self.db.q("SELECT 1 FROM subscriptions WHERE order_id=? AND chat_id=?", (oid, chat_id))
+        if not have:
+            per_order = self.db.q("SELECT count(*) AS n FROM subscriptions WHERE order_id=?", (oid,))[0]["n"]
+            per_chat = self.db.q("SELECT count(*) AS n FROM subscriptions WHERE chat_id=? AND done=0", (chat_id,))[0]["n"]
+            if per_order >= SUB_PER_ORDER or per_chat >= SUB_PER_CHAT:
+                self._send(chat_id, "На це замовлення вже підключено максимум чатів. Напишіть нам тут, і ми допоможемо.")
+                return
+            self.db.run("INSERT INTO subscriptions(order_id, chat_id, created_at, last_text) VALUES(?,?,?,?)", (oid, chat_id, iso, ""))
+        txt = order_status_text(row)
+        msg = SUB_WELCOME.format(oid=oid) + (chr(10) + chr(10) + "Зараз: " + txt if txt else "")
+        if self._send(chat_id, msg) and txt:
+            self.db.run("UPDATE subscriptions SET last_text=?, done=0, fails=0 WHERE order_id=? AND chat_id=?", (txt, oid, chat_id))
+
+    def notify_changes(self) -> int:
+        """Для кожної активної підписки: стан замовлення змінився (текст статусу інший, ніж востаннє надісланий) → пишемо клієнту. Невідомий стан (None) нічого не шле. Доставлено/скасовано → підписку закрито. Повертає кількість надісланих."""
+        subs = self.db.q("SELECT order_id, chat_id, last_text FROM subscriptions WHERE done=0 AND fails<?", (SUB_FAIL_LIMIT,))
+        sent = 0
+        for s in subs:
+            try:
+                row = fetch_order_row(s["order_id"])
+            except Exception as e:  # noqa: BLE001
+                print(f"[site_chat_bot] orders.db не прочитано (сповіщення): {type(e).__name__}", file=sys.stderr)
+                return sent
+            if row is None:
+                continue
+            txt = order_status_text(row)
+            if not txt or txt == (s["last_text"] or ""):
+                continue
+            if self._send(s["chat_id"], f"Замовлення {s['order_id']}: {txt}"):
+                final = (row["delivery_status"] or "").lower() == "delivered" or "cancel" in (row["status"] or "").lower() or (row["delivery_status"] or "").lower() == "cancelled" or bool(row["cancelled_at"])
+                self.db.run("UPDATE subscriptions SET last_text=?, fails=0, done=? WHERE order_id=? AND chat_id=?", (txt, 1 if final else 0, s["order_id"], s["chat_id"]))
+                sent += 1
+            else:
+                self.db.run("UPDATE subscriptions SET fails=fails+1 WHERE order_id=? AND chat_id=?", (s["order_id"], s["chat_id"]))
+        return sent
 
     def _auto_status(self, chat_id, text: str, now) -> tuple:
         """Автовідповідь про статус замовлення сайту → (мітка для копії власнику або '', чи надіслано відповідь клієнту)."""
@@ -361,6 +432,13 @@ class Bot:
                 print(f"[site_chat_bot] update {u.get('update_id')}: {type(e).__name__}: {str(e)[:120]}", file=sys.stderr)
             self.db.set_state("offset", u["update_id"] + 1)
         self.retry_unforwarded()
+        mono = time.monotonic()
+        if mono - getattr(self, "_last_notify", 0.0) >= NOTIFY_EVERY:
+            self._last_notify = mono
+            try:
+                self.notify_changes()
+            except Exception as e:  # noqa: BLE001
+                print(f"[site_chat_bot] notify_changes: {type(e).__name__}: {str(e)[:120]}", file=sys.stderr)
         return len(updates)
 
 

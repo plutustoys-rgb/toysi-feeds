@@ -216,6 +216,8 @@ cat <<'EOF'
     RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- ${promredir:$1} [R=301,L]
     # 15.10.2026 (SEO/Код, лог Googlebot): 647 запитів до старих Prom-шляхів оформлення /create_order_mobile та /ua/create_order_mobile (були 404) → 410 Gone, як і решта мертвих Prom-URL
     RewriteRule ^/(?:(?:ua|ru)/)?create_order_mobile - [G,L]
+    # 16.10.2026 (власник): сторінка Halloween тепер /halloween.html — старий /helovin.html (+ пагінація helovin_N.html) → 301
+    RewriteRule ^/helovin(_[0-9]+)?\.html$ /halloween$1.html [R=301,L]
     # 12.10.2026 (SEO-замовлення, GSC: 88 старих URL груп Prom /g<gid>-<slug> ≈40% показів): gid Є в prom_group_redirects_apache.map → 301 на /category-<slug>.html
     # (мовний префікс опційний, хвіст після «g<gid>-» довільний; QSD — ?query Prom не переноситься на сторінку категорії). gid поза мапою (null-категорія SEO, невідомий,
     # сторінка категорії зникла) → правило нижче, як було: /catalog.html. Мапа без дефолту: RewriteCond ... !=- пропускає лише знайдені ключі.
@@ -443,6 +445,8 @@ if [ "$CERT_OK" = "0" ]; then
     HO1=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code}' "http://$DOMAIN/create_order_mobile" 2>/dev/null || echo "ERR")
     HO2=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code}' "http://$DOMAIN/ua/create_order_mobile" 2>/dev/null || echo "ERR")
     echo "  /create_order_mobile, /ua/create_order_mobile: $HO1, $HO2 (очікую 410 Gone — старі Prom-шляхи оформлення)"
+    HH=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code} %{redirect_url}' "http://$DOMAIN/helovin.html" 2>/dev/null || echo "ERR")
+    echo "  /helovin.html      : $HH (очікую 301 …/halloween.html)"
     GRPKEY=$(awk '/^[0-9]/{print $1; exit}' "$GROUPMAP" 2>/dev/null || true)
     GRPVAL=$(awk '/^[0-9]/{print $2; exit}' "$GROUPMAP" 2>/dev/null || true)
     HG=$(redir $R "http://$DOMAIN/ua/g${GRPKEY:-0}-test")

@@ -44,6 +44,7 @@ _i_301 = sh.find("${promredir:$1} [R=301,L]")
 chk("410-правило p<id> іде безпосередньо після RewriteCond ${promredir:$1|-} =- і ПЕРЕД 301-правилом із мапи",
     -1 < _i_cond < _i_gone < _i_301 and sh[_i_cond:_i_gone].count("RewriteRule") == 1 and sh[_i_cond:_i_gone].count("RewriteCond") == 1)
 chk("410: /create_order_mobile, /ua/create_order_mobile (SEO/Код 15.10: 647 запитів Googlebot) → Gone; наші сторінки — ні", gone("/create_order_mobile") and gone("/ua/create_order_mobile") and not gone("/cart.html") and not gone("/checkout.html"))
+chk("301: /helovin.html і /helovin_2.html → /halloween.html, /halloween_2.html (власник 16.10)", 'RewriteRule ^/helovin(_[0-9]+)?\.html$ /halloween$1.html [R=301,L]' in sh and re.search(r"^/helovin(_[0-9]+)?\.html$", "/helovin.html") and re.search(r"^/helovin(_[0-9]+)?\.html$", "/helovin_2.html") and not re.search(r"^/helovin(_[0-9]+)?\.html$", "/helovinx.html"))
 chk("мапа БЕЗ дефолту /catalog.html (непокритий ключ більше не веде на каталог)", "${promredir:$1|/catalog.html}" not in sh)
 chk("410: /ua/p…, /ru/p…, /p… без префікса підпадають під [G]; /product-1.html, /ua/g…, /catalog.html — ні",
     gone("/ua/p3122611441-x.html") and gone("/ru/p3122611441-x.html") and gone("/p3138857147-x.html")

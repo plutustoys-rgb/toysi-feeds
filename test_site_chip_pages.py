@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """test_site_chip_pages.py — 16.10.2026 (власник: «коли нажимаєш на чіп повинно перекидати на окрему сторінку, як при нажиманні Уцінки. Зі своїми сортувальниками»).
-Чип головної = посилання на свою сторінку (podibrka-*.html; Halloween — /helovin.html); сторінка — шаблон «Уцінки»: крупна назва + панель сортування/категорії/ціни (cat-controls + cat-ids), до 72 карток на 3 сторінки,
+Чип головної = посилання на свою сторінку (podibrka-*.html; Halloween — /halloween.html); сторінка — шаблон «Уцінки»: крупна назва + панель сортування/категорії/ціни (cat-controls + cat-ids), до 72 карток на 3 сторінки,
 пагінація як у каталозі; сезонні сторінки (Миколай, До Різдва, Halloween) існують лише у своє вікно; стару сторінку прибирає крок прибирання."""
 import json
 import os
@@ -75,7 +75,7 @@ bs.TOYSI_TOP_FILE = str(TOP)
 TOP.write_text(json.dumps({"date": "2026-12-10", "fetched_at": "2026-12-10T16:05:00", "lists": {"shipments": [p["id"] for p in newp[:20]], "week": [p["id"] for p in newp[10:]], "yesterday": [], "month": []}}), encoding="utf-8")
 w1 = build_day("2026-12-10")
 chk(f"10.12: сторінки Українське/Популярне/День народження/Миколай/До Різдва є (24 + решта на стор. 2), Геловіну нема: {sorted(w1)}",
-    {"podibrka-ukrainske.html", "podibrka-populiarne.html", "podibrka-den-narodzhennia.html", "podibrka-mykolai-novyi-rik.html", "podibrka-do-rizdva.html"} <= w1 and "helovin.html" not in w1 and "podibrka-ukrainske_2.html" in w1)
+    {"podibrka-ukrainske.html", "podibrka-populiarne.html", "podibrka-den-narodzhennia.html", "podibrka-mykolai-novyi-rik.html", "podibrka-do-rizdva.html"} <= w1 and "halloween.html" not in w1 and "podibrka-ukrainske_2.html" in w1)
 u = (out / "podibrka-ukrainske.html").read_text(encoding="utf-8")
 ids = re.search(r'<script type="application/json" id="cat-ids">(.*?)</script>', u).group(1)
 n_ids = len(ids.strip("[]").split(","))
@@ -106,12 +106,12 @@ w1 = build_day("2026-12-10")
 chk("файли сторінок чипів починаються з «podibrka» (префікс у кроці прибирання застарілих сторінок)", all(f.startswith("podibrka") for f in w1))
 
 w2 = build_day("2026-10-20")
-chk(f"20.10: Halloween = /helovin.html з панеллю, Миколай/До Різдва нема; Українське/Популярне/День народження лишились: {sorted(w2)}",
-    "helovin.html" in w2 and "podibrka-mykolai-novyi-rik.html" not in w2 and "podibrka-do-rizdva.html" not in w2 and {"podibrka-ukrainske.html", "podibrka-populiarne.html", "podibrka-den-narodzhennia.html"} <= w2)
-hv = (out / "helovin.html").read_text(encoding="utf-8")
-chk("/helovin.html — шаблон з панеллю (cat-controls, крупна назва) і data-list=helovin", 'id="cat-controls"' in hv and '<h1 class="page cat-h1">Halloween</h1>' in hv and 'data-list="helovin"' in hv)
+chk(f"20.10: Halloween = /halloween.html з панеллю, Миколай/До Різдва нема; Українське/Популярне/День народження лишились: {sorted(w2)}",
+    "halloween.html" in w2 and "podibrka-mykolai-novyi-rik.html" not in w2 and "podibrka-do-rizdva.html" not in w2 and {"podibrka-ukrainske.html", "podibrka-populiarne.html", "podibrka-den-narodzhennia.html"} <= w2)
+hv = (out / "halloween.html").read_text(encoding="utf-8")
+chk("/halloween.html — шаблон з панеллю (cat-controls, крупна назва) і data-list=helovin", 'id="cat-controls"' in hv and '<h1 class="page cat-h1">Halloween</h1>' in hv and 'data-list="helovin"' in hv)
 home2 = (out / "index.html").read_text(encoding="utf-8")
-chk("головна 20.10: чип «Halloween» → helovin.html", re.search(r'data-set="hel" href="helovin\.html"', home2) is not None)
+chk("головна 20.10: чип «Halloween» → halloween.html", re.search(r'data-set="hel" href="halloween\.html"', home2) is not None)
 print()
 if F:
     print(f"FAILED ({len(F)}):")

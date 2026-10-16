@@ -11,7 +11,7 @@ import sys
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -24,6 +24,7 @@ FEED_URL = os.environ.get("EVA_FEED_URL", "https://raw.githubusercontent.com/plu
 REPORT_DIR = Path(os.environ.get("AUDIT_REPORT_DIR") or (BASE_DIR / "reports"))
 CHANNEL_FILE = Path(os.environ.get("EVA_CHECK_CHANNEL_FILE") or (REPORT_DIR.parent / "EXECUTOR_CHANNEL.md"))
 MARK = "[Автомат → Код] EVA: категорії кабінету"
+RECENT_DAYS = 3      # не частіше одного запису на стільки днів, поки стан триває
 _ROW = re.compile(r"(\d+)\s*\n\s*ID:\s*(\d+)\s*\n\s*([^\n\t]*)\t?\s*([^\n]*)")
 
 
@@ -76,24 +77,33 @@ def render_report(res: dict, now: datetime) -> str:
 
 
 def post_to_channel(res: dict, now: datetime, channel: Path | None = None) -> bool:
-    """Один запис на добу в канал для Коду (дедуп за датою); True — дописано."""
+    """Запис для Коду; не частіше ніж раз на RECENT_DAYS днів (поки стан триває); вставка перед першим рядком, що ПОЧИНАЄТЬСЯ з «## » (не всередині блок-цитати «> ## …»); атомарний запис; True — дописано."""
     channel = Path(channel or CHANNEL_FILE)
     stamp = f"{now:%Y-%m-%d}"
     try:
         s = channel.read_text(encoding="utf-8")
     except OSError:
         return False
+    for m in re.finditer(r"(?m)^## " + re.escape(MARK) + r" (\d{4}-\d{2}-\d{2})", s):
+        try:
+            if (now.date() - date.fromisoformat(m.group(1))).days < RECENT_DAYS:
+                return False
+        except ValueError:
+            continue
     head = f"## {MARK} {stamp}"
-    if head in s:
-        return False
     nl = "\r\n" if "\r\n" in s else "\n"
     top = "; ".join(f"{c} {name} — {n}" for n, c, name in res["top"][:5])
     entry = (f"{head}: {res['bad_offers']} товарів фіду в НЕСПІВСТАВЛЕНИХ категоріях ({res['bad_categories']} категорій)\n"
              f"Кабінет `Категорії`: потребують співставлення {res['unmatched_total']}, співставлені {res['matched_total']}; фід: available {res['feed_available']}. Топ: {top}. Повний звіт — eva_categories_{stamp}.md. "
-             f"Дія — Коду (повернення старих співставлених id: eva_legacy_rollout.json; решта — менеджер EVA за командою власника).\n\n")
-    i = s.find("## ")
-    s = (s[:i] + entry.replace("\n", nl) + s[i:]) if i >= 0 else (s + nl + entry.replace("\n", nl))
-    channel.write_text(s, encoding="utf-8")
+             f"Дія — Коду (повернення старих співставлених id: eva_legacy_rollout.json; решта — менеджер EVA за командою власника).\n\n").replace("\n", nl)
+    m = re.search(r"(?m)^## ", s)
+    new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
+    try:
+        tmp = channel.with_name(channel.name + ".tmp")
+        tmp.write_text(new, encoding="utf-8")
+        os.replace(tmp, channel)
+    except OSError:
+        return False
     return True
 
 

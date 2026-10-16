@@ -263,6 +263,26 @@ _check("6i. вибірка 9 (<10) → висновків нема", len(_r), 0)
 _r = vf.evaluate_returns({"ret_pub_n": 10, "ret_pub_buy": 6})
 _check("6j. вибірка 10, кнопка 6/10 (<70%) → порушення", len(_r), 1)
 
+# «здані» повернення (_readd_failed): ростуть два зрізи поспіль → порушення (факт, не поріг)
+_r = vf.evaluate_given_up({"ret_failed": 379}, [227, 302])
+_check("7a. 227 → 302 → 379 (росте двічі поспіль) → порушення з числами", (len(_r), "227 → 302 → 379" in _r[0]), (1, True))
+_check("7b. 302 → 302 → 379 (перша пауза в рості) → не порушення", len(vf.evaluate_given_up({"ret_failed": 379}, [302, 302])), 0)
+_check("7c. зменшується 400 → 380 → 379 → не порушення", len(vf.evaluate_given_up({"ret_failed": 379}, [400, 380])), 0)
+_check("7d. історії <2 точок або None → не вигадуємо", (len(vf.evaluate_given_up({"ret_failed": 5}, [3])), len(vf.evaluate_given_up({"ret_failed": None}, [1, 2]))), (0, 0))
+
+# запис «зданих» повернень у канал (без Telegram власнику)
+import tempfile as _tf
+from pathlib import Path as _P
+_ch = _P(_tf.mkdtemp()) / "EXECUTOR_CHANNEL.md"
+_ch.write_text("<!-- шапка -->" + chr(10) + "> ## 📇 Як написати" + chr(10) + ">" + chr(10) + chr(10) + "## [Аудитор → Код] старе" + chr(10) + "текст" + chr(10), encoding="utf-8")
+_n1 = vf.datetime(2026, 10, 16, 12, 0)
+_a = vf.post_given_up_to_channel("«здані» повернення ростуть: 227 → 302 → 379", _n1, _ch)
+_b = vf.post_given_up_to_channel("x", vf.datetime(2026, 10, 17, 12, 0), _ch)
+_c = vf.post_given_up_to_channel("x", vf.datetime(2026, 10, 19, 12, 0), _ch)
+_t = _ch.read_text(encoding="utf-8")
+_check("7e. запис у канал: 16.10 так, 17.10 ні (раз на 3 доби), 19.10 так; блок-цитата ціла; вставка перед «## [Аудитор»", (_a, _b, _c, _t.count(vf.GIVEN_UP_MARK), "> ## 📇 Як написати" in _t, _t.index(vf.GIVEN_UP_MARK) < _t.index("## [Аудитор → Код] старе")), (True, False, True, 2, True, True))
+_check("7f. нема каналу → False без винятку", vf.post_given_up_to_channel("x", _n1, _P(_tf.mkdtemp()) / "нема.md"), False)
+
 # часовий пояс і скасовані
 _utc = vf._parse_prom_dt("2026-09-24T13:23:56.878746+00:00")
 _local = vf.datetime(2026, 9, 24, 13, 23, 56, tzinfo=vf.timezone.utc).astimezone().replace(tzinfo=None)

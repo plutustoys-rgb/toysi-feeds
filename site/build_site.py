@@ -1393,7 +1393,7 @@ def write_utsinka(prods, cat_list, cat_slug):
     n = len(picked)
     desc = f"Уцінені іграшки PlutusToys: {_fmt_int(n)} товар{_plural(n)}, ціни від {picked[0]['price']} ₴. Дефект чи неповна комплектація вказані в назві й описі."
     return write_catalog("Уцінені іграшки", picked, cat_list, cat_slug, UTSINKA_FILE, active=None,
-                         special={"h1": "Уцінені іграшки", "title": "Уцінені іграшки — знижені ціни | PlutusToys", "desc": desc, "notice": UTSINKA_NOTICE})
+                         special={"h1": "Уцінені іграшки", "title": "Уцінені іграшки — знижені ціни | PlutusToys", "desc": desc, "notice": UTSINKA_NOTICE, "filters": True})
 
 
 AKTSII_FILE = "aktsii.html"
@@ -1467,7 +1467,7 @@ def write_aktsii(prods, cat_list=None, cat_slug=None):
     n = len(picks)
     desc = f"Акції PlutusToys: {_fmt_int(n)} товар{_plural(n)} за акційними цінами, добірка оновлюється щодня. Стара ціна перекреслена, знижка вже в ціні."
     return write_catalog("Акції", picks, cat_list or [], cat_slug or {}, AKTSII_FILE, active=None,
-                         special={"h1": "Акції", "h1_hidden": True, "title": "Акції | PlutusToys", "desc": desc, "notice": "", "list": "sale_week"})
+                         special={"h1": "Акції", "h1_hidden": True, "title": "Акції | PlutusToys", "desc": desc, "notice": "", "list": "sale_week", "filters": True})
 
 
 def _category_top_html(fname, cat_prods):
@@ -1522,6 +1522,19 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 crumbs_html(trail1) + '<div class="gp"><aside class="sb" aria-label="Категорії"><div class="sb-h">Категорії</div>' + side + '</aside><div class="gmain">'
                 '<div class="cat-bar"><h1 class="page cat-h1">Усі категорії<span class="sr-only"> — каталог іграшок</span></h1>' + _catalog_controls(groups_json=gj) + '</div>\n' +
                 _catalog_js_grid() + static_grid + '</div></div>'
+            )
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            written.add(cur)
+            continue
+        if special and special.get("filters") and k == 1:
+            # власник 16.10 («не вистачає сортерів, збільши текст»): Уцінка/Акції — як каталог: крупна назва + сортування/категорія/ціна в закріпленій панелі; JS працює лише з id цієї сторінки
+            ids_json = json.dumps([str(x["id"]) for x in prods]).replace("</", "<\\/")
+            h1cls = "page cat-h1" + (" sr-only" if special.get("h1_hidden") else "")
+            body = (
+                crumbs_html(trail) +
+                f'<div class="cat-bar"><h1 class="{h1cls}">{esc(special["h1"])}</h1>' + _catalog_controls() + '</div>\n' +
+                f'<script type="application/json" id="cat-ids">{ids_json}</script>\n' +
+                (special.get("notice") or "") + _catalog_js_grid() + f'<div id="cat-static">{static_grid}</div>'
             )
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
             written.add(cur)
@@ -1602,7 +1615,8 @@ HERO_MASCOT_POSTER = "assets/mascot/plutus_hero_poster.webp"
 # (широко відкритий рот; прибрати з ротації одним рядком — видалити запис). Ms = сума тривалостей кадрів файлу (+400 мс запасу додає JS). Вага в репо ≈2,5 МБ (Q=32 у make_mascot_clips.py), клипи вантажаться по одному перед показом.
 # (name, ms, weight, first_ok)
 HERO_MASCOT_CLIPS = (("tailtrip", 3154, 2, True), ("ear_scratch", 4000, 2, True), ("grooming", 4400, 2, True), ("sniff", 4400, 2, True), ("shakeoff", 1992, 2, True),
-                     ("stretch_yawn", 4400, 2, False), ("sneeze", 3500, 1, True), ("tailchase", 5976, 1, True), ("sleep", 4980, 1, True), ("rolljump", 4316, 1, True))
+                     ("stretch_yawn", 4400, 2, False), ("sneeze", 3500, 1, True), ("tailchase", 5976, 1, True), ("sleep", 4980, 1, True), ("rolljump", 4316, 1, True),
+                     ("nod", 3486, 2, True, True))   # «Киває» (SMM 16.10): 5-й елемент — dip: підміна poster↔кліп через «занурення» (кадр спокою відрізняється від спільного poster)
 # Сезонний рух «Гелловін» (SMM 15.10): відьомська шапка, гарбуз; діє 15–31.10 за датою збірки (як чип «Хелловін»), вага 2. Його кадр спокою ≠ спільний poster (шапка, гарбуз), тому підміна poster↔кліп іде через «занурення» (data-dip: обгортка гасне на 0,17 с, підміна, повертається) —
 # кросфейд дав би двійника крізь прозорий кліп. Вага рухів у репо ≤ 2,5 МБ: на час Гелловіну з ротації виходить слабкий tailchase (розмита пляма; рішення SMM), після 31.10 він повертається сам.
 # (name, ms, weight, first_ok, dip, перший день (м, д), останній день, що замінює)
@@ -1612,7 +1626,7 @@ HERO_MASCOT_SEASONAL = (("halloween", 3320, 2, True, True, (10, 15), (10, 31), "
 
 def hero_mascot_clips(today=None):
     """Рухи героя на ЗАРАЗ: базові 10 (HERO_MASCOT_CLIPS) + сезонні в межах дат (із витісненням слабшого). Кортеж: (name, ms, weight, first_ok, dip)."""
-    clips = [(n, ms, w, f, False) for n, ms, w, f in HERO_MASCOT_CLIPS]
+    clips = [(c[0], c[1], c[2], c[3], bool(len(c) > 4 and c[4])) for c in HERO_MASCOT_CLIPS]
     for n, ms, w, f, dip, first, last, replaces in HERO_MASCOT_SEASONAL:
         if seasonal_active(first, last, today):
             clips = [c for c in clips if c[0] != replaces] + [(n, ms, w, f, dip)]

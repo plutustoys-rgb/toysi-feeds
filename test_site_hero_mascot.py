@@ -56,7 +56,7 @@ with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.St
     bs.build()
 home = (out / "index.html").read_text(encoding="utf-8")
 
-m = re.search(r'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="([^"]+)" alt="[^"]*" width="(\d+)" height="(\d+)" decoding="async" data-clips="([^"]+)" data-ms="([^"]+)" data-w="([^"]+)" data-nofirst="([^"]*)">'
+m = re.search(r'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="([^"]+)" alt="[^"]*" width="(\d+)" height="(\d+)" decoding="async" data-clips="([^"]+)" data-ms="([^"]+)" data-w="([^"]+)" data-nofirst="([^"]*)"(?: data-dip="[^"]*")?>'
               r'<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>', home)
 chk("головна: герой = обгортка .mascot-wrap із poster (data-clips, data-ms) і накладеним clip-<img> БЕЗ src (aria-hidden)", m is not None)
 if m:
@@ -64,7 +64,7 @@ if m:
     wts, nofirst = m.group(6).split(","), m.group(7)
     chk("poster — webp зі сталою версією ?v=хеш, розміри 130×100 задані атрибутами (CLS 0)", re.fullmatch(r"assets/mascot/plutus_hero_poster\.webp\?v=[0-9a-f]{8}", poster) is not None and (w, h) == (130, 100))
     names = sorted(re.search(r"plutus_(\w+)\.webp", c).group(1) for c in clips)
-    chk("у героя 10 рухів (SMM 12.10): 5 «чистих» + stretch_yawn + sneeze, tailchase, sleep, rolljump", names == sorted(["tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff", "stretch_yawn", "sneeze", "tailchase", "sleep", "rolljump"]))
+    chk("у героя 11 рухів (SMM 12.10 + «Киває» 16.10): 5 «чистих» + stretch_yawn + sneeze, tailchase, sleep, rolljump, nod", names == sorted(["tailtrip", "ear_scratch", "grooming", "sniff", "shakeoff", "stretch_yawn", "sneeze", "tailchase", "sleep", "rolljump", "nod"]))
     chk("data-w: «рідкі» чотири (sneeze, tailchase, sleep, rolljump) мають вагу 1, решта 2; stretch_yawn не може бути першим (data-nofirst = його індекс)", len(wts) == len(clips) and all((w == "1") == (re.search(r"plutus_(\w+)\.webp", c).group(1) in ("sneeze", "tailchase", "sleep", "rolljump")) for c, w in zip(clips, wts))
         and nofirst == str([re.search(r"plutus_(\w+)\.webp", c).group(1) for c in clips].index("stretch_yawn")))
     chk("data-ms: тривалість кожного кліпу в мс, число на кліп", len(ms) == len(clips) and all(x.isdigit() and 1000 <= int(x) <= 8000 for x in ms))
@@ -72,7 +72,7 @@ if m:
     chk("файли існують у site/assets/mascot, кліпи ≤ 340 КБ (Q=32, найдовший tailchase ≈300 КБ), poster ≤ 30 КБ і легший за PNG 14,6 КБ, який у герої замінив", ps <= 30 * 1024 and ps < (HERE / "site/assets/plutus_mascot_s.png").stat().st_size
         and all((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size <= 340 * 1024 for n in names))
     tot = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in names) + ps
-    chk(f"загальна вага рухів у репо ≤ 2,5 МБ (SMM 12.10, 10 рухів): {tot/1024:.0f} КБ", tot <= 2.5 * 1000 * 1000 + 20000)
+    chk(f"загальна вага рухів у репо ≤ 3,0 МБ (11 рухів з «Киває», SMM 16.10 — ліміт піднято з 2,5; кліпи вантажаться по одному): {tot/1024:.0f} КБ", tot <= 3.0 * 1000 * 1000)
     from PIL import Image as _Im, ImageSequence as _Seq
     dur = {}
     for n in names:
@@ -243,25 +243,30 @@ for day, snow_on, hel_on in (("2026-10-14", False, False), ("2026-10-15", True, 
     names2 = r[0] if r else []
     isn = names2.index("snowflake") if "snowflake" in names2 else -1
     ish = names2.index("halloween") if "halloween" in names2 else -1
-    exp_n = 10 + int(snow_on) + int(hel_on) - int(hel_on)   # Гелловін замінює tailchase (10 → 10), Сніжинка додається
+    exp_n = 11 + int(snow_on)   # 11 базових (з «Киває»); Гелловін замінює tailchase (11 → 11), Сніжинка додається
     ok = bool(r) and (isn >= 0) == snow_on and (ish >= 0) == hel_on and len(names2) == exp_n and ("tailchase" in names2) == (not hel_on)
     if snow_on and r:
         ok = ok and r[2][isn] == "2" and abs(int(r[1][isn]) - 3818) <= 60 and str(isn) in _dips(r)
     if hel_on and r:
         ok = ok and r[2][ish] == "2" and abs(int(r[1][ish]) - 3320) <= 60 and str(ish) in _dips(r)
-    if not snow_on and not hel_on and r:
-        ok = ok and r[3] is None
+    if r:
+        _nod = names2.index("nod") if "nod" in names2 else -1
+        ok = ok and _nod >= 0 and str(_nod) in _dips(r)   # «Киває» (SMM 16.10) — несезонний рух із «зануренням»: data-dip є завжди
+        if not snow_on and not hel_on:
+            ok = ok and _dips(r) == {str(_nod)}
     chk(f"{day}: Сніжинка {'є' if snow_on else 'нема'}, Гелловін {'є' if hel_on else 'нема'}, tailchase {'виходить (Гелловін)' if hel_on else 'на місці'}, рухів {exp_n}, data-dip = сезонні індекси: {names2}", ok)
 sf = HERE / "site/assets/mascot/plutus_snowflake.webp"
 chk(f"файл Сніжинки в репо ({sf.stat().st_size // 1024} КБ ≤ 250, ліміт SMM)", sf.exists() and sf.stat().st_size <= 250 * 1024)
 act_s = [c[0] for c in bs.hero_mascot_clips(__import__("datetime").date(2026, 12, 1))]
 tot_s = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in act_s) + ps
-chk(f"вага рухів у ротації під час Сніжинки (tailchase лишається, SMM 15.10) ≤ 2,8 МБ: {tot_s/1024:.0f} КБ (кліпи вантажаться по одному)", tot_s <= 2.8 * 1000 * 1000)
+chk(f"вага рухів у ротації під час Сніжинки (tailchase лишається, SMM 15.10) ≤ 3,0 МБ (з «Киває» 16.10): {tot_s/1024:.0f} КБ (кліпи вантажаться по одному)", tot_s <= 3.0 * 1000 * 1000)
 hw = HERE / "site/assets/mascot/plutus_halloween.webp"
 chk(f"файл Гелловіну в репо ({hw.stat().st_size // 1024} КБ ≤ 250, ліміт SMM): 12 fps, loop=1", hw.exists() and hw.stat().st_size <= 250 * 1024)
 act = [n for n in (c[0] for c in bs.hero_mascot_clips(__import__("datetime").date(2026, 10, 20)))]
 tot_act = sum((HERE / f"site/assets/mascot/plutus_{n}.webp").stat().st_size for n in act) + ps
-chk(f"вага рухів у ротації під час Гелловіну + Сніжинки ≤ 2,8 МБ: {tot_act/1024:.0f} КБ", tot_act <= 2.8 * 1000 * 1000)
+chk(f"вага рухів у ротації під час Гелловіну + Сніжинки ≤ 3,0 МБ: {tot_act/1024:.0f} КБ", tot_act <= 3.0 * 1000 * 1000)
+nodf = HERE / "site/assets/mascot/plutus_nod.webp"
+chk(f"файл «Киває» в репо ({nodf.stat().st_size // 1024} КБ ≤ 250, ліміт SMM), data-ms = реальна тривалість кадрів", nodf.exists() and nodf.stat().st_size <= 250 * 1024)
 from PIL import Image as _Im2
 imh = _Im2.open(hw)
 dh = 0

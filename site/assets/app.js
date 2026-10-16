@@ -285,6 +285,9 @@
     try{ var gs=controls.getAttribute("data-group"); if(gs){ groupSet={}; JSON.parse(gs).forEach(function(c){ groupSet[c]=1; }); sideLinks=Array.prototype.slice.call(document.querySelectorAll(".sb-i")); } }catch(e){ groupSet=null; }
     function syncSide(){ sideLinks.forEach(function(a){ a.classList.toggle("on", (a.getAttribute("data-sub")||"")===elCat.value); }); }
     // ПОВНИЙ КАТАЛОГ із деревом (data-groups = [{n,s:[підкатегорії],o:власна}]): сайдбар «Усі товари / група / підкатегорія» фільтрує на місці; на вузьких екранах список категорій — з групами (optgroup)
+    // службова сторінка (Уцінка/Акції): <script id=cat-ids> = id її товарів; панель сортує/фільтрує лише їх (а не весь каталог)
+    var idSet=null;
+    try{ var ie=document.getElementById("cat-ids"); if(ie){ idSet={}; JSON.parse(ie.textContent||"[]").forEach(function(i){ idSet[i]=1; }); } }catch(e){ idSet=null; }
     var tree=null, treeSets=[], selSet=null, curG=-1, treeEls=[], treeGrp=[];
     try{ var gd=controls.getAttribute("data-groups"); if(gd && !groupSet){ tree=JSON.parse(gd); tree.forEach(function(g){ var m={}; g.s.forEach(function(c){ m[c]=1; }); treeSets.push(m); }); treeEls=Array.prototype.slice.call(document.querySelectorAll(".sb .sb-i")).filter(function(a){ return !a.classList.contains("sb-nav"); }); treeGrp=Array.prototype.slice.call(document.querySelectorAll(".sb-grp")); } }catch(e){ tree=null; }
     function groupOf(c){ for(var i=0;i<treeSets.length;i++){ if(treeSets[i][c]) return i; } return -1; }
@@ -302,7 +305,7 @@
     if(preset){ try{ catUrls=JSON.parse((document.getElementById("cat-urls")||{}).textContent||"{}"); }catch(e){ catUrls={}; } }
     ensureIndex(function(data){
       var cats={};
-      for(var i=0;i<data.length;i++){ if(data[i].c && (!groupSet || groupSet[data[i].c])) cats[data[i].c]=(cats[data[i].c]||0)+1; }
+      for(var i=0;i<data.length;i++){ if(data[i].c && (!groupSet || groupSet[data[i].c]) && (!idSet || idSet[data[i].id])) cats[data[i].c]=(cats[data[i].c]||0)+1; }
       function addOpt(parent, c, label){ var o=document.createElement("option"); o.value=c; o.textContent=(label||c)+" ("+cats[c]+")"; parent.appendChild(o); }
       if(tree){
         var placed={};
@@ -328,6 +331,7 @@
       var cat=elCat.value, ins=elStock ? elStock.checked : false, sort=elSort.value;
       filtered=(idx||[]).filter(function(p){
         if(groupSet && !groupSet[p.c]) return false;
+        if(idSet && !idSet[p.id]) return false;
         if(selSet && !cat && !selSet[p.c]) return false;
         if(cat==="__other"){ if(!otherSet || !otherSet[p.c]) return false; }
         else if(cat && p.c!==cat) return false;

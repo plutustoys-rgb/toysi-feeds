@@ -82,6 +82,9 @@ def main() -> None:
     rc_allo = _run("ALLO автоцикл (зіставлення+модерація)",
                    [PY, str(BASE_DIR / "allo_cabinet_scraper.py"), "--auto-cycle", *apply_flag])
 
+    # Звірка категорій кабінету EVA з фідом (лише читання; ≥1 товар у незіставлених категоріях → запис [Автомат → Код] у канал). Не впливає на код виходу.
+    _run("EVA категорії кабінету ↔ фід", [PY, str(BASE_DIR / "eva_category_check.py")])
+
     print(f"[marketplace-actions] Готово. EVA rc={rc_eva}, ALLO rc={rc_allo}. "
           f"Звіти: {os.environ['AUDIT_REPORT_DIR']}")
     # Ненульовий вихід лише якщо ОБИДВА впали (частковий успіх = ок для best-effort циклу).

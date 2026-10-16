@@ -1,0 +1,10 @@
+[Unit]
+Description=PlutusToys: ТОП Toysi двічі на добу (08:05 і 16:05 за Києвом), потім ребілд сайту підхоплює файл
+
+[Timer]
+OnCalendar=*-*-* 08:05:00 Europe/Kyiv
+OnCalendar=*-*-* 16:05:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

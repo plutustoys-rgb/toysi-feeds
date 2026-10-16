@@ -226,11 +226,50 @@ def _load_eva_category_map() -> dict:
 EVA_CATEGORY_MAP = _load_eva_category_map()
 
 
+# ПОВЕРНЕННЯ СТАРИХ СПІВСТАВЛЕНИХ id (16.10.2026). З 03.08 фід віддає id довідника EVA (7147eaf), а кабінет бачить їх як «Нова» (16.10: «Потребують співставлення»
+# 161 категорія = усі 94 категорії фіду, 7 781 товар; «З помилками» 4 363 «Категорія мерчанта не співставлена»). Тим часом 212 СТАРИХ id (Toysi-категорії до 03.08) у кабінеті «Співставлені».
+# eva_matched_legacy_ids.json = знімок цих 212 (id → назва + EVA-категорія, до якої EVA їх віднесла); eva_legacy_rollout.json = поетапне ввімкнення:
+#   {"mode": "ids", "ids": [toysi-id…]} — лише ці; {"mode": "all_safe"} — усі «безпечні» (співставлена EVA-категорія збігається з нашою мапою, без суфікса «(МП)»); {"mode": "off"}/нема файла — нічого.
+# Для категорії з ввімкненим поверненням фід віддає старі Toysi-id+назву (як до 03.08), яку кабінет уже зіставив.
+EVA_MATCHED_LEGACY_FILE = Path(__file__).parent / "eva_matched_legacy_ids.json"
+EVA_LEGACY_ROLLOUT_FILE = Path(__file__).parent / "eva_legacy_rollout.json"
+
+
+def _norm_eva_name(s: str) -> str:
+    import re as _re
+    return _re.sub(r"\s*\(МП\)\s*$", "", (s or "").replace("ʼ", "'").replace("’", "'")).strip().casefold()
+
+
+def _load_legacy_override() -> dict:
+    """{toysi_id: legacy_name} для категорій, які віддаємо зі старим співставленим id; будь-яка помилка файлів → {} (віддаємо EVA-id, як зараз)."""
+    try:
+        matched = json.loads(EVA_MATCHED_LEGACY_FILE.read_text(encoding="utf-8")).get("matched") or {}
+        cfg = json.loads(EVA_LEGACY_ROLLOUT_FILE.read_text(encoding="utf-8"))
+        mode = cfg.get("mode")
+        if mode == "ids":
+            ids = {str(x) for x in (cfg.get("ids") or [])}
+        elif mode == "all_safe":
+            ids = {t for t, v in EVA_CATEGORY_MAP.items()
+                   if t in matched and _norm_eva_name(matched[t].get("eva")) == _norm_eva_name(v.get("name")) and "(МП)" not in str(matched[t].get("name") or "")}
+        else:
+            return {}
+        return {t: str(matched[t].get("name") or "").strip() for t in ids if t in matched and str(matched[t].get("name") or "").strip()}
+    except (ValueError, OSError, TypeError, AttributeError):
+        return {}
+
+
+EVA_LEGACY_OVERRIDE = _load_legacy_override()
+
+
 def _map_eva_category(cid: str, cname: str):
     """(final_id, final_name): EVA-id+назва, якщо наша категорія зіставлена; інакше
     Toysi-id+назва (фолбек). Кілька наших категорій можуть лягти в один EVA-листок —
-    тому <categories> дедуплікується за фінальним id."""
-    ev = EVA_CATEGORY_MAP.get((cid or "").strip())
+    тому <categories> дедуплікується за фінальним id. Категорії зі списку повернення
+    (EVA_LEGACY_OVERRIDE) віддають СТАРИЙ уже співставлений у кабінеті Toysi-id+назву."""
+    cid = (cid or "").strip()
+    if cid in EVA_LEGACY_OVERRIDE and EVA_CATEGORY_MAP.get(cid):
+        return cid, EVA_LEGACY_OVERRIDE[cid]
+    ev = EVA_CATEGORY_MAP.get(cid)
     if ev:
         return ev["id"], (ev["name"] or cname or ev["id"])
     return cid, cname

@@ -45,7 +45,7 @@ GREETING = ("Вітаємо в PlutusToys! Напишіть своє питан�
             f"Контакти: {BASE_URL}/contacts.html" + chr(10) + chr(10) +
             "Щоб дізнатися статус замовлення, надішліть його номер (PT-…) і останні 4 цифри телефону, на який оформлено замовлення." + chr(10) + chr(10) +
             "Ваші повідомлення зберігаються лише для обробки звернення.")
-STATUS_NEED_PHONE = "Щоб показати статус замовлення, напишіть, будь ласка, ще останні 4 цифри телефону, на який воно оформлено."
+STATUS_NEED_PHONE = "Щоб показати статус замовлення, надішліть в ОДНОМУ повідомленні номер замовлення (PT-…) і рівно одне число з останніх 4 цифр телефону, на який воно оформлено."
 STATUS_NOT_FOUND = "Не вдалося знайти замовлення за цими даними. Перевірте номер (PT-…) і останні 4 цифри телефону; ми також прочитаємо ваше повідомлення й відповімо тут."
 ACK = "Дякуємо, повідомлення отримано. Ми прочитаємо його й відповімо тут."
 NON_TEXT = "Поки що ми приймаємо лише текстові повідомлення. Напишіть, будь ласка, питання словами."
@@ -176,8 +176,10 @@ def order_status_text(row) -> str | None:
         return "Замовлення скасовано. Якщо це сталося не за вашим бажанням, напишіть нам тут."
     if (row["payment_method"] or "") == "prepaid" and not row["payment_confirmed"]:
         return "Замовлення прийнято, очікуємо підтвердження оплати."
-    if st != "forwarded_to_supplier":
+    if st == "new":
         return "Замовлення прийнято й обробляється."
+    if st != "forwarded_to_supplier":
+        return None             # toysi_error / escalated / awaiting_manual_confirmation / deleted…: відповідає людина, не «обробляється»
     ttn = str(row["toysi_ttn"] or "").strip()
     link = (chr(10) + f"ТТН Нової Пошти: {ttn}" + chr(10) + f"Відстежити: https://novaposhta.ua/tracking/?cargo_number={ttn}") if _TTN_RE.match(ttn) else ""
     if ds == "delivered":
@@ -186,7 +188,7 @@ def order_status_text(row) -> str | None:
         return "Замовлення відправлено Новою Поштою." + link
     if ds == "packed":
         return "Замовлення укомплектовано, чекає відправлення." + link
-    if ds in ("processing", ""):
+    if ds in ("processing", "assembling", ""):
         return "Замовлення передано на комплектацію."
     return None
 
@@ -252,7 +254,11 @@ class Bot:
         clean = mask_cards(text.strip())[:MAX_LEN]
         cur = self.db.run("INSERT INTO messages(chat_id, direction, text, ts) VALUES(?,?,?,?)", (chat_id, "in", clean, iso))
         mid = cur.lastrowid
-        note, replied = self._auto_status(chat_id, clean, now)
+        try:
+            note, replied = self._auto_status(chat_id, clean, now)
+        except Exception as e:  # noqa: BLE001 — збій автовідповіді не має забрати ACK і копію власнику
+            print(f"[site_chat_bot] автовідповідь про статус: {type(e).__name__}: {str(e)[:100]}", file=sys.stderr)
+            note, replied = "🤖 автовідповідь про статус не спрацювала: відповісти вручну", False
         cust = self.db.q("SELECT last_ack FROM customers WHERE chat_id=?", (chat_id,))[0]
         if not replied and (not cust["last_ack"] or cust["last_ack"] < (now - ACK_EVERY).replace(microsecond=0).isoformat()):
             if self._send(chat_id, ACK):
@@ -265,9 +271,9 @@ class Bot:
         if not req:
             return "", False
         oid, cands = req
-        if not cands:
-            self.reply_to(chat_id, STATUS_NEED_PHONE)
-            return "🤖 просила 4 цифри телефону", True
+        if len(cands) != 1:          # 0 — нема цифр; >1 — це добір (кожне 4-значне число було б окремою спробою): звіряємо лише ОДНЕ число
+            self.reply_to(chat_id, STATUS_NEED_PHONE, kind="auto")
+            return "🤖 просила номер + рівно одне число з 4 цифр", True
         since = (now - timedelta(days=1)).replace(microsecond=0).isoformat()
         fails = self.db.q("SELECT count(*) AS n FROM status_fails WHERE order_id=? AND ts>=?", (oid, since))[0]["n"]
         if fails >= STATUS_FAIL_LIMIT:
@@ -275,7 +281,7 @@ class Bot:
         row = None
         try:
             import sqlite3 as _sq
-            oc = _sq.connect(f"file:{ORDERS_DB}?mode=ro", uri=True, timeout=5)
+            oc = _sq.connect(Path(ORDERS_DB).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
             oc.row_factory = _sq.Row
             try:
                 row = oc.execute("SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone FROM orders WHERE internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
@@ -286,13 +292,14 @@ class Bot:
             return "🤖 статус не перевірено (orders.db недоступна): відповісти вручну", False
         last4 = re.sub(r"\D", "", (row["phone"] if row else "") or "")[-4:]
         if row is None or len(last4) < 4 or last4 not in cands:
+            self.db.run("DELETE FROM status_fails WHERE ts<?", ((now - timedelta(days=2)).replace(microsecond=0).isoformat(),))
             self.db.run("INSERT INTO status_fails(order_id, ts) VALUES(?,?)", (oid, now.replace(microsecond=0).isoformat()))
-            self.reply_to(chat_id, STATUS_NOT_FOUND)
+            self.reply_to(chat_id, STATUS_NOT_FOUND, kind="auto")
             return "🤖 замовлення не знайдено / 4 цифри не збіглися", True
         msg = order_status_text(row)
         if not msg:
             return "🤖 стан замовлення невідомий для автовідповіді: відповісти вручну", False
-        self.reply_to(chat_id, f"Замовлення {oid}: {msg}")
+        self.reply_to(chat_id, f"Замовлення {oid}: {msg}", kind="auto")
         return "🤖 надіслала клієнту статус замовлення", True
 
     def _forward(self, mid: int, note: str = "") -> bool:
@@ -336,10 +343,11 @@ class Bot:
         ok = self.reply_to(r[0]["chat_id"], text.strip()[:MAX_LEN])
         self._send(self.owner, "✅ Надіслано клієнту." if ok else "⚠️ Не вдалося надіслати клієнту (він міг заблокувати бота).")
 
-    def reply_to(self, chat_id: int, text: str) -> bool:
+    def reply_to(self, chat_id: int, text: str, kind: str = "out") -> bool:
+        """kind='out' — відповідь людини (рахується в digest/list-new як «відповіли»); kind='auto' — автовідповідь бота (не рахується: чат лишається в черзі, поки не відповість людина)."""
         ok = self._send(chat_id, text)
         if ok:
-            self.db.run("INSERT INTO messages(chat_id, direction, text, ts, forwarded) VALUES(?,?,?,?,1)", (chat_id, "out", text, self.now().replace(microsecond=0).isoformat()))
+            self.db.run("INSERT INTO messages(chat_id, direction, text, ts, forwarded) VALUES(?,?,?,?,1)", (chat_id, kind, text, self.now().replace(microsecond=0).isoformat()))
         return bool(ok)
 
     # ── цикл
@@ -366,7 +374,10 @@ def digest(db: ChatDB, days: int = 1, now: datetime | None = None) -> str:
     out = [f"Запити клієнтів сайту за {days} добу: повідомлень {len(rows)}, клієнтів {len({r['chat_id'] for r in rows})}, клієнтам відповіли {answered}."]
     for r in rows:
         k = ids.setdefault(r["chat_id"], len(ids) + 1)
-        masked = _EMAIL_RE.sub("[e-mail]", _PHONE_RE.sub("[телефон]", r["text"]))[:300]
+        txt = r["text"]
+        if _ORDER_RE.search(txt):            # пара «номер замовлення + 4 цифри телефону» = ключ до статусу: у збірці лишаємо номер, 4-значні числа ховаємо
+            txt = _LAST4_RE.sub("[4 цифри]", txt)
+        masked = _EMAIL_RE.sub("[e-mail]", _PHONE_RE.sub("[телефон]", txt))[:300]
         out.append(f"  К{k}: {masked}")
     return "\n".join(out)
 

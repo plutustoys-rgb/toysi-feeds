@@ -289,6 +289,7 @@
     // службова сторінка (Уцінка/Акції): <script id=cat-ids> = id її товарів; панель сортує/фільтрує лише їх (а не весь каталог)
     var idSet=null;
     try{ var ie=document.getElementById("cat-ids"); if(ie){ idSet={}; JSON.parse(ie.textContent||"[]").forEach(function(i){ idSet[i]=1; }); } }catch(e){ idSet=null; }
+    if(idSet && elCat){ elCat.hidden=true; elCat.style.display="none"; }   // власник 16.10: на сторінках чипів/Уцінки/Акцій список «категорій по 1 товару» не потрібен — лишаються сортування й ціна
     var tree=null, treeSets=[], selSet=null, curG=-1, treeEls=[], treeGrp=[];
     try{ var gd=controls.getAttribute("data-groups"); if(gd && !groupSet){ tree=JSON.parse(gd); tree.forEach(function(g){ var m={}; g.s.forEach(function(c){ m[c]=1; }); treeSets.push(m); }); treeEls=Array.prototype.slice.call(document.querySelectorAll(".sb .sb-i")).filter(function(a){ return !a.classList.contains("sb-nav"); }); treeGrp=Array.prototype.slice.call(document.querySelectorAll(".sb-grp")); } }catch(e){ tree=null; }
     function groupOf(c){ for(var i=0;i<treeSets.length;i++){ if(treeSets[i][c]) return i; } return -1; }

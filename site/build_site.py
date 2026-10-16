@@ -241,7 +241,6 @@ def search_overlay():
     )
 
 FOOTER_LINKS = [
-    ("catalog.html", "Усі категорії"),
     ("about.html", "Про нас"), ("delivery.html", "Доставка"),
     ("returns.html", "Повернення"), ("contacts.html", "Контакти"),
     ("offer.html", "Публічна оферта"), ("privacy.html", "Політика конфіденційності"),
@@ -738,7 +737,7 @@ def build():
     prods_rec = rec_order(prods)
     paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
     paged |= write_utsinka(prods, cat_list, cat_slug)
-    paged |= write_aktsii(prods)
+    paged |= write_aktsii(prods, cat_list, cat_slug)
     paged |= write_helovin(prods)
     # 4) головна
     write_home(prods, cats, cat_list, cat_slug)
@@ -1129,7 +1128,7 @@ def _category_aside_html(cat_prods):
     sale = [p for p in cat_prods if p.get("old_price") and p.get("stock", 0) > 0]
     if sale and SALE_ACTIVE:
         p = min(sale, key=lambda x: (x["price"], str(x["id"])))
-        label = f'Знижки −{SALE_ACTIVE["pct"]}%'
+        label = "Акції"
         more = '<a class="cat-aside-more" href="aktsii.html">Усі знижки →</a>'
     else:
         # спершу правила вітрини головної; у дешевих категоріях (внесок < 100 ₴, ціна < 150 ₴) вони нічого не дають і права колонка лишалась би порожньою (15.10, перевірка на проді) → пом'якшена драбина: ціна 50–1500, внесок ≥ 30 ₴ (поріг сезонних чипів); мілітарі/зброя/OOS/без фото відсіюються так само
@@ -1459,24 +1458,16 @@ def aktsii_pick(prods):
     return out if len(out) >= AKTSII_MIN else []
 
 
-def write_aktsii(prods):
-    """Пише /aktsii.html «Знижка тижня −N%»: сітка карток (термін — на кожній картці товару) (події select_item «sale_week»). Повертає set записаних сторінок."""
+def write_aktsii(prods, cat_list=None, cat_slug=None):
+    """Пише /aktsii.html (+ aktsii_2.html, aktsii_3.html …: PER_PAGE карток на сторінку, пагінація як у каталозі). Власник 16.10: заголовка не треба (H1 лише для структури/читачів екрана,
+    sr-only), назв «Знижка тижня»/«Знижки −N%» нема; розмір знижки — бейдж «−N%» у правому верхньому куті картки (реальний % з цін). Події select_item «sale_week». Повертає set записаних сторінок."""
     picks = aktsii_pick(prods)
     if not picks:
         return set()
-    pct = SALE_ACTIVE["pct"]
-    body = (
-        crumbs_html([("Головна", "index.html"), ("Акції", None)]) +
-        f'\n<h1 class="page">Знижки −{pct}%</h1>\n'
-        f'<p class="sale-lead">Щодня — нові іграшки зі знижкою −{pct}%. Ціна вже знижена: нічого вводити не треба. Термін знижки вказано на картці товару.</p>' +
-        '<div class="sale-list" id="sale-list" data-list="sale_week">' + grid(picks, eager_n=4) + '</div>'
-        '<p class="nb-more"><a class="btn ghost" href="catalog.html" style="display:inline-block;max-width:260px">Усі іграшки</a></p>'
-    )
-    head = breadcrumb_ld([("Головна", "index.html"), ("Акції", None)])
-    _write(AKTSII_FILE, page(f"Знижки −{pct}%", body, extra_head=head,
-                             description=f"Знижки −{pct}% у PlutusToys: іграшки за акційними цінами, добірка оновлюється щодня. Стара ціна перекреслена, знижка вже в ціні.",
-                             canonical=AKTSII_FILE, og_image=OG_IMAGE, title_full=f"Знижки −{pct}% на іграшки | PlutusToys"))
-    return {AKTSII_FILE}
+    n = len(picks)
+    desc = f"Акції PlutusToys: {_fmt_int(n)} товар{_plural(n)} за акційними цінами, добірка оновлюється щодня. Стара ціна перекреслена, знижка вже в ціні."
+    return write_catalog("Акції", picks, cat_list or [], cat_slug or {}, AKTSII_FILE, active=None,
+                         special={"h1": "Акції", "h1_hidden": True, "title": "Акції | PlutusToys", "desc": desc, "notice": "", "list": "sale_week"})
 
 
 def _category_top_html(fname, cat_prods):
@@ -1518,6 +1509,8 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         is_full = active is None and not special   # повний каталог (catalog.html і його сторінки)
         controls = _catalog_controls() if (is_full and k == 1) else ""
         static_grid = grid(chunk, eager_n=(4 if k == 1 else 0)) + _pager(fname, k, pages)
+        if special and special.get("list"):   # /aktsii: select_item/view_item_list за data-list (initListTracking шукає #sale-list)
+            static_grid = f'<div class="sale-list" id="sale-list" data-list="{special["list"]}">{static_grid}</div>'
         if controls:
             static_grid = f'<div id="cat-static">{static_grid}</div>'
         if is_full and k == 1 and SITE_GROUPS and controls:
@@ -1562,7 +1555,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         body = (
             crumbs_html(trail) +
             ("" if (special or active is None) else chips(cat_list, cat_slug, active)) +   # власник 14.10: у повному каталозі рядок чипів-категорій прибрано (є панель «Категорія» в сортуванні/фільтрах); на сторінках категорій чипи лишаються (навігація між категоріями)
-            f'\n<h1 class="page">{esc(special["h1"] if special else (active or title))}</h1>\n' +
+            f'\n<h1 class="{"page sr-only" if (special and special.get("h1_hidden")) else "page"}">{esc(special["h1"] if special else (active or title))}</h1>\n' +
             (special["notice"] if special else "") +   # SEO 11.10: H1 категорії = лише назва («Каталог •» — у title/крихтах); повний каталог — «Каталог іграшок»
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
             (_category_intro_html(fname) if (active and k == 1) else "") +
@@ -2037,7 +2030,7 @@ def write_home(prods, cats, cat_list, cat_slug):
               + (f'<a class="chip chip-theme chip-link chip-sale" href="utsinka.html">{CHIP_ICON_SALE}<span>Уцінка</span></a>' if utsinka_pick(prods) else "")   # чип-посилання (власник 13.10): сторінка, а не набір у каруселі
               + '</div><p class="chip-sub" id="home-chip-sub" aria-live="polite"></p><a class="chip-all" id="home-car-all" href="catalog.html" hidden></a>'
               + "".join(f'<template id="car-set-{k}">' + "".join(tile(p, cls="slide", badge=True) for p in chip_sets[k]) + '</template>' for k in chip_sets))
-        car_title = f'Знижки −{SALE_ACTIVE["pct"]}%' if sale_picks else "Добірка Плутуса"
+        car_title = "Акції" if sale_picks else "Добірка Плутуса"
         carousel = (   # власник 16.10: чипи — ПІД каруселлю; карусель — з акційних товарів (поки акції нема — звична «Добірка Плутуса»)
           f'<h2 class="sr-only">{car_title}</h2>'
           f'<div class="car" id="home-car" role="region" aria-label="{car_title}" data-list="{car_title}">'
@@ -2302,6 +2295,7 @@ def write_thanks():
       '<h2>Дякуємо за замовлення!</h2>'
       '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
       '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'
+      '<p class="thanks-tg-wrap" id="thanks-tg-wrap" hidden><a class="btn" id="thanks-tg" href="https://t.me/plutustoys_support_bot" target="_blank" rel="noopener" style="display:inline-block;max-width:320px">Отримувати статус у Telegram</a></p>'
       '<p style="margin-top:20px"><a class="btn ghost" href="/" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )

@@ -184,7 +184,26 @@ pk = bs.aktsii_pick(prods)
 chk("aktsii_pick: лише акційні позиції, ціна зростаюче (290, 340)", [p["id"] for p in pk] == ["112", "111"])
 chk("write_aktsii пише aktsii.html", bs.write_aktsii(prods) == {"aktsii.html"})
 ah = (out / "aktsii.html").read_text(encoding="utf-8")
-chk("/aktsii: H1 «Знижки −15%», без загального терміну (він на картках), «Щодня — нові іграшки», сітка з бейджами, список для аналітики data-list=sale_week, без промокодів/підписок", '<h1 class="page">Знижки −15%</h1>' in ah and "Акція до <b>" not in ah and "Щодня — нові іграшки зі знижкою −15%. Ціна вже знижена: нічого вводити не треба. Термін знижки вказано на картці товару." in ah and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("</header>")[1].split("<footer")[0])
+chk("/aktsii: H1 лише для структури (sr-only «Акції», видимого заголовка нема — власник 16.10), title «Акції | PlutusToys», без «Знижка тижня»/«Знижки −N%»/лід-абзацу, сітка з бейджами (−N% у кутку картки), data-list=sale_week, без промокодів/підписок",
+    '<h1 class="page sr-only">Акції</h1>' in ah and "<title>Акції | PlutusToys</title>" in ah and "Знижка тижня" not in ah and "Знижки −" not in ah and 'class="sale-lead"' not in ah and "Щодня — нові іграшки" not in ah and "Акція до <b>" not in ah
+    and ah.count('class="sale-badge">−15%</span>') == 2 and 'data-list="sale_week"' in ah and 'id="sale-list"' in ah and "PLUTUS5" not in ah and "Instagram" not in ah.split("</header>")[1].split("<footer")[0])
+chk("/aktsii: у мета-описі й title немає відсотків (знижка в кожного товару своя 5–15%)", "−15%" not in re.search(r'<title>.*?</title>', ah).group(0) and "−15%" not in re.search(r'<meta name="description" content="([^"]*)"', ah).group(1) and "%" not in re.search(r'<meta name="description" content="([^"]*)"', ah).group(1))
+# 3 сторінки по 24 (власник 16.10): 60 акційних → aktsii.html, aktsii_2.html, aktsii_3.html (24+24+12), пагінація/canonical/rel як у каталозі
+many = [dict(p_sale, id=str(900 + i), name=f"Акційна «Іграшка{i}»", category=f"А{i % 7}", price=300 + i, old_price=400 + i) for i in range(60)]
+SALE_MANY = dict(SALE, items={p["id"]: (p["old_price"], p["price"]) for p in many})
+bs.SALE_ACTIVE = SALE_MANY
+pages_w = bs.write_aktsii(many)
+chk(f"/aktsii на 3 сторінки: {sorted(pages_w)}", pages_w == {"aktsii.html", "aktsii_2.html", "aktsii_3.html"})
+cnt = [len(re.findall(r'<a class="card"', (out / f).read_text(encoding="utf-8"))) for f in ("aktsii.html", "aktsii_2.html", "aktsii_3.html")]
+chk(f"на сторінках 24 + 24 + 12 карток: {cnt}", cnt == [24, 24, 12])
+a2 = (out / "aktsii_2.html").read_text(encoding="utf-8")
+chk("сторінка 2: canonical на себе, rel=prev → aktsii.html, rel=next → aktsii_3.html, пейджер із «Далі →», title зі «сторінка 2»", 'rel="canonical" href="https://plutustoys.com.ua/aktsii_2.html"' in a2 and '<link rel="prev" href="aktsii.html">' in a2 and '<link rel="next" href="aktsii_3.html">' in a2 and "Далі →" in a2 and "сторінка 2" in re.search(r"<title>.*?</title>", a2).group(0))
+a1 = (out / "aktsii.html").read_text(encoding="utf-8")
+chk("сторінка 1: пейджер 1 2 3, ціна зростаюче (перша 300 ₴), список data-list=sale_week на всіх трьох", 'class="pg cur">1<' in a1 and 'href="aktsii_2.html"' in a1 and 'href="aktsii_3.html"' in a1 and a1.index("300 ₴") < a1.index("323 ₴") and all('data-list="sale_week"' in (out / f).read_text(encoding="utf-8") for f in ("aktsii.html", "aktsii_2.html", "aktsii_3.html")))
+bs.SALE_ACTIVE = SALE
+bs.write_aktsii(prods)   # повертаємо двосторінковий стан фікстури для наступних перевірок
+for _f in ("aktsii_2.html", "aktsii_3.html"):
+    (out / _f).unlink(missing_ok=True)
 cats = {}
 for p in prods:
     cats.setdefault(p["category"], []).append(p)

@@ -2,9 +2,9 @@
 """toysi_top.py — «ТОП» Toysi → site/toysi_top.json (запит Сайту/власника 16.10: «у Тойсі є ТОП відвантажень, куди ви ці товари ставите?»).
 
 Публічні сторінки toysi.ua (як їх бачить будь-який відвідувач): /ua/top-prodazh («ТОП відвантажень»), /ua/top-prodazh-dnya («ТОП вчорашнього дня»), /ua/top-prodazh-nedeli («ТОП 7 днів»), /ua/top-prodazh-mesyatsa («ТОП 30 днів»).
-Кожна картка має `data-photo2="/p/<n>/enl_<ID>.jpg"` — ID = НАШ toysi_id (збігається з каталогом/фідами), порядок як на Toysi, на сторінці 52 картки (параметр ?page= список не змінює: інші картки підвантажуються скриптом, їх не беремо).
+Кожна картка має `data-photo2="/p/<n>/enl_<ID>.jpg"` — ID = НАШ toysi_id (збігається з каталогом/фідами), порядок як на Toysi, на сторінці 52 картки (параметр ?page= список не змінює; глибші сторінки існують як /ua/top-prodazh/offset52/ … offset936/, але беремо лише першу: 52 з 52 уже на сайті). УВАГА: порядок «ТОПу» Toysi близький до спадання ID, тобто це переважно свіжі надходження («Новинка» на 50+ з 52 карток) — не називати блок «найпопулярніше» без цієї обмовки.
 ВИХІД: site/toysi_top.json = {"date","fetched_at","lists":{"shipments":[ids],"yesterday":[ids],"week":[ids],"month":[ids]},"counts":{"shipments":{"toysi":52,"on_site":N},…}}; ids — рядки, лише ті, що є в site/index.json (тобто реально продаємо й показуємо на сайті), порядок збережено.
-Збій мережі/розмітки (<10 id на сторінці) НЕ перезаписує попередній файл (фронт бачить поле date і сам вирішує про свіжість). Лише читання з Toysi, 4 запити за запуск, чесний User-Agent. Запуск: `python toysi_top.py` (VPS-таймер 2 рази на добу)."""
+Збій мережі/розмітки (<10 id на сторінці, кількість блоків product ≠ кількості data-photo2, порожній після фільтра список) НЕ перезаписує попередній файл (фронт бачить поле date і сам вирішує про свіжість). Лише читання з Toysi, 4 запити за запуск, чесний User-Agent. Запуск: `python toysi_top.py` (VPS-таймер 2 рази на добу)."""
 import json
 import os
 import re
@@ -47,7 +47,8 @@ def fetch_html(path: str, getter=None, retries: int = 2) -> str | None:
                 return r.text
         except Exception:  # noqa: BLE001
             pass
-        time.sleep(2 * (k + 1))
+        if k < retries:
+            time.sleep(2 * (k + 1))
     return None
 
 
@@ -56,11 +57,15 @@ def build(pages: dict, site_ids: set, now: datetime) -> dict | None:
     lists, counts = {}, {}
     for name, html in pages.items():
         ids = parse_ids(html)
-        if len(ids) < MIN_IDS:
-            return None
+        raw = len(_ID.findall(html or ""))
+        blocks = (html or "").count('class="product product-req"')
+        if len(ids) < MIN_IDS or (blocks and blocks != raw):
+            return None                  # обрізаний HTML / змінена розмітка: блоків product стільки ж, скільки фото-атрибутів
         lists[name] = [i for i in ids if i in site_ids]
+        if not lists[name]:
+            return None                  # жодного нашого товару в списку: не затираємо добрий файл порожнім
         counts[name] = {"toysi": len(ids), "on_site": len(lists[name])}
-    return {"date": now.strftime("%Y-%m-%d"), "fetched_at": now.isoformat(timespec="seconds"), "lists": lists, "counts": counts}
+    return {"date": now.strftime("%Y-%m-%d"), "fetched_at": now.astimezone().isoformat(timespec="seconds"), "lists": lists, "counts": counts}
 
 
 def main(getter=None, now: datetime | None = None, out_file: Path | None = None, index_file: Path | None = None) -> int:

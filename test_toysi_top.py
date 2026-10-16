@@ -67,5 +67,15 @@ empty = d / "empty.json"
 empty.write_text("[]", encoding="utf-8")
 out2 = d / "o2.json"
 chk("порожній index.json → код 1, файл не створено", tt.main(getter_ok, now, out2, empty) == 1 and not out2.exists())
+# правки аудиту #828: обрізаний HTML (блоків product більше, ніж фото-атрибутів) і порожній після фільтра список не затирають файл
+trunc = page(ids_all[:52]) + "<div class=\"product product-req\"></div>" * 3
+before2 = out.read_text(encoding="utf-8")
+rc = tt.main(lambda u: R(trunc), now, out, idx)
+chk("блоків product (55) ≠ data-photo2 (52) → розмітка змінилась/обрізано: код 1, файл не змінено", rc == 1 and out.read_text(encoding="utf-8") == before2)
+none_on_site = d / "none.json"
+none_on_site.write_text(json.dumps([{"id": "999999", "pr": 1}]), encoding="utf-8")
+rc = tt.main(getter_ok, now, out, none_on_site)
+chk("жодного нашого товару у списку (усі поза index.json) → код 1, добрий файл не затерто порожнім", rc == 1 and out.read_text(encoding="utf-8") == before2)
+chk("fetched_at має часовий пояс", "+" in data["fetched_at"][10:] or "-" in data["fetched_at"][10:] or data["fetched_at"].endswith("Z"))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

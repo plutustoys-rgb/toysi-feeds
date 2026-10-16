@@ -9,5 +9,5 @@ User=root
 WorkingDirectory=/opt/plutustoys
 # КРИТИЧНО (CLAUDE.md): venv-python. 4 публічні сторінки toysi.ua; пише site/toysi_top.json (публічний: id товарів у порядку Toysi, без цін/собівартості).
 ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/toysi_top.py
-TimeoutStartSec=300
+TimeoutStartSec=420
 Nice=10

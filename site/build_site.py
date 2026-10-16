@@ -371,8 +371,8 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
     )
 
-# ── «Знижка тижня −15%» (власник 14.10, варіант «а»; з 15.10 ПОСТІЙНА: щодня нова партія на 8 діб, ≈48 товарів одночасно; бекенд Code-Agent: site_sale.py пише site/sale_week.json щодня) ──
-# КОНТРАКТ: {"week","pct","from","until","created_at","items":{"<id>":{"old":int,"new":int}}}; from/until — ISO із поясом; new = ceil(old × (100−pct)/100).
+# ── Постійна акція (власник 14.10; з 15.10 ПОСТІЙНА: щодня нова партія на 8 діб; з 16.10 ≈72 товари, знижка КОЖНОГО товару випадкова 5–15%; бекенд Code-Agent: site_sale.py пише site/sale_week.json щодня) ──
+# КОНТРАКТ: {"week","pct","from","until","created_at","items":{"<id>":{"old":int,"new":int,"pct":int 5..15}}}; from/until — ISO із поясом; new = ceil(old × (100−pct)/100).
 # build_site у вікні from…until ставить ціну pr=new і op=old (index.json) для id з файлу; ПОЗА вікном файл ігнорується (навіть якщо лишився). Ціна — єдине джерело для замовлення/LiqPay/чека (site_order_api читає pr, op ігнорує).
 # Захисні перевірки на КОЖНІЙ збірці (стара ціна має бути РЕАЛЬНОЮ, збитку нема): поточна ціна сайту == old; new < old; внесок після знижки ≥ SALE_RESERVE_UAH (запас 25 ₴); невідома собівартість — без знижки. Товар, що не пройшов, випадає з акції (ціна лишається звичайною).
 SALE_FILE = os.path.join(OUT, "sale_week.json")

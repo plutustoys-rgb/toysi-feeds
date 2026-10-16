@@ -1,5 +1,7 @@
 import os
+import re
 import sys
+import threading
 import time
 
 import requests
@@ -228,21 +230,66 @@ def search_cities(query: str, limit: int = 8) -> list:
     ]
 
 
+_WH_CACHE: dict = {}          # {city_ref: (час, список {ref, description, number})}: автокомпліт відділень (НЕ нічний SQLite-кеш nova_poshta_warehouse_cache.py — той для маршрутизації)
+_WH_TTL = 6 * 3600            # відділення міняються рідко; свіжість 6 год достатня
+_WH_LOCKS: dict = {}          # per-city замки: повільний промах одного міста не блокує інші
+_WH_LOCKS_GUARD = threading.Lock()
+_WH_REF = re.compile(r"^[0-9a-fA-F-]{10,40}$")
+_TRANSIENT = ("many requests", "timed out", "timeout", "помилка з'єднання", "connection")
+
+
+def _city_warehouses(city_ref: str) -> list:
+    """Список відділень міста для автокомпліту з кешем (TTL 6 год), замком НА МІСТО (single-flight) і запасом на збій. 16.10 тестувальник: ~15% запитів /api/np/warehouse давали 502 — НП відповідала «To many requests» (кожне натискання клавіші тягло getWarehouses Limit=500) і разовий Read timeout.
+    НП питаємо раз на місто за TTL; повтор (1,5 с) лише на тимчасових помилках («To many requests»/таймаут), не на детермінованих («City not found»); порожня відповідь = збій (НП під throttle віддає порожнє, звірено 17.09), у кеш НЕ пишемо; збій при наявному (навіть застарілому) кеші → віддаємо його, при цьому ставимо «негативний TTL» (ще ~60 с не довбаємо НП); без кешу → виняток."""
+    now = time.time()
+    hit = _WH_CACHE.get(city_ref)
+    if hit and now - hit[0] < _WH_TTL:
+        return hit[1]
+    with _WH_LOCKS_GUARD:
+        lock = _WH_LOCKS.setdefault(city_ref, threading.Lock())
+    with lock:
+        hit = _WH_CACHE.get(city_ref)
+        if hit and time.time() - hit[0] < _WH_TTL:
+            return hit[1]
+        last = None
+        for attempt in range(2):
+            try:
+                raw = _call("AddressGeneral", "getWarehouses", {"CityRef": city_ref, "Limit": "500"})
+                data = [{"ref": w.get("Ref"), "description": w.get("Description") or "", "number": (w.get("Number") or "").strip()} for w in (raw or [])]
+                if not data:
+                    raise NovaPoshtaAPIError("порожня відповідь getWarehouses (throttle?)")
+                _WH_CACHE[city_ref] = (time.time(), data)
+                return data
+            except NovaPoshtaAPIError as e:
+                last = e
+                if attempt == 0 and any(k in str(e).lower() for k in _TRANSIENT):
+                    time.sleep(1.5)
+                    continue
+                break
+        if hit:
+            _WH_CACHE[city_ref] = (time.time() - _WH_TTL + 60, hit[1])      # негативний TTL: наступна спроба оновлення не раніше ніж через ~60 с
+            print(f"[nova_poshta] getWarehouses {city_ref}: {last}; віддаю застарілий кеш", file=sys.stderr)
+            return hit[1]
+        raise last
+
+
 def search_warehouses(city_ref: str, query: str = "", limit: int = 12) -> list:
     """Список відділень/поштоматів міста для АВТОКОМПЛІТУ. Кожен елемент — {ref, description, number}.
     query (частина назви/номер) фільтрує на нашому боці (як find_warehouse). Порожній city_ref → [].
-    Піднімає NovaPoshtaAPIError, якщо запит до API не вдався."""
+    Піднімає NovaPoshtaAPIError, якщо запит до API не вдався і кешу нема."""
     if not (city_ref or "").strip():
         return []
-    warehouses = _call("AddressGeneral", "getWarehouses", {"CityRef": city_ref, "Limit": "500"})
+    if not _WH_REF.match(city_ref.strip()):
+        return []                                    # не GUID НП: не тягнемо НП і не тримаємо замок на сміття
+    warehouses = _city_warehouses(city_ref.strip())
     q = (query or "").strip().lower()
     out = []
     for wh in (warehouses or []):
-        number = (wh.get("Number") or "").strip()
-        description = wh.get("Description") or ""
+        number = wh.get("number") or ""
+        description = wh.get("description") or ""
         if q and not (q == number or q in description.lower()):
             continue
-        out.append({"ref": wh.get("Ref"), "description": description, "number": number})
+        out.append({"ref": wh.get("ref"), "description": description, "number": number})
         if len(out) >= limit:
             break
     return out

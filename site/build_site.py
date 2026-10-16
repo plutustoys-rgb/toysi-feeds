@@ -1869,8 +1869,8 @@ def _load_demand_featured(today=None):
     return {"ids": ids, "categories": cats, "date": dt, "source": str(data.get("source") or "")[:80]}
 
 
-def demand_pick(prods, demand=None):
-    """До HOME_PICK_COUNT карток із списку попиту: у наявності, внесок відомий і ≥ 0, не «Уцінка»/зброя/мілітарі; щодня інший зріз серед топ-списку (стабільний у добі)."""
+def _demand_ok(prods, demand=None):
+    """Придатні картки зі списку попиту (site/demand_featured.json) у порядку списку: у наявності, з фото, внесок ≥ 0, не уцінка/зброя/мілітарі/книги, без дублів «основи назви»."""
     d = demand if demand is not None else _load_demand_featured()
     if not d or not d["ids"]:
         return []
@@ -1891,6 +1891,12 @@ def demand_pick(prods, demand=None):
         if any(_pick_key(q["name"]) == _pick_key(name) for q in ok):
             continue   # одна «основа назви» — одна картка (кілька однакових Trefl-пазлів поспіль)
         ok.append(p)
+    return ok
+
+
+def demand_pick(prods, demand=None):
+    """До HOME_PICK_COUNT карток із списку попиту: у наявності, внесок відомий і ≥ 0, не «Уцінка»/зброя/мілітарі; щодня інший зріз серед топ-списку (стабільний у добі)."""
+    ok = _demand_ok(prods, demand)
     if len(ok) < DEMAND_MIN:
         return []
     rng = random.Random(HOME_PICK_SEED * 7 + _pick_day() * 104729)
@@ -1960,6 +1966,29 @@ def home_chip_sets(prods):
 
 # власник 16.10 («погоджуюсь»): чипи, що дублюють категорії, з головної прибрано — лишаються тематичні/сезонні (Хелловін/Миколай, Українське, Популярне зараз, День народження, До Різдва) і посилання «Уцінка»
 HOME_CHIPS_DROPPED = frozenset({"nab", "school", "duo", "quiet", "active"})
+HOME_MORE_COUNT = 10        # власник 16.10: під «Усі товари →» — 10 випадкових карток (щодня інші), бажано з «Популярне зараз»
+
+
+def home_more_picks(prods, exclude_ids, cats, cat_list):
+    """Картки під посиланням «Усі товари →» (власник 16.10): випадкові (зерно від дати) з «Популярне зараз» (список попиту), без тих, що вже в каруселі; якщо їх мало —
+    доповнюємо по 1 товару з топ-категорій з внеском ≥ HOME_MIN_CONTRIB (як була колишня секція «Більше іграшок»)."""
+    pool = [p for p in _demand_ok(prods) if p["id"] not in exclude_ids]
+    rng = random.Random(HOME_PICK_SEED * 11 + _pick_day() * 104729)
+    rng.shuffle(pool)
+    out = pool[:HOME_MORE_COUNT]
+    if len(out) < HOME_MORE_COUNT:
+        taken = set(exclude_ids) | {p["id"] for p in out}
+        for c in cat_list[:30]:
+            lst = [p for p in cats[c] if p["id"] not in taken and p.get("contribution") is not None and p["contribution"] >= HOME_MIN_CONTRIB]
+            if lst:
+                p = lst[len(lst) // 2]
+                out.append(p)
+                taken.add(p["id"])
+            if len(out) >= HOME_MORE_COUNT:
+                break
+    return out
+
+
 HOME_SALE_CAR_MIN = 4      # карусель з акційних товарів вмикається, коли придатних акційних карток ≥ стільки (інакше — звична «Добірка Плутуса»)
 HOME_SALE_CAR_PER_CAT = 2  # не більше стількох з однієї категорії (інакше найдешевші 10 — одна категорія)
 
@@ -1992,6 +2021,7 @@ def home_chip_defs(chip_sets):
 def write_home(prods, cats, cat_list, cat_slug):
     sale_picks = home_sale_picks(prods)
     picks = sale_picks or home_pick(prods)
+    more = home_more_picks(prods, {p["id"] for p in picks}, cats, cat_list)
     carousel = ""
     if picks:
         # перші 3 слайди без lazy (мобільний: видно 1,5–2; SMM 11.10), перший — fetchpriority=high (кандидат на LCP); слайди 4–5 на широкому екрані JS переводить в eager (initHomeCarousel)
@@ -2033,7 +2063,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
       '<div class="act">' + hero_act + '</div></div>'
       + carousel
-      + '<p class="home-more"><a class="btn" href="catalog.html">Усі товари</a></p>'   # власник 16.10: замість секції «Більше іграшок» — кнопка переходу до всіх товарів
+      + '<div class="sec-title more-title"><a href="catalog.html">Усі товари →</a></div>' + (grid(more) if more else "")   # власник 16.10: замість «Більше іграшок» — посилання «Усі товари →» (вигляд як «Усі знижки →», зліва) і під ним 10 випадкових зі «Популярне зараз»
     )
     _write("index.html", page(
         "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),

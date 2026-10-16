@@ -156,7 +156,8 @@ chk("карусель: рівно 10 слайдів у порядку відбо
 imgs = re.findall(r'<a class="card slide".*?<img ([^>]*)>', h_main, re.S)
 chk("карусель: перші 3 зображення без loading=lazy, решта — lazy (4–5 на широкому екрані переводить JS)", all("lazy" not in x for x in imgs[:3]) and all("lazy" in x for x in imgs[3:]))
 chk("карусель: першому слайду fetchpriority=high (кандидат на LCP), іншим — ні", 'fetchpriority="high"' in imgs[0] and sum(1 for x in imgs if "fetchpriority" in x) == 1)
-chk("«Новинок» нема; секції «Більше іграшок» нема — замість неї кнопка «Усі товари» → catalog.html (власник 16.10)", "Новинки" not in h and "Більше іграшок" not in h and '<p class="home-more"><a class="btn" href="catalog.html">Усі товари</a></p>' in h)
+chk("«Новинок» нема; секції «Більше іграшок» нема — замість неї посилання «Усі товари →» (зліва) і під ним картки без повторів із каруселлю (власник 16.10)", "Новинки" not in h and "Більше іграшок" not in h and '<div class="sec-title more-title"><a href="catalog.html">Усі товари →</a></div>' in h
+    and not (set(re.findall(r'href="product-(\d+)\.html"', h.split('more-title', 1)[1].split('<footer', 1)[0])) & set(ids)))
 chk("в усій розмітці немає «Знижок»/«Хітів продажів» (немає старої ціни й власних продажів)", "Знижки" not in h and "Хіти продажів" not in h)
 bs.write_home(bad, {c: [p for p in v if p in bad] for c, v in cats.items() if any(p in bad for p in v)}, [c for c in cat_list if any(p in bad for p in cats[c])], cat_slug)
 h2 = (tmp / "index.html").read_text(encoding="utf-8")

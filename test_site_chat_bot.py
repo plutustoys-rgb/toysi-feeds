@@ -292,5 +292,103 @@ b3, a3, d3 = mk()
 b3._auto_status = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("database is locked"))
 b3.handle_update(upd(C1, "PT-20261013-114919-85fd5b 4567"))
 chk("збій автовідповіді (виняток) не губить ACK клієнту і копію власнику з міткою «відповісти вручну»", to(a3, C1) == [sb.ACK] and any("відповісти вручну" in t for t in to(a3, OWNER)))
+
+# ── (10) підписка на статус: кнопка на сторінці «Дякуємо» → t.me/<бот>?start=PT-…; далі бот пише сам про кожну зміну ──
+sdb = os.path.join(tempfile.mkdtemp(), "orders.db")
+sc = sqlite3.connect(sdb)
+sc.execute("CREATE TABLE orders (internal_order_id TEXT, platform TEXT, status TEXT, delivery_status TEXT, payment_method TEXT, payment_confirmed INTEGER, toysi_ttn TEXT, cancelled_at TEXT, phone TEXT)")
+sc.execute("INSERT INTO orders VALUES('site_PT-20261016-100000-aaaaaa','site','forwarded_to_supplier','processing','cod',0,NULL,NULL,'+380501234567')")
+sc.execute("INSERT INTO orders VALUES('site_PT-20261016-100000-bbbbbb','site','sandbox_test',NULL,'prepaid',1,NULL,NULL,'+380501234567')")
+sc.commit()
+sb.ORDERS_DB = Path(sdb)
+
+
+def set_order(**kw):
+    c = sqlite3.connect(sdb)
+    for k, v in kw.items():
+        c.execute(f"UPDATE orders SET {k}=? WHERE internal_order_id='site_PT-20261016-100000-aaaaaa'", (v,))
+    c.commit()
+    c.close()
+
+
+bs1, as1, ds1 = mk()
+bs1.handle_update(upd(C1, "/start PT-20261016-100000-AAAAAA"))
+m1 = to(as1, C1)
+chk("/start PT-… (регістр не важливий): вітання з номером замовлення + поточний стан; власнику копії НЕМА (це не звернення)", len(m1) == 1 and "PT-20261016-100000-aaaaaa" in m1[0] and "передано на комплектацію" in m1[0] and not to(as1, OWNER))
+chk("підписку записано", ds1.q("SELECT count(*) AS n FROM subscriptions WHERE chat_id=? AND done=0", (C1,))[0]["n"] == 1)
+chk("без змін стану notify_changes нічого не шле", bs1.notify_changes() == 0 and len(to(as1, C1)) == 1)
+set_order(delivery_status="packed", toysi_ttn="20451561497392")
+chk("стан змінився (packed + ТТН) → клієнту прийшло повідомлення з ТТН і посиланням", bs1.notify_changes() == 1 and "20451561497392" in to(as1, C1)[-1] and "novaposhta.ua/tracking" in to(as1, C1)[-1])
+chk("повторна перевірка без змін — тиша", bs1.notify_changes() == 0)
+set_order(delivery_status="shipped")
+chk("shipped → нове повідомлення «відправлено»", bs1.notify_changes() == 1 and "відправлено" in to(as1, C1)[-1])
+set_order(delivery_status="delivered")
+n_before = len(to(as1, C1))
+chk("delivered → повідомлення «доставлено», підписку закрито (done=1)", bs1.notify_changes() == 1 and "доставлено" in to(as1, C1)[-1] and ds1.q("SELECT done FROM subscriptions")[0]["done"] == 1)
+set_order(delivery_status="shipped")
+chk("після закриття підписки зміни більше не надсилаються", bs1.notify_changes() == 0 and len(to(as1, C1)) == n_before + 1)
+set_order(delivery_status="expired", toysi_ttn="20451561497392")
+bs2, as2, ds2 = mk()
+set_order(delivery_status="expired")
+bs2.handle_update(upd(C1, "/start PT-20261016-100000-aaaaaa"))
+chk("невідомий стан (expired): підписка прийнята, «Зараз» не показуємо, нічого хибного не шлемо", "PT-20261016-100000-aaaaaa" in to(as2, C1)[-1] and "Зараз" not in to(as2, C1)[-1] and bs2.notify_changes() == 0)
+bs3, as3, ds3 = mk()
+bs3.handle_update(upd(C1, "/start PT-20990101-000000-ffffff"))
+bs3.handle_update(upd(C1, "/start PT-20261016-100000-bbbbbb"))
+chk("неіснуюче замовлення і sandbox_test: однакова нейтральна відповідь, підписки нема", to(as3, C1) == [sb.STATUS_NOT_FOUND, sb.STATUS_NOT_FOUND] and ds3.q("SELECT count(*) AS n FROM subscriptions")[0]["n"] == 0)
+bs3.handle_update(upd(C1, "/start щось-зовсім-інше"))
+bs3.handle_update(upd(C1, "/start"))
+chk("/start без/з чужим параметром — звичайне вітання", to(as3, C1)[-2:] == [sb.GREETING, sb.GREETING])
+set_order(delivery_status="processing", toysi_ttn=None)
+for chat in (601, 602, 603, 604):
+    bs3.handle_update(upd(chat, "/start PT-20261016-100000-aaaaaa"))
+chk(f"на одне замовлення не більше {sb.SUB_PER_ORDER} чатів, четвертий отримує відмову", ds3.q("SELECT count(*) AS n FROM subscriptions")[0]["n"] == sb.SUB_PER_ORDER and "максимум" in to(as3, 604)[-1])
+bs4, as4, ds4 = mk()
+bs4.handle_update(upd(C2, "/start PT-20261016-100000-aaaaaa"))
+as4.fail_for.add(C2)
+for i in range(sb.SUB_FAIL_LIMIT + 2):
+    set_order(delivery_status=("shipped" if i % 2 == 0 else "packed"), toysi_ttn="20451561497392")
+    bs4.notify_changes()
+chk("клієнт заблокував бота: після SUB_FAIL_LIMIT невдалих відправок підписку більше не опитуємо", ds4.q("SELECT fails FROM subscriptions")[0]["fails"] == sb.SUB_FAIL_LIMIT)
+sb.ORDERS_DB = Path(tempfile.mkdtemp()) / "нема.db"
+bs5, as5, ds5 = mk()
+bs5.handle_update(upd(C1, "/start PT-20261016-100000-aaaaaa"))
+chk("orders.db недоступна при /start: звичайне вітання, без винятку", to(as5, C1) == [sb.GREETING])
+sb.ORDERS_DB = Path(sdb)
+
+
+# ── (10б) правки аудиту #816 ──
+bf1, af1, df1 = mk()
+for i in range(sb.START_FAIL_LIMIT + 5):
+    bf1.handle_update(upd(C1, f"/start PT-20990101-0000{i:02d}-ffffff"))
+chk(f"хибні /start PT-… обмежено: після {sb.START_FAIL_LIMIT} за годину чат отримує тишу (відповідей рівно {sb.START_FAIL_LIMIT})", len(to(af1, C1)) == sb.START_FAIL_LIMIT)
+bf1.handle_update(upd(C2, "/start PT-20261016-100000-aaaaaa"))
+chk("ліміт по чату: інший чат підписується нормально", "PT-20261016-100000-aaaaaa" in to(af1, C2)[-1])
+set_order(delivery_status="delivered", toysi_ttn="20451561497392")
+bf2, af2, df2 = mk()
+bf2.handle_update(upd(C1, "/start PT-20261016-100000-aaaaaa"))
+chk("підписка на вже ДОСТАВЛЕНЕ замовлення закривається одразу (done=1) і не опитується вічно", "доставлено" in to(af2, C1)[-1] and df2.q("SELECT done FROM subscriptions")[0]["done"] == 1)
+set_order(delivery_status="processing", toysi_ttn=None)
+bf3, af3, df3 = mk()
+bf3.handle_update(upd(C1, "/start PT-20261016-100000-aaaaaa"))
+
+
+class Flaky(FakeAPI):
+    def call(self, method, **p):
+        if method == "sendMessage" and getattr(self, "mode", "") == "429":
+            raise RuntimeError("telegram sendMessage: Too Many Requests: retry after 5")
+        return super().call(method, **p)
+
+
+bf3.api = Flaky()
+bf3.api.mode = "429"
+for i in range(sb.SUB_FAIL_LIMIT + 3):
+    set_order(delivery_status=("shipped" if i % 2 == 0 else "packed"), toysi_ttn="20451561497392")
+    bf3.notify_changes()
+chk("тимчасова помилка Telegram (429) НЕ зараховується як «заблокував бота»: fails=0, підписка жива", df3.q("SELECT fails, done FROM subscriptions")[0]["fails"] == 0 and df3.q("SELECT done FROM subscriptions")[0]["done"] == 0)
+bf3.api.mode = ""
+set_order(delivery_status="shipped")
+chk("429 минув → клієнт отримує актуальний стан (оновлення не втрачено)", bf3.notify_changes() == 1 and "відправлено" in bf3.api.sent[-1][1])
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -79,11 +79,11 @@ def select(agg: dict, site_ids: set, rules: dict) -> list:
     return [i for i, _, _ in ranked[:rules["max_ids"]]]
 
 
-def build(ids: list, now: datetime, manual: dict | None, n_pages: int) -> dict:
-    out = {"date": now.strftime("%Y-%m-%d"), "source": f"Search Console API {DAYS}d (авто, demand_featured_auto.py): покази сторінок; старі Prom-URL зіставлено з toysi_id; відібрано {len(ids)} з {n_pages} зіставлених", "ids": ids}
+def build(ids: list, now: datetime, manual: dict | None, n_pool: int) -> dict:
+    out = {"date": now.strftime("%Y-%m-%d"), "source": f"Search Console API {DAYS}d (авто, demand_featured_auto.py): покази сторінок; старі Prom-URL зіставлено з toysi_id; відібрано {len(ids)} з {n_pool} зіставлених у наявності", "ids": ids}
     if isinstance(manual, dict) and manual.get("categories"):
         out["categories"] = manual["categories"]
-    out["note"] = "ids — найбільше показів у Google за 90 днів, лише в наявності; чорний список і ліміт — demand_rules.json; зброю/мілітарі відсіює збірка сайту."
+    out["note"] = "ids — найбільше ПОКАЗІВ у Google за 90 днів (покази ≠ покупки; кліків мало), лише в наявності; чорний список і ліміт — demand_rules.json; зброю/мілітарі відсіює збірка сайту."
     return out
 
 
@@ -120,7 +120,7 @@ def main(session=None, now: datetime | None = None, out_file: Path | None = None
         manual = json.loads(MANUAL_FILE.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         manual = None
-    data = build(ids, now, manual, len(agg))
+    data = build(ids, now, manual, sum(1 for i in agg if i in site_ids))
     tmp = out_file.with_name(out_file.name + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, out_file)

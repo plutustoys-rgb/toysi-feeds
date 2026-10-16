@@ -107,6 +107,11 @@ with sync_playwright() as pw:
             chk(f"{w}px: фільтр «ціна від 300» працює серед уцінених ({cnt2})", all(c[1] >= 300 for c in cards) and all(c[0] in ids for c in cards) and 0 < len(cards) < len(ids))
             hh = pg.evaluate("[...document.querySelectorAll('h1.cat-h1')].map(e=>parseFloat(getComputedStyle(e).fontSize))")
             chk(f"{w}px: назва крупніша за колишню (≥ 24 px): {hh}", hh and hh[0] >= 24)
+        pg.evaluate("window.scrollTo(0, 1500)")
+        pg.wait_for_timeout(300)
+        nt = pg.evaluate("(()=>{const n=document.querySelector('.md-notice-bar'); const r=n.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom), getComputedStyle(n.querySelector('.md-full')).display, getComputedStyle(n.querySelector('.md-short')).display, scrollY]})()")
+        chk(f"{w}px: примітка про дефект лишається в закріпленій панелі після прокрутки (власник 16.10): {nt}; на ПК повний текст, на телефоні короткий",
+            nt[4] > 500 and 60 <= nt[0] < 220 and ((w >= 701 and nt[2] != "none" and nt[3] == "none") or (w < 701 and nt[2] == "none" and nt[3] != "none")))
         chk(f"{w}px: без помилок JS", errs == [])
         pg.close()
     br.close()

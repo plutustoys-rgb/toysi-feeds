@@ -49,6 +49,9 @@ h1.page{font-size:18px;font-weight:700;margin:4px 16px 12px}
 .card .md-badge{position:absolute;top:8px;right:8px;z-index:1;background:#efe6dc;color:#7a3a00;border:1px solid #c9ad92;border-radius:8px;padding:2px 8px;font-size:11.5px;font-weight:700;line-height:1.4;pointer-events:none}
 .md-notice{margin:0 0 14px;padding:12px 14px;background:#fff1de;color:#6b3300;border:2px solid #f1b878;border-radius:12px;font-size:15px;line-height:1.45}
 .md-notice a{color:#8a3b00;font-weight:700;text-decoration:underline}
+.cat-bar .md-notice-bar{flex:1 0 100%;margin:6px 0 0;padding:5px 10px;font-size:12.5px;line-height:1.35;border-width:1px;border-radius:8px}
+.md-notice-bar .md-short{display:none}
+@media(max-width:700px){.md-notice-bar .md-full{display:none}.md-notice-bar .md-short{display:inline}}
 .card .stock-badge{position:absolute;top:8px;left:8px;z-index:1;background:#fff1de;color:#9a4300;border:1px solid #f1b878;border-radius:8px;padding:2px 8px;font-size:11.5px;font-weight:700;line-height:1.4;pointer-events:none}
 .card .ph img{width:100%;height:100%;object-fit:contain;padding:10px}
 .card .info{padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
@@ -423,6 +426,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips .chip[data-set=ny]{background:#C62F2F;color:#fff;border-color:#8E1F1F;border-top:5px dotted #fff;box-shadow:3px 3px 0 #0F2A4A}
 /* Набори в подарунок: бантик хитається ±3° */
 .home-chips .chip[data-set=ukr]{background:#EAF2FF;color:#0B2447;border-color:#1F6FD6 #FFD43B #FFD43B #1F6FD6;box-shadow:3px 3px 0 #FFD43B}
+.home-chips .chip[data-set=new]{background:#E0F6F4;color:#0B5D55;border-color:#14A89A;box-shadow:3px 3px 0 #14A89A;border-radius:12px}
 .home-chips .chip[data-set=nab]{background:#FFD9A8;color:#3A2A1E;border-color:#E04E39;box-shadow:3px 3px 0 #E8B04A}
 
 
@@ -571,3 +575,4 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .more-title{margin-top:6px}
 .home-chips ~ .chip-all{display:inline-block;margin:-2px 16px 10px;font-size:13px;color:var(--accent)}
 .chip-all[hidden]{display:none}
+.np-note{padding:8px 12px;font-size:13px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-top:4px}

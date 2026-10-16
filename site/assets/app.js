@@ -1236,11 +1236,15 @@
       selectedWarehouseNumber="";  // ввід руками скидає обраний № — щоб не лишити стале значення
       if(!selectedCityRef) return;
       var q=wh.value.trim(), myWh=++whSeq, myCity=selectedCityRef;
-      fetch("api/np/warehouse?city_ref="+encodeURIComponent(selectedCityRef)+"&q="+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){
+      fetch("api/np/warehouse?city_ref="+encodeURIComponent(selectedCityRef)+"&q="+encodeURIComponent(q)).then(function(r){ if(!r.ok) throw new Error("np"); return r.json(); }).then(function(d){
         if(myWh!==whSeq || myCity!==selectedCityRef) return;     // запізніла відповідь іншого міста/запиту (аудит #682 р.2, F5): склад чужого міста не пропонуємо
         renderAc(acWh, (d.warehouses||[]).map(function(w){ return {label:w.description, name:w.description, number:w.number}; }),
           function(pick){ wh.value=pick.name; selectedWarehouseNumber=pick.number||""; acWh.innerHTML=""; });
-      }).catch(function(){ acWh.innerHTML=""; });
+      }).catch(function(){
+        // збій довідника НП (502/мережа) не маскуємо під «відділення нема» (знахідка тестувальника 17, Code 16.10): один рядок і ручний ввід номера
+        if(myWh!==whSeq || myCity!==selectedCityRef) return;
+        acWh.innerHTML='<div class="np-note" role="status">Довідник відділень тимчасово недоступний, введіть номер відділення вручну</div>';
+      });
     }, 250));
 
     document.addEventListener("click", function(e){

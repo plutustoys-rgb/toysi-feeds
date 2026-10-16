@@ -9,6 +9,7 @@
 Без Telegram власнику. Збій/протухла сесія — повідомлення й код 0 (сигнал про сесію дає rozetka_price_monitor)."""
 import json
 import os
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ REPORT_DIR = Path(os.environ.get("AUDIT_REPORT_DIR") or DEFAULT_REPORT_DIR)
 HISTORY_FILE = REPORT_DIR / "rozetka_counts_history.jsonl"
 CHANNEL_FILE = Path(os.environ.get("RZ_COUNTS_CHANNEL_FILE") or (REPORT_DIR.parent / "EXECUTOR_CHANNEL.md"))
 STALL_DAYS = 3
+RECENT_DAYS = 3      # один запис на тему не частіше ніж раз на стільки днів
 MARK = "[Автомат → Код] Rozetka:"
 
 
@@ -59,6 +61,7 @@ def load_history(path: Path | None = None) -> list:
             try:
                 d = json.loads(line)
                 if isinstance(d, dict) and d.get("date"):
+                    date.fromisoformat(str(d["date"]))
                     out.append(d)
             except ValueError:
                 continue
@@ -85,26 +88,37 @@ def stalled(hist: list, days: int = STALL_DAYS) -> bool:
     if not hist or queue(hist[-1]) <= 0:
         return False
     last = date.fromisoformat(hist[-1]["date"])
-    window = [d for d in hist if (last - date.fromisoformat(d["date"])).days <= days]
-    if len(window) < 2 or (last - date.fromisoformat(window[0]["date"])).days < days:
-        return False
+    older = [i for i, d in enumerate(hist) if (last - date.fromisoformat(d["date"])).days >= days]
+    if not older:
+        return False                      # історія коротша за days діб
+    window = hist[older[-1]:]              # якір = НАЙНОВІШИЙ знімок, що відстоїть щонайменше days діб (пропуски днів не ховають застій)
     return all(queue(b) >= queue(a) for a, b in zip(window, window[1:]))
 
 
 def post_to_channel(title: str, body: str, now: datetime, channel: Path | None = None) -> bool:
-    """Один запис на добу на тему (дедуп за датою і заголовком); True — дописано."""
+    """Запис [Автомат → Код] угорі спільного каналу. Не частіше ніж раз на RECENT_DAYS днів на тему (поки стан триває, канал не засмічується щодня); вставка ПЕРЕД першим рядком, що ПОЧИНАЄТЬСЯ з «## » (не всередині блок-цитати «> ## …»); атомарний запис; недоступний/заблокований канал → False без винятку."""
     channel = Path(channel or CHANNEL_FILE)
     try:
         s = channel.read_text(encoding="utf-8")
     except OSError:
         return False
+    for m in re.finditer(r"(?m)^## " + re.escape(MARK) + " " + re.escape(title) + r" (\d{4}-\d{2}-\d{2})", s):
+        try:
+            if (now.date() - date.fromisoformat(m.group(1))).days < RECENT_DAYS:
+                return False
+        except ValueError:
+            continue
     head = f"## {MARK} {title} {now:%Y-%m-%d}"
-    if head in s:
-        return False
     nl = "\r\n" if "\r\n" in s else "\n"
-    i = s.find("## ")
     entry = f"{head}\n{body}\n\n".replace("\n", nl)
-    channel.write_text((s[:i] + entry + s[i:]) if i >= 0 else (s + nl + entry), encoding="utf-8")
+    m = re.search(r"(?m)^## ", s)
+    new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
+    try:
+        tmp = channel.with_name(channel.name + ".tmp")
+        tmp.write_text(new, encoding="utf-8")
+        os.replace(tmp, channel)
+    except OSError:
+        return False
     return True
 
 
@@ -149,6 +163,10 @@ def main() -> int:
             b.close()
     except Exception as e:  # noqa: BLE001 — сесія протухла/мережа: без паніки, сигнал про сесію дає rozetka_price_monitor
         print(f"[rz_counts] знімок не отримано: {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
+        return 0
+    cont = (counts or {}).get("content") if isinstance(counts, dict) else None
+    if not isinstance(cont, dict) or counts.get("success") is False or "on_moderation_items" not in cont or "items_waiting_approve" not in cont:
+        print("[rz_counts] відповідь кабінету неповна (нема on_moderation_items/items_waiting_approve): знімок не записано", file=sys.stderr)
         return 0
     snap = extract(counts)
     if not snap["all"] and not snap["active"]:

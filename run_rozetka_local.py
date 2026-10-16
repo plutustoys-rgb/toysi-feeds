@@ -145,9 +145,10 @@ def main() -> None:
     if not a.skip_pull:
         print("[RzLocal] 2b) чорний список відхилених (/goods/hidden)...")
         _run([PY, str(BASE_DIR / "rozetka_price_monitor.py"), "--rejected"])
-    # 2c. Щоденний знімок лічильників кабінету (черга модерації, помилки) + правила застою → запис [Автомат → Код] у канал. Лише читання, best-effort.
-    print("[RzLocal] 2c) знімок лічильників кабінету...")
-    _run([PY, str(BASE_DIR / "rozetka_counts_snapshot.py")])
+    # 2c. Щоденний знімок лічильників кабінету (черга модерації, помилки) + правила застою → запис [Автомат → Код] у канал. Лише читання, best-effort; не під --skip-pull (немає сесії кабінету в цьому режимі).
+    if not a.skip_pull:
+        print("[RzLocal] 2c) знімок лічильників кабінету...")
+        _run([PY, str(BASE_DIR / "rozetka_counts_snapshot.py")])
 
     # 3. own_product_links_cache для <url> (фід ЛИШЕ читає його).
     if not _restore_from_feed_data("own_product_links_cache.json", BASE_DIR / "own_product_links_cache.json"):

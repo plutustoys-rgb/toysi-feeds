@@ -66,5 +66,28 @@ chk("норма (черга зменшується, помилок 0) → ніч
 he = [dict(hn[-1], errors=3)]
 chk("помилки > 0 → запис про помилки", rc.evaluate(he, now, ch2) == ["помилки"] and "помилки/невалідні > 0" in ch2.read_text(encoding="utf-8"))
 chk("нема каналу → без винятку", rc.evaluate(he, now, Path(tempfile.mkdtemp()) / "нема.md") == ["помилки (запис за сьогодні вже є)"])
+# ── правки аудиту #822 ──
+dg = Path(tempfile.mkdtemp()) / "g.jsonl"
+for day, on in ((10, 100), (14, 100), (15, 100)):
+    hg = rc.record(snap(on=on, wa=0), date(2026, 10, day), dg)
+chk("пропуски днів (знімки 10, 14, 15): якір — найновіший знімок ≥3 діб (10), черга не зменшувалась → застій", rc.stalled(hg))
+dg2 = Path(tempfile.mkdtemp()) / "g2.jsonl"
+for day, on in ((10, 100), (14, 80), (15, 100)):
+    hg2 = rc.record(snap(on=on, wa=0), date(2026, 10, day), dg2)
+chk("зменшилась у вікні (100→80→100) → не застій", not rc.stalled(hg2))
+dbad = Path(tempfile.mkdtemp()) / "bad.jsonl"
+dbad.write_text('{"date":"bad","on_moderation":1}' + chr(10) + '{"date":"2026-10-15","on_moderation":5,"waiting_approve":0}' + chr(10) + '{не json' + chr(10) + '', encoding="utf-8")
+chk("load_history: рядок із некоректною датою і зіпсований рядок пропускаються (stalled не падає)", [d["date"] for d in rc.load_history(dbad)] == ["2026-10-15"])
+bq = Path(tempfile.mkdtemp()) / "c.md"
+bq.write_text('<!-- шапка -->' + chr(10) + '> ## 📇 Як написати' + chr(10) + '>' + chr(10) + '> таблиця' + chr(10) + '' + chr(10) + '## [Аудитор → Код] старе' + chr(10) + 'текст' + chr(10) + '', encoding="utf-8")
+rc.post_to_channel("застій черги модерації", "тіло", datetime(2026, 10, 16, 12, 0), bq)
+t = bq.read_text(encoding="utf-8")
+chk("вставка перед першим рядком, що починається з «## » (блок-цитата «> ## 📇» не ламається)", "> ## 📇 Як написати" in t and t.index(rc.MARK) < t.index("## [Аудитор → Код] старе") and "> ## [Автомат" not in t)
+c2 = Path(tempfile.mkdtemp()) / "c2.md"
+c2.write_text('## x' + chr(10) + '', encoding="utf-8")
+p1 = rc.post_to_channel("застій черги модерації", "тіло", datetime(2026, 10, 16, 12, 0), c2)
+p2 = rc.post_to_channel("застій черги модерації", "тіло", datetime(2026, 10, 17, 12, 0), c2)
+p3 = rc.post_to_channel("застій черги модерації", "тіло", datetime(2026, 10, 19, 12, 0), c2)
+chk("поки застій триває: запис не частіше раз на 3 доби (16.10 так, 17.10 ні, 19.10 так)", p1 and not p2 and p3 and c2.read_text(encoding="utf-8").count(rc.MARK) == 2)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

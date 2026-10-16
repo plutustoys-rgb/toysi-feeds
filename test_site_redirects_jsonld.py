@@ -67,6 +67,7 @@ chk("/site_contacts.html з префіксом і без → /contacts.html", hi
 chk("/site_about.html, /ua/site_delivery.html → /", hit("/site_about.html") == "/" and hit("/ua/site_delivery.html") == "/")
 chk("favicon/apple-touch-icon: внутрішній rewrite (не редірект) на /assets/…", "RewriteRule ^/favicon\.ico$ /assets/favicon.ico [L]" in sh and "apple-touch-icon" in sh and "/assets/apple-touch-icon.png [L]" in sh)
 chk("Cache-Control для /assets/ лише під mod_headers, 1 доба", 'LocationMatch "^/assets/"' in sh and "max-age=86400" in sh and sh.index("mod_headers.c") < sh.index('LocationMatch "^/assets/"'))
+chk("Cache-Control no-cache для HTML (16.10, власник «так»): <FilesMatch \.html$> під mod_headers, assets лишаються max-age=86400; у скрипті є проба", '<FilesMatch "\.html$">' in sh and 'Header set Cache-Control "no-cache"' in sh and sh.index("mod_headers.c") < sh.index('<FilesMatch "\.html$">') and "HTML Cache-Control" in sh and "max-age=86400" in sh)
 chk("НЕ чіпає наші: /product-168072.html, /p.html, /products.html, /page1.html, /privacy.html, /sitemap.xml, /site.webmanifest",
     all(hit(p) is None for p in ("/product-168072.html", "/p.html", "/products.html", "/page1.html", "/privacy.html", "/sitemap.xml", "/site.webmanifest", "/g.html")))
 

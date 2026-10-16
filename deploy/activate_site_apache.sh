@@ -188,10 +188,15 @@ cat <<'EOF'
         Header always set X-Content-Type-Options "nosniff"
         Header always set X-Frame-Options "SAMEORIGIN"
         Header always set Referrer-Policy "strict-origin-when-cross-origin"
-        # статика змінюється рідко, імена без хешів → добовий кеш (LCP/повторні візити); HTML кешується браузером за замовчуванням евристикою, не чіпаємо
+        # статика змінюється рідко, імена без хешів → добовий кеш (LCP/повторні візити)
         <LocationMatch "^/assets/">
             Header set Cache-Control "public, max-age=86400"
         </LocationMatch>
+        # 16.10.2026 (власник «так», через Code): HTML без Cache-Control кешувався браузером евристикою (10% віку за Last-Modified) → після деплою відвідувач бачив стару сторінку годинами (власник бачив стару панель каталогу).
+        # no-cache = завжди питати сервер (If-Modified-Since → 304 за кілька байтів, Last-Modified/ETag лишаються); на 404/410 заголовок не ставиться (Header set — лише успішні відповіді)
+        <FilesMatch "\.html$">
+            Header set Cache-Control "no-cache"
+        </FilesMatch>
     </IfModule>
     <IfModule mod_deflate.c>
         # + xml: sitemap.xml ≈3,5 МБ віддавався без стиснення (Google тягне його часто)
@@ -430,6 +435,9 @@ if [ "$CERT_OK" = "0" ]; then
     echo "  /catalog.html      : $HC (очікую 200)"
     echo "  /api/np/city       : $HA (очікую 200)"
     echo "  /build_site.py     : $HX (очікую 403/404, не 200)"
+    HN=$(curl -sSI --max-time 10 $R "http://$DOMAIN/catalog.html" 2>/dev/null | tr -d '' | grep -i '^cache-control:' || true)
+    HN0=$(curl -sSI --max-time 10 $R "http://$DOMAIN/" 2>/dev/null | tr -d '' | grep -i '^cache-control:' || true)
+    case "$HN$HN0" in *no-cache*no-cache*) echo "  HTML Cache-Control : OK (no-cache на /catalog.html і /)";; *) echo "  HTML Cache-Control : УВАГА — немає no-cache ($HN | $HN0): mod_headers відсутній? Сайт працює, але браузери кешують HTML евристикою";; esac
     echo "  /ua/p${MAPKEY}-test: $HR (очікую 301 …$MAPVAL)"
     echo "  /ua/p999999999999  : $HR0 (очікую 410 Gone — непокритий Prom-URL)"
     HO1=$(curl -sS --max-time 10 $R -o /dev/null -w '%{http_code}' "http://$DOMAIN/create_order_mobile" 2>/dev/null || echo "ERR")

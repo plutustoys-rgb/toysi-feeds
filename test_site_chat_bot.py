@@ -190,5 +190,75 @@ b6.handle_update(upd(C1, "Мій тел 067 123 45 67, ще +38 (067) 123-45-67 
 dg6 = sb.digest(d6, 1, now=clock["t"])
 chk("digest: усі формати телефону замасковано (3 шт.), ТТН і PT-номер лишились", dg6.count("[телефон]") == 3 and "20450123456789" in dg6 and "PT-20261010-142322-afbf46" in dg6 and "123 45 67" not in dg6 and "123-45-67" not in dg6)
 
+
+# ── (9) автовідповідь про статус замовлення сайту (номер PT-… + останні 4 цифри телефону; лише читання orders.db) ──
+import sqlite3
+odb = os.path.join(tempfile.mkdtemp(), "orders.db")
+oc = sqlite3.connect(odb)
+oc.execute("CREATE TABLE orders (internal_order_id TEXT, platform TEXT, status TEXT, delivery_status TEXT, payment_method TEXT, payment_confirmed INTEGER, toysi_ttn TEXT, cancelled_at TEXT, phone TEXT, customer_name TEXT)")
+
+
+def add_order(oid, status="forwarded_to_supplier", ds="shipped", pm="cod", paid=0, ttn="20451561497392", canc=None, phone="+380501234567", platform="site"):
+    oc.execute("INSERT INTO orders VALUES(?,?,?,?,?,?,?,?,?,?)", (oid, platform, status, ds, pm, paid, ttn, canc, phone, "Секретне Імя"))
+
+
+add_order("site_PT-20261013-114919-85fd5b")
+add_order("site_PT-20261013-114919-aaaaaa", ds="processing", ttn=None)
+add_order("site_PT-20261013-114919-bbbbbb", ds="packed")
+add_order("site_PT-20261013-114919-cccccc", status="pending", ds=None, pm="prepaid", paid=0, ttn=None)
+add_order("site_PT-20261013-114919-dddddd", status="cancelled", ds="cancelled")
+add_order("site_PT-20261013-114919-eeeeee", status="sandbox_test", ds=None, pm="prepaid", paid=1, ttn=None)
+add_order("site_PT-20261013-114919-ffffff", ds="delivered")
+add_order("site_PT-20261013-114919-0123ab", ds="expired")
+add_order("prom_PT-20261013-114919-abcabc", platform="prom")
+oc.commit()
+oc.close()
+sb.ORDERS_DB = Path(odb)
+
+
+def to(a, chat):
+    return [t for c, t in a.sent if c == chat]
+
+
+b9, a9, d9 = mk()
+b9.handle_update(upd(C1, "Статус PT-20261013-114919-85fd5b, телефон 4567"))
+rep = to(a9, C1)
+chk("статус: shipped + ТТН і посилання відстеження, без ПІБ/телефону/адреси/суми у відповіді; ACK не надсилається", len(rep) == 1 and "відправлено Новою Поштою" in rep[0] and "20451561497392" in rep[0] and "novaposhta.ua/tracking/?cargo_number=20451561497392" in rep[0] and "Секретне" not in rep[0] and "4567" not in rep[0] and sb.ACK not in rep[0])
+own = to(a9, OWNER)
+chk("копія власнику з міткою «🤖 надіслала клієнту статус»", len(own) == 1 and "🤖 надіслала клієнту статус" in own[0] and "↩️" in own[0])
+chk("відповідь збережена як out (digest рахує «відповіли»)", d9.q("SELECT count(*) AS n FROM messages WHERE chat_id=? AND direction='out'", (C1,))[0]["n"] == 1)
+b9.handle_update(upd(C1, "pt-20261013-114919-85FD5B +380 50 123 45 67"))
+chk("номер в іншому регістрі й повний телефон: збіг по останніх 4 цифрах", sum(1 for t in to(a9, C1) if "відправлено" in t) == 2)
+b9.handle_update(upd(C1, "PT-20261013-114919-85fd5b"))
+chk("номер без 4 цифр → просимо 4 цифри (нічого про замовлення не кажемо)", to(a9, C1)[-1] == sb.STATUS_NEED_PHONE)
+b9.handle_update(upd(C1, "PT-20261013-114919-85fd5b 9999"))
+nf1 = to(a9, C1)[-1]
+b9.handle_update(upd(C1, "PT-20990101-000000-123456 9999"))
+nf2 = to(a9, C1)[-1]
+chk("хибні 4 цифри і неіснуюче замовлення: ОДНАКОВА відповідь (не розкриваємо, що замовлення існує)", nf1 == nf2 == sb.STATUS_NOT_FOUND)
+for i in range(4):
+    b9.handle_update(upd(C1, f"PT-20261013-114919-85fd5b 000{i}"))
+b9.handle_update(upd(C1, "PT-20261013-114919-85fd5b 4567"))
+last = to(a9, C1)[-1]
+chk("після 5 невдалих звірок автовідповідь вимкнена навіть для правильних 4 цифр (захист від добору): статусу нема", "відправлено" not in last and last != sb.STATUS_NOT_FOUND)
+b8, a8, d8 = mk()
+for oid, want in (("aaaaaa", "передано на комплектацію"), ("bbbbbb", "укомплектовано"), ("cccccc", "очікуємо підтвердження оплати"), ("dddddd", "скасовано"), ("ffffff", "доставлено")):
+    b8.handle_update(upd(C2, f"PT-20261013-114919-{oid} 4567"))
+    chk(f"стан {oid}: «{want}»", want in to(a8, C2)[-1])
+cnt = len(to(a8, C2))
+b8.handle_update(upd(C2, "PT-20261013-114919-eeeeee 4567"))
+b8.handle_update(upd(C2, "PT-20261013-114919-0123ab 4567"))
+tail = to(a8, C2)[cnt:]
+own8 = to(a8, OWNER)[-2:]
+chk("sandbox_test і невідомий delivery_status (expired): автовідповіді нема (лише ACK), власнику мітка «відповісти вручну»", all("відправлено" not in t and "доставлено" not in t for t in tail) and all("відповісти вручну" in t for t in own8))
+b8.handle_update(upd(C2, "PT-20261013-114919-abcabc 4567"))
+chk("замовлення іншої платформи (prom_PT-…) через бот не віддається", to(a8, C2)[-1] == sb.STATUS_NOT_FOUND)
+sb.ORDERS_DB = Path(tempfile.mkdtemp()) / "нема.db"
+b7, a7, d7 = mk()
+b7.handle_update(upd(C1, "PT-20261013-114919-85fd5b 4567"))
+chk("orders.db недоступна: без винятку, клієнт отримує звичайне підтвердження, власнику мітка", to(a7, C1) == [sb.ACK] and any("orders.db недоступна" in t for t in to(a7, OWNER)))
+src = Path(sb.__file__).read_text(encoding="utf-8")
+chk("статус — лише читання: connect mode=ro, у коді нема UPDATE/INSERT у orders", "mode=ro" in src and "UPDATE orders" not in src and "INSERT INTO orders" not in src)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -16,6 +16,7 @@ CLI: python gmc_status_report.py                      # зібрати звіт
                                                       # сервіс-акаунт мав у Merchant Center доступ ADMIN (на час реєстрації; після неї понизити до STANDARD). EMAIL — звичайний акаунт Google, НЕ сервіс-акаунт.
 """
 import csv
+import json
 import os
 import sys
 from collections import Counter
@@ -128,6 +129,75 @@ def summarize(rows: list, products_n: int | None = None) -> str:
     return "\n".join(lines)
 
 
+def _stats_from_rows(rows: list):
+    st = Counter(r["status"] for r in rows)
+    codes = Counter()
+    for r in rows:
+        for c in [x.strip() for x in (r.get("issue_codes") or "").split("|") if x.strip()]:
+            codes[c] += 1
+    return st, codes
+
+
+def _previous_csv(out_dir: Path, today: str):
+    """Найновіший gmc_status_<дата>.csv СТАРШИЙ за today (або None)."""
+    best = None
+    for p in Path(out_dir).glob("gmc_status_*.csv"):
+        d = p.stem.replace("gmc_status_", "")
+        if d < today and (best is None or d > best[0]):
+            best = (d, p)
+    return best
+
+
+def compare_with_previous(rows: list, out_dir: Path, today: str) -> tuple:
+    """(рядки для summary, прапорці). Без числових порогів — лише ФАКТ зміни: прапорець 🚩, якщо approved ВПАВ проти попереднього знімка або з'явилась причина (з лічильником >0), якої НЕ було в жодному попередньому знімку (історія кодів — gmc_seen_codes.json, при першому запуску збирається з наявних CSV)."""
+    out_dir = Path(out_dir)
+    seen_file = out_dir / "gmc_seen_codes.json"
+    cur_st, cur_codes = _stats_from_rows(rows)
+    prev = _previous_csv(out_dir, today)
+    seen = None
+    try:
+        seen = set(json.loads(seen_file.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        seen = None
+    if seen is None:
+        seen = set()
+        for p in out_dir.glob("gmc_status_*.csv"):
+            if p.stem.replace("gmc_status_", "") < today:
+                try:
+                    with open(p, encoding="utf-8-sig", newline="") as f:
+                        seen |= set(_stats_from_rows(list(csv.DictReader(f)))[1])
+                except OSError:
+                    continue
+    lines, flags = [], []
+    if prev is None:
+        lines.append("Порівняння з попереднім днем: попереднього знімка нема (перший запуск).")
+    else:
+        pd, pp = prev
+        with open(pp, encoding="utf-8-sig", newline="") as f:
+            prev_rows = list(csv.DictReader(f))
+        pst, pcodes = _stats_from_rows(prev_rows)
+        lines.append(f"Порівняння з {pd}: " + ", ".join(f"{k} {pst.get(k, 0)}→{cur_st.get(k, 0)} ({cur_st.get(k, 0) - pst.get(k, 0):+d})" for k in ("approved", "disapproved", "unknown")))
+        ch = sorted(((cur_codes.get(c, 0) - pcodes.get(c, 0), c) for c in set(cur_codes) | set(pcodes)), key=lambda x: -abs(x[0]))[:6]
+        lines.append("Найбільші зміни причин: " + "; ".join(f"{c} {pcodes.get(c, 0)}→{cur_codes.get(c, 0)} ({d:+d})" for d, c in ch if d))
+        if cur_st.get("approved", 0) < pst.get("approved", 0):
+            flags.append(f"🚩 approved ВПАВ: {pst.get('approved', 0)} → {cur_st.get('approved', 0)} ({cur_st.get('approved', 0) - pst.get('approved', 0):+d})")
+    new = sorted(c for c, n in cur_codes.items() if n > 0 and c not in seen)
+    if new and (prev is not None or seen):
+        flags.append("🚩 НОВА причина (раніше в звітах не було): " + ", ".join(f"{c} ({cur_codes[c]})" for c in new))
+    try:
+        tmp = seen_file.with_name(seen_file.name + ".tmp")
+        tmp.write_text(json.dumps(sorted(seen | set(cur_codes))), encoding="utf-8")
+        os.replace(tmp, seen_file)
+    except OSError:
+        pass
+    if flags:
+        lines.append("ПРАПОРЦІ:")
+        lines += ["  " + f for f in flags]
+    else:
+        lines.append("Прапорців нема (approved не впав, нових причин нема).")
+    return lines, flags
+
+
 def write_report(rows: list, out_dir: Path, today: str) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_p, sum_p = out_dir / f"gmc_status_{today}.csv", out_dir / f"gmc_summary_{today}.txt"
@@ -137,7 +207,11 @@ def write_report(rows: list, out_dir: Path, today: str) -> tuple[Path, Path]:
         w.writeheader()
         w.writerows(rows)
     os.replace(tmp, csv_p)
-    sum_p.write_text(summarize(rows) + "\n", encoding="utf-8")
+    try:
+        cmp_lines, _ = compare_with_previous(rows, out_dir, today)
+    except Exception as e:  # noqa: BLE001 — порівняння допоміжне: не губить сам звіт
+        cmp_lines = [f"Порівняння з попереднім днем не вдалось: {type(e).__name__}"]
+    sum_p.write_text(summarize(rows) + "\n\n" + "\n".join(cmp_lines) + "\n", encoding="utf-8")
     return csv_p, sum_p
 
 

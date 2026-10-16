@@ -772,7 +772,7 @@ def build():
     valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
     removed = 0
     for fn in os.listdir(OUT):
-        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "podibrka", "group-")) and fn.endswith(".html")
+        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "halloween", "podibrka", "group-")) and fn.endswith(".html")
                 and fn not in valid):
             try:
                 os.remove(os.path.join(OUT, fn))
@@ -1405,7 +1405,7 @@ AKTSII_FILE = "aktsii.html"
 
 # ── /helovin.html «Геловін» (власник 15.10: «це вкладка в Toysi, чому у нас немає цих товарів?» — вони в каталозі, але не зібрані: чип головної шукав «гелловін» (Toysi пише «Геловін»), не брав «маски/грим/помаду» і відсікав ціну < 100 ₴) ──
 # Склад: id з вкладки Toysi (site/seasonal_halloween.json, 52 на 15.10) + товари в наявності, назва яких збігається з HELOVIN_RE. Вікно 1.10–2.11 за датою збірки; поза вікном сторінки нема (стара прибирається).
-HELOVIN_FILE = "helovin.html"
+HELOVIN_FILE = "halloween.html"   # власник 16.10: єдина назва Halloween і в адресі (старий /helovin.html → 301, Apache); ім'я константи лишилось історичним
 HELOVIN_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seasonal_halloween.json")
 HELOVIN_WINDOW = ((10, 1), (11, 2))
 HELOVIN_MIN = 6
@@ -1415,7 +1415,7 @@ HELOVIN_BAD = r"людин[аи]?[\s-]*павук|spider|марвел|marvel|п�
 
 
 def helovin_pick(prods):
-    """Товари для /helovin.html: спершу id з вкладки Toysi (її порядок), далі збіги за назвою; лише в наявності, з фото, не уцінка, не мілітарі/зброя. Ціни нижче порога вітрини (46–90 ₴) НЕ відсікаємо: це повний перелік, а не вітрина."""
+    """Товари для /halloween.html: спершу id з вкладки Toysi (її порядок), далі збіги за назвою; лише в наявності, з фото, не уцінка, не мілітарі/зброя. Ціни нижче порога вітрини (46–90 ₴) НЕ відсікаємо: це повний перелік, а не вітрина."""
     try:
         with open(HELOVIN_JSON, encoding="utf-8") as f:
             ids = [str(x) for x in (json.load(f).get("ids") or [])]
@@ -1434,7 +1434,7 @@ def helovin_pick(prods):
 
 
 def write_helovin(prods, cat_list=None, cat_slug=None):
-    """Пише /helovin.html «Геловін» у вікні 1.10–2.11 (власник 16.10: шаблон як «Уцінка» — крупна назва + сортування серед товарів сторінки, пагінація); повертає set записаних сторінок (порожній — сторінки нема, стару прибере крок прибирання)."""
+    """Пише /halloween.html «Halloween» у вікні 1.10–2.11 (власник 16.10: шаблон як «Уцінка» — крупна назва + сортування серед товарів сторінки, пагінація); повертає set записаних сторінок (порожній — сторінки нема, стару прибере крок прибирання)."""
     if not seasonal_active(HELOVIN_WINDOW[0], HELOVIN_WINDOW[1]):
         return set()
     picks = helovin_pick(prods)
@@ -2085,7 +2085,7 @@ def home_sale_picks(prods):
 
 # власник 16.10: «коли нажимаєш на чіп — перекидає на окрему сторінку, як при Уцінці, зі своїми сортувальниками». Чип → файл сторінки (Хелловін — наявний /helovin.html).
 CHIP_PAGE_FILES = {"ukr": "podibrka-ukrainske.html", "pop": "podibrka-populiarne.html", "bday": "podibrka-den-narodzhennia.html",
-                   "ny": "podibrka-mykolai-novyi-rik.html", "xmas": "podibrka-do-rizdva.html", "hel": "helovin.html", "new": "podibrka-novynky.html"}
+                   "ny": "podibrka-mykolai-novyi-rik.html", "xmas": "podibrka-do-rizdva.html", "hel": "halloween.html", "new": "podibrka-novynky.html"}
 CHIP_PAGE_N = 72           # до 3 сторінок по PER_PAGE
 CHIP_PAGE_PER_CAT = 4      # різноманітність: не більше стількох з однієї категорії
 
@@ -2132,7 +2132,7 @@ def write_home(prods, cats, cat_list, cat_slug):
         chip_sets = {k: v for k, v in home_chip_sets(prods, count=CHIP_PAGE_N, per_cat=CHIP_PAGE_PER_CAT).items() if k in CHIP_PAGE_FILES and k not in HOME_CHIPS_DROPPED}
         helovin_on = seasonal_active(HELOVIN_WINDOW[0], HELOVIN_WINDOW[1]) and len(helovin_pick(prods)) >= HELOVIN_MIN
         if not helovin_on:
-            chip_sets.pop("hel", None)   # чип «Хелловін» веде на /helovin.html — нема сторінки, нема чипа
+            chip_sets.pop("hel", None)   # чип «Halloween» веде на /halloween.html — нема сторінки, нема чипа
         slides = "".join(tile(p, cls="slide", eager=(i < 3), prio=(i == 0), badge=True) for i, p in enumerate(picks))
         chips_html = ""
         if chip_sets or utsinka_pick(prods):

@@ -141,7 +141,7 @@ with sync_playwright() as p:
         chk(f"{w_}px: повернення на накладений платіж відновлює підсумок, підпис і примітку", back == cod)
     ctx.close()
 
-    bs_chip_files = {"ukr": "podibrka-ukrainske.html", "pop": "podibrka-populiarne.html", "bday": "podibrka-den-narodzhennia.html", "ny": "podibrka-mykolai-novyi-rik.html", "xmas": "podibrka-do-rizdva.html", "hel": "helovin.html"}
+    bs_chip_files = {"ukr": "podibrka-ukrainske.html", "pop": "podibrka-populiarne.html", "bday": "podibrka-den-narodzhennia.html", "ny": "podibrka-mykolai-novyi-rik.html", "xmas": "podibrka-do-rizdva.html", "hel": "halloween.html"}
     # ── чипи головної: посилання на окремі сторінки (власник 16.10), карусель ними не перемикається ──
     for w, h in ((1280, 800), (390, 800), (320, 300)):
         ctx, pg = page(w=w, h=h)

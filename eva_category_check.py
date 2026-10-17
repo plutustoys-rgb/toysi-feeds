@@ -99,59 +99,91 @@ def read_merchant_counts(page) -> dict:
 
 
 def history_row(res: dict, counts: dict, now: datetime) -> dict:
-    return {"ts": now.isoformat(timespec="seconds"), "feed_available": res["feed_available"], "bad_offers": res["bad_offers"],
+    return {"ts": now.isoformat(timespec="seconds"), "feed_available": res["feed_available"], "bad_offers": res["bad_offers"], "bad_categories": res["bad_categories"],
             "unknown_offers": res["unknown_offers"], "unmatched_cats": res["unmatched_total"], "matched_cats": res["matched_total"],
             **{f"my_{k}": v for k, v in counts.items()}}
 
 
-def last_history(path: Path | None = None) -> dict | None:
+def _history_rows(path: Path | None = None) -> list:
     path = Path(path or HISTORY_FILE)
+    rows = []
     try:
-        lines = [x for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
-        return json.loads(lines[-1]) if lines else None
-    except (OSError, ValueError):
-        return None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue                      # обірваний рядок (збій під час запису) пропускаємо
+    except OSError:
+        return []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def last_history(path: Path | None = None) -> dict | None:
+    rows = _history_rows(path)
+    return rows[-1] if rows else None
+
+
+def last_value(key: str, path: Path | None = None):
+    """Останнє НЕ-None значення поля історії (знімок із None не скидає базу порівняння)."""
+    for r in reversed(_history_rows(path)):
+        if r.get(key) is not None:
+            return r[key]
+    return None
 
 
 def append_history(row: dict, path: Path | None = None) -> None:
     path = Path(path or HISTORY_FILE)
     path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = ""
+    try:
+        if path.exists() and path.stat().st_size and not path.read_bytes().endswith(b"\n"):
+            prefix = "\n"
+    except OSError:
+        pass
     with open(path, "a", encoding="utf-8", newline="") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.write(prefix + json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def regression_flags(prev: dict | None, cur: dict) -> list:
+def regression_flags(prev: dict | None, cur: dict, prev_active=None) -> list:
     """Лише ФАКТ погіршення проти попереднього знімка, без порогів (03.08 фід віддав усі 94 категорії як «Нова», і цього ніхто не побачив два місяці).
-    Погіршення: більше товарів фіду в незіставлених/невідомих категоріях; менше співставлених категорій; менше «Активних» у «Мої товари»."""
+    Міряємо СТРУКТУРУ кабінету, а не склад Toysi (коливання стоку ±товарів не є регресом): більше незіставлених/невідомих категорій фіду; менше співставлених
+    категорій; «Активні» впали БІЛЬШЕ, ніж впала кількість товарів фіду (інакше це просто склад). prev_active — останнє не-None значення (знімок із None базу не скидає)."""
     if not prev:
         return []
     out = []
-    pb, cb = (prev.get("bad_offers") or 0) + (prev.get("unknown_offers") or 0), (cur.get("bad_offers") or 0) + (cur.get("unknown_offers") or 0)
+    pb = (prev.get("bad_categories") or 0) + (prev.get("unknown_categories") or 0)
+    cb = (cur.get("bad_categories") or 0) + (cur.get("unknown_categories") or 0)
     if cb > pb:
-        out.append(f"товарів фіду в незіставлених категоріях стало більше: {pb} → {cb}")
+        out.append(f"категорій фіду без співставлення стало більше: {pb} → {cb}")
     if (cur.get("matched_cats") or 0) < (prev.get("matched_cats") or 0):
         out.append(f"співставлених категорій у кабінеті стало менше: {prev.get('matched_cats')} → {cur.get('matched_cats')}")
-    pa, ca = prev.get("my_active"), cur.get("my_active")
+    pa = prev_active if prev_active is not None else prev.get("my_active")
+    ca = cur.get("my_active")
     if pa is not None and ca is not None and ca < pa:
-        out.append(f"«Мої товари → Активні» впали: {pa} → {ca}")
+        feed_drop = max(0, (prev.get("feed_available") or 0) - (cur.get("feed_available") or 0))
+        if pa - ca > feed_drop:
+            out.append(f"«Мої товари → Активні» впали: {pa} → {ca} (товарів у фіді при цьому −{feed_drop})")
     return out
 
 
-def post_regression(flags: list, cur: dict, prev: dict | None, now: datetime, channel: Path | None = None) -> bool:
-    """Запис `## [Автомат → Код] EVA: регрес кабінету <дата>` угорі каналу (перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »); один на добу; без Telegram."""
+def post_regression(flags: list, cur: dict, prev: dict | None, now: datetime, channel: Path | None = None) -> str:
+    """Запис `## [Автомат → Код] EVA: регрес кабінету <дата> [відбиток]` угорі каналу (перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »); без Telegram.
+    Один запис на добу на ОДНАКОВИЙ набір прапорців (інший набір того ж дня = новий запис, шумний ранковий не затуляє справжній). Повертає "added" | "dup" | "unavailable"."""
+    import hashlib
     channel = Path(channel or CHANNEL_FILE)
     try:
         with open(channel, encoding="utf-8", newline="") as _f:
             s = _f.read()
     except OSError:
-        return False
-    head = f"## {REGRESS_MARK} {now:%Y-%m-%d}"
+        return "unavailable"
+    fp = hashlib.md5("|".join(sorted(flags)).encode("utf-8")).hexdigest()[:6]
+    head = f"## {REGRESS_MARK} {now:%Y-%m-%d} [{fp}]"
     if head in s:
-        return False
+        return "dup"
     nl = "\r\n" if "\r\n" in s else "\n"
     body = "\n".join(f"🚩 {x}" for x in flags)
-    entry = (f"{head}\n{body}\nБуло ({(prev or {}).get('ts')}): bad {(prev or {}).get('bad_offers')}, unknown {(prev or {}).get('unknown_offers')}, співставлені {(prev or {}).get('matched_cats')}, Активні {(prev or {}).get('my_active')}; "
-             f"стало ({cur.get('ts')}): bad {cur.get('bad_offers')}, unknown {cur.get('unknown_offers')}, співставлені {cur.get('matched_cats')}, Активні {cur.get('my_active')}. Історія — eva_category_history.jsonl. Дія — Коду.\n\n").replace("\n", nl)
+    entry = (f"{head}\n{body}\nБуло ({(prev or {}).get('ts')}): без співставлення категорій {(prev or {}).get('bad_categories')}, співставлені {(prev or {}).get('matched_cats')}, Активні {(prev or {}).get('my_active')}, фід {(prev or {}).get('feed_available')}; "
+             f"стало ({cur.get('ts')}): без співставлення {cur.get('bad_categories')}, співставлені {cur.get('matched_cats')}, Активні {cur.get('my_active')}, фід {cur.get('feed_available')}. Історія — eva_category_history.jsonl. Дія — Коду.\n\n").replace("\n", nl)
     m = re.search(r"(?m)^## ", s)
     new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
     try:
@@ -160,8 +192,8 @@ def post_regression(flags: list, cur: dict, prev: dict | None, now: datetime, ch
             _f.write(new)
         os.replace(tmp, channel)
     except OSError:
-        return False
-    return True
+        return "unavailable"
+    return "added"
 
 
 def post_to_channel(res: dict, now: datetime, channel: Path | None = None) -> bool:
@@ -230,11 +262,17 @@ def main() -> int:
     print(render_report(res, now))
     cur = history_row(res, counts, now)
     prev = last_history()
-    flags = regression_flags(prev, cur)
-    append_history(cur)
-    if flags:
-        print("[eva_category_check] 🚩 регрес:", "; ".join(flags))
-        print("[eva_category_check] запис регресу в канал:", "додано" if post_regression(flags, cur, prev, now) else "уже є за сьогодні / канал недоступний")
+    if res["feed_available"] <= 0:
+        print("[eva_category_check] фід без товарів у наявності: знімок історії НЕ пишемо (інакше наступний нормальний прогін дав би хибний регрес)", file=sys.stderr)
+    else:
+        flags = regression_flags(prev, cur, last_value("my_active"))
+        status = "none"
+        if flags:
+            print("[eva_category_check] 🚩 регрес:", "; ".join(flags))
+            status = post_regression(flags, cur, prev, now)
+            print("[eva_category_check] запис регресу в канал:", {"added": "додано", "dup": "уже є за сьогодні (той самий набір)", "unavailable": "канал недоступний — базу НЕ зсуваю"}[status])
+        if status != "unavailable":          # регрес, якого не вдалось записати, лишається видимим при наступному порівнянні
+            append_history(cur)
     if res["bad_offers"] > 0:
         print("[eva_category_check] запис у канал:", "додано" if post_to_channel(res, now) else "уже є за сьогодні / канал недоступний")
     return 0

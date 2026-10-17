@@ -414,9 +414,7 @@ def scrape() -> None:
     # Telegram — лише вивід залишків, БЕЗ порогів (рішення власника 2026-08-01)
     summary = (f"💰 Баланс EVA {today}: разом {balance['total']} ₴ "
                f"(роялті {balance['royalty']} + платформи {balance['platform']}).")
-    fl = fullness
-    if any(v is not None for v in fl.values()):
-        summary += f" Наповненість: активні {fl['active']}, модерація {fl['moderation']}, з помилками {fl['errors']}."
+    # наповненість — у звіті й часовому ряду, у Telegram не шлемо (шум; регрес бачить eva_category_check у каналі)
     _notify(summary)
     print(f"[EvaCabinet] {summary}")
 

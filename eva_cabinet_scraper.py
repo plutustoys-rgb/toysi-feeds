@@ -216,13 +216,25 @@ def read_fullness(page) -> dict:
     зчиталось — None (не валимо прогін, баланс важливіший)."""
     result = {"active": None, "moderation": None, "errors": None}
     try:
+        # Лічильники «Мої товари» (merchant/products: «Всі товари 6454 Активні 6454 Продані 0 На модерації 0 Приховані 0») — до 17.10 це поле
+        # завжди було None (регекс по сторінці імпорту нічого не знаходив), тож ряд «скільки активних» не велся (аудит 17.10, помилка 03.08 лишилась непоміченою).
+        page.goto("https://seller.eva.ua/merchant/products", timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        flat = re.sub(r"\s+", " ", page.inner_text("body"))
+        for key, label in (("active", "Активні"), ("moderation", "На модерації")):
+            m = re.search(label + r"\s+(\d[\d ]*)", flat)
+            if m:
+                result[key] = int(m.group(1).replace(" ", ""))
+    except Exception as e:  # noqa: BLE001
+        print(f"[EvaCabinet] лічильники «Мої товари» не зчитані: {type(e).__name__}", file=sys.stderr)
+    try:
         page.goto("https://seller.eva.ua/integrations/items/all", timeout=NAV_TIMEOUT_MS)
         page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
         text = page.inner_text("body")
         # Лічильники EVA рендерить як «Активні (123)» / «Активні 123» біля вкладок.
         for key, label in (("active", "Активні"), ("moderation", "Модерація"), ("errors", "З помилками")):
             m = re.search(label + r"\D{0,4}(\d[\d  ]*)", text)
-            if m:
+            if m and result[key] is None:     # лічильники «Мої товари» вище мають пріоритет
                 try:
                     result[key] = int(m.group(1).replace(" ", "").replace(" ", ""))
                 except ValueError:
@@ -402,9 +414,7 @@ def scrape() -> None:
     # Telegram — лише вивід залишків, БЕЗ порогів (рішення власника 2026-08-01)
     summary = (f"💰 Баланс EVA {today}: разом {balance['total']} ₴ "
                f"(роялті {balance['royalty']} + платформи {balance['platform']}).")
-    fl = fullness
-    if any(v is not None for v in fl.values()):
-        summary += f" Наповненість: активні {fl['active']}, модерація {fl['moderation']}, з помилками {fl['errors']}."
+    # наповненість — у звіті й часовому ряду, у Telegram не шлемо (шум; регрес бачить eva_category_check у каналі)
     _notify(summary)
     print(f"[EvaCabinet] {summary}")
 

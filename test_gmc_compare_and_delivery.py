@@ -66,7 +66,7 @@ chk("diff_settings: programs змінився, gone перестав читат�
 
 names = ["gmc_status_2026-10-15.csv", "gmc_status_2026-10-16.csv", "gmc_summary_2026-10-16.txt", "googlebot_daily_2026-10-14.csv", "gsc_daily_2026-10-16.csv", "gmc_seen_codes.json", "other.txt", "eva_full_import_2026-10-16.md", "eva_full_import_2026-10-17.md"]
 got = dl.latest_per_pattern(names)
-chk("latest_per_pattern: найновіший кожного шаблону, службові/чужі файли ігноруються", sorted(got) == ["gmc_status_2026-10-16.csv", "gmc_summary_2026-10-16.txt", "googlebot_daily_2026-10-14.csv", "gsc_daily_2026-10-16.csv", "eva_full_import_2026-10-17.md"])
+chk("latest_per_pattern: найновіший кожного шаблону, службові/чужі файли ігноруються", sorted(got) == ["eva_full_import_2026-10-17.md", "gmc_status_2026-10-16.csv", "gmc_summary_2026-10-16.txt", "googlebot_daily_2026-10-14.csv", "gsc_daily_2026-10-16.csv"])
 chk("flags_in_summary: лише рядки з 🚩", dl.flags_in_summary("a\n  🚩 approved ВПАВ\nПРАПОРЦІ:\n  🚩 НОВА причина x\nпросто текст") == ["🚩 approved ВПАВ", "🚩 НОВА причина x"] and dl.flags_in_summary("Прапорців нема") == [])
 ch = Path(tempfile.mkdtemp()) / "SEO_CHANNEL.md"
 ch.write_text("<!-- шапка -->" + chr(10) + "> ## 📇 адреси" + chr(10) + ">" + chr(10) + chr(10) + "## [SEO → Код] старе" + chr(10) + "текст" + chr(10), encoding="utf-8")

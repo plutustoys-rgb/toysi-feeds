@@ -71,7 +71,10 @@ chk("порожній index.json → код 1, файл не створено", 
 trunc = page(ids_all[:52]) + "<div class=\"product product-req\"></div>" * 3
 before2 = out.read_text(encoding="utf-8")
 rc = tt.main(lambda u: R(trunc), now, out, idx)
-chk("блоків product (55) ≠ data-photo2 (52) → розмітка змінилась/обрізано: код 1, файл не змінено", rc == 1 and out.read_text(encoding="utf-8") == before2)
+chk("обрізаний HTML (немає кінцевого </html>) → код 1, файл не змінено", rc == 1 and out.read_text(encoding="utf-8") == before2)
+nophoto = page(ids_all[:52]).replace("</html>", "<div class=\"product product-req\"><a href=\"/x\"></a></div></html>")
+out_np = d / "o_np.json"
+chk("картка без data-photo2 (блоків 53, id 52), HTML повний → файл записано, картка пропущена (регрес 17.10)", tt.main(lambda u: R(nophoto), now, out_np, idx) == 0 and out_np.exists())
 none_on_site = d / "none.json"
 none_on_site.write_text(json.dumps([{"id": "999999", "pr": 1}]), encoding="utf-8")
 rc = tt.main(getter_ok, now, out, none_on_site)

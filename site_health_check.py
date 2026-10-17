@@ -166,7 +166,8 @@ def post_to_channel(problems: list, now: datetime, channel: Path | None = None) 
     """Запис угорі каналу (перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »); дедуп: однаковий набір порушень за добу — один запис; атомарно; недоступний канал → False."""
     channel = Path(channel or CHANNEL_FILE)
     try:
-        s = channel.read_text(encoding="utf-8")
+        with open(channel, encoding="utf-8", newline="") as _f:
+            s = _f.read()
     except OSError:
         return False
     fp = hashlib.md5("|".join(sorted(problems)).encode("utf-8")).hexdigest()[:6]
@@ -180,7 +181,8 @@ def post_to_channel(problems: list, now: datetime, channel: Path | None = None) 
     new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
     try:
         tmp = channel.with_name(channel.name + ".tmp")
-        tmp.write_text(new, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", newline="") as _f:
+            _f.write(new)
         os.replace(tmp, channel)
     except OSError:
         return False

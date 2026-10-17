@@ -62,7 +62,8 @@ def _post_hang(label: str, timeout_sec: int, channel: Path | None = None) -> boo
     from datetime import datetime
     channel = Path(channel or CHANNEL_FILE)
     try:
-        s = channel.read_text(encoding="utf-8")
+        with open(channel, encoding="utf-8", newline="") as _f:
+            s = _f.read()
     except OSError:
         return False
     head = f"## [Автомат → Код] MarketplaceActions: крок «{label}» завис {datetime.now():%Y-%m-%d}"
@@ -74,7 +75,8 @@ def _post_hang(label: str, timeout_sec: int, channel: Path | None = None) -> boo
     new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
     try:
         tmp = channel.with_name(channel.name + ".tmp")
-        tmp.write_text(new, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", newline="") as _f:
+            _f.write(new)
         os.replace(tmp, channel)
     except OSError:
         return False

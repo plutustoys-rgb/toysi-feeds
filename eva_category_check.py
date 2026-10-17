@@ -81,7 +81,8 @@ def post_to_channel(res: dict, now: datetime, channel: Path | None = None) -> bo
     channel = Path(channel or CHANNEL_FILE)
     stamp = f"{now:%Y-%m-%d}"
     try:
-        s = channel.read_text(encoding="utf-8")
+        with open(channel, encoding="utf-8", newline="") as _f:
+            s = _f.read()
     except OSError:
         return False
     for m in re.finditer(r"(?m)^## " + re.escape(MARK) + r" (\d{4}-\d{2}-\d{2})", s):
@@ -100,7 +101,8 @@ def post_to_channel(res: dict, now: datetime, channel: Path | None = None) -> bo
     new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
     try:
         tmp = channel.with_name(channel.name + ".tmp")
-        tmp.write_text(new, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", newline="") as _f:
+            _f.write(new)
         os.replace(tmp, channel)
     except OSError:
         return False

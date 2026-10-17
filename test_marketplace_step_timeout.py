@@ -52,5 +52,16 @@ txt = r.CHANNEL_FILE.read_text(encoding="utf-8")
 chk("у каналі рівно один запис про завислий крок; перед першим «## »; блок-цитата ціла", txt.count("MarketplaceActions: крок «завислий» завис") == 1 and txt.index("MarketplaceActions") < txt.index("## [Хтось → Код] старе") and "> ## 📇 адреси" in txt)
 chk("повторний запис за ту саму добу не дублюється", r._post_hang("завислий", 4) is False and r.CHANNEL_FILE.read_text(encoding="utf-8").count("«завислий»") == 1)
 chk("нема каналу → False без винятку", r._post_hang("x", 4, d / "нема.md") is False)
+# закінчення рядків: LF-файл лишається LF (read_text+write_text на Windows перетворювали весь файл на CRLF), CRLF-файл лишається CRLF
+lf = d / "lf.md"
+lf.write_bytes("## [A → B] старе\nтекст\n".encode("utf-8"))
+r._post_hang("крок-lf", 4, lf)
+bl = lf.read_bytes()
+chk("LF-канал після запису: жодного CR", b"\r" not in bl and "крок-lf".encode("utf-8") in bl)
+crlf = d / "crlf.md"
+crlf.write_bytes("## [A → B] старе\r\nтекст\r\n".encode("utf-8"))
+r._post_hang("крок-crlf", 4, crlf)
+bc = crlf.read_bytes()
+chk("CRLF-канал після запису: усі переводи рядків CRLF, голих LF нема", bc.count(b"\n") == bc.count(b"\r\n") and b"\r\n" in bc)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

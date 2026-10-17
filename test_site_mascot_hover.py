@@ -53,9 +53,11 @@ m = re.search(r'data-clips="([^"]+)" data-ms="([^"]+)" data-w="([^"]+)" data-nof
 names = [re.search(r"plutus_(\w+)\.webp", c).group(1) for c in m.group(1).split("|")]
 gi = names.index("gift")
 only = html.replace(m.group(0), f'data-clips="{m.group(1).split("|")[gi]}" data-ms="{m.group(2).split(",")[gi]}" data-w="2" data-nofirst=""')
-chk("розмітка: .mascot-wrap є, курсор-вказівник у CSS", 'class="mascot-wrap"' in html and ".hero2 .mascot-wrap{cursor:pointer}" in (HERE / "site/assets/styles.css").read_text(encoding="utf-8"))
+chk("розмітка: .mascot-wrap є, курсор-вказівник у CSS", 'class="mascot-wrap"' in html and ".hero2 .mascot-wrap{cursor:pointer;-webkit-tap-highlight-color:transparent" in (HERE / "site/assets/styles.css").read_text(encoding="utf-8"))
+css = (HERE / "site/assets/styles.css").read_text(encoding="utf-8")
+chk("CSS: без «квадрата» при тапі (tap-highlight прозорий, user-select none, touch-action manipulation), відгук .poke через transition (без @keyframes)", all(x in css for x in ("-webkit-tap-highlight-color:transparent", "user-select:none", "touch-action:manipulation", ".hero2 .mascot-wrap.poke{transform:scale(.9)}", "transform .15s ease")) and "@keyframes pt-poke" not in css)
 js = (HERE / "site/assets/app.js").read_text(encoding="utf-8")
-chk("JS: react() не під час руху/підвантаження, пауза після кінця, скасовує відкладений автопоказ; pointerenter (миша), pointerdown (дотик), click", all(x in js for x in ("function react()", "REACT_COOL=3000", 'wrap.addEventListener("pointerenter"', 'wrap.addEventListener("pointerdown"', 'wrap.addEventListener("click"', "clearTimeout(timer);   // скасувати відкладений автопоказ")))
+chk("JS: react() не під час руху/підвантаження, пауза після кінця, скасовує відкладений автопоказ; pointerenter (миша), pointerdown (дотик), click", all(x in js for x in ("function react(touch)", "function poke()", "function prefetchNext()", "REACT_COOL=3000", 'wrap.addEventListener("pointerenter"', 'wrap.addEventListener("pointerdown"', 'wrap.addEventListener("click"', "clearTimeout(timer);   // скасувати відкладений автопоказ")))
 
 H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out))
 H.log_message = lambda *a, **k: None
@@ -70,7 +72,7 @@ srv = _Srv(("127.0.0.1", 0), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-INIT = """window.__plays=0; document.addEventListener('DOMContentLoaded',()=>{const c=document.getElementById('hero-mascot-clip'); let was=false;
+INIT = """window.__plays=0; window.__pf=[]; const _f=window.fetch; window.fetch=function(u){ if(String(u).indexOf('plutus_gift')>=0) window.__pf.push(String(u)); return _f.apply(this,arguments); }; document.addEventListener('DOMContentLoaded',()=>{const c=document.getElementById('hero-mascot-clip'); let was=false;
 new MutationObserver(()=>{const has=!!c.getAttribute('src'); if(has && !was) window.__plays++; was=has;}).observe(c,{attributes:true,attributeFilter:['src']});});"""
 URL = f"http://127.0.0.1:{srv.server_address[1]}/index.html"
 STATE = "(()=>{const w=document.querySelector('.mascot-wrap'); return [window.__plays, w.classList.contains('clip-on')]})()"
@@ -90,15 +92,17 @@ with sync_playwright() as pw:
     br = pw.chromium.launch()
     ctx, pg = new_page(br)
     pg.wait_for_timeout(500)          # раніше, ніж перший автопоказ (≥ 3 с після load)
+    chk(f"наступний рух ПЕРЕДЗАВАНТАЖЕНО наперед (fetch у кеш), поки Плутус спокійно сидить: {pg.evaluate('window.__pf.length')} запит(и)", pg.evaluate("window.__pf.length") >= 1)
     pg.hover(".mascot-wrap")
     pg.wait_for_timeout(900)
     st = pg.evaluate(STATE)
     chk(f"наведення миші ЗАПУСКАЄ рух одразу (≈1 с, а не через 3+ с автопоказу): plays={st[0]}, clip-on={st[1]}", st[0] == 1 and st[1] is True)
     pg.mouse.move(2, 2)
     pg.hover(".mascot-wrap")
-    pg.wait_for_timeout(300)
+    pg.wait_for_timeout(120)
     chk(f"повторне наведення ПІД ЧАС руху не запускає другий: plays={pg.evaluate(STATE)[0]}", pg.evaluate(STATE)[0] == 1)
-    pg.wait_for_timeout(1600)           # рух (1,66 с + 0,4 запас) завершився
+    chk("…але дає миттєвий візуальний відгук (клас .poke на 0,3 с): людина бачить, що зараховано", pg.evaluate("document.querySelector('.mascot-wrap').classList.contains('poke')") is True)
+    pg.wait_for_timeout(1800)           # рух (1,66 с + 0,4 запас) завершився
     st = pg.evaluate(STATE)
     chk(f"рух закінчився, wrap без clip-on: plays={st[0]}, clip-on={st[1]}", st[0] == 1 and st[1] is False)
     pg.mouse.move(2, 2)
@@ -111,8 +115,8 @@ with sync_playwright() as pw:
     pg.wait_for_timeout(900)
     st = pg.evaluate(STATE)
     chk(f"після паузи наведення знову запускає рух: plays={st[0]}, clip-on={st[1]}", st[0] == 2 and st[1] is True)
-    pg.wait_for_timeout(2600)
-    pg.wait_for_timeout(3200)           # кінець руху + пауза
+    pg.wait_for_timeout(1500)           # кінець руху
+    pg.wait_for_timeout(1500)           # пауза для дотику 1,2 с (для миші 3 с)
     pg.dispatch_event(".mascot-wrap", "pointerdown", {"pointerType": "touch", "isPrimary": True, "bubbles": True})
     pg.wait_for_timeout(900)
     st = pg.evaluate(STATE)

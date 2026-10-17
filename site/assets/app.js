@@ -995,7 +995,7 @@
       dipNow=false;
     }
     if(typeof IntersectionObserver==="function"){
-      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ visible=!!e.isIntersecting; if(!visible && playing){ stop(); schedule(wait()); } }); }, {threshold:0.3});
+      var io=new IntersectionObserver(function(es){ es.forEach(function(e){ visible=!!e.isIntersecting; if(!visible && playing){ stop(); schedule(wait()); } if(visible && !playing && !busy) prefetchNext(); }); }, {threshold:0.3});
       io.observe(img);
       visible=false;   // до першого повідомлення IntersectionObserver вважаємо «не видно»
     }
@@ -1005,7 +1005,7 @@
     var weights=(img.getAttribute("data-w")||"").split(",").map(Number);
     var noFirst=(img.getAttribute("data-nofirst")||"").split(",").filter(function(x){ return x!==""; }).map(Number);
     var started=false;
-    function next(){
+    function fillOrder(){
       if(!order.length){
         var pool=[]; clips.forEach(function(_,i){ for(var k=0;k<(weights[i]>0?weights[i]:1);k++) pool.push(i); });
         var prev=last, first=!started;
@@ -1016,7 +1016,19 @@
           prev=pool[pick]; order.push(prev); pool.splice(pick,1); first=false;
         }
       }
-      started=true; last=order.shift(); return last;
+    }
+    function next(){ fillOrder(); started=true; last=order.shift(); return last; }
+    // Передзавантаження НАСТУПНОГО руху, поки Плутус сидить спокійно (власник 17.10: «тапати треба декілька разів» — на мобільному кожен рух спершу вантажився 1–8 с, і тап «не спрацьовував»):
+    // fetch прогріває HTTP-кеш, тож пізніше new Image().src бере файл миттєво. Лише коли Плутуса видно й вкладка активна (без зайвого трафіку), раз на кожен наступний рух; на 2G/Save-Data/reduced-motion сюди не доходимо (return вище).
+    var pref=-1;
+    function prefetchNext(){
+      try{
+        if(!canPlay() || typeof fetch!=="function") return;
+        fillOrder(); var i=order[0];
+        if(i===undefined || pref===i) return;
+        pref=i;
+        var p=fetch(clips[i], {credentials:"omit"}); if(p && p.then) p.then(function(r){ return r && r.blob ? r.blob() : null; }).catch(function(){});
+      }catch(e){}
     }
     function play(){
       if(playing || busy) return;
@@ -1041,7 +1053,7 @@
             wrap.classList.add("dip");                                  // гасимо poster, під «нулем» міняємо на кліп, проявляємо — час кліпу стартує з підміни
             setTimeout(function(){ if(playing){ show(); } wrap.classList.remove("dip"); }, 170);
           } else { show(); }
-          endTimer=setTimeout(function(){ stop(true); schedule(wait()); }, ms);
+          endTimer=setTimeout(function(){ stop(true); schedule(wait()); prefetchNext(); }, ms);
         }
         if(clipImg.decode){ clipImg.decode().then(go, go); } else { go(); }
       };
@@ -1050,16 +1062,20 @@
     }
     // Реакція на курсор/дотик (власник 17.10, варіант 1): наведення мишею або клік/тап по Плутусу — одразу наступний рух із ротації, не чекаючи 12–20 с.
     // Не під час іншого руху, не частіше ніж раз на REACT_COOL після кінця попереднього; вимкнено при reduced-motion/saveData/2g (вище return) і коли Плутуса не видно.
-    function react(){
-      if(playing || busy || document.hidden || !visible) return;
-      if(lastEnd && Date.now()-lastEnd<REACT_COOL) return;
+    var pokeT=null;
+    function poke(){ if(!wrap || !wrap.classList) return; wrap.classList.remove("poke"); void wrap.offsetWidth; wrap.classList.add("poke"); clearTimeout(pokeT); pokeT=setTimeout(function(){ wrap.classList.remove("poke"); }, 320); }   // «вдавлення» 0,3 с: людина бачить, що тап/наведення зараховано, навіть коли рух ще вантажиться або триває
+    function react(touch){
+      if(document.hidden || !visible) return;
+      poke();
+      if(playing || busy) return;
+      if(lastEnd && Date.now()-lastEnd<(touch ? 1200 : REACT_COOL)) return;
       clearTimeout(timer);   // скасувати відкладений автопоказ — після реакції стартує звичайна пауза
       play();
     }
     if(wrap && wrap.addEventListener){
-      wrap.addEventListener("pointerenter", function(e){ if(!e.pointerType || e.pointerType==="mouse") react(); });
-      wrap.addEventListener("pointerdown", function(e){ if(e.pointerType && e.pointerType!=="mouse") react(); else if(!e.pointerType) react(); });
-      wrap.addEventListener("click", function(){ react(); });
+      wrap.addEventListener("pointerenter", function(e){ if(!e.pointerType || e.pointerType==="mouse") react(false); });
+      wrap.addEventListener("pointerdown", function(e){ if(e.pointerType && e.pointerType!=="mouse") react(true); else if(!e.pointerType) react(false); });
+      wrap.addEventListener("click", function(){ react(false); });
     }
     document.addEventListener("visibilitychange", function(){ if(document.hidden){ var was=playing; stop(); if(was) schedule(wait()); } });
     function start(){ schedule(3000); }      // перший кліп — не раніше ніж через 3 с після load

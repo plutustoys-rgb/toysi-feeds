@@ -76,6 +76,94 @@ def render_report(res: dict, now: datetime) -> str:
     return "\n".join(lines) + "\n"
 
 
+HISTORY_FILE = REPORT_DIR / "eva_category_history.jsonl"
+REGRESS_MARK = "[Автомат → Код] EVA: регрес кабінету"
+MERCHANT_URL = "https://seller.eva.ua/merchant/products"
+_COUNT_LABELS = (("all", "Всі товари"), ("active", "Активні"), ("sold", "Продані"), ("moderation", "На модерації"), ("hidden", "Приховані"))
+
+
+def parse_merchant_counts(text: str) -> dict:
+    """Лічильники «Мої товари» (seller.eva.ua/merchant/products): «Всі товари 6454 Активні 6454 Продані 0 На модерації 0 Приховані 0». Не знайдено → None (не 0)."""
+    out = {}
+    flat = re.sub(r"\s+", " ", text or "")
+    for key, label in _COUNT_LABELS:
+        m = re.search(re.escape(label) + r"\s+(\d[\d ]*)", flat)
+        out[key] = int(m.group(1).replace(" ", "")) if m else None
+    return out
+
+
+def read_merchant_counts(page) -> dict:
+    page.goto(MERCHANT_URL, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(3000)
+    return parse_merchant_counts(page.inner_text("body"))
+
+
+def history_row(res: dict, counts: dict, now: datetime) -> dict:
+    return {"ts": now.isoformat(timespec="seconds"), "feed_available": res["feed_available"], "bad_offers": res["bad_offers"],
+            "unknown_offers": res["unknown_offers"], "unmatched_cats": res["unmatched_total"], "matched_cats": res["matched_total"],
+            **{f"my_{k}": v for k, v in counts.items()}}
+
+
+def last_history(path: Path | None = None) -> dict | None:
+    path = Path(path or HISTORY_FILE)
+    try:
+        lines = [x for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        return json.loads(lines[-1]) if lines else None
+    except (OSError, ValueError):
+        return None
+
+
+def append_history(row: dict, path: Path | None = None) -> None:
+    path = Path(path or HISTORY_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def regression_flags(prev: dict | None, cur: dict) -> list:
+    """Лише ФАКТ погіршення проти попереднього знімка, без порогів (03.08 фід віддав усі 94 категорії як «Нова», і цього ніхто не побачив два місяці).
+    Погіршення: більше товарів фіду в незіставлених/невідомих категоріях; менше співставлених категорій; менше «Активних» у «Мої товари»."""
+    if not prev:
+        return []
+    out = []
+    pb, cb = (prev.get("bad_offers") or 0) + (prev.get("unknown_offers") or 0), (cur.get("bad_offers") or 0) + (cur.get("unknown_offers") or 0)
+    if cb > pb:
+        out.append(f"товарів фіду в незіставлених категоріях стало більше: {pb} → {cb}")
+    if (cur.get("matched_cats") or 0) < (prev.get("matched_cats") or 0):
+        out.append(f"співставлених категорій у кабінеті стало менше: {prev.get('matched_cats')} → {cur.get('matched_cats')}")
+    pa, ca = prev.get("my_active"), cur.get("my_active")
+    if pa is not None and ca is not None and ca < pa:
+        out.append(f"«Мої товари → Активні» впали: {pa} → {ca}")
+    return out
+
+
+def post_regression(flags: list, cur: dict, prev: dict | None, now: datetime, channel: Path | None = None) -> bool:
+    """Запис `## [Автомат → Код] EVA: регрес кабінету <дата>` угорі каналу (перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »); один на добу; без Telegram."""
+    channel = Path(channel or CHANNEL_FILE)
+    try:
+        with open(channel, encoding="utf-8", newline="") as _f:
+            s = _f.read()
+    except OSError:
+        return False
+    head = f"## {REGRESS_MARK} {now:%Y-%m-%d}"
+    if head in s:
+        return False
+    nl = "\r\n" if "\r\n" in s else "\n"
+    body = "\n".join(f"🚩 {x}" for x in flags)
+    entry = (f"{head}\n{body}\nБуло ({(prev or {}).get('ts')}): bad {(prev or {}).get('bad_offers')}, unknown {(prev or {}).get('unknown_offers')}, співставлені {(prev or {}).get('matched_cats')}, Активні {(prev or {}).get('my_active')}; "
+             f"стало ({cur.get('ts')}): bad {cur.get('bad_offers')}, unknown {cur.get('unknown_offers')}, співставлені {cur.get('matched_cats')}, Активні {cur.get('my_active')}. Історія — eva_category_history.jsonl. Дія — Коду.\n\n").replace("\n", nl)
+    m = re.search(r"(?m)^## ", s)
+    new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
+    try:
+        tmp = channel.with_name(channel.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8", newline="") as _f:
+            _f.write(new)
+        os.replace(tmp, channel)
+    except OSError:
+        return False
+    return True
+
+
 def post_to_channel(res: dict, now: datetime, channel: Path | None = None) -> bool:
     """Запис для Коду; не частіше ніж раз на RECENT_DAYS днів (поки стан триває); вставка перед першим рядком, що ПОЧИНАЄТЬСЯ з «## » (не всередині блок-цитати «> ## …»); атомарний запис; True — дописано."""
     channel = Path(channel or CHANNEL_FILE)
@@ -122,6 +210,11 @@ def main() -> int:
             page = ctx.new_page()
             unmatched = read_list(page, "mr")
             matched = read_list(page, "m")
+            try:
+                counts = read_merchant_counts(page)
+            except Exception as e:  # noqa: BLE001 — лічильники не критичні для звіту про категорії
+                print(f"[eva_category_check] лічильники «Мої товари» не зчитано: {type(e).__name__}", file=sys.stderr)
+                counts = {k: None for k, _ in _COUNT_LABELS}
             b.close()
         if not unmatched and not matched:
             print("[eva_category_check] кабінет не віддав жодної категорії (сесія протухла?): крок пропущено", file=sys.stderr)
@@ -135,6 +228,13 @@ def main() -> int:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     (REPORT_DIR / f"eva_categories_{now:%Y-%m-%d}.md").write_text(render_report(res, now), encoding="utf-8")
     print(render_report(res, now))
+    cur = history_row(res, counts, now)
+    prev = last_history()
+    flags = regression_flags(prev, cur)
+    append_history(cur)
+    if flags:
+        print("[eva_category_check] 🚩 регрес:", "; ".join(flags))
+        print("[eva_category_check] запис регресу в канал:", "додано" if post_regression(flags, cur, prev, now) else "уже є за сьогодні / канал недоступний")
     if res["bad_offers"] > 0:
         print("[eva_category_check] запис у канал:", "додано" if post_to_channel(res, now) else "уже є за сьогодні / канал недоступний")
     return 0

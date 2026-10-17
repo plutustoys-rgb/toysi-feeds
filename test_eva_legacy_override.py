@@ -70,7 +70,7 @@ g.EVA_MATCHED_LEGACY_FILE, g.EVA_LEGACY_ROLLOUT_FILE = orig_m, orig_r
 real = g._load_legacy_override()
 cfg = json.loads(orig_r.read_text(encoding="utf-8"))
 mm = json.loads(orig_m.read_text(encoding="utf-8"))["matched"]
-chk("робочий rollout (етап 1): усі id у мапі, у співставлених і «безпечні»; override = стільки ж id", cfg["mode"] == "ids" and len(real) == len(cfg["ids"]) > 0 and all(t in orig_map and t in mm and g._norm_eva_name(mm[t]["eva"]) == g._norm_eva_name(orig_map[t]["name"]) for t in cfg["ids"]))
+chk("робочий rollout (етап 2): mode=all_safe; override = 160 безпечних id; кожен id у мапі, у співставлених і з тією ж EVA-категорією", cfg["mode"] == "all_safe" and len(real) == 160 and all(t in orig_map and t in mm and g._norm_eva_name(mm[t]["eva"]) == g._norm_eva_name(orig_map[t]["name"]) and "(МП)" not in str(mm[t].get("name") or "") for t in real))
 chk("знімок кабінету: 212 співставлених id", len(mm) == 212)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")

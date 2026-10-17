@@ -18,7 +18,7 @@ SHARED = Path(os.environ.get("SHARED_DIR", r"C:\Users\smach\Claude\Projects\Plut
 KEY = Path(os.environ.get("VPS_SSH_KEY", str(Path.home() / ".ssh" / "plutustoys_vps")))
 HOST = "root@45.94.157.4"
 REMOTE_DIR = "/opt/plutustoys/reports/gmc"
-PATTERNS = ("gmc_status_", "gmc_summary_", "gmc_account_settings_", "gmc_settings_changes_", "googlebot_daily_", "googlebot_summary_", "gsc_query_page_", "gsc_daily_", "gsc_sitemaps_", "gsc_inspect_")
+PATTERNS = ("gmc_status_", "gmc_summary_", "gmc_account_settings_", "gmc_settings_changes_", "googlebot_daily_", "googlebot_summary_", "gsc_query_page_", "gsc_daily_", "gsc_sitemaps_", "gsc_inspect_", "eva_full_import_")
 MARK = "[Автомат → SEO] GMC: прапорець"
 
 
@@ -27,7 +27,7 @@ def latest_per_pattern(names: list) -> list:
     best = {}
     for n in names:
         for p in PATTERNS:
-            m = re.fullmatch(re.escape(p) + r"(\d{4}-\d{2}-\d{2})\.(?:csv|txt|json)", n)           # лише справжні файли: без .tmp, пробілів, ;
+            m = re.fullmatch(re.escape(p) + r"(\d{4}-\d{2}-\d{2})\.(?:csv|txt|json|md)", n)           # лише справжні файли: без .tmp, пробілів, ;
             if m and (p not in best or m.group(1) > best[p][0]):
                 best[p] = (m.group(1), n)
     return [v[1] for v in best.values()]

@@ -1,0 +1,16 @@
+[Unit]
+Description=PlutusToys: EVA — тримати сесію кабінету теплою (eva_cabinet_scraper.py --keepalive, окрема копія сесії на VPS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Сесія (storageState) — секрет поза git: /opt/plutustoys/.secrets/eva_cabinet_state.json (600), кладе власник (scp з ПК після --login).
+Environment=EVA_CABINET_STATE_FILE=/opt/plutustoys/.secrets/eva_cabinet_state.json
+Environment=AUDIT_REPORT_DIR=/opt/plutustoys/reports/gmc
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/eva_cabinet_scraper.py --keepalive
+# Сторожовий таймер: завислий браузер не тримає юніт (16-17.10 на ПК таке заблокувало ланцюг на 17 год).
+TimeoutStartSec=300
+Nice=10

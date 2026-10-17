@@ -336,6 +336,8 @@ def run_full_import(apply: bool) -> None:
 
     if result is not None and result["submitted"]:
         _notify(f"🟣 EVA повний імпорт {today} ({mode}): подано (чекбокс модерації {result['moderation_checked']}).")
+    if result is None:
+        sys.exit(1)   # збій видно в systemd (--failed) і в rc кроку ПК; раніше юніт лишався «success» (аудит #839)
 
 
 def scrape() -> None:

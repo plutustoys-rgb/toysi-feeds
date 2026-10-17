@@ -1,0 +1,19 @@
+[Unit]
+Description=PlutusToys: EVA повний імпорт за посиланням (eva_cabinet_scraper.py --full-import --apply, з VPS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Той самий імпорт, що й крок «EVA повний імпорт» таска PlutusToys_MarketplaceActions на ПК, але не залежить від ПК.
+# Сесія — окрема копія storageState на VPS (секрет, 600). Звіт eva_full_import_<дата>.md → reports/gmc (daily_files_to_shared кладе його у SEO_метрики).
+Environment=EVA_CABINET_STATE_FILE=/opt/plutustoys/.secrets/eva_cabinet_state.json
+Environment=AUDIT_REPORT_DIR=/opt/plutustoys/reports/gmc
+# Успішний імпорт 4 рази на добу не шле Telegram (власнику без користі); збій = код 1 → systemd failed (його бачить Код); протухла сесія → Telegram шле keepalive-юніт, раз на добу.
+Environment=AUDIT_NO_TELEGRAM=1
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/eva_cabinet_scraper.py --full-import --apply
+# Сторожовий таймер: форма імпорту — хвилини; завислий браузер знімається.
+TimeoutStartSec=900
+Nice=10

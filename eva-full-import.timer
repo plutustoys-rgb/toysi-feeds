@@ -1,0 +1,12 @@
+[Unit]
+Description=PlutusToys: EVA повний імпорт 4 рази на добу (05:50, 11:50, 17:50, 23:50 Київ) — між запусками з ПК (02:30/08:30/14:30/20:30), eva-feed публікує фід щогодини
+
+[Timer]
+OnCalendar=*-*-* 05:50:00 Europe/Kyiv
+OnCalendar=*-*-* 11:50:00 Europe/Kyiv
+OnCalendar=*-*-* 17:50:00 Europe/Kyiv
+OnCalendar=*-*-* 23:50:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

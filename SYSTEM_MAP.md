@@ -174,6 +174,8 @@
 | `np-warehouse-sync` | `nova_poshta_warehouse_cache.py` | замовлення: нічна (03:00) синхронізація локального кешу довідника відділень/поштоматів НП (`np_warehouses_cache.db`, посторінково `AddressGeneral.getWarehouses`) — за офіційною рекомендацією НП («оновлювати щоночі»). `nova_poshta.warehouse_by_ref()` читає кеш ПЕРШИМ (мілісекунди, без throttle-ризику), фолбек на живий запит лише при кеш-місі. Закриває структурно throttle-клас, що спричинив інцидент 906260104 (PR #553-556 закрили ретраєм; це — корінь). Read-only до НП, пише лише у власний файл, orders.db не чіпає |
 | `feed-pipeline` | (генерація фідів + репрайсер) | фіди Prom-top/Google/Meta/Bing, публікація `feed-data`. **Гейт фіду перед публікацією (13.10.2026, без довільних порогів за рішенням власника):** `feed_publish_gate.sh` не пускає лише порожній, пошкоджений/обрізаний XML або файл без жодної позиції (лишається попередня версія, прогін degraded; свідомо — `FEED_GATE_OVERRIDE=1`); фід, що просто менший, публікується; `feed_meta.py` пише `feeds/feed_meta.json` (час ГЕНЕРАЦІЇ, кількість позицій). Тест `test_feed_publish_gate.py`. Реальні тривалості прогону 3 год 11 хв – 4 год 30 хв, старти кожні 6 год (поріг watchdog 10 год, `service_watchdog.py`) |
 | `eva-feed` | (генерація EVA-фіда) | EVA-фід окремим юнітом |
+| `eva-cabinet-keepalive` | `eva_cabinet_scraper.py --keepalive` | EVA (17.10): окрема копія сесії кабінету на VPS (`/opt/plutustoys/.secrets/eva_cabinet_state.json`, 600), кожні 30 хв; ПК не потрібен |
+| `eva-full-import` | `eva_cabinet_scraper.py --full-import --apply` | EVA (17.10): повний імпорт за посиланням 4 рази на добу (05:50/11:50/17:50/23:50 Київ) з VPS, між запусками ПК (02:30/08:30/14:30/20:30); звіт `eva_full_import_<дата>.md` → reports/gmc → SEO_метрики. Сесія протухла → `--login` на ПК і scp файлу на VPS |
 | `eva-catalog-auditor` | `eva_catalog_auditor.py` | аудит каталогу EVA. ⚠️ **таймер ВИМКНЕНО** (disabled/inactive, VPS 2026-10-09, Code-Agent); чи навмисно — НЕ з'ясовано (питання власнику/Аудитору) |
 | `meta-feed-coverage-monitor` | `meta_feed_coverage_monitor.py` | покриття Meta-фіда |
 | `catalog-health-monitor` | `catalog_health_monitor.py` | здоров'я каталогу |
@@ -433,7 +435,7 @@
     "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog",
     "promo-margin-guard", "site-order-api", "site-rebuild", "stock-snapshot", "site-price-history", "site-sale-plan", "site-chat-bot", "gmc-status-report",
     "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync",
-    "bank-check", "vps-code-sync", "toysi-top", "demand-featured-auto", "restart-if-changed"
+    "bank-check", "vps-code-sync", "toysi-top", "demand-featured-auto", "restart-if-changed", "eva-cabinet-keepalive", "eva-full-import"
   ],
   "gh_workflows": ["update-feeds.yml"]
 }

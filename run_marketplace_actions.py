@@ -42,20 +42,73 @@ PY = sys.executable
 DEFAULT_REPORT_DIR = r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\reports"
 
 
-def _run(label: str, cmd: list[str]) -> int:
+# Сторожовий таймер зависання, не поріг якості: 16-17.10 крок eva_category_check завис на ~17 год і заблокував увесь ланцюг
+# (EVA повний імпорт, ALLO, перевірки сайту; таск не стартує нову копію, поки стара «Running»). Решта кроків тривають хвилини.
+STEP_TIMEOUT_SEC = int(os.environ.get("MARKETPLACE_STEP_TIMEOUT_SEC", "1800"))
+CHANNEL_FILE = Path(os.environ.get("EXECUTOR_CHANNEL_FILE") or (Path(DEFAULT_REPORT_DIR).parent / "EXECUTOR_CHANNEL.md"))
+
+
+def _kill_tree(pid: int) -> None:
+    """Знімає процес разом із дітьми (node-драйвер Playwright, браузер): subprocess.kill() на Windows дітей не чіпає."""
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _post_hang(label: str, timeout_sec: int, channel: Path | None = None) -> bool:
+    """Запис `## [Автомат → Код] …` угорі EXECUTOR_CHANNEL.md (перед першим рядком, що ПОЧИНАЄТЬСЯ з «## »); один на добу на крок; атомарно."""
+    import re
+    from datetime import datetime
+    channel = Path(channel or CHANNEL_FILE)
+    try:
+        s = channel.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    head = f"## [Автомат → Код] MarketplaceActions: крок «{label}» завис {datetime.now():%Y-%m-%d}"
+    if head in s:
+        return False
+    nl = "\r\n" if "\r\n" in s else "\n"
+    entry = (head + "\n" + f"Крок не завершився за {timeout_sec // 60} хв: процес і його діти зняті, ланцюг пішов далі. Без таймера один завислий крок блокував усі наступні запуски таска (16.10 20:30 → 17.10 14:30). Причину зависання (кабінет/браузер) розбирає Код.\n\n").replace("\n", nl)
+    m = re.search(r"(?m)^## ", s)
+    new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
+    try:
+        tmp = channel.with_name(channel.name + ".tmp")
+        tmp.write_text(new, encoding="utf-8")
+        os.replace(tmp, channel)
+    except OSError:
+        return False
+    return True
+
+
+def _run(label: str, cmd: list[str], timeout: int | None = None) -> int:
     """Один крок best-effort: друкує вивід, повертає returncode; виняток НЕ підіймає
-    (щоб збій EVA не завадив ALLO і навпаки)."""
+    (щоб збій EVA не завадив ALLO і навпаки). Крок довший за timeout (STEP_TIMEOUT_SEC) знімається з дітьми, код 124, запис у канал."""
+    timeout = timeout or STEP_TIMEOUT_SEC
     print(f"[marketplace-actions] {label}: {' '.join(cmd[1:])}")
     try:
-        r = subprocess.run(cmd, cwd=str(BASE_DIR), text=True,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           encoding="utf-8", errors="replace")
-        if r.stdout:
-            print(r.stdout.rstrip())
-        if r.returncode != 0:
-            print(f"[marketplace-actions] {label}: код {r.returncode} (скрейпер сам сигналить причину).",
+        proc = subprocess.Popen(cmd, cwd=str(BASE_DIR), text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                encoding="utf-8", errors="replace")
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc.pid)
+            try:
+                out, _ = proc.communicate(timeout=30)
+            except Exception:  # noqa: BLE001
+                out = ""
+            if out:
+                print(out.rstrip())
+            print(f"[marketplace-actions] {label}: ЗАВИС (>{timeout} с), процес знято, ланцюг іде далі.", file=sys.stderr)
+            _post_hang(label, timeout)
+            return 124
+        if out:
+            print(out.rstrip())
+        if proc.returncode != 0:
+            print(f"[marketplace-actions] {label}: код {proc.returncode} (скрейпер сам сигналить причину).",
                   file=sys.stderr)
-        return r.returncode
+        return proc.returncode
     except Exception as e:  # запуск процесу впав (нема python/скрипта тощо)
         print(f"[marketplace-actions] {label}: не вдалося запустити — {e}", file=sys.stderr)
         return 1

@@ -99,7 +99,8 @@ def post_to_channel(title: str, body: str, now: datetime, channel: Path | None =
     """Запис [Автомат → Код] угорі спільного каналу. Не частіше ніж раз на RECENT_DAYS днів на тему (поки стан триває, канал не засмічується щодня); вставка ПЕРЕД першим рядком, що ПОЧИНАЄТЬСЯ з «## » (не всередині блок-цитати «> ## …»); атомарний запис; недоступний/заблокований канал → False без винятку."""
     channel = Path(channel or CHANNEL_FILE)
     try:
-        s = channel.read_text(encoding="utf-8")
+        with open(channel, encoding="utf-8", newline="") as _f:
+            s = _f.read()
     except OSError:
         return False
     for m in re.finditer(r"(?m)^## " + re.escape(MARK) + " " + re.escape(title) + r" (\d{4}-\d{2}-\d{2})", s):
@@ -115,7 +116,8 @@ def post_to_channel(title: str, body: str, now: datetime, channel: Path | None =
     new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
     try:
         tmp = channel.with_name(channel.name + ".tmp")
-        tmp.write_text(new, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", newline="") as _f:
+            _f.write(new)
         os.replace(tmp, channel)
     except OSError:
         return False

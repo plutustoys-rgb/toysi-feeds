@@ -40,7 +40,8 @@ def flags_in_summary(text: str) -> list:
 
 def post_flag(flags: list, day: str, channel: Path) -> bool:
     try:
-        s = channel.read_text(encoding="utf-8")
+        with open(channel, encoding="utf-8", newline="") as _f:
+            s = _f.read()
     except OSError:
         return False
     head = f"## {MARK} {day}"
@@ -52,7 +53,8 @@ def post_flag(flags: list, day: str, channel: Path) -> bool:
     new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
     try:
         tmp = channel.with_name(channel.name + ".tmp")
-        tmp.write_text(new, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", newline="") as _f:
+            _f.write(new)
         os.replace(tmp, channel)
     except OSError:
         return False

@@ -270,7 +270,8 @@ def post_given_up_to_channel(text: str, now, channel=None) -> bool:
     from datetime import date as _date
     path = Path(channel or os.environ.get("VITRINE_CHANNEL_FILE") or r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\EXECUTOR_CHANNEL.md")
     try:
-        s = path.read_text(encoding="utf-8")
+        with open(path, encoding="utf-8", newline="") as _f:
+            s = _f.read()
     except OSError:
         return False
     for m in _re.finditer(r"(?m)^## " + _re.escape(GIVEN_UP_MARK) + r" (\d{4}-\d{2}-\d{2})", s):
@@ -285,7 +286,8 @@ def post_given_up_to_channel(text: str, now, channel=None) -> bool:
     new = (s[:m.start()] + entry + s[m.start():]) if m else (s + nl + entry)
     try:
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(new, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", newline="") as _f:
+            _f.write(new)
         os.replace(tmp, path)
     except OSError:
         return False

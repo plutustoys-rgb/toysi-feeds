@@ -975,14 +975,14 @@
     var conn=navigator.connection||{};
     if(reduced() || conn.saveData || /(^|-)2g$/.test(conn.effectiveType||"")) return;
     var dips=(img.getAttribute("data-dip")||"").split(",").filter(function(x){ return x!==""; }).map(Number);   // сезонні рухи, кадр спокою яких ≠ спільний poster: підміна через «занурення»
-    var visible=true, playing=false, last=-1, order=[], timer=null, endTimer=null, dipNow=false;
+    var visible=true, playing=false, busy=false, last=-1, order=[], timer=null, endTimer=null, dipNow=false, lastEnd=0, REACT_COOL=3000;
     function wait(){ return 12000 + Math.floor(Math.random()*8000); }
     function schedule(ms){ clearTimeout(timer); timer=setTimeout(play, ms); }
     var wrap=img.parentNode;
     function stop(soft){
       clearTimeout(endTimer);
       if(!playing) return;
-      playing=false;
+      playing=false; lastEnd=Date.now();
       function undo(){
         clipImg.classList.remove("on");
         if(wrap && wrap.classList) wrap.classList.remove("clip-on");    // poster повертається ВІДРАЗУ (останній кадр кліпу = poster)
@@ -1019,11 +1019,13 @@
       started=true; last=order.shift(); return last;
     }
     function play(){
-      if(playing) return;
+      if(playing || busy) return;
       if(!canPlay()){ schedule(wait()); return; }
+      busy=true;   // від початку підвантаження до старту руху: друга реакція/таймер не запускає паралельний кліп
       var idx=next(), url=clips[idx], ms=(durs[idx]>0?durs[idx]:4000)+400;      // запас 400 мс: декодування перших кадрів на слабкому телефоні не зрізає хвіст
       var pre=new Image();
       pre.onload=function(){
+        busy=false;
         if(!canPlay()){ schedule(wait()); return; }      // поки вантажився — вкладка сховалась / Плутус зник з екрана
         playing=true; clipImg.src=url;
         // Жорстка заміна, не кросфейд (SMM 12.10: крізь прозорий кліп просвічував poster → двійник): poster ховаємо ТІЛЬКИ коли перший кадр кліпу вже декодовано
@@ -1043,8 +1045,21 @@
         }
         if(clipImg.decode){ clipImg.decode().then(go, go); } else { go(); }
       };
-      pre.onerror=function(){ schedule(wait()); };
+      pre.onerror=function(){ busy=false; schedule(wait()); };
       pre.src=url;
+    }
+    // Реакція на курсор/дотик (власник 17.10, варіант 1): наведення мишею або клік/тап по Плутусу — одразу наступний рух із ротації, не чекаючи 12–20 с.
+    // Не під час іншого руху, не частіше ніж раз на REACT_COOL після кінця попереднього; вимкнено при reduced-motion/saveData/2g (вище return) і коли Плутуса не видно.
+    function react(){
+      if(playing || busy || document.hidden || !visible) return;
+      if(lastEnd && Date.now()-lastEnd<REACT_COOL) return;
+      clearTimeout(timer);   // скасувати відкладений автопоказ — після реакції стартує звичайна пауза
+      play();
+    }
+    if(wrap && wrap.addEventListener){
+      wrap.addEventListener("pointerenter", function(e){ if(!e.pointerType || e.pointerType==="mouse") react(); });
+      wrap.addEventListener("pointerdown", function(e){ if(e.pointerType && e.pointerType!=="mouse") react(); else if(!e.pointerType) react(); });
+      wrap.addEventListener("click", function(){ react(); });
     }
     document.addEventListener("visibilitychange", function(){ if(document.hidden){ var was=playing; stop(); if(was) schedule(wait()); } });
     function start(){ schedule(3000); }      // перший кліп — не раніше ніж через 3 с після load

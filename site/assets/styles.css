@@ -168,6 +168,7 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .hero2 .mascot-wrap .mascot-clip.on{visibility:visible}
 .hero2 .mascot-wrap.clip-on #hero-mascot{visibility:hidden}
 .hero2 .mascot-wrap{transition:opacity .16s ease}
+.hero2 .mascot-wrap{cursor:pointer}   /* Плутус реагує на наведення/клік (власник 17.10) */
 .hero2 .mascot-wrap.dip{opacity:0}   /* лише для сезонних рухів із іншим кадром спокою (data-dip): занурення замість кросфейду */   /* на час кліпу poster ховаємо — інакше крізь прозорий кліп видно двійника (SMM 12.10) */
 .hero2 .txt{flex:1;min-width:0}
 .hero2 h1{margin:0 0 4px;font-size:clamp(22px,3.4vw,32px);line-height:1.15}

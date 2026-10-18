@@ -1,0 +1,11 @@
+[Unit]
+Description=Щоденна перевірка TLS-сертифіката plutustoys.com.ua (site-cert-watch)
+
+[Timer]
+# раз на добу о 04:17 (не збігається з :20-ребілдом і 00:00:30); Persistent — пропущений через вимкнений сервер запуск виконається при старті
+OnCalendar=*-*-* 04:17:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

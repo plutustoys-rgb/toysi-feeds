@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys site-cert-watch — сторож TLS-сертифіката plutustoys.com.ua (самооновлення за 60 днів до кінця, сигнал у Telegram, якщо не вийшло)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plutustoys
+# 18.10.2026 (власник: «контролювати автоматично»): ставить ЛИШЕ activate_site_apache.sh (як site-rebuild.*). Код виходу 1/2 — «потрібна людина» (дивись journalctl -u site-cert-watch).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_cert_watch.py
+Nice=10

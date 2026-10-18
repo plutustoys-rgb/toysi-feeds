@@ -155,9 +155,17 @@ fi
 cp "$APP/deploy/site-order-api.service" /etc/systemd/system/site-order-api.service
 cp "$APP/deploy/site-rebuild.service" /etc/systemd/system/site-rebuild.service
 cp "$APP/deploy/site-rebuild.timer" /etc/systemd/system/site-rebuild.timer
+# 18.10.2026: сторож TLS-сертифіката (щодня 04:17; самооновлення за 60 днів до кінця; Telegram, якщо не вийшло) — перед підняттям HSTS до року
+cp "$APP/deploy/site-cert-watch.service" /etc/systemd/system/site-cert-watch.service
+cp "$APP/deploy/site-cert-watch.timer" /etc/systemd/system/site-cert-watch.timer
 systemctl daemon-reload
 systemctl enable --now site-order-api
 systemctl enable --now site-rebuild.timer
+systemctl enable --now site-cert-watch.timer
+systemctl restart site-cert-watch.timer || echo "⚠️  не вдалося перезапустити site-cert-watch.timer"
+echo "--- перший прогін site-cert-watch (діб до кінця сертифіката) ---"
+systemctl start site-cert-watch.service || echo "⚠️  site-cert-watch: код виходу ≠ 0 — дивись journalctl -u site-cert-watch"
+journalctl -u site-cert-watch -n 3 --no-pager 2>/dev/null | tail -3
 systemctl restart site-rebuild.timer || echo "⚠️  не вдалося перезапустити site-rebuild.timer — перезапусти вручну"   # підхопити ЗМІНЕНИЙ OnCalendar (enable --now на вже активному таймері розклад не оновлює)
 sleep 2
 systemctl is-active site-order-api >/dev/null || { journalctl -u site-order-api -n 30 --no-pager; die "site-order-api не запустився"; }
@@ -281,7 +289,8 @@ render_vhost() {   # $1 = http | https  → у stdout
         echo "    SSLCertificateFile /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
         echo "    SSLCertificateKeyFile /etc/letsencrypt/live/$DOMAIN/privkey.pem"
         echo "    <IfModule mod_headers.c>"
-        echo "        Header always set Strict-Transport-Security \"max-age=604800\""
+        # 18.10.2026 (SEO-аудит п.5, власник «так»): 1 рік, без поширення на піддомени й без внесення до списків браузерів — після того, як site-cert-watch (вище) контролює сертифікат автоматично
+        echo "        Header always set Strict-Transport-Security \"max-age=31536000\""
         echo "    </IfModule>"
         acme_tpl | sub
         echo "    RewriteEngine On"

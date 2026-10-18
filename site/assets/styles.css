@@ -208,6 +208,7 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 
 .cat-intro{margin:0 16px 14px;font-size:14px;line-height:1.55;color:var(--muted)}
 .cat-intro p{margin:0 0 8px}
+.cat-alt{font-size:13px}   /* SEO 19.10: «Також шукають: …» — видимий рядок під H1 */
 .done{text-align:center;padding:48px 24px}
 .done .fox{font-size:52px;margin-bottom:12px}
 .done h2{margin:0 0 8px;font-size:22px}
@@ -268,9 +269,15 @@ footer.foot a{color:var(--accent)}
 .foot .fnav{display:flex;flex-wrap:wrap;gap:4px 10px;justify-content:center;margin-bottom:12px}
 .foot .fnav a{color:var(--text);font-size:13px}
 .foot .fnav a:hover{color:var(--accent)}
-.foot .fcats{max-width:920px;margin:0 auto 14px;font-size:12px;line-height:1.9;color:var(--muted)}   /* SEO 16.10: перелік категорій у футері */
-.foot .fcats a{color:var(--muted)}
-.foot .fcats a:hover{color:var(--accent)}
+.chub{padding:0 16px 24px}   /* SEO 19.10: хаб /categories.html — усі категорії текстовими посиланнями */
+.chub h1.page{margin-left:0;margin-right:0}
+.chub .pagenote{padding-left:0;padding-right:0}
+.chub-g{margin:0 0 22px}
+.chub-h{font-size:18px;margin:0 0 8px}
+.chub-h a{color:inherit}
+.chub-l{list-style:none;margin:0;padding:0;columns:3 240px;column-gap:24px}
+.chub-l li{break-inside:avoid;padding:4px 0;font-size:15px;line-height:1.35}
+.chub-l span{color:var(--muted);font-size:12px}
 .foot .ftag{margin:0}
 .foot .flp{margin:0 0 10px;line-height:0;text-align:center}
 .foot .flp img{height:21px;width:auto;display:inline-block}   /* глобальне img{display:block} інакше притискає логотип ліворуч (аудит #717) */
@@ -524,6 +531,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .cat-aside-more{display:block;margin-top:8px;font-size:14px;font-weight:700;color:var(--accent)}
 @media(max-width:999px){
   .cat-top{display:block;padding:0}
+  .cat-top .cat-intro{margin:0 16px 14px}   /* 19.10: на вузьких екранах вступний текст торкався краю екрана (padding .cat-top тут 0, а margin скинуто правилом вище) */
   .cat-aside{margin:6px 16px 14px;max-width:360px}
 }
 /* Сторінка групи (власник 15.10, скетч затверджено): сайдбар підкатегорій зліва, назва окремим рядком, ФІЛЬТРИ ПІД НЕЮ і липкі; на ПК список категорій у фільтрах не потрібен (його замінює сайдбар) */

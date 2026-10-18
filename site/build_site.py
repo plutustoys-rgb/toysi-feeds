@@ -241,20 +241,16 @@ def search_overlay():
     )
 
 FOOTER_LINKS = [
+    ("categories.html", "Усі категорії товарів"),   # власник 19.10: хаб усіх категорій — ПЕРЕД «Про нас» (замість переліку 30 категорій у футері)
     ("about.html", "Про нас"), ("delivery.html", "Доставка"),
     ("returns.html", "Повернення"), ("contacts.html", "Контакти"),
     ("offer.html", "Публічна оферта"), ("privacy.html", "Політика конфіденційності"),
 ]
-FOOTER_CATS = []          # [(назва, "category-….html")] — заповнює build(); порожній (тести без збірки) → блоку нема
-FOOTER_CATS_MAX = 30      # SEO 16.10: ≥30 видимих текстових посилань на /category-… (внутрішня вага категоріям; на головному екрані нічого не з'являється)
 def footer():
     nav = " · ".join(f'<a href="{u}">{esc(t)}</a>' for u, t in FOOTER_LINKS)
-    fcats = ('<nav class="fcats" aria-label="Категорії іграшок">'
-             + " · ".join(f'<a href="{u}">{esc(t)}</a>' for t, u in FOOTER_CATS) + '</nav>') if FOOTER_CATS else ""
     return (
       '<footer class="foot">'
       f'<nav class="fnav">{nav}</nav>'
-      + fcats +
       '<p class="fphone"><a href="tel:+380730150815">📞 +380 (73) 015-08-15</a> · '
       '<a href="mailto:plutustoys@gmail.com">plutustoys@gmail.com</a></p>'
       '<p class="flp">' + LIQPAY_LOGO_HTML.format(src=asset_url('assets/liqpay-logo.svg'), w=100, h=21) + '</p>'
@@ -572,6 +568,7 @@ def build():
     if SALE_ACTIVE:
         print(f"[build] акція {SALE_ACTIVE['week']}: −{SALE_ACTIVE['pct']}%, {len(SALE_ACTIVE['items'])} позицій у файлі, до {SALE_ACTIVE['until'].isoformat()}")
     _load_category_texts()
+    _load_category_ru_alt()
     _load_product_texts()
     _load_category_related()
     print("[build] тягну каталог Toysi…")
@@ -704,7 +701,6 @@ def build():
             _used[base] = 1
             cat_slug[c] = base
     SEARCH_POPULAR[:] = [(c, f"category-{cat_slug[c]}.html") for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:8]
-    FOOTER_CATS[:] = [(c, f"category-{cat_slug[c]}.html") for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:FOOTER_CATS_MAX]
 
     # крос-сел як ДОПОВНЕННЯ (add-on), НЕ замінник: до 4 ДЕШЕВШИХ товарів з ІНШОЇ
     # категорії. Стара логіка брала ту саму категорію за близькою ціною → на картці
@@ -775,7 +771,7 @@ def build():
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
-    static_urls = ([] if SITE_GROUPS else [("categories.html", "0.6", "weekly")]) + ([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
+    static_urls = [("categories.html", "0.7", "weekly")] +([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
     write_robots()
 
@@ -800,6 +796,9 @@ def build():
     _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)
     if _unmatched:
         print(f"[build] ⚠ category_texts.json: slug без сторінки категорії (друкарська помилка? текст не з'явиться): {_unmatched[:10]}", file=sys.stderr)
+    _alt_unmatched = sorted(set(_CATEGORY_RU_ALT) - _written_slugs)
+    if _alt_unmatched:
+        print(f"[build] ⚠ category_ru_alt.json: slug без сторінки категорії (друкарська помилка? рядок не з'явиться): {_alt_unmatched[:10]}", file=sys.stderr)
     _prod_ids = {p["id"] for p in prods} | {p["id"] for p in oos_prods}
     _pt_unmatched = sorted(set(_PRODUCT_TEXTS) - _prod_ids, key=_id_key)
     if _pt_unmatched:
@@ -1186,10 +1185,35 @@ def _category_intro_html(fname):
     """Вступний текст категорії (лише 1-ша сторінка; на пагінації не дублюємо). slug = ім'я файлу без «category-» і «.html». HTML у тексті екранується, абзаци — за порожнім рядком."""
     m = re.fullmatch(r"category-(.+)\.html", fname or "")
     text = _CATEGORY_TEXTS.get(m.group(1)) if m else None
-    if not text:
+    alt = _CATEGORY_RU_ALT.get(m.group(1)) if m else None
+    if not text and not alt:
         return ""
-    paras = [p.strip() for p in re.split(r"\n\s*\n", text.replace("\r\n", "\n")) if p.strip()]
-    return '<div class="cat-intro">' + "".join(f"<p>{esc(p)}</p>" for p in paras) + "</div>\n"
+    paras = [p.strip() for p in re.split(r"\n\s*\n", (text or "").replace("\r\n", "\n")) if p.strip()]
+    alt_html = f'<p class="cat-alt">Також шукають: {esc(alt)}</p>' if alt else ""   # SEO 19.10: російські синоніми запиту — ВИДИМИЙ рядок під H1 (не прихований)
+    return '<div class="cat-intro">' + alt_html + "".join(f"<p>{esc(p)}</p>" for p in paras) + "</div>\n"
+
+
+_CATEGORY_RU_ALT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "category_ru_alt.json")
+_CATEGORY_RU_ALT = {}
+
+
+def _load_category_ru_alt():
+    """site/category_ru_alt.json: {slug: "синонім 1, синонім 2, синонім 3"} від SEO (19.10) — рядок «Також шукають: …» під H1 категорії. Нема файлу — рядків нема; зламаний файл — ГОЛОСНО, збірка не падає."""
+    global _CATEGORY_RU_ALT
+    _CATEGORY_RU_ALT = {}
+    try:
+        with open(_CATEGORY_RU_ALT_FILE, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return _CATEGORY_RU_ALT
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"[build] ⚠ category_ru_alt.json НЕ прочитано ({type(e).__name__}: {e}) — рядків «Також шукають» не буде", file=sys.stderr)
+        return _CATEGORY_RU_ALT
+    if not isinstance(data, dict):
+        print(f"[build] ⚠ category_ru_alt.json — очікується об'єкт {{slug: рядок}}, отримано {type(data).__name__} — рядків не буде", file=sys.stderr)
+        return _CATEGORY_RU_ALT
+    _CATEGORY_RU_ALT = {str(k): re.sub(r"\s+", " ", v).strip() for k, v in data.items() if isinstance(v, str) and v.strip()}
+    return _CATEGORY_RU_ALT
 
 
 # ── Внутрішня перелінковка (SEO-замовлення 12.10.2026) ──────────────────────────────────────────────────────────
@@ -2726,8 +2750,28 @@ def write_groups(groups, cats, cat_slug):
 def write_categories_index(cat_list, cat_slug, cats, groups=None):
     """Сторінка «Усі категорії» — закриває проблему orphan-категорій (усі 259 доступні
     з одного індексу + футера, а не лише з sitemap). Повертає ім'я файлу."""
-    if groups:   # «Усі категорії» тепер на /catalog.html (сайдбар категорій); стара адреса лишається як перехід, без індексації
-        _write("categories.html", page("Усі категорії", '<p class="pagenote">Усі категорії — <a href="catalog.html">тут</a>.</p><meta http-equiv="refresh" content="0; url=catalog.html">', noindex=True, canonical="catalog.html", og_image=OG_IMAGE))
+    if groups:   # SEO 19.10: ХАБ — усі категорії одним списком ВИДИМИХ текстових посилань (Googlebot ходить на /category- ≈0,1% запитів, 28 з 87 перевірених категорій Google не знає); посилання з футера кожної сторінки
+        in_group = set()
+        sections = []
+        for g in groups:
+            in_group.update(c for c, _n in g["subs"])
+            subs = [(c, n) for c, n in g["subs"] if c in cat_slug]
+            if subs:
+                sections.append((g["display"], g["file"], subs))
+        rest = sorted(((c, len(cats[c])) for c in cat_list if c not in in_group and c in cat_slug and "уцінк" not in c.lower() and "уценк" not in c.lower()), key=lambda x: (-x[1], x[0]))
+        if rest:
+            sections.append(("Окремі розділи", None, rest))
+        blocks = "".join(
+            '<section class="chub-g"><h2 class="chub-h">' + (f'<a href="{f}">{esc(t)}</a>' if f else esc(t)) + '</h2><ul class="chub-l">'
+            + "".join(f'<li><a href="category-{cat_slug[c]}.html">{esc(c)}</a> <span>{n}</span></li>' for c, n in subs) + '</ul></section>'
+            for t, f, subs in sections)
+        total = sum(len(s[2]) for s in sections)
+        trail = [("Головна", "index.html"), ("Усі категорії товарів", None)]
+        body = (crumbs_html(trail) + '<div class="chub"><h1 class="page">Усі категорії товарів</h1>'
+                f'<p class="pagenote">{total} категорій у {len(sections)} розділах — оберіть потрібну.</p>' + blocks + '</div>')
+        desc = f"Усі {total} категорій іграшок PlutusToys одним списком: конструктори, ляльки, машинки, настільні ігри, творчість та інші. Доставка Новою Поштою по Україні."[:DESC_MAX]
+        _write("categories.html", page("Усі категорії товарів", body, extra_head=breadcrumb_ld(trail), description=desc, canonical="categories.html", og_image=OG_IMAGE,
+                                       title_full="Усі категорії товарів — каталог PlutusToys"))
         return "categories.html"
     if False:   # (стара сторінка з плитками груп — не використовується) (без списків підкатегорій); категорії поза видимими групами (Уцінка, Геловін, нові) — «Окремі розділи», щоб жодна не лишилась без посилання
         in_group = {c for g in groups for c, _n in g["subs"]}
@@ -2931,7 +2975,7 @@ def write_trust_pages():
 # Після запису mtime файла = t, тож Apache віддає Last-Modified = дата реальної зміни й відповідає 304 на If-Modified-Since між збірками.
 LASTMOD_STATE_FILE = ".htlastmod_state.json"
 # + «хром» сторінки, що залежить від рейтингу категорій УСЬОГО каталогу, а не від самої сторінки: популярні категорії в оверлеї пошуку (sr-pill) і рядок чипів-категорій (div.chips) — інакше будь-яка зміна ціни десь у каталозі пересувала б lastmod УСІХ 28 тис. сторінок.
-_LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0-9a-f]{8}|<a class="sr-pill" href="[^"]*">[^<]*</a>|<div class="chips">.*?</div>|<nav class="fcats".*?</nav>', re.S)   # + перелік категорій у футері (глобальний «хром»: топ-30 за кількістю рухається від наявності — це не зміна сторінки)
+_LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0-9a-f]{8}|<a class="sr-pill" href="[^"]*">[^<]*</a>|<div class="chips">.*?</div>|<nav class="fcats".*?</nav>|<a href="categories\.html">Усі категорії товарів</a> · ', re.S)   # + перелік категорій у футері (глобальний «хром»: топ-30 за кількістю рухається від наявності — це не зміна сторінки)
 # На КАРТЦІ товару додатково не рахуємо сітки інших товарів («Додайте до замовлення», «Схожі товари» — підбір залежить від стану всього каталогу): lastmod картки = зміна ЇЇ власних даних (назва, ціна, наявність, фото, текст), а не чужих.
 _LASTMOD_GRID_RX = re.compile(r'<h2>[^<]*</h2><div class="grid">(?:\s*<a class="card".*?</a>)*\s*</div>', re.S)
 # На сторінці категорії не рахуємо права колонка «Рекомендуємо»/«Знижка тижня» (ротація щодня, акція щотижня — це не зміна самої сторінки).

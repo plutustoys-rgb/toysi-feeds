@@ -85,7 +85,7 @@ chk("H1 = назва групи (display), панель .cat-bar з контро
     and 0 < len(re.findall(r'<a class="card"', g1.split('id="cat-static"')[1])) <= bs.PER_PAGE)
 cats_html = (out / "categories.html").read_text(encoding="utf-8")
 tiles = []
-chk("стара «Усі категорії» (categories.html) = перехід на /catalog.html: meta refresh, noindex, canonical catalog.html; у sitemap її нема", 'http-equiv="refresh" content="0; url=catalog.html"' in cats_html and "noindex" in cats_html and 'rel="canonical" href="https://plutustoys.com.ua/catalog.html"' in cats_html and "/categories.html</loc>" not in (out / "sitemap-static.xml").read_text(encoding="utf-8"))
+chk("хаб «Усі категорії» (categories.html, SEO 19.10): індексується (без noindex/refresh), canonical categories.html, H1, кожна згенерована сторінка category-* має видиме текстове посилання, заголовки груп ведуть на group-*", 'http-equiv="refresh"' not in cats_html and "noindex" not in cats_html and 'rel="canonical" href="https://plutustoys.com.ua/categories.html"' in cats_html and '<h1 class="page">Усі категорії товарів</h1>' in cats_html and set(re.findall(r'<li><a href="(category-[a-z0-9-]+\.html)">', cats_html)) >= {f.name for f in out.glob("category-*.html") if not re.search(r"-\d+\.html$", f.name)} and re.findall(r'<h2 class="chub-h"><a href="(group-[a-z0-9-]+\.html)">', cats_html) != [])
 cat_page = (out / "catalog.html").read_text(encoding="utf-8")
 navs = re.findall(r'<a class="sb-i sb-nav" href="([^"]+)"><span>([^<]+)</span><em>(\d+)</em>', cat_page)
 chk(f"«Усі категорії» (/catalog.html): сайдбар «Категорії» лише з групами (кожна веде на свою сторінку; без «Усі товари», без підкатегорій), H1 «Усі категорії», крихти «Головна › Усі категорії», слова «Каталог» як пункту нема: {[(n[1], n[2]) for n in navs]}",

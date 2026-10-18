@@ -35,7 +35,7 @@ bs.write_thanks()
 h = (out / "thanks.html").read_text(encoding="utf-8")
 chk("розмітка: прихований <p id=thanks-tg-wrap> із кнопкою «Отримувати статус у Telegram» (target=_blank, rel=noopener), базове посилання — бот без start", '<p class="thanks-tg-wrap" id="thanks-tg-wrap" hidden>' in h and 'id="thanks-tg" href="https://t.me/plutustoys_support_bot"' in h and "Отримувати статус у Telegram" in h and 'rel="noopener"' in h)
 nav = re.search(r'<nav class="fnav">(.*?)</nav>', h, re.S).group(1)
-chk("футер: у верхньому рядку нема «Усі категорії» (власник 16.10), решта пунктів на місці", "Усі категорії" not in nav and all(x in nav for x in ("Про нас", "Доставка", "Повернення", "Контакти", "Публічна оферта", "Політика конфіденційності")))
+chk("футер: верхній рядок починається з «Усі категорії товарів» (власник 19.10, перед «Про нас»), решта пунктів на місці", nav.startswith('<a href="categories.html">Усі категорії товарів</a>') and all(x in nav for x in ("Про нас", "Доставка", "Повернення", "Контакти", "Публічна оферта", "Політика конфіденційності")))
 shutil.copytree(HERE / "site" / "assets", out / "assets", dirs_exist_ok=True)
 H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out))
 H.log_message = lambda *a, **k: None

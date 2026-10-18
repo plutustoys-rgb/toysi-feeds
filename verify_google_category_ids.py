@@ -47,8 +47,8 @@ def main() -> int:
     print(f"[verify-google] Листків таксономії Google у довіднику: {len(valid)}")
 
     # Беремо ID напряму з генератора (джерело правди), а не парсимо текст.
-    from generate_google_feed import _CATEGORY_RULES, GOOGLE_CATEGORY_FALLBACK
-    rule_ids = [cid for _kw, cid in _CATEGORY_RULES] + [GOOGLE_CATEGORY_FALLBACK]
+    from generate_google_feed import _CATEGORY_NAME_MAP, _CATEGORY_RULES, GOOGLE_CATEGORY_FALLBACK
+    rule_ids = [cid for _kw, cid in _CATEGORY_RULES] + list(_CATEGORY_NAME_MAP.values()) + [GOOGLE_CATEGORY_FALLBACK]
     uniq = sorted(set(rule_ids))
 
     bad = [i for i in uniq if i not in valid]

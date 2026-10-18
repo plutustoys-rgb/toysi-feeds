@@ -291,12 +291,36 @@ _CATEGORY_RULES = [
 ]
 
 
+# ТОЧНА відповідність НАЗВИ категорії Toysi → ID Google (18.10.2026, запит SEO п.4а; рішення власника «робіть категорії гугл»): 72% позицій фіду мали запасну «Toys & Games» (1239) через 200 категорій,
+# яких ключові слова не ловлять («Ляльки + лялькові набори», «Картини за номерами» у множині…). Беремо ЛИШЕ однозначні відповідності й лише з гілок Toys & Games / Baby & Toddler / Arts & Entertainment / Office Supplies:
+# Apparel (брелоки, сумочки, костюми, прикраси), Luggage (рюкзаки), Books (потрібен ISBN/GTIN) і Sporting Goods вимагають інших атрибутів (gender/age_group/color…) → масові відхилення, тому не чіпаємо.
+# Двозначні категорії («Тварини і птахи», «Розважальні», «Персонажі», «Інші герої», «Подушки», «Круги і жилети»…) лишаються на запасній. Перевірка валідності ID — verify_google_category_ids.py.
+_CATEGORY_NAME_MAP = {
+    "картини за номерами": "4778",            # Arts & Crafts > Art & Craft Kits > Drawing & Painting Kits
+    "ляльки + лялькові набори": "1255",       # Toys > Dolls, Playsets & Toy Figures
+    "набори для навчання": "1262",            # Toys > Educational Toys
+    "наукові ігри": "1262",
+    "дерев'яні вкладиші": "6725",             # Puzzles > Wooden & Pegged Puzzles
+    "соски і прорізувачі": "566",             # Baby & Toddler > Baby Health > Pacifiers & Teethers
+    "сквіші": "4352",                         # Toys > Activity Toys (як «антистрес»)
+    "спецтехніка": "3296",                    # Toy Trucks & Construction Vehicles
+    "блокноти": "961",                        # Office Supplies > Paper Products > Notebooks & Notepads
+    "пенали та папки": "3062",                # Office Supplies > Filing & Organization > Pen & Pencil Cases
+    "залізниці і треки": "5152",              # Toy Trains & Train Sets
+    "клейонки, килимки і підгузники": "5628", # Baby & Toddler > Diapering > Changing Mats & Trays
+    "брязкальця": "1244",                     # Baby Toys & Activity Equipment > Rattles
+    "меблі для ляльок": "2497",               # Dollhouse Accessories
+    "супермаркет": "3298",                    # Toy Kitchens & Play Food
+    "ведмеді": "1259",                        # Stuffed Animals
+}
+
+
 def google_product_category(category_name: str) -> str:
-    text = (category_name or "").strip().lower()
+    text = (category_name or "").strip().lower().replace("’", "'").replace("ʼ", "'")
     for keywords, cat_id in _CATEGORY_RULES:
         if all(kw in text for kw in keywords):
             return cat_id
-    return GOOGLE_CATEGORY_FALLBACK
+    return _CATEGORY_NAME_MAP.get(text, GOOGLE_CATEGORY_FALLBACK)
 
 
 # ---------------------------------------------------------------------------
@@ -1022,7 +1046,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "id": str(item.get("vendor_code") or pid),
             "title": normalize_title(name),   # правило SEO 14.10: регістр без «крику» (feed_title_norm), ≤150 без обрізання слова
             "description": enrich_brand_only_description(pid, name, _clean_description(item.get("description", ""))[:5000] or name, item.get("category_name") or "", "uk"),
-            "category_name": item.get("category_name") or "",   # лише для опису (у XML не пишеться)
+            "category_name": item.get("category_name") or "",   # для опису м'яких іграшок і product_type у Google XML
             "link": SITE_LINK_TEMPLATE.format(pid=pid),
             "image_link": image,
             "price": price_str,
@@ -1085,6 +1109,8 @@ def _build_xml(items: list) -> ET.Element:
             # без валідного GTIN/MPN: явно «no» — інакше GMC/Bing шлють попередження «відсутній ідентифікатор» (Аудитор 2026-10-03, п.8)
             ET.SubElement(entry, f"{{{NS}}}identifier_exists").text = "no"
         ET.SubElement(entry, f"{{{NS}}}google_product_category").text = it["google_product_category"]
+        if it.get("category_name"):
+            ET.SubElement(entry, f"{{{NS}}}product_type").text = f"Головна > {it['category_name']}"      # запит SEO п.4б: наш шлях категорії
 
     return rss
 

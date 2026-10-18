@@ -87,5 +87,13 @@ chk("наступного дня z уже не нова", not any("z (" in x for
 chk("latest_per_pattern: .csv.tmp, пробіли і «;» в імені ігноруються", dl.latest_per_pattern(["gmc_status_2026-10-18.csv.tmp", "gmc_status_2026-10-16.csv", "gmc_summary_2026-10-17.txt x y", "gmc_status_2026-10-19.csv; touch x"]) == ["gmc_status_2026-10-16.csv"])
 l4, f4 = g.compare_with_previous([row("1", "disapproved", "a")], d3, "2026-10-19")
 chk("прапорець «approved ВПАВ» містить загальну кількість і disapproved/unknown", any("усього товарів" in x and "disapproved" in x for x in f4))
+ch2 = Path(tempfile.mkdtemp()) / "SEO_CHANNEL.md"
+ch2.write_text("## [SEO → Код] старе" + chr(10) + "текст" + chr(10), encoding="utf-8")
+g1 = dl.post_flag(["🚩 x"], "2026-10-19", ch2)
+g2 = dl.post_flag(["🚩 y"], "2026-10-19", ch2, dl.MARK_GSC)
+g3 = dl.post_flag(["🚩 y"], "2026-10-19", ch2, dl.MARK_GSC)
+t2 = ch2.read_text(encoding="utf-8")
+chk("post_flag з mark: GMC і GSC-прапорці тієї ж дати — окремі записи, повтор GSC не дублюється", g1 and g2 and not g3 and t2.count(dl.MARK) == 1 and t2.count(dl.MARK_GSC) == 1)
+chk("patterns містять gsc_weekly_summary/gsc_inspect_summary/gsc_verification; latest_per_pattern їх бере", sorted(dl.latest_per_pattern(["gsc_weekly_summary_2026-10-19.csv", "gsc_verification_2026-10-19.txt", "gsc_inspect_summary_2026-10-18.txt", "gsc_inspect_summary_2026-10-19.txt"])) == ["gsc_inspect_summary_2026-10-19.txt", "gsc_verification_2026-10-19.txt", "gsc_weekly_summary_2026-10-19.csv"])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

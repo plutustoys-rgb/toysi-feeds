@@ -76,7 +76,8 @@ chk("НЕ чіпає наші: /product-168072.html, /p.html, /products.html, /p
 http_part = sh.split('if [ "$mode" = "http" ]; then', 1)[1].split("else", 1)[0]
 https_part = sh.split('if [ "$mode" = "http" ]; then', 1)[1].split("else", 1)[1]
 chk("HSTS лише в HTTPS-гілці, під <IfModule mod_headers.c>", "Strict-Transport-Security" not in http_part and "Strict-Transport-Security" in https_part and "mod_headers.c" in https_part)
-chk("HSTS обережний: max-age = 7 діб без includeSubDomains/preload", "max-age=604800" in sh and "includeSubDomains" not in sh and "preload" not in sh)
+chk("HSTS: max-age = 1 рік (власник 18.10, після сторожа сертифіката) без includeSubDomains/preload; 7-добового значення нема", "max-age=31536000" in sh and "max-age=604800" not in sh and "includeSubDomains" not in sh and "preload" not in sh)
+chk("сторож сертифіката встановлюється тим самим скриптом (site-cert-watch.service/.timer копіюються, таймер увімкнено, перший прогін), і ПЕРЕД HSTS-блоком vhost'а", "/etc/systemd/system/site-cert-watch.timer" in sh and "/etc/systemd/system/site-cert-watch.service" in sh and "systemctl enable --now site-cert-watch.timer" in sh and sh.index("systemctl enable --now site-cert-watch.timer") < sh.index("max-age=31536000"))
 
 # таймер
 timer = (HERE / "deploy" / "site-rebuild.timer").read_text(encoding="utf-8")

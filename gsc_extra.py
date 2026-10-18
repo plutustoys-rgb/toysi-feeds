@@ -178,8 +178,8 @@ def load_inspect_history(path: Path) -> dict:
             for r in csv.DictReader(f):
                 if r.get("url"):
                     hist[r["url"]] = r
-    except OSError:
-        pass
+    except (OSError, ValueError, csv.Error):
+        pass                                  # відсутній/пошкоджений файл → порожня історія (аудит #852)
     return hist
 
 
@@ -188,8 +188,8 @@ def update_inspect_history(hist: dict, results: list, today: date) -> dict:
     d = today.isoformat()
     for r in results:
         url, state = r[0], (r[2] if len(r) > 2 else "")
-        if str(r[1]).startswith("ERROR"):
-            continue
+        if str(r[1]).startswith("ERROR") or not state:
+            continue                          # помилка або порожня відповідь не перезаписує останній відомий стан
         h = hist.get(url) or {"url": url, "first_checked": d, "first_indexed": "", "last_checked": d, "last_state": ""}
         h["last_checked"], h["last_state"] = d, state
         if state == INDEXED_STATE and not h.get("first_indexed"):
@@ -226,14 +226,27 @@ def check_verification(fetch, sites: list, site_url: str) -> list:
         out.append(f"✅ /{VERIFY_HTML_FILE} віддає очікуваний вміст")
     else:
         out.append(f"🚩 /{VERIFY_HTML_FILE}: код {code}, очікуваний вміст {'є' if VERIFY_HTML_BODY in (body or '') else 'відсутній'}")
-    if site_url in (sites or []):
+    if sites is None:
+        out.append("⚠️ sites.list не вдалося прочитати: перевірка властивості GSC пропущена")
+    elif site_url in sites:
         out.append(f"✅ sites.list GSC містить {site_url}")
     else:
-        out.append(f"🚩 sites.list GSC НЕ містить {site_url} (є: {', '.join(sites or []) or 'порожньо'}): доступ сервіс-акаунта втрачено")
+        out.append(f"🚩 sites.list GSC НЕ містить {site_url} (є: {', '.join(sites) or 'порожньо'}): доступ сервіс-акаунта втрачено")
     return out
 
 
-def http_fetch(url: str, timeout: int = 30):
+def http_fetch(url: str, timeout: int = 30, retries: int = 1):
+    """GET із одним повтором на мережевий збій (код 0): одиничний збій не має давати хибний 🚩."""
+    for k in range(retries + 1):
+        code, body = _http_fetch_once(url, timeout)
+        if code != 0 or k == retries:
+            return code, body
+        import time as _t
+        _t.sleep(3)
+    return 0, ""
+
+
+def _http_fetch_once(url: str, timeout: int = 30):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "PlutusToys-gsc-guard/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as r:

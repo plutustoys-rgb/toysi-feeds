@@ -94,5 +94,25 @@ bad = ge.check_verification(lambda u: (200, HOME_NO) if u.endswith("/") else (40
 chk("guard: зникли meta Google, meta Facebook, файл, властивість → 4 прапорці 🚩 з причинами", len([x for x in bad if x.startswith("🚩")]) == 4 and any("google-site-verification" in x and "відсутня" in x for x in bad) and any("НЕ містить" in x for x in bad))
 chk("guard: головна не відповіла → 🚩 «головна не відповіла»", any("головна не відповіла" in x for x in ge.check_verification(lambda u: (0, ""), ["https://plutustoys.com.ua/"], "https://plutustoys.com.ua/")))
 chk("guard: інша meta (чужий токен) → 🚩 «інша»", any("інша" in x for x in ge.check_verification(lambda u: (200, HOME_OK.replace(ge.VERIFY_META_GOOGLE, "AAAA")) if u.endswith("/") else (200, ge.VERIFY_HTML_BODY), ["https://plutustoys.com.ua/"], "https://plutustoys.com.ua/")))
+h2 = ge.update_inspect_history({"u1": {"url": "u1", "first_checked": "2026-10-19", "first_indexed": "2026-10-19", "last_checked": "2026-10-19", "last_state": "Submitted and indexed"}}, [["u1", "PASS", "", "", "", "", "", "", ""]], D2)
+chk("порожній стан відповіді НЕ затирає останній відомий стан", h2["u1"]["last_state"] == "Submitted and indexed")
+bp = Path(tempfile.mkdtemp()) / "bad.csv"
+bp.write_bytes(b"\xff\xfe\x00bad")
+chk("пошкоджений файл історії → порожня історія без винятку", ge.load_inspect_history(bp) == {})
+unk = ge.check_verification(fetch_ok, None, "https://plutustoys.com.ua/")
+chk("sites=None → «пропущено» (⚠️), без хибного ✅ про властивість і без 🚩", any(l.startswith("⚠️") for l in unk) and not any("sites.list GSC містить" in l for l in unk) and not any(l.startswith("🚩") for l in unk))
+calls = []
+orig = ge._http_fetch_once
+ge._http_fetch_once = lambda u, t=30: (calls.append(u) or ((0, "") if len(calls) == 1 else (200, "ok")))
+ge.time_sleep_orig = None
+try:
+    import time as _time
+    _s = _time.sleep
+    _time.sleep = lambda s: None
+    r1 = ge.http_fetch("https://x/")
+finally:
+    _time.sleep = _s
+    ge._http_fetch_once = orig
+chk("http_fetch: один повтор після мережевого збою (код 0 → 200)", r1 == (200, "ok") and len(calls) == 2)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

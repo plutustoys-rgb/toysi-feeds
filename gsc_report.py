@@ -226,9 +226,7 @@ def part_verification(session, today: datetime, out_dir: Path):
     except Exception as e:  # noqa: BLE001 — збій запиту ≠ «властивості нема»
         sites = None
         sites_err = f"{type(e).__name__}"
-    lines = gsc_extra.check_verification(gsc_extra.http_fetch, sites if sites is not None else [SITE_URL], SITE_URL)
-    if sites is None:
-        lines.append(f"⚠️ sites.list не вдалося прочитати ({sites_err}): перевірка властивості GSC пропущена")
+    lines = gsc_extra.check_verification(gsc_extra.http_fetch, sites, SITE_URL)       # sites=None → «пропущено», без хибного ✅
     p = out_dir / f"gsc_verification_{today:%Y-%m-%d}.txt"
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return p, len(lines)

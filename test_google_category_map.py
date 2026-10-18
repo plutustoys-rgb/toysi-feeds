@@ -58,5 +58,14 @@ chk("price_band: межі lt150 / 150_300 / 300_500 / ge500 (149.99 | 150 | 299.
 bands, _ = gg.build_feed_items({"10": {**item("10", "Тварини і птахи"), "price": 200.0}}, {}, {}, {}, None, None)
 chk("build_feed_items кладе price_band у позицію; XML має custom_label_0 на КОЖНІЙ позиції", all(i.get("price_band") for i in bands) and all(e.findtext(NS + "custom_label_0") in ("lt150", "150_300", "300_500", "ge500") for e in gg._build_xml(items + bands).iter("item")))
 chk("значення custom_label_0 у XML збігається з ціною позиції", all(e.findtext(NS + "custom_label_0") == gg.price_band(float(e.findtext(NS + "price").split()[0])) for e in gg._build_xml(items).iter("item")))
+# стабільна смуга: під час акції (160 → 144) смуга за звичайною ціною (150_300), не за акційною (lt150)
+import site_sale as _ss  # noqa: E402
+_orig_sale = _ss.load_feed_sale
+_ss.load_feed_sale = lambda now=None, path=None: {"2001": {"old": 160, "new": 144, "dates": "2026-10-18T00:00+0300/2026-10-18T23:59+0300", "dates_colon": "2026-10-18T00:00:00+03:00/2026-10-18T23:59:59+03:00"}}
+try:
+    sale_items, _ = gg.build_feed_items({"2001": {**item("2001", "Тварини і птахи"), "price": 40.0}}, {}, {}, {}, None, {"2001": 144})
+finally:
+    _ss.load_feed_sale = _orig_sale
+chk("акція 160→144: у фіді price=160, sale_price=144 (акція показана) і смуга СТАБІЛЬНА = 150_300 (за звичайною ціною, а не lt150)", len(sale_items) == 1 and sale_items[0]["price"] == "160.00 UAH" and sale_items[0]["sale_price"] == "144.00 UAH" and sale_items[0]["price_band"] == "150_300")
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

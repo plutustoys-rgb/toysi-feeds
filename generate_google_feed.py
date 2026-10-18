@@ -647,6 +647,46 @@ def _clean_description(html_desc: str) -> str:
     return text
 
 
+# РОЗГОРТАННЯ описів «Бренд/Країна» (18.10.2026, рішення SEO): для м'яких іграшок (800 у фіді, 197 з них мали опис лише «Бренд: X Країна виробник: Y», Google просить
+# «додайте недостатню інформацію») складаємо 2–3 речення ТІЛЬКИ з наших даних: назва, бренд, країна, категорія, розмір із назви («25 см»). Параметрів у Toysi для цих товарів 0
+# (перевірено 18.10), тож нічого не вигадуємо: ні «безпечний», ні «розвиває». Решта описів фіду (≈2 500 з тим самим шаблоном «Бренд/Країна» поза цим розділом) НЕ чіпаємо — окреме рішення.
+DESC_ENRICH_TITLE_RE = re.compile(r"(?:м.?як|мягк)\w*\s+(?:іграшк|игрушк|ведмед|медвед|зайч|зайц|звір|зверь|тварин|животн|собач|кіт|кот|кішк|кошк)|плюш|(?:іграшк|игрушк)\w*\s+(?:м.?як|мягк)", re.I)
+_BRAND_ONLY_RE = re.compile(r"^Бренд\s*:\s*(?P<brand>[^:;<>]{1,60}?)(?:\s+(?:Країна\s+виробник|[CС]трана\s+производитель)\s*:\s*(?P<country>[^:;<>]{1,40}?))?\s*\.?$", re.I)
+_SIZE_IN_NAME_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:см|cm)\b", re.I)
+_DESC_BRAND_COUNTRY = {
+    "uk": ("Бренд — {b}, країна виробництва — {c}.", "Виробник: {b} ({c}).", "Торгова марка {b}, країна виробник: {c}."),
+    "ru": ("Бренд — {b}, страна производства — {c}.", "Производитель: {b} ({c}).", "Торговая марка {b}, страна производитель: {c}."),
+}
+
+
+def enrich_brand_only_description(pid, name: str, desc: str, category: str = "", lang: str = "uk") -> str:
+    """Опис «Бренд/Країна» м'якої іграшки → назва + бренд/країна (3 варіанти формулювання за id) + розмір із назви або розділ каталогу. Не підходить → desc без змін."""
+    if not DESC_ENRICH_TITLE_RE.search(name or ""):
+        return desc
+    m = _BRAND_ONLY_RE.match((desc or "").strip())
+    if not m:
+        return desc
+    brand = (m.group("brand") or "").strip(" .")
+    country = (m.group("country") or "").strip(" .")
+    if not brand:
+        return desc
+    try:
+        k = int(str(pid)) % 3
+    except ValueError:
+        k = 0
+    if country:
+        second = _DESC_BRAND_COUNTRY[lang][k].format(b=brand, c=country)
+    else:
+        second = ("Бренд — %s." if lang == "uk" else "Бренд — %s.") % brand
+    parts = [name.strip().rstrip(".") + ".", second]
+    size = _SIZE_IN_NAME_RE.search(name or "")
+    if size:
+        parts.append(("Розмір, зазначений у назві: %s см." if lang == "uk" else "Размер из названия: %s см.") % size.group(1))
+    elif category and lang == "uk":
+        parts.append("Розділ каталогу: %s." % category)
+    return " ".join(parts)
+
+
 # ДОДАНО (2026-07-24, пряме прохання власниці): images.prom.ua віддає
 # розмір зображення напряму з URL (main_image/images[].url — завжди
 # "..._w200_h200_..."). Живо перевірено на реальних товарах — запит
@@ -978,7 +1018,8 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "pid": str(pid),   # id каталогу Toysi (ключ російського тексту); у XML не пишеться
             "id": str(item.get("vendor_code") or pid),
             "title": normalize_title(name),   # правило SEO 14.10: регістр без «крику» (feed_title_norm), ≤150 без обрізання слова
-            "description": _clean_description(item.get("description", ""))[:5000] or name,
+            "description": enrich_brand_only_description(pid, name, _clean_description(item.get("description", ""))[:5000] or name, item.get("category_name") or "", "uk"),
+            "category_name": item.get("category_name") or "",   # лише для опису (у XML не пишеться)
             "link": SITE_LINK_TEMPLATE.format(pid=pid),
             "image_link": image,
             "price": price_str,
@@ -1059,7 +1100,7 @@ def build_ru_items(items: list, russian_text: dict) -> tuple[list, dict]:
             same += 1    # назва збіглась з українською (нейтральні слова/бренди) — це нормально, лише лічильник
         c = dict(it)
         c["title"] = normalize_title(ru_name)
-        c["description"] = _clean_description(ru.get("description", ""))[:5000] or ru_name
+        c["description"] = enrich_brand_only_description(it.get("pid"), ru_name, _clean_description(ru.get("description", ""))[:5000] or ru_name, "", "ru")
         out.append(c)
     return out, {"ru_included": len(out), "ru_missing_skipped": no_ru, "ru_same_as_ukr": same}
 

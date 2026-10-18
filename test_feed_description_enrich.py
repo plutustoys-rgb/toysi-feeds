@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""test_feed_description_enrich.py — розгортання описів «Бренд/Країна» м'яких іграшок у фідах Google/Meta/Bing (18.10.2026, рішення SEO).
+Інваріанти: (1) опис лише «Бренд: X Країна виробник: Y» м'якої іграшки → 2–3 речення з назви/бренду/країни (+розмір із назви або розділ каталогу), нічого вигаданого; (2) різні товари дають РІЗНІ тексти (формулювання за id, назва);
+(3) немяка іграшка, повний опис Toysi, нерозпізнаний шаблон → без змін; (4) ru-версія: російські формулювання, без розділу каталогу; (5) бренд без країни → одне речення про бренд; (6) build_feed_items і build_ru_items проводять це наскрізь.
+`python test_feed_description_enrich.py` → exit 0/1."""
+import os
+import re
+import sys
+from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+os.environ["AUDIT_NO_TELEGRAM"] = "1"
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent / "site"))
+import generate_google_feed as gg  # noqa: E402
+
+F = []
+
+
+def chk(n, c):
+    print(f"[{'OK ' if c else 'FAIL'}] {n}")
+    if not c:
+        F.append(n)
+
+
+E = gg.enrich_brand_only_description
+d1 = E("100", 'М\'яка іграшка "Песик Fluffie" 25 см', "Бренд: Копиця Країна виробник: Україна", "Тварини і птахи")
+chk("розгорнуто: назва + бренд/країна + розмір із назви (3 речення)", d1.startswith('М\'яка іграшка "Песик Fluffie" 25 см.') and "Копиця" in d1 and "Україна" in d1 and "25 см" in d1 and "Тварини" not in d1 and len(re.findall(r"\.", d1)) >= 3)
+d2 = E("101", "М'який ведмедик Тедді", "Бренд: MIC Країна виробник: Китай", "Ведмеді")
+chk("без розміру в назві → третє речення = розділ каталогу", d2.endswith("Розділ каталогу: Ведмеді.") and "MIC" in d2 and "Китай" in d2)
+chk("різні товари → різні тексти (назва, формулювання за id)", len({E(str(i), f"М'яка іграшка Зайчик №{i}", "Бренд: MIC Країна виробник: Китай", "Тварини") for i in range(30)}) == 30)
+chk("формулювання бренду/країни має 3 варіанти за id", len({E(str(i), "М'яка іграшка Зайчик", "Бренд: MIC Країна виробник: Китай", "Т").split(". ", 1)[1].split(" Розділ")[0] for i in range(3)}) == 3)
+chk("не м'яка іграшка → без змін", E("1", "Машинка металева", "Бренд: MIC Країна виробник: Китай", "Машинки") == "Бренд: MIC Країна виробник: Китай")
+full = "Чудова м'яка іграшка з натурального матеріалу, довгий опис від Toysi."
+chk("повний опис Toysi → без змін", E("1", "М'яка іграшка Зайчик", full, "Тварини") == full)
+chk("нерозпізнаний шаблон → без змін", E("1", "М'яка іграшка Зайчик", "Бренд: MIC; Вага: 1 кг", "Тварини") == "Бренд: MIC; Вага: 1 кг")
+d3 = E("102", "М'яка іграшка Лисичка", "Бренд: TIGRES", "Тварини")
+chk("бренд без країни → бренд і розділ, без вигаданої країни", "TIGRES" in d3 and "країн" not in d3.lower() and d3.endswith("Розділ каталогу: Тварини."))
+r1 = E("103", "Мягкая игрушка Зайчик 30 см", "Бренд: MIC Cтрана производитель: Китай", "", "ru")
+chk("ru: російські формулювання, розмір із назви, без розділу каталогу, латинська «C» у «Cтрана» розпізнана", "страна производ" in r1.lower() or "производитель" in r1.lower() or "производства" in r1.lower())
+chk("ru: нема українських слів «країна»/«Розділ»", "країн" not in r1.lower() and "розділ" not in r1.lower() and "Размер из названия: 30 см." in r1)
+
+
+def item(pid, name, desc, cat="Тварини і птахи"):
+    return {"id": pid, "name": name, "vendor": "Test", "price": 200.0, "stock": 5, "category_name": cat, "category_id": "1",
+            "pictures": ["https://toysi.ua/p/enl_%s.jpg" % pid], "description": desc, "barcode": ""}
+
+
+cat = {"201": item("201", "М'яка іграшка Песик 20 см", "<b>Бренд:</b> Копиця<br/><b>Країна виробник:</b> Україна"),
+       "202": item("202", "Машинка металева", "<b>Бренд:</b> MIC<br/><b>Країна виробник:</b> Китай", "Машинки")}
+items, st = gg.build_feed_items(cat, {}, {}, {}, None, None)
+byid = {i["pid"]: i for i in items}
+chk("build_feed_items: м'яка іграшка отримала розгорнутий опис, машинка лишилась «Бренд/Країна»", "Копиця" in byid["201"]["description"] and "20 см" in byid["201"]["description"] and byid["202"]["description"] == "Бренд: MIC Країна виробник: Китай")
+ru, _ = gg.build_ru_items(items, {"201": {"name": "Мягкая игрушка Песик 20 см", "description": "<b>Бренд:</b> Копиця<br/><b>Страна производитель:</b> Украина"}})
+chk("build_ru_items: російський розгорнутий опис", len(ru) == 1 and "Украина" in ru[0]["description"] and "Песик" in ru[0]["description"] and "Україна" not in ru[0]["description"])
+print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
+sys.exit(1 if F else 0)

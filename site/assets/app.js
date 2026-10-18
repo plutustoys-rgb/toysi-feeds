@@ -260,7 +260,7 @@
   // ── Каталог: сортування + фільтри (клієнтом з index.json, весь каталог) ──
   function catCard(p){
     var av = p.s ? '<span class="av">У наявності</span>' : '<span class="av oos">Немає</span>';
-    var img = p.p ? '<img src="'+esc(p.p)+'" loading="lazy" alt="'+esc(p.n)+'">' : '<div class="ph"></div>';
+    var img = p.p ? '<img src="'+esc(p.p)+'" loading="lazy" width="400" height="400" alt="'+esc(p.n)+'">' : '<div class="ph"></div>';
     var sale = p.op && p.op>p.pr;   // «Знижка тижня»: op — стара ціна (аудит 14.10: каталог показував акційну ціну без перекресленої старої й бейджа)
     var badge = sale ? '<span class="sale-badge">−'+Math.round((1-p.pr/p.op)*100)+'%</span>' : '';
     var price = sale ? '<span class="pr pr-sale">'+p.pr+' ₴</span><s class="pr-old">'+p.op+' ₴</s>' : '<span class="pr">'+p.pr+' ₴</span>';

@@ -74,8 +74,8 @@ main_img = re.search(r'<div class="photo">(<img [^>]*>)', hp)
 chk("картка: головне фото знайдено", main_img is not None)
 chk("картка: головне фото має fetchpriority=\"high\"", main_img is not None and 'fetchpriority="high"' in main_img.group(1))
 chk("картка: головне фото НЕ lazy (LCP)", main_img is not None and 'loading="lazy"' not in main_img.group(1))
-chk("картка: рівно одне фото з fetchpriority (решта — lazy)", hp.count('fetchpriority="high"') == 1)
-chk("картка: фото в «Додайте до замовлення» лишилось lazy", 'src="https://example.com/2.jpg" alt="Дрібничка" loading="lazy"' in hp)
+chk("картка: рівно одне фото з fetchpriority (решта — lazy)", len(re.findall(r'<img[^>]*fetchpriority="high"', hp)) == 1)   # рахуємо <img>; <link rel=preload fetchpriority=high> головного фото (SEO 18.10) — не фото
+chk("картка: фото в «Додайте до замовлення» лишилось lazy", 'src="https://example.com/2.jpg" alt="Дрібничка" width="400" height="400" loading="lazy"' in hp)
 
 # ── шаблон Apache
 sh = open(os.path.join(HERE, "deploy", "activate_site_apache.sh"), encoding="utf-8").read()

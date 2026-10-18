@@ -329,6 +329,9 @@ def asset_url(rel):
     return f"{rel}?v={v}" if v else rel
 
 
+GSC_VERIFICATION = "AzAID7jv3z26c8wFyrtnzjRTa_2xDyEnFx_R-neaoZY"   # підтвердження права власності Search Console (код власника з 17.07, був на вітрині Prom; SEO 18.10: на новому сайті злетіло) — у <head> КОЖНОЇ сторінки
+
+
 def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False, defer_trackers=True):
     full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
@@ -354,6 +357,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<!doctype html>\n<html lang=\"uk\">\n<head>\n"
       "<meta charset=\"utf-8\">\n"
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+      f"<meta name=\"google-site-verification\" content=\"{GSC_VERIFICATION}\">\n"
       # base_root лише для 404: її віддають за БУДЬ-ЯКОЇ адреси (/a/b/c), а шляхи в шаблоні відносні (assets/…, index.json, api/…)
       + ("<base href=\"/\">\n" if base_root else "") +
       f"<title>{esc(full_title)}</title>\n"

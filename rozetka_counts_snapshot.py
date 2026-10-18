@@ -125,17 +125,17 @@ def post_to_channel(title: str, body: str, now: datetime, channel: Path | None =
 
 
 def active_drop(hist: list) -> tuple | None:
-    """ФАКТ: «Активні» у кабінеті впали проти попереднього знімка БІЛЬШЕ, ніж виросла кількість «немає в наявності» (інакше це просто склад Toysi: товар без залишку
-    йде з активних у not_available). Без порогів. Повертає (було, стало, виросло_not_available) або None. Рішення власника 18.10: ряд активних мовчав 5 тижнів (None з 12.09)."""
+    """ФАКТ: «Активні» у кабінеті впали проти попереднього знімка БІЛЬШЕ, ніж виросли «немає в наявності» + «сховані» (інакше це склад Toysi / коливання схованих). Без порогів. Повертає (було, стало, виросло_not_available) або None. Рішення власника 18.10: ряд активних мовчав 5 тижнів (None з 12.09)."""
     if len(hist) < 2:
         return None
     prev, cur = hist[-2], hist[-1]
     pa, ca = prev.get("active"), cur.get("active")
     if not isinstance(pa, int) or not isinstance(ca, int) or ca >= pa:
         return None
-    na_grow = max(0, (cur.get("not_available") or 0) - (prev.get("not_available") or 0))
-    if pa - ca > na_grow:
-        return pa, ca, na_grow
+    # Пояснюють падіння лише склад (not_available↑) і «сховані» (hidden скаче туди-сюди щодня: 17.10 80→181). Перелив у модерацію/очікування/помилки — НЕ пояснення (саме це ловимо).
+    explained = max(0, (cur.get("not_available") or 0) - (prev.get("not_available") or 0)) + max(0, (cur.get("hidden") or 0) - (prev.get("hidden") or 0))
+    if pa - ca > explained:
+        return pa, ca, explained
     return None
 
 
@@ -154,10 +154,11 @@ def evaluate(hist: list, now: datetime, channel: Path | None = None) -> list:
             fired.append("застій (запис за сьогодні вже є)")
     drop = active_drop(hist)
     if drop:
-        body = (f"«Активні» у кабінеті Rozetka впали: {drop[0]} → {drop[1]} (−{drop[0] - drop[1]}), а «немає в наявності» виросло лише на {drop[2]}, тобто це не склад. "
+        body = (f"«Активні» у кабінеті Rozetka впали: {drop[0]} → {drop[1]} (−{drop[0] - drop[1]}), а «немає в наявності» + «сховані» виросли лише на {drop[2]}, тобто це не склад. "
                 f"Знімки: {hist[-2]['date']} → {hist[-1]['date']}; на модерації {cur['on_moderation']}, очікують {cur['waiting_approve']}, сховані {cur['hidden']}, з помилками {cur['errors']}. "
                 f"Дія — Коду: звірити, що змінилось у фіді/правилах (стоп-бренди, заборонені категорії, ціни) між цими датами.")
-        if post_to_channel("активні впали", body, now, channel):
+        # дата знімка в темі: інше падіння того ж 3-добового вікна не затулене попереднім записом (аудит #843)
+        if post_to_channel(f"активні впали ({hist[-1]['date']})", body, now, channel):
             fired.append("активні впали")
         else:
             fired.append("активні впали (запис за сьогодні вже є)")

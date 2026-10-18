@@ -89,6 +89,13 @@ chk("brand зі специфікацій має пріоритет над vendor
 chk("валідний EAN-13 → gtin13 у Product", ld(113).get("gtin13") == "4006381333931")
 chk("невалідна контрольна цифра і короткий код → gtin не ставимо", not any(k.startswith("gtin") for k in ld(114)) and not any(k.startswith("gtin") for k in ld(115)))
 chk("_valid_gtin: 8/12/13/14 цифр, нулі й сміття відсікаються", bs._valid_gtin("4006381333931") == ("gtin13", "4006381333931") and bs._valid_gtin("0000000000000") is None and bs._valid_gtin("abc") is None and bs._valid_gtin("") is None)
+# ступінчасті суфікси (SEO 18.10): повний суфікс → без бренду → без суфікса; назву не ріжемо, поки вона вміщується
+short, mid, longer, huge = "Лялька «Софі»", "А" * 50, "Б" * 60, "В" * 70
+chk("коротка назва: повний суфікс «— купити | PlutusToys»", bs.product_title(short).endswith("— купити | PlutusToys"))
+chk(f"середня назва (50 зн.): без бренду, лишається «— купити»: {bs.product_title(mid)[-20:]}", bs.product_title(mid) == mid + " — купити")
+chk("довга назва (60 зн.): без суфікса взагалі, назва ціла", bs.product_title(longer) == longer)
+chk("дуже довга (70 зн.): обрізання по межі слова з «…» і повним суфіксом, ≤65", bs.product_title(huge).endswith("— купити | PlutusToys") and len(bs.product_title(huge)) <= 65)
+chk("OOS: ступені так само («— немає в наявності» лишається без бренду)", bs.product_title("А" * 40, False) == "А" * 40 + " — немає в наявності" and bs.product_title(short, False).endswith("— немає в наявності | PlutusToys"))
 print()
 if F:
     print(f"FAILED ({len(F)}):")

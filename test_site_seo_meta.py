@@ -98,7 +98,7 @@ p = {"id": "4242", "name": "Уцінка. Валіза ТехноК, рожев�
      "photo": "https://example.com/1.jpg", "stock": 3, "desc": "Бренд: Deddy Bears", "contribution": 10.0}
 b.write_product(p, related=None, cat_slug={"Валізи <b>": "valizi"})
 h = open(os.path.join(tmp, "product-4242.html"), encoding="utf-8").read()
-chk("картка: <title> за шаблоном, ≤65", re.search(r"<title>(.*?)</title>", h).group(1).endswith("— купити | PlutusToys") and len(__import__("html").unescape(re.search(r"<title>(.*?)</title>", h).group(1))) <= 65)
+chk("картка: <title> за шаблоном (довга назва: без бренду, але з «— купити»; SEO 18.10), ≤65", (re.search(r"<title>(.*?)</title>", h).group(1).endswith(("— купити | PlutusToys", "— купити")) or re.search(r"<title>(.*?)</title>", h).group(1).startswith("Уцінка. Валіза ТехноК")) and len(__import__("html").unescape(re.search(r"<title>(.*?)</title>", h).group(1))) <= 65)
 m = re.search(r'<meta name="description" content="(.*?)">', h)
 chk("картка: description не «Бренд: …», ≤160", m is not None and not m.group(1).startswith("Бренд") and len(__import__("html").unescape(m.group(1))) <= 160)
 blocks = ld_blocks(h)

@@ -89,5 +89,29 @@ p1 = rc.post_to_channel("застій черги модерації", "тіло"
 p2 = rc.post_to_channel("застій черги модерації", "тіло", datetime(2026, 10, 17, 12, 0), c2)
 p3 = rc.post_to_channel("застій черги модерації", "тіло", datetime(2026, 10, 19, 12, 0), c2)
 chk("поки застій триває: запис не частіше раз на 3 доби (16.10 так, 17.10 ні, 19.10 так)", p1 and not p2 and p3 and c2.read_text(encoding="utf-8").count(rc.MARK) == 2)
+# --- правило «активні впали не через склад» (18.10.2026) ---
+def H(*rows):
+    return [{"date": f"2026-10-{15 + k:02d}", "active": r[0], "not_available": r[1], "on_moderation": 0, "waiting_approve": 0, "hidden": (r[2] if len(r) > 2 else 0), "errors": 0, "not_valid": 0, "all": r[0] + r[1], "new": 0, "stop_labels": 0} for k, r in enumerate(rows)]
+
+
+chk("active_drop: один знімок → None; ріст/без змін → None", rc.active_drop(H((100, 10))) is None and rc.active_drop(H((100, 10), (105, 10))) is None and rc.active_drop(H((100, 10), (100, 10))) is None)
+chk("active_drop: падіння 100→80, а not_available +20 (це склад) → None", rc.active_drop(H((100, 10), (80, 30))) is None)
+chk("active_drop: падіння 100→60, not_available +5 → (100, 60, 5)", rc.active_drop(H((100, 10), (60, 15))) == (100, 60, 5))
+chk("active_drop: not_available зменшилось, активні впали → спрацьовує", rc.active_drop(H((100, 10), (90, 5))) == (100, 90, 0))
+chk("active_drop: None/нечислове значення → None без винятку", rc.active_drop([{"date": "2026-10-15", "active": None}, {"date": "2026-10-16", "active": 5}]) is None)
+cdrop = Path(tempfile.mkdtemp()) / "c.md"
+cdrop.write_text("<!-- шапка -->" + chr(10) + "> ## 📇 адреси" + chr(10) + chr(10) + "## [A → B] старе" + chr(10) + "текст" + chr(10), encoding="utf-8")
+fr = rc.evaluate(H((100, 10), (60, 15)), datetime(2026, 10, 16, 9, 0), cdrop)
+txd = cdrop.read_text(encoding="utf-8")
+chk("evaluate: падіння активних → запис «активні впали» у канал, перед першим «## »; блок-цитата ціла", fr == ["активні впали"] and "активні впали (2026-10-16)" in txd and txd.index("активні впали") < txd.index("## [A → B] старе") and "> ## 📇 адреси" in txd)
+chk("active_drop: реальний випадок 16→17.10 (активні −6, not_available↓, hidden +101) → пояснено «схованими», None", rc.active_drop(H((2793, 7491, 80), (2787, 7396, 181))) is None)
+chk("active_drop: змішаний сценарій 100→60 при not_available +30 → спрацьовує, пояснено 30", rc.active_drop(H((100, 10), (60, 40))) == (100, 60, 30))
+c2d = Path(tempfile.mkdtemp()) / "c2.md"
+c2d.write_text("## [A → B] старе" + chr(10) + "текст" + chr(10), encoding="utf-8")
+f1 = rc.evaluate(H((100, 10), (60, 15)), datetime(2026, 10, 16, 9, 0), c2d)
+f2 = rc.evaluate(H((100, 10), (60, 15), (30, 15)), datetime(2026, 10, 17, 9, 0), c2d)
+f3 = rc.evaluate(H((100, 10), (60, 15), (30, 15)), datetime(2026, 10, 17, 15, 0), c2d)
+t2 = c2d.read_text(encoding="utf-8")
+chk("друге падіння в межах 3 діб НЕ затулене першим (інша дата знімка в темі); повтор того ж знімка — дубль", f1 == ["активні впали"] and f2 == ["активні впали"] and "(2026-10-17)" in t2 and "(2026-10-16)" in t2 and f3 == ["активні впали (запис за сьогодні вже є)"])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

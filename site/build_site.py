@@ -630,6 +630,7 @@ def build():
             "photo": pics[0], "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
+            "vendor": (it.get("vendor") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
     # Порядок «Рекомендовані» = за ВНЕСКОМ спадно (рішення Консультанта: на перший екран —
     # позиції, що приносять маржу, а не найбільша категорія/найдорожче). Товари з невідомою
@@ -651,6 +652,15 @@ def build():
     if LIMIT:
         prods = prods[:LIMIT]
         oos_prods = oos_prods[:LIMIT]
+    _tc = {}
+    for _p in prods:
+        _t = product_title(_p["name"], True); _tc[_t] = _tc.get(_t, 0) + 1
+    for _p in oos_prods:
+        _t = product_title(_p["name"], False); _tc[_t] = _tc.get(_t, 0) + 1
+    PRODUCT_DUP_TITLES.clear()
+    PRODUCT_DUP_TITLES.update(t for t, c in _tc.items() if c > 1)
+    if PRODUCT_DUP_TITLES:
+        print(f"[build] title: {len(PRODUCT_DUP_TITLES)} збігів після обрізання — у цих карток додано №id", file=sys.stderr)
     # Відносний гард (аудит #675 (a)): абсолютний поріг не ловить помірно усічений фід (26 тис. проходить), а це ~2,5 тис. сторінок → 404.
     # Порівнюємо з index.json ПОПЕРЕДНЬОЇ збірки (те саме «в наявності»): різке падіння → стоп ДО запису. Свідоме — SITE_ALLOW_SHRINK=1.
     try:
@@ -997,15 +1007,39 @@ def _fmt_int(n) -> str:
 _PROD_SUFFIX_OOS = " — немає в наявності | PlutusToys"
 
 
-def product_title(name, in_stock=True) -> str:
-    """{назва} — купити | PlutusToys (без залишку: «— немає в наявності | PlutusToys»); якщо довше за 65 — обрізаємо НАЗВУ по межі слова + «…», суфікс лишаємо."""
+PRODUCT_DUP_TITLES = set()   # title, що збігаються в кількох товарів (після обрізання до TITLE_MAX); заповнює build() — у них додається «№id» (SEO 18.10: 0 дублів title, зокрема серед OOS)
+
+
+_BRAND_JUNK = frozenset({"-", "—", "–", "немає", "нема", "без бренду", "без бренда", "no brand", "no name", "noname", "не вказано", "інше", "інший", "other", "unknown", "n/a", "китай", "china", "україна", "ukraine"})
+
+
+def _valid_gtin(code):
+    """('gtin13', '4820…') для штрихкоду з 8/12/13/14 цифр і правильною контрольною цифрою (GS1); інакше None — не вигадуємо, не публікуємо сміття."""
+    c = re.sub(r"\s", "", str(code or ""))
+    if not re.fullmatch(r"\d{8}|\d{12,14}", c) or not any(ch != "0" for ch in c):
+        return None
+    digits = [int(x) for x in c]
+    total = sum(d * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(digits[:-1])))
+    if (10 - total % 10) % 10 != digits[-1]:
+        return None
+    return ("gtin" + str(len(c)), c)
+
+
+def product_title(name, in_stock=True, uniq=None) -> str:
+    """{назва} — купити | PlutusToys (без залишку: «— немає в наявності | PlutusToys»); якщо довше за 65 — обрізаємо НАЗВУ по межі слова + «…», суфікс лишається. uniq (id товару) → «… №id» перед суфіксом (унікальність title)."""
     name = (name or "").strip()
     suffix = _PROD_SUFFIX if in_stock else _PROD_SUFFIX_OOS
-    if len(name) + len(suffix) <= TITLE_MAX:
-        return name + suffix
-    room = TITLE_MAX - len(suffix) - 1
+    tag = f" №{uniq}" if uniq else ""
+    if len(name) + len(tag) + len(suffix) <= TITLE_MAX:
+        return name + tag + suffix
+    room = TITLE_MAX - len(suffix) - len(tag) - 1
     cut = name[:room].rsplit(" ", 1)[0].rstrip(" ,.;:—–-") if " " in name[:room] else name[:room]
-    return cut + "…" + suffix
+    return cut + "…" + tag + suffix
+
+
+def product_title_for(p, in_stock=True) -> str:
+    t = product_title(p["name"], in_stock)
+    return product_title(p["name"], in_stock, uniq=p["id"]) if t in PRODUCT_DUP_TITLES else t
 
 
 def product_description(name, price, plain) -> str:
@@ -2283,8 +2317,15 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
             **offer_extras(p),
         },
     }
+    if not brand:   # запасний бренд — поле vendor Toysi (SEO 18.10: brand у 65% карток); сміттєві значення не беремо, не вигадуємо
+        _v = (p.get("vendor") or "").strip()
+        if 2 <= len(_v) <= 60 and _v.lower() not in _BRAND_JUNK:
+            brand = _v
     if brand:
         ld["brand"] = {"@type": "Brand", "name": brand}
+    _gt = _valid_gtin(p.get("barcode"))
+    if _gt:
+        ld[_gt[0]] = _gt[1]
     # безпечно в <script>: екрануємо КОЖЕН '<' у < (валідний JSON) — жоден HTML-вектор
     # (</script>, <!--, <script) не може вийти літерально, навіть із назви товару.
     # chr(92) = '\' — однозначно, без крихкого backslash-літерала.
@@ -2294,7 +2335,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     extra = f'<script type="application/ld+json">{ld_json}</script>' + chr(10) + breadcrumb_ld(trail)
     body = crumbs_html(trail) + body
     _write(f"product-{p['id']}.html", page(
-        p["name"], body, extra_head=extra, title_full=product_title(p["name"], in_stock), description=meta_desc,
+        p["name"], body, extra_head=extra, title_full=product_title_for(p, in_stock), description=meta_desc,
         canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product"))
 
 CART_ADDONS_MAX = 12     # пул «Додайте до замовлення» у кошику (на сторінці показуємо 3, яких ще нема в кошику)

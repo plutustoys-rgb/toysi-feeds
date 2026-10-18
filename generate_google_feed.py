@@ -315,6 +315,18 @@ _CATEGORY_NAME_MAP = {
 }
 
 
+def price_band(price: float) -> str:
+    """g:custom_label_0 — цінова смуга за ПУБЛІЧНОЮ ціною картки сайту в грн (без маржі/собівартості); межі задала SEO 18.10.2026 (= GOOGLE_SHOPPING_план 12.10 і пропозиція Shopify-code 13.10):
+    lt150: <150 | 150_300: 150–299.99 | 300_500: 300–499.99 | ge500: ≥500. Під час акції береться ціна картки (акційна), бо її бачить покупець."""
+    if price < 150:
+        return "lt150"
+    if price < 300:
+        return "150_300"
+    if price < 500:
+        return "300_500"
+    return "ge500"
+
+
 def google_product_category(category_name: str) -> str:
     text = (category_name or "").strip().lower().replace("’", "'").replace("ʼ", "'")
     for keywords, cat_id in _CATEGORY_RULES:
@@ -1050,6 +1062,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "link": SITE_LINK_TEMPLATE.format(pid=pid),
             "image_link": image,
             "price": price_str,
+            "price_band": price_band(retail_price),   # custom_label_0 (лише Google-фід)
             "sale_price": sale_price,
             "sale_dates": sale_dates,
             "sale_dates_colon": sale_dates_colon,
@@ -1111,6 +1124,8 @@ def _build_xml(items: list) -> ET.Element:
         ET.SubElement(entry, f"{{{NS}}}google_product_category").text = it["google_product_category"]
         if it.get("category_name"):
             ET.SubElement(entry, f"{{{NS}}}product_type").text = f"Головна > {it['category_name']}"      # запит SEO п.4б: наш шлях категорії
+        if it.get("price_band"):
+            ET.SubElement(entry, f"{{{NS}}}custom_label_0").text = it["price_band"]                      # запит SEO 18.10: цінова смуга
 
     return rss
 

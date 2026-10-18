@@ -53,5 +53,10 @@ pt = {e.findtext(NS + "id"): e.findtext(NS + "product_type") for e in xml.iter("
 chk("XML: product_type = «Головна > Картини за номерами» / «Головна > Тварини і птахи»", pt == {"1": "Головна > Картини за номерами", "2": "Головна > Тварини і птахи"})
 no_cat, _ = gg.build_feed_items({"3": item("3", "")}, {}, {}, {}, None, None)
 chk("без категорії product_type у XML не пишеться", all(e.find(NS + "product_type") is None for e in gg._build_xml(no_cat).iter("item")))
+# --- custom_label_0: цінова смуга (запит SEO 18.10) ---
+chk("price_band: межі lt150 / 150_300 / 300_500 / ge500 (149.99 | 150 | 299.99 | 300 | 499.99 | 500)", [gg.price_band(x) for x in (0.0, 149.99, 150.0, 299.99, 300.0, 499.99, 500.0, 9999.0)] == ["lt150", "lt150", "150_300", "150_300", "300_500", "300_500", "ge500", "ge500"])
+bands, _ = gg.build_feed_items({"10": {**item("10", "Тварини і птахи"), "price": 200.0}}, {}, {}, {}, None, None)
+chk("build_feed_items кладе price_band у позицію; XML має custom_label_0 на КОЖНІЙ позиції", all(i.get("price_band") for i in bands) and all(e.findtext(NS + "custom_label_0") in ("lt150", "150_300", "300_500", "ge500") for e in gg._build_xml(items + bands).iter("item")))
+chk("значення custom_label_0 у XML збігається з ціною позиції", all(e.findtext(NS + "custom_label_0") == gg.price_band(float(e.findtext(NS + "price").split()[0])) for e in gg._build_xml(items).iter("item")))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

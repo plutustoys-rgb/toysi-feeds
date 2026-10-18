@@ -291,7 +291,7 @@ _CATEGORY_RULES = [
 ]
 
 
-# ТОЧНА відповідність НАЗВИ категорії Toysi → ID Google (19.10.2026, запит SEO п.4а; рішення власника «робіть категорії гугл»): 72% позицій фіду мали запасну «Toys & Games» (1239) через 200 категорій,
+# ТОЧНА відповідність НАЗВИ категорії Toysi → ID Google (18.10.2026, запит SEO п.4а; рішення власника «робіть категорії гугл»): 72% позицій фіду мали запасну «Toys & Games» (1239) через 200 категорій,
 # яких ключові слова не ловлять («Ляльки + лялькові набори», «Картини за номерами» у множині…). Беремо ЛИШЕ однозначні відповідності й лише з гілок Toys & Games / Baby & Toddler / Arts & Entertainment / Office Supplies:
 # Apparel (брелоки, сумочки, костюми, прикраси), Luggage (рюкзаки), Books (потрібен ISBN/GTIN) і Sporting Goods вимагають інших атрибутів (gender/age_group/color…) → масові відхилення, тому не чіпаємо.
 # Двозначні категорії («Тварини і птахи», «Розважальні», «Персонажі», «Інші герої», «Подушки», «Круги і жилети»…) лишаються на запасній. Перевірка валідності ID — verify_google_category_ids.py.
@@ -1046,7 +1046,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "id": str(item.get("vendor_code") or pid),
             "title": normalize_title(name),   # правило SEO 14.10: регістр без «крику» (feed_title_norm), ≤150 без обрізання слова
             "description": enrich_brand_only_description(pid, name, _clean_description(item.get("description", ""))[:5000] or name, item.get("category_name") or "", "uk"),
-            "category_name": item.get("category_name") or "",   # лише для опису (у XML не пишеться)
+            "category_name": item.get("category_name") or "",   # для опису м'яких іграшок і product_type у Google XML
             "link": SITE_LINK_TEMPLATE.format(pid=pid),
             "image_link": image,
             "price": price_str,

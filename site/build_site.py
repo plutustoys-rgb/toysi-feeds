@@ -1030,8 +1030,10 @@ def product_title(name, in_stock=True, uniq=None) -> str:
     name = (name or "").strip()
     suffix = _PROD_SUFFIX if in_stock else _PROD_SUFFIX_OOS
     tag = f" №{uniq}" if uniq else ""
-    if len(name) + len(tag) + len(suffix) <= TITLE_MAX:
-        return name + tag + suffix
+    # ступінчасто (SEO 18.10: «прибрати «| PlutusToys» лише там, де інакше > 65»): повний суфікс → без бренду → без суфікса; назву не ріжемо, поки вона вміщується
+    for suf in (suffix, suffix.split(" | ")[0], ""):
+        if len(name) + len(tag) + len(suf) <= TITLE_MAX:
+            return name + tag + suf
     room = TITLE_MAX - len(suffix) - len(tag) - 1
     cut = name[:room].rsplit(" ", 1)[0].rstrip(" ,.;:—–-") if " " in name[:room] else name[:room]
     return cut + "…" + tag + suffix

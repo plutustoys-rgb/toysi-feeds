@@ -18,8 +18,10 @@ SHARED = Path(os.environ.get("SHARED_DIR", r"C:\Users\smach\Claude\Projects\Plut
 KEY = Path(os.environ.get("VPS_SSH_KEY", str(Path.home() / ".ssh" / "plutustoys_vps")))
 HOST = "root@45.94.157.4"
 REMOTE_DIR = "/opt/plutustoys/reports/gmc"
-PATTERNS = ("gmc_status_", "gmc_summary_", "gmc_account_settings_", "gmc_settings_changes_", "googlebot_daily_", "googlebot_summary_", "gsc_query_page_", "gsc_daily_", "gsc_sitemaps_", "gsc_inspect_", "eva_full_import_")
+PATTERNS = ("gmc_status_", "gmc_summary_", "gmc_account_settings_", "gmc_settings_changes_", "googlebot_daily_", "googlebot_summary_", "gsc_query_page_", "gsc_daily_", "gsc_sitemaps_", "gsc_inspect_", "eva_full_import_", "gsc_weekly_summary_", "gsc_inspect_summary_", "gsc_verification_")
 MARK = "[Автомат → SEO] GMC: прапорець"
+MARK_GSC = "[Автомат → SEO] GSC: прапорець"
+FIXED_FILES = ("gsc_inspect_history.csv",)          # накопичувальні файли без дати в імені (історія «перший день проіндексовано»)
 
 
 def latest_per_pattern(names: list) -> list:
@@ -38,14 +40,14 @@ def flags_in_summary(text: str) -> list:
     return [ln.strip() for ln in (text or "").splitlines() if ln.strip().startswith("🚩")]
 
 
-def post_flag(flags: list, day: str, channel: Path) -> bool:
+def post_flag(flags: list, day: str, channel: Path, mark: str = MARK) -> bool:
     try:
         with open(channel, encoding="utf-8", newline="") as _f:
             s = _f.read()
     except OSError:
         return False
-    head = f"## {MARK} {day}"
-    if re.search(r"(?m)^## " + re.escape(MARK) + " " + re.escape(day), s):
+    head = f"## {mark} {day}"
+    if re.search(r"(?m)^## " + re.escape(mark) + " " + re.escape(day), s):
         return False
     nl = "\r\n" if "\r\n" in s else "\n"
     entry = (head + "\n" + "\n".join(flags) + f"\nДжерело: щоденний gmc_summary ({day}); порівняння з попереднім днем — факт зміни, без порогів. Файли — SEO_метрики/{day}/. Дія — SEO.\n\n").replace("\n", nl)
@@ -79,12 +81,18 @@ def main() -> int:
         out = SHARED / "SEO_метрики" / day
         out.mkdir(parents=True, exist_ok=True)
         got = []
+        names = list(names) + [x for x in FIXED_FILES if x in {y.strip() for y in r.stdout.splitlines()}]
         for n in names:
             dst = out / n
             c = subprocess.run(["scp", "-q", "-i", str(KEY), "-o", "BatchMode=yes", f"{HOST}:{REMOTE_DIR}/{n}", str(dst)], capture_output=True, text=True, timeout=120)
             if c.returncode == 0:
                 got.append(n)
         print(f"[daily_files] {day}: скопійовано {len(got)} з {len(names)}: {', '.join(got)}")
+        ver = next((out / n for n in got if n.startswith("gsc_verification_")), None)
+        if ver:
+            vf = flags_in_summary(ver.read_text(encoding="utf-8"))
+            if vf:
+                print("[daily_files] прапорці GSC:", "запис у SEO_CHANNEL додано" if post_flag(vf, ver.stem.replace("gsc_verification_", ""), SHARED / "SEO_CHANNEL.md", MARK_GSC) else "уже є за цю дату / канал недоступний")
         summ = next((out / n for n in got if n.startswith("gmc_summary_")), None)
         if summ:
             fl = flags_in_summary(summ.read_text(encoding="utf-8"))

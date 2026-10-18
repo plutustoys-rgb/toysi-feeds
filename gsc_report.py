@@ -22,6 +22,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
+import gsc_extra
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -151,15 +153,16 @@ def part_sitemaps(session, today: datetime, out_dir: Path, site_url: str = SITE_
     return p, len(data)
 
 
-def priority_urls(n: int = INSPECT_N, sitemap_url: str = PRIORITY_SITEMAP) -> list:
-    """Перші n <loc> зі sitemap-priority.xml нашого ж сайту (стабільний порядок файлу); нема файлу/мережі → []."""
+def priority_urls(n: int | None = INSPECT_N, sitemap_url: str = PRIORITY_SITEMAP) -> list:
+    """Перші n <loc> зі sitemap-priority.xml нашого ж сайту (стабільний порядок файлу; n=None — усі); нема файлу/мережі → []."""
     try:
         with urllib.request.urlopen(sitemap_url, timeout=30) as r:
             xml = r.read().decode("utf-8", errors="replace")
     except Exception as e:  # noqa: BLE001
         print(f"[gsc_report] priority-sitemap не прочитано: {type(e).__name__}", file=sys.stderr)
         return []
-    return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml)[:n]
+    locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml)
+    return locs if n is None else locs[:n]
 
 
 def inspect_url(session, url: str, site_url: str = SITE_URL) -> list:
@@ -169,7 +172,10 @@ def inspect_url(session, url: str, site_url: str = SITE_URL) -> list:
 
 
 def part_inspect(session, today: datetime, out_dir: Path, urls=None, budget_sec: int = INSPECT_BUDGET_SEC):
-    urls = priority_urls() if urls is None else urls
+    all_urls = None
+    if urls is None:
+        all_urls = priority_urls(None)                                   # усі priority-URL (≈680)
+        urls = gsc_extra.inspect_chunk(all_urls, today.date())           # порція ≈1/7 на сьогодні: за 7 діб — усі (запит SEO 19.10)
     if not urls:
         raise RuntimeError("порожній перелік URL із priority-sitemap")
     data, errs, first_err = [], 0, ""
@@ -192,10 +198,44 @@ def part_inspect(session, today: datetime, out_dir: Path, urls=None, budget_sec:
         raise RuntimeError("URL Inspection: бюджет часу вичерпано до першого запиту")
     p = out_dir / f"gsc_inspect_{today:%Y-%m-%d}.csv"
     write_csv(p, INSPECT_FIELDS, data)
+    # накопичувальна історія «перший день проіндексовано» + щоденний рядок «проіндексовано X з Y»
+    hp = out_dir / "gsc_inspect_history.csv"
+    hist = gsc_extra.update_inspect_history(gsc_extra.load_inspect_history(hp), data, today.date())
+    write_csv(hp, gsc_extra.INSPECT_HISTORY_FIELDS, [[h.get(k, "") for k in gsc_extra.INSPECT_HISTORY_FIELDS] for h in hist.values()])
+    line = gsc_extra.indexed_line(hist, len(all_urls) if all_urls is not None else len(urls), today.date())
+    (out_dir / f"gsc_inspect_summary_{today:%Y-%m-%d}.txt").write_text(line + "\n", encoding="utf-8")
+    print(f"[gsc_report] {line}")
     return p, len(data)
 
 
-PARTS = [("query_page", part_query_page), ("daily", part_daily), ("sitemaps", part_sitemaps), ("inspect", part_inspect)]
+def part_weekly_summary(session, today: datetime, out_dir: Path):
+    end = (today - timedelta(days=LAG_DAYS)).date()
+    rows = query_rows(session, gsc_extra.FIRST_WEEK.isoformat(), end.isoformat(), ["date", "query", "page"])
+    data = gsc_extra.weekly_summary_rows(rows, end, gsc_extra.load_watchlist())
+    p = out_dir / f"gsc_weekly_summary_{today:%Y-%m-%d}.csv"
+    write_csv(p, gsc_extra.WEEKLY_FIELDS, data)
+    return p, len(data)
+
+
+def part_verification(session, today: datetime, out_dir: Path):
+    """Guard верифікацій (інцидент 18.10: зникло підтвердження GSC). 🚩-рядки підхопить daily_files_to_shared → SEO_CHANNEL."""
+    try:
+        sites = [x.get("siteUrl") for x in (_check(session.get(f"{API}/sites", timeout=60)).get("siteEntry") or [])]
+    except ApiDisabled:
+        raise
+    except Exception as e:  # noqa: BLE001 — збій запиту ≠ «властивості нема»
+        sites = None
+        sites_err = f"{type(e).__name__}"
+    lines = gsc_extra.check_verification(gsc_extra.http_fetch, sites if sites is not None else [SITE_URL], SITE_URL)
+    if sites is None:
+        lines.append(f"⚠️ sites.list не вдалося прочитати ({sites_err}): перевірка властивості GSC пропущена")
+    p = out_dir / f"gsc_verification_{today:%Y-%m-%d}.txt"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p, len(lines)
+
+
+PARTS = [("query_page", part_query_page), ("daily", part_daily), ("sitemaps", part_sitemaps), ("inspect", part_inspect),
+         ("weekly_summary", part_weekly_summary), ("verification", part_verification)]
 
 
 def run(session=None, out_dir: Path | None = None, now: datetime | None = None) -> int:

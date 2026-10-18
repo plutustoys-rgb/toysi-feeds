@@ -89,7 +89,7 @@ h1.page{font-size:18px;font-weight:700;margin:4px 16px 12px}
 
 /* ── Картка товару ── */
 .photo{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
-.photo img{width:100%;aspect-ratio:1/1;object-fit:contain;padding:16px}
+.photo img{width:100%;height:auto;aspect-ratio:1/1;object-fit:contain;padding:16px}   /* height:auto — атрибут height=800 не перебиває квадратний кадр (SEO 18.10) */
 .photo .ph{width:100%;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px}
 .body{padding:16px}
 .cat{font-size:13px;color:var(--muted);margin-bottom:6px}

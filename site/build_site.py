@@ -528,7 +528,7 @@ def tile(p, cls="", eager=False, prio=False, badge=False):
     sb = sale_badge_html(p)
     price_html = (f'<span class="pr pr-sale">{p["price"]} ₴</span><s class="pr-old">{p["old_price"]} ₴</s>' if p.get("old_price") else f'<span class="pr">{p["price"]} ₴</span>')
     lazy = (' fetchpriority="high"' if prio else "") if eager else ' loading="lazy"'
-    img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}"{lazy}>'
+    img = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" width="400" height="400"{lazy}>'   # SEO 18.10: width/height на всіх <img>; розмір оригіналу невідомий, кадр завжди 1:1 (.card .ph{aspect-ratio:1/1} + img 100%×100% object-fit:contain) — атрибути лише резервують пропорцію
            if p["photo"] else '<div class="ph"></div>')
     klass = ("card " + cls) if cls else "card"
     return (
@@ -2205,7 +2205,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       + '<div class="sec-title more-title"><a href="catalog.html">Усі товари →</a></div>' + (grid(more) if more else "")   # власник 16.10: замість «Більше іграшок» — посилання «Усі товари →» (вигляд як «Усі знижки →», зліва) і під ним 10 випадкових зі «Популярне зараз»
     )
     _write("index.html", page(
-        "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld(),
+        "Іграшки з доставкою Новою Поштою", body, extra_head=home_jsonld() + (f'<link rel="preload" as="image" href="{esc(picks[0]["photo"])}" fetchpriority="high">' + chr(10) if (picks and picks[0].get("photo")) else ""),   # LCP головної (виміряно 18.10: 2,8 с mobile, елемент — перше фото каруселі з toysi.ua): починаємо тягти до розбору розмітки
         description="Дитячі іграшки, від яких світяться очі 🦊 Конструктори, ляльки, машинки, розвиваючі та творчі набори. Іграшки для дітей від 1 року, повернення 14 днів.",
         canonical="index.html", og_image=OG_IMAGE))
 
@@ -2244,7 +2244,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
         desc_block = f'<div class="desc"><h2>Опис</h2>{desc_html}{specs_html}</div>' + prod_text_html
     # Головне фото = LCP картки: fetchpriority=high каже браузеру тягнути його першим (решта фото сторінки — loading=lazy).
     # width/height не ставимо: розмір оригіналу toysi.ua невідомий, а місце під кадр вже резервує `.photo img{aspect-ratio:1/1}` у styles.css.
-    photo = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" fetchpriority="high" decoding="async">'
+    photo = (f'<img src="{esc(p["photo"])}" alt="{esc(p["name"])}" width="800" height="800" fetchpriority="high" decoding="async">'
              if p["photo"] else '<div class="ph">Фото готуємо</div>')
     avail = "У наявності" if p["stock"] > 0 else "Немає в наявності"
     oos = "" if p["stock"] > 0 else "oos"
@@ -2333,6 +2333,8 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     cat_href = f"category-{cat_slug[p['category']]}.html" if (cat_slug and p.get("category") in cat_slug) else None
     trail = [("Головна", "index.html")] + ([(p["category"], cat_href)] if cat_href else []) + [(p["name"], None)]
     extra = f'<script type="application/ld+json">{ld_json}</script>' + chr(10) + breadcrumb_ld(trail)
+    if p.get("photo"):
+        extra += f'<link rel="preload" as="image" href="{esc(p["photo"])}" fetchpriority="high">' + chr(10)   # LCP картки — головне фото
     body = crumbs_html(trail) + body
     _write(f"product-{p['id']}.html", page(
         p["name"], body, extra_head=extra, title_full=product_title_for(p, in_stock), description=meta_desc,

@@ -317,7 +317,7 @@ _CATEGORY_NAME_MAP = {
 
 def price_band(price: float) -> str:
     """g:custom_label_0 — цінова смуга за ПУБЛІЧНОЮ ціною картки сайту в грн (без маржі/собівартості); межі задала SEO 18.10.2026 (= GOOGLE_SHOPPING_план 12.10 і пропозиція Shopify-code 13.10):
-    lt150: <150 | 150_300: 150–299.99 | 300_500: 300–499.99 | ge500: ≥500. Під час акції береться ціна картки (акційна), бо її бачить покупець."""
+    lt150: <150 | 150_300: 150–299.99 | 300_500: 300–499.99 | ge500: ≥500. СТАБІЛЬНА смуга (рішення SEO 18.10): береться ЗВИЧАЙНА ціна (price у фіді = стара ціна під час акції), щоб товар біля межі не перестрибував між смугами через щоденну знижку."""
     if price < 150:
         return "lt150"
     if price < 300:
@@ -1062,7 +1062,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             "link": SITE_LINK_TEMPLATE.format(pid=pid),
             "image_link": image,
             "price": price_str,
-            "price_band": price_band(retail_price),   # custom_label_0 (лише Google-фід)
+            "price_band": price_band(float(price_str.split()[0])),   # custom_label_0 (лише Google-фід): за ЗВИЧАЙНОЮ ціною (під час акції price_str = стара), смуга стабільна
             "sale_price": sale_price,
             "sale_dates": sale_dates,
             "sale_dates_colon": sale_dates_colon,

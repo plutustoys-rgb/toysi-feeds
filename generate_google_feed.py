@@ -771,6 +771,12 @@ FEED_MIN_SITE_VS_TOP = 0.5     # множина сайту менша за цю 
 FEED_EXCLUDED_CATEGORIES = frozenset({"велосипеди", "термометри та аспіратори", "маски захисні",
                                       "автомати і пістолети", "набори зі зброєю", "арбалети і луки", "зброя"})
 
+# ТОЧКОВІ pid, яких не просимо в фіди Google/Meta/Bing (на сайті й маркетплейсах лишаються): Merchant Center відхилив їх як порушення політики, хоча товар легальний
+# (хибне спрацювання класифікатора). Повторні порушення шкодять здоров'ю акаунта, тому не ризикуємо. НЕ плутати з forbidden_products (те — «не продаємо» взагалі).
+FEED_EXCLUDED_PRODUCT_IDS = {
+    "283091": "Машинка металева «Автопром Монстр Трак» (синій): GMC 17.10 — tobacco_policy_violation (хибне спрацювання)",
+}
+
 
 def select_feed_catalog(catalog: dict, top_catalog: dict | None = None) -> tuple[dict, str]:
     """Каталог для фідів Google/Meta/Bing = МНОЖИНА ВЛАСНОГО САЙТУ (товари, що мають картку в site/index.json), а не Prom-топ.
@@ -842,6 +848,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         "price_from_formula": 0,  # індексу нема/ціни нема — рахуємо site_retail_price
         "trademark_blocked": 0,  # ТМ «UNO» (претензія Mattel) — не віддаємо на сайт/у фіди
         "forbidden": 0,          # політика «що не продаємо» (forbidden_products: ножі/зброя) — власний гейт фіда, не залежить від свіжості індексу сайту
+        "excluded_product": 0,   # FEED_EXCLUDED_PRODUCT_IDS (точкові відхилення Merchant Center)
         "excluded_category": 0,  # FEED_EXCLUDED_CATEGORIES (не іграшки/без надійних даних — раніше теж не йшли у фіди)
         "out_of_stock": 0,       # stock ≤ 0 — у фіди не йдуть (сторінка сайту жива з OutOfStock, але трафік на неї не просимо)
         "clearance": 0,          # «Уцінка»: condition у фіді жорстко «new», для уцінки з дефектом це хибне твердження про товар
@@ -865,6 +872,9 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             continue
         if (item.get("category_name") or "").strip().lower() in FEED_EXCLUDED_CATEGORIES:
             stats["excluded_category"] += 1
+            continue
+        if str(pid) in FEED_EXCLUDED_PRODUCT_IDS:
+            stats["excluded_product"] += 1
             continue
         try:
             _stock_num = float(item.get("stock", 0) or 0)

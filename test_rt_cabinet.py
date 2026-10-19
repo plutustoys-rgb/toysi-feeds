@@ -17,7 +17,7 @@ for ok in ("/ua/my/", "/ua/my/orders/", "/ua/my/orders/?page=2", "/ua/my/orders/
     chk(f"дозволено: {ok}", rc.safe_link(B + ok))
 bad = ["/orders/12/del", "/orders/12/drop", "/my/orders/repeat/12", "/my/order/reorder/12", "/my/orders/pay/12", "/my/orders/confirm/12", "/my/orders/12/send", "/my/orders/12/close", "/my/orders/12/status/2",
        "/my/signout", "/my/logout/", "/my/wishlist/add/3", "/my/orders/12/annul", "/my/orders/create", "/my/orders/add", "/order/delete/12", "/cart/add/5", "/ua/auth/", "/my/orders/12/скасувати", "/my/orders/видалити", "/my/orders/отмена",
-       "/my/orders/?action=remove", "/my/orders/?token=abc", "/my/orders/?do=cancel", "/my/orders/?status=2", "/blog/", "/ua/category/igrushki/"]
+       "/my/orders/?action=remove", "/ua/my/?logout", "/ua/my/orders/cancelorder/12", "/ua/my/cart/removeitem/3", "/ua/my/orders/%64elete/12", "/ua/my/orders/disable/", "/my/orders/archive/", "/my/orders/return/", "/my/orders/unlink", "/ua/my/orders/?mode=delete", "/ua/my/orders/?go=logout", "/my/orders/?token=abc", "/my/orders/?do=cancel", "/my/orders/?status=2", "/blog/", "/ua/category/igrushki/"]
 for b in bad:
     chk(f"заблоковано: {b}", not rc.safe_link(B + b))
 chk("чужий хост і підрядок у query: заблоковано", not rc.safe_link("https://evil.tld/?r=royaltoys.com.ua/my/") and not rc.safe_link("https://royaltoys.com.ua.evil.tld/my/") and not rc.safe_link("http://royaltoys.com.ua/my/"))

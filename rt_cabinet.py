@@ -15,7 +15,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -29,9 +29,10 @@ HOME_URL = "https://royaltoys.com.ua/ua/"
 NAV_TIMEOUT_MS = 60000
 MAX_PAGES = 25
 # дієслова/дії у шляху (укр/рос/лат, початок слова або сегмент): будь-який збіг → посилання НЕ відкриваємо
+_STRONG_VERB_RE = re.compile(r"delete|remove|cancel|logout|logoff|signout|sign-out|clear|annul|скасув|видал|удал|отмен|выход|вихід|оплат", re.I)    # підрядок без межі слова (cancelorder, removeitem)
 _VERB_RE = re.compile(
     r"(?:^|[/_\-.])(?:log(?:out|off)|sign(?:out|-out)|exit|del(?:ete)?|drop|remove|cancel|clear|annul|reset|revoke|unsubscribe|toggle|deactivate|"
-    r"add|buy|checkout|create|new|edit|save|update|repeat|reorder|copy|pay|confirm|send|close|status|approve|submit|"
+    r"add|buy|checkout|create|new|edit|save|update|repeat|reorder|copy|pay|confirm|send|close|status|approve|submit|disable|activate|restore|archive|return|refund|accept|decline|reject|publish|unlink|subscribe|"
     r"выход|вихід|удал\w*|видал\w*|відміна|отмен\w*|скасув\w*|оплат\w*|повтор\w*|додат\w*|добавить)(?:$|[/_\-.?])", re.I)
 _ACTION_KEYS = {"action", "do", "act", "op", "delete", "remove", "cancel", "token", "logout", "exit", "confirm", "pay", "status"}
 _ID_SUB_RE = re.compile(r"/\d+/[^/]+")                       # /orders/12/<щось> — дія над конкретним об'єктом
@@ -46,13 +47,11 @@ def safe_link(href: str) -> bool:
         return False
     if u.scheme != "https" or (u.hostname or "").lower() not in HOST_OK:
         return False
-    path = u.path or "/"
-    if _VERB_RE.search(path) or _ID_SUB_RE.search(path) or not _NAV_HINT_RE.search(path):
+    path = unquote(u.path or "/")
+    if _STRONG_VERB_RE.search(path) or _VERB_RE.search(path) or _ID_SUB_RE.search(path) or not _NAV_HINT_RE.search(path):
         return False
-    q = {k.lower() for k in parse_qs(u.query)}
-    if ((q - {"page"}) & _ACTION_KEYS) or any(_VERB_RE.search("/" + k) for k in q if k != "page"):
-        return False
-    return True
+    q = {k.lower() for k in parse_qs(u.query, keep_blank_values=True)}      # у query дозволено лише ?page=N: будь-яка інша змінна (logout, mode=…, go=…) → посилання небезпечне
+    return not (q - {"page"})
 
 
 def _norm(href: str) -> str:
@@ -61,9 +60,13 @@ def _norm(href: str) -> str:
     return f"{u.scheme}://{u.hostname}{u.path}" + (f"?page={page}" if page.isdigit() else "")
 
 
-def _write_private(path: Path, data: str | bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _write_private(path: Path, data) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.unlink()                      # O_CREAT не виставляє права на вже існуючий файл (.tmp від збою)
+    except OSError:
+        pass
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data if isinstance(data, bytes) else data.encode("utf-8"))
@@ -72,13 +75,17 @@ def _write_private(path: Path, data: str | bytes) -> None:
 
 def _logged_in(page) -> bool:
     """Лише ПОЗИТИВНІ докази: не на сторінці входу і з'явилось посилання на вихід або на кабінет."""
-    if "/auth" in page.url or "login" in page.url:
+    path = urlparse(page.url).path.lower()
+    if "/auth" in path or "/login" in path:
         return False
     try:
-        page.wait_for_selector('a[href*="logout"], a[href*="exit"], a[href*="/my/"]', timeout=10000)
-        return True
+        # state="attached": посилання на вихід у випадному меню профілю невидиме, але є в DOM
+        page.wait_for_selector('a[href*="logout"], a[href*="exit"], a[href*="/my/"]', state="attached", timeout=10000)
     except Exception:  # noqa: BLE001
         return False
+    if page.query_selector('a[href*="logout"], a[href*="exit"]'):
+        return True
+    return page.query_selector('input[type="password"]') is None      # «Мій кабінет» гостю веде на вхід, а на сторінці входу є поле пароля
 
 
 def _save_state(ctx) -> None:
@@ -151,8 +158,16 @@ def explore() -> int:
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         try:
-            ctx = browser.new_context(storage_state=str(STATE_FILE))
-            ctx.route("**/*", lambda r: r.abort() if r.request.method not in ("GET", "HEAD") else r.continue_())     # мережевий замок: лише читання
+            ctx = browser.new_context(storage_state=str(STATE_FILE), service_workers="block")
+
+            def _lock(r):
+                req = r.request
+                if req.method not in ("GET", "HEAD"):
+                    return r.abort()                                        # лише читання: жодного POST/PUT/DELETE
+                if req.is_navigation_request() and req.url.rstrip("/") != HOME_URL.rstrip("/") and not safe_link(req.url) and "/auth" not in req.url:
+                    return r.abort()                                        # навіть редірект/GET-навігація на небезпечну адресу не виконується
+                return r.continue_()
+            ctx.route("**/*", _lock)
             page = ctx.new_page()
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if not _logged_in(page):

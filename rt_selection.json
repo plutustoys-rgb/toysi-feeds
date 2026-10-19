@@ -1,1 +1,1 @@
-{"mode": "pilot", "min_cost": 150, "min_stock": 5, "exclude_not_toys": false}
+{"mode": "full", "min_cost": null, "min_stock": 3, "exclude_not_toys": false}

@@ -29,7 +29,7 @@ HOME_URL = "https://royaltoys.com.ua/ua/"
 NAV_TIMEOUT_MS = 60000
 MAX_PAGES = 25
 # дієслова/дії у шляху (укр/рос/лат, початок слова або сегмент): будь-який збіг → посилання НЕ відкриваємо
-_STRONG_VERB_RE = re.compile(r"delete|remove|cancel|logout|logoff|signout|sign-out|clear|annul|скасув|видал|удал|отмен|выход|вихід|оплат", re.I)    # підрядок без межі слова (cancelorder, removeitem)
+_STRONG_VERB_RE = re.compile(r"delete|remove|cancel|logout|logoff|signout|sign-out|sign_out|signoff|purge|wipe|erase|kill|quit|oplat|oformit|zakaz\w*at|clear|annul|скасув|видал|удал|отмен|выход|вихід|оплат", re.I)    # підрядок без межі слова (cancelorder, removeitem)
 _VERB_RE = re.compile(
     r"(?:^|[/_\-.])(?:log(?:out|off)|sign(?:out|-out)|exit|del(?:ete)?|drop|remove|cancel|clear|annul|reset|revoke|unsubscribe|toggle|deactivate|"
     r"add|buy|checkout|create|new|edit|save|update|repeat|reorder|copy|pay|confirm|send|close|status|approve|submit|disable|activate|restore|archive|return|refund|accept|decline|reject|publish|unlink|subscribe|"
@@ -45,7 +45,7 @@ def safe_link(href: str) -> bool:
         u = urlparse(href)
     except ValueError:
         return False
-    if u.scheme != "https" or (u.hostname or "").lower() not in HOST_OK:
+    if u.scheme != "https" or (u.hostname or "").lower() not in HOST_OK or u.port not in (None, 443):
         return False
     path = unquote(u.path or "/")
     if _STRONG_VERB_RE.search(path) or _VERB_RE.search(path) or _ID_SUB_RE.search(path) or not _NAV_HINT_RE.search(path):
@@ -164,7 +164,7 @@ def explore() -> int:
                 req = r.request
                 if req.method not in ("GET", "HEAD"):
                     return r.abort()                                        # лише читання: жодного POST/PUT/DELETE
-                if req.is_navigation_request() and req.url.rstrip("/") != HOME_URL.rstrip("/") and not safe_link(req.url) and "/auth" not in req.url:
+                if req.is_navigation_request() and req.url.rstrip("/") != HOME_URL.rstrip("/") and not safe_link(req.url) and urlparse(req.url).path.rstrip("/") != "/ua/auth":
                     return r.abort()                                        # навіть редірект/GET-навігація на небезпечну адресу не виконується
                 return r.continue_()
             ctx.route("**/*", _lock)
@@ -187,7 +187,7 @@ def explore() -> int:
                     page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
                     page.wait_for_timeout(1500)
                     final = page.url
-                    if not safe_link(final) and "/auth" not in final:
+                    if not safe_link(final) and urlparse(final).path.rstrip("/") != "/ua/auth":
                         lines += [f"## {url}", f"Редірект на небезпечний/сторонній URL ({final[:100]}) — пропущено", ""]
                         continue
                     if "/auth" in final:

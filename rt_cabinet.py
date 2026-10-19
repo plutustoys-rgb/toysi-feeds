@@ -17,7 +17,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote, urljoin
+from urllib.parse import urlparse, parse_qs, unquote, unquote_plus, urljoin
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -27,6 +27,7 @@ STATE_FILE = Path(os.environ.get("RT_CABINET_STATE_FILE", str(BASE_DIR / ".local
 REPORT_DIR = Path(os.environ.get("RT_EXPLORE_DIR", str(BASE_DIR / ".local_secrets" / "reports")))
 HOST_OK = {"royaltoys.com.ua", "www.royaltoys.com.ua"}
 AUTH_URL = "https://royaltoys.com.ua/ua/auth/"
+EMAIL_AUTH_URL = "https://royaltoys.com.ua/ua/auth/email/"
 HOME_URL = "https://royaltoys.com.ua/ua/"
 NAV_TIMEOUT_MS = 60000
 MAX_PAGES = 25
@@ -126,17 +127,36 @@ def login() -> int:
     return 0
 
 
+def leaks_secret(secret: str, url: str, post_data=None) -> bool:
+    """Чиста функція замка: чи містить запит секрет там, де його не має бути. Перевіряємо query і fragment URL (звідти пароль береться GET-формою) у сирому й декодованому вигляді (браузерне кодування відрізняється від Python quote: `~`→%7E, `*` не кодується), а також тіло запиту — але тіло лише для запитів НА СТОРОННІ хости (на royaltoys.com.ua пароль у тілі POST — легітимний). Порожній секрет → False."""
+    if not secret:
+        return False
+    u = urlparse(url)
+    for part in (u.query, u.fragment):
+        for form in (part, unquote(part), unquote_plus(part)):
+            if secret in form:
+                return True
+    if post_data:
+        raw = post_data if isinstance(post_data, (bytes, bytearray)) else str(post_data).encode("utf-8", "replace")
+        txt = raw.decode("utf-8", "replace")
+        if secret.encode("utf-8") in raw or secret in txt or secret in unquote_plus(txt):
+            return True
+    return False
+
+
 def vps_login() -> int:
-    """Вхід без вікна: власник вписав RT_CABINET_PHONE і RT_CABINET_PASSWORD у .env на VPS (рішення «увесь вхід на VPS»). Капча → код 3, нічого не зберігаємо. Облікові дані ніколи не потрапляють у вивід, звіт чи стан (storage_state містить лише куки сесії)."""
+    """Вхід без вікна. Власник вписує у .env на VPS RT_CABINET_EMAIL (або RT_CABINET_PHONE) і RT_CABINET_PASSWORD. Капча → код 3, нічого не зберігаємо. ОДНА спроба за запуск. Облікові дані ніколи не потрапляють у вивід, звіт чи стан (storage_state містить лише куки сесії)."""
     try:
         from dotenv import load_dotenv
         load_dotenv(BASE_DIR / ".env")             # явний шлях: python-dotenv без аргументів шукає від каталогу файлу вгору й міг би взяти чужий .env
     except ImportError:
         pass
+    email = (os.environ.get("RT_CABINET_EMAIL") or "").strip()
     phone = (os.environ.get("RT_CABINET_PHONE") or "").strip()
     password = os.environ.get("RT_CABINET_PASSWORD") or ""
-    if not phone or not password:
-        print("[RtCabinet] нема RT_CABINET_PHONE / RT_CABINET_PASSWORD у середовищі (.env на VPS) — їх вписує власник.", file=sys.stderr)
+    kind, login_id, url = ("email", email, EMAIL_AUTH_URL) if email else ("phone", phone, AUTH_URL)
+    if not login_id or not password:
+        print("[RtCabinet] нема RT_CABINET_EMAIL (або RT_CABINET_PHONE) і RT_CABINET_PASSWORD у середовищі (.env на VPS) — їх вписує власник.", file=sys.stderr)
         return 1
     from playwright.sync_api import sync_playwright
     rc = 1
@@ -144,35 +164,60 @@ def vps_login() -> int:
         browser = pw.chromium.launch(headless=True)
         try:
             ctx = browser.new_context(service_workers="block")
+            blocked = {"hit": False}
+
+            def _guard(r):
+                try:
+                    req = r.request
+                    u = urlparse(req.url)
+                    body = req.post_data_buffer if (u.hostname or "").lower() not in HOST_OK else None      # bytes: бінарне тіло не ламає обробник (post_data робить строгий decode)
+                    if leaks_secret(password, req.url, body):
+                        blocked["hit"] = True
+                        return r.abort()                                           # пароль у query/фрагменті URL (GET-форма) або у даних запиту на сторонній хост — не відправляємо
+                    return r.continue_()
+                except Exception:  # noqa: BLE001
+                    blocked["hit"] = True                                          # fail-closed: збій перевірки = запит не пропускаємо, і він завжди завершується
+                    try:
+                        return r.abort()
+                    except Exception:  # noqa: BLE001
+                        return None
+            ctx.route("**/*", _guard)
             page = ctx.new_page()
-            page.goto(AUTH_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if (urlparse(page.url).hostname or "").lower() not in HOST_OK:
                 print("[RtCabinet] сторінка входу переадресована поза royaltoys.com.ua — зупинка, дані не введено.", file=sys.stderr)
                 return 1
-            forms = page.locator("form:has(input[name='password']):has(input[name='type'][value='auth'])")
+            if kind == "email":
+                forms = page.locator("form:has(input[name='email']):has(input[name='password'])")
+            else:
+                forms = page.locator("form:has(input[name='password']):has(input[name='type'][value='auth'])")
             if forms.count() != 1:
                 print(f"[RtCabinet] очікувалась рівно 1 форма входу, знайдено {forms.count()} — зупинка, дані не введено.", file=sys.stderr)
                 return 1
             form = forms.first
-            method = (form.get_attribute("method") or "get").lower()                 # відсутній method = GET за замовчуванням → пароль пішов би в URL
+            method = form.get_attribute("method")
             action = urlparse(urljoin(page.url, form.get_attribute("action") or ""))
-            if method != "post" or action.scheme != "https" or (action.hostname or "").lower() not in HOST_OK:
+            # явний method має бути POST; форма БЕЗ method/action (email-вхід Webasyst відправляє її JS-ом) допускається лише під мережевим замком вище (пароль у URL і сторонні хости блокуються)
+            if (method is not None and method.lower() != "post") or action.scheme != "https" or (action.hostname or "").lower() not in HOST_OK or (kind == "phone" and (method or "get").lower() != "post"):
                 print("[RtCabinet] форма входу не POST на royaltoys.com.ua по https — зупинка, дані не введено.", file=sys.stderr)
                 return 1
             if _captcha_visible(page):
                 print("[RtCabinet] капча вже видима до відправлення — вхід не робимо (капчу не обходимо).", file=sys.stderr)
                 return 3
-            form.locator("input[name='phone']").fill(phone)
+            form.locator("input[name='email']" if kind == "email" else "input[name='phone']").fill(login_id)
             form.locator("input[name='password']").fill(password)
             form.locator("input[type='submit'], button[type='submit'], button:not([type])").first.click()      # ОДНА спроба, без повторів
             page.wait_for_timeout(4000)
+            if blocked["hit"]:
+                print("[RtCabinet] мережевий замок заблокував запит із паролем (форма відправляє його в URL або на сторонній хост) — вхід не відбувся, стан не збережено.", file=sys.stderr)
+                return 1
             page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if _captcha_visible(page):
-                print("[RtCabinet] сайт показав капчу — вхід зупинено (капчу не обходимо). Увійдіть вручну на ПК (--login) або зачекайте.", file=sys.stderr)
+                print("[RtCabinet] сайт показав капчу — вхід зупинено (капчу не обходимо). Зачекайте або увійдіть вручну.", file=sys.stderr)
                 return 3
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if not _logged_in(page):
-                print("[RtCabinet] вхід не підтверджено (невірні дані або інша форма) — стан не збережено.", file=sys.stderr)
+                print("[RtCabinet] вхід не підтверджено (невірні дані або інша форма) — стан не збережено. Повторно поспіль не запускати.", file=sys.stderr)
                 return 1
             _save_state(ctx)
             rc = 0

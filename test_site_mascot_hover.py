@@ -57,7 +57,7 @@ chk("розмітка: .mascot-wrap є, курсор-вказівник у CSS",
 css = (HERE / "site/assets/styles.css").read_text(encoding="utf-8")
 chk("CSS: без «квадрата» при тапі (tap-highlight прозорий, user-select none, touch-action manipulation), відгук .poke через transition (без @keyframes)", all(x in css for x in ("-webkit-tap-highlight-color:transparent", "user-select:none", "touch-action:manipulation", ".hero2 .mascot-wrap.poke{transform:scale(.9)}", "transform .15s ease")) and "@keyframes pt-poke" not in css)
 js = (HERE / "site/assets/app.js").read_text(encoding="utf-8")
-chk("JS: react() не під час руху/підвантаження, пауза після кінця, скасовує відкладений автопоказ; pointerenter (миша), pointerdown (дотик), click", all(x in js for x in ("function react(touch)", "function poke()", "function prefetchNext()", "REACT_COOL=3000", 'wrap.addEventListener("pointerenter"', 'wrap.addEventListener("pointerdown"', 'wrap.addEventListener("click"', "clearTimeout(timer);   // скасувати відкладений автопоказ")))
+chk("JS: react() не під час руху/підвантаження, пауза після кінця, скасовує відкладений автопоказ; pointerenter (миша), pointerdown (дотик), click", all(x in js for x in ("function react(tap)", "function poke()", "function prefetchNext()", "REACT_COOL=3000", 'wrap.addEventListener("pointerenter"', 'wrap.addEventListener("pointerdown"', 'wrap.addEventListener("click"', "clearTimeout(timer);   // скасувати відкладений автопоказ")))
 
 H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out))
 H.log_message = lambda *a, **k: None
@@ -121,6 +121,28 @@ with sync_playwright() as pw:
     pg.wait_for_timeout(900)
     st = pg.evaluate(STATE)
     chk(f"тап (pointerdown touch) запускає рух: plays={st[0]}", st[0] == 3 and st[1] is True)
+    ctx.close()
+
+    # власник 19.10: «на компі тапаєш по Плутусу курсором — теж не з першого разу реагує». КЛІК завжди дає реакцію: перебиває рух і ігнорує паузу; наведення — ні.
+    ctx, pg = new_page(br)
+    pg.wait_for_timeout(500)
+    pg.hover(".mascot-wrap")
+    pg.wait_for_timeout(250)
+    pg.mouse.down(); pg.mouse.up()      # клік у межах того ж жесту (наведення → клік за <700 мс)
+    pg.wait_for_timeout(300)
+    chk(f"клік одразу після наведення (той самий жест, <700 мс) НЕ запускає другий рух: plays={pg.evaluate(STATE)[0]}", pg.evaluate(STATE)[0] == 1)
+    pg.wait_for_timeout(600)            # рух ще триває (≈2,06 с), але жест уже інший
+    pg.mouse.down(); pg.mouse.up()
+    pg.wait_for_timeout(500)
+    st = pg.evaluate(STATE)
+    chk(f"клік ПІД ЧАС руху (пізніше 0,7 с) перебиває його й запускає наступний: plays={st[0]}, clip-on={st[1]}", st[0] == 2 and st[1] is True)
+    pg.wait_for_timeout(2600)           # рух завершився; до кінця паузи наведення (3 с) ще далеко
+    st = pg.evaluate(STATE)
+    chk(f"після кінця руху wrap без clip-on: plays={st[0]}, clip-on={st[1]}", st[0] == 2 and st[1] is False)
+    pg.mouse.down(); pg.mouse.up()
+    pg.wait_for_timeout(600)
+    st = pg.evaluate(STATE)
+    chk(f"клік у межах 3-секундної паузи ПІСЛЯ руху реагує (пауза діє лише на наведення): plays={st[0]}, clip-on={st[1]}", st[0] == 3 and st[1] is True)
     ctx.close()
 
     ctx, pg = new_page(br, reduced_motion="reduce")

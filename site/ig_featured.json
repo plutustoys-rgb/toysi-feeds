@@ -1,8 +1,24 @@
 {
- "date": "2026-10-12",
- "ids": [
-  "196937",
-  "278999",
-  "238372"
+ "reels": [
+  {
+   "date": "2026-10-16",
+   "url": "https://www.instagram.com/plutustoys.ua/reel/Dej3cDiEeG6/",
+   "title": "М'які іграшки",
+   "ids": [
+    "231984",
+    "288814",
+    "219728"
+   ]
+  },
+  {
+   "date": "2026-10-12",
+   "url": "https://www.instagram.com/plutustoys.ua/reel/DecJImkmENe/",
+   "title": "Картини за номерами",
+   "ids": [
+    "196937",
+    "278999",
+    "238372"
+   ]
+  }
  ]
 }

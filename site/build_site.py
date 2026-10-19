@@ -2636,10 +2636,73 @@ def _load_ig_featured():
     return out
 
 
+_IG_URL_RX = re.compile(r"https://www\.instagram\.com/plutustoys\.ua/(?:reel|p)/[A-Za-z0-9_-]{5,40}/?")
+
+
+def _load_ig_reels():
+    """Кілька рілсів на /ig.html (SMM 19.10): site/ig_featured.json = {"reels": [{"date": "2026-10-16", "url": "https://www.instagram.com/plutustoys.ua/reel/<код>/", "title": "М'які іграшки", "ids": [...]}, ...]}, найновіший першим.
+    Старий формат {"date", "ids"} (один рілс) лишається: тоді повертаємо None і сторінка збирається як раніше. Некоректний рілс (нема ids/не https instagram.com/plutustoys.ua) — голосно, інші лишаються."""
+    try:
+        with open(IG_FEATURED_FILE, encoding="utf-8-sig") as f:
+            data = json.loads(f.read())
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        return None   # про помилки читання голосно скаже _load_ig_featured (старий шлях)
+    reels = data.get("reels") if isinstance(data, dict) else None
+    if not isinstance(reels, list):
+        return None
+    out = []
+    for r in reels[:6]:
+        if not isinstance(r, dict) or not isinstance(r.get("ids"), list):
+            print("[build] ⚠ ig_featured.json: рілс без списку ids — пропущено", file=sys.stderr)
+            continue
+        ids = []
+        for x in r["ids"][:IG_MAX_IDS]:
+            if isinstance(x, bool) or not isinstance(x, (str, int)):
+                print(f"[build] ⚠ ig_featured.json: id {x!r} не рядок/число — пропущено", file=sys.stderr)
+                continue
+            sx = str(x).strip()
+            if sx and sx not in ids:
+                ids.append(sx)
+        url = r.get("url") if isinstance(r.get("url"), str) else ""
+        if url and not _IG_URL_RX.fullmatch(url):
+            print(f"[build] ⚠ ig_featured.json: url {url[:60]!r} не з instagram.com/plutustoys.ua — посилання не показуємо", file=sys.stderr)
+            url = ""
+        d = str(r.get("date") or "")
+        m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", d)
+        out.append({"ids": ids, "url": url, "title": re.sub(r"\s+", " ", str(r.get("title") or "")).strip()[:60], "date": f"{m.group(3)}.{m.group(2)}" if m else ""})
+    return out
+
+
 def write_ig(prods):
     """Сторінка /ig.html: сітка з товарів ig_featured.json, ЛИШЕ в наявності (нема — не показуємо, у лог іде попередження). noindex (кампанійна сторінка), canonical без параметрів
     (utm не плодять дублів). Не в sitemap (noindex). Трекінг: view_item_list/select_item з item_list_name «ig_landing» (assets/app.js, initListTracking)."""
     by_id = {p["id"]: p for p in prods}
+    reels = _load_ig_reels()
+    if reels:   # кілька рілсів: секція на кожен, найновіший першим (SMM 19.10)
+        secs, n_shown = [], 0
+        for r in reels:
+            shown_r = [by_id[i] for i in r["ids"] if i in by_id and by_id[i]["stock"] > 0][:IG_MAX_ITEMS]
+            miss = [i for i in r["ids"] if i not in by_id or by_id[i]["stock"] <= 0]
+            if miss:
+                print(f"[build] ⚠ ig_featured.json ({r['title'] or r['date']}): нема в наявності/каталозі — не показано: {miss}", file=sys.stderr)
+            if not shown_r:
+                continue
+            head = esc(r["title"] or "Відео")
+            sub = f' <span class="ig-date">· відео від {esc(r["date"])}</span>' if r["date"] else ""
+            watch = f'<p class="ig-watch"><a href="{esc(r["url"])}" target="_blank" rel="noopener">Дивитися в Instagram →</a></p>' if r["url"] else ""
+            secs.append(f'<section class="ig-reel"><h2 class="sec-h">{head}{sub}</h2>{watch}' + grid(shown_r, eager_n=min(3, len(shown_r)) if not secs else 0, badge=True) + '</section>')
+            n_shown += len(shown_r)
+        if secs:
+            body = (
+                '<h1 class="page">З Instagram: що показали Плутус</h1>'
+                '<p class="ig-lead">Ці товари з наших останніх відео.</p>'
+                f'<div class="ig-list" id="ig-list" data-list="{IG_LIST_NAME}">' + "".join(secs) + '</div>'
+                '<p class="ig-all"><a class="btn" href="catalog.html">Усі іграшки</a></p>'
+            )
+            _write("ig.html", page("З Instagram: що показали Плутус", body, canonical="ig.html", noindex=True,
+                                   description="Товари з наших відео в Instagram — PlutusToys."))
+            return
+        print("[build] ⚠ ig_featured.json: жодного товару в наявності у жодному рілсі — /ig.html показує лише кнопку каталогу", file=sys.stderr)
     want = _load_ig_featured()
     shown = [by_id[i] for i in want if i in by_id and by_id[i]["stock"] > 0][:IG_MAX_ITEMS]
     missing = [i for i in want if i not in by_id or by_id[i]["stock"] <= 0]

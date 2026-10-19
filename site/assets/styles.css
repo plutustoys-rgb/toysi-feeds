@@ -353,6 +353,9 @@ footer.foot a{color:var(--accent)}
 .ig-lead{margin:0 clamp(12px,3vw,24px) 14px;color:var(--muted)}
 .ig-list{margin-bottom:8px}
 .ig-all{margin:18px clamp(12px,3vw,24px) 28px}
+.ig-reel{margin-bottom:10px}   /* /ig.html: секція на кожен рілс (SMM 19.10) */
+.ig-date{font-weight:400;color:var(--muted);font-size:14px}
+.ig-watch{margin:0 clamp(12px,3vw,24px) 10px;font-size:14px}
 
 /* ── кошик: двоколонково на десктопі (SMM 12.10) ── */
 .cart-grid{padding:0 16px}

@@ -23,14 +23,14 @@ for b in bad:
 chk("чужий хост і підрядок у query: заблоковано", not rc.safe_link("https://evil.tld/?r=royaltoys.com.ua/my/") and not rc.safe_link("https://royaltoys.com.ua.evil.tld/my/") and not rc.safe_link("http://royaltoys.com.ua/my/"))
 chk("_norm лишає лише ?page=N", rc._norm(B + "/my/orders/?page=3&sort=x") == B + "/my/orders/?page=3" and rc._norm(B + "/my/orders/?sort=x") == B + "/my/orders/")
 import os as _os, io as _io, contextlib as _cl
-for k in ("RT_CABINET_PHONE", "RT_CABINET_PASSWORD"):
+for k in ("RT_CABINET_EMAIL", "RT_CABINET_PHONE", "RT_CABINET_PASSWORD"):
     _os.environ.pop(k, None)
 import dotenv as _dotenv
 _dotenv.load_dotenv = lambda *a, **k: False      # тест не має підтягувати реальні RT_CABINET_* з локального .env (інакше запустив би справжній вхід)
 _err = _io.StringIO()
 with _cl.redirect_stderr(_err):
     _rc = rc.vps_login()
-chk("--vps-login без RT_CABINET_PHONE/PASSWORD у середовищі → код 1, браузер не запускається, облікових даних у виводі нема", _rc == 1 and "RT_CABINET_PHONE" in _err.getvalue())
+chk("--vps-login без RT_CABINET_PHONE/PASSWORD у середовищі → код 1, браузер не запускається, облікових даних у виводі нема", _rc == 1 and "RT_CABINET_EMAIL" in _err.getvalue())
 src = Path(rc.__file__).read_text(encoding="utf-8")
 chk("пароль ніколи не друкується: у файлі нема print з password/phone-змінними", not any(("password" in ln or "phone" in ln) and "print(" in ln and "RT_CABINET_" not in ln for ln in src.splitlines()))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")

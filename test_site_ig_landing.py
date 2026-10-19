@@ -119,6 +119,24 @@ chk("файл на 200 тис. id: збірка швидка (зупиняємо
 o, e = build_with(json.dumps({"ids": ["900"]}))
 chk("усі товари не в наявності → без сітки, лише кнопка каталогу, попередження «жодного товару в наявності»", 'id="ig-list"' not in (o / "ig.html").read_text(encoding="utf-8") and "жодного товару" in e)
 
+# 2б) кілька рілсів (SMM 19.10): секція на кожен, найновіший першим, посилання лише на instagram.com/plutustoys.ua
+multi = {"reels": [
+    {"date": "2026-10-16", "url": "https://www.instagram.com/plutustoys.ua/reel/Dej3cDiEeG6/", "title": "М'які іграшки", "ids": ["3", "900", "5"]},
+    {"date": "2026-10-12", "url": "https://evil.example.com/reel/xxxxx/", "title": "Картини <b>за</b> номерами", "ids": ["7", "8"]},
+    {"date": "2026-10-10", "ids": ["900"]},
+    {"date": "2026-10-09", "ids": "не список"},
+]}
+o, e = build_with(json.dumps(multi, ensure_ascii=False))
+pg = (o / "ig.html").read_text(encoding="utf-8")
+secs = re.findall(r'<section class="ig-reel"><h2 class="sec-h">(.*?)</h2>(.*?)</section>', pg, re.S)
+chk("кілька рілсів: рівно 2 секції (рілс без наявних товарів і без ids пропущені), найновіший першим", len(secs) == 2 and "М&#x27;які іграшки" in secs[0][0] and "відео від 16.10" in secs[0][0] and "відео від 12.10" in secs[1][0])
+chk("кожна секція — свої картки в заданому порядку (3, 5 | 7, 8), без OOS «900»", [re.findall(r'href="product-(\d+)\.html"', x[1]) for x in secs] == [["3", "5"], ["7", "8"]])
+chk("посилання «Дивитися в Instagram» лише для url з instagram.com/plutustoys.ua (target=_blank, rel=noopener); чужий url НЕ виводиться", 'href="https://www.instagram.com/plutustoys.ua/reel/Dej3cDiEeG6/" target="_blank" rel="noopener">Дивитися в Instagram' in pg and "evil.example.com" not in pg and "url" in e)
+chk("заголовок рілса екранується (жодного літерального <b>)", "<b>за</b>" not in pg and "&lt;b&gt;за&lt;/b&gt;" in pg)
+chk("рівно один контейнер #ig-list з data-list=ig_landing на всю сторінку (трекінг подій), noindex і кнопка «Усі іграшки» на місці", pg.count('id="ig-list"') == 1 and 'data-list="ig_landing"' in pg and 'content="noindex,follow"' in pg and "Усі іграшки" in pg)
+o, e = build_with(json.dumps({"reels": [{"date": "2026-10-10", "ids": ["900"]}]}))
+chk("усі рілси без наявних товарів → «скоро з’явиться» і попередження", "скоро з" in (o / "ig.html").read_text(encoding="utf-8") and "жодного товару" in e)
+
 # 3) футер: utm на соцмережі, sameAs чисті
 home = (out / "index.html").read_text(encoding="utf-8")
 fsoc = re.search(r'<p class="fsoc">(.*?)</p>', home, re.S).group(1)

@@ -488,6 +488,7 @@
     var rt=ids.filter(function(k){ return /^rt-/.test(k); }).length, mixed=rt>0 && rt<ids.length;
     var cod=document.querySelector('input[name="payment"][value="cod"]'), pre=document.querySelector('input[name="payment"][value="prepaid"]');
     var note=document.getElementById("rt-pay-note");
+    var tp=document.querySelector(".trust-pay"); if(tp){ if(tp.getAttribute("data-orig")===null) tp.setAttribute("data-orig", tp.textContent); tp.textContent = rt>0 ? (mixed ? "💳 Оплата карткою онлайн — для частини товарів у кошику лише передоплата" : "💳 Оплата карткою онлайн — цей товар відправляється лише за передоплатою") : tp.getAttribute("data-orig"); }
     if(cod){
       cod.disabled = rt>0;
       var lab=cod.parentNode; if(lab && lab.classList) lab.classList.toggle("is-off", rt>0);

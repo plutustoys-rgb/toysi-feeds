@@ -172,5 +172,26 @@ with _tf2.TemporaryDirectory() as td5:
     m = re.search(r"TimeoutStartSec=(\d+)", svc)
     chk("юніт: TimeoutStartSec > бюджет фото + 30 с запити + запас (аудит #866)", m and int(m.group(1)) >= ex.PREFETCH_BUDGET_S * 2)
 chk("російські літери: опис (ы э ъ ё) → порожній опис, картка лишається; російська «укр.» назва → картку не публікуємо", ex.build_item("rt-1", dict(V, description_ua="Набор посуды из пластика"), ["u"])["description"] == "" and ex.build_item("rt-1", dict(V, name_ua="Набор посуды"), ["u"]) is None and ex.build_item("rt-1", dict(V, name_ua="Набір посуду", description_ua="Опис українською"), ["u"])["description"] == "Опис українською")
+# --- поле index (SEO: нові rt-картки index:false, пілот true) ---
+with _tf2.TemporaryDirectory() as td7:
+    td7 = Path(td7)
+    ids_f = td7 / "ix.json"
+    ids_f.write_text(_j2.dumps({"ids": ["rt-2", "bad", "rt-../x"]}), encoding="utf-8")
+    chk("load_index_ids: лише коректні rt- id; нема файлу → порожньо", ex.load_index_ids(ids_f) == {"rt-2"} and ex.load_index_ids(td7 / "none.json") == set())
+    cat7 = {"1": mk(), "2": mk(), "3": mk()}
+    for k, v in cat7.items():
+        v["id"] = k
+    real_pilot, real_idx = ex.load_pilot_ids, ex.load_index_ids
+    ex.load_pilot_ids = lambda: ["rt-1"]
+    ex.load_index_ids = lambda: {"rt-2"}
+    o7 = td7 / "o7.json"
+    ex.run_once(cat7, None, o7, lambda u, d: True, td7 / "img", selection={"mode": "full", "min_cost": None, "min_stock": None, "exclude_not_toys": False})
+    ex.load_pilot_ids, ex.load_index_ids = real_pilot, real_idx
+    d7 = _j2.loads(o7.read_text(encoding="utf-8"))["items"]
+    chk("index: пілот (rt-1) true, id із rt_index_ids.json (rt-2) true, решта (rt-3) false", d7["rt-1"]["index"] is True and d7["rt-2"]["index"] is True and d7["rt-3"]["index"] is False)
+    o8 = td7 / "o8.json"
+    ex.run_once(cat7, ["rt-3"], o8, lambda u, d: True, td7 / "img")
+    chk("явний список id (ручний запуск/тести) → index true (як було)", _j2.loads(o8.read_text(encoding="utf-8"))["items"]["rt-3"]["index"] is True)
+chk("rt_selection.json: exclude_not_toys=false (рішення власника «повертай», 19.10); mode поки pilot", (lambda d: d["exclude_not_toys"] is False and d["mode"] == "pilot")(_j2.loads((Path(__file__).parent / "rt_selection.json").read_text(encoding="utf-8"))))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

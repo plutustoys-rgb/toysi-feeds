@@ -871,6 +871,12 @@ def build():
     idx = index_entries(prods_rec)
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
+    # Сторінки (app.js) читають НЕ повний index.json, а два файли: index-t.json (Toysi, як було) і index-rt.json (RoyalToys, довантажується у фоні) —
+    # 20.10: 9,9 тис. карток RoyalToys підняли index.json з 1,0 до 1,5 МБ gzip, і LCP каталогу/категорій у Lighthouse зріс з ≈3 до ≈12 с. Повний index.json лишається для site_order_api (ціни) і фідів.
+    with open(os.path.join(OUT, "index-t.json"), "w", encoding="utf-8") as f:
+        json.dump([x for x in idx if not x.get("rt")], f, ensure_ascii=False)
+    with open(os.path.join(OUT, "index-rt.json"), "w", encoding="utf-8") as f:
+        json.dump([x for x in idx if x.get("rt")], f, ensure_ascii=False)
     # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
     static_urls = [("categories.html", "0.7", "weekly")] +([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
@@ -1005,11 +1011,11 @@ def _catalog_js_grid():
     )
 
 
-def _catalog_controls(preset=None, group=None, own=None, groups_json=None, others=None):
+def _catalog_controls(preset=None, group=None, own=None, groups_json=None, others=None, rtonly=False):
     """Панель сортування/фільтрів каталогу (керує app.js initCatalog з index.json).
     hidden до JS-ініціалізації — щоб без JS не показувати неробочі контроли."""
     return (
-      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}{(" data-groups=" + chr(39) + esc(groups_json) + chr(39)) if groups_json else ""}{(" data-others=" + chr(39) + esc(others) + chr(39)) if others else ""}>'
+      f'<div id="cat-controls" class="cat-controls" hidden{(" data-cat=" + chr(34) + esc(preset) + chr(34)) if preset else ""}{(" data-group=" + chr(39) + esc(group) + chr(39)) if group else ""}{(" data-own=" + chr(34) + esc(own) + chr(34)) if own else ""}{(" data-groups=" + chr(39) + esc(groups_json) + chr(39)) if groups_json else ""}{(" data-others=" + chr(39) + esc(others) + chr(39)) if others else ""}{' data-rtonly="1"' if rtonly else ""}>'
         '<select id="cf-sort" aria-label="Сортування">'
           '<option value="rec">Рекомендовані</option>'
           '<option value="cheap">Спершу дешевші</option>'
@@ -1722,7 +1728,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             urls = json.dumps({c: f"category-{cat_slug[c]}.html" for c in cat_list}, ensure_ascii=False).replace("</", "<\\/")
             body = (
                 crumbs_html(trail) +   # на сторінці категорії крихти лишаємо (навігація «Головна › Каталог › Категорія» + внутрішні посилання для SEO), «Сторінку 1 з N» прибрано
-                f'<div class="cat-bar"><h1 class="page cat-h1">{esc(active)}</h1>' + _catalog_controls(preset=active) + '</div>\n' +
+                f'<div class="cat-bar"><h1 class="page cat-h1">{esc(active)}</h1>' + _catalog_controls(preset=active, rtonly=bool(prods) and all(p.get("rt") for p in prods)) + '</div>\n' +
                 f'<script type="application/json" id="cat-urls">{urls}</script>\n' +
                 chips(cat_list, cat_slug, active) +
                 _category_top_html(fname, prods) +
@@ -2907,7 +2913,7 @@ def write_groups(groups, cats, cat_slug):
         body = (
             crumbs_html(trail) +
             '<div class="gp">' + sidebar + '<div class="gmain">'
-            f'<div class="cat-bar"><h1 class="page cat-h1">{esc(g["display"])}</h1>' + _catalog_controls(group=subs_json, own=g["own"], others=json.dumps([c for c, _n in g["other"]], ensure_ascii=False) if g["other"] else None) + '</div>\n' +
+            f'<div class="cat-bar"><h1 class="page cat-h1">{esc(g["display"])}</h1>' + _catalog_controls(group=subs_json, own=g["own"], others=json.dumps([c for c, _n in g["other"]], ensure_ascii=False) if g["other"] else None, rtonly=bool(items) and all(p.get("rt") for p in items)) + '</div>\n' +
             _catalog_js_grid() +
             f'<div id="cat-static">{grid(items[:PER_PAGE], eager_n=4)}</div>'
             '</div></div>'

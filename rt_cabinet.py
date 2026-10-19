@@ -17,7 +17,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, urljoin
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -128,10 +128,9 @@ def login() -> int:
 
 def vps_login() -> int:
     """Вхід без вікна: власник вписав RT_CABINET_PHONE і RT_CABINET_PASSWORD у .env на VPS (рішення «увесь вхід на VPS»). Капча → код 3, нічого не зберігаємо. Облікові дані ніколи не потрапляють у вивід, звіт чи стан (storage_state містить лише куки сесії)."""
-    from playwright.sync_api import sync_playwright
     try:
         from dotenv import load_dotenv
-        load_dotenv()
+        load_dotenv(BASE_DIR / ".env")             # явний шлях: python-dotenv без аргументів шукає від каталогу файлу вгору й міг би взяти чужий .env
     except ImportError:
         pass
     phone = (os.environ.get("RT_CABINET_PHONE") or "").strip()
@@ -139,6 +138,7 @@ def vps_login() -> int:
     if not phone or not password:
         print("[RtCabinet] нема RT_CABINET_PHONE / RT_CABINET_PASSWORD у середовищі (.env на VPS) — їх вписує власник.", file=sys.stderr)
         return 1
+    from playwright.sync_api import sync_playwright
     rc = 1
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -146,10 +146,25 @@ def vps_login() -> int:
             ctx = browser.new_context(service_workers="block")
             page = ctx.new_page()
             page.goto(AUTH_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-            form = page.locator("form:has(input[name='password'])").first
+            if (urlparse(page.url).hostname or "").lower() not in HOST_OK:
+                print("[RtCabinet] сторінка входу переадресована поза royaltoys.com.ua — зупинка, дані не введено.", file=sys.stderr)
+                return 1
+            forms = page.locator("form:has(input[name='password']):has(input[name='type'][value='auth'])")
+            if forms.count() != 1:
+                print(f"[RtCabinet] очікувалась рівно 1 форма входу, знайдено {forms.count()} — зупинка, дані не введено.", file=sys.stderr)
+                return 1
+            form = forms.first
+            method = (form.get_attribute("method") or "get").lower()                 # відсутній method = GET за замовчуванням → пароль пішов би в URL
+            action = urlparse(urljoin(page.url, form.get_attribute("action") or ""))
+            if method != "post" or action.scheme != "https" or (action.hostname or "").lower() not in HOST_OK:
+                print("[RtCabinet] форма входу не POST на royaltoys.com.ua по https — зупинка, дані не введено.", file=sys.stderr)
+                return 1
+            if _captcha_visible(page):
+                print("[RtCabinet] капча вже видима до відправлення — вхід не робимо (капчу не обходимо).", file=sys.stderr)
+                return 3
             form.locator("input[name='phone']").fill(phone)
             form.locator("input[name='password']").fill(password)
-            form.locator("input[type='submit'], button[type='submit']").first.click()
+            form.locator("input[type='submit'], button[type='submit'], button:not([type])").first.click()      # ОДНА спроба, без повторів
             page.wait_for_timeout(4000)
             page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if _captcha_visible(page):
@@ -171,10 +186,13 @@ def vps_login() -> int:
 
 
 def _captcha_visible(page) -> bool:
+    """fail-closed: будь-який збій перевірки (напр. «Execution context was destroyed» під час навігації) = вважаємо, що капча є."""
+    js = ("() => { const vis = e => !!e && !e.classList.contains('d-none') && e.offsetParent !== null; "
+          "return vis(document.querySelector('.auth-form--captcha')) || vis(document.querySelector('.g-recaptcha')) || vis(document.querySelector(\"iframe[src*='recaptcha']\")); }")
     try:
-        return bool(page.evaluate("() => { const c = document.querySelector('.auth-form--captcha'); return !!c && !c.classList.contains('d-none') && c.offsetParent !== null; }"))
+        return bool(page.evaluate(js))
     except Exception:  # noqa: BLE001
-        return False
+        return True
 
 
 def keepalive() -> int:

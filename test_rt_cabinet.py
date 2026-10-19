@@ -25,6 +25,8 @@ chk("_norm лишає лише ?page=N", rc._norm(B + "/my/orders/?page=3&sort=x
 import os as _os, io as _io, contextlib as _cl
 for k in ("RT_CABINET_PHONE", "RT_CABINET_PASSWORD"):
     _os.environ.pop(k, None)
+import dotenv as _dotenv
+_dotenv.load_dotenv = lambda *a, **k: False      # тест не має підтягувати реальні RT_CABINET_* з локального .env (інакше запустив би справжній вхід)
 _err = _io.StringIO()
 with _cl.redirect_stderr(_err):
     _rc = rc.vps_login()

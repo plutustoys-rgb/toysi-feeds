@@ -192,6 +192,7 @@ with _tf2.TemporaryDirectory() as td7:
     o8 = td7 / "o8.json"
     ex.run_once(cat7, ["rt-3"], o8, lambda u, d: True, td7 / "img")
     chk("явний список id (ручний запуск/тести) → index true (як було)", _j2.loads(o8.read_text(encoding="utf-8"))["items"]["rt-3"]["index"] is True)
-chk("rt_selection.json: exclude_not_toys=false (рішення власника «повертай», 19.10); mode поки pilot", (lambda d: d["exclude_not_toys"] is False and d["mode"] == "pilot")(_j2.loads((Path(__file__).parent / "rt_selection.json").read_text(encoding="utf-8"))))
+chk("rt_selection.json = рішення власника 19.10: mode full, без мінімальної опт-ціни (дешеві теж), залишок ≥3, «не іграшки» включено", (lambda d: d == {"mode": "full", "min_cost": None, "min_stock": 3, "exclude_not_toys": False})(_j2.loads((Path(__file__).parent / "rt_selection.json").read_text(encoding="utf-8"))))
+chk("ціна сайту не нижча за опт+еквайринг+15: мінімум внеску ≥ 15 ₴ для будь-якого опту (формула власника, зворотна ТТН не в ціні)", all(ex.site_price(c) - c - ex.site_price(c) * 0.028 >= 15.0 for c in (0.49, 1, 5, 9.9, 10, 20, 33.3, 33.4, 50, 99.99, 150, 1000)))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

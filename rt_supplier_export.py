@@ -28,6 +28,7 @@ IMG_URL = "https://plutustoys.com.ua/img/rt/{name}"
 MAX_IMAGES = 3
 SELECTION_FILE = HERE / "rt_selection.json"
 DUP_FILE = HERE / "rt_dup_map.json"
+INDEX_FILE = HERE / "rt_index_ids.json"
 PREFETCH_WORKERS = 6
 PREFETCH_BUDGET_S = 900       # ліміт часу на завантаження фото за один запуск (виміряно аудитом ≈10 фото/с на 6 потоках): решта — наступного разу; TimeoutStartSec юніта (2400) з запасом перекриває бюджет + таймаути запитів + запис
 MIN_FREE_GB = 10              # запас диска (Shopify-code, замір VPS: 30 ГБ вільно): менше → нових фото не качаємо
@@ -104,6 +105,15 @@ def load_selection(path: Path = SELECTION_FILE) -> dict:
         return d
     except (OSError, ValueError):
         return {"mode": "pilot"}
+
+
+def load_index_ids(path: Path = INDEX_FILE) -> set:
+    """rt_index_ids.json {"ids": ["rt-…"]} — картки, відкриті для Google (хвилі індексації; веде SEO). Нема файлу → порожньо."""
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        return {str(i) for i in (d.get("ids") or []) if _ID_RE.fullmatch(str(i))} if isinstance(d, dict) else set()
+    except (OSError, ValueError):
+        return set()
 
 
 def load_dup_map(path: Path = DUP_FILE) -> dict:
@@ -301,7 +311,11 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
         if catalog is None:
             import royaltoys_parser
             catalog = royaltoys_parser.fetch_royaltoys_catalog()
-        ids = ids or select_ids(catalog or {}, load_pilot_ids(), selection if selection is not None else load_selection())
+        index_set = None            # None → усі картки index=true (явний список id: тести/ручний запуск)
+        if not ids:
+            pilot = load_pilot_ids()
+            ids = select_ids(catalog or {}, pilot, selection if selection is not None else load_selection())
+            index_set = set(pilot) | load_index_ids()          # пілот завжди відкритий; решта — noindex і поза sitemap, поки SEO не відкриє хвилю (rt_index_ids.json)
         dup_map = load_dup_map() if dup_map is None else dup_map
         if not catalog:
             _alert("rt_export_empty", "⚠️ rt_supplier_export: YML RoyalToys порожній/недоступний (ROYALTOYS_YML_URL у .env на VPS?) — supplier_rt.json НЕ оновлено; через 3 доби картки rt- зникнуть із сайту (fail-closed).")
@@ -331,6 +345,7 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
                 if it is None:
                     miss += 1
                     continue
+                it["index"] = True if index_set is None else (sid in index_set)       # Shopify-code: false → noindex,follow і поза sitemap-rt.xml
                 if sid in dup_map:
                     it["dup_of"] = dup_map[sid]
                 res[sid] = it

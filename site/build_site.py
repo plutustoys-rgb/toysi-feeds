@@ -564,10 +564,11 @@ class CatalogShrinkError(RuntimeError):
 
 
 # ── Другий постачальник (пілот RoyalToys, 19.10.2026; дані й замовлення — Код, сайт — тут) ─────────────────────────────────────────
-# site/supplier_rt.json: {"updated": ISO, "items": {"rt-<id>": {name, description, vendor, vendor_code, category (рос., назва RoyalToys), images[], price, cost, stock}}}
+# <корінь репо>/supplier_rt.json (НЕ в site/): {"updated": ISO, "items": {"rt-<id>": {name, description, vendor, vendor_code, category (рос., назва RoyalToys), images[], price, cost, stock}}}
 # site/rt_category_map.json: {назва категорії RoyalToys → наша категорія сайту}. Невідома категорія = картка НЕ публікується (голосне попередження), а не «Інше».
 # Картки з'являються лише коли онлайн-оплата ввімкнена (LIQPAY_LIVE): RoyalToys працює лише за передоплатою, без картки такий товар замовити не можна.
-SUPPLIER_RT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "supplier_rt.json")
+# УВАГА (Код 19.10, витік опту): файл містить «cost» (опт RoyalToys) → лежить у КОРЕНІ репо, ПОЗА site/ (DocumentRoot Apache = site/, файл віддавався б публічно); у .gitignore; шлях можна задати змінною SUPPLIER_RT_FILE.
+SUPPLIER_RT_FILE = os.environ.get("SUPPLIER_RT_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_rt.json")
 RT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rt_category_map.json")
 SUPPLIER_RT_MAX_AGE_DAYS = 3
 _RT_ID_RX = re.compile(r"rt-[0-9A-Za-z_]+")

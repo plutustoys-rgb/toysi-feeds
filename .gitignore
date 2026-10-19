@@ -331,3 +331,6 @@ site_chat.db
 site_chat.db-journal
 .secrets/
 gmc_service_account*.json
+# RoyalToys: опт у файлі (cost) — не в git і не в DocumentRoot (Код 19.10)
+/supplier_rt.json
+/site/img/rt/

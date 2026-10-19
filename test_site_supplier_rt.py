@@ -36,6 +36,7 @@ def chk(n, c):
         F.append(n)
 
 
+DEFAULT_RT_FILE = bs.SUPPLIER_RT_FILE   # шлях за замовчуванням ДО підміни в тесті
 site_photo_probe.run = lambda idx: None
 tmp = Path(tempfile.mkdtemp())
 now = datetime.now(timezone.utc)
@@ -57,6 +58,16 @@ def load(items, **kw):
     return res, err.getvalue()
 
 
+# опт (cost) не має віддаватись публічно (Код 19.10): файл ПОЗА DocumentRoot (site/), не в git, Apache його ще й забороняє
+site_dir = (HERE / "site").resolve()
+rt_path = Path(DEFAULT_RT_FILE).resolve()
+chk("supplier_rt.json за замовчуванням лежить у корені репо, а НЕ в site/ (DocumentRoot)", rt_path == (HERE / "supplier_rt.json").resolve() and site_dir not in rt_path.parents)
+gi = (HERE / ".gitignore").read_text(encoding="utf-8")
+chk("supplier_rt.json і site/img/rt/ у .gitignore", re.search(r"^/supplier_rt\.json\s*$", gi, re.M) is not None and re.search(r"^/site/img/rt/\s*$", gi, re.M) is not None)
+apa = (HERE / "deploy" / "activate_site_apache.sh").read_text(encoding="utf-8")
+chk("Apache забороняє віддавати supplier_rt.json навіть якщо його покладуть у site/", re.search(r'<FilesMatch "\^supplier_rt\\.json\$">\s*Require all denied', apa) is not None)
+js = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
+chk("замовлення з rt-позицією явно йде з payment_method=prepaid (app.js), навіть якщо радіо не обране", re.search(r'some\(function\(k\)\{ return /\^rt-/\.test\(k\); \}\)\) payment="prepaid"', js) is not None)
 bs.LIQPAY_LIVE = True
 r, e = load({"rt-101": GOOD})
 it = r.get("rt-101", {})

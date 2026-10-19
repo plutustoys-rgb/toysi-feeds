@@ -326,21 +326,26 @@ def validate_order(o: dict) -> dict:
         norm.append({"vendor_code": vc, "qty": qty, "cost": cost})
     if len({n["vendor_code"] for n in norm}) != len(norm):
         raise OrderError("дублі артикулів у позиціях: об'єднайте їх у одну позицію з сумарною кількістю")
+    # ПІБ/телефон отримувача НЕОБОВ'ЯЗКОВІ (власник 20.10: усі дані є на наліпці ТТН, яку ми передаємо PDF, — персональні дані клієнта постачальнику не віддаємо). Є — валідуємо й вписуємо; нема — поля форми лишаються порожніми.
     name = " ".join(str(o.get("recipient_name") or "").split())
-    if len(name.split()) < 2:
-        raise OrderError("ПІБ отримувача: потрібні щонайменше прізвище й ім'я")
-    digits = re.sub(r"\D", "", str(o.get("recipient_phone") or ""))
-    if len(digits) == 10 and digits.startswith("0"):
-        digits = "38" + digits
-    if not re.fullmatch(r"380\d{9}", digits):
-        raise OrderError("телефон отримувача не розпізнано")
+    if name and len(name.split()) < 2:
+        raise OrderError("ПІБ отримувача: потрібні щонайменше прізвище й ім'я (або не вказувати)")
+    raw_phone = str(o.get("recipient_phone") or "")
+    phone = ""
+    if raw_phone.strip():
+        digits = re.sub(r"\D", "", raw_phone)
+        if len(digits) == 10 and digits.startswith("0"):
+            digits = "38" + digits
+        if not re.fullmatch(r"380\d{9}", digits):
+            raise OrderError("телефон отримувача не розпізнано (або не вказувати)")
+        phone = "+" + digits
     ttn = re.sub(r"\s", "", str(o.get("ttn_number") or ""))
     if not re.fullmatch(r"\d{14}", ttn):
         raise OrderError("номер ТТН НП має бути 14 цифр")
     pdf = Path(str(o.get("marking_pdf") or ""))
     if not pdf.is_file() or pdf.stat().st_size > MAX_PDF_BYTES or pdf.stat().st_size < 100 or not pdf.read_bytes()[:5].startswith(b"%PDF"):
         raise OrderError("marking_pdf: потрібен існуючий PDF (до 2 МБ)")
-    return {"items": norm, "recipient_name": name, "recipient_phone": "+" + digits, "ttn_number": ttn, "marking_pdf": str(pdf), "comment": str(o.get("comment") or "")[:300]}
+    return {"items": norm, "recipient_name": name, "recipient_phone": phone, "ttn_number": ttn, "marking_pdf": str(pdf), "comment": str(o.get("comment") or "")[:300]}
 
 
 def _balance(txt: str):
@@ -465,8 +470,10 @@ def order_flow(order: dict, submit: bool = False) -> dict:
                 def setf(name, val):
                     page.locator("[name='%s']" % name).first.fill(val, timeout=8000)
                 pre = "customer_%s[address.shipping]" % SHIPPING_OWN_TTN
-                setf(pre + "[fio-poluchately]", order["recipient_name"])
-                setf(pre + "[telefon-polucha]", order["recipient_phone"])
+                if order["recipient_name"]:
+                    setf(pre + "[fio-poluchately]", order["recipient_name"])
+                if order["recipient_phone"]:
+                    setf(pre + "[telefon-polucha]", order["recipient_phone"])
                 setf(pre + "[nomer-ttn]", order["ttn_number"])
                 sel = page.locator("[name='%s[variant-oplaty]']" % pre).first
                 sel.evaluate("(e, v) => { const o = [...e.options].find(x => x.value === v); if (!o) throw new Error('no option'); e.value = v; e.dispatchEvent(new Event('change', {bubbles:true})); }", PAYMENT_PREPAID)

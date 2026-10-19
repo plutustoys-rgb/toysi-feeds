@@ -1338,6 +1338,7 @@
       }
       var payEl=document.querySelector('input[name="payment"]:checked');
       var payment=payEl ? payEl.value : "cod";
+      if(Object.keys(read()).some(function(k){ return /^rt-/.test(k); })) payment="prepaid";   // RoyalToys (rt-…): лише повна передоплата, явно (сервер без prepaid відхиляє кошик, Код 19.10)
       var payload={
         items:items,
         name:(document.getElementById("f-name").value||"").trim(),

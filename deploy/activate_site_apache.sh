@@ -188,6 +188,9 @@ cat <<'EOF'
     <FilesMatch "\.(py|pyc|md|sh)$">
         Require all denied
     </FilesMatch>
+    <FilesMatch "^supplier_rt\.json$">
+        Require all denied
+    </FilesMatch>
     <DirectoryMatch "/__pycache__">
         Require all denied
     </DirectoryMatch>

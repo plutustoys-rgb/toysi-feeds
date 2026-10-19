@@ -2,7 +2,7 @@
 """rt_supplier_export.py — дані RoyalToys для сайту (рішення власника 19.10.2026: спершу пілот, потім — «увесь каталог РТ зі своїми артикулами, а перетин по назвах вирішимо потім»; режим у rt_selection.json, за замовчуванням лише пілот): картки `rt-<id>` → ПРИВАТНИЙ <корінь>/supplier_rt.json (ПОЗА DocumentRoot: там опт "cost"), фото на НАШОМУ сервері site/img/rt/<id>-N.jpg.
 
 Контракт з Shopify-code (site/build_site.py `_load_supplier_rt`): {"updated": ISO UTC, "items": {"rt-<id>": {name, description, vendor, vendor_code, category (рос. назва RoyalToys), images[https://…], price, cost, stock}}}.
-Правила: назва й опис ЛИШЕ українські (name_ua/description_ua; нема name_ua → картки нема); ціна сайту за ЗАКРИТОЮ формулою max(опт×1,5; (опт+15)×1,03), вгору до гривні; відбір — rt_pilot_ids.json (лише id, без грошей);
+Правила: назва й опис ЛИШЕ українські (name_ua/description_ua; нема name_ua → картки нема); ціна сайту за ЗАКРИТОЮ формулою max(опт×1,5; (опт+15)×1,03), вгору до гривні; відбір — пілот (rt_pilot_ids.json: лише id, без грошей, завжди) + режим rt_selection.json;
 позиція без фото на диску, з нульовою/нечисловою ціною — не публікується. stock = 0, якщо offer не available. YML RoyalToys порожній/недоступний → попередній файл НЕ перезаписується (build_site сам вимкне картки, коли "updated" старший за 3 доби — fail-closed), сигнал раз на добу.
 Файл пишеться атомарно, права 0600. Запуск: rt-supplier-export.timer щогодини (залишки в YML RoyalToys оновлюються щогодини). stock_snapshot.py додає в site/stock.json ключі rt-<id> з цього файлу."""
 import html
@@ -29,7 +29,9 @@ MAX_IMAGES = 3
 SELECTION_FILE = HERE / "rt_selection.json"
 DUP_FILE = HERE / "rt_dup_map.json"
 PREFETCH_WORKERS = 6
-PREFETCH_BUDGET_S = 1200      # ліміт часу на завантаження фото за один запуск: решта — наступного разу (картка публікується, лише коли фото вже на диску)
+PREFETCH_BUDGET_S = 900       # ліміт часу на завантаження фото за один запуск (виміряно аудитом ≈10 фото/с на 6 потоках): решта — наступного разу; TimeoutStartSec юніта (2400) з запасом перекриває бюджет + таймаути запитів + запис
+MIN_FREE_GB = 10              # запас диска (Shopify-code, замір VPS: 30 ГБ вільно): менше → нових фото не качаємо
+MIN_KEEP_RATIO = 0.5          # (запозичено з гарду розміру каталогу Toysi, не виміряно окремо) нових карток менше половини попереднього файлу → не перезаписуємо, сигнал; річні коливання YML ≈0,1%
 IMG_MAX_SIDE = 1200
 IMG_TIMEOUT = 30
 IMG_MAX_BYTES = 15 * 1024 * 1024
@@ -63,24 +65,31 @@ def plain_text(raw: str) -> str:
 # Політика «що не продаємо» для позицій RoyalToys (категорії RoyalToys — рос. назви; forbidden_products.is_forbidden ключується категоріями Toysi, тому тут ще й власні правила):
 # ЗБРОЯ/18+/небезпечне — виключення за політикою (власник 07.10: «приберіть»); «НЕ ІГРАШКИ» — окрема група (книги, зошити, ручки, фітнес, електромобілі, уцінка, аксесуари) — керується rt_selection.json, бо це не політика, а асортимент.
 _POLICY_RE = re.compile(r"оружи|пистолет|автомат|ружь|арбалет|лук\b|нож|меч\b|эроти|18\+|вейп|сигар|табак|алкогол|зажигал|петард|фейерверк", re.I)
-_POLICY_UA_RE = re.compile(r"(?<!\w)(ніж|ножі|ножик\w*|меч|мечі|мечик\w*|шабл\w*|катан\w*|арбалет\w*|рушниц\w*|пістолет\w*|автомат\w*|зброя|зброї|еротик\w*|вейп\w*|сигар\w*|тютюн\w*|петард\w*|феєрверк\w*)(?!\w)", re.I)   # українські назви (name_ua)
+_POLICY_UA_RE = re.compile(r"(?<!\w)(зброя\w*|зброє\w*|зброю|зброї|шпаг\w*|шпаґ\w*|рогатк\w*|бластер\w*|покер\w*|казино|для дорослих|ніж|ножі|ножик\w*|меч|мечі|мечик\w*|шабл\w*|катан\w*|арбалет\w*|рушниц\w*|пістолет\w*|автомат\w*|зброя|зброї|еротик\w*|вейп\w*|сигар\w*|тютюн\w*|петард\w*|феєрверк\w*)(?!\w)", re.I)   # українські назви (name_ua)
+_NOT_TOY_NAME_RE = re.compile(r"(?<!\w)(зошит\w*|блокнот\w*|олівц\w*|ручк[аи]\b|книг\w*|гантел\w*)(?!\w)", re.I)   # за назвою — лише явні слова (аудит: «ручк» давало хибні «не іграшки»: кошики з ручками)
 _NOT_TOY_RE = re.compile(r"книг|тетрад|блокнот|фитнес|электромобил|уценен|аксессуары для|канцеляр|ручк|карандаш", re.I)
+
+
+_POLICY_WARNED = False
 
 
 def policy_reason(v: dict) -> str | None:
     """'policy' (не продаємо), 'not_toy' (не іграшка) або None. Чиста функція."""
-    name = (v.get("name_ua") or v.get("name") or "")
+    names = [x for x in (v.get("name_ua"), v.get("name")) if x]       # перевіряємо обидві назви (укр. і рос.)
     cat = v.get("category_name") or ""
     try:
         import generate_google_feed as gg
         from forbidden_products import is_forbidden
-        if gg.is_weapon_replica("rt-" + str(v.get("id")), name) or gg.is_adult_product(name) or is_forbidden({"id": v.get("id"), "category_name": cat}):
+        if is_forbidden({"id": v.get("id"), "category_name": cat}) or any(gg.is_weapon_replica("rt-" + str(v.get("id")), n) or gg.is_adult_product(n) for n in names):
             return "policy"
-    except ImportError:
-        pass
-    if _POLICY_RE.search(cat) or _POLICY_RE.search(name) or _POLICY_UA_RE.search(name):
+    except ImportError as e:
+        global _POLICY_WARNED
+        if not _POLICY_WARNED:
+            _POLICY_WARNED = True
+            print(f"[rt_export] ⚠ спільні перевірки політики недоступні ({e}) — працюють лише локальні регекси", file=sys.stderr)
+    if _POLICY_RE.search(cat) or any(_POLICY_RE.search(n) or _POLICY_UA_RE.search(n) for n in names):
         return "policy"
-    if _NOT_TOY_RE.search(cat) or _NOT_TOY_RE.search(name):
+    if _NOT_TOY_RE.search(cat) or _NOT_TOY_NAME_RE.search(names[0] if names else ""):
         return "not_toy"
     return None
 
@@ -128,7 +137,13 @@ def select_ids(catalog: dict, pilot_ids: list, sel: dict) -> list:
         mc, ms = sel.get("min_cost"), sel.get("min_stock")
         if mc is not None and cost < float(mc):
             continue
-        if ms is not None and (int(v.get("stock") or 0) < int(ms) or not v.get("available")):
+        try:
+            stock = int(v.get("stock") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not v.get("available") or stock <= 0:
+            continue                                 # немає в наявності — картку не публікуємо (у full)
+        if ms is not None and stock < int(ms):
             continue
         sp = site_price(cost)
         extra.append((sp - cost - sp * 0.028, sid))
@@ -136,16 +151,29 @@ def select_ids(catalog: dict, pilot_ids: list, sel: dict) -> list:
     return out + [sid for _, sid in extra]
 
 
+def _on_disk(dest: Path) -> bool:
+    try:
+        return dest.exists() and dest.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def prefetch(tasks: list, fetch, workers: int = 1, budget_s: float | None = None) -> dict:
-    """tasks=[(url, dest)] → {dest: bool}. Паралельно (workers), з бюджетом часу: що не встигли — False (досягнемо наступного запуску)."""
+    """tasks=[(url, dest)] → {dest: bool}. Паралельно (workers), з бюджетом часу: що не встигли — False (досягнемо наступного запуску). Фото, що вже на диску, — True незалежно від бюджету; виняток у fetch → False (не валить прогін)."""
     res = {}
     t0 = time.monotonic()
 
     def one(t):
         url, dest = t
+        if _on_disk(dest):
+            return dest, True
         if budget_s is not None and time.monotonic() - t0 > budget_s:
             return dest, False
-        return dest, bool(fetch(url, dest))
+        try:
+            return dest, bool(fetch(url, dest))
+        except Exception as e:  # noqa: BLE001
+            print(f"[rt_export] fetch збій {type(e).__name__}", file=sys.stderr)
+            return dest, False
 
     if workers <= 1:
         for t in tasks:
@@ -231,8 +259,41 @@ def images_for(rid: str, pictures: list, fetch=fetch_image, img_dir: Path = IMG_
     return out
 
 
+def out_guard_ok(out: Path, items: dict) -> bool:
+    """Гард усадки: нових карток менше MIN_KEEP_RATIO від кількості у попередньому файлі (усічений YML) → не перезаписуємо, сигнал (картки не зникають за годину). Нема попереднього файлу → ок."""
+    try:
+        prev = len(json.loads(Path(out).read_text(encoding="utf-8")).get("items") or {})
+    except (OSError, ValueError):
+        return True
+    if prev and len(items) < prev * MIN_KEEP_RATIO:
+        _alert("rt_export_shrink", f"⚠️ rt_supplier_export: нових карток {len(items)} проти {prev} у поточному файлі (менше {int(MIN_KEEP_RATIO * 100)}%) — YML усічений? supplier_rt.json НЕ перезаписано.")
+        return False
+    return True
+
+
+def load_category_keys(path: Path | None = None) -> set | None:
+    """Ключі site/rt_category_map.json (рос. назви категорій RT, які сайт уміє публікувати) або None, якщо файл недоступний (тоді не фільтруємо). Картка з невідомою категорією не публікується build_site — тож і фото для неї не качаємо."""
+    try:
+        d = json.loads(Path(path or (HERE / "site" / "rt_category_map.json")).read_text(encoding="utf-8-sig"))
+        return {str(k).strip() for k in d} if isinstance(d, dict) and d else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json(out: Path, items: dict, now) -> None:
+    payload = {"updated": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"), "items": items}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, out)
+
+
 def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | None = None, fetch=fetch_image, img_dir: Path = IMG_DIR, now: datetime | None = None,
-             selection: dict | None = None, workers: int = 1, budget_s: float | None = None, dup_map: dict | None = None) -> bool:
+             selection: dict | None = None, workers: int = 1, budget_s: float | None = None, dup_map: dict | None = None, category_keys: set | None = None, check_disk: bool = False) -> bool:
     """True — файл записано. Порожній каталог → попередній файл лишається, False. ids задано явно → лише ці id (тести/ручний запуск); інакше пілот + режим з rt_selection.json."""
     out = Path(out or OUT_FILE)
     try:
@@ -244,7 +305,7 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
         if not catalog:
             _alert("rt_export_empty", "⚠️ rt_supplier_export: YML RoyalToys порожній/недоступний (ROYALTOYS_YML_URL у .env на VPS?) — supplier_rt.json НЕ оновлено; через 3 доби картки rt- зникнуть із сайту (fail-closed).")
             return False
-        items, missing, nophoto = {}, [], []
+        items, missing, nophoto, nocat = {}, [], [], []
         cand, tasks = [], []
         for sid in ids:
             rid = sid[3:]
@@ -255,21 +316,42 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
             if build_item(sid, v, ["-"]) is None:      # назва/ціна/габарити невалідні — фото даремно не качаємо
                 nophoto.append(sid)
                 continue
+            if category_keys is not None and (v.get("category_name") or "").strip() not in category_keys:
+                nocat.append(sid)                      # сайт не опублікує картку без мапи категорії — фото не качаємо
+                continue
             cand.append((sid, v))
             for n, url in enumerate((v.get("pictures") or [])[:MAX_IMAGES], 1):
                 tasks.append((url, img_dir / f"{sid}-{n}.jpg"))
-        got = prefetch(tasks, fetch, workers, budget_s)          # фото: паралельно, з бюджетом часу; недокачане — наступного запуску
+        def build_items(got):
+            res, miss = {}, 0
+            for sid, v in cand:
+                imgs = [IMG_URL.format(name=f"{sid}-{n}.jpg") for n, _u in enumerate((v.get("pictures") or [])[:MAX_IMAGES], 1) if got.get(img_dir / f"{sid}-{n}.jpg")]
+                it = build_item(sid, v, imgs)
+                if it is None:
+                    miss += 1
+                    continue
+                if sid in dup_map:
+                    it["dup_of"] = dup_map[sid]
+                res[sid] = it
+            return res, miss
+
+        # 1) проміжний запис з фото, що вже на диску: опубліковані картки й залишки rt- не чекають на докачування (інакше юніт, убитий таймаутом, лишив би файл старим → через 3 год rt- «Немає»)
+        disk = {dest: True for _u, dest in tasks if _on_disk(dest)}
+        if disk and out_guard_ok(out, build_items(disk)[0]):
+            _write_json(out, build_items(disk)[0], now)
+        # 2) докачування (паралельно, з бюджетом часу й перевіркою вільного місця)
+        todo = [(u, d) for u, d in tasks if d not in disk]
+        if check_disk and todo:
+            import shutil
+            free_gb = shutil.disk_usage(img_dir.parent if img_dir.parent.exists() else HERE).free / 1e9
+            if free_gb < MIN_FREE_GB:
+                _alert("rt_export_disk", f"⚠️ rt_supplier_export: вільно {free_gb:.1f} ГБ < {MIN_FREE_GB} ГБ — нових фото rt- не качаємо.")
+                todo = []
+        got = {**disk, **prefetch(todo, fetch, workers, budget_s)}
         pending = 0
-        for sid, v in cand:
-            imgs = [IMG_URL.format(name=f"{sid}-{n}.jpg") for n, _u in enumerate((v.get("pictures") or [])[:MAX_IMAGES], 1) if got.get(img_dir / f"{sid}-{n}.jpg")]
-            it = build_item(sid, v, imgs)
-            if it is None:
-                nophoto.append(sid)
-                pending += 1
-                continue
-            if sid in dup_map:
-                it["dup_of"] = dup_map[sid]
-            items[sid] = it
+        items, pending = build_items(got)
+        if nocat:
+            print(f"[rt_export] категорії нема в site/rt_category_map.json: {len(nocat)} карток (фото не качаємо; Shopify-code розширює мапу)", file=sys.stderr)
         if pending:
             print(f"[rt_export] без жодного фото цього разу (бюджет часу/збій): {pending} — будуть наступним запуском", file=sys.stderr)
         if not items:
@@ -277,15 +359,9 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
             return False
         if missing or nophoto:
             print(f"[rt_export] пропущено: нема в YML {len(missing)} ({missing[:5]}), без фото/назви/ціни/габаритів {len(nophoto)} ({nophoto[:5]})", file=sys.stderr)
-        payload = {"updated": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"), "items": items}
-        out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_name(out.name + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        os.replace(tmp, out)
+        if not out_guard_ok(out, items):
+            return False
+        _write_json(out, items, now)
         print(f"[rt_export] ✅ {len(items)} з {len(ids)} карток, пропущено {len(missing) + len(nophoto)}")
         return True
     except Exception as e:  # noqa: BLE001
@@ -294,4 +370,4 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
 
 
 if __name__ == "__main__":
-    sys.exit(0 if run_once(workers=PREFETCH_WORKERS, budget_s=PREFETCH_BUDGET_S) else 1)
+    sys.exit(0 if run_once(workers=PREFETCH_WORKERS, budget_s=PREFETCH_BUDGET_S, category_keys=load_category_keys(), check_disk=True) else 1)

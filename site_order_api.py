@@ -222,6 +222,15 @@ class StockChanged(Exception):
         self.lines = lines
 
 
+# Товари партнера RoyalToys (id «rt-<id>», рішення власника 19.10.2026): лише передоплата (накладений ВИМКНЕНО: ТТН наша, повернення накладеного — нам), склад — fail-closed
+# (нема свіжого знімка / ключа «rt-…» у ньому → «немає»), на відміну від Toysi, де невідомий залишок не блокує.
+RT_PREFIX = "rt-"
+
+
+def is_rt_id(pid) -> bool:
+    return str(pid or "").strip().lower().startswith(RT_PREFIX)
+
+
 STOCK_FILE = os.path.join(SITE_DIR, "stock.json")
 STOCK_MAX_AGE = timedelta(minutes=45)      # знімок пишеться кожні 15 хв (stock-snapshot.timer); 3 інтервали без оновлення = знімок застарів → перевірку пропускаємо (fail-open)
 _stock_cache = {"mtime": None, "data": None}
@@ -250,18 +259,27 @@ def stock_snapshot():
 def check_stock(items: list) -> list:
     """Рядки, яких за свіжим знімком уже нема або менше, ніж замовлено: [{id, name, requested, available}]. Невідомий залишок (нема знімка/старий/id немає у знімку) → рядок НЕ чіпаємо."""
     snap, _ts = stock_snapshot()
-    if snap is None:
-        return []
     need = {}
     for it in items:
         need.setdefault(it["toysi_code"], {"name": it["name"], "requested": 0})["requested"] += it["qty"]
+    if snap is None:
+        snap = {}
+        rt_only = True    # знімка нема/застарів: Toysi-рядки не чіпаємо (fail-open), rt- — вважаємо «немає» (fail-closed)
+    else:
+        rt_only = False
     bad = []
     for pid, v in need.items():
+        if rt_only and not is_rt_id(pid):
+            continue
         if pid not in snap:
+            if is_rt_id(pid):
+                bad.append({"id": pid, "name": v["name"], "requested": v["requested"], "available": 0})
             continue
         try:
             avail = int(snap[pid])
         except (TypeError, ValueError):
+            if is_rt_id(pid):
+                bad.append({"id": pid, "name": v["name"], "requested": v["requested"], "available": 0})
             continue
         if avail < v["requested"]:
             bad.append({"id": pid, "name": v["name"], "requested": v["requested"], "available": max(0, avail)})
@@ -404,6 +422,9 @@ def build_order(payload: dict) -> tuple:
     # COD форвардиться одразу, prepaid — лише коли payment_confirmed=1.
     pay_raw = (payload.get("payment_method") or "").strip().lower()
     payment_method = "prepaid" if pay_raw == "prepaid" else "cod"
+    if payment_method != "prepaid" and any(is_rt_id(i["toysi_code"]) for i in items):
+        # fail-closed: у кошику товар партнера RoyalToys — накладений платіж не приймаємо (і невідомий/відсутній спосіб теж), лише картка онлайн
+        raise OrderError("Товари партнера відправляються лише за повною передоплатою: оберіть оплату карткою онлайн")
 
     # Структурні реф-поля НП з автокомпліту фронта: якщо клієнт ОБРАВ місто/відділення зі
     # списку — маємо точний CityRef + № відділення → order_router віддасть Toysi їх НАПРЯМУ,

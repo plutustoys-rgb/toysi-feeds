@@ -996,7 +996,7 @@
     var conn=navigator.connection||{};
     if(reduced() || conn.saveData || /(^|-)2g$/.test(conn.effectiveType||"")) return;
     var dips=(img.getAttribute("data-dip")||"").split(",").filter(function(x){ return x!==""; }).map(Number);   // сезонні рухи, кадр спокою яких ≠ спільний poster: підміна через «занурення»
-    var visible=true, playing=false, busy=false, last=-1, order=[], timer=null, endTimer=null, dipNow=false, lastEnd=0, REACT_COOL=3000;
+    var visible=true, playing=false, busy=false, last=-1, order=[], timer=null, endTimer=null, dipNow=false, lastEnd=0, startedAt=0, REACT_COOL=3000;
     function wait(){ return 12000 + Math.floor(Math.random()*8000); }
     function schedule(ms){ clearTimeout(timer); timer=setTimeout(play, ms); }
     var wrap=img.parentNode;
@@ -1060,7 +1060,7 @@
       pre.onload=function(){
         busy=false;
         if(!canPlay()){ schedule(wait()); return; }      // поки вантажився — вкладка сховалась / Плутус зник з екрана
-        playing=true; clipImg.src=url;
+        playing=true; startedAt=Date.now(); clipImg.src=url;
         // Жорстка заміна, не кросфейд (SMM 12.10: крізь прозорий кліп просвічував poster → двійник): poster ховаємо ТІЛЬКИ коли перший кадр кліпу вже декодовано
         // (інакше блимне порожнє місце); перший і останній кадри кліпів = poster, тож стик непомітний.
         function show(){
@@ -1085,18 +1085,24 @@
     // Не під час іншого руху, не частіше ніж раз на REACT_COOL після кінця попереднього; вимкнено при reduced-motion/saveData/2g (вище return) і коли Плутуса не видно.
     var pokeT=null;
     function poke(){ if(!wrap || !wrap.classList) return; wrap.classList.remove("poke"); void wrap.offsetWidth; wrap.classList.add("poke"); clearTimeout(pokeT); pokeT=setTimeout(function(){ wrap.classList.remove("poke"); }, 320); }   // «вдавлення» 0,3 с: людина бачить, що тап/наведення зараховано, навіть коли рух ще вантажиться або триває
-    function react(touch){
+    // власник 19.10: «на компі тапаєш по Плутусу курсором — теж не з першого разу реагує». Причина: клік під час руху (а рух триває 3–5 с, у т.ч. запущений наведенням курсора за мить до кліка)
+    // і протягом REACT_COOL після нього мовчки ігнорувався. Тепер КЛІК/ТАП завжди дає реакцію: перебиває поточний рух і запускає наступний із ротації, без паузи-охолодження;
+    // лише для самого жесту (наведення → клік за <700 мс, або pointerdown → click дотику) повторний запуск не робимо, щоб не смикати. Наведення мишею, як і раніше, не перебиває рух і має REACT_COOL.
+    function react(tap){
       if(document.hidden || !visible) return;
       poke();
-      if(playing || busy) return;
-      if(lastEnd && Date.now()-lastEnd<(touch ? 1200 : REACT_COOL)) return;
+      if(busy) return;                                  // кліп уже вантажиться — реакція йде
+      if(playing){
+        if(!tap || Date.now()-startedAt<700) return;    // наведення не перебиває; клік у межах того ж жесту — це та сама реакція
+        clearTimeout(endTimer); stop(false);            // клік під час руху: знімаємо його, нижче стартує наступний
+      } else if(!tap && lastEnd && Date.now()-lastEnd<REACT_COOL) return;
       clearTimeout(timer);   // скасувати відкладений автопоказ — після реакції стартує звичайна пауза
       play();
     }
     if(wrap && wrap.addEventListener){
       wrap.addEventListener("pointerenter", function(e){ if(!e.pointerType || e.pointerType==="mouse") react(false); });
-      wrap.addEventListener("pointerdown", function(e){ if(e.pointerType && e.pointerType!=="mouse") react(true); else if(!e.pointerType) react(false); });
-      wrap.addEventListener("click", function(){ react(false); });
+      wrap.addEventListener("pointerdown", function(e){ if(e.pointerType && e.pointerType!=="mouse") react(true); else if(!e.pointerType) react(true); });
+      wrap.addEventListener("click", function(){ react(true); });
     }
     document.addEventListener("visibilitychange", function(){ if(document.hidden){ var was=playing; stop(); if(was) schedule(wait()); } });
     function start(){ schedule(3000); }      // перший кліп — не раніше ніж через 3 с після load

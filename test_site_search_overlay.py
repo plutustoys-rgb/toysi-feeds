@@ -49,6 +49,8 @@ bs.OUT = str(out)
 os.environ["SITE_PICK_DATE"] = "2026-03-05"
 bs.write_home(prods, cats, cl, cs)
 (out / "index.json").write_text(json.dumps([{"id": p["id"], "n": p["name"], "pr": p["price"], "p": IMG, "c": p["category"], "s": 1} for p in prods], ensure_ascii=False), encoding="utf-8")
+(out / "index-t.json").write_text(json.dumps([{"id": p["id"], "n": p["name"], "pr": p["price"], "p": IMG, "c": p["category"], "s": 1} for p in prods], ensure_ascii=False), encoding="utf-8")
+(out / "index-rt.json").write_text("[]", encoding="utf-8")
 shutil.copytree(HERE / "site" / "assets", out / "assets")
 os.chdir(out)
 
@@ -153,7 +155,7 @@ with sync_playwright() as pw:
         pg = ctx.new_page()
         held = []
         pg.route("**/googletagmanager.com/**", lambda r: r.abort())
-        pg.route("**/index.json*", lambda r, _rq: held.append(r))
+        pg.route("**/index-t.json*", lambda r, _rq: held.append(r))
         pg.goto("about:blank")
         pg.goto(f"{BASE}/index.html", wait_until="load")
         pg.wait_for_timeout(400)
@@ -162,7 +164,7 @@ with sync_playwright() as pw:
         pg.wait_for_timeout(600)
         none_yet = pg.evaluate("document.querySelectorAll('#search-overlay .sr').length")
         for r in held:
-            r.fulfill(status=200, content_type="application/json", body=(out / "index.json").read_text(encoding="utf-8"))
+            r.fulfill(status=200, content_type="application/json", body=(out / "index-t.json").read_text(encoding="utf-8"))
         pg.wait_for_timeout(800)
         got = pg.evaluate("document.querySelectorAll('#search-overlay .sr').length")
         chk(f"{w}px: запит набрано до завершення завантаження індексу — результати з'являються самі після завантаження ({none_yet} → {got})", none_yet == 0 and got >= 3)
@@ -171,7 +173,7 @@ with sync_playwright() as pw:
         ctx = br.new_context(viewport={"width": w, "height": 800}, reduced_motion="reduce")
         pg = ctx.new_page()
         pg.route("**/googletagmanager.com/**", lambda r: r.abort())
-        pg.route("**/index.json*", lambda r, _rq: r.abort())
+        pg.route("**/index-t.json*", lambda r, _rq: r.abort())
         pg.goto("about:blank")
         pg.goto(f"{BASE}/index.html", wait_until="load")
         pg.wait_for_timeout(400)

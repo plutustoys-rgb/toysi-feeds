@@ -41,6 +41,8 @@ out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)
 bs.write_catalog("Каталог іграшок", prods, cl, cs, "catalog.html", active=None)
 (out / "index.json").write_text(json.dumps(bs.index_entries(prods), ensure_ascii=False), encoding="utf-8")
+(out / "index-t.json").write_text(json.dumps(bs.index_entries(prods), ensure_ascii=False), encoding="utf-8")
+(out / "index-rt.json").write_text("[]", encoding="utf-8")
 shutil.copytree(HERE / "site" / "assets", out / "assets")
 
 H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out))

@@ -46,7 +46,7 @@ GOOD = {"name": "Конструктор «Місто» 120 дет.", "descriptio
 
 def write_files(items, updated=None, cmap=None):
     (tmp / "s.json").write_text(json.dumps({"updated": (updated or now).isoformat(), "items": items}, ensure_ascii=False), encoding="utf-8")
-    (tmp / "m.json").write_text(json.dumps(cmap if cmap is not None else {"Конструкторы": "Конструктори RT"}, ensure_ascii=False), encoding="utf-8")
+    (tmp / "m.json").write_text(json.dumps(cmap if cmap is not None else {"Конструкторы": "Конструктори RT", "Редкая": "Тільки RT"}, ensure_ascii=False), encoding="utf-8")
     bs.SUPPLIER_RT_FILE, bs.RT_CATEGORY_MAP_FILE = str(tmp / "s.json"), str(tmp / "m.json")
 
 
@@ -86,7 +86,7 @@ bs.SUPPLIER_RT_FILE = str(tmp / "nope.json")
 chk("файлу нема → порожньо, без шуму", bs._load_supplier_rt() == {})
 
 # (2) повна збірка
-write_files({"rt-101": GOOD, "rt-102": dict(GOOD, name="Набір кубиків дерев'яних 50 шт", vendor_code="RT-78", price=350, cost=210, stock=0, images=["https://plutustoys.com.ua/img/rt/102-1.jpg"]), "rt-103": dict(GOOD, name="Набір фігурок 12 шт", index=False, vendor_code="RT-79"), "rt-104": dict(GOOD, name="Брязкальце зі звуком", description="Коротко.")})
+write_files({"rt-101": GOOD, "rt-102": dict(GOOD, name="Набір кубиків дерев'яних 50 шт", vendor_code="RT-78", price=350, cost=210, stock=0, images=["https://plutustoys.com.ua/img/rt/102-1.jpg"]), "rt-103": dict(GOOD, name="Набір фігурок 12 шт", index=False, vendor_code="RT-79"), "rt-104": dict(GOOD, name="Брязкальце зі звуком", description="Коротко."), "rt-105": dict(GOOD, name="Рідкісний колекційний набір", category="Редкая", vendor_code="RT-80", price=500)})
 
 
 def toysi(pid, name, cat):
@@ -132,6 +132,15 @@ cat_html = [q.read_text(encoding="utf-8") for q in out.glob("category-*.html") i
 order = re.findall(r'"url": "https://plutustoys.com.ua/product-([^"]+)\.html"', cat_html[0]) if cat_html else []
 chk("у категорії rt-картки стоять ПІСЛЯ Toysi (rec_order, ItemList)", "rt-101" in order and all(not x.startswith("rt-") for x in order[:order.index("rt-101")]) and order.index("rt-101") >= 1)
 
+# 2в) індекс розділено (20.10): index.json (повний — API/фіди), index-t.json (Toysi), index-rt.json (RoyalToys)
+full = json.loads((out / "index.json").read_text(encoding="utf-8"))
+it_ = json.loads((out / "index-t.json").read_text(encoding="utf-8"))
+irt = json.loads((out / "index-rt.json").read_text(encoding="utf-8"))
+chk("index-t.json — без rt; index-rt.json — лише rt; разом = повний index.json (порядок: спершу Toysi, потім rt)", all("rt" not in x for x in it_) and irt and all(x.get("rt") == 1 for x in irt) and [x["id"] for x in it_ + irt] == [x["id"] for x in full])
+rt_only_pages = [q.name for q in out.glob("category-*.html") if 'data-rtonly="1"' in q.read_text(encoding="utf-8")]
+mixed_page = next(q.name for q in out.glob("category-*.html") if "product-rt-101" in q.read_text(encoding="utf-8") and 'data-rtonly="1"' not in q.read_text(encoding="utf-8"))
+chk("сторінка категорії лише з RoyalToys позначена data-rtonly=1, змішана — ні", len(rt_only_pages) == 1 and mixed_page)
+
 # (3) браузер: кошик
 cart_html = (out / "cart.html").read_text(encoding="utf-8")
 chk("розмітка кошика: є блок пояснення #rt-pay-note, прихований за замовчуванням", re.search(r'id="rt-pay-note" hidden', cart_html) is not None)
@@ -167,6 +176,29 @@ with sync_playwright() as pw:
             chk(f"кошик {label}: у правій колонці «Оплата при отриманні» замінено на передоплату ({tp_txt})", tp_txt is None or "при отриманні" not in tp_txt)
         chk(f"кошик {label}: без помилок JS", errs == [])
         pg.close()
+    # каталог/категорії: спершу index-t.json (Toysi), RoyalToys довантажується у фоні; повний index.json сторінки НЕ читають
+    pg = br.new_page(viewport={"width": 1280, "height": 900})
+    reqs = []
+    pg.on("request", lambda r: reqs.append(r.url.split("/")[-1].split("?")[0]) if r.url.endswith(".json") or ".json?" in r.url else None)
+    pg.route("**/googletagmanager.com/**", lambda r: r.abort())
+    errs = []
+    pg.on("pageerror", lambda e: errs.append(str(e)))
+    pg.goto(f"{base}/{mixed_page}", wait_until="load")
+    pg.wait_for_selector("#cat-js a.card", timeout=15000)
+    pg.wait_for_function("document.getElementById('cat-count') && /Знайдено: 23/.test(document.getElementById('cat-count').textContent)", timeout=15000)
+    chk(f"змішана категорія: запити {reqs}: index-t.json перед index-rt.json, повний index.json НЕ запитувався; після довантаження Знайдено = 20 Toysi + 3 rt = 23", "index.json" not in reqs and "index-t.json" in reqs and "index-rt.json" in reqs and reqs.index("index-t.json") < reqs.index("index-rt.json"))
+    chk("змішана категорія: без помилок JS", errs == [])
+    pg.goto(f"{base}/{rt_only_pages[0]}", wait_until="load")
+    pg.wait_for_selector("#cat-js a.card", timeout=15000)
+    cards_rt = pg.evaluate("Array.from(document.querySelectorAll('#cat-js a.card')).map(a=>a.getAttribute('href'))")
+    chk(f"категорія лише з RoyalToys: сітка показує rt-картку одразу після завантаження обох файлів ({cards_rt}), не «Нічого не знайдено»", cards_rt == ["product-rt-105.html"] and "Нічого не знайдено" not in pg.content())
+    pg.goto(f"{base}/index.html", wait_until="load")
+    pg.click("#open-search")
+    pg.fill("#search-overlay input", "рідкісний колекційний")
+    pg.wait_for_selector("#search-overlay .results a.sr", timeout=15000)
+    found = pg.evaluate("Array.from(document.querySelectorAll('#search-overlay .results a.sr')).map(a=>a.getAttribute('href'))")
+    chk(f"пошук знаходить картку RoyalToys (довантаженню index-rt.json): {found}", "product-rt-105.html" in found)
+    pg.close()
     br.close()
 print()
 if F:

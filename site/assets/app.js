@@ -101,15 +101,29 @@
   // ── Пошуковий оверлей (індекс index.json) ──
   var idx=null, idxLoading=false;
   var idxWaiters=[];
+  var rtState=0, rtWaiters=[];   // 0 — не вантажили, 1 — вантажиться, 2 — готово (або файла нема: тоді просто Toysi)
   function ensureIndex(cb, onFail){
     // черга: запит, набраний ПОКИ індекс ще вантажиться, раніше губився (callback відкидався) — результати не з'являлись, доки не наберуть ще літеру
     if(idx){ cb(idx); return; }
     idxWaiters.push({ok:cb, fail:onFail});
     if(idxLoading) return;
     idxLoading=true;
-    fetch("index.json").then(function(r){ if(!r.ok) throw new Error("index "+r.status); return r.json(); })
+    fetch("index-t.json").then(function(r){ if(!r.ok) throw new Error("index "+r.status); return r.json(); })   // 20.10: RoyalToys (≈10 тис. карток) у окремому index-rt.json — не вантажимо разом із Toysi (LCP каталогу)
       .then(function(d){ idx=d; idxLoading=false; var w=idxWaiters; idxWaiters=[]; w.forEach(function(x){ try{ x.ok(idx); }catch(e){} }); })
       .catch(function(){ idxLoading=false; var w=idxWaiters; idxWaiters=[]; w.forEach(function(x){ if(x.fail){ try{ x.fail(); }catch(e){} } }); });
+  }
+  // RoyalToys: довантажуємо в ФОНІ ПІСЛЯ основного індексу й дописуємо в той самий масив idx; усі споживачі (пошук, каталог) беруть idx, а cb — оновлення після довантаження.
+  function ensureRt(cb){
+    if(rtState===2){ if(cb) cb(); return; }
+    if(cb) rtWaiters.push(cb);
+    if(rtState===1) return;
+    rtState=1;
+    ensureIndex(function(){
+      fetch("index-rt.json").then(function(r){ if(!r.ok) throw new Error("rt "+r.status); return r.json(); })
+        .then(function(d){ if(Array.isArray(d)){ for(var i=0;i<d.length;i++) idx.push(d[i]); } })
+        .catch(function(){})
+        .then(function(){ rtState=2; var w=rtWaiters; rtWaiters=[]; w.forEach(function(f){ try{ f(); }catch(e){} }); });
+    }, function(){ rtState=2; var w=rtWaiters; rtWaiters=[]; w.forEach(function(f){ try{ f(); }catch(e){} }); });
   }
   // Оверлей пошуку кладе свій запис в історію (тестувальник #16: «Назад» виводив із САЙТУ): відкриття = pushState, «Назад» (popstate) / Escape / клік по фону / «Готово» закривають оверлей і лишають на сторінці.
   var searchPushed=false, searchLeaveHref=null;
@@ -125,7 +139,7 @@
     var inp=o.querySelector("input");
     inp.value=""; inp.focus();
     o.querySelector(".results").innerHTML=searchEmptyHtml();
-    ensureIndex(function(){});
+    ensureIndex(function(){ ensureRt(function(){ var v=(inp.value||"").trim(); if(v.length>=2 && o.classList.contains("on")) runSearch(v); }); });
   }
   function closeSearch(fromPop){
     var o=document.getElementById("search-overlay");
@@ -250,6 +264,7 @@
       }
       lastMatches=all; lastQuery=q;
       renderSearch();
+      if(rtState!==2) ensureRt(function(){ if(mySeq===searchSeq) runSearch(q); });   // ще не довантажено RoyalToys: щойно прийде — той самий запит ще раз
     }, function(){
       if(mySeq!==searchSeq) return;
       res.innerHTML='<div class="empty" style="padding:40px 0">Не вдалося завантажити пошук. Перевірте звʼязок і спробуйте ще раз.</div>';
@@ -305,7 +320,8 @@
       treeGrp.forEach(function(d){ var open=(+d.getAttribute("data-g")===curG); d.classList.toggle("open", open); var s=d.querySelector(".sb-subs"); if(s) s.hidden=!open; });
     }
     if(preset){ try{ catUrls=JSON.parse((document.getElementById("cat-urls")||{}).textContent||"{}"); }catch(e){ catUrls={}; } }
-    ensureIndex(function(data){
+    var rtonly=controls.getAttribute("data-rtonly")==="1";   // сторінка, де ВСІ товари RoyalToys (напр. «Електромобілі»): без них нічого показувати — чекаємо обидва файли
+    function buildOptions(data){
       var cats={};
       for(var i=0;i<data.length;i++){ if(data[i].c && (!groupSet || groupSet[data[i].c]) && (!idSet || idSet[data[i].id])) cats[data[i].c]=(cats[data[i].c]||0)+1; }
       function addOpt(parent, c, label){ var o=document.createElement("option"); o.value=c; o.textContent=(label||c)+" ("+cats[c]+")"; parent.appendChild(o); }
@@ -323,15 +339,30 @@
         Object.keys(cats).sort(function(a,b){ return groupSet ? (cats[b]-cats[a] || a.localeCompare(b,"uk")) : a.localeCompare(b,"uk"); }).forEach(function(c){ if(otherSet && otherSet[c]){ otherN+=cats[c]; return; } addOpt(elCat, c, c===ownCat ? "Інше" : c); });
         if(otherSet && otherN){ var oo=document.createElement("option"); oo.value="__other"; oo.textContent="Інше ("+otherN+")"; elCat.appendChild(oo); }
       }
+    }
+    function initFromIndex(data){
+      buildOptions(data);
       if(preset) elCat.value=preset;
       controls.hidden=false;
       apply();
-    });
-    function apply(){
+      if(!rtonly) ensureRt(onRt);
+    }
+    function onRt(){   // RoyalToys довантажено: оновлюємо списки категорій і лічильники; відкриту сітку не скидаємо, якщо людина ще нічого не міняла
+      var cur=elCat.value, first=elCat.options[0] ? elCat.options[0].cloneNode(true) : null;
+      if(first){ elCat.innerHTML=""; elCat.appendChild(first); }
+      buildOptions(idx);
+      elCat.value=cur;
+      var untouched = elSort.value==="rec" && cur===preset && !elMin.value && !elMax.value && !(elStock && elStock.checked) && !selSet;
+      if(!untouched){ apply(); return; }
+      filtered=computeFiltered();
+      count.textContent="Знайдено: "+filtered.length+" · показано "+shown;
+      moreWrap.hidden = shown>=filtered.length;
+    }
+    function computeFiltered(){
       var min=parseInt(elMin.value,10), max=parseInt(elMax.value,10);
       if(isNaN(min)) min=null; if(isNaN(max)) max=null;
       var cat=elCat.value, ins=elStock ? elStock.checked : false, sort=elSort.value;
-      filtered=(idx||[]).filter(function(p){
+      var f=(idx||[]).filter(function(p){
         if(groupSet && !groupSet[p.c]) return false;
         if(idSet && !idSet[p.id]) return false;
         if(selSet && !cat && !selSet[p.c]) return false;
@@ -342,9 +373,14 @@
         if(max!=null && p.pr>max) return false;
         return true;
       });
-      if(sort==="cheap") filtered.sort(function(a,b){return a.pr-b.pr;});
-      else if(sort==="dear") filtered.sort(function(a,b){return b.pr-a.pr;});
-      else if(sort==="az") filtered.sort(function(a,b){return String(a.n).localeCompare(String(b.n),"uk");});
+      if(sort==="cheap") f.sort(function(a,b){return a.pr-b.pr;});
+      else if(sort==="dear") f.sort(function(a,b){return b.pr-a.pr;});
+      else if(sort==="az") f.sort(function(a,b){return String(a.n).localeCompare(String(b.n),"uk");});
+      return f;
+    }
+    ensureIndex(function(data){ if(rtonly){ ensureRt(function(){ initFromIndex(idx); }); } else initFromIndex(data); });   // (20.10) спершу Toysi, RoyalToys — у фоні
+    function apply(){
+      filtered=computeFiltered();
       // rec = природний порядок index.json (рекомендовані, за замовчуванням)
       shown=0; grid.innerHTML="";
       syncSide(); syncTree();

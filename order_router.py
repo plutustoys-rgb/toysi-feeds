@@ -926,7 +926,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> 
 
 
 def _has_rt_items(order: dict) -> bool:
-    return any(str((it or {}).get("toysi_code") or "").startswith("rt-") for it in (order.get("items") or []))
+    return any(str((it or {}).get("toysi_code") or "").strip().lower().startswith("rt-") for it in (order.get("items") or []))
 
 
 def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict = None) -> None:

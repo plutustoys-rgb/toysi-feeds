@@ -228,7 +228,7 @@ RT_PREFIX = "rt-"
 
 
 def is_rt_id(pid) -> bool:
-    return str(pid or "").startswith(RT_PREFIX)
+    return str(pid or "").strip().lower().startswith(RT_PREFIX)
 
 
 STOCK_FILE = os.path.join(SITE_DIR, "stock.json")

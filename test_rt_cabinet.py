@@ -42,5 +42,37 @@ chk("замок: пароль у fragment → leaks", rc.leaks_secret("secret1",
 chk("замок: легітимне — короткий пароль «ua»/«auth» збігається зі шляхом, але не з query → НЕ leaks", not rc.leaks_secret("ua", f"{B2}/ua/auth/email/") and not rc.leaks_secret("auth", f"{B2}/ua/auth/email/") and not rc.leaks_secret("royal", f"{B2}/ua/auth/email/?page=2"))
 chk("замок: тіло запиту на сторонній хост з паролем → leaks; без тіла/без пароля → ні; порожній секрет → ні", rc.leaks_secret("pw123456", "https://evil.tld/c", "email=a&password=pw123456") and not rc.leaks_secret("pw123456", "https://evil.tld/c", "email=a") and not rc.leaks_secret("", f"{B2}/x?p=1"))
 chk("замок: бінарне (не UTF-8) тіло на сторонній хост не ламає перевірку; пароль у бінарному тілі ловиться; без пароля — ні", rc.leaks_secret("pw123456", "https://evil.tld/c", b"\xff\xfe\x00pw123456\x80") and not rc.leaks_secret("pw123456", "https://evil.tld/c", b"\xff\xfe\x00\x80"))
+# --- оформлення замовлення (валідація без мережі) ---
+import tempfile as _tf3, json as _j3
+with _tf3.TemporaryDirectory() as td3:
+    pdf = Path(td3) / "m.pdf"
+    pdf.write_bytes(b"%PDF-1.4" + bytes([10]) + b"x" * 300)
+    base = {"items": [{"vendor_code": "200513", "qty": 2, "cost": 155}], "recipient_name": "Іваненко Іван", "recipient_phone": "050 123-45-67", "ttn_number": "2045 1500 0000 00", "marking_pdf": str(pdf), "comment": "c"}
+    ok = rc.validate_order(base)
+    chk("validate_order: нормалізація телефону (+380…), № ТТН (14 цифр без пробілів), позиції", ok["recipient_phone"] == "+380501234567" and ok["ttn_number"] == "20451500000000" and ok["items"] == [{"vendor_code": "200513", "qty": 2, "cost": 155.0}])
+    def bad(**kw):
+        d = dict(base)
+        d.update(kw)
+        try:
+            rc.validate_order(d)
+            return False
+        except rc.OrderError:
+            return True
+    chk("validate_order: відмови — порожні позиції, qty 0/100+/не число, один зі слова ПІБ, поганий телефон, ТТН не 14 цифр", bad(items=[]) and bad(items=[{"vendor_code": "1", "qty": 1}]) and bad(items=[{"vendor_code": "200513", "qty": 0}]) and bad(items=[{"vendor_code": "200513", "qty": 101}]) and bad(items=[{"vendor_code": "200513", "qty": "x"}]) and bad(recipient_name="Іваненко") and bad(recipient_phone="123") and bad(ttn_number="123") and bad(ttn_number="2045150000000a"))
+    notpdf = Path(td3) / "n.pdf"
+    notpdf.write_bytes(b"<html>" + b"x" * 300)
+    tiny = Path(td3) / "t.pdf"
+    tiny.write_bytes(b"%PDF")
+    big = Path(td3) / "b.pdf"
+    big.write_bytes(b"%PDF-1.4" + bytes([10]) + b"x" * (3 * 1024 * 1024))
+    chk("validate_order: marking_pdf — не PDF / замалий / завеликий / нема файлу → відмова", bad(marking_pdf=str(notpdf)) and bad(marking_pdf=str(tiny)) and bad(marking_pdf=str(big)) and bad(marking_pdf=str(Path(td3) / "none.pdf")))
+chk("_money/_balance: «155 грн.», «1 234,50 грн», «Доступно 0.00» (з переносом рядка), «Доступно 1 250.5»", rc._money("Всього" + chr(10) + "155 грн.") == 155.0 and rc._money("1 234,50 грн") == 1234.5 and rc._balance("Доступно" + chr(10) + "0.00") == 0.0 and rc._balance("Доступно 1 250.5") == 1250.5 and rc._balance("нема") is None)
+_os.environ.pop("RT_ORDER_SUBMIT", None)
+try:
+    rc.order_flow(base, submit=True)
+    ok_sub = False
+except rc.OrderError:
+    ok_sub = True
+chk("--submit-balance без RT_ORDER_SUBMIT=1 → відмова ДО будь-якої мережі", ok_sub)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

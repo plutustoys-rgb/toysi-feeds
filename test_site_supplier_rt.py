@@ -40,7 +40,7 @@ DEFAULT_RT_FILE = bs.SUPPLIER_RT_FILE   # шлях за замовчування
 site_photo_probe.run = lambda idx: None
 tmp = Path(tempfile.mkdtemp())
 now = datetime.now(timezone.utc)
-GOOD = {"name": "Конструктор «Місто» 120 дет.", "description": "Гарний набір. Оплата при отриманні на відділенні. Підходить для дітей від 5 років. Накладений платіж можливий.", "vendor": "Ideika",
+GOOD = {"name": "Конструктор «Місто» 120 дет.", "description": "Гарний набір. Оплата при отриманні на відділенні. Підходить для дітей від 5 років, містить 120 дрібних деталей. Накладений платіж можливий.", "vendor": "Ideika",
         "vendor_code": "RT-77", "category": "Конструкторы", "images": ["https://plutustoys.com.ua/img/rt/101-1.jpg"], "price": 480, "cost": 290, "stock": 7, "supplier": "royaltoys"}
 
 
@@ -86,7 +86,7 @@ bs.SUPPLIER_RT_FILE = str(tmp / "nope.json")
 chk("файлу нема → порожньо, без шуму", bs._load_supplier_rt() == {})
 
 # (2) повна збірка
-write_files({"rt-101": GOOD, "rt-102": dict(GOOD, name="Набір кубиків дерев'яних 50 шт", vendor_code="RT-78", price=350, cost=210, stock=0, images=["https://plutustoys.com.ua/img/rt/102-1.jpg"])})
+write_files({"rt-101": GOOD, "rt-102": dict(GOOD, name="Набір кубиків дерев'яних 50 шт", vendor_code="RT-78", price=350, cost=210, stock=0, images=["https://plutustoys.com.ua/img/rt/102-1.jpg"]), "rt-103": dict(GOOD, name="Набір фігурок 12 шт", index=False, vendor_code="RT-79"), "rt-104": dict(GOOD, name="Брязкальце зі звуком", description="Коротко.")})
 
 
 def toysi(pid, name, cat):
@@ -114,6 +114,19 @@ cat_files = [p for p in out.glob("category-*.html") if "rt-101" in p.read_text(e
 chk("картка потрапила в сторінку категорії «Конструктори RT»", len(cat_files) >= 1)
 sm = "".join(p.read_text(encoding="utf-8") for p in out.glob("sitemap-*.xml"))
 chk("у sitemap є product-rt-101.html рівно раз", sm.count("/product-rt-101.html") == 1)
+smrt = (out / "sitemap-rt.xml").read_text(encoding="utf-8") if (out / "sitemap-rt.xml").exists() else ""
+smp = (out / "sitemap-products.xml").read_text(encoding="utf-8")
+chk("sitemap-rt.xml: лише індексовані rt (101); хвиля не відкрита (103: index=false) і тонкий опис (104) — НЕ в sitemap; у products/priority rt нема", "/product-rt-101.html" in smrt and "/product-rt-103.html" not in smrt and "/product-rt-104.html" not in smrt and "product-rt-" not in smp and "product-rt-" not in (out / "sitemap-priority.xml").read_text(encoding="utf-8"))
+h103 = (out / "product-rt-103.html").read_text(encoding="utf-8")
+h104 = (out / "product-rt-104.html").read_text(encoding="utf-8")
+chk("rt-103 (index=false) і rt-104 (опис <50 знаків): <meta robots noindex,follow>; rt-101 — без noindex", 'content="noindex,follow"' in h103 and 'content="noindex,follow"' in h104 and 'noindex' not in h.split("</head>")[0])
+home = (out / "index.html").read_text(encoding="utf-8")
+chk("rt-картки НЕ потрапляють на головну (каруселі, добірки) і в кошикові add-on", "product-rt-" not in home and "product-rt-" not in (out / "cart.html").read_text(encoding="utf-8"))
+ix = {x["id"]: x for x in idx}
+chk("index.json: rt-запис має rt=1 і ix (1 — індексується, 0 — ні) для фідів; у звичайного товару цих полів нема", ix["rt-101"].get("rt") == 1 and ix["rt-101"].get("ix") == 1 and ix["rt-103"].get("ix") == 0 and ix["rt-104"].get("ix") == 0 and "rt" not in ix["5"] and "ix" not in ix["5"])
+cat_html = [q.read_text(encoding="utf-8") for q in out.glob("category-*.html") if "product-rt-101" in q.read_text(encoding="utf-8")]
+order = re.findall(r'"url": "https://plutustoys.com.ua/product-([^"]+)\.html"', cat_html[0]) if cat_html else []
+chk("у категорії rt-картки стоять ПІСЛЯ Toysi (rec_order, ItemList)", "rt-101" in order and all(not x.startswith("rt-") for x in order[:order.index("rt-101")]) and order.index("rt-101") >= 1)
 
 # (3) браузер: кошик
 cart_html = (out / "cart.html").read_text(encoding="utf-8")

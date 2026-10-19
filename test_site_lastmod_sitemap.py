@@ -62,12 +62,13 @@ def lm_map(fname):
     return dict(re.findall(r"<loc>([^<]+)</loc><lastmod>([^<]+)</lastmod>", (out / fname).read_text(encoding="utf-8")))
 
 
+BASE_SEGS = [n for n in bs.SITEMAP_SEGMENTS if n != "rt"]   # rt (RoyalToys) — порожній без supplier_rt.json: файл не пишеться, у індексі нема
 build()
 idx = (out / "sitemap.xml").read_text(encoding="utf-8")
 chk("sitemap.xml — sitemapindex із 5 дочірніми (priority, products, oos, categories, static), кожен файл існує і має lastmod",
-    "<sitemapindex" in idx and all(f"{bs.SITE_URL}/sitemap-{n}.xml</loc><lastmod>" in idx for n in bs.SITEMAP_SEGMENTS) and all((out / f"sitemap-{n}.xml").exists() for n in bs.SITEMAP_SEGMENTS))
-seg = {n: locs(f"sitemap-{n}.xml") for n in bs.SITEMAP_SEGMENTS}
-allu = [u for n in bs.SITEMAP_SEGMENTS for u in seg[n]]
+    "<sitemapindex" in idx and all(f"{bs.SITE_URL}/sitemap-{n}.xml</loc><lastmod>" in idx for n in BASE_SEGS) and all((out / f"sitemap-{n}.xml").exists() for n in BASE_SEGS))
+seg = {n: locs(f"sitemap-{n}.xml") for n in BASE_SEGS}
+allu = [u for n in BASE_SEGS for u in seg[n]]
 chk(f"кожен URL рівно в одному сегменті (разом {len(allu)}, унікальних {len(set(allu))}), без сторінок пагінації _N", len(allu) == len(set(allu)) and not any(re.search(r"_\d+\.html$", u) for u in allu))
 P = bs.SITE_URL + "/"
 pid = lambda i: f"{P}product-{i}.html"  # noqa: E731

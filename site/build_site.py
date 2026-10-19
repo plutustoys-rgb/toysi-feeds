@@ -516,7 +516,8 @@ def sale_until_html(pid=None) -> str:
 def index_entries(prods):
     """Записи index.json (клієнтський пошук/сорт, site_order_api): pr — ціна, за якою ПРОДАЄМО (акційна під час «Знижки тижня»), op — стара ціна акції (лише інформація: замовлення її ігнорує)."""
     return [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"],
-             "c": p["category"], "s": 1 if p["stock"] > 0 else 0, **({"op": p["old_price"]} if p.get("old_price") else {})} for p in prods]
+             "c": p["category"], "s": 1 if p["stock"] > 0 else 0, **({"op": p["old_price"]} if p.get("old_price") else {}),
+             **({"rt": 1, "ix": 0 if p.get("noindex") else 1} if p.get("rt") else {})} for p in prods]   # rt/ix — для фідів Google/Meta/Bing (Код): RoyalToys лише з ix=1
 
 
 def tile(p, cls="", eager=False, prio=False, badge=False):
@@ -571,6 +572,7 @@ class CatalogShrinkError(RuntimeError):
 SUPPLIER_RT_FILE = os.environ.get("SUPPLIER_RT_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_rt.json")
 RT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rt_category_map.json")
 SUPPLIER_RT_MAX_AGE_DAYS = 3
+RT_MIN_DESC_INDEX = 50
 _RT_ID_RX = re.compile(r"rt-[0-9A-Za-z_]+")
 _RT_COD_SENTENCE_RX = re.compile(r"[^.!?\n]*(?:накладен|при отриманні|післяплат)[^.!?\n]*[.!?]?", re.I)   # у картках rt- не обіцяємо оплату при отриманні
 
@@ -642,9 +644,12 @@ def _load_supplier_rt(now=None):
             rt_cost = int(v.get("cost") or 0)
         except (TypeError, ValueError):
             rt_cost = 0
-        out[k] = {"id": k, "name": str(v["name"]).strip(), "description": _rt_clean_description(v.get("description")), "vendor": str(v.get("vendor") or "").strip(),
+        _desc = _rt_clean_description(v.get("description"))
+        out[k] = {"id": k, "name": str(v["name"]).strip(), "description": _desc, "vendor": str(v.get("vendor") or "").strip(),
                   "vendor_code": str(v.get("vendor_code") or "").strip(), "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
-                  "site_price": price, "rt_cost": rt_cost, "supplier": "royaltoys", "price": price}
+                  "site_price": price, "rt_cost": rt_cost, "supplier": "royaltoys", "price": price,
+                  # хвилі відкриття до Google (SEO 19.10): "index": false → noindex,follow і поза sitemap; нема поля → true (пілот); опис <50 знаків (тонка картка) → noindex завжди
+                  "rt_noindex": v.get("index") is False or len(re.sub(r"<[^>]+>", "", _desc).strip()) < RT_MIN_DESC_INDEX}
     if skipped:
         print("[build] ⚠ supplier_rt.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
     print(f"[build] RoyalToys: {len(out)} карток із supplier_rt.json")
@@ -726,6 +731,7 @@ def build():
             "photo": pics[0], "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
+            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")),
             "vendor": (it.get("vendor") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
     # Порядок «Рекомендовані» = за ВНЕСКОМ спадно (рішення Консультанта: на перший екран —
@@ -804,7 +810,7 @@ def build():
     _ADDON_POOL_CAP = 80
     # Пул add-on НЕ бере уцінку, «розпродаж»-назви й копійчані позиції: «Уцінка. Браслет… 12 ₴» як
     # доповнення до дорогої іграшки виглядає сміттям (SMM 2026-10-06, наслідок PR #614 «каталог повний»).
-    _addon_pool = sorted((p for p in prods if _addon_ok(p)),
+    _addon_pool = sorted((p for p in prods if _addon_ok(p) and not p.get("rt")),
                          key=lambda x: x["price"])[:_ADDON_POOL_CAP]
     related_map = {}
     for p in prods:
@@ -840,17 +846,19 @@ def build():
     for c in cat_list:
         paged |= write_catalog(f"Каталог • {c}", rec_order(cats[c]), cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
     prods_rec = rec_order(prods)
+    toysi_prods = [p for p in prods if not p.get("rt")]   # головна/каруселі/акції/спец-сторінки/add-on кошика — без RoyalToys (рішення власника ще не прийнято)
     paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
-    paged |= write_utsinka(prods, cat_list, cat_slug)
-    paged |= write_aktsii(prods, cat_list, cat_slug)
-    paged |= write_helovin(prods, cat_list, cat_slug)
-    paged |= write_chip_pages(prods, cat_list, cat_slug)
+    paged |= write_utsinka(toysi_prods, cat_list, cat_slug)
+    paged |= write_aktsii(toysi_prods, cat_list, cat_slug)
+    paged |= write_helovin(toysi_prods, cat_list, cat_slug)
+    paged |= write_chip_pages(toysi_prods, cat_list, cat_slug)
     # 4) головна
-    write_home(prods, cats, cat_list, cat_slug)
-    write_ig(prods)
-    has_nabory = write_nabory(prods)
+    _cats_toysi = {c: [p for p in v if not p.get("rt")] for c, v in cats.items()}
+    write_home(toysi_prods, _cats_toysi, [c for c in cat_list if _cats_toysi.get(c)], cat_slug)
+    write_ig(toysi_prods)
+    has_nabory = write_nabory(toysi_prods)
     # 5) кошик + checkout + сторінка подяки
-    write_cart(_cart_addons(prods))
+    write_cart(_cart_addons(toysi_prods))
     write_thanks()
     write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
@@ -1217,7 +1225,8 @@ def _rec_bucket(p) -> int:
 
 
 def rec_order(items):
-    return sorted(items, key=lambda p: (_rec_bucket(p), hashlib.sha1(f"{REC_SEED}:{p['id']}".encode()).hexdigest()))
+    # rt-картки (RoyalToys, лише передоплата) — після Toysi, доки власник не вирішить інакше (Код/Shopify-code 19.10): із cost вони мають внесок і інакше витіснили б Toysi з перших позицій
+    return sorted(items, key=lambda p: (1 if p.get("rt") else 0, _rec_bucket(p), hashlib.sha1(f"{REC_SEED}:{p['id']}".encode()).hexdigest()))
 
 
 _CATEGORY_TEXTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "category_texts.json")
@@ -1260,6 +1269,7 @@ CATEGORY_ASIDE_MIN_CONTRIB = 30.0   # внесок на замовлення, �
 def _category_aside_html(cat_prods):
     """Права колонка біля вступного тексту категорії (власник 15.10: «права сторона повинна заповнитися рекомендацією товару або акцією»):
     є акційні товари цієї категорії («Знижка тижня», сайт показує лише чинну акцію) → найдешевший з них + посилання на всі знижки; інакше «Рекомендуємо» — один товар категорії з щоденною ротацією (home_pick: той самий відбір і правила, що у вітрині головної — ціна, внесок, без мілітарі/зброї)."""
+    cat_prods = [p for p in cat_prods if not p.get("rt")]   # RoyalToys у «Рекомендуємо/Знижка тижня» біля вступу не показуємо (рішення власника ще нема)
     sale = [p for p in cat_prods if p.get("old_price") and p.get("stock", 0) > 0]
     if sale and SALE_ACTIVE:
         p = min(sale, key=lambda x: (x["price"], str(x["id"])))
@@ -2464,7 +2474,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     body = crumbs_html(trail) + body
     _write(f"product-{p['id']}.html", page(
         p["name"], body, extra_head=extra, title_full=product_title_for(p, in_stock), description=meta_desc,
-        canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product"))
+        canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product", noindex=bool(p.get("noindex"))))   # rt: хвиля не відкрита / тонкий опис
 
 CART_ADDONS_MAX = 12     # пул «Додайте до замовлення» у кошику (на сторінці показуємо 3, яких ще нема в кошику)
 
@@ -3153,7 +3163,7 @@ def _write(fname, content):
 
 SITEMAP_PRIORITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitemap_priority.json")
 PROM_GROUP_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prom_group_to_category.json")
-SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static")
+SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority)
 
 
 def _sitemap_priority():
@@ -3198,10 +3208,16 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
             seg["categories"].append((fn, fn, "0.7", "weekly"))
     for p in prods:
         f = f"product-{p['id']}.html"
+        if p.get("rt"):
+            if not p.get("noindex"):
+                seg["rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
+            continue
         (seg["priority"] if p["id"] in pri_ids else seg["products"]).append((f, f, "0.6", "weekly"))
     # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий
     for p in oos_prods:
         f = f"product-{p['id']}.html"
+        if p.get("rt"):
+            continue   # rt без залишку: сторінка жива, у sitemap не додаємо
         (seg["priority"] if p["id"] in pri_ids else seg["oos"]).append((f, f, "0.6" if p["id"] in pri_ids else "0.3", "weekly" if p["id"] in pri_ids else "monthly"))
     index_items = []
     for name in SITEMAP_SEGMENTS:

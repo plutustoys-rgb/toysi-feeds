@@ -1,0 +1,12 @@
+[Unit]
+Description=PlutusToys: дані пілоту RoyalToys для сайту (rt_supplier_export.py → supplier_rt.json + фото site/img/rt)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. supplier_rt.json (з оптом) пишеться у /opt/plutustoys, ПОЗА DocumentRoot; фото — у публічну site/img/rt. ROYALTOYS_YML_URL береться з /opt/plutustoys/.env (секрет).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/rt_supplier_export.py
+TimeoutStartSec=900

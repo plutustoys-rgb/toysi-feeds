@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys: пілот RoyalToys — оновлення даних для сайту щогодини (залишки в YML RoyalToys оновлюються щогодини)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

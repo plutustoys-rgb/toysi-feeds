@@ -74,5 +74,46 @@ with tempfile.TemporaryDirectory() as td:
     ss.run_once(fetch=lambda: {"100": {"stock": 5}}, out=stk)
     snap = json.loads(stk.read_text(encoding="utf-8")) if stk.exists() else {}
     chk("run_once stock_snapshot: у stock.json є Toysi-ключ і rt-1", snap.get("s", {}).get("100") == 5 and snap.get("s", {}).get("rt-1") == 4)
+
+# --- режим «весь каталог» (19.10, слово власника) ---
+import json as _j2, tempfile as _tf2
+def mk(price="200", stock=7, cat="Конструкторы", name="Іграшка", dims=(10, 10, 10), avail=True, pics=("http://a/x.jpg",)):
+    return {"id": "", "name_ua": name, "description_ua": "Опис", "price": price, "stock": stock, "available": avail, "vendor": "V", "vendor_code": "C", "category_name": cat, "dims_cm": list(dims) if dims else None, "weight_kg": None, "pictures": list(pics)}
+cat2 = {"1": mk(), "2": mk(cat="Оружие игрушечное"), "3": mk(cat="Книги"), "4": mk(price="100"), "5": mk(stock=2), "6": mk(price="900", stock=10), "7": mk(name="Ніж «Катана»"), "8": mk(avail=False), "9": mk(price="0")}
+for k, v in cat2.items():
+    v["id"] = k
+chk("policy_reason: зброя/ніж → policy, книги → not_toy, звичайна іграшка → None", ex.policy_reason(cat2["2"]) == "policy" and ex.policy_reason(cat2["7"]) == "policy" and ex.policy_reason(cat2["3"]) == "not_toy" and ex.policy_reason(cat2["1"]) is None)
+chk("режим pilot → лише пілотні id", ex.select_ids(cat2, ["rt-1"], {"mode": "pilot"}) == ["rt-1"])
+full = {"mode": "full", "min_cost": 150, "min_stock": 5, "exclude_not_toys": True}
+sel = ex.select_ids(cat2, ["rt-5"], full)
+chk("full: пілот завжди (rt-5 з залишком 2), політика/не-іграшки/опт<150/залишок<5/не available/ціна 0 відсіяно; решта за спаданням внеску (rt-6 раніше за rt-1)", sel == ["rt-5", "rt-6", "rt-1"])
+chk("full без фільтрів і з not_toy: лишає книги, але НЕ зброю/ніж", set(ex.select_ids(cat2, [], {"mode": "full", "exclude_not_toys": False})) == {"rt-1", "rt-3", "rt-4", "rt-5", "rt-6", "rt-8", "rt-9"} - {"rt-9"} or set(ex.select_ids(cat2, [], {"mode": "full", "exclude_not_toys": False})) == {"rt-1", "rt-3", "rt-4", "rt-5", "rt-6"} | {"rt-8"})
+with _tf2.TemporaryDirectory() as td2:
+    td2 = Path(td2)
+    chk("load_selection: нема файлу/сміття/невідомий режим → pilot", ex.load_selection(td2 / "none.json") == {"mode": "pilot"} and (td2 / "b.json").write_text("{x", encoding="utf-8") is not None and ex.load_selection(td2 / "b.json") == {"mode": "pilot"} and (td2 / "c.json").write_text('{"mode":"all"}', encoding="utf-8") is not None and ex.load_selection(td2 / "c.json") == {"mode": "pilot"})
+    (td2 / "d.json").write_text(_j2.dumps({"rt-1": "555", "bad": "x"}), encoding="utf-8")
+    chk("load_dup_map: лише коректні rt- ключі", ex.load_dup_map(td2 / "d.json") == {"rt-1": "555"} and ex.load_dup_map(td2 / "none.json") == {})
+    import threading as _th
+    seen = []
+    def slow(url, dest):
+        seen.append(_th.get_ident())
+        return True
+    r = ex.prefetch([("u", td2 / f"{n}.jpg") for n in range(20)], slow, workers=4)
+    chk("prefetch: усі 20 виконано паралельно (кілька потоків), результат по dest", len(r) == 20 and all(r.values()))
+    r0 = ex.prefetch([("u", td2 / "a.jpg"), ("u", td2 / "b.jpg")], lambda u, d: True, workers=1, budget_s=-1)
+    chk("prefetch: бюджет часу вичерпано → недокачане False (не падає)", r0 == {td2 / "a.jpg": False, td2 / "b.jpg": False})
+    out3 = td2 / "o.json"
+    ex.run_once({"1": mk(), "2": mk(cat="Оружие")}, None, out3, lambda u, d: True, td2 / "img", selection={"mode": "full", "min_cost": 150, "min_stock": 5, "exclude_not_toys": True}, dup_map={"rt-1": "555"})
+    # ids=None → select_ids з load_pilot_ids() (234 id із файлу) + режим full: у каталозі лише 1 і 2 → rt-1 з full, пілотні відсутні в YML пропущено
+    d3 = _j2.loads(out3.read_text(encoding="utf-8"))["items"]
+    chk("run_once full: rt-1 опубліковано з dup_of, зброя (rt-2) — ні", list(d3) == ["rt-1"] and d3["rt-1"]["dup_of"] == "555")
+    out4 = td2 / "o4.json"
+    cnt = {"n": 0}
+    def fl(u, d):
+        cnt["n"] += 1
+        return cnt["n"] % 2 == 1
+    ex.run_once({"1": mk(pics=("a", "b", "c", "d")), "2": mk(pics=("a",))}, ["rt-1", "rt-2"], out4, fl, td2 / "img", workers=1)
+    d4 = _j2.loads(out4.read_text(encoding="utf-8"))["items"]
+    chk("не більше 3 фото на картку (MAX_IMAGES); картка без жодного фото цього разу не публікується (pending)", len(d4["rt-1"]["images"]) <= 3 and ex.MAX_IMAGES == 3)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

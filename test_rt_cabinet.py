@@ -41,5 +41,6 @@ chk("замок: браузерне кодування `~`→%7E і `*` сири
 chk("замок: пароль у fragment → leaks", rc.leaks_secret("secret1", f"{B2}/x#secret1"))
 chk("замок: легітимне — короткий пароль «ua»/«auth» збігається зі шляхом, але не з query → НЕ leaks", not rc.leaks_secret("ua", f"{B2}/ua/auth/email/") and not rc.leaks_secret("auth", f"{B2}/ua/auth/email/") and not rc.leaks_secret("royal", f"{B2}/ua/auth/email/?page=2"))
 chk("замок: тіло запиту на сторонній хост з паролем → leaks; без тіла/без пароля → ні; порожній секрет → ні", rc.leaks_secret("pw123456", "https://evil.tld/c", "email=a&password=pw123456") and not rc.leaks_secret("pw123456", "https://evil.tld/c", "email=a") and not rc.leaks_secret("", f"{B2}/x?p=1"))
+chk("замок: бінарне (не UTF-8) тіло на сторонній хост не ламає перевірку; пароль у бінарному тілі ловиться; без пароля — ні", rc.leaks_secret("pw123456", "https://evil.tld/c", b"\xff\xfe\x00pw123456\x80") and not rc.leaks_secret("pw123456", "https://evil.tld/c", b"\xff\xfe\x00\x80"))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

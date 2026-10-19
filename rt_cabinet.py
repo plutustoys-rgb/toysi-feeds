@@ -137,8 +137,9 @@ def leaks_secret(secret: str, url: str, post_data=None) -> bool:
             if secret in form:
                 return True
     if post_data:
-        txt = post_data if isinstance(post_data, str) else str(post_data)
-        if secret in txt or secret in unquote_plus(txt):
+        raw = post_data if isinstance(post_data, (bytes, bytearray)) else str(post_data).encode("utf-8", "replace")
+        txt = raw.decode("utf-8", "replace")
+        if secret.encode("utf-8") in raw or secret in txt or secret in unquote_plus(txt):
             return True
     return False
 
@@ -166,12 +167,20 @@ def vps_login() -> int:
             blocked = {"hit": False}
 
             def _guard(r):
-                req = r.request
-                u = urlparse(req.url)
-                if leaks_secret(password, req.url, req.post_data if (u.hostname or "").lower() not in HOST_OK else None):
-                    blocked["hit"] = True
-                    return r.abort()                                               # пароль у query/фрагменті URL (GET-форма) або у даних запиту на сторонній хост — не відправляємо
-                return r.continue_()
+                try:
+                    req = r.request
+                    u = urlparse(req.url)
+                    body = req.post_data_buffer if (u.hostname or "").lower() not in HOST_OK else None      # bytes: бінарне тіло не ламає обробник (post_data робить строгий decode)
+                    if leaks_secret(password, req.url, body):
+                        blocked["hit"] = True
+                        return r.abort()                                           # пароль у query/фрагменті URL (GET-форма) або у даних запиту на сторонній хост — не відправляємо
+                    return r.continue_()
+                except Exception:  # noqa: BLE001
+                    blocked["hit"] = True                                          # fail-closed: збій перевірки = запит не пропускаємо, і він завжди завершується
+                    try:
+                        return r.abort()
+                    except Exception:  # noqa: BLE001
+                        return None
             ctx.route("**/*", _guard)
             page = ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)

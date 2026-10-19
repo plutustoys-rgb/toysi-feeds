@@ -78,12 +78,12 @@ def build_item(rid: str, v: dict, images: list) -> dict | None:
     except (TypeError, ValueError):
         stock = 0
     dims = v.get("dims_cm")
-    if not dims or len(dims) != 3 or not all(isinstance(x, (int, float)) and x > 0 for x in dims):
+    if not dims or len(dims) != 3 or not all(isinstance(x, (int, float)) and math.isfinite(x) and x > 0 for x in dims):
         return None      # без габаритів картку не публікуємо (ТТН потребує розмірів; рішення Коду 19.10, чекаємо підтвердження RoyalToys)
     wt = v.get("weight_kg")
     return {"name": name, "description": plain_text(v.get("description_ua")), "vendor": (v.get("vendor") or "").strip(), "vendor_code": (v.get("vendor_code") or "").strip(),
             "category": (v.get("category_name") or "").strip(), "images": images, "price": site_price(cost), "cost": round(cost, 2), "stock": stock,
-            "dims_cm": [round(float(x), 1) for x in dims], "weight_kg": round(float(wt), 3) if isinstance(wt, (int, float)) and wt > 0 else None}
+            "dims_cm": [round(float(x), 1) for x in dims], "weight_kg": round(float(wt), 3) if isinstance(wt, (int, float)) and math.isfinite(wt) and wt > 0 else None}
 
 
 def fetch_image(url: str, dest: Path) -> bool:
@@ -154,10 +154,10 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
                 continue
             items[sid] = it
         if not items:
-            _alert("rt_export_none", f"⚠️ rt_supplier_export: жодної з {len(ids)} відібраних карток не зібрано (нема в YML: {len(missing)}, без фото/назви/ціни: {len(nophoto)}) — supplier_rt.json НЕ оновлено.")
+            _alert("rt_export_none", f"⚠️ rt_supplier_export: жодної з {len(ids)} відібраних карток не зібрано (нема в YML: {len(missing)}, без фото/назви/ціни/габаритів: {len(nophoto)}) — supplier_rt.json НЕ оновлено.")
             return False
         if missing or nophoto:
-            print(f"[rt_export] пропущено: нема в YML {len(missing)} ({missing[:5]}), без фото/назви/ціни {len(nophoto)} ({nophoto[:5]})", file=sys.stderr)
+            print(f"[rt_export] пропущено: нема в YML {len(missing)} ({missing[:5]}), без фото/назви/ціни/габаритів {len(nophoto)} ({nophoto[:5]})", file=sys.stderr)
         payload = {"updated": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"), "items": items}
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(out.name + ".tmp")

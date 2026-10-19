@@ -216,5 +216,14 @@ with _tf.TemporaryDirectory() as td:
     except t.TtnError:
         ok = True
     chk("нема supplier_rt.json → TtnError", ok)
+for bad_it in ({"dims_cm": [float("nan"), 5, 5]}, {"dims_cm": [5, 5, float("inf")]}, {"dims_cm": "123"}, {"dims_cm": [1, 2, 3], "weight_kg": float("nan")}, {"dims_cm": [1, 2, 3], "weight_kg": float("inf")}, {"dims_cm": [1, 2, 3], "weight_kg": -1}, {"dims_cm": [1, 2, 3], "weight_kg": True}):
+    try:
+        t.seats_for_items([dict(bad_it, price=100, qty=1)])
+        ok = False
+    except t.TtnError:
+        ok = True
+    chk(f"nan/inf/рядок/від'ємне/bool у габаритах чи вазі {list(bad_it.values())!r} → TtnError", ok)
+sl = t.seats_for_items([{"price": 100, "qty": 1, "dims_cm": [28, 4, 20]}])[0]
+chk("підписи: довжина = найбільший, ширина = середній, висота = найменший (28/20/4)", (sl["volumetricLength"], sl["volumetricWidth"], sl["volumetricHeight"]) == ("28.0", "20.0", "4.0"))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

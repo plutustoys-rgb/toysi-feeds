@@ -7,6 +7,7 @@
 БЕЗПЕКА (money/реальні дії): режим за замовчуванням — РОЗРАХУНОК (dry_run=True): будує payload і питає НП лише про вартість (InternetDocument.getDocumentPrice, нічого не створює). Реальне створення (Counterparty.save отримувача + InternetDocument.save) вимагає ОБОХ: параметр apply=True І змінну NP_TTN_APPLY=1. Видалення (delete_ttn) — так само під воротами. Ключ НП (NP_API_KEY) не друкується й не логується; URL маркування з ключем повертається лише всередині fetch_marking_pdf (байти, не рядок).
 
 API: build_ttn_payload(order, sender, items_seats) → dict; create_ttn(order, apply=False) → {"dry_run", "payload", "price"|"number","ref"}; fetch_marking_pdf(ref) → bytes; delete_ttn(ref). Без залежності від мережі в build_* (тестується офлайн)."""
+import math
 import os
 import re
 import sys
@@ -86,8 +87,10 @@ def item_seat(it: dict, qty: int, default_weight: float, default_dims: tuple, vo
     d = it.get("dims_cm")
     if d:
         try:
+            if not isinstance(d, (list, tuple)):
+                raise ValueError
             dd = sorted(float(x) for x in d)
-            if len(dd) != 3 or dd[0] <= 0:
+            if len(dd) != 3 or not all(math.isfinite(x) and x > 0 for x in dd):
                 raise ValueError
         except (TypeError, ValueError):
             raise TtnError(f"габарити позиції некоректні: {d!r}") from None
@@ -95,10 +98,12 @@ def item_seat(it: dict, qty: int, default_weight: float, default_dims: tuple, vo
         vol_m3 = max(MIN_SEAT_VOLUME, stacked[0] * stacked[1] * stacked[2] / 1_000_000)
         vol_w = stacked[0] * stacked[1] * stacked[2] / VOLUMETRIC_DIVISOR
         try:
-            real = float(it["weight_kg"]) * qty if it.get("weight_kg") else 0.0
+            real = float(it["weight_kg"]) * qty if it.get("weight_kg") not in (None, "") else 0.0
+            if isinstance(it.get("weight_kg"), bool) or not math.isfinite(real) or real < 0:
+                raise ValueError
         except (TypeError, ValueError):
             raise TtnError(f"вага позиції некоректна: {it.get('weight_kg')!r}") from None
-        return tuple(round(x, 1) for x in (stacked[1], stacked[2], stacked[0])), round(max(real, vol_w, 0.1), 3), vol_m3
+        return tuple(round(x, 1) for x in (stacked[2], stacked[1], stacked[0])), round(max(real, vol_w, 0.1), 3), vol_m3
     try:
         w = float(it.get("weight") or default_weight) * qty
     except (TypeError, ValueError):

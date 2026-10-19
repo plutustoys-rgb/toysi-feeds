@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 
@@ -22,7 +23,7 @@ def _num(raw):
         v = float(str(raw).replace(",", ".").strip())
     except (TypeError, ValueError):
         return None
-    return v if v > 0 else None
+    return v if math.isfinite(v) and v > 0 else None
 
 
 def _dims_cm(params: dict):

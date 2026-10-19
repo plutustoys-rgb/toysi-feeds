@@ -245,7 +245,7 @@
   `prom_catalog_sync`, `prom_convergence_monitor`, `prom_pushed_ledger`, `prom_chat_bot`, `prom_chat_db`,
   `prom_review_requester` → Код (інфра); сигнали — SEO; відгуки (`prom_review_requester`) — SMM.
 - **Замовлення/доставка/фінзвірка замовлень:** `order_pipeline`, `order_router`, `orders_watcher`, `orders_db`,
-  `order_status_tracker`, `toysi_order_submit`, `nova_poshta`, `ukrposhta_client`, `bank_check`,
+  `order_status_tracker`, `toysi_order_submit`, `nova_poshta`, `np_ttn` (створення ТТН НП нашим акаунтом для RoyalToys, 19.10: за замовчуванням лише РОЗРАХУНОК, реальне створення під воротами apply + NP_TTN_APPLY=1; відправник — с. Мила, відділення №2; одне місце на позицію), `ukrposhta_client`, `bank_check`,
   `reconcile_revenue` → Код + **КОДВ** (звірка).
 - **Власний сайт-магазин `plutustoys.com.ua`:** `site/build_site.py` (статичний генератор з каталогу Toysi:
   головна/каталог/категорії/картки/кошик/пошук, `site/assets/*`; **ціна = знижена ціна Toysi × 1.5 (як EVA), каталог = увесь in-stock Toysi,

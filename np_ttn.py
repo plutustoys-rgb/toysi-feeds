@@ -84,7 +84,10 @@ def seats_for_items(items: list, default_weight: float = DEFAULT_SEAT_WEIGHT, di
     vol = max(MIN_SEAT_VOLUME, dims[0] * dims[1] * dims[2] / 1_000_000)   # м³ (НП: volumetricVolume у м³), габарити місця від кількості не залежать
     for it in items or []:
         qty = _qty(it)
-        w = float(it.get("weight") or default_weight) * qty
+        try:
+            w = float(it.get("weight") or default_weight) * qty
+        except (TypeError, ValueError):
+            raise TtnError(f"вага позиції некоректна: {it.get('weight')!r}") from None
         seats.append({"volumetricLength": str(dims[0]), "volumetricWidth": str(dims[1]), "volumetricHeight": str(dims[2]),
                       "volumetricVolume": str(round(vol, 4)), "weight": str(round(w, 3))})
     if not seats:
@@ -218,7 +221,11 @@ def create_ttn(order: dict, apply: bool = False, cod_amount: int = 0, now: datet
         pr = np_._call("InternetDocument", "getDocumentPrice", price_payload(props))
         price = pr[0] if pr else {}
         return {"dry_run": True, "payload": props, "price": {"cost": price.get("Cost"), "cost_redelivery": price.get("CostRedelivery")}}
-    data = np_._call("InternetDocument", "save", props)
+    try:
+        data = np_._call("InternetDocument", "save", props)
+    except Exception as e:  # noqa: BLE001
+        # отримувач уже створений у НП: не губимо його Ref (повтор не має плодити дублі контрагента)
+        raise TtnError(f"ТТН не створено ({type(e).__name__}); отримувач уже створений у НП: Ref={props.get('Recipient')}") from None
     rec = data[0] if data else {}
     if not rec.get("IntDocNumber"):
         raise TtnError("НП не повернула номер ТТН")

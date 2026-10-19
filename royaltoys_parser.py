@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 
@@ -14,6 +15,21 @@ load_dotenv()
 ROYALTOYS_YML_URL = os.environ.get("ROYALTOYS_YML_URL", "")
 
 REQUEST_TIMEOUT = 90  # секунды — фід великий (~90+ МБ)
+
+
+def _num(raw):
+    """Число з параметра YML («6», «0,35», «12.6») або None."""
+    try:
+        v = float(str(raw).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+def _dims_cm(params: dict):
+    """[довжина, ширина, висота] у см із параметрів «Габариты: длина/ширина/высота» (виміряно 19.10: є повний набір у 197 з 233 відібраних карток; лише «длина» у 30 — це НЕ габарити). Неповний набір → None."""
+    d = [_num(params.get("Габариты: " + k)) for k in ("длина", "ширина", "высота")]
+    return d if all(d) else None
 
 
 def fetch_royaltoys_catalog() -> Dict[str, dict]:
@@ -90,6 +106,7 @@ def _parse_xml_stream(fileobj) -> Dict[str, dict]:
             vendor = elem.findtext("vendor", "").strip()
             category_id = elem.findtext("categoryId", "").strip()
             pictures = [p.text.strip() for p in elem.findall("picture") if p.text and p.text.strip()]
+            params = {(x.get("name") or "").strip(): (x.text or "").strip() for x in elem.findall("param")}
 
             catalog[product_id] = {
                 "id": product_id,
@@ -106,6 +123,8 @@ def _parse_xml_stream(fileobj) -> Dict[str, dict]:
                 "pictures": pictures,
                 "category_id": category_id,
                 "category_name": cat_names.get(category_id, ""),
+                "dims_cm": _dims_cm(params),
+                "weight_kg": _num(params.get("Вес товара")),
             }
             elem.clear()
 

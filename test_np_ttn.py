@@ -181,5 +181,49 @@ try:
 except t.TtnError:
     ok = True
 chk("fetch_marking_pdf: Ref не GUID → TtnError", ok)
+
+# --- габарити з картки постачальника (19.10, порівняння з ТТН Toysi) ---
+s1 = t.seats_for_items([{"price": 100, "qty": 1, "dims_cm": [28, 4, 20]}])[0]
+chk("габарити картки 28×4×20 → вага = Д×Ш×В/4000 = 0,56 кг (як у ТТН Toysi), об'єм 0,00224 м³", s1["weight"] == "0.56" and s1["volumetricVolume"] == "0.0022")
+s2 = t.seats_for_items([{"price": 100, "qty": 1, "dims_cm": [70, 21, 61], "weight_kg": 6}])[0]
+chk("ходунки 70×21×61, реальна вага 6 кг → вага ТТН = об'ємна 22,4 кг (НП рахує за більшим)", s2["weight"] == "22.418")
+s3 = t.seats_for_items([{"price": 100, "qty": 1, "dims_cm": [10, 10, 10], "weight_kg": 3}])[0]
+chk("важкий малий товар: реальна 3 кг > об'ємна 0,25 → 3 кг", s3["weight"] == "3.0")
+s4 = t.seats_for_items([{"price": 100, "qty": 2, "dims_cm": [28, 4, 20]}])[0]
+chk("qty=2: найменший розмір ×2 (28×8×20) → 1,12 кг, одне місце", s4["weight"] == "1.12")
+try:
+    t.seats_for_items([{"price": 100, "qty": 1, "dims_cm": [0, 5, 5]}])
+    ok = False
+except t.TtnError:
+    ok = True
+chk("нульовий габарит → TtnError", ok)
+import json as _j, tempfile as _tf
+with _tf.TemporaryDirectory() as td:
+    f = Path(td) / "sup.json"
+    f.write_text(_j.dumps({"updated": "2026-10-19T00:00:00+00:00", "items": {"rt-5": {"dims_cm": [10, 20, 30], "weight_kg": 1.5}, "rt-6": {"dims_cm": None}}}), encoding="utf-8")
+    o2 = t.with_supplier_dims({"items": [{"toysi_code": "rt-5", "qty": 1, "price": 100}, {"toysi_code": "100", "qty": 1, "price": 50}]}, f)
+    chk("with_supplier_dims: rt-5 отримав dims/вагу, Toysi-позиція не змінена", o2["items"][0]["dims_cm"] == [10, 20, 30] and o2["items"][0]["weight_kg"] == 1.5 and "dims_cm" not in o2["items"][1])
+    for code in ("rt-6", "rt-7"):
+        try:
+            t.with_supplier_dims({"items": [{"toysi_code": code, "qty": 1, "price": 100}]}, f)
+            ok = False
+        except t.TtnError:
+            ok = True
+        chk(f"{code}: нема габаритів/картки → TtnError (fail-closed)", ok)
+    try:
+        t.with_supplier_dims({"items": [{"toysi_code": "rt-5", "qty": 1, "price": 100}]}, Path(td) / "none.json")
+        ok = False
+    except t.TtnError:
+        ok = True
+    chk("нема supplier_rt.json → TtnError", ok)
+for bad_it in ({"dims_cm": [float("nan"), 5, 5]}, {"dims_cm": [5, 5, float("inf")]}, {"dims_cm": "123"}, {"dims_cm": [1, 2, 3], "weight_kg": float("nan")}, {"dims_cm": [1, 2, 3], "weight_kg": float("inf")}, {"dims_cm": [1, 2, 3], "weight_kg": -1}, {"dims_cm": [1, 2, 3], "weight_kg": True}):
+    try:
+        t.seats_for_items([dict(bad_it, price=100, qty=1)])
+        ok = False
+    except t.TtnError:
+        ok = True
+    chk(f"nan/inf/рядок/від'ємне/bool у габаритах чи вазі {list(bad_it.values())!r} → TtnError", ok)
+sl = t.seats_for_items([{"price": 100, "qty": 1, "dims_cm": [28, 4, 20]}])[0]
+chk("підписи: довжина = найбільший, ширина = середній, висота = найменший (28/20/4)", (sl["volumetricLength"], sl["volumetricWidth"], sl["volumetricHeight"]) == ("28.0", "20.0", "4.0"))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

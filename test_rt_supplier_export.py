@@ -28,10 +28,12 @@ chk("ціна: 100 → max(150; 118,45) = 150; 20 → max(30; 36,05) = 37; 10,5 
 ids = ex.load_pilot_ids()
 chk("rt_pilot_ids.json: 234 унікальних id з префіксом rt-", len(ids) == 234 == len(set(ids)) and all(i.startswith("rt-") for i in ids))
 chk("офіс. каталог не публікує гроші в site/: OUT_FILE поза site/", "site" not in ex.OUT_FILE.parts)
-V = {"name_ua": "Іграшка", "description_ua": " Опис ", "price": "200", "stock": 7, "available": True, "vendor": "V", "vendor_code": "C1", "category_name": "Конструкторы"}
+V = {"name_ua": "Іграшка", "description_ua": " Опис ", "price": "200", "stock": 7, "available": True, "vendor": "V", "vendor_code": "C1", "category_name": "Конструкторы", "dims_cm": [28.0, 4.0, 20.0], "weight_kg": 0.35}
 it = ex.build_item("rt-1", V, ["https://x/rt-1-1.jpg"])
 chk("елемент: ціна 300, cost 200, stock 7, категорія рос., опис обрізано", it["price"] == 300 and it["cost"] == 200.0 and it["stock"] == 7 and it["category"] == "Конструкторы" and it["description"] == "Опис")
 chk("опис: HTML-теги прибрано, сутності розкодовано, абзаци лишились", ex.plain_text("<p>Один &amp; два</p><p>Три<br>чотири</p>") == "Один & два\nТри\nчотири" and ex.plain_text(None) == "")
+chk("габарити й вага в елементі; без ваги → None", it["dims_cm"] == [28.0, 4.0, 20.0] and it["weight_kg"] == 0.35 and ex.build_item("rt-1", dict(V, weight_kg=None), ["u"])["weight_kg"] is None)
+chk("без габаритів (None / неповні / нуль) → None, картку не публікуємо", all(ex.build_item("rt-1", dict(V, dims_cm=d), ["u"]) is None for d in (None, [1, 2], [1, 0, 3], ["a", 1, 1])))
 chk("не available → stock 0", ex.build_item("rt-1", dict(V, available=False), ["u"])["stock"] == 0)
 chk("нема name_ua → None", ex.build_item("rt-1", dict(V, name_ua=""), ["u"]) is None)
 chk("без фото → None", ex.build_item("rt-1", V, []) is None)

@@ -7,6 +7,7 @@
 БЕЗПЕКА (money/реальні дії): режим за замовчуванням — РОЗРАХУНОК (dry_run=True): будує payload і питає НП лише про вартість (InternetDocument.getDocumentPrice, нічого не створює). Реальне створення (Counterparty.save отримувача + InternetDocument.save) вимагає ОБОХ: параметр apply=True І змінну NP_TTN_APPLY=1. Видалення (delete_ttn) — так само під воротами. Ключ НП (NP_API_KEY) не друкується й не логується; URL маркування з ключем повертається лише всередині fetch_marking_pdf (байти, не рядок).
 
 API: build_ttn_payload(order, sender, items_seats) → dict; create_ttn(order, apply=False) → {"dry_run", "payload", "price"|"number","ref"}; fetch_marking_pdf(ref) → bytes; delete_ttn(ref). Без залежності від мережі в build_* (тестується офлайн)."""
+import math
 import os
 import re
 import sys
@@ -77,6 +78,39 @@ def _qty(it: dict) -> int:
     return q
 
 
+VOLUMETRIC_DIVISOR = 4000    # НП: об'ємна вага (кг) = Д×Ш×В (см) / 4000; перевірено 19.10 на ТТН Toysi (збіг точний у 4 з 5)
+
+
+def item_seat(it: dict, qty: int, default_weight: float, default_dims: tuple, vol_default: float) -> tuple:
+    """(dims_cm, weight_kg, volumetric_m3) одного місця для позиції. Є it['dims_cm'] (з картки постачальника): габарити беремо як є, а для qty>1 найменший розмір множимо на qty (штабелювання);
+    вага = max(реальна×qty, об'ємна) — НП рахує за більшим (як і Toysi: вага в ТТН = Д×Ш×В/4000). Немає габаритів — запасні (дефолт), як раніше."""
+    d = it.get("dims_cm")
+    if d:
+        try:
+            if not isinstance(d, (list, tuple)):
+                raise ValueError
+            dd = sorted(float(x) for x in d)
+            if len(dd) != 3 or not all(math.isfinite(x) and x > 0 for x in dd):
+                raise ValueError
+        except (TypeError, ValueError):
+            raise TtnError(f"габарити позиції некоректні: {d!r}") from None
+        stacked = [dd[0] * qty, dd[1], dd[2]]
+        vol_m3 = max(MIN_SEAT_VOLUME, stacked[0] * stacked[1] * stacked[2] / 1_000_000)
+        vol_w = stacked[0] * stacked[1] * stacked[2] / VOLUMETRIC_DIVISOR
+        try:
+            real = float(it["weight_kg"]) * qty if it.get("weight_kg") not in (None, "") else 0.0
+            if isinstance(it.get("weight_kg"), bool) or not math.isfinite(real) or real < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise TtnError(f"вага позиції некоректна: {it.get('weight_kg')!r}") from None
+        return tuple(round(x, 1) for x in (stacked[2], stacked[1], stacked[0])), round(max(real, vol_w, 0.1), 3), vol_m3
+    try:
+        w = float(it.get("weight") or default_weight) * qty
+    except (TypeError, ValueError):
+        raise TtnError(f"вага позиції некоректна: {it.get('weight')!r}") from None
+    return default_dims, round(w, 3), vol_default
+
+
 def seats_for_items(items: list, default_weight: float = DEFAULT_SEAT_WEIGHT, dims: tuple = DEFAULT_SEAT_DIMS) -> list:
     """Одне місце на КОЖНУ ПОЗИЦІЮ (товар) замовлення (вимога кошика RoyalToys: «якщо декілька товарів — декілька місць (на кожен товар по одному місцю)»);
     кілька штук одного товару = одне місце, вага = вага одиниці × кількість. Жива перевірка НП 19.10: 3 окремі місця Мила→Київ коштують втричі дорожче за одне, тож «по місцю на штуку» було б хибним."""
@@ -84,12 +118,9 @@ def seats_for_items(items: list, default_weight: float = DEFAULT_SEAT_WEIGHT, di
     vol = max(MIN_SEAT_VOLUME, dims[0] * dims[1] * dims[2] / 1_000_000)   # м³ (НП: volumetricVolume у м³), габарити місця від кількості не залежать
     for it in items or []:
         qty = _qty(it)
-        try:
-            w = float(it.get("weight") or default_weight) * qty
-        except (TypeError, ValueError):
-            raise TtnError(f"вага позиції некоректна: {it.get('weight')!r}") from None
-        seats.append({"volumetricLength": str(dims[0]), "volumetricWidth": str(dims[1]), "volumetricHeight": str(dims[2]),
-                      "volumetricVolume": str(round(vol, 4)), "weight": str(round(w, 3))})
+        d, w, v = item_seat(it, qty, default_weight, dims, vol)
+        seats.append({"volumetricLength": str(d[0]), "volumetricWidth": str(d[1]), "volumetricHeight": str(d[2]),
+                      "volumetricVolume": str(round(v, 4)), "weight": str(round(w, 3))})
     if not seats:
         raise TtnError("у замовленні нема позицій для ТТН")
     return seats
@@ -201,10 +232,35 @@ def create_recipient(fio: str, phone: str, apply: bool = False) -> dict:
     return {"ref": rec["Ref"], "contact_ref": contact["Ref"]}
 
 
+def with_supplier_dims(order: dict, supplier_file=None) -> dict:
+    """Копія замовлення, де rt-позиції отримали dims_cm/weight_kg із приватного supplier_rt.json (rt_supplier_export). rt-позиція без габаритів → TtnError (fail-closed: на запасних розмірах ТТН не створюємо)."""
+    items = []
+    sup = None
+    for it in order.get("items") or []:
+        it = dict(it)
+        if str(it.get("toysi_code") or "").strip().lower().startswith("rt-") and not it.get("dims_cm"):
+            if sup is None:
+                import json
+                from pathlib import Path
+                if supplier_file is None:
+                    from rt_supplier_export import OUT_FILE as supplier_file
+                try:
+                    sup = (json.loads(Path(supplier_file).read_text(encoding="utf-8-sig")).get("items") or {})
+                except (OSError, ValueError):
+                    raise TtnError("supplier_rt.json недоступний: габарити rt-позицій невідомі") from None
+            src = sup.get(it["toysi_code"].strip().lower()) or sup.get(it["toysi_code"]) or {}
+            if not src.get("dims_cm"):
+                raise TtnError(f"нема габаритів для {it.get('toysi_code')}: ТТН не створюємо")
+            it["dims_cm"], it["weight_kg"] = src["dims_cm"], src.get("weight_kg")
+        items.append(it)
+    return {**order, "items": items}
+
+
 def create_ttn(order: dict, apply: bool = False, cod_amount: int = 0, now: datetime | None = None) -> dict:
     """dry_run (за замовчуванням): payload із ПЛЕЙСХОЛДЕРАМИ отримувача + вартість доставки з НП (getDocumentPrice); нічого не створює.
     apply=True і NP_TTN_APPLY=1: створює отримувача й накладну; повертає {'dry_run': False, 'number', 'ref', 'cost'}.
     ІДЕМПОТЕНТНІСТЬ — на стороні виклику: зберегти number/ref у замовленні одразу після створення і передавати їх як order['ttn_ref'|'ttn_number'] (тоді live-виклик відмовить); повторний виклик без цього створить другу платну ТТН."""
+    order = with_supplier_dims(order)    # rt-позиції: габарити з картки постачальника (fail-closed без них)
     live = _apply_allowed(apply)
     if live and (order.get("ttn_ref") or order.get("ttn_number")):
         raise TtnError("у замовлення вже є ТТН (ttn_ref/ttn_number): повторне створення коштувало б грошей — ідемпотентність на стороні виклику")

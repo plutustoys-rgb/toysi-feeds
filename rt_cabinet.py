@@ -210,8 +210,10 @@ def vps_login() -> int:
             stage = "fill"
             form.locator("input[name='email']" if kind == "email" else "input[name='phone']").fill(login_id, timeout=15000)
             form.locator("input[name='password']").fill(password, timeout=15000)
-            stage = "click"
-            form.locator("input[type='submit'], button[type='submit'], button:not([type])").first.click(timeout=15000, no_wait_after=True)      # ОДНА спроба, без повторів; не чекаємо навігації (сайт відправляє форму JS-ом)
+            stage = "submit-enter"
+            # Відправка клавішею Enter у полі пароля (ОДНА спроба, без повторів): форма email-входу лежить у fancybox-слайді, який перекриває кнопку «Увійти» (elementFromPoint = fancybox-slide, виміряно 19.10 на VPS),
+            # тому click() не проходить перевірку «елемент приймає події» (TimeoutError на кроці click). Enter ініціює неявну відправку форми (клік по submit-кнопці) без залежності від покриття.
+            form.locator("input[name='password']").press("Enter", timeout=15000, no_wait_after=True)
             stage = "after-click"
             page.wait_for_timeout(4000)
             if blocked["hit"]:

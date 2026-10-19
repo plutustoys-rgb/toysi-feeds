@@ -9,4 +9,6 @@ User=root
 WorkingDirectory=/opt/plutustoys
 # КРИТИЧНО (CLAUDE.md): venv-python. supplier_rt.json (з оптом) пишеться у /opt/plutustoys, ПОЗА DocumentRoot; фото — у публічну site/img/rt. ROYALTOYS_YML_URL береться з /opt/plutustoys/.env (секрет).
 ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/rt_supplier_export.py
-TimeoutStartSec=900
+TimeoutStartSec=2400
+Nice=10
+# TimeoutStartSec перекриває бюджет фото (PREFETCH_BUDGET_S=900) + таймаути запитів + запис; аудит #866: при 900 юніт вбивався б до запису файлу

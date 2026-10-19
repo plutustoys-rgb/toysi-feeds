@@ -22,7 +22,8 @@ PILOT = """Деревянные сортеры и логики|Детские Д
 m = json.loads((HERE / "site" / "rt_category_map.json").read_text(encoding="utf-8-sig"))
 chk("мапа — об'єкт {рос. назва: наша категорія}, усі значення непорожні рядки", isinstance(m, dict) and all(isinstance(v, str) and v.strip() for v in m.values()))
 chk("усі 40 категорій пілотної вибірки (209 + 25 від SEO) мають відповідник", len(PILOT) == 40 and not (set(PILOT) - set(m)))
-chk("зайвих ключів нема", not (set(m) - set(PILOT)))
+chk("повна мапа (19.10, список Коду rt_categories_2026-10-19.csv): ≥ 300 категорій, значення — наші існуючі назви без дублів-ключів", len(m) >= 300 and len(m) == len({k for k in m}))
+chk("«Уцінений товар» і порожні назви НЕ в мапі (не публікуємо)", "Уценённый товар" not in m and "" not in m)
 print()
 if F:
     print(f"FAILED ({len(F)}):")

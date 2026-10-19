@@ -22,5 +22,14 @@ for b in bad:
     chk(f"заблоковано: {b}", not rc.safe_link(B + b))
 chk("чужий хост і підрядок у query: заблоковано", not rc.safe_link("https://evil.tld/?r=royaltoys.com.ua/my/") and not rc.safe_link("https://royaltoys.com.ua.evil.tld/my/") and not rc.safe_link("http://royaltoys.com.ua/my/"))
 chk("_norm лишає лише ?page=N", rc._norm(B + "/my/orders/?page=3&sort=x") == B + "/my/orders/?page=3" and rc._norm(B + "/my/orders/?sort=x") == B + "/my/orders/")
+import os as _os, io as _io, contextlib as _cl
+for k in ("RT_CABINET_PHONE", "RT_CABINET_PASSWORD"):
+    _os.environ.pop(k, None)
+_err = _io.StringIO()
+with _cl.redirect_stderr(_err):
+    _rc = rc.vps_login()
+chk("--vps-login без RT_CABINET_PHONE/PASSWORD у середовищі → код 1, браузер не запускається, облікових даних у виводі нема", _rc == 1 and "RT_CABINET_PHONE" in _err.getvalue())
+src = Path(rc.__file__).read_text(encoding="utf-8")
+chk("пароль ніколи не друкується: у файлі нема print з password/phone-змінними", not any(("password" in ln or "phone" in ln) and "print(" in ln and "RT_CABINET_" not in ln for ln in src.splitlines()))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

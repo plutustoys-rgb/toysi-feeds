@@ -23,11 +23,23 @@ if hasattr(sys.stdout, "reconfigure"):
 RT_SENDER_CITY_REF = os.environ.get("NP_RT_SENDER_CITY_REF", "905c11b6-13d6-11e4-acce-0050568002cf")
 RT_SENDER_WAREHOUSE_REF = os.environ.get("NP_RT_SENDER_WAREHOUSE_REF", "c80e75dd-05e3-11e9-ad0d-005056b24375")
 DEFAULT_SEAT_WEIGHT = float(os.environ.get("NP_DEFAULT_SEAT_WEIGHT", "0.5"))      # кг, поки RoyalToys не дав вагу/габарити (запитано 19.10); НП перерахує за фактичною
-DEFAULT_SEAT_DIMS = tuple(float(x) for x in os.environ.get("NP_DEFAULT_SEAT_DIMS", "25,20,10").split(","))   # довжина, ширина, висота, см
+def _dims_from_env() -> tuple:
+    try:
+        d = tuple(float(x) for x in os.environ.get("NP_DEFAULT_SEAT_DIMS", "25,20,10").split(","))
+        if len(d) == 3 and all(x > 0 for x in d):
+            return d
+    except ValueError:
+        pass
+    return (25.0, 20.0, 10.0)
+
+
+DEFAULT_SEAT_DIMS = _dims_from_env()   # довжина, ширина, висота, см (некоректне значення env → дефолт, імпорт не ламаємо)
+MIN_SEAT_VOLUME = 0.0004     # м³ (мінімум НП для місця)
 MIN_DECLARED_COST = 200      # оголошена вартість не нижче (як у вже створених ТТН)
 APPLY_ENV = "NP_TTN_APPLY"
 MARKING_URL = "https://my.novaposhta.ua/orders/printMarking100x100/orders[]/{ref}/type/pdf/apiKey/{key}"
 _PHONE_RE = re.compile(r"\D+")
+_GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 class TtnError(Exception):
@@ -51,26 +63,45 @@ def split_fio(full_name: str) -> tuple:
     if not parts:
         raise TtnError("порожнє ПІБ отримувача")
     if len(parts) == 1:
-        return parts[0], parts[0], ""
+        raise TtnError("ПІБ отримувача: потрібні щонайменше прізвище й ім'я")
     return parts[0], parts[1], " ".join(parts[2:])
+
+
+def _qty(it: dict) -> int:
+    try:
+        q = int(it.get("qty"))
+    except (TypeError, ValueError):
+        raise TtnError(f"кількість позиції некоректна: {it.get('qty')!r}") from None
+    if q <= 0:
+        raise TtnError(f"кількість позиції має бути > 0: {q}")
+    return q
 
 
 def seats_for_items(items: list, default_weight: float = DEFAULT_SEAT_WEIGHT, dims: tuple = DEFAULT_SEAT_DIMS) -> list:
     """Одне місце на КОЖНУ ПОЗИЦІЮ (товар) замовлення (вимога кошика RoyalToys: «якщо декілька товарів — декілька місць (на кожен товар по одному місцю)»);
     кілька штук одного товару = одне місце, вага = вага одиниці × кількість. Жива перевірка НП 19.10: 3 окремі місця Мила→Київ коштують втричі дорожче за одне, тож «по місцю на штуку» було б хибним."""
     seats = []
+    vol = max(MIN_SEAT_VOLUME, dims[0] * dims[1] * dims[2] / 1_000_000)   # м³ (НП: volumetricVolume у м³), габарити місця від кількості не залежать
     for it in items or []:
-        qty = max(1, int(it.get("qty") or 1))
+        qty = _qty(it)
         w = float(it.get("weight") or default_weight) * qty
         seats.append({"volumetricLength": str(dims[0]), "volumetricWidth": str(dims[1]), "volumetricHeight": str(dims[2]),
-                      "volumetricVolume": str(round(dims[0] * dims[1] * dims[2] / 4000 * qty, 3)), "weight": str(round(w, 3))})
+                      "volumetricVolume": str(round(vol, 4)), "weight": str(round(w, 3))})
     if not seats:
         raise TtnError("у замовленні нема позицій для ТТН")
     return seats
 
 
 def declared_cost(items: list) -> int:
-    total = sum(float(it.get("price") or 0) * max(1, int(it.get("qty") or 1)) for it in items or [])
+    total = 0.0
+    for it in items or []:
+        try:
+            price = float(it.get("price"))
+        except (TypeError, ValueError):
+            raise TtnError(f"ціна позиції некоректна: {it.get('price')!r}") from None
+        if price <= 0:
+            raise TtnError(f"ціна позиції має бути > 0: {price}")
+        total += price * _qty(it)
     return int(max(MIN_DECLARED_COST, round(total)))
 
 
@@ -89,7 +120,6 @@ def build_ttn_payload(order: dict, sender: dict, recipient: dict, now: datetime 
         "DateTime": now.strftime("%d.%m.%Y"),
         "SeatsAmount": str(len(seats)),
         "Weight": str(round(sum(float(s["weight"]) for s in seats), 3)),
-        "VolumeGeneral": str(round(sum(float(s["volumetricVolume"]) for s in seats), 3)),
         "OptionsSeat": seats,
         "Description": "Дитячі іграшки",
         "Cost": str(declared_cost(items)),
@@ -112,7 +142,7 @@ def build_ttn_payload(order: dict, sender: dict, recipient: dict, now: datetime 
 
 def price_payload(props: dict) -> dict:
     """Підмножина для InternetDocument.getDocumentPrice (розрахунок вартості доставки; нічого не створює)."""
-    keys = ("CitySender", "CityRecipient", "Weight", "ServiceType", "Cost", "CargoType", "SeatsAmount", "OptionsSeat", "VolumeGeneral")
+    keys = ("CitySender", "CityRecipient", "Weight", "ServiceType", "Cost", "CargoType", "SeatsAmount", "OptionsSeat")
     out = {k: props[k] for k in keys if k in props}
     out["PayerType"] = props["PayerType"]
     if "BackwardDeliveryData" in props:
@@ -121,7 +151,7 @@ def price_payload(props: dict) -> dict:
 
 
 def _apply_allowed(apply: bool) -> bool:
-    return bool(apply) and os.environ.get(APPLY_ENV) == "1"
+    return apply is True and os.environ.get(APPLY_ENV) == "1"
 
 
 _SENDER_CACHE: dict = {}
@@ -155,8 +185,10 @@ def resolve_recipient_address(order: dict) -> tuple:
     return city, whs[0]["ref"]
 
 
-def create_recipient(fio: str, phone: str) -> dict:
-    """РЕАЛЬНА дія (створює контрагента-отримувача в НП): викликається лише під воротами apply."""
+def create_recipient(fio: str, phone: str, apply: bool = False) -> dict:
+    """РЕАЛЬНА дія (створює контрагента-отримувача в НП): власні ворота (apply=True і NP_TTN_APPLY=1), без них TtnError."""
+    if not _apply_allowed(apply):
+        raise TtnError("створення отримувача заборонено: потрібні apply=True і NP_TTN_APPLY=1")
     last, first, middle = split_fio(fio)
     data = np_._call("Counterparty", "save", {"FirstName": first, "MiddleName": middle, "LastName": last, "Phone": normalize_phone(phone), "CounterpartyType": "PrivatePerson", "CounterpartyProperty": "Recipient"})
     rec = data[0] if data else {}
@@ -168,16 +200,20 @@ def create_recipient(fio: str, phone: str) -> dict:
 
 def create_ttn(order: dict, apply: bool = False, cod_amount: int = 0, now: datetime | None = None) -> dict:
     """dry_run (за замовчуванням): payload із ПЛЕЙСХОЛДЕРАМИ отримувача + вартість доставки з НП (getDocumentPrice); нічого не створює.
-    apply=True і NP_TTN_APPLY=1: створює отримувача й накладну; повертає {'dry_run': False, 'number', 'ref', 'cost'}."""
+    apply=True і NP_TTN_APPLY=1: створює отримувача й накладну; повертає {'dry_run': False, 'number', 'ref', 'cost'}.
+    ІДЕМПОТЕНТНІСТЬ — на стороні виклику: зберегти number/ref у замовленні одразу після створення і передавати їх як order['ttn_ref'|'ttn_number'] (тоді live-виклик відмовить); повторний виклик без цього створить другу платну ТТН."""
+    live = _apply_allowed(apply)
+    if live and (order.get("ttn_ref") or order.get("ttn_number")):
+        raise TtnError("у замовлення вже є ТТН (ttn_ref/ttn_number): повторне створення коштувало б грошей — ідемпотентність на стороні виклику")
     sender = resolve_sender()
     city_ref, wh_ref = resolve_recipient_address(order)
-    live = _apply_allowed(apply)
+    recipient = {"ref": "DRY-RUN", "contact_ref": "DRY-RUN", "phone": order.get("phone"), "city_ref": city_ref, "address_ref": wh_ref}
+    props = build_ttn_payload(order, sender, recipient, now=now, cod_amount=cod_amount)   # уся валідація ДО будь-якої реальної дії (нема сиріт-контрагентів)
     if live:
-        rcp = create_recipient(order.get("customer_name"), order.get("phone"))
-    else:
-        rcp = {"ref": "DRY-RUN", "contact_ref": "DRY-RUN"}
-    recipient = {**rcp, "phone": order.get("phone"), "city_ref": city_ref, "address_ref": wh_ref}
-    props = build_ttn_payload(order, sender, recipient, now=now, cod_amount=cod_amount)
+        split_fio(order.get("customer_name"))
+        rcp = create_recipient(order.get("customer_name"), order.get("phone"), apply=True)
+        recipient.update(rcp)
+        props = build_ttn_payload(order, sender, recipient, now=now, cod_amount=cod_amount)
     if not live:
         pr = np_._call("InternetDocument", "getDocumentPrice", price_payload(props))
         price = pr[0] if pr else {}
@@ -193,7 +229,12 @@ def fetch_marking_pdf(ref: str, timeout: int = 30) -> bytes:
     """Файл маркування 100×100 (PDF) для ТТН — те, що RoyalToys просить прикріпити. Читання; ключ не логуємо й не повертаємо."""
     if not np_.NP_API_KEY:
         raise TtnError("не заданий NP_API_KEY")
-    r = requests.get(MARKING_URL.format(ref=ref, key=np_.NP_API_KEY), timeout=timeout)
+    if not _GUID_RE.match(ref or ""):
+        raise TtnError("маркування: Ref ТТН має бути GUID")
+    try:
+        r = requests.get(MARKING_URL.format(ref=ref, key=np_.NP_API_KEY), timeout=timeout)
+    except requests.RequestException:
+        raise TtnError("маркування: помилка з'єднання з НП") from None   # без тексту винятку: він містить URL з ключем
     if r.status_code != 200 or not r.content.startswith(b"%PDF"):
         raise TtnError(f"маркування не отримано (HTTP {r.status_code}, не PDF)")
     return r.content

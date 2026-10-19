@@ -114,5 +114,72 @@ calls.clear()
 chk("delete_ttn без воріт → False і без виклику", t.delete_ttn("REF", apply=True) is False and not calls and t.delete_ttn("REF", apply=False) is False)
 os.environ[t.APPLY_ENV] = "1"
 chk("delete_ttn під воротами → True і виклик delete", t.delete_ttn("REF", apply=True) is True and ("InternetDocument", "delete") in calls)
+
+# --- зауваження аудиту PR #858 ---
+os.environ.pop(t.APPLY_ENV, None)
+try:
+    t.create_recipient("Іваненко Іван", "0501234567")
+    ok = False
+except t.TtnError:
+    ok = True
+chk("create_recipient без воріт → TtnError (власні ворота)", ok)
+chk("apply='0' (рядок) не відкриває ворота", (os.environ.__setitem__(t.APPLY_ENV, "1"), t._apply_allowed("0"))[1] is False)
+try:
+    t.split_fio("Іваненко")
+    ok = False
+except t.TtnError:
+    ok = True
+chk("ПІБ з одного слова → TtnError", ok)
+for bad_item in ({"price": 100, "qty": 0}, {"price": 100, "qty": "x"}, {"price": None, "qty": 1}, {"price": 0, "qty": 1}):
+    try:
+        t.declared_cost([bad_item])
+        t.seats_for_items([bad_item])
+        ok = False
+    except t.TtnError:
+        ok = True
+    chk(f"позиція {bad_item} → TtnError", ok)
+sv = t.seats_for_items([{"price": 100, "qty": 3}])[0]
+chk("об'єм місця в м³ (25×20×10 = 0.005), від кількості не залежить", sv["volumetricVolume"] == "0.005" and t.seats_for_items([{"price": 100, "qty": 1}])[0]["volumetricVolume"] == "0.005")
+chk("payload без VolumeGeneral", "VolumeGeneral" not in p and "VolumeGeneral" not in t.price_payload(p))
+# валідація до створення контрагента: погана позиція → TtnError, жодного Counterparty.save
+calls.clear()
+np_.search_warehouses = lambda city, q="", limit=12: [{"ref": "WH-5", "number": "5", "description": "Відділення №5"}]
+bad = dict(ORDER, items=[{"price": 100, "qty": "x"}])
+try:
+    t.create_ttn(bad, apply=True, now=NOW)
+    ok = False
+except t.TtnError:
+    ok = True
+chk("погане замовлення при apply → TtnError ДО Counterparty.save (нема сирот)", ok and not any(m == "save" for _, m in calls))
+calls.clear()
+try:
+    t.create_ttn(dict(ORDER, ttn_number="2045"), apply=True, now=NOW)
+    ok = False
+except t.TtnError:
+    ok = True
+chk("замовлення з існуючою ТТН + apply → TtnError, нічого не створено", ok and not calls)
+# маркування: ключ не витікає у винятку
+import requests as _rq  # noqa: E402
+
+
+def _boom(url, timeout=0):
+    raise _rq.ConnectionError(f"HTTPSConnectionPool: {url}")
+
+
+_orig_get = _rq.get
+_rq.get = _boom
+try:
+    t.fetch_marking_pdf("11111111-2222-3333-4444-555555555555")
+    msg = ""
+except t.TtnError as e:
+    msg = str(e)
+_rq.get = _orig_get
+chk("fetch_marking_pdf: збій з'єднання → TtnError без ключа", bool(msg) and "TESTKEY-SECRET" not in msg and "apiKey" not in msg)
+try:
+    t.fetch_marking_pdf("../x")
+    ok = False
+except t.TtnError:
+    ok = True
+chk("fetch_marking_pdf: Ref не GUID → TtnError", ok)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

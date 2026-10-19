@@ -925,6 +925,10 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> 
     return True
 
 
+def _has_rt_items(order: dict) -> bool:
+    return any(str((it or {}).get("toysi_code") or "").startswith("rt-") for it in (order.get("items") or []))
+
+
 def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict = None) -> None:
     if not _ensure_site_prepaid_receipt(conn, order, test_mode):
         return
@@ -942,6 +946,12 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
     # блокує передачу — best-effort: краще ризикнути застарілим
     # припущенням "в наявності", ніж зупинити весь конвеєр через
     # тимчасову недоступність фіда Toysi.
+    if _has_rt_items(order):
+        # Позиції партнера RoyalToys (id «rt-…») у Toysi не існують: автоформард неможливий (Toysi відхилив би або взяв чужий код). Шлях — вручну:
+        # замовлення в кабінеті RoyalToys + наша ТТН (np_ttn). Лишаємо в черзі; watchdog нагадає, якщо застрягло.
+        print(f"[order_router] {order['internal_order_id']}: містить rt-позиції (RoyalToys) — НЕ передається в Toysi, обробка вручну (кабінет RoyalToys + np_ttn)", file=sys.stderr)
+        return
+
     if toysi_catalog is None:
         toysi_catalog = fetch_toysi_catalog()
 

@@ -160,6 +160,7 @@ def vps_login() -> int:
         return 1
     from playwright.sync_api import sync_playwright
     rc = 1
+    stage = "launch"                                   # статична мітка кроку (без даних): показує, ДЕ саме стався збій
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         try:
@@ -183,10 +184,12 @@ def vps_login() -> int:
                         return None
             ctx.route("**/*", _guard)
             page = ctx.new_page()
+            stage = "goto-login"
             page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if (urlparse(page.url).hostname or "").lower() not in HOST_OK:
                 print("[RtCabinet] сторінка входу переадресована поза royaltoys.com.ua — зупинка, дані не введено.", file=sys.stderr)
                 return 1
+            stage = "find-form"
             if kind == "email":
                 forms = page.locator("form:has(input[name='email']):has(input[name='password'])")
             else:
@@ -204,25 +207,34 @@ def vps_login() -> int:
             if _captcha_visible(page):
                 print("[RtCabinet] капча вже видима до відправлення — вхід не робимо (капчу не обходимо).", file=sys.stderr)
                 return 3
-            form.locator("input[name='email']" if kind == "email" else "input[name='phone']").fill(login_id)
-            form.locator("input[name='password']").fill(password)
-            form.locator("input[type='submit'], button[type='submit'], button:not([type])").first.click()      # ОДНА спроба, без повторів
+            stage = "fill"
+            form.locator("input[name='email']" if kind == "email" else "input[name='phone']").fill(login_id, timeout=15000)
+            form.locator("input[name='password']").fill(password, timeout=15000)
+            stage = "click"
+            form.locator("input[type='submit'], button[type='submit'], button:not([type])").first.click(timeout=15000, no_wait_after=True)      # ОДНА спроба, без повторів; не чекаємо навігації (сайт відправляє форму JS-ом)
+            stage = "after-click"
             page.wait_for_timeout(4000)
             if blocked["hit"]:
                 print("[RtCabinet] мережевий замок заблокував запит із паролем (форма відправляє його в URL або на сторонній хост) — вхід не відбувся, стан не збережено.", file=sys.stderr)
                 return 1
-            page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            stage = "wait-load"
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:  # noqa: BLE001
+                pass                                    # сторінка після JS-відправки могла не перезавантажуватись — це не помилка
             if _captcha_visible(page):
                 print("[RtCabinet] сайт показав капчу — вхід зупинено (капчу не обходимо). Зачекайте або увійдіть вручну.", file=sys.stderr)
                 return 3
+            stage = "goto-home"
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            stage = "check-login"
             if not _logged_in(page):
                 print("[RtCabinet] вхід не підтверджено (невірні дані або інша форма) — стан не збережено. Повторно поспіль не запускати.", file=sys.stderr)
                 return 1
             _save_state(ctx)
             rc = 0
         except Exception as e:  # noqa: BLE001
-            print(f"[RtCabinet] vps-login збій: {type(e).__name__}", file=sys.stderr)       # текст винятку не друкуємо (міг би містити введене)
+            print(f"[RtCabinet] vps-login збій на кроці «{stage}»: {type(e).__name__}", file=sys.stderr)       # лише статична мітка кроку й назва класу; текст винятку не друкуємо (журнал викликів Playwright міг би містити введене)
         finally:
             browser.close()
     if rc == 0:

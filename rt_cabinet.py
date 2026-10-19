@@ -14,6 +14,7 @@
 ЗАХИСТ --explore (аудит PR #871): (1) мережевий замок: усі запити, крім GET/HEAD, блокуються на рівні контексту (жоден POST/форма/JS-дія не пройде); (2) хост лише royaltoys.com.ua, лише https; (3) відкидаються посилки з небезпечними дієсловами (вихід/видалення/скасування/оплата/повтор/додавання/зміна статусу…), з query-ключами-діями, і `/<числовий id>/<ще сегмент>`; (4) після кожного goto перевіряється фінальний URL (редірект на вихід/вхід = зупинка); (5) стан сесії в explore НЕ пересохраняється;
 (6) звіт пишеться у finally (збій однієї сторінки не втрачає решту), права 0600, лежить у .local_secrets/ (поза git). Звіт містить ПІБ/телефони клієнтів — не копіювати в git/канали/публічні місця без редагування."""
 import argparse
+import math
 import os
 import re
 import sys
@@ -292,7 +293,8 @@ SEARCH_URL = "https://royaltoys.com.ua/ua/search/?query="
 SHIPPING_OWN_TTN = "10"                       # shipping_id «По своей ТТН» (виміряно 19.10)
 PAYMENT_PREPAID = "Предоплата на карту"       # варіант оплати для клієнта (накладений вимкнено рішенням власника)
 MAX_PDF_BYTES = 2 * 1024 * 1024
-_ONESTEP_OK_RE = re.compile(r"/(onestep/(shipping|payment|total|recalc|update)|data/shipping/\d+/(warehouse|findstreets)|cart/(add|delete|clear|save|update)|orderaddon)$")
+# allow-list POST: лише СПОСТЕРЕЖЕНІ під час розвідки 19-20.10 (cart/add, cart/delete, onestep/shipping, data/shipping/<id>/warehouse|findstreets, orderaddon; cart/save — для кількості, перевірено в Shop-Script). Нових — лише за фактичним логом.
+_ONESTEP_OK_RE = re.compile(r"^(?:/ua)?/(?:onestep/shipping|data/shipping/\d+/(?:warehouse|findstreets)|cart/(?:add|delete|save)|orderaddon)$")
 
 
 class OrderError(Exception):
@@ -315,8 +317,15 @@ def validate_order(o: dict) -> dict:
             raise OrderError("кількість позиції некоректна") from None
         if not re.fullmatch(r"[0-9A-Za-zА-Яа-яІіЇїЄє._/\- ]{2,40}", vc) or qty < 1 or qty > 100:
             raise OrderError(f"позиція некоректна: {vc!r} × {qty}")
-        cost = (it or {}).get("cost")
-        norm.append({"vendor_code": vc, "qty": qty, "cost": float(cost) if cost not in (None, "") else None})
+        try:
+            cost = float((it or {}).get("cost"))
+        except (TypeError, ValueError):
+            raise OrderError(f"{vc}: потрібна оптова cost (число)") from None
+        if not math.isfinite(cost) or cost <= 0:
+            raise OrderError(f"{vc}: cost має бути скінченним числом > 0")
+        norm.append({"vendor_code": vc, "qty": qty, "cost": cost})
+    if len({n["vendor_code"] for n in norm}) != len(norm):
+        raise OrderError("дублі артикулів у позиціях: об'єднайте їх у одну позицію з сумарною кількістю")
     name = " ".join(str(o.get("recipient_name") or "").split())
     if len(name.split()) < 2:
         raise OrderError("ПІБ отримувача: потрібні щонайменше прізвище й ім'я")
@@ -370,10 +379,8 @@ def order_flow(order: dict, submit: bool = False) -> dict:
                 path = u.path.rstrip("/")
                 if host_ok and _ONESTEP_OK_RE.search(path):
                     return r.continue_()
-                if host_ok and path.endswith("/onestep") and submit:
-                    return r.continue_()                         # фінальна відправка форми — лише в режимі submit
                 if host_ok and path.endswith("/onestep"):
-                    blocked["final"] = True
+                    blocked["final"] = True                      # фінальний POST блокується ЗАВЖДИ; майбутній фінал — окремий «озброєний» прохід безпосередньо перед навмисним кліком
                 return r.abort()
             ctx.route("**/*", _lock)
             page = ctx.new_page()
@@ -383,18 +390,25 @@ def order_flow(order: dict, submit: bool = False) -> dict:
                 raise OrderError("сесія не прийнята — --vps-login")
             res["balance"] = _balance(page.inner_text("body"))
 
+            def cart_empty() -> bool:
+                """Позитивна ознака порожнього кошика: залогінені, нема рядків кількості і є напис про порожній кошик."""
+                return _logged_in(page) and page.locator("input[name^='quantity[']").count() == 0 and bool(re.search(r"порожн|пусто", page.inner_text("body"), re.I))
+
             def clear_cart():
                 for _ in range(30):
                     page.goto(CART_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-                    page.wait_for_timeout(1200)
+                    page.wait_for_timeout(1500)
+                    if cart_empty():
+                        return
                     rm = page.locator(".cart-item__remove")
                     if rm.count() == 0:
-                        return
+                        raise OrderError("кошик не порожній, але елемента видалення нема (сесія/верстка) — очистіть вручну")
                     rm.first.evaluate("e => e.click()")
                     page.wait_for_timeout(1800)
                 raise OrderError("кошик не вдалося очистити")
+            if page.locator("input[name^='quantity[']").count() > 0:
+                raise OrderError("кошик у кабінеті RoyalToys не порожній (чужі позиції) — очистіть вручну; автоматично не чіпаю")
             try:
-                clear_cart()
                 # 1) позиції в кошик (за артикулом: пошук → картка з точним «Арт.: …»)
                 for it in order["items"]:
                     page.goto(SEARCH_URL + quote(it["vendor_code"]), wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
@@ -436,9 +450,11 @@ def order_flow(order: dict, submit: bool = False) -> dict:
                     raise OrderError(f"кошик не збігається з замовленням: у кошику {got}, потрібно {want}")
                 cart_text = page.inner_text("body")
                 res["cart_total"] = _money(cart_text.split("Всього", 1)[-1][:40]) if "Всього" in cart_text else None
-                exp = [it["cost"] * it["qty"] for it in order["items"]]
-                if all(c is not None for c in [it["cost"] for it in order["items"]]) and res["cart_total"] is not None and abs(sum(exp) - res["cart_total"]) > 0.5:
-                    raise OrderError(f"сума кошика {res['cart_total']} ≠ очікувана за оптом {sum(exp):.2f} — зупинка (ціна на сайті постачальника змінилась?)")
+                expected = sum(it["cost"] * it["qty"] for it in order["items"])
+                if res["cart_total"] is None:
+                    raise OrderError("не вдалося прочитати суму кошика — зупинка")
+                if abs(expected - res["cart_total"]) > 0.5:
+                    raise OrderError(f"сума кошика {res['cart_total']} ≠ очікувана за оптом {expected:.2f} — зупинка (ціна на сайті постачальника змінилась?)")
                 res["min_order_note"] = [l.strip() for l in cart_text.splitlines() if "Мінімальн" in l][:2]
                 # 3) оформлення «по своїй ТТН»
                 page.goto(ONESTEP_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
@@ -487,9 +503,8 @@ def order_flow(order: dict, submit: bool = False) -> dict:
             res["problems"].append(f"збій {type(e).__name__}")        # без тексту винятку: журнал Playwright міг би містити введені значення
         finally:
             browser.close()
-    if blocked["final"]:
-        res["problems"].append("замок заблокував відправку форми оформлення (так і має бути без --submit-balance)")
-    res["ready"] = bool(res["ready"] and not [x for x in res["problems"] if "замок" not in x])
+    res["final_post_blocked"] = blocked["final"]          # інформаційно: спроба фінального POST (мала б бути 0, бо код фінал не натискає)
+    res["ready"] = bool(res["ready"] and not res["problems"] and not blocked["final"])
     return res
 
 
@@ -573,6 +588,8 @@ if __name__ == "__main__":
     g.add_argument("--order", metavar="order.json")
     ap.add_argument("--submit-balance", action="store_true")
     a = ap.parse_args()
+    if a.submit_balance and not a.order:
+        ap.error("--submit-balance працює лише разом з --order")
     if a.order:
         import json
         try:

@@ -17,7 +17,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote, urljoin, quote, quote_plus
+from urllib.parse import urlparse, parse_qs, unquote, unquote_plus, urljoin
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -127,6 +127,22 @@ def login() -> int:
     return 0
 
 
+def leaks_secret(secret: str, url: str, post_data=None) -> bool:
+    """Чиста функція замка: чи містить запит секрет там, де його не має бути. Перевіряємо query і fragment URL (звідти пароль береться GET-формою) у сирому й декодованому вигляді (браузерне кодування відрізняється від Python quote: `~`→%7E, `*` не кодується), а також тіло запиту — але тіло лише для запитів НА СТОРОННІ хости (на royaltoys.com.ua пароль у тілі POST — легітимний). Порожній секрет → False."""
+    if not secret:
+        return False
+    u = urlparse(url)
+    for part in (u.query, u.fragment):
+        for form in (part, unquote(part), unquote_plus(part)):
+            if secret in form:
+                return True
+    if post_data:
+        txt = post_data if isinstance(post_data, str) else str(post_data)
+        if secret in txt or secret in unquote_plus(txt):
+            return True
+    return False
+
+
 def vps_login() -> int:
     """Вхід без вікна. Власник вписує у .env на VPS RT_CABINET_EMAIL (або RT_CABINET_PHONE) і RT_CABINET_PASSWORD. Капча → код 3, нічого не зберігаємо. ОДНА спроба за запуск. Облікові дані ніколи не потрапляють у вивід, звіт чи стан (storage_state містить лише куки сесії)."""
     try:
@@ -147,15 +163,14 @@ def vps_login() -> int:
         browser = pw.chromium.launch(headless=True)
         try:
             ctx = browser.new_context(service_workers="block")
-            variants = {password, quote(password, safe=""), quote_plus(password)}
+            blocked = {"hit": False}
 
             def _guard(r):
                 req = r.request
-                if req.resource_type in ("document", "xhr", "fetch"):
-                    if any(v in req.url for v in variants):
-                        return r.abort()                                           # пароль у URL (GET-форма) — не відправляємо
-                    if (urlparse(req.url).hostname or "").lower() not in HOST_OK:
-                        return r.abort()                                           # дані форми не йдуть на сторонні хости
+                u = urlparse(req.url)
+                if leaks_secret(password, req.url, req.post_data if (u.hostname or "").lower() not in HOST_OK else None):
+                    blocked["hit"] = True
+                    return r.abort()                                               # пароль у query/фрагменті URL (GET-форма) або у даних запиту на сторонній хост — не відправляємо
                 return r.continue_()
             ctx.route("**/*", _guard)
             page = ctx.new_page()
@@ -184,6 +199,9 @@ def vps_login() -> int:
             form.locator("input[name='password']").fill(password)
             form.locator("input[type='submit'], button[type='submit'], button:not([type])").first.click()      # ОДНА спроба, без повторів
             page.wait_for_timeout(4000)
+            if blocked["hit"]:
+                print("[RtCabinet] мережевий замок заблокував запит із паролем (форма відправляє його в URL або на сторонній хост) — вхід не відбувся, стан не збережено.", file=sys.stderr)
+                return 1
             page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if _captcha_visible(page):
                 print("[RtCabinet] сайт показав капчу — вхід зупинено (капчу не обходимо). Зачекайте або увійдіть вручну.", file=sys.stderr)

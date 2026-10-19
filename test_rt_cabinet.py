@@ -33,5 +33,13 @@ with _cl.redirect_stderr(_err):
 chk("--vps-login без RT_CABINET_PHONE/PASSWORD у середовищі → код 1, браузер не запускається, облікових даних у виводі нема", _rc == 1 and "RT_CABINET_EMAIL" in _err.getvalue())
 src = Path(rc.__file__).read_text(encoding="utf-8")
 chk("пароль ніколи не друкується: у файлі нема print з password/phone-змінними", not any(("password" in ln or "phone" in ln) and "print(" in ln and "RT_CABINET_" not in ln for ln in src.splitlines()))
+B2 = "https://royaltoys.com.ua"
+for pw_ in ("x~y", "a*b@c", "pa ss&w=rd", "Zażółć1", "abc123"):
+    from urllib.parse import quote as _q, quote_plus as _qp
+    chk(f"замок: пароль {pw_!r} у query (сирий/quote/quote_plus) → leaks", rc.leaks_secret(pw_, f"{B2}/ua/auth/email/?password={pw_}") and rc.leaks_secret(pw_, f"{B2}/x?p={_q(pw_, safe='')}") and rc.leaks_secret(pw_, f"{B2}/x?p={_qp(pw_)}"))
+chk("замок: браузерне кодування `~`→%7E і `*` сирий (a*b%40c) ловиться через unquote", rc.leaks_secret("x~y", f"{B2}/x?p=x%7Ey") and rc.leaks_secret("a*b@c", f"{B2}/x?p=a*b%40c"))
+chk("замок: пароль у fragment → leaks", rc.leaks_secret("secret1", f"{B2}/x#secret1"))
+chk("замок: легітимне — короткий пароль «ua»/«auth» збігається зі шляхом, але не з query → НЕ leaks", not rc.leaks_secret("ua", f"{B2}/ua/auth/email/") and not rc.leaks_secret("auth", f"{B2}/ua/auth/email/") and not rc.leaks_secret("royal", f"{B2}/ua/auth/email/?page=2"))
+chk("замок: тіло запиту на сторонній хост з паролем → leaks; без тіла/без пароля → ні; порожній секрет → ні", rc.leaks_secret("pw123456", "https://evil.tld/c", "email=a&password=pw123456") and not rc.leaks_secret("pw123456", "https://evil.tld/c", "email=a") and not rc.leaks_secret("", f"{B2}/x?p=1"))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

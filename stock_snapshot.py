@@ -46,6 +46,31 @@ def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
     return {"ts": _ts(now), "n": len(s), "s": s}
 
 
+RT_MAX_AGE_DAYS = 3      # як build_site.SUPPLIER_RT_MAX_AGE_DAYS: старіший файл RoyalToys = залишків rt- «не знаємо» → бекенд замовлень вважає їх «немає» (fail-closed)
+
+
+def rt_stock_entries(path=None, now: datetime | None = None) -> dict:
+    """{"rt-<id>": залишок} з приватного supplier_rt.json (rt_supplier_export). Нема файлу/нечитабельний/старший за RT_MAX_AGE_DAYS → {} (без ключів rt- сайт і бекенд показують «немає»)."""
+    try:
+        from datetime import timezone
+        from rt_supplier_export import OUT_FILE
+        raw = json.loads(Path(path or OUT_FILE).read_text(encoding="utf-8-sig"))
+        upd = datetime.fromisoformat(str(raw["updated"]).replace("Z", "+00:00"))
+        if upd.tzinfo is None:
+            upd = upd.replace(tzinfo=timezone.utc)
+        if ((now.astimezone(timezone.utc) if now and now.tzinfo else datetime.now(timezone.utc)) - upd).total_seconds() > RT_MAX_AGE_DAYS * 86400:
+            return {}
+        out = {}
+        for k, v in (raw.get("items") or {}).items():
+            try:
+                out[str(k)] = max(0, int(v.get("stock")))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return out
+    except Exception:  # noqa: BLE001 — немає файлу = пілот не розгорнуто
+        return {}
+
+
 def write_cost_file(catalog: dict, out=None, now: datetime | None = None) -> bool:
     """ПРИВАТНИЙ файл собівартості для знижок сайту (site_promo): {"ts", "c": {id: собівартість}} ПОЗА DocumentRoot (/opt/plutustoys/promo_cost.json, права 0600). Збій тут НЕ ламає знімок залишків:
     без файлу знижок просто нема (fail-closed). Собівартість = competitor_pricing.real_toysi_cost (та сама, що в закритій формулі ціни сайту)."""
@@ -95,6 +120,10 @@ def run_once(fetch=None, out=None, now=None, cost_out=None) -> bool:
         snap = build_snapshot(catalog, now)
         if snap["n"] < len(catalog):          # факт, не поріг: частина позицій з невідомим залишком (формат Toysi змінився?) — у знімок їх немає, сайт їх не чіпає
             _alert("stock_snapshot_unknown", f"⚠️ stock_snapshot: у {len(catalog) - snap['n']} із {len(catalog)} позицій залишок Toysi не розпізнано (поле відсутнє/без цифр) — їх немає у stock.json (сайт не ховає й не відмовляє). Перевірити формат <ostatok>.")
+        rt = rt_stock_entries()                  # пілот RoyalToys (19.10): залишки rt-<id> з приватного supplier_rt.json (без нього ключів rt- нема → fail-closed)
+        if rt:
+            snap["s"].update(rt)
+            snap["n"] = len(snap["s"])
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(out.name + ".tmp")
         tmp.write_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

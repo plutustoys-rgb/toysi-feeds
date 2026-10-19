@@ -53,6 +53,8 @@ def _alert(key: str, text: str) -> None:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_RU_WORD_STEMS = (r"набор|набором|наборы|игрушк\w*|игрушек|детск(?:ий|ая|ое|ие|ого|ую)|детей|ребенк\w*|цвет|цвета|цвету|цветов|размер\w*|мальчик\w*|девоч\w*|девочек|проведени\w+|раскоп\w*|расписани\w*|ламинирован\w*|деревянн(?:ая|ое|ый|ые|ую)|развивающ\w+|подарочн\w+")
+_RU_WORDS_RE = re.compile(r"(?<![а-яіїєґ'’-])(?:" + _RU_WORD_STEMS + r")(?![а-яіїєґ])", re.I)       # однозначно російські слова (в укр. їх нема; «наборі/наборах» — укр. місцевий відмінок — НЕ збігаються)
 _RU_LETTERS_RE = re.compile(r"[ыэъёЫЭЪЁ]")      # літери, яких нема в українській: поле name_ua/description_ua у постачальника інколи російське (виявлено 19.10: rt-46827) — опис не показуємо (картка піде без блоку «Опис» і з noindex у Shopify-code)
 
 
@@ -208,7 +210,7 @@ def load_pilot_ids(path: Path = IDS_FILE) -> list:
 def build_item(rid: str, v: dict, images: list) -> dict | None:
     """Елемент supplier_rt.json або None (не публікуємо). Чиста функція (без мережі)."""
     name = (v.get("name_ua") or "").strip()
-    if not name or not images or _RU_LETTERS_RE.search(name):
+    if not name or not images or _RU_LETTERS_RE.search(name) or _RU_WORDS_RE.search(name):
         return None          # укр. назва порожня або насправді російська (ы э ъ ё) — картку не публікуємо
     try:
         cost = float(str(v.get("price") or "").replace(",", "."))
@@ -224,7 +226,7 @@ def build_item(rid: str, v: dict, images: list) -> dict | None:
     if not dims or len(dims) != 3 or not all(isinstance(x, (int, float)) and math.isfinite(x) and x > 0 for x in dims):
         return None      # без габаритів картку не публікуємо (ТТН потребує розмірів; рішення Коду 19.10, чекаємо підтвердження RoyalToys)
     wt = v.get("weight_kg")
-    return {"name": name, "description": ("" if _RU_LETTERS_RE.search(v.get("description_ua") or "") else plain_text(v.get("description_ua"))), "vendor": (v.get("vendor") or "").strip(), "vendor_code": (v.get("vendor_code") or "").strip(),
+    return {"name": name, "description": ("" if (_RU_LETTERS_RE.search(v.get("description_ua") or "") or _RU_WORDS_RE.search(v.get("description_ua") or "")) else plain_text(v.get("description_ua"))), "vendor": (v.get("vendor") or "").strip(), "vendor_code": (v.get("vendor_code") or "").strip(),
             "category": (v.get("category_name") or "").strip(), "images": images, "price": site_price(cost), "cost": round(cost, 2), "stock": stock,
             "dims_cm": [round(float(x), 1) for x in dims], "weight_kg": round(float(wt), 3) if isinstance(wt, (int, float)) and math.isfinite(wt) and wt > 0 else None}
 

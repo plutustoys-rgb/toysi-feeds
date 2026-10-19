@@ -692,6 +692,9 @@ DESC_ENRICH_ALL = True
 DESC_ENRICH_TITLE_RE = re.compile(r"(?:м.?як|мягк)\w*\s+(?:іграшк|игрушк|ведмед|медвед|зайч|зайц|звір|зверь|тварин|животн|собач|кіт|кот|кішк|кошк)|плюш|(?:іграшк|игрушк)\w*\s+(?:м.?як|мягк)", re.I)
 _BRAND_ONLY_RE = re.compile(r"^Бренд\s*:\s*(?P<brand>[^:;<>]{1,60}?)(?:\s+(?:Країна\s+виробник|[CС]трана\s+производитель)\s*:\s*(?P<country>[^:;<>]{1,40}?))?\s*\.?$", re.I)
 _MULTI_DIM_RE = re.compile(r"\d\s*[xхХX×*]\s*\d")
+# Для НЕ м'яких іграшок (аудит PR розгортання, 19.10): (а) розмір «N см» у назві буває довжиною/шириною/діаметром — пишемо його лише коли в назві нема інших вимірів; (б) розділ каталогу НЕ пишемо в опис, якщо він «чутливий» (зброя/пістолети/азартне/піротехніка/ножі/лазер) — слова з таких розділів у описі Meta відхиляла.
+_AMBIG_SIZE_RE = re.compile(r"\d\s*(?:м|мм|мл|л|кг|г)\b|\*|(?<![A-Za-zА-Яа-яІіЇїЄє])[dDДд]\s*=|діаметр|ширин|довжин|товщин|висот|\d\s*(?:шт|штук)", re.I)
+_SENSITIVE_CATEGORY_RE = re.compile(r"зброя|зброє|зброю|зброї|пістолет|автомат|азартн|пістон|бомбочк|хлопавк|ножі|ножиц|лазер", re.I)
 _SIZE_IN_NAME_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:см|cm)\b", re.I)
 _DESC_BRAND_COUNTRY = {
     "uk": ("Бренд — {b}, країна виробництва — {c}.", "Виробник: {b} ({c}).", "Торгова марка {b}, країна виробник: {c}."),
@@ -721,10 +724,11 @@ def enrich_brand_only_description(pid, name: str, desc: str, category: str = "",
     parts = [normalize_title(name).rstrip(".") + ".", second]
     # розмір — лише якщо в назві РІВНО ОДНЕ число з «см» і нема запису виду «40 х 30 см» (інакше перший збіг дає хибний розмір: аудит #846)
     sizes = _SIZE_IN_NAME_RE.findall(name or "")
-    size = sizes[0] if len(sizes) == 1 and not _MULTI_DIM_RE.search(name or "") else None
+    soft = bool(DESC_ENRICH_TITLE_RE.search(name or ""))
+    size = sizes[0] if len(sizes) == 1 and not _MULTI_DIM_RE.search(name or "") and (soft or not _AMBIG_SIZE_RE.search(name or "")) else None
     if size:
         parts.append(("Розмір, зазначений у назві: %s см." if lang == "uk" else "Размер из названия: %s см.") % size)
-    elif category and lang == "uk":
+    elif category and lang == "uk" and (soft or not _SENSITIVE_CATEGORY_RE.search(category)):
         parts.append("Розділ каталогу: %s." % category)
     return " ".join(parts)
 

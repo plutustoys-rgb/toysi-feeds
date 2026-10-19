@@ -2401,6 +2401,9 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
         '<div><b>Доставка Новою Поштою</b> — ' + DELIVERY_COST + ' за тарифом перевізника; при накладеному платежі додається комісія НП: ' + DELIVERY_FEE_FORMULA_SHORT + ' (для замовлень понад 500 ₴ тариф трохи зростає). Доставка сплачується при отриманні посилки. Замовлення до 12:00 йдуть того ж дня, '
         'далі 1–3 робочі дні.</div></div>'
     ) if in_stock else _phone_line
+    if p.get("rt"):   # RoyalToys: лише передоплата
+        buy_info = buy_info.replace("✓ Оплата при отриманні", "✓ Оплата карткою онлайн")
+        buy_info = re.sub(r"; при накладеному платежі додається комісія НП:.*?Доставка сплачується при отриманні посилки\. ", ". Товар відправляється лише за передоплатою (оплата карткою онлайн). ", buy_info, flags=re.S)
     oos_note = ("" if in_stock else
                 f'<div class="oos-note"><b>Зараз цього товару немає в наявності.</b> '
                 f'<a href="{_oos_cat_href}">Подивитися схожі{(" в категорії «" + esc(p["category"]) + "»") if _oos_cat_href != "catalog.html" else " в каталозі"} →</a></div>')
@@ -2429,7 +2432,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     )
     # SEO: опис для сніпета (без HTML, ОБРІЗАНИЙ ПО СЛОВУ) + JSON-LD Product для Google Rich Results
     plain = re.sub(r"<[^>]+>", "", lead).strip()
-    meta_desc = product_description(p["name"], p["price"], plain)
+    meta_desc = product_description(p["name"], p["price"], "" if p.get("rt") else plain)   # rt: опис постачальника — анкетний («ТИП: …; ВІК: …»), у сніпет не годиться
     if not in_stock:
         meta_desc = _cut(f"Немає в наявності: {p['name']}. Подивіться схожі іграшки в каталозі PlutusToys.", DESC_MAX)
     # brand зі специфікацій «<b>Бренд:</b> X» — Google Rich Results цінує brand у Product.

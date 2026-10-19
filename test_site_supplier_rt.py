@@ -108,6 +108,10 @@ chk("index.json: rt-101 з ціною сайту 480 (pr); rt-102 (залишо�
 pg = out / "product-rt-101.html"
 h = pg.read_text(encoding="utf-8") if pg.exists() else ""
 chk("сторінка product-rt-101.html є, ціна 480, фото з нашого сервера, постачальника покупець не бачить", pg.exists() and "480" in h and "img/rt/101-1.jpg" in h and "royaltoys" not in h.lower())
+main101 = h.split("<footer")[0]
+meta101 = re.search(r'<meta name="description" content="([^"]*)"', h).group(1)
+chk("картка rt-101: бейдж «Оплата карткою онлайн», НЕМАЄ «Оплата при отриманні» і «при накладеному платежі»/«сплачується при отриманні», є «лише за передоплатою»", "✓ Оплата карткою онлайн" in main101 and "Оплата при отриманні" not in main101 and "накладеному платежі" not in main101 and "сплачується при отриманні" not in main101 and "лише за передоплатою" in main101)
+chk("meta description rt-картки — шаблон (назва, ціна, доставка), а не сирий опис постачальника", "Ціна 480" in meta101 or "480 ₴" in meta101)
 p2 = out / "product-rt-102.html"
 chk("сторінка товару без залишку rt-102: є (OutOfStock), без оплати при отриманні", p2.exists() and "OutOfStock" in p2.read_text(encoding="utf-8") and "при отриманні" not in p2.read_text(encoding="utf-8").split("<footer")[0].lower())
 cat_files = [p for p in out.glob("category-*.html") if "rt-101" in p.read_text(encoding="utf-8")]
@@ -158,6 +162,9 @@ with sync_playwright() as pw:
         else:
             chk(f"кошик {label}: накладений платіж неактивний, обрана картка онлайн, пояснення видиме", s["cod_disabled"] is True and s["cod_checked"] is False and s["pre_checked"] is True and s["note_hidden"] is False and "передоплат" in s["note"] and s["off"] is True)
             chk(f"кошик {label}: згадка про окремі посилки лише у змішаному", ("окремими посилками" in s["note"]) == (want == "mixed"))
+        if want != "plain":
+            tp_txt = pg.evaluate("(()=>{const e=document.querySelector('.trust-pay'); return e?e.textContent:null})()")
+            chk(f"кошик {label}: у правій колонці «Оплата при отриманні» замінено на передоплату ({tp_txt})", tp_txt is None or "при отриманні" not in tp_txt)
         chk(f"кошик {label}: без помилок JS", errs == [])
         pg.close()
     br.close()

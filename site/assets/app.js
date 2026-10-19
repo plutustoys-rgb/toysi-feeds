@@ -482,6 +482,25 @@
     }catch(e){}
   }
 
+  // ── Другий постачальник (RoyalToys, id «rt-…»; рішення власника 19.10): працює лише за повною передоплатою → у кошику з такою позицією «накладений платіж» неактивний, лишається «картка онлайн» ──
+  // Сервер це теж перевіряє (409), тут — щоб покупець не обирав те, що буде відхилено. Нема rt-позицій — нічого не міняємо.
+  function applyRtPayment(ids){
+    var rt=ids.filter(function(k){ return /^rt-/.test(k); }).length, mixed=rt>0 && rt<ids.length;
+    var cod=document.querySelector('input[name="payment"][value="cod"]'), pre=document.querySelector('input[name="payment"][value="prepaid"]');
+    var note=document.getElementById("rt-pay-note");
+    if(cod){
+      cod.disabled = rt>0;
+      var lab=cod.parentNode; if(lab && lab.classList) lab.classList.toggle("is-off", rt>0);
+      if(rt>0 && cod.checked && pre){ cod.checked=false; pre.checked=true; applyDeliveryView(total()); }
+    }
+    if(note){
+      if(rt>0){
+        note.textContent = "Оплата при отриманні недоступна: "+(mixed ? "один або кілька товарів у кошику" : "цей товар")+" відправляється лише за передоплатою (оплата карткою онлайн)."+(mixed ? " Товари надсилаються окремими посилками, доставка для кожної рахується окремо." : "");
+        note.hidden=false;
+      } else { note.hidden=true; note.textContent=""; }
+    }
+  }
+
   // ── Рендер кошика (сторінка cart.html) ──
   function renderCart(){
     var box=document.getElementById("cart-body");
@@ -490,6 +509,7 @@
     var staleNote=document.getElementById("cart-stock-note"); if(staleNote && staleNote.parentNode) staleNote.parentNode.removeChild(staleNote);   // порожній кошик не має мати попередження (аудит)
     renderAside(c, ids);
     var cg=document.querySelector(".cart-grid"); if(cg) cg.classList.toggle("is-empty", ids.length===0);   // порожній кошик: одна колонка, по центру (власник 14.10: на ПК блок стояв лівіше центру)
+    applyRtPayment(ids);   // RoyalToys (id «rt-…»): лише передоплата
     var codn=document.getElementById("cod-limit-note");
     if(codn) codn.style.display = total()>COD_CEILING ? "" : "none";
     var ct=document.getElementById("checkout-title"); if(ct) ct.style.display = ids.length ? "" : "none";
@@ -601,7 +621,7 @@
       if(!snap || !snap.fresh) return;
       var cards=document.querySelectorAll("a.card[href^='product-']");   // ПІСЛЯ відповіді: у цей час уже є клони каруселі (аудит: клони лишались «У наявності»)
       Array.prototype.forEach.call(cards, function(a){
-        var m=/product-(\d+)\.html/.exec(a.getAttribute("href")||""); if(!m || stockOf(snap, m[1])!==0) return;
+        var m=/product-([\w-]+)\.html/.exec(a.getAttribute("href")||""); if(!m || stockOf(snap, m[1])!==0) return;
         var av=a.querySelector(".av"); if(av){ av.textContent="Немає"; av.className="av oos"; }
         var sb=a.querySelector(".stock-badge"); if(sb && sb.parentNode) sb.parentNode.removeChild(sb);
       });
@@ -760,7 +780,7 @@
     }catch(e){}
   }
   function slideData(a, idx){
-    var m=/product-(\d+)\.html/.exec(a.getAttribute("href")||"");
+    var m=/product-([\w-]+)\.html/.exec(a.getAttribute("href")||"");
     var nm=a.querySelector(".nm"), pr=a.querySelector(".pr");
     return {item_id:m?m[1]:"", item_name:nm?nm.textContent.trim():"", price:pr?parseFloat(pr.textContent):0, index:idx, item_list_name:""};
   }

@@ -5,6 +5,8 @@
   python rt_cabinet.py --login      # раз, на ПК власника: відкриє вікно, власник логіниться, Enter → .local_secrets/rt_cabinet_state.json (зберігається, лише якщо вхід підтверджено; інакше питає)
   python rt_cabinet.py --explore    # ТІЛЬКИ ЧИТАННЯ: під збереженою сесією обходить навігаційні посилання кабінету (GET) і пише приватний звіт .local_secrets/reports/rt_cabinet_explore_<дата>.md (текст сторінок + поля форм) — щоб побудувати введення замовлення за реальною структурою
   python rt_cabinet.py --keepalive  # оновлює сесію (лише при підтвердженому вході)
+  python rt_cabinet.py --vps-login  # НА VPS, headless: форма входу (телефон+пароль) заповнюється з RT_CABINET_PHONE / RT_CABINET_PASSWORD у /opt/plutustoys/.env — їх у файл вписує ВЛАСНИК сам (я пароль не бачу й не вводжу); зберігає сесію у RT_CABINET_STATE_FILE.
+                                    # Якщо сайт показав капчу — зупиняється з кодом 3 (капчу НЕ обходимо), стан не змінюється. Пароль ніколи не друкується.
 Шлях стану: RT_CABINET_STATE_FILE (на VPS — /opt/plutustoys/.secrets/rt_cabinet_state.json). Режим введення замовлення (--order) — ПІСЛЯ вивчення кабінету, окремим PR з аудитом.
 
 ЗАХИСТ --explore (аудит PR #871): (1) мережевий замок: усі запити, крім GET/HEAD, блокуються на рівні контексту (жоден POST/форма/JS-дія не пройде); (2) хост лише royaltoys.com.ua, лише https; (3) відкидаються посилки з небезпечними дієсловами (вихід/видалення/скасування/оплата/повтор/додавання/зміна статусу…), з query-ключами-діями, і `/<числовий id>/<ще сегмент>`; (4) після кожного goto перевіряється фінальний URL (редірект на вихід/вхід = зупинка); (5) стан сесії в explore НЕ пересохраняється;
@@ -15,7 +17,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, urljoin
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -124,6 +126,75 @@ def login() -> int:
     return 0
 
 
+def vps_login() -> int:
+    """Вхід без вікна: власник вписав RT_CABINET_PHONE і RT_CABINET_PASSWORD у .env на VPS (рішення «увесь вхід на VPS»). Капча → код 3, нічого не зберігаємо. Облікові дані ніколи не потрапляють у вивід, звіт чи стан (storage_state містить лише куки сесії)."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(BASE_DIR / ".env")             # явний шлях: python-dotenv без аргументів шукає від каталогу файлу вгору й міг би взяти чужий .env
+    except ImportError:
+        pass
+    phone = (os.environ.get("RT_CABINET_PHONE") or "").strip()
+    password = os.environ.get("RT_CABINET_PASSWORD") or ""
+    if not phone or not password:
+        print("[RtCabinet] нема RT_CABINET_PHONE / RT_CABINET_PASSWORD у середовищі (.env на VPS) — їх вписує власник.", file=sys.stderr)
+        return 1
+    from playwright.sync_api import sync_playwright
+    rc = 1
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            ctx = browser.new_context(service_workers="block")
+            page = ctx.new_page()
+            page.goto(AUTH_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            if (urlparse(page.url).hostname or "").lower() not in HOST_OK:
+                print("[RtCabinet] сторінка входу переадресована поза royaltoys.com.ua — зупинка, дані не введено.", file=sys.stderr)
+                return 1
+            forms = page.locator("form:has(input[name='password']):has(input[name='type'][value='auth'])")
+            if forms.count() != 1:
+                print(f"[RtCabinet] очікувалась рівно 1 форма входу, знайдено {forms.count()} — зупинка, дані не введено.", file=sys.stderr)
+                return 1
+            form = forms.first
+            method = (form.get_attribute("method") or "get").lower()                 # відсутній method = GET за замовчуванням → пароль пішов би в URL
+            action = urlparse(urljoin(page.url, form.get_attribute("action") or ""))
+            if method != "post" or action.scheme != "https" or (action.hostname or "").lower() not in HOST_OK:
+                print("[RtCabinet] форма входу не POST на royaltoys.com.ua по https — зупинка, дані не введено.", file=sys.stderr)
+                return 1
+            if _captcha_visible(page):
+                print("[RtCabinet] капча вже видима до відправлення — вхід не робимо (капчу не обходимо).", file=sys.stderr)
+                return 3
+            form.locator("input[name='phone']").fill(phone)
+            form.locator("input[name='password']").fill(password)
+            form.locator("input[type='submit'], button[type='submit'], button:not([type])").first.click()      # ОДНА спроба, без повторів
+            page.wait_for_timeout(4000)
+            page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            if _captcha_visible(page):
+                print("[RtCabinet] сайт показав капчу — вхід зупинено (капчу не обходимо). Увійдіть вручну на ПК (--login) або зачекайте.", file=sys.stderr)
+                return 3
+            page.goto(HOME_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            if not _logged_in(page):
+                print("[RtCabinet] вхід не підтверджено (невірні дані або інша форма) — стан не збережено.", file=sys.stderr)
+                return 1
+            _save_state(ctx)
+            rc = 0
+        except Exception as e:  # noqa: BLE001
+            print(f"[RtCabinet] vps-login збій: {type(e).__name__}", file=sys.stderr)       # текст винятку не друкуємо (міг би містити введене)
+        finally:
+            browser.close()
+    if rc == 0:
+        print(f"[RtCabinet] Сесію збережено: {STATE_FILE}")
+    return rc
+
+
+def _captcha_visible(page) -> bool:
+    """fail-closed: будь-який збій перевірки (напр. «Execution context was destroyed» під час навігації) = вважаємо, що капча є."""
+    js = ("() => { const vis = e => !!e && !e.classList.contains('d-none') && e.offsetParent !== null; "
+          "return vis(document.querySelector('.auth-form--captcha')) || vis(document.querySelector('.g-recaptcha')) || vis(document.querySelector(\"iframe[src*='recaptcha']\")); }")
+    try:
+        return bool(page.evaluate(js))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def keepalive() -> int:
     from playwright.sync_api import sync_playwright
     if not STATE_FILE.exists():
@@ -223,5 +294,6 @@ if __name__ == "__main__":
     g.add_argument("--login", action="store_true")
     g.add_argument("--explore", action="store_true")
     g.add_argument("--keepalive", action="store_true")
+    g.add_argument("--vps-login", action="store_true")
     a = ap.parse_args()
-    sys.exit(login() if a.login else explore() if a.explore else keepalive())
+    sys.exit(login() if a.login else explore() if a.explore else vps_login() if a.vps_login else keepalive())

@@ -77,8 +77,13 @@ def build_item(rid: str, v: dict, images: list) -> dict | None:
         stock = max(0, int(v.get("stock") or 0)) if v.get("available") else 0
     except (TypeError, ValueError):
         stock = 0
+    dims = v.get("dims_cm")
+    if not dims or len(dims) != 3 or not all(isinstance(x, (int, float)) and x > 0 for x in dims):
+        return None      # без габаритів картку не публікуємо (ТТН потребує розмірів; рішення Коду 19.10, чекаємо підтвердження RoyalToys)
+    wt = v.get("weight_kg")
     return {"name": name, "description": plain_text(v.get("description_ua")), "vendor": (v.get("vendor") or "").strip(), "vendor_code": (v.get("vendor_code") or "").strip(),
-            "category": (v.get("category_name") or "").strip(), "images": images, "price": site_price(cost), "cost": round(cost, 2), "stock": stock}
+            "category": (v.get("category_name") or "").strip(), "images": images, "price": site_price(cost), "cost": round(cost, 2), "stock": stock,
+            "dims_cm": [round(float(x), 1) for x in dims], "weight_kg": round(float(wt), 3) if isinstance(wt, (int, float)) and wt > 0 else None}
 
 
 def fetch_image(url: str, dest: Path) -> bool:

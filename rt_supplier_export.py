@@ -64,8 +64,8 @@ def plain_text(raw: str) -> str:
 
 # Політика «що не продаємо» для позицій RoyalToys (категорії RoyalToys — рос. назви; forbidden_products.is_forbidden ключується категоріями Toysi, тому тут ще й власні правила):
 # ЗБРОЯ/18+/небезпечне — виключення за політикою (власник 07.10: «приберіть»); «НЕ ІГРАШКИ» — окрема група (книги, зошити, ручки, фітнес, електромобілі, уцінка, аксесуари) — керується rt_selection.json, бо це не політика, а асортимент.
-_POLICY_RE = re.compile(r"оружи|пистолет|автомат|ружь|арбалет|лук\b|нож|меч\b|эроти|18\+|вейп|сигар|табак|алкогол|зажигал|петард|фейерверк", re.I)
-_POLICY_UA_RE = re.compile(r"(?<!\w)(зброя\w*|зброє\w*|зброю|зброї|шпаг\w*|шпаґ\w*|рогатк\w*|бластер\w*|покер\w*|казино|для дорослих|ніж|ножі|ножик\w*|меч|мечі|мечик\w*|шабл\w*|катан\w*|арбалет\w*|рушниц\w*|пістолет\w*|автомат\w*|зброя|зброї|еротик\w*|вейп\w*|сигар\w*|тютюн\w*|петард\w*|феєрверк\w*)(?!\w)", re.I)   # українські назви (name_ua)
+_POLICY_RE = re.compile(r"оружи|пистолет|автомат|ружь|арбалет|лук\b|(?<!\w)нож(?:а|у|ом|е|и|ей|ам|ами|ах|ик\w*)?(?!\w)|меч\b|эроти|18\+|вейп|сигар|табак|алкогол|зажигал|петард|фейерверк", re.I)
+_POLICY_UA_RE = re.compile(r"(?<!\w)(зброя\w*|зброє\w*|зброю|зброї|шпаг(?:а|и|ою|і|ам|ами)(?!\w)|шпаґ\w*|рогатк\w*|бластер\w*|покер\w*|казино|для дорослих|ніж|ножі|ножик\w*|меч|мечі|мечик\w*|шабл\w*|катан\w*|арбалет\w*|рушниц\w*|пістолет\w*|автомат\w*|зброя|зброї|еротик\w*|вейп\w*|сигар\w*|тютюн\w*|петард\w*|феєрверк\w*)(?!\w)", re.I)   # українські назви (name_ua)
 _NOT_TOY_NAME_RE = re.compile(r"(?<!\w)(зошит\w*|блокнот\w*|олівц\w*|ручк[аи]\b|книг\w*|гантел\w*)(?!\w)", re.I)   # за назвою — лише явні слова (аудит: «ручк» давало хибні «не іграшки»: кошики з ручками)
 _NOT_TOY_RE = re.compile(r"книг|тетрад|блокнот|фитнес|электромобил|уценен|аксессуары для|канцеляр|ручк|карандаш", re.I)
 
@@ -259,14 +259,14 @@ def images_for(rid: str, pictures: list, fetch=fetch_image, img_dir: Path = IMG_
     return out
 
 
-def out_guard_ok(out: Path, items: dict) -> bool:
-    """Гард усадки: нових карток менше MIN_KEEP_RATIO від кількості у попередньому файлі (усічений YML) → не перезаписуємо, сигнал (картки не зникають за годину). Нема попереднього файлу → ок."""
+def out_guard_ok(out: Path, catalog_n: int) -> bool:
+    """Гард усадки КАТАЛОГУ джерела: у YML RoyalToys позицій менше MIN_KEEP_RATIO від кількості під час попереднього запису (usічений файл постачальника) → не перезаписуємо, сигнал (картки не зникають за годину). Порівнюємо розмір каталогу (catalog_n у файлі), а не розмір виходу: звуження вибірки/посилення політики — законні. Нема попереднього catalog_n → ок."""
     try:
-        prev = len(json.loads(Path(out).read_text(encoding="utf-8")).get("items") or {})
-    except (OSError, ValueError):
+        prev = int(json.loads(Path(out).read_text(encoding="utf-8")).get("catalog_n") or 0)
+    except (OSError, ValueError, TypeError):
         return True
-    if prev and len(items) < prev * MIN_KEEP_RATIO:
-        _alert("rt_export_shrink", f"⚠️ rt_supplier_export: нових карток {len(items)} проти {prev} у поточному файлі (менше {int(MIN_KEEP_RATIO * 100)}%) — YML усічений? supplier_rt.json НЕ перезаписано.")
+    if prev and catalog_n < prev * MIN_KEEP_RATIO:
+        _alert("rt_export_shrink", f"⚠️ rt_supplier_export: у YML RoyalToys {catalog_n} позицій проти {prev} під час попереднього запису (менше {int(MIN_KEEP_RATIO * 100)}%) — файл постачальника усічений? supplier_rt.json НЕ перезаписано. Свідоме звуження каталогу — видалити supplier_rt.json на VPS.")
         return False
     return True
 
@@ -280,8 +280,8 @@ def load_category_keys(path: Path | None = None) -> set | None:
         return None
 
 
-def _write_json(out: Path, items: dict, now) -> None:
-    payload = {"updated": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"), "items": items}
+def _write_json(out: Path, items: dict, now, catalog_n: int = 0) -> None:
+    payload = {"updated": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"), "catalog_n": catalog_n, "items": items}
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -337,8 +337,11 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
 
         # 1) проміжний запис з фото, що вже на диску: опубліковані картки й залишки rt- не чекають на докачування (інакше юніт, убитий таймаутом, лишив би файл старим → через 3 год rt- «Немає»)
         disk = {dest: True for _u, dest in tasks if _on_disk(dest)}
-        if disk and out_guard_ok(out, build_items(disk)[0]):
-            _write_json(out, build_items(disk)[0], now)
+        if not out_guard_ok(out, len(catalog)):
+            return False
+        disk_items = build_items(disk)[0] if disk else {}
+        if disk_items:
+            _write_json(out, disk_items, now, len(catalog))
         # 2) докачування (паралельно, з бюджетом часу й перевіркою вільного місця)
         todo = [(u, d) for u, d in tasks if d not in disk]
         if check_disk and todo:
@@ -359,9 +362,7 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
             return False
         if missing or nophoto:
             print(f"[rt_export] пропущено: нема в YML {len(missing)} ({missing[:5]}), без фото/назви/ціни/габаритів {len(nophoto)} ({nophoto[:5]})", file=sys.stderr)
-        if not out_guard_ok(out, items):
-            return False
-        _write_json(out, items, now)
+        _write_json(out, items, now, len(catalog))
         print(f"[rt_export] ✅ {len(items)} з {len(ids)} карток, пропущено {len(missing) + len(nophoto)}")
         return True
     except Exception as e:  # noqa: BLE001

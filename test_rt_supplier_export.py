@@ -124,6 +124,7 @@ def pv(name, cat="Игровые наборы", ru=None):
         d["name"] = ru
     return ex.policy_reason(d)
 chk("політика: «зброєю», «шпаги», «рогатка», «бластер», «Покерный набір», «для дорослих» → policy", all(pv(n) == "policy" for n in ("Ігровий набір зі зброєю М18-3", "Мушкетерський набір (2 шпаги)", "Рогатка дитяча", "Бластер водяний", "Покер набір", "Гра для дорослих")))
+chk("політика: «Ножка/подножка» (меблі, мольберт, самокат) і «шпагат» НЕ policy; «нож», «ножи», «шпага» — policy", all(pv(n) is None for n in ("Крісло з підніжкою", "Мольберт на ніжках", "Шпагат декоративний")) and pv("Набір", ru="Подножка для кресла") is None and pv("Набір", ru="Игрушечный нож") == "policy" and pv("Набір", ru="Набор ножи") == "policy" and pv("Шпага дитяча") == "policy")
 chk("політика: перевіряється й рос. назва (укр. безпечна, рос. — «пистолет») → policy", pv("Набір", ru="Пистолет игрушечный") == "policy")
 chk("«не іграшки» за назвою лише явні слова: «Кошик з ручками» і «Круг з ручками» — НЕ not_toy; «Зошит» — not_toy; за категорією «Книги» — not_toy", pv("Кошик з ручками") is None and pv("Круг з ручками") is None and pv("Зошит у клітинку") == "not_toy" and pv("Казка", cat="Книги") == "not_toy")
 chk("звичайна іграшка («Конструктор», «Лялька») → None", pv("Конструктор 100 деталей", cat="Конструкторы") is None and pv("Лялька Маша", cat="Куклы") is None)
@@ -139,8 +140,11 @@ with _tf2.TemporaryDirectory() as td5:
     chk("prefetch: виняток у fetch не валить прогін → False", r6 == {td5 / "z.jpg": False})
     # гард усадки
     big = td5 / "big.json"
-    big.write_text(_j2.dumps({"items": {f"rt-{n}": {} for n in range(10)}}), encoding="utf-8")
-    chk("гард усадки: 4 з 10 (<50%) → не перезаписувати; 6 з 10 → можна; нема файлу → можна", ex.out_guard_ok(big, {f"rt-{n}": {} for n in range(4)}) is False and ex.out_guard_ok(big, {f"rt-{n}": {} for n in range(6)}) is True and ex.out_guard_ok(td5 / "none.json", {}) is True)
+    big.write_text(_j2.dumps({"catalog_n": 10, "items": {}}), encoding="utf-8")
+    chk("гард усадки каталогу: YML 4 з 10 (<50%) → не перезаписувати; 6 з 10 → можна; нема файлу / нема catalog_n → можна", ex.out_guard_ok(big, 4) is False and ex.out_guard_ok(big, 6) is True and ex.out_guard_ok(td5 / "none.json", 0) is True)
+    (td5 / "old.json").write_text(_j2.dumps({"items": {f"rt-{n}": {} for n in range(3000)}}), encoding="utf-8")
+    chk("звуження ВИХОДУ (3000 → 197 карток при повному YML) гардом не блокується: порівнюється розмір каталогу, а не виходу", ex.out_guard_ok(td5 / "old.json", 18000) is True)
+    chk("catalog_n записується в supplier_rt.json", (lambda f: (ex.run_once({"1": mk()}, ["rt-1"], f, lambda u, d: True, td5 / "imgc"), _j2.loads(f.read_text(encoding="utf-8")).get("catalog_n"))[1])(td5 / "oc.json") == 1)
     # мапа категорій: картка з невідомою категорією — фото не качаємо
     calls5 = []
     def f5(u, d):

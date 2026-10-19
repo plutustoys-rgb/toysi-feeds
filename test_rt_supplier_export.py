@@ -171,5 +171,6 @@ with _tf2.TemporaryDirectory() as td5:
     svc = (Path(__file__).parent / "rt-supplier-export.service").read_text(encoding="utf-8")
     m = re.search(r"TimeoutStartSec=(\d+)", svc)
     chk("юніт: TimeoutStartSec > бюджет фото + 30 с запити + запас (аудит #866)", m and int(m.group(1)) >= ex.PREFETCH_BUDGET_S * 2)
+chk("російські літери: опис (ы э ъ ё) → порожній опис, картка лишається; російська «укр.» назва → картку не публікуємо", ex.build_item("rt-1", dict(V, description_ua="Набор посуды из пластика"), ["u"])["description"] == "" and ex.build_item("rt-1", dict(V, name_ua="Набор посуды"), ["u"]) is None and ex.build_item("rt-1", dict(V, name_ua="Набір посуду", description_ua="Опис українською"), ["u"])["description"] == "Опис українською")
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

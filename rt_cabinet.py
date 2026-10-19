@@ -154,7 +154,7 @@ def vps_login() -> int:
     email = (os.environ.get("RT_CABINET_EMAIL") or "").strip()
     phone = (os.environ.get("RT_CABINET_PHONE") or "").strip()
     password = os.environ.get("RT_CABINET_PASSWORD") or ""
-    kind, login_id, url = ("email", email, EMAIL_AUTH_URL) if email else ("phone", phone, AUTH_URL)
+    kind, login_id, url = ("email", email, AUTH_URL) if email else ("phone", phone, AUTH_URL)      # email-форма завантажується віджетом сайту зі сторінки /ua/auth/ (кнопка «Вхід за допомогою EMAIL»)
     if not login_id or not password:
         print("[RtCabinet] нема RT_CABINET_EMAIL (або RT_CABINET_PHONE) і RT_CABINET_PASSWORD у середовищі (.env на VPS) — їх вписує власник.", file=sys.stderr)
         return 1
@@ -189,6 +189,12 @@ def vps_login() -> int:
             if (urlparse(page.url).hostname or "").lower() not in HOST_OK:
                 print("[RtCabinet] сторінка входу переадресована поза royaltoys.com.ua — зупинка, дані не введено.", file=sys.stderr)
                 return 1
+            if kind == "email":
+                # Сторінка /ua/auth/email/ напряму НЕ підходить: без ініціалізованого віджета форма — звичайна GET-форма (виміряно 19.10 на VPS: Enter/click відправляють email і пароль у URL; замок це блокує).
+                # Через віджет форма відправляється AJAX POST на /ua/auth/login/email/ (пароль у тілі запиту). Посилання віджета відкриваємо JS-кліком (його перекриває fancybox-слайд).
+                stage = "open-email-form"
+                page.locator("a.auth-form--email-log").first.evaluate("e => e.click()")
+                page.wait_for_selector("form:has(input[name='email']):has(input[name='password'])", state="attached", timeout=15000)
             stage = "find-form"
             if kind == "email":
                 forms = page.locator("form:has(input[name='email']):has(input[name='password'])")

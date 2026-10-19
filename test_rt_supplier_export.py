@@ -26,7 +26,7 @@ def chk(n, c):
 
 chk("ціна: 100 → max(150; 118,45) = 150; 20 → max(30; 36,05) = 37; 10,5 → max(15,75; 26,3) = 27", ex.site_price(100) == 150 and ex.site_price(20) == 37 and ex.site_price(10.5) == 27)
 ids = ex.load_pilot_ids()
-chk("rt_pilot_ids.json: 209 унікальних id з префіксом rt-", len(ids) == 209 == len(set(ids)) and all(i.startswith("rt-") for i in ids))
+chk("rt_pilot_ids.json: 234 унікальних id з префіксом rt-", len(ids) == 234 == len(set(ids)) and all(i.startswith("rt-") for i in ids))
 chk("офіс. каталог не публікує гроші в site/: OUT_FILE поза site/", "site" not in ex.OUT_FILE.parts)
 V = {"name_ua": "Іграшка", "description_ua": " Опис ", "price": "200", "stock": 7, "available": True, "vendor": "V", "vendor_code": "C1", "category_name": "Конструкторы"}
 it = ex.build_item("rt-1", V, ["https://x/rt-1-1.jpg"])
@@ -57,9 +57,9 @@ with tempfile.TemporaryDirectory() as td:
     chk("фото не отримано (fetch=False) → картка не публікується", ex.run_once(cat, ["rt-1"], td / "o2.json", lambda u, d_: False, td / "img") is False and not (td / "o2.json").exists())
     # stock_snapshot
     chk("stock_snapshot: rt-1 → 7 з файлу", ss.rt_stock_entries(out) == {"rt-1": 7})
-    old = {"updated": (datetime.now(timezone.utc) - timedelta(days=3, hours=1)).isoformat(), "items": {"rt-1": {"stock": 5}}}
+    old = {"updated": (datetime.now(timezone.utc) - timedelta(hours=3, minutes=5)).isoformat(), "items": {"rt-1": {"stock": 5}}}
     (td / "old.json").write_text(json.dumps(old), encoding="utf-8")
-    chk("stock_snapshot: файл старший за 3 доби → {} (fail-closed)", ss.rt_stock_entries(td / "old.json") == {})
+    chk("stock_snapshot: файл старший за 3 год → {} (fail-closed)", ss.rt_stock_entries(td / "old.json") == {})
     chk("stock_snapshot: нема файлу / сміття → {}", ss.rt_stock_entries(td / "none.json") == {} and ss.rt_stock_entries(td / "o2.json") == {})
     (td / "bad.json").write_text("{не json", encoding="utf-8")
     chk("stock_snapshot: битий JSON → {}", ss.rt_stock_entries(td / "bad.json") == {})

@@ -9,7 +9,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -46,11 +46,11 @@ def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
     return {"ts": _ts(now), "n": len(s), "s": s}
 
 
-RT_MAX_AGE_DAYS = 3      # як build_site.SUPPLIER_RT_MAX_AGE_DAYS: старіший файл RoyalToys = залишків rt- «не знаємо» → бекенд замовлень вважає їх «немає» (fail-closed)
+RT_MAX_AGE = timedelta(hours=3)      # залишки RoyalToys оновлюються щогодини, rt-supplier-export.timer теж щогодини; 3 інтервали без оновлення = залишок rt- «не знаємо» → бекенд замовлень вважає «немає» (fail-closed). Той самий принцип «3 інтервали», що STOCK_MAX_AGE у site_order_api. Картки (ціна) живуть довше: 3 доби у build_site.
 
 
 def rt_stock_entries(path=None, now: datetime | None = None) -> dict:
-    """{"rt-<id>": залишок} з приватного supplier_rt.json (rt_supplier_export). Нема файлу/нечитабельний/старший за RT_MAX_AGE_DAYS → {} (без ключів rt- сайт і бекенд показують «немає»)."""
+    """{"rt-<id>": залишок} з приватного supplier_rt.json (rt_supplier_export). Нема файлу/нечитабельний/старший за RT_MAX_AGE (3 год) → {} (без ключів rt- сайт і бекенд показують «немає»)."""
     try:
         from datetime import timezone
         from rt_supplier_export import OUT_FILE
@@ -58,7 +58,7 @@ def rt_stock_entries(path=None, now: datetime | None = None) -> dict:
         upd = datetime.fromisoformat(str(raw["updated"]).replace("Z", "+00:00"))
         if upd.tzinfo is None:
             upd = upd.replace(tzinfo=timezone.utc)
-        if ((now.astimezone(timezone.utc) if now and now.tzinfo else datetime.now(timezone.utc)) - upd).total_seconds() > RT_MAX_AGE_DAYS * 86400:
+        if ((now.astimezone(timezone.utc) if now and now.tzinfo else datetime.now(timezone.utc)) - upd).total_seconds() > RT_MAX_AGE.total_seconds():
             return {}
         out = {}
         for k, v in (raw.get("items") or {}).items():

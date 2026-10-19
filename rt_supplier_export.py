@@ -26,6 +26,8 @@ IMG_URL = "https://plutustoys.com.ua/img/rt/{name}"
 MAX_IMAGES = 5
 IMG_MAX_SIDE = 1200
 IMG_TIMEOUT = 30
+IMG_MAX_BYTES = 15 * 1024 * 1024
+_ID_RE = re.compile(r"rt-[0-9A-Za-z_]+")      # як build_site._RT_ID_RX
 
 
 def site_price(cost: float) -> int:
@@ -54,7 +56,7 @@ def plain_text(raw: str) -> str:
 
 def load_pilot_ids(path: Path = IDS_FILE) -> list:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    ids = [str(i) for i in data.get("ids") or [] if str(i).startswith("rt-")]
+    ids = [str(i) for i in data.get("ids") or [] if _ID_RE.fullmatch(str(i))]
     if not ids:
         raise ValueError("rt_pilot_ids.json: порожній список")
     return ids
@@ -86,9 +88,19 @@ def fetch_image(url: str, dest: Path) -> bool:
     try:
         import requests
         from PIL import Image
-        r = requests.get(url, timeout=IMG_TIMEOUT)
+        if not str(url).startswith(("http://", "https://")):
+            return False
+        r = requests.get(url, timeout=IMG_TIMEOUT, stream=True)
         r.raise_for_status()
-        im = Image.open(io.BytesIO(r.content))
+        body = r.raw.read(IMG_MAX_BYTES + 1, decode_content=True)
+        if len(body) > IMG_MAX_BYTES:
+            raise ValueError("фото завелике")
+        im = Image.open(io.BytesIO(body))
+        if im.mode in ("RGBA", "LA", "P"):         # прозорі PNG — на білий фон (convert("RGB") дав би чорний)
+            im = im.convert("RGBA")
+            bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+            bg.alpha_composite(im)
+            im = bg
         im = im.convert("RGB")
         im.thumbnail((IMG_MAX_SIDE, IMG_MAX_SIDE))
         dest.parent.mkdir(parents=True, exist_ok=True)

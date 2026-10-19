@@ -152,6 +152,8 @@ def price_of(it):
     «наценка як у EVA»). Округлення вгору до гривні. Сайт НЕ залежить від жодного маркетплейсу: жодних цін
     конкурентів, підрізань і стану чужих кабінетів. EVA-специфічні надбавки (промо-коеф 2.143, підлога під
     15%-комісію EVA) на власному сайті не застосовуються — там нема комісії маркетплейсу."""
+    if it.get("site_price"):   # RoyalToys (rt-…): ціну сайту рахує Код за закритою формулою, а не 1.5× від ціни Toysi
+        return int(it["site_price"])
     return cp.site_retail_price(it)
 
 def esc(s):
@@ -561,6 +563,94 @@ class CatalogShrinkError(RuntimeError):
     """Каталог «в наявності» різко зменшився проти попередньої збірки — не пишемо й не прибираємо сторінки."""
 
 
+# ── Другий постачальник (пілот RoyalToys, 19.10.2026; дані й замовлення — Код, сайт — тут) ─────────────────────────────────────────
+# site/supplier_rt.json: {"updated": ISO, "items": {"rt-<id>": {name, description, vendor, vendor_code, category (рос., назва RoyalToys), images[], price, cost, stock}}}
+# site/rt_category_map.json: {назва категорії RoyalToys → наша категорія сайту}. Невідома категорія = картка НЕ публікується (голосне попередження), а не «Інше».
+# Картки з'являються лише коли онлайн-оплата ввімкнена (LIQPAY_LIVE): RoyalToys працює лише за передоплатою, без картки такий товар замовити не можна.
+SUPPLIER_RT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "supplier_rt.json")
+RT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rt_category_map.json")
+SUPPLIER_RT_MAX_AGE_DAYS = 3
+_RT_ID_RX = re.compile(r"rt-[0-9A-Za-z_]+")
+_RT_COD_SENTENCE_RX = re.compile(r"[^.!?\n]*(?:накладен|при отриманні|післяплат)[^.!?\n]*[.!?]?", re.I)   # у картках rt- не обіцяємо оплату при отриманні
+
+
+def _rt_clean_description(text):
+    t = _RT_COD_SENTENCE_RX.sub("", str(text or "")).strip()
+    return re.sub(r"[ \t]{2,}", " ", t)
+
+
+def _load_supplier_rt(now=None):
+    """{id: елемент у форматі Toysi} для відібраних карток RoyalToys. Нема файлу/LIQPAY не live/файл застарілий — порожньо; поламаний — ГОЛОСНО (stderr), збірка не падає."""
+    try:
+        with open(SUPPLIER_RT_FILE, encoding="utf-8-sig") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"[build] ⚠ supplier_rt.json НЕ прочитано ({type(e).__name__}: {e}) — карток RoyalToys не буде", file=sys.stderr)
+        return {}
+    items = raw.get("items") if isinstance(raw, dict) else None
+    if not isinstance(items, dict):
+        print("[build] ⚠ supplier_rt.json: очікується {\"updated\":…, \"items\":{…}} — карток RoyalToys не буде", file=sys.stderr)
+        return {}
+    if not LIQPAY_LIVE:
+        print("[build] ⚠ supplier_rt.json: онлайн-оплата не ввімкнена (SITE_LIQPAY_LIVE) — картки RoyalToys не публікуємо (лише передоплата)", file=sys.stderr)
+        return {}
+    try:
+        upd = datetime.fromisoformat(str(raw.get("updated")).replace("Z", "+00:00"))
+        if upd.tzinfo is None:
+            upd = upd.replace(tzinfo=timezone.utc)
+        age = ((now or datetime.now(timezone.utc)) - upd).total_seconds() / 86400.0
+    except (ValueError, TypeError):
+        print("[build] ⚠ supplier_rt.json: нема коректного «updated» — карток RoyalToys не буде", file=sys.stderr)
+        return {}
+    if age > SUPPLIER_RT_MAX_AGE_DAYS:
+        print(f"[build] ⚠ supplier_rt.json застарів ({age:.1f} діб > {SUPPLIER_RT_MAX_AGE_DAYS}) — карток RoyalToys не буде (ціни/залишки не свіжі)", file=sys.stderr)
+        return {}
+    try:
+        with open(RT_CATEGORY_MAP_FILE, encoding="utf-8-sig") as f:
+            cmap = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        cmap = {}
+    if not isinstance(cmap, dict):
+        cmap = {}
+    out, skipped = {}, {}
+    for k, v in items.items():
+        why = None
+        if not isinstance(k, str) or not _RT_ID_RX.fullmatch(k) or not isinstance(v, dict):
+            why = "id"
+        else:
+            imgs = [u for u in (v.get("images") or []) if isinstance(u, str) and u.startswith("https://")]
+            cat_name = cmap.get(str(v.get("category") or "").strip())
+            try:
+                price, stock = int(v.get("price")), int(v.get("stock"))
+            except (TypeError, ValueError):
+                price, stock = 0, -1
+            if not str(v.get("name") or "").strip():
+                why = "name"
+            elif not imgs:
+                why = "images"
+            elif price <= 0 or stock < 0:
+                why = "price/stock"
+            elif not isinstance(cat_name, str) or not cat_name.strip():
+                why = "category:" + str(v.get("category"))[:40]
+        if why:
+            skipped.setdefault(why, []).append(str(k)[:30])
+            continue
+        try:
+            rt_cost = int(v.get("cost") or 0)
+        except (TypeError, ValueError):
+            rt_cost = 0
+        out[k] = {"id": k, "name": str(v["name"]).strip(), "description": _rt_clean_description(v.get("description")), "vendor": str(v.get("vendor") or "").strip(),
+                  "vendor_code": str(v.get("vendor_code") or "").strip(), "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
+                  "site_price": price, "rt_cost": rt_cost, "supplier": "royaltoys", "price": price}
+    if skipped:
+        print("[build] ⚠ supplier_rt.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
+    print(f"[build] RoyalToys: {len(out)} карток із supplier_rt.json")
+    return out
+
+
+
 def build():
     global SALE_ACTIVE
     _lastmod_reset()
@@ -587,6 +677,8 @@ def build():
         except Exception:  # noqa: BLE001 — алерт best-effort
             pass
         raise
+    cat = dict(cat)
+    cat.update(_load_supplier_rt())   # другий постачальник (пілот RoyalToys, Код 19.10): картки «rt-…» у ЗАГАЛЬНОМУ каталозі
     prods = []
     # Товари БЕЗ залишку (рішення Консультанта 11.10.2026, GSC: 7 605 адрес «404» з 8 960 непроіндексованих — це самі зниклі зі складу товари):
     # їхня сторінка НЕ зникає, а лишається живою з «Немає в наявності» + schema.org/OutOfStock. Збираємо окремо: у каталог, категорії, пошук
@@ -619,7 +711,7 @@ def build():
         # собівартість → contribution=None: такий товар іде в кінець сорту й не пускається
         # на головну (не ведемо вітрину товаром з невідомою маржею).
         try:
-            cost = cp.real_toysi_cost(it)
+            cost = float(it["rt_cost"]) if it.get("rt_cost") else cp.real_toysi_cost(it)   # rt-: опт RoyalToys із supplier_rt.json (без поля — внесок None, картка не йде на головну/в акції)
         except (ValueError, TypeError):
             cost = 0.0
         _old_price = None
@@ -2448,6 +2540,7 @@ def write_cart(addons=None):
           '<div class="note" id="f-comment-count" style="margin:4px 0 0">до 300 символів</div></div>'
         '<div class="field"><label>Спосіб оплати</label>'
           + _pay_radios() +
+          '<div class="note rt-note" id="rt-pay-note" hidden></div>'
         '</div>'
         '<div class="addon-box addon-m" data-addon></div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'

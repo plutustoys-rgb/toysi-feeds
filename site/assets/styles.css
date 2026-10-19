@@ -587,3 +587,6 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .home-chips ~ .chip-all{display:inline-block;margin:-2px 16px 10px;font-size:13px;color:var(--accent)}
 .chip-all[hidden]{display:none}
 .np-note{padding:8px 12px;font-size:13px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-top:4px}
+
+label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накладений платіж неактивний */
+.rt-note{margin:6px 0 0}

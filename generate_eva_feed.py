@@ -265,11 +265,25 @@ EVA_LEGACY_OVERRIDE = _load_legacy_override()
 # (2 752 товари): їхні Toysi-категорії або не співставлені в кабінеті, або співставлені на ІНШУ EVA-категорію (небезпечно). Для таких Toysi-категорій T віддаємо старий id+назву L ІНШОЇ Toysi-категорії, яка в кабінеті вже «Співставлена»
 # саме з ТІЄЮ САМОЮ EVA-категорією, що в нашій мапі (порівняння як у _norm_eva_name). eva_remap_rollout.json: {"mode": "ids", "ids": [EVA-id цілі…]} — лише ці цілі (етапи розкатки, пілот → решта); {"mode": "off"}/нема файла — нічого. Відкат = mode=off.
 # L: не з EVA_EXCLUDED_CATEGORIES, без «(МП)» у назві; найбільший збіг слів назви L із назвою цілі, далі менший id (косметика: кабінет бачить нашу назву, EVA-категорія та сама).
+# УВАГА (аудит #898): (1) «(МП)» зустрічається лише в полі `eva` кабінету (його _norm_eva_name зрізає), у НАЗВАХ L його немає — тож окремий етап для цілей із «(МП)» тримається ЛИШЕ вибором `ids` у файлі розкатки, код його не забезпечує;
+# (2) remap залежить від legacy: якщо вимкнути eva_legacy_rollout.json (mode=off), а remap лишити, remap розшириться на категорії, що мали власний безпечний старий id — ПОВНИЙ відкат = ОБИДВА файли в off;
+# (3) mode=off для remap повертає старий вигляд усіх категорій, окрім 99075 («Пазли», поза мапою): для точного відкату прибрати й запис 99075 з eva_category_map.json.
 EVA_REMAP_ROLLOUT_FILE = Path(__file__).parent / "eva_remap_rollout.json"
 
 
 def _load_remap_override() -> dict:
-    """{toysi_id: (L_id, L_name)}; будь-яка помилка файлів → {} (поведінка як до зміни)."""
+    """{toysi_id: (L_id, L_name)}; БУДЬ-ЯКА помилка (файли, форма JSON, типи) → {} (поведінка як до зміни), а не падіння імпорту модуля (аудит #898: валідний JSON неправильної форми)."""
+    try:
+        out = _build_remap_override()
+    except Exception as e:  # noqa: BLE001
+        print(f"[EVA] remap: збій розбору ({type(e).__name__}) — перенаправлення вимкнено", file=sys.stderr)
+        return {}
+    if out:
+        print(f"[EVA] remap: {len(out)} Toysi-категорій перенаправлено у вже співставлені")
+    return out
+
+
+def _build_remap_override() -> dict:
     import re as _re
     try:
         cfg = json.loads(EVA_REMAP_ROLLOUT_FILE.read_text(encoding="utf-8"))

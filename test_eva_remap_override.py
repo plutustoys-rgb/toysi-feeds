@@ -78,6 +78,21 @@ chk("_map_eva_category: remap -> (L, назва L); legacy має пріорит
     g._map_eva_category("1", "x") == ("10", "Пазли і вкладиші") and g._map_eva_category("3", "x") == ("3", "Пазли і вкладиші")
     and g._map_eva_category("5", "x") == ("120704", "Різні набори для дитячої творчості") and g._map_eva_category("555", "Ім'я") == ("555", "Ім'я"))
 
+
+# аудит #898: валідний JSON неправильної форми не валить імпорт, а дає {}
+g.EVA_CATEGORY_MAP.clear()
+g.EVA_CATEGORY_MAP.update({"1": {"id": "105311", "name": "Пазли"}})
+g.EVA_LEGACY_OVERRIDE.clear()
+for label, bad in (("matched=список", {"matched": []}), ("запис-рядок", {"matched": {"10": "Пазли"}}), ("eva=число", {"matched": {"10": {"name": "Пазли і вкладиші", "eva": 5}}})):
+    (tmp / "matched.json").write_text(json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+    g.EVA_MATCHED_LEGACY_FILE = tmp / "matched.json"
+    g.EVA_REMAP_ROLLOUT_FILE = tmp / "roll.json"
+    (tmp / "roll.json").write_text(json.dumps({"mode": "ids", "ids": ["105311"]}), encoding="utf-8")
+    try:
+        res = g._load_remap_override()
+    except Exception as e:  # noqa: BLE001
+        res = f"EXC {type(e).__name__}"
+    chk(f"fail-closed: matched неправильної форми ({label}) -> {{}} без винятку", res == {})
 # відновлення і перевірка на живих файлах
 g.EVA_CATEGORY_MAP.clear()
 g.EVA_CATEGORY_MAP.update(orig[0])

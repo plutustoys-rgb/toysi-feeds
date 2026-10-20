@@ -398,5 +398,73 @@ fk = OkSession()
 with orders_db.get_connection() as c:
     rr.process_order(c, get(ns2), SUP, apply=True, deps=fk)
 chk("B1: автовхід (або жива сесія) ок -> йде далі: ensure_session ПЕРЕД rt_dry і ТТН", fk.calls.index("ensure_session") < fk.calls.index("rt_dry") < fk.calls.index("create_ttn"))
+# ---- повернення: повідомлення RoyalToys про ТТН повернення (20.10) ----
+class RetFake(Fake):
+    def __init__(self, info, send_ok=True):
+        super().__init__()
+        self.ttn_info = info
+        self.send_ok = send_ok
+        self.sent = []
+
+    def notify_rt_return(self, text):
+        self.sent.append(text)
+        return self.send_ok
+
+
+rt1 = new_order("RET1")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, rt1, "returned", rt_order_ref="RT000773594", toysi_ttn="20451565972503")
+    c.commit()
+fk = RetFake({"status": "Відмова одержувача", "status_code": "102", "delivered": False, "return_ttn": None})
+with orders_db.get_connection() as c:
+    o1 = rr.notify_returns(c, fk, True)
+chk("повернення без ТТН повернення в НП: не повідомляємо RoyalToys, не позначаємо, повторимо наступного циклу", fk.sent == [] and get(rt1)["rt_return_notified_at"] is None and o1[0].get("return_notice"))
+fk = RetFake({"status": "Відмова одержувача", "status_code": "102", "delivered": False, "return_ttn": "20451570000001"}, send_ok=False)
+with orders_db.get_connection() as c:
+    o2 = rr.notify_returns(c, fk, False)
+chk("dry-run (apply=False): нічого не шлемо RoyalToys і не позначаємо", fk.sent == [] and get(rt1)["rt_return_notified_at"] is None)
+with orders_db.get_connection() as c:
+    o3 = rr.notify_returns(c, fk, True)
+chk("apply: текст для RoyalToys з № замовлення RT і обома ТТН, без ПІБ/телефону; автонадсилання не вдалось → все одно позначено (власник отримав алерт з текстом)",
+    len(fk.sent) == 1 and "RT000773594" in fk.sent[0] and "20451565972503" in fk.sent[0] and "20451570000001" in fk.sent[0] and "Петренко" not in fk.sent[0] and get(rt1)["rt_return_notified_at"] and o3[0]["sent_to_rt"] is False)
+fk2 = RetFake({"status": "Відмова", "delivered": False, "return_ttn": "20451570000001"})
+with orders_db.get_connection() as c:
+    o4 = rr.notify_returns(c, fk2, True)
+chk("повторно (вже повідомлено) — нічого не шлемо вдруге", fk2.sent == [] and o4 == [])
+
+import nova_poshta as _np
+import telegram_userbot_client as _ub
+_orig_call = _np._call
+try:
+    _np._call = lambda m, c, p: [{"Status": "Відмова одержувача", "StatusCode": "102", "ActualDeliveryDate": "", "LastCreatedOnTheBasisNumber": "20451570000001", "LastCreatedOnTheBasisDocumentType": "CargoReturn"}]
+    r_a = _np.get_tracking_status("20451565972503")
+    _np._call = lambda m, c, p: [{"Status": "x", "LastCreatedOnTheBasisNumber": "20451565972503", "LastCreatedOnTheBasisDocumentType": "CargoReturn"}]
+    r_b = _np.get_tracking_status("20451565972503")
+    _np._call = lambda m, c, p: [{"Status": "x", "LastCreatedOnTheBasisNumber": "123", "LastCreatedOnTheBasisDocumentType": "CargoReturn"}]
+    r_c = _np.get_tracking_status("20451565972503")
+    _np._call = lambda m, c, p: [{"Status": "Відмова", "LastCreatedOnTheBasisNumber": "20451570000009", "LastCreatedOnTheBasisDocumentType": "Redirecting"}]
+    r_e = _np.get_tracking_status("20451565972503")
+    r_c = _np.get_tracking_status("20451565972503")
+    _np._call = lambda m, c, p: [{"Status": "x"}]
+    r_d = _np.get_tracking_status("20451565972503")
+finally:
+    _np._call = _orig_call
+chk("get_tracking_status.return_ttn: 14 цифр + тип документа «повернення», не збігається з вихідною -> береться; збіг із вихідною / не 14 цифр / нема / інший тип (переадресація) -> None (based_* для діагностики)", r_a["return_ttn"] == "20451570000001" and r_b["return_ttn"] is None and r_c["return_ttn"] is None and r_d["return_ttn"] is None
+    and r_e["return_ttn"] is None and r_e["based_ttn"] == "20451570000009" and r_e["based_type"] == "Redirecting")
+os.environ.pop("TELEGRAM_USERBOT_RT_TARGET", None)
+try:
+    _ub.send_rt_notice("текст")
+    ub_ok = False
+except _ub.UserbotError:
+    ub_ok = True
+chk("send_rt_notice без TELEGRAM_USERBOT_RT_TARGET -> UserbotError, нічого не йде", ub_ok)
+# аудит #927: notify_returns викликається з run() навіть коли інших замовлень «у роботі» немає
+rt2 = new_order("RET2")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, rt2, "returned", rt_order_ref="RT000773595", toysi_ttn="20451565972999")
+    c.commit()
+fk3 = RetFake({"status": "Відмова", "delivered": False, "return_ttn": "20451570000002"})
+rr.run(apply=True, deps=fk3)
+chk("run(): returned-замовлення без жодного іншого в роботі — повідомлення RoyalToys усе одно надіслано й позначено", any("RT000773595" in t for t in fk3.sent) and get(rt2)["rt_return_notified_at"])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

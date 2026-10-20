@@ -65,7 +65,7 @@ def _load_session_str() -> str:
     return s
 
 
-def _send_via_userbot(to_toysi: bool, action) -> bool:
+def _send_via_userbot(to_toysi: bool, action, target_override: str | None = None, label: str | None = None) -> bool:
     """Спільний каркас відправки через юзербот: перевірки env/сесії, конект, авторизація,
     резолв цілі, обгортка помилок у зрозумілий UserbotError. `action(client, target)` — що
     саме слати (текст чи файл), викликається всередині під'єднаного клієнта. Повертає True.
@@ -79,7 +79,9 @@ def _send_via_userbot(to_toysi: bool, action) -> bool:
     except ValueError:
         raise UserbotError("TELEGRAM_USERBOT_API_ID має бути числом")
 
-    target_raw = TOYSI_TARGET if to_toysi else TEST_TARGET
+    target_raw = target_override if target_override is not None else (TOYSI_TARGET if to_toysi else TEST_TARGET)
+    if target_override is not None and not target_raw:
+        raise UserbotError(f"не задано ціль {label or 'override'} у .env")
     if not target_raw:
         which = "TELEGRAM_USERBOT_TOYSI_TARGET" if to_toysi else "TELEGRAM_USERBOT_TEST_TARGET"
         raise UserbotError(
@@ -115,7 +117,7 @@ def _send_via_userbot(to_toysi: bool, action) -> bool:
     except Exception as e:  # мережа/авторизація тощо — теж із причиною
         raise UserbotError(f"збій відправки через юзербот: {type(e).__name__}: {e}")
 
-    dest = "РЕАЛЬНИЙ Toysi" if to_toysi else "тест (основний акаунт)"
+    dest = label or ("РЕАЛЬНИЙ Toysi" if to_toysi else "тест (основний акаунт)")
     print(f"[userbot] Надіслано ({dest}).")
     return True
 
@@ -128,6 +130,17 @@ def send_marking(text: str, to_toysi: bool = False) -> bool:
     if not text or not text.strip():
         raise UserbotError("порожній текст маркування — нема чого слати")
     return _send_via_userbot(to_toysi, lambda client, target: client.send_message(target, text))
+
+
+RT_TARGET_ENV = "TELEGRAM_USERBOT_RT_TARGET"
+
+
+def send_rt_notice(text: str) -> bool:
+    """Шле `text` у чат менеджерів RoyalToys через юзербот. Ціль — TELEGRAM_USERBOT_RT_TARGET (@username/id чату); порожня → UserbotError (нічого не йде). Текст — лише факти (№ замовлення RT, ТТН), без ПІБ/телефонів."""
+    if not text or not text.strip():
+        raise UserbotError("порожній текст повідомлення")
+    target = os.environ.get(RT_TARGET_ENV, "").strip()
+    return _send_via_userbot(False, lambda client, tgt: client.send_message(tgt, text), target_override=target, label="чат RoyalToys")
 
 
 def send_marking_file(file_bytes: bytes, filename: str, caption: str = "",

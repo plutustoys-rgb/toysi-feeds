@@ -349,6 +349,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rt_order_ref", "rt_order_ref TEXT")
         _ensure_column(conn, "orders", "rt_error", "rt_error TEXT")
         _ensure_column(conn, "orders", "rt_updated_at", "rt_updated_at TEXT")
+        _ensure_column(conn, "orders", "rt_return_notified_at", "rt_return_notified_at TEXT")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
         # дописано в kodv_ledger.jsonl — персистентна позначка, не 24-годинне
         # вікно, щоб дрейф/пропуск таймера (як уже стався з update-feeds.yml)
@@ -567,6 +568,22 @@ def set_rt_state(conn: sqlite3.Connection, internal_order_id: str, state: str | 
         params.append(datetime.now().isoformat(timespec="seconds"))
     params.append(internal_order_id)
     conn.execute(f"UPDATE orders SET {', '.join(sets)} WHERE internal_order_id = ?", params)
+
+
+def get_rt_returns_unnotified(conn: sqlite3.Connection) -> list:
+    """rt-замовлення сайту в стані returned, про повернення яких RoyalToys ще НЕ повідомлено (менеджер 20.10: ми МУСИМО повідомити їм № ТТН повернення, коли посилка йде/прийшла на їхнє відділення)."""
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE platform = 'site' AND rt_state = 'returned' AND rt_return_notified_at IS NULL "
+        "AND rt_order_ref IS NOT NULL AND rt_order_ref != '' ORDER BY rt_updated_at"
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def mark_rt_return_notified(conn: sqlite3.Connection, internal_order_id: str) -> bool:
+    cur = conn.execute("UPDATE orders SET rt_return_notified_at = ? WHERE internal_order_id = ? AND rt_return_notified_at IS NULL",
+                       (datetime.now().isoformat(timespec="seconds"), internal_order_id))
+    conn.commit()
+    return cur.rowcount == 1
 
 
 def claim_rt_state(conn: sqlite3.Connection, internal_order_id: str, from_state: str | None, to_state: str) -> bool:

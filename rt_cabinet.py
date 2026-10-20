@@ -375,6 +375,21 @@ def _money(txt: str):
     return float(re.sub(r"[\s\u00a0]", "", m.group(1)).replace(",", ".")) if m else None
 
 
+def confirm_new_reserve(after_text: str, refs_before: set, total):
+    """Підтвердження створеного резерву за списком замовлень: РІВНО ОДИН новий номер RT (його не було до кліку), чия «Сума замовлення» збігається з сумою оформлення. Інакше (None, "")."""
+    flat = re.sub(r"\s+", " ", after_text or "")
+    new_refs = [r for r in dict.fromkeys(re.findall(r"RT\d{6,}", flat)) if r not in refs_before]
+    if len(new_refs) != 1 or total is None:
+        return None, ""
+    i0 = flat.find(new_refs[0])
+    nxt = re.search(r"RT\d{6,}", flat[i0 + len(new_refs[0]):])
+    block = flat[i0:i0 + len(new_refs[0]) + (nxt.start() if nxt else 400)][:500]
+    m = re.search(r"Сума замовлення\s*(\d[\d\s ]*(?:[.,]\d+)?\s*грн)", block)
+    if m and abs((_money(m.group(1)) or -1) - total) < 0.005:
+        return new_refs[0], block
+    return None, ""
+
+
 def cart_row_vendor_code(txt: str, wanted) -> str:
     """Артикул рядка кошика: серед ОЧІКУВАНИХ артикулів (можуть містити пробіл: «MK 6039») шукаємо той, що стоїть після «Арт.:» (найдовший збіг — «MK 6039», а не «MK»). Нема збігу → перше слово після «Арт.» (щоб розбіжність було видно в повідомленні)."""
     t = txt or ""
@@ -595,8 +610,10 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                             return p2.inner_text("body")
                         finally:
                             p2.close()
-                    if _squash(order["ttn_number"]) in _squash(orders_text()):
+                    before_text = orders_text()
+                    if _squash(order["ttn_number"]) in _squash(before_text):
                         raise OrderError("замовлення з цим № ТТН уже є в кабінеті — повторно не створюємо")
+                    refs_before = set(re.findall(r"RT\d{6,}", before_text))      # номери RT ДО кліку: новий резерв = номер, якого тут не було
                     # РЕЗЕРВ. Усі перевірки нижче — ДО озброєння: помилка тут = «точно не відправлено» (чистий відкат кроку)
                     if blocked["final"]:
                         raise OrderError("під час заповнення форми сторінка вже пробувала відправити фінальний POST — зупинка (форма поводиться несподівано)")
@@ -633,7 +650,12 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     finally:
                         armed["on"] = False                      # лок відкритий лише на мить кліку (і при винятку теж)
                     after = orders_text()
-                    if _squash(order["ttn_number"]) not in _squash(after):
+                    # ПІДТВЕРДЖЕННЯ (живий прогін 20.10 17:27: резерв RT000773594 створено, але список замовлень НЕ показує ТТН → «не знайдено» було хибним). Дві ознаки: (а) ТТН у списку (як раніше) АБО
+                    # (б) фінальний POST пропущено (passed>0) І з'явився РІВНО ОДИН новий номер RT, чия сума збігається з сумою оформлення. Кілька нових RT / збіг суми не підтверджено → «невідомо», ручна звірка.
+                    new_ref, new_block = None, ""
+                    if armed["passed"] > 0:
+                        new_ref, new_block = confirm_new_reserve(after, refs_before, res.get("total_on_checkout"))
+                    if new_ref is None and _squash(order["ttn_number"]) not in _squash(after):
                         if armed["passed"] == 0:
                             res["problems"].append("заблоковані POST після кліку: " + (", ".join(aborted) or "жодного"))
                             try:
@@ -663,12 +685,18 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                             res["not_submitted_certain"] = True
                             raise OrderError("клік відправки форми (#checkout-btn) не дав фінального POST (лок не пропустив жодного), ТТН у списку немає — резерву не створено")
                         raise OrderError("після кліку «Резерв» замовлення з цим № ТТН у списку не знайдено — результат невідомий, звірте кабінет вручну")
-                    # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; ТТН показана групами/нема RT — позначаємо за ТТН
-                    pos = after.find(order["ttn_number"])
-                    window = after[max(0, pos - 400):pos] if pos >= 0 else ""      # лише ПЕРЕД ТТН: номер сусіднього (наступного) рядка не береться
-                    refs = re.findall(r"RT\d{6,}", window)
-                    res["rt_order_ref"] = refs[-1] if refs else "ttn-" + order["ttn_number"]
-                    res["reserve_status_seen"] = bool(re.search(r"резерв|очіку\w*\s+оплат|очікує", window, re.I))
+                    if new_ref is not None:
+                        res["rt_order_ref"] = new_ref
+                        res["reserve_status_seen"] = bool(re.search(r"резерв|очіку\w*\s+оплат|очікує|Новий", new_block, re.I))
+                        res["confirmed_by"] = "new_rt_number_and_sum"
+                    else:
+                        # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; ТТН показана групами/нема RT — позначаємо за ТТН
+                        pos = after.find(order["ttn_number"])
+                        window = after[max(0, pos - 400):pos] if pos >= 0 else ""      # лише ПЕРЕД ТТН: номер сусіднього (наступного) рядка не береться
+                        refs = re.findall(r"RT\d{6,}", window)
+                        res["rt_order_ref"] = refs[-1] if refs else "ttn-" + order["ttn_number"]
+                        res["reserve_status_seen"] = bool(re.search(r"резерв|очіку\w*\s+оплат|очікує", window, re.I))
+                        res["confirmed_by"] = "ttn_in_list"
                     res["submitted"] = True
                     res["mode"] = "reserve"
             finally:

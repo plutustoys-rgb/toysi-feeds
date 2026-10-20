@@ -2597,6 +2597,8 @@ def write_cart(addons=None):
           + _pay_radios() +
           '<div class="note rt-note" id="rt-pay-note" hidden></div>'
         '</div>'
+        # Telegram-статус (запит Коду 20.10): галочка лише керує тим, НАСКІЛЬКИ помітна кнопка «Старт у Telegram» на сторінці подяки (автопідписка без натискання «Старт» у Telegram неможлива); на сервер вибір не йде
+        '<label class="tgopt"><input type="checkbox" id="f-tg" name="tg" checked> <span>Хочу отримувати статус замовлення в Telegram</span></label>'
         '<div class="addon-box addon-m" data-addon></div>'
         '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button>'
         '<p class="note consent">Оформлюючи замовлення, ви погоджуєтесь з <a href="offer.html">публічною офертою</a> '
@@ -2630,7 +2632,11 @@ def write_thanks():
       '<h2>Дякуємо за замовлення!</h2>'
       '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
       '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'
-      '<p class="thanks-tg-wrap" id="thanks-tg-wrap" hidden><a class="btn" id="thanks-tg" href="https://t.me/plutustoys_support_bot" target="_blank" rel="noopener" style="display:inline-block;max-width:320px">Отримувати статус у Telegram</a></p>'
+      # Telegram-статус: блок видно, коли номер замовлення відомий (sessionStorage або ?o= після LiqPay); галочка «статус у Telegram» вимкнена → клас is-calm (тихіше, але кнопка є)
+      '<div class="thanks-tg" id="thanks-tg-wrap" hidden>'
+        '<p class="thanks-tg-hint" id="thanks-tg-hint" data-calm="Передумали? Натисніть «Старт» у боті — і ми напишемо вам, коли замовлення відправлять.">Натисніть «Старт» у боті — і ми напишемо вам, коли замовлення відправлять.</p>'
+        '<a class="btn" id="thanks-tg" href="https://t.me/plutustoys_support_bot" target="_blank" rel="noopener">Старт у Telegram</a>'
+      '</div>'
       '<p style="margin-top:20px"><a class="btn ghost" href="/" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )

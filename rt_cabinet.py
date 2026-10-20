@@ -606,11 +606,29 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     btn_text = (btn.first.inner_text() or "")
                     if "Резерв" not in btn_text or "балансу" in btn_text:
                         raise OrderError("кнопка за селектором .glavs.no — не «Резерв» (верстка змінилась) — зупинка")
+                    # КРОК 1 (живий лог 20.10 17:25): «Резерв»/«З балансу» — лише ПЕРЕМИКАЧ режиму (type=button, клас .active; запиту не шле — seen_req порожній). Справжня відправка форми — окрема кнопка #checkout-btn. Перемикач тиснемо при ЗАКРИТОМУ лоці (armed=False): це ще не відправка.
+                    if not btn.first.evaluate("e => e.classList.contains('active')"):        # якщо перемикач уже активний — не тиснемо (можливий toggle)
+                        btn.first.evaluate("e => e.click()")
+                        page.wait_for_timeout(800)
+                    if blocked["final"]:
+                        raise OrderError("клік перемикача «Резерв» спробував відправити фінальний POST — зупинка (форма поводиться несподівано)")
+                    mode_state = page.evaluate("() => ({no: !!document.querySelector('form.checkout-form button.glavs.no.active'), otp: !!document.querySelector('form.checkout-form button.glavs.otp.active'), n: document.querySelectorAll('button.glavs.active').length})")
+                    if not mode_state["no"] or mode_state["otp"] or mode_state["n"] != 1:
+                        raise OrderError(f"перемикач «Резерв» не став активним (резерв={mode_state['no']}, з балансу={mode_state['otp']}, активних на сторінці={mode_state['n']}) — зупинка")
+                    # КРОК 2: кнопка відправки форми. Перевірки — ДО озброєння.
+                    sub = page.locator("form.checkout-form #checkout-btn")
+                    if sub.count() != 1:
+                        raise OrderError(f"кнопка відправки #checkout-btn не знайдена або неоднозначна ({sub.count()}) — верстка змінилась, зупинка")
+                    sub_text = re.sub(r"\s+", " ", sub.first.inner_text() or "").strip()
+                    res["submit_button_text"] = sub_text[:60]
+                    res["submit_button_type"] = sub.first.get_attribute("type")
+                    if not sub.first.is_visible() or not sub.first.is_enabled() or "балансу" in sub_text:
+                        raise OrderError(f"кнопка відправки недоступна або має несподіваний текст («{sub_text[:40]}») — зупинка")
                     # З цього рядка результат може бути невідомим: помилки лишають rt_ordering (автоповтору немає)
                     res["not_submitted_certain"] = False
                     armed["on"] = True
                     try:
-                        btn.first.evaluate("e => e.click()")
+                        sub.first.evaluate("e => e.click()")
                         page.wait_for_timeout(6000)
                     finally:
                         armed["on"] = False                      # лок відкритий лише на мить кліку (і при винятку теж)
@@ -634,7 +652,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                     const btns = Array.from(document.querySelectorAll('form.checkout-form button.glavs, #checkout-btn')).map(e => ({cls: String(e.className).slice(0, 40), dis: !!e.disabled, vis: vis(e), onclick: !!e.getAttribute('onclick'), data: Object.keys(e.dataset || {}).join(',')}));
                                     const chk = Array.from(document.querySelectorAll('form.checkout-form input[type=checkbox]')).map(e => ({n: e.name, c: e.checked, r: e.required}));
                                     let ev = '';
-                                    try { const b = document.querySelector('form.checkout-form button.glavs.no'); const d = window.jQuery && jQuery._data(b, 'events'); ev = d ? Object.keys(d).join(',') : 'нема own-handlers'; } catch (x) { ev = 'err'; }
+                                    try { const b = document.querySelector('form.checkout-form #checkout-btn'); const d = window.jQuery && jQuery._data(b, 'events'); ev = d ? Object.keys(d).join(',') : 'нема own-handlers'; } catch (x) { ev = 'err'; }
                                     const inl = Array.from(document.scripts).filter(s => !s.src && /glavs/.test(s.textContent)).map(s => { const t = s.textContent; const i = t.indexOf('glavs'); return mask(t.slice(Math.max(0, i - 100), i + 300)); });
                                     return {modals: modals.slice(0, 3), btns, chk, ev, inl: inl.slice(0, 2)};
                                 }""", _toks)
@@ -643,7 +661,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                 res["problems"].append("DOM після кліку: не прочитано")
                             # дві ознаки разом: лок не пропустив жодного фінального POST І ТТН у списку немає → резерву не створено, чистий відкат (якщо обхідний шлях усе ж створив резерв і ТТН видно — це успіх нижче)
                             res["not_submitted_certain"] = True
-                            raise OrderError("клік «Резерв» не відправив фінальний POST (лок не пропустив жодного), ТТН у списку немає — резерву не створено")
+                            raise OrderError("клік відправки форми (#checkout-btn) не дав фінального POST (лок не пропустив жодного), ТТН у списку немає — резерву не створено")
                         raise OrderError("після кліку «Резерв» замовлення з цим № ТТН у списку не знайдено — результат невідомий, звірте кабінет вручну")
                     # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; ТТН показана групами/нема RT — позначаємо за ТТН
                     pos = after.find(order["ttn_number"])

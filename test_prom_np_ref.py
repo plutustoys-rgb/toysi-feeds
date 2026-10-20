@@ -16,6 +16,7 @@ os.environ["ORDERS_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "orders.db")
 sys.path.insert(0, str(Path(__file__).parent))
 import orders_watcher as ow  # noqa: E402
 import nova_poshta  # noqa: E402
+import order_router  # noqa: E402
 
 F = []
 
@@ -82,8 +83,9 @@ o6 = ow._convert_prom_order(prom("1005", provider="ukrposhta"))
 chk("Укрпошта: НП-поля None, НП не кличеться", o6["np_ref_id"] is None and calls == [])
 
 # наскрізно: build_toysi_order
-import order_router  # noqa: E402
 nova_poshta.warehouse_by_ref = fake_wh
+order_router.settlement_raion = lambda *a, **k: ""      # район НП — без мережі
+order_router.warehouse_by_ref = fake_wh      # order_router імпортує функцію за іменем — підміна і там (без цього тест ходив би в живу НП)
 norm = ow.normalize_order(ow._convert_prom_order(prom("1006")))
 norm["internal_order_id"] = "prom_1006"
 norm["platform"] = "prom"

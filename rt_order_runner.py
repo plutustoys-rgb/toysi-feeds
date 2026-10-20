@@ -214,6 +214,11 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
         if state is None:
             # усе, що можна перевірити БЕЗ незворотних дій, — ДО створення ТТН (ТТН-сирота не повинна виникати через ціну/форму/кошик)
             d.ttn_dry_run(order_for_ttn(order, items))
+            if hasattr(d, "ensure_cabinet_session"):
+                try:
+                    d.ensure_cabinet_session()          # автовхід ДО перевірки кабінету (аудит #923 B1): нове замовлення з мертвою сесією інакше висіло б у state=None
+                except Exception as e:  # noqa: BLE001
+                    raise RunnerError(f"кабінет RoyalToys недоступний: {e}")
             rt = d.rt_dry_run(items, recipient)
             if not rt.get("ready"):
                 raise RunnerError(f"кабінет RoyalToys не готовий до оформлення: {rt.get('problems')}")
@@ -283,6 +288,10 @@ class _Deps:
             pdf.write_bytes(b"%PDF-1.4\n%" + b"x" * 400 + b"\n%%EOF\n")
             order = {"items": [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"]} for i in items], "ttn_number": "00000000000000", "marking_pdf": str(pdf), **_recipient_fields(recipient)}
             return rt_cabinet.order_flow(order, submit=False)
+
+    def ensure_cabinet_session(self):
+        import rt_cabinet
+        rt_cabinet.ensure_session()
 
     def ensure_receipt(self, conn, order):
         from order_router import _ensure_site_prepaid_receipt

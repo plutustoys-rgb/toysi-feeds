@@ -376,5 +376,27 @@ try:
 finally:
     rt_cabinet.order_flow = _orig
 chk("OrderError з order_flow -> not_submitted_certain=True (крок відкочується, не застрягає у rt_ordering)", r_oe.get("not_submitted_certain") is True and not r_oe.get("submitted") and r_oe["problems"] == ["сесія кабінету не діє"])
+class NoSession(Fake):
+    def ensure_cabinet_session(self):
+        self.calls.append("ensure_session")
+        raise RuntimeError("капча")
+
+
+ns1 = new_order("NS1")
+fk = NoSession()
+with orders_db.get_connection() as c:
+    rns = rr.process_order(c, get(ns1), SUP, apply=True, deps=fk)
+chk("B1 (аудит #923): нове замовлення (state NULL), автовхід не вдався -> ТТН НЕ створюється, кабінет не чіпаємо, стан NULL, причина в problems",
+    fk.calls.count("ensure_session") == 1 and "create_ttn" not in fk.calls and "rt_dry" not in fk.calls and get(ns1)["rt_state"] is None and any("недоступний" in x for x in rns["problems"]))
+class OkSession(Fake):
+    def ensure_cabinet_session(self):
+        self.calls.append("ensure_session")
+
+
+ns2 = new_order("NS2")
+fk = OkSession()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ns2), SUP, apply=True, deps=fk)
+chk("B1: автовхід (або жива сесія) ок -> йде далі: ensure_session ПЕРЕД rt_dry і ТТН", fk.calls.index("ensure_session") < fk.calls.index("rt_dry") < fk.calls.index("create_ttn"))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

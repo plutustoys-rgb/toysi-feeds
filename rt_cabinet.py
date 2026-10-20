@@ -287,23 +287,37 @@ def ensure_session(check=None, login=None, marker=None, now=None) -> None:
     login = login or vps_login
     marker = marker or LOGIN_MARKER
     now = now or time.time
-    if check():
-        return
+    try:
+        if check():
+            return
+    except Exception:  # noqa: BLE001
+        raise OrderError("сесію кабінету RoyalToys перевірити не вдалося (мережа/браузер) — автовхід не пробуємо, повтор наступного циклу")
     try:
         last = json.loads(Path(marker).read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         last = None
-    if last and isinstance(last.get("ts"), (int, float)) and now() - last["ts"] < last.get("wait", LOGIN_WAIT_FAIL_S):
+    if isinstance(last, dict) and isinstance(last.get("ts"), (int, float)) and now() - last["ts"] < last.get("wait", LOGIN_WAIT_FAIL_S):
         left = int((last["ts"] + last.get("wait", LOGIN_WAIT_FAIL_S) - now()) / 60) + 1
         raise OrderError(f"сесія кабінету RoyalToys не діє; автовхід уже пробували ({last.get('why', 'невдача')}), наступна спроба через ~{left} хв")
-    rc = login()
+    def _write(d):
+        tmp = Path(str(marker) + ".tmp")
+        tmp.write_text(json.dumps(d), encoding="utf-8")
+        os.replace(tmp, marker)                          # атомарно (аудит #923 N4)
+    try:
+        Path(marker).parent.mkdir(parents=True, exist_ok=True)
+        _write({"ts": now(), "wait": LOGIN_WAIT_FAIL_S, "why": "вхід розпочато (процес міг бути перерваний)", "rc": None})      # маркер ДО входу (аудит #923 N1): якщо процес уб'ють/запис не вдасться — повторів без тротлінгу не буде
+    except Exception:  # noqa: BLE001
+        raise OrderError("автовхід: не вдалося записати маркер спроби — зупинка (без тротлінгу повторні входи небезпечні)")
+    try:
+        rc = login()
+    except Exception:  # noqa: BLE001
+        raise OrderError("автовхід: збій під час входу — наступна спроба через 60 хв або зайдіть вручну (--vps-login)")
     wait = 0 if rc == 0 else (LOGIN_WAIT_CAPTCHA_S if rc == 3 else LOGIN_WAIT_FAIL_S)
     why = {0: "успіх", 3: "капча"}.get(rc, "вхід не підтверджено / нема даних / форма змінилась")
     try:
-        Path(marker).parent.mkdir(parents=True, exist_ok=True)
-        Path(marker).write_text(json.dumps({"ts": now(), "wait": wait, "why": why, "rc": rc}), encoding="utf-8")
+        _write({"ts": now(), "wait": wait, "why": why, "rc": rc})
     except Exception:  # noqa: BLE001
-        raise OrderError("автовхід: не вдалося записати маркер спроби — зупинка (без тротлінгу повторні входи небезпечні)")
+        pass                                             # маркер «розпочато» уже стоїть (1 год) — безпечний напрям
     if rc != 0:
         raise OrderError(f"сесія кабінету RoyalToys не діє, автовхід не вдався ({why}); наступна спроба через {wait // 60} хв — або зайдіть вручну (--vps-login)")
 

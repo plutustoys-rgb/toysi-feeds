@@ -119,6 +119,18 @@ chk("ensure_session: після капчі 1 год ще замало", m3 is no
 _t[0] += rc.LOGIN_WAIT_CAPTCHA_S
 rc.ensure_session(check=lambda: False, login=_lg(0), marker=_mk, now=lambda: _t[0])
 chk("ensure_session: після 3 год вхід знову і успіх", _calls == [1, 3, 0])
+def _boom_check():
+    raise RuntimeError("timeout")
+_calls.clear()
+mx = _raises(check=_boom_check, login=_lg(0), marker=_mk, now=lambda: _t[0] + 99999)
+chk("ensure_session: збій перевірки сесії -> OrderError, вхід НЕ пробується (аудит #923 N2)", mx is not None and _calls == [])
+def _boom_login():
+    raise RuntimeError("x")
+_mk2 = Path(_tf.mkdtemp()) / "m2.json"
+mx2 = _raises(check=lambda: False, login=_boom_login, marker=_mk2, now=lambda: 5000.0)
+chk("ensure_session: виняток під час входу -> OrderError, маркер «розпочато» на 1 год лишився (N1)", mx2 is not None and _js.loads(_mk2.read_text(encoding="utf-8"))["wait"] == rc.LOGIN_WAIT_FAIL_S and _js.loads(_mk2.read_text(encoding="utf-8"))["rc"] is None)
+_mk3 = Path(_tf.mkdtemp()) / "m3.json"; _mk3.write_text("[1,2]", encoding="utf-8")
+chk("ensure_session: маркер не-словник (сміття) -> не падає AttributeError, одна спроба", _raises(check=lambda: False, login=_lg(0), marker=_mk3, now=lambda: 7000.0) is None)
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)

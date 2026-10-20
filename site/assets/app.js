@@ -109,7 +109,7 @@
     if(idxLoading) return;
     idxLoading=true;
     fetch("index-t.json").then(function(r){ if(!r.ok) throw new Error("index "+r.status); return r.json(); })   // 20.10: RoyalToys (≈10 тис. карток) у окремому index-rt.json — не вантажимо разом із Toysi (LCP каталогу)
-      .then(function(d){ idx=d; idxLoading=false; var w=idxWaiters; idxWaiters=[]; w.forEach(function(x){ try{ x.ok(idx); }catch(e){} }); })
+      .then(function(d){ idx=(Array.isArray(d) ? d.filter(function(x){ return !(x && x.dup); }) : d); idxLoading=false; var w=idxWaiters; idxWaiters=[]; w.forEach(function(x){ try{ x.ok(idx); }catch(e){} }); })
       .catch(function(){ idxLoading=false; var w=idxWaiters; idxWaiters=[]; w.forEach(function(x){ if(x.fail){ try{ x.fail(); }catch(e){} } }); });
   }
   // RoyalToys: довантажуємо в ФОНІ ПІСЛЯ основного індексу й дописуємо в той самий масив idx; усі споживачі (пошук, каталог) беруть idx, а cb — оновлення після довантаження.
@@ -120,7 +120,7 @@
     rtState=1;
     ensureIndex(function(){
       fetch("index-rt.json").then(function(r){ if(!r.ok) throw new Error("rt "+r.status); return r.json(); })
-        .then(function(d){ if(Array.isArray(d)){ for(var i=0;i<d.length;i++) idx.push(d[i]); } })
+        .then(function(d){ if(Array.isArray(d)){ for(var i=0;i<d.length;i++){ if(d[i] && d[i].dup) continue; idx.push(d[i]); } } })
         .catch(function(){})
         .then(function(){ rtState=2; var w=rtWaiters; rtWaiters=[]; w.forEach(function(f){ try{ f(); }catch(e){} }); });
     }, function(){ rtState=2; var w=rtWaiters; rtWaiters=[]; w.forEach(function(f){ try{ f(); }catch(e){} }); });

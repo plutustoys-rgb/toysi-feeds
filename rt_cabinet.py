@@ -401,6 +401,15 @@ def lock_decision(method: str, host_ok: bool, path: str, armed: bool) -> str:
     return "abort"
 
 
+def _mask_pii(text, order: dict) -> str:
+    """Діагностичний текст зі сторінки: цифри/телефони → '#', слова ПІБ отримувача (>2 симв.) і останні 4 цифри телефону → '#'."""
+    t = re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", re.sub(r"\s+", " ", str(text or "")))
+    toks = [w for w in re.split(r"\s+", order.get("recipient_name") or "") if len(w) > 2] + ([order["recipient_phone"][-4:]] if order.get("recipient_phone") else [])
+    for w in toks:
+        t = re.sub(re.escape(w), "#", t, flags=re.I)
+    return t
+
+
 def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict:
     """Оформлення в кабінеті RoyalToys. Без submit — зупиняємось перед фіналом. Повертає словник зі станом. Кошик лишається ЧИСТИМ (finally)."""
     from playwright.sync_api import sync_playwright
@@ -444,9 +453,11 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
             ctx.route("**/*", _lock)
             page = ctx.new_page()
             def _on_dialog(d):
-                if armed["on"] and len(dialogs) < 3:
-                    dialogs.append(d.type + ": " + re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", re.sub(r"\s+", " ", d.message))[:90])
-                d.accept()
+                try:
+                    if armed["on"] and len(dialogs) < 3:
+                        dialogs.append(d.type + ": " + _mask_pii(d.message, order)[:90])
+                finally:
+                    d.accept()
             page.on("dialog", _on_dialog)
             page.goto(CART_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if not _logged_in(page):
@@ -615,17 +626,18 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                             res["problems"].append("видимі повідомлення форми після кліку: " + (" | ".join(_errs) or "нема"))
                             res["problems"].append("усі запити у вікні кліку: " + (", ".join(seen_req) or "жодного") + "; діалоги: " + (" | ".join(dialogs) or "нема"))
                             try:
-                                _dom = page.evaluate("""() => {
+                                _toks = [t for t in re.split(r"\s+", order["recipient_name"]) if len(t) > 2] + ([order["recipient_phone"][-4:]] if order["recipient_phone"] else [])
+                                _dom = page.evaluate("""(toks) => {
                                     const vis = e => e.offsetParent !== null;
-                                    const mask = t => String(t || '').replace(/\\s+/g, ' ').replace(/[+\\d][\\d\\s()\\-]{5,}\\d/g, '#');
-                                    const modals = Array.from(document.querySelectorAll('.modal, .popup, [role=dialog], .fancybox-container, .mfp-content, .swal2-popup, .remodal, .jconfirm')).filter(vis).map(e => mask(e.innerText).slice(0, 160));
+                                    let mask = t => { t = String(t || '').replace(/\\s+/g, ' ').replace(/[+\\d][\\d\\s()\\-]{5,}\\d/g, '#'); toks.forEach(k => { if (k) t = t.split(k).join('#').split(k.toLowerCase()).join('#'); }); return t; };
+                                    const modals = Array.from(document.querySelectorAll('.modal, .popup, [role=dialog], .fancybox-container, .mfp-content, .swal2-popup, .remodal, .jconfirm')).filter(vis).map(e => mask(e.innerText).slice(0, 100));
                                     const btns = Array.from(document.querySelectorAll('form.checkout-form button.glavs, #checkout-btn')).map(e => ({cls: String(e.className).slice(0, 40), dis: !!e.disabled, vis: vis(e), onclick: !!e.getAttribute('onclick'), data: Object.keys(e.dataset || {}).join(',')}));
                                     const chk = Array.from(document.querySelectorAll('form.checkout-form input[type=checkbox]')).map(e => ({n: e.name, c: e.checked, r: e.required}));
                                     let ev = '';
                                     try { const b = document.querySelector('form.checkout-form button.glavs.no'); const d = window.jQuery && jQuery._data(b, 'events'); ev = d ? Object.keys(d).join(',') : 'нема own-handlers'; } catch (x) { ev = 'err'; }
-                                    const inl = Array.from(document.scripts).filter(s => !s.src && /glavs/.test(s.textContent)).map(s => { const t = s.textContent; const i = t.indexOf('glavs'); return mask(t.slice(Math.max(0, i - 150), i + 450)); });
+                                    const inl = Array.from(document.scripts).filter(s => !s.src && /glavs/.test(s.textContent)).map(s => { const t = s.textContent; const i = t.indexOf('glavs'); return mask(t.slice(Math.max(0, i - 100), i + 300)); });
                                     return {modals: modals.slice(0, 3), btns, chk, ev, inl: inl.slice(0, 2)};
-                                }""")
+                                }""", _toks)
                                 res["problems"].append("DOM після кліку: " + json.dumps(_dom, ensure_ascii=False)[:1800])
                             except Exception:  # noqa: BLE001
                                 res["problems"].append("DOM після кліку: не прочитано")

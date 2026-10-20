@@ -564,12 +564,15 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                         page.wait_for_timeout(6000)
                     finally:
                         armed["on"] = False                      # лок відкритий лише на мить кліку (і при винятку теж)
+                    if armed["passed"] == 0:
+                        res["not_submitted_certain"] = True      # лок не пропустив жодного фінального POST (інші POST завжди блокуються) → резерву точно не створено, чистий відкат
+                        raise OrderError("клік «Резерв» не відправив фінальний POST (лок не пропустив жодного) — резерву не створено")
                     after = orders_text()
                     if _squash(order["ttn_number"]) not in _squash(after):
                         raise OrderError("після кліку «Резерв» замовлення з цим № ТТН у списку не знайдено — результат невідомий, звірте кабінет вручну")
                     # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; ТТН показана групами/нема RT — позначаємо за ТТН
                     pos = after.find(order["ttn_number"])
-                    window = after[max(0, pos - 600):pos + 300] if pos >= 0 else ""
+                    window = after[max(0, pos - 400):pos] if pos >= 0 else ""      # лише ПЕРЕД ТТН: номер сусіднього (наступного) рядка не береться
                     refs = re.findall(r"RT\d{6,}", window)
                     res["rt_order_ref"] = refs[-1] if refs else "ttn-" + order["ttn_number"]
                     res["reserve_status_seen"] = bool(re.search(r"резерв|очіку\w*\s+оплат|очікує", window, re.I))

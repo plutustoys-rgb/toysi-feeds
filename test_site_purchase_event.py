@@ -64,7 +64,21 @@ async function run(opts){
     const r=await run({ls, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge"], payment:"cod"});
     r.E["f-name"].value="Іван Петренко"; r.E["f-phone"].value="0501234567"; const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
     await new Promise(x=>setTimeout(x,50));
-    console.log(JSON.stringify({loc:r.loc.href, order:r.ss.getItem("pt_last_order"), items:JSON.parse(r.ss.getItem("pt_last_order_items")||"null"), cart:ls.getItem("pt_cart_v1")}));
+    console.log(JSON.stringify({loc:r.loc.href, order:r.ss.getItem("pt_last_order"), items:JSON.parse(r.ss.getItem("pt_last_order_items")||"null"), cart:ls.getItem("pt_cart_v1"), tg_ss:r.ss.getItem("pt_tg_opt")}));
+  } else if(scenario==="submit_cod_tgoff"){
+    const ls=store(); ls.setItem("pt_cart_v1", JSON.stringify(cartItem));
+    const r=await run({ls, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge","f-tg"], payment:"cod"});
+    r.E["f-tg"].checked=false;
+    r.E["f-name"].value="Іван Петренко"; r.E["f-phone"].value="0501234567"; const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
+    await new Promise(x=>setTimeout(x,50));
+    console.log(JSON.stringify({loc:r.loc.href, tg_ss:r.ss.getItem("pt_tg_opt"), tg_ls:r.ls.getItem("pt_tg_opt")}));
+  } else if(scenario==="submit_cod_tgon"){
+    const ls=store(); ls.setItem("pt_cart_v1", JSON.stringify(cartItem));
+    const r=await run({ls, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge","f-tg"], payment:"cod"});
+    r.E["f-tg"].checked=true;
+    r.E["f-name"].value="Іван Петренко"; r.E["f-phone"].value="0501234567"; const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
+    await new Promise(x=>setTimeout(x,50));
+    console.log(JSON.stringify({loc:r.loc.href, tg_ss:r.ss.getItem("pt_tg_opt"), tg_ls:r.ls.getItem("pt_tg_opt")}));
   } else if(scenario==="submit_prepaid"){
     const ls=store(); ls.setItem("pt_cart_v1", JSON.stringify(cartItem));
     const ss0=store(); ss0.setItem("pt_last_order_items", JSON.stringify([{id:"1",name:"Старе COD-замовлення",price:100,qty:1}]));   // у тій самій вкладці раніше було COD
@@ -100,6 +114,11 @@ async function run(opts){
     chk("COD: у sessionStorage pt_last_order = PT-TEST-1", a is not None and a["order"] == "PT-TEST-1")
     chk("COD: позиції замовлення збережено для purchase (id, name, price, qty)", a is not None and a["items"] == [{"id": "235193", "name": "Картина за номерами", "price": 468, "qty": 2}])
     chk("COD: кошик очищено", a is not None and json.loads(a["cart"] or "{}") == {})
+    g0 = run("submit_cod_tgoff")
+    chk("Telegram-галочка ВИМКНЕНА → pt_tg_opt=0 у sessionStorage і localStorage, перехід на thanks.html не зламано", g0 is not None and g0["tg_ss"] == "0" and g0["tg_ls"] == "0" and g0["loc"] == "thanks.html")
+    g1 = run("submit_cod_tgon")
+    chk("Telegram-галочка УВІМКНЕНА → pt_tg_opt=1", g1 is not None and g1["tg_ss"] == "1" and g1["tg_ls"] == "1")
+    chk("COD без елемента галочки (старі сторінки) → pt_tg_opt=1 (за замовчуванням увімкнено)", a is not None and a.get("tg_ss") == "1")
     p = run("submit_prepaid")
     chk("prepaid: СТАРІ позиції попереднього COD-замовлення у вкладці стерто (інакше purchase піде за неоплаченим prepaid)", p is not None and p["order"] == "PT-TEST-1" and p["items"] is None)
     t = run("thanks")

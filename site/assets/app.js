@@ -794,10 +794,28 @@
 
     // сторінка подяки — підставити номер замовлення
     var oidEl=document.getElementById("thanks-oid");
-    if(oidEl){ try{ oidEl.textContent = sessionStorage.getItem("pt_last_order") || ""; }catch(e){} }
+    // номер замовлення: sessionStorage (та сама вкладка) → ?o=PT-… (повернення з LiqPay в іншу вкладку/вікно; result_url робить Code; приймаємо лише точний формат номера)
+    var thanksO="";
+    try{ thanksO = sessionStorage.getItem("pt_last_order") || ""; }catch(e){}
+    if(!thanksO){ try{ var qm=((location.search||"").match(/[?&]o=([^&#]*)/)||[])[1]||""; qm=decodeURIComponent(qm); if(/^PT-\d{8}-\d{6}-[0-9a-f]{6}$/.test(qm)) thanksO=qm; }catch(e){} }
+    if(oidEl){ oidEl.textContent = thanksO; }
     // кнопка «Отримувати статус у Telegram»: бот дізнається номер із ?start=<номер замовлення> (допустимі символи payload Telegram [A-Za-z0-9_-], ≤64; наш PT-YYYYMMDD-HHMMSS-xxxxxx підходить)
     var tgEl=document.getElementById("thanks-tg");
-    if(tgEl){ try{ var tgo=(sessionStorage.getItem("pt_last_order")||"").trim(); if(/^[A-Za-z0-9_-]{1,64}$/.test(tgo)){ tgEl.setAttribute("href","https://t.me/plutustoys_support_bot?start="+encodeURIComponent(tgo)); var tw=document.getElementById("thanks-tg-wrap"); if(tw) tw.hidden=false; } }catch(e){} }
+    if(tgEl){ try{
+      var tgo=thanksO.trim();
+      if(/^[A-Za-z0-9_-]{1,64}$/.test(tgo)){
+        tgEl.setAttribute("href","https://t.me/plutustoys_support_bot?start="+encodeURIComponent(tgo));
+        var tw=document.getElementById("thanks-tg-wrap");
+        if(tw){
+          var tgOpt=""; try{ tgOpt = sessionStorage.getItem("pt_tg_opt") || localStorage.getItem("pt_tg_opt") || ""; }catch(e){}
+          if(tgOpt==="0"){   // галочку вимкнено: кнопка лишається, але тихіше
+            tw.className="thanks-tg is-calm";
+            var th=document.getElementById("thanks-tg-hint"); if(th && th.getAttribute("data-calm")) th.textContent=th.getAttribute("data-calm");
+          }
+          tw.hidden=false;
+        }
+      }
+    }catch(e){} }
 
     // подія purchase — один раз на замовлення (оновлення сторінки не дублює): дані зберіг checkout у sessionStorage
     if(oidEl){
@@ -1418,6 +1436,10 @@
           var d=res.j;
           try{
             sessionStorage.setItem("pt_last_order", d.order_id);
+            // вибір «статус у Telegram» (галочка на чекауті): sessionStorage + localStorage — після LiqPay покупець може повернутись в іншу вкладку, де sessionStorage порожній
+            var tgBox=document.getElementById("f-tg"), tgv=(tgBox && tgBox.checked===false) ? "0" : "1";
+            sessionStorage.setItem("pt_tg_opt", tgv);
+            try{ localStorage.setItem("pt_tg_opt", tgv); }catch(e2){}
             // purchase лише для накладеного платежу: при prepaid (LiqPay) покупець повертається на thanks.html ще БЕЗ підтвердженої оплати —
             // подію не шлемо, щоб не завищувати конверсії (аудит #626); для prepaid позиції не зберігаємо
             if(payment!=="prepaid"){

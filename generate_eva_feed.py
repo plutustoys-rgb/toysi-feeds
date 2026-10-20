@@ -329,7 +329,7 @@ _RECLASS_PUZZLE_RE = re.compile(r"пазл", re.I)
 def _load_item_reclass_flag() -> bool:
     """eva_remap_rollout.json → "item_reclass": false вимикає покомпонентну перекласифікацію (перемикач відкату етапу 1б; нема ключа/файлу/помилка → ВВІМКНЕНО)."""
     try:
-        return bool(json.loads(EVA_REMAP_ROLLOUT_FILE.read_text(encoding="utf-8")).get("item_reclass", True))
+        return json.loads(EVA_REMAP_ROLLOUT_FILE.read_text(encoding="utf-8")).get("item_reclass", True) is not False   # вимикає лише справжній JSON false
     except (ValueError, OSError, TypeError, AttributeError):
         return True
 

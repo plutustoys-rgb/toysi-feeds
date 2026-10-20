@@ -716,7 +716,7 @@ def _open_orders_detail_section(conn) -> str:
 
 
 def _np_structure_line(conn, since: str, forwarded: int | None = None) -> str:
-    """Рядок звіту: скільки замовлень НП за період пішли в Toysi БЕЗ точного міста/відділення (немає np_city_ref) — по площадках (20.10.2026: Prom віддавав лише текст, виявив менеджер Toysi; тепер це видно в звіті,
+    """Рядок звіту: скільки замовлень НП за період мали порожній np_city_ref у базі при надходженні (роутер при передачі міг знайти місто за np_ref_id — тому це сигнал перевірити, не доказ помилки) — по площадках (20.10.2026: Prom віддавав лише текст, виявив менеджер Toysi; тепер це видно в звіті,
     а не зі скарги). Це ФАКТ, а не поріг: 0 = усе передано структурно."""
     rows = conn.execute(
         "SELECT platform, COUNT(*) FROM orders WHERE forwarded_to_toysi_at >= ? AND carrier = 'nova_poshta' AND COALESCE(np_city_ref, '') = '' GROUP BY platform ORDER BY platform",

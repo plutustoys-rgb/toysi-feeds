@@ -84,6 +84,7 @@ chk("Укрпошта: НП-поля None, НП не кличеться", o6["np
 
 # наскрізно: build_toysi_order
 nova_poshta.warehouse_by_ref = fake_wh
+order_router.settlement_raion = lambda *a, **k: ""      # район НП — без мережі
 order_router.warehouse_by_ref = fake_wh      # order_router імпортує функцію за іменем — підміна і там (без цього тест ходив би в живу НП)
 norm = ow.normalize_order(ow._convert_prom_order(prom("1006")))
 norm["internal_order_id"] = "prom_1006"

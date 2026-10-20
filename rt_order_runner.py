@@ -74,7 +74,15 @@ def map_items(order: dict, supplier: dict) -> list:
 
 
 def _since() -> str:
-    return (os.environ.get("RT_RUNNER_SINCE") or "").strip()
+    """RT_RUNNER_SINCE → ISO-рядок для порівняння з created_at; порожнє → ''; НЕРОЗІБРАНЕ (друкарська помилка) → 'INVALID' (fail-closed: ворота закриті)."""
+    from datetime import datetime
+    raw = (os.environ.get("RT_RUNNER_SINCE") or "").strip()
+    if not raw:
+        return ""
+    try:
+        return datetime.fromisoformat(raw).isoformat()
+    except ValueError:
+        return "INVALID"
 
 
 STUCK = ("ttn_creating", "rt_ordering")          # claim взято, результат кроку невідомий — лише людина
@@ -91,8 +99,8 @@ def apply_enabled() -> tuple:
         return False, "NP_TTN_APPLY≠1: реальне створення ТТН не дозволено"
     if os.environ.get("RT_ORDER_SUBMIT") != "1":
         return False, "RT_ORDER_SUBMIT≠1: фінальне оформлення в RoyalToys не дозволено"
-    if not _since():
-        return False, "RT_RUNNER_SINCE не задано (ISO-дата: старіші за неї замовлення конвеєр не чіпає — їх власник виконав вручну)"
+    if _since() in ("", "INVALID"):
+        return False, "RT_RUNNER_SINCE не задано або не ISO-дата (напр. 2026-10-21): старіші за неї замовлення конвеєр не чіпає — їх власник виконав вручну"
     if not getattr(rt_cabinet, "FINAL_IMPLEMENTED", False):
         return False, "фінальну кнопку оформлення в кабінеті RoyalToys ще не підключено (перше спостережуване замовлення власника)"
     return True, ""
@@ -157,14 +165,14 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 _alert(oid, "stale", f"стан «{state}» без змін понад {STALE_DAYS} днів (ТТН {order.get('toysi_ttn')}) — звірте статус посилки в НП (видалена/зберігання/відмова)")
                 rep["actions"].append(f"стан без змін понад {STALE_DAYS} днів — алерт")
             return rep
+        if state is None:
+            # фіскальний чек — ПЕРШИМ кроком, як у роутері (бухгалтер 12.10: не пізніше передачі товару), НЕ залежить ні від воріт, ні від залишку/відділення/ціни
+            if not d.ensure_receipt(conn, order):
+                raise RunnerError("фіскальний чек не видано — передачу постачальнику не починаємо")
         items = map_items(order, supplier)
         rep["items"] = [(i["toysi_code"], i["qty"], i["vendor_code"]) for i in items]
         if not (order.get("np_city_ref") and order.get("np_warehouse_number")):
             raise RunnerError("відділення НП не визначено (нема np_city_ref/np_warehouse_number) — уточніть у клієнта")
-        if state is None:
-            # фіскальний чек — як і раніше в роутері (бухгалтер 12.10: не пізніше передачі товару), НЕ залежить від воріт
-            if not d.ensure_receipt(conn, order):
-                raise RunnerError("фіскальний чек не видано — передачу постачальнику не починаємо")
         ok, why = apply_enabled() if apply else (False, "dry-run")
         if not ok:
             price = d.ttn_dry_run(order_for_ttn(order, items))
@@ -207,7 +215,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 raise RunnerError("замовлення вже взяте іншим запуском (claim) — пропускаю")
             res = d.rt_order(items, order["toysi_ttn"], order["rt_marking_path"])
             if not (res.get("submitted") and res.get("rt_order_ref")):
-                if res.get("submitted") is False and not res.get("rt_order_ref"):
+                if res.get("not_submitted_certain") is True and not res.get("submitted"):
                     orders_db.claim_rt_state(conn, oid, "rt_ordering", "marking_ready")     # однозначно НЕ відправлено → повертаємо крок
                 raise RunnerError(f"оформлення в RoyalToys не підтверджено: {res.get('problems')}")
             orders_db.set_rt_state(conn, oid, "rt_ordered", rt_order_ref=str(res["rt_order_ref"]), rt_error=None)
@@ -279,10 +287,13 @@ def run(apply: bool | None = None, deps=None, db_path=None) -> list:
     reports = []
     with orders_db.get_connection(db_path) if db_path else orders_db.get_connection() as conn:
         pending = orders_db.get_rt_orders_pending(conn)
-        if since:
+        if since == "INVALID":
+            print("[rt_runner] RT_RUNNER_SINCE не розібрано як ISO-дата — реальний режим закритий", file=sys.stderr)
+        if since and since != "INVALID":
             pending = [o for o in pending if str(o.get("created_at") or "") >= since or o.get("rt_state")]      # старіші без стану — виконані вручну
         elif apply:
-            pending = []                       # без RT_RUNNER_SINCE реальний режим нічого не бере (apply_enabled теж відмовить)
+            print("[rt_runner] apply без дійсного RT_RUNNER_SINCE: нові кроки не беремо (трекінг посилок у дорозі триває)", file=sys.stderr)
+            pending = [o for o in pending if o.get("rt_state") in ("rt_ordered", "shipped") or o.get("rt_state") in STUCK]
         if not pending:
             print("[rt_runner] немає замовлень RoyalToys у роботі")
             return reports
@@ -293,9 +304,20 @@ def run(apply: bool | None = None, deps=None, db_path=None) -> list:
             return [{"problems": [str(e)]}]
         # відстеження посилок і «застряглі» — без ліміту (дешево); нові кроки — не більше MAX_ORDERS_PER_RUN, найдавніше пробовані першими (збої не заступають нові замовлення)
         light = [o for o in pending if o.get("rt_state") not in ACTION_STATES]
-        action = sorted([o for o in pending if o.get("rt_state") in ACTION_STATES], key=lambda o: (o.get("rt_updated_at") or "", o.get("created_at") or ""))[:MAX_ORDERS_PER_RUN]
+        action_all = sorted([o for o in pending if o.get("rt_state") in ACTION_STATES], key=lambda o: (o.get("rt_updated_at") or "", o.get("created_at") or ""))
+        action, rest = action_all[:MAX_ORDERS_PER_RUN], action_all[MAX_ORDERS_PER_RUN:]
+        d = deps or _Deps()
+        for order in rest:                       # поза лімітом кроків — але чек (бухгалтер) і сигнал «чекає» отримують ВСІ нові замовлення
+            if order.get("rt_state") is None:
+                try:
+                    ok_r = d.ensure_receipt(conn, order)
+                except Exception as e:  # noqa: BLE001
+                    ok_r = False
+                    print(f"[rt_runner] {order['internal_order_id']}: чек збій {type(e).__name__}", file=sys.stderr)
+                if not apply:
+                    _alert(order["internal_order_id"], "waiting", "оплачене замовлення RoyalToys чекає ручної обробки" + ("" if ok_r else " (чек НЕ видано!)") + " — конвеєр у dry-run", cooldown=24 * 60 * 60)
         for order in light + action:
-            rep = process_order(conn, order, supplier, apply, deps)
+            rep = process_order(conn, order, supplier, apply, d)
             reports.append(rep)
             print("[rt_runner]", json.dumps(rep, ensure_ascii=False, default=str))
     return reports

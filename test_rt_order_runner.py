@@ -270,5 +270,72 @@ with orders_db.get_connection() as c:
     orders_db.set_rt_state(c, new1, "delivered")
     c.commit()
 chk("M1: delivered -> delivered_at проставлено", get(new1)["delivered_at"])
+
+# ---- повторний аудит #897: N1–N4 ----
+n1 = new_order("NN1", city=None, wh=None)
+n1b = new_order("NN2", items=[{"toysi_code": "rt-99", "name": "зник", "qty": 1, "price": 300}])
+n1c = new_order("NN3", items=[{"toysi_code": "rt-1", "name": "збиток", "qty": 1, "price": 100}])
+for iid_ in (n1, n1b, n1c):
+    fk = Fake()
+    with orders_db.get_connection() as c:
+        rr.process_order(c, get(iid_), SUP, apply=False, deps=fk)
+    chk(f"N1: {iid_} — чек виписується ПЕРШИМ кроком навіть коли замовлення не проходить перевірки (відділення/зник/збиток)", fk.calls[:1] == ["receipt"])
+
+# N2: ліміт кроків не лишає решту без чека
+rr.MAX_ORDERS_PER_RUN = 2
+with orders_db.get_connection() as c:
+    for iid_ in [x["internal_order_id"] for x in orders_db.get_rt_orders_pending(c)]:
+        orders_db.set_rt_state(c, iid_, "manual")
+    c.commit()
+many = [new_order(f"W{n}") for n in range(5)]
+rcpt = []
+
+
+class Rc(Fake):
+    def ensure_receipt(self, conn, o):
+        rcpt.append(o["internal_order_id"])
+        return True
+
+
+rr.run(apply=False, deps=Rc())
+chk("N2: 5 нових замовлень при ліміті 2 — чек (ensure_receipt) отримали ВСІ 5", set(many) <= set(rcpt))
+rr.MAX_ORDERS_PER_RUN = 5
+
+# N3: дата-помилка закриває ворота
+os.environ["RT_RUNNER_SINCE"] = "20.10.2026"
+ok, why = rr.apply_enabled()
+os.environ["RT_RUNNER_SINCE"] = "2026-10-21"
+ok2_, _ = rr.apply_enabled()
+chk("N3: RT_RUNNER_SINCE=20.10.2026 (не ISO) -> ворота закриті; 2026-10-21 -> проходить цю перевірку", ok is False and "ISO" in why and ok2_ is True)
+os.environ["RT_RUNNER_SINCE"] = "2026-01-01"
+
+
+# N4: відкат rt_ordering -> marking_ready лише за явною ознакою «точно не надіслано»
+class RtAmbiguous(Fake):
+    def rt_order(self, items, ttn, pdf):
+        self.calls.append("rt_order")
+        return {"submitted": False, "problems": ["збій"]}
+
+
+class RtCertain(Fake):
+    def rt_order(self, items, ttn, pdf):
+        self.calls.append("rt_order")
+        return {"submitted": False, "not_submitted_certain": True, "problems": ["баланс"]}
+
+
+q1 = new_order("Q1")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, q1, "marking_ready", toysi_ttn="20451500000009", rt_ttn_ref="R9", rt_marking_path=str(rr.MARKING_DIR / "x.pdf"))
+    c.commit()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(q1), SUP, apply=True, deps=RtAmbiguous())
+chk("N4: невизначений збій після кроку -> стан ЛИШАЄТЬСЯ rt_ordering (повтор не автоматичний)", get(q1)["rt_state"] == "rt_ordering")
+q2 = new_order("Q2")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, q2, "marking_ready", toysi_ttn="20451500000010", rt_ttn_ref="R10", rt_marking_path=str(rr.MARKING_DIR / "x.pdf"))
+    c.commit()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(q2), SUP, apply=True, deps=RtCertain())
+chk("N4: явне «точно не надіслано» (до кліку) -> відкат у marking_ready", get(q2)["rt_state"] == "marking_ready")
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

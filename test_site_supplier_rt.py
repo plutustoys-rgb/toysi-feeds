@@ -152,6 +152,13 @@ chk("тінь НЕ в index-t.json/index-rt.json (каталог/пошук її
 chk("дубль, чий Toysi вичерпаний (901) або якого нема (999999), — НЕ тінь: rt-107, rt-108 у index-rt.json, canonical на себе", {"rt-107", "rt-108"} <= ids_rt and 'rel="canonical" href="https://plutustoys.com.ua/product-rt-107.html"' in (out / "product-rt-107.html").read_text(encoding="utf-8"))
 txt_all = "".join(q.read_text(encoding="utf-8") for q in out.glob("category-*.html")) + (out / "catalog.html").read_text(encoding="utf-8") + (out / "index.html").read_text(encoding="utf-8")
 chk("тінь не показана в категоріях/каталозі/головній і не в sitemap", "product-rt-106" not in txt_all and "product-rt-106" not in "".join(q.read_text(encoding="utf-8") for q in out.glob("sitemap-*.xml")))
+sh_full = next(x for x in full if x["id"] == "rt-106")
+chk("сторінка тіні: НЕ можна купити (нема data-add, нема «У кошик»), ціну тіні не показуємо (нема .price і закріпленої ціни), є посилання на сторінку Toysi", "data-add=" not in sh_t and "У кошик" not in sh_t and 'class="price' not in sh_t
+    and 'class="buybar-inner"><div class="p">' not in sh_t and 'class="buybar-inner"><a class="btn" href="product-5.html">Перейти до товару</a>' in sh_t and 'href="product-5.html">Перейти до товару →</a>' in sh_t)
+ord_t = (out / "product-rt-101.html").read_text(encoding="utf-8")
+chk("звичайна rt-картка (не тінь) купується як раніше: data-add і «У кошик» на місці", "data-add=" in ord_t and "У кошик" in ord_t)
+app_src = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
+chk("app.js: записи з dup відсіюються в обох завантажувачах індексу (страховка, якщо фронт колись читатиме повний index.json)", app_src.count("x.dup") == 1 and app_src.count("d[i].dup") == 1)
 # (3) браузер: кошик
 cart_html = (out / "cart.html").read_text(encoding="utf-8")
 chk("розмітка кошика: є блок пояснення #rt-pay-note, прихований за замовчуванням", re.search(r'id="rt-pay-note" hidden', cart_html) is not None)
@@ -204,6 +211,25 @@ with sync_playwright() as pw:
     pg.wait_for_function("document.getElementById('cat-count') && /Знайдено: 25/.test(document.getElementById('cat-count').textContent)", timeout=15000)
     chk(f"змішана категорія: запити {reqs}: index-t.json перед index-rt.json, повний index.json НЕ запитувався; після довантаження Знайдено = 20 Toysi + 5 rt = 25", "index.json" not in reqs and "index-t.json" in reqs and "index-rt.json" in reqs and reqs.index("index-t.json") < reqs.index("index-rt.json"))
     chk("змішана категорія: без помилок JS", errs == [])
+    # страховка dup: підсовуємо в index-t.json запис із dup=1 — пошук його не показує; той самий запис БЕЗ dup — показує (контроль, що підміна працює)
+    for with_dup in (True, False):
+        pg2 = br.new_page(viewport={"width": 1280, "height": 900})
+        pg2.route("**/googletagmanager.com/**", lambda r: r.abort())
+        extra = dict(it_[0], id="9999001", n="ТІНЬ-ДУБЛЬ-ПРОБА", **({"dup": 1} if with_dup else {}))
+
+        def _mk(extra):
+            def _fake(route, request):
+                body = json.loads((out / "index-t.json").read_text(encoding="utf-8")) + [extra]
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(body, ensure_ascii=False))
+            return _fake
+        pg2.route("**/index-t.json*", _mk(extra))
+        pg2.goto(f"{base}/index.html", wait_until="load")
+        pg2.click("#open-search")
+        pg2.fill("#search-overlay input", "ТІНЬ-ДУБЛЬ-ПРОБА")
+        pg2.wait_for_timeout(1500)
+        n_found = pg2.evaluate("document.querySelectorAll('#search-overlay .results a.sr').length")
+        chk(f"страховка dup у пошуку: запис {'з dup=1 — не показано' if with_dup else 'без dup — показано (контроль)'} (знайдено {n_found})", (n_found == 0) if with_dup else (n_found >= 1))
+        pg2.close()
     pg.goto(f"{base}/{rt_only_pages[0]}", wait_until="load")
     pg.wait_for_selector("#cat-js a.card", timeout=15000)
     cards_rt = pg.evaluate("Array.from(document.querySelectorAll('#cat-js a.card')).map(a=>a.getAttribute('href'))")

@@ -171,6 +171,19 @@ def _notify(msg: str) -> None:
         print(f"[site_order_api] Telegram не надіслано (не критично): {e}", file=sys.stderr)
 
 # ── Ціни з боку сервера (site/index.json: [{id,n,pr,p}, ...]) — НЕ довіряємо кошику клієнта ──
+def _own_code_version() -> str:
+    """Перші 12 hex sha256 ВЛАСНОГО файлу, прочитаного при старті процесу (не при запиті): збіг із хешем файлу в репо = «новий код у пам'яті». Рестарт робить власник, і ззовні інакше не видно, чи він відбувся (запит Shopify-code/тестувальника 20.10)."""
+    try:
+        import hashlib
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+CODE_VERSION = _own_code_version()
+STARTED_AT = datetime.now().isoformat(timespec="seconds")
+
 _price_lock = threading.Lock()
 _price_cache = {"mtime": -1.0, "map": {}}
 
@@ -714,6 +727,8 @@ class Handler(SimpleHTTPRequestHandler):
         if not parsed.path.startswith("/api/"):
             return super().do_GET()   # статика сайту з SITE_DIR
         q = parse_qs(parsed.query)
+        if parsed.path == "/api/version":
+            return self._json(200, {"code_version": CODE_VERSION, "started_at": STARTED_AT})        # без секретів: 12 hex хешу власного файлу + час старту процесу
         try:
             if parsed.path == "/api/np/city":
                 # limit 50: у «Іванівка» 37 збігів, «Михайлівка» 40 — з 8 покупець зі свого села його не бачив би (аудит #682); випадайка скролиться (.ac max-height)

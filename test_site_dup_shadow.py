@@ -12,7 +12,11 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "site"))
+os.environ["AUDIT_NO_TELEGRAM"] = "1"
+os.environ["ORDERS_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "orders.db")      # тимчасова БД: бойова не чіпається
+import orders_db  # noqa: E402
 import site_order_api as so  # noqa: E402
+orders_db.init_db()
 
 F = []
 
@@ -71,5 +75,46 @@ finally:
         dm.write_text(backup, encoding="utf-8")
     elif dm.exists():
         dm.unlink()
+
+# ---- HTTP-рівень (справжній _handle_order, тимчасова БД): 409 і НІ ОДНОГО нового рядка в orders ----
+(td / "index.json").write_text(json.dumps([
+    {"id": "100", "n": "Toysi товар", "pr": 250, "p": "x"},
+    {"id": "rt-102", "n": "RT тінь", "pr": 626, "dup": 1, "p": "x"},
+], ensure_ascii=False), encoding="utf-8")
+so._price_cache.update({"mtime": -1.0, "map": {}})
+so.STOCK_FILE = str(td / "no_stock.json")
+
+
+def post(items):
+    out = []
+    h = so.Handler.__new__(so.Handler)
+    h.command, h.path = "POST", "/api/order"
+    body = {"items": items, "name": "Іван Петренко", "phone": "+380671112299", "city_name": "Київ", "warehouse_name": "Відділення №1", "np_warehouse_number": "1", "payment_method": "prepaid"}
+    h._read_json = lambda: body
+    h._json = lambda code, obj: out.append((code, obj))
+    h._handle_order()
+    return out[0]
+
+
+def cnt():
+    with orders_db.get_connection() as c:
+        return c.execute("SELECT count(*) FROM orders").fetchone()[0]
+
+
+n0 = cnt()
+code, resp = post([{"id": "rt-102", "qty": 1}])
+chk("HTTP: кошик лише з тіні -> 409 dup_shadow, у orders.db РІВНО СТІЛЬКИ Ж рядків (замовлення не вставляється)", code == 409 and resp["code"] == "dup_shadow" and resp["lines"][0]["id"] == "rt-102" and cnt() == n0)
+code, resp = post([{"id": "100", "qty": 1}, {"id": "rt-102", "qty": 1}, {"id": "rt-102", "qty": 3}])
+chk("HTTP: змішаний кошик + дубль id тіні -> 409, одна лінія для тіні, нових рядків у БД немає", code == 409 and [l["id"] for l in resp["lines"]] == ["rt-102"] and cnt() == n0)
+code, resp = post([{"id": "100", "qty": 1}])
+chk("HTTP: кошик без тіней створює замовлення як раніше (контроль, що тест справді бачить вставку)", code == 200 and cnt() == n0 + 1)
+h = so.Handler.__new__(so.Handler)
+h.command, h.path = "GET", "/api/version"
+out = []
+h._json = lambda code, obj: out.append((code, obj))
+h.do_GET()
+import re as _re
+chk("GET /api/version: 12 hex хешу власного файлу + час старту; без секретів", out[0][0] == 200 and _re.fullmatch(r"[0-9a-f]{12}", out[0][1]["code_version"]) and out[0][1]["started_at"] and set(out[0][1]) == {"code_version", "started_at"})
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

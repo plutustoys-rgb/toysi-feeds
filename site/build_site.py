@@ -156,6 +156,19 @@ def price_of(it):
         return int(it["site_price"])
     return cp.site_retail_price(it)
 
+# Російськомовні товари на сайті НЕ показуємо (власник 20.10: «російськомовні прибери»; для фідів Rozetka/Prom таке правило з 21.08 — generate_*_feed._RUSSIAN_LANG_RE).
+# Лише МОВНИЙ маркер у назві: «(рос)»/«(рус)», standalone «рос»/«рус», «російською», «російськомов…», «рос. звучення». НЕ голе «російськ…» (змістом, напр. «російські народні казки»,
+# не мова). Двомовні («рос. і укр. мовами», «укр./рос.») лишаємо: це укр. продукт із російською версією правил.
+_RU_LANG_RE = re.compile(r"\bрос\b|\bрус\b|російською|російськомов|рос\.\s*звуч", re.IGNORECASE)
+_UA_LANG_RE = re.compile(r"\bукр\b|\bукр\.|українськ", re.IGNORECASE)
+
+
+def is_russian_language_item(name):
+    n = str(name or "")
+    return bool(_RU_LANG_RE.search(n)) and not _UA_LANG_RE.search(n)
+
+
+
 def esc(s):
     return html.escape(str(s or ""))
 
@@ -700,6 +713,8 @@ def build():
         name = it.get("name") or ""
         if not pics or not name:
             continue
+        if is_russian_language_item(name):
+            continue   # російськомовний товар (власник 20.10) — і Toysi, і RoyalToys
         if is_forbidden(it):
             continue   # політика «що не продаємо» (forbidden_products, рішення власника 2026-10-07): ножі/зброя; старі сторінки прибере крок 8 build()
         if is_uno_trademark_blocked(name, it.get("vendor") or ""):

@@ -148,8 +148,8 @@ def _raises2(f):
         return str(e)
 _os.environ.pop("RT_ORDER_SUBMIT", None)          # аудит #925 B1: тест НІКОЛИ не має виконуватись із відкритою брамою; фіктивний номер (не реальне замовлення)
 _rt_before = _os.environ.get("RT_ORDER_SUBMIT")
-chk("confirm_from_balance: поганий rt_ref / нема суми / apply без RT_ORDER_SUBMIT — OrderError ДО мережі",
-    _raises2(lambda: rc.confirm_from_balance("773594", 30.4)) and _raises2(lambda: rc.confirm_from_balance("RT000000001", None)) and _raises2(lambda: rc.confirm_from_balance("RT000000001", 30.4, apply=True)) and _rt_before is None)
+chk("confirm_from_balance: поганий rt_ref / некоректна сума / apply без RT_ORDER_SUBMIT — OrderError ДО мережі (None-сума тепер дозволена: для замовлень без збереженої суми)",
+    _raises2(lambda: rc.confirm_from_balance("773594", 30.4)) and _raises2(lambda: rc.confirm_from_balance("RT000000001", -5.0)) and _raises2(lambda: rc.confirm_from_balance("RT000000001", 30.4, apply=True)) and _rt_before is None)
 _bv = rc.balance_confirm_verdict
 chk("balance_confirm_verdict: клік 1 + статус змінився -> підтверджено (навіть якщо баланс не змінився — живий факт 20.10); клік 0/2 або статус той самий -> ні",
     _bv(1, True, 1000.0, 1000.0, 30.4)[0] is True and _bv(1, True, 1000.0, 969.6, 30.4)[0] is True and _bv(0, True, 1000.0, 969.6, 30.4)[0] is False and _bv(2, True, 1, 1, 1)[0] is False and _bv(1, False, 1000.0, 969.6, 30.4)[0] is False)

@@ -823,8 +823,8 @@ def confirm_from_balance(rt_ref: str, expected_total, apply: bool = False) -> di
     if not m:
         raise OrderError("rt_ref має бути у форматі RT000773594")
     num = m.group(1)
-    if expected_total is None or not (0 < float(expected_total) < 1e6):
-        raise OrderError("expected_total обов'язковий (сума замовлення з кабінету)")
+    if expected_total is not None and not (0 < float(expected_total) < 1e6):
+        raise OrderError("expected_total має бути в межах 0…1e6 (або None — тоді збіг суми не перевіряється: лише для замовлень без збереженої суми)")
     if apply and os.environ.get("RT_ORDER_SUBMIT") != "1":
         raise OrderError("підтвердження з балансу вимагає RT_ORDER_SUBMIT=1 (свідоме рішення власника)")
     ensure_session()
@@ -871,10 +871,16 @@ def confirm_from_balance(rt_ref: str, expected_total, apply: bool = False) -> di
             if n_refs != 1 or not block:
                 res["problems"].append(f"замовлення {rt_ref} у списку: знайдено {n_refs} (потрібне рівно одне)")
             elif "Очікує оплати" not in block:
-                res["problems"].append("статус замовлення не «Очікує оплати» (вже підтверджене/скасоване?) — нічого не робимо")
-            elif total is None or abs(total - float(expected_total)) > 0.005:
+                if re.search(r"Відмін|Видален|Скасов", block):
+                    res["cancelled"] = True
+                    res["problems"].append("замовлення скасоване/видалене в кабінеті — підтверджувати нічого")
+                else:
+                    res["already"] = True          # статус пішов з «Очікує оплати» (підтвердили вручну чи раніше) — повторно не тиснемо
+                    res["problems"].append("статус замовлення не «Очікує оплати» (вже підтверджене) — нічого не робимо")
+            elif total is None or (expected_total is not None and abs(total - float(expected_total)) > 0.005):
                 res["problems"].append(f"сума в кабінеті ({total}) не збігається з очікуваною ({expected_total})")
             elif bal0 is None or bal0 + 0.005 < total:
+                res["low_balance"] = True
                 res["problems"].append(f"недостатньо балансу: доступно {bal0}, потрібно {total}")
             links = page.locator('a[href*="dop1=fromBalance"][href*="dop2=%s"]' % num)
             if not res["problems"] and links.count() != 1:

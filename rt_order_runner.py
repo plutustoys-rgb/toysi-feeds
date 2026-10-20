@@ -163,6 +163,38 @@ def notify_returns(conn, d, apply: bool) -> list:
     return out
 
 
+def auto_confirm_enabled() -> bool:
+    """Автопідтвердження «З балансу» (рішення власника 20.10: «нам не треба резерв, кожне замовлення автоматом повинно йти на відправку»). Окрема брама в .env VPS; без неї — лише резерв + алерт власнику."""
+    return os.environ.get("RT_AUTO_CONFIRM") == "1"
+
+
+def _confirm_step(conn, d, oid: str, order: dict, rep: dict) -> bool:
+    """Резерв → «З балансу». Ідемпотентно: confirm_from_balance діє лише коли статус «Очікує оплати», тож повтор після невідомого результату безпечний (статус уже пішов → already → позначаємо).
+    Баланс малий → резерв лишається, 🟠-алерт «поповніть» (раз на 6 год), наступний цикл повторить. Скасовано в кабінеті → manual."""
+    import orders_db
+    if order.get("rt_confirmed_at"):
+        return True
+    res = d.rt_confirm(order.get("rt_order_ref"), order.get("rt_total"))
+    if res.get("confirmed") or res.get("already"):
+        orders_db.mark_rt_confirmed(conn, oid)
+        rep["actions"].append("«З балансу»: підтверджено" if res.get("confirmed") else "«З балансу»: уже підтверджено раніше (статус пішов з «Очікує оплати»)")
+        if res.get("confirmed"):
+            _alert(oid, "confirmed", f"✅ замовлення RoyalToys {order.get('rt_order_ref')} підтверджено з балансу — передано на відправку (відсікання 14:00 пн–пт). Баланс до/після: {res.get('balance_before')}/{res.get('balance_after')}")
+        return True
+    if res.get("cancelled"):
+        orders_db.set_rt_state(conn, oid, "manual", rt_error="замовлення RoyalToys скасоване/видалене в кабінеті")
+        conn.commit()
+        _alert(oid, "rt_cancelled", f"замовлення RoyalToys {order.get('rt_order_ref')} скасоване/видалене в кабінеті — потрібне рішення (ТТН {order.get('toysi_ttn')}, повернення коштів клієнту?)")
+        rep["problems"].append("замовлення RoyalToys скасоване в кабінеті — стан manual")
+        return False
+    if res.get("low_balance"):
+        _alert(oid, "low_balance", f"недостатньо балансу RoyalToys для підтвердження {order.get('rt_order_ref')}: {'; '.join(res.get('problems') or [])}. Поповніть баланс — підтвердимо автоматично; резерв тримається 2 дні, потім скасується, ТТН НП живе обмежений час", cooldown=6 * 60 * 60)
+        rep["actions"].append("«З балансу»: недостатньо коштів — чекаємо поповнення")
+        return False
+    rep["problems"].append(f"підтвердження «З балансу» не вдалось: {res.get('problems')}")
+    return False
+
+
 def _tracking_state(info: dict | None) -> tuple:
     """Статус НП → (rt_state, delivery_status). None (ТТН ще не відскановано) → без змін."""
     if not info:
@@ -220,6 +252,15 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             raise RunnerError(f"крок «{state}» розпочато, але результат невідомий (збій/таймаут) — конвеєр сам НЕ повторює. Звірте ТТН у кабінеті НП / замовлення в кабінеті RoyalToys і виставте стан вручну "
                               "(ttn_created / marking_ready / rt_ordered / manual)")
         if state in ("rt_ordered", "shipped"):
+            if state == "rt_ordered" and apply and auto_confirm_enabled() and not order.get("rt_confirmed_at"):
+                _confirm_step(conn, d, oid, order, rep)
+                if rep["problems"]:
+                    try:
+                        orders_db.set_rt_state(conn, oid, None, rt_error="; ".join(rep["problems"])[:500])
+                        conn.commit()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _alert(oid, "confirm_fail", "; ".join(rep["problems"])[:400] + " — повторимо наступного циклу")
             new_state, ds = _tracking_state(d.tracking(order.get("toysi_ttn")))
             if new_state and new_state != state:
                 if apply:
@@ -291,10 +332,16 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 if res.get("not_submitted_certain") is True and not res.get("submitted"):
                     orders_db.claim_rt_state(conn, oid, "rt_ordering", "marking_ready")     # однозначно НЕ відправлено → повертаємо крок
                 raise RunnerError(f"оформлення в RoyalToys не підтверджено: {res.get('problems')}")
-            orders_db.set_rt_state(conn, oid, "rt_ordered", rt_order_ref=str(res["rt_order_ref"]), rt_error=None)
+            _tot = res.get("total_on_checkout")
+            orders_db.set_rt_state(conn, oid, "rt_ordered", rt_order_ref=str(res["rt_order_ref"]), rt_error=None, **({"rt_total": float(_tot)} if isinstance(_tot, (int, float)) else {}))
             conn.commit()
             rep["actions"].append(f"замовлення RoyalToys {res['rt_order_ref']}")
-            if _order_mode() == "reserve":
+            if auto_confirm_enabled():
+                try:
+                    _confirm_step(conn, d, oid, {**order, "rt_order_ref": str(res["rt_order_ref"]), "rt_total": float(_tot) if isinstance(_tot, (int, float)) else None, "rt_confirmed_at": None}, rep)
+                except Exception as e:  # noqa: BLE001
+                    rep["problems"].append(f"підтвердження «З балансу» збій {type(e).__name__} (резерв створено; повторимо наступного циклу)")
+            elif _order_mode() == "reserve":
                 _alert(oid, "reserved", ("" if res.get("reserve_status_seen", True) else "⚠️ статус «резерв» біля ТТН у списку НЕ підтверджено — звірте кабінет. ") + f"замовлення RoyalToys {res['rt_order_ref']} стоїть у РЕЗЕРВІ (ТТН {order['toysi_ttn']}): нічого не відправлено й не списано. Щоб відправили — поповніть баланс і натисніть «З балансу» в кабінеті "
                                        "(або напишіть менеджеру в чат) до 14:00 пн–пт; резерв тримається 2 дні, на третій скасується. ТТН НП живе обмежений час — не тягніть.", cooldown=24 * 60 * 60)
     except RunnerError as e:
@@ -332,6 +379,13 @@ class _Deps:
             pdf.write_bytes(b"%PDF-1.4\n%" + b"x" * 400 + b"\n%%EOF\n")
             order = {"items": [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"]} for i in items], "ttn_number": "00000000000000", "marking_pdf": str(pdf), **_recipient_fields(recipient)}
             return rt_cabinet.order_flow(order, submit=False)
+
+    def rt_confirm(self, rt_ref, total):
+        import rt_cabinet
+        try:
+            return rt_cabinet.confirm_from_balance(rt_ref, total, apply=True)
+        except rt_cabinet.OrderError as e:
+            return {"ready": False, "confirmed": False, "problems": [str(e)]}
 
     def notify_rt_return(self, text):
         try:

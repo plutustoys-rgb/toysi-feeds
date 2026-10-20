@@ -466,5 +466,72 @@ with orders_db.get_connection() as c:
 fk3 = RetFake({"status": "Відмова", "delivered": False, "return_ttn": "20451570000002"})
 rr.run(apply=True, deps=fk3)
 chk("run(): returned-замовлення без жодного іншого в роботі — повідомлення RoyalToys усе одно надіслано й позначено", any("RT000773595" in t for t in fk3.sent) and get(rt2)["rt_return_notified_at"])
+# ---- автопідтвердження «З балансу» (рішення власника 20.10) ----
+class AC(Fake):
+    def __init__(self, conf):
+        super().__init__()
+        self.conf = list(conf)
+        self.conf_calls = []
+
+    def rt_order(self, items, ttn, pdf, recipient=None):
+        self.calls.append("rt_order")
+        return {"submitted": True, "rt_order_ref": "RT000900001", "total_on_checkout": 618.0}
+
+    def rt_confirm(self, rt_ref, total):
+        self.conf_calls.append((rt_ref, total))
+        return self.conf.pop(0)
+
+
+def _with_gate(val):
+    if val is None:
+        os.environ.pop("RT_AUTO_CONFIRM", None)
+    else:
+        os.environ["RT_AUTO_CONFIRM"] = val
+
+
+_with_gate(None)
+ac0 = new_order("AC0")
+fk = AC([])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac0), SUP, apply=True, deps=fk)
+chk("авто-брама RT_AUTO_CONFIRM вимкнена: резерв створено, підтвердження НЕ пробується (як було), rt_total збережено", fk.conf_calls == [] and get(ac0)["rt_state"] == "rt_ordered" and get(ac0)["rt_confirmed_at"] is None and get(ac0)["rt_total"] == 618.0)
+_with_gate("1")
+ac1 = new_order("AC1")
+fk = AC([{"confirmed": True, "balance_before": 1000.0, "balance_after": 1000.0}])
+with orders_db.get_connection() as c:
+    rep1 = rr.process_order(c, get(ac1), SUP, apply=True, deps=fk)
+chk("авто-брама увімкнена: після резерву одразу «З балансу» з номером RT і збереженою сумою; rt_confirmed_at проставлено", fk.conf_calls == [("RT000900001", 618.0)] and get(ac1)["rt_confirmed_at"] and not rep1["problems"])
+fk = AC([])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac1), SUP, apply=True, deps=fk)
+chk("уже підтверджене (rt_confirmed_at) — повторно не підтверджуємо", fk.conf_calls == [])
+ac2 = new_order("AC2")
+fk = AC([{"confirmed": False, "low_balance": True, "problems": ["недостатньо балансу: доступно 10, потрібно 618"]}])
+with orders_db.get_connection() as c:
+    rep2 = rr.process_order(c, get(ac2), SUP, apply=True, deps=fk)
+chk("мало балансу: резерв лишається rt_ordered, НЕ позначено підтвердженим, без problems (алерт «поповніть»)", get(ac2)["rt_state"] == "rt_ordered" and get(ac2)["rt_confirmed_at"] is None and not rep2["problems"])
+fk = AC([{"confirmed": True, "balance_before": 1000.0, "balance_after": 1000.0}])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac2), SUP, apply=True, deps=fk)
+chk("після поповнення наступний цикл (rt_ordered) підтверджує сам", fk.conf_calls == [("RT000900001", 618.0)] and get(ac2)["rt_confirmed_at"])
+ac3 = new_order("AC3")
+fk = AC([{"confirmed": False, "already": True, "problems": ["статус не «Очікує оплати»"]}])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac3), SUP, apply=True, deps=fk)
+chk("уже підтверджено вручну (status already) — позначаємо без повторного кліку", get(ac3)["rt_confirmed_at"] and len(fk.conf_calls) == 1)
+ac4 = new_order("AC4")
+fk = AC([{"confirmed": False, "cancelled": True, "problems": ["скасоване"]}])
+with orders_db.get_connection() as c:
+    rep4 = rr.process_order(c, get(ac4), SUP, apply=True, deps=fk)
+chk("скасовано в кабінеті — стан manual, не підтверджено", get(ac4)["rt_state"] == "manual" and get(ac4)["rt_confirmed_at"] is None)
+ac5 = new_order("AC5")
+class ACboom(AC):
+    def rt_confirm(self, rt_ref, total):
+        raise RuntimeError("x")
+fk = ACboom([])
+with orders_db.get_connection() as c:
+    rep5 = rr.process_order(c, get(ac5), SUP, apply=True, deps=fk)
+chk("збій підтвердження після створеного резерву: стан rt_ordered лишається (резерв є), problems з поясненням, наступний цикл повторить", get(ac5)["rt_state"] == "rt_ordered" and any("збій" in x for x in rep5["problems"]))
+_with_gate(None)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -21,6 +21,7 @@ def chk(n, c):
 
 b = so.BASE_URL
 chk("валідний номер → /thanks.html?o=PT-…", so.thanks_url("PT-20261020-153620-193ef9") == f"{b}/thanks.html?o=PT-20261020-153620-193ef9")
-chk("сміття/порожнє/None/ін'єкція → без параметра", all(so.thanks_url(x) == f"{b}/thanks.html" for x in ("", None, "abc", "PT-1", "PT-20261020-153620-193ef9&x=1", "PT-20261020-153620-193ef9\"><script>", "../etc")))
+chk("сміття/порожнє/None/ін'єкція → без параметра", all(so.thanks_url(x) == f"{b}/thanks.html" for x in ("", None, "abc", "PT-1", "PT-20261020-153620-193ef9&x=1", "PT-20261020-153620-193ef9\"><script>", "../etc", "PT-20261020-153620-193ef9
+", "PT-20261020-153620-193EF9")))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

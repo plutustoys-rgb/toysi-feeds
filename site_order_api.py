@@ -134,7 +134,7 @@ def _test_order_preview(order: dict, total) -> str:
         return ""
 
 
-_THANKS_ORDER_RE = re.compile(r"PT-\d{8}-\d{6}-[0-9a-f]{6}")
+_THANKS_ORDER_RE = re.compile(r"PT-\d{8}-\d{6}-[0-9a-f]{6}", re.ASCII)
 
 
 def thanks_url(order_id) -> str:

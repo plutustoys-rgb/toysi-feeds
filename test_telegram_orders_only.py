@@ -127,5 +127,13 @@ tn.send_throttled_alert("k_lost", "🔴 prom_competitor_price_state.json пош�
 tn.send_throttled_alert("k_lost", "🔴 prom_competitor_price_state.json пошкоджений A", cooldown_sec=86400)
 chk("повторний виклик через send_throttled_alert у межах доби не шле вдруге", len(posts) == 1)
 
+# виняток 20.10: ланцюжок RoyalToys (🟠 RoyalToys site_PT-…) іде в Telegram, інформаційні (⚪) і чужі «🟠» — ні
+reset()
+tn.send_telegram_message("🟠 RoyalToys site_PT-20261020-153620-193ef9: замовлення RoyalToys RT000773594 стоїть у РЕЗЕРВІ")
+chk("🟠 RoyalToys site_PT-… (резерв/повернення/збій) іде в Telegram", len(posts) == 1)
+reset()
+tn.send_telegram_message("⚪ RoyalToys site_PT-20261020-153620-193ef9: чекає ручної обробки")
+tn.send_telegram_message("🟠 Щось інше: не ланцюжок RoyalToys")
+chk("⚪ RoyalToys (інформаційні) і чужі «🟠» НЕ йдуть у Telegram, лишаються в журналі", len(posts) == 0 and "RoyalToys" in log())
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

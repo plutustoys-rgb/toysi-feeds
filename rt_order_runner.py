@@ -136,8 +136,10 @@ def notify_returns(conn, d, apply: bool) -> list:
             info = d.tracking(o.get("toysi_ttn"))
             rttn = (info or {}).get("return_ttn")
             if not rttn:
-                out.append({"order": oid, "return_notice": "ТТН повернення ще не видно в НП"})
-                _alert(oid, "rt_return_wait", "посилка повертається, але ТТН повернення в НП ще не видно — перевірте автоповернення в кабінеті НП; RoyalToys повідомимо, щойно з'явиться", cooldown=24 * 60 * 60)
+                based = (info or {}).get("based_ttn")
+                out.append({"order": oid, "return_notice": "ТТН повернення ще не видно в НП", "based_ttn": based, "based_type": (info or {}).get("based_type")})
+                _alert(oid, "rt_return_wait", "посилка повертається, але ТТН повернення в НП ще не видно — перевірте автоповернення в кабінеті НП; RoyalToys повідомимо, щойно з'явиться"
+                       + (f" (НП показує ЕН на підставі нашої: {based}, тип «{(info or {}).get('based_type')}» — якщо це і є повернення, скажіть Коду)" if based else ""), cooldown=24 * 60 * 60)
                 continue
             text = return_notice_text(o["rt_order_ref"], o.get("toysi_ttn"), rttn)
             sent = False
@@ -146,7 +148,10 @@ def notify_returns(conn, d, apply: bool) -> list:
             _alert(oid, "rt_return", (f"ТТН повернення {rttn}: повідомлення передано менеджеру RoyalToys автоматично" if sent
                                        else f"ТТН повернення {rttn}: ПЕРЕШЛІТЬ менеджеру RoyalToys (автоматично не вдалося/не налаштовано): «{text}»"), cooldown=24 * 60 * 60)
             if apply:
-                orders_db.mark_rt_return_notified(conn, oid)
+                try:
+                    orders_db.mark_rt_return_notified(conn, oid)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[rt_runner] {oid}: НЕ вдалося позначити повернення повідомленим ({type(e).__name__}) — можливий дубль повідомлення наступного циклу", file=sys.stderr)
             out.append({"order": oid, "return_ttn": rttn, "sent_to_rt": sent, "apply": apply})
         except Exception as e:  # noqa: BLE001
             out.append({"order": oid, "return_notice_error": type(e).__name__})
@@ -363,9 +368,23 @@ class _Deps:
 
 
 def run(apply: bool | None = None, deps=None, db_path=None) -> list:
+    """Цикл раннера: замовлення в роботі (_run_pipeline) + повідомлення RoyalToys про повернення. notify_returns — ПОЗА ранніми виходами конвеєра (аудит #927): returned виключено з «замовлень у роботі», тож інакше ніколи не викликався б."""
     import orders_db
     if apply is None:
         apply = os.environ.get("RT_RUNNER_APPLY") == "1"
+    reports = _run_pipeline(apply, deps, db_path)
+    try:
+        with orders_db.get_connection(db_path) if db_path else orders_db.get_connection() as conn:
+            for r in notify_returns(conn, deps or _Deps(), apply):
+                reports.append(r)
+                print("[rt_runner]", json.dumps(r, ensure_ascii=False, default=str))
+    except Exception as e:  # noqa: BLE001
+        print(f"[rt_runner] повідомлення про повернення: збій {type(e).__name__}", file=sys.stderr)
+    return reports
+
+
+def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
+    import orders_db
     since = _since()
     reports = []
     with orders_db.get_connection(db_path) if db_path else orders_db.get_connection() as conn:
@@ -415,9 +434,6 @@ def run(apply: bool | None = None, deps=None, db_path=None) -> list:
             rep = process_order(conn, order, supplier, apply, d)
             reports.append(rep)
             print("[rt_runner]", json.dumps(rep, ensure_ascii=False, default=str))
-        for r in notify_returns(conn, d, apply):
-            reports.append(r)
-            print("[rt_runner]", json.dumps(r, ensure_ascii=False, default=str))
     return reports
 
 

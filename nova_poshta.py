@@ -392,13 +392,17 @@ def get_tracking_status(ttn: str) -> dict | None:
     actual_delivery_date = (info.get("ActualDeliveryDate") or "").strip()
     delivered = bool(actual_delivery_date) and "отримано" in status.lower()
     based = str(info.get("LastCreatedOnTheBasisNumber") or "").strip()
+    based_type = str(info.get("LastCreatedOnTheBasisDocumentType") or "").strip()
     return {
         "status": status,
         "status_code": str(info.get("StatusCode", "")),
         "delivered": delivered,
         "actual_delivery_date": actual_delivery_date or None,
         # № ЕН, створеної НП на підставі цієї (автоповернення/переадресація): 14 цифр або None. НЕ перевірено на живому поверненні (їх ще не було) — споживач лише повідомляє, рішення за людиною
-        "return_ttn": based if (len(based) == 14 and based.isdigit() and based != str(ttn)) else None,
+        # аудит #927: ЕН «на підставі» буває і переадресацією/зміною даних — повернення лише якщо ТИП документа каже про повернення (return/поверн…); тип і номер віддаємо окремо для діагностики
+        "return_ttn": based if (len(based) == 14 and based.isdigit() and based != str(ttn) and re.search(r"return|поверн", based_type, re.I)) else None,
+        "based_ttn": based if (len(based) == 14 and based.isdigit() and based != str(ttn)) else None,
+        "based_type": based_type[:40] or None,
     }
 
 

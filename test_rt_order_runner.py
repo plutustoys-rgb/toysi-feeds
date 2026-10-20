@@ -436,17 +436,21 @@ import nova_poshta as _np
 import telegram_userbot_client as _ub
 _orig_call = _np._call
 try:
-    _np._call = lambda m, c, p: [{"Status": "Відмова одержувача", "StatusCode": "102", "ActualDeliveryDate": "", "LastCreatedOnTheBasisNumber": "20451570000001"}]
+    _np._call = lambda m, c, p: [{"Status": "Відмова одержувача", "StatusCode": "102", "ActualDeliveryDate": "", "LastCreatedOnTheBasisNumber": "20451570000001", "LastCreatedOnTheBasisDocumentType": "CargoReturn"}]
     r_a = _np.get_tracking_status("20451565972503")
-    _np._call = lambda m, c, p: [{"Status": "x", "LastCreatedOnTheBasisNumber": "20451565972503"}]
+    _np._call = lambda m, c, p: [{"Status": "x", "LastCreatedOnTheBasisNumber": "20451565972503", "LastCreatedOnTheBasisDocumentType": "CargoReturn"}]
     r_b = _np.get_tracking_status("20451565972503")
-    _np._call = lambda m, c, p: [{"Status": "x", "LastCreatedOnTheBasisNumber": "123"}]
+    _np._call = lambda m, c, p: [{"Status": "x", "LastCreatedOnTheBasisNumber": "123", "LastCreatedOnTheBasisDocumentType": "CargoReturn"}]
+    r_c = _np.get_tracking_status("20451565972503")
+    _np._call = lambda m, c, p: [{"Status": "Відмова", "LastCreatedOnTheBasisNumber": "20451570000009", "LastCreatedOnTheBasisDocumentType": "Redirecting"}]
+    r_e = _np.get_tracking_status("20451565972503")
     r_c = _np.get_tracking_status("20451565972503")
     _np._call = lambda m, c, p: [{"Status": "x"}]
     r_d = _np.get_tracking_status("20451565972503")
 finally:
     _np._call = _orig_call
-chk("get_tracking_status.return_ttn: 14 цифр, що не збігається з вихідною, -> береться; збіг із вихідною / не 14 цифр / нема -> None", r_a["return_ttn"] == "20451570000001" and r_b["return_ttn"] is None and r_c["return_ttn"] is None and r_d["return_ttn"] is None)
+chk("get_tracking_status.return_ttn: 14 цифр + тип документа «повернення», не збігається з вихідною -> береться; збіг із вихідною / не 14 цифр / нема / інший тип (переадресація) -> None (based_* для діагностики)", r_a["return_ttn"] == "20451570000001" and r_b["return_ttn"] is None and r_c["return_ttn"] is None and r_d["return_ttn"] is None
+    and r_e["return_ttn"] is None and r_e["based_ttn"] == "20451570000009" and r_e["based_type"] == "Redirecting")
 os.environ.pop("TELEGRAM_USERBOT_RT_TARGET", None)
 try:
     _ub.send_rt_notice("текст")
@@ -454,5 +458,13 @@ try:
 except _ub.UserbotError:
     ub_ok = True
 chk("send_rt_notice без TELEGRAM_USERBOT_RT_TARGET -> UserbotError, нічого не йде", ub_ok)
+# аудит #927: notify_returns викликається з run() навіть коли інших замовлень «у роботі» немає
+rt2 = new_order("RET2")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, rt2, "returned", rt_order_ref="RT000773595", toysi_ttn="20451565972999")
+    c.commit()
+fk3 = RetFake({"status": "Відмова", "delivered": False, "return_ttn": "20451570000002"})
+rr.run(apply=True, deps=fk3)
+chk("run(): returned-замовлення без жодного іншого в роботі — повідомлення RoyalToys усе одно надіслано й позначено", any("RT000773595" in t for t in fk3.sent) and get(rt2)["rt_return_notified_at"])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

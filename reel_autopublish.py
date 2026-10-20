@@ -29,6 +29,8 @@ HERE = Path(__file__).resolve().parent
 QUEUE_DIR = Path(os.environ.get("REEL_QUEUE_DIR", "/opt/plutustoys/reels_queue"))
 SITE_INDEX_URL = "https://plutustoys.com.ua/index.json"
 IG_CAPTION_MAX = 2200
+IG_USERNAME = os.environ.get("IG_USERNAME", "plutustoys.ua")
+IG_REELS_FILE = Path(os.environ.get("IG_REELS_JSON", str(HERE / "ig_reels.json")))      # ЧИТАЄ site/build_site.py (/ig.html); поза site/ і git
 
 
 class HostingError(RuntimeError):
@@ -65,6 +67,52 @@ def host_video(mp4: Path) -> str:
 def publish_reel(url: str, caption: str) -> dict:
     import social_auto_poster
     return social_auto_poster.post_single_reel(url, caption, True)
+
+
+def _ig_permalink(media_id) -> str:
+    """Публічний permalink опублікованого Reel (Graph GET /{media_id}?fields=permalink) → нормалізований https://www.instagram.com/<IG_USERNAME>/reel/<код>/. Нема/не розібрано → ''."""
+    import re
+    import social_auto_poster as sap
+    r = requests.get(f"https://graph.facebook.com/{sap.GRAPH_VERSION}/{media_id}",
+                     params={"fields": "permalink", "access_token": sap.FB_PAGE_ACCESS_TOKEN}, timeout=30)
+    r.raise_for_status()
+    m = re.fullmatch(r"https://www\.instagram\.com/(?:[\w.]+/)?(?:reel|reels|p)/([\w-]+)/?", str((r.json() or {}).get("permalink") or ""))
+    return f"https://www.instagram.com/{IG_USERNAME}/reel/{m.group(1)}/" if m else ""
+
+
+def _start_site_rebuild() -> None:
+    subprocess.run(["systemctl", "start", "--no-block", "site-rebuild.service"], timeout=30, check=False)
+
+
+def register_on_site(name: str, manifest: dict, caption: str, media_id, now, *, permalink=None, rebuild=None, path=None) -> bool:
+    """Дописує опублікований Reel у ig_reels.json (читає site/build_site.py → /ig.html: «найновіший першим, зі своїми товарами») і запускає перебудову сайту. BEST-EFFORT: Reel уже опубліковано —
+    збій тут НЕ скасовує публікацію (алерт, повторити вручну). Формат (узгоджено з Shopify-code 20.10): {"reels":[{"date","url","title","ids":[…]}]}; дублі за url не додаємо. ids = id товарів із manifest.verify."""
+    try:
+        ids = [str(v["id"]).strip() for v in (manifest.get("verify") or []) if isinstance(v, dict) and str(v.get("id") or "").strip()]
+        url = (permalink or _ig_permalink)(media_id)
+        if not url or not ids:
+            raise RuntimeError(f"нема {'permalink' if not url else 'id товарів у manifest.verify'}")
+        title = str(manifest.get("title") or "").strip() or next((ln.strip() for ln in caption.splitlines() if ln.strip() and not ln.strip().startswith("#")), name)
+        target = Path(path or IG_REELS_FILE)
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+            reels = data.get("reels") if isinstance(data, dict) else None
+            reels = reels if isinstance(reels, list) else []
+        except (OSError, ValueError):
+            reels = []
+        if any(isinstance(r, dict) and r.get("url") == url for r in reels):
+            return True                                           # уже записано (повторний виклик ідемпотентний)
+        reels.append({"date": now.date().isoformat(), "url": url, "title": title[:90], "ids": ids})
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"reels": reels}, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, target)                                   # атомарно
+        (rebuild or _start_site_rebuild)()
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[reel_autopublish] {name}: запис на сайт не вдався ({type(e).__name__}: {e})", file=sys.stderr)
+        _alert(f"reel_site:{name}", f"⚠️ Reel {name} опубліковано, але на сайт (/ig.html) НЕ дописано: {type(e).__name__}: {e}. Додати вручну в ig_reels.json/ig_featured.json.")
+        return False
 
 
 def check_item(name: str, manifest: dict, mp4: Path, caption_path: Path, index: dict) -> list:
@@ -112,7 +160,7 @@ def _load_published(queue: Path) -> list:
         return []
 
 
-def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=None) -> dict:
+def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=None, register=None) -> dict:
     """Один запуск: публікує максимум ОДИН Reel. Не кидає назовні. Повертає {'published': name|None, 'held': [...], 'unknown': [...]}."""
     queue = Path(queue_dir or QUEUE_DIR)
     out = {"published": None, "held": [], "unknown": []}
@@ -120,6 +168,7 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
         if not queue.is_dir():
             return out
         fetch_index, host, publish = fetch_index or fetch_site_index, host or host_video, publish or publish_reel
+        register = register or register_on_site
         now = now or datetime.now()
         done = {p.get("name") for p in _load_published(queue)}
         index = None
@@ -183,7 +232,8 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
                 fh.write(now.isoformat(timespec="seconds"))
             try:
                 url = host(mp4)
-                res = publish(url, cap.read_text(encoding="utf-8").strip())
+                caption_txt = cap.read_text(encoding="utf-8").strip()
+                res = publish(url, caption_txt)
             except HostingError as e:
                 claim.unlink(missing_ok=True)                     # збій ДО відправки в Instagram: Reel точно не вийшов, повтор наступного запуску
                 print(f"[reel_autopublish] {name}: {e}", file=sys.stderr)
@@ -221,6 +271,7 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
                     f.replace(queue / "published" / f.name)
             out["published"] = name
             print(f"[reel_autopublish] ✅ {name}: media_id={res.get('id')}")
+            register(name, manifest, caption_txt, res.get("id"), now)       # best-effort: Reel уже опубліковано, збій запису на сайт його не скасовує
             _alert(f"reel_done:{name}", f"🎬 Reel опубліковано: {name}, media_id={res.get('id')}.")
             return out                                            # один Reel за запуск
     except Exception as e:  # noqa: BLE001

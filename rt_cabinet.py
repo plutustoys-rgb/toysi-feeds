@@ -18,7 +18,9 @@ import argparse
 import math
 import os
 import re
+import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote, unquote_plus, urljoin, quote
@@ -410,6 +412,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
         raise OrderError(f"нема сесії {STATE_FILE.name}: --vps-login")
     res = {"ready": False, "submitted": False, "not_submitted_certain": False, "problems": []}
     blocked = {"final": False}
+    up_dir = None        # temp-каталог копії PDF під коротким іменем: прибирається в зовнішньому finally (після фіналу/будь-якого виходу — форма може тримати File до відправки)
     armed = {"on": False, "passed": 0}        # фінальний POST /onestep дозволяється ЛИШЕ після всіх перевірок, безпосередньо перед кліком по «Резерв»
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -519,12 +522,27 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                 sel.evaluate("(e, v) => { const o = [...e.options].find(x => x.value === v); if (!o) throw new Error('no option'); e.value = v; e.dispatchEvent(new Event('change', {bubbles:true})); }", PAYMENT_PREPAID)
                 if order["comment"]:
                     page.locator("textarea[name='comment']").first.evaluate("(e, v) => { e.value = v; e.dispatchEvent(new Event('input', {bubbles:true})); e.dispatchEvent(new Event('change', {bubbles:true})); }", order["comment"])
-                page.locator("input[type=file][name='addon[]']").first.set_input_files(order["marking_pdf"], timeout=15000)
+                # Файл вантажимо під КОРОТКОЮ безпечною назвою «<№ТТН>.pdf» (живий прогін 20.10: довге ім'я «site_PT-…193ef9.pdf» форма RoyalToys показала скороченим, і звірка «ім'я є у формі» хибно сказала «PDF не з'явився»).
+                # Підтвердження завантаження — ДВІ ознаки: HTTP 200 на POST /orderaddon (дозволений локом) І ім'я/початок № ТТН у тексті форми.
+                up_dir = tempfile.mkdtemp(prefix="rt_up_")
+                up_pdf = Path(up_dir) / (order["ttn_number"] + ".pdf")
+                shutil.copyfile(order["marking_pdf"], up_pdf)
+                upload_ok = False
+                upload_status = None
+                try:
+                    with page.expect_response(lambda r: "orderaddon" in r.url and r.request.method == "POST", timeout=20000) as _up:
+                        page.locator("input[type=file][name='addon[]']").first.set_input_files(str(up_pdf), timeout=15000)
+                    upload_status = _up.value.status
+                    upload_ok = upload_status == 200
+                except Exception as _e:  # noqa: BLE001
+                    upload_ok = False
+                    upload_status = type(_e).__name__            # діагностика: HTTP-код відповіді /orderaddon або тип винятку (таймаут — відповіді нема)
                 page.wait_for_timeout(3500)
                 form_text = re.sub(r"\s+", " ", page.eval_on_selector("form.checkout-form", "f => f.innerText"))
-                res["pdf_uploaded"] = Path(order["marking_pdf"]).name in form_text
+                res["pdf_uploaded"] = bool(upload_ok and (up_pdf.name in form_text or order["ttn_number"][:8] in form_text))
+                res["upload_status"] = upload_status
                 if not res["pdf_uploaded"]:
-                    res["problems"].append("PDF маркування не з'явився в формі після завантаження")
+                    res["problems"].append(f"PDF маркування не з'явився в формі після завантаження (orderaddon: {upload_status})")
                 res["total_on_checkout"] = _money(form_text.split("Всього", 1)[-1][:40]) if "Всього" in form_text else None
                 res["checkout_warnings"] = [w for w in page.eval_on_selector_all("[class*=error], [class*=warning], .alert", "els => els.filter(e => e.offsetParent !== null).map(e => e.textContent.trim().slice(0,160))") if w][:5]
                 res["balance"] = _balance(form_text) if _balance(form_text) is not None else res.get("balance")
@@ -588,6 +606,8 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     res["submitted"] = True
                     res["mode"] = "reserve"
             finally:
+                if up_dir:
+                    shutil.rmtree(up_dir, ignore_errors=True)
                 try:
                     clear_cart()                                     # кошик завжди чистий (не лишаємо чернетку)
                 except Exception:  # noqa: BLE001

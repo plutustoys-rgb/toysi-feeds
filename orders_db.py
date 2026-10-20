@@ -525,11 +525,13 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
 
 
 RT_ITEM_MARK = '"toysi_code": "rt-'          # так json.dumps(ensure_ascii=False) пише позицію RoyalToys (insert_order)
-RT_STATES = ("ttn_created", "marking_ready", "rt_ordered", "shipped", "delivered", "returned")
+RT_STATES = ("ttn_creating", "ttn_created", "marking_ready", "rt_ordering", "rt_ordered", "shipped", "delivered", "returned", "manual")
+# ttn_creating / rt_ordering — «claim» ПЕРЕД незворотним зовнішнім кроком (створення ТТН НП / натискання кнопки в RoyalToys): якщо процес помер чи результат невідомий, стан лишається і конвеєр сам НЕ повторює крок (потрібна ручна звірка).
+# manual — власник виконав замовлення вручну (термінальний, конвеєр не чіпає).
 
 
 def get_rt_orders_pending(conn: sqlite3.Connection) -> list:
-    """Оплачені замовлення САЙТУ з товарами RoyalToys, які ще не дійшли до кінця конвеєра (rt_state не delivered/returned). Лише передоплата з підтвердженою оплатою; sandbox_test і скасовані — ні."""
+    """Оплачені замовлення САЙТУ з товарами RoyalToys, які ще не дійшли до кінця конвеєра (rt_state не delivered/returned/manual). Лише передоплата з підтвердженою оплатою; sandbox_test, скасовані й ПОВЕРНЕНІ (чек повернення LiqPay виписано/в роботі) — ні; замовлення, де ТТН уже внесено вручну (toysi_ttn) і конвеєр його не починав, — ні (не дублюємо ручну відправку)."""
     rows = conn.execute(
         """
         SELECT * FROM orders
@@ -537,7 +539,9 @@ def get_rt_orders_pending(conn: sqlite3.Connection) -> list:
           AND items LIKE '%' || ? || '%'
           AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled'))
           AND cancelled_at IS NULL
-          AND (rt_state IS NULL OR rt_state NOT IN ('delivered', 'returned'))
+          AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL
+          AND (rt_state IS NULL OR rt_state NOT IN ('delivered', 'returned', 'manual'))
+          AND (rt_state IS NOT NULL OR ((toysi_ttn IS NULL OR toysi_ttn = '') AND forwarded_to_toysi_at IS NULL))
         ORDER BY created_at
         """,
         (RT_ITEM_MARK,),
@@ -558,8 +562,23 @@ def set_rt_state(conn: sqlite3.Connection, internal_order_id: str, state: str | 
     for k, v in fields.items():
         sets.append(f"{k} = ?")
         params.append(v)
+    if state == "delivered" or fields.get("delivery_status") == "delivered":
+        sets.append("delivered_at = COALESCE(delivered_at, ?)")
+        params.append(datetime.now().isoformat(timespec="seconds"))
     params.append(internal_order_id)
     conn.execute(f"UPDATE orders SET {', '.join(sets)} WHERE internal_order_id = ?", params)
+
+
+def claim_rt_state(conn: sqlite3.Connection, internal_order_id: str, from_state: str | None, to_state: str) -> bool:
+    """Атомарний claim перед незворотним кроком: UPDATE ... WHERE rt_state = from_state. True — claim наш (і закомічений); False — хтось уже взяв/стан інший (не робити крок)."""
+    if to_state not in RT_STATES:
+        raise ValueError(f"claim_rt_state: невідомий стан {to_state!r}")
+    cur = conn.execute(
+        "UPDATE orders SET rt_state = ?, rt_updated_at = ? WHERE internal_order_id = ? AND " + ("rt_state IS NULL" if from_state is None else "rt_state = ?"),
+        (to_state, datetime.now().isoformat(timespec="seconds"), internal_order_id) + (() if from_state is None else (from_state,)),
+    )
+    conn.commit()
+    return cur.rowcount == 1
 
 
 def get_active_toysi_orders(conn: sqlite3.Connection) -> list:

@@ -121,28 +121,35 @@ rr.MARKING_DIR = Path(os.environ["RT_MARKING_DIR"])
 fk = Fake()
 with orders_db.get_connection() as c:
     rep = rr.process_order(c, get(a), SUP, apply=False, deps=fk)
-chk("DRY-RUN: розрахунок ТТН і перевірка форми RoyalToys є, СТВОРЕННЯ немає (create_ttn/rt_order/marking не викликались), БД не змінена", fk.calls == ["ttn_dry", "rt_dry"] and get(a)["rt_state"] is None and not rep["problems"])
+chk("DRY-RUN: чек (як було в роутері) + розрахунок ТТН; кабінет RoyalToys НЕ чіпається (спільний кошик), СТВОРЕННЯ немає, БД не змінена", fk.calls == ["receipt", "ttn_dry"] and get(a)["rt_state"] is None and not rep["problems"])
 for k in ("RT_RUNNER_APPLY", "NP_TTN_APPLY", "RT_ORDER_SUBMIT"):
     os.environ.pop(k, None)
 fk = Fake()
 with orders_db.get_connection() as c:
     rep = rr.process_order(c, get(a), SUP, apply=True, deps=fk)
-chk("apply=True без воріт → відмова з причиною, жодного створення, rt_error записано", "create_ttn" not in fk.calls and rep["problems"] and "недоступний" in rep["problems"][0] and get(a)["rt_error"] and get(a)["rt_state"] is None)
+chk("apply=True без воріт → відмова з причиною, жодного створення (ні ТТН, ні кабінету), rt_error записано", fk.calls == ["receipt", "ttn_dry"] and rep["problems"] and "недоступний" in rep["problems"][0] and get(a)["rt_error"] and get(a)["rt_state"] is None)
 os.environ.update({"RT_RUNNER_APPLY": "1", "NP_TTN_APPLY": "1", "RT_ORDER_SUBMIT": "1"})
 ok, why = rr.apply_enabled()
-chk("навіть при трьох змінних реальний режим закритий, поки rt_cabinet.FINAL_IMPLEMENTED=False", ok is False and "кнопку" in why and rt_cabinet.FINAL_IMPLEMENTED is False)
+chk("без RT_RUNNER_SINCE реальний режим закритий (старі замовлення, виконані вручну, не чіпаємо)", ok is False and "RT_RUNNER_SINCE" in why)
+os.environ["RT_RUNNER_SINCE"] = "2026-01-01"
+ok, why = rr.apply_enabled()
+chk("навіть при чотирьох змінних реальний режим закритий, поки rt_cabinet.FINAL_IMPLEMENTED=False", ok is False and "кнопку" in why and rt_cabinet.FINAL_IMPLEMENTED is False)
 rt_cabinet.FINAL_IMPLEMENTED = True        # лише в тесті
 ok, why = rr.apply_enabled()
 chk("усі ворота відкриті (тест) → дозволено", ok is True)
 fk = Fake(receipt_ok=False)
 with orders_db.get_connection() as c:
     rep = rr.process_order(c, get(a), SUP, apply=True, deps=fk)
-chk("чек не видано → ТТН НЕ створюється", "create_ttn" not in fk.calls and rep["problems"] and get(a)["rt_state"] is None)
+chk("чек не видано → ТТН НЕ створюється", fk.calls == ["receipt"] and rep["problems"] and get(a)["rt_state"] is None)
+fk = Fake(receipt_ok=False)
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(a), SUP, apply=False, deps=fk)
+chk("B1: у dry-run чек теж виписується (як робив роутер до PR) — інакше rt-замовлення без чека", fk.calls == ["receipt"])
 fk = Fake()
 with orders_db.get_connection() as c:
     rep = rr.process_order(c, get(a), SUP, apply=True, deps=fk)
 st = get(a)
-chk("ланцюг: чек → ТТН → наліпка → замовлення RoyalToys; стан rt_ordered, номер RT-77, ТТН збережена у toysi_ttn", fk.calls == ["receipt", "create_ttn", "marking", "rt_order"] and st["rt_state"] == "rt_ordered" and st["rt_order_ref"] == "RT-77" and st["toysi_ttn"] == "20451500000001" and st["rt_ttn_ref"] == "REF-1" and Path(st["rt_marking_path"]).exists())
+chk("ланцюг: чек → ТТН → наліпка → замовлення RoyalToys; стан rt_ordered, номер RT-77, ТТН збережена у toysi_ttn", fk.calls == ["receipt", "ttn_dry", "rt_dry", "create_ttn", "marking", "rt_order"] and st["rt_state"] == "rt_ordered" and st["rt_order_ref"] == "RT-77" and st["toysi_ttn"] == "20451500000001" and st["rt_ttn_ref"] == "REF-1" and Path(st["rt_marking_path"]).exists())
 sent = fk.rt_orders[0]
 chk("у замовлення RoyalToys немає ПІБ/телефону клієнта (лише артикули, кількості, опт, ТТН, PDF)", set(sent["items"][0]).isdisjoint({"customer_name", "phone"}) and "customer_name" not in sent and "phone" not in sent)
 fk2 = Fake(ttn_info=None)
@@ -172,5 +179,96 @@ try:
 except ValueError:
     ok2 = True
 chk("set_rt_state: невідомий стан/поле → ValueError", ok2)
+
+# ---- аудит #897: A1–A5, M1, M3 ----
+class DbFail(Fake):
+    """create_ttn пройшов, а запис у БД після нього падає."""
+    def create_ttn(self, o):
+        r = super().create_ttn(o)
+        real = orders_db.set_rt_state
+
+        def boom(*a_, **k_):
+            orders_db.set_rt_state = real
+            raise RuntimeError("database is locked")
+        orders_db.set_rt_state = boom
+        return r
+
+
+f1 = new_order("F1")
+fk = DbFail()
+with orders_db.get_connection() as c:
+    r1 = rr.process_order(c, get(f1), SUP, apply=True, deps=fk)
+st1 = get(f1)["rt_state"]
+fk_b = Fake()
+with orders_db.get_connection() as c:
+    r2 = rr.process_order(c, get(f1), SUP, apply=True, deps=fk_b)
+chk("A1: збій запису після create_ttn -> стан лишається ttn_creating, наступний запуск НЕ створює другу ТТН", st1 == "ttn_creating" and "create_ttn" not in fk_b.calls and r2["problems"] and "результат невідомий" in r2["problems"][0] and get(f1)["rt_state"] == "ttn_creating")
+f2 = new_order("F2")
+with orders_db.get_connection() as c:
+    chk("A1: claim атомарний (другий claim з того ж стану — False)", orders_db.claim_rt_state(c, f2, None, "ttn_creating") is True and orders_db.claim_rt_state(c, f2, None, "ttn_creating") is False)
+
+g = new_order("G1")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET toysi_ttn='20450000000001' WHERE internal_order_id=?", (g,))
+    c.commit()
+    pend = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+chk("A2: замовлення з уже внесеною вручну ТТН (rt_state NULL) конвеєр не бере (не дублює відправку)", g not in pend)
+
+h = new_order("H1")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET refund_receipt_at='2026-10-20T10:00:00' WHERE internal_order_id=?", (h,))
+    c.commit()
+    pend = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+chk("A3: повернене через LiqPay (чек повернення) замовлення НЕ у черзі", h not in pend)
+
+# A4: п'ять посилок у дорозі не блокують нове замовлення
+shipped_ids = [new_order(f"S{n}") for n in range(5)]
+with orders_db.get_connection() as c:
+    for iid_ in (a, f1, f2):
+        orders_db.set_rt_state(c, iid_, "manual")
+    for n, iid in enumerate(shipped_ids):
+        orders_db.set_rt_state(c, iid, "shipped", toysi_ttn=f"2045000000010{n}")
+    c.commit()
+new1 = new_order("N1")
+fk = Fake(ttn_info={"status": "Відправлення прямує", "status_code": "5", "delivered": False})
+rr.MAX_ORDERS_PER_RUN = 5
+rr.load_supplier = lambda path=None: SUP
+reps = rr.run(apply=False, deps=fk)
+chk("A4: 5 посилок у дорозі + нове замовлення -> нове оброблено (ліміт лише на дії, не на трекінг)", any(r.get("order") == new1 for r in reps) and sum(1 for r in reps if r.get("state") == "shipped") == 5)
+with orders_db.get_connection() as c:
+    pend = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+chk("A2: стан manual — термінальний", not ({a, f1, f2} & pend))
+
+# A5: однакові рядки зливаються, залишок — по сумі
+try:
+    rr.map_items({"items": [{"toysi_code": "rt-2", "qty": 1, "price": 300}, {"toysi_code": "rt-2", "qty": 1, "price": 300}]}, SUP)
+    ok5 = False
+except rr.RunnerError:
+    ok5 = True
+m = rr.map_items({"items": [{"toysi_code": "rt-1", "qty": 1, "price": 300}, {"toysi_code": "rt-1", "qty": 2, "price": 300}]}, SUP)
+chk("A5: два рядки одного rt- зливаються (qty 3), залишок по сумі (1+1 при залишку 1 -> відмова)", ok5 and len(m) == 1 and m[0]["qty"] == 3)
+
+
+class RtNotReady(Fake):
+    def rt_dry_run(self, items):
+        self.calls.append("rt_dry")
+        return {"ready": False, "problems": ["сума"]}
+
+
+p1 = new_order("P1")
+fk = RtNotReady()
+with orders_db.get_connection() as c:
+    rp = rr.process_order(c, get(p1), SUP, apply=True, deps=fk)
+chk("A5: кабінет RoyalToys не готовий -> ТТН НЕ створюється (без ТТН-сироти), стан NULL", "create_ttn" not in fk.calls and rp["problems"] and get(p1)["rt_state"] is None)
+try:
+    rr.map_items({"items": [{"toysi_code": "rt-1", "qty": 1, "price": 100}]}, SUP)
+    ok6 = False
+except rr.RunnerError:
+    ok6 = True
+chk("M3: клієнт сплатив менше за поточний опт (збиток) -> відмова, ручне рішення", ok6)
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, new1, "delivered")
+    c.commit()
+chk("M1: delivered -> delivered_at проставлено", get(new1)["delivered_at"])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

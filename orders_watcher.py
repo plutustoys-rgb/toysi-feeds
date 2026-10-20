@@ -274,6 +274,7 @@ def _convert_prom_order(order: dict) -> dict:
     # хибним — orders.db.order_exists() з тим самим ключем (order_id, platform), що й insert_order()
     # нижче, гарантує: друкуємо ЛИШЕ якщо цього замовлення ЩЕ НЕМА в базі (справжній перший раз).
     _dpd = order.get("delivery_provider_data") or {}
+    _is_new = False
     if (_dpd.get("provider") or "").strip().lower() == "nova_poshta":
         try:
             with get_connection() as _diag_conn:
@@ -321,6 +322,26 @@ def _convert_prom_order(order: dict) -> dict:
         for product in order.get("products", [])
     ]
 
+    # СТРУКТУРНИЙ ВИБІР КЛІЄНТА (20.10.2026, Toysi-менеджер: «не підтягується інформація по відділенню» — замовлення Prom 434846615, у CRM «Місто» порожнє): Prom віддає
+    # delivery_provider_data.recipient_address.warehouse_id = НП-реф відділення (живо звірено: 7b422fc7-… → warehouse_by_ref → Кагарлик №2, city_id == city_ref) і він є
+    # ВЖЕ при першому погляді на замовлення (діагностика 25.09 мала це з'ясувати — відповідь «так»). Раніше читали лише вільний текст, тож Toysi не діставав shipping_city_id.
+    # Тепер як для Rozetka: Ref persisted ЗАВЖДИ (np_ref_id → ретрай/відкладання в build_toysi_order), а резолв CityRef+номер (warehouse_by_ref) — ЛИШЕ для нового замовлення
+    # (вікно 72 год перечитується кожні ~15 хв — без гейту це був би виклик НП на кожне замовлення щоциклу). Не вдалося резолвити → лишається текстовий шлях, як було.
+    _pr_ref = _pr_city = _pr_wh = None
+    if _detect_carrier(_dpd, order.get("delivery_option")) == "nova_poshta":
+        _ra = _dpd.get("recipient_address")
+        _ra = _ra if isinstance(_ra, dict) else {}
+        _pr_ref = str(_ra.get("warehouse_id") or "").strip() or None
+        if _pr_ref and _is_new:
+            try:
+                _wh = nova_poshta.warehouse_by_ref(_pr_ref)
+            except Exception as _e:  # noqa: BLE001 — не валимо конвертацію; build_toysi_order ретраїть за np_ref_id
+                _wh = None
+                print(f"[orders_watcher] Prom NP warehouse_by_ref {order.get('id')} ({_pr_ref}): {_e}", file=sys.stderr)
+            if _wh and _wh.get("city_ref") and _wh.get("number"):
+                _pr_city = _wh["city_ref"]
+                _pr_wh = _wh["number"]
+
     return {
         "order_id": str(order["id"]),
         "platform": "prom",
@@ -330,6 +351,9 @@ def _convert_prom_order(order: dict) -> dict:
         "customer_name": customer_name,
         "phone": order.get("phone", ""),
         "np_branch": order.get("delivery_address", ""),
+        "np_city_ref": _pr_city,
+        "np_warehouse_number": _pr_wh,
+        "np_ref_id": _pr_ref,
         "carrier": _detect_carrier(order.get("delivery_provider_data"), order.get("delivery_option")),
         "items": items,
     }

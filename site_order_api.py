@@ -187,7 +187,7 @@ def price_map() -> dict:
                 with open(INDEX_PATH, encoding="utf-8") as f:
                     data = json.load(f)
                 _price_cache["map"] = {
-                    str(p["id"]): {"price": int(p["pr"]), "name": p.get("n", "")}
+                    str(p["id"]): {"price": int(p["pr"]), "name": p.get("n", ""), "dup": bool(p.get("dup"))}
                     for p in data if "id" in p and "pr" in p
                 }
                 _price_cache["mtime"] = mtime
@@ -222,6 +222,34 @@ def _expected_total(raw):
     if isinstance(raw, str) and re.fullmatch(r"[0-9]{1,12}", raw):
         return int(raw)
     return None
+
+
+class DupShadow(Exception):
+    """Позиція — «тінь»: RoyalToys-дубль товару Toysi у наявності (index.json dup=1, PR #920). Покупець бачить її сторінку без ціни й без «У кошик», тож у кошику її бути не повинно (застарілий localStorage / підроблений кошик).
+    Замовлення НЕ створюється (склад і суми не змінюємо мовчки): клієнт отримує 409 {code: dup_shadow, lines:[{id, name, dup_of}]} — UI замінює позицію на близнюка Toysi."""
+
+    def __init__(self, lines):
+        super().__init__("dup_shadow")
+        self.lines = lines
+
+
+_dup_cache = {"mtime": -1.0, "map": {}}
+DUP_MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rt_dup_map.json")
+
+
+def dup_twin(pid: str) -> str:
+    """id товару Toysi — близнюка rt-тіні (з rt_dup_map.json {"rt-<id>": "<id Toysi>"}); порожньо, якщо невідомо."""
+    try:
+        mtime = os.path.getmtime(DUP_MAP_PATH)
+        if mtime != _dup_cache["mtime"]:
+            with open(DUP_MAP_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            _dup_cache["map"] = {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+            _dup_cache["mtime"] = mtime
+    except Exception:  # noqa: BLE001
+        return ""
+    v = _dup_cache["map"].get(str(pid), "")
+    return v if re.fullmatch(r"[0-9]{1,12}", v) else ""
 
 
 class StockChanged(Exception):
@@ -380,6 +408,7 @@ def build_order(payload: dict) -> tuple:
         raise OrderError("Забагато позицій у замовленні")
 
     items, total = [], 0
+    shadows = []
     for it in raw_items:
         it = it if isinstance(it, dict) else {}   # елемент не-обʼєкт → чиста валідаційна відмова, не 500
         pid = str(it.get("id", "")).strip()
@@ -391,10 +420,15 @@ def build_order(payload: dict) -> tuple:
             raise OrderError(f"Товар {pid} недоступний")
         if qty < 1 or qty > MAX_QTY_PER_ITEM:
             raise OrderError(f"Некоректна кількість для товару {pid}")
+        if pm[pid].get("dup"):
+            shadows.append({"id": pid, "name": pm[pid]["name"], "dup_of": dup_twin(pid)})
+            continue
         total += pm[pid]["price"] * qty
         # price+name ОБОВʼЯЗКОВІ у позиції: order_router рахує COD moneyback як
         # sum(item["price"]*qty) (order_router.py:228) — без price COD-ТТН вийде на 0 ₴.
         items.append({"toysi_code": pid, "name": pm[pid]["name"], "qty": qty, "price": pm[pid]["price"]})
+    if shadows:
+        raise DupShadow(shadows)            # ДО перевірки складу й до будь-якого створення: замовлення не виникає
     if not items:
         raise OrderError("Кошик порожній")
     unavailable = check_stock(items)
@@ -760,6 +794,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(409, {"code": "price_changed", "error": "Ціни в кошику змінились: перевірте оновлену суму.", "expected_total": _exp, "total": total,
                                         "lines": [{"id": i["toysi_code"], "name": i["name"], "qty": i["qty"], "price": i["price"]} for i in order["items"]]})
             _check_cod_ceiling(order["payment_method"], total)
+        except DupShadow as e:
+            return self._json(409, {"code": "dup_shadow", "error": "Цей товар уже є на іншій сторінці (Toysi): оновіть кошик.", "lines": e.lines})
         except StockChanged as e:
             # НЕ створюємо замовлення: UI (Shopify-code) показує «щойно закінчилось», прибирає/зменшує лише ці рядки й просить підтвердити решту
             return self._json(409, {"code": "stock_changed", "error": "Деяких товарів уже немає в такій кількості: оновіть кошик.", "lines": e.lines})

@@ -2477,21 +2477,30 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     # OOS: кнопку деактивуємо (немає data-add) — не даємо покласти в кошик те, чого нема (баг рев'ю).
     buy_btn = (f"<button class=\"btn\" data-add='{esc(add)}'>У кошик</button>" if in_stock
                else '<button class="btn" disabled>Немає в наявності</button>')
+    # Тінь (RoyalToys-дубль Toysi у наявності): сторінка жива лише як резерв (noindex + canonical), але купити тут не можна й ціну не показуємо — інакше той самий товар
+    # на двох живих сторінках має дві ціни (тестувальник 21, 20.10). Покупця ведемо на сторінку Toysi.
+    _shadow_twin = f'product-{p["dup_of"]}.html' if (p.get("shadow") and p.get("dup_of")) else ""   # dup_of — лише цифри (перевірено в _load_supplier_rt)
+    _buy_p = f'<div class="p">{p["price"]} ₴</div>'
+    _shadow_note = ""    
+    if _shadow_twin:
+        buy_btn = f'<a class="btn" href="{_shadow_twin}">Перейти до товару</a>'
+        _buy_p = ""    
+        _shadow_note = f'<div class="oos-note shadow-note"><b>Цей товар продається на іншій сторінці.</b> <a href="{_shadow_twin}">Перейти до товару →</a></div>'
     body = (
       '<div class="pad-bar">'
       f'<div class="photo">{photo}</div>'
       '<div class="body">'
       f'<div class="cat">{esc(p["category"])}</div>'
       f'<h1 class="prod">{esc(p["name"])}</h1>'
-      + (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +
+      + (_shadow_note if _shadow_twin else (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +
       f'<div class="avail {oos}">{avail}</div></div>'
-      + (sale_until_html(p["id"]) if p.get("old_price") else "") + oos_note + buy_info +
+      + (sale_until_html(p["id"]) if p.get("old_price") else "") + oos_note + buy_info) +
       desc_block +
       '</div></div>'
       + (f'<section class="related"><h2>{esc(related_title)}</h2>{grid(related)}</section>' if related else "")
       + (f'<section class="related"><h2>{esc(similar_title)}</h2>{grid(similar)}</section>' if similar else "")
       + '<div class="buybar"><div class="buybar-inner">'
-      f'<div class="p">{p["price"]} ₴</div>'
+      f'{_buy_p}'
       f'{buy_btn}'
       '</div></div>'
     )

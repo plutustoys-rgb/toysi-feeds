@@ -804,6 +804,15 @@ def balance_lock_decision(method: str, host_ok: bool, path: str, query: str, arm
     return "continue"
 
 
+def balance_confirm_verdict(passed: int, status_changed: bool, bal0, bal1, total) -> tuple:
+    """Вердикт після кліку «З балансу»: (confirmed, пояснення). Підтверджено = клік пропущено рівно раз І статус пішов з «Очікує оплати» (не в скасований). Баланс — лише інформація: живий прогін 20.10 показав, що фактичний залишок
+    НЕ змінюється одразу після підтвердження (кошти спишуться, імовірно, при відвантаженні), тому вимога «баланс зменшився» давала хибне «не підтверджено» (статус уже був «Передано на комплектацію»)."""
+    paid = bal0 is not None and bal1 is not None and total is not None and abs((bal0 - bal1) - total) < 0.011
+    if passed == 1 and status_changed:
+        return True, "баланс зменшився на суму" if paid else "баланс одразу не змінився (списання — імовірно при відвантаженні): звірте після відправки"
+    return False, f"після кліку підтвердження не бачу (клік пропущено: {passed}, статус змінився: {status_changed}) — звірте кабінет вручну"
+
+
 def confirm_from_balance(rt_ref: str, expected_total, apply: bool = False) -> dict:
     """Підтвердження вже створеного РЕЗЕРВУ кнопкою «З балансу (На відправку)» (власник 20.10: «переводь, баланс поповнений»). Списує суму замовлення з балансу RoyalToys і віддає замовлення на відправку (менеджер: відсікання 14:00 пн–пт).
     Без apply — лише перевірки (нічого не натискається). Перевірки: RT-номер у списку один, статус «Очікує оплати», «Сума замовлення» = expected_total, Доступно >= суми, посилання fromBalance для ЦЬОГО номера рівно одне. Клік — це один GET /1sbuttons/?dop1=fromBalance&dop2=<номер>, дозволений замком лише в озброєному вікні.
@@ -898,10 +907,9 @@ def confirm_from_balance(rt_ref: str, expected_total, apply: bool = False) -> di
             res["balance_after"] = bal1
             res["status_after"] = re.sub(r"\s+", " ", block2)[:120] if block2 else ""
             status_changed = bool(block2) and "Очікує оплати" not in block2 and "Відмін" not in block2 and "Видален" not in block2 and "Скасов" not in block2
-            paid = bal0 is not None and bal1 is not None and abs((bal0 - bal1) - total) < 0.011
-            res["confirmed"] = bool(armed["passed"] == 1 and status_changed and paid)
+            res["confirmed"], res["note"] = balance_confirm_verdict(armed["passed"], status_changed, bal0, bal1, total)
             if not res["confirmed"]:
-                res["problems"].append(f"після кліку підтвердження не бачу (клік пропущено: {armed['passed']}, статус змінився: {status_changed}, баланс зменшився на суму: {paid}) — звірте кабінет вручну")
+                res["problems"].append(res["note"])
         finally:
             browser.close()
     return res

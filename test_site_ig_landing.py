@@ -137,6 +137,23 @@ chk("рівно один контейнер #ig-list з data-list=ig_landing н�
 o, e = build_with(json.dumps({"reels": [{"date": "2026-10-10", "ids": ["900"]}]}))
 chk("усі рілси без наявних товарів → «скоро з’явиться» і попередження", "скоро з" in (o / "ig.html").read_text(encoding="utf-8") and "жодного товару" in e)
 
+# 2в) автозапис рілсів (20.10): <корінь>/ig_reels.json від автомата публікації зливається з site/ig_featured.json за url, найновіший першим, чужий url не показуємо
+tmpd = Path(tempfile.mkdtemp())
+auto = tmpd / "ig_reels.json"
+auto.write_text(json.dumps({"reels": [
+    {"date": "2026-10-21", "url": "https://www.instagram.com/plutustoys.ua/reel/AutoNew111/", "title": "Автомат", "ids": ["20", "21"]},
+    {"date": "2026-10-16", "url": "https://www.instagram.com/plutustoys.ua/reel/Dej3cDiEeG6/", "title": "Дубль за url", "ids": ["99"]},
+    {"date": "2026-10-22", "url": "https://evil.example.com/reel/xxxxx/", "title": "Чужий", "ids": ["22"]},
+]}, ensure_ascii=False), encoding="utf-8")
+bs.IG_AUTO_FILE = str(auto)
+o, e = build_with(json.dumps({"reels": [{"date": "2026-10-16", "url": "https://www.instagram.com/plutustoys.ua/reel/Dej3cDiEeG6/", "title": "Ручний", "ids": ["3", "5"]}]}))
+pg2 = (o / "ig.html").read_text(encoding="utf-8")
+secs2 = re.findall(r'<section class="ig-reel"><h2 class="sec-h">(.*?)</h2>(.*?)</section>', pg2, re.S)
+titles2 = [re.sub(r"<[^>]+>", "", x[0]).split(" · ")[0].strip() for x in secs2]
+chk(f"автозапис: секції {titles2} — найновіший першим (22.10 «Чужий» → 21.10 «Автомат»); рілс із тим самим url, що в ручному файлі, не дублюється і перемагає запис автомата (його id 99 нема в каталозі → секції нема, ручний «Ручний» теж)", titles2 == ["Чужий", "Автомат"])
+chk("чужий url (evil.example.com) не виводиться посиланням, «Ручний» (той самий url) не з'являється", "Ручний" not in pg2 and "evil.example.com" not in pg2 and 'href="https://www.instagram.com/plutustoys.ua/reel/AutoNew111/"' in pg2)
+bs.IG_AUTO_FILE = str(tmpd / "нема.json")   # далі — без автозапису
+
 # 3) футер: utm на соцмережі, sameAs чисті
 home = (out / "index.html").read_text(encoding="utf-8")
 fsoc = re.search(r'<p class="fsoc">(.*?)</p>', home, re.S).group(1)

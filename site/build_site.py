@@ -2664,38 +2664,60 @@ def _load_ig_featured():
 _IG_URL_RX = re.compile(r"https://www\.instagram\.com/plutustoys\.ua/(?:reel|p)/[A-Za-z0-9_-]{5,40}/?")
 
 
-def _load_ig_reels():
-    """Кілька рілсів на /ig.html (SMM 19.10): site/ig_featured.json = {"reels": [{"date": "2026-10-16", "url": "https://www.instagram.com/plutustoys.ua/reel/<код>/", "title": "М'які іграшки", "ids": [...]}, ...]}, найновіший першим.
-    Старий формат {"date", "ids"} (один рілс) лишається: тоді повертаємо None і сторінка збирається як раніше. Некоректний рілс (нема ids/не https instagram.com/plutustoys.ua) — голосно, інші лишаються."""
+# Рілси, що пише АВТОМАТ публікації (reel_autopublish, VPS): <корінь репо>/ig_reels.json — ПОЗА site/ і поза git (як supplier_rt.json), щоб git pull не конфліктував з локальним записом.
+# Формат той самий: {"reels": [{"date": "2026-10-21", "url": "https://www.instagram.com/plutustoys.ua/reel/<код>/", "title": "...", "ids": [...]}]}. Рілси з обох файлів зливаються (за url без дублів), найновіший першим.
+IG_AUTO_FILE = os.environ.get("IG_REELS_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ig_reels.json")
+
+
+def _parse_ig_reels(path, label):
+    """Рілси з одного файлу: список {ids,url,title,date,iso} або None (нема файлу/не той формат). Некоректний рілс (нема ids/чужий url) — голосно, інші лишаються."""
     try:
-        with open(IG_FEATURED_FILE, encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.loads(f.read())
     except (OSError, UnicodeDecodeError, ValueError, RecursionError):
-        return None   # про помилки читання голосно скаже _load_ig_featured (старий шлях)
+        return None   # про помилки читання основного файлу голосно скаже _load_ig_featured (старий шлях)
     reels = data.get("reels") if isinstance(data, dict) else None
     if not isinstance(reels, list):
         return None
     out = []
-    for r in reels[:6]:
+    for r in reels[:12]:
         if not isinstance(r, dict) or not isinstance(r.get("ids"), list):
-            print("[build] ⚠ ig_featured.json: рілс без списку ids — пропущено", file=sys.stderr)
+            print(f"[build] ⚠ {label}: рілс без списку ids — пропущено", file=sys.stderr)
             continue
         ids = []
         for x in r["ids"][:IG_MAX_IDS]:
             if isinstance(x, bool) or not isinstance(x, (str, int)):
-                print(f"[build] ⚠ ig_featured.json: id {x!r} не рядок/число — пропущено", file=sys.stderr)
+                print(f"[build] ⚠ {label}: id {x!r} не рядок/число — пропущено", file=sys.stderr)
                 continue
             sx = str(x).strip()
             if sx and sx not in ids:
                 ids.append(sx)
         url = r.get("url") if isinstance(r.get("url"), str) else ""
         if url and not _IG_URL_RX.fullmatch(url):
-            print(f"[build] ⚠ ig_featured.json: url {url[:60]!r} не з instagram.com/plutustoys.ua — посилання не показуємо", file=sys.stderr)
+            print(f"[build] ⚠ {label}: url {url[:60]!r} не з instagram.com/plutustoys.ua — посилання не показуємо", file=sys.stderr)
             url = ""
         d = str(r.get("date") or "")
         m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", d)
-        out.append({"ids": ids, "url": url, "title": re.sub(r"\s+", " ", str(r.get("title") or "")).strip()[:60], "date": f"{m.group(3)}.{m.group(2)}" if m else ""})
+        out.append({"ids": ids, "url": url, "title": re.sub(r"\s+", " ", str(r.get("title") or "")).strip()[:60], "date": f"{m.group(3)}.{m.group(2)}" if m else "", "iso": d if m else ""})
     return out
+
+
+def _load_ig_reels():
+    """Кілька рілсів на /ig.html (SMM 19.10; автозапис — 20.10): site/ig_featured.json (SMM) + <корінь>/ig_reels.json (автомат публікації) = {"reels": [{"date","url","title","ids"}]}.
+    Зливаємо за url (запис автомата перемагає), найновіший першим, ≤6. Старий формат {"date","ids"} (один рілс) без жодного файлу з "reels" — повертаємо None: сторінка збирається як раніше."""
+    main = _parse_ig_reels(IG_FEATURED_FILE, "ig_featured.json")
+    auto = _parse_ig_reels(IG_AUTO_FILE, "ig_reels.json")
+    if main is None and auto is None:
+        return None
+    merged, seen = [], set()
+    for r in (auto or []) + (main or []):
+        key = r["url"] or ("noUrl:" + ",".join(r["ids"]) + r["iso"])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(r)
+    merged.sort(key=lambda r: r["iso"], reverse=True)   # найновіший першим (без дати — в кінець)
+    return merged[:6]
 
 
 def write_ig(prods):

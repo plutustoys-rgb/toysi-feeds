@@ -83,7 +83,7 @@ chk("_map_eva_category: remap -> (L, назва L); legacy має пріорит
 g.EVA_CATEGORY_MAP.clear()
 g.EVA_CATEGORY_MAP.update({"1": {"id": "105311", "name": "Пазли"}})
 g.EVA_LEGACY_OVERRIDE.clear()
-for label, bad in (("matched=список", {"matched": []}), ("запис-рядок", {"matched": {"10": "Пазли"}}), ("eva=число", {"matched": {"10": {"name": "Пазли і вкладиші", "eva": 5}}})):
+for label, bad in (("matched=список", {"matched": [1, 2]}), ("запис-рядок", {"matched": {"10": "Пазли"}}), ("eva=число", {"matched": {"10": {"name": "Пазли і вкладиші", "eva": 5}}})):
     (tmp / "matched.json").write_text(json.dumps(bad, ensure_ascii=False), encoding="utf-8")
     g.EVA_MATCHED_LEGACY_FILE = tmp / "matched.json"
     g.EVA_REMAP_ROLLOUT_FILE = tmp / "roll.json"

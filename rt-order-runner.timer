@@ -1,0 +1,10 @@
+[Unit]
+Description=PlutusToys: конвеєр замовлень RoyalToys — кожні 15 хв (dry-run, доки власник не відкриє ворота в .env)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

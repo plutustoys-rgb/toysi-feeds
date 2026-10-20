@@ -43,7 +43,7 @@ chk("rt + сміття у способі → OrderError", raises(lambda: so.buil
 o, t = so.build_order(dict(base, payment_method="prepaid"))
 chk("rt + prepaid → замовлення створено, prepaid", o["payment_method"] == "prepaid" and t == 400)
 mixed = dict(base, items=[{"id": "100", "qty": 1}, {"id": "rt-101", "qty": 1}])
-chk("змішаний кошик + cod → OrderError; + prepaid → ок", raises(lambda: so.build_order(dict(mixed, payment_method="cod"))) and so.build_order(dict(mixed, payment_method="prepaid"))[1] == 650)
+chk("змішаний кошик (Toysi + rt) відхиляється і з cod, і з prepaid (різні ланцюги виконання)", raises(lambda: so.build_order(dict(mixed, payment_method="cod"))) and raises(lambda: so.build_order(dict(mixed, payment_method="prepaid"))))
 plain = dict(base, items=[{"id": "100", "qty": 1}])
 chk("без rt: cod за замовчуванням, як раніше", so.build_order(plain)[0]["payment_method"] == "cod" and so.build_order(dict(plain, payment_method="prepaid"))[0]["payment_method"] == "prepaid")
 

@@ -297,6 +297,10 @@ MAX_PDF_BYTES = 2 * 1024 * 1024
 _ONESTEP_OK_RE = re.compile(r"^(?:/ua)?/(?:onestep/shipping|data/shipping/\d+/(?:warehouse|findstreets)|cart/(?:add|delete|save)|orderaddon)$")
 
 
+# Фінальне натискання «З балансу (Прошу відправити)» НЕ підключено (потрібне перше спостережуване замовлення власника). Поки False — rt_order_runner у реальному режимі відмовляє.
+FINAL_IMPLEMENTED = False
+
+
 class OrderError(Exception):
     pass
 
@@ -368,7 +372,7 @@ def order_flow(order: dict, submit: bool = False) -> dict:
         raise OrderError("--submit-balance вимагає RT_ORDER_SUBMIT=1 (свідоме рішення власника)")
     if not STATE_FILE.exists():
         raise OrderError(f"нема сесії {STATE_FILE.name}: --vps-login")
-    res = {"ready": False, "submitted": False, "problems": []}
+    res = {"ready": False, "submitted": False, "not_submitted_certain": False, "problems": []}
     blocked = {"final": False}
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -491,6 +495,7 @@ def order_flow(order: dict, submit: bool = False) -> dict:
                 if not res["problems"] and not res["checkout_warnings"]:
                     res["ready"] = True
                 if submit:
+                    res["not_submitted_certain"] = True      # усі наступні raise — ДО натискання; фінальна реалізація МУСИТЬ виставити False безпосередньо ПЕРЕД кліком (runner відкочує крок лише за True)
                     if not res["ready"]:
                         raise OrderError(f"фінал не виконано: {res['problems'] or res['checkout_warnings']}")
                     if res["balance"] is None or res["total_on_checkout"] is None or res["balance"] < res["total_on_checkout"]:

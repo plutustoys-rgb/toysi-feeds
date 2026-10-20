@@ -1,0 +1,14 @@
+[Unit]
+Description=PlutusToys: конвеєр замовлень RoyalToys (rt_order_runner.py — оплачене rt- замовлення → своя ТТН НП → наліпка → замовлення в кабінеті RoyalToys → трекінг)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. За замовчуванням DRY-RUN: нічого не створюється, поки у /opt/plutustoys/.env власник не виставить RT_RUNNER_APPLY=1, NP_TTN_APPLY=1, RT_ORDER_SUBMIT=1
+# (і поки rt_cabinet.FINAL_IMPLEMENTED=False у коді, реальний режим закритий у будь-якому разі). Код виходу 1 = у замовленні є проблема (див. journalctl -u rt-order-runner).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/rt_order_runner.py
+TimeoutStartSec=1200
+Nice=10

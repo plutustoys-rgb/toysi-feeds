@@ -430,8 +430,9 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     armed["on"] = False                          # ОДНОРАЗОВО: після першого пропущеного фінального POST лок знову закритий
                     armed["passed"] += 1
                     return r.continue_()
-                if req.method not in ("GET", "HEAD") and len(aborted) < 12:
-                    aborted.append(f"{req.method} {u.path}")
+                _entry = f"{req.method} {u.path}"
+                if req.method not in ("GET", "HEAD") and len(aborted) < 12 and _entry not in aborted:
+                    aborted.append(_entry)
                 if d == "final_blocked":
                     blocked["final"] = True                      # фінальний POST поза озброєним вікном блокується ЗАВЖДИ
                 return r.abort()
@@ -596,14 +597,16 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     after = orders_text()
                     if _squash(order["ttn_number"]) not in _squash(after):
                         if armed["passed"] == 0:
+                            res["problems"].append("заблоковані POST після кліку: " + (", ".join(aborted) or "жодного"))
                             try:
-                                _errs = page.eval_on_selector_all("[class*=error], [class*=warning], .alert", "els => els.filter(e => e.offsetParent !== null).map(e => e.textContent.trim().slice(0, 90)).filter(Boolean).slice(0, 4)")
+                                _errs = page.eval_on_selector_all("[class*=error], [class*=warning], .alert", "els => els.filter(e => e.offsetParent !== null).map(e => e.textContent.trim()).filter(Boolean).slice(0, 3)")
                             except Exception:  # noqa: BLE001
                                 _errs = []
+                            _errs = [re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", re.sub(r"\s+", " ", x))[:70] for x in _errs]     # цифри/телефони маскуємо: ПІБ/телефон не мають потрапити в rt_error/алерт
                             res["problems"].append("видимі повідомлення форми після кліку: " + (" | ".join(_errs) or "нема"))
                             # дві ознаки разом: лок не пропустив жодного фінального POST І ТТН у списку немає → резерву не створено, чистий відкат (якщо обхідний шлях усе ж створив резерв і ТТН видно — це успіх нижче)
                             res["not_submitted_certain"] = True
-                            raise OrderError("клік «Резерв» не відправив фінальний POST (лок не пропустив жодного), ТТН у списку немає — резерву не створено; заблоковані POST: " + (", ".join(sorted(set(aborted))) or "жодного"))
+                            raise OrderError("клік «Резерв» не відправив фінальний POST (лок не пропустив жодного), ТТН у списку немає — резерву не створено")
                         raise OrderError("після кліку «Резерв» замовлення з цим № ТТН у списку не знайдено — результат невідомий, звірте кабінет вручну")
                     # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; ТТН показана групами/нема RT — позначаємо за ТТН
                     pos = after.find(order["ttn_number"])

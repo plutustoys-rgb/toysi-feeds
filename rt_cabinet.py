@@ -788,6 +788,125 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
     return res
 
 
+def balance_lock_decision(method: str, host_ok: bool, path: str, query: str, armed: bool, num: str) -> str:
+    """Замок підтвердження «З балансу». continue | final_pass | abort. POST/інші методи — abort. Усі GET на /1sbuttons — abort, КРІМ одного: озброєний, рівно dop1=fromBalance&dop2=<номер нашого замовлення> (ніколи cancelOrder чи чуже замовлення).
+    GET на посилання з logout/exit/delete/remove/clear/cancel — abort."""
+    if method not in ("GET", "HEAD"):
+        return "abort"
+    p = path.rstrip("/").lower()
+    if "1sbuttons" in p:                              # будь-який шлях із 1sbuttons (/x, .php, //, /ua/) — abort, КРІМ єдиного дозволеного нижче (аудит #925 N4)
+        qs = parse_qs(query, keep_blank_values=True)   # порожні/дубльовані параметри не ховаються (N3)
+        if armed and host_ok and path == "/1sbuttons/" and qs == {"dop1": ["fromBalance"], "dop2": [num]}:
+            return "final_pass"
+        return "abort"
+    if re.search(r"logout|exit|delete|remove|clear|cancel", (path + "?" + query).lower()):
+        return "abort"
+    return "continue"
+
+
+def confirm_from_balance(rt_ref: str, expected_total, apply: bool = False) -> dict:
+    """Підтвердження вже створеного РЕЗЕРВУ кнопкою «З балансу (На відправку)» (власник 20.10: «переводь, баланс поповнений»). Списує суму замовлення з балансу RoyalToys і віддає замовлення на відправку (менеджер: відсікання 14:00 пн–пт).
+    Без apply — лише перевірки (нічого не натискається). Перевірки: RT-номер у списку один, статус «Очікує оплати», «Сума замовлення» = expected_total, Доступно >= суми, посилання fromBalance для ЦЬОГО номера рівно одне. Клік — це один GET /1sbuttons/?dop1=fromBalance&dop2=<номер>, дозволений замком лише в озброєному вікні.
+    Результат: після кліку статус має змінитися з «Очікує оплати» (не «Відмінено»), баланс — зменшитись на суму; інакше confirmed=False з поясненням (стан невідомий → звірка вручну)."""
+    from playwright.sync_api import sync_playwright
+    res = {"ready": False, "confirmed": False, "clicked": False, "problems": []}
+    m = re.fullmatch(r"RT0*(\d{3,})", rt_ref or "")
+    if not m:
+        raise OrderError("rt_ref має бути у форматі RT000773594")
+    num = m.group(1)
+    if expected_total is None or not (0 < float(expected_total) < 1e6):
+        raise OrderError("expected_total обов'язковий (сума замовлення з кабінету)")
+    if apply and os.environ.get("RT_ORDER_SUBMIT") != "1":
+        raise OrderError("підтвердження з балансу вимагає RT_ORDER_SUBMIT=1 (свідоме рішення власника)")
+    ensure_session()
+    armed = {"on": False, "passed": 0}
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            ctx = browser.new_context(storage_state=str(STATE_FILE), service_workers="block")
+
+            def _lock(r):
+                req = r.request
+                u = urlparse(req.url)
+                d = balance_lock_decision(req.method, (u.hostname or "").lower() in HOST_OK, u.path, u.query, armed["on"], num)
+                if d == "continue":
+                    return r.continue_()
+                if d == "final_pass":
+                    armed["on"] = False
+                    armed["passed"] += 1
+                    return r.continue_()
+                return r.abort()
+            ctx.route("**/*", _lock)
+            page = ctx.new_page()
+
+            def read_list():
+                page.goto("https://royaltoys.com.ua/ua/my/orders/", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                page.wait_for_timeout(2000)
+                text = re.sub(r"\s+", " ", page.inner_text("body"))
+                refs = re.findall(r"RT0*%s\b" % num, text)
+                mm = re.search(r"RT0*%s\b" % num, text)
+                i0 = mm.start() if mm else -1
+                block = ""
+                if i0 >= 0:
+                    nxt = re.search(r"RT\d{6,}", text[i0 + 8:])
+                    block = text[i0:i0 + 8 + (nxt.start() if nxt else 500)][:600]
+                return text, block, len(set(refs))
+
+            text, block, n_refs = read_list()
+            if not _logged_in(page):
+                raise OrderError("сесія не прийнята")
+            bal0 = _balance(text)
+            m_sum = re.search(r"Сума замовлення\s*(\d[\d\s\u00a0]*(?:[.,]\d+)?\s*грн)", block)
+            total = _money(m_sum.group(1)) if m_sum else None
+            res.update({"balance_before": bal0, "total": total, "status_block": re.sub(r"\s+", " ", block)[:120] if block else ""})
+            if n_refs != 1 or not block:
+                res["problems"].append(f"замовлення {rt_ref} у списку: знайдено {n_refs} (потрібне рівно одне)")
+            elif "Очікує оплати" not in block:
+                res["problems"].append("статус замовлення не «Очікує оплати» (вже підтверджене/скасоване?) — нічого не робимо")
+            elif total is None or abs(total - float(expected_total)) > 0.005:
+                res["problems"].append(f"сума в кабінеті ({total}) не збігається з очікуваною ({expected_total})")
+            elif bal0 is None or bal0 + 0.005 < total:
+                res["problems"].append(f"недостатньо балансу: доступно {bal0}, потрібно {total}")
+            links = page.locator('a[href*="dop1=fromBalance"][href*="dop2=%s"]' % num)
+            if not res["problems"] and links.count() != 1:
+                res["problems"].append(f"посилання «З балансу» для цього замовлення: {links.count()} (потрібне рівно одне)")
+            if res["problems"]:
+                return res
+            href = urljoin(page.url, links.first.get_attribute("href") or "")
+            if urlparse(href).path.rstrip("/") != "/1sbuttons" or parse_qs(urlparse(href).query) != {"dop1": ["fromBalance"], "dop2": [num]}:
+                res["problems"].append("посилання «З балансу» має несподіваний вигляд — зупинка")
+                return res
+            res["ready"] = True
+            if not apply:
+                return res
+            armed["on"] = True
+            try:
+                res["clicked"] = True
+                try:
+                    page.goto(href, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                except Exception:  # noqa: BLE001
+                    pass                                                 # редірект/перервана навігація — результат визначаємо за списком нижче
+                page.wait_for_timeout(2500)
+            finally:
+                armed["on"] = False
+            try:
+                text2, block2, n2 = read_list()
+            except Exception as _e:  # noqa: BLE001
+                res["problems"].append(f"клік виконано, але прочитати результат не вдалося ({type(_e).__name__}) — результат НЕВІДОМИЙ, звірте кабінет (статус замовлення і баланс) вручну")
+                return res
+            bal1 = _balance(text2)
+            res["balance_after"] = bal1
+            res["status_after"] = re.sub(r"\s+", " ", block2)[:120] if block2 else ""
+            status_changed = bool(block2) and "Очікує оплати" not in block2 and "Відмін" not in block2 and "Видален" not in block2 and "Скасов" not in block2
+            paid = bal0 is not None and bal1 is not None and abs((bal0 - bal1) - total) < 0.011
+            res["confirmed"] = bool(armed["passed"] == 1 and status_changed and paid)
+            if not res["confirmed"]:
+                res["problems"].append(f"після кліку підтвердження не бачу (клік пропущено: {armed['passed']}, статус змінився: {status_changed}, баланс зменшився на суму: {paid}) — звірте кабінет вручну")
+        finally:
+            browser.close()
+    return res
+
+
 def explore() -> int:
     from playwright.sync_api import sync_playwright
     if not STATE_FILE.exists():
@@ -866,11 +985,22 @@ if __name__ == "__main__":
     g.add_argument("--keepalive", action="store_true")
     g.add_argument("--vps-login", action="store_true")
     g.add_argument("--order", metavar="order.json")
+    g.add_argument("--confirm-balance", metavar="RT000000")        # «З балансу» для вже створеного резерву (потрібні --total і для реального кліку --yes + RT_ORDER_SUBMIT=1)
+    ap.add_argument("--total", type=float)
+    ap.add_argument("--yes", action="store_true")
     ap.add_argument("--submit-reserve", action="store_true")      # фінал «Резерв (Прошу не відправляти)»: лише з RT_ORDER_SUBMIT=1 (під наглядом власника)
     ap.add_argument("--submit-balance", action="store_true")      # «З балансу» — НЕ підключено
     a = ap.parse_args()
     if (a.submit_balance or a.submit_reserve) and not a.order:
         ap.error("--submit-* працює лише разом з --order")
+    if a.confirm_balance:
+        import json
+        try:
+            out = confirm_from_balance(a.confirm_balance, a.total, apply=a.yes)
+        except (OrderError, OSError, ValueError) as e:
+            out = {"ready": False, "confirmed": False, "problems": [str(e)]}
+        print(json.dumps(out, ensure_ascii=False))
+        sys.exit(0 if (out.get("confirmed") or (out.get("ready") and not a.yes)) else 1)
     if a.order:
         import json
         try:

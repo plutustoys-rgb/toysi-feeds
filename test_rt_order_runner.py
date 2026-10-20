@@ -13,6 +13,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 os.environ["AUDIT_NO_TELEGRAM"] = "1"
+os.environ.pop("RT_AUTO_CONFIRM", None)      # брама автопідтвердження в оточенні не має впливати на старі тести
 os.environ["ORDERS_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "orders.db")
 sys.path.insert(0, str(Path(__file__).parent))
 import orders_db  # noqa: E402
@@ -466,5 +467,108 @@ with orders_db.get_connection() as c:
 fk3 = RetFake({"status": "Відмова", "delivered": False, "return_ttn": "20451570000002"})
 rr.run(apply=True, deps=fk3)
 chk("run(): returned-замовлення без жодного іншого в роботі — повідомлення RoyalToys усе одно надіслано й позначено", any("RT000773595" in t for t in fk3.sent) and get(rt2)["rt_return_notified_at"])
+# ---- автопідтвердження «З балансу» (рішення власника 20.10) ----
+class AC(Fake):
+    def __init__(self, conf):
+        super().__init__()
+        self.conf = list(conf)
+        self.conf_calls = []
+
+    def rt_order(self, items, ttn, pdf, recipient=None):
+        self.calls.append("rt_order")
+        return {"submitted": True, "rt_order_ref": "RT000900001", "total_on_checkout": 618.0}
+
+    def rt_confirm(self, rt_ref, total):
+        self.conf_calls.append((rt_ref, total))
+        return self.conf.pop(0)
+
+
+def _with_gate(val):
+    if val is None:
+        os.environ.pop("RT_AUTO_CONFIRM", None)
+    else:
+        os.environ["RT_AUTO_CONFIRM"] = val
+
+
+_with_gate(None)
+ac0 = new_order("AC0")
+fk = AC([])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac0), SUP, apply=True, deps=fk)
+chk("авто-брама RT_AUTO_CONFIRM вимкнена: резерв створено, підтвердження НЕ пробується (як було), rt_total збережено", fk.conf_calls == [] and get(ac0)["rt_state"] == "rt_ordered" and get(ac0)["rt_confirmed_at"] is None and get(ac0)["rt_total"] == 618.0)
+_with_gate("1")
+ac1 = new_order("AC1")
+fk = AC([{"confirmed": True, "balance_before": 1000.0, "balance_after": 1000.0}])
+with orders_db.get_connection() as c:
+    rep1 = rr.process_order(c, get(ac1), SUP, apply=True, deps=fk)
+chk("авто-брама увімкнена: після резерву одразу «З балансу» з номером RT і збереженою сумою; rt_confirmed_at проставлено", fk.conf_calls == [("RT000900001", 618.0)] and get(ac1)["rt_confirmed_at"] and not rep1["problems"])
+fk = AC([])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac1), SUP, apply=True, deps=fk)
+chk("уже підтверджене (rt_confirmed_at) — повторно не підтверджуємо", fk.conf_calls == [])
+ac2 = new_order("AC2")
+fk = AC([{"confirmed": False, "low_balance": True, "problems": ["недостатньо балансу: доступно 10, потрібно 618"]}])
+with orders_db.get_connection() as c:
+    rep2 = rr.process_order(c, get(ac2), SUP, apply=True, deps=fk)
+chk("мало балансу: резерв лишається rt_ordered, НЕ позначено підтвердженим, без problems (алерт «поповніть»)", get(ac2)["rt_state"] == "rt_ordered" and get(ac2)["rt_confirmed_at"] is None and not rep2["problems"])
+fk = AC([{"confirmed": True, "balance_before": 1000.0, "balance_after": 1000.0}])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac2), SUP, apply=True, deps=fk)
+chk("після поповнення наступний цикл (rt_ordered) підтверджує сам", fk.conf_calls == [("RT000900001", 618.0)] and get(ac2)["rt_confirmed_at"])
+ac3 = new_order("AC3")
+fk = AC([{"confirmed": False, "already": True, "problems": ["статус не «Очікує оплати»"]}])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac3), SUP, apply=True, deps=fk)
+chk("уже підтверджено вручну (status already) — позначаємо без повторного кліку", get(ac3)["rt_confirmed_at"] and len(fk.conf_calls) == 1)
+ac4 = new_order("AC4")
+fk = AC([{"confirmed": False, "cancelled": True, "problems": ["скасоване"]}])
+with orders_db.get_connection() as c:
+    rep4 = rr.process_order(c, get(ac4), SUP, apply=True, deps=fk)
+chk("скасовано в кабінеті — стан manual, не підтверджено", get(ac4)["rt_state"] == "manual" and get(ac4)["rt_confirmed_at"] is None)
+ac5 = new_order("AC5")
+class ACboom(AC):
+    def rt_confirm(self, rt_ref, total):
+        raise RuntimeError("x")
+fk = ACboom([])
+with orders_db.get_connection() as c:
+    rep5 = rr.process_order(c, get(ac5), SUP, apply=True, deps=fk)
+chk("збій підтвердження після створеного резерву: стан rt_ordered лишається (резерв є), problems з поясненням, наступний цикл повторить", get(ac5)["rt_state"] == "rt_ordered" and any("збій" in x for x in rep5["problems"]))
+_with_gate(None)
+# аудит #929: у гілці rt_ordered — cancelled -> manual БЕЗ трекінгу/confirm_fail; unknown_status не підтверджує; «ttn-…» без номера RT -> ручна звірка
+_with_gate("1")
+ac6 = new_order("AC6")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ac6, "rt_ordered", rt_order_ref="RT000900006", toysi_ttn="20451500000006")
+    c.commit()
+fk = AC([{"confirmed": False, "cancelled": True, "problems": ["скасоване"]}])
+fk.ttn_info = {"status": "Відправлення прямує", "status_code": "5", "delivered": False}
+with orders_db.get_connection() as c:
+    rep6 = rr.process_order(c, get(ac6), SUP, apply=True, deps=fk)
+chk("rt_ordered + скасовано в кабінеті: manual, трекінг НП НЕ перезаписує стан, без хибного «повторимо»", get(ac6)["rt_state"] == "manual" and "tracking" not in fk.calls and not rep6["problems"])
+ac7 = new_order("AC7")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ac7, "rt_ordered", rt_order_ref="RT000900007", toysi_ttn="20451500000007")
+    c.commit()
+fk = AC([{"confirmed": False, "unknown_status": True, "problems": ["невідомий"]}])
+with orders_db.get_connection() as c:
+    rep7 = rr.process_order(c, get(ac7), SUP, apply=True, deps=fk)
+chk("невідомий статус у кабінеті: НЕ позначено підтвердженим, problems/rt_error, стан rt_ordered", get(ac7)["rt_confirmed_at"] is None and get(ac7)["rt_state"] == "rt_ordered" and rep7["problems"])
+ac8 = new_order("AC8")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ac8, "rt_ordered", rt_order_ref="ttn-20451500000008", toysi_ttn="20451500000008")
+    c.commit()
+fk = AC([])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac8), SUP, apply=True, deps=fk)
+chk("rt_order_ref без номера RT («ttn-…») -> автопідтвердження не пробується (ручна звірка), не падає", fk.conf_calls == [] and get(ac8)["rt_confirmed_at"] is None)
+ac9 = new_order("AC9")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ac9, "rt_ordered", rt_order_ref="RT000900009", toysi_ttn="20451500000009")
+    c.commit()
+fk = AC([])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac9), SUP, apply=False, deps=fk)
+chk("dry-run (apply=False) при ввімкненій брамі: підтвердження недосяжне", fk.conf_calls == [])
+_with_gate(None)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

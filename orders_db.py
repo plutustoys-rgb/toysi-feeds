@@ -350,6 +350,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rt_error", "rt_error TEXT")
         _ensure_column(conn, "orders", "rt_updated_at", "rt_updated_at TEXT")
         _ensure_column(conn, "orders", "rt_return_notified_at", "rt_return_notified_at TEXT")
+        _ensure_column(conn, "orders", "rt_confirmed_at", "rt_confirmed_at TEXT")
+        _ensure_column(conn, "orders", "rt_total", "rt_total REAL")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
         # дописано в kodv_ledger.jsonl — персистентна позначка, не 24-годинне
         # вікно, щоб дрейф/пропуск таймера (як уже стався з update-feeds.yml)
@@ -552,7 +554,7 @@ def get_rt_orders_pending(conn: sqlite3.Connection) -> list:
 
 def set_rt_state(conn: sqlite3.Connection, internal_order_id: str, state: str | None = None, **fields) -> None:
     """Оновлює rt_state та/або rt_ttn_ref / rt_marking_path / rt_order_ref / rt_error / toysi_ttn / delivery_status; rt_updated_at ставиться завжди. Невідомі поля й стани — ValueError (не мовчки)."""
-    allowed = {"rt_ttn_ref", "rt_marking_path", "rt_order_ref", "rt_error", "toysi_ttn", "delivery_status"}
+    allowed = {"rt_ttn_ref", "rt_marking_path", "rt_order_ref", "rt_error", "toysi_ttn", "delivery_status", "rt_total"}
     bad = set(fields) - allowed
     if bad or (state is not None and state not in RT_STATES):
         raise ValueError(f"set_rt_state: невідомий стан/поле {state!r} {sorted(bad)}")
@@ -568,6 +570,14 @@ def set_rt_state(conn: sqlite3.Connection, internal_order_id: str, state: str | 
         params.append(datetime.now().isoformat(timespec="seconds"))
     params.append(internal_order_id)
     conn.execute(f"UPDATE orders SET {', '.join(sets)} WHERE internal_order_id = ?", params)
+
+
+def mark_rt_confirmed(conn: sqlite3.Connection, internal_order_id: str) -> bool:
+    """Резерв RoyalToys підтверджено «З балансу» (автоматично або вручну власником) — більше не пробуємо."""
+    cur = conn.execute("UPDATE orders SET rt_confirmed_at = ? WHERE internal_order_id = ? AND rt_confirmed_at IS NULL",
+                       (datetime.now().isoformat(timespec="seconds"), internal_order_id))
+    conn.commit()
+    return cur.rowcount == 1
 
 
 def get_rt_returns_unnotified(conn: sqlite3.Connection) -> list:

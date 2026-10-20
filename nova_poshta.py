@@ -391,11 +391,14 @@ def get_tracking_status(ttn: str) -> dict | None:
     status = info.get("Status", "")
     actual_delivery_date = (info.get("ActualDeliveryDate") or "").strip()
     delivered = bool(actual_delivery_date) and "отримано" in status.lower()
+    based = str(info.get("LastCreatedOnTheBasisNumber") or "").strip()
     return {
         "status": status,
         "status_code": str(info.get("StatusCode", "")),
         "delivered": delivered,
         "actual_delivery_date": actual_delivery_date or None,
+        # № ЕН, створеної НП на підставі цієї (автоповернення/переадресація): 14 цифр або None. НЕ перевірено на живому поверненні (їх ще не було) — споживач лише повідомляє, рішення за людиною
+        "return_ttn": based if (len(based) == 14 and based.isdigit() and based != str(ttn)) else None,
     }
 
 

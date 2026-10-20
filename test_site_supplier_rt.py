@@ -86,7 +86,7 @@ bs.SUPPLIER_RT_FILE = str(tmp / "nope.json")
 chk("файлу нема → порожньо, без шуму", bs._load_supplier_rt() == {})
 
 # (2) повна збірка
-write_files({"rt-101": GOOD, "rt-102": dict(GOOD, name="Набір кубиків дерев'яних 50 шт", vendor_code="RT-78", price=350, cost=210, stock=0, images=["https://plutustoys.com.ua/img/rt/102-1.jpg"]), "rt-103": dict(GOOD, name="Набір фігурок 12 шт", index=False, vendor_code="RT-79"), "rt-104": dict(GOOD, name="Брязкальце зі звуком", description="Коротко."), "rt-105": dict(GOOD, name="Рідкісний колекційний набір", category="Редкая", vendor_code="RT-80", price=500)})
+write_files({"rt-101": GOOD, "rt-102": dict(GOOD, name="Набір кубиків дерев'яних 50 шт", vendor_code="RT-78", price=350, cost=210, stock=0, images=["https://plutustoys.com.ua/img/rt/102-1.jpg"]), "rt-103": dict(GOOD, name="Набір фігурок 12 шт", index=False, vendor_code="RT-79"), "rt-104": dict(GOOD, name="Брязкальце зі звуком", description="Коротко."), "rt-105": dict(GOOD, name="Рідкісний колекційний набір", category="Редкая", vendor_code="RT-80", price=500), "rt-106": dict(GOOD, name="Дубль іграшки п'ять", vendor_code="RT-81", dup_of="5"), "rt-107": dict(GOOD, name="Дубль якого нема", vendor_code="RT-82", dup_of="999999"), "rt-108": dict(GOOD, name="Дубль вичерпаного Toysi", vendor_code="RT-83", dup_of="901")})
 
 
 def toysi(pid, name, cat):
@@ -95,6 +95,8 @@ def toysi(pid, name, cat):
 
 
 catalog = {str(i): toysi(i, f"Іграшка {i}", "Конструктори RT" if i % 2 else "Машинки") for i in range(1, 41)}
+catalog["901"] = toysi(901, "Вичерпаний товар Toysi", "Конструктори RT")
+catalog["901"]["stock"] = 0
 bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
 bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None
 bs.CATEGORY_GROUPS_FILE = str(tmp / "none.json")
@@ -130,17 +132,26 @@ ix = {x["id"]: x for x in idx}
 chk("index.json: rt-запис має rt=1 і ix (1 — індексується, 0 — ні) для фідів; у звичайного товару цих полів нема", ix["rt-101"].get("rt") == 1 and ix["rt-101"].get("ix") == 1 and ix["rt-103"].get("ix") == 0 and ix["rt-104"].get("ix") == 0 and "rt" not in ix["5"] and "ix" not in ix["5"])
 cat_html = [q.read_text(encoding="utf-8") for q in out.glob("category-*.html") if "product-rt-101" in q.read_text(encoding="utf-8")]
 order = re.findall(r'"url": "https://plutustoys.com.ua/product-([^"]+)\.html"', cat_html[0]) if cat_html else []
-chk("у категорії rt-картки стоять ПІСЛЯ Toysi (rec_order, ItemList)", "rt-101" in order and all(not x.startswith("rt-") for x in order[:order.index("rt-101")]) and order.index("rt-101") >= 1)
+chk("у категорії rt-картки стоять ПІСЛЯ Toysi (rec_order, ItemList)", "rt-101" in order and [x.startswith("rt-") for x in order] == sorted(x.startswith("rt-") for x in order) and order[0] and not order[0].startswith("rt-"))
 
 # 2в) індекс розділено (20.10): index.json (повний — API/фіди), index-t.json (Toysi), index-rt.json (RoyalToys)
 full = json.loads((out / "index.json").read_text(encoding="utf-8"))
 it_ = json.loads((out / "index-t.json").read_text(encoding="utf-8"))
 irt = json.loads((out / "index-rt.json").read_text(encoding="utf-8"))
-chk("index-t.json — без rt; index-rt.json — лише rt; разом = повний index.json (порядок: спершу Toysi, потім rt)", all("rt" not in x for x in it_) and irt and all(x.get("rt") == 1 for x in irt) and [x["id"] for x in it_ + irt] == [x["id"] for x in full])
+chk("index-t.json — без rt; index-rt.json — лише rt; разом = повний index.json (порядок: спершу Toysi, потім rt)", all("rt" not in x for x in it_) and irt and all(x.get("rt") == 1 for x in irt) and [x["id"] for x in it_ + irt] == [x["id"] for x in full if not x.get("dup")])
 rt_only_pages = [q.name for q in out.glob("category-*.html") if 'data-rtonly="1"' in q.read_text(encoding="utf-8")]
 mixed_page = next(q.name for q in out.glob("category-*.html") if "product-rt-101" in q.read_text(encoding="utf-8") and 'data-rtonly="1"' not in q.read_text(encoding="utf-8"))
 chk("сторінка категорії лише з RoyalToys позначена data-rtonly=1, змішана — ні", len(rt_only_pages) == 1 and mixed_page)
 
+# 2г) RoyalToys-дублі Toysi (варіант 1 «резерв», власник 20.10): тінь = rt із dup_of на товар Toysi, що Є В НАЯВНОСТІ
+sh_t = (out / "product-rt-106.html").read_text(encoding="utf-8") if (out / "product-rt-106.html").exists() else ""
+chk("тінь rt-106 (dup_of=5, Toysi 5 в наявності): сторінка жива, noindex і canonical на product-5.html", bool(sh_t) and 'content="noindex,follow"' in sh_t and 'rel="canonical" href="https://plutustoys.com.ua/product-5.html"' in sh_t)
+ids_t = {x["id"] for x in it_}
+ids_rt = {x["id"] for x in irt}
+chk("тінь НЕ в index-t.json/index-rt.json (каталог/пошук її не бачать), але є в повному index.json з dup=1 (сервер бере ціну)", "rt-106" not in ids_t | ids_rt and next((x for x in full if x["id"] == "rt-106"), {}).get("dup") == 1)
+chk("дубль, чий Toysi вичерпаний (901) або якого нема (999999), — НЕ тінь: rt-107, rt-108 у index-rt.json, canonical на себе", {"rt-107", "rt-108"} <= ids_rt and 'rel="canonical" href="https://plutustoys.com.ua/product-rt-107.html"' in (out / "product-rt-107.html").read_text(encoding="utf-8"))
+txt_all = "".join(q.read_text(encoding="utf-8") for q in out.glob("category-*.html")) + (out / "catalog.html").read_text(encoding="utf-8") + (out / "index.html").read_text(encoding="utf-8")
+chk("тінь не показана в категоріях/каталозі/головній і не в sitemap", "product-rt-106" not in txt_all and "product-rt-106" not in "".join(q.read_text(encoding="utf-8") for q in out.glob("sitemap-*.xml")))
 # (3) браузер: кошик
 cart_html = (out / "cart.html").read_text(encoding="utf-8")
 chk("розмітка кошика: є блок пояснення #rt-pay-note, прихований за замовчуванням", re.search(r'id="rt-pay-note" hidden', cart_html) is not None)
@@ -185,8 +196,8 @@ with sync_playwright() as pw:
     pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto(f"{base}/{mixed_page}", wait_until="load")
     pg.wait_for_selector("#cat-js a.card", timeout=15000)
-    pg.wait_for_function("document.getElementById('cat-count') && /Знайдено: 23/.test(document.getElementById('cat-count').textContent)", timeout=15000)
-    chk(f"змішана категорія: запити {reqs}: index-t.json перед index-rt.json, повний index.json НЕ запитувався; після довантаження Знайдено = 20 Toysi + 3 rt = 23", "index.json" not in reqs and "index-t.json" in reqs and "index-rt.json" in reqs and reqs.index("index-t.json") < reqs.index("index-rt.json"))
+    pg.wait_for_function("document.getElementById('cat-count') && /Знайдено: 25/.test(document.getElementById('cat-count').textContent)", timeout=15000)
+    chk(f"змішана категорія: запити {reqs}: index-t.json перед index-rt.json, повний index.json НЕ запитувався; після довантаження Знайдено = 20 Toysi + 5 rt = 25", "index.json" not in reqs and "index-t.json" in reqs and "index-rt.json" in reqs and reqs.index("index-t.json") < reqs.index("index-rt.json"))
     chk("змішана категорія: без помилок JS", errs == [])
     pg.goto(f"{base}/{rt_only_pages[0]}", wait_until="load")
     pg.wait_for_selector("#cat-js a.card", timeout=15000)

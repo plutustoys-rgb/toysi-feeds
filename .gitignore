@@ -335,3 +335,5 @@ gmc_service_account*.json
 /supplier_rt.json
 /supplier_rt.json.tmp
 /site/img/rt/
+/ig_reels.json
+/ig_reels.json.tmp

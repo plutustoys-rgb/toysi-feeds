@@ -30,7 +30,7 @@ QUEUE_DIR = Path(os.environ.get("REEL_QUEUE_DIR", "/opt/plutustoys/reels_queue")
 SITE_INDEX_URL = "https://plutustoys.com.ua/index.json"
 IG_CAPTION_MAX = 2200
 IG_USERNAME = os.environ.get("IG_USERNAME", "plutustoys.ua")
-IG_REELS_FILE = Path(os.environ.get("IG_REELS_JSON", str(HERE / "ig_reels.json")))      # ЧИТАЄ site/build_site.py (/ig.html); поза site/ і git
+IG_REELS_FILE = Path(os.environ.get("IG_REELS_FILE", str(HERE / "ig_reels.json")))      # ЧИТАЄ site/build_site.py (/ig.html); поза site/ і git
 
 
 class HostingError(RuntimeError):
@@ -70,23 +70,43 @@ def publish_reel(url: str, caption: str) -> dict:
 
 
 def _ig_permalink(media_id) -> str:
-    """Публічний permalink опублікованого Reel (Graph GET /{media_id}?fields=permalink) → нормалізований https://www.instagram.com/<IG_USERNAME>/reel/<код>/. Нема/не розібрано → ''."""
+    """Публічний permalink опублікованого Reel (Graph GET /{media_id}?fields=permalink) → нормалізований https://www.instagram.com/<IG_USERNAME>/reel/<код>/. Нема/не розібрано → ''.
+    Токен іде в query, а текст винятків requests містить повний URL — тому жодного raise_for_status/str(e) назовні (аудит #902 B1: токен потрапляв у журнал і Telegram)."""
     import re
     import social_auto_poster as sap
-    r = requests.get(f"https://graph.facebook.com/{sap.GRAPH_VERSION}/{media_id}",
-                     params={"fields": "permalink", "access_token": sap.FB_PAGE_ACCESS_TOKEN}, timeout=30)
-    r.raise_for_status()
-    m = re.fullmatch(r"https://www\.instagram\.com/(?:[\w.]+/)?(?:reel|reels|p)/([\w-]+)/?", str((r.json() or {}).get("permalink") or ""))
+    try:
+        r = requests.get(f"https://graph.facebook.com/{sap.GRAPH_VERSION}/{media_id}",
+                         params={"fields": "permalink", "access_token": sap.FB_PAGE_ACCESS_TOKEN}, timeout=30)
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Graph недоступний ({type(e).__name__})") from None
+    if r.status_code != 200:
+        raise RuntimeError(f"Graph HTTP {r.status_code}")
+    m = re.fullmatch(r"https?://(?:www\.)?instagram\.com/(?:[A-Za-z0-9._]+/)?(?:reel|reels|p)/([A-Za-z0-9_-]+)/?(?:\?.*)?", str((r.json() or {}).get("permalink") or ""))
     return f"https://www.instagram.com/{IG_USERNAME}/reel/{m.group(1)}/" if m else ""
 
 
 def _start_site_rebuild() -> None:
-    subprocess.run(["systemctl", "start", "--no-block", "site-rebuild.service"], timeout=30, check=False)
+    r = subprocess.run(["systemctl", "start", "--no-block", "site-rebuild.service"], timeout=30, check=False, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"systemctl код {r.returncode}")
+
+
+def _safe(e) -> str:
+    """Текст помилки без секретів (токен у URL/повідомленні)."""
+    try:
+        import social_auto_poster as sap
+        return sap._mask_secrets(f"{type(e).__name__}: {e}")
+    except Exception:  # noqa: BLE001
+        return type(e).__name__
+
+
+IG_REELS_MAX = 50
 
 
 def register_on_site(name: str, manifest: dict, caption: str, media_id, now, *, permalink=None, rebuild=None, path=None) -> bool:
     """Дописує опублікований Reel у ig_reels.json (читає site/build_site.py → /ig.html: «найновіший першим, зі своїми товарами») і запускає перебудову сайту. BEST-EFFORT: Reel уже опубліковано —
-    збій тут НЕ скасовує публікацію (алерт, повторити вручну). Формат (узгоджено з Shopify-code 20.10): {"reels":[{"date","url","title","ids":[…]}]}; дублі за url не додаємо. ids = id товарів із manifest.verify."""
+    збій тут НЕ скасовує публікацію (алерт, повторити вручну). Формат (узгоджено з Shopify-code 20.10): {"reels":[{"date","url","title","ids":[…]}]}; НАЙНОВІШИЙ ПЕРШИМ; дублі за url не додаємо; ≤IG_REELS_MAX.
+    ids = id товарів із manifest.verify. Файл відсутній → новий; ЗІПСОВАНИЙ/нечитаний → не чіпаємо (алерт), щоб не стерти історію (аудит #902 S1). Збій лише перебудови ≠ збій запису (S2)."""
     try:
         ids = [str(v["id"]).strip() for v in (manifest.get("verify") or []) if isinstance(v, dict) and str(v.get("id") or "").strip()]
         url = (permalink or _ig_permalink)(media_id)
@@ -94,25 +114,34 @@ def register_on_site(name: str, manifest: dict, caption: str, media_id, now, *, 
             raise RuntimeError(f"нема {'permalink' if not url else 'id товарів у manifest.verify'}")
         title = str(manifest.get("title") or "").strip() or next((ln.strip() for ln in caption.splitlines() if ln.strip() and not ln.strip().startswith("#")), name)
         target = Path(path or IG_REELS_FILE)
+        top = {}
         try:
             data = json.loads(target.read_text(encoding="utf-8"))
-            reels = data.get("reels") if isinstance(data, dict) else None
-            reels = reels if isinstance(reels, list) else []
-        except (OSError, ValueError):
-            reels = []
+        except FileNotFoundError:
+            data = {}
+        if not isinstance(data, dict):
+            raise ValueError("ig_reels.json: очікувався об'єкт — файл не чіпаю")
+        top = {k: v for k, v in data.items() if k != "reels"}
+        reels = data.get("reels", [])
+        if not isinstance(reels, list):
+            raise ValueError("ig_reels.json: reels не список — файл не чіпаю")
         if any(isinstance(r, dict) and r.get("url") == url for r in reels):
             return True                                           # уже записано (повторний виклик ідемпотентний)
-        reels.append({"date": now.date().isoformat(), "url": url, "title": title[:90], "ids": ids})
+        reels.insert(0, {"date": now.date().isoformat(), "url": url, "title": title[:90], "ids": ids})
         tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"reels": reels}, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps({**top, "reels": reels[:IG_REELS_MAX]}, ensure_ascii=False, indent=1), encoding="utf-8")
         os.chmod(tmp, 0o644)
         os.replace(tmp, target)                                   # атомарно
-        (rebuild or _start_site_rebuild)()
-        return True
     except Exception as e:  # noqa: BLE001
-        print(f"[reel_autopublish] {name}: запис на сайт не вдався ({type(e).__name__}: {e})", file=sys.stderr)
-        _alert(f"reel_site:{name}", f"⚠️ Reel {name} опубліковано, але на сайт (/ig.html) НЕ дописано: {type(e).__name__}: {e}. Додати вручну в ig_reels.json/ig_featured.json.")
+        print(f"[reel_autopublish] {name}: запис на сайт не вдався ({_safe(e)})", file=sys.stderr)
+        _alert(f"reel_site:{name}", f"⚠️ Reel {name} опубліковано, але на сайт (/ig.html) НЕ дописано: {_safe(e)}. Додати вручну в ig_reels.json (найновіший першим) або ig_featured.json.")
         return False
+    try:
+        (rebuild or _start_site_rebuild)()
+    except Exception as e:  # noqa: BLE001
+        print(f"[reel_autopublish] {name}: запис є, перебудова сайту не стартувала ({_safe(e)})", file=sys.stderr)
+        _alert(f"reel_site_rebuild:{name}", f"⚠️ Reel {name}: у ig_reels.json ЗАПИСАНО, але перебудова сайту не стартувала ({_safe(e)}); /ig.html оновиться за таймером site-rebuild (≤ доби).")
+    return True
 
 
 def check_item(name: str, manifest: dict, mp4: Path, caption_path: Path, index: dict) -> list:

@@ -827,12 +827,32 @@ def _maybe_record_observed_discount(conn, order: dict) -> None:
     mark_discount_recorded(conn, order["internal_order_id"])
 
 
+def _np_refusals(active: list) -> dict:
+    """internal_order_id → {status, ttn, return_ttn} для відправлених замовлень, яких НП вже позначила відмовою/поверненням (власник 20.10: «детектити відмови і повернення»). Причина: Toysi про відмову ПІСЛЯ відправки не оновлює статус
+    (живе: 2 тихі відмови на 206 замовлень — site 10.10, Prom 15.09), а трекер раніше питав НП лише «delivered». Збій НП → порожньо (основне опитування не ламаємо)."""
+    cand = [o for o in active if o.get("toysi_ttn") and (o.get("carrier") or "nova_poshta") == "nova_poshta" and o.get("delivery_status") in ("shipped", "packed")]
+    if not cand:
+        return {}
+    try:
+        info = nova_poshta.get_tracking_batch([o["toysi_ttn"] for o in cand])
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_status_tracker] НП-перевірка відмов пропущена: {type(e).__name__}", file=sys.stderr)
+        return {}
+    out = {}
+    for o in cand:
+        x = info.get(str(o["toysi_ttn"]))
+        if x and nova_poshta.is_refusal(x):
+            out[o["internal_order_id"]] = {"status": x["status"], "ttn": str(o["toysi_ttn"]), "return_ttn": x.get("return_ttn")}
+    return out
+
+
 def track_orders() -> None:
     with get_connection() as conn:
         active = get_active_toysi_orders(conn)
         if not active:
             print("[order_status_tracker] Немає активних замовлень для відстеження")
             return
+        np_refused = _np_refusals(active)
 
         by_toysi_id = {str(o["toysi_order_id"]): o["internal_order_id"] for o in active}
         orders_by_internal_id = {o["internal_order_id"]: o for o in active}
@@ -859,8 +879,17 @@ def track_orders() -> None:
 
             order = orders_by_internal_id[internal_id]
             was_unsuccessful = order["delivery_status"] in _UNSUCCESSFUL_DELIVERY_STATUSES if order["delivery_status"] else False
+            refusal = np_refused.get(internal_id) if delivery_status in ("shipped", "packed") else None
+            if refusal:
+                delivery_status = "returned"          # НП каже «відмова/повернення», Toysi ще ні: далі спрацьовують наявні механізми returned (КОДВ-сторно в daily_report, виключення з опитування)
             update_delivery_status(conn, internal_id, toysi_ttn=ttn, delivery_status=delivery_status)
-            if delivery_status in _UNSUCCESSFUL_DELIVERY_STATUSES and not was_unsuccessful:
+            if refusal and not was_unsuccessful:
+                send_telegram_message(
+                    f"⚠️ Замовлення {internal_id} (Toysi #{toysi_id}, {order.get('platform', '?')}): відмова/повернення за Новою Поштою — «{refusal['status']}», ТТН {refusal['ttn']}"
+                    + (f", ТТН повернення {refusal['return_ttn']}" if refusal.get("return_ttn") else "")
+                    + ". Статус у базі виставлено returned; сторно для КОДВ готується автоматично, товар на поверненні — перевірте в «Взаєморозрахунках» Toysi."
+                )
+            elif delivery_status in _UNSUCCESSFUL_DELIVERY_STATUSES and not was_unsuccessful:
                 # Одразу, а не лише в щоденному звіті (P0-2) — власниця
                 # прямо просила алерт на КОЖНЕ скасування, не лише
                 # агрегований 60-денний показник раз на добу.

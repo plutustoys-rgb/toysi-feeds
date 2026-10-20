@@ -79,6 +79,14 @@ with _tf3.TemporaryDirectory() as td3:
     chk("validate_order: cost обов'язкова, скінченна і > 0 (nan/inf/0/-1/нема → відмова); дублі артикулів → відмова", bad(items=[{"vendor_code": "200513", "qty": 1, "cost": float("nan")}]) and bad(items=[{"vendor_code": "200513", "qty": 1, "cost": float("inf")}]) and bad(items=[{"vendor_code": "200513", "qty": 1, "cost": 0}]) and bad(items=[{"vendor_code": "200513", "qty": 1, "cost": -5}]) and bad(items=[{"vendor_code": "200513", "qty": 1}]) and bad(items=[{"vendor_code": "200513", "qty": 1, "cost": 10}, {"vendor_code": "200513", "qty": 2, "cost": 10}]))
     chk("allow-list POST: лише спостережені шляхи, прив'язані до початку; /onestep/update, /onestep/payment, /x/cart/add, фінал /onestep — НЕ пропускаються", all(rc._ONESTEP_OK_RE.search(x) for x in ("/ua/cart/add", "/ua/cart/delete", "/ua/cart/save", "/ua/onestep/shipping", "/ua/data/shipping/15/warehouse", "/ua/orderaddon", "/cart/add")) and not any(rc._ONESTEP_OK_RE.search(x) for x in ("/ua/onestep/update", "/ua/onestep/payment", "/ua/onestep", "/x/ua/cart/add", "/ua/onestep/total", "/ua/cart/clear")))
 chk("_money/_balance: «155 грн.», «1 234,50 грн», «Доступно 0.00» (з переносом рядка), «Доступно 1 250.5»", rc._money("Всього" + chr(10) + "155 грн.") == 155.0 and rc._money("1 234,50 грн") == 1234.5 and rc._balance("Доступно" + chr(10) + "0.00") == 0.0 and rc._balance("Доступно 1 250.5") == 1250.5 and rc._balance("нема") is None)
+lst_before = "Мої замовлення #RT000773500 от Вчора 10:00 Новий Сума замовлення 99,00 грн. Кількість 2шт."
+lst_after = "Мої замовлення #RT000773594 от Сьогодні 17:27 Новий Сума замовлення 30,40 грн. Кількість 1шт. " + lst_before
+cnr = rc.confirm_new_reserve
+chk("confirm_new_reserve: один новий RT із сумою оформлення → підтверджено (ТТН у списку не потрібна)", cnr(lst_after, {"RT000773500"}, 30.40)[0] == "RT000773594")
+chk("confirm_new_reserve: сума не збігається → не підтверджено", cnr(lst_after, {"RT000773500"}, 31.40)[0] is None)
+chk("confirm_new_reserve: нічого нового → None; два нових RT → None (неоднозначно); сума невідома → None",
+    cnr(lst_before, {"RT000773500"}, 99.0)[0] is None and cnr(lst_after + " RT000773595 Сума замовлення 30,40 грн.", {"RT000773500"}, 30.40)[0] is None and cnr(lst_after, {"RT000773500"}, None)[0] is None)
+chk("confirm_new_reserve: кількість штук збігається → ок; не збігається (інше замовлення з тією ж сумою) → None", cnr(lst_after, {"RT000773500"}, 30.40, 1)[0] == "RT000773594" and cnr(lst_after, {"RT000773500"}, 30.40, 2)[0] is None)
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)

@@ -257,6 +257,8 @@ def _detect_carrier(delivery_provider_data: dict | None, delivery_option: dict |
 def _convert_prom_order(order: dict) -> dict:
     """Приводить замовлення з реального Prom Orders API до сирої структури,
     яку очікує normalize_order() (той самий формат, що й мок-дані нижче)."""
+    # ВІДПОВІДЬ (20.10.2026): ТАК — recipient_address (city_id+warehouse_id = НП-рефи) є вже при першому погляді на замовлення; живо звірено warehouse_by_ref → Кагарлик №2, і для всіх 6 ТТН Prom за 35 днів
+    # місто/відділення в НП збігаються з вибором клієнта. Підключено нижче (np_ref_id/np_city_ref/np_warehouse_number). Діагностичний print лишено лише як журнал; питання закрито, нічого не «відкрито».
     # ДІАГНОСТИКА (наскрізний аудит order→Toysi, 2026-09-25, пропозиція Консультанта): Prom API
     # (delivery_provider_data.recipient_address.city_id/warehouse_id) дає той самий структурний
     # NP-реф, що й EVA/Rozetka, — ми його НЕ читаємо, лише вільний текст delivery_address.

@@ -564,11 +564,12 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                         page.wait_for_timeout(6000)
                     finally:
                         armed["on"] = False                      # лок відкритий лише на мить кліку (і при винятку теж)
-                    if armed["passed"] == 0:
-                        res["not_submitted_certain"] = True      # лок не пропустив жодного фінального POST (інші POST завжди блокуються) → резерву точно не створено, чистий відкат
-                        raise OrderError("клік «Резерв» не відправив фінальний POST (лок не пропустив жодного) — резерву не створено")
                     after = orders_text()
                     if _squash(order["ttn_number"]) not in _squash(after):
+                        if armed["passed"] == 0:
+                            # дві ознаки разом: лок не пропустив жодного фінального POST І ТТН у списку немає → резерву не створено, чистий відкат (якщо обхідний шлях усе ж створив резерв і ТТН видно — це успіх нижче)
+                            res["not_submitted_certain"] = True
+                            raise OrderError("клік «Резерв» не відправив фінальний POST (лок не пропустив жодного), ТТН у списку немає — резерву не створено")
                         raise OrderError("після кліку «Резерв» замовлення з цим № ТТН у списку не знайдено — результат невідомий, звірте кабінет вручну")
                     # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; ТТН показана групами/нема RT — позначаємо за ТТН
                     pos = after.find(order["ttn_number"])

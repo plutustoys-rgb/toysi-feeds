@@ -406,6 +406,37 @@ def get_tracking_status(ttn: str) -> dict | None:
     }
 
 
+def get_tracking_batch(ttns: list) -> dict:
+    """Статуси НП для кількох ТТН одним викликом (≤100 на запит): {ТТН: {status, status_code, return_ttn, based_ttn, based_type}}. ТТН, яких НП не знайшла, у результаті немає.
+    Піднімає NovaPoshtaAPIError лише коли ВЕСЬ запит провалився; викликач (трекер) це ловить і пропускає цикл — не ламає основне опитування."""
+    out = {}
+    uniq = [str(t) for t in dict.fromkeys(ttns) if t]
+    for i in range(0, len(uniq), 50):
+        chunk = uniq[i:i + 50]
+        for info in _call("TrackingDocument", "getStatusDocuments", {"Documents": [{"DocumentNumber": t, "Phone": ""} for t in chunk]}) or []:
+            num = str(info.get("Number") or "")
+            if not num:
+                continue
+            based = str(info.get("LastCreatedOnTheBasisNumber") or "").strip()
+            based_type = str(info.get("LastCreatedOnTheBasisDocumentType") or "").strip()
+            ok_based = len(based) == 14 and based.isdigit() and based != num
+            out[num] = {"status": str(info.get("Status") or ""), "status_code": str(info.get("StatusCode") or ""),
+                        "return_ttn": based if (ok_based and re.search(r"return|поверн", based_type, re.I)) else None,
+                        "based_ttn": based if ok_based else None, "based_type": based_type[:40] or None}
+    return out
+
+
+def is_refusal(info: dict) -> bool:
+    """Відмова одержувача / повернення: документ повернення (CargoReturn) АБО код 102/103 АБО текст статусу починається з «Відмов…»/«Відправлення повертається»; статус із «отримано/одержано» — НІКОЛИ (аудит #935 N1: «повернення коштів» ≠ відмова).
+    Живі дані: 16 з 16 відмов у базі мають і код 102, і CargoReturn; хибних спрацювань на 142 ТТН — 0. Коди 104/111 (зміна адреси/невдала спроба) — НЕ відмова."""
+    t = (info.get("status") or "").lower().strip()
+    if info.get("return_ttn"):
+        return True                                              # створено документ повернення (CargoReturn) — найсильніша ознака
+    if "отримано" in t or "одержано" in t:
+        return False                                             # вручено (напр. «…Одержано і створено ЄН повернення коштів») — не відмова, навіть якщо в тексті «повернення»
+    return str(info.get("status_code") or "") in ("102", "103") or t.startswith("відмов") or t.startswith("відправлення повертається")
+
+
 # --- Автоповернення при скасуванні покупцем (orderCargoReturn) ---------------
 # Створення заявки на повернення в NP API виконує клієнт-ВІДПРАВНИК. Наш акаунт
 # такі повернення СТВОРЮЄ (звірено живо 2026-09-05: AdditionalServiceGeneral.

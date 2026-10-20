@@ -494,6 +494,12 @@ def order_flow(order: dict, submit: bool = False) -> dict:
                 res["total_on_checkout"] = _money(form_text.split("Всього", 1)[-1][:40]) if "Всього" in form_text else None
                 res["checkout_warnings"] = [w for w in page.eval_on_selector_all("[class*=error], [class*=warning], .alert", "els => els.filter(e => e.offsetParent !== null).map(e => e.textContent.trim().slice(0,160))") if w][:5]
                 res["balance"] = _balance(form_text) if _balance(form_text) is not None else res.get("balance")
+                # ДІАГНОСТИКА (20.10, перегляд результату — одразу після першого dry-run на VPS: з цього пишу фінальні кнопки «Резерв»/«З балансу»): які саме кнопки/поля є у формі оформлення. Лише читання DOM, без значень полів ПІБ/телефону.
+                try:
+                    res["final_buttons"] = page.eval_on_selector_all("form.checkout-form button, form.checkout-form input[type=submit], form.checkout-form input[name=confirmation]",
+                                                                    "els => els.map(e => ({tag: e.tagName, type: e.type || '', name: e.name || '', value: (e.name === 'confirmation' ? String(e.value || '') : '').slice(0, 60), text: (e.innerText || '').trim().slice(0, 80), cls: String(e.className || '').slice(0, 60), form_action: ((e.form && e.form.getAttribute('action')) || '').split('?')[0]}))")
+                except Exception:  # noqa: BLE001
+                    res["final_buttons"] = None      # None = збій читання (≠ «форма без кнопок» = [])
                 if not res["problems"] and not res["checkout_warnings"]:
                     res["ready"] = True
                 if submit:

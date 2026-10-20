@@ -15,6 +15,7 @@
 ЗАХИСТ --explore (аудит PR #871): (1) мережевий замок: усі запити, крім GET/HEAD, блокуються на рівні контексту (жоден POST/форма/JS-дія не пройде); (2) хост лише royaltoys.com.ua, лише https; (3) відкидаються посилки з небезпечними дієсловами (вихід/видалення/скасування/оплата/повтор/додавання/зміна статусу…), з query-ключами-діями, і `/<числовий id>/<ще сегмент>`; (4) після кожного goto перевіряється фінальний URL (редірект на вихід/вхід = зупинка); (5) стан сесії в explore НЕ пересохраняється;
 (6) звіт пишеться у finally (збій однієї сторінки не втрачає решту), права 0600, лежить у .local_secrets/ (поза git). Звіт містить ПІБ/телефони клієнтів — не копіювати в git/канали/публічні місця без редагування."""
 import argparse
+import json
 import math
 import os
 import re
@@ -400,6 +401,15 @@ def lock_decision(method: str, host_ok: bool, path: str, armed: bool) -> str:
     return "abort"
 
 
+def _mask_pii(text, order: dict) -> str:
+    """Діагностичний текст зі сторінки: цифри/телефони → '#', слова ПІБ отримувача (>2 симв.) і останні 4 цифри телефону → '#'."""
+    t = re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", re.sub(r"\s+", " ", str(text or "")))
+    toks = [w for w in re.split(r"\s+", order.get("recipient_name") or "") if len(w) > 2] + ([order["recipient_phone"][-4:]] if order.get("recipient_phone") else [])
+    for w in toks:
+        t = re.sub(re.escape(w), "#", t, flags=re.I)
+    return t
+
+
 def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict:
     """Оформлення в кабінеті RoyalToys. Без submit — зупиняємось перед фіналом. Повертає словник зі станом. Кошик лишається ЧИСТИМ (finally)."""
     from playwright.sync_api import sync_playwright
@@ -414,6 +424,8 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
     blocked = {"final": False}
     up_dir = None        # temp-каталог копії PDF під коротким іменем: прибирається в зовнішньому finally (після фіналу/будь-якого виходу — форма може тримати File до відправки)
     aborted = []         # ДІАГНОСТИКА: шляхи (без query/тіла) POST-запитів, які лок заблокував — щоб побачити, куди насправді йде клік по «Резерв»
+    seen_req = []        # ДІАГНОСТИКА: усі запити (метод+шлях) у вікні кліку «Резерв» — навіть GET/XHR, не лише заблоковані POST
+    dialogs = []         # ДІАГНОСТИКА: діалоги confirm/alert, що з'явились у вікні кліку (текст маскується)
     armed = {"on": False, "passed": 0}        # фінальний POST /onestep дозволяється ЛИШЕ після всіх перевірок, безпосередньо перед кліком по «Резерв»
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -423,6 +435,9 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
             def _lock(r):
                 req = r.request
                 u = urlparse(req.url)
+                _entry = f"{req.method} {u.path}"
+                if armed["on"] and len(seen_req) < 25 and _entry not in seen_req and not re.search(r"\.(png|jpe?g|gif|svg|webp|css|woff2?|ico)$", u.path):
+                    seen_req.append(_entry)
                 d = lock_decision(req.method, (u.hostname or "").lower() in HOST_OK, u.path.rstrip("/"), armed["on"])
                 if d == "continue":
                     return r.continue_()
@@ -430,7 +445,6 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     armed["on"] = False                          # ОДНОРАЗОВО: після першого пропущеного фінального POST лок знову закритий
                     armed["passed"] += 1
                     return r.continue_()
-                _entry = f"{req.method} {u.path}"
                 if req.method not in ("GET", "HEAD") and len(aborted) < 12 and _entry not in aborted:
                     aborted.append(_entry)
                 if d == "final_blocked":
@@ -438,7 +452,13 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                 return r.abort()
             ctx.route("**/*", _lock)
             page = ctx.new_page()
-            page.on("dialog", lambda d: d.accept())
+            def _on_dialog(d):
+                try:
+                    if armed["on"] and len(dialogs) < 3:
+                        dialogs.append(d.type + ": " + _mask_pii(d.message, order)[:90])
+                finally:
+                    d.accept()
+            page.on("dialog", _on_dialog)
             page.goto(CART_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if not _logged_in(page):
                 raise OrderError("сесія не прийнята — --vps-login")
@@ -604,6 +624,23 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                 _errs = []
                             _errs = [re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", re.sub(r"\s+", " ", x))[:70] for x in _errs]     # цифри/телефони маскуємо: ПІБ/телефон не мають потрапити в rt_error/алерт
                             res["problems"].append("видимі повідомлення форми після кліку: " + (" | ".join(_errs) or "нема"))
+                            res["problems"].append("усі запити у вікні кліку: " + (", ".join(seen_req) or "жодного") + "; діалоги: " + (" | ".join(dialogs) or "нема"))
+                            try:
+                                _toks = [t for t in re.split(r"\s+", order["recipient_name"]) if len(t) > 2] + ([order["recipient_phone"][-4:]] if order["recipient_phone"] else [])
+                                _dom = page.evaluate("""(toks) => {
+                                    const vis = e => e.offsetParent !== null;
+                                    let mask = t => { t = String(t || '').replace(/\\s+/g, ' ').replace(/[+\\d][\\d\\s()\\-]{5,}\\d/g, '#'); toks.forEach(k => { if (k) t = t.split(k).join('#').split(k.toLowerCase()).join('#'); }); return t; };
+                                    const modals = Array.from(document.querySelectorAll('.modal, .popup, [role=dialog], .fancybox-container, .mfp-content, .swal2-popup, .remodal, .jconfirm')).filter(vis).map(e => mask(e.innerText).slice(0, 100));
+                                    const btns = Array.from(document.querySelectorAll('form.checkout-form button.glavs, #checkout-btn')).map(e => ({cls: String(e.className).slice(0, 40), dis: !!e.disabled, vis: vis(e), onclick: !!e.getAttribute('onclick'), data: Object.keys(e.dataset || {}).join(',')}));
+                                    const chk = Array.from(document.querySelectorAll('form.checkout-form input[type=checkbox]')).map(e => ({n: e.name, c: e.checked, r: e.required}));
+                                    let ev = '';
+                                    try { const b = document.querySelector('form.checkout-form button.glavs.no'); const d = window.jQuery && jQuery._data(b, 'events'); ev = d ? Object.keys(d).join(',') : 'нема own-handlers'; } catch (x) { ev = 'err'; }
+                                    const inl = Array.from(document.scripts).filter(s => !s.src && /glavs/.test(s.textContent)).map(s => { const t = s.textContent; const i = t.indexOf('glavs'); return mask(t.slice(Math.max(0, i - 100), i + 300)); });
+                                    return {modals: modals.slice(0, 3), btns, chk, ev, inl: inl.slice(0, 2)};
+                                }""", _toks)
+                                res["problems"].append("DOM після кліку: " + json.dumps(_dom, ensure_ascii=False)[:1800])
+                            except Exception:  # noqa: BLE001
+                                res["problems"].append("DOM після кліку: не прочитано")
                             # дві ознаки разом: лок не пропустив жодного фінального POST І ТТН у списку немає → резерву не створено, чистий відкат (якщо обхідний шлях усе ж створив резерв і ТТН видно — це успіх нижче)
                             res["not_submitted_certain"] = True
                             raise OrderError("клік «Резерв» не відправив фінальний POST (лок не пропустив жодного), ТТН у списку немає — резерву не створено")

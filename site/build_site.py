@@ -585,6 +585,8 @@ class CatalogShrinkError(RuntimeError):
 SUPPLIER_RT_FILE = os.environ.get("SUPPLIER_RT_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_rt.json")
 RT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rt_category_map.json")
 SUPPLIER_RT_MAX_AGE_DAYS = 3
+# Точкова заміна МЕРТВОГО головного фото Toysi на живу адресу з pictures (HEAD усіх 32 264 карток сайту 20.10.2026: 404 лише у двох; SEO: «підхопи живі /p/3/ і /p/2/»). Жива альтернатива перевірена HEAD=200.
+PHOTO_OVERRIDES = {"265377": "https://toysi.ua/p/3/enl_265377.jpg", "255663": "https://toysi.ua/p/2/enl_255663.jpg"}
 RT_MIN_DESC_INDEX = 50
 _RT_ID_RX = re.compile(r"rt-[0-9A-Za-z_]+")
 _RT_COD_SENTENCE_RX = re.compile(r"[^.!?\n]*(?:накладен|при отриманні|післяплат)[^.!?\n]*[.!?]?", re.I)   # у картках rt- не обіцяємо оплату при отриманні
@@ -743,7 +745,7 @@ def build():
         (oos_prods if is_oos else prods).append({
             "id": str(it.get("id")), "name": name, "price": price, "old_price": _old_price,
             "category": it.get("category_name") or "Інше",
-            "photo": pics[0], "stock": int(it.get("stock") or 0),
+            "photo": PHOTO_OVERRIDES.get(str(it.get("id")), pics[0]), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
             "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")),

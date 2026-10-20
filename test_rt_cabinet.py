@@ -86,6 +86,7 @@ chk("confirm_new_reserve: один новий RT із сумою оформле�
 chk("confirm_new_reserve: сума не збігається → не підтверджено", cnr(lst_after, {"RT000773500"}, 31.40)[0] is None)
 chk("confirm_new_reserve: нічого нового → None; два нових RT → None (неоднозначно); сума невідома → None",
     cnr(lst_before, {"RT000773500"}, 99.0)[0] is None and cnr(lst_after + " RT000773595 Сума замовлення 30,40 грн.", {"RT000773500"}, 30.40)[0] is None and cnr(lst_after, {"RT000773500"}, None)[0] is None)
+chk("confirm_new_reserve: кількість штук збігається → ок; не збігається (інше замовлення з тією ж сумою) → None", cnr(lst_after, {"RT000773500"}, 30.40, 1)[0] == "RT000773594" and cnr(lst_after, {"RT000773500"}, 30.40, 2)[0] is None)
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)

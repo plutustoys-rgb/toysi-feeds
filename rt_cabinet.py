@@ -375,7 +375,7 @@ def _money(txt: str):
     return float(re.sub(r"[\s\u00a0]", "", m.group(1)).replace(",", ".")) if m else None
 
 
-def confirm_new_reserve(after_text: str, refs_before: set, total):
+def confirm_new_reserve(after_text: str, refs_before: set, total, qty=None):
     """Підтвердження створеного резерву за списком замовлень: РІВНО ОДИН новий номер RT (його не було до кліку), чия «Сума замовлення» збігається з сумою оформлення. Інакше (None, "")."""
     flat = re.sub(r"\s+", " ", after_text or "")
     new_refs = [r for r in dict.fromkeys(re.findall(r"RT\d{6,}", flat)) if r not in refs_before]
@@ -386,6 +386,10 @@ def confirm_new_reserve(after_text: str, refs_before: set, total):
     block = flat[i0:i0 + len(new_refs[0]) + (nxt.start() if nxt else 400)][:500]
     m = re.search(r"Сума замовлення\s*(\d[\d\s ]*(?:[.,]\d+)?\s*грн)", block)
     if m and abs((_money(m.group(1)) or -1) - total) < 0.005:
+        if qty is not None:                               # додаткова ознака (аудит #921): кількість штук у блоці = сума qty наших позицій
+            mq = re.search(r"Кількість\s*(\d+)\s*шт", block)
+            if not mq or int(mq.group(1)) != qty:
+                return None, ""
         return new_refs[0], block
     return None, ""
 
@@ -654,7 +658,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     # (б) фінальний POST пропущено (passed>0) І з'явився РІВНО ОДИН новий номер RT, чия сума збігається з сумою оформлення. Кілька нових RT / збіг суми не підтверджено → «невідомо», ручна звірка.
                     new_ref, new_block = None, ""
                     if armed["passed"] > 0:
-                        new_ref, new_block = confirm_new_reserve(after, refs_before, res.get("total_on_checkout"))
+                        new_ref, new_block = confirm_new_reserve(after, refs_before, res.get("total_on_checkout"), sum(it["qty"] for it in order["items"]))
                     if new_ref is None and _squash(order["ttn_number"]) not in _squash(after):
                         if armed["passed"] == 0:
                             res["problems"].append("заблоковані POST після кліку: " + (", ".join(aborted) or "жодного"))

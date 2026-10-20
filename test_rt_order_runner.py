@@ -465,7 +465,12 @@ with orders_db.get_connection() as c:
     orders_db.set_rt_state(c, rt2, "returned", rt_order_ref="RT000773595", toysi_ttn="20451565972999")
     c.commit()
 fk3 = RetFake({"status": "Відмова", "delivered": False, "return_ttn": "20451570000002"})
+os.environ.pop("RT_RETURN_NOTICE", None)
 rr.run(apply=True, deps=fk3)
+chk("RT_RETURN_NOTICE не задано (власник: «повернення поки не треба») -> run() повідомлення про повернення НЕ шле й не позначає", fk3.sent == [] and get(rt2)["rt_return_notified_at"] is None)
+os.environ["RT_RETURN_NOTICE"] = "1"
+rr.run(apply=True, deps=fk3)
+os.environ.pop("RT_RETURN_NOTICE", None)
 chk("run(): returned-замовлення без жодного іншого в роботі — повідомлення RoyalToys усе одно надіслано й позначено", any("RT000773595" in t for t in fk3.sent) and get(rt2)["rt_return_notified_at"])
 # ---- автопідтвердження «З балансу» (рішення власника 20.10) ----
 class AC(Fake):

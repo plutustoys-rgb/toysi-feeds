@@ -297,6 +297,10 @@ MAX_PDF_BYTES = 2 * 1024 * 1024
 _ONESTEP_OK_RE = re.compile(r"^(?:/ua)?/(?:onestep/shipping|data/shipping/\d+/(?:warehouse|findstreets)|cart/(?:add|delete|save)|orderaddon)$")
 
 
+# Фінальне натискання «З балансу (Прошу відправити)» НЕ підключено (потрібне перше спостережуване замовлення власника). Поки False — rt_order_runner у реальному режимі відмовляє.
+FINAL_IMPLEMENTED = False
+
+
 class OrderError(Exception):
     pass
 

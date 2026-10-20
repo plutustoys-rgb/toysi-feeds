@@ -422,6 +422,10 @@ def build_order(payload: dict) -> tuple:
     # COD форвардиться одразу, prepaid — лише коли payment_confirmed=1.
     pay_raw = (payload.get("payment_method") or "").strip().lower()
     payment_method = "prepaid" if pay_raw == "prepaid" else "cod"
+    rt_cnt = sum(1 for i in items if is_rt_id(i["toysi_code"]))
+    if rt_cnt and rt_cnt != len(items):
+        # змішаний кошик (Toysi + RoyalToys): у них різні постачальники/відправлення, а автоматичного поділу замовлення немає — оплачене замовлення зависло б. Просимо оформити окремо (fail-closed)
+        raise OrderError("Товари партнера (RoyalToys) відправляються окремою посилкою: оформіть їх окремим замовленням від інших товарів")
     if payment_method != "prepaid" and any(is_rt_id(i["toysi_code"]) for i in items):
         # fail-closed: у кошику товар партнера RoyalToys — накладений платіж не приймаємо (і невідомий/відсутній спосіб теж), лише картка онлайн
         raise OrderError("Товари партнера відправляються лише за повною передоплатою: оберіть оплату карткою онлайн")

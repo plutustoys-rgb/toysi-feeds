@@ -341,6 +341,14 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "prom_delivered_pushed_at", "prom_delivered_pushed_at TEXT")
         _ensure_column(conn, "orders", "prom_ttn_pushed_at", "prom_ttn_pushed_at TEXT")
         _ensure_column(conn, "orders", "eva_ttn_pushed_at", "eva_ttn_pushed_at TEXT")
+        # Замовлення з товарами RoyalToys (rt-<id>, 20.10.2026): окремий конвеєр rt_order_runner (ТТН нашим ключем → наліпка → оформлення в кабінеті RoyalToys → трекінг НП).
+        # rt_state: NULL (нове) → ttn_created → marking_ready → rt_ordered → shipped|delivered|returned; rt_error — остання причина зупинки (для людини/алерту).
+        _ensure_column(conn, "orders", "rt_state", "rt_state TEXT")
+        _ensure_column(conn, "orders", "rt_ttn_ref", "rt_ttn_ref TEXT")
+        _ensure_column(conn, "orders", "rt_marking_path", "rt_marking_path TEXT")
+        _ensure_column(conn, "orders", "rt_order_ref", "rt_order_ref TEXT")
+        _ensure_column(conn, "orders", "rt_error", "rt_error TEXT")
+        _ensure_column(conn, "orders", "rt_updated_at", "rt_updated_at TEXT")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
         # дописано в kodv_ledger.jsonl — персистентна позначка, не 24-годинне
         # вікно, щоб дрейф/пропуск таймера (як уже стався з update-feeds.yml)
@@ -510,9 +518,48 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
               payment_method = 'cod'
               OR (payment_method = 'prepaid' AND payment_confirmed = 1)
           )
+          AND items NOT LIKE '%"toysi_code": "rt-%'
         """
     ).fetchall()
     return [_row_to_dict(row) for row in rows]
+
+
+RT_ITEM_MARK = '"toysi_code": "rt-'          # так json.dumps(ensure_ascii=False) пише позицію RoyalToys (insert_order)
+RT_STATES = ("ttn_created", "marking_ready", "rt_ordered", "shipped", "delivered", "returned")
+
+
+def get_rt_orders_pending(conn: sqlite3.Connection) -> list:
+    """Оплачені замовлення САЙТУ з товарами RoyalToys, які ще не дійшли до кінця конвеєра (rt_state не delivered/returned). Лише передоплата з підтвердженою оплатою; sandbox_test і скасовані — ні."""
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE platform = 'site' AND payment_method = 'prepaid' AND payment_confirmed = 1
+          AND items LIKE '%' || ? || '%'
+          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled'))
+          AND cancelled_at IS NULL
+          AND (rt_state IS NULL OR rt_state NOT IN ('delivered', 'returned'))
+        ORDER BY created_at
+        """,
+        (RT_ITEM_MARK,),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def set_rt_state(conn: sqlite3.Connection, internal_order_id: str, state: str | None = None, **fields) -> None:
+    """Оновлює rt_state та/або rt_ttn_ref / rt_marking_path / rt_order_ref / rt_error / toysi_ttn / delivery_status; rt_updated_at ставиться завжди. Невідомі поля й стани — ValueError (не мовчки)."""
+    allowed = {"rt_ttn_ref", "rt_marking_path", "rt_order_ref", "rt_error", "toysi_ttn", "delivery_status"}
+    bad = set(fields) - allowed
+    if bad or (state is not None and state not in RT_STATES):
+        raise ValueError(f"set_rt_state: невідомий стан/поле {state!r} {sorted(bad)}")
+    sets, params = ["rt_updated_at = ?"], [datetime.now().isoformat(timespec="seconds")]
+    if state is not None:
+        sets.append("rt_state = ?")
+        params.append(state)
+    for k, v in fields.items():
+        sets.append(f"{k} = ?")
+        params.append(v)
+    params.append(internal_order_id)
+    conn.execute(f"UPDATE orders SET {', '.join(sets)} WHERE internal_order_id = ?", params)
 
 
 def get_active_toysi_orders(conn: sqlite3.Connection) -> list:

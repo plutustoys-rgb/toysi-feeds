@@ -137,6 +137,24 @@ def _stale(order: dict) -> bool:
         return False
 
 
+def _recipient(order: dict) -> tuple:
+    """(ПІБ, телефон) отримувача для форми RoyalToys. RoyalToys не пропускає замовлення без них (менеджер 20.10); власник 20.10: «ПІБ передавай» (раніше рішення було не передавати). Некоректні → RunnerError."""
+    import re as _re
+    name = " ".join(str(order.get("customer_name") or "").split())
+    digits = _re.sub(r"\D", "", str(order.get("phone") or ""))
+    if len(digits) == 10 and digits.startswith("0"):
+        digits = "38" + digits
+    if len(name.split()) < 2 or not _re.fullmatch(r"380\d{9}", digits):
+        raise RunnerError("ПІБ (прізвище й ім'я) і телефон отримувача обов'язкові для RoyalToys, а в замовленні вони некоректні/неповні — уточніть у клієнта")
+    return name, "+" + digits
+
+
+def _recipient_fields(recipient) -> dict:
+    if not recipient:
+        return {}
+    return {"recipient_name": recipient[0], "recipient_phone": recipient[1], "require_recipient": True}
+
+
 def order_for_ttn(order: dict, items: list) -> dict:
     return {**order, "items": items}
 
@@ -171,6 +189,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 raise RunnerError("фіскальний чек не видано — передачу постачальнику не починаємо")
         items = map_items(order, supplier)
         rep["items"] = [(i["toysi_code"], i["qty"], i["vendor_code"]) for i in items]
+        recipient = _recipient(order)          # ПІБ і телефон ОБОВ'ЯЗКОВІ для RoyalToys — перевіряємо ДО ТТН (інакше ТТН-сирота)
         if not (order.get("np_city_ref") and order.get("np_warehouse_number")):
             raise RunnerError("відділення НП не визначено (нема np_city_ref/np_warehouse_number) — уточніть у клієнта")
         ok, why = apply_enabled() if apply else (False, "dry-run")
@@ -178,7 +197,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             price = d.ttn_dry_run(order_for_ttn(order, items))
             rep["actions"].append(f"ТТН (розрахунок): доставка {price.get('cost')} грн, місць {len(items)}")
             if os.environ.get("RT_DRYRUN_CABINET") == "1":     # кабінет RoyalToys міняє спільний кошик акаунта — у таймерному dry-run НЕ чіпаємо (власник може оформлювати вручну)
-                rt = d.rt_dry_run(items)
+                rt = d.rt_dry_run(items, recipient)
                 rep["actions"].append(f"кабінет RoyalToys (форма, без відправки): ready={rt.get('ready')}, кошик={rt.get('cart_total')}, мін.замовлення={rt.get('min_order_note')}")
                 if not rt.get("ready"):
                     rep["problems"].append(f"кабінет RoyalToys: {rt.get('problems')}")
@@ -190,7 +209,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
         if state is None:
             # усе, що можна перевірити БЕЗ незворотних дій, — ДО створення ТТН (ТТН-сирота не повинна виникати через ціну/форму/кошик)
             d.ttn_dry_run(order_for_ttn(order, items))
-            rt = d.rt_dry_run(items)
+            rt = d.rt_dry_run(items, recipient)
             if not rt.get("ready"):
                 raise RunnerError(f"кабінет RoyalToys не готовий до оформлення: {rt.get('problems')}")
             if not orders_db.claim_rt_state(conn, oid, None, "ttn_creating"):
@@ -213,7 +232,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
         if state == "marking_ready":
             if not orders_db.claim_rt_state(conn, oid, "marking_ready", "rt_ordering"):
                 raise RunnerError("замовлення вже взяте іншим запуском (claim) — пропускаю")
-            res = d.rt_order(items, order["toysi_ttn"], order["rt_marking_path"])
+            res = d.rt_order(items, order["toysi_ttn"], order["rt_marking_path"], recipient)
             if not (res.get("submitted") and res.get("rt_order_ref")):
                 if res.get("not_submitted_certain") is True and not res.get("submitted"):
                     orders_db.claim_rt_state(conn, oid, "rt_ordering", "marking_ready")     # однозначно НЕ відправлено → повертаємо крок
@@ -249,12 +268,12 @@ class _Deps:
         r = np_ttn.create_ttn(np_ttn.with_supplier_dims(ttn_order), apply=False)
         return r.get("price") or {}
 
-    def rt_dry_run(self, items):
+    def rt_dry_run(self, items, recipient=None):
         import rt_cabinet
         with tempfile.TemporaryDirectory() as td:
             pdf = Path(td) / "marking_dryrun.pdf"
             pdf.write_bytes(b"%PDF-1.4\n%" + b"x" * 400 + b"\n%%EOF\n")
-            order = {"items": [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"]} for i in items], "ttn_number": "00000000000000", "marking_pdf": str(pdf)}
+            order = {"items": [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"]} for i in items], "ttn_number": "00000000000000", "marking_pdf": str(pdf), **_recipient_fields(recipient)}
             return rt_cabinet.order_flow(order, submit=False)
 
     def ensure_receipt(self, conn, order):
@@ -273,9 +292,9 @@ class _Deps:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
 
-    def rt_order(self, items, ttn, pdf_path):
+    def rt_order(self, items, ttn, pdf_path, recipient=None):
         import rt_cabinet
-        order = {"items": [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"]} for i in items], "ttn_number": ttn, "marking_pdf": pdf_path}
+        order = {"items": [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"]} for i in items], "ttn_number": ttn, "marking_pdf": pdf_path, **_recipient_fields(recipient)}
         return rt_cabinet.order_flow(order, submit=True)
 
 

@@ -93,7 +93,7 @@ class Fake:
         self.calls.append("ttn_dry")
         return {"cost": 140}
 
-    def rt_dry_run(self, items):
+    def rt_dry_run(self, items, recipient=None):
         self.calls.append("rt_dry")
         return {"ready": True, "cart_total": 310.0, "min_order_note": ["Мінімальна…"]}
 
@@ -110,9 +110,9 @@ class Fake:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"%PDF-1.4 x")
 
-    def rt_order(self, items, ttn, pdf):
+    def rt_order(self, items, ttn, pdf, recipient=None):
         self.calls.append("rt_order")
-        self.rt_orders.append({"items": items, "ttn": ttn, "pdf": pdf})
+        self.rt_orders.append({"items": items, "ttn": ttn, "pdf": pdf, "recipient": recipient})
         return {"submitted": True, "rt_order_ref": "RT-77"}
 
 
@@ -151,7 +151,7 @@ with orders_db.get_connection() as c:
 st = get(a)
 chk("ланцюг: чек → ТТН → наліпка → замовлення RoyalToys; стан rt_ordered, номер RT-77, ТТН збережена у toysi_ttn", fk.calls == ["receipt", "ttn_dry", "rt_dry", "create_ttn", "marking", "rt_order"] and st["rt_state"] == "rt_ordered" and st["rt_order_ref"] == "RT-77" and st["toysi_ttn"] == "20451500000001" and st["rt_ttn_ref"] == "REF-1" and Path(st["rt_marking_path"]).exists())
 sent = fk.rt_orders[0]
-chk("у замовлення RoyalToys немає ПІБ/телефону клієнта (лише артикули, кількості, опт, ТТН, PDF)", set(sent["items"][0]).isdisjoint({"customer_name", "phone"}) and "customer_name" not in sent and "phone" not in sent)
+chk("ПІБ і телефон отримувача ПЕРЕДАЮТЬСЯ в RoyalToys (обов'язкові; власник 20.10)", sent["recipient"] == ("Іван Петренко", "+380671112233"))
 fk2 = Fake(ttn_info=None)
 with orders_db.get_connection() as c:
     rr.process_order(c, get(a), SUP, apply=True, deps=fk2)
@@ -250,7 +250,7 @@ chk("A5: два рядки одного rt- зливаються (qty 3), зал
 
 
 class RtNotReady(Fake):
-    def rt_dry_run(self, items):
+    def rt_dry_run(self, items, recipient=None):
         self.calls.append("rt_dry")
         return {"ready": False, "problems": ["сума"]}
 
@@ -312,13 +312,13 @@ os.environ["RT_RUNNER_SINCE"] = "2026-01-01"
 
 # N4: відкат rt_ordering -> marking_ready лише за явною ознакою «точно не надіслано»
 class RtAmbiguous(Fake):
-    def rt_order(self, items, ttn, pdf):
+    def rt_order(self, items, ttn, pdf, recipient=None):
         self.calls.append("rt_order")
         return {"submitted": False, "problems": ["збій"]}
 
 
 class RtCertain(Fake):
-    def rt_order(self, items, ttn, pdf):
+    def rt_order(self, items, ttn, pdf, recipient=None):
         self.calls.append("rt_order")
         return {"submitted": False, "not_submitted_certain": True, "problems": ["баланс"]}
 
@@ -353,5 +353,16 @@ class Rc7(Fake):
 rr.run(apply=True, deps=Rc7())
 chk("N7: apply без дійсного RT_RUNNER_SINCE -> нове оплачене замовлення все одно отримує чек (і не береться в роботу)", n7 in rcpt7 and get(n7)["rt_state"] is None)
 os.environ["RT_RUNNER_SINCE"] = "2026-01-01"
+
+# ПІБ/телефон обов'язкові: некоректні → стоп ДО ТТН
+bad_r = new_order("RC1")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET customer_name='Іван', phone='123' WHERE internal_order_id=?", (bad_r,))
+    c.commit()
+fk = Fake()
+with orders_db.get_connection() as c:
+    rr_bad = rr.process_order(c, get(bad_r), SUP, apply=True, deps=fk)
+chk("без повного ПІБ / з поганим телефоном -> стоп ДО створення ТТН (без ТТН-сироти), RunnerError з причиною", "create_ttn" not in fk.calls and rr_bad["problems"] and "ПІБ" in rr_bad["problems"][0] and get(bad_r)["rt_state"] is None)
+chk("_recipient: нормалізує телефон 0671112233 -> +380671112233", rr._recipient({"customer_name": "Іван Петренко", "phone": "0671112233"}) == ("Іван Петренко", "+380671112233"))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -134,6 +134,16 @@ def _test_order_preview(order: dict, total) -> str:
         return ""
 
 
+_THANKS_ORDER_RE = re.compile(r"PT-\d{8}-\d{6}-[0-9a-f]{6}", re.ASCII)
+
+
+def thanks_url(order_id) -> str:
+    """Адреса повернення з LiqPay: /thanks.html?o=<номер замовлення>. Раніше номер жив лише в sessionStorage вкладки; при поверненні з оплати в іншій вкладці/вікні він губився, і сторінка «Дякуємо» не показувала ні номер, ні кнопку «Статус у Telegram»
+    (власник 20.10). Номер у адресі — резервне джерело (фронт бере його, якщо в sessionStorage нема). Нерозпізнаний формат → без параметра."""
+    oid = str(order_id or "")
+    return f"{BASE_URL}/thanks.html" + (f"?o={oid}" if _THANKS_ORDER_RE.fullmatch(oid) else "")
+
+
 def _notify_new_order(order: dict, total, test: bool = False, note: str = "") -> None:
     """Єдине повідомлення власнику в Telegram (режим «лише замовлення»): надходження замовлення сайту. Без персональних даних; збій не ламає прийом."""
     if _NO_TELEGRAM:
@@ -804,7 +814,7 @@ class Handler(SimpleHTTPRequestHandler):
             desc = f"Замовлення {order['order_id']} на PlutusToys"
             ck = liqpay_client.build_checkout(
                 order_id=order["order_id"], amount=total, description=desc,
-                result_url=f"{BASE_URL}/thanks.html",
+                result_url=thanks_url(order["order_id"]),
                 server_url=f"{BASE_URL}/api/liqpay/callback",
             )
             resp["liqpay"] = {"action_url": ck["action_url"], "data": ck["data"],

@@ -131,6 +131,21 @@ mx2 = _raises(check=lambda: False, login=_boom_login, marker=_mk2, now=lambda: 5
 chk("ensure_session: виняток під час входу -> OrderError, маркер «розпочато» на 1 год лишився (N1)", mx2 is not None and _js.loads(_mk2.read_text(encoding="utf-8"))["wait"] == rc.LOGIN_WAIT_FAIL_S and _js.loads(_mk2.read_text(encoding="utf-8"))["rc"] is None)
 _mk3 = Path(_tf.mkdtemp()) / "m3.json"; _mk3.write_text("[1,2]", encoding="utf-8")
 chk("ensure_session: маркер не-словник (сміття) -> не падає AttributeError, одна спроба", _raises(check=lambda: False, login=_lg(0), marker=_mk3, now=lambda: 7000.0) is None)
+bl = rc.balance_lock_decision
+Q = "dop1=fromBalance&dop2=773594"
+chk("balance_lock: fromBalance свого замовлення — final_pass ЛИШЕ озброєний; без озброєння — abort",
+    bl("GET", True, "/1sbuttons/", Q, True, "773594") == "final_pass" and bl("GET", True, "/1sbuttons/", Q, False, "773594") == "abort")
+chk("balance_lock: cancelOrder / чуже замовлення / зайвий параметр / сторонній хост / POST — abort навіть озброєний",
+    all(bl(m, h, "/1sbuttons/", q, True, "773594") == "abort" for m, h, q in (("GET", True, "dop1=cancelOrder&dop2=773594"), ("GET", True, "dop1=fromBalance&dop2=773595"), ("GET", True, Q + "&x=1"), ("GET", False, Q), ("POST", True, Q))))
+chk("balance_lock: logout/delete/cancel у шляху чи query — abort; звичайні GET — continue; /ua/1sbuttons теж не проходить",
+    bl("GET", True, "/ua/my/orders/", "logout", False, "1") == "abort" and bl("GET", True, "/ua/my/orders/", "", False, "1") == "continue" and bl("GET", True, "/ua/1sbuttons/", Q, True, "773594") == "abort" and bl("GET", True, "/x/", "dop1=cancelOrder", False, "1") == "abort")
+def _raises2(f):
+    try:
+        f(); return None
+    except rc.OrderError as e:
+        return str(e)
+chk("confirm_from_balance: поганий rt_ref / нема суми / apply без RT_ORDER_SUBMIT — OrderError ДО мережі",
+    _raises2(lambda: rc.confirm_from_balance("773594", 30.4)) and _raises2(lambda: rc.confirm_from_balance("RT000773594", None)) and _raises2(lambda: rc.confirm_from_balance("RT000773594", 30.4, apply=True)))
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)

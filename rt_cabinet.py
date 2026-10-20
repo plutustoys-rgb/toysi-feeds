@@ -8,7 +8,8 @@
   python rt_cabinet.py --vps-login  # НА VPS, headless: форма входу (телефон+пароль) заповнюється з RT_CABINET_PHONE / RT_CABINET_PASSWORD у /opt/plutustoys/.env — їх у файл вписує ВЛАСНИК сам (я пароль не бачу й не вводжу); зберігає сесію у RT_CABINET_STATE_FILE.
                                     # Якщо сайт показав капчу — зупиняється з кодом 3 (капчу НЕ обходимо), стан не змінюється. Пароль ніколи не друкується.
   python rt_cabinet.py --order order.json   # ОФОРМЛЕННЯ замовлення «по своїй ТТН» (20.10): кошик → /ua/onestep/ → доставка «По своей ТТН» → ПІБ/телефон/№ТТН/PDF маркування → ЗУПИНКА перед фінальною кнопкою (кнопка НЕ натискається). Результат — JSON у stdout.
-  python rt_cabinet.py --order order.json --submit-balance   # те саме + фінал «З балансу (Прошу відправити)»: ТІЛЬКИ з RT_ORDER_SUBMIT=1 у середовищі, достатнім балансом, суми кошика = очікуваній, без дубля за № ТТН (перший бойовий запуск — під наглядом власника)
+  python rt_cabinet.py --order order.json --submit-reserve   # те саме + фінал «Резерв (Прошу не відправляти)» (20.10 підключено; лише з RT_ORDER_SUBMIT=1); «З балансу» НЕ підключено
+  python rt_cabinet.py --order order.json --submit-balance   # (НЕ ПІДКЛЮЧЕНО — відмова) було: фінал «З балансу (Прошу відправити)»: ТІЛЬКИ з RT_ORDER_SUBMIT=1 у середовищі, достатнім балансом, суми кошика = очікуваній, без дубля за № ТТН (перший бойовий запуск — під наглядом власника)
 Шлях стану: RT_CABINET_STATE_FILE (на VPS — /opt/plutustoys/.secrets/rt_cabinet_state.json). Режим введення замовлення (--order) — ПІСЛЯ вивчення кабінету, окремим PR з аудитом.
 
 ЗАХИСТ --explore (аудит PR #871): (1) мережевий замок: усі запити, крім GET/HEAD, блокуються на рівні контексту (жоден POST/форма/JS-дія не пройде); (2) хост лише royaltoys.com.ua, лише https; (3) відкидаються посилки з небезпечними дієсловами (вихід/видалення/скасування/оплата/повтор/додавання/зміна статусу…), з query-ключами-діями, і `/<числовий id>/<ще сегмент>`; (4) після кожного goto перевіряється фінальний URL (редірект на вихід/вхід = зупинка); (5) стан сесії в explore НЕ пересохраняється;
@@ -371,6 +372,22 @@ def _money(txt: str):
     return float(re.sub(r"[\s\u00a0]", "", m.group(1)).replace(",", ".")) if m else None
 
 
+def _squash(t: str) -> str:
+    """Текст без пробілів/переносів/nbsp — для звірки 14-значного № ТТН незалежно від групування в кабінеті."""
+    return re.sub(r"\s", "", t or "")
+
+
+def lock_decision(method: str, host_ok: bool, path: str, armed: bool) -> str:
+    """Рішення мережевого локу для запиту: continue | final_pass (озброєний фінал, ОДИН пропуск) | final_blocked | abort. Чиста функція (тестується без браузера)."""
+    if method in ("GET", "HEAD"):
+        return "continue"
+    if host_ok and _ONESTEP_OK_RE.search(path):
+        return "continue"
+    if host_ok and path.endswith("/onestep"):
+        return "final_pass" if armed else "final_blocked"
+    return "abort"
+
+
 def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict:
     """Оформлення в кабінеті RoyalToys. Без submit — зупиняємось перед фіналом. Повертає словник зі станом. Кошик лишається ЧИСТИМ (finally)."""
     from playwright.sync_api import sync_playwright
@@ -383,7 +400,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
         raise OrderError(f"нема сесії {STATE_FILE.name}: --vps-login")
     res = {"ready": False, "submitted": False, "not_submitted_certain": False, "problems": []}
     blocked = {"final": False}
-    armed = {"on": False}        # фінальний POST /onestep дозволяється ЛИШЕ після всіх перевірок, безпосередньо перед кліком по «Резерв»
+    armed = {"on": False, "passed": 0}        # фінальний POST /onestep дозволяється ЛИШЕ після всіх перевірок, безпосередньо перед кліком по «Резерв»
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         try:
@@ -392,16 +409,15 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
             def _lock(r):
                 req = r.request
                 u = urlparse(req.url)
-                if req.method in ("GET", "HEAD"):
+                d = lock_decision(req.method, (u.hostname or "").lower() in HOST_OK, u.path.rstrip("/"), armed["on"])
+                if d == "continue":
                     return r.continue_()
-                host_ok = (u.hostname or "").lower() in HOST_OK
-                path = u.path.rstrip("/")
-                if host_ok and _ONESTEP_OK_RE.search(path):
+                if d == "final_pass":
+                    armed["on"] = False                          # ОДНОРАЗОВО: після першого пропущеного фінального POST лок знову закритий
+                    armed["passed"] += 1
                     return r.continue_()
-                if host_ok and path.endswith("/onestep") and armed["on"]:
-                    return r.continue_()                         # озброєний фінал (резерв): один дозволений прохід
-                if host_ok and path.endswith("/onestep"):
-                    blocked["final"] = True                      # фінальний POST блокується ЗАВЖДИ; майбутній фінал — окремий «озброєний» прохід безпосередньо перед навмисним кліком
+                if d == "final_blocked":
+                    blocked["final"] = True                      # фінальний POST поза озброєним вікном блокується ЗАВЖДИ
                 return r.abort()
             ctx.route("**/*", _lock)
             page = ctx.new_page()
@@ -529,21 +545,34 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                             return p2.inner_text("body")
                         finally:
                             p2.close()
-                    if order["ttn_number"] in orders_text():
+                    if _squash(order["ttn_number"]) in _squash(orders_text()):
                         raise OrderError("замовлення з цим № ТТН уже є в кабінеті — повторно не створюємо")
-                    # РЕЗЕРВ: до цього рядка всі помилки — «точно не відправлено»; від кліку результат може бути невідомим
+                    # РЕЗЕРВ. Усі перевірки нижче — ДО озброєння: помилка тут = «точно не відправлено» (чистий відкат кроку)
+                    if blocked["final"]:
+                        raise OrderError("під час заповнення форми сторінка вже пробувала відправити фінальний POST — зупинка (форма поводиться несподівано)")
+                    btn = page.locator("form.checkout-form button.glavs.no")
+                    if btn.count() != 1:
+                        raise OrderError(f"кнопка «Резерв» не знайдена або неоднозначна ({btn.count()}) — верстка змінилась, зупинка")
+                    btn_text = (btn.first.inner_text() or "")
+                    if "Резерв" not in btn_text or "балансу" in btn_text:
+                        raise OrderError("кнопка за селектором .glavs.no — не «Резерв» (верстка змінилась) — зупинка")
+                    # З цього рядка результат може бути невідомим: помилки лишають rt_ordering (автоповтору немає)
                     res["not_submitted_certain"] = False
                     armed["on"] = True
-                    page.locator("form.checkout-form button.glavs.no").first.evaluate("e => e.click()")
-                    page.wait_for_timeout(6000)
-                    armed["on"] = False
+                    try:
+                        btn.first.evaluate("e => e.click()")
+                        page.wait_for_timeout(6000)
+                    finally:
+                        armed["on"] = False                      # лок відкритий лише на мить кліку (і при винятку теж)
                     after = orders_text()
-                    if order["ttn_number"] not in after:
+                    if _squash(order["ttn_number"]) not in _squash(after):
                         raise OrderError("після кліку «Резерв» замовлення з цим № ТТН у списку не знайдено — результат невідомий, звірте кабінет вручну")
-                    # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; нема — позначаємо за ТТН
-                    pos = after.index(order["ttn_number"])
-                    refs = re.findall(r"RT\d{6,}", after[max(0, pos - 600):pos + 100])
+                    # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; ТТН показана групами/нема RT — позначаємо за ТТН
+                    pos = after.find(order["ttn_number"])
+                    window = after[max(0, pos - 600):pos + 300] if pos >= 0 else ""
+                    refs = re.findall(r"RT\d{6,}", window)
                     res["rt_order_ref"] = refs[-1] if refs else "ttn-" + order["ttn_number"]
+                    res["reserve_status_seen"] = bool(re.search(r"резерв|очіку\w*\s+оплат|очікує", window, re.I))
                     res["submitted"] = True
                     res["mode"] = "reserve"
             finally:

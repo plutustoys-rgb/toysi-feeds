@@ -3,8 +3,8 @@
 """test_rt_order_runner.py — конвеєр замовлень RoyalToys (20.10.2026). Офлайн (підміна зовнішніх викликів), тимчасова БД.
 Інваріанти: (1) rt-замовлення НЕ потрапляють у get_orders_ready_to_forward (роутер Toysi їх не бачить, watchdog не алертить), але є в get_rt_orders_pending; delivered/returned/скасовані/sandbox/не оплачені — ні;
 (2) map_items: усі rt-, є в supplier_rt.json, артикул/опт/габарити, залишок ≥ qty; змішане/нема/немає залишку → RunnerError; (3) DRY-RUN нічого не створює (ні ТТН, ні замовлення, БД не змінюється);
-(4) реальний режим закритий воротами (RT_RUNNER_APPLY, NP_TTN_APPLY, RT_ORDER_SUBMIT, rt_cabinet.FINAL_IMPLEMENTED) — без них жодного створення ТТН; (5) ланцюг станів ttn_created → marking_ready → rt_ordered, ідемпотентний (повторний запуск не створює другу ТТН);
-(6) чек не видано → ТТН не створюється; (7) трекінг НП: shipped/delivered/returned (лише за текстом), returned → алерт; (8) персональні дані клієнта в замовлення RoyalToys не передаються."""
+(4) реальний режим закритий воротами (RT_RUNNER_APPLY, NP_TTN_APPLY, RT_ORDER_SUBMIT, RT_RUNNER_SINCE; режим фіналу reserve підключено, balance — ні) — без них жодного створення ТТН; (5) ланцюг станів ttn_created → marking_ready → rt_ordered, ідемпотентний (повторний запуск не створює другу ТТН);
+(6) чек не видано → ТТН не створюється; (7) трекінг НП: shipped/delivered/returned (лише за текстом), returned → алерт; (8) ПІБ і телефон отримувача передаються в RoyalToys (обов'язкові; власник 20.10)."""
 import os
 import sys
 import tempfile

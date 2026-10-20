@@ -441,13 +441,14 @@ def run(apply: bool | None = None, deps=None, db_path=None) -> list:
     if apply is None:
         apply = os.environ.get("RT_RUNNER_APPLY") == "1"
     reports = _run_pipeline(apply, deps, db_path)
-    try:
-        with orders_db.get_connection(db_path) if db_path else orders_db.get_connection() as conn:
-            for r in notify_returns(conn, deps or _Deps(), apply):
-                reports.append(r)
-                print("[rt_runner]", json.dumps(r, ensure_ascii=False, default=str))
-    except Exception as e:  # noqa: BLE001
-        print(f"[rt_runner] повідомлення про повернення: збій {type(e).__name__}", file=sys.stderr)
+    if os.environ.get("RT_RETURN_NOTICE") == "1":        # власник 20.10: «повернення поки не треба» — повідомлення про ТТН повернення вимкнено, брама в .env VPS (RT_RETURN_NOTICE=1 вмикає)
+        try:
+            with orders_db.get_connection(db_path) if db_path else orders_db.get_connection() as conn:
+                for r in notify_returns(conn, deps or _Deps(), apply):
+                    reports.append(r)
+                    print("[rt_runner]", json.dumps(r, ensure_ascii=False, default=str))
+        except Exception as e:  # noqa: BLE001
+            print(f"[rt_runner] повідомлення про повернення: збій {type(e).__name__}", file=sys.stderr)
     return reports
 
 

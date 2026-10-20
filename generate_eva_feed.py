@@ -261,6 +261,62 @@ def _load_legacy_override() -> dict:
 EVA_LEGACY_OVERRIDE = _load_legacy_override()
 
 
+# ПЕРЕНАПРАВЛЕННЯ У ВЖЕ СПІВСТАВЛЕНУ КАТЕГОРІЮ (20.10.2026, слово власника «розкласти по вже співставлених, що не підійдуть — через менеджера, спірні в чат»). Після all_safe лишається 51 EVA-категорія фіду без співставлення в кабінеті
+# (2 752 товари): їхні Toysi-категорії або не співставлені в кабінеті, або співставлені на ІНШУ EVA-категорію (небезпечно). Для таких Toysi-категорій T віддаємо старий id+назву L ІНШОЇ Toysi-категорії, яка в кабінеті вже «Співставлена»
+# саме з ТІЄЮ САМОЮ EVA-категорією, що в нашій мапі (порівняння як у _norm_eva_name). eva_remap_rollout.json: {"mode": "ids", "ids": [EVA-id цілі…]} — лише ці цілі (етапи розкатки, пілот → решта); {"mode": "off"}/нема файла — нічого. Відкат = mode=off.
+# L: не з EVA_EXCLUDED_CATEGORIES, без «(МП)» у назві; найбільший збіг слів назви L із назвою цілі, далі менший id (косметика: кабінет бачить нашу назву, EVA-категорія та сама).
+# УВАГА (аудит #898): (1) «(МП)» зустрічається лише в полі `eva` кабінету (його _norm_eva_name зрізає), у НАЗВАХ L його немає — тож окремий етап для цілей із «(МП)» тримається ЛИШЕ вибором `ids` у файлі розкатки, код його не забезпечує;
+# (2) remap залежить від legacy: якщо вимкнути eva_legacy_rollout.json (mode=off), а remap лишити, remap розшириться на категорії, що мали власний безпечний старий id — ПОВНИЙ відкат = ОБИДВА файли в off;
+# (3) mode=off для remap повертає старий вигляд усіх категорій, окрім 99075 («Пазли», поза мапою): для точного відкату прибрати й запис 99075 з eva_category_map.json.
+EVA_REMAP_ROLLOUT_FILE = Path(__file__).parent / "eva_remap_rollout.json"
+
+
+def _load_remap_override() -> dict:
+    """{toysi_id: (L_id, L_name)}; БУДЬ-ЯКА помилка (файли, форма JSON, типи) → {} (поведінка як до зміни), а не падіння імпорту модуля (аудит #898: валідний JSON неправильної форми)."""
+    try:
+        out = _build_remap_override()
+    except Exception as e:  # noqa: BLE001
+        print(f"[EVA] remap: збій розбору ({type(e).__name__}) — перенаправлення вимкнено", file=sys.stderr)
+        return {}
+    if out:
+        print(f"[EVA] remap: {len(out)} Toysi-категорій перенаправлено у вже співставлені")
+    return out
+
+
+def _build_remap_override() -> dict:
+    import re as _re
+    try:
+        cfg = json.loads(EVA_REMAP_ROLLOUT_FILE.read_text(encoding="utf-8"))
+        if cfg.get("mode") != "ids":
+            return {}
+        targets = {str(x) for x in (cfg.get("ids") or [])}
+        matched = json.loads(EVA_MATCHED_LEGACY_FILE.read_text(encoding="utf-8")).get("matched") or {}
+    except (ValueError, OSError, TypeError, AttributeError):
+        return {}
+
+    def _toks(x):
+        return set(_re.findall(r"\w+", (x or "").casefold()))
+
+    out = {}
+    for t, ev in EVA_CATEGORY_MAP.items():
+        if ev["id"] not in targets or t in EVA_LEGACY_OVERRIDE:
+            continue                                   # ціль не в етапі / ця Toysi-категорія вже віддає свій безпечний старий id
+        want = _norm_eva_name(ev.get("name"))
+        cands = []
+        for lid, m in matched.items():
+            lname = str(m.get("name") or "").strip()
+            if not lname or "(МП)" in lname or lid in EVA_EXCLUDED_CATEGORIES or _norm_eva_name(m.get("eva")) != want:
+                continue
+            cands.append((-len(_toks(lname) & _toks(ev.get("name"))), int(lid) if str(lid).isdigit() else 10**9, str(lid), lname))
+        if cands:
+            _, _, lid, lname = min(cands)
+            out[t] = (lid, lname)
+    return out
+
+
+EVA_REMAP_OVERRIDE = {}      # заповнюється нижче, ПІСЛЯ EVA_EXCLUDED_CATEGORIES (потрібен у _load_remap_override)
+
+
 def _map_eva_category(cid: str, cname: str):
     """(final_id, final_name): EVA-id+назва, якщо наша категорія зіставлена; інакше
     Toysi-id+назва (фолбек). Кілька наших категорій можуть лягти в один EVA-листок —
@@ -269,6 +325,8 @@ def _map_eva_category(cid: str, cname: str):
     cid = (cid or "").strip()
     if cid in EVA_LEGACY_OVERRIDE and EVA_CATEGORY_MAP.get(cid):
         return cid, EVA_LEGACY_OVERRIDE[cid]
+    if cid in EVA_REMAP_OVERRIDE and EVA_CATEGORY_MAP.get(cid):
+        return EVA_REMAP_OVERRIDE[cid]
     ev = EVA_CATEGORY_MAP.get(cid)
     if ev:
         return ev["id"], (ev["name"] or cname or ev["id"])
@@ -313,6 +371,8 @@ EVA_EXCLUDED_CATEGORIES = {
     # Прання та миття посуду (побутхімія). Не-іграшки в EVA-фід не йдуть.
     "98917", "98920", "99242", "99244",
 }
+
+EVA_REMAP_OVERRIDE = _load_remap_override()
 
 
 def _load_eva_listed() -> set:

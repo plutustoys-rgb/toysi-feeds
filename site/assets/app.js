@@ -728,6 +728,32 @@
     msg.appendChild(t); msg.appendChild(b);
   }
 
+  function dupShadow(lines){   // відповідь /api/order 409 {code:"dup_shadow", lines:[{id,name,dup_of}]} (Code-Agent, PR 930): позиція — «тінь» (той самий товар Toysi продається на іншій сторінці); замовлення НЕ створено, решта кошика не чіпається
+    var msg=document.getElementById("checkout-msg"), btn=document.getElementById("checkout-submit");
+    if(btn){ btn.disabled=false; btn.textContent="Оформити замовлення"; }
+    var items=(Array.isArray(lines) ? lines : []).filter(function(l){ return l && typeof l==="object" && l.id!==undefined && l.id!==null && l.id!==""; })
+      .map(function(l){ var d=String(l.dup_of==null ? "" : l.dup_of); return {id:String(l.id), name:String(l.name||""), twin:/^[0-9]{1,12}$/.test(d) ? d : ""}; });   // близнюк — лише цифри; порожній/дивний — без посилання, нічого не вигадуємо
+    var generic="Деякі товари в кошику вже продаються на іншій сторінці. Оновіть кошик і спробуйте ще раз.";
+    if(!items.length){ if(msg){ msg.classList.add("err"); msg.textContent=generic; } return; }
+    var c=read(); items.forEach(function(x){ delete c[x.id]; }); write(c);
+    renderCart(); updateBadge();
+    var host=msg, form=document.getElementById("checkout-form");
+    if(!form || form.style.display==="none"){   // кошик спорожнів → форма (з #checkout-msg) прихована: повідомлення над порожнім станом
+      var box=document.getElementById("cart-body");
+      if(!box) return;
+      host=document.createElement("div"); host.id="dup-shadow-note"; host.className="note err";
+      box.insertBefore(host, box.firstChild);
+    }
+    if(!host) return;
+    host.classList.add("err"); host.textContent="";
+    items.forEach(function(x){
+      var p=document.createElement("div");
+      p.appendChild(document.createTextNode((x.name||"Товар")+" — уже продається на іншій сторінці, ми прибрали його з кошика. "));
+      if(x.twin){ var a=document.createElement("a"); a.href="product-"+x.twin+".html"; a.textContent="Перейти до товару →"; p.appendChild(a); }
+      host.appendChild(p);
+    });
+  }
+
   // ── Ініціалізація на кожній сторінці ──
   document.addEventListener("DOMContentLoaded", function(){
     updateBadge();
@@ -1430,6 +1456,7 @@
         .then(function(res){
           if(!res.ok){
             if(res.status===409 && res.j && res.j.code==="stock_changed" && Array.isArray(res.j.lines)){ stockConflict(res.j.lines); return; }
+            if(res.status===409 && res.j && res.j.code==="dup_shadow"){ dupShadow(res.j.lines); return; }
             if(res.status===409 && res.j && res.j.code==="price_changed"){ priceChanged(res.j); return; }
             fail(res.j && res.j.error ? res.j.error : "Не вдалося оформити замовлення."); return;
           }

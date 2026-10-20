@@ -887,7 +887,7 @@ def track_orders() -> None:
                 send_telegram_message(
                     f"⚠️ Замовлення {internal_id} (Toysi #{toysi_id}, {order.get('platform', '?')}): відмова/повернення за Новою Поштою — «{refusal['status']}», ТТН {refusal['ttn']}"
                     + (f", ТТН повернення {refusal['return_ttn']}" if refusal.get("return_ttn") else "")
-                    + ". Статус у базі виставлено returned; сторно для КОДВ готується автоматично, товар на поверненні — перевірте в «Взаєморозрахунках» Toysi."
+                    + ". Статус у базі виставлено returned (відкат лише вручну); сторно для КОДВ готується автоматично, товар на поверненні — перевірте в «Взаєморозрахунках» Toysi."
                 )
             elif delivery_status in _UNSUCCESSFUL_DELIVERY_STATUSES and not was_unsuccessful:
                 # Одразу, а не лише в щоденному звіті (P0-2) — власниця

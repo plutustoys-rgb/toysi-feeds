@@ -30,6 +30,10 @@ chk("is_refusal: «Відмова від отримання» → так; док
     and not nova_poshta.is_refusal({"status": "Відправлення отримано", "status_code": "9"}) and not nova_poshta.is_refusal({"status": "Відправлення прямує до міста Київ", "status_code": "5"})
     and not nova_poshta.is_refusal({"status": "Невдала спроба доставки", "status_code": "111"}))
 
+chk("is_refusal (аудит #935 N1): «Одержано і створено ЄН повернення коштів» / «Відправлення отримано. …повернення коштів» → НЕ відмова; код 102 → відмова; «Відправлення повертається» → відмова; код 104/111 без слів → ні",
+    not nova_poshta.is_refusal({"status": "Одержано і створено ЄН повернення коштів", "status_code": "106"}) and not nova_poshta.is_refusal({"status": "Відправлення отримано. Повернення коштів на карту", "status_code": "9"})
+    and nova_poshta.is_refusal({"status": "щось", "status_code": "102"}) and nova_poshta.is_refusal({"status": "Відправлення повертається відправнику", "status_code": "103"})
+    and not nova_poshta.is_refusal({"status": "Зміна адреси одержувача", "status_code": "104"}))
 orders_db.init_db()
 
 

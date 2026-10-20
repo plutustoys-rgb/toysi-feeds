@@ -321,15 +321,31 @@ EVA_REMAP_OVERRIDE = {}      # заповнюється нижче, ПІСЛЯ E
 # — 46 із 70 товарів у наявності це вкладиші/рамки; 99086 — мозаїки) містять не-пазли, а кабінет співставив їх з EVA «Пазли». За назвою переносимо такі товари в уже співставлені категорії: вкладиші/Сегена/рамки без слова «пазл» →
 # Toysi 99122 «Дерев'яні вкладиші» (у кабінеті → «Іграшки для малюків»), «Мозаїка …» → Toysi 99141 «Мозаїки» (→ «Дитяча мозаїка»). «Пазли-вкладиші» лишаються пазлами.
 _EVA_PUZZLE_TARGET = "105311"
-_RECLASS_INSERT_RE = re.compile(r"вкладиш|сегена|рамк", re.I)
+_RECLASS_INSERT_RE = re.compile(r"вкладиш|сегена|рамк|сортер", re.I)
 _RECLASS_MOSAIC_RE = re.compile(r"^\s*мозаїк", re.I)
 _RECLASS_PUZZLE_RE = re.compile(r"пазл", re.I)
 
 
+def _load_item_reclass_flag() -> bool:
+    """eva_remap_rollout.json → "item_reclass": false вимикає покомпонентну перекласифікацію (перемикач відкату етапу 1б; нема ключа/файлу/помилка → ВВІМКНЕНО)."""
+    try:
+        return bool(json.loads(EVA_REMAP_ROLLOUT_FILE.read_text(encoding="utf-8")).get("item_reclass", True))
+    except (ValueError, OSError, TypeError, AttributeError):
+        return True
+
+
+EVA_ITEM_RECLASS_ON = _load_item_reclass_flag()
+
+
 def _item_category(item: dict) -> tuple:
-    """(category_id, category_name) товару для EVA: його Toysi-категорія, окрім перелічених перенесень з пазлів за назвою (див. вище)."""
+    """(category_id, category_name) товару для EVA: його Toysi-категорія, окрім перелічених перенесень за назвою (див. вище). Також у зворотний бік: власні товари 99122 «Дерев'яні вкладиші» зі словом «пазл» лишаються
+    пазлами (99031) — як було до зміни мапи 99122 (аудит #905: 66 справжніх пазлів інакше переїхали б у «Іграшки для малюків»)."""
     cid = (item.get("category_id") or "").strip()
     cname = (item.get("category_name") or "").strip()
+    if not EVA_ITEM_RECLASS_ON:
+        return cid, cname
+    if cid == "99122" and _RECLASS_PUZZLE_RE.search(str(item.get("name") or "")) and EVA_CATEGORY_MAP.get("99031"):
+        return "99031", "Пазли і вкладиші"
     ev = EVA_CATEGORY_MAP.get(cid)
     if ev and ev.get("id") == _EVA_PUZZLE_TARGET:
         n = str(item.get("name") or "")
@@ -658,8 +674,8 @@ _EVA_NAME_STOPWORD_RE = re.compile(
 # Живий замір 20.10 (кеш каталогу, в наявності): 79 з 21 167 назв, з них 50 «Уцінка». Не перевіряє мову опису.
 _RU_NAME_LETTERS_RE = re.compile(r"[ыэъёЫЭЪЁ]")
 _RU_NAME_WORDS_RE = re.compile(
-    r"(?<![а-яіїєґ'’-])(?:набор|наборы|игрушк\w*|игрушек|детск(?:ий|ая|ое|ие|ого|ую)|детей|ребенк\w*|цвет|цвета|цвету|цветов|размер\w*|мальчик\w*|девоч\w*|девочек|"
-    r"проведени\w+|раскоп\w*|расписани\w*|ламинирован\w*|деревянн(?:ая|ое|ый|ые|ую)|развивающ\w+|подарочн\w+|котенк\w*)(?![а-яіїєґ])", re.I)
+    r"(?<![а-яіїєґ])(?<![а-яіїєґ]['’])(?<!-)(?:набор|наборы|игрушк\w*|игрушек|детск(?:ий|ая|ое|ие|ого|ую)|детей|ребенк\w*|цвет|цвета|цвету|цветов|размер\w*|мальчик\w*|девоч\w*|девочек|"
+    r"раскоп\w*|расписани\w*|ламинирован\w*|деревянн(?:ая|ое|ый|ые|ую)|развивающ\w+|подарочн\w+|котенк\w*|котенок|лягушенок)(?![а-яіїєґ])", re.I)
 
 
 def _name_is_russian(name: str) -> bool:

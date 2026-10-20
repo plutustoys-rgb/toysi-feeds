@@ -293,7 +293,19 @@ def run(apply: bool | None = None, deps=None, db_path=None) -> list:
             pending = [o for o in pending if str(o.get("created_at") or "") >= since or o.get("rt_state")]      # старіші без стану — виконані вручну
         elif apply:
             print("[rt_runner] apply без дійсного RT_RUNNER_SINCE: нові кроки не беремо (трекінг посилок у дорозі триває)", file=sys.stderr)
+            midway = [o for o in pending if o.get("rt_state") in ("ttn_created", "marking_ready")]
+            for o in midway:                   # ланцюг посередині, а SINCE зник/зіпсований — не мовчимо
+                _alert(o["internal_order_id"], "since_mid", f"RT_RUNNER_SINCE не задано або не ISO-дата — замовлення зупинено на стані {o.get('rt_state')} (ТТН {o.get('toysi_ttn')})", cooldown=24 * 60 * 60)
+            dropped = [o for o in pending if o.get("rt_state") is None]
             pending = [o for o in pending if o.get("rt_state") in ("rt_ordered", "shipped") or o.get("rt_state") in STUCK]
+            dd = deps or _Deps()
+            for o in dropped:                  # нові замовлення без дійсного SINCE: чек (бухгалтер) і сигнал ВСЕ ОДНО — вони не повинні мовчки зависнути
+                try:
+                    ok_r = dd.ensure_receipt(conn, o)
+                except Exception as e:  # noqa: BLE001
+                    ok_r = False
+                    print(f"[rt_runner] {o['internal_order_id']}: чек збій {type(e).__name__}", file=sys.stderr)
+                _alert(o["internal_order_id"], "since", "RT_RUNNER_SINCE не задано або не ISO-дата — оплачене замовлення RoyalToys не обробляється" + ("" if ok_r else " (чек НЕ видано!)"), cooldown=24 * 60 * 60)
         if not pending:
             print("[rt_runner] немає замовлень RoyalToys у роботі")
             return reports

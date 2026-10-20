@@ -317,6 +317,45 @@ def _build_remap_override() -> dict:
 EVA_REMAP_OVERRIDE = {}      # заповнюється нижче, ПІСЛЯ EVA_EXCLUDED_CATEGORIES (потрібен у _load_remap_override)
 
 
+# ПОКОМПОНЕНТНА ПЕРЕКЛАСИФІКАЦІЯ З «ПАЗЛІВ» (Аудитор 20.10, замір після етапу 1: 5 відхилень «Некоректна категорія» у «Пазли і вкладиші»: вкладиші, дощечки Сегена, мозаїка, рамка-вкладиш). Toysi-категорії пазлів (99031 «Пазли і вкладиші»
+# — 46 із 70 товарів у наявності це вкладиші/рамки; 99086 — мозаїки) містять не-пазли, а кабінет співставив їх з EVA «Пазли». За назвою переносимо такі товари в уже співставлені категорії: вкладиші/Сегена/рамки без слова «пазл» →
+# Toysi 99122 «Дерев'яні вкладиші» (у кабінеті → «Іграшки для малюків»), «Мозаїка …» → Toysi 99141 «Мозаїки» (→ «Дитяча мозаїка»). «Пазли-вкладиші» лишаються пазлами.
+_EVA_PUZZLE_TARGET = "105311"
+_RECLASS_INSERT_RE = re.compile(r"вкладиш|сегена|рамк|сортер", re.I)
+_RECLASS_MOSAIC_RE = re.compile(r"^\s*мозаїк", re.I)
+_RECLASS_PUZZLE_RE = re.compile(r"пазл", re.I)
+
+
+def _load_item_reclass_flag() -> bool:
+    """eva_remap_rollout.json → "item_reclass": false вимикає покомпонентну перекласифікацію (перемикач відкату етапу 1б; нема ключа/файлу/помилка → ВВІМКНЕНО)."""
+    try:
+        return json.loads(EVA_REMAP_ROLLOUT_FILE.read_text(encoding="utf-8")).get("item_reclass", True) is not False   # вимикає лише справжній JSON false
+    except (ValueError, OSError, TypeError, AttributeError):
+        return True
+
+
+EVA_ITEM_RECLASS_ON = _load_item_reclass_flag()
+
+
+def _item_category(item: dict) -> tuple:
+    """(category_id, category_name) товару для EVA: його Toysi-категорія, окрім перелічених перенесень за назвою (див. вище). Також у зворотний бік: власні товари 99122 «Дерев'яні вкладиші» зі словом «пазл» лишаються
+    пазлами (99031) — як було до зміни мапи 99122 (аудит #905: 66 справжніх пазлів інакше переїхали б у «Іграшки для малюків»)."""
+    cid = (item.get("category_id") or "").strip()
+    cname = (item.get("category_name") or "").strip()
+    if not EVA_ITEM_RECLASS_ON:
+        return cid, cname
+    if cid == "99122" and _RECLASS_PUZZLE_RE.search(str(item.get("name") or "")) and EVA_CATEGORY_MAP.get("99031"):
+        return "99031", "Пазли і вкладиші"
+    ev = EVA_CATEGORY_MAP.get(cid)
+    if ev and ev.get("id") == _EVA_PUZZLE_TARGET:
+        n = str(item.get("name") or "")
+        if _RECLASS_MOSAIC_RE.search(n) and EVA_CATEGORY_MAP.get("99141"):
+            return "99141", "Мозаїки"
+        if _RECLASS_INSERT_RE.search(n) and not _RECLASS_PUZZLE_RE.search(n) and EVA_CATEGORY_MAP.get("99122"):
+            return "99122", "Дерев'яні вкладиші"
+    return cid, cname
+
+
 def _map_eva_category(cid: str, cname: str):
     """(final_id, final_name): EVA-id+назва, якщо наша категорія зіставлена; інакше
     Toysi-id+назва (фолбек). Кілька наших категорій можуть лягти в один EVA-листок —
@@ -630,11 +669,25 @@ _EVA_NAME_STOPWORD_RE = re.compile(
 )
 
 
+# РОСІЙСЬКА МОВА В НАЗВІ (модерація EVA 20.10: «Заборонено: російська мова в назві» — 142656/142670 «44 Котенка», 192737 «Цвет, счет и направления»). Лише однозначні ознаки: літери ы/э/ъ/ё (їх нема в українській)
+# і слова, яких нема в українській. «набором/набору» (укр. орудний відмінок «з набором») НЕ ловимо — на відміну від списку RoyalToys (rt_supplier_export), бо в каталозі Toysi це десятки хибних спрацьовувань.
+# Живий замір 20.10 (кеш каталогу, в наявності): 79 з 21 167 назв, з них 50 «Уцінка». Не перевіряє мову опису.
+_RU_NAME_LETTERS_RE = re.compile(r"[ыэъёЫЭЪЁ]")
+_RU_NAME_WORDS_RE = re.compile(
+    r"(?<![а-яіїєґ])(?<![а-яіїєґ]['’])(?<!-)(?:набор|наборы|игрушк\w*|игрушек|детск(?:ий|ая|ое|ие|ого|ую)|детей|ребенк\w*|цвет|цвета|цвету|цветов|размер\w*|мальчик\w*|девоч\w*|девочек|"
+    r"раскоп\w*|расписани\w*|ламинирован\w*|деревянн(?:ая|ое|ый|ые|ую)|развивающ\w+|подарочн\w+|котенк\w*|котенок|лягушенок)(?![а-яіїєґ])", re.I)
+
+
+def _name_is_russian(name: str) -> bool:
+    n = str(name or "")
+    return bool(_RU_NAME_LETTERS_RE.search(n) or _RU_NAME_WORDS_RE.search(n))
+
+
 def _name_has_forbidden_word(name: str) -> bool:
-    """True, якщо в назві є заборонене EVA слово (ТМ/бренд) — whole-word.
+    """True, якщо в назві є заборонене EVA слово (ТМ/бренд) — whole-word — АБО російська мова (_name_is_russian). Не віддаємо EVA те, що модерація однаково відхилить.
     Нормалізує -/_ у пробіл, щоб дефісні написання теж ловились."""
     blob = re.sub(r"[-_]+", " ", str(name or "").lower())  # str() — захист від нерядкового name (аудит #252 A)
-    return bool(_EVA_NAME_STOPWORD_RE.search(blob))
+    return bool(_EVA_NAME_STOPWORD_RE.search(blob)) or _name_is_russian(name)
 
 
 EVA_NAME_MAX_LEN        = 255       # https://sellersupport.eva.ua/article/pidhotovka-prays-listu-xml
@@ -999,8 +1052,7 @@ def _build_xml(
     # у 100k+ — переглянути (можлива колізія фолбеку з EVA-листком).
     cat_map: dict = {}
     for item in catalog.values():
-        cid   = (item.get("category_id") or "").strip()
-        cname = (item.get("category_name") or "").strip()
+        cid, cname = _item_category(item)
         if not cid:
             continue
         fid, fname = _map_eva_category(cid, cname)
@@ -1010,10 +1062,10 @@ def _build_xml(
     # посилався б на невизначену <category> (аудит #209 NIT) — окремий OOS-offer
     # міг би через це відхилитись autoimport'ом і лишитись available.
     for _d_item, _d_price in (deactivate_items or {}).values():
-        cid = (_d_item.get("category_id") or "").strip()
+        cid, _d_cname = _item_category(_d_item)
         if not cid:
             continue
-        fid, fname = _map_eva_category(cid, (_d_item.get("category_name") or "").strip())
+        fid, fname = _map_eva_category(cid, _d_cname)
         if fid and fid not in cat_map:
             cat_map[fid] = fname or fid
 
@@ -1158,8 +1210,7 @@ def _build_xml(
         ET.SubElement(offer, "stock_quantity").text = str(stock)
 
         if item.get("category_id"):
-            _fid, _ = _map_eva_category((item.get("category_id") or "").strip(),
-                                        (item.get("category_name") or "").strip())
+            _fid, _ = _map_eva_category(*_item_category(item))
             if _fid:
                 ET.SubElement(offer, "categoryId").text = _fid
 
@@ -1247,9 +1298,9 @@ def _build_xml(
         ET.SubElement(d_offer, "price").text = f"{price:.2f}"
         ET.SubElement(d_offer, "currencyId").text = "UAH"
         ET.SubElement(d_offer, "stock_quantity").text = "0"
-        cat_id = (item.get("category_id") or "").strip()
+        cat_id, _cat_name = _item_category(item)
         if cat_id:
-            _fid, _ = _map_eva_category(cat_id, (item.get("category_name") or "").strip())
+            _fid, _ = _map_eva_category(cat_id, _cat_name)
             if _fid:
                 ET.SubElement(d_offer, "categoryId").text = _fid
         # ПОВНІ поля (не голий offer) — щоб ПОВНИЙ імпорт EVA (SEO додає картки під

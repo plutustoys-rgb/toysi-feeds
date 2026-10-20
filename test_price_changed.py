@@ -98,7 +98,7 @@ idx.write_text(json.dumps([{"id": "X", "n": "Іграшка", "pr": 85, "op": 10
 api.INDEX_PATH = str(idx)
 api._price_cache["mtime"] = None
 pm = api.price_map()
-chk("price_map: ціна = pr (85), op (100) ігнорується", pm == {"X": {"price": 85, "name": "Іграшка"}})
+chk("price_map: ціна = pr (85), op (100) ігнорується", pm == {"X": {"price": 85, "name": "Іграшка", "dup": False}})
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

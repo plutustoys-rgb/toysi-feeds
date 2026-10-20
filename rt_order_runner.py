@@ -111,10 +111,14 @@ def apply_enabled() -> tuple:
     return True, ""
 
 
+INFO_ALERT_KEYS = ("waiting", "wait", "since", "since_mid")      # інформаційні (dry-run/ворота): маркер «⚪» — у Telegram НЕ йдуть (режим «лише замовлення»); решта (reserved, returned, stale, збої кроків) — «🟠» → власнику (виняток 20.10)
+
+
 def _alert(oid: str, key: str, text: str, cooldown: int = 6 * 60 * 60) -> None:
     try:
         from telegram_notify import send_throttled_alert
-        send_throttled_alert(f"rt_order:{oid}:{key}", f"🟠 RoyalToys {oid}: {text}", cooldown_sec=cooldown)
+        mark = "⚪" if key in INFO_ALERT_KEYS else "🟠"
+        send_throttled_alert(f"rt_order:{oid}:{key}", f"{mark} RoyalToys {oid}: {text}", cooldown_sec=cooldown)
     except Exception as e:  # noqa: BLE001
         print(f"[rt_runner] алерт не надіслано: {type(e).__name__}", file=sys.stderr)
 

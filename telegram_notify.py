@@ -102,7 +102,7 @@ def send_telegram_message(text: str) -> bool:
     Сито (telegram_triage.py): інформаційні повідомлення НЕ йдуть у Telegram (лишаються в журналі з позначкою), повторювані збої — раз на добу.
     Для заглушених повертає True — «доставку не вимагали» (виклики з ретраєм не зациклюються)."""
     text = _redact(text)   # секрети не потрапляють ні в Telegram, ні в журнал
-    if telegram_triage.orders_only_enabled() and not (telegram_triage.is_order_arrival(text) or telegram_triage.is_owner_critical(text)):
+    if telegram_triage.orders_only_enabled() and not (telegram_triage.is_order_arrival(text) or telegram_triage.is_owner_critical(text) or telegram_triage.is_rt_chain_alert(text)):
         _log_alert_to_shared_folder(text, note="[не надіслано в Telegram: режим «лише замовлення»]")
         return True        # «доставку не вимагали» (як і для заглушених ситом): виклики з ретраєм не зациклюються
     source = os.path.basename(sys.argv[0]) if sys.argv else "?"

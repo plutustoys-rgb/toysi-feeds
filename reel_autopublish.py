@@ -140,7 +140,7 @@ def register_on_site(name: str, manifest: dict, caption: str, media_id, now, *, 
         (rebuild or _start_site_rebuild)()
     except Exception as e:  # noqa: BLE001
         print(f"[reel_autopublish] {name}: запис є, перебудова сайту не стартувала ({_safe(e)})", file=sys.stderr)
-        _alert(f"reel_site_rebuild:{name}", f"⚠️ Reel {name}: у ig_reels.json ЗАПИСАНО, але перебудова сайту не стартувала ({_safe(e)}); /ig.html оновиться за таймером site-rebuild (≤ доби).")
+        _alert(f"reel_site_rebuild:{name}", f"⚠️ Reel {name}: у ig_reels.json ЗАПИСАНО, але перебудова сайту не стартувала ({_safe(e)}); /ig.html оновиться за таймером site-rebuild (≤ 2 год).")
     return True
 
 

@@ -421,7 +421,8 @@ def build_order(payload: dict) -> tuple:
         if qty < 1 or qty > MAX_QTY_PER_ITEM:
             raise OrderError(f"Некоректна кількість для товару {pid}")
         if pm[pid].get("dup"):
-            shadows.append({"id": pid, "name": pm[pid]["name"], "dup_of": dup_twin(pid)})
+            if not any(s_["id"] == pid for s_ in shadows):          # дубль id в кошику — одна лінія
+                shadows.append({"id": pid, "name": pm[pid]["name"], "dup_of": dup_twin(pid)})
             continue
         total += pm[pid]["price"] * qty
         # price+name ОБОВʼЯЗКОВІ у позиції: order_router рахує COD moneyback як

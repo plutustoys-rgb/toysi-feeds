@@ -47,7 +47,8 @@ def make(name, verify=None, caption="Підпис 100 грн", video=b"mp4data",
 
 def run(**over):
     kw = dict(fetch_index=lambda: INDEX, host=lambda mp4: (hosted.append(mp4.name) or f"https://raw.githubusercontent.com/x/{mp4.name}"),
-              publish=lambda url, cap: (published.append((url, cap)) or {"ok": True, "id": f"mid{len(published)}"}))
+              publish=lambda url, cap: (published.append((url, cap)) or {"ok": True, "id": f"mid{len(published)}"}),
+              register=lambda *a, **k: True)
     kw.update(over)
     return ra.run_once(q, **kw)
 
@@ -227,6 +228,87 @@ r = run_ig([_Resp(200, {"id": "c1"}), _Resp(502, {}, ok=False)])
 chk("5xx на media_publish → unknown=True", r["ok"] is False and r["unknown"] is True)
 r = run_ig([_Resp(200, {"id": "c1"}), _Resp(200, {"id": "m9"})])
 chk("успіх → ok і id", r == {"ok": True, "id": "m9"})
+
+# ---- запис опублікованого Reel на сайт (ig_reels.json), 20.10.2026: узгоджено з Shopify-code ----
+import tempfile as _tf
+from pathlib import Path as _P
+_d = _P(_tf.mkdtemp())
+_f = _d / "ig_reels.json"
+_rebuilds = []
+_now = datetime(2026, 10, 23, 18, 30)
+_man = {"verify": [{"id": "177602", "price": 349}, {"id": "44404", "price": 598}, {"id": "288920", "price": 168}]}
+ok1 = ra.register_on_site("builders_cars_01", _man, "Будуємо машинки!\n#іграшки", "mid1", _now, permalink=lambda m: "https://www.instagram.com/plutustoys.ua/reel/ABC123/", rebuild=lambda: _rebuilds.append(1), path=_f)
+d1 = json.loads(_f.read_text(encoding="utf-8"))
+chk("register_on_site: запис {date,url,title,ids}, запуск перебудови", ok1 and d1["reels"] == [{"date": "2026-10-23", "url": "https://www.instagram.com/plutustoys.ua/reel/ABC123/", "title": "Будуємо машинки!", "ids": ["177602", "44404", "288920"]}] and _rebuilds == [1])
+ok2 = ra.register_on_site("builders_cars_01", _man, "x", "mid1", _now, permalink=lambda m: "https://www.instagram.com/plutustoys.ua/reel/ABC123/", rebuild=lambda: _rebuilds.append(1), path=_f)
+chk("повторний виклик ідемпотентний (дубль за url не додається, перебудова не повторюється)", ok2 and len(json.loads(_f.read_text(encoding="utf-8"))["reels"]) == 1 and _rebuilds == [1])
+ra.register_on_site("second", _man, "Другий", "mid2", _now, permalink=lambda m: "https://www.instagram.com/plutustoys.ua/reel/XYZ/", rebuild=lambda: _rebuilds.append(1), path=_f)
+chk("другий Reel додається ПЕРЕД існуючими (найновіший першим)", [r["url"].split("/")[-2] for r in json.loads(_f.read_text(encoding="utf-8"))["reels"]] == ["XYZ", "ABC123"])
+_alerts = []
+ra._alert = lambda key, text: _alerts.append(key)
+bad1 = ra.register_on_site("nopermalink", _man, "x", "mid3", _now, permalink=lambda m: "", rebuild=lambda: _rebuilds.append(1), path=_f)
+bad2 = ra.register_on_site("noids", {"verify": []}, "x", "mid4", _now, permalink=lambda m: "https://www.instagram.com/plutustoys.ua/reel/Q/", rebuild=lambda: _rebuilds.append(1), path=_f)
+def _boom(m):
+    raise RuntimeError("graph down")
+bad3 = ra.register_on_site("graphdown", _man, "x", "mid5", _now, permalink=_boom, rebuild=lambda: _rebuilds.append(1), path=_f)
+chk("нема permalink / нема id / збій Graph → False, алерт, файл НЕ змінено, виняток назовні не йде", bad1 is False and bad2 is False and bad3 is False and len(_alerts) == 3 and len(json.loads(_f.read_text(encoding="utf-8"))["reels"]) == 2)
+# порядок «найновіший першим» (аудит #902 B2) і обмеження довжини
+_f2 = _d / "ig2.json"
+for _i, _code in enumerate(("A1", "B2", "C3")):
+    ra.register_on_site(f"n{_i}", _man, "T", f"m{_i}", datetime(2026, 10, 23 + _i, 18, 30), permalink=(lambda c: (lambda m: f"https://www.instagram.com/plutustoys.ua/reel/{c}/"))(_code), rebuild=lambda: None, path=_f2)
+_dates = [r["date"] for r in json.loads(_f2.read_text(encoding="utf-8"))["reels"]]
+chk("writer: найновіший ПЕРШИМ (дати 25,24,23)", _dates == ["2026-10-25", "2026-10-24", "2026-10-23"])
+_big = {"reels": [{"date": "2026-01-01", "url": f"https://www.instagram.com/plutustoys.ua/reel/X{i}/", "title": "t", "ids": ["1"]} for i in range(60)], "extra": 1}
+_f2.write_text(json.dumps(_big), encoding="utf-8")
+ra.register_on_site("cap", _man, "T", "m", _now, permalink=lambda m: "https://www.instagram.com/plutustoys.ua/reel/NEW/", rebuild=lambda: None, path=_f2)
+_d2 = json.loads(_f2.read_text(encoding="utf-8"))
+chk("довжина ≤ IG_REELS_MAX, новий на початку, інші ключі верхнього рівня збережено", len(_d2["reels"]) == ra.IG_REELS_MAX and _d2["reels"][0]["url"].endswith("/NEW/") and _d2.get("extra") == 1)
+# зіпсований файл НЕ стирається (S1)
+_f.write_text("{зіпсовано", encoding="utf-8")
+_alerts.clear()
+_res_bad = ra.register_on_site("x", _man, "T", "m", _now, permalink=lambda m: "https://www.instagram.com/plutustoys.ua/reel/N1/", rebuild=lambda: None, path=_f)
+chk("зіпсований ig_reels.json: False + алерт, файл НЕ перезаписано (історія не стирається)", _res_bad is False and _f.read_text(encoding="utf-8") == "{зіпсовано" and len(_alerts) == 1)
+_f.write_text(json.dumps({"reels": "не список"}), encoding="utf-8")
+chk("reels не список: False, файл не чіпаємо", ra.register_on_site("x", _man, "T", "m", _now, permalink=lambda m: "https://www.instagram.com/plutustoys.ua/reel/N1/", rebuild=lambda: None, path=_f) is False and json.loads(_f.read_text(encoding="utf-8")) == {"reels": "не список"})
+# збій лише перебудови ≠ збій запису (S2)
+_f3 = _d / "ig3.json"
+_alerts.clear()
+def _rb_fail():
+    raise RuntimeError("systemctl код 5")
+_ok_rb = ra.register_on_site("rb", _man, "T", "m", _now, permalink=lambda m: "https://www.instagram.com/plutustoys.ua/reel/RB/", rebuild=_rb_fail, path=_f3)
+chk("збій перебудови: запис ЗБЕРЕЖЕНО, повертає True, окремий алерт reel_site_rebuild", _ok_rb is True and len(json.loads(_f3.read_text(encoding="utf-8"))["reels"]) == 1 and _alerts == ["reel_site_rebuild:rb"])
+# токен не витікає (B1) + нормалізація permalink
+class _R:
+    def __init__(self, code, js=None):
+        self.status_code = code
+        self._js = js or {}
+    def json(self):
+        return self._js
+import social_auto_poster as _sap
+_sap.FB_PAGE_ACCESS_TOKEN = "SECRET_TOKEN_123"
+_real_get = ra.requests.get
+def _get_boom(*a, **k):
+    raise ra.requests.exceptions.ConnectionError("HTTPSConnectionPool url=...access_token=SECRET_TOKEN_123")
+ra.requests.get = _get_boom
+_alerts_txt = []
+ra._alert = lambda key, text: _alerts_txt.append(text)
+ra.register_on_site("tok", _man, "T", "m", _now, rebuild=lambda: None, path=_d / "ig4.json")
+ra.requests.get = lambda *a, **k: _R(400)
+ra.register_on_site("tok2", _man, "T", "m", _now, rebuild=lambda: None, path=_d / "ig4.json")
+chk("токен НЕ потрапляє в алерт при збої Graph (ConnectionError і HTTP 400)", len(_alerts_txt) == 2 and not any("SECRET_TOKEN_123" in x for x in _alerts_txt))
+_ok = {}
+for _pl in ("https://www.instagram.com/reel/AbC_1-x/", "https://www.instagram.com/plutustoys.ua/reel/AbC_1-x/", "https://instagram.com/reels/AbC_1-x", "https://www.instagram.com/p/AbC_1-x/?igsh=zzz", "http://www.instagram.com/reel/AbC_1-x/"):
+    ra.requests.get = (lambda pl: (lambda *a, **k: _R(200, {"permalink": pl})))(_pl)
+    _ok[_pl] = ra._ig_permalink("m")
+chk("permalink: усі форми (з/без username і www, reels/p, query ?igsh, http) → https://www.instagram.com/plutustoys.ua/reel/<код>/", all(v == "https://www.instagram.com/plutustoys.ua/reel/AbC_1-x/" for v in _ok.values()))
+ra.requests.get = lambda *a, **k: _R(200, {"permalink": "https://evil.example/reel/AbC/"})
+chk("permalink чужого хоста → '' (не приймаємо)", ra._ig_permalink("m") == "")
+ra.requests.get = _real_get
+# run_once викликає register після публікації; збій register не скасовує публікацію
+_calls = []
+make("regtest", age=100)
+r_ok = run(register=lambda *a, **k: _calls.append(a[0]) or True)
+chk("run_once: після публікації викликається register(name,…)", r_ok["published"] == "regtest" and _calls == ["regtest"])
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

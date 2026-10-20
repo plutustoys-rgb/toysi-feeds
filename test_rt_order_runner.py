@@ -337,5 +337,21 @@ with orders_db.get_connection() as c:
 with orders_db.get_connection() as c:
     rr.process_order(c, get(q2), SUP, apply=True, deps=RtCertain())
 chk("N4: явне «точно не надіслано» (до кліку) -> відкат у marking_ready", get(q2)["rt_state"] == "marking_ready")
+
+# N7: apply без дійсного SINCE — нові замовлення все одно отримують чек, замовлення посеред ланцюга дають алерт
+os.environ["RT_RUNNER_SINCE"] = "20.10.2026"
+n7 = new_order("N7")
+rcpt7 = []
+
+
+class Rc7(Fake):
+    def ensure_receipt(self, conn, o):
+        rcpt7.append(o["internal_order_id"])
+        return True
+
+
+rr.run(apply=True, deps=Rc7())
+chk("N7: apply без дійсного RT_RUNNER_SINCE -> нове оплачене замовлення все одно отримує чек (і не береться в роботу)", n7 in rcpt7 and get(n7)["rt_state"] is None)
+os.environ["RT_RUNNER_SINCE"] = "2026-01-01"
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

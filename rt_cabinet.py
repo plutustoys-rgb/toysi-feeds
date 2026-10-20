@@ -412,6 +412,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
         raise OrderError(f"нема сесії {STATE_FILE.name}: --vps-login")
     res = {"ready": False, "submitted": False, "not_submitted_certain": False, "problems": []}
     blocked = {"final": False}
+    up_dir = None        # temp-каталог копії PDF під коротким іменем: прибирається в зовнішньому finally (після фіналу/будь-якого виходу — форма може тримати File до відправки)
     armed = {"on": False, "passed": 0}        # фінальний POST /onestep дозволяється ЛИШЕ після всіх перевірок, безпосередньо перед кліком по «Резерв»
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -539,7 +540,6 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                 page.wait_for_timeout(3500)
                 form_text = re.sub(r"\s+", " ", page.eval_on_selector("form.checkout-form", "f => f.innerText"))
                 res["pdf_uploaded"] = bool(upload_ok and (up_pdf.name in form_text or order["ttn_number"][:8] in form_text))
-                shutil.rmtree(up_dir, ignore_errors=True)
                 res["upload_status"] = upload_status
                 if not res["pdf_uploaded"]:
                     res["problems"].append(f"PDF маркування не з'явився в формі після завантаження (orderaddon: {upload_status})")
@@ -606,6 +606,8 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     res["submitted"] = True
                     res["mode"] = "reserve"
             finally:
+                if up_dir:
+                    shutil.rmtree(up_dir, ignore_errors=True)
                 try:
                     clear_cart()                                     # кошик завжди чистий (не лишаємо чернетку)
                 except Exception:  # noqa: BLE001

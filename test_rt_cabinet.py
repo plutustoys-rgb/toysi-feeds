@@ -137,6 +137,8 @@ chk("balance_lock: fromBalance свого замовлення — final_pass Л
     bl("GET", True, "/1sbuttons/", Q, True, "773594") == "final_pass" and bl("GET", True, "/1sbuttons/", Q, False, "773594") == "abort")
 chk("balance_lock: cancelOrder / чуже замовлення / зайвий параметр / сторонній хост / POST — abort навіть озброєний",
     all(bl(m, h, "/1sbuttons/", q, True, "773594") == "abort" for m, h, q in (("GET", True, "dop1=cancelOrder&dop2=773594"), ("GET", True, "dop1=fromBalance&dop2=773595"), ("GET", True, Q + "&x=1"), ("GET", False, Q), ("POST", True, Q))))
+chk("balance_lock: будь-який шлях із 1sbuttons, крім єдиного дозволеного (/1sbuttons/x, /1sbuttons.php, //1sbuttons, дубль dop1, порожній dop1) — abort",
+    all(bl("GET", True, pth, q, True, "773594") == "abort" for pth, q in (("/1sbuttons/x", Q), ("/1sbuttons.php", Q), ("//1sbuttons/", Q), ("/1sbuttons/", Q + "&dop1=cancelOrder"), ("/1sbuttons/", Q + "&dop1="), ("/1SBUTTONS/x", "dop1=toTrash"))))
 chk("balance_lock: logout/delete/cancel у шляху чи query — abort; звичайні GET — continue; /ua/1sbuttons теж не проходить",
     bl("GET", True, "/ua/my/orders/", "logout", False, "1") == "abort" and bl("GET", True, "/ua/my/orders/", "", False, "1") == "continue" and bl("GET", True, "/ua/1sbuttons/", Q, True, "773594") == "abort" and bl("GET", True, "/x/", "dop1=cancelOrder", False, "1") == "abort")
 def _raises2(f):
@@ -144,8 +146,10 @@ def _raises2(f):
         f(); return None
     except rc.OrderError as e:
         return str(e)
+_os.environ.pop("RT_ORDER_SUBMIT", None)          # аудит #925 B1: тест НІКОЛИ не має виконуватись із відкритою брамою; фіктивний номер (не реальне замовлення)
+_rt_before = _os.environ.get("RT_ORDER_SUBMIT")
 chk("confirm_from_balance: поганий rt_ref / нема суми / apply без RT_ORDER_SUBMIT — OrderError ДО мережі",
-    _raises2(lambda: rc.confirm_from_balance("773594", 30.4)) and _raises2(lambda: rc.confirm_from_balance("RT000773594", None)) and _raises2(lambda: rc.confirm_from_balance("RT000773594", 30.4, apply=True)))
+    _raises2(lambda: rc.confirm_from_balance("773594", 30.4)) and _raises2(lambda: rc.confirm_from_balance("RT000000001", None)) and _raises2(lambda: rc.confirm_from_balance("RT000000001", 30.4, apply=True)) and _rt_before is None)
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)

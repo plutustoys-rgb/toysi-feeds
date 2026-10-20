@@ -794,9 +794,9 @@ def balance_lock_decision(method: str, host_ok: bool, path: str, query: str, arm
     if method not in ("GET", "HEAD"):
         return "abort"
     p = path.rstrip("/").lower()
-    if p.endswith("/1sbuttons"):
-        qs = parse_qs(query)
-        if armed and host_ok and p == "/1sbuttons" and qs == {"dop1": ["fromBalance"], "dop2": [num]}:
+    if "1sbuttons" in p:                              # будь-який шлях із 1sbuttons (/x, .php, //, /ua/) — abort, КРІМ єдиного дозволеного нижче (аудит #925 N4)
+        qs = parse_qs(query, keep_blank_values=True)   # порожні/дубльовані параметри не ховаються (N3)
+        if armed and host_ok and path == "/1sbuttons/" and qs == {"dop1": ["fromBalance"], "dop2": [num]}:
             return "final_pass"
         return "abort"
     if re.search(r"logout|exit|delete|remove|clear|cancel", (path + "?" + query).lower()):
@@ -889,11 +889,15 @@ def confirm_from_balance(rt_ref: str, expected_total, apply: bool = False) -> di
                 page.wait_for_timeout(2500)
             finally:
                 armed["on"] = False
-            text2, block2, n2 = read_list()
+            try:
+                text2, block2, n2 = read_list()
+            except Exception as _e:  # noqa: BLE001
+                res["problems"].append(f"клік виконано, але прочитати результат не вдалося ({type(_e).__name__}) — результат НЕВІДОМИЙ, звірте кабінет (статус замовлення і баланс) вручну")
+                return res
             bal1 = _balance(text2)
             res["balance_after"] = bal1
             res["status_after"] = re.sub(r"\s+", " ", block2)[:120] if block2 else ""
-            status_changed = bool(block2) and "Очікує оплати" not in block2 and "Відмін" not in block2 and "Видален" not in block2
+            status_changed = bool(block2) and "Очікує оплати" not in block2 and "Відмін" not in block2 and "Видален" not in block2 and "Скасов" not in block2
             paid = bal0 is not None and bal1 is not None and abs((bal0 - bal1) - total) < 0.011
             res["confirmed"] = bool(armed["passed"] == 1 and status_changed and paid)
             if not res["confirmed"]:

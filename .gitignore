@@ -335,3 +335,5 @@ gmc_service_account*.json
 /supplier_rt.json
 /supplier_rt.json.tmp
 /site/img/rt/
+# Рілси, яких пише автомат публікації (VPS): не в git і не в DocumentRoot (20.10)
+/ig_reels.json

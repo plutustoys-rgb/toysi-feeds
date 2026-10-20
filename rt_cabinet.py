@@ -606,11 +606,28 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     btn_text = (btn.first.inner_text() or "")
                     if "Резерв" not in btn_text or "балансу" in btn_text:
                         raise OrderError("кнопка за селектором .glavs.no — не «Резерв» (верстка змінилась) — зупинка")
+                    # КРОК 1 (живий лог 20.10 17:25): «Резерв»/«З балансу» — лише ПЕРЕМИКАЧ режиму (type=button, клас .active; запиту не шле — seen_req порожній). Справжня відправка форми — окрема кнопка #checkout-btn. Перемикач тиснемо при ЗАКРИТОМУ лоці (armed=False): це ще не відправка.
+                    if not btn.first.evaluate("e => e.classList.contains('active')"):        # якщо перемикач уже активний — не тиснемо (можливий toggle)
+                        btn.first.evaluate("e => e.click()")
+                        page.wait_for_timeout(800)
+                    if blocked["final"]:
+                        raise OrderError("клік перемикача «Резерв» спробував відправити фінальний POST — зупинка (форма поводиться несподівано)")
+                    mode_state = page.evaluate("() => ({no: !!document.querySelector('form.checkout-form button.glavs.no.active'), otp: !!document.querySelector('form.checkout-form button.glavs.otp.active')})")
+                    if not mode_state["no"] or mode_state["otp"]:
+                        raise OrderError(f"перемикач «Резерв» не став активним (резерв={mode_state['no']}, з балансу={mode_state['otp']}) — зупинка")
+                    # КРОК 2: кнопка відправки форми. Перевірки — ДО озброєння.
+                    sub = page.locator("form.checkout-form #checkout-btn")
+                    if sub.count() != 1:
+                        raise OrderError(f"кнопка відправки #checkout-btn не знайдена або неоднозначна ({sub.count()}) — верстка змінилась, зупинка")
+                    sub_text = re.sub(r"\s+", " ", sub.first.inner_text() or "").strip()
+                    res["submit_button_text"] = sub_text[:60]
+                    if not sub.first.is_enabled() or "балансу" in sub_text:
+                        raise OrderError(f"кнопка відправки недоступна або має несподіваний текст («{sub_text[:40]}») — зупинка")
                     # З цього рядка результат може бути невідомим: помилки лишають rt_ordering (автоповтору немає)
                     res["not_submitted_certain"] = False
                     armed["on"] = True
                     try:
-                        btn.first.evaluate("e => e.click()")
+                        sub.first.evaluate("e => e.click()")
                         page.wait_for_timeout(6000)
                     finally:
                         armed["on"] = False                      # лок відкритий лише на мить кліку (і при винятку теж)

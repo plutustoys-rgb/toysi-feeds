@@ -457,8 +457,15 @@
   //   Хто платить комісію — не доведено: текст говорить лише «орієнтовно» і «оплачується при отриманні».
   var DELIV_TARIFF_MIN=70, DELIV_TARIFF_MAX=90, DELIV_COD_FIXED=20, DELIV_COD_RATE=0.02, DELIV_COD_MAX=3000, DELIV_DECL_FREE=500, DELIV_DECL_RATE=0.005;
   function isPrepaid(){ var r=document.querySelector('input[name="payment"]:checked'); return !!r && r.value==="prepaid"; }
-  function deliveryEstimate(goods, prepaid){
+  // Дві посилки (тестувальник 20.10): у кошику є і Toysi, і RoyalToys (rt-…) → окремі відправлення, доставка рахується за КОЖНУ окремо; раніше оцінка лишалась «70–90 ₴», як для однієї.
+  function parcelCount(){
+    var ids=Object.keys(read()), rt=0;
+    ids.forEach(function(k){ if(/^rt-/.test(k)) rt++; });
+    return (rt>0 && rt<ids.length) ? 2 : 1;
+  }
+  function deliveryEstimate(goods, prepaid, parcels){
     // оплата карткою онлайн: комісії накладеного платежу нема, надбавка тарифу для передоплати не міряна → лише базовий тариф
+    if(parcels>1) return "орієнтовно "+(70*parcels)+"–"+(90*parcels)+" ₴ за "+(parcels===2 ? "дві посилки" : parcels+" посилки")+" (до 2 кг кожна)";
     if(prepaid || !(goods>0) || goods>DELIV_COD_MAX) return "орієнтовно 70–90 ₴ до 2 кг";
     var extra=goods>DELIV_DECL_FREE ? DELIV_DECL_RATE*goods : 0;
     var fee=DELIV_COD_FIXED+DELIV_COD_RATE*goods+extra;
@@ -468,14 +475,15 @@
   // Рядок доставки, підпис і примітка залежать від способу оплати (тестувальник 13.10: при «карткою онлайн» лишався COD-івський підсумок 99–119 ₴ і підпис про комісію).
   // Оригінальний (накладений платіж) текст запам'ятовуємо при першому виклику; prepaid-версії — з data-prepaid розмітки (єдине джерело в build_site.py).
   function applyDeliveryView(goods){
-    var pre=isPrepaid();
+    var pre=isPrepaid(), par=parcelCount();
     [["sum-delivery","sum-delivery-label","delivery-note-sum"],["aside-delivery","aside-delivery-label","delivery-note-aside"]].forEach(function(ids){
       var v=document.getElementById(ids[0]), lb=document.getElementById(ids[1]), nt=document.getElementById(ids[2]);
-      if(v) v.textContent=deliveryEstimate(goods, pre);
+      if(v) v.textContent=deliveryEstimate(goods, pre, par);
       [lb, nt].forEach(function(el){
         if(!el) return;
         if(el.getAttribute("data-cod")===null) el.setAttribute("data-cod", el.textContent);
         el.textContent = pre ? (el.getAttribute("data-prepaid")||el.textContent) : el.getAttribute("data-cod");
+        if(par>1 && el===nt) el.textContent = el.textContent.replace("70–90 ₴", (70*par)+"–"+(90*par)+" ₴ (за дві посилки)");   // примітка під підсумком називає ту саму суму, що й рядок «Доставка»
       });
     });
   }

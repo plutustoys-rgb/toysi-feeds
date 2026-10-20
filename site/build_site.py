@@ -673,7 +673,8 @@ def _load_supplier_rt(now=None):
                   "vendor_code": str(v.get("vendor_code") or "").strip(), "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
                   "site_price": price, "rt_cost": rt_cost, "supplier": "royaltoys", "price": price,
                   # хвилі відкриття до Google (SEO 19.10): "index": false → noindex,follow і поза sitemap; нема поля → true (пілот); опис <50 знаків (тонка картка) → noindex завжди
-                  "rt_noindex": v.get("index") is False or len(re.sub(r"<[^>]+>", "", _desc).strip()) < RT_MIN_DESC_INDEX}
+                  "rt_noindex": v.get("index") is False or len(re.sub(r"<[^>]+>", "", _desc).strip()) < RT_MIN_DESC_INDEX,
+                  "dup_of": str(v.get("dup_of")) if re.fullmatch(r"[0-9]{1,12}", str(v.get("dup_of") or "")) else ""}   # збіг із товаром Toysi (рішення власника 20.10, варіант 1 «резерв»)
     if skipped:
         print("[build] ⚠ supplier_rt.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
     print(f"[build] RoyalToys: {len(out)} карток із supplier_rt.json")
@@ -757,9 +758,20 @@ def build():
             "photo": PHOTO_OVERRIDES.get(str(it.get("id")), pics[0]), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
-            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")),
+            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")), "dup_of": str(it.get("dup_of") or ""),
             "vendor": (it.get("vendor") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
+    # RoyalToys-дублі Toysi, варіант 1 «резерв» (власник 20.10): rt-картка з dup_of на товар Toysi, що Є В НАЯВНОСТІ, — «тінь»: покупцям не показуємо (нема в каталозі/пошуку/sitemap/
+    # блоках), сторінка жива, але noindex і canonical на сторінку Toysi. Щойно товар Toysi вичерпався (його нема в prods) — rt-картка стає звичайною.
+    _toysi_live = {q["id"] for q in prods if not q.get("rt")}
+    shadows = [q for q in prods if q.get("rt") and q.get("dup_of") in _toysi_live]
+    if shadows:
+        _sh_ids = {q["id"] for q in shadows}
+        prods[:] = [q for q in prods if q["id"] not in _sh_ids]
+        for q in shadows:
+            q["shadow"] = True
+            q["noindex"] = True
+        print(f"[build] RoyalToys: {len(shadows)} карток-дублів Toysi (Toysi є в наявності) — не показуємо, noindex + canonical на Toysi", file=sys.stderr)
     # Порядок «Рекомендовані» = за ВНЕСКОМ спадно (рішення Консультанта: на перший екран —
     # позиції, що приносять маржу, а не найбільша категорія/найдорожче). Товари з невідомою
     # собівартістю (contribution=None) — у кінець. Тай-брейк: ціна спадно, потім назва (детермінізм).
@@ -864,6 +876,8 @@ def build():
     for p in oos_prods:
         # внутрішні посилання з OOS-сторінки на товари в наявності тієї ж категорії: шлях покупця і проти soft-404 (сторінка не «глухий кут»)
         write_product(p, related=None, cat_slug=cat_slug, similar=similar_products(sim_idx, p), similar_title="Схожі товари в наявності")
+    for p in shadows:   # тіні: сторінка жива (noindex, canonical на Toysi), без блоків схожих/крос-селу
+        write_product(p, related=None, cat_slug=cat_slug, similar=[])
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
     SITE_GROUPS[:] = site_groups(cats)
@@ -894,15 +908,15 @@ def build():
     trust = write_trust_pages()
     # 6) індекс пошуку
     # index.json — клієнтський пошук + фільтр/сорт каталогу. c=категорія, s=наявність(1/0).
-    idx = index_entries(prods_rec)
+    idx = index_entries(prods_rec) + [{**e, "dup": 1} for e in index_entries(shadows)]   # тіні — лише в повному index.json (сервер бере ціни); пошук/каталог їх не читають
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
         json.dump(idx, f, ensure_ascii=False)
     # Сторінки (app.js) читають НЕ повний index.json, а два файли: index-t.json (Toysi, як було) і index-rt.json (RoyalToys, довантажується у фоні) —
     # 20.10: 9,9 тис. карток RoyalToys підняли index.json з 1,0 до 1,5 МБ gzip, і LCP каталогу/категорій у Lighthouse зріс з ≈3 до ≈12 с. Повний index.json лишається для site_order_api (ціни) і фідів.
     with open(os.path.join(OUT, "index-t.json"), "w", encoding="utf-8") as f:
-        json.dump([x for x in idx if not x.get("rt")], f, ensure_ascii=False)
+        json.dump([x for x in idx if not x.get("rt") and not x.get("dup")], f, ensure_ascii=False)
     with open(os.path.join(OUT, "index-rt.json"), "w", encoding="utf-8") as f:
-        json.dump([x for x in idx if x.get("rt")], f, ensure_ascii=False)
+        json.dump([x for x in idx if x.get("rt") and not x.get("dup")], f, ensure_ascii=False)
     # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
     static_urls = [("categories.html", "0.7", "weekly")] +([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
@@ -914,7 +928,7 @@ def build():
     # вище ДО цього кроку, тож видаляємо лише справжні залишки). `paged` містить усі сторінки
     # каталогу/категорій (вкл. пагіновані catalog_N/category-slug_N), тож застарілі сторінки
     # пагінації від більшого попереднього білда теж приберуться.
-    valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | paged
+    valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | {f"product-{p['id']}.html" for p in shadows} | paged
     removed = 0
     for fn in os.listdir(OUT):
         if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "halloween", "podibrka", "group-")) and fn.endswith(".html")
@@ -2527,7 +2541,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     body = crumbs_html(trail) + body
     _write(f"product-{p['id']}.html", page(
         p["name"], body, extra_head=extra, title_full=product_title_for(p, in_stock), description=meta_desc,
-        canonical=f'product-{p["id"]}.html', og_image=p["photo"], og_type="product", noindex=bool(p.get("noindex"))))   # rt: хвиля не відкрита / тонкий опис
+        canonical=(f'product-{p["dup_of"]}.html' if p.get("shadow") else f'product-{p["id"]}.html'), og_image=p["photo"], og_type="product", noindex=bool(p.get("noindex"))))   # rt: хвиля не відкрита / тонкий опис
 
 CART_ADDONS_MAX = 12     # пул «Додайте до замовлення» у кошику (на сторінці показуємо 3, яких ще нема в кошику)
 

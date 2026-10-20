@@ -13,6 +13,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 os.environ["AUDIT_NO_TELEGRAM"] = "1"
+os.environ.pop("RT_AUTO_CONFIRM", None)      # брама автопідтвердження в оточенні не має впливати на старі тести
 os.environ["ORDERS_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "orders.db")
 sys.path.insert(0, str(Path(__file__).parent))
 import orders_db  # noqa: E402
@@ -532,6 +533,42 @@ fk = ACboom([])
 with orders_db.get_connection() as c:
     rep5 = rr.process_order(c, get(ac5), SUP, apply=True, deps=fk)
 chk("збій підтвердження після створеного резерву: стан rt_ordered лишається (резерв є), problems з поясненням, наступний цикл повторить", get(ac5)["rt_state"] == "rt_ordered" and any("збій" in x for x in rep5["problems"]))
+_with_gate(None)
+# аудит #929: у гілці rt_ordered — cancelled -> manual БЕЗ трекінгу/confirm_fail; unknown_status не підтверджує; «ttn-…» без номера RT -> ручна звірка
+_with_gate("1")
+ac6 = new_order("AC6")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ac6, "rt_ordered", rt_order_ref="RT000900006", toysi_ttn="20451500000006")
+    c.commit()
+fk = AC([{"confirmed": False, "cancelled": True, "problems": ["скасоване"]}])
+fk.ttn_info = {"status": "Відправлення прямує", "status_code": "5", "delivered": False}
+with orders_db.get_connection() as c:
+    rep6 = rr.process_order(c, get(ac6), SUP, apply=True, deps=fk)
+chk("rt_ordered + скасовано в кабінеті: manual, трекінг НП НЕ перезаписує стан, без хибного «повторимо»", get(ac6)["rt_state"] == "manual" and "tracking" not in fk.calls and not rep6["problems"])
+ac7 = new_order("AC7")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ac7, "rt_ordered", rt_order_ref="RT000900007", toysi_ttn="20451500000007")
+    c.commit()
+fk = AC([{"confirmed": False, "unknown_status": True, "problems": ["невідомий"]}])
+with orders_db.get_connection() as c:
+    rep7 = rr.process_order(c, get(ac7), SUP, apply=True, deps=fk)
+chk("невідомий статус у кабінеті: НЕ позначено підтвердженим, problems/rt_error, стан rt_ordered", get(ac7)["rt_confirmed_at"] is None and get(ac7)["rt_state"] == "rt_ordered" and rep7["problems"])
+ac8 = new_order("AC8")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ac8, "rt_ordered", rt_order_ref="ttn-20451500000008", toysi_ttn="20451500000008")
+    c.commit()
+fk = AC([])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac8), SUP, apply=True, deps=fk)
+chk("rt_order_ref без номера RT («ttn-…») -> автопідтвердження не пробується (ручна звірка), не падає", fk.conf_calls == [] and get(ac8)["rt_confirmed_at"] is None)
+ac9 = new_order("AC9")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ac9, "rt_ordered", rt_order_ref="RT000900009", toysi_ttn="20451500000009")
+    c.commit()
+fk = AC([])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac9), SUP, apply=False, deps=fk)
+chk("dry-run (apply=False) при ввімкненій брамі: підтвердження недосяжне", fk.conf_calls == [])
 _with_gate(None)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

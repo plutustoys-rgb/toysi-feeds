@@ -9,6 +9,7 @@
 Запуск: rt-order-runner.timer (VPS, кожні 15 хв; без rt-замовлень — миттєвий вихід). Збій → один самодіагностичний алерт на замовлення/стан/6 год."""
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -107,7 +108,7 @@ def apply_enabled() -> tuple:
     if _since() in ("", "INVALID"):
         return False, "RT_RUNNER_SINCE не задано або не ISO-дата (напр. 2026-10-21): старіші за неї замовлення конвеєр не чіпає — їх власник виконав вручну"
     if not rt_cabinet.final_implemented(_order_mode()):
-        return False, f"режим фіналу «{_order_mode()}» у кабінеті RoyalToys не підключено (є лише «reserve»)"
+        return False, f"режим фіналу «{_order_mode()}» у кабінеті RoyalToys не підключено (є лише «reserve»; «З балансу» виконує автопідтвердження RT_AUTO_CONFIRM після резерву)"
     return True, ""
 
 
@@ -174,6 +175,10 @@ def _confirm_step(conn, d, oid: str, order: dict, rep: dict) -> bool:
     import orders_db
     if order.get("rt_confirmed_at"):
         return True
+    if not re.fullmatch(r"RT\d{6,}", str(order.get("rt_order_ref") or "")):
+        _alert(oid, "rt_ref_manual", f"замовлення RoyalToys без номера RT у базі («{order.get('rt_order_ref')}») — автопідтвердження неможливе, підтвердьте «З балансу» вручну в кабінеті (ТТН {order.get('toysi_ttn')})")
+        rep["actions"].append("«З балансу»: нема номера RT — потрібна ручна звірка")
+        return False
     res = d.rt_confirm(order.get("rt_order_ref"), order.get("rt_total"))
     if res.get("confirmed") or res.get("already"):
         orders_db.mark_rt_confirmed(conn, oid)
@@ -184,13 +189,16 @@ def _confirm_step(conn, d, oid: str, order: dict, rep: dict) -> bool:
     if res.get("cancelled"):
         orders_db.set_rt_state(conn, oid, "manual", rt_error="замовлення RoyalToys скасоване/видалене в кабінеті")
         conn.commit()
+        rep["cancelled"] = True
         _alert(oid, "rt_cancelled", f"замовлення RoyalToys {order.get('rt_order_ref')} скасоване/видалене в кабінеті — потрібне рішення (ТТН {order.get('toysi_ttn')}, повернення коштів клієнту?)")
-        rep["problems"].append("замовлення RoyalToys скасоване в кабінеті — стан manual")
+        rep["actions"].append("замовлення RoyalToys скасоване в кабінеті — стан manual")
         return False
     if res.get("low_balance"):
         _alert(oid, "low_balance", f"недостатньо балансу RoyalToys для підтвердження {order.get('rt_order_ref')}: {'; '.join(res.get('problems') or [])}. Поповніть баланс — підтвердимо автоматично; резерв тримається 2 дні, потім скасується, ТТН НП живе обмежений час", cooldown=6 * 60 * 60)
         rep["actions"].append("«З балансу»: недостатньо коштів — чекаємо поповнення")
         return False
+    if res.get("unknown_status"):
+        _alert(oid, "rt_unknown_status", f"замовлення RoyalToys {order.get('rt_order_ref')}: статус у кабінеті невідомий для автопідтвердження — звірте й підтвердіть «З балансу» вручну (ТТН {order.get('toysi_ttn')}); автоматика повторить, але не підтвердить мовчки")
     rep["problems"].append(f"підтвердження «З балансу» не вдалось: {res.get('problems')}")
     return False
 
@@ -254,6 +262,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
         if state in ("rt_ordered", "shipped"):
             if state == "rt_ordered" and apply and auto_confirm_enabled() and not order.get("rt_confirmed_at"):
                 _confirm_step(conn, d, oid, order, rep)
+                if rep.get("cancelled"):
+                    return rep                      # стан уже manual (+алерт): трекінг НП не має його перезаписати
                 if rep["problems"]:
                     try:
                         orders_db.set_rt_state(conn, oid, None, rt_error="; ".join(rep["problems"])[:500])

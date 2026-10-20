@@ -804,6 +804,25 @@ def balance_lock_decision(method: str, host_ok: bool, path: str, query: str, arm
     return "continue"
 
 
+# Словник статусів кабінету RoyalToys — ЖИВИЙ, з фільтра «Статус замовлення» (20.10): Новий, В обробці, Очікує оплати, Кошти заблоковані, Передано на комплектацію (з 2-ох складів / Алматинська / Пожарського), Очікує відправки (Віддалений склад),
+# Зібраний, Відвантажено, Виконано, Продано, Повернення, Відмінено, Видалено, Надіслано. «Відмініти замовлення» — текст КНОПКИ, не статус (тому шукаємо «Відмінено», а не корінь).
+RT_STATUS_PENDING = "Очікує оплати"
+RT_STATUS_CANCELLED_RE = re.compile(r"Відмінено|Видалено|Скасовано")
+RT_STATUS_CONFIRMED_RE = re.compile(r"Кошти заблоковані|Передано на комплектацію|Очікує відправки|Зібраний|Відвантажено|Виконано|Продано|Надіслано")
+
+
+def classify_rt_status(block: str) -> str:
+    """pending | confirmed | cancelled | unknown — за текстом блоку замовлення у списку. Невідомий статус (Новий, В обробці, Повернення, нове слово) НЕ вважається підтвердженим (аудит #929 N1)."""
+    b = block or ""
+    if RT_STATUS_PENDING in b:
+        return "pending"
+    if RT_STATUS_CANCELLED_RE.search(b):
+        return "cancelled"
+    if RT_STATUS_CONFIRMED_RE.search(b):
+        return "confirmed"
+    return "unknown"
+
+
 def balance_confirm_verdict(passed: int, status_changed: bool, bal0, bal1, total) -> tuple:
     """Вердикт після кліку «З балансу»: (confirmed, пояснення). Підтверджено = клік пропущено рівно раз І статус пішов з «Очікує оплати» (не в скасований). Баланс — лише інформація: живий прогін 20.10 показав, що фактичний залишок
     НЕ змінюється одразу після підтвердження (кошти спишуться, імовірно, при відвантаженні), тому вимога «баланс зменшився» давала хибне «не підтверджено» (статус уже був «Передано на комплектацію»)."""
@@ -870,16 +889,22 @@ def confirm_from_balance(rt_ref: str, expected_total, apply: bool = False) -> di
             res.update({"balance_before": bal0, "total": total, "status_block": re.sub(r"\s+", " ", block)[:120] if block else ""})
             if n_refs != 1 or not block:
                 res["problems"].append(f"замовлення {rt_ref} у списку: знайдено {n_refs} (потрібне рівно одне)")
-            elif "Очікує оплати" not in block:
-                if re.search(r"Відмін|Видален|Скасов", block):
+            elif classify_rt_status(block) != "pending":
+                kind = classify_rt_status(block)
+                if kind == "cancelled":
                     res["cancelled"] = True
                     res["problems"].append("замовлення скасоване/видалене в кабінеті — підтверджувати нічого")
+                elif kind == "confirmed":
+                    res["already"] = True          # статус вже «підтверджений» (комплектація/відправка…) — повторно не тиснемо
+                    res["problems"].append("статус замовлення вже не «Очікує оплати» (підтверджене) — нічого не робимо")
                 else:
-                    res["already"] = True          # статус пішов з «Очікує оплати» (підтвердили вручну чи раніше) — повторно не тиснемо
-                    res["problems"].append("статус замовлення не «Очікує оплати» (вже підтверджене) — нічого не робимо")
+                    res["unknown_status"] = True   # Новий / В обробці / Повернення / нове слово — не підтверджуємо мовчки
+                    res["problems"].append("статус замовлення невідомий для автопідтвердження — потрібна ручна звірка")
             elif total is None or (expected_total is not None and abs(total - float(expected_total)) > 0.005):
                 res["problems"].append(f"сума в кабінеті ({total}) не збігається з очікуваною ({expected_total})")
-            elif bal0 is None or bal0 + 0.005 < total:
+            elif bal0 is None:
+                res["problems"].append("баланс у шапці кабінету не прочитано — підтвердження не робимо")
+            elif bal0 + 0.005 < total:
                 res["low_balance"] = True
                 res["problems"].append(f"недостатньо балансу: доступно {bal0}, потрібно {total}")
             links = page.locator('a[href*="dop1=fromBalance"][href*="dop2=%s"]' % num)
@@ -912,7 +937,7 @@ def confirm_from_balance(rt_ref: str, expected_total, apply: bool = False) -> di
             bal1 = _balance(text2)
             res["balance_after"] = bal1
             res["status_after"] = re.sub(r"\s+", " ", block2)[:120] if block2 else ""
-            status_changed = bool(block2) and "Очікує оплати" not in block2 and "Відмін" not in block2 and "Видален" not in block2 and "Скасов" not in block2
+            status_changed = bool(block2) and classify_rt_status(block2) in ("confirmed", "unknown")        # пішов з «Очікує оплати» і не скасований
             res["confirmed"], res["note"] = balance_confirm_verdict(armed["passed"], status_changed, bal0, bal1, total)
             if not res["confirmed"]:
                 res["problems"].append(res["note"])

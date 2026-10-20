@@ -153,6 +153,10 @@ chk("confirm_from_balance: поганий rt_ref / некоректна сума
 _bv = rc.balance_confirm_verdict
 chk("balance_confirm_verdict: клік 1 + статус змінився -> підтверджено (навіть якщо баланс не змінився — живий факт 20.10); клік 0/2 або статус той самий -> ні",
     _bv(1, True, 1000.0, 1000.0, 30.4)[0] is True and _bv(1, True, 1000.0, 969.6, 30.4)[0] is True and _bv(0, True, 1000.0, 969.6, 30.4)[0] is False and _bv(2, True, 1, 1, 1)[0] is False and _bv(1, False, 1000.0, 969.6, 30.4)[0] is False)
+_cs = rc.classify_rt_status
+chk("classify_rt_status: «Очікує оплати» → pending; «Передано на комплектацію (Алматинська)», «Відвантажено» → confirmed; «Відмінено» → cancelled; кнопка «Відмініти замовлення» сама НЕ означає скасування; Новий/В обробці/Повернення/порожньо → unknown",
+    _cs("RT1 Очікує оплати Відмініти замовлення") == "pending" and _cs("RT1 Передано на комплектацію (Алматинська) Відмініти замовлення") == "confirmed" and _cs("RT1 Відвантажено") == "confirmed"
+    and _cs("RT1 Відмінено") == "cancelled" and _cs("RT1 Видалено") == "cancelled" and _cs("RT1 Відмініти замовлення") == "unknown" and all(_cs(x) == "unknown" for x in ("RT1 Новий", "RT1 В обробці", "RT1 Повернення", "")))
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)

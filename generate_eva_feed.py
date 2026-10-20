@@ -261,6 +261,48 @@ def _load_legacy_override() -> dict:
 EVA_LEGACY_OVERRIDE = _load_legacy_override()
 
 
+# ПЕРЕНАПРАВЛЕННЯ У ВЖЕ СПІВСТАВЛЕНУ КАТЕГОРІЮ (20.10.2026, слово власника «розкласти по вже співставлених, що не підійдуть — через менеджера, спірні в чат»). Після all_safe лишається 51 EVA-категорія фіду без співставлення в кабінеті
+# (2 752 товари): їхні Toysi-категорії або не співставлені в кабінеті, або співставлені на ІНШУ EVA-категорію (небезпечно). Для таких Toysi-категорій T віддаємо старий id+назву L ІНШОЇ Toysi-категорії, яка в кабінеті вже «Співставлена»
+# саме з ТІЄЮ САМОЮ EVA-категорією, що в нашій мапі (порівняння як у _norm_eva_name). eva_remap_rollout.json: {"mode": "ids", "ids": [EVA-id цілі…]} — лише ці цілі (етапи розкатки, пілот → решта); {"mode": "off"}/нема файла — нічого. Відкат = mode=off.
+# L: не з EVA_EXCLUDED_CATEGORIES, без «(МП)» у назві; найбільший збіг слів назви L із назвою цілі, далі менший id (косметика: кабінет бачить нашу назву, EVA-категорія та сама).
+EVA_REMAP_ROLLOUT_FILE = Path(__file__).parent / "eva_remap_rollout.json"
+
+
+def _load_remap_override() -> dict:
+    """{toysi_id: (L_id, L_name)}; будь-яка помилка файлів → {} (поведінка як до зміни)."""
+    import re as _re
+    try:
+        cfg = json.loads(EVA_REMAP_ROLLOUT_FILE.read_text(encoding="utf-8"))
+        if cfg.get("mode") != "ids":
+            return {}
+        targets = {str(x) for x in (cfg.get("ids") or [])}
+        matched = json.loads(EVA_MATCHED_LEGACY_FILE.read_text(encoding="utf-8")).get("matched") or {}
+    except (ValueError, OSError, TypeError, AttributeError):
+        return {}
+
+    def _toks(x):
+        return set(_re.findall(r"\w+", (x or "").casefold()))
+
+    out = {}
+    for t, ev in EVA_CATEGORY_MAP.items():
+        if ev["id"] not in targets or t in EVA_LEGACY_OVERRIDE:
+            continue                                   # ціль не в етапі / ця Toysi-категорія вже віддає свій безпечний старий id
+        want = _norm_eva_name(ev.get("name"))
+        cands = []
+        for lid, m in matched.items():
+            lname = str(m.get("name") or "").strip()
+            if not lname or "(МП)" in lname or lid in EVA_EXCLUDED_CATEGORIES or _norm_eva_name(m.get("eva")) != want:
+                continue
+            cands.append((-len(_toks(lname) & _toks(ev.get("name"))), int(lid) if str(lid).isdigit() else 10**9, str(lid), lname))
+        if cands:
+            _, _, lid, lname = min(cands)
+            out[t] = (lid, lname)
+    return out
+
+
+EVA_REMAP_OVERRIDE = {}      # заповнюється нижче, ПІСЛЯ EVA_EXCLUDED_CATEGORIES (потрібен у _load_remap_override)
+
+
 def _map_eva_category(cid: str, cname: str):
     """(final_id, final_name): EVA-id+назва, якщо наша категорія зіставлена; інакше
     Toysi-id+назва (фолбек). Кілька наших категорій можуть лягти в один EVA-листок —
@@ -269,6 +311,8 @@ def _map_eva_category(cid: str, cname: str):
     cid = (cid or "").strip()
     if cid in EVA_LEGACY_OVERRIDE and EVA_CATEGORY_MAP.get(cid):
         return cid, EVA_LEGACY_OVERRIDE[cid]
+    if cid in EVA_REMAP_OVERRIDE and EVA_CATEGORY_MAP.get(cid):
+        return EVA_REMAP_OVERRIDE[cid]
     ev = EVA_CATEGORY_MAP.get(cid)
     if ev:
         return ev["id"], (ev["name"] or cname or ev["id"])
@@ -313,6 +357,8 @@ EVA_EXCLUDED_CATEGORIES = {
     # Прання та миття посуду (побутхімія). Не-іграшки в EVA-фід не йдуть.
     "98917", "98920", "99242", "99244",
 }
+
+EVA_REMAP_OVERRIDE = _load_remap_override()
 
 
 def _load_eva_listed() -> set:

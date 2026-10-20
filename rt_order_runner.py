@@ -232,7 +232,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
         if state == "marking_ready":
             if not orders_db.claim_rt_state(conn, oid, "marking_ready", "rt_ordering"):
                 raise RunnerError("замовлення вже взяте іншим запуском (claim) — пропускаю")
-            res = d.rt_order(items, order["toysi_ttn"], order["rt_marking_path"], _recipient(order))
+            res = d.rt_order(items, order["toysi_ttn"], order["rt_marking_path"], recipient)
             if not (res.get("submitted") and res.get("rt_order_ref")):
                 if res.get("not_submitted_certain") is True and not res.get("submitted"):
                     orders_db.claim_rt_state(conn, oid, "rt_ordering", "marking_ready")     # однозначно НЕ відправлено → повертаємо крок

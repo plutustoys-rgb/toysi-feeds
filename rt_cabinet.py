@@ -330,7 +330,7 @@ def validate_order(o: dict) -> dict:
         norm.append({"vendor_code": vc, "qty": qty, "cost": cost})
     if len({n["vendor_code"] for n in norm}) != len(norm):
         raise OrderError("дублі артикулів у позиціях: об'єднайте їх у одну позицію з сумарною кількістю")
-    # ПІБ/телефон отримувача НЕОБОВ'ЯЗКОВІ (власник 20.10: усі дані є на наліпці ТТН, яку ми передаємо PDF, — персональні дані клієнта постачальнику не віддаємо). Є — валідуємо й вписуємо; нема — поля форми лишаються порожніми.
+    # ПІБ/телефон отримувача: необов'язкові ЛИШЕ без require_recipient (exploration); RoyalToys у реальному замовленні їх вимагає (менеджер 20.10), тож runner передає їх завжди й ставить require_recipient=True (власник 20.10: «ПІБ передавай»).
     name = " ".join(str(o.get("recipient_name") or "").split())
     if name and len(name.split()) < 2:
         raise OrderError("ПІБ отримувача: потрібні щонайменше прізвище й ім'я (або не вказувати)")

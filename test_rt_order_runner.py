@@ -366,5 +366,15 @@ with orders_db.get_connection() as c:
     rr_bad = rr.process_order(c, get(bad_r), SUP, apply=True, deps=fk)
 chk("без повного ПІБ / з поганим телефоном -> стоп ДО створення ТТН (без ТТН-сироти), RunnerError з причиною", "create_ttn" not in fk.calls and rr_bad["problems"] and "ПІБ" in rr_bad["problems"][0] and get(bad_r)["rt_state"] is None)
 chk("_recipient: нормалізує телефон 0671112233 -> +380671112233", rr._recipient({"customer_name": "Іван Петренко", "phone": "0671112233"}) == ("Іван Петренко", "+380671112233"))
+# OrderError, що вийшла з order_flow (до кліку: сесія/автовхід/ворота), -> «точно не відправлено», а не вічне rt_ordering
+_orig = rt_cabinet.order_flow
+try:
+    def _boom(*a, **k):
+        raise rt_cabinet.OrderError("сесія кабінету не діє")
+    rt_cabinet.order_flow = _boom
+    r_oe = rr._Deps().rt_order([{"vendor_code": "MK 6039", "qty": 1, "cost": 20.0}], "20451565972503", "/x.pdf", None)
+finally:
+    rt_cabinet.order_flow = _orig
+chk("OrderError з order_flow -> not_submitted_certain=True (крок відкочується, не застрягає у rt_ordering)", r_oe.get("not_submitted_certain") is True and not r_oe.get("submitted") and r_oe["problems"] == ["сесія кабінету не діє"])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -22,6 +22,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote, unquote_plus, urljoin, quote
@@ -257,6 +258,56 @@ def vps_login() -> int:
     return rc
 
 
+LOGIN_MARKER = STATE_FILE.parent / "rt_login_attempt.json"       # час останньої спроби автовходу (без жодних даних входу): не довбемо сайт і не провокуємо блокування акаунта
+LOGIN_WAIT_FAIL_S = 3600          # після невдалого входу (дані/форма) — наступна спроба не раніше, ніж через годину
+LOGIN_WAIT_CAPTCHA_S = 3 * 3600   # після капчі — через 3 години (капчу не обходимо; вона зникає сама або власник заходить вручну)
+
+
+def _session_ok() -> bool:
+    """Чи діє збережена сесія кабінету (read-only: головна сторінка, лише позитивні ознаки входу)."""
+    if not STATE_FILE.exists():
+        return False
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            ctx = browser.new_context(storage_state=str(STATE_FILE), service_workers="block")
+            ctx.route("**/*", lambda r: r.continue_() if r.request.method in ("GET", "HEAD") else r.abort())
+            page = ctx.new_page()
+            page.goto(HOME_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            return _logged_in(page)
+        finally:
+            browser.close()
+
+
+def ensure_session(check=None, login=None, marker=None, now=None) -> None:
+    """Автовхід (власник 20.10: «логінитися без мене»). Сесія діє — нічого не робимо. Не діє — ОДНА спроба vps_login() (логін/пароль з .env на VPS), з тротлінгом через маркер-файл:
+    після невдачі 1 год, після капчі 3 год. Капчу не обходимо. Не вдалось — OrderError (до кліку: runner відкотить крок, спробує знову через цикл). Без даних входу/без права запису маркера — теж OrderError."""
+    check = check or _session_ok
+    login = login or vps_login
+    marker = marker or LOGIN_MARKER
+    now = now or time.time
+    if check():
+        return
+    try:
+        last = json.loads(Path(marker).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        last = None
+    if last and isinstance(last.get("ts"), (int, float)) and now() - last["ts"] < last.get("wait", LOGIN_WAIT_FAIL_S):
+        left = int((last["ts"] + last.get("wait", LOGIN_WAIT_FAIL_S) - now()) / 60) + 1
+        raise OrderError(f"сесія кабінету RoyalToys не діє; автовхід уже пробували ({last.get('why', 'невдача')}), наступна спроба через ~{left} хв")
+    rc = login()
+    wait = 0 if rc == 0 else (LOGIN_WAIT_CAPTCHA_S if rc == 3 else LOGIN_WAIT_FAIL_S)
+    why = {0: "успіх", 3: "капча"}.get(rc, "вхід не підтверджено / нема даних / форма змінилась")
+    try:
+        Path(marker).parent.mkdir(parents=True, exist_ok=True)
+        Path(marker).write_text(json.dumps({"ts": now(), "wait": wait, "why": why, "rc": rc}), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        raise OrderError("автовхід: не вдалося записати маркер спроби — зупинка (без тротлінгу повторні входи небезпечні)")
+    if rc != 0:
+        raise OrderError(f"сесія кабінету RoyalToys не діє, автовхід не вдався ({why}); наступна спроба через {wait // 60} хв — або зайдіть вручну (--vps-login)")
+
+
 def _captcha_visible(page) -> bool:
     """fail-closed: будь-який збій перевірки (напр. «Execution context was destroyed» під час навігації) = вважаємо, що капча є."""
     js = ("() => { const vis = e => !!e && !e.classList.contains('d-none') && e.offsetParent !== null; "
@@ -437,6 +488,8 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
         raise OrderError("фінал вимагає RT_ORDER_SUBMIT=1 (свідоме рішення власника)")
     if submit and not final_implemented(mode):
         raise OrderError(f"режим фіналу «{mode}» не підключено (є: {', '.join(FINAL_MODES)})")
+    if submit:
+        ensure_session()          # автовхід ДО будь-яких дій у кабінеті; збій = OrderError ДО кліку (runner відкотить крок)
     if not STATE_FILE.exists():
         raise OrderError(f"нема сесії {STATE_FILE.name}: --vps-login")
     res = {"ready": False, "submitted": False, "not_submitted_certain": False, "problems": []}

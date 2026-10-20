@@ -303,7 +303,11 @@ class _Deps:
     def rt_order(self, items, ttn, pdf_path, recipient=None):
         import rt_cabinet
         order = {"items": [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"]} for i in items], "ttn_number": ttn, "marking_pdf": pdf_path, **_recipient_fields(recipient)}
-        return rt_cabinet.order_flow(order, submit=True, mode=_order_mode())
+        try:
+            return rt_cabinet.order_flow(order, submit=True, mode=_order_mode())
+        except rt_cabinet.OrderError as e:
+            # OrderError, що ВИЙШЛА з order_flow, означає відмову ДО кліку (валідація, ворота, сесія/автовхід): усі збої після кліку order_flow повертає всередині res. Раніше такий виняток лишав замовлення в rt_ordering назавжди.
+            return {"submitted": False, "not_submitted_certain": True, "problems": [str(e)]}
 
 
 def run(apply: bool | None = None, deps=None, db_path=None) -> list:

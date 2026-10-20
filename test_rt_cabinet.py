@@ -87,6 +87,38 @@ chk("confirm_new_reserve: сума не збігається → не підтв
 chk("confirm_new_reserve: нічого нового → None; два нових RT → None (неоднозначно); сума невідома → None",
     cnr(lst_before, {"RT000773500"}, 99.0)[0] is None and cnr(lst_after + " RT000773595 Сума замовлення 30,40 грн.", {"RT000773500"}, 30.40)[0] is None and cnr(lst_after, {"RT000773500"}, None)[0] is None)
 chk("confirm_new_reserve: кількість штук збігається → ок; не збігається (інше замовлення з тією ж сумою) → None", cnr(lst_after, {"RT000773500"}, 30.40, 1)[0] == "RT000773594" and cnr(lst_after, {"RT000773500"}, 30.40, 2)[0] is None)
+import tempfile as _tf, json as _js
+_mk = Path(_tf.mkdtemp()) / "m.json"
+_calls = []
+def _lg(rc):
+    def f():
+        _calls.append(rc); return rc
+    return f
+_t = [1000.0]
+rc.ensure_session(check=lambda: True, login=_lg(0), marker=_mk, now=lambda: _t[0])
+chk("ensure_session: сесія діє → вхід не пробується", _calls == [] and not _mk.exists())
+rc.ensure_session(check=lambda: False, login=_lg(0), marker=_mk, now=lambda: _t[0])
+chk("ensure_session: сесія не діє → одна спроба входу, маркер зі статусом «успіх»", _calls == [0] and _js.loads(_mk.read_text(encoding="utf-8"))["rc"] == 0)
+def _raises(**kw):
+    try:
+        rc.ensure_session(**kw); return None
+    except rc.OrderError as e:
+        return str(e)
+_calls.clear(); _mk.write_text("{}", encoding="utf-8")
+m1 = _raises(check=lambda: False, login=_lg(1), marker=_mk, now=lambda: _t[0])
+chk("ensure_session: невдалий вхід → OrderError і маркер на 1 год", m1 is not None and _calls == [1] and _js.loads(_mk.read_text(encoding="utf-8"))["wait"] == rc.LOGIN_WAIT_FAIL_S)
+_t[0] += 600
+m2 = _raises(check=lambda: False, login=_lg(0), marker=_mk, now=lambda: _t[0])
+chk("ensure_session: повторна спроба в межах години НЕ входить (тротлінг)", m2 is not None and _calls == [1])
+_t[0] += rc.LOGIN_WAIT_FAIL_S
+_raises(check=lambda: False, login=_lg(3), marker=_mk, now=lambda: _t[0])
+chk("ensure_session: після години спроба знову; капча → маркер на 3 год", _calls == [1, 3] and _js.loads(_mk.read_text(encoding="utf-8"))["wait"] == rc.LOGIN_WAIT_CAPTCHA_S)
+_t[0] += rc.LOGIN_WAIT_FAIL_S + 10
+m3 = _raises(check=lambda: False, login=_lg(0), marker=_mk, now=lambda: _t[0])
+chk("ensure_session: після капчі 1 год ще замало", m3 is not None and _calls == [1, 3])
+_t[0] += rc.LOGIN_WAIT_CAPTCHA_S
+rc.ensure_session(check=lambda: False, login=_lg(0), marker=_mk, now=lambda: _t[0])
+chk("ensure_session: після 3 год вхід знову і успіх", _calls == [1, 3, 0])
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)

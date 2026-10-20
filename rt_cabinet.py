@@ -343,6 +343,8 @@ def validate_order(o: dict) -> dict:
         if not re.fullmatch(r"380\d{9}", digits):
             raise OrderError("телефон отримувача не розпізнано (або не вказувати)")
         phone = "+" + digits
+    if o.get("require_recipient") and not (name and phone):
+        raise OrderError("ПІБ і телефон отримувача обов'язкові: RoyalToys без них замовлення не пропускає (менеджер 20.10; власник 20.10: «ПІБ передавай»)")
     ttn = re.sub(r"\s", "", str(o.get("ttn_number") or ""))
     if not re.fullmatch(r"\d{14}", ttn):
         raise OrderError("номер ТТН НП має бути 14 цифр")

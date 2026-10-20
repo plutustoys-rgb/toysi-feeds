@@ -34,6 +34,7 @@ CITY = "f706230e-4078-11de-b509-001d92f78698"
 orders_db.init_db()
 nova_poshta.warehouse_by_ref = lambda ref: {"city_ref": CITY, "number": "2", "description": "Відділення №2 (до 30 кг): вул. Незалежності, 22"} if ref == REF else None
 orr.settlement_raion = lambda *a, **k: ""
+orr.warehouse_by_ref = nova_poshta.warehouse_by_ref      # order_router імпортує функцію за іменем — підміняємо й там (інакше жива НП: мережа залежно від .env)
 rozetka_client.is_order_paid = lambda oid: True
 
 RAW = {
@@ -97,6 +98,19 @@ with orders_db.get_connection() as c:
     line = dr._np_structure_line(c, "2026-10-20T00:00:00")
     ok_all = dr._np_structure_line(c, "2026-10-21T00:00:00")
 chk("звіт: рядок показує prom 2 без CityRef (eva з CityRef не рахується)", "prom 2" in line and "eva" not in line)
-chk("звіт: коли таких нема — «усі … з точним містом»", "усі" in ok_all and "точним" in ok_all)
+chk("звіт: коли таких нема — «усі … з точним містом»", "усі" in ok_all and "точне місто" in ok_all)
+
+# build_report() повністю (мережеві рядки підмінені): звіт не падає, рядок про адресу НП є (аудит #901: виклик поза with ронив щоденний звіт)
+dr._rozetka_balance_line = lambda: ""
+dr._prom_balance_line = lambda: ""
+dr._rozetka_validation_status_line = lambda: ""
+dr.fetch_toysi_catalog = lambda *a, **k: {}
+try:
+    rep_txt = dr.build_report()
+    chk("build_report() відпрацьовує на БД (звіт не падає) і містить рядок «Адреса НП у Toysi»", "Адреса НП у Toysi" in rep_txt)
+except Exception as e:  # noqa: BLE001
+    chk(f"build_report() відпрацьовує ({type(e).__name__}: {str(e)[:100]})", False)
+with orders_db.get_connection() as c:
+    chk("звіт: 0 передач -> «передач не було»", "передач не було" in dr._np_structure_line(c, "2099-01-01T00:00:00", 0))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

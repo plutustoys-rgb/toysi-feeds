@@ -715,17 +715,20 @@ def _open_orders_detail_section(conn) -> str:
     return "".join(lines)
 
 
-def _np_structure_line(conn, since: str) -> str:
+def _np_structure_line(conn, since: str, forwarded: int | None = None) -> str:
     """Рядок звіту: скільки замовлень НП за період пішли в Toysi БЕЗ точного міста/відділення (немає np_city_ref) — по площадках (20.10.2026: Prom віддавав лише текст, виявив менеджер Toysi; тепер це видно в звіті,
     а не зі скарги). Це ФАКТ, а не поріг: 0 = усе передано структурно."""
     rows = conn.execute(
         "SELECT platform, COUNT(*) FROM orders WHERE forwarded_to_toysi_at >= ? AND carrier = 'nova_poshta' AND COALESCE(np_city_ref, '') = '' GROUP BY platform ORDER BY platform",
         (since,),
     ).fetchall()
+    if forwarded == 0:
+        return f"\nАдреса НП у Toysi: за {LOOKBACK_HOURS} год передач не було."
     if not rows:
-        return f"\nАдреса НП у Toysi: усі передані за {LOOKBACK_HOURS} год замовлення — з точним містом (CityRef)."
+        return f"\nАдреса НП у Toysi: усі передані за {LOOKBACK_HOURS} год замовлення мали точне місто (CityRef) уже при надходженні."
     parts = ", ".join(f"{r[0]} {r[1]}" for r in rows)
-    return f"\n⚠️ Адреса НП у Toysi БЕЗ точного міста (лише текст) за {LOOKBACK_HOURS} год: {parts} — перевірити, чому площадка не віддала реф відділення."
+    return (f"\n⚠️ Адреса НП у Toysi: без CityRef у базі при надходженні за {LOOKBACK_HOURS} год: {parts} — або площадка не віддала реф відділення, або НП не відповіла при надходженні "
+            "(у другому випадку роутер міг знайти місто при передачі — звірити в CRM Toysi).")
 
 
 def build_report() -> str:
@@ -740,6 +743,7 @@ def build_report() -> str:
         forwarded_today = conn.execute(
             "SELECT COUNT(*) FROM orders WHERE forwarded_to_toysi_at >= ?", (since,)
         ).fetchone()[0]
+        np_structure_line = _np_structure_line(conn, since, forwarded_today)      # ВСЕРЕДИНІ with: після виходу з'єднання закрите (аудит #901)
 
         awaiting_bank_check = len(get_orders_awaiting_payment(conn))
 
@@ -825,7 +829,7 @@ def build_report() -> str:
     )
 
     lines.append(f"\n\nПередано Toysi за {LOOKBACK_HOURS} год: {forwarded_today}")
-    lines.append(_np_structure_line(conn, since))
+    lines.append(np_structure_line)
     lines.append(f"\nОчікують перевірки оплати (prepaid, ще не підтверджено): {awaiting_bank_check}")
     lines.append(f"\nПозначено \"очікує ручного підтвердження\": {awaiting_manual}")
 

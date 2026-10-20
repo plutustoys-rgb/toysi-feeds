@@ -372,6 +372,16 @@ def _money(txt: str):
     return float(re.sub(r"[\s\u00a0]", "", m.group(1)).replace(",", ".")) if m else None
 
 
+def cart_row_vendor_code(txt: str, wanted) -> str:
+    """Артикул рядка кошика: серед ОЧІКУВАНИХ артикулів (можуть містити пробіл: «MK 6039») шукаємо той, що стоїть після «Арт.:» (найдовший збіг — «MK 6039», а не «MK»). Нема збігу → перше слово після «Арт.» (щоб розбіжність було видно в повідомленні)."""
+    t = txt or ""
+    hits = [vc for vc in wanted if re.search(r"Арт\.?\s*:?\s*" + re.escape(vc) + r"(?![0-9A-Za-zА-Яа-яІіЇїЄє])", t)]
+    if hits:
+        return max(hits, key=len)
+    m = re.search(r"Арт\.?\s*:?\s*([^\s\n]+)", t)
+    return m.group(1) if m else ""
+
+
 def _squash(t: str) -> str:
     """Текст без пробілів/переносів/nbsp — для звірки 14-значного № ТТН незалежно від групування в кабінеті."""
     return re.sub(r"\s", "", t or "")
@@ -471,8 +481,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                 rows = page.eval_on_selector_all("input[name^='quantity[']", "els => els.map(e => [e.name, e.value, (e.closest('[class*=cart-item]') || e.closest('tr') || e.parentElement.parentElement).innerText])")
                 want = {it["vendor_code"]: it["qty"] for it in order["items"]}
                 for name, val, txt in rows:
-                    m = re.search(r"Арт\.?\s*:?\s*([^\s\n]+)", txt)
-                    vc = m.group(1) if m else ""
+                    vc = cart_row_vendor_code(txt, want)
                     if vc in want and int(val or 0) != want[vc]:
                         page.locator("input[name='%s']" % name).first.fill(str(want[vc]))
                         page.locator("input[name='%s']" % name).first.press("Tab")
@@ -481,8 +490,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                 page.wait_for_timeout(1800)
                 got = {}
                 for name, val, txt in page.eval_on_selector_all("input[name^='quantity[']", "els => els.map(e => [e.name, e.value, (e.closest('[class*=cart-item]') || e.closest('tr') || e.parentElement.parentElement).innerText])"):
-                    m = re.search(r"Арт\.?\s*:?\s*([^\s\n]+)", txt)
-                    got[m.group(1) if m else name] = int(val or 0)
+                    got[cart_row_vendor_code(txt, want) or name] = int(val or 0)
                 if got != want:
                     raise OrderError(f"кошик не збігається з замовленням: у кошику {got}, потрібно {want}")
                 cart_text = page.inner_text("body")

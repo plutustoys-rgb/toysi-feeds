@@ -593,3 +593,15 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 
 label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накладений платіж неактивний */
 .rt-note{margin:6px 0 0}
+/* Плутус у порожньому місці панелі каталогу/категорії (власник 20.10: «як на головній — рухається й реагує на клік»); ті самі правила, що .hero2 .mascot-wrap; на вузьких екранах схований */
+.cat-mascot{position:absolute;right:160px;bottom:5px;z-index:1;line-height:0}
+.cat-mascot .mascot{height:104px;width:auto;display:block;max-width:none}   /* як на головній (104 px) */
+.cat-mascot .mascot-wrap{position:relative;display:block;line-height:0;transition:opacity .16s ease,transform .15s ease;cursor:pointer;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;touch-action:manipulation;outline:none}
+.cat-mascot .mascot-wrap .mascot-clip{position:absolute;left:0;top:0;visibility:hidden;pointer-events:none}
+.cat-mascot .mascot-wrap .mascot-clip.on{visibility:visible}
+.cat-mascot .mascot-wrap.clip-on #hero-mascot{visibility:hidden}
+.cat-mascot .mascot-wrap img{-webkit-user-drag:none;-webkit-tap-highlight-color:transparent}
+.cat-mascot .mascot-wrap.poke{transform:scale(.9)}
+.cat-mascot .mascot-wrap.dip{opacity:0}
+@media(min-width:1101px){.cat-bar:has(.cat-mascot){min-height:116px}}   /* панель трохи вища, щоб Плутус вмістився під шапкою, не заходячи під липку шапку */
+@media(max-width:1100px){.cat-mascot{display:none}}

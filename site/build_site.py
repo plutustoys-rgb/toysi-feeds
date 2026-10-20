@@ -1711,7 +1711,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             trail1 = [("Головна", "index.html"), ("Усі категорії", None)]
             body = (
                 crumbs_html(trail1) + '<div class="gp"><aside class="sb" aria-label="Категорії"><div class="sb-h">Категорії</div>' + side + '</aside><div class="gmain">'
-                '<div class="cat-bar"><h1 class="page cat-h1">Усі категорії<span class="sr-only"> — каталог іграшок</span></h1>' + _catalog_controls(groups_json=gj) + '</div>\n' +
+                '<div class="cat-bar"><h1 class="page cat-h1">Усі категорії<span class="sr-only"> — каталог іграшок</span></h1>' + _catalog_controls(groups_json=gj) + catalog_mascot_html() + '</div>\n' +
                 _catalog_js_grid() + static_grid + '</div></div>'
             )
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
@@ -1733,7 +1733,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         if is_full:
             # власник 15.10: «залиш тільки слово Каталог, в 1 лінію з сортуванням, сортування й категорії не мають зникати при прокрутці» → липка панель .cat-bar (H1 + контроли); крихти й «Сторінка 1 з N» на стор.1 не показуємо (BreadcrumbList лишається в <head>)
             body = (
-                '<div class="cat-bar"><h1 class="page cat-h1">Каталог<span class="sr-only"> іграшок</span></h1>' + controls + '</div>\n' +
+                '<div class="cat-bar"><h1 class="page cat-h1">Каталог<span class="sr-only"> іграшок</span></h1>' + controls + (catalog_mascot_html() if controls else "") + '</div>\n' +
                 (_catalog_js_grid() if controls else "") +
                 (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if k > 1 else "") +
                 static_grid
@@ -1745,7 +1745,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             urls = json.dumps({c: f"category-{cat_slug[c]}.html" for c in cat_list}, ensure_ascii=False).replace("</", "<\\/")
             body = (
                 crumbs_html(trail) +   # на сторінці категорії крихти лишаємо (навігація «Головна › Каталог › Категорія» + внутрішні посилання для SEO), «Сторінку 1 з N» прибрано
-                f'<div class="cat-bar"><h1 class="page cat-h1">{esc(active)}</h1>' + _catalog_controls(preset=active, rtonly=bool(prods) and all(p.get("rt") for p in prods)) + '</div>\n' +
+                f'<div class="cat-bar"><h1 class="page cat-h1">{esc(active)}</h1>' + _catalog_controls(preset=active, rtonly=bool(prods) and all(p.get("rt") for p in prods)) + catalog_mascot_html() + '</div>\n' +
                 f'<script type="application/json" id="cat-urls">{urls}</script>\n' +
                 chips(cat_list, cat_slug, active) +
                 _category_top_html(fname, prods) +
@@ -1823,6 +1823,22 @@ HERO_MASCOT_SEASONAL = (("halloween", 3320, 2, True, True, (10, 15), (10, 31), "
                         ("snowflake", 3818, 2, True, True, (10, 15), (12, 31), None))   # «Сніжинка» (SMM 15.10): червона шапка, ловить сніжинку; власник 15.10: «для чого так довго чекати? нехай зараз крутиться» — з дати деплою (15.10) до 31.12, а не з 25.11; tailchase НЕ витісняє (SMM: лишити в ротації); із Гелловіном 15–31.10 граються разом
 
 
+def hero_mascot_html(hero_clips=None, lazy=False):
+    """Анімований Плутус (poster + кліп, керує app.js initMascot за id hero-mascot/hero-mascot-clip): на головній у героя і (власник 20.10) у порожньому місці панелі каталогу/категорії. Один екземпляр на сторінку."""
+    hero_clips = hero_clips if hero_clips is not None else hero_mascot_clips()
+    lz = ' loading="lazy"' if lazy else ""
+    return (
+      f'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async"{lz} '
+      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{c[0]}.webp")) for c in hero_clips)}" data-ms="{",".join(str(c[1]) for c in hero_clips)}" data-w="{",".join(str(c[2]) for c in hero_clips)}" data-nofirst="{",".join(str(i) for i, c in enumerate(hero_clips) if not c[3])}"'
+      + (f' data-dip="{",".join(str(i) for i, c in enumerate(hero_clips) if c[4])}"' if any(c[4] for c in hero_clips) else "") + '>'
+      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>')
+
+
+def catalog_mascot_html():
+    """Плутус у порожньому місці панелі каталогу/категорії (власник 20.10: «анімувати як на головній, клікабельність та сама»); на вузьких екранах схований (CSS)."""
+    return '<div class="cat-mascot">' + hero_mascot_html(lazy=True) + '</div>'
+
+
 def hero_mascot_clips(today=None):
     """Рухи героя на ЗАРАЗ: базові 10 (HERO_MASCOT_CLIPS) + сезонні в межах дат (із витісненням слабшого). Кортеж: (name, ms, weight, first_ok, dip)."""
     clips = [(c[0], c[1], c[2], c[3], bool(len(c) > 4 and c[4])) for c in HERO_MASCOT_CLIPS]
@@ -2358,10 +2374,7 @@ def write_home(prods, cats, cat_list, cat_slug):
     body = (
       # компактний герой (SMM 09.10: смуга ≤180 px; Плутус ліворуч, заголовок + кнопка + чип доставки; без великого абзацу)
       # poster завжди під низом, кліп кросфейдом поверх (див. initMascot): обидва <img> із width/height — CLS 0
-      f'<div class="hero2"><span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async" '
-      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{c[0]}.webp")) for c in hero_clips)}" data-ms="{",".join(str(c[1]) for c in hero_clips)}" data-w="{",".join(str(c[2]) for c in hero_clips)}" data-nofirst="{",".join(str(i) for i, c in enumerate(hero_clips) if not c[3])}"'
-      + (f' data-dip="{",".join(str(i) for i, c in enumerate(hero_clips) if c[4])}"' if any(c[4] for c in hero_clips) else "") + '>'
-      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>'
+      '<div class="hero2">' + hero_mascot_html(hero_clips) +
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
       '<div class="act">' + hero_act + '</div></div>'
       + carousel
@@ -3195,7 +3208,7 @@ def write_trust_pages():
 # Після запису mtime файла = t, тож Apache віддає Last-Modified = дата реальної зміни й відповідає 304 на If-Modified-Since між збірками.
 LASTMOD_STATE_FILE = ".htlastmod_state.json"
 # + «хром» сторінки, що залежить від рейтингу категорій УСЬОГО каталогу, а не від самої сторінки: популярні категорії в оверлеї пошуку (sr-pill) і рядок чипів-категорій (div.chips) — інакше будь-яка зміна ціни десь у каталозі пересувала б lastmod УСІХ 28 тис. сторінок.
-_LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0-9a-f]{8}|<a class="sr-pill" href="[^"]*">[^<]*</a>|<div class="chips">.*?</div>|<nav class="fcats".*?</nav>|<a href="categories\.html">Усі категорії товарів</a> · ', re.S)   # + перелік категорій у футері (глобальний «хром»: топ-30 за кількістю рухається від наявності — це не зміна сторінки)
+_LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0-9a-f]{8}|<a class="sr-pill" href="[^"]*">[^<]*</a>|<div class="chips">.*?</div>|<nav class="fcats".*?</nav>|<a href="categories\.html">Усі категорії товарів</a> · |<div class="cat-mascot">.*?</div>', re.S)   # + перелік категорій у футері (глобальний «хром»: топ-30 за кількістю рухається від наявності — це не зміна сторінки)
 # На КАРТЦІ товару додатково не рахуємо сітки інших товарів («Додайте до замовлення», «Схожі товари» — підбір залежить від стану всього каталогу): lastmod картки = зміна ЇЇ власних даних (назва, ціна, наявність, фото, текст), а не чужих.
 _LASTMOD_GRID_RX = re.compile(r'<h2>[^<]*</h2><div class="grid">(?:\s*<a class="card".*?</a>)*\s*</div>', re.S)
 # На сторінці категорії не рахуємо права колонка «Рекомендуємо»/«Знижка тижня» (ротація щодня, акція щотижня — це не зміна самої сторінки).

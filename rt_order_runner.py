@@ -3,9 +3,9 @@
 
 СТАНИ (orders.rt_state): NULL → ttn_created → marking_ready → rt_ordered → shipped → delivered | returned. Кожен крок ідемпотентний, стан пишеться й комітиться ОДРАЗУ після кроку (повторний запуск продовжує з місця зупинки).
 Запобіжники:
-  • ЗА ЗАМОВЧУВАННЯМ — DRY-RUN: нічого не створюється (ні ТТН, ні замовлення в RoyalToys); звіт: що б зробили (маппінг позицій, залишки, вартість доставки НП, перевірка кошика/форми RoyalToys на тестовому PDF). Реальний режим: RT_RUNNER_APPLY=1 І NP_TTN_APPLY=1 І RT_ORDER_SUBMIT=1 І rt_cabinet.FINAL_IMPLEMENTED=True (фінальну кнопку ще НЕ підключено — до першого спостережуваного замовлення власника реальний режим відмовляє).
+  • ЗА ЗАМОВЧУВАННЯМ — DRY-RUN: нічого не створюється (ні ТТН, ні замовлення в RoyalToys); звіт: що б зробили (маппінг позицій, залишки, вартість доставки НП, перевірка кошика/форми RoyalToys на тестовому PDF). Реальний режим: RT_RUNNER_APPLY=1 І NP_TTN_APPLY=1 І RT_ORDER_SUBMIT=1 І rt_cabinet.final_implemented(RT_ORDER_MODE) (за замовчуванням reserve = кнопка «Резерв»: нічого не відправляється й не списується, 2 дні; «З балансу» НЕ підключено).
   • Лише оплачені (prepaid+payment_confirmed) замовлення сайту ЗІ ВСІМА позиціями rt- (змішані ловить сервер; тут — стоп з причиною), з розпізнаним відділенням НП (np_city_ref+np_warehouse_number), фіскальним чеком ДО передачі постачальнику, залишком у supplier_rt.json ≥ кількості, габаритами.
-  • Персональні дані клієнта в RoyalToys НЕ передаються (усе на наліпці ТТН).
+  • ПІБ і телефон отримувача ПЕРЕДАЮТЬСЯ в RoyalToys (обов'язкові поля кабінету; власник 20.10: «ПІБ передавай»), перевіряються ДО створення ТТН.
 Запуск: rt-order-runner.timer (VPS, кожні 15 хв; без rt-замовлень — миттєвий вихід). Збій → один самодіагностичний алерт на замовлення/стан/6 год."""
 import json
 import os
@@ -90,6 +90,11 @@ ACTION_STATES = (None, "ttn_created", "marking_ready")
 STALE_DAYS = 7                                    # посилка в rt_ordered/shipped без зміни стану довше — алерт
 
 
+def _order_mode() -> str:
+    """Режим фіналу в RoyalToys: reserve (за замовчуванням — «Резерв», нічого не відправляється й не списується, 2 дні) або balance («З балансу», НЕ підключено)."""
+    return (os.environ.get("RT_ORDER_MODE") or "reserve").strip().lower()
+
+
 def apply_enabled() -> tuple:
     """(True, '') лише коли ВСІ ворота відкриті, інакше (False, причина)."""
     import rt_cabinet
@@ -101,8 +106,8 @@ def apply_enabled() -> tuple:
         return False, "RT_ORDER_SUBMIT≠1: фінальне оформлення в RoyalToys не дозволено"
     if _since() in ("", "INVALID"):
         return False, "RT_RUNNER_SINCE не задано або не ISO-дата (напр. 2026-10-21): старіші за неї замовлення конвеєр не чіпає — їх власник виконав вручну"
-    if not getattr(rt_cabinet, "FINAL_IMPLEMENTED", False):
-        return False, "фінальну кнопку оформлення в кабінеті RoyalToys ще не підключено (перше спостережуване замовлення власника)"
+    if not rt_cabinet.final_implemented(_order_mode()):
+        return False, f"режим фіналу «{_order_mode()}» у кабінеті RoyalToys не підключено (є лише «reserve»)"
     return True, ""
 
 
@@ -240,6 +245,9 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             orders_db.set_rt_state(conn, oid, "rt_ordered", rt_order_ref=str(res["rt_order_ref"]), rt_error=None)
             conn.commit()
             rep["actions"].append(f"замовлення RoyalToys {res['rt_order_ref']}")
+            if _order_mode() == "reserve":
+                _alert(oid, "reserved", ("" if res.get("reserve_status_seen", True) else "⚠️ статус «резерв» біля ТТН у списку НЕ підтверджено — звірте кабінет. ") + f"замовлення RoyalToys {res['rt_order_ref']} стоїть у РЕЗЕРВІ (ТТН {order['toysi_ttn']}): нічого не відправлено й не списано. Щоб відправили — поповніть баланс і натисніть «З балансу» в кабінеті "
+                                       "(або напишіть менеджеру в чат) до 14:00 пн–пт; резерв тримається 2 дні, на третій скасується. ТТН НП живе обмежений час — не тягніть.", cooldown=24 * 60 * 60)
     except RunnerError as e:
         rep["problems"].append(str(e))
     except Exception as e:  # noqa: BLE001
@@ -295,7 +303,7 @@ class _Deps:
     def rt_order(self, items, ttn, pdf_path, recipient=None):
         import rt_cabinet
         order = {"items": [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"]} for i in items], "ttn_number": ttn, "marking_pdf": pdf_path, **_recipient_fields(recipient)}
-        return rt_cabinet.order_flow(order, submit=True)
+        return rt_cabinet.order_flow(order, submit=True, mode=_order_mode())
 
 
 def run(apply: bool | None = None, deps=None, db_path=None) -> list:

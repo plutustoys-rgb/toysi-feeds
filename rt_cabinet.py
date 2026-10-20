@@ -8,7 +8,8 @@
   python rt_cabinet.py --vps-login  # НА VPS, headless: форма входу (телефон+пароль) заповнюється з RT_CABINET_PHONE / RT_CABINET_PASSWORD у /opt/plutustoys/.env — їх у файл вписує ВЛАСНИК сам (я пароль не бачу й не вводжу); зберігає сесію у RT_CABINET_STATE_FILE.
                                     # Якщо сайт показав капчу — зупиняється з кодом 3 (капчу НЕ обходимо), стан не змінюється. Пароль ніколи не друкується.
   python rt_cabinet.py --order order.json   # ОФОРМЛЕННЯ замовлення «по своїй ТТН» (20.10): кошик → /ua/onestep/ → доставка «По своей ТТН» → ПІБ/телефон/№ТТН/PDF маркування → ЗУПИНКА перед фінальною кнопкою (кнопка НЕ натискається). Результат — JSON у stdout.
-  python rt_cabinet.py --order order.json --submit-balance   # те саме + фінал «З балансу (Прошу відправити)»: ТІЛЬКИ з RT_ORDER_SUBMIT=1 у середовищі, достатнім балансом, суми кошика = очікуваній, без дубля за № ТТН (перший бойовий запуск — під наглядом власника)
+  python rt_cabinet.py --order order.json --submit-reserve   # те саме + фінал «Резерв (Прошу не відправляти)» (20.10 підключено; лише з RT_ORDER_SUBMIT=1); «З балансу» НЕ підключено
+  python rt_cabinet.py --order order.json --submit-balance   # (НЕ ПІДКЛЮЧЕНО — відмова) було: фінал «З балансу (Прошу відправити)»: ТІЛЬКИ з RT_ORDER_SUBMIT=1 у середовищі, достатнім балансом, суми кошика = очікуваній, без дубля за № ТТН (перший бойовий запуск — під наглядом власника)
 Шлях стану: RT_CABINET_STATE_FILE (на VPS — /opt/plutustoys/.secrets/rt_cabinet_state.json). Режим введення замовлення (--order) — ПІСЛЯ вивчення кабінету, окремим PR з аудитом.
 
 ЗАХИСТ --explore (аудит PR #871): (1) мережевий замок: усі запити, крім GET/HEAD, блокуються на рівні контексту (жоден POST/форма/JS-дія не пройде); (2) хост лише royaltoys.com.ua, лише https; (3) відкидаються посилки з небезпечними дієсловами (вихід/видалення/скасування/оплата/повтор/додавання/зміна статусу…), з query-ключами-діями, і `/<числовий id>/<ще сегмент>`; (4) після кожного goto перевіряється фінальний URL (редірект на вихід/вхід = зупинка); (5) стан сесії в explore НЕ пересохраняється;
@@ -297,8 +298,13 @@ MAX_PDF_BYTES = 2 * 1024 * 1024
 _ONESTEP_OK_RE = re.compile(r"^(?:/ua)?/(?:onestep/shipping|data/shipping/\d+/(?:warehouse|findstreets)|cart/(?:add|delete|save)|orderaddon)$")
 
 
-# Фінальне натискання «З балансу (Прошу відправити)» НЕ підключено (потрібне перше спостережуване замовлення власника). Поки False — rt_order_runner у реальному режимі відмовляє.
-FINAL_IMPLEMENTED = False
+# ФІНАЛ оформлення (20.10, probe кабінету: кнопки type=button .glavs.no «Резерв (Прошу не відправляти)» і .glavs.otp «З балансу (Прошу відправити замовлення)», hidden confirmation=1; менеджер: резерв = «очікує оплату»,
+# нічого не відправляється до підтвердження, тримається 2 дні). Реалізовано РЕЗЕРВ (безпечний: ні гроші, ні відправка); «З балансу» НЕ підключено (баланс 0, спершу перший резерв під наглядом власника).
+FINAL_MODES = ("reserve",)
+
+
+def final_implemented(mode: str) -> bool:
+    return mode in FINAL_MODES
 
 
 class OrderError(Exception):
@@ -366,16 +372,35 @@ def _money(txt: str):
     return float(re.sub(r"[\s\u00a0]", "", m.group(1)).replace(",", ".")) if m else None
 
 
-def order_flow(order: dict, submit: bool = False) -> dict:
+def _squash(t: str) -> str:
+    """Текст без пробілів/переносів/nbsp — для звірки 14-значного № ТТН незалежно від групування в кабінеті."""
+    return re.sub(r"\s", "", t or "")
+
+
+def lock_decision(method: str, host_ok: bool, path: str, armed: bool) -> str:
+    """Рішення мережевого локу для запиту: continue | final_pass (озброєний фінал, ОДИН пропуск) | final_blocked | abort. Чиста функція (тестується без браузера)."""
+    if method in ("GET", "HEAD"):
+        return "continue"
+    if host_ok and _ONESTEP_OK_RE.search(path):
+        return "continue"
+    if host_ok and path.endswith("/onestep"):
+        return "final_pass" if armed else "final_blocked"
+    return "abort"
+
+
+def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict:
     """Оформлення в кабінеті RoyalToys. Без submit — зупиняємось перед фіналом. Повертає словник зі станом. Кошик лишається ЧИСТИМ (finally)."""
     from playwright.sync_api import sync_playwright
     order = validate_order(order)
     if submit and os.environ.get("RT_ORDER_SUBMIT") != "1":
-        raise OrderError("--submit-balance вимагає RT_ORDER_SUBMIT=1 (свідоме рішення власника)")
+        raise OrderError("фінал вимагає RT_ORDER_SUBMIT=1 (свідоме рішення власника)")
+    if submit and not final_implemented(mode):
+        raise OrderError(f"режим фіналу «{mode}» не підключено (є: {', '.join(FINAL_MODES)})")
     if not STATE_FILE.exists():
         raise OrderError(f"нема сесії {STATE_FILE.name}: --vps-login")
     res = {"ready": False, "submitted": False, "not_submitted_certain": False, "problems": []}
     blocked = {"final": False}
+    armed = {"on": False, "passed": 0}        # фінальний POST /onestep дозволяється ЛИШЕ після всіх перевірок, безпосередньо перед кліком по «Резерв»
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         try:
@@ -384,14 +409,15 @@ def order_flow(order: dict, submit: bool = False) -> dict:
             def _lock(r):
                 req = r.request
                 u = urlparse(req.url)
-                if req.method in ("GET", "HEAD"):
+                d = lock_decision(req.method, (u.hostname or "").lower() in HOST_OK, u.path.rstrip("/"), armed["on"])
+                if d == "continue":
                     return r.continue_()
-                host_ok = (u.hostname or "").lower() in HOST_OK
-                path = u.path.rstrip("/")
-                if host_ok and _ONESTEP_OK_RE.search(path):
+                if d == "final_pass":
+                    armed["on"] = False                          # ОДНОРАЗОВО: після першого пропущеного фінального POST лок знову закритий
+                    armed["passed"] += 1
                     return r.continue_()
-                if host_ok and path.endswith("/onestep"):
-                    blocked["final"] = True                      # фінальний POST блокується ЗАВЖДИ; майбутній фінал — окремий «озброєний» прохід безпосередньо перед навмисним кліком
+                if d == "final_blocked":
+                    blocked["final"] = True                      # фінальний POST поза озброєним вікном блокується ЗАВЖДИ
                 return r.abort()
             ctx.route("**/*", _lock)
             page = ctx.new_page()
@@ -506,12 +532,53 @@ def order_flow(order: dict, submit: bool = False) -> dict:
                     res["not_submitted_certain"] = True      # усі наступні raise — ДО натискання; фінальна реалізація МУСИТЬ виставити False безпосередньо ПЕРЕД кліком (runner відкочує крок лише за True)
                     if not res["ready"]:
                         raise OrderError(f"фінал не виконано: {res['problems'] or res['checkout_warnings']}")
-                    if res["balance"] is None or res["total_on_checkout"] is None or res["balance"] < res["total_on_checkout"]:
-                        raise OrderError(f"недостатньо балансу (доступно {res['balance']}, сума {res['total_on_checkout']})")
-                    page.goto("https://royaltoys.com.ua/ua/my/orders/", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-                    if order["ttn_number"] in page.inner_text("body"):
+                    if res["total_on_checkout"] is None:
+                        raise OrderError("не вдалося прочитати суму на оформленні — зупинка")
+                    if mode == "balance" and (res["balance"] is None or res["balance"] < res["total_on_checkout"]):
+                        raise OrderError(f"недостатньо балансу (доступно {res['balance']}, сума {res['total_on_checkout']})")   # для «Резерв» баланс НЕ потрібен (замовлення просто чекає оплати)
+                    def orders_text():
+                        """Список замовлень у ОКРЕМІЙ вкладці (форма оформлення в основній не губиться)."""
+                        p2 = ctx.new_page()
+                        try:
+                            p2.goto("https://royaltoys.com.ua/ua/my/orders/", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                            p2.wait_for_timeout(1500)
+                            return p2.inner_text("body")
+                        finally:
+                            p2.close()
+                    if _squash(order["ttn_number"]) in _squash(orders_text()):
                         raise OrderError("замовлення з цим № ТТН уже є в кабінеті — повторно не створюємо")
-                    raise OrderError("фінальне натискання «З балансу» буде підключено після першого спостережуваного замовлення власника")
+                    # РЕЗЕРВ. Усі перевірки нижче — ДО озброєння: помилка тут = «точно не відправлено» (чистий відкат кроку)
+                    if blocked["final"]:
+                        raise OrderError("під час заповнення форми сторінка вже пробувала відправити фінальний POST — зупинка (форма поводиться несподівано)")
+                    btn = page.locator("form.checkout-form button.glavs.no")
+                    if btn.count() != 1:
+                        raise OrderError(f"кнопка «Резерв» не знайдена або неоднозначна ({btn.count()}) — верстка змінилась, зупинка")
+                    btn_text = (btn.first.inner_text() or "")
+                    if "Резерв" not in btn_text or "балансу" in btn_text:
+                        raise OrderError("кнопка за селектором .glavs.no — не «Резерв» (верстка змінилась) — зупинка")
+                    # З цього рядка результат може бути невідомим: помилки лишають rt_ordering (автоповтору немає)
+                    res["not_submitted_certain"] = False
+                    armed["on"] = True
+                    try:
+                        btn.first.evaluate("e => e.click()")
+                        page.wait_for_timeout(6000)
+                    finally:
+                        armed["on"] = False                      # лок відкритий лише на мить кліку (і при винятку теж)
+                    after = orders_text()
+                    if _squash(order["ttn_number"]) not in _squash(after):
+                        if armed["passed"] == 0:
+                            # дві ознаки разом: лок не пропустив жодного фінального POST І ТТН у списку немає → резерву не створено, чистий відкат (якщо обхідний шлях усе ж створив резерв і ТТН видно — це успіх нижче)
+                            res["not_submitted_certain"] = True
+                            raise OrderError("клік «Резерв» не відправив фінальний POST (лок не пропустив жодного), ТТН у списку немає — резерву не створено")
+                        raise OrderError("після кліку «Резерв» замовлення з цим № ТТН у списку не знайдено — результат невідомий, звірте кабінет вручну")
+                    # номер замовлення RoyalToys (RT…) найближчий ПЕРЕД ТТН у тексті списку; ТТН показана групами/нема RT — позначаємо за ТТН
+                    pos = after.find(order["ttn_number"])
+                    window = after[max(0, pos - 400):pos] if pos >= 0 else ""      # лише ПЕРЕД ТТН: номер сусіднього (наступного) рядка не береться
+                    refs = re.findall(r"RT\d{6,}", window)
+                    res["rt_order_ref"] = refs[-1] if refs else "ttn-" + order["ttn_number"]
+                    res["reserve_status_seen"] = bool(re.search(r"резерв|очіку\w*\s+оплат|очікує", window, re.I))
+                    res["submitted"] = True
+                    res["mode"] = "reserve"
             finally:
                 try:
                     clear_cart()                                     # кошик завжди чистий (не лишаємо чернетку)
@@ -606,14 +673,15 @@ if __name__ == "__main__":
     g.add_argument("--keepalive", action="store_true")
     g.add_argument("--vps-login", action="store_true")
     g.add_argument("--order", metavar="order.json")
-    ap.add_argument("--submit-balance", action="store_true")
+    ap.add_argument("--submit-reserve", action="store_true")      # фінал «Резерв (Прошу не відправляти)»: лише з RT_ORDER_SUBMIT=1 (під наглядом власника)
+    ap.add_argument("--submit-balance", action="store_true")      # «З балансу» — НЕ підключено
     a = ap.parse_args()
-    if a.submit_balance and not a.order:
-        ap.error("--submit-balance працює лише разом з --order")
+    if (a.submit_balance or a.submit_reserve) and not a.order:
+        ap.error("--submit-* працює лише разом з --order")
     if a.order:
         import json
         try:
-            out = order_flow(json.loads(Path(a.order).read_text(encoding="utf-8")), submit=a.submit_balance)
+            out = order_flow(json.loads(Path(a.order).read_text(encoding="utf-8")), submit=a.submit_balance or a.submit_reserve, mode="balance" if a.submit_balance else "reserve")
         except (OrderError, OSError, ValueError) as e:
             out = {"ready": False, "submitted": False, "problems": [str(e)]}
         print(json.dumps(out, ensure_ascii=False))

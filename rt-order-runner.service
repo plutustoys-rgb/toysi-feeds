@@ -8,7 +8,8 @@ Type=oneshot
 User=root
 WorkingDirectory=/opt/plutustoys
 # КРИТИЧНО (CLAUDE.md): venv-python. За замовчуванням DRY-RUN: нічого не створюється, поки у /opt/plutustoys/.env власник не виставить RT_RUNNER_APPLY=1, NP_TTN_APPLY=1, RT_ORDER_SUBMIT=1
-# (і поки rt_cabinet.FINAL_IMPLEMENTED=False у коді, реальний режим закритий у будь-якому разі). Код виходу 1 = у замовленні є проблема (див. journalctl -u rt-order-runner).
+# + RT_RUNNER_SINCE=<ISO-дата>. Фінал у кабінеті RoyalToys — «Резерв» (RT_ORDER_MODE=reserve за замовчуванням; «З балансу» не підключено). Код виходу 1 = у замовленні є проблема (див. journalctl -u rt-order-runner).
+Environment=RT_CABINET_STATE_FILE=/opt/plutustoys/.secrets/rt_cabinet_state.json
 ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/rt_order_runner.py
 TimeoutStartSec=1200
 Nice=10

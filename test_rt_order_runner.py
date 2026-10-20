@@ -133,8 +133,10 @@ ok, why = rr.apply_enabled()
 chk("без RT_RUNNER_SINCE реальний режим закритий (старі замовлення, виконані вручну, не чіпаємо)", ok is False and "RT_RUNNER_SINCE" in why)
 os.environ["RT_RUNNER_SINCE"] = "2026-01-01"
 ok, why = rr.apply_enabled()
-chk("навіть при чотирьох змінних реальний режим закритий, поки rt_cabinet.FINAL_IMPLEMENTED=False", ok is False and "кнопку" in why and rt_cabinet.FINAL_IMPLEMENTED is False)
-rt_cabinet.FINAL_IMPLEMENTED = True        # лише в тесті
+os.environ["RT_ORDER_MODE"] = "balance"
+ok_b, why_b = rr.apply_enabled()
+os.environ.pop("RT_ORDER_MODE")
+chk("режим balance («З балансу» не підключено) → реальний режим закритий навіть з усіма змінними", ok_b is False and "не підключено" in why_b)
 ok, why = rr.apply_enabled()
 chk("усі ворота відкриті (тест) → дозволено", ok is True)
 fk = Fake(receipt_ok=False)

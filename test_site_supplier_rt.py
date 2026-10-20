@@ -174,6 +174,11 @@ with sync_playwright() as pw:
         if want != "plain":
             tp_txt = pg.evaluate("(()=>{const e=document.querySelector('.trust-pay'); return e?e.textContent:null})()")
             chk(f"кошик {label}: у правій колонці «Оплата при отриманні» замінено на передоплату ({tp_txt})", tp_txt is None or "при отриманні" not in tp_txt)
+        dl = pg.evaluate("(()=>{const e=document.getElementById('sum-delivery'), n=document.getElementById('delivery-note-sum'); return [e?e.textContent:'', n?n.textContent:'']})()")
+        two = want == "mixed"
+        chk(f"кошик {label}: оцінка доставки — {'ДВІ посилки 140–180 ₴' if two else 'одна посилка 70–90 ₴'} (було: завжди 70–90): «{dl[0]}»", ("140–180" in dl[0] and "дві посилки" in dl[0]) if two else ("70–90" in dl[0] and "посилки" not in dl[0]))
+        if two:
+            chk("кошик змішаний: примітка під підсумком називає ту саму суму (140–180 ₴), а не 70–90", "140–180" in dl[1] and "70–90" not in dl[1])
         chk(f"кошик {label}: без помилок JS", errs == [])
         pg.close()
     # каталог/категорії: спершу index-t.json (Toysi), RoyalToys довантажується у фоні; повний index.json сторінки НЕ читають

@@ -144,7 +144,7 @@ chk("кошик: згода з офертою й політикою біля к�
 
 # ── доставка: друкуємо ЛИШЕ виміряне (SEO 12.10: НП getDocumentPrice із нашого акаунту: Київ→Київ 70, інші великі міста 90, +23,8 накладений; до 2 кг). Невиміряного («від 65/70 ₴», >2 кг) — ніде.
 appjs = open(os.path.join(HERE, "site", "assets", "app.js"), encoding="utf-8").read()
-chk("app.js: кошик показує розраховану «орієнтовно …» доставку (deliveryEstimate, формула 20 ₴ + 2%; не «за тарифами НП»), Разом = товари", 'if(d && freeShip) d.textContent="Безкоштовно"; else applyDeliveryView(goods);' in appjs and "deliveryEstimate(goods, pre)" in appjs and 't.textContent=goods+" ₴"' in appjs and "DELIVERY_HINT" not in appjs.replace("// ", "").split("прибрано")[0])
+chk("app.js: кошик показує розраховану «орієнтовно …» доставку (deliveryEstimate, формула 20 ₴ + 2%; не «за тарифами НП»), Разом = товари", 'if(d && freeShip) d.textContent="Безкоштовно"; else applyDeliveryView(goods);' in appjs and "deliveryEstimate(goods, pre, par)" in appjs and 't.textContent=goods+" ₴"' in appjs and "DELIVERY_HINT" not in appjs.replace("// ", "").split("прибрано")[0])
 blob = cart + h + b._DELIVERY + b._ABOUT
 chk("жодного НЕВИМІРЯНОГО орієнтиру («від 65», «≈ 70», «від 70»)", all(x not in blob for x in ("від 65", "≈ 70", "≈70", "від 70")))
 chk("кошик: «орієнтовно 70–90 ₴ до 2 кг», «Разом за товари», застереження про важчі посилки й комісію НП за накладений ФОРМУЛОЮ (12.10: виміряно Кодом — 20 ₴ + 2%)", "орієнтовно 70–90 ₴ до 2 кг" in cart and "Разом за товари" in cart and "для важчих посилок сума вища" in cart and "комісія за накладений платіж: 20 ₴ + 2% від суми замовлення" in cart and "≈24" not in cart)

@@ -60,7 +60,7 @@ async function run(opts){
       if(resp==="500"){ return Promise.resolve({ok:false, json(){return Promise.resolve({})}}); }
       return Promise.resolve({ok:true, json(){return Promise.resolve(resp)}});
     }
-    return Promise.resolve({ok:true, json(){return Promise.resolve({order_id:"PT-TEST-1", liqpay:opts.liqpay||null})}});
+    return Promise.resolve({ok:true, json(){return Promise.resolve({order_id:"PT-TEST-1", public_number:opts.pub, liqpay:opts.liqpay||null})}});
   };
   const ctx={document:doc,localStorage:ls,sessionStorage:ss,console,fetch:fetchStub,navigator:{},location:loc,setTimeout:(opts.fast?((f,ms)=>setTimeout(f,1)):setTimeout),clearTimeout};
   const win=ctx; ctx.window=ctx; ctx.self=ctx;      // як у браузері: window === глобальний об'єкт (app.js звертається до PT без window.)
@@ -105,6 +105,31 @@ async function run(opts){
     const r1=await run(o);
     const r2=await run({ss, elements:["thanks-oid"], ls:r1.ls, conv:scenario!=="thanks_noconv"});     // «reload»: той самий sessionStorage
     console.log(JSON.stringify({gt1:r1.gt, fb1:r1.fb, gt2:r2.gt, fb2:r2.fb, oid:r1.E["thanks-oid"].textContent, sent:ss.getItem("pt_purchase_sent"), pf:r1.fetchLog.filter(u=>u.indexOf("order/paid")>=0).length}));
+  } else if(scenario.indexOf("pub_")===0){
+    // короткий номер для покупця (PT-123456): показ на thanks і збереження після відповіді сервера
+    const LONG="PT-20261021-100000-aaaaaa";
+    if(scenario==="pub_submit"){
+      const ls=store(); ls.setItem("pt_cart_v1", JSON.stringify(cartItem));
+      const r=await run({ls, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge"], payment:"cod", pub:"PT-123456"});
+      r.E["f-name"].value="Іван Петренко"; r.E["f-phone"].value="0501234567"; (r.E["checkout-form"].h.submit||[]).forEach(f=>f({preventDefault(){}}));
+      await new Promise(x=>setTimeout(x,50));
+      console.log(JSON.stringify({pub:r.ss.getItem("pt_last_public"), order:r.ss.getItem("pt_last_order")}));
+    } else if(scenario==="pub_submit_bad"){
+      const ss0=store(); ss0.setItem("pt_last_public","PT-999999");        // від попереднього замовлення в цій вкладці
+      const ls=store(); ls.setItem("pt_cart_v1", JSON.stringify(cartItem));
+      const r=await run({ls, ss:ss0, elements:["checkout-form","checkout-msg","checkout-submit","f-name","f-phone","f-email","f-city","f-warehouse","cart-badge"], payment:"cod", pub:"evil<b>"});
+      r.E["f-name"].value="Іван Петренко"; r.E["f-phone"].value="0501234567"; (r.E["checkout-form"].h.submit||[]).forEach(f=>f({preventDefault(){}}));
+      await new Promise(x=>setTimeout(x,50));
+      console.log(JSON.stringify({pub:r.ss.getItem("pt_last_public"), order:r.ss.getItem("pt_last_order")}));
+    } else {
+      const ss=store(); const o={ss, elements:["thanks-oid"], analytics:false};
+      if(scenario==="pub_thanks_session"){ ss.setItem("pt_last_order", LONG); ss.setItem("pt_last_public","PT-482917"); }
+      else if(scenario==="pub_thanks_query"){ o.search="?o="+LONG+"&n=PT-482917"; }
+      else if(scenario==="pub_thanks_invalid"){ ss.setItem("pt_last_order", LONG); ss.setItem("pt_last_public","evil<script>"); o.search="?n=PT-1234"; }
+      else if(scenario==="pub_thanks_none"){ ss.setItem("pt_last_order", LONG); }
+      const r=await run(o);
+      console.log(JSON.stringify({text:r.E["thanks-oid"].textContent}));
+    }
   } else if(scenario.indexOf("prepaid_")===0){
     // передоплата: позицій у sessionStorage НЕМАЄ; подія лише після серверного paid:true
     const PAID={paid:true, currency:"UAH", value:936, items:[{id:"235193", name:"Картина за номерами", price:468, qty:2}]};
@@ -203,6 +228,13 @@ async function run(opts){
     chk("prepaid: відповідь {paid:false} навіть з value>0 і items → події НЕМАЄ (захист у глибину: лише paid===true)", fp is not None and not ev(fp, "gt1", "purchase") and not ev(fp, "gt1", "conversion") and fp["pf1"] == 10)
     bt = run("prepaid_other_tab_between_polls")
     chk("prepaid: між опитуваннями інша вкладка вже відправила (pt_purchase_done у localStorage) → друга перевірка purchaseDone зупиняє: 0 подій, 1 запит", bt is not None and not ev(bt, "gt1", "purchase") and not ev(bt, "gt1", "conversion") and bt["pf1"] == 1)
+    LONGID = "PT-20261021-100000-aaaaaa"
+    chk("короткий номер: після відповіді сервера зберігається pt_last_public (PT-123456), довгий pt_last_order лишається ключем", (run("pub_submit") or {}).get("pub") == "PT-123456" and (run("pub_submit") or {}).get("order") == "PT-TEST-1")
+    chk("короткий номер: некоректний public_number у відповіді НЕ зберігається, і стара «чужа» pt_last_public з попереднього замовлення стирається", (run("pub_submit_bad") or {}).get("pub") is None)
+    chk("thanks показує КОРОТКИЙ номер із sessionStorage (покупцю не показуємо довгий)", (run("pub_thanks_session") or {}).get("text") == "PT-482917")
+    chk("thanks: повернення з LiqPay в іншу вкладку — короткий номер із ?n= (лише для показу)", (run("pub_thanks_query") or {}).get("text") == "PT-482917")
+    chk("thanks: підроблений/некоректний короткий номер (sessionStorage чи ?n=) ігнорується — показується довгий ключ (без вставки чужого тексту)", (run("pub_thanks_invalid") or {}).get("text") == LONGID)
+    chk("thanks: короткого номера нема (старе замовлення) → як раніше довгий", (run("pub_thanks_none") or {}).get("text") == LONGID)
     n = run("thanks_noid")
     cv = [e for e in (t or {}).get("gt1", []) if e[:2] == ["event", "conversion"]]
     chk("Google Ads: на thanks рівно ОДИН gtag('event','conversion') з send_to мітки «Покупка на сайте»", t is not None and len(cv) == 1 and cv[0][2].get("send_to") == "AW-18528978608/W1AACIPZ0KQdELCNp4NF")

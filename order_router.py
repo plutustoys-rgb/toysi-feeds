@@ -836,6 +836,20 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
 SITE_RECEIPT_HEADER = "PlutusToys · plutustoys.com.ua"   # шапка чека онлайн-оплати: назва магазину (власник 13.10)
 
 
+def _receipt_ref(order) -> str:
+    """Номер замовлення для алертів про чек: довгий internal id (+ короткий для покупця, якщо є) — у footer чека тепер КОРОТКИЙ."""
+    oid = order.get("internal_order_id")
+    pn = order.get("public_number")
+    return f"{oid} (№ для клієнта {pn})" if pn else str(oid)
+
+
+def _receipt_search_hint(order) -> str:
+    """Як людині знайти чек у Checkbox: footer «замовлення <короткий номер або довгий>», номер платежу LiqPay, сума й дата. Без цього «чека не знайдено» → хибне зняття claim → дубль фіскального чека."""
+    shown = order.get("public_number") or order.get("order_id")
+    pid = (order.get("liqpay_payment_id") or "").strip()
+    return f"footer «замовлення {shown}»" + (f", «LiqPay payment_id {pid}»" if pid else "") + ", а також за сумою й датою оплати"
+
+
 def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, include_eva: bool = False) -> bool:
     """Сайт + передоплата (LiqPay): фіскальний чек ПРРО Checkbox SELL/CASHLESS виписується одразу після підтвердженої оплати (колбек success) і ДО передачі в Toysi/НП
     (рішення головного бухгалтера 12.10.2026, КОДВ_CHANNEL: розрахунковий документ — не пізніше передачі товару; Закон №265/95-ВР ст.3). Місце — тут, на початку route_order:
@@ -862,12 +876,13 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
             print(f"[order_router] алерт про чек не надіслано: {type(ae).__name__}", file=sys.stderr)
 
     registered_at, claim_at = get_receipt_state(conn, oid)        # свіже читання БД
+    ref = _receipt_ref(order)
     if registered_at:
         order["checkbox_ettn_registered_at"] = registered_at
         return True
     if claim_at:                                                    # чек уже виписує інший процес, або результат невідомий
-        _alert("claim", f"🔴 Чек на онлайн-оплату {oid}: claim виписування взято {claim_at}, але прапорця «чек видано» нема. Або чек виписує інший процес зараз, або результат невідомий "
-                        "(таймаут/обрив). Другий чек автоматично НЕ видається. Звір у кабінеті Checkbox, чи є чек із footer «замовлення …»; якщо є, проставити checkbox_ettn_registered_at, "
+        _alert("claim", f"🔴 Чек на онлайн-оплату {ref}: claim виписування взято {claim_at}, але прапорця «чек видано» нема. Або чек виписує інший процес зараз, або результат невідомий "
+                        "(таймаут/обрив). Другий чек автоматично НЕ видається. Звір у кабінеті Checkbox, чи є чек (шукай за " + _receipt_search_hint(order) + "); якщо є, проставити checkbox_ettn_registered_at, "
                         "якщо нема, зняти receipt_claim_at. Замовлення в Toysi не передається.")
         return False
 
@@ -887,10 +902,11 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
             if abs(total - float(charged)) > 0.01:
                 raise ValueError(f"сума позицій {total} ≠ зафіксована при оформленні {charged}: чек НЕ видано (money-safety), розберіть вручну")
             pid = (order.get("liqpay_payment_id") or "").strip()
-            footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('order_id')}"
+            # у чеку покупець бачить ТОЙ САМИЙ номер, що на сторінці подяки й у боті — короткий PT-NNNNNN (власник 21.10.2026); старі замовлення без нього — довгий. Машинний ключ чека (order_id=oid) лишається довгим.
+            footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('public_number') or order.get('order_id')}"
     except Exception as e:  # noqa: BLE001 — до claim: чек точно не створювався
         print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
-        _alert("prep", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {oid}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
+        _alert("prep", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {_receipt_ref(order)}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
                        "Наступний цикл (~15 хв) повторить; якщо повторюється, розберіть суму/дані замовлення.")
         return False
 
@@ -904,13 +920,13 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
     except Exception as e:  # noqa: BLE001
         print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
         if getattr(e, "maybe_created", False):
-            _alert("unknown", f"🔴 Чек на онлайн-оплату {oid}: відповідь Checkbox не отримано чи нечитабельна ({str(e)[:200]}); чек МІГ бути створений. Автоматичного повтору НЕ буде (щоб не було дубля "
-                              "фіскального чека): звір у кабінеті Checkbox (footer «замовлення …»); якщо чек є, проставити checkbox_ettn_registered_at, якщо нема, зняти receipt_claim_at. "
+            _alert("unknown", f"🔴 Чек на онлайн-оплату {ref}: відповідь Checkbox не отримано чи нечитабельна ({str(e)[:200]}); чек МІГ бути створений. Автоматичного повтору НЕ буде (щоб не було дубля "
+                              "фіскального чека): звір у кабінеті Checkbox (шукай за " + _receipt_search_hint(order) + "); якщо чек є, проставити checkbox_ettn_registered_at, якщо нема, зняти receipt_claim_at. "
                               "Замовлення в Toysi не передається.")
         else:
             release_receipt_claim(conn, oid)
             conn.commit()
-            _alert("fail", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {oid}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
+            _alert("fail", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {ref}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
                            "Наступний цикл (~15 хв) повторить; якщо повторюється, перевір зміну/ключ Checkbox; ручний чек у кабінеті Checkbox, далі позначити checkbox_ettn_registered_at.")
         return False
 

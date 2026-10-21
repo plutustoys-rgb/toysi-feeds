@@ -156,6 +156,7 @@ class TelegramAPI:
 
 
 _ORDER_RE = re.compile(r"(?<![\w-])PT-\d{8}-\d{6}-[0-9a-f]{6}(?![\w-])", re.I)
+_PUBLIC_RE = re.compile(r"(?<![\w-])PT-([1-9]\d{5})(?![\w-])", re.I)       # короткий номер для покупця (PT-123456)
 _LAST4_RE = re.compile(r"(?<![\w+-])(\d{4})(?![\w-])")
 _TTN_RE = re.compile(r"^\d{10,20}$")
 
@@ -163,14 +164,20 @@ _TTN_RE = re.compile(r"^\d{10,20}$")
 def order_status_request(text: str):
     """(номер замовлення, набір кандидатів «останні 4 цифри») із тексту клієнта, або None, якщо номера PT-… нема. Кандидати: окремі 4-значні числа поза номером замовлення і останні 4 цифри повного українського номера."""
     m = _ORDER_RE.search(text or "")
+    pub = None
     if not m:
-        return None
+        pub = _PUBLIC_RE.search(text or "")          # короткий номер PT-123456 (власник 21.10.2026)
+        if not pub:
+            return None
+        m = pub
     rest = text[:m.start()] + " " + text[m.end():]
     cands = set(_LAST4_RE.findall(rest))
     for pm in _PHONE_RE.finditer(rest):
         d = re.sub(r"\D", "", pm.group(0))
         if len(d) >= 4:
             cands.add(d[-4:])
+    if pub:
+        return "PT-" + pub.group(1), cands                      # короткий номер як є; internal id знаходить resolve_public()
     return "PT-" + m.group(0)[3:].lower(), cands          # у БД номер у форматі PT-YYYYMMDD-HHMMSS-<hex малими>
 
 
@@ -242,6 +249,31 @@ def order_status_text(row) -> str | None:
     return None
 
 
+def resolve_public(num: str):
+    """internal id (без префікса site_) за коротким номером PT-NNNNNN, або None (нема/формат/старої БД без колонки). Лише читання."""
+    import sqlite3 as _sq
+    if not re.fullmatch(r"PT-[1-9]\d{5}", num or ""):
+        return None
+    oc = _sq.connect(Path(ORDERS_DB).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        cols = {r[1] for r in oc.execute("PRAGMA table_info(orders)")}
+        if "public_number" not in cols:
+            return None
+        r = oc.execute("SELECT internal_order_id FROM orders WHERE public_number=? AND platform='site'", (num,)).fetchone()
+        return r[0][len("site_"):] if r and str(r[0]).startswith("site_") else None
+    finally:
+        oc.close()
+
+
+def shown_number(row, fallback: str) -> str:
+    """Номер, який бачить ПОКУПЕЦЬ у повідомленнях бота: короткий (public_number), інакше довгий."""
+    try:
+        pn = row["public_number"] if "public_number" in row.keys() else None
+    except (TypeError, IndexError):
+        pn = None
+    return pn or fallback
+
+
 def fetch_order_row(oid: str):
     """Рядок замовлення сайту з orders.db (лише читання) або None; виняток — якщо база недоступна."""
     import sqlite3 as _sq
@@ -249,7 +281,7 @@ def fetch_order_row(oid: str):
     oc.row_factory = _sq.Row
     try:
         cols = {r[1] for r in oc.execute("PRAGMA table_info(orders)")}
-        extra = "".join(", " + c for c in ("rt_state", "rt_cabinet_status") if c in cols)       # колонок може не бути (стара БД/тести) — тоді як раніше
+        extra = "".join(", " + c for c in ("rt_state", "rt_cabinet_status", "public_number") if c in cols)       # колонок може не бути (стара БД/тести) — тоді як раніше
         return oc.execute("SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone" + extra + " FROM orders WHERE internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
     finally:
         oc.close()
@@ -358,7 +390,7 @@ class Bot:
                 return
             self.db.run("INSERT INTO subscriptions(order_id, chat_id, created_at, last_text) VALUES(?,?,?,?)", (oid, chat_id, iso, ""))
         txt = order_status_text(row)
-        msg = SUB_WELCOME.format(oid=oid) + (chr(10) + chr(10) + "Зараз: " + txt if txt else "")
+        msg = SUB_WELCOME.format(oid=shown_number(row, oid)) + (chr(10) + chr(10) + "Зараз: " + txt if txt else "")
         if self._send(chat_id, msg) and txt:
             final = _is_final(row)
             self.db.run("UPDATE subscriptions SET last_text=?, done=?, fails=0 WHERE order_id=? AND chat_id=?", (txt, 1 if final else 0, oid, chat_id))
@@ -378,7 +410,7 @@ class Bot:
             txt = order_status_text(row)
             if not txt or txt == (s["last_text"] or ""):
                 continue
-            if self._send(s["chat_id"], f"Замовлення {s['order_id']}: {txt}"):
+            if self._send(s["chat_id"], f"Замовлення {shown_number(row, s['order_id'])}: {txt}"):
                 final = _is_final(row)
                 self.db.run("UPDATE subscriptions SET last_text=?, fails=0, done=? WHERE order_id=? AND chat_id=?", (txt, 1 if final else 0, s["order_id"], s["chat_id"]))
                 sent += 1
@@ -393,6 +425,15 @@ class Bot:
         if not req:
             return "", False
         oid, cands = req
+        typed = oid                  # як набрав клієнт (для відповіді-заглушки)
+        if _PUBLIC_RE.fullmatch(oid):
+            try:
+                _real = resolve_public(oid)
+            except Exception as e:  # noqa: BLE001 — БД недоступна: як і для довгого номера, справу віддаємо людині (НЕ «не знайдено» і без запису невдалої спроби)
+                print(f"[site_chat_bot] orders.db не прочитано: {type(e).__name__}", file=sys.stderr)
+                return "🤖 статус не перевірено (orders.db недоступна): відповісти вручну", False
+            if _real:
+                oid = _real          # ліміт спроб — по internal id: «PT-123456» і довгий формат одного замовлення діляться одним лічильником
         if len(cands) != 1:          # 0 — нема цифр; >1 — це добір (кожне 4-значне число було б окремою спробою): звіряємо лише ОДНЕ число
             self.reply_to(chat_id, STATUS_NEED_PHONE, kind="auto")
             return "🤖 просила номер + рівно одне число з 4 цифр", True
@@ -402,7 +443,7 @@ class Bot:
             return "🤖 автовідповідь вимкнена (забагато невдалих звірок по цьому замовленню)", False
         row = None
         try:
-            row = fetch_order_row(oid)          # той самий SELECT, що в підписці (з rt_state/rt_cabinet_status, якщо колонки є) — інакше RT-замовлення отримало б стару відповідь «обробляється»
+            row = fetch_order_row(oid) if not _PUBLIC_RE.fullmatch(oid) else None       # oid вже internal id, якщо короткий номер знайдено; невідомий короткий → None (відповідь та сама, що й для хибного телефону)          # той самий SELECT, що в підписці (з rt_state/rt_cabinet_status, якщо колонки є) — інакше RT-замовлення отримало б стару відповідь «обробляється»
         except Exception as e:  # noqa: BLE001
             print(f"[site_chat_bot] orders.db не прочитано: {type(e).__name__}", file=sys.stderr)
             return "🤖 статус не перевірено (orders.db недоступна): відповісти вручну", False
@@ -415,7 +456,7 @@ class Bot:
         msg = order_status_text(row)
         if not msg:
             return "🤖 стан замовлення невідомий для автовідповіді: відповісти вручну", False
-        self.reply_to(chat_id, f"Замовлення {oid}: {msg}", kind="auto")
+        self.reply_to(chat_id, f"Замовлення {shown_number(row, typed)}: {msg}", kind="auto")
         return "🤖 надіслала клієнту статус замовлення", True
 
     def _forward(self, mid: int, note: str = "") -> bool:
@@ -498,7 +539,7 @@ def digest(db: ChatDB, days: int = 1, now: datetime | None = None) -> str:
     for r in rows:
         k = ids.setdefault(r["chat_id"], len(ids) + 1)
         txt = r["text"]
-        if _ORDER_RE.search(txt):            # пара «номер замовлення + 4 цифри телефону» = ключ до статусу: у збірці лишаємо номер, 4-значні числа ховаємо
+        if _ORDER_RE.search(txt) or _PUBLIC_RE.search(txt):            # пара «номер замовлення + 4 цифри телефону» = ключ до статусу: у збірці лишаємо номер, 4-значні числа ховаємо
             txt = _LAST4_RE.sub("[4 цифри]", txt)
         masked = _EMAIL_RE.sub("[e-mail]", _PHONE_RE.sub("[телефон]", txt))[:300]
         out.append(f"  К{k}: {masked}")

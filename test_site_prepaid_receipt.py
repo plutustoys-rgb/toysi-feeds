@@ -112,6 +112,17 @@ chk("порядок: спершу чек, потім передача в Toysi",
 rc = receipt_calls[0]
 chk("чек: CASHLESS, сума 100, номер замовлення в order_id", rc["payment_type"] == "CASHLESS" and rc["total_amount"] == 100 and rc["order_id"] == "site_PT-R1")
 chk("чек: footer містить номер платежу LiqPay і номер замовлення", rc["footer"] == "LiqPay payment_id 123456; замовлення PT-R1")
+# 1б. новий номер: у footer чека — той самий короткий номер, що бачить покупець; ключ чека (order_id) — довгий
+new_order("PT-R9")
+with orders_db.get_connection() as _c:
+    _pn = orders_db.assign_public_number(_c, "site_PT-R9", rand=lambda: 654321)
+    _c.commit()
+callback("PT-R9", "777001")
+reset()
+route("PT-R9")
+chk("чек: footer = «замовлення <короткий номер PT-654321>» (як на сторінці подяки й у боті), order_id чека — довгий ключ site_PT-R9",
+    _pn == "PT-654321" and receipt_calls and receipt_calls[0]["footer"] == "LiqPay payment_id 777001; замовлення PT-654321" and receipt_calls[0]["order_id"] == "site_PT-R9")
+reset()
 chk("чек: header = назва магазину (PlutusToys · plutustoys.com.ua)", rc.get("header") == "PlutusToys · plutustoys.com.ua")
 chk("чек: телефон і e-mail покупця передані для електронного надсилання", rc["customer_phone"] == "380671112233" and rc["customer_email"] == "buyer@example.com")
 chk("чек: позиції з ціною й кількістю", rc["goods"] == [{"code": "1", "name": "Тестовий товар", "price": 100, "qty": 1}])
@@ -380,5 +391,37 @@ checkbox_client_real.requests.post = lambda url, headers=None, json=None, timeou
 checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASH", total_amount=100)
 chk("без header одна спроба, як і раніше", len(calls) == 1)
 
+
+# --- аудит #955 E1: алерти про чек називають КОРОТКИЙ номер і дають, за чим шукати чек у Checkbox (інакше «чека не знайдено» → хибне зняття claim → дубль) ---
+new_order("PT-H1")
+with orders_db.get_connection() as _c:
+    orders_db.assign_public_number(_c, "site_PT-H1", rand=lambda: 424242)
+    _c.commit()
+callback("PT-H1", "910001")
+reset()
+with orders_db.get_connection() as c:
+    orders_db.claim_receipt(c, "site_PT-H1"); c.commit()
+    orr._ensure_site_prepaid_receipt(c, get("PT-H1"))
+ta_claim = alerts[0][1] if alerts else ""
+chk("алерт claim: містить довгий id І короткий номер, і підказку пошуку «footer «замовлення PT-424242»», LiqPay payment_id, суму й дату", "site_PT-H1" in ta_claim and "№ для клієнта PT-424242" in ta_claim
+    and "footer «замовлення PT-424242»" in ta_claim and "LiqPay payment_id 910001" in ta_claim and "сумою й датою" in ta_claim)
+new_order("PT-H2")
+with orders_db.get_connection() as _c:
+    orders_db.assign_public_number(_c, "site_PT-H2", rand=lambda: 535353)
+    _c.commit()
+callback("PT-H2", "910002")
+reset()
+checkbox_client.create_receipt = fake_unknown
+route("PT-H2")
+ta_unknown = next((t for k, t in alerts if k.endswith(":unknown")), "")
+chk("алерт «МІГ бути створений»: короткий номер + підказка пошуку footer «замовлення PT-535353» і суми/дати", "№ для клієнта PT-535353" in ta_unknown and "footer «замовлення PT-535353»" in ta_unknown and "сумою й датою" in ta_unknown)
+checkbox_client.create_receipt = fake_receipt
+new_order("PT-H3")
+callback("PT-H3", "910003")
+reset()
+with orders_db.get_connection() as c:
+    orders_db.claim_receipt(c, "site_PT-H3"); c.commit()
+    orr._ensure_site_prepaid_receipt(c, get("PT-H3"))
+chk("старе замовлення без короткого номера: підказка пошуку з довгим номером у footer", "footer «замовлення PT-H3»" in alerts[0][1] and "№ для клієнта" not in alerts[0][1])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

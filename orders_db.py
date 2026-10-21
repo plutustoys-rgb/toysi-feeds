@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -353,6 +354,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         # Статус замовлення з КАБІНЕТУ RoyalToys (лише читання, rt_order_runner): для тексту клієнту в боті («зібране, очікує передачі перевізнику»); не впливає на rt_state.
         _ensure_column(conn, "orders", "rt_cabinet_status", "rt_cabinet_status TEXT")
         _ensure_column(conn, "orders", "rt_cabinet_checked_at", "rt_cabinet_checked_at TEXT")
+        # Короткий номер замовлення сайту для ПОКУПЦЯ (PT-123456, власник 21.10.2026: «літери та 6 цифр»). Довгий internal id (PT-YYYYMMDD-HHMMSS-hex) лишається внутрішнім ключем у посиланнях/API/боті.
+        _ensure_column(conn, "orders", "public_number", "public_number TEXT")
         _ensure_column(conn, "orders", "rt_confirmed_at", "rt_confirmed_at TEXT")
         _ensure_column(conn, "orders", "rt_total", "rt_total REAL")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
@@ -400,6 +403,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         # бо очікує на вході CHECK(platform IN ('rozetka','prom','eva')) і додає до нього 'site'.
         _migrate_platform_allow_site(conn)
         _migrate_carrier_allow_rozetka_delivery(conn)
+        # ПІСЛЯ rebuild-міграцій: вони роблять DROP TABLE orders і відновлюють лише старі індекси — індекс короткого номера, створений раніше, пропав би до наступного init_db (аудит #955 A1)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_public_number ON orders (public_number) WHERE public_number IS NOT NULL")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -475,6 +480,42 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     result = dict(row)
     result["items"] = json.loads(result["items"])
     return result
+
+
+PUBLIC_NUMBER_RE = re.compile(r"PT-[1-9][0-9]{5}")
+
+
+def assign_public_number(conn: sqlite3.Connection, internal_order_id: str, rand=None, tries: int = 30) -> Optional[str]:
+    """Призначає замовленню сайту короткий номер для покупця «PT-NNNNNN» (6 цифр, перша не нуль: 900 000 варіантів). Унікальність гарантує частковий UNIQUE-індекс: при колізії (IntegrityError) пробуємо інше число (до `tries`).
+    Уже призначений номер не змінюється (ідемпотентно). Повертає номер або None (усі спроби невдалі — замовлення лишається з довгим номером, фронт/бот просто показують його)."""
+    cur = conn.execute("SELECT public_number FROM orders WHERE internal_order_id = ?", (internal_order_id,)).fetchone()
+    if cur is None:
+        return None
+    if cur[0]:
+        return cur[0]
+    rnd = rand or (lambda: 100000 + secrets.randbelow(900000))
+    for _ in range(tries):
+        num = f"PT-{rnd()}"
+        try:
+            cur2 = conn.execute("UPDATE orders SET public_number = ? WHERE internal_order_id = ? AND public_number IS NULL", (num, internal_order_id))
+            if cur2.rowcount == 0:             # між SELECT і UPDATE номер уже призначили (гонка/бекфіл) — повертаємо те, що реально в БД, а не свій
+                again = conn.execute("SELECT public_number FROM orders WHERE internal_order_id = ?", (internal_order_id,)).fetchone()
+                return again[0] if again and again[0] else None
+            return num
+        except sqlite3.IntegrityError:
+            continue
+        except sqlite3.Error as e:             # блокування БД тощо: короткий номер — косметика покупця, він НЕ має валити створення замовлення (довгий лишається)
+            print(f"[orders_db] public_number не призначено ({type(e).__name__}) — лишається довгий номер", file=__import__("sys").stderr)
+            return None
+    return None
+
+
+def get_internal_id_by_public(conn: sqlite3.Connection, public_number: str) -> Optional[str]:
+    """internal_order_id замовлення САЙТУ за коротким номером (лише формат PT-NNNNNN); інакше None."""
+    if not isinstance(public_number, str) or not PUBLIC_NUMBER_RE.fullmatch(public_number):
+        return None
+    row = conn.execute("SELECT internal_order_id FROM orders WHERE public_number = ? AND platform = 'site'", (public_number,)).fetchone()
+    return row[0] if row else None
 
 
 def get_order(conn: sqlite3.Connection, internal_order_id: str) -> Optional[dict]:

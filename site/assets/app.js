@@ -863,7 +863,11 @@
     var thanksO="";
     try{ thanksO = sessionStorage.getItem("pt_last_order") || ""; }catch(e){}
     if(!thanksO){ try{ var qm=((location.search||"").match(/[?&]o=([^&#]*)/)||[])[1]||""; qm=decodeURIComponent(qm); if(/^PT-\d{8}-\d{6}-[0-9a-f]{6}$/.test(qm)) thanksO=qm; }catch(e){} }
-    if(oidEl){ oidEl.textContent = thanksO; }
+    var thanksPub="";
+    try{ thanksPub = sessionStorage.getItem("pt_last_public") || ""; }catch(e){}
+    if(!thanksPub){ try{ var qn=((location.search||"").match(/[?&]n=([^&#]*)/)||[])[1]||""; qn=decodeURIComponent(qn); if(/^PT-[1-9]\d{5}$/.test(qn)) thanksPub=qn; }catch(e){} }
+    if(!/^PT-[1-9]\d{5}$/.test(thanksPub)){ thanksPub=""; }
+    if(oidEl){ oidEl.textContent = thanksPub || thanksO; }          // покупцю — короткий номер (якщо є), інакше довгий
     // кнопка «Отримувати статус у Telegram»: бот дізнається номер із ?start=<номер замовлення> (допустимі символи payload Telegram [A-Za-z0-9_-], ≤64; наш PT-YYYYMMDD-HHMMSS-xxxxxx підходить)
     var tgEl=document.getElementById("thanks-tg");
     if(tgEl){ try{
@@ -1543,6 +1547,8 @@
           var d=res.j;
           try{
             sessionStorage.setItem("pt_last_order", d.order_id);
+            // короткий номер для покупця (PT-123456, 21.10.2026): лише для ПОКАЗУ на сторінці подяки; ключ замовлення (посилання/API/бот) — довгий order_id
+            try{ if(d.public_number && /^PT-[1-9]\d{5}$/.test(d.public_number)){ sessionStorage.setItem("pt_last_public", d.public_number); } else { sessionStorage.removeItem("pt_last_public"); } }catch(e3){}
             // вибір «статус у Telegram» (галочка на чекауті): sessionStorage + localStorage — після LiqPay покупець може повернутись в іншу вкладку, де sessionStorage порожній
             var tgBox=document.getElementById("f-tg"), tgv=(tgBox && tgBox.checked===false) ? "0" : "1";
             sessionStorage.setItem("pt_tg_opt", tgv);

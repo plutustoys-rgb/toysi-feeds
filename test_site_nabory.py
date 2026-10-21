@@ -86,7 +86,7 @@ chk("H1 і підзаголовок за текстом SMM", "<h1 class=\"page\
 chk("чипи: «Усі» + 7 груп, кнопки з data-g/aria-pressed, 'Усі' активний", html.count('class="chip') >= 8 and 'data-g="all" aria-pressed="true"' in html and all(f'data-g="{k}"' in html for k, _t, _c in bs.NABORY_GROUPS)
     and all(t in html for _k, t, _c in bs.NABORY_GROUPS))
 chk("картки несуть data-g, group «other» без чипа", html.count('<a class="card" data-g=') == len(picked) and 'data-g="other"' in html and 'data-g="other" aria-pressed' not in html)
-chk("список: id=nabory-list, data-list=nabory_page, data-limit=24; бейдж залишку лише на stock 1–3 (badge=True)", 'id="nabory-list" data-list="nabory_page" data-limit="24"' in html and "Залишилось 1 шт" in html and "Залишилось 5 шт" not in html)
+chk("список: id=nabory-list, data-list=nabory_page, data-limit=24; бейдж «Остання штука» лише на stock 1 (badge=True)", 'id="nabory-list" data-list="nabory_page" data-limit="24"' in html and "Остання штука" in html and "Залишилось" not in html)
 chk("перші 3 картки без lazy, перша fetchpriority=high (LCP)", html.count('fetchpriority="high"') == 1)
 chk("SEO: canonical nabory.html, title з назвою, description без обіцянки безкоштовної доставки, не noindex", 'rel="canonical" href="https://plutustoys.com.ua/nabory.html"' in html and "noindex" not in html and "<title>Набори, які займуть дитину надовго" in html and "безкоштовн" not in html.lower())
 _css = (HERE / "site/assets/styles.css").read_text(encoding="utf-8")

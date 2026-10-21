@@ -661,17 +661,17 @@
     });
   }
   // «Залишилось N шт» (бейдж у каруселі/nabory/ig): число вшите при збірці (раз на 2 год), а stock.json свіжіший (раз на 15 хв). Застаріле число — фальшива терміновість
-  // (тестувальник 24, 21.10): число змінилось → показуємо нове; залишок став більше межі бейджа (3 = STOCK_BADGE_MAX у build_site.py) → бейдж знімаємо й повертаємо «У наявності».
+  // (тестувальник 24, 21.10): свіжий залишок 1 → «Остання штука» (стару форму «Залишилось N шт» з попередньої збірки теж приводимо до неї); залишок став більше межі бейджа (1 = STOCK_BADGE_MAX у build_site.py) → бейдж знімаємо й повертаємо «У наявності».
   function liveBadge(a, sb, live){
     if(!sb) return;
-    if(live>3){
+    if(live>1){
       if(sb.parentNode) sb.parentNode.removeChild(sb);
       var f=a.querySelector(".foot");
       if(f && !f.querySelector(".av")){ var s=document.createElement("span"); s.className="av"; s.textContent="У наявності"; f.appendChild(s); }
       return;
     }
-    var bn=/(\d+)/.exec(sb.textContent||"");
-    if(!bn || +bn[1]!==live) sb.textContent="Залишилось "+live+" шт";
+    if((sb.textContent||"")!=="Остання штука") sb.textContent="Остання штука";
+
   }
   function initStockCards(){   // списки/каталог/головна: «У наявності» → «Немає» для позицій, що вже закінчились (сторінки збираються раз на 2 год)
     if(!document.querySelector("a.card[href^='product-']")) return;

@@ -14,9 +14,11 @@ import os
 import shutil
 import sys
 import urllib.request
+from datetime import date
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from reel_seasons import season_not_after  # noqa: E402
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -33,7 +35,7 @@ def fetch_json(name):
 
 def site_prices(prices_dir=None):
     """{id: ціна на сайті (int)} з index-t.json + index-rt.json (+ index.json як запасний): те, що бачить покупець ЗАРАЗ. Лише товари в наявності (s=1)."""
-    out = {}
+    out, seen = {}, set()
     for name in ("index-t.json", "index-rt.json", "index.json"):
         try:
             data = json.load(open(os.path.join(prices_dir, name), encoding="utf-8")) if prices_dir else fetch_json(name)
@@ -41,8 +43,12 @@ def site_prices(prices_dir=None):
             print(f"[reel_batch] ⚠ {name} не прочитано ({type(e).__name__}) — пропускаю", file=sys.stderr)
             continue
         for x in data:
+            i = str(x.get("id"))
+            if i in seen:                       # перший файл, де є товар, вирішує (index-t → index-rt → index): «нема в наявності» там не перекривається застарілим index.json
+                continue
+            seen.add(i)
             if x.get("s") == 1 and "pr" in x:
-                out.setdefault(str(x["id"]), int(round(float(x["pr"]))))
+                out[i] = int(round(float(x["pr"])))
     return out
 
 
@@ -69,8 +75,13 @@ def build_caption(spec, prices):
 
 
 def build_manifest(spec, prices):
-    return {"verify": [{"id": str(it["id"]), "price": prices[str(it["id"])]} for it in spec["items"]],
-            "not_before": f"{spec['publish_date']}T00:00"}
+    m = {"verify": [{"id": str(it["id"]), "price": prices[str(it["id"])]} for it in spec["items"]],
+         "not_before": f"{spec['publish_date']}T00:00"}
+    # сезонна сцена (halloween/snowflake): not_after = кінець вікна. reel_autopublish цього ключа НЕ читає — його перевіряє reels_upload.ps1 (не заливає прострочене) і ще раз — SMM при QA
+    na = season_not_after([spec.get("first_scene"), spec.get("endscene")], date.fromisoformat(spec["publish_date"]))
+    if na:
+        m["not_after"] = f"{na.isoformat()}T23:59"
+    return m
 
 
 def process(spec_path, out_dir, feed_path, prices, render=True):

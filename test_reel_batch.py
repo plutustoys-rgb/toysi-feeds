@@ -56,6 +56,15 @@ chk("process --no-render: .caption.txt і .json створено (LF), mp4 — �
 (td / "index-t.json").write_text(json.dumps([{"id": "1", "pr": 100, "s": 1}, {"id": "2", "pr": 200, "s": 0}, {"id": "3", "pr": 300.4, "s": 1}]), encoding="utf-8")
 chk("site_prices: лише в наявності (s=1), округлення; відсутній файл index-rt/index — пропускається без падіння", rb.site_prices(str(td)) == {"1": 100, "3": 300})
 
+# site_prices: перший файл, де є товар, вирішує (нема в наявності в index-t не перекривається застарілим index.json)
+(td / "index-t.json").write_text(json.dumps([{"id": "5", "pr": 100, "s": 0}, {"id": "6", "pr": 100, "s": 1}]), encoding="utf-8")
+(td / "index-rt.json").write_text(json.dumps([{"id": "7", "pr": 70, "s": 1}]), encoding="utf-8")
+(td / "index.json").write_text(json.dumps([{"id": "5", "pr": 90, "s": 1}, {"id": "6", "pr": 80, "s": 1}, {"id": "8", "pr": 60, "s": 1}]), encoding="utf-8")
+chk("site_prices: товар, якого нема в наявності в index-t (5), не оживає з index.json; ціна з першого файлу (6=100); решта з rt/index", rb.site_prices(str(td)) == {"6": 100, "7": 70, "8": 60})
+# сезонна сцена → not_after у маніфесті (autopublish його не читає; перевіряє reels_upload.ps1)
+mh = rb.build_manifest(dict(SPEC, publish_date="2026-10-30", first_scene="scene_halloween_RENDER_GREEN.mp4"), PR)
+chk("маніфест сезонної сцени (halloween) має not_after = 2026-10-31T23:59; несезонний — без нього", mh.get("not_after") == "2026-10-31T23:59" and "not_after" not in m)
+
 # партія №1: усі спеки валідні, ціни в підписі лише з сайту
 specs = sorted((HERE / "reels_specs").glob("*_01.json"))
 batch = [p for p in specs if p.stem in ("puzzles_01", "halloween_01", "dough_01", "squish_01", "bubbles_01", "games_01")]

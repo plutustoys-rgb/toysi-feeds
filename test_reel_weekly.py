@@ -84,9 +84,25 @@ td = Path(tempfile.mkdtemp())
 (td / "a.json").write_text(json.dumps({"verify": [{"id": "1", "price": 1}, {"id": "2", "price": 2}], "not_before": "2026-11-06T00:00"}), encoding="utf-8")
 (td / "b.json").write_text(json.dumps({"verify": [{"id": "3", "price": 1}], "not_before": "2026-10-30T00:00"}), encoding="utf-8")
 (td / "_weekly_state.json").write_text("{не json", encoding="utf-8")
-ids_, last = rw.folder_used_ids_and_last_date(str(td))
+EMPTY = tempfile.mkdtemp()
+ids_, last = rw.folder_used_ids_and_last_date(str(td), EMPTY)
 chk("з теки: id з УСІХ маніфестів (1,2,3), остання дата not_before = 2026-11-06; службовий _weekly_state.json і битий JSON не ламають", ids_ == {"1", "2", "3"} and last == date(2026, 11, 6))
 chk("битий журнал → порожній стан, без падіння", rw.load_state(str(td)) == {"used_ids": [], "themes": [], "scenes": []})
+
+# 6б) підтеки, спеки, службові файли
+(td / "published").mkdir()
+(td / "published" / "old.json").write_text(json.dumps({"verify": [{"id": "77", "price": 1}], "not_before": "2026-12-01T00:00"}), encoding="utf-8")
+(td / "_specs").mkdir()
+(td / "_specs" / "sq_01.json").write_text(json.dumps({"publish_date": "2026-12-04", "items": [{"id": "88"}]}), encoding="utf-8")
+SPD = Path(tempfile.mkdtemp())
+(SPD / "x_01.json").write_text(json.dumps({"publish_date": "2026-12-08", "items": [{"id": "99"}, {"id": "98"}]}), encoding="utf-8")
+ids2, last2 = rw.folder_used_ids_and_last_date(str(td), str(SPD))
+chk("id і дати беруться також з підтек (published/), з _specs/ і зі спек репо; остання дата = 2026-12-08", {"1", "2", "3", "77", "88", "98", "99"} <= ids2 and last2 == date(2026, 12, 8))
+chk("BAD_NAME_RE (розширено): бластер, зомбі, привид, мафія, зброя — відсіяно; «Список», «Демонстрація», «Мумі-тролі» — ні", all(rw.BAD_NAME_RE.search(w) for w in ("Бластер Nerf", "Зомбі-набір", "Набір Привиди", "Гра Мафія", "Набір зброї")) and not any(rw.BAD_NAME_RE.search(w) for w in ("Список покупок", "Демонстрація", "Мумі-тролі", "Пазл Спис-гра".replace("Спис-гра", "Альфа"))))
+chk("зірочка в назві не ламає розмітку гачка *…* (short_name і cap_text без «*»)", "*" not in rw.short_name("Сквіш *Супер* Сир") and "*" not in rw.make_spec(THEME, [X(1, "Сквіш *Сир*")], date(2026, 11, 3), "scene_nod_RENDER_GREEN.mp4", "t_01")["items"][0]["cap_text"])
+nb = rw.approval_note(tempfile.mkdtemp(), [dict(rw.make_spec(THEME, [X(1, "Сквіш Сир")], date(2026, 10, 30), "scene_halloween_RENDER_GREEN.mp4", "t_01"))], date(2026, 10, 21))
+txt = open(nb, encoding="utf-8").read()
+chk("список на схвалення: файли рілса, ендсцена, підпис товару і «не пізніше 2026-10-31» для сезонної сцени", "t_01.mp4" in txt and "ендсцена" in txt and "підпис: 🧸 Сквіш Сир" in txt and "не пізніше 2026-10-31" in txt)
 
 # 7) spec
 TH3 = json.load(open(rw.THEMES_FILE, encoding="utf-8"))["themes"][0]
@@ -105,7 +121,7 @@ feedbig = {x["id"]: {"avail": "in stock", "image": "http://x"} for x in big}
 filler = [X(1000 + i, f"Пазл{chr(1040 + i % 30)}{i}", c="Пазли Trefl", pr=200) for i in range(1100)]
 for x in filler:
     feedbig[x["id"]] = {"avail": "in stock", "image": "http://x"}
-built = rw.run_build(2, out, dry_run=True, today=date(2026, 10, 21), index=big + filler, feed=feedbig, demand=set(), now_forbidden=lambda it: False)
+built = rw.run_build(2, out, dry_run=True, today=date(2026, 10, 21), index=big + filler, feed=feedbig, demand=set(), now_forbidden=lambda it: False, specs_dir=EMPTY)
 chk("dry-run: 2 рілси на слоти пт 23.10 і вт 27.10; теми різні, сцени різні й підряд не повторюються; id не перетинаються", len(built) == 2 and [b["publish_date"] for b in built] == ["2026-10-23", "2026-10-27"]
     and built[0]["queue_name"].split("_")[0] != built[1]["queue_name"].split("_")[0] and built[0]["first_scene"] != built[1]["first_scene"] and not ({i["id"] for i in built[0]["items"]} & {i["id"] for i in built[1]["items"]}))
 chk("dry-run нічого не пише: тека порожня (немає спек/журналу/mp4)", os.listdir(out) == [])

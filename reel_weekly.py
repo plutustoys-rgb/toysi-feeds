@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from reel_seasons import season_not_after  # noqa: E402
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -35,7 +36,7 @@ SCENE_ROTATION = ["sunglasses", "tailwag", "laugh", "bubblegum", "noselick", "wi
 END_SCENE = "scene_sunglasses_RENDER_GREEN.mp4"
 END_SCENE_ALT = "scene_noselick_RENDER_GREEN.mp4"     # коли перша сцена — sunglasses
 # слова, через які товар НЕ береться в рілс (зброя, імітації, страшне; доповнення до forbidden_products)
-BAD_NAME_RE = re.compile(r"пістолет|пистолет|рушниц|автомат(?!ичн)|меч\b|мечі|ніж\b|ножі|арбалет|\bлук\b|лук зі|гранат|бомб|кинджал|катан|сокир|кров|череп|скелет|джейсон|чакі|вбив|монстр-?трак|страш|сигарет|вейп|алкогол|пиво|горілк", re.I)
+BAD_NAME_RE = re.compile(r"пістолет|пистолет|рушниц|автомат(?!ичн)|меч\b|мечі|ніж\b|ножі|арбалет|\bлук\b|лук зі|гранат|бомб|кинджал|катан|сокир|кров|череп|скелет|джейсон|чакі|вбив|монстр-?трак|страш|сигарет|вейп|алкогол|пиво|горілк|зброя|зброї|бластер|нунчак|кастет|топор|шабл|\bспис\b|стріл[яь]|снайпер|військов|воєнн|\bтанк\b|зомбі|вампір|дракул|привид|демон(?!стр)|диявол|\bчорт|відьм|\bтруп|могил|кладовищ|смерт|убивц|вбивц|мафі|гангстер", re.I)
 UNIT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(елемент\w*|ел\b|елм|шт\w*|кольор\w*|мл|г\b|см|деталей|деталі|карток|картки|кульок)", re.I)
 UNIT_FIX = {"ел": "елементів", "елм": "елементів"}
 
@@ -54,7 +55,7 @@ def norm_stem(name):
 
 def short_name(name, limit=26):
     """Коротка назва для гачка: без дужок/розмірів/«укр», до `limit` символів по межі слова."""
-    n = re.sub(r"\(.*?\)", " ", name or "")
+    n = re.sub(r"\(.*?\)", " ", (name or "").replace("*", " "))
     n = re.sub(r",\s*(укр|\d).*$", "", n)
     n = re.sub(r"\s+", " ", n).strip(" ,.-")
     if len(n) <= limit:
@@ -103,20 +104,26 @@ def save_state(out_dir, st):
     os.replace(tmp, p)
 
 
-def folder_used_ids_and_last_date(out_dir):
-    """(множина id з УСІХ маніфестів у теці черги, остання дата not_before) — джерело правди «що вже було/заплановано»."""
+def folder_used_ids_and_last_date(out_dir, specs_dir=None):
+    """(множина id, остання дата) з УСІХ маніфестів у теці черги (разом з підтеками: published/ тощо) і з усіх спек репо — джерело правди «що вже було/заплановано».
+    Маніфест: verify[].id + not_before; спека: items[].id + publish_date. Нечитабельний файл пропускається."""
     ids, last = set(), None
-    if os.path.isdir(out_dir):
-        for fn in os.listdir(out_dir):
-            if fn.endswith(".json") and not fn.startswith("_"):
+    roots = [r for r in (out_dir, specs_dir if specs_dir is not None else os.path.join(HERE, "reels_specs")) if r and os.path.isdir(r)]
+    for root in roots:
+        for dp, _dn, fns in os.walk(root):
+            for fn in fns:
+                if not fn.endswith(".json") or fn.startswith("_"):
+                    continue
                 try:
-                    m = json.load(open(os.path.join(out_dir, fn), encoding="utf-8"))
+                    m = json.load(open(os.path.join(dp, fn), encoding="utf-8"))
                 except (OSError, ValueError):
                     continue
+                if not isinstance(m, dict):
+                    continue
                 ids |= {str(v.get("id")) for v in m.get("verify", []) if isinstance(v, dict)}
-                nb = str(m.get("not_before") or "")[:10]
+                ids |= {str(v.get("id")) for v in m.get("items", []) if isinstance(v, dict)}
                 try:
-                    d = date.fromisoformat(nb)
+                    d = date.fromisoformat(str(m.get("not_before") or m.get("publish_date") or "")[:10])
                     last = d if last is None or d > last else last
                 except ValueError:
                     pass
@@ -192,14 +199,14 @@ def make_spec(theme, items, publish_date, scene, queue_name):
     for x in items:
         sn = short_name(x["n"])
         its.append({"id": str(x["id"]), "hook": f"{theme['hook_verb']} *{sn}*", "name": short_name(x["n"], 44), "spec": [stat_for(x["n"], theme), theme["tail"]],
-                    "cap_emoji": theme["emoji"], "cap_text": re.sub(r"\s+", " ", x["n"]).strip()[:90]})
+                    "cap_emoji": theme["emoji"], "cap_text": re.sub(r"\s+", " ", x["n"].replace("*", " ")).strip()[:90]})
     return {"queue_name": queue_name, "publish_date": publish_date.isoformat(), "out": "PlutusToys_reel_" + queue_name, "endline": theme["endline"], "first_scene": scene, "endscene": end,
             "caption": {"intro": theme["intro"], "sub": theme["sub"], "cta": theme["cta"], "hashtags": theme["hashtags"]}, "items": its}
 
 
 def next_queue_name(theme_key, out_dir):
     k = 1
-    while os.path.exists(os.path.join(out_dir, f"{theme_key}_{k:02d}.json")) or os.path.exists(os.path.join(HERE, "reels_specs", f"{theme_key}_{k:02d}.json")):
+    while any(os.path.exists(os.path.join(d, f"{theme_key}_{k:02d}.json")) for d in (out_dir, os.path.join(out_dir, "_specs"), os.path.join(HERE, "reels_specs"))):
         k += 1
     return f"{theme_key}_{k:02d}"
 
@@ -208,9 +215,11 @@ def approval_note(out_dir, built, today):
     lines = [f"# Рілси НА СХВАЛЕННЯ — зібрано {today.isoformat()} (reel_weekly.py)", "",
              "Публікація — лише після «ок» власника: один scp mp4+caption+json у /opt/plutustoys/reels_queue/. Гачки й підписи — чернетка за шаблоном, SMM перечитує.", ""]
     for b in built:
-        lines += [f"## {b['queue_name']} — публікація не раніше {b['publish_date']} (сцена {b['first_scene']})", ""]
+        na = season_not_after([b.get("first_scene"), b.get("endscene")], date.fromisoformat(b["publish_date"]))
+        lines += [f"## {b['queue_name']} — публікація не раніше {b['publish_date']}" + (f", не пізніше {na.isoformat()} (сезонна сцена)" if na else "") + f" (сцена {b['first_scene']}, ендсцена {b['endscene']})",
+                  f"Файли: `{b['queue_name']}.mp4`, `{b['queue_name']}.caption.txt`, `{b['queue_name']}.json`", ""]
         for it in b["items"]:
-            lines.append(f"- {it['id']}: гачок «{it['hook']}» · {it['name']} · {' / '.join(it['spec'])}")
+            lines.append(f"- {it['id']}: гачок «{it['hook']}» · {it['name']} · {' / '.join(it['spec'])} · підпис: {it['cap_emoji']} {it['cap_text']}")
         lines.append("")
     p = os.path.join(out_dir, f"НА_СХВАЛЕННЯ_{today.isoformat()}.md")
     with open(p, "w", encoding="utf-8", newline="\n") as f:
@@ -218,7 +227,7 @@ def approval_note(out_dir, built, today):
     return p
 
 
-def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, demand=None, now_forbidden=None, feed_path=None):
+def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, demand=None, now_forbidden=None, feed_path=None, specs_dir=None):
     """Збирає `count` рілсів. Дані можна підмінити (тести): index/feed/demand."""
     import reel_build
     import reel_batch
@@ -246,7 +255,7 @@ def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, 
         except Exception:  # noqa: BLE001
             demand = set()
     st = load_state(out_dir)
-    folder_ids, last_date = folder_used_ids_and_last_date(out_dir)
+    folder_ids, last_date = folder_used_ids_and_last_date(out_dir, specs_dir)
     used = set(st["used_ids"]) | folder_ids
     themes = json.load(open(THEMES_FILE, encoding="utf-8"))["themes"]
     slots = next_slots(max([today] + ([last_date] if last_date else [])), count)
@@ -262,7 +271,10 @@ def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, 
         if dry_run:
             print(f"[reel_weekly] ПЛАН {spec['queue_name']} на {sd}: {th['key']} · сцена {scene} · " + ", ".join(i["id"] for i in spec["items"]))
         else:
-            sp_path = os.path.join(HERE, "reels_specs", spec["queue_name"] + ".json")
+            # спека — у теці виводу (_specs/), НЕ в репо: щотижневі спеки не засмічують git; id з неї враховує folder_used_ids_and_last_date
+            sp_dir = os.path.join(out_dir, "_specs")
+            os.makedirs(sp_dir, exist_ok=True)
+            sp_path = os.path.join(sp_dir, spec["queue_name"] + ".json")
             with open(sp_path, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(spec, f, ensure_ascii=False, indent=2)
                 f.write("\n")
@@ -272,8 +284,9 @@ def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, 
         st["themes"].append(th["key"])
         st["scenes"].append(scene)
         built.append(spec)
+        if not dry_run:
+            save_state(out_dir, st)          # після КОЖНОГО рілса: збій на наступному не губить уже зібрані (інакше повторний запуск знову візьме ті самі товари/сцени)
     if built and not dry_run:
-        save_state(out_dir, st)
         print("[reel_weekly] список на схвалення:", approval_note(out_dir, built, today))
     return built
 

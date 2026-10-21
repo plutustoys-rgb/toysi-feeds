@@ -112,6 +112,17 @@ chk("порядок: спершу чек, потім передача в Toysi",
 rc = receipt_calls[0]
 chk("чек: CASHLESS, сума 100, номер замовлення в order_id", rc["payment_type"] == "CASHLESS" and rc["total_amount"] == 100 and rc["order_id"] == "site_PT-R1")
 chk("чек: footer містить номер платежу LiqPay і номер замовлення", rc["footer"] == "LiqPay payment_id 123456; замовлення PT-R1")
+# 1б. новий номер: у footer чека — той самий короткий номер, що бачить покупець; ключ чека (order_id) — довгий
+new_order("PT-R9")
+with orders_db.get_connection() as _c:
+    _pn = orders_db.assign_public_number(_c, "site_PT-R9", rand=lambda: 654321)
+    _c.commit()
+callback("PT-R9", "777001")
+reset()
+route("PT-R9")
+chk("чек: footer = «замовлення <короткий номер PT-654321>» (як на сторінці подяки й у боті), order_id чека — довгий ключ site_PT-R9",
+    _pn == "PT-654321" and receipt_calls and receipt_calls[0]["footer"] == "LiqPay payment_id 777001; замовлення PT-654321" and receipt_calls[0]["order_id"] == "site_PT-R9")
+reset()
 chk("чек: header = назва магазину (PlutusToys · plutustoys.com.ua)", rc.get("header") == "PlutusToys · plutustoys.com.ua")
 chk("чек: телефон і e-mail покупця передані для електронного надсилання", rc["customer_phone"] == "380671112233" and rc["customer_email"] == "buyer@example.com")
 chk("чек: позиції з ціною й кількістю", rc["goods"] == [{"code": "1", "name": "Тестовий товар", "price": 100, "qty": 1}])

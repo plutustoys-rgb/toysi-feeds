@@ -887,7 +887,8 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
             if abs(total - float(charged)) > 0.01:
                 raise ValueError(f"сума позицій {total} ≠ зафіксована при оформленні {charged}: чек НЕ видано (money-safety), розберіть вручну")
             pid = (order.get("liqpay_payment_id") or "").strip()
-            footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('order_id')}"
+            # у чеку покупець бачить ТОЙ САМИЙ номер, що на сторінці подяки й у боті — короткий PT-NNNNNN (власник 21.10.2026); старі замовлення без нього — довгий. Машинний ключ чека (order_id=oid) лишається довгим.
+            footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('public_number') or order.get('order_id')}"
     except Exception as e:  # noqa: BLE001 — до claim: чек точно не створювався
         print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
         _alert("prep", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {oid}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "

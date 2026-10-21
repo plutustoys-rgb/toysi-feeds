@@ -103,10 +103,7 @@ _ENDSCENE_BLOCKED = {
 _ENDSCENE_BLOCKED_PREFIX = ("scene16_", "scene17_", "scene18_", "scene19_", "scene21_", "scene24_", "scene27_")
 # Сезонні сцени (SMM 21.10.2026): {файл: (з (місяць, день), до (місяць, день))}, вікна щорічні. halloween — «до 31.10» (беремо жовтень: 01.10–31.10, щоб не було «хелловіну» в січні); snowflake — «з 25.11» (кінцеву дату SMM не назвала —
 # консервативно до 31.12; продовжити скаже SMM).
-SEASONAL_SCENES = {
-    "scene_halloween_RENDER_GREEN.mp4": ((10, 1), (10, 31)),
-    "scene_snowflake_RENDER_GREEN.mp4": ((11, 25), (12, 31)),
-}
+from reel_seasons import SEASONAL_SCENES, scene_season_ok  # noqa: E402,F401  (вікна — в reel_seasons.py, щоб reel_batch не тягнув numpy/PIL)
 FIRST_CARD_VERSION = "1"            # зміна алгоритму першої карти → новий ключ кешу
 FIRST_SCENE_SECONDS_MAX = 5.0       # перша карта = лише сцена (≈4,5 с)
 REEL_SECONDS_MAX = 15.0             # вимога SMM: тривалість рілса ≤ 15 с
@@ -348,16 +345,6 @@ def check_endscene(scene_file):
         sys.exit(f"[reel] СТОП: ендсцена {scene_file} у чорному списку (дефект вирізу) — рілс не рендеримо")
 
 
-def scene_season_ok(scene_file, on_date):
-    """Сезонна сцена доступна лише у своєму вікні (on_date — дата ПУБЛІКАЦІЇ рілса, не рендера). Несезонна — завжди True. Рік не береться до уваги (вікна щорічні)."""
-    win = SEASONAL_SCENES.get(scene_file)
-    if not win:
-        return True
-    md = (on_date.month, on_date.day)
-    lo, hi = win
-    return lo <= md <= hi
-
-
 def check_first_scene(scene_file, on_date):
     """Перевірки сцени для ПЕРШОЇ карти: файл існує, не в чорному списку, сезонне вікно (дата публікації)."""
     check_endscene(scene_file)
@@ -378,12 +365,21 @@ def scene_first_frames(scene_file, bg):
         key = hashlib.sha1(fh.read() + np.asarray(bg).tobytes() + FIRST_CARD_VERSION.encode()).hexdigest()[:12]
     cache_dir = os.path.join(OUT, "_scene_cache")
     cache_path = os.path.join(cache_dir, f"{os.path.splitext(scene_file)[0]}_{key}.mp4")
-    if os.path.isfile(cache_path):
-        cached, _ = read_frames(cache_path)
-        if cached:
-            return cached
     frames, src_fps = read_frames(path)
     n_src = len(frames)
+    if os.path.isfile(cache_path):
+        try:
+            cached, _ = read_frames(cache_path)
+        except Exception as e:  # noqa: BLE001
+            cached = None
+            print(f"[reel] кеш першої карти нечитабельний ({type(e).__name__}) — перерахую", file=sys.stderr)
+        # кеш = рівно стільки кадрів, скільки дасть сцена: обрізаний/пошкоджений mp4 не береться
+        if cached and len(cached) == int(round(n_src * FPS / float(src_fps or 24))):
+            return cached
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
     cut = []
     x0 = y0 = 10 ** 9
     x1 = y1 = 0
@@ -466,12 +462,14 @@ def _validate_spec(spec, feed):
         if k not in spec:
             sys.exit(f"[reel] СТОП: у специфікації нема ключа '{k}'")
     check_endscene(spec["endscene"])
+    from datetime import date as _date
+    try:
+        _on = _date.fromisoformat(str(spec.get("publish_date") or _date.today().isoformat())[:10])
+    except ValueError:
+        sys.exit(f"[reel] СТОП: publish_date має бути ISO-датою, а не {spec.get('publish_date')!r}")
+    if not scene_season_ok(spec["endscene"], _on):
+        sys.exit(f"[reel] СТОП: сезонна ендсцена {spec['endscene']} недоступна на дату {_on.isoformat()}")
     if spec.get("first_scene"):
-        from datetime import date as _date
-        try:
-            _on = _date.fromisoformat(str(spec.get("publish_date") or _date.today().isoformat())[:10])
-        except ValueError:
-            sys.exit(f"[reel] СТОП: publish_date має бути ISO-датою, а не {spec.get('publish_date')!r}")
         check_first_scene(spec["first_scene"], _on)
     if not spec["items"]:
         sys.exit("[reel] СТОП: порожній items — нема чого рендерити")

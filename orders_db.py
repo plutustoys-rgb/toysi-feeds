@@ -356,7 +356,6 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rt_cabinet_checked_at", "rt_cabinet_checked_at TEXT")
         # Короткий номер замовлення сайту для ПОКУПЦЯ (PT-123456, власник 21.10.2026: «літери та 6 цифр»). Довгий internal id (PT-YYYYMMDD-HHMMSS-hex) лишається внутрішнім ключем у посиланнях/API/боті.
         _ensure_column(conn, "orders", "public_number", "public_number TEXT")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_public_number ON orders (public_number) WHERE public_number IS NOT NULL")
         _ensure_column(conn, "orders", "rt_confirmed_at", "rt_confirmed_at TEXT")
         _ensure_column(conn, "orders", "rt_total", "rt_total REAL")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
@@ -404,6 +403,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         # бо очікує на вході CHECK(platform IN ('rozetka','prom','eva')) і додає до нього 'site'.
         _migrate_platform_allow_site(conn)
         _migrate_carrier_allow_rozetka_delivery(conn)
+        # ПІСЛЯ rebuild-міграцій: вони роблять DROP TABLE orders і відновлюють лише старі індекси — індекс короткого номера, створений раніше, пропав би до наступного init_db (аудит #955 A1)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_public_number ON orders (public_number) WHERE public_number IS NOT NULL")
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:
@@ -496,10 +497,16 @@ def assign_public_number(conn: sqlite3.Connection, internal_order_id: str, rand=
     for _ in range(tries):
         num = f"PT-{rnd()}"
         try:
-            conn.execute("UPDATE orders SET public_number = ? WHERE internal_order_id = ? AND public_number IS NULL", (num, internal_order_id))
+            cur2 = conn.execute("UPDATE orders SET public_number = ? WHERE internal_order_id = ? AND public_number IS NULL", (num, internal_order_id))
+            if cur2.rowcount == 0:             # між SELECT і UPDATE номер уже призначили (гонка/бекфіл) — повертаємо те, що реально в БД, а не свій
+                again = conn.execute("SELECT public_number FROM orders WHERE internal_order_id = ?", (internal_order_id,)).fetchone()
+                return again[0] if again and again[0] else None
             return num
         except sqlite3.IntegrityError:
             continue
+        except sqlite3.Error as e:             # блокування БД тощо: короткий номер — косметика покупця, він НЕ має валити створення замовлення (довгий лишається)
+            print(f"[orders_db] public_number не призначено ({type(e).__name__}) — лишається довгий номер", file=__import__("sys").stderr)
+            return None
     return None
 
 

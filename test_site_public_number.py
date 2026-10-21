@@ -197,5 +197,47 @@ b5.handle_update(upd(705, "Статус PT-20261021-100000-aaaaaa телефон
 t5 = [t for c, t in a5.sent if c == 705]
 chk("стара БД без public_number: короткий → «не знайдено» без падіння; довгий → статус, у тексті довгий номер", len(t5) == 2 and t5[0] == sb.STATUS_NOT_FOUND and t5[1].startswith("Замовлення PT-20261021-100000-aaaaaa:"))
 
+
+# --- аудит #955: B1 (гонка rowcount), B2 (збій БД не валить), A1 (індекс після міграцій), C1 (ліміт за internal id) ---
+i4 = mk("PT-20261021-100003-dddddd")
+with orders_db.get_connection() as c:
+    def _race():
+        c.execute("UPDATE orders SET public_number='PT-888888' WHERE internal_order_id=?", (i4,))     # «інший процес» призначив номер між SELECT і UPDATE
+        return 123457
+    got = orders_db.assign_public_number(c, i4, rand=_race)
+    in_db = c.execute("SELECT public_number FROM orders WHERE internal_order_id=?", (i4,)).fetchone()[0]
+chk("B1: гонка — номер уже призначено між SELECT і UPDATE → повертається те, що реально в БД (PT-888888), а не вигаданий", got == "PT-888888" == in_db)
+
+
+class _Boom:
+    def execute(self, sql, *a):
+        if sql.lstrip().upper().startswith("SELECT"):
+            class _R:
+                def fetchone(self_inner):
+                    return (None,)
+            return _R()
+        raise sqlite3.OperationalError("database is locked")
+
+
+chk("B2: «database is locked» (будь-який sqlite3.Error, окрім IntegrityError) → None, замовлення не валиться", orders_db.assign_public_number(_Boom(), "site_X") is None)
+import inspect  # noqa: E402
+_src = inspect.getsource(orders_db.init_db)
+chk("A1: CREATE UNIQUE INDEX idx_orders_public_number стоїть ПІСЛЯ rebuild-міграцій у init_db", _src.index("idx_orders_public_number") > _src.index("_migrate_carrier_allow_rozetka_delivery(conn)"))
+with orders_db.get_connection() as c:
+    idxs = {r[1] for r in c.execute("PRAGMA index_list(orders)")}
+chk("A1: індекс існує після init_db", "idx_orders_public_number" in idxs)
+# C1: короткий і довгий формат одного замовлення діляться лімітом невдалих звірок
+sb.ORDERS_DB = Path(os.environ["ORDERS_DB_PATH"])
+ci = mk("PT-20261021-100005-eeeeee", phone="380671119999")
+with orders_db.get_connection() as c:
+    pn_ci = orders_db.assign_public_number(c, ci, rand=lambda: 246810)
+    c.commit()
+bz, az = newbot()
+for i, txt in enumerate((f"Статус {pn_ci} телефон 0001", f"Статус {pn_ci} телефон 0002", f"Статус PT-20261021-100005-eeeeee телефон 0003", f"Статус PT-20261021-100005-eeeeee телефон 0004", f"Статус {pn_ci} телефон 0005")):
+    bz.handle_update(upd(790, txt, uid=i + 1))
+bz.handle_update(upd(790, f"Статус {pn_ci} телефон 9999", uid=10))        # 6-а спроба (навіть із правильними цифрами — вимкнено)
+tz = [t for c, t in az.sent if c == 790]
+chk("C1: ліміт невдалих звірок ключується за internal id: 5 хибних спроб (3 за коротким + 2 за довгим номером) → 6-а (навіть із правильними цифрами) статусом НЕ відповідає — лише загальне «повідомлення отримано» (піде людині)",
+    len(tz) == 6 and all(t == sb.STATUS_NOT_FOUND for t in tz[:5]) and "повідомлення отримано" in tz[5] and "відправлено" not in tz[5] and "20451565972503" not in tz[5])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

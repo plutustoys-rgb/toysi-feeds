@@ -391,5 +391,37 @@ checkbox_client_real.requests.post = lambda url, headers=None, json=None, timeou
 checkbox_client_real.create_receipt(goods=[{"code": "1", "name": "Т", "price": 100, "qty": 1}], payment_type="CASH", total_amount=100)
 chk("без header одна спроба, як і раніше", len(calls) == 1)
 
+
+# --- аудит #955 E1: алерти про чек називають КОРОТКИЙ номер і дають, за чим шукати чек у Checkbox (інакше «чека не знайдено» → хибне зняття claim → дубль) ---
+new_order("PT-H1")
+with orders_db.get_connection() as _c:
+    orders_db.assign_public_number(_c, "site_PT-H1", rand=lambda: 424242)
+    _c.commit()
+callback("PT-H1", "910001")
+reset()
+with orders_db.get_connection() as c:
+    orders_db.claim_receipt(c, "site_PT-H1"); c.commit()
+    orr._ensure_site_prepaid_receipt(c, get("PT-H1"))
+ta_claim = alerts[0][1] if alerts else ""
+chk("алерт claim: містить довгий id І короткий номер, і підказку пошуку «footer «замовлення PT-424242»», LiqPay payment_id, суму й дату", "site_PT-H1" in ta_claim and "№ для клієнта PT-424242" in ta_claim
+    and "footer «замовлення PT-424242»" in ta_claim and "LiqPay payment_id 910001" in ta_claim and "сумою й датою" in ta_claim)
+new_order("PT-H2")
+with orders_db.get_connection() as _c:
+    orders_db.assign_public_number(_c, "site_PT-H2", rand=lambda: 535353)
+    _c.commit()
+callback("PT-H2", "910002")
+reset()
+checkbox_client.create_receipt = fake_unknown
+route("PT-H2")
+ta_unknown = next((t for k, t in alerts if k.endswith(":unknown")), "")
+chk("алерт «МІГ бути створений»: короткий номер + підказка пошуку footer «замовлення PT-535353» і суми/дати", "№ для клієнта PT-535353" in ta_unknown and "footer «замовлення PT-535353»" in ta_unknown and "сумою й датою" in ta_unknown)
+checkbox_client.create_receipt = fake_receipt
+new_order("PT-H3")
+callback("PT-H3", "910003")
+reset()
+with orders_db.get_connection() as c:
+    orders_db.claim_receipt(c, "site_PT-H3"); c.commit()
+    orr._ensure_site_prepaid_receipt(c, get("PT-H3"))
+chk("старе замовлення без короткого номера: підказка пошуку з довгим номером у footer", "footer «замовлення PT-H3»" in alerts[0][1] and "№ для клієнта" not in alerts[0][1])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

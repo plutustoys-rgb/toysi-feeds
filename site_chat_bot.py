@@ -425,6 +425,14 @@ class Bot:
         if not req:
             return "", False
         oid, cands = req
+        typed = oid                  # як набрав клієнт (для відповіді-заглушки)
+        if _PUBLIC_RE.fullmatch(oid):
+            try:
+                _real = resolve_public(oid)
+            except Exception:  # noqa: BLE001
+                _real = None
+            if _real:
+                oid = _real          # ліміт спроб — по internal id: «PT-123456» і довгий формат одного замовлення діляться одним лічильником
         if len(cands) != 1:          # 0 — нема цифр; >1 — це добір (кожне 4-значне число було б окремою спробою): звіряємо лише ОДНЕ число
             self.reply_to(chat_id, STATUS_NEED_PHONE, kind="auto")
             return "🤖 просила номер + рівно одне число з 4 цифр", True
@@ -434,8 +442,7 @@ class Bot:
             return "🤖 автовідповідь вимкнена (забагато невдалих звірок по цьому замовленню)", False
         row = None
         try:
-            real = resolve_public(oid) if _PUBLIC_RE.fullmatch(oid) else oid       # короткий номер → internal id; невідомий → None (відповідь та сама, що й для хибного телефону)
-            row = fetch_order_row(real) if real else None          # той самий SELECT, що в підписці (з rt_state/rt_cabinet_status, якщо колонки є) — інакше RT-замовлення отримало б стару відповідь «обробляється»
+            row = fetch_order_row(oid) if not _PUBLIC_RE.fullmatch(oid) else None       # oid вже internal id, якщо короткий номер знайдено; невідомий короткий → None (відповідь та сама, що й для хибного телефону)          # той самий SELECT, що в підписці (з rt_state/rt_cabinet_status, якщо колонки є) — інакше RT-замовлення отримало б стару відповідь «обробляється»
         except Exception as e:  # noqa: BLE001
             print(f"[site_chat_bot] orders.db не прочитано: {type(e).__name__}", file=sys.stderr)
             return "🤖 статус не перевірено (orders.db недоступна): відповісти вручну", False
@@ -448,7 +455,7 @@ class Bot:
         msg = order_status_text(row)
         if not msg:
             return "🤖 стан замовлення невідомий для автовідповіді: відповісти вручну", False
-        self.reply_to(chat_id, f"Замовлення {shown_number(row, oid)}: {msg}", kind="auto")
+        self.reply_to(chat_id, f"Замовлення {shown_number(row, typed)}: {msg}", kind="auto")
         return "🤖 надіслала клієнту статус замовлення", True
 
     def _forward(self, mid: int, note: str = "") -> bool:

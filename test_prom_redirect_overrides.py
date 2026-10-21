@@ -83,7 +83,7 @@ real = json.loads((HERE / "prom_redirect_overrides.json").read_text(encoding="ut
 chk("prom_redirect_overrides.json: непорожній, усі ключі цифрові, усі цілі /category-<slug>.html (a-z0-9-)", bool(real) and all(k.isdigit() and isinstance(v, dict) and __import__("re").fullmatch(r"/category-[a-z0-9-]+\.html", v.get("target", "")) for k, v in real.items()))
 gm = json.loads((HERE / "prom_group_to_category.json").read_text(encoding="utf-8"))
 chk("prom_group_to_category.json: групи 155145000 (ляльки), 155490013 (плакати), 155412282 (пазли) мають категорію за рішенням SEO 21.10",
-    gm["155145000"]["category"] == "lialky-i-pupsy" and gm["155490013"]["category"] == "plakaty-interaktyvni" and gm["155412282"]["category"] == "pazly")
+    gm["155145000"]["category"] == "lialky-lialkovi-nabory" and gm["155490013"]["category"] == "plakaty-interaktyvni" and gm["155412282"]["category"] == "pazly")
 chk("жодна ціль перекриття не вказує на сторінки заборонених тем (мечі/ножі/арбалети/пістолети/азартні/пістони/бомбочки)", not any(w in v["target"] for v in real.values() for w in ("mechi", "nozh", "arbalet", "pistolet", "azart", "pistony", "bombochk")))
 
 # --- правки аудиту #945: ключі з сміттям, дубль ключа, глибока вкладеність ---

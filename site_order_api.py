@@ -678,6 +678,71 @@ def recompute_total(items: list) -> int:
     return total
 
 
+# ── Підтвердження ОПЛАТИ для аналітики (21.10.2026, SEO/власник): thanks.html питає, чи замовлення передплачене й ОПЛАЧЕНЕ (колбек LiqPay), і лише тоді шле GA4 purchase + конверсію Google Ads.
+# Віддаємо мінімум: paid, сума, валюта, позиції (id/назва/ціна/к-сть) — БЕЗ ПІБ/телефону/адреси. Номер замовлення PT-YYYYMMDD-HHMMSS-<6 hex> — єдиний «ключ», тож: невідоме/некоректне = ті самі {"paid": false}
+# (існування не розкриваємо) + ліміт запитів на IP.
+ORDER_ID_RE = re.compile(r"PT-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}")
+PAID_RATE_LIMIT = int(os.environ.get("SITE_PAID_RATE_LIMIT", "30"))       # запитів на IP за вікно
+PAID_RATE_WINDOW_S = 60
+
+
+def paid_purchase_payload(order) -> dict:
+    """Відповідь /api/order/paid для замовлення (dict з orders_db) або None. paid=True ЛИШЕ для сайтового ПЕРЕДПЛАЧЕНОГО замовлення з підтвердженою оплатою (payment_confirmed=1), не тестового (sandbox_test),
+    не скасованого. Сума = site_charged_total (зафіксована при оформленні = те, що реально списано LiqPay; callback звіряє саме її); немає (давні) → сума позицій. COD сюди НЕ потрапляє (його purchase іде зі сторінки одразу)."""
+    no = {"paid": False}
+    if not order or order.get("platform") != "site" or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
+        return no
+    st = (order.get("status") or "").lower()
+    if st == "sandbox_test" or "cancel" in st or order.get("cancelled_at"):
+        return no
+    items = []
+    for it in order.get("items") or []:
+        try:
+            items.append({"id": str(it["toysi_code"]), "name": str(it.get("name") or ""), "price": float(it.get("price") or 0), "qty": int(it.get("qty") or 1)})
+        except (KeyError, TypeError, ValueError):
+            return no
+    if not items:
+        return no
+    value = order.get("site_charged_total")
+    if value is None:
+        value = sum(i["price"] * i["qty"] for i in items)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return no
+    if value <= 0:
+        return no
+    return {"paid": True, "currency": "UAH", "value": value, "items": items}
+
+
+class RateLimiter:
+    """Ковзне вікно «N запитів за T секунд на ключ» (у пам'яті процесу; перезапуск скидає — для захисту від добору номерів цього досить). Словник обмежений, старі ключі чистяться."""
+
+    def __init__(self, limit: int, window_s: int, max_keys: int = 5000):
+        self.limit, self.window, self.max_keys = limit, window_s, max_keys
+        self._hits = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str, now: float = None) -> bool:
+        now = time.time() if now is None else now
+        with self._lock:
+            if len(self._hits) > self.max_keys:
+                for k in [k for k, v in self._hits.items() if not v or now - v[-1] > self.window]:
+                    self._hits.pop(k, None)
+                if len(self._hits) > self.max_keys:
+                    self._hits.clear()
+            q = [t for t in self._hits.get(key, []) if now - t < self.window]
+            if len(q) >= self.limit:
+                self._hits[key] = q
+                return False
+            q.append(now)
+            self._hits[key] = q
+            return True
+
+
+_PAID_LIMITER = RateLimiter(PAID_RATE_LIMIT, PAID_RATE_WINDOW_S)
+
+
 class Handler(SimpleHTTPRequestHandler):
     server_version = "PlutusToysSiteAPI/1.0"
 
@@ -689,11 +754,13 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
     # ── утиліти відповіді ──
-    def _json(self, code: int, obj):
+    def _json(self, code: int, obj, no_store: bool = False):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -729,6 +796,8 @@ class Handler(SimpleHTTPRequestHandler):
         q = parse_qs(parsed.query)
         if parsed.path == "/api/version":
             return self._json(200, {"code_version": CODE_VERSION, "started_at": STARTED_AT})        # без секретів: 12 hex хешу власного файлу + час старту процесу
+        if parsed.path == "/api/order/paid":
+            return self._handle_order_paid(q)
         try:
             if parsed.path == "/api/np/city":
                 # limit 50: у «Іванівка» 37 збігів, «Михайлівка» 40 — з 8 покупець зі свого села його не бачив би (аудит #682); випадайка скролиться (.ac max-height)
@@ -759,6 +828,27 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/liqpay/callback":
             return self._handle_callback()
         return self._json(404, {"error": "невідомий ендпоінт"})
+
+    def _client_ip(self) -> str:
+        """IP клієнта за Apache-проксі, інакше адреса сокета. Лише ключ для ліміту запитів. БЕРЕМО ОСТАННІЙ елемент X-Forwarded-For: його дописує наш Apache (mod_proxy_http додає адресу з'єднання в кінець),
+        а ПЕРШІ елементи може підробити зовнішній клієнт (тоді ліміт обходиться, а чужий ключ можна «вибити»; аудит #951)."""
+        xff = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+        return xff[:64] or (self.client_address[0] if self.client_address else "?")
+
+    def _handle_order_paid(self, q):
+        """GET /api/order/paid?o=PT-… → {"paid": false} | {"paid": true, currency, value, items} (див. paid_purchase_payload). Лише читання; без ПІБ/телефону/адреси; no-store."""
+        if not _PAID_LIMITER.allow(self._client_ip()):
+            return self._json(429, {"error": "забагато запитів"}, no_store=True)
+        oid = (q.get("o") or [""])[0].strip()
+        if not ORDER_ID_RE.fullmatch(oid):
+            return self._json(200, {"paid": False}, no_store=True)
+        try:
+            with get_connection() as conn:
+                order = get_order(conn, f"site_{oid}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[site_order_api] order/paid помилка: {type(e).__name__}", file=sys.stderr)
+            return self._json(500, {"error": "внутрішня помилка"}, no_store=True)
+        return self._json(200, paid_purchase_payload(order), no_store=True)
 
     def _handle_promo_quote(self):
         """POST /api/promo/quote {items:[{id,qty}], promo_code?, phone?} → розрахунок знижки для UI (без створення замовлення). Нічого не пише в БД."""

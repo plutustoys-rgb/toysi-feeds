@@ -61,6 +61,42 @@
     }catch(e){}
   }
 
+  // ── Покупка за ПЕРЕДОПЛАТОЮ (LiqPay): GA4 purchase + конверсія Google Ads лише після СЕРВЕРНОГО підтвердження оплати (21.10.2026, SEO/власник) ──
+  // thanks.html питає api/order/paid?o=<номер>: {paid:true,value,currency,items} лише для оплаченого (колбек LiqPay) не-тестового не-скасованого передплатного замовлення; сума = реально списана.
+  // Одноразово: прапорець у sessionStorage (pt_purchase_sent) І у localStorage (pt_purchase_done — друга вкладка/повторний вхід); ставиться ДО відправки подій. Неоплачене/скасоване — нічого не шлемо.
+  var PAID_POLL_TRIES=10, PAID_POLL_MS=3000;     // колбек LiqPay може прийти через кілька секунд після повернення покупця
+  function purchaseDone(o){
+    try{ if(sessionStorage.getItem("pt_purchase_sent")===o){ return true; } }catch(e){}
+    try{ return (JSON.parse(localStorage.getItem("pt_purchase_done")||"[]")||[]).indexOf(o)>=0; }catch(e){ return false; }
+  }
+  function markPurchaseDone(o){
+    try{ sessionStorage.setItem("pt_purchase_sent", o); }catch(e){}
+    try{ var d=JSON.parse(localStorage.getItem("pt_purchase_done")||"[]")||[]; d.push(o); localStorage.setItem("pt_purchase_done", JSON.stringify(d.slice(-20))); }catch(e){}
+  }
+  function adsConversion(value, tid){   // конверсія Google Ads: лише 4 поля, без даних клієнта (розширене відстеження не вмикаємо — рішення власника)
+    try{ if(window.PT_GADS_CONV && window.gtag){ window.gtag("event", "conversion", {send_to:window.PT_GADS_CONV, value:+value, currency:"UAH", transaction_id:tid}); } }catch(e){}
+  }
+  function pollPaid(o){
+    var tries=0;
+    function again(){ if(++tries<PAID_POLL_TRIES){ setTimeout(check, PAID_POLL_MS); } }
+    function check(){
+      if(purchaseDone(o)){ return; }
+      var p; try{ p=fetch("api/order/paid?o="+encodeURIComponent(o), {cache:"no-store", credentials:"omit"}); }catch(e){ return; }
+      p.then(function(r){ return r.ok ? r.json() : null; }).then(function(j){
+        if(j && j.paid===true && j.items && j.items.length && +j.value>0){
+          if(purchaseDone(o)){ return; }
+          markPurchaseDone(o);
+          var its=j.items.map(function(i){ return {id:i.id, name:i.name, price:+i.price, qty:+i.qty||1}; });
+          track("purchase", its, +j.value, {transaction_id:o});
+          adsConversion(+j.value, o);
+          return;
+        }
+        again();
+      }).catch(again);
+    }
+    check();
+  }
+
   window.PT = {
     add:function(p, listName){       // p={id,name,price,photo}; listName — звідки додано (item_list_name у GA4, напр. cart_addon)
       var c=read();
@@ -854,10 +890,14 @@
           var pit=JSON.parse(pj), pv=pit.reduce(function(s,i){ return s+i.price*i.qty; },0);
           track("purchase", pit, pv, {transaction_id:po});
           // конверсія Google Ads (SEO 21.10.2026): той самий момент і той самий одноразовий прапорець, що GA4 purchase; transaction_id = номер замовлення (дедуплікація в Ads); без розширеного відстеження (жодних даних клієнта)
-          try{ if(window.PT_GADS_CONV && window.gtag){ window.gtag("event", "conversion", {send_to:window.PT_GADS_CONV, value:+pv, currency:"UAH", transaction_id:po}); } }catch(e){}
+          adsConversion(pv, po);
           sessionStorage.setItem("pt_purchase_sent", po);
         }
       }catch(e){}
+    }
+    // передоплата: позиції в sessionStorage НЕ зберігаються (подія лише після підтвердження оплати) → питаємо сервер; COD сюди не заходить (є позиції) і сервер для COD завжди paid:false
+    if(oidEl && window.PT_ANALYTICS && /^PT-\d{8}-\d{6}-[0-9a-f]{6}$/.test(thanksO)){
+      try{ if(!sessionStorage.getItem("pt_last_order_items") && !purchaseDone(thanksO)){ pollPaid(thanksO); } }catch(e){}
     }
 
     // подія view_item — на картці товару в наявності (дані з кнопки «У кошик»)

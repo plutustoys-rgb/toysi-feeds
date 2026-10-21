@@ -575,5 +575,20 @@ with orders_db.get_connection() as c:
     rr.process_order(c, get(ac9), SUP, apply=False, deps=fk)
 chk("dry-run (apply=False) при ввімкненій брамі: підтвердження недосяжне", fk.conf_calls == [])
 _with_gate(None)
+# 21.10: одиничний таймаут НП у трекінгу не має слати власнику «конвеєр зупинено»
+class TrackBoom(Fake):
+    def tracking(self, ttn):
+        raise nova_poshta_mod.NovaPoshtaAPIError("Read timed out")
+
+
+import nova_poshta as nova_poshta_mod
+tb = new_order("TB1")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, tb, "rt_ordered", rt_order_ref="RT000900099", toysi_ttn="20451500000099")
+    c.commit()
+fk = TrackBoom()
+with orders_db.get_connection() as c:
+    rtb = rr.process_order(c, get(tb), SUP, apply=True, deps=fk)
+chk("таймаут НП у трекінгу rt_ordered: без problems/алерту/rt_error, стан не змінено, повтор наступного циклу", not rtb["problems"] and get(tb)["rt_state"] == "rt_ordered" and not get(tb)["rt_error"] and any("недоступний" in a for a in rtb["actions"]))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

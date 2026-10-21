@@ -590,5 +590,88 @@ fk = TrackBoom()
 with orders_db.get_connection() as c:
     rtb = rr.process_order(c, get(tb), SUP, apply=True, deps=fk)
 chk("таймаут НП у трекінгу rt_ordered: без problems/алерту/rt_error, стан не змінено, повтор наступного циклу", not rtb["problems"] and get(tb)["rt_state"] == "rt_ordered" and not get(tb)["rt_error"] and any("недоступний" in a for a in rtb["actions"]))
+# ---- ланцюжок EVA→RoyalToys (21.10): платформа eva у конвеєрі RT ----
+class EvaFake(Fake):
+    def __init__(self, precheck=True, cancelled_live=False):
+        super().__init__()
+        self.precheck = precheck
+        self.cancelled_live = cancelled_live
+        self.pushed = []
+
+    def eva_precheck(self, conn, o):
+        self.calls.append("eva_precheck")
+        return self.precheck
+
+    def eva_accept_and_push_ttn(self, conn, o, ttn):
+        self.calls.append("eva_push")
+        self.pushed.append(ttn)
+        return True
+
+    def eva_cancelled_live(self, o):
+        return self.cancelled_live
+
+
+_alerts = []
+_orig_alert = rr._alert
+rr._alert = lambda oid, key, text, cooldown=0: _alerts.append((oid, key))
+ev1 = new_order("E1", platform="eva")
+with orders_db.get_connection() as c:
+    pend_ids = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+chk("get_rt_orders_pending: передплачене EVA-замовлення з rt-позицією потрапляє в чергу", ev1 in pend_ids)
+fk = EvaFake()
+with orders_db.get_connection() as c:
+    rev1 = rr.process_order(c, get(ev1), SUP, apply=True, deps=fk)
+chk("EVA: передперевірка скасування ДО чека/ТТН; після резерву ТТН передано в EVA (11→12) з нашою ТТН; стан rt_ordered",
+    fk.calls.index("eva_precheck") < fk.calls.index("receipt") < fk.calls.index("create_ttn") and fk.pushed == ["20451500000001"] and get(ev1)["rt_state"] == "rt_ordered" and not rev1["problems"])
+ev2 = new_order("E2", platform="eva")
+fk = EvaFake(precheck=False)
+with orders_db.get_connection() as c:
+    rev2 = rr.process_order(c, get(ev2), SUP, apply=True, deps=fk)
+chk("EVA: скасовано покупцем до оформлення -> ні чека, ні ТТН, стан NULL, причина в problems", "receipt" not in fk.calls and "create_ttn" not in fk.calls and get(ev2)["rt_state"] is None and rev2["problems"])
+ev3 = new_order("E3", platform="eva")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ev3, "rt_ordered", rt_order_ref="RT000900031", toysi_ttn="20451500000031")
+    c.commit()
+_alerts.clear()
+fk = EvaFake(cancelled_live=True)
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ev3), SUP, apply=True, deps=fk)
+chk("EVA rt_ordered: ТТН у EVA ще не передано -> ретрай; скасовано покупцем ПІСЛЯ оформлення -> 🟠 алерт eva_cancelled", fk.pushed == ["20451500000031"] and any(k == "eva_cancelled" for _, k in _alerts))
+ev4 = new_order("E4", platform="eva", pm="cod")
+with orders_db.get_connection() as c:
+    pend2 = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+    cods = {o["internal_order_id"] for o in orders_db.get_rt_cod_orders(c)}
+chk("EVA + накладений платіж + rt-позиція: НЕ в черзі конвеєра, але видно get_rt_cod_orders (алерт, не мовчимо)", ev4 not in pend2 and ev4 in cods)
+_alerts.clear()
+rr.run(apply=True, deps=EvaFake())
+chk("run(): для COD-замовлення з rt-позицією іде алерт rt_cod", any(oid == ev4 and k == "rt_cod" for oid, k in _alerts))
+ev5 = new_order("E5", platform="eva")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET status='eva_cancelled_before_forward' WHERE internal_order_id=?", (ev5,))
+    c.commit()
+    pend3 = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+chk("EVA зі статусом eva_cancelled_before_forward виключено з черги", ev5 not in pend3)
+rr._alert = _orig_alert
+# реальний Deps._ensure_eva_receipt: чек CASHLESS через трекерну _maybe_issue_receipt, ідемпотентно (прапорець)
+import order_status_tracker as _ost
+_calls_r = []
+_orig_r = _ost._maybe_issue_receipt
+
+
+def _fake_issue(conn, order, ttn, ds):
+    _calls_r.append((order["internal_order_id"], ds))
+    orders_db.mark_checkbox_ettn_registered(conn, order["internal_order_id"], "rcpt-1")
+
+
+_ost._maybe_issue_receipt = _fake_issue
+try:
+    ev6 = new_order("E6", platform="eva", receipt=False)
+    d_real = rr._Deps()
+    with orders_db.get_connection() as c:
+        r1_ = d_real.ensure_receipt(c, get(ev6))
+        r2_ = d_real.ensure_receipt(c, get(ev6))
+finally:
+    _ost._maybe_issue_receipt = _orig_r
+chk("Deps.ensure_receipt для EVA: чек видається через _maybe_issue_receipt ОДИН раз (повторний виклик — прапорець), результат True", r1_ is True and r2_ is True and len(_calls_r) == 1)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

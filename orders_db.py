@@ -538,13 +538,29 @@ def get_rt_orders_pending(conn: sqlite3.Connection) -> list:
     rows = conn.execute(
         """
         SELECT * FROM orders
-        WHERE platform = 'site' AND payment_method = 'prepaid' AND payment_confirmed = 1
+        WHERE platform IN ('site', 'eva') AND payment_method = 'prepaid' AND payment_confirmed = 1
           AND items LIKE '%' || ? || '%'
-          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled'))
+          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled', 'eva_cancelled_before_forward'))
           AND cancelled_at IS NULL
           AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL
           AND (rt_state IS NULL OR rt_state NOT IN ('delivered', 'returned', 'manual'))
           AND (rt_state IS NOT NULL OR ((toysi_ttn IS NULL OR toysi_ttn = '') AND forwarded_to_toysi_at IS NULL))
+        ORDER BY created_at
+        """,
+        (RT_ITEM_MARK,),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_rt_cod_orders(conn: sqlite3.Connection) -> list:
+    """Замовлення з товарами RoyalToys і НАКЛАДЕНИМ платежем (сайт це відхиляє на вході; EVA — власник 21.10: «післяплати там немає», але якщо раптом з'явиться): конвеєр RT їх НЕ бере (лише передоплата — повернення накладеного лягає на нас),
+    тож без цього запиту вони б висіли мовчки. Лише ще не оброблені (rt_state порожній) і не скасовані."""
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE platform IN ('site', 'eva') AND payment_method = 'cod' AND items LIKE '%' || ? || '%'
+          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled', 'eva_cancelled_before_forward'))
+          AND cancelled_at IS NULL AND rt_state IS NULL
         ORDER BY created_at
         """,
         (RT_ITEM_MARK,),

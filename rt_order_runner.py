@@ -271,7 +271,14 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                     except Exception:  # noqa: BLE001
                         pass
                     _alert(oid, "confirm_fail", "; ".join(rep["problems"])[:400] + " — повторимо наступного циклу")
-            new_state, ds = _tracking_state(d.tracking(order.get("toysi_ttn")))
+            try:
+                _info = d.tracking(order.get("toysi_ttn"))
+            except Exception as e:  # noqa: BLE001
+                # НП тимчасово недоступна (таймаут/мережа) — НЕ алерт і не «збій кроку»: повтор через 15 хв; тривала відсутність змін ловиться алертом «stale» (21.10: одиничний таймаут слав власнику хибне «конвеєр зупинено»)
+                print(f"[rt_runner] {oid}: трекінг НП недоступний ({type(e).__name__}) — повтор наступного циклу", file=sys.stderr)
+                rep["actions"].append("трекінг НП недоступний — повтор наступного циклу")
+                return rep
+            new_state, ds = _tracking_state(_info)
             if new_state and new_state != state:
                 if apply:
                     orders_db.set_rt_state(conn, oid, new_state, delivery_status=ds)

@@ -595,6 +595,25 @@ class CatalogShrinkError(RuntimeError):
     """Каталог «в наявності» різко зменшився проти попередньої збірки — не пишемо й не прибираємо сторінки."""
 
 
+# ── Категорії, які Google відхиляє за політиками (SEO 22.10; власник: «приберай, якщо зайве») ──────────────────────────────────────────────────────────────────────
+# «Азартні» (звичайні настільні ігри: лото, карти, Sequence — Google читав як «азартні ігри») і «Арбалети і луки» (іграшкова зброя — політика «зброя»; зброю 07.10 уже прибрали). Сторінка категорії ЖИВА (прямий адрес),
+# але noindex,follow і поза sitemap-categories/priority, хабом /categories.html, групами/сайдбаром, чипами, «Схожими категоріями», фільтром категорій. Значення: чи ховати й ТОВАРИ
+# (True — noindex і поза sitemap-products; False — товари звичайні, лишаються в sitemap). Ключ — casefold назви категорії Toysi.
+NOINDEX_CATEGORIES = {"азартні": False, "арбалети і луки": True}
+
+
+NOINDEX_CATEGORIES_NAMES = ["Азартні", "Арбалети і луки"]   # відображувані назви (для фільтра категорій у браузері; casefold-ключі — NOINDEX_CATEGORIES)
+
+
+def category_hidden(name) -> bool:
+    return str(name or "").strip().casefold() in NOINDEX_CATEGORIES
+
+
+def product_hidden(p) -> bool:
+    """Товар категорії з NOINDEX_CATEGORIES[...] = True: noindex і поза sitemap."""
+    return NOINDEX_CATEGORIES.get(str(p.get("category") or "").strip().casefold()) is True
+
+
 # ── Другий постачальник (пілот RoyalToys, 19.10.2026; дані й замовлення — Код, сайт — тут) ─────────────────────────────────────────
 # <корінь репо>/supplier_rt.json (НЕ в site/): {"updated": ISO, "items": {"rt-<id>": {name, description, vendor, vendor_code, category (рос., назва RoyalToys), images[], price, cost, stock}}}
 # site/rt_category_map.json: {назва категорії RoyalToys → наша категорія сайту}. Невідома категорія = картка НЕ публікується (голосне попередження), а не «Інше».
@@ -767,7 +786,7 @@ def build():
             "photo": PHOTO_OVERRIDES.get(str(it.get("id")), pics[0]), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
-            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")), "dup_of": str(it.get("dup_of") or ""),
+            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(it.get("category_name") or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
             "vendor": (it.get("vendor") or "").strip(), "vendor_code": (it.get("vendor_code") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
     # RoyalToys-дублі Toysi, варіант 1 «резерв» (власник 20.10): rt-картка з dup_of на товар Toysi, що Є В НАЯВНОСТІ, — «тінь»: покупцям не показуємо (нема в каталозі/пошуку/sitemap/
@@ -857,8 +876,10 @@ def build():
         else:
             _used[base] = 1
             cat_slug[c] = base
-    SEARCH_POPULAR[:] = [(c, f"category-{cat_slug[c]}.html") for c in cat_list if "уцінк" not in c.lower() and "уценк" not in c.lower()][:8]
+    SEARCH_POPULAR[:] = [(c, f"category-{cat_slug[c]}.html") for c in cat_list if not category_hidden(c) and "уцінк" not in c.lower() and "уценк" not in c.lower()][:8]
 
+    nav_list = [c for c in cat_list if not category_hidden(c)]                 # навігація (хаб, групи, чипи, «Схожі», фільтр): без NOINDEX_CATEGORIES
+    nav_cats = {c: v for c, v in cats.items() if not category_hidden(c)}
     # крос-сел як ДОПОВНЕННЯ (add-on), НЕ замінник: до 4 ДЕШЕВШИХ товарів з ІНШОЇ
     # категорії. Стара логіка брала ту саму категорію за близькою ціною → на картці
     # виходили 4 копії того самого типу товару за тією ж ціною (замінники), що НЕ
@@ -900,21 +921,21 @@ def build():
         write_product(p, related=None, cat_slug=cat_slug, similar=[])
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
-    SITE_GROUPS[:] = site_groups(cats)
+    SITE_GROUPS[:] = site_groups(nav_cats)
     for g in SITE_GROUPS:
         g["slugs"] = cat_slug
     for c in cat_list:
-        paged |= write_catalog(f"Каталог • {c}", rec_order(cats[c]), cat_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
+        paged |= write_catalog(f"Каталог • {c}", rec_order(cats[c]), nav_list, cat_slug, f"category-{cat_slug[c]}.html", active=c)
     prods_rec = rec_order(prods)
     toysi_prods = [p for p in prods if not p.get("rt")]   # головна/каруселі/акції/спец-сторінки/add-on кошика — без RoyalToys (рішення власника ще не прийнято)
-    paged |= write_catalog("Каталог іграшок", prods_rec, cat_list, cat_slug, "catalog.html", active=None)
-    paged |= write_utsinka(toysi_prods, cat_list, cat_slug)
-    paged |= write_aktsii(toysi_prods, cat_list, cat_slug)
-    paged |= write_helovin(toysi_prods, cat_list, cat_slug)
-    paged |= write_chip_pages(toysi_prods, cat_list, cat_slug)
+    paged |= write_catalog("Каталог іграшок", prods_rec, nav_list, cat_slug, "catalog.html", active=None)
+    paged |= write_utsinka(toysi_prods, nav_list, cat_slug)
+    paged |= write_aktsii(toysi_prods, nav_list, cat_slug)
+    paged |= write_helovin(toysi_prods, nav_list, cat_slug)
+    paged |= write_chip_pages(toysi_prods, nav_list, cat_slug)
     # 4) головна
     _cats_toysi = {c: [p for p in v if not p.get("rt")] for c, v in cats.items()}
-    write_home(toysi_prods, _cats_toysi, [c for c in cat_list if _cats_toysi.get(c)], cat_slug)
+    write_home(toysi_prods, _cats_toysi, [c for c in nav_list if _cats_toysi.get(c)], cat_slug)
     write_ig(toysi_prods)
     has_nabory = write_nabory(toysi_prods)
     # 5) кошик + checkout + сторінка подяки
@@ -923,8 +944,8 @@ def build():
     write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
     groups = SITE_GROUPS
-    paged |= write_groups(groups, cats, cat_slug)
-    write_categories_index(cat_list, cat_slug, cats, groups)
+    paged |= write_groups(groups, nav_cats, cat_slug)
+    write_categories_index(nav_list, cat_slug, nav_cats, groups)
     trust = write_trust_pages()
     # 6) індекс пошуку
     # index.json — клієнтський пошук + фільтр/сорт каталогу. c=категорія, s=наявність(1/0).
@@ -939,7 +960,7 @@ def build():
         json.dump([x for x in idx if x.get("rt") and not x.get("dup")], f, ensure_ascii=False)
     # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
     static_urls = [("categories.html", "0.7", "weekly")] +([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
-    write_sitemap(prods, paged, static_urls, oos_prods=oos_prods)
+    write_sitemap(prods, paged, static_urls, oos_prods=oos_prods, hidden_files={f"category-{cat_slug[c]}.html" for c in cat_list if category_hidden(c)})
     write_robots()
 
     # 8) ПРИБИРАННЯ ЗАСТАРІЛИХ сторінок від попередніх білдів: build пише лише поточний вибір,
@@ -1082,7 +1103,7 @@ def _catalog_controls(preset=None, group=None, own=None, groups_json=None, other
           '<option value="dear">Спершу дорожчі</option>'
           '<option value="az">За назвою А–Я</option>'
         '</select>'
-        '<select id="cf-cat" aria-label="Категорія"><option value="">Усі категорії</option></select>'
+        '<select id="cf-cat" aria-label="Категорія" data-hide=' + chr(39) + json.dumps(sorted(NOINDEX_CATEGORIES_NAMES), ensure_ascii=False) + chr(39) + '><option value="">Усі категорії</option></select>'
         '<button id="cf-price-toggle" class="cf-price-toggle" type="button" aria-expanded="false" aria-controls="cf-price-panel">Ціна</button>'
         '<span id="cf-price-panel" class="cf-price"><input id="cf-min" type="number" inputmode="numeric" min="0" placeholder="ціна від" aria-label="Ціна від">'
           '<input id="cf-max" type="number" inputmode="numeric" min="0" placeholder="до" aria-label="Ціна до">'
@@ -1634,7 +1655,7 @@ def _relcats_html(fname, cat_slug, active):
     targets = _CATEGORY_RELATED.get(m.group(1)) if m else None
     if not targets:
         return ""
-    by_slug = {sl: c for c, sl in cat_slug.items()}
+    by_slug = {sl: c for c, sl in cat_slug.items() if not category_hidden(c)}
     links, seen = [], {m.group(1)}
     for sl in targets:
         if sl in seen or sl not in by_slug:
@@ -1888,7 +1909,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 '<div class="cat-bar"><h1 class="page cat-h1">Усі категорії<span class="sr-only"> — каталог іграшок</span></h1>' + _catalog_controls(groups_json=gj) + catalog_mascot_html() + '</div>\n' +
                 _catalog_js_grid() + static_grid + '</div></div>'
             )
-            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t, noindex=bool(active and category_hidden(active))))
             written.add(cur)
             continue
         if special and special.get("filters") and k == 1:
@@ -1901,7 +1922,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 f'<script type="application/json" id="cat-ids">{ids_json}</script>\n' +
                 ((special.get("notice") or "") if not special.get("notice_bar") else "") + _catalog_js_grid() + f'<div id="cat-static">{static_grid}</div>'
             )
-            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t, noindex=bool(active and category_hidden(active))))
             written.add(cur)
             continue
         if is_full:
@@ -1912,7 +1933,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if k > 1 else "") +
                 static_grid
             )
-            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t, noindex=bool(active and category_hidden(active))))
             written.add(cur)
             continue
         if active and not special and k == 1:
@@ -1927,7 +1948,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 f'<div id="cat-static">{static_grid}</div>' +
                 _relcats_html(fname, cat_slug, active)
             )
-            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+            _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t, noindex=bool(active and category_hidden(active))))
             written.add(cur)
             continue
         body = (
@@ -1941,7 +1962,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             static_grid +
             (_relcats_html(fname, cat_slug, active) if (active and k == 1) else "")
         )
-        _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t))
+        _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t, noindex=bool(active and category_hidden(active))))
         written.add(cur)
     return written
 
@@ -3512,7 +3533,7 @@ def _sitemap_priority():
     return ids, cats
 
 
-def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
+def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=frozenset()):
     """sitemap.xml = ІНДЕКС п'яти сегментів (SEO 15.10.2026: GSC рахує виявлені/проіндексовані по кожному sitemap окремо — швидкий вимір): priority / products (в наявності) / oos / categories / static.
     Кожен URL рівно в одному сегменті. lastmod — дата реальної зміни сторінки (див. _write). paged = усі сторінки каталогу/категорій; стор.≥2 не потрапляють у sitemap."""
     pri_ids, pri_cats = _sitemap_priority()
@@ -3523,6 +3544,8 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
     seg["priority"].append(("", "index.html", "1.0", "daily"))
     seg["static"] += [(u, u, pr, cf) for u, pr, cf in (static_urls or [])]   # categories.html + сторінки довіри
     for fn in sorted(paged):
+        if fn in hidden_files:
+            continue   # NOINDEX_CATEGORIES: сторінка категорії поза sitemap (SEO 22.10)
         if re.search(r"_\d+\.html$", fn):
             continue   # SEO 11.10.2026: у sitemap лише 1-ша сторінка категорії/каталогу; пагінація лишається доступною через посилання, canonical і rel=prev/next
         if fn in pri_cats:
@@ -3533,6 +3556,8 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
             seg["categories"].append((fn, fn, "0.7", "weekly"))
     for p in prods:
         f = f"product-{p['id']}.html"
+        if product_hidden(p):
+            continue   # NOINDEX_CATEGORIES (True): товар noindex і поза sitemap
         if p.get("rt"):
             if not p.get("noindex"):
                 seg["rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
@@ -3541,6 +3566,8 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=()):
     # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий
     for p in oos_prods:
         f = f"product-{p['id']}.html"
+        if product_hidden(p):
+            continue
         if p.get("rt"):
             continue   # rt без залишку: сторінка жива, у sitemap не додаємо
         (seg["priority"] if p["id"] in pri_ids else seg["oos"]).append((f, f, "0.6" if p["id"] in pri_ids else "0.3", "weekly" if p["id"] in pri_ids else "monthly"))

@@ -322,8 +322,9 @@
     if(preset){ try{ catUrls=JSON.parse((document.getElementById("cat-urls")||{}).textContent||"{}"); }catch(e){ catUrls={}; } }
     var rtonly=controls.getAttribute("data-rtonly")==="1";   // сторінка, де ВСІ товари RoyalToys (напр. «Електромобілі»): без них нічого показувати — чекаємо обидва файли
     function buildOptions(data){
-      var cats={};
-      for(var i=0;i<data.length;i++){ if(data[i].c && (!groupSet || groupSet[data[i].c]) && (!idSet || idSet[data[i].id])) cats[data[i].c]=(cats[data[i].c]||0)+1; }
+      var cats={}, hideSet={};   // NOINDEX_CATEGORIES (SEO 22.10): у списку категорій не показуємо (крім відкритої сторінки такої категорії)
+      try{ JSON.parse(elCat.getAttribute("data-hide")||"[]").forEach(function(c){ hideSet[c]=1; }); }catch(e){}
+      for(var i=0;i<data.length;i++){ if(data[i].c && (!hideSet[data[i].c] || data[i].c===preset) && (!groupSet || groupSet[data[i].c]) && (!idSet || idSet[data[i].id])) cats[data[i].c]=(cats[data[i].c]||0)+1; }
       function addOpt(parent, c, label){ var o=document.createElement("option"); o.value=c; o.textContent=(label||c)+" ("+cats[c]+")"; parent.appendChild(o); }
       if(tree){
         var placed={};

@@ -15,5 +15,7 @@ ExecStart=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/gmc_account_settings
 ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/googlebot_log_report.py 14
 # Знімок Google Search Console для SEO (gsc_report.py, лише читання, запит SEO 15.10): ОСТАННІЙ крок, щоб його повільні запити (бюджет inspect 700 с) не позбавили часу Googlebot-крок; з «-»: сам шле алерт про збій частин; API вимкнено → мовчки код 0 (очікувано до дії власника).
 ExecStart=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/gsc_report.py
+# Радар трендів для SEO (trend_radar.py, лише читання, рішення власника 21.10): що вперше з'явилось у каталозі сайту за 7 діб + top_growth-запити, що збігаються з назвами цих товарів → reports/gmc/trend_radar_*.csv (daily_files_to_shared кладе в SEO_метрики). Після gsc_report (потрібен gsc_weekly_summary); «-»: збій не валить юніт.
+ExecStart=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/trend_radar.py
 TimeoutStartSec=1500
 Nice=10

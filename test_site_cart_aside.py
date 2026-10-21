@@ -71,7 +71,7 @@ chk("колонка: «Ваше замовлення» (А), довіра (Б), 
 chk("довіра: фіскальний чек, повернення 14 днів (посилання на returns.html), оплата при отриманні, рядок про 12:00 — без нових обіцянок («зазвичай»)", "Фіскальний чек" in aside and 'href="returns.html"' in aside and "Повернення протягом 14 днів" in aside
     and "Оплата при отриманні" in aside and 'id="ship-today">🚚 Замовлення до 12:00 зазвичай відправляємо того ж дня' in aside and "знижк" not in aside.lower() and "безкоштовн" not in aside.lower())
 chk("Плутус: статичний ≈80 px із підписом «Плутус пакує вашу посилку»", 'class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="80" height="73"' in aside and "Плутус пакує вашу посилку" in aside)
-chk("підсумок доставки в колонці — «орієнтовно 70–90 ₴ до 2 кг» І застереження (важчі посилки, комісія НП за накладений) — десктопний #cart-summary сховано, тож примітка має бути в колонці (аудит #691 F2)", "орієнтовно 70–90 ₴ до 2 кг" in aside and "для важчих посилок сума вища" in aside and "комісія за накладений платіж: 20 ₴ + 2% від суми замовлення" in aside and 'id="aside-delivery"' in aside)
+chk("підсумок доставки в колонці — «за тарифами оператора» (без орієнтовної суми, власник 21.10) І пояснення (сума залежить від міста/ваги/розмірів, комісія НП за накладений) — десктопний #cart-summary сховано, тож примітка має бути в колонці (аудит #691 F2)", "за тарифами оператора" in aside and "орієнтовно" not in aside and "сума залежить від міста, ваги та розмірів посилки" in aside and "комісія за накладений платіж: 20 ₴ + 2% від суми замовлення" in aside and 'id="aside-delivery"' in aside)
 chk("aside aria-label не вводить в оману на мобільному («Інформація про замовлення»)", 'aria-label="Інформація про замовлення"' in aside)
 
 m = re.search(r'<script type="application/json" id="cart-addons">(.*?)</script>', cart, re.S)
@@ -156,7 +156,7 @@ function el(id){ const h={}; return {id,value:"",textContent:"",_inner:"",style:
     chk("render: колонка видима; «Ваше замовлення» — мініатюри, «2 × 468 ₴», «1 × 150 ₴», екранована назва", a is not None and a["threw"] is None and a["aside"] == ""
         and "2 × 468 ₴" in a["items"] and "1 × 150 ₴" in a["items"] and "&lt;b&gt;" in a["items"] and "<b>" not in a["items"])
     chk("render: товари і «Разом за товари» = 468×2+150 = 1086 ₴", a is not None and a["goods"] == "1086 ₴" and a["total"] == "1086 ₴")
-    chk("доставка в колонці рахується від суми: 1086 ₴ → 70+5,43+20+21,72 … 90+… = «орієнтовно 117–137 ₴» (аудит #699 F1: renderAside писав aside-delivery, тест цього не бачив)", a is not None and a["deliv"] == "орієнтовно 117–137 ₴")
+    chk("доставка в колонці рахується від суми: 1086 ₴ → рядок «за тарифами оператора» (суми нема; аудит #699 F1: renderAside писав aside-delivery, тест цього не бачив)", a is not None and a["deliv"] == "за тарифами оператора")
     adds = re.findall(r'data-add=', a["boxD"]) if a else []
     chk("add-on: РІВНО 3 позиції, жодної з уже наявних у кошику (1, 2), порядок пулу (3, 4, 5); в обох контейнерах (десктоп і мобільний)", a is not None and len(adds) == 3
         and all(x in a["boxD"] for x in ("Add3", "ведмедик", "Add5")) and "Add1" not in a["boxD"] and "Add2" not in a["boxD"] and a["boxM"] == a["boxD"])
@@ -172,7 +172,7 @@ function el(id){ const h={}; return {id,value:"",textContent:"",_inner:"",style:
     chk("апостроф у назві add-on екранується (&#39;), сирого «М'яка» в атрибуті нема (аудит #691 F1: ламало кнопку й давало ін'єкцію)", a is not None and "&#39;" in a["boxD"] and "М'яка" not in a["boxD"])
     chk("кнопка «+ Додати» має aria-label з назвою товару", a is not None and 'aria-label="Додати до замовлення: Add3"' in a["boxD"])
     ck = run("click")
-    chk("клік «+ Додати»: доставка в колонці перерахована (1176 ₴ → «орієнтовно 119–139 ₴»)", ck is not None and ck["delivAfter"] == "орієнтовно 119–139 ₴")
+    chk("клік «+ Додати»: доставка в колонці перерахована (1176 ₴ → «за тарифами оператора»)", ck is not None and ck["delivAfter"] == "за тарифами оператора")
     chk("клік «+ Додати»: товар у кошику (qty 1), рівно ОДИН add_to_cart з item_list_name «cart_addon», підсумок оновлено (1086+90=1176), доданий зникає з add-on",
         ck is not None and ck["cart"]["5"]["qty"] == 1 and len(ck["ev"]) == 1 and ck["ev"][0][2]["items"][0]["item_list_name"] == "cart_addon" and ck["goodsAfter"] == "1176 ₴" and "Add5" not in ck["boxAfter"] and "Add6" in ck["boxAfter"])
     em = run("empty")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """test_site_card_default.py — 13.10.2026 (власник): оплата карткою — обраний спосіб за замовчуванням. Прод у бойовому режимі (LIQPAY_LIVE). Перевіряємо в Chromium ПЕРВИННИЙ рендер (шлях, яким раніше ніхто не йшов, тестувальник 13.10):
-при завантаженні cart.html БЕЗ жодного кліку: обрано «Оплата карткою онлайн», доставка «орієнтовно 70–90 ₴ до 2 кг», підпис БЕЗ «з комісією за накладений платіж»; перемикання на «при отриманні» → 99–119 ₴ (кошик 468 ₴) і підпис із комісією; назад на картку — знову 70–90 ₴.
+при завантаженні cart.html БЕЗ жодного кліку: обрано «Оплата карткою онлайн», доставка «за тарифами оператора» (власник 21.10: орієнтовну суму не показуємо), підпис БЕЗ «з комісією за накладений платіж»; перемикання на «при отриманні» → той самий рядок і підпис із комісією; назад на картку — знову без комісії.
 Окремо: без LIQPAY_LIVE (до ввімкнення оплати) за замовчуванням лишається накладений платіж; при кошику >3 000 ₴ — картка й так обрана."""
 import http.server
 import json
@@ -79,21 +79,21 @@ with sync_playwright() as pw:
         pg.goto(f"{BASE_LIVE}/cart.html", wait_until="load")
         pg.wait_for_timeout(600)
         v0 = pg.evaluate(VIEW)
-        chk(f"{w}px: ПЕРВИННИЙ рендер без кліків: обрана картка, доставка «орієнтовно 70–90 ₴ до 2 кг», підпис без комісії (і в підсумку, і в бічній картці) {v0}",
-            v0["pay"] == "prepaid" and v0["sum"] == "орієнтовно 70–90 ₴ до 2 кг" and v0["aside"] == "орієнтовно 70–90 ₴ до 2 кг" and "комісі" not in v0["lbl"] and "комісі" not in v0["albl"])
+        chk(f"{w}px: ПЕРВИННИЙ рендер без кліків: обрана картка, доставка «за тарифами оператора», підпис без комісії (і в підсумку, і в бічній картці) {v0}",
+            v0["pay"] == "prepaid" and v0["sum"] == "за тарифами оператора" and v0["aside"] == "за тарифами оператора" and "комісі" not in v0["lbl"] and "комісі" not in v0["albl"])
         pg.check('input[name=payment][value=cod]')
         pg.wait_for_timeout(300)
         v1 = pg.evaluate(VIEW)
-        chk(f"{w}px: перемикання на «при отриманні»: 99–119 ₴ і підпис із комісією {v1}", v1["pay"] == "cod" and "99–119" in v1["sum"] and "99–119" in v1["aside"] and "комісі" in v1["lbl"] and "комісі" in v1["albl"])
+        chk(f"{w}px: перемикання на «при отриманні»: «за тарифами оператора» і підпис із комісією {v1}", v1["pay"] == "cod" and v1["sum"] == "за тарифами оператора" and v1["aside"] == "за тарифами оператора" and "комісі" in v1["lbl"] and "комісі" in v1["albl"])
         pg.check('input[name=payment][value=prepaid]')
         pg.wait_for_timeout(300)
         v2 = pg.evaluate(VIEW)
-        chk(f"{w}px: назад на картку: знову 70–90 ₴ без комісії {v2}", v2["pay"] == "prepaid" and v2["sum"] == "орієнтовно 70–90 ₴ до 2 кг" and "комісі" not in v2["lbl"])
+        chk(f"{w}px: назад на картку: знову без комісії {v2}", v2["pay"] == "prepaid" and v2["sum"] == "за тарифами оператора" and "комісі" not in v2["lbl"])
         # відновлення форми браузером (bfcache/Firefox): pageshow перераховує під обране
         pg.evaluate("document.querySelector('input[name=payment][value=cod]').checked = true; window.dispatchEvent(new Event('pageshow'))")
         pg.wait_for_timeout(200)
         v3 = pg.evaluate(VIEW)
-        chk(f"{w}px: pageshow із відновленим «при отриманні» — підсумок відповідає обраному {v3['sum']}", v3["pay"] == "cod" and "99–119" in v3["sum"])
+        chk(f"{w}px: pageshow із відновленим «при отриманні» — підсумок відповідає обраному {v3['sum']}", v3["pay"] == "cod" and v3["sum"] == "за тарифами оператора")
         chk(f"{w}px: без помилок JS", errs == [])
         ctx.close()
     ctx = br.new_context(viewport={"width": 1280, "height": 900}, reduced_motion="reduce")
@@ -103,7 +103,7 @@ with sync_playwright() as pw:
     pg.goto(f"{BASE_LIVE}/cart.html", wait_until="load")
     pg.wait_for_timeout(500)
     v = pg.evaluate(VIEW)
-    chk(f"кошик 3 500 ₴ (понад стелю накладеного): картка обрана, доставка 70–90 ₴ {v['pay']} / {v['sum']}", v["pay"] == "prepaid" and v["sum"] == "орієнтовно 70–90 ₴ до 2 кг")
+    chk(f"кошик 3 500 ₴ (понад стелю накладеного): картка обрана, доставка «за тарифами оператора» {v['pay']} / {v['sum']}", v["pay"] == "prepaid" and v["sum"] == "за тарифами оператора")
     ctx.close()
     BASE_OFF = serve(roots[False])
     ctx = br.new_context(viewport={"width": 1280, "height": 900}, reduced_motion="reduce")
@@ -113,7 +113,7 @@ with sync_playwright() as pw:
     pg.goto(f"{BASE_OFF}/cart.html", wait_until="load")
     pg.wait_for_timeout(500)
     v = pg.evaluate(VIEW)
-    chk(f"без LIQPAY_LIVE: за замовчуванням накладений платіж, 99–119 ₴ {v['pay']} / {v['sum']}", v["pay"] == "cod" and "99–119" in v["sum"])
+    chk(f"без LIQPAY_LIVE: за замовчуванням накладений платіж, «за тарифами оператора» {v['pay']} / {v['sum']}", v["pay"] == "cod" and v["sum"] == "за тарифами оператора")
     ctx.close()
     br.close()
 

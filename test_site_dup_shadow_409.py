@@ -92,6 +92,9 @@ with sync_playwright() as pw:
         pg.goto(f"{BASE}/cart.html", wait_until="load")
         pg.wait_for_timeout(500)
         fill_and_submit(pg)
+        pg.wait_for_timeout(400)
+        if pg.evaluate("!!document.getElementById('parcel-dialog')"):   # змішаний кошик (rt- + Toysi): спершу вікно «кілька посилок» (власник 21.10) — покупець підтверджує
+            pg.click("#pk-ok")
         pg.wait_for_timeout(800)
         st = pg.evaluate("""(()=>{const m=document.getElementById('checkout-msg'), n=document.getElementById('dup-shadow-note'), host=(n||m);
             const vis=e=>!!e && e.offsetParent!==null;

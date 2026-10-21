@@ -86,5 +86,13 @@ chk("prom_group_to_category.json: групи 155145000 (ляльки), 155490013
     gm["155145000"]["category"] == "lialky-i-pupsy" and gm["155490013"]["category"] == "plakaty-interaktyvni" and gm["155412282"]["category"] == "pazly")
 chk("жодна ціль перекриття не вказує на сторінки заборонених тем (мечі/ножі/арбалети/пістолети/азартні/пістони/бомбочки)", not any(w in v["target"] for v in real.values() for w in ("mechi", "nozh", "arbalet", "pistolet", "azart", "pistony", "bombochk")))
 
+# --- правки аудиту #945: ключі з сміттям, дубль ключа, глибока вкладеність ---
+g = setup(json.dumps({"2000x": {"target": "/category-skvishi.html"}, "12 34": {"target": "/category-skvishi.html"}, " 2000": {"target": "/category-skvishi.html"}, "2008": {"target": "/category-skvishi.html"}}))
+chk("ключі «2000x», «12 34», « 2000» (з пробілом) — відхилені (PID fullmatch, без пробілів); валідний 2008 — застосований", lines(g) == ["1000 /product-111.html", "2008 /category-skvishi.html"])
+g = setup('{"2009": {"target": "/category-skvishi.html"}, "2009": {"target": "/category-mashynky.html"}, "2010": {"target": "/category-skvishi.html"}}')
+chk("дубль ключа 2009 у JSON (різні цілі) — відхилений гучно, а не «беремо останній»; 2010 застосований", lines(g) == ["1000 /product-111.html", "2010 /category-skvishi.html"])
+g = setup("[" * 100000)
+chk("глибоко вкладений зіпсований JSON — без падіння (RecursionError ловиться), мапа карток ціла", lines(g) == ["1000 /product-111.html"])
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

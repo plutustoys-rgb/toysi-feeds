@@ -74,10 +74,10 @@ def load_overrides(site_dir: Path, taken: set) -> tuple[dict, dict]:
     Відхиляємо: не-цифровий id, ціль поза форматом, відсутня сторінка site/category-<slug>.html, prom_id що вже має картку в основній мапі (taken)."""
     stats = {"ok": 0, "invalid": 0, "no_page": 0, "has_card": 0}
     try:
-        raw = json.loads(OVERRIDES_JSON.read_text(encoding="utf-8-sig"))
+        raw = json.loads(OVERRIDES_JSON.read_text(encoding="utf-8-sig"), object_pairs_hook=_pairs_hook)
     except FileNotFoundError:
         return {}, stats
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         print(f"[prom_redirects] УВАГА (перекриття): {OVERRIDES_JSON} нечитний ({type(e).__name__}: {str(e)[:120]}) — перекриття не застосовано", file=sys.stderr)
         return {}, stats
     if not isinstance(raw, dict):
@@ -85,10 +85,14 @@ def load_overrides(site_dir: Path, taken: set) -> tuple[dict, dict]:
         return {}, stats
     out = {}
     for key, rec in raw.items():
+        if rec is _DUP:                              # дубль ключа в JSON (json.loads мовчки лишив би останній) — неоднозначно, пропуск
+            print(f"[prom_redirects] УВАГА (перекриття): дубль ключа {str(key)[:30]!r} у JSON — пропущено", file=sys.stderr)
+            stats["invalid"] += 1
+            continue
         pid = key.strip() if isinstance(key, str) else ""
         tgt = (rec or {}).get("target") if isinstance(rec, dict) else None
         m = OVERRIDE_TARGET_RE.fullmatch(tgt) if isinstance(tgt, str) else None
-        if not PID_RE.fullmatch(pid) or not m:
+        if not PID_RE.fullmatch(pid) or pid != key or not m:          # ключ без пробілів, лише цифри (\" 2000\" і \"2000\" не мають бути двома записами)
             print(f"[prom_redirects] УВАГА (перекриття): запис {str(key)[:30]!r} поза форматом — пропущено", file=sys.stderr)
             stats["invalid"] += 1
             continue

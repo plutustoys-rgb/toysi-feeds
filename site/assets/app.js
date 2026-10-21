@@ -451,26 +451,16 @@
     try{ var el=document.getElementById("cart-addons"); cartAddonPool=el ? JSON.parse(el.textContent||"[]") : []; }catch(e){ cartAddonPool=[]; }
     return cartAddonPool;
   }
-  // Орієнтовна вартість доставки НП для кошика (Код, 12.10: getDocumentPrice + реальні ТТН 704/881/982 — збіг до копійки): Toysi ставить оголошену вартість = сумі накладеного (мінімум 500), тож
-  //   доставка до 2 кг = база (Київ 70 / інші великі міста 90) + 0,5% × S, якщо S > 500, інакше база; комісія за накладений платіж = 20 ₴ + 2% × S (точно на 190/400/1000/3000). Місто невідоме → діапазон Київ…інші.
-  //   Понад DELIV_COD_MAX накладеного платежу немає → лише тариф. НЕ ВРАХОВАНО: вага >2 кг (у 2 реальних ТТН +25 ₴; ваги в каталозі Toysi немає) — тому в тексті «орієнтовно» і «точну суму назве Нова Пошта».
-  //   Хто платить комісію — не доведено: текст говорить лише «орієнтовно» і «оплачується при отриманні».
-  var DELIV_TARIFF_MIN=70, DELIV_TARIFF_MAX=90, DELIV_COD_FIXED=20, DELIV_COD_RATE=0.02, DELIV_COD_MAX=3000, DELIV_DECL_FREE=500, DELIV_DECL_RATE=0.005;
+  // Вартість доставки сайт НЕ друкує (власник 21.10): лише «за тарифами оператора» — сума залежить від міста, ваги й розмірів, її називає Нова Пошта.
   function isPrepaid(){ var r=document.querySelector('input[name="payment"]:checked'); return !!r && r.value==="prepaid"; }
-  // Дві посилки (тестувальник 20.10): у кошику є і Toysi, і RoyalToys (rt-…) → окремі відправлення, доставка рахується за КОЖНУ окремо; раніше оцінка лишалась «70–90 ₴», як для однієї.
-  function parcelCount(){
-    var ids=Object.keys(read()), rt=0;
-    ids.forEach(function(k){ if(/^rt-/.test(k)) rt++; });
-    return (rt>0 && rt<ids.length) ? 2 : 1;
+  // Посилки (тестувальник 20.10; власник 21.10): Toysi, RoyalToys (rt-…) і ZooBaza (zb-…) — окремі склади = окремі посилки. parcelGroups: масив груп товарів у порядку Toysi → rt → zb (порожні пропускаємо).
+  function parcelGroups(c){
+    var g={t:[], r:[], z:[]};
+    Object.keys(c).forEach(function(id){ var k=/^rt-/.test(id) ? "r" : (/^zb-/.test(id) ? "z" : "t"); g[k].push({name:String((c[id] && c[id].name)||""), qty:+(c[id] && c[id].qty)||1}); });
+    return [g.t, g.r, g.z].filter(function(a){ return a.length>0; });
   }
-  function deliveryEstimate(goods, prepaid, parcels){
-    // оплата карткою онлайн: комісії накладеного платежу нема, надбавка тарифу для передоплати не міряна → лише базовий тариф
-    if(parcels>1) return "орієнтовно "+(70*parcels)+"–"+(90*parcels)+" ₴ за "+(parcels===2 ? "дві посилки" : parcels+" посилки")+" (до 2 кг кожна)";
-    if(prepaid || !(goods>0) || goods>DELIV_COD_MAX) return "орієнтовно 70–90 ₴ до 2 кг";
-    var extra=goods>DELIV_DECL_FREE ? DELIV_DECL_RATE*goods : 0;
-    var fee=DELIV_COD_FIXED+DELIV_COD_RATE*goods+extra;
-    return "орієнтовно "+Math.round(DELIV_TARIFF_MIN+fee)+"–"+Math.round(DELIV_TARIFF_MAX+fee)+" ₴";
-  }
+  function parcelCount(){ return parcelGroups(read()).length || 1; }
+  function deliveryEstimate(goods, prepaid, parcels){ return parcels>1 ? "за тарифами оператора (за кожну посилку)" : "за тарифами оператора"; }
 
   // Рядок доставки, підпис і примітка залежать від способу оплати (тестувальник 13.10: при «карткою онлайн» лишався COD-івський підсумок 99–119 ₴ і підпис про комісію).
   // Оригінальний (накладений платіж) текст запам'ятовуємо при першому виклику; prepaid-версії — з data-prepaid розмітки (єдине джерело в build_site.py).
@@ -483,7 +473,6 @@
         if(!el) return;
         if(el.getAttribute("data-cod")===null) el.setAttribute("data-cod", el.textContent);
         el.textContent = pre ? (el.getAttribute("data-prepaid")||el.textContent) : el.getAttribute("data-cod");
-        if(par>1 && el===nt) el.textContent = el.textContent.replace("70–90 ₴", (70*par)+"–"+(90*par)+" ₴ (за дві посилки)");   // примітка під підсумком називає ту саму суму, що й рядок «Доставка»
       });
     });
   }
@@ -1412,10 +1401,39 @@
     });
   }
 
+  // Вікно «Замовлення прийде кількома посилками» (власник 21.10, варіант Б): якщо в кошику товари з різних складів (Toysi / RoyalToys / ZooBaza), перед відправкою замовлення просимо підтвердити;
+  // товари показуємо по посилках (різний фон), без суми — «за тарифом оператора». Підтвердив → оформлення йде далі; «Повернутися до кошика» / Esc / клік повз вікно → нічого не відправлено.
+  function showParcelDialog(groups, onConfirm){
+    var old=document.getElementById("parcel-dialog"); if(old && old.parentNode) old.parentNode.removeChild(old);
+    var ov=document.createElement("div"); ov.id="parcel-dialog"; ov.className="pk-ov"; ov.setAttribute("role","dialog"); ov.setAttribute("aria-modal","true"); ov.setAttribute("aria-labelledby","pk-title");
+    var box=document.createElement("div"); box.className="pk-modal";
+    var h=document.createElement("h3"); h.id="pk-title"; h.textContent="⚠ Замовлення прийде кількома посилками";
+    var p=document.createElement("p"); p.textContent="Товари у вашому кошику відправляються з різних складів, тому ви отримаєте окремі посилки. Доставка Новою Поштою — за тарифом оператора за кожну посилку.";
+    box.appendChild(h); box.appendChild(p);
+    groups.forEach(function(g, i){
+      var d=document.createElement("div"); d.className="pk-grp pk-"+(i+1);
+      var b=document.createElement("b"); b.textContent="📦 Посилка "+(i+1); d.appendChild(b);
+      var ul=document.createElement("ul");
+      g.forEach(function(it){ var li=document.createElement("li"); var a=document.createElement("span"); a.textContent=it.name; var q=document.createElement("span"); q.textContent=it.qty+" шт"; li.appendChild(a); li.appendChild(q); ul.appendChild(li); });
+      d.appendChild(ul); box.appendChild(d);
+    });
+    var ok=document.createElement("button"); ok.type="button"; ok.className="btn"; ok.id="pk-ok"; ok.textContent="Так, розумію — оформити замовлення";
+    var back=document.createElement("button"); back.type="button"; back.className="btn ghost"; back.id="pk-back"; back.textContent="Повернутися до кошика";
+    function onKey(e){ if(e.key==="Escape") close(); }
+    function close(){ if(ov.parentNode) ov.parentNode.removeChild(ov); document.removeEventListener("keydown", onKey); }
+    ok.addEventListener("click", function(){ close(); onConfirm(); });
+    back.addEventListener("click", function(){ close(); var t=document.getElementById("cart-body"); if(t && t.scrollIntoView) t.scrollIntoView(); });
+    ov.addEventListener("click", function(e){ if(e.target===ov) close(); });
+    document.addEventListener("keydown", onKey);
+    box.appendChild(ok); box.appendChild(back); ov.appendChild(box); document.body.appendChild(ov);
+    if(ok.focus) ok.focus();
+  }
+
   // ── Оформлення: POST /api/order → редірект на LiqPay або підтвердження ──
   function initCheckout(){
     var form=document.getElementById("checkout-form");
     if(!form) return;
+    var parcelAck=false;   // покупець підтвердив «кілька посилок» у вікні (скидається після кожної відправки)
     var started=false;   // begin_checkout — один раз, коли покупець почав заповнювати форму
     form.addEventListener("focusin", function(){
       if(started) return; started=true;
@@ -1444,6 +1462,12 @@
         var fc=document.getElementById("f-city"); if(fc && fc.focus) fc.focus();
         return;
       }
+      var pgrp=parcelGroups(read());
+      if(pgrp.length>1 && !parcelAck){   // товари з різних складів → спершу вікно підтвердження (варіант Б, власник 21.10)
+        showParcelDialog(pgrp, function(){ parcelAck=true; if(typeof form.requestSubmit==="function") form.requestSubmit(); else form.dispatchEvent(new Event("submit", {cancelable:true})); });
+        return;
+      }
+      parcelAck=false;
       var payEl=document.querySelector('input[name="payment"]:checked');
       var payment=payEl ? payEl.value : "cod";
       if(Object.keys(read()).some(function(k){ return /^rt-/.test(k); })) payment="prepaid";   // RoyalToys (rt-…): лише повна передоплата, явно (сервер без prepaid відхиляє кошик, Код 19.10)

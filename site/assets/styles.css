@@ -613,3 +613,18 @@ label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накла
 .cat-mascot .mascot-wrap.dip{opacity:0}
 @media(min-width:1101px){.cat-bar:has(.cat-mascot){min-height:116px}}   /* панель трохи вища, щоб Плутус вмістився під шапкою, не заходячи під липку шапку */
 @media(max-width:1100px){.cat-mascot{display:none}}
+
+/* Вікно «Замовлення прийде кількома посилками» (власник 21.10, варіант Б): товари по посилках, кожна зі своїм тлом */
+.pk-ov{position:fixed;inset:0;background:rgba(20,15,10,.55);z-index:9990;display:flex;align-items:center;justify-content:center;padding:16px}
+.pk-modal{background:var(--surface,#fff);color:var(--text,#3b2a10);border-radius:16px;max-width:440px;width:100%;max-height:92vh;overflow:auto;padding:18px;box-shadow:0 10px 40px rgba(0,0,0,.35);font-size:14px;line-height:1.45}
+.pk-modal h3{margin:0 0 8px;font-size:18px;color:#9a4300}
+.pk-modal p{margin:0 0 10px}
+.pk-modal .btn{margin-top:8px}
+.pk-grp{border-radius:12px;padding:10px 12px;margin:8px 0;border:1px solid}
+.pk-grp b{display:block;font-size:13px;margin-bottom:4px}
+.pk-grp ul{margin:0;padding:0;list-style:none}
+.pk-grp li{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+.pk-grp li span:last-child{white-space:nowrap;opacity:.75}
+.pk-1{background:#e9f2fb;border-color:#b9d3ee;color:#173a5c}
+.pk-2{background:#ecf6e8;border-color:#bcdcb1;color:#24491a}
+.pk-3{background:#f6ecfa;border-color:#d9bde6;color:#47235c}

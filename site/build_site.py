@@ -92,6 +92,10 @@ SELLER_TAX_BR = f"<br>РНОКПП: {SELLER_TAXID}" if SELLER_TAXID else ""
 # (сайт працює як раніше). Формат перевіряється — ID потрапляє в <script>, довільний рядок не пускаємо.
 _ga = os.environ.get("SITE_GA4_ID", "").strip()
 GA4_ID = _ga if re.fullmatch(r"G-[A-Z0-9]{6,14}", _ga) else ""
+# Рекламний тег Google Ads (власник 21.10.2026, акаунт 280-525-6388; SEO): додається НА ТОМУ Ж gtag.js поруч із GA4 — `gtag('config','AW-…')`, другого завантаження gtag.js нема.
+# Діє лише коли задано GA4_ID (gtag.js вантажиться з його id); SITE_GADS_ID="" вимикає; формат AW-<цифри> валідується (id потрапляє в <script>).
+_gads = os.environ.get("SITE_GADS_ID", "AW-18528978608").strip()
+GADS_ID = _gads if (GA4_ID and re.fullmatch(r"AW-[0-9]{8,12}", _gads)) else ""
 _px = os.environ.get("SITE_META_PIXEL_ID", "").strip()
 META_PIXEL_ID = _px if re.fullmatch(r"[0-9]{8,20}", _px) else ""   # ASCII-цифри: \d приймає й юнікод-цифри (аудит #626)
 LIMIT = int(os.environ.get("LIMIT", "0") or "0")   # 0 = без ліміту
@@ -298,12 +302,13 @@ def analytics_head(defer=True) -> str:
         return ""
     out = [f'<script>window.PT_ANALYTICS={json.dumps({"ga4": GA4_ID, "fb": META_PIXEL_ID})};</script>\n']
     gtag_src = f"https://www.googletagmanager.com/gtag/js?id={GA4_ID}"
+    gtag_cfg = f"gtag('config','{GA4_ID}');" + (f"gtag('config','{GADS_ID}');" if GADS_ID else "")      # GA4 + (опційно) Google Ads на одному gtag.js
     fb_src = "https://connect.facebook.net/en_US/fbevents.js"
     if not defer:
         if GA4_ID:
             out.append(f'<script async src="{gtag_src}"></script>\n'
                        "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
-                       f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n")
+                       f"gtag('js',new Date());{gtag_cfg}</script>\n")
         if META_PIXEL_ID:
             out.append("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
                        "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;"
@@ -314,7 +319,7 @@ def analytics_head(defer=True) -> str:
     js = []
     if GA4_ID:
         js.append("window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
-                  f"gtag('js',new Date());gtag('config','{GA4_ID}');")
+                  f"gtag('js',new Date());{gtag_cfg}")
     if META_PIXEL_ID:
         js.append("(function(f){var n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];})(window);"
                   f"fbq('set','autoConfig',false,'{META_PIXEL_ID}');fbq('init','{META_PIXEL_ID}');fbq('track','PageView');")   # autoConfig=false: без Automatic Advanced Matching

@@ -338,3 +338,7 @@ gmc_service_account*.json
 # Рілси, яких пише автомат публікації (VPS): не в git і не в DocumentRoot (20.10)
 /ig_reels.json
 /ig_reels.json.tmp
+
+# RoyalToys у EVA-фіді: машинний стан (рахується на VPS)
+rt_eva_selection.json
+rt_eva_listed_state.json

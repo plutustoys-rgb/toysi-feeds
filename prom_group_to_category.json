@@ -247,7 +247,7 @@
  "155145000": {
   "g_slug": "lyalki",
   "impressions_90d": 12,
-  "category": "lialky"
+  "category": "lialky-lialkovi-nabory"
  },
  "155144990": {
   "g_slug": "spinneri",
@@ -438,5 +438,15 @@
   "g_slug": "igrovi-kompleksi",
   "impressions_90d": 3,
   "category": "ihrovi-kompleksy"
+ },
+ "155490013": {
+  "g_slug": "plakati-interaktivni",
+  "impressions_90d": 7,
+  "category": "plakaty-interaktyvni"
+ },
+ "155412282": {
+  "g_slug": "pazli",
+  "impressions_90d": 1,
+  "category": "pazly"
  }
-}
+}

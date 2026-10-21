@@ -38,6 +38,11 @@ OUT_FILE_APACHE = Path(os.environ.get("PROM_REDIRECTS_MAP_APACHE", str(BASE / "p
 # групи Prom (12.10.2026): джерело правди (SEO) → мапа Apache gid -> /category-<slug>.html
 GROUP_JSON = Path(os.environ.get("PROM_GROUP_CATEGORY_JSON", str(BASE / "prom_group_to_category.json")))
 OUT_FILE_GROUPS_APACHE = Path(os.environ.get("PROM_GROUP_REDIRECTS_MAP_APACHE", str(BASE / "prom_group_redirects_apache.map")))
+# Ручні перекриття для старих Prom-карток БЕЗ сторінки на сайті (21.10.2026, рішення SEO/власника «захист старих адрес»): {"<prom_id>": {"target": "/category-<slug>.html", ...}}.
+# Застосовуються ЛИШЕ до prom_id, яких немає в основній мапі (картка з реальною сторінкою ніколи не перебивається), і лише на існуючу сторінку категорії.
+OVERRIDES_JSON = Path(os.environ.get("PROM_REDIRECT_OVERRIDES_JSON", str(BASE / "prom_redirect_overrides.json")))
+PID_RE = re.compile(r"[0-9]{1,20}")
+OVERRIDE_TARGET_RE = re.compile(r"/category-([a-z0-9-]{1,200})\.html")
 GID_RE = re.compile(r"[0-9]{1,20}")                 # fullmatch; явний клас, а не \d (той приймає арабсько-індійські цифри)
 SLUG_RE = re.compile(r"[a-z0-9-]{1,200}")
 GROUP_LINE_RE = re.compile(r"[0-9]{1,20} /category-[a-z0-9-]{1,200}\.html")   # формат рядка мапи груп (перевіряється перед записом і в тесті)
@@ -62,6 +67,45 @@ def load_valid_ids() -> set:
     except OSError:
         pass
     return ids
+
+
+def load_overrides(site_dir: Path, taken: set) -> tuple[dict, dict]:
+    """Валідні ручні перекриття {prom_id: "/category-<slug>.html"} + статистика. Ніколи не падає: зіпсований файл/запис — гучне попередження й пропуск (prom_id лишається на 410, як було).
+    Відхиляємо: не-цифровий id, ціль поза форматом, відсутня сторінка site/category-<slug>.html, prom_id що вже має картку в основній мапі (taken)."""
+    stats = {"ok": 0, "invalid": 0, "no_page": 0, "has_card": 0}
+    try:
+        raw = json.loads(OVERRIDES_JSON.read_text(encoding="utf-8-sig"), object_pairs_hook=_pairs_hook)
+    except FileNotFoundError:
+        return {}, stats
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"[prom_redirects] УВАГА (перекриття): {OVERRIDES_JSON} нечитний ({type(e).__name__}: {str(e)[:120]}) — перекриття не застосовано", file=sys.stderr)
+        return {}, stats
+    if not isinstance(raw, dict):
+        print("[prom_redirects] УВАГА (перекриття): очікую JSON-об'єкт {prom_id: {...}} — перекриття не застосовано", file=sys.stderr)
+        return {}, stats
+    out = {}
+    for key, rec in raw.items():
+        if rec is _DUP:                              # дубль ключа в JSON (json.loads мовчки лишив би останній) — неоднозначно, пропуск
+            print(f"[prom_redirects] УВАГА (перекриття): дубль ключа {str(key)[:30]!r} у JSON — пропущено", file=sys.stderr)
+            stats["invalid"] += 1
+            continue
+        pid = key.strip() if isinstance(key, str) else ""
+        tgt = (rec or {}).get("target") if isinstance(rec, dict) else None
+        m = OVERRIDE_TARGET_RE.fullmatch(tgt) if isinstance(tgt, str) else None
+        if not PID_RE.fullmatch(pid) or pid != key or not m:          # ключ без пробілів, лише цифри (\" 2000\" і \"2000\" не мають бути двома записами)
+            print(f"[prom_redirects] УВАГА (перекриття): запис {str(key)[:30]!r} поза форматом — пропущено", file=sys.stderr)
+            stats["invalid"] += 1
+            continue
+        if pid in taken:
+            stats["has_card"] += 1               # цей prom_id має сторінку-картку: перекриття не потрібне і не діє
+            continue
+        if not (site_dir / f"category-{m.group(1)}.html").is_file():
+            print(f"[prom_redirects] УВАГА (перекриття): prom_id {pid}: сторінки site/category-{m.group(1)}.html НЕМАЄ — лишається 410", file=sys.stderr)
+            stats["no_page"] += 1
+            continue
+        out[pid] = tgt
+        stats["ok"] += 1
+    return out, stats
 
 
 def build_map() -> tuple[str, int, int]:
@@ -89,8 +133,12 @@ def build_map() -> tuple[str, int, int]:
         seen_prom.add(prom_id)
         lines.append(f"{prom_id} /product-{toysi_id}.html;")
 
+    ov, ov_stats = load_overrides(INDEX_FILE.parent, seen_prom)
+    for pid, tgt in ov.items():
+        lines.append(f"{pid} {tgt};")
+    build_map.override_stats = ov_stats
     lines.sort()
-    build_map.apache_lines = [l.rstrip(";") for l in lines]   # той самий набір, формат "prom_id /product-X.html"
+    build_map.apache_lines = [l.rstrip(";") for l in lines]   # той самий набір, формат "prom_id /product-X.html" (+ перекриття "prom_id /category-<slug>.html")
     header = ("# АВТО-ЗГЕНЕРОВАНО generate_prom_redirects.py — nginx map (prom_id -> наша картка).\n"
               "# Include у map-блоці nginx; default (/catalog.html) — для непокритих.\n")
     return header + "\n".join(lines) + "\n", len(lines), skipped
@@ -245,7 +293,7 @@ def main() -> None:
     _write_atomic(OUT_FILE, content)
     _write_atomic(OUT_FILE_APACHE, build_map_apache())
     print(f"[prom_redirects] {OUT_FILE}: {n} редиректів prom_id->/product-*.html "
-          f"(пропущено {skipped} — нема сторінки на сайті; ці Prom-URL на проді віддають 410 Gone)")
+          f"(пропущено {skipped} — нема сторінки на сайті; ці Prom-URL на проді віддають 410 Gone; ручні перекриття на категорії: {getattr(build_map, 'override_stats', {})})")
     try:
         write_group_map()       # окрема мапа; її збій не чіпає мапу товарів вище (вона вже записана)
     except Exception as e:  # noqa: BLE001

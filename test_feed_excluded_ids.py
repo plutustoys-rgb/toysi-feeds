@@ -33,5 +33,12 @@ items, st = gg.build_feed_items(cat, {}, {}, {}, None, None)
 ids = {i["pid"] for i in items}
 chk("283091 виключено, сусідній товар лишився", ids == {"283092"})
 chk("лічильник excluded_product = 1", st.get("excluded_product") == 1)
+chk("«Арбалети і луки» (239852, 277619, 264057, 297048) — pid-страховка, рішення власника 22.10; «Азартні» в списку НЕМАЄ (лишаються у фідах)", all(p in gg.FEED_EXCLUDED_PRODUCT_IDS for p in ("239852", "277619", "264057", "297048"))
+    and not any(p in gg.FEED_EXCLUDED_PRODUCT_IDS for p in ("141716", "289284", "19250", "132858", "257679", "257680", "139013", "126642", "205520")))
+cat2 = {p: item(p, "Лук зі стрілами") for p in ("239852", "277619", "264057", "297048", "141716")}
+for p in cat2:
+    cat2[p]["category_name"] = "Інша назва категорії"        # навіть якщо категорію перейменують — pid-виняток тримає
+items2, st2 = gg.build_feed_items(cat2, {}, {}, {}, None, None)
+chk("при ІНШІЙ назві категорії 4 pid арбалетів усе одно виключені, «Азартний» 141716 лишається в фіді", {i["pid"] for i in items2} == {"141716"} and st2.get("excluded_product") == 4)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -68,5 +68,24 @@ b = load(SITE_GA4_ID="G-ABC123XYZ9", SITE_GADS_ID="AW-99999999999")
 chk("Google Ads: інший валідний AW-id через env підставляється", "gtag('config','AW-99999999999')" in b.analytics_head())
 load()
 
+# --- мітка конверсії Google Ads (SEO 21.10.2026) ---
+b = load(SITE_GA4_ID="G-ABC123XYZ9")
+hd = b.analytics_head(defer=True)
+chk("Google Ads: window.PT_GADS_CONV = send_to мітки «Покупка на сайте» (АВ-акаунт/мітка) у head кожної сторінки; PT_ANALYTICS незмінений", b.GADS_CONV == "AW-18528978608/W1AACIPZ0KQdELCNp4NF"
+    and 'window.PT_ANALYTICS={"ga4": "G-ABC123XYZ9", "fb": ""};window.PT_GADS_CONV="AW-18528978608/W1AACIPZ0KQdELCNp4NF";' in hd and 'PT_GADS_CONV' in b.page("t", "x"))
+b = load(SITE_GA4_ID="G-ABC123XYZ9", SITE_GADS_CONV="")
+chk("Google Ads: SITE_GADS_CONV=\"\" вимикає конверсію (PT_GADS_CONV у HTML немає)", b.GADS_CONV == "" and "PT_GADS_CONV" not in b.analytics_head())
+for bad in ('AW-18528978608/x");alert(1);//', "AW-18528978608/short", "AW-99999999999/W1AACIPZ0KQdELCNp4NF", "AW-18528978608W1AACIPZ0KQdELCNp4NF", "G-ABC123XYZ9/W1AACIPZ0KQdELCNp4NF", "AW-18528978608/" + "A" * 41):
+    b = load(SITE_GA4_ID="G-ABC123XYZ9", SITE_GADS_CONV=bad)
+    chk(f"Google Ads: некоректна мітка {bad[:34]!r} (ін'єкція, інший акаунт, формат, довжина) відкидається", b.GADS_CONV == "" and "PT_GADS_CONV" not in b.analytics_head() and "alert" not in b.analytics_head())
+b = load(SITE_GA4_ID="G-ABC123XYZ9", SITE_GADS_ID="")
+chk("Google Ads: без GADS_ID (вимкнено) конверсія теж вимкнена", b.GADS_CONV == "" and "PT_GADS_CONV" not in b.analytics_head())
+b = load()
+chk("Google Ads: без GA4 (сайт без аналітики) PT_GADS_CONV немає", b.GADS_CONV == "" and "PT_GADS_CONV" not in b.page("t", "x"))
+js_ = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
+chk("app.js: conversion шлеться лише коли є window.PT_GADS_CONV і gtag, в обгортці try, поруч із pt_purchase_sent; розширене відстеження (user_data/set user_data) відсутнє", 'window.gtag("event", "conversion"' in js_ and "window.PT_GADS_CONV && window.gtag" in js_
+    and "user_data" not in js_ and js_.index('"conversion"') < js_.index('setItem("pt_purchase_sent"'))
+load()
+
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ аналітика сайту — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

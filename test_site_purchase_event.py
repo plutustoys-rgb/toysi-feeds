@@ -52,7 +52,7 @@ async function run(opts){
   const fetchStub=function(url, init){ return Promise.resolve({ok:true, json(){return Promise.resolve({order_id:"PT-TEST-1", liqpay:opts.liqpay||null})}}); };
   const ctx={document:doc,localStorage:ls,sessionStorage:ss,console,fetch:fetchStub,navigator:{},location:loc,setTimeout,clearTimeout};
   const win=ctx; ctx.window=ctx; ctx.self=ctx;      // як у браузері: window === глобальний об'єкт (app.js звертається до PT без window.)
-  if(opts.analytics!==false){ ctx.PT_ANALYTICS={ga4:"G-TEST", fb:"123"}; ctx.gtag=function(){gt.push(Array.from(arguments))}; ctx.fbq=function(){fb.push(Array.from(arguments))}; }
+  if(opts.analytics!==false){ ctx.PT_ANALYTICS={ga4:"G-TEST", fb:"123"}; if(opts.conv!==false){ ctx.PT_GADS_CONV="AW-18528978608/W1AACIPZ0KQdELCNp4NF"; } ctx.gtag=function(){gt.push(Array.from(arguments))}; ctx.fbq=function(){fb.push(Array.from(arguments))}; }
   vm.createContext(ctx); vm.runInContext(code,ctx);
   ready.forEach(f=>f());
   return {E, ls, ss, gt, fb, loc, win};
@@ -86,12 +86,12 @@ async function run(opts){
     r.E["f-name"].value="Іван Петренко"; r.E["f-phone"].value="0501234567"; const form=r.E["checkout-form"]; (form.h.submit||[]).forEach(f=>f({preventDefault(){}}));
     await new Promise(x=>setTimeout(x,50));
     console.log(JSON.stringify({order:r.ss.getItem("pt_last_order"), items:r.ss.getItem("pt_last_order_items")}));
-  } else if(scenario==="thanks" || scenario==="thanks_noid"){
+  } else if(scenario==="thanks" || scenario==="thanks_noid" || scenario==="thanks_noconv"){
     const ss=store(); ss.setItem("pt_last_order","PT-TEST-1");
     ss.setItem("pt_last_order_items", JSON.stringify([{id:"235193",name:"Картина за номерами",price:468,qty:2},{id:"7",name:"Дрібничка",price:50,qty:1}]));
-    const o=scenario==="thanks"?{ss, elements:["thanks-oid"]}:{ss, elements:["thanks-oid"], analytics:false};
+    const o=scenario==="thanks"?{ss, elements:["thanks-oid"]}:(scenario==="thanks_noconv"?{ss, elements:["thanks-oid"], conv:false}:{ss, elements:["thanks-oid"], analytics:false});
     const r1=await run(o);
-    const r2=await run({ss, elements:["thanks-oid"], ls:r1.ls});     // «reload»: той самий sessionStorage
+    const r2=await run({ss, elements:["thanks-oid"], ls:r1.ls, conv:scenario!=="thanks_noconv"});     // «reload»: той самий sessionStorage
     console.log(JSON.stringify({gt1:r1.gt, fb1:r1.fb, gt2:r2.gt, fb2:r2.fb, oid:r1.E["thanks-oid"].textContent, sent:ss.getItem("pt_purchase_sent")}));
   }
 })();
@@ -136,6 +136,18 @@ async function run(opts){
     chk("thanks: повторне відкриття (reload) НЕ шле purchase вдруге (pt_purchase_sent)", t is not None and not [e for e in t["gt2"] if e[:2] == ["event", "purchase"]]
         and not [e for e in t["fb2"] if e[:2] == ["track", "Purchase"]] and t["sent"] == "PT-TEST-1")
     n = run("thanks_noid")
+    cv = [e for e in (t or {}).get("gt1", []) if e[:2] == ["event", "conversion"]]
+    chk("Google Ads: на thanks рівно ОДИН gtag('event','conversion') з send_to мітки «Покупка на сайте»", t is not None and len(cv) == 1 and cv[0][2].get("send_to") == "AW-18528978608/W1AACIPZ0KQdELCNp4NF")
+    if cv:
+        chk("Google Ads conversion: value = 986 (той самий, що GA4 purchase), currency UAH, transaction_id = номер замовлення; жодних даних клієнта (лише ці 4 поля)", cv[0][2].get("value") == 986 and cv[0][2].get("currency") == "UAH"
+            and cv[0][2].get("transaction_id") == "PT-TEST-1" and sorted(cv[0][2].keys()) == ["currency", "send_to", "transaction_id", "value"])
+    chk("Google Ads: порядок — GA4 purchase передує conversion; reload НЕ шле conversion вдруге (той самий pt_purchase_sent)", t is not None and [e[1] for e in t["gt1"] if e[:2] in (["event", "purchase"], ["event", "conversion"])] == ["purchase", "conversion"]
+        and not [e for e in t["gt2"] if e[:2] == ["event", "conversion"]])
+    nc = run("thanks_noconv")
+    chk("без PT_GADS_CONV (мітка не задана/вимкнена): GA4 purchase є, conversion НЕ шлеться", nc is not None and len([e for e in nc["gt1"] if e[:2] == ["event", "purchase"]]) == 1 and not [e for e in nc["gt1"] if e[:2] == ["event", "conversion"]])
+    for sc_ in ("submit_prepaid",):
+        pp = run(sc_)
+        chk("prepaid: позиції не зберігаються → ні purchase, ні conversion на thanks (як і було; підтвердження оплати LiqPay у цій події не враховано)", pp is not None and pp["items"] is None)
     chk("без PT_ANALYTICS (нема ID) нічого не шлеться і нічого не падає", n is not None and n["gt1"] == [] and n["fb1"] == [])
 
 print()

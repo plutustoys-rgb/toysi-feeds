@@ -852,6 +852,8 @@
         if(po && pj && sessionStorage.getItem("pt_purchase_sent")!==po){
           var pit=JSON.parse(pj), pv=pit.reduce(function(s,i){ return s+i.price*i.qty; },0);
           track("purchase", pit, pv, {transaction_id:po});
+          // конверсія Google Ads (SEO 21.10.2026): той самий момент і той самий одноразовий прапорець, що GA4 purchase; transaction_id = номер замовлення (дедуплікація в Ads); без розширеного відстеження (жодних даних клієнта)
+          try{ if(window.PT_GADS_CONV && window.gtag){ window.gtag("event", "conversion", {send_to:window.PT_GADS_CONV, value:+pv, currency:"UAH", transaction_id:po}); } }catch(e){}
           sessionStorage.setItem("pt_purchase_sent", po);
         }
       }catch(e){}

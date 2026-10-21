@@ -628,3 +628,4 @@ label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накла
 .pk-1{background:#e9f2fb;border-color:#b9d3ee;color:#173a5c}
 .pk-2{background:#ecf6e8;border-color:#bcdcb1;color:#24491a}
 .pk-3{background:#f6ecfa;border-color:#d9bde6;color:#47235c}
+.brandlink{display:inline-block;margin:0 0 8px;font-size:13px;font-weight:600;color:var(--accent)}

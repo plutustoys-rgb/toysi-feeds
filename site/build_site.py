@@ -759,7 +759,7 @@ def build():
             "desc": it.get("description") or "",
             "contribution": contribution,
             "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")), "dup_of": str(it.get("dup_of") or ""),
-            "vendor": (it.get("vendor") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
+            "vendor": (it.get("vendor") or "").strip(), "vendor_code": (it.get("vendor_code") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
     # RoyalToys-дублі Toysi, варіант 1 «резерв» (власник 20.10): rt-картка з dup_of на товар Toysi, що Є В НАЯВНОСТІ, — «тінь»: покупцям не показуємо (нема в каталозі/пошуку/sitemap/
     # блоках), сторінка жива, але noindex і canonical на сторінку Toysi. Щойно товар Toysi вичерпався (його нема в prods) — rt-картка стає звичайною.
@@ -794,13 +794,24 @@ def build():
         oos_prods = oos_prods[:LIMIT]
     _tc = {}
     for _p in prods:
+        if _p.get("rt"):
+            continue   # rt — власна формула (RT_TITLE_CODES), не «№id»
         _t = product_title(_p["name"], True); _tc[_t] = _tc.get(_t, 0) + 1
     for _p in oos_prods:
+        if _p.get("rt"):
+            continue
         _t = product_title(_p["name"], False); _tc[_t] = _tc.get(_t, 0) + 1
     PRODUCT_DUP_TITLES.clear()
     PRODUCT_DUP_TITLES.update(t for t, c in _tc.items() if c > 1)
     if PRODUCT_DUP_TITLES:
         print(f"[build] title: {len(PRODUCT_DUP_TITLES)} збігів після обрізання — у цих карток додано №id", file=sys.stderr)
+    _rt_items = [(_p, True) for _p in prods if _p.get("rt")] + [(_p, False) for _p in oos_prods if _p.get("rt")]
+    _toysi_titles = {product_title_for(_p, True) for _p in prods if not _p.get("rt")} | {product_title_for(_p, False) for _p in oos_prods if not _p.get("rt")}
+    _codes, _fail = assign_rt_title_codes(_rt_items, _toysi_titles)
+    RT_TITLE_CODES.clear(); RT_TITLE_CODES.update(_codes)
+    RT_TITLE_FAIL[:] = _fail
+    if _rt_items:
+        print(f"[build] RoyalToys title: {len(_rt_items)} карток, до {len(_codes)} додано артикул для унікальності, без унікального title лишилось {len(_fail)}", file=sys.stderr)
     # Відносний гард (аудит #675 (a)): абсолютний поріг не ловить помірно усічений фід (26 тис. проходить), а це ~2,5 тис. сторінок → 404.
     # Порівнюємо з index.json ПОПЕРЕДНЬОЇ збірки (те саме «в наявності»): різке падіння → стоп ДО запису. Свідоме — SITE_ALLOW_SHRINK=1.
     try:
@@ -1191,7 +1202,79 @@ def product_title(name, in_stock=True, uniq=None) -> str:
     return cut + "…" + tag + suffix
 
 
+# ── Title карток RoyalToys (SEO 21.10, формула SEO) ─────────────────────────────────────────────────────────────────────────────────────────────────────
+# title = {назва постачальника, обрізана ПО МЕЖІ СЛОВА так, щоб разом із суфіксом «— купити | PlutusToys» було ≤ 65 символів, БЕЗ «…» і БЕЗ внутрішнього коду rt-…}.
+# Унікальність лише за потреби: після обрізання у групі однакових title до кінця назви додається артикул постачальника (vendorCode; префікса rt- там нема) — «… Qman 1418Q-6».
+# Код rt-… у title не друкується НІКОЛИ (у H1/JSON-LD name лишається повна назва). Якщо унікальності досягти не вдалося (нема артикула / артикули однакові) — картка лишається з найкращим title
+# і потрапляє в RT_TITLE_FAIL (збірка друкує число; список бачить SEO).
+RT_TITLE_CODES = {}     # id → артикул, що додається до title (заповнює build())
+RT_TITLE_FAIL = []      # id карток, чий title не став унікальним
+_TITLE_TAIL_WORDS = re.compile(r"\s(?:для|та|і|й|з|із|зі|на|в|у|по|до|від|за|при|під|над|про|без|або|чи|а|the|and|or|with|for|of)$", re.I)
+
+
+def _cut_title_words(name, room):
+    """Назва ≤ room символів по межі слова: без «…», без висячих розділювачів/прийменників і без незакритих лапок/дужок."""
+    name = re.sub(r"\s+", " ", (name or "")).strip()
+    if room <= 0:
+        return ""
+    if len(name) <= room:
+        return name
+    cut = name[:room]
+    if name[room] != " " and " " in cut:     # наступний символ — середина слова → відкидаємо недописане слово
+        cut = cut.rsplit(" ", 1)[0]
+    for _ in range(6):
+        prev = cut
+        cut = cut.rstrip(" ,.;:—–-/&+|")
+        # незакриті лапки/дужки: прибираємо недописаний фрагмент (якщо лишається достатньо назви), інакше лише сам відкриваючий знак
+        for o, c in (('"', '"'), ("«", "»"), ("(", ")"), ("“", "”")):
+            opened = cut.count(o) - (cut.count(c) if o != c else 0) if o != c else cut.count('"') % 2
+            if opened > 0:
+                i = cut.rfind(o)
+                head = cut[:i].rstrip(" ,.;:—–-/&+|")
+                cut = head if len(head) >= 20 else (cut[:i] + cut[i + 1:]).strip()
+        m = _TITLE_TAIL_WORDS.search(cut)
+        if m:
+            cut = cut[:m.start()]
+        if cut == prev:
+            break
+    return cut.strip()
+
+
+def rt_title(name, in_stock=True, code=None):
+    suffix = _PROD_SUFFIX if in_stock else _PROD_SUFFIX_OOS
+    code = (code or "").strip()
+    if code:
+        return _cut_title_words(name, TITLE_MAX - len(suffix) - len(code) - 1) + " " + code + suffix
+    return _cut_title_words(name, TITLE_MAX - len(suffix)) + suffix
+
+
+def assign_rt_title_codes(rt_items, taken_titles=()):
+    """rt_items: [(p, in_stock)]. Повертає ({id: артикул}, [id картки без унікального title]). taken_titles — title Toysi-карток (rt не має збігатися й із ними)."""
+    groups = {}
+    for p, ins in rt_items:
+        groups.setdefault(rt_title(p["name"], ins), []).append((p, ins))
+    taken = set(taken_titles)
+    codes, fail = {}, []
+    for t, members in groups.items():
+        if len(members) == 1 and t not in taken:
+            continue
+        seen = {}
+        for p, ins in members:
+            code = str(p.get("vendor_code") or "").strip()
+            if re.match(r"(?i)rt-", code):
+                code = ""
+            if code:
+                codes[p["id"]] = code
+            seen.setdefault(rt_title(p["name"], ins, code or None), []).append(p["id"])
+        for t2, ids in seen.items():
+            if len(ids) > 1 or t2 in taken:
+                fail.extend(ids)
+    return codes, sorted(set(fail))
+
+
 def product_title_for(p, in_stock=True) -> str:
+    if p.get("rt"):   # RoyalToys: формула SEO 21.10 (без «…» і без коду rt-)
+        return rt_title(p["name"], in_stock, RT_TITLE_CODES.get(p["id"]))
     t = product_title(p["name"], in_stock)
     return product_title(p["name"], in_stock, uniq=p["id"]) if t in PRODUCT_DUP_TITLES else t
 

@@ -1330,10 +1330,65 @@ def _category_aside_html(cat_prods):
     return f'<aside class="cat-aside" aria-label="{esc(label)}"><div class="cat-aside-lbl">{esc(label)}</div>{tile(p)}{more}</aside>'
 
 
-def _category_intro_html(fname):
+# SEO 21.10 (пілот «посилена брендова категорія», варіант А): існуюча категорія бренду (НЕ новий URL) отримує унікальний текст 120–180 слів лише з наших даних —
+# виробник, кількість моделей у наявності, діапазон деталей і вікові позначки ЛИШЕ з назв, ціни від/до. Без вигаданих дат, цифр, нагород. Текст рахується щозбірки (не застаріває зі складом);
+# статичний текст із category_texts.json (SEO) для цього slug має пріоритет. Така ж категорія автоматично потрапляє в sitemap-priority і має CollectionPage-розмітку та посилання «Усі пазли …» на своїх картках.
+BRAND_CATEGORIES = {
+    "pazly-trefl": {"brand": "Trefl", "producer": "польський виробник пазлів і настільних ігор", "noun": "пазли", "link_text": "Усі пазли Trefl",
+                    # популярні сюжети (SEO 19.10: «Marvel, Холодне серце, Стіч, Міккі, Маквін»): згадуємо ЛИШЕ ті, що реально є в ≥ BRAND_THEME_MIN назвах моделей (підрахунок щозбірки, не вручну)
+                    "themes": (("Marvel", r"marvel|марвел"), ("«Холодне серце»", r"холодне серце"), ("Стіч", r"стіч"), ("Міккі", r"мікк?і"), ("Маквін", r"маквін"),
+                               ("«Щенячий патруль»", r"щенячий патруль"), ("Барбі", r"барбі"))},
+}
+BRAND_INTRO_MIN_ITEMS = 5      # менше моделей — тексту нема (нічого писати)
+BRAND_THEME_MIN = 3           # сюжет згадуємо, лише коли він є в стількох назвах (і не менше)
+_PIECES_RX = re.compile(r"(?<![\d.,])(\d{2,4})\s*ел\w*", re.I)    # «1000 елм.», «(60 ел)», «(2 x 70 елм.)», «2х200 елм.» → число деталей ОДНОГО пазла
+_AGE_RX = re.compile(r"(?<![\w.,+])(\d{1,2})\+(?![\w+])")               # «3+», «6+» — вікова позначка в назві (впритул до плюса; «2в1 + Мемо» — не вік)
+
+
+def brand_category_text(slug, items) -> str:
+    """Унікальний вступ брендової категорії (див. BRAND_CATEGORIES). Лише Toysi-товари у наявності з цієї категорії; < BRAND_INTRO_MIN_ITEMS — порожньо."""
+    cfg = BRAND_CATEGORIES.get(slug)
+    items = [x for x in (items or []) if not x.get("rt") and x.get("stock", 0) > 0]
+    if not cfg or len(items) < BRAND_INTRO_MIN_ITEMS:
+        return ""
+    n = len(items)
+    pieces = sorted(int(m.group(1)) for x in items for m in [_PIECES_RX.search(html.unescape(x["name"]))] if m)
+    ages = sorted(int(m.group(1)) for x in items for m in [_AGE_RX.search(html.unescape(x["name"]))] if m)
+    pmin, pmax = min(x["price"] for x in items), max(x["price"] for x in items)
+    brand, noun = cfg["brand"], cfg["noun"]
+    p1 = f"{brand} — {cfg['producer']}. У цій категорії PlutusToys зібрано {noun} {brand}, які зараз є в наявності: {n} {_model_word(n)}."
+    if pieces:
+        p1 += f" За назвами моделей кількість деталей — від {pieces[0]} до {pieces[-1]}."
+    if ages:
+        p1 += f" У назвах зустрічаються вікові позначки — від {ages[0]}+ до {ages[-1]}+."
+    names = [html.unescape(x["name"]).lower() for x in items]
+    th = sorted(((sum(1 for nm in names if re.search(rx, nm)), label) for label, rx in cfg.get("themes", ())), reverse=True)
+    th = [label for c, label in th if c >= BRAND_THEME_MIN][:5]
+    if th:
+        p1 += " У назвах моделей зустрічаються популярні сюжети: " + ", ".join(th) + "."
+    p2 = (f"Ціни на {noun} {brand} у нашому каталозі — від {_fmt_int(pmin)} до {_fmt_int(pmax)} ₴. Пазл із меншою кількістю деталей збирається швидше й добре підходить для початку, "
+          "а великі набори краще вибирати, коли є час і вільне місце на столі. Перед замовленням відкрийте картку товару: там є фото й назва моделі з форматом пазла, "
+          "а в категорії можна відсортувати товари за ціною.")
+    p3 = ("Усі позиції на цій сторінці є в наявності на момент збірки сторінки; залишок може змінюватися, тому актуальний стан видно на картці товару. "
+          "Відправляємо замовлення Новою Поштою по Україні, вартість доставки — за тарифами оператора. Умови оплати, доставки й повернення описано на сторінках «Доставка» та «Повернення».")
+    return "\n\n".join((p1, p2, p3))
+
+
+def _model_word(n):
+    n10, n100 = n % 10, n % 100
+    if n10 == 1 and n100 != 11:
+        return "модель"
+    if 2 <= n10 <= 4 and not 12 <= n100 <= 14:
+        return "моделі"
+    return "моделей"
+
+
+def _category_intro_html(fname, cat_prods=None):
     """Вступний текст категорії (лише 1-ша сторінка; на пагінації не дублюємо). slug = ім'я файлу без «category-» і «.html». HTML у тексті екранується, абзаци — за порожнім рядком."""
     m = re.fullmatch(r"category-(.+)\.html", fname or "")
     text = _CATEGORY_TEXTS.get(m.group(1)) if m else None
+    if not text and m and m.group(1) in BRAND_CATEGORIES:   # SEO 21.10: динамічний текст брендової категорії (із даних збірки)
+        text = brand_category_text(m.group(1), cat_prods)
     alt = _CATEGORY_RU_ALT.get(m.group(1)) if m else None
     if not text and not alt:
         return ""
@@ -1686,7 +1741,7 @@ def write_aktsii(prods, cat_list=None, cat_slug=None):
 
 def _category_top_html(fname, cat_prods):
     """Вступний текст категорії зліва + (є текст) права колонка «Знижка тижня»/«Рекомендуємо»; на вузьких екранах колонка під текстом."""
-    intro = _category_intro_html(fname)
+    intro = _category_intro_html(fname, cat_prods)
     if not intro:
         return ""
     aside = _category_aside_html(cat_prods)
@@ -1713,6 +1768,10 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         head += _ld_script({"@context": "https://schema.org", "@type": "ItemList",
                             "itemListElement": [{"@type": "ListItem", "position": (k - 1) * PER_PAGE + i + 1,
                                                  "url": f"{SITE_URL}/product-{x['id']}.html"} for i, x in enumerate(chunk)]})
+        _bslug = (re.fullmatch(r"category-(.+)\.html", fname or "") or [None, None])[1]
+        if active and not special and k == 1 and _bslug in BRAND_CATEGORIES:   # SEO 21.10: CollectionPage (BreadcrumbList і ItemList лишаються)
+            head += _ld_script({"@context": "https://schema.org", "@type": "CollectionPage", "name": active, "url": f"{SITE_URL}/{fname}", "description": desc,
+                                "about": {"@type": "Brand", "name": BRAND_CATEGORIES[_bslug]["brand"]}})
         if k > 1:
             head += f'<link rel="prev" href="{_page_fname(fname, k - 1)}">\n'
         if k < pages:
@@ -1785,7 +1844,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             f'\n<h1 class="{"page sr-only" if (special and special.get("h1_hidden")) else "page"}">{esc(special["h1"] if special else (active or title))}</h1>\n' +
             (special["notice"] if special else "") +   # SEO 11.10: H1 категорії = лише назва («Каталог •» — у title/крихтах); повний каталог — «Каталог іграшок»
             (f'<p class="pagenote">Сторінка {k} з {pages}</p>\n' if pages > 1 else "") +
-            (_category_intro_html(fname) if (active and k == 1) else "") +
+            (_category_intro_html(fname, prods) if (active and k == 1) else "") +
             controls +
             static_grid +
             (_relcats_html(fname, cat_slug, active) if (active and k == 1) else "")
@@ -2489,12 +2548,14 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
         buy_btn = f'<a class="btn" href="{_shadow_twin}">Перейти до товару</a>'
         _buy_p = ""    
         _shadow_note = f'<div class="oos-note shadow-note"><b>Цей товар продається на іншій сторінці.</b> <a href="{_shadow_twin}">Перейти до товару →</a></div>'
+    _bslug_p = (cat_slug or {}).get(p.get("category"))   # брендова категорія → посилання «Усі пазли …» (SEO 21.10)
     body = (
       '<div class="pad-bar">'
       f'<div class="photo">{photo}</div>'
       '<div class="body">'
       f'<div class="cat">{esc(p["category"])}</div>'
-      f'<h1 class="prod">{esc(p["name"])}</h1>'
+      + (f'<a class="brandlink" href="category-{_bslug_p}.html">{esc(BRAND_CATEGORIES[_bslug_p]["link_text"])} →</a>' if _bslug_p in BRAND_CATEGORIES else '') +
+            f'<h1 class="prod">{esc(p["name"])}</h1>'
       + (_shadow_note if _shadow_twin else (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +
       f'<div class="avail {oos}">{avail}</div></div>'
       + (sale_until_html(p["id"]) if p.get("old_price") else "") + oos_note + buy_info) +
@@ -3341,6 +3402,7 @@ def _sitemap_priority():
     """(id товарів, файли категорій) для sitemap-priority.xml: картки з текстами (product_texts.json), demand_featured, топ за показами GSC (sitemap_priority.json від SEO) і категорії з текстами + цільові категорії старих груп Prom."""
     ids = set(_PRODUCT_TEXTS)
     cats = {f"category-{slug}.html" for slug in _CATEGORY_TEXTS}
+    cats |= {f"category-{slug}.html" for slug in BRAND_CATEGORIES}   # SEO 21.10: посилена брендова категорія — у priority (міряємо окремо)
     for path, key in ((DEMAND_FILE, "ids"), (SITEMAP_PRIORITY_FILE, "product_ids")):
         try:
             with open(path, encoding="utf-8") as f:

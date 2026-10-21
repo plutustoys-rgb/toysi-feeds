@@ -97,7 +97,13 @@ chk("HTTP: невідомий номер і некоректний формат 
 api._PAID_LIMITER = api.RateLimiter(3, 60)
 codes = [get(f"?o={O_PAID}", {"X-Forwarded-For": "1.2.3.4, 10.0.0.1"})[0] for _ in range(5)]
 other = get(f"?o={O_PAID}", {"X-Forwarded-For": "5.6.7.8"})[0]
-chk("HTTP: ліміт на IP (X-Forwarded-For): 3 пройшли, далі 429; інший IP — 200", codes == [200, 200, 200, 429, 429] and other == 200)
+chk("HTTP: ліміт на IP (ОСТАННІЙ елемент X-Forwarded-For — той, що додав наш Apache): 3 пройшли, далі 429; інший IP — 200", codes == [200, 200, 200, 429, 429] and other == 200)
+api._PAID_LIMITER = api.RateLimiter(3, 60)
+spoof = [get(f"?o={O_PAID}", {"X-Forwarded-For": f"10.9.{i}.{i}, 203.0.113.7"})[0] for i in range(5)]
+chk("HTTP: підроблені ПЕРШІ елементи XFF (різні 10.9.i.i) НЕ обходять ліміт: ключ = останній (203.0.113.7) → 3×200, далі 429 (аудит #951)", spoof == [200, 200, 200, 429, 429])
+api._PAID_LIMITER = api.RateLimiter(3, 60)
+victim = [get(f"?o={O_PAID}", {"X-Forwarded-For": "1.1.1.1"})[0] for _ in range(4)]
+chk("HTTP: без XFF (прямий сокет) ліміт теж діє (ключ = адреса з'єднання)", [get(f"?o={O_PAID}")[0] for _ in range(4)] == [200, 200, 200, 429] and victim == [200, 200, 200, 429])
 srv.shutdown()
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")

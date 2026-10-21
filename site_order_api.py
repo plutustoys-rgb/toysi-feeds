@@ -830,8 +830,9 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(404, {"error": "невідомий ендпоінт"})
 
     def _client_ip(self) -> str:
-        """IP клієнта за Apache-проксі (X-Forwarded-For: перший елемент), інакше адреса сокета. Лише ключ для ліміту запитів."""
-        xff = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        """IP клієнта за Apache-проксі, інакше адреса сокета. Лише ключ для ліміту запитів. БЕРЕМО ОСТАННІЙ елемент X-Forwarded-For: його дописує наш Apache (mod_proxy_http додає адресу з'єднання в кінець),
+        а ПЕРШІ елементи може підробити зовнішній клієнт (тоді ліміт обходиться, а чужий ключ можна «вибити»; аудит #951)."""
+        xff = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
         return xff[:64] or (self.client_address[0] if self.client_address else "?")
 
     def _handle_order_paid(self, q):

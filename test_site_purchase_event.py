@@ -55,6 +55,7 @@ async function run(opts){
     fetchLog.push(String(url));
     if(String(url).indexOf("order/paid")>=0){
       const seq=opts.paid||[]; const resp=seq.length?seq[Math.min(paidIdx++,seq.length-1)]:{paid:false};
+      if(paidIdx===1 && opts.onFirstPoll){ opts.onFirstPoll(); }
       if(resp==="net"){ return Promise.reject(new Error("network")); }
       if(resp==="500"){ return Promise.resolve({ok:false, json(){return Promise.resolve({})}}); }
       return Promise.resolve({ok:true, json(){return Promise.resolve(resp)}});
@@ -117,6 +118,8 @@ async function run(opts){
     else if(scenario==="prepaid_query_only"){ o.search="?o="+O; o.paid=[PAID]; }
     else if(scenario==="prepaid_no_analytics"){ ss.setItem("pt_last_order", O); o.paid=[PAID]; o.analytics=false; }
     else if(scenario==="prepaid_bad_id"){ ss.setItem("pt_last_order", "garbage"); o.paid=[PAID]; }
+    else if(scenario==="prepaid_false_with_payload"){ ss.setItem("pt_last_order", O); o.paid=[{paid:false, value:936, currency:"UAH", items:PAID.items}]; }
+    else if(scenario==="prepaid_other_tab_between_polls"){ ss.setItem("pt_last_order", O); o.paid=[{paid:false},PAID]; o.onFirstPoll=function(){ ls.setItem("pt_purchase_done", JSON.stringify([O])); }; }
     else if(scenario==="prepaid_cod_items_present"){ ss.setItem("pt_last_order", O); ss.setItem("pt_last_order_items", JSON.stringify([{id:"1",name:"COD",price:100,qty:1}])); o.paid=[PAID]; }
     const r1=await run(o);
     await new Promise(x=>setTimeout(x,150));
@@ -196,6 +199,10 @@ async function run(opts){
     chk("prepaid: некоректний номер замовлення в sessionStorage → сервер не опитується, подій нема", bi is not None and bi["pf1"] == 0 and not ev(bi, "gt1", "purchase"))
     ci = run("prepaid_cod_items_present")
     chk("позиції COD є в sessionStorage → prepaid-гілка НЕ запускається (щоб не було подвійної події)", ci is not None and ci["pf1"] == 0)
+    fp = run("prepaid_false_with_payload")
+    chk("prepaid: відповідь {paid:false} навіть з value>0 і items → події НЕМАЄ (захист у глибину: лише paid===true)", fp is not None and not ev(fp, "gt1", "purchase") and not ev(fp, "gt1", "conversion") and fp["pf1"] == 10)
+    bt = run("prepaid_other_tab_between_polls")
+    chk("prepaid: між опитуваннями інша вкладка вже відправила (pt_purchase_done у localStorage) → друга перевірка purchaseDone зупиняє: 0 подій, 1 запит", bt is not None and not ev(bt, "gt1", "purchase") and not ev(bt, "gt1", "conversion") and bt["pf1"] == 1)
     n = run("thanks_noid")
     cv = [e for e in (t or {}).get("gt1", []) if e[:2] == ["event", "conversion"]]
     chk("Google Ads: на thanks рівно ОДИН gtag('event','conversion') з send_to мітки «Покупка на сайте»", t is not None and len(cv) == 1 and cv[0][2].get("send_to") == "AW-18528978608/W1AACIPZ0KQdELCNp4NF")

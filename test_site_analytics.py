@@ -84,7 +84,7 @@ b = load()
 chk("Google Ads: без GA4 (сайт без аналітики) PT_GADS_CONV немає", b.GADS_CONV == "" and "PT_GADS_CONV" not in b.page("t", "x"))
 js_ = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
 chk("app.js: conversion шлеться лише коли є window.PT_GADS_CONV і gtag, в обгортці try, поруч із pt_purchase_sent; розширене відстеження (user_data/set user_data) відсутнє", 'window.gtag("event", "conversion"' in js_ and "window.PT_GADS_CONV && window.gtag" in js_
-    and "user_data" not in js_ and js_.index('"conversion"') < js_.index('setItem("pt_purchase_sent"'))
+    and "user_data" not in js_ and js_.index('adsConversion(pv, po)') < js_.index('setItem("pt_purchase_sent", po)'))
 load()
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ аналітика сайту — усі перевірки коректні.'}")

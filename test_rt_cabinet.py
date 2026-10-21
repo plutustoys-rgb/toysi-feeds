@@ -157,6 +157,21 @@ _cs = rc.classify_rt_status
 chk("classify_rt_status: «Очікує оплати» → pending; «Передано на комплектацію (Алматинська)», «Відвантажено» → confirmed; «Відмінено» → cancelled; кнопка «Відмініти замовлення» сама НЕ означає скасування; Новий/В обробці/Повернення/порожньо → unknown",
     _cs("RT1 Очікує оплати Відмініти замовлення") == "pending" and _cs("RT1 Передано на комплектацію (Алматинська) Відмініти замовлення") == "confirmed" and _cs("RT1 Відвантажено") == "confirmed"
     and _cs("RT1 Відмінено") == "cancelled" and _cs("RT1 Видалено") == "cancelled" and _cs("RT1 Відмініти замовлення") == "unknown" and all(_cs(x) == "unknown" for x in ("RT1 Новий", "RT1 В обробці", "RT1 Повернення", "")))
+
+# --- статус замовлення з кабінету (read-only) для тексту клієнту ---
+_T = "Фільтр Статус замовлення: Неважливо Новий В обробці Очікує оплати Відмінено #RT000773594 от Учора 17:27 Зібраний Сума замовлення 30,40 грн. #RT000773500 от 10.10 Виконано Сума 5 #RT000773400 от 09.10 Відмінено Сума 7"
+_P = rc.parse_order_statuses(_T, ["RT000773594", "RT000773500", "RT000773400", "RT000999999", "bad"])
+chk("parse_order_statuses: статус беремо з БЛОКУ свого замовлення (не зі словника-фільтра нагорі): Зібраний / Виконано / Відмінено; немає в списку або кривий номер → None",
+    _P == {"RT000773594": "Зібраний", "RT000773500": "Виконано", "RT000773400": "Відмінено", "RT000999999": None, "bad": None})
+chk("parse_order_statuses: «Передано на комплектацію (Алматинська)» — повний підпис, не обрізаний",
+    rc.parse_order_statuses("#RT000000111 от 1 Передано на комплектацію (Алматинська) Сума 1", ["RT000000111"])["RT000000111"] == "Передано на комплектацію (Алматинська)")
+chk("parse_order_statuses: невідоме слово статусу → None (нічого не вигадуємо)", rc.parse_order_statuses("#RT000000111 от 1 Щось нове Сума 1", ["RT000000111"])["RT000000111"] is None)
+_rl = rc.readonly_lock_decision
+chk("readonly_lock_decision: GET списку/картинок — continue; будь-який POST, logout, cancelOrder, 1sbuttons/fromBalance, onestep — abort",
+    _rl("GET", True, "/ua/my/orders/", "") == "continue" and _rl("GET", False, "/img/a.png", "") == "continue" and _rl("POST", True, "/ua/my/orders/", "") == "abort"
+    and _rl("GET", True, "/ua/logout/", "") == "abort" and _rl("GET", True, "/1sbuttons/", "dop1=cancelOrder&dop2=1") == "abort" and _rl("GET", True, "/1sbuttons/", "dop1=fromBalance&dop2=1") == "abort"
+    and _rl("GET", True, "/ua/onestep/", "") == "abort" and _rl("POST", False, "/x", "") == "abort")
+chk("read_order_statuses: порожній список → {} без мережі", rc.read_order_statuses([]) == {})
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)
@@ -164,5 +179,21 @@ try:
 except rc.OrderError:
     ok_sub = True
 chk("--submit-balance без RT_ORDER_SUBMIT=1 → відмова ДО будь-якої мережі", ok_sub)
+# --- правки аудиту #944 (N2, N3, N5, N8) ---
+chk("readonly_lock_decision: кодований URL (%63ancelOrder, %6Cogout, %64op1=%66romBalance, /%31sbuttons/) і чужий/зсунутий хост — abort",
+    _rl("GET", True, "/ua/my/orders/", "x=%63ancelOrder") == "abort" and _rl("GET", True, "/ua/%6Cogout/", "") == "abort"
+    and _rl("GET", True, "/ua/my/orders/", "%64op1=%66romBalance&dop2=1") == "abort" and _rl("GET", True, "/%31sbuttons/", "") == "abort"
+    and _rl("GET", False, "/1sbuttons/", "dop1=cancelOrder&dop2=1") == "abort" and _rl("GET", False, "/ua/logout/", "") == "abort")
+chk("readonly_lock_decision: кожне небезпечне слово окремо (cancel, exit, delete, remove, clear, checkout, signout, logoff, otmen) — abort; список і звичайні картинки — continue",
+    all(_rl("GET", True, "/ua/my/" + w + "/", "") == "abort" for w in ("cancel", "exit", "delete", "remove", "clear", "checkout", "signout", "logoff", "otmen"))
+    and _rl("GET", True, "/ua/my/orders/", "") == "continue" and _rl("GET", False, "/wa-data/public/img/a.jpg", "") == "continue")
+_Pp = rc.parse_order_statuses
+chk("parse: RT000000111 не плутається з RT0000001110 (межа \\b)", _Pp("#RT0000001110 от 1 Виконано Сума 1 #RT000000111 от 2 Зібраний Сума 2", ["RT000000111", "RT0000001110"]) == {"RT000000111": "Зібраний", "RT0000001110": "Виконано"})
+chk("parse: повтор ТОГО Ж номера в картці не обриває блок («Новий» зі словника не підміняє «Зібраний»)", _Pp("Замовлення RT000773594 створено! #RT000773594 от 1 Зібраний Сума 1", ["RT000773594"])["RT000773594"] == "Зібраний")
+chk("parse: картка без статусу перед карткою зі статусом → None (статус сусіда не береться)", _Pp("#RT000000201 от 1 Сума 1 #RT000000202 от 2 Відвантажено Сума 2", ["RT000000201", "RT000000202"]) == {"RT000000201": None, "RT000000202": "Відвантажено"})
+chk("parse: футер списку («Кіл-сть замовлень … Фільтр Новий В обробці») не дає статус останній картці без статусу", _Pp("#RT000000301 от 1 Сума 1 Кіл-сть замовлень на сторінці 10 20 Фільтр замовлень Новий В обробці", ["RT000000301"])["RT000000301"] is None)
+chk("read_order_statuses: поллер НЕ запускає автовхід (немає виклику ensure_session) і без файлу сесії → OrderError до браузера",
+    "ensure_session()" not in __import__("inspect").getsource(rc.read_order_statuses) and (_raises2(lambda: (setattr(rc, "STATE_FILE", __import__("pathlib").Path("Z:/нема/state.json")), rc.read_order_statuses(["RT000000001"]))) is not None))
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

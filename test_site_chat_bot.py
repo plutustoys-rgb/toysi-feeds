@@ -390,5 +390,59 @@ bf3.api.mode = ""
 set_order(delivery_status="shipped")
 chk("429 минув → клієнт отримує актуальний стан (оновлення не втрачено)", bf3.notify_changes() == 1 and "відправлено" in bf3.api.sent[-1][1])
 
+# --- RT-замовлення: повна послідовність текстів клієнту, БЕЗ назви постачальника ---
+_rc = sqlite3.connect(":memory:")
+_rc.row_factory = sqlite3.Row
+_rc.execute("CREATE TABLE o (status TEXT, delivery_status TEXT, payment_method TEXT, payment_confirmed INTEGER, toysi_ttn TEXT, cancelled_at TEXT, phone TEXT, rt_state TEXT, rt_cabinet_status TEXT)")
+
+
+def rtrow(rs, cab=None, ds=None, ttn="20451565972503", paid=1, status="new", canc=None):
+    _rc.execute("DELETE FROM o")
+    _rc.execute("INSERT INTO o VALUES(?,?,?,?,?,?,?,?,?)", (status, ds, "prepaid", paid, ttn, canc, "+380501234567", rs, cab))
+    return _rc.execute("SELECT * FROM o").fetchone()
+
+
+_ot = sb.order_status_text
+chk("RT: оплата пройшла, конвеєр у роботі (ttn_created/marking_ready/rt_ordering) → «Оплату отримано, замовлення в роботі»",
+    all(_ot(rtrow(s)) == "Оплату отримано, замовлення в роботі." for s in ("ttn_creating", "ttn_created", "marking_ready", "rt_ordering")))
+chk("RT: rt_ordered без статусу кабінету → «передано на комплектацію»", _ot(rtrow("rt_ordered")) == "Замовлення передано на комплектацію.")
+chk("RT: rt_ordered + кабінет «Зібраний» → «зібране, очікує передачі перевізнику»", _ot(rtrow("rt_ordered", "Зібраний")) == "Замовлення зібране, очікує передачі перевізнику.")
+chk("RT: кабінет «Передано на комплектацію (Алматинська)» / «Кошти заблоковані» → «передано на комплектацію»", _ot(rtrow("rt_ordered", "Передано на комплектацію (Алматинська)")) == "Замовлення передано на комплектацію." and _ot(rtrow("rt_ordered", "Кошти заблоковані")) == "Замовлення передано на комплектацію.")
+chk("RT: кабінет «Відмінено»/«Видалено» після підтвердження → None (автовідповіді немає, відповідає людина)", _ot(rtrow("rt_ordered", "Відмінено")) is None and _ot(rtrow("rt_ordered", "Видалено")) is None)
+_s = _ot(rtrow("shipped", ds="shipped"))
+chk("RT: shipped → «відправлено Новою Поштою» + ТТН + посилання відстеження", "відправлено Новою Поштою" in _s and "20451565972503" in _s and "cargo_number=20451565972503" in _s)
+chk("RT: delivered → «доставлено» + ТТН", _ot(rtrow("delivered", ds="delivered")).startswith("Замовлення доставлено.") and "20451565972503" in _ot(rtrow("delivered", ds="delivered")))
+chk("RT: returned → «повертається відправнику, напишіть нам»", "повертається" in _ot(rtrow("returned", ds="returned")))
+chk("RT: manual / невідомий rt_state → None (відповідає людина)", _ot(rtrow("manual")) is None and _ot(rtrow("щось")) is None)
+chk("RT: скасоване замовлення / неоплачений передплатний → як і раніше (скасовано / очікуємо оплату), RT-гілка не перебиває",
+    "скасовано" in _ot(rtrow("rt_ordered", canc="2026-10-21")) and "очікуємо підтвердження оплати" in _ot(rtrow("ttn_created", paid=0)))
+_all = " ".join(str(_ot(rtrow(s, c, d)) or "") for s in ("ttn_created", "rt_ordered", "shipped", "delivered", "returned") for c in (None, "Зібраний") for d in (None, "shipped", "delivered", "returned"))
+chk("RT: у жодному тексті клієнту немає «RT», «Royal», «Toysi», «постачальник», «кабінет»", not any(w in _all.lower() for w in ("royal", "toysi", "постачальн", "кабінет")) and " rt" not in _all.lower())
+chk("звичайне (не RT) замовлення «new» → «прийнято й обробляється» без змін (rt_state порожній)", _ot(rtrow(None)) == "Замовлення прийнято й обробляється.")
+
+# --- правки аудиту #944 (N1, N6, N7) ---
+_rcs = sqlite3.connect(":memory:")
+_rcs.row_factory = sqlite3.Row
+chk("RT: кабінет «Очікує оплати»/«Новий»/«В обробці» (rt_ordered) → «Оплату отримано, замовлення в роботі» (не «на комплектації»)", all(_ot(rtrow("rt_ordered", c)) == "Оплату отримано, замовлення в роботі." for c in ("Очікує оплати", "Новий", "В обробці")))
+chk("RT: кабінет «Повернення» → None (відповідає людина)", _ot(rtrow("rt_ordered", "Повернення")) is None)
+chk("RT: returned НЕ кінцевий (підписка лишається — «скасовано» після повернення коштів клієнт ще отримає)", not sb._is_final(rtrow("returned", ds="returned")) and sb._is_final(rtrow("delivered", ds="delivered")))
+# N1: автовідповідь «номер + 4 цифри» бачить RT-колонки
+_odb2 = os.path.join(tempfile.mkdtemp(), "orders_rt.db")
+_c2 = sqlite3.connect(_odb2)
+_c2.execute("CREATE TABLE orders (internal_order_id TEXT, platform TEXT, status TEXT, delivery_status TEXT, payment_method TEXT, payment_confirmed INTEGER, toysi_ttn TEXT, cancelled_at TEXT, phone TEXT, rt_state TEXT, rt_cabinet_status TEXT)")
+_c2.execute("INSERT INTO orders VALUES('site_PT-20261021-100000-aaaaaa','site','new',NULL,'prepaid',1,'20451565972503',NULL,'+380501234567','rt_ordered','Зібраний')")
+_c2.execute("INSERT INTO orders VALUES('site_PT-20261021-100000-bbbbbb','site','new','shipped','prepaid',1,'20451565972503',NULL,'+380501234567','shipped',NULL)")
+_c2.commit()
+_c2.close()
+_old_db = sb.ORDERS_DB
+sb.ORDERS_DB = Path(_odb2)
+b_rt, a_rt, d_rt = mk()
+b_rt.handle_update(upd(C1, "Статус PT-20261021-100000-aaaaaa, телефон 4567"))
+b_rt.handle_update(upd(C1, "Статус PT-20261021-100000-bbbbbb, телефон 4567"))
+_m = to(a_rt, C1)
+chk("автовідповідь «номер + 4 цифри» для RT-замовлення: «зібране, очікує передачі перевізнику» і «відправлено Новою Поштою» + ТТН (не «обробляється»)",
+    len(_m) == 2 and "зібране, очікує передачі перевізнику" in _m[0] and "відправлено Новою Поштою" in _m[1] and "20451565972503" in _m[1] and not any("обробляється" in t for t in _m))
+sb.ORDERS_DB = _old_db
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

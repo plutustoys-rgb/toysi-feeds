@@ -775,5 +775,75 @@ finally:
     _cbc.create_receipt = _orig_cr
 chk("Deps.ensure_receipt для EVA: чек CASHLESS ОДИН раз (footer «EVA замовлення …», сума = позиції), повторний виклик — прапорець; результат True",
     r1_ is True and r2_ is True and len(_calls_r) == 1 and _calls_r[0][0] == "CASHLESS" and "EVA замовлення E6" in _calls_r[0][1] and _calls_r[0][2] == 600.0)
+
+# --- статус з кабінету RT (read-only) для тексту клієнту: refresh_cabinet_statuses ---
+class CabFake(Fake):
+    def __init__(self, got=None, boom=False):
+        super().__init__()
+        self.got = got or {}
+        self.boom = boom
+        self.asked = []
+
+    def cabinet_statuses(self, refs):
+        self.asked.append(list(refs))
+        if self.boom:
+            raise RuntimeError("сесія не прийнята")
+        return self.got
+
+
+def _mk_cab(oid, ref, state="rt_ordered"):
+    iid = new_order(oid)
+    with orders_db.get_connection() as c:
+        orders_db.set_rt_state(c, iid, state, rt_order_ref=ref, toysi_ttn="20451565972503")
+        c.commit()
+    return iid
+
+
+cb1 = _mk_cab("CB1", "RT000900001")
+cb2 = _mk_cab("CB2", "RT000900002")
+cb3 = _mk_cab("CB3", "RT000900003", state="shipped")        # shipped: НП — джерело, кабінет не питаємо
+_alerts.clear()
+rr._alert = lambda oid, key, text, cooldown=0: _alerts.append((oid, key))      # попередня підміна вже знята (рядок вище) — ставимо знову на цей блок
+with orders_db.get_connection() as c:
+    _pend = [o for o in orders_db.get_rt_orders_pending(c) if o["internal_order_id"] in (cb1, cb2, cb3)]
+    _fk = CabFake({"RT000900001": "Зібраний", "RT000900002": "Відмінено"})
+    _n = rr.refresh_cabinet_statuses(c, _fk, _pend)
+chk("refresh_cabinet_statuses: питає кабінет ОДИН раз і лише про rt_ordered (CB1, CB2; shipped CB3 — ні)", len(_fk.asked) == 1 and set(_fk.asked[0]) == {"RT000900001", "RT000900002"})
+chk("refresh_cabinet_statuses: статус збережено (Зібраний / Відмінено), змінено 2", get(cb1)["rt_cabinet_status"] == "Зібраний" and get(cb2)["rt_cabinet_status"] == "Відмінено" and _n == 2 and get(cb3).get("rt_cabinet_status") is None)
+chk("refresh_cabinet_statuses: «Відмінено» після підтвердження → алерт rt_cancelled_live для CB2 (і лише для нього)", (cb2, "rt_cancelled_live") in _alerts and not any(o == cb1 for o, k in _alerts))
+_t0 = get(cb1)["rt_updated_at"]
+with orders_db.get_connection() as c:
+    _n2 = rr.refresh_cabinet_statuses(c, CabFake({"RT000900001": "Зібраний", "RT000900002": "Відмінено"}), [o for o in orders_db.get_rt_orders_pending(c) if o["internal_order_id"] in (cb1, cb2, cb3)])
+chk("повторне читання без змін → 0 змін; rt_updated_at НЕ змінюється (інакше «застрягло» ніколи не спрацює)", _n2 == 0 and get(cb1)["rt_updated_at"] == _t0)
+with orders_db.get_connection() as c:
+    _n3 = rr.refresh_cabinet_statuses(c, CabFake({"RT000900001": None}), orders_db.get_rt_orders_pending(c))
+chk("не знайдено/невідомий підпис (None) → попереднє значення НЕ стирається", _n3 == 0 and get(cb1)["rt_cabinet_status"] == "Зібраний")
+with orders_db.get_connection() as c:
+    _n4 = rr.refresh_cabinet_statuses(c, CabFake(boom=True), orders_db.get_rt_orders_pending(c))
+chk("збій читання кабінету (сесія/мережа) → без винятку, без алерту, статуси як були", _n4 == 0 and get(cb1)["rt_cabinet_status"] == "Зібраний")
+with orders_db.get_connection() as c:
+    _n5 = rr.refresh_cabinet_statuses(c, Fake(), orders_db.get_rt_orders_pending(c))
+chk("deps без cabinet_statuses (старі підміни) → 0, нічого не ламається", _n5 == 0)
+chk("_Deps має cabinet_statuses (справжній виклик read_order_statuses)", hasattr(rr._Deps, "cabinet_statuses"))
+rr._alert = _orig_alert
+
+# --- правки аудиту #944 (N6, N8): dry-run не питає кабінет; rt_updated_at не чіпається; не знайдено — не алерт ---
+cb4 = _mk_cab("CB4", "RT000900004")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET rt_updated_at='2026-01-01T00:00:00' WHERE internal_order_id=?", (cb4,))
+    c.commit()
+    orders_db.set_rt_cabinet_status(c, cb4, "Зібраний")
+    c.commit()
+chk("set_rt_cabinet_status НЕ чіпає rt_updated_at (явно старе значення лишається)", get(cb4)["rt_updated_at"] == "2026-01-01T00:00:00" and get(cb4)["rt_cabinet_status"] == "Зібраний" and bool(get(cb4)["rt_cabinet_checked_at"]))
+_fk2 = CabFake({"RT000900004": "Зібраний"})
+rr._run_pipeline(False, deps=_fk2)
+chk("dry-run (apply=False): кабінет статусів НЕ читається", _fk2.asked == [])
+rr._alert = lambda oid, key, text, cooldown=0: _alerts.append((oid, key))
+_alerts.clear()
+with orders_db.get_connection() as c:
+    rr.refresh_cabinet_statuses(c, CabFake({}), [o for o in orders_db.get_rt_orders_pending(c) if o["internal_order_id"] == cb4])
+chk("не знайдено у списку (None) → без алерту", not _alerts)
+rr._alert = _orig_alert
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

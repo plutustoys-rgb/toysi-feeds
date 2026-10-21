@@ -350,6 +350,9 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rt_error", "rt_error TEXT")
         _ensure_column(conn, "orders", "rt_updated_at", "rt_updated_at TEXT")
         _ensure_column(conn, "orders", "rt_return_notified_at", "rt_return_notified_at TEXT")
+        # Статус замовлення з КАБІНЕТУ RoyalToys (лише читання, rt_order_runner): для тексту клієнту в боті («зібране, очікує передачі перевізнику»); не впливає на rt_state.
+        _ensure_column(conn, "orders", "rt_cabinet_status", "rt_cabinet_status TEXT")
+        _ensure_column(conn, "orders", "rt_cabinet_checked_at", "rt_cabinet_checked_at TEXT")
         _ensure_column(conn, "orders", "rt_confirmed_at", "rt_confirmed_at TEXT")
         _ensure_column(conn, "orders", "rt_total", "rt_total REAL")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
@@ -587,6 +590,17 @@ def set_rt_state(conn: sqlite3.Connection, internal_order_id: str, state: str | 
         params.append(datetime.now().isoformat(timespec="seconds"))
     params.append(internal_order_id)
     conn.execute(f"UPDATE orders SET {', '.join(sets)} WHERE internal_order_id = ?", params)
+
+
+def set_rt_cabinet_status(conn: sqlite3.Connection, internal_order_id: str, status: str | None) -> bool:
+    """Зберігає прочитаний зі списку кабінету RoyalToys статус (точний підпис зі словника) і час перевірки. rt_updated_at НЕ чіпає (це не перехід стану конвеєра, інакше «застрягло» ніколи б не спрацювало). True — статус змінився."""
+    row = conn.execute("SELECT rt_cabinet_status FROM orders WHERE internal_order_id = ?", (internal_order_id,)).fetchone()
+    if row is None:
+        return False
+    changed = (row[0] or None) != (status or None)
+    conn.execute("UPDATE orders SET rt_cabinet_status = ?, rt_cabinet_checked_at = ? WHERE internal_order_id = ?",
+                 (status, datetime.now().isoformat(timespec="seconds"), internal_order_id))
+    return changed
 
 
 def mark_rt_confirmed(conn: sqlite3.Connection, internal_order_id: str) -> bool:

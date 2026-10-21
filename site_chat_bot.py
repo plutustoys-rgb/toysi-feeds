@@ -429,8 +429,9 @@ class Bot:
         if _PUBLIC_RE.fullmatch(oid):
             try:
                 _real = resolve_public(oid)
-            except Exception:  # noqa: BLE001
-                _real = None
+            except Exception as e:  # noqa: BLE001 — БД недоступна: як і для довгого номера, справу віддаємо людині (НЕ «не знайдено» і без запису невдалої спроби)
+                print(f"[site_chat_bot] orders.db не прочитано: {type(e).__name__}", file=sys.stderr)
+                return "🤖 статус не перевірено (orders.db недоступна): відповісти вручну", False
             if _real:
                 oid = _real          # ліміт спроб — по internal id: «PT-123456» і довгий формат одного замовлення діляться одним лічильником
         if len(cands) != 1:          # 0 — нема цифр; >1 — це добір (кожне 4-значне число було б окремою спробою): звіряємо лише ОДНЕ число

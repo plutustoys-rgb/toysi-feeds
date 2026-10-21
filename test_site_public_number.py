@@ -239,5 +239,14 @@ bz.handle_update(upd(790, f"Статус {pn_ci} телефон 9999", uid=10)) 
 tz = [t for c, t in az.sent if c == 790]
 chk("C1: ліміт невдалих звірок ключується за internal id: 5 хибних спроб (3 за коротким + 2 за довгим номером) → 6-а (навіть із правильними цифрами) статусом НЕ відповідає — лише загальне «повідомлення отримано» (піде людині)",
     len(tz) == 6 and all(t == sb.STATUS_NOT_FOUND for t in tz[:5]) and "повідомлення отримано" in tz[5] and "відправлено" not in tz[5] and "20451565972503" not in tz[5])
+
+# аудит #955 (повторний): БД недоступна → короткий і довгий номер поводяться однаково (справа людині, не «не знайдено», без запису невдалої спроби)
+sb.ORDERS_DB = Path(tempfile.mkdtemp()) / "nema.db"
+bd, ad = newbot()
+bd.handle_update(upd(795, "Статус PT-123456 телефон 4567", uid=1))
+bd.handle_update(upd(796, "Статус PT-20261021-100000-aaaaaa телефон 4567", uid=2))          # інший чат: загальне підтвердження прийому ≤1 раз/6 год на чат
+td_ = [next((t for c, t in ad.sent if c == ch), None) for ch in (795, 796)]
+chk("БД недоступна: короткий і довгий номер — однакова відповідь (НЕ «не знайдено»), невдала спроба в status_fails не пишеться", td_[0] is not None and td_[0] == td_[1] and td_[0] != sb.STATUS_NOT_FOUND
+    and bd.db.q("SELECT count(*) AS n FROM status_fails")[0]["n"] == 0)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

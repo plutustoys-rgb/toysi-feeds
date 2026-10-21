@@ -91,6 +91,7 @@ LIQPAY_SANDBOX=0
 ```
 SITE_GA4_ID=G-XXXXXXXXXX          # Measurement ID потоку GA4 (формат G-…)
 SITE_META_PIXEL_ID=1234567890123  # ID піксела Meta (лише цифри)
+SITE_GADS_ID=AW-18528978608       # (21.10.2026) тег Google Ads на тому ж gtag.js; за замовчуванням уже в коді, діє лише з GA4; порожнє значення вимикає
 ```
 Без змінних сайт не містить жодних сніпетів. З ними: gtag.js/fbevents.js + події `view_item` (картка товару), `add_to_cart`,
 `begin_checkout` (перший фокус у формі оформлення), `purchase` (thanks.html, один раз на замовлення; значення = сума товарів без

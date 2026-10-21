@@ -590,5 +590,190 @@ fk = TrackBoom()
 with orders_db.get_connection() as c:
     rtb = rr.process_order(c, get(tb), SUP, apply=True, deps=fk)
 chk("таймаут НП у трекінгу rt_ordered: без problems/алерту/rt_error, стан не змінено, повтор наступного циклу", not rtb["problems"] and get(tb)["rt_state"] == "rt_ordered" and not get(tb)["rt_error"] and any("недоступний" in a for a in rtb["actions"]))
+# ---- ланцюжок EVA→RoyalToys (21.10): платформа eva у конвеєрі RT ----
+class EvaFake(Fake):
+    def __init__(self, precheck=True, cancelled_live=False):
+        super().__init__()
+        self.precheck = precheck
+        self.cancelled_live = cancelled_live
+        self.pushed = []
+
+    def eva_precheck(self, conn, o):
+        self.calls.append("eva_precheck")
+        return self.precheck
+
+    def eva_accept_and_push_ttn(self, conn, o, ttn):
+        self.calls.append("eva_push")
+        self.pushed.append(ttn)
+        return True
+
+    def eva_cancelled_live(self, o):
+        return self.cancelled_live
+
+
+_alerts = []
+_orig_alert = rr._alert
+rr._alert = lambda oid, key, text, cooldown=0: _alerts.append((oid, key))
+ev1 = new_order("E1", platform="eva")
+with orders_db.get_connection() as c:
+    pend_ids = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+chk("get_rt_orders_pending: передплачене EVA-замовлення з rt-позицією потрапляє в чергу", ev1 in pend_ids)
+fk = EvaFake()
+with orders_db.get_connection() as c:
+    rev1 = rr.process_order(c, get(ev1), SUP, apply=True, deps=fk)
+chk("EVA: передперевірка скасування ДО чека/ТТН; після резерву ТТН передано в EVA (11→12) з нашою ТТН; стан rt_ordered",
+    fk.calls.index("eva_precheck") < fk.calls.index("receipt") < fk.calls.index("create_ttn") and fk.pushed == ["20451500000001"] and get(ev1)["rt_state"] == "rt_ordered" and not rev1["problems"])
+ev2 = new_order("E2", platform="eva")
+fk = EvaFake(precheck=False)
+with orders_db.get_connection() as c:
+    rev2 = rr.process_order(c, get(ev2), SUP, apply=True, deps=fk)
+chk("EVA: скасовано покупцем до оформлення -> ні чека, ні ТТН, стан NULL, причина в problems", "receipt" not in fk.calls and "create_ttn" not in fk.calls and get(ev2)["rt_state"] is None and rev2["problems"])
+ev3 = new_order("E3", platform="eva")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ev3, "rt_ordered", rt_order_ref="RT000900031", toysi_ttn="20451500000031")
+    c.commit()
+_alerts.clear()
+fk = EvaFake(cancelled_live=True)
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ev3), SUP, apply=True, deps=fk)
+chk("EVA rt_ordered: скасовано покупцем ПІСЛЯ оформлення -> 🟠 алерт eva_cancelled і БЕЗ ретраю ТТН у EVA (спершу скасування)", fk.pushed == [] and any(k == "eva_cancelled" for _, k in _alerts))
+ev3b = new_order("E3B", platform="eva")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ev3b, "rt_ordered", rt_order_ref="RT000900032", toysi_ttn="20451500000032")
+    c.commit()
+fk = EvaFake()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ev3b), SUP, apply=True, deps=fk)
+chk("EVA rt_ordered (автопідтвердження вимкнено): ТТН у EVA ще не передано -> ретрай 11→12", fk.pushed == ["20451500000032"])
+ev4 = new_order("E4", platform="eva", pm="cod")
+with orders_db.get_connection() as c:
+    pend2 = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+    cods = {o["internal_order_id"] for o in orders_db.get_rt_cod_orders(c)}
+chk("EVA + накладений платіж + rt-позиція: НЕ в черзі конвеєра, але видно get_rt_cod_orders (алерт, не мовчимо)", ev4 not in pend2 and ev4 in cods)
+_alerts.clear()
+rr.run(apply=True, deps=EvaFake())
+chk("run(): для COD-замовлення з rt-позицією іде алерт rt_cod", any(oid == ev4 and k == "rt_cod" for oid, k in _alerts))
+ev5 = new_order("E5", platform="eva")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET status='eva_cancelled_before_forward' WHERE internal_order_id=?", (ev5,))
+    c.commit()
+    pend3 = {o["internal_order_id"] for o in orders_db.get_rt_orders_pending(c)}
+chk("EVA зі статусом eva_cancelled_before_forward виключено з черги", ev5 not in pend3)
+# — аудит #938: блокери ДО чека (змішаний кошик, не-НП перевізник), 12 лише ПІСЛЯ підтвердження (автопідтвердження), 11 одразу —
+class EvaFake2(EvaFake):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.accepted = []
+
+    def eva_accept(self, o):
+        self.calls.append("eva_accept")
+        self.accepted.append(o["internal_order_id"])
+
+    def rt_confirm(self, rt_ref, total):
+        self.calls.append("rt_confirm")
+        return {"confirmed": True, "balance_before": 1000.0, "balance_after": 1000.0}
+
+    def rt_order(self, items, ttn, pdf, recipient=None):
+        self.calls.append("rt_order")
+        return {"submitted": True, "rt_order_ref": "RT000900040", "total_on_checkout": 100.0}
+
+
+_alerts.clear()
+evm = new_order("EMX", platform="eva", items=[{"toysi_code": "rt-1", "name": "a", "qty": 1, "price": 300}, {"toysi_code": "100", "name": "toysi", "qty": 1, "price": 100}])
+fk = EvaFake2()
+with orders_db.get_connection() as c:
+    rem = rr.process_order(c, get(evm), SUP, apply=True, deps=fk)
+chk("EVA змішаний кошик (rt- + Toysi): ЧЕК НЕ видається, ТТН нема, алерт eva_mixed (Toysi-частину ніхто не форвардить)", "receipt" not in fk.calls and "create_ttn" not in fk.calls and any(k == "eva_mixed" for _, k in _alerts) and rem["problems"])
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET carrier='ukrposhta' WHERE internal_order_id=?", (new_order("EUP", platform="eva"),))
+    c.commit()
+evu = "eva_EUP"
+fk = EvaFake2()
+_alerts.clear()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(evu), SUP, apply=True, deps=fk)
+chk("EVA з перевізником не НП (ukrposhta): ЧЕК НЕ видається, ТТН НП не створюється, алерт eva_carrier", "receipt" not in fk.calls and "create_ttn" not in fk.calls and any(k == "eva_carrier" for _, k in _alerts))
+_with_gate("1")
+eva_ok = new_order("EOK", platform="eva")
+fk = EvaFake2()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(eva_ok), SUP, apply=True, deps=fk)
+chk("автопідтвердження ввімкнено: після резерву спершу «З балансу», ТІЛЬКИ ПОТІМ 12 з ТТН у EVA", fk.calls.index("rt_confirm") < fk.calls.index("eva_push") and fk.pushed == ["20451500000001"])
+class EvaLow(EvaFake2):
+    def rt_confirm(self, rt_ref, total):
+        self.calls.append("rt_confirm")
+        return {"confirmed": False, "low_balance": True, "problems": ["мало"]}
+eva_low = new_order("ELO", platform="eva")
+fk = EvaLow()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(eva_low), SUP, apply=True, deps=fk)
+chk("мало балансу: ТТН у EVA НЕ передається (посилка не йде), але 11 «підтверджене продавцем» виставлено одразу", fk.pushed == [] and fk.accepted == [eva_low])
+_with_gate(None)
+# — аудит #938 (повторний): B1 звичайні EVA-замовлення НЕ отримують чек у route_order; B2 «reserved» лише без автопідтвердження; N1 скасоване покупцем не підтверджується з балансу
+import order_router as _orr
+import checkbox_client as _cbc
+_cc = []
+_orig_cr2 = _cbc.create_receipt
+_cbc.create_receipt = lambda **kw: (_cc.append(kw.get("payment_type")) or {"id": "r-x"})
+try:
+    ev_plain = new_order("EPL", platform="eva", receipt=False)
+    with orders_db.get_connection() as c:
+        okd = _orr._ensure_site_prepaid_receipt(c, get(ev_plain))
+    n_default = len(_cc)
+    with orders_db.get_connection() as c:
+        oki = _orr._ensure_site_prepaid_receipt(c, get(ev_plain), include_eva=True)
+finally:
+    _cbc.create_receipt = _orig_cr2
+chk("B1: _ensure_site_prepaid_receipt за замовчуванням для EVA нічого не видає (route_order/звичайний EVA-потік не змінено); лише include_eva=True (конвеєр RT) видає чек", okd is True and n_default == 0 and oki is True and len(_cc) == 1)
+_with_gate("1")
+_alerts.clear()
+st1 = new_order("ST1")
+fk = EvaFake2()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(st1), SUP, apply=True, deps=fk)
+chk("B2: сайт + автопідтвердження ввімкнено → хибного алерту «reserved» НЕМАЄ", not any(k == "reserved" for _, k in _alerts))
+_with_gate(None)
+_alerts.clear()
+st2 = new_order("ST2")
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(st2), SUP, apply=True, deps=EvaFake2() if False else Fake())
+st3 = new_order("ST3", platform="eva")
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(st3), SUP, apply=True, deps=EvaFake2())
+chk("B2: автопідтвердження вимкнено → «reserved» іде і для сайту, і для EVA (власник має підтвердити вручну)", sum(1 for _, k in _alerts if k == "reserved") == 2)
+_with_gate("1")
+ev7 = new_order("E7", platform="eva")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ev7, "rt_ordered", rt_order_ref="RT000900071", toysi_ttn="20451500000071")
+    c.commit()
+fk = EvaFake2(cancelled_live=True)
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ev7), SUP, apply=True, deps=fk)
+chk("N1: EVA скасовано покупцем після резерву → «З балансу» НЕ виконується, ТТН у EVA не передається", "rt_confirm" not in fk.calls and fk.pushed == [])
+_with_gate(None)
+rr._alert = _orig_alert
+# реальний Deps.ensure_receipt для EVA: той самий безпечний шлях, що й сайт (claim + прапорець), чек CASHLESS ОДИН раз
+import checkbox_client as _cbc
+_calls_r = []
+_orig_cr = _cbc.create_receipt
+
+
+def _fake_create(**kw):
+    _calls_r.append((kw.get("payment_type"), kw.get("footer"), kw.get("total_amount")))
+    return {"id": "rcpt-eva-1"}
+
+
+_cbc.create_receipt = _fake_create
+try:
+    ev6 = new_order("E6", platform="eva", receipt=False)
+    d_real = rr._Deps()
+    with orders_db.get_connection() as c:
+        r1_ = d_real.ensure_receipt(c, get(ev6))
+    with orders_db.get_connection() as c:
+        r2_ = d_real.ensure_receipt(c, get(ev6))
+finally:
+    _cbc.create_receipt = _orig_cr
+chk("Deps.ensure_receipt для EVA: чек CASHLESS ОДИН раз (footer «EVA замовлення …», сума = позиції), повторний виклик — прапорець; результат True",
+    r1_ is True and r2_ is True and len(_calls_r) == 1 and _calls_r[0][0] == "CASHLESS" and "EVA замовлення E6" in _calls_r[0][1] and _calls_r[0][2] == 600.0)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

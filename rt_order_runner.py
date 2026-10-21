@@ -248,6 +248,29 @@ def order_for_ttn(order: dict, items: list) -> dict:
     return {**order, "items": items}
 
 
+def eva_blocker(conn, d, order: dict):
+    """Причина, за якої EVA-замовлення НЕ можна оформлювати через конвеєр RT, або None. Перевіряється ДО чека (інакше платнику видається реальний фіскальний чек на замовлення, яке не відправимо):
+    mixed — у замовленні є не-rt позиції (Toysi-частину ніхто не форвардить, бо order_router пропускає замовлення з rt-позиціями), carrier — не Нова Пошта (ТТН НП була б на чуже відділення),
+    cancelled — покупець скасував на EVA (передперевірка order_router)."""
+    if order.get("platform") != "eva":
+        return None
+    items = order.get("items") or []
+    if any(not str((it or {}).get("toysi_code") or "").strip().lower().startswith("rt-") for it in items):
+        return "mixed"
+    if (order.get("carrier") or "nova_poshta") != "nova_poshta":
+        return "carrier"
+    if hasattr(d, "eva_precheck") and not d.eva_precheck(conn, order):
+        return "cancelled"
+    return None
+
+
+_EVA_BLOCK_TEXT = {
+    "mixed": "EVA-замовлення зі ЗМІШАНИМ кошиком (rt- + інші позиції): Toysi-частину ніхто не форвардить, RT-частину конвеєр не оформлює, ЧЕК НЕ ВИДАНО — потрібне рішення (розділити/скасувати в EVA з причиною 2000–2004, повернення коштів веде EVA)",
+    "carrier": "EVA-замовлення з перевізником НЕ Нова Пошта (Укрпошта/інше): конвеєр RT оформлює лише НП, ЧЕК НЕ ВИДАНО — потрібне рішення (скасувати в EVA з причиною чи обробити вручну)",
+    "cancelled": "EVA: замовлення скасоване покупцем ДО оформлення — не оформлюємо (позначено eva_cancelled_before_forward)",
+}
+
+
 def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> dict:
     """Один крок(и) для замовлення. Повертає звіт-словник. deps — підміна зовнішніх викликів у тестах."""
     import orders_db
@@ -260,8 +283,24 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             raise RunnerError(f"крок «{state}» розпочато, але результат невідомий (збій/таймаут) — конвеєр сам НЕ повторює. Звірте ТТН у кабінеті НП / замовлення в кабінеті RoyalToys і виставте стан вручну "
                               "(ttn_created / marking_ready / rt_ordered / manual)")
         if state in ("rt_ordered", "shipped"):
+            if apply and order.get("platform") == "eva":
+                _cancelled = hasattr(d, "eva_cancelled_live") and d.eva_cancelled_live(order)
+                if _cancelled:
+                    _alert(oid, "eva_cancelled", f"покупець скасував замовлення на EVA ПІСЛЯ нашого оформлення (RT {order.get('rt_order_ref')}, ТТН {order.get('toysi_ttn')}) — потрібне рішення: зупинити/повернути посилку, відмова від резерву/відвантаження в RoyalToys; кошти покупцю повертає EVA (не LiqPay)")
+                    rep["actions"].append("EVA: замовлення скасоване покупцем — «З балансу»/ретрай ТТН пропущено")
+                    return rep                  # скасоване покупцем: НЕ підтверджуємо «З балансу» (гроші на скасоване не йдуть)
+                elif not order.get("eva_ttn_pushed_at") and hasattr(d, "eva_accept_and_push_ttn") and (not auto_confirm_enabled() or order.get("rt_confirmed_at")):
+                    try:
+                        d.eva_accept_and_push_ttn(conn, order, order.get("toysi_ttn"))      # ретрай: ТТН ще не передано в EVA; 12 — лише ПІСЛЯ підтвердження «З балансу» (посилка реально йде), якщо автопідтвердження ввімкнено
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[rt_runner] {oid}: ТТН у EVA не передано ({type(e).__name__}) — повтор", file=sys.stderr)
             if state == "rt_ordered" and apply and auto_confirm_enabled() and not order.get("rt_confirmed_at"):
-                _confirm_step(conn, d, oid, order, rep)
+                _done = _confirm_step(conn, d, oid, order, rep)
+                if _done and order.get("platform") == "eva" and not order.get("eva_ttn_pushed_at") and hasattr(d, "eva_accept_and_push_ttn"):
+                    try:
+                        d.eva_accept_and_push_ttn(conn, order, order.get("toysi_ttn"))      # підтвердили саме зараз — одразу 12 з ТТН
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[rt_runner] {oid}: ТТН у EVA не передано ({type(e).__name__}) — повтор", file=sys.stderr)
                 if rep.get("cancelled"):
                     return rep                      # стан уже manual (+алерт): трекінг НП не має його перезаписати
                 if rep["problems"]:
@@ -290,6 +329,12 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 _alert(oid, "stale", f"стан «{state}» без змін понад {STALE_DAYS} днів (ТТН {order.get('toysi_ttn')}) — звірте статус посилки в НП (видалена/зберігання/відмова)")
                 rep["actions"].append(f"стан без змін понад {STALE_DAYS} днів — алерт")
             return rep
+        if state is None:
+            _why = eva_blocker(conn, d, order)
+            if _why:
+                if _why != "cancelled":
+                    _alert(oid, "eva_" + _why, _EVA_BLOCK_TEXT[_why])
+                raise RunnerError(_EVA_BLOCK_TEXT[_why])
         if state is None:
             # фіскальний чек — ПЕРШИМ кроком, як у роутері (бухгалтер 12.10: не пізніше передачі товару), НЕ залежить ні від воріт, ні від залишку/відділення/ціни
             if not d.ensure_receipt(conn, order):
@@ -353,12 +398,26 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             orders_db.set_rt_state(conn, oid, "rt_ordered", rt_order_ref=str(res["rt_order_ref"]), rt_error=None, **({"rt_total": float(_tot)} if isinstance(_tot, (int, float)) else {}))
             conn.commit()
             rep["actions"].append(f"замовлення RoyalToys {res['rt_order_ref']}")
+            _confirmed = False
             if auto_confirm_enabled():
                 try:
-                    _confirm_step(conn, d, oid, {**order, "rt_order_ref": str(res["rt_order_ref"]), "rt_total": float(_tot) if isinstance(_tot, (int, float)) else None, "rt_confirmed_at": None}, rep)
+                    _confirmed = _confirm_step(conn, d, oid, {**order, "rt_order_ref": str(res["rt_order_ref"]), "rt_total": float(_tot) if isinstance(_tot, (int, float)) else None, "rt_confirmed_at": None}, rep)
                 except Exception as e:  # noqa: BLE001
-                    rep["problems"].append(f"підтвердження «З балансу» збій {type(e).__name__} (резерв створено; повторимо наступного циклу)")
-            elif _order_mode() == "reserve":
+                    rep["problems"].append(f"підтвердження «З балансу» збій {type(e).__name__} (резерву створено; повторимо наступного циклу)")
+            if order.get("platform") == "eva" and hasattr(d, "eva_accept_and_push_ttn") and (_confirmed or not auto_confirm_enabled()):
+                try:
+                    if d.eva_accept_and_push_ttn(conn, order, order["toysi_ttn"]):
+                        rep["actions"].append("ТТН передано в EVA (11→12)")
+                    else:
+                        rep["actions"].append("ТТН у EVA не передано — повтор наступного циклу")
+                except Exception as e:  # noqa: BLE001
+                    rep["actions"].append(f"ТТН у EVA не передано ({type(e).__name__}) — повтор наступного циклу")
+            elif order.get("platform") == "eva" and hasattr(d, "eva_accept"):
+                try:
+                    d.eva_accept(order)         # 12 чекає підтвердження «З балансу», але 11 виставляємо одразу (EVA авто-скасовує непідтверджені за 24 год)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[rt_runner] {oid}: EVA 11 не виставлено ({type(e).__name__})", file=sys.stderr)
+            if not auto_confirm_enabled() and _order_mode() == "reserve":      # окремий блок для ОБОХ платформ (аудит #938 B2): при автопідтвердженні «reserved» хибний
                 _alert(oid, "reserved", ("" if res.get("reserve_status_seen", True) else "⚠️ статус «резерв» біля ТТН у списку НЕ підтверджено — звірте кабінет. ") + f"замовлення RoyalToys {res['rt_order_ref']} стоїть у РЕЗЕРВІ (ТТН {order['toysi_ttn']}): нічого не відправлено й не списано. Щоб відправили — поповніть баланс і натисніть «З балансу» в кабінеті "
                                        "(або напишіть менеджеру в чат) до 14:00 пн–пт; резерв тримається 2 дні, на третій скасується. ТТН НП живе обмежений час — не тягніть.", cooldown=24 * 60 * 60)
     except RunnerError as e:
@@ -417,8 +476,45 @@ class _Deps:
         rt_cabinet.ensure_session()
 
     def ensure_receipt(self, conn, order):
+        """Чек передоплати: сайт і EVA — один безпечний шлях (order_router._ensure_site_prepaid_receipt: свіжий стан БД, атомарний claim, невідомий результат Checkbox → другого чека автоматично НЕ буде)."""
         from order_router import _ensure_site_prepaid_receipt
-        return _ensure_site_prepaid_receipt(conn, order)
+        return _ensure_site_prepaid_receipt(conn, order, include_eva=True)
+
+    def eva_precheck(self, conn, order):
+        """True = можна оформлювати. EVA-замовлення, скасоване покупцем ДО нашої дії, не оформлюємо (як у order_router для Toysi-потоку; позначає status eva_cancelled_before_forward + Telegram)."""
+        from order_router import _check_eva_not_cancelled
+        return bool(_check_eva_not_cancelled(conn, order))
+
+    def eva_accept(self, order):
+        """1 → 11 «Підтверджене продавцем» (best-effort; якщо вже 11 — помилка ігнорується викликачем)."""
+        import eva_orders_client
+        eva_orders_client.update_order_status(order["order_id"], status=eva_orders_client.EVA_STATUS_CONFIRMED_BY_SELLER)
+
+    def eva_accept_and_push_ttn(self, conn, order, ttn):
+        """EVA-потік: 1 → 11 «Підтверджене продавцем» → 12 з tracking_number (наша ТТН). 11 — best-effort (якщо вже 11 — помилка ігнорується), 12 і прапорець eva_ttn_pushed_at — як у трекера (ідемпотентно)."""
+        import eva_orders_client
+        import order_status_tracker as ost
+        if order.get("eva_ttn_pushed_at"):
+            return True
+        try:
+            eva_orders_client.update_order_status(order["order_id"], status=eva_orders_client.EVA_STATUS_CONFIRMED_BY_SELLER)
+        except Exception as e:  # noqa: BLE001
+            print(f"[rt_runner] {order['internal_order_id']}: EVA 11 не виставлено ({type(e).__name__}) — пробуємо 12 одразу", file=sys.stderr)
+        ost._maybe_push_ttn_to_eva(conn, order, ttn)
+        row = conn.execute("SELECT eva_ttn_pushed_at FROM orders WHERE internal_order_id = ?", (order["internal_order_id"],)).fetchone()
+        return bool(row and row[0])
+
+    def eva_cancelled_live(self, order):
+        """True, якщо замовлення на сторінці EVA вже скасоване (9/10). Помилка/невідомо → False (не вигадуємо)."""
+        import eva_orders_client
+        try:
+            live = eva_orders_client.get_order(order["order_id"])
+        except Exception:  # noqa: BLE001
+            return False
+        try:
+            return int((live or {}).get("status")) in (9, 10)
+        except (TypeError, ValueError):
+            return False
 
     def create_ttn(self, ttn_order):
         import np_ttn
@@ -465,6 +561,8 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
     reports = []
     with orders_db.get_connection(db_path) if db_path else orders_db.get_connection() as conn:
         pending = orders_db.get_rt_orders_pending(conn)
+        for _o in orders_db.get_rt_cod_orders(conn):            # товари RoyalToys + накладений платіж: конвеєр їх не бере (лише передоплата) — не мовчимо
+            _alert(_o["internal_order_id"], "rt_cod", f"замовлення з товарами RoyalToys і НАКЛАДЕНИМ платежем ({_o.get('platform')}) — конвеєр RT їх не оформлює (лише передоплата, рішення власника 19.10): потрібне ручне рішення (скасувати/узгодити з покупцем)")
         if since == "INVALID":
             print("[rt_runner] RT_RUNNER_SINCE не розібрано як ISO-дата — реальний режим закритий", file=sys.stderr)
         if since and since != "INVALID":
@@ -479,7 +577,7 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
             dd = deps or _Deps()
             for o in dropped:                  # нові замовлення без дійсного SINCE: чек (бухгалтер) і сигнал ВСЕ ОДНО — вони не повинні мовчки зависнути
                 try:
-                    ok_r = dd.ensure_receipt(conn, o)
+                    ok_r = False if eva_blocker(conn, dd, o) else dd.ensure_receipt(conn, o)
                 except Exception as e:  # noqa: BLE001
                     ok_r = False
                     print(f"[rt_runner] {o['internal_order_id']}: чек збій {type(e).__name__}", file=sys.stderr)
@@ -500,7 +598,7 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
         for order in rest:                       # поза лімітом кроків — але чек (бухгалтер) і сигнал «чекає» отримують ВСІ нові замовлення
             if order.get("rt_state") is None:
                 try:
-                    ok_r = d.ensure_receipt(conn, order)
+                    ok_r = False if eva_blocker(conn, d, order) else d.ensure_receipt(conn, order)
                 except Exception as e:  # noqa: BLE001
                     ok_r = False
                     print(f"[rt_runner] {order['internal_order_id']}: чек збій {type(e).__name__}", file=sys.stderr)

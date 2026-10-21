@@ -342,3 +342,6 @@ gmc_service_account*.json
 # RoyalToys у EVA-фіді: машинний стан (рахується на VPS)
 rt_eva_selection.json
 rt_eva_listed_state.json
+
+# Журнал першої появи товарів у каталозі сайту (trend_radar.py): VPS-локальний стан
+catalog_first_seen.json

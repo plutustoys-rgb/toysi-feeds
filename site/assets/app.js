@@ -660,14 +660,27 @@
       var av=document.querySelector(".avail"); if(av){ av.textContent="Немає в наявності"; av.classList.add("oos"); }
     });
   }
+  // «Залишилось N шт» (бейдж у каруселі/nabory/ig): число вшите при збірці (раз на 2 год), а stock.json свіжіший (раз на 15 хв). Застаріле число — фальшива терміновість
+  // (тестувальник 24, 21.10): число змінилось → показуємо нове; залишок став більше межі бейджа (3 = STOCK_BADGE_MAX у build_site.py) → бейдж знімаємо й повертаємо «У наявності».
+  function liveBadge(a, sb, live){
+    if(!sb) return;
+    if(live>3){
+      if(sb.parentNode) sb.parentNode.removeChild(sb);
+      var f=a.querySelector(".foot");
+      if(f && !f.querySelector(".av")){ var s=document.createElement("span"); s.className="av"; s.textContent="У наявності"; f.appendChild(s); }
+      return;
+    }
+    var bn=/(\d+)/.exec(sb.textContent||"");
+    if(!bn || +bn[1]!==live) sb.textContent="Залишилось "+live+" шт";
+  }
   function initStockCards(){   // списки/каталог/головна: «У наявності» → «Немає» для позицій, що вже закінчились (сторінки збираються раз на 2 год)
     if(!document.querySelector("a.card[href^='product-']")) return;
     stockSnapshot().then(function(snap){
       if(!snap || !snap.fresh) return;
       var cards=document.querySelectorAll("a.card[href^='product-']");   // ПІСЛЯ відповіді: у цей час уже є клони каруселі (аудит: клони лишались «У наявності»)
       Array.prototype.forEach.call(cards, function(a){
-        var m=/product-([\w-]+)\.html/.exec(a.getAttribute("href")||""); if(!m || stockOf(snap, m[1])!==0) return;
-        var av=a.querySelector(".av"); if(av){ av.textContent="Немає"; av.className="av oos"; }
+        var m=/product-([\w-]+)\.html/.exec(a.getAttribute("href")||""); if(!m) return; var live=stockOf(snap, m[1]); if(live===null) return; if(live>0){ liveBadge(a, a.querySelector(".stock-badge"), live); return; }
+        var av=a.querySelector(".av"); if(av){ av.textContent="Немає"; av.className="av oos"; } else { var ff=a.querySelector(".foot"); if(ff){ av=document.createElement("span"); av.className="av oos"; av.textContent="Немає"; ff.appendChild(av); } }   // картка з бейджем «Залишилось N» не має .av — без цього після нуля лишалась картка без жодного статусу
         var sb=a.querySelector(".stock-badge"); if(sb && sb.parentNode) sb.parentNode.removeChild(sb);
       });
     });

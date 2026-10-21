@@ -41,7 +41,7 @@ from urllib.parse import urlparse, parse_qs
 import nova_poshta
 import liqpay_client
 import site_promo
-from orders_db import get_connection, init_db, insert_order, get_order, mark_payment_confirmed, set_liqpay_payment_id
+from orders_db import get_connection, init_db, insert_order, get_order, mark_payment_confirmed, set_liqpay_payment_id, assign_public_number, PUBLIC_NUMBER_RE
 
 HOST = os.environ.get("SITE_API_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SITE_API_PORT", "8901"))
@@ -137,11 +137,14 @@ def _test_order_preview(order: dict, total) -> str:
 _THANKS_ORDER_RE = re.compile(r"PT-\d{8}-\d{6}-[0-9a-f]{6}", re.ASCII)
 
 
-def thanks_url(order_id) -> str:
+def thanks_url(order_id, public_number=None) -> str:
     """Адреса повернення з LiqPay: /thanks.html?o=<номер замовлення>. Раніше номер жив лише в sessionStorage вкладки; при поверненні з оплати в іншій вкладці/вікні він губився, і сторінка «Дякуємо» не показувала ні номер, ні кнопку «Статус у Telegram»
     (власник 20.10). Номер у адресі — резервне джерело (фронт бере його, якщо в sessionStorage нема). Нерозпізнаний формат → без параметра."""
     oid = str(order_id or "")
-    return f"{BASE_URL}/thanks.html" + (f"?o={oid}" if _THANKS_ORDER_RE.fullmatch(oid) else "")
+    if not _THANKS_ORDER_RE.fullmatch(oid):
+        return f"{BASE_URL}/thanks.html"
+    pn = str(public_number or "")
+    return f"{BASE_URL}/thanks.html?o={oid}" + (f"&n={pn}" if PUBLIC_NUMBER_RE.fullmatch(pn) else "")      # &n= — лише для ПОКАЗУ покупцю на сторінці подяки (ключ — довгий o)
 
 
 def _notify_new_order(order: dict, total, test: bool = False, note: str = "") -> None:
@@ -150,6 +153,8 @@ def _notify_new_order(order: dict, total, test: bool = False, note: str = "") ->
         return
     try:
         from orders_db import clean_customer_comment
+        if order.get("public_number"):
+            note = (f"{note} · " if note else "") + f"№ для клієнта {order['public_number']}"
         _cc = clean_customer_comment(order.get("customer_comment"))
         if _cc:
             note = (f"{note} · " if note else "") + f"Коментар покупця: {_cc}"
@@ -928,6 +933,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "UPDATE orders SET site_charged_total=? WHERE internal_order_id=?",
                         (total, f"site_{order['order_id']}"),
                     )
+                    order["public_number"] = assign_public_number(conn, f"site_{order['order_id']}")      # короткий номер для покупця (None — лишається довгий)
                 conn.commit()
         except OrderError as e:
             return self._json(400, {"error": str(e)})
@@ -941,6 +947,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         resp = {"order_id": order["order_id"], "total": total,
                 "payment_method": order["payment_method"]}
+        if order.get("public_number"):
+            resp["public_number"] = order["public_number"]
         if order["payment_method"] == "cod":
             # Накладений платіж — онлайн-оплата не потрібна; замовлення прийнято одразу.
             resp["liqpay"] = None
@@ -953,10 +961,10 @@ class Handler(SimpleHTTPRequestHandler):
             _notify(f"💳 LiqPay: чекаут для site_{order['order_id']} НЕ побудовано: {_mp}. Виправ LIQPAY_* у .env на VPS і перезапусти site-order-api.")
             _notify_new_order(order, total, note="ОЧІКУЄ ОПЛАТУ, чекаут LiqPay недоступний (розбіжність режиму/ключів): звʼяжіться з покупцем")   # єдиний канал, що доходить у Telegram за режимом «лише замовлення»
         if liqpay_client.is_configured() and not _mp:
-            desc = f"Замовлення {order['order_id']} на PlutusToys"
+            desc = f"Замовлення {order.get('public_number') or order['order_id']} на PlutusToys"
             ck = liqpay_client.build_checkout(
                 order_id=order["order_id"], amount=total, description=desc,
-                result_url=thanks_url(order["order_id"]),
+                result_url=thanks_url(order["order_id"], order.get("public_number")),
                 server_url=f"{BASE_URL}/api/liqpay/callback",
             )
             resp["liqpay"] = {"action_url": ck["action_url"], "data": ck["data"],

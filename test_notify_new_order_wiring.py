@@ -109,7 +109,7 @@ posts.clear()
 callback("wait_accept", oid)
 chk("колбек wait_accept: повідомлення про замовлення НЕМАЄ (оплата не підтверджена)", not posts)
 code, _ = callback("success", oid)
-chk("колбек success (перше підтвердження): рівно одне повідомлення, передоплата", code == 200 and len(posts) == 1 and f"site №{oid}" in posts[0] and posts[0].endswith("передоплата"))
+chk("колбек success (перше підтвердження): рівно одне повідомлення, передоплата", code == 200 and len(posts) == 1 and f"site №{oid}" in posts[0] and "передоплата" in posts[0] and posts[0].rsplit(" · ", 1)[-1].startswith("№ для клієнта PT-"))      # 21.10: у кінці — короткий номер для розмови з покупцем
 posts.clear()
 callback("success", oid)
 chk("повторний колбек success НЕ дублює (атомарний перехід 0→1)", not posts)

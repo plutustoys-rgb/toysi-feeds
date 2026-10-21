@@ -7,7 +7,9 @@
 Підробки відомих брендів тут НЕ відсіюємо: колонка vendor — для ручної перевірки SEO.
 
 ДАТА ПЕРШОЇ ПОЯВИ. У каталозі її не було, тому ведемо ЖУРНАЛ `catalog_first_seen.json` (VPS-локальний стан, у .gitignore): щодня беремо id із опублікованого сайту (site/index.json) і невідомим ставимо сьогоднішню дату (джерело «observed»).
-Перший запуск (журнал порожній): для Toysi береться дата з фіду постачальника (поле date, є не в усіх), джерело «toysi_feed_date»; решта — «baseline» (дата невідома, у радар НЕ потрапляє, поки не мине час). Товар, що зник і повернувся, НЕ вважається новим (журнал його пам'ятає).
+Журнал веде ВЕСЬ відомий каталог (опублікований сайт ∪ кеш Toysi, включно з товарами без залишку ∪ supplier_rt.json), а не лише те, що зараз на сайті: тому перезапас старого товару і товар, що зник та повернувся, НЕ «нові» (аудит #946 В1). Нове = id, якого журнал ще не бачив.
+Перший запуск (журнал порожній): для Toysi береться дата з фіду постачальника (поле date, є не в усіх), джерело «toysi_feed_date»; решта — «baseline» (дата невідома, у радар НЕ потрапляє).
+Захисти: (а) журнал, що ІСНУЄ, але не читається/не тієї форми → зупинка з помилкою, нічого не перезаписуємо (В3, В6); (б) якщо серед НЕвідомих id більше половини поточного каталогу — журнал неповний або каталог раптово розширився (збірка з LIMIT, ручна збірка): усі вони стають baseline, а не «новими», і це видно в stderr (В2); (в) у радар не йдуть тіні дублів (dup) і RT-картки без індексації (ix=0) — для SEO це шум (В4); (г) текст у CSV, що починається з = + - @, екранується апострофом (формули Excel/Sheets).
 Як запускається: VPS, останній крок gmc-status-report.service (після gsc_report.py, щоб бачити gsc_weekly_summary). Помилка читання одного джерела не валить решту; без index.json нічого не пишемо."""
 import csv
 import json
@@ -30,13 +32,17 @@ WINDOW_DAYS = 7
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # службові слова запитів, що не описують товар (фіксований перелік, не поріг)
 STOP = {"купити", "недорого", "ціна", "ціни", "відгуки", "україна", "україні", "київ", "доставка", "інтернет", "магазин", "опт", "дешево", "купить", "цена", "отзывы", "украина", "дешево", "для", "від", "або"}
-WORD_RE = re.compile(r"[a-zа-яіїєґ0-9]+", re.I)
+WORD_RE = re.compile(r"[a-zа-яёіїєґ0-9]+", re.I)
+APOS = ("’", "'", "ʼ", "‘", "`", "´")
 
 
 def stems(text: str) -> set:
     """Основи слів: нижній регістр, слова від 4 символів, не службові; основа = перші 5 символів (грубе «за основою слова»: сквіш/сквіші/сквішів → «сквіш»; лабубу → «лабуб»)."""
     out = set()
-    for w in WORD_RE.findall((text or "").lower().replace("’", "").replace("'", "")):
+    t = (text or "").lower().replace("ё", "е")
+    for a in APOS:
+        t = t.replace(a, "")
+    for w in WORD_RE.findall(t):
         if len(w) >= 4 and w not in STOP:
             out.add(w[:5])
     return out
@@ -56,11 +62,16 @@ def update_ledger(ledger: dict, ids, today: date, toysi_dates: dict) -> dict:
     first_run = not seen
     if first_run:
         ledger["baseline_date"] = today.isoformat()
-    for i in ids:
-        i = str(i)
-        if i in seen:
-            continue
-        if first_run:
+    ids = [str(i) for i in ids]
+    unknown = [i for i in dict.fromkeys(ids) if i not in seen]
+    flood = (not first_run) and len(unknown) * 2 > len(set(ids))      # невідомих більше половини каталогу → журнал неповний/каталог раптово розширився: це baseline, а не «нове»
+    ledger["last_run"] = {"date": today.isoformat(), "unknown": len(unknown), "flood_guard": flood}
+    if flood:
+        print(f"[trend_radar] ⚠ невідомих id {len(unknown)} із {len(set(ids))} (>50%) — журнал неповний або каталог раптово розширився; усі йдуть як baseline, у радар не потраплять", file=sys.stderr)
+    for i in unknown:
+        if flood:
+            seen[i] = {"first": today.isoformat(), "src": "baseline"}
+        elif first_run:
             d = (toysi_dates or {}).get(i, "")
             if DATE_RE.fullmatch(d or "") and d <= today.isoformat():
                 seen[i] = {"first": d, "src": "toysi_feed_date"}
@@ -69,6 +80,28 @@ def update_ledger(ledger: dict, ids, today: date, toysi_dates: dict) -> dict:
         else:
             seen[i] = {"first": today.isoformat(), "src": "observed"}
     return ledger
+
+
+def ledger_valid(raw) -> bool:
+    """Журнал структурно придатний: об'єкт, seen — об'єкт, кожен запис — об'єкт із рядками first/src."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("seen", {}), dict):
+        return False
+    return all(isinstance(v, dict) and isinstance(v.get("first"), str) and isinstance(v.get("src"), str) for v in raw.get("seen", {}).values())
+
+
+def load_ledger(path: Path):
+    """(журнал, ok). Файла нема → ({}, True) — перший запуск. Файл є, але нечитний/не тієї форми → ({}, False): НІЧОГО не перезаписуємо (доказ збережено), юніт отримає код 1 (крок із «-»: юніт не падає)."""
+    if not path.exists():
+        return {}, True
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as e:
+        print(f"[trend_radar] ❌ журнал {path.name} існує, але не читається ({type(e).__name__}) — нічого не пишу, журнал не перезаписую", file=sys.stderr)
+        return {}, False
+    if not ledger_valid(raw):
+        print(f"[trend_radar] ❌ журнал {path.name} має неочікувану структуру — нічого не пишу, журнал не перезаписую", file=sys.stderr)
+        return {}, False
+    return raw, True
 
 
 def new_ids(ledger: dict, current_ids, today: date, days: int = WINDOW_DAYS) -> list:
@@ -135,12 +168,17 @@ def latest_weekly(out_dir: Path):
     return best[1] if best else None
 
 
+def _safe(v):
+    """Захист від формул Excel/Sheets: текст, що починається з = + - @ (або таб/CR), отримує апостроф попереду."""
+    return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+
 def write_csv(path: Path, cols: list, rows: list) -> None:
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
-        w.writerows(rows)
+        w.writerows([{k: _safe(v) for k, v in r.items()} for r in rows])
     os.replace(tmp, path)
 
 
@@ -152,16 +190,20 @@ def main(today: date = None) -> int:
         return 0
     index_by_id = {str(p["id"]): p for p in idx if isinstance(p, dict) and "id" in p}
     toysi = load_json(TOYSI_CACHE, {}) or {}
+    if not toysi:
+        print("[trend_radar] ⚠ кеш Toysi відсутній/порожній — перезапаси старих товарів можуть показатись як нові, vendor/залишок Toysi порожні", file=sys.stderr)
     rt_raw = load_json(SUPPLIER_RT, {}) or {}
     rt = rt_raw.get("items", {}) if isinstance(rt_raw, dict) else {}
-    ledger = load_json(LEDGER, {}) or {}
-    if not isinstance(ledger, dict):
-        ledger = {}
-    update_ledger(ledger, index_by_id.keys(), today, {k: (v or {}).get("date", "") for k, v in toysi.items() if isinstance(v, dict)})
+    ledger, ok = load_ledger(LEDGER)
+    if not ok:
+        return 1
+    universe = set(index_by_id) | {str(k) for k in toysi} | {str(k) for k in rt}          # увесь відомий каталог, а не лише те, що зараз у наявності
+    update_ledger(ledger, sorted(universe), today, {k: (v or {}).get("date", "") for k, v in toysi.items() if isinstance(v, dict)})
     tmp = LEDGER.with_name(LEDGER.name + ".tmp")
     tmp.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, LEDGER)
-    products = product_rows(new_ids(ledger, index_by_id.keys(), today), index_by_id, toysi, rt)
+    visible = [i for i, p in index_by_id.items() if not p.get("dup") and p.get("ix", 1) != 0]      # без тіней дублів і RT без індексації
+    products = product_rows(new_ids(ledger, visible, today), index_by_id, toysi, rt)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     write_csv(OUT_DIR / f"trend_radar_{today:%Y-%m-%d}.csv", ["id", "name", "vendor", "site_category", "price", "stock", "first_seen", "first_seen_source", "supplier"], products)
     weekly = latest_weekly(OUT_DIR)

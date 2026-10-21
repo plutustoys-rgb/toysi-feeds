@@ -88,5 +88,48 @@ before = (td / "ledger.json").read_text(encoding="utf-8")
 tr.main(date(2026, 10, 26))
 chk("без index.json: нічого не пишемо, журнал не чіпаємо, не падаємо", (td / "ledger.json").read_text(encoding="utf-8") == before and not (out / "trend_radar_2026-10-26.csv").exists())
 
+# --- правки аудиту #946 (В1–В7) ---
+chk("В5: апостроф ʼ (U+02BC) і ’ нормалізуються: «мʼяка» = «м'яка»; «ёлка» = «елка»", tr.stems("мʼяка іграшка") == tr.stems("м'яка іграшка") and tr.stems("ёлка") == tr.stems("елка"))
+chk("В6: ledger_valid відхиляє {seen:null}, {seen:[]}, {seen:{1:'x'}}, {seen:{1:null}}, не-об'єкт; приймає {} і валідний", not any(tr.ledger_valid(x) for x in ({"seen": None}, {"seen": []}, {"seen": {"1": "x"}}, {"seen": {"1": None}}, [], "x", None))
+    and tr.ledger_valid({}) and tr.ledger_valid({"seen": {"1": {"first": "2026-10-20", "src": "observed"}}}))
+chk("В7: _safe екранує =, +, -, @ апострофом; звичайний текст і числа не чіпає", tr._safe("=SUM(A1)") == "'=SUM(A1)" and tr._safe("-1") == "'-1" and tr._safe("@x") == "'@x" and tr._safe("Сквіш") == "Сквіш" and tr._safe(350) == 350)
+# В2: неповний журнал → baseline, не «нове»
+Lf = tr.update_ledger({}, [str(i) for i in range(100)], date(2026, 10, 1), {})
+Lf = tr.update_ledger(Lf, [str(i) for i in range(1000)], date(2026, 10, 2), {})
+chk("В2: журнал із 100 id, а потім каталог 1000 (невідомих 900 > половини) → усі 900 baseline, у радар не йдуть; flood_guard=True", sum(1 for r in Lf["seen"].values() if r["src"] == "observed") == 0 and not tr.new_ids(Lf, [str(i) for i in range(1000)], date(2026, 10, 2)) and Lf["last_run"]["flood_guard"] is True)
+Ln = tr.update_ledger({}, [str(i) for i in range(100)], date(2026, 10, 1), {})
+Ln = tr.update_ledger(Ln, [str(i) for i in range(110)], date(2026, 10, 2), {})
+chk("В2: звичайний приплив (10 нових зі 110) → observed, у радарі; flood_guard=False", len(tr.new_ids(Ln, [str(i) for i in range(110)], date(2026, 10, 2))) == 10 and Ln["last_run"]["flood_guard"] is False)
+
+# main-сценарії В1/В3/В4 з окремою текою
+td2 = Path(tempfile.mkdtemp())
+site2 = td2 / "site"
+site2.mkdir()
+out2 = td2 / "reports"
+os.makedirs(out2)
+tr.SITE_DIR, tr.OUT_DIR, tr.LEDGER, tr.TOYSI_CACHE, tr.SUPPLIER_RT = site2, out2, td2 / "ledger.json", td2 / "toysi.json", td2 / "rt.json"
+(td2 / "rt.json").write_text(json.dumps({"updated": "x", "items": {"rt-5": {"vendor": "V3", "stock": 4}}}), encoding="utf-8")
+PAD = {str(i): {"vendor": "P", "stock": 1, "date": ""} for i in range(100, 130)}          # реалістичний «великий» каталог: інакше 3–4 нових id дали б >50% і спрацював захист від залиття
+(td2 / "toysi.json").write_text(json.dumps({"20": {"vendor": "A", "stock": 5, "date": ""}, "21": {"vendor": "B", "stock": 0, "date": ""}, **PAD}), encoding="utf-8")
+(site2 / "index.json").write_text(json.dumps([{"id": "20", "n": "Старий у наявності", "pr": 10, "c": "К", "s": 1}]), encoding="utf-8")
+tr.main(date(2026, 10, 22))
+(site2 / "index.json").write_text(json.dumps([{"id": "20", "n": "Старий у наявності", "pr": 10, "c": "К", "s": 1}, {"id": "21", "n": "Перезапас (був без залишку)", "pr": 20, "c": "К", "s": 1}]), encoding="utf-8")
+tr.main(date(2026, 10, 25))
+r = list(csv.DictReader(open(out2 / "trend_radar_2026-10-25.csv", encoding="utf-8-sig")))
+chk("В1: товар 21 був у кеші Toysi з нульовим залишком, на сайті з'явився пізніше → НЕ новий (перезапас); журнал знав його з першого запуску", r == [])
+(site2 / "index.json").write_text(json.dumps([{"id": "20", "n": "Старий", "pr": 10, "c": "К", "s": 1}, {"id": "21", "n": "Перезапас", "pr": 20, "c": "К", "s": 1}, {"id": "30", "n": "=Справді новий", "pr": 5, "c": "К", "s": 1},
+    {"id": "rt-9", "n": "Тінь дубля", "pr": 5, "c": "К", "s": 1, "dup": 1, "rt": 1, "ix": 0}, {"id": "rt-8", "n": "RT без індексації", "pr": 5, "c": "К", "s": 1, "rt": 1, "ix": 0}, {"id": "rt-7", "n": "RT з індексацією", "pr": 5, "c": "К", "s": 1, "rt": 1, "ix": 1}]), encoding="utf-8")
+(td2 / "toysi.json").write_text(json.dumps({"20": {"vendor": "A", "stock": 5, "date": ""}, "21": {"vendor": "B", "stock": 3, "date": ""}, "30": {"vendor": "C", "stock": 2, "date": ""}, **PAD}), encoding="utf-8")
+(td2 / "rt.json").write_text(json.dumps({"updated": "x", "items": {"rt-5": {"vendor": "V3", "stock": 4}, "rt-9": {}, "rt-8": {}, "rt-7": {"vendor": "V7", "stock": 1}}}), encoding="utf-8")
+tr.main(date(2026, 10, 26))
+r = list(csv.DictReader(open(out2 / "trend_radar_2026-10-26.csv", encoding="utf-8-sig")))
+chk("В4: у радарі лише 30 (Toysi, назва з «=» екранована) і rt-7; тінь дубля (dup) і RT з ix=0 — ні", {x["id"] for x in r} == {"30", "rt-7"} and [x for x in r if x["id"] == "30"][0]["name"] == "'=Справді новий")
+led = (td2 / "ledger.json").read_text(encoding="utf-8")
+(td2 / "ledger.json").write_text("{не json", encoding="utf-8")
+rc = tr.main(date(2026, 10, 27))
+chk("В3: зіпсований журнал → код 1, файл журналу НЕ перезаписано, CSV за цей день не створено", rc == 1 and (td2 / "ledger.json").read_text(encoding="utf-8") == "{не json" and not (out2 / "trend_radar_2026-10-27.csv").exists())
+(td2 / "ledger.json").write_text(json.dumps({"seen": {"1": None}}), encoding="utf-8")
+chk("В6: журнал не тієї форми → код 1, без винятку, файл не змінено", tr.main(date(2026, 10, 27)) == 1 and (td2 / "ledger.json").read_text(encoding="utf-8") == json.dumps({"seen": {"1": None}}))
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

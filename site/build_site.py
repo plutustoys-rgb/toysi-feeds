@@ -96,6 +96,10 @@ GA4_ID = _ga if re.fullmatch(r"G-[A-Z0-9]{6,14}", _ga) else ""
 # Діє лише коли задано GA4_ID (gtag.js вантажиться з його id); SITE_GADS_ID="" вимикає; формат AW-<цифри> валідується (id потрапляє в <script>).
 _gads = os.environ.get("SITE_GADS_ID", "AW-18528978608").strip()
 GADS_ID = _gads if (GA4_ID and re.fullmatch(r"AW-[0-9]{8,12}", _gads)) else ""
+# Мітка конверсії «Покупка на сайте» Google Ads (SEO 21.10.2026): send_to AW-<акаунт>/<мітка>. Іде в window.PT_GADS_CONV; app.js шле gtag('event','conversion',…) у тому ж місці й за тим самим тригером, що GA4 purchase.
+# Валідується (потрапляє в <script>): формат AW-<цифри>/<мітка> і префікс = GADS_ID; SITE_GADS_CONV="" вимикає. Розширене відстеження конверсій (хеші даних клієнта) НЕ вмикаємо — рішення власника.
+_gconv = os.environ.get("SITE_GADS_CONV", "AW-18528978608/W1AACIPZ0KQdELCNp4NF").strip()
+GADS_CONV = _gconv if (GADS_ID and re.fullmatch(r"AW-[0-9]{8,12}/[A-Za-z0-9_-]{8,40}", _gconv) and _gconv.startswith(GADS_ID + "/")) else ""
 _px = os.environ.get("SITE_META_PIXEL_ID", "").strip()
 META_PIXEL_ID = _px if re.fullmatch(r"[0-9]{8,20}", _px) else ""   # ASCII-цифри: \d приймає й юнікод-цифри (аудит #626)
 LIMIT = int(os.environ.get("LIMIT", "0") or "0")   # 0 = без ліміту
@@ -300,7 +304,7 @@ def analytics_head(defer=True) -> str:
     у вікно виміру (TBT назад 1,8–3,3 с) заради рідкісного випадку."""
     if not (GA4_ID or META_PIXEL_ID):
         return ""
-    out = [f'<script>window.PT_ANALYTICS={json.dumps({"ga4": GA4_ID, "fb": META_PIXEL_ID})};</script>\n']
+    out = [f'<script>window.PT_ANALYTICS={json.dumps({"ga4": GA4_ID, "fb": META_PIXEL_ID})};' + (f'window.PT_GADS_CONV={json.dumps(GADS_CONV)};' if GADS_CONV else "") + '</script>\n']
     gtag_src = f"https://www.googletagmanager.com/gtag/js?id={GA4_ID}"
     gtag_cfg = f"gtag('config','{GA4_ID}');" + (f"gtag('config','{GADS_ID}');" if GADS_ID else "")      # GA4 + (опційно) Google Ads на одному gtag.js
     fb_src = "https://connect.facebook.net/en_US/fbevents.js"

@@ -846,11 +846,12 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> 
     коли відомо, що чек НЕ створено (відмова до POST або HTTP 4xx); при невідомому результаті (таймаут/обрив/5xx/нечитабельна відповідь — `maybe_created`) claim ЛИШАЄТЬСЯ й іде алерт
     «звір у кабінеті Checkbox»: другого чека автоматично не буде; (4) збій запису прапорця ПІСЛЯ успішного чека не губить чек: ретрай + алерт, замовлення продовжує шлях (чек є).
     Sandbox LiqPay: реальний фіскальний чек на тестовий платіж не видається (SITE_RECEIPT_IN_SANDBOX=1 вмикає свідомо)."""
-    if test_mode or order.get("platform") != "site" or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
+    if test_mode or order.get("platform") not in ("site", "eva") or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
         return True
     oid = order["internal_order_id"]
+    is_eva = order.get("platform") == "eva"       # EVA+RoyalToys (21.10): той самий безпечний шлях (claim, невідомий результат → без другого чека), без LiqPay-специфіки
     import liqpay_client
-    if liqpay_client.LIQPAY_SANDBOX and os.environ.get("SITE_RECEIPT_IN_SANDBOX", "0") != "1":
+    if not is_eva and liqpay_client.LIQPAY_SANDBOX and os.environ.get("SITE_RECEIPT_IN_SANDBOX", "0") != "1":
         print(f"[order_router] LiqPay у sandbox: реальний фіскальний чек для {oid} НЕ видається (SITE_RECEIPT_IN_SANDBOX=1 вмикає)", file=sys.stderr)
         return True
 
@@ -875,13 +876,18 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> 
         from order_status_tracker import _receipt_goods_from_order
         goods = _receipt_goods_from_order(order)
         total = round(sum(float(g["price"]) * g.get("qty", 1) for g in goods), 2)
-        charged = order.get("site_charged_total")
-        if charged is None:
-            raise ValueError("немає зафіксованої при оформленні суми (site_charged_total): чек НЕ видано (money-safety)")
-        if abs(total - float(charged)) > 0.01:
-            raise ValueError(f"сума позицій {total} ≠ зафіксована при оформленні {charged}: чек НЕ видано (money-safety), розберіть вручну")
-        pid = (order.get("liqpay_payment_id") or "").strip()
-        footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('order_id')}"
+        if is_eva:
+            if total <= 0:
+                raise ValueError("сума позицій EVA-замовлення ≤ 0: чек НЕ видано (money-safety)")
+            footer = f"EVA замовлення {order.get('order_id')}"
+        else:
+            charged = order.get("site_charged_total")
+            if charged is None:
+                raise ValueError("немає зафіксованої при оформленні суми (site_charged_total): чек НЕ видано (money-safety)")
+            if abs(total - float(charged)) > 0.01:
+                raise ValueError(f"сума позицій {total} ≠ зафіксована при оформленні {charged}: чек НЕ видано (money-safety), розберіть вручну")
+            pid = (order.get("liqpay_payment_id") or "").strip()
+            footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('order_id')}"
     except Exception as e:  # noqa: BLE001 — до claim: чек точно не створювався
         print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
         _alert("prep", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {oid}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
@@ -894,7 +900,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> 
     try:
         result = create_receipt(goods=goods, payment_type="CASHLESS", total_amount=total, order_id=oid,
                                 customer_phone=order.get("phone"), footer=footer, customer_email=order.get("email"),
-                                header=SITE_RECEIPT_HEADER)
+                                header=(None if is_eva else SITE_RECEIPT_HEADER))
     except Exception as e:  # noqa: BLE001
         print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
         if getattr(e, "maybe_created", False):

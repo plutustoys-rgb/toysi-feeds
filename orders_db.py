@@ -561,6 +561,7 @@ def get_rt_cod_orders(conn: sqlite3.Connection) -> list:
         WHERE platform IN ('site', 'eva') AND payment_method = 'cod' AND items LIKE '%' || ? || '%'
           AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled', 'eva_cancelled_before_forward'))
           AND cancelled_at IS NULL AND rt_state IS NULL
+          AND (toysi_ttn IS NULL OR toysi_ttn = '') AND forwarded_to_toysi_at IS NULL
         ORDER BY created_at
         """,
         (RT_ITEM_MARK,),

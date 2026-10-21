@@ -836,7 +836,7 @@ def _maybe_send_rz_delivery_marking(conn, order: dict) -> bool:
 SITE_RECEIPT_HEADER = "PlutusToys · plutustoys.com.ua"   # шапка чека онлайн-оплати: назва магазину (власник 13.10)
 
 
-def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> bool:
+def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, include_eva: bool = False) -> bool:
     """Сайт + передоплата (LiqPay): фіскальний чек ПРРО Checkbox SELL/CASHLESS виписується одразу після підтвердженої оплати (колбек success) і ДО передачі в Toysi/НП
     (рішення головного бухгалтера 12.10.2026, КОДВ_CHANNEL: розрахунковий документ — не пізніше передачі товару; Закон №265/95-ВР ст.3). Місце — тут, на початку route_order:
     гроші вже отримано, тож чек не залежить ні від залишку Toysi, ні від hold-гейтів адреси. Повертає True — можна рухатись далі (не наш випадок / чек уже є / видано щойно);
@@ -846,8 +846,8 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False) -> 
     коли відомо, що чек НЕ створено (відмова до POST або HTTP 4xx); при невідомому результаті (таймаут/обрив/5xx/нечитабельна відповідь — `maybe_created`) claim ЛИШАЄТЬСЯ й іде алерт
     «звір у кабінеті Checkbox»: другого чека автоматично не буде; (4) збій запису прапорця ПІСЛЯ успішного чека не губить чек: ретрай + алерт, замовлення продовжує шлях (чек є).
     Sandbox LiqPay: реальний фіскальний чек на тестовий платіж не видається (SITE_RECEIPT_IN_SANDBOX=1 вмикає свідомо)."""
-    if test_mode or order.get("platform") not in ("site", "eva") or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
-        return True
+    if test_mode or order.get("platform") not in (("site", "eva") if include_eva else ("site",)) or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
+        return True        # include_eva=True ЛИШЕ з конвеєра RT (rt_order_runner): звичайні EVA-замовлення з Toysi, як і раніше, отримують чек від трекера ПІСЛЯ форварду (аудит #938 B1)
     oid = order["internal_order_id"]
     is_eva = order.get("platform") == "eva"       # EVA+RoyalToys (21.10): той самий безпечний шлях (claim, невідомий результат → без другого чека), без LiqPay-специфіки
     import liqpay_client

@@ -287,6 +287,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 _cancelled = hasattr(d, "eva_cancelled_live") and d.eva_cancelled_live(order)
                 if _cancelled:
                     _alert(oid, "eva_cancelled", f"покупець скасував замовлення на EVA ПІСЛЯ нашого оформлення (RT {order.get('rt_order_ref')}, ТТН {order.get('toysi_ttn')}) — потрібне рішення: зупинити/повернути посилку, відмова від резерву/відвантаження в RoyalToys; кошти покупцю повертає EVA (не LiqPay)")
+                    rep["actions"].append("EVA: замовлення скасоване покупцем — «З балансу»/ретрай ТТН пропущено")
+                    return rep                  # скасоване покупцем: НЕ підтверджуємо «З балансу» (гроші на скасоване не йдуть)
                 elif not order.get("eva_ttn_pushed_at") and hasattr(d, "eva_accept_and_push_ttn") and (not auto_confirm_enabled() or order.get("rt_confirmed_at")):
                     try:
                         d.eva_accept_and_push_ttn(conn, order, order.get("toysi_ttn"))      # ретрай: ТТН ще не передано в EVA; 12 — лише ПІСЛЯ підтвердження «З балансу» (посилка реально йде), якщо автопідтвердження ввімкнено
@@ -415,7 +417,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                     d.eva_accept(order)         # 12 чекає підтвердження «З балансу», але 11 виставляємо одразу (EVA авто-скасовує непідтверджені за 24 год)
                 except Exception as e:  # noqa: BLE001
                     print(f"[rt_runner] {oid}: EVA 11 не виставлено ({type(e).__name__})", file=sys.stderr)
-            elif _order_mode() == "reserve":
+            if not auto_confirm_enabled() and _order_mode() == "reserve":      # окремий блок для ОБОХ платформ (аудит #938 B2): при автопідтвердженні «reserved» хибний
                 _alert(oid, "reserved", ("" if res.get("reserve_status_seen", True) else "⚠️ статус «резерв» біля ТТН у списку НЕ підтверджено — звірте кабінет. ") + f"замовлення RoyalToys {res['rt_order_ref']} стоїть у РЕЗЕРВІ (ТТН {order['toysi_ttn']}): нічого не відправлено й не списано. Щоб відправили — поповніть баланс і натисніть «З балансу» в кабінеті "
                                        "(або напишіть менеджеру в чат) до 14:00 пн–пт; резерв тримається 2 дні, на третій скасується. ТТН НП живе обмежений час — не тягніть.", cooldown=24 * 60 * 60)
     except RunnerError as e:
@@ -476,7 +478,7 @@ class _Deps:
     def ensure_receipt(self, conn, order):
         """Чек передоплати: сайт і EVA — один безпечний шлях (order_router._ensure_site_prepaid_receipt: свіжий стан БД, атомарний claim, невідомий результат Checkbox → другого чека автоматично НЕ буде)."""
         from order_router import _ensure_site_prepaid_receipt
-        return _ensure_site_prepaid_receipt(conn, order)
+        return _ensure_site_prepaid_receipt(conn, order, include_eva=True)
 
     def eva_precheck(self, conn, order):
         """True = можна оформлювати. EVA-замовлення, скасоване покупцем ДО нашої дії, не оформлюємо (як у order_router для Toysi-потоку; позначає status eva_cancelled_before_forward + Telegram)."""

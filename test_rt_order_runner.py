@@ -709,6 +709,48 @@ with orders_db.get_connection() as c:
     rr.process_order(c, get(eva_low), SUP, apply=True, deps=fk)
 chk("мало балансу: ТТН у EVA НЕ передається (посилка не йде), але 11 «підтверджене продавцем» виставлено одразу", fk.pushed == [] and fk.accepted == [eva_low])
 _with_gate(None)
+# — аудит #938 (повторний): B1 звичайні EVA-замовлення НЕ отримують чек у route_order; B2 «reserved» лише без автопідтвердження; N1 скасоване покупцем не підтверджується з балансу
+import order_router as _orr
+import checkbox_client as _cbc
+_cc = []
+_orig_cr2 = _cbc.create_receipt
+_cbc.create_receipt = lambda **kw: (_cc.append(kw.get("payment_type")) or {"id": "r-x"})
+try:
+    ev_plain = new_order("EPL", platform="eva", receipt=False)
+    with orders_db.get_connection() as c:
+        okd = _orr._ensure_site_prepaid_receipt(c, get(ev_plain))
+    n_default = len(_cc)
+    with orders_db.get_connection() as c:
+        oki = _orr._ensure_site_prepaid_receipt(c, get(ev_plain), include_eva=True)
+finally:
+    _cbc.create_receipt = _orig_cr2
+chk("B1: _ensure_site_prepaid_receipt за замовчуванням для EVA нічого не видає (route_order/звичайний EVA-потік не змінено); лише include_eva=True (конвеєр RT) видає чек", okd is True and n_default == 0 and oki is True and len(_cc) == 1)
+_with_gate("1")
+_alerts.clear()
+st1 = new_order("ST1")
+fk = EvaFake2()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(st1), SUP, apply=True, deps=fk)
+chk("B2: сайт + автопідтвердження ввімкнено → хибного алерту «reserved» НЕМАЄ", not any(k == "reserved" for _, k in _alerts))
+_with_gate(None)
+_alerts.clear()
+st2 = new_order("ST2")
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(st2), SUP, apply=True, deps=EvaFake2() if False else Fake())
+st3 = new_order("ST3", platform="eva")
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(st3), SUP, apply=True, deps=EvaFake2())
+chk("B2: автопідтвердження вимкнено → «reserved» іде і для сайту, і для EVA (власник має підтвердити вручну)", sum(1 for _, k in _alerts if k == "reserved") == 2)
+_with_gate("1")
+ev7 = new_order("E7", platform="eva")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, ev7, "rt_ordered", rt_order_ref="RT000900071", toysi_ttn="20451500000071")
+    c.commit()
+fk = EvaFake2(cancelled_live=True)
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ev7), SUP, apply=True, deps=fk)
+chk("N1: EVA скасовано покупцем після резерву → «З балансу» НЕ виконується, ТТН у EVA не передається", "rt_confirm" not in fk.calls and fk.pushed == [])
+_with_gate(None)
 rr._alert = _orig_alert
 # реальний Deps.ensure_receipt для EVA: той самий безпечний шлях, що й сайт (claim + прапорець), чек CASHLESS ОДИН раз
 import checkbox_client as _cbc

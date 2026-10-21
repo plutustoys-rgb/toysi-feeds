@@ -83,10 +83,47 @@ o3 = [o for o in root2.find("shop").find("offers") if o.get("id") == "rt-3"]
 chk("колись листований rt-3 (випав: залишок 0) → мінімальний offer available=false, stock 0", st2.get("deactivated") == 1 and o3 and o3[0].get("available") == "false" and o3[0].findtext("stock_quantity") == "0")
 
 # категорія поза відомо-прийнятими (не в valid_ids і не задекларована Toysi-частиною) → offer НЕ емітується
+rt_eva.LISTED_FILE.unlink()
 sel_bad = {**sel, "items": {"rt-1": dict(SEL, eva_id="105999")}}
 root3 = base_root()
 st3 = rt_eva.append_rt_offers(root3, ge, sel_bad, sup)
 chk("категорія EVA поза відомо-прийнятими → offer не емітується (invalid_category), фід не отримує невідомих id", st3.get("emitted", 0) == 0 and st3.get("invalid_category") == 1)
+# ---- аудит #939: липка категорія, гістерезис, знімок для заглушки, DUP, розміри, свіжість, гарди відбору ----
+rt_eva.LISTED_FILE.write_text(json.dumps({"v": 2, "listed": {"rt-1": {"cat": EV, "catname": "Пазли", "name": "Іграшка Тест Модель 1", "price": 300, "vendor": "TestBrand", "pics": ["https://plutustoys.com.ua/img/rt/rt-1-1.jpg"], "desc": DESC},
+                                                           "rt-7": {"cat": EV, "catname": "Пазли", "name": "Зниклий товар", "price": 150, "vendor": "TestBrand", "pics": ["https://plutustoys.com.ua/img/rt/rt-7-1.jpg"], "desc": DESC},
+                                                           "rt-8": {"cat": EV, "catname": "Пазли", "name": "Дубль тепер", "price": 150, "vendor": "TestBrand", "pics": [], "desc": DESC}}}), encoding="utf-8")
+sel_flap = {**sel, "valid_ids": [EV, "99120"], "dup_ids": ["rt-8"], "items": {"rt-1": dict(SEL, eva_id="99120"), "rt-2": dict(SEL, cls="GRAY")}}      # категорію rt-1 «перерахували» на іншу, rt-7 випав із відбору, rt-8 став DUP
+sup2 = {"rt-1": item(), "rt-2": item(name="Інша іграшка Модель 2", vendor_code="TB-2"), "rt-8": item(name="Дубль тепер Модель 8")}
+root4 = base_root()
+st4 = rt_eva.append_rt_offers(root4, ge, sel_flap, sup2)
+ids4 = {o.get("id"): o for o in root4.find("shop").find("offers")}
+chk("липка категорія: rt-1 лишився в EV, хоча відбір «перерахував» на іншу (EVA: categoryId не міняти)", ids4["rt-1"].findtext("categoryId") == EV)
+chk("DUP (rt-8) НЕ тримається гістерезисом → заглушка available=false; rt-7 (зник із supplier_rt і з відбору) → ПОВНА заглушка зі знімка (бренд, фото, опис, категорія)",
+    ids4["rt-8"].get("available") == "false" and ids4["rt-7"].get("available") == "false" and ids4["rt-7"].findtext("vendor") == "TestBrand" and ids4["rt-7"].find("picture") is not None and len(ids4["rt-7"].findtext("description_ua") or "") >= 30 and ids4["rt-7"].findtext("categoryId") == EV)
+st5 = rt_eva.append_rt_offers(base_root(), ge, {**sel_flap, "items": {}}, {**sup2})
+chk("гістерезис: колись листований rt-1 лишається у фіді, навіть якщо випав із відбору (kNN-коливання не вибивають товар)", st5.get("emitted", 0) >= 1)
+f_nd, why_nd = rt_eva.build_offer_fields("rt-5", item(dims_cm="[20.0, 10.0, 0.0]", weight_kg="0"), SEL, ge, is_forbidden)
+chk("без габаритів (EVA: розміри обов'язкові) → не емітується (no_dims)", f_nd is None and why_nd == "no_dims")
+sup_file = tmp / "supplier_rt.json"
+rt_eva.SUPPLIER_FILE = sup_file
+sup_file.write_text(json.dumps({"updated": datetime.now().astimezone().isoformat(), "items": {"rt-1": item()}}), encoding="utf-8")
+ok_fresh = rt_eva.supplier_fresh()
+sup_file.write_text(json.dumps({"updated": (datetime.now().astimezone() - timedelta(hours=9)).isoformat(), "items": {"rt-1": item()}}), encoding="utf-8")
+chk("supplier_fresh: щойно оновлений → True; 9 год тому → False (застарілі залишки RT у фід не віддаємо)", ok_fresh and not rt_eva.supplier_fresh())
+sup_file.write_text(json.dumps({"updated": datetime.now().astimezone().isoformat(), "items": {"rt-1": item()}}), encoding="utf-8")
+old_sel = {"built_at": (datetime.now() - timedelta(hours=20)).isoformat(timespec="seconds"), "rt_n": 1, "items": {}, "stats": {"in_feed_candidates": 1000}}
+rt_eva._atomic_write(rt_eva.SEL_FILE, old_sel)
+chk("ensure_selection: усічений каталог Toysi (<25000) → перебудови немає, лишається свіжий старий відбір", rt_eva.ensure_selection({"1": {}}, ge) == old_sel)
+orig_bs = rt_eva.build_selection
+try:
+    rt_eva.build_selection = lambda ty, sup, g: {"built_at": datetime.now().isoformat(timespec="seconds"), "rt_n": 1, "items": {}, "stats": {"in_feed_candidates": 300}}
+    big = {str(i): {} for i in range(25_001)}
+    chk("ensure_selection: новий відбір підозріло менший (300 проти 1000, <70%) → відкинуто, лишаємо попередній", rt_eva.ensure_selection(big, ge) == old_sel)
+    rt_eva.build_selection = lambda ty, sup, g: {"built_at": datetime.now().isoformat(timespec="seconds"), "rt_n": 1, "items": {}, "stats": {"in_feed_candidates": 900}}
+    got = rt_eva.ensure_selection(big, ge)
+    chk("ensure_selection: нормальний новий відбір (900 проти 1000) приймається й записується", got["stats"]["in_feed_candidates"] == 900 and rt_eva.load_selection()["stats"]["in_feed_candidates"] == 900)
+finally:
+    rt_eva.build_selection = orig_bs
 # брама і збої
 os.environ.pop("EVA_RT_IN_FEED", None)
 r0 = base_root()

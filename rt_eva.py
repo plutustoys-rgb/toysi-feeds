@@ -37,6 +37,7 @@ AGREE_T = 0.8
 POST_MAX_DF = 400
 TOPK = 5
 INCLUDE_CLASSES = ("UNIQUE", "UNIQUE_BRAND", "GRAY")      # власник 21.10: унікальні і сумнівні; DUP — ні
+RT_MIN_STOCK = 2                                            # RT у фіді лише з залишком ≥2 (та сама семантика «>1», що з 19.10 у Toysi; власна константа — аудит #939 B1)
 MIN_MARKUP = 1.3                                            # санітарна перевірка ціни: price >= cost × 1.3 (supplier_rt: ×1.5)
 
 
@@ -85,6 +86,11 @@ class Knn:
                 if df[w] <= POST_MAX_DF:
                     self.post[w].append(i)
         self.cache = {}
+
+    def safe(self, t) -> bool:
+        """Категорія Toysi, чий фінальний id EVA ВЖЕ співставила в кабінеті: legacy-повернення (EVA_LEGACY_OVERRIDE) або ціль remap-розкатки. EVA-id із довідника, яких там нема, можуть бути «не співставлені» (інцидент 03.08/17.10)."""
+        cid, _ = self.ge._item_category(t)
+        return bool(cid and ((cid in self.ge.EVA_LEGACY_OVERRIDE and self.ge.EVA_CATEGORY_MAP.get(cid)) or cid in self.ge.EVA_REMAP_OVERRIDE))
 
     def label(self, t):
         k = t["id"]
@@ -166,7 +172,7 @@ def build_selection(ty: dict, sup_items: dict, ge) -> dict:
     cls, m = classify_dups(rt, ty, sids, rd)
     knn = Knn(m, ge)
     thr = calibrate(knn, random.Random(20261021))
-    known = {knn.label(t)[0] for t in knn.items} - {"EXCL"}       # id категорій, які поточний Toysi-фід УЖЕ віддає EVA (відомо-прийняті: співставлені + legacy у кабінеті) — єдина безпечна множина для авто-вибору
+    known = {knn.label(t)[0] for t in knn.items if knn.safe(t)} - {"EXCL"}       # id категорій, які поточний Toysi-фід УЖЕ віддає EVA (відомо-прийняті: співставлені + legacy у кабінеті) — єдина безпечна множина для авто-вибору
     overrides = load_overrides()
     ref_ids = valid_eva_ids()
     valid = known
@@ -230,11 +236,11 @@ def build_selection(ty: dict, sup_items: dict, ge) -> dict:
     stats = {"rt_total": len(sids), "classes": dict(Counter(cls.values())), "in_feed_candidates": len(items), "by_src": dict(Counter(v["src"] for v in items.values())),
              "dropped": dict(drop), "rules": len(rules), "thresholds": {"top1": thr[0], "share": thr[1], "precision": round(thr[3], 3)} if thr else None}
     ok_ids = sorted(known | {v["eva_id"] for v in items.values() if v["src"] == "override"})
-    return {"built_at": datetime.now().isoformat(timespec="seconds"), "toysi_n": len(ty), "rt_n": len(sids), "items": items, "rules": rules, "review": review, "valid_ids": ok_ids, "stats": stats}
+    return {"built_at": datetime.now().isoformat(timespec="seconds"), "toysi_n": len(ty), "rt_n": len(sids), "items": items, "rules": rules, "review": review, "valid_ids": ok_ids, "dup_ids": sorted(s for s, c in cls.items() if c == "DUP"), "stats": stats}
 
 
 def _atomic_write(path: Path, obj) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")      # унікальне ім'я: погодинний і 6-годинний цикли можуть писати одночасно
     tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
 
@@ -254,21 +260,44 @@ def selection_fresh(sel, now=None) -> bool:
         return False
 
 
+MIN_KEEP_RATIO = 0.7        # новий відбір не приймаємо, якщо кандидатів < 70% попереднього (усічений каталог/збій) — лишаємо попередній
+
+
 def ensure_selection(ty: dict, ge, rebuild_after_h: float = 12.0):
-    """Відбір для фіду: свіжий кеш (< rebuild_after_h) → його; інакше перебудова (збій перебудови → лишаємо старий, якщо він ще не застарілий, інакше None)."""
+    """Відбір для фіду: свіжий кеш (< rebuild_after_h) → його; інакше перебудова. Гарди (аудит #939 B4): каталог Toysi усічений (<25 000) → перебудови немає (лишаємо свіжий старий або None);
+    новий відбір суттєво менший за попередній (<MIN_KEEP_RATIO) → відкидаємо; збій → старий, якщо ще не застарів."""
     sup = load_supplier()
     if not sup:
         return None
     sel = load_selection()
-    if sel and sel.get("rt_n", 0) > 0 and selection_fresh(sel, None) and (datetime.now() - datetime.fromisoformat(sel["built_at"])) <= timedelta(hours=rebuild_after_h):
-        return sel
+    fresh_old = sel if sel and selection_fresh(sel) else None
+    if fresh_old and fresh_old.get("rt_n", 0) > 0 and (datetime.now() - datetime.fromisoformat(fresh_old["built_at"])) <= timedelta(hours=rebuild_after_h):
+        return fresh_old
+    if len(ty) < 25_000:
+        print(f"[rt_eva] каталог Toysi усічений ({len(ty)}) — відбір не перебудовую", file=sys.stderr)
+        return fresh_old
     try:
         new = build_selection(ty, sup, ge)
-        _atomic_write(SEL_FILE, new)
-        return new
     except Exception as e:  # noqa: BLE001
-        print(f"[rt_eva] перебудова відбору не вдалась ({type(e).__name__}: {str(e)[:120]}) — {'лишаємо попередній' if sel and selection_fresh(sel) else 'RT у фід цього прогону НЕ йдуть'}", file=sys.stderr)
-        return sel if sel and selection_fresh(sel) else None
+        print(f"[rt_eva] перебудова відбору не вдалась ({type(e).__name__}: {str(e)[:120]}) — {'лишаємо попередній' if fresh_old else 'RT у фід цього прогону НЕ йдуть'}", file=sys.stderr)
+        return fresh_old
+    prev_n = (sel or {}).get("stats", {}).get("in_feed_candidates") or 0
+    if fresh_old and prev_n and new["stats"]["in_feed_candidates"] < prev_n * MIN_KEEP_RATIO:
+        print(f"[rt_eva] новий відбір підозріло менший ({new['stats']['in_feed_candidates']} проти {prev_n}) — відкинуто, лишаємо попередній", file=sys.stderr)
+        return fresh_old
+    _atomic_write(SEL_FILE, new)
+    return new
+
+
+def supplier_fresh(max_h: float = 6.0) -> bool:
+    """supplier_rt.json оновлювався не раніше max_h годин тому (поле updated): застарілі залишки/ціни RT у фід не віддаємо."""
+    try:
+        d = json.loads(SUPPLIER_FILE.read_text(encoding="utf-8"))
+        ts = datetime.fromisoformat(str(d.get("updated")).replace("Z", "+00:00"))
+        now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
+        return now - ts <= timedelta(hours=max_h)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def load_supplier() -> dict:
@@ -331,7 +360,7 @@ def build_offer_fields(sid: str, r: dict, sel_item: dict, ge, forbidden_fn):
         return None, "forbidden_policy"
     stock = _num(r.get("stock"))
     cost, price = _num(r.get("cost")), _num(r.get("price"))
-    if stock is None or stock <= ge.EVA_SELECTION_MIN_STOCK:
+    if stock is None or stock < RT_MIN_STOCK:
         return None, "stock"
     if not cost or cost <= 0 or cost < ge.MIN_SUPPLIER_PRICE or not price or price < cost * MIN_MARKUP:
         return None, "price"
@@ -345,6 +374,8 @@ def build_offer_fields(sid: str, r: dict, sel_item: dict, ge, forbidden_fn):
     if len(desc) < ge.EVA_DESCRIPTION_MIN_LEN:
         return None, "short_desc"
     params = _dims_params(r)
+    if not any(pn.startswith("Розміри") for pn, _ in params):
+        return None, "no_dims"                                  # EVA: розміри товару обов'язкові (в назві/описі/фото/параметрах); без габаритів — не емітуємо (аудит #939 N7)
     for fn, fv in (("Виробник", vendor), ("Категорія", sel_item.get("eva_name") or r.get("category") or "Дитячі товари")):
         if len(params) >= 2:
             break
@@ -372,16 +403,29 @@ def validate_offer(f: dict, valid_ids: set, name_max: int) -> str:
     return ""
 
 
-def _load_listed() -> set:
+def _snapshot(f: dict, sel_item: dict) -> dict:
+    return {"cat": f["category"], "catname": sel_item.get("eva_name") or "", "name": f["name"], "price": f["price"], "vendor": f["vendor"], "pics": f["pictures"][:3], "desc": f["description"][:500]}
+
+
+def _load_listed() -> dict:
+    """Стан «колись листовані» {sid: знімок}: категорія (липка), назва, ціна, бренд, фото, початок опису — щоб (а) заглушка деактивації вийшла повною навіть коли id зник із supplier_rt (select_ids прибирає товари з малим залишком),
+    (б) категорія вже листованого товару НЕ мінялась між прогонами (EVA: categoryId після додавання не міняти — повторна модерація). Старий формат (список id) → знімки порожні."""
     try:
         d = json.loads(LISTED_FILE.read_text(encoding="utf-8"))
-        return {str(x) for x in d.get("listed", [])} if isinstance(d.get("listed"), list) else set()
+        v = d.get("listed")
+        if isinstance(v, dict):
+            return {str(k): (x if isinstance(x, dict) else {}) for k, x in v.items()}
+        if isinstance(v, list):
+            return {str(k): {} for k in v}
     except (OSError, ValueError, AttributeError):
-        return set()
+        pass
+    return {}
 
 
 def append_rt_offers(root: ET.Element, ge, selection: dict, sup_items: dict) -> dict:
-    """Дописує у <shop>: категорії (якщо ще нема) і offer'и RT. Повертає статистику. root — результат ge._build_xml (до indent/CDATA)."""
+    """Дописує у <shop>: категорії (якщо ще нема) і offer'и RT. Повертає статистику. root — результат ge._build_xml (до indent/CDATA).
+    СТАБІЛЬНІСТЬ (аудит #939 B3): уже листований товар (є у rt_eva_listed_state.json) тримає ТУ САМУ категорію і лишається у фіді, поки проходить фільтри/залишок і не став DUP — дрібні коливання kNN/порогів відбору його не вибивають
+    і категорію не міняють; нові товари додаються за відбором."""
     from forbidden_products import is_forbidden
     shop = root.find("shop")
     cats_el, offers_el = shop.find("categories"), shop.find("offers")
@@ -389,14 +433,30 @@ def append_rt_offers(root: ET.Element, ge, selection: dict, sup_items: dict) -> 
     valid = set(selection.get("valid_ids") or []) | have_cats           # лише відомо-прийняті EVA категорії (+ ручні рішення власника); id поза цим → offer не емітується
     toysi_names = {ge._dedup_key(o.findtext("name_ua") or "") for o in offers_el}
     stats = Counter()
-    active = {}
+    prev = _load_listed()
+    dup_ids = set(selection.get("dup_ids") or [])
+    overrides = load_overrides()
+    excluded_cats = {k for k, v in overrides.items() if v is None}
     items = selection.get("items", {})
-    for sid, sel_item in items.items():
-        if sel_item.get("cls") not in INCLUDE_CLASSES:
-            continue
+    cand = {}
+    for sid, si in items.items():
+        if si.get("cls") in INCLUDE_CLASSES:
+            cand[sid] = dict(si)
+    for sid, snap in prev.items():                                         # гістерезис: колись листований лишається кандидатом (крім DUP)
+        if sid not in cand and sid not in dup_ids and snap.get("cat"):
+            cand[sid] = {"eva_id": snap["cat"], "eva_name": snap.get("catname") or "", "cls": "HOLD", "src": "sticky"}
+    for sid, si in cand.items():                                           # липка категорія
+        sc = (prev.get(sid) or {}).get("cat")
+        if sc and sc in valid:
+            si["eva_id"], si["eva_name"] = sc, (prev[sid].get("catname") or si.get("eva_name") or "")
+    active = {}
+    for sid, sel_item in cand.items():
         r = sup_items.get(sid)
         if not r:
             stats["skip_not_in_supplier"] += 1
+            continue
+        if (r.get("category") or "").strip() in excluded_cats:
+            stats["skip_override_exclude"] += 1
             continue
         f, why = build_offer_fields(sid, r, sel_item, ge, is_forbidden)
         if f is None:
@@ -418,6 +478,7 @@ def append_rt_offers(root: ET.Element, ge, selection: dict, sup_items: dict) -> 
             key = ge._dedup_key(f["name"])
             stats["renamed_dup"] += 1
         seen.add(key)
+    new_prev = dict(prev)
     for sid, (f, sel_item) in sorted(active.items()):
         if f["category"] not in have_cats:
             ET.SubElement(cats_el, "category", id=f["category"]).text = ge._clean_text(sel_item.get("eva_name") or f["category"])
@@ -434,32 +495,39 @@ def append_rt_offers(root: ET.Element, ge, selection: dict, sup_items: dict) -> 
         ET.SubElement(o, "description_ua").text = f["description"]
         for pn, pv in f["params"]:
             ET.SubElement(o, "param", name=ge._clean_text(pn)).text = ge._clean_text(str(pv))
+        new_prev[sid] = _snapshot(f, sel_item)
         stats["emitted"] += 1
-    # деактивація: колись листовані, зараз не активні
-    ever = _load_listed() | set(active)
-    for sid in sorted(ever - set(active)):
-        r = sup_items.get(sid)
-        sel_item = items.get(sid)
-        price = _num(r.get("price")) if r else None
-        if not r or not price or price <= 0:
+    # деактивація: колись листовані, зараз не активні. Повна заглушка (як у Toysi-частини: бренд, фото, опис, категорія) із живих даних або зі знімка — навіть коли id зник із supplier_rt (товар із малим залишком туди не потрапляє)
+    for sid in sorted(set(new_prev) - set(active)):
+        snap = new_prev.get(sid) or {}
+        r = sup_items.get(sid) or {}
+        price = _num(r.get("price")) or _num(snap.get("price"))
+        name = r.get("name") or snap.get("name") or ""
+        if not price or price <= 0 or not name:
             continue
         o = ET.SubElement(offers_el, "offer", id=sid, available="false")
-        ET.SubElement(o, "name_ua").text = ge._truncate(ge._normalize_trailing_color_case(ge._limit_punctuation(ge._denoise_caps(ge._clean_text(r.get("name") or "")))), ge.EVA_NAME_MAX_LEN) or f"Товар {sid}"
+        ET.SubElement(o, "name_ua").text = ge._truncate(ge._normalize_trailing_color_case(ge._limit_punctuation(ge._denoise_caps(ge._clean_text(name)))), ge.EVA_NAME_MAX_LEN) or f"Товар {sid}"
         ET.SubElement(o, "price").text = f"{round(price):.2f}"
         ET.SubElement(o, "currencyId").text = "UAH"
         ET.SubElement(o, "stock_quantity").text = "0"
-        if sel_item and sel_item.get("eva_id") in valid:
-            ET.SubElement(o, "categoryId").text = sel_item["eva_id"]
-            if sel_item["eva_id"] not in have_cats:
-                ET.SubElement(cats_el, "category", id=sel_item["eva_id"]).text = ge._clean_text(sel_item.get("eva_name") or sel_item["eva_id"])
-                have_cats.add(sel_item["eva_id"])
-        for p in _pictures(r, ge.EVA_MAX_PICTURES):
+        cat = snap.get("cat") or (cand.get(sid) or {}).get("eva_id")
+        if cat and cat in valid:
+            ET.SubElement(o, "categoryId").text = cat
+            if cat not in have_cats:
+                ET.SubElement(cats_el, "category", id=cat).text = ge._clean_text(snap.get("catname") or (cand.get(sid) or {}).get("eva_name") or cat)
+                have_cats.add(cat)
+        pics = _pictures(r, ge.EVA_MAX_PICTURES) if r else []
+        for p in (pics or snap.get("pics") or []):
             ET.SubElement(o, "picture").text = p
-        if (r.get("vendor") or "").strip():
-            ET.SubElement(o, "vendor").text = ge._clean_text(ge.normalize_vendor(r["vendor"]))
+        vend = (r.get("vendor") or snap.get("vendor") or "").strip()
+        if vend:
+            ET.SubElement(o, "vendor").text = ge._clean_text(ge.normalize_vendor(vend)) if r else vend
+        d = snap.get("desc") or ""
+        if len(d) >= ge.EVA_DESCRIPTION_MIN_LEN:
+            ET.SubElement(o, "description_ua").text = d
         stats["deactivated"] += 1
     try:
-        _atomic_write(LISTED_FILE, {"listed": sorted(ever), "saved_at": datetime.now().isoformat(timespec="seconds")})
+        _atomic_write(LISTED_FILE, {"v": 2, "listed": new_prev, "saved_at": datetime.now().isoformat(timespec="seconds")})
     except OSError as e:
         print(f"[rt_eva] не вдалось зберегти {LISTED_FILE.name}: {e}", file=sys.stderr)
     return dict(stats)

@@ -1438,6 +1438,9 @@ def _maybe_add_rt_offers(root: ET.Element, catalog: dict) -> ET.Element:
         if not rt_eva.gate_on():
             return root
         me = sys.modules[__name__]
+        if not rt_eva.supplier_fresh():
+            print("[EVA] RT: supplier_rt.json застарів (>6 год) — RoyalToys у цей фід НЕ додано (EVA лишає попередній стан).", file=sys.stderr)
+            return root
         sel = rt_eva.ensure_selection(catalog, me)
         if not sel or not rt_eva.selection_fresh(sel):
             print("[EVA] RT: відбір відсутній/застарілий — RoyalToys у цей фід НЕ додано (Toysi-частина без змін).", file=sys.stderr)

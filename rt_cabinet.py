@@ -823,6 +823,75 @@ def classify_rt_status(block: str) -> str:
     return "unknown"
 
 
+# Підписи статусів зі словника кабінету (див. вище) — РІВНО в такому вигляді зберігаємо; усе інше → None (нічого не вигадуємо).
+RT_STATUS_LABELS = ("Новий", "В обробці", "Очікує оплати", "Кошти заблоковані", "Передано на комплектацію (з 2-ох складів)",
+                    "Передано на комплектацію (Алматинська)", "Передано на комплектацію (Пожарського)", "Очікує відправки (Віддалений склад)",
+                    "Зібраний", "Відвантажено", "Виконано", "Продано", "Повернення", "Відмінено", "Видалено", "Надіслано")
+_RT_DANGER_RE = re.compile(r"logout|exit|delete|remove|clear|cancel|1sbuttons|dop1|frombalance|checkout|onestep", re.I)
+
+
+def readonly_lock_decision(method: str, host_ok: bool, path: str, query: str) -> str:
+    """Мережевий лок ЧИТАННЯ списку замовлень: лише GET/HEAD; на хості кабінету — жодних дій (вихід, видалення, скасування, «З балансу», оформлення). continue | abort. Чиста функція."""
+    if method not in ("GET", "HEAD"):
+        return "abort"
+    if host_ok and _RT_DANGER_RE.search((path or "") + "?" + (query or "")):
+        return "abort"
+    return "continue"
+
+
+def parse_order_statuses(text: str, refs) -> dict:
+    """{RT000773594: підпис статусу | None} зі змісту сторінки «Мої замовлення». Блок замовлення — від його номера до наступного номера; статус — підпис зі словника, що стоїть у блоці РАНІШЕ за інші (при однаковій позиції — довший). Не знайдено / не зі словника → None."""
+    t = re.sub(r"\s+", " ", text or "")
+    out = {}
+    for ref in refs:
+        m = re.fullmatch(r"RT0*(\d{3,})", ref or "")
+        if not m:
+            out[ref] = None
+            continue
+        mm = re.search(r"RT0*%s\b" % m.group(1), t)
+        if not mm:
+            out[ref] = None
+            continue
+        nxt = re.search(r"RT\d{6,}", t[mm.end():])
+        block = t[mm.start():mm.end() + (nxt.start() if nxt else 400)]
+        best = None
+        for lab in RT_STATUS_LABELS:
+            i = block.find(lab)
+            if i >= 0 and (best is None or (i, -len(lab)) < (best[0], -len(best[1]))):
+                best = (i, lab)
+        out[ref] = best[1] if best else None
+    return out
+
+
+def read_order_statuses(refs) -> dict:
+    """Статуси замовлень RoyalToys зі списку кабінету (ЛИШЕ ЧИТАННЯ: одна явна адреса /ua/my/orders/, мережевий лок readonly_lock_decision). Перша сторінка списку (найновіші) — нові замовлення завжди там. {ref: підпис|None}. Виняток OrderError — сесія не прийнята."""
+    from playwright.sync_api import sync_playwright
+    refs = [r for r in (refs or []) if r]
+    if not refs:
+        return {}
+    ensure_session()
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            ctx = browser.new_context(storage_state=str(STATE_FILE), service_workers="block")
+
+            def _lock(r):
+                req = r.request
+                u = urlparse(req.url)
+                if readonly_lock_decision(req.method, (u.hostname or "").lower() in HOST_OK, u.path, u.query) == "continue":
+                    return r.continue_()
+                return r.abort()
+            ctx.route("**/*", _lock)
+            page = ctx.new_page()
+            page.goto("https://royaltoys.com.ua/ua/my/orders/", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(2000)
+            if not _logged_in(page):
+                raise OrderError("сесія не прийнята")
+            return parse_order_statuses(page.inner_text("body"), refs)
+        finally:
+            browser.close()
+
+
 def balance_confirm_verdict(passed: int, status_changed: bool, bal0, bal1, total) -> tuple:
     """Вердикт після кліку «З балансу»: (confirmed, пояснення). Підтверджено = клік пропущено рівно раз І статус пішов з «Очікує оплати» (не в скасований). Баланс — лише інформація: живий прогін 20.10 показав, що фактичний залишок
     НЕ змінюється одразу після підтвердження (кошти спишуться, імовірно, при відвантаженні), тому вимога «баланс зменшився» давала хибне «не підтверджено» (статус уже був «Передано на комплектацію»)."""

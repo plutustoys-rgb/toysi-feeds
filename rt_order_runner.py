@@ -463,6 +463,10 @@ class _Deps:
         except rt_cabinet.OrderError as e:
             return {"ready": False, "confirmed": False, "problems": [str(e)]}
 
+    def cabinet_statuses(self, refs):
+        import rt_cabinet
+        return rt_cabinet.read_order_statuses(refs)
+
     def notify_rt_return(self, text):
         try:
             import telegram_userbot_client as ub
@@ -555,6 +559,32 @@ def run(apply: bool | None = None, deps=None, db_path=None) -> list:
     return reports
 
 
+def refresh_cabinet_statuses(conn, d, orders: list) -> int:
+    """Читає статус замовлень RoyalToys з кабінету (read-only, ОДНЕ завантаження списку на цикл) для замовлень у стані rt_ordered і зберігає в БД: з нього бот пише клієнту «зібране, очікує передачі перевізнику». Збій читання (сесія/мережа) — не алерт і не зупинка: клієнт просто бачить попередній текст. «Відмінено/Видалено» після підтвердження — 🟠 алерт (раніше ми цього не бачили: трекінг НП мовчить, поки посилки нема). Повертає кількість змінених статусів."""
+    import re as _re
+    import orders_db
+    import rt_cabinet
+    active = [o for o in orders if o.get("rt_state") == "rt_ordered" and _re.fullmatch(r"RT\d{6,}", str(o.get("rt_order_ref") or ""))]
+    if not active or not hasattr(d, "cabinet_statuses"):
+        return 0
+    try:
+        got = d.cabinet_statuses([o["rt_order_ref"] for o in active])
+    except Exception as e:  # noqa: BLE001
+        print(f"[rt_runner] статус з кабінету RT не прочитано ({type(e).__name__}) — повтор наступного циклу", file=sys.stderr)
+        return 0
+    changed = 0
+    for o in active:
+        st = (got or {}).get(o["rt_order_ref"])
+        if st is None:
+            continue                                   # не знайдено/невідомий підпис — лишаємо попереднє значення, не стираємо
+        if orders_db.set_rt_cabinet_status(conn, o["internal_order_id"], st):
+            changed += 1
+        if rt_cabinet.RT_STATUS_CANCELLED_RE.search(st):
+            _alert(o["internal_order_id"], "rt_cancelled_live", f"замовлення RoyalToys {o.get('rt_order_ref')} має в кабінеті статус «{st}» ПІСЛЯ підтвердження (ТТН {o.get('toysi_ttn')}) — потрібне рішення: клієнт, повернення коштів, ТТН")
+    conn.commit()
+    return changed
+
+
 def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
     import orders_db
     since = _since()
@@ -595,6 +625,8 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
         action_all = sorted([o for o in pending if o.get("rt_state") in ACTION_STATES], key=lambda o: (o.get("rt_updated_at") or "", o.get("created_at") or ""))
         action, rest = action_all[:MAX_ORDERS_PER_RUN], action_all[MAX_ORDERS_PER_RUN:]
         d = deps or _Deps()
+        if apply:
+            refresh_cabinet_statuses(conn, d, pending)
         for order in rest:                       # поза лімітом кроків — але чек (бухгалтер) і сигнал «чекає» отримують ВСІ нові замовлення
             if order.get("rt_state") is None:
                 try:

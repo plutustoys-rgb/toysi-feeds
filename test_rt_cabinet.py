@@ -157,6 +157,21 @@ _cs = rc.classify_rt_status
 chk("classify_rt_status: «Очікує оплати» → pending; «Передано на комплектацію (Алматинська)», «Відвантажено» → confirmed; «Відмінено» → cancelled; кнопка «Відмініти замовлення» сама НЕ означає скасування; Новий/В обробці/Повернення/порожньо → unknown",
     _cs("RT1 Очікує оплати Відмініти замовлення") == "pending" and _cs("RT1 Передано на комплектацію (Алматинська) Відмініти замовлення") == "confirmed" and _cs("RT1 Відвантажено") == "confirmed"
     and _cs("RT1 Відмінено") == "cancelled" and _cs("RT1 Видалено") == "cancelled" and _cs("RT1 Відмініти замовлення") == "unknown" and all(_cs(x) == "unknown" for x in ("RT1 Новий", "RT1 В обробці", "RT1 Повернення", "")))
+
+# --- статус замовлення з кабінету (read-only) для тексту клієнту ---
+_T = "Фільтр Статус замовлення: Неважливо Новий В обробці Очікує оплати Відмінено #RT000773594 от Учора 17:27 Зібраний Сума замовлення 30,40 грн. #RT000773500 от 10.10 Виконано Сума 5 #RT000773400 от 09.10 Відмінено Сума 7"
+_P = rc.parse_order_statuses(_T, ["RT000773594", "RT000773500", "RT000773400", "RT000999999", "bad"])
+chk("parse_order_statuses: статус беремо з БЛОКУ свого замовлення (не зі словника-фільтра нагорі): Зібраний / Виконано / Відмінено; немає в списку або кривий номер → None",
+    _P == {"RT000773594": "Зібраний", "RT000773500": "Виконано", "RT000773400": "Відмінено", "RT000999999": None, "bad": None})
+chk("parse_order_statuses: «Передано на комплектацію (Алматинська)» — повний підпис, не обрізаний",
+    rc.parse_order_statuses("#RT000000111 от 1 Передано на комплектацію (Алматинська) Сума 1", ["RT000000111"])["RT000000111"] == "Передано на комплектацію (Алматинська)")
+chk("parse_order_statuses: невідоме слово статусу → None (нічого не вигадуємо)", rc.parse_order_statuses("#RT000000111 от 1 Щось нове Сума 1", ["RT000000111"])["RT000000111"] is None)
+_rl = rc.readonly_lock_decision
+chk("readonly_lock_decision: GET списку/картинок — continue; будь-який POST, logout, cancelOrder, 1sbuttons/fromBalance, onestep — abort",
+    _rl("GET", True, "/ua/my/orders/", "") == "continue" and _rl("GET", False, "/img/a.png", "") == "continue" and _rl("POST", True, "/ua/my/orders/", "") == "abort"
+    and _rl("GET", True, "/ua/logout/", "") == "abort" and _rl("GET", True, "/1sbuttons/", "dop1=cancelOrder&dop2=1") == "abort" and _rl("GET", True, "/1sbuttons/", "dop1=fromBalance&dop2=1") == "abort"
+    and _rl("GET", True, "/ua/onestep/", "") == "abort" and _rl("POST", False, "/x", "") == "abort")
+chk("read_order_statuses: порожній список → {} без мережі", rc.read_order_statuses([]) == {})
 _os.environ.pop("RT_ORDER_SUBMIT", None)
 try:
     rc.order_flow(base, submit=True)

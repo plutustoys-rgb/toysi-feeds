@@ -174,6 +174,41 @@ def order_status_request(text: str):
     return "PT-" + m.group(0)[3:].lower(), cands          # у БД номер у форматі PT-YYYYMMDD-HHMMSS-<hex малими>
 
 
+RT_COLLECTED = ("Зібраний", "Відвантажено", "Виконано", "Продано")      # статуси кабінету постачальника «посилку зібрали / передають перевізнику»
+RT_CANCELLED_CAB = ("Відмінено", "Видалено")
+
+
+def _g(row, key):
+    return row[key] if key in row.keys() else None
+
+
+def _is_final(row) -> bool:
+    ds = (row["delivery_status"] or "").lower()
+    return ds in ("delivered", "cancelled", "returned") or "cancel" in (row["status"] or "").lower() or bool(row["cancelled_at"])
+
+
+def _rt_status_text(row, link: str) -> str | None:
+    """Текст клієнту для замовлення з товарами другого постачальника (rt_state задано): БЕЗ назви постачальника, лише стан. Невідомий/«потрібна людина» → None (відповідає людина)."""
+    rs = (_g(row, "rt_state") or "").lower()
+    ds = (row["delivery_status"] or "").lower()
+    cab = (_g(row, "rt_cabinet_status") or "").strip()
+    if rs == "delivered" or ds == "delivered":
+        return "Замовлення доставлено." + link
+    if rs == "returned" or ds == "returned":
+        return "Посилка повертається відправнику. Напишіть нам тут, і ми разом вирішимо, що робити."
+    if rs == "shipped":
+        return "Замовлення відправлено Новою Поштою." + link
+    if rs == "rt_ordered":
+        if cab in RT_CANCELLED_CAB:
+            return None
+        if cab in RT_COLLECTED:
+            return "Замовлення зібране, очікує передачі перевізнику."
+        return "Замовлення передано на комплектацію."
+    if rs in ("ttn_creating", "ttn_created", "marking_ready", "rt_ordering"):
+        return "Оплату отримано, замовлення в роботі."
+    return None             # manual / невідомий стан
+
+
 def order_status_text(row) -> str | None:
     """Текст статусу замовлення сайту для клієнта (лише стан і ТТН, без ПІБ/адреси/телефону/сум); None — стан невідомий, автовідповіді не даємо (відповість людина)."""
     st = (row["status"] or "").lower()
@@ -184,6 +219,9 @@ def order_status_text(row) -> str | None:
         return "Замовлення скасовано. Якщо це сталося не за вашим бажанням, напишіть нам тут."
     if (row["payment_method"] or "") == "prepaid" and not row["payment_confirmed"]:
         return "Замовлення прийнято, очікуємо підтвердження оплати."
+    if _g(row, "rt_state"):
+        _t = str(row["toysi_ttn"] or "").strip()
+        return _rt_status_text(row, (chr(10) + f"ТТН Нової Пошти: {_t}" + chr(10) + f"Відстежити: https://novaposhta.ua/tracking/?cargo_number={_t}") if _TTN_RE.match(_t) else "")
     if st == "new":
         return "Замовлення прийнято й обробляється."
     if st != "forwarded_to_supplier":
@@ -207,7 +245,9 @@ def fetch_order_row(oid: str):
     oc = _sq.connect(Path(ORDERS_DB).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
     oc.row_factory = _sq.Row
     try:
-        return oc.execute("SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone FROM orders WHERE internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
+        cols = {r[1] for r in oc.execute("PRAGMA table_info(orders)")}
+        extra = "".join(", " + c for c in ("rt_state", "rt_cabinet_status") if c in cols)       # колонок може не бути (стара БД/тести) — тоді як раніше
+        return oc.execute("SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone" + extra + " FROM orders WHERE internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
     finally:
         oc.close()
 
@@ -317,7 +357,7 @@ class Bot:
         txt = order_status_text(row)
         msg = SUB_WELCOME.format(oid=oid) + (chr(10) + chr(10) + "Зараз: " + txt if txt else "")
         if self._send(chat_id, msg) and txt:
-            final = (row["delivery_status"] or "").lower() in ("delivered", "cancelled") or "cancel" in (row["status"] or "").lower() or bool(row["cancelled_at"])
+            final = _is_final(row)
             self.db.run("UPDATE subscriptions SET last_text=?, done=?, fails=0 WHERE order_id=? AND chat_id=?", (txt, 1 if final else 0, oid, chat_id))
 
     def notify_changes(self) -> int:
@@ -336,7 +376,7 @@ class Bot:
             if not txt or txt == (s["last_text"] or ""):
                 continue
             if self._send(s["chat_id"], f"Замовлення {s['order_id']}: {txt}"):
-                final = (row["delivery_status"] or "").lower() == "delivered" or "cancel" in (row["status"] or "").lower() or (row["delivery_status"] or "").lower() == "cancelled" or bool(row["cancelled_at"])
+                final = _is_final(row)
                 self.db.run("UPDATE subscriptions SET last_text=?, fails=0, done=? WHERE order_id=? AND chat_id=?", (txt, 1 if final else 0, s["order_id"], s["chat_id"]))
                 sent += 1
             elif any(k in str(getattr(self, "_last_send_error", "")).lower() for k in ("forbidden", "blocked", "chat not found", "deactivated")):

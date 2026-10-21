@@ -827,5 +827,23 @@ chk("deps без cabinet_statuses (старі підміни) → 0, нічог�
 chk("_Deps має cabinet_statuses (справжній виклик read_order_statuses)", hasattr(rr._Deps, "cabinet_statuses"))
 rr._alert = _orig_alert
 
+# --- правки аудиту #944 (N6, N8): dry-run не питає кабінет; rt_updated_at не чіпається; не знайдено — не алерт ---
+cb4 = _mk_cab("CB4", "RT000900004")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET rt_updated_at='2026-01-01T00:00:00' WHERE internal_order_id=?", (cb4,))
+    c.commit()
+    orders_db.set_rt_cabinet_status(c, cb4, "Зібраний")
+    c.commit()
+chk("set_rt_cabinet_status НЕ чіпає rt_updated_at (явно старе значення лишається)", get(cb4)["rt_updated_at"] == "2026-01-01T00:00:00" and get(cb4)["rt_cabinet_status"] == "Зібраний" and bool(get(cb4)["rt_cabinet_checked_at"]))
+_fk2 = CabFake({"RT000900004": "Зібраний"})
+rr._run_pipeline(False, deps=_fk2)
+chk("dry-run (apply=False): кабінет статусів НЕ читається", _fk2.asked == [])
+rr._alert = lambda oid, key, text, cooldown=0: _alerts.append((oid, key))
+_alerts.clear()
+with orders_db.get_connection() as c:
+    rr.refresh_cabinet_statuses(c, CabFake({}), [o for o in orders_db.get_rt_orders_pending(c) if o["internal_order_id"] == cb4])
+chk("не знайдено у списку (None) → без алерту", not _alerts)
+rr._alert = _orig_alert
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

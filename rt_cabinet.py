@@ -827,15 +827,17 @@ def classify_rt_status(block: str) -> str:
 RT_STATUS_LABELS = ("Новий", "В обробці", "Очікує оплати", "Кошти заблоковані", "Передано на комплектацію (з 2-ох складів)",
                     "Передано на комплектацію (Алматинська)", "Передано на комплектацію (Пожарського)", "Очікує відправки (Віддалений склад)",
                     "Зібраний", "Відвантажено", "Виконано", "Продано", "Повернення", "Відмінено", "Видалено", "Надіслано")
-_RT_DANGER_RE = re.compile(r"logout|exit|delete|remove|clear|cancel|1sbuttons|dop1|frombalance|checkout|onestep", re.I)
+_RT_DANGER_RE = re.compile(r"logout|logoff|signout|sign-out|sign_out|exit|delete|remove|clear|cancel|otmen|1sbuttons|dop1|frombalance|checkout|onestep", re.I)
 
 
 def readonly_lock_decision(method: str, host_ok: bool, path: str, query: str) -> str:
     """Мережевий лок ЧИТАННЯ списку замовлень: лише GET/HEAD; на хості кабінету — жодних дій (вихід, видалення, скасування, «З балансу», оформлення). continue | abort. Чиста функція."""
     if method not in ("GET", "HEAD"):
         return "abort"
-    if host_ok and _RT_DANGER_RE.search((path or "") + "?" + (query or "")):
-        return "abort"
+    raw = (path or "") + "?" + (query or "")
+    dec = unquote(unquote(raw))                      # %63ancel / подвійне кодування не обходять словник
+    if _RT_DANGER_RE.search(raw) or _RT_DANGER_RE.search(dec) or _STRONG_VERB_RE.search(dec):
+        return "abort"                               # незалежно від хоста: нам потрібен лише текст списку, картинки/шрифти з «підозрілими» назвами не критичні
     return "continue"
 
 
@@ -852,8 +854,16 @@ def parse_order_statuses(text: str, refs) -> dict:
         if not mm:
             out[ref] = None
             continue
-        nxt = re.search(r"RT\d{6,}", t[mm.end():])
-        block = t[mm.start():mm.end() + (nxt.start() if nxt else 400)]
+        end = mm.end() + 400
+        for nm in re.finditer(r"RT0*(\d{3,})\b", t[mm.end():]):
+            if nm.group(1) != m.group(1):                       # повтор ТОГО Ж номера в картці не обриває блок
+                end = mm.end() + nm.start()
+                break
+        block = t[mm.start():end]
+        for stop in ("Кіл-сть замовлень", "Фільтр замовлень"):      # футер/шапка списку містять словник статусів — не частина блоку
+            j = block.find(stop)
+            if j >= 0:
+                block = block[:j]
         best = None
         for lab in RT_STATUS_LABELS:
             i = block.find(lab)
@@ -869,24 +879,28 @@ def read_order_statuses(refs) -> dict:
     refs = [r for r in (refs or []) if r]
     if not refs:
         return {}
-    ensure_session()
+    if not Path(STATE_FILE).exists():
+        raise OrderError("файл сесії кабінету RoyalToys відсутній")
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         try:
             ctx = browser.new_context(storage_state=str(STATE_FILE), service_workers="block")
 
             def _lock(r):
-                req = r.request
-                u = urlparse(req.url)
-                if readonly_lock_decision(req.method, (u.hostname or "").lower() in HOST_OK, u.path, u.query) == "continue":
-                    return r.continue_()
-                return r.abort()
+                try:
+                    req = r.request
+                    u = urlparse(req.url)
+                    if readonly_lock_decision(req.method, (u.hostname or "").lower() in HOST_OK, u.path, u.query) == "continue":
+                        return r.continue_()
+                except Exception:  # noqa: BLE001
+                    pass
+                return r.abort()                     # будь-який збій рішення = блок (як _guard у vps_login)
             ctx.route("**/*", _lock)
             page = ctx.new_page()
-            page.goto("https://royaltoys.com.ua/ua/my/orders/", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            page.goto("https://royaltoys.com.ua/ua/my/orders/", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(2000)
             if not _logged_in(page):
-                raise OrderError("сесія не прийнята")
+                raise OrderError("сесія не діє — автовхід лише в операціях із замовленнями (поллер статусів сам не логіниться)")
             return parse_order_statuses(page.inner_text("body"), refs)
         finally:
             browser.close()

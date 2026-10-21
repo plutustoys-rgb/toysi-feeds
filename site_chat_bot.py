@@ -175,7 +175,8 @@ def order_status_request(text: str):
 
 
 RT_COLLECTED = ("Зібраний", "Відвантажено", "Виконано", "Продано")      # статуси кабінету постачальника «посилку зібрали / передають перевізнику»
-RT_CANCELLED_CAB = ("Відмінено", "Видалено")
+RT_CANCELLED_CAB = ("Відмінено", "Видалено", "Повернення")        # у кабінеті скасовано/повернення — автовідповіді немає, відповідає людина
+RT_PAID_CAB = ("Новий", "В обробці", "Очікує оплати")               # ще не комплектують: клієнту — «оплату отримано, замовлення в роботі»
 
 
 def _g(row, key):
@@ -184,7 +185,7 @@ def _g(row, key):
 
 def _is_final(row) -> bool:
     ds = (row["delivery_status"] or "").lower()
-    return ds in ("delivered", "cancelled", "returned") or "cancel" in (row["status"] or "").lower() or bool(row["cancelled_at"])
+    return ds in ("delivered", "cancelled") or "cancel" in (row["status"] or "").lower() or bool(row["cancelled_at"])
 
 
 def _rt_status_text(row, link: str) -> str | None:
@@ -203,6 +204,8 @@ def _rt_status_text(row, link: str) -> str | None:
             return None
         if cab in RT_COLLECTED:
             return "Замовлення зібране, очікує передачі перевізнику."
+        if cab in RT_PAID_CAB:
+            return "Оплату отримано, замовлення в роботі."
         return "Замовлення передано на комплектацію."
     if rs in ("ttn_creating", "ttn_created", "marking_ready", "rt_ordering"):
         return "Оплату отримано, замовлення в роботі."
@@ -399,13 +402,7 @@ class Bot:
             return "🤖 автовідповідь вимкнена (забагато невдалих звірок по цьому замовленню)", False
         row = None
         try:
-            import sqlite3 as _sq
-            oc = _sq.connect(Path(ORDERS_DB).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-            oc.row_factory = _sq.Row
-            try:
-                row = oc.execute("SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone FROM orders WHERE internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
-            finally:
-                oc.close()
+            row = fetch_order_row(oid)          # той самий SELECT, що в підписці (з rt_state/rt_cabinet_status, якщо колонки є) — інакше RT-замовлення отримало б стару відповідь «обробляється»
         except Exception as e:  # noqa: BLE001
             print(f"[site_chat_bot] orders.db не прочитано: {type(e).__name__}", file=sys.stderr)
             return "🤖 статус не перевірено (orders.db недоступна): відповісти вручну", False

@@ -560,7 +560,7 @@ def run(apply: bool | None = None, deps=None, db_path=None) -> list:
 
 
 def refresh_cabinet_statuses(conn, d, orders: list) -> int:
-    """Читає статус замовлень RoyalToys з кабінету (read-only, ОДНЕ завантаження списку на цикл) для замовлень у стані rt_ordered і зберігає в БД: з нього бот пише клієнту «зібране, очікує передачі перевізнику». Збій читання (сесія/мережа) — не алерт і не зупинка: клієнт просто бачить попередній текст. «Відмінено/Видалено» після підтвердження — 🟠 алерт (раніше ми цього не бачили: трекінг НП мовчить, поки посилки нема). Повертає кількість змінених статусів."""
+    """Читає статус замовлень RoyalToys з кабінету (read-only, ОДНЕ завантаження списку на цикл) для замовлень у стані rt_ordered і зберігає в БД: з нього бот пише клієнту «зібране, очікує передачі перевізнику». Збій читання (сесія/мережа) — не алерт і не зупинка: клієнт просто бачить попередній текст. «Відмінено/Видалено» у кабінеті (стан rt_ordered) — 🟠 алерт (раніше ми цього не бачили: трекінг НП мовчить, поки посилки нема). Повертає кількість змінених статусів."""
     import re as _re
     import orders_db
     import rt_cabinet
@@ -576,11 +576,12 @@ def refresh_cabinet_statuses(conn, d, orders: list) -> int:
     for o in active:
         st = (got or {}).get(o["rt_order_ref"])
         if st is None:
+            print(f"[rt_runner] {o['internal_order_id']}: {o['rt_order_ref']} не знайдено/невідомий статус у першій сторінці списку кабінету — лишаємо попереднє значення", file=sys.stderr)
             continue                                   # не знайдено/невідомий підпис — лишаємо попереднє значення, не стираємо
         if orders_db.set_rt_cabinet_status(conn, o["internal_order_id"], st):
             changed += 1
         if rt_cabinet.RT_STATUS_CANCELLED_RE.search(st):
-            _alert(o["internal_order_id"], "rt_cancelled_live", f"замовлення RoyalToys {o.get('rt_order_ref')} має в кабінеті статус «{st}» ПІСЛЯ підтвердження (ТТН {o.get('toysi_ttn')}) — потрібне рішення: клієнт, повернення коштів, ТТН")
+            _alert(o["internal_order_id"], "rt_cancelled_live", f"замовлення RoyalToys {o.get('rt_order_ref')} має в кабінеті статус «{st}» (ТТН {o.get('toysi_ttn')}) — потрібне рішення: клієнт, повернення коштів, ТТН")
     conn.commit()
     return changed
 

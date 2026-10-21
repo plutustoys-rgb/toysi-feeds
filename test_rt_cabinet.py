@@ -179,5 +179,21 @@ try:
 except rc.OrderError:
     ok_sub = True
 chk("--submit-balance без RT_ORDER_SUBMIT=1 → відмова ДО будь-якої мережі", ok_sub)
+# --- правки аудиту #944 (N2, N3, N5, N8) ---
+chk("readonly_lock_decision: кодований URL (%63ancelOrder, %6Cogout, %64op1=%66romBalance, /%31sbuttons/) і чужий/зсунутий хост — abort",
+    _rl("GET", True, "/ua/my/orders/", "x=%63ancelOrder") == "abort" and _rl("GET", True, "/ua/%6Cogout/", "") == "abort"
+    and _rl("GET", True, "/ua/my/orders/", "%64op1=%66romBalance&dop2=1") == "abort" and _rl("GET", True, "/%31sbuttons/", "") == "abort"
+    and _rl("GET", False, "/1sbuttons/", "dop1=cancelOrder&dop2=1") == "abort" and _rl("GET", False, "/ua/logout/", "") == "abort")
+chk("readonly_lock_decision: кожне небезпечне слово окремо (cancel, exit, delete, remove, clear, checkout, signout, logoff, otmen) — abort; список і звичайні картинки — continue",
+    all(_rl("GET", True, "/ua/my/" + w + "/", "") == "abort" for w in ("cancel", "exit", "delete", "remove", "clear", "checkout", "signout", "logoff", "otmen"))
+    and _rl("GET", True, "/ua/my/orders/", "") == "continue" and _rl("GET", False, "/wa-data/public/img/a.jpg", "") == "continue")
+_Pp = rc.parse_order_statuses
+chk("parse: RT000000111 не плутається з RT0000001110 (межа \\b)", _Pp("#RT0000001110 от 1 Виконано Сума 1 #RT000000111 от 2 Зібраний Сума 2", ["RT000000111", "RT0000001110"]) == {"RT000000111": "Зібраний", "RT0000001110": "Виконано"})
+chk("parse: повтор ТОГО Ж номера в картці не обриває блок («Новий» зі словника не підміняє «Зібраний»)", _Pp("Замовлення RT000773594 створено! #RT000773594 от 1 Зібраний Сума 1", ["RT000773594"])["RT000773594"] == "Зібраний")
+chk("parse: картка без статусу перед карткою зі статусом → None (статус сусіда не береться)", _Pp("#RT000000201 от 1 Сума 1 #RT000000202 от 2 Відвантажено Сума 2", ["RT000000201", "RT000000202"]) == {"RT000000201": None, "RT000000202": "Відвантажено"})
+chk("parse: футер списку («Кіл-сть замовлень … Фільтр Новий В обробці») не дає статус останній картці без статусу", _Pp("#RT000000301 от 1 Сума 1 Кіл-сть замовлень на сторінці 10 20 Фільтр замовлень Новий В обробці", ["RT000000301"])["RT000000301"] is None)
+chk("read_order_statuses: поллер НЕ запускає автовхід (немає виклику ensure_session) і без файлу сесії → OrderError до браузера",
+    "ensure_session()" not in __import__("inspect").getsource(rc.read_order_statuses) and (_raises2(lambda: (setattr(rc, "STATE_FILE", __import__("pathlib").Path("Z:/нема/state.json")), rc.read_order_statuses(["RT000000001"]))) is not None))
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

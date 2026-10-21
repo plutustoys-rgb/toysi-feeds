@@ -183,9 +183,10 @@ def tidy(alpha, open_iter=2, close_iter=3):
     return np.minimum(alpha, b.astype(np.float32)), b
 
 
-def clean_mascot(scene_file, frame_idx=None, feather=1.2, debug=None):
-    """-> (rgb float HxWx3, alpha float HxW 0..1) обрізані по силуету, вже чисті."""
-    frames, _ = read_frames(os.path.join(SCENES, scene_file))
+def clean_mascot(scene_file, frame_idx=None, feather=1.2, debug=None, crop=True, frames=None):
+    """-> (rgb float HxWx3, alpha float HxW 0..1) обрізані по силуету, вже чисті. crop=False — повний кадр сцени (для анімації з єдиним bbox на всі кадри: інакше маскот «стрибає»)."""
+    if frames is None:
+        frames, _ = read_frames(os.path.join(SCENES, scene_file))        # frames= дозволяє не читати mp4 на кожен кадр анімації
     fr = frames[len(frames) // 2 if frame_idx is None else frame_idx]
     rgb, alpha = key_green(fr)
     a0 = alpha * largest_component_mask(alpha > 0.5)
@@ -214,6 +215,8 @@ def clean_mascot(scene_file, frame_idx=None, feather=1.2, debug=None):
         print(f"[matte] {tag}: викинуто підлоги {dropped} px "
               f"({100.0 * dropped / max(1, (a0 > 0.5).sum()):.1f}% силуету)")
 
+    if not crop:
+        return rgb, a2
     ys, xs = np.where(a2 > 0.03)
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
     return rgb[y0:y1, x0:x1], a2[y0:y1, x0:x1]

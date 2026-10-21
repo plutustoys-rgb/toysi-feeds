@@ -1430,6 +1430,30 @@ def _build_eva_static_selection(catalog: dict, russian_text: dict = None,
     return items, prices, russian_names
 
 
+def _maybe_add_rt_offers(root: ET.Element, catalog: dict) -> ET.Element:
+    """Товари RoyalToys у фіді (rt_eva.py): лише за брамою EVA_RT_IN_FEED=1 і лише зі свіжим відбором. Працює на КОПІЇ дерева: будь-який збій → Toysi-фід лишається як був (RT у цьому прогоні не йдуть)."""
+    import copy
+    try:
+        import rt_eva
+        if not rt_eva.gate_on():
+            return root
+        me = sys.modules[__name__]
+        if not rt_eva.supplier_fresh():
+            print("[EVA] RT: supplier_rt.json застарів (>6 год) — RoyalToys у цей фід НЕ додано (EVA лишає попередній стан).", file=sys.stderr)
+            return root
+        sel = rt_eva.ensure_selection(catalog, me)
+        if not sel or not rt_eva.selection_fresh(sel):
+            print("[EVA] RT: відбір відсутній/застарілий — RoyalToys у цей фід НЕ додано (Toysi-частина без змін).", file=sys.stderr)
+            return root
+        work = copy.deepcopy(root)
+        st = rt_eva.append_rt_offers(work, me, sel, rt_eva.load_supplier())
+        print(f"[EVA] RoyalToys у фіді: {st}")
+        return work
+    except Exception as e:  # noqa: BLE001
+        print(f"[EVA] RT: збій додавання ({type(e).__name__}: {str(e)[:160]}) — RoyalToys у фід НЕ додано, Toysi-частина без змін.", file=sys.stderr)
+        return root
+
+
 def generate_feed(output_file: str = OUTPUT_FILE,
                   catalog: dict = None,
                   exclude_ids: set = None,
@@ -1465,6 +1489,8 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         static_items, price_overrides=static_prices, exclude_ids=exclude_ids,
         description_overrides=description_overrides, deactivate_items=deactivations,
     )
+
+    root = _maybe_add_rt_offers(root, catalog)
 
     ET.indent(root, space="  ")
     xml_str = ET.tostring(root, encoding="unicode")

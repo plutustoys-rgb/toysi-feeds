@@ -246,7 +246,7 @@ def detect_role(transcript_path: str) -> str:
 _SKILL_ROLE = {"business-consultant": "consultant", "seo-agent": "seo", "plutustoys-smm": "smm", "accountant": "kodv",
                "seller": "seller", "agent-code": "kod", "agent-architector": "architector"}
 _HEADER_ROLE = {"консультант": "consultant", "seo": "seo", "smm": "smm", "продажник": "seller", "виконавець": "executor",
-                "аудитор кабінетів": "executor", "головний бухгалтер": "kodv", "бухгалтер": "kodv", "кодв": "kodv",
+                "аудитор": "executor", "головний бухгалтер": "kodv", "бухгалтер": "kodv", "кодв": "kodv",
                 "код": "kod", "архітектор": "architector", "тестувальник": "tester"}
 _HDR_RE = re.compile(r"(?m)^## \[([^\]→\n]+?)\s*→")
 
@@ -266,7 +266,9 @@ def _detect_role_from_activity(transcript_path: str) -> str:
                     o = json.loads(line)
                 except ValueError:
                     continue
-                msg = o.get("message") if isinstance(o, dict) and isinstance(o.get("message"), dict) else {}
+                if not isinstance(o, dict):
+                    continue
+                msg = o.get("message") if isinstance(o.get("message"), dict) else {}
                 content = msg.get("content")
                 if o.get("type") != "assistant" or not isinstance(content, list):
                     continue   # лише ВЛАСНІ дії сесії; цитати чужих заголовків у запитах/вивідках не рахуємо
@@ -284,8 +286,8 @@ def _detect_role_from_activity(transcript_path: str) -> str:
                                 r = _HEADER_ROLE.get(m.strip().lower())
                                 if r:
                                     hdrs[r] += 1
-                    elif b.get("type") == "text":
-                        for m in _HDR_RE.findall(b.get("text") or ""):
+                    elif b.get("type") == "text" and isinstance(b.get("text"), str):
+                        for m in _HDR_RE.findall(b["text"]):
                             r = _HEADER_ROLE.get(m.strip().lower())
                             if r:
                                 hdrs[r] += 1

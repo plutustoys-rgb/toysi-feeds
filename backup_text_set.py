@@ -41,18 +41,30 @@ DEFAULT_DEST = Path(os.environ.get("PLUTUS_BACKUP_REPO") or r"C:\Users\smach\plu
 MAX_FILE_MB = 20
 TEXT_EXT = {".md", ".txt", ".json", ".jsonl", ".csv", ".tsv", ".py", ".ps1", ".sh", ".bat", ".cmd", ".yml", ".yaml",
             ".xml", ".html", ".htm", ".js", ".cfg", ".ini", ".toml", ".sql", ".log", ""}
-NEVER_NAMES = re.compile(r"(?i)^(КОДВ_журнал.*|\.env.*|.*\.pem|.*\.key|.*\.p12|.*\.pfx|credentials.*|.*secrets?\.json|id_rsa.*|id_ed25519.*)$")
+NEVER_NAMES = re.compile(r"(?i)^(КОДВ_.*|\.env.*|.*\.pem|.*\.key|.*\.p12|.*\.pfx|credentials.*|.*secrets?\.json|id_rsa.*|id_ed25519.*)$")
 COWORK_DIRS = ("технічні_вимоги_маркетплейсів", "SEO_метрики")
-ALLOW_SECRET_LIKE: set = set()   # відносні шляхи, які власник свідомо дозволив попри збіг (наприклад, документація з прикладом)
+# відносні шляхи, які свідомо дозволено попри збіг. .vps_audit_ok — лише «sha256  _vps_*.sh», назви на кшталт *_key.sh дають хибний збіг
+ALLOW_SECRET_LIKE: set = {"repo_local/.vps_audit_ok"}
+MASK_LINE = "[РЯДОК ПРИХОВАНО БЕКАПОМ: підозра на секрет]"
 DELETE_GUARD_RATIO = 0.30
 
+_TRIVIAL_VALUES = {"none", "null", "true", "false", "string", "os.environ", "environ"}
 _PLACEHOLDER = re.compile(r"(?i)(<[^>]+>|\.\.\.|x{4,}|your[_-]|example|placeholder|changeme|\*{3,}|\[приховано\]|redacted)")
 SECRET_RULES = [
     ("приватний ключ", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("префікс токена", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_\-]{20,}|"
                                   r"xox[abprs]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{35}|ya29\.[0-9A-Za-z_\-]{20,})")),
     ("Bearer", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]{24,}")),
-    ("ключ=значення", re.compile(r"""(?ix)["']?[\w.-]*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[\w.-]*["']?\s*[=:]\s*["']?([A-Za-z0-9_\-/+=.]{16,})""")),
+    ("Basic-авторизація", re.compile(r"(?i)\bauthorization\W{1,4}basic\s+[A-Za-z0-9+/=]{12,}")),
+    ("токен Telegram", re.compile(r"\b\d{8,10}:[A-Za-z0-9_\-]{30,}\b")),
+    ("пароль у URL", re.compile(r"://[^/\s:@]+:[^@\s/]{3,}@")),
+    ("sshpass", re.compile(r"(?i)\bsshpass\s+-p\s*\S+")),
+    # ключ=значення: слова-ключі ширші (…key, …pin, пароль), значення без пробілів ≥12 (≥16 для звичайних слів);
+    # паролі зі спецсимволами теж ловимо
+    ("ключ=значення", re.compile(r"""(?ix)["']?[\w.-]*(?:password|passwd|пароль|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|_key|_pin|\bpin|\bkey)[\w.-]*["']?\s*[=:]\s*["'`]?([^\s"'`,;<>]{12,})""")),
+    ("PIN", re.compile(r"""(?i)(?:_pin|pin|пін)[\w.-]*["']?\s*[=:]\s*["'`]?\d{4,}""")),
+    # голий довгий hex (>=32) у рядку зі словом «ключ/key/токен/пароль/secret/PIN» — напр. «Ключ ФОП НП: `<hex32>`»
+    ("hex-секрет поруч зі словом-ключем", re.compile(r"(?i)^(?=.*(?:ключ|\bkey\b|токен|token|парол|password|secret|секрет|\bpin\b)).*\b[0-9a-f]{32,}\b")),
 ]
 
 
@@ -64,8 +76,10 @@ def scan_text(text: str) -> list:
             m = rx.search(line)
             if not m:
                 continue
-            frag = m.group(0)
-            if _PLACEHOLDER.search(frag) or _PLACEHOLDER.search(line[:300]) and kind == "ключ=значення":
+            # плейсхолдер перевіряємо ЛИШЕ на самому знайденому значенні, не на всьому рядку (аудит PR #962:
+            # «Wait... token=<реальне>» раніше проходило), і лише для рівня «ключ=значення»
+            val = m.group(1) if m.groups() else m.group(0)
+            if kind == "ключ=значення" and (_PLACEHOLDER.search(val) or val.lower() in _TRIVIAL_VALUES):
                 continue
             hits.append((n, kind))
             break
@@ -123,13 +137,35 @@ def classify(src: Path, rel: str):
     if size > MAX_FILE_MB * 1024 * 1024:
         return False, f"більше {MAX_FILE_MB} МБ", []
     try:
-        text = src.read_bytes().decode("utf-8", errors="replace")
+        data = src.read_bytes()
     except OSError as e:
         return False, f"не прочитати ({e.__class__.__name__})", []
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):     # UTF-16 (PowerShell 5.1 `>`) — інакше скан його не бачив би
+        text = data.decode("utf-16", errors="replace")
+    else:
+        text = data.decode("utf-8", errors="replace")
     hits = scan_text(text)
     if hits and rel not in ALLOW_SECRET_LIKE:
-        return False, "підозра на секрет", hits
-    return True, "", []
+        if any(k == "приватний ключ" for _, k in hits):
+            return False, "приватний ключ у файлі", hits            # багаторядковий блок — файл не копіюємо взагалі
+        # Підозрілі РЯДКИ маскуємо, решту документа копіюємо (важливі великі документи, напр. план, не випадають із
+        # копії через один рядок). Нумерація — та сама splitlines, що в scan_text.
+        bad = {n for n, _ in hits}
+        masked = "".join((MASK_LINE + ("\n" if ln.endswith(("\n", "\r")) else "")) if i in bad else ln
+                         for i, ln in enumerate(text.splitlines(keepends=True), 1))
+        return True, "masked", (masked.encode("utf-8"), hits)
+    return True, "", (data, [])   # саме ті байти, що пройшли скан, і копіюємо — файл не читається вдруге
+
+
+GUARD_MIN_FILES = 5   # групи менші за це не мають сенсу міряти відсотком
+
+
+def _group(rel: str) -> str:
+    """Група для запобіжника: cowork | claude_home/projects | claude_home/hooks | claude_home | repo_local."""
+    parts = rel.split("/")
+    if parts[0] == "claude_home" and len(parts) > 2 and parts[1] in ("projects", "hooks"):
+        return f"claude_home/{parts[1]}"
+    return parts[0]
 
 
 def run_git(dest: Path, *args):
@@ -141,11 +177,15 @@ def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_ru
     items = collect(cowork, claude_home, repo_local)
     keep, skipped = [], []
     for src, rel in items:
-        ok, why, hits = classify(src, rel)
-        (keep if ok else skipped).append((src, rel, why, hits))
+        ok, why, extra = classify(src, rel)
+        if ok:
+            keep.append((src, rel, why, extra))      # extra = (байти для запису, [(рядок, тип)] замаскованих)
+        else:
+            skipped.append((src, rel, why, extra))   # extra = [(рядок, тип)]
     keep_rel = {rel for _, rel, _, _ in keep}
 
-    # запобіжник від масового видалення
+    # запобіжник від масового видалення — ПО ГРУПАХ (аудит PR #962: пам'ять/hooks складають лише ~12% файлів,
+    # тож загальний відсоток не помітив би, що вони зникли знову)
     existing = []
     if dest.is_dir():
         for top in ("cowork", "claude_home", "repo_local"):
@@ -153,13 +193,26 @@ def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_ru
             if base.is_dir():
                 existing += [p.relative_to(dest).as_posix() for p in base.rglob("*") if p.is_file()]
     to_delete = [r for r in existing if r not in keep_rel]
-    if existing and len(to_delete) > DELETE_GUARD_RATIO * len(existing):
+    if existing and len(to_delete) > DELETE_GUARD_RATIO * len(existing):      # загальний рівень
         print(f"[СТОП] синхронізація видалила б {len(to_delete)} із {len(existing)} файлів копії (>"
               f"{int(DELETE_GUARD_RATIO * 100)}%). Джерела порожні/недоступні? Нічого не змінено.")
         return 3
+    for group in sorted({_group(r) for r in existing}):
+        g_exist = [r for r in existing if _group(r) == group]
+        g_del = [r for r in to_delete if _group(r) == group]
+        if len(g_exist) >= GUARD_MIN_FILES and len(g_del) > DELETE_GUARD_RATIO * len(g_exist):
+            print(f"[СТОП] група «{group}»: синхронізація видалила б {len(g_del)} із {len(g_exist)} файлів копії "
+                  f"(>{int(DELETE_GUARD_RATIO * 100)}%). Джерело порожнє/недоступне? Нічого не змінено.")
+            return 3
 
     lines = ["# Звіт останнього бекапу (час — у git-коміті; без мітки часу, щоб без змін не було порожніх комітів)",
              f"Скопійовано: {len(keep)}; пропущено: {len(skipped)}; видалено з копії (зникли в джерелі): {len(to_delete)}", ""]
+    masked_files = [(rel, mh) for _, rel, why, (_, mh) in keep if mh]
+    if masked_files:
+        lines.append("## Скопійовано із ЗАМАСКОВАНИМИ рядками (секрет у джерелі — прибрати й, можливо, ротувати!)")
+        for rel, mh in masked_files:
+            lines.append(f"- `{rel}` — " + ", ".join(f"рядок {n}: {k}" for n, k in mh[:8]))
+        lines.append("")
     if skipped:
         lines.append("## Пропущено (НЕ в копії)")
         for src, rel, why, hits in skipped:
@@ -176,10 +229,17 @@ def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_ru
         run_git(dest, "init", "-b", "main")
         run_git(dest, "config", "user.name", "PlutusToys backup")
         run_git(dest, "config", "user.email", "backup@plutustoys.invalid")
-    for src, rel, _, _ in keep:
+    failed = []
+    for src, rel, _, (data, _mh) in keep:
         target = dest / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, target)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)                 # саме ті байти, що пройшли скан
+        except OSError as e:
+            failed.append((rel, e.__class__.__name__))
+    if failed:                                       # зайнятий/зниклий файл не валить усе: коміт робимо, код виходу 1
+        report += "\n## Не вдалось записати\n" + "\n".join(f"- `{r}` — {w}" for r, w in failed) + "\n"
+        print(f"[увага] не вдалось записати {len(failed)} файлів: " + ", ".join(r for r, _ in failed[:5]))
     for rel in to_delete:
         try:
             (dest / rel).unlink()
@@ -204,7 +264,7 @@ def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_ru
             print("[ok] push виконано" if rc == 0 else f"[ПОМИЛКА] push: {err[:300]}")
             if rc != 0:
                 return 4
-    return 0
+    return 1 if failed else 0
 
 
 def main() -> int:

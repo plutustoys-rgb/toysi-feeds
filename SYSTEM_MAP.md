@@ -439,7 +439,7 @@
     "prom-competitor-pricer", "prom-review-requester", "prom-chat-bot",
     "social-poster-fb", "social-poster-ig", "reel-autopublish", "social-dead-post-cleaner",
     "novapay-statement", "daily-report", "deadline-reminder", "service-watchdog",
-    "promo-margin-guard", "site-order-api", "site-rebuild", "stock-snapshot", "rt-supplier-export", "rt-order-runner", "site-price-history", "site-sale-plan", "site-chat-bot", "gmc-status-report",
+    "promo-margin-guard", "site-order-api", "site-rebuild", "stock-snapshot", "rt-supplier-export", "rt-order-runner", "site-price-history", "site-sale-plan", "site-chat-bot", "site-cert-watch", "gmc-status-report",
     "system-map-driftcheck", "link-cache-validator", "np-warehouse-sync",
     "bank-check", "vps-code-sync", "toysi-top", "demand-featured-auto", "restart-if-changed", "eva-cabinet-keepalive", "eva-full-import"
   ],

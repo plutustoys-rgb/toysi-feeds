@@ -42,7 +42,7 @@ VPS_UNIT_KEYWORDS = ("plutus", "feed", "order", "prom", "rozetka", "novapay",
                      "site-",   # "site-" (з дефісом): site-rebuild перевірка не бачила, поки слова не було (09.10.2026)
                      "driftcheck", "link-cache", "np-warehouse",
                      "bank-check", "code-sync",
-                     "gmc-", "reel-", "stock-snapshot", "toysi-top", "demand-featured", "restart-if-changed", "eva-cabinet", "eva-full")   # 16.10: gmc-status-report, reel-autopublish, stock-snapshot були в реєстрі, але невидимі фільтру → щодоби хибне «ЖИВОГО НЕМА» (служба system-map-driftcheck failed); нові toysi-top / demand-featured-auto / restart-if-changed   # сторож схеми, link-cache-validator, np-warehouse-sync — теж були невидимі
+                     "gmc-", "reel-", "rt-supplier", "stock-snapshot", "toysi-top", "demand-featured", "restart-if-changed", "eva-cabinet", "eva-full")   # 16.10: gmc-status-report, reel-autopublish, stock-snapshot були в реєстрі, але невидимі фільтру → щодоби хибне «ЖИВОГО НЕМА» (служба system-map-driftcheck failed); нові toysi-top / demand-featured-auto / restart-if-changed   # сторож схеми, link-cache-validator, np-warehouse-sync — теж були невидимі
 # СИСТЕМНІ юніти Ubuntu, які збігаються з keyword'ами (daily→apt-daily, catalog→systemd-journal-
 # catalog-update) — це НЕ наші, drift-check їх ігнорує (інакше хибний «дрейф»; знайдено живо на VPS).
 VPS_UNIT_EXCLUDE_PREFIX = ("apt-", "apt.", "systemd-", "fwupd", "logrotate", "man-db", "dpkg",

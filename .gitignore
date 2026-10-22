@@ -345,3 +345,4 @@ rt_eva_listed_state.json
 
 # Журнал першої появи товарів у каталозі сайту (trend_radar.py): VPS-локальний стан
 catalog_first_seen.json
+site_rejected_baskets.jsonl

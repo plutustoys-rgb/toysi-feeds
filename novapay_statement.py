@@ -168,6 +168,53 @@ def _decode_mime_words(raw: str) -> str:
     )
 
 
+_BODYSTRUCTURE_NAME_RE = re.compile(rb'"(?:NAME|FILENAME)" "([^"]+)"', re.IGNORECASE)
+_BODYSTRUCTURE_HEAD_RE = re.compile(rb"(\d+) \(BODYSTRUCTURE")
+# Ознаки, що ім'я вкладення з BODYSTRUCTURE не прочитати простим regex: RFC2231 (NAME*/FILENAME*)
+# або літерал {n} — такий лист лишаємо кандидатом (другий етап розбере get_filename()).
+_BODYSTRUCTURE_UNREADABLE_RE = re.compile(rb'"(?:NAME|FILENAME)\*|\{\d+\}', re.IGNORECASE)
+
+
+def _bodystructure_is_candidate(segment: bytes) -> bool:
+    if _BODYSTRUCTURE_UNREADABLE_RE.search(segment):
+        return True
+    names = []
+    for n in _BODYSTRUCTURE_NAME_RE.findall(segment):
+        try:
+            names.append(_decode_mime_words(n.decode("utf-8", errors="replace")).lower())
+        except Exception:  # noqa: BLE001 — невідомий charset тощо: не валимо звірку, лист = кандидат
+            return True
+    return not names or any(n.endswith(".xlsx") and _ATTACHMENT_NAME_MARKER in n for n in names)
+
+
+def _registry_candidate_uids(imap_conn: imaplib.IMAP4_SSL, uids: list, chunk: int = 200) -> list:
+    """Дешевий префільтр: ЛИШЕ BODYSTRUCTURE (без тіл листів) → лишаємо uid, у яких ім'я
+    вкладення містить _ATTACHMENT_NAME_MARKER та закінчується на .xlsx. Лист, ім'я вкладення
+    якого з BODYSTRUCTURE не прочитати (RFC2231, літерал, невідоме кодування) — лишаємо
+    кандидатом (безпечніше завантажити зайвий, ніж пропустити реєстр). Без цього кожен
+    запуск тягнув усі xlsx-листи."""
+    keep = []
+    for i in range(0, len(uids), chunk):
+        part = uids[i:i + chunk]
+        status, resp = imap_conn.fetch(b",".join(part).decode(), "(BODYSTRUCTURE)")
+        if status != "OK":
+            keep.extend(part)  # не вдалось — не звужуємо
+            continue
+        # imaplib розбиває відповідь з літералом на tuple + хвіст bytes — склеюємо ВСЕ й ріжемо по "N (BODYSTRUCTURE".
+        blob = b"\n".join(x for item in resp for x in (item if isinstance(item, tuple) else (item,))
+                          if isinstance(x, bytes))
+        heads = list(_BODYSTRUCTURE_HEAD_RE.finditer(blob))
+        seen_uids = set()
+        for k, m in enumerate(heads):
+            end = heads[k + 1].start() if k + 1 < len(heads) else len(blob)
+            uid = m.group(1)
+            seen_uids.add(uid)
+            if _bodystructure_is_candidate(blob[m.start():end]):
+                keep.append(uid)
+        keep.extend(u for u in part if u not in seen_uids)  # відповідь не розібрано → кандидат
+    return keep
+
+
 def _fetch_unseen_registry_attachments(imap_conn: imaplib.IMAP4_SSL) -> list:
     """Повертає список (uid, filename, bytes) для непрочитаних листів із
     вкладенням .xlsx, ім'я якого містить _ATTACHMENT_NAME_MARKER. Листи БЕЗ
@@ -179,14 +226,25 @@ def _fetch_unseen_registry_attachments(imap_conn: imaplib.IMAP4_SSL) -> list:
             f"IMAP SELECT теки/мітки '{NOVAPAY_IMAP_FOLDER}' не вдався — "
             f"перевір NOVAPAY_IMAP_FOLDER у .env (реальна назва мітки в кабінеті пошти)"
         )
-    status, data = imap_conn.search(None, "UNSEEN")
+    # 22.10: NOVAPAY_IMAP_FOLDER=INBOX (мітка «NovaPay» у Gmail зникла), а в INBOX 1500+ непрочитаних
+    # листів: UNSEEN+RFC822 тягнув КОЖЕН (довго → збій/тайм-аут; реєстри з 25.08 лишились необробленими)
+    # і ще й позначав усі прочитаними. Gmail: звужуємо пошук до листів з xlsx-вкладенням на боці
+    # сервера; будь-яка інша пошта — як було (UNSEEN).
+    status, data = "NO", None
+    if "gmail" in NOVAPAY_IMAP_HOST.lower():
+        try:
+            status, data = imap_conn.search(None, "X-GM-RAW", '"filename:xlsx is:unread"')
+        except imaplib.IMAP4.error:  # BAD на розширенні Gmail → звичайний UNSEEN нижче
+            status, data = "NO", None
+    if status != "OK":
+        status, data = imap_conn.search(None, "UNSEEN")
     if status != "OK":
         raise NovaPayStatementError(f"IMAP SEARCH не вдався: {status}")
 
-    uids = data[0].split()
+    uids = _registry_candidate_uids(imap_conn, data[0].split())
     results = []
     for uid in uids:
-        status, msg_data = imap_conn.fetch(uid, "(RFC822)")
+        status, msg_data = imap_conn.fetch(uid, "(BODY.PEEK[])")  # PEEK: не позначає лист прочитаним, поки не обробили
         if status != "OK" or not msg_data or not msg_data[0]:
             continue
         raw_email = msg_data[0][1]
@@ -416,6 +474,7 @@ def main() -> None:
                 try:
                     result = process_registry_email(conn, uid, filename, xlsx_bytes, processed)
                     results.append(result)
+                    _save_processed_registries(processed)  # одразу: kill посеред циклу не дублює запис у журнал
                     _mark_seen(imap_conn, uid)
                     print(f"[NovaPay] Реєстр №{result['registry_number']}: {result['rows']} рядків, "
                           f"{result['matched']} зіставлено, {result['unmatched']} без відповідника в orders_db.")

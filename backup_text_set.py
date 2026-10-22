@@ -128,15 +128,20 @@ def collect(cowork: Path, claude_home: Path, repo_local: Path, skills_dirs=()) -
             for p in sorted(mem.rglob("*")):
                 if p.is_file():
                     add_file(p, f"claude_home/projects/{mem.parent.name}/memory/{p.relative_to(mem).as_posix()}")
+    seen_sk = set()
     for sk in skills_dirs:
-        # префікс = перші 8 символів двох id-тек набору (шлях <набір>/<сесія>/skills), щоб різні набори не злились
-        tag = "_".join(x[:8] for x in (sk.parent.parent.name, sk.parent.name))
+        # БЕЗ id набору/сесії в шляху: id тек Claude Desktop можуть змінитись, і тоді вся група «зникла б» (хибний exit 3 на кожному запуску).
+        # Однакові відносні шляхи з кількох наборів: перший виграє.
         for p in sorted(sk.rglob("*")):
             if p.is_file() and p.suffix.lower() in SKILL_EXT:
-                add_file(p, f"claude_skills/{tag}/{p.relative_to(sk).as_posix()}")
+                rel = f"claude_skills/{p.relative_to(sk).as_posix()}"
+                if rel not in seen_sk:
+                    seen_sk.add(rel)
+                    add_file(p, rel)
         manifest = sk.parent / "manifest.json"
-        if manifest.is_file():
-            add_file(manifest, f"claude_skills/{tag}/manifest.json")
+        if manifest.is_file() and "claude_skills/manifest.json" not in seen_sk:
+            seen_sk.add("claude_skills/manifest.json")
+            add_file(manifest, "claude_skills/manifest.json")
     marker = repo_local / ".vps_audit_ok"
     if marker.is_file():
         add_file(marker, "repo_local/.vps_audit_ok")

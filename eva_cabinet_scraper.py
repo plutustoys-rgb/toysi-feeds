@@ -81,6 +81,10 @@ class EvaCabinetError(Exception):
     pass
 
 
+class KeepaliveTimeout(Exception):
+    """Кабінет EVA не відповів двічі підряд (таймаут) — мережевий збій, не протухла сесія."""
+
+
 def _save_failure_artifacts(page, prefix: str) -> None:
     """Скріншот при непередбаченому кроці — для живого налагодження, а не
     мовчазний крах (той самий принцип, що prom_cabinet_scraper). HTML НЕ
@@ -155,7 +159,17 @@ def keepalive() -> None:
         ctx = browser.new_context(storage_state=str(STATE_FILE))
         page = ctx.new_page()
         try:
-            page.goto(MERCHANT_URL, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            # ТАЙМАУТ ≠ протухла сесія: 22.10 о 16:24 (ПК) і 18:20 (VPS) goto впав на 30 с, хоча сесія жива, а алерт казав «протухла».
+            # Тому на таймаут — ще одна спроба з подвоєним таймаутом; алерт — лише після двох невдач (і з чесним текстом).
+            # Справжня протухла сесія (EvaCabinetError із _ensure_session) — без повтору, алерт одразу.
+            for attempt, tmo in enumerate((NAV_TIMEOUT_MS, NAV_TIMEOUT_MS * 2), start=1):
+                try:
+                    page.goto(MERCHANT_URL, timeout=tmo, wait_until="domcontentloaded")
+                    break
+                except PlaywrightTimeoutError:
+                    if attempt == 2:
+                        raise KeepaliveTimeout(f"кабінет EVA не відповів: таймаут {NAV_TIMEOUT_MS // 1000} с і {NAV_TIMEOUT_MS * 2 // 1000} с")
+                    print(f"[EvaCabinet] keepalive: таймаут {tmo // 1000} с — повторюю з {NAV_TIMEOUT_MS * 2 // 1000} с", file=sys.stderr)
             page.wait_for_timeout(3000)
             # Перевикористовуємо _ensure_session() (не власну вужчу перевірку) — аудит PR #567:
             # голий `"login" in url or domain not in url` не ловить oauth/auth/sign_in-редірект
@@ -165,6 +179,12 @@ def keepalive() -> None:
             _ensure_session(page)
             ctx.storage_state(path=str(STATE_FILE))  # пересохраняємо → оновлює сесію (теплою)
             print("[EvaCabinet] keepalive: сесію оновлено.")
+        except KeepaliveTimeout as e:
+            msg = (f"🚨 eva_cabinet_scraper keepalive: {e}. Це збій мережі/кабінету, а НЕ доказ, що сесія протухла — "
+                   f"перелогінюватись не треба, якщо наступний запуск (за ~30 хв) пройде.")
+            print(f"[EvaCabinet] {msg}", file=sys.stderr)
+            _notify(msg)
+            sys.exit(1)
         except (PlaywrightTimeoutError, EvaCabinetError) as e:
             msg = (f"🚨 eva_cabinet_scraper keepalive: сесія протухла/збій ({e}). "
                    f"Перелогінься: `python eva_cabinet_scraper.py --login`.")

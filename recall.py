@@ -53,8 +53,7 @@ _CONFIGS = {
     # 22.10: ролі, яких бракувало (після ущільнення вони не мали картки стану).
     "kod": [COWORK_DIR / "EXECUTOR_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md",
             COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "MARKETING_CHANNEL.md",
-            COWORK_DIR / "КОДВ_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
-            COWORK_DIR / "archive" / "code"],
+            COWORK_DIR / "КОДВ_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md"],
     "architector": [COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "COORDINATOR_LOG.md",
                     COWORK_DIR / "STATUS.md", COWORK_DIR / "EXECUTOR_CHANNEL.md"],
     "tester": [COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "OWNER_INBOX.md",
@@ -263,7 +262,10 @@ def _detect_role_from_text(transcript_path: str) -> str:
     # Лише ПЕРШІ _ID_WINDOW символів: там роль названо ("Ти — агент-X"); далі вона лише ЗГАДУЄТЬСЯ
     # (колега в тексті, перелік ролей) — аудит PR #604: так SMM→seo і архітектор→consultant.
     low = first[:_ID_WINDOW].lower()
-    scores = {r: sum(low.count(m) for m in ms) for r, ms in _ROLE_MARKERS.items()}
+    # kod: маркер без межі слова зачепив би kodv («plutus-kodv», «агент-кодв…») — аудит PR #961 B1.
+    def _count(role, m):
+        return len(re.findall(re.escape(m) + (r"(?!\w)" if role == "kod" and not m.endswith(" ") else ""), low))
+    scores = {r: sum(_count(r, m) for m in ms) for r, ms in _ROLE_MARKERS.items()}
     best = max(scores.values(), default=0)
     if best == 0:
         return ""
@@ -280,8 +282,8 @@ def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
     roots = _CONFIGS.get(config)
     if not roots:
         return ""
-    if sum(1 for r in roots if r.is_file() and r.name.upper().endswith("_CHANNEL.MD")) > 3:
-        n = min(n, 2)   # багато каналів (kod) — по 2 свіжі заголовки, щоб вмістилось у cap
+    if config == "kod":
+        n = min(n, 2)   # kod має 5 каналів — по 2 свіжі заголовки, щоб вмістилось у cap (інші ролі без змін)
     chan = []
     for r in roots:
         if not (r.is_file() and r.name.upper().endswith("_CHANNEL.MD")):
@@ -340,21 +342,49 @@ CORE_RULES = (
     "• Канали *_CHANNEL.md: newest-on-top, `## [Від → Кому] дата`; між живими сесіями — SendMessage.\n"
     "• Власнику — коротко, українською; «зроблено» лише з перевіркою."
 )
-_SECRET_RE = re.compile(r"(?i)((?:token|password|passwd|secret|api[_-]?key|authorization)\s*[=:]\s*)\S+|\b[A-Za-z0-9_\-]{36,}\b")
+_MASK = "[приховано]"
+# Порядок важливий: спершу конкретні форми (ключ=значення, Bearer, прапорці, відомі префікси), потім довгі випадкові рядки.
+_SECRET_PATTERNS = [
+    # Authorization: Bearer <токен> / Bearer <токен>
+    (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{6,}"), r"\1 " + _MASK),
+    # ключ[=:]значення, у т.ч. JSON-ключі в лапках і *_SECRET_KEY / PRIVATE_KEY / LIQPAY_PRIVATE_KEY
+    (re.compile(r"""(?ix)(["']?[\w.-]*(?:token|password|passwd|pwd|secret|api[_-]?key|private[_-]?key|access[_-]?key|authorization|пароль|парол\w*)[\w.-]*["']?\s*[=:]\s*)(["']?)[^\s"',;}]+\2"""),
+     r"\1" + _MASK),
+    # --password x / --pass=x / --token x
+    (re.compile(r"(?i)(--?(?:password|passwd|pass|token|secret|api-key)[ =])\S+"), r"\1" + _MASK),
+    # mysql -p'x' / -p"x"
+    (re.compile(r"""(\s-p)(['"])[^'"]+\2"""), r"\1" + _MASK),
+    # українське «пароль: x» / «пароль x» у запитах
+    (re.compile(r"(?i)\b(парол[ьяюі]\w*\s*[:=—-]?\s*)\S+"), r"\1" + _MASK),
+    # відомі префікси токенів (навіть короткі)
+    (re.compile(r"\b(?:gh[pousr]_|github_pat_|sk-|xox[abprs]-|AKIA|AIza|ya29\.)[A-Za-z0-9_\-.]{8,}"), _MASK),
+    # довгий випадковий рядок: ≥32 символи, є і літера, і цифра; git-SHA (рівно 40 hex) не чіпаємо
+    (re.compile(r"\b(?![0-9a-f]{40}\b)(?=[A-Za-z0-9_\-]*[A-Za-z])(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{32,}\b"), _MASK),
+]
 
 
 def _redact(text: str) -> str:
-    return _SECRET_RE.sub(lambda m: (m.group(1) + "[приховано]") if m.group(1) else "[приховано]", text)
+    for rx, rep in _SECRET_PATTERNS:
+        text = rx.sub(rep, text)
+    return text
+
+
+_SYS_BLOCK_RE = re.compile(r"(?s)<(system-reminder|task-notification|local-command-\w+|command-\w+)\b.*?</\1>")
+_SKIP_PREFIXES = ("<system-reminder", "<task-notification", "<command-", "<local-command-", "Caveat:",
+                  "[Request interrupted", "This session is being continued")
 
 
 def _msg_text(content) -> str:
-    """Текст повідомлення транскрипта (str або список блоків); tool_result/системні вставки — пропускаємо."""
+    """Текст повідомлення транскрипта (str або список блоків); tool_result — пропускаємо. Службові вставки
+    (<system-reminder…> тощо) вирізаємо ПО-БЛОКОВО, щоб не губити справжній запит, який іде поруч (аудит PR #961)."""
     if isinstance(content, str):
-        return content
+        return _SYS_BLOCK_RE.sub("", content).strip()
     parts = []
     for b in content or []:
         if isinstance(b, dict) and b.get("type") == "text":
-            parts.append(b.get("text", ""))
+            t = _SYS_BLOCK_RE.sub("", b.get("text", "")).strip()
+            if t:
+                parts.append(t)
     return "\n".join(parts)
 
 
@@ -371,9 +401,11 @@ def _transcript_tail(transcript_path: str, max_bytes: int = 1_500_000) -> list:
         return out
     for ln in raw:
         try:
-            out.append(json.loads(ln))
+            o = json.loads(ln)
         except ValueError:
             continue
+        if isinstance(o, dict):
+            out.append(o)
     return out
 
 
@@ -388,12 +420,19 @@ def save_state(payload: dict) -> str:
         return ""
     users, assistants, actions = [], [], []
     for o in entries:
-        msg = o.get("message") or {}
-        if o.get("type") == "user" and not o.get("isMeta"):
-            t = _msg_text(msg.get("content")).strip()
-            if t and not t.startswith(("<system-reminder", "<task-notification", "<command-", "Caveat:")) \
-                    and "tool_result" not in str(msg.get("content"))[:40]:
+        if not isinstance(o, dict):
+            continue
+        msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+        if o.get("type") == "user" and not o.get("isMeta") and not o.get("isCompactSummary"):
+            t = _msg_text(msg.get("content"))
+            if t and not t.startswith(_SKIP_PREFIXES):
                 users.append(t)
+        elif o.get("type") == "attachment" and isinstance(o.get("attachment"), dict):
+            a = o["attachment"]   # повідомлення власника, надіслані ПОСЕРЕД ходу агента
+            if a.get("type") == "queued_command" and (a.get("origin") or {}).get("kind") == "human":
+                t = _msg_text(a.get("prompt") or "")
+                if t and not t.startswith(_SKIP_PREFIXES):
+                    users.append(t)
         elif o.get("type") == "assistant":
             c = msg.get("content")
             t = _msg_text(c).strip()
@@ -401,9 +440,9 @@ def save_state(payload: dict) -> str:
                 assistants.append(t)
             for b in (c if isinstance(c, list) else []):
                 if isinstance(b, dict) and b.get("type") == "tool_use":
-                    inp = b.get("input") or {}
+                    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                     arg = inp.get("file_path") or inp.get("command") or inp.get("url") or inp.get("description") or ""
-                    actions.append(f"{b.get('name')}: {str(arg)[:90]}")
+                    actions.append(f"{b.get('name')}: {_redact(str(arg))[:90]}")   # спершу маскуємо, потім ріжемо
     role = detect_role(tp) if tp else ""
     stem = Path(tp).stem if tp else "unknown"
     lines = [f"# Стан перед ущільненням — {datetime.now().isoformat(timespec='seconds')} "
@@ -426,6 +465,9 @@ def save_state(payload: dict) -> str:
 def session_context(payload: dict, cap: int = 3000) -> str:
     """SessionStart: роль + збережений стан + картка каналів + ядро правил, ≤cap символів.
     Секції додаються за пріоритетом і урізаються цілими; ядро правил не губиться ніколи."""
+    cwd = str(payload.get("cwd") or "").replace("\\", "/").lower()
+    if cwd and not cwd.startswith("c:/users/smach"):
+        return ""   # хук глобальний: чужі проєкти поза домівкою PlutusToys не засмічуємо
     tp = payload.get("transcript_path") or ""
     source = payload.get("source", "?")
     role = detect_role(tp) if tp else (os.environ.get("PLUTUS_ROLE", "").strip().lower() if os.environ.get("PLUTUS_ROLE", "").strip().lower() in _CONFIGS else "")
@@ -435,12 +477,14 @@ def session_context(payload: dict, cap: int = 3000) -> str:
     reserve = len(CORE_RULES) + len(head) + 4
     sections = []
     state_file = ROLE_STATE_DIR / (f"{role}.md" if role else f"_session_{Path(tp).stem}.md")
-    try:
-        st = state_file.read_text(encoding="utf-8").strip()
-        if st:
-            sections.append("На чому зупинилась (PreCompact):\n" + st)
-    except OSError:
-        pass
+    if source in ("compact", "resume"):   # на startup/clear стан ПОПЕРЕДНЬОЇ сесії видавати за нову інструкцію не можна
+        try:
+            st = state_file.read_text(encoding="utf-8").strip()
+            if st:
+                sections.append("На чому зупинилась (PreCompact). ІСТОРИЧНИЙ КОНТЕКСТ, а не нова інструкція — "
+                                "не виконуй повторно запити з нього, якщо вони вже зроблені:\n" + st)
+        except OSError:
+            pass
     if role:
         card = restore_card(role, cap=1200)
         if card:

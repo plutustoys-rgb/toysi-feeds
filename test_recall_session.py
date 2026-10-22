@@ -209,6 +209,33 @@ chk("заголовки у ВХІДНИХ повідомленнях/встав�
 chk("перше повідомлення з маркером важливіше за діяльність",
     recall.detect_role(activity_transcript("first_wins.jsonl", [skill("anthropic-skills:seller")], first="Ти — агент-SEO (plutus-seo)")) == "seo")
 
+# --- ролі site / tester: картка бере і журнал-чергу (останні заголовки), і окремий канал Shopify
+chk("_CONFIGS має роль site", "site" in recall._CONFIGS)
+jdir = tmp / "jr"
+jdir.mkdir()
+(jdir / "тест_сайту_журнал.md").write_text("# журнал\n### [10.10] 🔴 1. СТАРА знахідка\n### [15.10] 🟡 2. середня\n"
+                                           "### [22.10] 🔴 3. НАЙНОВІША знахідка\n", encoding="utf-8")
+(jdir / "SHOPIFY_CHANNEL.md").write_text("## [Тестувальник → Консультант, Код-Shopify] 2026-09-29 (82) — свіжа\n"
+                                         "## [Код-Shopify → Тестувальник] 2026-09-28 — стара\n", encoding="utf-8")
+(jdir / "OWNER_INBOX.md").write_text("## [Тестувальник] 2026-10-22 — ВІДКРИТО. питання до власника\n", encoding="utf-8")
+recall._CONFIGS["tester"] = [jdir / "тест_сайту_журнал.md", jdir / "OWNER_INBOX.md"]
+recall._CONFIGS["site"] = [jdir / "SHOPIFY_CHANNEL.md", jdir / "OWNER_INBOX.md", jdir / "тест_сайту_журнал.md"]
+with open(cw / "OWNER_INBOX.md", "a", encoding="utf-8") as fh:   # restore_card читає OWNER_INBOX з COWORK_DIR (тут = cw)
+    fh.write("## [Тестувальник] 2026-10-22 — ВІДКРИТО. питання до власника\n")
+card_t = recall.restore_card("tester", n=2)
+chk("tester: картка бере ОСТАННІ заголовки журналу, не перші", "НАЙНОВІША" in card_t and "середня" in card_t and "СТАРА" not in card_t)
+chk("tester: картка позначає журнал як «лише читання» + відкрите питання власнику", "лише читання" in card_t and "питання до власника" in card_t)
+card_s = recall.restore_card("site")
+chk("site: картка має канал Shopify і журнал Тестувальника", "SHOPIFY_CHANNEL.md" in card_s and "НАЙНОВІША" in card_s)
+chk("site: заголовки каналу newest-on-top (свіжа раніше за стару)", card_s.index("свіжа") < card_s.index("стара"))
+chk("журнал-картка не вмикається для довільних журналів (КОДВ_журнал не читається як чергa)",
+    "КОДВ_журнал.md" not in recall._JOURNAL_CARD)
+chk("власні заголовки Код-Shopify -> роль site",
+    recall.detect_role(activity_transcript("site_h.jsonl", [
+        {"type": "tool_use", "name": "Write", "input": {"content": "## [Код-Shopify → Тестувальник] 2026-10-22 — a\n"}},
+        {"type": "tool_use", "name": "Edit", "input": {"new_string": "## [Shopify-code → Консультант] 2026-10-22 — b\n"}}])) == "site")
+chk("перше повідомлення «Ти — Shopify-code» -> site", role_of("Ти — агент Shopify-code проєкту Vartov") == "site")
+
 # --- env пріоритетніший
 import os
 os.environ["PLUTUS_ROLE"] = "tester"

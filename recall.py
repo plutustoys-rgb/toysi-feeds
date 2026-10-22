@@ -30,6 +30,7 @@ MEMORY_DIR = Path(os.environ.get(    # durable памʼять агента (фа
 COWORK_DIR = Path(os.environ.get(
     "PLUTUS_COWORK_DIR", r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya"))
 
+SHOPIFY_DIR = Path(os.environ.get("PLUTUS_SHOPIFY_DIR", r"C:\Users\smach\shopify_feed_app"))
 # Профілі ролей: кожен агент шукає у СВОЇХ джерелах (не в коді — SEO/SMM працюють у каналах, не в
 # репо). `recall.py --config seo "тема"` → шукає лише в цих файлах/папках + їх archive. Дублі в них
 # інші, ніж у коду: повторне дослідження/закритий запит (напр. SEO подав уже закриті «укр-назви»).
@@ -58,7 +59,12 @@ _CONFIGS = {
                     COWORK_DIR / "STATUS.md", COWORK_DIR / "EXECUTOR_CHANNEL.md"],
     "tester": [COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "OWNER_INBOX.md",
                COWORK_DIR / "archive" / "tester"],
+    # Shopify-code / сайт (Vartov): власний канал лежить ПОЗА Cowork (shopify_feed_app); журнал Тестувальника — лише читання
+    # (його єдиний писар — Тестувальник), там черга дефектів сайту — головний вхід для цієї ролі.
+    "site": [SHOPIFY_DIR / "SHOPIFY_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
+             COWORK_DIR / "тест_сайту_журнал.md"],
 }
+_JOURNAL_CARD = {"тест_сайту_журнал.md"}   # журнали, з яких картка бере останні `### [` заголовки
 # Стан ролей між ущільненнями контексту: <роль>.md (пише PreCompact) + <id сесії>.role (кеш ролі).
 # У .local_secrets (gitignored).
 ROLE_STATE_DIR = Path(os.environ.get("PLUTUS_ROLE_STATE_DIR") or (BASE_DIR / ".local_secrets" / "role_state"))
@@ -187,6 +193,7 @@ _ROLE_AUTHORS = {
     "consultant": ("консультант",), "kodv": ("кодв", "бухгалтер", "головний бухгалтер", "аудитор"),
     # "[код" співпало б із "[кодв…" (бухгалтер) — тому з закриттям/стрілкою.
     "kod": ("код]", "код →", "code-agent"), "architector": ("архітектор",), "tester": ("тестувальник",),
+    "site": ("shopify-code", "код-shopify"),
 }
 # Ознаки ролі в ПЕРШОМУ повідомленні сесії (єдине місце, де роль названо: cwd у всіх однаковий).
 # Рахуємо збіги по ролях; нічия або нуль → "" (фолбек: хук лишає поведінку без змін).
@@ -202,6 +209,7 @@ _ROLE_MARKERS = {
     "kod": ("you are code-agent", "plutus-kod", "агент-код", "агента-код", "ти — код ", "ти - код "),
     "architector": ("agent-architector", "агент-архітектор", "агента-архітектора", "ти — архітектор", "ти - архітектор"),
     "tester": ("plutus-tester", "агент-тестувальник", "агента-тестувальника", "тестувальник сайту"),
+    "site": ("shopify-code", "код-shopify", "код shopify", "агент-shopify"),
 }
 
 
@@ -247,7 +255,8 @@ _SKILL_ROLE = {"business-consultant": "consultant", "seo-agent": "seo", "plutust
                "seller": "seller", "agent-code": "kod", "agent-architector": "architector"}
 _HEADER_ROLE = {"консультант": "consultant", "seo": "seo", "smm": "smm", "продажник": "seller", "виконавець": "executor",
                 "аудитор": "executor", "головний бухгалтер": "kodv", "бухгалтер": "kodv", "кодв": "kodv",
-                "код": "kod", "архітектор": "architector", "тестувальник": "tester"}
+                "код": "kod", "архітектор": "architector", "тестувальник": "tester",
+                "shopify-code": "site", "код-shopify": "site"}
 _HDR_RE = re.compile(r"(?m)^## \[([^\]→\n]+?)\s*→")
 
 
@@ -349,6 +358,16 @@ def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
         n = min(n, 2)   # kod має 5 каналів — по 2 свіжі заголовки, щоб вмістилось у cap (інші ролі без змін)
     chan = []
     for r in roots:
+        if r.is_file() and r.name in _JOURNAL_CARD:      # журнал-«черга» (дописується ВНИЗ): беремо ОСТАННІ заголовки
+            try:
+                jh = [ln[4:].strip()[:130] for ln in r.read_text(encoding="utf-8", errors="replace").splitlines()
+                      if ln.startswith("### [")]
+            except Exception:
+                continue
+            if jh:
+                chan.append(f"{r.name} (внизу = найновіше, лише читання):")
+                chan += [f"   • {h}" for h in jh[-n:]]
+            continue
         if not (r.is_file() and r.name.upper().endswith("_CHANNEL.MD")):
             continue
         heads = []

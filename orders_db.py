@@ -535,7 +535,7 @@ def get_orders_awaiting_payment(conn: sqlite3.Connection) -> list:
 
     Скасовані (mark_cancelled → status='cancelled') ВИКЛЮЧЕНО: вони вже не чекають оплати.
     Без цього ті самі мертві замовлення (22.10: 16 шт.) повторно проходили Прохід 2 КОЖЕН
-    цикл (по запиту в кабінет + UPDATE у одній транзакції, що тримає write-lock хвилину) —
+    цикл (по запиту в кабінет + UPDATE у одній транзакції, що тримає write-lock на час мережевих викликів) —
     одна з причин «database is locked» у order-pipeline (20–21.10)."""
     rows = conn.execute(
         "SELECT * FROM orders WHERE payment_method = 'prepaid' AND payment_confirmed = 0 "

@@ -631,3 +631,4 @@ label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накла
 .brandlink{display:inline-block;margin:0 0 8px;font-size:13px;font-weight:600;color:var(--accent)}
 .catblock{padding:20px 0 8px;margin-top:28px;border-top:1px solid var(--line)}
 .catblock-h{font-size:20px;margin:0 0 14px}
+@media(max-width:999px){.catblock{padding-left:16px;padding-right:16px}}   /* на вузьких екранах .gp без відступів (сайдбар прибрано), як у .cat-intro */

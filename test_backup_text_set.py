@@ -159,4 +159,28 @@ chk("пам'ять у копії збережена", len(list((d3 / "claude_hom
 # --- без remote: не падає
 chk("push без remote не падає (лише попередження)", bk.backup(cw, ch, rl, dest, push=True) == 0)
 
+# --- чесність: майданчик усередині домашньої теки без remote — не бекап (прохання Консультанта 22.10)
+hdir = tmp / "honest"
+cw4, ch4, rl4, d4 = hdir / "c", hdir / "h", hdir / "r", hdir / "home" / "dest"
+for d in (cw4, ch4, rl4):
+    d.mkdir(parents=True)
+(cw4 / "a.md").write_text("звичайний документ\n", encoding="utf-8")
+(cw4 / "plan.md").write_text(f"Ключ ФОП НП ({FAKE_HEX})\n", encoding="utf-8")
+(cw4 / "code.md").write_text("token_ratio = fuzz.ratio_of_something_long(a, b)\n", encoding="utf-8")
+bk.HOME = hdir / "home"          # dest усередині «домашньої теки»
+bk.backup(cw4, ch4, rl4, d4, push=False)
+rep4 = (d4 / "_report_last.md").read_text(encoding="utf-8")
+chk("dest у домашній теці без remote: звіт каже «ЦЕ НЕ БЕКАП, А МАЙДАНЧИК»", "ЦЕ НЕ БЕКАП" in rep4)
+chk("звіт розділяє «імовірні секрети» і «низька ймовірність»", "Імовірні СЕКРЕТИ" in rep4 and "Низька ймовірність" in rep4
+    and rep4.index("plan.md") < rep4.index("code.md"))
+chk("hex-ключ у групі СЕКРЕТИ, а ключ=значення з коду — у групі хибних",
+    "plan.md" in rep4.split("Низька ймовірність")[0] and "code.md" in rep4.split("Низька ймовірність")[1])
+subprocess.run(["git", "-C", str(d4), "remote", "add", "origin", str(tmp / "nowhere.git")], capture_output=True)
+bk.backup(cw4, ch4, rl4, d4, push=False)
+chk("з налаштованим remote попередження зникає", "ЦЕ НЕ БЕКАП" not in (d4 / "_report_last.md").read_text(encoding="utf-8"))
+d5 = tmp / "outside" / "dest"
+bk.HOME = hdir / "otherhome"
+bk.backup(cw4, ch4, rl4, d5, push=False)
+chk("dest поза домашньою текою: попередження немає", "ЦЕ НЕ БЕКАП" not in (d5 / "_report_last.md").read_text(encoding="utf-8"))
+
 sys.exit(1 if F else 0)

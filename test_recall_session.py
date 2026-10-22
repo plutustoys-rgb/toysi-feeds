@@ -245,6 +245,37 @@ chk("SMM, що згадує Shopify-code двічі -> smm", role_of("Ти — �
 tight = recall.restore_card("site", cap=900)
 chk("site: при тісному cap журнал (головний вхід) лишається в картці, а не відрізається", "НАЙНОВІША" in tight)
 
+# --- 22.10 (Shopify-code спитала власника «я Vartov-Код чи Shopify-code?»): SEO_CHANNEL у картці site лише з її записами;
+#     seo не читає чергу, адресовану Shopify-code; згадка vartov/файла процедури НЕ дає ролі
+seo_dir = tmp / "seo_ch"
+seo_dir.mkdir()
+(seo_dir / "SEO_CHANNEL.md").write_text(
+    "## [SEO → Shopify-code, Консультант] 2026-10-12 — два відкриті питання сайту\\n".replace("\\n", chr(10)) +
+    "## [Консультант → SEO] 2026-10-14 — чужа SEO-черга ПРО GMC" + chr(10) +
+    "## [Shopify-code → SEO] 2026-10-13 — відповідь по сайту" + chr(10) +
+    "## [Консультант → Shopify-code] 2026-10-11 — лише Shopify-code, без SEO" + chr(10) +
+    "## [SEO → Консультант] 2026-10-10 — SEO-запис без сайту" + chr(10), encoding="utf-8")
+(seo_dir / "MARKETING_CHANNEL.md").write_text("## [SMM → Shopify-code] 2026-10-21 — додай рух «Муха»" + chr(10) +
+                                              "## [SMM → SEO] 2026-10-20 — чужа маркетингова черга SEO" + chr(10), encoding="utf-8")
+recall._CONFIGS["site"] = [jdir / "SHOPIFY_CHANNEL.md", seo_dir / "MARKETING_CHANNEL.md", seo_dir / "SEO_CHANNEL.md", jdir / "OWNER_INBOX.md"]
+recall._CONFIGS["seo"] = [seo_dir / "SEO_CHANNEL.md", seo_dir / "MARKETING_CHANNEL.md", jdir / "OWNER_INBOX.md"]
+card_site = recall.restore_card("site", n=4)
+chk("site: у картці записи SEO_CHANNEL, де фігурує Shopify-code (адресат АБО автор)",
+    "два відкриті питання сайту" in card_site and "відповідь по сайту" in card_site)   # n=2 для site: два найсвіжіші
+chk("site: чужа SEO-черга (без Shopify-code) у картку НЕ потрапляє",
+    "ПРО GMC" not in card_site and "SEO-запис без сайту" not in card_site)
+card_seo = recall.restore_card("seo", n=6)
+chk("seo: записи, адресовані ЛИШЕ Shopify-code (без SEO), у картку seo НЕ потрапляють", "лише Shopify-code, без SEO" not in card_seo)
+chk("site: запис MARKETING_CHANNEL, адресований Shopify-code, у картці; чужий SEO-запис — ні",
+    "додай рух «Муха»" in card_site and "чужа маркетингова черга SEO" not in card_site)
+chk("seo: запис MARKETING_CHANNEL, адресований ЛИШЕ Shopify-code, у картці seo немає; свій — є",
+    "додай рух «Муха»" not in card_seo and "чужа маркетингова черга SEO" in card_seo)
+chk("seo: власні записи і записи з участю SEO лишаються",
+    "ПРО GMC" in card_seo and "два відкриті питання сайту" in card_seo and "відповідь по сайту" in card_seo and "SEO-запис без сайту" in card_seo)
+chk("згадка vartov / процедура_vartov_vhost.md у першому повідомленні роль НЕ дає",
+    role_of("Прочитай процедура_vartov_vhost.md у теці shopify_feed_app для vartov.app") == "")
+chk("«Vartov-Код» без форми «Ти — …» роль не дає", role_of("Vartov-Код, перевір vhost") == "")
+
 # --- env пріоритетніший
 import os
 os.environ["PLUTUS_ROLE"] = "tester"

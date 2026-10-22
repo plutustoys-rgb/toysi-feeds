@@ -403,7 +403,7 @@
    з межею слова, щоб не зачепити `kodv`) → **виклик скіла ролі** (`Skill` tool_use асистента: business-consultant, seo-agent,
    plutustoys-smm, accountant, seller, agent-code, agent-architector) → ≥2 власні заголовки каналів `## [Роль → …]` (лише
    дії асистента; цитати у вхідних не рахуються; нічия → порожньо; перевірено на 4 живих транскриптах 22.10); вручну `recall.py --detect-role <transcript> --set-role <роль>`. Ролі
-   `recall.py`: seo, smm, seller, executor, consultant, kodv + **kod, architector, tester, site** (site: SHOPIFY_CHANNEL.md з shopify_feed_app + журнал Тестувальника лише для читання). Відомі межі: роль
+   `recall.py`: seo, smm, seller, executor, consultant, kodv + **kod, architector, tester, site** (site: SHOPIFY_CHANNEL.md з shopify_feed_app + журнал Тестувальника лише для читання + записи, де Shopify-code автор/адресат, у спільних MARKETING/SEO/CONSULTANT_CHANNEL — фільтр за частиною `[автор → адресати]`; seo дзеркально НЕ бачить записів, адресованих лише Shopify-code). **`control_panel.py` виставляє `PLUTUS_ROLE` у середовищі дочірньої сесії** (чат і кнопка 🔗) для Код/SEO/SMM/Консультант/Бухгалтер/Продажник/Виконавець — детекція за текстом тоді не потрібна (22.10: Shopify-code не змогла визначити роль, бо картка не мала її записів із SEO_CHANNEL). Відомі межі: роль
    знаходиться за ПЕРШИМ повідомленням, якого на `startup`/`clear` ще нема → там «роль не визначена», повноцінно
    працює `compact`/`resume`; стан зберігається по ролі, не по сесії (дві одночасні сесії однієї ролі перезапишуть одна
    одну). **Резервна копія тексту, якого нема в git:** `backup_text_set.py` (ручний/планований запуск; локальний git у

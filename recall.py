@@ -62,9 +62,27 @@ _CONFIGS = {
     # Shopify-code / сайт (Vartov): власний канал лежить ПОЗА Cowork (shopify_feed_app); журнал Тестувальника — лише читання
     # (його єдиний писар — Тестувальник), там черга дефектів сайту — головний вхід для цієї ролі.
     # Журнал — ДРУГИМ (головний вхід ролі): картка обрізається з кінця за cap, тож менш важливе має стояти після нього.
-    "site": [SHOPIFY_DIR / "SHOPIFY_CHANNEL.md", COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "CONSULTANT_CHANNEL.md",
-             COWORK_DIR / "OWNER_INBOX.md"],
+    # MARKETING/SEO/CONSULTANT_CHANNEL — лише записи, де Shopify-code автор/адресат (фільтр _header_ok): її черга лежить і там (22.10: без цього
+    # сесія site не бачила адресованих їй питань і пішла шукати роль у власника).
+    "site": [SHOPIFY_DIR / "SHOPIFY_CHANNEL.md", COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "MARKETING_CHANNEL.md",
+             COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md"],
 }
+_SHARED_CHANNELS = {"SEO_CHANNEL.md", "MARKETING_CHANNEL.md", "CONSULTANT_CHANNEL.md"}   # канали, де черги ролей перемішані
+_SHOPIFY_RE = re.compile(r"shopify-code|код-shopify", re.IGNORECASE)
+_SEO_RE = re.compile(r"\bseo\b", re.IGNORECASE)
+
+
+def _header_ok(config: str, fname: str, header: str) -> bool:
+    """Фільтр заголовків спільного SEO_CHANNEL.md, щоб дві ролі не читали чергу одна одної:
+    site бачить лише записи, де фігурує Shopify-code; seo НЕ бачить записів, адресованих Shopify-code без участі SEO."""
+    if fname in _SHARED_CHANNELS:
+        m = re.match(r"\s*##\s*\[([^\]]*)\]", header)
+        who = m.group(1) if m else header          # лише «автор → адресати», НЕ опис запису (там слова SEO/Shopify трапляються довільно)
+        if config == "site":
+            return bool(_SHOPIFY_RE.search(who))
+        if config == "seo":
+            return not (_SHOPIFY_RE.search(who) and not _SEO_RE.search(who))
+    return True
 _JOURNAL_CARD = {"тест_сайту_журнал.md"}   # журнали, з яких картка бере останні `### [` заголовки
 # Стан ролей між ущільненнями контексту: <роль>.md (пише PreCompact) + <id сесії>.role (кеш ролі).
 # У .local_secrets (gitignored).
@@ -377,7 +395,7 @@ def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
         heads = []
         try:
             for ln in r.read_text(encoding="utf-8", errors="replace").splitlines():
-                if ln.startswith("## ["):
+                if ln.startswith("## [") and _header_ok(config, r.name, ln):
                     heads.append(ln[3:].strip()[:130])
                     if len(heads) >= n:
                         break
@@ -572,7 +590,7 @@ def session_context(payload: dict, cap: int = 3000) -> str:
         except OSError:
             pass
     if role:
-        card = restore_card(role, cap=1200)
+        card = restore_card(role, cap=1700 if role == "site" else 1200)   # site має 6 джерел, 3 із них фільтровані
         if card:
             sections.append(card)
     out, budget = [head], cap - reserve

@@ -82,6 +82,20 @@ _AGENT_DEF = {
 }
 
 
+# Ім'я агента → роль recall.py (PLUTUS_ROLE): панель ЗНАЄ, кого піднімає, тож виставляє роль у середовищі сесії — детекція
+# за текстом (recall.detect_role) тоді не потрібна й не може помилитись (22.10: Shopify-code не змогла визначити роль).
+_ROLE_ENV = {
+    "Код": "kod", "SEO": "seo", "SMM": "smm", "Консультант": "consultant", "Бухгалтер": "kodv",
+    "Продажник": "seller", "Виконавець": "executor",
+}
+
+
+def _role_env(agent) -> dict:
+    """Середовище дочірньої сесії з PLUTUS_ROLE (лише дочірньої: власне середовище панелі не міняємо)."""
+    role = _ROLE_ENV.get(agent.get("name"))
+    return {**os.environ, "PLUTUS_ROLE": role} if role else dict(os.environ)
+
+
 def _agents():
     """Агенти панелі: з agent_watch (Код/SEO/SMM/Продажник/Виконавець/Консультант) + PANEL_EXTRA (бухгалтер)."""
     out = []
@@ -198,7 +212,7 @@ def _chat(agent, message):
         cmd += ["--resume", sid]      # продовжуємо — роль/навичка/памʼять уже в сесії
     elif slug:
         cmd += ["--agent", slug]      # перша репліка — повний агент із def
-    env = {**os.environ, "PLUTUS_AGENT_HEADLESS": "1"}
+    env = {**_role_env(agent), "PLUTUS_AGENT_HEADLESS": "1"}
     # Промпт через STDIN (багаторядковий argv до claude.CMD на Windows ріжеться, 2026-09-02).
     try:
         r = subprocess.run(cmd, input=message, cwd=str(BASE_DIR), capture_output=True, text=True,
@@ -240,7 +254,8 @@ def _launch(agent):
         args += ["--agent", slug]      # нема сесії — новий повний агент із def
     args += ["--add-dir", str(COWORK_DIR)]
     try:
-        subprocess.Popen(["cmd", "/c", "start", agent["name"], "/d", str(BASE_DIR), "cmd", "/k", *args])
+        subprocess.Popen(["cmd", "/c", "start", agent["name"], "/d", str(BASE_DIR), "cmd", "/k", *args],
+                         env=_role_env(agent))   # PLUTUS_ROLE у середовищі нового вікна (start його успадковує)
         what = ("ПРОДОВЖИВ розмову" if sid else
                 (f"відкрив повного агента «{slug}»" if slug else f"відкрив сесію «{agent['name']}»"))
         return True, f"{what} з «{agent['name']}» у терміналі (роль+навичка+правила+памʼять)"

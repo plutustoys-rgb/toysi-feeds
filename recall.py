@@ -241,7 +241,68 @@ def detect_role(transcript_path: str) -> str:
     return role
 
 
+# Роль за ДІЯЛЬНІСТЮ сесії (22.10, дефект від Консультанта: у 2 із 3 живих сесій перша фраза власника роль не називала).
+# 1) виклик скіла ролі (найнадійніший сигнал — є в кожній рольовій сесії); 2) власні записи в каналах `## [<Роль> → …]`.
+_SKILL_ROLE = {"business-consultant": "consultant", "seo-agent": "seo", "plutustoys-smm": "smm", "accountant": "kodv",
+               "seller": "seller", "agent-code": "kod", "agent-architector": "architector"}
+_HEADER_ROLE = {"консультант": "consultant", "seo": "seo", "smm": "smm", "продажник": "seller", "виконавець": "executor",
+                "аудитор кабінетів": "executor", "головний бухгалтер": "kodv", "бухгалтер": "kodv", "кодв": "kodv",
+                "код": "kod", "архітектор": "architector", "тестувальник": "tester"}
+_HDR_RE = re.compile(r"(?m)^## \[([^\]→\n]+?)\s*→")
+
+
+def _detect_role_from_activity(transcript_path: str) -> str:
+    import json
+    from collections import Counter
+    skills, hdrs = Counter(), Counter()
+    try:
+        with open(transcript_path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 60000:
+                    break
+                if '"Skill"' not in line and "## [" not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                msg = o.get("message") if isinstance(o, dict) and isinstance(o.get("message"), dict) else {}
+                content = msg.get("content")
+                if o.get("type") != "assistant" or not isinstance(content, list):
+                    continue   # лише ВЛАСНІ дії сесії; цитати чужих заголовків у запитах/вивідках не рахуємо
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "tool_use":
+                        inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                        if b.get("name") == "Skill":
+                            role = _SKILL_ROLE.get(str(inp.get("skill", "")).split(":")[-1])
+                            if role:
+                                skills[role] += 1
+                        for v in (inp.get("content"), inp.get("new_string")):   # Write / Edit: власний допис у канал
+                            for m in _HDR_RE.findall(v if isinstance(v, str) else ""):
+                                r = _HEADER_ROLE.get(m.strip().lower())
+                                if r:
+                                    hdrs[r] += 1
+                    elif b.get("type") == "text":
+                        for m in _HDR_RE.findall(b.get("text") or ""):
+                            r = _HEADER_ROLE.get(m.strip().lower())
+                            if r:
+                                hdrs[r] += 1
+    except OSError:
+        return ""
+    for counter, need in ((skills, 1), (hdrs, 2)):
+        top = counter.most_common(2)
+        if top and top[0][1] >= need and (len(top) == 1 or top[0][1] >= 2 * top[1][1]):
+            return top[0][0]
+    return ""
+
+
 def _detect_role_from_text(transcript_path: str) -> str:
+    return _detect_role_from_first_message(transcript_path) or _detect_role_from_activity(transcript_path)
+
+
+def _detect_role_from_first_message(transcript_path: str) -> str:
     import json
     try:
         with open(transcript_path, encoding="utf-8", errors="replace") as f:

@@ -51,9 +51,10 @@ def posix(p):
     return str(p).replace("\\", "/")
 
 
-def run(stream, root, **env):
+def run(stream, root, expected=None, **env):
     e = {**os.environ, "BACKUP_ROOT": posix(root), **env}
-    r = subprocess.run([BASH, posix(SCRIPT)], input=stream, capture_output=True, env=e, timeout=120)
+    args = [BASH, posix(SCRIPT)] + ([str(expected)] if expected is not None else [])
+    r = subprocess.run(args, input=stream, capture_output=True, env=e, timeout=120)
     return r.returncode, r.stdout.decode("utf-8", "replace")
 
 
@@ -91,6 +92,23 @@ chk("обірваний/битий tar-потік: код != 0, .part прибр
 # --- права
 mode = oct((root).stat().st_mode & 0o777)
 chk("корінь знімків має права 700 (там, де ФС це підтримує)", mode in ("0o700",) or os.name == "nt")
+
+# --- аудит PR #965: кількість файлів від відправника, залишки .part, небезпечний корінь, predecessor того ж дня
+before = sorted(p.name for p in root.glob("cowork_*"))
+rc, out = run(good, root, expected=150)
+chk("очікувана кількість збігається (150) -> опубліковано", rc == 0 and "SNAPSHOT_DONE" in out)
+rc, out = run(good, root, expected=300)
+chk("відправник запакував 300, дійшло 150 (обрив на межі запису) -> код 6, не опубліковано",
+    rc == 6 and "SNAPSHOT_FAILED" in out and not list(root.glob("*.part")))
+(root / "cowork_2020-01-01.part").mkdir()
+(root / "cowork_2020-01-01.part" / "junk").write_text("x", encoding="utf-8")
+rc, out = run(good, root, expected=150)
+chk("залишок .part з ІНШОЇ дати прибирається при старті", rc == 0 and not list(root.glob("*.part")))
+snap_today = sorted(p.name for p in root.glob("cowork_*"))
+rc, out = run(good, root, expected=150, MIN_FREE_GB="999999")
+chk("невдалий повторний запуск того ж дня НЕ чіпає опублікований знімок", rc == 3 and sorted(p.name for p in root.glob("cowork_*")) == snap_today)
+rc, out = run(good, tmp / "x", BACKUP_ROOT="/")
+chk("небезпечний BACKUP_ROOT='/' відхиляється", rc == 2 and "unsafe" in out)
 
 shutil.rmtree(tmp, ignore_errors=True)
 sys.exit(1 if F else 0)

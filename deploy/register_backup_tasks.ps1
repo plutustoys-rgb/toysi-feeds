@@ -32,15 +32,18 @@ $defs = @(
 )
 
 foreach ($d in $defs) {
+    # Повторний запуск НЕ змінює стан за власника: якщо задача вже є, її Enabled/Disabled зберігається
+    # (вмикати знімок - -EnableSnapshot або Enable-ScheduledTask).
+    $existing0 = Get-ScheduledTask -TaskName $d.Name -ErrorAction SilentlyContinue
+    if ($existing0 -and -not $EnableSnapshot) { $d.Enabled = ($existing0.State -ne 'Disabled') }
     $state = if ($d.Enabled) { 'ENABLED' } else { 'DISABLED' }
     if ($DryRun) { Write-Output "[dry-run] $($d.Name) -> $($d.Exec) $($d.Args) [$state]"; continue }
     New-Item -ItemType Directory -Force -Path $logdir | Out-Null
     $action    = New-ScheduledTaskAction -Execute $d.Exec -Argument $d.Args
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
     $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit $d.Limit
-    if (Get-ScheduledTask -TaskName $d.Name -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $d.Name -Confirm:$false }
     $task = New-ScheduledTask -Action $action -Trigger $d.Trigger -Principal $principal -Settings $settings
     if (-not $d.Enabled) { $task.Settings.Enabled = $false }
-    Register-ScheduledTask -TaskName $d.Name -InputObject $task | Out-Null
+    Register-ScheduledTask -TaskName $d.Name -InputObject $task -Force | Out-Null   # -Force замінює наявну БЕЗ вікна, коли Register падає - стара лишається
     Write-Output "[ok] $($d.Name) registered [$state]"
 }

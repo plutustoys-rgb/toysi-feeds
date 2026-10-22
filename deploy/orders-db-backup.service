@@ -1,0 +1,7 @@
+[Unit]
+Description=PlutusToys: backup orders.db (sqlite online-backup + integrity check + gzip, 30d retention)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/plutustoys/venv/bin/python /opt/plutustoys/backup_orders_db.py
+Nice=10

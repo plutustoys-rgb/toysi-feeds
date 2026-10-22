@@ -518,9 +518,20 @@
   }
   function swapLater(){ var c=read(), later=readStore(LATER_KEY); write(later); writeLater(c); renderCart(); }
   function dropLater(){ writeLater({}); renderCart(); }
+  // Облік попиту на поділ замовлень (Код/Консультант 22.10): блокований змішаний кошик до /api/order не доходить, тож повідомляємо окремо — лише id і к-сть, без персональних даних;
+  // раз на сесію для кожного складу кошика (відсікає повтори при перемальовках), best-effort.
+  function reportMixedBlock(c){
+    var sig=Object.keys(c).sort().map(function(id){ return id+":"+c[id].qty; }).join(",");
+    try{ if(sessionStorage.getItem("pt_mix_rep")===sig) return; sessionStorage.setItem("pt_mix_rep", sig); }catch(e){ return; }
+    try{
+      fetch("api/basket_blocked", {method:"POST", headers:{"Content-Type":"application/json"}, keepalive:true, credentials:"omit",
+        body:JSON.stringify({items:Object.keys(c).map(function(id){ return {id:id, qty:c[id].qty}; })})}).catch(function(){});
+    }catch(e){}
+  }
   function renderMixAndLater(c, ids){
     var mb=document.getElementById("mix-block"), lb=document.getElementById("later-box"), sub=document.getElementById("checkout-submit");
     var mixed=isMixedCart(c), g=groupIds(c);
+    if(mixed) reportMixedBlock(c);
     if(mb){
       if(mixed){
         var h='<b>Ці товари не можна оформити одним замовленням</b><p>'+esc(MIX_MSG)+'</p><div class="mix-btns">';

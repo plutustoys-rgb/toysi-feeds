@@ -96,6 +96,9 @@ with sync_playwright() as pw:
         pg.route("**/googletagmanager.com/**", lambda r: r.abort())
         pg.route("**/stock.json*", lambda r: r.fulfill(status=404, body=""))
         calls = []
+        beacons = []
+        pg.route("**/api/basket_blocked", lambda r, _rq: (beacons.append(_rq.post_data), r.fulfill(status=200, content_type="application/json", body='{"ok": true}')))
+        pg.beacons = beacons
         pg.route("**/api/order", lambda r, _rq: (calls.append(1), r.fulfill(status=400, content_type="application/json", body=json.dumps({"error": "тест"}))))
         if allow_mixed:
             pg.add_init_script("window.PT_ALLOW_MIXED_PARCELS=true")
@@ -117,6 +120,9 @@ with sync_playwright() as pw:
     s = pg.evaluate(STATE)
     chk("відправка програмно (requestSubmit): вікна посилок НЕМАЄ, запит /api/order не пішов, показано причину", not s["dialog"] and len(calls) == 0 and "різних складів" in s["msg"] and s["submitDisabled"] is True)
     chk("без помилок JS", errs == [])
+    b = [json.loads(x) for x in pg.beacons]
+    chk(f"облік: заблокований змішаний кошик повідомлено серверу рівно ОДИН раз, лише id і к-сть, без персональних даних ({b})",
+        len(b) == 1 and set(b[0]) == {"items"} and sorted((i["id"], i["qty"]) for i in b[0]["items"]) == [("9100", 1), ("9101", 2), ("rt-45560", 1)] and all(set(i) == {"id", "qty"} for i in b[0]["items"]))
     # (3) «Спершу: основні товари» → у кошику лишається Toysi, rt іде «на потім»
     pg.click("[data-mix-keep='t']")
     pg.wait_for_timeout(300)
@@ -137,7 +143,7 @@ with sync_playwright() as pw:
     # (2) один склад — без змін
     ctx, pg, errs, calls = newpage(cart_of(T1, T2))
     s = pg.evaluate(STATE)
-    chk("один склад: блоку і «на потім» нема, «Оформити» активна", s["mixHidden"] and s["laterHidden"] and not s["submitDisabled"])
+    chk("один склад: блоку і «на потім» нема, «Оформити» активна, облік блокування НЕ шлеться", s["mixHidden"] and s["laterHidden"] and not s["submitDisabled"] and pg.beacons == [])
     fill_and_submit(pg)
     pg.wait_for_timeout(500)
     chk("один склад: вікна нема, запит пішов одразу", not pg.evaluate(STATE)["dialog"] and len(calls) == 1)
@@ -172,7 +178,7 @@ with sync_playwright() as pw:
     # (5) прапорець зворотної сумісності
     ctx, pg, errs, calls = newpage(cart_of(T1, R1), allow_mixed=True)
     s = pg.evaluate(STATE)
-    chk("PT_ALLOW_MIXED_PARCELS=true: блоку нема, кнопка активна (стара поведінка)", s["mixHidden"] and not s["submitDisabled"])
+    chk("PT_ALLOW_MIXED_PARCELS=true: блоку нема, кнопка активна (стара поведінка), облік блокування не шлеться", s["mixHidden"] and not s["submitDisabled"] and pg.beacons == [])
     fill_and_submit(pg)
     pg.wait_for_timeout(500)
     s = pg.evaluate(STATE)

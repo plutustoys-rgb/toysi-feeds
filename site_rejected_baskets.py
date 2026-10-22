@@ -20,7 +20,8 @@ from pathlib import Path
 
 KIND_MIXED = "mixed_toysi_rt"      # змішаний кошик Toysi + RoyalToys
 KIND_RT_COD = "rt_cod"             # rt-позиція + накладений (або невідомий) спосіб оплати
-KIND_TITLES = {KIND_MIXED: "змішаний Toysi+RT", KIND_RT_COD: "RT + накладений"}
+KIND_BLOCKED = "mixed_blocked_cart"   # змішаний кошик, заблокований ще В КОШИКУ (22.10, Консультант): до сервера /api/order такий кошик більше не доходить, тож фронт повідомляє про нього окремо (POST /api/basket_blocked)
+KIND_TITLES = {KIND_MIXED: "змішаний Toysi+RT", KIND_RT_COD: "RT + накладений", KIND_BLOCKED: "змішаний, заблоковано в кошику"}
 
 
 def _file() -> Path:
@@ -32,6 +33,7 @@ def log_rejected(kind: str, items) -> None:
     try:
         items = [i for i in (items or []) if isinstance(i, dict)]
         n_rt = sum(1 for i in items if str(i.get("toysi_code") or "").lower().startswith("rt-"))
+        n_zb = sum(1 for i in items if str(i.get("toysi_code") or "").lower().startswith("zb-"))
         rec = {
             "ts": datetime.now().isoformat(timespec="seconds"),
             "kind": kind,
@@ -39,8 +41,10 @@ def log_rejected(kind: str, items) -> None:
             "qty": sum(int(i.get("qty") or 0) for i in items),
             "total": round(sum(float(i.get("price") or 0) * int(i.get("qty") or 0) for i in items), 2),
             "n_rt": n_rt,
-            "n_toysi": len(items) - n_rt,
+            "n_toysi": len(items) - n_rt - n_zb,
         }
+        if n_zb:
+            rec["n_zb"] = n_zb
         path = _file()
         with open(path, "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")

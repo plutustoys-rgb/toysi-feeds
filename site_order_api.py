@@ -12,6 +12,7 @@ site_order_api.py — HTTP-бекенд власного магазину plutus
                          → створює замовлення (payment_confirmed=0) → {order_id,total,payment_method,liqpay}
                            cod  → liqpay=null, замовлення прийнято одразу (накладений платіж НП)
                            prepaid → liqpay={...} для редіректу (або null, якщо ключі не задані)
+  POST /api/basket_blocked {items:[{id,qty}]}    → облік змішаного кошика, заблокованого ще в кошику (site_rejected_baskets; без персональних даних) → {ok}
   POST /api/liqpay/callback  (data, signature)  → verify → mark_payment_confirmed → 200
 
 MONEY-SAFETY:
@@ -749,6 +750,11 @@ class RateLimiter:
 
 
 _PAID_LIMITER = RateLimiter(PAID_RATE_LIMIT, PAID_RATE_WINDOW_S)
+# Облік змішаних кошиків, заблокованих ще в кошику (POST /api/basket_blocked): ліміт на IP і загальний (запис у файл — лише за валідним змішаним кошиком, ≈150 Б на подію)
+BLOCKED_RATE_LIMIT = int(os.environ.get("SITE_BLOCKED_RATE_LIMIT", "10"))
+BLOCKED_GLOBAL_LIMIT = int(os.environ.get("SITE_BLOCKED_GLOBAL_LIMIT", "60"))
+_BLOCKED_LIMITER = RateLimiter(BLOCKED_RATE_LIMIT, 60)
+_BLOCKED_GLOBAL = RateLimiter(BLOCKED_GLOBAL_LIMIT, 60)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -833,9 +839,43 @@ class Handler(SimpleHTTPRequestHandler):
             return self._handle_promo_quote()
         if parsed.path == "/api/order":
             return self._handle_order()
+        if parsed.path == "/api/basket_blocked":
+            return self._handle_basket_blocked()
         if parsed.path == "/api/liqpay/callback":
             return self._handle_callback()
         return self._json(404, {"error": "невідомий ендпоінт"})
+
+    def _handle_basket_blocked(self):
+        """POST /api/basket_blocked {items:[{id,qty}]} — фронт повідомляє, що змішаний кошик (товари різних складів) заблоковано ще в кошику, ДО введення даних (22.10, Консультант).
+        Без цього облік site_rejected_baskets не бачив би ці кошики: до /api/order вони більше не доходять, а їхня кількість — вхід для рішення «будувати поділ замовлень». Нічого не створює,
+        персональних даних не приймає й не пише; відповідь завжди 200 {"ok": bool} (покупця це не стосується), окрім 429 за лімітом."""
+        if not _BLOCKED_LIMITER.allow(self._client_ip()) or not _BLOCKED_GLOBAL.allow("*"):
+            return self._json(429, {"error": "забагато запитів"}, no_store=True)
+        payload = self._read_json()
+        try:
+            pm = price_map()
+            raw = payload.get("items") if isinstance(payload, dict) else None
+            if not pm or not isinstance(raw, list) or not raw or len(raw) > MAX_ITEMS:
+                return self._json(200, {"ok": False}, no_store=True)
+            items, classes = [], set()
+            for it in raw:
+                it = it if isinstance(it, dict) else {}
+                pid = str(it.get("id", "")).strip()
+                try:
+                    qty = int(it.get("qty", 0))
+                except (TypeError, ValueError):
+                    qty = 0
+                if pid not in pm or qty < 1 or qty > MAX_QTY_PER_ITEM:
+                    return self._json(200, {"ok": False}, no_store=True)
+                items.append({"toysi_code": pid, "name": pm[pid]["name"], "qty": qty, "price": pm[pid]["price"]})
+                classes.add("rt" if is_rt_id(pid) else ("zb" if pid.lower().startswith("zb-") else "toysi"))
+            if len(classes) < 2:
+                return self._json(200, {"ok": False}, no_store=True)   # не змішаний: нічого не рахуємо
+            site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_BLOCKED, items)
+        except Exception as e:  # noqa: BLE001 — облік не має ламати кошик
+            print(f"[site_order_api] basket_blocked: {type(e).__name__}", file=sys.stderr)
+            return self._json(200, {"ok": False}, no_store=True)
+        return self._json(200, {"ok": True}, no_store=True)
 
     def _client_ip(self) -> str:
         """IP клієнта за Apache-проксі, інакше адреса сокета. Лише ключ для ліміту запитів. БЕРЕМО ОСТАННІЙ елемент X-Forwarded-For: його дописує наш Apache (mod_proxy_http додає адресу з'єднання в кінець),

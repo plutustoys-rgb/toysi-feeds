@@ -168,6 +168,25 @@ def _group(rel: str) -> str:
     return parts[0]
 
 
+WEAK_KIND = "ключ=значення"
+
+
+def _under_home(p: Path) -> bool:
+    try:
+        return p.resolve().is_relative_to(HOME.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def _remote_configured(dest: Path) -> bool:
+    if not (dest / ".git").exists():
+        return False
+    try:
+        return subprocess.run(["git", "-C", str(dest), "remote", "get-url", "origin"], capture_output=True, timeout=30).returncode == 0
+    except Exception:
+        return False
+
+
 def run_git(dest: Path, *args):
     r = subprocess.run(["git", "-C", str(dest), *args], capture_output=True, timeout=300)
     return r.returncode, r.stdout.decode("utf-8", "replace").strip(), r.stderr.decode("utf-8", "replace").strip()
@@ -207,11 +226,25 @@ def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_ru
 
     lines = ["# Звіт останнього бекапу (час — у git-коміті; без мітки часу, щоб без змін не було порожніх комітів)",
              f"Скопійовано: {len(keep)}; пропущено: {len(skipped)}; видалено з копії (зникли в джерелі): {len(to_delete)}", ""]
+    if _under_home(dest) and not _remote_configured(dest):
+        lines.insert(1, f"⚠️ **ЦЕ НЕ БЕКАП, А МАЙДАНЧИК.** Копія лежить у {dest} — усередині домашньої теки ({HOME}), яку вже стирав "
+                        f"інцидент 21.10 (shutil.rmtree(USERPROFILE)), і приватний remote не налаштований. Захистом стає push у приватне "
+                        f"репо АБО копія поза цим диском (знімок на VPS: deploy/cowork_snapshot_to_vps.cmd включає цю теку).")
+    # Групи за ймовірністю: «ключ=значення» майже завжди код/URL (хибні спрацювання), решта — справжні кандидати в секрети.
     masked_files = [(rel, mh) for _, rel, why, (_, mh) in keep if mh]
-    if masked_files:
-        lines.append("## Скопійовано із ЗАМАСКОВАНИМИ рядками (секрет у джерелі — прибрати й, можливо, ротувати!)")
-        for rel, mh in masked_files:
+    strong = [(rel, [h for h in mh if h[1] != WEAK_KIND]) for rel, mh in masked_files]
+    strong = [(rel, mh) for rel, mh in strong if mh]
+    weak = [(rel, [h for h in mh if h[1] == WEAK_KIND]) for rel, mh in masked_files]
+    weak = [(rel, mh) for rel, mh in weak if mh]
+    if strong:
+        lines.append("## 🔴 Імовірні СЕКРЕТИ (hex-ключ/токен/пароль/PIN) — замасковано в копії; прибрати з джерела й, можливо, ротувати")
+        for rel, mh in strong:
             lines.append(f"- `{rel}` — " + ", ".join(f"рядок {n}: {k}" for n, k in mh[:8]))
+        lines.append("")
+    if weak:
+        lines.append("## 🟡 Ймовірно хибні (ключ=значення: переважно код/URL-шаблони) — замасковано, перевірити вибірково")
+        for rel, mh in weak:
+            lines.append(f"- `{rel}` — " + ", ".join(f"рядок {n}" for n, k in mh[:8]))
         lines.append("")
     if skipped:
         lines.append("## Пропущено (НЕ в копії)")
@@ -259,6 +292,9 @@ def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_ru
         rc, url, _ = run_git(dest, "remote", "get-url", "origin")
         if rc != 0:
             print("[увага] remote origin не налаштований — лише локальний коміт (приватне репо створює власник)")
+            if _under_home(dest):
+                print("[УВАГА] Це НЕ бекап, а майданчик: копія в домашній теці, яку вже стирав інцидент 21.10. "
+                      "Захист — push у приватне репо або знімок на VPS (deploy/cowork_snapshot_to_vps.cmd).")
         else:
             rc, out, err = run_git(dest, "push", "-u", "origin", "main")
             print("[ok] push виконано" if rc == 0 else f"[ПОМИЛКА] push: {err[:300]}")

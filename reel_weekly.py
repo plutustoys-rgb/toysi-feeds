@@ -31,10 +31,12 @@ DEFAULT_OUT = r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\reels_queue
 PRICE_MIN, PRICE_MAX = 80, 1500
 ITEMS_PER_REEL = 3
 THEME_COOLDOWN = 3          # скільки останніх рілсів тема не повторюється
-# несезонні сцени у порядку ротації (SMM 21.10.2026: 12 несезонних; halloween/snowflake — лише за сезоном і лише вручну/під тему)
-SCENE_ROTATION = ["sunglasses", "tailwag", "laugh", "bubblegum", "noselick", "wink", "nod", "headshake", "lookaround", "flychase", "dustbook", "icecream"]
-END_SCENE = "scene_sunglasses_RENDER_GREEN.mp4"
-END_SCENE_ALT = "scene_noselick_RENDER_GREEN.mp4"     # коли перша сцена — sunglasses
+# ЗАТВЕРДЖЕНІ сцени для ротації (SMM 22.10.2026, QA кадрами за вердиктом по 14 сценах): ЧОРНИЙ СПИСОК — sunglasses, laugh, bubblegum, dustbook, flychase (дефект джерела: водяний знак/вибиті
+# ключем кадри/зрізи); tailwag — після виправлення хвоста (поки не в ротації); halloween/snowflake — сезонні, лише вручну під тему/дату.
+SCENE_ROTATION = ["noselick", "headshake", "icecream", "nod", "wink", "lookaround"]
+SCENE_BLACKLIST = ("sunglasses", "laugh", "bubblegum", "dustbook", "flychase")
+END_SCENE = "scene_noselick_RENDER_GREEN.mp4"          # кінцева сцена за замовчуванням — чиста (не sunglasses)
+END_SCENE_ALT = "scene_wink_RENDER_GREEN.mp4"          # коли перша сцена — noselick
 # слова, через які товар НЕ береться в рілс (зброя, імітації, страшне; доповнення до forbidden_products)
 BAD_NAME_RE = re.compile(r"пістолет|пистолет|рушниц|автомат(?!ичн)|меч\b|мечі|\bніж\b|ножі|арбалет|\bлук\b|лук зі|\bграната\b|гранатомет|бомб|кинджал|катан|сокир|\bкров|\bчереп(?!ах|аш)|скелет|джейсон|чакі|вбив|монстр-?трак|страш|сигарет|вейп|алкогол|пиво|горілк|зброя|зброї|бластер|нунчак|кастет|топор|\bшабл(?!он)|\bспис\b|стріл[яь]|снайпер|військов|воєнн|\bтанк(?!ер)|зомбі|вампір|дракул|привид|демон(?!стр)|диявол|\bчорт|відьм|\bтруп|могил|кладовищ|смерт|убивц|вбивц|мафі|гангстер|squid|кальмар|перестріл|\bармі|\bгуль\b|18\+", re.I)
 UNIT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(елемент\w*|ел\b|елм|шт\w*|кольор\w*|мл|г\b|см|деталей|деталі|карток|картки|кульок)", re.I)

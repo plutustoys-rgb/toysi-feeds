@@ -68,8 +68,11 @@ chk("тема без ≥3 придатних товарів → None", th is Non
 
 # 5) сцени
 ok = reel_build.scene_season_ok
-chk("сцена: перша — sunglasses; після неї tailwag; ротація замикається; ніколи та сама підряд", rw.pick_scene([], date(2026, 11, 3), ok) == "scene_sunglasses_RENDER_GREEN.mp4"
-    and rw.pick_scene(["scene_sunglasses_RENDER_GREEN.mp4"], date(2026, 11, 3), ok) == "scene_tailwag_RENDER_GREEN.mp4" and rw.pick_scene(["scene_icecream_RENDER_GREEN.mp4"], date(2026, 11, 3), ok) == "scene_sunglasses_RENDER_GREEN.mp4")
+chk("сцена: перша — noselick; після неї headshake; ротація замикається (lookaround → noselick); ніколи та сама підряд; чорного списку в ротації нема",
+    rw.pick_scene([], date(2026, 11, 3), ok) == "scene_noselick_RENDER_GREEN.mp4"
+    and rw.pick_scene(["scene_noselick_RENDER_GREEN.mp4"], date(2026, 11, 3), ok) == "scene_headshake_RENDER_GREEN.mp4"
+    and rw.pick_scene(["scene_lookaround_RENDER_GREEN.mp4"], date(2026, 11, 3), ok) == "scene_noselick_RENDER_GREEN.mp4"
+    and not set(rw.SCENE_ROTATION) & set(rw.SCENE_BLACKLIST) and "sunglasses" not in rw.END_SCENE and "sunglasses" not in rw.END_SCENE_ALT)
 allsc = set()
 prev = []
 for _ in range(24):
@@ -77,7 +80,7 @@ for _ in range(24):
     assert not prev or sc != prev[-1]
     prev.append(sc)
     allsc.add(sc)
-chk("ротація охоплює усі 12 несезонних, жодної сезонної (halloween/snowflake) і жодної бракованої", len(allsc) == 12 and not any("halloween" in x or "snowflake" in x for x in allsc))
+chk("ротація охоплює усі 6 затверджених сцен, жодної сезонної (halloween/snowflake) і жодної з чорного списку", len(allsc) == len(rw.SCENE_ROTATION) == 6 and not any("halloween" in x or "snowflake" in x or any(b in x for b in rw.SCENE_BLACKLIST) for x in allsc))
 
 # 6) використані id з теки
 td = Path(tempfile.mkdtemp())
@@ -107,9 +110,9 @@ chk("список на схвалення: файли рілса, ендсцен
 # 7) spec
 TH3 = json.load(open(rw.THEMES_FILE, encoding="utf-8"))["themes"][0]
 spec = rw.make_spec(TH3, [X(1, 'Пазл «Марвел. Спайдермен і друзі» (60 елементів)', c="Пазли Trefl", pr=268), X(2, "Пазли 3в1 «Холодне серце»", c="Пазли Trefl", pr=326), X(3, "Пазл 100 ел «Поні»", c="Пазли Trefl", pr=298)], date(2026, 11, 3),
-                    "scene_sunglasses_RENDER_GREEN.mp4", "puzzles_09")
+                    "scene_noselick_RENDER_GREEN.mp4", "puzzles_09")
 chk("spec: first_scene, endscene (інша ніж перша), publish_date, queue_name, 3 товари з гачком «Збери *…*», стат «60 елементів»/«100 елементів»/запасний",
-    spec["first_scene"] == "scene_sunglasses_RENDER_GREEN.mp4" and spec["endscene"] == "scene_noselick_RENDER_GREEN.mp4" and spec["publish_date"] == "2026-11-03" and spec["queue_name"] == "puzzles_09" and len(spec["items"]) == 3
+    spec["first_scene"] == "scene_noselick_RENDER_GREEN.mp4" and spec["endscene"] == "scene_wink_RENDER_GREEN.mp4" and spec["publish_date"] == "2026-11-03" and spec["queue_name"] == "puzzles_09" and len(spec["items"]) == 3
     and spec["items"][0]["hook"].startswith("Збери *Пазл «Марвел") and spec["items"][0]["spec"][0] == "60 елементів" and spec["items"][2]["spec"][0] == "100 елементів" and spec["items"][1]["spec"][0] == TH3["stat_default"])
 chk("short_name: прибирає дужки/розміри, ≤ 26 символів по межі слова", rw.short_name('Пазл «Марвел. Спайдермен і друзі» (60 елементів)') == "Пазл «Марвел. Спайдермен і" or len(rw.short_name('Пазл «Марвел. Спайдермен і друзі» (60 елементів)')) <= 26)
 chk("reel_themes.json валідний: 10 тем, кожна з категоріями/емодзі/гачком/хештегами/endline", len(json.load(open(rw.THEMES_FILE, encoding="utf-8"))["themes"]) == 10 and all(all(k in t for k in ("key", "categories", "emoji", "hook_verb", "intro", "sub", "cta", "endline", "hashtags", "stat_default", "tail")) for t in json.load(open(rw.THEMES_FILE, encoding="utf-8"))["themes"]))

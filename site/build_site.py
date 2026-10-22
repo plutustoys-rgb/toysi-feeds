@@ -921,6 +921,7 @@ def build():
         write_product(p, related=None, cat_slug=cat_slug, similar=[])
     # 2) сторінки категорій (з пагінацією) + 3) повний каталог — збираємо ВСІ записані сторінки
     paged = set()
+    SITE_CATS.clear(); SITE_CATS.update(nav_cats)
     SITE_GROUPS[:] = site_groups(nav_cats)
     for g in SITE_GROUPS:
         g["slugs"] = cat_slug
@@ -1907,7 +1908,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             body = (
                 crumbs_html(trail1) + '<div class="gp"><aside class="sb" aria-label="Категорії"><div class="sb-h">Категорії</div>' + side + '</aside><div class="gmain">'
                 '<div class="cat-bar"><h1 class="page cat-h1">Усі категорії<span class="sr-only"> — каталог іграшок</span></h1>' + _catalog_controls(groups_json=gj) + catalog_mascot_html() + '</div>\n' +
-                _catalog_js_grid() + static_grid + '</div></div>'
+                _catalog_js_grid() + static_grid + _catalog_cats_block(cat_list, cat_slug) + '</div></div>'
             )
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t, noindex=bool(active and category_hidden(active))))
             written.add(cur)
@@ -3152,6 +3153,7 @@ def site_groups(cats):
     return out
 
 
+SITE_CATS = {}      # категорії навігації поточної збірки {назва: товари} (заповнює build(); потрібні блоку категорій внизу /catalog.html)
 SITE_GROUPS = []   # групи поточної збірки (заповнює build() до запису сторінок; потрібні й каталогу, і сторінкам груп)
 
 
@@ -3197,24 +3199,43 @@ def write_groups(groups, cats, cat_slug):
     return written
 
 
+def _cat_hub_sections(cat_list, cat_slug, cats, groups):
+    """Секції переліку категорій: [(назва групи, файл групи | None, [(категорія, кількість товарів)])] — групи за порядком, потім «Окремі розділи» (категорії поза видимими групами, без Уцінки). Спільне для хаба /categories.html і блоку внизу /catalog.html."""
+    in_group = set()
+    sections = []
+    for g in groups:
+        in_group.update(c for c, _n in g["subs"])
+        subs = [(c, n) for c, n in g["subs"] if c in cat_slug]
+        if subs:
+            sections.append((g["display"], g["file"], subs))
+    rest = sorted(((c, len(cats[c])) for c in cat_list if c not in in_group and c in cat_slug and c in cats and "уцінк" not in c.lower() and "уценк" not in c.lower()), key=lambda x: (-x[1], x[0]))
+    if rest:
+        sections.append(("Окремі розділи", None, rest))
+    return sections
+
+
+def _cat_hub_html(sections, cat_slug):
+    return "".join(
+        '<section class="chub-g"><h2 class="chub-h">' + (f'<a href="{f}">{esc(t)}</a>' if f else esc(t)) + '</h2><ul class="chub-l">'
+        + "".join(f'<li><a href="category-{cat_slug[c]}.html">{esc(c)}</a> <span>{n}</span></li>' for c, n in subs) + '</ul></section>'
+        for t, f, subs in sections)
+
+
+def _catalog_cats_block(cat_list, cat_slug):
+    """Блок «Категорії товарів» унизу /catalog.html (SEO 22.10: Googlebot робить на /catalog.html 9 782 запити за 14 діб, а на /category- лише 0,1 %; Консультант 22.10 схвалив варіант Б — футер і головну не чіпаємо, власник 15.10 і 19.10): ті самі видимі текстові посилання, що й хаб."""
+    sections = _cat_hub_sections(cat_list, cat_slug, SITE_CATS, SITE_GROUPS)
+    if not sections:
+        return ""
+    total = sum(len(s[2]) for s in sections)
+    return f'<section class="chub catblock" aria-label="Категорії товарів"><h2 class="catblock-h">Категорії товарів ({total})</h2>' + _cat_hub_html(sections, cat_slug) + '</section>'
+
+
 def write_categories_index(cat_list, cat_slug, cats, groups=None):
     """Сторінка «Усі категорії» — закриває проблему orphan-категорій (усі 259 доступні
     з одного індексу + футера, а не лише з sitemap). Повертає ім'я файлу."""
     if groups:   # SEO 19.10: ХАБ — усі категорії одним списком ВИДИМИХ текстових посилань (Googlebot ходить на /category- ≈0,1% запитів, 28 з 87 перевірених категорій Google не знає); посилання з футера кожної сторінки
-        in_group = set()
-        sections = []
-        for g in groups:
-            in_group.update(c for c, _n in g["subs"])
-            subs = [(c, n) for c, n in g["subs"] if c in cat_slug]
-            if subs:
-                sections.append((g["display"], g["file"], subs))
-        rest = sorted(((c, len(cats[c])) for c in cat_list if c not in in_group and c in cat_slug and "уцінк" not in c.lower() and "уценк" not in c.lower()), key=lambda x: (-x[1], x[0]))
-        if rest:
-            sections.append(("Окремі розділи", None, rest))
-        blocks = "".join(
-            '<section class="chub-g"><h2 class="chub-h">' + (f'<a href="{f}">{esc(t)}</a>' if f else esc(t)) + '</h2><ul class="chub-l">'
-            + "".join(f'<li><a href="category-{cat_slug[c]}.html">{esc(c)}</a> <span>{n}</span></li>' for c, n in subs) + '</ul></section>'
-            for t, f, subs in sections)
+        sections = _cat_hub_sections(cat_list, cat_slug, cats, groups)
+        blocks = _cat_hub_html(sections, cat_slug)
         total = sum(len(s[2]) for s in sections)
         trail = [("Головна", "index.html"), ("Усі категорії товарів", None)]
         body = (crumbs_html(trail) + '<div class="chub"><h1 class="page">Усі категорії товарів</h1>'

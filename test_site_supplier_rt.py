@@ -188,7 +188,7 @@ with sync_playwright() as pw:
             chk(f"кошик {label}: накладений платіж активний, пояснення нема", s["cod_disabled"] is False and s["note_hidden"] is True and s["off"] is False)
         else:
             chk(f"кошик {label}: накладений платіж неактивний, обрана картка онлайн, пояснення видиме", s["cod_disabled"] is True and s["cod_checked"] is False and s["pre_checked"] is True and s["note_hidden"] is False and "передоплат" in s["note"] and s["off"] is True)
-            chk(f"кошик {label}: згадка про окремі посилки лише у змішаному", ("окремими посилками" in s["note"]) == (want == "mixed"))
+            chk(f"кошик {label}: нотатка не обіцяє «окремі посилки» (змішаний кошик блокується окремо, 22.10; test_site_mixed_cart_block)", "окремими посилками" not in s["note"])
         if want != "plain":
             tp_txt = pg.evaluate("(()=>{const e=document.querySelector('.trust-pay'); return e?e.textContent:null})()")
             chk(f"кошик {label}: у правій колонці «Оплата при отриманні» замінено на передоплату ({tp_txt})", tp_txt is None or "при отриманні" not in tp_txt)

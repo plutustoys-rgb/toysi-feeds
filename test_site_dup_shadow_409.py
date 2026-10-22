@@ -88,6 +88,7 @@ with sync_playwright() as pw:
         pg.route("**/stock.json*", lambda r: r.fulfill(status=404, body=""))
         calls = []
         pg.route("**/api/order", lambda r, _rq, b=body: (calls.append(1), r.fulfill(status=409, content_type="application/json", body=json.dumps(b, ensure_ascii=False))))
+        pg.add_init_script("window.PT_ALLOW_MIXED_PARCELS=true")   # тест перевіряє обробку 409 від сервера (мок); змішаний кошик тут лише фікстура — на живому сайті його блокує cart (test_site_mixed_cart_block)
         pg.add_init_script(f"if(!localStorage.getItem('pt_cart_v1')) localStorage.setItem('pt_cart_v1', JSON.stringify({json.dumps(cart, ensure_ascii=False)}))")
         pg.goto(f"{BASE}/cart.html", wait_until="load")
         pg.wait_for_timeout(500)

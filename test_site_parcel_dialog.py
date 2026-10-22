@@ -91,7 +91,7 @@ DLG = """(()=>{const d=document.getElementById('parcel-dialog'); if(!d) return n
 with sync_playwright() as pw:
     br = pw.chromium.launch()
 
-    def newpage(cart):
+    def newpage(cart, allow_mixed=False):
         ctx = br.new_context(viewport={"width": 390, "height": 860})
         pg = ctx.new_page()
         errs = []
@@ -100,6 +100,8 @@ with sync_playwright() as pw:
         pg.route("**/stock.json*", lambda r: r.fulfill(status=404, body=""))
         calls = []
         pg.route("**/api/order", lambda r, _rq: (calls.append(1), r.fulfill(status=400, content_type="application/json", body=json.dumps({"error": "тест"}))))
+        if allow_mixed:   # змішаний кошик блокується на вході (Консультант 22.10); вікно «кількома посилками» лишається під прапорцем window.PT_ALLOW_MIXED_PARCELS
+            pg.add_init_script("window.PT_ALLOW_MIXED_PARCELS=true")
         pg.add_init_script(f"if(!localStorage.getItem('pt_cart_v1')) localStorage.setItem('pt_cart_v1', JSON.stringify({json.dumps(cart, ensure_ascii=False)}))")
         pg.goto(f"{BASE}/cart.html", wait_until="load")
         pg.wait_for_timeout(500)
@@ -116,7 +118,7 @@ with sync_playwright() as pw:
     ctx.close()
 
     # (2) змішаний: Toysi + rt
-    ctx, pg, errs, calls = newpage(cart_of(T1, T2, R1))
+    ctx, pg, errs, calls = newpage(cart_of(T1, T2, R1), allow_mixed=True)
     r = pg.evaluate("['sum-delivery','aside-delivery'].map(i=>document.getElementById(i).textContent)")
     chk(f"дві посилки: рядок «Доставка» = «за тарифами оператора (за кожну посилку)», суми нема ({r[0]!r})", all(x == "за тарифами оператора (за кожну посилку)" for x in r))
     fill_and_submit(pg)
@@ -159,7 +161,7 @@ with sync_playwright() as pw:
     ctx.close()
 
     # (3) три посилки: Toysi + rt + zb, назва з HTML — текстом
-    ctx, pg, errs, calls = newpage(cart_of(T1, R1, Z1))
+    ctx, pg, errs, calls = newpage(cart_of(T1, R1, Z1), allow_mixed=True)
     fill_and_submit(pg)
     pg.wait_for_timeout(500)
     d = pg.evaluate(DLG)

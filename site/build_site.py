@@ -2768,7 +2768,7 @@ def write_cart(addons=None):
     addons_json = json.dumps(addons or [], ensure_ascii=False).replace("</", "<\\/")
     body = (
       '<h1 class="page">Кошик</h1>'
-      '<div class="cart-grid"><div class="cart-main"><div id="cart-body"></div>'
+      '<div class="cart-grid"><div class="cart-main"><div class="later-box" id="later-box" hidden></div><div id="cart-body"></div><div class="mix-block" id="mix-block" role="alert" hidden></div>'
       f'<p class="ret-line ret-cart">{RETURN_LINE}</p>'
       '<div class="summary" id="cart-summary">'
         '<div class="row"><span>Товари</span><span id="sum-goods">0 ₴</span></div>'

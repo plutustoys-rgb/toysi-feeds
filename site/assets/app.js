@@ -23,8 +23,9 @@
   var FREE_SHIPPING_ENABLED = false;
 
   var MAX_QTY=50, COD_CEILING=3000;   // = site_order_api.MAX_QTY_PER_ITEM і SITE_COD_CEILING (сервер усе одно перевіряє)
-  function read(){
-    var raw; try{ raw=JSON.parse(localStorage.getItem(CART_KEY)) || {}; }catch(e){ return {}; }
+  function read(){ return readStore(CART_KEY); }
+  function readStore(key){   // той самий розбір і чистка, що й для кошика; key — кошик або «збережене на потім» (LATER_KEY)
+    var raw; try{ raw=JSON.parse(localStorage.getItem(key)) || {}; }catch(e){ return {}; }
     if(!raw || typeof raw!=="object" || Array.isArray(raw)) return {};
     // тестувальник 12.10: qty=-5 → «-50 ₴», price="abc" → «NaN ₴» (лише ручним втручанням у DevTools) — чистимо при читанні
     var out={};
@@ -497,6 +498,50 @@
     return [g.t, g.r, g.z].filter(function(a){ return a.length>0; });
   }
   function parcelCount(){ return parcelGroups(read()).length || 1; }
+  // ── Змішаний кошик (Консультант 22.10): сервер НЕ вміє ділити замовлення між складами (site_order_api: змішаний кошик відхиляється, оплачене замовлення зависло б),
+  // тож блокуємо ще в кошику, а не після введення адреси й підтвердження вікна. Вікно «кількома посилками» (власник 21.10) лишається в коді для часу, коли поділ замовлень буде:
+  // window.PT_ALLOW_MIXED_PARCELS=true повертає стару поведінку (так його перевіряє test_site_parcel_dialog). Покупцю даємо вихід: оформити спершу одну групу, решту зберегти «на потім».
+  var ALLOW_MIXED_PARCELS=(window.PT_ALLOW_MIXED_PARCELS===true);
+  var LATER_KEY="pt_cart_later_v1";
+  var GROUP_LABEL={t:"основні товари", r:"товари партнера", z:"товари для тварин"};
+  var MIX_MSG="Ці товари відправляються з різних складів і оформлюються окремими замовленнями. Оберіть, що оформити спершу, — решту ми збережемо.";
+  function groupKey(id){ return /^rt-/.test(id) ? "r" : (/^zb-/.test(id) ? "z" : "t"); }
+  function groupIds(c){ var g={t:[], r:[], z:[]}; Object.keys(c).forEach(function(id){ g[groupKey(id)].push(id); }); return g; }
+  function mixedGroups(c){ var g=groupIds(c); return ["t","r","z"].filter(function(k){ return g[k].length>0; }); }
+  function isMixedCart(c){ return !ALLOW_MIXED_PARCELS && mixedGroups(c).length>1; }
+  function writeLater(c){ try{ if(Object.keys(c).length) localStorage.setItem(LATER_KEY, JSON.stringify(c)); else localStorage.removeItem(LATER_KEY); }catch(e){} }
+  function keepGroup(k){   // лишити в кошику одну групу, решту (одну чи дві) перенести в «на потім»
+    var c=read(), g=groupIds(c), later=readStore(LATER_KEY);
+    if(!g[k] || !g[k].length) return;
+    ["t","r","z"].forEach(function(x){ if(x===k) return; g[x].forEach(function(id){ later[id]=c[id]; delete c[id]; }); });
+    write(c); writeLater(later); renderCart();
+  }
+  function swapLater(){ var c=read(), later=readStore(LATER_KEY); write(later); writeLater(c); renderCart(); }
+  function dropLater(){ writeLater({}); renderCart(); }
+  function renderMixAndLater(c, ids){
+    var mb=document.getElementById("mix-block"), lb=document.getElementById("later-box"), sub=document.getElementById("checkout-submit");
+    var mixed=isMixedCart(c), g=groupIds(c);
+    if(mb){
+      if(mixed){
+        var h='<b>Ці товари не можна оформити одним замовленням</b><p>'+esc(MIX_MSG)+'</p><div class="mix-btns">';
+        mixedGroups(c).forEach(function(k){
+          var n=g[k].reduce(function(s,id){ return s+c[id].qty; },0);
+          h+='<button type="button" class="btn ghost" data-mix-keep="'+k+'">Спершу: '+GROUP_LABEL[k]+' ('+n+' шт)</button>';
+        });
+        mb.innerHTML=h+'</div>'; mb.hidden=false;
+      } else { mb.innerHTML=""; mb.hidden=true; }
+    }
+    if(sub) sub.disabled=mixed;
+    if(lb){
+      var later=readStore(LATER_KEY), lids=Object.keys(later);
+      if(lids.length){
+        var ln=lids.reduce(function(s,id){ return s+later[id].qty; },0), names=lids.slice(0,3).map(function(id){ return esc(later[id].name); }).join(", ")+(lids.length>3 ? "…" : "");
+        lb.innerHTML='<b>Збережено на потім: '+ln+' шт</b><p>'+names+'</p><div class="mix-btns"><button type="button" class="btn ghost" data-later-swap="1">'+
+          (ids.length ? 'Оформити їх замість поточних' : 'Повернути до кошика')+'</button><button type="button" class="btn ghost" data-later-drop="1">Прибрати</button></div>';
+        lb.hidden=false;
+      } else { lb.innerHTML=""; lb.hidden=true; }
+    }
+  }
   function deliveryEstimate(goods, prepaid, parcels){ return parcels>1 ? "за тарифами оператора (за кожну посилку)" : "за тарифами оператора"; }
 
   // Рядок доставки, підпис і примітка залежать від способу оплати (тестувальник 13.10: при «карткою онлайн» лишався COD-івський підсумок 99–119 ₴ і підпис про комісію).
@@ -566,7 +611,7 @@
     }
     if(note){
       if(rt>0){
-        note.textContent = "Оплата при отриманні недоступна: "+(mixed ? "один або кілька товарів у кошику" : "цей товар")+" відправляється лише за передоплатою (оплата карткою онлайн)."+(mixed ? " Товари надсилаються окремими посилками, доставка для кожної рахується окремо." : "");
+        note.textContent = "Оплата при отриманні недоступна: "+(mixed ? "один або кілька товарів у кошику" : "цей товар")+" відправляється лише за передоплатою (оплата карткою онлайн)."+(mixed && ALLOW_MIXED_PARCELS ? " Товари надсилаються окремими посилками, доставка для кожної рахується окремо." : "");
         note.hidden=false;
       } else { note.hidden=true; note.textContent=""; }
     }
@@ -581,6 +626,7 @@
     renderAside(c, ids);
     var cg=document.querySelector(".cart-grid"); if(cg) cg.classList.toggle("is-empty", ids.length===0);   // порожній кошик: одна колонка, по центру (власник 14.10: на ПК блок стояв лівіше центру)
     applyRtPayment(ids);   // RoyalToys (id «rt-…»): лише передоплата
+    renderMixAndLater(c, ids);   // змішаний кошик блокується на вході; «збережене на потім» видно і в порожньому кошику
     var codn=document.getElementById("cod-limit-note");
     if(codn) codn.style.display = total()>COD_CEILING ? "" : "none";
     var ct=document.getElementById("checkout-title"); if(ct) ct.style.display = ids.length ? "" : "none";
@@ -810,6 +856,10 @@
     document.body.addEventListener("click", function(e){
       var t=e.target.closest("[data-add]");
       if(t){ e.preventDefault(); PT.add(JSON.parse(t.getAttribute("data-add")), t.getAttribute("data-list")||""); if(document.getElementById("cart-body")) renderCart(); return; }
+      var mk=e.target.closest("[data-mix-keep]");
+      if(mk){ e.preventDefault(); keepGroup(mk.getAttribute("data-mix-keep")); return; }
+      if(e.target.closest("[data-later-swap]")){ e.preventDefault(); swapLater(); return; }
+      if(e.target.closest("[data-later-drop]")){ e.preventDefault(); dropLater(); return; }
       if(e.target.closest("#open-search")){ e.preventDefault(); openSearch(); return; }
       if(e.target.closest("#close-search")){ e.preventDefault(); closeSearch(); return; }
       var ov=document.getElementById("search-overlay");
@@ -1509,6 +1559,7 @@
         var fc=document.getElementById("f-city"); if(fc && fc.focus) fc.focus();
         return;
       }
+      if(isMixedCart(read())){ fail(MIX_MSG); if(btn) btn.disabled=true; return; }   // сервер такий кошик відхилив би; кнопка в цьому стані й так вимкнена (renderMixAndLater) — це страховка від requestSubmit
       var pgrp=parcelGroups(read());
       if(pgrp.length>1 && !parcelAck){   // товари з різних складів → спершу вікно підтвердження (варіант Б, власник 21.10)
         showParcelDialog(pgrp, function(){ parcelAck=true; if(typeof form.requestSubmit==="function") form.requestSubmit(); else form.dispatchEvent(new Event("submit", {cancelable:true})); });

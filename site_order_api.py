@@ -41,6 +41,7 @@ from urllib.parse import urlparse, parse_qs
 import nova_poshta
 import liqpay_client
 import site_promo
+import site_rejected_baskets
 from orders_db import get_connection, init_db, insert_order, get_order, mark_payment_confirmed, set_liqpay_payment_id, assign_public_number, PUBLIC_NUMBER_RE
 
 HOST = os.environ.get("SITE_API_HOST", "127.0.0.1")
@@ -487,9 +488,11 @@ def build_order(payload: dict) -> tuple:
     payment_method = "prepaid" if pay_raw == "prepaid" else "cod"
     rt_cnt = sum(1 for i in items if is_rt_id(i["toysi_code"]))
     if rt_cnt and rt_cnt != len(items):
+        site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_MIXED, items)   # облік відхилень (без ПІБ/адреси): рішення про поділ замовлень — за числом
         # змішаний кошик (Toysi + RoyalToys): у них різні постачальники/відправлення, а автоматичного поділу замовлення немає — оплачене замовлення зависло б. Просимо оформити окремо (fail-closed)
         raise OrderError("Товари партнера (RoyalToys) відправляються окремою посилкою: оформіть їх окремим замовленням від інших товарів")
     if payment_method != "prepaid" and any(is_rt_id(i["toysi_code"]) for i in items):
+        site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_RT_COD, items)
         # fail-closed: у кошику товар партнера RoyalToys — накладений платіж не приймаємо (і невідомий/відсутній спосіб теж), лише картка онлайн
         raise OrderError("Товари партнера відправляються лише за повною передоплатою: оберіть оплату карткою онлайн")
 

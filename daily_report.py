@@ -834,6 +834,11 @@ def build_report() -> str:
     lines.append(f"\nПозначено \"очікує ручного підтвердження\": {awaiting_manual}")
 
     lines.append(open_orders_section)
+    try:    # облік відхилених кошиків сайту (змішаний Toysi+RT, RT+накладений): збій обліку не ламає звіт
+        import site_rejected_baskets
+        lines.append(site_rejected_baskets.report_line())
+    except Exception as e:  # noqa: BLE001
+        print(f"[daily_report] site_rejected_baskets: {type(e).__name__}", file=sys.stderr)
 
     if toysi_errors:
         lines.append(f"\n\n🔴 Замовлення з помилками Toysi (потребують уваги): {toysi_errors}")

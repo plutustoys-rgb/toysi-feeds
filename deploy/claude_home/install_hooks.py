@@ -5,6 +5,8 @@
   python deploy\\claude_home\\install_hooks.py --dry-run   # показати підсумковий settings.json, НІЧОГО не писати
   python deploy\\claude_home\\install_hooks.py             # встановити
   python deploy\\claude_home\\install_hooks.py --rollback  # повернути settings.json з останнього бекапу
+  python deploy\\claude_home\\install_hooks.py --restore-automode [--dry-run]
+                                                           # + відновити блок autoMode з транскрипта 9d996807
 
 settings.json глобальний: зламаний хук валить УСІ сесії всіх ролей, тому:
   • перед будь-яким записом settings.json копіюється в теку бекапів ПОЗА ~/.claude (типово
@@ -33,6 +35,12 @@ SETTINGS = HOME_CLAUDE / "settings.json"
 SCRIPTS = ("session-start.sh", "pre-compact.sh", "vps-audit-guard.sh")
 BACKUP_DIR = Path(os.environ.get("PLUTUS_BACKUP_DIR") or
                   r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\backups_claude_settings")
+
+# Блок autoMode (24 пункти `environment`) втрачено в інциденті 21.10; єдина копія — результат читання settings.json у
+# транскрипті сесії 9d996807 (рішення власника 22.10: «відновлюй»). У публічне репо ТІЛО блоку НЕ кладемо — установник
+# витягує його з транскрипта сам (лише з --restore-automode) і НІКОЛИ не перезаписує вже наявний autoMode.
+AUTO_MODE_TRANSCRIPT = Path(os.environ.get("PLUTUS_AUTOMODE_TRANSCRIPT") or
+                            (HOME_CLAUDE / "projects" / "C--Users-smach" / "9d996807-3983-4067-861a-614edbd6b2d0.jsonl"))
 
 # (подія, matcher, скрипт, таймаут)
 WANTED = (
@@ -71,11 +79,49 @@ def has_hook(hooks_cfg: dict, event: str, matcher: str, command: str) -> bool:
     return False
 
 
-def plan(cfg: dict):
+def load_auto_mode_from_transcript():
+    """Дослівний блок autoMode з транскрипта: шукаємо результат інструмента (tool_result), текст якого — JSON
+    settings.json з ключем autoMode. Повертає dict або None. Нічого не вигадує: немає точного збігу — None."""
+    try:
+        f = AUTO_MODE_TRANSCRIPT.open(encoding="utf-8")
+    except OSError:
+        return None
+    with f:
+        for line in f:
+            if "autoMode" not in line or "tool_result" not in line:   # у JSONL лапки всередині рядка екрановані (\"autoMode\")
+                continue
+            try:
+                rec = json.loads(line)
+                blocks = rec["message"]["content"]
+            except (ValueError, KeyError, TypeError):
+                continue
+            if not isinstance(blocks, list):
+                continue
+            for b in blocks:
+                text = b.get("content") if isinstance(b, dict) and b.get("type") == "tool_result" else None
+                if isinstance(text, list):
+                    text = "\n".join(x.get("text", "") for x in text if isinstance(x, dict))
+                if not isinstance(text, str) or '"autoMode"' not in text or "{" not in text:
+                    continue
+                try:
+                    data = json.loads(text[text.index("{"): text.rindex("}") + 1])
+                except ValueError:
+                    continue
+                block = data.get("autoMode") if isinstance(data, dict) else None
+                if (isinstance(block, dict) and isinstance(block.get("environment"), list) and block["environment"]
+                        and "�" not in json.dumps(block, ensure_ascii=False)):
+                    return block
+    return None
+
+
+def plan(cfg: dict, auto_block=None):
     """Повертає (нова конфігурація, список доданого). Не пише на диск."""
     new = json.loads(json.dumps(cfg))
     hooks = new.setdefault("hooks", {})
     added = []
+    if auto_block is not None and "autoMode" not in new:   # існуючий autoMode власника НІКОЛИ не перезаписуємо
+        new["autoMode"] = auto_block
+        added.append(f"autoMode (з транскрипта, {sum(len(v) if isinstance(v, list) else 1 for v in auto_block.values())} пунктів)")
     for event, matcher, script, timeout in WANTED:
         cmd = command_for(script)
         if has_hook(hooks, event, matcher, cmd):
@@ -111,9 +157,19 @@ def rollback() -> int:
     return 0
 
 
-def install(dry_run: bool) -> int:
+def install(dry_run: bool, restore_automode: bool = False) -> int:
     cfg = load_settings()                      # 1) спершу розібрати — при помилці нічого не пишемо
-    new_cfg, added = plan(cfg)
+    auto_block = None
+    if restore_automode:
+        if "autoMode" in cfg:
+            print("[skip] autoMode: у settings.json вже є — не перезаписую")
+        else:
+            auto_block = load_auto_mode_from_transcript()
+            if auto_block is None:
+                print(f"[ПОМИЛКА] блок autoMode не знайдено в {AUTO_MODE_TRANSCRIPT} — нічого не записано.")
+                return 1
+            print(f"[ok] autoMode знайдено в транскрипті: {len(auto_block.get('environment', []))} пунктів environment")
+    new_cfg, added = plan(cfg, auto_block)
     if dry_run:
         print("[dry-run] нічого не записано. Було б додано:" if added else "[dry-run] додавати нічого — усе вже стоїть.")
         for a in added:
@@ -159,8 +215,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="показати підсумок і нічого не писати")
     ap.add_argument("--rollback", action="store_true", help="повернути settings.json з останнього бекапу")
+    ap.add_argument("--restore-automode", action="store_true",
+                    help="додати блок autoMode, витягнутий дослівно з транскрипта сесії 9d996807 (лише якщо autoMode ще нема)")
     a = ap.parse_args()
-    return rollback() if a.rollback else install(a.dry_run)
+    return rollback() if a.rollback else install(a.dry_run, a.restore_automode)
 
 
 if __name__ == "__main__":

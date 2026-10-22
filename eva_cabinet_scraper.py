@@ -159,7 +159,7 @@ def keepalive() -> None:
         ctx = browser.new_context(storage_state=str(STATE_FILE))
         page = ctx.new_page()
         try:
-            # ТАЙМАУТ ≠ протухла сесія: 22.10 о 16:24 (ПК) і 18:20 (VPS) goto впав на 30 с, хоча сесія жива, а алерт казав «протухла».
+            # ТАЙМАУТ ≠ протухла сесія: 22.10 о 18:20 (VPS, journal) goto впав на 30 с, хоча сесія жива, а алерт казав «протухла».
             # Тому на таймаут — ще одна спроба з подвоєним таймаутом; алерт — лише після двох невдач (і з чесним текстом).
             # Справжня протухла сесія (EvaCabinetError із _ensure_session) — без повтору, алерт одразу.
             for attempt, tmo in enumerate((NAV_TIMEOUT_MS, NAV_TIMEOUT_MS * 2), start=1):

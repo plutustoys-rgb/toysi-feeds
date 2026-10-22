@@ -102,4 +102,50 @@ home4, bk4, env4 = fresh(ORIG)
 rc, out = run(env4, "--rollback")
 chk("rollback без бекапів: помилка, settings.json цілий", rc == 1 and (home4 / ".claude" / "settings.json").read_text(encoding="utf-8") == ORIG)
 
+# --- --restore-automode (рішення власника 22.10): дослівне витягання блоку з транскрипта
+BLOCK = {"environment": ["### Org-wide", "**Trusted internal domains**: plutustoys.com.ua", "кирилиця — не губиться: Привіт"]}
+settings_like = json.dumps({"hooks": {}, "theme": "dark", "autoMode": BLOCK}, ensure_ascii=False, indent=2)
+
+
+def transcript_with(*tool_result_texts):
+    p = Path(tempfile.mkdtemp()) / "t.jsonl"
+    rows = [json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "content": t}]}}, ensure_ascii=False)
+            for t in tool_result_texts]
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return str(p)
+
+
+good_tp = transcript_with("total 8\nщось не те", "Вивід cat:\n" + settings_like)
+home5, bk5, env5 = fresh(json.dumps({"theme": "dark", "hooks": {}}))
+env5["PLUTUS_AUTOMODE_TRANSCRIPT"] = good_tp
+s5 = home5 / ".claude" / "settings.json"
+rc, out = run(env5, "--restore-automode", "--dry-run")
+chk("restore-automode dry-run: показує autoMode і нічого не пише",
+    rc == 0 and "autoMode" in out and json.loads(s5.read_text(encoding="utf-8")) == {"theme": "dark", "hooks": {}} and not bk5.exists())
+rc, out = run(env5, "--restore-automode")
+cfg5 = json.loads(s5.read_text(encoding="utf-8"))
+chk("restore-automode: autoMode додано ДОСЛІВНО (включно з кирилицею)", rc == 0 and cfg5.get("autoMode") == BLOCK)
+chk("restore-automode: бекап перед записом, хуки теж на місці", any(bk5.glob("settings.json.*")) and "SessionStart" in cfg5["hooks"])
+rc, out = run(env5, "--restore-automode")
+chk("повторний запуск: autoMode не дублюється і не перезаписується", rc == 0 and json.loads(s5.read_text(encoding="utf-8")) == cfg5)
+rc, out = run(env5, "--rollback")
+chk("rollback прибирає і autoMode (повертає стан до відновлення)", rc == 0 and "autoMode" not in json.loads(s5.read_text(encoding="utf-8")))
+
+# власний autoMode власника не перезаписується
+home6, bk6, env6 = fresh(json.dumps({"autoMode": {"environment": ["МІЙ ВЛАСНИЙ"]}}))
+env6["PLUTUS_AUTOMODE_TRANSCRIPT"] = good_tp
+rc, out = run(env6, "--restore-automode")
+chk("наявний autoMode власника НЕ перезаписується", rc == 0 and json.loads((home6 / ".claude" / "settings.json").read_text(encoding="utf-8"))["autoMode"] == {"environment": ["МІЙ ВЛАСНИЙ"]})
+
+# нема в транскрипті / транскрипта нема -> помилка, нічого не записано
+for label, tp_path in (("немає блоку", transcript_with("просто текст", "{\"theme\": \"dark\"}")),
+                       ("транскрипта нема", str(Path(tempfile.mkdtemp()) / "nope.jsonl")),
+                       ("біти символи заміни", transcript_with(settings_like.replace("Привіт", "Прив�т")))):
+    h, b, e = fresh(json.dumps({"theme": "dark"}))
+    e["PLUTUS_AUTOMODE_TRANSCRIPT"] = tp_path
+    rc, out = run(e, "--restore-automode")
+    chk(f"restore-automode {label}: exit 1, нічого не записано",
+        rc == 1 and json.loads((h / ".claude" / "settings.json").read_text(encoding="utf-8")) == {"theme": "dark"}
+        and not (h / ".claude" / "hooks").exists())
+
 sys.exit(1 if F else 0)

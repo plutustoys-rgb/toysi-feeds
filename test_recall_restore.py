@@ -13,6 +13,7 @@ def chk(n, c):
     if not c: F.append(n)
 
 tmp = Path(tempfile.mkdtemp())
+recall.ROLE_STATE_DIR = tmp / "role_state"   # кеш ролей тесту не пише в реальний .local_secrets
 def transcript(first, name="t.jsonl"):
     p = tmp / name
     p.write_text(json.dumps({"type": "queue-operation"}) + "\n" +
@@ -26,7 +27,7 @@ cases = [
     ("ти бізнес консультант. треба нова ідея для цифрового бізнеса.", "consultant"),
     ("Ти — сесія бізнес-консультанта PlutusToys. Ти прокинувся за монітором каналу", "consultant"),
     ("<scheduled-task name=\"kodv-independent-book-audit\" file=\"x\"> This is an automated run", "kodv"),
-    ("You are Code-Agent, an elite Autonomous Software Engineering AI Agent.", ""),
+    ("You are Code-Agent, an elite Autonomous Software Engineering AI Agent.", "kod"),   # 22.10: роль kod з'явилась
     ("Ось черга завдань для Код (повний текст у PROJECT_STATUS.md)", ""),
     ("ти бізнес консультант і агент-продажник", ""),   # нічия → не вгадуємо
     # реальні хибні спрацювання з аудиту PR #604: роль лише ЗГАДАНА далі в тексті

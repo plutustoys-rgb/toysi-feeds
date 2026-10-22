@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+test_recall_session.py — регрес відновлення ролі після ущільнення (recall.py: save_state / session_context).
+
+Скарга власника 22.10: після стискання контексту агент не знає ні ролі, ні на чому зупинився.
+ІНВАРІАНТИ:
+  - save_state (PreCompact) пише останні запити/відповідь/дії у <роль>.md; секрети маскуються;
+    системні вставки (<system-reminder…>) і tool_result не потрапляють у «запити»;
+  - session_context (SessionStart) називає роль, віддає збережений стан + картку каналів + ядро правил;
+  - ≤3000 символів, ядро правил не втрачається навіть при великому стані;
+  - роль, знайдена за текстом, кешується за id сесії (ім'я .jsonl) і переживає транскрипт без маркерів;
+  - env PLUTUS_ROLE має пріоритет; невідома роль → чесне «не визначена», без падіння;
+  - ролі kod/architector/tester існують у _CONFIGS.
+Усе в тимчасових теках. `python test_recall_session.py` → exit 0/1.
+"""
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+import recall
+
+F = []
+
+
+def chk(name, cond):
+    print(f"[{'OK ' if cond else 'FAIL'}] {name}")
+    if not cond:
+        F.append(name)
+
+
+tmp = Path(tempfile.mkdtemp())
+recall.ROLE_STATE_DIR = tmp / "rs"
+cw = tmp / "cw"
+cw.mkdir()
+(cw / "SEO_CHANNEL.md").write_text("## [SEO → Код] 2026-10-22 — свіже\n## [Код → SEO] 2026-10-21 — старе\n", encoding="utf-8")
+(cw / "OWNER_INBOX.md").write_text("## [SEO] 2026-10-22 — ВІДКРИТО. питання власнику\n", encoding="utf-8")
+recall.COWORK_DIR = cw
+recall._CONFIGS["seo"] = [cw / "SEO_CHANNEL.md", cw / "OWNER_INBOX.md"]
+
+
+def line(**o):
+    return json.dumps(o, ensure_ascii=False)
+
+
+def make_transcript(name, first, extra=()):
+    p = tmp / name
+    rows = [line(type="user", message={"content": first}),
+            line(type="assistant", message={"content": [
+                {"type": "text", "text": "Роблю PR. api_key=SUPERSECRETVALUE123 не показувати"},
+                {"type": "tool_use", "name": "Bash", "input": {"command": "gh pr create --title fix"}}]}),
+            line(type="user", message={"content": "<system-reminder>службова вставка</system-reminder>"}),
+            line(type="user", message={"content": [{"type": "tool_result", "content": "вивід"}]}),
+            line(type="user", message={"content": "дороби аудит PR 961 і замерджи"})]
+    rows += list(extra)
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return str(p)
+
+
+# --- ролі
+for r in ("kod", "architector", "tester"):
+    chk(f"_CONFIGS має роль {r}", r in recall._CONFIGS)
+
+# --- save_state
+tp = make_transcript("sess1.jsonl", "Ти — агент-SEO PlutusToys (plutus-seo). Працюй.")
+path = recall.save_state({"transcript_path": tp, "trigger": "auto"})
+chk("save_state пише <роль>.md", path.endswith("seo.md") and Path(path).exists())
+txt = Path(path).read_text(encoding="utf-8")
+chk("стан має останній запит власника", "дороби аудит PR 961" in txt)
+chk("стан має останню дію інструмента", "Bash: gh pr create" in txt)
+chk("секрет замасковано", "SUPERSECRETVALUE123" not in txt and "[приховано]" in txt)
+chk("системна вставка не потрапила в запити", "службова вставка" not in txt)
+
+# --- session_context
+ctx = recall.session_context({"transcript_path": tp, "source": "compact"})
+chk("контекст називає роль", "«seo»" in ctx)
+chk("контекст має збережений стан", "дороби аудит PR 961" in ctx)
+chk("контекст має картку каналів", "SEO_CHANNEL.md" in ctx and "питання власнику" in ctx)
+chk("контекст має ядро правил", "ЯДРО ПРАВИЛ" in ctx)
+chk("≤3000 символів", len(ctx) <= 3000)
+
+# --- кеш ролі: транскрипт без маркерів, але сесія вже відома
+tp2 = make_transcript("sess2.jsonl", "Привіт, продовжимо.")
+chk("без маркерів і без кешу — роль порожня", recall.detect_role(tp2) == "")
+recall.set_role(tp2, "kodv")
+chk("після set_role роль береться з кешу", recall.detect_role(tp2) == "kodv")
+tp3 = make_transcript("sess3.jsonl", "Ти — головний бухгалтер PlutusToys")
+recall.detect_role(tp3)
+Path(tp3).write_text(line(type="user", message={"content": "вже без маркерів"}) + "\n", encoding="utf-8")
+chk("знайдена за текстом роль переживає транскрипт без маркерів", recall.detect_role(tp3) == "kodv")
+
+# --- великий стан не витісняє ядро правил
+(recall.ROLE_STATE_DIR / "seo.md").write_text("дуже довго\n" * 600, encoding="utf-8")
+big = recall.session_context({"transcript_path": tp, "source": "resume"})
+chk("великий стан: ≤3000 і ядро правил на місці", len(big) <= 3000 and "ЯДРО ПРАВИЛ" in big)
+
+# --- невідома роль та порожній транскрипт не падають
+unk = recall.session_context({"transcript_path": str(tmp / "nope.jsonl"), "source": "startup"})
+chk("невідома роль: чесне повідомлення + ядро правил", "НЕ визначена" in unk and "ЯДРО ПРАВИЛ" in unk)
+chk("save_state без транскрипта → порожньо, без падіння", recall.save_state({"transcript_path": str(tmp / 'nope.jsonl')}) == "")
+
+# --- аудит PR #961: B1 (межі слова kod/kodv)
+def role_of(first):
+    return recall.detect_role(make_transcript(f"r{abs(hash(first))}.jsonl", first))
+
+
+chk("plutus-kodv -> kodv (не нічия і не kod)", role_of("Ти — агент plutus-kodv, бухгалтер") == "kodv")
+chk("«агент-кодв, перевір книгу» НЕ kod", role_of("агент-кодв, перевір книгу") != "kod")
+chk("«агент-код» -> kod", role_of("Ти — агент-код PlutusToys, працюй") == "kod")
+chk("plutus-kod -> kod", role_of("Ти — plutus-kod. Читай канали") == "kod")
+
+# --- B2: маскування
+for label, src, secret in [
+    ("Bearer", "curl -H 'Authorization: Bearer abc123DEF456ghi'", "abc123DEF456ghi"),
+    ("JSON-ключ", '{"password": "hunter2xyz", "api_key": "k-9f8e7d"}', "hunter2xyz"),
+    ("*_SECRET_KEY", "export LIQPAY_PRIVATE_KEY=sandbox_i123456789 ; X_SECRET_KEY=zzTOPzz1", "sandbox_i123456789"),
+    ("--password", "mysql --password s3cr3tPass -h x", "s3cr3tPass"),
+    ("-p'x'", "mysql -u root -p'MyRootPw99' db", "MyRootPw99"),
+    ("пароль:", "мій пароль: Qwerty12345 вставте", "Qwerty12345"),
+    ("ghp_ короткий", "token ghp_A1b2C3d4E5f6G7h8", "A1b2C3d4E5f6G7h8"),
+    ("AKIA", "key AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+]:
+    chk(f"маскується: {label}", secret not in recall._redact(src))
+sha = "a" * 8 + "1" * 32
+chk("git-SHA (40 hex) не маскується", recall._redact(f"коміт {sha}") == f"коміт {sha}")
+chk("звичайний текст без змін", recall._redact("Мерж PR 961 після аудиту, файл recall.py") == "Мерж PR 961 після аудиту, файл recall.py")
+# токен у команді довше 90 символів: маска ДО обрізання
+longtok = "ghp_" + "A1b2C3d4E5" * 4
+tpx = tmp / "redact.jsonl"
+tpx.write_text("\n".join([
+    line(type="user", message={"content": "Ти — агент-SEO (plutus-seo)"}),
+    line(type="assistant", message={"content": [{"type": "tool_use", "name": "Bash",
+         "input": {"command": "curl -H 'Authorization: Bearer " + longtok + "' https://x"}}]}),
+]) + "\n", encoding="utf-8")
+pr = recall.save_state({"transcript_path": str(tpx), "trigger": "auto"})
+chk("токен у команді не лишається навіть частково", "A1b2C3d4E5" not in Path(pr).read_text(encoding="utf-8"))
+
+# --- вибірка запитів: службове не потрапляє, справжнє — так
+tpq = tmp / "queries.jsonl"
+tpq.write_text("\n".join([
+    line(type="user", message={"content": "Ти — агент-SEO (plutus-seo)"}),
+    line(type="user", isCompactSummary=True, message={"content": "This session is being continued from a previous"}),
+    line(type="user", message={"content": "[Request interrupted by user for tool use]"}),
+    line(type="user", message={"content": "<local-command-stdout>вивід</local-command-stdout>"}),
+    line(type="user", message={"content": [{"type": "text", "text": "<system-reminder>вставка</system-reminder>"},
+                                            {"type": "text", "text": "ЗАПИТ-ПІСЛЯ-ВСТАВКИ зроби X"}]}),
+    line(type="attachment", attachment={"type": "queued_command", "prompt": "ЗАПИТ-ПОСЕРЕД-ХОДУ зроби Y",
+                                         "origin": {"kind": "human"}}),
+    line(type="attachment", attachment={"type": "queued_command", "prompt": "<task-notification>x</task-notification>",
+                                         "origin": {"kind": "task-notification"}}),
+    "[1]", '"рядок"', '{"message": "str"}',
+]) + "\n", encoding="utf-8")
+st2 = Path(recall.save_state({"transcript_path": str(tpq), "trigger": "manual"})).read_text(encoding="utf-8")
+chk("запит після вставки в одному повідомленні збережено", "ЗАПИТ-ПІСЛЯ-ВСТАВКИ" in st2)
+chk("повідомлення посеред ходу (queued_command/human) збережено", "ЗАПИТ-ПОСЕРЕД-ХОДУ" in st2)
+chk("compact-summary / interrupted / local-command / task-notification не потрапили",
+    not any(x in st2 for x in ("This session is being continued", "Request interrupted", "вивід", "task-notification")))
+
+# --- SessionStart: стан лише для compact/resume; чужий cwd — тиша
+(recall.ROLE_STATE_DIR / "seo.md").write_text("СТАН-ДЛЯ-ТЕСТУ\n", encoding="utf-8")
+chk("source=compact: стан є, з позначкою «історичний контекст»",
+    "СТАН-ДЛЯ-ТЕСТУ" in (c := recall.session_context({"transcript_path": tp, "source": "compact"})) and "ІСТОРИЧНИЙ" in c)
+chk("source=startup: стану попередньої сесії НЕМАЄ",
+    "СТАН-ДЛЯ-ТЕСТУ" not in recall.session_context({"transcript_path": tp, "source": "startup"}))
+chk("cwd поза C:/Users/smach -> порожньо",
+    recall.session_context({"transcript_path": tp, "source": "compact", "cwd": "D:/other/project"}) == "")
+chk("cwd у домашній теці -> працює",
+    "ЯДРО ПРАВИЛ" in recall.session_context({"transcript_path": tp, "source": "compact", "cwd": "C:\\Users\\smach\\rozetka_agent"}))
+
+# --- env пріоритетніший
+import os
+os.environ["PLUTUS_ROLE"] = "tester"
+chk("PLUTUS_ROLE перекриває детекцію", recall.detect_role(tp) == "tester")
+del os.environ["PLUTUS_ROLE"]
+
+sys.exit(1 if F else 0)

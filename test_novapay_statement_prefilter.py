@@ -59,4 +59,22 @@ _check("лист без імен — кандидат", b"4" in got)
 _check("відповідь не розібрано → кандидат", n._registry_candidate_uids(_Fake([]), [b"7"]) == [b"7"])
 _check("збій FETCH → не звужуємо", n._registry_candidate_uids(_Fake([], status="NO"), uids) == uids)
 
+# --- B1 з аудиту PR #960: реальні форми відповіді imaplib ---
+# а) змішаний: звичайне logo.png + реєстр з RFC2231 NAME* → лишається
+rfc = (b'5 (BODYSTRUCTURE (("IMAGE" "PNG" ("NAME" "logo.png") NIL NIL "BASE64" 5)'
+       b'("APPLICATION" "OCTET-STREAM" ("NAME*" "utf-8%27%27%D0%A0.xlsx") NIL NIL "BASE64" 9) "MIXED"))')
+_check("RFC2231 NAME* поряд зі звичайним вкладенням → кандидат", n._registry_candidate_uids(_Fake([rfc]), [b"5"]) == [b"5"])
+# б) літерал {n}: imaplib віддає tuple(початок, літерал) + хвіст bytes
+lit = [(b'6 (BODYSTRUCTURE (("IMAGE" "PNG" ("NAME" "logo.png") NIL NIL "BASE64" 5)("APPLICATION" "OCTET-STREAM" ("NAME" {12}',
+        "Реєстр.xlsx".encode("utf-8")),
+       b') NIL NIL "BASE64" 9) "MIXED"))']
+_check("літерал {n} (tuple + хвіст) → кандидат", n._registry_candidate_uids(_Fake(lit), [b"6"]) == [b"6"])
+# в) два листи в одній відповіді, один з літералом: uid не плутаються
+two = lit + [_bs(7, _enc("Специфікація до акту.xlsx"))]
+got2 = n._registry_candidate_uids(_Fake(two), [b"6", b"7"])
+_check("літерал одного листа не зачіпає сусіда (6 так, 7 ні)", got2 == [b"6"])
+# г) невідомий charset → не падає, лист кандидат
+bad = _bs(8, b"=?x-foo-unknown?Q?abc?=.xlsx")
+_check("невідомий charset не валить звірку (кандидат)", n._registry_candidate_uids(_Fake([bad]), [b"8"]) == [b"8"])
+
 sys.exit(1 if _FAILS else 0)

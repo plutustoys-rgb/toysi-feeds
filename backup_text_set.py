@@ -8,6 +8,7 @@ backup_text_set.py — резервна копія КРИТИЧНОГО ТЕКС
   • Cowork: файли кореня (канали, журнали, плани), технічні_вимоги_маркетплейсів/, SEO_метрики/;
   • ~/.claude: settings.json, CLAUDE.md, hooks/, projects/*/memory/;
   • rozetka_agent: .vps_audit_ok (маркер аудитів VPS-скриптів).
+  • скіли ролей Claude (%APPDATA%/Claude/local-agent-mode-sessions/skills-plugin/*/*/skills): лише *.md і *.txt (SKILL.md та довідки; скрипти/схеми вбудованих скілів — ні) + manifest.json;
 НЕ копіюється ніколи: документи_КОДВ і КОДВ_журнал* (фінанси/податкова первинка — рішення Консультанта: не в GitHub, їм місце на VPS), mascot_new та будь-які
 медіа/бінарні файли (їм місце на VPS), .env/ключі/сертифікати, .local_secrets (живі сесії кабінетів).
 
@@ -86,7 +87,16 @@ def scan_text(text: str) -> list:
     return hits
 
 
-def collect(cowork: Path, claude_home: Path, repo_local: Path) -> list:
+SKILL_EXT = {".md", ".txt"}
+
+
+def discover_skills_dirs() -> list:
+    """Теки `skills` усіх встановлених наборів скілів Claude (опис ролей лежить ПОЗА git і ПОЗА ~/.claude)."""
+    base = Path(os.environ.get("APPDATA") or (HOME / "AppData" / "Roaming")) / "Claude" / "local-agent-mode-sessions" / "skills-plugin"
+    return sorted(p for p in base.glob("*/*/skills") if p.is_dir()) if base.is_dir() else []
+
+
+def collect(cowork: Path, claude_home: Path, repo_local: Path, skills_dirs=()) -> list:
     """[(джерело Path, відносний шлях у копії)] за білим списком."""
     out = []
 
@@ -118,6 +128,20 @@ def collect(cowork: Path, claude_home: Path, repo_local: Path) -> list:
             for p in sorted(mem.rglob("*")):
                 if p.is_file():
                     add_file(p, f"claude_home/projects/{mem.parent.name}/memory/{p.relative_to(mem).as_posix()}")
+    seen_sk = set()
+    for sk in skills_dirs:
+        # БЕЗ id набору/сесії в шляху: id тек Claude Desktop можуть змінитись, і тоді вся група «зникла б» (хибний exit 3 на кожному запуску).
+        # Однакові відносні шляхи з кількох наборів: перший виграє.
+        for p in sorted(sk.rglob("*")):
+            if p.is_file() and p.suffix.lower() in SKILL_EXT:
+                rel = f"claude_skills/{p.relative_to(sk).as_posix()}"
+                if rel not in seen_sk:
+                    seen_sk.add(rel)
+                    add_file(p, rel)
+        manifest = sk.parent / "manifest.json"
+        if manifest.is_file() and "claude_skills/manifest.json" not in seen_sk:
+            seen_sk.add("claude_skills/manifest.json")
+            add_file(manifest, "claude_skills/manifest.json")
     marker = repo_local / ".vps_audit_ok"
     if marker.is_file():
         add_file(marker, "repo_local/.vps_audit_ok")
@@ -192,8 +216,8 @@ def run_git(dest: Path, *args):
     return r.returncode, r.stdout.decode("utf-8", "replace").strip(), r.stderr.decode("utf-8", "replace").strip()
 
 
-def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_run=False, push=True) -> int:
-    items = collect(cowork, claude_home, repo_local)
+def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_run=False, push=True, skills_dirs=()) -> int:
+    items = collect(cowork, claude_home, repo_local, skills_dirs)
     keep, skipped = [], []
     for src, rel in items:
         ok, why, extra = classify(src, rel)
@@ -207,7 +231,7 @@ def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_ru
     # тож загальний відсоток не помітив би, що вони зникли знову)
     existing = []
     if dest.is_dir():
-        for top in ("cowork", "claude_home", "repo_local"):
+        for top in ("cowork", "claude_home", "repo_local", "claude_skills"):
             base = dest / top
             if base.is_dir():
                 existing += [p.relative_to(dest).as_posix() for p in base.rglob("*") if p.is_file()]
@@ -311,8 +335,10 @@ def main() -> int:
     ap.add_argument("--claude-home", default=str(HOME / ".claude"))
     ap.add_argument("--repo-local", default=str(DEFAULT_REPO))
     ap.add_argument("--dest", default=str(DEFAULT_DEST))
+    ap.add_argument("--skills-dir", action="append", default=None, help="тека skills (можна кілька); за замовчуванням — автопошук у %APPDATA%/Claude")
     a = ap.parse_args()
-    return backup(Path(a.cowork), Path(a.claude_home), Path(a.repo_local), Path(a.dest), a.dry_run, not a.no_push)
+    skills = [Path(x) for x in a.skills_dir] if a.skills_dir else discover_skills_dirs()
+    return backup(Path(a.cowork), Path(a.claude_home), Path(a.repo_local), Path(a.dest), a.dry_run, not a.no_push, skills)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ MIN_FREE_GB="${MIN_FREE_GB:-8}"
 KEEP="${KEEP:-2}"
 EXPECTED="${1:-}"
 case "$ROOT" in ""|"/"|"/opt"|"/root"|"/home") echo "SNAPSHOT_FAILED: refusing unsafe BACKUP_ROOT='$ROOT'"; exit 2;; esac
+case "$EXPECTED" in *[!0-9]*) echo "SNAPSHOT_FAILED: EXPECTED_FILES must be a number, got '$EXPECTED'"; exit 2;; esac
 DEST="$ROOT/cowork_$(date +%F)"
 
 mkdir -p "$ROOT" && chmod 700 "$ROOT" || { echo "SNAPSHOT_FAILED: cannot create $ROOT"; exit 2; }

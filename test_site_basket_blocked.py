@@ -91,6 +91,8 @@ for label, body in (("два товари Toysi (не змішаний)", {"item
                     ("рядок замість об'єкта", {"items": ["100", "rt-1"]})):
     c, r = post(body)
     chk(f"{label}: 200 ok=false, обліку нема", c == 200 and r == {"ok": False} and len(lines()) == n0)
+c, r = post({"items": [{"id": "100", "qty": 1}, {"id": "100", "qty": 1}, {"id": "rt-1", "qty": 1}]})
+chk("дублі id в одному запиті (підробка, яка роздуває суму): ok=false, обліку нема", c == 200 and r == {"ok": False} and len(lines()) == n0)
 c, r = post("{не json".encode("utf-8"), raw=True)
 chk("сміття замість JSON: 200 ok=false, обліку нема", c == 200 and r == {"ok": False} and len(lines()) == n0)
 c, r = post({"items": [{"id": "100", "qty": 1}] * (so.MAX_ITEMS + 1)})
@@ -109,11 +111,22 @@ fresh_limiters()
 # збій запису не ламає відповідь
 os.environ["SITE_REJECTED_BASKETS_FILE"] = str(TMP)   # каталог замість файлу — запис неможливий
 c, r = post(mixed)
-chk("недоступний файл обліку: відповідь 200 (ok=true, подію не записано — облік best-effort), без винятку", c == 200 and r.get("ok") in (True, False))
+chk("недоступний файл обліку: відповідь 200 {ok: true} (облік best-effort, подію не записано), без винятку", c == 200 and r == {"ok": True})
 os.environ["SITE_REJECTED_BASKETS_FILE"] = str(LOG)
 
+# розмір файлу обмежено (ротації нема): понад ліміт нові події не пишуться, відповідь не змінюється
+n_before = len(lines())
+saved = rb.MAX_FILE_BYTES
+rb.MAX_FILE_BYTES = LOG.stat().st_size
+c, r = post(mixed)
+chk("файл обліку досяг ліміту розміру: відповідь 200, нового рядка НЕМАЄ", c == 200 and len(lines()) == n_before)
+rb.MAX_FILE_BYTES = saved
+c, r = post(mixed)
+chk("після зняття ліміту запис знову працює", c == 200 and len(lines()) == n_before + 1)
+
 # звіт
-chk("report_line: новий вид показано окремо", "змішаний, заблоковано в кошику: 3 за 7 діб" in rb.report_line() or "змішаний, заблоковано в кошику:" in rb.report_line())
+n_blocked = sum(1 for x in lines() if x["kind"] == rb.KIND_BLOCKED)
+chk(f"report_line: новий вид показано окремо і число збігається з файлом ({n_blocked})", f"змішаний, заблоковано в кошику: {n_blocked} за 7 діб" in rb.report_line())
 chk("існуючі види в звіті на місці", "змішаний Toysi+RT:" in rb.report_line() and "RT + накладений:" in rb.report_line())
 srv.shutdown()
 

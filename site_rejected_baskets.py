@@ -24,6 +24,9 @@ KIND_BLOCKED = "mixed_blocked_cart"   # змішаний кошик, забло�
 KIND_TITLES = {KIND_MIXED: "змішаний Toysi+RT", KIND_RT_COD: "RT + накладений", KIND_BLOCKED: "змішаний, заблоковано в кошику"}
 
 
+MAX_FILE_BYTES = int(os.environ.get("SITE_REJECTED_BASKETS_MAX_BYTES", "5000000"))   # ≈ 35 тис. подій (≈140 Б на рядок); звичайний потік — одиниці на добу
+
+
 def _file() -> Path:
     return Path(os.environ.get("SITE_REJECTED_BASKETS_FILE") or (Path(__file__).resolve().parent / "site_rejected_baskets.jsonl"))
 
@@ -46,6 +49,9 @@ def log_rejected(kind: str, items) -> None:
         if n_zb:
             rec["n_zb"] = n_zb
         path = _file()
+        if path.exists() and path.stat().st_size >= MAX_FILE_BYTES:   # захист від роздування (ротації нема, load() читає файл повністю): понад ліміт нові події не пишемо, відповідь покупцю не змінюється
+            print(f"[site_rejected_baskets] файл ≥ {MAX_FILE_BYTES} Б — подію не записано (ротація/архів — вручну)", file=sys.stderr)
+            return
         with open(path, "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:  # noqa: BLE001 — облік не має ламати прийом замовлень

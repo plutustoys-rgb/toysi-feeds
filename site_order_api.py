@@ -857,10 +857,13 @@ class Handler(SimpleHTTPRequestHandler):
             raw = payload.get("items") if isinstance(payload, dict) else None
             if not pm or not isinstance(raw, list) or not raw or len(raw) > MAX_ITEMS:
                 return self._json(200, {"ok": False}, no_store=True)
-            items, classes = [], set()
+            items, classes, seen = [], set(), set()
             for it in raw:
                 it = it if isinstance(it, dict) else {}
                 pid = str(it.get("id", "")).strip()
+                if pid in seen:   # фронт шле кожен id раз (рядки кошика унікальні); дублі = підроблений запит, яким можна довільно роздути суму
+                    return self._json(200, {"ok": False}, no_store=True)
+                seen.add(pid)
                 try:
                     qty = int(it.get("qty", 0))
                 except (TypeError, ValueError):

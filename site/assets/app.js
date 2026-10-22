@@ -513,16 +513,20 @@
   function keepGroup(k){   // лишити в кошику одну групу, решту (одну чи дві) перенести в «на потім»
     var c=read(), g=groupIds(c), later=readStore(LATER_KEY);
     if(!g[k] || !g[k].length) return;
-    ["t","r","z"].forEach(function(x){ if(x===k) return; g[x].forEach(function(id){ later[id]=c[id]; delete c[id]; }); });
+    ["t","r","z"].forEach(function(x){ if(x===k) return; g[x].forEach(function(id){ if(later[id]) later[id].qty=Math.min(MAX_QTY, later[id].qty+c[id].qty); else later[id]=c[id]; delete c[id]; }); });   // той самий товар уже був «на потім» — кількості складаємо, а не затираємо
     write(c); writeLater(later); renderCart();
   }
   function swapLater(){ var c=read(), later=readStore(LATER_KEY); write(later); writeLater(c); renderCart(); }
   function dropLater(){ writeLater({}); renderCart(); }
   // Облік попиту на поділ замовлень (Код/Консультант 22.10): блокований змішаний кошик до /api/order не доходить, тож повідомляємо окремо — лише id і к-сть, без персональних даних;
-  // раз на сесію для кожного складу кошика (відсікає повтори при перемальовках), best-effort.
+  // раз на сесію для кожного НАБОРУ товарів (кількість у підписі не бере участі: зміна «+/−» і перемикання A→B→A не дають нових повідомлень — лічильник має рахувати кошики, а не дії), best-effort.
   function reportMixedBlock(c){
-    var sig=Object.keys(c).sort().map(function(id){ return id+":"+c[id].qty; }).join(",");
-    try{ if(sessionStorage.getItem("pt_mix_rep")===sig) return; sessionStorage.setItem("pt_mix_rep", sig); }catch(e){ return; }
+    var sig=Object.keys(c).sort().join(",");
+    try{
+      var seen=JSON.parse(sessionStorage.getItem("pt_mix_rep")||"[]"); if(!Array.isArray(seen)) seen=[];
+      if(seen.indexOf(sig)>=0) return;
+      seen.push(sig); sessionStorage.setItem("pt_mix_rep", JSON.stringify(seen.slice(-20)));
+    }catch(e){ return; }
     try{
       fetch("api/basket_blocked", {method:"POST", headers:{"Content-Type":"application/json"}, keepalive:true, credentials:"omit",
         body:JSON.stringify({items:Object.keys(c).map(function(id){ return {id:id, qty:c[id].qty}; })})}).catch(function(){});
@@ -542,7 +546,10 @@
         mb.innerHTML=h+'</div>'; mb.hidden=false;
       } else { mb.innerHTML=""; mb.hidden=true; }
     }
-    if(sub) sub.disabled=mixed;
+    if(sub){   // вимикаємо ЛИШЕ для змішаного кошика і знімаємо лише своє вимкнення (інакше renderCart під час запиту знову ввімкнув би «Обробляємо…» → подвійний POST)
+      if(mixed){ sub.disabled=true; sub.setAttribute("data-mix-off","1"); }
+      else if(sub.getAttribute("data-mix-off")==="1"){ sub.disabled=false; sub.removeAttribute("data-mix-off"); }
+    }
     if(lb){
       var later=readStore(LATER_KEY), lids=Object.keys(later);
       if(lids.length){

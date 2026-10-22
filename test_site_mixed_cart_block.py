@@ -140,6 +140,28 @@ with sync_playwright() as pw:
     chk("після обміну кошик знову з однієї групи — без блоку", s["mixHidden"] and not s["submitDisabled"])
     ctx.close()
 
+    # дедуп обліку: зміна кількості (+) у змішаному кошику НЕ дає нового повідомлення серверу
+    ctx2, pg2, errs2, calls2 = newpage(cart_of(T1, R1))
+    pg2.click(".cart-item[data-id='9100'] [data-act='inc']")
+    pg2.wait_for_timeout(300)
+    s2 = pg2.evaluate(STATE)
+    chk(f"зміна кількості змішаного кошика не дублює облік (повідомлень: {len(pg2.beacons)})", len(pg2.beacons) == 1 and s2["submitDisabled"] is True)
+    ctx2.close()
+    # кнопка «Оформити» не вмикається під час запиту, коли перемальовка кошика (не змішаного) відбувається посеред відправки
+    ctx2, pg2, errs2, calls2 = newpage(cart_of(T1, T2))
+    pg2.evaluate("(()=>{const b=document.getElementById('checkout-submit'); b.disabled=true; b.textContent='Обробляємо…';})()")
+    pg2.click(".cart-item[data-id='9100'] [data-act='inc']")
+    pg2.wait_for_timeout(300)
+    chk("не змішаний кошик: перемальовка під час «Обробляємо…» НЕ вмикає кнопку знову (немає подвійного POST)", pg2.evaluate("document.getElementById('checkout-submit').disabled") is True)
+    ctx2.close()
+    # «на потім» уже містить той самий товар: кількості складаються
+    ctx2, pg2, errs2, calls2 = newpage(cart_of(T1, dict(R1, qty=1)), later=cart_of(dict(R1, qty=3)))
+    pg2.click("[data-mix-keep='t']")
+    pg2.wait_for_timeout(300)
+    lat = pg2.evaluate("JSON.parse(localStorage.getItem('pt_cart_later_v1')||'{}')")
+    chk(f"«Спершу: основні товари»: rt-товар, що вже був «на потім» (3 шт), складається з тим, що в кошику (1 шт) = 4 шт, не затирається ({lat.get('rt-45560', {}).get('qty')})", lat.get("rt-45560", {}).get("qty") == 4)
+    ctx2.close()
+
     # (2) один склад — без змін
     ctx, pg, errs, calls = newpage(cart_of(T1, T2))
     s = pg.evaluate(STATE)

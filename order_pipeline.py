@@ -45,6 +45,8 @@ import bank_check
 import order_router
 import orders_watcher
 import site_refund_receipts
+import zoobaza_intake
+from orders_db import get_connection
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -53,6 +55,11 @@ if hasattr(sys.stdout, "reconfigure"):
 def run_once() -> None:
     orders_watcher.poll_once()
     bank_check.check_pending_prepayments()
+    try:    # ZooBaza (D1): забрати zb-/змішані замовлення ДО роутера (статус + один алерт на замовлення); збій НЕ зупиняє роутинг
+        with get_connection() as conn:     # (get_orders_ready_to_forward і так виключає zb- за складом позицій — подвійний захист)
+            zoobaza_intake.claim_new(conn)
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_pipeline] zoobaza_intake: {type(e).__name__}: {e}", file=sys.stderr)
     order_router.route_pending_orders()
     try:    # чек повернення за статусом LiqPay: best-effort, збій НЕ зриває забір/роутинг замовлень (сам не кидає, але страхуємось)
         site_refund_receipts.run_once()

@@ -689,6 +689,11 @@ def _open_orders_detail_section(conn) -> str:
         # загальною prepaid-гілкою, інакше він ніколи не показався б окремо.
         if status == "toysi_error":
             reason = "🔴 помилка Toysi"
+        elif status == "zoobaza_hold":
+            # ZooBaza (D1): утримане власним ланцюгом — це НЕ «застрягло» (Toysi-роутер його не бере свідомо; аудит PR #634 M-1)
+            reason = "🐾 ZooBaza: утримано, веде власний ланцюг"
+        elif status == "zoobaza_mixed_hold":
+            reason = "🔴 ZooBaza: ЗМІШАНИЙ кошик — потрібне рішення власника"
         elif status == "awaiting_manual_confirmation":
             reason = "очікує ручного підтвердження"
         elif pm == "prepaid" and not pc:
@@ -703,7 +708,7 @@ def _open_orders_detail_section(conn) -> str:
         parsed.append((age_h, r["platform"], r["order_id"], amount, reason))
 
     parsed.sort(key=lambda x: x[0], reverse=True)  # найстаріші зверху
-    stuck = sum(1 for p in parsed if "застрягло" in p[4] or "Toysi" in p[4])
+    stuck = sum(1 for p in parsed if "застрягло" in p[4] or "Toysi" in p[4] or "ЗМІШАНИЙ" in p[4])
     head = f"\n\n📦 Відкриті замовлення (не передані в Toysi): {len(parsed)}"
     if stuck:
         head += f" — 🔴 {stuck} потребують уваги"

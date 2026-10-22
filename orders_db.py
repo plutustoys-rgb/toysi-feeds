@@ -566,17 +566,22 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
         """
         SELECT * FROM orders
         WHERE forwarded_to_toysi_at IS NULL
-          AND (status IS NULL OR status NOT IN ('toysi_error', 'prom_cancelled_before_forward', 'eva_cancelled_before_forward', 'rozetka_cancelled_before_forward', 'sandbox_test'))
+          AND (status IS NULL OR status NOT IN ('toysi_error', 'prom_cancelled_before_forward', 'eva_cancelled_before_forward', 'rozetka_cancelled_before_forward', 'sandbox_test', 'zoobaza_hold', 'zoobaza_mixed_hold'))
           AND (
               payment_method = 'cod'
               OR (payment_method = 'prepaid' AND payment_confirmed = 1)
           )
           AND items NOT LIKE '%"toysi_code": "rt-%'
+          AND items NOT LIKE '%"toysi_code": "zb-%'
         """
     ).fetchall()
     return [_row_to_dict(row) for row in rows]
 
 
+# ZooBaza (D1, 22.10): позиції з префіксом zb- НІКОЛИ не йдуть у Toysi-роутер — і за статусом (zoobaza_hold / zoobaza_mixed_hold, його
+# ставить zoobaza_intake.claim_new), і за самим складом позицій (подвійний захист, як для rt-: якщо claim не відпрацював, роутер
+# усе одно не візьме ні чисте zb-, ні змішане замовлення). Змішаний кошик тримається для ручного рішення власника.
+ZB_ITEM_MARK = '"toysi_code": "zb-'          # так json.dumps(ensure_ascii=False) пише позицію ZooBaza (insert_order)
 RT_ITEM_MARK = '"toysi_code": "rt-'          # так json.dumps(ensure_ascii=False) пише позицію RoyalToys (insert_order)
 RT_STATES = ("ttn_creating", "ttn_created", "marking_ready", "rt_ordering", "rt_ordered", "shipped", "delivered", "returned", "manual")
 # ttn_creating / rt_ordering — «claim» ПЕРЕД незворотним зовнішнім кроком (створення ТТН НП / натискання кнопки в RoyalToys): якщо процес помер чи результат невідомий, стан лишається і конвеєр сам НЕ повторює крок (потрібна ручна звірка).

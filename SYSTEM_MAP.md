@@ -401,7 +401,7 @@
    з межею слова, щоб не зачепити `kodv`) → **виклик скіла ролі** (`Skill` tool_use асистента: business-consultant, seo-agent,
    plutustoys-smm, accountant, seller, agent-code, agent-architector) → ≥2 власні заголовки каналів `## [Роль → …]` (лише
    дії асистента; цитати у вхідних не рахуються; нічия → порожньо; перевірено на 4 живих транскриптах 22.10); вручну `recall.py --detect-role <transcript> --set-role <роль>`. Ролі
-   `recall.py`: seo, smm, seller, executor, consultant, kodv + **kod, architector, tester**. Відомі межі: роль
+   `recall.py`: seo, smm, seller, executor, consultant, kodv + **kod, architector, tester, site** (site: SHOPIFY_CHANNEL.md з shopify_feed_app + журнал Тестувальника лише для читання). Відомі межі: роль
    знаходиться за ПЕРШИМ повідомленням, якого на `startup`/`clear` ще нема → там «роль не визначена», повноцінно
    працює `compact`/`resume`; стан зберігається по ролі, не по сесії (дві одночасні сесії однієї ролі перезапишуть одна
    одну). **Резервна копія тексту, якого нема в git:** `backup_text_set.py` (ручний/планований запуск; локальний git у

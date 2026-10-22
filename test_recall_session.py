@@ -276,6 +276,35 @@ chk("згадка vartov / процедура_vartov_vhost.md у першому 
     role_of("Прочитай процедура_vartov_vhost.md у теці shopify_feed_app для vartov.app") == "")
 chk("«Vartov-Код» без форми «Ти — …» роль не дає", role_of("Vartov-Код, перевір vhost") == "")
 
+# --- 22.10 (прохання Консультанта): тег «Сайт» = автор/адресат ролі site (SEO_CHANNEL: `## [Сайт → SEO]`)
+(seo_dir / "SEO_CHANNEL.md").write_text(
+    "## [Сайт → SEO] 2026-10-15 — відповідь по сайту від тегу «Сайт»" + chr(10) +
+    "## [SEO → Консультант] 2026-10-14 — SEO-запис про тестувальника сайту" + chr(10) +
+    "## [Тестувальник сайту → Консультант] 2026-10-13 — «сайту» у назві ролі не є тегом site" + chr(10) +
+    "## [Консультант → Сайт, SEO] 2026-10-12 — питання адресоване Сайту" + chr(10), encoding="utf-8")
+recall._CONFIGS["site"] = [seo_dir / "SEO_CHANNEL.md", jdir / "OWNER_INBOX.md"]
+recall._CONFIGS["seo"] = [seo_dir / "SEO_CHANNEL.md", jdir / "OWNER_INBOX.md"]
+card_s2 = recall.restore_card("site", n=6)
+chk("site: заголовки з тегом «Сайт» (автор і адресат) у картці",
+    "відповідь по сайту від тегу" in card_s2 and "питання адресоване Сайту" in card_s2)
+chk("site: «Тестувальник сайту» (слово «сайту») і чужі SEO-записи НЕ потрапляють",
+    "«сайту» у назві ролі" not in card_s2 and "SEO-запис про тестувальника" not in card_s2)
+card_seo2 = recall.restore_card("seo", n=6)
+chk("seo: записи з її участю лишаються, а «Сайт → SEO» і «Консультант → Сайт, SEO» — теж (в них є SEO)",
+    "відповідь по сайту від тегу" in card_seo2 and "питання адресоване Сайту" in card_seo2 and "SEO-запис про тестувальника" in card_seo2)
+chk("seo: запис ЛИШЕ для тегу «Сайт» (без SEO) у картку seo не потрапляє",
+    "тільки для сайту" not in recall.restore_card("seo", n=6))
+(seo_dir / "SEO_CHANNEL.md").write_text(
+    "## [Консультант → Сайт] 2026-10-11 — тільки для сайту без SEO" + chr(10) +
+    "## [SEO → Консультант] 2026-10-10 — SEO-запис" + chr(10), encoding="utf-8")
+chk("seo: запис [Консультант → Сайт] (без SEO) відфільтровано дзеркально до Shopify-code",
+    "тільки для сайту" not in recall.restore_card("seo", n=6) and "SEO-запис" in recall.restore_card("seo", n=6))
+chk("site: цей запис [Консультант → Сайт] — у картці site", "тільки для сайту" in recall.restore_card("site", n=6))
+chk("активність: власні заголовки «Сайт →» двічі -> роль site",
+    recall.detect_role(activity_transcript("site_tag.jsonl", [
+        {"type": "tool_use", "name": "Write", "input": {"content": "## [Сайт → SEO] 2026-10-22 — a" + chr(10)}},
+        {"type": "tool_use", "name": "Edit", "input": {"new_string": "## [Сайт → Консультант] 2026-10-22 — b" + chr(10)}}])) == "site")
+
 # --- env пріоритетніший
 import os
 os.environ["PLUTUS_ROLE"] = "tester"

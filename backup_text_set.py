@@ -41,7 +41,7 @@ DEFAULT_DEST = Path(os.environ.get("PLUTUS_BACKUP_REPO") or r"C:\Users\smach\plu
 MAX_FILE_MB = 20
 TEXT_EXT = {".md", ".txt", ".json", ".jsonl", ".csv", ".tsv", ".py", ".ps1", ".sh", ".bat", ".cmd", ".yml", ".yaml",
             ".xml", ".html", ".htm", ".js", ".cfg", ".ini", ".toml", ".sql", ".log", ""}
-NEVER_NAMES = re.compile(r"(?i)^(КОДВ_.*|\.env.*|.*\.pem|.*\.key|.*\.p12|.*\.pfx|credentials.*|.*secrets?\.json|id_rsa.*|id_ed25519.*)$")
+NEVER_NAMES = re.compile(r"(?i)^(КОДВ_.*|\.local_secrets.*|\.env.*|.*\.pem|.*\.key|.*\.p12|.*\.pfx|credentials.*|.*secrets?\.json|id_rsa.*|id_ed25519.*)$")
 COWORK_DIRS = ("технічні_вимоги_маркетплейсів", "SEO_метрики")
 # відносні шляхи, які свідомо дозволено попри збіг. .vps_audit_ok — лише «sha256  _vps_*.sh», назви на кшталт *_key.sh дають хибний збіг
 ALLOW_SECRET_LIKE: set = {"repo_local/.vps_audit_ok"}
@@ -62,7 +62,7 @@ SECRET_RULES = [
     # ключ=значення: слова-ключі ширші (…key, …pin, пароль), значення без пробілів ≥12 (≥16 для звичайних слів);
     # паролі зі спецсимволами теж ловимо
     ("ключ=значення", re.compile(r"""(?ix)["']?[\w.-]*(?:password|passwd|пароль|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|_key|_pin|\bpin|\bkey)[\w.-]*["']?\s*[=:]\s*["'`]?([^\s"'`,;<>]{12,})""")),
-    ("PIN", re.compile(r"""(?i)(?:_pin|pin|пін)[\w.-]*["']?\s*[=:]\s*["'`]?\d{4,}""")),
+    ("PIN", re.compile(r"""(?i)(?:_pin|(?<![A-Za-z])pin|(?<!\w)пін)[\w.-]*["']?\s*[=:]\s*["'`]?\d{4,}""")),
     # голий довгий hex (>=32) у рядку зі словом «ключ/key/токен/пароль/secret/PIN» — напр. «Ключ ФОП НП: `<hex32>`»
     ("hex-секрет поруч зі словом-ключем", re.compile(r"(?i)^(?=.*(?:ключ|\bkey\b|токен|token|парол|password|secret|секрет|\bpin\b)).*\b[0-9a-f]{32,}\b")),
 ]

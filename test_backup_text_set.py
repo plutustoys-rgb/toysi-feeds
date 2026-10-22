@@ -107,6 +107,9 @@ cases = {
     "PROM_KEY=": "PROM_KEY=Zq8Lm2Xw9RtY4pKd7A",
     "пароль зі спецсимволами": "password: P@ss!w0rd#2026x",
     "PIN": "CHECKBOX_CASHIER_PIN=1044934402",
+    "PIN: слово без префікса": "PIN: 482915",
+    "pin= малими": "pin=482915",
+    "ПІН кирилицею": "ПІН: 482915",
 }
 for label, txt in cases.items():
     chk(f"скан ловить: {label}", bool(bk.scan_text(txt)))

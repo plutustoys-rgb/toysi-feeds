@@ -170,6 +170,45 @@ chk("cwd поза C:/Users/smach -> порожньо",
 chk("cwd у домашній теці -> працює",
     "ЯДРО ПРАВИЛ" in recall.session_context({"transcript_path": tp, "source": "compact", "cwd": "C:\\Users\\smach\\rozetka_agent"}))
 
+# --- роль за діяльністю сесії (дефект Консультанта 22.10: перша фраза власника роль не називає)
+def activity_transcript(name, blocks, first="у нас стався збій, як ти? у тебе як з роллю та памяттю?"):
+    p = tmp / name
+    rows = [line(type="user", message={"content": first})]
+    for b in blocks:
+        rows.append(line(type="assistant", message={"content": [b]}))
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return str(p)
+
+
+def skill(name):
+    return {"type": "tool_use", "name": "Skill", "input": {"skill": name}}
+
+
+for sk, want in [("anthropic-skills:business-consultant", "consultant"), ("anthropic-skills:seo-agent", "seo"),
+                 ("anthropic-skills:plutustoys-smm", "smm"), ("anthropic-skills:accountant", "kodv"),
+                 ("anthropic-skills:seller", "seller"), ("anthropic-skills:agent-code", "kod"),
+                 ("anthropic-skills:agent-architector", "architector")]:
+    chk(f"виклик скіла {sk.split(':')[1]} -> {want}", recall.detect_role(activity_transcript(f"sk_{want}.jsonl", [skill(sk)])) == want)
+chk("нерольовий скіл (loop) -> порожньо", recall.detect_role(activity_transcript("sk_loop.jsonl", [skill("loop")])) == "")
+chk("два різні рольові скіли -> нічия -> порожньо",
+    recall.detect_role(activity_transcript("sk_two.jsonl", [skill("anthropic-skills:seo-agent"), skill("anthropic-skills:seller")])) == "")
+chk("скіл з префіксом-пустим іменем (seo-agent) теж ловиться",
+    recall.detect_role(activity_transcript("sk_bare.jsonl", [skill("seo-agent")])) == "seo")
+
+hdr_w = {"type": "tool_use", "name": "Write", "input": {"content": "## [Консультант → Код] 2026-10-22 — тест\nтіло\n"}}
+hdr_e = {"type": "tool_use", "name": "Edit", "input": {"new_string": "## [Консультант → SEO] 2026-10-22 (2) — тест\n"}}
+chk("2 власні заголовки каналу -> роль автора", recall.detect_role(activity_transcript("h2.jsonl", [hdr_w, hdr_e])) == "consultant")
+chk("1 заголовок (можливо цитата) -> порожньо", recall.detect_role(activity_transcript("h1.jsonl", [hdr_w])) == "")
+quote = tmp / "hq.jsonl"
+quote.write_text("\n".join([
+    line(type="user", message={"content": "Привіт"}),
+    line(type="user", message={"content": "## [Консультант → Код] 1\n## [Консультант → Код] 2\n## [Консультант → Код] 3"}),
+    line(type="attachment", attachment={"type": "hook_additional_context", "content": "## [SEO → Код] 1\n## [SEO → Код] 2"}),
+]) + "\n", encoding="utf-8")
+chk("заголовки у ВХІДНИХ повідомленнях/вставках не рахуються", recall.detect_role(str(quote)) == "")
+chk("перше повідомлення з маркером важливіше за діяльність",
+    recall.detect_role(activity_transcript("first_wins.jsonl", [skill("anthropic-skills:seller")], first="Ти — агент-SEO (plutus-seo)")) == "seo")
+
 # --- env пріоритетніший
 import os
 os.environ["PLUTUS_ROLE"] = "tester"

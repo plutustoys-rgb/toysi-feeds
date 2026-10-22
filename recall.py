@@ -68,7 +68,7 @@ _CONFIGS = {
              COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md"],
 }
 _SHARED_CHANNELS = {"SEO_CHANNEL.md", "MARKETING_CHANNEL.md", "CONSULTANT_CHANNEL.md"}   # канали, де черги ролей перемішані
-# «Сайт» — давній тег ролі site в заголовках (напр. `## [Сайт → SEO]` у SEO_CHANNEL, 15.10);  — щоб «сайту»/«сайтів» не збігались
+# «Сайт» — давній тег ролі site в заголовках (напр. `## [Сайт → SEO]` у SEO_CHANNEL, 15.10); межі слова (?<!\w)…(?!\w), щоб «сайту»/«сайтів» не збігались
 _SHOPIFY_RE = re.compile(r"shopify-code|код-shopify|(?<!\w)сайт(?!\w)", re.IGNORECASE)
 _SEO_RE = re.compile(r"\bseo\b", re.IGNORECASE)
 

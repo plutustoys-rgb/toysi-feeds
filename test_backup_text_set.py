@@ -183,4 +183,44 @@ bk.HOME = hdir / "otherhome"
 bk.backup(cw4, ch4, rl4, d5, push=False)
 chk("dest поза домашньою текою: попередження немає", "ЦЕ НЕ БЕКАП" not in (d5 / "_report_last.md").read_text(encoding="utf-8"))
 
+# --- скіли ролей Claude (поза git і поза ~/.claude): лише *.md/*.txt + manifest.json; запобіжник групи
+sk_root = tmp / "skills_case"
+sk = sk_root / "setAAAAAAAA" / "sessBBBBBBBB" / "skills"
+ROLES6 = ("seo-agent", "plutustoys-smm", "accountant", "agent-code", "seller", "business-consultant")
+for name in ROLES6:
+    (sk / name).mkdir(parents=True)
+    (sk / name / "SKILL.md").write_text("# роль " + name + "\n", encoding="utf-8")
+(sk / "docx" / "scripts").mkdir(parents=True)
+(sk / "docx" / "scripts" / "office.py").write_text("print(1)\n", encoding="utf-8")
+(sk / "docx" / "schema.xsd").write_text("<x/>", encoding="utf-8")
+(sk / "seo-agent" / "ref.txt").write_text("довідка\n", encoding="utf-8")
+(sk.parent / "manifest.json").write_text('{"skills": []}', encoding="utf-8")
+(sk / "seller" / "LEAK.md").write_text("pin = 7391824650123456\nnormal\n", encoding="utf-8")
+cw6, ch6, rl6, d6 = sk_root / "c", sk_root / "h", sk_root / "r", sk_root / "d"
+for p in (cw6, ch6, rl6):
+    p.mkdir(parents=True)
+(cw6 / "A.md").write_text("a", encoding="utf-8")
+(ch6 / "settings.json").write_text("{}", encoding="utf-8")
+(rl6 / ".vps_audit_ok").write_text("a" * 64 + "  _vps_x.sh\n", encoding="utf-8")
+chk("скіли: перший бекап ок", bk.backup(cw6, ch6, rl6, d6, push=False, skills_dirs=[sk]) == 0)
+files6 = {p.relative_to(d6).as_posix() for p in d6.rglob("*") if p.is_file() and ".git" not in p.parts}
+tagp = "claude_skills/setAAAAA_sessBBBB"
+chk("SKILL.md усіх ролей і ref.txt скопійовано під claude_skills/<набір>_<сесія>/",
+    all(f"{tagp}/{n}/SKILL.md" in files6 for n in ROLES6) and f"{tagp}/seo-agent/ref.txt" in files6)
+chk("manifest.json скопійовано", f"{tagp}/manifest.json" in files6)
+chk("скрипти (.py) і схеми (.xsd) вбудованих скілів НЕ копіюються", not any(f.endswith(".py") or f.endswith(".xsd") for f in files6))
+leak6 = (d6 / tagp / "seller" / "LEAK.md").read_text(encoding="utf-8") if f"{tagp}/seller/LEAK.md" in files6 else ""
+chk("секретний рядок у SKILL-файлі замасковано, решта лишилась", "7391824650123456" not in leak6 and "normal" in leak6)
+rc6 = bk.backup(cw6, ch6, rl6, d6, push=False, skills_dirs=())
+files6b = {p.relative_to(d6).as_posix() for p in d6.rglob("*") if p.is_file() and ".git" not in p.parts}
+chk("запобіжник групи claude_skills: скіли раптом зникли з джерел -> exit 3, копія цілa", rc6 == 3 and f"{tagp}/seo-agent/SKILL.md" in files6b)
+old_appdata = bk.os.environ.get("APPDATA")
+bk.os.environ["APPDATA"] = str(tmp / "no_such_appdata")
+chk("discover_skills_dirs без теки Claude повертає [] (не падає)", bk.discover_skills_dirs() == [])
+if old_appdata is None:
+    bk.os.environ.pop("APPDATA", None)
+else:
+    bk.os.environ["APPDATA"] = old_appdata
+
+
 sys.exit(1 if F else 0)

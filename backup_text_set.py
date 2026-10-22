@@ -242,7 +242,7 @@ def backup(cowork: Path, claude_home: Path, repo_local: Path, dest: Path, dry_ru
             lines.append(f"- `{rel}` — " + ", ".join(f"рядок {n}: {k}" for n, k in mh[:8]))
         lines.append("")
     if weak:
-        lines.append("## 🟡 Ймовірно хибні (ключ=значення: переважно код/URL-шаблони) — замасковано, перевірити вибірково")
+        lines.append("## 🟡 Низька ймовірність (ключ=значення: переважно код/URL, але може бути й пароль) — замасковано, перевірити вибірково")
         for rel, mh in weak:
             lines.append(f"- `{rel}` — " + ", ".join(f"рядок {n}" for n, k in mh[:8]))
         lines.append("")

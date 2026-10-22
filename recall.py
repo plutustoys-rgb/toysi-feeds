@@ -61,8 +61,9 @@ _CONFIGS = {
                COWORK_DIR / "archive" / "tester"],
     # Shopify-code / сайт (Vartov): власний канал лежить ПОЗА Cowork (shopify_feed_app); журнал Тестувальника — лише читання
     # (його єдиний писар — Тестувальник), там черга дефектів сайту — головний вхід для цієї ролі.
-    "site": [SHOPIFY_DIR / "SHOPIFY_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
-             COWORK_DIR / "тест_сайту_журнал.md"],
+    # Журнал — ДРУГИМ (головний вхід ролі): картка обрізається з кінця за cap, тож менш важливе має стояти після нього.
+    "site": [SHOPIFY_DIR / "SHOPIFY_CHANNEL.md", COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "CONSULTANT_CHANNEL.md",
+             COWORK_DIR / "OWNER_INBOX.md"],
 }
 _JOURNAL_CARD = {"тест_сайту_журнал.md"}   # журнали, з яких картка бере останні `### [` заголовки
 # Стан ролей між ущільненнями контексту: <роль>.md (пише PreCompact) + <id сесії>.role (кеш ролі).
@@ -209,7 +210,10 @@ _ROLE_MARKERS = {
     "kod": ("you are code-agent", "plutus-kod", "агент-код", "агента-код", "ти — код ", "ти - код "),
     "architector": ("agent-architector", "агент-архітектор", "агента-архітектора", "ти — архітектор", "ти - архітектор"),
     "tester": ("plutus-tester", "агент-тестувальник", "агента-тестувальника", "тестувальник сайту"),
-    "site": ("shopify-code", "код-shopify", "код shopify", "агент-shopify"),
+    # лише форми, що НАЗИВАЮТЬ саму роль («Ти — Shopify-code»); голе «shopify-code» колеги згадують у перших 140 символах
+    # власних сесій (аудит PR #964: давало хибний site у Коду/Консультанта/SEO)
+    "site": ("ти — shopify-code", "ти - shopify-code", "ти — код-shopify", "ти - код-shopify", "агент-shopify",
+             "агента-shopify", "plutus-shopify"),
 }
 
 
@@ -354,8 +358,8 @@ def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
     roots = _CONFIGS.get(config)
     if not roots:
         return ""
-    if config == "kod":
-        n = min(n, 2)   # kod має 5 каналів — по 2 свіжі заголовки, щоб вмістилось у cap (інші ролі без змін)
+    if config in ("kod", "site"):
+        n = min(n, 2)   # kod має 5 каналів, site — 3 джерела + журнал: по 2 свіжі заголовки, щоб вмістилось у cap
     chan = []
     for r in roots:
         if r.is_file() and r.name in _JOURNAL_CARD:      # журнал-«черга» (дописується ВНИЗ): беремо ОСТАННІ заголовки

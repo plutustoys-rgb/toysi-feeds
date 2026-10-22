@@ -1,0 +1,9 @@
+[Unit]
+Description=PlutusToys: orders.db backup every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:12:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

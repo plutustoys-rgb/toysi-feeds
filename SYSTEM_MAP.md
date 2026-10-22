@@ -131,6 +131,8 @@
 | `PlutusToys-ChecboxRegistrySync` | `checkbox_registry_sync.ps1` → `checkbox_registry_sync.py` | КОДВ: нові фіскальні чеки Checkbox → кандидати доходу у документи_КОДВ (read-only API, книгу не пише) |
 | `PlutusToys_KandydatyStaleCheck` | `kandydaty_registry.py stale-check` (щодня 08:30) | КОДВ: сигнал «книга стоїть» (Аудитор, 2026-09-29) — відкриті кандидати реєстру старші 2 діб, не визнані винятком → ОДИН throttled Telegram-алерт (раз/добу, `send_throttled_alert`). Читає той самий `_vidkryti_kandydaty.json`, що наповнюють kandydaty-скрипти нижче |
 | `PlutusToys_RozetkaReturnsMonitor` | `rozetka_returns_monitor.py` (кожні 4 год) | Rozetka Delivery: незабрані/відмовлені RMP-посилки (замовлення 11/12/19) → Telegram на ПЕРЕХОДІ стадії; «Очікує відправника» = ДІЯ: забрати в Алматинська, 4 («Реєстр повернення відправлень»). NP-автоповернення на RZ-посилки не діє. Читає Orders API + публічний трекінг RZ-Delivery, нічого не змінює |
+| `PlutusToys_BackupTextSet` | `backup_text_set.py` (щодня 03:10; реєструє `deploy/register_backup_tasks.ps1`) | резервна копія критичного ТЕКСТОВОГО набору (Cowork-корінь, `~/.claude` settings/hooks/memory) у локальний git `plutus_backup_repo`; push — лише з налаштованим приватним remote; код виходу ≠ 0 = збій (3 = спрацював запобіжник видалень, 4 = push) |
+| `PlutusToys_BackupCoworkToVps` ⛔ **створено ВИМКНЕНОЮ 22.10.2026** | `deploy/cowork_snapshot_to_vps.cmd` (щонеділі 03:40) | повний знімок Cowork (mascot_new, документи_КОДВ, КОДВ_журнал, медіа) на VPS `/opt/plutustoys_backup/cowork_РРРР-ММ-ДД` (700, 2 останні); вмикати після першого успішного ручного прогону (`--dry-run`, потім реальний) |
 
 > **`kandydaty_registry.py` — спільний ПЕРСИСТЕНТНИЙ реєстр відкритих кандидатів** (2026-09-18,
 > розширено 2026-09-28/29): незалежний від курсора КОЖНОГО джерела (курсор = «бачили в джерелі»,
@@ -409,7 +411,7 @@
    (Cowork-корінь, технічні_вимоги, SEO_метрики, `~/.claude` settings/hooks/memory, `.vps_audit_ok`), лише текст ≤20 МБ,
    скан секретів з МАСКУВАННЯМ підозрілих рядків у копії (звіт `_report_last.md`: шлях:рядок:тип, без значень),
    `КОДВ_*`/`документи_КОДВ`/медіа/`.env`/ключі ніколи, запобіжник від масових видалень (загалом і по групах).
-   Важке (mascot_new, рендери, документи_КОДВ) — на VPS, не в GitHub. Рівень користувача: `~/.claude/CLAUDE.md` (ядро правил; рольові сесії мають cwd = домашня тека і
+   Важке (mascot_new, рендери, документи_КОДВ, КОДВ_журнал) — на VPS, не в GitHub: `deploy/cowork_snapshot_to_vps.cmd` (+ `cowork_snapshot_remote.sh` на VPS: перевірка вільного місця ДО розпаковки, `.part` → перейменування лише після успіху, мінімум 100 файлів, ротація 2 останніх) — тижнева задача `PlutusToys_BackupCoworkToVps` (створена ВИМКНЕНОЮ; реєструє `deploy/register_backup_tasks.ps1`). Скрипти бекапу ЛЕЖАТЬ У РЕПО (git), а не в Cowork — урок 22.10: що жило поза версіонуванням, те й губилось. Рівень користувача: `~/.claude/CLAUDE.md` (ядро правил; рольові сесії мають cwd = домашня тека і
    репо-`CLAUDE.md` не вантажать). **Встановлення — `python deploy\claude_home\install_hooks.py` (`--dry-run`, `--rollback`;
    бекап settings.json ПОЗА `~/.claude`, типово `Cowork\backups_claude_settings`)** запускає ВЛАСНИК: агентові запис у
    `~/.claude` заблоковано класифікатором. **`--restore-automode` (рішення власника 22.10)** додає блок `autoMode`
@@ -460,10 +462,11 @@
     "PlutusToys_MarketplaceActions",
     "PlutusToys-TelegramOutbox", "PlutusToys-CabinetAudit",
     "PlutusToys-Graph6Daily", "PlutusToys-NovaPayRegistryArchiver",
-    "PlutusToys-ChecboxRegistrySync", "PlutusToys_KandydatyStaleCheck", "PlutusToys_RozetkaReturnsMonitor"
+    "PlutusToys-ChecboxRegistrySync", "PlutusToys_KandydatyStaleCheck", "PlutusToys_RozetkaReturnsMonitor",
+    "PlutusToys_BackupTextSet"
   ],
   "local_tasks_disabled": [
-    "PlutusToys_AgentWatch", "PlutusToys_SellerWatchdog"
+    "PlutusToys_AgentWatch", "PlutusToys_SellerWatchdog", "PlutusToys_BackupCoworkToVps"
   ],
   "vps_units": [
     "order-pipeline", "order-router", "orders-watcher", "order-status-tracker",

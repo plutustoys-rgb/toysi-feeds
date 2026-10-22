@@ -50,7 +50,19 @@ _CONFIGS = {
     "kodv": [COWORK_DIR / "КОДВ_CHANNEL.md", COWORK_DIR / "КОДВ_журнал.md",
              COWORK_DIR / "КОДВ_норми_довідник.md", COWORK_DIR / "документи_КОДВ",
              COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "archive" / "kodv"],
+    # 22.10: ролі, яких бракувало (після ущільнення вони не мали картки стану).
+    "kod": [COWORK_DIR / "EXECUTOR_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md",
+            COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "MARKETING_CHANNEL.md",
+            COWORK_DIR / "КОДВ_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md",
+            COWORK_DIR / "archive" / "code"],
+    "architector": [COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "COORDINATOR_LOG.md",
+                    COWORK_DIR / "STATUS.md", COWORK_DIR / "EXECUTOR_CHANNEL.md"],
+    "tester": [COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "OWNER_INBOX.md",
+               COWORK_DIR / "archive" / "tester"],
 }
+# Стан ролей між ущільненнями контексту: <роль>.md (пише PreCompact) + <id сесії>.role (кеш ролі).
+# У .local_secrets (gitignored).
+ROLE_STATE_DIR = Path(os.environ.get("PLUTUS_ROLE_STATE_DIR") or (BASE_DIR / ".local_secrets" / "role_state"))
 # Токени, що нічого не кажуть про тему (щоб не матчити пів-репо). Латиниця (код) + укр (канали).
 _STOP = {"py", "sh", "test", "tests", "util", "utils", "the", "and", "for", "new", "old",
          "tmp", "temp", "client", "run", "main", "get", "set", "make", "data", "file",
@@ -174,6 +186,8 @@ def _memory_hits(terms: list) -> list:
 _ROLE_AUTHORS = {
     "seo": ("seo",), "smm": ("smm",), "seller": ("продажник",), "executor": ("виконавець",),
     "consultant": ("консультант",), "kodv": ("кодв", "бухгалтер", "головний бухгалтер", "аудитор"),
+    # "[код" співпало б із "[кодв…" (бухгалтер) — тому з закриттям/стрілкою.
+    "kod": ("код]", "код →", "code-agent"), "architector": ("архітектор",), "tester": ("тестувальник",),
 }
 # Ознаки ролі в ПЕРШОМУ повідомленні сесії (єдине місце, де роль названо: cwd у всіх однаковий).
 # Рахуємо збіги по ролях; нічия або нуль → "" (фолбек: хук лишає поведінку без змін).
@@ -186,15 +200,49 @@ _ROLE_MARKERS = {
                    "business-consultant"),
     "kodv": ("головний бухгалтер", "агент-бухгалтер", "агента-бухгалтера", "plutus-kodv", "kodv-independent",
              "kodv-legislative", "ти бухгалтер", "агент бухгалтер"),
+    "kod": ("you are code-agent", "plutus-kod", "агент-код", "агента-код", "ти — код ", "ти - код "),
+    "architector": ("agent-architector", "агент-архітектор", "агента-архітектора", "ти — архітектор", "ти - архітектор"),
+    "tester": ("plutus-tester", "агент-тестувальник", "агента-тестувальника", "тестувальник сайту"),
 }
 
 
 _ID_WINDOW = 140
 
 
+def _role_cache_file(transcript_path: str) -> Path:
+    return ROLE_STATE_DIR / f"{Path(transcript_path).stem}.role"
+
+
+def set_role(transcript_path: str, role: str) -> None:
+    """Запам'ятати роль сесії (id сесії = ім'я .jsonl). Читається detect_role/SessionStart."""
+    if role in _CONFIGS and transcript_path:
+        ROLE_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _role_cache_file(transcript_path).write_text(role, encoding="utf-8")
+
+
 def detect_role(transcript_path: str) -> str:
-    """Роль сесії за першим user-повідомленням її транскрипта; "" якщо не визначилась
-    (нуль збігів АБО нічия між ролями — краще нічого, ніж не та роль)."""
+    """Роль сесії: PLUTUS_ROLE (env) → кеш сесії → перше user-повідомлення транскрипта;
+    "" якщо не визначилась (нуль збігів АБО нічия між ролями — краще нічого, ніж не та роль).
+    Знайдену за текстом роль кешуємо за id сесії — після ущільнення вона вже не зникне."""
+    env_role = os.environ.get("PLUTUS_ROLE", "").strip().lower()
+    if env_role in _CONFIGS:
+        return env_role
+    try:
+        cached = _role_cache_file(transcript_path).read_text(encoding="utf-8").strip()
+        if cached in _CONFIGS:
+            return cached
+    except OSError:
+        pass
+    role = _detect_role_from_text(transcript_path)
+    if role:
+        try:
+            set_role(transcript_path, role)
+        except OSError:
+            pass
+    return role
+
+
+def _detect_role_from_text(transcript_path: str) -> str:
     import json
     try:
         with open(transcript_path, encoding="utf-8", errors="replace") as f:
@@ -232,6 +280,8 @@ def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
     roots = _CONFIGS.get(config)
     if not roots:
         return ""
+    if sum(1 for r in roots if r.is_file() and r.name.upper().endswith("_CHANNEL.MD")) > 3:
+        n = min(n, 2)   # багато каналів (kod) — по 2 свіжі заголовки, щоб вмістилось у cap
     chan = []
     for r in roots:
         if not (r.is_file() and r.name.upper().endswith("_CHANNEL.MD")):
@@ -272,6 +322,139 @@ def restore_card(config: str, n: int = 4, cap: int = 2800) -> str:
         lines.pop()
     out = chr(10).join(lines)
     return out if len(lines) > 1 and len(out) <= cap else ""
+
+
+# ---------------------------------------------------------------------------------------------
+# Відновлення ролі після ущільнення/перезапуску (22.10.2026, скарга власника: «після стискання
+# агент забуває, хто він і на чому зупинився»). Два хуки Claude Code:
+#   PreCompact   → recall.py --save-state   : скидає «що в роботі» в ROLE_STATE_DIR/<роль>.md
+#   SessionStart → recall.py --session-start: роль + стан + картка каналів + ядро правил (≤3000 симв.)
+# Детерміновано, без LLM, найгірший випадок = порожній вивід (хук нічого не ламає).
+# ---------------------------------------------------------------------------------------------
+CORE_RULES = (
+    "ЯДРО ПРАВИЛ (повні — SYSTEM_MAP.md та CLAUDE.md репо rozetka_agent):\n"
+    "• Твердження про систему — лише з доказом file:line, прочитаним ЦІЄЇ сесії; не вигадуй і не вгадуй.\n"
+    "• Мерж у toysi-feeds — лише після незалежного аудиту (.audit_ok з номером PR); косметика — власна перевірка.\n"
+    "• Гроші/ціни/відправлення/публікації назовні — лише з явного слова власника; пороги — з виміряного розподілу.\n"
+    "• Секрети не друкувати, .env не source-ити; VPS: діагностика read-only, запис — власник.\n"
+    "• Канали *_CHANNEL.md: newest-on-top, `## [Від → Кому] дата`; між живими сесіями — SendMessage.\n"
+    "• Власнику — коротко, українською; «зроблено» лише з перевіркою."
+)
+_SECRET_RE = re.compile(r"(?i)((?:token|password|passwd|secret|api[_-]?key|authorization)\s*[=:]\s*)\S+|\b[A-Za-z0-9_\-]{36,}\b")
+
+
+def _redact(text: str) -> str:
+    return _SECRET_RE.sub(lambda m: (m.group(1) + "[приховано]") if m.group(1) else "[приховано]", text)
+
+
+def _msg_text(content) -> str:
+    """Текст повідомлення транскрипта (str або список блоків); tool_result/системні вставки — пропускаємо."""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for b in content or []:
+        if isinstance(b, dict) and b.get("type") == "text":
+            parts.append(b.get("text", ""))
+    return "\n".join(parts)
+
+
+def _transcript_tail(transcript_path: str, max_bytes: int = 1_500_000) -> list:
+    import json
+    out = []
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            raw = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return out
+    for ln in raw:
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            continue
+    return out
+
+
+def save_state(payload: dict) -> str:
+    """PreCompact: механічно (без LLM) складає «що в роботі» з хвоста транскрипта і пише його
+    в ROLE_STATE_DIR/<роль>.md (роль невідома → _session_<id>.md). Повертає шлях або ""."""
+    import json
+    from datetime import datetime
+    tp = payload.get("transcript_path") or ""
+    entries = _transcript_tail(tp)
+    if not entries:
+        return ""
+    users, assistants, actions = [], [], []
+    for o in entries:
+        msg = o.get("message") or {}
+        if o.get("type") == "user" and not o.get("isMeta"):
+            t = _msg_text(msg.get("content")).strip()
+            if t and not t.startswith(("<system-reminder", "<task-notification", "<command-", "Caveat:")) \
+                    and "tool_result" not in str(msg.get("content"))[:40]:
+                users.append(t)
+        elif o.get("type") == "assistant":
+            c = msg.get("content")
+            t = _msg_text(c).strip()
+            if t:
+                assistants.append(t)
+            for b in (c if isinstance(c, list) else []):
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    inp = b.get("input") or {}
+                    arg = inp.get("file_path") or inp.get("command") or inp.get("url") or inp.get("description") or ""
+                    actions.append(f"{b.get('name')}: {str(arg)[:90]}")
+    role = detect_role(tp) if tp else ""
+    stem = Path(tp).stem if tp else "unknown"
+    lines = [f"# Стан перед ущільненням — {datetime.now().isoformat(timespec='seconds')} "
+             f"(trigger={payload.get('trigger', '?')}, роль={role or 'не визначена'}, сесія={stem[:8]})"]
+    if users:
+        lines.append("## Останні запити власника/системи (старіші → новіші)")
+        lines += [f"- {_redact(u)[:330]}" for u in users[-3:]]
+    if assistants:
+        lines.append("## Остання відповідь/план агента")
+        lines.append(_redact(assistants[-1])[:900])
+    if actions:
+        lines.append("## Останні дії (інструменти)")
+        lines += [f"- {_redact(a)}" for a in actions[-6:]]
+    ROLE_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = ROLE_STATE_DIR / (f"{role}.md" if role else f"_session_{stem}.md")
+    path.write_text("\n".join(lines)[:2800] + "\n", encoding="utf-8")
+    return str(path)
+
+
+def session_context(payload: dict, cap: int = 3000) -> str:
+    """SessionStart: роль + збережений стан + картка каналів + ядро правил, ≤cap символів.
+    Секції додаються за пріоритетом і урізаються цілими; ядро правил не губиться ніколи."""
+    tp = payload.get("transcript_path") or ""
+    source = payload.get("source", "?")
+    role = detect_role(tp) if tp else (os.environ.get("PLUTUS_ROLE", "").strip().lower() if os.environ.get("PLUTUS_ROLE", "").strip().lower() in _CONFIGS else "")
+    head = (f"🧭 Відновлення сесії [{source}]. Роль: «{role}»." if role else
+            f"🧭 Відновлення сесії [{source}]. Роль НЕ визначена — назви її зі своєї персони/першого повідомлення "
+            f"(або `python recall.py --detect-role <transcript> --set-role <роль>`).")
+    reserve = len(CORE_RULES) + len(head) + 4
+    sections = []
+    state_file = ROLE_STATE_DIR / (f"{role}.md" if role else f"_session_{Path(tp).stem}.md")
+    try:
+        st = state_file.read_text(encoding="utf-8").strip()
+        if st:
+            sections.append("На чому зупинилась (PreCompact):\n" + st)
+    except OSError:
+        pass
+    if role:
+        card = restore_card(role, cap=1200)
+        if card:
+            sections.append(card)
+    out, budget = [head], cap - reserve
+    for sec in sections:
+        if len(sec) + 2 <= budget:
+            out.append(sec)
+            budget -= len(sec) + 2
+        elif budget > 300:
+            out.append(sec[:budget - 3].rsplit("\n", 1)[0])   # урізаємо цілим рядком
+            budget = 0
+    out.append(CORE_RULES)
+    return "\n\n".join(out)[:cap]
 
 
 def recall(query: str, file_mode: str = "", config: str = "") -> int:
@@ -370,7 +553,36 @@ def main() -> None:
                     help="з --config <роль>: картка стану (заголовки останніх записів каналів + відкрите в OWNER_INBOX)")
     ap.add_argument("--detect-role", default="", metavar="TRANSCRIPT",
                     help="надрукувати роль сесії за її транскриптом (порожньо, якщо не визначилась)")
+    ap.add_argument("--set-role", default="", metavar="ROLE",
+                    help="з --detect-role <transcript>: запам'ятати роль сесії вручну (ім'я з --config)")
+    ap.add_argument("--session-start", action="store_true",
+                    help="хук SessionStart: JSON зі stdin → JSON additionalContext (роль+стан+картка+ядро правил)")
+    ap.add_argument("--save-state", action="store_true",
+                    help="хук PreCompact: JSON зі stdin → скинути «що в роботі» в .local_secrets/role_state/<роль>.md")
     a = ap.parse_args()
+    if a.session_start or a.save_state:
+        import json
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except ValueError:
+            sys.exit(0)
+        try:
+            if a.save_state:
+                save_state(payload)
+            else:
+                ctx = session_context(payload)
+                if ctx.strip():
+                    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                             "additionalContext": ctx}}, ensure_ascii=False))
+        except Exception as e:  # noqa: BLE001 — хук не має ламати старт сесії
+            print(f"[recall] {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(0)
+    if a.set_role:
+        if a.set_role not in _CONFIGS or not a.detect_role:
+            ap.error(f"--set-role потребує --detect-role <transcript> і роль з: {', '.join(_CONFIGS)}")
+        set_role(a.detect_role, a.set_role)
+        print(a.set_role)
+        sys.exit(0)
     if a.detect_role:
         print(detect_role(a.detect_role))
         sys.exit(0)

@@ -389,6 +389,20 @@
    інакше запис `## [X → Код]` у цих двох каналах НІКОЛИ не будив headless-Код. Продажник — Є в
    `agent_watch.py` (додано 2026-09-17): будиться на `## [X → Продажник]` у `SELLER_CHANNEL.md`,
    як SEO/SMM (headless, лише інлайн-`wake_prompt`, без повної персони).
+2e. **Відновлення ролі після ущільнення/перезапуску (22.10.2026, скарга власника; знахідка Консультанта).**
+   Хуки `~/.claude/settings.json`: `PreCompact` → `hooks/pre-compact.sh` → `recall.py --save-state`
+   (скидає «останні запити / остання відповідь / останні дії» у `.local_secrets/role_state/<роль>.md`, секрети
+   маскуються); `SessionStart` (`startup|resume|compact|clear`) → `hooks/session-start.sh` →
+   `recall.py --session-start` (роль + той стан + картка каналів + ядро правил, ≤3000 симв.). Роль:
+   `PLUTUS_ROLE` (env) → кеш сесії `role_state/<id сесії>.role` → перше повідомлення (`detect_role`);
+   вручну `recall.py --detect-role <transcript> --set-role <роль>`. Ролі `recall.py`: seo, smm, seller,
+   executor, consultant, kodv + **kod, architector, tester**. Рівень користувача: `~/.claude/CLAUDE.md`
+   (ядро правил; рольові сесії мають cwd = домашня тека і репо-`CLAUDE.md` не вантажать). Встановлення —
+   `python deploy\claude_home\install_hooks.py` (запускає ВЛАСНИК: агентові запис у `~/.claude`
+   заблоковано класифікатором). Копії хук-скриптів — `deploy/claude_home/` (резерв: `~/.claude` поза git).
+   **`reference-guard.sh` і `vps-audit-guard.sh` НЕ ВІДНОВЛЕНО й НЕ ВГАДАНО** (оригінали втрачено 21.10; логіку
+   не відтворюю без джерела) — їхню роль частково виконують merge-guard (аудит перед мержем) і правило
+   «VPS-скрипти теж аудит» у CLAUDE.md. Відновлювати лише з архіву/опису, під аудит.
 3. **Власність файлів (проти гонок перезапису):** `STATUS.md`→лише Cowork; `CODE_LOG.md`→лише Код;
    канали→теговані записи, чужі не редагувати; `OWNER_INBOX.md`→усі складають розвилки власнику, Cowork зводить.
 4. **Код тільки через PR + незалежний аудит ПЕРЕД мержем** (CLAUDE.md, гейт `.audit_ok`). SEO/SMM код не пишуть —

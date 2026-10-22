@@ -5,7 +5,7 @@
   1. Читає ЖИВІ дані: опублікований сайт (index-t.json/index-rt.json: наявність і ціна), фід наявності (meta_feed.xml з feed-data), «попит» (demand_featured_auto.json).
   2. Слоти публікації: наступні вівторки й п'ятниці після останнього запланованого рілса (not_before у теці черги) — по `--count` (за замовч. 2 = тиждень).
   3. Тема: за списком reel_themes.json, що НЕ повторювалась у останніх рілсах і має ≥3 придатних товари. Товари: у наявності на сайті І у фіді, є фото, не заборонені (is_forbidden + FEED_EXCLUDED + ключові слова зброї/страшного), без дублю з УСІМА раніше використаними (маніфести в теці + журнал), ціна 80–1500 ₴; пріоритет — «попит» із Search Console, далі помірна ціна; різні вироби (без однакових назв).
-  4. Сцена: ротація 12 несезонних (не та сама підряд; сезонні — лише у своєму вікні за ДАТОЮ ПУБЛІКАЦІЇ; браковані — ніколи).
+  4. Сцена: ротація 6 затверджених несезонних (SCENE_ROTATION; не та сама підряд; сезонні — лише у своєму вікні за ДАТОЮ ПУБЛІКАЦІЇ; браковані — ніколи).
   5. Рендер reel_build (перша карта = лише сцена, 3 товари, картка бренду) + підпис і маніфест reel_batch (ЖИВІ ціни з сайту) → <out>/<name>.{mp4,caption.txt,json} + список «НА_СХВАЛЕННЯ_<дата>.md» (гачки й підписи — ЧЕРНЕТКА за шаблоном: SMM перечитує).
 Публікація = окремий явний крок власника (scp у /opt/plutustoys/reels_queue/) після «ок». Журнал: <out>/_weekly_state.json.
 
@@ -31,10 +31,12 @@ DEFAULT_OUT = r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\reels_queue
 PRICE_MIN, PRICE_MAX = 80, 1500
 ITEMS_PER_REEL = 3
 THEME_COOLDOWN = 3          # скільки останніх рілсів тема не повторюється
-# несезонні сцени у порядку ротації (SMM 21.10.2026: 12 несезонних; halloween/snowflake — лише за сезоном і лише вручну/під тему)
-SCENE_ROTATION = ["sunglasses", "tailwag", "laugh", "bubblegum", "noselick", "wink", "nod", "headshake", "lookaround", "flychase", "dustbook", "icecream"]
-END_SCENE = "scene_sunglasses_RENDER_GREEN.mp4"
-END_SCENE_ALT = "scene_noselick_RENDER_GREEN.mp4"     # коли перша сцена — sunglasses
+# ЗАТВЕРДЖЕНІ сцени для ротації (SMM 22.10.2026, QA кадрами за вердиктом по 14 сценах): ЧОРНИЙ СПИСОК — sunglasses, laugh, bubblegum, dustbook, flychase (дефект джерела: водяний знак/вибиті
+# ключем кадри/зрізи); tailwag — після виправлення хвоста (поки не в ротації); halloween/snowflake — сезонні, лише вручну під тему/дату.
+SCENE_ROTATION = ["noselick", "headshake", "icecream", "nod", "wink", "lookaround"]
+SCENE_BLACKLIST = ("sunglasses", "laugh", "bubblegum", "dustbook", "flychase")
+END_SCENE = "scene_noselick_RENDER_GREEN.mp4"          # кінцева сцена за замовчуванням — чиста (не sunglasses)
+END_SCENE_ALT = "scene_wink_RENDER_GREEN.mp4"          # коли перша сцена — noselick
 # слова, через які товар НЕ береться в рілс (зброя, імітації, страшне; доповнення до forbidden_products)
 BAD_NAME_RE = re.compile(r"пістолет|пистолет|рушниц|автомат(?!ичн)|меч\b|мечі|\bніж\b|ножі|арбалет|\bлук\b|лук зі|\bграната\b|гранатомет|бомб|кинджал|катан|сокир|\bкров|\bчереп(?!ах|аш)|скелет|джейсон|чакі|вбив|монстр-?трак|страш|сигарет|вейп|алкогол|пиво|горілк|зброя|зброї|бластер|нунчак|кастет|топор|\bшабл(?!он)|\bспис\b|стріл[яь]|снайпер|військов|воєнн|\bтанк(?!ер)|зомбі|вампір|дракул|привид|демон(?!стр)|диявол|\bчорт|відьм|\bтруп|могил|кладовищ|смерт|убивц|вбивц|мафі|гангстер|squid|кальмар|перестріл|\bармі|\bгуль\b|18\+", re.I)
 UNIT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(елемент\w*|ел\b|елм|шт\w*|кольор\w*|мл|г\b|см|деталей|деталі|карток|картки|кульок)", re.I)
@@ -181,7 +183,7 @@ def pick_theme(themes, recent, index, feed, used, demand, excluded, forbidden=No
 
 
 def pick_scene(prev_scenes, publish_date, season_ok):
-    """Наступна сцена за ротацією після останньої використаної, не та сама підряд, сезонні сюди не входять (тільки несезонні 12)."""
+    """Наступна сцена за ротацією після останньої використаної, не та сама підряд, сезонні сюди не входять (тільки затверджені несезонні, SCENE_ROTATION)."""
     names = [f"scene_{n}_RENDER_GREEN.mp4" for n in SCENE_ROTATION]
     names = [n for n in names if season_ok(n, publish_date)]
     last = prev_scenes[-1] if prev_scenes else None

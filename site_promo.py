@@ -72,13 +72,15 @@ def _discount_total(items: list, lines: dict) -> int:
     return sum((int(it["price"]) - lines[str(it["toysi_code"])]) * int(it["qty"]) for it in items if str(it["toysi_code"]) in lines)
 
 
-def compute(items: list, costs, code, code_allowed: bool = True) -> dict:
+def compute(items: list, costs, code, code_allowed: bool = True, mixed: bool = False) -> dict:
     """items: [{toysi_code, qty, price}] за ціною каталогу. Повертає
     {"applied": "PLUTUS5"|"TWO10"|None, "lines": {id: нова ціна одиниці}, "discount_total": int,
      "code_status": "none" (код не вводили) | "ok" (код застосовано) | "unknown" (такого коду нема) | "used" (уже використано з цього телефону) |
                     "not_applicable" (код дійсний, але жоден рядок не проходить покриття АБО автоматична −10% більша) | "unavailable" (нема собівартості: знижок немає),
      "costs_available": bool}.
-    code_allowed=False — промокод уже використано з цього телефону (лишається лише автоматична −10%)."""
+    code_allowed=False — промокод уже використано з цього телефону (лишається лише автоматична −10%).
+    mixed=True — кошик ЗМІШАНИЙ (Toysi + RoyalToys → ДВА замовлення, ДВІ витрати SITE_FULFILL_PER_ORDER): автоматична −10% (TWO10) НЕ застосовується (рішення Консультанта 23.10.2026:
+    її умова покриття рахує половину витрати замовлення на позицію, а тут витрат вдвічі більше); повернення — лише з запобіжником внеску кожної частини (поки не збудовано). Промокод PLUTUS5 (кожен рядок покриває ПОВНУ витрату) діє як раніше."""
     res = {"applied": None, "lines": {}, "discount_total": 0, "code_status": "none", "costs_available": costs is not None}
     raw = (code or "").strip().upper()
     code_valid = raw == PROMO_CODE
@@ -91,7 +93,7 @@ def compute(items: list, costs, code, code_allowed: bool = True) -> dict:
     if code_valid and not code_allowed:
         res["code_status"] = "used"
     a = _scheme_lines(items, costs, 5, FULFILL_FULL) if (code_valid and code_allowed) else {}
-    b = _scheme_lines(items, costs, 10, FULFILL_HALF, MIN_PRICE_TWO) if len({str(it["toysi_code"]) for it in items}) >= 2 else {}
+    b = _scheme_lines(items, costs, 10, FULFILL_HALF, MIN_PRICE_TWO) if (len({str(it["toysi_code"]) for it in items}) >= 2 and not mixed) else {}
     da, db = _discount_total(items, a), _discount_total(items, b)
     if da > 0 and da >= db:
         res.update(applied=LABEL_CODE, lines=a, discount_total=da, code_status="ok")

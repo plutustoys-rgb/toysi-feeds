@@ -27,6 +27,7 @@ MONEY-SAFETY:
 Конфіг (env): SITE_API_HOST/PORT, SITE_DIR (де index.json + сторінки), SITE_BASE_URL
 (для result_url/server_url LiqPay). LiqPay-ключі — через liqpay_client (.env), sandbox за замовч.
 """
+import hashlib
 import os
 import re
 import sys
@@ -288,6 +289,60 @@ def is_rt_id(pid) -> bool:
     return str(pid or "").strip().lower().startswith(RT_PREFIX)
 
 
+def is_zb_id(pid) -> bool:
+    return str(pid or "").strip().lower().startswith("zb-")
+
+
+def mixed_enabled() -> bool:
+    """Прийом ЗМІШАНОГО кошика (Toysi + RoyalToys) з поділом на два замовлення (рішення власника 22.10.2026: вікно «кількома посилками» + одна оплата,
+    два замовлення). За замовчуванням ВИМКНЕНО (SITE_MIXED_ORDERS=1 вмикає; зчитується на кожен запит, перезапуск не потрібен лише для тестів)."""
+    return os.environ.get("SITE_MIXED_ORDERS", "0").strip() == "1"
+
+
+def mixed_child_ids(parent: str) -> tuple:
+    """(id замовлення Toysi, id замовлення RT) для змішаного кошика з батьківським номером `parent` (той, що йде в LiqPay і на сторінку подяки).
+    Дочірні id ДЕТЕРМІНОВАНІ від батьківського (без нової колонки в orders): ті самі префікс «PT-ДАТА-ЧАС» + 6 hex від sha256(parent|T / parent|R) —
+    формат збігається з ORDER_ID_RE, тож усе, що розпізнає номер замовлення сайту, працює й для них. Рядка з id `parent` у БД НЕМАЄ."""
+    prefix = parent.rsplit("-", 1)[0]
+    def h(tag):
+        return hashlib.sha256(f"{parent}|{tag}".encode("utf-8")).hexdigest()[:6]
+    return f"{prefix}-{h('T')}", f"{prefix}-{h('R')}"
+
+
+def mixed_children_rows(conn, parent: str) -> list:
+    """Дочірні замовлення змішаного кошика за батьківським номером (лише якщо РІВНО обидва існують; інакше []). Порядок: Toysi, RT."""
+    if not ORDER_ID_RE.fullmatch(str(parent or "")):
+        return []
+    rows = [get_order(conn, f"site_{cid}") for cid in mixed_child_ids(parent)]
+    return rows if all(rows) else []
+
+
+def split_mixed_children(order: dict, total) -> tuple:
+    """Із замовлення (items уже після знижки) робить [дочірнє Toysi, дочірнє RT] з власними сумами. Кидає OrderError, якщо суми не сходяться
+    (fail-closed: краще відмовити, ніж взяти гроші за суму, що не збігається з частинами)."""
+    toysi_items = [i for i in order["items"] if not is_rt_id(i["toysi_code"])]
+    rt_items = [i for i in order["items"] if is_rt_id(i["toysi_code"])]
+    if not toysi_items or not rt_items:
+        raise OrderError("Кошик не змішаний")
+    toysi_id, rt_id = mixed_child_ids(order["order_id"])
+    children = []
+    for cid, its in ((toysi_id, toysi_items), (rt_id, rt_items)):
+        ct = sum(int(i["price"]) * int(i["qty"]) for i in its)
+        child = dict(order)
+        child["order_id"] = cid
+        child["items"] = its
+        disc = sum((int(i.get("list_price", i["price"])) - int(i["price"])) * int(i["qty"]) for i in its)
+        if order.get("promo_code") and disc > 0:
+            child["promo_discount_total"] = disc
+        else:
+            child.pop("promo_code", None)
+            child.pop("promo_discount_total", None)
+        children.append((child, ct))
+    if sum(ct for _, ct in children) != int(total):
+        raise OrderError("Не вдалося поділити замовлення: суми частин не збігаються із загальною")
+    return tuple(children)
+
+
 STOCK_FILE = os.path.join(SITE_DIR, "stock.json")
 STOCK_MAX_AGE = timedelta(minutes=45)      # знімок пишеться кожні 15 хв (stock-snapshot.timer); 3 інтервали без оновлення = знімок застарів → перевірку пропускаємо (fail-open)
 _stock_cache = {"mtime": None, "data": None}
@@ -487,7 +542,7 @@ def build_order(payload: dict) -> tuple:
     pay_raw = (payload.get("payment_method") or "").strip().lower()
     payment_method = "prepaid" if pay_raw == "prepaid" else "cod"
     rt_cnt = sum(1 for i in items if is_rt_id(i["toysi_code"]))
-    if rt_cnt and rt_cnt != len(items):
+    if rt_cnt and rt_cnt != len(items) and not (mixed_enabled() and not any(is_zb_id(i["toysi_code"]) for i in items)):
         site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_MIXED, items)   # облік відхилень (без ПІБ/адреси): рішення про поділ замовлень — за числом
         # змішаний кошик (Toysi + RoyalToys): у них різні постачальники/відправлення, а автоматичного поділу замовлення немає — оплачене замовлення зависло б. Просимо оформити окремо (fail-closed)
         raise OrderError("Товари партнера (RoyalToys) відправляються окремою посилкою: оформіть їх окремим замовленням від інших товарів")
@@ -723,6 +778,15 @@ def paid_purchase_payload(order) -> dict:
     return {"paid": True, "currency": "UAH", "value": value, "items": items}
 
 
+def paid_purchase_payload_group(kids) -> dict:
+    """/api/order/paid для змішаного кошика: paid=True ЛИШЕ коли ОБИДВІ частини оплачені (кожна проходить paid_purchase_payload); сума = сума частин,
+    позиції — обʼєднані (GA4 purchase бачить одну покупку на всю оплату)."""
+    parts = [paid_purchase_payload(k) for k in kids]
+    if not parts or not all(x.get("paid") for x in parts):
+        return {"paid": False}
+    return {"paid": True, "currency": "UAH", "value": sum(x["value"] for x in parts), "items": [it for x in parts for it in x["items"]]}
+
+
 class RateLimiter:
     """Ковзне вікно «N запитів за T секунд на ключ» (у пам'яті процесу; перезапуск скидає — для захисту від добору номерів цього досить). Словник обмежений, старі ключі чистяться."""
 
@@ -853,9 +917,12 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             with get_connection() as conn:
                 order = get_order(conn, f"site_{oid}")
+                kids = [] if order else mixed_children_rows(conn, oid)
         except Exception as e:  # noqa: BLE001
             print(f"[site_order_api] order/paid помилка: {type(e).__name__}", file=sys.stderr)
             return self._json(500, {"error": "внутрішня помилка"}, no_store=True)
+        if kids:
+            return self._json(200, paid_purchase_payload_group(kids), no_store=True)
         return self._json(200, paid_purchase_payload(order), no_store=True)
 
     def _handle_promo_quote(self):
@@ -919,6 +986,15 @@ class Handler(SimpleHTTPRequestHandler):
             print(f"[site_order_api] {self.command} {self.path}: {e}", file=sys.stderr)
             return self._json(500, {"error": "внутрішня помилка"})
 
+        children = None
+        if any(is_rt_id(i["toysi_code"]) for i in order["items"]) and any(not is_rt_id(i["toysi_code"]) for i in order["items"]):
+            if not mixed_enabled() or order["payment_method"] != "prepaid":
+                return self._json(400, {"error": "Змішане замовлення поки недоступне: оформіть товари окремими замовленнями"})   # страховка: build_order уже відсік, сюди не доходить
+            try:
+                children = split_mixed_children(order, total)
+            except OrderError as e:
+                print(f"[site_order_api] split: {e}", file=sys.stderr)
+                return self._json(400, {"error": str(e)})
         try:
             with get_connection() as conn:
                 if order.get("promo_code") == site_promo.LABEL_CODE:
@@ -929,15 +1005,30 @@ class Handler(SimpleHTTPRequestHandler):
                 if order["payment_method"] == "cod":
                     _check_cod_circuit_breaker(conn)   # глобальний гейт — перед per-телефон
                     _check_cod_phone_limit(conn, order["phone"])
-                created = insert_order(conn, order)
+                if children:
+                    # ЗМІШАНИЙ: два замовлення в ОДНІЙ транзакції (або обидва, або жодного); `order` лишається «батьківським» номером для LiqPay/сторінки подяки
+                    created = True
+                    for child, ctotal in children:
+                        if not insert_order(conn, child):
+                            created = False
+                            break
+                        conn.execute("UPDATE orders SET site_charged_total=? WHERE internal_order_id=?", (ctotal, f"site_{child['order_id']}"))
+                        child["public_number"] = assign_public_number(conn, f"site_{child['order_id']}")
+                    if not created:
+                        conn.rollback()
+                    else:
+                        order["public_number"] = children[0][0].get("public_number") or children[1][0].get("public_number")
+                else:
+                    created = insert_order(conn, order)
+                    if created:
+                        # фіксуємо виставлену суму для звірки з колбеком (стійко до дрейфу цін у каталозі)
+                        conn.execute(
+                            "UPDATE orders SET site_charged_total=? WHERE internal_order_id=?",
+                            (total, f"site_{order['order_id']}"),
+                        )
+                        order["public_number"] = assign_public_number(conn, f"site_{order['order_id']}")      # короткий номер для покупця (None — лишається довгий)
                 if created:
-                    # фіксуємо виставлену суму для звірки з колбеком (стійко до дрейфу цін у каталозі)
-                    conn.execute(
-                        "UPDATE orders SET site_charged_total=? WHERE internal_order_id=?",
-                        (total, f"site_{order['order_id']}"),
-                    )
-                    order["public_number"] = assign_public_number(conn, f"site_{order['order_id']}")      # короткий номер для покупця (None — лишається довгий)
-                conn.commit()
+                    conn.commit()
         except OrderError as e:
             return self._json(400, {"error": str(e)})
         except Exception as e:
@@ -952,6 +1043,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "payment_method": order["payment_method"]}
         if order.get("public_number"):
             resp["public_number"] = order["public_number"]
+        if children:
+            resp["parcels"] = [{"order_id": c["order_id"], "public_number": c.get("public_number"), "kind": ("rt" if is_rt_id(c["items"][0]["toysi_code"]) else "toysi"),
+                                "total": ct} for c, ct in children]
         if order["payment_method"] == "cod":
             # Накладений платіж — онлайн-оплата не потрібна; замовлення прийнято одразу.
             resp["liqpay"] = None
@@ -964,7 +1058,7 @@ class Handler(SimpleHTTPRequestHandler):
             _notify(f"💳 LiqPay: чекаут для site_{order['order_id']} НЕ побудовано: {_mp}. Виправ LIQPAY_* у .env на VPS і перезапусти site-order-api.")
             _notify_new_order(order, total, note="ОЧІКУЄ ОПЛАТУ, чекаут LiqPay недоступний (розбіжність режиму/ключів): звʼяжіться з покупцем")   # єдиний канал, що доходить у Telegram за режимом «лише замовлення»
         if liqpay_client.is_configured() and not _mp:
-            desc = f"Замовлення {order.get('public_number') or order['order_id']} на PlutusToys"
+            desc = f"Замовлення {order.get('public_number') or order['order_id']} на PlutusToys" + (" (2 посилки)" if children else "")
             ck = liqpay_client.build_checkout(
                 order_id=order["order_id"], amount=total, description=desc,
                 result_url=thanks_url(order["order_id"], order.get("public_number")),
@@ -977,6 +1071,33 @@ class Handler(SimpleHTTPRequestHandler):
             resp["message"] = ("Замовлення прийнято. Онлайн-оплату (LiqPay) ще не підключено — "
                                "менеджер звʼяжеться для підтвердження.")
         return self._json(200, resp)
+
+    def _confirm_mixed_group(self, conn, res, kids):
+        """Колбек LiqPay для ЗМІШАНОГО кошика: один платіж за обидві частини. Сума колбека має дорівнювати СУМІ зафіксованих сум обох дочірніх
+        (fail-closed, як і для звичайного). Обидва підтверджуються разом; кожен далі йде СВОЇМ ланцюжком (Toysi / RT)."""
+        expected = 0
+        for k in kids:
+            e = k.get("site_charged_total")
+            expected += recompute_total(k["items"]) if e is None else e
+        amount = res.get("amount")
+        if amount is not None and abs(float(amount) - float(expected)) > 0.01:
+            return self._text(400, f"amount mismatch: got {amount}, expected {expected}")
+        is_test = res["status"] == "sandbox"
+        fresh = []
+        for k in kids:
+            internal = f"site_{k['order_id']}"
+            if mark_payment_confirmed(conn, internal):
+                fresh.append(k)
+            set_liqpay_payment_id(conn, internal, (res.get("data") or {}).get("payment_id"))
+            if is_test:
+                conn.execute("UPDATE orders SET status = 'sandbox_test' WHERE internal_order_id = ? AND forwarded_to_toysi_at IS NULL", (internal,))
+        conn.commit()
+        for k in fresh:
+            part = "RT" if any(is_rt_id(i["toysi_code"]) for i in k["items"]) else "Toysi"
+            ktotal = k.get("site_charged_total")
+            ktotal = recompute_total(k["items"]) if ktotal is None else ktotal
+            _notify_new_order(k, ktotal, test=is_test, note=f"ЗМІШАНЕ замовлення: посилка {part} (оплата одна, {expected} грн за обидві)" + ((" · " + _test_order_preview(k, ktotal)) if is_test else ""))
+        return self._text(200, "ok")
 
     def _handle_callback(self):
         form = self._read_form()
@@ -1000,6 +1121,9 @@ class Handler(SimpleHTTPRequestHandler):
             with get_connection() as conn:
                 order = get_order(conn, internal)
                 if not order:
+                    kids = mixed_children_rows(conn, res["order_id"])
+                    if kids:
+                        return self._confirm_mixed_group(conn, res, kids)
                     return self._text(404, "order not found")
                 # звіряємо із зафіксованою при оформленні сумою (стійко до дрейфу цін);
                 # фолбек на перерахунок для давніх замовлень без site_charged_total

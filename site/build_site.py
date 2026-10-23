@@ -186,6 +186,12 @@ def is_russian_language_item(name):
 
 
 
+def site_product_code(pid):
+    """Власний код товару для покупця: Toysi «176003» -> «PT-176003», RoyalToys «rt-X» -> «PT-RX» (літера R відрізняє постачальника). Лише показ — id (ключ кошика/замовлень/фідів) не змінюється."""
+    pid = str(pid)
+    return "PT-R" + pid[3:] if pid.startswith("rt-") else "PT-" + pid
+
+
 def esc(s):
     return html.escape(str(s or ""))
 
@@ -2671,6 +2677,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
       f'<div class="cat">{esc(p["category"])}</div>'
       + (f'<a class="brandlink" href="category-{_bslug_p}.html">{esc(BRAND_CATEGORIES[_bslug_p]["link_text"])} →</a>' if _bslug_p in BRAND_CATEGORIES else '') +
             f'<h1 class="prod">{esc(p["name"])}</h1>'
+      f'<div class="sku">Код товару: {esc(site_product_code(p["id"]))}</div>'
       + (_shadow_note if _shadow_twin else (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +
       f'<div class="avail {oos}">{avail}</div></div>'
       + (sale_until_html(p["id"]) if p.get("old_price") else "") + oos_note + buy_info) +

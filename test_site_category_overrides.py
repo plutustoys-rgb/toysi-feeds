@@ -48,6 +48,10 @@ for i in range(1, 31):
 for i in range(31, 51):
     catalog[str(i)] = item(i, f"Розмальовка {i}", "Розмальовки")
 catalog["60"] = item(60, "Чашка «Україна»", "Металеві моделі")      # чужий товар
+catalog["80"] = item(80, "Лише без залишку", "Тільки OOS")
+catalog["80"]["stock"] = 0                                          # категорія лише з товаром без залишку: нової сторінки перенесення не створює
+for i in (81, 82):
+    catalog[str(i)] = item(i, f"Арбалет {i}", "Арбалети і луки")   # NOINDEX_CATEGORIES[...] = True: картки noindex і поза sitemap
 catalog["61"] = item(61, "Шахи магнітні", "Металеві моделі")        # чужий товар
 for i in range(70, 76):
     catalog[str(i)] = item(i, f"Азартна гра {i}", "Азартні")          # прихована категорія (NOINDEX_CATEGORIES)
@@ -71,6 +75,10 @@ def build_with(overrides, label):
     return out, err.getvalue()
 
 
+def sm_all(out):
+    return "".join(p.read_text(encoding="utf-8") for p in out.glob("sitemap-*.xml"))
+
+
 def cat_file(out, slug_part):
     c = [p for p in out.glob("category-*.html") if slug_part in p.name]
     return c[0].read_text(encoding="utf-8") if c else ""
@@ -80,20 +88,24 @@ base, _ = build_with(None, "none")
 idx0 = {x["id"]: x for x in json.loads((base / "index.json").read_text(encoding="utf-8"))}
 chk("без файла перекриттів: чужі товари лишаються в «Металеві моделі» (c)", idx0["60"]["c"] == "Металеві моделі" and idx0["61"]["c"] == "Металеві моделі")
 
-ov = {"_призначення": "службове", "60": "Розмальовки", "61": "Розмальовки", "abc": "Розмальовки", "62": "Розмальовки", "5": "Нема такої категорії", "6": "Азартні", "7": 123, "8": "Металеві моделі", "rt-9": "Розмальовки"}
+ov = {"_призначення": "службове", "9": "Тільки OOS", "81": "Розмальовки", "60": "Розмальовки", "61": "Розмальовки", "abc": "Розмальовки", "62": "Розмальовки", "5": "Нема такої категорії", "6": "Азартні", "7": 123, "8": "Металеві моделі", "rt-9": "Розмальовки"}
 out, err = build_with(ov, "main")
 idx = {x["id"]: x for x in json.loads((out / "index.json").read_text(encoding="utf-8"))}
 chk("перенесені товари 60 і 61 тепер у категорії «Розмальовки» (index.json c)", idx["60"]["c"] == "Розмальовки" and idx["61"]["c"] == "Розмальовки")
 roz = cat_file(out, "rozmalovky")
 met = cat_file(out, "metalevi-modeli")
 chk("сторінка «Розмальовки» містить перенесені товари, «Металеві моделі» їх уже не містить", "product-60.html" in roz and "product-61.html" in roz and "product-60.html" not in met and "product-61.html" not in met)
-chk("«Металеві моделі» лишає свої 30 товарів (рахунок за index.json; сторінка категорії пагінується)", sum(1 for x in idx.values() if x["c"] == "Металеві моделі") == 30 and sum(1 for x in idx.values() if x["c"] == "Розмальовки") == 22)
+chk("«Металеві моделі» лишає свої 30 товарів (рахунок за index.json; сторінка категорії пагінується)", sum(1 for x in idx.values() if x["c"] == "Металеві моделі") == 30 and sum(1 for x in idx.values() if x["c"] == "Розмальовки") == 23)
 p60 = (out / "product-60.html").read_text(encoding="utf-8")
 chk("сторінка товару 60: категорія «Розмальовки» (в блоці категорії й у крихтах), «Металеві моделі» не згадується", 'class="cat">Розмальовки<' in p60 and "Металеві моделі" not in p60.split("<footer")[0])
 chk("прихована ціль («Азартні») відкинута: товар 6 лишився у «Металеві моделі»", idx["6"]["c"] == "Металеві моделі")
 chk("цілі нема серед категорій сайту («Нема такої категорії»): товар 5 лишився", idx["5"]["c"] == "Металеві моделі")
 chk("id не з цифр («abc», «rt-9»), значення не рядок (7), id без товару (62), службовий ключ: нічого не ламають", "62" not in idx and idx["7"]["c"] == "Металеві моделі")
 chk("перенесення в ту саму категорію (8 → «Металеві моделі») не змінює нічого", idx["8"]["c"] == "Металеві моделі")
+chk("ціль лише з товарами без залишку («Тільки OOS») відкинута: нової сторінки категорії не з'явилось, товар 9 лишився", idx["9"]["c"] == "Металеві моделі" and not list(out.glob("category-*oos*.html")) and not list(out.glob("category-tilky*.html")))
+chk("перенесення З noindex-категорії у видиму (81: «Арбалети і луки» → «Розмальовки»): картка видима й індексована (без noindex, є в sitemap)",
+    idx.get("81", {}).get("c") == "Розмальовки" and 'content="noindex' not in (out / "product-81.html").read_text(encoding="utf-8").split("</head>")[0] and sm_all(out).count("/product-81.html") == 1)
+chk("товар 82 лишився в «Арбалети і луки»: noindex і поза sitemap, як і раніше", 'content="noindex' in (out / "product-82.html").read_text(encoding="utf-8").split("</head>")[0] and sm_all(out).count("/product-82.html") == 0)
 chk("попередження в stderr: відкинуті записи названо, збірка не впала", "category_overrides.json" in err and "відкинуто" in err)
 sm = "".join(p.read_text(encoding="utf-8") for p in out.glob("sitemap-*.xml"))
 chk("sitemap і індекс узгоджені: товар 60 є в sitemap рівно раз", sm.count("/product-60.html") == 1)

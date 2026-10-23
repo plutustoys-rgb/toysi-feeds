@@ -9,7 +9,7 @@ from orders_db import (
     mark_ukrposhta_shipment, update_delivery_status,
     mark_stock_alert_sent, clear_stock_alert, mark_rozetka_delivery_ttn,
     init_db, mark_rz_marking_sent, bump_rz_marking_attempt, get_rz_markings_to_retry,
-    mark_checkbox_ettn_registered, claim_receipt, release_receipt_claim, get_receipt_state,
+    mark_checkbox_ettn_registered, claim_receipt, release_receipt_claim, get_receipt_state, get_group_children,
     clean_customer_comment,
 )
 from parser import fetch_toysi_catalog
@@ -875,10 +875,31 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
         except Exception as ae:  # noqa: BLE001
             print(f"[order_router] алерт про чек не надіслано: {type(ae).__name__}", file=sys.stderr)
 
-    registered_at, claim_at = get_receipt_state(conn, oid)        # свіже читання БД
+    # ЗМІШАНИЙ кошик (два замовлення — Toysi і RT — під ОДНУ оплату LiqPay; рішення власника 23.10.2026: «покупцю чек один»): ОДИН фіскальний чек на всю оплату з позиціями ОБОХ частин.
+    # Стан і claim чека живуть на ПЕРШІЙ частині групи (rid_oid), хто б із двох замовлень не дійшов сюди першим: це гарантує рівно один чек (атомарний claim на одному рядку).
+    group = None
+    rid_oid = oid
+    gid = None if is_eva else order.get("site_group_id")
+    if gid:
+        kids = get_group_children(conn, gid)
+        if len(kids) != 2 or not all(k.get("payment_confirmed") for k in kids):
+            print(f"[order_router] Чек змішаної оплати НЕ видано для {oid}: група {gid} неповна або не всі частини оплачені (частин {len(kids)})", file=sys.stderr)
+            _alert("group", f"🔴 Чек змішаного замовлення {_receipt_ref(order)}: група {gid} неповна або не всі її частини оплачені (знайдено частин: {len(kids)}) — чек НЕ видано (money-safety), замовлення не передається. "
+                            "Розбери вручну (mixed_order_lookup.py).")
+            return False
+        group = kids
+        rid_oid = kids[0]["internal_order_id"]
+
+    registered_at, claim_at = get_receipt_state(conn, rid_oid)    # свіже читання БД
     ref = _receipt_ref(order)
     if registered_at:
         order["checkbox_ettn_registered_at"] = registered_at
+        if rid_oid != oid:                                         # друга частина групи: чек уже виданий на всю оплату — копіюємо прапорець і id чека на цей рядок
+            row = conn.execute("SELECT checkbox_receipt_id FROM orders WHERE internal_order_id = ?", (rid_oid,)).fetchone()
+            _own_reg, _ = get_receipt_state(conn, oid)
+            if not _own_reg:
+                mark_checkbox_ettn_registered(conn, oid, (row[0] if row else None))
+                conn.commit()
         return True
     if claim_at:                                                    # чек уже виписує інший процес, або результат невідомий
         _alert("claim", f"🔴 Чек на онлайн-оплату {ref}: claim виписування взято {claim_at}, але прапорця «чек видано» нема. Або чек виписує інший процес зараз, або результат невідомий "
@@ -889,7 +910,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
     try:
         from checkbox_client import create_receipt
         from order_status_tracker import _receipt_goods_from_order
-        goods = _receipt_goods_from_order(order)
+        goods = [g for k in (group or [order]) for g in _receipt_goods_from_order(k)]
         total = round(sum(float(g["price"]) * g.get("qty", 1) for g in goods), 2)
         if is_eva:
             if total <= 0:
@@ -897,24 +918,28 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
             footer = f"EVA замовлення {order.get('order_id')}"
         else:
             charged = order.get("site_charged_total")
+            if group:
+                _parts = [k.get("site_charged_total") for k in group]
+                charged = None if any(x is None for x in _parts) else sum(float(x) for x in _parts)      # сума ОДНОЇ оплати = сума зафіксованих сум обох частин
             if charged is None:
                 raise ValueError("немає зафіксованої при оформленні суми (site_charged_total): чек НЕ видано (money-safety)")
             if abs(total - float(charged)) > 0.01:
                 raise ValueError(f"сума позицій {total} ≠ зафіксована при оформленні {charged}: чек НЕ видано (money-safety), розберіть вручну")
-            pid = (order.get("liqpay_payment_id") or "").strip()
+            _main = group[0] if group else order                 # для групи — перша частина: її номер бачить покупець (сторінка подяки/бот)
+            pid = (_main.get("liqpay_payment_id") or "").strip()
             # у чеку покупець бачить ТОЙ САМИЙ номер, що на сторінці подяки й у боті — короткий PT-NNNNNN (власник 21.10.2026); старі замовлення без нього — довгий. Машинний ключ чека (order_id=oid) лишається довгим.
-            footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {order.get('public_number') or order.get('order_id')}"
+            footer = (f"LiqPay payment_id {pid}; " if pid else "") + f"замовлення {_main.get('public_number') or _main.get('order_id')}"
     except Exception as e:  # noqa: BLE001 — до claim: чек точно не створювався
         print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
         _alert("prep", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {_receipt_ref(order)}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
                        "Наступний цикл (~15 хв) повторить; якщо повторюється, розберіть суму/дані замовлення.")
         return False
 
-    if not claim_receipt(conn, oid):
+    if not claim_receipt(conn, rid_oid):
         return False                                                # інший процес виграв claim між читанням і UPDATE
     conn.commit()                                                   # claim має бути видимий іншим процесам ДО виклику Checkbox
     try:
-        result = create_receipt(goods=goods, payment_type="CASHLESS", total_amount=total, order_id=oid,
+        result = create_receipt(goods=goods, payment_type="CASHLESS", total_amount=total, order_id=rid_oid,
                                 customer_phone=order.get("phone"), footer=footer, customer_email=order.get("email"),
                                 header=(None if is_eva else SITE_RECEIPT_HEADER))
     except Exception as e:  # noqa: BLE001
@@ -924,7 +949,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
                               "фіскального чека): звір у кабінеті Checkbox (шукай за " + _receipt_search_hint(order) + "); якщо чек є, проставити checkbox_ettn_registered_at, якщо нема, зняти receipt_claim_at. "
                               "Замовлення в Toysi не передається.")
         else:
-            release_receipt_claim(conn, oid)
+            release_receipt_claim(conn, rid_oid)
             conn.commit()
             _alert("fail", f"🔴 Чек Checkbox на онлайн-оплату НЕ видано для {ref}: {str(e)[:300]}. Оплату отримано, але фіскального чека нема, тому замовлення НЕ передається в Toysi. "
                            "Наступний цикл (~15 хв) повторить; якщо повторюється, перевір зміну/ключ Checkbox; ручний чек у кабінеті Checkbox, далі позначити checkbox_ettn_registered_at.")
@@ -933,7 +958,9 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
     receipt_id = result.get("id") if isinstance(result, dict) else None
     for attempt in range(3):                                        # чек ВЖЕ видано: прапорець мусить записатися (ретрай), інакше наступний цикл не знатиме про чек
         try:
-            mark_checkbox_ettn_registered(conn, oid, receipt_id)
+            mark_checkbox_ettn_registered(conn, rid_oid, receipt_id)
+            if rid_oid != oid:
+                mark_checkbox_ettn_registered(conn, oid, receipt_id)        # чек на всю групу: id чека й прапорець — на обох частинах
             conn.commit()
             break
         except Exception as me:  # noqa: BLE001

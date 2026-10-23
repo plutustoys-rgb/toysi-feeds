@@ -138,7 +138,7 @@ STATUS[P] = {"status": "reversed", "amount": 100.0, "refund_amount": 100.0, "ord
 res = run()
 chk("група reversed: чеків повернення НЕ створено (post не викликався), 1 запит до LiqPay за батьківським id, human=1", posted == [] and asked == [P] and res["human"] == 1 and res["created"] == 0)
 chk("група reversed: ОДИН алерт refund_group:<батьківський> з обома частинами, номерами й діями людини", len(alerts) == 1 and alerts[0][0] == f"refund_group:{P}"
-    and K_T in alerts[0][1] and K_R in alerts[0][1] and "PT-111111" in alerts[0][1] and "PT-222222" in alerts[0][1] and "RETURN" in alerts[0][1])
+    and K_T in alerts[0][1] and K_R in alerts[0][1] and "PT-111111" in alerts[0][1] and "PT-222222" in alerts[0][1] and "ОДИН" in alerts[0][1] and "Checkbox" in alerts[0][1])
 chk("група reversed: обидві частини позначено перевіреними (не опитуються щогодини щоразу)", checked(K_T) and checked(K_R))
 # часткове повернення групи — теж алерт людині, не чек
 uncheck(K_T, K_R)

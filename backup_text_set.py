@@ -335,7 +335,7 @@ def main() -> int:
     ap.add_argument("--claude-home", default=str(HOME / ".claude"))
     ap.add_argument("--repo-local", default=str(DEFAULT_REPO))
     ap.add_argument("--dest", default=str(DEFAULT_DEST))
-    ap.add_argument("--skills-dir", action="append", default=None, help="тека skills (можна кілька); за замовчуванням — автопошук у %APPDATA%/Claude")
+    ap.add_argument("--skills-dir", action="append", default=None, help="тека skills (можна кілька); за замовчуванням — автопошук у %%APPDATA%%/Claude")      # %% — argparse форматує help через %, одинарний % валив ВЕСЬ запуск (23.10: нічний бекап впав кодом 1)
     a = ap.parse_args()
     skills = [Path(x) for x in a.skills_dir] if a.skills_dir else discover_skills_dirs()
     return backup(Path(a.cowork), Path(a.claude_home), Path(a.repo_local), Path(a.dest), a.dry_run, not a.no_push, skills)

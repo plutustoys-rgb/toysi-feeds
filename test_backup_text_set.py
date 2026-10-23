@@ -231,4 +231,21 @@ else:
     bk.os.environ["APPDATA"] = old_appdata
 
 
+# --- CLI: сам розбір аргументів і запуск main() (нічна задача викликає саме його; PR #973 одного разу зламав його знаком % у help — 23.10 нічний бекап впав)
+import subprocess as _sp
+_here = Path(bk.__file__).resolve().parent
+_r = _sp.run([sys.executable, "-X", "utf8", str(_here / "backup_text_set.py"), "--help"], capture_output=True, text=True, encoding="utf-8", timeout=60)
+chk("CLI: --help працює (exit 0, без «badly formed help string»); опис --skills-dir згадує %APPDATA%", _r.returncode == 0 and "badly formed" not in (_r.stderr or "") and "APPDATA" in (_r.stdout or ""))
+_cli = tmp / "cli_case"
+for _d in ("c", "h", "r", "sk"):
+    (_cli / _d).mkdir(parents=True, exist_ok=True)
+(_cli / "c" / "A.md").write_text("a", encoding="utf-8")
+(_cli / "h" / "settings.json").write_text("{}", encoding="utf-8")
+(_cli / "r" / ".vps_audit_ok").write_text("a" * 64 + "  _vps_x.sh\n", encoding="utf-8")
+(_cli / "sk" / "S").mkdir(exist_ok=True)
+(_cli / "sk" / "S" / "SKILL.md").write_text("# s\n", encoding="utf-8")
+_r = _sp.run([sys.executable, "-X", "utf8", str(_here / "backup_text_set.py"), "--dry-run", "--no-push", "--cowork", str(_cli / "c"), "--claude-home", str(_cli / "h"),
+              "--repo-local", str(_cli / "r"), "--dest", str(_cli / "d"), "--skills-dir", str(_cli / "sk")], capture_output=True, text=True, encoding="utf-8", timeout=120)
+chk("CLI: повний запуск `--dry-run` з усіма аргументами (як нічна задача) → exit 0 і нічого не записано в dest", _r.returncode == 0 and not (_cli / "d").exists())
+
 sys.exit(1 if F else 0)

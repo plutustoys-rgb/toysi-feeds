@@ -130,6 +130,9 @@ chk("site_charged_total частин: Toysi=620, RT=400, сума = total; об�
 chk("parcels: два елементи (toysi, rt) з сумами, у відповіді є liqpay для БАТЬКІВСЬКОГО id і повна сума",
     [p["kind"] for p in j["parcels"]] == ["toysi", "rt"] and [p["total"] for p in j["parcels"]] == [TOYSI_SUM, RT_SUM]
     and j["liqpay"]["action_url"] == "https://liqpay.test")
+with orders_db.get_connection() as c:
+    grp = c.execute("select internal_order_id, site_group_id from orders where platform='site' and site_group_id is not null").fetchall()
+chk("створення змішаного прописує site_group_id = БАТЬКІВСЬКИЙ номер в обох дочірніх", {g[0] for g in grp} == {f"site_{kid_t}", f"site_{kid_r}"} and all(g[1] == PARENT for g in grp))
 chk("публічні номери призначені дочірнім (PT-NNNNNN)", all(x[5] and orders_db.PUBLIC_NUMBER_RE.fullmatch(x[5]) for x in r) and j.get("public_number") == by[f"site_{kid_t}"][5])
 
 # --- paid до колбека

@@ -103,8 +103,32 @@ def check_cards(index: list, today: date, fetcher=fetch, n: int = SAMPLE_N) -> l
 
 NEUTRAL_URL = "https://www.google.com/generate_204"
 
+# ЗОВНІШНЯ перевірка портів VPS (23.10.2026, лист HOSTiQ про PHP + зауваження Консультанта «закрито — це стан, а не гарантія»): уся безпека панелі Webuzo (PHP 7.4)
+# і MySQL тримається на одному nft-правилі extblock (`@reboot nft -f /etc/extblock.nft`). Цей запуск — з ДЕСКТОПА власника, тобто ЗЗОВНІ VPS (з самого VPS перевірка нічого б не сказала).
+# Очікується «закрито» (DROP → таймаут, або відмова); УСПІШНЕ підключення = порушення. Порти: панель Webuzo 2002–2005, Apache-панель 8443, MySQL 3306/33060.
+EXT_CLOSED_PORTS = {2002: "панель Webuzo", 2003: "панель Webuzo (HTTPS)", 2004: "панель Webuzo", 2005: "панель Webuzo (HTTPS)", 8443: "Apache-панель", 3306: "MySQL", 33060: "MySQL X"}
+PORT_TIMEOUT = 4.0
 
-def run_checks(today: date, fetcher=fetch, certfn=cert_days, retry_sleep: float = 5.0) -> tuple:
+
+def port_open(host: str, port: int, timeout: float = PORT_TIMEOUT) -> bool:
+    """True лише якщо TCP-підключення УСПІШНЕ. Таймаут/відмова/збій DNS = «не відкрито» (для нашої мети це і є «закрито»)."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (OSError, ValueError):      # ValueError (UnicodeError при некоректному імені хоста) — теж «не відкрито», а не падіння запуску
+        return False
+
+
+def check_ext_ports(host: str, portfn=port_open) -> list:
+    """Порушення: порт із EXT_CLOSED_PORTS відкритий ЗЗОВНІ. Паралельно (7 портів × таймаут не мають розтягувати запуск)."""
+    from concurrent.futures import ThreadPoolExecutor
+    ports = sorted(EXT_CLOSED_PORTS)
+    with ThreadPoolExecutor(max_workers=len(ports)) as ex:
+        res = list(ex.map(lambda pt: portfn(host, pt), ports))
+    return [f"порт {pt} ({EXT_CLOSED_PORTS[pt]}) ВІДКРИТИЙ зовні — nft extblock не діє (перевір /etc/extblock.nft, `nft list ruleset`, cron @reboot)" for pt, o in zip(ports, res) if o]
+
+
+def run_checks(today: date, fetcher=fetch, certfn=cert_days, retry_sleep: float = 5.0, portfn=None) -> tuple:
     """(рядок для CSV, список порушень). Чиста щодо мережі (fetcher/certfn підміняються в тестах). Невдалий (код 0 або 5xx) запит повторюється раз; якщо головна й index.json мовчать (код 0) І нейтральний хост теж — це немає мережі на десктопі, порушень не фіксуємо."""
     raw_fetcher = fetcher
 
@@ -138,6 +162,8 @@ def run_checks(today: date, fetcher=fetch, certfn=cert_days, retry_sleep: float 
     if info.get("/", (None,))[0] == 0 and code == 0 and raw_fetcher(NEUTRAL_URL, 15)[0] == 0:
         row = {"at": datetime.now().strftime("%Y-%m-%d %H:%M"), "home": 0, "home_s": "", "cert_days": "", "index_n": 0, "problems": 0, "detail": "немає мережі на десктопі (нейтральний хост теж не відповідає): перевірку пропущено"}
         return row, []
+    if portfn is not None:
+        problems += check_ext_ports(HOST, portfn)
     days = certfn(HOST)
     if days is None:
         problems.append("сертифікат: не вдалось прочитати")
@@ -191,7 +217,7 @@ def post_to_channel(problems: list, now: datetime, channel: Path | None = None) 
 
 def main() -> int:
     now = datetime.now()
-    row, problems = run_checks(now.date())
+    row, problems = run_checks(now.date(), portfn=port_open)
     try:
         write_row(row)
     except OSError as e:

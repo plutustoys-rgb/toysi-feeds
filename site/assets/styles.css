@@ -95,7 +95,10 @@ h1.page{font-size:18px;font-weight:700;margin:4px 16px 12px}
 .cat{font-size:13px;color:var(--muted);margin-bottom:6px}
 h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-weight:700;
   display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.sku{font-size:13px;color:var(--muted);margin:-6px 0 8px}
+.sku{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;font-size:13px;color:var(--muted);margin:-6px 0 8px}   /* код товару під назвою (варіант A, власник 23.10) */
+.sku-code{color:var(--text);font-weight:600;letter-spacing:.02em}
+.sku-copy{appearance:none;background:none;border:0;font:inherit;color:var(--accent);cursor:pointer;padding:8px 6px;margin:-8px 0;min-height:32px;border-radius:6px}   /* зона дотику більша за видимий текст, висоту рядка не збільшує */
+.sku-copy:hover{color:var(--accent-hover)} .sku-copy.ok{color:var(--success)} .sku-copy:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .price-row{display:flex;align-items:baseline;gap:10px;margin:4px 0 10px}
 .price{font-size:clamp(26px,6vw,32px);font-weight:800}
 .avail{display:inline-flex;align-items:center;gap:6px;font-size:14px;color:var(--success);font-weight:600}

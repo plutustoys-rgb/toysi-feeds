@@ -2677,7 +2677,8 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
       f'<div class="cat">{esc(p["category"])}</div>'
       + (f'<a class="brandlink" href="category-{_bslug_p}.html">{esc(BRAND_CATEGORIES[_bslug_p]["link_text"])} →</a>' if _bslug_p in BRAND_CATEGORIES else '') +
             f'<h1 class="prod">{esc(p["name"])}</h1>'
-      f'<div class="sku">Код товару: {esc(site_product_code(p["id"]))}</div>'
+      f'<div class="sku">Код товару: <b class="sku-code">{esc(site_product_code(p["id"]))}</b>'
+      f' <button type="button" class="sku-copy" data-copy="{esc(site_product_code(p["id"]))}" aria-live="polite" aria-label="Скопіювати код товару">Копіювати</button></div>'
       + (_shadow_note if _shadow_twin else (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +
       f'<div class="avail {oos}">{avail}</div></div>'
       + (sale_until_html(p["id"]) if p.get("old_price") else "") + oos_note + buy_info) +

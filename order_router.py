@@ -859,6 +859,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
     до 70-МБ фетчу каталогу, коли паралельний процес уже видав чек); (2) АТОМАРНИЙ claim (orders.receipt_claim_at) перед викликом Checkbox: другий процес отримує False; (3) claim знімається ЛИШЕ
     коли відомо, що чек НЕ створено (відмова до POST або HTTP 4xx); при невідомому результаті (таймаут/обрив/5xx/нечитабельна відповідь — `maybe_created`) claim ЛИШАЄТЬСЯ й іде алерт
     «звір у кабінеті Checkbox»: другого чека автоматично не буде; (4) збій запису прапорця ПІСЛЯ успішного чека не губить чек: ретрай + алерт, замовлення продовжує шлях (чек є).
+    ЗМІШАНИЙ кошик (два замовлення з однаковим site_group_id — Toysi і RT — під одну оплату): ОДИН чек на всю оплату з позиціями обох частин; claim і прапорець — на ПЕРШІЙ частині групи, id чека й прапорець копіюються на другу.
     Sandbox LiqPay: реальний фіскальний чек на тестовий платіж не видається (SITE_RECEIPT_IN_SANDBOX=1 вмикає свідомо)."""
     if test_mode or order.get("platform") not in (("site", "eva") if include_eva else ("site",)) or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
         return True        # include_eva=True ЛИШЕ з конвеєра RT (rt_order_runner): звичайні EVA-замовлення з Toysi, як і раніше, отримують чек від трекера ПІСЛЯ форварду (аудит #938 B1)
@@ -879,6 +880,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
     # Стан і claim чека живуть на ПЕРШІЙ частині групи (rid_oid), хто б із двох замовлень не дійшов сюди першим: це гарантує рівно один чек (атомарний claim на одному рядку).
     group = None
     rid_oid = oid
+    _group_note = ""
     gid = None if is_eva else order.get("site_group_id")
     if gid:
         kids = get_group_children(conn, gid)
@@ -889,9 +891,12 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
             return False
         group = kids
         rid_oid = kids[0]["internal_order_id"]
+        _gsum = sum(float(k.get("site_charged_total") or 0) for k in kids)
+        _group_note = (f" [ЗМІШАНЕ замовлення: чек на ВСЮ оплату {_gsum:g} грн; claim і прапорець чека — на рядку {rid_oid} (№ для клієнта {kids[0].get('public_number') or '—'}); "
+                       f"LiqPay payment_id {(kids[0].get('liqpay_payment_id') or '—')}]")
 
     registered_at, claim_at = get_receipt_state(conn, rid_oid)    # свіже читання БД
-    ref = _receipt_ref(order)
+    ref = _receipt_ref(order) + _group_note
     if registered_at:
         order["checkbox_ettn_registered_at"] = registered_at
         if rid_oid != oid:                                         # друга частина групи: чек уже виданий на всю оплату — копіюємо прапорець і id чека на цей рядок
@@ -903,8 +908,8 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
         return True
     if claim_at:                                                    # чек уже виписує інший процес, або результат невідомий
         _alert("claim", f"🔴 Чек на онлайн-оплату {ref}: claim виписування взято {claim_at}, але прапорця «чек видано» нема. Або чек виписує інший процес зараз, або результат невідомий "
-                        "(таймаут/обрив). Другий чек автоматично НЕ видається. Звір у кабінеті Checkbox, чи є чек (шукай за " + _receipt_search_hint(order) + "); якщо є, проставити checkbox_ettn_registered_at, "
-                        "якщо нема, зняти receipt_claim_at. Замовлення в Toysi не передається.")
+                        "(таймаут/обрив). Другий чек автоматично НЕ видається. Звір у кабінеті Checkbox, чи є чек (шукай за " + _receipt_search_hint(group[0] if group else order) + "); якщо є, проставити checkbox_ettn_registered_at, "
+                        "якщо нема, зняти receipt_claim_at (для групи — на рядку " + rid_oid + "), але СПЕРШУ зачекай один цикл (~15 хв): це може бути паралельний процес. Замовлення в Toysi не передається.")
         return False
 
     try:
@@ -946,7 +951,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
         print(f"[order_router] Чек онлайн-оплати НЕ видано для {oid}: {type(e).__name__}: {e}", file=sys.stderr)
         if getattr(e, "maybe_created", False):
             _alert("unknown", f"🔴 Чек на онлайн-оплату {ref}: відповідь Checkbox не отримано чи нечитабельна ({str(e)[:200]}); чек МІГ бути створений. Автоматичного повтору НЕ буде (щоб не було дубля "
-                              "фіскального чека): звір у кабінеті Checkbox (шукай за " + _receipt_search_hint(order) + "); якщо чек є, проставити checkbox_ettn_registered_at, якщо нема, зняти receipt_claim_at. "
+                              "фіскального чека): звір у кабінеті Checkbox (шукай за " + _receipt_search_hint(group[0] if group else order) + "); якщо чек є, проставити checkbox_ettn_registered_at, якщо нема, зняти receipt_claim_at. "
                               "Замовлення в Toysi не передається.")
         else:
             release_receipt_claim(conn, rid_oid)
@@ -967,7 +972,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
             print(f"[order_router] прапорець чека для {oid} не записано (спроба {attempt + 1}): {type(me).__name__}: {me}", file=sys.stderr)
             time.sleep(0.5)
     else:
-        _alert("flag", f"🔴 Чек на онлайн-оплату {oid} ВИДАНО (receipt_id={receipt_id}), але прапорець у БД не записано (БД заблокована?). Другий чек не буде видано (claim лишився). "
+        _alert("flag", f"🔴 Чек на онлайн-оплату {ref} ВИДАНО (receipt_id={receipt_id}), але прапорець у БД не записано (БД заблокована?). Другий чек не буде видано (claim лишився). "
                        f"Проставити checkbox_ettn_registered_at/checkbox_receipt_id вручну.")
     order["checkbox_ettn_registered_at"] = "set"
     print(f"[order_router] Чек Checkbox (CASHLESS) видано до передачі в Toysi: {oid} (receipt_id={receipt_id})")

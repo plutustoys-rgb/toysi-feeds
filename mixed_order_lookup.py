@@ -51,7 +51,9 @@ def render(kids: list) -> str:
     lines = []
     for k in kids:
         lines.append(f"{k['internal_order_id']} | {'RT' if _is_rt(k.get('items')) else 'Toysi'} | № {k.get('public_number') or '—'} | сума {k.get('site_charged_total')} | оплата {'так' if k.get('payment_confirmed') else 'НІ'} "
-                     f"| статус {k.get('status')} | ТТН {k.get('toysi_ttn') or k.get('rt_ttn_ref') or '—'} | LiqPay payment_id {k.get('liqpay_payment_id') or '—'}")
+                     f"| статус {k.get('status')} | ТТН {k.get('toysi_ttn') or k.get('rt_ttn_ref') or '—'} | LiqPay payment_id {k.get('liqpay_payment_id') or '—'} "
+                     f"| чек Checkbox {k.get('checkbox_receipt_id') or '—'} (прапорець {'є' if k.get('checkbox_ettn_registered_at') else 'нема'}, claim {k.get('receipt_claim_at') or 'нема'}) "
+                     f"| повернення refund_receipt_at {k.get('refund_receipt_at') or 'нема'}")
     return f"Батьківський номер платежу LiqPay: {kids[0].get('site_group_id')}\n" + "\n".join(lines)
 
 

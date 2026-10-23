@@ -61,12 +61,16 @@ def main(argv=None) -> int:
         print(__doc__)
         return 2
     uri = "file:" + orders_db.DB_PATH.replace("\\", "/") + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=10)
-    conn.row_factory = sqlite3.Row
     try:
-        kids = resolve(conn, argv[0])
-    finally:
-        conn.close()
+        conn = sqlite3.connect(uri, uri=True, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            kids = resolve(conn, argv[0])
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as e:
+        print(f"База недоступна або без колонки site_group_id ({e}). Перевір ORDERS_DB_PATH; колонка з'являється після init_db на оновленому коді.")
+        return 3
     if not kids:
         print("Не знайдено або це не змішане замовлення (немає site_group_id).")
         return 1

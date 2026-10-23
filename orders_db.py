@@ -298,7 +298,6 @@ def init_db(db_path: str = DB_PATH) -> None:
         )
         _ensure_column(conn, "orders", "ukrposhta_ttn", "ukrposhta_ttn TEXT")
         _ensure_column(conn, "orders", "site_group_id", "site_group_id TEXT")      # ЗМІШАНИЙ кошик сайту (23.10.2026): батьківський номер платежу LiqPay, спільний для двох дочірніх замовлень (Toysi + RT); NULL для всіх інших
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_site_group_id ON orders(site_group_id)")
         _ensure_column(conn, "orders", "ukrposhta_sticker_path", "ukrposhta_sticker_path TEXT")
         _ensure_column(conn, "orders", "checkbox_ettn_registered_at", "checkbox_ettn_registered_at TEXT")
         _ensure_column(conn, "orders", "checkbox_receipt_id", "checkbox_receipt_id TEXT")
@@ -407,6 +406,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         _migrate_carrier_allow_rozetka_delivery(conn)
         # ПІСЛЯ rebuild-міграцій: вони роблять DROP TABLE orders і відновлюють лише старі індекси — індекс короткого номера, створений раніше, пропав би до наступного init_db (аудит #955 A1)
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_public_number ON orders (public_number) WHERE public_number IS NOT NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_site_group_id ON orders (site_group_id)")      # теж ПІСЛЯ rebuild-міграцій (вони DROP TABLE і відновлюють лише старі індекси)
 
 
 def order_exists(conn: sqlite3.Connection, order_id: str, platform: str) -> bool:

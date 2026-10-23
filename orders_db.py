@@ -297,6 +297,8 @@ def init_db(db_path: str = DB_PATH) -> None:
             "carrier TEXT NOT NULL DEFAULT 'nova_poshta' CHECK (carrier IN ('nova_poshta', 'ukrposhta', 'rozetka_delivery'))",
         )
         _ensure_column(conn, "orders", "ukrposhta_ttn", "ukrposhta_ttn TEXT")
+        _ensure_column(conn, "orders", "site_group_id", "site_group_id TEXT")      # ЗМІШАНИЙ кошик сайту (23.10.2026): батьківський номер платежу LiqPay, спільний для двох дочірніх замовлень (Toysi + RT); NULL для всіх інших
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_site_group_id ON orders(site_group_id)")
         _ensure_column(conn, "orders", "ukrposhta_sticker_path", "ukrposhta_sticker_path TEXT")
         _ensure_column(conn, "orders", "checkbox_ettn_registered_at", "checkbox_ettn_registered_at TEXT")
         _ensure_column(conn, "orders", "checkbox_receipt_id", "checkbox_receipt_id TEXT")
@@ -523,6 +525,14 @@ def get_order(conn: sqlite3.Connection, internal_order_id: str) -> Optional[dict
         "SELECT * FROM orders WHERE internal_order_id = ?", (internal_order_id,)
     ).fetchone()
     return _row_to_dict(row) if row else None
+
+
+def get_group_children(conn: sqlite3.Connection, parent_id: str) -> list:
+    """Дочірні замовлення ЗМІШАНОГО кошика сайту за батьківським номером платежу (колонка site_group_id), у порядку створення (Toysi, потім RT). [] — нема/не група."""
+    if not parent_id:
+        return []
+    rows = conn.execute("SELECT * FROM orders WHERE platform = 'site' AND site_group_id = ? ORDER BY rowid", (str(parent_id),)).fetchall()
+    return [_row_to_dict(r) for r in rows]
 
 
 def get_orders_by_status(conn: sqlite3.Connection, status: str) -> list:

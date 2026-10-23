@@ -43,7 +43,7 @@ import nova_poshta
 import liqpay_client
 import site_promo
 import site_rejected_baskets
-from orders_db import get_connection, init_db, insert_order, get_order, mark_payment_confirmed, set_liqpay_payment_id, assign_public_number, PUBLIC_NUMBER_RE
+from orders_db import get_group_children, get_connection, init_db, insert_order, get_order, mark_payment_confirmed, set_liqpay_payment_id, assign_public_number, PUBLIC_NUMBER_RE
 
 HOST = os.environ.get("SITE_API_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SITE_API_PORT", "8901"))
@@ -99,6 +99,19 @@ _LIQPAY_STATUS_HINT = {
 }
 
 
+def _mixed_group_hint(parent) -> str:
+    """Для алерту LiqPay: якщо order_id платежу — БАТЬКІВСЬКИЙ номер змішаного кошика, назвати обидва дочірні замовлення (їх internal id не збігаються з номером у LiqPay). '' — не група або збій читання."""
+    try:
+        with get_connection() as conn:
+            kids = mixed_children_rows(conn, str(parent or ""))
+    except Exception:  # noqa: BLE001 — підказка не має валити алерт
+        return ""
+    if not kids:
+        return ""
+    parts = [f"site_{k['order_id']} ({'RT' if any(is_rt_id(i['toysi_code']) for i in k['items']) else 'Toysi'}, № {k.get('public_number') or '—'})" for k in kids]
+    return " ЦЕ ЗМІШАНЕ замовлення: один платіж = дві частини — " + " і ".join(parts) + "; підтверджувати/повертати треба ОБИДВІ (див. mixed_order_lookup.py)."
+
+
 def _alert_liqpay_status(res: dict) -> None:
     """Непідтверджений/повернений статус LiqPay: замовлення НЕ передаємо в Toysi й чек НЕ виписуємо (payment_confirmed лишається 0) — сповіщаємо власника,
     самодіагностично (що, чому, що робити). Тротлінг: раз на 12 год на пару замовлення+статус. Збій алерту не валить колбек."""
@@ -109,6 +122,7 @@ def _alert_liqpay_status(res: dict) -> None:
     extra = ("Якщо замовлення вже відправлене чи чек видано, потрібне повернення чека (kodv_return_receipt.py) і рішення по посилці."
              if status == "reversed" else
              "Замовлення НЕ підтверджено: у Toysi не передаємо, чек не виписуємо. Звір статус платежу в кабінеті LiqPay (LiqPay не документує повторну відправку колбека після активації магазину: не очікуй, що замовлення підтвердиться само).")
+    extra += _mixed_group_hint(res.get("order_id"))
     try:
         from telegram_notify import send_throttled_alert
         send_throttled_alert(f"liqpay_status:{oid}:{status}",
@@ -313,7 +327,12 @@ def mixed_children_rows(conn, parent: str) -> list:
     """Дочірні замовлення змішаного кошика за батьківським номером (лише якщо РІВНО обидва існують; інакше []). Порядок: Toysi, RT."""
     if not ORDER_ID_RE.fullmatch(str(parent or "")):
         return []
-    rows = [get_order(conn, f"site_{cid}") for cid in mixed_child_ids(parent)]
+    kids = get_group_children(conn, parent)           # основне джерело правди: колонка site_group_id (прописується при створенні)
+    if len(kids) == 2 and sum(1 for k in kids if any(is_rt_id(i["toysi_code"]) for i in k["items"])) == 1:
+        return sorted(kids, key=lambda k: any(is_rt_id(i["toysi_code"]) for i in k["items"]))      # Toysi, потім RT
+    if kids:
+        return []                                      # група є, але неповна/некоректна: fail-closed
+    rows = [get_order(conn, f"site_{cid}") for cid in mixed_child_ids(parent)]        # запасний шлях: дочірні, створені до появи колонки
     return rows if all(rows) else []
 
 
@@ -1012,7 +1031,7 @@ class Handler(SimpleHTTPRequestHandler):
                         if not insert_order(conn, child):
                             created = False
                             break
-                        conn.execute("UPDATE orders SET site_charged_total=? WHERE internal_order_id=?", (ctotal, f"site_{child['order_id']}"))
+                        conn.execute("UPDATE orders SET site_charged_total=?, site_group_id=? WHERE internal_order_id=?", (ctotal, order["order_id"], f"site_{child['order_id']}"))
                         child["public_number"] = assign_public_number(conn, f"site_{child['order_id']}")
                     if not created:
                         conn.rollback()

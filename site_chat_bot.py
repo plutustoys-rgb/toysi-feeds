@@ -282,7 +282,12 @@ def fetch_order_row(oid: str):
     try:
         cols = {r[1] for r in oc.execute("PRAGMA table_info(orders)")}
         extra = "".join(", " + c for c in ("rt_state", "rt_cabinet_status", "public_number") if c in cols)       # колонок може не бути (стара БД/тести) — тоді як раніше
-        return oc.execute("SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone" + extra + " FROM orders WHERE internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
+        sel = "SELECT status, delivery_status, payment_method, payment_confirmed, toysi_ttn, cancelled_at, phone" + extra + " FROM orders WHERE "
+        row = oc.execute(sel + "internal_order_id=? AND platform='site'", ("site_" + oid,)).fetchone()
+        if row is None and "site_group_id" in cols:
+            # ЗМІШАНИЙ кошик: «Статус у Telegram» зі сторінки подяки несе БАТЬКІВСЬКИЙ номер платежу — рядка з таким id нема; показуємо першу частину групи (Toysi), номер покупця — її
+            row = oc.execute(sel + "platform='site' AND site_group_id=? ORDER BY rowid LIMIT 1", (oid,)).fetchone()
+        return row
     finally:
         oc.close()
 

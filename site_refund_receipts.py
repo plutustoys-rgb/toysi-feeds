@@ -78,11 +78,18 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
             _alert(f"refund_stuck:{st['internal_order_id']}", f"🔴 Чек повернення для {st['internal_order_id']}: claim від {st['refund_receipt_claim_at']} без результату (процес перервано чи результат невідомий). Перевір касу Checkbox: якщо RETURN до чека продажу є, познач refund_receipt_at у БД; якщо нема, зніми refund_receipt_claim_at, і наступний цикл створить.")
         token = None
         liq_fails = 0
+        seen_groups = set()
         for o in cands:
             oid = o["internal_order_id"]
             out["checked"] += 1
+            gid = o.get("site_group_id")                  # ЗМІШАНИЙ кошик (два замовлення, один платіж LiqPay під БАТЬКІВСЬКИМ номером)
+            if gid and gid in seen_groups:
+                orders_db.mark_refund_checked(conn, oid)    # друга частина тієї ж групи: статус платежу вже запитано в цьому проході
+                conn.commit()
+                continue
+            qid = gid or o["order_id"]
             try:
-                liq = status_fn(o["order_id"])
+                liq = status_fn(qid)
             except Exception as e:  # noqa: BLE001
                 print(f"[refund_receipts] {oid}: статус LiqPay не отримано ({type(e).__name__}: {e})", file=sys.stderr)
                 liq_fails += 1
@@ -93,11 +100,24 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
             liq_fails = 0
             orders_db.mark_refund_checked(conn, oid)
             conn.commit()
+            if gid:
+                seen_groups.add(gid)                    # статус платежу групи запитано: другу частину в цьому проході не питаємо
             if (liq or {}).get("status") != "reversed":
                 continue
-            if str(liq.get("order_id") or o["order_id"]) != str(o["order_id"]) or str(liq.get("currency") or lp.CURRENCY).upper() != lp.CURRENCY:
+            if str(liq.get("order_id") or qid) != str(qid) or str(liq.get("currency") or lp.CURRENCY).upper() != lp.CURRENCY:
                 out["human"] += 1
                 _alert(f"refund_mismatch:{oid}", f"🔴 LiqPay: відповідь по {oid} не збігається із замовленням (order_id={liq.get('order_id')}, валюта={liq.get('currency')}) — чек повернення автоматично НЕ створено.")
+                continue
+            if gid:
+                # ПОВЕРНЕННЯ ЗМІШАНОГО ПЛАТЕЖУ: чеки повернення по двох частинах автоматично НЕ створюємо (одна сума повернення на два чеки продажу — рішення людини); алерт з усім потрібним.
+                kids = orders_db.get_group_children(conn, gid)
+                for k in kids:
+                    orders_db.mark_refund_checked(conn, k["internal_order_id"])
+                conn.commit()
+                out["human"] += 1
+                _alert(f"refund_group:{gid}", f"🔴 LiqPay повернув платіж ЗМІШАНОГО замовлення {gid} (повернено {liq.get('refund_amount')} із {liq.get('amount')}): "
+                       f"частини — {', '.join(k['internal_order_id'] + ' (№ ' + str(k.get('public_number') or '—') + ')' for k in kids)}. Чеки повернення автоматично НЕ створюються. "
+                       f"Дії людини: RETURN-чек по кожній частині (kodv_return_receipt.py), зупинити RT-частину, якщо її ще не відправлено, і Toysi-частину, якщо вона ще не пішла.")
                 continue
             total = o.get("site_charged_total")
             refunded = liq.get("refund_amount")

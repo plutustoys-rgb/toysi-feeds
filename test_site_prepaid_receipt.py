@@ -423,5 +423,97 @@ with orders_db.get_connection() as c:
     orders_db.claim_receipt(c, "site_PT-H3"); c.commit()
     orr._ensure_site_prepaid_receipt(c, get("PT-H3"))
 chk("старе замовлення без короткого номера: підказка пошуку з довгим номером у footer", "footer «замовлення PT-H3»" in alerts[0][1] and "№ для клієнта" not in alerts[0][1])
+# ── 9. ЗМІШАНИЙ кошик (два замовлення Toysi+RT, ОДНА оплата): ОДИН чек на всю оплату (власник 23.10: «покупцю чек один»)
+def new_group(gid, t_oid, r_oid, paid=(1, 1), t_total=620, r_total=400, pid="555001", pubs=("PT-111111", "PT-222222")):
+    orders_db.init_db()
+    with orders_db.get_connection() as c:
+        for oid, code, name, price, qty, total in ((t_oid, "1", "Тестовий товар", 310, 2, t_total), (r_oid, "rt-9", "RT іграшка", 400, 1, r_total)):
+            orders_db.insert_order(c, {"order_id": oid, "platform": "site", "payment_method": "prepaid", "payment_confirmed": 0, "customer_name": "Іван Петренко",
+                                       "phone": "380671112233", "email": "buyer@example.com", "np_branch": "Київ, Відділення №1", "np_warehouse_number": "1", "carrier": "nova_poshta",
+                                       "items": [{"toysi_code": code, "name": name, "qty": qty, "price": price}]})
+        for (oid, total, pn, p) in ((t_oid, t_total, pubs[0], paid[0]), (r_oid, r_total, pubs[1], paid[1])):
+            c.execute("UPDATE orders SET site_charged_total=?, site_group_id=?, public_number=?, payment_confirmed=?, liqpay_payment_id=? WHERE internal_order_id=?",
+                      (total, gid, pn, p, pid, f"site_{oid}"))
+        c.commit()
+
+
+def ensure(oid):
+    with orders_db.get_connection() as c:
+        o = orders_db.get_order(c, f"site_{oid}")
+        ok = orr._ensure_site_prepaid_receipt(c, o)
+        c.commit()
+        return ok
+
+
+GP, GT, GR = "PT-20261023-100000-aaaaaa", "PT-20261023-100000-111111", "PT-20261023-100000-222222"
+new_group(GP, GT, GR)
+reset()
+chk("група: перша частина (Toysi) → чек видано, True", ensure(GT) is True and len(receipt_calls) == 1)
+rcg = receipt_calls[0]
+chk("ЄДИНИЙ чек містить позиції ОБОХ частин (Toysi ×2 і RT ×1) і суму оплати 1020", [g["code"] for g in rcg["goods"]] == ["1", "rt-9"] and rcg["total_amount"] == 1020)
+chk("footer: спільний payment_id і номер ПЕРШОЇ частини (той, що бачить покупець); order_id чека — перша частина", rcg["footer"] == "LiqPay payment_id 555001; замовлення PT-111111" and rcg["order_id"] == f"site_{GT}")
+reset()
+chk("друга частина (RT) НЕ виписує другий чек, повертає True", ensure(GR) is True and receipt_calls == [])
+a, b = get(GT), get(GR)
+chk("обидві частини мають ТОЙ САМИЙ id чека й прапорець «чек видано»", a["checkbox_receipt_id"] == "rcpt-1" and b["checkbox_receipt_id"] == "rcpt-1" and a["checkbox_ettn_registered_at"] and b["checkbox_ettn_registered_at"])
+reset()
+chk("повторні виклики для обох частин нічого не дублюють", ensure(GT) is True and ensure(GR) is True and receipt_calls == [])
+
+# порядок навпаки: першою до чека доходить RT-частина (вона друга в групі) → все одно ОДИН чек на всю оплату, claim на ПЕРШІЙ частині
+GP2, GT2, GR2 = "PT-20261023-100001-aaaaaa", "PT-20261023-100001-111111", "PT-20261023-100001-222222"
+new_group(GP2, GT2, GR2, pid="555002", pubs=("PT-333333", "PT-444444"))
+reset()
+chk("RT-частина першою: чек видано один раз на всю оплату (1020), order_id = перша частина групи", ensure(GR2) is True and len(receipt_calls) == 1 and receipt_calls[0]["total_amount"] == 1020 and receipt_calls[0]["order_id"] == f"site_{GT2}")
+reset()
+chk("потім Toysi-частина: другого чека нема", ensure(GT2) is True and receipt_calls == [] and get(GT2)["checkbox_receipt_id"] == get(GR2)["checkbox_receipt_id"] == "rcpt-1")
+
+# не всі частини оплачені / неповна група / розбіжність суми → fail-closed, чека нема
+GP3, GT3, GR3 = "PT-20261023-100002-aaaaaa", "PT-20261023-100002-111111", "PT-20261023-100002-222222"
+new_group(GP3, GT3, GR3, paid=(1, 0), pid="555003", pubs=("PT-555555", "PT-666666"))
+reset()
+chk("одна з частин неоплачена → чек НЕ видано (False), алерт", ensure(GT3) is False and receipt_calls == [] and alerts)
+GP4, GT4, GR4 = "PT-20261023-100003-aaaaaa", "PT-20261023-100003-111111", "PT-20261023-100003-222222"
+new_group(GP4, GT4, GR4, t_total=600, pid="555004", pubs=("PT-777777", "PT-888888"))     # зафіксовано 600+400, а позиції дають 620+400
+reset()
+chk("сума позицій обох частин ≠ сума site_charged_total → чек НЕ видано, claim знято", ensure(GT4) is False and receipt_calls == [] and not get(GT4)["receipt_claim_at"])
+GP5, GT5 = "PT-20261023-100004-aaaaaa", "PT-20261023-100004-111111"
+new_order(GT5, charged=100)
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET site_group_id=?, payment_confirmed=1 WHERE internal_order_id=?", (GP5, f"site_{GT5}"))
+    c.commit()
+reset()
+chk("група з ОДНІЄЇ частини → чек НЕ видано (fail-closed)", ensure(GT5) is False and receipt_calls == [])
+
+# збій Checkbox для групи: claim знято на ПЕРШІЙ частині, прапорців нема, повтор можливий і дає ОДИН чек
+GP6, GT6, GR6 = "PT-20261023-100005-aaaaaa", "PT-20261023-100005-111111", "PT-20261023-100005-222222"
+new_group(GP6, GT6, GR6, pid="555006", pubs=("PT-135791", "PT-246802"))
+receipt_mode["fail"] = True
+reset()
+chk("збій Checkbox для групи → False, прапорців нема, claim знято на першій частині", ensure(GR6) is False and not get(GT6)["checkbox_ettn_registered_at"] and not get(GR6)["checkbox_ettn_registered_at"] and not get(GT6)["receipt_claim_at"])
+receipt_mode["fail"] = False
+reset()
+chk("повтор після збою: рівно ОДИН чек на всю оплату, обидві частини позначено", ensure(GT6) is True and len(receipt_calls) == 1 and ensure(GR6) is True and len(receipt_calls) == 1 and get(GR6)["checkbox_receipt_id"] == "rcpt-1")
+
+# невідомий результат (можливо створено): claim ЛИШАЄТЬСЯ на першій частині; друга частина НЕ видає свій чек
+GP7, GT7, GR7 = "PT-20261023-100006-aaaaaa", "PT-20261023-100006-111111", "PT-20261023-100006-222222"
+new_group(GP7, GT7, GR7, pid="555007", pubs=("PT-112233", "PT-445566"))
+
+
+class _Maybe(checkbox_client.CheckboxAPIError):
+    maybe_created = True
+
+
+def fake_maybe(**kw):
+    receipt_calls.append(kw)
+    raise _Maybe("відповідь Checkbox нечитабельна")
+
+
+checkbox_client.create_receipt = fake_maybe
+reset()
+chk("невідомий результат для групи → False, claim ЛИШЕНО на першій частині", ensure(GT7) is False and get(GT7)["receipt_claim_at"] and not get(GT7)["checkbox_ettn_registered_at"])
+n_calls = len(receipt_calls)
+chk("друга частина при невідомому результаті першої НЕ створює свій чек (False, нових викликів Checkbox нема)", ensure(GR7) is False and len(receipt_calls) == n_calls)
+checkbox_client.create_receipt = fake_receipt
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

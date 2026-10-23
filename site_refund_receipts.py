@@ -116,8 +116,8 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
                 conn.commit()
                 out["human"] += 1
                 _alert(f"refund_group:{gid}", f"🔴 LiqPay повернув платіж ЗМІШАНОГО замовлення {gid} (повернено {liq.get('refund_amount')} із {liq.get('amount')}): "
-                       f"частини — {', '.join(k['internal_order_id'] + ' (№ ' + str(k.get('public_number') or '—') + ')' for k in kids)}. Чеки повернення автоматично НЕ створюються. "
-                       f"Дії людини: RETURN-чек по кожній частині (kodv_return_receipt.py), зупинити RT-частину, якщо її ще не відправлено, і Toysi-частину, якщо вона ще не пішла; "
+                       f"частини — {', '.join(k['internal_order_id'] + ' (№ ' + str(k.get('public_number') or '—') + ')' for k in kids)}. Чек продажу на цю оплату ОДИН (спільний checkbox_receipt_id у обох частин); чек повернення автоматично НЕ створюється. "
+                       f"Дії людини: чек повернення оформлює бухгалтер у кабінеті Checkbox на повернену суму/позиції (kodv_return_receipt.py багатопозиційні чеки не підтримує), зупинити RT-частину, якщо її ще не відправлено, і Toysi-частину, якщо вона ще не пішла; "
                        f"потім позначити refund_receipt_at у БД для ОБОХ частин (orders_db.mark_refund_receipt_done), інакше алерт повторюватиметься щодоби.")
                 continue
             total = o.get("site_charged_total")

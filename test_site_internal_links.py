@@ -207,8 +207,8 @@ r, e = load_texts("", "empty_t.json")
 chk("А-лоадер: порожній файл → ГОЛОСНО", r == {} and "product_texts.json" in e)
 
 shipped = json.loads((HERE / "site" / "product_texts.json").read_text(encoding="utf-8-sig"))
-chk("А-дані: site/product_texts.json у репо: 177 записів, id — цифри, значення — непорожні рядки ≤900 без < >",
-    len(shipped) == 177 and all(re.fullmatch(r"[0-9]+", k) and isinstance(v, str) and v.strip() and len(v) <= 900 and "<" not in v and ">" not in v for k, v in shipped.items()))
+chk("А-дані: site/product_texts.json у репо: ≥ 177 записів (177 пілотних + партії SEO), id — цифри, значення — непорожні рядки ≤900 без < >",
+    len(shipped) >= 177 and all(re.fullmatch(r"[0-9]+", k) and isinstance(v, str) and v.strip() and len(v) <= 900 and "<" not in v and ">" not in v for k, v in shipped.items()))
 
 # ═══ Б. Схожі товари ═══
 S = sections(h500)

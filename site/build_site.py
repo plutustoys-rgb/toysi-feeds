@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
 
 import parser as tp
 import competitor_pricing as cp
+import site_auto_text
 from trademark_filter import is_uno_trademark_blocked
 from forbidden_products import is_forbidden
 from weapon_policy import is_weapon_replica
@@ -164,13 +165,18 @@ def price_of(it):
         return int(it["site_price"])
     return cp.site_retail_price(it)
 
-# Російськомовні товари на сайті НЕ показуємо (власник 20.10: «російськомовні прибери»; для фідів Rozetka/Prom таке правило з 21.08 — generate_*_feed._RUSSIAN_LANG_RE).
-# Лише МОВНИЙ маркер у назві: «(рос)»/«(рус)», standalone «рос»/«рус», «російською», «російськомов…», «рос. звучення». НЕ голе «російськ…» (змістом, напр. «російські народні казки»,
-# не мова). Двомовні («рос. і укр. мовами», «укр./рос.») лишаємо: це укр. продукт із російською версією правил.
+# Російськомовні товари на сайті НЕ показуємо (власник 20.10: «російськомовні прибери»; для фідів Rozetka/Prom таке правило з 21.08 — generate_*_feed._RUSSIAN_LANG_RE).
+
+# Лише МОВНИЙ маркер у назві: «(рос)»/«(рус)», standalone «рос»/«рус», «російською», «російськомов…», «рос. звучення». НЕ голе «російськ…» (змістом, напр. «російські народні казки»,
+
+# не мова). Двомовні («рос. і укр. мовами», «укр./рос.») лишаємо: це укр. продукт із російською версією правил.
+
 _RU_LANG_RE = re.compile(r"\bрос\b|\bрус\b|російською|російськомов|рос\.\s*звуч", re.IGNORECASE)
 _UA_LANG_RE = re.compile(r"\bукр\b|\bукр\.|українськ", re.IGNORECASE)
-
-
+
+
+
+
 # Російські НАЗВИ (власник 20.10: «російськомовні прибери»; тестувальник 20.10 показав 60+ карток Toysi з російським текстом у назві): (1) літери, яких нема в українській (ы э ъ ё) — тверда ознака;
 # (2) російські СЛОВА, лише ТОЧНІ форми (без \w* після «набор»: укр. «набір» відмінюється «набору/набором/наборі/наборах/наборів», вони починаються на «набор» — з \w* зникли б 189 звичайних укр. карток).
 # Слова: набор/наборы/наборов (нижче — відмінки НЕ беремо), игрушк*, детск*, цвет*, размер*, мальчик*, девоч*, проведени*, раскоп*, расписани*, ламинирован*, деревянн*, развивающ*, подарочн* — у цих основ нема укр. збігів.
@@ -183,9 +189,12 @@ def is_russian_language_item(name):
     if _RU_LETTERS_RE.search(n) or _RU_WORDS_RE.search(n):
         return True   # російський текст у назві — навіть якщо є «(укр)» (покупець бачить російську назву)
     return bool(_RU_LANG_RE.search(n)) and not _UA_LANG_RE.search(n)   # мовний маркер («рос», «російською…») — двомовні «рос. і укр.» лишаються
-
-
-
+
+
+
+
+
+
 def esc(s):
     return html.escape(str(s or ""))
 
@@ -719,6 +728,8 @@ def build():
     _load_category_texts()
     _load_category_ru_alt()
     _load_product_texts()
+    global _AUTO_DEFS
+    _AUTO_DEFS = site_auto_text.load_definitions() if SITE_AUTO_TEXTS_ENABLED else {}
     _load_category_related()
     print("[build] тягну каталог Toysi…")
     cat = tp.fetch_toysi_catalog()
@@ -785,6 +796,7 @@ def build():
             "category": it.get("category_name") or "Інше",
             "photo": PHOTO_OVERRIDES.get(str(it.get("id")), pics[0]), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
+            "auto_text": (site_auto_text.site_text(it, _AUTO_DEFS) if SITE_AUTO_TEXTS_ENABLED and not str(it.get("id")).startswith("rt-") else ""),
             "contribution": contribution,
             "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(it.get("category_name") or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
             "vendor": (it.get("vendor") or "").strip(), "vendor_code": (it.get("vendor_code") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
@@ -1540,6 +1552,9 @@ def _load_category_ru_alt():
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PRODUCT_TEXTS_FILE = os.path.join(_HERE, "product_texts.json")
 _PRODUCT_TEXTS = {}
+# Автотекст картки з атрибутів Toysi (site_auto_text.py; 23.10.2026): ВИМКНЕНО до затвердження семплу власником (вмикається окремим PR). Пріоритет: ручний product_texts.json > автотекст.
+SITE_AUTO_TEXTS_ENABLED = False
+_AUTO_DEFS = {}
 PRODUCT_TEXT_WARN_LEN = 900          # довший текст — попередження (SEO: абзац-«простирадло» виштовхує характеристики)
 _CATEGORY_RELATED_FILE = os.path.join(_HERE, "category_related.json")
 _CATEGORY_RELATED = {}
@@ -1605,6 +1620,12 @@ def _load_product_texts():
         print(f"[build] ⚠ product_texts.json: у тексті є < або > (екранується як звичайний текст, розмітка НЕ спрацює): {angle[:10]}", file=sys.stderr)
     _PRODUCT_TEXTS = out
     return _PRODUCT_TEXTS
+
+
+def _auto_text_html(p):
+    """Автотекст картки (site_auto_text) як блок prod-text; порожній, якщо тексту нема. Ручний product_texts.json має пріоритет (див. write_product)."""
+    text = (p.get("auto_text") or "").strip()
+    return ('<div class="prod-text"><p>' + esc(text) + "</p></div>") if text else ""
 
 
 def _product_text_html(pid):
@@ -2025,22 +2046,38 @@ HERO_MASCOT_SEASONAL = (("halloween", 3320, 2, True, True, (10, 15), (10, 31), "
                         ("snowflake", 3818, 2, True, True, (10, 15), (12, 31), None))   # «Сніжинка» (SMM 15.10): червона шапка, ловить сніжинку; власник 15.10: «для чого так довго чекати? нехай зараз крутиться» — з дати деплою (15.10) до 31.12, а не з 25.11; tailchase НЕ витісняє (SMM: лишити в ротації); із Гелловіном 15–31.10 граються разом
 
 
-def hero_mascot_html(hero_clips=None, lazy=False):
-    """Анімований Плутус (poster + кліп, керує app.js initMascot за id hero-mascot/hero-mascot-clip): на головній у героя і (власник 20.10) у порожньому місці панелі каталогу/категорії. Один екземпляр на сторінку."""
-    hero_clips = hero_clips if hero_clips is not None else hero_mascot_clips()
-    lz = ' loading="lazy"' if lazy else ""
-    return (
-      f'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async"{lz} '
-      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{c[0]}.webp")) for c in hero_clips)}" data-ms="{",".join(str(c[1]) for c in hero_clips)}" data-w="{",".join(str(c[2]) for c in hero_clips)}" data-nofirst="{",".join(str(i) for i, c in enumerate(hero_clips) if not c[3])}"'
-      + (f' data-dip="{",".join(str(i) for i, c in enumerate(hero_clips) if c[4])}"' if any(c[4] for c in hero_clips) else "") + '>'
-      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>')
-
-
-def catalog_mascot_html():
-    """Плутус у порожньому місці панелі каталогу/категорії (власник 20.10: «анімувати як на головній, клікабельність та сама»); на вузьких екранах схований (CSS)."""
-    return '<div class="cat-mascot">' + hero_mascot_html(lazy=True) + '</div>'
-
-
+def hero_mascot_html(hero_clips=None, lazy=False):
+
+    """Анімований Плутус (poster + кліп, керує app.js initMascot за id hero-mascot/hero-mascot-clip): на головній у героя і (власник 20.10) у порожньому місці панелі каталогу/категорії. Один екземпляр на сторінку."""
+
+    hero_clips = hero_clips if hero_clips is not None else hero_mascot_clips()
+
+    lz = ' loading="lazy"' if lazy else ""
+
+    return (
+
+      f'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async"{lz} '
+
+      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{c[0]}.webp")) for c in hero_clips)}" data-ms="{",".join(str(c[1]) for c in hero_clips)}" data-w="{",".join(str(c[2]) for c in hero_clips)}" data-nofirst="{",".join(str(i) for i, c in enumerate(hero_clips) if not c[3])}"'
+
+      + (f' data-dip="{",".join(str(i) for i, c in enumerate(hero_clips) if c[4])}"' if any(c[4] for c in hero_clips) else "") + '>'
+
+      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>')
+
+
+
+
+
+def catalog_mascot_html():
+
+    """Плутус у порожньому місці панелі каталогу/категорії (власник 20.10: «анімувати як на головній, клікабельність та сама»); на вузьких екранах схований (CSS)."""
+
+    return '<div class="cat-mascot">' + hero_mascot_html(lazy=True) + '</div>'
+
+
+
+
+
 def hero_mascot_clips(today=None):
     """Рухи героя на ЗАРАЗ: базові 10 (HERO_MASCOT_CLIPS) + сезонні в межах дат (із витісненням слабшого). Кортеж: (name, ms, weight, first_ok, dip)."""
     clips = [(c[0], c[1], c[2], c[3], bool(len(c) > 4 and c[4])) for c in HERO_MASCOT_CLIPS]
@@ -2615,7 +2652,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     specs_html = ("<ul>" + "".join(f"<li>{s}</li>" for s in specs) + "</ul>") if specs else ""
     # Текст картки від SEO (site/product_texts.json): під описом Toysi, ПЕРЕД його характеристиками (якщо вони є — вони йдуть окремим блоком нижче), лише після блоку ціни/оплати/доставки,
     # тож перший екран мобільного (фото, ціна, бейджі, закріплена панель «У кошик») не зміщується. Нема тексту — розмітка рівно як була.
-    prod_text_html = _product_text_html(p["id"])
+    prod_text_html = _product_text_html(p["id"]) or _auto_text_html(p)
     if prod_text_html and specs_html:
         desc_block = (f'<div class="desc"><h2>Опис</h2>{desc_html}</div>' + prod_text_html + f'<div class="desc specs">{specs_html}</div>')
     else:

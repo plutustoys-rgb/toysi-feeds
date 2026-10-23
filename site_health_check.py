@@ -115,7 +115,7 @@ def port_open(host: str, port: int, timeout: float = PORT_TIMEOUT) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
-    except OSError:
+    except (OSError, ValueError):      # ValueError (UnicodeError при некоректному імені хоста) — теж «не відкрито», а не падіння запуску
         return False
 
 

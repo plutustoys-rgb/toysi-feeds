@@ -213,4 +213,16 @@ api._promo_code_allowed = real_allowed
 chk("гонка: друге замовлення з тим самим телефоном відхилено повторною перевіркою в транзакції (promo_used), нове НЕ створено", code == 400 and resp["code"] == "promo_used" and len(db_rows()) == n1)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
+# ── ЗМІШАНИЙ кошик (Toysi + RT = два замовлення, дві витрати): автоматична −10% НЕ діє (Консультант 23.10)
+MIX_COST = dict(OK_COST, **{"rt-1": 50.0})
+mixed_items = [{"toysi_code": "A", "qty": 1, "price": 100, "name": "A"}, {"toysi_code": "rt-1", "qty": 1, "price": 120, "name": "R"}]
+r = sp.compute(mixed_items, MIX_COST, None)
+chk("ті самі два різні товари БЕЗ позначки mixed → автоматична −10% діє (поведінка не змінена)", r["applied"] == "TWO10" and r["discount_total"] > 0)
+r = sp.compute(mixed_items, MIX_COST, None, mixed=True)
+chk("mixed=True → TWO10 НЕ застосовується (знижки нема, discount_total=0)", r["applied"] is None and r["discount_total"] == 0 and r["lines"] == {})
+r = sp.compute(mixed_items, MIX_COST, "PLUTUS5", mixed=True)
+chk("mixed=True + PLUTUS5 → промокод діє як раніше (кожен рядок покриває повну витрату), код використано", r["applied"] == "PLUTUS5" and r["code_status"] == "ok" and r["discount_total"] > 0)
+r = sp.compute(mixed_items, MIX_COST, "PLUTUS5", code_allowed=False, mixed=True)
+chk("mixed=True + код уже використано → знижки нема зовсім (TWO10 теж не діє)", r["applied"] is None and r["code_status"] == "used")
+
 sys.exit(1 if F else 0)

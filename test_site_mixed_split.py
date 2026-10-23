@@ -213,6 +213,17 @@ chk("split: кошик не змішаний → OrderError", bad)
 chk("mixed_child_ids детермінований і не залежить від порядку викликів", api.mixed_child_ids(PARENT) == (kid_t, kid_r))
 chk("mixed_children_rows відхиляє сміттєвий id (SQL/довгий/порожній)", all(api.mixed_children_rows(None, x) == [] for x in ("", "PT-1; DROP", "x" * 200, None)))
 
+# --- TWO10 (автоматична −10 % при ≥2 різних позиціях) для змішаного кошика НЕ діє; для звичайного діє
+api.site_promo.load_cost_map = lambda: {"100": 100.0, "200": 60.0, "rt-101": 100.0}
+plain_items = [{"toysi_code": "100", "qty": 1, "price": 250, "name": "a"}, {"toysi_code": "200", "qty": 1, "price": 120, "name": "b"}]
+mix_items = [{"toysi_code": "100", "qty": 1, "price": 250, "name": "a"}, {"toysi_code": "rt-101", "qty": 1, "price": 400, "name": "r"}]
+rp, _, tp = api.quote_promo(plain_items, None, None)
+rm, _, tm = api.quote_promo(mix_items, None, None)
+chk("quote_promo: звичайний кошик з двох різних позицій → TWO10 діє", rp["applied"] == "TWO10" and tp < 370)
+chk("quote_promo: змішаний кошик (Toysi+rt) → TWO10 НЕ діє, сума без знижки", rm["applied"] is None and tm == 650)
+rc, _, tc = api.quote_promo(mix_items, "PLUTUS5", "+380501234567")
+chk("quote_promo: змішаний + PLUTUS5 → промокод діє (не TWO10)", rc["applied"] in ("PLUTUS5", None) and rc["applied"] != "TWO10")
+
 srv.shutdown()
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -660,7 +660,8 @@ def quote_promo(items: list, code, phone, strict: bool = False) -> dict:
             print(f"[site_order_api] promo limit check: {e}", file=sys.stderr)
             if strict:
                 return {"applied": None, "lines": {}, "discount_total": 0, "code_status": "unavailable", "costs_available": True}, items, sum(int(i["price"]) * int(i["qty"]) for i in items)
-    res = site_promo.compute(items, site_promo.load_cost_map(), code, allowed)
+    _rt = [is_rt_id(i["toysi_code"]) for i in items]
+    res = site_promo.compute(items, site_promo.load_cost_map(), code, allowed, mixed=(any(_rt) and not all(_rt)))        # змішаний (Toysi+RT): TWO10 не діє — рішення Консультанта 23.10
     new_items, new_total = site_promo.apply_to_items(items, res)
     return res, new_items, new_total
 

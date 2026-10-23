@@ -124,11 +124,13 @@
   // «Копіювати» поруч із кодом товару (рядок під назвою на картці): код йде в буфер, кнопка на 1,8 с каже результат; без clipboard API (старі браузери, http) — запасний шлях через textarea.
   function copySku(btn){
     var code=btn.getAttribute("data-copy")||"";
+    var st=btn.parentNode && btn.parentNode.querySelector(".sku-status");   // окремий role=status: скрінрідер озвучить результат (aria-label кнопки не змінюється разом із її текстом)
     function done(ok){
       btn.textContent=ok ? "Скопійовано" : "Не вдалося";
       btn.classList.toggle("ok", ok);
+      if(st) st.textContent=ok ? "Код товару скопійовано" : "Не вдалося скопіювати код";
       clearTimeout(btn._t);
-      btn._t=setTimeout(function(){ btn.textContent="Копіювати"; btn.classList.remove("ok"); }, 1800);
+      btn._t=setTimeout(function(){ btn.textContent="Копіювати"; btn.classList.remove("ok"); if(st) st.textContent=""; }, 1800);
     }
     function fallback(){
       var ta=document.createElement("textarea"), ok=false;

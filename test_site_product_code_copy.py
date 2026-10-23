@@ -96,6 +96,44 @@ with sync_playwright() as pw:
     chk("запасний шлях не лишає textarea на сторінці", pg.evaluate("document.querySelectorAll('textarea[readonly]').length") == 0)
     ctx.close()
 
+    # writeText відмовив (http/iframe/Safari), execCommand працює: запасний шлях спрацьовує і для ВІДХИЛЕНОГО промісу
+    ctx = br.new_context(viewport={"width": 390, "height": 900})
+    pg = ctx.new_page()
+    pg.add_init_script("Object.defineProperty(navigator,'clipboard',{value:{writeText:function(){ return Promise.reject(new Error('denied')); }}}); window.__copied=null; document.execCommand=function(c){ if(c==='copy'){ window.__copied=(document.querySelector('textarea[readonly]')||{}).value||null; return true; } return false; };")
+    pg.route("**/googletagmanager.com/**", lambda r: r.abort())
+    pg.goto(f"{BASE}/product-9701.html", wait_until="load")
+    pg.wait_for_timeout(300)
+    pg.click(".sku-copy")
+    pg.wait_for_timeout(300)
+    chk("writeText відхилено, execCommand ок: код скопійовано запасним шляхом, кнопка «Скопійовано»", pg.evaluate("window.__copied") == "PT-9701" and pg.evaluate("document.querySelector('.sku-copy').textContent") == "Скопійовано")
+    ctx.close()
+
+    # кнопка в <form>: type=button і preventDefault: клік не відправляє форму
+    ctx = br.new_context(viewport={"width": 390, "height": 900})
+    pg = ctx.new_page()
+    pg.route("**/googletagmanager.com/**", lambda r: r.abort())
+    pg.goto(f"{BASE}/product-9701.html", wait_until="load")
+    pg.wait_for_timeout(300)
+    r = pg.evaluate("""(()=>{const b=document.querySelector('.sku-copy'); const f=document.createElement('form'); window.__sub=0; f.addEventListener('submit',e=>{window.__sub++; e.preventDefault();}); b.parentNode.insertBefore(f,b); f.appendChild(b); b.click(); return {type:b.getAttribute('type'), sub:window.__sub};})()""")
+    chk("кнопка має type=button і не відправляє форму навколо себе", r["type"] == "button" and r["sub"] == 0)
+    ctx.close()
+
+    # доступність: окремий role=status озвучує результат, назва кнопки містить видимий текст
+    ctx = br.new_context(viewport={"width": 390, "height": 900})
+    ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=BASE)
+    pg = ctx.new_page()
+    pg.route("**/googletagmanager.com/**", lambda r: r.abort())
+    pg.goto(f"{BASE}/product-9701.html", wait_until="load")
+    pg.wait_for_timeout(300)
+    a = pg.evaluate("""(()=>{const b=document.querySelector('.sku-copy'), s=document.querySelector('.sku .sku-status'); return {name:b.getAttribute('aria-label'), live:b.getAttribute('aria-live'), role:s&&s.getAttribute('role'), lv:s&&s.getAttribute('aria-live')};})()""")
+    chk("a11y: aria-label кнопки містить видиме «Копіювати» і код, aria-live на самій кнопці нема, є span role=status aria-live=polite", a["name"] == "Копіювати код товару PT-9701" and a["live"] is None and a["role"] == "status" and a["lv"] == "polite")
+    pg.click(".sku-copy")
+    pg.wait_for_timeout(250)
+    chk("після копіювання role=status повідомляє «Код товару скопійовано» і очищується через ≈2 с", pg.evaluate("document.querySelector('.sku-status').textContent") == "Код товару скопійовано")
+    pg.wait_for_timeout(2000)
+    chk("статус очищено", pg.evaluate("document.querySelector('.sku-status').textContent") == "")
+    ctx.close()
+
     # збій копіювання: «Не вдалося», сторінка жива
     ctx = br.new_context(viewport={"width": 390, "height": 900})
     pg = ctx.new_page()

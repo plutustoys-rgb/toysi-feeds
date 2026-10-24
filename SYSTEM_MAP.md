@@ -337,7 +337,7 @@
 ## 4. АЛГОРИТМ СПІВПРАЦІ (консолідовано з BOOTSTRAP / COORDINATION_PROTOCOL / CODE_LOG)
 
 1. **Канали — протокол і журнал, НЕ засіб доставки.** Файли `*_CHANNEL.md` у Cowork-теці (`SEO_CHANNEL.md` Код↔SEO+якість,
-   `MARKETING_CHANNEL.md` Код↔SMM, `CONSULTANT_CHANNEL.md`, `КОДВ_CHANNEL.md`, `SELLER_CHANNEL.md`, `EXECUTOR_CHANNEL.md`).
+   `MARKETING_CHANNEL.md` Код↔SMM, `CONSULTANT_CHANNEL.md`, `КОДВ_CHANNEL.md`, `SELLER_CHANNEL.md`, `EXECUTOR_CHANNEL.md` — з 24.10 це канал КОДУ (вхідні + автоалерти `[Автомат → Код]`; Upwork закрито, Виконавця не піднімають), `SITE_CHANNEL.md` — канал Shopify-code (сайт; `SHOPIFY_CHANNEL.md` у shopify_feed_app — архів Vartov), `COPYWRITER_CHANNEL.md` — Копірайтер). **Запис лягає в канал отримувача один раз, без копій у кілька каналів;** повна карта — `КАНАЛИ_карта.md` у Cowork-теці.
    Newest-on-top, заголовок `## [Відправник → Отримувач] дата` (стрілка U+2192). **Доставка між живими сесіями —
    `SendMessage`** (звірено живо 2026-10-09: сесія agent-architector → Code-Agent, відповідь надійшла того ж дня);
    `spawn_task` лише кладе чіп власнику й нікого не будить.

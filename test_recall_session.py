@@ -32,6 +32,9 @@ def chk(name, cond):
         F.append(name)
 
 
+chk("site: живий канал SITE_CHANNEL.md — перший у картці ролі, SHOPIFY_CHANNEL.md (архів) — другий", [r.name for r in recall._CONFIGS["site"][:2]] == ["SITE_CHANNEL.md", "SHOPIFY_CHANNEL.md"])
+
+
 tmp = Path(tempfile.mkdtemp())
 recall.ROLE_STATE_DIR = tmp / "rs"
 cw = tmp / "cw"
@@ -314,8 +317,6 @@ chk("copywriter: власні заголовки «Копірайтер →» д
     recall.detect_role(activity_transcript("copywriter_tag.jsonl", [
         {"type": "tool_use", "name": "Write", "input": {"content": "## [Копірайтер → SEO] 2026-10-24 — a" + chr(10)}},
         {"type": "tool_use", "name": "Edit", "input": {"new_string": "## [Копірайтер → Консультант] 2026-10-24 — b" + chr(10)}}])) == "copywriter")
-
-chk("site: живий канал SITE_CHANNEL.md — перший у картці ролі, SHOPIFY_CHANNEL.md (архів) — другий", [r.name for r in recall._CONFIGS["site"][:2]] == ["SITE_CHANNEL.md", "SHOPIFY_CHANNEL.md"])
 
 # --- env пріоритетніший
 import os

@@ -121,6 +121,27 @@
     b.classList.toggle("on", n>0);
   }
 
+  // «Копіювати» поруч із кодом товару (рядок під назвою на картці): код йде в буфер, кнопка на 1,8 с каже результат; без clipboard API (старі браузери, http) — запасний шлях через textarea.
+  function copySku(btn){
+    var code=btn.getAttribute("data-copy")||"";
+    var st=btn.parentNode && btn.parentNode.querySelector(".sku-status");   // окремий role=status: скрінрідер озвучить результат (aria-label кнопки не змінюється разом із її текстом)
+    function done(ok){
+      btn.textContent=ok ? "Скопійовано" : "Не вдалося";
+      btn.classList.toggle("ok", ok);
+      if(st) st.textContent=ok ? "Код товару скопійовано" : "Не вдалося скопіювати код";
+      clearTimeout(btn._t);
+      btn._t=setTimeout(function(){ btn.textContent="Копіювати"; btn.classList.remove("ok"); if(st) st.textContent=""; }, 1800);
+    }
+    function fallback(){
+      var ta=document.createElement("textarea"), ok=false;
+      ta.value=code; ta.setAttribute("readonly", ""); ta.style.cssText="position:fixed;left:-9999px;top:0";
+      document.body.appendChild(ta); ta.select();
+      try{ ok=document.execCommand("copy"); }catch(e){}
+      document.body.removeChild(ta);
+      done(ok);
+    }
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(code).then(function(){ done(true); }, fallback); } else { fallback(); }
+  }
   // невелике сповіщення "додано"
   var toast;
   function flash(msg){
@@ -810,6 +831,8 @@
     document.body.addEventListener("click", function(e){
       var t=e.target.closest("[data-add]");
       if(t){ e.preventDefault(); PT.add(JSON.parse(t.getAttribute("data-add")), t.getAttribute("data-list")||""); if(document.getElementById("cart-body")) renderCart(); return; }
+      var sc=e.target.closest(".sku-copy");
+      if(sc){ e.preventDefault(); copySku(sc); return; }
       if(e.target.closest("#open-search")){ e.preventDefault(); openSearch(); return; }
       if(e.target.closest("#close-search")){ e.preventDefault(); closeSearch(); return; }
       var ov=document.getElementById("search-overlay");

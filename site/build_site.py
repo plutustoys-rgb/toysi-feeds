@@ -743,6 +743,7 @@ def build():
             pass
         raise
     cat = dict(cat)
+    _load_category_overrides({str(v.get("category_name") or "").strip() for v in cat.values() if str(v.get("stock") or "0") not in ("0", "")} - {""})   # перенесення товарів між категоріями даними (SEO 23.10)
     cat.update(_load_supplier_rt())   # другий постачальник (пілот RoyalToys, Код 19.10): картки «rt-…» у ЗАГАЛЬНОМУ каталозі
     prods = []
     # Товари БЕЗ залишку (рішення Консультанта 11.10.2026, GSC: 7 605 адрес «404» з 8 960 непроіндексованих — це самі зниклі зі складу товари):
@@ -751,6 +752,7 @@ def build():
     # (site_order_api бере ціни лише з index.json).
     oos_prods = []
     oos_skipped_no_price = 0
+    _cat_ov_applied = 0
     for it in cat.values():
         is_oos = str(it.get("stock") or "0") in ("0", "")
         pics = it.get("pictures")
@@ -766,6 +768,10 @@ def build():
         if is_uno_trademark_blocked(name, it.get("vendor") or ""):
             continue   # ТМ «UNO» (претензія Mattel): не продаємо на власному сайті (SEO-замовлення 2026-10-06)
         catname = it.get("category_name") or "Інше"
+        _cat_ov = _CATEGORY_OVERRIDES.get(str(it.get("id")))
+        if _cat_ov and not str(it.get("id")).startswith("rt-") and _cat_ov != catname:
+            catname = _cat_ov   # перенесення в іншу категорію сайту (category_overrides.json)
+            _cat_ov_applied += 1
         # Каталог ПОВНИЙ відповідно до Toysi (рішення власника 2026-10-05): без відсікань за ціною чи категорією
         # (включно з «Уцінкою»); єдина умова — товар є в наявності й має фото/назву (вище).
         price = price_of(it)
@@ -788,13 +794,15 @@ def build():
                         - SITE_FULFILL_PER_ORDER) if cost > 0 else None
         (oos_prods if is_oos else prods).append({
             "id": str(it.get("id")), "name": name, "price": price, "old_price": _old_price,
-            "category": it.get("category_name") or "Інше",
+            "category": catname,
             "photo": PHOTO_OVERRIDES.get(str(it.get("id")), pics[0]), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
-            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(it.get("category_name") or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
+            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
             "vendor": (it.get("vendor") or "").strip(), "vendor_code": (it.get("vendor_code") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
+    if _CATEGORY_OVERRIDES:
+        print(f"[build] перенесення між категоріями: у файлі {len(_CATEGORY_OVERRIDES)}, застосовано до карток {_cat_ov_applied}")
     # RoyalToys-дублі Toysi, варіант 1 «резерв» (власник 20.10): rt-картка з dup_of на товар Toysi, що Є В НАЯВНОСТІ, — «тінь»: покупцям не показуємо (нема в каталозі/пошуку/sitemap/
     # блоках), сторінка жива, але noindex і canonical на сторінку Toysi. Щойно товар Toysi вичерпався (його нема в prods) — rt-картка стає звичайною.
     _toysi_live = {q["id"] for q in prods if not q.get("rt")}
@@ -1622,6 +1630,36 @@ def _product_text_html(pid):
     if not paras:
         return ""
     return '<div class="prod-text">' + "".join(f"<p>{esc(p)}</p>" for p in paras) + "</div>"
+
+
+# ── Перекриття категорії окремого Toysi-товару (SEO 23.10): у категоріях є чужі товари (аудит: «Металеві моделі» — чашки, шахи), а категорія береться з поля постачальника (`category_name`), тож перенесення робимо ДАНИМИ ──
+# site/category_overrides.json {"<id Toysi, лише цифри>": "<ТОЧНА назва категорії, що вже є на сайті>"}; ключі з «_» службові. Застосовується під час збору картки: index.json, сторінки категорій, крихти, sitemap, noindex.
+# Не довіряємо даним: id лише цифри (rt-картки не чіпаємо); ціль мусить бути назвою категорії, що вже має сторінку в ЦІЙ збірці (є хоч один товар у наявності: категорія лише з OOS нової сторінки не створює), і не з NOINDEX_CATEGORIES; інакше запис пропускається ГОЛОСНО, товар лишається у своїй категорії.
+# Нових категорій цим файлом не створюємо (нова категорія = нова сторінка). Фіди Google/Meta/Bing і маркетплейси беруть категорію іншим шляхом і не змінюються.
+_CATEGORY_OVERRIDES_FILE = os.path.join(_HERE, "category_overrides.json")
+_CATEGORY_OVERRIDES = {}
+
+
+def _load_category_overrides(known_categories):
+    global _CATEGORY_OVERRIDES
+    _CATEGORY_OVERRIDES = {}
+    data = _read_json_loud(_CATEGORY_OVERRIDES_FILE, "category_overrides.json", "перенесень товарів між категоріями не буде")
+    if data is _MISSING:
+        return _CATEGORY_OVERRIDES
+    if not isinstance(data, dict):
+        print(f"[build] ⚠ category_overrides.json — очікується об'єкт {{id: категорія}}, отримано {type(data).__name__} — перенесень не буде", file=sys.stderr)
+        return _CATEGORY_OVERRIDES
+    bad = []
+    for k, v in data.items():
+        if isinstance(k, str) and k.startswith("_"):
+            continue
+        if isinstance(k, str) and re.fullmatch(r"[0-9]{1,12}", k) and isinstance(v, str) and v.strip() in known_categories and not category_hidden(v):
+            _CATEGORY_OVERRIDES[k] = v.strip()
+        else:
+            bad.append(str(k)[:20])
+    if bad:
+        print(f"[build] ⚠ category_overrides.json: {len(bad)} записів відкинуто (id не з цифр, цілі нема серед категорій сайту або вона прихована; товар лишається у своїй категорії): {bad[:10]}", file=sys.stderr)
+    return _CATEGORY_OVERRIDES
 
 
 def _load_category_related():

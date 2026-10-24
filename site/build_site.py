@@ -1399,6 +1399,19 @@ _CATEGORY_TEXTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 _CATEGORY_TEXTS = {}
 
 
+# Запобіжник «без грошей у статичних текстах» (Консультант 24.10): ціни застарівають із фідом, а твердження «типово 259 ₴» при інших цифрах у фіді працює проти довіри.
+# Ознака бінарна (знак валюти, «грн/гривня», «ціна/ціни/коштує»), порогів нема; «вартість» не ловимо (є значення «очки за літеру»). Лише попередження в stderr: текст усе одно показується.
+_MONEY_RX = re.compile(r"₴|грн|гривн|\b(?:ціна|ціни|ціну|ціною|коштує|коштують)\b", re.I)
+
+
+def _warn_money_words(label, texts):
+    """Ключі {id|slug: текст}, де є слова про гроші; друкує попередження в stderr, повертає відсортований список ключів."""
+    hits = sorted(k for k, v in texts.items() if _MONEY_RX.search(v))
+    if hits:
+        print(f"[build] ⚠ {label}: у тексті є гроші (₴/грн/«ціна»/«коштує») — вони застарівають із фідом, правило проєкту: без цін у статичних текстах; ключі: {hits[:10]} (усього {len(hits)})", file=sys.stderr)
+    return hits
+
+
 def _load_category_texts():
     """site/category_texts.json: {slug: "абзац 1\\n\\nабзац 2"} — унікальні вступні тексти категорій від SEO (11.10.2026). Нема файлу — порожньо (так і задумано).
     ГОЛОСНО (stderr), а не мовчки, коли файл ЄСТЬ, але не прочитався (BOM читаємо як utf-8-sig; битий JSON, не-словник) або в ньому відкинуто значення: тоді SEO бачить причину в журналі збірки."""
@@ -1424,6 +1437,7 @@ def _load_category_texts():
     if bad:
         print(f"[build] ⚠ category_texts.json: значення НЕ рядок, відкинуто: {bad[:10]}", file=sys.stderr)
     _CATEGORY_TEXTS = {str(k): v for k, v in data.items() if isinstance(v, str) and v.strip()}
+    _warn_money_words("category_texts.json", _CATEGORY_TEXTS)
     return _CATEGORY_TEXTS
 
 
@@ -1610,6 +1624,7 @@ def _load_product_texts():
     if angle:
         print(f"[build] ⚠ product_texts.json: у тексті є < або > (екранується як звичайний текст, розмітка НЕ спрацює): {angle[:10]}", file=sys.stderr)
     _PRODUCT_TEXTS = out
+    _warn_money_words("product_texts.json", _PRODUCT_TEXTS)
     return _PRODUCT_TEXTS
 
 

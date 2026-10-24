@@ -66,11 +66,15 @@ _CONFIGS = {
     # сесія site не бачила адресованих їй питань і пішла шукати роль у власника).
     "site": [SHOPIFY_DIR / "SHOPIFY_CHANNEL.md", COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "MARKETING_CHANNEL.md",
              COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md"],
+    # 24.10 (запит Консультанта, роль «Копірайтер карток»): власний канал першим; SEO/MARKETING — лише записи, де Копірайтер автор/адресат (фільтр _header_ok).
+    "copywriter": [COWORK_DIR / "COPYWRITER_CHANNEL.md", COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "MARKETING_CHANNEL.md",
+                   COWORK_DIR / "OWNER_INBOX.md", COWORK_DIR / "archive" / "copywriter"],
 }
 _SHARED_CHANNELS = {"SEO_CHANNEL.md", "MARKETING_CHANNEL.md", "CONSULTANT_CHANNEL.md"}   # канали, де черги ролей перемішані
 # «Сайт» — давній тег ролі site в заголовках (напр. `## [Сайт → SEO]` у SEO_CHANNEL, 15.10); межі слова (?<!\w)…(?!\w), щоб «сайту»/«сайтів» не збігались
 _SHOPIFY_RE = re.compile(r"shopify-code|код-shopify|(?<!\w)сайт(?!\w)", re.IGNORECASE)
 _SEO_RE = re.compile(r"\bseo\b", re.IGNORECASE)
+_COPYWRITER_RE = re.compile(r"копірайтер", re.IGNORECASE)
 
 
 def _header_ok(config: str, fname: str, header: str) -> bool:
@@ -81,6 +85,8 @@ def _header_ok(config: str, fname: str, header: str) -> bool:
         who = m.group(1) if m else header          # лише «автор → адресати», НЕ опис запису (там слова SEO/Shopify трапляються довільно)
         if config == "site":
             return bool(_SHOPIFY_RE.search(who))
+        if config == "copywriter":
+            return bool(_COPYWRITER_RE.search(who))
         if config == "seo":
             return not (_SHOPIFY_RE.search(who) and not _SEO_RE.search(who))
     return True
@@ -213,7 +219,7 @@ _ROLE_AUTHORS = {
     "consultant": ("консультант",), "kodv": ("кодв", "бухгалтер", "головний бухгалтер", "аудитор"),
     # "[код" співпало б із "[кодв…" (бухгалтер) — тому з закриттям/стрілкою.
     "kod": ("код]", "код →", "code-agent"), "architector": ("архітектор",), "tester": ("тестувальник",),
-    "site": ("shopify-code", "код-shopify"),
+    "site": ("shopify-code", "код-shopify"), "copywriter": ("копірайтер",),
 }
 # Ознаки ролі в ПЕРШОМУ повідомленні сесії (єдине місце, де роль названо: cwd у всіх однаковий).
 # Рахуємо збіги по ролях; нічия або нуль → "" (фолбек: хук лишає поведінку без змін).
@@ -233,6 +239,7 @@ _ROLE_MARKERS = {
     # власних сесій (аудит PR #964: давало хибний site у Коду/Консультанта/SEO)
     "site": ("ти — shopify-code", "ти - shopify-code", "ти — код-shopify", "ти - код-shopify", "агент-shopify",
              "агента-shopify", "plutus-shopify"),
+    "copywriter": ("агент-копірайтер", "агента-копірайтера", "ти — копірайтер", "ти - копірайтер", "plutus-copywriter"),
 }
 
 
@@ -275,11 +282,12 @@ def detect_role(transcript_path: str) -> str:
 # Роль за ДІЯЛЬНІСТЮ сесії (22.10, дефект від Консультанта: у 2 із 3 живих сесій перша фраза власника роль не називала).
 # 1) виклик скіла ролі (найнадійніший сигнал — є в кожній рольовій сесії); 2) власні записи в каналах `## [<Роль> → …]`.
 _SKILL_ROLE = {"business-consultant": "consultant", "seo-agent": "seo", "plutustoys-smm": "smm", "accountant": "kodv",
-               "seller": "seller", "agent-code": "kod", "agent-architector": "architector"}
+               "seller": "seller", "agent-code": "kod", "agent-architector": "architector",
+               "senior-conversion-copywriter-content-strategist": "copywriter"}
 _HEADER_ROLE = {"консультант": "consultant", "seo": "seo", "smm": "smm", "продажник": "seller", "виконавець": "executor",
                 "аудитор": "executor", "головний бухгалтер": "kodv", "бухгалтер": "kodv", "кодв": "kodv",
                 "код": "kod", "архітектор": "architector", "тестувальник": "tester",
-                "shopify-code": "site", "код-shopify": "site", "сайт": "site"}
+                "shopify-code": "site", "код-shopify": "site", "сайт": "site", "копірайтер": "copywriter"}
 _HDR_RE = re.compile(r"(?m)^## \[([^\]→\n]+?)\s*→")
 
 

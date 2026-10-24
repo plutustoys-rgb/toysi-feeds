@@ -59,12 +59,12 @@ _CONFIGS = {
                     COWORK_DIR / "STATUS.md", COWORK_DIR / "EXECUTOR_CHANNEL.md"],
     "tester": [COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "OWNER_INBOX.md",
                COWORK_DIR / "archive" / "tester"],
-    # Shopify-code / сайт (Vartov): власний канал лежить ПОЗА Cowork (shopify_feed_app); журнал Тестувальника — лише читання
+    # 24.10: живий канал сайту — SITE_CHANNEL.md у Cowork (перший); SHOPIFY_CHANNEL.md у shopify_feed_app — архів епохи Vartov. Раніше: власний канал лежить ПОЗА Cowork (shopify_feed_app); журнал Тестувальника — лише читання
     # (його єдиний писар — Тестувальник), там черга дефектів сайту — головний вхід для цієї ролі.
     # Журнал — ДРУГИМ (головний вхід ролі): картка обрізається з кінця за cap, тож менш важливе має стояти після нього.
     # MARKETING/SEO/CONSULTANT_CHANNEL — лише записи, де Shopify-code автор/адресат (фільтр _header_ok): її черга лежить і там (22.10: без цього
     # сесія site не бачила адресованих їй питань і пішла шукати роль у власника).
-    "site": [SHOPIFY_DIR / "SHOPIFY_CHANNEL.md", COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "MARKETING_CHANNEL.md",
+    "site": [COWORK_DIR / "SITE_CHANNEL.md", SHOPIFY_DIR / "SHOPIFY_CHANNEL.md", COWORK_DIR / "тест_сайту_журнал.md", COWORK_DIR / "MARKETING_CHANNEL.md",
              COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "CONSULTANT_CHANNEL.md", COWORK_DIR / "OWNER_INBOX.md"],
     # 24.10 (запит Консультанта, роль «Копірайтер карток»): власний канал першим; SEO/MARKETING — лише записи, де Копірайтер автор/адресат (фільтр _header_ok).
     "copywriter": [COWORK_DIR / "COPYWRITER_CHANNEL.md", COWORK_DIR / "SEO_CHANNEL.md", COWORK_DIR / "MARKETING_CHANNEL.md",

@@ -54,9 +54,9 @@ for name, loader in (("category_texts.json", bs._load_category_texts), ("product
     chk(f"{name} у репо: {len(res)} текстів, жодного слова про гроші (попереджень про гроші нема)", len(res) > 0 and "гроші" not in err.getvalue())
 
 # (2) категорії
-cat_bad = {"a": "Ціни на першій сторінці — від 107 до 326 ₴.", "b": "Типова ціна — 150 грн.", "c": "Модель коштує дорожче.", "d": "Чистий текст без чисел.", "e": "Вартість літери — очки."}
+cat_bad = {"a": "Ціни на першій сторінці — від 107 до 326 ₴.", "b": "Типова ціна — 150 грн.", "c": "Модель коштує дорожче.", "d": "Чистий текст без чисел.", "e": "Вартість літери — очки.", "f": "Набір — 99 ₴.", "g": "Набір 99 грн."}
 res, err = run(bs._load_category_texts, "_CATEGORY_TEXTS_FILE", cat_bad)
-chk("категорії: попередження названо ключі a, b, c", "category_texts.json" in err and "'a'" in err and "'b'" in err and "'c'" in err and "(усього 3)" in err)
+chk("категорії: попередження названо ключі a, b, c", "category_texts.json" in err and "'a'" in err and "'b'" in err and "'c'" in err and "'f'" in err and "'g'" in err and "(усього 5)" in err)
 chk("категорії: чисті ключі d і e не названі, текст усе одно завантажено", "'d'" not in err and "'e'" not in err and set(res) == set(cat_bad))
 
 # (2) картки

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """test_site_brand_category.py — 21.10.2026 (SEO, варіант А; пілот «посилена брендова категорія» Trefl): НОВОГО URL нема, посилюється існуюча category-pazly-trefl.html:
-унікальний текст 120–180 слів лише з наших даних (виробник, кількість моделей, діапазон деталей з назв, вік лише якщо є в назвах «3+», ціни від/до), title/H1 не змінені, JSON-LD CollectionPage
+унікальний текст 100–180 слів лише з наших даних (компанія, а не «виробник»; кількість моделей, діапазон деталей з назв, вік лише якщо є в назвах «3+», ціни від/до), title/H1 не змінені, JSON-LD CollectionPage
 (BreadcrumbList і ItemList лишаються), sitemap-priority (не categories), посилання «Усі пазли Trefl» на картках цієї категорії, посилання з категорії «Пазли» і з hub. Текст лише на 1-й сторінці;
 < 5 моделей — тексту нема; статичний текст SEO для slug має пріоритет."""
 import contextlib
@@ -70,14 +70,14 @@ page = (out / "category-pazly-trefl.html").read_text(encoding="utf-8")
 intro = re.search(r'<div class="cat-intro">(.*?)</div>', page, re.S)
 text = re.sub(r"<[^>]+>", " ", intro.group(1)) if intro else ""
 words = re.findall(r"[\w'’ʼ+-]+", text)
-chk(f"категорія «Пазли Trefl»: є унікальний вступ, {len(words)} слів (120–180)", intro is not None and 120 <= len(words) <= 180)
+chk(f"категорія «Пазли Trefl»: є унікальний вступ, {len(words)} слів (100–180; після прибирання поради-призначення 24.10 було 120–180)", intro is not None and 100 <= len(words) <= 180)
 _idx = json.loads((out / "index-t.json").read_text(encoding="utf-8"))
 _pr = [x["pr"] for x in _idx if x["c"] == "Пазли Trefl"]
 _fmt = lambda v: f"{v:,}".replace(",", " ")   # noqa: E731 — _fmt_int: тисячі через nbsp
 pmin, pmax = min(_pr), max(_pr)
-chk(f"текст: виробник, кількість моделей = 30, діапазон деталей від 24 до 2000, ціни від {pmin} до {pmax} ₴ (з побудованого індексу)", "польський виробник пазлів і настільних ігор" in text and "30 моделей" in text
+chk(f"текст: компанія (не «виробник»), кількість моделей = 30, діапазон деталей від 24 до 2000, ціни від {pmin} до {pmax} ₴ (з побудованого індексу)", "Trefl — польська компанія пазлів і настільних ігор" in text and "30 моделей" in text
     and "від 24 до 2000" in text and f"від {pmin} до {pmax} ₴" in text.replace(" ", " ").replace("  ", " "))
-chk("сюжети лише з назв і лише коли їх ≥ 3: «Стіч» (3 моделі) згадано, «Marvel» (2 моделі) — ні", "популярні сюжети: Стіч" in text and "Marvel" not in text)
+chk("сюжети лише з назв і лише коли їх ≥ 3: «Стіч» (3 моделі) згадано, «Marvel» (2 моделі) — ні", "зустрічаються сюжети: Стіч" in text and "Marvel" not in text)
 chk("вікових позначок у назвах нема → речення про вік НЕМАЄ", "вікові позначки" not in text)
 allowed = {"30", "24", "2000", str(pmin), str(pmax)}
 nums = set(re.findall(r"\d+", text.replace("\xa0", "")))
@@ -101,7 +101,7 @@ chk("hub /categories.html веде на category-pazly-trefl.html", 'href="categ
 pz = (out / "category-pazly.html").read_text(encoding="utf-8")
 chk("категорія «Пазли» веде на «Пазли Trefl» (блок «Схожі категорії»)", 'href="category-pazly-trefl.html"' in pz)
 other = (out / "category-liali.html").read_text(encoding="utf-8") if (out / "category-liali.html").exists() else (out / sorted(p.name for p in out.glob("category-*.html") if "lial" in p.name)[0]).read_text(encoding="utf-8")
-chk("інша категорія (Ляльки): вступу/CollectionPage бренду нема", "польський виробник" not in other and "CollectionPage" not in other)
+chk("інша категорія (Ляльки): вступу/CollectionPage бренду нема", "польська компанія" not in other and "CollectionPage" not in other)
 
 # менше 5 моделей — тексту нема
 small = {k: v for k, v in cat.items() if v["category_name"] != "Пазли Trefl"}
@@ -127,7 +127,24 @@ bs._CATEGORY_TEXTS_FILE = str(_tmp)
 out4 = build(cat)
 bs._CATEGORY_TEXTS_FILE = _orig_file
 pg4 = (out4 / "category-pazly-trefl.html").read_text(encoding="utf-8")
-chk("статичний текст із category_texts.json має пріоритет над динамічним", "Статичний текст від SEO." in pg4 and "польський виробник" not in pg4)
+chk("статичний текст із category_texts.json має пріоритет над динамічним", "Статичний текст від SEO." in pg4 and "польська компанія" not in pg4)
+
+# 24.10 (Консультант): клас Б — про КОМПАНІЮ можна, про ВИРОБНИЦТВО ні; поради-призначення про товари прибрано
+chk("текст не каже «виробник» (про місце виготовлення нічого) і не містить поради-призначення про складання", "виробник" not in text and "виготовлено" not in text and "зроблено в" not in text and "збирається швидше" not in text and "вільне місце" not in text)
+import contextlib as _cl, io as _io
+_e = _io.StringIO()
+with _cl.redirect_stderr(_e):
+    _g = bs._warn_money_rendered("категорії", "pazly-trefl", bs.brand_category_text("pazly-trefl", [{"name": f"Пазл {i}", "price": 100 + i, "stock": 1, "rt": 0} for i in range(30)]))
+chk("запобіжник видимого тексту: обчислюваний діапазон «від X до Y ₴» дозволений, інших грошей у тексті Trefl нема", _g is False and "гроші" not in _e.getvalue())
+_e = _io.StringIO()
+with _cl.redirect_stderr(_e):
+    _g = bs._warn_money_rendered("категорії", "x-test", "Типова ціна 259 ₴ у цій категорії.")
+_e2 = _io.StringIO()
+with _cl.redirect_stderr(_e2):
+    _g2 = bs._warn_money_rendered("категорії", "x-mut1", "Пазл коштує 259 ₴ — від 100 до 200 ₴.")
+    _g3 = bs._warn_money_rendered("категорії", "x-mut2", "Типова ціна 259 ₴\n\nЦіни на пазли Trefl у нашому каталозі — від 100 до 200 ₴.")
+chk("запобіжник: застигле число не маскується обчислюваним реченням (мутації «коштує 259 ₴ — від…» і абзац без крапки)", _g2 is True and _g3 is True)
+chk("запобіжник видимого тексту: застигле число «Типова ціна 259 ₴» дає попередження", _g is True and "x-test" in _e.getvalue())
 
 print()
 if F:

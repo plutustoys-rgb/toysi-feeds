@@ -1412,6 +1412,23 @@ def _warn_money_words(label, texts):
     return hits
 
 
+# Те саме правило на ВИХОДІ: що сторінка справді показує (тексти з файлів, згенерований текст брендової категорії, будь-який третій шлях). Дозволено лише ОБЧИСЛЕНЕ щозбірки
+# речення «… від X до Y ₴.» (діапазон із даних, не застигле число) і службову фразу про сортування за ціною; решта грошей у видимому тексті — попередження в stderr один раз на ключ.
+_RENDER_MONEY_OK_RX = re.compile(r"Ціни на [^.\n]{1,40} у нашому каталозі — від \d[\d\xa0 ]* до \d[\d\xa0 ]* ₴\.|відсортувати товари за ціною")
+_MONEY_RENDER_SEEN = set()
+
+
+def _warn_money_rendered(kind, key, text):
+    """Попередження в stderr, якщо видимий текст (kind: «категорія»/«картка») має гроші поза дозволеним обчислюваним реченням. Повертає True, коли знайдено."""
+    rest = _RENDER_MONEY_OK_RX.sub("", text or "")
+    if not _MONEY_RX.search(rest):
+        return False
+    if (kind, key) not in _MONEY_RENDER_SEEN:
+        _MONEY_RENDER_SEEN.add((kind, key))
+        print(f"[build] ⚠ видимий текст ({kind} {key}): у ньому гроші (₴/грн/«ціна»/«коштує») поза обчислюваним діапазоном — застигле число застаріє з фідом, прибери з джерела", file=sys.stderr)
+    return True
+
+
 def _load_category_texts():
     """site/category_texts.json: {slug: "абзац 1\\n\\nабзац 2"} — унікальні вступні тексти категорій від SEO (11.10.2026). Нема файлу — порожньо (так і задумано).
     ГОЛОСНО (stderr), а не мовчки, коли файл ЄСТЬ, але не прочитався (BOM читаємо як utf-8-sig; битий JSON, не-словник) або в ньому відкинуто значення: тоді SEO бачить причину в журналі збірки."""
@@ -1471,7 +1488,7 @@ def _category_aside_html(cat_prods):
 # Джерело «Trefl — польська компанія (Trefl S.A., пазли, настільні ігри, засн. 1985; зареєстрована на Kontenerowa, Гдиня)»: https://en.wikipedia.org/wiki/Trefl і https://www.trefl.com/en/ (звірено 24.10.2026).
 # Поля «Країна виробник» на картках Trefl нема в більшості (вибірка 25: немає на 16, Польща на 5, Україна на 2, Китай на 2), тож текст не каже, де виготовлено конкретний пазл.
 BRAND_CATEGORIES = {
-    "pazly-trefl": {"brand": "Trefl", "producer": "польський виробник пазлів і настільних ігор", "noun": "пазли", "link_text": "Усі пазли Trefl",
+    "pazly-trefl": {"brand": "Trefl", "producer": "польська компанія пазлів і настільних ігор", "noun": "пазли", "link_text": "Усі пазли Trefl",
                     # популярні сюжети (SEO 19.10: «Marvel, Холодне серце, Стіч, Міккі, Маквін»): згадуємо ЛИШЕ ті, що реально є в ≥ BRAND_THEME_MIN назвах моделей (підрахунок щозбірки, не вручну)
                     "themes": (("Marvel", r"marvel|марвел"), ("«Холодне серце»", r"холодне серце"), ("Стіч", r"стіч"), ("Міккі", r"мікк?і"), ("Маквін", r"маквін"),
                                ("«Щенячий патруль»", r"щенячий патруль"), ("Барбі", r"барбі"))},
@@ -1502,9 +1519,8 @@ def brand_category_text(slug, items) -> str:
     th = sorted(((sum(1 for nm in names if re.search(rx, nm)), label) for label, rx in cfg.get("themes", ())), reverse=True)
     th = [label for c, label in th if c >= BRAND_THEME_MIN][:5]
     if th:
-        p1 += " У назвах моделей зустрічаються популярні сюжети: " + ", ".join(th) + "."
-    p2 = (f"Ціни на {noun} {brand} у нашому каталозі — від {_fmt_int(pmin)} до {_fmt_int(pmax)} ₴. Пазл із меншою кількістю деталей збирається швидше й добре підходить для початку, "
-          "а великі набори краще вибирати, коли є час і вільне місце на столі. Перед замовленням відкрийте картку товару: там є фото й назва моделі з форматом пазла, "
+        p1 += " У назвах моделей зустрічаються сюжети: " + ", ".join(th) + "."
+    p2 = (f"Ціни на {noun} {brand} у нашому каталозі — від {_fmt_int(pmin)} до {_fmt_int(pmax)} ₴. Перед замовленням відкрийте картку товару: там є фото й повна назва моделі, "
           "а в категорії можна відсортувати товари за ціною.")
     p3 = ("Усі позиції на цій сторінці є в наявності на момент збірки сторінки; залишок може змінюватися, тому актуальний стан видно на картці товару. "
           "Відправляємо замовлення Новою Поштою по Україні, вартість доставки — за тарифами оператора. Умови оплати, доставки й повернення описано на сторінках «Доставка» та «Повернення».")
@@ -1529,6 +1545,7 @@ def _category_intro_html(fname, cat_prods=None):
     alt = _CATEGORY_RU_ALT.get(m.group(1)) if m else None
     if not text and not alt:
         return ""
+    _warn_money_rendered("категорії", m.group(1) if m else fname, text)
     paras = [p.strip() for p in re.split(r"\n\s*\n", (text or "").replace("\r\n", "\n")) if p.strip()]
     alt_html = f'<p class="cat-alt">Також шукають: {esc(alt)}</p>' if alt else ""   # SEO 19.10: російські синоніми запиту — ВИДИМИЙ рядок під H1 (не прихований)
     return '<div class="cat-intro">' + alt_html + "".join(f"<p>{esc(p)}</p>" for p in paras) + "</div>\n"
@@ -1636,6 +1653,7 @@ def _product_text_html(pid):
     text = _PRODUCT_TEXTS.get(str(pid))
     if not text:
         return ""
+    _warn_money_rendered("картки", str(pid), text)
     paras = [p.strip() for p in re.split(r"\n\s*\n", text.replace("\r\n", "\n")) if p.strip()]
     if not paras:
         return ""

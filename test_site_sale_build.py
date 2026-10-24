@@ -53,9 +53,9 @@ def margin_new(pid):
     return new - cost[pid] - new * com - bs.SITE_FULFILL_PER_ORDER
 
 
-ok_ids = [p for p in catalog if p != "501" and margin_new(p) >= 25][:4]
-low_ids = [p for p in catalog if p != "501" and margin_new(p) < 25][:1]
-assert len(ok_ids) == 4, ("fixture: замало товарів із маржею ≥25", ok_ids)
+ok_ids = [p for p in catalog if p != "501" and margin_new(p) >= bs.SALE_RESERVE_UAH][:4]
+low_ids = [p for p in catalog if p != "501" and margin_new(p) < bs.SALE_RESERVE_UAH][:1]
+assert len(ok_ids) == 4, ("fixture: замало товарів із маржею ≥ запасу", ok_ids)
 changed = "40" if "40" not in ok_ids else "39"
 wk_items = {pid: {"old": price[pid], "new": -(-price[pid] * 85 // 100)} for pid in ok_ids}
 wk_items[changed] = {"old": price[changed] + 1, "new": -(-(price[changed] + 1) * 85 // 100)}   # ціна змінилась між планом і збіркою → не застосовується

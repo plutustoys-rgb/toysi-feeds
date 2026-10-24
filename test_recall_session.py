@@ -187,7 +187,8 @@ def skill(name):
 for sk, want in [("anthropic-skills:business-consultant", "consultant"), ("anthropic-skills:seo-agent", "seo"),
                  ("anthropic-skills:plutustoys-smm", "smm"), ("anthropic-skills:accountant", "kodv"),
                  ("anthropic-skills:seller", "seller"), ("anthropic-skills:agent-code", "kod"),
-                 ("anthropic-skills:agent-architector", "architector")]:
+                 ("anthropic-skills:agent-architector", "architector"),
+                 ("anthropic-skills:senior-conversion-copywriter-content-strategist", "copywriter")]:
     chk(f"виклик скіла {sk.split(':')[1]} -> {want}", recall.detect_role(activity_transcript(f"sk_{want}.jsonl", [skill(sk)])) == want)
 chk("нерольовий скіл (loop) -> порожньо", recall.detect_role(activity_transcript("sk_loop.jsonl", [skill("loop")])) == "")
 chk("два різні рольові скіли -> нічия -> порожньо",
@@ -304,6 +305,15 @@ chk("активність: власні заголовки «Сайт →» дв
     recall.detect_role(activity_transcript("site_tag.jsonl", [
         {"type": "tool_use", "name": "Write", "input": {"content": "## [Сайт → SEO] 2026-10-22 — a" + chr(10)}},
         {"type": "tool_use", "name": "Edit", "input": {"new_string": "## [Сайт → Консультант] 2026-10-22 — b" + chr(10)}}])) == "site")
+
+chk("copywriter: фільтр спільного каналу — запис [SEO → Копірайтер] видно, [SEO → Сайт] ні",
+    recall._header_ok("copywriter", "SEO_CHANNEL.md", "## [SEO → Копірайтер, Консультант] 2026-10-24 — x")
+    and not recall._header_ok("copywriter", "SEO_CHANNEL.md", "## [SEO → Сайт] 2026-10-24 — x")
+    and recall._header_ok("copywriter", "COPYWRITER_CHANNEL.md", "## [Консультант → Копірайтер] 2026-10-24"))
+chk("copywriter: власні заголовки «Копірайтер →» двічі -> роль copywriter",
+    recall.detect_role(activity_transcript("copywriter_tag.jsonl", [
+        {"type": "tool_use", "name": "Write", "input": {"content": "## [Копірайтер → SEO] 2026-10-24 — a" + chr(10)}},
+        {"type": "tool_use", "name": "Edit", "input": {"new_string": "## [Копірайтер → Консультант] 2026-10-24 — b" + chr(10)}}])) == "copywriter")
 
 # --- env пріоритетніший
 import os

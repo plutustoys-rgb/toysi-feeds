@@ -239,7 +239,7 @@ _ROLE_MARKERS = {
     # власних сесій (аудит PR #964: давало хибний site у Коду/Консультанта/SEO)
     "site": ("ти — shopify-code", "ти - shopify-code", "ти — код-shopify", "ти - код-shopify", "агент-shopify",
              "агента-shopify", "plutus-shopify"),
-    "copywriter": ("копірайтер карток", "агент-копірайтер", "агента-копірайтера", "ти — копірайтер", "ти - копірайтер", "plutus-copywriter"),
+    "copywriter": ("агент-копірайтер", "агента-копірайтера", "ти — копірайтер", "ти - копірайтер", "plutus-copywriter"),
 }
 
 

@@ -88,7 +88,7 @@ for i in range(1, 31):
     catalog[pid] = cat_item(220)       # знижена ціна Toysi ≈187 → real_cost ≈202; ціна сайту 400
     history[pid] = {"price": 400, "since": STABLE}
 c0 = ss.candidates(index, catalog, history, NOW)
-chk("30 нормальних товарів → усі кандидати, нова ціна 340, маржа ≥ запасу", len(c0) == 30 and all(c["new"] == 340 and c["margin"] >= 25 for c in c0))
+chk("30 нормальних товарів → усі кандидати, нова ціна 340, маржа ≥ запасу", len(c0) == 30 and all(c["new"] == 340 and c["margin"] >= ss.RESERVE_UAH for c in c0))
 cheap = {"id": "2001", "pr": 60, "n": "дешевий", "p": "u"}
 catalog["2001"] = cat_item(45); history["2001"] = {"price": 60, "since": STABLE}
 chk("збитковий після знижки (ціна 60 при собівартості ≈54) не кандидат", all(c["id"] != "2001" for c in ss.candidates(index + [cheap], catalog, history, NOW)))

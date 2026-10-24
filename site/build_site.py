@@ -414,7 +414,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
 # ── Постійна акція (власник 14.10; з 15.10 ПОСТІЙНА: щодня нова партія на 8 діб; з 16.10 ≈72 товари, знижка КОЖНОГО товару випадкова 5–15%; бекенд Code-Agent: site_sale.py пише site/sale_week.json щодня) ──
 # КОНТРАКТ: {"week","pct","from","until","created_at","items":{"<id>":{"old":int,"new":int,"pct":int 5..15}}}; from/until — ISO із поясом; new = ceil(old × (100−pct)/100).
 # build_site у вікні from…until ставить ціну pr=new і op=old (index.json) для id з файлу; ПОЗА вікном файл ігнорується (навіть якщо лишився). Ціна — єдине джерело для замовлення/LiqPay/чека (site_order_api читає pr, op ігнорує).
-# Захисні перевірки на КОЖНІЙ збірці (стара ціна має бути РЕАЛЬНОЮ, збитку нема): поточна ціна сайту == old; new < old; внесок після знижки ≥ SALE_RESERVE_UAH (запас 25 ₴); невідома собівартість — без знижки. Товар, що не пройшов, випадає з акції (ціна лишається звичайною).
+# Захисні перевірки на КОЖНІЙ збірці (стара ціна має бути РЕАЛЬНОЮ, збитку нема): поточна ціна сайту == old; new < old; внесок після знижки ≥ SALE_RESERVE_UAH (запас 80 ₴ з 24.10; було 25); невідома собівартість — без знижки. Товар, що не пройшов, випадає з акції (ціна лишається звичайною).
 SALE_FILE = os.path.join(OUT, "sale_week.json")
 SALE_WEEK_ENABLED = True
 SALE_RESERVE_UAH = 80.0   # ТРЕБА дорівнювати site_sale.RESERVE_UAH (плановик і критерій фіду); було 25.0 до 24.10
@@ -516,7 +516,7 @@ def apply_sale(pid, price, sale, cost):
     if price != old or not (0 < new < price) or not cost or cost <= 0:
         return price, None
     margin = new - cost - new * cp.PAYMENT_COMMISSION.get("site", 0.0) - SITE_FULFILL_PER_ORDER
-    if round(margin, 2) < SALE_RESERVE_UAH:   # до копійок: похибка float не має відкидати внесок «рівно 25,00»
+    if round(margin, 2) < SALE_RESERVE_UAH:   # до копійок: похибка float не має відкидати внесок «рівно на межі запасу»
         return price, None
     return new, old
 

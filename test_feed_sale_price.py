@@ -151,6 +151,7 @@ chk("позиція, яку build_site скине (внесок після зн�
 
 # критерій фіду == критерій build_site (apply_sale) на широкій сітці, включно з межею рівно 25,00 (аудит #769: float-розбіжність)
 import build_site as _bs
+chk("запас маржі акції ОДНАКОВИЙ у плановику (site_sale.RESERVE_UAH) і в збірці (build_site.SALE_RESERVE_UAH): розбіжність тихо прибирає акцію з сайту", float(ss.RESERVE_UAH) == float(_bs.SALE_RESERVE_UAH))
 _diff = 0
 _n = 0
 for _o in range(100, 3000, 3):

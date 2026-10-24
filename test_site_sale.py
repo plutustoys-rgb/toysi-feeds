@@ -88,7 +88,7 @@ for i in range(1, 31):
     catalog[pid] = cat_item(220)       # знижена ціна Toysi ≈187 → real_cost ≈202; ціна сайту 400
     history[pid] = {"price": 400, "since": STABLE}
 c0 = ss.candidates(index, catalog, history, NOW)
-chk("30 нормальних товарів → усі кандидати, нова ціна 340, маржа ≥25", len(c0) == 30 and all(c["new"] == 340 and c["margin"] >= 25 for c in c0))
+chk("30 нормальних товарів → усі кандидати, нова ціна 340, маржа ≥ запасу", len(c0) == 30 and all(c["new"] == 340 and c["margin"] >= 25 for c in c0))
 cheap = {"id": "2001", "pr": 60, "n": "дешевий", "p": "u"}
 catalog["2001"] = cat_item(45); history["2001"] = {"price": 60, "since": STABLE}
 chk("збитковий після знижки (ціна 60 при собівартості ≈54) не кандидат", all(c["id"] != "2001" for c in ss.candidates(index + [cheap], catalog, history, NOW)))
@@ -112,13 +112,13 @@ chk("уцінка → не кандидат", all(c["id"] != "1007" for c in ss.
 pcts = [ss.item_pct("2026-10-26", str(i)) for i in range(1, 2001)]
 chk("item_pct: усі в межах 5…15, усі 11 значень трапляються, детермінований", min(pcts) == 5 and max(pcts) == 15 and len(set(pcts)) == 11 and ss.item_pct("2026-10-26", "7") == ss.item_pct("2026-10-26", "7") and any(ss.item_pct("2026-10-27", str(i)) != ss.item_pct("2026-10-26", str(i)) for i in range(1, 50)))
 cl = ss.candidates(index, catalog, history, NOW, label="2026-10-26")
-chk("candidates з датою партії: pct на кожному, new = ceil(old×(100−pct)/100), маржа ≥25, різні відсотки", cl and all(5 <= c["pct"] <= 15 and c["new"] == ss.sale_ceil(c["old"], c["pct"]) and c["margin"] >= 25 for c in cl) and len({c["pct"] for c in cl}) > 1)
+chk("candidates з датою партії: pct на кожному, new = ceil(old×(100−pct)/100), маржа ≥25, різні відсотки", cl and all(5 <= c["pct"] <= 15 and c["new"] == ss.sale_ceil(c["old"], c["pct"]) and c["margin"] >= ss.RESERVE_UAH for c in cl) and len({c["pct"] for c in cl}) > 1)
 _it = {"id": "9001", "pr": 300, "n": "тонка маржа", "p": "u"}
 catalog["9001"] = cat_item(220)
 _h = dict(history); _h["9001"] = {"price": 300, "since": STABLE}
 import competitor_pricing as _cp
 _cost = _cp.real_toysi_cost(catalog["9001"])
-_fit = [p for p in range(5, 16) if ss.margin_after(300, _cost, p) >= 25]
+_fit = [p for p in range(5, 16) if ss.margin_after(300, _cost, p) >= ss.RESERVE_UAH]
 _c9 = [c for c in ss.candidates(index + [_it], catalog, _h, NOW, label="2026-10-26") if c["id"] == "9001"]
 chk(f"тонка маржа: випадковий % знижується до дозволеного маржею (дозволені {_fit}), якщо не проходить жоден — не кандидат", (not _fit and not _c9) or (_fit and _c9 and _c9[0]["pct"] <= max(_fit)))
 del catalog["9001"]

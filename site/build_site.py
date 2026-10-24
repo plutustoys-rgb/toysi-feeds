@@ -417,7 +417,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
 # Захисні перевірки на КОЖНІЙ збірці (стара ціна має бути РЕАЛЬНОЮ, збитку нема): поточна ціна сайту == old; new < old; внесок після знижки ≥ SALE_RESERVE_UAH (запас 25 ₴); невідома собівартість — без знижки. Товар, що не пройшов, випадає з акції (ціна лишається звичайною).
 SALE_FILE = os.path.join(OUT, "sale_week.json")
 SALE_WEEK_ENABLED = True
-SALE_RESERVE_UAH = 25.0
+SALE_RESERVE_UAH = 80.0   # ТРЕБА дорівнювати site_sale.RESERVE_UAH (плановик і критерій фіду); було 25.0 до 24.10
 SALE_MIN_APPLIED_ALERT = 3   # менше застосованих позицій при діючій акції — алерт у Telegram
 SALE_ACTIVE = None   # виставляє build(): {"week","pct","from","until","items":{id:(old,new)}} або None
 

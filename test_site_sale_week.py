@@ -144,12 +144,12 @@ chk("бейдж картки = реальний відсоток із цін (38
 # ── 2. apply_sale: перевірки на кожній збірці ──
 SALE = {"week": "w", "pct": 15, "from": START, "until": END, "items": {"111": (400, 340)}}
 com = bs.cp.PAYMENT_COMMISSION.get("site", 0.0)
-cost_ok = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - 30          # внесок після знижки ≈ 30 ≥ 25
-cost_low = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - 20         # внесок ≈ 20 < 25
-cost_edge = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - 25.0           # внесок ТОЧНО 25 → застосовується
-chk("apply_sale: внесок рівно 25,00 ₴ — знижка діє; 24,99 — ні (межа запасу)", bs.apply_sale("111", 400, SALE, cost_edge) == (340, 400) and bs.apply_sale("111", 400, SALE, cost_edge + 0.01) == (400, None))
-chk("apply_sale: ціна == old, внесок ≥ 25 → (340, 400)", bs.apply_sale("111", 400, SALE, cost_ok) == (340, 400))
-chk("apply_sale: внесок після знижки < 25 ₴ — без знижки (збитку/тонкої маржі нема)", bs.apply_sale("111", 400, SALE, cost_low) == (400, None))
+cost_ok = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - (bs.SALE_RESERVE_UAH + 5)          # внесок після знижки = запас + 5
+cost_low = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - (bs.SALE_RESERVE_UAH - 5)         # внесок = запас − 5 (нижче запасу)
+cost_edge = 340 - 340 * com - bs.SITE_FULFILL_PER_ORDER - bs.SALE_RESERVE_UAH           # внесок ТОЧНО дорівнює запасу → застосовується
+chk("apply_sale: внесок рівно дорівнює запасу — знижка діє; на копійку менше — ні (межа запасу)", bs.apply_sale("111", 400, SALE, cost_edge) == (340, 400) and bs.apply_sale("111", 400, SALE, cost_edge + 0.01) == (400, None))
+chk("apply_sale: ціна == old, внесок ≥ запасу → (340, 400)", bs.apply_sale("111", 400, SALE, cost_ok) == (340, 400))
+chk("apply_sale: внесок після знижки < запасу — без знижки (збитку/тонкої маржі нема)", bs.apply_sale("111", 400, SALE, cost_low) == (400, None))
 chk("apply_sale: ціна сайту змінилась (≠ old) — без знижки (стара ціна має бути реальною)", bs.apply_sale("111", 401, SALE, cost_ok) == (401, None) and bs.apply_sale("111", 399, SALE, cost_ok) == (399, None))
 chk("apply_sale: невідома собівартість (0/None) — без знижки; id не з акції — без змін; нема акції — без змін", bs.apply_sale("111", 400, SALE, 0) == (400, None) and bs.apply_sale("111", 400, SALE, None) == (400, None) and bs.apply_sale("999", 400, SALE, cost_ok) == (400, None) and bs.apply_sale("111", 400, None, cost_ok) == (400, None))
 chk("apply_sale: new ≥ поточної ціни — без знижки", bs.apply_sale("111", 340, {"items": {"111": (400, 340)}}, cost_ok) == (340, None))

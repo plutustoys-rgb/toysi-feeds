@@ -73,7 +73,11 @@ def check_integrity(lib=None, require=False):
             raise RuntimeError(f"[reel_library] нема SHA256SUMS у {lib} — цілісність заливки не звірити")
         return False
     want = {}
-    for ln in sums.read_text(encoding="utf-8-sig").splitlines():
+    try:
+        sums_text = sums.read_text(encoding="utf-8-sig")
+    except (OSError, ValueError) as e:        # напр. SHA256SUMS у UTF-16 (PowerShell 5.1 `>`/Out-File): це помилка заливки, а не падіння
+        raise RuntimeError(f"[reel_library] SHA256SUMS нечитабельний ({type(e).__name__}; потрібен UTF-8)") from e
+    for ln in sums_text.splitlines():
         m = re.fullmatch(r"([0-9a-fA-F]{64})\s+\*?(.+?)\s*", ln)
         if m:
             want[m.group(2).replace("\\", "/")] = m.group(1).lower()
@@ -87,9 +91,13 @@ def check_integrity(lib=None, require=False):
                 bad.append(f"{rel}: нема в SHA256SUMS")
                 continue
             h = hashlib.sha256()
-            with open(lib / rel, "rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(chunk)
+            try:
+                with open(lib / rel, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+            except OSError as e:
+                bad.append(f"{rel}: файл нечитабельний ({type(e).__name__})")
+                continue
             if h.hexdigest() != exp:
                 bad.append(f"{rel}: sha256 не збігається (файл пошкоджено/обрізано)")
     if bad:

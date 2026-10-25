@@ -8,8 +8,8 @@ Wants=network-online.target
 Type=oneshot
 User=root
 WorkingDirectory=/opt/plutustoys
-# КРИТИЧНО (CLAUDE.md): venv-python. Бібліотека схвалених перших карт: /opt/plutustoys/plutus_scene_library (manifest.json + SHA256SUMS + first_card/ + end_mascot/).
-Environment=PLUTUS_SCENE_LIBRARY=/opt/plutustoys/plutus_scene_library
+# КРИТИЧНО (CLAUDE.md): venv-python. Бібліотека схвалених перших карт: /opt/plutustoys/plutus_scene_library (manifest.json + SHA256SUMS + first_card/ + end_mascot/);
+# шлях типовий (reel_library.DEFAULT_VPS_DIR), змінну НЕ задаємо: поки теки нема, reel_weekly тихо нічого не робить (exit 0) — автозбір вмикає сама заливка бібліотеки.
 ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/reel_weekly.py build --vps
 # Рендер 1080x1920 ≈ хвилини на рілс; не заважаємо order-pipeline (2 ядра, ≈2,7 ГБ вільної RAM): низький пріоритет і стеля пам'яті.
 Nice=15

@@ -547,8 +547,8 @@ def _validate_spec(spec, feed):
 def build(spec, feed_path=FEED):
     feed = live_feed(feed_path)
     os.makedirs(OUT, exist_ok=True)
+    lib_mode = bool(reel_library.library_dir())      # один раз на збірку (до валідації): тека бібліотеки не може зʼявитись/зникнути посеред рендера
     validated = _validate_spec(spec, feed)
-    lib_mode = bool(reel_library.library_dir())      # один раз на збірку: тека бібліотеки не може зʼявитись/зникнути посеред рендера
     _dur = (4.6 if spec.get("first_scene") else 0.0) + 2.0 * len(validated) + 2.5     # сцена ≤ FIRST_SCENE_SECONDS_MAX (перевіряється при рендері)
     if _dur > REEL_SECONDS_MAX:
         sys.exit(f"[reel] СТОП: орієнтовна тривалість {_dur:.1f} с > {REEL_SECONDS_MAX:.0f} с (вимога SMM) — менше товарів")

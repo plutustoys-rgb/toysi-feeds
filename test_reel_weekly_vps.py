@@ -244,12 +244,144 @@ try:
 finally:
     reel_batch.process, reel_batch.site_prices = real_process, real_prices
 
-# ── 6. вимкнено без бібліотеки / з пошкодженою
+# ── 6. без бібліотеки: тихий вихід; з пошкодженою: СТОП + сигнал
 os.environ.pop("PLUTUS_SCENE_LIBRARY", None)
-if rl.library_dir() is None:
-    chk("run_vps без бібліотеки → СТОП", exits(rw.run_vps, 4, str(q), str(tmp / "s5"), alert=lambda k, t: alerts.append((k, t))))
+real_default = rl.DEFAULT_VPS_DIR
+rl.DEFAULT_VPS_DIR = str(tmp / "no_such_dir")
+alerts.clear()
+chk("library_dir() без env і без теки = None", rl.library_dir() is None)
+chk("run_vps без бібліотеки → тихо [] (exit 0), без сигналу (автозбір вмикає заливка бібліотеки)", rw.run_vps(4, str(q), str(tmp / "s5"), alert=lambda k, t: alerts.append((k, t))) == [] and alerts == [])
+os.environ["PLUTUS_SCENE_LIBRARY"] = str(tmp / "no_such_dir2")
+chk("PLUTUS_SCENE_LIBRARY на неіснуючу теку → теж тихо []", rw.run_vps(4, str(q), str(tmp / "s5"), alert=lambda k, t: alerts.append((k, t))) == [] and alerts == [])
+rl.DEFAULT_VPS_DIR = real_default
 os.environ["PLUTUS_SCENE_LIBRARY"] = str(lib3)
 alerts.clear()
 chk("run_vps з пошкодженою бібліотекою → СТОП + сигнал reel_weekly_lib", exits(rw.run_vps, 4, str(q), str(tmp / "s6"), alert=lambda k, t: alerts.append((k, t))) and [k for k, _ in alerts] == ["reel_weekly_lib"])
+os.environ["PLUTUS_SCENE_LIBRARY"] = str(lib)
+
+# ── 7. check_integrity: UTF-16 і відсутній PNG → RuntimeError (не traceback)
+lib5 = make_lib(tmp / "lib_utf16")
+txt = (lib5 / "SHA256SUMS").read_text(encoding="utf-8")
+(lib5 / "SHA256SUMS").write_bytes(txt.encode("utf-16"))
+chk("SHA256SUMS у UTF-16 (PowerShell 5.1) → RuntimeError", raises(rl.check_integrity, lib5, True))
+lib6 = make_lib(tmp / "lib_nopng")
+(lib6 / "end_mascot" / "wink_f1.png").unlink()
+chk("у manifest є end_mascot_png, а файла нема → RuntimeError", raises(rl.check_integrity, lib6, True))
+
+# ── 8. імена: чергу й published/ враховано; часткова заливка прибирається
+q2 = tmp / "q2"
+(q2 / "published").mkdir(parents=True)
+(q2 / "puzzles_01.mp4").write_bytes(b"x")                 # сирота без json
+(q2 / "published" / "puzzles_02.json").write_text("{}")   # уже опублікований
+nm = rw.next_queue_name("puzzles", str(tmp / "out_names"), extra_dirs=(str(q2),))
+chk("next_queue_name уникає імен із черги (mp4-сирота) і з published/: → puzzles_03", nm == "puzzles_03")
+
+stg5 = tmp / "stg5"
+stg5.mkdir()
+for ext, body in ((".mp4", b"video"), (".caption.txt", b"caption"), (".json", b"{}")):
+    (stg5 / f"z_01{ext}").write_bytes(body)
+q3 = tmp / "q3"
+q3.mkdir()
+import shutil as _sh
+real_copy = _sh.copyfile
+n_copy = {"n": 0}
+
+
+def failing_copy(a, b_):
+    n_copy["n"] += 1
+    if n_copy["n"] == 2:
+        raise OSError(28, "No space left on device")
+    return real_copy(a, b_)
+
+
+_sh.copyfile = failing_copy
+try:
+    try:
+        rw.publish_to_queue("z_01", str(stg5), str(q3))
+        raised_os = False
+    except OSError:
+        raised_os = True
+    chk("publish_to_queue: збій диска на 2-му файлі → OSError піднімається далі", raised_os)
+finally:
+    _sh.copyfile = real_copy
+chk("після збою в черзі НІЧОГО від z_01 (ні mp4, ні *.incoming), json не з'явився", os.listdir(q3) == [])
+chk("staging після збою не втрачено (повтор можливий)", all((stg5 / f"z_01{e}").is_file() for e in (".mp4", ".caption.txt", ".json")))
+
+# ── 9. слоти за симуляцією черги (поточний реальний стан VPS 25.10)
+q4 = tmp / "q4"
+q4.mkdir()
+for nm_, nb in (("builders_cars_01", "2026-10-23"), ("puzzles_01", "2026-10-28"), ("squish_01", "2026-10-31"), ("bubbles_01", "2026-11-04"), ("games_01", "2026-11-07")):
+    (q4 / f"{nm_}.json").write_text(json.dumps({"verify": [], "not_before": nb + "T00:00"}))
+last = rw.queue_last_slot(str(q4), date(2026, 10, 25))
+chk("queue_last_slot для поточної черги = вт 10.11 (5 рілсів на 27.10, 30.10, 03.11, 06.11, 10.11)", last == date(2026, 11, 10))
+chk("наступні слоти: пт 13.11, вт 17.11", rw.next_slots(last, 2) == [date(2026, 11, 13), date(2026, 11, 17)])
+chk("порожня черга → None", rw.queue_last_slot(str(tmp / "nope"), date(2026, 10, 25)) is None)
+
+# ── 10. засів стану з черги
+st0 = {"used_ids": [], "themes": [], "scenes": []}
+q5 = tmp / "q5"
+q5.mkdir()
+for nm_, nb in (("puzzles_01", "2026-10-30"), ("builders_cars_01", "2026-10-27"), ("squish_01", "2026-11-03")):
+    (q5 / f"{nm_}.json").write_text(json.dumps({"verify": [], "not_before": nb + "T00:00"}))
+seeded = rw.seed_state_from_queue(st0, str(q5), {"puzzles", "squish", "dough"})
+chk("засів: теми з імен черги за not_before, лише відомі теми (builders_cars не тема)", seeded["themes"] == ["puzzles", "squish"])
+chk("засів не чіпає вже наявний стан", rw.seed_state_from_queue({"used_ids": [], "themes": ["dough"], "scenes": []}, str(q5), {"puzzles"})["themes"] == ["dough"])
+
+# ── 11. refresh_queue: нові ціни, виселення, SMM-рілс не чіпаємо
+q6, s6 = tmp / "q6", tmp / "s6x"
+(s6 / "_specs").mkdir(parents=True)
+q6.mkdir()
+SPEC = {"queue_name": "r_01", "publish_date": "2026-11-03", "first_scene": "scene_wink_RENDER_GREEN.mp4", "endscene": "scene_nod_RENDER_GREEN.mp4",
+        "caption": {"intro": "Інтро", "sub": "", "cta": "Клич", "hashtags": ["х"]},
+        "items": [{"id": "1", "cap_emoji": "🧸", "cap_text": "Товар А"}, {"id": "2", "cap_emoji": "🧸", "cap_text": "Товар Б"}]}
+(s6 / "_specs" / "r_01.json").write_text(json.dumps(SPEC, ensure_ascii=False), encoding="utf-8")
+(q6 / "r_01.mp4").write_bytes(b"v")
+(q6 / "r_01.caption.txt").write_text("старий", encoding="utf-8")
+(q6 / "r_01.json").write_text(json.dumps({"verify": [{"id": "1", "price": 100}, {"id": "2", "price": 200}], "not_before": "2026-11-03T00:00"}))
+(q6 / "smm_01.mp4").write_bytes(b"v")
+(q6 / "smm_01.json").write_text(json.dumps({"verify": [{"id": "9", "price": 5}], "not_before": "2026-11-06T00:00"}))
+al6 = []
+r_, e_ = rw.refresh_queue(str(q6), str(s6), {"1": 100, "2": 250, "9": 777}, lambda k, t: al6.append(k))
+mf = json.load(open(q6 / "r_01.json", encoding="utf-8"))
+cap = (q6 / "r_01.caption.txt").read_text(encoding="utf-8")
+chk("refresh: ціна товару 2 змінилась → verify і підпис оновлено, not_before збережено", r_ == ["r_01"] and e_ == [] and mf["verify"][1]["price"] == 250 and "250 грн" in cap and mf["not_before"] == "2026-11-03T00:00")
+chk("refresh: SMM-рілс (нема спеки у staging) не чіпаємо навіть із чужою ціною", json.load(open(q6 / "smm_01.json"))["verify"][0]["price"] == 5)
+r_, e_ = rw.refresh_queue(str(q6), str(s6), {"1": 100}, lambda k, t: al6.append(k))
+chk("refresh: товару 2 нема в наявності → рілс виселено в _evicted/, з черги зник, сигнал reel_weekly_evict",
+    e_ == ["r_01"] and not (q6 / "r_01.json").exists() and (s6 / "_evicted" / "r_01.json").is_file() and (s6 / "_evicted" / "r_01.mp4").is_file() and al6[-1] == "reel_weekly_evict")
+chk("після виселення queue_count не рахує його (лишається лише SMM-рілс)", rw.queue_count(str(q6)) == 1)
+
+# ── 12. сезонні сцени не в ротації
+lib7 = make_lib(tmp / "lib_seasonal")
+m7 = json.loads((lib7 / "manifest.json").read_text(encoding="utf-8"))
+m7["scenes"]["halloween"]["status"] = "approved"             # власник «схвалив» сезонну: у ротацію авто-режиму вона НЕ входить
+(lib7 / "manifest.json").write_text(json.dumps(m7), encoding="utf-8")
+os.environ["PLUTUS_SCENE_LIBRARY"] = str(lib7)
+chk("сезонна approved-сцена (halloween) не потрапляє в ротацію й ендсцени авто-режиму",
+    "scene_halloween_RENDER_GREEN.mp4" not in rw.library_rotation() and "scene_halloween_RENDER_GREEN.mp4" not in rw.library_end_choices())
+os.environ["PLUTUS_SCENE_LIBRARY"] = str(lib)
+
+# ── 13. ручний потік не змінився: збій збірки без on_built/failures — виняток як раніше; VPS-режим ловить будь-який виняток
+reel_batch.site_prices = lambda: {}
+
+
+def boom_sysexit(*a, **k):
+    sys.exit("[reel_batch] СТОП: тест")
+
+
+def boom_value(*a, **k):
+    raise ValueError("несподіване")
+
+
+reel_batch.process = boom_sysexit
+manual_out = tmp / "manual_out"
+chk("ручний потік: СТОП збірки НЕ ковтається (SystemExit як раніше)",
+    exits(rw.run_build, 1, str(manual_out), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(), now_forbidden=lambda it: False, specs_dir=EMPTY))
+reel_batch.process = boom_value
+fl = []
+b_ = rw.run_build(1, str(tmp / "vps_out"), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(), now_forbidden=lambda it: False, specs_dir=EMPTY,
+                  failures=fl, on_built=lambda spec: None)
+chk("VPS-режим: ValueError збірки не валить партію, потрапляє в failures", b_ == [] and len(fl) == 1 and "ValueError" in fl[0])
+reel_batch.process, reel_batch.site_prices = real_process, real_prices
 
 sys.exit(1 if F else 0)

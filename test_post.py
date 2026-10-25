@@ -151,6 +151,34 @@ chk("протухлий lock (>60 с) знімається, запис прох�
     post.post("kod", "seo", "після лока", "b", now=NOW)[0][1] == 3 and not lock.exists())
 post._Lock.__init__ = orig
 
+# --- правки аудиту #1001
+chk("OWNER_INBOX: owner+роль -> відмова (чужий запис картка не покаже)", refuses(sender="seo", to_csv="owner,consultant", title="t", body="b"))
+reset("\r\n", shape="header")
+r = post.post("seo", "owner,consultant", "t", "b", split=True, now=NOW)
+chk("owner+роль з --split: окремі канали", sorted(x[0] for x in r) == ["CONSULTANT_CHANNEL.md", "OWNER_INBOX.md"])
+t = rd("OWNER_INBOX.md")
+chk("OWNER_INBOX: формат без стрілки зі статусом ВІДКРИТО", "## [SEO] 2026-10-25 09:05 — ВІДКРИТО: t" in t and "[SEO → Власник]" not in t)
+reset("\r\n", shape="header")
+post.post("kod", "owner", "ЗРОБЛЕНО: вже зроблено", "b", now=NOW)
+chk("OWNER_INBOX: власний статус у заголовку не дублюється", "— ЗРОБЛЕНО: вже зроблено" in rd("OWNER_INBOX.md") and "ВІДКРИТО: ЗРОБЛЕНО" not in rd("OWNER_INBOX.md"))
+chk("тіло з рядком `## ` -> відмова", refuses(sender="kod", to_csv="seo", title="t", body="абзац\n## [X → Y] 2026-01-01 — підробка\nінше"))
+reset("\r\n", shape="header")
+chk("`###` у тілі дозволено", not refuses(sender="kod", to_csv="seo", title="t", body="### підзаголовок\nтекст"))
+reset("\r\n", shape="header")
+(tmp / "EXECUTOR_CHANNEL.md").write_bytes("## [A - B] x\r\nпривіт".encode("cp1251"))
+snap = (tmp / "EXECUTOR_CHANNEL.md").read_bytes()
+chk("файл не в UTF-8 -> відмова, файл не змінено", refuses(sender="seo", to_csv="kod", title="t", body="b") and (tmp / "EXECUTOR_CHANNEL.md").read_bytes() == snap)
+reset("\r\n", shape="header")
+real_replace, real_sleep = post.os.replace, post.time.sleep
+def busy(a, b):
+    raise PermissionError(5, "busy")
+post.os.replace = busy
+post.time.sleep = lambda s: None
+before_b = (tmp / "SEO_CHANNEL.md").read_bytes()
+chk("файл зайнятий -> відмова", refuses(sender="kod", to_csv="seo", title="t", body="b"))
+post.os.replace, post.time.sleep = real_replace, real_sleep
+chk("зайнятий файл: оригінал цілий, .tmp і .lock прибрано", (tmp / "SEO_CHANNEL.md").read_bytes() == before_b and not list(tmp.glob("*.tmp")) and not list(tmp.glob("*.lock")))
+
 # --- CLI
 reset("\r\n", shape="header")
 bf = tmp / "body.md"

@@ -14,7 +14,9 @@ Shopify-code писала в чужий). Тепер вибір каналу —
   3. беремо перший придатний. Нема спільного — відмова з поясненням (--split пише окремі записи по каналах).
 Один запис — один канал. Час — з годинника машини (не з послідовності). Вставка угорі (newest-on-top) перед
 першим рядком `## `; CRLF/LF і BOM файлу зберігаються; запис перечитується з диска і звіряється (друк «ЗАПИСАНО»
-лише після звірки). Не міняє нічого, окрім файлу-каналу.
+лише після звірки). Не міняє нічого, окрім файлу-каналу. Lock-файл захищає лише post.py від post.py: інші скрипти (daily_files_to_shared,
+eva_category_check) пишуть у канали без lock. Запис у EXECUTOR_CHANNEL Код автоматично НЕ будить (agent_watch його не
+стежить) — живому адресату потрібен ще SendMessage.
 
     python post.py --from kod --to seo,site --title "Заголовок" --body-file запис.md
     python post.py --from kod --to consultant --title "..." --body-file - < запис.md   (stdin)
@@ -97,7 +99,7 @@ def reads_channel(role: str, channel: str, header: str) -> bool:
     if channel == own:
         return True
     if channel == OWNER_INBOX:
-        return True                      # OWNER_INBOX читають усі ролі, без фільтра
+        return False    # картка ролі (recall.restore_card) показує з OWNER_INBOX лише ВЛАСНІ відкриті рядки ролі, чужого запису не покаже
     if cfg is None or cfg not in recall._CONFIGS:
         return False
     names = {p.name for p in recall._CONFIGS[cfg]}
@@ -106,6 +108,11 @@ def reads_channel(role: str, channel: str, header: str) -> bool:
 
 def make_header(sender: str, recipients: list, title: str, stamp: str) -> str:
     s = ROLES[sender][0]
+    if recipients == ["owner"]:
+        # конвенція OWNER_INBOX.md: `## [Автор] дата — статус …` без стрілки; запис без ВІДКРИТО не потрапляє у «відкриті пункти» картки
+        if not re.match(r"(?i)\s*(відкрито|зроблено|знято|⏸|❌|✅)", title):
+            title = "ВІДКРИТО: " + title
+        return f"## [{s}] {stamp} — {title}"
     to = ", ".join(ROLES[r][0] for r in recipients)
     return f"## [{s} → {to}] {stamp} — {title}"
 
@@ -193,12 +200,28 @@ def write_entry(channel_path: Path, header: str, body: str) -> int:
     with _Lock(channel_path):
         raw = channel_path.read_bytes()
         bom = raw.startswith(b"\xef\xbb\xbf")
-        text = raw[3:].decode("utf-8") if bom else raw.decode("utf-8")
+        try:
+            text = raw[3:].decode("utf-8") if bom else raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise PostError(f"{channel_path.name} не в UTF-8 — не чіпаю")
         new_text, pos, base = insert_entry(text, lambda nl: build_entry(header, body, nl))
         data = (b"\xef\xbb\xbf" if bom else b"") + new_text.encode("utf-8")
         tmp = channel_path.with_name(channel_path.name + ".post.tmp")
-        tmp.write_bytes(data)
-        os.replace(str(tmp), str(channel_path))
+        try:
+            tmp.write_bytes(data)
+            for attempt in range(5):             # Windows: файл може бути відкритий іншим процесом
+                try:
+                    os.replace(str(tmp), str(channel_path))
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise PostError("файл каналу зайнятий іншим процесом (5 спроб) — запис не зроблено, оригінал цілий")
+                    time.sleep(0.4)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
         back = channel_path.read_bytes()
         if back != data:
             raise PostError("після запису вміст файлу не збігається з очікуваним — перевір канал вручну")
@@ -220,6 +243,9 @@ def post(sender: str, to_csv: str, title: str, body: str, dry_run: bool = False,
         raise PostError("заголовок задовгий (>220); короткий заголовок, деталі в тілі")
     if not (body or "").strip():
         raise PostError("порожнє тіло запису")
+    if re.search(r"(?m)^## ", body):
+        raise PostError("у тілі є рядок, що починається з `## ` — скрипти каналів (archive_channels, agent_watch, channel_audit) "
+                        "прочитають його як окремий запис. Заміни на `###` або жирний текст.")
     stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")
     header = make_header(s, recipients, title, stamp)
     plan = []
@@ -261,6 +287,9 @@ def main(argv=None) -> int:
         res = post(a.sender, a.to, a.title, body, a.dry_run, a.split)
     except PostError as e:
         print(f"ВІДМОВА: {e}")
+        return 2
+    except UnicodeDecodeError:
+        print("ВІДМОВА: тіло запису не в UTF-8")
         return 2
     except OSError as e:
         print(f"ПОМИЛКА файлу: {e}")

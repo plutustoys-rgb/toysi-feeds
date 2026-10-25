@@ -40,5 +40,12 @@ for p in cat2:
     cat2[p]["category_name"] = "Інша назва категорії"        # навіть якщо категорію перейменують — pid-виняток тримає
 items2, st2 = gg.build_feed_items(cat2, {}, {}, {}, None, None)
 chk("при ІНШІЙ назві категорії 4 pid арбалетів усе одно виключені, «Азартний» 141716 лишається в фіді", {i["pid"] for i in items2} == {"141716"} and st2.get("excluded_product") == 4)
+# 289264 «До Дна!»: на коробці «алкогольна гра 18+» (SEO 25.10), у назві мітки нема — фільтр за назвою його не бачить, тому точковий pid
+t289264 = 'Настільна гра "До Дна!" (укр)'
+chk("назва «До Дна!» чиста для is_adult_product (саме тому потрібен pid-виняток)", gg.is_adult_product(t289264) is False)
+cat3 = {"289264": item("289264", t289264), "289265": item("289265", "Настільна гра «Дитяче лото»")}
+items3, st3 = gg.build_feed_items(cat3, {}, {}, {}, None, None)
+chk("289264 виключено з фідів (Google/Meta/Bing), сусідній 289265 лишився, excluded_product = 1", {i["pid"] for i in items3} == {"289265"} and st3.get("excluded_product") == 1)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

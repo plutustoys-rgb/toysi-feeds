@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys: тижневий добір черги рілсів (неділя вночі; публікація — окремо reel-autopublish.timer вт/пт 18:30)
+
+[Timer]
+# Раз на тиждень, коли VPS найменш навантажений; добирає лише недостачу до 6 майбутніх слотів (не більше 3 рілсів за запуск).
+OnCalendar=Sun *-*-* 03:40:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

@@ -353,6 +353,10 @@ def check_library_scenes(first_scene, endscene):
     ok = reel_library.approved_scenes()
     if not ok:
         sys.exit("[reel] СТОП: бібліотека налаштована, але схвалених сцен нема (manifest.json) — рілс не збираємо")
+    try:
+        reel_library.check_integrity()          # SHA256SUMS (якщо є): обрізана/пошкоджена заливка → СТОП
+    except RuntimeError as e:
+        sys.exit(f"[reel] СТОП: {e}")
     if first_scene and reel_library.first_card_path(first_scene) is None:
         sys.exit(f"[reel] СТОП: перша сцена {first_scene!r} не схвалена власником (схвалені: {', '.join(sorted(ok))})")
     if reel_library.end_mascot_path(endscene) is None:
@@ -364,7 +368,7 @@ def check_first_scene(scene_file, on_date):
     """Перевірки сцени для ПЕРШОЇ карти: файл існує, не в чорному списку, сезонне вікно (дата публікації)."""
     check_endscene(scene_file)
     if reel_library.library_dir():     # бібліотека: файл — first_card/<ключ>.mp4 (check_library_scenes), а не plutus_scenes/
-        if not scene_season_ok(scene_file, on_date):
+        if not scene_season_ok(reel_library.canonical_scene_file(scene_file), on_date):   # голий ключ теж під сезонне вікно
             sys.exit(f"[reel] СТОП: сезонна сцена {scene_file} недоступна на дату {on_date.isoformat()}")
         return
     if not os.path.isfile(os.path.join(SCENES_DIR, scene_file)):
@@ -520,7 +524,7 @@ def _validate_spec(spec, feed):
         _on = _date.fromisoformat(str(spec.get("publish_date") or _date.today().isoformat())[:10])
     except ValueError:
         sys.exit(f"[reel] СТОП: publish_date має бути ISO-датою, а не {spec.get('publish_date')!r}")
-    if not scene_season_ok(spec["endscene"], _on):
+    if not scene_season_ok(reel_library.canonical_scene_file(spec["endscene"]) if reel_library.library_dir() else spec["endscene"], _on):
         sys.exit(f"[reel] СТОП: сезонна ендсцена {spec['endscene']} недоступна на дату {_on.isoformat()}")
     if spec.get("first_scene"):
         check_first_scene(spec["first_scene"], _on)
@@ -544,6 +548,7 @@ def build(spec, feed_path=FEED):
     feed = live_feed(feed_path)
     os.makedirs(OUT, exist_ok=True)
     validated = _validate_spec(spec, feed)
+    lib_mode = bool(reel_library.library_dir())      # один раз на збірку: тека бібліотеки не може зʼявитись/зникнути посеред рендера
     _dur = (4.6 if spec.get("first_scene") else 0.0) + 2.0 * len(validated) + 2.5     # сцена ≤ FIRST_SCENE_SECONDS_MAX (перевіряється при рендері)
     if _dur > REEL_SECONDS_MAX:
         sys.exit(f"[reel] СТОП: орієнтовна тривалість {_dur:.1f} с > {REEL_SECONDS_MAX:.0f} с (вимога SMM) — менше товарів")
@@ -559,7 +564,7 @@ def build(spec, feed_path=FEED):
     done = False
     try:
         if spec.get("first_scene"):          # шаблон «сцена першою» (рілси №5+, рішення власника 21.10)
-            for fr in (reel_library.iter_first_card_frames(spec["first_scene"]) if reel_library.library_dir()
+            for fr in (reel_library.iter_first_card_frames(spec["first_scene"]) if lib_mode
                        else scene_first_frames(spec["first_scene"], bg)):
                 wr.append_data(fr)
                 total += 1
@@ -575,7 +580,7 @@ def build(spec, feed_path=FEED):
             total += seg_frames
             print(f"[reel:{spec['out']}] {it['id']}  у кадрі: {' · '.join(it['spec'])}"
                   f"   | у підпис: {price:>9}  | {live_title[:46]}")
-        for fr in (endcard_library if reel_library.library_dir() else endcard)(bg, int(2.5 * FPS), spec["endline"], spec["endscene"]):
+        for fr in (endcard_library if lib_mode else endcard)(bg, int(2.5 * FPS), spec["endline"], spec["endscene"]):
             wr.append_data(fr)
         total += int(2.5 * FPS)
         done = True

@@ -36,6 +36,7 @@ from reel_matte import clean_mascot   # noqa: E402  чистий виріз ма
 from reel_matte import SCENES as SCENES_DIR   # noqa: E402  plutus_scenes/
 from plutus_overlay import read_frames   # noqa: E402  кадри сцени (mp4 → список кадрів, fps)
 import reel_prep_product              # noqa: E402  кадрування фото товару в 1080²
+import reel_library                   # noqa: E402  схвалена власником бібліотека перших карт (автозбирач на VPS; None → старий потік)
 import reel_segment                   # noqa: E402  зум-пульсація сегмента
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -345,9 +346,27 @@ def check_endscene(scene_file):
         sys.exit(f"[reel] СТОП: ендсцена {scene_file} у чорному списку (дефект вирізу) — рілс не рендеримо")
 
 
+def check_library_scenes(first_scene, endscene):
+    """Режим бібліотеки (PLUTUS_SCENE_LIBRARY / /opt/plutustoys/plutus_scene_library): рілс збирається ЛИШЕ зі сцен, схвалених власником
+    (рішення 25.10.2026). Перша карта — схвалена сцена; ендсцена — схвалена сцена З end_mascot PNG. Інакше СТОП (не фолбек на старі сцени —
+    вони з відхиленою вирізкою)."""
+    ok = reel_library.approved_scenes()
+    if not ok:
+        sys.exit("[reel] СТОП: бібліотека налаштована, але схвалених сцен нема (manifest.json) — рілс не збираємо")
+    if first_scene and reel_library.first_card_path(first_scene) is None:
+        sys.exit(f"[reel] СТОП: перша сцена {first_scene!r} не схвалена власником (схвалені: {', '.join(sorted(ok))})")
+    if reel_library.end_mascot_path(endscene) is None:
+        have = sorted(k for k in ok if reel_library.end_mascot_path(k))
+        sys.exit(f"[reel] СТОП: ендсцена {endscene!r} не схвалена або без end_mascot PNG (доступні: {', '.join(have)})")
+
+
 def check_first_scene(scene_file, on_date):
     """Перевірки сцени для ПЕРШОЇ карти: файл існує, не в чорному списку, сезонне вікно (дата публікації)."""
     check_endscene(scene_file)
+    if reel_library.library_dir():     # бібліотека: файл — first_card/<ключ>.mp4 (check_library_scenes), а не plutus_scenes/
+        if not scene_season_ok(scene_file, on_date):
+            sys.exit(f"[reel] СТОП: сезонна сцена {scene_file} недоступна на дату {on_date.isoformat()}")
+        return
     if not os.path.isfile(os.path.join(SCENES_DIR, scene_file)):
         sys.exit(f"[reel] СТОП: сцени {scene_file} нема в plutus_scenes/ (залий render_ready-сцени на VPS)")
     if not scene_season_ok(scene_file, on_date):
@@ -452,6 +471,40 @@ def endcard(bg, n_frames, endline, scene_file):
     return [arr.clip(0, 255).astype(np.uint8)] * n_frames
 
 
+def endcard_library(bg, n_frames, endline, endscene):
+    """Ендкартка БЕЗ білого квадрата (рішення власника/SMM 24.10) з готової RGBA-вирізки бібліотеки (end_mascot PNG): ключувати на VPS нічого не треба."""
+    img = Image.fromarray(bg.copy())
+    d = ImageDraw.Draw(img)
+    f_brand = _font(_F_BOLD, 104)
+    f_line = _font(_F_REG, 48)
+    d.text(((W - d.textlength("PlutusToys", font=f_brand)) / 2, 1090), "PlutusToys", font=f_brand, fill=T["ink"])
+    d.text(((W - d.textlength(endline, font=f_line)) / 2, 1235), endline, font=f_line, fill=T["muted"])
+    cta = "Ціна й замовлення — у підписі"
+    f_cta = _font(_F_BOLD, 46)
+    cw = d.textlength(cta, font=f_cta)
+    cx, cy = (W - cw) / 2, 1360
+    assert cy + 76 < SAFE_BOT, "CTA залазить у нижню UI-зону"
+    d.rounded_rectangle([cx - 40, cy - 14, cx + cw + 40, cy + 76], 46, fill=T["accent_fill"])
+    d.text((cx, cy), cta, font=f_cta, fill=T["on_accent"])
+    arr = np.asarray(img).astype(np.float32)
+    y1 = EC_TOP + EC_H
+    rgb, alpha = reel_library.load_end_mascot(endscene)
+    h0, w0 = alpha.shape
+    s = min(MASCOT_MAX_H / h0, EC_W * 0.86 / w0)
+    w, h = max(1, int(w0 * s)), max(1, int(h0 * s))
+    rgb = np.asarray(Image.fromarray(rgb.clip(0, 255).astype(np.uint8)).resize((w, h), Image.LANCZOS)).astype(np.float32)
+    al = np.asarray(Image.fromarray((alpha * 255).astype(np.uint8)).resize((w, h), Image.LANCZOS)).astype(np.float32) / 255.0
+    x = (W - w) // 2
+    y = y1 - FOOT_INSET - h
+    sh = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(sh).ellipse([x + w * 0.12, y + h - 30, x + w * 0.88, y + h + 36], fill=95)
+    sh = (np.asarray(sh.filter(ImageFilter.GaussianBlur(22))).astype(np.float32) / 255.0)[..., None]
+    arr = arr * (1 - sh) + np.array([196, 152, 120], np.float32) * sh
+    a = al[..., None]
+    arr[y:y + h, x:x + w] = rgb * a + arr[y:y + h, x:x + w] * (1 - a)
+    return [arr.clip(0, 255).astype(np.uint8)] * n_frames
+
+
 # ─────────────────────────── збірка ───────────────────────────
 
 def _validate_spec(spec, feed):
@@ -471,6 +524,8 @@ def _validate_spec(spec, feed):
         sys.exit(f"[reel] СТОП: сезонна ендсцена {spec['endscene']} недоступна на дату {_on.isoformat()}")
     if spec.get("first_scene"):
         check_first_scene(spec["first_scene"], _on)
+    if reel_library.library_dir():
+        check_library_scenes(spec.get("first_scene"), spec["endscene"])
     if not spec["items"]:
         sys.exit("[reel] СТОП: порожній items — нема чого рендерити")
     validated = []
@@ -504,7 +559,8 @@ def build(spec, feed_path=FEED):
     done = False
     try:
         if spec.get("first_scene"):          # шаблон «сцена першою» (рілси №5+, рішення власника 21.10)
-            for fr in scene_first_frames(spec["first_scene"], bg):
+            for fr in (reel_library.iter_first_card_frames(spec["first_scene"]) if reel_library.library_dir()
+                       else scene_first_frames(spec["first_scene"], bg)):
                 wr.append_data(fr)
                 total += 1
             print(f"[reel:{spec['out']}] перша карта = сцена {spec['first_scene']} ({total / FPS:.1f} с)")
@@ -519,7 +575,7 @@ def build(spec, feed_path=FEED):
             total += seg_frames
             print(f"[reel:{spec['out']}] {it['id']}  у кадрі: {' · '.join(it['spec'])}"
                   f"   | у підпис: {price:>9}  | {live_title[:46]}")
-        for fr in endcard(bg, int(2.5 * FPS), spec["endline"], spec["endscene"]):
+        for fr in (endcard_library if reel_library.library_dir() else endcard)(bg, int(2.5 * FPS), spec["endline"], spec["endscene"]):
             wr.append_data(fr)
         total += int(2.5 * FPS)
         done = True

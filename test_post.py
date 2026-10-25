@@ -163,6 +163,7 @@ post.post("kod", "owner", "ЗРОБЛЕНО: вже зроблено", "b", now=
 chk("OWNER_INBOX: власний статус у заголовку не дублюється", "— ЗРОБЛЕНО: вже зроблено" in rd("OWNER_INBOX.md") and "ВІДКРИТО: ЗРОБЛЕНО" not in rd("OWNER_INBOX.md"))
 chk("тіло з рядком `## ` -> відмова", refuses(sender="kod", to_csv="seo", title="t", body="абзац\n## [X → Y] 2026-01-01 — підробка\nінше"))
 reset("\r\n", shape="header")
+chk("тіло з одиноким \r перед `## ` -> відмова", refuses(sender="kod", to_csv="seo", title="t", body="a\r## [X → Y] 2026-10-25 fake\rb"))
 chk("`###` у тілі дозволено", not refuses(sender="kod", to_csv="seo", title="t", body="### підзаголовок\nтекст"))
 reset("\r\n", shape="header")
 (tmp / "EXECUTOR_CHANNEL.md").write_bytes("## [A - B] x\r\nпривіт".encode("cp1251"))

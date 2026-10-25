@@ -243,7 +243,7 @@ def post(sender: str, to_csv: str, title: str, body: str, dry_run: bool = False,
         raise PostError("заголовок задовгий (>220); короткий заголовок, деталі в тілі")
     if not (body or "").strip():
         raise PostError("порожнє тіло запису")
-    if re.search(r"(?m)^## ", body):
+    if re.search(r"(?m)^## ", re.sub(r"\r\n|\r", "\n", body)):   # як у build_entry: одинокий \r теж перенос рядка
         raise PostError("у тілі є рядок, що починається з `## ` — скрипти каналів (archive_channels, agent_watch, channel_audit) "
                         "прочитають його як окремий запис. Заміни на `###` або жирний текст.")
     stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")

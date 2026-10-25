@@ -364,11 +364,17 @@ def refresh_queue(queue_dir, staging_dir, prices, alert):
         except (OSError, ValueError, TypeError):
             unreadable.append(name)
             continue
+        if not isinstance(spec, dict) or not isinstance(manifest, dict):      # валідний json, але не об'єкт — теж «нечитабельно», не падіння
+            unreadable.append(name)
+            continue
         try:
             new_manifest = reel_batch.build_manifest(spec, prices)          # KeyError: товару нема в наявності на сайті
             new_caption = reel_batch.build_caption(spec, prices)            # SystemExit: те саме / підпис задовгий
         except (KeyError, SystemExit):
             evict.append(name)
+            continue
+        except (TypeError, AttributeError):                                  # спека не тієї форми: не виселяємо, лише сигнал
+            unreadable.append(name)
             continue
         if new_manifest.get("verify") != manifest.get("verify"):
             updates[name] = (mpath, manifest, new_manifest["verify"], new_caption)

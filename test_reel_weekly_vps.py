@@ -421,6 +421,18 @@ al7.clear()
 r7, e7 = rw.refresh_queue(str(q7), str(s7), {"11": 100, "13": 100}, lambda k, t: al7.append(k))
 chk("нечитабельна спека НЕ виселяє рілс (тільки сигнал reel_weekly_unreadable)", (q7 / "m_03.json").is_file() and "m_03" not in e7 and "reel_weekly_unreadable" in al7)
 
+
+# спека/маніфест — валідний json, але не об'єкт ([]): не падіння refresh_queue, не виселення
+(s7 / "_specs" / "m_03.json").write_text("[]", encoding="utf-8")
+al7.clear()
+r7, e7 = rw.refresh_queue(str(q7), str(s7), {"11": 100, "13": 100}, lambda k, t: al7.append(k))
+chk("спека-масив ([]) → unreadable без падіння й без виселення", (q7 / "m_03.json").is_file() and "m_03" not in e7 and "reel_weekly_unreadable" in al7)
+(s7 / "_specs" / "m_03.json").write_text(json.dumps(dict(SPEC, queue_name="m_03", items=[{"id": "13", "cap_emoji": "x", "cap_text": "Т13"}]), ensure_ascii=False), encoding="utf-8")
+(q7 / "m_03.json").write_text("[1]", encoding="utf-8")
+al7.clear()
+r7, e7 = rw.refresh_queue(str(q7), str(s7), {"11": 100, "13": 100}, lambda k, t: al7.append(k))
+chk("маніфест-масив → unreadable без падіння", "m_03" not in e7 and "reel_weekly_unreadable" in al7)
+
 # MemoryError не ковтається у VPS-режимі
 def boom_mem(*a, **k):
     raise MemoryError()

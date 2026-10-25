@@ -51,6 +51,60 @@ def scene_key(scene_file):
     return s if re.fullmatch(r"[a-z0-9]+", s) else None
 
 
+def canonical_scene_file(scene):
+    """'wink' | 'wink.mp4' | 'scene_wink_RENDER_GREEN.mp4' → 'scene_wink_RENDER_GREEN.mp4' (під цією назвою діють сезонні вікна reel_seasons);
+    дивне ім'я → як є (воно не пройде схвалення)."""
+    key = scene_key(scene)
+    return f"scene_{key}_RENDER_GREEN.mp4" if key else str(scene or "")
+
+
+def check_integrity(lib=None, require=False):
+    """Звіряє схвалені файли (first_card + end_mascot PNG) із `SHA256SUMS` у теці бібліотеки (рядки «<sha256>  <відносний/шлях>»; пише скрипт заливки).
+    Ловить обрізану/пошкоджену заливку (кількість кадрів 100–150 цього не ловить: кліп, обрізаний до 80 %, ще проходить діапазон).
+    Повертає True, якщо звірено; False, якщо SHA256SUMS нема і require=False. Невідповідність/файл не в переліку → RuntimeError.
+    require=True (автозбирач на VPS) — відсутність SHA256SUMS теж помилка."""
+    import hashlib
+    lib = Path(lib) if lib else library_dir()
+    if not lib:
+        return False
+    sums = lib / "SHA256SUMS"
+    if not sums.is_file():
+        if require:
+            raise RuntimeError(f"[reel_library] нема SHA256SUMS у {lib} — цілісність заливки не звірити")
+        return False
+    want = {}
+    try:
+        sums_text = sums.read_text(encoding="utf-8-sig")
+    except (OSError, ValueError) as e:        # напр. SHA256SUMS у UTF-16 (PowerShell 5.1 `>`/Out-File): це помилка заливки, а не падіння
+        raise RuntimeError(f"[reel_library] SHA256SUMS нечитабельний ({type(e).__name__}; потрібен UTF-8)") from e
+    for ln in sums_text.splitlines():
+        m = re.fullmatch(r"([0-9a-fA-F]{64})\s+\*?(.+?)\s*", ln)
+        if m:
+            want[m.group(2).replace("\\", "/")] = m.group(1).lower()
+    bad = []
+    for key, ent in approved_scenes(lib).items():
+        for rel in (ent.get("file"), ent.get("end_mascot_png")):
+            if not rel:
+                continue
+            exp = want.get(str(rel).replace("\\", "/"))
+            if exp is None:
+                bad.append(f"{rel}: нема в SHA256SUMS")
+                continue
+            h = hashlib.sha256()
+            try:
+                with open(lib / rel, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+            except OSError as e:
+                bad.append(f"{rel}: файл нечитабельний ({type(e).__name__})")
+                continue
+            if h.hexdigest() != exp:
+                bad.append(f"{rel}: sha256 не збігається (файл пошкоджено/обрізано)")
+    if bad:
+        raise RuntimeError("[reel_library] цілісність бібліотеки: " + "; ".join(bad))
+    return True
+
+
 def approved_scenes(lib=None):
     """{ключ: запис manifest} лише зі status == 'approved' І наявним first_card-файлом."""
     lib = Path(lib) if lib else library_dir()

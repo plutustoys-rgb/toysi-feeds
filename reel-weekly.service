@@ -1,0 +1,18 @@
+# /etc/systemd/system/reel-weekly.service
+[Unit]
+Description=PlutusToys: автозбирач рілсів на VPS (reel_weekly.py build --vps: добирає чергу reels_queue зі схвалених сцен, без людського схвалення)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Бібліотека схвалених перших карт: /opt/plutustoys/plutus_scene_library (manifest.json + SHA256SUMS + first_card/ + end_mascot/);
+# шлях типовий (reel_library.DEFAULT_VPS_DIR), змінну НЕ задаємо: поки теки нема, reel_weekly тихо нічого не робить (exit 0) — автозбір вмикає сама заливка бібліотеки.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/reel_weekly.py build --vps
+# Рендер 1080x1920 ≈ хвилини на рілс; не заважаємо order-pipeline (2 ядра, ≈2,7 ГБ вільної RAM): низький пріоритет і стеля пам'яті.
+Nice=15
+IOSchedulingClass=idle
+MemoryMax=1800M
+TimeoutStartSec=3600

@@ -384,4 +384,70 @@ b_ = rw.run_build(1, str(tmp / "vps_out"), today=date(2026, 10, 25), index=items
 chk("VPS-режим: ValueError збірки не валить партію, потрапляє в failures", b_ == [] and len(fl) == 1 and "ValueError" in fl[0])
 reel_batch.process, reel_batch.site_prices = real_process, real_prices
 
+
+# ── 14. запобіжники refresh_queue (дрібні пропозиції аудиту #1003)
+q7, s7 = tmp / "q7", tmp / "s7x"
+(s7 / "_specs").mkdir(parents=True)
+q7.mkdir()
+
+
+def mk_reel(qdir, sdir, name, ids, price=100):
+    spec = dict(SPEC, queue_name=name, items=[{"id": i, "cap_emoji": "🧸", "cap_text": "Т" + i} for i in ids])
+    (sdir / "_specs" / f"{name}.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    (qdir / f"{name}.mp4").write_bytes(b"v")
+    (qdir / f"{name}.caption.txt").write_text("старий", encoding="utf-8")
+    (qdir / f"{name}.json").write_text(json.dumps({"verify": [{"id": i, "price": price} for i in ids], "not_before": "2026-11-03T00:00"}))
+
+
+mk_reel(q7, s7, "p_01", ["1"])
+(q7 / "p_01.publishing").write_text("")
+al7 = []
+r7, e7 = rw.refresh_queue(str(q7), str(s7), {}, lambda k, t: al7.append(k))
+chk("refresh: рілс із .publishing не чіпаємо (навіть якщо товару нема)", e7 == [] and r7 == [] and (q7 / "p_01.json").is_file() and al7 == [])
+
+mk_reel(q7, s7, "m_01", ["11"]); mk_reel(q7, s7, "m_02", ["12"]); mk_reel(q7, s7, "m_03", ["13"])
+al7.clear()
+r7, e7 = rw.refresh_queue(str(q7), str(s7), {"13": 100}, lambda k, t: al7.append(k))
+chk("масове виселення (2 з 4 рілсів VPS без публікації) ЗУПИНЕНО: нічого не виселено, сигнал reel_weekly_evict_mass",
+    e7 == [] and (q7 / "m_01.json").is_file() and (q7 / "m_02.json").is_file() and al7 == ["reel_weekly_evict_mass"])
+(q7 / "p_01.publishing").unlink()
+os.remove(q7 / "p_01.json"); os.remove(q7 / "p_01.mp4"); os.remove(q7 / "p_01.caption.txt"); os.remove(s7 / "_specs" / "p_01.json")
+al7.clear()
+r7, e7 = rw.refresh_queue(str(q7), str(s7), {"11": 100, "13": 100}, lambda k, t: al7.append(k))
+chk("1 з 3 рілсів без товару → виселено лише його", e7 == ["m_02"] and (q7 / "m_01.json").is_file() and not (q7 / "m_02.json").exists() and al7 == ["reel_weekly_evict"])
+
+(s7 / "_specs" / "m_03.json").write_text("{не json", encoding="utf-8")
+al7.clear()
+r7, e7 = rw.refresh_queue(str(q7), str(s7), {"11": 100, "13": 100}, lambda k, t: al7.append(k))
+chk("нечитабельна спека НЕ виселяє рілс (тільки сигнал reel_weekly_unreadable)", (q7 / "m_03.json").is_file() and "m_03" not in e7 and "reel_weekly_unreadable" in al7)
+
+
+# спека/маніфест — валідний json, але не об'єкт ([]): не падіння refresh_queue, не виселення
+(s7 / "_specs" / "m_03.json").write_text("[]", encoding="utf-8")
+al7.clear()
+r7, e7 = rw.refresh_queue(str(q7), str(s7), {"11": 100, "13": 100}, lambda k, t: al7.append(k))
+chk("спека-масив ([]) → unreadable без падіння й без виселення", (q7 / "m_03.json").is_file() and "m_03" not in e7 and "reel_weekly_unreadable" in al7)
+(s7 / "_specs" / "m_03.json").write_text(json.dumps(dict(SPEC, queue_name="m_03", items=[{"id": "13", "cap_emoji": "x", "cap_text": "Т13"}]), ensure_ascii=False), encoding="utf-8")
+(q7 / "m_03.json").write_text("[1]", encoding="utf-8")
+al7.clear()
+r7, e7 = rw.refresh_queue(str(q7), str(s7), {"11": 100, "13": 100}, lambda k, t: al7.append(k))
+chk("маніфест-масив → unreadable без падіння", "m_03" not in e7 and "reel_weekly_unreadable" in al7)
+
+# MemoryError не ковтається у VPS-режимі
+def boom_mem(*a, **k):
+    raise MemoryError()
+
+
+reel_batch.process = boom_mem
+reel_batch.site_prices = lambda: {}
+try:
+    rw.run_build(1, str(tmp / "vps_out2"), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(), now_forbidden=lambda it: False, specs_dir=EMPTY,
+                 failures=[], on_built=lambda spec: None)
+    mem_swallowed = True
+except MemoryError:
+    mem_swallowed = False
+finally:
+    reel_batch.process, reel_batch.site_prices = real_process, real_prices
+chk("MemoryError у VPS-режимі піднімається (OOM-каскад зупиняється), не ковтається", not mem_swallowed)
+
 sys.exit(1 if F else 0)

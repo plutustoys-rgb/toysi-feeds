@@ -342,22 +342,48 @@ def _write_atomic(path, text):
 def refresh_queue(queue_dir, staging_dir, prices, alert):
     """Ціни в підписі/маніфесті фіксуються при збірці й за тижні старіють; publisher правильно НЕ публікує рілс із чужою ціною, але в авто-режимі нікому оновити
     підпис. Для рілсів, зібраних на VPS (спека лежить у staging/_specs/), перед добором звіряємо з живим сайтом: ціна змінилась → переписуємо підпис і verify
-    (caption, потім json); товару нема в наявності → рілс виселяється в staging/_evicted/ (json першим) + сигнал, замість нього збереться новий.
+    (caption, потім json); товару нема в наявності (KeyError/СТОП build_*) → рілс виселяється в staging/_evicted/ (json першим) + сигнал, замість нього збереться новий.
+    Запобіжники: рілс із `<name>.publishing` (стан публікації невідомий, чекає людини) не чіпаємо; тимчасова помилка читання файлу (OSError/ValueError) НЕ виселяє —
+    лише сигнал; якщо виселення зачепило б половину й більше рілсів з VPS (≥2) — не виселяємо нічого (схоже на збій даних сайту), лише сигнал.
     Рілси не з VPS (SMM, без спеки тут) не чіпаємо: їх тримає/сигналить publisher. -> (оновлено, виселено)."""
     import reel_batch
     specs_dir = os.path.join(staging_dir, "_specs")
-    refreshed, evicted = [], []
+    refreshed, evict, unreadable = [], [], []
+    updates = {}
+    vps_built = 0
     for name, mpath in _queue_manifests(queue_dir):
         sp = os.path.join(specs_dir, name + ".json")
         if not os.path.isfile(sp):
             continue
+        vps_built += 1
+        if os.path.exists(os.path.join(queue_dir, name + ".publishing")):
+            continue
         try:
             spec = json.load(open(sp, encoding="utf-8"))
             manifest = json.load(open(mpath, encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            unreadable.append(name)
+            continue
+        if not isinstance(spec, dict) or not isinstance(manifest, dict):      # валідний json, але не об'єкт — теж «нечитабельно», не падіння
+            unreadable.append(name)
+            continue
+        try:
             new_manifest = reel_batch.build_manifest(spec, prices)          # KeyError: товару нема в наявності на сайті
             new_caption = reel_batch.build_caption(spec, prices)            # SystemExit: те саме / підпис задовгий
-        except (KeyError, SystemExit, OSError, ValueError, TypeError):
-            ev = os.path.join(staging_dir, "_evicted")
+        except (KeyError, SystemExit):
+            evict.append(name)
+            continue
+        except (TypeError, AttributeError):                                  # спека не тієї форми: не виселяємо, лише сигнал
+            unreadable.append(name)
+            continue
+        if new_manifest.get("verify") != manifest.get("verify"):
+            updates[name] = (mpath, manifest, new_manifest["verify"], new_caption)
+    evicted = []
+    if evict and len(evict) >= 2 and len(evict) * 2 >= vps_built:
+        alert("reel_weekly_evict_mass", f"🔴 reel-weekly: виселення {len(evict)} з {vps_built} рілсів VPS ЗУПИНЕНО (схоже на збій даних сайту): " + ", ".join(evict))
+    else:
+        ev = os.path.join(staging_dir, "_evicted")
+        for name in evict:
             os.makedirs(ev, exist_ok=True)
             for fn in (name + ".json", name + ".caption.txt", name + ".mp4"):         # json першим: publisher одразу перестає його бачити
                 try:
@@ -365,14 +391,15 @@ def refresh_queue(queue_dir, staging_dir, prices, alert):
                 except OSError:
                     pass
             evicted.append(name)
-            continue
-        if new_manifest.get("verify") != manifest.get("verify"):
-            manifest["verify"] = new_manifest["verify"]
-            _write_atomic(os.path.join(queue_dir, name + ".caption.txt"), new_caption + "\n")
-            _write_atomic(mpath, json.dumps(manifest, ensure_ascii=False))
-            refreshed.append(name)
+    for name, (mpath, manifest, verify, caption) in updates.items():
+        manifest["verify"] = verify
+        _write_atomic(os.path.join(queue_dir, name + ".caption.txt"), caption + "\n")
+        _write_atomic(mpath, json.dumps(manifest, ensure_ascii=False))
+        refreshed.append(name)
     if evicted:
         alert("reel_weekly_evict", "⚠️ reel-weekly: рілси виселено з черги (товару нема в наявності на сайті): " + ", ".join(evicted) + " — збереться заміна")
+    if unreadable:
+        alert("reel_weekly_unreadable", "⚠️ reel-weekly: не вдалось прочитати спеку/маніфест (пропущено без змін): " + ", ".join(unreadable))
     return refreshed, evicted
 
 
@@ -486,7 +513,7 @@ def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, 
                 if on_built:
                     on_built(spec)
             except (Exception, SystemExit) as e:      # СТОП збірки (товар зник, підпис задовгий, сцена/бібліотека) не валить усю VPS-партію; ручний потік — як раніше
-                if not vps:
+                if not vps or isinstance(e, MemoryError):      # OOM-каскад не продовжуємо: наступний рілс так само впаде
                     raise
                 msg = f"{spec['queue_name']}: {type(e).__name__}: {e}"
                 print(f"[reel_weekly] ⚠ збірка не вдалась — {msg}", file=sys.stderr)

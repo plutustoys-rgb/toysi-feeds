@@ -299,10 +299,11 @@ def trigger_full_import(page, feed_url: str, apply: bool) -> dict:
     except Exception as e:
         print(f"[EvaCabinet] radio 'через посилання' не встановлено ({e})", file=sys.stderr)
 
-    # поле URL
+    # поле URL. З 26.10.2026 (між 05:50 і 11:50) верстка EVA інша: поля введення нема — адреса XML збережена в налаштуваннях і показана текстом,
+    # а запуск робить кнопка «Оновити каталог» (форма за посиланням); чекбокс — input[name=send_new_to_moderation]. Звірено живо 26.10 (read-only огляд кабінету).
     box = page.get_by_role("textbox", name="Введіть адресу XML файлу")
     if box.count() == 0:
-        raise EvaCabinetError("не знайдено поле 'Введіть адресу XML файлу' (верстка змінилась або сесія неповна)")
+        return _trigger_full_import_saved_url(page, feed_url, apply, res)
     box.first.fill(feed_url)
 
     # чекбокс «Відправити нові товари з співставленою категорією на модерацію» — саме він
@@ -322,6 +323,35 @@ def trigger_full_import(page, feed_url: str, apply: bool) -> dict:
             raise EvaCabinetError("кнопка 'Почати' відсутня/неактивна — форму не подано")
         btn.first.click()
         page.wait_for_timeout(4000)  # старт імпорту (запис зʼявляється в «Історія імпорту»)
+        res["submitted"] = True
+    return res
+
+
+def _trigger_full_import_saved_url(page, feed_url: str, apply: bool, res: dict) -> dict:
+    """Нова верстка EVA (з 26.10.2026): адреса XML збережена в кабінеті, форма «За посиланням» має чекбокс модерації і кнопку «Оновити каталог».
+    Усе (кнопка, чекбокс, адреса) беремо з ОДНІЄЇ форми кнопки — не з усієї сторінки (аудит #1009: збіг у «історії» міг би пройти при зміненій адресі).
+    Запобіжник: збережена адреса мусить збігатися з нашим фідом ТОЧНО (межі токена, не підрядок довшого URL), інакше імпорт НЕ запускаємо."""
+    btns = page.get_by_role("button", name="Оновити каталог", exact=True)
+    if btns.count() != 1:
+        raise EvaCabinetError(f"не знайдено поле 'Введіть адресу XML файлу', а кнопок 'Оновити каталог' {btns.count()} (очікувалась 1) — верстка змінилась або сесія неповна")
+    btn = btns.first
+    form = btn.locator("xpath=ancestor::form[1]")
+    cb = form.locator("input[name=send_new_to_moderation]")
+    if cb.count() != 1:
+        raise EvaCabinetError("у формі кнопки 'Оновити каталог' нема чекбокса модерації send_new_to_moderation (верстка змінилась)")
+    if not re.search(r"(?<![\w/.:%?=&-])" + re.escape(feed_url) + r"(?![\w/.%?=&-])", form.inner_text()):
+        raise EvaCabinetError(f"збережена в кабінеті адреса XML не збігається з {feed_url} — імпорт не запущено")
+    radio = page.locator("input[name=import_method_choice][value=url]")
+    if radio.count() and not radio.first.is_checked():
+        radio.first.check()
+    if not cb.first.is_checked():
+        cb.first.check()
+    res["moderation_checked"] = cb.first.is_checked()
+    if apply:
+        if not btn.is_enabled():
+            raise EvaCabinetError("кнопка 'Оновити каталог' неактивна — форму не подано")
+        btn.click()
+        page.wait_for_timeout(4000)
         res["submitted"] = True
     return res
 

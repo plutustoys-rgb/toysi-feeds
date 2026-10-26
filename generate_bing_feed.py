@@ -157,7 +157,7 @@ def generate_bing_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
     print(f"[Bing] Готово! Збережено: {output_file}")
     print(f"[Bing] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Bing] Пропущено — заборонені: {stats['forbidden']}; «Уцінка»: {stats['clearance']}; збиткові за економікою сайту: {stats['site_unprofitable']}; "
-          f"нема картки на сайті: {stats['not_on_site']}; ТМ «UNO»: {stats['trademark_blocked']}; без фото: {stats['no_image']}")
+          f"нема картки на сайті: {stats['not_on_site']}; ТМ «UNO»: {stats['trademark_blocked']}; ліцензійний перелік: {stats['licensed_excluded']}; без фото: {stats['no_image']}")
 
 
 if __name__ == "__main__":

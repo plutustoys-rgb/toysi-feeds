@@ -819,6 +819,36 @@ def is_adult_product(title: str) -> bool:
     return bool(_ADULT_RE.search(title or ""))
 
 
+# Ліцензійні марки/персонажі — ТИМЧАСОВО поза рекламними фідами Google/Meta/Bing (рішення власника 26.10.2026 через Консультанта: «поки прибрати бренди з фіда»;
+# «поки» = до відповіді Toysi про ліцензії). Область дії — ЛИШЕ `build_feed_items` (спільний для Google/Meta/Bing): сайт, Prom, Rozetka, EVA, акція `site_sale`
+# лишаються як були. НЕ плутати з `trademark_filter.py` (UNO; його імпортують build_site.py і site_sale.py — додавання марок туди прибрало б товари З САЙТУ).
+# Перелік — ФАЙЛ `feed_licensed_marks.json` (копія списку SEO `SEO_метрики/robota_kartky/licensed_marks.json`: групи → регулярки, ключі з «_» — службові; поповнюється
+# SEO → Код копіює оновлену версію в репо окремим дрібним PR). Вмикач — змінна середовища FEED_EXCLUDE_LICENSED (типово УВІМКНЕНО; «0» вимикає без релізу: `.env` на VPS).
+# Файл нечитабельний/порожній при ввімкненому гейті → RuntimeError (fail-closed: фід НЕ перезаписується, лишається попередній; тихий «пропуск гейта» повернув би марки).
+FEED_LICENSED_MARKS_FILE = os.environ.get("FEED_LICENSED_MARKS_FILE") or str(Path(__file__).resolve().parent / "feed_licensed_marks.json")
+
+
+def licensed_gate_on() -> bool:
+    return os.environ.get("FEED_EXCLUDE_LICENSED", "1").strip() != "0"
+
+
+def load_licensed_marks_regex(path=None):
+    """Одна скомпільована регулярка зі ВСІХ груп переліку (re.search по назві, IGNORECASE; межі слів \\b — у самих формах)."""
+    p = path or FEED_LICENSED_MARKS_FILE
+    try:
+        data = json.loads(Path(p).read_text(encoding="utf-8-sig"))
+        forms = []
+        for key, val in data.items():
+            if str(key).startswith("_") or not isinstance(val, list):
+                continue
+            forms += [x for x in val if isinstance(x, str) and x.strip()]
+        if not forms:
+            raise ValueError("жодної форми")
+        return re.compile("|".join(f"(?:{f})" for f in forms), re.IGNORECASE)
+    except (OSError, ValueError, AttributeError, TypeError, re.error) as e:
+        raise RuntimeError(f"[Feed] перелік ліцензійних марок {p} непридатний ({type(e).__name__}: {e}) — фід не збираю (fail-closed), попередній лишається") from e
+
+
 SITE_FILTER_MAX_DROP_SHARE = 0.25   # макс. частка каталогу, яку фільтр «є на сайті» має право відсікти
 
 # Мінімальний ВНЕСОК позиції на замовлення за економікою САЙТУ (ціна картки − собівартість − еквайринг − логістика/замовлення,
@@ -941,6 +971,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         "price_from_card": 0,     # ціна взята з index.json (= ціна картки)
         "price_from_formula": 0,  # індексу нема/ціни нема — рахуємо site_retail_price
         "trademark_blocked": 0,  # ТМ «UNO» (претензія Mattel) — не віддаємо на сайт/у фіди
+        "licensed_excluded": 0,  # ліцензійний перелік feed_licensed_marks.json (тимчасово, FEED_EXCLUDE_LICENSED) — лише Google/Meta/Bing
         "forbidden": 0,          # політика «що не продаємо» (forbidden_products: ножі/зброя) — власний гейт фіда, не залежить від свіжості індексу сайту
         "excluded_product": 0,   # FEED_EXCLUDED_PRODUCT_IDS (точкові відхилення Merchant Center)
         "excluded_category": 0,  # FEED_EXCLUDED_CATEGORIES (не іграшки/без надійних даних — раніше теж не йшли у фіди)
@@ -956,6 +987,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
     items = []
     stats["on_sale"] = 0       # позицій із sale_price (акція «Знижка тижня», файл site/sale_week.json)
     sale_map = site_sale.load_feed_sale()
+    licensed_rx = load_licensed_marks_regex() if licensed_gate_on() else None
 
     for pid, item in catalog.items():
         if site_ids is not None and str(pid) not in site_ids:
@@ -1033,6 +1065,9 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
 
         # посилання — на рідну картку сайту (Prom-посилання/links більше не потрібні фіду; links лишається в сигнатурі
         # для сумісності з викликачами та для генерації мапи 301 зі старих Prom-URL)
+        if licensed_rx is not None and licensed_rx.search(name):
+            stats["licensed_excluded"] += 1
+            continue
         if is_uno_trademark_blocked(name, item.get("vendor") or ""):
             stats["trademark_blocked"] += 1
             continue
@@ -1279,6 +1314,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")
+    print(f"[Google] Пропущено за ліцензійним переліком: {stats['licensed_excluded']} (гейт {'УВІМКНЕНО' if licensed_gate_on() else 'вимкнено FEED_EXCLUDE_LICENSED=0'})")
     print(f"[Google] Пропущено — заборонені (ножі/зброя): {stats['forbidden']}; «Уцінка»: {stats['clearance']}; "
           f"виключені категорії: {stats['excluded_category']}; без залишку: {stats['out_of_stock']}; "
           f"збиткові за економікою сайту (внесок ≤ {FEED_MIN_SITE_CONTRIBUTION:g} ₴): {stats['site_unprofitable']}")

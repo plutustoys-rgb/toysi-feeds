@@ -43,6 +43,13 @@ OLD = f"""<html><body><form>
 <label><input type=checkbox name=cb> Відправити нові товари на модерацію</label>
 <button type=submit>Почати</button></form>{CLICK}</body></html>"""
 
+NEW_HIST = f"""<html><body>
+<form><label><input type=radio name=import_method_choice value=url checked> За посиланням</label></form>
+<form>Адреса XML файлу<div>https://example.com/other.xml</div>
+<label><input type=checkbox name=send_new_to_moderation> модерація</label>
+<button type=submit>Оновити каталог</button></form>
+<div>Історія: {FEED}</div>{CLICK}</body></html>"""
+
 NONE = "<html><body><p>Нічого</p></body></html>"
 
 
@@ -72,6 +79,12 @@ r, e, sent, ck = run(NEW.replace("{url}", FEED), apply=True)
 chk("нова верстка, APPLY: кнопку натиснуто 1 раз, submitted=True", r is not None and r["submitted"] is True and sent == 1 and r["moderation_checked"] is True)
 r, e, sent, ck = run(NEW.replace("{url}", "https://example.com/other.xml"), apply=True)
 chk("збережена адреса ≠ наш фід → EvaCabinetError, кнопку не натиснуто", r is None and e and "не збігається" in e and sent == 0)
+r, e, sent, ck = run(NEW_HIST, apply=True)
+chk("наш URL є лише в «історії» поза формою, у формі інша адреса → відмова, кнопку не натиснуто", r is None and e and "не збігається" in e and sent == 0)
+r, e, sent, ck = run(NEW.replace("{url}", FEED + ".old"), apply=True)
+chk("збережена адреса — довший URL (…eva_feed.xml.old) → відмова", r is None and e and "не збігається" in e and sent == 0)
+r, e, sent, ck = run(NEW.replace("{url}", "«" + FEED + "»"), apply=True)
+chk("адреса в лапках-ялинках (як у тексті «Остання зміна») → збіг, запуск", r is not None and r["submitted"] is True and sent == 1)
 r, e, sent, ck = run(NONE, apply=True)
 chk("нема ні поля, ні кнопки → EvaCabinetError", r is None and e and "Оновити каталог" in e and sent == 0)
 r, e, sent, ck = run(OLD, apply=True)

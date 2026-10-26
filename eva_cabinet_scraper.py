@@ -329,12 +329,17 @@ def trigger_full_import(page, feed_url: str, apply: bool) -> dict:
 
 def _trigger_full_import_saved_url(page, feed_url: str, apply: bool, res: dict) -> dict:
     """Нова верстка EVA (з 26.10.2026): адреса XML збережена в кабінеті, форма «За посиланням» має чекбокс модерації і кнопку «Оновити каталог».
-    Запобіжник: збережена адреса мусить збігатися з нашим фідом, інакше імпорт НЕ запускаємо (не тягнемо чужий/застарілий файл)."""
-    btn = page.get_by_role("button", name="Оновити каталог")
-    cb = page.locator("input[name=send_new_to_moderation]")
-    if btn.count() == 0 or cb.count() == 0:
-        raise EvaCabinetError("не знайдено ні поля 'Введіть адресу XML файлу', ні кнопки 'Оновити каталог' з чекбоксом модерації (верстка знову змінилась або сесія неповна)")
-    if feed_url not in page.inner_text("body"):
+    Усе (кнопка, чекбокс, адреса) беремо з ОДНІЄЇ форми кнопки — не з усієї сторінки (аудит #1009: збіг у «історії» міг би пройти при зміненій адресі).
+    Запобіжник: збережена адреса мусить збігатися з нашим фідом ТОЧНО (межі токена, не підрядок довшого URL), інакше імпорт НЕ запускаємо."""
+    btns = page.get_by_role("button", name="Оновити каталог", exact=True)
+    if btns.count() != 1:
+        raise EvaCabinetError(f"не знайдено поле 'Введіть адресу XML файлу', а кнопок 'Оновити каталог' {btns.count()} (очікувалась 1) — верстка змінилась або сесія неповна")
+    btn = btns.first
+    form = btn.locator("xpath=ancestor::form[1]")
+    cb = form.locator("input[name=send_new_to_moderation]")
+    if cb.count() != 1:
+        raise EvaCabinetError("у формі кнопки 'Оновити каталог' нема чекбокса модерації send_new_to_moderation (верстка змінилась)")
+    if not re.search(r"(?<![\w/.:%?=&-])" + re.escape(feed_url) + r"(?![\w/.%?=&-])", form.inner_text()):
         raise EvaCabinetError(f"збережена в кабінеті адреса XML не збігається з {feed_url} — імпорт не запущено")
     radio = page.locator("input[name=import_method_choice][value=url]")
     if radio.count() and not radio.first.is_checked():
@@ -343,9 +348,9 @@ def _trigger_full_import_saved_url(page, feed_url: str, apply: bool, res: dict) 
         cb.first.check()
     res["moderation_checked"] = cb.first.is_checked()
     if apply:
-        if not btn.first.is_enabled():
+        if not btn.is_enabled():
             raise EvaCabinetError("кнопка 'Оновити каталог' неактивна — форму не подано")
-        btn.first.click()
+        btn.click()
         page.wait_for_timeout(4000)
         res["submitted"] = True
     return res

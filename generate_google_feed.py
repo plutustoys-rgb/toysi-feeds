@@ -1073,11 +1073,12 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
 
         # посилання — на рідну картку сайту (Prom-посилання/links більше не потрібні фіду; links лишається в сигнатурі
         # для сумісності з викликачами та для генерації мапи 301 зі старих Prom-URL)
-        if licensed_rx is not None and licensed_rx.search(name):
-            stats["licensed_excluded"] += 1
-            continue
         if is_uno_trademark_blocked(name, item.get("vendor") or ""):
             stats["trademark_blocked"] += 1
+            continue
+        # ліцензійний перелік — ПІСЛЯ UNO: UNO (Mattel) має власний лічильник/логіку (дозволений vendor Mattel), перелік SEO лише доповнює
+        if licensed_rx is not None and licensed_rx.search(name):
+            stats["licensed_excluded"] += 1
             continue
 
         prom_product = prom_products.get(str(item.get("vendor_code") or pid)) or {}

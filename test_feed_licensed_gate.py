@@ -92,9 +92,33 @@ os.environ["FEED_EXCLUDE_LICENSED"] = "0"
 chk("при вимкненому гейті зламаний/відсутній файл не заважає збірці фіду", len(ids(cat)[0]) == 5)
 os.environ.pop("FEED_EXCLUDE_LICENSED", None)
 
+# контракт SEO (в.4): групи СТРОГО за `_контракт_для_коду.застосовувати`; вкладені робочі регекси автомарок і службові ключі не збираються
+contract_file = tmp / "contract.json"
+contract_file.write_text(json.dumps({
+    "_контракт_для_коду": {"застосовувати": ["Disney"], "НЕ застосовувати": ["Автомарки"]},
+    "Disney": [r"\bхолодне серце\b"], "Marvel": [r"\bлюдина[- ]павук\w*"],
+    "_автомарки_окремо": {"форми": [r"\bbmw\b"]},
+}, ensure_ascii=False), encoding="utf-8")
+rxc = gg.load_licensed_marks_regex(str(contract_file))
+chk("контракт: збирається лише перелічена група (Disney), а Marvel (поза контрактом) і вкладені автомарки — ні",
+    bool(rxc.search("Холодне серце")) and not rxc.search("Людина-павук") and not rxc.search("BMW X6"))
+bad_contract = tmp / "bad_contract.json"
+bad_contract.write_text(json.dumps({"_контракт_для_коду": {"застосовувати": ["Нема такої"]}, "Disney": [r"\bx\b"]}, ensure_ascii=False), encoding="utf-8")
+try:
+    gg.load_licensed_marks_regex(str(bad_contract))
+    bc = False
+except RuntimeError:
+    bc = True
+chk("контракт посилається на відсутню групу → RuntimeError (fail-closed)", bc)
+
 # файл у репо
 gg.FEED_LICENSED_MARKS_FILE = str(Path(__file__).parent / "feed_licensed_marks.json")
+repo_doc = json.loads((Path(__file__).parent / "feed_licensed_marks.json").read_text(encoding="utf-8"))
+chk("файл у репо — в.4+ з контрактом, 8 груп, 128 форм", str(repo_doc.get("_версія", "")).startswith("4") and len(repo_doc["_контракт_для_коду"]["застосовувати"]) == 8
+    and sum(len(repo_doc[g]) for g in repo_doc["_контракт_для_коду"]["застосовувати"]) == 128)
 rx = gg.load_licensed_marks_regex()
+chk("regex із файла в репо не ловить автомарки (діекаст не вилучається): BMW, Ferrari, Toyota, Mustang, Mercedes",
+    not any(rx.search(s) for s in ("Машинка BMW X6", "Металева Ferrari", "Toyota Land Cruiser", "Ford Mustang", "Mercedes-Benz G-Class")))
 chk("feed_licensed_marks.json у репо валідний; ловить «Людина-павук», «Холодне серце», «Стіч», «Barbie»",
     all(rx.search(s) for s in ("Фігурка Людина-павук", 'Пазли "Холодне серце"', "Бомбочка для ванни «Стіч»", "Лялька Barbie")))
 chk("не ловить звичайні: «Гімнастична палиця», «Реалістична собака», «Еластична стрічка», «Мелодії для малюків»",

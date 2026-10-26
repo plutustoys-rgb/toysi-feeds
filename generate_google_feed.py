@@ -823,7 +823,7 @@ def is_adult_product(title: str) -> bool:
 # «поки» = до відповіді Toysi про ліцензії). Область дії — ЛИШЕ `build_feed_items` (спільний для Google/Meta/Bing): сайт, Prom, Rozetka, EVA, акція `site_sale`
 # лишаються як були. НЕ плутати з `trademark_filter.py` (UNO; його імпортують build_site.py і site_sale.py — додавання марок туди прибрало б товари З САЙТУ).
 # Перелік — ФАЙЛ `feed_licensed_marks.json` (копія списку SEO `SEO_метрики/robota_kartky/licensed_marks.json`: групи → регулярки, ключі з «_» — службові; поповнюється
-# SEO → Код копіює оновлену версію в репо окремим дрібним PR). Вмикач — змінна середовища FEED_EXCLUDE_LICENSED (типово УВІМКНЕНО; «0» вимикає без релізу: `.env` на VPS).
+# SEO → Код копіює оновлену версію в репо окремим дрібним PR; з в.4 береться СТРОГО за `_контракт_для_коду.застосовувати`). Вмикач — змінна середовища FEED_EXCLUDE_LICENSED (типово УВІМКНЕНО; «0» вимикає без релізу: `.env` на VPS).
 # Файл нечитабельний/порожній при ввімкненому гейті → RuntimeError (fail-closed: фід НЕ перезаписується, лишається попередній; тихий «пропуск гейта» повернув би марки).
 FEED_LICENSED_MARKS_FILE = os.environ.get("FEED_LICENSED_MARKS_FILE") or str(Path(__file__).resolve().parent / "feed_licensed_marks.json")
 
@@ -838,10 +838,18 @@ def load_licensed_marks_regex(path=None):
     try:
         data = json.loads(Path(p).read_text(encoding="utf-8-sig"))
         forms = []
-        for key, val in data.items():
-            if str(key).startswith("_") or not isinstance(val, list):
-                continue
-            forms += [x for x in val if isinstance(x, str) and x.strip()]
+        contract = data.get("_контракт_для_коду")
+        if isinstance(contract, dict) and contract.get("застосовувати"):
+            # машинний контракт SEO (в.4): беремо СТРОГО перелічені групи; вкладений `_автомарки_окремо.форми` (248 карток діекасту) і службові ключі — НІКОЛИ
+            for g in contract["застосовувати"]:
+                if str(g).startswith("_") or not isinstance(data.get(g), list):
+                    raise ValueError(f"група {g!r} з контракту відсутня або не список")
+                forms += [x for x in data[g] if isinstance(x, str) and x.strip()]
+        else:
+            for key, val in data.items():
+                if str(key).startswith("_") or not isinstance(val, list):
+                    continue
+                forms += [x for x in val if isinstance(x, str) and x.strip()]
         if not forms:
             raise ValueError("жодної форми")
         return re.compile("|".join(f"(?:{f})" for f in forms), re.IGNORECASE)

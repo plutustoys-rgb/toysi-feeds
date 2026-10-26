@@ -114,8 +114,8 @@ chk("контракт посилається на відсутню групу �
 # файл у репо
 gg.FEED_LICENSED_MARKS_FILE = str(Path(__file__).parent / "feed_licensed_marks.json")
 repo_doc = json.loads((Path(__file__).parent / "feed_licensed_marks.json").read_text(encoding="utf-8"))
-chk("файл у репо — в.4+ з контрактом, 8 груп, 128 форм", str(repo_doc.get("_версія", "")).startswith("4") and len(repo_doc["_контракт_для_коду"]["застосовувати"]) == 8
-    and sum(len(repo_doc[g]) for g in repo_doc["_контракт_для_коду"]["застосовувати"]) == 128)
+chk("файл у репо — в.6+ з контрактом, 8 груп, 132 форми", int(str(repo_doc.get("_версія", "0")).split()[0]) >= 6 and len(repo_doc["_контракт_для_коду"]["застосовувати"]) == 8
+    and sum(len(repo_doc[g]) for g in repo_doc["_контракт_для_коду"]["застосовувати"]) == 132)
 rx = gg.load_licensed_marks_regex()
 chk("regex із файла в репо не ловить автомарки (діекаст не вилучається): BMW, Ferrari, Toyota, Mustang, Mercedes",
     not any(rx.search(s) for s in ("Машинка BMW X6", "Металева Ferrari", "Toyota Land Cruiser", "Ford Mustang", "Mercedes-Benz G-Class")))

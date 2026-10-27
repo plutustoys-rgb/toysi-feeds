@@ -78,6 +78,12 @@ row, hits, notes = lk.run_check(broken, gate_rx, probe_rx)
 chk("bing недоступний, meta не-XML → дві примітки, google прочитано (3 позиції), збігів 0",
     len(notes) == 2 and row["google_merchant_feed_items"] == 3 and row["meta_feed_items"] == "" and row["bing_feed_items"] == "" and not hits)
 
+# 4б. аудит #1014: коректний XML без позицій / позиції без g:id (HTML-заглушка 200, інша схема) = збій читання, а не «0 збігів»
+row, hits, notes = lk.run_check(lambda url: b"<html><body>404</body></html>", gate_rx, probe_rx)
+chk("добре сформований XML без позицій → примітка у всіх трьох, а не «0 збігів, усе прочитано»", len(notes) == 3 and not hits and row["google_merchant_feed_items"] == "")
+row, hits, notes = lk.run_check(lambda url: '<rss><channel><item><id>1</id><title>Лялька Стич</title></item></channel></rss>'.encode("utf-8"), gate_rx, probe_rx)
+chk("позиції без g:id (інша схема) → примітка, а не злиття під ключем «»", len(notes) == 3 and not hits)
+
 # 5. CSV
 csv_path = tmp / "rep" / "leak.csv"
 lk.write_row(row, csv_path)

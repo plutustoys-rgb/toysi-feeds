@@ -100,9 +100,11 @@ def run_check(fetch=fetch_bytes, gate_rx=None, probe_rx=None):
             titles = feed_titles(raw) if raw else None
         except ET.ParseError:
             titles = None
+        if titles is not None and (not titles or "" in titles):
+            titles = None          # коректний XML без позицій або позиції без g:id (інша схема / HTML-заглушка 200) = збій читання, а не «0 збігів»
         if titles is None:
             row[name + "_items"], row[name + "_hits"] = "", ""
-            notes.append(f"{name}: недоступний або не XML")
+            notes.append(f"{name}: недоступний, не XML, порожній або без g:id")
             continue
         n = 0
         for pid, title in titles.items():

@@ -141,6 +141,8 @@ def main() -> None:
     _run("EVA категорії кабінету ↔ фід", [PY, str(BASE_DIR / "eva_category_check.py")])
     # Машинна перевірка власного сайту очима покупця (лише читання; порушення → запис [Автомат → Код] у канал). Не впливає на код виходу.
     _run("Сайт: здоров'я очима покупця", [PY, str(BASE_DIR / "site_health_check.py")])
+    # Міра протікання ліцензійних марок в ОПУБЛІКОВАНИХ фідах Google/Meta/Bing (лише читання feed-data; очікуване 0; збіги → запис [Автомат → Код] у EXECUTOR_CHANNEL.md). Не впливає на код виходу.
+    _run("Ліцензійні марки: протікання в опублікованих фідах", [PY, str(BASE_DIR / "feed_licensed_leak_check.py")])
     # Доставка щоденних файлів GMC/Googlebot/GSC з VPS у спільну теку для SEO + запис [Автомат → SEO] у SEO_CHANNEL.md, якщо в gmc_summary є прапорець 🚩. Лише читання з VPS; не впливає на код виходу.
     _run("Файли VPS → спільна тека SEO", [PY, str(BASE_DIR / "daily_files_to_shared.py")])
 

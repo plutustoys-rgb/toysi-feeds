@@ -800,6 +800,7 @@ def run(only_month: str = None) -> list:
         exp_results = []
     (vch.DOCS_DIR / JSON_NAME).write_text(json.dumps(rows, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     unread = [a for a in acts if a["error"] or not a["parsed"]]
+    run.unread_pdf = [a for a in acts if a["error"]]    # саме ПОМИЛКА читання PDF (а не «акт прочитано, але формат невідомий»)
     print(f"[AktyZvirka] актів: {len(acts)} (не прочитано: {len(unread)}); рядків звіту: {len(rows)}; "
           f"⚠️ різниця: {sum(1 for r in rows if r['status'].startswith('⚠️ різниця'))}; звіт: {out_md}")
     if exp_results:
@@ -813,3 +814,15 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--month", help="лише цей місяць, YYYY-MM")
     run(ap.parse_args().month)
+    # Запобіжник «тихих нулів» (запит бухгалтера 27.10.2026): PDF не відкрився (напр. зник pdfplumber) → рядок у звіті + код ≠ 0.
+    if getattr(run, "unread_pdf", None):
+        bad = run.unread_pdf
+        _rep = vch.DOCS_DIR / REPORT_NAME
+        try:
+            _rep.write_text("## ❗ НЕ ПРОЧИТАНО PDF-АКТІВ: " + str(len(bad)) + " — звірка НЕПОВНА, нулі не означають «розбіжностей нема»\n\n"
+                            + "\n".join(f"- {a['vendor']} {a['doc_id']}: {a['error']}" for a in bad) + "\n\n"
+                            + _rep.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError as e:
+            print(f"[AktyZvirka] не вдалось дописати попередження у звіт: {e}", file=sys.stderr)
+        print(f"[AktyZvirka] ❗ не прочитано PDF: {len(bad)} — вихід з кодом 1", file=sys.stderr)
+        sys.exit(1)

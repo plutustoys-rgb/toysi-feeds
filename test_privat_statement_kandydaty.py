@@ -328,6 +328,33 @@ _chk("раунд 3: живий формат р.186 (дві пари, LIQPAY ID �
               "LIQPAY ID 2933869994).")])[0] == "in_book"
          for s, n, g, r in (("082102039", 111.03, 112.49, 149), ("082105333", 242.12, 245.31, 150))))
 
+# Запобіжник «тихих нулів» (запит бухгалтера 27.10.2026): нечитабельний PDF → блок у звіті + sys.exit(1), а не «чистий» нульовий звіт.
+import io
+import contextlib
+from unittest.mock import patch as _patch
+
+with tempfile.TemporaryDirectory() as _td:
+    _docs = Path(_td)
+    _pdf_dir = _docs / datetime.now().strftime("%Y-%m") / "ПриватБанк"
+    _pdf_dir.mkdir(parents=True)
+    (_pdf_dir / "2026-10-27_privat_vypiska.pdf").write_bytes(b"not a pdf at all")          # немає %PDF- → ValueError у extract_table
+    _code = None
+    with _patch.object(ps, "DOCS_DIR", _docs), _patch.object(ps, "_notify", lambda m: None), \
+            _patch.object(ps.source_freshness, "check_and_record", lambda *a, **k: None), \
+            _patch.object(ps.source_freshness, "write_report", lambda *a, **k: None), \
+            _patch.object(ps, "_load_book_rows", lambda: []), _patch.object(ps, "_book_money_index", lambda: {}), \
+            _patch.object(ps.kandydaty_registry, "sync_open_candidates", lambda *a, **k: {"newly_opened": [], "resolved": [], "still_open": []}), \
+            _patch.object(ps.kandydaty_registry, "write_open_report", lambda *a, **k: None), \
+            contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        try:
+            ps.main()
+        except SystemExit as e:
+            _code = e.code
+    _md = list(_docs.glob("*/ПриватБанк/*_privat_kandydaty.md"))
+    _chk("нечитабельний PDF → вихід з кодом 1 (не тихий 0)", _code == 1)
+    _chk("нечитабельний PDF → звіт існує і починається з помітного блоку «НЕ ПРОЧИТАНО PDF»",
+         bool(_md) and "НЕ ПРОЧИТАНО PDF" in _md[0].read_text(encoding="utf-8").split("\n")[1] + _md[0].read_text(encoding="utf-8")[:200])
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)

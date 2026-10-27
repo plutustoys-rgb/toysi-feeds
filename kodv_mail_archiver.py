@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -294,6 +295,103 @@ def _find_privat_statement_link(msg) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------------------------------------------------------
+# ЧОМУ ТАК (запит головного бухгалтера 27.10.2026): задача PlutusToys-NovaPayRegistryArchiver щодня падала з «The read operation
+# timed out» — скрипт тягнув ПОВНЕ тіло (BODY.PEEK[]) усіх 1 702 листів за 60 днів щопрогону, а курсор писався лише в самому кінці,
+# тож жоден прогін не доходив до кінця й нічого не зберігав; останній реєстр NovaPay — від 05.10.
+# Виправлення, що не міняє, ЯКІ листи вважаються документами:
+#   1. префільтр за ЗАГОЛОВКАМИ (From/Subject/Content-Type — кілька КБ на лист, пачками): повне тіло тягнемо лише там, де клас
+#      документа взагалі можливий (див. _header_relevant — рівно ті самі умови, що далі перевіряє archive());
+#   2. кожна IMAP-операція — з повтором і ПЕРЕПІДКЛЮЧЕННЯМ (_ImapSession.call): разовий таймаут не вбиває прогін;
+#   3. курсор зберігається і при збої (finally), тож наступний прогін не починає з нуля.
+# ---------------------------------------------------------------------------------------------------------------------------
+IMAP_RETRIES = int(os.environ.get("KODV_MAIL_IMAP_RETRIES", "3"))
+HEADER_BATCH = 100
+_HEADER_FIELDS = "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)])"
+# Маркери «лист може бути релевантним за темою/відправником» = усі маркери _classify + ті, що рахують «схожі без вкладення».
+_RELEVANT_SUBJECT_SENDER_MARKERS = (
+    _ROZETKAPAY_MARKERS + _PRIVAT_STATEMENT_MARKERS + _NOVAPAY_MARKERS + _NP_AKT_MARKERS
+    + ("пошт", "novapay", "novaposhta", "звірк"))
+
+
+def _header_relevant(subject_l: str, sender_l: str, content_type: str) -> bool:
+    """Чи треба тягнути ПОВНИЙ лист. Рівно ті самі джерела істини, що в archive(): (а) _classify по темі/відправнику (+ «схожі» маркери
+    лічильника unclassified), АБО (б) лист може нести вкладення — _classify може спрацювати лише за ім'ям файлу. Вкладення неможливі
+    лише в text/* та multipart/alternative; відсутній/нерозпізнаний Content-Type → тягнемо (консервативно)."""
+    hay = f"{subject_l} {sender_l}"
+    if any(m in hay for m in _RELEVANT_SUBJECT_SENDER_MARKERS):
+        return True
+    ct = (content_type or "").strip().lower()
+    if ct.startswith("text/") or ct.startswith("multipart/alternative"):
+        return False
+    return True
+
+
+class _ImapSession:
+    """Одне IMAP-з'єднання з повтором і перепідключенням: тека вибирається знову після reconnect."""
+
+    def __init__(self):
+        self.imap = None
+        self.folder = None
+
+    def connect(self, folder=None):
+        self.close()
+        self.imap = imaplib.IMAP4_SSL(IMAP_HOST, timeout=IMAP_TIMEOUT)
+        self.imap.login(IMAP_EMAIL, IMAP_APP_PASSWORD)
+        if folder is not None:
+            self.folder = folder
+        if self.folder is not None:
+            typ = self.imap.select(self.folder, readonly=True)[0]
+            if typ != "OK":
+                raise imaplib.IMAP4.error(f"тека {self.folder} не вибралась ({typ})")
+
+    def close(self):
+        if self.imap is not None:
+            try:
+                self.imap.logout()
+            except Exception:  # noqa: BLE001
+                pass
+            self.imap = None
+
+    def call(self, fn):
+        """fn(imap) -> результат; на OSError/IMAP4.abort/error — до IMAP_RETRIES спроб із новим з'єднанням (пауза зростає)."""
+        last = None
+        for attempt in range(1, IMAP_RETRIES + 1):
+            try:
+                if self.imap is None:
+                    self.connect()
+                return fn(self.imap)
+            except (OSError, imaplib.IMAP4.abort, imaplib.IMAP4.error) as e:
+                last = e
+                _log(f"IMAP збій (спроба {attempt}/{IMAP_RETRIES}): {type(e).__name__}: {e} — перепідключаюсь")
+                self.close()
+                if attempt < IMAP_RETRIES:
+                    time.sleep(2 * attempt)
+        raise last
+
+
+def _headers_by_uid(sess: "_ImapSession", uids: list) -> dict:
+    """{uid(bytes): (subject_l, sender_l, content_type)} пачками по HEADER_BATCH. UID, якого нема у відповіді → не потрапляє в словник
+    (archive() тоді тягне такий лист повністю — консервативно)."""
+    out = {}
+    for i in range(0, len(uids), HEADER_BATCH):
+        chunk = uids[i:i + HEADER_BATCH]
+        status, data = sess.call(lambda im, c=chunk: im.uid("FETCH", b",".join(c), _HEADER_FIELDS))
+        if status != "OK" or not data:
+            continue
+        for item in data:
+            if not (isinstance(item, tuple) and len(item) == 2):
+                continue
+            m = re.search(rb"UID (\d+)", item[0])
+            if not m:
+                continue
+            hdr = email.message_from_bytes(item[1])
+            out[m.group(1)] = (_decode_mime_words(hdr.get("Subject", "")).lower(),
+                               _decode_mime_words(hdr.get("From", "")).lower(),
+                               hdr.get("Content-Type", ""))
+    return out
+
+
 def archive(dry_run: bool = False) -> dict:
     saved_cursor = _load_cursor()
     saved_cursor = _repair_ghost_cursor_entries(saved_cursor)
@@ -307,8 +405,9 @@ def archive(dry_run: bool = False) -> dict:
     since_d = datetime.fromordinal(datetime.now(timezone.utc).date().toordinal() - LOOKBACK_DAYS)
     since_str = f"{since_d.day:02d}-{_MON[since_d.month - 1]}-{since_d.year}"
 
-    imap = imaplib.IMAP4_SSL(IMAP_HOST, timeout=IMAP_TIMEOUT)
-    imap.login(IMAP_EMAIL, IMAP_APP_PASSWORD)
+    sess = _ImapSession()
+    sess.connect()
+    skipped_headers = 0
     try:
         scanned_any = False
         for folder in FOLDERS:
@@ -317,22 +416,31 @@ def archive(dry_run: bool = False) -> dict:
                 # кинула б UnicodeEncodeError. Пропускаємо явно, а не сирим трейсбеком.
                 _log(f"тека '{folder}' не-ASCII — imaplib її не підтримує, пропускаю.")
                 continue
-            if imap.select(folder, readonly=True)[0] != "OK":
+            if sess.imap.select(folder, readonly=True)[0] != "OK":
                 _log(f"тека '{folder}' не вибралась (нема такої мітки?) — пропускаю.")
                 continue
+            sess.folder = folder          # після reconnect тека вибереться знову
             scanned_any = True
-            status, data = imap.search(None, f'(SINCE "{since_str}")')
+            status, data = sess.call(lambda im: im.uid("SEARCH", None, f'(SINCE "{since_str}")'))
             if status != "OK":
                 _log(f"тека '{folder}': SEARCH не вдався ({status}) — пропускаю.")
                 continue
             uids = data[0].split()
-            _log(f"тека '{folder}': {len(uids)} листів за {LOOKBACK_DAYS} дн — сканую вкладення.")
+            hdrs = _headers_by_uid(sess, uids)
+            _log(f"тека '{folder}': {len(uids)} листів за {LOOKBACK_DAYS} дн — заголовки прочитано ({len(hdrs)}), "
+                 f"повне тіло лише для релевантних.")
 
-            for uid in uids:
-                # BODY.PEEK[] — НЕ ставить \\Seen (read-only, не заважає novapay_statement).
-                status, msg_data = imap.fetch(uid, "(BODY.PEEK[])")
-                if status != "OK" or not msg_data or not msg_data[0]:
+            for n_done, uid in enumerate(uids, 1):
+                h = hdrs.get(uid)
+                if h is not None and not _header_relevant(*h):
+                    skipped_headers += 1
                     continue
+                # BODY.PEEK[] — НЕ ставить \\Seen (read-only, не заважає novapay_statement).
+                status, msg_data = sess.call(lambda im, u=uid: im.uid("FETCH", u, "(BODY.PEEK[])"))
+                if status != "OK" or not msg_data or not msg_data[0] or not isinstance(msg_data[0], tuple):
+                    continue
+                if not dry_run and n_done % 25 == 0:
+                    _save_cursor(saved_cursor)      # проміжне збереження: збій далі не губить уже заархівоване
                 msg = email.message_from_bytes(msg_data[0][1])
                 subject_l = _decode_mime_words(msg.get("Subject", "")).lower()
                 sender_l = _decode_mime_words(msg.get("From", "")).lower()
@@ -446,13 +554,11 @@ def archive(dry_run: bool = False) -> dict:
         if not scanned_any:
             raise RuntimeError(f"жодна з тек {FOLDERS} не вибралась — перевір KODV_MAIL_FOLDERS")
     finally:
-        try:
-            imap.logout()
-        except Exception:  # noqa: BLE001
-            pass
+        if not dry_run:
+            _save_cursor(saved_cursor)              # і при збої: наступний прогін продовжує, а не починає з нуля
+        sess.close()
 
-    if not dry_run:
-        _save_cursor(saved_cursor)
+    _log(f"листів пропущено за заголовками (без повного читання): {skipped_headers}")
     return {"newly": newly, "skipped_dupe": skipped_dupe, "unclassified": unclassified_msgs}
 
 

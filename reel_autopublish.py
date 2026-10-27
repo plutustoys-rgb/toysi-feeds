@@ -207,6 +207,8 @@ def refresh_prices(name: str, manifest: dict, mpath: Path, cap_path: Path, index
         if item is None:
             return []
         new = float(item["price"])
+        if not new > 0:
+            return []                                                   # ціна ≤ 0 / NaN у каталозі = збій даних, не ціна: не підставляємо (аудит #1011), check_item утримає
         olds[format(old, "g")] = olds.get(format(old, "g"), 0) + 1
         if mapping.setdefault(format(old, "g"), format(new, "g")) != format(new, "g"):
             return []                                                   # одна стара ціна → дві різні нові: неоднозначно

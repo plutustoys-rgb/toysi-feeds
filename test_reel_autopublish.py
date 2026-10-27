@@ -344,6 +344,10 @@ make("rf4", verify=[{"id": "31", "price": 100}, {"id": "99", "price": 50}], capt
 res = run(fetch_index=lambda: {"31": {"price": 105, "name": "A"}})
 chk("товару нема в каталозі (нема в наявності) → утримано, підпис не переписано",
     "rf4" in res["held"] and "100 грн" in (q / "rf4.caption.txt").read_text(encoding="utf-8"))
+make("rf6", verify=[{"id": "51", "price": 100}], caption="А — 100 грн", age=550)
+res = run(fetch_index=lambda: {"51": {"price": 0, "name": "A"}})
+chk("ціна на сайті 0 (збій даних) → НЕ підставляємо в підпис: утримано, підпис без змін",
+    "rf6" in res["held"] and (q / "rf6.caption.txt").read_text(encoding="utf-8") == "А — 100 грн")
 make("rf5", verify=[{"id": "41", "price": 100}], caption="Ціна 999 грн, без старої ціни", age=500)
 res = run(fetch_index=lambda: {"41": {"price": 105, "name": "A"}})
 chk("старої ціни нема в підписі → не вгадуємо: утримано, підпис без змін",

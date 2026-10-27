@@ -116,10 +116,20 @@ def _notify(msg: str) -> None:
 def _decode_mime_words(raw: str) -> str:
     if not raw:
         return ""
-    return "".join(
-        part.decode(enc or "utf-8", errors="replace") if isinstance(part, bytes) else part
-        for part, enc in decode_header(raw)
-    )
+    try:
+        parts = decode_header(str(raw))
+    except Exception:  # noqa: BLE001 — зіпсований заголовок не має валити весь прогін (аудит #1010)
+        return str(raw)
+    out = []
+    for part, enc in parts:
+        if isinstance(part, bytes):
+            try:
+                out.append(part.decode(enc or "utf-8", errors="replace"))
+            except LookupError:        # напр. unknown-8bit
+                out.append(part.decode("utf-8", errors="replace"))
+        else:
+            out.append(part)
+    return "".join(out)
 
 
 def _load_cursor() -> set:
@@ -305,7 +315,7 @@ def _find_privat_statement_link(msg) -> str | None:
 #   2. кожна IMAP-операція — з повтором і ПЕРЕПІДКЛЮЧЕННЯМ (_ImapSession.call): разовий таймаут не вбиває прогін;
 #   3. курсор зберігається і при збої (finally), тож наступний прогін не починає з нуля.
 # ---------------------------------------------------------------------------------------------------------------------------
-IMAP_RETRIES = int(os.environ.get("KODV_MAIL_IMAP_RETRIES", "3"))
+IMAP_RETRIES = max(1, int(os.environ.get("KODV_MAIL_IMAP_RETRIES", "3")))
 HEADER_BATCH = 100
 _HEADER_FIELDS = "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)])"
 # Маркери «лист може бути релевантним за темою/відправником» = усі маркери _classify + ті, що рахують «схожі без вкладення».
@@ -385,10 +395,13 @@ def _headers_by_uid(sess: "_ImapSession", uids: list) -> dict:
             m = re.search(rb"UID (\d+)", item[0])
             if not m:
                 continue
-            hdr = email.message_from_bytes(item[1])
-            out[m.group(1)] = (_decode_mime_words(hdr.get("Subject", "")).lower(),
-                               _decode_mime_words(hdr.get("From", "")).lower(),
-                               hdr.get("Content-Type", ""))
+            try:
+                hdr = email.message_from_bytes(item[1])
+                out[m.group(1)] = (_decode_mime_words(hdr.get("Subject", "")).lower(),
+                                   _decode_mime_words(hdr.get("From", "")).lower(),
+                                   str(hdr.get("Content-Type", "") or ""))
+            except Exception as e:  # noqa: BLE001 — лист із нерозбірливими заголовками не потрапляє в словник → archive() тягне його повністю (консервативно)
+                _log(f"заголовки UID {m.group(1).decode()} не розібрано ({type(e).__name__}) — лист буде прочитано повністю")
     return out
 
 
@@ -555,7 +568,10 @@ def archive(dry_run: bool = False) -> dict:
             raise RuntimeError(f"жодна з тек {FOLDERS} не вибралась — перевір KODV_MAIL_FOLDERS")
     finally:
         if not dry_run:
-            _save_cursor(saved_cursor)              # і при збої: наступний прогін продовжує, а не починає з нуля
+            try:
+                _save_cursor(saved_cursor)          # і при збої: наступний прогін продовжує, а не починає з нуля
+            except OSError as e:                    # не маскуємо початковий виняток збоєм збереження
+                _log(f"⚠️ курсор не збережено: {e}")
         sess.close()
 
     _log(f"листів пропущено за заголовками (без повного читання): {skipped_headers}")

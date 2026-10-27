@@ -321,6 +321,33 @@ with patch.object(km.imaplib, "IMAP4_SSL", _Flaky), patch.object(km.time, "sleep
     _chk("IMAP-сесія: обрив з'єднання → reconnect + повтор повертає результат", res == ("OK", [b"fine"]) and _Flaky.n == 2)
 
 
+# аудит #1010: сирі 8-бітні байти в заголовках (Content-Type name="файл.pdf" без RFC2231, Subject/From unknown-8bit) не мають валити прогін
+_raw = ("From: =?unknown-8bit?q?novapay?= <x@novapay.ua>\r\nSubject: \u0440\u0435\u0454\u0441\u0442\u0440\r\n"
+        "Content-Type: multipart/mixed; name=\"\u0444\u0430\u0439\u043b.pdf\"\r\n\r\n").encode("utf-8")
+
+
+class _RawHdrImap(_FakeImap):
+    def uid(self, cmd, *args):
+        if cmd == "FETCH" and "HEADER.FIELDS" in args[1]:
+            return ("OK", [(b"1 (UID 7 BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)] {1}", _raw), b")"])
+        return super().uid(cmd, *args)
+
+
+with patch.object(km.imaplib, "IMAP4_SSL", _RawHdrImap), patch.object(km, "IMAP_EMAIL", "x"), patch.object(km, "IMAP_APP_PASSWORD", "y"):
+    _ss = km._ImapSession()
+    _ss.connect("INBOX")
+    try:
+        _h = km._headers_by_uid(_ss, [b"7"])
+        _ok_raw = all(isinstance(km._header_relevant(*v), bool) for v in _h.values())   # саме тут падало: Header.strip() у _header_relevant
+    except Exception as _e:  # noqa: BLE001
+        _h, _ok_raw = {}, False
+    _chk("8-бітні/зіпсовані заголовки: _headers_by_uid не падає (лист або розібрано, або піде в повне читання)", _ok_raw)
+_chk("_decode_mime_words: unknown-8bit не кидає LookupError", isinstance(km._decode_mime_words("=?unknown-8bit?q?abc=FF?="), str))
+_chk("_decode_mime_words: Header-об'єкт (сирі байти) не кидає AttributeError",
+     isinstance(km._decode_mime_words(email.header.Header("abc", "utf-8")), str))
+_chk("IMAP_RETRIES ≥ 1 навіть при KODV_MAIL_IMAP_RETRIES=0", km.IMAP_RETRIES >= 1)
+
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)

@@ -114,6 +114,7 @@ try {
 #        НоваПошта on its own cycle - idempotent cursor-based, a second run here is harmless,
 #        not a duplicate side effect - see kodv_mail_archiver.py's own cursor logic).
 & $py kodv_mail_archiver.py
+if ($LASTEXITCODE -ne 0) { $failedSteps += "kodv_mail_archiver.py" }
 
 # 3c-6. PrivatBank daily statement -> KODV book candidates (owner 2026-09-19: PDF statements
 #       started arriving daily; the notification email itself has no MIME attachment, just a

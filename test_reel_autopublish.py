@@ -310,5 +310,48 @@ make("regtest", age=100)
 r_ok = run(register=lambda *a, **k: _calls.append(a[0]) or True)
 chk("run_once: після публікації викликається register(name,…)", r_ok["published"] == "regtest" and _calls == ["regtest"])
 
+# ── автооновлення цін (запит власника 27.10.2026: «чому не поставити актуальні ціни?») — ціна в підписі це текст, у кадрі цін нема
+ra._alert = lambda key, text: alerts.append((key, text))
+IDX3 = {"177602": {"price": 329, "name": "A"}, "44404": {"price": 567, "name": "B"}, "288920": {"price": 170, "name": "C"}}
+CAP3 = "Плутус підібрав:\n🚜 Трактор — 349 грн\n🏗️ Кран — 567 грн\n🚗 Машинка — 169 грн\n\n#plutustoys"
+make("rf1", verify=[{"id": "177602", "price": 349}, {"id": "44404", "price": 567}, {"id": "288920", "price": 169}], caption=CAP3,
+     extra={"not_before": "2020-01-01T00:00"}, age=900)
+published.clear()
+res = run(fetch_index=lambda: IDX3)
+chk("ціни змінились (349→329, 169→170): рілс НЕ утримано, а опубліковано з живими цінами", res["published"] == "rf1" and res["held"] == [])
+chk("опублікований підпис має нові ціни й не має старих (349/169), незмінена ціна 567 на місці",
+    bool(published) and "329 грн" in published[-1][1] and "170 грн" in published[-1][1] and "567 грн" in published[-1][1]
+    and "349" not in published[-1][1] and "169" not in published[-1][1])
+_man_new = json.loads((q / "published" / "rf1.json").read_text(encoding="utf-8"))
+chk("маніфест оновлено: verify на живі ціни, not_before збережено",
+    [v["price"] for v in _man_new["verify"]] == [329, 567, 170] and _man_new.get("not_before") == "2020-01-01T00:00")
+chk("сигнал «ℹ️ ціни оновлено» надіслано", any(k == "reel_prices_refreshed:rf1" and "329" in t for k, t in alerts))
+
+# ланцюжок цін: 100→150 і 150→200 — одним проходом, без каскаду (інакше «100 грн» стало б 200)
+IDX_CH = {"11": {"price": 150, "name": "A"}, "12": {"price": 200, "name": "B"}}
+make("rf2", verify=[{"id": "11", "price": 100}, {"id": "12", "price": 150}], caption="А — 100 грн\nБ — 150 грн", age=800)
+published.clear()
+res = run(fetch_index=lambda: IDX_CH)
+chk("ланцюг цін 100→150 і 150→200: без каскаду (А=150, Б=200)", res["published"] == "rf2" and published[-1][1] == "А — 150 грн\nБ — 200 грн")
+
+# неоднозначно / нема в наявності / ціни немає в підписі → НЕ чіпаємо, утримуємо, файли без змін
+make("rf3", verify=[{"id": "21", "price": 100}, {"id": "22", "price": 100}], caption="А — 100 грн\nБ — 100 грн", age=700)
+_before = ((q / "rf3.caption.txt").read_text(encoding="utf-8"), (q / "rf3.json").read_text(encoding="utf-8"))
+res = run(fetch_index=lambda: {"21": {"price": 110, "name": "A"}, "22": {"price": 120, "name": "B"}})
+chk("одна стара ціна → дві різні нові: неоднозначно → утримано, файли не змінені",
+    "rf3" in res["held"] and ((q / "rf3.caption.txt").read_text(encoding="utf-8"), (q / "rf3.json").read_text(encoding="utf-8")) == _before)
+make("rf4", verify=[{"id": "31", "price": 100}, {"id": "99", "price": 50}], caption="А — 100 грн\nБ — 50 грн", age=600)
+res = run(fetch_index=lambda: {"31": {"price": 105, "name": "A"}})
+chk("товару нема в каталозі (нема в наявності) → утримано, підпис не переписано",
+    "rf4" in res["held"] and "100 грн" in (q / "rf4.caption.txt").read_text(encoding="utf-8"))
+make("rf6", verify=[{"id": "51", "price": 100}], caption="А — 100 грн", age=550)
+res = run(fetch_index=lambda: {"51": {"price": 0, "name": "A"}})
+chk("ціна на сайті 0 (збій даних) → НЕ підставляємо в підпис: утримано, підпис без змін",
+    "rf6" in res["held"] and (q / "rf6.caption.txt").read_text(encoding="utf-8") == "А — 100 грн")
+make("rf5", verify=[{"id": "41", "price": 100}], caption="Ціна 999 грн, без старої ціни", age=500)
+res = run(fetch_index=lambda: {"41": {"price": 105, "name": "A"}})
+chk("старої ціни нема в підписі → не вгадуємо: утримано, підпис без змін",
+    "rf5" in res["held"] and (q / "rf5.caption.txt").read_text(encoding="utf-8") == "Ціна 999 грн, без старої ціни")
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

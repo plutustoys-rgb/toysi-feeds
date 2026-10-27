@@ -9,6 +9,7 @@
      підпис ≤ 2200 символів (ліміт Instagram); відео існує й не порожнє. Не пройшло → Reel НЕ публікується, лишається в черзі, сигнал SMM/власнику (журнал) раз на добу, береться НАСТУПНИЙ Reel з черги.
   3. ПУБЛІКАЦІЯ — publish_reel_video.sh кладе відео в feed-data/media і дає публічний raw-URL, social_auto_poster.post_single_reel публікує. Успіх → media_id у reels_queue/published.json,
      файли в reels_queue/published/. Помилка → лишається в черзі, повтор наступного запуску.
+  2а. Якщо розбіжність лише в ЦІНІ (ціна в підписі — текст, у кадрі цін нема), refresh_prices ПЕРЕД перевіркою переписує підпис і verify на живі ціни сайту (однозначні випадки); нема в наявності — утримує, як раніше.
   4. ЗАХИСТ ВІД ДУБЛЯ: перед викликом Instagram створюється файл <name>.publishing. Якщо він лишився (процес перервано чи результат невідомий) — Reel НЕ публікується повторно, сигнал «перевір Instagram»;
      людина або видаляє .publishing (якщо Reel НЕ вийшов), або переносить файли в published/ (якщо вийшов).
 """
@@ -182,6 +183,56 @@ def check_item(name: str, manifest: dict, mp4: Path, caption_path: Path, index: 
     return problems
 
 
+def refresh_prices(name: str, manifest: dict, mpath: Path, cap_path: Path, index: dict):
+    """Ціна в підписі — ТЕКСТ (у кадрі цін нема: ПРАВИЛО №0 reel_build), тож коли ціна на сайті змінилась за дні очікування в черзі, замість утримання рілса
+    (запит власника 27.10.2026: «чому не поставити актуальні ціни?») переписуємо підпис і verify на ЖИВІ ціни. Робимо це лише коли це однозначно:
+      • усі товари з verify є в каталозі сайту (нема в наявності → не чіпаємо, check_item утримає, як і раніше);
+      • кожна стара ціна з маніфесту стоїть у підписі як «<N> грн» РІВНО стільки разів, скільки товарів verify мають таку ціну (інакше незрозуміло, що саме міняти);
+      • дві різні нові ціни не відображаються з однієї старої.
+    Заміна — одним проходом re.sub (ціна A→B не зачепить інший товар, чия стара ціна = B). Порядок запису: підпис, потім маніфест (як refresh_queue у reel_weekly):
+    збій між ними залишає підпис з новою ціною та маніфест зі старою → check_item утримає (fail-closed), а не опублікує чужу ціну.
+    Повертає список «id: стара→нова» (порожній = нічого не змінено)."""
+    ver = manifest.get("verify")
+    if not isinstance(ver, list) or not ver or not cap_path.is_file():
+        return []
+    mapping, changes, olds = {}, [], {}
+    for v in ver:
+        if not isinstance(v, dict):
+            return []
+        item = index.get(str(v.get("id", "")))
+        try:
+            old = float(v.get("price"))
+        except (TypeError, ValueError):
+            return []
+        if item is None:
+            return []
+        new = float(item["price"])
+        if not new > 0:
+            return []                                                   # ціна ≤ 0 / NaN у каталозі = збій даних, не ціна: не підставляємо (аудит #1011), check_item утримає
+        olds[format(old, "g")] = olds.get(format(old, "g"), 0) + 1
+        if mapping.setdefault(format(old, "g"), format(new, "g")) != format(new, "g"):
+            return []                                                   # одна стара ціна → дві різні нові: неоднозначно
+        if abs(new - old) > 0.005:
+            changes.append(f"{v.get('id')}: {old:g}→{new:g}")
+    if not changes:
+        return []
+    cap_text = cap_path.read_text(encoding="utf-8")
+    for old_s, n in olds.items():
+        if len(re.findall(rf"(?<![\d.,]){re.escape(old_s)}(?= грн)", cap_text)) != n:
+            return []                                                   # у підписі стара ціна не там/не стільки разів — не вгадуємо
+    new_cap = re.sub(r"(?<![\d.,])(\d+(?:\.\d+)?)(?= грн)", lambda m: mapping.get(m.group(1), m.group(1)), cap_text)
+    new_ver = []
+    for v in ver:
+        new_price = float(index[str(v["id"])]["price"])
+        new_ver.append({**v, "price": int(new_price) if new_price == int(new_price) else new_price})
+    tmp_c, tmp_m = cap_path.with_name(cap_path.name + ".tmp"), mpath.with_name(mpath.name + ".tmp")
+    tmp_c.write_text(new_cap, encoding="utf-8")
+    os.replace(tmp_c, cap_path)
+    tmp_m.write_text(json.dumps({**manifest, "verify": new_ver}, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_m, mpath)
+    return changes
+
+
 def _load_published(queue: Path) -> list:
     try:
         return json.loads((queue / "published.json").read_text(encoding="utf-8"))
@@ -243,6 +294,14 @@ def run_once(queue_dir=None, *, fetch_index=None, host=None, publish=None, now=N
                     print(f"[reel_autopublish] каталог сайту недоступний ({type(e).__name__}: {e}) — публікація відкладена", file=sys.stderr)
                     _alert("reel_infra_index", f"⚠️ Автопублікація Reels відкладена: каталог сайту недоступний ({type(e).__name__}); без перевірки цін не публікую, повтор наступного запуску.")
                     return out                                    # без перевірки цін не публікуємо
+            try:
+                changes = refresh_prices(name, manifest, mpath, cap, index)
+                if changes:
+                    manifest = json.loads(mpath.read_text(encoding="utf-8"))
+                    print(f"[reel_autopublish] {name}: ціни в підписі й маніфесті оновлено за живим сайтом: " + "; ".join(changes))
+                    _alert(f"reel_prices_refreshed:{name}", f"ℹ️ Reel {name}: за дні в черзі ціни на сайті змінились — підпис і маніфест оновлено на живі ціни ({'; '.join(changes)}), публікація йде далі.")
+            except Exception as e:  # noqa: BLE001
+                print(f"[reel_autopublish] {name}: автооновлення цін не вдалось ({type(e).__name__}: {e}) — далі звичайна перевірка", file=sys.stderr)
             try:
                 problems = check_item(name, manifest, mp4, cap, index)
             except Exception as e:  # noqa: BLE001

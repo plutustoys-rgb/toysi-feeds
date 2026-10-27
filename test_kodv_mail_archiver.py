@@ -185,6 +185,169 @@ _chk(f"ghost-repair: 2-й прогін прибирає наступні {km.GHO
 _chk("ghost-repair: 2-й прогін — реальний файл і далі не зачеплений", real_key in r4)
 
 
+# ----------------------------------------------------------------------------------------------------------------------------------
+# 10. Тайм-аут IMAP (запит головного бухгалтера 27.10.2026): префільтр за заголовками, повтор із перепідключенням, курсор при збої.
+# ----------------------------------------------------------------------------------------------------------------------------------
+import imaplib
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+
+_chk("префільтр: відправник NovaPay → тягнемо", km._header_relevant("реєстр", "novapay <erp-backoffice-mailer@novapay.ua>", "multipart/mixed"))
+_chk("префільтр: RozetkaPay text/html із темою «реєстр платежів» → тягнемо (посилання в тілі)",
+     km._header_relevant("реєстр платежів фоп чечетенко_2026-10-26", "rozetkapay reports <reports@rozetkapay.com>", 'text/html; charset="utf-8"'))
+_chk("префільтр: невідомий відправник, multipart/mixed (може бути вкладення з маркером у назві файлу) → тягнемо",
+     km._header_relevant("привіт", "x <x@example.com>", "multipart/mixed; boundary=x"))
+_chk("префільтр: розсилка multipart/alternative без маркерів → НЕ тягнемо",
+     not km._header_relevant("знижки до п'ятниці", "shop <news@example.com>", "multipart/alternative; boundary=x"))
+_chk("префільтр: text/plain без маркерів → НЕ тягнемо", not km._header_relevant("привіт", "x <x@example.com>", "text/plain"))
+_chk("префільтр: Content-Type відсутній → тягнемо (консервативно)", km._header_relevant("привіт", "x <x@example.com>", ""))
+
+
+def _np_mail(fname, subject="Реєстр платежів контрагента"):
+    m = MIMEMultipart("mixed")
+    m["Subject"] = subject
+    m["From"] = "NovaPay <erp-backoffice-mailer@novapay.ua>"
+    m["Date"] = "Tue, 6 Oct 2026 01:48:38 +0300"
+    m.attach(MIMEText("реєстр у вкладенні", "plain", "utf-8"))
+    att = MIMEApplication(b"PK-fake-xlsx-" + fname.encode("utf-8"), Name=fname)
+    att.add_header("Content-Disposition", "attachment", filename=("utf-8", "", fname))
+    m.attach(att)
+    return m.as_bytes()
+
+
+def _newsletter():
+    m = MIMEMultipart("alternative")
+    m["Subject"] = "Знижки до п'ятниці"
+    m["From"] = "Shop <news@example.com>"
+    m["Date"] = "Tue, 6 Oct 2026 02:00:00 +0300"
+    m.attach(MIMEText("текст", "plain", "utf-8"))
+    m.attach(MIMEText("<b>текст</b>", "html", "utf-8"))
+    return m.as_bytes()
+
+
+class _FakeImap:
+    """Імітація imaplib.IMAP4_SSL: листи {uid: bytes}; fail_full_uids — UID, повний FETCH яких завжди кидає TimeoutError."""
+    full_fetches = []
+    fail_full_uids = set()
+    messages = {}
+
+    def __init__(self, host, timeout=None):
+        pass
+
+    def login(self, u, p):
+        return ("OK", [b"ok"])
+
+    def logout(self):
+        return ("BYE", [b""])
+
+    def select(self, folder, readonly=True):
+        return ("OK", [b"3"])
+
+    def uid(self, cmd, *args):
+        if cmd == "SEARCH":
+            return ("OK", [b" ".join(sorted(self.messages))])
+        assert cmd == "FETCH"
+        uid_arg, what = args
+        if "HEADER.FIELDS" in what:
+            out = []
+            for u in uid_arg.split(b","):
+                msg = email.message_from_bytes(self.messages[u])
+                hdr = "".join(f"{k}: {msg[k]}\r\n" for k in ("From", "Subject", "Date", "Content-Type") if msg[k]) + "\r\n"
+                out.append((b"1 (UID " + u + b" BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)] {1}", hdr.encode("utf-8")))
+                out.append(b")")
+            return ("OK", out)
+        _FakeImap.full_fetches.append(uid_arg)
+        if uid_arg in self.fail_full_uids:
+            raise TimeoutError("The read operation timed out")
+        return ("OK", [(b"1 (UID " + uid_arg + b" BODY[] {1}", self.messages[uid_arg]), b")"])
+
+
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    _FakeImap.messages = {b"1": _newsletter(), b"2": _np_mail("reestr_A.XLSX"), b"3": _np_mail("reestr_B.XLSX")}
+    _FakeImap.fail_full_uids = {b"3"}
+    with patch.object(km.imaplib, "IMAP4_SSL", _FakeImap), patch.object(km, "KODV_DOCS_DIR", td / "docs"), \
+            patch.object(km, "CURSOR_FILE", td / "cursor.json"), patch.object(km.time, "sleep", lambda s: None), \
+            patch.object(km, "IMAP_EMAIL", "x"), patch.object(km, "IMAP_APP_PASSWORD", "y"):
+        raised = False
+        try:
+            km.archive()
+        except TimeoutError:
+            raised = True
+        _chk("архіватор: 3 невдалі спроби підряд на листі №3 → помилка піднімається (exit 1 у main)", raised)
+        _chk("архіватор: розсилка (лист №1) НЕ завантажена повністю — лише заголовки", b"1" not in _FakeImap.full_fetches)
+        _chk("архіватор: на листі №3 було рівно IMAP_RETRIES спроб повного читання",
+             _FakeImap.full_fetches.count(b"3") == km.IMAP_RETRIES)
+        _chk("архіватор: файл листа №2 збережено на диск ДО збою", (td / "docs" / "2026-10" / "NovaPay" / "reestr_A.XLSX").is_file())
+        cur = km._load_cursor()
+        _chk("архіватор: курсор збережено при збої (finally) — лист №2 не буде викачано знову",
+             "2026-10/NovaPay/reestr_A.XLSX" in cur and "2026-10/NovaPay/reestr_B.XLSX" not in cur)
+        # наступний прогін: лист №3 вже читається — дописує тільки його, №2 → дубль
+        _FakeImap.fail_full_uids = set()
+        _FakeImap.full_fetches.clear()
+        r = km.archive()
+        _chk("архіватор: наступний прогін архівує №3 і пропускає №2 як дубль",
+             r["newly"]["NovaPay"] == 1 and r["skipped_dupe"] == 1 and (td / "docs" / "2026-10" / "NovaPay" / "reestr_B.XLSX").is_file())
+
+
+# разовий збій з'єднання: call() перепідключається і повторює
+class _Flaky:
+    n = 0
+
+    def __init__(self, host, timeout=None):
+        pass
+
+    def login(self, u, p):
+        return ("OK", [b""])
+
+    def logout(self):
+        return ("BYE", [b""])
+
+    def select(self, f, readonly=True):
+        return ("OK", [b"1"])
+
+    def uid(self, *a):
+        _Flaky.n += 1
+        if _Flaky.n == 1:
+            raise imaplib.IMAP4.abort("socket error: EOF")
+        return ("OK", [b"fine"])
+
+
+with patch.object(km.imaplib, "IMAP4_SSL", _Flaky), patch.object(km.time, "sleep", lambda s: None), \
+        patch.object(km, "IMAP_EMAIL", "x"), patch.object(km, "IMAP_APP_PASSWORD", "y"):
+    ss = km._ImapSession()
+    ss.connect("INBOX")
+    res = ss.call(lambda im: im.uid("SEARCH", None, "ALL"))
+    _chk("IMAP-сесія: обрив з'єднання → reconnect + повтор повертає результат", res == ("OK", [b"fine"]) and _Flaky.n == 2)
+
+
+# аудит #1010: сирі 8-бітні байти в заголовках (Content-Type name="файл.pdf" без RFC2231, Subject/From unknown-8bit) не мають валити прогін
+_raw = ("From: =?unknown-8bit?q?novapay?= <x@novapay.ua>\r\nSubject: \u0440\u0435\u0454\u0441\u0442\u0440\r\n"
+        "Content-Type: multipart/mixed; name=\"\u0444\u0430\u0439\u043b.pdf\"\r\n\r\n").encode("utf-8")
+
+
+class _RawHdrImap(_FakeImap):
+    def uid(self, cmd, *args):
+        if cmd == "FETCH" and "HEADER.FIELDS" in args[1]:
+            return ("OK", [(b"1 (UID 7 BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)] {1}", _raw), b")"])
+        return super().uid(cmd, *args)
+
+
+with patch.object(km.imaplib, "IMAP4_SSL", _RawHdrImap), patch.object(km, "IMAP_EMAIL", "x"), patch.object(km, "IMAP_APP_PASSWORD", "y"):
+    _ss = km._ImapSession()
+    _ss.connect("INBOX")
+    try:
+        _h = km._headers_by_uid(_ss, [b"7"])
+        _ok_raw = all(isinstance(km._header_relevant(*v), bool) for v in _h.values())   # саме тут падало: Header.strip() у _header_relevant
+    except Exception as _e:  # noqa: BLE001
+        _h, _ok_raw = {}, False
+    _chk("8-бітні/зіпсовані заголовки: _headers_by_uid не падає (лист або розібрано, або піде в повне читання)", _ok_raw)
+_chk("_decode_mime_words: unknown-8bit не кидає LookupError", isinstance(km._decode_mime_words("=?unknown-8bit?q?abc=FF?="), str))
+_chk("_decode_mime_words: Header-об'єкт (сирі байти) не кидає AttributeError",
+     isinstance(km._decode_mime_words(email.header.Header("abc", "utf-8")), str))
+_chk("IMAP_RETRIES ≥ 1 навіть при KODV_MAIL_IMAP_RETRIES=0", km.IMAP_RETRIES >= 1)
+
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)

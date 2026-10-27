@@ -17,6 +17,7 @@ $ErrorActionPreference = "Continue"
 $repo = "C:\Users\smach\rozetka_agent"
 $py = "C:\Users\smach\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 $reportDir = "C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\reports"
+$failedSteps = @()   # steps whose exit code must reach Task Scheduler (silent-zeros guard, KODV accountant 2026-10-27)
 
 Set-Location $repo
 # Pull merged+audited master into this working copy first (no-op if branch/tree is not clean) - desktop_code_sync.py, 2026-10-06
@@ -113,6 +114,7 @@ try {
 #        НоваПошта on its own cycle - idempotent cursor-based, a second run here is harmless,
 #        not a duplicate side effect - see kodv_mail_archiver.py's own cursor logic).
 & $py kodv_mail_archiver.py
+if ($LASTEXITCODE -ne 0) { $failedSteps += "kodv_mail_archiver.py" }
 
 # 3c-6. PrivatBank daily statement -> KODV book candidates (owner 2026-09-19: PDF statements
 #       started arriving daily; the notification email itself has no MIME attachment, just a
@@ -122,6 +124,7 @@ try {
 #       book (bank statement covers income/commissions/other write-offs at once, not one
 #       specific graph like Checkbox). READ-ONLY, no login/scraping needed.
 & $py privat_statement_kandydaty.py
+if ($LASTEXITCODE -ne 0) { $failedSteps += "privat_statement_kandydaty.py" }
 
 & $py vchasno_akty_kandydaty.py
 
@@ -140,6 +143,7 @@ try {
 #       field закрито_актом in _ochikuvani_v_aktakh.json (accountant expectations check, 2026-10-08). Runs AFTER all candidate
 #       producers above so it sees today's registries.
 & $py akty_zvirka.py
+if ($LASTEXITCODE -ne 0) { $failedSteps += "akty_zvirka.py" }
 
 # 3e. ALLO cabinet (balances + subscription-balance warning + orders). One-time: `--login`.
 & $py allo_cabinet_scraper.py
@@ -168,3 +172,7 @@ $env:AUDIT_NO_TELEGRAM = "1"
 & $py archive_channels.py --apply
 
 Write-Output "[local-audit] Done. Reports in $reportDir"
+if ($failedSteps.Count -gt 0) {
+    Write-Output ("[local-audit] FAILED steps (exit code != 0): " + ($failedSteps -join ", "))
+    exit 1
+}

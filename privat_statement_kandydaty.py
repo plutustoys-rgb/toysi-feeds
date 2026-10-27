@@ -528,6 +528,18 @@ def render_report(txns: list, today: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _flag_unread_in_report(month_dir: Path, today: str, failed: list) -> None:
+    """Дописує у вже записаний звіт .md помітний блок про нечитані PDF — звіт з нулями не має виглядати «чистим»."""
+    p = month_dir / f"{today}_privat_kandydaty.md"
+    try:
+        body = p.read_text(encoding="utf-8")
+        block = ("\n## ❗ НЕ ПРОЧИТАНО PDF — звіт НЕПОВНИЙ, нулі в ньому не означають «нічого немає»\n\n"
+                 + "\n".join(f"- {x}" for x in failed) + "\n")
+        p.write_text(block + "\n" + body, encoding="utf-8")
+    except OSError as e:
+        print(f"[PrivatStmt] не вдалось дописати попередження у звіт: {e}", file=sys.stderr)
+
+
 def main() -> None:
     # Детектор тиші (аудит Д3, 2026-09-18): ПриватБанк мовчав з 11.08 і про це не було жодного
     # сигналу — той самий клас, що RozetkaPay мав до PR #566. Лист приходить ЩОДНЯ (підтверджено
@@ -543,6 +555,7 @@ def main() -> None:
 
     all_txns = []
     any_file_failed = False
+    failed_files = []
     for path in files:
         try:
             table = extract_table(path)
@@ -550,6 +563,7 @@ def main() -> None:
             print(f"[PrivatStmt] {path}: не вдалось прочитати ({e})", file=sys.stderr)
             _notify(f"🚨 privat_statement_kandydaty: {os.path.basename(path)} не читається: {e}")
             any_file_failed = True
+            failed_files.append(f"{os.path.basename(path)}: {type(e).__name__}: {str(e)[:100]}")
             continue
         for t in parse_transactions(table):
             t["file"] = os.path.basename(path)
@@ -608,6 +622,10 @@ def main() -> None:
     print(f"[PrivatStmt] {len(txns)} операцій: " + ", ".join(f"{_SECTIONS[s]} {n}" for s, n in counts.items()))
     if any_file_failed:
         print("[PrivatStmt] ⚠️ бодай один PDF не прочитався — закриття кандидатів пропущено цим прогоном.")
+        # Запобіжник «тихих нулів» (запит бухгалтера 27.10.2026: з 22.10 звіти були суцільні нулі, бо в системному Python зникло
+        # pdfplumber, а прогін завершувався з кодом 0): рядок у САМОМУ звіті + ненульовий код виходу (local_cabinet_audit.ps1 його ловить).
+        _flag_unread_in_report(month_dir, today, failed_files)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

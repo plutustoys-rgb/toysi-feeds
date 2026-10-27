@@ -279,8 +279,17 @@ def _fix_shared_strings_casing(xlsx_bytes: bytes) -> bytes:
     buf_in = io.BytesIO(xlsx_bytes)
     buf_out = io.BytesIO()
     with zipfile.ZipFile(buf_in) as zin, zipfile.ZipFile(buf_out, "w") as zout:
+        names = {item.filename for item in zin.infolist()}
+        # Другий підтверджений випадок (виписка «після плата» 09.10.2026, збережена через LibreOffice): усі клітинки — inlineStr, самої
+        # частини sharedStrings.xml у архіві НЕМАЄ, але [Content_Types].xml і workbook.xml.rels на неї посилаються → openpyxl падає з
+        # «There is no item named 'xl/sharedStrings.xml'». Знімаємо ВИСЯЧІ посилання (лише коли жодного варіанта імені в архіві нема).
+        dangling = "xl/sharedStrings.xml" not in names and "xl/SharedStrings.xml" not in names
         for item in zin.infolist():
             data = zin.read(item.filename)
+            if dangling and item.filename == "[Content_Types].xml":
+                data = re.sub(rb'<Override PartName="/xl/[sS]haredStrings\.xml"[^>]*/>', b"", data)
+            if dangling and item.filename == "xl/_rels/workbook.xml.rels":
+                data = re.sub(rb'<Relationship [^>]*[sS]haredStrings[^>]*/>', b"", data)
             name = "xl/sharedStrings.xml" if item.filename == "xl/SharedStrings.xml" else item.filename
             zout.writestr(name, data)
     return buf_out.getvalue()
@@ -301,13 +310,17 @@ _COLUMN_MARKERS = {
 }
 
 
-def parse_registry_xlsx(xlsx_bytes: bytes) -> dict:
+def parse_registry_xlsx(xlsx_bytes: bytes, allow_unnumbered: bool = False) -> dict:
     """Повертає {"registry_number": str, "rows": [ {date, amount_received,
     commission, amount_net, buyer_name, ttn, internal_order_id,
     toysi_order_id, raw_order_ref}, ... ]}. Рядки без розпізнаваного
     internal_order_id (formатy не "prom_.../rozetka_..." тощо) все одно
     повертаються — з internal_order_id=None, щоб їх було видно в журналі
-    як "не зіставлено", а не тихо загублено."""
+    як "не зіставлено", а не тихо загублено.
+
+    allow_unnumbered=False (типово, VPS-звірка замовлень): файл без «РЕЄСТР ПЕРЕКАЗІВ №…» відхиляється, як і раніше. True — лише для локального
+    збирача кандидатів КОДВ (novapay_registry_kandydaty): зведена виписка за період («Реєстр переказів з … по …», власні номери реєстрів у
+    колонці кожного рядка) читається з міткою registry_number="зведена виписка"."""
     fixed_bytes = _fix_shared_strings_casing(xlsx_bytes)
     wb = openpyxl.load_workbook(io.BytesIO(fixed_bytes), data_only=True)
     ws = wb[wb.sheetnames[0]]
@@ -336,6 +349,8 @@ def parse_registry_xlsx(xlsx_bytes: bytes) -> dict:
                 header_row_idx = i
                 column_index = found
 
+    if registry_number is None and allow_unnumbered and header_row_idx is not None:
+        registry_number = "зведена виписка"
     if registry_number is None:
         raise NovaPayStatementError("Не знайдено номер реєстру (РЕЄСТР ПЕРЕКАЗІВ №...) у файлі")
     if header_row_idx is None:

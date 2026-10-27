@@ -115,7 +115,7 @@ def _rows_from(paths: list) -> list:
     out = []
     for p in paths:
         try:
-            parsed = parse_registry_xlsx(Path(p).read_bytes())
+            parsed = parse_registry_xlsx(Path(p).read_bytes(), allow_unnumbered=True)
         except Exception as e:  # noqa: BLE001
             print(f"[NovaPayReg] {os.path.basename(p)}: не прочитано ({e}) — пропуск.", file=sys.stderr)
             continue

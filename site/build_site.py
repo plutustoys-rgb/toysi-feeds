@@ -1672,6 +1672,8 @@ def _product_text_html(pid):
 # site/category_overrides.json {"<id Toysi, лише цифри>": "<ТОЧНА назва категорії, що вже є на сайті>"}; ключі з «_» службові. Застосовується під час збору картки: index.json, сторінки категорій, крихти, sitemap, noindex.
 # Не довіряємо даним: id лише цифри (rt-картки не чіпаємо); ціль мусить бути назвою категорії, що вже має сторінку в ЦІЙ збірці (є хоч один товар у наявності: категорія лише з OOS нової сторінки не створює), і не з NOINDEX_CATEGORIES; інакше запис пропускається ГОЛОСНО, товар лишається у своїй категорії.
 # Нових категорій цим файлом не створюємо (нова категорія = нова сторінка). Фіди Google/Meta/Bing і маркетплейси беруть категорію іншим шляхом і не змінюються.
+# ВИНЯТОК із «нових категорій не створюємо» (рішення власника 28.10: ігри 18+ і 16+ — в ОКРЕМУ категорію): перелік назв, які ДОЗВОЛЕНО створити цим файлом (категорія з'являється, коли хоч один товар у наявності на неї вказує). Нова назва = рішення власника + рядок тут.
+NEW_CATEGORIES_ALLOWED = ("Ігри 16+ та 18+",)
 _CATEGORY_OVERRIDES_FILE = os.path.join(_HERE, "category_overrides.json")
 _CATEGORY_OVERRIDES = {}
 
@@ -1689,7 +1691,7 @@ def _load_category_overrides(known_categories):
     for k, v in data.items():
         if isinstance(k, str) and k.startswith("_"):
             continue
-        if isinstance(k, str) and re.fullmatch(r"[0-9]{1,12}", k) and isinstance(v, str) and v.strip() in known_categories and not category_hidden(v):
+        if isinstance(k, str) and re.fullmatch(r"[0-9]{1,12}", k) and isinstance(v, str) and (v.strip() in known_categories or v.strip() in NEW_CATEGORIES_ALLOWED) and not category_hidden(v):
             _CATEGORY_OVERRIDES[k] = v.strip()
         else:
             bad.append(str(k)[:20])

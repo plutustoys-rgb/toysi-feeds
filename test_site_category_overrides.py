@@ -120,7 +120,7 @@ finally:
 idx4 = {x["id"]: x for x in json.loads((out4 / "index.json").read_text(encoding="utf-8"))}
 chk("дозволена нова категорія створюється: товар 61 в «Нова дозволена», сторінка категорії є і містить товар", idx4["61"]["c"] == "Нова дозволена" and any("product-61.html" in p.read_text(encoding="utf-8") for p in out4.glob("category-nova-*.html")))
 chk("недозволена нова назва («Інша нова») відкинута: товар 5 лишився у «Металеві моделі»", idx4["5"]["c"] == "Металеві моделі" and not list(out4.glob("category-insha-nova*.html")))
-chk("«Ігри 18+» у реальному переліку дозволених; файл репо містить 14 ігор 16+/18+ з цією ціллю", "Ігри 16+ та 18+" in bs.NEW_CATEGORIES_ALLOWED and sum(1 for v in json.loads((HERE / "site" / "category_overrides.json").read_text(encoding="utf-8-sig")).values() if v == "Ігри 16+ та 18+") == 14)
+chk("«Ігри 18+» у реальному переліку дозволених; файл репо містить 15 ігор 16+/18+ з цією ціллю", "Ігри 16+ та 18+" in bs.NEW_CATEGORIES_ALLOWED and sum(1 for v in json.loads((HERE / "site" / "category_overrides.json").read_text(encoding="utf-8-sig")).values() if v == "Ігри 16+ та 18+") == 15)
 
 # порожній файл і файл лише зі службовим ключем — як без файла
 out2, err2 = build_with({"_призначення": "лише службове"}, "empty")

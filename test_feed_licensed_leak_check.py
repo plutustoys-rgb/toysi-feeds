@@ -111,6 +111,31 @@ row_e, hits_e, _ = lk.run_check(lambda url: feed_xml(dict(dirty, **{"13": "Ля�
 chk("інший набір позицій тієї ж доби — новий запис", lk.post_to_channel(hits_e, row_e, now, ch, None) is True)
 chk("недоступний канал → False, без винятку", lk.post_to_channel(hits_d, row_d, now, tmp / "нема" / "x.md", None) is False)
 
+# 6б. білий список вендорів (29.10): позиція з маркою від вендора з ліцензією — не протікання; чужий вендор із тією ж маркою — протікання
+def feed_xml_b(rows):
+    items = "".join(f"<item><g:id>{i}</g:id><title>{t}</title><g:brand>{b}</g:brand></item>" for i, (t, b) in rows.items())
+    return ('<?xml version="1.0" encoding="UTF-8"?><rss xmlns:g="http://base.google.com/ns/1.0" version="2.0"><channel>' + items + "</channel></rss>").encode("utf-8")
+
+
+wl_file = tmp / "wl.json"
+wl_file.write_text(json.dumps({"вендори": [{"вендор": "Trefl", "джерело": "цитата", "дата": "2026-10-28"}, {"вендор": "GToys", "джерело": "цитата", "дата": "2026-10-28"},
+                                          {"вендор": "Без джерела", "дата": "2026-10-28"}]}, ensure_ascii=False), encoding="utf-8")
+wl = lk.load_whitelist(wl_file)
+chk("білий список у перевірці: {trefl, gtoys}; запис без джерела ігнорується; «G-Toys» = «Gtoys»", wl == frozenset({"trefl", "gtoys"}) and lk.vendor_key("G-Toys") == "gtoys")
+wrows = {"1": ("Пазл «Увесь рік»", "Trefl"), "2": ("Лялька Стич", "Trefl"), "3": ("Лялька Стич", "G-Toys"), "4": ("Лялька Стич", "MIC"),
+         "5": ('Подушка "Аніме. Наруто"', "Trefl"), "6": ("Лялька Стич", "")}
+row_w, hits_w, _ = lk.run_check(lambda url: feed_xml_b(wrows), gate_rx, probe_rx, wl)
+chk("вендори з ліцензією (Trefl/G-Toys) з маркою НЕ в протіканні, MIC і порожній бренд — у протіканні; Trefl+проба теж пропущено", sorted(hits_w) == ["4", "6"] and row_w["whitelisted_ids"] == 3)
+row_n, hits_n, _ = lk.run_check(lambda url: feed_xml_b(wrows), gate_rx, probe_rx, frozenset())
+chk("без білого списку ті самі позиції (2,3,4,5,6) — протікання", sorted(hits_n) == ["2", "3", "4", "5", "6"] and row_n["whitelisted_ids"] == 0)
+chk("нечитабельний файл списку → порожній набір (усе рахується протіканням)", lk.load_whitelist(tmp / "нема.json") == frozenset())
+csv_old = tmp / "old_header.csv"
+csv_old.write_text("at,unique_hits\n", encoding="utf-8-sig")
+lk.write_row({"at": "t", "unique_hits": 0, "whitelisted_ids": 5}, csv_old)
+chk("CSV зі старим заголовком не зсувається: нова колонка ігнорується", csv_old.read_text(encoding="utf-8-sig").replace("\r\n", "\n") == "at,unique_hits\nt,0\n")
+import generate_google_feed as _gg2  # noqa: E402
+chk("vendor_key у перевірці = generate_google_feed.vendor_key (дубль не розійшовся)", all(lk.vendor_key(x) == _gg2.vendor_key(x) for x in ("G-Toys", "Додо", " Trefl ", "YG Toys", None)))
+
 # 7. регулярка гейта тотожна генераторній (дубль навмисний — не розійтись) + репо-файли
 import generate_google_feed as gg  # noqa: E402
 real_marks = Path(__file__).parent / "feed_licensed_marks.json"

@@ -32,6 +32,7 @@ FEED_BASE = os.environ.get("LEAK_CHECK_FEED_BASE", "https://raw.githubuserconten
 FEEDS = ("google_merchant_feed", "meta_feed", "bing_feed")
 MARKS_FILE = Path(os.environ.get("FEED_LICENSED_MARKS_FILE") or (BASE_DIR / "feed_licensed_marks.json"))
 PROBE_FILE = Path(os.environ.get("FEED_LICENSED_PROBE_FILE") or (BASE_DIR / "feed_licensed_probe.json"))
+WHITELIST_FILE = Path(os.environ.get("FEED_LICENSED_VENDOR_WHITELIST_FILE") or (BASE_DIR / "feed_licensed_vendor_whitelist.json"))
 DEFAULT_REPORT_DIR = r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\reports"
 REPORT_DIR = Path(os.environ.get("AUDIT_REPORT_DIR") or DEFAULT_REPORT_DIR)
 CSV_FILE = REPORT_DIR / "feed_licensed_leak.csv"
@@ -61,6 +62,20 @@ def load_gate_regex(path=None):
     return re.compile("|".join(f"(?:{f})" for f in forms), re.IGNORECASE)
 
 
+def vendor_key(vendor) -> str:
+    """Те саме, що generate_google_feed.vendor_key (дубль навмисний, як і load_gate_regex; тотожність стереже test_feed_licensed_leak_check.py)."""
+    return re.sub(r"[^a-zа-яіїєґ0-9]", "", str(vendor or "").lower())
+
+
+def load_whitelist(path=None) -> frozenset:
+    """Вендори з ліцензією (feed_licensed_vendor_whitelist.json, 29.10): їхні позиції з маркою у фіді — ЗАМІР ВЛАСНОГО РІШЕННЯ, а не протікання. Нечитабельний файл → порожньо (усе, що є у фіді, рахується протіканням)."""
+    try:
+        data = json.loads(Path(path or WHITELIST_FILE).read_text(encoding="utf-8-sig"))
+        return frozenset(k for k in (vendor_key(r.get("вендор")) for r in data.get("вендори", []) if isinstance(r, dict) and str(r.get("джерело") or "").strip() and str(r.get("дата") or "").strip()) if k)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return frozenset()
+
+
 def load_probe_regex(path=None):
     data = json.loads(Path(path or PROBE_FILE).read_text(encoding="utf-8-sig"))
     forms = [x for x in data.get("проба", []) if isinstance(x, str) and x.strip()]
@@ -88,12 +103,23 @@ def feed_titles(xml_bytes: bytes) -> dict:
     return out
 
 
-def run_check(fetch=fetch_bytes, gate_rx=None, probe_rx=None):
+def feed_brands(xml_bytes: bytes) -> dict:
+    """{g:id: g:brand} з RSS-фіда (бренд = вендор каталогу Toysi, generate_google_feed.build_feed_items)."""
+    out = {}
+    for _, el in ET.iterparse(io.BytesIO(xml_bytes)):
+        if el.tag == "item":
+            out[(el.findtext(_NS_G + "id") or "").strip()] = el.findtext(_NS_G + "brand") or ""
+            el.clear()
+    return out
+
+
+def run_check(fetch=fetch_bytes, gate_rx=None, probe_rx=None, whitelist=None):
     """(row для CSV, hits {id: (назва, {фіди}, 'gate'|'probe')}, нотатки). hits порожній і note → перевірка неможлива."""
     gate_rx = gate_rx or load_gate_regex()
     probe_rx = probe_rx or load_probe_regex()
+    whitelist = load_whitelist() if whitelist is None else whitelist
     row = {"at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    hits, notes = {}, []
+    hits, notes, wl_ids = {}, [], set()
     for name in FEEDS:
         raw = fetch(FEED_BASE + name + ".xml")
         try:
@@ -106,9 +132,16 @@ def run_check(fetch=fetch_bytes, gate_rx=None, probe_rx=None):
             row[name + "_items"], row[name + "_hits"] = "", ""
             notes.append(f"{name}: недоступний, не XML, порожній або без g:id")
             continue
+        try:
+            brands = feed_brands(raw) if whitelist else {}
+        except ET.ParseError:
+            brands = {}
         n = 0
         for pid, title in titles.items():
             g, p = bool(gate_rx.search(title)), bool(probe_rx.search(title))
+            if (g or p) and vendor_key(brands.get(pid)) in whitelist:
+                wl_ids.add(pid)   # вендор із ліцензією (білий список): повернення в фід — рішення власника 29.10, не протікання
+                continue
             if g or p:
                 n += 1
                 prev = hits.get(pid)
@@ -118,6 +151,7 @@ def run_check(fetch=fetch_bytes, gate_rx=None, probe_rx=None):
     row["unique_hits"] = len(hits)
     row["gate_hits"] = sum(1 for v in hits.values() if v[2] == "gate")
     row["probe_only"] = sum(1 for v in hits.values() if v[2] == "probe")
+    row["whitelisted_ids"] = len(wl_ids)   # у CSV лише якщо колонка вже є в заголовку (write_row); у консольному рядку — завжди
     row["note"] = "; ".join(notes)
     return row, hits, notes
 
@@ -126,8 +160,12 @@ def write_row(row: dict, path: Path | None = None) -> None:
     path = Path(path or CSV_FILE)
     path.parent.mkdir(parents=True, exist_ok=True)
     new = not path.exists()
+    fields = list(row)
+    if not new:   # існуючий заголовок не міняємо (нова колонка в рядку без колонки в файлі не зсуває стовпці): зайві ключі ігноруються
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            fields = next(csv.reader(f), None) or fields
     with open(path, "a", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(row))
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         if new:
             w.writeheader()
         w.writerow(row)
@@ -192,7 +230,7 @@ def main() -> int:
     except OSError as e:
         print(f"[feed_leak] CSV не записано: {type(e).__name__}", file=sys.stderr)
     print(f"[feed_leak] {row['at']}: позицій у фідах {row.get('google_merchant_feed_items', '?')}/{row.get('meta_feed_items', '?')}/{row.get('bing_feed_items', '?')}, "
-          f"збігів {len(hits)} (гейт {row['gate_hits']}, лише проба {row['probe_only']}); {row['note'] or 'усі три фіди прочитано'}")
+          f"збігів {len(hits)} (гейт {row['gate_hits']}, лише проба {row['probe_only']}; вендори з білого списку не рахуються: {row['whitelisted_ids']} позицій); {row['note'] or 'усі три фіди прочитано'}")
     if hits:
         full = write_full_list(hits, now)
         print("[feed_leak] запис у канал:", "додано" if post_to_channel(hits, row, now, full_list=full) else "за сьогодні вже є / канал недоступний")

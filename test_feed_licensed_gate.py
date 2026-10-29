@@ -136,6 +136,65 @@ for _s in ('Іграшка антистрес "Кальмар" (РОЖЕВИЙ)'
            'Книга "Еґґі Мортон. Небіжчик у садку"', "Іграшка-трансформер Дихаючий заєць", "Новий рік. Набір для творчості"):
     chk(f"в.9: НЕ чіпає родове «{_s[:60]}»", not rx.search(_s))
 
+# --- білий список вендорів з ліцензією (29.10, «коригуй фіди»): марка І вендор не в списку → виключити
+import io as _io  # noqa: E402
+from contextlib import redirect_stderr  # noqa: E402
+
+def vitem(pid, name, vendor, pictures=True):
+    d = item(pid, name)
+    d["vendor"] = vendor
+    if not pictures:
+        d["pictures"] = []
+    return d
+
+gg.FEED_LICENSED_MARKS_FILE = str(marks)
+wl_repo = Path(__file__).parent / "feed_licensed_vendor_whitelist.json"
+gg.FEED_LICENSED_WHITELIST_FILE = str(wl_repo)
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+os.environ.pop("FEED_LICENSED_VENDOR_WHITELIST", None)
+chk("вендор-вайтліст типово УВІМКНЕНО", gg.licensed_whitelist_on() is True)
+wl_doc = json.loads(wl_repo.read_text(encoding="utf-8-sig"))
+chk("файл білого списку в репо: рівно Trefl, GToys, Dodo; у кожного джерело (цитата) і дата", sorted(gg.vendor_key(r["вендор"]) for r in wl_doc["вендори"]) == ["dodo", "gtoys", "trefl"]
+    and all(r["джерело"].strip() and r["дата"].strip() for r in wl_doc["вендори"]))
+chk("завантажений набір = {trefl, gtoys, dodo}", gg.load_licensed_vendor_whitelist() == frozenset({"trefl", "gtoys", "dodo"}))
+chk("vendor_key: «G-Toys» = «Gtoys» = «GTOYS »; «Додо» (кирилиця) ≠ «Dodo»; «YG Toys» ≠ «GToys»",
+    gg.vendor_key("G-Toys") == gg.vendor_key("Gtoys") == gg.vendor_key(" GTOYS ") == "gtoys" and gg.vendor_key("Додо") != gg.vendor_key("Dodo") and gg.vendor_key("YG Toys") != gg.vendor_key("GToys"))
+
+wcat = {"1": vitem("1", 'Пазл "Холодне серце"', "Trefl"), "2": vitem("2", 'Пазл "Холодне серце"', "Gtoys"), "3": vitem("3", 'Пазл "Холодне серце"', "Dodo"),
+        "4": vitem("4", 'Пазл "Холодне серце"', "MIC"), "5": vitem("5", 'Пазл "Холодне серце"', "YG Toys"), "6": vitem("6", 'Пазл "Холодне серце"', "Додо"),
+        "7": vitem("7", 'Пазл "Холодне серце"', "G-Toys"), "8": vitem("8", 'Звичайний пазл', "MIC"), "9": vitem("9", 'Пазл "Холодне серце"', ""),
+        "10": vitem("10", 'Лялька Стич', "Trefl", pictures=False)}
+got, st = ids(wcat)
+chk("білий список: Trefl/Gtoys/Dodo/G-Toys з маркою ПОВЕРНУТО (1,2,3,7); MIC, YG Toys, кирилична «Додо», порожній вендор — лишились виключені", got == {"1", "2", "3", "7", "8"})
+chk("лічильники: виключено 4 (MIC, YG Toys, Додо, порожній), пройшло гейт за списком 5, у фіді з них 4 (10 відпав на «без фото»)",
+    st["licensed_excluded"] == 4 and st["licensed_whitelisted"] == 5 and st["licensed_returned"] == 4 and st["no_image"] == 1)
+chk("звичайна позиція MIC без марки не зачеплена (8 у фіді)", "8" in got)
+os.environ["FEED_LICENSED_VENDOR_WHITELIST"] = "0"
+got_off, st_off = ids(wcat)
+chk("FEED_LICENSED_VENDOR_WHITELIST=0 → як до 29.10: усі марки поза фідом, повернено 0", got_off == {"8"} and st_off["licensed_returned"] == 0 and st_off["licensed_whitelisted"] == 0 and st_off["licensed_excluded"] == 9)
+os.environ.pop("FEED_LICENSED_VENDOR_WHITELIST", None)
+os.environ["FEED_EXCLUDE_LICENSED"] = "0"
+got_g0, st_g0 = ids(wcat)
+chk("гейт марок вимкнено (FEED_EXCLUDE_LICENSED=0) → у фіді все з фото, лічильники білого списку 0", len(got_g0) == 9 and st_g0["licensed_whitelisted"] == 0 and st_g0["licensed_returned"] == 0)
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+
+# збійний / недійсний файл списку → СУВОРО (виключається більше), без винятку
+for label, content in (("зламаний JSON", "{не json"), ("запис без джерела", json.dumps({"вендори": [{"вендор": "Trefl", "дата": "2026-10-28"}]})),
+                       ("запис без дати", json.dumps({"вендори": [{"вендор": "Trefl", "джерело": "цитата"}]})), ("порожній", json.dumps({"вендори": []}))):
+    badwl = tmp / "badwl.json"
+    badwl.write_text(content, encoding="utf-8")
+    gg.FEED_LICENSED_WHITELIST_FILE = str(badwl)
+    buf = _io.StringIO()
+    with redirect_stderr(buf):
+        g_, s_ = ids(wcat)
+    chk(f"{label}: суворий режим — Trefl/Gtoys/Dodo знову виключені, повернено 0, збірка не падає", g_ == {"8"} and s_["licensed_returned"] == 0)
+gg.FEED_LICENSED_WHITELIST_FILE = str(tmp / "no_wl.json")
+buf = _io.StringIO()
+with redirect_stderr(buf):
+    g_, s_ = ids(wcat)
+chk("файлу списку нема → суворий режим + попередження в stderr", g_ == {"8"} and "СУВОРИЙ режим" in buf.getvalue())
+gg.FEED_LICENSED_WHITELIST_FILE = str(wl_repo)
+
 # Meta/Bing — той самий build_feed_items
 import generate_meta_feed as gm  # noqa: E402
 import generate_bing_feed as gb  # noqa: E402

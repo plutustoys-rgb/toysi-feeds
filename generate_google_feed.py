@@ -747,6 +747,25 @@ def enrich_brand_only_description(pid, name: str, desc: str, category: str = "",
 _PROM_IMAGE_SIZE_RE = re.compile(r"_w\d+_h\d+_")
 
 
+# 30.10.2026 (SEO, GMC «image_too_small_for_high_resolution»: 1 204 позиції × 2 мови, 86 % — фото toysi.ua/p/enl_N.jpg):
+# `enl_N.jpg` — зменшена до 500 px копія; оригінал лежить поруч БЕЗ префікса (`/p/N.jpg`, типово 800–1200 px). Виміряно 30.10: усі 9 644
+# `enl_`-посилань фіду мають оригінал (HEAD=200, image/jpeg, жодного <3 КБ); на вибірці з 30 відхилених оригінал більший у всіх 30.
+# Для Google/Meta/Bing (спільний build_feed_items) віддаємо оригінал. FEED_TOYSI_ORIGINAL_IMAGE=0 — повернути enl_ без релізу.
+_TOYSI_ENL_RE = re.compile(r"^(https://toysi\.ua/p/)enl_(\d+\.jpg)$")
+
+
+def toysi_original_image_on() -> bool:
+    return os.environ.get("FEED_TOYSI_ORIGINAL_IMAGE", "1").strip() != "0"
+
+
+def _toysi_original_image(url: str) -> str:
+    """https://toysi.ua/p/enl_N.jpg → https://toysi.ua/p/N.jpg (лише рівно цей вигляд; /p/3/enl_… і чужі хости не чіпаємо)."""
+    if not url or not toysi_original_image_on():
+        return url
+    m = _TOYSI_ENL_RE.match(url)
+    return m.group(1) + m.group(2) if m else url
+
+
 def _upscale_prom_image(url: str) -> str:
     if not url or "images.prom.ua" not in url:
         return url
@@ -1130,6 +1149,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             stats["no_image"] += 1
             continue
         image = _upscale_prom_image(image)
+        image = _toysi_original_image(image)
 
         stock = _stock_num   # число, перевірене гейтом вище (рядок '5' раніше проходив гейт, а нижче падав на stock > 0)
 

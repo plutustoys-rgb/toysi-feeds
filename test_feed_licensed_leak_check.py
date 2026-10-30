@@ -159,5 +159,26 @@ chk("приклади SEO «мусить упасти»: гейт ловить �
 chk("приклади SEO «мусить лишитись»: гейт не чіпає родові (кальмар, увесь рік, Еґґі Мортон, трансформер у однині, Новий рік)", not any(real_gate.search(s) for s in MUST_STAY))
 chk("проба (окремі, простіші форми) ловить ті самі приклади «мусить упасти», що й гейт", all(real_probe.search(s) for s in MUST_CATCH))
 
+# 30.10: гейт типово ВИМКНЕНО → збіги НЕ є протіканням: main() не пише в канал; з FEED_EXCLUDE_LICENSED=1 пише
+_posted = []
+_orig = (lk.run_check, lk.post_to_channel, lk.write_row, lk.write_full_list)
+lk.run_check = lambda *a, **k: ({"at": "t", "gate_hits": 1, "probe_only": 0, "whitelisted_ids": 0, "note": "", "google_merchant_feed_items": 10}, {"1": ("Лялька Стич", {"google"}, "gate")}, [])
+lk.write_row = lambda row: None
+lk.write_full_list = lambda hits, now, report_dir=None: None
+lk.post_to_channel = lambda *a, **k: (_posted.append(1) or True)
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+_off = lk.gate_on() is False
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"
+_on = lk.gate_on() is True
+chk("gate_on(): без змінної вимкнено, «1» вмикає", _off and _on)
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+lk.main()
+chk("гейт вимкнено (типово): збіг є, а запису в канал нема", _posted == [])
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"
+lk.main()
+chk("гейт увімкнено (env=1): збіг → запис у канал", _posted == [1])
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+lk.run_check, lk.post_to_channel, lk.write_row, lk.write_full_list = _orig
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

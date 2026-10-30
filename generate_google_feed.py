@@ -847,8 +847,11 @@ def is_adult_product(title: str) -> bool:
 FEED_LICENSED_MARKS_FILE = os.environ.get("FEED_LICENSED_MARKS_FILE") or str(Path(__file__).resolve().parent / "feed_licensed_marks.json")
 
 
+# 30.10.2026 — ГЕЙТ ТИПОВО ВИМКНЕНО (рішення власника через Консультанта, дослівно: «тема і так по нам закрита, якщо тойсі надали ці документи, логічно що вони в них і беруть.
+# і яке це відношення має до нас? повертай усі бренди у фід.»; підстава — договори, які надала Toysi: Kiddisvit↔Funko UK №20181107 і MGA↔Kiddisvit (L.O.L. Surprise!, Rainbow High, Bratz, Little Tikes), Україна).
+# Перелік, білий список вендорів і код гейта ЛИШЕНО (оборотність): `FEED_EXCLUDE_LICENSED=1` у .env вмикає гейт назад без релізу. ТМ «UNO» (претензія Mattel, trademark_blocked) і доросла тематика — окремі гейти, цим не зачеплені.
 def licensed_gate_on() -> bool:
-    return os.environ.get("FEED_EXCLUDE_LICENSED", "1").strip() != "0"
+    return os.environ.get("FEED_EXCLUDE_LICENSED", "0").strip() == "1"
 
 
 # БІЛИЙ СПИСОК ВЕНДОРІВ З ЛІЦЕНЗІЄЮ (рішення власника 29.10.2026 «коригуй фіди» через Консультанта; підстава — письмова відповідь Toysi 28.10, див. джерело/дату в КОЖНОМУ записі файлу):
@@ -1388,7 +1391,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")
-    print(f"[Google] Пропущено за ліцензійним переліком: {stats['licensed_excluded']} (гейт {'УВІМКНЕНО' if licensed_gate_on() else 'вимкнено FEED_EXCLUDE_LICENSED=0'})")
+    print(f"[Google] Пропущено за ліцензійним переліком: {stats['licensed_excluded']} (гейт {'УВІМКНЕНО FEED_EXCLUDE_LICENSED=1' if licensed_gate_on() else 'ВИМКНЕНО (типово з 30.10, рішення власника)'})")
     print(f"[Google] Білий список вендорів з ліцензією ({'УВІМКНЕНО' if licensed_whitelist_on() else 'вимкнено FEED_LICENSED_VENDOR_WHITELIST=0'}): повернено у фід {stats['licensed_returned']} позицій (пройшли гейт {stats['licensed_whitelisted']}); лишилось виключеними {stats['licensed_excluded']}")
     print(f"[Google] Пропущено — заборонені (ножі/зброя): {stats['forbidden']}; «Уцінка»: {stats['clearance']}; "
           f"виключені категорії: {stats['excluded_category']}; без залишку: {stats['out_of_stock']}; "

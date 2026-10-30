@@ -53,12 +53,18 @@ marks.write_text(json.dumps({
 }, ensure_ascii=False), encoding="utf-8")
 os.environ["FEED_LICENSED_MARKS_FILE"] = str(marks)
 gg.FEED_LICENSED_MARKS_FILE = str(marks)
-os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"   # з 30.10 типово вимкнено — тести механіки гейта вмикають явно
 
 cat = {"1": item("1", 'Пазли 3в1 "Холодне серце"'), "2": item("2", "Фігурка Людина-павук 15 см"), "3": item("3", "Гімнастична палиця"),
        "4": item("4", "Машинка BMW X6"), "5": item("5", "Конструктор «Дитяче місто»")}
 
-chk("гейт типово УВІМКНЕНО", gg.licensed_gate_on() is True)
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+chk("гейт ТИПОВО ВИМКНЕНО (30.10, рішення власника «повертай усі бренди у фід»): змінної нема → вимкнено; «1» вмикає; «0»/порожнє — вимкнено", gg.licensed_gate_on() is False)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"
+chk("FEED_EXCLUDE_LICENSED=1 вмикає гейт", gg.licensed_gate_on() is True)
+os.environ["FEED_EXCLUDE_LICENSED"] = ""
+chk("порожнє значення — вимкнено", gg.licensed_gate_on() is False)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"
 got, st = ids(cat)
 chk("ліцензійні (Холодне серце, Людина-павук) прибрано; звичайні, «Гімнастична» (межа слова) і автомарка BMW (службовий ключ ігнорується) лишились", got == {"3", "4", "5"})
 chk("лічильник licensed_excluded = 2", st.get("licensed_excluded") == 2)
@@ -67,8 +73,12 @@ os.environ["FEED_EXCLUDE_LICENSED"] = "0"
 got0, st0 = ids(cat)
 chk("FEED_EXCLUDE_LICENSED=0 → гейт вимкнено, у фіді всі 5, лічильник 0", got0 == {"1", "2", "3", "4", "5"} and st0.get("licensed_excluded") == 0)
 os.environ["FEED_EXCLUDE_LICENSED"] = "1"
+del os.environ["FEED_EXCLUDE_LICENSED"]
+got_def, st_def = ids(cat)
+chk("БЕЗ змінної (типовий стан з 30.10): у фіді всі 5 позицій, жодна марка не виключена, лічильник 0", got_def == {"1", "2", "3", "4", "5"} and st_def.get("licensed_excluded") == 0)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"
 chk("FEED_EXCLUDE_LICENSED=1 → гейт увімкнено", gg.licensed_gate_on() is True and ids(cat)[0] == {"3", "4", "5"})
-os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"   # з 30.10 типово вимкнено — тести механіки гейта вмикають явно
 
 # fail-closed
 for label, content in (("порожній перелік", json.dumps({"_x": "y"})), ("зламаний JSON", "{не json"), ("неправильна регулярка", json.dumps({"G": ["(непарна"]}))):
@@ -90,7 +100,7 @@ except RuntimeError:
 chk("файлу нема при ввімкненому гейті → RuntimeError", nf)
 os.environ["FEED_EXCLUDE_LICENSED"] = "0"
 chk("при вимкненому гейті зламаний/відсутній файл не заважає збірці фіду", len(ids(cat)[0]) == 5)
-os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"   # з 30.10 типово вимкнено — тести механіки гейта вмикають явно
 
 # контракт SEO (в.4): групи СТРОГО за `_контракт_для_коду.застосовувати`; вкладені робочі регекси автомарок і службові ключі не збираються
 contract_file = tmp / "contract.json"
@@ -150,7 +160,7 @@ def vitem(pid, name, vendor, pictures=True):
 gg.FEED_LICENSED_MARKS_FILE = str(marks)
 wl_repo = Path(__file__).parent / "feed_licensed_vendor_whitelist.json"
 gg.FEED_LICENSED_WHITELIST_FILE = str(wl_repo)
-os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"   # з 30.10 типово вимкнено — тести механіки гейта вмикають явно
 os.environ.pop("FEED_LICENSED_VENDOR_WHITELIST", None)
 chk("вендор-вайтліст типово УВІМКНЕНО", gg.licensed_whitelist_on() is True)
 wl_doc = json.loads(wl_repo.read_text(encoding="utf-8-sig"))
@@ -176,7 +186,7 @@ os.environ.pop("FEED_LICENSED_VENDOR_WHITELIST", None)
 os.environ["FEED_EXCLUDE_LICENSED"] = "0"
 got_g0, st_g0 = ids(wcat)
 chk("гейт марок вимкнено (FEED_EXCLUDE_LICENSED=0) → у фіді все з фото, лічильники білого списку 0", len(got_g0) == 9 and st_g0["licensed_whitelisted"] == 0 and st_g0["licensed_returned"] == 0)
-os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"   # з 30.10 типово вимкнено — тести механіки гейта вмикають явно
 
 # збійний / недійсний файл списку → СУВОРО (виключається більше), без винятку
 for label, content in (("зламаний JSON", "{не json"), ("запис без джерела", json.dumps({"вендори": [{"вендор": "Trefl", "дата": "2026-10-28"}]})),

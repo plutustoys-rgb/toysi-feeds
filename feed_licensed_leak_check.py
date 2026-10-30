@@ -222,6 +222,11 @@ def post_to_channel(hits: dict, row: dict, now: datetime, channel: Path | None =
     return True
 
 
+def gate_on() -> bool:
+    """Те саме, що generate_google_feed.licensed_gate_on (дубль навмисний, як і решта цього модуля): з 30.10.2026 типово ВИМКНЕНО. Змінну VPS цей десктопний скрипт не бачить — тому «увімкнути» тут = лише env десктопа."""
+    return os.environ.get("FEED_EXCLUDE_LICENSED", "0").strip() == "1"
+
+
 def main() -> int:
     now = datetime.now()
     row, hits, notes = run_check()
@@ -231,6 +236,9 @@ def main() -> int:
         print(f"[feed_leak] CSV не записано: {type(e).__name__}", file=sys.stderr)
     print(f"[feed_leak] {row['at']}: позицій у фідах {row.get('google_merchant_feed_items', '?')}/{row.get('meta_feed_items', '?')}/{row.get('bing_feed_items', '?')}, "
           f"збігів {len(hits)} (гейт {row['gate_hits']}, лише проба {row['probe_only']}; вендори з білого списку не рахуються: {row['whitelisted_ids']} позицій); {row['note'] or 'усі три фіди прочитано'}")
+    if hits and not gate_on():
+        print("[feed_leak] гейт марок ВИМКНЕНО (типово з 30.10, рішення власника; FEED_EXCLUDE_LICENSED=1 вмикає) — збіги не є протіканням, у канал не пишемо")
+        return 0
     if hits:
         full = write_full_list(hits, now)
         print("[feed_leak] запис у канал:", "додано" if post_to_channel(hits, row, now, full_list=full) else "за сьогодні вже є / канал недоступний")

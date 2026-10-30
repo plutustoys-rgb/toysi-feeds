@@ -131,6 +131,10 @@ if ($LASTEXITCODE -ne 0) { $failedSteps += "privat_statement_kandydaty.py" }
 # 3d. Prom notifications (top of /cms/notifications, money signals). One-time: `--login`.
 & $py prom_notifications_scraper.py
 
+# 3d-1. ProSale tier guard (30.10.2026): live mode of the Prom campaign vs competitor_pricing.PROSALE_TIER; mismatch -> [Avtomat -> Kod] record in EXECUTOR_CHANNEL.md + failed step.
+& $py prom_prosale_tier_check.py
+if ($LASTEXITCODE -ne 0) { $failedSteps += "prom_prosale_tier_check.py" }
+
 # 3d-2. Prom per-order commission for KODV graph 9 (owner request 2026-08-29). Reads actual
 #       cpa_commission via Prom Orders API (methodology КОДВ_норми_довідник §3, verified 12/12),
 #       writes candidates into документи_КОДВ/Prom - never the book. Needs an order-scope

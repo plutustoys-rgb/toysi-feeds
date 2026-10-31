@@ -33,6 +33,7 @@ FEEDS = ("google_merchant_feed", "meta_feed", "bing_feed")
 MARKS_FILE = Path(os.environ.get("FEED_LICENSED_MARKS_FILE") or (BASE_DIR / "feed_licensed_marks.json"))
 PROBE_FILE = Path(os.environ.get("FEED_LICENSED_PROBE_FILE") or (BASE_DIR / "feed_licensed_probe.json"))
 WHITELIST_FILE = Path(os.environ.get("FEED_LICENSED_VENDOR_WHITELIST_FILE") or (BASE_DIR / "feed_licensed_vendor_whitelist.json"))
+BLOCKLIST_FILE = Path(os.environ.get("FEED_LICENSED_VENDOR_BLOCKLIST_FILE") or (BASE_DIR / "feed_licensed_vendor_blocklist.json"))
 DEFAULT_REPORT_DIR = r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\reports"
 REPORT_DIR = Path(os.environ.get("AUDIT_REPORT_DIR") or DEFAULT_REPORT_DIR)
 CSV_FILE = REPORT_DIR / "feed_licensed_leak.csv"
@@ -76,6 +77,16 @@ def load_whitelist(path=None) -> frozenset:
         return frozenset()
 
 
+def load_blocklist(path=None) -> frozenset:
+    """Вендори з чорного списку (feed_licensed_vendor_blocklist.json, рішення власника 31.10: «без мік та бамбі»): їхні позиції з маркою у фіді — ПРОТІКАННЯ навіть при вимкненому гейті.
+    Нечитабельний файл → порожньо (дубль generate_google_feed.load_licensed_vendor_blocklist без fail-closed: перевірка лише читає)."""
+    try:
+        data = json.loads(Path(path or BLOCKLIST_FILE).read_text(encoding="utf-8-sig"))
+        return frozenset(k for k in (vendor_key(r.get("вендор")) for r in data.get("вендори", []) if isinstance(r, dict) and str(r.get("джерело") or "").strip() and str(r.get("дата") or "").strip()) if k)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return frozenset()
+
+
 def load_probe_regex(path=None):
     data = json.loads(Path(path or PROBE_FILE).read_text(encoding="utf-8-sig"))
     forms = [x for x in data.get("проба", []) if isinstance(x, str) and x.strip()]
@@ -113,11 +124,13 @@ def feed_brands(xml_bytes: bytes) -> dict:
     return out
 
 
-def run_check(fetch=fetch_bytes, gate_rx=None, probe_rx=None, whitelist=None):
-    """(row для CSV, hits {id: (назва, {фіди}, 'gate'|'probe')}, нотатки). hits порожній і note → перевірка неможлива."""
+def run_check(fetch=fetch_bytes, gate_rx=None, probe_rx=None, whitelist=None, blocklist=None, gate_active=True):
+    """(row для CSV, hits {id: (назва, {фіди}, 'gate'|'probe')}, нотатки). hits порожній і note → перевірка неможлива.
+    gate_active=False (загальний гейт марок вимкнено, з 30.10): протіканням рахується ЛИШЕ збіг гейта у вендора з чорного списку (31.10); решта — рішення власника «усі бренди»."""
     gate_rx = gate_rx or load_gate_regex()
     probe_rx = probe_rx or load_probe_regex()
     whitelist = load_whitelist() if whitelist is None else whitelist
+    blocklist = load_blocklist() if blocklist is None else blocklist
     row = {"at": datetime.now().strftime("%Y-%m-%d %H:%M")}
     hits, notes, wl_ids = {}, [], set()
     for name in FEEDS:
@@ -133,13 +146,15 @@ def run_check(fetch=fetch_bytes, gate_rx=None, probe_rx=None, whitelist=None):
             notes.append(f"{name}: недоступний, не XML, порожній або без g:id")
             continue
         try:
-            brands = feed_brands(raw) if whitelist else {}
+            brands = feed_brands(raw) if (whitelist or blocklist) else {}
         except ET.ParseError:
             brands = {}
         n = 0
         for pid, title in titles.items():
             g, p = bool(gate_rx.search(title)), bool(probe_rx.search(title))
-            if (g or p) and vendor_key(brands.get(pid)) in whitelist:
+            if not gate_active and not (g and vendor_key(brands.get(pid)) in blocklist):
+                continue          # гейт вимкнено: не протікання, якщо вендор не з чорного списку
+            if (g or p) and vendor_key(brands.get(pid)) not in blocklist and vendor_key(brands.get(pid)) in whitelist:
                 wl_ids.add(pid)   # вендор із ліцензією (білий список): повернення в фід — рішення власника 29.10, не протікання
                 continue
             if g or p:
@@ -229,16 +244,15 @@ def gate_on() -> bool:
 
 def main() -> int:
     now = datetime.now()
-    row, hits, notes = run_check()
+    row, hits, notes = run_check(gate_active=gate_on())
     try:
         write_row(row)
     except OSError as e:
         print(f"[feed_leak] CSV не записано: {type(e).__name__}", file=sys.stderr)
     print(f"[feed_leak] {row['at']}: позицій у фідах {row.get('google_merchant_feed_items', '?')}/{row.get('meta_feed_items', '?')}/{row.get('bing_feed_items', '?')}, "
           f"збігів {len(hits)} (гейт {row['gate_hits']}, лише проба {row['probe_only']}; вендори з білого списку не рахуються: {row['whitelisted_ids']} позицій); {row['note'] or 'усі три фіди прочитано'}")
-    if hits and not gate_on():
-        print("[feed_leak] гейт марок ВИМКНЕНО (типово з 30.10, рішення власника; FEED_EXCLUDE_LICENSED=1 вмикає) — збіги не є протіканням, у канал не пишемо")
-        return 0
+    if not gate_on():
+        print("[feed_leak] загальний гейт марок ВИМКНЕНО (типово з 30.10, рішення власника); протіканням рахуються лише збіги вендорів із чорного списку (MIC/МІС/Bambi, 31.10)")
     if hits:
         full = write_full_list(hits, now)
         print("[feed_leak] запис у канал:", "додано" if post_to_channel(hits, row, now, full_list=full) else "за сьогодні вже є / канал недоступний")

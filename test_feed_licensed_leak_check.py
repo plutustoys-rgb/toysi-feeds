@@ -159,10 +159,29 @@ chk("приклади SEO «мусить упасти»: гейт ловить �
 chk("приклади SEO «мусить лишитись»: гейт не чіпає родові (кальмар, увесь рік, Еґґі Мортон, трансформер у однині, Новий рік)", not any(real_gate.search(s) for s in MUST_STAY))
 chk("проба (окремі, простіші форми) ловить ті самі приклади «мусить упасти», що й гейт", all(real_probe.search(s) for s in MUST_CATCH))
 
-# 30.10: гейт типово ВИМКНЕНО → збіги НЕ є протіканням: main() не пише в канал; з FEED_EXCLUDE_LICENSED=1 пише
+# 6в. чорний список вендорів (31.10, «без мік та бамбі»): при вимкненому гейті протіканням є ЛИШЕ збіг гейта у вендора з чорного списку; при увімкненому — як раніше
+bl_file = tmp / "bl.json"
+bl_file.write_text(json.dumps({"вендори": [{"вендор": "MIC", "джерело": "цитата", "дата": "2026-10-31"}, {"вендор": "МІС", "джерело": "цитата", "дата": "2026-10-31"},
+                                          {"вендор": "Bambi", "джерело": "цитата", "дата": "2026-10-31"}, {"вендор": "Без дати", "джерело": "цитата"}]}, ensure_ascii=False), encoding="utf-8")
+bl = lk.load_blocklist(bl_file)
+chk("чорний список у перевірці: {mic, міс, bambi}; запис без дати ігнорується; нечитабельний → порожній", bl == frozenset({"mic", "міс", "bambi"}) and lk.load_blocklist(tmp / "нема.json") == frozenset())
+brows = {"1": ("Лялька Стич", "MIC"), "2": ("Лялька Стич", "МІС"), "3": ("Лялька Стич", "Bambi"), "4": ("Лялька Стич", "Funko"), "5": ("Пазл «Увесь рік»", "MIC"), "6": ("Лялька Стич", "Trefl")}
+row_b, hits_b, _ = lk.run_check(lambda url: feed_xml_b(brows), gate_rx, probe_rx, wl, bl, gate_active=False)
+chk("гейт ВИМКНЕНО: протікання = Стич від MIC, МІС, Bambi (1,2,3); Funko/Trefl з маркою — рішення власника «усі бренди», не рахується; MIC без марки — теж ні",
+    sorted(hits_b) == ["1", "2", "3"] and all(v[2] == "gate" for v in hits_b.values()))
+row_b2, hits_b2, _ = lk.run_check(lambda url: feed_xml_b(brows), gate_rx, probe_rx, wl, bl, gate_active=True)
+chk("гейт УВІМКНЕНО: як раніше (1,2,3,4); Trefl у білому списку пропущено", sorted(hits_b2) == ["1", "2", "3", "4"])
+row_b3, hits_b3, _ = lk.run_check(lambda url: feed_xml_b(brows), gate_rx, probe_rx, wl, frozenset(), gate_active=False)
+chk("гейт вимкнено і чорний список порожній → протікань 0", hits_b3 == {})
+wl_bl = lk.run_check(lambda url: feed_xml_b({"1": ("Лялька Стич", "MIC")}), gate_rx, probe_rx, frozenset({"mic"}), bl, gate_active=True)[1]
+chk("чорний список сильніший за білий: вендор в обох → протікання", sorted(wl_bl) == ["1"])
+chk("файл чорного списку в репо: рівно MIC, МІС, Bambi; у кожного джерело й дата", lk.load_blocklist() == frozenset({"mic", "міс", "bambi"}))
+
+# 30.10/31.10: гейт типово ВИМКНЕНО → main() передає gate_active=False у run_check (протіканням лише чорний список); з FEED_EXCLUDE_LICENSED=1 — True; запис у канал робить, якщо run_check повернув збіги
 _posted = []
+_kw = []
 _orig = (lk.run_check, lk.post_to_channel, lk.write_row, lk.write_full_list)
-lk.run_check = lambda *a, **k: ({"at": "t", "gate_hits": 1, "probe_only": 0, "whitelisted_ids": 0, "note": "", "google_merchant_feed_items": 10}, {"1": ("Лялька Стич", {"google"}, "gate")}, [])
+lk.run_check = lambda *a, **k: (_kw.append(k) or {"at": "t", "gate_hits": 1, "probe_only": 0, "whitelisted_ids": 0, "note": "", "google_merchant_feed_items": 10}, {"1": ("Лялька Стич", {"google"}, "gate")}, [])
 lk.write_row = lambda row: None
 lk.write_full_list = lambda hits, now, report_dir=None: None
 lk.post_to_channel = lambda *a, **k: (_posted.append(1) or True)
@@ -173,10 +192,10 @@ _on = lk.gate_on() is True
 chk("gate_on(): без змінної вимкнено, «1» вмикає", _off and _on)
 os.environ.pop("FEED_EXCLUDE_LICENSED", None)
 lk.main()
-chk("гейт вимкнено (типово): збіг є, а запису в канал нема", _posted == [])
+chk("гейт вимкнено (типово): run_check викликано з gate_active=False, збіг (вендор із чорного списку) → запис у канал", _kw[-1].get("gate_active") is False and _posted == [1])
 os.environ["FEED_EXCLUDE_LICENSED"] = "1"
 lk.main()
-chk("гейт увімкнено (env=1): збіг → запис у канал", _posted == [1])
+chk("гейт увімкнено (env=1): gate_active=True, збіг → запис у канал", _kw[-1].get("gate_active") is True and _posted == [1, 1])
 os.environ.pop("FEED_EXCLUDE_LICENSED", None)
 lk.run_check, lk.post_to_channel, lk.write_row, lk.write_full_list = _orig
 

@@ -54,6 +54,7 @@ marks.write_text(json.dumps({
 os.environ["FEED_LICENSED_MARKS_FILE"] = str(marks)
 gg.FEED_LICENSED_MARKS_FILE = str(marks)
 os.environ["FEED_EXCLUDE_LICENSED"] = "1"   # з 30.10 типово вимкнено — тести механіки гейта вмикають явно
+os.environ["FEED_LICENSED_VENDOR_BLOCKLIST"] = "0"   # з 31.10 чорний список вендорів типово ввімкнено — механіка гейта перевіряється без нього; його тести — в кінці
 
 cat = {"1": item("1", 'Пазли 3в1 "Холодне серце"'), "2": item("2", "Фігурка Людина-павук 15 см"), "3": item("3", "Гімнастична палиця"),
        "4": item("4", "Машинка BMW X6"), "5": item("5", "Конструктор «Дитяче місто»")}
@@ -210,5 +211,61 @@ import generate_meta_feed as gm  # noqa: E402
 import generate_bing_feed as gb  # noqa: E402
 chk("Meta і Bing викликають gg.build_feed_items (успадковують гейт)", "build_feed_items" in Path(gm.__file__).read_text(encoding="utf-8") and "build_feed_items" in Path(gb.__file__).read_text(encoding="utf-8"))
 chk("trademark_filter.py не знає про ліцензійний перелік (сайт/акція не зачеплені)", "licensed" not in Path(__file__).parent.joinpath("trademark_filter.py").read_text(encoding="utf-8").lower())
+
+# --- 31.10: ЧОРНИЙ СПИСОК ВЕНДОРІВ (рішення власника «без мік та бамбі»): гейт марок вимкнено, але MIC/МІС/Bambi з маркою у фід не йдуть
+bl_repo = Path(__file__).parent / "feed_licensed_vendor_blocklist.json"
+gg.FEED_LICENSED_BLOCKLIST_FILE = str(bl_repo)
+os.environ.pop("FEED_LICENSED_VENDOR_BLOCKLIST", None)
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+chk("чорний список типово УВІМКНЕНО; гейт марок типово вимкнено", gg.licensed_blocklist_on() is True and gg.licensed_gate_on() is False)
+bl_doc = json.loads(bl_repo.read_text(encoding="utf-8-sig"))
+chk("файл чорного списку в репо: рівно MIC, МІС, Bambi; у кожного джерело й дата", sorted(gg.vendor_key(r["вендор"]) for r in bl_doc["вендори"]) == ["bambi", "mic", "міс"]
+    and all(r["джерело"].strip() and r["дата"].strip() for r in bl_doc["вендори"]))
+chk("завантажений набір = {mic, міс, bambi}; «MiC» = «MIC»; кириличне «МІС» ≠ латинське «MIC»", gg.load_licensed_vendor_blocklist() == frozenset({"mic", "міс", "bambi"})
+    and gg.vendor_key("MiC") == "mic" and gg.vendor_key("МІС") == "міс" and gg.vendor_key("МІС") != gg.vendor_key("MIC"))
+bcat = {"1": vitem("1", 'Пазл "Холодне серце"', "MIC"), "2": vitem("2", 'Пазл "Холодне серце"', "MiC"), "3": vitem("3", 'Пазл "Холодне серце"', "МІС"),
+        "4": vitem("4", 'Пазл "Холодне серце"', "Bambi"), "5": vitem("5", 'Пазл "Холодне серце"', "Funko"), "6": vitem("6", 'Пазл "Холодне серце"', "Trefl"),
+        "7": vitem("7", 'Звичайний пазл', "MIC"), "8": vitem("8", 'Лялька Стич', "Невідомий"), "9": vitem("9", 'Лялька Стич', "")}
+got_b, st_b = ids(bcat)
+chk("гейт вимкнено + чорний список: Холодне серце від MIC/MiC/МІС/Bambi (1–4) прибрано; Funko/Trefl/невідомий/порожній вендор З маркою лишились; MIC без марки лишився",
+    got_b == {"5", "6", "7", "8", "9"} and st_b["licensed_vendor_blocked"] == 4 and st_b["licensed_excluded"] == 0)
+os.environ["FEED_LICENSED_VENDOR_BLOCKLIST"] = "0"
+got_b0, st_b0 = ids(bcat)
+chk("FEED_LICENSED_VENDOR_BLOCKLIST=0 → чорний список знято: у фіді все (9), лічильник 0", len(got_b0) == 9 and st_b0["licensed_vendor_blocked"] == 0)
+os.environ.pop("FEED_LICENSED_VENDOR_BLOCKLIST", None)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"
+got_b1, st_b1 = ids(bcat)
+chk("гейт УВІМКНЕНО + чорний список: MIC-групу рахує чорний список (4), решта марок — гейт (Funko, Невідомий, порожній = 3; Trefl повернено білим списком)",
+    got_b1 == {"6", "7"} and st_b1["licensed_vendor_blocked"] == 4 and st_b1["licensed_excluded"] == 3)
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+wl_and_bl = tmp / "wl_bl.json"
+wl_and_bl.write_text(json.dumps({"вендори": [{"вендор": "MIC", "джерело": "цитата", "дата": "2026-10-31"}]}, ensure_ascii=False), encoding="utf-8")
+gg.FEED_LICENSED_WHITELIST_FILE = str(wl_and_bl)
+os.environ["FEED_EXCLUDE_LICENSED"] = "1"
+got_x, _ = ids({"1": vitem("1", 'Пазл "Холодне серце"', "MIC")})
+chk("чорний список сильніший за білий: вендор в обох → виключено", got_x == set())
+gg.FEED_LICENSED_WHITELIST_FILE = str(wl_repo)
+os.environ.pop("FEED_EXCLUDE_LICENSED", None)
+# fail-closed: чорний список нечитабельний → RuntimeError (фід не перезаписується)
+badbl = tmp / "badbl.json"
+badbl.write_text("{не json", encoding="utf-8")
+gg.FEED_LICENSED_BLOCKLIST_FILE = str(badbl)
+try:
+    ids(bcat)
+    fc = False
+except RuntimeError:
+    fc = True
+chk("чорний список: зламаний JSON → RuntimeError (fail-closed)", fc)
+gg.FEED_LICENSED_BLOCKLIST_FILE = str(tmp / "no_bl.json")
+try:
+    ids(bcat)
+    fc = False
+except RuntimeError:
+    fc = True
+chk("файлу чорного списку нема → RuntimeError", fc)
+os.environ["FEED_LICENSED_VENDOR_BLOCKLIST"] = "0"
+chk("FEED_LICENSED_VENDOR_BLOCKLIST=0 і файлу нема → збірка не падає (список не читається)", len(ids(bcat)[0]) == 9)
+os.environ.pop("FEED_LICENSED_VENDOR_BLOCKLIST", None)
+gg.FEED_LICENSED_BLOCKLIST_FILE = str(bl_repo)
 
 sys.exit(1 if F else 0)

@@ -1623,8 +1623,13 @@ def _utf8_clean(v):
     return "\x00" not in v
 
 
+def _product_text_key_ok(k):
+    """Ключ тексту картки: id Toysi (лише ASCII-цифри) або id RoyalToys `rt-…` (`_RT_ID_RX`, 31.10.2026 — Копірайтер, 11 207 rt-товарів без наших описів). fullmatch, тож юнікод-цифри й хвости не проходять."""
+    return isinstance(k, str) and (re.fullmatch(r"[0-9]+", k) is not None or _RT_ID_RX.fullmatch(k) is not None)
+
+
 def _load_product_texts():
-    """site/product_texts.json: {"<toysi_id>": "абзац 1\\n\\nабзац 2"}. Не довіряємо даним: корінь — об'єкт; ключ — лише ASCII-цифри; значення — непорожній рядок
+    """site/product_texts.json: {"<toysi_id>": "абзац 1\\n\\nабзац 2"} (ключ також `rt-…` для RoyalToys). Не довіряємо даним: корінь — об'єкт; ключ — ASCII-цифри або rt-id; значення — непорожній рядок
     (інше відкидається ГОЛОСНО); довше PRODUCT_TEXT_WARN_LEN або з символами < > — попередження (текст усе одно екранується й показується)."""
     global _PRODUCT_TEXTS
     _PRODUCT_TEXTS = {}
@@ -1637,10 +1642,10 @@ def _load_product_texts():
     bad_val = [k for k, v in data.items() if not isinstance(v, str)]
     if bad_val:
         print(f"[build] ⚠ product_texts.json: значення НЕ рядок, відкинуто: {bad_val[:10]}", file=sys.stderr)
-    bad_id = [k for k in data if not re.fullmatch(r"[0-9]+", k)]
+    bad_id = [k for k in data if not _product_text_key_ok(k)]
     if bad_id:
-        print(f"[build] ⚠ product_texts.json: id не з цифр, відкинуто: {bad_id[:10]}", file=sys.stderr)
-    out = {k: v for k, v in data.items() if isinstance(v, str) and v.strip() and re.fullmatch(r"[0-9]+", k)}
+        print(f"[build] ⚠ product_texts.json: id не з цифр і не rt-id, відкинуто: {bad_id[:10]}", file=sys.stderr)
+    out = {k: v for k, v in data.items() if isinstance(v, str) and v.strip() and _product_text_key_ok(k)}
     unenc = [k for k, v in out.items() if not _utf8_clean(v)]
     if unenc:
         print(f"[build] ⚠ product_texts.json: одинокий сурогат/NUL у тексті — відкинуто (інакше збірка падала б під час запису HTML): {unenc[:10]}", file=sys.stderr)

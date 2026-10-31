@@ -166,7 +166,7 @@ chk("А: без характеристик Toysi: текст просто під
     h14.index('<div class="desc">') < h14.index('<div class="prod-text">') < h14.index('<section class="related">') and 'class="desc specs"' not in h14)
 chk("А: JSON-LD картки не містить тексту SEO (розмітку не чіпано)", "Другий абзац" not in re.search(r'<script type="application/ld\+json">(.*?)</script>', h500, re.S).group(1))
 chk("А: product_texts: нечисловий id, не-рядок і пробільний — відкинуто голосно/мовчки; id без картки → попередження в build()",
-    "abc" in err and "id не з цифр" in err and "значення НЕ рядок" in err and "'20'" in err and "9999" in err and "id без картки" in err)
+    "abc" in err and "id не з цифр і не rt-id" in err and "значення НЕ рядок" in err and "'20'" in err and "9999" in err and "id без картки" in err)
 chk("А: довгий текст → попередження про довжину", "довший за 900" in err and "'40'" in err)
 chk("А: <b> у тексті → попередження (екранується як текст)", "є < або >" in err and "'500'" in err)
 chk("А: id з картки (500) НЕ в списку «id без картки»", "id без картки" in err and "'500'" not in err.split("id без картки")[1].split("\n")[0])
@@ -200,15 +200,24 @@ chk("А-лоадер: cp1251 → порожньо, ГОЛОСНО", r == {} and 
 r, e = load_texts('["a"]', "list_t.json")
 chk("А-лоадер: корінь-список → ГОЛОСНО", r == {} and "очікується об'єкт" in e)
 r, e = load_texts(json.dumps({"1": "ok", "2": 5, "3": None, "4": ["x"], "5": "  ", "x1": "id", "٣": "арабська цифра"}, ensure_ascii=False), "mixed_t.json")
-chk("А-лоадер: не-рядки й нечислові id (вкл. юнікод-цифри) відкинуто ГОЛОСНО; лишається лише валідне", r == {"1": "ok"} and "значення НЕ рядок" in e and "id не з цифр" in e and "x1" in e)
+chk("А-лоадер: не-рядки й нечислові id (вкл. юнікод-цифри) відкинуто ГОЛОСНО; лишається лише валідне", r == {"1": "ok"} and "значення НЕ рядок" in e and "id не з цифр і не rt-id" in e and "x1" in e)
+r, e = load_texts(json.dumps({"1": "toysi", "rt-8512": "rt ok", "rt-AB_9": "rt ok2", "rt-": "порожній хвіст", "rt-ж1": "кирилиця", "rt-12 ": "пробіл", "RT-1": "регістр", "xrt-1": "префікс", "rt-1/../": "шлях"}, ensure_ascii=False), "rt_t.json")
+chk("А-лоадер: rt-id (rt-8512, rt-AB_9) приймаються поряд із цифровими; «rt-», кирилиця, пробіл, інший регістр, префікс і шлях — відкинуто ГОЛОСНО",
+    r == {"1": "toysi", "rt-8512": "rt ok", "rt-AB_9": "rt ok2"} and "id не з цифр і не rt-id" in e and "RT-1" in e)
+_saved_pt = bs._PRODUCT_TEXTS
+bs._PRODUCT_TEXTS = {"rt-8512": "Перший абзац.\n\nДругий <b>абзац</b>."}
+_rt_html = bs._product_text_html("rt-8512")
+chk("А-rt: текст для rt-id відображається тим самим блоком (esc, абзаци); іншого rt-id без тексту — блоку нема",
+    _rt_html.startswith('<div class="prod-text">') and "<p>Перший абзац.</p>" in _rt_html and "&lt;b&gt;абзац&lt;/b&gt;" in _rt_html and bs._product_text_html("rt-9999") == "")
+bs._PRODUCT_TEXTS = _saved_pt
 r, e = load_texts("[" * 100000, "deep_t.json")
 chk("А-лоадер: глибоко вкладений JSON → ГОЛОСНО, без винятку (RecursionError)", r == {} and "product_texts.json" in e)
 r, e = load_texts("", "empty_t.json")
 chk("А-лоадер: порожній файл → ГОЛОСНО", r == {} and "product_texts.json" in e)
 
 shipped = json.loads((HERE / "site" / "product_texts.json").read_text(encoding="utf-8-sig"))
-chk("А-дані: site/product_texts.json у репо: ≥ 177 записів (177 пілотних + партії SEO), id — цифри, значення — непорожні рядки ≤900 без < >",
-    len(shipped) >= 177 and all(re.fullmatch(r"[0-9]+", k) and isinstance(v, str) and v.strip() and len(v) <= 900 and "<" not in v and ">" not in v for k, v in shipped.items()))
+chk("А-дані: site/product_texts.json у репо: ≥ 177 записів (177 пілотних + партії SEO), id — цифри або rt-id, значення — непорожні рядки ≤900 без < >",
+    len(shipped) >= 177 and all(bs._product_text_key_ok(k) and isinstance(v, str) and v.strip() and len(v) <= 900 and "<" not in v and ">" not in v for k, v in shipped.items()))
 
 # ═══ Б. Схожі товари ═══
 S = sections(h500)

@@ -32,11 +32,25 @@ chk("синоніми без тексту категорії: показуєть
 chk("є текст, нема синонімів: як раніше, без рядка", "cat-alt" not in bs._category_intro_html("category-c.html") and "<p>Текст без синонімів.</p>" in bs._category_intro_html("category-c.html"))
 chk("нема ні того, ні іншого: порожньо", bs._category_intro_html("category-z.html") == "" and bs._category_intro_html("catalog.html") == "")
 d = json.loads((HERE / "site" / "category_ru_alt.json").read_text(encoding="utf-8-sig"))
-chk("site/category_ru_alt.json: 19 slug партії 2, кожен 3–5 фраз", len(d) == 19 and all(isinstance(v, str) and 3 <= len([x for x in v.split(",") if x.strip()]) <= 5 for v in d.values()))
+# партія 2 (19.10, 19 slug) і партія 3 (31.10, +13 slug з виміряних запитів GSC; SEO відбирала очима проти H1 категорії)
+BATCH2 = {"bloknoty", "dytiachi-hadzhety", "ihrashky-dlia-vannoi", "koliasky-dlia-lialok", "konstruktory-typu-leho", "kubyky", "mashynky-na-batarey-kakh", "miaki-ihrashky",
+          "nezvychay-ni-konstruktory", "nichnyky", "pazly-i-vkladyshi", "pidhotovka-do-shkoly", "pupsy", "riukzaky", "roboty", "samokaty-chotyrykolisni", "soldatyky",
+          "sumochky-ta-hamantsi", "vodna-zbroia"}
+BATCH3 = {"briazkaltsia", "dereviani-konstruktory", "ihrashky-antystres", "inshi-pazly", "kukhni-i-posud", "nastilni-ihry", "pazly-castorland", "pazly-trefl",
+          "samokaty-trykolisni", "sosky-i-prorizuvachi", "spetstekhnika", "tisto-dlia-liplennia-i-plastylin", "zavodni-ihrashky"}
+
+
+def n_phrases(v):
+    return len([x for x in v.split(",") if x.strip()])
+
+
+chk("site/category_ru_alt.json: рівно партії 2 (19) + 3 (13) = 32 slug; рядки; партія 2 — 3–5 фраз, партія 3 — 2–5",
+    set(d) == BATCH2 | BATCH3 and len(d) == 32 and all(isinstance(v, str) for v in d.values())
+    and all(3 <= n_phrases(d[k]) <= 5 for k in BATCH2) and all(2 <= n_phrases(d[k]) <= 5 for k in BATCH3))
 t = json.loads((HERE / "site" / "category_texts.json").read_text(encoding="utf-8-sig"))
-chk("кожен slug синонімів має текст категорії (партія 2)", all(k in t for k in d))
+chk("кожен slug партії 2 має текст категорії (партія 3 може бути без тексту: рядок показується й так — перевірено вище)", all(k in t for k in BATCH2))
 bs._load_category_ru_alt()
-chk("_load_category_ru_alt читає файл і прибирає зайві пробіли", len(bs._CATEGORY_RU_ALT) == 19 and all("  " not in v for v in bs._CATEGORY_RU_ALT.values()))
+chk("_load_category_ru_alt читає файл і прибирає зайві пробіли", len(bs._CATEGORY_RU_ALT) == 32 and all("  " not in v for v in bs._CATEGORY_RU_ALT.values()))
 css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
 chk("стиль .cat-alt є, без animation/@keyframes", ".cat-alt{" in css)
 print()

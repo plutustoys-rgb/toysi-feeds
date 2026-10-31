@@ -252,7 +252,7 @@ def main() -> int:
     print(f"[feed_leak] {row['at']}: позицій у фідах {row.get('google_merchant_feed_items', '?')}/{row.get('meta_feed_items', '?')}/{row.get('bing_feed_items', '?')}, "
           f"збігів {len(hits)} (гейт {row['gate_hits']}, лише проба {row['probe_only']}; вендори з білого списку не рахуються: {row['whitelisted_ids']} позицій); {row['note'] or 'усі три фіди прочитано'}")
     if not gate_on():
-        print("[feed_leak] загальний гейт марок ВИМКНЕНО (типово з 30.10, рішення власника); протіканням рахуються лише збіги вендорів із чорного списку (MIC/МІС/Bambi, 31.10)")
+        print("[feed_leak] загальний гейт марок ВИМКНЕНО (типово з 30.10, рішення власника); протіканням рахуються лише збіги вендорів із чорного списку (MIC/Bambi, 31.10)")
     if hits:
         full = write_full_list(hits, now)
         print("[feed_leak] запис у канал:", "додано" if post_to_channel(hits, row, now, full_list=full) else "за сьогодні вже є / канал недоступний")

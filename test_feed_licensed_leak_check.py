@@ -175,7 +175,7 @@ row_b3, hits_b3, _ = lk.run_check(lambda url: feed_xml_b(brows), gate_rx, probe_
 chk("гейт вимкнено і чорний список порожній → протікань 0", hits_b3 == {})
 wl_bl = lk.run_check(lambda url: feed_xml_b({"1": ("Лялька Стич", "MIC")}), gate_rx, probe_rx, frozenset({"mic"}), bl, gate_active=True)[1]
 chk("чорний список сильніший за білий: вендор в обох → протікання", sorted(wl_bl) == ["1"])
-chk("файл чорного списку в репо: рівно MIC, МІС, Bambi; у кожного джерело й дата", lk.load_blocklist() == frozenset({"mic", "міс", "bambi"}))
+chk("файл чорного списку в репо: рівно MIC, Bambi (кириличне «МІС» — окремий бренд, не внесено)", lk.load_blocklist() == frozenset({"mic", "bambi"}))
 
 # 30.10/31.10: гейт типово ВИМКНЕНО → main() передає gate_active=False у run_check (протіканням лише чорний список); з FEED_EXCLUDE_LICENSED=1 — True; запис у канал робить, якщо run_check повернув збіги
 _posted = []

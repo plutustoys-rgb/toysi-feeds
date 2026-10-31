@@ -219,24 +219,24 @@ os.environ.pop("FEED_LICENSED_VENDOR_BLOCKLIST", None)
 os.environ.pop("FEED_EXCLUDE_LICENSED", None)
 chk("чорний список типово УВІМКНЕНО; гейт марок типово вимкнено", gg.licensed_blocklist_on() is True and gg.licensed_gate_on() is False)
 bl_doc = json.loads(bl_repo.read_text(encoding="utf-8-sig"))
-chk("файл чорного списку в репо: рівно MIC, МІС, Bambi; у кожного джерело й дата", sorted(gg.vendor_key(r["вендор"]) for r in bl_doc["вендори"]) == ["bambi", "mic", "міс"]
+chk("файл чорного списку в репо: рівно MIC, Bambi (кириличне «МІС» — окремий бренд, не внесено); у кожного джерело й дата", sorted(gg.vendor_key(r["вендор"]) for r in bl_doc["вендори"]) == ["bambi", "mic"]
     and all(r["джерело"].strip() and r["дата"].strip() for r in bl_doc["вендори"]))
-chk("завантажений набір = {mic, міс, bambi}; «MiC» = «MIC»; кириличне «МІС» ≠ латинське «MIC»", gg.load_licensed_vendor_blocklist() == frozenset({"mic", "міс", "bambi"})
+chk("завантажений набір = {mic, bambi}; «MiC» = «MIC»; кириличне «МІС» ≠ латинське «MIC» і в набір не входить", gg.load_licensed_vendor_blocklist() == frozenset({"mic", "bambi"})
     and gg.vendor_key("MiC") == "mic" and gg.vendor_key("МІС") == "міс" and gg.vendor_key("МІС") != gg.vendor_key("MIC"))
 bcat = {"1": vitem("1", 'Пазл "Холодне серце"', "MIC"), "2": vitem("2", 'Пазл "Холодне серце"', "MiC"), "3": vitem("3", 'Пазл "Холодне серце"', "МІС"),
         "4": vitem("4", 'Пазл "Холодне серце"', "Bambi"), "5": vitem("5", 'Пазл "Холодне серце"', "Funko"), "6": vitem("6", 'Пазл "Холодне серце"', "Trefl"),
         "7": vitem("7", 'Звичайний пазл', "MIC"), "8": vitem("8", 'Лялька Стич', "Невідомий"), "9": vitem("9", 'Лялька Стич', "")}
 got_b, st_b = ids(bcat)
-chk("гейт вимкнено + чорний список: Холодне серце від MIC/MiC/МІС/Bambi (1–4) прибрано; Funko/Trefl/невідомий/порожній вендор З маркою лишились; MIC без марки лишився",
-    got_b == {"5", "6", "7", "8", "9"} and st_b["licensed_vendor_blocked"] == 4 and st_b["licensed_excluded"] == 0)
+chk("гейт вимкнено + чорний список: Холодне серце від MIC/MiC/Bambi (1, 2, 4) прибрано; МІС (окремий бренд), Funko, Trefl, невідомий і порожній вендор З маркою лишились; MIC без марки лишився",
+    got_b == {"3", "5", "6", "7", "8", "9"} and st_b["licensed_vendor_blocked"] == 3 and st_b["licensed_excluded"] == 0)
 os.environ["FEED_LICENSED_VENDOR_BLOCKLIST"] = "0"
 got_b0, st_b0 = ids(bcat)
 chk("FEED_LICENSED_VENDOR_BLOCKLIST=0 → чорний список знято: у фіді все (9), лічильник 0", len(got_b0) == 9 and st_b0["licensed_vendor_blocked"] == 0)
 os.environ.pop("FEED_LICENSED_VENDOR_BLOCKLIST", None)
 os.environ["FEED_EXCLUDE_LICENSED"] = "1"
 got_b1, st_b1 = ids(bcat)
-chk("гейт УВІМКНЕНО + чорний список: MIC-групу рахує чорний список (4), решта марок — гейт (Funko, Невідомий, порожній = 3; Trefl повернено білим списком)",
-    got_b1 == {"6", "7"} and st_b1["licensed_vendor_blocked"] == 4 and st_b1["licensed_excluded"] == 3)
+chk("гейт УВІМКНЕНО + чорний список: MIC/MiC/Bambi рахує чорний список (3), решта марок — гейт (МІС, Funko, Невідомий, порожній = 4; Trefl повернено білим списком)",
+    got_b1 == {"6", "7"} and st_b1["licensed_vendor_blocked"] == 3 and st_b1["licensed_excluded"] == 4)
 os.environ.pop("FEED_EXCLUDE_LICENSED", None)
 wl_and_bl = tmp / "wl_bl.json"
 wl_and_bl.write_text(json.dumps({"вендори": [{"вендор": "MIC", "джерело": "цитата", "дата": "2026-10-31"}]}, ensure_ascii=False), encoding="utf-8")
@@ -263,6 +263,16 @@ try:
 except RuntimeError:
     fc = True
 chk("файлу чорного списку нема → RuntimeError", fc)
+for label, content in (("валідний JSON без списку «вендори» ({})", "{}"), ("«вендори» не список", json.dumps({"вендори": {"MIC": 1}})), ("корінь — список", "[]")):
+    badbl2 = tmp / "badbl2.json"
+    badbl2.write_text(content, encoding="utf-8")
+    gg.FEED_LICENSED_BLOCKLIST_FILE = str(badbl2)
+    try:
+        ids(bcat)
+        fc = False
+    except RuntimeError:
+        fc = True
+    chk(f"чорний список: {label} → RuntimeError (fail-closed на схему, не тихо порожній)", fc)
 os.environ["FEED_LICENSED_VENDOR_BLOCKLIST"] = "0"
 chk("FEED_LICENSED_VENDOR_BLOCKLIST=0 і файлу нема → збірка не падає (список не читається)", len(ids(bcat)[0]) == 9)
 os.environ.pop("FEED_LICENSED_VENDOR_BLOCKLIST", None)

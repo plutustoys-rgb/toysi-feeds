@@ -40,17 +40,23 @@ BATCH3 = {"briazkaltsia", "dereviani-konstruktory", "ihrashky-antystres", "inshi
           "samokaty-trykolisni", "sosky-i-prorizuvachi", "spetstekhnika", "tisto-dlia-liplennia-i-plastylin", "zavodni-ihrashky"}
 
 
+# партія 4 (31.10, v4): рядок має обіцяти лише те, що є на ЦІЙ сторінці (Wader — у «Пластикових машинках», Bubble Pops — у «Тварини і птахи»), тому два slug перенесено
+BATCH4 = {"plastykovi-mashynky", "tvaryny-i-ptakhy"}
+
+
 def n_phrases(v):
     return len([x for x in v.split(",") if x.strip()])
 
 
-chk("site/category_ru_alt.json: рівно партії 2 (19) + 3 (13) = 32 slug; рядки; партія 2 — 3–5 фраз, партія 3 — 2–5",
-    set(d) == BATCH2 | BATCH3 and len(d) == 32 and all(isinstance(v, str) for v in d.values())
-    and all(3 <= n_phrases(d[k]) <= 5 for k in BATCH2) and all(2 <= n_phrases(d[k]) <= 5 for k in BATCH3))
+chk("site/category_ru_alt.json: рівно партії 2 (19) + 3 (13) + 4 (2) = 34 slug; рядки; партія 2 — 3–5 фраз, партії 3–4 — 2–5 (дві чесні форми краще за третю вигадану)",
+    set(d) == BATCH2 | BATCH3 | BATCH4 and len(d) == 34 and all(isinstance(v, str) for v in d.values())
+    and all(3 <= n_phrases(d[k]) <= 5 for k in BATCH2) and all(2 <= n_phrases(d[k]) <= 5 for k in BATCH3 | BATCH4))
+chk("рядок не обіцяє товару, якого на сторінці нема: Wader/Вадер/Bubble Pops не стоять на dereviani-konstruktory та ihrashky-antystres (аудит 31.10)",
+    not any(w in d["dereviani-konstruktory"].lower() for w in ("wader", "вадер")) and "bubble pops" not in d["ihrashky-antystres"].lower())
 t = json.loads((HERE / "site" / "category_texts.json").read_text(encoding="utf-8-sig"))
 chk("кожен slug партії 2 має текст категорії (партія 3 може бути без тексту: рядок показується й так — перевірено вище)", all(k in t for k in BATCH2))
 bs._load_category_ru_alt()
-chk("_load_category_ru_alt читає файл і прибирає зайві пробіли", len(bs._CATEGORY_RU_ALT) == 32 and all("  " not in v for v in bs._CATEGORY_RU_ALT.values()))
+chk("_load_category_ru_alt читає файл і прибирає зайві пробіли", len(bs._CATEGORY_RU_ALT) == 34 and all("  " not in v for v in bs._CATEGORY_RU_ALT.values()))
 css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
 chk("стиль .cat-alt є, без animation/@keyframes", ".cat-alt{" in css)
 print()

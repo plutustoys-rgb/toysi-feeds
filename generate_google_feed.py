@@ -847,8 +847,11 @@ def is_adult_product(title: str) -> bool:
 FEED_LICENSED_MARKS_FILE = os.environ.get("FEED_LICENSED_MARKS_FILE") or str(Path(__file__).resolve().parent / "feed_licensed_marks.json")
 
 
+# 30.10.2026 — ГЕЙТ ТИПОВО ВИМКНЕНО (рішення власника через Консультанта, дослівно: «тема і так по нам закрита, якщо тойсі надали ці документи, логічно що вони в них і беруть.
+# і яке це відношення має до нас? повертай усі бренди у фід.»; підстава — договори, які надала Toysi: Kiddisvit↔Funko UK №20181107 і MGA↔Kiddisvit (L.O.L. Surprise!, Rainbow High, Bratz, Little Tikes), Україна).
+# Перелік, білий список вендорів і код гейта ЛИШЕНО (оборотність): `FEED_EXCLUDE_LICENSED=1` у .env вмикає гейт назад без релізу. ТМ «UNO» (претензія Mattel, trademark_blocked) і доросла тематика — окремі гейти, цим не зачеплені.
 def licensed_gate_on() -> bool:
-    return os.environ.get("FEED_EXCLUDE_LICENSED", "1").strip() != "0"
+    return os.environ.get("FEED_EXCLUDE_LICENSED", "0").strip() == "1"
 
 
 # БІЛИЙ СПИСОК ВЕНДОРІВ З ЛІЦЕНЗІЄЮ (рішення власника 29.10.2026 «коригуй фіди» через Консультанта; підстава — письмова відповідь Toysi 28.10, див. джерело/дату в КОЖНОМУ записі файлу):
@@ -884,6 +887,35 @@ def load_licensed_vendor_whitelist(path=None) -> frozenset:
     except (OSError, ValueError, AttributeError, TypeError) as e:
         print(f"[Feed] білий список вендорів {p} непридатний ({type(e).__name__}: {e}) — СУВОРИЙ режим: усі марки з переліку поза фідом", file=sys.stderr)
         return frozenset()
+
+
+# ЧОРНИЙ СПИСОК ВЕНДОРІВ (рішення власника 31.10.2026, дослівно: «без мік та бамбі»; PR #1058): гейт марок ВИМКНЕНО для решти, але позиція з маркою переліку,
+# чий вендор у `feed_licensed_vendor_blocklist.json` (MIC/MiC, Bambi; кириличне «МІС» — окремий бренд, НЕ внесено), у рекламні фіди НЕ йде. Сильніший за білий список. Вмикач FEED_LICENSED_VENDOR_BLOCKLIST
+# (типово УВІМКНЕНО; «0» у `.env` на VPS знімає без релізу). Файл нечитабельний → RuntimeError (як перелік марок: фід не перезаписується, лишається попередній).
+FEED_LICENSED_BLOCKLIST_FILE = os.environ.get("FEED_LICENSED_VENDOR_BLOCKLIST_FILE") or str(Path(__file__).resolve().parent / "feed_licensed_vendor_blocklist.json")
+
+
+def licensed_blocklist_on() -> bool:
+    return os.environ.get("FEED_LICENSED_VENDOR_BLOCKLIST", "1").strip() != "0"
+
+
+def load_licensed_vendor_blocklist(path=None) -> frozenset:
+    """Множина vendor_key з чорного списку; запис без вендора/джерела/дати пропускається (stderr); будь-яка помилка читання → RuntimeError (fail-closed)."""
+    p = path or FEED_LICENSED_BLOCKLIST_FILE
+    try:
+        data = json.loads(Path(p).read_text(encoding="utf-8-sig"))
+        if not isinstance(data.get("вендори"), list):
+            raise ValueError("нема списку «вендори»")   # неправильна схема = fail-closed, а не тихо порожній список
+        keys = set()
+        for rec in data["вендори"]:
+            k = vendor_key(rec.get("вендор")) if isinstance(rec, dict) else ""
+            if k and str(rec.get("джерело") or "").strip() and str(rec.get("дата") or "").strip():
+                keys.add(k)
+            else:
+                print(f"[Feed] чорний список вендорів: запис пропущено (нема вендора/джерела/дати): {str(rec)[:80]}", file=sys.stderr)
+        return frozenset(keys)
+    except (OSError, ValueError, AttributeError, TypeError) as e:
+        raise RuntimeError(f"чорний список вендорів {p} непридатний ({type(e).__name__}: {e}) — фід не перезаписуємо") from e
 
 
 def load_licensed_marks_regex(path=None):
@@ -1034,6 +1066,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         "price_from_formula": 0,  # індексу нема/ціни нема — рахуємо site_retail_price
         "trademark_blocked": 0,  # ТМ «UNO» (претензія Mattel) — не віддаємо на сайт/у фіди
         "licensed_excluded": 0,  # ліцензійний перелік feed_licensed_marks.json (тимчасово, FEED_EXCLUDE_LICENSED) — лише Google/Meta/Bing
+        "licensed_vendor_blocked": 0,  # марка з переліку І вендор у чорному списку (MIC/Bambi, рішення власника 31.10) — виключено незалежно від гейта
         "licensed_whitelisted": 0,  # марка з переліку, але вендор у білому списку → пройшла гейт (ще може відпасти на пізніших фільтрах)
         "licensed_returned": 0,  # з них реально у фіді після всіх фільтрів
         "forbidden": 0,          # політика «що не продаємо» (forbidden_products: ножі/зброя) — власний гейт фіда, не залежить від свіжості індексу сайту
@@ -1051,8 +1084,10 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
     items = []
     stats["on_sale"] = 0       # позицій із sale_price (акція «Знижка тижня», файл site/sale_week.json)
     sale_map = site_sale.load_feed_sale()
-    licensed_rx = load_licensed_marks_regex() if licensed_gate_on() else None
-    licensed_wl = load_licensed_vendor_whitelist() if (licensed_rx is not None and licensed_whitelist_on()) else frozenset()
+    licensed_gate = licensed_gate_on()
+    licensed_bl = load_licensed_vendor_blocklist() if licensed_blocklist_on() else frozenset()   # 31.10: MIC/Bambi поза рекламними фідами і при вимкненому гейті
+    licensed_rx = load_licensed_marks_regex() if (licensed_gate or licensed_bl) else None
+    licensed_wl = load_licensed_vendor_whitelist() if (licensed_gate and licensed_whitelist_on()) else frozenset()
 
     for pid, item in catalog.items():
         if site_ids is not None and str(pid) not in site_ids:
@@ -1136,12 +1171,16 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         # ліцензійний перелік — ПІСЛЯ UNO: UNO (Mattel) має власний лічильник/логіку (дозволений vendor Mattel), перелік SEO лише доповнює
         _lic_wl = False
         if licensed_rx is not None and licensed_rx.search(name):
-            if vendor_key(item.get("vendor")) in licensed_wl:   # білий список вендорів: марка є, але виробник має ліцензію (Toysi 28.10)
-                stats["licensed_whitelisted"] += 1
-                _lic_wl = True
-            else:
-                stats["licensed_excluded"] += 1
+            if vendor_key(item.get("vendor")) in licensed_bl:   # чорний список вендорів (рішення власника 31.10): сильніший за білий і не залежить від гейта
+                stats["licensed_vendor_blocked"] += 1
                 continue
+            if licensed_gate:
+                if vendor_key(item.get("vendor")) in licensed_wl:   # білий список вендорів: марка є, але виробник має ліцензію (Toysi 28.10)
+                    stats["licensed_whitelisted"] += 1
+                    _lic_wl = True
+                else:
+                    stats["licensed_excluded"] += 1
+                    continue
 
         prom_product = prom_products.get(str(item.get("vendor_code") or pid)) or {}
         image = prom_product.get("main_image") or (item.get("pictures") or [None])[0]
@@ -1388,7 +1427,8 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")
-    print(f"[Google] Пропущено за ліцензійним переліком: {stats['licensed_excluded']} (гейт {'УВІМКНЕНО' if licensed_gate_on() else 'вимкнено FEED_EXCLUDE_LICENSED=0'})")
+    print(f"[Google] Пропущено за ліцензійним переліком: {stats['licensed_excluded']} (гейт {'УВІМКНЕНО FEED_EXCLUDE_LICENSED=1' if licensed_gate_on() else 'ВИМКНЕНО (типово з 30.10, рішення власника)'})")
+    print(f"[Google] Чорний список вендорів (MIC/Bambi, рішення власника 31.10; {'УВІМКНЕНО' if licensed_blocklist_on() else 'вимкнено FEED_LICENSED_VENDOR_BLOCKLIST=0'}): виключено з маркою {stats['licensed_vendor_blocked']} позицій")
     print(f"[Google] Білий список вендорів з ліцензією ({'УВІМКНЕНО' if licensed_whitelist_on() else 'вимкнено FEED_LICENSED_VENDOR_WHITELIST=0'}): повернено у фід {stats['licensed_returned']} позицій (пройшли гейт {stats['licensed_whitelisted']}); лишилось виключеними {stats['licensed_excluded']}")
     print(f"[Google] Пропущено — заборонені (ножі/зброя): {stats['forbidden']}; «Уцінка»: {stats['clearance']}; "
           f"виключені категорії: {stats['excluded_category']}; без залишку: {stats['out_of_stock']}; "

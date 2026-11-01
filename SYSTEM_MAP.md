@@ -115,6 +115,7 @@
 |---|---|---|
 | `PlutusToys_AgentWatch` ⛔ **ВИМКНЕНО 22.09.2026** | `agent_watch.py` (30 хв) | ~~координація (будив SEO/SMM/Код/Продажник/Виконавець на нові записи каналів; Консультант — так само + періодично раз на 3 год)~~ — рішення власника 22.09: headless-пробудження не давало результату (дані й причини — §4 п.2). Код лишено, вмикається `Enable-ScheduledTask -TaskName PlutusToys_AgentWatch`. Чинний зв'язок між агентами — §4 п.2 |
 | `PlutusToys_SystemMapDriftCheck` | `system_map_driftcheck.py --alert` (щодня 08:40) | сам звіряє цей SSOT із живими тасками, Telegram-алерт при дрейфі |
+| `PlutusToys_HealthCheck` | `health_check.py --post` (щогодини; реєстрація `deploy/register_health_check_task.ps1`) | **усі збої й контроль VPS — на Код (рішення власника 01.11.2026).** Читає знімок VPS із приватної гілки `ops-health`, `feed_meta.json`, задачі `PlutusToys_*`, локальний журнал алертів, критичний календар; НОВІ проблеми дописує в `EXECUTOR_CHANNEL.md` угорі (`## [Автомат → Код] Стан системи …`) один раз (стан `.local_secrets/health_check_state.json`), знімає, коли зникли. Нічого не змінює |
 | `PlutusToys_CriticalCalendar` | `critical_watch.py` (візуальне вікно) | світлофор термінів ключів/балансів/абонплат (критичний календар) |
 | `PlutusToys_RozetkaLocalChain` | `run_rozetka_local.py` | Rozetka: pull цін → **товарознавець** → commit membership → фід. Крок 2c (16.10): `rozetka_counts_snapshot.py` — щоденний знімок лічильників кабінету (`/v1/goods/counts`: черга модерації, сховані, помилки) у `reports/rozetka_counts_history.jsonl`; застій черги ≥3 доби або «з помилками/невалідні» >0 → запис `[Автомат → Код]` у EXECUTOR_CHANNEL.md (без Telegram власнику) **+ правило «активні впали не через склад» (18.10): «Активні» впали більше, ніж виросло not_available → `[Автомат → Код] Rozetka: активні впали`.** |
 | `PlutusToys_RozetkaPricePull` | `rozetka_price_monitor.py` | Rozetka: пул цін конкурентів |
@@ -324,6 +325,7 @@
   раз на добу на ключ; усе інше (🛑/📉 вітрини, збої watchdog, нові замовлення, фіскалізація, КОДВ, масові видалення, помилки, невідоме) іде одразу. Новий шумний клас = рядок у `RULES` (лише allow-list).
 - **Координація / інфра / деплой:** `agent_watch` (код лишено, **вимкнено 22.09.2026**), `service_watchdog`, `vps_code_sync_report`,
   `deadline_reminder`, `system_map_driftcheck`,
+  **Здоров'я системи (01.11.2026, рішення власника: «у Telegram лише замовлення; усі збої й контроль VPS — на тебе; при пробудженні перше — перевірка стану»):** `vps_health.py` (VPS, лише читає: стан сервісів/таймерів проєкту, `systemctl --failed`, диск/пам'ять, git HEAD, файли стану, алерти доби з `telegram_alerts.md` без «Нове замовлення», після `_redact`) → `publish_vps_health_private.sh` (щогодини з `run_eva_feed_vps.sh`, force-push однієї гілки `ops-health` у ПРИВАТНИЙ `plutustoys-private-ledger` тим самим deploy-ключем; у публічний feed-data не кладемо: тексти алертів несуть гривні й id) → `health_check.py` (десктоп: «VPS мовчить» = знімок старший за 3 год; failed-юніти, зупинені таймери, диск ≥95 %, VPS не підтягнув master >45 хв, статус feed-pipeline, застарілі фіди >12 год (EVA >3 год — за датою `yml_catalog` у самому файлі: `feed_meta.json` для EVA оновлюється лише раз на 6 год), помилки локальних задач, журнал алертів, критичний календар; кожна перевірка в try — збій перевірки стає проблемою; перевірка, що не відпрацювала, НЕ «знімає» відкриті проблеми свого префікса). Протокол пробудження: `recall.py` (SessionStart, бюджет хука 15 с) для ролі «kod» ПЕРШИМ кладе в картку звіт (≤450 символів): кеш `.local_secrets/health_check_last.json`, який щогодини оновлює задача (≤90 хв — без мережі), інакше швидка перевірка `HEALTH_FAST=1` з таймаутом 11 с, інакше «НЕ перевірено» + застарілий кеш; що можна виправити сама — виправляє, власнику лише доклад «що зламано, чому, яка дія». Telegram лишається «лише замовлення» (`telegram_triage`), решта — журнал + ці перевірки. Тест `test_health_check.py`; `telegram_notify._redact` доповнено токенами Telegram-бота в URL, `gh*_`/`github_pat_`/`sk-…`, `Api-Key`/`private_key`,
   `recall.py` (антидубль/пам'ять: «що вже зроблено про X» з git+коду+SYSTEM_MAP+CODE_LOG;
   `--file` = дубль-варта, exit 3 якщо схоже вже є. Хук `recall-guard.sh` [локальний, `~/.claude/hooks/`]
   автоматично впорскує його перед створенням нового файлу — щоб після ущільнення сесії не робити дублі;
@@ -461,7 +463,7 @@
 ```json
 {
   "local_tasks": [
-    "PlutusToys_SystemMapDriftCheck",
+    "PlutusToys_SystemMapDriftCheck", "PlutusToys_HealthCheck",
     "PlutusToys_RozetkaLocalChain", "PlutusToys_RozetkaPricePull",
     "PlutusToys_RozetkaKeepalive", "PlutusToys_PromCatalogHistory", "PlutusToys_PromCabinetKeepalive",
     "PlutusToys_EvaCabinetKeepalive",

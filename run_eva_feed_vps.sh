@@ -39,4 +39,7 @@ python3 verify_eva_category_map.py || echo "[EvaFeed] verify_eva_category_map: �
 
 bash publish_eva_feed_vps.sh
 
+# Знімок стану VPS для сесії «Код» (01.11.2026, рішення власника): щогодини, у приватну гілку ops-health. Best-effort: збій не валить EVA-цикл.
+bash publish_vps_health_private.sh || echo "[EvaFeed] publish_vps_health_private.sh: збій (best-effort)."
+
 echo "[EvaFeed] $(date -u +'%Y-%m-%d %H:%M UTC') — погодинний EVA-цикл завершено."

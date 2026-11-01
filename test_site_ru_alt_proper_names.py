@@ -34,7 +34,7 @@ slug = {c: s for c, s in zip(cats, ["derevyani-konstruktory", "bryazkaltsya", "p
 bad = bs.ru_alt_proper_name_issues({"derevyani-konstruktory": "конструктор Lego"}, cats, slug)
 check("марка Lego без опори в категорії → порушення", [b[2] for b in bad] == ["Lego"])
 bad = bs.ru_alt_proper_name_issues({"antistres": "антистрес Bubble Pops"}, cats, slug)
-check("Bubble Pops без опори → порушення", {b[2] for b in bad} == {"Bubble", "Pops"} or "Bubble" in {b[2] for b in bad})
+check("Bubble Pops без опори → порушення", {b[2] for b in bad} == {"Bubble", "Pops"})
 check("загальні слова на «Брязкальцях» не караються", bs.ru_alt_proper_name_issues({"bryazkaltsya": "погремушки для новорождённых, погремушка"}, cats, slug) == [])
 check("марка Wader є в назвах категорії → чисто", bs.ru_alt_proper_name_issues({"derevyani-konstruktory": "конструктор Wader"}, cats, slug) == [])
 check("виняток ALLOW (Касторленд) → чисто", bs.ru_alt_proper_name_issues({"pazly-castorland": "пазлы Касторленд"}, cats, slug) == [])

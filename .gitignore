@@ -347,3 +347,5 @@ rt_eva_listed_state.json
 catalog_first_seen.json
 site_rejected_baskets.jsonl
 reels_pending/
+# робоча тека знімка VPS (publish_vps_health_private.sh)
+.vps_health_git/

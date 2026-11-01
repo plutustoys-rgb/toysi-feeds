@@ -453,7 +453,8 @@ CORE_RULES = (
     "• Гроші/ціни/відправлення/публікації назовні — лише з явного слова власника; пороги — з виміряного розподілу.\n"
     "• Секрети не друкувати, .env не source-ити; VPS: діагностика read-only, запис — власник.\n"
     "• Канали *_CHANNEL.md: newest-on-top, `## [Від → Кому] дата`; між живими сесіями — SendMessage.\n"
-    "• Власнику — коротко, українською; «зроблено» лише з перевіркою."
+    "• Власнику — коротко, українською; «зроблено» лише з перевіркою.\n"
+    "• Пробудження Коду: перше — стан системи (health_check.py); усі збої й контроль VPS — на Код; власнику лише те, що без нього не виправити (що зламано, чому, яка дія)."
 )
 _MASK = "[приховано]"
 # Порядок важливий: спершу конкретні форми (ключ=значення, Bearer, прапорці, відомі префікси), потім довгі випадкові рядки.
@@ -575,6 +576,28 @@ def save_state(payload: dict) -> str:
     return str(path)
 
 
+HEALTH_CAP = 1100
+
+
+def health_section(role: str) -> str:
+    """Протокол пробудження (рішення власника 01.11.2026: «при пробудженні перше — перевірка стану»). Для ролі «kod» запускає health_check.py
+    (читає знімок VPS, фіди, задачі, журнал алертів; нові проблеми дописує у EXECUTOR_CHANNEL). Роль не визначена — лише нагадування (не чужим ролям).
+    Збій/таймаут не ховаємо: у картці з'являється рядок «перевірка не відпрацювала — запусти вручну»."""
+    cmd = "python health_check.py --brief --post"
+    if role != "kod":
+        return "" if role else f"🩺 Якщо ти Код — ПЕРШЕ: `{cmd}` (стан системи; виправ сама, власнику — лише що без нього не виправити)."
+    try:
+        r = subprocess.run([sys.executable, "-I", str(Path(__file__).resolve().parent / "health_check.py"), "--brief", "--post"],
+                           capture_output=True, text=True, timeout=45, encoding="utf-8", errors="replace")
+        out = (r.stdout or "").strip()
+        if not out:
+            raise RuntimeError(f"порожній вихід, код {r.returncode}")
+    except Exception as e:  # noqa: BLE001
+        return f"🩺 Стан системи НЕ перевірено автоматично ({type(e).__name__}) — ПЕРШЕ запусти `{cmd}` вручну."
+    return ("🩺 ПЕРШЕ ДІЯ ПРОБУДЖЕННЯ — стан системи (виправ сама; власнику лише те, що без нього не виправити: що зламано, чому, яка дія; "
+            "повний звіт: `python health_check.py --full`):\n" + out)[:HEALTH_CAP]
+
+
 def session_context(payload: dict, cap: int = 3000) -> str:
     """SessionStart: роль + збережений стан + картка каналів + ядро правил, ≤cap символів.
     Секції додаються за пріоритетом і урізаються цілими; ядро правил не губиться ніколи."""
@@ -589,6 +612,9 @@ def session_context(payload: dict, cap: int = 3000) -> str:
             f"(або `python recall.py --detect-role <transcript> --set-role <роль>`).")
     reserve = len(CORE_RULES) + len(head) + 4
     sections = []
+    hs = health_section(role)
+    if hs:
+        sections.append(hs)
     state_file = ROLE_STATE_DIR / (f"{role}.md" if role else f"_session_{Path(tp).stem}.md")
     if source in ("compact", "resume"):   # на startup/clear стан ПОПЕРЕДНЬОЇ сесії видавати за нову інструкцію не можна
         try:

@@ -43,8 +43,13 @@ def snap(**kw):
     return s
 
 
+def eva_date(h_ago):
+    """Дата в голові eva_feed.xml — локальний час хоста без зони, як віддає VPS."""
+    return (NOW.astimezone() - timedelta(hours=h_ago)).strftime("%Y-%m-%d %H:%M")
+
+
 def ctx(snapshot=None, err=None, **over):
-    d = dict(now=NOW, vps_snapshot=lambda: (snapshot, err), master=lambda: ("", ""), feed_meta=lambda: {}, tasks=lambda: [], local_alerts=lambda: [],
+    d = dict(now=NOW, vps_snapshot=lambda: (snapshot, err), master=lambda: ("", ""), feed_meta=lambda: {}, eva_date=lambda: eva_date(0.5), tasks=lambda: [], local_alerts=lambda: [],
              critical=lambda: {"generated_at": iso(0.2), "events": []})
     d.update(over)
     return hc.Ctx(**d)
@@ -96,10 +101,13 @@ chk("ключ алерта стабільний між запусками (ід�
 # --- артефакти ---
 meta = {k: {"generated_at": iso(1), "offers": 100} for k in hc.FEED_KEYS + ("eva_feed.xml",)}
 chk("свіжі фіди — тихо", hc.check_artifacts(ctx(feed_meta=lambda: meta)) == [])
-m2 = json.loads(json.dumps(meta)); m2["meta_feed.xml"]["generated_at"] = iso(13); m2["eva_feed.xml"]["generated_at"] = iso(3.5); m2["bing_feed.xml"]["offers"] = 0
-r = hc.check_artifacts(ctx(feed_meta=lambda: m2))
-chk("meta >12 год, eva >3 год — warn; 0 позицій — crit", ids(r) == {"art:feed_stale:meta_feed.xml", "art:feed_stale:eva_feed.xml", "art:feed_empty:bing_feed.xml"}
+m2 = json.loads(json.dumps(meta)); m2["meta_feed.xml"]["generated_at"] = iso(13); m2["bing_feed.xml"]["offers"] = 0
+r = hc.check_artifacts(ctx(feed_meta=lambda: m2, eva_date=lambda: eva_date(3.5)))
+chk("meta >12 год, eva (за датою у файлі) >3 год — warn; 0 позицій — crit", ids(r) == {"art:feed_stale:meta_feed.xml", "art:feed_stale:eva_feed.xml", "art:feed_empty:bing_feed.xml"}
     and [i for i in r if i["id"] == "art:feed_empty:bing_feed.xml"][0]["sev"] == "crit")
+m4 = json.loads(json.dumps(meta)); m4["eva_feed.xml"]["generated_at"] = iso(5)   # feed_meta для EVA оновлюється раз на 6 год — старий запис НЕ є ознакою збою (аудит #1068 B3)
+chk("EVA: старий generated_at у feed_meta при свіжій даті у файлі — тихо", hc.check_artifacts(ctx(feed_meta=lambda: m4, eva_date=lambda: eva_date(1))) == [])
+chk("EVA: дату в файлі не прочитано → warn, не тиша", ids(hc.check_artifacts(ctx(feed_meta=lambda: meta, eva_date=lambda: None))) == {"art:feed_stale:eva_feed.xml"})
 m3 = dict(meta); del m3["google_merchant_feed.xml"]
 chk("фід зник із feed_meta → warn", ids(hc.check_artifacts(ctx(feed_meta=lambda: m3))) == {"art:feed_missing:google_merchant_feed.xml"})
 
@@ -135,7 +143,9 @@ i1, i2 = hc.issue("a", "warn", "A"), hc.issue("b", "info", "B")
 new, res, st = hc.diff_state([i1, i2], {"open": {}}, "t1")
 chk("перший запуск: усе нове, нічого знято", len(new) == 2 and res == [] and set(st["open"]) == {"a", "b"})
 new, res, st2 = hc.diff_state([i1], st, "t2")
-chk("наступний: нічого нового; b зникла → знято", new == [] and [x["id"] for x in res] == ["b"] and st2["open"]["a"]["first"] == "t1" and st2["open"]["a"]["last"] == "t2")
+chk("наступний: нічого нового; info-проблема b зникла → у «знято» НЕ пишемо (шум, аудит N1), зі стану вилучено", new == [] and res == [] and "b" not in st2["open"] and st2["open"]["a"]["first"] == "t1" and st2["open"]["a"]["last"] == "t2")
+_, res, _ = hc.diff_state([i2], st2, "t3")
+chk("warn-проблема a зникла → знято", [x["id"] for x in res] == ["a"])
 new, res, st3 = hc.diff_state([hc.issue("a", "crit", "A")], st2, "t3")
 chk("ескалація warn→crit — знову нова", [x["id"] for x in new] == ["a"])
 new, res, _ = hc.diff_state([hc.issue("a", "info", "A")], st3, "t4")
@@ -216,6 +226,7 @@ with tempfile.TemporaryDirectory() as td:
 
 # --- протокол пробудження (recall.health_section) ---
 import recall  # noqa: E402
+hc.LAST_BRIEF_FILE = Path(tempfile.gettempdir()) / "health_check_test_no_such_last.json"   # тест не залежить від реального кешу звіту
 chk("інша роль — порожньо; роль не визначена — лише нагадування (без запуску)", recall.health_section("seo") == "" and "ПЕРШЕ" in recall.health_section("") and "health_check.py" in recall.health_section(""))
 _orig = subprocess.run
 subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="🩺 Стан системи X: 🔴 1\n🔴 щось", stderr="")
@@ -226,8 +237,97 @@ subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout=""
 he = recall.health_section("kod")
 subprocess.run = _orig
 chk("kod: звіт у картці; таймаут і порожній вихід НЕ ховаються («не перевірено — запусти вручну»); довжина ≤ HEALTH_CAP",
-    "🔴 щось" in hs and "ПЕРШЕ ДІЯ ПРОБУДЖЕННЯ" in hs and len(hs) <= recall.HEALTH_CAP and "НЕ перевірено" in hf and "TimeoutExpired" in hf and "НЕ перевірено" in he)
+    "🔴 щось" in hs and "ПЕРШЕ при пробудженні" in hs and len(hs) <= recall.HEALTH_CAP and "НЕ перевірено" in hf and "TimeoutExpired" in hf and "НЕ перевірено" in he)
 chk("ядро правил містить пробудження, кожен пункт з нового рядка", "Пробудження Коду" in recall.CORE_RULES and recall.CORE_RULES.count("\n•") == 7)
+
+# --- аудит #1068: B1 кеш/таймаут хука, B2 бюджет картки, B3 (вище), B4 сліпі перевірки, N2–N4, мутації ---
+import health_check as _hcmod  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    _hcmod.LAST_BRIEF_FILE = Path(td) / "last.json"
+    now_l = datetime.now().astimezone()
+    hc.save_last_brief("🩺 Стан X: 🔴 1\n🔴 кешований рядок", now_l - timedelta(minutes=10), _hcmod.LAST_BRIEF_FILE)
+    _orig = subprocess.run
+    subprocess.run = lambda cmd, **kw: (_ for _ in ()).throw(AssertionError("свіжий кеш: мережі/підпроцесу бути не повинно"))
+    try:
+        hs = recall.health_section("kod")
+    finally:
+        subprocess.run = _orig
+    chk("свіжий кеш (<90 хв): хук бере його БЕЗ підпроцесу й мережі (B1), у межах HEALTH_CAP", "кешований рядок" in hs and len(hs) <= recall.HEALTH_CAP)
+    hc.save_last_brief("🩺 Стан старий\n🔴 старий рядок", now_l - timedelta(minutes=300), _hcmod.LAST_BRIEF_FILE)
+    tmo = []
+    subprocess.run = lambda cmd, **kw: (tmo.append(kw.get("timeout")), (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, kw.get("timeout"))))[1]
+    try:
+        hs = recall.health_section("kod")
+    finally:
+        subprocess.run = _orig
+    chk("старий кеш + таймаут: жива перевірка з таймаутом хука (11 с < 15 с хука), збій видно + застарілий звіт позначено", tmo == [recall.HEALTH_HOOK_TIMEOUT] and recall.HEALTH_HOOK_TIMEOUT < 15
+        and "НЕ перевірено" in hs and "ЗАСТАРІЛИЙ" in hs and "старий рядок" in hs)
+    big = "🩺 Стан: 🔴 2\n" + "\n".join(f"🟠 проблема номер {k} з довгим описом, щоб заповнити бюджет картки" for k in range(12))
+    hc.save_last_brief(big, now_l - timedelta(minutes=5), _hcmod.LAST_BRIEF_FILE)
+    hs = recall.health_section("kod")
+    chk("довгий звіт ріжеться ЦІЛИМИ рядками в HEALTH_CAP з лічильником «ще N»", len(hs) <= recall.HEALTH_CAP and "ще " in hs and "--full" in hs and not hs.endswith("з довг"))
+    # B2: довгий звіт не витісняє стан PreCompact і картку каналів
+    with tempfile.TemporaryDirectory() as td2:
+        _rs, _rc = recall.ROLE_STATE_DIR, recall.restore_card
+        recall.ROLE_STATE_DIR = Path(td2)
+        (Path(td2) / "kod.md").write_text("# Стан\n" + "\n".join(f"рядок стану {k:03d} " + "ж" * 80 for k in range(6)) + "\nКІНЕЦЬ_СТАНУ", encoding="utf-8")
+        recall.restore_card = lambda role, cap=1200, **kw: "КАРТКА_КАНАЛІВ " + "к" * 700
+        os.environ["PLUTUS_ROLE"] = "kod"
+        try:
+            ctx_txt = recall.session_context({"cwd": "C:/Users/smach", "source": "compact"})
+        finally:
+            recall.ROLE_STATE_DIR, recall.restore_card = _rs, _rc
+            os.environ.pop("PLUTUS_ROLE", None)
+    chk("B2: звіт стану + PreCompact-стан + картка каналів + ядро правил — усе вціліло у cap 3000", "КІНЕЦЬ_СТАНУ" in ctx_txt and "КАРТКА_КАНАЛІВ" in ctx_txt and "проблема номер" in ctx_txt
+        and "ЯДРО ПРАВИЛ" in ctx_txt and len(ctx_txt) <= 3000)
+_hcmod.LAST_BRIEF_FILE = Path(tempfile.gettempdir()) / "health_check_test_nonexistent_last.json"
+
+# B4: сліпа перевірка не «знімає» проблем
+old_state = {"open": {"vps:unit_failed:x.service": {"sev": "crit", "title": "X failed", "first": "t0", "last": "t0"}, "art:feed_stale:meta_feed.xml": {"sev": "warn", "title": "meta", "first": "t0", "last": "t0"},
+                      "task:fail:T": {"sev": "warn", "title": "T", "first": "t0", "last": "t0"}}}
+stale_issue = hc.issue("vps:stale", "crit", "VPS мовчить")
+new, res, st = hc.diff_state([stale_issue], old_state, "t1", hc.blind_prefixes([stale_issue]))
+chk("B4: «VPS мовчить» → failed-юніт VPS НЕ знято; чужі префікси (art:, task:) знімаються як звичайно",
+    "vps:unit_failed:x.service" in st["open"] and sorted(x["id"] for x in res) == ["art:feed_stale:meta_feed.xml", "task:fail:T"])
+broken = hc.issue("check:artifacts", "warn", "Перевірка artifacts не відпрацювала")
+new, res, st = hc.diff_state([broken], old_state, "t1", hc.blind_prefixes([broken]))
+chk("B4: збій перевірки artifacts → art:* лишається відкритою, не «знято»; vps/task знімаються", "art:feed_stale:meta_feed.xml" in st["open"] and "art:feed_stale:meta_feed.xml" not in [x["id"] for x in res])
+new, res, st = hc.diff_state([stale_issue], st, "t2", hc.blind_prefixes([stale_issue]))
+chk("B4: після відновлення знімка (без проблем) — тепер справді знято", sorted(x["id"] for x in hc.diff_state([], old_state, "t3", ())[1]) == sorted(old_state["open"]))
+r = hc.check_vps(ctx(snap(generated_at=iso(5), units={"services": {}, "timers": {}, "failed": ["x.service"]})))
+chk("мутація: після vps:stale знімку далі не віримо (failed-юніт зі старого знімка не з'являється)", ids(r) == {"vps:stale"})
+
+# N3: вік коміту master — на момент знімка
+r = hc.check_vps(ctx(snap(generated_at=iso(2), host_stats={"git_head": "a" * 40, "disk_used_pct": 10}), master=lambda: ("b" * 40, iso(1.9))))
+chk("N3: коміт з'явився вже ПІСЛЯ знімка — не «відставання»", "vps:code_behind" not in ids(r))
+r = hc.check_vps(ctx(snap(generated_at=iso(2), host_stats={"git_head": "a" * 40, "disk_used_pct": 10}), master=lambda: ("b" * 40, iso(2.9))))
+chk("N3: на момент знімка коміту було 54 хв, VPS не на ньому → warn", "vps:code_behind" in ids(r))
+
+# N4: файлу каналу нема
+with tempfile.TemporaryDirectory() as td:
+    chp = Path(td) / "NEW_CHANNEL.md"
+    hc.post_to_channel("## [Автомат → Код] перший\nтекст\n", chp)
+    chk("N4: файлу каналу нема → створюється, запис на місці", chp.exists() and "перший" in chp.read_text(encoding="utf-8"))
+
+# N2: редакція нових форм секретів
+import telegram_notify as tn  # noqa: E402
+bad = ["https://api.telegram.org/bot123456789:AAHabcdefghijklmnopqrstuvwxyz0123456/sendMessage", "https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x",
+       "ключ sk-ant-api03-abcdefghijklmnop", "{'Api-Key': 'SECRETVALUE123'}", "private_key=ABCSECRETDEF"]
+red = [tn._redact(t) for t in bad]
+chk("N2: токен бота в URL, ghp_, sk-ant-, Api-Key, private_key прибрано; звичайний текст не чіпаємо", not any(w in " ".join(red) for w in ("AAHabc", "ghp_abc", "sk-ant-api03-abc", "SECRETVALUE", "ABCSECRETDEF"))
+    and tn._redact("замовлення 12345, сума 500 грн, key не задано") == "замовлення 12345, сума 500 грн, key не задано")
+r = hc.group_alerts([{"at": "2026-11-01T10:00:00", "source": "x.py", "category": "error", "text": "🚨 збій https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x"}], "vps", NOW)
+chk("N2: перший рядок алерта в заголовку проблеми проходить редакцію", "ghp_abc" not in r[0]["title"])
+
+# N6/N7 vps_health: секції в try; вікно журналу — локальний час
+_oh = vh.collect_host
+vh.collect_host = lambda app_dir=vh.APP_DIR: (_ for _ in ()).throw(IndexError("x"))
+try:
+    snap_ = vh.collect(NOW, run=lambda c, timeout=30: "", app_dir="/nonexistent")
+finally:
+    vh.collect_host = _oh
+chk("N6: збій однієї секції знімка → errors[], решта секцій є, знімок не втрачено", snap_["errors"] and snap_["errors"][0].startswith("host_stats") and snap_["units"] == {"services": {}, "timers": {}, "failed": []} and "alerts" in snap_)
+chk("_age_h: наївний ISO = локальний час (мутація UTC-трактування)", abs(hc._age_h(datetime.now().replace(microsecond=0).isoformat(), datetime.now().astimezone())) < 0.01)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

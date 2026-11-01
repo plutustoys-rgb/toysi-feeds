@@ -150,7 +150,7 @@ def collect_alerts(now: datetime, app_dir: str = APP_DIR, path=None) -> list:
         from telegram_notify import _redact
     except Exception:  # noqa: BLE001
         _redact = None
-    cut = now.replace(tzinfo=None) - timedelta(hours=ALERT_WINDOW_HOURS)
+    cut = now.astimezone().replace(tzinfo=None) - timedelta(hours=ALERT_WINDOW_HOURS)   # журнал пишеться ЛОКАЛЬНИМ часом хоста (не UTC)
     entries = parse_log(Path(path or Path(app_dir) / "reports" / "telegram_alerts.md"))
     keep = []
     for e in entries:
@@ -167,10 +167,17 @@ def collect_alerts(now: datetime, app_dir: str = APP_DIR, path=None) -> list:
 
 
 def collect(now: datetime = None, run=_run, app_dir: str = APP_DIR) -> dict:
+    """Кожна секція в своєму try: несподівана помилка в одній не губить решту знімка (інакше десктоп побачить «VPS мовчить» замість часткових даних)."""
     now = now or datetime.now(timezone.utc)
-    return {"schema": 1, "generated_at": now.isoformat(timespec="seconds"), "host": os.uname().nodename if hasattr(os, "uname") else "?",
-            "units": collect_units(run, app_dir), "host_stats": collect_host(app_dir), "state_files": collect_state_files(app_dir),
-            "alerts": collect_alerts(now, app_dir)}
+    out = {"schema": 1, "generated_at": now.isoformat(timespec="seconds"), "host": os.uname().nodename if hasattr(os, "uname") else "?", "errors": []}
+    for key, fn, default in (("units", lambda: collect_units(run, app_dir), {"services": {}, "timers": {}, "failed": []}), ("host_stats", lambda: collect_host(app_dir), {}),
+                             ("state_files", lambda: collect_state_files(app_dir), {}), ("alerts", lambda: collect_alerts(now, app_dir), [])):
+        try:
+            out[key] = fn()
+        except Exception as e:  # noqa: BLE001
+            out[key] = default
+            out["errors"].append(f"{key}: {type(e).__name__}: {str(e)[:120]}")
+    return out
 
 
 def main() -> None:

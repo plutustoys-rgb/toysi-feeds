@@ -576,7 +576,22 @@ def save_state(payload: dict) -> str:
     return str(path)
 
 
-HEALTH_CAP = 1100
+HEALTH_CAP = 450          # лишається місце для стану PreCompact і картки каналів (cap картки 3000)
+HEALTH_HOOK_TIMEOUT = 11  # session-start.sh: `timeout 15 python recall.py --session-start`; не вкладемося — вся картка пропаде
+HEALTH_CACHE_MAX_MIN = 90 # задача PlutusToys_HealthCheck оновлює кеш щогодини
+
+
+def _cut_lines(text: str, cap: int) -> str:
+    """Обрізає ЦІЛИМИ рядками до cap символів; відрізане рахує: «…ще N — `python health_check.py --full`»."""
+    lines = text.splitlines()
+    out, used = [], 0
+    for k, ln in enumerate(lines):
+        if used + len(ln) + 1 > cap - 70 and k < len(lines):
+            out.append(f"…ще {len(lines) - k} — `python health_check.py --full`")
+            break
+        out.append(ln)
+        used += len(ln) + 1
+    return "\n".join(out)
 
 
 def health_section(role: str) -> str:
@@ -586,16 +601,35 @@ def health_section(role: str) -> str:
     cmd = "python health_check.py --brief --post"
     if role != "kod":
         return "" if role else f"🩺 Якщо ти Код — ПЕРШЕ: `{cmd}` (стан системи; виправ сама, власнику — лише що без нього не виправити)."
+    hc_path = Path(__file__).resolve().parent / "health_check.py"
+    head = "🩺 ПЕРШЕ при пробудженні — стан системи (виправ сама; власнику лише що без нього не виправити):"
+    room = max(120, HEALTH_CAP - len(head) - 30)    # уся секція (з шапкою) ≤ HEALTH_CAP
+    cached_at, cached = None, None
     try:
-        r = subprocess.run([sys.executable, "-I", str(Path(__file__).resolve().parent / "health_check.py"), "--brief", "--post"],
-                           capture_output=True, text=True, timeout=45, encoding="utf-8", errors="replace")
+        sys.path.insert(0, str(hc_path.parent))
+        import health_check as _hc
+        cached_at, cached = _hc.load_last_brief()
+    except Exception:  # noqa: BLE001
+        pass
+    age_min = None
+    if cached_at:
+        try:
+            from datetime import datetime as _dt
+            age_min = (_dt.now().astimezone() - _dt.fromisoformat(cached_at)).total_seconds() / 60
+        except ValueError:
+            age_min = None
+    if cached and age_min is not None and age_min <= HEALTH_CACHE_MAX_MIN:
+        return head + f" (звіт {int(age_min)} хв тому)\n" + _cut_lines(cached, room)   # без мережі: вкладаємось у бюджет хука
+    try:   # кеш старий/відсутній → швидка жива перевірка з короткими таймаутами
+        r = subprocess.run([sys.executable, "-I", str(hc_path), "--brief", "--post"], capture_output=True, text=True, timeout=HEALTH_HOOK_TIMEOUT,
+                           encoding="utf-8", errors="replace", env={**os.environ, "HEALTH_FAST": "1"})
         out = (r.stdout or "").strip()
         if not out:
             raise RuntimeError(f"порожній вихід, код {r.returncode}")
+        return head + "\n" + _cut_lines(out, room)
     except Exception as e:  # noqa: BLE001
-        return f"🩺 Стан системи НЕ перевірено автоматично ({type(e).__name__}) — ПЕРШЕ запусти `{cmd}` вручну."
-    return ("🩺 ПЕРШЕ ДІЯ ПРОБУДЖЕННЯ — стан системи (виправ сама; власнику лише те, що без нього не виправити: що зламано, чому, яка дія; "
-            "повний звіт: `python health_check.py --full`):\n" + out)[:HEALTH_CAP]
+        stale = (f"\nОстанній відомий звіт ({int(age_min)} хв тому, ЗАСТАРІЛИЙ):\n" + _cut_lines(cached, room - 90)) if cached and age_min is not None else ""
+        return f"🩺 Стан системи НЕ перевірено автоматично ({type(e).__name__}) — ПЕРШЕ запусти `{cmd}` вручну." + stale
 
 
 def session_context(payload: dict, cap: int = 3000) -> str:

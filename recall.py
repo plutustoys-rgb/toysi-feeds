@@ -594,6 +594,32 @@ def _cut_lines(text: str, cap: int) -> str:
     return "\n".join(out)
 
 
+def _kill_tree(pid: int) -> None:
+    """Убиває процес УСЮ гілку: git/powershell-онуки тримають pipe і без цього очікування затягується за бюджет хука (аудит #1068 B5)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=8)
+        else:
+            os.killpg(pid, 9)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_health(cmd, env, timeout):
+    """→ (stdout, код). stdout у ТИМЧАСОВИЙ файл, а не pipe: онуки, що успадкували pipe, не блокують повернення; на таймауті гине вся гілка процесів."""
+    import tempfile
+    kw = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}     # без вікна консолі / окрема група процесів
+    with tempfile.TemporaryFile() as f:
+        p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.DEVNULL, env=env, **kw)
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(p.pid)
+            raise
+        f.seek(0)
+        return f.read().decode("utf-8", errors="replace"), p.returncode
+
+
 def health_section(role: str) -> str:
     """Протокол пробудження (рішення власника 01.11.2026: «при пробудженні перше — перевірка стану»). Для ролі «kod» запускає health_check.py
     (читає знімок VPS, фіди, задачі, журнал алертів; нові проблеми дописує у EXECUTOR_CHANNEL). Роль не визначена — лише нагадування (не чужим ролям).
@@ -602,7 +628,7 @@ def health_section(role: str) -> str:
     if role != "kod":
         return "" if role else f"🩺 Якщо ти Код — ПЕРШЕ: `{cmd}` (стан системи; виправ сама, власнику — лише що без нього не виправити)."
     hc_path = Path(__file__).resolve().parent / "health_check.py"
-    head = "🩺 ПЕРШЕ при пробудженні — стан системи (виправ сама; власнику лише що без нього не виправити):"
+    head = "ПЕРШЕ при пробудженні — стан системи (виправ сама; власнику лише що без нього не виправити):"
     room = max(120, HEALTH_CAP - len(head) - 30)    # уся секція (з шапкою) ≤ HEALTH_CAP
     cached_at, cached = None, None
     try:
@@ -621,11 +647,10 @@ def health_section(role: str) -> str:
     if cached and age_min is not None and age_min <= HEALTH_CACHE_MAX_MIN:
         return head + f" (звіт {int(age_min)} хв тому)\n" + _cut_lines(cached, room)   # без мережі: вкладаємось у бюджет хука
     try:   # кеш старий/відсутній → швидка жива перевірка з короткими таймаутами
-        r = subprocess.run([sys.executable, "-I", str(hc_path), "--brief", "--post"], capture_output=True, text=True, timeout=HEALTH_HOOK_TIMEOUT,
-                           encoding="utf-8", errors="replace", env={**os.environ, "HEALTH_FAST": "1"})
-        out = (r.stdout or "").strip()
+        out, rc = _run_health([sys.executable, "-I", str(hc_path), "--brief", "--post"], {**os.environ, "HEALTH_FAST": "1"}, HEALTH_HOOK_TIMEOUT)
+        out = out.strip()
         if not out:
-            raise RuntimeError(f"порожній вихід, код {r.returncode}")
+            raise RuntimeError(f"порожній вихід, код {rc}")
         return head + "\n" + _cut_lines(out, room)
     except Exception as e:  # noqa: BLE001
         stale = (f"\nОстанній відомий звіт ({int(age_min)} хв тому, ЗАСТАРІЛИЙ):\n" + _cut_lines(cached, room - 90)) if cached and age_min is not None else ""

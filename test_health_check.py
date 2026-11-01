@@ -38,7 +38,7 @@ def iso(h_ago):
 
 
 def snap(**kw):
-    s = {"generated_at": iso(0.5), "units": {"services": {}, "timers": {}, "failed": []}, "host_stats": {"disk_used_pct": 40.0}, "state_files": {}, "alerts": []}
+    s = {"generated_at": iso(0.5), "units": {"services": {"ok.service": {"active": "inactive", "result": "success"}}, "timers": {}, "failed": []}, "host_stats": {"disk_used_pct": 40.0}, "state_files": {}, "alerts": []}
     s.update(kw)
     return s
 
@@ -72,7 +72,7 @@ r = hc.check_vps(ctx(snap(units={"services": {"x.service": {"active": "inactive"
 chk("сервіс inactive з result=exit-code теж помічено (failed-список порожній)", "vps:unit_failed:x.service" in ids(r))
 r = hc.check_vps(ctx(snap(units={"services": {"ok.service": {"active": "inactive", "result": "success"}, "run.service": {"active": "activating", "result": "success"}}, "timers": {}, "failed": []})))
 chk("success і activating — не проблема", ids(r) == set())
-r = hc.check_vps(ctx(snap(units={"services": {}, "timers": {"a.timer": {"enabled": "enabled", "active": "inactive"}, "b.timer": {"enabled": "disabled", "active": "inactive"}}, "failed": []})))
+r = hc.check_vps(ctx(snap(units={"services": {"ok.service": {"active": "inactive", "result": "success"}}, "timers": {"a.timer": {"enabled": "enabled", "active": "inactive"}, "b.timer": {"enabled": "disabled", "active": "inactive"}}, "failed": []})))
 chk("увімкнений, але неактивний таймер — warn; вимкнений навмисно — ні", ids(r) == {"vps:timer_down:a.timer"})
 r = hc.check_vps(ctx(snap(host_stats={"disk_used_pct": 96.5, "disk_free_gb": 1.2})))
 chk("диск ≥95 % → crit", "vps:disk" in ids(r))
@@ -228,14 +228,14 @@ with tempfile.TemporaryDirectory() as td:
 import recall  # noqa: E402
 hc.LAST_BRIEF_FILE = Path(tempfile.gettempdir()) / "health_check_test_no_such_last.json"   # тест не залежить від реального кешу звіту
 chk("інша роль — порожньо; роль не визначена — лише нагадування (без запуску)", recall.health_section("seo") == "" and "ПЕРШЕ" in recall.health_section("") and "health_check.py" in recall.health_section(""))
-_orig = subprocess.run
-subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="🩺 Стан системи X: 🔴 1\n🔴 щось", stderr="")
+_orh = recall._run_health
+recall._run_health = lambda cmd, env, timeout: ("🩺 Стан системи X: 🔴 1\n🔴 щось", 0)
 hs = recall.health_section("kod")
-subprocess.run = lambda cmd, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 45))
+recall._run_health = lambda cmd, env, timeout: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 11))
 hf = recall.health_section("kod")
-subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="traceback")
+recall._run_health = lambda cmd, env, timeout: ("", 1)
 he = recall.health_section("kod")
-subprocess.run = _orig
+recall._run_health = _orh
 chk("kod: звіт у картці; таймаут і порожній вихід НЕ ховаються («не перевірено — запусти вручну»); довжина ≤ HEALTH_CAP",
     "🔴 щось" in hs and "ПЕРШЕ при пробудженні" in hs and len(hs) <= recall.HEALTH_CAP and "НЕ перевірено" in hf and "TimeoutExpired" in hf and "НЕ перевірено" in he)
 chk("ядро правил містить пробудження, кожен пункт з нового рядка", "Пробудження Коду" in recall.CORE_RULES and recall.CORE_RULES.count("\n•") == 7)
@@ -246,20 +246,19 @@ with tempfile.TemporaryDirectory() as td:
     _hcmod.LAST_BRIEF_FILE = Path(td) / "last.json"
     now_l = datetime.now().astimezone()
     hc.save_last_brief("🩺 Стан X: 🔴 1\n🔴 кешований рядок", now_l - timedelta(minutes=10), _hcmod.LAST_BRIEF_FILE)
-    _orig = subprocess.run
-    subprocess.run = lambda cmd, **kw: (_ for _ in ()).throw(AssertionError("свіжий кеш: мережі/підпроцесу бути не повинно"))
+    recall._run_health = lambda *a, **kw: (_ for _ in ()).throw(AssertionError("свіжий кеш: мережі/підпроцесу бути не повинно"))
     try:
         hs = recall.health_section("kod")
     finally:
-        subprocess.run = _orig
+        recall._run_health = _orh
     chk("свіжий кеш (<90 хв): хук бере його БЕЗ підпроцесу й мережі (B1), у межах HEALTH_CAP", "кешований рядок" in hs and len(hs) <= recall.HEALTH_CAP)
     hc.save_last_brief("🩺 Стан старий\n🔴 старий рядок", now_l - timedelta(minutes=300), _hcmod.LAST_BRIEF_FILE)
     tmo = []
-    subprocess.run = lambda cmd, **kw: (tmo.append(kw.get("timeout")), (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, kw.get("timeout"))))[1]
+    recall._run_health = lambda cmd, env, timeout: (tmo.append(timeout), env.get("HEALTH_FAST"), (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, timeout)))[2]
     try:
         hs = recall.health_section("kod")
     finally:
-        subprocess.run = _orig
+        recall._run_health = _orh
     chk("старий кеш + таймаут: жива перевірка з таймаутом хука (11 с < 15 с хука), збій видно + застарілий звіт позначено", tmo == [recall.HEALTH_HOOK_TIMEOUT] and recall.HEALTH_HOOK_TIMEOUT < 15
         and "НЕ перевірено" in hs and "ЗАСТАРІЛИЙ" in hs and "старий рядок" in hs)
     big = "🩺 Стан: 🔴 2\n" + "\n".join(f"🟠 проблема номер {k} з довгим описом, щоб заповнити бюджет картки" for k in range(12))
@@ -328,6 +327,53 @@ finally:
     vh.collect_host = _oh
 chk("N6: збій однієї секції знімка → errors[], решта секцій є, знімок не втрачено", snap_["errors"] and snap_["errors"][0].startswith("host_stats") and snap_["units"] == {"services": {}, "timers": {}, "failed": []} and "alerts" in snap_)
 chk("_age_h: наївний ISO = локальний час (мутація UTC-трактування)", abs(hc._age_h(datetime.now().replace(microsecond=0).isoformat(), datetime.now().astimezone())) < 0.01)
+
+# --- аудит #1068 раунд 2: B5 онуки/pipe, B6 швидкий режим, B7 помилки знімка, N1–N2 ---
+import time  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    stub = Path(td) / "stub.py"
+    stub.write_text("import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c', 'import time; time.sleep(40)'])\nprint('частковий вивід', flush=True)\ntime.sleep(40)\n", encoding="utf-8")
+    t0 = time.time()
+    try:
+        recall._run_health([sys.executable, str(stub)], dict(os.environ), 3)
+        raised = False
+    except subprocess.TimeoutExpired:
+        raised = True
+    el = time.time() - t0
+    chk("B5: онук тримає pipe, але _run_health вкладається в таймаут (гілку процесів убито), не чекає 40 с", raised and el < 12)
+    ok_stub = Path(td) / "ok.py"
+    ok_stub.write_text("print('🩺 нормальний вивід')", encoding="utf-8")
+    out_, rc_ = recall._run_health([sys.executable, str(ok_stub)], {**os.environ, "PYTHONIOENCODING": "utf-8"}, 20)
+    chk("B5: нормальний процес: stdout через тимчасовий файл читається, код 0", "нормальний вивід" in out_ and rc_ == 0)
+
+_fast = hc.FAST
+hc.FAST = True
+try:
+    rr = hc._run_one(ctx(), "tasks", lambda c: (_ for _ in ()).throw(subprocess.TimeoutExpired("powershell", 8)))
+finally:
+    hc.FAST = _fast
+chk("B6: у швидкому режимі таймаут перевірки = info «не перевірено», НЕ warn-проблема (не потрапляє в канал/кеш як збій)", len(rr) == 1 and rr[0]["sev"] == "info" and rr[0]["id"] == "check:tasks")
+chk("B6: у повному режимі той самий збій — warn", hc._run_one(ctx(), "tasks", lambda c: (_ for _ in ()).throw(subprocess.TimeoutExpired("p", 1)))[0]["sev"] == "warn")
+chk("B6: brief показує «не перевірено» навіть для info-check (кеш не бреше «усе чисто»)", "не перевірено" in hc.brief(rr, NOW) and "усе чисто" not in hc.brief(rr, NOW))
+new_, res_, st_ = hc.diff_state(rr, {"open": {"task:fail:A": {"sev": "warn", "title": "A"}}}, "t", hc.blind_prefixes(rr))
+chk("B6: «не перевірено» не знімає відкритих task:*", "task:fail:A" in st_["open"] and res_ == [])
+
+r = hc.check_vps(ctx(snap(errors=["units: OSError: x"])))
+chk("B7: помилки збирання знімка → warn vps:snapshot_errors", "vps:snapshot_errors" in ids(r))
+r = hc.check_vps(ctx(snap(units={"services": {}, "timers": {}, "failed": []})))
+chk("B7: знімок без жодного сервісу проєкту → warn vps:no_units (порожнє ≠ «усе гаразд»)", "vps:no_units" in ids(r))
+r = hc.check_vps(ctx(snap(units={"services": {"a.service": {"active": "inactive", "result": "success"}}, "timers": {}, "failed": []})))
+chk("B7: нормальний знімок із сервісами — без цих двох проблем", not ({"vps:snapshot_errors", "vps:no_units"} & ids(r)))
+
+def eva_boom():
+    raise OSError("мережа")
+r = hc.check_artifacts(ctx(feed_meta=lambda: meta, eva_date=eva_boom))
+chk("N2: збій читання дати EVA → лише art:eva_unreadable, решта art:* на місці (тут — порожньо, бо фіди свіжі)", ids(r) == {"art:eva_unreadable"})
+m5 = json.loads(json.dumps(meta)); m5["meta_feed.xml"]["generated_at"] = iso(13)
+chk("N2: збій EVA не губить застарілий meta", ids(hc.check_artifacts(ctx(feed_meta=lambda: m5, eva_date=eva_boom))) == {"art:feed_stale:meta_feed.xml", "art:eva_unreadable"})
+chk("N1: slug/артикул `-sk-` не калічиться; справжні ключі sk-ant-/sk-proj- — так",
+    tn._redact("https://plutustoys.com.ua/p1234567-sk-konstruktor-lego-friends-sklad") == "https://plutustoys.com.ua/p1234567-sk-konstruktor-lego-friends-sklad"
+    and "sk-ant-api03-abcdefghijklmnop" not in tn._redact("ключ sk-ant-api03-abcdefghijklmnop") and "sk-proj-abcdefghijklmnop12" not in tn._redact("sk-proj-abcdefghijklmnop12"))
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

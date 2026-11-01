@@ -220,7 +220,11 @@ def check_vps(ctx):
                          "публікує його eva-feed щогодини: або зупинився eva-feed/таймер, або не працює публікація (ключ/мережа), або VPS недоступний; "
                          "на VPS мені писати не можна — потрібен власник (read-only: journalctl -u eva-feed)", owner=True))
         return out    # решта знімка вже не «зараз»
+    if snap.get("errors"):
+        out.append(issue("vps:snapshot_errors", "warn", "Знімок VPS зібрано з помилками: " + "; ".join(str(x) for x in snap["errors"])[:200], "", "порожні секції знімка НЕ означають «усе гаразд»: виправити vps_health.py/доступ до systemctl"))
     u = snap.get("units") or {}
+    if not u.get("services"):
+        out.append(issue("vps:no_units", "warn", "Знімок VPS без жодного сервісу проєкту (systemctl недоступний або змінився ExecStart)", "", "перевірити vps_health.collect_units на VPS"))
     for name in u.get("failed") or []:
         out.append(issue(f"vps:unit_failed:{name}", "crit", f"VPS: {name} у стані failed", "systemctl --failed", "розібрати журнал юніта (потрібен read-only витяг від власника, якщо причини нема в алертах знімка)", owner=True))
     seen = {i["id"] for i in out}
@@ -266,7 +270,12 @@ def check_artifacts(ctx):
                 out.append(issue(f"art:feed_stale:{k}", "warn", f"Фід {k} застарів: {'невідомо' if age is None else f'{age:.1f} год'} (ліміт {FEED_MAX_AGE_H} год)", f"generated_at {m.get('generated_at')}", "feed-pipeline на VPS не публікує вчасно; деталі — у знімку VPS", owner=True))
         if not m.get("offers"):
             out.append(issue(f"art:feed_empty:{k}", "crit", f"Фід {k}: 0 позицій", "", "порожній фід не має публікуватись (feed_publish_gate) — перевірити", owner=True))
-    eva = ctx.eva_date()
+    try:
+        eva = ctx.eva_date()
+    except Exception as e:  # noqa: BLE001
+        out.append(issue("art:eva_unreadable", "warn", f"Дату EVA-фіда не прочитано: {type(e).__name__}", "", "мережа до raw.githubusercontent.com або формат файлу"))
+        return out
+    # дата в файлі — час VPS без зони (Київ); якщо пояс VPS зміниться на UTC, вік стане хибним — тоді змінити джерело
     age = _age_h(eva.replace(" ", "T") if eva else None, ctx.now)
     if age is None or age > EVA_FEED_MAX_AGE_H:
         out.append(issue("art:feed_stale:eva_feed.xml", "warn", f"EVA-фід застарів: {'дату в файлі не прочитано' if age is None else f'{age:.1f} год'} (ліміт {EVA_FEED_MAX_AGE_H} год)", f"yml_catalog date {eva}", "погодинний eva-feed на VPS не публікує; деталі — у знімку VPS", owner=True))
@@ -324,6 +333,8 @@ def _run_one(ctx, name, fn):
     try:
         return fn(ctx)
     except Exception as e:  # noqa: BLE001
+        if FAST:   # хук SessionStart: короткі таймаути під навантаженням дають хибні збої — не пишемо їх у канал/кеш, лише «не перевірено» (аудит #1068 B6)
+            return [issue(f"check:{name}", "info", f"«{name}»: не перевірено у швидкому режимі ({type(e).__name__})", "", "повна перевірка — `python health_check.py --full`")]
         # текст винятку підпроцесу (TimeoutExpired тощо) несе повну команду — у звіт лише тип; для решти — короткий текст
         detail = "" if isinstance(e, subprocess.SubprocessError) else str(e)[:160].replace("\n", " ")
         return [issue(f"check:{name}", "warn", f"Перевірка «{name}» не відпрацювала: {type(e).__name__}", detail, "спостерігач не має мовчати про власний збій — виправити перевірку")]
@@ -448,6 +459,9 @@ def brief(issues, now: datetime, limit=12) -> str:
     own = sum(1 for i in issues if i["owner"] and i["sev"] != "info")
     head = f"🩺 Стан системи {now:%Y-%m-%d %H:%M}: 🔴 {c['crit']} · 🟠 {c['warn']} · ℹ️ {c['info']}" + (f" (потрібен власник: {own})" if own else "") + (" — усе чисто" if not issues else "")
     rows = [format_issue(i) for i in issues if i["sev"] != "info"][:limit]
+    unchecked = [i["id"][6:] for i in issues if i["id"].startswith("check:") and i["sev"] == "info"]
+    if unchecked:
+        rows.append("ℹ️ не перевірено (швидкий режим): " + ", ".join(unchecked) + " — `python health_check.py --full`")
     return "\n".join([head] + rows)
 
 

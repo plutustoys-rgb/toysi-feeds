@@ -68,7 +68,7 @@ _BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{12,}")
 # Форми, яких не ловили вище (аудит #1068 N2): токен Telegram-бота в URL `/bot123:AAH…/`, GitHub-токени `ghp_/gho_/github_pat_`, ключі `sk-…`,
 # заголовки/поля `Api-Key: …`, `private_key=…`. Знімок VPS і канал «Автомат → Код» дають цим текстам нові виходи — закриваємо в єдиній точці.
 _TG_BOT_RE = re.compile(r"/bot\d{6,}:[A-Za-z0-9_-]{20,}")
-_PREFIXED_TOKEN_RE = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:ant-)?[A-Za-z0-9_-]{16,})")
+_PREFIXED_TOKEN_RE = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:ant|proj|live|test)-[A-Za-z0-9_-]{16,})")
 _APIKEY_FIELD_RE = re.compile(r"(?i)([\"']?(?:x-)?(?:api[-_]?key|private[-_]?key)[\"']?\s*[:=]\s*)[\"']?[^\s\"',;}]+")
 
 

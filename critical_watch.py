@@ -154,6 +154,34 @@ def _eval_event(ev: dict, today: date) -> dict:
             out["detail"] = f"до {d.isoformat()} · {days} дн"
         return out
 
+    if etype == "cookie_expiry":
+        # Сесія кабінету має АБСОЛЮТНИЙ термін (EVA: sessionid = 14 діб від входу; keepalive його НЕ подовжує — виміряно 02.11.2026:
+        # після двох keepalive expires sessionid не зсунувся, інші куки зсунулись). Тож читаємо дату просто з файлу сесії Playwright.
+        sf = BASE_DIR / str(ev.get("state_file", ""))
+        cname = ev.get("cookie", "sessionid")
+        try:
+            cookies = json.loads(sf.read_text(encoding="utf-8")).get("cookies", [])
+        except (OSError, ValueError):
+            out["state"] = CRITICAL
+            out["detail"] = f"файл сесії нечитабельний/відсутній ({sf.name}) — потрібен вхід"
+            return out
+        exp = next((c.get("expires") for c in cookies if c.get("name") == cname), None)
+        if not isinstance(exp, (int, float)) or exp <= 0:
+            out["state"] = WARN
+            out["detail"] = f"у файлі сесії нема дати спливання куки «{cname}» — звірити вручну"
+            return out
+        d = datetime.fromtimestamp(exp).date()
+        days = (d - today).days
+        if days < 0:
+            out["state"] = CRITICAL
+            out["detail"] = f"сесія ПРОТУХЛА {-days} дн тому (до {d.isoformat()})"
+        elif days <= lead:
+            out["state"] = WARN
+            out["detail"] = f"сесія спливає {d.isoformat()} · {days} дн"
+        else:
+            out["detail"] = f"сесія дійсна до {d.isoformat()} · {days} дн"
+        return out
+
     if etype == "recurring_monthly":
         nxt = _next_monthly(int(ev.get("day_of_month", 1)), today)
         days = (nxt - today).days

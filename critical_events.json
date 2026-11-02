@@ -145,6 +145,20 @@
       "used_in": "Домен вітрини магазину (адреса, за якою покупці й площадки бачать магазин).",
       "renewal": "Продовжити домен у реєстратора IMENA. Спершу уточнити реальну дату закінчення (внести сюди).",
       "note": "дата продовження невідома — потребує звірки"
+    },
+    {
+      "id": "eva_session",
+      "name": "Сесія кабінету EVA (вхід власника)",
+      "icon": "key",
+      "type": "cookie_expiry",
+      "state_file": ".local_secrets/eva_cabinet_state.json",
+      "cookie": "sessionid",
+      "lead_days": 3,
+      "blocks": "EVA: повний імпорт нових товарів, звірка категорій, реєстри замовлень і комісій, keepalive на ПК і VPS",
+      "source": "seller.eva.ua (вхід за e-mail і паролем власника)",
+      "used_in": "eva_cabinet_scraper.py (--keepalive на ПК кожні 30 хв і на VPS eva-cabinet-keepalive.timer), run_marketplace_actions.py, eva_category_check.py, eva_orders_ledger.py, eva_commission_ledger.py",
+      "renewal": "Власник: `cd C:\\Users\\smach\\rozetka_agent`, потім `python eva_cabinet_scraper.py --login` (у вікні увійти до кабінету, у терміналі Enter), потім `powershell -NoProfile -ExecutionPolicy Bypass -File deploy\\eva_session_to_vps.ps1` (переносить свіжу сесію на VPS і перевіряє). Автоматично не можна: вхід — пароль власника, ми його не зберігаємо.",
+      "note": "sessionid = 14 діб від входу, keepalive термін НЕ подовжує (виміряно 02.11.2026); дату читає сам critical_watch з файлу сесії"
     }
   ]
 }

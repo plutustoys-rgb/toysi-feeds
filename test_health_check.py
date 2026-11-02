@@ -375,5 +375,40 @@ chk("N1: slug/артикул `-sk-` не калічиться; справжні 
     tn._redact("https://plutustoys.com.ua/p1234567-sk-konstruktor-lego-friends-sklad") == "https://plutustoys.com.ua/p1234567-sk-konstruktor-lego-friends-sklad"
     and "sk-ant-api03-abcdefghijklmnop" not in tn._redact("ключ sk-ant-api03-abcdefghijklmnop") and "sk-proj-abcdefghijklmnop12" not in tn._redact("sk-proj-abcdefghijklmnop12"))
 
+# --- аудит #1070: сесія EVA на VPS + ескалація warn критичного календаря ---
+def sess(days):
+    return {"present": True, "sessionid_expires": int(NOW.timestamp() + days * 86400)}
+
+
+r = hc.check_vps(ctx(snap(eva_session=sess(10))))
+chk("сесія EVA на VPS: 10 діб → без проблем", "vps:eva_session" not in ids(r))
+r = hc.check_vps(ctx(snap(eva_session=sess(2))))
+chk("сесія EVA на VPS: 2 доби → warn vps:eva_session + потрібен власник + команди входу в підказці", "vps:eva_session" in ids(r) and r[0]["owner"] and "eva_session_to_vps" in [i for i in r if i["id"] == "vps:eva_session"][0]["hint"])
+r = hc.check_vps(ctx(snap(eva_session=sess(-1))))
+chk("сесія EVA на VPS: протухла → warn", "vps:eva_session" in ids(r))
+chk("сесія EVA на VPS: файла нема → warn", "vps:eva_session" in ids(hc.check_vps(ctx(snap(eva_session={"present": False, "sessionid_expires": None})))))
+chk("старий знімок без ключа eva_session (до цього PR) → без проблеми (немає даних ≠ збій)", "vps:eva_session" not in ids(hc.check_vps(ctx(snap()))))
+crit_w = {"generated_at": iso(0.2), "events": [{"id": "eva_session", "name": "EVA", "state": "warn", "detail": "сесія спливає 2026-11-03 · 1 дн", "blocks": "EVA: імпорт", "renewal": "вхід", "escalate": True},
+                                                 {"id": "other", "name": "O", "state": "warn", "detail": "d", "blocks": "x", "renewal": "", "escalate": False}]}
+r = hc.check_critical(ctx(critical=lambda: crit_w))
+chk("warn-подія з escalate → issue Коду (owner), без escalate → ні (нового шуму від решти календаря нема)", ids(r) == {"crit:eva_session"} and r[0]["owner"] and r[0]["sev"] == "warn")
+with tempfile.TemporaryDirectory() as td:
+    sf = Path(td) / "st.json"
+    sf.write_text(json.dumps({"cookies": [{"name": "csrftoken", "expires": 1}, {"name": "sessionid", "expires": 1794847948.5}]}), encoding="utf-8")
+    os.environ["EVA_CABINET_STATE_FILE"] = str(sf)
+    try:
+        c1 = vh.collect_eva_session(td)
+        sf.write_text("{ не json", encoding="utf-8")
+        c2 = vh.collect_eva_session(td)
+        sf.write_text(json.dumps({"cookies": [{"name": "sessionid", "value": "СЕКРЕТ", "expires": -1}]}), encoding="utf-8")
+        c3 = vh.collect_eva_session(td)
+        os.environ["EVA_CABINET_STATE_FILE"] = str(Path(td) / "нема.json")
+        c4 = vh.collect_eva_session(td)
+    finally:
+        os.environ.pop("EVA_CABINET_STATE_FILE", None)
+chk("vps_health.collect_eva_session: лише дата sessionid (int), значень кук у знімку нема", c1 == {"present": True, "sessionid_expires": 1794847948} and "СЕКРЕТ" not in json.dumps(c3))
+chk("vps_health.collect_eva_session: зіпсований/відсутній файл → present False; сесійна кука -1 → present True, дата None",
+    c2 == {"present": False, "sessionid_expires": None} and c4 == {"present": False, "sessionid_expires": None} and c3 == {"present": True, "sessionid_expires": None})
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

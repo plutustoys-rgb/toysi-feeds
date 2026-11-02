@@ -55,6 +55,7 @@ FEED_MAX_AGE_H = 12
 EVA_FEED_MAX_AGE_H = 3
 VPS_CODE_BEHIND_MIN = 45         # vps-code-sync підтягує master ~15 хв → три цикли
 DISK_FULL_PCT = 95
+EVA_SESSION_WARN_DAYS = 3        # як lead_days події eva_session у critical_events.json
 OK_TASK_RESULTS = {0, 267008, 267009, 267011}   # 0 успіх; 0x41300 готова; 0x41301 виконується; 0x41303 ще не запускалась
 SEV_ORDER = {"crit": 0, "warn": 1, "info": 2}
 SEV_ICON = {"crit": "🔴", "warn": "🟠", "info": "ℹ️"}
@@ -248,6 +249,19 @@ def check_vps(ctx):
                 out.append(issue("vps:code_behind", "warn", f"VPS не підтягнув master: на VPS {h['git_head'][:7]}, у master {sha[:7]} (на момент знімка коміту було {mage * 60:.0f} хв)", "", "перевірити vps-code-sync (vps_code_sync_state.json у знімку); можливий локальний розбіг гілки на VPS"))
     except Exception:  # noqa: BLE001
         pass   # master недоступний — це не збій VPS
+    ev = snap.get("eva_session")
+    if ev is not None:
+        # сесія EVA на VPS — ОКРЕМА копія від ПК (17.10→31.10 саме вона вмерла непомітно); дату спливання береться з файлу на VPS, значення кук у знімок не потрапляють
+        exp = ev.get("sessionid_expires")
+        hint = "вхід власника: `python eva_cabinet_scraper.py --login`, потім `deploy\\eva_session_to_vps.ps1` (переносить сесію на VPS і перевіряє)"
+        if not ev.get("present") or not isinstance(exp, (int, float)):
+            out.append(issue("vps:eva_session", "warn", "VPS: файл сесії EVA відсутній або без дати спливання sessionid", "", hint, owner=True))
+        else:
+            days = (exp - ctx.now.timestamp()) / 86400
+            if days < 0:
+                out.append(issue("vps:eva_session", "warn", f"VPS: сесія EVA протухла {-days:.0f} дн тому", "", hint, owner=True))
+            elif days <= EVA_SESSION_WARN_DAYS:
+                out.append(issue("vps:eva_session", "warn", f"VPS: сесія EVA спливає за {days:.1f} дн", "", hint, owner=True))
     fp = (snap.get("state_files") or {}).get("feed_pipeline_state.json") or {}
     if fp.get("last_status") in ("failed", "degraded"):
         out.append(issue(f"vps:feed_pipeline:{fp['last_status']}", "crit" if fp["last_status"] == "failed" else "warn",
@@ -319,7 +333,7 @@ def check_critical(ctx):
     if age is None or age > 3:
         out.append(issue("crit:stale", "info", "Критичний календар не оновлюється", f"generated_at {d.get('generated_at')}", "перевірити задачу PlutusToys_CriticalCalendar"))
     for e in d.get("events") or []:
-        if e.get("state") == "critical":
+        if e.get("state") == "critical" or (e.get("state") == "warn" and e.get("escalate")):
             # пункт, що блокує лише ручний вхід власника (поле blocks починається «лише ручний…»), автоматику не зупиняє → info, не «потрібен власник» щоразу
             manual = str(e.get("blocks") or "").startswith("лише ручний")
             out.append(issue(f"crit:{e.get('id')}", "info" if manual else "warn", f"Критичний календар: {e.get('name')}: {e.get('detail')}", "", (e.get("renewal") or "")[:200], owner=not manual))

@@ -139,6 +139,18 @@ def collect_state_files(app_dir: str = APP_DIR) -> dict:
     return out
 
 
+def collect_eva_session(app_dir: str = APP_DIR) -> dict:
+    """Файл сесії кабінету EVA на VPS (окрема копія від ПК): лише наявність і дата спливання sessionid — значень кук тут немає й не буде."""
+    p = Path(os.environ.get("EVA_CABINET_STATE_FILE") or Path(app_dir) / ".secrets" / "eva_cabinet_state.json")
+    try:
+        cookies = json.loads(p.read_text(encoding="utf-8")).get("cookies", [])
+    except (OSError, ValueError, AttributeError):
+        return {"present": False, "sessionid_expires": None}
+    exps = [c.get("expires") for c in cookies if isinstance(c, dict) and c.get("name") == "sessionid"] if isinstance(cookies, list) else []
+    exp = next((x for x in exps if isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0), None)
+    return {"present": True, "sessionid_expires": int(exp) if exp is not None else None}
+
+
 def collect_alerts(now: datetime, app_dir: str = APP_DIR, path=None) -> list:
     """Алерти за ALERT_WINDOW_HOURS з журналу VPS (категорії error/warning/money, крім «🛒 Нове замовлення»), найновіші першими."""
     sys.path.insert(0, str(BASE))
@@ -171,7 +183,7 @@ def collect(now: datetime = None, run=_run, app_dir: str = APP_DIR) -> dict:
     now = now or datetime.now(timezone.utc)
     out = {"schema": 1, "generated_at": now.isoformat(timespec="seconds"), "host": os.uname().nodename if hasattr(os, "uname") else "?", "errors": []}
     for key, fn, default in (("units", lambda: collect_units(run, app_dir), {"services": {}, "timers": {}, "failed": []}), ("host_stats", lambda: collect_host(app_dir), {}),
-                             ("state_files", lambda: collect_state_files(app_dir), {}), ("alerts", lambda: collect_alerts(now, app_dir), [])):
+                             ("state_files", lambda: collect_state_files(app_dir), {}), ("eva_session", lambda: collect_eva_session(app_dir), {}), ("alerts", lambda: collect_alerts(now, app_dir), [])):
         try:
             out[key] = fn()
         except Exception as e:  # noqa: BLE001

@@ -149,8 +149,7 @@ if ($LASTEXITCODE -ne 0) { $failedSteps += "prom_prosale_tier_check.py" }
 & $py akty_zvirka.py
 if ($LASTEXITCODE -ne 0) { $failedSteps += "akty_zvirka.py" }
 
-# 3e. ALLO cabinet (balances + subscription-balance warning + orders). One-time: `--login`.
-& $py allo_cabinet_scraper.py
+# 3e. ALLO cabinet: REMOVED 2026-11-02 (owner decision; ALLO abandoned since 12.10, session dead, step only produced alerts).
 
 # 4. Weekly balance trend digest (rewrites today's - cheap to run daily).
 & $py weekly_balance_digest.py

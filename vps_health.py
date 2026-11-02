@@ -9,6 +9,7 @@
   • systemd: стан КОЖНОГО сервісу з ExecStart у /opt/plutustoys (Result, код виходу, час останнього завершення), стан їхніх таймерів, `systemctl --failed`;
   • хост: диск `/`, пам'ять, навантаження, uptime; git HEAD у /opt/plutustoys (чи доїхав master);
   • файли стану, що вже є на VPS (feed_pipeline_state.json, vps_code_sync_state.json, watchdog_state.json);
+  • сесія кабінету EVA на VPS (`eva_session`): лише наявність файлу і дата спливання sessionid, значень кук немає (14-добовий абсолютний термін, 02.11.2026);
   • алерти за останню добу з telegram_alerts.md (не «нове замовлення»), текст — після telegram_notify._redact і обрізаний до 300 символів.
 Репо ПРИВАТНЕ (як plutustoys-private-ledger): текст алертів може містити гривні/id замовлень — у публічний feed-data його класти НЕ можна (витік 10.08).
 

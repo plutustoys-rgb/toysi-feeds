@@ -68,6 +68,12 @@ git fetch --depth 1 origin feed-data 2>/dev/null || true
 git checkout --orphan feed-data -q
 git checkout origin/feed-data -- . 2>/dev/null || true
 
+# >>> ALLO-RETIRE (02.11.2026, рішення власника: фід ALLO прибрати). Restore вище підтягує ВЕСЬ попередній вміст feed-data, тож без явного видалення
+# старий allo_feed.xml (зі застарілими цінами/залишками) висів би публічно вічно. Ідемпотентно: файла нема → нічого не робить.
+git rm -q -f --ignore-unmatch feeds/allo_feed.xml 2>/dev/null || true
+rm -f feeds/allo_feed.xml
+# <<< ALLO-RETIRE
+
 mkdir -p feeds
 # ГЕЙТ РОЗМІРУ (feed_publish_gate.sh): порожній/обрізаний фід не перезаписує робочий. Заблокований → лишається попередня опублікована версія (з `git checkout origin/feed-data` вище).
 # Причини блокувань пишемо в BLOCKED_FILE — run_feed_pipeline_vps.sh бачить його й позначає прогін degraded (watchdog повідомить).
@@ -105,7 +111,7 @@ git add -f feeds/prom_feed_top.xml \
 # ведеться живим фідом, знімок заморозки не використовується). eva_feed.xml і далі
 # публікується в циклі нижче; при порожньому прогоні попередня версія зберігається
 # автоматично через `git checkout origin/feed-data -- .` вище (рядок ~57).
-for f in google_merchant_feed.xml google_merchant_feed_ru.xml meta_feed.xml bing_feed.xml eva_feed.xml allo_feed.xml; do
+for f in google_merchant_feed.xml google_merchant_feed_ru.xml meta_feed.xml bing_feed.xml eva_feed.xml; do
     if [ -s "/opt/plutustoys/feeds/$f" ]; then
         if gate_msg=$(feed_gate_ok "/opt/plutustoys/feeds/$f"); then
             cp "/opt/plutustoys/feeds/$f" "feeds/$f"

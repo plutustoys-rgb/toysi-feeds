@@ -11,6 +11,8 @@ import sys
 from datetime import datetime, timezone
 
 _COUNT_RE = re.compile(rb"<item>|<offer[ >]")
+# Фіди, зняті з публікації: їхні записи прибираються з feed_meta.json (інакше мітка вічно «застаріла»). allo_feed.xml — рішення власника 02.11.2026.
+RETIRED = ("allo_feed.xml",)
 
 
 def update_meta(workdir: str, src_dir: str, published: list) -> dict:
@@ -22,6 +24,8 @@ def update_meta(workdir: str, src_dir: str, published: list) -> dict:
             meta = {}
     except (OSError, ValueError):
         meta = {}
+    for name in RETIRED:
+        meta.pop(name, None)
     for name in published:
         src = os.path.join(src_dir, name)
         try:

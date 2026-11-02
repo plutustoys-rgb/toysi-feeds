@@ -110,7 +110,7 @@ def _eval_event(ev: dict, today: date) -> dict:
     out = {"id": ev.get("id"), "name": ev.get("name", "?"), "icon": ev.get("icon", "dot"),
            "blocks": ev.get("blocks", ""), "source": ev.get("source", ""),
            "used_in": ev.get("used_in", ""), "renewal": ev.get("renewal", ""),
-           "note": ev.get("note", ""), "state": OK, "detail": ""}
+           "note": ev.get("note", ""), "state": OK, "detail": "", "escalate": bool(ev.get("escalate_warn"))}
 
     if etype in ("balance_threshold", "count_threshold"):
         threshold = float(ev.get("threshold", 0))
@@ -152,6 +152,39 @@ def _eval_event(ev: dict, today: date) -> dict:
             out["detail"] = f"до {d.isoformat()} · {days} дн"
         else:
             out["detail"] = f"до {d.isoformat()} · {days} дн"
+        return out
+
+    if etype == "cookie_expiry":
+        # Сесія кабінету має АБСОЛЮТНИЙ термін (EVA: sessionid = 14 діб від входу; keepalive його НЕ подовжує — виміряно 02.11.2026:
+        # після двох keepalive expires sessionid не зсунувся, інші куки зсунулись). Тож читаємо дату просто з файлу сесії Playwright.
+        sf = BASE_DIR / str(ev.get("state_file", ""))
+        cname = ev.get("cookie", "sessionid")
+        try:
+            cookies = json.loads(sf.read_text(encoding="utf-8")).get("cookies", [])
+        except (OSError, ValueError, AttributeError):
+            out["state"] = CRITICAL
+            out["detail"] = f"файл сесії нечитабельний/відсутній ({sf.name}) — потрібен вхід"
+            return out
+        # перша кука з цим іменем, що має ЧИСЛОВУ дату (bool — підклас int, не рахується); структурно хибний файл не валить весь календар
+        exps = [c.get("expires") for c in cookies if isinstance(c, dict) and c.get("name") == cname] if isinstance(cookies, list) else []
+        exp = next((x for x in exps if isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0), None)
+        try:
+            d = datetime.fromtimestamp(exp).date() if exp is not None else None
+        except (OverflowError, OSError, ValueError):
+            d = None
+        if d is None:
+            out["state"] = WARN
+            out["detail"] = f"у файлі сесії нема дати спливання куки «{cname}» — звірити вручну"
+            return out
+        days = (d - today).days
+        if days < 0:
+            out["state"] = CRITICAL
+            out["detail"] = f"сесія ПРОТУХЛА {-days} дн тому (до {d.isoformat()})"
+        elif days <= lead:
+            out["state"] = WARN
+            out["detail"] = f"сесія спливає {d.isoformat()} · {days} дн"
+        else:
+            out["detail"] = f"сесія дійсна до {d.isoformat()} · {days} дн"
         return out
 
     if etype == "recurring_monthly":

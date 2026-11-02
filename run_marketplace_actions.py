@@ -1,4 +1,6 @@
-"""run_marketplace_actions.py — ЛОКАЛЬНИЙ періодичний автоцикл ДІЙ у кабінетах EVA/ALLO.
+"""run_marketplace_actions.py — ЛОКАЛЬНИЙ періодичний автоцикл ДІЙ у кабінеті EVA (+ перевірки сайту й фідів).
+
+02.11.2026 (рішення власника): крок ALLO (`allo_cabinet_scraper.py --auto-cycle`) ПРИБРАНО — від ALLO власник відмовився ще 12.10, сесія кабінету мертва, крок щоразу сипав алерти.
 
 Наказ власника 2026-08-31 (через SEO, SEO_CHANNEL.md): на відміну від Rozetka
 (`run_rozetka_local.py`) і Prom («Імпорт за посиланням»), EVA й ALLO НЕ мали
@@ -10,9 +12,6 @@
   1. EVA:  eva_cabinet_scraper.py --full-import   — повний імпорт «через посилання».
            (авто-імпорт EVA лише освіжає ціну/склад; НОВІ товари доходять до
            модерації ЛИШЕ через повний імпорт — тому робимо його періодично.)
-  2. ALLO: allo_cabinet_scraper.py --auto-cycle    — авто-завершення майстра
-           «Зіставлення даних» (категорії+характеристики) + подача «Нових» на
-           модерацію.
 
 БЕЗПЕКА СЕСІЇ: скрейпери працюють на збереженій storageState-сесії
 (`.local_secrets/*_cabinet_state.json`, разовий `--login` власником у вікні).
@@ -22,7 +21,7 @@
 а не хибна дія. Кожен прогін пише звіт у AUDIT_REPORT_DIR (лічильники
 оновлено/відхилено/помилок) — самодіагностика, а не мовчазний збій.
 
---dry-run: ганяє обидва скрейпери БЕЗ --apply (лише звіт, що БУДЕ зроблено —
+--dry-run: ганяє скрейпер БЕЗ --apply (лише звіт, що БУДЕ зроблено —
 жодних кліків у кабінеті). Для безпечної перевірки launcher'а.
 
 БЕЗ ФІНАНСІВ: звіти кабінетних дій — лічильники, не cost/margin; тому
@@ -43,7 +42,7 @@ DEFAULT_REPORT_DIR = r"C:\Users\smach\Claude\Projects\PlutusToys_avtonomiya\repo
 
 
 # Сторожовий таймер зависання, не поріг якості: 16-17.10 крок eva_category_check завис на ~17 год і заблокував увесь ланцюг
-# (EVA повний імпорт, ALLO, перевірки сайту; таск не стартує нову копію, поки стара «Running»). Решта кроків тривають хвилини.
+# (EVA повний імпорт, перевірки сайту; таск не стартує нову копію, поки стара «Running»). Решта кроків тривають хвилини.
 STEP_TIMEOUT_SEC = int(os.environ.get("MARKETPLACE_STEP_TIMEOUT_SEC", "1800"))
 CHANNEL_FILE = Path(os.environ.get("EXECUTOR_CHANNEL_FILE") or (Path(DEFAULT_REPORT_DIR).parent / "EXECUTOR_CHANNEL.md"))
 
@@ -85,7 +84,7 @@ def _post_hang(label: str, timeout_sec: int, channel: Path | None = None) -> boo
 
 def _run(label: str, cmd: list[str], timeout: int | None = None) -> int:
     """Один крок best-effort: друкує вивід, повертає returncode; виняток НЕ підіймає
-    (щоб збій EVA не завадив ALLO і навпаки). Крок довший за timeout (STEP_TIMEOUT_SEC) знімається з дітьми, код 124, запис у канал."""
+    (щоб збій одного кроку не завадив наступним). Крок довший за timeout (STEP_TIMEOUT_SEC) знімається з дітьми, код 124, запис у канал."""
     timeout = timeout or STEP_TIMEOUT_SEC
     print(f"[marketplace-actions] {label}: {' '.join(cmd[1:])}")
     try:
@@ -134,8 +133,6 @@ def main() -> None:
 
     rc_eva = _run("EVA повний імпорт",
                   [PY, str(BASE_DIR / "eva_cabinet_scraper.py"), "--full-import", *apply_flag])
-    rc_allo = _run("ALLO автоцикл (зіставлення+модерація)",
-                   [PY, str(BASE_DIR / "allo_cabinet_scraper.py"), "--auto-cycle", *apply_flag])
 
     # Звірка категорій кабінету EVA з фідом (лише читання; ≥1 товар у незіставлених категоріях → запис [Автомат → Код] у канал). Не впливає на код виходу.
     _run("EVA категорії кабінету ↔ фід", [PY, str(BASE_DIR / "eva_category_check.py")])
@@ -146,10 +143,10 @@ def main() -> None:
     # Доставка щоденних файлів GMC/Googlebot/GSC з VPS у спільну теку для SEO + запис [Автомат → SEO] у SEO_CHANNEL.md, якщо в gmc_summary є прапорець 🚩. Лише читання з VPS; не впливає на код виходу.
     _run("Файли VPS → спільна тека SEO", [PY, str(BASE_DIR / "daily_files_to_shared.py")])
 
-    print(f"[marketplace-actions] Готово. EVA rc={rc_eva}, ALLO rc={rc_allo}. "
+    print(f"[marketplace-actions] Готово. EVA rc={rc_eva}. "
           f"Звіти: {os.environ['AUDIT_REPORT_DIR']}")
-    # Ненульовий вихід лише якщо ОБИДВА впали (частковий успіх = ок для best-effort циклу).
-    sys.exit(0 if (rc_eva == 0 or rc_allo == 0) else 1)
+    # Ненульовий вихід, якщо впав повний імпорт EVA; решта кроків (перевірки) на код виходу не впливають.
+    sys.exit(0 if rc_eva == 0 else 1)
 
 
 if __name__ == "__main__":

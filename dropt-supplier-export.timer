@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys: Dropt — оновлення даних для сайту щогодини (ціни «Дроп» і наявність зі списків розділів; описи/фото — порціями)
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

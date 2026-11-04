@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: дані Dropt для сайту й фіду EVA (dropt_supplier_export.py → supplier_dropt.json + фото site/img/dropt)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. supplier_dropt.json (з закупівельною ціною «Дроп» = cost) пишеться у /opt/plutustoys, ПОЗА DocumentRoot; права 0600. Лише читання публічного dropt.in.ua.
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/dropt_supplier_export.py
+TimeoutStartSec=2700
+Nice=10

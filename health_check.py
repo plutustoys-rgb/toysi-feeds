@@ -56,6 +56,7 @@ EVA_FEED_MAX_AGE_H = 3
 VPS_CODE_BEHIND_MIN = 45         # vps-code-sync підтягує master ~15 хв → три цикли
 DISK_FULL_PCT = 95
 EVA_SESSION_WARN_DAYS = 3        # як lead_days події eva_session у critical_events.json
+SELF_TASK = "PlutusToys_HealthCheck"
 OK_TASK_RESULTS = {0, 267008, 267009, 267011}   # 0 успіх; 0x41300 готова; 0x41301 виконується; 0x41303 ще не запускалась
 SEV_ORDER = {"crit": 0, "warn": 1, "info": 2}
 SEV_ICON = {"crit": "🔴", "warn": "🟠", "info": "ℹ️"}
@@ -315,7 +316,7 @@ def check_tasks(ctx):
             if n in skip:
                 continue
             out.append(issue(f"task:disabled:{n}", "info", f"Локальна задача {n} вимкнена", "", "чи вимкнена навмисно — якщо так, ігнорувати; якщо ні — увімкнути"))
-        elif r not in OK_TASK_RESULTS:
+        elif r not in OK_TASK_RESULTS and not (n == SELF_TASK and r in (1, 2)):      # код виходу самої перевірки: 1 = знайшла warn, 2 = знайшла crit (main() → return 2/1/0) — це не збій задачі
             keep = n.endswith("Keepalive")
             out.append(issue(f"task:fail:{n}", "warn", f"Локальна задача {n}: помилка останнього запуску (код {r})", "",
                              KEEPALIVE_HINT if keep else "дивитись вихід задачі / reports/*_failure_*", owner=keep))

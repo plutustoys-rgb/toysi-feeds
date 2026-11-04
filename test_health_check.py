@@ -410,5 +410,13 @@ chk("vps_health.collect_eva_session: лише дата sessionid (int), знач
 chk("vps_health.collect_eva_session: зіпсований/відсутній файл → present False; сесійна кука -1 → present True, дата None",
     c2 == {"present": False, "sessionid_expires": None} and c4 == {"present": False, "sessionid_expires": None} and c3 == {"present": True, "sessionid_expires": None})
 
+# --- 04.11: код виходу самої HealthCheck (1/2 = знайшла warn/crit) — не збій задачі; інші задачі з кодом 2 — збій ---
+r = hc.check_tasks(ctx(tasks=lambda: [{"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 2}, {"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 1}]))
+chk("HealthCheck з кодом виходу 1/2 (знайдено проблеми) — НЕ «помилка задачі»", ids(r) == set())
+r = hc.check_tasks(ctx(tasks=lambda: [{"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 3}, {"n": "PlutusToys_Other", "s": "Ready", "r": 2}]))
+chk("справжній збій HealthCheck (код 3) і код 2 в ІНШОЇ задачі лишаються помилками", ids(r) == {"task:fail:PlutusToys_HealthCheck", "task:fail:PlutusToys_Other"})
+import service_watchdog as _sw  # noqa: E402
+chk("watchdog: pdfplumber (лише локальні скрипти ПК) не дрейф залежностей; решта пакетів лишаються під контролем", "pdfplumber" in _sw.LOCAL_ONLY_PACKAGES and "playwright" not in _sw.LOCAL_ONLY_PACKAGES and "requests" not in _sw.LOCAL_ONLY_PACKAGES)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

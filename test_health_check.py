@@ -410,11 +410,14 @@ chk("vps_health.collect_eva_session: лише дата sessionid (int), знач
 chk("vps_health.collect_eva_session: зіпсований/відсутній файл → present False; сесійна кука -1 → present True, дата None",
     c2 == {"present": False, "sessionid_expires": None} and c4 == {"present": False, "sessionid_expires": None} and c3 == {"present": True, "sessionid_expires": None})
 
-# --- 04.11: код виходу самої HealthCheck (1/2 = знайшла warn/crit) — не збій задачі; інші задачі з кодом 2 — збій ---
-r = hc.check_tasks(ctx(tasks=lambda: [{"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 2}, {"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 1}]))
-chk("HealthCheck з кодом виходу 1/2 (знайдено проблеми) — НЕ «помилка задачі»", ids(r) == set())
-r = hc.check_tasks(ctx(tasks=lambda: [{"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 3}, {"n": "PlutusToys_Other", "s": "Ready", "r": 2}]))
-chk("справжній збій HealthCheck (код 3) і код 2 в ІНШОЇ задачі лишаються помилками", ids(r) == {"task:fail:PlutusToys_HealthCheck", "task:fail:PlutusToys_Other"})
+# --- 04.11: власні коди виходу HealthCheck (10 = знайшла warn, 11 = знайшла crit) — не збій задачі; а 1/2 (крах/помилка запуску Python) і інші задачі — збій (аудит #1105) ---
+r = hc.check_tasks(ctx(tasks=lambda: [{"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 10}, {"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 11}]))
+chk("HealthCheck з кодом виходу 10/11 (знайдено проблеми) — НЕ «помилка задачі»", ids(r) == set())
+r = hc.check_tasks(ctx(tasks=lambda: [{"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 1}, {"n": "PlutusToys_HealthCheck", "s": "Ready", "r": 2}, {"n": "PlutusToys_Other", "s": "Ready", "r": 10}]))
+chk("крах HealthCheck (необроблений виняток = код 1, помилка запуску = 2) лишається помилкою; код 10 в ІНШОЇ задачі — теж помилка", ids(r) == {"task:fail:PlutusToys_HealthCheck", "task:fail:PlutusToys_Other"})
+import inspect as _insp  # noqa: E402
+_src = _insp.getsource(hc.main)
+chk("main() повертає 11/10/0 (а не 2/1/0)", "return 11 if" in _src and " else 10 if" in _src and "return 2 if" not in _src)
 import service_watchdog as _sw  # noqa: E402
 chk("watchdog: pdfplumber (лише локальні скрипти ПК) не дрейф залежностей; решта пакетів лишаються під контролем", "pdfplumber" in _sw.LOCAL_ONLY_PACKAGES and "playwright" not in _sw.LOCAL_ONLY_PACKAGES and "requests" not in _sw.LOCAL_ONLY_PACKAGES)
 

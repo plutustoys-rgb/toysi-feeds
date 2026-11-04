@@ -57,6 +57,7 @@ VPS_CODE_BEHIND_MIN = 45         # vps-code-sync підтягує master ~15 х�
 DISK_FULL_PCT = 95
 EVA_SESSION_WARN_DAYS = 3        # як lead_days події eva_session у critical_events.json
 SELF_TASK = "PlutusToys_HealthCheck"
+SELF_OK_RC = (10, 11)             # власні коди виходу main(): 10 = знайшла warn, 11 = знайшла crit. НЕ 1/2: їх дає сам Python (необроблений виняток = 1, argparse/«can't open file» = 2) — інакше падіння сторожа лишилось би непомітним (аудит #1105)
 OK_TASK_RESULTS = {0, 267008, 267009, 267011}   # 0 успіх; 0x41300 готова; 0x41301 виконується; 0x41303 ще не запускалась
 SEV_ORDER = {"crit": 0, "warn": 1, "info": 2}
 SEV_ICON = {"crit": "🔴", "warn": "🟠", "info": "ℹ️"}
@@ -316,7 +317,7 @@ def check_tasks(ctx):
             if n in skip:
                 continue
             out.append(issue(f"task:disabled:{n}", "info", f"Локальна задача {n} вимкнена", "", "чи вимкнена навмисно — якщо так, ігнорувати; якщо ні — увімкнути"))
-        elif r not in OK_TASK_RESULTS and not (n == SELF_TASK and r in (1, 2)):      # код виходу самої перевірки: 1 = знайшла warn, 2 = знайшла crit (main() → return 2/1/0) — це не збій задачі
+        elif r not in OK_TASK_RESULTS and not (n == SELF_TASK and r in SELF_OK_RC):
             keep = n.endswith("Keepalive")
             out.append(issue(f"task:fail:{n}", "warn", f"Локальна задача {n}: помилка останнього запуску (код {r})", "",
                              KEEPALIVE_HINT if keep else "дивитись вихід задачі / reports/*_failure_*", owner=keep))
@@ -508,7 +509,7 @@ def main() -> int:
                 print(format_issue(i, full=True))
     else:
         print(brief(issues, ctx.now))
-    return 2 if any(i["sev"] == "crit" for i in issues) else 1 if any(i["sev"] == "warn" for i in issues) else 0
+    return 11 if any(i["sev"] == "crit" for i in issues) else 10 if any(i["sev"] == "warn" for i in issues) else 0      # див. SELF_OK_RC: не 1/2, щоб крах Python не маскувався під «знайдено проблеми»
 
 
 if __name__ == "__main__":

@@ -222,18 +222,27 @@ chk(f"е: reviewCount \"10\", ratingValue з показаних 10 ({exp_avg}), 
 # ж) review.html
 hr = rd(out, "review.html")
 chk("ж: review.html — noindex", '<meta name="robots" content="noindex,follow">' in hr)
-chk("ж: review.html — <meta name=\"referrer\" content=\"no-referrer\"> у <head>", '<meta name="referrer" content="no-referrer">' in hr[:hr.index("</head>")])
+_ref = hr.find('<meta name="referrer" content="no-referrer">')
+chk("ж: review.html — <meta name=\"referrer\" content=\"no-referrer\"> ПЕРШИМ у <head>: одразу після charset, до будь-якого <link>/<script>",
+    0 < _ref < hr.index("<link") and _ref < hr.index("<script") and hr[:_ref].endswith('<meta charset="utf-8">\n') and _ref < hr.index("</head>"))
+_other = [f for f in os.listdir(out) if f.endswith(".html") and f != "review.html"]
+chk("ж: на інших сторінках meta referrer нема (head_first порожній — розмітка як була)", _other and not any('name="referrer"' in rd(out, f) for f in _other))
 chk("ж: токен береться ЛИШЕ з фрагмента #t= (location.hash), не з query: URLSearchParams/get(\"t\") нема, location.search — лише у перевірці старого ?t= (→ «недійсне»)",
     'exec(location.hash||"")' in hr and "URLSearchParams" not in hr and '.get("t")' not in hr
-    and re.findall(r"location\.search", hr) == ["location.search"] and 'if(/[?&]t=/.test(location.search)){bad();return;}' in hr)
+    and re.findall(r"location\.search", hr) == ["location.search"] and 'var old=/[?&]t=/.test(location.search)' in hr and 'if(old||!t||t.length>512){bad();return;}' in hr)
 _urls = re.findall(r'(?:href|src|action)="([^"]*)"', hr)
 chk("ж: жодне посилання/ресурс сторінки (href/src/action) не містить t= чи #t", _urls and not any(re.search(r"[?&#]t=", u) for u in _urls))
-chk("ж: адреса чиститься (replaceState) і в терміналних станах (успіх/помилка), і після помилки POST",
-    'function say(s){f.hidden=true;st.textContent=s;st.hidden=false;clean();}' in hr and "btn.textContent=\"Надіслати відгук\";clean();}" in hr)
+_i_read, _i_clean, _i_fetch = hr.find('t=m?decodeURIComponent(m[1])'), hr.find('clean();if(old||!t'), hr.find('fetch("api/review/form"')
+chk("ж: адреса чиститься (replaceState → /review.html) ОДРАЗУ після зчитування токена — до перевірки й до будь-якого запиту",
+    0 < _i_read < _i_clean < _i_fetch and 'function clean(){try{history.replaceState(null,"",location.pathname);}catch(e){}}' in hr)
+chk("ж: токен НЕ йде в query жодного запиту: жоден fetch(\"…?…\") без query, encodeURIComponent нема; токен лише в тілі POST",
+    re.findall(r'fetch\("([^"]*)"', hr) == ["api/review/form", "api/review"] and "encodeURIComponent" not in hr and "body:JSON.stringify({t:t})" in hr and "body:JSON.stringify({t:t,rating:" in hr)
 sm = "".join((out / f).read_text(encoding="utf-8") for f in os.listdir(out) if f.startswith("sitemap") and f.endswith(".xml"))
 chk("ж: review.html немає в жодному sitemap", "review.html" not in sm and "sitemap.xml" in os.listdir(out))
 chk("ж: robots.txt — Disallow: /review.html", "Disallow: /review.html" in rd(out, "robots.txt"))
-chk("ж: містить api/review/form і POST api/review", 'fetch("api/review/form?t="+encodeURIComponent(t),{cache:"no-store",credentials:"omit"})' in hr and 'fetch("api/review",{method:"POST"' in hr)
+chk("ж: POST api/review/form {t} (no-store, omit) і POST api/review",
+    'fetch("api/review/form",{method:"POST",cache:"no-store",credentials:"omit",headers:{"Content-Type":"application/json"},body:JSON.stringify({t:t})})' in hr
+    and 'fetch("api/review",{method:"POST"' in hr and 'fetch("api/review/form?' not in hr)
 main = hr[hr.index('<section class="doc review-page"'):hr.index("<footer")]
 chk("ж: у змісті сторінки нема слів про доставку/гроші (доставк, гривн/гривен, грн, ₴)", not re.search(r"доставк|гриве?н|грн|₴", main, re.I))
 chk("ж: назва товару — textContent, без innerHTML; токен не логується", "pn.textContent=String(nm)" in main and "innerHTML" not in main and "console." not in main)
@@ -311,6 +320,36 @@ r, e = load(payload({"101": [{"rating": 5, "text": "abc \ud800 def", "author": "
                              {"rating": 5, "text": "з NUL \u0000 всередині", "author": "А", "date": "2026-11-01"},
                              {"rating": 5, "text": "Нормальний текст", "author": "А", "date": "2026-11-01"}]}, ascii=True))
 chk("з: одинокий сурогат/NUL у тексті → запис відкинуто (збірка не впаде на записі HTML)", [x["text"] for x in r.get("101", [])] == ["Нормальний текст"] and "записів 2" in e)
+
+# аудит-2: bidi/невидимі символи, ZWJ-емодзі, нижня межа дати
+ZWJ_TEXT = "Клас\u200dно 👨\u200d👩\u200d👧 👍🏽 🏳\ufe0f\u200d🌈 🇺🇦"
+_inv = {"101": [
+    {"rating": 5, "text": "Дата \u202eтекст\u202c з \u2066bidi\u2069 і \u200eмітками\u200f\u061c", "author": "Іра\u202e", "date": "2026-11-01"},
+    {"rating": 4, "text": ZWJ_TEXT, "author": "\u200b\u2060\u00ad", "date": "2026-10-31"},
+    {"rating": 5, "text": "👍👍👍", "author": "Емодзі", "date": "2026-10-30"},
+    {"rating": 3, "text": "Межа дати", "author": "А", "date": "2020-01-01"},
+    {"rating": 5, "text": "\u00ad\u00ad\u00ad\u00ad", "author": "А", "date": "2026-11-01"},
+    {"rating": 5, "text": "\u2061\u2062\u2063\u2064", "author": "А", "date": "2026-11-01"},
+    {"rating": 5, "text": "\u034f\u034f\u034f\u180e", "author": "А", "date": "2026-11-01"},
+    {"rating": 5, "text": "\u200e\u200f\u061c\u202e\u2066", "author": "А", "date": "2026-11-01"},
+    {"rating": 5, "text": "a\u00a0\u3000b\u2028\u0301", "author": "А", "date": "2026-11-01"},
+    {"rating": 5, "text": "Занадто давно", "author": "А", "date": "2019-12-31"},
+]}
+r, e = load(payload(_inv, ascii=True), now=datetime(2026, 11, 4, 12, 0, 0, tzinfo=timezone.utc))
+_got = r.get("101", [])
+_bidi = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
+chk("з: bidi (U+202A–202E, U+2066–2069, U+200E/200F, U+061C) вирізано з text і author: «Іра» без U+202E, текст без керувальних",
+    len(_got) == 4 and _got[0]["author"] == "Іра" and _got[0]["text"] == "Дата текст з bidi і мітками" and not any(_bidi.search(x["text"] + x["author"]) for x in _got))
+chk("з: ZWJ-емодзі, тон шкіри, прапори — текст НЕ змінено (U+200D/U+FE0F на місці)", _got[1]["text"] == ZWJ_TEXT and "\u200d" in _got[1]["text"])
+chk("з: автор лише з невидимих (U+200B, U+2060, U+00AD) → «Покупець»", _got[1]["author"] == "Покупець")
+chk("з: «👍👍👍» — 3 видимі символи, прийнято; дата 2020-01-01 (нижня межа) прийнята", _got[2]["text"] == "👍👍👍" and _got[3]["date"] == "2020-01-01")
+chk("з: текст із невидимих (U+00AD, U+2061–2064, U+034F/U+180E, лише bidi, NBSP/U+3000/U+2028/комбінований знак — <3 видимих) і дата 2019-12-31 → невалідні (6 записів)",
+    "записів 6" in e and not any(x["text"] in ("Занадто давно",) for x in _got))
+_html = bs._reviews_html(_got)
+chk("з: у HTML блоку ZWJ-емодзі цілі, bidi нема, автор «Іра» перед датою",
+    ZWJ_TEXT in _html and not _bidi.search(_html) and '<b class="rv-author">Іра</b> · <time' in _html)
+chk("з: видимі символи рахуються без Cf/Zs/Cc/Mn: «a\u00a0b» = 2, «👨\u200d👩\u200d👧» = 3, «Клас\u200dно» = 6",
+    bs._review_visible_len("a\u00a0b") == 2 and bs._review_visible_len("👨\u200d👩\u200d👧") == 3 and bs._review_visible_len("Клас\u200dно") == 6)
 
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ Відгуки: блок / JSON-LD / валідація / XSS / review.html / fail-closed — усі перевірки коректні.'}")
 sys.exit(1 if F else 0)

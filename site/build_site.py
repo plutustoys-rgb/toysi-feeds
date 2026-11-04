@@ -368,7 +368,7 @@ META_DOMAIN_VERIFICATION = "zrxty9pynr6k0qh1y1tpgzkfyliv7s"   # Meta Business «
 GSC_VERIFICATION = "AzAID7jv3z26c8wFyrtnzjRTa_2xDyEnFx_R-neaoZY"   # підтвердження права власності Search Console (код власника з 17.07, був на вітрині Prom; SEO 18.10: на новому сайті злетіло) — у <head> КОЖНОЇ сторінки
 
 
-def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False, defer_trackers=True, analytics=True):
+def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False, defer_trackers=True, analytics=True, head_first=""):
     full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
     if canonical == "index.html":
@@ -391,7 +391,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
     head_meta = "".join(m + "\n" for m in meta if m)
     return (
       "<!doctype html>\n<html lang=\"uk\">\n<head>\n"
-      "<meta charset=\"utf-8\">\n"
+      "<meta charset=\"utf-8\">\n" + head_first +   # head_first — лише review.html (meta referrer до будь-якого ресурсу); порожній — розмітка як була
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
       f"<meta name=\"google-site-verification\" content=\"{GSC_VERIFICATION}\">\n"
       f"<meta name=\"facebook-domain-verification\" content=\"{META_DOMAIN_VERIFICATION}\" />\n"
@@ -1685,13 +1685,20 @@ REVIEWS_SHOW_MAX = 10
 REVIEW_TEXT_MIN, REVIEW_TEXT_MAX, REVIEW_AUTHOR_MAX = 3, 1500, 40
 REVIEW_AUTHOR_DEFAULT = "Покупець"
 REVIEWS_STALE_DAYS = 7
-_REVIEW_ZW_RX = re.compile("[\u200b-\u200d\ufeff\u2060]")   # нульової ширини: текст лише з них (і пробілів) — візуально порожній
+_REVIEW_BIDI_RX = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")   # керування напрямком (bidi): вирізаємо з text і author — інакше U+202E в імені перевертає дату в рядку відгуку (аудит-2)
+_REVIEW_INVISIBLE_CATS = frozenset(("Cf", "Zs", "Zl", "Zp", "Cc", "Mn", "Me"))   # не рахуються як видимі символи (формат, пробіли, керівні, комбіновані знаки); з тексту їх НЕ вирізаємо — ZWJ-емодзі й прапори лишаються цілими
+REVIEW_DATE_MIN = "2020-01-01"   # нижня межа дати відгуку (ISO-рядки порівнюються лексикографічно)
+
+
+def _review_visible_len(s):
+    """Кількість видимих символів: без категорій _REVIEW_INVISIBLE_CATS (U+200B, U+00AD, U+2061…, U+034F, пробіли, NBSP тощо)."""
+    return sum(1 for ch in s if unicodedata.category(ch) not in _REVIEW_INVISIBLE_CATS)
 _REVIEW_MONEY_RX = re.compile(_MONEY_RX.pattern + r"|доставк", re.I)   # гроші/доставка у відгуку — лише попередження (модерація бекенду), не блокуємо
 
 
 def _review_clean(r, today=None):
-    """Один запис відгуку → нормалізований dict або None (невалідний): rating int 1..5; text 3..1500 після trim (≥3 видимих: без пробілів нульової ширини); author рядок ≤40 (порожній/нема → «Покупець»);
-    date YYYY-MM-DD (справжня дата, не пізніше today — київська дата збірки)."""
+    """Один запис відгуку → нормалізований dict або None (невалідний): bidi-символи з text/author вирізаються; rating int 1..5; text 3..1500 після trim, ≥3 ВИДИМИХ (_review_visible_len);
+    author рядок ≤40 (без видимих символів/нема → «Покупець»); date YYYY-MM-DD (справжня дата, від REVIEW_DATE_MIN і не пізніше today — київська дата збірки)."""
     if not isinstance(r, dict):
         return None
     rating, text, author, date = r.get("rating"), r.get("text"), r.get("author"), r.get("date")
@@ -1699,24 +1706,26 @@ def _review_clean(r, today=None):
         return None
     if not isinstance(text, str):
         return None
-    text = text.replace("\r\n", "\n").strip()
-    if not REVIEW_TEXT_MIN <= len(text) <= REVIEW_TEXT_MAX or not _utf8_clean(text) or len(_REVIEW_ZW_RX.sub("", text).strip()) < REVIEW_TEXT_MIN:
+    text = _REVIEW_BIDI_RX.sub("", text.replace("\r\n", "\n")).strip()
+    if not REVIEW_TEXT_MIN <= len(text) <= REVIEW_TEXT_MAX or not _utf8_clean(text) or _review_visible_len(text) < REVIEW_TEXT_MIN:
         return None
     if author is None:
         author = ""
     if not isinstance(author, str):
         return None
-    author = " ".join(author.split())
+    author = " ".join(_REVIEW_BIDI_RX.sub("", author).split())
     if len(author) > REVIEW_AUTHOR_MAX or not _utf8_clean(author):
         return None
+    if not _review_visible_len(author):
+        author = ""   # лише невидимі символи → «Покупець»
     if not isinstance(date, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date):
         return None
     try:
         d = datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError:
         return None
-    if today is not None and d > today:
-        return None   # дата з майбутнього — не публікуємо (datePublished не може бути завтрашнім)
+    if date < REVIEW_DATE_MIN or (today is not None and d > today):
+        return None   # дата з майбутнього (datePublished не може бути завтрашнім) або до REVIEW_DATE_MIN — не публікуємо
     return {"rating": rating, "text": text, "author": author or REVIEW_AUTHOR_DEFAULT, "date": date}
 
 
@@ -3088,23 +3097,23 @@ def write_thanks():
     _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True, defer_trackers=False))   # purchase — без відкладання (рішення Консультанта 12.10)
 
 REVIEW_RATING_LABELS = ((5, "чудово"), (4, "добре"), (3, "нормально"), (2, "погано"), (1, "дуже погано"))
-# Скрипт форми відгуку: посилання `review.html#t=<токен>` — токен лише у ФРАГМЕНТІ (не йде ні в Referer, ні в журнали сервера; аудит 04.11), далі лише в змінній (не в HTML, не в логах, не в аналітиці);
-# назва товару — textContent; після успіху й після помилки фрагмент прибирається з адресного рядка (history.replaceState). `?t=` у query не підтримується.
+# Скрипт форми відгуку: посилання `review.html#t=<токен>` — токен лише у ФРАГМЕНТІ (не йде ні в Referer, ні в журнали сервера; аудит 04.11); одразу після зчитування фрагмент прибирається
+# з адресного рядка (history.replaceState), далі токен лише в змінній (не в HTML, не в логах, не в аналітиці) і йде лише в ТІЛІ POST api/review/form і POST api/review. Назва товару — textContent. `?t=` не підтримується.
 _REVIEW_JS = (
     '(function(){'
     'var d=document,st=d.getElementById("rv-state"),f=d.getElementById("review-form"),msg=d.getElementById("rv-msg"),btn=d.getElementById("rv-submit"),'
     'ta=d.getElementById("rv-text"),cnt=d.getElementById("rv-count"),au=d.getElementById("rv-author"),pn=d.getElementById("rv-product"),busy=false,t="";'
     'function clean(){try{history.replaceState(null,"",location.pathname);}catch(e){}}'
-    'function say(s){f.hidden=true;st.textContent=s;st.hidden=false;clean();}'
+    'function say(s){f.hidden=true;st.textContent=s;st.hidden=false;}'
     'function bad(){say("Посилання недійсне або вже використане.");}'
     'function later(){say("Не вдалося відкрити форму відгуку. Спробуйте пізніше.");}'
-    'function unlock(){busy=false;btn.disabled=false;btn.textContent="Надіслати відгук";clean();}'
-    'if(/[?&]t=/.test(location.search)){bad();return;}'   # старий формат ?t= НЕ підтримуємо: query йде в Referer і журнали сервера; адресу одразу чистимо (say → clean)
-    'var m=/^#(?:.*&)?t=([^&]*)/.exec(location.hash||"");'
+    'function unlock(){busy=false;btn.disabled=false;btn.textContent="Надіслати відгук";}'
+    'var old=/[?&]t=/.test(location.search),m=/^#(?:.*&)?t=([^&]*)/.exec(location.hash||"");'
     'try{t=m?decodeURIComponent(m[1]):"";}catch(e){t="";}'
-    'if(!t||t.length>512){bad();return;}'
+    'clean();'   # токен ОДРАЗУ прибираємо з адресного рядка (і з історії): далі він лише в змінній t; перезавантаження → «недійсне посилання» (прийнятно, аудит-2)
+    'if(old||!t||t.length>512){bad();return;}'   # старий формат ?t= НЕ підтримуємо: query йде в Referer і журнали сервера
     'ta.addEventListener("input",function(){cnt.textContent=ta.value.length+" / 1500";});'
-    'fetch("api/review/form?t="+encodeURIComponent(t),{cache:"no-store",credentials:"omit"}).then(function(r){'
+    'fetch("api/review/form",{method:"POST",cache:"no-store",credentials:"omit",headers:{"Content-Type":"application/json"},body:JSON.stringify({t:t})}).then(function(r){'   # токен у тілі, не в query: не потрапляє в журнал Apache
       'if(r.status===404||r.status===410){bad();return;}'
       'if(!r.ok){later();return;}'
       'return r.json().then(function(j){'
@@ -3137,7 +3146,7 @@ _REVIEW_JS = (
 
 
 def write_review_page():
-    """review.html — форма відгуку за одноразовим посиланням (`review.html#t=<токен>`; токен видає й перевіряє бекенд VPS: GET api/review/form, POST api/review — див. site/REVIEWS_CONTRACT.md).
+    """review.html — форма відгуку за одноразовим посиланням (`review.html#t=<токен>`; токен видає й перевіряє бекенд VPS: POST api/review/form, POST api/review — див. site/REVIEWS_CONTRACT.md).
     noindex, поза sitemap (не в static_urls) і Disallow у robots.txt; БЕЗ аналітики (analytics=False): page_view/Pixel відправили б адресу з токеном третім сторонам."""
     radios = "".join(
         f'<label class="pay"><input type="radio" name="rating" value="{n}" required> <span aria-hidden="true" style="color:var(--accent)">{_review_stars(n)}</span> {n} з 5 — {lbl}</label>'
@@ -3164,7 +3173,7 @@ def write_review_page():
       '<script>' + _REVIEW_JS + '</script>'
     )
     _write("review.html", page("Відгук про товар", body, description="Залиште відгук про товар, придбаний у PlutusToys.", noindex=True, analytics=False,
-                               extra_head='<meta name="referrer" content="no-referrer">\n'))   # жодного Referer з цієї сторінки (аудит 04.11: токен витікав у GA4/Pixel наступної сторінки)
+                               head_first='<meta name="referrer" content="no-referrer">\n'))   # жодного Referer з цієї сторінки, ПЕРШИМ у head — до stylesheet/іконок (аудити 04.11)
 
 # ── /ig.html: посадкова сторінка для bio-посилання Instagram (SMM 12.10.2026: у підписах IG посилання не клікабельні, єдине клікабельне місце — шапка профілю) ──
 IG_FEATURED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ig_featured.json")

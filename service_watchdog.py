@@ -415,6 +415,11 @@ def _normalize_pkg_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name.strip().lower())
 
 
+# Пакети з requirements.txt, потрібні ЛИШЕ локальним скриптам ПК (на VPS їх ніхто не імпортує) — їх відсутність у venv на VPS не дрейф. Перевірено 04.11.2026:
+# pdfplumber імпортують лише akty_zvirka.py і privat_statement_kandydaty.py (запускає local_cabinet_audit.ps1 на ПК); у systemd-юнітах VPS їх нема. Новий пакет сюди — лише з тим самим доказом.
+LOCAL_ONLY_PACKAGES = frozenset({"pdfplumber"})
+
+
 def _required_package_names(requirements_text: str) -> set:
     """Парсить requirements.txt у множину нормалізованих назв пакетів,
     ігноруючи версійні специфікатори (>=, ==, тощо), коментарі, порожні
@@ -477,7 +482,7 @@ def check_dependency_drift() -> None:
     installed = {_normalize_pkg_name(dist.metadata["Name"]) for dist in importlib_metadata.distributions()
                  if dist.metadata.get("Name")}
 
-    missing_now = sorted(required - installed)
+    missing_now = sorted(required - LOCAL_ONLY_PACKAGES - installed)
     drift_state = set(state.get("dependency_drift", []))
 
     new_alarms = [f"⛔ {name}: у requirements.txt є, у venv НЕ встановлено" for name in missing_now if name not in drift_state]

@@ -62,7 +62,7 @@ def lm_map(fname):
     return dict(re.findall(r"<loc>([^<]+)</loc><lastmod>([^<]+)</lastmod>", (out / fname).read_text(encoding="utf-8")))
 
 
-BASE_SEGS = [n for n in bs.SITEMAP_SEGMENTS if n != "rt"]   # rt (RoyalToys) — порожній без supplier_rt.json: файл не пишеться, у індексі нема
+BASE_SEGS = [n for n in bs.SITEMAP_SEGMENTS if n not in ("rt", "dropt")]   # rt (RoyalToys) — порожній без supplier_rt.json, dropt — без SITE_DROPT_LIVE: файл не пишеться, у індексі нема
 build()
 idx = (out / "sitemap.xml").read_text(encoding="utf-8")
 chk("sitemap.xml — sitemapindex із 5 дочірніми (priority, products, oos, categories, static), кожен файл існує і має lastmod",

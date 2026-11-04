@@ -45,8 +45,9 @@ def make_fetch(session=None, delay=REQUEST_DELAY_S, retries=RETRIES):
             last[0] = time.monotonic()
             try:
                 r = s.get(url, headers={"User-Agent": USER_AGENT, "Accept-Language": "uk"}, timeout=timeout)
-                if r.status_code >= 500 and attempt < retries:
-                    time.sleep(2 * (attempt + 1))
+                if (r.status_code >= 500 or r.status_code == 429) and attempt < retries:
+                    wait429 = 30 if r.status_code == 429 else 2 * (attempt + 1)      # 429 — довша пауза (аудит #1099)
+                    time.sleep(min(wait429, 60))
                     continue
                 r.raise_for_status()
                 return r.text
@@ -106,8 +107,11 @@ def parse_detail(html):
         return None
     offers = ld.get("offers") if isinstance(ld.get("offers"), dict) else {}
     price, sku = _price(offers.get("price")), str(ld.get("sku") or "").strip()
-    if not sku.isdigit() or not price or price <= 0:
+    if not sku.isdigit():
         return None
+    no_price = not price or price <= 0
+    if no_price:
+        price = 0.0                       # товар є, але ціни нема (напр. «₴0.00» на знятій картці): запис товару з price=0 і in_stock=False — не «не-товар» (аудит #1099 п.A)
     brand = ld.get("brand")
     brand = (brand.get("name") if isinstance(brand, dict) else brand) or ""
     names = []
@@ -133,5 +137,5 @@ def parse_detail(html):
     anchors.sort(key=lambda h: 0 if base_main and re.sub(r"-1000x1000\.\w+$", "", h.replace("/image/cache/", "/image/")) == base_main else 1)      # sort стабільний: решта лишається в порядку DOM
     images = anchors or ([main] if main.startswith("https://") else [])
     return {"sku": sku, "name": str(ld.get("name") or "").strip(), "brand": str(brand).strip(), "price": price,
-            "in_stock": str(offers.get("availability") or "").rstrip("/").endswith("InStock"),
+            "in_stock": (not no_price) and str(offers.get("availability") or "").rstrip("/").endswith("InStock"),
             "category": " / ".join(mid[:2]), "top": mid[0] if mid else "", "description": desc, "images": [u for u in images if u.startswith("https://")]}

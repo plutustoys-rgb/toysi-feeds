@@ -36,9 +36,13 @@ MIN_SITEMAP_URLS = 1000       # виміряно 04.11: ≈7 800 адрес /ua/
 MAX_IMAGES = 3
 STOCK_IN = 3                  # Dropt публічно показує лише «є / нема в наявності» — кількість невідома; 3 = обережний віртуальний залишок (кошик не дасть замовити більше)
 DETAIL_TIME_BUDGET_S = 1200   # час на читання сторінок за запуск; решта — наступним (TimeoutStartSec юніта 2700 = 1200 + фото 600 + запас)
-REFRESH_MIN_AGE_S = 40 * 60   # обрану картку перечитуємо, коли її запис старший за 40 хв (годинний таймер → щоразу)
-ITEM_MAX_AGE_S = 12 * 3600    # у файл — лише картки, ціну/наявність яких читали не давніше (довше — вважаємо невідомою)
-OTHER_TTL_S = 7 * 86400       # не-товари й товари поза 7 розділами перевіряємо раз на 7 діб (розділ товару змінюється рідко)
+REFRESH_MIN_AGE_S = 40 * 60   # картку «в наявності» (і будь-яку спробу читання) повторюємо, коли попередня спроба старша за 40 хв (годинний таймер → щоразу)
+OOS_REFRESH_S = 4 * 3600      # обрані товари НЕ в наявності перечитуємо раз на 4 год (аудит #1099 п.D: вдвічі менше навантаження на Dropt, наявність важить для тих, що «є»)
+ITEM_MAX_AGE_S = 3 * 3600     # у файл — лише картки, ціну/наявність яких читали не давніше (довше — вважаємо невідомою; у кожної картки є checked_at)
+OTHER_TTL_S = 7 * 86400       # сторінки розділів (не-товари) перечитуємо раз на 7 діб
+FOREIGN_TTL_S = 30 * 86400    # товари поза 7 розділами — раз на 30 діб (розділ товару змінюється рідко; їх ≈5 300)
+PRUNE_AFTER_S = 3 * 86400     # скільки адреса може бракувати в sitemap, перш ніж її запис видаляється з кешу
+STALE_RELEASE_S = 12 * 3600   # гард усадки не тримає файл довше: якщо попередній запис старший — приймаємо нове (легітимне звуження, напр. Новий Рік після свят)
 SAVE_EVERY = 100              # кеш на диск кожні N сторінок: прогін, убитий таймаутом, не губить прогрес
 MAX_CONSEC_ERRORS = 25        # стільки збоїв поспіль = Dropt недоступний, зупиняємо читання
 MIN_KEEP_RATIO = 0.5          # (запозичено з rt_supplier_export, не виміряно окремо) усадка файлу/розділу >50 % → файл усічений, не перезаписуємо
@@ -52,7 +56,9 @@ _SEP_RE = re.compile(r"\s[•∙·]\s")      # Dropt ріже назву на «
 _DESC_CUT_RE = re.compile(r"^(Як замовити|Залиште заявку|Заходьте|Вдалих покупок|Доставка|Оплата)\b", re.I)    # шаблонний хвіст Dropt про замовлення/доставку/оплату — для нашого сайту чужі умови
 _DESC_DROP_RE = re.compile(r"на нашому сайті|Dropt|dropt\.in\.ua", re.I)
 _RU_FUNC_RE = re.compile(r"(?<![А-Яа-яІіЇїЄєҐґ'’])(?:и|или|что|это|наушник\w*|щетк\w*|груминг\w*|кошек|собак(?=\s+и\b))(?![А-Яа-яІіЇїЄєҐґ])")   # «и/или/что/это» в українській не існують; решта — слова, що вже слизнули з Dropt (аудит #1099)
-_POLICY_RE = re.compile(r"(?<!\w)(зброя\w*|зброї|зброю|пістолет\w*|рушниц\w*|арбалет\w*|шабл\w*|катан[аиуі]?|меч|мечі|мечик\w*|шпаг\w*|рогатк\w*|бластер\w*|вейп\w*|сигар\w*|тютюн\w*|петард\w*|піротехн\w*|еротик\w*|казино|для дорослих)(?!\w)", re.I)
+_POLICY_RE = re.compile(r"(?<!\w)(зброя\w*|зброї|зброю|пістолет\w*|револьвер\w*|рушниц\w*|гвинтів\w*|кулемет\w*|дробовик\w*|арбалет\w*|шабл\w*|катан[аиуі]?|тесак\w*|нунчак\w*|кастет\w*|\w*шокер\w*|травмат\w*|ракетниц\w*|газов\w+ балончик\w*|меч|мечі|мечик\w*|шпаг\w*|рогатк\w*|бластер\w*|вейп\w*|сигар\w*|тютюн\w*|петард\w*|піротехн\w*|еротик\w*|казино|для дорослих)(?!\w)", re.I)
+_AVTOMAT_RE = re.compile(r"(?<![\w-])автомат(?![\w-])", re.I)        # «Іграшковий автомат», «Автомат іграшковий»; не «автоматична/автоматичний», не «Намет-автомат»
+_AVTOMAT_OK_RE = re.compile(r"намет|палатк|тент|компресор|напувалк|годівниц|повідець|гойдалк|люльк|кавомашин|торгов", re.I)      # «автомат» у значенні «з автоматичним механізмом» (аудит #1099 п.6/E)
 _KNIFE_RE = re.compile(r"(?<!\w)(ніж|ножі|ножик\w*|мультиніж\w*|мачете|кинджал\w*)(?!\w)", re.I)
 _KNIFE_OK_RE = re.compile(r"кухонн|для кавуна|для хліба|для сиру|для піци|для овоч|для фрукт|кухн", re.I)       # кухонні ножі — не зброя
 
@@ -71,6 +77,8 @@ def policy_blocked(short, full="", category=""):
     except ImportError:
         pass
     if _POLICY_RE.search(short):
+        return True
+    if _AVTOMAT_RE.search(short) and not _AVTOMAT_OK_RE.search(short + " " + (category or "")):
         return True
     if _KNIFE_RE.search(short) and not _KNIFE_OK_RE.search(short + " " + (full or "")):
         return True
@@ -114,6 +122,10 @@ def save_cache(cache, path=None):
     p = Path(path or DETAIL_CACHE)
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)          # у записах кешу — ціна «Дроп» (= cost): як у supplier_dropt.json (аудит #1099 п.C)
+    except OSError:
+        pass
     os.replace(tmp, p)
 
 
@@ -122,42 +134,75 @@ def is_selected(e):
 
 
 def refresh(urls, cache, fetch, now_ts, time_budget=DETAIL_TIME_BUDGET_S, clock=time.monotonic, save=None):
-    """Читає сторінки в такому порядку: (1) адреси, яких у кеші нема; (2) обрані товари, чий запис старший за REFRESH_MIN_AGE_S (найстаріші першими); (3) решта, що старша за OTHER_TTL_S.
-    Зупиняється за часовим бюджетом або після MAX_CONSEC_ERRORS збоїв поспіль. Повертає {"read": n, "errors": n, "aborted": bool}."""
-    new, stale_sel, stale_other = [], [], []
+    """Читає сторінки в порядку: (1) адреси, яких у кеші нема; (2) обрані товари В НАЯВНОСТІ з давньою спробою (найстаріші першими); (3) обрані НЕ в наявності (раз на OOS_REFRESH_S);
+    (4) чужі товари (раз на FOREIGN_TTL_S) і сторінки розділів (раз на OTHER_TTL_S). Зупиняється за часовим бюджетом або після MAX_CONSEC_ERRORS мережевих збоїв поспіль.
+    Правила кешу (аудит #1099 п.A/B): розбір None на раніше відомому ТОВАРІ не перезаписує запис (збій розбору ≠ «не товар»; повтор за REFRESH_MIN_AGE_S);
+    404/410 → запис gone/other із датою (не повторюється щоразу, не рахується мережевим збоєм); решта помилок оновлює лише `try_at` — мертва адреса не стоїть першою в черзі вічно.
+    Повертає {"read": n, "errors": n, "parse_failures": n, "aborted": bool}."""
+    new, q_in, q_oos, q_other = [], [], [], []
     for u in urls:
         e = cache.get(u)
         if not isinstance(e, dict):
             new.append(u)
             continue
+        try_at = float(e.get("try_at") or e.get("fetched_at") or 0)
         age = now_ts - float(e.get("fetched_at") or 0)
+        since_try = now_ts - try_at
         if is_selected(e):
-            if age > REFRESH_MIN_AGE_S:
-                stale_sel.append((age, u))
-        elif age > OTHER_TTL_S:
-            stale_other.append((age, u))
-    stale_sel.sort(reverse=True)
-    stale_other.sort(reverse=True)
-    queue = new + [u for _a, u in stale_sel] + [u for _a, u in stale_other]
-    t0, st, consec = clock(), {"read": 0, "errors": 0, "aborted": False}, 0
+            if e.get("in_stock"):
+                if age > REFRESH_MIN_AGE_S and since_try > REFRESH_MIN_AGE_S:
+                    q_in.append((age, u))
+            elif age > OOS_REFRESH_S and since_try > REFRESH_MIN_AGE_S:
+                q_oos.append((age, u))
+        elif e.get("kind") == "product":
+            if age > FOREIGN_TTL_S and since_try > REFRESH_MIN_AGE_S:
+                q_other.append((age, u))
+        elif e.get("kind") in ("other", "gone"):
+            if age > OTHER_TTL_S and since_try > REFRESH_MIN_AGE_S:
+                q_other.append((age, u))
+        elif since_try > REFRESH_MIN_AGE_S:                    # kind=error (адреса, яку ще жодного разу не вдалося прочитати)
+            q_other.insert(0, (1e12, u))
+    for q in (q_in, q_oos, q_other):
+        q.sort(reverse=True)
+    queue = new + [u for _a, u in q_in] + [u for _a, u in q_oos] + [u for _a, u in q_other]
+    t0, st, consec = clock(), {"read": 0, "errors": 0, "parse_failures": 0, "aborted": False}, 0
     for u in queue:
         if clock() - t0 > time_budget:
             break
+        prev = cache.get(u) if isinstance(cache.get(u), dict) else None
         try:
             d = dp.parse_detail(fetch(u))
             consec = 0
         except Exception as ex:  # noqa: BLE001
+            code = getattr(getattr(ex, "response", None), "status_code", None)
+            if code in (404, 410):
+                cache[u] = {"kind": "gone" if (prev and prev.get("kind") == "product") else "other", "fetched_at": now_ts}
+                st["read"] += 1
+                consec = 0
+                continue
             st["errors"] += 1
             consec += 1
-            print(f"[dropt_export] сторінка: {type(ex).__name__}", file=sys.stderr)
+            print(f"[dropt_export] сторінка: {type(ex).__name__}{' ' + str(code) if code else ''}", file=sys.stderr)
+            if prev is not None:
+                prev["try_at"] = now_ts
+            else:
+                cache[u] = {"kind": "error", "try_at": now_ts}
             if consec >= MAX_CONSEC_ERRORS:
                 st["aborted"] = True
                 break
             continue
-        prev_sig = (cache.get(u) or {}).get("img_sig")                 # підпис фото, з якими вже качали файли: переживає перечитування сторінки (інакше зміну фото не помітити)
-        cache[u] = ({"kind": "product", "fetched_at": now_ts, **d} if d else {"kind": "other", "fetched_at": now_ts})
-        if d and prev_sig:
-            cache[u]["img_sig"] = prev_sig
+        if d is None and prev and prev.get("kind") == "product":
+            st["parse_failures"] += 1                        # сторінка раніше була товаром, а тепер без JSON-LD (заглушка/зміна верстки): старий запис лишаємо
+            prev["try_at"] = now_ts
+            continue
+        if d is None:
+            cache[u] = {"kind": "other", "fetched_at": now_ts}
+        elif d.get("top") in dp.TOP_NAMES:
+            cache[u] = {"kind": "product", "fetched_at": now_ts, **d}
+            if prev and prev.get("img_sig"):
+                cache[u]["img_sig"] = prev["img_sig"]          # підпис фото, з якими вже качали файли: переживає перечитування (інакше зміну фото не помітити)
+        else:
+            cache[u] = {"kind": "product", "fetched_at": now_ts, "sku": d["sku"], "top": d.get("top") or "", "in_stock": False}      # чужий розділ: мінімальний запис (без опису/фото/ціни — кеш не роздувається)
         st["read"] += 1
         if save and st["read"] % SAVE_EVERY == 0:
             save(cache)
@@ -187,6 +232,19 @@ def build_item(sid, e, images):
             "images": images, "price": rt.site_price(cost), "cost": round(cost, 2), "stock": STOCK_IN, "dims_cm": None, "weight_kg": None, "source_url": e.get("url") or ""}
 
 
+def write_file(out, items, now, catalog_n):
+    """Як rt_supplier_export._write_json + `min_checked_at` (найстаріша перевірка серед карток; `updated` показує момент запису файлу, а не свіжість карток — аудит #1099 п.D)."""
+    payload = {"updated": now.isoformat(timespec="seconds"), "min_checked_at": min((v.get("checked_at") or 0) for v in items.values()) if items else 0, "catalog_n": catalog_n, "items": items}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, out)
+
+
 def _top_counts(items):
     out = {}
     for v in items.values():
@@ -195,14 +253,18 @@ def _top_counts(items):
     return out
 
 
-def out_guard_ok(out, items):
+def out_guard_ok(out, items, now_ts=0):
     """Усадка файлу (всього або одного розділу) >50 % проти попереднього запису → False + сигнал. Свідоме звуження — видалити supplier_dropt.json на VPS."""
     try:
-        prev = json.loads(Path(out).read_text(encoding="utf-8")).get("items") or {}
+        doc = json.loads(Path(out).read_text(encoding="utf-8"))
+        prev = doc.get("items") or {}
+        age = now_ts - datetime.fromisoformat(str(doc.get("updated")).replace("Z", "+00:00")).timestamp() if now_ts else 0
     except (OSError, ValueError, TypeError, AttributeError):
         return True
     if not isinstance(prev, dict) or not prev:
         return True
+    if age > STALE_RELEASE_S:
+        return True                        # попередній запис давній (≥12 год): легітимну зміну (сезон, зняття розділу) приймаємо — гард не тримає файл вічно
     why = None
     if len(prev) >= 50 and len(items) < len(prev) * MIN_KEEP_RATIO:
         why = f"усього {len(items)} проти {len(prev)}"
@@ -222,13 +284,47 @@ def _sig(images):
     return hashlib.sha1("|".join(images[:MAX_IMAGES]).encode("utf-8")).hexdigest()[:12]
 
 
-def run_once(urls=None, cache=None, fetch=None, out=None, cache_path=None, img_dir=None, fetch_img=rt.fetch_image, now=None, workers=1, budget_s=None, time_budget=DETAIL_TIME_BUDGET_S, clock=time.monotonic, check_disk=False):
+def fetch_image(url, dest):
+    """Як rt_supplier_export.fetch_image, але з нашим User-Agent (аудит #1099: фото ходили зі стандартним python-requests)."""
+    if rt._on_disk(dest):
+        return True
+    try:
+        import io
+        import requests
+        from PIL import Image
+        if not str(url).startswith(("http://", "https://")):
+            return False
+        r = requests.get(url, timeout=rt.IMG_TIMEOUT, stream=True, headers={"User-Agent": dp.USER_AGENT})
+        r.raise_for_status()
+        body = r.raw.read(rt.IMG_MAX_BYTES + 1, decode_content=True)
+        if len(body) > rt.IMG_MAX_BYTES:
+            raise ValueError("фото завелике")
+        im = Image.open(io.BytesIO(body))
+        if im.mode in ("RGBA", "LA", "P"):
+            im = im.convert("RGBA")
+            bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+            bg.alpha_composite(im)
+            im = bg
+        im = im.convert("RGB")
+        im.thumbnail((rt.IMG_MAX_SIDE, rt.IMG_MAX_SIDE))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".tmp")
+        im.save(tmp, "JPEG", quality=85, optimize=True)
+        os.replace(tmp, dest)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[dropt_export] фото не отримано {str(url)[:80]}: {type(e).__name__}", file=sys.stderr)
+        return False
+
+
+def run_once(urls=None, cache=None, fetch=None, out=None, cache_path=None, img_dir=None, fetch_img=None, now=None, workers=1, budget_s=None, time_budget=DETAIL_TIME_BUDGET_S, clock=time.monotonic, check_disk=False):
     """True — файл записано. Збій мережі/sitemap, усадка, порожній результат → попередній файл лишається, False."""
     out, img_dir = Path(out or OUT_FILE), Path(img_dir or IMG_DIR)
     now = now or datetime.now(timezone.utc)
     now_ts = now.timestamp()
     try:
         fetch = fetch or dp.make_fetch()
+        fetch_img = fetch_img or fetch_image
         if urls is None:
             try:
                 urls = dp.parse_sitemap(fetch(SITEMAP_URL, timeout=120) if _accepts_timeout(fetch) else fetch(SITEMAP_URL))
@@ -241,15 +337,15 @@ def run_once(urls=None, cache=None, fetch=None, out=None, cache_path=None, img_d
         cache = load_cache(cache_path) if cache is None else cache
         st = refresh(urls, cache, fetch, now_ts, time_budget, clock, save=lambda c: save_cache(c, cache_path))
         live = set(urls)
-        for u in [u for u in cache if u not in live]:
-            del cache[u]                      # адреси, яких уже нема в sitemap
+        for u in [u for u in cache if u not in live and now_ts - float((cache[u] or {}).get("fetched_at") or (cache[u] or {}).get("try_at") or 0) > PRUNE_AFTER_S]:
+            del cache[u]                      # адреси, яких нема в sitemap УЖЕ понад 3 доби (усічений sitemap на годину не стирає кеш на 7 770 сторінок)
         save_cache(cache, cache_path)
         if st["aborted"]:
             _alert("dropt_export_down", f"⚠️ dropt_supplier_export: {MAX_CONSEC_ERRORS} збоїв читання поспіль — Dropt недоступний? Читання зупинено (прочитано {st['read']}), файл не перезаписується.")
             return False
         cand = []
         for u, e in cache.items():
-            if is_selected(e) and e.get("in_stock") and now_ts - float(e.get("fetched_at") or 0) <= ITEM_MAX_AGE_S and e.get("images"):
+            if is_selected(e) and e.get("in_stock") and 0 <= now_ts - float(e.get("fetched_at") or 0) <= ITEM_MAX_AGE_S and e.get("images"):
                 e = dict(e, url=u)
                 cand.append(("dropt-" + e["sku"], e, cache[u]))
         tasks = []
@@ -284,6 +380,7 @@ def run_once(urls=None, cache=None, fetch=None, out=None, cache_path=None, img_d
                             rejected.append(str(e.get("name") or "")[:50])
                     continue
                 it["index"] = sid in index_set
+                it["checked_at"] = int(e.get("fetched_at") or 0)        # коли саме прочитано ціну/наявність цієї картки (споживач сам вирішує, що вважати застарілим)
                 items[sid] = it
             return items, skipped
 
@@ -293,16 +390,16 @@ def run_once(urls=None, cache=None, fetch=None, out=None, cache_path=None, img_d
         else:
             # проміжний запис із фото, що вже на диску: картки з готовими фото не чекають докачування (прогін, убитий таймаутом юніта, не лишає файл старим)
             first, _s = build_all(disk)
-            if first and out_guard_ok(out, first):
-                rt._write_json(out, first, now, len(urls))
+            if first and out_guard_ok(out, first, now_ts):
+                write_file(out, first, now, len(urls))
             got = {**disk, **rt.prefetch(todo, fetch_img, workers, budget_s)}
         items, skipped = build_all(got)
         if not items:
             _alert("dropt_export_none", f"⚠️ dropt_supplier_export: жодної картки не зібрано (кандидатів {len(cand)}, прочитано сторінок {st['read']}) — supplier_dropt.json НЕ оновлено.")
             return False
-        if not out_guard_ok(out, items):
+        if not out_guard_ok(out, items, now_ts):
             return False
-        rt._write_json(out, items, now, len(urls))
+        write_file(out, items, now, len(urls))
         _prune_images(img_dir, {f"dropt-{e['sku']}" for e in cache.values() if is_selected(e) and e.get("in_stock")}, now_ts)
         unread = sum(1 for u in urls if u not in cache)
         print(f"[dropt_export] ✅ {len(items)} карток у файлі (кандидатів {len(cand)}, відсіяно правилами {skipped}{": " + "; ".join(rejected) if rejected else ""}); сторінок: прочитано цього разу {st['read']}, збоїв {st['errors']}, ще не читано {unread}")

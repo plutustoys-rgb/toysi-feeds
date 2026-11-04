@@ -295,7 +295,7 @@ MUTATIONS = [
     ("A1 правило Apache без умови «ключ є в мапі» (gid поза мапою дав би порожній редірект)", "script", lambda s: mutate(s, "    RewriteCond ${grpredir:$1|-} !=-\n", "")),
     ("A2 правило Apache без опційного мовного префікса", "script", lambda s: mutate(s, "RewriteRule ^/(?:(?:ua|ru)/)?g([0-9]+)- ${grpredir:$1}", "RewriteRule ^/g([0-9]+)- ${grpredir:$1}")),
     ("A3 catch-all /catalog.html стоїть ПЕРЕД правилом з мапи", "script", lambda s: mutate(s, SWAP_CATCH, "").replace('    RewriteMap grpredir', SWAP_CATCH + '    RewriteMap grpredir')),
-    ("A4 без QSD (?query Prom тягнеться на категорію)", "script", lambda s: mutate(s, "[R=301,L,QSD]", "[R=301,L]")),
+    ("A4 без QSD (?query Prom тягнеться на категорію)", "script", lambda s: mutate(s, "${grpredir:$1} [R=301,L,QSD]", "${grpredir:$1} [R=301,L]")),
     ("A5 gid не прив'язано до повного числа (g[0-9]+ без дефіса)", "script", lambda s: mutate(s, "RewriteRule ^/(?:(?:ua|ru)/)?g([0-9]+)- ${grpredir:$1}", "RewriteRule ^/(?:(?:ua|ru)/)?g([0-9]+) ${grpredir:$1}")),
     ("A6 sub() не підставляє @GROUPMAPFILE@", "script", lambda s: mutate(s, ' -e "s#@GROUPMAPFILE@#$GROUPMAP#g"', "")),
     ("A7 проба групи не ставить bad=1 (відкат не спрацює)", "script", lambda s: mutate(s, "(/ua/g${gp_key}-…) веде не на свою категорію ($gp_ua, очікую $gp_exp)\"; bad=1; }",

@@ -238,44 +238,24 @@
    "zaliznytsi-i-treky",
    "mashynky-na-batarey-kakh",
    "mashynky-ru",
-   "litaky-i-vertoloty",
-   "mashynky"
+   "litaky-i-vertoloty"
   ],
   "mashynky-na-batarey-kakh": [
    "plastykovi-mashynky",
    "spetstekhnika",
    "zaliznytsi-i-treky",
    "mashynky-ru",
-   "litaky-i-vertoloty",
-   "mashynky"
+   "litaky-i-vertoloty"
   ],
   "mashynky-ru": [
    "plastykovi-mashynky",
    "spetstekhnika",
    "zaliznytsi-i-treky",
    "mashynky-na-batarey-kakh",
-   "litaky-i-vertoloty",
-   "mashynky"
+   "litaky-i-vertoloty"
   ],
   "spetstekhnika": [
    "plastykovi-mashynky",
-   "zaliznytsi-i-treky",
-   "mashynky-na-batarey-kakh",
-   "mashynky-ru",
-   "litaky-i-vertoloty",
-   "mashynky"
-  ],
-  "mashyny-hihanty": [
-   "plastykovi-mashynky",
-   "spetstekhnika",
-   "zaliznytsi-i-treky",
-   "mashynky-na-batarey-kakh",
-   "mashynky-ru",
-   "litaky-i-vertoloty"
-  ],
-  "mashynky": [
-   "plastykovi-mashynky",
-   "spetstekhnika",
    "zaliznytsi-i-treky",
    "mashynky-na-batarey-kakh",
    "mashynky-ru",
@@ -286,16 +266,14 @@
    "spetstekhnika",
    "mashynky-na-batarey-kakh",
    "mashynky-ru",
-   "litaky-i-vertoloty",
-   "mashynky"
+   "litaky-i-vertoloty"
   ],
   "litaky-i-vertoloty": [
    "plastykovi-mashynky",
    "spetstekhnika",
    "zaliznytsi-i-treky",
    "mashynky-na-batarey-kakh",
-   "mashynky-ru",
-   "mashynky"
+   "mashynky-ru"
   ],
   "pisochni-nabory": [
    "mylni-bulbashky",
@@ -482,14 +460,6 @@
    "dytiachyy-posud"
   ],
   "nahrudnyky-ta-slyniavchyky": [
-   "knyhy-dlia-maliat",
-   "sosky-i-prorizuvachi",
-   "dereviani-vkladyshi",
-   "dlia-maliukiv",
-   "briazkaltsia",
-   "dytiachyy-posud"
-  ],
-  "khodunky": [
    "knyhy-dlia-maliat",
    "sosky-i-prorizuvachi",
    "dereviani-vkladyshi",

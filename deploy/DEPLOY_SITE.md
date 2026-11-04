@@ -9,6 +9,7 @@
 > (Let's Encrypt віддає перевагу IPv6; залишений AAAA на Prom зламає валідацію). Скрипт чекає, поки ВСІ публічні резолвери дадуть лише наш IP.
 > Старі Prom-URL (`/ua/p<id>-…`) → 301 через `RewriteMap txt:` (`prom_redirects_apache.map`, генерує `generate_prom_redirects.py`). Prom-ID, якого немає в мапі → **410 Gone** (з 11.10.2026; не 301 на каталог).
 > Старі URL груп Prom (`/g<gid>-<slug>`, з `/ua`/`/ru` або без): gid є в мапі `prom_group_redirects_apache.map` (генерує той самий `generate_prom_redirects.py` з `prom_group_to_category.json`; категорія мусить існувати в збірці як `site/category-<slug>.html`) → **301 на `/category-<slug>.html`**; решта (null-категорія, невідомий gid) → 301 на `/catalog.html`, як було. Скрипт активації перевіряє це пробами й відкочує vhost при розбіжності. Правила Apache змінюються лише повторним запуском `activate_site_apache.sh` власником.
+> Злиті категорії сайту (04.11.2026): `/category-<старий>.html` і `/category-<старий>_N.html` → **301 на `/category-<приймач>.html`** за мапою `category_moves_apache.map` (генерує `generate_prom_redirects.py` з `site/category_moves.json`; приймач мусить існувати в збірці). Порожня/відсутня мапа — правило не діє (скрипт створює порожній файл, бо RewriteMap без файла валить configtest).
 
 Код автодеплоїться в `/opt/plutustoys` (read-only pull master, `vps_code_sync.sh`), тож ці
 файли вже там. Нижче — **одноразові** привілейовані кроки (systemd/nginx/TLS/DNS + бойові

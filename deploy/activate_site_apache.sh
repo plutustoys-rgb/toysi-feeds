@@ -31,6 +31,7 @@ WEBUZO_VH="$CONFD/webuzoVH.conf"
 WEBROOT=/var/webuzo-data/www                  # той самий webroot ACME, що в прецеденті Vartov
 MAPFILE="$APP/prom_redirects_apache.map"
 GROUPMAP="$APP/prom_group_redirects_apache.map"   # старі URL груп Prom /g<gid>-… → /category-<slug>.html (generate_prom_redirects.py; 12.10.2026)
+CATMOVESMAP="$APP/category_moves_apache.map"      # злиття категорій сайту: /category-<старий>[_N].html → /category-<приймач>.html (generate_prom_redirects.py з site/category_moves.json; 04.11.2026)
 MIN_MAP_LINES="${MIN_MAP_LINES:-500}"
 WAIT_DNS_MIN="${WAIT_DNS_MIN:-180}"
 LE_EMAIL="${LE_EMAIL:-plutustoys@gmail.com}"
@@ -120,6 +121,15 @@ fi
 GRPLINES=$(grep -c '^[0-9]' "$GROUPMAP" 2>/dev/null || true)
 GRPLINES=${GRPLINES:-0}
 echo "ℹ️  рядків у мапі груп Prom (gid -> /category-*.html): $GRPLINES"
+# мапа злиття категорій (04.11.2026): так само МУСИТЬ існувати (RewriteMap txt:). Порожня — не помилка: старі адреси категорій просто без 301.
+if [ ! -e "$CATMOVESMAP" ]; then
+    printf '# порожня мапа переїздів категорій (generate_prom_redirects.py не створив: нема site/category_moves.json?) — /category-*.html без 301\n' > "$CATMOVESMAP"
+    chmod 644 "$CATMOVESMAP"
+    echo "⚠️  $CATMOVESMAP не створено генератором — поклав порожню (старі сторінки злитих категорій без 301)"
+fi
+CMLINES=$(grep -c '^[a-z0-9]' "$CATMOVESMAP" 2>/dev/null || true)
+CMLINES=${CMLINES:-0}
+echo "ℹ️  рядків у мапі переїздів категорій (старий slug -> приймач): $CMLINES"
 
 can_read() { su -s /bin/sh "$APUSER" -c "test -r '$1'" 2>/dev/null; }
 if ! can_read "$APP/site/index.html"; then
@@ -143,6 +153,10 @@ fi
 if ! can_read "$GROUPMAP"; then
     command -v setfacl >/dev/null 2>&1 && setfacl -m "u:$APUSER:r--" "$GROUPMAP" || true
     can_read "$GROUPMAP" || die "$APUSER не читає $GROUPMAP — Apache НЕ чіпано"
+fi
+if ! can_read "$CATMOVESMAP"; then
+    command -v setfacl >/dev/null 2>&1 && setfacl -m "u:$APUSER:r--" "$CATMOVESMAP" || true
+    can_read "$CATMOVESMAP" || die "$APUSER не читає $CATMOVESMAP — Apache НЕ чіпано"
 fi
 echo "✅ $APUSER читає $APP/site і мапи"
 for f in "$APP/.env" "$APP/orders.db"; do
@@ -229,6 +243,13 @@ cat <<'EOF'
     RewriteRule ^/(?:(?:ua|ru)/)?create_order_mobile - [G,L]
     # 16.10.2026 (власник): сторінка Halloween тепер /halloween.html — старий /helovin.html (+ пагінація helovin_N.html) → 301
     RewriteRule ^/helovin(_[0-9]+)?\.html$ /halloween$1.html [R=301,L]
+    # 04.11.2026 (злиття тонких категорій): старий slug Є в category_moves_apache.map (джерело — site/category_moves.json) → 301 на 1-шу сторінку приймача,
+    # і для /category-<старий>.html, і для пагінації /category-<старий>_N.html; ?query відкидаємо (QSD). Slug поза мапою (усі живі категорії) — правило не чіпає.
+    RewriteMap catmoved "txt:@CATMOVESMAPFILE@"
+    RewriteCond ${catmoved:$1|-} !=-
+    RewriteRule ^/category-([a-z0-9-]+)\.html$ /category-${catmoved:$1}.html [R=301,L,QSD]
+    RewriteCond ${catmoved:$1|-} !=-
+    RewriteRule ^/category-([a-z0-9-]+)_[0-9]+\.html$ /category-${catmoved:$1}.html [R=301,L,QSD]
     # 12.10.2026 (SEO-замовлення, GSC: 88 старих URL груп Prom /g<gid>-<slug> ≈40% показів): gid Є в prom_group_redirects_apache.map → 301 на /category-<slug>.html
     # (мовний префікс опційний, хвіст після «g<gid>-» довільний; QSD — ?query Prom не переноситься на сторінку категорії). gid поза мапою (null-категорія SEO, невідомий,
     # сторінка категорії зникла) → правило нижче, як було: /catalog.html. Мапа без дефолту: RewriteCond ... !=- пропускає лише знайдені ключі.
@@ -262,7 +283,7 @@ cat <<'EOF'
     </Directory>
 EOF
 }
-sub() { sed -e "s#@APP@#$APP#g" -e "s#@MAPFILE@#$MAPFILE#g" -e "s#@GROUPMAPFILE@#$GROUPMAP#g" -e "s#@WEBROOT@#$WEBROOT#g"; }
+sub() { sed -e "s#@APP@#$APP#g" -e "s#@MAPFILE@#$MAPFILE#g" -e "s#@GROUPMAPFILE@#$GROUPMAP#g" -e "s#@CATMOVESMAPFILE@#$CATMOVESMAP#g" -e "s#@WEBROOT@#$WEBROOT#g"; }
 
 render_vhost() {   # $1 = http | https  → у stdout
     local mode="$1"
@@ -396,6 +417,32 @@ write_vhost() {   # $1 = http | https
     [ "$gp_out" = "301 $sch2://$DOMAIN/catalog.html" ] || { echo "🚨 gid групи Prom поза мапою не веде 301 на /catalog.html ($gp_out)"; bad=1; }
     [ "$gp_ua" = "$gp_exp" ] || { echo "🚨 gid групи Prom з мапи (/ua/g${gp_key}-…) веде не на свою категорію ($gp_ua, очікую $gp_exp)"; bad=1; }
     [ "$gp_bare" = "$gp_exp" ] || { echo "🚨 gid групи Prom з мапи (/g${gp_key}-… без префікса, з ?query) веде не на свою категорію ($gp_bare, очікую $gp_exp; QSD не діє?)"; bad=1; }
+    # проба злиття категорій (04.11.2026): перший рядок мапи → /category-<старий>.html і /category-<старий>_2.html?query ведуть 301 на /category-<приймач>.html
+    # (без ?query — QSD); сторінка приймача сама НЕ редиректиться (200). Порожня мапа — пропуск. Хибний напрям / редирект живої сторінки = відкат.
+    local cm_key=""
+    local cm_val=""
+    local cm_exp=""
+    local cm_p1="ERR"
+    local cm_p2="ERR"
+    local cm_rcv="ERR"
+    cm_key=$(awk '/^[a-z0-9]/{print $1; exit}' "$CATMOVESMAP" 2>/dev/null || true)
+    cm_val=$(awk '/^[a-z0-9]/{print $2; exit}' "$CATMOVESMAP" 2>/dev/null || true)
+    if [ -n "$cm_key" ] && [ -n "$cm_val" ]; then
+        cm_exp="301 $sch2://$DOMAIN/category-$cm_val.html"
+        for try in 1 2 3; do
+            cm_p1=$(redir --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/category-$cm_key.html")
+            cm_p2=$(redir --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/category-${cm_key}_2.html?utm_probe=1")
+            cm_rcv=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/category-$cm_val.html")
+            [ "$cm_p1" = "$cm_exp" ] && [ "$cm_p2" = "$cm_exp" ] && [ "$cm_rcv" = "200" ] && break
+            echo "ℹ️  проба злиття категорій ще не збіглась (спроба $try/3): старий = $cm_p1, старий _2 = $cm_p2, приймач = $cm_rcv — чекаю"; sleep 4
+        done
+        echo "  злиття категорій: /category-$cm_key.html = $cm_p1, /category-${cm_key}_2.html?query = $cm_p2 (очікую $cm_exp); приймач = $cm_rcv (очікую 200)"
+        [ "$cm_p1" = "$cm_exp" ] || { echo "🚨 стара сторінка злитої категорії (/category-$cm_key.html) веде не на приймач ($cm_p1, очікую $cm_exp)"; bad=1; }
+        [ "$cm_p2" = "$cm_exp" ] || { echo "🚨 пагінація злитої категорії (/category-${cm_key}_2.html?query) веде не на 1-шу сторінку приймача ($cm_p2, очікую $cm_exp; QSD не діє?)"; bad=1; }
+        [ "$cm_rcv" = "200" ] || { echo "🚨 сторінка приймача /category-$cm_val.html віддає $cm_rcv, а не 200"; bad=1; }
+    else
+        echo "  злиття категорій: мапа $CATMOVESMAP порожня — пробу пропущено"
+    fi
     # власна проба нових правил (10.10.2026): «/» не зациклився на редіректі /index.html → /; /index.html → 301 на «/»; неіснуюча адреса → 404 (не 500).
     # Перевірка чужих сайтів вище цього НЕ бачить, а помилка в нашому правилі клала б саму головну.
     local sch="http"
@@ -473,6 +520,13 @@ if [ "$CERT_OK" = "0" ]; then
     [ "$HO1" = "410" ] && [ "$HO2" = "410" ] || die "старі Prom-шляхи /create_order_mobile не віддають 410 ($HO1, $HO2) — DNS НЕ переводити!"
     case "$HG0" in "301 "*"/catalog.html") ;; *) die "gid групи Prom поза мапою не веде 301 на /catalog.html ($HG0) — DNS НЕ переводити!";; esac
     if [ -n "$GRPKEY" ]; then case "$HG" in "301 "*"$GRPVAL") ;; *) die "301 групи Prom на категорію не працює ($HG) — DNS НЕ переводити!";; esac; fi
+    CMKEY=$(awk '/^[a-z0-9]/{print $1; exit}' "$CATMOVESMAP" 2>/dev/null || true)
+    CMVAL=$(awk '/^[a-z0-9]/{print $2; exit}' "$CATMOVESMAP" 2>/dev/null || true)
+    if [ -n "$CMKEY" ] && [ -n "$CMVAL" ]; then
+        HCM=$(redir $R "http://$DOMAIN/category-$CMKEY.html")
+        echo "  /category-$CMKEY.html : $HCM (очікую 301 …/category-$CMVAL.html — злита категорія)"
+        case "$HCM" in "301 "*"/category-$CMVAL.html") ;; *) die "301 злитої категорії на приймач не працює ($HCM) — DNS НЕ переводити!";; esac
+    fi
     echo ""
     echo "✅ ФАЗА C ГОТОВА: сайт працює на VPS по HTTP (чужі vhost'и не зачеплено). МОЖНА ПЕРЕВОДИТИ DNS:"
     echo "   у кабінеті Prom: A для @ та www -> $IP, AAAA (якщо є) — видалити. Онлайн-оплата (LiqPay) ще не підключена: prepaid покаже"
@@ -567,6 +621,8 @@ if [ "$CERT_OK" = "1" ]; then
     echo "  https /ru/p999999999999-x (очікую 410 Gone): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/p999999999999-x.html" 2>/dev/null || echo ERR)"
     FGK=$(awk '/^[0-9]/{print $1; exit}' "$GROUPMAP" 2>/dev/null || true)
     echo "  https /ru/g${FGK:-?}-x (група Prom → 301 на свою категорію): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/g${FGK:-0}-x" 2>/dev/null || echo ERR)"
+    FCM=$(awk '/^[a-z0-9]/{print $1; exit}' "$CATMOVESMAP" 2>/dev/null || true)
+    if [ -n "$FCM" ]; then echo "  https /category-$FCM.html (злита категорія → 301 на приймач): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/category-$FCM.html" 2>/dev/null || echo ERR)"; fi
     certbot renew --dry-run --cert-name "$DOMAIN" >/dev/null 2>&1 && echo "✅ certbot renew --dry-run для $DOMAIN ОК" || echo "⚠️  certbot renew --dry-run для $DOMAIN НЕ пройшов — перевір /var/log/letsencrypt/letsencrypt.log"
     echo ""
     echo "🎉 ГОТОВО: https://$DOMAIN працює. Далі (не тут): LiqPay-ключі в $APP/.env, SYSTEM_MAP, GMC."

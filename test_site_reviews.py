@@ -117,9 +117,9 @@ XSS_TEXT = 'Чудово! <script>alert(1)</script> "лапки" </script><!-- &
 XSS_AUTHOR = '</script><b>"Х"'
 many = [{"rating": 5 if d % 2 else 4, "text": f"Відгук номер {d}", "author": f"Автор {d}", "date": f"2026-10-{d:02d}"} for d in range(1, 13)]   # 12 записів, порядок — від старих (перевіряємо сортування)
 entries = {
-    "101": [{"rating": 5, "text": "  Дуже гарна машинка, дитина в захваті.  ", "author": "Олена", "date": "2026-11-10"},
-            {"rating": 4, "text": "Добре, але коробка пом'ята.\nДругий рядок.", "author": "", "date": "2026-11-09"},
-            {"rating": 4, "text": "Нормально", "date": "2026-11-08"}],
+    "101": [{"rating": 5, "text": "  Дуже гарна машинка, дитина в захваті.  ", "author": "Олена", "date": "2026-10-30"},
+            {"rating": 4, "text": "Добре, але коробка пом'ята.\nДругий рядок.", "author": "", "date": "2026-10-29"},
+            {"rating": 4, "text": "Нормально", "date": "2026-10-28"}],
     "102": [{"rating": 3, "text": XSS_TEXT, "author": XSS_AUTHOR, "date": "2026-11-01"}],
     "103": many,
     "104": [{"rating": 0, "text": "Нуль зірок", "author": "А", "date": "2026-11-01"},
@@ -133,9 +133,14 @@ entries = {
             {"rating": 5, "text": "Неіснуюча дата", "author": "А", "date": "2026-13-01"},
             {"rating": 5, "text": "Задовгий автор", "author": "Я" * 41, "date": "2026-11-01"},
             "не об'єкт",
+            {"rating": 5, "text": "Дата з майбутнього", "author": "А", "date": "2099-01-01"},
+            {"rating": 5, "text": "\u200b\u200b \u200b\ufeff\u2060 \u200c\u200d", "author": "А", "date": "2026-11-01"},
+            {"rating": 5, "text": "\u200bab\u200b", "author": "А", "date": "2026-11-01"},
             {"rating": 2, "text": "Єдиний валідний серед поганих", "author": "Петро", "date": "2026-11-02"}],
     "abc": [{"rating": 5, "text": "Нецифровий ключ", "author": "А", "date": "2026-11-01"}],
     "rt-77": [{"rating": 5, "text": "rt-ключ не приймаємо", "author": "А", "date": "2026-11-01"}],
+    "00101": [{"rating": 5, "text": "Ведучий нуль у ключі", "author": "А", "date": "2026-11-01"}],
+    "105": [{"rating": 4, "text": "Доставка швидка, за 200 грн — нормально", "author": "Марія", "date": "2026-10-20"}],
     "999999": [{"rating": 5, "text": "Товару нема в збірці", "author": "А", "date": "2026-11-01"}],
 }
 data = json.loads(payload(entries))
@@ -158,7 +163,7 @@ chk("б: JSON-LD aggregateRating: ratingValue \"4.3\", reviewCount \"3\", bestRa
 rv = (ld101 or {}).get("review") or []
 chk("б: JSON-LD review — 3 записи Review з author Person, datePublished, reviewRating (Rating, bestRating 5), reviewBody — ті самі, що на сторінці",
     len(rv) == 3 and all(r["@type"] == "Review" and r["author"]["@type"] == "Person" and r["reviewRating"]["@type"] == "Rating" and r["reviewRating"]["bestRating"] == "5" for r in rv)
-    and [r["reviewRating"]["ratingValue"] for r in rv] == ["5", "4", "4"] and [r["datePublished"] for r in rv] == ["2026-11-10", "2026-11-09", "2026-11-08"]
+    and [r["reviewRating"]["ratingValue"] for r in rv] == ["5", "4", "4"] and [r["datePublished"] for r in rv] == ["2026-10-30", "2026-10-29", "2026-10-28"]
     and rv[0]["reviewBody"] == "Дуже гарна машинка, дитина в захваті." and rv[0]["author"]["name"] == "Олена" and rv[2]["author"]["name"] == "Покупець")
 chk("б: без shippingDetails у розмітці", "shippingDetails" not in h101)
 chk("б: середня — half-up з 1 знаком (4,4,4,5 → 4.3; 5,4 → 4.5; 1 → 1.0; 5×10 → 5.0)",
@@ -167,7 +172,7 @@ chk("б: середня — half-up з 1 знаком (4,4,4,5 → 4.3; 5,4 → 
 chk("б: OOS-картка без відгуків лишається без блоку", 'id="reviews"' not in rd(out, "product-301.html"))
 
 # в) товар без відгуків — сторінка та сама, що в базовій збірці (і жодного aggregateRating/review)
-no_rev = [f for f in PIDS if f not in ("product-101.html", "product-102.html", "product-103.html", "product-104.html")]
+no_rev = [f for f in PIDS if f not in ("product-101.html", "product-102.html", "product-103.html", "product-104.html", "product-105.html")]
 chk("в: товари без відгуків — без aggregateRating/review/блоку", all("aggregateRating" not in rd(out, f) and '"review"' not in rd(out, f) and 'id="reviews"' not in rd(out, f) for f in no_rev))
 same = [f for f in no_rev if rd(out, f) != rd(base, f)]
 chk("а/в: картки без відгуків БАЙТ-У-БАЙТ як у збірці без файлу (крім сітки «Схожих» — її теж не змінено)", not same)
@@ -176,12 +181,18 @@ chk("а: службові сторінки (головна/каталог/кош
 
 # г) невалідні записи
 h104 = rd(out, "product-104.html")
-chk("г: з 12 записів 104 показано лише 1 валідний", h104.count('<li class="rv"') == 1 and "Єдиний валідний серед поганих" in h104 and '"reviewCount": "1"' in h104)
-for bad in ("Нуль зірок", "Шість зірок", "Рядок замість числа", "bool замість числа", "Не-ISO дата", "Неіснуюча дата", "Задовгий автор"):
+chk("г: з 15 записів 104 показано лише 1 валідний", h104.count('<li class="rv"') == 1 and "Єдиний валідний серед поганих" in h104 and '"reviewCount": "1"' in h104)
+for bad in ("Нуль зірок", "Шість зірок", "Рядок замість числа", "bool замість числа", "Не-ISO дата", "Неіснуюча дата", "Задовгий автор", "Дата з майбутнього", "2099"):
     chk(f"г: невалідний запис «{bad}» не показано", bad not in h104)
 warn_lines = [ln for ln in err.splitlines() if "reviews.json: пропущено невалідних" in ln]
-chk("г: ОДНЕ зведене попередження: 11 невалідних записів + нецифрові ключі abc/rt-77",
-    len(warn_lines) == 1 and "записів 11" in warn_lines[0] and "'abc'" in warn_lines[0] and "'rt-77'" in warn_lines[0])
+chk("г: ОДНЕ зведене попередження: 14 невалідних записів (вкл. дату з майбутнього й текст із пробілів нульової ширини) + ключі abc/rt-77/00101",
+    len(warn_lines) == 1 and "записів 14" in warn_lines[0] and "'abc'" in warn_lines[0] and "'rt-77'" in warn_lines[0] and "'00101'" in warn_lines[0])
+chk("г: ключ із ведучим нулем (00101) не показано ніде", all("Ведучий нуль у ключі" not in rd(out, f) for f in PIDS))
+chk("г: текст лише з пробілів нульової ширини / <3 видимих символів — не показано", "\u200bab\u200b" not in h104 and h104.count('<li class="rv"') == 1)
+h105 = rd(out, "product-105.html")
+money_lines = [ln for ln in err.splitlines() if "у показаних відгуках є гроші/доставка" in ln]
+chk("г: гроші/доставка у відгуку — ОДНЕ попередження з id 105, відгук показано (не блокуємо)",
+    len(money_lines) == 1 and "'105'" in money_lines[0] and "'101'" not in money_lines[0] and "Доставка швидка, за 200 грн" in h105)
 chk("г: нецифровий ключ у вихід не потрапив (немає сторінки, нема тексту)", all("Нецифровий ключ" not in rd(out, f) for f in PIDS))
 chk("г: службовий ключ «_service» не рахується й не дає попередження про count", "_meta.count=" not in err and "_service" not in err)
 
@@ -211,6 +222,14 @@ chk(f"е: reviewCount \"10\", ratingValue з показаних 10 ({exp_avg}), 
 # ж) review.html
 hr = rd(out, "review.html")
 chk("ж: review.html — noindex", '<meta name="robots" content="noindex,follow">' in hr)
+chk("ж: review.html — <meta name=\"referrer\" content=\"no-referrer\"> у <head>", '<meta name="referrer" content="no-referrer">' in hr[:hr.index("</head>")])
+chk("ж: токен береться ЛИШЕ з фрагмента #t= (location.hash), не з query: URLSearchParams/get(\"t\") нема, location.search — лише у перевірці старого ?t= (→ «недійсне»)",
+    'exec(location.hash||"")' in hr and "URLSearchParams" not in hr and '.get("t")' not in hr
+    and re.findall(r"location\.search", hr) == ["location.search"] and 'if(/[?&]t=/.test(location.search)){bad();return;}' in hr)
+_urls = re.findall(r'(?:href|src|action)="([^"]*)"', hr)
+chk("ж: жодне посилання/ресурс сторінки (href/src/action) не містить t= чи #t", _urls and not any(re.search(r"[?&#]t=", u) for u in _urls))
+chk("ж: адреса чиститься (replaceState) і в терміналних станах (успіх/помилка), і після помилки POST",
+    'function say(s){f.hidden=true;st.textContent=s;st.hidden=false;clean();}' in hr and "btn.textContent=\"Надіслати відгук\";clean();}" in hr)
 sm = "".join((out / f).read_text(encoding="utf-8") for f in os.listdir(out) if f.startswith("sitemap") and f.endswith(".xml"))
 chk("ж: review.html немає в жодному sitemap", "review.html" not in sm and "sitemap.xml" in os.listdir(out))
 chk("ж: robots.txt — Disallow: /review.html", "Disallow: /review.html" in rd(out, "robots.txt"))
@@ -271,6 +290,14 @@ r, e = load(payload(good, exported_at="2026-11-01T12:00:00Z"), now=datetime(2026
 chk("з: exported_at старший за 7 діб → лише попередження, відгуки ЗАВАНТАЖЕНО", len(r.get("101", [])) == 3 and "старше 7 діб" in e and "fail-closed" not in e)
 r, e = load(payload(good, exported_at="2026-11-03T12:00:00Z"), now=datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc))
 chk("з: exported_at 6 діб — тихо", len(r.get("101", [])) == 3 and e == "")
+r, e = load(payload(good, exported_at="2026-11-11T12:00:01Z"), now=datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc))
+chk("з: exported_at у майбутньому (>1 доба) → лише попередження, відгуки ЗАВАНТАЖЕНО", len(r.get("101", [])) == 3 and "у майбутньому" in e and "fail-closed" not in e)
+r, e = load(payload(good, exported_at="2026-11-11T11:00:00Z"), now=datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc))
+chk("з: exported_at на <1 добу вперед (розбіжність годинників) — тихо", len(r.get("101", [])) == 3 and e == "")
+_fut = {"101": [{"rating": 5, "text": "Сьогоднішній за Києвом", "author": "А", "date": "2026-11-11"}, {"rating": 5, "text": "Завтрашній за Києвом", "author": "А", "date": "2026-11-12"}]}
+r, e = load(payload(_fut, exported_at="2026-11-10T22:30:00Z"), now=datetime(2026, 11, 10, 22, 30, 0, tzinfo=timezone.utc))
+chk("з: дата відгуку — за київською добою: 11.11 (у Києві вже 00:30 11.11) прийнято, 12.11 (майбутнє) відкинуто",
+    [x["text"] for x in r.get("101", [])] == ["Сьогоднішній за Києвом"] and "записів 1" in e)
 r, e = load(payload(good, exported_at="вчора"))
 chk("з: exported_at нечитабельне → лише попередження, відгуки ЗАВАНТАЖЕНО", len(r.get("101", [])) == 3 and "exported_at нема, нечитабельне" in e and "fail-closed" not in e)
 r, e = load(json.dumps({"_meta": {"count": 3}, **good}, ensure_ascii=False))

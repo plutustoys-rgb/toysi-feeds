@@ -9,5 +9,5 @@ User=root
 WorkingDirectory=/opt/plutustoys
 # КРИТИЧНО (CLAUDE.md): venv-python. supplier_dropt.json (з закупівельною ціною «Дроп» = cost) пишеться у /opt/plutustoys, ПОЗА DocumentRoot; права 0600. Лише читання публічного dropt.in.ua.
 ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/dropt_supplier_export.py
-TimeoutStartSec=2400
+TimeoutStartSec=2700
 Nice=10

@@ -65,7 +65,9 @@ chk("supplier_rt.json за замовчуванням лежить у корен
 gi = (HERE / ".gitignore").read_text(encoding="utf-8")
 chk("supplier_rt.json і site/img/rt/ у .gitignore", re.search(r"^/supplier_rt\.json\s*$", gi, re.M) is not None and re.search(r"^/site/img/rt/\s*$", gi, re.M) is not None)
 apa = (HERE / "deploy" / "activate_site_apache.sh").read_text(encoding="utf-8")
-chk("Apache забороняє віддавати supplier_rt.json навіть якщо його покладуть у site/", re.search(r'<FilesMatch "\^supplier_rt\\.json\$">\s*Require all denied', apa) is not None)
+chk("Apache забороняє віддавати supplier_rt.json навіть якщо його покладуть у site/", re.search(r'<FilesMatch "\^supplier_\(rt\|dropt\)\\.json\$">\s*Require all denied', apa) is not None)
+_fm = re.search(r'<FilesMatch "(\^supplier_[^"]+)">', apa)
+chk("той самий FilesMatch забороняє й supplier_dropt.json (там закупівельна ціна «Дроп» = cost; аудит #1099)", bool(_fm) and re.fullmatch(_fm.group(1), "supplier_rt.json") is not None and re.fullmatch(_fm.group(1), "supplier_dropt.json") is not None)
 js = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
 chk("замовлення з rt-позицією явно йде з payment_method=prepaid (app.js), навіть якщо радіо не обране", re.search(r'some\(function\(k\)\{ return /\^rt-/\.test\(k\); \}\)\) payment="prepaid"', js) is not None)
 bs.LIQPAY_LIVE = True

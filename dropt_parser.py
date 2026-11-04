@@ -45,9 +45,11 @@ def make_fetch(session=None, delay=REQUEST_DELAY_S, retries=RETRIES):
             last[0] = time.monotonic()
             try:
                 r = s.get(url, headers={"User-Agent": USER_AGENT, "Accept-Language": "uk"}, timeout=timeout)
-                if (r.status_code >= 500 or r.status_code == 429) and attempt < retries:
-                    wait429 = 30 if r.status_code == 429 else 2 * (attempt + 1)      # 429 — довша пауза (аудит #1099)
-                    time.sleep(min(wait429, 60))
+                if r.status_code == 429 and attempt < 1:                  # ліміт Dropt: одна довга пауза, далі виняток (щоб 25 адрес поспіль не висіли по 30 с кожна)
+                    time.sleep(30)
+                    continue
+                if r.status_code >= 500 and attempt < retries:
+                    time.sleep(2 * (attempt + 1))
                     continue
                 r.raise_for_status()
                 return r.text

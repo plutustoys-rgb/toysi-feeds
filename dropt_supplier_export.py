@@ -41,6 +41,7 @@ OOS_REFRESH_S = 4 * 3600      # обрані товари НЕ в наявнос
 ITEM_MAX_AGE_S = 3 * 3600     # у файл — лише картки, ціну/наявність яких читали не давніше (довше — вважаємо невідомою; у кожної картки є checked_at)
 OTHER_TTL_S = 7 * 86400       # сторінки розділів (не-товари) перечитуємо раз на 7 діб
 FOREIGN_TTL_S = 30 * 86400    # товари поза 7 розділами — раз на 30 діб (розділ товару змінюється рідко; їх ≈5 300)
+GONE_TTL_S = 24 * 3600         # товар, що раніше був у каталозі, а тепер віддав 404/410, перевіряємо за добу (перехідний 404 не лишає картку без перевірки на 7 діб)
 PRUNE_AFTER_S = 3 * 86400     # скільки адреса може бракувати в sitemap, перш ніж її запис видаляється з кешу
 STALE_RELEASE_S = 12 * 3600   # гард усадки не тримає файл довше: якщо попередній запис старший — приймаємо нове (легітимне звуження, напр. Новий Рік після свят)
 SAVE_EVERY = 100              # кеш на диск кожні N сторінок: прогін, убитий таймаутом, не губить прогрес
@@ -139,32 +140,39 @@ def refresh(urls, cache, fetch, now_ts, time_budget=DETAIL_TIME_BUDGET_S, clock=
     Правила кешу (аудит #1099 п.A/B): розбір None на раніше відомому ТОВАРІ не перезаписує запис (збій розбору ≠ «не товар»; повтор за REFRESH_MIN_AGE_S);
     404/410 → запис gone/other із датою (не повторюється щоразу, не рахується мережевим збоєм); решта помилок оновлює лише `try_at` — мертва адреса не стоїть першою в черзі вічно.
     Повертає {"read": n, "errors": n, "parse_failures": n, "aborted": bool}."""
-    new, q_in, q_oos, q_other = [], [], [], []
+    new, q_in, q_oos, q_other, q_err = [], [], [], [], []
     for u in urls:
         e = cache.get(u)
         if not isinstance(e, dict):
             new.append(u)
             continue
-        try_at = float(e.get("try_at") or e.get("fetched_at") or 0)
         age = now_ts - float(e.get("fetched_at") or 0)
+        try_at = float(e.get("try_at") or e.get("fetched_at") or 0)
         since_try = now_ts - try_at
+        if age < 0 or since_try < 0:                              # годинник пішов назад/запис «з майбутнього» → вважаємо застарілим і перечитуємо (аудит #1099)
+            age, since_try = 1e12, 1e12
+        key = try_at if since_try < 1e11 else 0.0                  # черга — за давністю ОСТАННЬОЇ СПРОБИ: збійна адреса після спроби йде в кінець (аудит #1099, 3-й раунд п.1)
         if is_selected(e):
             if e.get("in_stock"):
                 if age > REFRESH_MIN_AGE_S and since_try > REFRESH_MIN_AGE_S:
-                    q_in.append((age, u))
+                    q_in.append((key, u))
             elif age > OOS_REFRESH_S and since_try > REFRESH_MIN_AGE_S:
-                q_oos.append((age, u))
+                q_oos.append((key, u))
         elif e.get("kind") == "product":
-            if age > FOREIGN_TTL_S and since_try > REFRESH_MIN_AGE_S:
-                q_other.append((age, u))
-        elif e.get("kind") in ("other", "gone"):
+            ttl = FOREIGN_TTL_S if e.get("top") else OOS_REFRESH_S      # без розділу (нема BreadcrumbList) — не «чужий», коротко
+            if age > ttl and since_try > REFRESH_MIN_AGE_S:
+                q_other.append((key, u))
+        elif e.get("kind") == "gone":
+            if age > GONE_TTL_S and since_try > REFRESH_MIN_AGE_S:
+                q_other.append((key, u))
+        elif e.get("kind") == "other":
             if age > OTHER_TTL_S and since_try > REFRESH_MIN_AGE_S:
-                q_other.append((age, u))
-        elif since_try > REFRESH_MIN_AGE_S:                    # kind=error (адреса, яку ще жодного разу не вдалося прочитати)
-            q_other.insert(0, (1e12, u))
-    for q in (q_in, q_oos, q_other):
-        q.sort(reverse=True)
-    queue = new + [u for _a, u in q_in] + [u for _a, u in q_oos] + [u for _a, u in q_other]
+                q_other.append((key, u))
+        elif since_try > REFRESH_MIN_AGE_S:                        # kind=error: адреса, яку ще жодного разу не вдалося прочитати
+            q_err.append((key, u))
+    for q in (q_in, q_oos, q_other, q_err):
+        q.sort()                                                   # найстарша остання спроба — першою
+    queue = new + [u for _a, u in q_in] + [u for _a, u in q_oos] + [u for _a, u in q_other] + [u for _a, u in q_err]
     t0, st, consec = clock(), {"read": 0, "errors": 0, "parse_failures": 0, "aborted": False}, 0
     for u in queue:
         if clock() - t0 > time_budget:
@@ -191,6 +199,8 @@ def refresh(urls, cache, fetch, now_ts, time_budget=DETAIL_TIME_BUDGET_S, clock=
                 st["aborted"] = True
                 break
             continue
+        if d is not None and not d.get("top") and prev and is_selected(prev):
+            d = None                                         # сторінка без BreadcrumbList на раніше ОБРАНОМУ товарі = збій розбору, а не «чужий розділ» (аудит #1099, 3-й раунд п.2)
         if d is None and prev and prev.get("kind") == "product":
             st["parse_failures"] += 1                        # сторінка раніше була товаром, а тепер без JSON-LD (заглушка/зміна верстки): старий запис лишаємо
             prev["try_at"] = now_ts
@@ -341,10 +351,11 @@ def run_once(urls=None, cache=None, fetch=None, out=None, cache_path=None, img_d
             del cache[u]                      # адреси, яких нема в sitemap УЖЕ понад 3 доби (усічений sitemap на годину не стирає кеш на 7 770 сторінок)
         save_cache(cache, cache_path)
         if st["aborted"]:
-            _alert("dropt_export_down", f"⚠️ dropt_supplier_export: {MAX_CONSEC_ERRORS} збоїв читання поспіль — Dropt недоступний? Читання зупинено (прочитано {st['read']}), файл не перезаписується.")
-            return False
+            _alert("dropt_export_down", f"⚠️ dropt_supplier_export: {MAX_CONSEC_ERRORS} збоїв читання поспіль — Dropt недоступний або частина адрес віддає помилки? Читання зупинено (прочитано {st['read']}); файл збираємо з того, що вже в кеші й свіже (ITEM_MAX_AGE_S).")
         cand = []
         for u, e in cache.items():
+            if u not in live:
+                continue                          # адреси, яких уже нема в sitemap, не публікуємо (їх запис ще 3 доби лежить у кеші лише на випадок усіченого sitemap)
             if is_selected(e) and e.get("in_stock") and 0 <= now_ts - float(e.get("fetched_at") or 0) <= ITEM_MAX_AGE_S and e.get("images"):
                 e = dict(e, url=u)
                 cand.append(("dropt-" + e["sku"], e, cache[u]))
@@ -401,7 +412,7 @@ def run_once(urls=None, cache=None, fetch=None, out=None, cache_path=None, img_d
             return False
         write_file(out, items, now, len(urls))
         _prune_images(img_dir, {f"dropt-{e['sku']}" for e in cache.values() if is_selected(e) and e.get("in_stock")}, now_ts)
-        unread = sum(1 for u in urls if u not in cache)
+        unread = sum(1 for u in urls if (cache.get(u) or {}).get("kind") in (None, "error"))
         print(f"[dropt_export] ✅ {len(items)} карток у файлі (кандидатів {len(cand)}, відсіяно правилами {skipped}{": " + "; ".join(rejected) if rejected else ""}); сторінок: прочитано цього разу {st['read']}, збоїв {st['errors']}, ще не читано {unread}")
         return True
     except Exception as e:  # noqa: BLE001

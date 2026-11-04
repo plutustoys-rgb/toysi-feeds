@@ -183,6 +183,45 @@ forn = {}
 ex.refresh(["https://dropt.in.ua/ua/f"], forn, lambda u: product("77", top="Автотовари", desc="Довгий опис " * 200), 1.0, time_budget=1e9)
 chk("товар поза 7 розділами: мінімальний запис (без опису/фото/ціни) — кеш не роздувається", forn["https://dropt.in.ua/ua/f"] == {"kind": "product", "fetched_at": 1.0, "sku": "77", "top": "Автотовари", "in_stock": False})
 
+# ---- 3-й раунд аудиту #1099 ----
+T0 = 5_000_000.0
+tail = {f"https://dropt.in.ua/ua/ok{i}": {"kind": "product", "fetched_at": T0 - 7200 - i, "top": "Акустика", "in_stock": True, "sku": str(100 + i), "name": "Т", "price": 10.0, "images": ["https://x/y-1000x1000.webp"], "category": "Акустика"} for i in range(60)}
+bad_u = [f"https://dropt.in.ua/ua/bad{i}" for i in range(40)]
+for u in bad_u:
+    tail[u] = {"kind": "product", "fetched_at": T0 - 90000, "top": "Акустика", "in_stock": True, "sku": "9", "name": "Т", "price": 10.0, "images": ["https://x/y-1000x1000.webp"], "category": "Акустика"}
+
+
+def f5xx(u):
+    if "/bad" in u:
+        raise OSError("500")
+    return product(u.rsplit("ok", 1)[1] if "/ok" in u else "1")
+
+
+st = ex.refresh(list(tail), tail, f5xx, T0, time_budget=1e9)
+chk("стійкі 5xx на 40 найстаріших адресах: прогін aborted (сигнал), але далі НЕ вічно першими — після спроби йдуть у кінець черги", st["aborted"] and all(tail[u]["try_at"] == T0 for u in list(tail) if u in bad_u and "try_at" in tail[u]))
+calls.clear()
+st = ex.refresh(list(tail), tail, lambda u: (calls.append(u) or f5xx(u)), T0 + 3000, time_budget=1e9)
+chk("наступний прогін спершу читає ще не пробувані адреси (не тих, що вже збоїли), прогрес є", len(calls) > 0 and calls[0] not in bad_u[:ex.MAX_CONSEC_ERRORS])
+cp3 = {}
+ex.refresh(["https://dropt.in.ua/ua/sel"], cp3, lambda u: product("6001"), T0, time_budget=1e9)
+ex.refresh(["https://dropt.in.ua/ua/sel"], cp3, lambda u: product("6001").replace("BreadcrumbList", "Nothing"), T0 + 7200, time_budget=1e9)
+chk("сторінка БЕЗ BreadcrumbList на раніше обраному товарі = збій розбору: запис лишається обраним (не «чужий розділ» на 30 діб)", ex.is_selected(cp3["https://dropt.in.ua/ua/sel"]) and cp3["https://dropt.in.ua/ua/sel"]["try_at"] == T0 + 7200)
+cp4 = {}
+ex.refresh(["https://dropt.in.ua/ua/nb"], cp4, lambda u: product("6002").replace("BreadcrumbList", "Nothing"), T0, time_budget=1e9)
+calls.clear()
+ex.refresh(["https://dropt.in.ua/ua/nb"], cp4, lambda u: (calls.append(u) or product("6002")), T0 + 5 * 3600, time_budget=1e9)
+chk("нова сторінка без розділу (top пустий): перечитується за ≈4 год, а не за 30 діб", cp4["https://dropt.in.ua/ua/nb"]["top"] == "Товари для дітей" and len(calls) == 1)
+gone = {"https://dropt.in.ua/ua/g": {"kind": "product", "fetched_at": T0, "top": "Акустика", "in_stock": True, "sku": "7"}}
+ex.refresh(list(gone), gone, f404, T0 + 3600, time_budget=1e9)
+chk("товар → 404/410: kind gone; через добу перечитується (не 7 діб)", gone["https://dropt.in.ua/ua/g"]["kind"] == "gone")
+calls.clear()
+ex.refresh(list(gone), gone, lambda u: (calls.append(u) or product("7")), T0 + 3600 + 90000, time_budget=1e9)
+chk("gone перечитується через ~24 год і повертається в обрані", len(calls) == 1 and ex.is_selected(gone["https://dropt.in.ua/ua/g"]))
+fut = {"https://dropt.in.ua/ua/fu": {"kind": "product", "fetched_at": T0 + 10 ** 6, "top": "Акустика", "in_stock": True, "sku": "8"}}
+calls.clear()
+ex.refresh(list(fut), fut, lambda u: (calls.append(u) or product("8")), T0, time_budget=1e9)
+chk("запис «з майбутнього» (годинник пішов назад) вважається застарілим і перечитується", len(calls) == 1 and fut["https://dropt.in.ua/ua/fu"]["fetched_at"] == T0)
+
 # ---- end-to-end ----
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
@@ -240,6 +279,19 @@ with tempfile.TemporaryDirectory() as td:
     ex.run_once(urls=many, fetch=lambda u: html4[u], out=out, cache_path=cp, img_dir=imgd, fetch_img=fake_img, now=datetime(2026, 11, 4, 16, 0, tzinfo=timezone.utc))
     chk("Dropt змінив фото → старі dropt-<sku>-N.jpg прибрано, лишилось одне нове", sorted(p.name for p in imgd.glob("dropt-2010-*.jpg")) == ["dropt-2010-1.jpg"])
     ex.INDEX_FILE = saved_idx
+
+with tempfile.TemporaryDirectory() as td3:
+    td3 = Path(td3)
+    many3 = [f"https://dropt.in.ua/ua/q{i}" for i in range(ex.MIN_SITEMAP_URLS)]
+
+    def tail_down(u):
+        if int(u.rsplit("q", 1)[1]) >= ex.MIN_SITEMAP_URLS - 40:
+            raise OSError("500")
+        return product(str(8000 + int(u.rsplit("q", 1)[1])), name="Товар • Х", price="50", top="Акустика")
+
+    ok3 = ex.run_once(urls=many3, fetch=tail_down, out=td3 / "s.json", cache_path=td3 / "c.json", img_dir=td3 / "img", fetch_img=lambda url, dest: (dest.parent.mkdir(parents=True, exist_ok=True), dest.write_bytes(b"j"), True)[2], now=NOW)
+    n3 = len(json.loads((td3 / "s.json").read_text(encoding="utf-8"))["items"]) if (td3 / "s.json").exists() else -1
+    chk("40 адрес на хвості віддають 5xx: файл усе одно записано з тих, що прочитано (aborted лише сигналить; аудит #1099, 3-й раунд п.1)", ok3 is True and n3 == ex.MIN_SITEMAP_URLS - 40)
 
 with tempfile.TemporaryDirectory() as td2:
     gf = Path(td2) / "s.json"

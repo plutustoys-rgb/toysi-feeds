@@ -149,6 +149,24 @@ r, e = load({"dropt-12a": good("dropt-12a"), "dropt-١٢": good("dropt-١٢"), "
              "dropt-13": good("dropt-13", name={"x": 1})})
 chk("поганий id (не dropt-<ASCII-цифри>) / не об'єкт / нема назви / ціна 0 або bool / від'ємний залишок → ні, голосно", r == {} and "supplier_dropt.json: не опубліковано" in e and "id" in e)
 
+# аудит, знахідка 4: суворі price/stock (лише int або float без дробу; межі), назва (довжина, керівні й bidi-символи), updated не з майбутнього
+r, e = load({"dropt-21": good("dropt-21", price="1890"), "dropt-22": good("dropt-22", price=1890.5), "dropt-23": good("dropt-23", price=1890.0), "dropt-24": good("dropt-24", price=1_000_001),
+             "dropt-25": good("dropt-25", price=1_000_000), "dropt-26": good("dropt-26", stock="3"), "dropt-27": good("dropt-27", stock=2.0), "dropt-28": good("dropt-28", stock=100_001),
+             "dropt-29": good("dropt-29", stock=3.5), "dropt-30": good("dropt-30", price=float("nan")), "dropt-31": good("dropt-31", stock=False), "dropt-32": good("dropt-32", price=-5),
+             "dropt-33": good("dropt-33", price=[1890]), "dropt-34": good("dropt-34", stock=0)})
+chk("price/stock: рядок/дріб/NaN/bool/список/від'ємне/понад межу (ціна 1 000 000, залишок 100 000) → ні; 1890.0, 2.0, рівно межа, залишок 0 → так (ціле int)",
+    set(r) == {"dropt-23", "dropt-25", "dropt-27", "dropt-34"} and r["dropt-23"]["site_price"] == 1890 and type(r["dropt-23"]["site_price"]) is int
+    and r["dropt-27"]["stock"] == 2 and type(r["dropt-27"]["stock"]) is int and "price/stock" in e)
+r, e = load({"dropt-41": good("dropt-41", name="А" * 300), "dropt-42": good("dropt-42", name="А" * 301), "dropt-43": good("dropt-43", name="Лялька\x07 дзвоник"),
+             "dropt-44": good("dropt-44", name="Лялька\nз переносом"), "dropt-45": good("dropt-45", name="Лялька ‮абв"), "dropt-46": good("dropt-46", name="Лялька ⁦x⁩"),
+             "dropt-47": good("dropt-47", name="Лялька\x00"), "dropt-48": good("dropt-48", name="Лялька \x7f"), "dropt-49": good("dropt-49", name="М'яка лялька «Соня» & друзі")})
+chk("назва: ≤300 → так, 301 → ні; керівні символи (Cc: \\x07, \\n, \\x00, \\x7f) і bidi U+202A–202E / U+2066–2069 → ні; звичайні лапки/апостроф/& → так",
+    set(r) == {"dropt-41", "dropt-49"} and "name" in e)
+r, e = load({"dropt-101": good("dropt-101")}, updated=now + timedelta(hours=2))
+chk("«updated» з майбутнього більш ніж на 1 год → файл відкинуто, голосно", r == {} and "майбутнього" in e)
+r, e = load({"dropt-101": good("dropt-101")}, updated=now + timedelta(minutes=30))
+chk("«updated» на 30 хв уперед (розбіжність годинників) → приймається", set(r) == {"dropt-101"} and e == "")
+
 for label, kw in (("файл застарів (4 доби > 3)", {"updated": now - timedelta(days=4)}),):
     r, e = load({"dropt-101": good("dropt-101")}, **kw)
     chk(f"{label} → порожньо, голосно", r == {} and "застарів" in e)
@@ -178,12 +196,14 @@ bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None
 bs.CATEGORY_GROUPS_FILE = str(tmp / "none.json")
 bs.SUPPLIER_RT_FILE = str(tmp / "no_rt.json")
 XSS_NAME = 'Іграшка <script>alert("n")</script> & «лапки» \' "'
+ENT_DESC = 'М\'який чохол & ремені "Isofix" — крісло для дітей від 9 до 36 кг, знімний чохол можна прати.'
 XSS_DESC = 'Гарна іграшка для дітей <img src=x onerror=alert(1)> </p><script>alert(2)</script> — довгий опис понад п\'ятдесят знаків, щоб не тонкий.'
 ITEMS = {"dropt-101": good("dropt-101"), "dropt-102": good("dropt-102", name="Акумуляторні батарейки АА 4 шт", category="Електроніка / Акумуляторні батарейки", cost=COST_F, price=150),
          "dropt-103": good("dropt-103", name=XSS_NAME, description=XSS_DESC, category="Електроніка / Акумуляторні батарейки"),
          "dropt-104": good("dropt-104", name="Застарілий товар", checked_at=NOW_TS - 8 * 3600), "dropt-105": good("dropt-105", name="Невідомий розділ", category="Акустика / Навушники"),
          "dropt-106": good("dropt-106", name="Чуже фото", images=["https://evil.example/a.jpg"]), "dropt-107": good("dropt-107", name="Гірлянда", category="Новий Рік / Новорічні гірлянди"),
-         "dropt-12x": good("dropt-12x", name="Поганий id")}
+         "dropt-12x": good("dropt-12x", name="Поганий id"),
+         "dropt-108": good("dropt-108", name="Автокрісло з базою", description=ENT_DESC)}
 
 
 def run_build(live, supplier_present):
@@ -270,6 +290,17 @@ chk("JSON-LD dropt: поля ті самі, що в картки Toysi (без �
     and ld["offers"]["price"] == "1890" and "shippingDetails" not in ld["offers"])
 ld103 = re.findall(r'<script type="application/ld\+json">(.*?)</script>', h103, re.S)
 chk("JSON-LD dropt-103: жодного сирого «<» усередині (XSS не виходить зі <script>)", ld103 and all("<" not in s for s in ld103))
+ld103p = next(x for x in (json.loads(s) for s in ld103) if x.get("@type") == "Product")
+chk("JSON-LD dropt-103: опис розкодований (у значенні «<script>», у сирому тексті — \\u003c), без «&lt;»", "<script>alert(2)" in ld103p["description"] and "&lt;" not in ld103p["description"])
+h108 = (out / "product-dropt-108.html").read_text(encoding="utf-8")
+ld108_raw = re.findall(r'<script type="application/ld\+json">(.*?)</script>', h108, re.S)
+ld108 = next(x for x in (json.loads(s) for s in ld108_raw) if x.get("@type") == "Product")
+chk("аудит, знахідка 3: JSON-LD description dropt — чисті символи (М'який, &, \"Isofix\"), без &#x27; / &amp; / &quot;", "М'який чохол & ремені \"Isofix\"" in ld108["description"]
+    and not any(s in "".join(ld108_raw) for s in ("&#x27;", "&amp;", "&quot;")))
+body108 = h108.split("</head>")[1]
+chk("…а в тілі сторінки опис і далі екранований (М&#x27;який … &amp; … &quot;Isofix&quot;)", "М&#x27;який чохол &amp; ремені &quot;Isofix&quot;" in body108)
+meta108 = re.search(r'<meta name="description" content="([^"]*)"', h108).group(1)
+chk("meta description dropt — шаблон із назвою (як rt), без подвійного екранування", "Автокрісло з базою" in meta108 and "&amp;amp;" not in meta108 and "&amp;#x27;" not in meta108)
 print()
 if F:
     print(f"FAILED ({len(F)}):")

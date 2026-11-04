@@ -733,6 +733,27 @@ SUPPLIER_DROPT_MAX_AGE_DAYS = SUPPLIER_RT_MAX_AGE_DAYS   # той самий п�
 DROPT_ITEM_MAX_AGE_H = 6                                 # checked_at картки старший (від моменту збірки) → картку не показуємо
 _DROPT_ID_RX = re.compile(r"dropt-[0-9]{1,12}")          # лише ASCII-цифри (\d пропустив би юнікод-цифри)
 _DROPT_VCODE_RX = re.compile(r"[0-9A-Za-z._-]{1,40}")
+DROPT_MAX_PRICE = 1_000_000          # ₴; більше — збій даних, а не товар
+DROPT_MAX_STOCK = 100_000
+DROPT_NAME_MAX = 300
+_DROPT_BIDI_RX = re.compile("[\u202a-\u202e\u2066-\u2069]")   # керування напрямком тексту (підміна вигляду назви)
+
+
+def _dropt_int(x, hi):
+    """Ціле 0..hi лише з int (не bool) або float без дробової частини (1890.0); рядок/дріб/bool/NaN/поза межами → None."""
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, float):
+        if not math.isfinite(x) or not x.is_integer():
+            return None
+        x = int(x)
+    return x if isinstance(x, int) and 0 <= x <= hi else None
+
+
+def _dropt_name_ok(name):
+    """Назва: рядок, непорожня, ≤ DROPT_NAME_MAX, без керівних символів (Cc) і bidi-керування."""
+    return (isinstance(name, str) and name.strip() != "" and len(name.strip()) <= DROPT_NAME_MAX
+            and not any(unicodedata.category(c) == "Cc" for c in name) and not _DROPT_BIDI_RX.search(name))
 
 
 def _load_dropt_index_ids():
@@ -776,6 +797,9 @@ def _load_supplier_dropt(site_cats, now=None):
     except (ValueError, TypeError):
         print("[build] ⚠ supplier_dropt.json: нема коректного «updated» — карток Dropt не буде", file=sys.stderr)
         return {}
+    if age < -1 / 24:
+        print("[build] ⚠ supplier_dropt.json: «updated» з майбутнього (> 1 год) — карток Dropt не буде (годинник/дані зіпсовані)", file=sys.stderr)
+        return {}
     if age > SUPPLIER_DROPT_MAX_AGE_DAYS:
         print(f"[build] ⚠ supplier_dropt.json застарів ({age:.1f} діб > {SUPPLIER_DROPT_MAX_AGE_DAYS}) — карток Dropt не буде (ціни/залишки не свіжі)", file=sys.stderr)
         return {}
@@ -800,17 +824,12 @@ def _load_supplier_dropt(site_cats, now=None):
             cat_name = cmap.get(_cat_raw.strip()) if isinstance(_cat_raw, str) else None
             _ca = v.get("checked_at")
             _ca_age_h = (now_ts - _ca) / 3600.0 if isinstance(_ca, (int, float)) and not isinstance(_ca, bool) and math.isfinite(_ca) else None
-            try:
-                if isinstance(v.get("price"), bool) or isinstance(v.get("stock"), bool):
-                    raise TypeError
-                price, stock = int(v.get("price")), int(v.get("stock"))
-            except (TypeError, ValueError, OverflowError):
-                price, stock = 0, -1
-            if not isinstance(v.get("name"), str) or not v["name"].strip():
+            price, stock = _dropt_int(v.get("price"), DROPT_MAX_PRICE), _dropt_int(v.get("stock"), DROPT_MAX_STOCK)
+            if not _dropt_name_ok(v.get("name")):
                 why = "name"
             elif not imgs:
                 why = "images"
-            elif price <= 0 or stock < 0:
+            elif price is None or price <= 0 or stock is None:
                 why = "price/stock"
             elif _ca_age_h is None or _ca_age_h > DROPT_ITEM_MAX_AGE_H or _ca_age_h < -0.25:
                 why = "checked_at"
@@ -2899,6 +2918,8 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     )
     # SEO: опис для сніпета (без HTML, ОБРІЗАНИЙ ПО СЛОВУ) + JSON-LD Product для Google Rich Results
     plain = re.sub(r"<[^>]+>", "", lead).strip()
+    if str(p["id"]).startswith("dropt-"):
+        plain = html.unescape(plain)   # dropt: опис екранований у _load_supplier_dropt (для тіла сторінки); у JSON-LD — чисті символи («<» там однаково стає \u003c)
     meta_desc = product_description(p["name"], p["price"], "" if p.get("rt") else plain)   # rt: опис постачальника — анкетний («ТИП: …; ВІК: …»), у сніпет не годиться
     if not in_stock:
         meta_desc = _cut(f"Немає в наявності: {p['name']}. Подивіться схожі іграшки в каталозі PlutusToys.", DESC_MAX)

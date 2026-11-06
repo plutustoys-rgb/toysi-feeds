@@ -303,6 +303,13 @@ def is_rt_id(pid) -> bool:
     return str(pid or "").strip().lower().startswith(RT_PREFIX)
 
 
+DROPT_PREFIX = "dropt-"
+
+
+def is_dropt_id(pid) -> bool:
+    return str(pid or "").strip().lower().startswith(DROPT_PREFIX)
+
+
 def is_zb_id(pid) -> bool:
     return str(pid or "").strip().lower().startswith("zb-")
 
@@ -509,6 +516,10 @@ def build_order(payload: dict) -> tuple:
             qty = int(it.get("qty", 0))
         except (TypeError, ValueError):
             qty = 0
+        if is_dropt_id(pid):
+            # Dropt (рішення власника 04.11: лише передплата, ТТН наша, замовлення в кабінеті Dropt): конвеєр замовлень ще НЕ збудований — купівля dropt- закрита ЗАВЖДИ,
+            # навіть якщо картки відкрито на сайті (SITE_DROPT_LIVE) чи id підробили в кошику (аудит #1104). Знімає цю відмову лише PR із конвеєром dropt (prepaid-only, склад fail-closed, свій маршрут).
+            raise OrderError("Цей товар поки що недоступний для замовлення")
         if pid not in pm:
             raise OrderError(f"Товар {pid} недоступний")
         if qty < 1 or qty > MAX_QTY_PER_ITEM:

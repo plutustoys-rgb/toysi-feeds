@@ -43,6 +43,7 @@ import nova_poshta
 import liqpay_client
 import site_promo
 import site_rejected_baskets
+import reviews_db
 from orders_db import get_group_children, get_connection, init_db, insert_order, get_order, mark_payment_confirmed, set_liqpay_payment_id, assign_public_number, PUBLIC_NUMBER_RE
 
 HOST = os.environ.get("SITE_API_HOST", "127.0.0.1")
@@ -844,6 +845,7 @@ class RateLimiter:
 
 
 _PAID_LIMITER = RateLimiter(PAID_RATE_LIMIT, PAID_RATE_WINDOW_S)
+_REVIEW_LIMITER = RateLimiter(int(os.environ.get("SITE_REVIEW_RATE_LIMIT", "20")), 60)      # POST api/review/form|review: запитів на IP за хвилину
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -930,7 +932,49 @@ class Handler(SimpleHTTPRequestHandler):
             return self._handle_order()
         if parsed.path == "/api/liqpay/callback":
             return self._handle_callback()
+        if parsed.path == "/api/review/form":
+            return self._handle_review_form()
+        if parsed.path == "/api/review":
+            return self._handle_review_submit()
         return self._json(404, {"error": "невідомий ендпоінт"})
+
+    # ── відгуки покупців (контракт: site/REVIEWS_CONTRACT.md; логіка й БД: reviews_db.py). Токен приходить ЛИШЕ в тілі POST (не в URL/Referer/логах Apache) і ніколи не друкується ──
+    def _handle_review_form(self):
+        """POST /api/review/form {"t": токен} → 200 {product_id, product_name} | 404 (нема/використаний/прострочений — причини не розрізняємо) | 429."""
+        if not _REVIEW_LIMITER.allow(self._client_ip()):
+            return self._json(429, {"error": "забагато запитів"}, no_store=True)
+        p = self._read_json()
+        token = p.get("t") if isinstance(p, dict) else None            # тіло не-об'єкт JSON ([1], "x", null) → 404, а не обрив з'єднання (аудит #1108)
+        try:
+            with get_connection() as conn:
+                info = reviews_db.form_info(conn, token)
+        except Exception as e:  # noqa: BLE001
+            print(f"[site_order_api] review/form: {type(e).__name__}", file=sys.stderr)
+            return self._json(500, {"error": "внутрішня помилка"}, no_store=True)
+        if not info:
+            return self._json(404, {"error": "посилання недійсне"}, no_store=True)
+        return self._json(200, {"product_id": info["product_id"], "product_name": ((price_map() or {}).get(info["product_id"]) or {}).get("name") or ""}, no_store=True)
+
+    def _handle_review_submit(self):
+        """POST /api/review {t, rating, text, author_name} → 200 {ok} | 400 поля (токен НЕ спалюється) | 404 недійсний | 409 уже використаний | 429."""
+        if not _REVIEW_LIMITER.allow(self._client_ip()):
+            return self._json(429, {"error": "забагато запитів"}, no_store=True)
+        p = self._read_json()
+        if not isinstance(p, dict):
+            p = {}
+        try:
+            with get_connection() as conn:
+                st, rid = reviews_db.submit(conn, p.get("t"), p.get("rating"), p.get("text"), p.get("author_name"))
+        except reviews_db.ReviewError as e:
+            return self._json(400, {"error": "перевірте оцінку й текст", "field": str(e)}, no_store=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[site_order_api] review/submit: {type(e).__name__}", file=sys.stderr)
+            return self._json(500, {"error": "внутрішня помилка"}, no_store=True)
+        if st == "invalid":
+            return self._json(404, {"error": "посилання недійсне"}, no_store=True)
+        if st == "used":
+            return self._json(409, {"error": "посилання вже використане"}, no_store=True)
+        return self._json(200, {"ok": True}, no_store=True)
 
     def _client_ip(self) -> str:
         """IP клієнта за Apache-проксі, інакше адреса сокета. Лише ключ для ліміту запитів. БЕРЕМО ОСТАННІЙ елемент X-Forwarded-For: його дописує наш Apache (mod_proxy_http додає адресу з'єднання в кінець),

@@ -355,3 +355,5 @@ site_rejected_baskets.jsonl
 reels_pending/
 # робоча тека знімка VPS (publish_vps_health_private.sh)
 .vps_health_git/
+/site/reviews.json
+/site/reviews.json.tmp

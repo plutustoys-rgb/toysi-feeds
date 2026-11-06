@@ -1387,41 +1387,126 @@ def _valid_gtin(code):
 
 
 # ── Однакові <h1> карток (SEO 06.11: 591 група з ІДЕНТИЧНОЮ назвою, 1 519 карток — різні товари, яким Toysi дала одну назву; title розведено «№id», h1 — ні) ──
-# Група = картки, чиї назви збігаються без регістру, розділових знаків і латинсько-кириличних двійників («MIC»/«МІС»). Для групи шукаємо ОДНЕ поле характеристик картки
-# (рядки «<b>Колір:</b> …» в описі Toysi; бренд — як у JSON-LD: зі специфікацій, інакше vendor), що є в КОЖНОЇ картки групи й попарно різне → h1 «{назва} — {поле}: {значення}»
-# (≤ H1_MAX у всіх картках групи; інакше наступне поле). Нема такого поля → « №id», як у title. Рішення залежить лише від складу групи (не від порядку).
+# Група = картки, чиї назви збігаються без регістру, розділових знаків, апострофів і латинсько-кириличних двійників («MIC»/«МІС»). Для групи шукаємо ОДНЕ поле з характеристик,
+# ПОКАЗАНИХ на сторінці картки (_shown_specs — ті самі ≤6 рядків «<b>Колір:</b> …», що друкує write_product), яке дає СПРАВЖНЄ розрізнення (аудит 06.11):
+#   • є в КОЖНОЇ картки групи, не узагальнене («різнобарвний», «мікс», «асорті», «інший»…), не повторює й не суперечить назві (колір при кольорі в назві, «120 ел.» у назві ≠ «150 ел.» у полі, розмір при розмірі в назві);
+#   • значення попарно різні ПІСЛЯ нормалізації (регістр/пробіли/розділові; «ел./елементів/деталей/шт» — одне; виміри без порядку «21 x 30» = «30 x 21»; бренд без пробілів/дефісів; ведуча «1 »).
+# Тоді h1 «{назва} — {поле}: {значення}» (≤ H1_MAX у всіх картках групи); інакше наступне поле; нема — « №id», як у title. Рішення залежить лише від складу групи (не від порядку).
 # Змінюється ЛИШЕ <h1>: title, JSON-LD name, alt фото, крихти, index.json/пошук/кошик — сира назва. Картки поза групами — байт-у-байт як раніше.
 PRODUCT_H1 = {}          # id → h1 (лише картки з груп однакових назв); заповнює build()
 H1_MAX = 120
-# (ключ характеристики в описі Toysi, підпис у h1) — у порядку пріоритету; габарити/вага В УПАКОВЦІ свідомо не беремо (для покупця це шум, не відмінність товару)
-H1_ATTRS = (("колір", "колір"), ("вік", "вік"), ("мова", "мова"), ("габарити без упаковки", "розмір"), ("матеріал", "матеріал"), ("комплектація", "комплектація"), ("бренд", "бренд"))
+# (ключ характеристики, підпис у h1) — у порядку пріоритету. Не беремо: габарити/вагу В УПАКОВЦІ (шум для покупця) і «вік» (у Toysi «16 років»/«96 років» — двозначно: від чи до).
+H1_ATTRS = (("колір", "колір"), ("мова", "мова"), ("габарити без упаковки", "розмір"), ("матеріал", "матеріал"), ("комплектація", "комплектація"), ("бренд", "бренд"))
 _H1_CONFUSABLE = str.maketrans("аеорсхуікмнвт", "aeopcxyikmhbt")   # після casefold: кирилиця, що виглядає як латиниця
-_H1_JUNK = frozenset({"-", "—", "–", "немає", "нема", "не вказано", "n/a", "unknown"})
+_H1_CTRL_RX = re.compile("[  ‪-‮⁦-⁩​-‏﻿]")   # розрив рядка/абзацу, bidi-керування, нульової ширини
+_H1_GENERIC_RX = re.compile(r"(?:різно|багато)(?:барв|кольор)\w*|мікс\w*|mix|асорті\w*|в асортименті|assort\w*|multicolou?r\w*|інш(?:ий|а|е|і)|різн(?:ий|і|а|е)|не вказано|немає|нема|n a|unknown")
+_H1_UNIT_RX = re.compile(r"(?<!\w)(?:ел|елем|елемент\w*|дет|детал\w*|шт|штук\w*|pcs)(?!\w)")
+_H1_DIM_RX = re.compile(r"\d+(?:[.,]\d+)?\s*[xх×*]\s*\d+(?:[.,]\d+)?(?:\s*[xх×*]\s*\d+(?:[.,]\d+)?)*")
+_H1_SIZE_IN_NAME_RX = re.compile(r"\d\s*(?:[xх×*]\s*\d|(?:см|мм|cm|mm)(?!\w))")
+_H1_COLOR_RX = re.compile(r"(?<!\w)(?:червон|син(?:ій|я|є|і|ього|ьої|ім|ьому|ю)(?!\w)|жовт|зелен|рожев|фіолет|помаранч|оранжев|блакит|біл(?:ий|а|е|і|ого|ої|им|ою|ому)(?!\w)|чорн|"
+                          r"сір(?:ий|а|е|і|ого|ої|им|ою|ому)(?!\w)|коричнев|бежев|бузков|бірюз|золот|срібл|салатов|малинов|бордов|голуб|мʼятн|м'ятн|лілов|персиков|корал|хакі|"
+                          r"(?:red|blue|green|yellow|pink|black|white|purple|orange|grey|gray)(?!\w))")
+
+
+def _shown_specs(parts):
+    """Характеристики, які write_product показує на картці: рядки «<b>X:</b> Y» опису (після вступу), не більше 6."""
+    return [_clean_desc(x) for x in parts[1:] if x.startswith("<b>") and "</b>" in x and ":" in x
+            and not x.rstrip().endswith("</b>")][:6]
 
 
 def _h1_key(s):
-    """Ключ порівняння «на око»: без регістру, розділових знаків і латинсько-кириличних двійників."""
-    s = unicodedata.normalize("NFKC", str(s or "")).casefold().translate(_H1_CONFUSABLE)
+    """Ключ порівняння «на око»: без регістру, апострофів, розділових знаків і латинсько-кириличних двійників."""
+    s = re.sub(r"[ʼ'’`]", "", unicodedata.normalize("NFKC", str(s or "")).casefold()).translate(_H1_CONFUSABLE)
     return " ".join(re.sub(r"[^\w]|_", " ", s).split())
 
 
+def _h1_clean(v):
+    """Значення для показу: без тегів, сутностей, керівних/невидимих символів і зайвих пробілів."""
+    v = html.unescape(re.sub(r"<[^>]+>", " ", v or ""))
+    v = "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in v)
+    return " ".join(_H1_CTRL_RX.sub("", v).split()).strip(" :;,.")
+
+
+def _h1_sem(v):
+    """Смислова нормалізація значення (до транслітерації двійників): регістр, апострофи, розділові, одиниці «ел./деталей/шт», ведуча «1 »."""
+    s = re.sub(r"[ʼ'’`]", "", unicodedata.normalize("NFKC", v).casefold())
+    s = " ".join(re.sub(r"[^\w]|_", " ", s).split())
+    s = re.sub(r"^1 ", "", _H1_UNIT_RX.sub("ел", s))
+    return s
+
+
+def _h1_vkey(label, v):
+    """Ключ унікальності значення в групі: виміри — відсортовані числа (порядок і «x/х/×» не важать), бренд — без пробілів/дефісів, решта — _h1_sem + двійники."""
+    m = _H1_DIM_RX.search(v.casefold())
+    if label == "розмір" and m:
+        nums = sorted(float(x.replace(",", ".")) for x in re.findall(r"\d+(?:[.,]\d+)?", m.group(0)))
+        return "dim:" + "x".join(f"{n:g}" for n in nums)
+    k = _h1_sem(v).translate(_H1_CONFUSABLE)
+    return k.replace(" ", "") if label == "бренд" else k
+
+
+_H1_TRANSLIT = str.maketrans({"а": "a", "б": "b", "в": "v", "г": "h", "ґ": "g", "д": "d", "е": "e", "є": "e", "ж": "zh", "з": "z", "и": "i", "і": "i", "ї": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+                              "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch", "ь": "", "ю": "iu", "я": "ia",
+                              "c": "k", "y": "i", "w": "v", "x": "ks"})
+
+
+def _h1_lev1(a, b):
+    """Відстань Левенштейна ≤ 1 (одна заміна/вставка/видалення)."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+    i = 0
+    while i < min(len(a), len(b)) and a[i] == b[i]:
+        i += 1
+    return a[i + 1:] == b[i + 1:] or a[i + 1:] == b[i:] or a[i:] == b[i + 1:]
+
+
+def _h1_same(label, a, b):
+    """Два значення — на ділі одне (несправжнє розрізнення)? Бренд: ще й транслітерація («Bamsic»/«Бамсик»), переставлені/одна зайва літера («Strateg»/«Starteg»)."""
+    if _h1_vkey(label, a) == _h1_vkey(label, b):
+        return True
+    if label != "бренд":
+        return False
+    pa, pb = (_h1_sem(x).replace(" ", "").translate(_H1_TRANSLIT) for x in (a, b))
+    return pa == pb or sorted(pa) == sorted(pb) or _h1_lev1(pa, pb)
+
+
+def _h1_usable(label, v, name):
+    """Значення годиться для h1 ЦІЄЇ картки: не узагальнене, не повторює назву й не суперечить їй."""
+    sem = _h1_sem(v)
+    if not sem or any(_H1_GENERIC_RX.fullmatch(_h1_sem(x)) for x in re.split(r"[,;/]| і | та ", v) if _h1_sem(x)):
+        return False
+    nsem = _h1_sem(name)
+    if re.search(r"(?<!\w)" + re.escape(sem) + r"(?!\w)", nsem):
+        return False                                                   # повторює назву («… (синій) — колір: синій»)
+    if label == "колір" and _H1_COLOR_RX.search(name.casefold()):
+        return False                                                   # колір уже в назві — інший колір у полі суперечив би їй
+    if label == "розмір" and _H1_SIZE_IN_NAME_RX.search(name.casefold()):
+        return False                                                   # розмір у назві («40х50 см», «7 см») — розмір у полі повторив би або суперечив
+    n_name, n_val = set(re.findall(r"(\d+) ел(?!\w)", nsem)), set(re.findall(r"(\d+) ел(?!\w)", sem))
+    if n_name and n_val and n_name != n_val:
+        return False                                                   # «120 елементів» у назві, «150 елементів» у полі
+    return True
+
+
+def _h1_display(label, v):
+    """«Синій, Зелений» → «синій, зелений» (кожен елемент переліку; абревіатури й бренд не чіпаємо)."""
+    if label == "бренд":
+        return v
+    return ", ".join(x[0].lower() + x[1:] if len(x) > 1 and x[0].isupper() and x[1].islower() else x for x in v.split(", "))
+
+
 def _h1_specs(p):
-    """{ключ характеристики (casefold): значення} з опису картки + «бренд» (специфікації, інакше vendor — як у JSON-LD). Лише факти цієї картки."""
+    """{ключ характеристики (casefold): значення} лише з характеристик, показаних на сторінці картки. Лише факти цієї картки."""
     out = {}
-    for part in re.split(r"<br\s*/?>", p.get("desc") or ""):
-        m = re.match(r"\s*<b>\s*([^<]+?)\s*</b>(.*)$", part, re.S)
+    parts = [x.strip() for x in re.split(r"<br\s*/?>", p.get("desc") or "") if x.strip()]
+    for s in _shown_specs(parts):
+        m = re.match(r"\s*<b>\s*([^<]+?)\s*</b>(.*)$", s, re.S)
         if not m:
             continue
-        label = m.group(1).strip().rstrip(":").strip().casefold()
-        val = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", m.group(2))).split()).strip(" :;,.")
-        if label and val and label not in out and val.casefold() not in _H1_JUNK and _h1_key(val):
+        label = _h1_clean(m.group(1)).rstrip(":").strip().casefold()
+        val = _h1_clean(m.group(2))
+        if label and val and label not in out:
             out[label] = val
-    if "бренд" in out and out["бренд"].casefold() in _BRAND_JUNK:
-        del out["бренд"]
-    if "бренд" not in out:
-        v = (p.get("vendor") or "").strip()
-        if 2 <= len(v) <= 60 and v.casefold() not in _BRAND_JUNK:
-            out["бренд"] = v
     return out
 
 
@@ -1443,11 +1528,11 @@ def assign_product_h1(items):
         chosen = None
         for key, label in H1_ATTRS:
             vals = [s.get(key, "") for s in specs]
-            if not all(vals) or len({_h1_key(v) for v in vals}) != len(vals):
+            if not all(vals) or not all(_h1_usable(label, v, p["name"]) for p, v in zip(members, vals)):
                 continue
-            if label != "бренд":   # «Бежевий» → «бежевий» (лише коли далі малі літери: абревіатури не чіпаємо)
-                vals = [v[0].lower() + v[1:] if len(v) > 1 and v[0].isupper() and v[1].islower() else v for v in vals]
-            cand = [f"{p['name']} — {label}: {v}" for p, v in zip(members, vals)]
+            if any(_h1_same(label, vals[i], vals[j]) for i in range(len(vals)) for j in range(i + 1, len(vals))):
+                continue                                               # після нормалізації є збіги — розрізнення несправжнє
+            cand = [f"{p['name']} — {label}: {_h1_display(label, v)}" for p, v in zip(members, vals)]
             if max(len(c) for c in cand) > H1_MAX:
                 continue
             chosen = (label, cand)
@@ -3117,8 +3202,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     lead = _clean_desc(parts[0]) if parts else ""
     if lead in ("-", "—", "–") or len(re.sub(r"<[^>]+>", "", lead)) < 3:
         lead = ""  # порожній/сміттєвий опис не показуємо
-    specs = [_clean_desc(x) for x in parts[1:] if x.startswith("<b>") and "</b>" in x and ":" in x
-             and not x.rstrip().endswith("</b>")][:6]
+    specs = _shown_specs(parts)   # ті самі рядки бере й h1 групи однакових назв (assign_product_h1)
     desc_html = f"<p>{lead}</p>" if lead else ""
     specs_html = ("<ul>" + "".join(f"<li>{s}</li>" for s in specs) + "</ul>") if specs else ""
     # Текст картки від SEO (site/product_texts.json): під описом Toysi, ПЕРЕД його характеристиками (якщо вони є — вони йдуть окремим блоком нижче), лише після блоку ціни/оплати/доставки,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""test_category_moves.py — 04.11.2026, злиття 23 тонких категорій сайту в приймачі + 301 зі старих сторінок категорій.
+"""test_category_moves.py — 04.11.2026, злиття 22 тонких категорій сайту в приймачі + 301 зі старих сторінок категорій.
 
 Що перевіряється (Apache тут не запускається — правила беруться З ТЕКСТУ deploy/activate_site_apache.sh, порядок/умови відтворює міні-симулятор mod_rewrite):
   1. генератор (generate_prom_redirects.write_catmoves_map): валідні/невалідні slug, приймач без зібраної сторінки, старий == приймач, ланцюжок, цикл, дубль ключа,
@@ -8,11 +8,13 @@
      формат рядків «<slug> <slug>», LF, сортування; main() пише мапу й ізолює її збій від мапи товарів;
   2. шаблон Apache: RewriteMap catmoved + обидва правила (сторінка й пагінація) з RewriteCond, підстановка @CATMOVESMAPFILE@ у sub(), файл мапи існує до vhost'а,
      читається Apache-користувачем; симулятор: старі адреси → 301 на 1-шу сторінку приймача (без ?query), живі категорії й наявні правила Prom не зачеплено;
-  3. дані репо: site/category_moves.json (23 переїзди, формат, без ланцюжків), жоден файл даних сайту/редиректів не посилається на зниклий slug;
-  4. повна збірка build() на синтетичному каталозі з РЕАЛЬНИМИ id і назвами 23 старих категорій та реальними файлами даних репо: старі category-<slug>.html
-     не генеруються, товари — на сторінках приймачів, на старі сторінки не лишилось внутрішніх посилань (HTML, sitemap, index.json), генератор дає 23 рядки;
-  5. МУТАЦІЇ генератора/шаблону мають робити набір червоним.
-Самодостатній, мережа не потрібна."""
+  3. дані репо: site/category_moves.json (22 переїзди, формат, без ланцюжків), жоден файл даних сайту/редиректів не посилається на зниклий slug;
+  4. повна збірка build() на синтетичному каталозі з РЕАЛЬНИМИ id і назвами 22 старих категорій та реальними файлами даних репо: старі category-<slug>.html
+     не генеруються, товари — на сторінках приймачів, на старі сторінки не лишилось внутрішніх посилань (HTML, sitemap, index.json), генератор дає 22 рядки;
+  5. МУТАЦІЇ генератора/шаблону мають робити набір червоним;
+  6. ОПЦІЙНО (CATMOVES_LIVE=1, мережа): живий https://plutustoys.com.ua/index.json — кожен товар у наявності в старій категорії має перенесення
+     в category_overrides.json (інакше 301 сховає сторінку з товаром; аудит #1103, «Ялинки і сосни»). Без змінної мережа не потрібна.
+Самодостатній, мережа не потрібна (крім опційного п.6)."""
 import contextlib
 import io
 import json
@@ -36,14 +38,13 @@ GEN_SRC = (HERE / "generate_prom_redirects.py").read_text(encoding="utf-8")
 SCRIPT_SRC = (HERE / "deploy" / "activate_site_apache.sh").read_text(encoding="utf-8")
 MOVES_PATH = HERE / "site" / "category_moves.json"
 
-# 23 злиті категорії: slug → (назва категорії Toysi, id товарів у наявності на момент злиття; рішення 04.11.2026)
+# 22 злиті категорії («Ялинки і сосни» знято 06.11 — аудит #1103: категорія вже не тонка, 10 товарів): slug → (назва категорії Toysi, id товарів у наявності на момент злиття; рішення 04.11.2026)
 OLD = {
     'shcheniachyy-patrul': ('Щенячий патруль', ['119890']),
     'chovny': ('Човни', ['297461']),
     'ihrashky-na-kolesakh': ('Іграшки на колесах', ['33664']),
     'tovary-dlia-tvorchosti': ('Товари для творчості', ['259739']),
     'klavishni': ('Клавішні', ['47165']),
-    'ialynky-i-sosny': ('Ялинки і сосни', ['250489']),
     'lialky-i-pupsy': ('Ляльки і пупси', ['223559']),
     'ihrovi-nabory': ('Ігрові набори', ['132709']),
     'dereviani-mebli': ("Дерев'яні меблі", ['30490']),
@@ -300,7 +301,7 @@ def data_and_build_checks():
     moves_raw = json.loads(MOVES_PATH.read_text(encoding="utf-8-sig"))
     moves = {k: v for k, v in moves_raw.items() if not k.startswith("_")}
     chk("category_moves.json: є службовий «_що це» з поясненням", isinstance(moves_raw.get("_що це"), str) and len(moves_raw["_що це"]) > 50)
-    chk("category_moves.json: рівно 23 переїзди, ключі = 23 злиті slug", set(moves) == set(OLD) and len(moves) == 23)
+    chk("category_moves.json: рівно 22 переїзди, ключі = 22 злиті slug", set(moves) == set(OLD) and len(moves) == 22)
     chk("category_moves.json: усі slug [a-z0-9-]{1,200}, старий ≠ приймач, без ланцюжків (приймач не є ключем)",
         all(g.SLUG_RE.fullmatch(k) and isinstance(v, str) and g.SLUG_RE.fullmatch(v) and k != v and v not in moves for k, v in moves.items()))
     chk("slug старих категорій = slugify(назва) збірки", all(bs.slugify(name) == s for s, (name, _ids) in OLD.items()))
@@ -384,9 +385,9 @@ def data_and_build_checks():
     warn_lines = [l for l in err.splitlines() if "slug без сторінки" in l or "без сторінки категорії" in l]
     chk(f"збірка: попередження «slug без сторінки» не згадують злитих slug ({[l[:120] for l in warn_lines if link_rx.search(l) or any(s in l for s in moves)][:3]})",
         not [l for l in warn_lines if any(re.search(r"'" + re.escape(s) + r"'", l) for s in moves)])
-    chk("збірка: жоден із 42 нових записів category_overrides.json не відкинуто", not [i for i in moved_ids if f"'{i}'" in "".join(l for l in err.splitlines() if "category_overrides.json" in l)])
+    chk("збірка: жоден із 41 нового запису category_overrides.json не відкинуто", not [i for i in moved_ids if f"'{i}'" in "".join(l for l in err.splitlines() if "category_overrides.json" in l)])
 
-    # генератор на зібраній теці: 23 рядки без попереджень; симулятор веде кожну стару адресу на живий приймач
+    # генератор на зібраній теці: 22 рядки без попереджень; симулятор веде кожну стару адресу на живий приймач
     g.INDEX_FILE = out / "index.json"
     g.CATMOVES_JSON = MOVES_PATH
     g.OUT_FILE_CATMOVES_APACHE = out.parent / (out.name + "_cm.map")
@@ -394,7 +395,7 @@ def data_and_build_checks():
     with contextlib.redirect_stderr(e2), contextlib.redirect_stdout(io.StringIO()):
         rc = g.write_catmoves_map()
     lines = read_map_lines(g.OUT_FILE_CATMOVES_APACHE)
-    chk(f"генератор на зібраному сайті: 23 рядки, без попереджень (rc={rc}, {e2.getvalue()[:200]!r})", rc == 23 and len(lines) == 23 and "УВАГА" not in e2.getvalue())
+    chk(f"генератор на зібраному сайті: 22 рядки, без попереджень (rc={rc}, {e2.getvalue()[:200]!r})", rc == 22 and len(lines) == 22 and "УВАГА" not in e2.getvalue())
     cm = dict(l.split(" ") for l in lines)
     bad_sim = [s for s in moves if simulate(SCRIPT_SRC, f"/category-{s}.html", "", {"catmoved": cm}) != (301, f"/category-{moves[s]}.html")
                or simulate(SCRIPT_SRC, f"/category-{s}_2.html", "", {"catmoved": cm}) != (301, f"/category-{moves[s]}.html")
@@ -458,6 +459,32 @@ for name, kind, fn in MUTATIONS:
     if not fails:
         survived.append(name)
 
-bad_all = base + db + survived
+live = []
+if os.environ.get("CATMOVES_LIVE") == "1":
+    import urllib.request
+    import build_site as _bs
+    _url = os.environ.get("CATMOVES_LIVE_URL", "https://plutustoys.com.ua/index.json")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(_url, headers={"User-Agent": "plutustoys-catmoves-test"}), timeout=120) as _r:
+            _idx = json.loads(_r.read().decode("utf-8"))
+        _moves = {k: v for k, v in json.loads(MOVES_PATH.read_text(encoding="utf-8-sig")).items() if not k.startswith("_")}
+        _ov = json.loads((HERE / "site" / "category_overrides.json").read_text(encoding="utf-8-sig"))
+        # живий index.json — чинна збірка (категорія товару = поле «c»); товар у наявності в старій категорії без перенесення в репо = розбіжність
+        _in_old = [e for e in _idx if e.get("s", 1) and _bs.slugify(str(e.get("c") or "")) in _moves]
+        _orph = sorted((e.get("c"), str(e.get("id"))) for e in _in_old if not str(e.get("id")).startswith("rt-") and str(e.get("id")) not in _ov)
+        _rt = sorted((e.get("c"), str(e.get("id"))) for e in _in_old if str(e.get("id")).startswith("rt-"))
+        if _orph:
+            live.append(f"живий index.json: {len(_orph)} товарів у наявності в старих категоріях БЕЗ перенесення: {_orph[:12]}")
+        if _rt:
+            live.append(f"живий index.json: {len(_rt)} rt-карток у старих категоріях (перенесення за id на rt- не діє — потрібен rt_category_map.json): {_rt[:12]}")
+        print(f"[{'OK ' if not live else 'FAIL'}] живий index.json ({len(_idx)} записів, у старих категоріях {len(_in_old)}): "
+              f"{'усі товари старих категорій мають перенесення' if not live else '; '.join(live)}")
+    except Exception as _e:  # noqa: BLE001 — увімкнена жива перевірка без даних = провал, а не тиша
+        live.append(f"живу перевірку не виконано: {type(_e).__name__}: {str(_e)[:150]}")
+        print(f"[FAIL] {live[-1]}")
+else:
+    print("[--] жива перевірка проти plutustoys.com.ua/index.json пропущена (увімкнути: CATMOVES_LIVE=1)")
+
+bad_all = base + db + survived + live
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(bad_all) if bad_all else f'✅ злиття категорій: генератор, правило Apache, дані, повна збірка — коректні; усі {len(MUTATIONS)} мутацій червоніють.'}")
 sys.exit(1 if bad_all else 0)

@@ -989,6 +989,12 @@ def build():
     PRODUCT_DUP_TITLES.update(t for t, c in _tc.items() if c > 1)
     if PRODUCT_DUP_TITLES:
         print(f"[build] title: {len(PRODUCT_DUP_TITLES)} збігів після обрізання — у цих карток додано №id", file=sys.stderr)
+    _h1, _h1st = assign_product_h1(prods + oos_prods)   # тіні (shadows) сюди не входять: noindex + canonical на Toysi
+    PRODUCT_H1.clear(); PRODUCT_H1.update(_h1)
+    _h1in = assign_product_h1(prods)[1]   # лише в наявності — та сама база, що в заміру SEO (index.json)
+    print(f"[build] h1: {_h1st['groups']} груп з однаковою назвою ({_h1st['cards']} карток; у наявності {_h1in['groups']} груп / {_h1in['cards']} карток) — розведено атрибутом "
+          f"{_h1st['attr_cards']} карток у {_h1st['attr_groups']} групах ({', '.join(f'{k} {v}' for k, v in sorted(_h1st['by'].items(), key=lambda kv: (-kv[1], kv[0]))) or '—'}), «№id» {_h1st['id_cards']} карток, "
+          f"не розведено {_h1st['unresolved']}", file=sys.stderr)
     _rt_items = [(_p, True) for _p in prods if _p.get("rt")] + [(_p, False) for _p in oos_prods if _p.get("rt")]
     _toysi_titles = {product_title_for(_p, True) for _p in prods if not _p.get("rt")} | {product_title_for(_p, False) for _p in oos_prods if not _p.get("rt")}
     _codes, _fail = assign_rt_title_codes(_rt_items, _toysi_titles)
@@ -1378,6 +1384,89 @@ def _valid_gtin(code):
     if (10 - total % 10) % 10 != digits[-1]:
         return None
     return ("gtin" + str(len(c)), c)
+
+
+# ── Однакові <h1> карток (SEO 06.11: 591 група з ІДЕНТИЧНОЮ назвою, 1 519 карток — різні товари, яким Toysi дала одну назву; title розведено «№id», h1 — ні) ──
+# Група = картки, чиї назви збігаються без регістру, розділових знаків і латинсько-кириличних двійників («MIC»/«МІС»). Для групи шукаємо ОДНЕ поле характеристик картки
+# (рядки «<b>Колір:</b> …» в описі Toysi; бренд — як у JSON-LD: зі специфікацій, інакше vendor), що є в КОЖНОЇ картки групи й попарно різне → h1 «{назва} — {поле}: {значення}»
+# (≤ H1_MAX у всіх картках групи; інакше наступне поле). Нема такого поля → « №id», як у title. Рішення залежить лише від складу групи (не від порядку).
+# Змінюється ЛИШЕ <h1>: title, JSON-LD name, alt фото, крихти, index.json/пошук/кошик — сира назва. Картки поза групами — байт-у-байт як раніше.
+PRODUCT_H1 = {}          # id → h1 (лише картки з груп однакових назв); заповнює build()
+H1_MAX = 120
+# (ключ характеристики в описі Toysi, підпис у h1) — у порядку пріоритету; габарити/вага В УПАКОВЦІ свідомо не беремо (для покупця це шум, не відмінність товару)
+H1_ATTRS = (("колір", "колір"), ("вік", "вік"), ("мова", "мова"), ("габарити без упаковки", "розмір"), ("матеріал", "матеріал"), ("комплектація", "комплектація"), ("бренд", "бренд"))
+_H1_CONFUSABLE = str.maketrans("аеорсхуікмнвт", "aeopcxyikmhbt")   # після casefold: кирилиця, що виглядає як латиниця
+_H1_JUNK = frozenset({"-", "—", "–", "немає", "нема", "не вказано", "n/a", "unknown"})
+
+
+def _h1_key(s):
+    """Ключ порівняння «на око»: без регістру, розділових знаків і латинсько-кириличних двійників."""
+    s = unicodedata.normalize("NFKC", str(s or "")).casefold().translate(_H1_CONFUSABLE)
+    return " ".join(re.sub(r"[^\w]|_", " ", s).split())
+
+
+def _h1_specs(p):
+    """{ключ характеристики (casefold): значення} з опису картки + «бренд» (специфікації, інакше vendor — як у JSON-LD). Лише факти цієї картки."""
+    out = {}
+    for part in re.split(r"<br\s*/?>", p.get("desc") or ""):
+        m = re.match(r"\s*<b>\s*([^<]+?)\s*</b>(.*)$", part, re.S)
+        if not m:
+            continue
+        label = m.group(1).strip().rstrip(":").strip().casefold()
+        val = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", m.group(2))).split()).strip(" :;,.")
+        if label and val and label not in out and val.casefold() not in _H1_JUNK and _h1_key(val):
+            out[label] = val
+    if "бренд" in out and out["бренд"].casefold() in _BRAND_JUNK:
+        del out["бренд"]
+    if "бренд" not in out:
+        v = (p.get("vendor") or "").strip()
+        if 2 <= len(v) <= 60 and v.casefold() not in _BRAND_JUNK:
+            out["бренд"] = v
+    return out
+
+
+def assign_product_h1(items):
+    """items: усі картки, що отримають сторінку (у наявності + без залишку; тіні — ні). Повертає ({id: h1}, статистика)."""
+    groups = {}
+    for p in items:
+        k = _h1_key(p["name"])
+        if k:
+            groups.setdefault(k, []).append(p)
+    h1s = {}
+    st = {"groups": 0, "cards": 0, "attr_groups": 0, "attr_cards": 0, "id_cards": 0, "by": {}}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        st["groups"] += 1
+        st["cards"] += len(members)
+        specs = [_h1_specs(p) for p in members]
+        chosen = None
+        for key, label in H1_ATTRS:
+            vals = [s.get(key, "") for s in specs]
+            if not all(vals) or len({_h1_key(v) for v in vals}) != len(vals):
+                continue
+            if label != "бренд":   # «Бежевий» → «бежевий» (лише коли далі малі літери: абревіатури не чіпаємо)
+                vals = [v[0].lower() + v[1:] if len(v) > 1 and v[0].isupper() and v[1].islower() else v for v in vals]
+            cand = [f"{p['name']} — {label}: {v}" for p, v in zip(members, vals)]
+            if max(len(c) for c in cand) > H1_MAX:
+                continue
+            chosen = (label, cand)
+            break
+        if chosen:
+            st["attr_groups"] += 1
+            st["attr_cards"] += len(members)
+            st["by"][chosen[0]] = st["by"].get(chosen[0], 0) + 1
+            for p, c in zip(members, chosen[1]):
+                h1s[p["id"]] = c
+        else:
+            st["id_cards"] += len(members)
+            for p in members:
+                h1s[p["id"]] = f"{p['name']} №{site_product_code(p['id']) if p.get('rt') else p['id']}"   # rt: код rt-… не друкуємо (як у title), лише «PT-R…»
+    _seen = {}
+    for p in items:
+        _seen.setdefault(_h1_key(h1s.get(p["id"], p["name"])), []).append(p["id"])
+    st["unresolved"] = sum(len(v) for v in _seen.values() if len(v) > 1)
+    return h1s, st
 
 
 def product_title(name, in_stock=True, uniq=None) -> str:
@@ -3090,7 +3179,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
       '<div class="body">'
       f'<div class="cat">{esc(p["category"])}</div>'
       + (f'<a class="brandlink" href="category-{_bslug_p}.html">{esc(BRAND_CATEGORIES[_bslug_p]["link_text"])} →</a>' if _bslug_p in BRAND_CATEGORIES else '') +
-            f'<h1 class="prod">{esc(p["name"])}</h1>'
+            f'<h1 class="prod">{esc(PRODUCT_H1.get(p["id"], p["name"]))}</h1>'
       f'<div class="sku">Код товару: <b class="sku-code">{esc(site_product_code(p["id"]))}</b>'
       f' <button type="button" class="sku-copy" data-copy="{esc(site_product_code(p["id"]))}" aria-label="Копіювати код товару {esc(site_product_code(p["id"]))}">Копіювати</button><span class="sr-only sku-status" role="status" aria-live="polite"></span></div>'
       + (_shadow_note if _shadow_twin else (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +

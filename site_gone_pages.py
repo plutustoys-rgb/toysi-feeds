@@ -15,7 +15,8 @@
   • сторінка, що ЖИВА в поточній збірці (site/product-<id>.html або site/category-<slug>.html є на диску), у мапу НЕ йде — гучне
     попередження в stderr (410 ніколи не перекриє справжню сторінку, напр. якщо заборону колись знімуть, а запис лишився);
   • id — лише [0-9]+ або rt-[0-9]+, slug — лише [a-z0-9-]+ (символи, з якими RewriteRule збігається), інакше запис пропущено з попередженням;
-  • зіпсований/нечитний JSON → наявна мапа НЕ перезаписується (exit 1); мапи ще нема → пишемо порожню (RewriteMap з відсутнім файлом валить configtest).
+  • ВІДСУТНІЙ/зіпсований/нечитний JSON → наявна мапа НЕ перезаписується (exit 1); мапи ще нема → пишемо порожню (RewriteMap з відсутнім файлом валить configtest);
+  • збій або пропущені записи → тротлений Telegram-алерт (як generate_prom_redirects; у site-rebuild крок не-фатальний, тож без алерту збій тонув би в journal).
 Тест: test_site_removed_pages.py.
 """
 import json
@@ -37,6 +38,19 @@ HEADER = ("# АВТО-ЗГЕНЕРОВАНО site_gone_pages.py з site/removed_
 
 def _warn(msg: str) -> None:
     print(f"[site_gone] УВАГА: {msg}", file=sys.stderr)
+    _warn.log.append(msg)
+
+
+_warn.log = []
+
+
+def _alert(text: str) -> None:
+    """Тротлений Telegram-алерт, як у сусіднього generate_prom_redirects (site-rebuild біжить кожні 2 год; збій не має тонути в journal)."""
+    try:
+        from telegram_notify import send_throttled_alert
+        send_throttled_alert("site_gone_map", f"🚨 site-rebuild/site_gone_pages: {text[:900]}", cooldown_sec=6 * 3600)
+    except Exception:  # noqa: BLE001 — алерт best-effort (у тестах/без токена мовчить)
+        pass
 
 
 def load_source(path: Path = None):
@@ -45,7 +59,8 @@ def load_source(path: Path = None):
     try:
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return [], []
+        _warn(f"{path} ВІДСУТНІЙ (не задеплоєно? видалено?) — мапу 410 не оновлюю, наявна лишається")
+        return None
     except (OSError, ValueError, RecursionError) as e:
         _warn(f"{path} нечитний ({type(e).__name__}: {str(e)[:120]}) — мапу 410 не оновлюю")
         return None
@@ -93,12 +108,16 @@ def _write_atomic(path: Path, text: str) -> None:
 
 
 def main() -> int:
+    _warn.log.clear()
     src = load_source()
     if src is None:
         if not OUT_FILE.exists():
             _write_atomic(OUT_FILE, HEADER)
+        _alert("мапу 410 НЕ оновлено: " + " | ".join(_warn.log) + " Зняті сторінки віддають те, що в наявній мапі (або 404, якщо її нема).")
         return 1
     lines = build_lines(*src)
+    if _warn.log:
+        _alert("мапу 410 записано, але з пропусками: " + " | ".join(_warn.log[:5]) + (f" (+ ще {len(_warn.log) - 5})" if len(_warn.log) > 5 else ""))
     assert all(LINE_RE.fullmatch(l) for l in lines)
     _write_atomic(OUT_FILE, HEADER + "".join(l + "\n" for l in lines))
     print(f"[site_gone] {OUT_FILE.name}: {len(lines)} адрес → 410 Gone "

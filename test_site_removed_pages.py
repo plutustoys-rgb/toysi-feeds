@@ -30,6 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, str(HERE / "site"))
 sys.path.insert(0, str(HERE))
 import forbidden_products as fp  # noqa: E402
+import telegram_notify  # noqa: E402,F401 — генератор шле алерт через нього; тест підміняє send_throttled_alert
 
 GEN_SRC = (HERE / "site_gone_pages.py").read_text(encoding="utf-8")
 SCRIPT_SRC = (HERE / "deploy" / "activate_site_apache.sh").read_text(encoding="utf-8")
@@ -139,8 +140,21 @@ def suite(gen_src, script_src):
     c("генератор: зіпсований JSON → наявну мапу НЕ перезаписано, rc=1", rc == 1 and lines == ["product-1 gone"] and "нечитний" in err)
     rc, lines, err, out = run_gen(g, raw_text="[1, 2]")
     c("генератор: JSON не того типу і мапи ще нема → порожня мапа існує (RewriteMap txt: без файлу валить configtest)", rc == 1 and out.exists() and lines == [])
+    rc, lines, err, out = run_gen(g, preexisting="# old\nproduct-1 gone\n")
+    c("генератор: removed_pages.json ВІДСУТНІЙ → наявну мапу НЕ перезаписано, rc≠0, гучне попередження", rc == 1 and lines == ["product-1 gone"] and "ВІДСУТНІЙ" in err)
     rc, lines, err, out = run_gen(g)
-    c("генератор: джерела нема → порожня мапа, rc=0", rc == 0 and lines == [])
+    c("генератор: джерела нема і мапи нема → порожня мапа існує (configtest), rc≠0", rc == 1 and out.exists() and lines == [])
+    sent = []
+    tn = sys.modules.get("telegram_notify")
+    if tn is not None:
+        orig = tn.send_throttled_alert
+        tn.send_throttled_alert = lambda *a, **k: (sent.append(a) or True)
+        run_gen(g)
+        run_gen(g, {"products": {"9": {}}}, live=["product-9.html"])
+        run_gen(g, {"products": {"9": {}}})
+        tn.send_throttled_alert = orig
+    c("генератор: збій (нема джерела) і пропуск живої сторінки → тротлений Telegram-алерт; чистий прогін — без алерту",
+      tn is not None and len(sent) == 2 and all(a[0] == "site_gone_map" for a in sent) and "ВІДСУТНІЙ" in sent[0][1] and "product-9.html" in sent[1][1])
     # правило Apache
     maps = {"sitegone": gone_map(["product-277303 gone", "product-rt-5 gone", "category-zasoby-dlia-prannia gone"]), "promredir": {"777": "/product-1.html"}, "grpredir": {}}
     sim = lambda p: simulate(script_src, p, maps)  # noqa: E731
@@ -165,6 +179,9 @@ def suite(gen_src, script_src):
     c("скрипт: проби 410 (товар, категорія, _2, прохід по всій мапі) і контроль 404 ставлять bad=1",
       "віддає $sg_p, а не 410\"; bad=1; }" in script_src and "(_2) віддає $sg_c ($sg_c2), а не 410\"; bad=1; }" in script_src
       and "зачепило чужу адресу?)\"; bad=1; }" in script_src and 'адрес(и) мапи 410 віддають не 410"; bad=1; fi' in script_src and 'done < "$GONEMAP"' in script_src)
+    c("скрипт: прохід по всіх адресах мапи — по 3 спроби на адресу (тимчасовий збій не відкочує активацію)", "for sg_try in 1 2 3; do" in script_src)
+    c("скрипт: 410 (sitegone) стоїть ПЕРЕД 301 злиття категорій (catmoved): знята назавжди категорія не редиректиться",
+      "RewriteMap catmoved" not in script_src or script_src.find("RewriteMap sitegone") < script_src.find("RewriteMap catmoved"))
     return E
 
 
@@ -176,13 +193,19 @@ chk(f"генератор + правило Apache + скрипт активаці
 # ── дані: site/removed_pages.json ─────────────────────────────────────────────────────────────────────────────────────────────────
 import build_site as bs  # noqa: E402
 prods, cats = SRC.get("products", {}), SRC.get("categories", {})
-chk("джерело: 161 товар хімії (49 у наявності + 112 сторінок «немає в наявності», живий каталог 06.11) і 5 категорій", len(prods) == 161 and len(cats) == 5)
+chk("джерело: 160 товарів хімії (49 у наявності + 111 сторінок «немає в наявності», живий каталог 06.11) і 5 категорій", len(prods) == 160 and len(cats) == 5)
 chk("джерело: КОЖЕН товар заборонений is_forbidden (за сирою категорією Toysi або точковим pid)",
     all(fp.is_forbidden({"id": pid, "category_name": r.get("category")}) for pid, r in prods.items()))
 chk("джерело: КОЖНА категорія — у FORBIDDEN_TOYSI_CATEGORIES, slug = slugify(назви)",
     all(n.strip().lower() in fp.FORBIDDEN_TOYSI_CATEGORIES and bs.slugify(n) == s for s, n in cats.items()) and sorted(cats.values()) == sorted(CHEM_CATS))
 chk("джерело: є 277303 (контроль SEO) і три точкові 279732/310330/310331", {"277303", "279732", "310330", "310331"} <= set(prods))
 chk("джерело: НЕ-хімії немає (освіжувач-«Літак» 299076-8, пігмент rt-62870/62872/62873)", not ({"299076", "299077", "299078", "rt-62870", "rt-62872", "rt-62873"} & set(prods)))
+chk("джерело: звільнені FORBIDDEN_EXEMPT_PRODUCT_IDS (280754 — дитячий шампунь) відсутні (410 не переживе звільнення)",
+    "280754" in fp.FORBIDDEN_EXEMPT_PRODUCT_IDS and not (set(fp.FORBIDDEN_EXEMPT_PRODUCT_IDS) & set(prods)))
+_moves = HERE / "site" / "category_moves.json"
+_mv = {k for k in json.loads(_moves.read_text(encoding="utf-8")) if not k.startswith("_")} if _moves.exists() else set()
+_mv |= {v for k, v in (json.loads(_moves.read_text(encoding="utf-8")).items() if _moves.exists() else []) if not k.startswith("_") and isinstance(v, str)}
+chk("джерело: жодна знята категорія не є ні старим slug, ні приймачем у site/category_moves.json", not (set(cats) & _mv))
 chk("джерело: формат ключів прийме генератор (жоден запис не загубиться)", all(re.fullmatch(r"[0-9]+", p) for p in prods) and all(re.fullmatch(r"[a-z0-9-]+", s) for s in cats))
 
 # ── конфіги більше не посилаються на зниклі категорії й товари ───────────────────────────────────────────────────────────────────
@@ -195,7 +218,7 @@ for fn in ("category_related.json", "category_texts.json", "category_ru_alt.json
     t = (HERE / "site" / fn).read_text(encoding="utf-8-sig")
     hit = [s for s in slugs if re.search(r"(?<![a-z0-9-])" + re.escape(s) + r"(?![a-z0-9-])", t)] + [n for n in CHEM_CATS if n in t] \
         + ([i for i in ids if re.search(r'"' + i + r'"', t)] if fn != "category_overrides.json" else [i for i in ids if re.search(r'"' + i + r'"\s*:', t)])
-    chk(f"site/{fn}: посилань на 5 категорій / 161 товар хімії немає", not hit)
+    chk(f"site/{fn}: посилань на 5 категорій / 160 товарів хімії немає", not hit)
 pg = json.loads((HERE / "prom_group_to_category.json").read_text(encoding="utf-8"))
 chk("prom_group_to_category.json: жодна група Prom не веде на категорію хімії (інакше 301 на зниклу сторінку)", not any((v or {}).get("category") in slugs for v in pg.values() if isinstance(v, dict)))
 ov = json.loads((HERE / "prom_redirect_overrides.json").read_text(encoding="utf-8"))
@@ -229,11 +252,13 @@ for pid, cat in (("279732", "Догляд за тілом та волоссям"
     catalog[pid] = toysi(pid, f"MAXI POWER / SILA засіб {pid}", cat)
     chem_ids.add(pid)
 keep = {}
-for cat, cnt in (("Ляльки", 8), ("Машинки", 8), ("Догляд за тілом та волоссям", 6), ("Набори для прибирання", 6), ("Іграшки антистрес", 5), ("Уцінка", 5), ("Догляд за тілом", 6)):
+for cat, cnt in (("Ляльки", 8), ("Машинки", 8), ("Догляд за тілом та волоссям", 6), ("Набори для прибирання", 6), ("Іграшки антистрес", 5), ("Уцінка", 5), ("Догляд за тілом", 6), ("Догляд за волоссям", 4)):
     for i in range(cnt):
         catalog[str(n)] = toysi(n, f"{cat} товар {i}", cat, price=200 + i)
         keep[str(n)] = cat
         n += 1
+catalog["280754"] = toysi("280754", "Карапуз шампунь дитячий 250мл слоненя", "Догляд за будинком")   # виняток: косметика в категорії хімії лишається
+keep["280754"] = "Догляд за будинком"
 catalog["299076"] = toysi("299076", 'Освіжувач повітря "Літак" на сонячній батареї 10 см (ЧЕРВОНИЙ)', "Іграшки антистрес")
 keep["299076"] = "Іграшки антистрес"
 bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
@@ -257,21 +282,23 @@ for fn in ("index.json", "index-t.json", "index-rt.json"):
     if fn in files:
         idx_all += json.loads(files[fn].read_text(encoding="utf-8"))
 chk("збірка: index.json / index-t.json — жодного товару хімії, жодної категорії хімії", not ({str(x.get("id")) for x in idx_all} & chem_ids) and not ({x.get("c") for x in idx_all} & set(CHEM_CATS)))
-chk("збірка: суміжне лишилось (299076 «Літак», «Набори для прибирання», «Догляд за тілом») — сторінки є", all(f"product-{p}.html" in files for p in keep))
+chk("збірка: суміжне лишилось (280754 шампунь-виняток, 299076 «Літак», «Набори для прибирання», «Догляд за тілом») — сторінки є", all(f"product-{p}.html" in files for p in keep))
 big = ""
 for fn, p in files.items():
     if fn.endswith((".html", ".xml", ".json", ".txt")):
         big += p.read_text(encoding="utf-8", errors="replace")
+chk("збірка: шампунь-виняток 280754 у наявності переїхав у «Догляд за волоссям» (category_overrides) — категорія хімії через нього НЕ воскресає",
+    any(str(x.get("id")) == "280754" and x.get("c") == "Догляд за волоссям" for x in idx_all))
 chk("збірка: у ЖОДНОМУ HTML/XML/JSON нема посилання на сторінку товару хімії", not any(f"product-{i}.html" in big for i in chem_ids))
 chk("збірка: у ЖОДНОМУ HTML/XML/JSON нема посилання на сторінку категорії хімії (групи, хаб, чипи, сайдбар, sitemap)", not any(f"category-{s}.html" in big or f"category-{s}_" in big for s in chem_slugs))
 chk("збірка: назви 5 категорій хімії ніде не показано (фільтр, хлібні крихти, чипи)", not any(f">{c}<" in big or f'"{c}"' in big for c in CHEM_CATS))
-# мапа 410 на зібраній теці: усі 161 + 5 (їх сторінок немає), а сторінка, що жива (299076), туди не пройшла б
+# мапа 410 на зібраній теці: усі 160 + 5 (їх сторінок немає), а сторінка, що жива (299076), туди не пройшла б
 g = load_gen(GEN_SRC)
 g.SITE_DIR, g.SOURCE_JSON, g.OUT_FILE = out, HERE / "site" / "removed_pages.json", Path(tempfile.mkdtemp()) / "gone.map"
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     rc = g.main()
 gl = [l for l in g.OUT_FILE.read_text(encoding="utf-8").splitlines() if l and not l.startswith("#")]
-chk("мапа 410 з реального removed_pages.json: 161 товар + 5 категорій, rc=0", rc == 0 and len(gl) == 166 and sum(l.startswith("category-") for l in gl) == 5)
+chk("мапа 410 з реального removed_pages.json: 160 товарів + 5 категорій, rc=0", rc == 0 and len(gl) == 165 and sum(l.startswith("category-") for l in gl) == 5)
 chk("мапа 410 → симулятор: кожна адреса мапи дає 410, жива сторінка (299076, Ляльки) — ні",
     all(simulate(SCRIPT_SRC, f"/{l.split()[0]}.html", {"sitegone": gone_map(gl)}) == 410 for l in gl)
     and simulate(SCRIPT_SRC, "/product-299076.html", {"sitegone": gone_map(gl)}) == 200
@@ -288,8 +315,12 @@ MUTATIONS = [
     ("R6 проба товару не ставить bad=1", "script", lambda s: mutate(s, "віддає $sg_p, а не 410\"; bad=1; }", "віддає $sg_p, а не 410\"; }")),
     ("R7 генератор не викликається у скрипті", "script", lambda s: mutate(s, '"$PY" "$APP/site_gone_pages.py" ||', 'true ||')),
     ("G1 генератор пускає живу сторінку в мапу", "gen", lambda s: mutate(s, '        if (site_dir / f"product-{pid}.html").exists():', "        if False:")),
-    ("G2 генератор при зіпсованому JSON перезаписує мапу порожньою", "gen", lambda s: mutate(s, "        if not OUT_FILE.exists():\n            _write_atomic(OUT_FILE, HEADER)\n        return 1",
-                                                                                            "        _write_atomic(OUT_FILE, HEADER)\n        return 1")),
+    ("G2 генератор при зіпсованому JSON перезаписує мапу порожньою", "gen", lambda s: mutate(s, "        if not OUT_FILE.exists():\n            _write_atomic(OUT_FILE, HEADER)\n        _alert(",
+                                                                                            "        _write_atomic(OUT_FILE, HEADER)\n        _alert(")),
+    ("G4 відсутній removed_pages.json тихо стирає мапу", "gen", lambda s: mutate(s, '        _warn(f"{path} ВІДСУТНІЙ (не задеплоєно? видалено?) — мапу 410 не оновлюю, наявна лишається")\n        return None',
+                                                                       "        return [], []")),
+    ("G5 генератор не шле алерт", "gen", lambda s: mutate(s, "        send_throttled_alert(\"site_gone_map\"", "        (lambda *a, **k: None)(\"site_gone_map\"")),
+    ("R8 прохід по мапі без повторних спроб", "script", lambda s: mutate(s, "for sg_try in 1 2 3; do", "for sg_try in 3; do")),
     ("G3 генератор приймає будь-який id (без fullmatch)", "gen", lambda s: mutate(s, "if isinstance(pid, str) and PRODUCT_ID_RE.fullmatch(pid):", "if isinstance(pid, str):")),
 ]
 survived = []

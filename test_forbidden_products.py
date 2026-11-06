@@ -50,6 +50,15 @@ chk("хімія: суміжне НЕ заборонено (косметика, �
     not any(fp.is_forbidden(item(p, c)) for p, c in [(20, "Догляд за тілом"), (21, "Гігієнічні вироби"), (22, "Набори для прибирання"), (299076, "Іграшки антистрес"),
                                                       (23, "Кухні і посуд"), (24, "Дитячий посуд"), (25, "NEW: ПОБУТОВА ХІМІЯ (інше)")]))
 chk("хімія: точкові 279732 (догляд за тілом), 310330/310331 (Уцінка) → True", all(fp.is_forbidden(item(p, c)) for p, c in [(279732, "Догляд за тілом та волоссям"), (310330, "Уцінка"), (310331, "Уцінка")]))
+# ── 1а''. винятки з категорійної заборони (аудит 06.11): дитячий шампунь 280754 у «Догляд за будинком» лишається; сусід тієї ж категорії — ні ──
+chk("винятки: рівно {280754}, не перетинаються з FORBIDDEN_PRODUCT_IDS", set(fp.FORBIDDEN_EXEMPT_PRODUCT_IDS) == {"280754"} and not (set(fp.FORBIDDEN_EXEMPT_PRODUCT_IDS) & set(fp.FORBIDDEN_PRODUCT_IDS)))
+chk("винятки: 280754 у «Догляд за будинком» → False; 279737 у тій самій категорії → True", not fp.is_forbidden(item(280754, "Догляд за будинком")) and fp.is_forbidden(item(279737, "Догляд за будинком")))
+_saved = dict(fp.FORBIDDEN_EXEMPT_PRODUCT_IDS)
+fp.FORBIDDEN_EXEMPT_PRODUCT_IDS["166976"] = "тест: виняток НЕ перебиває точкову заборону"
+chk("винятки: pid і у винятках, і у FORBIDDEN_PRODUCT_IDS → заборонено (виняток діє лише проти категорії)", fp.is_forbidden(item(166976, "Уцінка")))
+fp.FORBIDDEN_EXEMPT_PRODUCT_IDS.clear()
+fp.FORBIDDEN_EXEMPT_PRODUCT_IDS.update(_saved)
+chk("винятки: звільнення одного pid не відкриває категорію для інших", fp.is_forbidden(item(280755, "Догляд за будинком")) and fp.is_forbidden(item(280756, CAT)))
 chk("is_forbidden: pid зі списку → True навіть у невинній категорії; сусідній pid тієї ж категорії → False",
     fp.is_forbidden(item(166976, "Уцінка")) and fp.is_forbidden(item("306414", "Маскарадні костюми")) and not fp.is_forbidden(item(166977, "Уцінка")))
 

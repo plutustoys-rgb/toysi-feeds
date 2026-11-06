@@ -442,9 +442,16 @@ write_vhost() {   # $1 = http | https
     [ "$sg_p" = "410" ] || { echo "🚨 знятий назавжди товар /product-$sg_pid.html віддає $sg_p, а не 410"; bad=1; }
     [ "$sg_c" = "410" ] && [ "$sg_c2" = "410" ] || { echo "🚨 знята назавжди категорія /category-$sg_cat.html (_2) віддає $sg_c ($sg_c2), а не 410"; bad=1; }
     [ "$sg_ctl" = "404" ] || { echo "🚨 товар поза мапою 410 віддає $sg_ctl, а не 404 (правило sitegone зачепило чужу адресу?)"; bad=1; }
+    local sg_try
+    local sg_got=""
     while read -r sg_key _; do
         case "$sg_key" in product-*|category-*) ;; *) continue;; esac
-        [ "$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/$sg_key.html")" = "410" ] || { echo "🚨 /$sg_key.html з мапи 410 віддає не 410"; sg_bad=$((sg_bad + 1)); }
+        for sg_try in 1 2 3; do    # ті самі 3 спроби, що в головній пробі: один тимчасовий збій curl не відкочує вдалу активацію
+            sg_got=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/$sg_key.html")
+            [ "$sg_got" = "410" ] && break
+            [ "$sg_try" = "3" ] || sleep 2
+        done
+        [ "$sg_got" = "410" ] || { echo "🚨 /$sg_key.html з мапи 410 віддає $sg_got, а не 410 (3 спроби)"; sg_bad=$((sg_bad + 1)); }
     done < "$GONEMAP"
     if [ "$sg_bad" != "0" ]; then echo "🚨 $sg_bad адрес(и) мапи 410 віддають не 410"; bad=1; fi
     # проба правила груп Prom (12.10.2026): gid з мапи (перший рядок = найбільше показів) → 301 на СВОЮ категорію — і з /ua/, і без префікса (з ?query, який QSD має відкинути);

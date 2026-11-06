@@ -15,11 +15,13 @@
   Prom вилітають разом — свідомо прийнято (0,4% вітрини), бо ключ Toysi-категорії стійкий, а Prom-категорії — ні.
   ПОБУТОВА ХІМІЯ (рішення власника 2026-11-06, дослівно «хімію прибирай»; знахідка SEO 03.11/06.11) — п'ять Toysi-категорій ЦІЛКОМ хімії:
   «засоби для прання», «догляд за будинком», «засоби для миття посуду», «new: побутова хімія», «прання та миття посуду» (06.11 живий
-  каталог Toysi: 49 у наявності + 112 без залишку = 161 SKU; написання звірено з полем category_name живого фіду). Косметику/гігієну
-  («Догляд за тілом», «Гігієнічні вироби»…) і іграшкові «Набори для прибирання» НЕ чіпаємо — власник сказав лише про хімію.
+  каталог Toysi: 49 у наявності + 111 без залишку = 160 SKU; написання звірено з полем category_name живого фіду). Косметику/гігієну
+  («Догляд за тілом», «Гігієнічні вироби»…) і іграшкові «Набори для прибирання» НЕ чіпаємо — власник сказав лише про хімію;
+  косметика, яку Toysi поклала В заборонену категорію, звільняється точково через FORBIDDEN_EXEMPT_PRODUCT_IDS (аудит 06.11: дитячий шампунь).
   Зниклі сторінки сайту цих SKU/категорій віддають 410 Gone, а не 404: перелік — site/removed_pages.json (site_gone_pages.py → Apache).
 
-ДОДАТИ ЩОСЬ: один рядок у FORBIDDEN_TOYSI_CATEGORIES (ціла категорія) або FORBIDDEN_PRODUCT_IDS (точковий pid) + `python test_forbidden_products.py --live` (перевіряє на живому каталозі, що жоден фід не містить
+ДОДАТИ ЩОСЬ: один рядок у FORBIDDEN_TOYSI_CATEGORIES (ціла категорія) або FORBIDDEN_PRODUCT_IDS (точковий pid); звільнити pid із забороненої
+категорії — FORBIDDEN_EXEMPT_PRODUCT_IDS (і прибрати його з site/removed_pages.json, інакше 410 переживе звільнення — ловить test_site_removed_pages.py) +`python test_forbidden_products.py --live` (перевіряє на живому каталозі, що жоден фід не містить
 заборонений SKU). НОВИЙ ГЕНЕРАТОР вітрини ЗОБОВ'ЯЗАНИЙ викликати `is_forbidden(item)` у місці відбору — `test_forbidden_products.py` падає, якщо
 файл generate_*_feed.py / site/build_site.py не імпортує цей модуль (запобіжник проти «принцип зроблено в одному шарі, сусідній забули»).
 """
@@ -51,11 +53,21 @@ FORBIDDEN_PRODUCT_IDS = {
     "310331": "Уцінка. SILA Professiona засіб чистячий 500г для ванної кімнати (Уцінка)",
 }
 
+# ВИНЯТКИ з категорійної заборони — точкові pid, які Toysi поклала в заборонену категорію, але які НЕ підпадають під рішення власника
+# (06.11.2026, аудит: косметику/гігієну не чіпаємо). Діють ЛИШЕ проти FORBIDDEN_TOYSI_CATEGORIES; FORBIDDEN_PRODUCT_IDS не перебивають
+# (pid в обох множинах = заборонено; тест вимагає, щоб множини не перетиналися).
+FORBIDDEN_EXEMPT_PRODUCT_IDS = {
+    "280754": "Карапуз шампунь дитячий 250мл слоненя — косметика, Toysi поклала в «Догляд за будинком»; «брати» 280750 (Догляд за волоссям) і 283769 (Догляд за дитиною) у продажу",
+}
+
 
 def is_forbidden(item) -> bool:
-    """True, якщо позиція належить до забороненої на вітрині Toysi-категорії АБО її pid у FORBIDDEN_PRODUCT_IDS. Приймає dict товару."""
+    """True, якщо pid у FORBIDDEN_PRODUCT_IDS АБО (pid не у FORBIDDEN_EXEMPT_PRODUCT_IDS і позиція належить до забороненої Toysi-категорії). Приймає dict товару."""
     if not isinstance(item, dict):
         return False
-    if str(item.get("id") or "") in FORBIDDEN_PRODUCT_IDS:
+    pid = str(item.get("id") or "")
+    if pid in FORBIDDEN_PRODUCT_IDS:
         return True
+    if pid in FORBIDDEN_EXEMPT_PRODUCT_IDS:
+        return False
     return (item.get("category_name") or "").strip().lower() in FORBIDDEN_TOYSI_CATEGORIES

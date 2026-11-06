@@ -370,7 +370,7 @@ META_DOMAIN_VERIFICATION = "zrxty9pynr6k0qh1y1tpgzkfyliv7s"   # Meta Business «
 GSC_VERIFICATION = "AzAID7jv3z26c8wFyrtnzjRTa_2xDyEnFx_R-neaoZY"   # підтвердження права власності Search Console (код власника з 17.07, був на вітрині Prom; SEO 18.10: на новому сайті злетіло) — у <head> КОЖНОЇ сторінки
 
 
-def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False, defer_trackers=True):
+def page(title, body, extra_head="", description="", canonical="", og_image="", og_type="website", noindex=False, title_full="", base_root=False, defer_trackers=True, analytics=True, head_first=""):
     full_title = title_full or f"{title} — PlutusToys"
     # Головна: канонічна адреса — КОРІНЬ '/', а не '/index.html' (щоб не плодити дубль root vs index.html).
     if canonical == "index.html":
@@ -393,7 +393,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
     head_meta = "".join(m + "\n" for m in meta if m)
     return (
       "<!doctype html>\n<html lang=\"uk\">\n<head>\n"
-      "<meta charset=\"utf-8\">\n"
+      "<meta charset=\"utf-8\">\n" + head_first +   # head_first — лише review.html (meta referrer до будь-якого ресурсу); порожній — розмітка як була
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
       f"<meta name=\"google-site-verification\" content=\"{GSC_VERIFICATION}\">\n"
       f"<meta name=\"facebook-domain-verification\" content=\"{META_DOMAIN_VERIFICATION}\" />\n"
@@ -407,7 +407,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
       "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n"
       f"<link rel=\"stylesheet\" href=\"{asset_url('assets/styles.css')}\">\n"
-      f"{analytics_head(defer_trackers)}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"
+      f"{analytics_head(defer_trackers) if analytics else ''}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"   # analytics=False лише review.html (токен в адресі)
       f"{header()}\n{body}\n{footer()}\n</div>\n"
       f"{search_overlay()}\n"
       f"<script src=\"{asset_url('assets/app.js')}\"></script>\n</body>\n</html>\n"
@@ -864,6 +864,7 @@ def build():
     _load_category_ru_alt()
     _load_product_texts()
     _load_category_related()
+    _load_reviews()
     print("[build] тягну каталог Toysi…")
     cat = tp.fetch_toysi_catalog()
     # Захист (аудит #675, ВАЖЛИВО-1): порожній/усічений каталог Toysi (структурно валідний XML без HTTP-помилки) раніше давав index.json=[] і прибирання
@@ -1097,6 +1098,7 @@ def build():
     # 5) кошик + checkout + сторінка подяки
     write_cart(_cart_addons(toysi_prods))
     write_thanks()
+    write_review_page()
     write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
     groups = SITE_GROUPS
@@ -1855,6 +1857,148 @@ def _product_text_html(pid):
     if not paras:
         return ""
     return '<div class="prod-text">' + "".join(f"<p>{esc(p)}</p>" for p in paras) + "</div>"
+
+
+# ── Відгуки покупців (03.11.2026): бекенд на VPS віддає site/reviews.json ЛИШЕ з опублікованими (перевіреними) відгуками; контракт і межі — site/REVIEWS_CONTRACT.md ──
+# Формат: {"_meta": {"exported_at": ISO, "count": N}, "<id Toysi>": [{"rating","text","author","date"}, …]} (ключі з «_» службові). Нема файлу — тихо порожньо.
+# FAIL-CLOSED (SEO): файл нечитабельний / не об'єкт / нема _meta / _meta.count не ціле або ≠ кількості записів у файлі → ГОЛОСНО в stderr і ЖОДНОГО блоку/aggregateRating/review (збірка не падає).
+# Розмітка = видиме: блок і JSON-LD (aggregateRating + review) рахуються з тих самих ≤REVIEWS_SHOW_MAX показаних записів (агрегату бекенд не передає); без відгуків картка байт-у-байт як була.
+_REVIEWS_FILE = os.path.join(_HERE, "reviews.json")
+_REVIEWS = {}
+REVIEWS_SHOW_MAX = 10
+REVIEW_TEXT_MIN, REVIEW_TEXT_MAX, REVIEW_AUTHOR_MAX = 3, 1500, 40
+REVIEW_AUTHOR_DEFAULT = "Покупець"
+REVIEWS_STALE_DAYS = 7
+_REVIEW_BIDI_RX = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")   # керування напрямком (bidi): вирізаємо з text і author — інакше U+202E в імені перевертає дату в рядку відгуку (аудит-2)
+_REVIEW_INVISIBLE_CATS = frozenset(("Cf", "Zs", "Zl", "Zp", "Cc", "Mn", "Me"))   # не рахуються як видимі символи (формат, пробіли, керівні, комбіновані знаки); з тексту їх НЕ вирізаємо — ZWJ-емодзі й прапори лишаються цілими
+REVIEW_DATE_MIN = "2020-01-01"   # нижня межа дати відгуку (ISO-рядки порівнюються лексикографічно)
+
+
+def _review_visible_len(s):
+    """Кількість видимих символів: без категорій _REVIEW_INVISIBLE_CATS (U+200B, U+00AD, U+2061…, U+034F, пробіли, NBSP тощо)."""
+    return sum(1 for ch in s if unicodedata.category(ch) not in _REVIEW_INVISIBLE_CATS)
+_REVIEW_MONEY_RX = re.compile(_MONEY_RX.pattern + r"|доставк", re.I)   # гроші/доставка у відгуку — лише попередження (модерація бекенду), не блокуємо
+
+
+def _review_clean(r, today=None):
+    """Один запис відгуку → нормалізований dict або None (невалідний): bidi-символи з text/author вирізаються; rating int 1..5; text 3..1500 після trim, ≥3 ВИДИМИХ (_review_visible_len);
+    author рядок ≤40 (без видимих символів/нема → «Покупець»); date YYYY-MM-DD (справжня дата, від REVIEW_DATE_MIN і не пізніше today — київська дата збірки)."""
+    if not isinstance(r, dict):
+        return None
+    rating, text, author, date = r.get("rating"), r.get("text"), r.get("author"), r.get("date")
+    if type(rating) is not int or not 1 <= rating <= 5:   # bool/float/рядок — ні
+        return None
+    if not isinstance(text, str):
+        return None
+    text = _REVIEW_BIDI_RX.sub("", text.replace("\r\n", "\n")).strip()
+    if not REVIEW_TEXT_MIN <= len(text) <= REVIEW_TEXT_MAX or not _utf8_clean(text) or _review_visible_len(text) < REVIEW_TEXT_MIN:
+        return None
+    if author is None:
+        author = ""
+    if not isinstance(author, str):
+        return None
+    author = " ".join(_REVIEW_BIDI_RX.sub("", author).split())
+    if len(author) > REVIEW_AUTHOR_MAX or not _utf8_clean(author):
+        return None
+    if not _review_visible_len(author):
+        author = ""   # лише невидимі символи → «Покупець»
+    if not isinstance(date, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date):
+        return None
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    if date < REVIEW_DATE_MIN or (today is not None and d > today):
+        return None   # дата з майбутнього (datePublished не може бути завтрашнім) або до REVIEW_DATE_MIN — не публікуємо
+    return {"rating": rating, "text": text, "author": author or REVIEW_AUTHOR_DEFAULT, "date": date}
+
+
+def _load_reviews(now=None):
+    """site/reviews.json → _REVIEWS {"<id>": [≤REVIEWS_SHOW_MAX валідних, від нових до старих]}. Fail-closed (див. вище); невалідні записи — пропуск з ОДНИМ зведеним попередженням."""
+    global _REVIEWS
+    _REVIEWS = {}
+    off = "жодного відгуку й aggregateRating не публікуємо (fail-closed)"
+    data = _read_json_loud(_REVIEWS_FILE, "reviews.json", off)
+    if data is _MISSING:
+        return _REVIEWS
+    if not isinstance(data, dict):
+        print(f"[build] ⚠ reviews.json — очікується об'єкт {{_meta, id: [відгуки]}}, отримано {type(data).__name__} — {off}", file=sys.stderr)
+        return _REVIEWS
+    meta = data.get("_meta")
+    cnt = meta.get("count") if isinstance(meta, dict) else None
+    if type(cnt) is not int or cnt < 0:
+        print(f"[build] ⚠ reviews.json — нема _meta або _meta.count не ціле невід'ємне (файл неповний або не від бекенду) — {off}", file=sys.stderr)
+        return _REVIEWS
+    entries = {k: v for k, v in data.items() if not k.startswith("_")}
+    actual = sum(len(v) if isinstance(v, list) else 1 for v in entries.values())   # валідні + невалідні; значення-не-масив рахується як 1 запис
+    if actual != cnt:
+        print(f"[build] ⚠ reviews.json — _meta.count={cnt}, а записів у файлі {actual} (файл обірваний або змінений не бекендом) — {off}", file=sys.stderr)
+        return _REVIEWS
+    exp = meta.get("exported_at")
+    exp_dt = _aware_dt(exp.strip().replace("Z", "+00:00")) if isinstance(exp, str) else None
+    now = now or datetime.now(timezone.utc)
+    today = (now + timedelta(hours=_eu_dst_hours(now))).date()   # київська дата (як _kyiv_now, але від переданого now — для тестів)
+    if exp_dt is None:
+        print("[build] ⚠ reviews.json: _meta.exported_at нема, нечитабельне або без часового поясу — свіжість вивантаження невідома (відгуки показано)", file=sys.stderr)
+    elif exp_dt - now > timedelta(days=1):
+        print(f"[build] ⚠ reviews.json: _meta.exported_at у майбутньому (exported_at {exp}) — некоректний час вивантаження або годинник бекенду (відгуки показано)", file=sys.stderr)
+    elif now - exp_dt > timedelta(days=REVIEWS_STALE_DAYS):
+        print(f"[build] ⚠ reviews.json: вивантаження старше {REVIEWS_STALE_DAYS} діб (exported_at {exp}) — бекенд не оновлює файл? (відгуки показано)", file=sys.stderr)
+    bad_keys, bad_recs, out = [], 0, {}
+    for k, v in entries.items():
+        if re.fullmatch(r"[1-9][0-9]*", k) is None or not isinstance(v, list):   # канонічний id Toysi: без ведучих нулів ("00101" не збігся б із жодною карткою)
+            bad_keys.append(k)
+            continue
+        good = []
+        for r in v:
+            c = _review_clean(r, today)
+            if c is None:
+                bad_recs += 1
+            else:
+                good.append(c)
+        if good:
+            good.sort(key=lambda x: x["date"], reverse=True)   # від нових до старих; однакова дата — порядок бекенду (сортування стабільне)
+            out[k] = good[:REVIEWS_SHOW_MAX]
+    if bad_recs or bad_keys:
+        print(f"[build] ⚠ reviews.json: пропущено невалідних записів {bad_recs} (rating 1..5, text {REVIEW_TEXT_MIN}..{REVIEW_TEXT_MAX}, author ≤{REVIEW_AUTHOR_MAX}, date YYYY-MM-DD)"
+              + (f"; ключі не з цифр (або з ведучим нулем) чи значення не масив, відкинуто: {bad_keys[:10]}" if bad_keys else ""), file=sys.stderr)
+    money = sorted({k for k, v in out.items() for r in v if _REVIEW_MONEY_RX.search(r["text"])}, key=_id_key)
+    if money:
+        print(f"[build] ⚠ reviews.json: у показаних відгуках є гроші/доставка (₴/грн/«ціна»/«доставк…») — показано як є, перевір модерацію; товари: {money[:10]} (усього {len(money)})", file=sys.stderr)
+    _REVIEWS = out
+    return _REVIEWS
+
+
+def _review_avg(rv):
+    """Середня оцінка з 1 знаком, округлення half-up, рядок «4.7» (для JSON-LD; на сторінці — з комою). Цілочисельно, без float-похибки."""
+    s, n = sum(r["rating"] for r in rv), len(rv)
+    q = (20 * s + n) // (2 * n)   # round_half_up(10·s/n)
+    return f"{q // 10}.{q % 10}"
+
+
+def _review_stars(n):
+    return "★" * n + "☆" * (5 - n)
+
+
+def _reviews_html(rv):
+    """Блок «Відгуки покупців» на картці (лише ≥1 валідний відгук; інакше порожньо — розмітка картки як була). Усі тексти — esc()."""
+    if not rv:
+        return ""
+    avg = _review_avg(rv)
+    q = int(avg.replace(".", ""))
+    n = len(rv)
+    items = "".join(
+        '<li class="rv" style="margin:0 0 12px">'
+        f'<div class="rv-head"><span class="rv-stars" aria-hidden="true" style="color:var(--accent)">{_review_stars(r["rating"])}</span> '
+        f'<span class="rv-num">{r["rating"]} з 5</span> · <b class="rv-author">{esc(r["author"])}</b> · '
+        f'<time class="rv-date" datetime="{r["date"]}">{r["date"][8:10]}.{r["date"][5:7]}.{r["date"][:4]}</time></div>'
+        f'<p class="rv-text" style="margin:4px 0 0">{esc(r["text"]).replace(chr(10), "<br>")}</p></li>'
+        for r in rv)
+    return ('<section class="desc reviews" id="reviews" aria-labelledby="reviews-h">'
+            '<h2 id="reviews-h">Відгуки покупців</h2>'
+            f'<p class="rv-sum"><span aria-hidden="true" style="color:var(--accent)">{_review_stars((q + 5) // 10)}</span> '
+            f'<b>{avg.replace(".", ",")}</b> з 5 · {n} відгук{_plural(n)}</p>'
+            f'<ul class="rv-list" style="list-style:none;padding:0;color:inherit">{items}</ul></section>')
 
 
 # ── Перекриття категорії окремого Toysi-товару (SEO 23.10): у категоріях є чужі товари (аудит: «Металеві моделі» — чашки, шахи), а категорія береться з поля постачальника (`category_name`), тож перенесення робимо ДАНИМИ ──
@@ -2891,6 +3035,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     # Текст картки від SEO (site/product_texts.json): під описом Toysi, ПЕРЕД його характеристиками (якщо вони є — вони йдуть окремим блоком нижче), лише після блоку ціни/оплати/доставки,
     # тож перший екран мобільного (фото, ціна, бейджі, закріплена панель «У кошик») не зміщується. Нема тексту — розмітка рівно як була.
     prod_text_html = _product_text_html(p["id"])
+    _rv = _REVIEWS.get(str(p["id"])) or []   # ≤REVIEWS_SHOW_MAX уже відібраних; ті самі записи — і блок, і JSON-LD
     if prod_text_html and specs_html:
         desc_block = (f'<div class="desc"><h2>Опис</h2>{desc_html}</div>' + prod_text_html + f'<div class="desc specs">{specs_html}</div>')
     else:
@@ -2951,7 +3096,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
       + (_shadow_note if _shadow_twin else (f'<div class="price-row"><div class="price sale-price">{p["price"]} ₴</div><s class="pr-old">{p["old_price"]} ₴</s>{sale_badge_html(p)}' if p.get("old_price") else f'<div class="price-row"><div class="price">{p["price"]} ₴</div>') +
       f'<div class="avail {oos}">{avail}</div></div>'
       + (sale_until_html(p["id"]) if p.get("old_price") else "") + oos_note + buy_info) +
-      desc_block +
+      desc_block + _reviews_html(_rv) +
       '</div></div>'
       + (f'<section class="related"><h2>{esc(related_title)}</h2>{grid(related)}</section>' if related else "")
       + (f'<section class="related"><h2>{esc(similar_title)}</h2>{grid(similar)}</section>' if similar else "")
@@ -2997,6 +3142,10 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     _gt = _valid_gtin(p.get("barcode"))
     if _gt:
         ld[_gt[0]] = _gt[1]
+    if _rv:   # лише коли блок відгуків відрендерено на ЦІЙ сторінці (shippingDetails не ставимо — рішення власника)
+        ld["aggregateRating"] = {"@type": "AggregateRating", "ratingValue": _review_avg(_rv), "reviewCount": str(len(_rv)), "bestRating": "5", "worstRating": "1"}
+        ld["review"] = [{"@type": "Review", "author": {"@type": "Person", "name": r["author"]}, "datePublished": r["date"],
+                         "reviewRating": {"@type": "Rating", "ratingValue": str(r["rating"]), "bestRating": "5"}, "reviewBody": r["text"]} for r in _rv]
     # безпечно в <script>: екрануємо КОЖЕН '<' у < (валідний JSON) — жоден HTML-вектор
     # (</script>, <!--, <script) не може вийти літерально, навіть із назви товару.
     # chr(92) = '\' — однозначно, без крихкого backslash-літерала.
@@ -3133,6 +3282,85 @@ def write_thanks():
       '</div>'
     )
     _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True, defer_trackers=False))   # purchase — без відкладання (рішення Консультанта 12.10)
+
+REVIEW_RATING_LABELS = ((5, "чудово"), (4, "добре"), (3, "нормально"), (2, "погано"), (1, "дуже погано"))
+# Скрипт форми відгуку: посилання `review.html#t=<токен>` — токен лише у ФРАГМЕНТІ (не йде ні в Referer, ні в журнали сервера; аудит 04.11); одразу після зчитування фрагмент прибирається
+# з адресного рядка (history.replaceState), далі токен лише в змінній (не в HTML, не в логах, не в аналітиці) і йде лише в ТІЛІ POST api/review/form і POST api/review. Назва товару — textContent. `?t=` не підтримується.
+_REVIEW_JS = (
+    '(function(){'
+    'var d=document,st=d.getElementById("rv-state"),f=d.getElementById("review-form"),msg=d.getElementById("rv-msg"),btn=d.getElementById("rv-submit"),'
+    'ta=d.getElementById("rv-text"),cnt=d.getElementById("rv-count"),au=d.getElementById("rv-author"),pn=d.getElementById("rv-product"),busy=false,t="";'
+    'function clean(){try{history.replaceState(null,"",location.pathname);}catch(e){}}'
+    'function say(s){f.hidden=true;st.textContent=s;st.hidden=false;}'
+    'function bad(){say("Посилання недійсне або вже використане.");}'
+    'function later(){say("Не вдалося відкрити форму відгуку. Спробуйте пізніше.");}'
+    'function unlock(){busy=false;btn.disabled=false;btn.textContent="Надіслати відгук";}'
+    'var old=/[?&]t=/.test(location.search),m=/^#(?:.*&)?t=([^&]*)/.exec(location.hash||"");'
+    'try{t=m?decodeURIComponent(m[1]):"";}catch(e){t="";}'
+    'clean();'   # токен ОДРАЗУ прибираємо з адресного рядка (і з історії): далі він лише в змінній t; перезавантаження → «недійсне посилання» (прийнятно, аудит-2)
+    'if(old||!t||t.length>512){bad();return;}'   # старий формат ?t= НЕ підтримуємо: query йде в Referer і журнали сервера
+    'ta.addEventListener("input",function(){cnt.textContent=ta.value.length+" / 1500";});'
+    'fetch("api/review/form",{method:"POST",cache:"no-store",credentials:"omit",headers:{"Content-Type":"application/json"},body:JSON.stringify({t:t})}).then(function(r){'   # токен у тілі, не в query: не потрапляє в журнал Apache
+      'if(r.status===404||r.status===410){bad();return;}'
+      'if(!r.ok){later();return;}'
+      'return r.json().then(function(j){'
+        'var nm=j&&(j.product_name||j.name||j.title);'
+        'if(nm){pn.textContent=String(nm);}else{d.getElementById("rv-product-line").hidden=true;}'
+        'st.hidden=true;f.hidden=false;'
+      '});'
+    '}).catch(later);'
+    'f.addEventListener("submit",function(e){'
+      'e.preventDefault();if(busy)return;'
+      'var sel=f.querySelector(\'input[name="rating"]:checked\'),text=ta.value.trim(),name=au.value.trim();'
+      'msg.textContent="";'
+      'if(!sel){msg.textContent="Оберіть оцінку від 1 до 5.";return;}'
+      'if(text.length<3){msg.textContent="Напишіть кілька слів про товар (щонайменше 3 символи).";ta.focus();return;}'
+      'if(text.length>1500){msg.textContent="Відгук задовгий: до 1500 символів.";ta.focus();return;}'
+      'if(name.length>40){name=name.slice(0,40);}'
+      'busy=true;btn.disabled=true;btn.textContent="Надсилаємо…";'
+      'fetch("api/review",{method:"POST",cache:"no-store",credentials:"omit",headers:{"Content-Type":"application/json"},'
+        'body:JSON.stringify({t:t,rating:+sel.value,text:text,author_name:name})}).then(function(r){'
+        'if(r.ok){t="";say("Дякуємо! Відгук з’явиться після перевірки.");return;}'
+        'if(r.status===404||r.status===410||r.status===409){bad();return;}'
+        'if(r.status===429){msg.textContent="Забагато спроб. Зачекайте кілька хвилин і спробуйте ще раз.";}'
+        'else if(r.status===400||r.status===422){msg.textContent="Перевірте оцінку й текст відгуку та спробуйте ще раз.";}'
+        'else{msg.textContent="Не вдалося надіслати відгук. Спробуйте пізніше.";}'
+        'unlock();'
+      '}).catch(function(){msg.textContent="Немає зв’язку із сервером. Спробуйте пізніше.";unlock();});'
+    '});'
+    '})();'
+)
+
+
+def write_review_page():
+    """review.html — форма відгуку за одноразовим посиланням (`review.html#t=<токен>`; токен видає й перевіряє бекенд VPS: POST api/review/form, POST api/review — див. site/REVIEWS_CONTRACT.md).
+    noindex, поза sitemap (не в static_urls) і Disallow у robots.txt; БЕЗ аналітики (analytics=False): page_view/Pixel відправили б адресу з токеном третім сторонам."""
+    radios = "".join(
+        f'<label class="pay"><input type="radio" name="rating" value="{n}" required> <span aria-hidden="true" style="color:var(--accent)">{_review_stars(n)}</span> {n} з 5 — {lbl}</label>'
+        for n, lbl in REVIEW_RATING_LABELS)
+    body = (
+      '<section class="doc review-page" id="review-page">'
+      '<h1 class="page" style="margin-left:0;margin-right:0">Відгук про товар</h1>'
+      '<p id="rv-state" role="status" aria-live="polite">Перевіряємо посилання…</p>'
+      '<form id="review-form" hidden novalidate>'
+        '<p id="rv-product-line">Товар: <b id="rv-product"></b></p>'
+        '<fieldset class="field" style="border:0;padding:0;margin:12px 0;min-width:0">'
+          '<legend style="font-size:13px;color:var(--muted);margin-bottom:6px;padding:0">Ваша оцінка</legend>' + radios +
+        '</fieldset>'
+        '<div class="field"><label for="rv-text">Ваш відгук</label>'
+          '<textarea id="rv-text" name="text" rows="6" minlength="3" maxlength="1500" required placeholder="Що сподобалось, що ні, кому підійде"></textarea>'
+          '<div class="note" id="rv-count">0 / 1500</div></div>'
+        '<div class="field"><label for="rv-author">Ваше ім’я <span style="opacity:.6">(необовʼязково)</span></label>'
+          '<input id="rv-author" name="author_name" maxlength="40" autocomplete="given-name"></div>'
+        '<button class="btn" type="submit" id="rv-submit">Надіслати відгук</button>'
+        '<div class="note" id="rv-msg" role="alert" aria-live="polite"></div>'
+        '<p class="note">Відгук з’явиться на сторінці товару після перевірки.</p>'
+      '</form>'
+      '</section>'
+      '<script>' + _REVIEW_JS + '</script>'
+    )
+    _write("review.html", page("Відгук про товар", body, description="Залиште відгук про товар, придбаний у PlutusToys.", noindex=True, analytics=False,
+                               head_first='<meta name="referrer" content="no-referrer">\n'))   # жодного Referer з цієї сторінки, ПЕРШИМ у head — до stylesheet/іконок (аудити 04.11)
 
 # ── /ig.html: посадкова сторінка для bio-посилання Instagram (SMM 12.10.2026: у підписах IG посилання не клікабельні, єдине клікабельне місце — шапка профілю) ──
 IG_FEATURED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ig_featured.json")
@@ -3901,6 +4129,7 @@ def write_robots():
            "Allow: /\n"
            "Disallow: /cart.html\n"
            "Disallow: /thanks.html\n"
+           "Disallow: /review.html\n"
            f"Sitemap: {SITE_URL}/sitemap.xml\n")
 
 

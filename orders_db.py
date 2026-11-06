@@ -582,6 +582,7 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
               OR (payment_method = 'prepaid' AND payment_confirmed = 1)
           )
           AND items NOT LIKE '%"toysi_code": "rt-%'
+          AND items NOT LIKE '%"toysi_code": "dropt-%'
         """
     ).fetchall()
     return [_row_to_dict(row) for row in rows]

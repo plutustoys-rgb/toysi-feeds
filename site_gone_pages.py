@@ -120,8 +120,10 @@ def main() -> int:
         # (порожній файл після невдалого деплою/мерджу зняв би 410 з усіх зняттих сторінок → 404). Наявну мапу не чіпаємо.
         try:
             prev = [l for l in OUT_FILE.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
-        except OSError:
+        except FileNotFoundError:
             prev = []
+        except (OSError, ValueError):  # наявна мапа нечитна (не UTF-8/права) — вважаємо її непорожньою: не стираємо, але гучно
+            prev = ["<нечитна наявна мапа>"]
         if prev:
             _warn(f"{SOURCE_JSON} ПОРОЖНІЙ, а наявна мапа має {len(prev)} адрес — мапу 410 не оновлюю (щоб прибрати всі 410 навмисно — видали мапу вручну)")
             _alert("мапу 410 НЕ оновлено: " + " | ".join(_warn.log))

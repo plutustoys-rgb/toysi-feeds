@@ -144,6 +144,11 @@ def suite(gen_src, script_src):
     c("генератор: {products:{}, categories:{}} при непорожній мапі → теж shrink-guard (rc=1, мапа ціла)", rc == 1 and lines == ["product-1 gone"])
     rc, lines, err, _ = run_gen(g, data={"products": {}, "categories": {}}, preexisting="# old\n")
     c("генератор: порожнє джерело при ПОРОЖНІЙ наявній мапі → не збій (rc=0, мапа порожня)", rc == 0 and lines == [])
+    rc, lines, err, out = run_gen(g, raw_text="{}", preexisting="")
+    g.OUT_FILE.write_bytes(b"\xff\xfe\x00bad")
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        rc2 = g.main()
+    c("генератор: порожнє джерело + нечитна (не UTF-8) наявна мапа → без traceback, rc=1, мапу не стерто", rc2 == 1 and g.OUT_FILE.read_bytes() == b"\xff\xfe\x00bad")
     rc, lines, err, out = run_gen(g, raw_text="[1, 2]")
     c("генератор: JSON не того типу і мапи ще нема → порожня мапа існує (RewriteMap txt: без файлу валить configtest)", rc == 1 and out.exists() and lines == [])
     rc, lines, err, out = run_gen(g, preexisting="# old\nproduct-1 gone\n")

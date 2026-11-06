@@ -40,7 +40,25 @@ chk("is_forbidden: категорія → True, інша → False", fp.is_forbi
 chk("is_forbidden: регістр/пробіли/не-dict", fp.is_forbidden(item(3, "  МЕЧІ, НОЖІ ТА ШАБЛІ ")) and not fp.is_forbidden(None) and not fp.is_forbidden({}))
 
 # ── 1б. точкові pid (FORBIDDEN_PRODUCT_IDS) — поза забороненою категорією ──
-chk("FORBIDDEN_PRODUCT_IDS: рівно 6 pid рішення Консультанта 07.10", set(fp.FORBIDDEN_PRODUCT_IDS) == {"181821", "166976", "180570", "293570", "275143", "306414"})
+chk("FORBIDDEN_PRODUCT_IDS: рівно 9 pid — 6 рішення Консультанта 07.10 + 3 хімії поза категоріями 06.11", set(fp.FORBIDDEN_PRODUCT_IDS) == {"181821", "166976", "180570", "293570", "275143", "306414", "279732", "310330", "310331"})
+# ── 1а'. побутова хімія (власник 06.11 «хімію прибирай»): п'ять Toysi-категорій точним написанням живого фіду; НЕ-хімія не зачеплена ──
+CHEM = {"засоби для прання", "догляд за будинком", "засоби для миття посуду", "new: побутова хімія", "прання та миття посуду"}
+chk("хімія: рівно «мечі…» + 5 категорій хімії", fp.FORBIDDEN_TOYSI_CATEGORIES == {"мечі, ножі та шаблі"} | CHEM)
+chk("хімія: сирі назви Toysi (регістр/двокрапка) → True", all(fp.is_forbidden(item(10 + i, c)) for i, c in enumerate(
+    ["Засоби для прання", "Догляд за будинком", "Засоби для миття посуду", "NEW: ПОБУТОВА ХІМІЯ", "Прання та миття посуду"])))
+chk("хімія: суміжне НЕ заборонено (косметика, гігієна, іграшкові набори для прибирання, освіжувач-«Літак» 299076, «Кухні і посуд»)",
+    not any(fp.is_forbidden(item(p, c)) for p, c in [(20, "Догляд за тілом"), (21, "Гігієнічні вироби"), (22, "Набори для прибирання"), (299076, "Іграшки антистрес"),
+                                                      (23, "Кухні і посуд"), (24, "Дитячий посуд"), (25, "NEW: ПОБУТОВА ХІМІЯ (інше)")]))
+chk("хімія: точкові 279732 (догляд за тілом), 310330/310331 (Уцінка) → True", all(fp.is_forbidden(item(p, c)) for p, c in [(279732, "Догляд за тілом та волоссям"), (310330, "Уцінка"), (310331, "Уцінка")]))
+# ── 1а''. винятки з категорійної заборони (аудит 06.11): дитячий шампунь 280754 у «Догляд за будинком» лишається; сусід тієї ж категорії — ні ──
+chk("винятки: рівно {280754}, не перетинаються з FORBIDDEN_PRODUCT_IDS", set(fp.FORBIDDEN_EXEMPT_PRODUCT_IDS) == {"280754"} and not (set(fp.FORBIDDEN_EXEMPT_PRODUCT_IDS) & set(fp.FORBIDDEN_PRODUCT_IDS)))
+chk("винятки: 280754 у «Догляд за будинком» → False; 279737 у тій самій категорії → True", not fp.is_forbidden(item(280754, "Догляд за будинком")) and fp.is_forbidden(item(279737, "Догляд за будинком")))
+_saved = dict(fp.FORBIDDEN_EXEMPT_PRODUCT_IDS)
+fp.FORBIDDEN_EXEMPT_PRODUCT_IDS["166976"] = "тест: виняток НЕ перебиває точкову заборону"
+chk("винятки: pid і у винятках, і у FORBIDDEN_PRODUCT_IDS → заборонено (виняток діє лише проти категорії)", fp.is_forbidden(item(166976, "Уцінка")))
+fp.FORBIDDEN_EXEMPT_PRODUCT_IDS.clear()
+fp.FORBIDDEN_EXEMPT_PRODUCT_IDS.update(_saved)
+chk("винятки: звільнення одного pid не відкриває категорію для інших", fp.is_forbidden(item(280755, "Догляд за будинком")) and fp.is_forbidden(item(280756, CAT)))
 chk("is_forbidden: pid зі списку → True навіть у невинній категорії; сусідній pid тієї ж категорії → False",
     fp.is_forbidden(item(166976, "Уцінка")) and fp.is_forbidden(item("306414", "Маскарадні костюми")) and not fp.is_forbidden(item(166977, "Уцінка")))
 

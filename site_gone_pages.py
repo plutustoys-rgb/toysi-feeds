@@ -115,6 +115,17 @@ def main() -> int:
             _write_atomic(OUT_FILE, HEADER)
         _alert("мапу 410 НЕ оновлено: " + " | ".join(_warn.log) + " Зняті сторінки віддають те, що в наявній мапі (або 404, якщо її нема).")
         return 1
+    if not src[0] and not src[1]:
+        # shrink-guard: валідний, але ПОРОЖНІЙ джерельний JSON ({} / products і categories порожні) при непорожній наявній мапі — майже напевно збій, не рішення
+        # (порожній файл після невдалого деплою/мерджу зняв би 410 з усіх зняттих сторінок → 404). Наявну мапу не чіпаємо.
+        try:
+            prev = [l for l in OUT_FILE.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
+        except OSError:
+            prev = []
+        if prev:
+            _warn(f"{SOURCE_JSON} ПОРОЖНІЙ, а наявна мапа має {len(prev)} адрес — мапу 410 не оновлюю (щоб прибрати всі 410 навмисно — видали мапу вручну)")
+            _alert("мапу 410 НЕ оновлено: " + " | ".join(_warn.log))
+            return 1
     lines = build_lines(*src)
     if _warn.log:
         _alert("мапу 410 записано, але з пропусками: " + " | ".join(_warn.log[:5]) + (f" (+ ще {len(_warn.log) - 5})" if len(_warn.log) > 5 else ""))

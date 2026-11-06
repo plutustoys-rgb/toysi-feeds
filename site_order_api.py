@@ -932,7 +932,8 @@ class Handler(SimpleHTTPRequestHandler):
         """POST /api/review/form {"t": токен} → 200 {product_id, product_name} | 404 (нема/використаний/прострочений — причини не розрізняємо) | 429."""
         if not _REVIEW_LIMITER.allow(self._client_ip()):
             return self._json(429, {"error": "забагато запитів"}, no_store=True)
-        token = self._read_json().get("t")
+        p = self._read_json()
+        token = p.get("t") if isinstance(p, dict) else None            # тіло не-об'єкт JSON ([1], "x", null) → 404, а не обрив з'єднання (аудит #1108)
         try:
             with get_connection() as conn:
                 info = reviews_db.form_info(conn, token)
@@ -948,6 +949,8 @@ class Handler(SimpleHTTPRequestHandler):
         if not _REVIEW_LIMITER.allow(self._client_ip()):
             return self._json(429, {"error": "забагато запитів"}, no_store=True)
         p = self._read_json()
+        if not isinstance(p, dict):
+            p = {}
         try:
             with get_connection() as conn:
                 st, rid = reviews_db.submit(conn, p.get("t"), p.get("rating"), p.get("text"), p.get("author_name"))

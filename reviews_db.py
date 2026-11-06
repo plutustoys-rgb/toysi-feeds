@@ -137,7 +137,12 @@ def issue_token(conn: sqlite3.Connection, order: dict, product_id: str, now=None
         conn.execute("INSERT INTO reviews (order_id, product_id, token_hash, token_expires_at, invited_at, status) VALUES (?, ?, ?, ?, ?, 'invited')",
                      (order["internal_order_id"], pid, _hash(token), _iso(t + timedelta(days=TOKEN_TTL_DAYS)), _iso(t)))
     except sqlite3.IntegrityError:
-        return None                                  # (order, product) уже є — друге запрошення не видаємо
+        # (order, product) уже є: друге запрошення не видаємо, КРІМ випадку «лист не дійшов / термін вийшов» — рядок досі 'invited' (текст не писали) і токен ПРОСТРОЧЕНИЙ:
+        # тоді перевидаємо новий токен на той самий рядок (старий хеш замінюється → старе посилання мертве). Живе посилання перевидати не можна (аудит #1108).
+        new_hash = _hash(token)
+        cur = conn.execute("UPDATE reviews SET token_hash=?, token_expires_at=?, invited_at=? WHERE order_id=? AND product_id=? AND status='invited' AND token_used_at IS NULL AND token_expires_at <= ?",
+                           (new_hash, _iso(t + timedelta(days=TOKEN_TTL_DAYS)), _iso(t), order["internal_order_id"], pid, _iso(t)))
+        return token if cur.rowcount == 1 else None
     return token
 
 

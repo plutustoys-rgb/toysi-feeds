@@ -148,6 +148,25 @@ chk("ліміт запитів на IP: після 3-х → 429", codes == [404,
 src = (HERE / "site_order_api.py").read_text(encoding="utf-8")
 chk("токен не друкується в журнал (немає print із токеном у відгукових обробниках)", "print(f\"[site_order_api] review" in src and "{token}" not in src[src.index("def _handle_review_form"):src.index("def _client_ip")])
 
+# не-об'єкт JSON у тілі → відповідь (404), а не виняток (аудит #1108)
+for n_, body in enumerate(([1], "x", 123, None)):
+    chk(f"тіло JSON {body!r} (не об'єкт): form → 404, submit → 404 (без винятку)", call("_handle_review_form", body, ip=f"7.7.7.{n_}")[0] == 404 and call("_handle_review_submit", body, ip=f"7.7.8.{n_}")[0] == 404)
+
+# перевидача простроченого посилання
+o9 = new_order("E1", [{"toysi_code": "500", "name": "Т5", "qty": 1, "price": 10}])
+with orders_db.get_connection() as conn:
+    tk1 = rdb.issue_token(conn, o9, "500", NOW)
+    chk("перше посилання видано; друге (живе) — ні", bool(tk1) and rdb.issue_token(conn, o9, "500", NOW + timedelta(days=1)) is None)
+    late = NOW + timedelta(days=rdb.TOKEN_TTL_DAYS + 1)
+    tk2 = rdb.issue_token(conn, o9, "500", late)
+    chk("прострочене посилання перевидається новим; старе мертве, нове живе", bool(tk2) and tk2 != tk1 and rdb.form_info(conn, tk1, late) is None and rdb.form_info(conn, tk2, late) is not None)
+    rdb.submit(conn, tk2, 5, "Нормально, дякуємо", "Іра", late)
+    chk("після використання (pending) перевидати не можна навіть через роки", rdb.issue_token(conn, o9, "500", NOW + timedelta(days=500)) is None)
+    conn.commit()
+NL = chr(10)
+ESC, BEL = chr(27), chr(7)
+chk("review_moderate._clean: ESC/керівні → «?», перенос рядка зберігається", rm._clean("a" + ESC + "[31mb" + BEL + "c" + NL + "d") == "a?[31mb?c" + NL + "d")
+
 # ── CLI
 o4 = new_order("D1", [{"toysi_code": "400", "name": "Т4", "qty": 1, "price": 10}])
 buf = io.StringIO()

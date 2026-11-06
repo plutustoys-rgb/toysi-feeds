@@ -17,8 +17,13 @@ import reviews_db
 LINK = "https://plutustoys.com.ua/review.html#t={t}"
 
 
+def _clean(s):
+    """Керівні символи (ESC-послідовності тощо) з тексту покупця не друкуємо в консоль модератора (аудит #1108): лишаємо перенос рядка й табуляцію."""
+    return "".join(ch if (ch in "\n\t" or ord(ch) >= 32) and ord(ch) != 127 else "?" for ch in str(s or ""))
+
+
 def _short(s, n=70):
-    s = " ".join(str(s or "").split())
+    s = " ".join(_clean(s).split())
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
@@ -36,8 +41,8 @@ def cmd_show(conn, rid):
         print(f"нема відгуку #{rid}")
         return 1
     for k in ("id", "status", "rating", "product_id", "order_id", "author", "submitted_at", "moderated_at", "moderated_by"):
-        print(f"{k}: {r[k]}")
-    print("text:\n" + (r["text"] or ""))
+        print(f"{k}: {_clean(r[k])}")
+    print("text:\n" + _clean(r["text"]))
     return 0
 
 

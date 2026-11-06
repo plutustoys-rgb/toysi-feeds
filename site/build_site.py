@@ -189,6 +189,8 @@ def is_russian_language_item(name):
 def site_product_code(pid):
     """Власний код товару для покупця: Toysi «176003» -> «PT-176003», RoyalToys «rt-X» -> «PT-RX» (літера R відрізняє постачальника). Лише показ — id (ключ кошика/замовлень/фідів) не змінюється."""
     pid = str(pid)
+    if pid.startswith("dropt-"):
+        return "PT-D" + pid[6:]   # Dropt «dropt-123» -> «PT-D123» (літера D відрізняє постачальника, як R у RoyalToys)
     return "PT-R" + pid[3:] if pid.startswith("rt-") else "PT-" + pid
 
 
@@ -715,6 +717,142 @@ def _load_supplier_rt(now=None):
     return out
 
 
+# ── Третій постачальник Dropt (04.11.2026; дані — Код: dropt_supplier_export.py, сайт — тут). ЗА ВОРОТАМИ: SITE_DROPT_LIVE=1 вмикає; будь-що інше (нема/0/порожньо/« 1») = ВИМКНЕНО:
+# файл НЕ читається, жодної картки/категорії/запису в index.json/sitemap — вихід збірки такий самий, як без Dropt.
+# <корінь репо>/supplier_dropt.json (ПОЗА site/, у .gitignore, Apache denied; шлях — змінна SUPPLIER_DROPT_FILE, як в експортера): {"updated": ISO UTC, "min_checked_at", "catalog_n",
+#   "items": {"dropt-<цифри>": {name, description, vendor, vendor_code, category («Розділ / Підрозділ» укр.), images[https://plutustoys.com.ua/img/dropt/<id>-N.jpg], price (формула сайту), cost, stock, index, checked_at, …}}}
+# «cost» (закупівля «Дроп») тут НЕ ЧИТАЄТЬСЯ ВЗАГАЛІ — ні в картку, ні у внесок (внесок рахується як для rt без опту), тож потрапити в html/index.json/JSON-LD/логи не може.
+# Решта — як RoyalToys: лише при LIQPAY_LIVE (передоплата), картки з rt=1 (поза головною/акціями/add-on, після Toysi, index-rt.json, текст «лише передоплата»), невідома категорія → не публікуємо.
+# Відмінності від RT (fail-closed): категорія сайту з мапи має вже існувати серед категорій Toysi цієї збірки (нових сторінок категорій Dropt не створює); картка, чию ціну/наявність читали
+# давніше DROPT_ITEM_MAX_AGE_H від моменту збірки, не показується; індексація — лише якщо і "index": true у файлі, і id є в dropt_index_ids.json (той самий файл, що читає експортер; формат як rt_index_ids.json).
+DROPT_LIVE = os.environ.get("SITE_DROPT_LIVE") == "1"
+SUPPLIER_DROPT_FILE = os.environ.get("SUPPLIER_DROPT_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_dropt.json")
+DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_category_map.json")
+DROPT_INDEX_IDS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_index_ids.json")
+SUPPLIER_DROPT_MAX_AGE_DAYS = SUPPLIER_RT_MAX_AGE_DAYS   # той самий поріг, що для RoyalToys (3 доби від «updated»)
+DROPT_ITEM_MAX_AGE_H = 6                                 # checked_at картки старший (від моменту збірки) → картку не показуємо
+_DROPT_ID_RX = re.compile(r"dropt-[0-9]{1,12}")          # лише ASCII-цифри (\d пропустив би юнікод-цифри)
+_DROPT_VCODE_RX = re.compile(r"[0-9A-Za-z._-]{1,40}")
+DROPT_MAX_PRICE = 1_000_000          # ₴; більше — збій даних, а не товар
+DROPT_MAX_STOCK = 100_000
+DROPT_NAME_MAX = 300
+_DROPT_BIDI_RX = re.compile("[\u202a-\u202e\u2066-\u2069]")   # керування напрямком тексту (підміна вигляду назви)
+
+
+def _dropt_int(x, hi):
+    """Ціле 0..hi лише з int (не bool) або float без дробової частини (1890.0); рядок/дріб/bool/NaN/поза межами → None."""
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, float):
+        if not math.isfinite(x) or not x.is_integer():
+            return None
+        x = int(x)
+    return x if isinstance(x, int) and 0 <= x <= hi else None
+
+
+def _dropt_name_ok(name):
+    """Назва: рядок, непорожня, ≤ DROPT_NAME_MAX, без керівних символів (Cc) і bidi-керування."""
+    return (isinstance(name, str) and name.strip() != "" and len(name.strip()) <= DROPT_NAME_MAX
+            and not any(unicodedata.category(c) == "Cc" for c in name) and not _DROPT_BIDI_RX.search(name))
+
+
+def _load_dropt_index_ids():
+    """dropt_index_ids.json {"ids": ["dropt-…"]} (як rt_index_ids.json; веде SEO) — id, відкриті для Google. Нема/битий файл → порожньо (усе noindex)."""
+    try:
+        with open(DROPT_INDEX_IDS_FILE, encoding="utf-8-sig") as f:
+            d = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return set()
+    ids = d.get("ids") if isinstance(d, dict) else d
+    return {i for i in ids if isinstance(i, str) and _DROPT_ID_RX.fullmatch(i)} if isinstance(ids, list) else set()
+
+
+def _load_supplier_dropt(site_cats, now=None):
+    """{id: елемент у форматі Toysi} для відібраних карток Dropt. site_cats — назви категорій Toysi цієї збірки (ціль мапи мусить серед них бути).
+    Ворота вимкнені / нема файлу / LIQPAY не live / файл застарілий — порожньо; поламаний — ГОЛОСНО (stderr), збірка не падає."""
+    if not DROPT_LIVE:
+        return {}
+    try:
+        with open(SUPPLIER_DROPT_FILE, encoding="utf-8-sig") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        print("[build] ⚠ SITE_DROPT_LIVE=1, але supplier_dropt.json нема — карток Dropt не буде", file=sys.stderr)
+        return {}
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"[build] ⚠ supplier_dropt.json НЕ прочитано ({type(e).__name__}) — карток Dropt не буде", file=sys.stderr)
+        return {}
+    items = raw.get("items") if isinstance(raw, dict) else None
+    if not isinstance(items, dict):
+        print("[build] ⚠ supplier_dropt.json: очікується {\"updated\":…, \"items\":{…}} — карток Dropt не буде", file=sys.stderr)
+        return {}
+    if not LIQPAY_LIVE:
+        print("[build] ⚠ supplier_dropt.json: онлайн-оплата не ввімкнена (SITE_LIQPAY_LIVE) — картки Dropt не публікуємо (лише передоплата)", file=sys.stderr)
+        return {}
+    now = now or datetime.now(timezone.utc)
+    try:
+        upd = datetime.fromisoformat(str(raw.get("updated")).replace("Z", "+00:00"))
+        if upd.tzinfo is None:
+            upd = upd.replace(tzinfo=timezone.utc)
+        age = (now - upd).total_seconds() / 86400.0
+    except (ValueError, TypeError):
+        print("[build] ⚠ supplier_dropt.json: нема коректного «updated» — карток Dropt не буде", file=sys.stderr)
+        return {}
+    if age < -1 / 24:
+        print("[build] ⚠ supplier_dropt.json: «updated» з майбутнього (> 1 год) — карток Dropt не буде (годинник/дані зіпсовані)", file=sys.stderr)
+        return {}
+    if age > SUPPLIER_DROPT_MAX_AGE_DAYS:
+        print(f"[build] ⚠ supplier_dropt.json застарів ({age:.1f} діб > {SUPPLIER_DROPT_MAX_AGE_DAYS}) — карток Dropt не буде (ціни/залишки не свіжі)", file=sys.stderr)
+        return {}
+    try:
+        with open(DROPT_CATEGORY_MAP_FILE, encoding="utf-8-sig") as f:
+            cmap = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        cmap = {}
+    if not isinstance(cmap, dict):
+        cmap = {}
+    index_ids = _load_dropt_index_ids()
+    now_ts = now.timestamp()
+    out, skipped = {}, {}
+    for k, v in items.items():
+        why = None
+        if not isinstance(k, str) or not _DROPT_ID_RX.fullmatch(k) or not isinstance(v, dict):
+            why = "id"
+        else:
+            _img_rx = re.compile(r"https://plutustoys\.com\.ua/img/dropt/" + re.escape(k) + r"-[0-9]{1,2}\.jpg")   # лише наш сервер і фото САМЕ цієї картки
+            imgs = [u for u in (v.get("images") if isinstance(v.get("images"), list) else []) if isinstance(u, str) and _img_rx.fullmatch(u)]
+            _cat_raw = v.get("category")
+            cat_name = cmap.get(_cat_raw.strip()) if isinstance(_cat_raw, str) else None
+            _ca = v.get("checked_at")
+            _ca_age_h = (now_ts - _ca) / 3600.0 if isinstance(_ca, (int, float)) and not isinstance(_ca, bool) and math.isfinite(_ca) else None
+            price, stock = _dropt_int(v.get("price"), DROPT_MAX_PRICE), _dropt_int(v.get("stock"), DROPT_MAX_STOCK)
+            if not _dropt_name_ok(v.get("name")):
+                why = "name"
+            elif not imgs:
+                why = "images"
+            elif price is None or price <= 0 or stock is None:
+                why = "price/stock"
+            elif _ca_age_h is None or _ca_age_h > DROPT_ITEM_MAX_AGE_H or _ca_age_h < -0.25:
+                why = "checked_at"
+            elif not isinstance(cat_name, str) or not cat_name.strip():
+                why = "category:" + str(_cat_raw)[:40]
+            elif cat_name.strip() not in site_cats:
+                why = "category-target:" + cat_name.strip()[:40]
+        if why:
+            skipped.setdefault(why, []).append(str(k)[:30])
+            continue
+        _plain = _rt_clean_description(v.get("description") if isinstance(v.get("description"), str) else "")
+        _vc = str(v.get("vendor_code") or "").strip()
+        out[k] = {"id": k, "name": v["name"].strip(), "description": esc(_plain), "vendor": v["vendor"].strip() if isinstance(v.get("vendor"), str) else "",
+                  "vendor_code": _vc if _DROPT_VCODE_RX.fullmatch(_vc) else "", "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
+                  "site_price": price, "supplier": "dropt", "price": price,   # cost НЕ переносимо (див. вище)
+                  "rt_noindex": not (v.get("index") is True and k in index_ids) or len(_plain.strip()) < RT_MIN_DESC_INDEX,
+                  "dup_of": ""}
+    if skipped:
+        print("[build] ⚠ supplier_dropt.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
+    print(f"[build] Dropt: {len(out)} карток із supplier_dropt.json (індексуються: {sum(1 for x in out.values() if not x['rt_noindex'])})")
+    return out
+
+
 
 def build():
     global SALE_ACTIVE
@@ -745,6 +883,9 @@ def build():
     cat = dict(cat)
     _load_category_overrides({str(v.get("category_name") or "").strip() for v in cat.values() if str(v.get("stock") or "0") not in ("0", "")} - {""})   # перенесення товарів між категоріями даними (SEO 23.10)
     cat.update(_load_supplier_rt())   # другий постачальник (пілот RoyalToys, Код 19.10): картки «rt-…» у ЗАГАЛЬНОМУ каталозі
+    if DROPT_LIVE:   # третій постачальник Dropt — ЗА ВОРОТАМИ (SITE_DROPT_LIVE=1); вимкнено → файл не читається, збірка як без Dropt
+        cat.update(_load_supplier_dropt({str(v.get("category_name") or "").strip() for v in cat.values()
+                                         if re.fullmatch(r"[0-9]+", str(v.get("id"))) and str(v.get("stock") or "0") not in ("0", "")} - {""}))
     prods = []
     # Товари БЕЗ залишку (рішення Консультанта 11.10.2026, GSC: 7 605 адрес «404» з 8 960 непроіндексованих — це самі зниклі зі складу товари):
     # їхня сторінка НЕ зникає, а лишається живою з «Немає в наявності» + schema.org/OutOfStock. Збираємо окремо: у каталог, категорії, пошук
@@ -798,7 +939,7 @@ def build():
             "photo": PHOTO_OVERRIDES.get(str(it.get("id")), pics[0]), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
-            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
+            "rt": 1 if str(it.get("id")).startswith(("rt-", "dropt-")) else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
             "vendor": (it.get("vendor") or "").strip(), "vendor_code": (it.get("vendor_code") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
     if _CATEGORY_OVERRIDES:
@@ -2821,6 +2962,8 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     )
     # SEO: опис для сніпета (без HTML, ОБРІЗАНИЙ ПО СЛОВУ) + JSON-LD Product для Google Rich Results
     plain = re.sub(r"<[^>]+>", "", lead).strip()
+    if str(p["id"]).startswith("dropt-"):
+        plain = html.unescape(plain)   # dropt: опис екранований у _load_supplier_dropt (для тіла сторінки); у JSON-LD — чисті символи («<» там однаково стає \u003c)
     meta_desc = product_description(p["name"], p["price"], "" if p.get("rt") else plain)   # rt: опис постачальника — анкетний («ТИП: …; ВІК: …»), у сніпет не годиться
     if not in_stock:
         meta_desc = _cut(f"Немає в наявності: {p['name']}. Подивіться схожі іграшки в каталозі PlutusToys.", DESC_MAX)
@@ -3666,7 +3809,7 @@ def _write(fname, content):
 
 SITEMAP_PRIORITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitemap_priority.json")
 PROM_GROUP_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prom_group_to_category.json")
-SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority)
+SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt", "dropt")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority); dropt — так само для Dropt
 
 
 def _sitemap_priority():
@@ -3718,7 +3861,7 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=fro
             continue   # NOINDEX_CATEGORIES (True): товар noindex і поза sitemap
         if p.get("rt"):
             if not p.get("noindex"):
-                seg["rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
+                seg["dropt" if p["id"].startswith("dropt-") else "rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
             continue
         (seg["priority"] if p["id"] in pri_ids else seg["products"]).append((f, f, "0.6", "weekly"))
     # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий

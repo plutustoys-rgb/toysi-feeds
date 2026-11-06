@@ -138,6 +138,17 @@ def suite(gen_src, script_src):
     c("генератор: сміттєві ключі (пробіл, ../, не-ASCII цифри, кирилиця, _) пропущено з попередженням", lines == ["product-5 gone", "category-ok-slug gone"] and err.count("поза форматом") == 5)
     rc, lines, err, _ = run_gen(g, raw_text="{not json", preexisting="# old\nproduct-1 gone\n")
     c("генератор: зіпсований JSON → наявну мапу НЕ перезаписано, rc=1", rc == 1 and lines == ["product-1 gone"] and "нечитний" in err)
+    rc, lines, err, _ = run_gen(g, raw_text="{}", preexisting="# old\nproduct-1 gone\n")
+    c("генератор: ВАЛІДНИЙ порожній {} при непорожній наявній мапі → shrink-guard: мапу НЕ перезаписано, rc=1, попередження ПОРОЖНІЙ", rc == 1 and lines == ["product-1 gone"] and "ПОРОЖНІЙ" in err)
+    rc, lines, err, _ = run_gen(g, data={"products": {}, "categories": {}}, preexisting="# old\nproduct-1 gone\n")
+    c("генератор: {products:{}, categories:{}} при непорожній мапі → теж shrink-guard (rc=1, мапа ціла)", rc == 1 and lines == ["product-1 gone"])
+    rc, lines, err, _ = run_gen(g, data={"products": {}, "categories": {}}, preexisting="# old\n")
+    c("генератор: порожнє джерело при ПОРОЖНІЙ наявній мапі → не збій (rc=0, мапа порожня)", rc == 0 and lines == [])
+    rc, lines, err, out = run_gen(g, raw_text="{}", preexisting="")
+    g.OUT_FILE.write_bytes(b"\xff\xfe\x00bad")
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        rc2 = g.main()
+    c("генератор: порожнє джерело + нечитна (не UTF-8) наявна мапа → без traceback, rc=1, мапу не стерто", rc2 == 1 and g.OUT_FILE.read_bytes() == b"\xff\xfe\x00bad")
     rc, lines, err, out = run_gen(g, raw_text="[1, 2]")
     c("генератор: JSON не того типу і мапи ще нема → порожня мапа існує (RewriteMap txt: без файлу валить configtest)", rc == 1 and out.exists() and lines == [])
     rc, lines, err, out = run_gen(g, preexisting="# old\nproduct-1 gone\n")
@@ -193,7 +204,7 @@ chk(f"генератор + правило Apache + скрипт активаці
 # ── дані: site/removed_pages.json ─────────────────────────────────────────────────────────────────────────────────────────────────
 import build_site as bs  # noqa: E402
 prods, cats = SRC.get("products", {}), SRC.get("categories", {})
-chk("джерело: 160 товарів хімії (49 у наявності + 111 сторінок «немає в наявності», живий каталог 06.11) і 5 категорій", len(prods) == 160 and len(cats) == 5)
+chk("джерело: 161 товар хімії (50 у наявності + 111 сторінок «немає в наявності», живий каталог 06.11) і 5 категорій", len(prods) == 161 and len(cats) == 5)
 chk("джерело: КОЖЕН товар заборонений is_forbidden (за сирою категорією Toysi або точковим pid)",
     all(fp.is_forbidden({"id": pid, "category_name": r.get("category")}) for pid, r in prods.items()))
 chk("джерело: КОЖНА категорія — у FORBIDDEN_TOYSI_CATEGORIES, slug = slugify(назви)",
@@ -218,7 +229,7 @@ for fn in ("category_related.json", "category_texts.json", "category_ru_alt.json
     t = (HERE / "site" / fn).read_text(encoding="utf-8-sig")
     hit = [s for s in slugs if re.search(r"(?<![a-z0-9-])" + re.escape(s) + r"(?![a-z0-9-])", t)] + [n for n in CHEM_CATS if n in t] \
         + ([i for i in ids if re.search(r'"' + i + r'"', t)] if fn != "category_overrides.json" else [i for i in ids if re.search(r'"' + i + r'"\s*:', t)])
-    chk(f"site/{fn}: посилань на 5 категорій / 160 товарів хімії немає", not hit)
+    chk(f"site/{fn}: посилань на 5 категорій / 161 товар хімії немає", not hit)
 pg = json.loads((HERE / "prom_group_to_category.json").read_text(encoding="utf-8"))
 chk("prom_group_to_category.json: жодна група Prom не веде на категорію хімії (інакше 301 на зниклу сторінку)", not any((v or {}).get("category") in slugs for v in pg.values() if isinstance(v, dict)))
 ov = json.loads((HERE / "prom_redirect_overrides.json").read_text(encoding="utf-8"))
@@ -292,13 +303,13 @@ chk("збірка: шампунь-виняток 280754 у наявності п
 chk("збірка: у ЖОДНОМУ HTML/XML/JSON нема посилання на сторінку товару хімії", not any(f"product-{i}.html" in big for i in chem_ids))
 chk("збірка: у ЖОДНОМУ HTML/XML/JSON нема посилання на сторінку категорії хімії (групи, хаб, чипи, сайдбар, sitemap)", not any(f"category-{s}.html" in big or f"category-{s}_" in big for s in chem_slugs))
 chk("збірка: назви 5 категорій хімії ніде не показано (фільтр, хлібні крихти, чипи)", not any(f">{c}<" in big or f'"{c}"' in big for c in CHEM_CATS))
-# мапа 410 на зібраній теці: усі 160 + 5 (їх сторінок немає), а сторінка, що жива (299076), туди не пройшла б
+# мапа 410 на зібраній теці: усі 161 + 5 (їх сторінок немає), а сторінка, що жива (299076), туди не пройшла б
 g = load_gen(GEN_SRC)
 g.SITE_DIR, g.SOURCE_JSON, g.OUT_FILE = out, HERE / "site" / "removed_pages.json", Path(tempfile.mkdtemp()) / "gone.map"
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     rc = g.main()
 gl = [l for l in g.OUT_FILE.read_text(encoding="utf-8").splitlines() if l and not l.startswith("#")]
-chk("мапа 410 з реального removed_pages.json: 160 товарів + 5 категорій, rc=0", rc == 0 and len(gl) == 165 and sum(l.startswith("category-") for l in gl) == 5)
+chk("мапа 410 з реального removed_pages.json: 161 товар + 5 категорій, rc=0", rc == 0 and len(gl) == 166 and sum(l.startswith("category-") for l in gl) == 5)
 chk("мапа 410 → симулятор: кожна адреса мапи дає 410, жива сторінка (299076, Ляльки) — ні",
     all(simulate(SCRIPT_SRC, f"/{l.split()[0]}.html", {"sitegone": gone_map(gl)}) == 410 for l in gl)
     and simulate(SCRIPT_SRC, "/product-299076.html", {"sitegone": gone_map(gl)}) == 200
@@ -319,6 +330,7 @@ MUTATIONS = [
                                                                                             "        _write_atomic(OUT_FILE, HEADER)\n        _alert(")),
     ("G4 відсутній removed_pages.json тихо стирає мапу", "gen", lambda s: mutate(s, '        _warn(f"{path} ВІДСУТНІЙ (не задеплоєно? видалено?) — мапу 410 не оновлюю, наявна лишається")\n        return None',
                                                                        "        return [], []")),
+    ("G6 shrink-guard вимкнено (порожнє джерело стирає наявну мапу)", "gen", lambda s: mutate(s, "    if not src[0] and not src[1]:", "    if False:")),
     ("G5 генератор не шле алерт", "gen", lambda s: mutate(s, "        send_throttled_alert(\"site_gone_map\"", "        (lambda *a, **k: None)(\"site_gone_map\"")),
     ("R8 прохід по мапі без повторних спроб", "script", lambda s: mutate(s, "for sg_try in 1 2 3; do", "for sg_try in 3; do")),
     ("G3 генератор приймає будь-який id (без fullmatch)", "gen", lambda s: mutate(s, "if isinstance(pid, str) and PRODUCT_ID_RE.fullmatch(pid):", "if isinstance(pid, str):")),

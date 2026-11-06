@@ -22,6 +22,11 @@ product-<id>.html у site/) — решта: nginx-`default` (/catalog.html); в 
 Дані SEO — НЕ довірений вхід: gid — лише цифри, slug — лише [a-z0-9-]+, а сторінка site/category-<slug>.html мусить існувати у зібраному
 сайті; інакше запис пропускається з гучним попередженням у stderr (генератор не падає — gid лишається на /catalog.html, як було).
 Перший рядок мапи — gid з найбільшою кількістю показів: його беруть проби activate_site_apache.sh і канарка.
+
+ЗЛИТТЯ КАТЕГОРІЙ САЙТУ (04.11.2026): третя мапа `category_moves_apache.map` (Apache RewriteMap txt:, "<старий-slug> <slug-приймача>") з джерела правди
+`site/category_moves.json` ({"<старий slug>": "<slug приймача>"}, ключі з «_» службові). Правило в activate_site_apache.sh: /category-<старий>.html і
+/category-<старий>_N.html → 301 на /category-<приймач>.html. Ті самі запобіжники: обидва slug лише [a-z0-9-]{1,200}, приймач мусить мати зібрану сторінку,
+старий ≠ приймач, приймач не є ключем мапи (без ланцюжків 301 і циклів); відхилене — гучне попередження в stderr, генератор не падає.
 """
 import os
 import re
@@ -47,6 +52,11 @@ GID_RE = re.compile(r"[0-9]{1,20}")                 # fullmatch; явний кл
 SLUG_RE = re.compile(r"[a-z0-9-]{1,200}")
 GROUP_LINE_RE = re.compile(r"[0-9]{1,20} /category-[a-z0-9-]{1,200}\.html")   # формат рядка мапи груп (перевіряється перед записом і в тесті)
 GROUP_HEADER = "# АВТО-ЗГЕНЕРОВАНО generate_prom_redirects.py — Apache RewriteMap txt (gid групи Prom -> /category-<slug>.html; перший рядок = найбільше показів)."
+# злиття категорій сайту (04.11.2026): джерело правди → мапа Apache "<старий-slug> <slug-приймача>"
+CATMOVES_JSON = Path(os.environ.get("CATEGORY_MOVES_JSON", str(BASE / "site" / "category_moves.json")))
+OUT_FILE_CATMOVES_APACHE = Path(os.environ.get("CATEGORY_MOVES_MAP_APACHE", str(BASE / "category_moves_apache.map")))
+CATMOVE_LINE_RE = re.compile(r"[a-z0-9-]{1,200} [a-z0-9-]{1,200}")   # формат рядка мапи переїздів (перевіряється перед записом і в тесті)
+CATMOVES_HEADER = "# АВТО-ЗГЕНЕРОВАНО generate_prom_redirects.py — Apache RewriteMap txt (старий slug категорії -> slug приймача; /category-<старий>[_N].html -> 301 /category-<приймач>.html)."
 
 
 def load_valid_ids() -> set:
@@ -264,6 +274,103 @@ def write_group_map() -> int:
     return len(lines)
 
 
+def _warn_cm(msg: str) -> None:
+    print(f"[prom_redirects] УВАГА (злиття категорій): {msg}", file=sys.stderr)
+
+
+def load_catmoves_source(path: Path = None):
+    """site/category_moves.json -> dict або None (файл відсутній/зіпсований/не об'єкт — з гучним попередженням; стара мапа тоді не чіпається)."""
+    path = path or CATMOVES_JSON
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_pairs_hook)
+    except FileNotFoundError:
+        _warn_cm(f"{path} нема — мапу переїздів категорій не оновлюю")
+        return None
+    except (OSError, ValueError, RecursionError) as e:     # ValueError ⊃ JSONDecodeError, UnicodeDecodeError
+        _warn_cm(f"{path} нечитний ({type(e).__name__}: {str(e)[:120]}) — мапу переїздів категорій не оновлюю")
+        return None
+    if not isinstance(raw, dict):
+        _warn_cm(f"{path}: очікую JSON-об'єкт {{старий_slug: slug_приймача}}, отримано {type(raw).__name__} — мапу не оновлюю")
+        return None
+    return raw
+
+
+def build_catmove_lines(raw: dict, site_dir: Path) -> tuple[list[str], dict]:
+    """Рядки мапи "<старий-slug> <slug-приймача>" (за алфавітом старого slug) + статистика. Ніколи не падає на поганих даних.
+    Відхиляємо (з попередженням): slug поза [a-z0-9-]{1,200} (без strip — пробіл = помилка даних), дубль ключа, старий == приймач,
+    приймач сам є ключем (ланцюжок 301; якщо він веде назад — цикл), приймач без зібраної сторінки site/category-<slug>.html.
+    Стара сторінка ще зібрана (у старій категорії з'явився товар у наявності) — рядок лишаємо, але попереджаємо: редирект ховає живу сторінку."""
+    stats = {"invalid": 0, "dup": 0, "self": 0, "chain": 0, "cycle": 0, "no_page": 0, "old_page_live": 0}
+    cand = {}
+    for key, val in raw.items():
+        if isinstance(key, str) and key.startswith("_"):
+            continue                                   # службові ключі («_що це»)
+        if val is _DUP:
+            _warn_cm(f"дубль ключа {str(key)[:60]!r} у JSON — неоднозначно, пропущено")
+            stats["dup"] += 1
+            continue
+        if not (isinstance(key, str) and SLUG_RE.fullmatch(key)):
+            _warn_cm(f"старий slug {str(key)[:60]!r} не відповідає [a-z0-9-]+; пропущено")
+            stats["invalid"] += 1
+            continue
+        if not (isinstance(val, str) and SLUG_RE.fullmatch(val)):
+            _warn_cm(f"{key}: приймач {str(val)[:60]!r} не відповідає [a-z0-9-]+; пропущено")
+            stats["invalid"] += 1
+            continue
+        if key == val:
+            _warn_cm(f"{key}: приймач = сам старий slug (петля 301); пропущено")
+            stats["self"] += 1
+            continue
+        cand[key] = val
+    rows = []
+    for old, new in sorted(cand.items()):
+        if new in cand:                                # приймач теж «переїжджає» → ланцюжок 301 (або цикл)
+            seen, cur = {old}, new
+            while cur in cand and cur not in seen:
+                seen.add(cur)
+                cur = cand[cur]
+            if cur in seen:
+                _warn_cm(f"{old} -> {new}: ЦИКЛ переїздів (… -> {cur}); пропущено")
+                stats["cycle"] += 1
+            else:
+                _warn_cm(f"{old} -> {new}: приймач сам є ключем мапи (ланцюжок 301 до {cur}) — вкажи кінцевий приймач; пропущено")
+                stats["chain"] += 1
+            continue
+        if not (site_dir / f"category-{new}.html").is_file():
+            _warn_cm(f"{old} -> {new}: сторінки site/category-{new}.html НЕМАЄ у зібраному сайті — пропущено (стара адреса без редиректу)")
+            stats["no_page"] += 1
+            continue
+        if (site_dir / f"category-{old}.html").is_file():
+            _warn_cm(f"{old}: сторінка site/category-{old}.html ЗНОВУ зібрана (у старій категорії є товар у наявності?) — 301 її ховає; "
+                     f"перенеси товар у category_overrides.json або прибери рядок із category_moves.json")
+            stats["old_page_live"] += 1
+        line = f"{old} {new}"
+        if not CATMOVE_LINE_RE.fullmatch(line):        # останній рубіж: у мапу Apache не потрапить нічого поза форматом
+            _warn_cm(f"рядок {line!r} поза форматом; пропущено")
+            stats["invalid"] += 1
+            continue
+        rows.append(line)
+    if cand and not rows:
+        _warn_cm(f"жоден із {len(cand)} переїздів не дав рядка мапи (сайт ще не зібрано в {site_dir}?) — мапа порожня, старі адреси категорій без редиректу")
+    return rows, stats
+
+
+def write_catmoves_map() -> int:
+    """Будує й атомарно пише мапу переїздів категорій. Повертає кількість рядків (-1 — джерело непридатне, мапа не оновлена).
+    Файл мапи мусить існувати завжди (Apache RewriteMap з відсутнім файлом валить configtest) — якщо його нема, пишемо порожню."""
+    raw = load_catmoves_source()
+    if raw is None:
+        if not OUT_FILE_CATMOVES_APACHE.exists():
+            _write_atomic(OUT_FILE_CATMOVES_APACHE, CATMOVES_HEADER + "\n")
+        return -1
+    lines, stats = build_catmove_lines(raw, INDEX_FILE.parent)
+    _write_atomic(OUT_FILE_CATMOVES_APACHE, "\n".join([CATMOVES_HEADER] + lines) + "\n")
+    print(f"[prom_redirects] {OUT_FILE_CATMOVES_APACHE}: {len(lines)} редиректів /category-<старий>.html -> /category-<приймач>.html "
+          f"(невалідних {stats['invalid']}, дублів {stats['dup']}, петель {stats['self']}, ланцюжків {stats['chain']}, циклів {stats['cycle']}, "
+          f"приймач без сторінки {stats['no_page']}, стара сторінка знову зібрана {stats['old_page_live']})")
+    return len(lines)
+
+
 SHRINK_GUARD_MIN_PREV = 100      # попередня мапа менша за це — гард не діє (перший запуск/мала мапа)
 SHRINK_GUARD_FRACTION = 0.5      # нова мапа менша за цю частку попередньої → не перезаписуємо
 
@@ -298,6 +405,10 @@ def main() -> None:
         write_group_map()       # окрема мапа; її збій не чіпає мапу товарів вище (вона вже записана)
     except Exception as e:  # noqa: BLE001
         _warn(f"мапу груп не записано ({type(e).__name__}: {str(e)[:150]})")
+    try:
+        write_catmoves_map()    # окрема мапа (злиття категорій); її збій не чіпає мап вище
+    except Exception as e:  # noqa: BLE001
+        _warn_cm(f"мапу переїздів категорій не записано ({type(e).__name__}: {str(e)[:150]})")
 
 
 if __name__ == "__main__":

@@ -325,8 +325,8 @@ chk("В-лоадер: cp1251 → ГОЛОСНО", r == {} and "НЕ прочит
 r, e = load_rel("[" * 100000, "deep_r.json")
 chk("В-лоадер: глибоко вкладений JSON → ГОЛОСНО, без винятку", r == {} and "category_related.json" in e)
 shipped_r = json.loads((HERE / "site" / "category_related.json").read_text(encoding="utf-8-sig"))["related"]
-chk("В-дані: site/category_related.json у репо: 107 ключів, ≤6 цілей, slug-и [a-z0-9-]+, без самопосилань",
-    len(shipped_r) == 107 and all(re.fullmatch(r"[a-z0-9-]+", k) and isinstance(v, list) and 0 < len(v) <= 6 and k not in v and all(re.fullmatch(r"[a-z0-9-]+", x) for x in v) for k, v in shipped_r.items()))
+chk("В-дані: site/category_related.json у репо: 104 ключі (107 − 3 злиті категорії 04.11), ≤6 цілей, slug-и [a-z0-9-]+, без самопосилань",
+    len(shipped_r) == 104 and all(re.fullmatch(r"[a-z0-9-]+", k) and isinstance(v, list) and 0 < len(v) <= 6 and k not in v and all(re.fullmatch(r"[a-z0-9-]+", x) for x in v) for k, v in shipped_r.items()))
 
 # ═══ Г. Пагінація ═══
 FN = "category-x.html"

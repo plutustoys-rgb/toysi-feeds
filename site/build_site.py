@@ -1002,6 +1002,10 @@ def build():
     _alt_unmatched = sorted(set(_CATEGORY_RU_ALT) - _written_slugs)
     if _alt_unmatched:
         print(f"[build] ⚠ category_ru_alt.json: slug без сторінки категорії (друкарська помилка? рядок не з'явиться): {_alt_unmatched[:10]}", file=sys.stderr)
+    _ru_alt_bad = ru_alt_proper_name_issues(_CATEGORY_RU_ALT, cats, cat_slug)
+    if _ru_alt_bad:
+        print(f"[build] ⚠ category_ru_alt.json: {len(_ru_alt_bad)} власних назв без опори в назвах товарів категорії (сторінка обіцяє чужий товар): "
+              + "; ".join(f"{sl}: «{t}» у «{ph}» (товарів {n})" for sl, ph, t, n in _ru_alt_bad[:10]), file=sys.stderr)
     _prod_ids = {p["id"] for p in prods} | {p["id"] for p in oos_prods}
     _pt_unmatched = sorted(set(_PRODUCT_TEXTS) - _prod_ids, key=_id_key)
     if _pt_unmatched:
@@ -1580,6 +1584,45 @@ def _load_category_ru_alt():
         return _CATEGORY_RU_ALT
     _CATEGORY_RU_ALT = {str(k): re.sub(r"\s+", " ", v).strip() for k, v in data.items() if isinstance(v, str) and v.strip()}
     return _CATEGORY_RU_ALT
+
+
+# Гейт «власні назви» для category_ru_alt.json (SEO 01.11, КОНТРАКТ_cat_alt_власні_назви.md): латинський токен або
+# Слово-З-Великої усередині фрази мусить зустрічатись у назвах товарів ЦІЄЇ категорії (марка пишеться однаково
+# обома мовами; інакше сторінка обіцяє чужий товар — так були хибні «конструктор Wader», «Bubble Pops»).
+# Лише ПОПЕРЕДЖЕННЯ в stderr, збірку не валить. Загальні слова («погремушки») не карає — рядок для них і існує.
+_RU_ALT_LATIN_OK = {"pop", "it", "ua", "3d", "led", "diy", "xl", "tv", "toys", "kids", "mini", "puzzle", "game", "games", "series",
+                    "tech", "action", "figure", "baby", "block", "card", "gloves", "for", "and", "new", "set", "box", "art", "fun",
+                    "soft", "water", "color", "colors", "como", "que", "isso", "the"}
+_RU_ALT_ALLOW = {("pazly-castorland", "Касторленд")}  # транслітерація марки Castorland з НАЗВИ КАТЕГОРІЇ (SEO 31.10)
+_RU_ALT_TR = {"а": "a", "б": "b", "в": "v", "г": "h", "д": "d", "е": "e", "ж": "zh", "з": "z", "и": "y", "і": "i", "й": "y", "к": "k",
+              "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts",
+              "ч": "ch", "ш": "sh", "щ": "shch", "ю": "iu", "я": "ia", "ї": "i", "є": "ie", "ё": "e", "ы": "y", "э": "e", "ъ": "", "ь": ""}
+
+
+def _ru_alt_translit(w):
+    return "".join(_RU_ALT_TR.get(c, c) for c in w.lower())
+
+
+def ru_alt_proper_name_issues(alt, cats, cat_slug):
+    """[(slug, фраза, токен, кількість товарів категорії)] — власні назви без опори в назвах товарів своєї категорії."""
+    slug_cat = {v: k for k, v in cat_slug.items()}
+    bad = []
+    for slug, line in sorted(alt.items()):
+        cname = slug_cat.get(slug)
+        if cname is None:
+            continue  # slug без сторінки — окреме попередження
+        names = [str(p.get("name") or "").lower() for p in cats.get(cname, [])]
+        pool = " | ".join(names)
+        ctx = (slug + " " + cname).lower()
+        for phrase in [x.strip() for x in line.split(",") if x.strip()]:
+            latin = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9'\-]{2,}", phrase) if w.lower() not in _RU_ALT_LATIN_OK]
+            ws = phrase.split()
+            proper = [re.sub(r"[^\wʼ'-]", "", w) for i, w in enumerate(ws) if i > 0 and re.match(r"^[А-ЯІЇЄҐA-Z][а-яіїєґa-z]{2,}", w)]
+            for tok in set(latin + proper):
+                if tok.lower() in pool or tok.lower() in ctx or _ru_alt_translit(tok)[:6] in _ru_alt_translit(ctx) or (slug, tok) in _RU_ALT_ALLOW:
+                    continue
+                bad.append((slug, phrase, tok, len(names)))
+    return bad
 
 
 # ── Внутрішня перелінковка (SEO-замовлення 12.10.2026) ──────────────────────────────────────────────────────────

@@ -163,6 +163,23 @@ for f in "$APP/.env" "$APP/orders.db"; do
     if [ -e "$f" ] && can_read "$f"; then echo "⚠️  УВАГА: $APUSER може читати $f ще ДО нас (існуюче право файла) — не наша зміна, але закрий: chmod o-r"; fi
 done
 
+# 06.11.2026 (власник «хімію прибирай»): мапа 410 Gone для сторінок, знятих НАЗАВЖДИ (джерело — site/removed_pages.json; site_gone_pages.py; правило RewriteMap sitegone у vhost).
+# Файл МУСИТЬ існувати (RewriteMap txt: з відсутнім файлом валить configtest). Порожня мапа — не помилка: жодна адреса не віддає 410, решта як була.
+GONEMAP="$APP/site_gone_apache.map"
+"$PY" "$APP/site_gone_pages.py" || echo "  (генератор мапи 410 site_gone_pages.py завершився з помилкою — лишаю наявну мапу)"
+if [ ! -e "$GONEMAP" ]; then
+    printf '# порожня мапа 410 (site_gone_pages.py не створив) — жодна сторінка сайту не віддає 410\n' > "$GONEMAP"
+    chmod 644 "$GONEMAP"
+    echo "⚠️  $GONEMAP не створено генератором — поклав порожню (зняті сторінки віддаватимуть 404, а не 410)"
+fi
+GONELINES=$(grep -c '^[a-z]' "$GONEMAP" 2>/dev/null || true)
+GONELINES=${GONELINES:-0}
+echo "ℹ️  рядків у мапі 410 (сторінки, зняті назавжди): $GONELINES"
+if ! can_read "$GONEMAP"; then
+    command -v setfacl >/dev/null 2>&1 && setfacl -m "u:$APUSER:r--" "$GONEMAP" || true
+    can_read "$GONEMAP" || die "$APUSER не читає $GONEMAP — Apache НЕ чіпано"
+fi
+
 if ! systemctl is-active --quiet site-order-api; then
     if ss -ltn 2>/dev/null | grep -q '127.0.0.1:8901 \|:8901 '; then die "порт 8901 уже зайнятий не нашим site-order-api — розбери вручну"; fi
 fi
@@ -239,6 +256,12 @@ cat <<'EOF'
     RewriteCond ${promredir:$1|-} =-
     RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- - [G,L]
     RewriteRule ^/(?:(?:ua|ru)/)?p([0-9]+)- ${promredir:$1} [R=301,L]
+    # 06.11.2026 (власник «хімію прибирай», завдання SEO): сторінки, зняті НАЗАВЖДИ (site/removed_pages.json → site_gone_pages.py → site_gone_apache.map,
+    # ключі «product-<id>» / «category-<slug>»), → 410 Gone, а не 404 (build_site крок 8 видаляє їхні HTML; 404 не припиняє переобхід, 301 на іграшкову категорію = soft-404).
+    # Пагінація category-<slug>_N.html — той самий ключ. Адреси поза мапою (усі живі сторінки) правило не чіпає; живу сторінку генератор у мапу не пускає.
+    RewriteMap sitegone "txt:@APP@/site_gone_apache.map"
+    RewriteCond ${sitegone:$1|-} !=-
+    RewriteRule ^/((?:product|category)-[a-z0-9-]+)(?:_[0-9]+)?\.html$ - [G,L]
     # 15.10.2026 (SEO/Код, лог Googlebot): 647 запитів до старих Prom-шляхів оформлення /create_order_mobile та /ua/create_order_mobile (були 404) → 410 Gone, як і решта мертвих Prom-URL
     RewriteRule ^/(?:(?:ua|ru)/)?create_order_mobile - [G,L]
     # 16.10.2026 (власник): сторінка Halloween тепер /halloween.html — старий /helovin.html (+ пагінація helovin_N.html) → 301
@@ -391,6 +414,39 @@ write_vhost() {   # $1 = http | https
     echo "  Prom-URL: непокритий = $pk_gone (очікую 410); покритий p${pk_key:-?} = $pk_map (очікую 301 …${pk_val:-?})"
     [ "$pk_gone" = "410" ] || { echo "🚨 непокритий Prom-URL віддає $pk_gone, а не 410"; bad=1; }
     case "$pk_map" in "301 "*) ;; *) echo "🚨 покритий Prom-URL не веде 301 на картку ($pk_map)"; bad=1;; esac
+    # проба 410 для сторінок, знятих назавжди (06.11.2026): перший product-… і перший category-… мапи (+ пагінація _2) → 410; контроль — товар поза мапою → 404
+    # (правило не зачепило чужі адреси); далі ОДИН прохід по ВСІХ адресах мапи. Порожня мапа — пропуск. Не 410 = відкат (інакше зняті сторінки мовчки віддають 404).
+    local sg_pid=""
+    local sg_cat=""
+    local sg_p="ERR"
+    local sg_c="ERR"
+    local sg_c2="ERR"
+    local sg_ctl="ERR"
+    local sg_key=""
+    local sg_bad=0
+    sg_pid=$(awk '/^product-/{sub(/^product-/, "", $1); print $1; exit}' "$GONEMAP" 2>/dev/null || true)
+    sg_cat=$(awk '/^category-/{sub(/^category-/, "", $1); print $1; exit}' "$GONEMAP" 2>/dev/null || true)
+    for try in 1 2 3; do
+        sg_ctl=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/product-999999999999.html")
+        if [ -n "$sg_pid" ]; then sg_p=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/product-$sg_pid.html"); else sg_p="410"; fi
+        if [ -n "$sg_cat" ]; then
+            sg_c=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/category-$sg_cat.html")
+            sg_c2=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/category-${sg_cat}_2.html")
+        else
+            sg_c="410"; sg_c2="410"
+        fi
+        [ "$sg_p" = "410" ] && [ "$sg_c" = "410" ] && [ "$sg_c2" = "410" ] && [ "$sg_ctl" = "404" ] && break
+        echo "ℹ️  проба 410 знятих сторінок ще не збіглась (спроба $try/3): товар = $sg_p, категорія = $sg_c, _2 = $sg_c2, поза мапою = $sg_ctl — чекаю"; sleep 4
+    done
+    echo "  зняті назавжди: /product-${sg_pid:-?}.html = $sg_p, /category-${sg_cat:-?}.html = $sg_c, _2 = $sg_c2 (очікую 410; порожня мапа — пропуск); товар поза мапою = $sg_ctl (очікую 404)"
+    [ "$sg_p" = "410" ] || { echo "🚨 знятий назавжди товар /product-$sg_pid.html віддає $sg_p, а не 410"; bad=1; }
+    [ "$sg_c" = "410" ] && [ "$sg_c2" = "410" ] || { echo "🚨 знята назавжди категорія /category-$sg_cat.html (_2) віддає $sg_c ($sg_c2), а не 410"; bad=1; }
+    [ "$sg_ctl" = "404" ] || { echo "🚨 товар поза мапою 410 віддає $sg_ctl, а не 404 (правило sitegone зачепило чужу адресу?)"; bad=1; }
+    while read -r sg_key _; do
+        case "$sg_key" in product-*|category-*) ;; *) continue;; esac
+        [ "$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/$sg_key.html")" = "410" ] || { echo "🚨 /$sg_key.html з мапи 410 віддає не 410"; sg_bad=$((sg_bad + 1)); }
+    done < "$GONEMAP"
+    if [ "$sg_bad" != "0" ]; then echo "🚨 $sg_bad адрес(и) мапи 410 віддають не 410"; bad=1; fi
     # проба правила груп Prom (12.10.2026): gid з мапи (перший рядок = найбільше показів) → 301 на СВОЮ категорію — і з /ua/, і без префікса (з ?query, який QSD має відкинути);
     # gid поза мапою → 301 на /catalog.html, як було. Хибний напрям (не та категорія / каталог для мапованого) = відкат.
     local gp_key=""

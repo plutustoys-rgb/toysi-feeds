@@ -88,6 +88,18 @@ out = build_with({"groups": [dict(G, former_files=["../x.html", "Group-A.html", 
 chk("некоректні former_files відкинуто, коректний group-ok.html — створено", (out / "group-ok.html").exists() and not (out / "x.html").exists()
     and not any(p.name.startswith("Group") for p in out.iterdir()))
 
+# former_files, що збігається з ЖИВОЮ сторінкою (власною чи іншої групи), відкидається: сторінка лишається справжньою й у sitemap
+G2 = {"name": "Інша група", "subs": ["Брелоки"], "display": "Інша група"}
+for i in range(101, 109):
+    catalog[str(i)] = dict(catalog["1"], id=str(i), name=f"Брелок номер {i}", category_name="Брелоки", pictures=[f"https://toysi.ua/p/enl_{i}.jpg"])
+_probe = build_with({"groups": [dict(G), dict(G2)]})
+_files = sorted(p.name for p in _probe.glob("group-*.html") if p.name != "group-pobutova-khimiia.html")
+_own, _other = _files[0], _files[-1]
+out = build_with({"groups": [dict(G, former_files=[_own, _other]), dict(G2)]})
+_sm = "".join(p.read_text(encoding="utf-8", errors="replace") for p in out.glob("sitemap*.xml"))
+chk("former_files = жива сторінка (власна/чужа): не вказівник — обидві групи справжні, індексуються, у sitemap",
+    len(_files) == 2 and all("noindex" not in (out / f).read_text(encoding="utf-8") and f in _sm for f in _files))
+
 if F:
     print("\n❌ ПРОВАЛЕНО:", F)
     sys.exit(1)

@@ -3831,6 +3831,9 @@ def site_groups(cats):
         _m = {c for c, _n in main}
         other = [(c, n) for c, n in subs if c not in _m]
         out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own, "main": main, "other": other, "former": g.get("former", [])})
+    _live = {g["file"] for g in out}
+    for g in out:   # former_files не може вказувати на ЖИВУ сторінку (власну чи чужої групи): вказівник перезаписав би її / вибив із sitemap
+        g["former"] = [f for f in g["former"] if f not in _live]
     out.sort(key=lambda g: -g["total"])
     return out
 

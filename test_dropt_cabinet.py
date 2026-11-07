@@ -355,23 +355,28 @@ import builtins  # noqa: E402
 import types  # noqa: E402
 
 
-def run_login(html_or_exc, status=200, close_raises=False):
+def run_login(html_or_exc, status=200, close_raises=False, redirects=None):
     """Підроблений Playwright. goto дозволено РІВНО раз (відкриття кабінету); другий goto, як у житті, падає. Перевірка входу — через ctx.request.get."""
     calls = {"goto": 0, "req": 0}
     state = {"cookies": [{"name": "s", "value": "1", "domain": "dropt.in.ua"}, {"name": "g", "value": "1", "domain": ".google.com"}], "origins": [{"origin": "x"}]}
 
     class Resp:
-        def __init__(self):
-            self.status = status
+        def __init__(self, st=None, loc=None):
+            self.status = st or status
+            self.headers = {"location": loc} if loc else {}
 
         def text(self):
             return html_or_exc
 
     class Req:
-        def get(self, url, timeout=None):
+        def get(self, url, timeout=None, max_redirects=None):
             calls["req"] += 1
+            calls.setdefault("urls", []).append(url)
+            assert max_redirects == 0                           # автоматичні редіректи Playwright вимкнено
             if isinstance(html_or_exc, Exception):
                 raise html_or_exc
+            if redirects and url in redirects:
+                return Resp(302, redirects[url])
             return Resp()
 
     class Page:
@@ -446,6 +451,14 @@ rc, saved, calls = run_login(CABINET, status=302)
 chk("login: статус не 200 → rc 1, сесію не збережено", rc == 1 and saved is None)
 rc, saved, calls = run_login(RuntimeError("net down"))
 chk("login: збій перевірки (мережа) → rc 1 без винятку, сесію не збережено", rc == 1 and saved is None)
+rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet": "https://dropt.in.ua/index.php?route=account/logout"})
+chk("login: редірект кабінету на logout НЕ виконується (запиту на logout нема), сесію не збережено", rc == 1 and saved is None and all("logout" not in u for u in calls["urls"]))
+rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet": "https://evil.example/ua/cabinet"})
+chk("login: редірект на чужий хост НЕ виконується, сесію не збережено", rc == 1 and saved is None and calls["urls"] == ["https://dropt.in.ua/ua/cabinet"])
+rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet": "/ua/cabinet/"})
+chk("login: звичайний редірект у межах dropt.in.ua слідуємо вручну → вхід підтверджено, сесія збережена", rc == 0 and saved is not None and calls["urls"] == ["https://dropt.in.ua/ua/cabinet", "https://dropt.in.ua/ua/cabinet/"])
+rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet": "/ua/cabinet"})
+chk("login: нескінченний редірект → rc 1, сесію не збережено", rc == 1 and saved is None)
 rc, saved, calls = run_login(CABINET, close_raises=True)
 chk("login: browser.close() кидає виняток (вікно закрито) → збережена сесія НЕ втрачена, rc 0", rc == 0 and saved is not None)
 

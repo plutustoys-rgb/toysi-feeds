@@ -434,8 +434,16 @@ def login() -> int:
             except EOFError:
                 print("[DroptCabinet] Немає інтерактивного вводу — --login запускати вручну в терміналі.", file=sys.stderr)
                 return 1
-            page.goto(f"{BASE}/ua/cabinet", timeout=60000)
-            html = page.content()
+            try:                                                # після входу сторінка ще може йти переадресацією: повторний page.goto тоді падає «interrupted by another navigation»
+                page.wait_for_load_state("load", timeout=15000)
+            except Exception:
+                pass
+            try:                                                # перевірка входу — запитом із куками контексту (не навігацією сторінки): не конфліктує з переадресацією
+                resp = ctx.request.get(f"{BASE}/ua/cabinet", timeout=60000)
+                html = resp.text() if resp.status == 200 else ""
+            except Exception as e:
+                print(f"[DroptCabinet] Не вдалось перевірити вхід ({type(e).__name__}). Сесію НЕ збережено - запустіть --login ще раз.")
+                return 1
             if "account/logout" not in html:
                 print("[DroptCabinet] Не бачу ознак входу (посилання на вихід). Сесію НЕ збережено.")
                 return 1
@@ -448,7 +456,10 @@ def login() -> int:
                 json.dump(st, f, ensure_ascii=False)
             os.replace(tmp, STATE_FILE)
         finally:
-            browser.close()
+            try:
+                browser.close()
+            except Exception:                                   # власник міг закрити вікно сам: це не привід губити вже збережену сесію
+                pass
     print(f"[DroptCabinet] Сесію збережено: {STATE_FILE}")
     return 0
 

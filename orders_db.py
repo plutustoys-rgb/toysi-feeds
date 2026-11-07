@@ -613,6 +613,46 @@ def get_rt_orders_pending(conn: sqlite3.Connection) -> list:
     return [_row_to_dict(row) for row in rows]
 
 
+DROPT_ITEM_MARK = '"toysi_code": "dropt-'      # так json.dumps(ensure_ascii=False) пише позицію Dropt (insert_order)
+
+
+def get_dropt_orders_pending(conn: sqlite3.Connection) -> list:
+    """Оплачені замовлення САЙТУ з товарами Dropt, які ще не дійшли до кінця конвеєра dropt_order_runner. Стан і службові поля ті самі, що в RoyalToys (rt_state / rt_ttn_ref / rt_marking_path / rt_order_ref / rt_total — окремої схеми
+    не заводимо: замовлення або лише rt-, або лише dropt-, змішані сайт відхиляє). Лише platform='site' (EVA-замовлення з dropt- конвеєр не бере, доки не збудовано фід EVA для Dropt), лише передоплата з підтвердженою оплатою;
+    sandbox_test, скасовані й ПОВЕРНЕНІ — ні; замовлення, де ТТН уже внесено вручну і конвеєр його не починав, — ні."""
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE platform = 'site' AND payment_method = 'prepaid' AND payment_confirmed = 1
+          AND items LIKE '%' || ? || '%'
+          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled'))
+          AND cancelled_at IS NULL
+          AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL
+          AND (rt_state IS NULL OR rt_state NOT IN ('delivered', 'returned', 'manual'))
+          AND (rt_state IS NOT NULL OR ((toysi_ttn IS NULL OR toysi_ttn = '') AND forwarded_to_toysi_at IS NULL))
+        ORDER BY created_at
+        """,
+        (DROPT_ITEM_MARK,),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_dropt_cod_orders(conn: sqlite3.Connection) -> list:
+    """Замовлення з товарами Dropt і НАКЛАДЕНИМ платежем (сайт це відхиляє на вході; на випадок, якщо воно все ж виникло): конвеєр Dropt їх НЕ бере (лише передоплата), тож без цього запиту вони б висіли мовчки."""
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE platform IN ('site', 'eva') AND payment_method = 'cod' AND items LIKE '%' || ? || '%'
+          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled', 'eva_cancelled_before_forward'))
+          AND cancelled_at IS NULL AND rt_state IS NULL
+          AND (toysi_ttn IS NULL OR toysi_ttn = '') AND forwarded_to_toysi_at IS NULL
+        ORDER BY created_at
+        """,
+        (DROPT_ITEM_MARK,),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
 def get_rt_cod_orders(conn: sqlite3.Connection) -> list:
     """Замовлення з товарами RoyalToys і НАКЛАДЕНИМ платежем (сайт це відхиляє на вході; EVA — власник 21.10: «післяплати там немає», але якщо раптом з'явиться): конвеєр RT їх НЕ бере (лише передоплата — повернення накладеного лягає на нас),
     тож без цього запиту вони б висіли мовчки. Лише ще не оброблені (rt_state порожній) і не скасовані."""

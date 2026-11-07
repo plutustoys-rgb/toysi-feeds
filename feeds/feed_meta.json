@@ -1,0 +1,32 @@
+{
+ "bing_feed.xml": {
+  "bytes": 19249283,
+  "generated_at": "2026-11-07T10:22:33+00:00",
+  "offers": 12553
+ },
+ "eva_feed.xml": {
+  "bytes": 24427175,
+  "generated_at": "2026-11-07T14:00:54+00:00",
+  "offers": 17219
+ },
+ "google_merchant_feed.xml": {
+  "bytes": 21017578,
+  "generated_at": "2026-11-07T10:20:53+00:00",
+  "offers": 12557
+ },
+ "google_merchant_feed_ru.xml": {
+  "bytes": 21096361,
+  "generated_at": "2026-11-07T10:21:19+00:00",
+  "offers": 12557
+ },
+ "meta_feed.xml": {
+  "bytes": 18596528,
+  "generated_at": "2026-11-07T10:21:58+00:00",
+  "offers": 12553
+ },
+ "prom_feed_top.xml": {
+  "bytes": 17520421,
+  "generated_at": "2026-11-07T14:02:03+00:00",
+  "offers": 5997
+ }
+}

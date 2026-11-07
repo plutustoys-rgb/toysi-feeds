@@ -196,7 +196,7 @@ row = get(a)
 chk("повний ланцюг: порядок кроків чек → сесія → preflight → ТТН → наліпка → замовлення", fk.calls == ["receipt", "ttn_dry", "ttn_dry", "session", "dropt_dry", "create_ttn", "marking", "dropt_order"] or
     [x for x in fk.calls if x in ("receipt", "session", "dropt_dry", "create_ttn", "marking", "dropt_order")] == ["receipt", "session", "dropt_dry", "create_ttn", "marking", "dropt_order"])
 chk("повний ланцюг: стан rt_ordered, ТТН, номер Dropt, сума, шлях наліпки у БД", row["rt_state"] == "rt_ordered" and row["toysi_ttn"] == "20451500000001" and row["rt_order_ref"] == "D-77" and row["rt_total"] == 300.0 and str(row["rt_marking_path"]).endswith("site_A1.pdf"))
-chk("в кабінет передано артикул, qty, закупівлю й НАШУ ціну продажу, ТТН і PDF", fk.orders and fk.orders[0]["items"][0] == {"toysi_code": "dropt-59298", "qty": 1, "price": 450, "name": "Товар Dropt", "vendor_code": "59298", "cost": 300.0}
+chk("в кабінет передано артикул, qty, закупівлю й НАШУ ціну продажу, ТТН і PDF", fk.orders and fk.orders[0]["items"][0] == {"toysi_code": "dropt-59298", "qty": 1, "price": 450, "name": "Товар Dropt", "vendor_code": "59298", "cost": 300.0, "source_url": None}
     and fk.orders[0]["ttn"] == "20451500000001" and fk.orders[0]["pdf"].endswith("site_A1.pdf"))
 chk("алерт ✅ «ordered» після оформлення", (a, "ordered") in ALERTS)
 before = list(fk.calls)

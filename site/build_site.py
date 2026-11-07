@@ -816,8 +816,10 @@ def _load_supplier_dropt(site_cats, now=None):
             item_cat = json.load(f)
     except (OSError, ValueError, RecursionError):
         item_cat = {}
+        print("[build] ⚠ dropt_item_category.json відсутній/нечитний — покарткових категорій нема (публікується лише те, що дає мапа категорій)", file=sys.stderr)
     if not isinstance(item_cat, dict):
         item_cat = {}
+        print("[build] ⚠ dropt_item_category.json: очікую об'єкт {\"dropt-…\": \"категорія\"} — ігнорую", file=sys.stderr)
     index_ids = _load_dropt_index_ids()
     now_ts = now.timestamp()
     out, skipped = {}, {}
@@ -829,7 +831,7 @@ def _load_supplier_dropt(site_cats, now=None):
             _img_rx = re.compile(r"https://plutustoys\.com\.ua/img/dropt/" + re.escape(k) + r"-[0-9]{1,2}\.jpg")   # лише наш сервер і фото САМЕ цієї картки
             imgs = [u for u in (v.get("images") if isinstance(v.get("images"), list) else []) if isinstance(u, str) and _img_rx.fullmatch(u)]
             _cat_raw = v.get("category")
-            cat_name = item_cat.get(k) if isinstance(item_cat.get(k), str) else None   # покартковий запис має пріоритет над мапою категорій
+            cat_name = (item_cat[k] if isinstance(item_cat[k], str) else "") if k in item_cat else None   # покартковий запис має пріоритет над мапою; нерядкове значення = «не публікувати» (не віддаємо мапі)
             if cat_name is None:
                 cat_name = cmap.get(_cat_raw.strip()) if isinstance(_cat_raw, str) else None
             _ca = v.get("checked_at")

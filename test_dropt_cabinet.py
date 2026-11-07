@@ -350,5 +350,117 @@ sf2 = tmp / "state2.json"
 sf2.write_text(json.dumps({"cookies": [{"name": "a", "value": "1", "domain": "evildropt.in.ua"}, {"name": "b", "value": "1", "domain": ".dropt.in.ua"}, {"name": "c", "value": "1", "domain": "dropt.in.ua"}]}), encoding="utf-8")
 chk("load_cookies: evildropt.in.ua відхилено; dropt.in.ua і .dropt.in.ua — ні", [c["name"] for c in dc.load_cookies(sf2)] == ["b", "c"])
 
+# ---- login(): фікс 07.11 («interrupted by another navigation» губив сесію власника) ----
+import builtins  # noqa: E402
+import types  # noqa: E402
+
+
+def run_login(html_or_exc, status=200, close_raises=False, redirects=None):
+    """Підроблений Playwright. goto дозволено РІВНО раз (відкриття кабінету); другий goto, як у житті, падає. Перевірка входу — через ctx.request.get."""
+    calls = {"goto": 0, "req": 0}
+    state = {"cookies": [{"name": "s", "value": "1", "domain": "dropt.in.ua"}, {"name": "g", "value": "1", "domain": ".google.com"}], "origins": [{"origin": "x"}]}
+
+    class Resp:
+        def __init__(self, st=None, loc=None):
+            self.status = st or status
+            self.headers = {"location": loc} if loc else {}
+
+        def text(self):
+            return html_or_exc
+
+    class Req:
+        def get(self, url, timeout=None, max_redirects=None):
+            calls["req"] += 1
+            calls.setdefault("urls", []).append(url)
+            assert max_redirects == 0                           # автоматичні редіректи Playwright вимкнено
+            if isinstance(html_or_exc, Exception):
+                raise html_or_exc
+            if redirects and url in redirects:
+                return Resp(302, redirects[url])
+            return Resp()
+
+    class Page:
+        def goto(self, url, timeout=None):
+            calls["goto"] += 1
+            if calls["goto"] > 1:
+                raise RuntimeError("Page.goto: Navigation is interrupted by another navigation")
+
+        def wait_for_load_state(self, *a, **k):
+            raise RuntimeError("timeout")                       # навіть таймаут очікування не валить вхід
+
+    class Ctx:
+        request = Req()
+
+        def new_page(self):
+            return Page()
+
+        def storage_state(self):
+            return state
+
+    class Browser:
+        def new_context(self):
+            return Ctx()
+
+        def close(self):
+            if close_raises:
+                raise RuntimeError("Connection closed")
+
+    class PW:
+        class chromium:
+            @staticmethod
+            def launch(headless=False):
+                return Browser()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    m = types.ModuleType("playwright.sync_api")
+    m.sync_playwright = lambda: PW()
+    pkg = types.ModuleType("playwright")
+    old = {k: sys.modules.get(k) for k in ("playwright", "playwright.sync_api")}
+    sys.modules["playwright"], sys.modules["playwright.sync_api"] = pkg, m
+    old_state, old_input = dc.STATE_FILE, builtins.input
+    target = tmp / "login_state.json"
+    if target.exists():
+        target.unlink()
+    dc.STATE_FILE = target
+    builtins.input = lambda *a: ""
+    try:
+        rc = dc.login()
+    finally:
+        builtins.input = old_input
+        dc.STATE_FILE = old_state
+        for k, v in old.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    saved = json.loads(target.read_text(encoding="utf-8")) if target.exists() else None
+    return rc, saved, calls
+
+
+rc, saved, calls = run_login(CABINET)
+chk("login: вхід є → сесія збережена, лише куки dropt.in.ua, без origins", rc == 0 and saved is not None and [c["name"] for c in saved["cookies"]] == ["s"] and saved["origins"] == [])
+chk("login: повторного page.goto після Enter НЕМАЄ (було причиною краху), перевірка — запитом із куками", calls["goto"] == 1 and calls["req"] == 1)
+rc, saved, calls = run_login(CABINET_GUEST)
+chk("login: у відповіді нема ознак входу → rc 1, файл сесії НЕ створено", rc == 1 and saved is None)
+rc, saved, calls = run_login(CABINET, status=302)
+chk("login: статус не 200 → rc 1, сесію не збережено", rc == 1 and saved is None)
+rc, saved, calls = run_login(RuntimeError("net down"))
+chk("login: збій перевірки (мережа) → rc 1 без винятку, сесію не збережено", rc == 1 and saved is None)
+rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet": "https://dropt.in.ua/index.php?route=account/logout"})
+chk("login: редірект кабінету на logout НЕ виконується (запиту на logout нема), сесію не збережено", rc == 1 and saved is None and all("logout" not in u for u in calls["urls"]))
+rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet": "https://evil.example/ua/cabinet"})
+chk("login: редірект на чужий хост НЕ виконується, сесію не збережено", rc == 1 and saved is None and calls["urls"] == ["https://dropt.in.ua/ua/cabinet"])
+rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet": "/ua/cabinet/"})
+chk("login: звичайний редірект у межах dropt.in.ua слідуємо вручну → вхід підтверджено, сесія збережена", rc == 0 and saved is not None and calls["urls"] == ["https://dropt.in.ua/ua/cabinet", "https://dropt.in.ua/ua/cabinet/"])
+rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet": "/ua/cabinet"})
+chk("login: нескінченний редірект → rc 1, сесію не збережено", rc == 1 and saved is None)
+rc, saved, calls = run_login(CABINET, close_raises=True)
+chk("login: browser.close() кидає виняток (вікно закрито) → збережена сесія НЕ втрачена, rc 0", rc == 0 and saved is not None)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

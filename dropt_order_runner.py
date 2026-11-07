@@ -32,7 +32,7 @@ RunnerError = rt_run.RunnerError
 STUCK = rt_run.STUCK
 ACTION_STATES = rt_run.ACTION_STATES
 STALE_DAYS = rt_run.STALE_DAYS
-INFO_ALERT_KEYS = ("waiting", "wait", "since", "since_mid")      # інформаційні (dry-run/ворота) — «⚪», у Telegram не йдуть; решта — «🟠» власнику
+INFO_ALERT_KEYS = ("waiting", "wait", "since", "since_mid", "supplier_stale")      # інформаційні (dry-run/ворота) — «⚪», у Telegram не йдуть; решта — «🟠» власнику
 
 
 SUPPLIER_MAX_AGE_S = 3 * 3600      # як ITEM_MAX_AGE_S в експортері й DROPT_MAX_AGE у stock_snapshot: файл/позиція, прочитані давніше, — ціну й наявність «не знаємо»
@@ -145,7 +145,7 @@ def _pdf_ok(path) -> bool:
     try:
         p = Path(path)
         return p.is_file() and 0 < p.stat().st_size <= MAX_PDF_BYTES and p.read_bytes()[:5] == b"%PDF-"
-    except OSError:
+    except (OSError, TypeError):          # TypeError: шляху нема (rt_marking_path = None)
         return False
 
 
@@ -233,7 +233,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             order = {**order, "rt_marking_path": str(path)}
         if state == "marking_ready":
             if not _pdf_ok(order.get("rt_marking_path")):
-                raise RunnerError(f"наліпка ТТН {order.get('rt_marking_path')} зникла/не є коректним PDF ≤ 2 МБ — відновіть файл (ТТН {order.get('toysi_ttn')}) і поверніть стан у ttn_created (rt_set_state)")
+                raise RunnerError(f"наліпка ТТН {order.get('rt_marking_path')} зникла/не є коректним PDF ≤ 2 МБ — ТТН {order.get('toysi_ttn')} створено: поверніть файл наліпки на місце, або позначте замовлення manual (rt_set_state.py --to manual) і доведіть його вручну")
             if not orders_db.claim_rt_state(conn, oid, "marking_ready", "rt_ordering"):
                 raise RunnerError("замовлення вже взяте іншим запуском (claim) — пропускаю")
             res = d.dropt_order(items, order["toysi_ttn"], order["rt_marking_path"])
@@ -326,11 +326,12 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
         if not pending:
             print("[dropt_runner] немає замовлень Dropt у роботі")
             return reports
+        supplier, sup_err = {}, None
         try:
             supplier = load_supplier()
-        except RunnerError as e:
+        except RunnerError as e:           # файл постачальника нема/застарів: НОВІ кроки (map_items) стоять, але трекінг посилок у дорозі й STUCK-діагностика файла не потребують — не зупиняємо їх (аудит #1114)
+            sup_err = str(e)
             print(f"[dropt_runner] {e}", file=sys.stderr)
-            return [{"problems": [str(e)]}]
         light = [o for o in pending if o.get("rt_state") not in ACTION_STATES]
         action_all = sorted([o for o in pending if o.get("rt_state") in ACTION_STATES], key=lambda o: (o.get("rt_updated_at") or "", o.get("created_at") or ""))
         action, rest = action_all[:MAX_ORDERS_PER_RUN], action_all[MAX_ORDERS_PER_RUN:]
@@ -345,6 +346,10 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
                 if not apply:
                     _alert(order["internal_order_id"], "waiting", "оплачене замовлення Dropt чекає ручної обробки" + ("" if ok_r else " (чек НЕ видано!)") + " — конвеєр у dry-run")
         for order in light + action:
+            if sup_err and order.get("rt_state") in ACTION_STATES:
+                reports.append({"order": order["internal_order_id"], "state": order.get("rt_state"), "apply": apply, "actions": [], "problems": [sup_err]})
+                _alert(order["internal_order_id"], "supplier_stale", sup_err + " — нові кроки замовлення стоять, трекінг посилок триває")
+                continue
             rep = process_order(conn, order, supplier, apply, d)
             reports.append(rep)
             print("[dropt_runner]", json.dumps(rep, ensure_ascii=False, default=str))

@@ -369,5 +369,23 @@ with orders_db.get_connection() as c:
 rep = run_one(a11, Fake(), apply=True)
 chk("некоректний ПІБ: причина не називає RoyalToys", rep["problems"] and "RoyalToys" not in rep["problems"][0])
 
+# ---- аудит #1114: застарілий файл постачальника не зупиняє трекінг посилок у дорозі ----
+os.environ["DROPT_RUNNER_SINCE"] = "2026-11-01"
+stale_p = write_sup("stale.json", (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat())
+dse.OUT_FILE = stale_p
+t1 = new_order("T1")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, t1, "shipped", rt_order_ref="D-1", toysi_ttn="20451500000099")
+    c.commit()
+t2 = new_order("T2")
+fkS = Fake(ttn_info={"status": "Отримано", "status_code": "9", "delivered": True})
+ALERTS.clear()
+reps = dr.run(apply=True, deps=fkS)
+byo = {r.get("order"): r for r in reps}
+chk("файл постачальника застарів: посилка в дорозі (T1) усе одно відстежується (delivered), нова (T2) стоїть з причиною й алертом",
+    get(t1)["rt_state"] == "delivered" and byo.get(t2, {}).get("problems") and "застарів" in byo[t2]["problems"][0] and (t2, "supplier_stale") in ALERTS and "create_ttn" not in fkS.calls)
+chk("_pdf_ok(None) не кидає", dr._pdf_ok(None) is False)
+dse.OUT_FILE = supp_path
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

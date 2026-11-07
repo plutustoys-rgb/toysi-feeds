@@ -1124,7 +1124,7 @@ def build():
         json.dump([x for x in idx if x.get("rt") and not x.get("dup")], f, ensure_ascii=False)
     # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
     static_urls = [("categories.html", "0.7", "weekly")] +([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
-    write_sitemap(prods, paged, static_urls, oos_prods=oos_prods, hidden_files={f"category-{cat_slug[c]}.html" for c in cat_list if category_hidden(c)})
+    write_sitemap(prods, paged, static_urls, oos_prods=oos_prods, hidden_files={f"category-{cat_slug[c]}.html" for c in cat_list if category_hidden(c)} | {f for g in SITE_GROUPS for f in g.get("former", [])})   # сторінки-вказівники старих груп — поза sitemap
     write_robots()
 
     # 8) ПРИБИРАННЯ ЗАСТАРІЛИХ сторінок від попередніх білдів: build пише лише поточний вибір,
@@ -3805,7 +3805,8 @@ def load_category_groups():
     out = []
     for g in (raw.get("groups") if isinstance(raw, dict) else None) or []:
         if isinstance(g, dict) and isinstance(g.get("name"), str) and isinstance(g.get("subs"), list) and not g.get("hide"):
-            out.append({"name": g["name"], "display": str(g.get("display") or g["name"]), "subs": [s for s in g["subs"] if isinstance(s, str)]})
+            out.append({"name": g["name"], "display": str(g.get("display") or g["name"]), "subs": [s for s in g["subs"] if isinstance(s, str)],
+                        "former": [x for x in (g.get("former_files") or []) if isinstance(x, str) and re.fullmatch(r"group-[a-z0-9-]+\.html", x)]})
     return out
 
 
@@ -3829,7 +3830,7 @@ def site_groups(cats):
         main = [(c, n) for c, n in subs if c != own and n >= GROUP_SUB_MIN][:GROUP_SUB_MAX]
         _m = {c for c, _n in main}
         other = [(c, n) for c, n in subs if c not in _m]
-        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own, "main": main, "other": other})
+        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own, "main": main, "other": other, "former": g.get("former", [])})
     out.sort(key=lambda g: -g["total"])
     return out
 
@@ -3877,6 +3878,12 @@ def write_groups(groups, cats, cat_slug):
         desc = f"{g['display']} у PlutusToys: {g['total']} товарів у {n_sub} підкатегоріях. Є в наявності, доставка Новою Поштою по Україні."[:DESC_MAX]
         _write(g["file"], page(g["display"], body, extra_head=head, description=desc, canonical=g["file"], og_image=OG_IMAGE, title_full=f"{g['display']} — іграшки в наявності | PlutusToys"))
         written.add(g["file"])
+        for old in g.get("former", []):   # група перейменована (змінився slug): стара адреса не 404, а сторінка-вказівник → нова (noindex, canonical на нову, refresh 0 с)
+            if old != g["file"]:
+                _write(old, page(g["display"], f'<div class="gp"><p>Розділ перейменовано: <a href="{g["file"]}">{esc(g["display"])}</a>.</p></div>',
+                                 extra_head=f'<meta http-equiv="refresh" content="0; url={g["file"]}">', description=g["display"], canonical=g["file"], noindex=True,
+                                 title_full=f"{g['display']} | PlutusToys"))
+                written.add(old)
     return written
 
 

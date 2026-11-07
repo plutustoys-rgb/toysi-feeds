@@ -241,5 +241,114 @@ except dc.OrderError:
     ok = True
 chk("load_cookies: нема файлу → OrderError", ok)
 
+# ---- аудит #1118: посилення ----
+def cart_html(inner):
+    return f"<table>{inner}</table>"
+
+
+def raises_oe(fn):
+    try:
+        fn()
+        return False
+    except dc.OrderError:
+        return True
+
+
+chk("parse_cart_rows: рядок без кількості → OrderError (раніше читалось як 1)", raises_oe(lambda: dc.parse_cart_rows(cart_html('<tr data-product-id="7"><td>x</td></tr>'))))
+chk("parse_cart_rows: <TR> верхній регістр / id без лапок читаються; value=\"2.0\" → OrderError (не ціле)",
+    dc.parse_cart_rows(cart_html('<TR DATA-PRODUCT-ID=7><td><input class="quantity-input" value="3"></td></TR>')) == {"7": 3} and raises_oe(lambda: dc.parse_cart_rows(cart_html('<tr data-product-id="7"><td><input class="quantity-input" value="2.0"></td></tr>'))))
+chk("parse_cart_rows: дубль id → OrderError; порожній кошик → {}", raises_oe(lambda: dc.parse_cart_rows(cart_html('<tr data-product-id="7"><td><input class="quantity-input" value="1"></td></tr>' * 2))) and dc.parse_cart_rows("<table></table>") == {})
+
+
+def ld(price, sku="59298", extra=""):
+    return f'<html>{extra}<script type="application/ld+json">{{"@type":"Product","sku":"{sku}","offers":{{"price":"{price}","availability":"https://schema.org/InStock"}}}}</script><input name="current_params" value="product_id=19357"></html>'
+
+
+chk("parse_product: ціна «1 250.50» / «1250,50» (NBSP, кома) читається коректно", dc.parse_product(ld("1 250.50"))["price"] == 1250.50 and dc.parse_product(ld("1250,50"))["price"] == 1250.50 and dc.parse_product(ld("1 250,50"))["price"] == 1250.50)
+chk("parse_product: ціну/sku беремо з JSON-LD Product, а не з першого збігу на сторінці (data-layer з іншою ціною раніше)", dc.parse_product(ld("500", extra='<script>dataLayer.push({"price":"9","sku":"WRONG"})</script>')) == {"internal_id": "19357", "sku": "59298", "price": 500.0, "in_stock": True})
+chk("parse_product: без JSON-LD → price/sku None (preflight не вважатиме це «ок»)", dc.parse_product("<html></html>")["price"] is None)
+no_price = FakeHttp(prod={"https://dropt.in.ua/ua/tovar-a": '<html><script type="application/ld+json">{"@type":"Product","sku":"59298","offers":{"availability":"InStock"}}</script><input name="current_params" value="product_id=19357"></html>'})
+chk("preflight: ціна на сторінці не прочитана → проблема (раніше мовчки пропускалось)", any("не прочитано" in x for x in dc.preflight(ORDER, no_price)["problems"]))
+
+# URL
+chk("_url_ok: evil.com\\@dropt.in.ua, подвійне кодування logout, пробіли, userinfo, інший порт — відхилено",
+    not dc._url_ok("https://evil.com\\@dropt.in.ua/x") and not dc._url_ok("https://dropt.in.ua/index.php?route=account/l%6Fgout") and not dc._url_ok("https://dropt.in.ua/index.php?route=account/l%256Fgout")
+    and not dc._url_ok("https://dropt.in.ua/a b") and not dc._url_ok("https://user:pw@dropt.in.ua/x") and not dc._url_ok("https://dropt.in.ua:8443/x") and dc._url_ok("https://dropt.in.ua/ua/cabinet?tab=orders"))
+chk("_product_url_ok: лише /ua/<slug> без підкаталогів/параметрів", dc._product_url_ok("https://dropt.in.ua/ua/tovar-a-1") and not dc._product_url_ok("https://dropt.in.ua/ua/a/b") and not dc._product_url_ok("https://dropt.in.ua/index.php?route=account/logout")
+    and not dc._product_url_ok("https://dropt.in.ua/ua/x?y=1") and not dc._product_url_ok("https://dropt.in.ua/ru/x"))
+bad_logout = dict(ORDER, items=[dict(ORDER["items"][0], source_url="https://dropt.in.ua/index.php?route=account/logout")])
+h = FakeHttp()
+chk("preflight: source_url = logout → проблема, жодного запиту на нього", not dc.preflight(bad_logout, h)["ready"] and all("logout" not in u for u in h.gets))
+
+
+class Resp:
+    def __init__(self, code, text="", loc=None):
+        self.status_code, self.text, self.headers = code, text, ({"Location": loc} if loc else {})
+
+
+class Sess:
+    def __init__(self, table):
+        self.table, self.seen = table, []
+
+    def get(self, url, timeout=None, allow_redirects=True, **kw):
+        self.seen.append((url, allow_redirects))
+        return self.table[url]
+
+
+def make_http(table):
+    hh = object.__new__(dc.Http)
+    hh.s = Sess(table)
+    return hh
+
+
+hh = make_http({"https://dropt.in.ua/ua/a": Resp(302, loc="https://dropt.in.ua/index.php?route=account/logout")})
+try:
+    hh.get("https://dropt.in.ua/ua/a")
+    ok = False
+except dc.OrderError:
+    ok = [u for u, _ in hh.s.seen] == ["https://dropt.in.ua/ua/a"]
+chk("Http.get: редирект на logout НЕ виконується (перевірка до запиту)", ok)
+hh = make_http({"https://dropt.in.ua/ua/a": Resp(301, loc="https://evil.example/x")})
+try:
+    hh.get("https://dropt.in.ua/ua/a")
+    ok = False
+except dc.OrderError:
+    ok = [u for u, _ in hh.s.seen] == ["https://dropt.in.ua/ua/a"]
+chk("Http.get: редирект на чужий хост НЕ виконується", ok)
+hh = make_http({"https://dropt.in.ua/ua/a": Resp(302, loc="/ua/b"), "https://dropt.in.ua/ua/b": Resp(200, "OK")})
+chk("Http.get: нормальний редирект у межах хоста — слідуємо вручну (allow_redirects=False)", hh.get("https://dropt.in.ua/ua/a") == (200, "OK") and all(a is False for _, a in hh.s.seen))
+loop = {"https://dropt.in.ua/ua/a": Resp(302, loc="/ua/a")}
+chk("Http.get: нескінченний редирект → OrderError", raises_oe(lambda: make_http(loop).get("https://dropt.in.ua/ua/a")))
+
+# confirm: нестандартні відповіді
+os.environ["DROPT_CABINET_VERIFIED"] = "1"
+for body, label in ((json.dumps({"error": ["x"]}), "error=список"), (json.dumps({"error": True}), "error=true")):
+    r = dc.order_flow(ORDER, submit=True, http=FakeHttp(confirm=body))
+    chk(f"confirm {label}: без винятків, «не оформлено напевно»", r["submitted"] is False and r["not_submitted_certain"] is True)
+r = dc.order_flow(ORDER, submit=True, http=FakeHttp(confirm=json.dumps({"success": True, "error": "попередження"})))
+chk("confirm success+error одночасно → результат НЕВІДОМИЙ (щоб runner не повторив і не оплатив вдруге)", r["submitted"] is False and r["not_submitted_certain"] is False)
+
+
+class RacyHttp(FakeHttp):
+    def post(self, url, data=None, files=None, headers=None):
+        res = super().post(url, data=data, files=files, headers=headers)
+        if "uploadTTN" in url:
+            self.rows["555"] = 1                               # власник додав товар у кошик під час завантаження PDF
+        return res
+
+
+h = RacyHttp()
+try:
+    dc.order_flow(ORDER, submit=True, http=h)
+    ok = False
+except dc.OrderError as e:
+    ok = "змінився" in str(e) and all("dropshipper_checkout/confirm" not in u for u, _d, _f in h.posts)
+chk("кошик змінився між читанням і confirm (власник додав товар) → оформлення зупинено, confirm не викликано", ok)
+os.environ.pop("DROPT_CABINET_VERIFIED", None)
+chk("_fmt: 790 → «790», 790.5 → «790.5», 1000000 → «1000000», 12345.67 → «12345.67»", dc._fmt(790) == "790" and dc._fmt(790.5) == "790.5" and dc._fmt(1000000) == "1000000" and dc._fmt(12345.67) == "12345.67")
+sf2 = tmp / "state2.json"
+sf2.write_text(json.dumps({"cookies": [{"name": "a", "value": "1", "domain": "evildropt.in.ua"}, {"name": "b", "value": "1", "domain": ".dropt.in.ua"}, {"name": "c", "value": "1", "domain": "dropt.in.ua"}]}), encoding="utf-8")
+chk("load_cookies: evildropt.in.ua відхилено; dropt.in.ua і .dropt.in.ua — ні", [c["name"] for c in dc.load_cookies(sf2)] == ["b", "c"])
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -44,12 +44,27 @@ def final_implemented() -> bool:
 
 
 # ───────────────────────────── HTTP ─────────────────────────────
+_URL_RE = re.compile(r"https://dropt\.in\.ua(?:/[A-Za-z0-9._~!$'()*+,;=:@%/?#\[\]&-]*)?")
+_PRODUCT_URL_RE = re.compile(r"https://dropt\.in\.ua/ua/[A-Za-z0-9._~-]+")
+
+
 def _url_ok(url: str) -> bool:
+    """Лише https://dropt.in.ua. Жодних зворотних слешів/пробілів/userinfo (різний розбір urlparse і urllib3), жодного logout (також у %-кодуванні: GET logout вилогінить власника)."""
+    if not isinstance(url, str) or not _URL_RE.fullmatch(url):
+        return False
     try:
         u = urlparse(url)
     except ValueError:
         return False
-    return u.scheme == "https" and (u.hostname or "").lower() == HOST_OK and u.port in (None, 443) and "logout" not in url.lower()
+    if "@" in (u.netloc or "") or u.username or u.password:
+        return False
+    from urllib.parse import unquote
+    return u.scheme == "https" and (u.hostname or "").lower() == HOST_OK and u.port in (None, 443) and "logout" not in unquote(unquote(url)).lower()
+
+
+def _product_url_ok(url: str) -> bool:
+    """Сторінка товару: лише https://dropt.in.ua/ua/<slug> (так само відсіює експортер)."""
+    return _url_ok(url) and bool(_PRODUCT_URL_RE.fullmatch(url))
 
 
 class Http:
@@ -67,10 +82,16 @@ class Http:
             raise OrderError(f"заборонений URL (лише https://{HOST_OK}, без logout)")
 
     def get(self, url, **kw):
-        self._check(url)
-        r = self.s.get(url, timeout=TIMEOUT, allow_redirects=True, **kw)
-        self._check(r.url)
-        return r.status_code, r.text
+        """GET з РУЧНИМ слідуванням за редіректами: кожен крок перевіряється ДО запиту (редирект на logout/чужий хост не виконується)."""
+        from urllib.parse import urljoin
+        for _ in range(6):
+            self._check(url)
+            r = self.s.get(url, timeout=TIMEOUT, allow_redirects=False, **kw)
+            if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+                url = urljoin(url, r.headers["Location"])
+                continue
+            return r.status_code, r.text
+        raise OrderError("забагато редіректів у відповіді Dropt")
 
     def post(self, url, data=None, files=None, headers=None):
         self._check(url)
@@ -84,7 +105,7 @@ def load_cookies(path) -> list:
         d = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise OrderError("нема збереженої сесії кабінету Dropt — власник має виконати вхід: python dropt_cabinet.py --login і скопіювати файл на VPS") from None
-    out = [c for c in (d.get("cookies") or []) if isinstance(c, dict) and str(c.get("domain", "")).lstrip(".").endswith(HOST_OK) and c.get("name")]
+    out = [c for c in (d.get("cookies") or []) if isinstance(c, dict) and (str(c.get("domain", "")).lstrip(".") == HOST_OK or str(c.get("domain", "")).endswith("." + HOST_OK)) and c.get("name")]
     if not out:
         raise OrderError("у збереженій сесії Dropt нема куків dropt.in.ua — потрібен новий вхід (--login)")
     return out
@@ -115,22 +136,60 @@ def _money(s):
         return None
 
 
+def _ld_products(html: str) -> list:
+    out = []
+    for m in re.finditer(r"<script[^>]*application/ld\+json[^>]*>(.*?)</script>", html, re.S | re.I):
+        try:
+            d = json.loads(m.group(1))
+        except ValueError:
+            continue
+        stack = [d]
+        while stack:
+            x = stack.pop()
+            if isinstance(x, list):
+                stack.extend(x)
+            elif isinstance(x, dict):
+                if "@graph" in x:
+                    stack.append(x["@graph"])
+                t = x.get("@type")
+                if t == "Product" or (isinstance(t, list) and "Product" in t):
+                    out.append(x)
+    return out
+
+
 def parse_product(html: str) -> dict:
-    """Сторінка товару → {internal_id, sku, price, in_stock}. Відсутнє → None у полі."""
+    """Сторінка товару → {internal_id, sku, price, in_stock}. Артикул/ціна/наявність — з JSON-LD блоку Product (не з першого збігу на сторінці); ціна з пробілами/NBSP/комою читається як у dropt_parser. Відсутнє → None."""
     m = re.search(r'name=["\']current_params["\'][^>]*value=["\']product_id=(\d+)["\']', html) or re.search(r'value=["\']product_id=(\d+)["\'][^>]*name=["\']current_params["\']', html)
-    sku = re.search(r'"sku"\s*:\s*"([^"]+)"', html)
-    price = re.search(r'"price"\s*:\s*"?([\d.]+)"?', html)
-    avail = re.search(r'"availability"\s*:\s*"([^"]+)"', html)
-    return {"internal_id": m.group(1) if m else None, "sku": sku.group(1) if sku else None, "price": float(price.group(1)) if price else None,
-            "in_stock": bool(avail and avail.group(1).rstrip("/").endswith("InStock"))}
+    prods = _ld_products(html)
+    sku = price = avail = None
+    if prods:
+        pr = prods[0]
+        sku = str(pr.get("sku")) if pr.get("sku") is not None else None
+        offers = pr.get("offers")
+        if isinstance(offers, list):
+            offers = offers[0] if offers else None
+        if isinstance(offers, dict):
+            price = _money(str(offers.get("price", ""))) if offers.get("price") not in (None, "") else None
+            avail = offers.get("availability")
+    return {"internal_id": m.group(1) if m else None, "sku": sku, "price": price, "in_stock": bool(avail and str(avail).rstrip("/").endswith("InStock"))}
 
 
 def parse_cart_rows(modal_html: str) -> dict:
-    """Рядки кошика з HTML модалки → {internal_id: qty}."""
+    """Рядки кошика з HTML модалки → {internal_id: qty}. СТРОГО: рядок без прочитної цілої кількості, дубль id або рядок з data-product-id без лапок/у верхньому регістрі, який не вдалось розібрати, — OrderError
+    (колись «не знайшли кількість» читалось як 1, і confirm оплатив би більше, ніж ми додали)."""
     rows = {}
-    for m in re.finditer(r"<tr[^>]*data-product-id=[\"'](\d+)[\"'][^>]*>(.*?)</tr>", modal_html, re.S):
-        q = re.search(r"quantity-input[^>]*value=[\"'](\d+)[\"']", m.group(2)) or re.search(r"value=[\"'](\d+)[\"'][^>]*quantity-input", m.group(2))
-        rows[m.group(1)] = int(q.group(1)) if q else 1
+    n_attr = len(re.findall(r"data-product-id\s*=", modal_html, re.I))
+    n_tr = 0
+    for m in re.finditer(r"<tr\b[^>]*data-product-id\s*=\s*[\"']?(\d+)[\"']?[^>]*>(.*?)</tr>", modal_html, re.S | re.I):
+        n_tr += 1
+        q = re.search(r"quantity-input[^>]*\svalue\s*=\s*[\"'](\d+)[\"']", m.group(2), re.I) or re.search(r"\svalue\s*=\s*[\"'](\d+)[\"'][^>]*quantity-input", m.group(2), re.I)
+        if not q:
+            raise OrderError(f"кошик Dropt: не вдалось прочитати кількість у рядку товару {m.group(1)} (змінилась верстка?)")
+        if m.group(1) in rows:
+            raise OrderError(f"кошик Dropt: товар {m.group(1)} двічі в кошику")
+        rows[m.group(1)] = int(q.group(1))
+    if n_tr and not n_attr:
+        raise OrderError("кошик Dropt: рядки без data-product-id")
     return rows
 
 
@@ -167,8 +226,8 @@ def ensure_session(http=None) -> dict:
 def product_info(http, item: dict) -> dict:
     """Внутрішній id/ціна/наявність товару зі сторінки (source_url з supplier_dropt.json). Артикул сторінки має збігатися з замовленим."""
     url = str(item.get("source_url") or "")
-    if not _url_ok(url):
-        raise OrderError(f"{item.get('vendor_code')}: нема коректної адреси сторінки товару Dropt (source_url)")
+    if not _product_url_ok(url):
+        raise OrderError(f"{item.get('vendor_code')}: нема коректної адреси сторінки товару Dropt (очікується https://dropt.in.ua/ua/<slug>)")
     code, html = http.get(url)
     if code != 200:
         raise OrderError(f"{item.get('vendor_code')}: сторінка товару Dropt недоступна (HTTP {code})")
@@ -212,7 +271,9 @@ def preflight(order: dict, http=None) -> dict:
         if not p["in_stock"]:
             problems.append(f"{it['vendor_code']}: на сторінці Dropt нема в наявності")
         cost = float(it["cost"])
-        if p["price"] is not None and p["price"] > cost * PRICE_TOLERANCE + 1:
+        if p["price"] is None:
+            problems.append(f"{it['vendor_code']}: ціну «Дроп» на сторінці не прочитано — перевірити нічим")
+        elif p["price"] > cost * PRICE_TOLERANCE + 1:
             problems.append(f"{it['vendor_code']}: ціна «Дроп» на сторінці {p['price']} вища за закупівлю в замовленні {cost} — ціна зросла, потрібне ручне рішення")
         total += cost * int(it["qty"])
     bal = info.get("balance")
@@ -230,6 +291,13 @@ def _open_modal(http):
     if code != 200 or not j or not isinstance(j.get("html"), str):
         raise OrderError(f"модалка оформлення Dropt недоступна (HTTP {code})")
     return j["html"]
+
+
+def _fmt(x) -> str:
+    """Число для форми без експоненти й зайвих нулів: 790 → «790», 790.5 → «790.5», 1000000 → «1000000»."""
+    from decimal import Decimal
+    d = Decimal(str(x)).quantize(Decimal("0.01"))
+    return format(d.normalize(), "f")
 
 
 def _ttn_digits(s) -> str:
@@ -294,14 +362,17 @@ def order_flow(order: dict, submit: bool = False, http=None) -> dict:
     rec = _ttn_digits(j.get("ttn_number"))
     if rec and rec != ttn:
         raise OrderError(f"Dropt розпізнав у PDF ТТН {rec}, а наша {ttn} — перевірте наліпку")
+    again = _open_modal(http)
+    if parse_cart_rows(again) != want:                          # між читанням модалки і confirm пройшли секунди (завантаження PDF): кошик не мав змінитись (власник міг додати товар вручну)
+        raise OrderError(f"кошик Dropt змінився під час оформлення: {parse_cart_rows(again)} ≠ {want} — оформлення зупинено")
     # --- оформлення ---
     form = {"order_type": "drop", "delivery_type": "external", "ttn_number": ttn, "ttn_filename": j["filename"], "pay_from_balance": "1", "payment_choice": "balance", "payment_method": "prepaid",
             "comment": "", "csrf_token": csrf}
     total_sale = 0.0
     for it in items:
-        form[f"sale_price[{ids[str(it['vendor_code'])]}]"] = f"{float(it['sale_price']):g}"
+        form[f"sale_price[{ids[str(it['vendor_code'])]}]"] = _fmt(it["sale_price"])
         total_sale += float(it["sale_price"]) * int(it["qty"])
-    form["total_order_price"] = f"{total_sale:g}"
+    form["total_order_price"] = _fmt(total_sale)
     try:
         code, text = http.post(action, data=form, headers={"X-Requested-With": "XMLHttpRequest"})
     except Exception as e:  # noqa: BLE001 — результат кліку невідомий (таймаут/мережа)
@@ -309,9 +380,11 @@ def order_flow(order: dict, submit: bool = False, http=None) -> dict:
     j = _json(text)
     if code != 200 or j is None:
         return {"submitted": False, "not_submitted_certain": False, "problems": [f"оформлення Dropt: незрозуміла відповідь (HTTP {code}) — звірте замовлення в кабінеті"]}
+    if j.get("error") and j.get("success"):
+        return {"submitted": False, "not_submitted_certain": False, "problems": ["оформлення Dropt: у відповіді одночасно success і error — результат невідомий, звірте замовлення в кабінеті"]}
     if j.get("error"):
         err = j["error"]
-        txt = err if isinstance(err, str) else "; ".join(f"{k}: {v}" for k, v in err.items())
+        txt = err if isinstance(err, str) else ("; ".join(f"{k}: {v}" for k, v in err.items()) if isinstance(err, dict) else str(err)[:200])
         return {"submitted": False, "not_submitted_certain": True, "low_balance": bool(j.get("redirect_deposit")), "problems": [f"Dropt відхилив оформлення: {txt}"[:300]]}
     if not j.get("success"):
         return {"submitted": False, "not_submitted_certain": False, "problems": ["оформлення Dropt: відповідь без success/error — звірте замовлення в кабінеті"]}
@@ -370,7 +443,9 @@ def login() -> int:
             tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
             fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(ctx.storage_state(), f, ensure_ascii=False)
+                st = ctx.storage_state()
+                st = {"cookies": [c for c in st.get("cookies", []) if str(c.get("domain", "")).lstrip(".").endswith(HOST_OK)], "origins": []}     # куки Google/Telegram з OAuth-входу не зберігаємо
+                json.dump(st, f, ensure_ascii=False)
             os.replace(tmp, STATE_FILE)
         finally:
             browser.close()

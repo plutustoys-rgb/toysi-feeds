@@ -88,7 +88,7 @@ def map_items(order: dict, supplier: dict) -> list:
         if code in merged:
             merged[code]["qty"] += qty
         else:
-            merged[code] = {"toysi_code": code, "qty": qty, "price": it.get("price"), "name": it.get("name"), "vendor_code": str(src["vendor_code"]).strip(), "cost": float(src["cost"])}
+            merged[code] = {"toysi_code": code, "qty": qty, "price": it.get("price"), "name": it.get("name"), "vendor_code": str(src["vendor_code"]).strip(), "cost": float(src["cost"]), "source_url": src.get("source_url")}
     out = list(merged.values())
     if not out:
         raise RunnerError("у замовленні нема позицій")
@@ -273,7 +273,7 @@ class _Deps(rt_run._Deps):
 
     @staticmethod
     def _cab_items(items):
-        return [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"], "sale_price": i["price"]} for i in items]
+        return [{"vendor_code": i["vendor_code"], "qty": i["qty"], "cost": i["cost"], "sale_price": i["price"], "source_url": i.get("source_url")} for i in items]
 
     def dropt_dry_run(self, items):
         import dropt_cabinet

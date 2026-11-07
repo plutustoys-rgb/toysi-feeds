@@ -134,7 +134,45 @@ r, e = load({"dropt-101": good("dropt-101", category="Невідома / Щос�
              "dropt-103": good("dropt-103", category="Новий Рік / Новорічні гірлянди"), "dropt-104": good("dropt-104", category=None),
              "dropt-105": good("dropt-105", category="Електроніка / Акумуляторні батарейки")})
 chk("невідома категорія / ціль «» у мапі / ціль поза категоріями Toysi цієї збірки / нема категорії → ні; відома й існуюча → так", set(r) == {"dropt-105"}
-    and r["dropt-105"]["category_name"] == "Батарейки" and "category:" in e and "category-target:" in e)
+    and r["dropt-105"]["category_name"] == "Батарейки" and "category:" in e)
+
+# ── покартковий файл dropt_item_category.json (07.11.2026): категорії Dropt брудні → запис по id має пріоритет над мапою категорій ──
+_orig_item_file = bs.DROPT_ITEM_CATEGORY_FILE
+
+
+def with_item_map(content, items, site_cats=SITE_CATS):
+    f = tmp / "item_cat.json"
+    if content is None:
+        if f.exists():
+            f.unlink()
+    else:
+        f.write_text(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False), encoding="utf-8")
+    bs.DROPT_ITEM_CATEGORY_FILE = str(f)
+    try:
+        return load(items, site_cats=site_cats)
+    finally:
+        bs.DROPT_ITEM_CATEGORY_FILE = _orig_item_file
+
+
+_dirty = {"dropt-201": good("dropt-201", category="Електроніка / Товари для ПК"), "dropt-202": good("dropt-202", category="Невідома / Щось"),
+          "dropt-203": good("dropt-203", category="Електроніка / Акумуляторні батарейки"), "dropt-204": good("dropt-204", category=None)}
+r, e = with_item_map({"dropt-201": "Машинки", "dropt-204": "Автокрісла", "dropt-203": "Автокрісла"}, _dirty)
+chk("покартковий запис: товар зі «брудною» категорією Dropt (і без категорії) отримує категорію з файлу; запис перебиває мапу категорій; без запису й без мапи — ні",
+    set(r) == {"dropt-201", "dropt-203", "dropt-204"} and r["dropt-201"]["category_name"] == "Машинки" and r["dropt-203"]["category_name"] == "Автокрісла"
+    and r["dropt-204"]["category_name"] == "Автокрісла" and "dropt-202" not in r)
+r, e = with_item_map(None, _dirty)
+chk("файлу нема → як раніше (лише мапа категорій): без падіння, брудний id без запису не публікується", isinstance(r, dict) and "dropt-201" not in r and "dropt-204" not in r)
+r, e = with_item_map("{not json", _dirty)
+chk("файл битий → як раніше (мапа категорій), без падіння збірки", isinstance(r, dict) and "dropt-201" not in r)
+r, e = with_item_map(["dropt-201"], _dirty)
+chk("файл не об'єкт → ігнорується", "dropt-201" not in r)
+r, e = with_item_map({"dropt-201": "Нема такої категорії", "dropt-202": "", "dropt-203": 5, "dropt-204": None}, _dirty)
+chk("ціль поза категоріями Toysi цієї збірки / порожній рядок / не рядок → картку не публікуємо (category-target:)", not ({"dropt-201", "dropt-202", "dropt-204"} & set(r)) and "category-target:" in e)
+r, e = with_item_map({"dropt-201": "Машинки"}, {"dropt-201": good("dropt-201", category="Електроніка / Товари для ПК"), "dropt-999": good("dropt-999", category="Електроніка / Товари для ПК")})
+chk("запис лише для одного id не відкриває сусіда з тією самою брудною категорією", set(r) == {"dropt-201"})
+_item_doc = json.loads((HERE / "site" / "dropt_item_category.json").read_text(encoding="utf-8"))
+chk("реальний site/dropt_item_category.json: об'єкт; ключі dropt-<цифри>; цілі — непорожні рядки без слова «Dropt», без дублікатів ключів", isinstance(_item_doc, dict)
+    and all(re.fullmatch(r"dropt-[0-9]{1,12}", k) for k in _item_doc) and all(isinstance(v, str) and v.strip() and "dropt" not in v.lower() for v in _item_doc.values()))
 
 bad_imgs = ["http://plutustoys.com.ua/img/dropt/dropt-101-1.jpg", "https://evil.example/img/dropt/dropt-101-1.jpg", "https://plutustoys.com.ua.evil.com/img/dropt/dropt-101-1.jpg",
             "https://plutustoys.com.ua/img/dropt/../../supplier_dropt.json", "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg", "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg",
@@ -201,7 +239,7 @@ XSS_DESC = 'Гарна іграшка для дітей <img src=x onerror=alert
 ITEMS = {"dropt-101": good("dropt-101"), "dropt-102": good("dropt-102", name="Акумуляторні батарейки АА 4 шт", category="Електроніка / Акумуляторні батарейки", cost=COST_F, price=150),
          "dropt-103": good("dropt-103", name=XSS_NAME, description=XSS_DESC, category="Електроніка / Акумуляторні батарейки"),
          "dropt-104": good("dropt-104", name="Застарілий товар", checked_at=NOW_TS - 8 * 3600), "dropt-105": good("dropt-105", name="Невідомий розділ", category="Акустика / Навушники"),
-         "dropt-106": good("dropt-106", name="Чуже фото", images=["https://evil.example/a.jpg"]), "dropt-107": good("dropt-107", name="Гірлянда", category="Новий Рік / Новорічні гірлянди"),
+         "dropt-106": good("dropt-106", name="Чуже фото", images=["https://evil.example/a.jpg"]), "dropt-107": good("dropt-107", name="Скарбничка", category="Товари для дітей / Дитячі скарбнички/сейфи"),
          "dropt-12x": good("dropt-12x", name="Поганий id"),
          "dropt-108": good("dropt-108", name="Автокрісло з базою", description=ENT_DESC)}
 

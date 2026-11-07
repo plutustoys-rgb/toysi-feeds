@@ -728,6 +728,7 @@ def _load_supplier_rt(now=None):
 DROPT_LIVE = os.environ.get("SITE_DROPT_LIVE") == "1"
 SUPPLIER_DROPT_FILE = os.environ.get("SUPPLIER_DROPT_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_dropt.json")
 DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_category_map.json")
+DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо
 DROPT_INDEX_IDS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_index_ids.json")
 SUPPLIER_DROPT_MAX_AGE_DAYS = SUPPLIER_RT_MAX_AGE_DAYS   # той самий поріг, що для RoyalToys (3 доби від «updated»)
 DROPT_ITEM_MAX_AGE_H = 6                                 # checked_at картки старший (від моменту збірки) → картку не показуємо
@@ -810,6 +811,13 @@ def _load_supplier_dropt(site_cats, now=None):
         cmap = {}
     if not isinstance(cmap, dict):
         cmap = {}
+    try:
+        with open(DROPT_ITEM_CATEGORY_FILE, encoding="utf-8-sig") as f:
+            item_cat = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        item_cat = {}
+    if not isinstance(item_cat, dict):
+        item_cat = {}
     index_ids = _load_dropt_index_ids()
     now_ts = now.timestamp()
     out, skipped = {}, {}
@@ -821,7 +829,9 @@ def _load_supplier_dropt(site_cats, now=None):
             _img_rx = re.compile(r"https://plutustoys\.com\.ua/img/dropt/" + re.escape(k) + r"-[0-9]{1,2}\.jpg")   # лише наш сервер і фото САМЕ цієї картки
             imgs = [u for u in (v.get("images") if isinstance(v.get("images"), list) else []) if isinstance(u, str) and _img_rx.fullmatch(u)]
             _cat_raw = v.get("category")
-            cat_name = cmap.get(_cat_raw.strip()) if isinstance(_cat_raw, str) else None
+            cat_name = item_cat.get(k) if isinstance(item_cat.get(k), str) else None   # покартковий запис має пріоритет над мапою категорій
+            if cat_name is None:
+                cat_name = cmap.get(_cat_raw.strip()) if isinstance(_cat_raw, str) else None
             _ca = v.get("checked_at")
             _ca_age_h = (now_ts - _ca) / 3600.0 if isinstance(_ca, (int, float)) and not isinstance(_ca, bool) and math.isfinite(_ca) else None
             price, stock = _dropt_int(v.get("price"), DROPT_MAX_PRICE), _dropt_int(v.get("stock"), DROPT_MAX_STOCK)

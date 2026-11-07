@@ -1,0 +1,15 @@
+[Unit]
+Description=PlutusToys: конвеєр замовлень Dropt (dropt_order_runner.py — оплачене dropt- замовлення → своя ТТН НП → наліпка → «Зовнішня ТТН» у кабінеті Dropt з балансу → трекінг)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. За замовчуванням DRY-RUN: нічого не створюється, поки у /opt/plutustoys/.env власник не виставить DROPT_RUNNER_APPLY=1, NP_TTN_APPLY=1, DROPT_ORDER_SUBMIT=1
+# + DROPT_RUNNER_SINCE=<ISO-дата>; і поки dropt_cabinet.final_implemented() = False (заглушка), реальний режим усе одно закритий. Код виходу 1 = у замовленні є проблема (див. journalctl -u dropt-order-runner).
+Environment=DROPT_CABINET_STATE_FILE=/opt/plutustoys/.secrets/dropt_cabinet_state.json
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/dropt_order_runner.py
+TimeoutStartSec=1200
+Nice=10

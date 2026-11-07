@@ -20,7 +20,9 @@ from pathlib import Path
 
 KIND_MIXED = "mixed_toysi_rt"      # змішаний кошик Toysi + RoyalToys
 KIND_RT_COD = "rt_cod"             # rt-позиція + накладений (або невідомий) спосіб оплати
-KIND_TITLES = {KIND_MIXED: "змішаний Toysi+RT", KIND_RT_COD: "RT + накладений"}
+KIND_DROPT_MIXED = "dropt_mixed"   # dropt-позиція разом з іншими постачальниками
+KIND_DROPT_COD = "dropt_cod"       # dropt-позиція + накладений (або невідомий) спосіб оплати
+KIND_TITLES = {KIND_MIXED: "змішаний Toysi+RT", KIND_RT_COD: "RT + накладений", KIND_DROPT_MIXED: "Dropt змішаний", KIND_DROPT_COD: "Dropt + накладений"}
 
 
 def _file() -> Path:

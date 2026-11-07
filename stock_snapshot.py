@@ -71,6 +71,36 @@ def rt_stock_entries(path=None, now: datetime | None = None) -> dict:
         return {}
 
 
+DROPT_MAX_AGE = timedelta(hours=3)    # як RT_MAX_AGE: dropt-supplier-export іде щогодини; 3 інтервали без оновлення = залишок dropt- «не знаємо» → бекенд замовлень вважає «немає» (fail-closed)
+
+
+def dropt_stock_entries(path=None, now: datetime | None = None) -> dict:
+    """{"dropt-<артикул>": залишок} з приватного supplier_dropt.json (dropt_supplier_export). Нема файлу/нечитабельний/старший за DROPT_MAX_AGE → {} (без ключів dropt- бекенд замовлень вважає «немає»).
+    Залишок Dropt — ознака «є» (STOCK_IN), не точна кількість: виставляється лише для позицій, які експортер зараз вважає наявними."""
+    try:
+        from datetime import timezone
+        from dropt_supplier_export import OUT_FILE
+        raw = json.loads(Path(path or OUT_FILE).read_text(encoding="utf-8-sig"))
+        upd = datetime.fromisoformat(str(raw["updated"]).replace("Z", "+00:00"))
+        if upd.tzinfo is None:
+            upd = upd.replace(tzinfo=timezone.utc)
+        if ((now.astimezone(timezone.utc) if now and now.tzinfo else datetime.now(timezone.utc)) - upd).total_seconds() > DROPT_MAX_AGE.total_seconds():
+            return {}
+        out = {}
+        now_ts = (now or datetime.now()).timestamp()
+        for k, v in (raw.get("items") or {}).items():
+            try:
+                chk = v.get("checked_at")
+                if chk and now_ts - float(chk) > DROPT_MAX_AGE.total_seconds():
+                    continue                     # картку цієї позиції читали давніше за 3 год — залишок «не знаємо» (fail-closed)
+                out[str(k)] = max(0, int(v.get("stock")))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return out
+    except Exception:  # noqa: BLE001 — немає файлу = Dropt не розгорнуто
+        return {}
+
+
 def write_cost_file(catalog: dict, out=None, now: datetime | None = None) -> bool:
     """ПРИВАТНИЙ файл собівартості для знижок сайту (site_promo): {"ts", "c": {id: собівартість}} ПОЗА DocumentRoot (/opt/plutustoys/promo_cost.json, права 0600). Збій тут НЕ ламає знімок залишків:
     без файлу знижок просто нема (fail-closed). Собівартість = competitor_pricing.real_toysi_cost (та сама, що в закритій формулі ціни сайту)."""
@@ -123,6 +153,10 @@ def run_once(fetch=None, out=None, now=None, cost_out=None) -> bool:
         rt = rt_stock_entries()                  # пілот RoyalToys (19.10): залишки rt-<id> з приватного supplier_rt.json (без нього ключів rt- нема → fail-closed)
         if rt:
             snap["s"].update(rt)
+            snap["n"] = len(snap["s"])
+        dr = dropt_stock_entries()               # Dropt (04.11): залишки dropt-<артикул> з приватного supplier_dropt.json (без нього ключів dropt- нема → fail-closed у check_stock)
+        if dr:
+            snap["s"].update(dr)
             snap["n"] = len(snap["s"])
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(out.name + ".tmp")

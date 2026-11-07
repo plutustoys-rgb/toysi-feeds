@@ -1454,6 +1454,25 @@ def _maybe_add_rt_offers(root: ET.Element, catalog: dict) -> ET.Element:
         return root
 
 
+def _maybe_add_dropt_offers(root: ET.Element, catalog: dict) -> ET.Element:
+    """Товари Dropt у фіді (dropt_eva.py): лише за брамою dropt_eva.gate_on() (EVA_DROPT_IN_FEED=1 І EVA_ORDERS_SUPPORTED) і лише зі свіжим supplier_dropt.json. Працює на КОПІЇ дерева: будь-який збій -> повертаємо початкове (Toysi/RT без змін)."""
+    import copy
+    try:
+        import dropt_eva
+        if not dropt_eva.gate_on():
+            return root
+        if not dropt_eva.supplier_fresh():
+            print("[EVA] Dropt: supplier_dropt.json застарів (>3 год) — Dropt у цей фід НЕ додано (EVA лишає попередній стан).", file=sys.stderr)
+            return root
+        work = copy.deepcopy(root)
+        st = dropt_eva.append_dropt_offers(work, sys.modules[__name__], dropt_eva.load_supplier())
+        print(f"[EVA] Dropt у фіді: {st}")
+        return work
+    except Exception as e:  # noqa: BLE001
+        print(f"[EVA] Dropt: збій додавання ({type(e).__name__}: {str(e)[:160]}) — Dropt у фід НЕ додано, решта без змін.", file=sys.stderr)
+        return root
+
+
 def generate_feed(output_file: str = OUTPUT_FILE,
                   catalog: dict = None,
                   exclude_ids: set = None,
@@ -1491,6 +1510,7 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     )
 
     root = _maybe_add_rt_offers(root, catalog)
+    root = _maybe_add_dropt_offers(root, catalog)
 
     ET.indent(root, space="  ")
     xml_str = ET.tostring(root, encoding="unicode")

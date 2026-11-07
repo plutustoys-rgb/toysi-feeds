@@ -359,3 +359,5 @@ reels_pending/
 /site/reviews.json.tmp
 # мапа 410 для сторінок, знятих назавжди (site_gone_pages.py з site/removed_pages.json; 06.11.2026) — генерується на VPS, не для git
 site_gone_apache.map
+dropt_eva_listed_state.json
+dropt_eva_listed_state.json.*.tmp

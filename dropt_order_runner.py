@@ -35,13 +35,33 @@ STALE_DAYS = rt_run.STALE_DAYS
 INFO_ALERT_KEYS = ("waiting", "wait", "since", "since_mid")      # інформаційні (dry-run/ворота) — «⚪», у Telegram не йдуть; решта — «🟠» власнику
 
 
-def load_supplier(path=None) -> dict:
-    """items із приватного supplier_dropt.json (cost, vendor_code, stock). Нема/битий → RunnerError (fail-closed)."""
+SUPPLIER_MAX_AGE_S = 3 * 3600      # як ITEM_MAX_AGE_S в експортері й DROPT_MAX_AGE у stock_snapshot: файл/позиція, прочитані давніше, — ціну й наявність «не знаємо»
+
+
+def load_supplier(path=None, now=None) -> dict:
+    """items із приватного supplier_dropt.json (cost, vendor_code, stock, checked_at). Нема/битий/без `updated`/старший за 3 год → RunnerError (fail-closed: якщо експортер помер, ціну й наявність не вгадуємо — аудит #1112 S1)."""
+    from datetime import datetime, timezone
     from dropt_supplier_export import OUT_FILE
     try:
-        return (json.loads(Path(path or OUT_FILE).read_text(encoding="utf-8-sig")).get("items") or {})
-    except (OSError, ValueError) as e:
+        raw = json.loads(Path(path or OUT_FILE).read_text(encoding="utf-8-sig"))
+        upd = datetime.fromisoformat(str(raw["updated"]).replace("Z", "+00:00"))
+    except (OSError, ValueError, KeyError, TypeError) as e:
         raise RunnerError(f"supplier_dropt.json недоступний ({type(e).__name__})") from None
+    if upd.tzinfo is None:
+        upd = upd.replace(tzinfo=timezone.utc)
+    age = ((now or datetime.now(timezone.utc)) - upd).total_seconds()
+    if age > SUPPLIER_MAX_AGE_S or age < -300:
+        raise RunnerError(f"supplier_dropt.json застарів/з майбутнього (вік {age / 3600:.1f} год > 3 год) — ціна й наявність не свіжі, експортер не оновлює файл")
+    return raw.get("items") or {}
+
+
+def _item_fresh(src: dict, now_ts=None) -> bool:
+    """Позицію читали не давніше 3 год (checked_at — epoch-секунди; нема/некоректне → НЕ свіжа, fail-closed)."""
+    import time
+    try:
+        return 0 <= (now_ts or time.time()) - float(src.get("checked_at")) <= SUPPLIER_MAX_AGE_S
+    except (TypeError, ValueError):
+        return False
 
 
 def map_items(order: dict, supplier: dict) -> list:
@@ -61,6 +81,8 @@ def map_items(order: dict, supplier: dict) -> list:
             raise RunnerError(f"{code}: кількість некоректна") from None
         if qty < 1:
             raise RunnerError(f"{code}: кількість < 1")
+        if not _item_fresh(src):
+            raise RunnerError(f"{code}: ціну/наявність давно не перевіряли (checked_at старший за 3 год) — потрібне свіже читання")
         if not str(src.get("vendor_code") or "").strip() or not src.get("cost"):
             raise RunnerError(f"{code}: у даних постачальника нема артикулу/закупівлі")
         if code in merged:
@@ -136,8 +158,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
     state = order.get("rt_state")
     try:
         if state in STUCK:
-            raise RunnerError(f"крок «{state}» розпочато, але результат невідомий (збій/таймаут) — конвеєр сам НЕ повторює. Звірте ТТН у кабінеті НП / замовлення в кабінеті Dropt і виставте стан вручну "
-                              "(rt_set_state.py: ttn_created / marking_ready / rt_ordered / manual)")
+            raise RunnerError(f"крок «{state}» розпочато, але результат невідомий (збій/таймаут) — конвеєр сам НЕ повторює. Звірте ТТН у кабінеті НП і замовлення в кабінеті Dropt, потім rt_set_state.py: rt_ordering → marking_ready (якщо в Dropt замовлення НЕ створено) або manual (якщо створено/сумнів — "
+                              "доведіть вручну); ttn_creating → лише manual")
         if state in ("rt_ordered", "shipped"):
             try:
                 _info = d.tracking(order.get("toysi_ttn"))
@@ -163,7 +185,10 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 raise RunnerError("фіскальний чек не видано — передачу постачальнику не починаємо")
         items = map_items(order, supplier)
         rep["items"] = [(i["toysi_code"], i["qty"], i["vendor_code"]) for i in items]
-        recipient = rt_run._recipient(order)          # ПІБ і телефон потрібні для НАШОЇ ТТН НП (у Dropt не передаються) — перевіряємо ДО ТТН
+        try:
+            recipient = rt_run._recipient(order)          # ПІБ і телефон потрібні для НАШОЇ ТТН НП (у Dropt не передаються) — перевіряємо ДО ТТН
+        except RunnerError as e:
+            raise RunnerError(str(e).replace("для RoyalToys", "для ТТН Нової пошти")) from None
         if not (order.get("np_city_ref") and order.get("np_warehouse_number")):
             raise RunnerError("відділення НП не визначено (нема np_city_ref/np_warehouse_number) — уточніть у клієнта")
         ok, why = apply_enabled() if apply else (False, "dry-run")
@@ -207,6 +232,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             rep["actions"].append("наліпка PDF збережена")
             order = {**order, "rt_marking_path": str(path)}
         if state == "marking_ready":
+            if not _pdf_ok(order.get("rt_marking_path")):
+                raise RunnerError(f"наліпка ТТН {order.get('rt_marking_path')} зникла/не є коректним PDF ≤ 2 МБ — відновіть файл (ТТН {order.get('toysi_ttn')}) і поверніть стан у ttn_created (rt_set_state)")
             if not orders_db.claim_rt_state(conn, oid, "marking_ready", "rt_ordering"):
                 raise RunnerError("замовлення вже взяте іншим запуском (claim) — пропускаю")
             res = d.dropt_order(items, order["toysi_ttn"], order["rt_marking_path"])

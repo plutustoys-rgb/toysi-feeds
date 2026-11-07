@@ -38,10 +38,14 @@ def chk(n, c):
         F.append(n)
 
 
-SUP = {"dropt-59298": {"vendor_code": "59298", "cost": 300, "stock": 3},
-       "dropt-2": {"vendor_code": "2", "cost": 100, "stock": 1},
-       "dropt-3": {"vendor_code": "", "cost": 100, "stock": 3},
-       "dropt-4": {"vendor_code": "4", "cost": 0, "stock": 3}}
+import time  # noqa: E402
+NOW = int(time.time())
+SUP = {"dropt-59298": {"vendor_code": "59298", "cost": 300, "stock": 3, "checked_at": NOW - 600},
+       "dropt-2": {"vendor_code": "2", "cost": 100, "stock": 1, "checked_at": NOW - 600},
+       "dropt-3": {"vendor_code": "", "cost": 100, "stock": 3, "checked_at": NOW - 600},
+       "dropt-4": {"vendor_code": "4", "cost": 0, "stock": 3, "checked_at": NOW - 600},
+       "dropt-old": {"vendor_code": "9", "cost": 100, "stock": 3, "checked_at": NOW - 5 * 3600},
+       "dropt-nochk": {"vendor_code": "8", "cost": 100, "stock": 3}}
 
 
 def new_order(oid, items=None, paid=1, platform="site", pm="prepaid", city="CITY", wh="5", receipt=True, status=None):
@@ -92,6 +96,8 @@ def raises(items_, sup=SUP):
 chk("map_items: змішане / нема у файлі / ознака залишку < qty / нема артикулу / закупівля 0 / порожньо → RunnerError",
     raises([{"toysi_code": "100", "qty": 1, "price": 9}]) and raises([{"toysi_code": "dropt-99", "qty": 1, "price": 9}]) and raises([{"toysi_code": "dropt-2", "qty": 2, "price": 999}])
     and raises([{"toysi_code": "dropt-3", "qty": 1, "price": 999}]) and raises([{"toysi_code": "dropt-4", "qty": 1, "price": 999}]) and raises([]))
+chk("map_items: позиція, прочитана давніше 3 год / без checked_at → RunnerError (fail-closed, аудит #1112 S1)",
+    raises([{"toysi_code": "dropt-old", "qty": 1, "price": 999}]) and raises([{"toysi_code": "dropt-nochk", "qty": 1, "price": 999}]))
 chk("map_items: ціна клієнта нижча за закупівлю → RunnerError (збиток)", raises([{"toysi_code": "dropt-59298", "qty": 1, "price": 299}]))
 m = dr.map_items({"items": [{"toysi_code": "Dropt-59298", "qty": 1, "price": 450}, {"toysi_code": "dropt-59298", "qty": 2, "price": 450}]}, SUP)
 chk("map_items: однакові рядки зливаються, регістр id не важливий", len(m) == 1 and m[0]["qty"] == 3)
@@ -305,6 +311,63 @@ old = dict(fresh, updated=datetime.fromtimestamp(now.timestamp() - 4 * 3600, tim
 pf.write_text(json.dumps(old), encoding="utf-8")
 chk("dropt_stock_entries: файл старший за 3 год → порожньо (fail-closed)", ss.dropt_stock_entries(path=pf) == {})
 chk("dropt_stock_entries: нема файлу → порожньо", ss.dropt_stock_entries(path=Path(tempfile.mkdtemp()) / "none.json") == {})
+
+# ---- S1: свіжість файлу постачальника ----
+from datetime import timedelta  # noqa: E402
+tmpd = Path(tempfile.mkdtemp())
+
+
+def write_sup(name, updated):
+    pth = tmpd / name
+    pth.write_text(json.dumps({"updated": updated, "items": SUP}), encoding="utf-8")
+    return pth
+
+
+def sup_raises(pth):
+    try:
+        dr.load_supplier(pth)
+        return False
+    except dr.RunnerError:
+        return True
+
+
+chk("load_supplier: свіжий файл читається", not sup_raises(write_sup("a.json", datetime.now(timezone.utc).isoformat())) and "dropt-59298" in dr.load_supplier(write_sup("a2.json", datetime.now(timezone.utc).isoformat())))
+chk("load_supplier: файл старший за 3 год → RunnerError", sup_raises(write_sup("b.json", (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat())))
+chk("load_supplier: файл «з майбутнього» (>5 хв) → RunnerError", sup_raises(write_sup("c.json", (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat())))
+chk("load_supplier: нема `updated` / нема файлу → RunnerError", sup_raises(write_sup("d.json", None)) and sup_raises(tmpd / "none.json"))
+(tmpd / "junk.json").write_text("{не json", encoding="utf-8")
+chk("load_supplier: битий JSON → RunnerError", sup_raises(tmpd / "junk.json"))
+
+# ---- S2: алерти Dropt доходять до Telegram (не лише RoyalToys); ⚪ — ні ----
+import telegram_triage as tt  # noqa: E402
+chk("telegram_triage: «🟠 Dropt site_PT-…» і «🟠 RoyalToys site_PT-…» — критичні події ланцюжка; «⚪ Dropt …» — ні",
+    tt.is_rt_chain_alert("🟠 Dropt site_PT-20261108-101010-abcdef: збій") and tt.is_rt_chain_alert("🟠 RoyalToys site_PT-20261108-101010-abcdef: збій")
+    and not tt.is_rt_chain_alert("⚪ Dropt site_PT-20261108-101010-abcdef: чекає") and not tt.is_rt_chain_alert("🟠 Інше site_PT-1"))
+
+# ---- marking_ready: наліпка зникла → не йдемо в Dropt ----
+os.environ["DROPT_RUNNER_APPLY"] = "1"
+a9 = new_order("A9")
+fk9 = Fake()
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, a9, "marking_ready", rt_ttn_ref="REF-9", toysi_ttn="20451500000009", rt_marking_path=str(dr.MARKING_DIR / "gone.pdf"))
+    c.commit()
+rep = run_one(a9, fk9, apply=True)
+chk("marking_ready без файла наліпки → в Dropt не йдемо, стан не змінено", "dropt_order" not in fk9.calls and get(a9)["rt_state"] == "marking_ready" and rep["problems"])
+# ---- STUCK ttn_creating ----
+a10 = new_order("A10")
+with orders_db.get_connection() as c:
+    orders_db.set_rt_state(c, a10, "ttn_creating")
+    c.commit()
+fk10 = Fake()
+rep = run_one(a10, fk10, apply=True)
+chk("STUCK ttn_creating: нічого не створює, підказка веде до manual", "create_ttn" not in fk10.calls and rep["problems"] and "manual" in rep["problems"][0])
+# ---- повідомлення про ПІБ без «RoyalToys» ----
+a11 = new_order("A11")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET customer_name='Іван' WHERE internal_order_id=?", (a11,))
+    c.commit()
+rep = run_one(a11, Fake(), apply=True)
+chk("некоректний ПІБ: причина не називає RoyalToys", rep["problems"] and "RoyalToys" not in rep["problems"][0])
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -64,6 +64,21 @@ else:
     print("[--] живий CONSULTANT_CHANNEL.md не знайдено (Cowork не змонтовано) — пропущено")
 
 
+# ---- 08.11.2026: три правила звітування їдуть у КОЖНЕ пробудження (headless не вантажить персону/CLAUDE.md) ----
+import glob
+from pathlib import Path
+
+_HEAD = "Три правила звітування (чинні для ВСІХ ролей з 08.11.2026"
+for _w in aw.WATCHERS:
+    for _per in (False, True):
+        _p = aw._compose_prompt(_w, "тест", _per)
+        _chk(f"{_w['name']} (periodic={_per}): у промпті пробудження всі три правила", "1) ОДИНИЦЯ ПЕРЕД ЧИСЛОМ" in _p and "2) «НЕМАЄ» І «НЕМОЖЛИВО»" in _p and "3) ДАТА ДЖЕРЕЛА ПРИ ЧИСЛІ" in _p)
+        _chk(f"{_w['name']} (periodic={_per}): правила не вбивають запуск (жодних cmd-метасимволів & | ^ % у блоці правил)", not any(c in aw.REPORT_RULES for c in "&|^%<>"))
+_here = Path(__file__).parent
+_chk("CLAUDE.md містить блок правил звітування", _HEAD in (_here / "CLAUDE.md").read_text(encoding="utf-8"))
+_personas = sorted(glob.glob(str(_here / ".claude" / "agents" / "plutus-*.md")))
+_chk("персони plutus-*.md у репо: кожна має блок правил (знайдено %d)" % len(_personas), len(_personas) >= 8 and all(_HEAD in Path(p).read_text(encoding="utf-8") for p in _personas))
+
 if _FAILS:
     print(f"\n❌ ПРОВАЛЕНО: {len(_FAILS)} — {_FAILS}")
     sys.exit(1)

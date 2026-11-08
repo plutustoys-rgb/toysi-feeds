@@ -390,11 +390,24 @@ def _periodic_due(schedule: dict | None, state: dict) -> bool:
     return False
 
 
+# Три правила звітування (рішення власника 08.11.2026): headless-пробудження НЕ вантажить ні персону, ні CLAUDE.md, тож правила їдуть у самому промпті КОЖНОГО пробудження (див. _compose_prompt).
+REPORT_RULES = (
+    "ТРИ ПРАВИЛА ЗВІТУВАННЯ (чинні для ВСІХ ролей з 08.11.2026, рішення власника). 1) ОДИНИЦЯ ПЕРЕД ЧИСЛОМ: будь-яке число з кабінету, звіту чи вивантаження спершу звести до УНІКАЛЬНИХ id і назвати, що саме пораховано (рядків, товарів, позицій, сторінок). РЯДОК ЗВІТУ ≠ ТОВАР: у Merchant Center один товар стоїть 2–3 рядками (укр + рос + джерела даних). "
+    "2) «НЕМАЄ» І «НЕМОЖЛИВО» — ЛИШЕ ПІСЛЯ ЧИТАННЯ МЕХАНІЗМУ: висновок про відсутність чи неможливість публікується тільки після читання реалізації від початку до кінця, з file:line, прочитаним ЦІЄЇ сесії. «Схоже, що немає» ≠ «немає». "
+    "3) ДАТА ДЖЕРЕЛА ПРИ ЧИСЛІ: кожне число несе джерело Й ДАТУ; переказане чуже число — з датою ОРИГІНАЛУ, а не сьогоднішньою. Старе число без дати — хибне твердження про поточний стан, навіть якщо саме число правильне."
+)
+
+
+def _compose_prompt(cfg: dict, reason: str, periodic: bool = False) -> str:
+    """Текст пробудження: промпт ролі + ТРИ ПРАВИЛА ЗВІТУВАННЯ + мітка монітора (правила в самому промпті, бо headless не вантажить персону/CLAUDE.md)."""
+    base = cfg.get("periodic_prompt") if (periodic and cfg.get("periodic_prompt")) else cfg["wake_prompt"]
+    return f"{base}\n\n{REPORT_RULES}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
+
+
 def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     """Піднімає повного агента через `claude -p`. True якщо успішно (exit 0).
     Для періодичної задачі бере `periodic_prompt` (якщо є), інакше — звичайний `wake_prompt`."""
-    base = cfg.get("periodic_prompt") if (periodic and cfg.get("periodic_prompt")) else cfg["wake_prompt"]
-    prompt = f"{base}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
+    prompt = _compose_prompt(cfg, reason, periodic)
     # ⚠️ CMD.EXE-МЕТАСИМВОЛИ: claude на Windows — це `claude.CMD`, тож subprocess запускає його
     # ЧЕРЕЗ cmd.exe, який трактує `<`/`>` як перенаправлення вводу/виводу ЩЕ ДО старту сесії —
     # навіть усередині лапок аргументу → «The system cannot find the file specified», exit=1,

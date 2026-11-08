@@ -95,6 +95,7 @@ chk("yesterday порожній (повна сторінка): код 0, фай�
 chk("yesterday з 3 картками (1..9) — досі збій розмітки: код 1", tt.main(lambda u: R(page([1, 2, 3])) if "top-prodazh-dnya" in u else getter_ok(u), now, d2 / "x.json", idx) == 1 and not (d2 / "x.json").exists())
 chk("yesterday порожній, але обрізаний (нема </html>) — збій: код 1", tt.main(lambda u: R("<html><body>") if "top-prodazh-dnya" in u else getter_ok(u), now, d2 / "y.json", idx) == 1)
 chk("порожній shipments (не з MAY_BE_EMPTY) — збій: код 1, файл не записано", tt.main(lambda u: R("<html></html>") if u.endswith("/ua/top-prodazh") else getter_ok(u), now, d2 / "z.json", idx) == 1 and not (d2 / "z.json").exists())
+chk("yesterday має картки БЕЗ data-photo2 (class product-req) — це не порожнеча: код 1", tt.main(lambda u: R('<html><div class="product product-req"></div></html>') if "top-prodazh-dnya" in u else getter_ok(u), now, d2 / "v.json", idx) == 1)
 chk("розмітка змінилась на ВСІХ сторінках (усі порожні) — збій: код 1", tt.main(lambda u: R("<html></html>"), now, d2 / "w.json", idx) == 1)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")

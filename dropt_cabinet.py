@@ -3,7 +3,7 @@
 
 КОНТРАКТ ПРОЧИТАНО ЖИВИМ ЧИТАННЯМ кабінету власника (07.11.2026, нічого не замовлялось і не завантажувалось; скрипти checkout_modal*.js, GET модалки):
   • вхід — Google/Telegram, пароля нема → автовходу НЕ робимо. Власник один раз входить у вікні Playwright (`python dropt_cabinet.py --login`), сесія зберігається у файл (0600) і копіюється на VPS;
-  • GET /ua/cabinet → `<meta name="csrf-token">`, баланс («БАЛАНС … ₴N»), посилання `route=account/logout` (ознака входу);
+  • GET /ua/cabinet → баланс («БАЛАНС … ₴N»), посилання `route=account/logout` (ознака входу);
   • внутрішній id товару ≠ артикул: сторінка товару містить `<input name="current_params" value="product_id=19357">` (артикул 59298 — у JSON-LD `sku`);
   • кошик: POST index.php?route=checkout/cart/add {product_id, quantity}; кошик у акаунті ОДИН, спільний із ручною роботою власника → стороннього НЕ чіпаємо (є сторонні рядки → відмова з поясненням);
   • GET index.php?route=checkout/modal → JSON {"html": …}: форма #modal-checkout-form (data-action = POST оформлення `checkout/dropshipper_checkout/confirm`), рядки tr[data-product-id], «Оплатити з балансу (доступно: N грн)»;
@@ -119,13 +119,14 @@ def parse_csrf(html: str):
 
 def parse_balance(html: str):
     """«БАЛАНС ›  ₴0.00» на сторінці кабінету → float або None."""
-    m = re.search(r"БАЛАНС[^₴\d]{0,40}₴\s*([\d\s ]+(?:[.,]\d{1,2})?)", html)
+    m = (re.search(r"Баланс\s*<i[^>]*>[^<]{0,10}</i>\s*</span>\s*<b[^>]*>\s*₴\s*([\d\s ]+(?:[.,]\d{1,2})?)", html)    # живий кабінет (08.11): «Баланс <i>›</i></span><b class=\"ds-hero-money\">₴0.00</b>» — лише ця структура, щоб не схопити ₴ сусіднього блоку
+         or re.search(r"БАЛАНС[^<₴\d]{0,40}₴\s*([\d\s ]+(?:[.,]\d{1,2})?)", html))                                       # старий формат (без тегів)
     return _money(m.group(1)) if m else None
 
 
 def parse_modal_balance(html: str):
     """«Оплатити з балансу (доступно: 0.00 грн)» у модалці → float або None."""
-    m = re.search(r"доступно:\s*([\d\s ]+(?:[.,]\d{1,2})?)\s*грн", html)
+    m = re.search(r"доступно:\s*(?:<[^>]*>\s*)*([\d\s ]+(?:[.,]\d{1,2})?)\s*грн", html)    # живо: «доступно: <strong id="user-balance">0.00 грн</strong>»
     return _money(m.group(1)) if m else None
 
 
@@ -207,10 +208,27 @@ def _json(text):
 
 
 # ───────────────────────────── операції ─────────────────────────────
+DYNAMIC_URL = f"{BASE}/index.php?route=common/header_dynamic"
+
+
+def parse_header_dynamic(text: str) -> dict:
+    """JSON від common/header_dynamic → {"logged": bool, "csrf": str|None}. Сторінка кабінету кешується, тож `<meta name="csrf-token">` у ній ПОРОЖНІЙ (виміряно на живому кабінеті 08.11): справжній токен сесії браузер підтягує саме цим запитом."""
+    try:
+        d = json.loads(text)
+    except (TypeError, ValueError):
+        return {"logged": False, "csrf": None}
+    if not isinstance(d, dict):
+        return {"logged": False, "csrf": None}
+    tok = d.get("csrf_token")
+    return {"logged": d.get("logged") is True, "csrf": tok.strip() if isinstance(tok, str) and tok.strip() else None}
+
+
 def session_info(http) -> dict:
     code, html = http.get(f"{BASE}/ua/cabinet")
-    csrf = parse_csrf(html)
-    logged = code == 200 and "account/logout" in html and bool(csrf)
+    dcode, dtext = http.get(DYNAMIC_URL)
+    dyn = parse_header_dynamic(dtext) if dcode == 200 else {"logged": False, "csrf": None}
+    csrf = dyn["csrf"]                                          # лише токен сесії з header_dynamic: `<meta csrf-token>` кешованої сторінки порожній і довіри не має
+    logged = code == 200 and "account/logout" in html and dyn["logged"] and bool(csrf)
     return {"logged_in": logged, "csrf": csrf, "balance": parse_balance(html) if logged else None}
 
 

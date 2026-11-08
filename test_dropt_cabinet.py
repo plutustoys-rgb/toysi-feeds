@@ -50,6 +50,8 @@ class FakeHttp:
 
     def get(self, url, **kw):
         self.gets.append(url)
+        if "header_dynamic" in url:                            # як на живому сайті: кешована сторінка має порожній csrf-meta, токен — тут
+            return 200, json.dumps({"logged": "account/logout" in self.cabinet, "csrf_token": "TOK123", "username": "x"})
         if url.endswith("/ua/cabinet"):
             return 200, self.cabinet
         if "tab=orders" in url:
@@ -461,6 +463,48 @@ rc, saved, calls = run_login(CABINET, redirects={"https://dropt.in.ua/ua/cabinet
 chk("login: нескінченний редірект → rc 1, сесію не збережено", rc == 1 and saved is None)
 rc, saved, calls = run_login(CABINET, close_raises=True)
 chk("login: browser.close() кидає виняток (вікно закрито) → збережена сесія НЕ втрачена, rc 0", rc == 0 and saved is not None)
+
+# ---- 08.11: живий кабінет кешований, csrf-meta порожній, токен — з common/header_dynamic ----
+LIVE_CABINET = CABINET.replace('content="TOK123"', 'content=""')
+
+
+class DynHttp(FakeHttp):
+    def __init__(self, dyn_body, dyn_code=200, **kw):
+        super().__init__(**kw)
+        self.dyn_body, self.dyn_code = dyn_body, dyn_code
+
+    def get(self, url, **kw):
+        if "header_dynamic" in url:
+            self.gets.append(url)
+            return self.dyn_code, self.dyn_body
+        return super().get(url, **kw)
+
+
+ok_dyn = json.dumps({"logged": True, "csrf_token": "LIVE" + "x" * 60, "username": "u", "logout_url": "https://dropt.in.ua/index.php?route=account/logout"})
+chk("session_info: ПОРОЖНІЙ csrf-meta на сторінці + токен у header_dynamic → сесія жива, csrf з header_dynamic",
+    dc.session_info(DynHttp(ok_dyn, cabinet=LIVE_CABINET))["logged_in"] is True and dc.session_info(DynHttp(ok_dyn, cabinet=LIVE_CABINET))["csrf"] == "LIVE" + "x" * 60)
+chk("session_info: header_dynamic каже logged=false при посиланні logout на сторінці → НЕ залогінений", dc.session_info(DynHttp(json.dumps({"logged": False, "csrf_token": "t"}), cabinet=LIVE_CABINET))["logged_in"] is False)
+chk("session_info: header_dynamic не JSON / 500 / порожній токен → НЕ залогінений (fail-closed)",
+    all(dc.session_info(DynHttp(b, c, cabinet=LIVE_CABINET))["logged_in"] is False for b, c in (("<html>", 200), (ok_dyn, 500), (json.dumps({"logged": True, "csrf_token": ""}), 200), ("[]", 200))))
+chk("session_info: запит header_dynamic ходить лише на dropt.in.ua без logout (_url_ok)", dc._url_ok(dc.DYNAMIC_URL))
+h = DynHttp(ok_dyn, cabinet=LIVE_CABINET)
+os.environ["DROPT_CABINET_VERIFIED"] = "1"
+try:
+    dc.order_flow(ORDER, submit=True, http=h)
+except dc.OrderError:
+    pass
+os.environ.pop("DROPT_CABINET_VERIFIED", None)
+chk("order_flow на живій формі сторінки: csrf у POST береться з header_dynamic, не порожній", any(d.get("csrf_token") == "LIVE" + "x" * 60 for _u, d, _f in h.posts))
+
+# ---- 08.11: розмітка балансу з ЖИВОГО кабінету (зняти з живої сторінки: змішаний регістр, теги всередині) ----
+LIVE_BAL = '<span id="cart-total">1 товар(ів) - ₴502.20</span><span class="ds-hero-bal__item"><span class="ds-hero-lbl">Баланс <i class="ds-hero-arr">›</i></span><b class="ds-hero-money">₴0.00</b></span><span class="ds-hero-bal__item"><span class="ds-hero-lbl">На холді</span><b class="ds-hero-money ds-hero-money--hold">₴7.00</b></span>'
+chk("parse_balance: жива розмітка «Баланс <i>›</i></span><b>₴0.00</b>» → 0.0 (а не ₴ кошика 502.2 і не «на холді»)", dc.parse_balance(LIVE_BAL) == 0.0)
+chk("parse_balance: «Баланс ... ₴1 250.50» з пробілом-розділювачем і тегами → 1250.5; старий формат «БАЛАНС ›\n₴1 250.50» теж", dc.parse_balance(LIVE_BAL.replace("₴0.00", "₴1&nbsp;250.50").replace("&nbsp;", " ")) == 1250.5 and dc.parse_balance(CABINET) == 1250.5)
+chk("parse_balance: нема блоку балансу → None", dc.parse_balance("<html>₴5</html>") is None)
+chk("parse_modal_balance: живо «доступно: <strong id=\"user-balance\">0.00 грн</strong>» → 0.0; старий формат без тегів теж", dc.parse_modal_balance('Оплатити з балансу (доступно: <strong id="user-balance">0.00 грн</strong>)') == 0.0 and dc.parse_modal_balance("(доступно: 1 250.50 грн)") == 1250.5)
+
+chk("session_info: logged як РЯДОК («true»/«false») або число → НЕ залогінений (лише булів true)", all(dc.session_info(DynHttp(json.dumps({"logged": v, "csrf_token": "t" * 64}), cabinet=LIVE_CABINET))["logged_in"] is False for v in ("true", "false", 1, "1")))
+chk("parse_balance: блок «Баланс» без власного ₴, а далі ₴ кошика/«на холді» → None, а не чуже число", dc.parse_balance('<a>Баланс</a><div><span>Кошик</span><b>₴502.20</b></div>') is None and dc.parse_balance('<span>Баланс</span><span>На холді</span><b>₴7.00</b>') is None)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

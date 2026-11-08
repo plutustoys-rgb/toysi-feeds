@@ -303,9 +303,12 @@ def preflight(order: dict, http=None) -> dict:
     return {"ready": not problems, "problems": problems, "low_balance": bool(low), "balance": bal, "total": round(total, 2), "ids": ids}
 
 
-def _open_modal(http):
+def _open_modal(http, allow_empty=False):
+    """HTML модалки оформлення. Порожній кошик Dropt віддає {"error": "Ваш кошик порожній!"} без html (виміряно на живому кабінеті 08.11): з allow_empty це «кошик порожній» (""), інакше помилка."""
     code, text = http.get(f"{BASE}/index.php?route=checkout/modal")
     j = _json(text)
+    if allow_empty and code == 200 and isinstance(j, dict) and "html" not in j and isinstance(j.get("error"), str) and "порожн" in j["error"].lower():
+        return ""
     if code != 200 or not j or not isinstance(j.get("html"), str):
         raise OrderError(f"модалка оформлення Dropt недоступна (HTTP {code})")
     return j["html"]
@@ -350,7 +353,7 @@ def order_flow(order: dict, submit: bool = False, http=None) -> dict:
     info = ensure_session(http)
     csrf = info["csrf"]
     # --- кошик: сторонні рядки не чіпаємо; свої добираємо ---
-    have = parse_cart_rows(_open_modal(http))
+    have = parse_cart_rows(_open_modal(http, allow_empty=True))   # перед додаванням кошик зазвичай ПОРОЖНІЙ — це норма, не помилка
     foreign = {k: v for k, v in have.items() if k not in want}
     if foreign:
         raise OrderError(f"у кошику Dropt є сторонні товари ({', '.join(sorted(foreign))}) — очистіть кошик у кабінеті, інакше вони потраплять в це замовлення")

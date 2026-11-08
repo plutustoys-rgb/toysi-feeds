@@ -57,6 +57,8 @@ class FakeHttp:
         if "tab=orders" in url:
             return 200, "<table><tr><td>#7788</td><td>20451500000001</td></tr></table>"
         if "checkout/modal" in url:
+            if not self.rows:                                  # як на живому кабінеті: порожній кошик -> {"error"} без html
+                return 200, json.dumps({"error": "Ваш кошик порожній!"})
             return 200, modal(self.rows, self.balance)
         if url in self.prod:
             return 200, self.prod[url]
@@ -505,6 +507,16 @@ chk("parse_modal_balance: живо «доступно: <strong id=\"user-balance
 
 chk("session_info: logged як РЯДОК («true»/«false») або число → НЕ залогінений (лише булів true)", all(dc.session_info(DynHttp(json.dumps({"logged": v, "csrf_token": "t" * 64}), cabinet=LIVE_CABINET))["logged_in"] is False for v in ("true", "false", 1, "1")))
 chk("parse_balance: блок «Баланс» без власного ₴, а далі ₴ кошика/«на холді» → None, а не чуже число", dc.parse_balance('<a>Баланс</a><div><span>Кошик</span><b>₴502.20</b></div>') is None and dc.parse_balance('<span>Баланс</span><span>На холді</span><b>₴7.00</b>') is None)
+
+# ---- 08.11: порожній кошик на старті оформлення (на живому кабінеті модалка віддає {"error"} без html) ----
+os.environ["DROPT_CABINET_VERIFIED"] = "1"
+h = FakeHttp()
+r = dc.order_flow(ORDER, submit=True, http=h)
+os.environ.pop("DROPT_CABINET_VERIFIED", None)
+chk("order_flow: ПОРОЖНІЙ кошик на старті (модалка = {error: порожній}) — норма, товар додається і замовлення оформлюється", r["submitted"] is True and any("cart/add" in u for u, _d, _f in h.posts))
+chk("_open_modal: порожній кошик без allow_empty → OrderError; з allow_empty → ''; інша помилка → OrderError навіть з allow_empty",
+    raises_oe(lambda: dc._open_modal(FakeHttp())) and dc._open_modal(FakeHttp(), allow_empty=True) == ""
+    and raises_oe(lambda: dc._open_modal(type("E", (), {"get": lambda self, u, **k: (200, json.dumps({"error": "Сесія завершена"}))})(), allow_empty=True)))
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

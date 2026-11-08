@@ -401,7 +401,7 @@ REPORT_RULES = (
 def _compose_prompt(cfg: dict, reason: str, periodic: bool = False) -> str:
     """Текст пробудження: промпт ролі + ТРИ ПРАВИЛА ЗВІТУВАННЯ + мітка монітора (правила в самому промпті, бо headless не вантажить персону/CLAUDE.md)."""
     base = cfg.get("periodic_prompt") if (periodic and cfg.get("periodic_prompt")) else cfg["wake_prompt"]
-    return f"{base}\n\n{REPORT_RULES}\n\n[Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"
+    return f"{base} {REPORT_RULES} [Монітор: {reason} — {_now().isoformat(timespec='minutes')}]"     # ОДИН рядок: claude.CMD через cmd.exe ріже аргумент на першому переносі (control_panel.py:226) — усе після нього, і правила, і наступні --аргументи, губилося б
 
 
 def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
@@ -417,6 +417,7 @@ def _wake(cfg: dict, reason: str, dry: bool, periodic: bool = False) -> bool:
     # метасимвольні гільмети (‹ ›). Робимо в ТОЧЦІ ЗАПУСКУ, щоб і майбутні промпти не могли знову
     # тихо вбити пробудження (звірено живо: `"<тема>"` → exit=1; `"‹тема›"` → exit=0, аргумент цілий).
     prompt = prompt.replace("<", "‹").replace(">", "›")
+    prompt = " ".join(prompt.split())            # жодних переносів у argv (див. _compose_prompt): навіть якщо майбутній wake_prompt матиме багаторядковий текст
     # cwd визначає, ДЕ агент передусім читає/пише файли. УСІ три агенти (SEO/SMM/Код з 2026-08-21)
     # стартують у папці каналів (cfg["cwd"]=COWORK) — інакше НЕ бачать MARKETING_CHANNEL.md/
     # SEO_CHANNEL.md (доступ через --add-dir у headless упирається в дозвіл-промпт, перевірено живо).

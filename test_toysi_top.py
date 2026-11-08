@@ -80,5 +80,22 @@ none_on_site.write_text(json.dumps([{"id": "999999", "pr": 1}]), encoding="utf-8
 rc = tt.main(getter_ok, now, out, none_on_site)
 chk("жодного нашого товару у списку (усі поза index.json) → код 1, добрий файл не затерто порожнім", rc == 1 and out.read_text(encoding="utf-8") == before2)
 chk("fetched_at має часовий пояс", "+" in data["fetched_at"][10:] or "-" in data["fetched_at"][10:] or data["fetched_at"].endswith("Z"))
+# ---- 08.11.2026: порожній «вчорашній ТОП» (повна сторінка без карток) не валить запуск ----
+def getter_empty_yesterday(url):
+    if "top-prodazh-dnya" in url:
+        return R("<html><body>порожньо</body></html>")
+    return getter_ok(url)
+
+
+d2 = Path(tempfile.mkdtemp())
+out2 = d2 / "toysi_top.json"
+rc = tt.main(getter_empty_yesterday, now, out2, idx)
+data2 = json.loads(out2.read_text(encoding="utf-8")) if out2.exists() else {}
+chk("yesterday порожній (повна сторінка): код 0, файл записано, yesterday=[], shipments/week на місці", rc == 0 and data2.get("lists", {}).get("yesterday") == [] and data2["counts"]["yesterday"] == {"toysi": 0, "on_site": 0} and data2["lists"]["shipments"] and data2["lists"]["week"])
+chk("yesterday з 3 картками (1..9) — досі збій розмітки: код 1", tt.main(lambda u: R(page([1, 2, 3])) if "top-prodazh-dnya" in u else getter_ok(u), now, d2 / "x.json", idx) == 1 and not (d2 / "x.json").exists())
+chk("yesterday порожній, але обрізаний (нема </html>) — збій: код 1", tt.main(lambda u: R("<html><body>") if "top-prodazh-dnya" in u else getter_ok(u), now, d2 / "y.json", idx) == 1)
+chk("порожній shipments (не з MAY_BE_EMPTY) — збій: код 1, файл не записано", tt.main(lambda u: R("<html></html>") if u.endswith("/ua/top-prodazh") else getter_ok(u), now, d2 / "z.json", idx) == 1 and not (d2 / "z.json").exists())
+chk("розмітка змінилась на ВСІХ сторінках (усі порожні) — збій: код 1", tt.main(lambda u: R("<html></html>"), now, d2 / "w.json", idx) == 1)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

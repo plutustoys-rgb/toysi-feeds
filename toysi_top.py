@@ -24,6 +24,7 @@ BASE = "https://toysi.ua"
 LISTS = {"shipments": "/ua/top-prodazh", "yesterday": "/ua/top-prodazh-dnya", "week": "/ua/top-prodazh-nedeli", "month": "/ua/top-prodazh-mesyatsa"}
 UA = {"User-Agent": "PlutusToys-top/1.0 (+https://plutustoys.com.ua)"}
 MIN_IDS = 10
+MAY_BE_EMPTY = {"yesterday"}      # лише денний ТОП може законно бути порожнім (вчора нічого не відвантажили); shipments/week/month порожніми бути не можуть. Сайт (build_site._load_toysi_top) читає тільки shipments і week.
 _ID = re.compile(r'data-photo2="/p/\d+/enl_(\d+)\.jpg"')
 
 
@@ -58,6 +59,9 @@ def build(pages: dict, site_ids: set, now: datetime) -> dict | None:
     for name, html in pages.items():
         ids = parse_ids(html)
         complete = (html or "").rstrip().lower().endswith("</html>")
+        if name in MAY_BE_EMPTY and not ids and complete:
+            lists[name], counts[name] = [], {"toysi": 0, "on_site": 0}      # 08.11: «ТОП вчорашнього дня» віддав ПОВНУ сторінку без жодної картки (8.11 08:05 це валило весь запуск, exit 1); решта списків розбирається — розмітка ціла
+            continue
         if len(ids) < MIN_IDS or not complete:
             return None                  # обрізаний HTML (нема кінцевого </html>) / змінена розмітка (<MIN_IDS карток). Картка без data-photo2 (17.10: "новинка" без фото-атрибута, блоків 52, id 51) НЕ скасовує файл: її просто нема в списку
         lists[name] = [i for i in ids if i in site_ids]

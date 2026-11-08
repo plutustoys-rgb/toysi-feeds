@@ -62,7 +62,7 @@ NP = {"20451500000011": {"status": "Відмова від отримання", "
       "20451500000014": {"status": "Прибув у відділення", "status_code": "7", "return_ttn": "59001806649999", "based_ttn": None, "based_type": "CargoReturn"}}
 sent = []
 state = {"np_fail": False}
-ost.send_telegram_message = lambda t: sent.append(t)
+ost.send_telegram_message = lambda t: (sent.append(t) or True)      # реальна send_telegram_message повертає bool; None = «збій» (сповіщення стану site повторилось би)
 ost.fetch_order_statuses = lambda ids: {str(i): {"status": 60, "TTN": row_ttn} for i, row_ttn in (("11", "20451500000011"), ("12", "20451500000012"), ("13", "20451500000013"), ("14", "20451500000014"))}
 
 

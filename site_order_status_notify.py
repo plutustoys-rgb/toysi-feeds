@@ -36,6 +36,17 @@ def _rank(state) -> int:
     return {"processing": 1, "assembling": 2, "packed": 3, "shipped": 4}.get(s, 0)
 
 
+NP_RECEIVED_CODES = ("9", "10", "11", "106")      # НП: 9 «Відправлення отримано», 10/11 «…отримано (+грошовий переказ)», 106 «Одержано і створено ЄН повернення коштів»
+
+
+def np_delivered(info) -> bool:
+    """Вручено одержувачу за записом НП: текст «отримано/одержано» І код статусу з NP_RECEIVED_CODES, без документа повернення/відмови. Подвійна умова (аудит #1129): слово в тексті саме по собі
+    (напр. «Відправлення отримано відправником») доставленим не вважаємо — від цього залежить delivery_status=delivered, а значить право на відгук і вихід із перевірки відмов."""
+    if not info:
+        return False
+    return str(info.get("status_code") or "") in NP_RECEIVED_CODES and np_received(info.get("status")) and not nova_poshta.is_refusal(info)
+
+
 def np_received(text: str) -> bool:
     """НП: вручено одержувачу. Відмова/повернення («Відмова…», документ повернення) вручених не рахується."""
     t = (text or "").lower()
@@ -54,7 +65,7 @@ def compute_stage(order: dict, toysi_id, delivery_status, ttn, np_info):
         icon, word = ("❌", "скасовано") if ds == "cancelled" else ("↩️", "повернення")
         return ds, f"{icon} {lab}: {word} (Toysi #{toysi_id}" + (f", ТТН {ttn}" if ttn else "") + ")"
     ntext = (np_info or {}).get("status") or ""
-    if ds == "delivered" or (ttn and np_info and np_received(ntext) and not nova_poshta.is_refusal(np_info)):      # документ повернення/відмова важить більше за слово «отримано»
+    if ds == "delivered" or (ttn and np_delivered(np_info)):      # документ повернення/відмова важить більше за слово «отримано»
         return "received", f"✅ {lab}: отримано · ТТН {ttn or '—'}" + (f" · НП: {ntext[:100]}" if ntext else "")
     if ttn and np_info and ntext:
         return f"np:{np_info.get('status_code') or ntext[:30]}", f"🚚 {lab}: ТТН {ttn} · НП: {ntext[:100]}"

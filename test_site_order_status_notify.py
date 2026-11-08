@@ -163,8 +163,23 @@ NP["20451500000071"] = npi("Відправлення отримано", "9")
 m = cycle()
 chk("старе замовлення: НП спершу мовчала, потім «отримано» → повідомлення нема, стан оновлено до received", not any("20451500000071" in x for x in m) and row(old2)["site_tg_state"] == "received")
 
+# ── аудит #1129: слово «отримано» у статусі без коду вручення — НЕ доставлено
+chk("текст «отримано відправником», код 5 → не доставлено; код 9 → доставлено; код 11 «видано одержувачу» → доставлено; 106 → доставлено",
+    not sn.np_delivered(npi("Відправлення отримано відправником", "5")) and sn.np_delivered(npi("Відправлення отримано", "9")) and sn.np_delivered(npi("Відправлення отримано. Грошовий переказ видано одержувачу", "11"))
+    and sn.np_delivered(npi("Одержано і створено ЄН повернення коштів", "106")) and not sn.np_delivered(None) and not sn.np_delivered(npi("Відправлення отримано", "9", "59001806649372", "CargoReturn")))
+
 # ── аудит #1126 п.3: документ повернення важить більше за слово «отримано»
 chk("«отримано» разом з документом повернення (return_ttn) — НЕ отримано", sn.compute_stage({"public_number": "PT-1"}, "9", "shipped", "20451500000088", npi("Відправлення отримано", "9", "59001806649372", "CargoReturn"))[0] != "received")
+
+# ── delivered для site за сигналом НП (інакше reviews_db.eligible_order нікого не пускає до відгуку)
+import reviews_db  # noqa: E402
+r1 = row(s1)
+chk("site-замовлення, вручене за НП: delivery_status=delivered, delivered_at проставлено, і воно НЕ відкочується в shipped наступними циклами", r1["delivery_status"] == "delivered" and r1["delivered_at"] and cycle() is not None and row(s1)["delivery_status"] == "delivered")
+chk("доставлене site-замовлення має право на відгук (reviews_db.eligible_order)", reviews_db.eligible_order(row(s1)) is True)
+chk("відмова НП → returned, НЕ delivered (і не право на відгук)", row(s3)["delivery_status"] == "returned" and reviews_db.eligible_order(row(s3)) is False)
+chk("скасоване site → не delivered", row(s2)["delivery_status"] == "cancelled")
+chk("prom-замовлення цим не чіпаємо: delivery_status лишається Toysi-ним (processing)", row(p1)["delivery_status"] == "processing")
+chk("старе site-замовлення, вручене за НП (OLD2): теж delivered (стан засіяно мовчки, повідомлення нема)", row(old2)["delivery_status"] == "delivered")
 
 # ── повний режим Telegram: скасування не дублюємо
 os.environ["TELEGRAM_ORDERS_ONLY"] = "0"

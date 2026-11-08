@@ -866,6 +866,17 @@ def _site_np_info(statuses: dict, by_toysi_id: dict, orders_by_internal_id: dict
         return {}
 
 
+def _site_received_by_np(order: dict, delivery_status: str, ttn, site_np: dict) -> bool:
+    """Замовлення САЙТУ вручено одержувачу за НП: нефінальний Toysi-статус (processing/assembling/packed/shipped) + ТТН + текст НП «отримано/одержано» без документа повернення/відмови,
+    АБО вже зафіксований стан сповіщення received (щоб наступні цикли не відкочували delivered назад у shipped від Toysi). Лише platform='site'."""
+    if order.get("platform") != "site" or delivery_status not in ("processing", "assembling", "packed", "shipped"):
+        return False
+    if order.get("site_tg_state") == "received":
+        return True
+    info = site_np.get(str(ttn)) if ttn else None
+    return site_order_status_notify.np_delivered(info)
+
+
 def _save_site_state(conn, internal_id: str, state: str) -> None:
     """Стан сповіщення пишемо й КОМІТИМО одразу: якщо будь-який пізніший _maybe_* у циклі кине виняток, відкат не поверне стан назад і повідомлення не піде вдруге."""
     set_site_tg_state(conn, internal_id, state)
@@ -926,6 +937,8 @@ def track_orders() -> None:
             refusal = np_refused.get(internal_id) if delivery_status in ("shipped", "packed") else None
             if refusal:
                 delivery_status = "returned"          # НП каже «відмова/повернення», Toysi ще ні: далі спрацьовують наявні механізми returned (КОДВ-сторно в daily_report, виключення з опитування)
+            if not refusal and _site_received_by_np(order, delivery_status, ttn, site_np):
+                delivery_status = "delivered"      # замовлення САЙТУ: Toysi код 70 не повертає → «доставлено» береться з НП (інакше покупець ніколи не отримає права на відгук: reviews_db.eligible_order вимагає delivered)
             update_delivery_status(conn, internal_id, toysi_ttn=ttn, delivery_status=delivery_status)
             if refusal and not was_unsuccessful:
                 send_telegram_message(

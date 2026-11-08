@@ -172,6 +172,9 @@ def _notify_new_order(order: dict, total, test: bool = False, note: str = "") ->
         from orders_db import clean_customer_comment
         if order.get("public_number"):
             note = (f"{note} · " if note else "") + f"№ для клієнта {order['public_number']}"
+        if not test and any(is_dropt_id(it.get("toysi_code")) for it in (order.get("items") or []) if isinstance(it, dict)):
+            # аудит 08.11: поки конвеєр Dropt у пробному режимі (DROPT_RUNNER_APPLY≠1) оплачене dropt-замовлення НІКИМ не оформлюється — власник має це бачити в тому ж повідомленні, а не з журналу
+            note = (f"{note} · " if note else "") + ("DROPT: оформити в кабінеті Dropt ВРУЧНУ (конвеєр у пробному режимі)" if os.environ.get("DROPT_RUNNER_APPLY") != "1" else "DROPT: оформить конвеєр dropt_order_runner")
         _cc = clean_customer_comment(order.get("customer_comment"))
         if _cc:
             note = (f"{note} · " if note else "") + f"Коментар покупця: {_cc}"

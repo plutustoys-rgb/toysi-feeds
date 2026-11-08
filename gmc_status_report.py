@@ -7,7 +7,7 @@
 
 АВТОРИЗАЦІЯ: сервіс-акаунт Google Cloud (JSON-ключ), який створює ВЛАСНИК і кладе на VPS (права 600; /opt/plutustoys — git-клон, тому `.secrets/` і `gmc_service_account*.json` в .gitignore): GMC_SERVICE_ACCOUNT_FILE (за замовчуванням /opt/plutustoys/.secrets/gmc_service_account.json). Email акаунта додається в
 Merchant Center → Налаштування → Люди й доступ (роль лише читання). Merchant API вимагає ОДНОРАЗОВОЇ реєстрації GCP-проєкту (POST accounts/v1/accounts/{id}/developerRegistration:registerGcp з developerEmail) і ввімкненого Merchant API в проєкті; без цього перший прогін дасть 401/403 і алерт. Без ключа скрипт пише підказку й завершується кодом 0. Потрібен пакет google-auth (`/opt/plutustoys/venv/bin/pip install google-auth`).
-ВИХІД (приватна папка reports/gmc/, не публікується): gmc_status_YYYY-MM-DD.csv (рядок на товар: offerId, мова, мітка, джерело, статус, коди й описи причин, країни, дата) і gmc_summary_YYYY-MM-DD.txt (кількості за статусом і топ причин).
+ВИХІД (приватна папка reports/gmc/, не публікується): gmc_status_YYYY-MM-DD.csv (РЯДОК на кожну комбінацію товар × мова × джерело даних, а не на товар: один offerId стоїть кількома рядками; колонки offerId, мова, мітка, джерело, статус, коди й описи причин, країни, дата) і gmc_summary_YYYY-MM-DD.txt (кількості за статусом і топ причин).
 Статус товару: disapproved — є destination з disapprovedCountries АБО issue із severity DISAPPROVED; pending — немає approved, але є pending; approved — є approved і немає disapproved; unknown — нема даних.
 CLI: python gmc_status_report.py                      # зібрати звіт
      python gmc_status_report.py --summary            # надрукувати останнє summary
@@ -297,8 +297,8 @@ def run(session=None, out_dir: Path | None = None, now: datetime | None = None) 
         _alert("gmc_report_api", f"⚠️ gmc_status_report: запит до Merchant API не вдався ({type(e).__name__}) — звіт за {today} не зібрано (перевірити доступ сервіс-акаунта в Merchant Center і ввімкнений Merchant API).")
         return 1
     if not rows:
-        print("[gmc_status_report] акаунт повернув 0 товарів — файл не пишемо (перевірити account id/доступ)", file=sys.stderr)
-        _alert("gmc_report_empty", f"⚠️ gmc_status_report: Merchant API повернув 0 товарів для акаунта {ACCOUNT_ID} — звіт не записано.")
+        print("[gmc_status_report] акаунт повернув 0 записів (рядків) — файл не пишемо (перевірити account id/доступ)", file=sys.stderr)
+        _alert("gmc_report_empty", f"⚠️ gmc_status_report: Merchant API повернув 0 записів для акаунта {ACCOUNT_ID} — звіт не записано.")
         return 1
     csv_p, sum_p = write_report(rows, Path(out_dir or OUT_DIR), today)
     print(summarize(rows))

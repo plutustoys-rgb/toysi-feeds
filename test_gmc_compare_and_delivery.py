@@ -95,7 +95,6 @@ g3 = dl.post_flag(["🚩 y"], "2026-10-19", ch2, dl.MARK_GSC)
 t2 = ch2.read_text(encoding="utf-8")
 chk("post_flag з mark: GMC і GSC-прапорці тієї ж дати — окремі записи, повтор GSC не дублюється", g1 and g2 and not g3 and t2.count(dl.MARK) == 1 and t2.count(dl.MARK_GSC) == 1)
 chk("patterns містять gsc_weekly_summary/gsc_inspect_summary/gsc_verification; latest_per_pattern їх бере", sorted(dl.latest_per_pattern(["gsc_weekly_summary_2026-10-19.csv", "gsc_verification_2026-10-19.txt", "gsc_inspect_summary_2026-10-18.txt", "gsc_inspect_summary_2026-10-19.txt"])) == ["gsc_inspect_summary_2026-10-19.txt", "gsc_verification_2026-10-19.txt", "gsc_weekly_summary_2026-10-19.csv"])
-print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 # ---- 08.11.2026 (запит SEO, правило «одиниця перед числом»): РЯДОК звіту ≠ ТОВАР — кожне число несе обидві одиниці ----
 def mrow(oid, status, lang, ds, codes=""):
     r = row(oid, status, codes)
@@ -121,4 +120,12 @@ l5, f5 = g.compare_with_previous([mrow("A", "approved", "uk", "1"), mrow("A", "a
 chk("падіння на 1 рядок при тих самих товарах: прапорець називає РЯДКІВ 4 → 3 і УНІКАЛЬНИХ ТОВАРІВ 2 → 2 (не плутає)", any("РЯДКІВ 4 → 3 (-1)" in x and "УНІКАЛЬНИХ ТОВАРІВ 2 → 2 (+0)" in x for x in f5))
 chk("рядок порівняння в summary має обидві одиниці", any("РЯДКІВ:" in x for x in l5) and any("УНІКАЛЬНИХ ТОВАРІВ:" in x for x in l5))
 
+d6 = Path(tempfile.mkdtemp())
+write_csv(d6, "2026-11-07", [mrow("A", "approved", "uk", "1"), mrow("A", "approved", "ru", "2"), mrow("B", "approved", "uk", "1"), mrow("B", "approved", "ru", "2")])
+l6, f6 = g.compare_with_previous([mrow("A", "approved", "uk", "1"), mrow("A", "approved", "ru", "2"), mrow("B", "approved", "uk", "1"), mrow("B", "disapproved", "ru", "2", "q")], d6, "2026-11-08")
+chk("рядків approved 4→3, і товарів 2→1 (B частково не approved): прапорець є і називає обидві одиниці", any("РЯДКІВ 4 → 3" in x and "УНІКАЛЬНИХ ТОВАРІВ 2 → 1 (-1)" in x for x in f6))
+l7, f7 = g.compare_with_previous([mrow("A", "approved", "uk", "1"), mrow("A", "approved", "ru", "2"), mrow("B", "approved", "uk", "1"), mrow("B", "approved", "ru", "2"), mrow("C", "approved", "uk", "1")], d6, "2026-11-09")
+chk("approved виріс і в рядках, і в товарах → прапорця «ВПАВ» нема", not any("ВПАВ" in x for x in f7))
+
+print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -874,7 +874,7 @@ def _site_received_by_np(order: dict, delivery_status: str, ttn, site_np: dict) 
     if order.get("site_tg_state") == "received":
         return True
     info = site_np.get(str(ttn)) if ttn else None
-    return bool(info and site_order_status_notify.np_received(info.get("status")) and not nova_poshta.is_refusal(info))
+    return site_order_status_notify.np_delivered(info)
 
 
 def _save_site_state(conn, internal_id: str, state: str) -> None:

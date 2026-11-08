@@ -140,6 +140,32 @@ NP["20451500000041"] = npi("Відмова від отримання", "102", "5
 m = cycle()
 chk("відмова НП (returned): є ↩️-повідомлення, НЕ «отримано», стан returned", any(x.startswith("↩️") for x in m) and not any(x.startswith("✅") and "20451500000041" in x for x in m) and row(s3)["site_tg_state"] == "returned")
 
+# ── аудит #1126 п.1: скасування, коли Telegram недоступний, не губиться (замовлення вже поза активними)
+s5 = mk("S5", tid="61")
+TOYSI["61"] = {"status": 30, "TTN": None}
+cycle()
+tg_ok["v"] = False
+TOYSI["61"] = {"status": 10, "TTN": None}
+m = cycle()
+chk("скасовано, Telegram недоступний: спроба була, стан НЕ фінальний, delivery_status=cancelled", len(m) >= 1 and row(s5)["site_tg_state"] == "processing" and row(s5)["delivery_status"] == "cancelled")
+tg_ok["v"] = True
+m = cycle()
+chk("Telegram повернувся → ❌ скасовано надіслано ПОВТОРНО (замовлення вже не в активних), стан cancelled", len([x for x in m if x.startswith("❌") and "site_S5" in x]) == 1 and row(s5)["site_tg_state"] == "cancelled")
+chk("і більше не повторюється", [x for x in cycle() if "site_S5" in x] == [])
+
+# ── аудит #1126 п.5: старе замовлення не сповіщається, навіть якщо НП вперше відповіла пізніше
+old2 = mk("OLD2", tid="71", fwd="2026-10-02T10:00:00", ds="shipped")
+TOYSI["71"] = {"status": 60, "TTN": "20451500000071"}
+np_fail["v"] = True
+cycle()
+np_fail["v"] = False
+NP["20451500000071"] = npi("Відправлення отримано", "9")
+m = cycle()
+chk("старе замовлення: НП спершу мовчала, потім «отримано» → повідомлення нема, стан оновлено до received", not any("20451500000071" in x for x in m) and row(old2)["site_tg_state"] == "received")
+
+# ── аудит #1126 п.3: документ повернення важить більше за слово «отримано»
+chk("«отримано» разом з документом повернення (return_ttn) — НЕ отримано", sn.compute_stage({"public_number": "PT-1"}, "9", "shipped", "20451500000088", npi("Відправлення отримано", "9", "59001806649372", "CargoReturn"))[0] != "received")
+
 # ── повний режим Telegram: скасування не дублюємо
 os.environ["TELEGRAM_ORDERS_ONLY"] = "0"
 s4 = mk("S4", tid="51")

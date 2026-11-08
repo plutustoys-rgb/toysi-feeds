@@ -7,10 +7,13 @@
   • Нова Пошта по ТТН (один пакетний запит на цикл для замовлень сайту): статус тексту НП. «Отримано» = текст статусу НП містить «отримано/одержано» (НЕ відмова; той самий принцип, що nova_poshta.get_tracking_status:382–393).
     Toysi-код 70 «Доставлено» Toysi поки НЕ повертає (toysi_order_submit.ORDER_STATUS_MESSAGES[70]), тому «отримано» береться з НП.
 ДЕДУП: останній сповіщений стан — orders.site_tg_state. Повідомлення йде, лише коли стан ЗМІНИВСЯ; після фінального (received/cancelled/returned) — тиша. Стан пишеться, лише якщо Telegram прийняв повідомлення (інакше повторимо в наступному циклі).
-ЗАСІВ: замовлення, передані в Toysi ДО SITE_TG_SINCE (дата запуску функції), отримують стан мовчки — без шквалу повідомлень про старі замовлення.
+ЗАСІВ: замовлення, передані в Toysi ДО SITE_TG_SINCE (дата запуску функції), лише оновлюють стан мовчки — без шквалу повідомлень про старі замовлення.
+СКАСОВАНО/ПОВЕРНЕНО: замовлення з такими delivery_status вилучає з опитування orders_db.get_active_toysi_orders, тож їх сповіщення повторює order_status_tracker._retry_site_final_notifications (якщо Telegram не прийняв одразу).
 ПРИВАТНІСТЬ: у тексті лише номер замовлення (PT-…), номер Toysi, ТТН і статус; ПІБ/телефон/адреса не включаються.
 Вхід у Telegram — виняток із режиму «лише замовлення»: telegram_triage.is_site_order_status (початок тексту «<іконка> Замовлення сайту »)."""
 import sys
+
+import nova_poshta
 
 SITE_TG_SINCE = "2026-11-08T00:00:00"      # дата запуску: передані в Toysi раніше — лише засів стану, без повідомлень
 FINAL_STATES = ("received", "cancelled", "returned")
@@ -51,7 +54,7 @@ def compute_stage(order: dict, toysi_id, delivery_status, ttn, np_info):
         icon, word = ("❌", "скасовано") if ds == "cancelled" else ("↩️", "повернення")
         return ds, f"{icon} {lab}: {word} (Toysi #{toysi_id}" + (f", ТТН {ttn}" if ttn else "") + ")"
     ntext = (np_info or {}).get("status") or ""
-    if ds == "delivered" or (ttn and np_info and np_received(ntext)):
+    if ds == "delivered" or (ttn and np_info and np_received(ntext) and not nova_poshta.is_refusal(np_info)):      # документ повернення/відмова важить більше за слово «отримано»
         return "received", f"✅ {lab}: отримано · ТТН {ttn or '—'}" + (f" · НП: {ntext[:100]}" if ntext else "")
     if ttn and np_info and ntext:
         return f"np:{np_info.get('status_code') or ntext[:30]}", f"🚚 {lab}: ТТН {ttn} · НП: {ntext[:100]}"
@@ -74,8 +77,8 @@ def maybe_notify(order: dict, toysi_id, delivery_status, ttn, np_info, send, sav
         state, text = st
         if state == prev or (prev is not None and _rank(state) < _rank(prev)):
             return None
-        if prev is None and (order.get("forwarded_to_toysi_at") or "") < SITE_TG_SINCE:
-            save_state(state)                  # засів: старе замовлення — без повідомлення
+        if (order.get("forwarded_to_toysi_at") or "") < SITE_TG_SINCE:
+            save_state(state)                  # старе замовлення (до запуску функції) — стан оновлюємо ЗАВЖДИ мовчки (не лише першого разу: якщо НП тоді мовчала, пізніший «отримано» старого замовлення не має спрацювати)
             return state
         if state in ("cancelled", "returned") and not orders_only:
             save_state(state)                  # у повному режимі Telegram скасування/повернення вже шле сам трекер (order_status_tracker.track_orders) — без дубля

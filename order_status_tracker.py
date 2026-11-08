@@ -9,7 +9,7 @@ from orders_db import (
     mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
     mark_prom_ttn_pushed, mark_eva_ttn_pushed, update_delivery_status,
     mark_rozetka_cancel_ticket_sent, mark_np_return_created, mark_np_return_dryrun_notified,
-    mark_payment_confirmed, mark_cancelled, mark_discount_recorded, set_site_tg_state,
+    mark_payment_confirmed, mark_cancelled, mark_discount_recorded, set_site_tg_state, _row_to_dict,
 )
 import site_order_status_notify
 import telegram_triage
@@ -866,8 +866,31 @@ def _site_np_info(statuses: dict, by_toysi_id: dict, orders_by_internal_id: dict
         return {}
 
 
+def _save_site_state(conn, internal_id: str, state: str) -> None:
+    """Стан сповіщення пишемо й КОМІТИМО одразу: якщо будь-який пізніший _maybe_* у циклі кине виняток, відкат не поверне стан назад і повідомлення не піде вдруге."""
+    set_site_tg_state(conn, internal_id, state)
+    conn.commit()
+
+
+def _retry_site_final_notifications(conn) -> None:
+    """Скасовані/повернені замовлення САЙТУ вже не в get_active_toysi_orders, тож якщо Telegram не прийняв ❌/↩️ у циклі зміни статусу — повторюємо тут, поки стан не стане фінальним."""
+    try:
+        rows = conn.execute(
+            "SELECT * FROM orders WHERE platform = 'site' AND delivery_status IN ('cancelled', 'returned') "
+            "AND (site_tg_state IS NULL OR site_tg_state NOT IN ('cancelled', 'returned', 'received'))").fetchall()
+        only = telegram_triage.orders_only_enabled()
+        for r in rows:
+            o = _row_to_dict(r)
+            iid = o["internal_order_id"]
+            site_order_status_notify.maybe_notify(o, o.get("toysi_order_id"), o.get("delivery_status"), o.get("toysi_ttn"), None,
+                                                  send_telegram_message, lambda st, _i=iid: _save_site_state(conn, _i, st), only)
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_status_tracker] повтор сповіщень site (скасовано/повернуто) не вдався: {type(e).__name__}: {e}", file=sys.stderr)
+
+
 def track_orders() -> None:
     with get_connection() as conn:
+        _retry_site_final_notifications(conn)
         active = get_active_toysi_orders(conn)
         if not active:
             print("[order_status_tracker] Немає активних замовлень для відстеження")
@@ -923,7 +946,7 @@ def track_orders() -> None:
             order["toysi_ttn"] = ttn
             site_order_status_notify.maybe_notify(
                 order, toysi_id, delivery_status, ttn, site_np.get(str(ttn)) if ttn else None,
-                send_telegram_message, lambda st, _i=internal_id: set_site_tg_state(conn, _i, st), telegram_triage.orders_only_enabled())
+                send_telegram_message, lambda st, _i=internal_id: _save_site_state(conn, _i, st), telegram_triage.orders_only_enabled())
             _maybe_issue_receipt(conn, order, ttn, delivery_status)
             _maybe_advance_rozetka_processing(conn, order, delivery_status, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)

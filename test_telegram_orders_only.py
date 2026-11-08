@@ -66,11 +66,14 @@ COOKIE_ALERT = ("🚨 Prom-конвергенція: не зміг зчитат�
 reset()
 chk("надходження замовлення → ЙДЕ в Telegram", tn.send_telegram_message("🛒 Нове замовлення · prom №123 · 250 грн · 2 поз.") is True and len(posts) == 1)
 reset()
-for txt in ("🚨 eva_cabinet_scraper keepalive: сесія протухла", "⚠️ orders_watcher: замовлення 1 НЕ оброблено", "🛑 site_T1: замовлення сайту НЕ передано в Toysi",
+for txt in ("🚨 eva_cabinet_scraper keepalive: сесія протухла", "⚠️ orders_watcher: замовлення 1 НЕ оброблено",
             "💳 LiqPay: site_T1 має статус wait_accept", "🔴 Чек Checkbox НЕ видано для prom_1", "📊 звіт", "щось невідоме"):
     r = tn.send_telegram_message(txt)
     chk(f"НЕ замовлення → у Telegram не йде, повертає True: {txt[:32]}", r is True and not posts)
-chk("усе заглушене лишилось у журналі з позначкою режиму", log().count("[не надіслано в Telegram: режим «лише замовлення»]") == 7)
+chk("усе заглушене лишилось у журналі з позначкою режиму", log().count("[не надіслано в Telegram: режим «лише замовлення»]") == 6)
+reset()
+chk("🛑 «замовлення сайту НЕ передано в Toysi» (утримано) — виняток №3: ЙДЕ в Telegram", tn.send_telegram_message("🛑 site_T1: замовлення сайту НЕ передано в Toysi — нема валідного номера відділення") is True and len(posts) == 1)
+reset()
 
 # ── (2) секрети
 reset()

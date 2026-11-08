@@ -357,6 +357,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "rt_cabinet_checked_at", "rt_cabinet_checked_at TEXT")
         # Короткий номер замовлення сайту для ПОКУПЦЯ (PT-123456, власник 21.10.2026: «літери та 6 цифр»). Довгий internal id (PT-YYYYMMDD-HHMMSS-hex) лишається внутрішнім ключем у посиланнях/API/боті.
         _ensure_column(conn, "orders", "public_number", "public_number TEXT")
+        # Останній СПОВІЩЕНИЙ у Telegram стан замовлення сайту (site_order_status_notify, 08.11.2026): дедуп «лише зміна стану», після received/cancelled/returned — тиша. NULL = ще не сповіщали.
+        _ensure_column(conn, "orders", "site_tg_state", "site_tg_state TEXT")
         _ensure_column(conn, "orders", "rt_confirmed_at", "rt_confirmed_at TEXT")
         _ensure_column(conn, "orders", "rt_total", "rt_total REAL")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
@@ -1044,6 +1046,11 @@ def mark_np_return_dryrun_notified(conn: sqlite3.Connection, internal_order_id: 
         "UPDATE orders SET np_return_dryrun_notified_at = ? WHERE internal_order_id = ?",
         (datetime.now().isoformat(timespec="seconds"), internal_order_id),
     )
+
+
+def set_site_tg_state(conn: sqlite3.Connection, internal_order_id: str, state: str) -> None:
+    """Запам'ятати останній сповіщений у Telegram стан замовлення сайту (site_order_status_notify). Тільки platform='site'."""
+    conn.execute("UPDATE orders SET site_tg_state = ? WHERE internal_order_id = ? AND platform = 'site'", (state, internal_order_id))
 
 
 def mark_cancelled(conn: sqlite3.Connection, internal_order_id: str, reason: str) -> None:

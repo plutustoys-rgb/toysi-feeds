@@ -9,8 +9,10 @@ from orders_db import (
     mark_rozetka_ttn_pushed, mark_rozetka_processing_pushed, mark_prom_delivered_pushed,
     mark_prom_ttn_pushed, mark_eva_ttn_pushed, update_delivery_status,
     mark_rozetka_cancel_ticket_sent, mark_np_return_created, mark_np_return_dryrun_notified,
-    mark_payment_confirmed, mark_cancelled, mark_discount_recorded,
+    mark_payment_confirmed, mark_cancelled, mark_discount_recorded, set_site_tg_state,
 )
+import site_order_status_notify
+import telegram_triage
 import nova_poshta
 from orders_watcher import (
     update_prom_order_status, attach_prom_declaration_id, check_prom_order_status, PromAPIError,
@@ -846,6 +848,24 @@ def _np_refusals(active: list) -> dict:
     return out
 
 
+def _site_np_info(statuses: dict, by_toysi_id: dict, orders_by_internal_id: dict) -> dict:
+    """{ТТН: запис НП} для замовлень САЙТУ через НП з ТТН і нефінальним site_tg_state — ОДИН пакетний запит на цикл (site_order_status_notify: «отримано» береться з НП,
+    бо Toysi код 70 «Доставлено» поки не повертає). Збій НП → порожній словник: повідомлення про Toysi-стани йдуть, НП-стани — наступного циклу."""
+    ttns = []
+    for toysi_id, internal_id in by_toysi_id.items():
+        o = orders_by_internal_id.get(internal_id) or {}
+        t = (statuses.get(toysi_id) or {}).get("TTN")
+        if o.get("platform") == "site" and t and (o.get("carrier") or "nova_poshta") == "nova_poshta" and o.get("site_tg_state") not in site_order_status_notify.FINAL_STATES:
+            ttns.append(str(t))
+    if not ttns:
+        return {}
+    try:
+        return nova_poshta.get_tracking_batch(ttns)
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_status_tracker] НП-статуси для сповіщень сайту пропущено: {type(e).__name__}", file=sys.stderr)
+        return {}
+
+
 def track_orders() -> None:
     with get_connection() as conn:
         active = get_active_toysi_orders(conn)
@@ -862,6 +882,7 @@ def track_orders() -> None:
         except (RuntimeError, ToysiAPIError) as e:
             print(f"[order_status_tracker] {e}", file=sys.stderr)
             return
+        site_np = _site_np_info(statuses, by_toysi_id, orders_by_internal_id)
 
         for toysi_id, internal_id in by_toysi_id.items():
             info = statuses.get(toysi_id)
@@ -900,6 +921,9 @@ def track_orders() -> None:
                 )
 
             order["toysi_ttn"] = ttn
+            site_order_status_notify.maybe_notify(
+                order, toysi_id, delivery_status, ttn, site_np.get(str(ttn)) if ttn else None,
+                send_telegram_message, lambda st, _i=internal_id: set_site_tg_state(conn, _i, st), telegram_triage.orders_only_enabled())
             _maybe_issue_receipt(conn, order, ttn, delivery_status)
             _maybe_advance_rozetka_processing(conn, order, delivery_status, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)

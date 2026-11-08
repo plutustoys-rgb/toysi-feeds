@@ -119,7 +119,8 @@ def parse_csrf(html: str):
 
 def parse_balance(html: str):
     """«БАЛАНС ›  ₴0.00» на сторінці кабінету → float або None."""
-    m = re.search(r"БАЛАНС(?:<[^>]*>|[^<₴\d]){0,120}?₴\s*([\d\s ]+(?:[.,]\d{1,2})?)", html, re.I)    # живий кабінет (08.11): «Баланс <i>›</i></span><b>₴0.00</b>» — регістр змішаний і теги всередині
+    m = (re.search(r"Баланс\s*<i[^>]*>[^<]{0,10}</i>\s*</span>\s*<b[^>]*>\s*₴\s*([\d\s ]+(?:[.,]\d{1,2})?)", html)    # живий кабінет (08.11): «Баланс <i>›</i></span><b class=\"ds-hero-money\">₴0.00</b>» — лише ця структура, щоб не схопити ₴ сусіднього блоку
+         or re.search(r"БАЛАНС[^<₴\d]{0,40}₴\s*([\d\s ]+(?:[.,]\d{1,2})?)", html))                                       # старий формат (без тегів)
     return _money(m.group(1)) if m else None
 
 
@@ -219,14 +220,14 @@ def parse_header_dynamic(text: str) -> dict:
     if not isinstance(d, dict):
         return {"logged": False, "csrf": None}
     tok = d.get("csrf_token")
-    return {"logged": d.get("logged") is True, "csrf": tok if isinstance(tok, str) and tok.strip() else None}
+    return {"logged": d.get("logged") is True, "csrf": tok.strip() if isinstance(tok, str) and tok.strip() else None}
 
 
 def session_info(http) -> dict:
     code, html = http.get(f"{BASE}/ua/cabinet")
     dcode, dtext = http.get(DYNAMIC_URL)
     dyn = parse_header_dynamic(dtext) if dcode == 200 else {"logged": False, "csrf": None}
-    csrf = dyn["csrf"] or parse_csrf(html)                      # meta у кешованій сторінці порожній; лишаємо як запасний шлях
+    csrf = dyn["csrf"]                                          # лише токен сесії з header_dynamic: `<meta csrf-token>` кешованої сторінки порожній і довіри не має
     logged = code == 200 and "account/logout" in html and dyn["logged"] and bool(csrf)
     return {"logged_in": logged, "csrf": csrf, "balance": parse_balance(html) if logged else None}
 

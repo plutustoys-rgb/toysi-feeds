@@ -503,5 +503,8 @@ chk("parse_balance: «Баланс ... ₴1 250.50» з пробілом-роз�
 chk("parse_balance: нема блоку балансу → None", dc.parse_balance("<html>₴5</html>") is None)
 chk("parse_modal_balance: живо «доступно: <strong id=\"user-balance\">0.00 грн</strong>» → 0.0; старий формат без тегів теж", dc.parse_modal_balance('Оплатити з балансу (доступно: <strong id="user-balance">0.00 грн</strong>)') == 0.0 and dc.parse_modal_balance("(доступно: 1 250.50 грн)") == 1250.5)
 
+chk("session_info: logged як РЯДОК («true»/«false») або число → НЕ залогінений (лише булів true)", all(dc.session_info(DynHttp(json.dumps({"logged": v, "csrf_token": "t" * 64}), cabinet=LIVE_CABINET))["logged_in"] is False for v in ("true", "false", 1, "1")))
+chk("parse_balance: блок «Баланс» без власного ₴, а далі ₴ кошика/«на холді» → None, а не чуже число", dc.parse_balance('<a>Баланс</a><div><span>Кошик</span><b>₴502.20</b></div>') is None and dc.parse_balance('<span>Баланс</span><span>На холді</span><b>₴7.00</b>') is None)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

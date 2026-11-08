@@ -86,7 +86,7 @@ with tempfile.TemporaryDirectory() as td:
     raw = csvp.read_bytes()
     chk("CSV з BOM (Excel), читається назад, 7 рядків, колонки як задано", raw.startswith(b"\xef\xbb\xbf") and list(csv.DictReader(open(csvp, encoding="utf-8-sig")))[1]["offerId"] == "2" and len(list(csv.DictReader(open(csvp, encoding="utf-8-sig")))) == 7)
     s = sump.read_text(encoding="utf-8")
-    chk("summary: кількості за статусом і топ причин (missing_price 2, image_not_processed 2)", "товарів 7" in s and "disapproved 4" in s and "missing_price" in s and "image_not_processed" in s and "Не указана цена" in s)
+    chk("summary: кількості за статусом і топ причин (missing_price 2, image_not_processed 2)", "РЯДКІВ звіту 7" in s and "УНІКАЛЬНИХ ТОВАРІВ (offerId) 7" in s and "disapproved 4" in s and "missing_price" in s and "image_not_processed" in s and "Не указана цена" in s)
 
     # нема ключа → 0, API не чіпаємо
     old_key = g.KEY_FILE

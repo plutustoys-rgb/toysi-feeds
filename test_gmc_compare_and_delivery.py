@@ -48,7 +48,7 @@ chk("approved 1→2 виріс, причина a відома → прапорц
 write_csv(d, "2026-10-17", nxt)
 drop = [row("1", "disapproved", "a"), row("2", "disapproved", "a | c")]
 lines, flags = g.compare_with_previous(drop, d, "2026-10-18")
-chk("approved впав 2→0 → 🚩; НОВА причина c → 🚩; відома a — ні", len(flags) == 2 and "approved ВПАВ: 2 → 0" in flags[0] and "c (1)" in flags[1] and "a (" not in flags[1])
+chk("approved впав 2→0 → 🚩; НОВА причина c → 🚩; відома a — ні", len(flags) == 2 and "approved ВПАВ: РЯДКІВ 2 → 0" in flags[0] and "УНІКАЛЬНИХ ТОВАРІВ 2 → 0" in flags[0] and "c (рядків 1, товарів 1)" in flags[1] and "a (" not in flags[1])
 chk("історія кодів дописана новою причиною c", "c" in json.loads((d / "gmc_seen_codes.json").read_text(encoding="utf-8")))
 write_csv(d, "2026-10-18", drop)
 lines, flags = g.compare_with_previous(drop, d, "2026-10-19")
@@ -81,12 +81,12 @@ d3 = Path(tempfile.mkdtemp())
 write_csv(d3, "2026-10-16", [row("1", "approved", "a")])
 l1, f1 = g.compare_with_previous([row("1", "approved", "a"), row("2", "disapproved", "z")], d3, "2026-10-17")
 l2, f2 = g.compare_with_previous([row("1", "approved", "a"), row("2", "disapproved", "z")], d3, "2026-10-17")
-chk("повторний запуск того ж дня: прапорець «НОВА причина z» лишається (first_seen == сьогодні)", any("z (1)" in x for x in f1) and any("z (1)" in x for x in f2))
+chk("повторний запуск того ж дня: прапорець «НОВА причина z» лишається (first_seen == сьогодні)", any("z (рядків 1" in x for x in f1) and any("z (рядків 1" in x for x in f2))
 l3, f3 = g.compare_with_previous([row("1", "approved", "a"), row("2", "disapproved", "z")], d3, "2026-10-18") if (write_csv(d3, "2026-10-17", [row("1", "approved", "a"), row("2", "disapproved", "z")]) or True) else None
 chk("наступного дня z уже не нова", not any("z (" in x for x in f3))
 chk("latest_per_pattern: .csv.tmp, пробіли і «;» в імені ігноруються", dl.latest_per_pattern(["gmc_status_2026-10-18.csv.tmp", "gmc_status_2026-10-16.csv", "gmc_summary_2026-10-17.txt x y", "gmc_status_2026-10-19.csv; touch x"]) == ["gmc_status_2026-10-16.csv"])
 l4, f4 = g.compare_with_previous([row("1", "disapproved", "a")], d3, "2026-10-19")
-chk("прапорець «approved ВПАВ» містить загальну кількість і disapproved/unknown", any("усього товарів" in x and "disapproved" in x for x in f4))
+chk("прапорець «approved ВПАВ» містить загальну кількість і disapproved/unknown", any("Усього: рядків" in x and "унікальних товарів" in x and "disapproved" in x for x in f4))
 ch2 = Path(tempfile.mkdtemp()) / "SEO_CHANNEL.md"
 ch2.write_text("## [SEO → Код] старе" + chr(10) + "текст" + chr(10), encoding="utf-8")
 g1 = dl.post_flag(["🚩 x"], "2026-10-19", ch2)
@@ -95,5 +95,37 @@ g3 = dl.post_flag(["🚩 y"], "2026-10-19", ch2, dl.MARK_GSC)
 t2 = ch2.read_text(encoding="utf-8")
 chk("post_flag з mark: GMC і GSC-прапорці тієї ж дати — окремі записи, повтор GSC не дублюється", g1 and g2 and not g3 and t2.count(dl.MARK) == 1 and t2.count(dl.MARK_GSC) == 1)
 chk("patterns містять gsc_weekly_summary/gsc_inspect_summary/gsc_verification; latest_per_pattern їх бере", sorted(dl.latest_per_pattern(["gsc_weekly_summary_2026-10-19.csv", "gsc_verification_2026-10-19.txt", "gsc_inspect_summary_2026-10-18.txt", "gsc_inspect_summary_2026-10-19.txt"])) == ["gsc_inspect_summary_2026-10-19.txt", "gsc_verification_2026-10-19.txt", "gsc_weekly_summary_2026-10-19.csv"])
+# ---- 08.11.2026 (запит SEO, правило «одиниця перед числом»): РЯДОК звіту ≠ ТОВАР — кожне число несе обидві одиниці ----
+def mrow(oid, status, lang, ds, codes=""):
+    r = row(oid, status, codes)
+    r["contentLanguage"], r["dataSource"] = lang, ds
+    return r
+
+
+multi = [mrow("A", "approved", "uk", g.UK_DATASOURCE), mrow("A", "approved", "ru", "other"), mrow("A", "approved", "uk", "feed2"),
+         mrow("B", "approved", "uk", g.UK_DATASOURCE), mrow("B", "disapproved", "ru", "other", "img"),
+         mrow("C", "unknown", "uk", g.UK_DATASOURCE), mrow("D", "disapproved", "ru", "other", "img | price")]
+u = g._unit_stats(multi)
+chk("_unit_stats: 7 рядків = 4 унікальні товари; товари за статусом складаються в 4 (B: approved+disapproved → найгірший disapproved)", u["n_rows"] == 7 and u["n_prod"] == 4 and u["prod"] == {"approved": 1, "disapproved": 2, "unknown": 1} and sum(u["prod"].values()) == 4)
+chk("_unit_stats: 1 товар (B) має рядки з різним статусом; причина img — 2 рядки, 2 товари; price — 1/1", u["mixed"] == 1 and u["code_rows"]["img"] == 2 and u["code_prod"]["img"] == 2 and u["code_rows"]["price"] == 1)
+chk("_unit_stats: два рядки одного товару з однією причиною → рядків 2, товарів 1", g._unit_stats([mrow("E", "disapproved", "uk", "1", "z"), mrow("E", "disapproved", "ru", "2", "z")])["code_rows"]["z"] == 2 and g._unit_stats([mrow("E", "disapproved", "uk", "1", "z"), mrow("E", "disapproved", "ru", "2", "z")])["code_prod"]["z"] == 1)
+sm = g.summarize(multi)
+chk("summarize: у заголовку і РЯДКІВ, і УНІКАЛЬНИХ ТОВАРІВ з назвою одиниці; нема голого «товарів 7»", "РЯДКІВ звіту 7" in sm and "УНІКАЛЬНИХ ТОВАРІВ (offerId) 4" in sm and "товарів 7" not in sm.replace("УНІКАЛЬНИХ ТОВАРІВ (offerId) 4", ""))
+chk("summarize: окремий рядок для українського фіду (uk + його джерело): 3 рядки = 3 товари", "Наш український фід" in sm and "рядків 3, унікальних товарів 3" in sm)
+chk("summarize: топ причин має обидві одиниці «N рядків → M товарів»", "2 рядків →      2 товарів  img" in sm)
+chk("summarize: без uk-рядків нашого джерела окремого рядка нема (не вигадуємо)", "Наш український фід" not in g.summarize([mrow("A", "approved", "ru", "x")]))
+d5 = Path(tempfile.mkdtemp())
+write_csv(d5, "2026-11-07", [mrow("A", "approved", "uk", "1"), mrow("A", "approved", "ru", "2"), mrow("B", "approved", "uk", "1"), mrow("B", "approved", "ru", "2")])
+l5, f5 = g.compare_with_previous([mrow("A", "approved", "uk", "1"), mrow("A", "approved", "ru", "2"), mrow("B", "approved", "uk", "1")], d5, "2026-11-08")
+chk("падіння на 1 рядок при тих самих товарах: прапорець називає РЯДКІВ 4 → 3 і УНІКАЛЬНИХ ТОВАРІВ 2 → 2 (не плутає)", any("РЯДКІВ 4 → 3 (-1)" in x and "УНІКАЛЬНИХ ТОВАРІВ 2 → 2 (+0)" in x for x in f5))
+chk("рядок порівняння в summary має обидві одиниці", any("РЯДКІВ:" in x for x in l5) and any("УНІКАЛЬНИХ ТОВАРІВ:" in x for x in l5))
+
+d6 = Path(tempfile.mkdtemp())
+write_csv(d6, "2026-11-07", [mrow("A", "approved", "uk", "1"), mrow("A", "approved", "ru", "2"), mrow("B", "approved", "uk", "1"), mrow("B", "approved", "ru", "2")])
+l6, f6 = g.compare_with_previous([mrow("A", "approved", "uk", "1"), mrow("A", "approved", "ru", "2"), mrow("B", "approved", "uk", "1"), mrow("B", "disapproved", "ru", "2", "q")], d6, "2026-11-08")
+chk("рядків approved 4→3, і товарів 2→1 (B частково не approved): прапорець є і називає обидві одиниці", any("РЯДКІВ 4 → 3" in x and "УНІКАЛЬНИХ ТОВАРІВ 2 → 1 (-1)" in x for x in f6))
+l7, f7 = g.compare_with_previous([mrow("A", "approved", "uk", "1"), mrow("A", "approved", "ru", "2"), mrow("B", "approved", "uk", "1"), mrow("B", "approved", "ru", "2"), mrow("C", "approved", "uk", "1")], d6, "2026-11-09")
+chk("approved виріс і в рядках, і в товарах → прапорця «ВПАВ» нема", not any("ВПАВ" in x for x in f7))
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

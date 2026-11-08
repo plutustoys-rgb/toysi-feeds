@@ -7,7 +7,7 @@
 
 АВТОРИЗАЦІЯ: сервіс-акаунт Google Cloud (JSON-ключ), який створює ВЛАСНИК і кладе на VPS (права 600; /opt/plutustoys — git-клон, тому `.secrets/` і `gmc_service_account*.json` в .gitignore): GMC_SERVICE_ACCOUNT_FILE (за замовчуванням /opt/plutustoys/.secrets/gmc_service_account.json). Email акаунта додається в
 Merchant Center → Налаштування → Люди й доступ (роль лише читання). Merchant API вимагає ОДНОРАЗОВОЇ реєстрації GCP-проєкту (POST accounts/v1/accounts/{id}/developerRegistration:registerGcp з developerEmail) і ввімкненого Merchant API в проєкті; без цього перший прогін дасть 401/403 і алерт. Без ключа скрипт пише підказку й завершується кодом 0. Потрібен пакет google-auth (`/opt/plutustoys/venv/bin/pip install google-auth`).
-ВИХІД (приватна папка reports/gmc/, не публікується): gmc_status_YYYY-MM-DD.csv (рядок на товар: offerId, мова, мітка, джерело, статус, коди й описи причин, країни, дата) і gmc_summary_YYYY-MM-DD.txt (кількості за статусом і топ причин).
+ВИХІД (приватна папка reports/gmc/, не публікується): gmc_status_YYYY-MM-DD.csv (РЯДОК на кожну комбінацію товар × мова × джерело даних, а не на товар: один offerId стоїть кількома рядками; колонки offerId, мова, мітка, джерело, статус, коди й описи причин, країни, дата) і gmc_summary_YYYY-MM-DD.txt (кількості за статусом і топ причин).
 Статус товару: disapproved — є destination з disapprovedCountries АБО issue із severity DISAPPROVED; pending — немає approved, але є pending; approved — є approved і немає disapproved; unknown — нема даних.
 CLI: python gmc_status_report.py                      # зібрати звіт
      python gmc_status_report.py --summary            # надрукувати останнє summary
@@ -112,20 +112,55 @@ def product_row(p: dict, today: str) -> dict:
     }
 
 
+# Одиниця звіту (рішення власника 08.11.2026, правило «одиниця перед числом»): РЯДОК звіту ≠ ТОВАР. Один товар (offerId) стоїть кількома рядками — мова × джерело даних (на 07.11: 34 327 рядків = 21 358 унікальних offerId).
+# Статус ТОВАРУ = найгірший зі статусів його рядків (disapproved > pending > unknown > approved), тож товари за статусами складаються рівно в «унікальних товарів». Товари з різним статусом у різних рядках рахуємо окремо й називаємо.
+_WORST_FIRST = ("disapproved", "pending", "unknown", "approved")
+UK_DATASOURCE = os.environ.get("GMC_UK_DATASOURCE", "10778023253")      # наш український фід (джерело даних; на 07–08.11 — uk-рядки цього джерела)
+
+
+def _worst(statuses) -> str:
+    s = set(statuses)
+    return next((x for x in _WORST_FIRST if x in s), "unknown")
+
+
+def _unit_stats(rows: list) -> dict:
+    """{rows: Counter статусів рядків, n_rows, prod: Counter статусів товарів (найгірший зі статусів рядків), n_prod, mixed: товарів з різним статусом рядків,
+    code_rows: Counter причин по рядках, code_prod: Counter причин по унікальних товарах}. Рядок без offerId рахується окремим товаром (щоб не злитись в один)."""
+    by, codes_by = {}, {}
+    code_rows = Counter()
+    for i, r in enumerate(rows):
+        pid = r.get("offerId") or f"∅{i}"
+        by.setdefault(pid, set()).add(r["status"])
+        for c in [x.strip() for x in (r.get("issue_codes") or "").split("|") if x.strip()]:
+            code_rows[c] += 1
+            codes_by.setdefault(c, set()).add(pid)
+    return {"rows": Counter(r["status"] for r in rows), "n_rows": len(rows),
+            "prod": Counter(_worst(s) for s in by.values()), "n_prod": len(by), "mixed": sum(1 for s in by.values() if len(s) > 1),
+            "code_rows": code_rows, "code_prod": Counter({c: len(p) for c, p in codes_by.items()})}
+
+
+def _fmt_counter(c: Counter, keys=("approved", "disapproved", "pending", "unknown")) -> str:
+    return ", ".join(f"{k} {c.get(k, 0)}" for k in keys if c.get(k, 0) or k in ("approved", "disapproved"))
+
+
 def summarize(rows: list, products_n: int | None = None) -> str:
-    st = Counter(r["status"] for r in rows)
-    codes = Counter()
+    u = _unit_stats(rows)
     desc = {}
     for r in rows:
         cs = [c for c in r["issue_codes"].split(" | ") if c]
         ds = r["issue_descriptions"].split(" | ")
         for k, c in enumerate(cs):
-            codes[c] += 1
             desc.setdefault(c, ds[k] if k < len(ds) else "")
-    lines = [f"Merchant Center {ACCOUNT_ID}: товарів {len(rows)}; " + ", ".join(f"{k} {v}" for k, v in st.most_common())]
-    lines.append("Топ причин (позицій з такою причиною):")
-    for c, n in codes.most_common(15):
-        lines.append(f"  {n:6d}  {c}  — {desc.get(c, '')[:120]}")
+    lines = [f"Merchant Center {ACCOUNT_ID}: РЯДКІВ звіту {u['n_rows']}, УНІКАЛЬНИХ ТОВАРІВ (offerId) {u['n_prod']} — один товар стоїть кількома рядками (мова × джерело даних)."]
+    lines.append("За статусом, рядків: " + _fmt_counter(u["rows"]))
+    lines.append("За статусом, унікальних товарів (статус товару = найгірший з його рядків; сума = " + str(u["n_prod"]) + "): " + _fmt_counter(u["prod"]) + f"; з них {u['mixed']} товарів мають рядки з різним статусом")
+    uk = [r for r in rows if r.get("contentLanguage") == "uk" and r.get("dataSource") == UK_DATASOURCE]
+    if uk:
+        k = _unit_stats(uk)
+        lines.append(f"Наш український фід (uk, джерело {UK_DATASOURCE}) окремо: рядків {k['n_rows']}, унікальних товарів {k['n_prod']}; за статусом, товарів: " + _fmt_counter(k["prod"]))
+    lines.append("Топ причин (рядків з такою причиною → унікальних товарів з нею):")
+    for c, n in u["code_rows"].most_common(15):
+        lines.append(f"  {n:6d} рядків → {u['code_prod'].get(c, 0):6d} товарів  {c}  — {desc.get(c, '')[:120]}")
     return "\n".join(lines)
 
 
@@ -153,6 +188,7 @@ def compare_with_previous(rows: list, out_dir: Path, today: str) -> tuple:
     out_dir = Path(out_dir)
     seen_file = out_dir / "gmc_seen_codes.json"
     cur_st, cur_codes = _stats_from_rows(rows)
+    cur_u = _unit_stats(rows)
     prev = _previous_csv(out_dir, today)
     seen = None            # {код причини: дата ПЕРШОЇ появи}; повторний запуск того ж дня не стирає прапорець «нова» (first_seen == today)
     try:
@@ -179,15 +215,23 @@ def compare_with_previous(rows: list, out_dir: Path, today: str) -> tuple:
         with open(pp, encoding="utf-8-sig", newline="") as f:
             prev_rows = list(csv.DictReader(f))
         pst, pcodes = _stats_from_rows(prev_rows)
-        lines.append(f"Порівняння з {pd}: " + ", ".join(f"{k} {pst.get(k, 0)}→{cur_st.get(k, 0)} ({cur_st.get(k, 0) - pst.get(k, 0):+d})" for k in ("approved", "disapproved", "unknown")))
+        prev_u = _unit_stats(prev_rows)
+        lines.append(f"Порівняння з {pd}, РЯДКІВ: " + ", ".join(f"{k} {pst.get(k, 0)}→{cur_st.get(k, 0)} ({cur_st.get(k, 0) - pst.get(k, 0):+d})" for k in ("approved", "disapproved", "unknown")))
+        lines.append(f"Порівняння з {pd}, УНІКАЛЬНИХ ТОВАРІВ: " + ", ".join(f"{k} {prev_u['prod'].get(k, 0)}→{cur_u['prod'].get(k, 0)} ({cur_u['prod'].get(k, 0) - prev_u['prod'].get(k, 0):+d})" for k in ("approved", "disapproved", "unknown")) + f"; усього товарів {prev_u['n_prod']}→{cur_u['n_prod']} ({cur_u['n_prod'] - prev_u['n_prod']:+d})")
         ch = sorted(((cur_codes.get(c, 0) - pcodes.get(c, 0), c) for c in set(cur_codes) | set(pcodes)), key=lambda x: -abs(x[0]))[:6]
         if any(d for d, _ in ch):
-            lines.append("Найбільші зміни причин: " + "; ".join(f"{c} {pcodes.get(c, 0)}→{cur_codes.get(c, 0)} ({d:+d})" for d, c in ch if d))
-        if cur_st.get("approved", 0) < pst.get("approved", 0):
-            flags.append(f"🚩 approved ВПАВ: {pst.get('approved', 0)} → {cur_st.get('approved', 0)} ({cur_st.get('approved', 0) - pst.get('approved', 0):+d}); усього товарів {sum(pst.values())} → {sum(cur_st.values())}, disapproved {pst.get('disapproved', 0)} → {cur_st.get('disapproved', 0)}, unknown {pst.get('unknown', 0)} → {cur_st.get('unknown', 0)} (щоб відрізнити падіння якості від скорочення фіду)")
+            lines.append("Найбільші зміни причин (РЯДКІВ з причиною): " + "; ".join(f"{c} {pcodes.get(c, 0)}→{cur_codes.get(c, 0)} ({d:+d})" for d, c in ch if d))
+        if cur_st.get("approved", 0) < pst.get("approved", 0) or cur_u["prod"].get("approved", 0) < prev_u["prod"].get("approved", 0):
+            ra, rp, pa, pp_ = cur_st.get("approved", 0), pst.get("approved", 0), cur_u["prod"].get("approved", 0), prev_u["prod"].get("approved", 0)
+            flags.append(
+                f"🚩 approved ВПАВ: РЯДКІВ {rp} → {ra} ({ra - rp:+d}); УНІКАЛЬНИХ ТОВАРІВ {pp_} → {pa} ({pa - pp_:+d}). "
+                f"Усього: рядків {sum(pst.values())} → {sum(cur_st.values())}, унікальних товарів {prev_u['n_prod']} → {cur_u['n_prod']}. "
+                f"disapproved: рядків {pst.get('disapproved', 0)} → {cur_st.get('disapproved', 0)}, товарів {prev_u['prod'].get('disapproved', 0)} → {cur_u['prod'].get('disapproved', 0)}; "
+                f"unknown: рядків {pst.get('unknown', 0)} → {cur_st.get('unknown', 0)}, товарів {prev_u['prod'].get('unknown', 0)} → {cur_u['prod'].get('unknown', 0)} "
+                f"(рядок звіту ≠ товар: один товар стоїть кількома рядками; щоб відрізнити падіння якості від скорочення фіду)")
     new = sorted(c for c, n in cur_codes.items() if n > 0 and (c not in seen or seen[c] == today))
     if new and (prev is not None or seen):
-        flags.append("🚩 НОВА причина (раніше в звітах не було): " + ", ".join(f"{c} ({cur_codes[c]})" for c in new))
+        flags.append("🚩 НОВА причина (раніше в звітах не було): " + ", ".join(f"{c} (рядків {cur_codes[c]}, товарів {cur_u['code_prod'].get(c, 0)})" for c in new))
     try:
         tmp = seen_file.with_name(seen_file.name + ".tmp")
         for c in cur_codes:
@@ -253,8 +297,8 @@ def run(session=None, out_dir: Path | None = None, now: datetime | None = None) 
         _alert("gmc_report_api", f"⚠️ gmc_status_report: запит до Merchant API не вдався ({type(e).__name__}) — звіт за {today} не зібрано (перевірити доступ сервіс-акаунта в Merchant Center і ввімкнений Merchant API).")
         return 1
     if not rows:
-        print("[gmc_status_report] акаунт повернув 0 товарів — файл не пишемо (перевірити account id/доступ)", file=sys.stderr)
-        _alert("gmc_report_empty", f"⚠️ gmc_status_report: Merchant API повернув 0 товарів для акаунта {ACCOUNT_ID} — звіт не записано.")
+        print("[gmc_status_report] акаунт повернув 0 записів (рядків) — файл не пишемо (перевірити account id/доступ)", file=sys.stderr)
+        _alert("gmc_report_empty", f"⚠️ gmc_status_report: Merchant API повернув 0 записів для акаунта {ACCOUNT_ID} — звіт не записано.")
         return 1
     csv_p, sum_p = write_report(rows, Path(out_dir or OUT_DIR), today)
     print(summarize(rows))

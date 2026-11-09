@@ -270,8 +270,8 @@ _deny = {"dropt-502": good("dropt-502", name="GSM трекер Mini A8 з про
          "dropt-506": good("dropt-506", name="Набір неодимових магнітів Неокуб", category="Товари для тварин"), "dropt-507": good("dropt-507", name="Годівниця для кота", category="Товари для тварин")}
 r, e = with_item_map({}, _deny)
 _st2 = json.loads(Path(bs.DROPT_UNMAPPED_STATE_FILE).read_text(encoding="utf-8"))
-chk("чорний список назв: через фолбек НЕ публікуються прилади прослуховування, лазери, набори виживання, ошийники, неодимові магніти; звичайний товар — так; у «нерозмічені» вони не потрапляють",
-    set(r) == {"dropt-507"} and not (set(_st2["ids"]) & {"dropt-502", "dropt-503", "dropt-504", "dropt-505", "dropt-506"}))
+chk("чорний список назв: через фолбек НЕ публікуються прилади прослуховування, лазери, набори виживання, ошийники, неодимові магніти; звичайний товар — так; відсічені потрапляють у «на перегляд» (dropt_unmapped_state.json), а не зникають мовчки",
+    set(r) == {"dropt-507"} and {"dropt-502", "dropt-503", "dropt-504", "dropt-505", "dropt-506"} <= set(_st2["ids"]) and "dropt-507" not in _st2["ids"])
 r, e = with_item_map({"dropt-502": "Електроніка та гаджети"}, {"dropt-502": _deny["dropt-502"]})
 chk("покартковий запис (рішення людини) не обмежується чорним списком назв фолбека", set(r) == {"dropt-502"})
 # РЕАЛЬНІ файли: кожен id з "" у покартковому файлі не публікується навіть коли його розділ має фолбек; непорожні — публікуються з правильною ціллю
@@ -290,6 +290,23 @@ try:
 finally:
     bs.DROPT_ITEM_CATEGORY_FILE = str(tmp / "empty_item_cat.json")
     bs.DROPT_CATEGORY_MAP_FILE = str(tmp / "cmap_fixture.json")
+
+_names_bad = ["Ножі кухонні набір", "Нож складной", "Мисливський нож", "Ножик туристичний", "Кинджал", "Мачете", "Сокира туристична", "Кастет", "Перцевий балончик", "Тазер", "Taser pro",
+              "Прихована міні камера", "Шпигунська камера", "Жучок прослушка", "Диктофон міні", "GPS маячок", "Кальян", "Лaзерна указка", "GSM розетка з прослуховуванням", "Електрошокер",
+              "Колонка JBL PartyBox 320", "Навушники Redmi AirDots", "Монокуляр Bushnell", "Рюкзак Swissgear", "Фурмінатор FURminator", "Костюм Marvel Дедпул", "Карта пам'яті Amazon pro"]
+_names_ok = ["Ніжна лялька", "Ножки для столу пластикові", "Ніжний плед для дітей", "Фітнес-трекер браслет", "Вакуумні пакети для зберігання", "Магніти на холодильник", "Ножиці дитячі", "Ножний насос для надувних іграшок", "Годівниця для кота"]
+_nm = {f"dropt-{600 + i}": good(f"dropt-{600 + i}", name=n, category="Товари для тварин") for i, n in enumerate(_names_bad + _names_ok)}
+r, e = with_item_map({}, _nm)
+_nb = {f"dropt-{600 + i}" for i in range(len(_names_bad))}
+_leak = sorted(_nm[k]["name"] for k in r if k in _nb)
+_fp = sorted(_nm[k]["name"] for k in _nm if k not in _nb and k not in r)
+chk(f"чорний список назв фолбека: усі {len(_names_bad)} небезпечних/брендових назв (форми «нож/ножі/ніж», латинські двійники, шпигунські пристрої, чужі бренди) відсічені (просочилось: {_leak}); {len(_names_ok)} безпечних («Ніжна», «Ніжки», фітнес-трекер, вакуумні пакети, ножиці…) — публікуються (хибних спрацювань: {_fp})",
+    not _leak and not _fp)
+r, e = with_item_map({}, {"dropt-011836": good("dropt-011836", category="Товари для тварин"), "dropt-0": good("dropt-0", category="Товари для тварин"), "dropt-11836": good("dropt-11836", category="Товари для тварин")})
+chk("id з провідним нулем (dropt-011836) не приймається; без нулів — так", set(r) == {"dropt-11836"})
+r, e = with_item_map({}, {"dropt-11836": good("dropt-11836", category="Товари для тварин")})
+for _k in ("dropt-79998", "dropt-52540", "dropt-52541"):
+    chk(f"{_k} (дитяче автокрісло-бустер / лазерні нічники) свідомо виключено у реальному файлі", item_real.get(_k) == "")
 
 bad_imgs = ["http://plutustoys.com.ua/img/dropt/dropt-101-1.jpg", "https://evil.example/img/dropt/dropt-101-1.jpg", "https://plutustoys.com.ua.evil.com/img/dropt/dropt-101-1.jpg",
             "https://plutustoys.com.ua/img/dropt/../../supplier_dropt.json", "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg", "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg",

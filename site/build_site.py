@@ -733,14 +733,24 @@ DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)
 DROPT_OWN_CATEGORIES = ("Навушники та колонки", "Електроніка та гаджети", "Товари для тварин", "Туризм і відпочинок", "Сумки та рюкзаки")
 # Фолбек мапи категорій (для id БЕЗ покартового запису) НЕ публікує товари з назвою, що вказує на заборонене/ризикове (прилади прослуховування, лазери, шокери, ножі/виживання, медичне, неодимові магніти, підробки Apple…):
 # нові id недитячих розділів з'являються щогодини без перегляду, тож чорний список за назвою — остання лінія захисту. Покартковий запис (рішення людини) цим не обмежується.
-DROPT_FALLBACK_DENY_RX = re.compile(r"прослуховув|GSM|трекер|лазер|laser|шокер|електрошок|ошийник|\bніж|ножів|ножа|мультитул|виживання|кастингов|airpods|вейп|vape|сигарет|тютюн|алкогол|18\+|пневмат|арбалет|пістолет|вакуумн|молоковідсмок|неодим|buckyball|неокуб|neocube|магніти", re.I)
+DROPT_FALLBACK_DENY_RX = re.compile(
+    r"прослуховув|прослушк|gsm|gps|маячок|жучок|жучк|(?<!фітнес-)(?<!фітнес )трекер|лазер|laser|шокер|електрошок|тазер|taser|ошийник|"
+    r"ніж(?![нк])|нож(?!иц|н|к)|кинджал|мачете|сокир|кастет|балончик|мультитул|виживання|кастингов|"
+    r"прихован|шпигун|диктофон|кальян|вейп|vape|сигарет|тютюн|алкогол|18\+|пневмат|арбалет|пістолет|"
+    r"вакуумн\w* (?:апарат|масаж)|молоковідсмок|неодим|buckyball|неокуб|neocube|магнітні кул|"
+    r"airpods|airdots|redmi|jbl|partybox|bushnell|swissgear|furminator|marvel|disney|amazon",
+    re.I)
+_LAT2CYR = str.maketrans("aeopcxiykmthb", "аеорсхіукмтнв")   # латинські двійники кирилиці («Лaзерна» з латинською «a») нормалізуємо перед перевіркою
+def _dropt_name_denied(name):
+    n = str(name or "")
+    return bool(DROPT_FALLBACK_DENY_RX.search(n) or DROPT_FALLBACK_DENY_RX.search(n.lower().translate(_LAT2CYR)))
 DROPT_UNMAPPED_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_unmapped_state.json")   # КОРІНЬ репо (НЕ site/ — site/ публічний): id Dropt без категорії сайту → Код читає через ops-health; лише id, без назв/цін
 DROPT_UNMAPPED_MAX_IDS = 1200                          # ≤ ~20 КБ (поріг знімка ops-health): 1200 × ≈16 байт ≈ 19 КБ
 DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо
 DROPT_INDEX_IDS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_index_ids.json")
 SUPPLIER_DROPT_MAX_AGE_DAYS = SUPPLIER_RT_MAX_AGE_DAYS   # той самий поріг, що для RoyalToys (3 доби від «updated»)
 DROPT_ITEM_MAX_AGE_H = 6                                 # checked_at картки старший (від моменту збірки) → картку не показуємо
-_DROPT_ID_RX = re.compile(r"dropt-[0-9]{1,12}")          # лише ASCII-цифри (\d пропустив би юнікод-цифри)
+_DROPT_ID_RX = re.compile(r"dropt-[1-9][0-9]{0,11}")   # без провідних нулів (dropt-011836 ≠ dropt-11836)          # лише ASCII-цифри (\d пропустив би юнікод-цифри)
 _DROPT_VCODE_RX = re.compile(r"[0-9A-Za-z._-]{1,40}")
 DROPT_MAX_PRICE = 1_000_000          # ₴; більше — збій даних, а не товар
 DROPT_MAX_STOCK = 100_000
@@ -847,7 +857,7 @@ def _load_supplier_dropt(site_cats, now=None):
             if cat_name is None:
                 # фолбек мапи категорій: лише коли покартковий файл прочитано (інакше нічого без перегляду не публікуємо) і назва не потрапляє в чорний список
                 cat_name = cmap.get(_cat_raw.strip()) if (item_cat_ok and isinstance(_cat_raw, str)) else None
-                if cat_name and isinstance(v.get("name"), str) and DROPT_FALLBACK_DENY_RX.search(v["name"]):
+                if cat_name and isinstance(v.get("name"), str) and _dropt_name_denied(v["name"]):
                     cat_name = ""
                     _deny = True
             _ca = v.get("checked_at")
@@ -861,10 +871,10 @@ def _load_supplier_dropt(site_cats, now=None):
                 why = "price/stock"
             elif _ca_age_h is None or _ca_age_h > DROPT_ITEM_MAX_AGE_H or _ca_age_h < -0.25:
                 why = "checked_at"
-            elif (k in item_cat and isinstance(item_cat[k], str) and not item_cat[k].strip()) or _deny:
+            elif k in item_cat and isinstance(item_cat[k], str) and not item_cat[k].strip():
                 why = "excluded"   # свідомо НЕ публікуємо (запис "" у покартковому файлі: юридичний/брендовий ризик чи побутове) — не вважається «нерозміченим»
             elif not isinstance(cat_name, str) or not cat_name.strip():
-                why = "category:" + str(_cat_raw)[:40]
+                why = ("category:deny-name:" if _deny else "category:") + str(_cat_raw)[:40]   # назва з чорного списку → у список «на перегляд» (dropt_unmapped_state.json), не мовчки
             elif cat_name.strip() not in site_cats and cat_name.strip() not in DROPT_OWN_CATEGORIES:
                 why = "category-target:" + cat_name.strip()[:40]
         if why:

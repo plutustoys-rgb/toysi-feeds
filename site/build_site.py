@@ -734,16 +734,38 @@ DROPT_OWN_CATEGORIES = ("Навушники та колонки", "Електр�
 # Фолбек мапи категорій (для id БЕЗ покартового запису) НЕ публікує товари з назвою, що вказує на заборонене/ризикове (прилади прослуховування, лазери, шокери, ножі/виживання, медичне, неодимові магніти, підробки Apple…):
 # нові id недитячих розділів з'являються щогодини без перегляду, тож чорний список за назвою — остання лінія захисту. Покартковий запис (рішення людини) цим не обмежується.
 DROPT_FALLBACK_DENY_RX = re.compile(
-    r"прослуховув|прослушк|gsm|gps|маячок|жучок|жучк|(?<!фітнес-)(?<!фітнес )трекер|лазер|laser|шокер|електрошок|тазер|taser|ошийник|"
-    r"ніж(?![нк])|нож(?!иц|н|к)|кинджал|мачете|сокир|кастет|балончик|мультитул|виживання|кастингов|"
-    r"прихован|шпигун|диктофон|кальян|вейп|vape|сигарет|тютюн|алкогол|18\+|пневмат|арбалет|пістолет|"
+    r"прослух|підслух|прослушк|gsm|gps|маячок|жучок|жучк|airtag|smart ?tag|пошуков\w* брелок|(?<!фітнес-)(?<!фітнес )(?:трекер|tracker)|лазер|laser|шокер|електрошок|тазер|taser|stun ?gun|ошийник|"
+    r"(?<![спдо])ніж(?![нк])|нож(?!иц|н|к)|ножны|knife|кинджал|кинжал|кінджал|мачете|machete|сокир|топор|топір|тесак|клинок|керамбіт|karambit|кортик|штик|багнет|нунчак|сюрікен|shuriken|кастет|kastet|балончик|баллончик|"
+    r"мультитул|multitool|multi-tool|виживання|выживани|кастингов|пістолет|пистолет|pistol|револьвер|гвинтів|винтовк|crossbow|арбалет|рогатк|ракетниц|петард|"
+    r"прихован\w* (?:камер|відеокамер|мікрофон|диктофон)|скрыт\w* камер|спрей самооборон|самооборон|шпигун|шпион|spy|диктофон|міні[- ]?камер|камер\w*[- ]годинник|"
+    r"кальян|hookah|вейп|vape|pod[- ]?систем|elf ?bar|iqos|glo hyper|сигарет|цигарк|тютюн|алкогол|коньяк|віскі|келих для вина|18 ?\+|\+ ?18|секс|інтим|вібратор|еротич|для дорослих|пневмат|"
     r"вакуумн\w* (?:апарат|масаж)|молоковідсмок|неодим|buckyball|неокуб|neocube|магнітні кул|"
-    r"airpods|airdots|redmi|jbl|partybox|bushnell|swissgear|furminator|marvel|disney|amazon",
+    r"airpods|airdots|redmi|\bjbl\b|partybox|bushnell|swissgear|furminator|\bmarvel\b|\bdisney\b|amazon",
     re.I)
-_LAT2CYR = str.maketrans("aeopcxiykmthb", "аеорсхіукмтнв")   # латинські двійники кирилиці («Лaзерна» з латинською «a») нормалізуємо перед перевіркою
+# виняткові безпечні вирази, що містять заборонений корінь (пістолет водяний/мильний/клейовий; сніжинка/підніжжя; ножовка)
+DROPT_DENY_EXCEPT_RX = re.compile(r"водян\w* пістолет|водн\w* пістолет|пістолет\w* для мильних|мильн\w* пістолет|клейов\w* пістолет|термопістолет|пістолет-розпилювач|ножовк|чохол для airpods", re.I)
+# сильні корені, що перевіряються ще й на рядку БЕЗ пробілів/дефісів/розділювачів («Ш о к е р», «Н-іж» не обходять)
+DROPT_DENY_CORE_RX = re.compile(r"шокер|кастет|кинджал|кинжал|мачете|тазер|taser|прослух|підслух|лазер|laser|шпигун|шпион|gps|гпс|gsm|нунчак|сюрікен|вейп|кальян|електрошок|балончик|баллончик|(?<![спдо])ніж(?![нк])", re.I)
+_LAT2CYR = str.maketrans("aeopcxiykmthb", "аеорсхіукмтнв")   # латинські двійники кирилиці («Лaзерна» з латинською «a»)
+_CYR2LAT = str.maketrans("аеорсхіукмтнвАЕОРСХІУКМТНВ", "aeopcxiykmthbAEOPCXIYKMTHB")   # зворотно: кириличні двійники всередині латинських слів («Tаser»)
+_DROPT_KEEP_MN = {"̆", "̈"}   # бреве (й) і трема (ї) — частини літер, їх не знімаємо; решта комбінованих (наголос…) і невидимі (Cf) — знімаємо
+_LOOKALIKE = str.maketrans({"ο": "о", "ı": "і", "α": "а", "ε": "е", "ρ": "р", "ν": "н", "ι": "і", "κ": "к", "τ": "т", "υ": "у", "χ": "х"})   # грецькі/турецькі двійники
+def _dropt_norm(name):
+    n = unicodedata.normalize("NFKC", str(name or ""))
+    n = "".join(ch for ch in n if unicodedata.category(ch) != "Cf")
+    n = "".join(ch for ch in unicodedata.normalize("NFD", n) if unicodedata.category(ch) != "Mn" or ch in _DROPT_KEEP_MN)
+    return unicodedata.normalize("NFC", n).lower().translate(_LOOKALIKE)
 def _dropt_name_denied(name):
-    n = str(name or "")
-    return bool(DROPT_FALLBACK_DENY_RX.search(n) or DROPT_FALLBACK_DENY_RX.search(n.lower().translate(_LAT2CYR)))
+    n = _dropt_norm(name)
+    if DROPT_DENY_EXCEPT_RX.search(n):
+        n = DROPT_DENY_EXCEPT_RX.sub(" ", n)
+    variants = (n, n.translate(_LAT2CYR), n.translate(_CYR2LAT))
+    for v in variants:
+        if DROPT_FALLBACK_DENY_RX.search(v):
+            return True
+        if DROPT_DENY_CORE_RX.search(re.sub(r"[^0-9a-zа-яіїєґ]+", "", v)):
+            return True
+    return False
 DROPT_UNMAPPED_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_unmapped_state.json")   # КОРІНЬ репо (НЕ site/ — site/ публічний): id Dropt без категорії сайту → Код читає через ops-health; лише id, без назв/цін
 DROPT_UNMAPPED_MAX_IDS = 1200                          # ≤ ~20 КБ (поріг знімка ops-health): 1200 × ≈16 байт ≈ 19 КБ
 DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо

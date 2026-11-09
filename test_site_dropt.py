@@ -298,6 +298,13 @@ r, e = with_item_map({}, {"dropt-11836": good("dropt-11836", category="Това�
 for _k in ("dropt-79998", "dropt-52540", "dropt-52541"):
     chk(f"{_k} (дитяче автокрісло-бустер / лазерні нічники) свідомо виключено у реальному файлі", item_real.get(_k) == "")
 
+# цілі Dropt = категорії Toysi І RoyalToys у наявності (Dropt-картки не рахуємо)
+_cat_probe = {"1": {"id": "1", "category_name": "КатТойсі", "stock": 3}, "rt-5": {"id": "rt-5", "category_name": "КатRT", "stock": 2}, "rt-6": {"id": "rt-6", "category_name": "КатRTНемаЗалишку", "stock": 0},
+              "dropt-7": {"id": "dropt-7", "category_name": "КатDroptЛише", "stock": 5}, "9": {"id": "9", "category_name": "КатТойсіНемаЗалишку", "stock": 0}, "rt-x": {"id": "rt-x", "category_name": "КатRTпоганийId", "stock": 1}}
+chk("цілі Dropt: категорії Toysi і RoyalToys у наявності; без залишку, dropt-картки та зіпсовані id — не рахуються", bs._dropt_site_categories(_cat_probe) == {"КатТойсі", "КатRT"})
+r, e = with_item_map({"dropt-801": "КатRT"}, {"dropt-801": good("dropt-801", category="Невідома / Щось")}, site_cats=bs._dropt_site_categories(_cat_probe))
+chk("картка Dropt з ціллю, що існує лише серед RT-карток (як «Електромобілі»), публікується", set(r) == {"dropt-801"} and r["dropt-801"]["category_name"] == "КатRT")
+
 bad_imgs = ["http://plutustoys.com.ua/img/dropt/dropt-101-1.jpg", "https://evil.example/img/dropt/dropt-101-1.jpg", "https://plutustoys.com.ua.evil.com/img/dropt/dropt-101-1.jpg",
             "https://plutustoys.com.ua/img/dropt/../../supplier_dropt.json", "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg", "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg",
             "javascript:alert(1)", "https://plutustoys.com.ua/img/dropt/dropt-101-1.jpg\" onerror=\"x", 7]

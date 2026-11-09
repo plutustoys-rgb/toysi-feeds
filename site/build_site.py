@@ -773,6 +773,13 @@ def _load_dropt_index_ids():
     return {i for i in ids if isinstance(i, str) and _DROPT_ID_RX.fullmatch(i)} if isinstance(ids, list) else set()
 
 
+def _dropt_site_categories(cat):
+    """Назви категорій, що ВЖЕ живуть на сайті цієї збірки (ціль покарткового файлу Dropt мусить серед них бути або бути власною категорією Dropt): картки Toysi (числові id) І RoyalToys («rt-…») у наявності.
+    Без RT «Електромобілі» (їх на сайті лише картки rt-) були б для Dropt «категорією, якої нема» і 6 дитячих електромобілів не публікувались би. Dropt-картки в розрахунок НЕ входять (нових категорій самі собою не створюють)."""
+    return {str(v.get("category_name") or "").strip() for v in cat.values()
+            if (re.fullmatch(r"[0-9]+", str(v.get("id"))) or _RT_ID_RX.fullmatch(str(v.get("id")))) and str(v.get("stock") or "0") not in ("0", "")} - {""}
+
+
 def _load_supplier_dropt(site_cats, now=None):
     """{id: елемент у форматі Toysi} для відібраних карток Dropt. site_cats — назви категорій Toysi цієї збірки (ціль мапи мусить серед них бути).
     Ворота вимкнені / нема файлу / LIQPAY не live / файл застарілий — порожньо; поламаний — ГОЛОСНО (stderr), збірка не падає."""
@@ -926,8 +933,7 @@ def build():
     _load_category_overrides({str(v.get("category_name") or "").strip() for v in cat.values() if str(v.get("stock") or "0") not in ("0", "")} - {""})   # перенесення товарів між категоріями даними (SEO 23.10)
     cat.update(_load_supplier_rt())   # другий постачальник (пілот RoyalToys, Код 19.10): картки «rt-…» у ЗАГАЛЬНОМУ каталозі
     if DROPT_LIVE:   # третій постачальник Dropt — ЗА ВОРОТАМИ (SITE_DROPT_LIVE=1); вимкнено → файл не читається, збірка як без Dropt
-        cat.update(_load_supplier_dropt({str(v.get("category_name") or "").strip() for v in cat.values()
-                                         if re.fullmatch(r"[0-9]+", str(v.get("id"))) and str(v.get("stock") or "0") not in ("0", "")} - {""}))
+        cat.update(_load_supplier_dropt(_dropt_site_categories(cat)))
     prods = []
     # Товари БЕЗ залишку (рішення Консультанта 11.10.2026, GSC: 7 605 адрес «404» з 8 960 непроіндексованих — це самі зниклі зі складу товари):
     # їхня сторінка НЕ зникає, а лишається живою з «Немає в наявності» + schema.org/OutOfStock. Збираємо окремо: у каталог, категорії, пошук

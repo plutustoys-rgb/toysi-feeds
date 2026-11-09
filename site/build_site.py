@@ -733,7 +733,7 @@ DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)
 DROPT_OWN_CATEGORIES = ("Навушники та колонки", "Електроніка та гаджети", "Товари для тварин", "Туризм і відпочинок", "Сумки та рюкзаки")
 DROPT_UNMAPPED_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_unmapped_state.json")   # КОРІНЬ репо (НЕ site/ — site/ публічний): id Dropt без категорії сайту → Код читає через ops-health; лише id, без назв/цін
 DROPT_UNMAPPED_MAX_IDS = 1200                          # ≤ ~20 КБ (поріг знімка ops-health): 1200 × ≈16 байт ≈ 19 КБ
-DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо
+DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"} — ЄДИНИЙ шлях публікації картки Dropt; "" = свідомо не публікуємо; нема запису → картка НЕ публікується, id йде у dropt_unmapped_state.json на перегляд
 DROPT_INDEX_IDS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_index_ids.json")
 SUPPLIER_DROPT_MAX_AGE_DAYS = SUPPLIER_RT_MAX_AGE_DAYS   # той самий поріг, що для RoyalToys (3 доби від «updated»)
 DROPT_ITEM_MAX_AGE_H = 6                                 # checked_at картки старший (від моменту збірки) → картку не показуємо
@@ -823,7 +823,7 @@ def _load_supplier_dropt(site_cats, now=None):
     except (OSError, ValueError, RecursionError):
         item_cat = {}
         item_cat_ok = False
-        print("[build] ⚠ dropt_item_category.json відсутній/нечитний — покарткових категорій нема (публікується лише те, що дає мапа категорій)", file=sys.stderr)
+        print("[build] ⚠ dropt_item_category.json відсутній/нечитний — покарткових категорій нема (фолбек закритий: нічого не публікується без покарткового файлу)", file=sys.stderr)
     if not isinstance(item_cat, dict):
         item_cat = {}
         item_cat_ok = False
@@ -857,7 +857,7 @@ def _load_supplier_dropt(site_cats, now=None):
             elif k in item_cat and isinstance(item_cat[k], str) and not item_cat[k].strip():
                 why = "excluded"   # свідомо НЕ публікуємо (запис "" у покартковому файлі: юридичний/брендовий ризик чи побутове) — не вважається «нерозміченим»
             elif not isinstance(cat_name, str) or not cat_name.strip():
-                why = "category:" + str(_cat_raw)[:40]   # назва з чорного списку → у список «на перегляд» (dropt_unmapped_state.json), не мовчки
+                why = "category:" + str(_cat_raw)[:40]   # id без категорії → у список «на перегляд» (dropt_unmapped_state.json), не мовчки
             elif cat_name.strip() not in site_cats and cat_name.strip() not in DROPT_OWN_CATEGORIES:
                 why = "category-target:" + cat_name.strip()[:40]
         if why:

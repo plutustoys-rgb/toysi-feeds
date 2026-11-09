@@ -440,7 +440,8 @@ finally:
 _h101 = (outT / "product-dropt-101.html").read_text(encoding="utf-8")
 _h102 = (outT / "product-dropt-102.html").read_text(encoding="utf-8")
 chk("Dropt з нашим текстом: на сторінці є наш текст (обидва абзаци), опису постачальника (LONG) нема", "Перший абзац нашого тексту про автокрісло." in _h101 and "Другий абзац нашого тексту." in _h101 and LONG[:40] not in _h101)
-chk("Dropt з нашим текстом: JSON-LD description = перший абзац нашого тексту", '"description": "Перший абзац нашого тексту про автокрісло."' in _h101 or "Перший абзац нашого тексту про автокрісло." in _h101.split('application/ld+json', 1)[-1])
+_ld101 = [json.loads(m) for m in re.findall(r'<script type="application/ld\+json">(.*?)</script>', _h101, re.S)]
+chk("Dropt з нашим текстом: JSON-LD Product.description = рівно перший абзац нашого тексту", any(isinstance(x, dict) and x.get("@type") == "Product" and x.get("description") == "Перший абзац нашого тексту про автокрісло." for x in _ld101))
 chk("Dropt без нашого тексту: опис постачальника як було (LONG є), нашого тексту нема", LONG[:40] in _h102 and "нашого тексту" not in _h102)
 blob = b"".join(T.values())
 chk("cost (31337 / 4242.17) НІДЕ у виході збірки (html, index*.json, sitemap, JSON-LD) і ні слова «cost» у index.json", str(COST).encode() not in blob and b"4242" not in blob and all("cost" not in x for x in idx))

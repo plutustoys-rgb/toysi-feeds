@@ -300,8 +300,8 @@ for _k in ("dropt-79998", "dropt-52540", "dropt-52541"):
 
 # цілі Dropt = категорії Toysi І RoyalToys у наявності (Dropt-картки не рахуємо)
 _cat_probe = {"1": {"id": "1", "category_name": "КатТойсі", "stock": 3}, "rt-5": {"id": "rt-5", "category_name": "КатRT", "stock": 2}, "rt-6": {"id": "rt-6", "category_name": "КатRTНемаЗалишку", "stock": 0},
-              "dropt-7": {"id": "dropt-7", "category_name": "КатDroptЛише", "stock": 5}, "9": {"id": "9", "category_name": "КатТойсіНемаЗалишку", "stock": 0}, "rt-x": {"id": "rt-x", "category_name": "КатRTпоганийId", "stock": 1}}
-chk("цілі Dropt: категорії Toysi і RoyalToys у наявності; без залишку, dropt-картки та зіпсовані id — не рахуються", bs._dropt_site_categories(_cat_probe) == {"КатТойсі", "КатRT"})
+              "dropt-7": {"id": "dropt-7", "category_name": "КатDroptЛише", "stock": 5}, "9": {"id": "9", "category_name": "КатТойсіНемаЗалишку", "stock": 0}, "rt-@x": {"id": "rt-@x", "category_name": "КатRTпоганийId", "stock": 1}, "rt-18636s22164": {"id": "rt-18636s22164", "category_name": "КатRTбуквений", "stock": 4}}
+chk("цілі Dropt: категорії Toysi і RoyalToys у наявності; без залишку, dropt-картки та зіпсовані id — не рахуються", bs._dropt_site_categories(_cat_probe) == {"КатТойсі", "КатRT", "КатRTбуквений"})
 r, e = with_item_map({"dropt-801": "КатRT"}, {"dropt-801": good("dropt-801", category="Невідома / Щось")}, site_cats=bs._dropt_site_categories(_cat_probe))
 chk("картка Dropt з ціллю, що існує лише серед RT-карток (як «Електромобілі»), публікується", set(r) == {"dropt-801"} and r["dropt-801"]["category_name"] == "КатRT")
 

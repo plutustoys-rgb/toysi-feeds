@@ -777,7 +777,7 @@ def _dropt_site_categories(cat):
     """Назви категорій, що ВЖЕ живуть на сайті цієї збірки (ціль покарткового файлу Dropt мусить серед них бути або бути власною категорією Dropt): картки Toysi (числові id) І RoyalToys («rt-…») у наявності.
     Без RT «Електромобілі» (їх на сайті лише картки rt-) були б для Dropt «категорією, якої нема» і 6 дитячих електромобілів не публікувались би. Dropt-картки в розрахунок НЕ входять (нових категорій самі собою не створюють)."""
     return {str(v.get("category_name") or "").strip() for v in cat.values()
-            if re.fullmatch(r"(?:rt-)?[0-9]+", str(v.get("id"))) and str(v.get("stock") or "0") not in ("0", "")} - {""}
+            if (re.fullmatch(r"[0-9]+", str(v.get("id"))) or _RT_ID_RX.fullmatch(str(v.get("id")))) and str(v.get("stock") or "0") not in ("0", "")} - {""}
 
 
 def _load_supplier_dropt(site_cats, now=None):

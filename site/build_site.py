@@ -731,6 +731,8 @@ DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)
 # «Власні» категорії Dropt (рішення власника 04/09.11.2026: на сайті весь каталог Dropt): для недитячого асортименту, якого нема в каталозі Toysi. Ціль в dropt_item_category.json / dropt_category_map.json може бути однією з цих назв,
 # навіть коли такої категорії в Toysi нема (сторінка категорії створюється з самих карток). Усе інше, чого нема серед категорій Toysi цієї збірки, як і раніше НЕ публікується.
 DROPT_OWN_CATEGORIES = ("Навушники та колонки", "Електроніка та гаджети", "Товари для тварин", "Туризм і відпочинок", "Сумки та рюкзаки")
+DROPT_UNMAPPED_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_unmapped_state.json")   # КОРІНЬ репо (НЕ site/ — site/ публічний): id Dropt без категорії сайту → Код читає через ops-health; лише id, без назв/цін
+DROPT_UNMAPPED_MAX_IDS = 1200                          # ≤ ~20 КБ (поріг знімка ops-health): 1200 × ≈16 байт ≈ 19 КБ
 DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо
 DROPT_INDEX_IDS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_index_ids.json")
 SUPPLIER_DROPT_MAX_AGE_DAYS = SUPPLIER_RT_MAX_AGE_DAYS   # той самий поріг, що для RoyalToys (3 доби від «updated»)
@@ -848,6 +850,8 @@ def _load_supplier_dropt(site_cats, now=None):
                 why = "price/stock"
             elif _ca_age_h is None or _ca_age_h > DROPT_ITEM_MAX_AGE_H or _ca_age_h < -0.25:
                 why = "checked_at"
+            elif k in item_cat and isinstance(item_cat[k], str) and not item_cat[k].strip():
+                why = "excluded"   # свідомо НЕ публікуємо (запис "" у покартковому файлі: юридичний/брендовий ризик чи побутове) — не вважається «нерозміченим»
             elif not isinstance(cat_name, str) or not cat_name.strip():
                 why = "category:" + str(_cat_raw)[:40]
             elif cat_name.strip() not in site_cats and cat_name.strip() not in DROPT_OWN_CATEGORIES:
@@ -864,8 +868,26 @@ def _load_supplier_dropt(site_cats, now=None):
                   "dup_of": ""}
     if skipped:
         print("[build] ⚠ supplier_dropt.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
+    _write_dropt_unmapped_state(skipped)
     print(f"[build] Dropt: {len(out)} карток із supplier_dropt.json (індексуються: {sum(1 for x in out.values() if not x['rt_noindex'])})")
     return out
+
+
+def _write_dropt_unmapped_state(skipped):
+    """{"updated": ISO UTC, "n": N, "ids": [...]} — id Dropt, відкинуті ЛИШЕ через відсутню/недоступну категорію сайту (why починається з «category»): сигнал Коду дорозмітити покартковий файл.
+    Атомарно (tmp + os.replace), у корені репо, ≤ DROPT_UNMAPPED_MAX_IDS id. Збій запису не валить збірку (лише попередження)."""
+    try:
+        ids = sorted({i for why, lst in skipped.items() if str(why).startswith("category") for i in lst if isinstance(i, str) and _DROPT_ID_RX.fullmatch(i)},
+                     key=lambda x: int(x[6:]))
+        doc = {"updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "n": len(ids), "ids": ids[:DROPT_UNMAPPED_MAX_IDS]}
+        tmp = DROPT_UNMAPPED_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(doc, f, ensure_ascii=False)
+        os.replace(tmp, DROPT_UNMAPPED_STATE_FILE)
+        if ids:
+            print(f"[build] Dropt: {len(ids)} id без категорії сайту → дорозмітити site/dropt_item_category.json (список: dropt_unmapped_state.json у корені репо)", file=sys.stderr)
+    except OSError as e:
+        print(f"[build] ⚠ dropt_unmapped_state.json не записано: {type(e).__name__}", file=sys.stderr)
 
 
 

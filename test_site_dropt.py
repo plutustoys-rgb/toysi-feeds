@@ -83,6 +83,8 @@ _CM_FIX = {
 (tmp / "cmap_fixture.json").write_text(json.dumps(_CM_FIX, ensure_ascii=False), encoding="utf-8")
 _REAL_CMAP_FILE = bs.DROPT_CATEGORY_MAP_FILE
 _REAL_ITEM_FILE = bs.DROPT_ITEM_CATEGORY_FILE
+_REAL_STATE_FILE = bs.DROPT_UNMAPPED_STATE_FILE
+bs.DROPT_UNMAPPED_STATE_FILE = str(tmp / "unmapped_state.json")
 bs.DROPT_CATEGORY_MAP_FILE = str(tmp / "cmap_fixture.json")      # читацькі тести — на фіксованій мапі (реальна перевіряється нижче окремо)
 (tmp / "empty_item_cat.json").write_text("{}", encoding="utf-8")
 bs.DROPT_ITEM_CATEGORY_FILE = str(tmp / "empty_item_cat.json")   # покартковий файл у читацьких тестах — порожній об'єкт, якщо тест не підставляє свій
@@ -142,8 +144,9 @@ chk("реальна мапа: брудні розділи «Товари для 
     and all(cmap_real.get(k) for k in ("Акустика / Навушники", "Електроніка / Товари для ПК", "Товари для тварин", "Рюкзаки, сумки, портмоне", "Туризм, відпочинок і спорт / Літній відпочинок")))
 chk("реальна мапа: ключі зі слешем (мертві, не збігаються з даними) відсутні", not any("/" in k.split(" / ", 1)[-1] for k in cmap_real if " / " in k))
 item_real = json.loads(Path(_REAL_ITEM_FILE).read_text(encoding="utf-8"))
-chk("реальний покартковий файл: ≥ 700 записів, ключі dropt-<цифри>, цілі — непорожні рядки без «dropt»; усі 5 власних категорій представлені", isinstance(item_real, dict) and len(item_real) >= 700
-    and all(re.fullmatch(r"dropt-[0-9]{1,12}", k) and isinstance(v, str) and v.strip() and "dropt" not in v.lower() for k, v in item_real.items()) and _own <= set(item_real.values()))
+chk("реальний покартковий файл: ≥ 700 записів, ключі dropt-<цифри>, цілі — рядки без «dropt» (\"\" = свідомо не публікуємо, таких < 5 %); ≥ 700 непорожніх; усі 5 власних категорій представлені", isinstance(item_real, dict) and len(item_real) >= 700
+    and all(re.fullmatch(r"dropt-[0-9]{1,12}", k) and isinstance(v, str) and "dropt" not in v.lower() for k, v in item_real.items())
+    and sum(1 for v in item_real.values() if v.strip()) >= 700 and sum(1 for v in item_real.values() if not v.strip()) < 0.05 * len(item_real) and _own <= set(item_real.values()))
 ids_doc = json.loads((HERE / "dropt_index_ids.json").read_text(encoding="utf-8"))
 chk("dropt_index_ids.json у корені (той самий, що читає експортер): {\"ids\": [...]}, усі id — dropt-<цифри>", isinstance(ids_doc, dict) and isinstance(ids_doc.get("ids"), list)
     and all(re.fullmatch(r"dropt-[0-9]+", str(i)) for i in ids_doc["ids"]))
@@ -230,13 +233,29 @@ r, e = with_item_map({"dropt-201": "Машинки"}, {"dropt-201": good("dropt-
 chk("запис лише для одного id не відкриває сусіда з тією самою брудною категорією", set(r) == {"dropt-201"})
 _item_doc = json.loads((HERE / "site" / "dropt_item_category.json").read_text(encoding="utf-8"))
 chk("реальний site/dropt_item_category.json: об'єкт; ключі dropt-<цифри>; цілі — непорожні рядки без слова «Dropt», без дублікатів ключів", isinstance(_item_doc, dict)
-    and all(re.fullmatch(r"dropt-[0-9]{1,12}", k) for k in _item_doc) and all(isinstance(v, str) and v.strip() and "dropt" not in v.lower() for v in _item_doc.values()))
+    and all(re.fullmatch(r"dropt-[0-9]{1,12}", k) for k in _item_doc) and all(isinstance(v, str) and "dropt" not in v.lower() for v in _item_doc.values()))
 
 r, e = with_item_map({"dropt-301": "Навушники та колонки", "dropt-302": "Невідома власна"}, {"dropt-301": good("dropt-301", category="Акустика / Навушники"), "dropt-302": good("dropt-302", category="Акустика / Навушники")})
 chk("власна категорія Dropt («Навушники та колонки») дозволена як ціль без існування в Toysi; довільна ціль поза Toysi і власними — ні",
     set(r) == {"dropt-301"} and r["dropt-301"]["category_name"] == "Навушники та колонки" and "category-target:" in e)
 r, e = load({"dropt-303": good("dropt-303", category="Товари для тварин"), "dropt-304": good("dropt-304", category="Рюкзаки, сумки, портмоне")})
 chk("фолбек мапи категорій дає власну категорію новому id без покартового запису; мапа з ціллю поза Toysi/власними — ні", set(r) == {"dropt-303"} and r["dropt-303"]["category_name"] == "Товари для тварин")
+
+# dropt_unmapped_state.json: id, відкинуті ЛИШЕ через відсутню/недоступну категорію (не через checked_at/фото/свідоме виключення), лише id, атомарно
+import os as _os
+_items = {"dropt-401": good("dropt-401", category="Невідома / Щось"), "dropt-402": good("dropt-402", category="Невідома / Щось"), "dropt-403": good("dropt-403", category="Невідома / Щось", checked_at=NOW_TS - 8 * 3600),
+          "dropt-404": good("dropt-404", category="Невідома / Щось"), "dropt-405": good("dropt-405", category="Невідома / Щось")}
+r, e = with_item_map({"dropt-402": "Нема такої категорії", "dropt-404": "", "dropt-405": "Машинки"}, _items)
+_st = json.loads(Path(bs.DROPT_UNMAPPED_STATE_FILE).read_text(encoding="utf-8"))
+chk("стан нерозмічених: лише 401 (нема запису) і 402 (ціль поза категоріями); 403 (checked_at) і 404 (свідомо \"\") — ні; 405 опубліковано", set(r) == {"dropt-405"} and _st["ids"] == ["dropt-401", "dropt-402"]
+    and _st["n"] == 2 and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", _st["updated"]) and set(_st) == {"updated", "n", "ids"} and not _os.path.exists(bs.DROPT_UNMAPPED_STATE_FILE + ".tmp"))
+chk("свідоме виключення (\"\" у файлі) не публікується й не рахується нерозміченим", "dropt-404" not in r and "dropt-404" not in _st["ids"])
+chk("стан нерозмічених: лише id (без назв/цін/cost) і не у публічному site/", "cost" not in json.dumps(_st) and str(COST) not in json.dumps(_st) and (HERE / "site") not in Path(_REAL_STATE_FILE).resolve().parents
+    and Path(_REAL_STATE_FILE).resolve().parent == HERE.resolve())
+_big = {f"dropt-{900000 + i}": good(f"dropt-{900000 + i}", category="Невідома / Щось") for i in range(1500)}
+r, e = with_item_map({}, _big)
+_st = json.loads(Path(bs.DROPT_UNMAPPED_STATE_FILE).read_text(encoding="utf-8"))
+chk("стан нерозмічених: ≤ 1200 id (файл < 20 КБ), n — справжня кількість", len(_st["ids"]) == bs.DROPT_UNMAPPED_MAX_IDS and _st["n"] == 1500 and len(json.dumps(_st)) < 20000)
 
 bad_imgs = ["http://plutustoys.com.ua/img/dropt/dropt-101-1.jpg", "https://evil.example/img/dropt/dropt-101-1.jpg", "https://plutustoys.com.ua.evil.com/img/dropt/dropt-101-1.jpg",
             "https://plutustoys.com.ua/img/dropt/../../supplier_dropt.json", "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg", "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg",

@@ -826,6 +826,62 @@
    "pidhotovka-do-shkoly",
    "ruchky-i-korektory",
    "olivtsi-ta-flomastery"
+  ],
+  "zoshyt-liniy-ka": [
+   "zoshyt-klitynka",
+   "zoshyty",
+   "bloknoty",
+   "pysmo",
+   "penaly-ta-papky",
+   "kantstovary"
+  ],
+  "zoshyt-klitynka": [
+   "zoshyt-liniy-ka",
+   "zoshyty",
+   "bloknoty",
+   "pysmo",
+   "penaly-ta-papky",
+   "kantstovary"
+  ],
+  "zavodni-ihrashky": [
+   "roboty",
+   "mashynky-na-batarey-kakh",
+   "metalevi-modeli",
+   "plastykovi-mashynky",
+   "zaliznytsi-i-treky",
+   "spetstekhnika"
+  ],
+  "poni-ta-koni": [
+   "tvaryny-i-ptakhy",
+   "tvaryny",
+   "miaki-ihrashky",
+   "lialky-lialkovi-nabory",
+   "fihurky-heroi-v",
+   "vedmedi"
+  ],
+  "kolorovyy-papir-ta-karton": [
+   "aplikatsii-ta-orihami",
+   "insha-tvorchist",
+   "tisto-dlia-liplennia-i-plastylin",
+   "farby-ta-penzlyky",
+   "nozhytsi-dytiachi",
+   "tochyla-humky-i-kley"
+  ],
+  "batarey-ky": [
+   "likhtaryky-ta-lazerni-ukazky",
+   "nichnyky",
+   "dytiachi-hadzhety",
+   "mashynky-na-batarey-kakh",
+   "ratsii-i-binokli",
+   "muzychni-instrumenty"
+  ],
+  "muzychni-instrumenty": [
+   "dytiachi-hadzhety",
+   "rozvazhalni-interaktyvni-ihrashky",
+   "ihrashky-dlia-maliukiv",
+   "briazkaltsia",
+   "ihrashky-z-pidsvichuvanniam",
+   "svystky"
   ]
  }
 }

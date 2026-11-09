@@ -728,11 +728,16 @@ def _load_supplier_rt(now=None):
 DROPT_LIVE = os.environ.get("SITE_DROPT_LIVE") == "1"
 SUPPLIER_DROPT_FILE = os.environ.get("SUPPLIER_DROPT_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_dropt.json")
 DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_category_map.json")
-DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо
+# «Власні» категорії Dropt (рішення власника 04/09.11.2026: на сайті весь каталог Dropt): для недитячого асортименту, якого нема в каталозі Toysi. Ціль в dropt_item_category.json / dropt_category_map.json може бути однією з цих назв,
+# навіть коли такої категорії в Toysi нема (сторінка категорії створюється з самих карток). Усе інше, чого нема серед категорій Toysi цієї збірки, як і раніше НЕ публікується.
+DROPT_OWN_CATEGORIES = ("Навушники та колонки", "Електроніка та гаджети", "Товари для тварин", "Туризм і відпочинок", "Сумки та рюкзаки")
+DROPT_UNMAPPED_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_unmapped_state.json")   # КОРІНЬ репо (НЕ site/ — site/ публічний): id Dropt без категорії сайту → Код читає через ops-health; лише id, без назв/цін
+DROPT_UNMAPPED_MAX_IDS = 1200                          # ≤ ~20 КБ (поріг знімка ops-health): 1200 × ≈16 байт ≈ 19 КБ
+DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"} — ЄДИНИЙ шлях публікації картки Dropt; "" = свідомо не публікуємо; нема запису → картка НЕ публікується, id йде у dropt_unmapped_state.json на перегляд
 DROPT_INDEX_IDS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_index_ids.json")
 SUPPLIER_DROPT_MAX_AGE_DAYS = SUPPLIER_RT_MAX_AGE_DAYS   # той самий поріг, що для RoyalToys (3 доби від «updated»)
 DROPT_ITEM_MAX_AGE_H = 6                                 # checked_at картки старший (від моменту збірки) → картку не показуємо
-_DROPT_ID_RX = re.compile(r"dropt-[0-9]{1,12}")          # лише ASCII-цифри (\d пропустив би юнікод-цифри)
+_DROPT_ID_RX = re.compile(r"dropt-[1-9][0-9]{0,11}")   # без провідних нулів (dropt-011836 ≠ dropt-11836)          # лише ASCII-цифри (\d пропустив би юнікод-цифри)
 _DROPT_VCODE_RX = re.compile(r"[0-9A-Za-z._-]{1,40}")
 DROPT_MAX_PRICE = 1_000_000          # ₴; більше — збій даних, а не товар
 DROPT_MAX_STOCK = 100_000
@@ -811,14 +816,17 @@ def _load_supplier_dropt(site_cats, now=None):
         cmap = {}
     if not isinstance(cmap, dict):
         cmap = {}
+    item_cat_ok = True
     try:
         with open(DROPT_ITEM_CATEGORY_FILE, encoding="utf-8-sig") as f:
             item_cat = json.load(f)
     except (OSError, ValueError, RecursionError):
         item_cat = {}
-        print("[build] ⚠ dropt_item_category.json відсутній/нечитний — покарткових категорій нема (публікується лише те, що дає мапа категорій)", file=sys.stderr)
+        item_cat_ok = False
+        print("[build] ⚠ dropt_item_category.json відсутній/нечитний — покарткових категорій нема (фолбек закритий: нічого не публікується без покарткового файлу)", file=sys.stderr)
     if not isinstance(item_cat, dict):
         item_cat = {}
+        item_cat_ok = False
         print("[build] ⚠ dropt_item_category.json: очікую об'єкт {\"dropt-…\": \"категорія\"} — ігнорую", file=sys.stderr)
     index_ids = _load_dropt_index_ids()
     now_ts = now.timestamp()
@@ -833,7 +841,8 @@ def _load_supplier_dropt(site_cats, now=None):
             _cat_raw = v.get("category")
             cat_name = (item_cat[k] if isinstance(item_cat[k], str) else "") if k in item_cat else None   # покартковий запис має пріоритет над мапою; нерядкове значення = «не публікувати» (не віддаємо мапі)
             if cat_name is None:
-                cat_name = cmap.get(_cat_raw.strip()) if isinstance(_cat_raw, str) else None
+                # фолбек мапи категорій: лише коли покартковий файл прочитано (інакше нічого без перегляду не публікуємо). Реальна мапа зараз БЕЗ непорожніх значень: нові id Dropt не публікуються самі, а йдуть у dropt_unmapped_state.json на перегляд
+                cat_name = cmap.get(_cat_raw.strip()) if (item_cat_ok and isinstance(_cat_raw, str)) else None
             _ca = v.get("checked_at")
             _ca_age_h = (now_ts - _ca) / 3600.0 if isinstance(_ca, (int, float)) and not isinstance(_ca, bool) and math.isfinite(_ca) else None
             price, stock = _dropt_int(v.get("price"), DROPT_MAX_PRICE), _dropt_int(v.get("stock"), DROPT_MAX_STOCK)
@@ -845,9 +854,11 @@ def _load_supplier_dropt(site_cats, now=None):
                 why = "price/stock"
             elif _ca_age_h is None or _ca_age_h > DROPT_ITEM_MAX_AGE_H or _ca_age_h < -0.25:
                 why = "checked_at"
+            elif k in item_cat and isinstance(item_cat[k], str) and not item_cat[k].strip():
+                why = "excluded"   # свідомо НЕ публікуємо (запис "" у покартковому файлі: юридичний/брендовий ризик чи побутове) — не вважається «нерозміченим»
             elif not isinstance(cat_name, str) or not cat_name.strip():
-                why = "category:" + str(_cat_raw)[:40]
-            elif cat_name.strip() not in site_cats:
+                why = "category:" + str(_cat_raw)[:40]   # id без категорії → у список «на перегляд» (dropt_unmapped_state.json), не мовчки
+            elif cat_name.strip() not in site_cats and cat_name.strip() not in DROPT_OWN_CATEGORIES:
                 why = "category-target:" + cat_name.strip()[:40]
         if why:
             skipped.setdefault(why, []).append(str(k)[:30])
@@ -861,8 +872,26 @@ def _load_supplier_dropt(site_cats, now=None):
                   "dup_of": ""}
     if skipped:
         print("[build] ⚠ supplier_dropt.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
+    _write_dropt_unmapped_state(skipped)
     print(f"[build] Dropt: {len(out)} карток із supplier_dropt.json (індексуються: {sum(1 for x in out.values() if not x['rt_noindex'])})")
     return out
+
+
+def _write_dropt_unmapped_state(skipped):
+    """{"updated": ISO UTC, "n": N, "ids": [...]} — id Dropt, відкинуті ЛИШЕ через відсутню/недоступну категорію сайту (why починається з «category»): сигнал Коду дорозмітити покартковий файл.
+    Атомарно (tmp + os.replace), у корені репо, ≤ DROPT_UNMAPPED_MAX_IDS id. Збій запису не валить збірку (лише попередження)."""
+    try:
+        ids = sorted({i for why, lst in skipped.items() if str(why).startswith("category") for i in lst if isinstance(i, str) and _DROPT_ID_RX.fullmatch(i)},
+                     key=lambda x: int(x[6:]))
+        doc = {"updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "n": len(ids), "ids": ids[:DROPT_UNMAPPED_MAX_IDS]}
+        tmp = DROPT_UNMAPPED_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(doc, f, ensure_ascii=False)
+        os.replace(tmp, DROPT_UNMAPPED_STATE_FILE)
+        if ids:
+            print(f"[build] Dropt: {len(ids)} id без категорії сайту → дорозмітити site/dropt_item_category.json (список: dropt_unmapped_state.json у корені репо)", file=sys.stderr)
+    except OSError as e:
+        print(f"[build] ⚠ dropt_unmapped_state.json не записано: {type(e).__name__}", file=sys.stderr)
 
 
 
@@ -3818,7 +3847,8 @@ def load_category_groups():
     for g in (raw.get("groups") if isinstance(raw, dict) else None) or []:
         if isinstance(g, dict) and isinstance(g.get("name"), str) and isinstance(g.get("subs"), list) and not g.get("hide"):
             out.append({"name": g["name"], "display": str(g.get("display") or g["name"]), "subs": [s for s in g["subs"] if isinstance(s, str)],
-                        "former": [x for x in (g.get("former_files") or []) if isinstance(x, str) and re.fullmatch(r"group-[a-z0-9-]+\.html", x)]})
+                        "former": [x for x in (g.get("former_files") or []) if isinstance(x, str) and re.fullmatch(r"group-[a-z0-9-]+\.html", x)],
+                        "non_toy": g.get("non_toy") is True})
     return out
 
 
@@ -3842,7 +3872,7 @@ def site_groups(cats):
         main = [(c, n) for c, n in subs if c != own and n >= GROUP_SUB_MIN][:GROUP_SUB_MAX]
         _m = {c for c, _n in main}
         other = [(c, n) for c, n in subs if c not in _m]
-        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own, "main": main, "other": other, "former": g.get("former", [])})
+        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own, "main": main, "other": other, "former": g.get("former", []), "non_toy": g.get("non_toy") is True})
     _live = {g["file"] for g in out}
     for g in out:   # former_files не може вказувати на ЖИВУ сторінку (власну чи чужої групи): вказівник перезаписав би її / вибив із sitemap
         g["former"] = [f for f in g["former"] if f not in _live]
@@ -3891,7 +3921,7 @@ def write_groups(groups, cats, cat_slug):
             {"@type": "ListItem", "position": i + 1, "url": f"{SITE_URL}/product-{x['id']}.html"} for i, x in enumerate(items[:PER_PAGE])]})
         n_sub = len(g["subs"])
         desc = f"{g['display']} у PlutusToys: {g['total']} товарів у {n_sub} підкатегоріях. Є в наявності, доставка Новою Поштою по Україні."[:DESC_MAX]
-        _write(g["file"], page(g["display"], body, extra_head=head, description=desc, canonical=g["file"], og_image=OG_IMAGE, title_full=f"{g['display']} — іграшки в наявності | PlutusToys"))
+        _write(g["file"], page(g["display"], body, extra_head=head, description=desc, canonical=g["file"], og_image=OG_IMAGE, title_full=(f"{g['display']} — в наявності | PlutusToys" if g.get("non_toy") else f"{g['display']} — іграшки в наявності | PlutusToys")))
         written.add(g["file"])
         for old in g.get("former", []):   # група перейменована (змінився slug): стара адреса не 404, а сторінка-вказівник → нова (noindex, canonical на нову, refresh 0 с)
             if old != g["file"]:

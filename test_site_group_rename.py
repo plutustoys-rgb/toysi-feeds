@@ -112,9 +112,9 @@ _t = (out / _nf[0]).read_text(encoding="utf-8") if _nf else ""
 chk("група без non_toy — як раніше: «— іграшки в наявності»", len(_nf) == 1 and "іграшки в наявності | PlutusToys" in _t)
 _own = set(bs.DROPT_OWN_CATEGORIES)
 _grp = {g["name"]: g for g in real["groups"] if g.get("non_toy")}
-chk("реальний category_groups.json: три non_toy-групи (Електроніка і звук / Туризм, відпочинок і сумки / Товари для тварин), їхні підкатегорії — лише власні категорії Dropt, разом усі п'ять",
-    set(_grp) == {"Електроніка і звук", "Туризм, відпочинок і сумки", "Товари для тварин"} and all(set(g["subs"]) <= _own for g in _grp.values())
-    and set().union(*(set(g["subs"]) for g in _grp.values())) == _own)
+chk("реальний category_groups.json: дві non_toy-групи (Електроніка і звук / Туризм, відпочинок і сумки), їхні підкатегорії — лише власні категорії Dropt; «Товари для тварин» — окрема категорія без групи (назва групи збігалась би з категорією)",
+    set(_grp) == {"Електроніка і звук", "Туризм, відпочинок і сумки"} and all(set(g["subs"]) <= _own for g in _grp.values())
+    and set().union(*(set(g["subs"]) for g in _grp.values())) == _own - {"Товари для тварин"})
 
 if F:
     print("\n❌ ПРОВАЛЕНО:", F)

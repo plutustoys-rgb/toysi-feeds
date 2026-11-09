@@ -731,6 +731,9 @@ DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)
 # «Власні» категорії Dropt (рішення власника 04/09.11.2026: на сайті весь каталог Dropt): для недитячого асортименту, якого нема в каталозі Toysi. Ціль в dropt_item_category.json / dropt_category_map.json може бути однією з цих назв,
 # навіть коли такої категорії в Toysi нема (сторінка категорії створюється з самих карток). Усе інше, чого нема серед категорій Toysi цієї збірки, як і раніше НЕ публікується.
 DROPT_OWN_CATEGORIES = ("Навушники та колонки", "Електроніка та гаджети", "Товари для тварин", "Туризм і відпочинок", "Сумки та рюкзаки")
+# Фолбек мапи категорій (для id БЕЗ покартового запису) НЕ публікує товари з назвою, що вказує на заборонене/ризикове (прилади прослуховування, лазери, шокери, ножі/виживання, медичне, неодимові магніти, підробки Apple…):
+# нові id недитячих розділів з'являються щогодини без перегляду, тож чорний список за назвою — остання лінія захисту. Покартковий запис (рішення людини) цим не обмежується.
+DROPT_FALLBACK_DENY_RX = re.compile(r"прослуховув|GSM|трекер|лазер|laser|шокер|електрошок|ошийник|\bніж|ножів|ножа|мультитул|виживання|кастингов|airpods|вейп|vape|сигарет|тютюн|алкогол|18\+|пневмат|арбалет|пістолет|вакуумн|молоковідсмок|неодим|buckyball|неокуб|neocube|магніти", re.I)
 DROPT_UNMAPPED_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_unmapped_state.json")   # КОРІНЬ репо (НЕ site/ — site/ публічний): id Dropt без категорії сайту → Код читає через ops-health; лише id, без назв/цін
 DROPT_UNMAPPED_MAX_IDS = 1200                          # ≤ ~20 КБ (поріг знімка ops-health): 1200 × ≈16 байт ≈ 19 КБ
 DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо
@@ -816,14 +819,17 @@ def _load_supplier_dropt(site_cats, now=None):
         cmap = {}
     if not isinstance(cmap, dict):
         cmap = {}
+    item_cat_ok = True
     try:
         with open(DROPT_ITEM_CATEGORY_FILE, encoding="utf-8-sig") as f:
             item_cat = json.load(f)
     except (OSError, ValueError, RecursionError):
         item_cat = {}
+        item_cat_ok = False
         print("[build] ⚠ dropt_item_category.json відсутній/нечитний — покарткових категорій нема (публікується лише те, що дає мапа категорій)", file=sys.stderr)
     if not isinstance(item_cat, dict):
         item_cat = {}
+        item_cat_ok = False
         print("[build] ⚠ dropt_item_category.json: очікую об'єкт {\"dropt-…\": \"категорія\"} — ігнорую", file=sys.stderr)
     index_ids = _load_dropt_index_ids()
     now_ts = now.timestamp()
@@ -835,10 +841,15 @@ def _load_supplier_dropt(site_cats, now=None):
         else:
             _img_rx = re.compile(r"https://plutustoys\.com\.ua/img/dropt/" + re.escape(k) + r"-[0-9]{1,2}\.jpg")   # лише наш сервер і фото САМЕ цієї картки
             imgs = [u for u in (v.get("images") if isinstance(v.get("images"), list) else []) if isinstance(u, str) and _img_rx.fullmatch(u)]
+            _deny = False
             _cat_raw = v.get("category")
             cat_name = (item_cat[k] if isinstance(item_cat[k], str) else "") if k in item_cat else None   # покартковий запис має пріоритет над мапою; нерядкове значення = «не публікувати» (не віддаємо мапі)
             if cat_name is None:
-                cat_name = cmap.get(_cat_raw.strip()) if isinstance(_cat_raw, str) else None
+                # фолбек мапи категорій: лише коли покартковий файл прочитано (інакше нічого без перегляду не публікуємо) і назва не потрапляє в чорний список
+                cat_name = cmap.get(_cat_raw.strip()) if (item_cat_ok and isinstance(_cat_raw, str)) else None
+                if cat_name and isinstance(v.get("name"), str) and DROPT_FALLBACK_DENY_RX.search(v["name"]):
+                    cat_name = ""
+                    _deny = True
             _ca = v.get("checked_at")
             _ca_age_h = (now_ts - _ca) / 3600.0 if isinstance(_ca, (int, float)) and not isinstance(_ca, bool) and math.isfinite(_ca) else None
             price, stock = _dropt_int(v.get("price"), DROPT_MAX_PRICE), _dropt_int(v.get("stock"), DROPT_MAX_STOCK)
@@ -850,7 +861,7 @@ def _load_supplier_dropt(site_cats, now=None):
                 why = "price/stock"
             elif _ca_age_h is None or _ca_age_h > DROPT_ITEM_MAX_AGE_H or _ca_age_h < -0.25:
                 why = "checked_at"
-            elif k in item_cat and isinstance(item_cat[k], str) and not item_cat[k].strip():
+            elif (k in item_cat and isinstance(item_cat[k], str) and not item_cat[k].strip()) or _deny:
                 why = "excluded"   # свідомо НЕ публікуємо (запис "" у покартковому файлі: юридичний/брендовий ризик чи побутове) — не вважається «нерозміченим»
             elif not isinstance(cat_name, str) or not cat_name.strip():
                 why = "category:" + str(_cat_raw)[:40]

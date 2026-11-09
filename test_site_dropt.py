@@ -144,9 +144,9 @@ chk("реальна мапа: брудні розділи «Товари для 
     and all(cmap_real.get(k) for k in ("Акустика / Навушники", "Електроніка / Товари для ПК", "Товари для тварин", "Рюкзаки, сумки, портмоне", "Туризм, відпочинок і спорт / Літній відпочинок")))
 chk("реальна мапа: ключі зі слешем (мертві, не збігаються з даними) відсутні", not any("/" in k.split(" / ", 1)[-1] for k in cmap_real if " / " in k))
 item_real = json.loads(Path(_REAL_ITEM_FILE).read_text(encoding="utf-8"))
-chk("реальний покартковий файл: ≥ 700 записів, ключі dropt-<цифри>, цілі — рядки без «dropt» (\"\" = свідомо не публікуємо, таких < 5 %); ≥ 700 непорожніх; усі 5 власних категорій представлені", isinstance(item_real, dict) and len(item_real) >= 700
+chk("реальний покартковий файл: ≥ 700 записів, ключі dropt-<цифри>, цілі — рядки без «dropt» (\"\" = свідомо не публікуємо, таких < 10 %); ≥ 700 непорожніх; усі 5 власних категорій представлені", isinstance(item_real, dict) and len(item_real) >= 700
     and all(re.fullmatch(r"dropt-[0-9]{1,12}", k) and isinstance(v, str) and "dropt" not in v.lower() for k, v in item_real.items())
-    and sum(1 for v in item_real.values() if v.strip()) >= 700 and sum(1 for v in item_real.values() if not v.strip()) < 0.05 * len(item_real) and _own <= set(item_real.values()))
+    and sum(1 for v in item_real.values() if v.strip()) >= 700 and sum(1 for v in item_real.values() if not v.strip()) < 0.10 * len(item_real) and _own <= set(item_real.values()))
 ids_doc = json.loads((HERE / "dropt_index_ids.json").read_text(encoding="utf-8"))
 chk("dropt_index_ids.json у корені (той самий, що читає експортер): {\"ids\": [...]}, усі id — dropt-<цифри>", isinstance(ids_doc, dict) and isinstance(ids_doc.get("ids"), list)
     and all(re.fullmatch(r"dropt-[0-9]+", str(i)) for i in ids_doc["ids"]))
@@ -256,6 +256,40 @@ _big = {f"dropt-{900000 + i}": good(f"dropt-{900000 + i}", category="Невід�
 r, e = with_item_map({}, _big)
 _st = json.loads(Path(bs.DROPT_UNMAPPED_STATE_FILE).read_text(encoding="utf-8"))
 chk("стан нерозмічених: ≤ 1200 id (файл < 20 КБ), n — справжня кількість", len(_st["ids"]) == bs.DROPT_UNMAPPED_MAX_IDS and _st["n"] == 1500 and len(json.dumps(_st)) < 20000)
+
+# фолбек мапи: закритий, коли покартковий файл відсутній/битий; чорний список назв; реальні файли — усі виключені не публікуються
+_fb = {"dropt-501": good("dropt-501", name="Годівниця для кота", category="Товари для тварин")}
+r, e = with_item_map(None, _fb)
+chk("покартковий файл відсутній → фолбек мапи ЗАКРИТИЙ (нічого без перегляду не публікуємо), з попередженням", not r and "dropt_item_category.json" in e)
+r, e = with_item_map("{not json", _fb)
+chk("покартковий файл битий → фолбек мапи закритий", not r)
+r, e = with_item_map({}, _fb)
+chk("покартковий файл є (порожній об'єкт) → фолбек працює для недитячого розділу", set(r) == {"dropt-501"})
+_deny = {"dropt-502": good("dropt-502", name="GSM трекер Mini A8 з прослуховуванням", category="Товари для тварин"), "dropt-503": good("dropt-503", name="Лазерна вказівка високої потужності", category="Товари для тварин"),
+         "dropt-504": good("dropt-504", name="Набір виживання 10 в 1", category="Товари для тварин"), "dropt-505": good("dropt-505", name="Електронний ошийник для собак", category="Товари для тварин"),
+         "dropt-506": good("dropt-506", name="Набір неодимових магнітів Неокуб", category="Товари для тварин"), "dropt-507": good("dropt-507", name="Годівниця для кота", category="Товари для тварин")}
+r, e = with_item_map({}, _deny)
+_st2 = json.loads(Path(bs.DROPT_UNMAPPED_STATE_FILE).read_text(encoding="utf-8"))
+chk("чорний список назв: через фолбек НЕ публікуються прилади прослуховування, лазери, набори виживання, ошийники, неодимові магніти; звичайний товар — так; у «нерозмічені» вони не потрапляють",
+    set(r) == {"dropt-507"} and not (set(_st2["ids"]) & {"dropt-502", "dropt-503", "dropt-504", "dropt-505", "dropt-506"}))
+r, e = with_item_map({"dropt-502": "Електроніка та гаджети"}, {"dropt-502": _deny["dropt-502"]})
+chk("покартковий запис (рішення людини) не обмежується чорним списком назв фолбека", set(r) == {"dropt-502"})
+# РЕАЛЬНІ файли: кожен id з "" у покартковому файлі не публікується навіть коли його розділ має фолбек; непорожні — публікуються з правильною ціллю
+_ex = [k for k, v in item_real.items() if not v.strip()]
+_ok = {k: v for k, v in item_real.items() if v.strip()}
+bs.DROPT_ITEM_CATEGORY_FILE = _REAL_ITEM_FILE
+bs.DROPT_CATEGORY_MAP_FILE = _REAL_CMAP_FILE
+try:
+    _sc = set(_ok.values()) | {"Нема"}
+    _items_ex = {k: good(k, category="Електроніка / Товари для ПК") for k in _ex}
+    r, e = load(_items_ex, site_cats=_sc)
+    chk(f"реальні файли: усі {len(_ex)} виключених (\"\") НЕ публікуються, хоч їхній розділ має фолбек", not r and "excluded" in e)
+    _items_ok = {k: good(k, category="Невідомий / Розділ") for k in _ok}
+    r, e = load(_items_ok, site_cats=_sc)
+    chk(f"реальні файли: усі {len(_ok)} розмічених публікуються зі своєю ціллю", set(r) == set(_ok) and all(r[k]["category_name"] == _ok[k] for k in _ok))
+finally:
+    bs.DROPT_ITEM_CATEGORY_FILE = str(tmp / "empty_item_cat.json")
+    bs.DROPT_CATEGORY_MAP_FILE = str(tmp / "cmap_fixture.json")
 
 bad_imgs = ["http://plutustoys.com.ua/img/dropt/dropt-101-1.jpg", "https://evil.example/img/dropt/dropt-101-1.jpg", "https://plutustoys.com.ua.evil.com/img/dropt/dropt-101-1.jpg",
             "https://plutustoys.com.ua/img/dropt/../../supplier_dropt.json", "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg", "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg",

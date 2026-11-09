@@ -337,6 +337,8 @@ gmc_service_account*.json
 /supplier_rt.json.tmp
 /supplier_dropt.json
 /supplier_dropt.json.tmp
+/dropt_unmapped_state.json
+/dropt_unmapped_state.json.tmp
 /dropt_detail_cache.json
 /dropt_detail_cache.json.tmp
 /site/img/rt/

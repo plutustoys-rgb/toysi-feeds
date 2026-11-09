@@ -35,7 +35,7 @@ ALERT_TEXT_MAX = 300
 ALERT_MAX_ENTRIES = 60
 SHOW_PROPS = ("Id", "ActiveState", "SubState", "Result", "ExecMainStatus", "ExecMainExitTimestamp", "ExecMainStartTimestamp",
               "Type", "UnitFileState", "NextElapseUSecRealtime", "LastTriggerUSec", "ExecStart")
-STATE_FILES = ("feed_pipeline_state.json", "vps_code_sync_state.json", "watchdog_state.json")
+STATE_FILES = ("feed_pipeline_state.json", "vps_code_sync_state.json", "watchdog_state.json", "dropt_unmapped_state.json")      # dropt_unmapped_state.json (09.11): id Dropt без категорії сайту — пише збірка сайту (Shopify-code), агенти читають у приватному знімку ops-health; ≤20 КБ (інакше не потрапить)
 _TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 

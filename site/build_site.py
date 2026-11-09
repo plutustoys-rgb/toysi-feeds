@@ -728,6 +728,9 @@ def _load_supplier_rt(now=None):
 DROPT_LIVE = os.environ.get("SITE_DROPT_LIVE") == "1"
 SUPPLIER_DROPT_FILE = os.environ.get("SUPPLIER_DROPT_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_dropt.json")
 DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_category_map.json")
+# «Власні» категорії Dropt (рішення власника 04/09.11.2026: на сайті весь каталог Dropt): для недитячого асортименту, якого нема в каталозі Toysi. Ціль в dropt_item_category.json / dropt_category_map.json може бути однією з цих назв,
+# навіть коли такої категорії в Toysi нема (сторінка категорії створюється з самих карток). Усе інше, чого нема серед категорій Toysi цієї збірки, як і раніше НЕ публікується.
+DROPT_OWN_CATEGORIES = ("Навушники та колонки", "Електроніка та гаджети", "Товари для тварин", "Туризм і відпочинок", "Сумки та рюкзаки")
 DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо
 DROPT_INDEX_IDS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_index_ids.json")
 SUPPLIER_DROPT_MAX_AGE_DAYS = SUPPLIER_RT_MAX_AGE_DAYS   # той самий поріг, що для RoyalToys (3 доби від «updated»)
@@ -847,7 +850,7 @@ def _load_supplier_dropt(site_cats, now=None):
                 why = "checked_at"
             elif not isinstance(cat_name, str) or not cat_name.strip():
                 why = "category:" + str(_cat_raw)[:40]
-            elif cat_name.strip() not in site_cats:
+            elif cat_name.strip() not in site_cats and cat_name.strip() not in DROPT_OWN_CATEGORIES:
                 why = "category-target:" + cat_name.strip()[:40]
         if why:
             skipped.setdefault(why, []).append(str(k)[:30])
@@ -3818,7 +3821,8 @@ def load_category_groups():
     for g in (raw.get("groups") if isinstance(raw, dict) else None) or []:
         if isinstance(g, dict) and isinstance(g.get("name"), str) and isinstance(g.get("subs"), list) and not g.get("hide"):
             out.append({"name": g["name"], "display": str(g.get("display") or g["name"]), "subs": [s for s in g["subs"] if isinstance(s, str)],
-                        "former": [x for x in (g.get("former_files") or []) if isinstance(x, str) and re.fullmatch(r"group-[a-z0-9-]+\.html", x)]})
+                        "former": [x for x in (g.get("former_files") or []) if isinstance(x, str) and re.fullmatch(r"group-[a-z0-9-]+\.html", x)],
+                        "non_toy": g.get("non_toy") is True})
     return out
 
 
@@ -3842,7 +3846,7 @@ def site_groups(cats):
         main = [(c, n) for c, n in subs if c != own and n >= GROUP_SUB_MIN][:GROUP_SUB_MAX]
         _m = {c for c, _n in main}
         other = [(c, n) for c, n in subs if c not in _m]
-        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own, "main": main, "other": other, "former": g.get("former", [])})
+        out.append({"name": g["name"], "display": g["display"], "file": f"{slug}.html", "subs": subs, "total": total, "own": own, "main": main, "other": other, "former": g.get("former", []), "non_toy": g.get("non_toy") is True})
     _live = {g["file"] for g in out}
     for g in out:   # former_files не може вказувати на ЖИВУ сторінку (власну чи чужої групи): вказівник перезаписав би її / вибив із sitemap
         g["former"] = [f for f in g["former"] if f not in _live]
@@ -3891,7 +3895,7 @@ def write_groups(groups, cats, cat_slug):
             {"@type": "ListItem", "position": i + 1, "url": f"{SITE_URL}/product-{x['id']}.html"} for i, x in enumerate(items[:PER_PAGE])]})
         n_sub = len(g["subs"])
         desc = f"{g['display']} у PlutusToys: {g['total']} товарів у {n_sub} підкатегоріях. Є в наявності, доставка Новою Поштою по Україні."[:DESC_MAX]
-        _write(g["file"], page(g["display"], body, extra_head=head, description=desc, canonical=g["file"], og_image=OG_IMAGE, title_full=f"{g['display']} — іграшки в наявності | PlutusToys"))
+        _write(g["file"], page(g["display"], body, extra_head=head, description=desc, canonical=g["file"], og_image=OG_IMAGE, title_full=(f"{g['display']} — в наявності | PlutusToys" if g.get("non_toy") else f"{g['display']} — іграшки в наявності | PlutusToys")))
         written.add(g["file"])
         for old in g.get("former", []):   # група перейменована (змінився slug): стара адреса не 404, а сторінка-вказівник → нова (noindex, canonical на нову, refresh 0 с)
             if old != g["file"]:

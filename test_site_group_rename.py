@@ -100,6 +100,22 @@ _sm = "".join(p.read_text(encoding="utf-8", errors="replace") for p in out.glob(
 chk("former_files = жива сторінка (власна/чужа): не вказівник — обидві групи справжні, індексуються, у sitemap",
     len(_files) == 2 and all("noindex" not in (out / f).read_text(encoding="utf-8") and f in _sm for f in _files))
 
+# non_toy: групи недитячого асортименту (Dropt) — у <title> без слова «іграшки»; звичайні групи — як було
+G3 = {"name": "Електроніка і звук", "subs": ["Косметичні засоби"], "display": "Електроніка і звук", "non_toy": True}
+out = build_with({"groups": [G3]})
+_nf = [p.name for p in out.glob("group-*.html") if p.name != "group-pobutova-khimiia.html"]
+_t = (out / _nf[0]).read_text(encoding="utf-8") if _nf else ""
+chk("група non_toy: <title> «… — в наявності | PlutusToys» без слова «іграшки»", len(_nf) == 1 and "Електроніка і звук — в наявності | PlutusToys" in _t and "іграшки в наявності" not in _t)
+out = build_with({"groups": [dict(G3, non_toy=False)]})
+_nf = [p.name for p in out.glob("group-*.html") if p.name != "group-pobutova-khimiia.html"]
+_t = (out / _nf[0]).read_text(encoding="utf-8") if _nf else ""
+chk("група без non_toy — як раніше: «— іграшки в наявності»", len(_nf) == 1 and "іграшки в наявності | PlutusToys" in _t)
+_own = set(bs.DROPT_OWN_CATEGORIES)
+_grp = {g["name"]: g for g in real["groups"] if g.get("non_toy")}
+chk("реальний category_groups.json: три non_toy-групи (Електроніка і звук / Туризм, відпочинок і сумки / Товари для тварин), їхні підкатегорії — лише власні категорії Dropt, разом усі п'ять",
+    set(_grp) == {"Електроніка і звук", "Туризм, відпочинок і сумки", "Товари для тварин"} and all(set(g["subs"]) <= _own for g in _grp.values())
+    and set().union(*(set(g["subs"]) for g in _grp.values())) == _own)
+
 if F:
     print("\n❌ ПРОВАЛЕНО:", F)
     sys.exit(1)

@@ -731,50 +731,6 @@ DROPT_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)
 # «Власні» категорії Dropt (рішення власника 04/09.11.2026: на сайті весь каталог Dropt): для недитячого асортименту, якого нема в каталозі Toysi. Ціль в dropt_item_category.json / dropt_category_map.json може бути однією з цих назв,
 # навіть коли такої категорії в Toysi нема (сторінка категорії створюється з самих карток). Усе інше, чого нема серед категорій Toysi цієї збірки, як і раніше НЕ публікується.
 DROPT_OWN_CATEGORIES = ("Навушники та колонки", "Електроніка та гаджети", "Товари для тварин", "Туризм і відпочинок", "Сумки та рюкзаки")
-# Фолбек мапи категорій (для id БЕЗ покартового запису) НЕ публікує товари з назвою, що вказує на заборонене/ризикове (прилади прослуховування, лазери, шокери, ножі/виживання, медичне, неодимові магніти, підробки Apple…):
-# нові id недитячих розділів з'являються щогодини без перегляду, тож чорний список за назвою — остання лінія захисту. Покартковий запис (рішення людини) цим не обмежується.
-DROPT_FALLBACK_DENY_RX = re.compile(
-    r"прослух|підслух|прослушк|gsm|gps|маячок|жучок|жучк|airtag|smart ?tag|пошуков\w* брелок|(?<!фітнес-)(?<!фітнес )(?:трекер|tracker)|лазер|laser|шокер|електрошок|тазер|taser|stun ?gun|ошийник|"
-    r"(?<![спдо])ніж(?![нк])|нож(?!иц|н|к)|ножны|knife|кинджал|кинжал|кінджал|мачете|machete|сокир|топор|топір|тесак|клинок|керамбіт|karambit|кортик|штик|багнет|нунчак|сюрікен|shuriken|кастет|kastet|балончик|баллончик|"
-    r"мультитул|multitool|multi-tool|виживання|выживани|кастингов|пістолет|пистолет|pistol|револьвер|гвинтів|винтовк|crossbow|арбалет|рогатк|ракетниц|петард|"
-    r"прихован\w* (?:камер|відеокамер|мікрофон|диктофон)|скрыт\w* камер|спрей самооборон|самооборон|шпигун|шпион|spy|диктофон|міні[- ]?камер|камер\w*[- ]годинник|"
-    r"кальян|hookah|вейп|vape|pod[- ]?систем|elf ?bar|iqos|glo hyper|сигарет|цигарк|тютюн|алкогол|коньяк|віскі|келих для вина|18 ?\+|\+ ?18|секс|інтим|вібратор|еротич|для дорослих|пневмат|"
-    r"вакуумн\w* (?:апарат|масаж)|молоковідсмок|неодим|buckyball|неокуб|neocube|магнітні кул|"
-    r"airpods|airdots|redmi|\bjbl\b|partybox|bushnell|swissgear|furminator|\bmarvel\b|\bdisney\b|amazon|airbeats|charge ?(?:mini|[0-9])|стіч|stitch|beats|marshall|apple|labubu|лабубу|kuromi|hello ?kitty",
-    re.I)
-# виняткові безпечні вирази, що містять заборонений корінь (пістолет водяний/мильний/клейовий; сніжинка/підніжжя; ножовка)
-DROPT_DENY_EXCEPT_RX = re.compile(r"водян\w* пістолет|водн\w* пістолет|пістолет\w* для мильних|мильн\w* пістолет|клейов\w* пістолет|термопістолет|пістолет-розпилювач|ножовк|чохол для airpods", re.I)
-# сильні корені, що перевіряються ще й на рядку БЕЗ пробілів/дефісів/розділювачів («Ш о к е р», «Н-іж» не обходять)
-DROPT_DENY_CORE_RX = re.compile(r"шокер|кастет|кинджал|кинжал|мачете|тазер|taser|прослух|підслух|лазер|laser|шпигун|шпион|gps|гпс|gsm|нунчак|сюрікен|вейп|кальян|електрошок|балончик|баллончик|(?<![спдо])ніж(?![нк])", re.I)
-_LAT2CYR = str.maketrans("aeopcxiykmthb", "аеорсхіукмтнв")   # латинські двійники кирилиці («Лaзерна» з латинською «a»)
-_CYR2LAT = str.maketrans("аеорсхіукмтнвАЕОРСХІУКМТНВ", "aeopcxiykmthbAEOPCXIYKMTHB")   # зворотно: кириличні двійники всередині латинських слів («Tаser»)
-_DROPT_KEEP_MN = {"̆", "̈"}   # бреве (й) і трема (ї) — частини літер, їх не знімаємо; решта комбінованих (наголос…) і невидимі (Cf) — знімаємо
-_LOOKALIKE = str.maketrans({"ο": "о", "ı": "і", "α": "а", "ε": "е", "ρ": "р", "ν": "н", "ι": "і", "κ": "к", "τ": "т", "υ": "у", "χ": "х"})   # грецькі/турецькі двійники
-def _dropt_norm(name):
-    n = unicodedata.normalize("NFKC", str(name or ""))
-    n = "".join(ch for ch in n if unicodedata.category(ch) != "Cf")
-    n = "".join(ch for ch in unicodedata.normalize("NFD", n) if unicodedata.category(ch) != "Mn" or ch in _DROPT_KEEP_MN)
-    return unicodedata.normalize("NFC", n).lower().translate(_LOOKALIKE)
-def _dropt_name_denied(name):
-    n = _dropt_norm(name)
-    if DROPT_DENY_EXCEPT_RX.search(n):
-        n = DROPT_DENY_EXCEPT_RX.sub(" ", n)
-    variants = (n, n.translate(_LAT2CYR), n.translate(_CYR2LAT))
-    for v in variants:
-        if DROPT_FALLBACK_DENY_RX.search(v):
-            return True
-        if DROPT_DENY_CORE_RX.search(re.sub(r"[^0-9a-zа-яіїєґ]+", "", v)):
-            return True
-    return False
-# ДОЗВІЛЬНИЙ список для фолбека (default-deny): новий id без покартового запису публікується САМ лише коли назва містить безпечний іменник свого розділу (чорний список за назвою за побудовою неповний —
-# нові форми небезпечних слів завжди знайдуться). Усе інше — не публікуємо, id іде у dropt_unmapped_state.json на перегляд людиною.
-DROPT_FALLBACK_ALLOW_RX = re.compile(
-    r"годівниц|мис(?:ка|ки|ку)|поїлк|лежак|лежанк|будиночок|клітк|переноск|кігтеточк|когтеточк|шлейк|повідок|килимок для|лоток|"
-    r"навушник|гарнітур|колонк|радіоприймач|підсилювач|акустичн\w* систем|"
-    r"рюкзак|сумк|портмоне|гаманець|косметичк|шоппер|барсетк|"
-    r"басейн|надувн|матрац|парасол|ласти|жилет для (?:плавання|купання)|круг для (?:плавання|купання)|шезлонг|пляжн", re.I)
-def _dropt_name_allowed(name):
-    return bool(DROPT_FALLBACK_ALLOW_RX.search(_dropt_norm(name)))
 DROPT_UNMAPPED_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dropt_unmapped_state.json")   # КОРІНЬ репо (НЕ site/ — site/ публічний): id Dropt без категорії сайту → Код читає через ops-health; лише id, без назв/цін
 DROPT_UNMAPPED_MAX_IDS = 1200                          # ≤ ~20 КБ (поріг знімка ops-health): 1200 × ≈16 байт ≈ 19 КБ
 DROPT_ITEM_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dropt_item_category.json")   # покартково {"dropt-<арт>": "категорія сайту"}: ПЕРШИМ (категорії Dropt брудні); нема запису → мапа категорій (лише чисті категорії) → інакше картку не публікуємо
@@ -882,15 +838,11 @@ def _load_supplier_dropt(site_cats, now=None):
         else:
             _img_rx = re.compile(r"https://plutustoys\.com\.ua/img/dropt/" + re.escape(k) + r"-[0-9]{1,2}\.jpg")   # лише наш сервер і фото САМЕ цієї картки
             imgs = [u for u in (v.get("images") if isinstance(v.get("images"), list) else []) if isinstance(u, str) and _img_rx.fullmatch(u)]
-            _deny = False
             _cat_raw = v.get("category")
             cat_name = (item_cat[k] if isinstance(item_cat[k], str) else "") if k in item_cat else None   # покартковий запис має пріоритет над мапою; нерядкове значення = «не публікувати» (не віддаємо мапі)
             if cat_name is None:
-                # фолбек мапи категорій: лише коли покартковий файл прочитано (інакше нічого без перегляду не публікуємо) і назва не потрапляє в чорний список
+                # фолбек мапи категорій: лише коли покартковий файл прочитано (інакше нічого без перегляду не публікуємо). Реальна мапа зараз БЕЗ непорожніх значень: нові id Dropt не публікуються самі, а йдуть у dropt_unmapped_state.json на перегляд
                 cat_name = cmap.get(_cat_raw.strip()) if (item_cat_ok and isinstance(_cat_raw, str)) else None
-                if cat_name in DROPT_OWN_CATEGORIES and isinstance(v.get("name"), str) and (not _dropt_name_allowed(v["name"]) or _dropt_name_denied(v["name"])):   # дозвільний+чорний списки — лише для власних недитячих категорій
-                    cat_name = ""
-                    _deny = True
             _ca = v.get("checked_at")
             _ca_age_h = (now_ts - _ca) / 3600.0 if isinstance(_ca, (int, float)) and not isinstance(_ca, bool) and math.isfinite(_ca) else None
             price, stock = _dropt_int(v.get("price"), DROPT_MAX_PRICE), _dropt_int(v.get("stock"), DROPT_MAX_STOCK)
@@ -905,7 +857,7 @@ def _load_supplier_dropt(site_cats, now=None):
             elif k in item_cat and isinstance(item_cat[k], str) and not item_cat[k].strip():
                 why = "excluded"   # свідомо НЕ публікуємо (запис "" у покартковому файлі: юридичний/брендовий ризик чи побутове) — не вважається «нерозміченим»
             elif not isinstance(cat_name, str) or not cat_name.strip():
-                why = ("category:review-name:" if _deny else "category:") + str(_cat_raw)[:40]   # назва з чорного списку → у список «на перегляд» (dropt_unmapped_state.json), не мовчки
+                why = "category:" + str(_cat_raw)[:40]   # назва з чорного списку → у список «на перегляд» (dropt_unmapped_state.json), не мовчки
             elif cat_name.strip() not in site_cats and cat_name.strip() not in DROPT_OWN_CATEGORIES:
                 why = "category-target:" + cat_name.strip()[:40]
         if why:

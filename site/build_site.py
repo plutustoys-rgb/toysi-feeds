@@ -2031,12 +2031,12 @@ def _utf8_clean(v):
 
 
 def _product_text_key_ok(k):
-    """Ключ тексту картки: id Toysi (лише ASCII-цифри) або id RoyalToys `rt-…` (`_RT_ID_RX`, 31.10.2026 — Копірайтер, 11 207 rt-товарів без наших описів). fullmatch, тож юнікод-цифри й хвости не проходять."""
-    return isinstance(k, str) and (re.fullmatch(r"[0-9]+", k) is not None or _RT_ID_RX.fullmatch(k) is not None)
+    """Ключ тексту картки: id Toysi (лише ASCII-цифри), id RoyalToys `rt-…` або id Dropt `dropt-<цифри>` (09.11.2026 — Копірайтер, 704 тексти карток Dropt; текст ЗАМІНЮЄ опис постачальника на сторінці) (`_RT_ID_RX`, 31.10.2026 — Копірайтер, 11 207 rt-товарів без наших описів). fullmatch, тож юнікод-цифри й хвости не проходять."""
+    return isinstance(k, str) and (re.fullmatch(r"[0-9]+", k) is not None or _RT_ID_RX.fullmatch(k) is not None or _DROPT_ID_RX.fullmatch(k) is not None)
 
 
 def _load_product_texts():
-    """site/product_texts.json: {"<toysi_id>": "абзац 1\\n\\nабзац 2"} (ключ також `rt-…` для RoyalToys). Не довіряємо даним: корінь — об'єкт; ключ — ASCII-цифри або rt-id; значення — непорожній рядок
+    """site/product_texts.json: {"<toysi_id>": "абзац 1\\n\\nабзац 2"} (ключ також `rt-…` для RoyalToys). Не довіряємо даним: корінь — об'єкт; ключ — ASCII-цифри, rt-id або dropt-id; значення — непорожній рядок
     (інше відкидається ГОЛОСНО); довше PRODUCT_TEXT_WARN_LEN або з символами < > — попередження (текст усе одно екранується й показується)."""
     global _PRODUCT_TEXTS
     _PRODUCT_TEXTS = {}
@@ -2066,6 +2066,13 @@ def _load_product_texts():
     _PRODUCT_TEXTS = out
     _warn_money_words("product_texts.json", _PRODUCT_TEXTS)
     return _PRODUCT_TEXTS
+
+
+def _product_text_first_para(pid):
+    """Перший абзац тексту картки (plain) — для опису в JSON-LD там, де текст замінює опис постачальника (Dropt). Нема тексту — порожньо."""
+    text = _PRODUCT_TEXTS.get(str(pid)) or ""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text.replace("\r\n", "\n")) if p.strip()]
+    return paras[0] if paras else ""
 
 
 def _product_text_html(pid):
@@ -3256,7 +3263,10 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     # тож перший екран мобільного (фото, ціна, бейджі, закріплена панель «У кошик») не зміщується. Нема тексту — розмітка рівно як була.
     prod_text_html = _product_text_html(p["id"])
     _rv = _REVIEWS.get(str(p["id"])) or []   # ≤REVIEWS_SHOW_MAX уже відібраних; ті самі записи — і блок, і JSON-LD
-    if prod_text_html and specs_html:
+    _dropt_own_text = bool(prod_text_html) and str(p["id"]).startswith("dropt-")
+    if _dropt_own_text:   # Dropt: наш текст ЗАМІНЮЄ опис постачальника (там рекламні/медичні обіцянки, звернення на «ви»); характеристики з опису лишаються лише в тексті Копірайтера
+        desc_block = f'<div class="desc"><h2>Опис</h2>{prod_text_html}</div>'
+    elif prod_text_html and specs_html:
         desc_block = (f'<div class="desc"><h2>Опис</h2>{desc_html}</div>' + prod_text_html + f'<div class="desc specs">{specs_html}</div>')
     else:
         desc_block = f'<div class="desc"><h2>Опис</h2>{desc_html}{specs_html}</div>' + prod_text_html
@@ -3327,7 +3337,9 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     )
     # SEO: опис для сніпета (без HTML, ОБРІЗАНИЙ ПО СЛОВУ) + JSON-LD Product для Google Rich Results
     plain = re.sub(r"<[^>]+>", "", lead).strip()
-    if str(p["id"]).startswith("dropt-"):
+    if _dropt_own_text:
+        plain = _product_text_first_para(p["id"])   # JSON-LD description = наш текст, не опис постачальника
+    elif str(p["id"]).startswith("dropt-"):
         plain = html.unescape(plain)   # dropt: опис екранований у _load_supplier_dropt (для тіла сторінки); у JSON-LD — чисті символи («<» там однаково стає \u003c)
     meta_desc = product_description(p["name"], p["price"], "" if p.get("rt") else plain)   # rt: опис постачальника — анкетний («ТИП: …; ВІК: …»), у сніпет не годиться
     if not in_stock:

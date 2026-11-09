@@ -150,7 +150,8 @@ ids_doc = json.loads((HERE / "dropt_index_ids.json").read_text(encoding="utf-8")
 chk("dropt_index_ids.json у корені (той самий, що читає експортер): {\"ids\": [...]}, усі id — dropt-<цифри>", isinstance(ids_doc, dict) and isinstance(ids_doc.get("ids"), list)
     and all(re.fullmatch(r"dropt-[0-9]+", str(i)) for i in ids_doc["ids"]))
 pt = json.loads((HERE / "site" / "product_texts.json").read_text(encoding="utf-8"))
-chk("product_texts.json без dropt-ключів", not any(str(k).startswith("dropt-") for k in pt))
+chk("product_texts.json: dropt-ключі (якщо є) мають формат dropt-<цифри без провідного нуля>", all(re.fullmatch(r"dropt-[1-9][0-9]{0,11}", str(k)) for k in pt if str(k).startswith("dropt-")))
+chk("ключ тексту: dropt-123 приймається; dropt-0123, dropt-, dropt-12x, юнікод-цифри — ні", bs._product_text_key_ok("dropt-123") and not any(bs._product_text_key_ok(k) for k in ("dropt-0123", "dropt-", "dropt-12x", "dropt-١٢٣", " dropt-1")))
 
 # ── (1) ворота: значення змінної ───────────────────────────────────────────────────────────────────
 for val, want in (("1", True), ("0", False), ("", False), ("true", False), (" 1", False), ("yes", False), (None, False)):
@@ -428,6 +429,20 @@ chk("власна категорія Dropt у повній збірці: кар�
     (out / "product-dropt-109.html").exists() and "dropt-109" in ix and ix["dropt-109"].get("c") == "Товари для тварин"
     and any(f.startswith("category-") and "dropt-109" in T[f].decode("utf-8", "replace") or f.startswith("category-") and "Годівниця для кота" in T[f].decode("utf-8", "replace") for f in T))
 chk("лог збірки пояснює відкинуті картки (checked_at, category, images)", all(w in log for w in ("checked_at", "category:", "category-target:", "images", "id")))
+# наш текст для картки Dropt ЗАМІНЮЄ опис постачальника (сторінка + JSON-LD); картка без нашого тексту — опис постачальника як було
+(tmp / "pt_dropt.json").write_text(json.dumps({"dropt-101": "Перший абзац нашого тексту про автокрісло.\n\nДругий абзац нашого тексту."}, ensure_ascii=False), encoding="utf-8")
+_real_pt_file = bs._PRODUCT_TEXTS_FILE
+bs._PRODUCT_TEXTS_FILE = str(tmp / "pt_dropt.json")
+try:
+    outT, logT, _ = run_build(True, True)
+finally:
+    bs._PRODUCT_TEXTS_FILE = _real_pt_file
+_h101 = (outT / "product-dropt-101.html").read_text(encoding="utf-8")
+_h102 = (outT / "product-dropt-102.html").read_text(encoding="utf-8")
+chk("Dropt з нашим текстом: на сторінці є наш текст (обидва абзаци), опису постачальника (LONG) нема", "Перший абзац нашого тексту про автокрісло." in _h101 and "Другий абзац нашого тексту." in _h101 and LONG[:40] not in _h101)
+_ld101 = [json.loads(m) for m in re.findall(r'<script type="application/ld\+json">(.*?)</script>', _h101, re.S)]
+chk("Dropt з нашим текстом: JSON-LD Product.description = рівно перший абзац нашого тексту", any(isinstance(x, dict) and x.get("@type") == "Product" and x.get("description") == "Перший абзац нашого тексту про автокрісло." for x in _ld101))
+chk("Dropt без нашого тексту: опис постачальника як було (LONG є), нашого тексту нема", LONG[:40] in _h102 and "нашого тексту" not in _h102)
 blob = b"".join(T.values())
 chk("cost (31337 / 4242.17) НІДЕ у виході збірки (html, index*.json, sitemap, JSON-LD) і ні слова «cost» у index.json", str(COST).encode() not in blob and b"4242" not in blob and all("cost" not in x for x in idx))
 chk("cost нема і в лозі збірки (stdout+stderr)", str(COST) not in log and "4242" not in log)

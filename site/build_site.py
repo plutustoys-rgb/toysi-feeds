@@ -717,6 +717,14 @@ _RT_ID_RX = re.compile(r"rt-[0-9A-Za-z_]+")
 _RT_COD_SENTENCE_RX = re.compile(r"[^.!?\n]*(?:накладен|при отриманні|післяплат)[^.!?\n]*[.!?]?", re.I)   # у картках rt- не обіцяємо оплату при отриманні
 
 
+_BROKEN_NUM_ENTITY_RX = re.compile(r"&([0-9]{2,5});")   # «110&730;» = «110&#730;» без «#» (SEO 10.11, y45563): без «#» браузер показує сирий текст
+
+
+def _supplier_text_plain(text):
+    """Назва/бренд постачальника: HTML-сутності з фіду («м&#39;яконабивна», «Build&amp;Play») розкодовуються ОДИН раз, бо далі назва проходить esc() — інакше покупець бачить «&#39;»/«&amp;» (SEO 10.11: y22528, y24014). Без «&» — рядок як був."""
+    return html.unescape(text) if isinstance(text, str) and "&" in text else text
+
+
 def _rt_clean_description(text):
     t = _RT_COD_SENTENCE_RX.sub("", str(text or "")).strip()
     return re.sub(r"[ \t]{2,}", " ", t)
@@ -784,8 +792,8 @@ def _load_supplier_rt(now=None):
             rt_cost = int(v.get("cost") or 0)
         except (TypeError, ValueError):
             rt_cost = 0
-        _desc = _rt_clean_description(v.get("description"))
-        out[k] = {"id": k, "name": str(v["name"]).strip(), "description": _desc, "vendor": str(v.get("vendor") or "").strip(),
+        _desc = _BROKEN_NUM_ENTITY_RX.sub(lambda m: "&#" + m.group(1) + ";", _rt_clean_description(v.get("description")))   # RT: опис вставляється як HTML — «&730;» стає «&#730;» (˚)
+        out[k] = {"id": k, "name": _supplier_text_plain(str(v["name"]).strip()), "description": _desc, "vendor": _supplier_text_plain(str(v.get("vendor") or "").strip()),
                   "vendor_code": str(v.get("vendor_code") or "").strip(), "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
                   "site_price": price, "rt_cost": rt_cost, "supplier": "royaltoys", "price": price,
                   # хвилі відкриття до Google (SEO 19.10): "index": false → noindex,follow і поза sitemap; нема поля → true (пілот); опис <50 знаків (тонка картка) → noindex завжди
@@ -952,7 +960,7 @@ def _load_supplier_dropt(site_cats, now=None):
             continue
         _plain = _rt_clean_description(v.get("description") if isinstance(v.get("description"), str) else "")
         _vc = str(v.get("vendor_code") or "").strip()
-        out[k] = {"id": k, "name": v["name"].strip(), "description": esc(_plain), "vendor": v["vendor"].strip() if isinstance(v.get("vendor"), str) else "",
+        out[k] = {"id": k, "name": _supplier_text_plain(v["name"].strip()), "description": esc(_plain), "vendor": _supplier_text_plain(v["vendor"].strip()) if isinstance(v.get("vendor"), str) else "",
                   "vendor_code": _vc if _DROPT_VCODE_RX.fullmatch(_vc) else "", "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
                   "site_price": price, "supplier": "dropt", "price": price,   # cost НЕ переносимо (див. вище)
                   "rt_noindex": not (v.get("index") is True and k in index_ids) or len(_plain.strip()) < RT_MIN_DESC_INDEX,
@@ -1036,7 +1044,7 @@ def build():
             continue   # політика «що не продаємо» (forbidden_products, рішення власника 2026-10-07): ножі/зброя; старі сторінки прибере крок 8 build()
         if is_uno_trademark_blocked(name, it.get("vendor") or ""):
             continue   # ТМ «UNO» (претензія Mattel): не продаємо на власному сайті (SEO-замовлення 2026-10-06)
-        name = normalize_site_title(name)   # після всіх фільтрів за оригінальною назвою: регістр назви-капсом (feed_title_norm, лише зміна регістру)
+        name = normalize_site_title(name if it.get("supplier") in ("royaltoys", "dropt") else _supplier_text_plain(name))   # Toysi (parser.py: supplier="Toysi"): сутності з фіду («Build &amp; Play», SEO 10.11: 131989, 154061) розкодовуємо до esc(); RT/Dropt вже розкодовані при завантаженні (подвійний прохід не потрібен). Далі: після всіх фільтрів за оригінальною назвою: регістр назви-капсом (feed_title_norm, лише зміна регістру)
         catname = it.get("category_name") or "Інше"
         _cat_ov = _CATEGORY_OVERRIDES.get(str(it.get("id")))
         if _cat_ov and not str(it.get("id")).startswith("rt-") and _cat_ov != catname:

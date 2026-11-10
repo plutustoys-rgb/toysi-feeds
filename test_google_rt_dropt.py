@@ -136,5 +136,40 @@ chk("гейт GOOGLE_RT_DROPT_IN_FEED за замовчуванням ВИМКН
 os.environ["GOOGLE_RT_DROPT_IN_FEED"] = "1"
 chk("гейт =1 вмикається", g.gate_on() is True)
 os.environ.pop("GOOGLE_RT_DROPT_IN_FEED", None)
+# ── російський Google-фід: переклади RT/Dropt (власник 10.11: «переклад робіть»)
+import json as _json  # noqa: E402
+import tempfile as _tf  # noqa: E402
+from pathlib import Path as _P  # noqa: E402
+long_desc = ("Перше речення про набір. " * 30).strip()
+tt, dd = g.ru_source({"title": " Конструктор «Місто» ", "description": long_desc})
+chk("ru_source: назва обрізана по пробілах, опис ≤ 450 і закінчується межею речення", tt == "Конструктор «Місто»" and 120 < len(dd) <= g.RU_DESC_MAX and dd.endswith("."))
+it_list, _ = g.build_items(gf, entries={"rt-1": entry("rt-1", "y1")}, rt_sup={"rt-1": sup()}, dropt_sup={})
+it = it_list[0]
+t1, d1 = g.ru_source(it)
+h = g.src_hash(t1, d1)
+f_ru = _P(_tf.mkdtemp()) / "ru.json"
+GOOD = {"src": h, "name": "Конструктор «Город» 120 деталей", "description": "Набор для развития мелкой моторики и воображения."}
+f_ru.write_text(_json.dumps({"version": 1, "items": {"rt-1": GOOD}}), encoding="utf-8")
+rt0, st0 = g.merge_ru_texts({"123": {"name": "x"}}, [it], path=f_ru)
+chk("merge_ru_texts: актуальний переклад додано, Toysi-записи не зачеплено", rt0["rt-1"]["name"].startswith("Конструктор «Город»") and "123" in rt0 and st0["used"] == 1)
+f_ru.write_text(_json.dumps({"version": 1, "items": {"rt-1": dict(GOOD, src="deadbeef00000000")}}), encoding="utf-8")
+rt1, st1 = g.merge_ru_texts({}, [it], path=f_ru)
+chk("застарілий переклад (укр. джерело змінилось) → не використовується", "rt-1" not in rt1 and st1["stale"] == 1)
+f_ru.write_text(_json.dumps({"version": 1, "items": {"rt-1": dict(GOOD, name="Конструктор Міста", description="Набір для розвитку.")}}), encoding="utf-8")
+rt2, st2 = g.merge_ru_texts({}, [it], path=f_ru)
+chk("«переклад» з українськими літерами (і/ї/є) → непридатний, не використовується", "rt-1" not in rt2 and st2["bad"] == 1)
+f_ru.write_text(_json.dumps({"version": 1, "items": {"rt-1": dict(GOOD, name="Набор Dropt", description="Описание товара.")}}), encoding="utf-8")
+rt3, st3 = g.merge_ru_texts({}, [it], path=f_ru)
+chk("переклад з іменем постачальника → непридатний", "rt-1" not in rt3 and st3["bad"] == 1)
+rt4, st4 = g.merge_ru_texts({}, [it], path=_P(_tf.mkdtemp()) / "nema.json")
+chk("нема файлу перекладів → нічого не додано (missing=1), без винятку", rt4 == {} and st4["missing"] == 1)
+f_ru.write_text(_json.dumps({"version": 1, "items": {"rt-1": GOOD}}), encoding="utf-8")
+rt5, _ = g.merge_ru_texts({}, [it], path=f_ru)
+ru_out, ru_stat = gf.build_ru_items([it], rt5)
+chk("build_ru_items: позиція RT з перекладом потрапляє в ru-фід із російською назвою; id і ціна ті самі", ru_stat["ru_included"] == 1 and "Город" in ru_out[0]["title"] and ru_out[0]["id"] == "y1" and ru_out[0]["price"] == it["price"])
+exp = g.export_for_translation(gf, entries={"rt-1": entry("rt-1", "y1"), "rt-2": entry("rt-2", "y2")}, rt_sup={"rt-1": sup(), "rt-2": sup()}, dropt_sup={})
+chk("export_for_translation: обидві позиції без актуального перекладу, є src і назва", {e["pid"] for e in exp} == {"rt-1", "rt-2"} and all(e["src"] and e["title"] for e in exp))
+os.environ.pop("GOOGLE_RU_RT_DROPT_IN_FEED", None)
+chk("брама ru GOOGLE_RU_RT_DROPT_IN_FEED за замовчуванням ВИМКНЕНО", g.gate_ru_on() is False)
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

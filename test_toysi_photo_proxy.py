@@ -27,6 +27,11 @@ body = m.group(1) if m else ""
 rule = [l.strip() for l in body.split("\n") if l.strip().startswith("RewriteRule ^/img/t/")]
 chk("є рівно одне правило проксі /img/t/ у шаблоні vhost, прапори [P,L], ціль https://toysi.ua/p/$1", len(rule) == 1 and rule[0].endswith("https://toysi.ua/p/$1 [P,L]"))
 chk("у шаблоні є SSLProxyEngine On, ProxyTimeout і Cache-Control для /img/t/", "SSLProxyEngine On" in body and "ProxyTimeout" in body and '<LocationMatch "^/img/t/">' in body)
+blk = re.search(r'<LocationMatch "\^/img/t/">\s*ProxyPreserveHost Off\s*</LocationMatch>', body)
+chk("для /img/t/ ProxyPreserveHost Off (інакше Toysi отримує Host нашого сайту і редіректить на toysi.com.ua) + ProxyPassReverse на нашу адресу", bool(blk) and "ProxyPassReverse /img/t/ https://toysi.ua/p/" in body)
+chk("vhost-широкий ProxyPreserveHost On для /api/ лишився (не ламаємо API)", (lambda ls: "ProxyPreserveHost On" in ls and "ProxyPreserveHost Off" in ls and ls.index("ProxyPreserveHost On") > ls.index("ProxyPreserveHost Off"))([l.strip() for l in body.split("
+")]))
+chk("у скрипті активації є НЕфатальна проба /img/t/ (попередження, не відкат)", "/img/t/enl_218158.jpg" in src and "НЕ віддає 200 image/jpeg" in src)
 pat = re.compile(rule[0].split()[1]) if rule else None
 ok = ["/img/t/enl_218158.jpg", "/img/t/218158.jpg", "/img/t/3/enl_265377.jpg", "/img/t/2/255663.jpg", "/img/t/12/enl_1.png", "/img/t/enl_5.webp"]
 bad = ["/img/t/../../etc/passwd", "/img/t/%2e%2e/x.jpg", "/img/t/a/b/enl_1.jpg", "/img/t/123/456/7.jpg", "/img/t/enl_1.php", "/img/t/enl_1.jpg/x", "/img/t/https://evil.com/x.jpg",

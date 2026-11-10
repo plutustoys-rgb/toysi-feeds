@@ -10,7 +10,9 @@
 ЗАСІВ: замовлення, передані в Toysi ДО SITE_TG_SINCE (дата запуску функції), лише оновлюють стан мовчки — без шквалу повідомлень про старі замовлення.
 СКАСОВАНО/ПОВЕРНЕНО: замовлення з такими delivery_status вилучає з опитування orders_db.get_active_toysi_orders, тож їх сповіщення повторює order_status_tracker._retry_site_final_notifications (якщо Telegram не прийняв одразу).
 ПРИВАТНІСТЬ: у тексті лише номер замовлення (PT-…), номер Toysi, ТТН і статус; ПІБ/телефон/адреса не включаються.
+ВИМКНЕНО за замовчуванням з 10.11.2026 (власник: «телеграм статуси вимкни»; огляд замовлень — панель, orders_admin.py): вмикається лише SITE_ORDER_STATUS_TG=1 у .env.
 Вхід у Telegram — виняток із режиму «лише замовлення»: telegram_triage.is_site_order_status (початок тексту «<іконка> Замовлення сайту »)."""
+import os
 import sys
 
 import nova_poshta
@@ -88,6 +90,9 @@ def maybe_notify(order: dict, toysi_id, delivery_status, ttn, np_info, send, sav
         state, text = st
         if state == prev or (prev is not None and _rank(state) < _rank(prev)):
             return None
+        if os.environ.get("SITE_ORDER_STATUS_TG") != "1":
+            save_state(state)                  # власник 10.11: «телеграм статуси вимкни» — повідомлення про стан замовлення сайту ВИМКНЕНО (за замовчуванням); стан тихо оновлюємо, щоб при вмиканні (SITE_ORDER_STATUS_TG=1) не було шквалу старих. Огляд — у панелі (orders_admin)
+            return state
         if (order.get("forwarded_to_toysi_at") or "") < SITE_TG_SINCE:
             save_state(state)                  # старе замовлення (до запуску функції) — стан оновлюємо ЗАВЖДИ мовчки (не лише першого разу: якщо НП тоді мовчала, пізніший «отримано» старого замовлення не має спрацювати)
             return state

@@ -14,6 +14,7 @@ if hasattr(sys.stdout, "reconfigure"):
 os.environ["AUDIT_NO_TELEGRAM"] = "1"
 os.environ["ORDERS_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "orders.db")
 os.environ.pop("TELEGRAM_ORDERS_ONLY", None)
+os.environ["SITE_ORDER_STATUS_TG"] = "1"      # механізм перевіряється ВВІМКНЕНИМ; за замовчуванням вимкнено (власник 10.11) — окремі перевірки внизу
 sys.path.insert(0, str(Path(__file__).parent))
 import orders_db  # noqa: E402
 import nova_poshta  # noqa: E402
@@ -218,6 +219,20 @@ posts.clear()
 tn.send_telegram_message("ℹ️ щось стороннє про замовлення сайту")
 chk("стороннє повідомлення режим усе одно глушить", posts == [])
 chk("compute_stage: Toysi 70 → received; невідомий статус без ТТН → None", sn.compute_stage({"public_number": "PT-1"}, "9", "delivered", None, None)[0] == "received" and sn.compute_stage({"public_number": "PT-1"}, "9", "unknown_77", None, None) is None)
+
+# ── 10.11.2026: за замовчуванням повідомлення про стан замовлення сайту ВИМКНЕНО (власник: «телеграм статуси вимкни»)
+os.environ.pop("SITE_ORDER_STATUS_TG", None)
+_sent, _saved = [], []
+_o = {"platform": "site", "internal_order_id": "site_G1", "public_number": "PT-G1", "forwarded_to_toysi_at": "2026-11-10T10:00:00", "site_tg_state": None}
+_r = sn.maybe_notify(_o, "100", "shipped", "204", None, lambda t: (_sent.append(t) or True), lambda st: _saved.append(st), False)
+chk("ВИМКНЕНО за замовчуванням: Telegram не викликано, стан тихо записано (shipped)", _sent == [] and _saved == ["shipped"] and _r == "shipped")
+_sent.clear(); _saved.clear()
+sn.maybe_notify(dict(_o), "100", "cancelled", "", None, lambda t: (_sent.append(t) or True), lambda st: _saved.append(st), True)
+chk("ВИМКНЕНО: навіть «скасовано» (режим лише замовлення) не шле повідомлення", _sent == [] and _saved == ["cancelled"])
+os.environ["SITE_ORDER_STATUS_TG"] = "1"
+_sent.clear(); _saved.clear()
+sn.maybe_notify(dict(_o), "100", "shipped", "204", None, lambda t: (_sent.append(t) or True), lambda st: _saved.append(st), True)
+chk("SITE_ORDER_STATUS_TG=1: повідомлення знову йде (механізм збережено)", len(_sent) == 1 and _saved == ["shipped"])
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -1413,8 +1413,11 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())
 
     ru_items = items      # російський фід — лише Toysi (російського тексту для RT/Dropt нема)
-    import google_rt_dropt      # власник 10.11.2026: «РТ та дропт додай у гугл» — за брамою GOOGLE_RT_DROPT_IN_FEED=1; збій НЕ валить основний фід
-    items = google_rt_dropt.extend_items(items, sys.modules[__name__], "google")
+    try:
+        import google_rt_dropt      # власник 10.11.2026: «РТ та дропт додай у гугл» — за брамою GOOGLE_RT_DROPT_IN_FEED=1; збій (і імпорту) НЕ валить основний фід
+        items = google_rt_dropt.extend_items(items, sys.modules[__name__], "google")
+    except Exception as e:  # noqa: BLE001
+        print(f"[Google] RT/Dropt пропущено ({type(e).__name__}: {str(e)[:120]}) — фід лише з Toysi.", file=sys.stderr)
 
     root = _build_xml(items)
     ET.indent(root, space="  ")

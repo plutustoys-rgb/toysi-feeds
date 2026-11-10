@@ -5,7 +5,7 @@
 а бренд/опис/закупівля/штрихкод — у supplier_rt.json / supplier_dropt.json (VPS). Тут ці два джерела зводяться до тих самих dict-ів, що віддає build_feed_items, і йдуть у _build_xml.
 ПРАВИЛА (ті самі, що в Toysi-шляху build_feed_items): ціна фіда = ЦІНА КАРТКИ (index.json) — без «Price mismatch»; посилання = публічна адреса картки (`/product-<u>.html`); id у фіді = публічний slug (x…/y…), БЕЗ імені постачальника;
 фільтри: forbidden_products, FEED_EXCLUDED_CATEGORIES, UNO, ліцензійні марки (гейт/чорний/білий списки), репліки зброї, 18+, внесок за економікою сайту (ціна − закупівля − комісія − логістика > FEED_MIN_SITE_CONTRIBUTION), фото, залишок.
-ГЕЙТ: GOOGLE_RT_DROPT_IN_FEED=1 у .env VPS (власник); без нього нічого не змінюється. ЛИШЕ Google-фід (uk): Meta/Bing/російський фід не чіпаємо (російського тексту для RT/Dropt нема).
+ГЕЙТИ у .env VPS (власник); без них нічого не змінюється. Google, Meta і Bing — кожен за СВОЄЮ брамою (GOOGLE_/META_/BING_RT_DROPT_IN_FEED=1); російський Google-фід НЕ чіпаємо (російського тексту для RT/Dropt нема).
 НЕ ВИГАДУЄМО даних: нема джерела для бренду → «PlutusToys» (як Toysi); штрихкод — лише валідний GTIN; опис — з постачальника (очищений), інакше назва."""
 import json
 import os

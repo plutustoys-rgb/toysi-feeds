@@ -97,17 +97,24 @@ _DELIVERY = {"processing": "передано, в обробці", "assembling": 
 
 
 def stage(row: dict, now: datetime) -> tuple:
-    """→ (код, підпис українською, прапорець «потребує уваги»). Лише за службовими полями orders.db."""
+    """→ (код, підпис українською, прапорець «потребує уваги»). Лише за службовими полями orders.db.
+    ЗМІШАНИЙ кошик сайту (Toysi+RT) у базі — ДВА окремі замовлення (site_order_api.split_mixed_children) з однією оплатою: неоплачений змішаний кошик у лічильнику «чекають оплати» дає 2 (одиниця = рядок orders.db)."""
     st = (row.get("status") or "")
     ds = (row.get("delivery_status") or "")
     if st == "sandbox_test":
         return "test", "ТЕСТ (пісочниця LiqPay)", False
-    if row.get("cancelled_at") or ds == "cancelled":
+    if st == "toysi_error" or "error" in st or "failed" in st:      # найважливіший збій конвеєра (order_router.py:1164) — не ховати під «прийнято» (аудит #1165)
+        return "error", f"ПОМИЛКА ({st})", True
+    if row.get("cancelled_at") or ds == "cancelled" or st == "cancelled" or st.endswith("_cancelled_before_forward"):      # скасовані до форварду маркетплейси (order_router.py:643/693/737; cancellation_audit.py:29-30)
         return "cancelled", "скасовано" + (f" ({row['cancel_reason']})" if row.get("cancel_reason") else ""), False
     if ds == "returned":
         return "returned", "повернення", True
     if ds == "delivered":
         return "delivered", "доставлено", False
+    if ds == "expired":
+        return "expired", "Toysi більше не віддає статус (минуло 40 днів) — звірити вручну", True
+    if ds.startswith("unknown"):
+        return "unknown", f"невідомий статус Toysi ({ds})", True
     if ds in _DELIVERY:
         return ds, _DELIVERY[ds] + (f" · ТТН {row['toysi_ttn']}" if row.get("toysi_ttn") else ""), False
     if row.get("forwarded_to_toysi_at"):

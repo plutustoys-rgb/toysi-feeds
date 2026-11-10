@@ -46,6 +46,11 @@ chk("передано в Toysi з ТТН", S(forwarded_to_toysi_at="2026-11-10T0
 chk("delivery_status: shipped/delivered/cancelled/returned", [S(delivery_status=x)[0] for x in ("shipped", "delivered", "cancelled", "returned")] == ["shipped", "delivered", "cancelled", "returned"])
 chk("скасовано з причиною", "причина" in S(cancelled_at="2026-11-10T09:00:00", cancel_reason="причина X")[1] or "причина X" in S(cancelled_at="2026-11-10T09:00:00", cancel_reason="причина X")[1])
 
+chk("toysi_error → помилка + увага (не «прийнято»)", S(status="toysi_error")[0] == "error" and S(status="toysi_error")[2] is True)
+chk("*_cancelled_before_forward (prom/eva/rozetka) → скасовано", all(S(status=f"{p}_cancelled_before_forward")[0] == "cancelled" for p in ("prom", "eva", "rozetka")))
+chk("delivery_status expired / unknown_77 → увага, не «передано в Toysi»", S(delivery_status="expired")[0] == "expired" and S(delivery_status="expired")[2] and S(delivery_status="unknown_77")[0] == "unknown" and S(delivery_status="unknown_77")[2])
+chk("помилка має пріоритет над «чекає оплати» (prepaid + toysi_error)", S(status="toysi_error", payment_method="prepaid")[0] == "error")
+
 # ── total
 chk("сума: site_charged_total має пріоритет", oa.total({"site_charged_total": 84, "items": [{"price": 1, "qty": 1}]}) == 84.0)
 chk("сума: з позицій, сміття не ламає", oa.total({"items": [{"price": 100, "qty": 2}, {"price": "x", "qty": 1}, {}]}) == 200.0)

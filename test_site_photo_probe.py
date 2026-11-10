@@ -116,6 +116,13 @@ try:
 except Exception:
     ok = False
 chk("збій каналу алертів НЕ кидає виняток (збірка сайту не падає)", ok)
+# 10.11.2026: проксі фото Toysi — зонд має ходити нашим шляхом /img/t/, а чужі наші адреси не чіпати
+import site_photo_probe as _sp
+chk("зонд приймає https://plutustoys.com.ua/img/t/… (ланцюг: наш Apache → Toysi)", _sp._allowed("https://plutustoys.com.ua/img/t/enl_218158.jpg") and _sp._allowed("https://plutustoys.com.ua/img/t/3/enl_265377.jpg"))
+chk("інші наші шляхи, http і чужі підроблені хости НЕ дозволені", not any(_sp._allowed(u) for u in ("https://plutustoys.com.ua/img/p/x1-1.jpg", "https://plutustoys.com.ua/assets/x.jpg", "http://plutustoys.com.ua/img/t/enl_1.jpg", "https://plutustoys.com.ua.evil.com/img/t/enl_1.jpg", "https://evil.com/img/t/enl_1.jpg")))
+idx2 = [{"p": "https://plutustoys.com.ua/img/t/enl_%d.jpg" % i} for i in range(30)] + [{"p": "https://plutustoys.com.ua/img/p/y1-1.jpg"}]
+smp = _sp.pick_sample(idx2, n=10)
+chk("вибірка з index.json після вмикання проксі НЕ порожня і лише з /img/t/", len(smp) == 10 and all("/img/t/" in u for u in smp))
 print()
 if F:
     print("FAILED:", F)

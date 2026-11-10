@@ -221,6 +221,35 @@ def public_photo(pid, url):
     return f"https://plutustoys.com.ua/img/p/{public_slug(pid)}-{m.group(3)}.jpg"
 
 
+# ── Назви-капсом (SEO 10.11.2026, GMC title_all_caps): на сайті назва картки проходить feed_title_norm.normalize_title — ТОЙ САМИЙ детермінований модуль, що й фіди Google (title на сторінці й у фіді збігаються).
+# Без опори на каталог і без замороженого переліку: вихід залежить лише від самої назви. Запобіжник: приймаємо результат тільки якщо він відрізняється від назви постачальника ЛИШЕ регістром
+# (casefold збігається) — модуль не може прибрати слова/пунктуацію з назви на сайті. Обрізання до 150 символів (потрібне фіду) для сайту вимкнено: limit = довжина назви.
+try:
+    from feed_title_norm import normalize_title as _feed_normalize_title
+except ImportError:   # модуля нема — назви як є (збірка не падає), але ГУЧНО: інакше всі капс-назви тихо лишились би
+    _feed_normalize_title = None
+    print("[build] ⚠ feed_title_norm недоступний — назви-капсом на сайті НЕ нормалізовано", file=sys.stderr)
+_TITLE_NORM_COUNT = [0]   # скільки назв змінила нормалізація за збірку (0 на повному каталозі — сигнал, що модуль не працює)
+
+
+def _norm_case(t):
+    return str(t).casefold().replace("ʼ", "'").replace("’", "'")
+
+
+def normalize_site_title(name):
+    """Назва картки для сайту: регістр нормалізовано feed_title_norm (лише зміна регістру), інакше — назва постачальника без змін."""
+    if not _feed_normalize_title or not isinstance(name, str) or not name:
+        return name
+    try:
+        new = _feed_normalize_title(name, limit=max(150, len(name) + 1))
+    except Exception:   # noqa: BLE001 — нормалізація не повинна валити збірку
+        return name
+    if new != name and isinstance(new, str) and _norm_case(new) == _norm_case(name):
+        _TITLE_NORM_COUNT[0] += 1
+        return new
+    return name
+
+
 def site_product_code(pid):
     """Власний код товару для покупця: Toysi «176003» -> «PT-176003»; Dropt/RoyalToys при SITE_PUBLIC_IDS_LIVE=1 — «PT-X123»/«PT-Y69616» (нейтральні літери = публічний slug); до відкриття воріт — як було: Dropt «PT-D123», RoyalToys «rt-X» -> «PT-RX»."""
     pid = str(pid)
@@ -993,6 +1022,7 @@ def build():
             continue   # політика «що не продаємо» (forbidden_products, рішення власника 2026-10-07): ножі/зброя; старі сторінки прибере крок 8 build()
         if is_uno_trademark_blocked(name, it.get("vendor") or ""):
             continue   # ТМ «UNO» (претензія Mattel): не продаємо на власному сайті (SEO-замовлення 2026-10-06)
+        name = normalize_site_title(name)   # після всіх фільтрів за оригінальною назвою: регістр назви-капсом (feed_title_norm, лише зміна регістру)
         catname = it.get("category_name") or "Інше"
         _cat_ov = _CATEGORY_OVERRIDES.get(str(it.get("id")))
         if _cat_ov and not str(it.get("id")).startswith("rt-") and _cat_ov != catname:
@@ -1104,6 +1134,7 @@ def build():
             pass
         raise CatalogShrinkError(_msg)
     print(f"[build] карток до генерації: {len(prods)} (+ без залишку, сторінка жива: {len(oos_prods)}; без залишку й без ціни — пропущено: {oos_skipped_no_price})")
+    print(f"[build] назви-капсом: нормалізовано {_TITLE_NORM_COUNT[0]} назв (feed_title_norm){' — ⚠ МОДУЛЬ НЕДОСТУПНИЙ' if _feed_normalize_title is None else ''})", file=sys.stderr)
 
     # категорії
     cats = {}

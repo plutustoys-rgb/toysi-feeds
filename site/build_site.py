@@ -186,11 +186,48 @@ def is_russian_language_item(name):
 
 
 
-def site_product_code(pid):
-    """Власний код товару для покупця: Toysi «176003» -> «PT-176003», RoyalToys «rt-X» -> «PT-RX» (літера R відрізняє постачальника). Лише показ — id (ключ кошика/замовлень/фідів) не змінюється."""
+# 10.11.2026 (власник: «мені треба щоб покупець не бачив» постачальників): публічні адреса картки, код на картці, sku і шлях фото НЕ містять імен постачальників.
+# ЗА ВОРОТАМИ SITE_PUBLIC_IDS_LIVE=1 (як SITE_DROPT_LIVE): вмикає Код ПІСЛЯ того, як Apache вже має 301 зі старих адрес і rewrite нового шляху фото (deploy/activate_site_apache.sh);
+# вимкнено → збірка як була (product-dropt-…/product-rt-…, /img/dropt|rt/…, PT-D…/PT-R…). Внутрішній id (dropt-…/rt-…) лишається ключем даних, кошика й замовлень.
+PUBLIC_IDS_LIVE = os.environ.get("SITE_PUBLIC_IDS_LIVE") == "1"
+PUBLIC_SLUG_PREFIX = {"dropt-": "x", "rt-": "y"}    # нейтральні літери (не ініціали постачальників): Dropt «dropt-123» -> «x123», RoyalToys «rt-69616» -> «y69616»; Toysi — лише ASCII-цифри, тож слаги однозначні
+_PUBLIC_IMG_RX = re.compile(r"https://plutustoys\.com\.ua/img/(dropt|rt)/(\1-[0-9A-Za-z_]+)-([0-9]{1,2})\.jpg")   # каталог зв'язаний з префіксом id (\1): /img/rt/dropt-… не переписуємо
+
+
+def public_slug(pid):
+    """Публічна частина адреси картки. Toysi — як є; Dropt/RoyalToys при SITE_PUBLIC_IDS_LIVE=1 — нейтральний slug (x123 / y69616); сміттєві id не перетворюються."""
     pid = str(pid)
+    if not PUBLIC_IDS_LIVE:
+        return pid
+    if _DROPT_ID_RX.fullmatch(pid):
+        return PUBLIC_SLUG_PREFIX["dropt-"] + pid[6:]
+    if _RT_ID_RX.fullmatch(pid):
+        return PUBLIC_SLUG_PREFIX["rt-"] + pid[3:]
+    return pid
+
+
+def product_file(pid):
+    """Ім'я файлу/адреса картки (відносна): product-<публічний slug>.html. Єдине місце, де id перетворюється на адресу."""
+    return f"product-{public_slug(pid)}.html"
+
+
+def public_photo(pid, url):
+    """Фото Dropt/RoyalToys з нашого сервера: https://plutustoys.com.ua/img/<dropt|rt>/<id>-N.jpg -> https://plutustoys.com.ua/img/p/<slug>-N.jpg (Apache переписує назад). Інші URL (Toysi тощо) — без змін."""
+    if not PUBLIC_IDS_LIVE or not isinstance(url, str):
+        return url
+    m = _PUBLIC_IMG_RX.fullmatch(url)
+    if not m or m.group(2) != str(pid) or public_slug(pid) == str(pid):
+        return url
+    return f"https://plutustoys.com.ua/img/p/{public_slug(pid)}-{m.group(3)}.jpg"
+
+
+def site_product_code(pid):
+    """Власний код товару для покупця: Toysi «176003» -> «PT-176003»; Dropt/RoyalToys при SITE_PUBLIC_IDS_LIVE=1 — «PT-X123»/«PT-Y69616» (нейтральні літери = публічний slug); до відкриття воріт — як було: Dropt «PT-D123», RoyalToys «rt-X» -> «PT-RX»."""
+    pid = str(pid)
+    if PUBLIC_IDS_LIVE and public_slug(pid) != pid:
+        return "PT-" + public_slug(pid)[0].upper() + public_slug(pid)[1:]   # регістр решти id зберігаємо (rt-id, що різняться регістром, не зливаються в один код)
     if pid.startswith("dropt-"):
-        return "PT-D" + pid[6:]   # Dropt «dropt-123» -> «PT-D123» (літера D відрізняє постачальника, як R у RoyalToys)
+        return "PT-D" + pid[6:]
     return "PT-R" + pid[3:] if pid.startswith("rt-") else "PT-" + pid
 
 
@@ -554,7 +591,7 @@ def sale_until_html(pid=None) -> str:
 
 def index_entries(prods):
     """Записи index.json (клієнтський пошук/сорт, site_order_api): pr — ціна, за якою ПРОДАЄМО (акційна під час «Знижки тижня»), op — стара ціна акції (лише інформація: замовлення її ігнорує)."""
-    return [{"id": p["id"], "n": p["name"], "pr": p["price"], "p": p["photo"],
+    return [{"id": p["id"], **({"u": public_slug(p["id"])} if public_slug(p["id"]) != p["id"] else {}), "n": p["name"], "pr": p["price"], "p": p["photo"],
              "c": p["category"], "s": 1 if p["stock"] > 0 else 0, **({"op": p["old_price"]} if p.get("old_price") else {}),
              **({"rt": 1, "ix": 0 if p.get("noindex") else 1} if p.get("rt") else {})} for p in prods]   # rt/ix — для фідів Google/Meta/Bing (Код): RoyalToys лише з ix=1
 
@@ -576,7 +613,7 @@ def tile(p, cls="", eager=False, prio=False, badge=False):
            if p["photo"] else '<div class="ph"></div>')
     klass = ("card " + cls) if cls else "card"
     return (
-      f'<a class="{klass}" href="product-{esc(p["id"])}.html">'
+      f'<a class="{klass}" href="{esc(product_file(p["id"]))}">'
       f'<div class="ph">{img}{badge}{md}{sb}</div>'
       f'<div class="info"><div class="nm">{esc(p["name"])}</div>'
       f'<div class="foot">{price_html}{av}</div></div></a>'
@@ -984,7 +1021,7 @@ def build():
         (oos_prods if is_oos else prods).append({
             "id": str(it.get("id")), "name": name, "price": price, "old_price": _old_price,
             "category": catname,
-            "photo": PHOTO_OVERRIDES.get(str(it.get("id")), pics[0]), "stock": int(it.get("stock") or 0),
+            "photo": PHOTO_OVERRIDES.get(str(it.get("id")), public_photo(str(it.get("id")), pics[0])), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
             "rt": 1 if str(it.get("id")).startswith(("rt-", "dropt-")) else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
@@ -1177,7 +1214,7 @@ def build():
     # вище ДО цього кроку, тож видаляємо лише справжні залишки). `paged` містить усі сторінки
     # каталогу/категорій (вкл. пагіновані catalog_N/category-slug_N), тож застарілі сторінки
     # пагінації від більшого попереднього білда теж приберуться.
-    valid = {f"product-{p['id']}.html" for p in prods} | {f"product-{p['id']}.html" for p in oos_prods} | {f"product-{p['id']}.html" for p in shadows} | paged
+    valid = {product_file(p['id']) for p in prods} | {product_file(p['id']) for p in oos_prods} | {product_file(p['id']) for p in shadows} | paged
     removed = 0
     for fn in os.listdir(OUT):
         if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "halloween", "podibrka", "group-")) and fn.endswith(".html")
@@ -2523,7 +2560,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         head = breadcrumb_ld(trail)
         head += _ld_script({"@context": "https://schema.org", "@type": "ItemList",
                             "itemListElement": [{"@type": "ListItem", "position": (k - 1) * PER_PAGE + i + 1,
-                                                 "url": f"{SITE_URL}/product-{x['id']}.html"} for i, x in enumerate(chunk)]})
+                                                 "url": f"{SITE_URL}/{product_file(x['id'])}"} for i, x in enumerate(chunk)]})
         _bslug = (re.fullmatch(r"category-(.+)\.html", fname or "") or [None, None])[1]
         if active and not special and k == 1 and _bslug in BRAND_CATEGORIES:   # SEO 21.10: CollectionPage (BreadcrumbList і ItemList лишаються)
             head += _ld_script({"@context": "https://schema.org", "@type": "CollectionPage", "name": active, "url": f"{SITE_URL}/{fname}", "description": desc,
@@ -3353,14 +3390,14 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     ld = {
         "@context": "https://schema.org", "@type": "Product",
         "name": p["name"], "category": p.get("category") or "",
-        "sku": str(p["id"]),
+        "sku": public_slug(p["id"]),   # Dropt/RoyalToys при воротах — нейтральний slug
         "image": [p["photo"]] if p["photo"] else [],
         "description": _cut(plain, 500) or p["name"],
         "offers": {
             "@type": "Offer",
             "price": str(p["price"]), "priceCurrency": "UAH",
             "availability": "https://schema.org/InStock" if p["stock"] > 0 else "https://schema.org/OutOfStock",
-            "url": f'{SITE_URL}/product-{p["id"]}.html',
+            "url": f'{SITE_URL}/{product_file(p["id"])}',
             **offer_extras(p),
         },
     }
@@ -3387,9 +3424,9 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     if p.get("photo"):
         extra += f'<link rel="preload" as="image" href="{esc(p["photo"])}" fetchpriority="high">' + chr(10)   # LCP картки — головне фото
     body = crumbs_html(trail) + body
-    _write(f"product-{p['id']}.html", page(
+    _write(product_file(p['id']), page(
         p["name"], body, extra_head=extra, title_full=product_title_for(p, in_stock), description=meta_desc,
-        canonical=(f'product-{p["dup_of"]}.html' if p.get("shadow") else f'product-{p["id"]}.html'), og_image=p["photo"], og_type="product", noindex=bool(p.get("noindex"))))   # rt: хвиля не відкрита / тонкий опис
+        canonical=(f'product-{p["dup_of"]}.html' if p.get("shadow") else product_file(p["id"])), og_image=p["photo"], og_type="product", noindex=bool(p.get("noindex"))))   # rt: хвиля не відкрита / тонкий опис
 
 CART_ADDONS_MAX = 12     # пул «Додайте до замовлення» у кошику (на сторінці показуємо 3, яких ще нема в кошику)
 
@@ -3935,7 +3972,7 @@ def write_groups(groups, cats, cat_slug):
             '</div></div>'
         )
         head = breadcrumb_ld(trail) + _ld_script({"@context": "https://schema.org", "@type": "ItemList", "itemListElement": [
-            {"@type": "ListItem", "position": i + 1, "url": f"{SITE_URL}/product-{x['id']}.html"} for i, x in enumerate(items[:PER_PAGE])]})
+            {"@type": "ListItem", "position": i + 1, "url": f"{SITE_URL}/{product_file(x['id'])}"} for i, x in enumerate(items[:PER_PAGE])]})
         n_sub = len(g["subs"])
         desc = f"{g['display']} у PlutusToys: {g['total']} товарів у {n_sub} підкатегоріях. Є в наявності, доставка Новою Поштою по Україні."[:DESC_MAX]
         _write(g["file"], page(g["display"], body, extra_head=head, description=desc, canonical=g["file"], og_image=OG_IMAGE, title_full=(f"{g['display']} — в наявності | PlutusToys" if g.get("non_toy") else f"{g['display']} — іграшки в наявності | PlutusToys")))
@@ -4310,6 +4347,9 @@ def _write(fname, content):
 
 SITEMAP_PRIORITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitemap_priority.json")
 PROM_GROUP_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prom_group_to_category.json")
+SITEMAP_FILE_OVERRIDE = {"dropt": "sitemap-more.xml"}   # Dropt при воротах SITE_PUBLIC_IDS_LIVE: без назви постачальника в адресі sitemap
+SITEMAP_LEGACY_FILES = ("sitemap-dropt.xml",)   # прибирається при воротах (нова назва — sitemap-more.xml)
+SITEMAP_NEW_FILES = ("sitemap-more.xml",)       # прибирається, коли ворота ВИМКНЕНІ (відкат): інакше лишається файл з адресами, яких уже нема
 SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt", "dropt")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority); dropt — так само для Dropt
 
 
@@ -4357,7 +4397,7 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=fro
         else:                                             # page-1 категорії/каталогу
             seg["categories"].append((fn, fn, "0.7", "weekly"))
     for p in prods:
-        f = f"product-{p['id']}.html"
+        f = product_file(p['id'])
         if product_hidden(p):
             continue   # NOINDEX_CATEGORIES (True): товар noindex і поза sitemap
         if p.get("rt"):
@@ -4367,15 +4407,20 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=fro
         (seg["priority"] if p["id"] in pri_ids else seg["products"]).append((f, f, "0.6", "weekly"))
     # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий
     for p in oos_prods:
-        f = f"product-{p['id']}.html"
+        f = product_file(p['id'])
         if product_hidden(p):
             continue
         if p.get("rt"):
             continue   # rt без залишку: сторінка жива, у sitemap не додаємо
         (seg["priority"] if p["id"] in pri_ids else seg["oos"]).append((f, f, "0.6" if p["id"] in pri_ids else "0.3", "weekly" if p["id"] in pri_ids else "monthly"))
     index_items = []
+    for _legacy in (SITEMAP_LEGACY_FILES if PUBLIC_IDS_LIVE else SITEMAP_NEW_FILES):
+        try:
+            os.remove(os.path.join(OUT, _legacy))
+        except OSError:
+            pass
     for name in SITEMAP_SEGMENTS:
-        fname = f"sitemap-{name}.xml"
+        fname = (SITEMAP_FILE_OVERRIDE if PUBLIC_IDS_LIVE else {}).get(name, f"sitemap-{name}.xml")
         urls = seg[name]
         if not urls:
             try:

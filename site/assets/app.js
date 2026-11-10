@@ -3,6 +3,8 @@
 (function(){
   "use strict";
   var CART_KEY = "pt_cart_v1";
+  // Публічна адреса картки (build_site.public_slug): у index.json поле u (є лише коли відрізняється від id). Ключі кошика/замовлень лишаються внутрішніми.
+  function slugId(sl){ sl=String(sl); var m; if((m=/^x([1-9][0-9]*)$/.exec(sl))) return "dropt-"+m[1]; if((m=/^y([0-9A-Za-z_]+)$/.exec(sl))) return "rt-"+m[1]; return sl; }   // href -> внутрішній id (ворота SITE_PUBLIC_IDS_LIVE; зі старих адрес product-dropt-… id без змін)
   // Суму доставки покупцю НЕ друкуємо (10.10.2026, рішення Консультанта: «65/70 ₴» нічим не підкріплене) — доки нема виміряної цифри з книги КОДВ.
   // Поріг безкоштовної доставки — число Консультанта (рекомендація CONSULTANT_CHANNEL.md
   // 2026-09-14/16, економічно перевірене 2026-09-18: ~3.1х середнього чека, floor витримує).
@@ -298,7 +300,7 @@
         return '<button type="button" data-sort="'+m[0]+'"'+(searchSort===m[0]?' class="on"':'')+'>'+m[1]+'</button>';
       }).join("")+'</span></div>';
     res.innerHTML = meta + out.map(function(p){
-      return '<a class="sr" href="product-'+p.id+'.html">'+
+      return '<a class="sr" href="product-'+(p.u||p.id)+'.html">'+
         '<img src="'+p.p+'" loading="lazy" alt="">'+
         '<div><div class="srn">'+esc(p.n)+'</div><div class="srp">'+p.pr+' ₴'+(p.op ? ' <s class="pr-old">'+p.op+' ₴</s>' : '')+'</div></div></a>';
     }).join("");
@@ -336,7 +338,7 @@
     var sale = p.op && p.op>p.pr;   // «Знижка тижня»: op — стара ціна (аудит 14.10: каталог показував акційну ціну без перекресленої старої й бейджа)
     var badge = sale ? '<span class="sale-badge">−'+Math.round((1-p.pr/p.op)*100)+'%</span>' : '';
     var price = sale ? '<span class="pr pr-sale">'+p.pr+' ₴</span><s class="pr-old">'+p.op+' ₴</s>' : '<span class="pr">'+p.pr+' ₴</span>';
-    return '<a class="card" href="product-'+esc(p.id)+'.html"><div class="ph">'+img+badge+'</div>'+
+    return '<a class="card" href="product-'+esc(p.u||p.id)+'.html"><div class="ph">'+img+badge+'</div>'+
       '<div class="info"><div class="nm">'+esc(p.n)+'</div>'+
       '<div class="foot">'+price+av+'</div></div></a>';
   }
@@ -726,7 +728,7 @@
       if(!snap || !snap.fresh) return;
       var cards=document.querySelectorAll("a.card[href^='product-']");   // ПІСЛЯ відповіді: у цей час уже є клони каруселі (аудит: клони лишались «У наявності»)
       Array.prototype.forEach.call(cards, function(a){
-        var m=/product-([\w-]+)\.html/.exec(a.getAttribute("href")||""); if(!m) return; var live=stockOf(snap, m[1]); if(live===null) return; if(live>0){ liveBadge(a, a.querySelector(".stock-badge"), live); return; }
+        var m=/product-([\w-]+)\.html/.exec(a.getAttribute("href")||""); if(!m) return; var live=stockOf(snap, slugId(m[1])); if(live===null) return; if(live>0){ liveBadge(a, a.querySelector(".stock-badge"), live); return; }
         var av=a.querySelector(".av"); if(av){ av.textContent="Немає"; av.className="av oos"; } else { var ff=a.querySelector(".foot"); if(ff){ av=document.createElement("span"); av.className="av oos"; av.textContent="Немає"; ff.appendChild(av); } }   // картка з бейджем «Залишилось N» не має .av — без цього після нуля лишалась картка без жодного статусу
         var sb=a.querySelector(".stock-badge"); if(sb && sb.parentNode) sb.parentNode.removeChild(sb);
       });
@@ -943,7 +945,7 @@
   function slideData(a, idx){
     var m=/product-([\w-]+)\.html/.exec(a.getAttribute("href")||"");
     var nm=a.querySelector(".nm"), pr=a.querySelector(".pr");
-    return {item_id:m?m[1]:"", item_name:nm?nm.textContent.trim():"", price:pr?parseFloat(pr.textContent):0, index:idx, item_list_name:""};
+    return {item_id:m?slugId(m[1]):"", item_name:nm?nm.textContent.trim():"", price:pr?parseFloat(pr.textContent):0, index:idx, item_list_name:""};
   }
   function initHomeCarousel(){
     var car=document.getElementById("home-car");

@@ -489,6 +489,40 @@ body108 = h108.split("</head>")[1]
 chk("…а в тілі сторінки опис і далі екранований (М&#x27;який … &amp; … &quot;Isofix&quot;)", "М&#x27;який чохол &amp; ремені &quot;Isofix&quot;" in body108)
 meta108 = re.search(r'<meta name="description" content="([^"]*)"', h108).group(1)
 chk("meta description dropt — шаблон із назвою (як rt), без подвійного екранування", "Автокрісло з базою" in meta108 and "&amp;amp;" not in meta108 and "&amp;#x27;" not in meta108)
+# ── ворота SITE_PUBLIC_IDS_LIVE (10.11.2026, власник: «щоб покупець не бачив» постачальників): нейтральні адреса, код, sku, шлях фото ──
+chk("ворота вимкнені (типово): public_slug/site_product_code/public_photo — як було", (not bs.PUBLIC_IDS_LIVE) and bs.public_slug("dropt-101") == "dropt-101" and bs.public_slug("rt-69616") == "rt-69616" and bs.product_file("dropt-101") == "product-dropt-101.html" and bs.site_product_code("dropt-101") == "PT-D101" and bs.site_product_code("rt-69616") == "PT-R69616")
+_pi_old = bs.PUBLIC_IDS_LIVE
+bs.PUBLIC_IDS_LIVE = True
+try:
+    chk("ворота: dropt-123 -> x123, rt-69616 -> y69616, rt-18636s22164 -> y18636s22164; Toysi — як є; сміття не перетворюється", bs.public_slug("dropt-123") == "x123" and bs.public_slug("rt-69616") == "y69616" and bs.public_slug("rt-18636s22164") == "y18636s22164" and bs.public_slug("218158") == "218158" and bs.public_slug("dropt-0123") == "dropt-0123" and bs.public_slug("dropt-") == "dropt-" and bs.public_slug("rt-") == "rt-")
+    chk("ворота: адреса/код — без імен постачальників (PT-X…/PT-Y…, product-x…/product-y…)", bs.product_file("dropt-123") == "product-x123.html" and bs.product_file("rt-69616") == "product-y69616.html" and bs.site_product_code("dropt-123") == "PT-X123" and bs.site_product_code("rt-69616") == "PT-Y69616" and bs.site_product_code("218158") == "PT-218158")
+    chk("ворота: фото нашого сервера переписується на /img/p/<slug>-N.jpg; чуже фото, чужий id, Toysi — без змін",
+        bs.public_photo("dropt-101", "https://plutustoys.com.ua/img/dropt/dropt-101-2.jpg") == "https://plutustoys.com.ua/img/p/x101-2.jpg"
+        and bs.public_photo("rt-69616", "https://plutustoys.com.ua/img/rt/rt-69616-1.jpg") == "https://plutustoys.com.ua/img/p/y69616-1.jpg"
+        and bs.public_photo("dropt-101", "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg") == "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg"
+        and bs.public_photo("218158", "https://toysi.ua/p/2/enl_218158.jpg") == "https://toysi.ua/p/2/enl_218158.jpg")
+    chk("ворота: фото — каталог зв'язаний з префіксом id (/img/rt/dropt-… не переписується); код зберігає регістр id (PT-Yabc12S3)", bs.public_photo("dropt-101", "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg") == "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg" and bs.public_photo("rt-5", "https://plutustoys.com.ua/img/dropt/rt-5-1.jpg") == "https://plutustoys.com.ua/img/dropt/rt-5-1.jpg" and bs.site_product_code("rt-18636s22164") == "PT-Y18636s22164" and bs.site_product_code("rt-Ab1") != bs.site_product_code("rt-aB1"))
+    outP, logP, _ = run_build(True, True)
+    hP = (outP / "product-x101.html").read_text(encoding="utf-8")
+    ldP = hP.split('application/ld+json', 1)[-1]
+    chk("ворота: картка Dropt лежить за product-x101.html; product-dropt-*.html нема", (outP / "product-x101.html").exists() and not any(f.name.startswith("product-dropt-") for f in outP.iterdir()))
+    chk("ворота: canonical, JSON-LD url/sku, og:image, код на картці — без «dropt»", 'rel="canonical" href="https://plutustoys.com.ua/product-x101.html"' in hP and '"url": "https://plutustoys.com.ua/product-x101.html"' in ldP and '"sku": "x101"' in ldP and "PT-X101" in hP and "PT-D101" not in hP)
+    chk("ворота: фото картки /img/p/x101-1.jpg, шляху /img/dropt/ на сторінці нема", "img/p/x101-1.jpg" in hP and "img/dropt/" not in hP)
+    smP = (outP / "sitemap-more.xml").read_text(encoding="utf-8") if (outP / "sitemap-more.xml").exists() else ""
+    chk("ворота: sitemap-more.xml замість sitemap-dropt.xml; в адресах sitemap «dropt» нема; індекс посилається на новий файл", "/product-x101.html" in smP and "/product-x103.html" in smP and "dropt" not in smP and not (outP / "sitemap-dropt.xml").exists() and "sitemap-more.xml" in (outP / "sitemap.xml").read_text(encoding="utf-8") and "sitemap-dropt" not in (outP / "sitemap.xml").read_text(encoding="utf-8"))
+    ixP = json.loads((outP / "index.json").read_text(encoding="utf-8"))
+    ixP = {x["id"]: x for x in ixP} if isinstance(ixP, list) else ixP
+    chk("ворота: index.json має поле u (публічний slug) для Dropt, внутрішній id лишається; для Toysi поля u нема", ixP["dropt-101"].get("u") == "x101" and all("u" not in x for k, x in ixP.items() if not k.startswith(("dropt-", "rt-"))))
+    catP = next((v for k, v in {f.name: f.read_bytes().decode("utf-8") for f in outP.glob("category-*.html")}.items() if "product-x101" in v), "")
+    chk("ворота: сторінка категорії посилається на product-x101.html, не на product-dropt-101", bool(catP) and "product-dropt-" not in catP)
+    bs.PUBLIC_IDS_LIVE = False
+    bs.OUT = str(outP)   # відкат У ТОМУ САМОМУ каталозі: старі файли воріт мають зникнути
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        bs.build()
+    outR = outP
+    chk("відкат воріт: збірка без sitemap-more.xml і без product-x*.html, є product-dropt-101.html", not (outR / "sitemap-more.xml").exists() and not any(f.name.startswith("product-x") for f in outR.iterdir()) and (outR / "product-dropt-101.html").exists())
+finally:
+    bs.PUBLIC_IDS_LIVE = _pi_old
 print()
 if F:
     print(f"FAILED ({len(F)}):")

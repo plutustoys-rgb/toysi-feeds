@@ -361,6 +361,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/launch":
             ok, msg = _launch(agent)
             return self._json(200 if ok else 500, {"ok": ok, "msg": msg})
+        if path == "/api/orders":        # огляд замовлень (власник 10.11.2026): читальний ssh-запит до orders.db на VPS; ПІБ/телефон лише для цієї локальної сторінки
+            import orders_admin
+            res = orders_admin.payload(body.get("days") or 30)
+            return self._json(200 if res.get("ok") else 502, res)
         if path == "/api/term":          # термінал НЕ прив'язаний до агента (машинна оболонка)
             cmd = (body.get("cmd") or "").strip()
             if not cmd:
@@ -403,6 +407,15 @@ button.ghost{background:#222a33;color:var(--tx)}button:disabled{opacity:.5;curso
   <div class=tabs id=tabs>завантаження…</div>
   <div id=session></div>
 </div>
+<div class=card style=margin-top:16px>
+  <h2>🛒 Замовлення (сайт, Prom, Rozetka, EVA) — читається з VPS за кліком</h2>
+  <div class=row style="margin:0 0 8px"><select id=odays class=tinp style="width:auto"><option value=1>1 день</option><option value=7 selected>7 днів</option><option value=30>30 днів</option><option value=90>90 днів</option></select>
+    <select id=oplat class=tinp style="width:auto" onchange=renderOrders()><option value="">усі площадки</option><option>site</option><option>prom</option><option>rozetka</option><option>eva</option></select>
+    <input id=oq class=tinp style="width:220px" placeholder="пошук: №, ім'я, телефон, ТТН" oninput=renderOrders()>
+    <button onclick=loadOrders()>↻ завантажити замовлення</button><span class="small mut" id=ogen></span></div>
+  <div id=osum class="small" style="margin-bottom:8px"></div>
+  <div class=scroll style="max-height:460px"><table id=otab style="width:100%;border-collapse:collapse;font-size:12.5px"></table></div>
+</div>
 <div class=grid style=margin-top:16px>
   <div class=card><h2>🧭 Що діється (Telegram-дайджест, 7 дн.)</h2><pre id=digest class=scroll>завантаження…</pre></div>
   <div class=card><h2>🚦 Критичний статус</h2><div id=crit class="small scroll">завантаження…</div></div>
@@ -429,6 +442,29 @@ async function refresh(){
     +(e.state!=='ok'&&e.blocks?`<div class="small mut" style="margin-left:20px">блокує: ${esc(e.blocks)}</div>`:'')
     +`</div>`).join(''):'нема reports/critical_status.json';
   const d=await jget('/api/digest');$('#digest').textContent=d.text;
+}
+let ORD=null;
+async function loadOrders(){
+  $('#ogen').textContent=' завантажую…';
+  try{const r=await jpost('/api/orders',{days:+$('#odays').value});
+    if(!r.ok){$('#ogen').textContent=' помилка: '+(r.error||'?');return}
+    ORD=r;$('#ogen').textContent=' знято '+r.generated+' (VPS)';renderOrders();
+  }catch(e){$('#ogen').textContent=' помилка: '+e}
+}
+function renderOrders(){
+  if(!ORD)return;const S=ORD.summary,pl=$('#oplat').value,q=($('#oq').value||'').toLowerCase();
+  const pn=Object.entries(S.by_platform).map(([k,v])=>k+': '+v).join(' · ');
+  const td=Object.entries(S.today).map(([k,v])=>k+': '+v).join(' · ')||'0';
+  $('#osum').innerHTML='<b>Усього за період: '+S.total+'</b> ('+esc(pn)+') · <b>сьогодні:</b> '+esc(td)
+    +' · сайт: <b>чекають оплати '+S.site_unpaid+'</b>'+(S.site_unpaid_stale?' (<span style="color:var(--err)">зависли: '+S.site_unpaid_stale+'</span>)':'');
+  const rows=ORD.rows.filter(r=>(!pl||r.platform===pl)&&(!q||JSON.stringify([r.public_number,r.order_id,r.customer_name,r.phone,r.toysi_ttn,r.toysi_order_id]).toLowerCase().includes(q)));
+  const col={unpaid:'var(--warn)',test:'var(--mut)',cancelled:'var(--mut)',returned:'var(--err)',delivered:'var(--ok)'};
+  $('#otab').innerHTML='<tr class=mut style="text-align:left"><th>Час</th><th>Пл.</th><th>№</th><th>Сума</th><th>Оплата</th><th>Стан</th><th>Покупець</th><th>Товари</th></tr>'
+   +rows.map(r=>{const its=(r.items||[]).map(i=>esc(i.name||i.code)+' ×'+(i.qty||'?')).join('; ');
+    return '<tr style="border-top:1px solid var(--line);vertical-align:top"><td>'+esc((r.created_at||'').replace('T',' ').slice(5,16))+'</td><td>'+esc(r.platform)+'</td><td>'+esc(r.public_number||r.order_id)+'</td>'
+     +'<td>'+Math.round(r.total)+' ₴</td><td>'+(r.payment_method==='cod'?'накл.':(r.payment_confirmed?'<span style="color:var(--ok)">оплачено</span>':'передоплата, нема оплати'))+'</td>'
+     +'<td style="color:'+(r.attention?'var(--err)':(col[r.stage]||'inherit'))+'">'+esc(r.stage_label)+'</td>'
+     +'<td>'+esc(r.customer_name||'')+'<div class="small mut">'+esc(r.phone||'')+(r.np_branch?' · '+esc(r.np_branch):'')+'</div></td><td class=small>'+its+'</td></tr>'}).join('');
 }
 function renderTabs(){
   $('#tabs').innerHTML=AG.map(a=>`<button class="tab${a.name===SEL?' active':''}" onclick="pick('${a.name}')">${esc(a.name)}</button>`).join('');

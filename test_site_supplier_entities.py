@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""test_site_supplier_entities.py — 10.11.2026 (SEO: на живих картках RT покупець бачить «м&#39;яконабивна», «Build&amp;amp;Play», «110&730;»).
+Причина: фід постачальника віддає назву з HTML-сутностями, а сайт екранує назву ще раз (esc) -> сутність показується буквально.
+Інваріанти:
+  • _supplier_text_plain розкодовує сутності ОДИН раз; рядок без «&» і не-рядок — без змін;
+  • картка RT: name/vendor розкодовані, тож на сторінці <title>/<h1> — «м'яконабивна», «Build&amp;Play» у HTML (= «Build&Play» для людини), без «&amp;#39;»/«&amp;amp;»;
+  • опис RT: «&730;» (втрачений «#») стає «&#730;» (браузер покаже «˚»); валідні сутності й звичайний текст не чіпаємо;
+  • назви без сутностей — без змін (байт у байт)."""
+import contextlib
+import io
+import json
+import os
+import re
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+os.environ["AUDIT_NO_TELEGRAM"] = "1"
+HERE = Path(__file__).parent
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.path.insert(0, str(HERE / "site"))
+sys.path.insert(0, str(HERE))
+import build_site as bs  # noqa: E402
+
+F = []
+
+
+def chk(n, c):
+    print(f"[{'OK ' if c else 'FAIL'}] {n}")
+    if not c:
+        F.append(n)
+
+
+P = bs._supplier_text_plain
+chk("&#39; -> ', &amp; -> &, &quot; -> \"", P("Іграшка м&#39;яконабивна") == "Іграшка м'яконабивна" and P("Build&amp;Play") == "Build&Play" and P("Набір &quot;А&quot;") == 'Набір "А"')
+chk("один прохід: «&amp;amp;» -> «&amp;» (не глибше)", P("A&amp;amp;B") == "A&amp;B")
+chk("без «&» і не-рядок — без змін", P("Звичайна назва 5 шт") == "Звичайна назва 5 шт" and P("") == "" and P(None) is None and P(7) == 7)
+chk("голий амперсанд без сутності лишається", P("Tom & Jerry") == "Tom & Jerry")
+
+tmp = Path(tempfile.mkdtemp())
+now = datetime.now(timezone.utc)
+base = {"category": "Конструкторы", "images": ["https://plutustoys.com.ua/img/rt/rt-1-1.jpg"], "price": 480, "cost": 290, "stock": 7, "supplier": "royaltoys", "vendor_code": "RT-1"}
+items = {
+    "rt-1": {**base, "name": "Іграшка м&#39;яконабивна набір кубиків", "vendor": "Build&amp;Play", "description": "Стілець, кут нахилу 110&730;. Ще &amp; текст."},
+    "rt-2": {**base, "name": "Звичайна назва без сутностей", "vendor": "HANYE", "description": "Опис без сутностей."},
+}
+(tmp / "s.json").write_text(json.dumps({"updated": now.isoformat(), "items": items}, ensure_ascii=False), encoding="utf-8")
+(tmp / "m.json").write_text(json.dumps({"Конструкторы": "Конструктори RT"}, ensure_ascii=False), encoding="utf-8")
+bs.SUPPLIER_RT_FILE, bs.RT_CATEGORY_MAP_FILE = str(tmp / "s.json"), str(tmp / "m.json")
+bs.LIQPAY_LIVE = True
+with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+    res = bs._load_supplier_rt()
+a, b = res.get("rt-1"), res.get("rt-2")
+chk("RT: обидві картки завантажено", bool(a) and bool(b))
+chk("RT: назва і бренд розкодовані", a["name"] == "Іграшка м'яконабивна набір кубиків" and a["vendor"] == "Build&Play")
+chk("RT: опис — «&730;» -> «&#730;», валідна «&amp;» не чіпана", "110&#730;." in a["description"] and "&730;" not in a["description"] and "Ще &amp; текст." in a["description"])
+chk("RT: назва/бренд/опис без сутностей — без змін", b["name"] == "Звичайна назва без сутностей" and b["vendor"] == "HANYE" and b["description"] == "Опис без сутностей.")
+chk("після esc() у сторінці немає подвійного екранування", "&amp;#39;" not in bs.esc(a["name"]) and "&amp;amp;" not in bs.esc(a["vendor"]) and bs.esc(a["vendor"]) == "Build&amp;Play")
+
+print()
+if F:
+    print(f"FAILED ({len(F)}):")
+    for n in F:
+        print("  -", n)
+    sys.exit(1)
+print("ALL OK")

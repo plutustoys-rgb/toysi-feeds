@@ -92,6 +92,12 @@ chk("сайт COD: у повідомленні сума 100 грн, 1 поз., �
 posts.clear()
 code, resp = post_order("prepaid", phone="+380671112244")
 oid = resp["order_id"]
+import time as _t
+for _ in range(40):      # ⏳ шлеться в окремому потоці (аудит #1163)
+    if posts:
+        break
+    _t.sleep(0.05)
+_t.sleep(0.2)
 chk("сайт передоплата: при створенні рівно одне «⏳ чекає оплати», НЕ «🛒 Нове замовлення» (неоплачене не «надходження»), без ПІБ/телефону/адреси",
     code == 200 and len(posts) == 1 and posts[0].startswith("⏳ Замовлення сайту ") and "чекає оплати" in posts[0] and not posts[0].startswith("🛒") and not any(x in posts[0] for x in PII))
 

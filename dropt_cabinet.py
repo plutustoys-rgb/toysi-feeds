@@ -232,6 +232,61 @@ def session_info(http) -> dict:
     return {"logged_in": logged, "csrf": csrf, "balance": parse_balance(html) if logged else None}
 
 
+def _state_cookies(path):
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        return d, [c for c in (d.get("cookies") or []) if isinstance(c, dict)]
+    except (OSError, ValueError):
+        return None, []
+
+
+def session_days_left(state_file=None, now=None):
+    """Скільки діб до спливу сесійних куків (DSESSID/is_logged) за збереженим станом; None — дат нема. Лише дати, значення куків не читаються назовні."""
+    import time as _t
+    now = now if now is not None else _t.time()
+    d, cks = _state_cookies(state_file or STATE_FILE)
+    ex = [float(c["expires"]) for c in cks if c.get("name") in ("DSESSID", "is_logged") and isinstance(c.get("expires"), (int, float)) and c["expires"] > 0]
+    return round((min(ex) - now) / 86400.0, 1) if ex else None
+
+
+def persist_cookies(http, state_file=None) -> int:
+    """Записує у збережений стан куки, які сервер ОНОВИВ у відповідях (нове value або пізніший expires). → скільки куків оновлено. Атомарно (tmp+replace), права 0600; нема що оновлювати → файл не чіпаємо."""
+    path = Path(state_file or STATE_FILE)
+    d, cks = _state_cookies(path)
+    if d is None:
+        return 0
+    jar = {}
+    for c in http.s.cookies:
+        jar[(c.name, (c.domain or "").lstrip("."), c.path or "/")] = c
+    n = 0
+    for c in cks:
+        j = jar.get((c.get("name"), str(c.get("domain", "")).lstrip("."), c.get("path") or "/"))
+        if j is None:
+            continue
+        changed = False
+        if j.value is not None and j.value != c.get("value"):
+            c["value"], changed = j.value, True
+        if j.expires and (not isinstance(c.get("expires"), (int, float)) or j.expires > c["expires"]):
+            c["expires"], changed = float(j.expires), True
+        n += 1 if changed else 0
+    if n:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    return n
+
+
+def keepalive(http=None, state_file=None) -> dict:
+    """Підтримка сесії: звичайний захід у кабінет (як це робить людина) + збереження оновлених сервером куків. Сесія мертва → OrderError (потрібен вхід власника; автовходу нема — Google/Telegram)."""
+    http = http or Http(state_file)
+    info = ensure_session(http)
+    return {"balance": info.get("balance"), "cookies_updated": persist_cookies(http, state_file), "days_left": session_days_left(state_file)}
+
+
 def ensure_session(http=None) -> dict:
     """Сесія жива (інакше OrderError: потрібен вхід власника; автовходу нема)."""
     http = http or Http()
@@ -499,7 +554,17 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Кабінет Dropt: --login (вхід власника), --check (сесія і баланс, лише читання)")
     ap.add_argument("--login", action="store_true")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--keepalive", action="store_true", help="зайти в кабінет, зберегти оновлені сервером куки, показати скільки діб лишилось")
     a = ap.parse_args(argv)
+    if a.keepalive:
+        try:
+            before = session_days_left()
+            r = keepalive()
+        except OrderError as e:
+            print(f"[DroptCabinet] {e}", file=sys.stderr)
+            return 1
+        print(f"[DroptCabinet] сесія жива; днів до спливу було: {before}, стало: {r['days_left']}; оновлено куків: {r['cookies_updated']}")
+        return 0
     if a.login:
         return login()
     if a.check:

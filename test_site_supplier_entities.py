@@ -60,6 +60,35 @@ chk("RT: опис — «&730;» -> «&#730;», валідна «&amp;» не ч�
 chk("RT: назва/бренд/опис без сутностей — без змін", b["name"] == "Звичайна назва без сутностей" and b["vendor"] == "HANYE" and b["description"] == "Опис без сутностей.")
 chk("після esc() у сторінці немає подвійного екранування", "&amp;#39;" not in bs.esc(a["name"]) and "&amp;amp;" not in bs.esc(a["vendor"]) and bs.esc(a["vendor"]) == "Build&amp;Play")
 
+# ── Toysi (SEO 10.11: 131989 «Create &amp; Play», 154061 «Mega Stretch Slime &amp; Fluffy Slime»): повна збірка
+def item(pid, name):
+    return {"id": str(pid), "name": name, "vendor": "Test", "price": 300.0, "stock": 5, "category_name": "Машинки", "category_id": "10",
+            "pictures": [f"https://toysi.ua/p/enl_{pid}.jpg"], "description": "Опис товару достатньої довжини для картки, щоб він не вважався тонким і мав нормальний вигляд.", "barcode": ""}
+
+
+catalog = {str(i): item(i, f"Іграшка номер {i}") for i in range(1, 41)}
+catalog["131989"] = item(131989, 'Набір слайм "2 в 1: Mega Stretch Slime &amp; Fluffy Slime"')
+catalog["154061"] = item(154061, 'Конструктор &quot;Create &amp; Play Поліція&quot; м&#39;який')
+bs.tp.fetch_toysi_catalog = lambda: catalog
+bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None
+import telegram_notify  # noqa: E402
+telegram_notify.send_throttled_alert = lambda *a, **k: True
+import site_photo_probe  # noqa: E402
+site_photo_probe.run = lambda idx: None
+bs.LIMIT = 0
+out = Path(tempfile.mkdtemp())
+bs.OUT = str(out)
+with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+    bs.build()
+h1 = (out / "product-131989.html").read_text(encoding="utf-8")
+h2 = (out / "product-154061.html").read_text(encoding="utf-8")
+ix = {x["id"]: x["n"] for x in json.loads((out / "index.json").read_text(encoding="utf-8"))}
+chk("Toysi: <title>/<h1> без «&amp;amp;» і «&amp;#39;»/«&amp;quot;»", not re.search(r"&amp;(amp|#39|quot);", h1 + h2))
+chk("Toysi: «Slime &amp; Fluffy» (один раз екрановано), лапки й апостроф чисті",
+    "Mega Stretch Slime &amp; Fluffy Slime" in h1 and "Create &amp; Play Поліція" in h2 and any(x in h2 for x in ("м&#x27;який", "м&#39;який", "м'який")))
+chk("Toysi: index.json n — чисті символи (клієнт екранує сам)", ix["131989"] == 'Набір слайм "2 в 1: Mega Stretch Slime & Fluffy Slime"' and ix["154061"] == "Конструктор \"Create & Play Поліція\" м'який")
+chk("Toysi: звичайна назва без змін", ix["5"] == "Іграшка номер 5")
+
 print()
 if F:
     print(f"FAILED ({len(F)}):")

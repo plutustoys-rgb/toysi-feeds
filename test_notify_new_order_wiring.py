@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """test_notify_new_order_wiring.py — підключення «🛒 Нове замовлення» (режим «лише замовлення», 12.10.2026) у трьох місцях, реальним кодом на тимчасовій БД:
  • orders_watcher.poll_once: рівно одне повідомлення на нове замовлення, повторний прогін не дублює, без ПІБ/телефону/адреси;
- • site_order_api._handle_order: COD → одне повідомлення при створенні; передоплата → одне «⏳ чекає оплати» (не «🛒»; власник 10.11);
+ • site_order_api._handle_order: COD → одне повідомлення при створенні; передоплата → нуль при створенні;
  • site_order_api._handle_callback: передоплата → одне при ПЕРШОМУ success, повторний колбек нуль; pending (wait_accept) нуль.
 Мережа/Telegram замокані (requests.post). `python test_notify_new_order_wiring.py` → exit 0/1."""
 import base64
@@ -92,14 +92,7 @@ chk("сайт COD: у повідомленні сума 100 грн, 1 поз., �
 posts.clear()
 code, resp = post_order("prepaid", phone="+380671112244")
 oid = resp["order_id"]
-import time as _t
-for _ in range(40):      # ⏳ шлеться в окремому потоці (аудит #1163)
-    if posts:
-        break
-    _t.sleep(0.05)
-_t.sleep(0.2)
-chk("сайт передоплата: при створенні рівно одне «⏳ чекає оплати», НЕ «🛒 Нове замовлення» (неоплачене не «надходження»), без ПІБ/телефону/адреси",
-    code == 200 and len(posts) == 1 and posts[0].startswith("⏳ Замовлення сайту ") and "чекає оплати" in posts[0] and not posts[0].startswith("🛒") and not any(x in posts[0] for x in PII))
+chk("сайт передоплата: при створенні повідомлення НЕМАЄ (неоплачене не «надходження»)", code == 200 and not posts)
 
 
 def callback(status, order_id, amount=100):

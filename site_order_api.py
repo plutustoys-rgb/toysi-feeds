@@ -164,30 +164,6 @@ def thanks_url(order_id, public_number=None) -> str:
     return f"{BASE_URL}/thanks.html?o={oid}" + (f"&n={pn}" if PUBLIC_NUMBER_RE.fullmatch(pn) else "")      # &n= — лише для ПОКАЗУ покупцю на сторінці подяки (ключ — довгий o)
 
 
-def _notify_unpaid_order(order: dict, total, sandbox: bool = False) -> None:
-    """«⏳ Замовлення сайту PT-… створено, чекає оплати»: передоплатне замовлення створене, покупець іде на сторінку LiqPay (рішення власника 10.11.2026: «усе проходить всліпу» — без цього провалена оплата була невидимою:
-    замовлення є в базі, а в Telegram нічого). Це НЕ «надходження» (його шле колбек після оплати): текст інший. Без ПІБ/телефону/адреси. Відправка в окремому потоці (аудит #1163): Telegram не стоїть на шляху до оплати,
-    збій/зависання не ламають прийом і не затримують відповідь покупцю."""
-    if _NO_TELEGRAM:
-        return
-    try:
-        lab = str(order.get("public_number") or order.get("order_id") or "?")
-        n = len(order.get("items") or [])
-        text = (f"⏳ Замовлення сайту {lab}: створено, чекає оплати LiqPay{' (ПІСОЧНИЦЯ, тест)' if sandbox else ''} · {float(total):.0f} грн · {n} поз. "
-                f"Оплата ще НЕ підтверджена: якщо «🛒 Нове замовлення» з цим номером не прийде — перевір кабінет LiqPay (можливі: оплата не пройшла, очікує підтвердження, розбіжність суми).")
-
-        def _send():
-            try:
-                from telegram_notify import send_telegram_message
-                send_telegram_message(text)
-            except Exception as e:  # noqa: BLE001
-                print(f"[site_order_api] повідомлення про неоплачене замовлення не надіслано: {type(e).__name__}", file=sys.stderr)
-
-        threading.Thread(target=_send, name="notify-unpaid-order", daemon=True).start()
-    except Exception as e:  # noqa: BLE001
-        print(f"[site_order_api] повідомлення про неоплачене замовлення не підготовлено: {type(e).__name__}", file=sys.stderr)
-
-
 def _notify_new_order(order: dict, total, test: bool = False, note: str = "") -> None:
     """Єдине повідомлення власнику в Telegram (режим «лише замовлення»): надходження замовлення сайту. Без персональних даних; збій не ламає прийом."""
     if _NO_TELEGRAM:
@@ -1185,7 +1161,6 @@ class Handler(SimpleHTTPRequestHandler):
             )
             resp["liqpay"] = {"action_url": ck["action_url"], "data": ck["data"],
                               "signature": ck["signature"], "sandbox": ck["sandbox"]}
-            _notify_unpaid_order(order, total, sandbox=bool(ck.get("sandbox")))      # власник 10.11: «усе проходить всліпу» — неоплачене замовлення теж видно (окремий тип «⏳», не «🛒 Нове замовлення»)
         else:
             resp["liqpay"] = None
             resp["message"] = ("Замовлення прийнято. Онлайн-оплату (LiqPay) ще не підключено — "

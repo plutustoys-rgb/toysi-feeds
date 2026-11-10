@@ -226,8 +226,10 @@ def public_photo(pid, url):
 # (casefold збігається) — модуль не може прибрати слова/пунктуацію з назви на сайті. Обрізання до 150 символів (потрібне фіду) для сайту вимкнено: limit = довжина назви.
 try:
     from feed_title_norm import normalize_title as _feed_normalize_title
-except ImportError:   # модуля нема — назви як є (збірка не падає)
+except ImportError:   # модуля нема — назви як є (збірка не падає), але ГУЧНО: інакше всі капс-назви тихо лишились би
     _feed_normalize_title = None
+    print("[build] ⚠ feed_title_norm недоступний — назви-капсом на сайті НЕ нормалізовано", file=sys.stderr)
+_TITLE_NORM_COUNT = [0]   # скільки назв змінила нормалізація за збірку (0 на повному каталозі — сигнал, що модуль не працює)
 
 
 def _norm_case(t):
@@ -242,7 +244,10 @@ def normalize_site_title(name):
         new = _feed_normalize_title(name, limit=max(150, len(name) + 1))
     except Exception:   # noqa: BLE001 — нормалізація не повинна валити збірку
         return name
-    return new if (new != name and isinstance(new, str) and _norm_case(new) == _norm_case(name)) else name
+    if new != name and isinstance(new, str) and _norm_case(new) == _norm_case(name):
+        _TITLE_NORM_COUNT[0] += 1
+        return new
+    return name
 
 
 def site_product_code(pid):
@@ -1129,6 +1134,7 @@ def build():
             pass
         raise CatalogShrinkError(_msg)
     print(f"[build] карток до генерації: {len(prods)} (+ без залишку, сторінка жива: {len(oos_prods)}; без залишку й без ціни — пропущено: {oos_skipped_no_price})")
+    print(f"[build] назви-капсом: нормалізовано {_TITLE_NORM_COUNT[0]} назв (feed_title_norm){' — ⚠ МОДУЛЬ НЕДОСТУПНИЙ' if _feed_normalize_title is None else ''})", file=sys.stderr)
 
     # категорії
     cats = {}

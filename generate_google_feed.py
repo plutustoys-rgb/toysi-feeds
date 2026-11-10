@@ -766,6 +766,22 @@ def _toysi_original_image(url: str) -> str:
     return m.group(1) + m.group(2) if m else url
 
 
+_TOYSI_PHOTO_RX = re.compile(r"^https://toysi\.ua/p/((?:[0-9]{1,2}/)?(?:enl_)?[0-9]{1,12}\.(?:jpg|png|webp))$")
+
+
+def toysi_photo_proxy_on() -> bool:
+    """Власник 10.11.2026 («роби проксі»): фото Toysi у Google/Meta/Bing-фідах — під НАШОЮ адресою /img/t/… (Apache-проксі, deploy/activate_site_apache.sh), без домену постачальника. FEEDS_TOYSI_PHOTO_PROXY=1 вмикає ПІСЛЯ того, як проксі на VPS перевірено."""
+    return os.environ.get("FEEDS_TOYSI_PHOTO_PROXY", "0").strip() == "1"
+
+
+def _public_toysi_image(url: str) -> str:
+    """https://toysi.ua/p/<шлях> → https://plutustoys.com.ua/img/t/<шлях> (лише рівно файли Toysi; інші хости — images.prom.ua тощо — не чіпаємо)."""
+    if not url or not toysi_photo_proxy_on():
+        return url
+    m = _TOYSI_PHOTO_RX.match(url)
+    return f"{SHOP_URL}/img/t/{m.group(1)}" if m else url
+
+
 def _upscale_prom_image(url: str) -> str:
     if not url or "images.prom.ua" not in url:
         return url
@@ -1189,6 +1205,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             continue
         image = _upscale_prom_image(image)
         image = _toysi_original_image(image)
+        image = _public_toysi_image(image)
 
         stock = _stock_num   # число, перевірене гейтом вище (рядок '5' раніше проходив гейт, а нижче падав на stock > 0)
 

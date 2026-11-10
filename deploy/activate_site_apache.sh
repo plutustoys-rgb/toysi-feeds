@@ -234,6 +234,9 @@ cat <<'EOF'
         <LocationMatch "^/assets/">
             Header set Cache-Control "public, max-age=86400"
         </LocationMatch>
+        <LocationMatch "^/img/t/">
+            Header set Cache-Control "public, max-age=1209600"
+        </LocationMatch>
         # 16.10.2026 (власник «так», через Code): HTML без Cache-Control кешувався браузером евристикою (10% віку за Last-Modified) → після деплою відвідувач бачив стару сторінку годинами (власник бачив стару панель каталогу).
         # no-cache = завжди питати сервер (If-Modified-Since → 304 за кілька байтів, Last-Modified/ETag лишаються); на 404/410 заголовок не ставиться (Header set — лише успішні відповіді)
         <FilesMatch "\.html$">
@@ -274,6 +277,16 @@ cat <<'EOF'
     RewriteRule ^/img/p/x([1-9][0-9]*)-([0-9]{1,2})\.jpg$ /img/dropt/dropt-$1-$2.jpg [L]
     RewriteCond %{DOCUMENT_ROOT}/img/rt/rt-$1-$2.jpg -f
     RewriteRule ^/img/p/y([0-9A-Za-z_]+)-([0-9]{1,2})\.jpg$ /img/rt/rt-$1-$2.jpg [L]
+    # 10.11.2026 (власник: «роби проксі» — фото Toysi під нашою адресою, без домену постачальника в коді сторінок/фідах): /img/t/<шлях> → https://toysi.ua/p/<шлях>. Лише суворий шаблон файлів Toysi (цифри/enl_, .jpg/.png/.webp,
+    # не більше одного підкаталогу з цифр) — інакше це відкритий проксі (SSRF/обхід шляхів неможливі: символи лише [0-9a-z_] і одна «/»). Фото НЕ копіюємо: тягнемо з Toysi на запит; браузер кешує добу+ (Cache-Control нижче).
+    SSLProxyEngine On
+    ProxyTimeout 20
+    # аудит #1181: vhost-широкий `ProxyPreserveHost On` (для /api/) слав би Toysi заголовок Host: plutustoys.com.ua → Toysi віддає 301 на toysi.com.ua (виміряно) — для /img/t/ ВИМИКАЄМО; ProxyPassReverse переписує можливий Location на нашу адресу
+    <LocationMatch "^/img/t/">
+        ProxyPreserveHost Off
+    </LocationMatch>
+    ProxyPassReverse /img/t/ https://toysi.ua/p/
+    RewriteRule ^/img/t/((?:[0-9]{1,2}/)?(?:enl_)?[0-9]{1,12}\.(?:jpg|png|webp))$ https://toysi.ua/p/$1 [P,L]
     # Dropt-sitemap: sitemap-dropt.xml → sitemap-more.xml (лише коли нова карта існує)
     RewriteCond %{DOCUMENT_ROOT}/sitemap-more.xml -f
     RewriteRule ^/sitemap-dropt\.xml$ /sitemap-more.xml [R=301,L]
@@ -701,6 +714,10 @@ if [ "$CERT_OK" = "1" ]; then
     echo "  https /ru/g${FGK:-?}-x (група Prom → 301 на свою категорію): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/ru/g${FGK:-0}-x" 2>/dev/null || echo ERR)"
     FCM=$(awk '/^[a-z0-9]/{print $1; exit}' "$CATMOVESMAP" 2>/dev/null || true)
     if [ -n "$FCM" ]; then echo "  https /category-$FCM.html (злита категорія → 301 на приймач): $(curl -sS --max-time 10 -o /dev/null -w '%{http_code} -> %{redirect_url}' "https://$DOMAIN/category-$FCM.html" 2>/dev/null || echo ERR)"; fi
+    # проба проксі фото Toysi (10.11.2026): ЛИШЕ попередження, не відкат — фото Toysi не критичні для решти сайту, а відкат через зовнішню залежність (Toysi) ламав би непов'язані правила
+    PH=$(curl -sS --max-time 25 -D - -o /dev/null "https://$DOMAIN/img/t/enl_218158.jpg" 2>/dev/null | tr -d '' || true)
+    case "$PH" in *"200"*image/jpeg*) echo "  https /img/t/enl_218158.jpg (проксі фото Toysi): OK 200 image/jpeg";; *) echo "  ⚠️  /img/t/enl_218158.jpg (проксі фото Toysi) НЕ віддає 200 image/jpeg — перевір вручну (не критично для сайту): $(printf '%s' "$PH" | head -n1)";; esac
+    if printf '%s' "$PH" | grep -qi '^location:.*toysi'; then echo "  ⚠️  проксі фото віддає Location з іменем постачальника — НЕ вмикати SITE_TOYSI_PHOTO_PROXY/FEEDS_TOYSI_PHOTO_PROXY"; fi
     certbot renew --dry-run --cert-name "$DOMAIN" >/dev/null 2>&1 && echo "✅ certbot renew --dry-run для $DOMAIN ОК" || echo "⚠️  certbot renew --dry-run для $DOMAIN НЕ пройшов — перевір /var/log/letsencrypt/letsencrypt.log"
     echo ""
     echo "🎉 ГОТОВО: https://$DOMAIN працює. Далі (не тут): LiqPay-ключі в $APP/.env, SYSTEM_MAP, GMC."

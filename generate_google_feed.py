@@ -1436,7 +1436,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     items, stats = build_feed_items(feed_catalog, prom_by_external_id, links, prom_price_overrides,
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())
 
-    ru_items = items      # російський фід — лише Toysi (російського тексту для RT/Dropt нема)
+    ru_items = items      # російський фід: Toysi; RT/Dropt додаються нижче лише за брамою GOOGLE_RU_RT_DROPT_IN_FEED=1 і з готовим перекладом
     try:
         import google_rt_dropt      # власник 10.11.2026: «РТ та дропт додай у гугл» — за брамою GOOGLE_RT_DROPT_IN_FEED=1; збій (і імпорту) НЕ валить основний фід
         items = google_rt_dropt.extend_items(items, sys.modules[__name__], "google")

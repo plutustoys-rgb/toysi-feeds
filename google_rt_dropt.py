@@ -9,6 +9,7 @@
 НЕ ВИГАДУЄМО даних: нема джерела для бренду → «PlutusToys» (як Toysi); штрихкод — лише валідний GTIN; опис — з постачальника (очищений), інакше назва."""
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -16,10 +17,51 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SUPPLIER_MAX_AGE_H = 72          # supplier_*.json старший за це — джерело брендів/закупівлі не свіже: фід RT/Dropt цього прогону НЕ формуємо (fail-safe; решта фіда не страждає)
 PREFIXES = ("rt-", "dropt-")
+PHOTO_PREFIX = "https://plutustoys.com.ua/img/p/"        # фото лише з нашого шляху /img/p/<slug>-K.jpg (public_photo, build_site.py) — інакше позицію не віддаємо
+LEAK_TOKENS = ("dropt", "royaltoys", "royal toys", "toysi")      # ім'я постачальника не має потрапити ні в бренд, ні в назву, ні в опис, ні в посилання, ні в id, ні в фото (рішення власника 10.11). «royal» окремо НЕ ловимо: легальні назви товарів («Royal Pony»); «rt-» — лише як id (нижче)
+_RT_ID_RX = re.compile(r"(?<![a-z0-9])rt-[0-9a-z]", re.I)
+_URL_RX = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+\.(?:com|ua|net|org|in\.ua|com\.ua)\b\S*", re.I)
+_PHONE_RX = re.compile(r"\+?\d[\d\s().-]{8,}\d")
+_BAD_SENTENCE_RX = re.compile(r"накладен|післяплат|наложен|наложк|при отриманні|при получении|оплат\w* (?:при|на пошті|на поште)|менеджер|дропшип|dropship|на нашому сайті|на нашем сайте|наш сайт|\bдропт|royal ?toys|dropt|toysi|телефон\w*|звертайтесь|замовляйте", re.I)
 
 
-def gate_on() -> bool:
-    return os.environ.get("GOOGLE_RT_DROPT_IN_FEED") == "1"
+def scrub_description(text: str) -> str:
+    """Опис постачальника → безпечний для публічного фіда: без посилань/телефонів, без речень про накладений платіж/менеджера/сайт постачальника (як на картці сайту: передоплата; ім'я постачальника ніде). Порожній результат → викликач бере назву."""
+    t = _URL_RX.sub(" ", str(text or ""))
+    t = _PHONE_RX.sub(" ", t)
+    parts = re.split(r"(?<=[.!?…])\s+|\n+", t)
+    keep = [x.strip() for x in parts if x.strip() and not _BAD_SENTENCE_RX.search(x)]
+    out = re.sub(r"\s{2,}", " ", " ".join(keep)).strip()
+    return out if not leaks(out) else ""
+
+
+def leaks(*values) -> bool:
+    return any(tok in str(v or "").lower() or _RT_ID_RX.search(str(v or "")) for v in values for tok in LEAK_TOKENS)
+
+
+def only_indexable() -> bool:
+    """За замовчуванням у фід лише картки, які SEO відкрила для індексації (ix=1; контракт у site/build_site.py поруч з index_entries). FEED_RT_DROPT_ONLY_IX=0 — віддавати й закриті (рішення власника/SEO)."""
+    return os.environ.get("FEED_RT_DROPT_ONLY_IX", "1") != "0"
+
+
+def gate_on(feed: str = "google") -> bool:
+    """Брама на КОЖЕН фід окремо: GOOGLE_/META_/BING_RT_DROPT_IN_FEED=1 у .env VPS."""
+    return os.environ.get(f"{feed.upper()}_RT_DROPT_IN_FEED") == "1"
+
+
+def extend_items(items: list, gf, feed: str = "google") -> list:
+    """Додає RT/Dropt до items фіда `feed` за його брамою. Збій/вимкнено → items без змін (основний фід не страждає)."""
+    if not gate_on(feed):
+        return items
+    try:
+        extra, st = build_items(gf)
+        print(f"[{feed}] RT/Dropt: " + describe(st))
+        return items + extra
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        print(f"[{feed}] RT/Dropt пропущено ({type(e).__name__}: {str(e)[:120]}) — фід лише з Toysi.", file=sys.stderr)
+        return items
 
 
 def _site_dir() -> Path:
@@ -92,6 +134,12 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
         if not isinstance(r, dict):
             no("no_supplier_record")
             continue
+        if e.get("dup"):
+            no("shadow_duplicate_of_toysi")        # RT-«тінь» товару Toysi: на сайті прихована, canonical на Toysi (build_site.py) — у фід не віддаємо
+            continue
+        if only_indexable() and e.get("ix") != 1:
+            no("not_opened_for_index")             # SEO ще не відкрила картку (noindex) — контракт «фіди лише з ix=1»
+            continue
         if e.get("s") != 1:
             no("out_of_stock")
             continue
@@ -105,14 +153,17 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
         if not slug:
             no("no_public_slug")           # публічних адрес ще нема (ворота сайту вимкнені) — не віддаємо Google ні id «rt-/dropt-», ні стару адресу з іменем постачальника (рішення власника 10.11)
             continue
-        if not image.startswith("https://"):
+        if not image.startswith(PHOTO_PREFIX):
             no("no_image")
             continue
         vendor = (r.get("vendor") or "").strip()
         cat_site = (e.get("c") or "").strip()
         cat_sup = (r.get("category") or "").strip()
-        if gf.is_forbidden({"name": name, "vendor": vendor, "category_name": cat_sup or cat_site}):
+        if any(gf.is_forbidden({"id": pid, "name": name, "vendor": vendor, "category_name": c}) for c in {cat_sup, cat_site} if c) or gf.is_forbidden({"id": pid, "name": name, "vendor": vendor, "category_name": ""}):
             no("forbidden")
+            continue
+        if gf.is_clearance_item(name, cat_site, "") or gf.is_clearance_item(name, cat_sup, ""):
+            no("clearance")
             continue
         if cat_site.lower() in gf.FEED_EXCLUDED_CATEGORIES or cat_sup.lower() in gf.FEED_EXCLUDED_CATEGORIES:
             no("excluded_category")
@@ -152,11 +203,17 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
             continue
         seen.add(feed_id)
         brand = gf.normalize_vendor(vendor) or gf.SHOP_NAME
+        if leaks(brand):
+            brand = gf.SHOP_NAME
         bc = str(r.get("barcode") or r.get("gtin") or "").strip()
         gtin = bc if bc and gf.is_valid_gtin(bc) else None
-        desc = gf._clean_description(r.get("description") or "")[:5000] or name
+        desc = scrub_description(gf._clean_description(r.get("description") or ""))[:5000] or name
         desc = gf.enrich_brand_only_description(feed_id, name, desc, cat_site or cat_sup, "uk")
         link = gf.SHOP_URL + "/product-" + slug + ".html"
+        if leaks(feed_id, title, desc, link, image, brand):
+            no("supplier_name_leak")               # остання перевірка: ім'я постачальника ніде у позиції — інакше позицію не віддаємо
+            seen.discard(feed_id)
+            continue
         price_str = f"{price:.2f} {gf.FEED_CURRENCY}"
         items.append({
             "pid": pid,

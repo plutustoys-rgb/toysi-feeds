@@ -146,6 +146,8 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
     items, stats = build_feed_items(feed_catalog, prom_by_external_id, links, load_fresh_prom_price_overrides(),
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())
     # Репліки зброї виключає САМ build_feed_items (спільно для google/meta/bing) — тут не дублюємо.
+    import generate_google_feed as _gf, google_rt_dropt      # власник 10.11.2026: RoyalToys/Dropt і в Meta — за брамою META_RT_DROPT_IN_FEED=1
+    items = google_rt_dropt.extend_items(items, _gf, "meta")
 
     root = _build_xml(items)
     ET.indent(root, space="  ")

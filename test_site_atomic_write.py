@@ -121,8 +121,17 @@ except UnicodeEncodeError:
     raised = True
 chk("збій кодування під час запису: старий HTML цілий, тимчасового файлу нема", raised and read("product-1.html") == "<html>B</html>" and sorted(os.listdir(out)) == ["index.json", "product-1.html", "sitemap-x.xml"])
 
-# ── залишок тимчасового файлу від перерваної збірки прибирається чисткою збірки (рядок із шаблоном у build_site.py)
-chk("чистка збірки знає шаблон залишку .<ім'я>.tmp<pid> (шаблон збігається з тим, що створює _write_text_atomic)", "tmp[0-9]+" in real_open(os.path.join(HERE, "site", "build_site.py"), encoding="utf-8").read() and __import__("re").fullmatch(r"\.[^/]+\.tmp[0-9]+", "." + "product-1.html" + ".tmp" + str(os.getpid())) is not None)
+# ── чистка залишків: свіжий тимчасовий файл (паралельна збірка) лишається, старий (>10 хв) прибирається, легітимні файли з крапкою — ні
+_fresh = os.path.join(out, ".sitemap-y.xml.tmp111")
+_old = os.path.join(out, ".sitemap-z.xml.tmp222")
+_keep = os.path.join(out, ".htaccess")
+for _f in (_fresh, _old, _keep):
+    with real_open(_f, "w") as _h:
+        _h.write("x")
+os.utime(_old, (os.path.getmtime(_old) - 3600, os.path.getmtime(_old) - 3600))
+_n = b._remove_stale_tmp(out)
+chk("чистка залишків: старий (>10 хв) прибрано, свіжий (паралельна збірка) і .htaccess лишились", _n == 1 and not os.path.exists(_old) and os.path.exists(_fresh) and os.path.exists(_keep))
+os.remove(_fresh); os.remove(_keep)
 
 # ── у вихідному коді не лишилось прямих open(<файл збірки>, "w")
 src_txt = real_open(os.path.join(HERE, "site", "build_site.py"), encoding="utf-8").read()

@@ -1187,11 +1187,8 @@ def build():
                 removed += 1
             except OSError:
                 pass
-        elif re.fullmatch(r"\.[^/]+\.tmp[0-9]+", fn):   # залишок тимчасового файлу атомарного запису від перерваної збірки (kill/живлення) — не віддаємо й не копіюємо
-            try:
-                os.remove(os.path.join(OUT, fn))
-            except OSError:
-                pass
+
+    _remove_stale_tmp(OUT)
 
     _written_slugs = {m.group(1) for m in (re.fullmatch(r"category-(.+)\.html", f) for f in paged if not re.search(r"_\d+\.html$", f)) if m}
     _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)
@@ -4248,6 +4245,23 @@ def _lastmod_date(fname):
     ent = _lm_state().get(fname)
     t = ent["t"] if ent else time.time()
     return time.strftime("%Y-%m-%d", time.gmtime(t))
+
+
+_STALE_TMP_RX = re.compile(r"\.[^/]+\.tmp[0-9]+")
+
+
+def _remove_stale_tmp(out, max_age=600):
+    """Прибирає залишки тимчасових файлів атомарного запису від перерваної збірки (kill/живлення): лише старші за max_age секунд — тимчасовий файл паралельної збірки (timer + ручна) не чіпаємо."""
+    n = 0
+    for fn in os.listdir(out):
+        if _STALE_TMP_RX.fullmatch(fn):
+            try:
+                if time.time() - os.path.getmtime(os.path.join(out, fn)) > max_age:
+                    os.remove(os.path.join(out, fn))
+                    n += 1
+            except OSError:
+                pass
+    return n
 
 
 def _write_text_atomic(path, content):

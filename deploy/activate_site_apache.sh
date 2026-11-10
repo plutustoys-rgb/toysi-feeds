@@ -234,6 +234,9 @@ cat <<'EOF'
         <LocationMatch "^/assets/">
             Header set Cache-Control "public, max-age=86400"
         </LocationMatch>
+        <LocationMatch "^/img/t/">
+            Header set Cache-Control "public, max-age=1209600"
+        </LocationMatch>
         # 16.10.2026 (власник «так», через Code): HTML без Cache-Control кешувався браузером евристикою (10% віку за Last-Modified) → після деплою відвідувач бачив стару сторінку годинами (власник бачив стару панель каталогу).
         # no-cache = завжди питати сервер (If-Modified-Since → 304 за кілька байтів, Last-Modified/ETag лишаються); на 404/410 заголовок не ставиться (Header set — лише успішні відповіді)
         <FilesMatch "\.html$">
@@ -274,6 +277,11 @@ cat <<'EOF'
     RewriteRule ^/img/p/x([1-9][0-9]*)-([0-9]{1,2})\.jpg$ /img/dropt/dropt-$1-$2.jpg [L]
     RewriteCond %{DOCUMENT_ROOT}/img/rt/rt-$1-$2.jpg -f
     RewriteRule ^/img/p/y([0-9A-Za-z_]+)-([0-9]{1,2})\.jpg$ /img/rt/rt-$1-$2.jpg [L]
+    # 10.11.2026 (власник: «роби проксі» — фото Toysi під нашою адресою, без домену постачальника в коді сторінок/фідах): /img/t/<шлях> → https://toysi.ua/p/<шлях>. Лише суворий шаблон файлів Toysi (цифри/enl_, .jpg/.png/.webp,
+    # не більше одного підкаталогу з цифр) — інакше це відкритий проксі (SSRF/обхід шляхів неможливі: символи лише [0-9a-z_] і одна «/»). Фото НЕ копіюємо: тягнемо з Toysi на запит; браузер кешує добу+ (Cache-Control нижче).
+    SSLProxyEngine On
+    ProxyTimeout 20
+    RewriteRule ^/img/t/((?:[0-9]{1,2}/)?(?:enl_)?[0-9]{1,12}\.(?:jpg|png|webp))$ https://toysi.ua/p/$1 [P,L]
     # Dropt-sitemap: sitemap-dropt.xml → sitemap-more.xml (лише коли нова карта існує)
     RewriteCond %{DOCUMENT_ROOT}/sitemap-more.xml -f
     RewriteRule ^/sitemap-dropt\.xml$ /sitemap-more.xml [R=301,L]

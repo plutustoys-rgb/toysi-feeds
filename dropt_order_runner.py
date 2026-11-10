@@ -292,9 +292,57 @@ class _Deps(rt_run._Deps):
             return {"submitted": False, "not_submitted_certain": True, "problems": [str(e)]}
 
 
+KEEPALIVE_EVERY_H = 6        # як часто заходити в кабінет Dropt, щоб сесія не «старіла» без діяльності
+SESSION_WARN_DAYS = 7        # скільки діб до спливу сесії — попередження
+
+
+def keepalive_if_due(now=None, marker=None, cab=None) -> dict:
+    """Власник 10.11.2026: «з протухання виріши щоб його не було». Кабінет Dropt входить через Google/Telegram — автовходу немає, тож (1) раз на KEEPALIVE_EVERY_H заходимо в кабінет як людина й зберігаємо куки, які сервер
+    продовжив (dropt_cabinet.keepalive); (2) якщо сесія мертва — алерт «потрібен вхід» (Код → власнику одна дія); (3) якщо до спливу ≤ SESSION_WARN_DAYS діб — попередження ЗАЗДАЛЕГІДЬ. Ніколи не кидає виняток.
+    Нема файлу сесії (Dropt не підключено) — мовчки нічого. → {'ran':bool,...} для тестів."""
+    import json
+    from datetime import datetime, timedelta
+    from pathlib import Path
+    try:
+        cab = cab or __import__("dropt_cabinet")
+        now = now or datetime.now()
+        mk = Path(marker) if marker else Path(cab.STATE_FILE).with_name("dropt_keepalive.json")
+        if not Path(cab.STATE_FILE).exists():
+            return {"ran": False, "why": "no_session_file"}
+        try:
+            last = datetime.fromisoformat(json.loads(mk.read_text(encoding="utf-8")).get("at", ""))
+        except (OSError, ValueError, AttributeError):
+            last = None
+        if last and now - last < timedelta(hours=KEEPALIVE_EVERY_H):
+            return {"ran": False, "why": "not_due"}
+        res = {"ran": True}
+        try:
+            r = cab.keepalive()
+            res.update(r)
+            days = r.get("days_left")
+            if days is not None and days <= SESSION_WARN_DAYS:
+                _alert("cabinet", "session_expiring", f"сесія кабінету Dropt спливає через {days} діб — потрібен новий вхід власника (python dropt_cabinet.py --login на ПК, потім deploy/dropt_session_to_vps.ps1; кілька хвилин), інакше автоматичне оформлення зупиниться", cooldown=24 * 3600)
+        except Exception as e:  # noqa: BLE001 — і OrderError (сесія мертва), і мережа
+            res["error"] = f"{type(e).__name__}"
+            _alert("cabinet", "session_dead", f"кабінет Dropt: сесія не діє або кабінет недоступний ({type(e).__name__}: {str(e)[:160]}) — автоматичне оформлення Dropt зупинене до нового входу власника (python dropt_cabinet.py --login на ПК, потім deploy/dropt_session_to_vps.ps1)", cooldown=6 * 3600)
+        try:
+            mk.parent.mkdir(parents=True, exist_ok=True)
+            tmp = mk.with_name(mk.name + ".tmp")
+            tmp.write_text(json.dumps({"at": now.isoformat(timespec="seconds")}), encoding="utf-8")
+            os.replace(tmp, mk)
+        except OSError:
+            pass
+        return res
+    except Exception as e:  # noqa: BLE001
+        print(f"[dropt_runner] keepalive збій: {type(e).__name__}", file=sys.stderr)
+        return {"ran": False, "why": f"error_{type(e).__name__}"}
+
+
 def run(apply: bool | None = None, deps=None, db_path=None) -> list:
     if apply is None:
         apply = os.environ.get("DROPT_RUNNER_APPLY") == "1"
+    if deps is None:
+        keepalive_if_due()             # лише у бойовому викликі (тести з deps його не чіпають)
     return _run_pipeline(apply, deps, db_path)
 
 

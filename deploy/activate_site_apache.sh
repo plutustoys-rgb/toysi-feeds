@@ -262,6 +262,21 @@ cat <<'EOF'
     RewriteMap sitegone "txt:@APP@/site_gone_apache.map"
     RewriteCond ${sitegone:$1|-} !=-
     RewriteRule ^/((?:product|category)-[a-z0-9-]+)(?:_[0-9]+)?\.html$ - [G,L]
+    # 10.11.2026 (власник: «щоб покупець не бачив» постачальника; Shopify-code, PR #1142, ворота SITE_PUBLIC_IDS_LIVE у збірці сайту): нейтральні публічні адреси Dropt/RoyalToys.
+    # Контракт (SITE_CHANNEL 07:45): dropt-N → /product-xN.html, rt-X → /product-yX.html; фото /img/p/xN-K.jpg, /img/p/yX-K.jpg (файли лежать у /img/dropt, /img/rt і НЕ рухаються).
+    # 301 зі старих адрес — лише коли нова сторінка вже існує (-f): до першої збірки з воротами старі адреси віддаються як було (без 301 у 404). Правила нічого не міняють, поки збірка не створила нових файлів.
+    RewriteCond %{DOCUMENT_ROOT}/product-x$1.html -f
+    RewriteRule ^/product-dropt-([1-9][0-9]*)\.html$ /product-x$1.html [R=301,L]
+    RewriteCond %{DOCUMENT_ROOT}/product-y$1.html -f
+    RewriteRule ^/product-rt-([0-9A-Za-z_]+)\.html$ /product-y$1.html [R=301,L]
+    # внутрішній rewrite фото (без редиректу): публічний шлях → фізичний файл; старі шляхи /img/dropt|rt віддаються як були (збережені кошики, Google Images)
+    RewriteCond %{DOCUMENT_ROOT}/img/dropt/dropt-$1-$2.jpg -f
+    RewriteRule ^/img/p/x([1-9][0-9]*)-([0-9]{1,2})\.jpg$ /img/dropt/dropt-$1-$2.jpg [L]
+    RewriteCond %{DOCUMENT_ROOT}/img/rt/rt-$1-$2.jpg -f
+    RewriteRule ^/img/p/y([0-9A-Za-z_]+)-([0-9]{1,2})\.jpg$ /img/rt/rt-$1-$2.jpg [L]
+    # Dropt-sitemap: sitemap-dropt.xml → sitemap-more.xml (лише коли нова карта існує)
+    RewriteCond %{DOCUMENT_ROOT}/sitemap-more.xml -f
+    RewriteRule ^/sitemap-dropt\.xml$ /sitemap-more.xml [R=301,L]
     # 15.10.2026 (SEO/Код, лог Googlebot): 647 запитів до старих Prom-шляхів оформлення /create_order_mobile та /ua/create_order_mobile (були 404) → 410 Gone, як і решта мертвих Prom-URL
     RewriteRule ^/(?:(?:ua|ru)/)?create_order_mobile - [G,L]
     # 16.10.2026 (власник): сторінка Halloween тепер /halloween.html — старий /helovin.html (+ пагінація helovin_N.html) → 301

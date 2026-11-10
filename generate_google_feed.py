@@ -1412,6 +1412,13 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     items, stats = build_feed_items(feed_catalog, prom_by_external_id, links, prom_price_overrides,
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())
 
+    ru_items = items      # російський фід — лише Toysi (російського тексту для RT/Dropt нема)
+    try:
+        import google_rt_dropt      # власник 10.11.2026: «РТ та дропт додай у гугл» — за брамою GOOGLE_RT_DROPT_IN_FEED=1; збій (і імпорту) НЕ валить основний фід
+        items = google_rt_dropt.extend_items(items, sys.modules[__name__], "google")
+    except Exception as e:  # noqa: BLE001
+        print(f"[Google] RT/Dropt пропущено ({type(e).__name__}: {str(e)[:120]}) — фід лише з Toysi.", file=sys.stderr)
+
     root = _build_xml(items)
     ET.indent(root, space="  ")
     xml_str = ET.tostring(root, encoding="unicode")
@@ -1423,7 +1430,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
         f.write(xml_str)
 
     print(f"[Google] Готово! Збережено: {output_file}")
-    write_ru_feed(items, OUTPUT_FILE_RU if output_file == OUTPUT_FILE else output_file.replace(".xml", "_ru.xml"))
+    write_ru_feed(ru_items, OUTPUT_FILE_RU if output_file == OUTPUT_FILE else output_file.replace(".xml", "_ru.xml"))
     print(f"[Google] У фіді: {stats['included']} з {stats['total_considered']} розглянутих")
     print(f"[Google] Пропущено — нема картки на власному сайті: {stats['not_on_site']}")
     print(f"[Google] Пропущено — ТМ «UNO» (претензія правовласника): {stats['trademark_blocked']}")

@@ -501,6 +501,7 @@ try:
         and bs.public_photo("rt-69616", "https://plutustoys.com.ua/img/rt/rt-69616-1.jpg") == "https://plutustoys.com.ua/img/p/y69616-1.jpg"
         and bs.public_photo("dropt-101", "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg") == "https://plutustoys.com.ua/img/dropt/dropt-999-1.jpg"
         and bs.public_photo("218158", "https://toysi.ua/p/2/enl_218158.jpg") == "https://toysi.ua/p/2/enl_218158.jpg")
+    chk("ворота: фото — каталог зв'язаний з префіксом id (/img/rt/dropt-… не переписується); код зберігає регістр id (PT-Yabc12S3)", bs.public_photo("dropt-101", "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg") == "https://plutustoys.com.ua/img/rt/dropt-101-1.jpg" and bs.public_photo("rt-5", "https://plutustoys.com.ua/img/dropt/rt-5-1.jpg") == "https://plutustoys.com.ua/img/dropt/rt-5-1.jpg" and bs.site_product_code("rt-18636s22164") == "PT-Y18636s22164" and bs.site_product_code("rt-Ab1") != bs.site_product_code("rt-aB1"))
     outP, logP, _ = run_build(True, True)
     hP = (outP / "product-x101.html").read_text(encoding="utf-8")
     ldP = hP.split('application/ld+json', 1)[-1]
@@ -514,6 +515,12 @@ try:
     chk("ворота: index.json має поле u (публічний slug) для Dropt, внутрішній id лишається; для Toysi поля u нема", ixP["dropt-101"].get("u") == "x101" and all("u" not in x for k, x in ixP.items() if not k.startswith(("dropt-", "rt-"))))
     catP = next((v for k, v in {f.name: f.read_bytes().decode("utf-8") for f in outP.glob("category-*.html")}.items() if "product-x101" in v), "")
     chk("ворота: сторінка категорії посилається на product-x101.html, не на product-dropt-101", bool(catP) and "product-dropt-" not in catP)
+    bs.PUBLIC_IDS_LIVE = False
+    bs.OUT = str(outP)   # відкат У ТОМУ САМОМУ каталозі: старі файли воріт мають зникнути
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        bs.build()
+    outR = outP
+    chk("відкат воріт: збірка без sitemap-more.xml і без product-x*.html, є product-dropt-101.html", not (outR / "sitemap-more.xml").exists() and not any(f.name.startswith("product-x") for f in outR.iterdir()) and (outR / "product-dropt-101.html").exists())
 finally:
     bs.PUBLIC_IDS_LIVE = _pi_old
 print()

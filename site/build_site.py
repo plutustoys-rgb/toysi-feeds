@@ -164,13 +164,13 @@ def price_of(it):
         return int(it["site_price"])
     return cp.site_retail_price(it)
 
-# Російськомовні товари на сайті НЕ показуємо (власник 20.10: «російськомовні прибери»; для фідів Rozetka/Prom таке правило з 21.08 — generate_*_feed._RUSSIAN_LANG_RE).
-# Лише МОВНИЙ маркер у назві: «(рос)»/«(рус)», standalone «рос»/«рус», «російською», «російськомов…», «рос. звучення». НЕ голе «російськ…» (змістом, напр. «російські народні казки»,
-# не мова). Двомовні («рос. і укр. мовами», «укр./рос.») лишаємо: це укр. продукт із російською версією правил.
+# Російськомовні товари на сайті НЕ показуємо (власник 20.10: «російськомовні прибери»; для фідів Rozetka/Prom таке правило з 21.08 — generate_*_feed._RUSSIAN_LANG_RE).
+# Лише МОВНИЙ маркер у назві: «(рос)»/«(рус)», standalone «рос»/«рус», «російською», «російськомов…», «рос. звучення». НЕ голе «російськ…» (змістом, напр. «російські народні казки»,
+# не мова). Двомовні («рос. і укр. мовами», «укр./рос.») лишаємо: це укр. продукт із російською версією правил.
 _RU_LANG_RE = re.compile(r"\bрос\b|\bрус\b|російською|російськомов|рос\.\s*звуч", re.IGNORECASE)
 _UA_LANG_RE = re.compile(r"\bукр\b|\bукр\.|українськ", re.IGNORECASE)
-
-
+
+
 # Російські НАЗВИ (власник 20.10: «російськомовні прибери»; тестувальник 20.10 показав 60+ карток Toysi з російським текстом у назві): (1) літери, яких нема в українській (ы э ъ ё) — тверда ознака;
 # (2) російські СЛОВА, лише ТОЧНІ форми (без \w* після «набор»: укр. «набір» відмінюється «набору/набором/наборі/наборах/наборів», вони починаються на «набор» — з \w* зникли б 189 звичайних укр. карток).
 # Слова: набор/наборы/наборов (нижче — відмінки НЕ беремо), игрушк*, детск*, цвет*, размер*, мальчик*, девоч*, проведени*, раскоп*, расписани*, ламинирован*, деревянн*, развивающ*, подарочн* — у цих основ нема укр. збігів.
@@ -183,15 +183,15 @@ def is_russian_language_item(name):
     if _RU_LETTERS_RE.search(n) or _RU_WORDS_RE.search(n):
         return True   # російський текст у назві — навіть якщо є «(укр)» (покупець бачить російську назву)
     return bool(_RU_LANG_RE.search(n)) and not _UA_LANG_RE.search(n)   # мовний маркер («рос», «російською…») — двомовні «рос. і укр.» лишаються
-
-
-
+
+
+
 # 10.11.2026 (власник: «мені треба щоб покупець не бачив» постачальників): публічні адреса картки, код на картці, sku і шлях фото НЕ містять імен постачальників.
 # ЗА ВОРОТАМИ SITE_PUBLIC_IDS_LIVE=1 (як SITE_DROPT_LIVE): вмикає Код ПІСЛЯ того, як Apache вже має 301 зі старих адрес і rewrite нового шляху фото (deploy/activate_site_apache.sh);
 # вимкнено → збірка як була (product-dropt-…/product-rt-…, /img/dropt|rt/…, PT-D…/PT-R…). Внутрішній id (dropt-…/rt-…) лишається ключем даних, кошика й замовлень.
 PUBLIC_IDS_LIVE = os.environ.get("SITE_PUBLIC_IDS_LIVE") == "1"
 PUBLIC_SLUG_PREFIX = {"dropt-": "x", "rt-": "y"}    # нейтральні літери (не ініціали постачальників): Dropt «dropt-123» -> «x123», RoyalToys «rt-69616» -> «y69616»; Toysi — лише ASCII-цифри, тож слаги однозначні
-_PUBLIC_IMG_RX = re.compile(r"https://plutustoys\.com\.ua/img/(?:dropt|rt)/((?:dropt|rt)-[0-9A-Za-z_]+)-([0-9]{1,2})\.jpg")
+_PUBLIC_IMG_RX = re.compile(r"https://plutustoys\.com\.ua/img/(dropt|rt)/(\1-[0-9A-Za-z_]+)-([0-9]{1,2})\.jpg")   # каталог зв'язаний з префіксом id (\1): /img/rt/dropt-… не переписуємо
 
 
 def public_slug(pid):
@@ -216,16 +216,16 @@ def public_photo(pid, url):
     if not PUBLIC_IDS_LIVE or not isinstance(url, str):
         return url
     m = _PUBLIC_IMG_RX.fullmatch(url)
-    if not m or m.group(1) != str(pid) or public_slug(pid) == str(pid):
+    if not m or m.group(2) != str(pid) or public_slug(pid) == str(pid):
         return url
-    return f"https://plutustoys.com.ua/img/p/{public_slug(pid)}-{m.group(2)}.jpg"
+    return f"https://plutustoys.com.ua/img/p/{public_slug(pid)}-{m.group(3)}.jpg"
 
 
 def site_product_code(pid):
     """Власний код товару для покупця: Toysi «176003» -> «PT-176003»; Dropt/RoyalToys при SITE_PUBLIC_IDS_LIVE=1 — «PT-X123»/«PT-Y69616» (нейтральні літери = публічний slug); до відкриття воріт — як було: Dropt «PT-D123», RoyalToys «rt-X» -> «PT-RX»."""
     pid = str(pid)
     if PUBLIC_IDS_LIVE and public_slug(pid) != pid:
-        return "PT-" + public_slug(pid).upper()
+        return "PT-" + public_slug(pid)[0].upper() + public_slug(pid)[1:]   # регістр решти id зберігаємо (rt-id, що різняться регістром, не зливаються в один код)
     if pid.startswith("dropt-"):
         return "PT-D" + pid[6:]
     return "PT-R" + pid[3:] if pid.startswith("rt-") else "PT-" + pid
@@ -2709,22 +2709,22 @@ HERO_MASCOT_SEASONAL = (("halloween", 3320, 2, True, True, (10, 15), (10, 31), "
                         ("snowflake", 3818, 2, True, True, (10, 15), (12, 31), None))   # «Сніжинка» (SMM 15.10): червона шапка, ловить сніжинку; власник 15.10: «для чого так довго чекати? нехай зараз крутиться» — з дати деплою (15.10) до 31.12, а не з 25.11; tailchase НЕ витісняє (SMM: лишити в ротації); із Гелловіном 15–31.10 граються разом
 
 
-def hero_mascot_html(hero_clips=None, lazy=False):
-    """Анімований Плутус (poster + кліп, керує app.js initMascot за id hero-mascot/hero-mascot-clip): на головній у героя і (власник 20.10) у порожньому місці панелі каталогу/категорії. Один екземпляр на сторінку."""
-    hero_clips = hero_clips if hero_clips is not None else hero_mascot_clips()
-    lz = ' loading="lazy"' if lazy else ""
-    return (
-      f'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async"{lz} '
-      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{c[0]}.webp")) for c in hero_clips)}" data-ms="{",".join(str(c[1]) for c in hero_clips)}" data-w="{",".join(str(c[2]) for c in hero_clips)}" data-nofirst="{",".join(str(i) for i, c in enumerate(hero_clips) if not c[3])}"'
-      + (f' data-dip="{",".join(str(i) for i, c in enumerate(hero_clips) if c[4])}"' if any(c[4] for c in hero_clips) else "") + '>'
-      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>')
-
-
-def catalog_mascot_html():
-    """Плутус у порожньому місці панелі каталогу/категорії (власник 20.10: «анімувати як на головній, клікабельність та сама»); на вузьких екранах схований (CSS)."""
-    return '<div class="cat-mascot">' + hero_mascot_html(lazy=True) + '</div>'
-
-
+def hero_mascot_html(hero_clips=None, lazy=False):
+    """Анімований Плутус (poster + кліп, керує app.js initMascot за id hero-mascot/hero-mascot-clip): на головній у героя і (власник 20.10) у порожньому місці панелі каталогу/категорії. Один екземпляр на сторінку."""
+    hero_clips = hero_clips if hero_clips is not None else hero_mascot_clips()
+    lz = ' loading="lazy"' if lazy else ""
+    return (
+      f'<span class="mascot-wrap"><img class="mascot" id="hero-mascot" src="{asset_url(HERO_MASCOT_POSTER)}" alt="Плутус — маскот PlutusToys" width="130" height="100" decoding="async"{lz} '
+      f'data-clips="{"|".join(esc(asset_url(f"assets/mascot/plutus_{c[0]}.webp")) for c in hero_clips)}" data-ms="{",".join(str(c[1]) for c in hero_clips)}" data-w="{",".join(str(c[2]) for c in hero_clips)}" data-nofirst="{",".join(str(i) for i, c in enumerate(hero_clips) if not c[3])}"'
+      + (f' data-dip="{",".join(str(i) for i, c in enumerate(hero_clips) if c[4])}"' if any(c[4] for c in hero_clips) else "") + '>'
+      '<img class="mascot mascot-clip" id="hero-mascot-clip" alt="" aria-hidden="true" width="130" height="100" decoding="async"></span>')
+
+
+def catalog_mascot_html():
+    """Плутус у порожньому місці панелі каталогу/категорії (власник 20.10: «анімувати як на головній, клікабельність та сама»); на вузьких екранах схований (CSS)."""
+    return '<div class="cat-mascot">' + hero_mascot_html(lazy=True) + '</div>'
+
+
 def hero_mascot_clips(today=None):
     """Рухи героя на ЗАРАЗ: базові 10 (HERO_MASCOT_CLIPS) + сезонні в межах дат (із витісненням слабшого). Кортеж: (name, ms, weight, first_ok, dip)."""
     clips = [(c[0], c[1], c[2], c[3], bool(len(c) > 4 and c[4])) for c in HERO_MASCOT_CLIPS]
@@ -4318,7 +4318,8 @@ def _write(fname, content):
 SITEMAP_PRIORITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitemap_priority.json")
 PROM_GROUP_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prom_group_to_category.json")
 SITEMAP_FILE_OVERRIDE = {"dropt": "sitemap-more.xml"}   # Dropt при воротах SITE_PUBLIC_IDS_LIVE: без назви постачальника в адресі sitemap
-SITEMAP_LEGACY_FILES = ("sitemap-dropt.xml",)
+SITEMAP_LEGACY_FILES = ("sitemap-dropt.xml",)   # прибирається при воротах (нова назва — sitemap-more.xml)
+SITEMAP_NEW_FILES = ("sitemap-more.xml",)       # прибирається, коли ворота ВИМКНЕНІ (відкат): інакше лишається файл з адресами, яких уже нема
 SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt", "dropt")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority); dropt — так само для Dropt
 
 
@@ -4383,7 +4384,7 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=fro
             continue   # rt без залишку: сторінка жива, у sitemap не додаємо
         (seg["priority"] if p["id"] in pri_ids else seg["oos"]).append((f, f, "0.6" if p["id"] in pri_ids else "0.3", "weekly" if p["id"] in pri_ids else "monthly"))
     index_items = []
-    for _legacy in (SITEMAP_LEGACY_FILES if PUBLIC_IDS_LIVE else ()):
+    for _legacy in (SITEMAP_LEGACY_FILES if PUBLIC_IDS_LIVE else SITEMAP_NEW_FILES):
         try:
             os.remove(os.path.join(OUT, _legacy))
         except OSError:

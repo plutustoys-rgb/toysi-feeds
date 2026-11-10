@@ -10,7 +10,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -93,7 +92,6 @@ def callback(status, order_id, currency="UAH"):
 
 # ── чекаут: розбіжність → не будується; узгоджено → будується
 set_keys("sandbox_i1", "sandbox_k1", False)          # бойовий режим з тестовими ключами
-time.sleep(0.5)      # ⏳ «чекає оплати» шлеться в окремому потоці (PR #1163) — дочекатись, щоб не потрапило в наступну перевірку
 posts.clear()
 code, resp = post_order(phone="+380671110001")
 chk("розбіжність: власник отримує в Telegram «Нове замовлення … ОЧІКУЄ ОПЛАТУ, чекаут недоступний» (інакше покупець лишився б без відповіді)", len(posts) == 1 and posts[0].startswith("🛒 Нове замовлення") and "ОЧІКУЄ ОПЛАТУ" in posts[0])
@@ -104,7 +102,6 @@ chk("тестовий режим + тестові ключі: чекаут по�
 oid_test = resp["order_id"]
 
 # ── (1) тестовий платіж: зафіксовано, але не у форвард; сповіщення з позначкою ТЕСТ
-time.sleep(0.5)      # ⏳ «чекає оплати» шлеться в окремому потоці (PR #1163) — дочекатись, щоб не потрапило в наступну перевірку
 posts.clear()
 code, _ = callback("sandbox", oid_test)
 with orders_db.get_connection() as c:
@@ -118,7 +115,6 @@ chk("тестове замовлення: у Telegram видно, що пішл�
 set_keys("i123456", "private123", False)
 code, resp = post_order(phone="+380671110003")
 oid_live = resp["order_id"]
-time.sleep(0.5)      # ⏳ «чекає оплати» шлеться в окремому потоці (PR #1163) — дочекатись, щоб не потрапило в наступну перевірку
 posts.clear()
 code, _ = callback("success", oid_live)
 with orders_db.get_connection() as c:

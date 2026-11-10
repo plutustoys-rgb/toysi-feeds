@@ -63,7 +63,7 @@ chk("після esc() у сторінці немає подвійного екр
 # ── Toysi (SEO 10.11: 131989 «Create &amp; Play», 154061 «Mega Stretch Slime &amp; Fluffy Slime»): повна збірка
 def item(pid, name):
     return {"id": str(pid), "name": name, "vendor": "Test", "price": 300.0, "stock": 5, "category_name": "Машинки", "category_id": "10",
-            "pictures": [f"https://toysi.ua/p/enl_{pid}.jpg"], "description": "Опис товару достатньої довжини для картки, щоб він не вважався тонким і мав нормальний вигляд.", "barcode": ""}
+            "pictures": [f"https://toysi.ua/p/enl_{pid}.jpg"], "description": "Опис товару достатньої довжини для картки, щоб він не вважався тонким і мав нормальний вигляд.", "barcode": "", "supplier": "Toysi"}   # parser.py:219 додає supplier="Toysi" усім Toysi-карткам: фікстура мусить мати його, інакше тест перевіряє не той формат
 
 
 catalog = {str(i): item(i, f"Іграшка номер {i}") for i in range(1, 41)}

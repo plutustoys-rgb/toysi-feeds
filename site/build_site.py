@@ -1161,14 +1161,11 @@ def build():
     # 6) індекс пошуку
     # index.json — клієнтський пошук + фільтр/сорт каталогу. c=категорія, s=наявність(1/0).
     idx = index_entries(prods_rec) + [{**e, "dup": 1} for e in index_entries(shadows)]   # тіні — лише в повному index.json (сервер бере ціни); пошук/каталог їх не читають
-    with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
-        json.dump(idx, f, ensure_ascii=False)
+    _write_text_atomic(os.path.join(OUT, "index.json"), json.dumps(idx, ensure_ascii=False))   # index.json читають кошик і пошук — запис атомарний
     # Сторінки (app.js) читають НЕ повний index.json, а два файли: index-t.json (Toysi, як було) і index-rt.json (RoyalToys, довантажується у фоні) —
     # 20.10: 9,9 тис. карток RoyalToys підняли index.json з 1,0 до 1,5 МБ gzip, і LCP каталогу/категорій у Lighthouse зріс з ≈3 до ≈12 с. Повний index.json лишається для site_order_api (ціни) і фідів.
-    with open(os.path.join(OUT, "index-t.json"), "w", encoding="utf-8") as f:
-        json.dump([x for x in idx if not x.get("rt") and not x.get("dup")], f, ensure_ascii=False)
-    with open(os.path.join(OUT, "index-rt.json"), "w", encoding="utf-8") as f:
-        json.dump([x for x in idx if x.get("rt") and not x.get("dup")], f, ensure_ascii=False)
+    _write_text_atomic(os.path.join(OUT, "index-t.json"), json.dumps([x for x in idx if not x.get("rt") and not x.get("dup")], ensure_ascii=False))
+    _write_text_atomic(os.path.join(OUT, "index-rt.json"), json.dumps([x for x in idx if x.get("rt") and not x.get("dup")], ensure_ascii=False))
     # 7) SEO: sitemap-індекс + сегменти + robots (lastmod = дата РЕАЛЬНОЇ зміни сторінки зі стану .htlastmod_state.json)
     static_urls = [("categories.html", "0.7", "weekly")] +([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust]
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods, hidden_files={f"category-{cat_slug[c]}.html" for c in cat_list if category_hidden(c)} | {f for g in SITE_GROUPS for f in g.get("former", [])})   # сторінки-вказівники старих груп — поза sitemap
@@ -1190,6 +1187,8 @@ def build():
                 removed += 1
             except OSError:
                 pass
+
+    _remove_stale_tmp(OUT)
 
     _written_slugs = {m.group(1) for m in (re.fullmatch(r"category-(.+)\.html", f) for f in paged if not re.search(r"_\d+\.html$", f)) if m}
     _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)
@@ -4248,6 +4247,39 @@ def _lastmod_date(fname):
     return time.strftime("%Y-%m-%d", time.gmtime(t))
 
 
+_STALE_TMP_RX = re.compile(r"\.[^/]+\.tmp[0-9]+")
+
+
+def _remove_stale_tmp(out, max_age=600):
+    """Прибирає залишки тимчасових файлів атомарного запису від перерваної збірки (kill/живлення): лише старші за max_age секунд — тимчасовий файл паралельної збірки (timer + ручна) не чіпаємо."""
+    n = 0
+    for fn in os.listdir(out):
+        if _STALE_TMP_RX.fullmatch(fn):
+            try:
+                if time.time() - os.path.getmtime(os.path.join(out, fn)) > max_age:
+                    os.remove(os.path.join(out, fn))
+                    n += 1
+            except OSError:
+                pass
+    return n
+
+
+def _write_text_atomic(path, content):
+    """Запис файлу збірки АТОМАРНО (SEO 10.11.2026: open(path, "w") обнуляє файл ще до запису, і Apache у цю мить віддає порожню/обірвану сторінку з кодом 200).
+    Пишемо в сусідній тимчасовий файл і os.replace — читач бачить або старий файл цілим, або новий цілим. Збій запису/заміни: тимчасовий файл прибираємо, старий лишається."""
+    tmp = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + f".tmp{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _write(fname, content):
     path = os.path.join(OUT, fname)
     if fname.endswith(".html"):
@@ -4266,16 +4298,14 @@ def _write(fname, content):
         except OSError:
             same = False
         if not same:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+            _write_text_atomic(path, content)
         try:
             os.utime(path, (t, t))
         except OSError:
             pass
         st[fname] = {"h": h, "t": t}
         return
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    _write_text_atomic(path, content)
 
 
 SITEMAP_PRIORITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitemap_priority.json")

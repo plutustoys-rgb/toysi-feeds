@@ -241,6 +241,87 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
     return items, stats
 
 
+# ───────────────────────── російський Google-фід (власник 10.11.2026: «переклад робіть») ─────────────────────────
+RU_TEXTS_FILE = HERE / "rt_dropt_ru_text.json"       # {"version":1,"items":{pid:{"src":<hash укр. джерела>,"name":…,"description":…}}} — переклад робить Код (LLM) партіями; змінилось укр. джерело → переклад НЕ використовується (src не збігається)
+RU_DESC_MAX = 450
+_UK_ONLY = set("іїєґІЇЄҐ")
+
+
+def gate_ru_on() -> bool:
+    return os.environ.get("GOOGLE_RU_RT_DROPT_IN_FEED") == "1"
+
+
+def ru_source(item: dict) -> tuple:
+    """(назва, короткий опис ≤RU_DESC_MAX по межі речення) — те, що перекладаємо; той самий текст рахується і під час експорту, і під час фіда."""
+    title = (item.get("title") or "").strip()
+    d = (item.get("description") or "").strip()
+    if len(d) > RU_DESC_MAX:
+        cut = max(d.rfind(". ", 0, RU_DESC_MAX), d.rfind("! ", 0, RU_DESC_MAX), d.rfind("? ", 0, RU_DESC_MAX))
+        d = d[:cut + 1] if cut > 120 else d[:RU_DESC_MAX].rsplit(" ", 1)[0]
+    return title, d
+
+
+def src_hash(title: str, desc: str) -> str:
+    import hashlib
+    return hashlib.sha1((title + "|" + desc).encode("utf-8")).hexdigest()[:16]
+
+
+def ru_text_ok(name: str, desc: str) -> bool:
+    """Переклад придатний: є кирилиця, нема українських літер (і ї є ґ — ознака неперекладеного), нема імені постачальника."""
+    for t in (name, desc):
+        if not t or not re.search(r"[А-Яа-я]", t) or any(ch in _UK_ONLY for ch in t) or leaks(t):
+            return False
+    return len(name) >= 3
+
+
+def export_for_translation(gf, entries=None, rt_sup=None, dropt_sup=None) -> list:
+    """Для перекладу: [{pid, id, title, desc, src}] по ВСІХ позиціях, що зараз пройшли б у фід (build_items) і ще не мають актуального перекладу."""
+    items, _st = build_items(gf, entries=entries, rt_sup=rt_sup, dropt_sup=dropt_sup)
+    have = _load_ru_file()
+    out = []
+    for it in items:
+        t, d = ru_source(it)
+        h = src_hash(t, d)
+        if (have.get(it["pid"]) or {}).get("src") == h:
+            continue
+        out.append({"pid": it["pid"], "id": it["id"], "title": t, "desc": d, "src": h})
+    return out
+
+
+def _load_ru_file(path=None) -> dict:
+    try:
+        d = json.loads(Path(path or RU_TEXTS_FILE).read_text(encoding="utf-8"))
+        items = d.get("items")
+        return items if isinstance(items, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def merge_ru_texts(russian_text: dict, items: list, path=None) -> tuple:
+    """Додає до russian_text (формат build_ru_items: {pid: {name, description}}) переклади RT/Dropt для позицій із items. → (russian_text, {used, stale, bad}). Жодного перекладу не вигадуємо: нема/застарів/непридатний → позиції немає в ru-фіді."""
+    have = _load_ru_file(path)
+    out = dict(russian_text or {})
+    st = {"used": 0, "stale": 0, "bad": 0, "missing": 0}
+    for it in items:
+        pid = it.get("pid") or ""
+        if not pid.startswith(PREFIXES):
+            continue
+        e = have.get(pid)
+        if not e:
+            st["missing"] += 1
+            continue
+        t, d = ru_source(it)
+        if e.get("src") != src_hash(t, d):
+            st["stale"] += 1
+            continue
+        if not ru_text_ok(e.get("name") or "", e.get("description") or ""):
+            st["bad"] += 1
+            continue
+        out[pid] = {"name": e["name"].strip(), "description": e["description"].strip()}
+        st["used"] += 1
+    return out, st
+
+
 def describe(stats: dict) -> str:
     sk = ", ".join(f"{k}={v}" for k, v in sorted((stats.get("skip") or {}).items(), key=lambda kv: -kv[1]))
     return (f"кандидатів {stats.get('candidates', 0)}; у фіді {stats.get('included', 0)} (RT {stats.get('included_rt', 0)}, Dropt {stats.get('included_dropt', 0)}); "

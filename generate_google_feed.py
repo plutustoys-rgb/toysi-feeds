@@ -1344,6 +1344,13 @@ def write_ru_feed(items: list, output_file: str = OUTPUT_FILE_RU, russian_text: 
         if not russian_text:
             print("[Google-RU] російський каталог порожній/недоступний — ru-фід НЕ оновлено.", file=sys.stderr)
             return False
+        try:
+            import google_rt_dropt
+            if google_rt_dropt.gate_ru_on():
+                russian_text, _rst = google_rt_dropt.merge_ru_texts(russian_text, items)
+                print(f"[Google-RU] RT/Dropt: переклади використано {_rst['used']}, застарілих {_rst['stale']}, непридатних {_rst['bad']}, без перекладу {_rst['missing']}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[Google-RU] RT/Dropt переклади пропущено ({type(e).__name__}) — ru-фід лише з Toysi.", file=sys.stderr)
         ru_items, ru_stats = build_ru_items(items, russian_text)
         if not ru_items:
             print("[Google-RU] жодної позиції з російським текстом — ru-фід НЕ оновлено.", file=sys.stderr)
@@ -1433,6 +1440,8 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
     try:
         import google_rt_dropt      # власник 10.11.2026: «РТ та дропт додай у гугл» — за брамою GOOGLE_RT_DROPT_IN_FEED=1; збій (і імпорту) НЕ валить основний фід
         items = google_rt_dropt.extend_items(items, sys.modules[__name__], "google")
+        if google_rt_dropt.gate_ru_on() and len(items) > len(ru_items):
+            ru_items = ru_items + items[len(ru_items):]      # власник 10.11: «переклад робіть» — RT/Dropt і в російський Google-фід (лише з наявним актуальним перекладом, брама GOOGLE_RU_RT_DROPT_IN_FEED=1)
     except Exception as e:  # noqa: BLE001
         print(f"[Google] RT/Dropt пропущено ({type(e).__name__}: {str(e)[:120]}) — фід лише з Toysi.", file=sys.stderr)
 

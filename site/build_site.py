@@ -221,6 +221,20 @@ def public_photo(pid, url):
     return f"https://plutustoys.com.ua/img/p/{public_slug(pid)}-{m.group(3)}.jpg"
 
 
+# 10.11.2026 (власник: «роби проксі»): фото Toysi покупець не повинен бачити з адресою постачальника. ЗА ВОРОТАМИ SITE_TOYSI_PHOTO_PROXY=1 (вимкнено за замовчуванням; вмикає Код ПІСЛЯ того, як на VPS працює проксі /img/t/ -> https://toysi.ua/p/): публічне фото = https://plutustoys.com.ua/img/t/<шлях після /p/>.
+# Лише шлях виду [NN/][enl_]<цифри>.jpg|png|webp (інакше — URL як є: довільні адреси не проксуємо). Інші хости (images.prom.ua, наш власний) не чіпаємо. Єдина точка входу — p["photo"] (index.json, <img>, og:image, JSON-LD, каруселі, preload).
+TOYSI_PHOTO_PROXY = os.environ.get("SITE_TOYSI_PHOTO_PROXY") == "1"
+_TOYSI_PHOTO_RX = re.compile(r"https://toysi\.ua/p/((?:[0-9]{1,2}/)?(?:enl_)?[0-9]{1,12}\.(?:jpg|png|webp))")
+
+
+def toysi_proxy_photo(url):
+    """https://toysi.ua/p/3/enl_265377.jpg -> https://plutustoys.com.ua/img/t/3/enl_265377.jpg (лише при SITE_TOYSI_PHOTO_PROXY=1; інші URL — без змін)."""
+    if not TOYSI_PHOTO_PROXY or not isinstance(url, str):
+        return url
+    m = _TOYSI_PHOTO_RX.fullmatch(url)
+    return f"https://plutustoys.com.ua/img/t/{m.group(1)}" if m else url
+
+
 # ── Назви-капсом (SEO 10.11.2026, GMC title_all_caps): на сайті назва картки проходить feed_title_norm.normalize_title — ТОЙ САМИЙ детермінований модуль, що й фіди Google (регістр назви на сторінці й у фіді однаковий; ВИНЯТОК — назви довші за 150 символів: фід обрізає їх до 150 (≈72 назви), сайт показує повну назву).
 # Без опори на каталог і без замороженого переліку: вихід залежить лише від самої назви. Запобіжник: приймаємо результат тільки якщо він відрізняється від назви постачальника ЛИШЕ регістром
 # (casefold збігається) — модуль не може прибрати слова/пунктуацію з назви на сайті. Обрізання до 150 символів (потрібне фіду) для сайту вимкнено: limit = довжина назви.
@@ -470,8 +484,8 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<link rel=\"icon\" href=\"assets/favicon.ico\" sizes=\"any\">\n"
       "<link rel=\"icon\" type=\"image/png\" sizes=\"32x32\" href=\"assets/favicon-32.png\">\n"
       "<link rel=\"apple-touch-icon\" href=\"assets/apple-touch-icon.png\">\n"
-      "<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
-      "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n"
+      + ("" if TOYSI_PHOTO_PROXY else ("<link rel=\"preconnect\" href=\"https://toysi.ua\" crossorigin>\n"
+                                        "<link rel=\"dns-prefetch\" href=\"https://toysi.ua\">\n")) +
       f"<link rel=\"stylesheet\" href=\"{asset_url('assets/styles.css')}\">\n"
       f"{analytics_head(defer_trackers) if analytics else ''}{extra_head}</head>\n<body>\n<div class=\"wrap\">\n"   # analytics=False лише review.html (токен в адресі)
       f"{header()}\n{body}\n{footer()}\n</div>\n"
@@ -1051,7 +1065,7 @@ def build():
         (oos_prods if is_oos else prods).append({
             "id": str(it.get("id")), "name": name, "price": price, "old_price": _old_price,
             "category": catname,
-            "photo": PHOTO_OVERRIDES.get(str(it.get("id")), public_photo(str(it.get("id")), pics[0])), "stock": int(it.get("stock") or 0),
+            "photo": toysi_proxy_photo(PHOTO_OVERRIDES.get(str(it.get("id")), public_photo(str(it.get("id")), pics[0]))), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
             "rt": 1 if str(it.get("id")).startswith(("rt-", "dropt-")) else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),

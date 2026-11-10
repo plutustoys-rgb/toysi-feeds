@@ -60,6 +60,27 @@ n3 = dc.persist_cookies(FakeHttp(new_exp=int(NOW + 1 * 86400), new_val="old"), s
 chk("сервер дав РАНІШИЙ expires → не скорочуємо (expires лише вперед)", n3 == 0 and abs(dc.session_days_left(state, NOW) - 3.0) < 0.1)
 chk("нема файлу стану → persist 0, days_left None", dc.persist_cookies(FakeHttp(), tmp / "nope.json") == 0 and dc.session_days_left(tmp / "nope.json") is None)
 
+# свіжий вхід власника під час keepalive: файл підмінено (mtime змінився між читанням і записом) → НЕ перезаписуємо
+write_state(NOW + 3 * 86400)
+
+
+class _SwappingJar:
+    def __init__(self, jar):
+        self.jar = jar
+
+    def __iter__(self):
+        time.sleep(0.05)
+        write_state(NOW + 29 * 86400)          # «власник підмінив файл» ПІСЛЯ того, як persist_cookies його прочитав
+        return iter(self.jar)
+
+
+sw = FakeHttp(new_exp=int(NOW + 30 * 86400), new_val="stale-session")
+sw.s.cookies = _SwappingJar(sw.s.cookies)
+n4 = dc.persist_cookies(sw, state)
+chk("файл підмінили під час keepalive (свіжий вхід) → не перезаписуємо старими куками (n=0, днів ≈29)", n4 == 0 and abs(dc.session_days_left(state, NOW) - 29.0) < 0.1)
+if os.name != "nt":
+    chk("права файлу стану 0600", (state.stat().st_mode & 0o777) == 0o600)
+
 # keepalive() із підміненим ensure_session
 orig_es = dc.ensure_session
 dc.ensure_session = lambda http=None: {"logged_in": True, "balance": 367.47}

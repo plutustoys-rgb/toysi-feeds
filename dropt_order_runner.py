@@ -321,10 +321,10 @@ def keepalive_if_due(now=None, marker=None, cab=None) -> dict:
             res.update(r)
             days = r.get("days_left")
             if days is not None and days <= SESSION_WARN_DAYS:
-                _alert("cabinet", "session_expiring", f"сесія кабінету Dropt спливає через {days} діб — потрібен новий вхід власника (dropt_login.ps1, кілька хвилин), інакше автоматичне оформлення зупиниться", cooldown=24 * 3600)
+                _alert("cabinet", "session_expiring", f"сесія кабінету Dropt спливає через {days} діб — потрібен новий вхід власника (python dropt_cabinet.py --login на ПК, потім deploy/dropt_session_to_vps.ps1; кілька хвилин), інакше автоматичне оформлення зупиниться", cooldown=24 * 3600)
         except Exception as e:  # noqa: BLE001 — і OrderError (сесія мертва), і мережа
             res["error"] = f"{type(e).__name__}"
-            _alert("cabinet", "session_dead", f"кабінет Dropt: сесія не діє або кабінет недоступний ({type(e).__name__}: {str(e)[:160]}) — автоматичне оформлення Dropt зупинене до нового входу власника (dropt_login.ps1)", cooldown=6 * 3600)
+            _alert("cabinet", "session_dead", f"кабінет Dropt: сесія не діє або кабінет недоступний ({type(e).__name__}: {str(e)[:160]}) — автоматичне оформлення Dropt зупинене до нового входу власника (python dropt_cabinet.py --login на ПК, потім deploy/dropt_session_to_vps.ps1)", cooldown=6 * 3600)
         try:
             mk.parent.mkdir(parents=True, exist_ok=True)
             tmp = mk.with_name(mk.name + ".tmp")

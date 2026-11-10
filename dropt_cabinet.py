@@ -255,6 +255,10 @@ def persist_cookies(http, state_file=None) -> int:
     d, cks = _state_cookies(path)
     if d is None:
         return 0
+    try:
+        mt0 = path.stat().st_mtime_ns
+    except OSError:
+        return 0
     jar = {}
     for c in http.s.cookies:
         jar[(c.name, (c.domain or "").lstrip("."), c.path or "/")] = c
@@ -270,12 +274,15 @@ def persist_cookies(http, state_file=None) -> int:
             c["expires"], changed = float(j.expires), True
         n += 1 if changed else 0
     if n:
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
         try:
-            os.chmod(tmp, 0o600)
+            if path.stat().st_mtime_ns != mt0:      # файл підмінили (власник щойно увійшов заново — dropt_session_to_vps) поки ми ходили в кабінет: свіжий вхід НЕ перезаписуємо старими куками
+                return 0
         except OSError:
-            pass
+            return 0
+        tmp = path.with_name(path.name + ".tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)      # права 0600 з моменту створення (не після запису)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(d, ensure_ascii=False))
         os.replace(tmp, path)
     return n
 

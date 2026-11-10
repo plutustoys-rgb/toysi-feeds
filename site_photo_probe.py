@@ -23,6 +23,8 @@ ALERT_COOLDOWN_SEC = 6 * 60 * 60
 RETRY_DELAY_SEC = 4
 ALLOWED_HOSTS = ("toysi.ua", "images.prom.ua")   # лише наші джерела фото (аудит #664: не ходимо на довільні адреси з індексу)
 MIN_BAD_TO_ALERT = 2
+OWN_HOST = "plutustoys.com.ua"
+OWN_PROXY_PREFIX = "/img/t/"
 
 
 def _allowed(url) -> bool:
@@ -31,6 +33,8 @@ def _allowed(url) -> bool:
         h = (u.hostname or "").lower()
     except Exception:  # noqa: BLE001
         return False
+    if u.scheme == "https" and h == OWN_HOST and (u.path or "").startswith(OWN_PROXY_PREFIX):
+        return True      # 10.11.2026 (проксі фото Toysi): після SITE_TOYSI_PHOTO_PROXY=1 в index.json фото — наші /img/t/…; зонд ходить саме цим шляхом (перевіряє весь ланцюг: наш Apache → Toysi). Інші наші шляхи не пробуємо
     return u.scheme in ("http", "https") and any(h == a or h.endswith("." + a) for a in ALLOWED_HOSTS)
 
 

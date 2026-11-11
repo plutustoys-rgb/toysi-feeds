@@ -3,6 +3,43 @@
 (function(){
   "use strict";
   var CART_KEY = "pt_cart_v1";
+  /* ATTR-BEGIN */
+  // Джерело замовлення (11.11.2026, запит Код): first-touch — мітки реклами/UTM + посадкова сторінка + хост реферера зберігаємо у localStorage на ~30 днів і шлемо як `attribution` у POST /api/order. Перший захід зберігаємо завжди (landing є навіть без міток: органіка/прямий), наступні сторінки збережене не чіпають. Персональних даних нема.
+  var ATTR_KEY = "pt_attr_v1", ATTR_TTL = 30 * 24 * 3600 * 1000;
+  var ATTR_PARAMS = ["gclid","gbraid","wbraid","fbclid","msclkid","utm_source","utm_medium","utm_campaign","utm_term","utm_content"];
+  function attrRead(){
+    try{
+      var o = JSON.parse(localStorage.getItem(ATTR_KEY) || "null");
+      if(o && typeof o.t === "number" && o.a && typeof o.a === "object" && (Date.now() - o.t) < ATTR_TTL && o.t <= Date.now() + 60000) return o.a;
+    }catch(e){}
+    return null;
+  }
+  function attrCapture(){
+    try{
+      if(attrRead()) return;   // first-touch: не перезаписуємо, доки не минув ТТЛ
+      var a = {}, n = 0, qs = String(window.location.search || ""), i, m, v;
+      for(i = 0; i < ATTR_PARAMS.length; i++){
+        m = new RegExp("[?&]" + ATTR_PARAMS[i] + "=([^&#]*)").exec(qs);
+        if(!m) continue;
+        try{ v = decodeURIComponent(m[1].replace(/\+/g, " ")); }catch(e1){ v = m[1]; }
+        v = String(v).trim().slice(0, 200);
+        if(v){ a[ATTR_PARAMS[i]] = v; n++; }
+      }
+      var ref = "";
+      try{
+        var rm = /^https?:\/\/([^\/?#:]+)/i.exec(String(document.referrer || ""));
+        var host = rm ? rm[1].toLowerCase() : "";
+        var own = String(window.location.hostname || "").toLowerCase().replace(/^www\./, "");
+        if(host && host.replace(/^www\./, "") !== own) ref = host.slice(0, 200);   // лише хост і лише зовнішній
+      }catch(e2){}
+      // першу сторінку зберігаємо ЗАВЖДИ (Код 11.11): landing без міток = органіка/прямий; замовлення зовсім без attribution = збір не спрацював
+      a.landing = String(window.location.pathname || "/").slice(0, 200);
+      if(ref) a.referrer = ref;
+      localStorage.setItem(ATTR_KEY, JSON.stringify({t: Date.now(), a: a}));
+    }catch(e){}
+  }
+  attrCapture();
+  /* ATTR-END */
   // Публічна адреса картки (build_site.public_slug): у index.json поле u (є лише коли відрізняється від id). Ключі кошика/замовлень лишаються внутрішніми.
   function slugId(sl){ sl=String(sl); var m; if((m=/^x([1-9][0-9]*)$/.exec(sl))) return "dropt-"+m[1]; if((m=/^y([0-9A-Za-z_]+)$/.exec(sl))) return "rt-"+m[1]; return sl; }   // href -> внутрішній id (ворота SITE_PUBLIC_IDS_LIVE; зі старих адрес product-dropt-… id без змін)
   // Суму доставки покупцю НЕ друкуємо (10.10.2026, рішення Консультанта: «65/70 ₴» нічим не підкріплене) — доки нема виміряної цифри з книги КОДВ.
@@ -1558,6 +1595,7 @@
       };
       // сума, яку ПОКАЗАВ кошик у момент сабміту (ціле грн): якщо index.json змінився між «У кошик» і оплатою, сервер відповість 409 price_changed і НЕ створить замовлення (Code-Agent #759); без поля — поведінка як раніше
       var shownTotal=total(); if(isFinite(shownTotal)){ payload.expected_total=Math.round(shownTotal); }
+      var attr=attrRead(); if(attr){ payload.attribution=attr; }   // first-touch джерело (мітки реклами/UTM, landing, хост реферера); без міток — поля нема
       if(btn){ btn.disabled=true; btn.textContent="Обробляємо…"; }
 
       fetch("api/order", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)})

@@ -38,6 +38,7 @@ chk("керуючі символи прибрано", all(ch not in r["utm_sourc
 r = json.loads(c({"landing": "/product-y1.html?phone=380501112233&email=a@b.c#frag", "referrer": "https://www.google.com/search?q=іграшки+Київ"}))
 chk("landing — лише шлях (без query/якоря/ПІБ), referrer — лише хост", r == {"landing": "/product-y1.html", "referrer": "www.google.com"})
 chk("landing не з «/» → відкинуто; referrer без схеми → перший сегмент", "landing" not in json.loads(c({"landing": "https://x.com/a", "utm_source": "s"})) and json.loads(c({"referrer": "google.com/x?y"})) == {"referrer": "google.com"})
+chk("referrer без схеми: query/якір/e-mail не потрапляють", json.loads(c({"referrer": "google.com?q=Ivan+0501234567", "utm_source": "s"})) == {"referrer": "google.com", "utm_source": "s"} and "referrer" not in json.loads(c({"referrer": "ivan@x.com", "utm_source": "s"})))
 chk("сміттєві типи (список/dict усередині) не кидають і не потрапляють", json.loads(c({"gclid": ["a"], "utm_source": {"x": 1}, "utm_medium": 5}))  == {"utm_medium": "5"})
 
 orders_db.init_db()

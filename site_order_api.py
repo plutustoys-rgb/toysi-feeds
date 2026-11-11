@@ -664,7 +664,9 @@ def _clean_attribution(raw):
                     continue
             elif k == "referrer":
                 from urllib.parse import urlparse
-                s = (urlparse(s).hostname or "") if "//" in s else s.split("/")[0]
+                s = (urlparse(s).hostname or "") if "//" in s else re.split(r"[/?#]", s)[0]
+                if "@" in s or ":" in s:   # не хост (e-mail/логін/порт) — не зберігаємо
+                    continue
             s = s[:ATTR_MAX_LEN]
             if s:
                 out[k] = s

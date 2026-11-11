@@ -16,6 +16,10 @@ SSH_KEY = os.environ.get("ORDERS_ADMIN_SSH_KEY", os.path.join(os.path.expanduser
 SSH_TIMEOUT_SEC = 60
 ROW_LIMIT = 3000
 STALE_UNPAID_MIN = 30        # передоплата без оплати довше цього = «зависла»
+STALLED_MIN = 60             # оплачене/накладене, ще не передане ні Toysi, ні постачальнику довше цього = «стоїть»
+STALLED_MAX_DAYS = 3         # старіше — це історія, не тривога (не підсвічуємо)
+_RT_LABELS = {"ttn_creating": "створюється ТТН (результат невідомий, якщо довго)", "ttn_created": "ТТН створено", "marking_ready": "наліпка готова",
+              "rt_ordering": "оформлюється у постачальника (результат невідомий, якщо довго)", "rt_ordered": "замовлено у постачальника", "manual": "виконано вручну"}
 
 # Лише ASCII: кирилиця через stdin ssh ламається. Читає orders.db у режимі mode=ro (запис неможливий). Аргумент: кількість днів.
 REMOTE_SCRIPT = r'''
@@ -26,7 +30,7 @@ c = sqlite3.connect("file:orders.db?mode=ro", uri=True)
 c.row_factory = sqlite3.Row
 cols = {r[1] for r in c.execute("pragma table_info(orders)")}
 want = ["internal_order_id", "platform", "order_id", "public_number", "created_at", "status", "payment_method", "payment_confirmed", "site_charged_total",
-        "customer_name", "phone", "np_branch", "items", "forwarded_to_toysi_at", "toysi_order_id", "toysi_ttn", "delivery_status", "delivered_at", "cancelled_at", "cancel_reason", "carrier"]
+        "customer_name", "phone", "np_branch", "items", "forwarded_to_toysi_at", "toysi_order_id", "toysi_ttn", "delivery_status", "delivered_at", "cancelled_at", "cancel_reason", "carrier", "rt_state", "rt_error"]
 sel = [w for w in want if w in cols]
 since = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
 rows = []
@@ -115,6 +119,12 @@ def stage(row: dict, now: datetime) -> tuple:
         return "expired", "Toysi більше не віддає статус (минуло 40 днів) — звірити вручну", True
     if ds.startswith("unknown"):
         return "unknown", f"невідомий статус Toysi ({ds})", True
+    rt_err = str(row.get("rt_error") or "").strip()
+    if rt_err:      # конвеєр постачальника (RoyalToys/Dropt) зупинився на цьому замовленні й записав причину — рівно те, що власник мусить бачити (12.11: eva_8-084262173 «City not found»)
+        return "stuck", f"ЗУПИНЕНО конвеєром: {rt_err[:160]}", True
+    rs = str(row.get("rt_state") or "")
+    if rs in _RT_LABELS and ds not in _DELIVERY:
+        return "rt_" + rs, _RT_LABELS[rs] + (f" · ТТН {row['toysi_ttn']}" if row.get("toysi_ttn") else ""), rs in ("ttn_creating", "rt_ordering")
     if ds in _DELIVERY:
         return ds, _DELIVERY[ds] + (f" · ТТН {row['toysi_ttn']}" if row.get("toysi_ttn") else ""), False
     if row.get("forwarded_to_toysi_at"):
@@ -123,6 +133,11 @@ def stage(row: dict, now: datetime) -> tuple:
         created = _parse(row.get("created_at"))
         age = (now - created).total_seconds() / 60 if created else 0
         return "unpaid", f"ЧЕКАЄ ОПЛАТИ ({age:.0f} хв)" + (" — зависло" if age > STALE_UNPAID_MIN else ""), age > STALE_UNPAID_MIN
+    if (row.get("payment_method") == "cod" or row.get("payment_confirmed")) and not row.get("forwarded_to_toysi_at") and not rs:
+        created = _parse(row.get("created_at"))
+        age = (now - created).total_seconds() / 60 if created else 0
+        if age > STALLED_MIN:
+            return "stalled", f"ОПЛАЧЕНО/ПРИЙНЯТО, але нікуди не передано ({age / 60:.1f} год)", age <= STALLED_MAX_DAYS * 1440
     return "accepted", "прийнято" + (f" ({st})" if st else ""), False
 
 
@@ -142,7 +157,13 @@ def summarize(rows: list, now: datetime) -> dict:
             site_unpaid += 1
             if stage(r, now)[2]:
                 site_unpaid_stale += 1
-    return {"total": len(rows), "by_platform": by_platform, "by_stage": by_stage, "today": today_n, "site_unpaid": site_unpaid, "site_unpaid_stale": site_unpaid_stale}
+    attn = []
+    for r in rows:
+        code, label, flag = stage(r, now)
+        if flag and code not in ("unpaid",):
+            attn.append({"platform": r.get("platform"), "id": r.get("public_number") or r.get("order_id"), "stage": code, "label": label})
+    return {"total": len(rows), "by_platform": by_platform, "by_stage": by_stage, "today": today_n, "site_unpaid": site_unpaid, "site_unpaid_stale": site_unpaid_stale,
+            "attention": len(attn), "attention_rows": attn[:12]}
 
 
 def payload(days: int = 30, runner=None, now: datetime | None = None) -> dict:

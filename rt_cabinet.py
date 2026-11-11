@@ -393,7 +393,7 @@ def validate_order(o: dict) -> dict:
             qty = int((it or {}).get("qty"))
         except (TypeError, ValueError):
             raise OrderError("кількість позиції некоректна") from None
-        if not re.fullmatch(r"[0-9A-Za-zА-Яа-яІіЇїЄє._/\- ]{2,40}", vc) or qty < 1 or qty > 100:
+        if not re.fullmatch(r"[0-9A-Za-zА-Яа-яІіЇїЄє._/()\- ]{2,40}", vc) or qty < 1 or qty > 100:
             raise OrderError(f"позиція некоректна: {vc!r} × {qty}")
         try:
             cost = float((it or {}).get("cost"))

@@ -59,6 +59,10 @@ with _tf3.TemporaryDirectory() as td3:
         except rc.OrderError:
             return True
     chk("validate_order: відмови — порожні позиції, qty 0/100+/не число, один зі слова ПІБ, поганий телефон, ТТН не 14 цифр", bad(items=[]) and bad(items=[{"vendor_code": "1", "qty": 1}]) and bad(items=[{"vendor_code": "200513", "qty": 0}]) and bad(items=[{"vendor_code": "200513", "qty": 101}]) and bad(items=[{"vendor_code": "200513", "qty": "x"}]) and bad(recipient_name="Іваненко") and bad(recipient_phone="123") and bad(ttn_number="123") and bad(ttn_number="2045150000000a"))
+    okp = rc.validate_order({**base, "items": [{"vendor_code": "7209(Green)", "qty": 1, "cost": 100}]})
+    chk("validate_order: артикул з дужками «7209(Green)» (реальний артикул RT, eva_8-084262173 12.11) ПРИЙМАЄТЬСЯ", okp["items"][0]["vendor_code"] == "7209(Green)")
+    chk("validate_order: небезпечні символи в артикулі все ще відхиляються (; ' \" < > $ ` | & та переноси)",
+        all(bad(items=[{"vendor_code": v, "qty": 1, "cost": 100}]) for v in ("7209;rm", "a'b", 'a"b', "a<b>", "a$b", "a`b", "a|b", "a&b", "a\nb", "a\\b")))
     notpdf = Path(td3) / "n.pdf"
     notpdf.write_bytes(b"<html>" + b"x" * 300)
     tiny = Path(td3) / "t.pdf"

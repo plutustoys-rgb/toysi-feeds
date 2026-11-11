@@ -244,6 +244,24 @@ def _recipient_fields(recipient) -> dict:
     return {"recipient_name": recipient[0], "recipient_phone": recipient[1], "require_recipient": True}
 
 
+def _verified_np_destination(order: dict, d) -> dict:
+    """CityRef і номер відділення НП: якщо площадка дала точний Ref відділення (np_ref_id) — беремо city_ref/number з довідника НП
+    (він ПЕРЕВАЖАЄ значення площадки: EVA city_id не завжди валідний CityRef для того самого відділення — живий інцидент 26.09, і
+    11.11 eva_8-084262173 «City not found» у цьому раннері). Нема np_ref_id / довідник недоступний / відповідь неповна — лишаємо
+    значення площадки (fail-open до попередньої поведінки, не гірше за раніше)."""
+    ref = str(order.get("np_ref_id") or "").strip()
+    if not ref or not hasattr(d, "np_warehouse_by_ref"):
+        return order
+    try:
+        wh = d.np_warehouse_by_ref(ref)
+    except Exception as e:  # noqa: BLE001
+        print(f"[rt_runner] {order.get('internal_order_id')}: звірка відділення НП за Ref недоступна ({type(e).__name__}) — беремо дані площадки", file=sys.stderr)
+        return order
+    if wh and wh.get("city_ref") and wh.get("number"):
+        return {**order, "np_city_ref": str(wh["city_ref"]), "np_warehouse_number": str(wh["number"])}
+    return order
+
+
 def order_for_ttn(order: dict, items: list) -> dict:
     return {**order, "items": items}
 
@@ -342,6 +360,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
         items = map_items(order, supplier)
         rep["items"] = [(i["toysi_code"], i["qty"], i["vendor_code"]) for i in items]
         recipient = _recipient(order)          # ПІБ і телефон ОБОВ'ЯЗКОВІ для RoyalToys — перевіряємо ДО ТТН (інакше ТТН-сирота)
+        order = _verified_np_destination(order, d)      # 11.11: city_id площадки (EVA) не завжди валідний NP CityRef → «City not found»; Ref відділення — авторитетне джерело (як order_router.py:337–361)
         if not (order.get("np_city_ref") and order.get("np_warehouse_number")):
             raise RunnerError("відділення НП не визначено (нема np_city_ref/np_warehouse_number) — уточніть у клієнта")
         ok, why = apply_enabled() if apply else (False, "dry-run")
@@ -442,6 +461,10 @@ class _Deps:
     def tracking(self, ttn):
         import nova_poshta
         return nova_poshta.get_tracking_status(ttn) if ttn else None
+
+    def np_warehouse_by_ref(self, ref):
+        import nova_poshta
+        return nova_poshta.warehouse_by_ref(ref)
 
     def ttn_dry_run(self, ttn_order):
         import np_ttn

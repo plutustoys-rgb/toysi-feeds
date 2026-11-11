@@ -175,6 +175,61 @@ e = new_order("E1", city=None, wh=None)
 with orders_db.get_connection() as c:
     rep = rr.process_order(c, get(e), SUP, apply=False, deps=Fake())
 chk("нема розпізнаного відділення НП → зупинка з причиною (без дзвінків НП/RoyalToys)", rep["problems"] and "відділення" in rep["problems"][0])
+
+# ---- 11.11: CityRef площадки не завжди валідний → довідник НП за Ref відділення ПЕРЕВАЖАЄ (інцидент eva_8-084262173 «City not found») ----
+def ref_order(oid, city, wh, ref):
+    iid = new_order(oid, city=city, wh=wh, platform="eva")
+    with orders_db.get_connection() as c:
+        c.execute("UPDATE orders SET np_ref_id=? WHERE internal_order_id=?", (ref, iid))
+        c.commit()
+    return iid
+
+
+class FakeRef(Fake):
+    def __init__(self, wh=None, boom=False):
+        super().__init__()
+        self.wh, self.boom, self.ref_calls, self.seen = wh, boom, [], []
+
+    def np_warehouse_by_ref(self, ref):
+        self.ref_calls.append(ref)
+        if self.boom:
+            raise RuntimeError("NP down")
+        return self.wh
+
+    def ttn_dry_run(self, o):
+        self.seen.append((o.get("np_city_ref"), o.get("np_warehouse_number")))
+        return super().ttn_dry_run(o)
+
+
+fr = FakeRef(wh={"city_ref": "GOOD-CITY-GUID", "number": 303, "description": "Відділення №303"})
+r1 = ref_order("R1", "EVA-BAD-CITY-ID", "999", "WH-REF-1")
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(r1), SUP, apply=False, deps=fr)
+chk("np_ref_id є → у ТТН іде city_ref/номер З ДОВІДНИКА НП (303), а не хибний city_id площадки", fr.ref_calls == ["WH-REF-1"] and fr.seen == [("GOOD-CITY-GUID", "303")])
+fr = FakeRef(wh={"city_ref": "GOOD-CITY-GUID", "number": "7"})
+r2 = ref_order("R2", None, None, "WH-REF-2")
+with orders_db.get_connection() as c:
+    rep = rr.process_order(c, get(r2), SUP, apply=False, deps=fr)
+chk("площадка не дала city/номер, але дала Ref відділення → резолвиться з довідника, зупинки «відділення не визначено» нема", fr.seen == [("GOOD-CITY-GUID", "7")] and not any("відділення НП не визначено" in p for p in rep["problems"]))
+fr = FakeRef(boom=True)
+r3 = ref_order("R3", "PLATFORM-CITY", "5", "WH-REF-3")
+with orders_db.get_connection() as c:
+    rep = rr.process_order(c, get(r3), SUP, apply=False, deps=fr)
+chk("довідник НП недоступний (виняток) → fail-open: лишаються дані площадки, не гірше за раніше", fr.seen == [("PLATFORM-CITY", "5")])
+fr = FakeRef(wh={"city_ref": "", "number": None})
+r4 = ref_order("R4", "PLATFORM-CITY", "5", "WH-REF-4")
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(r4), SUP, apply=False, deps=fr)
+chk("довідник дав неповну відповідь → лишаються дані площадки", fr.seen == [("PLATFORM-CITY", "5")])
+fr = FakeRef(wh={"city_ref": "X", "number": "1"})
+r5 = ref_order("R5", "PLATFORM-CITY", "5", None)
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(r5), SUP, apply=False, deps=fr)
+chk("нема np_ref_id → довідник НЕ викликається, дані площадки без змін", fr.ref_calls == [] and fr.seen == [("PLATFORM-CITY", "5")])
+chk("_verified_np_destination: dict-вхід не мутується (повертається копія)", (lambda o: (rr._verified_np_destination(o, FakeRef(wh={"city_ref": "Z", "number": "9"})), o["np_city_ref"])[1] == "C")({"internal_order_id": "x", "np_ref_id": "R", "np_city_ref": "C", "np_warehouse_number": "1"}))
+with orders_db.get_connection() as c:        # тестові R1–R5 не мають лишатися в черзі RT для наступних перевірок (A4 рахує всі оплачені rt-замовлення)
+    c.execute("UPDATE orders SET status='sandbox_test' WHERE internal_order_id IN (?,?,?,?,?)", (r1, r2, r3, r4, r5))
+    c.commit()
 try:
     with orders_db.get_connection() as c:
         orders_db.set_rt_state(c, e, "bogus")

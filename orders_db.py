@@ -359,6 +359,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "public_number", "public_number TEXT")
         # Останній СПОВІЩЕНИЙ у Telegram стан замовлення сайту (site_order_status_notify, 08.11.2026): дедуп «лише зміна стану», після received/cancelled/returned — тиша. NULL = ще не сповіщали.
         _ensure_column(conn, "orders", "site_tg_state", "site_tg_state TEXT")
+        # Звідки прийшло замовлення сайту (10.11.2026, SEO + власник «усе всліпу»): JSON {gclid, utm_source, utm_medium, utm_campaign, landing(шлях без query), referrer(лише хост), …} — лише службові мітки кліку, БЕЗ персональних даних
+        _ensure_column(conn, "orders", "attribution", "attribution TEXT")
         _ensure_column(conn, "orders", "rt_confirmed_at", "rt_confirmed_at TEXT")
         _ensure_column(conn, "orders", "rt_total", "rt_total REAL")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже

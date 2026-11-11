@@ -413,6 +413,7 @@ button.ghost{background:#222a33;color:var(--tx)}button:disabled{opacity:.5;curso
     <select id=oplat class=tinp style="width:auto" onchange=renderOrders()><option value="">усі площадки</option><option>site</option><option>prom</option><option>rozetka</option><option>eva</option></select>
     <input id=oq class=tinp style="width:220px" placeholder="пошук: №, ім'я, телефон, ТТН" oninput=renderOrders()>
     <button onclick=loadOrders()>↻ завантажити замовлення</button><span class="small mut" id=ogen></span></div>
+  <div id=oalert></div>
   <div id=osum class="small" style="margin-bottom:8px"></div>
   <div class=scroll style="max-height:460px"><table id=otab style="width:100%;border-collapse:collapse;font-size:12.5px"></table></div>
 </div>
@@ -447,14 +448,19 @@ let ORD=null;
 async function loadOrders(){
   $('#ogen').textContent=' завантажую…';
   try{const r=await jpost('/api/orders',{days:+$('#odays').value});
-    if(!r.ok){$('#ogen').textContent=' помилка: '+(r.error||'?');return}
+    if(!r.ok){$('#ogen').textContent=' помилка: '+(r.error||'?');unknownOrders();return}
     ORD=r;$('#ogen').textContent=' знято '+r.generated+' (VPS)';renderOrders();
-  }catch(e){$('#ogen').textContent=' помилка: '+e}
+  }catch(e){$('#ogen').textContent=' помилка: '+e;unknownOrders()}
+}
+function unknownOrders(){   // аудит #1242: порожній банер при недоступному VPS виглядав би як «все гаразд»
+  $('#oalert').innerHTML='<div style="border:2px solid var(--warn);border-radius:8px;padding:8px 10px;margin:6px 0;color:var(--warn)"><b>⚠ Стан замовлень невідомий:</b> VPS не відповів'+(ORD?' (нижче — дані від '+esc(ORD.generated||'?')+', можуть застаріти)':'')+'</div>';
 }
 function renderOrders(){
   if(!ORD)return;const S=ORD.summary,pl=$('#oplat').value,q=($('#oq').value||'').toLowerCase();
   const pn=Object.entries(S.by_platform).map(([k,v])=>k+': '+v).join(' · ');
   const td=Object.entries(S.today).map(([k,v])=>k+': '+v).join(' · ')||'0';
+  const AT=(S.attention_rows||[]).map(a=>'<div>🔴 '+esc(a.platform)+' '+esc(String(a.id))+' — '+esc(a.label)+'</div>').join('');
+  $('#oalert').innerHTML=S.attention?'<div style="border:2px solid var(--err);border-radius:8px;padding:8px 10px;margin:6px 0;color:var(--err)"><b>⚠ Замовлення, що потребують уваги: '+S.attention+'</b>'+AT+'</div>':'';
   $('#osum').innerHTML='<b>Усього за період: '+S.total+'</b> ('+esc(pn)+') · <b>сьогодні:</b> '+esc(td)
     +' · сайт: <b>чекають оплати '+S.site_unpaid+'</b>'+(S.site_unpaid_stale?' (<span style="color:var(--err)">зависли: '+S.site_unpaid_stale+'</span>)':'');
   const rows=ORD.rows.filter(r=>(!pl||r.platform===pl)&&(!q||JSON.stringify([r.public_number,r.order_id,r.customer_name,r.phone,r.toysi_ttn,r.toysi_order_id]).toLowerCase().includes(q)));
@@ -518,7 +524,7 @@ async function queue(){const a=SEL,t=$('#inp'),msg=t.value.trim();if(!msg)return
 async function openSess(){const r=await jpost('/api/launch',{agent:SEL});alert(r.msg||r.error);}
 async function reset(){const a=SEL;if(!confirm('Почати нову розмову з «'+a+'»? Памʼять поточної сесії скинеться.'))return;
   const r=await jpost('/api/reset',{agent:a});LOG[a]=[];if(SEL===a)renderSession();alert(r.msg||r.error);}
-refresh();setInterval(refresh,60000);
+refresh();setInterval(refresh,60000);loadOrders();setInterval(loadOrders,300000);   // 12.11: замовлення, що стоять, мають бути видні без кліку — оновлення раз на 5 хв
 </script></body></html>"""
 
 

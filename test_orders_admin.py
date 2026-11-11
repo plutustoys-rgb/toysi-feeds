@@ -51,6 +51,21 @@ chk("*_cancelled_before_forward (prom/eva/rozetka) → скасовано", all(
 chk("delivery_status expired / unknown_77 → увага, не «передано в Toysi»", S(delivery_status="expired")[0] == "expired" and S(delivery_status="expired")[2] and S(delivery_status="unknown_77")[0] == "unknown" and S(delivery_status="unknown_77")[2])
 chk("помилка має пріоритет над «чекає оплати» (prepaid + toysi_error)", S(status="toysi_error", payment_method="prepaid")[0] == "error")
 
+# ── 12.11: замовлення, що стоять (eva_8-084262173: оплачене, RoyalToys, rt_error «City not found», у панелі було просто «прийнято»)
+EVA = dict(platform="eva", status="new", payment_method="prepaid", payment_confirmed=1, created_at="2026-11-10T08:00:00", rt_state=None,
+           rt_error="збій NovaPoshtaAPIError: API повернув помилку: ['City not found']")
+c1, l1, a1 = oa.stage(EVA, NOW)
+chk("оплачене з rt_error → «ЗУПИНЕНО конвеєром» + причина + увага (не «прийнято»)", c1 == "stuck" and "City not found" in l1 and a1 is True)
+chk("rt_error зникає після успіху → звичайний стан, без тривоги", oa.stage({**EVA, "rt_error": None, "rt_state": "rt_ordered", "toysi_ttn": "2045"}, NOW)[:1] == ("rt_rt_ordered",) and oa.stage({**EVA, "rt_error": None, "rt_state": "rt_ordered"}, NOW)[2] is False)
+chk("rt_state ttn_creating/rt_ordering (claim, результат невідомий) → увага; ttn_created/marking_ready — ні", oa.stage({**EVA, "rt_error": None, "rt_state": "ttn_creating"}, NOW)[2] is True and oa.stage({**EVA, "rt_error": None, "rt_state": "ttn_created"}, NOW)[2] is False)
+chk("delivered/cancelled/returned мають пріоритет над старим rt_error (історія не кричить)", oa.stage({**EVA, "delivery_status": "delivered"}, NOW)[0] == "delivered" and oa.stage({**EVA, "cancelled_at": "2026-11-10T23:30:00"}, NOW)[0] == "cancelled")
+chk("оплачене, не передане ніким >1 год, без помилки → «нікуди не передано» + увага", oa.stage({**EVA, "rt_error": None}, NOW)[0] == "stalled" and oa.stage({**EVA, "rt_error": None}, NOW)[2] is True)
+chk("оплачене, не передане <1 год → ще «прийнято» (не шумимо)", oa.stage({**EVA, "rt_error": None, "created_at": "2026-11-10T14:30:00"}, NOW)[0] == "accepted")
+chk("давнє (>3 діб) непередане → підпис є, тривоги немає (історія)", oa.stage({**EVA, "rt_error": None, "created_at": "2026-11-01T10:00:00"}, NOW)[0] == "stalled" and oa.stage({**EVA, "rt_error": None, "created_at": "2026-11-01T10:00:00"}, NOW)[2] is False)
+chk("передано в Toysi — не «stalled»", oa.stage({**EVA, "rt_error": None, "forwarded_to_toysi_at": "2026-11-10T23:10:00"}, NOW)[0] == "forwarded")
+sm = oa.summarize([EVA, {**EVA, "order_id": "ok", "rt_error": None, "rt_state": "rt_ordered"}], NOW)
+chk("summarize: attention=1 і рядок із причиною для банера панелі", sm["attention"] == 1 and sm["attention_rows"][0]["stage"] == "stuck" and "City not found" in sm["attention_rows"][0]["label"])
+
 # ── total
 chk("сума: site_charged_total має пріоритет", oa.total({"site_charged_total": 84, "items": [{"price": 1, "qty": 1}]}) == 84.0)
 chk("сума: з позицій, сміття не ламає", oa.total({"items": [{"price": 100, "qty": 2}, {"price": "x", "qty": 1}, {}]}) == 200.0)

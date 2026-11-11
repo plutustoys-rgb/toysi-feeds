@@ -448,9 +448,12 @@ let ORD=null;
 async function loadOrders(){
   $('#ogen').textContent=' завантажую…';
   try{const r=await jpost('/api/orders',{days:+$('#odays').value});
-    if(!r.ok){$('#ogen').textContent=' помилка: '+(r.error||'?');return}
+    if(!r.ok){$('#ogen').textContent=' помилка: '+(r.error||'?');unknownOrders();return}
     ORD=r;$('#ogen').textContent=' знято '+r.generated+' (VPS)';renderOrders();
-  }catch(e){$('#ogen').textContent=' помилка: '+e}
+  }catch(e){$('#ogen').textContent=' помилка: '+e;unknownOrders()}
+}
+function unknownOrders(){   // аудит #1242: порожній банер при недоступному VPS виглядав би як «все гаразд»
+  $('#oalert').innerHTML='<div style="border:2px solid var(--warn);border-radius:8px;padding:8px 10px;margin:6px 0;color:var(--warn)"><b>⚠ Стан замовлень невідомий:</b> VPS не відповів'+(ORD?' (нижче — дані від '+esc(ORD.generated||'?')+', можуть застаріти)':'')+'</div>';
 }
 function renderOrders(){
   if(!ORD)return;const S=ORD.summary,pl=$('#oplat').value,q=($('#oq').value||'').toLowerCase();

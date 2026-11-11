@@ -189,6 +189,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             recipient = rt_run._recipient(order)          # ПІБ і телефон потрібні для НАШОЇ ТТН НП (у Dropt не передаються) — перевіряємо ДО ТТН
         except RunnerError as e:
             raise RunnerError(str(e).replace("для RoyalToys", "для ТТН Нової пошти")) from None
+        order = rt_run._verified_np_destination(order, d)      # 12.11: city_id площадки (EVA) не завжди валідний NP CityRef → «City not found»; Ref відділення — авторитетне джерело (як у rt_order_runner, #1240)
         if not (order.get("np_city_ref") and order.get("np_warehouse_number")):
             raise RunnerError("відділення НП не визначено (нема np_city_ref/np_warehouse_number) — уточніть у клієнта")
         ok, why = apply_enabled() if apply else (False, "dry-run")

@@ -385,6 +385,52 @@ byo = {r.get("order"): r for r in reps}
 chk("файл постачальника застарів: посилка в дорозі (T1) усе одно відстежується (delivered), нова (T2) стоїть з причиною й алертом",
     get(t1)["rt_state"] == "delivered" and byo.get(t2, {}).get("problems") and "застарів" in byo[t2]["problems"][0] and (t2, "supplier_stale") in ALERTS and "create_ttn" not in fkS.calls)
 chk("_pdf_ok(None) не кидає", dr._pdf_ok(None) is False)
+
+# ---- 12.11: CityRef площадки не завжди валідний → довідник НП за Ref відділення ПЕРЕВАЖАЄ (як rt_order_runner, #1240) ----
+class FakeRef(Fake):
+    def __init__(self, wh=None, boom=False):
+        super().__init__()
+        self.wh, self.boom, self.ref_calls, self.seen = wh, boom, [], []
+
+    def np_warehouse_by_ref(self, ref):
+        self.ref_calls.append(ref)
+        if self.boom:
+            raise RuntimeError("NP down")
+        return self.wh
+
+    def ttn_dry_run(self, o):
+        self.seen.append((o.get("np_city_ref"), o.get("np_warehouse_number")))
+        return super().ttn_dry_run(o)
+
+
+def ref_order(oid, city, wh, ref):
+    iid = new_order(oid, city=city, wh=wh, platform="eva")
+    with orders_db.get_connection() as c:
+        c.execute("UPDATE orders SET np_ref_id=? WHERE internal_order_id=?", (ref, iid))
+        c.commit()
+    return iid
+
+
+def run_ref(iid, fk):
+    with orders_db.get_connection() as c:
+        return dr.process_order(c, get(iid), SUP, apply=False, deps=fk)
+
+
+fk = FakeRef(wh={"city_ref": "GOOD-CITY-GUID", "number": 303})
+run_ref(ref_order("DR1", "EVA-BAD-CITY-ID", "999", "WH-REF-1"), fk)
+chk("Dropt: np_ref_id є → у ТТН іде city_ref/номер З ДОВІДНИКА НП, а не хибний city_id площадки", fk.ref_calls == ["WH-REF-1"] and fk.seen == [("GOOD-CITY-GUID", "303")])
+fk = FakeRef(wh={"city_ref": "GOOD-CITY-GUID", "number": "7"})
+rep = run_ref(ref_order("DR2", None, None, "WH-REF-2"), fk)
+chk("Dropt: площадка не дала city/номер, але дала Ref → резолвиться, зупинки «відділення не визначено» нема", fk.seen == [("GOOD-CITY-GUID", "7")] and not any("відділення НП не визначено" in p for p in rep["problems"]))
+fk = FakeRef(boom=True)
+run_ref(ref_order("DR3", "PLATFORM-CITY", "5", "WH-REF-3"), fk)
+chk("Dropt: довідник НП недоступний → fail-open, дані площадки", fk.seen == [("PLATFORM-CITY", "5")])
+fk = FakeRef(wh={"city_ref": "X", "number": "1"})
+run_ref(ref_order("DR4", "PLATFORM-CITY", "5", None), fk)
+chk("Dropt: нема np_ref_id → довідник НЕ викликається", fk.ref_calls == [] and fk.seen == [("PLATFORM-CITY", "5")])
+with orders_db.get_connection() as c:      # тестові DR1–DR4 не мають лишатися в черзі для наступних перевірок
+    c.execute("UPDATE orders SET status='sandbox_test' WHERE internal_order_id LIKE 'eva_DR%'")
+    c.commit()
 dse.OUT_FILE = supp_path
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")

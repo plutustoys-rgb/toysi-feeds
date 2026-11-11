@@ -637,8 +637,42 @@ def build_order(payload: dict) -> tuple:
         "items": items,
         "carrier": "nova_poshta",
         "customer_comment": customer_comment,   # коментар покупця (≤300, очищений); Код зберігає в orders.customer_comment і додає в comment для Toysi
+        "attribution": _clean_attribution(payload.get("attribution")),   # звідки прийшов покупець (gclid/utm); зберігається після створення (UPDATE нижче)
     }
     return order, total
+
+
+ATTR_KEYS = ("gclid", "gbraid", "wbraid", "fbclid", "msclkid", "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "landing", "referrer")
+ATTR_MAX_LEN = 200
+
+
+def _clean_attribution(raw):
+    """Мітки джерела замовлення (gclid/utm_*/landing/referrer) із тіла запиту → JSON-рядок або None. Лише білий список ключів, рядки ≤200 без керуючих символів;
+    landing — лише ШЛЯХ (без query/якоря), referrer — лише ХОСТ: персональні дані в query не зберігаємо. Нічого не вигадуємо: нема міток — None (не «direct»). Ніколи не кидає виняток."""
+    try:
+        if not isinstance(raw, dict):
+            return None
+        out = {}
+        for k in ATTR_KEYS:
+            v = raw.get(k)
+            if isinstance(v, bool) or not isinstance(v, (str, int)):
+                continue
+            s = _COMMENT_CTRL_RE.sub(" ", str(v)).strip()
+            if k == "landing":
+                s = s.split("?")[0].split("#")[0]
+                if not s.startswith("/"):
+                    continue
+            elif k == "referrer":
+                from urllib.parse import urlparse
+                s = (urlparse(s).hostname or "") if "//" in s else re.split(r"[/?#]", s)[0]
+                if "@" in s or ":" in s:   # не хост (e-mail/логін/порт) — не зберігаємо
+                    continue
+            s = s[:ATTR_MAX_LEN]
+            if s:
+                out[k] = s
+        return json.dumps(out, ensure_ascii=False, sort_keys=True) if out else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 MAX_COMMENT_LEN = 300
@@ -1108,6 +1142,8 @@ class Handler(SimpleHTTPRequestHandler):
                             created = False
                             break
                         conn.execute("UPDATE orders SET site_charged_total=?, site_group_id=? WHERE internal_order_id=?", (ctotal, order["order_id"], f"site_{child['order_id']}"))
+                        if order.get("attribution"):
+                            conn.execute("UPDATE orders SET attribution=? WHERE internal_order_id=?", (order["attribution"], f"site_{child['order_id']}"))
                         child["public_number"] = assign_public_number(conn, f"site_{child['order_id']}")
                     if not created:
                         conn.rollback()
@@ -1121,6 +1157,8 @@ class Handler(SimpleHTTPRequestHandler):
                             "UPDATE orders SET site_charged_total=? WHERE internal_order_id=?",
                             (total, f"site_{order['order_id']}"),
                         )
+                        if order.get("attribution"):
+                            conn.execute("UPDATE orders SET attribution=? WHERE internal_order_id=?", (order["attribution"], f"site_{order['order_id']}"))
                         order["public_number"] = assign_public_number(conn, f"site_{order['order_id']}")      # короткий номер для покупця (None — лишається довгий)
                 if created:
                     conn.commit()

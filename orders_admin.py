@@ -138,7 +138,7 @@ def stage(row: dict, now: datetime) -> tuple:
     if rt_err and not row.get("rt_confirmed_at"):      # після підтвердження оплати старий rt_error (напр. «статус невідомий») — застарілий: раннер його не очищає (12.11, eva_8-084262173); конвеєр постачальника (RoyalToys/Dropt) зупинився на цьому замовленні й записав причину — рівно те, що власник мусить бачити (12.11: eva_8-084262173 «City not found»)
         return "stuck", f"ЗУПИНЕНО конвеєром: {rt_err[:160]}", True
     rs = str(row.get("rt_state") or "")
-    if rs == "rt_ordered" and not row.get("rt_confirmed_at") and ds not in _DELIVERY:      # резерв є, оплату з балансу ще не зроблено: чекаємо перехід у «Очікує оплати» на боці постачальника або поповнення балансу
+    if rs == "rt_ordered" and not row.get("rt_confirmed_at") and ds not in _DELIVERY and supplier_of(row) == "RoyalToys":      # лише RoyalToys: у Dropt оплата з балансу — на самому оформленні, rt_confirmed_at не пишеться (аудит #1244)      # резерв є, оплату з балансу ще не зроблено: чекаємо перехід у «Очікує оплати» на боці постачальника або поповнення балансу
         created = _parse(row.get("created_at"))
         age = (now - created).total_seconds() / 60 if created else 0
         return "rt_wait_pay", "резерв у постачальника, ЧЕКАЄ ОПЛАТИ З БАЛАНСУ" + (f" ({age / 60:.1f} год)" if age >= 60 else "") + (f" · ТТН {row['toysi_ttn']}" if row.get("toysi_ttn") else ""), age > 60

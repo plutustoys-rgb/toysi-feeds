@@ -74,10 +74,13 @@ def SP(*codes):
 chk("постачальник за кодами: rt- → RoyalToys, dropt- → Dropt, zb- → ZooBaza, число → Toysi; змішане через « + »; порожнє → ?",
     SP("rt-68654") == "RoyalToys" and SP("dropt-57114") == "Dropt" and SP("zb-5") == "ZooBaza" and SP("308212") == "Toysi" and SP("100", "rt-1") == "Toysi + RoyalToys" and SP() == "?" and SP("RT-9") == "RoyalToys")
 chk("payload несе supplier для рядків", oa.payload(7, runner=lambda *a, **k: type("R", (), {"returncode": 0, "stdout": json.dumps({"generated": "x", "days": 7, "rows": [{"platform": "eva", "order_id": "1", "items": [{"code": "rt-1", "name": "n", "qty": 1, "price": 100}], "payment_method": "prepaid", "payment_confirmed": 1, "created_at": "2026-11-10T08:00:00"}]}).encode(), "stderr": b""})(), now=NOW)["rows"][0]["supplier"] == "RoyalToys")
-RO = {**EVA, "rt_error": None, "rt_state": "rt_ordered", "created_at": "2026-11-10T10:00:00"}
+RO = {**EVA, "rt_error": None, "rt_state": "rt_ordered", "created_at": "2026-11-10T10:00:00", "items": [{"code": "rt-68654", "name": "n", "qty": 1, "price": 100}]}
 c2, l2, a2 = oa.stage(RO, NOW)
 chk("rt_ordered без rt_confirmed_at, >1 год → «ЧЕКАЄ ОПЛАТИ З БАЛАНСУ» + увага", c2 == "rt_wait_pay" and "БАЛАНСУ" in l2 and a2 is True)
 chk("rt_ordered без rt_confirmed_at, <1 год → без тривоги", oa.stage({**RO, "created_at": "2026-11-10T14:30:00"}, NOW)[2] is False)
+DR = {**RO, "items": [{"code": "dropt-57114", "name": "n", "qty": 1, "price": 100}]}
+chk("Dropt у rt_ordered без rt_confirmed_at (оплата з балансу на оформленні) → НЕ «чекає оплати», без тривоги (аудит #1244)", oa.stage(DR, NOW)[0] == "rt_rt_ordered" and oa.stage(DR, NOW)[2] is False)
+chk("RoyalToys у rt_ordered без rt_confirmed_at: supplier визначається за rt- позиціями", oa.stage({**RO, "items": [{"code": "rt-68654"}]}, NOW)[0] == "rt_wait_pay")
 chk("rt_ordered із rt_confirmed_at → звичайний стан «замовлено у постачальника», без тривоги", oa.stage({**RO, "rt_confirmed_at": "2026-11-10T11:00:00"}, NOW)[:1] == ("rt_rt_ordered",) and oa.stage({**RO, "rt_confirmed_at": "2026-11-10T11:00:00"}, NOW)[2] is False)
 chk("застарілий rt_error після підтвердження (rt_confirmed_at) НЕ показується як «ЗУПИНЕНО»", oa.stage({**RO, "rt_error": "підтвердження не вдалось: статус невідомий", "rt_confirmed_at": "2026-11-10T11:00:00"}, NOW)[0] != "stuck")
 chk("недостатній баланс (rt_error без rt_confirmed_at) → «ЗУПИНЕНО … недостатньо балансу» + увага", oa.stage({**RO, "rt_error": "недостатньо балансу RoyalToys: потрібно 72 — поповніть баланс, конвеєр підтвердить сам"}, NOW)[0] == "stuck" and oa.stage({**RO, "rt_error": "недостатньо балансу RoyalToys: потрібно 72"}, NOW)[2] is True)

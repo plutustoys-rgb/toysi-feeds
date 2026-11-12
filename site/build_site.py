@@ -3445,8 +3445,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     elif str(p["id"]).startswith("dropt-"):
         plain = html.unescape(plain)   # dropt: опис екранований у _load_supplier_dropt (для тіла сторінки); у JSON-LD — чисті символи («<» там однаково стає \u003c)
     if not _dropt_own_text and snippet_use_own_text(plain, p["id"]):
-        plain = " ".join(_product_text_first_para(p["id"]).split())   # сніпет і JSON-LD (пробіли/переноси стиснуто: у content="…" не має бути сирого 
-): наш текст замість заглушки/короткого/російського опису постачальника (SEO, варіант Б; ворота SITE_SNIPPET_OWN_TEXT)
+        plain = _product_text_first_para(p["id"])   # сніпет і JSON-LD: наш текст замість заглушки/короткого/російського опису постачальника (SEO, варіант Б; ворота SITE_SNIPPET_OWN_TEXT)
     meta_desc = product_description(p["name"], p["price"], "" if p.get("rt") else plain)   # rt: опис постачальника — анкетний («ТИП: …; ВІК: …»), у сніпет не годиться
     if not in_stock:
         meta_desc = _cut(f"Немає в наявності: {p['name']}. Подивіться схожі іграшки в каталозі PlutusToys.", DESC_MAX)

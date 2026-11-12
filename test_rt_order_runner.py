@@ -575,6 +575,15 @@ fk = AC([{"confirmed": True, "balance_before": 1000.0, "balance_after": 1000.0}]
 with orders_db.get_connection() as c:
     rr.process_order(c, get(ac2), SUP, apply=True, deps=fk)
 chk("після поповнення наступний цикл (rt_ordered) підтверджує сам", fk.conf_calls == [("RT000900001", 618.0)] and get(ac2)["rt_confirmed_at"])
+chk("12.11: після підтвердження застарілий rt_error («недостатньо балансу») очищено — панель не показує хибну зупинку", get(ac2)["rt_error"] in (None, ""))
+ac2b = new_order("AC2B")
+fk = AC([{"confirmed": False, "low_balance": True, "problems": ["недостатньо балансу: доступно 10, потрібно 618"]}])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(ac2b), SUP, apply=True, deps=fk)
+chk("12.11: мало балансу → rt_error у БД («недостатньо балансу RoyalToys … поповніть») — бачить панель без Telegram; стан лишається rt_ordered", "недостатньо балансу RoyalToys" in (get(ac2b)["rt_error"] or "") and "поповніть" in get(ac2b)["rt_error"] and get(ac2b)["rt_state"] == "rt_ordered" and not get(ac2b)["rt_confirmed_at"])
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET status='sandbox_test' WHERE internal_order_id=?", (ac2b,))
+    c.commit()
 ac3 = new_order("AC3")
 fk = AC([{"confirmed": False, "already": True, "problems": ["статус не «Очікує оплати»"]}])
 with orders_db.get_connection() as c:

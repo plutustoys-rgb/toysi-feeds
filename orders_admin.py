@@ -30,7 +30,7 @@ c = sqlite3.connect("file:orders.db?mode=ro", uri=True)
 c.row_factory = sqlite3.Row
 cols = {r[1] for r in c.execute("pragma table_info(orders)")}
 want = ["internal_order_id", "platform", "order_id", "public_number", "created_at", "status", "payment_method", "payment_confirmed", "site_charged_total",
-        "customer_name", "phone", "np_branch", "items", "forwarded_to_toysi_at", "toysi_order_id", "toysi_ttn", "delivery_status", "delivered_at", "cancelled_at", "cancel_reason", "carrier", "rt_state", "rt_error"]
+        "customer_name", "phone", "np_branch", "items", "forwarded_to_toysi_at", "toysi_order_id", "toysi_ttn", "delivery_status", "delivered_at", "cancelled_at", "cancel_reason", "carrier", "rt_state", "rt_error", "rt_confirmed_at"]
 sel = [w for w in want if w in cols]
 since = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
 rows = []
@@ -100,6 +100,21 @@ _DELIVERY = {"processing": "передано, в обробці", "assembling": 
              "cancelled": "скасовано", "returned": "повернення"}
 
 
+_SUPPLIER_BY_PREFIX = (("rt-", "RoyalToys"), ("dropt-", "Dropt"), ("zb-", "ZooBaza"))
+
+
+def supplier_of(row: dict) -> str:
+    """Постачальник замовлення за кодами позицій (так само, як розводить конвеєр: rt- → RoyalToys, dropt- → Dropt, zb- → ZooBaza, решта — Toysi).
+    Змішане (кілька постачальників в одному замовленні) — перелік через « + »."""
+    found = []
+    for i in row.get("items") or []:
+        code = str((i or {}).get("code") or "").strip().lower()
+        name = next((n for p, n in _SUPPLIER_BY_PREFIX if code.startswith(p)), "Toysi")
+        if name not in found:
+            found.append(name)
+    return " + ".join(found) if found else "?"
+
+
 def stage(row: dict, now: datetime) -> tuple:
     """→ (код, підпис українською, прапорець «потребує уваги»). Лише за службовими полями orders.db.
     ЗМІШАНИЙ кошик сайту (Toysi+RT) у базі — ДВА окремі замовлення (site_order_api.split_mixed_children) з однією оплатою: неоплачений змішаний кошик у лічильнику «чекають оплати» дає 2 (одиниця = рядок orders.db)."""
@@ -120,9 +135,13 @@ def stage(row: dict, now: datetime) -> tuple:
     if ds.startswith("unknown"):
         return "unknown", f"невідомий статус Toysi ({ds})", True
     rt_err = str(row.get("rt_error") or "").strip()
-    if rt_err:      # конвеєр постачальника (RoyalToys/Dropt) зупинився на цьому замовленні й записав причину — рівно те, що власник мусить бачити (12.11: eva_8-084262173 «City not found»)
+    if rt_err and not row.get("rt_confirmed_at"):      # після підтвердження оплати старий rt_error (напр. «статус невідомий») — застарілий: раннер його не очищає (12.11, eva_8-084262173); конвеєр постачальника (RoyalToys/Dropt) зупинився на цьому замовленні й записав причину — рівно те, що власник мусить бачити (12.11: eva_8-084262173 «City not found»)
         return "stuck", f"ЗУПИНЕНО конвеєром: {rt_err[:160]}", True
     rs = str(row.get("rt_state") or "")
+    if rs == "rt_ordered" and not row.get("rt_confirmed_at") and ds not in _DELIVERY:      # резерв є, оплату з балансу ще не зроблено: чекаємо перехід у «Очікує оплати» на боці постачальника або поповнення балансу
+        created = _parse(row.get("created_at"))
+        age = (now - created).total_seconds() / 60 if created else 0
+        return "rt_wait_pay", "резерв у постачальника, ЧЕКАЄ ОПЛАТИ З БАЛАНСУ" + (f" ({age / 60:.1f} год)" if age >= 60 else "") + (f" · ТТН {row['toysi_ttn']}" if row.get("toysi_ttn") else ""), age > 60
     if rs in _RT_LABELS and ds not in _DELIVERY:
         return "rt_" + rs, _RT_LABELS[rs] + (f" · ТТН {row['toysi_ttn']}" if row.get("toysi_ttn") else ""), rs in ("ttn_creating", "rt_ordering")
     if ds in _DELIVERY:
@@ -176,7 +195,7 @@ def payload(days: int = 30, runner=None, now: datetime | None = None) -> dict:
     for r in d.get("rows") or []:
         code, label, attn = stage(r, now)
         r = dict(r)
-        r.update({"stage": code, "stage_label": label, "attention": attn, "total": round(total(r), 2)})
+        r.update({"stage": code, "stage_label": label, "attention": attn, "total": round(total(r), 2), "supplier": supplier_of(r)})
         out.append(r)
     return {"ok": True, "generated": d.get("generated"), "days": d.get("days"), "rows": out, "summary": summarize(out, now)}
 

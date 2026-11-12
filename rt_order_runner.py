@@ -182,6 +182,11 @@ def _confirm_step(conn, d, oid: str, order: dict, rep: dict) -> bool:
     res = d.rt_confirm(order.get("rt_order_ref"), order.get("rt_total"))
     if res.get("confirmed") or res.get("already"):
         orders_db.mark_rt_confirmed(conn, oid)
+        try:
+            orders_db.set_rt_state(conn, oid, None, rt_error=None)      # 12.11: застарілий rt_error («статус невідомий», «недостатньо балансу») після підтвердження не має висіти в панелі
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
         rep["actions"].append("«З балансу»: підтверджено" if res.get("confirmed") else "«З балансу»: уже підтверджено раніше (статус пішов з «Очікує оплати»)")
         if res.get("confirmed"):
             _alert(oid, "confirmed", f"✅ замовлення RoyalToys {order.get('rt_order_ref')} підтверджено з балансу — передано на відправку (відсікання 14:00 пн–пт). Баланс до/після: {res.get('balance_before')}/{res.get('balance_after')}")
@@ -196,6 +201,11 @@ def _confirm_step(conn, d, oid: str, order: dict, rep: dict) -> bool:
     if res.get("low_balance"):
         _alert(oid, "low_balance", f"недостатньо балансу RoyalToys для підтвердження {order.get('rt_order_ref')}: {'; '.join(res.get('problems') or [])}. Поповніть баланс — підтвердимо автоматично; резерв тримається 2 дні, потім скасується, ТТН НП живе обмежений час", cooldown=6 * 60 * 60)
         rep["actions"].append("«З балансу»: недостатньо коштів — чекаємо поповнення")
+        try:      # 12.11: видно в панелі (Telegram вимкнено): «ЗУПИНЕНО … недостатньо балансу» — власник поповнює, наступний цикл підтверджує сам
+            orders_db.set_rt_state(conn, oid, None, rt_error=("недостатньо балансу RoyalToys: " + "; ".join(res.get("problems") or []))[:300] + " — поповніть баланс, конвеєр підтвердить сам")
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
         return False
     if res.get("unknown_status"):
         _alert(oid, "rt_unknown_status", f"замовлення RoyalToys {order.get('rt_order_ref')}: статус у кабінеті невідомий для автопідтвердження — звірте й підтвердіть «З балансу» вручну (ТТН {order.get('toysi_ttn')}); автоматика повторить, але не підтвердить мовчки")

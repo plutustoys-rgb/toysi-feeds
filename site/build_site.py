@@ -2170,9 +2170,13 @@ SNIPPET_OWN_TEXT = os.environ.get("SITE_SNIPPET_OWN_TEXT") == "1"
 SNIPPET_SHORT_MIN = 60
 
 
-def snippet_use_own_text(supplier_plain, pid):
-    """True, якщо для сніпета/JSON-LD треба взяти наш текст замість опису постачальника (ворота ввімкнено, наш текст є, а опис постачальника — «Бренд: …» / <60 знаків / російський)."""
-    if not SNIPPET_OWN_TEXT or not _product_text_first_para(pid):
+_SECOND_PERSON_RX = re.compile(r"\b[а-яіїєґ']{3,}(?:єш|еш|иш|їш)(?:ся)?\b", re.I)   # дієслова 2-ї особи однини (SEO 12.11: 6/6 справжніх, 6/6 чистих на прикладах)
+
+
+def snippet_use_own_text(supplier_plain, pid, name=""):
+    """True, якщо для сніпета/JSON-LD треба взяти наш текст замість опису постачальника: ворота ввімкнено, наш текст є, а опис постачальника — «Бренд: …» / <60 знаків / російський. НЕ беремо наш текст, якщо його перший абзац містить дієслова 2-ї особи (шаблонні речення черги 2-ї особи не мають потрапляти у сніпет) або майже не додає до назви (коротший за назву + 40 знаків)."""
+    first = _product_text_first_para(pid) if SNIPPET_OWN_TEXT else ""
+    if not first or _SECOND_PERSON_RX.search(first) or len(" ".join(first.split())) < len(name or "") + 40:
         return False
     t = html.unescape(supplier_plain or "").strip()
     return bool(re.match(r"бренд\s*:", t, re.I)) or len(t) < SNIPPET_SHORT_MIN or bool(_RU_LETTERS_RE.search(t))
@@ -3444,7 +3448,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
         plain = _product_text_first_para(p["id"])   # JSON-LD description = наш текст, не опис постачальника
     elif str(p["id"]).startswith("dropt-"):
         plain = html.unescape(plain)   # dropt: опис екранований у _load_supplier_dropt (для тіла сторінки); у JSON-LD — чисті символи («<» там однаково стає \u003c)
-    if not _dropt_own_text and snippet_use_own_text(plain, p["id"]):
+    if not _dropt_own_text and snippet_use_own_text(plain, p["id"], p["name"]):
         plain = " ".join(_product_text_first_para(p["id"]).split())   # пробіли й переноси стиснуто (нема сирого перенесення в content); сніпет і JSON-LD: наш текст замість заглушки/короткого/російського опису постачальника (SEO, варіант Б; ворота SITE_SNIPPET_OWN_TEXT)
     meta_desc = product_description(p["name"], p["price"], "" if p.get("rt") else plain)   # rt: опис постачальника — анкетний («ТИП: …; ВІК: …»), у сніпет не годиться
     if not in_stock:

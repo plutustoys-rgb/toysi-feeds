@@ -2170,7 +2170,7 @@ SNIPPET_OWN_TEXT = os.environ.get("SITE_SNIPPET_OWN_TEXT") == "1"
 SNIPPET_SHORT_MIN = 60
 
 
-_SECOND_PERSON_RX = re.compile(r"\b[а-яіїєґ']{3,}(?:єш|еш|иш|їш)(?:ся)?\b", re.I)   # дієслова 2-ї особи однини (SEO 12.11: 6/6 справжніх, 6/6 чистих на прикладах)
+_SECOND_PERSON_RX = re.compile(r"\b[а-яіїєґ']{1,}(?:єш|еш|иш|їш)(?:ся)?\b", re.I)   # дієслова 2-ї особи однини (SEO 12.11; основа ≥1 знак: ловить і «Даєш», «б'єш»; хибні «фреш»/«флеш» лише повертають сніпет до опису постачальника)
 
 
 def snippet_use_own_text(supplier_plain, pid, name=""):

@@ -56,15 +56,34 @@ EVA = dict(platform="eva", status="new", payment_method="prepaid", payment_confi
            rt_error="збій NovaPoshtaAPIError: API повернув помилку: ['City not found']")
 c1, l1, a1 = oa.stage(EVA, NOW)
 chk("оплачене з rt_error → «ЗУПИНЕНО конвеєром» + причина + увага (не «прийнято»)", c1 == "stuck" and "City not found" in l1 and a1 is True)
-chk("rt_error зникає після успіху → звичайний стан, без тривоги", oa.stage({**EVA, "rt_error": None, "rt_state": "rt_ordered", "toysi_ttn": "2045"}, NOW)[:1] == ("rt_rt_ordered",) and oa.stage({**EVA, "rt_error": None, "rt_state": "rt_ordered"}, NOW)[2] is False)
+chk("rt_error зникає після успіху → звичайний стан, без тривоги", oa.stage({**EVA, "rt_error": None, "rt_state": "rt_ordered", "toysi_ttn": "2045", "rt_confirmed_at": "2026-11-10T09:00:00"}, NOW)[:1] == ("rt_rt_ordered",) and oa.stage({**EVA, "rt_error": None, "rt_state": "rt_ordered", "rt_confirmed_at": "2026-11-10T09:00:00"}, NOW)[2] is False)
 chk("rt_state ttn_creating/rt_ordering (claim, результат невідомий) → увага; ttn_created/marking_ready — ні", oa.stage({**EVA, "rt_error": None, "rt_state": "ttn_creating"}, NOW)[2] is True and oa.stage({**EVA, "rt_error": None, "rt_state": "ttn_created"}, NOW)[2] is False)
 chk("delivered/cancelled/returned мають пріоритет над старим rt_error (історія не кричить)", oa.stage({**EVA, "delivery_status": "delivered"}, NOW)[0] == "delivered" and oa.stage({**EVA, "cancelled_at": "2026-11-10T23:30:00"}, NOW)[0] == "cancelled")
 chk("оплачене, не передане ніким >1 год, без помилки → «нікуди не передано» + увага", oa.stage({**EVA, "rt_error": None}, NOW)[0] == "stalled" and oa.stage({**EVA, "rt_error": None}, NOW)[2] is True)
 chk("оплачене, не передане <1 год → ще «прийнято» (не шумимо)", oa.stage({**EVA, "rt_error": None, "created_at": "2026-11-10T14:30:00"}, NOW)[0] == "accepted")
 chk("давнє (>3 діб) непередане → підпис є, тривоги немає (історія)", oa.stage({**EVA, "rt_error": None, "created_at": "2026-11-01T10:00:00"}, NOW)[0] == "stalled" and oa.stage({**EVA, "rt_error": None, "created_at": "2026-11-01T10:00:00"}, NOW)[2] is False)
 chk("передано в Toysi — не «stalled»", oa.stage({**EVA, "rt_error": None, "forwarded_to_toysi_at": "2026-11-10T23:10:00"}, NOW)[0] == "forwarded")
-sm = oa.summarize([EVA, {**EVA, "order_id": "ok", "rt_error": None, "rt_state": "rt_ordered"}], NOW)
+sm = oa.summarize([EVA, {**EVA, "order_id": "ok", "rt_error": None, "rt_state": "rt_ordered", "rt_confirmed_at": "2026-11-10T09:00:00"}], NOW)
 chk("summarize: attention=1 і рядок із причиною для банера панелі", sm["attention"] == 1 and sm["attention_rows"][0]["stage"] == "stuck" and "City not found" in sm["attention_rows"][0]["label"])
+
+# ── 12.11: постачальник у панелі + очікування оплати з балансу + застарілий rt_error
+def SP(*codes):
+    return oa.supplier_of({"items": [{"code": c} for c in codes]})
+
+
+chk("постачальник за кодами: rt- → RoyalToys, dropt- → Dropt, zb- → ZooBaza, число → Toysi; змішане через « + »; порожнє → ?",
+    SP("rt-68654") == "RoyalToys" and SP("dropt-57114") == "Dropt" and SP("zb-5") == "ZooBaza" and SP("308212") == "Toysi" and SP("100", "rt-1") == "Toysi + RoyalToys" and SP() == "?" and SP("RT-9") == "RoyalToys")
+chk("payload несе supplier для рядків", oa.payload(7, runner=lambda *a, **k: type("R", (), {"returncode": 0, "stdout": json.dumps({"generated": "x", "days": 7, "rows": [{"platform": "eva", "order_id": "1", "items": [{"code": "rt-1", "name": "n", "qty": 1, "price": 100}], "payment_method": "prepaid", "payment_confirmed": 1, "created_at": "2026-11-10T08:00:00"}]}).encode(), "stderr": b""})(), now=NOW)["rows"][0]["supplier"] == "RoyalToys")
+RO = {**EVA, "rt_error": None, "rt_state": "rt_ordered", "created_at": "2026-11-10T10:00:00", "items": [{"code": "rt-68654", "name": "n", "qty": 1, "price": 100}]}
+c2, l2, a2 = oa.stage(RO, NOW)
+chk("rt_ordered без rt_confirmed_at, >1 год → «ЧЕКАЄ ОПЛАТИ З БАЛАНСУ» + увага", c2 == "rt_wait_pay" and "БАЛАНСУ" in l2 and a2 is True)
+chk("rt_ordered без rt_confirmed_at, <1 год → без тривоги", oa.stage({**RO, "created_at": "2026-11-10T14:30:00"}, NOW)[2] is False)
+DR = {**RO, "items": [{"code": "dropt-57114", "name": "n", "qty": 1, "price": 100}]}
+chk("Dropt у rt_ordered без rt_confirmed_at (оплата з балансу на оформленні) → НЕ «чекає оплати», без тривоги (аудит #1244)", oa.stage(DR, NOW)[0] == "rt_rt_ordered" and oa.stage(DR, NOW)[2] is False)
+chk("RoyalToys у rt_ordered без rt_confirmed_at: supplier визначається за rt- позиціями", oa.stage({**RO, "items": [{"code": "rt-68654"}]}, NOW)[0] == "rt_wait_pay")
+chk("rt_ordered із rt_confirmed_at → звичайний стан «замовлено у постачальника», без тривоги", oa.stage({**RO, "rt_confirmed_at": "2026-11-10T11:00:00"}, NOW)[:1] == ("rt_rt_ordered",) and oa.stage({**RO, "rt_confirmed_at": "2026-11-10T11:00:00"}, NOW)[2] is False)
+chk("застарілий rt_error після підтвердження (rt_confirmed_at) НЕ показується як «ЗУПИНЕНО»", oa.stage({**RO, "rt_error": "підтвердження не вдалось: статус невідомий", "rt_confirmed_at": "2026-11-10T11:00:00"}, NOW)[0] != "stuck")
+chk("недостатній баланс (rt_error без rt_confirmed_at) → «ЗУПИНЕНО … недостатньо балансу» + увага", oa.stage({**RO, "rt_error": "недостатньо балансу RoyalToys: потрібно 72 — поповніть баланс, конвеєр підтвердить сам"}, NOW)[0] == "stuck" and oa.stage({**RO, "rt_error": "недостатньо балансу RoyalToys: потрібно 72"}, NOW)[2] is True)
 
 # ── total
 chk("сума: site_charged_total має пріоритет", oa.total({"site_charged_total": 84, "items": [{"price": 1, "qty": 1}]}) == 84.0)

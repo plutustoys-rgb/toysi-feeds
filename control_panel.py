@@ -465,9 +465,9 @@ function renderOrders(){
     +' · сайт: <b>чекають оплати '+S.site_unpaid+'</b>'+(S.site_unpaid_stale?' (<span style="color:var(--err)">зависли: '+S.site_unpaid_stale+'</span>)':'');
   const rows=ORD.rows.filter(r=>(!pl||r.platform===pl)&&(!q||JSON.stringify([r.public_number,r.order_id,r.customer_name,r.phone,r.toysi_ttn,r.toysi_order_id]).toLowerCase().includes(q)));
   const col={unpaid:'var(--warn)',test:'var(--mut)',cancelled:'var(--mut)',returned:'var(--err)',delivered:'var(--ok)'};
-  $('#otab').innerHTML='<tr class=mut style="text-align:left"><th>Час</th><th>Пл.</th><th>№</th><th>Сума</th><th>Оплата</th><th>Стан</th><th>Покупець</th><th>Товари</th></tr>'
+  $('#otab').innerHTML='<tr class=mut style="text-align:left"><th>Час</th><th>Пл.</th><th>Постачальник</th><th>№</th><th>Сума</th><th>Оплата</th><th>Стан</th><th>Покупець</th><th>Товари</th></tr>'
    +rows.map(r=>{const its=(r.items||[]).map(i=>esc(i.name||i.code)+' ×'+esc(String(i.qty||'?'))).join('; ');
-    return '<tr style="border-top:1px solid var(--line);vertical-align:top"><td>'+esc((r.created_at||'').replace('T',' ').slice(5,16))+'</td><td>'+esc(r.platform)+'</td><td>'+esc(r.public_number||r.order_id)+'</td>'
+    return '<tr style="border-top:1px solid var(--line);vertical-align:top"><td>'+esc((r.created_at||'').replace('T',' ').slice(5,16))+'</td><td>'+esc(r.platform)+'</td><td>'+esc(r.supplier||'?')+'</td><td>'+esc(r.public_number||r.order_id)+'</td>'
      +'<td>'+Math.round(r.total)+' ₴</td><td>'+(r.payment_method==='cod'?'накл.':(r.payment_confirmed?'<span style="color:var(--ok)">оплачено</span>':'передоплата, нема оплати'))+'</td>'
      +'<td style="color:'+(r.attention?'var(--err)':(col[r.stage]||'inherit'))+'">'+esc(r.stage_label)+'</td>'
      +'<td>'+esc(r.customer_name||'')+'<div class="small mut">'+esc(r.phone||'')+(r.np_branch?' · '+esc(r.np_branch):'')+'</div></td><td class=small>'+its+'</td></tr>'}).join('');

@@ -17,6 +17,7 @@ CLI: python gmc_price_competitiveness.py --check     # 5 рядків звіту
      python gmc_price_competitiveness.py --summary   # зведення останнього знімка
 """
 import json
+import math
 import os
 import sys
 import time
@@ -125,11 +126,18 @@ def classify(rows: list, country: str = COUNTRY) -> tuple:
             continue
         p, pc = _micros(r.get("price"))
         b, bc = _micros(r.get("benchmarkPrice") if "benchmarkPrice" in r else r.get("benchmark_price"))
-        d = per.setdefault(oid, {"with_bench": 0, "pricier": 0})
+        d = per.setdefault(oid, {"with_bench": 0, "pricier": 0, "ratio": None})
         if p is not None and b is not None and pc and pc == bc:
             d["with_bench"] += 1
             if p > b:
                 d["pricier"] += 1
+            if b > 0:
+                try:
+                    q = p / b
+                except OverflowError:      # int поза діапазоном float — статистика не має валити мітки
+                    q = None
+                if q is not None and math.isfinite(q):
+                    d["ratio"] = q if d["ratio"] is None else max(d["ratio"], q)      # кілька рядків товару (uk+ru) — найгірший (найдорожчий) із них
     labels = {}
     pricier = nobench = 0
     for oid, d in per.items():
@@ -142,7 +150,34 @@ def classify(rows: list, country: str = COUNTRY) -> tuple:
             else:
                 nobench += 1
     st.update({"units": len(per), "vyhidni": sum(1 for v in labels.values() if v == LABEL_YES), "ni_pricier": pricier, "ni_no_benchmark": nobench})
+    try:
+        st["spread"] = spread_stats([d["ratio"] for d in per.values() if d.get("ratio") is not None])
+    except Exception:  # noqa: BLE001 — статистика НЕ має впливати на мітки
+        st["spread"] = None
     return labels, st
+
+
+def _pct(sorted_vals: list, q: float) -> float:
+    """Лінійна інтерполяція перцентиля q∈[0,1] на відсортованому списку."""
+    if not sorted_vals:
+        return 0.0
+    k = (len(sorted_vals) - 1) * q
+    lo = int(k)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo)
+
+
+def spread_stats(ratios: list) -> dict:
+    """Розподіл відхилення нашої ціни від контрольної (МІРА, не поріг; мітки з неї не залежать). ratios = ціна/контрольна по товарах із контрольною ціною.
+    → {n, pct{p10,p25,p50,p75,p90} (у % відхилення: +12.4 = на 12,4 % дорожче, −5 = на 5 % дешевше), pricier_median_pct, pricier_buckets{le5, 5_10, 10_20, 20_50, gt50}}."""
+    pct = sorted(round((r - 1.0) * 100.0, 6) for r in ratios if r and r > 0 and math.isfinite(r))      # round: 110/100 дає 10.000000000000009 і потрапляло б не в той проміжок
+    pricier = [x for x in pct if x > 0]
+    b = {"le5": 0, "5_10": 0, "10_20": 0, "20_50": 0, "gt50": 0}
+    for x in pricier:
+        k = "le5" if x <= 5 else "5_10" if x <= 10 else "10_20" if x <= 20 else "20_50" if x <= 50 else "gt50"
+        b[k] += 1
+    return {"n": len(pct), "pct": {k: round(_pct(pct, q), 1) for k, q in (("p10", .10), ("p25", .25), ("p50", .50), ("p75", .75), ("p90", .90))},
+            "pricier_median_pct": round(_pct(pricier, 0.5), 1) if pricier else None, "pricier_buckets": b}
 
 
 def write_snapshot(labels: dict, stats: dict, variant: str, now: datetime | None = None, path: Path = SNAPSHOT) -> Path:
@@ -155,11 +190,21 @@ def write_snapshot(labels: dict, stats: dict, variant: str, now: datetime | None
     return path
 
 
+def spread_text(stats: dict) -> str:
+    sp = (stats or {}).get("spread")
+    if not sp or not sp.get("n"):
+        return ""
+    p, b = sp["pct"], sp["pricier_buckets"]
+    return (f" РОЗПОДІЛ відхилення нашої ціни від контрольної (товарів з контрольною ціною {sp['n']}; + = дорожче, − = дешевше): "
+            f"p10 {p['p10']:+}%, p25 {p['p25']:+}%, медіана {p['p50']:+}%, p75 {p['p75']:+}%, p90 {p['p90']:+}%. "
+            f"Серед дорожчих (медіана перевищення {sp['pricier_median_pct']}%): до 5% — {b['le5']}, 5–10% — {b['5_10']}, 10–20% — {b['10_20']}, 20–50% — {b['20_50']}, понад 50% — {b['gt50']}.")
+
+
 def summary_text(stats: dict, date: str, variant: str = "") -> str:
     return (f"Порівняння цін Google (Merchant API Reports), знімок {date}, країна {COUNTRY}{', таблиця ' + variant if variant else ''}. "
             f"ОДИНИЦЯ — товар (offerId); рядків звіту {stats.get('rows')} (uk+ru зведено). Товарів: {stats.get('units')}; "
             f"vyhidni (ціна ≤ контрольної): {stats.get('vyhidni')}; ni, бо дорожчі за контрольну: {stats.get('ni_pricier')}; "
-            f"ni, бо контрольної ціни нема (серед товарів звіту): {stats.get('ni_no_benchmark')}; товари фіду, яких у звіті взагалі нема, теж отримують ni (рахувати: позицій фіду мінус units). Рядків іншої країни пропущено {stats.get('rows_other_country')}, без offerId {stats.get('rows_no_offer')}.")
+            f"ni, бо контрольної ціни нема (серед товарів звіту): {stats.get('ni_no_benchmark')}; товари фіду, яких у звіті взагалі нема, теж отримують ni (рахувати: позицій фіду мінус units). Рядків іншої країни пропущено {stats.get('rows_other_country')}, без offerId {stats.get('rows_no_offer')}." + spread_text(stats))
 
 
 def load_labels(path: Path = SNAPSHOT, max_age_days: int = MAX_AGE_DAYS, now: datetime | None = None) -> dict:

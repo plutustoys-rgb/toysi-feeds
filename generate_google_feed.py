@@ -1275,8 +1275,19 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
     return items, stats
 
 
+def _price_labels() -> dict:
+    """{offerId: 'vyhidni'|'ni'} зі знімка порівняння цін Google (gmc_price_competitiveness; рішення власника 13.11 «реклама лише вигідних»). Нема знімка/ключа/збій → {} (мітки не ставимо; фід як був). Ніколи не кидає."""
+    try:
+        import gmc_price_competitiveness as _gpc
+        return _gpc.labels_for_feed()
+    except BaseException as e:  # noqa: BLE001
+        print(f"[Google] мітки вигідності пропущено ({type(e).__name__})", file=sys.stderr)
+        return {}
+
+
 def _build_xml(items: list) -> ET.Element:
     NS = "http://base.google.com/ns/1.0"
+    _labels = _price_labels()
     ET.register_namespace("g", NS)
     rss = ET.Element("rss", version="2.0")
     channel = ET.SubElement(rss, "channel")
@@ -1306,6 +1317,9 @@ def _build_xml(items: list) -> ET.Element:
             ET.SubElement(entry, f"{{{NS}}}product_type").text = f"Головна > {it['category_name']}"      # запит SEO п.4б: наш шлях категорії
         if it.get("price_band"):
             ET.SubElement(entry, f"{{{NS}}}custom_label_0").text = it["price_band"]                      # запит SEO 18.10: цінова смуга
+        _lab = _labels.get(str(it.get("id"))) or ("ni" if _labels else None)       # є свіжий знімок, а товару в ньому нема → контрольної ціни нема → ni (специфікація Аудитора: «без контрольної ціни НЕ вигідний»); знімка нема → без мітки
+        if _lab:
+            ET.SubElement(entry, f"{{{NS}}}custom_label_1").text = _lab                                   # рішення власника 13.11: «реклама лише вигідних» (vyhidni = наша ціна ≤ контрольної Google, UA); custom_label_0 не чіпаємо
 
     return rss
 

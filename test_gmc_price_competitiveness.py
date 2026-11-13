@@ -57,6 +57,18 @@ labels3, st3 = g.classify([row("u", 100, 120, country="PL"), row("v", 100, 120),
 chk("країна ≠ UA пропускається; рядок без offerId пропускається й рахується", "u" not in labels3 and st3["rows_other_country"] == 1 and st3["rows_no_offer"] == 1 and labels3 == {"v": "vyhidni"})
 chk("порожній звіт → порожні мітки", g.classify([])[0] == {} and g.classify([])[1]["units"] == 0)
 
+# ── розподіл відхилення (міра; мітки з неї не залежать)
+rows_sp = [row("s1", 100, 100), row("s2", 110, 100), row("s3", 95, 100), row("s4", 120, 100), row("s5", 130, 100), row("s6", 200, 100), row("s7", 100, None), row("s8", 104, 100)]
+lab_sp, st_sp = g.classify(rows_sp)
+sp = st_sp["spread"]
+chk("розподіл: n = товари З контрольною ціною (7 з 8; s7 без контрольної не входить)", sp["n"] == 7)
+chk("розподіл: відхилення у % від контрольної; медіана (7 значень: −5, 0, 4, 10, 20, 30, 100) = +10", sp["pct"]["p50"] == 10.0 and sp["pct"]["p10"] < 0 < sp["pct"]["p90"])
+chk("розподіл: ПРОМІЖКИ перевищення серед дорожчих (≤5: s8=4; 5–10: s2=10 → 5–10 включно; 10–20: s4=20; 20–50: s5=30; >50: s6=100)", sp["pricier_buckets"] == {"le5": 1, "5_10": 1, "10_20": 1, "20_50": 1, "gt50": 1} and sp["pricier_median_pct"] == 20.0)
+chk("розподіл не впливає на мітки (ті самі vyhidni/ni)", lab_sp["s1"] == "vyhidni" and lab_sp["s3"] == "vyhidni" and lab_sp["s2"] == "ni" and lab_sp["s7"] == "ni")
+chk("кілька рядків одного товару: береться НАЙДОРОЖЧЕ відхилення", g.classify([row("m", 100, 100), row("m", 150, 100)])[1]["spread"]["pct"]["p50"] == 50.0)
+chk("порожні/нульові дані: spread_stats не кидає (n=0)", g.spread_stats([])["n"] == 0 and g.spread_stats([0])["n"] == 0)
+chk("текст розподілу є в зведенні запуску; для порожнього — порожній рядок", "РОЗПОДІЛ відхилення" in g.summary_text(st_sp, "2026-11-13") and g.spread_text({"spread": None}) == "" and g.spread_text({}) == "")
+
 # ── API: пагінація, кандидати запиту, зведення
 class Resp:
     def __init__(self, d, code=200, text=""):

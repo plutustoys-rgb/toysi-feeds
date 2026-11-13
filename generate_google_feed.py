@@ -1317,7 +1317,7 @@ def _build_xml(items: list) -> ET.Element:
             ET.SubElement(entry, f"{{{NS}}}product_type").text = f"Головна > {it['category_name']}"      # запит SEO п.4б: наш шлях категорії
         if it.get("price_band"):
             ET.SubElement(entry, f"{{{NS}}}custom_label_0").text = it["price_band"]                      # запит SEO 18.10: цінова смуга
-        _lab = _labels.get(str(it.get("id")))
+        _lab = _labels.get(str(it.get("id"))) or ("ni" if _labels else None)       # є свіжий знімок, а товару в ньому нема → контрольної ціни нема → ni (специфікація Аудитора: «без контрольної ціни НЕ вигідний»); знімка нема → без мітки
         if _lab:
             ET.SubElement(entry, f"{{{NS}}}custom_label_1").text = _lab                                   # рішення власника 13.11: «реклама лише вигідних» (vyhidni = наша ціна ≤ контрольної Google, UA); custom_label_0 не чіпаємо
 

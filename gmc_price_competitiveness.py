@@ -19,6 +19,7 @@ CLI: python gmc_price_competitiveness.py --check     # 5 рядків звіту
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -31,8 +32,9 @@ OUT_DIR = Path(os.environ.get("GMC_REPORT_DIR", str(HERE / "reports" / "gmc")))
 SNAPSHOT = OUT_DIR / "price_competitiveness_labels.json"
 API = "https://merchantapi.googleapis.com/reports/v1"
 COUNTRY = "UA"
-PAGE_SIZE = 100000
-MAX_PAGES = 20
+PAGE_SIZE = 5000            # консервативно (аудит #1346: верхня межа reports:search могла бути менша за 100000); решту добирає nextPageToken
+MAX_PAGES = 100
+DEADLINE_SEC = 600         # загальний бюджет часу на ВЕСЬ запит до API (усі сторінки й варіанти): фід-прогін не має чекати годинами
 MAX_AGE_DAYS = 7
 REFRESH_AFTER_HOURS = 20
 LABEL_YES, LABEL_NO = "vyhidni", "ni"
@@ -55,11 +57,13 @@ def build_query(table: str, fields) -> str:
     return f"SELECT {', '.join(fields)} FROM {table}"
 
 
-def fetch_rows(session, query: str, account_id: str = ACCOUNT_ID, page_size: int = PAGE_SIZE, max_pages: int = MAX_PAGES) -> list:
+def fetch_rows(session, query: str, account_id: str = ACCOUNT_ID, page_size: int = PAGE_SIZE, max_pages: int = MAX_PAGES, deadline: float | None = None) -> list:
     """Усі рядки звіту (пагінація nextPageToken). session.post(url, json=..., timeout=...) → response; у проді AuthorizedSession. Повертає список priceCompetitivenessProductView-обʼєктів."""
     url = f"{API}/accounts/{account_id}/reports:search"
     token, pages, out = None, 0, []
     while pages < max_pages:
+        if deadline is not None and time.monotonic() > deadline:
+            raise RuntimeError(f"звіт: перевищено бюджет часу {DEADLINE_SEC} с — повного знімка нема")
         body = {"query": query, "pageSize": page_size}
         if token:
             body["pageToken"] = token
@@ -80,10 +84,11 @@ def fetch_rows(session, query: str, account_id: str = ACCOUNT_ID, page_size: int
 def fetch_any(session, account_id: str = ACCOUNT_ID, variants=QUERY_VARIANTS) -> tuple:
     """Пробує кандидатів по черзі. → (rows, query_variant). Усі відмовили → RuntimeError з відповідями API (для канал/алерту)."""
     errors = []
+    deadline = time.monotonic() + DEADLINE_SEC
     for table, fields in variants:
         q = build_query(table, fields)
         try:
-            rows = fetch_rows(session, q, account_id)
+            rows = fetch_rows(session, q, account_id, deadline=deadline)
             return rows, table
         except Exception as e:  # noqa: BLE001
             body = ""
@@ -154,7 +159,7 @@ def summary_text(stats: dict, date: str, variant: str = "") -> str:
     return (f"Порівняння цін Google (Merchant API Reports), знімок {date}, країна {COUNTRY}{', таблиця ' + variant if variant else ''}. "
             f"ОДИНИЦЯ — товар (offerId); рядків звіту {stats.get('rows')} (uk+ru зведено). Товарів: {stats.get('units')}; "
             f"vyhidni (ціна ≤ контрольної): {stats.get('vyhidni')}; ni, бо дорожчі за контрольну: {stats.get('ni_pricier')}; "
-            f"ni, бо контрольної ціни нема: {stats.get('ni_no_benchmark')}. Рядків іншої країни пропущено {stats.get('rows_other_country')}, без offerId {stats.get('rows_no_offer')}.")
+            f"ni, бо контрольної ціни нема (серед товарів звіту): {stats.get('ni_no_benchmark')}; товари фіду, яких у звіті взагалі нема, теж отримують ni (рахувати: позицій фіду мінус units). Рядків іншої країни пропущено {stats.get('rows_other_country')}, без offerId {stats.get('rows_no_offer')}.")
 
 
 def load_labels(path: Path = SNAPSHOT, max_age_days: int = MAX_AGE_DAYS, now: datetime | None = None) -> dict:

@@ -168,7 +168,7 @@ gf._price_labels = lambda: {"1": "vyhidni", "2": "ni"}
 root = gf._build_xml([item("1"), item("2"), item("3")])
 NS = "{http://base.google.com/ns/1.0}"
 ent = {e.findtext(NS + "id"): e for e in root.iter("item")}
-chk("XML: товар 1 → custom_label_1=vyhidni, 2 → ni, 3 (нема в знімку) → без custom_label_1", ent["1"].findtext(NS + "custom_label_1") == "vyhidni" and ent["2"].findtext(NS + "custom_label_1") == "ni" and ent["3"].find(NS + "custom_label_1") is None)
+chk("XML: товар 1 → vyhidni, 2 → ni, 3 (нема в свіжому знімку = контрольної ціни нема) → ni", ent["1"].findtext(NS + "custom_label_1") == "vyhidni" and ent["2"].findtext(NS + "custom_label_1") == "ni" and ent["3"].findtext(NS + "custom_label_1") == "ni")
 chk("XML: custom_label_0 (цінова смуга) не зачеплено", all(e.findtext(NS + "custom_label_0") == "100-250" for e in ent.values()))
 gf._price_labels = lambda: {}
 root = gf._build_xml([item("1")])

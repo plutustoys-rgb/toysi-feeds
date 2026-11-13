@@ -17,6 +17,7 @@ CLI: python gmc_price_competitiveness.py --check     # 5 рядків звіту
      python gmc_price_competitiveness.py --summary   # зведення останнього знімка
 """
 import json
+import math
 import os
 import sys
 import time
@@ -131,8 +132,12 @@ def classify(rows: list, country: str = COUNTRY) -> tuple:
             if p > b:
                 d["pricier"] += 1
             if b > 0:
-                q = p / b
-                d["ratio"] = q if d["ratio"] is None else max(d["ratio"], q)      # кілька рядків товару (uk+ru) — найгірший (найдорожчий) із них
+                try:
+                    q = p / b
+                except OverflowError:      # int поза діапазоном float — статистика не має валити мітки
+                    q = None
+                if q is not None and math.isfinite(q):
+                    d["ratio"] = q if d["ratio"] is None else max(d["ratio"], q)      # кілька рядків товару (uk+ru) — найгірший (найдорожчий) із них
     labels = {}
     pricier = nobench = 0
     for oid, d in per.items():
@@ -165,7 +170,7 @@ def _pct(sorted_vals: list, q: float) -> float:
 def spread_stats(ratios: list) -> dict:
     """Розподіл відхилення нашої ціни від контрольної (МІРА, не поріг; мітки з неї не залежать). ratios = ціна/контрольна по товарах із контрольною ціною.
     → {n, pct{p10,p25,p50,p75,p90} (у % відхилення: +12.4 = на 12,4 % дорожче, −5 = на 5 % дешевше), pricier_median_pct, pricier_buckets{le5, 5_10, 10_20, 20_50, gt50}}."""
-    pct = sorted(round((r - 1.0) * 100.0, 6) for r in ratios if r and r > 0)      # round: 110/100 дає 10.000000000000009 і потрапляло б не в той проміжок
+    pct = sorted(round((r - 1.0) * 100.0, 6) for r in ratios if r and r > 0 and math.isfinite(r))      # round: 110/100 дає 10.000000000000009 і потрапляло б не в той проміжок
     pricier = [x for x in pct if x > 0]
     b = {"le5": 0, "5_10": 0, "10_20": 0, "20_50": 0, "gt50": 0}
     for x in pricier:

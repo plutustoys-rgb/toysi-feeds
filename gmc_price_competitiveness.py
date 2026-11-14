@@ -309,7 +309,7 @@ def check_freshness_alert(path: Path = SNAPSHOT, now: datetime | None = None, ke
             _alert("gmc_price_comp_expired", f"gmc_price_competitiveness: знімок цін застарів ({age / 24:.1f} діб > {MAX_AGE_DAYS}) — мітки custom_label_1 ЗНИКЛИ з фіду, кампанія Google Ads не покаже жодного товару. Перевірити ключ/API.")
             return "expired"
         if age > STALE_WARN_HOURS:
-            _alert("gmc_price_comp_old", f"gmc_price_competitiveness: знімок цін не оновлювався {age:.0f} год (норма ≤20) — мітки ще діють (до {MAX_AGE_DAYS} діб), але оновлення не працює. Перевірити журнал фід-прогону/ключ/API.")
+            _alert("gmc_price_comp_old", f"gmc_price_competitiveness: знімок цін не оновлювався {age:.0f} год (норма ≤20) — мітки діють лише до {MAX_AGE_DAYS} діб від знімка (поріг рахується за датою, тож можуть зникнути й раніше за {MAX_AGE_DAYS * 24} год), оновлення не працює. Перевірити журнал фід-прогону/ключ/API.")
             return "old"
     except Exception:  # noqa: BLE001
         return None

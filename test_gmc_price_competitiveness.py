@@ -167,6 +167,24 @@ g.refresh_if_stale(now=NOW + timedelta(hours=30), path=tmp, runner=boom)
 chk("refresh_if_stale: SystemExit/виняток у runner не валить виклик (фід-генерація)", True)
 g._REFRESH_DONE = True
 
+# ── раннє попередження про застарілий/відсутній знімок (SEO 14.11: без міток кампанія не покаже жодного товару)
+fresh_tmp = Path(tempfile.mkdtemp()) / "s.json"
+g.write_snapshot({"a": "vyhidni"}, {"units": 1}, "t", NOW, fresh_tmp)
+alerts.clear()
+chk("знімок свіжий (5 год) → сигналу нема", g.check_freshness_alert(fresh_tmp, NOW + timedelta(hours=5), key_exists=True) is None and alerts == [])
+alerts.clear()
+chk("знімок 40 год → попередження gmc_price_comp_old (мітки ще діють)", g.check_freshness_alert(fresh_tmp, NOW + timedelta(hours=40), key_exists=True) == "old" and alerts == ["gmc_price_comp_old"])
+alerts.clear()
+chk("знімок старший за 7 діб → gmc_price_comp_expired (мітки зникли)", g.check_freshness_alert(fresh_tmp, NOW + timedelta(days=8), key_exists=True) == "expired" and alerts == ["gmc_price_comp_expired"])
+alerts.clear()
+none_tmp = Path(tempfile.mkdtemp()) / "none.json"
+chk("знімка нема, ключ є → gmc_price_comp_missing", g.check_freshness_alert(none_tmp, NOW, key_exists=True) == "missing" and alerts == ["gmc_price_comp_missing"])
+alerts.clear()
+chk("знімка нема, ключа нема (Windows/тест) → мовчимо", g.check_freshness_alert(none_tmp, NOW, key_exists=False) is None and alerts == [])
+g._alert = lambda k, t: (_ for _ in ()).throw(RuntimeError("x"))
+chk("збій відправки сигналу не кидає назовні", g.check_freshness_alert(fresh_tmp, NOW + timedelta(hours=40), key_exists=True) is None)
+g._alert = lambda k, t: alerts.append(k)
+
 # ── фід: _build_xml ставить custom_label_1, custom_label_0 лишається
 import generate_google_feed as gf  # noqa: E402
 

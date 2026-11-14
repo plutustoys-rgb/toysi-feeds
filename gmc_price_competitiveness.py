@@ -284,7 +284,36 @@ def refresh_if_stale(now: datetime | None = None, path: Path = SNAPSHOT, runner=
 def labels_for_feed() -> dict:
     """Для generate_google_feed: оновити (якщо треба) і віддати мітки; {} → міток нема."""
     refresh_if_stale()
-    return load_labels()
+    labels = load_labels()
+    check_freshness_alert()
+    return labels
+
+
+STALE_WARN_HOURS = 36      # раннє попередження: знімок має оновлюватись ≤раз на 20 год; за 36 год щось не так (ключ, API, google-auth) — мітки ще діють до MAX_AGE_DAYS
+
+
+def check_freshness_alert(path: Path = SNAPSHOT, now: datetime | None = None, key_exists: bool | None = None) -> str | None:
+    """Раннє попередження в журнал алертів (→ health_check → Код; не Telegram): знімок цін старий/відсутній, а мітки від нього живлять рекламу Google Ads (SEO 14.11: якщо вони зникнуть, кампанія не покаже жодного товару).
+    → код сигналу або None. Ніколи не кидає."""
+    try:
+        age = snapshot_age_hours(path, now)
+        if age is None:
+            if key_exists is None:
+                from gmc_status_report import KEY_FILE
+                key_exists = Path(KEY_FILE).exists()
+            if key_exists:
+                _alert("gmc_price_comp_missing", "gmc_price_competitiveness: знімка порівняння цін ще НЕМАЄ (ключ сервіс-акаунта є) — мітки vyhidni/ni не ставляться, реклама «лише вигідних» без товарів. Перевірити журнал фід-прогону.")
+                return "missing"
+            return None
+        if age > MAX_AGE_DAYS * 24:
+            _alert("gmc_price_comp_expired", f"gmc_price_competitiveness: знімок цін застарів ({age / 24:.1f} діб > {MAX_AGE_DAYS}) — мітки custom_label_1 ЗНИКЛИ з фіду, кампанія Google Ads не покаже жодного товару. Перевірити ключ/API.")
+            return "expired"
+        if age > STALE_WARN_HOURS:
+            _alert("gmc_price_comp_old", f"gmc_price_competitiveness: знімок цін не оновлювався {age:.0f} год (норма ≤20) — мітки ще діють (до {MAX_AGE_DAYS} діб), але оновлення не працює. Перевірити журнал фід-прогону/ключ/API.")
+            return "old"
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def main(argv=None) -> int:

@@ -61,7 +61,10 @@ def load_excluded_ids(path=None) -> dict:
         d = json.loads(Path(path or EXCLUDED_IDS_FILE).read_text(encoding="utf-8-sig"))
         ids = d.get("ids")
         return {str(k): str(v) for k, v in ids.items()} if isinstance(ids, dict) else {}
-    except Exception:  # noqa: BLE001
+    except FileNotFoundError:
+        return {}
+    except Exception as e:  # noqa: BLE001
+        print(f"[Meta] meta_excluded_ids.json не прочитано ({type(e).__name__}) — фід БЕЗ виключень (відхилені Meta товари можуть повернутись)", file=sys.stderr)
         return {}
 
 

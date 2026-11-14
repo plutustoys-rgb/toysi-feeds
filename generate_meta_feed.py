@@ -52,6 +52,28 @@ from generate_google_feed import (
 )
 
 OUTPUT_FILE = "feeds/meta_feed.xml"
+EXCLUDED_IDS_FILE = Path(__file__).resolve().parent / "meta_excluded_ids.json"
+
+
+def load_excluded_ids(path=None) -> dict:
+    """{g:id: причина} — товари, відхилені Meta за Правилами торгівлі й виключені з Meta-фіду (лише Meta; інші фіди не чіпає). Нема/битий файл → {} (фід не падає)."""
+    try:
+        d = json.loads(Path(path or EXCLUDED_IDS_FILE).read_text(encoding="utf-8-sig"))
+        ids = d.get("ids")
+        return {str(k): str(v) for k, v in ids.items()} if isinstance(ids, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:  # noqa: BLE001
+        print(f"[Meta] meta_excluded_ids.json не прочитано ({type(e).__name__}) — фід БЕЗ виключень (відхилені Meta товари можуть повернутись)", file=sys.stderr)
+        return {}
+
+
+def drop_excluded(items: list, excluded: dict) -> tuple:
+    """→ (items без виключених, кількість прибраних)."""
+    if not excluded:
+        return items, 0
+    kept = [i for i in items if str(i.get("id")) not in excluded]
+    return kept, len(items) - len(kept)
 
 
 def _load_own_product_links_cache() -> dict:
@@ -152,6 +174,9 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
     except Exception as e:  # noqa: BLE001
         print(f"[Meta] RT/Dropt пропущено ({type(e).__name__}: {str(e)[:120]}) — фід лише з Toysi.", file=sys.stderr)
 
+    items, _meta_dropped = drop_excluded(items, load_excluded_ids())      # відхилені Meta за Правилами торгівлі (meta_excluded_ids.json)
+    if _meta_dropped:
+        print(f"[Meta] Виключено відхилених Meta: {_meta_dropped}")
     root = _build_xml(items)
     ET.indent(root, space="  ")
     xml_str = ET.tostring(root, encoding="unicode")

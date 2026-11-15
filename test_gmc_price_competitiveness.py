@@ -219,6 +219,9 @@ chk("detail: класи vyhidni / pricier / no_benchmark збігаються з
 chk("detail: ціни в гривнях, a=100/120, c=130/120", (det["a"]["price"], det["a"]["benchmark"]) == (100.0, 120.0) and (det["c"]["price"], det["c"]["benchmark"]) == (130.0, 120.0))
 chk("detail: без контрольної — наша ціна є, контрольної нема (d: 100/None); без нашої ціни — обидва None (e)", det["d"]["price"] == 100.0 and det["d"]["benchmark"] is None and det["e"]["price"] is None and det["e"]["benchmark"] is None)
 chk("detail: кілька рядків товару → найгірший (найдорожчий відносно контрольної): w=110/100 pricier, m=100/100 vyhidni", (det["w"]["price"], det["w"]["class"]) == (110.0, "pricier") and (det["m"]["price"], det["m"]["class"]) == (100.0, "vyhidni"))
+detz = {}
+g.classify([row("z", 100, 100), row("z", 120, 100)], detail=detz)
+chk("detail: найгірший рядок СТОЇТЬ ДРУГИМ (z: 100/100, потім 120/100) → price=120, pricier (тест відрізняє «найгірший» від «першого», аудит #1551)", (detz["z"]["price"], detz["z"]["class"]) == (120.0, "pricier"))
 tdet = Path(tempfile.mkdtemp())
 pth = g.write_detail_csv(det, NOW, tdet)
 import csv as _csv2  # noqa: E402

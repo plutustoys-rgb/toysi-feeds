@@ -203,6 +203,7 @@ class Ctx:
         self.now = now or datetime.now(timezone.utc).astimezone()
         self.vps_snapshot, self.master, self.feed_meta, self.eva_date = fetch_vps_snapshot, fetch_master, fetch_feed_meta, fetch_eva_feed_date
         self.tasks, self.local_alerts, self.critical = fetch_tasks, (lambda: read_local_alerts(self.now)), read_critical
+        self.seo_metrics = read_seo_metrics_state
         for k, v in over.items():
             setattr(self, k, v)
 
@@ -342,7 +343,64 @@ def check_critical(ctx):
     return out
 
 
-CHECKS = (("vps", check_vps), ("artifacts", check_artifacts), ("tasks", check_tasks), ("local_journal", check_local_journal), ("critical", check_critical))
+# ---------- SEO_метрики: свіжість доставки файлів VPS → ПК (запит SEO 15.11.2026) ----------
+SEO_METRICS_DIR = SHARED / "SEO_метрики"
+# Доставку робить локальна задача PlutusToys_MarketplaceActions кожні 6 год (02:30, 08:30, 14:30, 20:30; крок daily_files_to_shared.py). Один пропущений запуск (ПК вимкнений вночі) = розрив до 12 год,
+# що НЕ є тривогою; два поспіль — так. Поріг = 2 інтервали + 1 год запасу = 13 год (виміряний інтервал, не вигаданий). Файли VPS-звітів оновлюються щодоби о 06:30, тож їхня дата в імені не може бути старшою за вчорашню+1.
+SEO_METRICS_MAX_AGE_H = 13
+SEO_FILE_MAX_AGE_DAYS = 2
+_SEO_DATE_RE = re.compile(r"_(\d{4}-\d{2}-\d{2})\.(?:csv|txt|json|md)$")
+
+
+def read_seo_metrics_state(root=None):
+    """{newest_mtime (epoch), latest_file_date (ISO), files} лише за файлами, які кладе доставка (daily_files_to_shared.PATTERNS), у 3 найновіших датованих теках; None — теки нема/не прочитано."""
+    try:
+        import daily_files_to_shared as dl
+        prefixes = tuple(dl.PATTERNS) + tuple(dl.FIXED_FILES)
+        base = Path(root or SEO_METRICS_DIR)
+        dirs = sorted([d for d in base.iterdir() if d.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", d.name)], reverse=True)[:3]
+    except Exception:  # noqa: BLE001
+        return None
+    newest, latest, n = None, None, 0
+    for d in dirs:
+        try:
+            for f in d.iterdir():
+                if not (f.is_file() and f.name.startswith(prefixes)):
+                    continue
+                n += 1
+                mt = f.stat().st_mtime
+                newest = mt if newest is None or mt > newest else newest
+                m = _SEO_DATE_RE.search(f.name)
+                if m and (latest is None or m.group(1) > latest):
+                    latest = m.group(1)
+        except OSError:
+            continue
+    return {"newest_mtime": newest, "latest_file_date": latest, "files": n}
+
+
+def check_seo_metrics(ctx):
+    """Мовчазний збій, якого не ловили інші перевірки (SEO 15.11): ПК вимкнений / ssh недоступний → daily_files_to_shared виходить кодом 0, SEO_метрики старіє без сигналу."""
+    st = ctx.seo_metrics()
+    if not st or st.get("newest_mtime") is None:
+        return [issue("seo:no_files", "warn", "SEO_метрики: файлів доставки VPS→ПК не знайдено", "", "перевірити PlutusToys_MarketplaceActions (крок daily_files_to_shared) і теку SEO_метрики")]
+    age = (ctx.now.timestamp() - st["newest_mtime"]) / 3600
+    if age > SEO_METRICS_MAX_AGE_H:
+        return [issue("seo:delivery_stale", "warn", f"SEO_метрики: доставка файлів VPS→ПК не оновлювалась {age:.0f} год (норма: кожні 6 год; один пропущений запуск = до 12 год)",
+                      f"найновіший файл доставки {datetime.fromtimestamp(st['newest_mtime']):%d.%m %H:%M}",
+                      "задача PlutusToys_MarketplaceActions (ПК увімкнений? ssh-ключ плутустойс? крок daily_files_to_shared виходить кодом 0 при недоступному ssh — тихо)")]
+    ld = st.get("latest_file_date")
+    if ld:
+        try:
+            days = (ctx.now.date() - datetime.strptime(ld, "%Y-%m-%d").date()).days
+        except ValueError:
+            days = 0
+        if days >= SEO_FILE_MAX_AGE_DAYS:
+            return [issue("seo:vps_reports_stale", "warn", f"SEO_метрики: найновіший VPS-звіт від {ld} ({days} діб тому) — щоденні звіти 06:30 не оновлюються", "",
+                          "gmc-status-report.service на VPS: journalctl, ключ сервіс-акаунта GSC/GMC, GSC API (вимкнений API → код 0 без алерту)")]
+    return []
+
+
+CHECKS = (("vps", check_vps), ("artifacts", check_artifacts), ("tasks", check_tasks), ("local_journal", check_local_journal), ("critical", check_critical), ("seo_metrics", check_seo_metrics))
 
 
 def _run_one(ctx, name, fn):

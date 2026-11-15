@@ -111,9 +111,11 @@ def _micros(price):
         return None, None
 
 
-def classify(rows: list, country: str = COUNTRY) -> tuple:
+def classify(rows: list, country: str = COUNTRY, detail: dict | None = None) -> tuple:
     """rows → (labels {offerId: 'vyhidni'|'ni'}, stats). Одиниця — offerId (рядки uk/ru одного товару зводяться в один).
-    stats: units, vyhidni, ni_pricier, ni_no_benchmark, rows, rows_other_country, rows_no_offer."""
+    stats: units, vyhidni, ni_pricier, ni_no_benchmark, rows, rows_other_country, rows_no_offer.
+    detail (необов'язково, dict, заповнюється на місці; запит SEO 15.11: розділити «дорожчі» і «нема контрольної ціни»): {offerId: {"price","benchmark","ratio","class"}}, ціни в гривнях з рядка звіту
+    (при кількох рядках товару з контрольною ціною — рядок з НАЙБІЛЬШИМ відношенням price/benchmark; без контрольної — перша наша ціна); class: vyhidni | pricier | no_benchmark — та сама логіка, що й у мітці. Не впливає на labels/stats."""
     per = {}
     st = {"rows": len(rows), "rows_other_country": 0, "rows_no_offer": 0}
     for r in rows:
@@ -127,8 +129,12 @@ def classify(rows: list, country: str = COUNTRY) -> tuple:
         p, pc = _micros(r.get("price"))
         b, bc = _micros(r.get("benchmarkPrice") if "benchmarkPrice" in r else r.get("benchmark_price"))
         d = per.setdefault(oid, {"with_bench": 0, "pricier": 0, "ratio": None})
+        if p is not None and pc and d.get("any_price") is None:
+            d["any_price"] = p      # для detail: наша ціна й там, де контрольної нема
         if p is not None and b is not None and pc and pc == bc:
             d["with_bench"] += 1
+            if d.get("bench") is None or (b > 0 and p / b >= (d["price"] / d["bench"] if d["bench"] > 0 else 0)):
+                d["price"], d["bench"] = p, b      # для detail: найгірший (найдорожчий відносно контрольної) рядок товару
             if p > b:
                 d["pricier"] += 1
             if b > 0:
@@ -143,12 +149,18 @@ def classify(rows: list, country: str = COUNTRY) -> tuple:
     for oid, d in per.items():
         if d["with_bench"] and not d["pricier"]:
             labels[oid] = LABEL_YES
+            cls = "vyhidni"
         else:
             labels[oid] = LABEL_NO
             if d["with_bench"]:
                 pricier += 1
+                cls = "pricier"
             else:
                 nobench += 1
+                cls = "no_benchmark"
+        if detail is not None:
+            has_b = d.get("bench") is not None
+            detail[oid] = {"price": (d["price"] / 1e6) if has_b else ((d["any_price"] / 1e6) if d.get("any_price") is not None else None), "benchmark": (d["bench"] / 1e6) if has_b else None, "ratio": d["ratio"], "class": cls}
     st.update({"units": len(per), "vyhidni": sum(1 for v in labels.values() if v == LABEL_YES), "ni_pricier": pricier, "ni_no_benchmark": nobench})
     try:
         st["spread"] = spread_stats([d["ratio"] for d in per.values() if d.get("ratio") is not None])
@@ -188,6 +200,31 @@ def write_snapshot(labels: dict, stats: dict, variant: str, now: datetime | None
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
     return path
+
+
+DETAIL_FIELDS = ["offer_id", "our_price_uah", "benchmark_price_uah", "ratio", "class"]
+
+
+def write_detail_csv(detail: dict, now: datetime | None = None, out_dir: Path = OUT_DIR) -> Path | None:
+    """Побаркодний знімок для SEO (запит 15.11: мітка «ni» зливає «дорожчі» і «нема контрольної ціни»; потрібні наша ціна й контрольна по кожному товару). reports/gmc/gmc_price_detail_<дата>.csv,
+    доставка в SEO_метрики (daily_files_to_shared.PATTERNS). Лише ЦІНИ САЙТУ та контрольна ціна Google (публічні); собівартості/опту тут немає й не буде. Одиниця — offerId. Порожній detail → None."""
+    if not detail:
+        return None
+    now = now or datetime.now()
+    p = Path(out_dir) / f"gmc_price_detail_{now:%Y-%m-%d}.csv"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    import csv as _csv
+    with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(DETAIL_FIELDS)
+        for oid in sorted(detail):
+            d = detail[oid]
+            r = d.get("ratio")
+            w.writerow([oid, "" if d.get("price") is None else round(d["price"], 2), "" if d.get("benchmark") is None else round(d["benchmark"], 2),
+                        "" if r is None or not math.isfinite(r) else round(r, 4), d.get("class", "")])
+    os.replace(tmp, p)
+    return p
 
 
 def spread_text(stats: dict) -> str:
@@ -247,13 +284,18 @@ def run(session=None, now: datetime | None = None, path: Path = SNAPSHOT) -> int
         print(msg, file=sys.stderr)
         _alert("gmc_price_comp_fail", msg)
         return 1
-    labels, st = classify(rows)
+    detail = {}
+    labels, st = classify(rows, detail=detail)
     if not labels:
         msg = f"gmc_price_competitiveness: звіт порожній (рядків {st['rows']}, товарів 0) — знімок не перезаписано"
         print(msg, file=sys.stderr)
         _alert("gmc_price_comp_empty", msg)
         return 1
     write_snapshot(labels, st, variant, now, path)
+    try:
+        write_detail_csv(detail, now, Path(path).parent)       # побічний файл для SEO: збій НЕ має впливати на мітки
+    except Exception as e:  # noqa: BLE001
+        print(f"[gmc_price_competitiveness] gmc_price_detail не записано: {type(e).__name__}", file=sys.stderr)
     print(summary_text(st, now.strftime("%Y-%m-%d"), variant))
     return 0
 

@@ -210,5 +210,36 @@ g.labels_for_feed = lambda: (_ for _ in ()).throw(RuntimeError("x"))
 chk("_price_labels: збій модуля мітки → {} без винятку (фід не падає)", gf._price_labels() == {})
 g.labels_for_feed = orig
 
+# ── побаркодний знімок цін для SEO (запит 15.11: розділити «дорожчі» і «нема контрольної ціни»)
+det = {}
+labs2, st2 = g.classify([row("a", 100, 120), row("c", 130, 120), row("d", 100, None), row("e", None, 100), row("m", 100, 100), row("m", 90, 100), row("w", 110, 100), row("w", 100, 100)], detail=det)
+labs0, st0 = g.classify([row("a", 100, 120), row("c", 130, 120), row("d", 100, None), row("e", None, 100), row("m", 100, 100), row("m", 90, 100), row("w", 110, 100), row("w", 100, 100)])
+chk("detail НЕ змінює labels/stats (з detail і без — ідентично)", labs2 == labs0 and st2 == st0)
+chk("detail: класи vyhidni / pricier / no_benchmark збігаються з міткою (a vyhidni, c pricier, d і e no_benchmark)", det["a"]["class"] == "vyhidni" and det["c"]["class"] == "pricier" and det["d"]["class"] == "no_benchmark" and det["e"]["class"] == "no_benchmark")
+chk("detail: ціни в гривнях, a=100/120, c=130/120", (det["a"]["price"], det["a"]["benchmark"]) == (100.0, 120.0) and (det["c"]["price"], det["c"]["benchmark"]) == (130.0, 120.0))
+chk("detail: без контрольної — наша ціна є, контрольної нема (d: 100/None); без нашої ціни — обидва None (e)", det["d"]["price"] == 100.0 and det["d"]["benchmark"] is None and det["e"]["price"] is None and det["e"]["benchmark"] is None)
+chk("detail: кілька рядків товару → найгірший (найдорожчий відносно контрольної): w=110/100 pricier, m=100/100 vyhidni", (det["w"]["price"], det["w"]["class"]) == (110.0, "pricier") and (det["m"]["price"], det["m"]["class"]) == (100.0, "vyhidni"))
+tdet = Path(tempfile.mkdtemp())
+pth = g.write_detail_csv(det, NOW, tdet)
+import csv as _csv2  # noqa: E402
+rdd = list(_csv2.reader(open(pth, encoding="utf-8-sig"))) if pth else []
+chk("write_detail_csv: файл gmc_price_detail_<дата>.csv, шапка, рядок на offerId (6), відсортовано", pth and pth.name == "gmc_price_detail_2026-11-13.csv" and rdd[0] == g.DETAIL_FIELDS and len(rdd) == 7 and [r[0] for r in rdd[1:]] == sorted(det))
+rc_ = {r[0]: r for r in rdd[1:]}
+chk("CSV: c=130/120 pricier; d порожня контрольна; e обидві порожні; жодної колонки собівартості/опту", rc_["c"][1:3] == ["130.0", "120.0"] and rc_["c"][4] == "pricier" and rc_["d"][2] == "" and rc_["e"][1] == "" and all(("cost" not in h and "wholesale" not in h) for h in rdd[0]))
+chk("write_detail_csv: порожній detail → None, файл не створено", g.write_detail_csv({}, NOW, tdet / "x") is None and not (tdet / "x").exists())
+tmp3 = Path(tempfile.mkdtemp()) / "snap.json"
+rc3 = g.run(session=S(h_ok), now=NOW, path=tmp3)
+chk("run: поруч зі знімком з'являється gmc_price_detail_<дата>.csv", rc3 == 0 and (tmp3.parent / "gmc_price_detail_2026-11-13.csv").exists())
+orig_w = g.write_detail_csv
+g.write_detail_csv = lambda *a, **k: (_ for _ in ()).throw(OSError("disk"))
+tmp4 = Path(tempfile.mkdtemp()) / "snap.json"
+try:
+    rc4 = g.run(session=S(h_ok), now=NOW, path=tmp4)
+finally:
+    g.write_detail_csv = orig_w
+chk("збій запису detail НЕ ламає знімок міток: код 0, snap.json записано", rc4 == 0 and tmp4.exists())
+import daily_files_to_shared as _dl  # noqa: E402
+chk("daily_files_to_shared.PATTERNS містить gmc_price_detail_ (доїде в SEO_метрики)", "gmc_price_detail_" in _dl.PATTERNS)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

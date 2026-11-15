@@ -48,6 +48,15 @@ def property_id(env=None, config_file: Path = None) -> str | None:
     return cand if cand.isdigit() else None
 
 
+def _load_env() -> None:
+    """GA4_PROPERTY_ID із /opt/plutustoys/.env (як у telegram_notify/site_chat_bot: службі не дано EnvironmentFile). Викликається з main(), не на імпорті; нема python-dotenv/файлу → мовчки далі (лишається ga4_config.json)."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(HERE / ".env")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def make_session():
     try:
         from google.oauth2 import service_account
@@ -95,6 +104,7 @@ def to_csv_rows(rows: list) -> list:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    _load_env()
     prop = property_id()
     if not prop:
         print("[ga4_report] GA4_PROPERTY_ID / ga4_config.json не задано — пропуск (ще не налаштовано власником)")

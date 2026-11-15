@@ -94,6 +94,20 @@ except gsc.ApiDisabled:
     dis_raised = True
 chk("accessNotConfigured → ApiDisabled", dis_raised)
 
+# --- .env (аудит #1550: служба не має EnvironmentFile, тож ID із .env читаємо самі) ---------
+_envdir = Path(tempfile.mkdtemp())
+(_envdir / ".env").write_text("GA4_PROPERTY_ID=4242\n", encoding="utf-8")
+_saved_home, _saved_cfg = ga.HERE, ga.CONFIG_FILE
+os.environ.pop("GA4_PROPERTY_ID", None)
+ga.HERE, ga.CONFIG_FILE = _envdir, _envdir / "absent.json"
+try:
+    chk("до _load_env() ID із .env не видно (немає в оточенні)", ga.property_id() is None)
+    ga._load_env()
+    chk("після _load_env(): GA4_PROPERTY_ID із .env підхоплено", ga.property_id() == "4242")
+finally:
+    ga.HERE, ga.CONFIG_FILE = _saved_home, _saved_cfg
+    os.environ.pop("GA4_PROPERTY_ID", None)
+
 # --- main ------------------------------------------------------------------------
 alerts = []
 gsc._alert = lambda key, text: alerts.append((key, text))

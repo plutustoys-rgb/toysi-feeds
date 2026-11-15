@@ -127,7 +127,7 @@ def maybe_notify(conn, order: dict, send, now: datetime | None = None, chats: li
             except Exception as e:  # noqa: BLE001
                 print(f"[review_link_notify] {order.get('internal_order_id')}: відправка збій ({type(e).__name__})", file=sys.stderr)
         if not ok:
-            # НІХТО не отримав: прибираємо щойно видані токени — наступний цикл трекера (~15 хв) повторить спробу (інакше «видано, але ніхто не отримав» нічим не відновити)
+            # НІХТО не отримав: прибираємо щойно видані токени — наступний цикл трекера  повторить спробу (інакше «видано, але ніхто не отримав» нічим не відновити)
             try:
                 for pid, token, _n, _l in issued:
                     conn.execute("DELETE FROM reviews WHERE order_id = ? AND product_id = ? AND token_hash = ?", (order["internal_order_id"], pid, reviews_db._hash(token)))

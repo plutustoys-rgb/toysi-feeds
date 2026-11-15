@@ -449,5 +449,36 @@ st = hc.read_seo_metrics_state(_root)
 chk("read_seo_metrics_state: файли доставки враховано (4), чужі (copy_fix_*, ЗАПИТИ_*, файли поза датованими теками) — ні; latest_file_date = 2026-11-14", st and st["files"] == 4 and st["latest_file_date"] == "2026-11-14")
 chk("read_seo_metrics_state: нема теки → None без винятку", hc.read_seo_metrics_state(_root / "nope") is None)
 
+# --- попередження збірки сайту: VPS-журнал → знімок → SEO_метрики/site_build_warnings.md (запит SEO 15.11.2026) ---
+_JR = ("2026-11-15T16:22:05+0200 vps python3[10]: [build] ⚠ gift: podarunok-do-100-hrn — лише 7 товарів за правилом (< 12)\n"
+       "2026-11-15T16:22:06+0200 vps python3[10]: [build] ⚠ porady: щось\n"
+       "2026-11-15T16:22:09+0200 vps python3[10]: звичайний рядок без попередження\n"
+       "2026-11-15T16:22:30+0200 vps systemd[1]: Finished PlutusToys site rebuild — регенерація.\n"
+       "2026-11-15T14:22:05+0200 vps python3[9]: [build] ⚠ gift: podarunok-do-100-hrn — лише 7 товарів за правилом (< 12)\n"
+       "2026-11-15T14:22:07+0200 vps python3[9]: [build] ⚠ token ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD leaked\n")
+_seen = {}
+bw = vh.collect_build_warnings(lambda c, timeout=30: (_seen.setdefault("cmd", c), _JR)[1])
+chk("collect_build_warnings: команда читає journalctl -u site-rebuild.service", _seen["cmd"][0] == "journalctl" and "site-rebuild.service" in _seen["cmd"])
+_texts = [w["text"] for w in bw["warnings"]]
+chk("збираються лише рядки «[build] ⚠», звичайні — ні (3 унікальні тексти)", len(bw["warnings"]) == 3 and not any("звичайний" in t for t in _texts))
+_g = next(w for w in bw["warnings"] if w["text"].startswith("⚠ gift: podarunok-do-100-hrn"))
+chk("однакові тексти згорнуто: count=2, last_at = найновіший (16:22)", _g["count"] == 2 and _g["last_at"].startswith("2026-11-15T16:22") and "лише 7 товарів" in _g["text"])
+chk("найновіші першими", bw["warnings"][0]["last_at"] >= bw["warnings"][-1]["last_at"])
+chk("секрет у тексті попередження редаговано (ghp_… немає)", not any("ghp_abcdefghijklmnopqrstuvwxyz" in t for t in _texts))
+chk("завершена збірка знайдена (builds_finished)", bw["builds_finished"] == ["2026-11-15T16:22:30+0200"])
+chk("порожній журнал/збій journalctl → warnings=[] без винятку", vh.collect_build_warnings(lambda c, timeout=30: "")["warnings"] == [])
+import tempfile as _tf2  # noqa: E402
+_td2 = Path(_tf2.mkdtemp())
+_snap = {"generated_at": "2026-11-15T14:31:37+00:00", "site_build_warnings": bw}
+_pp = _td2 / "SEO_метрики" / "site_build_warnings.md"
+chk("write_site_build_warnings: файл записано, є «лише 7 товарів» і час знімка", hc.write_site_build_warnings(_snap, _pp) and "лише 7 товарів" in _pp.read_text(encoding="utf-8") and "2026-11-15T14:31:37" in _pp.read_text(encoding="utf-8"))
+chk("знімок без ключа site_build_warnings (VPS на старому коді) → False, файл не чіпаємо", hc.write_site_build_warnings({"generated_at": "x"}, _td2 / "nope.md") is False and not (_td2 / "nope.md").exists())
+chk("None-знімок → False без винятку", hc.write_site_build_warnings(None, _td2 / "n2.md") is False)
+_pp.with_suffix(".md.tmp").exists() and F.append("tmp-файл лишився після запису")
+chk("порожні попередження → у файлі явний рядок «немає» (а не порожній файл)", hc.write_site_build_warnings({"generated_at": "x", "site_build_warnings": {"window_h": 8, "builds_finished": [], "warnings": []}}, _td2 / "e.md") and "немає" in (_td2 / "e.md").read_text(encoding="utf-8"))
+_c = hc.Ctx(vps_snapshot=lambda: (_snap, None))
+hc.check_vps(_c)
+chk("check_vps зберігає знімок у ctx.last_snapshot (без другого git fetch)", getattr(_c, "last_snapshot", None) is _snap)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

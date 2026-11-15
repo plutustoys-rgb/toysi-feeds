@@ -105,10 +105,23 @@ def boom(text, log_text=None):
 h1 = mk("PT-9", items, "2026-11-14T10:00:00")
 with orders_db.get_connection() as c:
     nb = rl.notify_for_internal_id(c, h1, boom, NOW)
-chk("збій Telegram → не кидає; посилання видано (повторно саме не піде)", nb == 0)
+chk("виняток у Telegram → не кидає, 0 надіслано", nb == 0)
+with orders_db.get_connection() as c:
+    left = c.execute("SELECT COUNT(*) FROM reviews WHERE order_id = ?", (h1,)).fetchone()[0]
+chk("після збою запис посилання ПРИБРАНО (аудит #1501: «видано, але власник не отримав» нічим не відновити)", left == 0)
+sent.clear()
 with orders_db.get_connection() as c:
     nb2 = rl.notify_for_internal_id(c, h1, send, NOW + timedelta(hours=1))
-chk("після збою Telegram нове посилання само НЕ видається (перевидати може лише власник через review_moderate.py --issue після терміну)", nb2 == 0)
+chk("наступний цикл трекера сам повторює і надсилає (1 повідомлення)", nb2 == 1 and len(sent) == 1)
+h2 = mk("PT-10", items, "2026-11-14T10:00:00")
+with orders_db.get_connection() as c:
+    nf = rl.notify_for_internal_id(c, h2, lambda text, log_text=None: False, NOW)
+    left2 = c.execute("SELECT COUNT(*) FROM reviews WHERE order_id = ?", (h2,)).fetchone()[0]
+chk("send_telegram_message повернув False (мережа/нема токена бота; НЕ виняток) → 0 надіслано, запис прибрано", nf == 0 and left2 == 0)
+sent.clear()
+with orders_db.get_connection() as c:
+    nf2 = rl.notify_for_internal_id(c, h2, send, NOW + timedelta(hours=1))
+chk("після False наступний цикл надсилає", nf2 == 1 and len(sent) == 1)
 with orders_db.get_connection() as c:
     chk("неіснуюче замовлення → 0 без винятку", rl.notify_for_internal_id(c, "site_NONE", send, NOW) == 0)
 

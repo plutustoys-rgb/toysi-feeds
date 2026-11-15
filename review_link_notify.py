@@ -53,14 +53,22 @@ def maybe_notify(conn, order: dict, send, now: datetime | None = None) -> int:
             token = reviews_db.issue_token(conn, order, pid, now=now)
             if not token:
                 continue
-            conn.commit()      # токен видано й записано ДО відправки: збій Telegram → посилання не повториться само (перевидати може лише власник вручну)
             link = LINK.format(t=token)
             msg = build_message(order, (it or {}).get("name") or "", link)
             try:
-                send(msg, log_text=msg.replace(link, LINK.format(t="…приховано…")))
+                ok = send(msg, log_text=msg.replace(link, LINK.format(t="…приховано…"))) is not False      # send_telegram_message повертає False при збої Telegram (не кидає)
             except Exception as e:  # noqa: BLE001
-                print(f"[review_link_notify] {order.get('internal_order_id')}: не надіслано ({type(e).__name__}); посилання видано, перевидати: review_moderate.py --issue", file=sys.stderr)
+                print(f"[review_link_notify] {order.get('internal_order_id')}: відправка збій ({type(e).__name__})", file=sys.stderr)
+                ok = False
+            if not ok:
+                # НЕ ЗАЛИШАЄМО «видано, але власник не отримав» (посилання нічим не відновити): прибираємо щойно вставлений запис — наступний цикл трекера (~15 хв) повторить спробу
+                try:
+                    conn.execute("DELETE FROM reviews WHERE order_id = ? AND product_id = ? AND token_hash = ?", (order["internal_order_id"], pid, reviews_db._hash(token)))
+                    conn.commit()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[review_link_notify] відкат запису посилання не вдався ({type(e).__name__})", file=sys.stderr)
                 continue
+            conn.commit()      # токен фіксуємо ЛИШЕ після успішної відправки (дубль із новим токеном можливий, втрата — ні)
             sent += 1
         return sent
     except Exception as e:  # noqa: BLE001

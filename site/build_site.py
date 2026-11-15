@@ -4159,103 +4159,115 @@ def write_gift_pages(prods, texts=None, plan=None):
     return written
 
 
-# ── Статті-поради (SEO 15.11, ТЗ розд. 2): /porady-<slug>.html — підзаголовки-питання, коротка відповідь на початку кожного розділу, Article (+FAQPage) ──
-# Тексти пише Копірайтер у site/porady.json: {"porady-<slug>": {"title", "published": "РРРР-ММ-ДД", "lead", "sections": [{"h", "short", "text"}], "faq": [{"q", "a"}]}}.
-# Дозволені лише slug-и з PORADY_SLUGS (хвиля 1); решта — голосне попередження. Дата публікації — з файлу (dateModified = datePublished: не вигадуємо «свіжість»); автор — PlutusToys.
-PORADY_SLUGS = ("porady-shcho-podaruvaty-na-mykolaia", "porady-podarunok-na-5-rokiv", "porady-yak-vybraty-nastilnu-hru")
-PORADY_FILE = os.path.join(OUT, "porady.json")
-PORADY_FILES = frozenset(f"{s}.html" for s in PORADY_SLUGS)
-PORADY_MIN_SECTIONS = 3
-GIFT_ARTICLES_BUILT = []    # [(slug, title)] статей, які побудовано в цій збірці (сторінки подарунків і хаб лінкують лише на них)
-# які статті лінкує яка сторінка подарунків (і, зворотно, на які сторінки подарунків веде стаття)
-PORADY_FOR_GIFT = {
-    "podarunok-na-mykolaia": ("porady-shcho-podaruvaty-na-mykolaia",),
-    "novorichnyi-podarunok-dytyni": ("porady-shcho-podaruvaty-na-mykolaia",),
-    "podarunok-do-100-hrn": ("porady-shcho-podaruvaty-na-mykolaia",),
-    "podarunok-do-200-hrn": ("porady-shcho-podaruvaty-na-mykolaia",),
-    "podarunok-do-300-hrn": ("porady-shcho-podaruvaty-na-mykolaia",),
-    "podarunok-do-500-hrn": ("porady-shcho-podaruvaty-na-mykolaia",),
-    "podarunok-na-1-rik": ("porady-shcho-podaruvaty-na-mykolaia",),
-    "podarunok-na-2-roky": ("porady-shcho-podaruvaty-na-mykolaia",),
-    "podarunok-na-3-roky": ("porady-shcho-podaruvaty-na-mykolaia", "porady-yak-vybraty-nastilnu-hru"),
-    "podarunok-na-5-rokiv": ("porady-podarunok-na-5-rokiv", "porady-yak-vybraty-nastilnu-hru"),
-    "podarunok-na-7-rokiv": ("porady-yak-vybraty-nastilnu-hru",),
-    "podarunok-na-10-rokiv": ("porady-yak-vybraty-nastilnu-hru",),
-}
-
-
-def _load_porady(path=None):
-    """site/porady.json → {slug: {title, published, lead, sections[(h, short, text)], faq[(q, a)]}}. Кривий запис пропускаємо ГОЛОСНО (стаття не будується); збірка не падає."""
-    path = path or PORADY_FILE
-    if not os.path.isfile(path):
-        return {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except (OSError, ValueError) as e:
-        print(f"[build] ⚠ porady.json не читається ({e}) — статті-поради не будуються", file=sys.stderr)
-        return {}
-    if not isinstance(raw, dict):
-        print("[build] ⚠ porady.json: корінь не об'єкт {slug: {…}} — статті-поради не будуються", file=sys.stderr)
-        return {}
-    out = {}
-    for slug, v in raw.items():
-        if slug.startswith("_"):
-            continue
-        if slug not in PORADY_SLUGS or not isinstance(v, dict):
-            print(f"[build] ⚠ porady.json[{slug}]: невідомий slug або не об'єкт — пропущено (дозволені: {', '.join(PORADY_SLUGS)})", file=sys.stderr)
-            continue
-        title, pub, lead = v.get("title"), v.get("published"), v.get("lead")
-        secs = [(x["h"].strip(), x["short"].strip(), (x.get("text") or "").strip()) for x in (v.get("sections") if isinstance(v.get("sections"), list) else [])
-                if isinstance(x, dict) and isinstance(x.get("h"), str) and isinstance(x.get("short"), str) and x["h"].strip() and x["short"].strip() and isinstance(x.get("text") or "", str)]
-        faq = [(x["q"].strip(), x["a"].strip()) for x in (v.get("faq") if isinstance(v.get("faq"), list) else []) if isinstance(x, dict) and isinstance(x.get("q"), str) and isinstance(x.get("a"), str) and x["q"].strip() and x["a"].strip()]
-        if not (isinstance(title, str) and title.strip() and isinstance(lead, str) and lead.strip() and isinstance(pub, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", pub) and len(secs) >= PORADY_MIN_SECTIONS):
-            print(f"[build] ⚠ porady.json[{slug}]: потрібні title, lead, published РРРР-ММ-ДД і ≥{PORADY_MIN_SECTIONS} розділів h/short — запис пропущено", file=sys.stderr)
-            continue
-        out[slug] = {"title": title.strip(), "published": pub, "lead": lead.strip(), "sections": secs, "faq": faq}
-    return out
-
-
-def _porady_date_ua(iso):
-    y, m, d = iso.split("-")
-    return f"{d}.{m}.{y}"
-
-
-def write_porady(porady, plan_slugs=None):
-    """Пише статті-поради; повертає [(файл, пріоритет, частота)] для sitemap. Видимі розділи й FAQ = розмітка (Article, FAQPage, BreadcrumbList); посилання на сторінки подарунків — лише побудовані."""
-    GIFT_ARTICLES_BUILT[:] = [(s, porady[s]["title"]) for s in PORADY_SLUGS if s in porady]
-    written = []
-    built_gifts = {s: h for s, h, _lb in GIFT_BUILT}
-    for slug in PORADY_SLUGS:
-        if slug not in porady:
-            continue
-        a = porady[slug]
-        fname = f"{slug}.html"
-        trail = [("Головна", "index.html")] + ([("Подарунки", GIFT_HUB_FILE)] if GIFT_BUILT else []) + [(a["title"], None)]
-        secs_html = "".join(f'<section class="porady-sec"><h2>{esc(h)}</h2><p class="porady-short"><strong>{esc(short)}</strong></p>{_gift_paras(text)}</section>' for h, short, text in a["sections"])
-        faq_html = ("<section class=\"gift-faq\"><h2>Часті запитання</h2>" + "".join(f"<h3>{esc(q)}</h3><p>{esc(an)}</p>" for q, an in a["faq"]) + "</section>") if a["faq"] else ""
-        rel = [(g, built_gifts[g]) for g, arts in PORADY_FOR_GIFT.items() if slug in arts and g in built_gifts]
-        rel_links = "".join(f'<li><a href="{g}.html">{esc(h)}</a></li>' for g, h in rel)
-        rel_html = ('<nav class="gift-links" aria-label="Добірки товарів за темою">' + (f'<h2>Добірки товарів за темою</h2><ul>{rel_links}</ul>' if rel else "")
-                    + (f'<p><a href="{GIFT_HUB_FILE}">Усі добірки подарунків</a> · <a href="catalog.html">Увесь каталог</a></p>' if GIFT_BUILT else '<p><a href="catalog.html">Увесь каталог</a></p>') + '</nav>')
-        body = (crumbs_html(trail) + f'<article class="porady"><h1 class="page">{esc(a["title"])}</h1>'
-                f'<p class="porady-by">PlutusToys · {_porady_date_ua(a["published"])}</p>'
-                f'<div class="gift-intro">{_gift_paras(a["lead"])}</div>{secs_html}{faq_html}</article>{rel_html}')
-        head = breadcrumb_ld(trail)
-        head += _ld_script({"@context": "https://schema.org", "@type": "Article", "headline": a["title"], "inLanguage": "uk", "datePublished": a["published"], "dateModified": a["published"],
-                            "author": {"@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/"},
-                            "publisher": {"@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/"},
-                            "mainEntityOfPage": f"{SITE_URL}/{fname}", "description": _cut(a["lead"], DESC_MAX)})
-        if a["faq"]:
-            head += _ld_script({"@context": "https://schema.org", "@type": "FAQPage",
-                                "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": an}} for q, an in a["faq"]]})
-        first = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", a["lead"]).strip())
-        desc = _cut(" ".join(first[:2]), DESC_MAX) or a["title"]
-        _write(fname, page(a["title"], body, extra_head=head, description=desc, canonical=fname, og_image=OG_IMAGE, og_type="article", title_full=(f'{a["title"]} | PlutusToys' if len(a["title"]) + 13 <= TITLE_MAX else a["title"])))
-        written.append((fname, "0.6", "monthly"))
-    return written
-
-
+# ── Статті-поради (SEO 15.11, ТЗ розд. 2): /porady-<slug>.html — підзаголовки-питання, коротка відповідь на початку кожного розділу, Article (+FAQPage) ──
+# Тексти пише Копірайтер у site/porady.json: {"porady-<slug>": {"title", "published": "РРРР-ММ-ДД", "lead", "sections": [{"h", "short", "text"}], "faq": [{"q", "a"}]}}.
+# Дозволені лише slug-и з PORADY_SLUGS (хвиля 1); решта — голосне попередження. Дата публікації — з файлу (dateModified = datePublished: не вигадуємо «свіжість»); автор — PlutusToys.
+PORADY_SLUGS = ("porady-shcho-podaruvaty-na-mykolaia", "porady-podarunok-na-5-rokiv", "porady-yak-vybraty-nastilnu-hru")
+PORADY_FILE = os.path.join(OUT, "porady.json")
+PORADY_FILES = frozenset(f"{s}.html" for s in PORADY_SLUGS)
+PORADY_MIN_SECTIONS = 3
+GIFT_ARTICLES_BUILT = []    # [(slug, title)] статей, які побудовано в цій збірці (сторінки подарунків і хаб лінкують лише на них)
+# які статті лінкує яка сторінка подарунків (і, зворотно, на які сторінки подарунків веде стаття)
+PORADY_FOR_GIFT = {
+    "podarunok-na-mykolaia": ("porady-shcho-podaruvaty-na-mykolaia", "porady-podarunok-na-5-rokiv"),
+    "novorichnyi-podarunok-dytyni": ("porady-shcho-podaruvaty-na-mykolaia", "porady-podarunok-na-5-rokiv"),
+    "podarunok-do-100-hrn": ("porady-shcho-podaruvaty-na-mykolaia",),
+    "podarunok-do-200-hrn": ("porady-shcho-podaruvaty-na-mykolaia",),
+    "podarunok-do-300-hrn": ("porady-shcho-podaruvaty-na-mykolaia",),
+    "podarunok-do-500-hrn": ("porady-shcho-podaruvaty-na-mykolaia",),
+    "podarunok-na-1-rik": ("porady-shcho-podaruvaty-na-mykolaia",),
+    "podarunok-na-2-roky": ("porady-shcho-podaruvaty-na-mykolaia",),
+    "podarunok-na-3-roky": ("porady-shcho-podaruvaty-na-mykolaia", "porady-yak-vybraty-nastilnu-hru"),
+    "podarunok-na-5-rokiv": ("porady-podarunok-na-5-rokiv", "porady-shcho-podaruvaty-na-mykolaia", "porady-yak-vybraty-nastilnu-hru"),
+    "podarunok-na-7-rokiv": ("porady-shcho-podaruvaty-na-mykolaia", "porady-yak-vybraty-nastilnu-hru"),
+    "podarunok-na-10-rokiv": ("porady-shcho-podaruvaty-na-mykolaia", "porady-yak-vybraty-nastilnu-hru"),
+}   # зворотно: на які сторінки подарунків веде стаття (лише побудовані); статті лінкують і одна одну («Інші поради»)
+
+
+def _load_porady(path=None):
+    """site/porady.json → {slug: {title, published, lead, sections[(h, short, text)], faq[(q, a)]}}. Кривий запис пропускаємо ГОЛОСНО (стаття не будується); збірка не падає."""
+    path = path or PORADY_FILE
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as e:
+        print(f"[build] ⚠ porady.json не читається ({e}) — статті-поради не будуються", file=sys.stderr)
+        return {}
+    if not isinstance(raw, dict):
+        print("[build] ⚠ porady.json: корінь не об'єкт {slug: {…}} — статті-поради не будуються", file=sys.stderr)
+        return {}
+    out = {}
+    for slug, v in raw.items():
+        if slug.startswith("_"):
+            continue
+        if slug not in PORADY_SLUGS or not isinstance(v, dict):
+            print(f"[build] ⚠ porady.json[{slug}]: невідомий slug або не об'єкт — пропущено (дозволені: {', '.join(PORADY_SLUGS)})", file=sys.stderr)
+            continue
+        title, pub, lead = v.get("title"), v.get("published"), v.get("lead")
+        secs = [(x["h"].strip(), x["short"].strip(), (x.get("text") or "").strip()) for x in (v.get("sections") if isinstance(v.get("sections"), list) else [])
+                if isinstance(x, dict) and isinstance(x.get("h"), str) and isinstance(x.get("short"), str) and x["h"].strip() and x["short"].strip() and isinstance(x.get("text") or "", str)]
+        faq = [(x["q"].strip(), x["a"].strip()) for x in (v.get("faq") if isinstance(v.get("faq"), list) else []) if isinstance(x, dict) and isinstance(x.get("q"), str) and isinstance(x.get("a"), str) and x["q"].strip() and x["a"].strip()]
+        _n_secs = len(v.get("sections") if isinstance(v.get("sections"), list) else []); _n_faq = len(v.get("faq") if isinstance(v.get("faq"), list) else [])
+        if len(secs) < _n_secs or len(faq) < _n_faq:
+            print(f"[build] ⚠ porady.json[{slug}]: відкинуто розділів {_n_secs - len(secs)} і пар q/a {_n_faq - len(faq)} (потрібні рядки h+short / q+a) — перевірте файл", file=sys.stderr)
+        _pub_ok = False
+        if isinstance(pub, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", pub):
+            try:
+                datetime.strptime(pub, "%Y-%m-%d")
+                _pub_ok = True
+            except ValueError:
+                pass
+        if not (isinstance(title, str) and title.strip() and isinstance(lead, str) and lead.strip() and _pub_ok and len(secs) >= PORADY_MIN_SECTIONS):
+            print(f"[build] ⚠ porady.json[{slug}]: потрібні title, lead, published РРРР-ММ-ДД і ≥{PORADY_MIN_SECTIONS} розділів h/short — запис пропущено", file=sys.stderr)
+            continue
+        out[slug] = {"title": title.strip(), "published": pub, "lead": lead.strip(), "sections": secs, "faq": faq}
+    return out
+
+
+def _porady_date_ua(iso):
+    y, m, d = iso.split("-")
+    return f"{d}.{m}.{y}"
+
+
+def write_porady(porady):
+    """Пише статті-поради; повертає [(файл, пріоритет, частота)] для sitemap. Видимі розділи й FAQ = розмітка (Article, FAQPage, BreadcrumbList); посилання на сторінки подарунків — лише побудовані."""
+    GIFT_ARTICLES_BUILT[:] = [(s, porady[s]["title"]) for s in PORADY_SLUGS if s in porady]
+    written = []
+    built_gifts = {s: h for s, h, _lb in GIFT_BUILT}
+    for slug in PORADY_SLUGS:
+        if slug not in porady:
+            continue
+        a = porady[slug]
+        fname = f"{slug}.html"
+        trail = [("Головна", "index.html")] + ([("Подарунки", GIFT_HUB_FILE)] if GIFT_BUILT else []) + [(a["title"], None)]
+        secs_html = "".join(f'<section class="porady-sec"><h2>{esc(h)}</h2><p class="porady-short"><strong>{esc(short)}</strong></p>{_gift_paras(text)}</section>' for h, short, text in a["sections"])
+        faq_html = ("<section class=\"gift-faq\"><h2>Часті запитання</h2>" + "".join(f"<h3>{esc(q)}</h3><p>{esc(an)}</p>" for q, an in a["faq"]) + "</section>") if a["faq"] else ""
+        rel = [(g, built_gifts[g]) for g, arts in PORADY_FOR_GIFT.items() if slug in arts and g in built_gifts]
+        rel_links = "".join(f'<li><a href="{g}.html">{esc(h)}</a></li>' for g, h in rel)
+        rel_html = ('<nav class="gift-links" aria-label="Добірки товарів за темою">' + (f'<h2>Добірки товарів за темою</h2><ul>{rel_links}</ul>' if rel else "")
+                    + (f'<p><a href="{GIFT_HUB_FILE}">Усі добірки подарунків</a> · <a href="catalog.html">Увесь каталог</a></p>' if GIFT_BUILT else '<p><a href="catalog.html">Увесь каталог</a></p>') + '</nav>')
+        other = [(s_, t_) for s_, t_ in GIFT_ARTICLES_BUILT if s_ != slug]
+        other_html = ('<nav class="gift-links" aria-label="Інші поради"><h2>Інші поради</h2><ul>' + "".join(f'<li><a href="{s_}.html">{esc(t_)}</a></li>' for s_, t_ in other) + '</ul></nav>') if other else ""
+        body = (crumbs_html(trail) + f'<article class="porady"><h1 class="page">{esc(a["title"])}</h1>'
+                f'<p class="porady-by">PlutusToys · {_porady_date_ua(a["published"])}</p>'
+                f'<div class="gift-intro">{_gift_paras(a["lead"])}</div>{secs_html}{faq_html}</article>{rel_html}{other_html}')
+        head = breadcrumb_ld(trail)
+        head += _ld_script({"@context": "https://schema.org", "@type": "Article", "headline": a["title"], "inLanguage": "uk", "datePublished": a["published"], "dateModified": a["published"],
+                            "author": {"@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/"},
+                            "publisher": {"@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/"},
+                            "mainEntityOfPage": f"{SITE_URL}/{fname}", "description": _cut(a["lead"], DESC_MAX)})
+        if a["faq"]:
+            head += _ld_script({"@context": "https://schema.org", "@type": "FAQPage",
+                                "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": an}} for q, an in a["faq"]]})
+        first = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", a["lead"]).strip())
+        desc = _cut(" ".join(first[:2]), DESC_MAX) or a["title"]
+        _write(fname, page(a["title"], body, extra_head=head, description=desc, canonical=fname, og_image=OG_IMAGE, og_type="article", title_full=(f'{a["title"]} | PlutusToys' if len(a["title"]) + 13 <= TITLE_MAX else a["title"])))
+        written.append((fname, "0.6", "monthly"))
+    return written
+
+
 def write_404():
     """Власна сторінка 404 (Apache: `ErrorDocument 404 /404.html` у deploy/activate_site_apache.sh). Без неї покупець
     з помилковою/застарілою адресою бачив дефолт Webuzo: логотип Softaculous з чужого домену по http:// (mixed content)

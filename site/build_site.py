@@ -3967,7 +3967,7 @@ GIFT_SHOW_MAX = 36
 GIFT_PER_CAT = 2
 GIFT_LIST_NAME = "gift_page"
 GIFT_MIN_CONTRIB = 0.0
-GIFT_EXCLUDED_CATS = frozenset({"косметика"})   # дитячі подарунки: накладні вії, бальзами для губ тощо не показуємо (15.11, живий замір складу)
+# дитячі подарунки: категорії з «космет…» (накладні вії, бальзами для губ тощо) не показуємо (15.11, живий замір складу; перевіряє _gift_ok)
 GIFT_POOL_MAX = 4 * GIFT_SHOW_MAX               # пул найвигідніших кандидатів, з якого вибираємо рівномірно за ціною
 GIFT_AGE_PRICE_MAX = 2000                       # вікові сторінки: подарунок до 2 000 ₴ (без басейнів/ігрових комплексів за 4–5 тис.)
 GIFT_FAQ_MIN, GIFT_FAQ_MAX = 3, 6
@@ -4022,7 +4022,7 @@ def _gift_ok(p):
         return False
     if _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name) or any(w in name.lower() for w in NABORY_BAD_WORDS):
         return False
-    if cat.strip().lower() in GIFT_EXCLUDED_CATS or cat.strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name) or HOME_SEASONAL_BAD_CAT.search(cat) or is_home_excluded(p):
+    if "космет" in cat.strip().lower() or cat.strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name) or HOME_SEASONAL_BAD_CAT.search(cat) or is_home_excluded(p):
         return False
     return True
 
@@ -4053,17 +4053,25 @@ def gift_pick(prods, rule, pool=None):
     ny_rx = None
     if rule.get("ny"):
         ny_rx = next((re.compile(rx, re.I) for k, _l, _s, rx, _f, _la, _eb in HOME_SEASONAL if k == "ny"), None)
+    pool = gift_pool(prods) if pool is None else pool
+    out = _gift_pick_pool(pool, rule, ny_rx, True)
+    if "age" in rule and len(out) < GIFT_MIN_ITEMS:   # стеля ціни не має ховати вікову сторінку (за < 12 — повторюємо без стелі)
+        out = _gift_pick_pool(pool, rule, ny_rx, False)
+    return out
+
+
+def _gift_pick_pool(pool, rule, ny_rx, price_cap):
     cand = []
-    for p, a in (gift_pool(prods) if pool is None else pool):
+    for p, a in pool:
         if "pmax" in rule and not (rule.get("pmin", 0) <= p["price"] <= rule["pmax"]):
             continue
         if "age" in rule:
-            if a is None or not (rule["age"][0] <= a <= rule["age"][1]) or p["price"] > GIFT_AGE_PRICE_MAX:
+            if a is None or not (rule["age"][0] <= a <= rule["age"][1]) or (price_cap and p["price"] > GIFT_AGE_PRICE_MAX):
                 continue
         elif a is not None and a > GIFT_MAX_AGE:
             continue
         cand.append(p)
-    cand.sort(key=lambda p: (-(p.get("contribution") or 0), str(p["id"])))
+    cand.sort(key=lambda p: (0 if (ny_rx and ny_rx.search(p.get("name") or "")) else 1, -(p.get("contribution") or 0), str(p["id"])))
     out, per_cat, keys = [], {}, set()
     for p in cand:
         cat, k = (p.get("category") or "").strip().lower(), _pick_key(p["name"])

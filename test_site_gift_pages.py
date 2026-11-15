@@ -119,6 +119,14 @@ prs = [p_["price"] for p_ in mk2]
 chk(f"Миколай: вибір рівномірно за ціною — є і дешеві, і дорогі (діапазон {min(prs)}–{max(prs)}), порядок за зростанням", len(prs) >= 12 and min(prs) <= 200 and max(prs) >= 600 and prs == sorted(prs))
 chk("_gift_spread: n=1 і n>len без падіння, ≤ n елементів", len(bs._gift_spread(mix, 1)) == 1 and len(bs._gift_spread(mix[:3], 36)) == 3 and len(bs._gift_spread(mix, 5)) <= 5 and bs._gift_spread([], 3) == [])
 
+# ny-пріоритет не губиться (аудит #1534): низьковигідні новорічні товари потрапляють, коли звичайних багато
+ny_low = [P(n_, 150, f"НовКат{i}", "", contrib=11) for i, n_ in enumerate(("Новорічна кулька Зоря", "Новорічний дзвоник Сніжинка", "Новорічна гірлянда Промінь", "Новорічна свічка Метелик", "Новорічний ангел Мрія", "Новорічна шапка Казка"))]
+hi = [P(f"Звична іграшка {W[i % 20]}{i} {W[(i * 5) % 20]}", 200 + i, f"ЗвКат{i}", "", contrib=300 + i) for i in range(300)]
+ny_pick = bs.gift_pick(ny_low + hi, by_slug["novorichnyi-podarunok-dytyni"])
+chk(f"новорічна: усі 6 низьковигідних «ny» потрапили в добірку попри 300 вигідніших звичайних ({sum('Новоріч' in p_['name'] for p_ in ny_pick)})", sum("Новоріч" in p_["name"] for p_ in ny_pick) == 6)
+# вікова сторінка не зникає через стелю ціни
+exp_age = [P(f"Дорога іграшка {W[i % 20]}{i} {W[(i * 7) % 20]}", 3000 + i, f"ДорК{i}", "Для дітей від 3 років", contrib=500) for i in range(14)]
+chk(f"вікова сторінка: якщо під стелею < {bs.GIFT_MIN_ITEMS}, повторюємо без стелі (сторінка не зникає)", len(bs.gift_pick(exp_age, by_slug["podarunok-na-3-roky"])) >= bs.GIFT_MIN_ITEMS)
 # ── збірка сторінок ──
 out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)

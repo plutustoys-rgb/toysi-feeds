@@ -50,7 +50,8 @@ def eva_date(h_ago):
 
 def ctx(snapshot=None, err=None, **over):
     d = dict(now=NOW, vps_snapshot=lambda: (snapshot, err), master=lambda: ("", ""), feed_meta=lambda: {}, eva_date=lambda: eva_date(0.5), tasks=lambda: [], local_alerts=lambda: [],
-             critical=lambda: {"generated_at": iso(0.2), "events": []})
+             critical=lambda: {"generated_at": iso(0.2), "events": []},
+             seo_metrics=lambda: {"newest_mtime": NOW.timestamp() - 3600, "latest_file_date": NOW.date().isoformat(), "files": 5})
     d.update(over)
     return hc.Ctx(**d)
 
@@ -420,6 +421,33 @@ _src = _insp.getsource(hc.main)
 chk("main() повертає 11/10/0 (а не 2/1/0)", "return 11 if" in _src and " else 10 if" in _src and "return 2 if" not in _src)
 import service_watchdog as _sw  # noqa: E402
 chk("watchdog: pdfplumber (лише локальні скрипти ПК) не дрейф залежностей; решта пакетів лишаються під контролем", "pdfplumber" in _sw.LOCAL_ONLY_PACKAGES and "playwright" not in _sw.LOCAL_ONLY_PACKAGES and "requests" not in _sw.LOCAL_ONLY_PACKAGES)
+
+# ---- 15.11.2026 (запит SEO): свіжість доставки файлів у SEO_метрики ----
+def seo(mt_ago_h, file_date=None, n=5):
+    return dict(seo_metrics=lambda: {"newest_mtime": NOW.timestamp() - mt_ago_h * 3600, "latest_file_date": file_date or NOW.date().isoformat(), "files": n})
+
+
+chk("SEO_метрики: свіжа доставка (1 год) → без проблем", ids(hc.check_seo_metrics(ctx(**seo(1)))) == set())
+chk("SEO_метрики: ОДИН пропущений нічний запуск (розрив 12 год) НЕ дає хибної тривоги (поріг 13 год)", ids(hc.check_seo_metrics(ctx(**seo(12.0)))) == set())
+chk("SEO_метрики: 14 год без доставки (два запуски поспіль пропущено) → seo:delivery_stale", ids(hc.check_seo_metrics(ctx(**seo(14)))) == {"seo:delivery_stale"})
+chk("SEO_метрики: поріг = 2 інтервали доставки (6 год) + 1 год запасу, не вигаданий", hc.SEO_METRICS_MAX_AGE_H == 2 * 6 + 1)
+chk("SEO_метрики: доставка свіжа, але найновіший VPS-звіт від позавчора (2 доби) → seo:vps_reports_stale", ids(hc.check_seo_metrics(ctx(**seo(1, file_date="2026-10-30")))) == {"seo:vps_reports_stale"})
+chk("SEO_метрики: звіт від вчора — норма (щоденний о 06:30; доставка 08:30)", ids(hc.check_seo_metrics(ctx(**seo(1, file_date="2026-10-31")))) == set())
+chk("SEO_метрики: при простроченій доставці повідомляється ОДНА проблема (не дві)", len(hc.check_seo_metrics(ctx(**seo(20, file_date="2026-10-20")))) == 1)
+chk("SEO_метрики: теки/файлів нема (None) → seo:no_files", ids(hc.check_seo_metrics(ctx(seo_metrics=lambda: None))) == {"seo:no_files"} and ids(hc.check_seo_metrics(ctx(seo_metrics=lambda: {"newest_mtime": None, "latest_file_date": None, "files": 0}))) == {"seo:no_files"})
+chk("seo_metrics зареєстровано в CHECKS", "seo_metrics" in [n for n, _f in hc.CHECKS])
+# реальне читання тек: лише файли доставки (не copy_fix_* від інших ролей); три найновіші теки
+import tempfile as _tf  # noqa: E402
+import os as _os  # noqa: E402
+_root = Path(_tf.mkdtemp())
+for dname, files in (("2026-11-13", ["gsc_daily_2026-11-12.csv"]), ("2026-11-14", ["gsc_daily_2026-11-13.csv", "gmc_status_2026-11-13.csv"]), ("2026-11-15", ["gsc_daily_2026-11-14.csv", "copy_fix_FX164_2026-11-15.json", "ЗАПИТИ_по_картках_2026-11-15.json"])):
+    (_root / dname).mkdir()
+    for f in files:
+        (_root / dname / f).write_text("x", encoding="utf-8")
+(_root / "random_file.csv").write_text("x", encoding="utf-8")
+st = hc.read_seo_metrics_state(_root)
+chk("read_seo_metrics_state: файли доставки враховано (4), чужі (copy_fix_*, ЗАПИТИ_*, файли поза датованими теками) — ні; latest_file_date = 2026-11-14", st and st["files"] == 4 and st["latest_file_date"] == "2026-11-14")
+chk("read_seo_metrics_state: нема теки → None без винятку", hc.read_seo_metrics_state(_root / "nope") is None)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

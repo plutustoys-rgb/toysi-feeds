@@ -158,6 +158,13 @@ chk("90d: файлу ще нема (не понеділок) → пишемо; �
 chk("90d: формат колонок як у витягу 10.11 (start,end,query,page,clicks,impressions,ctr,position)", list(q90[0].keys()) == ["start", "end", "query", "page", "clicks", "impressions", "ctr", "position"])
 p11, n11 = g.part_90d(SessDays("2026-11-10"), NOW2, d10)       # той самий каталог, субота, файл уже є → пропуск
 chk("90d: не понеділок і файл уже є → пропущено (0 рядків, нових запитів до API нема)", n11 == 0)
+d_old = Path(tempfile.mkdtemp())
+(d_old / "gsc_90d_query_page_2026-11-02.csv").write_text("start,end\n", encoding="utf-8")      # найновіший 12 діб тому, субота → має перегенерувати (повтор після невдалого понеділка)
+p13, n13 = g.part_90d(SessDays("2026-11-10"), NOW2, d_old)
+chk("90d: найновіший файл старший за 7 діб, навіть не понеділок → перегенеровується (повтор після невдалого понеділка)", n13 == 1 and (d_old / "gsc_90d_query_page_2026-11-14.csv").exists())
+d_new = Path(tempfile.mkdtemp())
+(d_new / "gsc_90d_query_page_2026-11-12.csv").write_text("start,end\n", encoding="utf-8")      # 2 доби тому → не чіпаємо
+chk("90d: найновіший файл 2 доби тому, не понеділок → пропуск", g.part_90d(SessDays("2026-11-10"), NOW2, d_new)[1] == 0 and not (d_new / "gsc_90d_query_page_2026-11-14.csv").exists())
 NOW_MON = datetime(2026, 11, 16, 6, 30)      # понеділок
 sm = SessDays("2026-11-13")
 p12, n12 = g.part_90d(sm, NOW_MON, d10)

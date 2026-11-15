@@ -8,6 +8,7 @@
   • gsc_query_page_YYYY-MM-DD.csv — searchanalytics.query за ОДНУ добу з відставанням 3 дні (дані GSC фінальні з ~2–3 днів): dimensions=query,page; clicks, impressions, ctr, position. До GSC_ROWS_MAX рядків.
   • gsc_daily_YYYY-MM-DD.csv — searchanalytics.query dimensions=date за 90 днів (до «сьогодні−3»): clicks, impressions, ctr, position.
   • gsc_sitemaps_YYYY-MM-DD.csv — sitemaps.list: path, lastSubmitted, lastDownloaded, isPending, errors, warnings, type, submitted (по кожному з 5 sitemap). Поле `indexed` Google позначив deprecated (завжди порожнє/0) — НЕ збираємо: індексацію дивитись у gsc_inspect (coverageState).
+  • gsc_90d_query_page_YYYY-MM-DD.csv + gsc_90d_queries_YYYY-MM-DD.csv (з 15.11.2026) — 90-добовий витяг запит×сторінка / запит для SEO; щопонеділка або якщо найновіший старший за 7 діб; кінець вікна = остання доба з ФІНАЛЬНИМИ даними. query_page: якщо доба «сьогодні−3» порожня (GSC ще не фінальна) — відкат до 3 діб назад, date = реальна доба.
   • gsc_inspect_YYYY-MM-DD.csv — URL Inspection API (urlInspection.index.inspect) для перших INSPECT_N URL з sitemap-priority.xml: coverageState, indexingState, lastCrawlTime, googleCanonical, pageFetchState, robotsTxtState. Лише читання, без «запитів на індексацію».
 Кожна частина незалежна: збій однієї не скасовує інших. Збій (не «API вимкнено») — Telegram-алерт з throttle. Код виходу: 0, якщо хоч одна частина записана або API вимкнено; 1 — якщо жодна частина не вдалась через помилку.
 CLI: python gsc_report.py [--check]    # --check: один запит sites.list, нічого не пише
@@ -256,8 +257,9 @@ def _latest_final_date(session, today: datetime):
 def part_90d(session, today: datetime, out_dir: Path):
     """90-добовий витяг «запит×сторінка» й «запит» для SEO (запит 15.11: щотижня, формат як 10.11). Пишеться в понеділок, а також якщо такого файлу в теці ще нема.
     Кінець вікна = остання доба з фінальними даними (а не сліпо «сьогодні−3»)."""
-    if today.weekday() != 0 and list(out_dir.glob("gsc_90d_query_page_*.csv")):
-        return out_dir / "gsc_90d_query_page_(не понеділок, пропущено)", 0
+    stamps = [datetime.strptime(m.group(1), "%Y-%m-%d") for m in (re.search(r"(\d{4}-\d{2}-\d{2})", f.name) for f in out_dir.glob("gsc_90d_query_page_*.csv")) if m]
+    if today.weekday() != 0 and stamps and (today - max(stamps)).days < 7:      # не понеділок і свіжий файл (<7 діб) є; якщо понеділкова спроба впала — повторюємо щодня, поки найновіший не молодший за 7 діб (аудит #1499)
+        return out_dir / "gsc_90d_query_page_(пропущено: свіжий є)", 0
     end_s = _latest_final_date(session, today)
     if not end_s:
         raise RuntimeError("GSC не віддав жодної фінальної доби за останні ~10 діб")

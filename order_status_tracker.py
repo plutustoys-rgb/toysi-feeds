@@ -960,9 +960,9 @@ def track_orders() -> None:
             site_order_status_notify.maybe_notify(
                 order, toysi_id, delivery_status, ttn, site_np.get(str(ttn)) if ttn else None,
                 send_telegram_message, lambda st, _i=internal_id: _save_site_state(conn, _i, st), telegram_triage.orders_only_enabled())
-            if delivery_status == "delivered" and order.get("platform") == "site":      # 15.11 (слово власника «у телеграм посилання»): одноразове посилання на відгук власнику; best-effort, не кидає
+            if delivery_status == "delivered" and order.get("platform") == "site":      # 15.11 (слово власника: «відправляйте клієнту напряму, якщо він підписався на нашого бота»): прохання про відгук КЛІЄНТУ в боті сайту; власнику нічого; best-effort, не кидає
                 import review_link_notify
-                review_link_notify.notify_for_internal_id(conn, internal_id, send_telegram_message)
+                review_link_notify.notify_for_internal_id(conn, internal_id, review_link_notify.customer_sender())
             _maybe_issue_receipt(conn, order, ttn, delivery_status)
             _maybe_advance_rozetka_processing(conn, order, delivery_status, ttn)
             _maybe_push_ttn_to_rozetka(conn, order, ttn)

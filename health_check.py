@@ -415,7 +415,7 @@ def _run_one(ctx, name, fn):
 
 
 def run_checks(ctx):
-    """П'ять перевірок паралельно (мережа/PowerShell/git незалежні): загальний час = найповільніша, а не сума — хук SessionStart має бюджет 15 с."""
+    """Шість перевірок паралельно (мережа/PowerShell/git незалежні): загальний час = найповільніша, а не сума — хук SessionStart має бюджет 15 с."""
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=len(CHECKS)) as ex:
         futs = [ex.submit(_run_one, ctx, name, fn) for name, fn in CHECKS]
@@ -441,7 +441,7 @@ def save_state(state: dict, path: Path = None) -> None:
     tmp.replace(p)
 
 
-BLIND_PREFIX = {"vps": ("vps:",), "artifacts": ("art:",), "tasks": ("task:",), "local_journal": ("loc:",), "critical": ("crit:",)}
+BLIND_PREFIX = {"vps": ("vps:",), "artifacts": ("art:",), "tasks": ("task:",), "local_journal": ("loc:",), "critical": ("crit:",), "seo_metrics": ("seo:",)}
 BLIND_IDS = {"vps:stale": ("vps:",), "vps:no_snapshot": ("vps:",)}   # знімок застарів/нема → стан VPS невідомий, «знято» писати не можна
 
 

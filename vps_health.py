@@ -167,7 +167,7 @@ def collect_build_warnings(run=_run, hours: int = BUILD_WARN_HOURS) -> dict:
         elif "Finished site-rebuild" in ln or "Finished PlutusToys site rebuild" in ln:
             builds.append(ln.split(" ", 1)[0])
     warns = sorted(groups.values(), key=lambda g: g["last_at"], reverse=True)[:BUILD_WARN_MAX]
-    return {"window_h": hours, "builds_finished": builds[-6:], "warnings": warns}
+    return {"window_h": hours, "builds_finished": builds[-6:], "warnings": warns, "unchecked": not txt.strip()}      # unchecked: журнал порожній/недоступний — «нуль попереджень» тоді НЕ доказ
 
 
 def collect_eva_session(app_dir: str = APP_DIR) -> dict:

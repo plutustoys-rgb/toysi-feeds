@@ -510,7 +510,12 @@ def write_site_build_warnings(snap, path=None) -> bool:
              f"Завершені збірки: {', '.join(sw.get('builds_finished') or []) or 'у журналі не знайдено'}", ""]
     warns = sw.get("warnings") or []
     if not warns:
-        lines.append("Попереджень «[build] ⚠» у вікні немає.")
+        # «нуль» чесний лише коли журнал прочитано й у ньому є завершена збірка; інакше це НЕ ПЕРЕВІРЕНО (journalctl недоступний/порожній/секція знімка зламана) — не «немає» (аудит #1535)
+        errs = [e for e in (snap.get("errors") or []) if "site_build_warnings" in str(e)]
+        if not sw or sw.get("unchecked") or not sw.get("builds_finished"):
+            lines.append("НЕ ПЕРЕВІРЕНО: у журналі site-rebuild немає жодної завершеної збірки за вікно (journalctl недоступний/журнал порожній/секція знімка збійна). Це НЕ означає, що попереджень немає." + (f" Збій знімка: {errs[0]}" if errs else ""))
+        else:
+            lines.append("Попереджень «[build] ⚠» у вікні немає.")
     for w in warns:
         lines.append(f"- {w.get('last_at', '?')} (×{w.get('count', 1)}) {w.get('text', '')}")
     p.parent.mkdir(parents=True, exist_ok=True)

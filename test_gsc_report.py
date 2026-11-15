@@ -70,7 +70,7 @@ d = Path(tempfile.mkdtemp())
 s = Sess()
 rc = g.run(s, d, NOW)
 rows = list(csv.DictReader(open(d / "gsc_query_page_2026-10-15.csv", encoding="utf-8-sig")))
-chk("run: код 0, 6 csv (query_page, daily, sitemaps, inspect, inspect_history, weekly_summary) + підсумок індексації + verification, без .tmp", rc == 0 and len(list(d.glob("*.csv"))) == 6 and (d / "gsc_inspect_summary_2026-10-15.txt").exists() and (d / "gsc_verification_2026-10-15.txt").exists() and not list(d.glob("*.tmp")))
+chk("run: код 0, 6 csv (query_page, daily, sitemaps, inspect, inspect_history, weekly_summary) + підсумок індексації + verification, без .tmp", rc == 0 and len(list(d.glob("*.csv"))) == 8 and (d / "gsc_inspect_summary_2026-10-15.txt").exists() and (d / "gsc_verification_2026-10-15.txt").exists() and not list(d.glob("*.tmp")))
 chk("query_page: доба = сьогодні−3 (12.10), запит dimensions query,page, startRow 0", rows and rows[0]["date"] == "2026-10-12" and any(c[1] and c[1].get("dimensions") == ["query", "page"] and c[1]["startDate"] == c[1]["endDate"] == "2026-10-12" and c[1]["startRow"] == 0 for c in s.calls))
 chk("query_page: кирилиця в запиті збережена, position округлено до 2 знаків", rows[0]["query"] == "лялька" and rows[0]["position"] == "5.12")
 daily = list(csv.DictReader(open(d / "gsc_daily_2026-10-15.csv", encoding="utf-8-sig")))
@@ -116,8 +116,61 @@ g.priority_urls = lambda n=100, sitemap_url="": []
 alerts.clear()
 d6 = Path(tempfile.mkdtemp())
 rc = g.run(Sess(), d6, NOW)
-chk("порожній priority-sitemap: inspect збій+алерт, інші частини (query_page, daily, sitemaps, weekly_summary) записані", rc == 0 and not (d6 / "gsc_inspect_2026-10-15.csv").exists() and len(list(d6.glob("*.csv"))) == 4 and "gsc_report_part" in alerts)
+chk("порожній priority-sitemap: inspect збій+алерт, інші частини (query_page, daily, sitemaps, weekly_summary) записані", rc == 0 and not (d6 / "gsc_inspect_2026-10-15.csv").exists() and len(list(d6.glob("*.csv"))) == 6 and "gsc_report_part" in alerts)
 chk("--check: властивість є → 0; API вимкнено → 2", g.check(Sess()) == 0 and g.check(Sess("disabled")) == 2)
+
+# ── 15.11: порожня остання доба (GSC ще не фінальна) → відкат на попередню; 90-добовий витяг щотижня
+class SessDays:
+    """searchAnalytics: dimensions=date → рядки до final_end включно; query,page за одну добу → рядки лише якщо ця доба ≤ final_end; інакше порожньо."""
+
+    def __init__(self, final_end):
+        self.final_end, self.calls = final_end, []
+
+    def post(self, url, json=None, timeout=0):
+        self.calls.append(json)
+        dims, s0, e0 = json["dimensions"], json["startDate"], json["endDate"]
+        if dims == ["date"]:
+            from datetime import date, timedelta
+            a, b_ = date.fromisoformat(s0), min(date.fromisoformat(e0), date.fromisoformat(self.final_end))
+            return R({"rows": [{"keys": [str(a + timedelta(days=i))], "clicks": 1, "impressions": 10, "ctr": 0.1, "position": 9.0} for i in range((b_ - a).days + 1)]})
+        if e0 > self.final_end:
+            return R({})
+        if dims == ["query", "page"]:
+            return R({"rows": [{"keys": ["q1", "https://plutustoys.com.ua/product-1.html"], "clicks": 1, "impressions": 10, "ctr": 0.1, "position": 5.0}]})
+        return R({"rows": [{"keys": ["q1"], "clicks": 1, "impressions": 10, "ctr": 0.1, "position": 5.0}]})
+
+
+NOW2 = datetime(2026, 11, 14, 6, 30)      # субота; сьогодні−3 = 11.11, а фінальні дані лише до 10.11 (як було 14.11)
+d7 = Path(tempfile.mkdtemp())
+p7, n7 = g.part_query_page(SessDays("2026-11-10"), NOW2, d7)
+r7 = list(csv.DictReader(open(p7, encoding="utf-8-sig")))
+chk("query_page: доба сьогодні−3 порожня (не фінальна) → береться остання фінальна (10.11), файл НЕ порожній, колонка date = реальна доба", n7 == 1 and r7[0]["date"] == "2026-11-10")
+d8 = Path(tempfile.mkdtemp())
+p8, n8 = g.part_query_page(SessDays("2026-11-11"), NOW2, d8)
+chk("query_page: доба сьогодні−3 вже фінальна → без відкату (11.11)", n8 == 1 and list(csv.DictReader(open(p8, encoding="utf-8-sig")))[0]["date"] == "2026-11-11")
+d9 = Path(tempfile.mkdtemp())
+p9, n9 = g.part_query_page(SessDays("2026-01-01"), NOW2, d9)
+chk("query_page: даних нема взагалі → порожній файл із заголовком, без винятку", n9 == 0 and p9.exists())
+d10 = Path(tempfile.mkdtemp())
+p10, n10 = g.part_90d(SessDays("2026-11-10"), NOW2, d10)      # субота, файлу ще нема → пишемо
+q90 = list(csv.DictReader(open(p10, encoding="utf-8-sig")))
+chk("90d: файлу ще нема (не понеділок) → пишемо; кінець вікна = остання ФІНАЛЬНА доба (10.11), початок = кінець−89 (13.08); два файли", n10 == 1 and q90[0]["end"] == "2026-11-10" and q90[0]["start"] == "2026-08-13" and (d10 / "gsc_90d_queries_2026-11-14.csv").exists())
+chk("90d: формат колонок як у витягу 10.11 (start,end,query,page,clicks,impressions,ctr,position)", list(q90[0].keys()) == ["start", "end", "query", "page", "clicks", "impressions", "ctr", "position"])
+p11, n11 = g.part_90d(SessDays("2026-11-10"), NOW2, d10)       # той самий каталог, субота, файл уже є → пропуск
+chk("90d: не понеділок і файл уже є → пропущено (0 рядків, нових запитів до API нема)", n11 == 0)
+NOW_MON = datetime(2026, 11, 16, 6, 30)      # понеділок
+sm = SessDays("2026-11-13")
+p12, n12 = g.part_90d(sm, NOW_MON, d10)
+chk("90d: понеділок → оновлюємо навіть якщо файл уже є; новий файл із датою запуску", n12 == 1 and (d10 / "gsc_90d_query_page_2026-11-16.csv").exists())
+dN = Path(tempfile.mkdtemp())
+try:
+    g.part_90d(SessDays("2025-01-01"), NOW2, dN)
+    okx = False
+except RuntimeError:
+    okx = True
+chk("90d: GSC не віддав жодної фінальної доби → RuntimeError (run() позначить частину збійною й алертує, інші частини живі)", okx)
+import daily_files_to_shared as dl  # noqa: E402
+chk("доставка у SEO_метрики знає нові файли (gsc_90d_query_page_ / gsc_90d_queries_)", "gsc_90d_query_page_" in dl.PATTERNS and "gsc_90d_queries_" in dl.PATTERNS and dl.latest_per_pattern(["gsc_90d_query_page_2026-11-16.csv", "gsc_90d_query_page_2026-11-09.csv"]) == ["gsc_90d_query_page_2026-11-16.csv"])
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -154,7 +154,7 @@ chk("хаб: опис складено з побудованого (є вік і
 # ── чип «Миколай і Новий рік» і крок прибирання ──
 chk("файли подарунків відомі кроку прибирання застарілих", "podarunky.html" in bs.GIFT_PAGE_FILES and "podarunok-na-3-roky.html" in bs.GIFT_PAGE_FILES)
 src = Path(bs.__file__).read_text(encoding="utf-8")
-chk("крок прибирання: gift-файли, яких збірка не будує, видаляються окремою гілкою; початок оригінального if лишився (тест gsc_verification)", "elif fn in GIFT_PAGE_FILES and fn not in _gift_files:" in src and "        if (fn.startswith((\"product-\"" in src)
+chk("крок прибирання: gift-файли, яких збірка не будує, видаляються окремою гілкою; початок оригінального if лишився (тест gsc_verification)", "elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES) and fn not in _gift_files:" in src and "        if (fn.startswith((\"product-\"" in src)
 bs.HELOVIN_JSON = str(Path(tempfile.mkdtemp()) / "none.json")
 os.environ["SITE_PICK_DATE"] = "2026-12-10"
 ny_prods = [P(f"Новорічна ялинка «{W[i % 20]}{i}»", 250, f"Ялинки{i}", "", contrib=70) for i in range(40)] + [P(f"Звичайна іграшка «{W[i % 20]}{i}»", 300 + i, f"Звич{i}", "", contrib=150) for i in range(14)]
@@ -170,6 +170,46 @@ chk(f"чип «Миколай і Новий рік» ({chip_file}): є поси�
 bs.GIFT_BUILT[:] = []
 bs.write_chip_pages(ny_prods, ny_cl, ny_slug)
 chk("чип: без хаба посилання нема", 'href="podarunky.html"' not in (out / chip_file).read_text(encoding="utf-8"))
+
+# ── статті-поради ──
+real_t = bs._load_gift_texts()
+real_p = bs._load_porady()
+chk(f"реальний site/gift_pages.json: усі {len(bs.GIFT_PAGES)} slug з текстом (вступ 80–150 слів, ≥3 питань)", set(real_t) == {s_ for s_, _h, _l, _r in bs.GIFT_PAGES} and all(80 <= len(v["intro"].split()) <= 150 and len(v["faq"]) >= 3 for v in real_t.values()))
+chk("реальний site/porady.json: 3 статті, ≥3 розділів, дата РРРР-ММ-ДД", set(real_p) == set(bs.PORADY_SLUGS) and all(len(v["sections"]) >= 3 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v["published"]) for v in real_p.values()))
+_sec = re.compile(r"\b[а-яіїєґ'ʼ]{1,}(?:єш|еш|иш|їш)(?:ся)?\b", re.I)
+_bad = re.compile(r"безпечн|ліценз|оригінал|офіційн|найкращ|гарн|приємн|чудов", re.I)
+chk("тексти Копірайтера: без 2-ї особи й заборонених слів (STOP-скан)", not any(_sec.search(str(v)) or _bad.search(str(v)) for v in list(real_t.values()) + list(real_p.values())))
+bs.GIFT_BUILT[:] = [(s_, h, lb) for s_, h, lb, _r, _i in plan]
+out2 = Path(tempfile.mkdtemp())
+bs.OUT = str(out2)
+bs.GIFT_ARTICLES_BUILT[:] = [(s_, real_p[s_]["title"]) for s_ in bs.PORADY_SLUGS if s_ in real_p]
+gu = bs.write_gift_pages(prods, lt)
+pu = bs.write_porady(real_p)
+chk(f"write_porady: 3 файли, кортежі sitemap (файл, пріоритет, частота): {[u for u, _p, _f in pu]}", sorted(u for u, _p, _f in pu) == sorted(f"{s_}.html" for s_ in bs.PORADY_SLUGS) and all(len(x) == 3 for x in pu))
+ar = (out2 / "porady-podarunok-na-5-rokiv.html").read_text(encoding="utf-8")
+alds = [json.loads(x.replace("\\u003c", "<")) for x in re.findall(r'<script type="application/ld\+json">(.*?)</script>', ar, re.S)]
+atypes = [d["@type"] for d in alds]
+art_ld = next(d for d in alds if d["@type"] == "Article")
+chk(f"стаття: розмітка Article + BreadcrumbList + FAQPage ({atypes}); автор PlutusToys; дата з файлу", {"Article", "BreadcrumbList", "FAQPage"} <= set(atypes) and art_ld["author"]["name"] == "PlutusToys" and art_ld["datePublished"] == real_p["porady-podarunok-na-5-rokiv"]["published"])
+chk("стаття: H1 = title, canonical, не noindex; питання FAQPage видимі на сторінці",
+    f'<h1 class="page">{bs.esc(real_p["porady-podarunok-na-5-rokiv"]["title"])}</h1>' in ar and 'rel="canonical" href="https://plutustoys.com.ua/porady-podarunok-na-5-rokiv.html"' in ar and "noindex" not in ar
+    and all(bs.esc(q["name"]) in ar for d in alds if d["@type"] == "FAQPage" for q in d["mainEntity"]))
+chk("стаття: кожен розділ — підзаголовок-питання + коротка відповідь першою", ar.count('<p class="porady-short">') == len(real_p["porady-podarunok-na-5-rokiv"]["sections"]) and ar.count("<h2>") >= len(real_p["porady-podarunok-na-5-rokiv"]["sections"]))
+chk("стаття веде на побудовані добірки подарунків (5 років) і на хаб", 'href="podarunok-na-5-rokiv.html"' in ar and 'href="podarunky.html"' in ar)
+g5 = (out2 / "podarunok-na-5-rokiv.html").read_text(encoding="utf-8")
+chk("сторінка подарунків на 5 років лінкує на свою статтю й на статтю про настільні ігри", 'href="porady-podarunok-na-5-rokiv.html"' in g5 and 'href="porady-yak-vybraty-nastilnu-hru.html"' in g5)
+hb = (out2 / "podarunky.html").read_text(encoding="utf-8")
+chk("хаб лінкує на 3 статті", all(f'href="{s_}.html"' in hb for s_ in bs.PORADY_SLUGS))
+mt = re.search(r"<title>(.*?)</title>", ar, re.S).group(1)
+chk(f"title статті: бренд додається лише коли вміщається в {bs.TITLE_MAX} ({len(mt)})", len(mt) <= bs.TITLE_MAX + 14)
+bs.GIFT_ARTICLES_BUILT[:] = []
+bs.GIFT_BUILT[:] = [(s_, h, lb) for s_, h, lb, _r, _i in plan]
+bs.write_gift_pages(prods, lt)
+chk("без статей сторінки подарунків НЕ лінкують на неіснуючі porady-*", "porady-" not in (out2 / "podarunok-na-5-rokiv.html").read_text(encoding="utf-8"))
+bad_p = Path(tempfile.mkdtemp()) / "porady.json"
+bad_p.write_text(json.dumps({"porady-podarunok-na-5-rokiv": {"title": "x", "published": "2026-11-15", "lead": "y", "sections": 5}, "porady-чужа": {"title": "x"}, "porady-yak-vybraty-nastilnu-hru": {"title": "T", "published": "15.11.2026", "lead": "l", "sections": [{"h": "a", "short": "b"}] * 3}}), encoding="utf-8")
+chk("кривий porady.json (sections не список, чужий slug, дата не ISO): збірка НЕ падає, записи пропущено", bs._load_porady(str(bad_p)) == {})
+chk("файли статей відомі кроку прибирання застарілих", all(f"{s_}.html" in bs.PORADY_FILES for s_ in bs.PORADY_SLUGS) and "elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES)" in src)
 
 if F:
     print(f"\n❌ FAIL: {len(F)}")

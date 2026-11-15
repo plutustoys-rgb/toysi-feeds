@@ -427,6 +427,11 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .gift-links{margin:20px 16px 8px}
 .gift-links ul{list-style:none;margin:0 0 10px;padding:0;columns:2 240px;column-gap:24px}
 .gift-links li{break-inside:avoid;padding:4px 0;font-size:15px;line-height:1.35}
+.porady-by{margin:-4px 16px 10px;color:var(--muted);font-size:13px}
+.porady-sec{margin:18px 16px 0;max-width:760px}
+.porady-sec h2{font-size:18px;margin:0 0 6px}
+.porady-sec p{margin:0 0 8px;font-size:15px;line-height:1.5}
+.porady-short{font-size:15px}
 .pay[hidden]{display:none}
 /* чипи над каруселлю головної (SMM 12.10): місце зарезервовано до JS (без CLS); без JS ховає <noscript> */
 /* Десктоп/планшет (≥701 px): чипи головної переносяться на другий рядок — усі видно без горизонтального скролу (мишею до правих чипів не дістатися; власник 14.10). Телефон: один рядок зі свайпом. */

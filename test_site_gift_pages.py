@@ -88,7 +88,12 @@ allpicked = [p for s in by_slug for p in bs.gift_pick(prods, by_slug[s])]
 names = " | ".join(p["name"] for p in allpicked)
 chk("виключено: зброя, уцінка, книги, немає в наявності", "Автомат" not in names and "Уцінка" not in names and "Книжка" not in names and "нема в наявності" not in names)
 one = [p for p in bs.gift_pick(prods, by_slug["podarunok-na-3-roky"]) if p["category"] == "ОднаКатегорія"]
-chk(f"≤2 товари з однієї категорії (товарів 3, у добірці рівно {len(one)})", len(one) == bs.GIFT_PER_CAT)
+_saved_show = bs.GIFT_SHOW_MAX
+bs.GIFT_SHOW_MAX = 500   # без вибірки за ціною: лише ліміт категорії
+bs.GIFT_POOL_MAX = 500
+one_all = [p for p in bs.gift_pick(prods, by_slug["podarunok-na-3-roky"]) if p["category"] == "ОднаКатегорія"]
+bs.GIFT_SHOW_MAX, bs.GIFT_POOL_MAX = _saved_show, 4 * _saved_show
+chk(f"≤2 товари з однієї категорії (товарів 3; у добірці без вибірки за ціною рівно {len(one_all)}, зі вибіркою ≤{len(one)})", len(one_all) == bs.GIFT_PER_CAT and len(one) <= bs.GIFT_PER_CAT)
 nm100 = " | ".join(p["name"] for p in bs.gift_pick(prods, by_slug["podarunok-do-100-hrn"]))
 chk("на сторінках без вікового правила немає карток «14+» (аудит #1505)", "14+" not in nm100 and "14+" not in " | ".join(p["name"] for p in bs.gift_pick(prods, by_slug["podarunok-na-mykolaia"])))
 chk("товар з ціною 0 не потрапляє ніде (аудит #1505)", all("Безкоштовна" not in p["name"] for r in by_slug.values() for p in bs.gift_pick(prods, r)))
@@ -99,6 +104,20 @@ _flags = [bool(_ny_rx.search(p["name"])) for p in ny]
 chk("новорічна: спершу назви з HOME_SEASONAL «ny» (усі збіги йдуть перед рештою)", ny and _flags[0] and _flags == sorted(_flags, reverse=True))
 mk = bs.gift_pick(prods, by_slug["podarunok-na-mykolaia"])
 chk("Миколай: ціна 100–700", mk and all(100 <= p["price"] <= 700 for p in mk))
+
+# ── виправлення добору 15.11 (живий замір): косметика, рівномірна ціна, стеля ціни вікових ──
+cos = [P(f"Накладні вії {W[i]}", 150, "Косметика", "Для дітей від 3 років", contrib=900) for i in range(3)]
+exp = [P(f"Басейн дорогий {W[i]}{i}", 4500, f"Басейни{i}", "Для дітей від 3 років", contrib=800) for i in range(3)]
+mix = [P(f"Різноцінна іграшка {n_}", pr_, f"Різна{k_}", "Рекомендовано для дітей від 3 років", contrib=100 - k_) for k_, (n_, pr_) in enumerate((("Аа", 120), ("Бб", 180), ("Вв", 240), ("Гг", 300), ("Дд", 360), ("Ее", 420), ("Єє", 480), ("Жж", 540), ("Зз", 600), ("Ии", 660), ("Її", 690), ("Йй", 699)) * 6)]
+for i_, p_ in enumerate(mix):
+    p_["name"] = f"Різноцінна іграшка {W[i_ % 20]}{i_} {W[(i_ * 7) % 20]}"
+prods2 = prods + cos + exp + mix
+chk("косметика виключена зі ВСІХ добірок", all(p_["category"] != "Косметика" for r_ in by_slug.values() for p_ in bs.gift_pick(prods2, r_)))
+chk("вікові сторінки: ціна ≤ GIFT_AGE_PRICE_MAX (басейни 4 500 ₴ не потрапляють)", all(p_["price"] <= bs.GIFT_AGE_PRICE_MAX for s_ in ("podarunok-na-3-roky", "podarunok-na-5-rokiv", "podarunok-na-1-rik") for p_ in bs.gift_pick(prods2, by_slug[s_])))
+mk2 = bs.gift_pick(prods2, by_slug["podarunok-na-mykolaia"])
+prs = [p_["price"] for p_ in mk2]
+chk(f"Миколай: вибір рівномірно за ціною — є і дешеві, і дорогі (діапазон {min(prs)}–{max(prs)}), порядок за зростанням", len(prs) >= 12 and min(prs) <= 200 and max(prs) >= 600 and prs == sorted(prs))
+chk("_gift_spread: n=1 і n>len без падіння, ≤ n елементів", len(bs._gift_spread(mix, 1)) == 1 and len(bs._gift_spread(mix[:3], 36)) == 3 and len(bs._gift_spread(mix, 5)) <= 5 and bs._gift_spread([], 3) == [])
 
 # ── збірка сторінок ──
 out = Path(tempfile.mkdtemp())

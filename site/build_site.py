@@ -3967,6 +3967,9 @@ GIFT_SHOW_MAX = 36
 GIFT_PER_CAT = 2
 GIFT_LIST_NAME = "gift_page"
 GIFT_MIN_CONTRIB = 0.0
+GIFT_EXCLUDED_CATS = frozenset({"косметика"})   # дитячі подарунки: накладні вії, бальзами для губ тощо не показуємо (15.11, живий замір складу)
+GIFT_POOL_MAX = 4 * GIFT_SHOW_MAX               # пул найвигідніших кандидатів, з якого вибираємо рівномірно за ціною
+GIFT_AGE_PRICE_MAX = 2000                       # вікові сторінки: подарунок до 2 000 ₴ (без басейнів/ігрових комплексів за 4–5 тис.)
 GIFT_FAQ_MIN, GIFT_FAQ_MAX = 3, 6
 GIFT_HUB_FILE = "podarunky.html"
 # (slug, H1 = запит, підпис, правило). Правило: pmin/pmax — ціна (₴); age=(lo, hi) — мінімальний вік з опису в РОКАХ (місяці = N/12), включно; ny=True — спершу назви з HOME_SEASONAL «ny».
@@ -4019,7 +4022,7 @@ def _gift_ok(p):
         return False
     if _is_markdown_item(p) or any(m in name.lower() for m in cp._BAD_NAME_MARKERS) or is_weapon_replica(str(p["id"]), name) or any(w in name.lower() for w in NABORY_BAD_WORDS):
         return False
-    if cat.strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name) or HOME_SEASONAL_BAD_CAT.search(cat) or is_home_excluded(p):
+    if cat.strip().lower() in GIFT_EXCLUDED_CATS or cat.strip().lower() in HOME_CHIP_EXCLUDED_CATS or HOME_SEASONAL_BAD_NAME.search(name) or HOME_SEASONAL_BAD_CAT.search(cat) or is_home_excluded(p):
         return False
     return True
 
@@ -4032,8 +4035,21 @@ def gift_pool(prods):
     return [(p, gift_min_age(p.get("desc"))) for p in prods if not p.get("rt") and (p.get("price") or 0) > 0 and _gift_ok(p)]
 
 
+def _gift_spread(items, n):
+    """n позицій із items, РІВНОМІРНО за ціною (від найдешевшого до найдорожчого), порядок — за зростанням ціни; items ≤ n повертає як є (відсортовано за ціною)."""
+    items = sorted(items, key=lambda p: (p.get("price") or 0, str(p["id"])))
+    if n <= 0:
+        return []
+    if len(items) <= n:
+        return items
+    if n == 1:
+        return items[:1]
+    idx = sorted({round(i * (len(items) - 1) / (n - 1)) for i in range(n)})
+    return [items[i] for i in idx]
+
+
 def gift_pick(prods, rule, pool=None):
-    """Добірка сторінки подарунків за правилом: ≤GIFT_SHOW_MAX товарів, ≤GIFT_PER_CAT з категорії, без дублів «основи назви»; порядок — за внеском (спадно), далі id. pool — gift_pool(prods), якщо вже пораховано."""
+    """Добірка сторінки подарунків за правилом: з пулу найвигідніших (≤GIFT_POOL_MAX; ≤GIFT_PER_CAT з категорії, без дублів «основи назви») беремо ≤GIFT_SHOW_MAX РІВНОМІРНО за ціною (щоб були і дешеві, і дорожчі); новорічна — спершу «ny»-назви. pool — gift_pool(prods), якщо вже пораховано."""
     ny_rx = None
     if rule.get("ny"):
         ny_rx = next((re.compile(rx, re.I) for k, _l, _s, rx, _f, _la, _eb in HOME_SEASONAL if k == "ny"), None)
@@ -4042,12 +4058,12 @@ def gift_pick(prods, rule, pool=None):
         if "pmax" in rule and not (rule.get("pmin", 0) <= p["price"] <= rule["pmax"]):
             continue
         if "age" in rule:
-            if a is None or not (rule["age"][0] <= a <= rule["age"][1]):
+            if a is None or not (rule["age"][0] <= a <= rule["age"][1]) or p["price"] > GIFT_AGE_PRICE_MAX:
                 continue
         elif a is not None and a > GIFT_MAX_AGE:
             continue
         cand.append(p)
-    cand.sort(key=lambda p: (0 if (ny_rx and ny_rx.search(p.get("name") or "")) else 1, -(p.get("contribution") or 0), str(p["id"])))
+    cand.sort(key=lambda p: (-(p.get("contribution") or 0), str(p["id"])))
     out, per_cat, keys = [], {}, set()
     for p in cand:
         cat, k = (p.get("category") or "").strip().lower(), _pick_key(p["name"])
@@ -4056,9 +4072,14 @@ def gift_pick(prods, rule, pool=None):
         per_cat[cat] = per_cat.get(cat, 0) + 1
         keys.add(k)
         out.append(p)
-        if len(out) >= GIFT_SHOW_MAX:
+        if len(out) >= GIFT_POOL_MAX:
             break
-    return out
+    if ny_rx:
+        ny = [p for p in out if ny_rx.search(p.get("name") or "")]
+        rest = [p for p in out if not ny_rx.search(p.get("name") or "")]
+        first = _gift_spread(ny, GIFT_SHOW_MAX)
+        return first + _gift_spread(rest, GIFT_SHOW_MAX - len(first))
+    return _gift_spread(out, GIFT_SHOW_MAX)
 
 
 def _load_gift_texts(path=None):

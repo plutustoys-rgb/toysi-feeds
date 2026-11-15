@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""test_review_link_notify.py — посилання на відгук власнику в Telegram (слово власника 15.11.2026: «у телеграм посилання… поки запускаю я»).
+"""test_review_link_notify.py — прохання про відгук КЛІЄНТУ в боті сайту (слово власника 15.11.2026: «відправляйте клієнту напряму, якщо він підписався на нашого бота для отримання статуса»).
 Без мережі. `python test_review_link_notify.py` → exit 0/1."""
 import os
 import sqlite3
@@ -12,12 +12,12 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 os.environ["AUDIT_NO_TELEGRAM"] = "1"
-os.environ["ORDERS_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "orders.db")
+_td = tempfile.mkdtemp()
+os.environ["ORDERS_DB_PATH"] = os.path.join(_td, "orders.db")
+os.environ.pop("SITE_CHAT_BOT_TOKEN", None)
 import orders_db  # noqa: E402
 import reviews_db  # noqa: E402
 import review_link_notify as rl  # noqa: E402
-import telegram_notify as tn  # noqa: E402
-import telegram_triage  # noqa: E402
 
 F = []
 
@@ -42,118 +42,122 @@ def mk(oid, items, delivered_at, status="forwarded_to_supplier", ds="delivered",
     return iid
 
 
-def get(iid):
+def reviews_count(iid):
     with orders_db.get_connection() as c:
-        return orders_db._row_to_dict(c.execute("SELECT * FROM orders WHERE internal_order_id=?", (iid,)).fetchone())
+        reviews_db.init(c)
+        return c.execute("SELECT COUNT(*) FROM reviews WHERE order_id = ?", (iid,)).fetchone()[0]
 
 
 sent = []
 
 
-def send(text, log_text=None):
-    sent.append((text, log_text))
+def send(chat_id, text):
+    sent.append((chat_id, text))
     return True
 
 
+def run(iid, snd=send, chats=None, now=NOW):
+    with orders_db.get_connection() as c:
+        return rl.notify_for_internal_id(c, iid, snd, now, chats)
+
+
 items = [{"toysi_code": "218158", "name": "Іграшка-ліхтарик", "qty": 1, "price": 100}]
+
+# --- клієнт ПІДПИСАНИЙ -------------------------------------------------------
 a = mk("PT-1", items, "2026-11-14T10:00:00")
-with orders_db.get_connection() as c:
-    n = rl.notify_for_internal_id(c, a, send, NOW)
-chk("доставлене замовлення сайту, Toysi-товар → 1 посилання, 1 повідомлення", n == 1 and len(sent) == 1)
-txt, logt = sent[0]
-chk("текст: починається з «⭐ Посилання на відгук», номер замовлення, дата доставки, назва товару, посилання review.html#t=", txt.startswith("⭐ Посилання на відгук") and "PT-1" in txt and "2026-11-14" in txt and "Іграшка-ліхтарик" in txt and "https://plutustoys.com.ua/review.html#t=" in txt)
-chk("БЕЗ особистих даних: ні ПІБ, ні телефону, ні email, ні адреси", not any(p in txt for p in ("Іван", "Петренко", "380671112233", "b@e.com", "Київ", "Відділення")))
+n = run(a, chats=[111])
+chk("підписаний клієнт: 1 посилання, 1 повідомлення саме цьому чату", n == 1 and len(sent) == 1 and sent[0][0] == 111)
+txt = sent[0][1]
+chk("текст: номер замовлення, назва товару, посилання review.html#t=", "PT-1" in txt and "Іграшка-ліхтарик" in txt and "https://plutustoys.com.ua/review.html#t=" in txt)
+chk("БЕЗ особистих даних і БЕЗ знижок/бонусів у тексті", not any(p in txt for p in ("Іван", "Петренко", "380671112233", "b@e.com", "Київ", "Відділення")) and not any(w in txt.lower() for w in ("знижк", "бонус", "промокод", "подарун", "купон")))
 raw = txt.split("#t=")[1].split()[0]
-chk("у ЖУРНАЛ іде версія без сирого токена (log_text), у Telegram — з токеном", raw not in logt and "приховано" in logt and raw in txt)
 with orders_db.get_connection() as c:
     info = reviews_db.form_info(c, raw, now=NOW)
-chk("токен робочий: reviews_db.form_info за ним віддає товар (форма відгуку відкриється)", info and str(info.get("product_id")) == "218158")
+chk("токен робочий: reviews_db.form_info віддає товар (форма відгуку відкриється)", info and str(info.get("product_id")) == "218158")
 sent.clear()
-with orders_db.get_connection() as c:
-    n2 = rl.notify_for_internal_id(c, a, send, NOW + timedelta(hours=2))
-chk("повторний прохід (наступний цикл трекера) → НЕ видає друге посилання на ту саму пару (замовлення, товар)", n2 == 0 and sent == [])
+chk("повторний прохід трекера → друге посилання на ту саму пару (замовлення, товар) НЕ видається", run(a, chats=[111], now=NOW + timedelta(hours=2)) == 0 and sent == [])
 
-# виключення
-b = mk("PT-2", items, "2026-11-14T10:00:00", ds="shipped")
-c1 = mk("PT-3", items, "2026-11-14T10:00:00", status="sandbox_test")
-d1 = mk("PT-4", items, "2026-11-14T10:00:00", cancelled="2026-11-14T11:00:00")
-e1 = mk("PT-5", items, "2026-11-14T10:00:00", platform="prom")
-f1 = mk("PT-6", items, "2026-09-01T10:00:00")
-g1 = mk("PT-7", [{"toysi_code": "rt-68654", "name": "RT", "qty": 1, "price": 50}, {"toysi_code": "dropt-57114", "name": "D", "qty": 1, "price": 50}], "2026-11-14T10:00:00")
+# --- клієнт НЕ підписаний: нічого ---------------------------------------------
+b = mk("PT-2", items, "2026-11-14T10:00:00")
 sent.clear()
-with orders_db.get_connection() as c:
-    r = [rl.notify_for_internal_id(c, x, send, NOW) for x in (b, c1, d1, e1, f1, g1)]
-chk("не доставлене / sandbox / скасоване / не сайт / доставлене давно (>14 діб) / лише RT+Dropt-товари → жодного посилання", r == [0, 0, 0, 0, 0, 0] and sent == [])
+chk("нема підписаних чатів → 0, жодного повідомлення, токен НЕ видано", run(b, chats=[]) == 0 and sent == [] and reviews_count(b) == 0)
+chk("send=None (нема SITE_CHAT_BOT_TOKEN) → 0, токен НЕ видано", run(b, snd=None, chats=[222]) == 0 and reviews_count(b) == 0)
 
-# кілька товарів: до 3 на замовлення, дублі кодів — раз
+# --- виключення ---------------------------------------------------------------
+shipped = mk("PT-3", items, "2026-11-14T10:00:00", ds="shipped")
+sandbox = mk("PT-4", items, "2026-11-14T10:00:00", status="sandbox_test")
+cancelled = mk("PT-5", items, "2026-11-14T10:00:00", cancelled="2026-11-14T11:00:00")
+prom = mk("PT-6", items, "2026-11-14T10:00:00", platform="prom")
+old = mk("PT-7", items, "2026-11-10T10:00:00")                       # доставлено 5 діб тому: > MAX_AGE_DAYS (3)
+rtd = mk("PT-8", [{"toysi_code": "rt-68654", "name": "RT", "qty": 1, "price": 50}, {"toysi_code": "dropt-57114", "name": "D", "qty": 1, "price": 50}], "2026-11-14T10:00:00")
+sent.clear()
+r = [run(x, chats=[333]) for x in (shipped, sandbox, cancelled, prom, old, rtd)]
+chk("не доставлене / sandbox / скасоване / не сайт / доставлене >3 діб тому / лише RT+Dropt-товари → жодного повідомлення", r == [0] * 6 and sent == [])
+fresh = mk("PT-9", items, "2026-11-14T10:00:00")
+chk("межа віку: доставлено 2 доби тому — пишемо", run(fresh, chats=[444]) == 1)
+
+# --- кілька товарів, кілька чатів ---------------------------------------------
 many = [{"toysi_code": str(100 + i), "name": f"Т{i}", "qty": 1, "price": 10} for i in range(5)] + [{"toysi_code": "100", "name": "дубль", "qty": 1, "price": 10}]
-m1 = mk("PT-8", many, "2026-11-14T10:00:00")
+m1 = mk("PT-10", many, "2026-11-14T10:00:00")
 sent.clear()
-with orders_db.get_connection() as c:
-    nm = rl.notify_for_internal_id(c, m1, send, NOW)
-chk("5 товарів → не більше 3 посилань за раз (MAX_LINKS_PER_ORDER); дубль коду не дає другого", nm == 3 and len(sent) == 3)
+nm = run(m1, chats=[501, 502, 501])
+chk("5 товарів → не більше 3 посилань, у ОДНОМУ повідомленні кожному чату (дубль чату — одне повідомлення); дубль коду не дає другого", nm == 3 and [c for c, _ in sent] == [501, 502] and sent[0][1].count("review.html#t=") == 3)
 sent.clear()
-with orders_db.get_connection() as c:
-    nm2 = rl.notify_for_internal_id(c, m1, send, NOW + timedelta(hours=1))
-chk("наступний цикл довидає решту (2 товари), не повторюючи видані", nm2 == 2 and len(sent) == 2)
+chk("наступний цикл довидає решту (2 товари) і знову пише клієнтам", run(m1, chats=[501, 502, 501], now=NOW + timedelta(hours=1)) == 2 and sent[0][1].count("review.html#t=") == 2)
 
-# збої не кидають
-def boom(text, log_text=None):
+# --- збої не кидають, токен не губиться ---------------------------------------
+def boom(chat_id, text):
     raise RuntimeError("tg down")
 
 
-h1 = mk("PT-9", items, "2026-11-14T10:00:00")
-with orders_db.get_connection() as c:
-    nb = rl.notify_for_internal_id(c, h1, boom, NOW)
-chk("виняток у Telegram → не кидає, 0 надіслано", nb == 0)
-with orders_db.get_connection() as c:
-    left = c.execute("SELECT COUNT(*) FROM reviews WHERE order_id = ?", (h1,)).fetchone()[0]
-chk("після збою запис посилання ПРИБРАНО (аудит #1501: «видано, але власник не отримав» нічим не відновити)", left == 0)
+h1 = mk("PT-11", items, "2026-11-14T10:00:00")
+chk("виняток у відправці → не кидає, 0, запис посилання ПРИБРАНО (інакше «видано, але ніхто не отримав»)", run(h1, snd=boom, chats=[601]) == 0 and reviews_count(h1) == 0)
 sent.clear()
-with orders_db.get_connection() as c:
-    nb2 = rl.notify_for_internal_id(c, h1, send, NOW + timedelta(hours=1))
-chk("наступний цикл трекера сам повторює і надсилає (1 повідомлення)", nb2 == 1 and len(sent) == 1)
-h2 = mk("PT-10", items, "2026-11-14T10:00:00")
-with orders_db.get_connection() as c:
-    nf = rl.notify_for_internal_id(c, h2, lambda text, log_text=None: False, NOW)
-    left2 = c.execute("SELECT COUNT(*) FROM reviews WHERE order_id = ?", (h2,)).fetchone()[0]
-chk("send_telegram_message повернув False (мережа/нема токена бота; НЕ виняток) → 0 надіслано, запис прибрано", nf == 0 and left2 == 0)
+chk("наступний цикл трекера сам повторює і надсилає", run(h1, chats=[601], now=NOW + timedelta(hours=1)) == 1 and len(sent) == 1)
+h2 = mk("PT-12", items, "2026-11-14T10:00:00")
+chk("send повернув False (клієнт заблокував бота) → 0, запис прибрано", run(h2, snd=lambda c, t: False, chats=[602]) == 0 and reviews_count(h2) == 0)
+h3 = mk("PT-13", items, "2026-11-14T10:00:00")
+got = []
+chk("два чати: перший не прийняв, другий прийняв → токен ЗАФІКСОВАНО (1 посилання), повтору немає",
+    run(h3, snd=lambda c, t: (got.append(c) or c == 702), chats=[701, 702]) == 1 and got == [701, 702] and reviews_count(h3) == 1
+    and run(h3, snd=lambda c, t: True, chats=[701, 702], now=NOW + timedelta(hours=1)) == 0)
+chk("неіснуюче замовлення → 0 без винятку", run("site_NONE", chats=[1]) == 0)
+
+# --- підписки з site_chat.db --------------------------------------------------
+chat_db = Path(_td) / "site_chat.db"
+cc = sqlite3.connect(chat_db)
+cc.execute("CREATE TABLE subscriptions (order_id TEXT, chat_id INTEGER, created_at TEXT, last_text TEXT, fails INTEGER DEFAULT 0, done INTEGER DEFAULT 0, PRIMARY KEY(order_id, chat_id))")
+cc.executemany("INSERT INTO subscriptions(order_id, chat_id, fails, done) VALUES(?,?,?,?)", [("PT-20", 801, 0, 1), ("PT-20", 802, 5, 0), ("PT-20", 803, 0, 0), ("PT-OTHER", 804, 0, 0), ("GRP-1", 805, 0, 0)])
+cc.commit()
+cc.close()
+chk("subscribed_chats: підписки цього замовлення (done=1 теж), без мертвих (fails≥5) і без чужих",
+    sorted(rl.subscribed_chats({"internal_order_id": "site_PT-20"}, chat_db)) == [801, 803])
+chk("subscribed_chats: змішаний кошик — і за батьківським номером платежу (site_group_id)", sorted(rl.subscribed_chats({"internal_order_id": "site_PT-21", "site_group_id": "GRP-1"}, chat_db)) == [805])
+chk("subscribed_chats: нема бази / не site_ / збій → [] без винятку", rl.subscribed_chats({"internal_order_id": "site_PT-20"}, Path(_td) / "nope.db") == [] and rl.subscribed_chats({"internal_order_id": "prom_1"}, chat_db) == [] and rl.subscribed_chats({}, chat_db) == [])
+bad = Path(_td) / "bad.db"
+bad.write_bytes(b"not a database")
+chk("subscribed_chats: зіпсована база → [] без винятку", rl.subscribed_chats({"internal_order_id": "site_PT-20"}, bad) == [])
+chk("customer_sender: без SITE_CHAT_BOT_TOKEN → None (нічого не шлемо)", rl.customer_sender() is None)
+os.environ["SITE_CHAT_BOT_TOKEN"] = "123:TEST"
+calls = []
+import site_chat_bot  # noqa: E402
+_orig = site_chat_bot.TelegramAPI.call
+site_chat_bot.TelegramAPI.call = lambda self, method, **p: calls.append((method, p)) or {}
+try:
+    snd = rl.customer_sender()
+    ok1 = snd(77, "привіт")
+    site_chat_bot.TelegramAPI.call = lambda self, method, **p: (_ for _ in ()).throw(RuntimeError("telegram sendMessage: Forbidden: bot was blocked"))
+    ok2 = snd(77, "привіт")
+finally:
+    site_chat_bot.TelegramAPI.call = _orig
+    os.environ.pop("SITE_CHAT_BOT_TOKEN", None)
+chk("customer_sender: sendMessage(chat_id, text) без прев'ю; помилка Telegram → False, не виняток", ok1 is True and calls and calls[0][0] == "sendMessage" and calls[0][1].get("chat_id") == 77 and calls[0][1].get("disable_web_page_preview") is True and ok2 is False)
+
+# повний шлях: підписка в site_chat.db → відправка саме підписаному чату
+os.environ["SITE_CHAT_DB"] = str(chat_db)
+e1 = mk("PT-20", items, "2026-11-14T10:00:00")
 sent.clear()
-with orders_db.get_connection() as c:
-    nf2 = rl.notify_for_internal_id(c, h2, send, NOW + timedelta(hours=1))
-chk("після False наступний цикл надсилає", nf2 == 1 and len(sent) == 1)
-with orders_db.get_connection() as c:
-    chk("неіснуюче замовлення → 0 без винятку", rl.notify_for_internal_id(c, "site_NONE", send, NOW) == 0)
-
-# Telegram: режим «лише замовлення» пропускає саме ці повідомлення; токен не потрапляє в журнал
-chk("telegram_triage.is_review_link: «⭐ Посилання на відгук…» так; інші повідомлення — ні", telegram_triage.is_review_link("⭐ Посилання на відгук · замовлення PT-1") and not telegram_triage.is_review_link("⭐ Щось інше") and not telegram_triage.is_review_link("🛒 Нове замовлення · site №1"))
-posts = []
-tn.TELEGRAM_BOT_TOKEN, tn.TELEGRAM_CHAT_ID = "T", "C"
-tn.ALERTS_LOG_FILE = Path(tempfile.mkdtemp()) / "telegram_alerts.md"
-tn.ALERT_THROTTLE_FILE = tn.ALERTS_LOG_FILE.parent / ".t.json"
-
-
-class _Resp:
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return {"ok": True}
-
-
-tn.requests.post = lambda url, json=None, timeout=0: (posts.append(json["text"]) or _Resp())
-os.environ.pop("AUDIT_NO_TELEGRAM", None)
-os.environ.pop("TELEGRAM_ORDERS_ONLY", None)
-secret = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
-link = f"https://plutustoys.com.ua/review.html#t={secret}"
-msg = f"⭐ Посилання на відгук · замовлення PT-1 (сайт) доставлено 2026-11-14 · товар «X»\n{link}"
-ok = tn.send_telegram_message(msg, log_text=msg.replace(link, "https://plutustoys.com.ua/review.html#t=…приховано…"))
-logged = tn.ALERTS_LOG_FILE.read_text(encoding="utf-8") if tn.ALERTS_LOG_FILE.exists() else ""
-chk("режим «лише замовлення»: повідомлення із посиланням ПРОХОДИТЬ у Telegram (з токеном)", ok and len(posts) == 1 and secret in posts[0])
-chk("журнал telegram_alerts.md: токена НЕМАЄ, є «приховано»", secret not in logged and "приховано" in logged)
-posts.clear()
-tn.send_telegram_message("ℹ️ звичайне службове повідомлення")
-chk("режим «лише замовлення» все ще глушить решту повідомлень", posts == [])
+chk("повний шлях: підписки з site_chat.db → повідомлення рівно підписаним чатам (801, 803)", run(e1) == 1 and sorted(c for c, _ in sent) == [801, 803])
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

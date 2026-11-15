@@ -111,6 +111,16 @@ def _micros(price):
         return None, None
 
 
+def _uah(micros):
+    """micros (int) → гривні (float) або None (None/поза діапазоном float): detail не має валити classify."""
+    if micros is None:
+        return None
+    try:
+        return micros / 1e6
+    except OverflowError:
+        return None
+
+
 def classify(rows: list, country: str = COUNTRY, detail: dict | None = None) -> tuple:
     """rows → (labels {offerId: 'vyhidni'|'ni'}, stats). Одиниця — offerId (рядки uk/ru одного товару зводяться в один).
     stats: units, vyhidni, ni_pricier, ni_no_benchmark, rows, rows_other_country, rows_no_offer.
@@ -163,7 +173,7 @@ def classify(rows: list, country: str = COUNTRY, detail: dict | None = None) -> 
                 cls = "no_benchmark"
         if detail is not None:
             has_b = d.get("bench") is not None
-            detail[oid] = {"price": (d["price"] / 1e6) if has_b else ((d["any_price"] / 1e6) if d.get("any_price") is not None else None), "benchmark": (d["bench"] / 1e6) if has_b else None, "ratio": d["ratio"], "class": cls}
+            detail[oid] = {"price": _uah(d["price"]) if has_b else _uah(d.get("any_price")), "benchmark": _uah(d["bench"]) if has_b else None, "ratio": d["ratio"], "class": cls}
     st.update({"units": len(per), "vyhidni": sum(1 for v in labels.values() if v == LABEL_YES), "ni_pricier": pricier, "ni_no_benchmark": nobench})
     try:
         st["spread"] = spread_stats([d["ratio"] for d in per.values() if d.get("ratio") is not None])

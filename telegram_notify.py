@@ -101,7 +101,7 @@ def notify_new_order(platform: str, order_id, total, items_count: int, payment: 
         print(f"[telegram] сповіщення про нове замовлення не надіслано: {type(e).__name__}", file=sys.stderr)
 
 
-def send_telegram_message(text: str) -> bool:
+def send_telegram_message(text: str, log_text: str | None = None) -> bool:
     """Надсилає повідомлення власнику через PlutusToysBot. Повертає True при успіху.
 
     Дублює КОЖЕН виклик (незалежно від успіху самого надсилання) у
@@ -110,17 +110,18 @@ def send_telegram_message(text: str) -> bool:
     Сито (telegram_triage.py): інформаційні повідомлення НЕ йдуть у Telegram (лишаються в журналі з позначкою), повторювані збої — раз на добу.
     Для заглушених повертає True — «доставку не вимагали» (виклики з ретраєм не зациклюються)."""
     text = _redact(text)   # секрети не потрапляють ні в Telegram, ні в журнал
-    if telegram_triage.orders_only_enabled() and not (telegram_triage.is_order_arrival(text) or telegram_triage.is_owner_critical(text) or telegram_triage.is_rt_chain_alert(text) or telegram_triage.is_site_order_status(text)):
-        _log_alert_to_shared_folder(text, note="[не надіслано в Telegram: режим «лише замовлення»]")
+    _jt = _redact(log_text) if log_text is not None else text      # що саме писати в журнал (одноразові посилання з токеном у журнал НЕ кладемо)
+    if telegram_triage.orders_only_enabled() and not (telegram_triage.is_order_arrival(text) or telegram_triage.is_owner_critical(text) or telegram_triage.is_rt_chain_alert(text) or telegram_triage.is_site_order_status(text) or telegram_triage.is_review_link(text)):
+        _log_alert_to_shared_folder(_jt, note="[не надіслано в Telegram: режим «лише замовлення»]")
         return True        # «доставку не вимагали» (як і для заглушених ситом): виклики з ретраєм не зациклюються
     source = os.path.basename(sys.argv[0]) if sys.argv else "?"
     rule_id, action = telegram_triage.classify(source, text)
     if action == "throttle" and _triage_in_cooldown(rule_id):
         action = "mute"
     if action == "mute":
-        _log_alert_to_shared_folder(text, note=f"[не надіслано в Telegram: правило {rule_id}]")
+        _log_alert_to_shared_folder(_jt, note=f"[не надіслано в Telegram: правило {rule_id}]")
         return True
-    _log_alert_to_shared_folder(text)
+    _log_alert_to_shared_folder(_jt)
 
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print(

@@ -107,6 +107,15 @@ def is_site_order_status(text: str) -> bool:
     return bool(SITE_ORDER_STATUS_RE.search((text or "").lstrip()))
 
 
+# ВИНЯТОК №4 (слово власника 15.11.2026: «у телеграм посилання», відгуки): одноразове посилання на форму відгуку для ДОСТАВЛЕНОГО замовлення сайту — власник сам пересилає його покупцю.
+# Без ПІБ/телефону/адреси; сирий токен у журнал НЕ пишеться (send_telegram_message(log_text=…)).
+REVIEW_LINK_RE = re.compile(r"^⭐ Посилання на відгук\b")
+
+
+def is_review_link(text: str) -> bool:
+    return bool(REVIEW_LINK_RE.search((text or "").lstrip()))
+
+
 _ORDER_ID_RE = re.compile(r"\b(?:prom|rozetka|eva|allo|site)_[\w-]+")
 _MARKET_RE = re.compile(r"🔻 (\w+):")
 # rule_id → витягувач ключа з тексту (порожній набір → send: ключа нема, не ховаємо)

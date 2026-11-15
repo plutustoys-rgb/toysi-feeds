@@ -8,6 +8,7 @@
   • gsc_query_page_YYYY-MM-DD.csv — searchanalytics.query за ОДНУ добу з відставанням 3 дні (дані GSC фінальні з ~2–3 днів): dimensions=query,page; clicks, impressions, ctr, position. До GSC_ROWS_MAX рядків.
   • gsc_daily_YYYY-MM-DD.csv — searchanalytics.query dimensions=date за 90 днів (до «сьогодні−3»): clicks, impressions, ctr, position.
   • gsc_sitemaps_YYYY-MM-DD.csv — sitemaps.list: path, lastSubmitted, lastDownloaded, isPending, errors, warnings, type, submitted (по кожному з 5 sitemap). Поле `indexed` Google позначив deprecated (завжди порожнє/0) — НЕ збираємо: індексацію дивитись у gsc_inspect (coverageState).
+  • gsc_90d_query_page_YYYY-MM-DD.csv + gsc_90d_queries_YYYY-MM-DD.csv (з 15.11.2026) — 90-добовий витяг запит×сторінка / запит для SEO; щопонеділка або якщо найновіший старший за 7 діб; кінець вікна = остання доба з ФІНАЛЬНИМИ даними. query_page: якщо доба «сьогодні−3» порожня (GSC ще не фінальна) — відкат до 3 діб назад, date = реальна доба.
   • gsc_inspect_YYYY-MM-DD.csv — URL Inspection API (urlInspection.index.inspect) для перших INSPECT_N URL з sitemap-priority.xml: coverageState, indexingState, lastCrawlTime, googleCanonical, pageFetchState, robotsTxtState. Лише читання, без «запитів на індексацію».
 Кожна частина незалежна: збій однієї не скасовує інших. Збій (не «API вимкнено») — Telegram-алерт з throttle. Код виходу: 0, якщо хоч одна частина записана або API вимкнено; 1 — якщо жодна частина не вдалась через помилку.
 CLI: python gsc_report.py [--check]    # --check: один запит sites.list, нічого не пише
@@ -122,10 +123,19 @@ def write_csv(path: Path, fields: list, rows: list) -> None:
     os.replace(tmp, path)
 
 
+QP_FALLBACK_DAYS = 3      # скільки днів назад шукати останню добу з фінальними даними, якщо «сьогодні−LAG_DAYS» ще порожня (15.11: GSC не віддав фінальні дані за 11.11 на ранок 14.11 → зріз був порожній)
+
+
 def part_query_page(session, today: datetime, out_dir: Path):
     day = (today - timedelta(days=LAG_DAYS)).strftime("%Y-%m-%d")
-    rows = query_rows(session, day, day, ["query", "page"])
-    data = [[day, r["keys"][0], r["keys"][1], r.get("clicks", 0), r.get("impressions", 0), _fmt(r.get("ctr")), _fmt(r.get("position"), 2)] for r in rows if len(r.get("keys") or []) == 2]
+    rows = []
+    for extra in range(0, QP_FALLBACK_DAYS + 1):
+        d = (today - timedelta(days=LAG_DAYS + extra)).strftime("%Y-%m-%d")
+        rows = query_rows(session, d, d, ["query", "page"])
+        if rows:
+            day = d       # колонка date у файлі — реальна доба даних (може бути раніша за «сьогодні−3»)
+            break
+    data =[[day, r["keys"][0], r["keys"][1], r.get("clicks", 0), r.get("impressions", 0), _fmt(r.get("ctr")), _fmt(r.get("position"), 2)] for r in rows if len(r.get("keys") or []) == 2]
     p = out_dir / f"gsc_query_page_{today:%Y-%m-%d}.csv"
     write_csv(p, QP_FIELDS, data)
     return p, len(data)
@@ -232,7 +242,40 @@ def part_verification(session, today: datetime, out_dir: Path):
     return p, len(lines)
 
 
-PARTS = [("query_page", part_query_page), ("daily", part_daily), ("sitemaps", part_sitemaps), ("inspect", part_inspect),
+QP90_FIELDS = ["start", "end", "query", "page", "clicks", "impressions", "ctr", "position"]
+Q90_FIELDS = ["start", "end", "query", "clicks", "impressions", "ctr", "position"]
+
+
+def _latest_final_date(session, today: datetime):
+    """Остання доба, за яку GSC вже віддає ФІНАЛЬНІ дані (dimensions=date за останні ~10 діб); None — даних нема."""
+    start = (today - timedelta(days=LAG_DAYS + 10)).strftime("%Y-%m-%d")
+    end = (today - timedelta(days=LAG_DAYS)).strftime("%Y-%m-%d")
+    dates = sorted(r["keys"][0] for r in query_rows(session, start, end, ["date"]) if r.get("keys"))
+    return dates[-1] if dates else None
+
+
+def part_90d(session, today: datetime, out_dir: Path):
+    """90-добовий витяг «запит×сторінка» й «запит» для SEO (запит 15.11: щотижня, формат як 10.11). Пишеться в понеділок, а також якщо такого файлу в теці ще нема.
+    Кінець вікна = остання доба з фінальними даними (а не сліпо «сьогодні−3»)."""
+    stamps = [datetime.strptime(m.group(1), "%Y-%m-%d") for m in (re.search(r"(\d{4}-\d{2}-\d{2})", f.name) for f in out_dir.glob("gsc_90d_query_page_*.csv")) if m]
+    if today.weekday() != 0 and stamps and (today - max(stamps)).days < 7:      # не понеділок і свіжий файл (<7 діб) є; якщо понеділкова спроба впала — повторюємо щодня, поки найновіший не молодший за 7 діб (аудит #1499)
+        return out_dir / "gsc_90d_query_page_(пропущено: свіжий є)", 0
+    end_s = _latest_final_date(session, today)
+    if not end_s:
+        raise RuntimeError("GSC не віддав жодної фінальної доби за останні ~10 діб")
+    end_d = datetime.strptime(end_s, "%Y-%m-%d")
+    start_s = (end_d - timedelta(days=89)).strftime("%Y-%m-%d")
+    qp = [[start_s, end_s, r["keys"][0], r["keys"][1], r.get("clicks", 0), r.get("impressions", 0), _fmt(r.get("ctr")), _fmt(r.get("position"), 2)]
+          for r in query_rows(session, start_s, end_s, ["query", "page"]) if len(r.get("keys") or []) == 2]
+    q = [[start_s, end_s, r["keys"][0], r.get("clicks", 0), r.get("impressions", 0), _fmt(r.get("ctr")), _fmt(r.get("position"), 2)]
+         for r in query_rows(session, start_s, end_s, ["query"]) if len(r.get("keys") or []) == 1]
+    write_csv(out_dir / f"gsc_90d_queries_{today:%Y-%m-%d}.csv", Q90_FIELDS, q)
+    p = out_dir / f"gsc_90d_query_page_{today:%Y-%m-%d}.csv"
+    write_csv(p, QP90_FIELDS, qp)
+    return p, len(qp)
+
+
+PARTS = [("query_page", part_query_page), ("daily", part_daily), ("sitemaps", part_sitemaps), ("90d", part_90d), ("inspect", part_inspect),
          ("weekly_summary", part_weekly_summary), ("verification", part_verification)]
 
 

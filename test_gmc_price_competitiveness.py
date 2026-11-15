@@ -238,6 +238,15 @@ try:
 finally:
     g.write_detail_csv = orig_w
 chk("збій запису detail НЕ ламає знімок міток: код 0, snap.json записано", rc4 == 0 and tmp4.exists())
+_huge = {"offerId": "H", "reportCountryCode": "UA", "price": {"amountMicros": str(10 ** 400), "currencyCode": "UAH"}, "benchmarkPrice": {"amountMicros": "1000000", "currencyCode": "UAH"}}
+try:
+    dh = {}
+    lh, sh = g.classify([_huge, row("a", 100, 120)], detail=dh)
+    lh0, sh0 = g.classify([_huge, row("a", 100, 120)])
+    ok_h = lh == lh0 and sh == sh0 and dh["H"]["class"] == "pricier"
+except Exception:  # noqa: BLE001
+    ok_h = False
+chk("величезні micros (OverflowError у p/b) НЕ обвалюють classify, labels/stats ті самі що без detail (регресія аудиту #1551)", ok_h)
 import daily_files_to_shared as _dl  # noqa: E402
 chk("daily_files_to_shared.PATTERNS містить gmc_price_detail_ (доїде в SEO_метрики)", "gmc_price_detail_" in _dl.PATTERNS)
 

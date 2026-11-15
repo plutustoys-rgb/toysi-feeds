@@ -133,17 +133,20 @@ def classify(rows: list, country: str = COUNTRY, detail: dict | None = None) -> 
             d["any_price"] = p      # для detail: наша ціна й там, де контрольної нема
         if p is not None and b is not None and pc and pc == bc:
             d["with_bench"] += 1
-            if d.get("bench") is None or (b > 0 and p / b >= (d["price"] / d["bench"] if d["bench"] > 0 else 0)):
-                d["price"], d["bench"] = p, b      # для detail: найгірший (найдорожчий відносно контрольної) рядок товару
             if p > b:
                 d["pricier"] += 1
+            q = None
             if b > 0:
                 try:
                     q = p / b
                 except OverflowError:      # int поза діапазоном float — статистика не має валити мітки
                     q = None
-                if q is not None and math.isfinite(q):
-                    d["ratio"] = q if d["ratio"] is None else max(d["ratio"], q)      # кілька рядків товару (uk+ru) — найгірший (найдорожчий) із них
+                if q is not None and not math.isfinite(q):
+                    q = None
+            if d.get("bench") is None or (q is not None and (d["ratio"] is None or q >= d["ratio"])):
+                d["price"], d["bench"] = p, b      # для detail: найгірший (найдорожчий відносно контрольної) рядок товару; q лічено в тому ж try, що й ratio (нових винятків немає)
+            if q is not None:
+                d["ratio"] = q if d["ratio"] is None else max(d["ratio"], q)      # кілька рядків товару (uk+ru) — найгірший (найдорожчий) із них
     labels = {}
     pricier = nobench = 0
     for oid, d in per.items():

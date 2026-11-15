@@ -50,6 +50,10 @@ chk("вік: «від 6 міс» → 0,5 року", abs(A("Від 6 міс до 
 chk("вік: «3+» → 3", A("Позначка 3+ на коробці") == 3.0)
 chk("вік: діапазон «5–7 років» → 5", A("Для дітей 5–7 років") == 5.0)
 chk("вік: нема → None", A("Просто іграшка без віку") is None)
+chk("вік: «Вік: 3 роки» (без «від») → 3", A("Вік: 3 роки") == 3.0 and A("Рекомендований вік 4 роки") is None or A("Вік: 3 роки") == 3.0)
+chk("вік: «Час роботи від 2 годин» / «від 5 год» (години) → None", A("Час роботи від 2 годин") is None and A("Заряджається від 5 год") is None)
+chk("вік: «Набір 3 + 1 в подарунок» → None; «3+» упритул → 3", A("Набір 3 + 1 в подарунок") is None and A("Для дітей 3+") == 3.0)
+chk("вік: «від 1 года» → 1", A("Для малят от 1 года") == 1.0)
 chk("вік: HTML і &nbsp; не заважають", A("<p>Вік:&nbsp;від&nbsp;4 років</p>") == 4.0)
 
 prods = []
@@ -61,7 +65,9 @@ prods += many("Звичайна іграшка «{}»", 40, 600, "Зв{}", "", s
 prods += [P("Автомат військовий іграшковий", 200, "Зброя-X", "від 5 років"), P("Іграшка з наслідком», Уцінка", 120, "Уцінка", "від 3 років", old=300),
           P("Книжка про звірят", 140, "Книги для малят", "від 3 років"), P("Іграшка нема в наявності", 140, "Нема", "від 3 років", stock=0)]
 # 3 товари однієї категорії (ліміт 2 на категорію)
-prods += [P(f"Одна категорія {W[i]}{i}", 180, "ОднаКатегорія", "від 3 років") for i in range(3)]
+prods += [P(n_, 180, "ОднаКатегорія", "від 3 років", contrib=500) for n_ in ("Лялька Аліса", "Машинка Тріо", "Конструктор Місто")]
+prods += [P(f"Іграшка 14+ {W[i]}{i}", 90, f"Дорослі{i}", "Для дітей 14+", contrib=400) for i in range(3)]
+prods += [P(f"Безкоштовна {W[i]}{i}", 0, f"Нуль{i}", "від 3 років", contrib=400) for i in range(3)]
 
 texts = {s: {"intro": f"Вступ для {s}. Другий абзац.\n\nТретє речення.", "faq": [{"q": f"Питання {i}?", "a": f"Відповідь {i}."} for i in range(3)]} for s, _h, _l, _r in bs.GIFT_PAGES}
 tf = Path(tempfile.mkdtemp()) / "gift_pages.json"
@@ -81,7 +87,10 @@ allpicked = [p for s in by_slug for p in bs.gift_pick(prods, by_slug[s])]
 names = " | ".join(p["name"] for p in allpicked)
 chk("виключено: зброя, уцінка, книги, немає в наявності", "Автомат" not in names and "Уцінка" not in names and "Книжка" not in names and "нема в наявності" not in names)
 one = [p for p in bs.gift_pick(prods, by_slug["podarunok-na-3-roky"]) if p["category"] == "ОднаКатегорія"]
-chk(f"≤2 товари з однієї категорії ({len(one)})", len(one) <= bs.GIFT_PER_CAT)
+chk(f"≤2 товари з однієї категорії (товарів 3, у добірці рівно {len(one)})", len(one) == bs.GIFT_PER_CAT)
+nm100 = " | ".join(p["name"] for p in bs.gift_pick(prods, by_slug["podarunok-do-100-hrn"]))
+chk("на сторінках без вікового правила немає карток «14+» (аудит #1505)", "14+" not in nm100 and "14+" not in " | ".join(p["name"] for p in bs.gift_pick(prods, by_slug["podarunok-na-mykolaia"])))
+chk("товар з ціною 0 не потрапляє ніде (аудит #1505)", all("Безкоштовна" not in p["name"] for r in by_slug.values() for p in bs.gift_pick(prods, r)))
 chk(f"кожна добірка ≤ {bs.GIFT_SHOW_MAX} товарів", all(len(bs.gift_pick(prods, r)) <= bs.GIFT_SHOW_MAX for r in by_slug.values()))
 ny = bs.gift_pick(prods, by_slug["novorichnyi-podarunok-dytyni"])
 _ny_rx = re.compile(next(rx for k, _l, _s, rx, _f, _la, _eb in bs.HOME_SEASONAL if k == "ny"), re.I)
@@ -127,12 +136,39 @@ chk("нема тексту → сторінок немає", bs.gift_plan(prods,
 bad = Path(tempfile.mkdtemp()) / "gift_pages.json"
 bad.write_text(json.dumps({"podarunok-do-100-hrn": {"intro": "x", "faq": [{"q": "a", "a": "b"}]}, "podarunok-do-200-hrn": {"intro": "", "faq": []}, "_note": "x"}), encoding="utf-8")
 chk("кривий текст (мало питань / порожній вступ) пропускається голосно", bs._load_gift_texts(str(bad)) == {})
+bad2 = Path(tempfile.mkdtemp()) / "gift_pages.json"
+bad2.write_text(json.dumps({"podarunok-do-100-hrn": {"intro": "x", "faq": 5}, "podarunok-do-200-hrn": {"intro": "y", "faq": [1, 2, 3]}}), encoding="utf-8")
+chk("faq не список / елементи не об'єкти: збірка НЕ падає, запис пропущено (аудит #1505)", bs._load_gift_texts(str(bad2)) == {})
+bad3 = Path(tempfile.mkdtemp()) / "gift_pages.json"
+bad3.write_text("[1, 2]", encoding="utf-8")
+chk("корінь-масив: {} без падіння", bs._load_gift_texts(str(bad3)) == {})
 chk("нема файлу → {}", bs._load_gift_texts(str(Path(tempfile.mkdtemp()) / "no.json")) == {})
 few = prods[:5]
 chk("замало товарів → жодної сторінки і хаба", bs.write_gift_pages(few, lt) == [])
 
-# ── чип «Миколай і Новий рік» ──
+# ── хаб не обіцяє відсутнього ──
+hub_txt = (out / "podarunky.html").read_text(encoding="utf-8")
+chk("хаб: опис складено з побудованого (є вік і ціна; «від 1 до 10 років» не захардкожено)", "за віком" in hub_txt and "до 100–500 грн" not in hub_txt and "від 1 до 10 років" not in hub_txt)
+
+# ── чип «Миколай і Новий рік» і крок прибирання ──
 chk("файли подарунків відомі кроку прибирання застарілих", "podarunky.html" in bs.GIFT_PAGE_FILES and "podarunok-na-3-roky.html" in bs.GIFT_PAGE_FILES)
+src = Path(bs.__file__).read_text(encoding="utf-8")
+chk("крок прибирання: gift-файли, яких збірка не будує, видаляються окремою гілкою; початок оригінального if лишився (тест gsc_verification)", "elif fn in GIFT_PAGE_FILES and fn not in _gift_files:" in src and "        if (fn.startswith((\"product-\"" in src)
+bs.HELOVIN_JSON = str(Path(tempfile.mkdtemp()) / "none.json")
+os.environ["SITE_PICK_DATE"] = "2026-12-10"
+ny_prods = [P(f"Новорічна ялинка «{W[i % 20]}{i}»", 250, f"Ялинки{i}", "", contrib=70) for i in range(40)] + [P(f"Звичайна іграшка «{W[i % 20]}{i}»", 300 + i, f"Звич{i}", "", contrib=150) for i in range(14)]
+ny_cats = {}
+for p_ in ny_prods:
+    ny_cats.setdefault(p_["category"], []).append(p_)
+ny_cl = sorted(ny_cats)
+ny_slug = {c: bs.slugify(c) for c in ny_cats}
+bs.GIFT_BUILT[:] = [(s, h, lb) for s, h, lb, _r, _i in plan]
+w_ny = bs.write_chip_pages(ny_prods, ny_cl, ny_slug)
+chip_file = bs.CHIP_PAGE_FILES["ny"]
+chk(f"чип «Миколай і Новий рік» ({chip_file}): є посилання на хаб подарунків, коли хаб побудовано", chip_file in w_ny and 'href="podarunky.html"' in (out / chip_file).read_text(encoding="utf-8"))
+bs.GIFT_BUILT[:] = []
+bs.write_chip_pages(ny_prods, ny_cl, ny_slug)
+chk("чип: без хаба посилання нема", 'href="podarunky.html"' not in (out / chip_file).read_text(encoding="utf-8"))
 
 if F:
     print(f"\n❌ FAIL: {len(F)}")

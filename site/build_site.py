@@ -1276,9 +1276,16 @@ def build():
     # пагінації від більшого попереднього білда теж приберуться.
     valid = {product_file(p['id']) for p in prods} | {product_file(p['id']) for p in oos_prods} | {product_file(p['id']) for p in shadows} | paged
     removed = 0
+    _gift_files = {u for u, _pr, _cf in gift_urls}
     for fn in os.listdir(OUT):
-        if ((fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "halloween", "podibrka", "group-")) and fn.endswith(".html")
-                and fn not in valid) or (fn in GIFT_PAGE_FILES and fn not in {u for u, _pr, _cf in gift_urls})):   # сторінка подарунків, якої ця збірка не будує (мало товарів/нема тексту), не лишається живою
+        if (fn.startswith(("product-", "category-", "catalog", "utsinka", "aktsii", "helovin", "halloween", "podibrka", "group-")) and fn.endswith(".html")
+                and fn not in valid):
+            try:
+                os.remove(os.path.join(OUT, fn))
+                removed += 1
+            except OSError:
+                pass
+        elif fn in GIFT_PAGE_FILES and fn not in _gift_files:   # сторінка подарунків, якої ця збірка не будує (мало товарів/нема тексту), не лишається живою
             try:
                 os.remove(os.path.join(OUT, fn))
                 removed += 1
@@ -3978,21 +3985,28 @@ GIFT_PAGES = (
 GIFT_PAGE_FILES = frozenset(f"{s}.html" for s, _h, _l, _r in GIFT_PAGES) | {GIFT_HUB_FILE}
 GIFT_CHIP_NOTICE = '<p class="sale-lead">Подарунки за віком і бюджетом: <a href="podarunky.html">усі добірки</a>.</p>'   # на сторінці чипа «Миколай і Новий рік» (SEO 15.11): посилання на хаб
 GIFT_BUILT = []    # [(slug, h1, label)] побудованих сторінок поточної збірки; footer() і чип «Миколай і Новий рік» читають
-_GIFT_AGE_RX = re.compile(r"(?:від|от|з|с)\s*(\d{1,2})\s*(?:-х\s*)?(рок|років|р\.|лет|год|міс|мес)|(?<![\d,.])(\d{1,2})\s*\+(?!\d)|(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(рок|років|лет)", re.I)
+# Шаблон SEO (перевірений 15.11) + виправлення за аудитом #1505: «год»/«г.» без закінчення не беремо (це години: «від 5 год»), лише «года»; «N+» — плюс упритул до цифри (не «3 + 1 в подарунок»); «Вік: 3 роки» без «від».
+_GIFT_AGE_RXS = (
+    re.compile(r"(?:від|от|з|с)\s*(\d{1,2})\s*(?:-х\s*)?(рок|років|р\.|лет|года|міс|мес)", re.I),
+    re.compile(r"(?<![\d,.])(\d{1,2})\+(?![\d+])"),
+    re.compile(r"(\d{1,2})\s*[-–]\s*\d{1,2}\s*(?:рок|років|лет)", re.I),
+    re.compile(r"(?:вік|возраст)\s*:?\s*(\d{1,2})\s*(?:-х\s*)?(рок|років|роки|лет|года|міс|мес)", re.I),
+)
 
 
 def gift_min_age(desc):
-    """Мінімальний рекомендований вік у РОКАХ з тексту опису (None — вік не визначено). Шаблон перевірений SEO 15.11 (8 з 8 збігів); місяці → N/12."""
+    """Мінімальний рекомендований вік у РОКАХ з тексту опису (None — вік не визначено): перший за позицією збіг із _GIFT_AGE_RXS; місяці → N/12."""
     txt = re.sub(r"<[^>]+>", " ", html.unescape(desc or ""))
-    m = _GIFT_AGE_RX.search(txt)
-    if not m:
+    best = None
+    for rx in _GIFT_AGE_RXS:
+        m = rx.search(txt)
+        if m and (best is None or m.start() < best.start()):
+            best = m
+    if best is None:
         return None
-    if m.group(1) is not None:
-        n = int(m.group(1))
-        return n / 12.0 if (m.group(2) or "").lower() in ("міс", "мес") else float(n)
-    if m.group(3) is not None:
-        return float(int(m.group(3)))
-    return float(int(m.group(4)))
+    n = int(best.group(1))
+    unit = (best.group(2) if best.re.groups >= 2 else "") or ""
+    return n / 12.0 if unit.lower() in ("міс", "мес") else float(n)
 
 
 def _gift_ok(p):
@@ -4008,22 +4022,28 @@ def _gift_ok(p):
     return True
 
 
-def gift_pick(prods, rule):
-    """Добірка сторінки подарунків за правилом: ≤GIFT_SHOW_MAX товарів, ≤GIFT_PER_CAT з категорії, без дублів «основи назви»; порядок — за внеском (спадно), далі id."""
+GIFT_MAX_AGE = 12   # на сторінках без вікового правила (ціна/сезон) картки з відомим мінімальним віком > 12 («14+», «18+») не показуємо (аудит #1505)
+
+
+def gift_pool(prods):
+    """[(товар, мінімальний вік у роках | None)] придатних для сторінок подарунків (спільні виключення, ціна > 0, не RT) — рахується ОДИН раз на збірку."""
+    return [(p, gift_min_age(p.get("desc"))) for p in prods if not p.get("rt") and (p.get("price") or 0) > 0 and _gift_ok(p)]
+
+
+def gift_pick(prods, rule, pool=None):
+    """Добірка сторінки подарунків за правилом: ≤GIFT_SHOW_MAX товарів, ≤GIFT_PER_CAT з категорії, без дублів «основи назви»; порядок — за внеском (спадно), далі id. pool — gift_pool(prods), якщо вже пораховано."""
     ny_rx = None
     if rule.get("ny"):
         ny_rx = next((re.compile(rx, re.I) for k, _l, _s, rx, _f, _la, _eb in HOME_SEASONAL if k == "ny"), None)
     cand = []
-    for p in prods:
-        if p.get("rt") or not _gift_ok(p):
-            continue
-        pr = p.get("price") or 0
-        if "pmax" in rule and not (rule.get("pmin", 0) <= pr <= rule["pmax"]):
+    for p, a in (gift_pool(prods) if pool is None else pool):
+        if "pmax" in rule and not (rule.get("pmin", 0) <= p["price"] <= rule["pmax"]):
             continue
         if "age" in rule:
-            a = gift_min_age(p.get("desc"))
             if a is None or not (rule["age"][0] <= a <= rule["age"][1]):
                 continue
+        elif a is not None and a > GIFT_MAX_AGE:
+            continue
         cand.append(p)
     cand.sort(key=lambda p: (0 if (ny_rx and ny_rx.search(p.get("name") or "")) else 1, -(p.get("contribution") or 0), str(p["id"])))
     out, per_cat, keys = [], {}, set()
@@ -4050,12 +4070,16 @@ def _load_gift_texts(path=None):
     except (OSError, ValueError) as e:
         print(f"[build] ⚠ gift_pages.json не читається ({e}) — сторінки подарунків не будуються", file=sys.stderr)
         return {}
+    if not isinstance(raw, dict):
+        print("[build] ⚠ gift_pages.json: корінь не об'єкт {slug: {intro, faq}} — сторінки подарунків не будуються", file=sys.stderr)
+        return {}
     out = {}
-    for slug, v in (raw.items() if isinstance(raw, dict) else []):
+    for slug, v in raw.items():
         if slug.startswith("_") or not isinstance(v, dict):
             continue
         intro = v.get("intro")
-        faq = [(x["q"].strip(), x["a"].strip()) for x in (v.get("faq") or []) if isinstance(x, dict) and isinstance(x.get("q"), str) and isinstance(x.get("a"), str) and x["q"].strip() and x["a"].strip()]
+        _faq = v.get("faq")
+        faq = [(x["q"].strip(), x["a"].strip()) for x in (_faq if isinstance(_faq, list) else []) if isinstance(x, dict) and isinstance(x.get("q"), str) and isinstance(x.get("a"), str) and x["q"].strip() and x["a"].strip()]
         if not isinstance(intro, str) or not intro.strip() or len(faq) < GIFT_FAQ_MIN:
             print(f"[build] ⚠ gift_pages.json[{slug}]: потрібні рядок intro і ≥{GIFT_FAQ_MIN} пар q/a — запис пропущено", file=sys.stderr)
             continue
@@ -4070,12 +4094,12 @@ def _gift_paras(text):
 def gift_plan(prods, texts=None):
     """[(slug, h1, label, rule, items)] сторінок, які МОЖНА побудувати (є текст і ≥GIFT_MIN_ITEMS товарів); решту — голосне попередження в журнал збірки."""
     texts = _load_gift_texts() if texts is None else texts
-    plan = []
+    plan, pool = [], gift_pool(prods)
     for slug, h1, label, rule in GIFT_PAGES:
         if slug not in texts:
             print(f"[build] ⚠ gift: для {slug} нема тексту в gift_pages.json — сторінку не будуємо", file=sys.stderr)
             continue
-        items = gift_pick(prods, rule)
+        items = gift_pick(prods, rule, pool)
         if len(items) < GIFT_MIN_ITEMS:
             print(f"[build] ⚠ gift: {slug} — лише {len(items)} товарів за правилом (< {GIFT_MIN_ITEMS}) — сторінку не будуємо", file=sys.stderr)
             continue
@@ -4117,12 +4141,14 @@ def write_gift_pages(prods, texts=None, plan=None):
         written.append((fname, "0.6", "weekly"))
     trail = [("Головна", "index.html"), ("Подарунки", None)]
     lis = "".join(f'<li><a href="{s}.html">{esc(h)}</a></li>' for s, h, _lb in GIFT_BUILT)
+    _kinds = ([] if not any(s in ("podarunok-na-mykolaia", "novorichnyi-podarunok-dytyni") for s, _h, _lb in GIFT_BUILT) else ["на Миколая та Новий рік"]) + (["за ціною"] if any("-hrn" in s for s, _h, _lb in GIFT_BUILT) else []) + (["за віком, який рекомендує виробник"] if any(s.startswith("podarunok-na-") and s.endswith(("-rik", "-roky", "-rokiv")) for s, _h, _lb in GIFT_BUILT) else [])
+    hub_kinds = ", ".join(_kinds) or "подарунки дитині"
     hub_body = (crumbs_html(trail) + '<h1 class="page">Подарунки дитині: добірки за віком і бюджетом</h1>'
-                '<p class="gift-hub-lead">Добірки іграшок у наявності: на Миколая та Новий рік, за ціною і за віком, який рекомендує виробник.</p>'
+                f'<p class="gift-hub-lead">Добірки іграшок у наявності: {esc(hub_kinds)}.</p>'
                 f'<nav class="gift-links" aria-label="Добірки подарунків"><ul>{lis}</ul></nav>')
     head = breadcrumb_ld(trail) + _ld_script({"@context": "https://schema.org", "@type": "ItemList", "name": "Подарунки дитині",
                                               "itemListElement": [{"@type": "ListItem", "position": i + 1, "name": h, "url": f"{SITE_URL}/{s}.html"} for i, (s, h, _lb) in enumerate(GIFT_BUILT)]})
-    _write(GIFT_HUB_FILE, page("Подарунки дитині", hub_body, extra_head=head, description="Добірки подарунків для дітей: на Миколая та Новий рік, до 100–500 грн, за віком від 1 до 10 років. Усе в наявності, доставка Новою Поштою.",
+    _write(GIFT_HUB_FILE, page("Подарунки дитині", hub_body, extra_head=head, description=_cut(f"Добірки подарунків для дітей: {hub_kinds}. Усе в наявності, доставка Новою Поштою.", DESC_MAX),
                                canonical=GIFT_HUB_FILE, og_image=OG_IMAGE, title_full="Подарунки дитині — добірки за віком і бюджетом | PlutusToys"))
     written.append((GIFT_HUB_FILE, "0.7", "weekly"))
     return written

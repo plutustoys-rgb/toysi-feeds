@@ -140,6 +140,36 @@ def collect_state_files(app_dir: str = APP_DIR) -> dict:
     return out
 
 
+BUILD_WARN_HOURS = 8
+BUILD_WARN_MAX = 60
+BUILD_WARN_TEXT_MAX = 300
+_BUILD_MARK = "[build] ⚠"      # "[build] ⚠": так build_site.py позначає попередження (stderr → журнал юніта site-rebuild)
+
+
+def collect_build_warnings(run=_run, hours: int = BUILD_WARN_HOURS) -> dict:
+    """Попередження збірки сайту (рядки «[build] ⚠ …» з журналу site-rebuild за `hours` год) — щоб Shopify-code/SEO бачили відсіви (напр. «gift: … лише N товарів») БЕЗ ssh на VPS
+    (запит SEO 15.11.2026). Лише читання. Однакові тексти згортаються: last_at + count. Секрети — через telegram_notify._redact. Порожній журнал/збій → warnings=[]."""
+    txt = run(["journalctl", "-u", "site-rebuild.service", "--since", f"-{hours}h", "--no-pager", "-o", "short-iso"], 30)
+    try:
+        from telegram_notify import _redact
+    except Exception:  # noqa: BLE001
+        _redact = None
+    groups, builds = {}, []
+    for ln in txt.splitlines():
+        if _BUILD_MARK in ln:
+            at = ln.split(" ", 1)[0]
+            body = ln.split("[build] ", 1)[1].strip()
+            body = (_redact(body) if _redact else body)[:BUILD_WARN_TEXT_MAX]
+            g = groups.setdefault(body, {"text": body, "last_at": at, "count": 0})
+            g["count"] += 1
+            if at > g["last_at"]:
+                g["last_at"] = at
+        elif "Finished site-rebuild" in ln or "Finished PlutusToys site rebuild" in ln:
+            builds.append(ln.split(" ", 1)[0])
+    warns = sorted(groups.values(), key=lambda g: g["last_at"], reverse=True)[:BUILD_WARN_MAX]
+    return {"window_h": hours, "builds_finished": builds[-6:], "warnings": warns, "unchecked": not txt.strip()}      # unchecked: журнал порожній/недоступний — «нуль попереджень» тоді НЕ доказ
+
+
 def collect_eva_session(app_dir: str = APP_DIR) -> dict:
     """Файл сесії кабінету EVA на VPS (окрема копія від ПК): лише наявність і дата спливання sessionid — значень кук тут немає й не буде."""
     p = Path(os.environ.get("EVA_CABINET_STATE_FILE") or Path(app_dir) / ".secrets" / "eva_cabinet_state.json")
@@ -184,7 +214,7 @@ def collect(now: datetime = None, run=_run, app_dir: str = APP_DIR) -> dict:
     now = now or datetime.now(timezone.utc)
     out = {"schema": 1, "generated_at": now.isoformat(timespec="seconds"), "host": os.uname().nodename if hasattr(os, "uname") else "?", "errors": []}
     for key, fn, default in (("units", lambda: collect_units(run, app_dir), {"services": {}, "timers": {}, "failed": []}), ("host_stats", lambda: collect_host(app_dir), {}),
-                             ("state_files", lambda: collect_state_files(app_dir), {}), ("eva_session", lambda: collect_eva_session(app_dir), {}), ("alerts", lambda: collect_alerts(now, app_dir), [])):
+                             ("state_files", lambda: collect_state_files(app_dir), {}), ("site_build_warnings", lambda: collect_build_warnings(run), {}), ("eva_session", lambda: collect_eva_session(app_dir), {}), ("alerts", lambda: collect_alerts(now, app_dir), [])):
         try:
             out[key] = fn()
         except Exception as e:  # noqa: BLE001

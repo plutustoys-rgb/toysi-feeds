@@ -212,6 +212,7 @@ class Ctx:
 
 def check_vps(ctx):
     snap, err = ctx.vps_snapshot()
+    ctx.last_snapshot = snap      # для write_site_build_warnings (без другого git fetch)
     if snap is None:
         return [issue("vps:no_snapshot", "warn", f"Знімок VPS недоступний: {err}", "",
                       "знімок з'являється після мержу PR health-монітора (VPS підтягне код ~15 хв) і першого погодинного EVA-циклу (:30); "
@@ -497,6 +498,33 @@ def channel_entry(new, resolved, now: datetime) -> str:
     return "\n".join(lines)
 
 
+def write_site_build_warnings(snap, path=None) -> bool:
+    """Кладе попередження останніх збірок сайту зі знімка VPS у SEO_метрики/site_build_warnings.md (запит SEO 15.11.2026: Shopify-code і SEO бачать відсіви збірки — «gift: … лише N товарів» тощо — без ssh).
+    Перезапис цілим файлом (tmp + os.replace). Знімок без ключа site_build_warnings (VPS ще на старому коді) → нічого не пише, False."""
+    sw = (snap or {}).get("site_build_warnings")
+    if not isinstance(sw, dict):
+        return False
+    p = Path(path or SEO_METRICS_DIR / "site_build_warnings.md")
+    lines = [f"# Попередження збірки сайту (журнал site-rebuild за {sw.get('window_h', '?')} год)", "",
+             f"Знімок VPS: {snap.get('generated_at', '?')} (оновлюється щогодини; автоматично, health_check.py). Часи — з журналу VPS (локальний час хоста).",
+             f"Завершені збірки: {', '.join(sw.get('builds_finished') or []) or 'у журналі не знайдено'}", ""]
+    warns = sw.get("warnings") or []
+    if not warns:
+        # «нуль» чесний лише коли журнал прочитано й у ньому є завершена збірка; інакше це НЕ ПЕРЕВІРЕНО (journalctl недоступний/порожній/секція знімка зламана) — не «немає» (аудит #1535)
+        errs = [e for e in (snap.get("errors") or []) if "site_build_warnings" in str(e)]
+        if not sw or sw.get("unchecked") or not sw.get("builds_finished"):
+            lines.append("НЕ ПЕРЕВІРЕНО: у журналі site-rebuild немає жодної завершеної збірки за вікно (journalctl недоступний/журнал порожній/секція знімка збійна). Це НЕ означає, що попереджень немає." + (f" Збій знімка: {errs[0]}" if errs else ""))
+        else:
+            lines.append("Попереджень «[build] ⚠» у вікні немає.")
+    for w in warns:
+        lines.append(f"- {w.get('last_at', '?')} (×{w.get('count', 1)}) {w.get('text', '')}")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".md.tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, p)
+    return True
+
+
 def post_to_channel(text: str, path: Path = None) -> None:
     p = path or EXEC_CHANNEL
     b = p.read_bytes() if p.exists() else b""
@@ -548,6 +576,10 @@ def main() -> int:
     a = ap.parse_args()
     ctx = Ctx()
     issues = run_checks(ctx)
+    try:
+        write_site_build_warnings(getattr(ctx, "last_snapshot", None))
+    except Exception as e:  # noqa: BLE001      # побічна доставка не має валити звіт стану
+        print(f"⚠️ site_build_warnings.md не записано ({type(e).__name__})", file=sys.stderr)
     now_iso = ctx.now.isoformat(timespec="seconds")
     new, resolved, state = diff_state(issues, load_state(), now_iso, blind_prefixes(issues))
     if a.post:

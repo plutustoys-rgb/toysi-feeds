@@ -52,13 +52,24 @@ chk("« 1» з пробілом тут вмикає (strip) — так само,
 os.environ["SITE_MARKET_PRICE"] = "1"
 
 # контрольна вища за формулу: піднімаємо до контрольна−3 (рішення «Так, усі»)
-bm = {"VC1": 500.0}
-cp._MARKET_BENCH_CACHE = bm
-chk("контрольна 500 → 497 (вище за формулу — піднімає)", cp.site_retail_price(A) == 497 and 497 > formula)
-cp._MARKET_BENCH_CACHE = {"VC1": 500.5}
-chk("контрольна 500,5 → 497 (вниз до цілого, не вище контрольної−3 = 497,5)", cp.site_retail_price(A) == 497)
-cp._MARKET_BENCH_CACHE = {"VC1": 500.0 + 1e-12}
-chk("контрольна 500,000000000001 → 497", cp.site_retail_price(A) == 497)
+up_t = int(formula * 1.15)            # ціль на +15 % до формули (в межах стелі +20 %)
+cp._MARKET_BENCH_CACHE = {"VC1": float(up_t + 3)}
+chk(f"контрольна {up_t + 3} → {up_t} (вище за формулу {formula}, але в межах +20 % — піднімає)", cp.site_retail_price(A) == up_t and up_t > formula)
+cp._MARKET_BENCH_CACHE = {"VC1": up_t + 3 + 0.5}
+chk("контрольна з дробом → вниз до цілого, не вище контрольної−3", cp.site_retail_price(A) == up_t)
+cp._MARKET_BENCH_CACHE = {"VC1": up_t + 3 + 1e-12}
+chk("контрольна +1e-12 → та сама ціль", cp.site_retail_price(A) == up_t)
+# СТЕЛЯ +20 % (рішення власника 16.11: «Макс +20 %»): ціль > формула×1,20 → контрольна підозріла → ціна = формула
+cp._MARKET_BENCH_CACHE = {"VC1": 500.0}
+chk(f"контрольна 500 (ціль 497 > формула {formula} × 1,20) → ЦІНА ЗА ФОРМУЛОЮ {formula}", cp.site_retail_price(A) == formula)
+edge_ok = int(formula * 1.2)           # ≤ формула×1,20 → застосовується
+cp._MARKET_BENCH_CACHE = {"VC1": float(edge_ok + 3)}
+chk(f"межа: ціль {edge_ok} ≤ формула×1,20 → застосовується", cp.site_retail_price(A) == edge_ok)
+cp._MARKET_BENCH_CACHE = {"VC1": float(edge_ok + 1 + 3)}
+chk(f"межа: ціль {edge_ok + 1} > формула×1,20 → формула", cp.site_retail_price(A) == formula)
+cp._MARKET_BENCH_CACHE = {"VC1": 1e30}
+chk("безглузда контрольна 1e30 → формула (стеля рятує)", cp.site_retail_price(A) == formula)
+chk("site_market_price з formula_price: те саме правило напряму", cp.site_market_price(A, fl, {"VC1": 500.0}, formula_price=formula) == formula and cp.site_market_price(A, fl, {"VC1": float(up_t + 3)}, formula_price=formula) == up_t)
 # контрольна нижча за формулу, вища за підлогу
 mid = (fl + formula) // 2 + 3
 cp._MARKET_BENCH_CACHE = {"VC1": float(mid)}
@@ -74,10 +85,10 @@ for label, bmv in (("нема offerId у знімку", {"OTHER": 500.0}), ("0",
     chk(f"контрольна «{label}» → формула без змін", cp.site_retail_price(A) == formula)
 # offerId: vendor_code, інакше id
 B = item(77, 200, "")
-cp._MARKET_BENCH_CACHE = {"77": 400.0}
-chk("без vendor_code offerId = id каталогу", cp.market_offer_id(B) == "77" and cp.site_retail_price(B) == 397)
-cp._MARKET_BENCH_CACHE = {"VC1": 400.0, "1": 999.0}
-chk("з vendor_code береться він (не id)", cp.site_retail_price(A) == 397)
+cp._MARKET_BENCH_CACHE = {"77": float(up_t + 3)}
+chk("без vendor_code offerId = id каталогу", cp.market_offer_id(B) == "77" and cp.site_retail_price(B) == up_t)
+cp._MARKET_BENCH_CACHE = {"VC1": float(up_t + 3), "1": 999.0}
+chk("з vendor_code береться він (не id)", cp.site_retail_price(A) == up_t)
 chk("порожній товар без id/vendor_code → offerId порожній, правило не застосовується навіть при ключі «» у знімку", cp.market_offer_id({}) == "" and cp.site_market_price({}, 10, {"": 50.0}) is None)
 # невизначена собівартість → як було (формула), навіть із контрольною
 Z = {"id": "9", "vendor_code": "Z9", "price": "0"}
@@ -129,16 +140,18 @@ import site_market_price_report as rep  # noqa: E402
 cat = {"1": {"id": "1", "vendor_code": "R1", "price": "200", "stock": "5"},      # контрольна вища → дорожчає
        "2": {"id": "2", "vendor_code": "R2", "price": "200", "stock": "5"},      # контрольна нижча за формулу, вища за підлогу → дешевшає
        "3": {"id": "3", "vendor_code": "R3", "price": "200", "stock": "0"},      # контрольна нижча за підлогу → підлога; нема в наявності
-       "4": {"id": "4", "vendor_code": "R4", "price": "200", "stock": "5"}}      # без контрольної → не рахується
+       "4": {"id": "4", "vendor_code": "R4", "price": "200", "stock": "5"},
+       "5": {"id": "5", "vendor_code": "R5", "price": "200", "stock": "5"}}      # контрольна 600 надто висока (> +20 %) → стеля → ціна за формулою      # без контрольної → не рахується
 f200 = floor_of(item(1, 200))
 os.environ["SITE_MARKET_PRICE"] = "0"
 old200 = cp.site_retail_price(item(1, 200))
 os.environ["SITE_MARKET_PRICE"] = "1"
-bmr = {"R1": 600.0, "R2": float(old200 - 20), "R3": 5.0}
+up_r1 = int(old200 * 1.15)
+bmr = {"R1": float(up_r1 + 3), "R2": float(old200 - 20), "R3": 5.0, "R5": 600.0}
 sm = rep.compute(cat, bmr, formula_fn=lambda it: old200)
-chk("звіт: одиниця = 3 товари з контрольною (4-й без неї не рахується)", sm["units"] == 3 and sm["units_instock"] == 2)
-chk("звіт: 1 дорожчає (R1), 2 дешевшає (R2 і R3 до підлоги), у підлогу впирається 1 (R3)", sm["pricier"] == 1 and sm["cheaper"] == 2 and sm["at_floor"] == 1)
-chk("звіт: сума в наявності: було 2×стара, стане 597 + (стара−20−3)", sm["sum_old_instock"] == 2 * old200 and sm["sum_new_instock"] == 597 + max(f200, old200 - 23))
+chk("звіт: одиниця = 4 товари з контрольною (R4 без неї не рахується); у наявності 3", sm["units"] == 4 and sm["units_instock"] == 3)
+chk("звіт: R1 дорожчає, R2 і R3 дешевшають (R3 — до підлоги), R5 повернуто стелею на формулу (без змін); підлога 1; capped 1", sm["pricier"] == 1 and sm["cheaper"] == 2 and sm["same"] == 1 and sm["at_floor"] == 1 and sm["capped_back_to_formula"] == 1)
+chk("звіт: сума в наявності: було 3×стара, стане R1 + R2 + R5(=стара)", sm["sum_old_instock"] == 3 * old200 and sm["sum_new_instock"] == up_r1 + max(f200, old200 - 23) + old200)
 chk("звіт: рахує внесок ≤ 0 і випадання/повернення у фіди (поля є й числа не від'ємні)", all(isinstance(sm[k], int) and sm[k] >= 0 for k in ("contrib_le0_old", "contrib_le0_new", "leave_feeds", "return_to_feeds")))
 sm2 = rep.summarize([{"id": "x", "old": 100, "new": 60, "bench": 63.0, "floor": 60, "cost": 59.0, "instock": True},      # старий внесок >0 → новий ≤0: випаде
                      {"id": "y", "old": 60, "new": 100, "bench": 103.0, "floor": 50, "cost": 59.0, "instock": True}], min_contribution=0.0)   # старий ≤0 → новий >0: повернеться

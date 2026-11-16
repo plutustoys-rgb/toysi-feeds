@@ -3771,6 +3771,7 @@ GIFT_LIST_NAME = "gift_page"
 GIFT_MIN_CONTRIB = 0.0
 # дитячі подарунки: категорії з «космет…» (накладні вії, бальзами для губ тощо) не показуємо (15.11, живий замір складу; перевіряє _gift_ok)
 GIFT_POOL_MAX = 4 * GIFT_SHOW_MAX               # пул найвигідніших кандидатів, з якого вибираємо рівномірно за ціною
+GIFT_BAND_POOL_MULT = 3                          # пул смуги = 3 × місць (18 найкращих за внеском), з нього місця беруться рівномірно за ціною
 GIFT_BANDS = 6                                  # «На Миколая»/«Новорічний» (SEO 16.11): діапазон 100–700 ₴ ділимо на смуги по 100 ₴; у кожній — найкращі за внеском (GIFT_SHOW_MAX // GIFT_BANDS)
 GIFT_AGE_PRICE_MAX = 2000                       # вікові сторінки: подарунок до 2 000 ₴ (без басейнів/ігрових комплексів за 4–5 тис.)
 GIFT_FAQ_MIN, GIFT_FAQ_MAX = 3, 6
@@ -3863,10 +3864,11 @@ def gift_pick(prods, rule, pool=None):
     return out
 
 
-def _gift_pick_bands(cand, rule):
-    """Цінові смуги (SEO 16.11): [pmin, pmax] ділимо на rule["bands"] рівних смуг (остання включає pmax); у кожній беремо ≤ GIFT_SHOW_MAX // bands перших кандидатів
-    (cand уже відсортовано: «ny»-назви першими, далі за внеском спадно), ≤GIFT_PER_CAT з категорії на всю сторінку, без дублів «основи назви». Якщо в смузі кандидатів менше,
-    ніж місць, решту добираємо з найкращих кандидатів ЗАЛИШКУ (без обмеження смуг). Результат — за зростанням ціни."""
+def _gift_pick_bands(cand, rule, ny_rx=None):
+    """Цінові смуги (SEO 16.11): [pmin, pmax] ділимо на rule["bands"] рівних смуг (остання включає pmax). У кожній смузі: пул із GIFT_BAND_POOL_MULT×(місць у смузі) найкращих
+    кандидатів (cand уже відсортовано: «ny»-назви першими, далі за внеском спадно; ≤GIFT_PER_CAT з категорії на всю сторінку, без дублів «основи назви»); з пулу спершу беремо «ny»-назви
+    (≤ місць), решту місць — РІВНОМІРНО за ціною (SEO 16.11: «під подушку» потрібні й дешевші, внесок росте з ціною, тож без розтягування всі добірки липнуть до верху смуги).
+    Якщо в смузі кандидатів менше, ніж місць, решту добираємо з найкращих кандидатів ЗАЛИШКУ (без обмеження смуг). Результат — за зростанням ціни."""
     n_b = int(rule["bands"])
     lo, hi = rule.get("pmin", 0), rule["pmax"]
     width = (hi - lo) / n_b
@@ -3885,13 +3887,23 @@ def _gift_pick_bands(cand, rule):
 
     for b in range(n_b):
         blo, bhi = lo + b * width, lo + (b + 1) * width
-        got = 0
+        pool, pc, pk = [], dict(per_cat), set(keys)   # пул смуги з тими самими обмеженнями, що й take(): будь-яка підмножина пулу пройде take()
         for p in cand:
-            if got >= per_band:
+            if len(pool) >= per_band * GIFT_BAND_POOL_MULT:
                 break
             pr = p["price"]
-            if (blo <= pr < bhi or (b == n_b - 1 and pr == hi)) and str(p["id"]) not in used and take(p):
-                got += 1
+            if not ((blo <= pr < bhi or (b == n_b - 1 and pr == hi)) and str(p["id"]) not in used):
+                continue
+            cat, k = (p.get("category") or "").strip().lower(), _pick_key(p["name"])
+            if pc.get(cat, 0) >= GIFT_PER_CAT or k in pk:
+                continue
+            pc[cat] = pc.get(cat, 0) + 1
+            pk.add(k)
+            pool.append(p)
+        ny = [p for p in pool if ny_rx and ny_rx.search(p.get("name") or "")][:per_band]
+        rest = [p for p in pool if p not in ny]
+        for p in ny + _gift_spread(rest, per_band - len(ny)):
+            take(p)
     for p in cand:   # смуга без кандидатів не лишає порожніх місць на сторінці
         if len(out) >= GIFT_SHOW_MAX:
             break
@@ -3913,7 +3925,7 @@ def _gift_pick_pool(pool, rule, ny_rx, price_cap):
         cand.append(p)
     cand.sort(key=lambda p: (0 if (ny_rx and ny_rx.search(p.get("name") or "")) else 1, -(p.get("contribution") or 0), str(p["id"])))
     if rule.get("bands"):
-        return _gift_pick_bands(cand, rule)
+        return _gift_pick_bands(cand, rule, ny_rx)
     out, per_cat, keys = [], {}, set()
     for p in cand:
         cat, k = (p.get("category") or "").strip().lower(), _pick_key(p["name"])

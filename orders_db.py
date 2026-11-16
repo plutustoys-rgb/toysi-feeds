@@ -12,6 +12,12 @@ from typing import Optional
 # та сама. Env читається на імпорті; тест має ставити ORDERS_DB_PATH ДО import orders_db.
 DB_PATH = os.environ.get("ORDERS_DB_PATH", "orders.db")
 
+# Скільки секунд чекати, поки інший процес відпустить запис у orders.db. sqlite3.connect за замовчуванням чекає лише 5 с
+# і кидає «database is locked». ЖИВИЙ ВИПАДОК 16-17.11.2026: order-status-tracker (таймер 30 хв, 25-33 с на одному
+# з'єднанні з HTTP усередині) зсунувся на ту саму секунду, що й order-pipeline (:24:01/:54:01) → pipeline тричі впав у
+# bank_check.update_delivery_status (23:24, 23:54, 00:24). 90 с > найдовший відомий прогін трекера (~35 с).
+BUSY_TIMEOUT_S = float(os.environ.get("ORDERS_DB_BUSY_TIMEOUT_S", "90"))
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS orders (
     internal_order_id     TEXT PRIMARY KEY,   -- "{platform}_{order_id}", захист від дублів між Rozetka/Prom
@@ -100,7 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_payment_confirmed ON orders (payment_confi
 
 @contextmanager
 def get_connection(db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_S)
     conn.row_factory = sqlite3.Row
     try:
         yield conn

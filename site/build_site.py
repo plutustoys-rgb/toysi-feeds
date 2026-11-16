@@ -3775,7 +3775,7 @@ GIFT_BANDS = 6                                  # «На Миколая»/«Но
 GIFT_AGE_PRICE_MAX = 2000                       # вікові сторінки: подарунок до 2 000 ₴ (без басейнів/ігрових комплексів за 4–5 тис.)
 GIFT_FAQ_MIN, GIFT_FAQ_MAX = 3, 6
 GIFT_HUB_FILE = "podarunky.html"
-# (slug, H1 = запит, підпис, правило). Правило: pmin/pmax — ціна (₴); age=(lo, hi) — мінімальний вік з опису в РОКАХ (місяці = N/12), включно; ny=True — спершу назви з HOME_SEASONAL «ny».
+# (slug, H1 = запит, підпис, правило). Правило: pmin/pmax — ціна (₴); age=(lo, hi) — мінімальний вік з опису в РОКАХ (місяці = N/12), включно; ny=True — спершу назви з HOME_SEASONAL «ny» (при bands — першими в межах смуги; на сторінці порядок за ціною); bands=N — діапазон pmin..pmax ділиться на N цінових смуг, у кожній найкращі за внеском (SEO 16.11).
 GIFT_PAGES = (
     ("podarunok-na-mykolaia", "Подарунок на Миколая дитині", "На Миколая", {"pmin": 100, "pmax": 700, "bands": GIFT_BANDS}),
     ("novorichnyi-podarunok-dytyni", "Новорічний подарунок дитині", "На Новий рік", {"pmin": 100, "pmax": 700, "ny": True, "bands": GIFT_BANDS}),
@@ -3852,7 +3852,7 @@ def _gift_spread(items, n):
 
 
 def gift_pick(prods, rule, pool=None):
-    """Добірка сторінки подарунків за правилом: з пулу найвигідніших (≤GIFT_POOL_MAX; ≤GIFT_PER_CAT з категорії, без дублів «основи назви») беремо ≤GIFT_SHOW_MAX РІВНОМІРНО за ціною (щоб були і дешеві, і дорожчі); новорічна — спершу «ny»-назви. pool — gift_pool(prods), якщо вже пораховано."""
+    """Добірка сторінки подарунків за правилом: з пулу найвигідніших (≤GIFT_POOL_MAX; ≤GIFT_PER_CAT з категорії, без дублів «основи назви») беремо ≤GIFT_SHOW_MAX РІВНОМІРНО за ціною (щоб були і дешеві, і дорожчі); новорічна — спершу «ny»-назви. Правило з bands (Миколай, новорічна) — по цінових смугах (_gift_pick_bands). pool — gift_pool(prods), якщо вже пораховано."""
     ny_rx = None
     if rule.get("ny"):
         ny_rx = next((re.compile(rx, re.I) for k, _l, _s, rx, _f, _la, _eb in HOME_SEASONAL if k == "ny"), None)

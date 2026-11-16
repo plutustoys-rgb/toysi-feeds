@@ -150,6 +150,16 @@ chk(f"смуга без кандидатів: сторінка лишаєтьс�
 ny_b = [P(n_, 150 + b_ * 100, f"НрК{b_}", "", contrib=5) for b_, n_ in enumerate(("Новорічна кулька Зоря", "Новорічний дзвоник Сніжинка", "Новорічна гірлянда Промінь", "Новорічна свічка Метелик", "Новорічний ангел Мрія", "Новорічна шапка Казка"))] + [P(f"Звичайна {W[i_ % 20]}{i_} {W[(i_ * 3) % 20]}", 120 + (i_ % 6) * 100 + i_ // 6, f"ЗвК{i_}", "", contrib=400 + i_) for i_ in range(60)]
 nb = bs.gift_pick(ny_b, by_slug["novorichnyi-podarunok-dytyni"])
 chk(f"новорічна (смуги): усі 6 «ny»-назв (внесок 5 проти 400+) потрапили, по одній у смузі ({sum('Новоріч' in p_['name'] for p_ in nb)})", sum("Новоріч" in p_["name"] for p_ in nb) == 6 and len(nb) == 36)
+# насичення категорій у смузі і дублі «основи назви» (аудит #1620: мутації «без ліміту категорії»/«без _pick_key»/«другий прохід в обхід take» виживали)
+sat = [P(f"Насичена {W[(b_ * 5 + j_) % 20]}{b_}y{j_} {W[(j_ * 3) % 20]}", 110 + b_ * 100 + j_, "Одна й та сама категорія", "", contrib=900 - j_) for b_ in range(6) for j_ in range(8)]
+sat += [P(f"Інша {W[(b_ + j_) % 20]}{b_}z{j_} {W[(j_ * 11) % 20]}", 150 + b_ * 100 + j_ * 7, f"Інша{b_}-{j_}", "", contrib=50 - j_) for b_ in range(6) for j_ in range(4)]
+sk = bs.gift_pick(sat, by_slug["podarunok-na-mykolaia"])
+chk(f"смуги: «чужа» категорія з ≥8 товарів у кожній смузі дає на сторінці ≤{bs.GIFT_PER_CAT} (другий прохід теж дотримується ліміту): {sum(p_['category'] == 'Одна й та сама категорія' for p_ in sk)}",
+    sum(p_["category"] == "Одна й та сама категорія" for p_ in sk) <= bs.GIFT_PER_CAT and len(sk) >= bs.GIFT_MIN_ITEMS)
+dup = [P(f"Набір «Єдина Лінійка» варіант {j_}", 120 + (j_ % 6) * 100 + j_, f"ДублК{j_}", "", contrib=900 - j_) for j_ in range(18)]
+dup += [P(f"Звичайна {W[i_ % 20]}{i_} {W[(i_ * 3) % 20]}", 130 + (i_ % 6) * 100 + i_ // 6, f"ЗвичК{i_}", "", contrib=20 + i_ % 5) for i_ in range(60)]
+dk = bs.gift_pick(dup, by_slug["podarunok-na-mykolaia"])
+chk(f"смуги: однакова «основа назви» (лінійка в лапках) — не більше 1 картки на сторінці: {sum('Єдина Лінійка' in p_['name'] for p_ in dk)}", sum("Єдина Лінійка" in p_["name"] for p_ in dk) <= 1)
 # ── збірка сторінок ──
 out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)

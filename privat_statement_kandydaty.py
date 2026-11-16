@@ -468,6 +468,24 @@ def reconcile_commission(txn: dict, day_total: float, book_rows: list) -> tuple:
     return "not_in_book", f"комісію за платіж {base if base is not None else '?'} у книзі не знайдено"
 
 
+def _doc_in_book(txn: dict, book_rows: list):
+    """Звірка за НОМЕРОМ ДОКУМЕНТА (запит головного бухгалтера 16.11.2026): бухгалтер пише в гр.5 «платіж № 27 від 05.10.2026», «платіжна інструкція № 31 від 20.10.2026»,
+    «документ № B9OF50P5OY від 09.11.2026» — і для НУЛЬОВИХ рядків (гр.2–10 порожні: передоплата РУШ, аванс постачальнику), яких звірка за сумою не бачить, і для комісій банку
+    (база платежу там з пробілом «4 000,00», тож `_has_amount` її не знаходить). Ключ = «№ <ref> від <дата операції>» ТОЧНО (ref з виписки без пробілів — PDF переносить «B9OF50P5 OY»);
+    ref не може бути префіксом/частиною іншого номера. Повертає № рядка книги або None."""
+    ref = re.sub(r"\s+", "", str(txn.get("ref") or ""))
+    if not ref or ref.startswith("@"):         # «@2PL…» — банківський референс зарахування, не номер документа бухгалтера
+        return None
+    d = _parse_dmy(txn.get("date") or "")
+    if d is None:
+        return None
+    pat = re.compile(r"(?:№|N)\s*" + re.escape(ref) + r"(?![0-9A-Za-zА-Яа-яІіЇїЄєҐґ])\s*від\s*" + re.escape(d.strftime("%d.%m.%Y")), re.IGNORECASE)
+    for r in book_rows:
+        if pat.search(r["text"] or ""):
+            return r["row"]
+    return None
+
+
 def reconcile_all(txns: list, book_rows: list, index: dict, rzp_ops) -> None:
     """Проставляє кожній операції cls/status/note/in_book. in_book=True лише для 'in_book'."""
     day_totals: dict = {}
@@ -483,11 +501,19 @@ def reconcile_all(txns: list, book_rows: list, index: dict, rzp_ops) -> None:
             status, note = reconcile_rozetkapay(t, rzp_ops, book_rows)
         elif cls == "bank_commission":
             status, note = reconcile_commission(t, day_totals[t["date"]], book_rows)
+            if status == "not_in_book":
+                rw = _doc_in_book(t, book_rows)
+                if rw:
+                    status, note = "in_book", f"р.{rw} (за номером документа № {re.sub(chr(32), '', str(t.get('ref') or ''))})"
         elif cls in ("own_transfer", "deposit"):
             status, note = "not_pnl", "не дохід і не витрата — у книгу не вноситься"
         else:
             found = _already_in_book(t, index)
             status, note = ("in_book" if found else "not_in_book"), "звірка за сумою ±1 день"
+            if not found:
+                rw = _doc_in_book(t, book_rows)       # нульові рядки книги (без суми в гр.2–10): за № платіжної інструкції + датою
+                if rw:
+                    status, note = "in_book", f"р.{rw} (за номером платіжної інструкції № {re.sub(chr(32), '', str(t.get('ref') or ''))})"
         t["status"], t["note"], t["in_book"] = status, note, status == "in_book"
         t["label"] = label(t)
 

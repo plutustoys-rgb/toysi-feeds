@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -102,9 +102,11 @@ def ins(oid, plat, created, pay="prepaid", st="new", name="Іван Петрен
     items = items if items is not None else [{"toysi_code": "57114", "name": "Іграшка для котів", "qty": 1, "price": 199}]
     c.execute("insert into orders (internal_order_id, order_id, platform, status, payment_method, payment_confirmed, customer_name, phone, items, created_at) values (?,?,?,?,?,?,?,?,?,?)",
               (f"{plat}_{oid}", oid, plat, st, pay, 0, name, phone, json.dumps(items, ensure_ascii=False), created))
-ins("PT-1", "site", "2026-11-10T07:27:15", st="awaiting_manual_confirmation")
+# дати ВІДНОСНО «зараз»: віддалений скрипт фільтрує за реальним datetime.now() (вікно 7 діб) — фіксовані дати гнили (17.11.2026 «09.11» вийшло за вікно)
+_ts = lambda days: (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+ins("PT-1", "site", _ts(2), st="awaiting_manual_confirmation")
 ins("PT-0", "site", "2026-09-01T07:27:15")                      # старе — поза вікном 7 днів
-ins("414", "prom", "2026-11-09T12:00:00", pay="cod", items=[{"toysi_code": "1", "name": "X" * 300, "qty": 2, "price": 10}] * 40)
+ins("414", "prom", _ts(3), pay="cod", items=[{"toysi_code": "1", "name": "X" * 300, "qty": 2, "price": 10}] * 40)
 c.commit(); c.close()
 wd = TMP
 res = subprocess.run([sys.executable, "-", "7"], input=oa.REMOTE_SCRIPT.encode("ascii"), cwd=wd, capture_output=True, timeout=60)

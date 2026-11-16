@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""google_rt_dropt.py — товари RoyalToys (rt-) і Dropt (dropt-) у фіді Google Merchant (рішення власника 10.11.2026: «РТ та дропт додай у гугл»).
+"""google_rt_feed.py — товари RoyalToys (rt-) у фіді Google Merchant (рішення власника 10.11.2026: «РТ додай у гугл»).
 
-ЧОМУ ОКРЕМО: build_feed_items(generate_google_feed) обходить КАТАЛОГ TOYSI; RT/Dropt у ньому нема. Їхні картки живуть на сайті (site/index.json: id, публічний slug `u`, назва `n`, ЦІНА КАРТКИ `pr`, фото `p` на НАШОМУ домені, категорія `c`, наявність `s`),
-а бренд/опис/закупівля/штрихкод — у supplier_rt.json / supplier_dropt.json (VPS). Тут ці два джерела зводяться до тих самих dict-ів, що віддає build_feed_items, і йдуть у _build_xml.
+ЧОМУ ОКРЕМО: build_feed_items(generate_google_feed) обходить КАТАЛОГ TOYSI; RT у ньому нема. Його картки живуть на сайті (site/index.json: id, публічний slug `u`, назва `n`, ЦІНА КАРТКИ `pr`, фото `p` на НАШОМУ домені, категорія `c`, наявність `s`),
+а бренд/опис/закупівля/штрихкод — у supplier_rt.json (VPS). Тут ці два джерела зводяться до тих самих dict-ів, що віддає build_feed_items, і йдуть у _build_xml.
 ПРАВИЛА (ті самі, що в Toysi-шляху build_feed_items): ціна фіда = ЦІНА КАРТКИ (index.json) — без «Price mismatch»; посилання = публічна адреса картки (`/product-<u>.html`); id у фіді = публічний slug (x…/y…), БЕЗ імені постачальника;
 фільтри: forbidden_products, FEED_EXCLUDED_CATEGORIES, UNO, ліцензійні марки (гейт/чорний/білий списки), репліки зброї, 18+, внесок за економікою сайту (ціна − закупівля − комісія − логістика > FEED_MIN_SITE_CONTRIBUTION), фото, залишок.
-ГЕЙТИ у .env VPS (власник); без них нічого не змінюється. Google, Meta і Bing — кожен за СВОЄЮ брамою (GOOGLE_/META_/BING_RT_DROPT_IN_FEED=1); російський Google-фід — за окремою брамою GOOGLE_RU_RT_DROPT_IN_FEED=1 і лише з готовим перекладом (rt_dropt_ru_text.json).
+ГЕЙТИ у .env VPS (власник); без них нічого не змінюється. Google, Meta і Bing — кожен за СВОЄЮ брамою (GOOGLE_/META_/BING_RT_IN_FEED=1); російський Google-фід — за окремою брамою GOOGLE_RU_RT_IN_FEED=1 і лише з готовим перекладом (rt_ru_text.json).
 НЕ ВИГАДУЄМО даних: нема джерела для бренду → «PlutusToys» (як Toysi); штрихкод — лише валідний GTIN; опис — з постачальника (очищений), інакше назва."""
 import json
 import os
@@ -15,14 +15,14 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SUPPLIER_MAX_AGE_H = 72          # supplier_*.json старший за це — джерело брендів/закупівлі не свіже: фід RT/Dropt цього прогону НЕ формуємо (fail-safe; решта фіда не страждає)
-PREFIXES = ("rt-", "dropt-")
+SUPPLIER_MAX_AGE_H = 72          # supplier_*.json старший за це — джерело брендів/закупівлі не свіже: фід RT цього прогону НЕ формуємо (fail-safe; решта фіда не страждає)
+PREFIXES = ("rt-",)
 PHOTO_PREFIX = "https://plutustoys.com.ua/img/p/"        # фото лише з нашого шляху /img/p/<slug>-K.jpg (public_photo, build_site.py) — інакше позицію не віддаємо
-LEAK_TOKENS = ("dropt", "royaltoys", "royal toys", "toysi")      # ім'я постачальника не має потрапити ні в бренд, ні в назву, ні в опис, ні в посилання, ні в id, ні в фото (рішення власника 10.11). «royal» окремо НЕ ловимо: легальні назви товарів («Royal Pony»); «rt-» — лише як id (нижче)
+LEAK_TOKENS = ("royaltoys", "royal toys", "toysi")      # ім'я постачальника не має потрапити ні в бренд, ні в назву, ні в опис, ні в посилання, ні в id, ні в фото (рішення власника 10.11). «royal» окремо НЕ ловимо: легальні назви товарів («Royal Pony»); «rt-» — лише як id (нижче)
 _RT_ID_RX = re.compile(r"(?<![a-z0-9])rt-[0-9a-z]", re.I)
 _URL_RX = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+\.(?:com|ua|net|org|in\.ua|com\.ua)\b\S*", re.I)
 _PHONE_RX = re.compile(r"\+?\d[\d\s().-]{8,}\d")
-_BAD_SENTENCE_RX = re.compile(r"накладен|післяплат|наложен|наложк|при отриманні|при получении|оплат\w* (?:при|на пошті|на поште)|менеджер|дропшип|dropship|на нашому сайті|на нашем сайте|наш сайт|\bдропт|royal ?toys|dropt|toysi|телефон\w*|звертайтесь|замовляйте", re.I)
+_BAD_SENTENCE_RX = re.compile(r"накладен|післяплат|наложен|наложк|при отриманні|при получении|оплат\w* (?:при|на пошті|на поште)|менеджер|дропшип|dropship|на нашому сайті|на нашем сайте|наш сайт|royal ?toys|toysi|телефон\w*|звертайтесь|замовляйте", re.I)
 
 
 def scrub_description(text: str) -> str:
@@ -39,28 +39,37 @@ def leaks(*values) -> bool:
     return any(tok in str(v or "").lower() or _RT_ID_RX.search(str(v or "")) for v in values for tok in LEAK_TOKENS)
 
 
+def _env(new: str, old: str, default=None):
+    """ТИМЧАСОВО: прибрати після міграції .env на VPS. Нове ім'я змінної має пріоритет; якщо його нема — діє старе ім'я (до 16.11.2026 брами звались *_RT_DROPT_*
+    і вже ввімкнені у .env VPS: без запасного імені RT-товари тихо зникли б з рекламних фідів між деплоєм коду й правкою .env). Порожній рядок — теж «задано»."""
+    v = os.environ.get(new)
+    if v is None:
+        v = os.environ.get(old)
+    return default if v is None else v
+
+
 def only_indexable() -> bool:
-    """За замовчуванням у фід лише картки, які SEO відкрила для індексації (ix=1; контракт у site/build_site.py поруч з index_entries). FEED_RT_DROPT_ONLY_IX=0 — віддавати й закриті (рішення власника/SEO)."""
-    return os.environ.get("FEED_RT_DROPT_ONLY_IX", "1") != "0"
+    """За замовчуванням у фід лише картки, які SEO відкрила для індексації (ix=1; контракт у site/build_site.py поруч з index_entries). FEED_RT_ONLY_IX=0 — віддавати й закриті (рішення власника/SEO)."""
+    return _env("FEED_RT_ONLY_IX", "FEED_RT_DROPT_ONLY_IX", "1") != "0"      # ТИМЧАСОВО: запасне старе ім'я, прибрати після міграції .env на VPS
 
 
 def gate_on(feed: str = "google") -> bool:
-    """Брама на КОЖЕН фід окремо: GOOGLE_/META_/BING_RT_DROPT_IN_FEED=1 у .env VPS."""
-    return os.environ.get(f"{feed.upper()}_RT_DROPT_IN_FEED") == "1"
+    """Брама на КОЖЕН фід окремо: GOOGLE_/META_/BING_RT_IN_FEED=1 у .env VPS (ТИМЧАСОВО діє й старе GOOGLE_/META_/BING_RT_DROPT_IN_FEED — прибрати після міграції .env)."""
+    return _env(f"{feed.upper()}_RT_IN_FEED", f"{feed.upper()}_RT_DROPT_IN_FEED") == "1"
 
 
 def extend_items(items: list, gf, feed: str = "google") -> list:
-    """Додає RT/Dropt до items фіда `feed` за його брамою. Збій/вимкнено → items без змін (основний фід не страждає)."""
+    """Додає RT до items фіда `feed` за його брамою. Збій/вимкнено → items без змін (основний фід не страждає)."""
     if not gate_on(feed):
         return items
     try:
         extra, st = build_items(gf)
-        print(f"[{feed}] RT/Dropt: " + describe(st))
+        print(f"[{feed}] RT: " + describe(st))
         return items + extra
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc()
-        print(f"[{feed}] RT/Dropt пропущено ({type(e).__name__}: {str(e)[:120]}) — фід лише з Toysi.", file=sys.stderr)
+        print(f"[{feed}] RT пропущено ({type(e).__name__}: {str(e)[:120]}) — фід лише з Toysi.", file=sys.stderr)
         return items
 
 
@@ -69,7 +78,7 @@ def _site_dir() -> Path:
 
 
 def load_site_entries() -> dict:
-    """{id → запис index.json} лише для rt-/dropt- з наявністю на сайті. Порожній dict — індекс недоступний."""
+    """{id → запис index.json} лише для rt- з наявністю на сайті. Порожній dict — індекс недоступний."""
     try:
         data = json.loads((_site_dir() / "index.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -101,9 +110,9 @@ def _num(x):
         return None
 
 
-def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dropt_sup: dict | None = None, rt_fresh: bool = True, dropt_fresh: bool = True) -> tuple:
-    """→ (items для generate_google_feed._build_xml, stats). gf — модуль generate_google_feed (функції/константи Toysi-шляху). Параметри entries/rt_sup/dropt_sup — для тестів; None → читаємо з диска."""
-    stats = {"candidates": 0, "included": 0, "included_rt": 0, "included_dropt": 0, "noindex_pages_included": 0}
+def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_fresh: bool = True) -> tuple:
+    """→ (items для generate_google_feed._build_xml, stats). gf — модуль generate_google_feed (функції/константи Toysi-шляху). Параметри entries/rt_sup — для тестів; None → читаємо з диска."""
+    stats = {"candidates": 0, "included": 0, "included_rt": 0, "noindex_pages_included": 0}
     skip = {}
 
     def no(why):
@@ -113,8 +122,6 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
         entries = load_site_entries()
     if rt_sup is None:
         rt_sup, rt_fresh = _load_supplier(HERE / "supplier_rt.json")
-    if dropt_sup is None:
-        dropt_sup, dropt_fresh = _load_supplier(HERE / "supplier_dropt.json")
     if not entries:
         stats["skip"] = {"index_unavailable": 1}
         return [], stats
@@ -125,12 +132,10 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
     items, seen = [], set()
     for pid, e in entries.items():
         stats["candidates"] += 1
-        is_rt = pid.startswith("rt-")
-        sup, fresh = (rt_sup, rt_fresh) if is_rt else (dropt_sup, dropt_fresh)
-        if not fresh:
+        if not rt_fresh:
             no("supplier_stale")
             continue
-        r = sup.get(pid)
+        r = rt_sup.get(pid)
         if not isinstance(r, dict):
             no("no_supplier_record")
             continue
@@ -151,7 +156,7 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
             no("no_name_or_price")
             continue
         if not slug:
-            no("no_public_slug")           # публічних адрес ще нема (ворота сайту вимкнені) — не віддаємо Google ні id «rt-/dropt-», ні стару адресу з іменем постачальника (рішення власника 10.11)
+            no("no_public_slug")           # публічних адрес ще нема (ворота сайту вимкнені) — не віддаємо Google ні id «rt-», ні стару адресу з іменем постачальника (рішення власника 10.11)
             continue
         if not image.startswith(PHOTO_PREFIX):
             no("no_image")
@@ -234,7 +239,7 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
             "licensed_whitelisted": lic_wl,
         })
         stats["included"] += 1
-        stats["included_rt" if is_rt else "included_dropt"] += 1
+        stats["included_rt"] += 1
         if e.get("ix") != 1:
             stats["noindex_pages_included"] += 1
     stats["skip"] = skip
@@ -242,13 +247,13 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, dro
 
 
 # ───────────────────────── російський Google-фід (власник 10.11.2026: «переклад робіть») ─────────────────────────
-RU_TEXTS_FILE = HERE / "rt_dropt_ru_text.json"       # {"version":1,"items":{pid:{"src":<hash укр. джерела>,"name":…,"description":…}}} — переклад робить Код (LLM) партіями; змінилось укр. джерело → переклад НЕ використовується (src не збігається)
+RU_TEXTS_FILE = HERE / "rt_ru_text.json"       # {"version":1,"items":{pid:{"src":<hash укр. джерела>,"name":…,"description":…}}} — переклад робить Код (LLM) партіями; змінилось укр. джерело → переклад НЕ використовується (src не збігається)
 RU_DESC_MAX = 450
 _UK_ONLY = set("іїєґІЇЄҐ")
 
 
 def gate_ru_on() -> bool:
-    return os.environ.get("GOOGLE_RU_RT_DROPT_IN_FEED") == "1"
+    return _env("GOOGLE_RU_RT_IN_FEED", "GOOGLE_RU_RT_DROPT_IN_FEED") == "1"      # ТИМЧАСОВО: запасне старе ім'я, прибрати після міграції .env на VPS
 
 
 def ru_source(item: dict) -> tuple:
@@ -274,9 +279,9 @@ def ru_text_ok(name: str, desc: str) -> bool:
     return len(name) >= 3
 
 
-def export_for_translation(gf, entries=None, rt_sup=None, dropt_sup=None) -> list:
+def export_for_translation(gf, entries=None, rt_sup=None) -> list:
     """Для перекладу: [{pid, id, title, desc, src}] по ВСІХ позиціях, що зараз пройшли б у фід (build_items) і ще не мають актуального перекладу."""
-    items, _st = build_items(gf, entries=entries, rt_sup=rt_sup, dropt_sup=dropt_sup)
+    items, _st = build_items(gf, entries=entries, rt_sup=rt_sup)
     have = _load_ru_file()
     out = []
     for it in items:
@@ -298,7 +303,7 @@ def _load_ru_file(path=None) -> dict:
 
 
 def merge_ru_texts(russian_text: dict, items: list, path=None) -> tuple:
-    """Додає до russian_text (формат build_ru_items: {pid: {name, description}}) переклади RT/Dropt для позицій із items. → (russian_text, {used, stale, bad}). Жодного перекладу не вигадуємо: нема/застарів/непридатний → позиції немає в ru-фіді."""
+    """Додає до russian_text (формат build_ru_items: {pid: {name, description}}) переклади RT для позицій із items. → (russian_text, {used, stale, bad}). Жодного перекладу не вигадуємо: нема/застарів/непридатний → позиції немає в ru-фіді."""
     have = _load_ru_file(path)
     out = dict(russian_text or {})
     st = {"used": 0, "stale": 0, "bad": 0, "missing": 0}
@@ -324,14 +329,14 @@ def merge_ru_texts(russian_text: dict, items: list, path=None) -> tuple:
 
 def describe(stats: dict) -> str:
     sk = ", ".join(f"{k}={v}" for k, v in sorted((stats.get("skip") or {}).items(), key=lambda kv: -kv[1]))
-    return (f"кандидатів {stats.get('candidates', 0)}; у фіді {stats.get('included', 0)} (RT {stats.get('included_rt', 0)}, Dropt {stats.get('included_dropt', 0)}); "
+    return (f"кандидатів {stats.get('candidates', 0)}; у фіді {stats.get('included', 0)} (RT {stats.get('included_rt', 0)}); "
             f"з них сторінок noindex: {stats.get('noindex_pages_included', 0)}; відсів: {sk or '—'}")
 
 
 if __name__ == "__main__":
     import generate_google_feed as _gf
-    its, st = build_items(_gf)       # ПРОБНИЙ прогін (нічого не пише): лічильники + 6 прикладів — для рішення власника перед вмиканням GOOGLE_RT_DROPT_IN_FEED=1
-    print("[google_rt_dropt]", describe(st))
+    its, st = build_items(_gf)       # ПРОБНИЙ прогін (нічого не пише): лічильники + 6 прикладів — для рішення власника перед вмиканням GOOGLE_RT_IN_FEED=1
+    print("[google_rt_feed]", describe(st))
     import random
     random.seed(20261110)
     for it in random.sample(its, min(6, len(its))):

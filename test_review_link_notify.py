@@ -89,10 +89,10 @@ sandbox = mk("PT-4", items, "2026-11-14T10:00:00", status="sandbox_test")
 cancelled = mk("PT-5", items, "2026-11-14T10:00:00", cancelled="2026-11-14T11:00:00")
 prom = mk("PT-6", items, "2026-11-14T10:00:00", platform="prom")
 old = mk("PT-7", items, "2026-11-10T10:00:00")                       # доставлено 5 діб тому: > MAX_AGE_DAYS (3)
-rtd = mk("PT-8", [{"toysi_code": "rt-68654", "name": "RT", "qty": 1, "price": 50}, {"toysi_code": "dropt-57114", "name": "D", "qty": 1, "price": 50}], "2026-11-14T10:00:00")
+rtd = mk("PT-8", [{"toysi_code": "rt-68654", "name": "RT", "qty": 1, "price": 50}, {"toysi_code": "rt-68655", "name": "RT2", "qty": 1, "price": 50}], "2026-11-14T10:00:00")
 sent.clear()
 r = [run(x, chats=[333]) for x in (shipped, sandbox, cancelled, prom, old, rtd)]
-chk("не доставлене / sandbox / скасоване / не сайт / доставлене >3 діб тому / лише RT+Dropt-товари → жодного повідомлення", r == [0] * 6 and sent == [])
+chk("не доставлене / sandbox / скасоване / не сайт / доставлене >3 діб тому / лише RT-товари → жодного повідомлення", r == [0] * 6 and sent == [])
 fresh = mk("PT-9", items, "2026-11-14T10:00:00")
 chk("межа віку: доставлено 2 доби тому — пишемо", run(fresh, chats=[444]) == 1)
 

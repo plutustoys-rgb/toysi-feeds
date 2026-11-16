@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""test_apache_neutral_public_urls.py — Apache-правила нейтральних публічних адрес Dropt/RoyalToys (власник 10.11.2026: «щоб покупець не бачив» постачальника; контракт Shopify-code, SITE_CHANNEL 07:45, PR #1142).
+"""test_apache_neutral_public_urls.py — Apache-правила нейтральних публічних адрес RoyalToys (власник 10.11.2026: «щоб покупець не бачив» постачальника; контракт Shopify-code, SITE_CHANNEL 07:45, PR #1142).
 Перевіряє deploy/activate_site_apache.sh (шаблон vhost body_tpl): правила на місці, умови -f, регулярки на прикладах (PCRE ≈ Python re для цих шаблонів), порядок відносно сусідніх правил.
 `python test_apache_neutral_public_urls.py` → exit 0/1."""
 import re
@@ -48,42 +48,33 @@ def find(pat_sub):
     return [r for r in R if pat_sub in r[1]]
 
 
-d301 = find("product-dropt-")
 r301 = find("product-rt-")
-dimg = find("/img/p/x")
 rimg = find("/img/p/y")
-smap = find("sitemap-dropt")
-chk("є 301 Dropt, RT, фото Dropt, фото RT, sitemap", all(len(x) == 1 for x in (d301, r301, dimg, rimg, smap)))
-for name, x, flag in (("301 Dropt", d301, "R=301"), ("301 RT", r301, "R=301"), ("sitemap", smap, "R=301")):
-    if x:
-        chk(f"{name}: прапор {flag} і умова -f (нова сторінка існує)", flag in x[0][3] and any(c.endswith("-f") for c in x[0][0]))
-for name, x in (("фото Dropt", dimg), ("фото RT", rimg)):
-    if x:
-        chk(f"{name}: внутрішній rewrite (без R=), умова -f на фізичний файл", "R=" not in x[0][3] and any(c.endswith("-f") for c in x[0][0]) and "/img/" in x[0][2])
+chk("є 301 RT і фото RT", all(len(x) == 1 for x in (r301, rimg)))
+chk("правил постачальника, якого прибрано (16.11.2026), у шаблоні Apache немає: ні 301, ні фото, ні sitemap", not find("product-dropt-") and not find("/img/p/x") and not find("sitemap-dropt") and not re.search(r"dropt", body, re.I))
+if r301:
+    chk("301 RT: прапор R=301 і умова -f (нова сторінка існує)", "R=301" in r301[0][3] and any(c.endswith("-f") for c in r301[0][0]))
+if rimg:
+    chk("фото RT: внутрішній rewrite (без R=), умова -f на фізичний файл", "R=" not in rimg[0][3] and any(c.endswith("-f") for c in rimg[0][0]) and "/img/" in rimg[0][2])
 
 
 def match(rule, path):
     return re.match(rule[1], path)
 
 
-if d301 and r301 and dimg and rimg:
-    d, r, di, ri = d301[0], r301[0], dimg[0], rimg[0]
-    chk("Dropt: /product-dropt-57114.html → захоплює 57114", match(d, "/product-dropt-57114.html") and match(d, "/product-dropt-57114.html").group(1) == "57114")
-    chk("Dropt: нульовий/нечисловий id не збігається", not match(d, "/product-dropt-0123.html") and not match(d, "/product-dropt-abc.html"))
-    chk("Dropt: нова адреса /product-x57114.html НЕ збігається зі старим правилом (нема циклу)", not match(d, "/product-x57114.html"))
+if r301 and rimg:
+    r, ri = r301[0], rimg[0]
     chk("RT: /product-rt-69616.html і буквено-цифровий id 18636s22164", match(r, "/product-rt-69616.html") and match(r, "/product-rt-18636s22164.html").group(1) == "18636s22164")
     chk("RT: нова /product-y69616.html не збігається (нема циклу)", not match(r, "/product-y69616.html"))
-    chk("Toysi /product-218158.html не чіпається жодним новим правилом", not any(match(x, "/product-218158.html") for x in (d, r)))
-    mm = match(di, "/img/p/x57114-1.jpg")
-    chk("фото Dropt: /img/p/x57114-1.jpg → dropt-57114-1.jpg (групи 1,2)", mm and mm.groups() == ("57114", "1") and di[2] == "/img/dropt/dropt-$1-$2.jpg")
+    chk("Toysi /product-218158.html не чіпається жодним новим правилом", not match(r, "/product-218158.html"))
     mm = match(ri, "/img/p/y18636s22164-3.jpg")
     chk("фото RT: /img/p/y18636s22164-3.jpg → rt-18636s22164-3.jpg (групи 1,2)", mm and mm.groups() == ("18636s22164", "3") and ri[2] == "/img/rt/rt-$1-$2.jpg")
-    chk("фото: умова -f перевіряє ТОЙ САМИЙ файл, що й ціль rewrite", all(("%{DOCUMENT_ROOT}" + x[2]).replace("$1", "$1") in " ".join(x[0]) for x in (di, ri)))
-    chk("старі шляхи /img/dropt/… і /img/rt/… не збігаються з новими правилами (лишаються як були)", not any(match(x, "/img/dropt/dropt-57114-1.jpg") or match(x, "/img/rt/rt-69616-1.jpg") for x in (di, ri)))
+    chk("фото: умова -f перевіряє ТОЙ САМИЙ файл, що й ціль rewrite", ("%{DOCUMENT_ROOT}" + ri[2]) in " ".join(ri[0]))
+    chk("старі шляхи /img/rt/… не збігаються з новими правилами (лишаються як були)", not match(ri, "/img/rt/rt-69616-1.jpg"))
     prom = [x for x in R if x[1].startswith("^/(?:(?:ua|ru)/)?p(")]
-    chk("правило старих Prom-URL не перехоплює /img/p/… (шлях починається з /img/)", prom and not any(re.match(x[1], "/img/p/x57114-1.jpg") for x in prom))
+    chk("правило старих Prom-URL не перехоплює /img/p/… (шлях починається з /img/)", prom and not any(re.match(x[1], "/img/p/y69616-1.jpg") for x in prom))
     idx = {id(x): i for i, x in enumerate(R)}
     gone = [x for x in R if "(?:product|category)-" in x[1]]
-    chk("новий блок іде ПІСЛЯ правила 410 для знятих сторінок і ПЕРЕД загальними 301/410 нижче", gone and idx[id(gone[0])] < idx[id(d)] < idx[id(find("helovin")[0])])
+    chk("новий блок іде ПІСЛЯ правила 410 для знятих сторінок і ПЕРЕД загальними 301/410 нижче", gone and idx[id(gone[0])] < idx[id(r)] < idx[id(find("helovin")[0])])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

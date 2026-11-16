@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """test_reviews_backend.py — бекенд відгуків (06.11.2026): reviews_db.py, ендпоінти POST api/review/form та api/review у site_order_api.py, CLI review_moderate.py. Контракт — site/REVIEWS_CONTRACT.md.
-Інваріанти: (1) токен лише для ДОСТАВЛЕНОГО замовлення сайту й товару Toysi з цього замовлення (не rt-/dropt-/скасоване/sandbox/чуже), один раз на пару; у БД лише хеш; (2) form: 200 лише для живого токена,
+Інваріанти: (1) токен лише для ДОСТАВЛЕНОГО замовлення сайту й товару Toysi з цього замовлення (не rt-/zb-/скасоване/sandbox/чуже), один раз на пару; у БД лише хеш; (2) form: 200 лише для живого токена,
 інакше однаково 404 (нема/використаний/прострочений); (3) submit: поля за правилами збірки, невалідні → 400 і токен НЕ спалено; успіх спалює; повторний → 409; невідомий → 404; (4) модерація:
 published лише після approve, reject знімає; reviews.json за контрактом і ПРИЙМАЄТЬСЯ збіркою сайту (_load_reviews) без попереджень; (5) ліміт запитів 429; (6) відповіді не містять токена; нічого не шле назовні."""
 import io
@@ -50,7 +50,7 @@ def new_order(oid, items, delivery="delivered", status=None, platform="site", ca
         return orders_db._row_to_dict(c.execute("SELECT * FROM orders WHERE internal_order_id=?", (iid,)).fetchone())
 
 
-ITEMS = [{"toysi_code": "251827", "name": "Тест", "qty": 1, "price": 100}, {"toysi_code": "rt-5", "name": "RT", "qty": 1, "price": 100}, {"toysi_code": "dropt-7", "name": "D", "qty": 1, "price": 100}]
+ITEMS = [{"toysi_code": "251827", "name": "Тест", "qty": 1, "price": 100}, {"toysi_code": "rt-5", "name": "RT", "qty": 1, "price": 100}, {"toysi_code": "zb-7", "name": "D", "qty": 1, "price": 100}]
 o1 = new_order("A1", ITEMS)
 BADO = (("не доставлене", new_order("A2", ITEMS, delivery="shipped")), ("sandbox", new_order("A3", ITEMS, status="sandbox_test")),
         ("скасоване", new_order("A4", ITEMS, cancelled="2026-11-02T10:00:00")), ("не сайт (Prom)", new_order("A5", ITEMS, platform="prom")))
@@ -60,7 +60,7 @@ with orders_db.get_connection() as conn:
     chk("видано токен для доставленого замовлення сайту й товару Toysi", bool(t_ok) and rdb.valid_token_shape(t_ok))
     chk("у БД лише хеш токена, сирого токена нема", t_ok not in json.dumps([dict(r) for r in conn.execute("SELECT * FROM reviews")], ensure_ascii=False))
     chk("друге запрошення на ту саму пару (замовлення, товар) не видається", rdb.issue_token(conn, o1, "251827", NOW) is None)
-    chk("rt-товар/dropt-товар/нецифровий id → без посилання", rdb.issue_token(conn, o1, "rt-5", NOW) is None and rdb.issue_token(conn, o1, "dropt-7", NOW) is None and rdb.issue_token(conn, o1, "abc", NOW) is None)
+    chk("rt-товар/zb-товар/нецифровий id → без посилання", rdb.issue_token(conn, o1, "rt-5", NOW) is None and rdb.issue_token(conn, o1, "zb-7", NOW) is None and rdb.issue_token(conn, o1, "abc", NOW) is None)
     chk("товару, якого нема в замовленні → без посилання", rdb.issue_token(conn, o1, "999", NOW) is None)
     for name, od in BADO:
         chk(f"замовлення «{name}» → без посилання", rdb.issue_token(conn, od, "251827", NOW) is None)

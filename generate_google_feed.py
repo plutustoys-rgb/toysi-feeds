@@ -782,6 +782,15 @@ def _public_toysi_image(url: str) -> str:
     return f"{SHOP_URL}/img/t/{m.group(1)}" if m else url
 
 
+def usable_feed_image(url) -> bool:
+    """Придатне посилання на фото для рекламних фідів: абсолютний http(s) URL і не заглушка «немає фото» Prom
+    (`/cloud-cgi/static/uaprom-static/image/company_site/no-image-200-….png` — відносний шлях; GMC 16.11.2026: invalid_url [image_link], 40 товарів)."""
+    if not isinstance(url, str):
+        return False
+    u = url.strip().lower()
+    return u.startswith(("https://", "http://")) and "no-image" not in u and "uaprom-static" not in u
+
+
 def _upscale_prom_image(url: str) -> str:
     if not url or "images.prom.ua" not in url:
         return url
@@ -1199,7 +1208,8 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
                     continue
 
         prom_product = prom_products.get(str(item.get("vendor_code") or pid)) or {}
-        image = prom_product.get("main_image") or (item.get("pictures") or [None])[0]
+        # перше ПРИДАТНЕ фото: Prom main_image (може бути відносною заглушкою «no-image») → фото каталогу Toysi; жодного придатного → пропуск
+        image = next((c for c in [prom_product.get("main_image"), *(item.get("pictures") or [])] if usable_feed_image(c)), None)
         if not image:
             stats["no_image"] += 1
             continue

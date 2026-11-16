@@ -41,7 +41,7 @@
   attrCapture();
   /* ATTR-END */
   // Публічна адреса картки (build_site.public_slug): у index.json поле u (є лише коли відрізняється від id). Ключі кошика/замовлень лишаються внутрішніми.
-  function slugId(sl){ sl=String(sl); var m; if((m=/^x([1-9][0-9]*)$/.exec(sl))) return "dropt-"+m[1]; if((m=/^y([0-9A-Za-z_]+)$/.exec(sl))) return "rt-"+m[1]; return sl; }   // href -> внутрішній id (ворота SITE_PUBLIC_IDS_LIVE; зі старих адрес product-dropt-… id без змін)
+  function slugId(sl){ sl=String(sl); var m; if((m=/^y([0-9A-Za-z_]+)$/.exec(sl))) return "rt-"+m[1]; return sl; }   // href -> внутрішній id (ворота SITE_PUBLIC_IDS_LIVE; зі старих адрес product-rt-… id без змін)
   // Суму доставки покупцю НЕ друкуємо (10.10.2026, рішення Консультанта: «65/70 ₴» нічим не підкріплене) — доки нема виміряної цифри з книги КОДВ.
   // Поріг безкоштовної доставки — число Консультанта (рекомендація CONSULTANT_CHANNEL.md
   // 2026-09-14/16, економічно перевірене 2026-09-18: ~3.1х середнього чека, floor витримує).
@@ -552,9 +552,9 @@
   function isPrepaid(){ var r=document.querySelector('input[name="payment"]:checked'); return !!r && r.value==="prepaid"; }
   // Посилки (тестувальник 20.10; власник 21.10): Toysi, RoyalToys (rt-…) і ZooBaza (zb-…) — окремі склади = окремі посилки. parcelGroups: масив груп товарів у порядку Toysi → rt → zb (порожні пропускаємо).
   function parcelGroups(c){
-    var g={t:[], r:[], d:[], z:[]};
-    Object.keys(c).forEach(function(id){ var k=/^rt-/.test(id) ? "r" : (/^dropt-/.test(id) ? "d" : (/^zb-/.test(id) ? "z" : "t")); g[k].push({name:String((c[id] && c[id].name)||""), qty:+(c[id] && c[id].qty)||1}); });
-    return [g.t, g.r, g.d, g.z].filter(function(a){ return a.length>0; });
+    var g={t:[], r:[], z:[]};
+    Object.keys(c).forEach(function(id){ var k=/^rt-/.test(id) ? "r" : (/^zb-/.test(id) ? "z" : "t"); g[k].push({name:String((c[id] && c[id].name)||""), qty:+(c[id] && c[id].qty)||1}); });
+    return [g.t, g.r, g.z].filter(function(a){ return a.length>0; });
   }
   function parcelCount(){ return parcelGroups(read()).length || 1; }
   function deliveryEstimate(goods, prepaid, parcels){ return parcels>1 ? "за тарифами оператора (за кожну посилку)" : "за тарифами оператора"; }
@@ -615,7 +615,7 @@
   // ── Другий постачальник (RoyalToys, id «rt-…»; рішення власника 19.10): працює лише за повною передоплатою → у кошику з такою позицією «накладений платіж» неактивний, лишається «картка онлайн» ──
   // Сервер це теж перевіряє (409), тут — щоб покупець не обирав те, що буде відхилено. Нема rt-позицій — нічого не міняємо.
   function applyRtPayment(ids){
-    var rt=ids.filter(function(k){ return /^(rt|dropt)-/.test(k); }).length, mixed=rt>0 && rt<ids.length;   // rt- і dropt- (постачальники «лише передоплата»; власник 04.11)
+    var rt=ids.filter(function(k){ return /^rt-/.test(k); }).length, mixed=rt>0 && rt<ids.length;
     var cod=document.querySelector('input[name="payment"][value="cod"]'), pre=document.querySelector('input[name="payment"][value="prepaid"]');
     var note=document.getElementById("rt-pay-note");
     var tp=document.querySelector(".trust-pay"); if(tp){ if(tp.getAttribute("data-orig")===null) tp.setAttribute("data-orig", tp.textContent); tp.textContent = rt>0 ? (mixed ? "💳 Оплата карткою онлайн — для частини товарів у кошику лише передоплата" : "💳 Оплата карткою онлайн — цей товар відправляється лише за передоплатою") : tp.getAttribute("data-orig"); }
@@ -1579,7 +1579,7 @@
       parcelAck=false;
       var payEl=document.querySelector('input[name="payment"]:checked');
       var payment=payEl ? payEl.value : "cod";
-      if(Object.keys(read()).some(function(k){ return /^(rt|dropt)-/.test(k); })) payment="prepaid";   // RoyalToys (rt-…): лише повна передоплата, явно (сервер без prepaid відхиляє кошик, Код 19.10)
+      if(Object.keys(read()).some(function(k){ return /^rt-/.test(k); })) payment="prepaid";   // RoyalToys (rt-…): лише повна передоплата, явно (сервер без prepaid відхиляє кошик, Код 19.10)
       var payload={
         items:items,
         name:(document.getElementById("f-name").value||"").trim(),

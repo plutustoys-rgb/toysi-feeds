@@ -44,7 +44,7 @@ try:
     chk("увімкнено: /p/enl_N.jpg -> /img/t/enl_N.jpg", T(urls[0]) == "https://plutustoys.com.ua/img/t/enl_265377.jpg")
     chk("увімкнено: /p/3/enl_N.jpg -> /img/t/3/enl_N.jpg", T(urls[1]) == "https://plutustoys.com.ua/img/t/3/enl_265377.jpg")
     chk("увімкнено: png/webp, без enl_, дворозрядна тека", T(urls[2]) == "https://plutustoys.com.ua/img/t/12/265377.png" and T(urls[3]) == "https://plutustoys.com.ua/img/t/2/enl_255663.webp")
-    others = ["https://images.prom.ua/123456789_w640_h640_foto.jpg", "https://plutustoys.com.ua/img/p/x101-1.jpg", "https://plutustoys.com.ua/img/dropt/dropt-101-1.jpg",
+    others = ["https://images.prom.ua/123456789_w640_h640_foto.jpg", "https://plutustoys.com.ua/img/p/x101-1.jpg", "https://plutustoys.com.ua/img/rt/rt-101-1.jpg",
               "https://toysi.ua/p/../etc/passwd.jpg", "https://toysi.ua/p/3/enl_1.jpg?x=1", "https://toysi.ua/p/a/enl_1.jpg", "https://toysi.ua/p/123/enl_1.jpg",
               "https://toysi.ua.evil.com/p/enl_1.jpg", "http://toysi.ua/p/enl_1.jpg", "https://toysi.ua/p/enl_1.gif", "https://toysi.ua/p/enl_1.jpg/extra", "", "https://toysi.ua/p/enl_.jpg"]
     chk("інші хости й невідповідні шляхи — без змін", all(T(u) == u for u in others))

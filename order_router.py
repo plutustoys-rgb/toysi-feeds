@@ -983,7 +983,8 @@ def _has_rt_items(order: dict) -> bool:
     return any(str((it or {}).get("toysi_code") or "").strip().lower().startswith("rt-") for it in (order.get("items") or []))
 
 
-def _has_dropt_items(order: dict) -> bool:
+def _has_legacy_dropt_items(order: dict) -> bool:
+    # Захист ІСТОРИЧНИХ замовлень: постачальника прибрано 16.11.2026, але в БД можуть лишитись замовлення з id «dropt-…» — у Toysi їх не передаємо ніколи.
     return any(str((it or {}).get("toysi_code") or "").strip().lower().startswith("dropt-") for it in (order.get("items") or []))
 
 
@@ -1004,9 +1005,8 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
     # блокує передачу — best-effort: краще ризикнути застарілим
     # припущенням "в наявності", ніж зупинити весь конвеєр через
     # тимчасову недоступність фіда Toysi.
-    if _has_dropt_items(order):
-        # Позиції Dropt (id «dropt-…») у Toysi не існують: НІКОЛИ не передаємо (конвеєр Dropt ще не збудований; прийнято лише передоплату). Лишаємо в черзі для ручної обробки.
-        print(f"[order_router] {order['internal_order_id']}: містить dropt-позиції (Dropt) — НЕ передається в Toysi, обробка вручну")
+    if _has_legacy_dropt_items(order):
+        print(f"[order_router] {order['internal_order_id']}: історична позиція «dropt-…» (постачальника прибрано) — НЕ передається в Toysi, обробка вручну")
         return
     if _has_rt_items(order):
         # Позиції партнера RoyalToys (id «rt-…») у Toysi не існують: автоформард неможливий (Toysi відхилив би або взяв чужий код). Шлях — вручну:

@@ -335,14 +335,7 @@ gmc_service_account*.json
 # RoyalToys: опт у файлі (cost) — не в git і не в DocumentRoot (Код 19.10)
 /supplier_rt.json
 /supplier_rt.json.tmp
-/supplier_dropt.json
-/supplier_dropt.json.tmp
-/dropt_unmapped_state.json
-/dropt_unmapped_state.json.tmp
-/dropt_detail_cache.json
-/dropt_detail_cache.json.tmp
 /site/img/rt/
-/site/img/dropt/
 # Рілси, яких пише автомат публікації (VPS): не в git і не в DocumentRoot (20.10)
 /ig_reels.json
 /ig_reels.json.tmp
@@ -361,5 +354,3 @@ reels_pending/
 /site/reviews.json.tmp
 # мапа 410 для сторінок, знятих назавжди (site_gone_pages.py з site/removed_pages.json; 06.11.2026) — генерується на VPS, не для git
 site_gone_apache.map
-dropt_eva_listed_state.json
-dropt_eva_listed_state.json.*.tmp

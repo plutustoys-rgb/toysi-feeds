@@ -172,12 +172,6 @@ def _notify_new_order(order: dict, total, test: bool = False, note: str = "") ->
         from orders_db import clean_customer_comment
         if order.get("public_number"):
             note = (f"{note} · " if note else "") + f"№ для клієнта {order['public_number']}"
-        if not test and any(is_dropt_id(it.get("toysi_code")) for it in (order.get("items") or []) if isinstance(it, dict)):
-            # аудит 08.11: поки конвеєр Dropt у пробному режимі (DROPT_RUNNER_APPLY≠1) оплачене dropt-замовлення НІКИМ не оформлюється — власник має це бачити в тому ж повідомленні, а не з журналу
-            note = (f"{note} · " if note else "") + ("DROPT: оформити в кабінеті Dropt ВРУЧНУ (конвеєр у пробному режимі)" if os.environ.get("DROPT_RUNNER_APPLY") != "1" else "DROPT: оформить конвеєр dropt_order_runner")
-            # власник 09.11: ручне оформлення потребує артикула Dropt прямо в повідомленні (id без префікса «dropt-» = артикул у кабінеті Dropt) і кількості
-            _arts = [f"{str(it['toysi_code']).strip()[len(DROPT_PREFIX):]}×{it.get('qty') or '?'}" for it in (order.get("items") or []) if isinstance(it, dict) and is_dropt_id(it.get("toysi_code"))]
-            note += " · артикул Dropt: " + ", ".join(_arts[:10])
         _cc = clean_customer_comment(order.get("customer_comment"))
         if _cc:
             note = (f"{note} · " if note else "") + f"Коментар покупця: {_cc}"
@@ -310,18 +304,6 @@ def is_rt_id(pid) -> bool:
     return str(pid or "").strip().lower().startswith(RT_PREFIX)
 
 
-DROPT_PREFIX = "dropt-"
-
-
-def is_dropt_id(pid) -> bool:
-    return str(pid or "").strip().lower().startswith(DROPT_PREFIX)
-
-
-def dropt_orders_open() -> bool:
-    """Ворота купівлі товарів Dropt (.env VPS): SITE_DROPT_ORDERS=1 ставить власник ЛИШЕ коли конвеєр dropt_order_runner пройшов аудит і тестове замовлення. Без воріт — як було: «dropt-» у кошику відхиляється."""
-    return os.environ.get("SITE_DROPT_ORDERS") == "1"
-
-
 def is_zb_id(pid) -> bool:
     return str(pid or "").strip().lower().startswith("zb-")
 
@@ -414,21 +396,21 @@ def check_stock(items: list) -> list:
         need.setdefault(it["toysi_code"], {"name": it["name"], "requested": 0})["requested"] += it["qty"]
     if snap is None:
         snap = {}
-        rt_only = True    # знімка нема/застарів: Toysi-рядки не чіпаємо (fail-open), rt-/dropt- — вважаємо «немає» (fail-closed)
+        rt_only = True    # знімка нема/застарів: Toysi-рядки не чіпаємо (fail-open), rt- — вважаємо «немає» (fail-closed)
     else:
         rt_only = False
     bad = []
     for pid, v in need.items():
-        if rt_only and not (is_rt_id(pid) or is_dropt_id(pid)):
+        if rt_only and not is_rt_id(pid):
             continue
         if pid not in snap:
-            if is_rt_id(pid) or is_dropt_id(pid):
+            if is_rt_id(pid):
                 bad.append({"id": pid, "name": v["name"], "requested": v["requested"], "available": 0})
             continue
         try:
             avail = int(snap[pid])
         except (TypeError, ValueError):
-            if is_rt_id(pid) or is_dropt_id(pid):
+            if is_rt_id(pid):
                 bad.append({"id": pid, "name": v["name"], "requested": v["requested"], "available": 0})
             continue
         if avail < v["requested"]:
@@ -528,10 +510,6 @@ def build_order(payload: dict) -> tuple:
             qty = int(it.get("qty", 0))
         except (TypeError, ValueError):
             qty = 0
-        if is_dropt_id(pid) and not dropt_orders_open():
-            # Dropt (рішення власника 04.11: лише передплата, ТТН наша, замовлення в кабінеті Dropt): без воріт SITE_DROPT_ORDERS=1 купівля dropt- закрита навіть якщо картки відкрито на сайті
-            # (SITE_DROPT_LIVE) чи id підробили в кошику (аудит #1104). Ворота відкриває власник після аудиту конвеєра dropt_order_runner.
-            raise OrderError("Цей товар поки що недоступний для замовлення")
         if pid not in pm:
             raise OrderError(f"Товар {pid} недоступний")
         if qty < 1 or qty > MAX_QTY_PER_ITEM:
@@ -583,15 +561,6 @@ def build_order(payload: dict) -> tuple:
     # COD форвардиться одразу, prepaid — лише коли payment_confirmed=1.
     pay_raw = (payload.get("payment_method") or "").strip().lower()
     payment_method = "prepaid" if pay_raw == "prepaid" else "cod"
-    dropt_cnt = sum(1 for i in items if is_dropt_id(i["toysi_code"]))
-    if dropt_cnt and dropt_cnt != len(items):
-        site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_DROPT_MIXED, items)
-        # Dropt — окремий постачальник і окрема посилка, автоматичного поділу замовлення нема (і рядки Toysi/RT роутер не відокремить): лише окремим замовленням
-        raise OrderError("Товари цього постачальника відправляються окремою посилкою: оформіть їх окремим замовленням від інших товарів")
-    if dropt_cnt and payment_method != "prepaid":
-        site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_DROPT_COD, items)
-        # fail-closed (рішення власника 04.11 «лише передплата»): накладений платіж НЕ приймаємо (комісія Dropt 100 ₴ за невикуп, ТТН наша), невідомий/відсутній спосіб теж
-        raise OrderError("Товари цього постачальника відправляються лише за повною передоплатою: оберіть оплату карткою онлайн")
     rt_cnt = sum(1 for i in items if is_rt_id(i["toysi_code"]))
     if rt_cnt and rt_cnt != len(items) and not (mixed_enabled() and not any(is_zb_id(i["toysi_code"]) for i in items)):
         site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_MIXED, items)   # облік відхилень (без ПІБ/адреси): рішення про поділ замовлень — за числом

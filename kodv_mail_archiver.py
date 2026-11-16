@@ -26,6 +26,7 @@
 локально треба додати у .env). Без них скрипт М'ЯКО виходить (код 0), не валить ланцюг.
 """
 import email
+import html as _html
 import imaplib
 import json
 import os
@@ -285,6 +286,10 @@ def _download(url: str, label: str = "RozetkaPay") -> bytes | None:
 
 _PRIVAT_LINK_RE = re.compile(
     r'href=["\'](https://[^"\']*awstrack\.me[^"\']*privatbank\.ua[^"\']*)["\']', re.IGNORECASE)
+# З 13.11.2026 ПриватБанк прибрав awstrack.me-обгортку: кнопка «Отримати виписку» веде ПРЯМО на https://socauth.privatbank.ua/cp/api/out_click.php?utm_medium=…&token=…&resource=… (href з &amp;).
+# Старий regex шукав лише awstrack → _find_privat_statement_link повертало None, виписки 13–16.11 мовчки не архівувались (запит головного бухгалтера 16.11).
+_PRIVAT_ANCHOR_RE = re.compile(r'<a\b[^>]*?href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+_PRIVAT_BUTTON_TEXT = "отримати виписку"
 
 
 def _find_privat_statement_link(msg) -> str | None:
@@ -299,6 +304,13 @@ def _find_privat_statement_link(msg) -> str | None:
         if not payload:
             continue
         html = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        # 1) кнопка за ТЕКСТОМ «Отримати виписку» — стійко до зміни обгортки (awstrack.me → пряме socauth). Лише https-посилання на privatbank.ua (прямо або в awstrack-обгортці).
+        for hm in _PRIVAT_ANCHOR_RE.finditer(html):
+            text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", hm.group(2))).strip().lower()
+            href = _html.unescape(hm.group(1)).strip()
+            if _PRIVAT_BUTTON_TEXT in text and href.lower().startswith("https://") and "privatbank.ua" in href.lower():
+                return href
+        # 2) запасний (стара поведінка): перше awstrack-посилання на privatbank.ua
         m = _PRIVAT_LINK_RE.search(html)
         if m:
             return m.group(1)

@@ -131,6 +131,48 @@ _chk("_find_privat_statement_link: знайшло awstrack.me-посилання
 _chk("_find_privat_statement_link: усередині справді att.privatbank.ua/efile",
      privat_url is not None and "att.privatbank.ua" in privat_url)
 
+# 7б: З 13.11.2026 ПриватБанк прибрав awstrack.me-обгортку: кнопка «Отримати виписку» веде ПРЯМО на socauth.privatbank.ua/cp/api/out_click.php (href з &amp;).
+#     Звірено живо 16.11.2026 на листах 13/14/15/16.11 (виписки не архівувались 4 дні). Токени тут вигадані.
+_NEW_PRIVAT_HTML = (
+    '<html><body>'
+    '<a href="https://socauth.privatbank.ua/cp/api/out_click.php?utm_medium=email&amp;token=CONTACTS&amp;resource=https%3A%2F%2Fprivatbank.ua%2Fcontacts">Контакти</a>'
+    '<a href="https://socauth.privatbank.ua/cp/api/out_click.php?utm_medium=email&amp;token=STMT&amp;resource=https%3A%2F%2Fatt.privatbank.ua%2Fefile%2Fxyz" style="x">'
+    '<span> Отримати  виписку </span></a>'
+    '</body></html>'
+)
+msg_new = _make_html_email(_NEW_PRIVAT_HTML)
+new_url = km._find_privat_statement_link(msg_new)
+_chk("нова структура (пряме socauth): посилання знайдено", new_url is not None)
+_chk("нова структура: обрано саме кнопку «Отримати виписку», а не «Контакти» (навіть коли «Контакти» першим)", new_url is not None and "token=STMT" in new_url and "CONTACTS" not in new_url)
+_chk("нова структура: &amp; розкодовано (інакше сервер Привата не прийме параметри)", new_url is not None and "&amp;" not in new_url and "&token=STMT&" in new_url)
+_chk("кнопка з тегами всередині тексту і зайвими пробілами розпізнається", new_url is not None and new_url.startswith("https://socauth.privatbank.ua/cp/api/out_click.php?"))
+_NO_BTN = _make_html_email('<a href="https://socauth.privatbank.ua/cp/api/out_click.php?token=C">Контакти</a>')
+_chk("нема кнопки «Отримати виписку» і нема awstrack → None (не беремо навмання перше посилання)", km._find_privat_statement_link(_NO_BTN) is None)
+_FOREIGN = _make_html_email('<a href="https://evil.example.com/steal?x=1">Отримати виписку</a>')
+_chk("кнопка з текстом «Отримати виписку», але НЕ на privatbank.ua → None (не качаємо з чужих хостів)", km._find_privat_statement_link(_FOREIGN) is None)
+_HTTP = _make_html_email('<a href="http://socauth.privatbank.ua/cp/api/out_click.php?token=X">Отримати виписку</a>')
+_chk("не-https посилання відхиляється", km._find_privat_statement_link(_HTTP) is None)
+_chk("стара структура (awstrack) далі працює (регресія)", km._find_privat_statement_link(msg_privat) is not None and "att.privatbank.ua" in km._find_privat_statement_link(msg_privat))
+
+# 7в: аудит #1596 — перевірка ХОСТА розбором URL (не підрядком) і лінійність розбору
+import time as _time  # noqa: E402
+for _bad in ("https://evil.com/?x=privatbank.ua", "https://privatbank.ua.evil.com/a", "https://evil.com/#privatbank.ua", "https://user@evil.com/?privatbank.ua",
+             "https://privatbank.ua@evil.com/", "https://evilprivatbank.ua/", "https://evil.com/?awstrack.me&privatbank.ua"):
+    _m = _make_html_email(f'<a href="{_bad}">Отримати виписку</a>')
+    _chk(f"хост обхід відхилено: {_bad}", km._find_privat_statement_link(_m) is None)
+_good = km._find_privat_statement_link(_make_html_email('<a href="https://socauth.privatbank.ua/cp/api/out_click.php?t=1&amp;r=2">Отримати виписку</a>'))
+_chk("справжній socauth.privatbank.ua приймається (+ &amp; розкодовано)", _good == "https://socauth.privatbank.ua/cp/api/out_click.php?t=1&r=2")
+_chk("awstrack.me-обгортка (піддомен) приймається", km._find_privat_statement_link(_make_html_email('<a href="https://v084ncpp.r.eu-central-1.awstrack.me/L0/https:%2F%2Fsocauth.privatbank.ua%2Fx">Отримати виписку</a>')) is not None)
+_t0 = _time.time()
+_r1 = km._find_privat_statement_link(_make_html_email("<a " * 60000))
+_r2 = km._find_privat_statement_link(_make_html_email('<a href="x">' * 20000))
+_chk(f"розбір лінійний: 60 000 незакритих «<a » і 20 000 «<a href>» без </a> — менше 3 с (було 20–60 с квадратично), знайдено нічого ({_time.time() - _t0:.2f} с)", (_time.time() - _t0) < 3 and _r1 is None and _r2 is None)
+_chk("_download(ПриватБанк): стартовий чужий хост → None БЕЗ мережі", km._download("https://evil.com/x?privatbank.ua", label="ПриватБанк") is None)
+
+for _name, _html in (("слова в окремих <span>", '<a href="https://socauth.privatbank.ua/x"><span>Отримати</span><span>виписку</span></a>'),
+                     ("<br> між словами", '<a href="https://socauth.privatbank.ua/x">Отримати<br>виписку</a>')):
+    _chk(f"кнопка розпізнається, коли слова розділені тегами без пробілу: {_name}", km._find_privat_statement_link(_make_html_email(_html)) == "https://socauth.privatbank.ua/x")
+
 # 8: ПОСИЛАННЯ ПРОТУХЛО — сервер повертає HTML-логін Приват24 замість PDF (реальний випадок,
 #    2026-09-19: 11 з 13 листів 60-денного бекфілу дали саме це, не помилку HTTP). Перевіряємо
 #    саме ту перевірку вмісту, яку archive() робить ПІСЛЯ _download() (b"%PDF-" in payload[:4096]).

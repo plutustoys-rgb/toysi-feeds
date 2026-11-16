@@ -247,11 +247,12 @@ else:
     items = list(cat_real.values()) if isinstance(cat_real, dict) else list(cat_real)
     n = len(items)
     has_flag = sum(1 for it in items if isinstance(it, dict) and it.get("is_import") is not None)
+    # аудит #1638: свіжий кеш (VPS, після наступного get_catalog) УЖЕ має is_import — для перевірки СТАРОГО фолбеку прибираємо поле з копій
+    items = [{k: v for k, v in it.items() if k != "is_import"} if isinstance(it, dict) else it for it in items]
     diff = [it.get("id") for it in items if cp.site_retail_price(it) != ref_site_price(it)]
     cost_diff = [it.get("id") for it in items if cp.real_toysi_cost(it) != round(cp.toysi_discounted_price(it) + 15, 2)
                  and cp.toysi_discounted_price(it) > 0]
-    chk(f"реальний каталог: {n} товарів (>= 20000), поле is_import у кеші відсутнє ({has_flag} шт. з ним) -> перевірка старого фолбеку",
-        n >= 20000 and has_flag == 0)
+    chk(f"реальний каталог: {n} товарів (>= 20000); is_import у кеші в {has_flag} шт. (для перевірки старого фолбеку поле прибрано з копій)", n >= 20000)
     chk(f"реальний каталог: site_retail_price побайтово = еталон старої логіки на всіх {n} товарах (розбіжностей: {len(diff)})", not diff)
     chk(f"реальний каталог: real_toysi_cost = стара формула на всіх {n} (без is_import) (розбіжностей: {len(cost_diff)})", not cost_diff)
 

@@ -3771,12 +3771,11 @@ GIFT_LIST_NAME = "gift_page"
 GIFT_MIN_CONTRIB = 0.0
 # дитячі подарунки: категорії з «космет…» (накладні вії, бальзами для губ тощо) не показуємо (15.11, живий замір складу; перевіряє _gift_ok)
 GIFT_POOL_MAX = 4 * GIFT_SHOW_MAX               # пул найвигідніших кандидатів, з якого вибираємо рівномірно за ціною
-GIFT_BAND_POOL_MULT = 3                          # пул смуги = 3 × місць (18 найкращих за внеском), з нього місця беруться рівномірно за ціною
-GIFT_BANDS = 6                                  # «На Миколая»/«Новорічний» (SEO 16.11): діапазон 100–700 ₴ ділимо на смуги по 100 ₴; у кожній — найкращі за внеском (GIFT_SHOW_MAX // GIFT_BANDS)
+GIFT_BANDS = 6                                  # «На Миколая»/«Новорічний» (SEO 16.11): діапазон 100–700 ₴ ділимо на смуги по 100 ₴; у кожній GIFT_SHOW_MAX // GIFT_BANDS карток: найкращий за внеском у кожній під-смузі ціни
 GIFT_AGE_PRICE_MAX = 2000                       # вікові сторінки: подарунок до 2 000 ₴ (без басейнів/ігрових комплексів за 4–5 тис.)
 GIFT_FAQ_MIN, GIFT_FAQ_MAX = 3, 6
 GIFT_HUB_FILE = "podarunky.html"
-# (slug, H1 = запит, підпис, правило). Правило: pmin/pmax — ціна (₴); age=(lo, hi) — мінімальний вік з опису в РОКАХ (місяці = N/12), включно; ny=True — спершу назви з HOME_SEASONAL «ny» (при bands — першими в межах смуги; на сторінці порядок за ціною); bands=N — діапазон pmin..pmax ділиться на N цінових смуг, у кожній найкращі за внеском (SEO 16.11).
+# (slug, H1 = запит, підпис, правило). Правило: pmin/pmax — ціна (₴); age=(lo, hi) — мінімальний вік з опису в РОКАХ (місяці = N/12), включно; ny=True — спершу назви з HOME_SEASONAL «ny» (при bands — першими в межах смуги; на сторінці порядок за ціною); bands=N — діапазон pmin..pmax ділиться на N цінових смуг, у кожній по одному найкращому за внеском у кожній під-смузі ціни (SEO 16.11).
 GIFT_PAGES = (
     ("podarunok-na-mykolaia", "Подарунок на Миколая дитині", "На Миколая", {"pmin": 100, "pmax": 700, "bands": GIFT_BANDS}),
     ("novorichnyi-podarunok-dytyni", "Новорічний подарунок дитині", "На Новий рік", {"pmin": 100, "pmax": 700, "ny": True, "bands": GIFT_BANDS}),
@@ -3865,10 +3864,12 @@ def gift_pick(prods, rule, pool=None):
 
 
 def _gift_pick_bands(cand, rule, ny_rx=None):
-    """Цінові смуги (SEO 16.11): [pmin, pmax] ділимо на rule["bands"] рівних смуг (остання включає pmax). У кожній смузі: пул із GIFT_BAND_POOL_MULT×(місць у смузі) найкращих
-    кандидатів (cand уже відсортовано: «ny»-назви першими, далі за внеском спадно; ≤GIFT_PER_CAT з категорії на всю сторінку, без дублів «основи назви»); з пулу спершу беремо «ny»-назви
-    (≤ місць), решту місць — РІВНОМІРНО за ціною (SEO 16.11: «під подушку» потрібні й дешевші, внесок росте з ціною, тож без розтягування всі добірки липнуть до верху смуги).
-    Якщо в смузі кандидатів менше, ніж місць, решту добираємо з найкращих кандидатів ЗАЛИШКУ (без обмеження смуг). Результат — за зростанням ціни."""
+    """Цінові смуги (SEO 16.11): [pmin, pmax] ділимо на rule["bands"] рівних смуг (остання включає pmax), у кожній — GIFT_SHOW_MAX // bands місць.
+    cand уже відсортовано: «ny»-назви першими, далі за внеском спадно; ≤GIFT_PER_CAT з категорії на ВСЮ сторінку, без дублів «основи назви» (take()).
+    У смузі: 1) «ny»-назви (≤ місць); 2) решта місць — по ОДНОМУ найкращому за внеском у кожній з рівних під-смуг ціни (смуга / кількість решти місць, ≈17 ₴),
+    бо внесок росте разом із ціною: вибір «найкращі за внеском» у цілій смузі липне до її верху (на живому було 199×6, 299×6…), а під-смуги дають ціни по всій смузі;
+    3) під-смуга без кандидатів — місце добирається найкращим із решти смуги; 4) якщо смуга порожня/мала — решту сторінки добираємо найкращими кандидатами залишку.
+    Результат — за зростанням ціни."""
     n_b = int(rule["bands"])
     lo, hi = rule.get("pmin", 0), rule["pmax"]
     width = (hi - lo) / n_b
@@ -3887,23 +3888,31 @@ def _gift_pick_bands(cand, rule, ny_rx=None):
 
     for b in range(n_b):
         blo, bhi = lo + b * width, lo + (b + 1) * width
-        pool, pc, pk = [], dict(per_cat), set(keys)   # пул смуги з тими самими обмеженнями, що й take(): будь-яка підмножина пулу пройде take()
-        for p in cand:
-            if len(pool) >= per_band * GIFT_BAND_POOL_MULT:
+        in_band = [p for p in cand if (blo <= p["price"] < bhi or (b == n_b - 1 and p["price"] == hi)) and str(p["id"]) not in used]
+        got = 0
+        if ny_rx:
+            for p in in_band:
+                if got >= per_band:
+                    break
+                if ny_rx.search(p.get("name") or "") and take(p):
+                    got += 1
+        n_sub = per_band - got
+        if n_sub > 0:
+            sw = (bhi - blo) / n_sub
+            for s in range(n_sub):
+                slo, shi = blo + s * sw, blo + (s + 1) * sw
+                for p in in_band:
+                    pr = p["price"]
+                    if str(p["id"]) in used or not (slo <= pr < shi or (s == n_sub - 1 and b == n_b - 1 and pr == hi)):
+                        continue
+                    if take(p):
+                        got += 1
+                        break
+        for p in in_band:   # під-смуга без кандидатів: місце — найкращому з решти смуги
+            if got >= per_band:
                 break
-            pr = p["price"]
-            if not ((blo <= pr < bhi or (b == n_b - 1 and pr == hi)) and str(p["id"]) not in used):
-                continue
-            cat, k = (p.get("category") or "").strip().lower(), _pick_key(p["name"])
-            if pc.get(cat, 0) >= GIFT_PER_CAT or k in pk:
-                continue
-            pc[cat] = pc.get(cat, 0) + 1
-            pk.add(k)
-            pool.append(p)
-        ny = [p for p in pool if ny_rx and ny_rx.search(p.get("name") or "")][:per_band]
-        rest = [p for p in pool if p not in ny]
-        for p in ny + _gift_spread(rest, per_band - len(ny)):
-            take(p)
+            if str(p["id"]) not in used and take(p):
+                got += 1
     for p in cand:   # смуга без кандидатів не лишає порожніх місць на сторінці
         if len(out) >= GIFT_SHOW_MAX:
             break

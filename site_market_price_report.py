@@ -50,10 +50,10 @@ def compute(catalog: dict, benchmarks: dict, formula_fn=None, market_fn=None) ->
             continue
         floor_price = int(math.ceil(cost * (1 + cp.SITE_MIN_MARGIN)))
         old = int(formula_fn(it))
-        new = market_fn(it, floor_price, benchmarks)
+        new = market_fn(it, floor_price, benchmarks, formula_price=old)
         if new is None or old <= 0:
             continue
-        rows.append({"id": oid, "old": old, "new": int(new), "bench": float(b), "floor": floor_price, "cost": float(cost), "instock": _stock_positive(it)})
+        rows.append({"id": oid, "old": old, "new": int(new), "capped": int(math.floor(float(b) - cp.SITE_MARKET_DISCOUNT_UAH + 1e-9)) > old * cp.SITE_MARKET_MAX_UP, "bench": float(b), "floor": floor_price, "cost": float(cost), "instock": _stock_positive(it)})
     return summarize(rows)
 
 
@@ -69,7 +69,7 @@ def summarize(rows: list, min_contribution: float | None = None) -> dict:
             min_contribution = float(os.environ.get("FEED_MIN_SITE_CONTRIBUTION", "0"))
         except ValueError:
             min_contribution = 0.0
-    out = {"units": len(rows), "cheaper": 0, "pricier": 0, "same": 0, "at_floor": 0, "above_bench_minus_3": 0,
+    out = {"units": len(rows), "capped_back_to_formula": sum(1 for r in rows if r.get("capped")), "cheaper": 0, "pricier": 0, "same": 0, "at_floor": 0, "above_bench_minus_3": 0,
            "contrib_le0_old": 0, "contrib_le0_new": 0, "leave_feeds": 0, "return_to_feeds": 0, "min_contribution": min_contribution}
     ins = [r for r in rows if r["instock"]]
     out["units_instock"] = len(ins)
@@ -110,6 +110,7 @@ def render(s: dict, snapshot_generated: str = "") -> str:
     L = [f"Ринкова ціна −3 ₴ — що зміниться (читання, ворота SITE_MARKET_PRICE ще НЕ ввімкнені). Знімок Google: {snapshot_generated or '?'}; звіт {datetime.now():%Y-%m-%d %H:%M}.",
          f"ОДИНИЦЯ — товар каталогу Toysi з контрольною ціною: {s['units']} (з них у наявності {s['units_instock']}).",
          f"дешевшає: {s['cheaper']} · дорожчає: {s['pricier']} · без змін: {s['same']} · впирається в підлогу (собівартість×1,03): {s['at_floor']}",
+         f"повернуто на ціну за формулою через стелю +20 % (контрольна підозріла): {s['capped_back_to_formula']}",
          f"внесок на замовлення ≤ 0 (ціна − собівартість − комісія − 17,81 ₴ логістики): було {s['contrib_le0_old']} → стане {s['contrib_le0_new']}; "
          f"випаде з фідів Google/Meta/Bing (внесок ≤ {s['min_contribution']}): {s['leave_feeds']}; ПОВЕРНЕТЬСЯ у фіди: {s['return_to_feeds']}",
          f"сума цін товарів у наявності з контрольною: було {s['sum_old_instock']} ₴ → стане {s['sum_new_instock']} ₴ (різниця {d_sum:+d} ₴, {pct:+.1f} %)",

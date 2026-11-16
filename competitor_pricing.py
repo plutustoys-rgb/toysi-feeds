@@ -576,6 +576,9 @@ SITE_MIN_MARGIN = 0.03
 # собівартість × 1,03 (правило власника 06.10). Без контрольної / знімок застарів / вимкнено — формула вище (× 1,5). Діє лише на сайт і на все, що бере ціну сайту
 # (Google/Meta/Bing-фіди читають index.json); маркетплейси (EVA/Rozetka/Prom) НЕ чіпаємо. ВОРОТА: SITE_MARKET_PRICE=1 (інакше нічого не змінюється).
 SITE_MARKET_DISCOUNT_UAH = 3
+# СТЕЛЯ ПІДВИЩЕННЯ (рішення власника 16.11.2026, дослівно: «Макс +20 %»): якщо floor(контрольна − 3) БІЛЬШЕ за ціну за формулою (×1,5 з підлогою) × 1,20 — контрольна підозріла
+# (Google плутає товари: 48019 «Кухня 9 ТехноК» 355 → 1 065 при ринку 348–410 ₴) і ціна = формула. Зниження стелею НЕ обмежуються.
+SITE_MARKET_MAX_UP = 1.20
 _MARKET_BENCH_CACHE = None
 
 
@@ -600,7 +603,7 @@ def market_offer_id(item: dict) -> str:
     return str(item.get("vendor_code") or item.get("id") or "").strip()
 
 
-def site_market_price(item: dict, floor_price: int, benchmarks: dict | None = None):
+def site_market_price(item: dict, floor_price: int, benchmarks: dict | None = None, formula_price: int | None = None):
     """Ціна за правилом «контрольна − 3 ₴» або None (правило не застосовується: вимкнено / нема контрольної). floor_price — підлога (собівартість × 1,03, ціле вгору)."""
     import math as _math
     if not site_market_price_on():
@@ -613,6 +616,8 @@ def site_market_price(item: dict, floor_price: int, benchmarks: dict | None = No
     if not isinstance(b, (int, float)) or isinstance(b, bool) or not _math.isfinite(b) or b <= 0:
         return None
     target = int(_math.floor(b - SITE_MARKET_DISCOUNT_UAH + 1e-9))
+    if formula_price is not None and formula_price > 0 and target > formula_price * SITE_MARKET_MAX_UP:
+        return int(formula_price)       # підозріла контрольна (> +20 % до формули) → ціна за формулою
     return int(max(floor_price, target))
 
 
@@ -629,10 +634,11 @@ def site_retail_price(item: dict) -> int:
     if not cost or cost <= 0:
         return int(base)
     floor_price = _math.ceil(cost * (1 + SITE_MIN_MARGIN))
-    mk = site_market_price(item, int(floor_price))
+    formula_price = int(max(base, floor_price))
+    mk = site_market_price(item, int(floor_price), formula_price=formula_price)
     if mk is not None:
         return mk
-    return int(max(base, floor_price))
+    return formula_price
 
 
 def toysi_discounted_price(item: dict) -> float:

@@ -337,6 +337,8 @@ class _AnchorCollector(HTMLParser):
         if tag == "a":
             self._flush()
             self._href = dict(attrs).get("href") or ""
+        elif self._href is not None and len(self._text) < 50:
+            self._text.append(" ")      # аудит #1596 п.3: теги між словами («Отримати</span><span>виписку», <br>) дають пробіл, а не склеєні слова
 
     def handle_data(self, data):
         if self._href is not None and len(self._text) < 50:
@@ -345,6 +347,8 @@ class _AnchorCollector(HTMLParser):
     def handle_endtag(self, tag):
         if tag == "a":
             self._flush()
+        elif self._href is not None and len(self._text) < 50:
+            self._text.append(" ")
 
     def close(self):
         super().close()
@@ -597,6 +601,9 @@ def archive(dry_run: bool = False) -> dict:
                 # на реальному листі "Виписка за рахунком ...".
                 if not had_doc and _classify("", subject_l, sender_l) == "ПриватБанк":
                     link_url = _find_privat_statement_link(msg)
+                    if not link_url:
+                        # тихий нуль (13–16.11.2026: лист є, посилання не розпізнано, прогін «+0 нових» без жодного слова) — тепер голосно
+                        _log(f"⚠️ лист ПриватБанку ({_message_datetime(msg):%Y-%m-%d}, «{subject_l[:40]}») БЕЗ розпізнаної кнопки «Отримати виписку» — виписку НЕ архівовано; перевір верстку листа")
                     if link_url:
                         msg_date = _message_datetime(msg).strftime("%Y-%m-%d")
                         filename = f"{msg_date}_privat_vypiska.pdf"

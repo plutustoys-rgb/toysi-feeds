@@ -169,6 +169,10 @@ _r2 = km._find_privat_statement_link(_make_html_email('<a href="x">' * 20000))
 _chk(f"розбір лінійний: 60 000 незакритих «<a » і 20 000 «<a href>» без </a> — менше 3 с (було 20–60 с квадратично), знайдено нічого ({_time.time() - _t0:.2f} с)", (_time.time() - _t0) < 3 and _r1 is None and _r2 is None)
 _chk("_download(ПриватБанк): стартовий чужий хост → None БЕЗ мережі", km._download("https://evil.com/x?privatbank.ua", label="ПриватБанк") is None)
 
+for _name, _html in (("слова в окремих <span>", '<a href="https://socauth.privatbank.ua/x"><span>Отримати</span><span>виписку</span></a>'),
+                     ("<br> між словами", '<a href="https://socauth.privatbank.ua/x">Отримати<br>виписку</a>')):
+    _chk(f"кнопка розпізнається, коли слова розділені тегами без пробілу: {_name}", km._find_privat_statement_link(_make_html_email(_html)) == "https://socauth.privatbank.ua/x")
+
 # 8: ПОСИЛАННЯ ПРОТУХЛО — сервер повертає HTML-логін Приват24 замість PDF (реальний випадок,
 #    2026-09-19: 11 з 13 листів 60-денного бекфілу дали саме це, не помилку HTTP). Перевіряємо
 #    саме ту перевірку вмісту, яку archive() робить ПІСЛЯ _download() (b"%PDF-" in payload[:4096]).

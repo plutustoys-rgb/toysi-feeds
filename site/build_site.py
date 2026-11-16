@@ -3771,13 +3771,14 @@ GIFT_LIST_NAME = "gift_page"
 GIFT_MIN_CONTRIB = 0.0
 # дитячі подарунки: категорії з «космет…» (накладні вії, бальзами для губ тощо) не показуємо (15.11, живий замір складу; перевіряє _gift_ok)
 GIFT_POOL_MAX = 4 * GIFT_SHOW_MAX               # пул найвигідніших кандидатів, з якого вибираємо рівномірно за ціною
+GIFT_BANDS = 6                                  # «На Миколая»/«Новорічний» (SEO 16.11): діапазон 100–700 ₴ ділимо на смуги по 100 ₴; у кожній — найкращі за внеском (GIFT_SHOW_MAX // GIFT_BANDS)
 GIFT_AGE_PRICE_MAX = 2000                       # вікові сторінки: подарунок до 2 000 ₴ (без басейнів/ігрових комплексів за 4–5 тис.)
 GIFT_FAQ_MIN, GIFT_FAQ_MAX = 3, 6
 GIFT_HUB_FILE = "podarunky.html"
-# (slug, H1 = запит, підпис, правило). Правило: pmin/pmax — ціна (₴); age=(lo, hi) — мінімальний вік з опису в РОКАХ (місяці = N/12), включно; ny=True — спершу назви з HOME_SEASONAL «ny».
+# (slug, H1 = запит, підпис, правило). Правило: pmin/pmax — ціна (₴); age=(lo, hi) — мінімальний вік з опису в РОКАХ (місяці = N/12), включно; ny=True — спершу назви з HOME_SEASONAL «ny» (при bands — першими в межах смуги; на сторінці порядок за ціною); bands=N — діапазон pmin..pmax ділиться на N цінових смуг, у кожній найкращі за внеском (SEO 16.11).
 GIFT_PAGES = (
-    ("podarunok-na-mykolaia", "Подарунок на Миколая дитині", "На Миколая", {"pmin": 100, "pmax": 700}),
-    ("novorichnyi-podarunok-dytyni", "Новорічний подарунок дитині", "На Новий рік", {"pmin": 100, "pmax": 700, "ny": True}),
+    ("podarunok-na-mykolaia", "Подарунок на Миколая дитині", "На Миколая", {"pmin": 100, "pmax": 700, "bands": GIFT_BANDS}),
+    ("novorichnyi-podarunok-dytyni", "Новорічний подарунок дитині", "На Новий рік", {"pmin": 100, "pmax": 700, "ny": True, "bands": GIFT_BANDS}),
     ("podarunok-do-100-hrn", "Подарунок дитині до 100 грн", "До 100 грн", {"pmin": 0, "pmax": 100}),
     ("podarunok-do-200-hrn", "Подарунок дитині до 200 грн", "До 200 грн", {"pmin": 0, "pmax": 200}),
     ("podarunok-do-300-hrn", "Подарунок дитині до 300 грн", "До 300 грн", {"pmin": 0, "pmax": 300}),
@@ -3851,7 +3852,7 @@ def _gift_spread(items, n):
 
 
 def gift_pick(prods, rule, pool=None):
-    """Добірка сторінки подарунків за правилом: з пулу найвигідніших (≤GIFT_POOL_MAX; ≤GIFT_PER_CAT з категорії, без дублів «основи назви») беремо ≤GIFT_SHOW_MAX РІВНОМІРНО за ціною (щоб були і дешеві, і дорожчі); новорічна — спершу «ny»-назви. pool — gift_pool(prods), якщо вже пораховано."""
+    """Добірка сторінки подарунків за правилом: з пулу найвигідніших (≤GIFT_POOL_MAX; ≤GIFT_PER_CAT з категорії, без дублів «основи назви») беремо ≤GIFT_SHOW_MAX РІВНОМІРНО за ціною (щоб були і дешеві, і дорожчі); новорічна — спершу «ny»-назви. Правило з bands (Миколай, новорічна) — по цінових смугах (_gift_pick_bands). pool — gift_pool(prods), якщо вже пораховано."""
     ny_rx = None
     if rule.get("ny"):
         ny_rx = next((re.compile(rx, re.I) for k, _l, _s, rx, _f, _la, _eb in HOME_SEASONAL if k == "ny"), None)
@@ -3860,6 +3861,43 @@ def gift_pick(prods, rule, pool=None):
     if "age" in rule and len(out) < GIFT_MIN_ITEMS:   # стеля ціни не має ховати вікову сторінку (за < 12 — повторюємо без стелі)
         out = _gift_pick_pool(pool, rule, ny_rx, False)
     return out
+
+
+def _gift_pick_bands(cand, rule):
+    """Цінові смуги (SEO 16.11): [pmin, pmax] ділимо на rule["bands"] рівних смуг (остання включає pmax); у кожній беремо ≤ GIFT_SHOW_MAX // bands перших кандидатів
+    (cand уже відсортовано: «ny»-назви першими, далі за внеском спадно), ≤GIFT_PER_CAT з категорії на всю сторінку, без дублів «основи назви». Якщо в смузі кандидатів менше,
+    ніж місць, решту добираємо з найкращих кандидатів ЗАЛИШКУ (без обмеження смуг). Результат — за зростанням ціни."""
+    n_b = int(rule["bands"])
+    lo, hi = rule.get("pmin", 0), rule["pmax"]
+    width = (hi - lo) / n_b
+    per_band = max(1, GIFT_SHOW_MAX // n_b)
+    out, per_cat, keys, used = [], {}, set(), set()
+
+    def take(p):
+        cat, k = (p.get("category") or "").strip().lower(), _pick_key(p["name"])
+        if per_cat.get(cat, 0) >= GIFT_PER_CAT or k in keys:
+            return False
+        per_cat[cat] = per_cat.get(cat, 0) + 1
+        keys.add(k)
+        used.add(str(p["id"]))
+        out.append(p)
+        return True
+
+    for b in range(n_b):
+        blo, bhi = lo + b * width, lo + (b + 1) * width
+        got = 0
+        for p in cand:
+            if got >= per_band:
+                break
+            pr = p["price"]
+            if (blo <= pr < bhi or (b == n_b - 1 and pr == hi)) and str(p["id"]) not in used and take(p):
+                got += 1
+    for p in cand:   # смуга без кандидатів не лишає порожніх місць на сторінці
+        if len(out) >= GIFT_SHOW_MAX:
+            break
+        if str(p["id"]) not in used:
+            take(p)
+    return sorted(out[:GIFT_SHOW_MAX], key=lambda p: (p.get("price") or 0, str(p["id"])))
 
 
 def _gift_pick_pool(pool, rule, ny_rx, price_cap):
@@ -3874,6 +3912,8 @@ def _gift_pick_pool(pool, rule, ny_rx, price_cap):
             continue
         cand.append(p)
     cand.sort(key=lambda p: (0 if (ny_rx and ny_rx.search(p.get("name") or "")) else 1, -(p.get("contribution") or 0), str(p["id"])))
+    if rule.get("bands"):
+        return _gift_pick_bands(cand, rule)
     out, per_cat, keys = [], {}, set()
     for p in cand:
         cat, k = (p.get("category") or "").strip().lower(), _pick_key(p["name"])

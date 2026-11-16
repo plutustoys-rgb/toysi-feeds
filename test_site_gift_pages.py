@@ -101,7 +101,7 @@ chk(f"кожна добірка ≤ {bs.GIFT_SHOW_MAX} товарів", all(len(
 ny = bs.gift_pick(prods, by_slug["novorichnyi-podarunok-dytyni"])
 _ny_rx = re.compile(next(rx for k, _l, _s, rx, _f, _la, _eb in bs.HOME_SEASONAL if k == "ny"), re.I)
 _flags = [bool(_ny_rx.search(p["name"])) for p in ny]
-chk("новорічна: спершу назви з HOME_SEASONAL «ny» (усі збіги йдуть перед рештою)", ny and _flags[0] and _flags == sorted(_flags, reverse=True))
+chk("новорічна (цінові смуги): у добірці є назви з HOME_SEASONAL «ny»; порядок — за зростанням ціни", ny and any(_flags) and [p["price"] for p in ny] == sorted(p["price"] for p in ny))
 mk = bs.gift_pick(prods, by_slug["podarunok-na-mykolaia"])
 chk("Миколай: ціна 100–700", mk and all(100 <= p["price"] <= 700 for p in mk))
 
@@ -127,6 +127,29 @@ chk(f"новорічна: усі 6 низьковигідних «ny» потр�
 # вікова сторінка не зникає через стелю ціни
 exp_age = [P(f"Дорога іграшка {W[i % 20]}{i} {W[(i * 7) % 20]}", 3000 + i, f"ДорК{i}", "Для дітей від 3 років", contrib=500) for i in range(14)]
 chk(f"вікова сторінка: якщо під стелею < {bs.GIFT_MIN_ITEMS}, повторюємо без стелі (сторінка не зникає)", len(bs.gift_pick(exp_age, by_slug["podarunok-na-3-roky"])) >= bs.GIFT_MIN_ITEMS)
+# ── цінові смуги «На Миколая» / «Новорічний» (SEO 16.11): 100–700 ₴ на 6 смуг по 100 ₴, у кожній найкращі за внеском ──
+chk("правила Миколай/новорічна мають bands=GIFT_BANDS (6), решта сторінок — без смуг", by_slug["podarunok-na-mykolaia"].get("bands") == bs.GIFT_BANDS == 6 and by_slug["novorichnyi-podarunok-dytyni"].get("bands") == 6
+    and not any(r_.get("bands") for s_, r_ in by_slug.items() if s_ not in ("podarunok-na-mykolaia", "novorichnyi-podarunok-dytyni")))
+bd = []
+for b_ in range(6):   # у кожній смузі 15 товарів, внесок за спаданням ціни зростає: найкращі — найдешевші в смузі
+    for j_ in range(15):
+        bd.append(P(f"Смуга {W[(b_ * 3 + j_) % 20]}{b_}x{j_} {W[(j_ * 7) % 20]}", 100 + b_ * 100 + j_ * 6, f"Бк{b_}-{j_ % 8}", "", contrib=200 - j_))
+bd += [P("Крайня 100 Альфа", 100, "Крайня1", "", contrib=500), P("Крайня 700 Омега", 700, "Крайня2", "", contrib=500), P("Нижче смуги Дельта", 99, "Нижче", "", contrib=900), P("Вище смуги Сигма", 701, "Вище", "", contrib=900)]
+bk = bs.gift_pick(bd, by_slug["podarunok-na-mykolaia"])
+cnt = [sum(1 for p_ in bk if 100 + b_ * 100 <= p_["price"] < 200 + b_ * 100 or (b_ == 5 and p_["price"] == 700)) for b_ in range(6)]
+chk(f"смуги: 36 карток, по 6 у кожній смузі 100–200 … 600–700: {cnt}", len(bk) == 36 and cnt == [6] * 6)
+chk("смуги: ціна 100 і 700 увійшли (краї), 99 і 701 — ні", any(p_["price"] == 100 for p_ in bk) and any(p_["price"] == 700 for p_ in bk) and not any(p_["price"] in (99, 701) for p_ in bk))
+chk("смуги: порядок за зростанням ціни", [p_["price"] for p_ in bk] == sorted(p_["price"] for p_ in bk))
+chk("смуги: ≤2 товари з категорії на всю сторінку", max(__import__("collections").Counter(p_["category"].strip().lower() for p_ in bk).values()) <= bs.GIFT_PER_CAT)
+chk("смуги: у смузі беруться найкращі за внеском (крайні 500-внесок товари 100/700 — обидва тут)", {"Крайня 100 Альфа", "Крайня 700 Омега"} <= {p_["name"] for p_ in bk})
+# смуга без кандидатів: місця добираються з решти, сторінка лишається повною
+bd_gap = [p_ for p_ in bd if not (300 <= p_["price"] < 400)]
+bk_gap = bs.gift_pick(bd_gap, by_slug["podarunok-na-mykolaia"])
+chk(f"смуга без кандидатів: сторінка лишається повною ({len(bk_gap)} з {bs.GIFT_SHOW_MAX}), товарів 300–399 нема", len(bk_gap) == bs.GIFT_SHOW_MAX and not any(300 <= p_["price"] < 400 for p_ in bk_gap))
+# новорічна: «ny»-назви у смузі йдуть першими навіть із меншим внеском
+ny_b = [P(n_, 150 + b_ * 100, f"НрК{b_}", "", contrib=5) for b_, n_ in enumerate(("Новорічна кулька Зоря", "Новорічний дзвоник Сніжинка", "Новорічна гірлянда Промінь", "Новорічна свічка Метелик", "Новорічний ангел Мрія", "Новорічна шапка Казка"))] + [P(f"Звичайна {W[i_ % 20]}{i_} {W[(i_ * 3) % 20]}", 120 + (i_ % 6) * 100 + i_ // 6, f"ЗвК{i_}", "", contrib=400 + i_) for i_ in range(60)]
+nb = bs.gift_pick(ny_b, by_slug["novorichnyi-podarunok-dytyni"])
+chk(f"новорічна (смуги): усі 6 «ny»-назв (внесок 5 проти 400+) потрапили, по одній у смузі ({sum('Новоріч' in p_['name'] for p_ in nb)})", sum("Новоріч" in p_["name"] for p_ in nb) == 6 and len(nb) == 36)
 # ── збірка сторінок ──
 out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)

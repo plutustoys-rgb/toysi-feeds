@@ -53,12 +53,24 @@ def compute(catalog: dict, benchmarks: dict, formula_fn=None, market_fn=None) ->
         new = market_fn(it, floor_price, benchmarks)
         if new is None or old <= 0:
             continue
-        rows.append({"id": oid, "old": old, "new": int(new), "bench": float(b), "floor": floor_price, "instock": _stock_positive(it)})
+        rows.append({"id": oid, "old": old, "new": int(new), "bench": float(b), "floor": floor_price, "cost": float(cost), "instock": _stock_positive(it)})
     return summarize(rows)
 
 
-def summarize(rows: list) -> dict:
-    out = {"units": len(rows), "cheaper": 0, "pricier": 0, "same": 0, "at_floor": 0, "above_bench_minus_3": 0}
+def _contribution(price: float, cost: float) -> float:
+    """Внесок на замовлення — та сама формула, що відсіває збиткові позиції з фідів (generate_google_feed ~1176): ціна − собівартість − комісія сайту − логістика 17,81 ₴."""
+    import competitor_pricing as cp
+    return price - cost - price * cp.PAYMENT_COMMISSION.get("site", 0.0) - cp.SITE_FULFILL_PER_ORDER
+
+
+def summarize(rows: list, min_contribution: float | None = None) -> dict:
+    if min_contribution is None:
+        try:
+            min_contribution = float(os.environ.get("FEED_MIN_SITE_CONTRIBUTION", "0"))
+        except ValueError:
+            min_contribution = 0.0
+    out = {"units": len(rows), "cheaper": 0, "pricier": 0, "same": 0, "at_floor": 0, "above_bench_minus_3": 0,
+           "contrib_le0_old": 0, "contrib_le0_new": 0, "leave_feeds": 0, "return_to_feeds": 0, "min_contribution": min_contribution}
     ins = [r for r in rows if r["instock"]]
     out["units_instock"] = len(ins)
     out["sum_old_instock"] = sum(r["old"] for r in ins)
@@ -74,6 +86,12 @@ def summarize(rows: list) -> dict:
             out["at_floor"] += 1
         if r["new"] > math.floor(r["bench"] - 3 + 1e-9):
             out["above_bench_minus_3"] += 1
+        if "cost" in r:
+            c_old, c_new = _contribution(r["old"], r["cost"]), _contribution(r["new"], r["cost"])
+            out["contrib_le0_old"] += c_old <= 0
+            out["contrib_le0_new"] += c_new <= 0
+            out["leave_feeds"] += (c_old > min_contribution and c_new <= min_contribution)
+            out["return_to_feeds"] += (c_old <= min_contribution and c_new > min_contribution)
     ratios = sorted(r["bench"] / r["old"] for r in rows if r["old"] > 0)
 
     def q(p):
@@ -92,6 +110,8 @@ def render(s: dict, snapshot_generated: str = "") -> str:
     L = [f"Ринкова ціна −3 ₴ — що зміниться (читання, ворота SITE_MARKET_PRICE ще НЕ ввімкнені). Знімок Google: {snapshot_generated or '?'}; звіт {datetime.now():%Y-%m-%d %H:%M}.",
          f"ОДИНИЦЯ — товар каталогу Toysi з контрольною ціною: {s['units']} (з них у наявності {s['units_instock']}).",
          f"дешевшає: {s['cheaper']} · дорожчає: {s['pricier']} · без змін: {s['same']} · впирається в підлогу (собівартість×1,03): {s['at_floor']}",
+         f"внесок на замовлення ≤ 0 (ціна − собівартість − комісія − 17,81 ₴ логістики): було {s['contrib_le0_old']} → стане {s['contrib_le0_new']}; "
+         f"випаде з фідів Google/Meta/Bing (внесок ≤ {s['min_contribution']}): {s['leave_feeds']}; ПОВЕРНЕТЬСЯ у фіди: {s['return_to_feeds']}",
          f"сума цін товарів у наявності з контрольною: було {s['sum_old_instock']} ₴ → стане {s['sum_new_instock']} ₴ (різниця {d_sum:+d} ₴, {pct:+.1f} %)",
          f"контрольна / стара ціна (розподіл): {s['bench_over_old']}",
          "найбільші підвищення (id, стара, нова, контрольна): " + "; ".join(f"{a} {b}→{c} (к. {d})" for a, b, c, d in s["top_up"]),

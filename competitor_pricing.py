@@ -610,7 +610,7 @@ def site_market_price(item: dict, floor_price: int, benchmarks: dict | None = No
     if not oid:
         return None
     b = bm.get(oid)
-    if not isinstance(b, (int, float)) or not _math.isfinite(b) or b <= 0:
+    if not isinstance(b, (int, float)) or isinstance(b, bool) or not _math.isfinite(b) or b <= 0:
         return None
     target = int(_math.floor(b - SITE_MARKET_DISCOUNT_UAH + 1e-9))
     return int(max(floor_price, target))

@@ -104,7 +104,12 @@ tmp3.write_text("{не json", encoding="utf-8")
 chk("битий файл / нема файлу → {} без винятку", g.load_benchmarks(tmp3, now=NOW) == {} and g.load_benchmarks(tmp.with_name("nope.json"), now=NOW) == {})
 tmp4 = tmp.with_name("mix.json")
 tmp4.write_text(json.dumps({"generated": NOW.strftime("%Y-%m-%dT%H:%M:%S"), "bench": {"x": 5, "y": "7", "z": -1, "w": 0, "v": 2.5}}), encoding="utf-8")
-chk("load_benchmarks відсіює нечислові/невід'ємні/нульові значення", g.load_benchmarks(tmp4, now=NOW) == {"x": 5.0, "v": 2.5})
+chk("load_benchmarks відсіює нечислові/від'ємні/нульові значення", g.load_benchmarks(tmp4, now=NOW) == {"x": 5.0, "v": 2.5})
+tmp5 = tmp.with_name("bool.json")
+tmp5.write_text(json.dumps({"generated": NOW.strftime("%Y-%m-%dT%H:%M:%S"), "bench": {"t": True, "ok": 3.0}}), encoding="utf-8")
+chk("JSON true не вважається ціною 1,0 (bool відсіяно)", g.load_benchmarks(tmp5, now=NOW) == {"ok": 3.0} and cp.site_market_price({"id": "t"}, 5, {"t": True}) is None)
+# offerId фіду == market_offer_id: у фіді id = str(vendor_code or pid) (generate_google_feed ~1211)
+chk("offerId: vendor_code ≠ id → береться vendor_code (як id у фіді); без vendor_code — id", cp.market_offer_id({"id": "5", "vendor_code": "VC-5"}) == "VC-5" and cp.market_offer_id({"id": "5", "vendor_code": ""}) == "5")
 
 # ---- кеш: збій завантаження не валить ціну
 cp._MARKET_BENCH_CACHE = None
@@ -134,6 +139,10 @@ sm = rep.compute(cat, bmr, formula_fn=lambda it: old200)
 chk("звіт: одиниця = 3 товари з контрольною (4-й без неї не рахується)", sm["units"] == 3 and sm["units_instock"] == 2)
 chk("звіт: 1 дорожчає (R1), 2 дешевшає (R2 і R3 до підлоги), у підлогу впирається 1 (R3)", sm["pricier"] == 1 and sm["cheaper"] == 2 and sm["at_floor"] == 1)
 chk("звіт: сума в наявності: було 2×стара, стане 597 + (стара−20−3)", sm["sum_old_instock"] == 2 * old200 and sm["sum_new_instock"] == 597 + max(f200, old200 - 23))
+chk("звіт: рахує внесок ≤ 0 і випадання/повернення у фіди (поля є й числа не від'ємні)", all(isinstance(sm[k], int) and sm[k] >= 0 for k in ("contrib_le0_old", "contrib_le0_new", "leave_feeds", "return_to_feeds")))
+sm2 = rep.summarize([{"id": "x", "old": 100, "new": 60, "bench": 63.0, "floor": 60, "cost": 59.0, "instock": True},      # старий внесок >0 → новий ≤0: випаде
+                     {"id": "y", "old": 60, "new": 100, "bench": 103.0, "floor": 50, "cost": 59.0, "instock": True}], min_contribution=0.0)   # старий ≤0 → новий >0: повернеться
+chk("звіт: товар x випадає з фідів, y повертається; ≤0: було 1 (y), стане 1 (x)", sm2["leave_feeds"] == 1 and sm2["return_to_feeds"] == 1 and sm2["contrib_le0_old"] == 1 and sm2["contrib_le0_new"] == 1)
 chk("звіт: render не падає й містить одиницю та назву", "Ринкова ціна" in rep.render(sm, "2026-11-16T10:00:00") and "товар каталогу" in rep.render(sm))
 os.environ.pop("SITE_MARKET_PRICE", None)
 cp._MARKET_BENCH_CACHE = None

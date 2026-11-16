@@ -295,7 +295,7 @@ def load_benchmarks(path: Path = SNAPSHOT, max_age_days: int = MAX_AGE_DAYS, now
             return {}
         out = {}
         for k, v in b.items():
-            if isinstance(v, (int, float)) and math.isfinite(v) and v > 0:
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0:
                 out[str(k)] = float(v)
         return out
     except Exception:  # noqa: BLE001

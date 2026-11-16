@@ -154,6 +154,21 @@ _HTTP = _make_html_email('<a href="http://socauth.privatbank.ua/cp/api/out_click
 _chk("не-https посилання відхиляється", km._find_privat_statement_link(_HTTP) is None)
 _chk("стара структура (awstrack) далі працює (регресія)", km._find_privat_statement_link(msg_privat) is not None and "att.privatbank.ua" in km._find_privat_statement_link(msg_privat))
 
+# 7в: аудит #1596 — перевірка ХОСТА розбором URL (не підрядком) і лінійність розбору
+import time as _time  # noqa: E402
+for _bad in ("https://evil.com/?x=privatbank.ua", "https://privatbank.ua.evil.com/a", "https://evil.com/#privatbank.ua", "https://user@evil.com/?privatbank.ua",
+             "https://privatbank.ua@evil.com/", "https://evilprivatbank.ua/", "https://evil.com/?awstrack.me&privatbank.ua"):
+    _m = _make_html_email(f'<a href="{_bad}">Отримати виписку</a>')
+    _chk(f"хост обхід відхилено: {_bad}", km._find_privat_statement_link(_m) is None)
+_good = km._find_privat_statement_link(_make_html_email('<a href="https://socauth.privatbank.ua/cp/api/out_click.php?t=1&amp;r=2">Отримати виписку</a>'))
+_chk("справжній socauth.privatbank.ua приймається (+ &amp; розкодовано)", _good == "https://socauth.privatbank.ua/cp/api/out_click.php?t=1&r=2")
+_chk("awstrack.me-обгортка (піддомен) приймається", km._find_privat_statement_link(_make_html_email('<a href="https://v084ncpp.r.eu-central-1.awstrack.me/L0/https:%2F%2Fsocauth.privatbank.ua%2Fx">Отримати виписку</a>')) is not None)
+_t0 = _time.time()
+_r1 = km._find_privat_statement_link(_make_html_email("<a " * 60000))
+_r2 = km._find_privat_statement_link(_make_html_email('<a href="x">' * 20000))
+_chk(f"розбір лінійний: 60 000 незакритих «<a » і 20 000 «<a href>» без </a> — менше 3 с (було 20–60 с квадратично), знайдено нічого ({_time.time() - _t0:.2f} с)", (_time.time() - _t0) < 3 and _r1 is None and _r2 is None)
+_chk("_download(ПриватБанк): стартовий чужий хост → None БЕЗ мережі", km._download("https://evil.com/x?privatbank.ua", label="ПриватБанк") is None)
+
 # 8: ПОСИЛАННЯ ПРОТУХЛО — сервер повертає HTML-логін Приват24 замість PDF (реальний випадок,
 #    2026-09-19: 11 з 13 листів 60-денного бекфілу дали саме це, не помилку HTTP). Перевіряємо
 #    саме ту перевірку вмісту, яку archive() робить ПІСЛЯ _download() (b"%PDF-" in payload[:4096]).

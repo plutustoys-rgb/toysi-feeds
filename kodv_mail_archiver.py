@@ -26,7 +26,7 @@
 локально треба додати у .env). Без них скрипт М'ЯКО виходить (код 0), не валить ланцюг.
 """
 import email
-import html as _html
+from html.parser import HTMLParser
 import imaplib
 import json
 import os
@@ -277,6 +277,20 @@ def _download(url: str, label: str = "RozetkaPay") -> bytes | None:
     (CAdES/PKCS7-обгортка навколо %PDF-…) — перевірено живо 2026-09-19, БЕЗ логіну в Приват24."""
     try:
         req = urllib.request.Request(url, method="GET", headers={"User-Agent": "Mozilla/5.0"})
+        if label == "ПриватБанк":
+            # Аудит #1596: лист може бути підроблений — стартовий хост і КОЖЕН редірект лише *.privatbank.ua / *.awstrack.me (інакше blind-SSRF + підроблений PDF у теці банку)
+            if not _host_ok(url, _PRIVAT_HOSTS):
+                print(f"[KODVmail] посилання {label} веде на сторонній хост — не качаю", file=sys.stderr)
+                return None
+
+            class _Limited(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req_, fp, code, msg, headers, newurl):
+                    if not _host_ok(newurl, _PRIVAT_HOSTS):
+                        raise urllib.error.URLError("редірект на сторонній хост заблоковано")
+                    return super().redirect_request(req_, fp, code, msg, headers, newurl)
+
+            with urllib.request.build_opener(_Limited()).open(req, timeout=LINK_DOWNLOAD_TIMEOUT) as resp:
+                return resp.read()
         with urllib.request.urlopen(req, timeout=LINK_DOWNLOAD_TIMEOUT) as resp:
             return resp.read()
     except Exception as e:  # noqa: BLE001
@@ -288,8 +302,53 @@ _PRIVAT_LINK_RE = re.compile(
     r'href=["\'](https://[^"\']*awstrack\.me[^"\']*privatbank\.ua[^"\']*)["\']', re.IGNORECASE)
 # З 13.11.2026 ПриватБанк прибрав awstrack.me-обгортку: кнопка «Отримати виписку» веде ПРЯМО на https://socauth.privatbank.ua/cp/api/out_click.php?utm_medium=…&token=…&resource=… (href з &amp;).
 # Старий regex шукав лише awstrack → _find_privat_statement_link повертало None, виписки 13–16.11 мовчки не архівувались (запит головного бухгалтера 16.11).
-_PRIVAT_ANCHOR_RE = re.compile(r'<a\b[^>]*?href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 _PRIVAT_BUTTON_TEXT = "отримати виписку"
+_PRIVAT_HOSTS = ("privatbank.ua", "awstrack.me")      # кнопка: пряме socauth.privatbank.ua АБО стара awstrack.me-обгортка
+
+
+def _host_ok(url: str, suffixes) -> bool:
+    """Аудит #1596: ХОСТ посилання з листа перевіряємо розбором URL, а не підрядком (https://evil.com/?x=privatbank.ua, https://privatbank.ua.evil.com/, https://privatbank.ua@evil.com/
+    раніше проходили б). Лише https, без userinfo, hostname == суфікс або закінчується на «.суфікс»."""
+    try:
+        sp = urllib.parse.urlsplit(url or "")
+        h = (sp.hostname or "").lower()
+        if sp.scheme != "https" or sp.username is not None or not h:
+            return False
+    except ValueError:
+        return False
+    return any(h == x or h.endswith("." + x) for x in suffixes)
+
+
+class _AnchorCollector(HTMLParser):
+    """Лінійний збирач <a href>…текст…</a> (аудит #1596: regex з `.*?`/`[^>]*?` давав квадратичний backtracking на листі з тисячами `<a`). HTMLParser сам розкодовує &amp; в href."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.anchors = []
+        self._href = None
+        self._text = []
+
+    def _flush(self):
+        if self._href is not None:
+            self.anchors.append((self._href, " ".join("".join(self._text).split()).lower()))
+        self._href, self._text = None, []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self._flush()
+            self._href = dict(attrs).get("href") or ""
+
+    def handle_data(self, data):
+        if self._href is not None and len(self._text) < 50:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self._flush()
+
+    def close(self):
+        super().close()
+        self._flush()
 
 
 def _find_privat_statement_link(msg) -> str | None:
@@ -304,15 +363,19 @@ def _find_privat_statement_link(msg) -> str | None:
         if not payload:
             continue
         html = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
-        # 1) кнопка за ТЕКСТОМ «Отримати виписку» — стійко до зміни обгортки (awstrack.me → пряме socauth). Лише https-посилання на privatbank.ua (прямо або в awstrack-обгортці).
-        for hm in _PRIVAT_ANCHOR_RE.finditer(html):
-            text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", hm.group(2))).strip().lower()
-            href = _html.unescape(hm.group(1)).strip()
-            if _PRIVAT_BUTTON_TEXT in text and href.lower().startswith("https://") and "privatbank.ua" in href.lower():
-                return href
-        # 2) запасний (стара поведінка): перше awstrack-посилання на privatbank.ua
+        # 1) кнопка за ТЕКСТОМ «Отримати виписку» — стійко до зміни обгортки (awstrack.me → пряме socauth). Хост — РОЗБОРОМ URL: *.privatbank.ua або *.awstrack.me, https, без userinfo.
+        try:
+            col = _AnchorCollector()
+            col.feed(html)
+            col.close()
+            for href, text in col.anchors:
+                if _PRIVAT_BUTTON_TEXT in text and _host_ok(href.strip(), _PRIVAT_HOSTS):
+                    return href.strip()
+        except Exception as e:  # noqa: BLE001
+            _log(f"розбір HTML листа ПриватБанку не вдався ({type(e).__name__}) — пробую запасний пошук")
+        # 2) запасний (стара поведінка): перше awstrack-посилання на privatbank.ua, але ХОСТ — лише *.awstrack.me
         m = _PRIVAT_LINK_RE.search(html)
-        if m:
+        if m and _host_ok(m.group(1), ("awstrack.me",)):
             return m.group(1)
     return None
 

@@ -468,11 +468,24 @@ def reconcile_commission(txn: dict, day_total: float, book_rows: list) -> tuple:
     return "not_in_book", f"комісію за платіж {base if base is not None else '?'} у книзі не знайдено"
 
 
+def _amount_in_row(text: str, amount, money) -> bool:
+    """Сума операції в рядку книги: у грошових графах АБО в тексті гр.5 (з нормалізацією «1 000,00» → «1000,00»: бухгалтер пише розряди пробілом)."""
+    try:
+        a = round(abs(float(amount)), 2)
+    except (TypeError, ValueError):
+        return False
+    if any(isinstance(v, (int, float)) and abs(abs(v) - a) < 0.005 for v in (money or {}).values()):
+        return True
+    t = re.sub(r"(?<=\d)[ \u00a0](?=\d{3}(?!\d))", "", text or "")
+    return _has_amount(t, a)
+
+
 def _doc_in_book(txn: dict, book_rows: list):
     """Звірка за НОМЕРОМ ДОКУМЕНТА (запит головного бухгалтера 16.11.2026): бухгалтер пише в гр.5 «платіж № 27 від 05.10.2026», «платіжна інструкція № 31 від 20.10.2026»,
     «документ № B9OF50P5OY від 09.11.2026» — і для НУЛЬОВИХ рядків (гр.2–10 порожні: передоплата РУШ, аванс постачальнику), яких звірка за сумою не бачить, і для комісій банку
     (база платежу там з пробілом «4 000,00», тож `_has_amount` її не знаходить). Ключ = «№ <ref> від <дата операції>» ТОЧНО (ref з виписки без пробілів — PDF переносить «B9OF50P5 OY»);
-    ref не може бути префіксом/частиною іншого номера. Повертає № рядка книги або None."""
+    ref не може бути префіксом/частиною іншого номера. ДОДАТКОВО (аудит #1596): сума операції має бути в тому ж рядку (грошові графи або текст) — номер+дата без суми
+    могли б збігтися з іншою операцією; рядок обирається першим, що задовольняє №+дата+суму. Повертає № рядка книги або None."""
     ref = re.sub(r"\s+", "", str(txn.get("ref") or ""))
     if not ref or ref.startswith("@"):         # «@2PL…» — банківський референс зарахування, не номер документа бухгалтера
         return None
@@ -481,7 +494,7 @@ def _doc_in_book(txn: dict, book_rows: list):
         return None
     pat = re.compile(r"(?:№|N)\s*" + re.escape(ref) + r"(?![0-9A-Za-zА-Яа-яІіЇїЄєҐґ])\s*від\s*" + re.escape(d.strftime("%d.%m.%Y")), re.IGNORECASE)
     for r in book_rows:
-        if pat.search(r["text"] or ""):
+        if pat.search(r["text"] or "") and _amount_in_row(r["text"], txn.get("amount"), r.get("money")):
             return r["row"]
     return None
 

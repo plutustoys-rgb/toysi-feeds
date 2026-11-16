@@ -571,9 +571,55 @@ SITE_PRICE_MULT = 1.5
 SITE_MIN_MARGIN = 0.03
 
 
+# РИНКОВА ЦІНА (рішення власника 16.11.2026, дослівно: «треба ринкова ціна -3 грн.»; на питання про товари, що вже дешевші за ринок, — «Так, усі»):
+# для товару з КОНТРОЛЬНОЮ ціною Google (знімок gmc_price_competitiveness, ≤7 діб) ціна сайту = контрольна − 3 ₴ (ціле вниз, не вище), але НЕ нижче підлоги
+# собівартість × 1,03 (правило власника 06.10). Без контрольної / знімок застарів / вимкнено — формула вище (× 1,5). Діє лише на сайт і на все, що бере ціну сайту
+# (Google/Meta/Bing-фіди читають index.json); маркетплейси (EVA/Rozetka/Prom) НЕ чіпаємо. ВОРОТА: SITE_MARKET_PRICE=1 (інакше нічого не змінюється).
+SITE_MARKET_DISCOUNT_UAH = 3
+_MARKET_BENCH_CACHE = None
+
+
+def site_market_price_on() -> bool:
+    return os.environ.get("SITE_MARKET_PRICE", "0").strip() == "1"
+
+
+def _market_benchmarks() -> dict:
+    """Контрольні ціни зі знімка Google (один раз на процес). Будь-який збій → {} (тобто формула ×1,5, як було)."""
+    global _MARKET_BENCH_CACHE
+    if _MARKET_BENCH_CACHE is None:
+        try:
+            import gmc_price_competitiveness as _g
+            _MARKET_BENCH_CACHE = _g.load_benchmarks()
+        except Exception:  # noqa: BLE001
+            _MARKET_BENCH_CACHE = {}
+    return _MARKET_BENCH_CACHE
+
+
+def market_offer_id(item: dict) -> str:
+    """offerId у звіті Google = id у фіді = vendor_code товару, а без нього — id каталогу (generate_google_feed: str(vendor_code or pid))."""
+    return str(item.get("vendor_code") or item.get("id") or "").strip()
+
+
+def site_market_price(item: dict, floor_price: int, benchmarks: dict | None = None):
+    """Ціна за правилом «контрольна − 3 ₴» або None (правило не застосовується: вимкнено / нема контрольної). floor_price — підлога (собівартість × 1,03, ціле вгору)."""
+    import math as _math
+    if not site_market_price_on():
+        return None
+    bm = _market_benchmarks() if benchmarks is None else benchmarks
+    oid = market_offer_id(item)
+    if not oid:
+        return None
+    b = bm.get(oid)
+    if not isinstance(b, (int, float)) or not _math.isfinite(b) or b <= 0:
+        return None
+    target = int(_math.floor(b - SITE_MARKET_DISCOUNT_UAH + 1e-9))
+    return int(max(floor_price, target))
+
+
 def site_retail_price(item: dict) -> int:
     """Ціна сайту, грн (ціле, вгору): max(знижена ціна Toysi × 1.5, real_toysi_cost × 1.03).
-    real_toysi_cost = знижена ціна + фіксована «Збірка» Toysi (пакування). Невизначена собівартість → лише ×1.5."""
+    real_toysi_cost = знижена ціна + фіксована «Збірка» Toysi (пакування). Невизначена собівартість → лише ×1.5.
+    З воротами SITE_MARKET_PRICE=1 і свіжою контрольною ціною Google — max(підлога, контрольна − 3 ₴) (див. вище site_market_price)."""
     import math as _math
     base = _math.ceil(toysi_discounted_price(item) * SITE_PRICE_MULT)
     try:
@@ -582,7 +628,11 @@ def site_retail_price(item: dict) -> int:
         return int(base)
     if not cost or cost <= 0:
         return int(base)
-    return int(max(base, _math.ceil(cost * (1 + SITE_MIN_MARGIN))))
+    floor_price = _math.ceil(cost * (1 + SITE_MIN_MARGIN))
+    mk = site_market_price(item, int(floor_price))
+    if mk is not None:
+        return mk
+    return int(max(base, floor_price))
 
 
 def toysi_discounted_price(item: dict) -> float:

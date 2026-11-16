@@ -205,10 +205,22 @@ def spread_stats(ratios: list) -> dict:
             "pricier_median_pct": round(_pct(pricier, 0.5), 1) if pricier else None, "pricier_buckets": b}
 
 
-def write_snapshot(labels: dict, stats: dict, variant: str, now: datetime | None = None, path: Path = SNAPSHOT) -> Path:
+def bench_from_detail(detail: dict | None) -> dict:
+    """{offerId: контрольна ціна, грн (2 знаки)} лише там, де вона є й скінченна та > 0 (рішення власника 16.11.2026: ціна сайту = контрольна − 3 ₴)."""
+    out = {}
+    for oid, d in (detail or {}).items():
+        b = d.get("benchmark")
+        if isinstance(b, (int, float)) and math.isfinite(b) and b > 0:
+            out[str(oid)] = round(float(b), 2)
+    return out
+
+
+def write_snapshot(labels: dict, stats: dict, variant: str, now: datetime | None = None, path: Path = SNAPSHOT, bench: dict | None = None) -> Path:
     now = now or datetime.now()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"date": now.strftime("%Y-%m-%d"), "generated": now.strftime("%Y-%m-%dT%H:%M:%S"), "country": COUNTRY, "query_variant": variant, "stats": stats, "labels": labels}
+    if bench:
+        payload["bench"] = bench
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
@@ -270,6 +282,26 @@ def load_labels(path: Path = SNAPSHOT, max_age_days: int = MAX_AGE_DAYS, now: da
         return {}
 
 
+def load_benchmarks(path: Path = SNAPSHOT, max_age_days: int = MAX_AGE_DAYS, now: datetime | None = None) -> dict:
+    """{offerId: контрольна ціна грн} зі знімка або {} (нема файлу / битий / старший за max_age_days / нема поля bench). Ніколи не кидає.
+    Свіжість рахується за ТИМ САМИМ правилом, що й load_labels (7 діб за `generated`)."""
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        gen = datetime.strptime(str(d.get("generated") or d.get("date"))[:10], "%Y-%m-%d")
+        if ((now or datetime.now()) - gen) > timedelta(days=max_age_days):
+            return {}
+        b = d.get("bench")
+        if not isinstance(b, dict):
+            return {}
+        out = {}
+        for k, v in b.items():
+            if isinstance(v, (int, float)) and math.isfinite(v) and v > 0:
+                out[str(k)] = float(v)
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def snapshot_age_hours(path: Path = SNAPSHOT, now: datetime | None = None):
     try:
         d = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -304,7 +336,7 @@ def run(session=None, now: datetime | None = None, path: Path = SNAPSHOT) -> int
         print(msg, file=sys.stderr)
         _alert("gmc_price_comp_empty", msg)
         return 1
-    write_snapshot(labels, st, variant, now, path)
+    write_snapshot(labels, st, variant, now, path, bench=bench_from_detail(detail))
     try:
         write_detail_csv(detail, now, Path(path).parent)       # побічний файл для SEO: збій НЕ має впливати на мітки
     except Exception as e:  # noqa: BLE001

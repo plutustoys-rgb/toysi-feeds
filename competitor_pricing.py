@@ -1754,7 +1754,7 @@ def decide_price_for_platform(
     Рішення про ціну для ОДНОГО майданчика (Prom або Rozetka):
         Шлях 1 (немає конкурента):
             нижня_межа = (cost + cost*MIN_PROFIT) / (1 - комісія_майданчика - комісія_оплати)
-            ціна       = max(cost*NO_COMPETITOR_MULT, нижня_межа)
+            ціна       = max(cost*NO_COMPETITOR_MULT, нижня_межа)   (Prom: нижня_межа від cost+PROM_ORDER_FEE_UAH, множник — від cost)
         Шлях 2, Rozetka (є конкурент):
             нижня_межа = (cost + cost*MIN_PROFIT_COMPETITOR_FLOOR) / (1 - комісія_майданчика - комісія_оплати)
             кандидат   = min_competitor - PRICE_STEP (фіксований крок, грн — не %)
@@ -1787,8 +1787,10 @@ def decide_price_for_platform(
     payment_commission = PAYMENT_COMMISSION.get(platform, 0.0)
     target_margin = MIN_PROFIT if min_competitor is None else MIN_PROFIT_COMPETITOR_FLOOR
     # 2026-11-16 (рішення власника «додай 10 грн»): Prom — собівартість + фіксована витрата на замовлення
-    # («Дешева доставка», PROM_ORDER_FEE_UAH); для решти майданчиків cost_eff == cost. cost_eff йде в КОЖНУ формулу
-    # нижче (floor, canonical_competitor_floor, NO_COMPETITOR_MULT, min_safe_price, margin_pct).
+    # («Дешева доставка», PROM_ORDER_FEE_UAH); для решти майданчиків cost_eff == cost. cost_eff йде у НИЖНЮ МЕЖУ й
+    # звітну маржу (floor, canonical_competitor_floor, min_safe_price, margin_pct). У НАЦІНКУ «без конкурента»
+    # (cost * NO_COMPETITOR_MULT) 10 ₴ НЕ множиться (уточнення власника-координатора 16.11: «додай 10 грн» = у нижню межу
+    # ціни Prom, не в націнку; floor уже містить +10).
     cost_eff = prom_effective_cost(cost) if platform == "prom" else cost
 
     if platform == "rozetka":
@@ -1808,7 +1810,7 @@ def decide_price_for_platform(
         floor = compute_floor(cost_eff, total_commission, target_margin)
 
     if min_competitor is None:
-        price = round(max(cost_eff * NO_COMPETITOR_MULT, floor), 2)
+        price = round(max(cost * NO_COMPETITOR_MULT, floor), 2)   # cost, НЕ cost_eff: +10 ₴ лише в floor
         result_category = "no_competitor"
     else:
         candidate = round(min_competitor - PRICE_STEP, 2)

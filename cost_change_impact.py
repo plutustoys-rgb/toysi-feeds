@@ -65,6 +65,7 @@ def main() -> int:
     ap.add_argument("--env", help="шлях до .env з TOYSI_API_KEY (якщо не поруч зі скриптом)")
     ap.add_argument("--observed-txt")
     ap.add_argument("--catalog-json", help="замість живого каталогу — кеш-файл (для налагодження)")
+    ap.add_argument("--prom-state", help="prom_competitor_price_state.json (публічна гілка feed-data, редагований; читаємо лише competitor_price/category/price/_delisted_since) — для блоку «Prom з конкурентом»")
     ap.add_argument("--out", default=str(HERE / "reports"))
     a = ap.parse_args()
 
@@ -181,6 +182,19 @@ def main() -> int:
         dsum = round(sum(r[key] - r["prom_old"] for r in up), 2)
         P(f"{label:30s} дорожчає: {len(up):6d} із {len(pr)}; ріст % сер./мед./p95 = {st['mean']}/{st['median']}/{st['p95']}; Σ різниці = {dsum} ₴ (по 1 од. кожного товару)")
         prom_summary[key] = {"up": len(up), "of": len(pr), **st, "sum_delta_uah": dsum}
+    # 2б. лише isImport (fee=0): хто міняє ціну «без конкурента» і чому (націнка ×1,75 від нової собівартості чи floor)
+    io = [r for r in pr if abs(r["prom_cost_only"] - r["prom_old"]) > 0.005]
+    io_up = [r for r in io if r["prom_cost_only"] > r["prom_old"]]
+    io_dn = [r for r in io if r["prom_cost_only"] < r["prom_old"]]
+    pct_up = _stats([(r["prom_cost_only"] / r["prom_old"] - 1) * 100 for r in io_up])
+    nonimp = [r for r in io_up if r["is_import"] is False]
+    P(f"  ТІЛЬКИ через isImport (без +10 ₴): ціна змінюється у {len(io)} товарів (дорожчає {len(io_up)}, дешевшає {len(io_dn)}); "
+      f"з дорожчих не-імпортних (isImport=false): {len(nonimp)}; ріст % сер./мед./p95 = {pct_up['mean']}/{pct_up['median']}/{pct_up['p95']}; "
+      f"Σ різниці = {round(sum(r['prom_cost_only'] - r['prom_old'] for r in io), 2)} ₴")
+    prom_summary["only_isimport"] = {"changed": len(io), "up": len(io_up), "down": len(io_dn), "nonimport_up": len(nonimp), **pct_up}
+    mult_new = [r for r in pr if r["prom_new"] > r["prom_new_floor"] + 0.005]
+    P(f"  Після обох змін ціну «без конкурента» задає: націнка cost×1,75 — {len(mult_new)} товарів, нижня межа (floor) — {len(pr) - len(mult_new)}")
+    P("  (+10 ₴ входить лише в floor, у націнку cost×1,75 НЕ множиться; тому «лише +10 ₴» міняє ціну тільки там, де floor ≥ cost×1,75)")
     fl = [r for r in pr if r["prom_new_floor"] > r["prom_old_floor"] + 0.005]
     P(f"Prom нижня межа (floor, Шлях 1) змінилась у {len(fl)} із {len(pr)} товарів")
     prom_summary["floor_changed"] = len(fl)
@@ -213,6 +227,88 @@ def main() -> int:
         newly_invalid = [r for r in ev if r["eva_old"] is not None and r["eva_new"] is None]
         P(f"EVA ціна (_eva_price: база ×1,5 + покривна підлога збиткових) змінилась у {len(ev)} товарів; випали з EVA (cost < MIN_SUPPLIER_PRICE): {len(newly_invalid)}")
         summary["eva"] = {"price_changed": len(ev), "newly_invalid": len(newly_invalid)}
+
+    # --- 5. Prom З КОНКУРЕНТОМ (реальні competitor_price зі стану репрайсера, публічна гілка feed-data)
+    if a.prom_state:
+        P("\n=== 5. Prom З КОНКУРЕНТОМ: decide_price_for_platform(cost, competitor_price, 'prom', category) — undercut/floor ===")
+        try:
+            st = json.loads(Path(a.prom_state).read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            st = None
+            P(f"Стан репрайсера недоступний ({type(e).__name__}: {e}) — блок не рахується.")
+        if st is not None:
+            delisted = set((st.get("_delisted_since") or {}).keys()) if isinstance(st.get("_delisted_since"), dict) else set()
+            ents = {k: v for k, v in st.items() if not k.startswith("_") and isinstance(v, dict)}
+            with_comp = {k: v for k, v in ents.items() if isinstance(v.get("competitor_price"), (int, float)) and v["competitor_price"] > 0}
+            P(f"Стан: записів (SKU) {len(ents)}; з competitor_price > 0: {len(with_comp)}; серед них у _delisted_since: {len(set(with_comp) & delisted)}")
+            if not with_comp:
+                P("Стан не містить competitor_price — порахувати нічого (не вигадую).")
+            else:
+                def decide(item, cprice, gate, fee):
+                    mode(gate, fee)
+                    cst = cp.real_toysi_cost(item)
+                    if cst <= 0:
+                        return None
+                    return cp.decide_price_for_platform(cst, float(cprice), "prom", item.get("category_name") or "")
+                recs = []
+                missing = 0
+                for pid, e in with_comp.items():
+                    item = catalog.get(pid)
+                    try:
+                        ok = bool(item) and float(item.get("price") or 0) > 0
+                    except (TypeError, ValueError):
+                        ok = False
+                    if not ok:
+                        missing += 1
+                        continue
+                    o = decide(item, e["competitor_price"], False, 0.0)
+                    n = decide(item, e["competitor_price"], True, 10.0)
+                    only_i = decide(item, e["competitor_price"], True, 0.0)
+                    only_f = decide(item, e["competitor_price"], False, 10.0)
+                    if not (o and n and only_i and only_f):
+                        missing += 1
+                        continue
+                    try:
+                        in_stock = float(item.get("stock") or 0) > 0
+                    except (TypeError, ValueError):
+                        in_stock = False
+                    recs.append({"pid": pid, "o": o, "n": n, "oi": only_i, "of": only_f, "rec_cat": e.get("category"), "in_stock": in_stock,
+                                 "delisted": pid in delisted})
+                mode(True, 10.0)
+                os.environ.pop("TOYSI_COST_BY_IMPORT", None)
+                P(f"Порахувано товарів (унікальних SKU): {len(recs)}; немає в живому каталозі/без валідної ціни: {missing}")
+                agree = sum(1 for r in recs if r["o"]["category"] == r["rec_cat"])
+                P(f"Звірка «стара формула» з категорією у стані репрайсера: збігається {agree} із {len(recs)} "
+                  f"({agree / len(recs) * 100:.1f} %) — стан записаний у різні дати, зі своїми собівартістю/комісією за id (кешу prom_category_cache тут нема → комісія за назвою)")
+
+                def block(title, rows_):
+                    trans = {}
+                    for r in rows_:
+                        k = (r["o"]["category"], r["n"]["category"])
+                        trans[k] = trans.get(k, 0) + 1
+                    ch = [r for r in rows_ if abs(r["n"]["price"] - r["o"]["price"]) > 0.004]
+                    pc_ = _stats([(r["n"]["price"] / r["o"]["price"] - 1) * 100 for r in ch if r["o"]["price"] > 0])
+                    dl = _stats([r["n"]["price"] - r["o"]["price"] for r in ch])
+                    P(f"-- {title}: SKU {len(rows_)}")
+                    P(f"   залишились undercut: {trans.get(('undercut', 'undercut'), 0)}; undercut→floor (НОВІ кандидати на delist): {trans.get(('undercut', 'floor'), 0)}; "
+                      f"уже були floor: {trans.get(('floor', 'floor'), 0)}; floor→undercut: {trans.get(('floor', 'undercut'), 0)}")
+                    P(f"   змінили ціну: {len(ch)}; Δціни ₴ сер./мед./p95 = {dl['mean']}/{dl['median']}/{dl['p95']}; Δ% сер./мед./p95 = {pc_['mean']}/{pc_['median']}/{pc_['p95']}; "
+                      f"Σ Δціни = {round(sum(r['n']['price'] - r['o']['price'] for r in ch), 2)} ₴ (по 1 од. кожного)")
+                    return {"sku": len(rows_), "undercut_stay": trans.get(("undercut", "undercut"), 0), "undercut_to_floor": trans.get(("undercut", "floor"), 0),
+                            "floor_stay": trans.get(("floor", "floor"), 0), "floor_to_undercut": trans.get(("floor", "undercut"), 0),
+                            "price_changed": len(ch), "d_uah": dl, "d_pct": pc_, "sum_d_uah": round(sum(r["n"]["price"] - r["o"]["price"] for r in ch), 2)}
+                s5 = {}
+                s5["all"] = block("УСІ з competitor_price (повна зміна: isImport + 10 ₴ у floor)", recs)
+                s5["active"] = block("без уже delisted (_delisted_since)", [r for r in recs if not r["delisted"]])
+                s5["in_stock"] = block("лише в наявності", [r for r in recs if r["in_stock"]])
+                # розклад по причині (лише isImport / лише +10): перехід undercut→floor
+                def uf(key):
+                    return sum(1 for r in recs if r["o"]["category"] == "undercut" and r[key]["category"] == "floor")
+                P(f"   з undercut→floor: лише isImport (без +10) = {uf('oi')}; лише +10 ₴ (без isImport) = {uf('of')}; разом = {uf('n')}")
+                s5["undercut_to_floor_split"] = {"only_isimport": uf("oi"), "only_fee": uf("of"), "both": uf("n")}
+                summary["prom_with_competitor"] = s5
+        mode(True, 10.0)
+        os.environ.pop("TOYSI_COST_BY_IMPORT", None)
 
     text = "\n".join(out)
     print(text)

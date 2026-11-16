@@ -154,10 +154,18 @@ new_rz_c = cp.decide_price_for_platform(COST, 150.0, "rozetka")
 
 tc = cp.compute_total_commission("prom", CAT)
 ce = COST + 10.0
-# без конкурента: floor = ce*1.25/(1-tc); ціна = max(ce*1.75, floor)
+# без конкурента: floor = ce*1.25/(1-tc); ціна = max(COST*1.75, floor) — +10 ₴ лише в floor, НЕ в націнці
 chk("Prom без конкурента: floor = (cost+10)*1.25/(1-tc)", near(new_nc["floor"], round(ce * 1.25 / (1 - tc), 2), 0.011))
-chk("Prom без конкурента: ціна = max((cost+10)*1.75, floor)", near(new_nc["price"], round(max(ce * 1.75, ce * 1.25 / (1 - tc)), 2), 0.011))
-chk("Prom без конкурента: ціна/floor ВИЩІ за стару", new_nc["price"] > old_nc["price"] and new_nc["floor"] > old_nc["floor"])
+chk("Prom без конкурента: ціна = max(cost*1.75, floor) — множник БЕЗ +10", near(new_nc["price"], round(max(COST * 1.75, ce * 1.25 / (1 - tc)), 2), 0.011))
+chk("Prom без конкурента: коли націнка домінує (floor нижчий) ціна НЕ змінюється від +10 ₴",
+    old_nc["price"] == COST * 1.75 and new_nc["price"] == old_nc["price"] if COST * 1.75 > ce * 1.25 / (1 - tc) else True)
+chk("Prom без конкурента: floor ВИЩИЙ за стару, ціна не нижча", new_nc["price"] >= old_nc["price"] and new_nc["floor"] > old_nc["floor"])
+# дорогий за floor випадок: низька комісія -> націнка ×1,75 домінує; дешевий випадок: floor домінує
+cp.PROM_ORDER_FEE_UAH = 0.0
+cheap_old = cp.decide_price_for_platform(1.0, None, "prom", CAT)
+cp.PROM_ORDER_FEE_UAH = 10.0
+cheap_new = cp.decide_price_for_platform(1.0, None, "prom", CAT)
+chk("Prom без конкурента, дуже дешевий товар (floor домінує): +10 ₴ піднімає ціну до floor від cost+10", cheap_new["price"] == cheap_new["floor"] > cheap_old["price"])
 # з конкурентом 150: candidate = 147, B = ce*1.03 + 147*tc
 cand = 150.0 - cp.PRICE_STEP
 want_floor = round(ce * 1.03 + cand * tc, 2)

@@ -88,10 +88,13 @@ def evaluate(today: date = None, catalog: dict = None) -> dict:
             comm_source = "ДЕФОЛТ20%"
         disc_price = round(float(base) * (1 - PROM_SEASONAL_DISCOUNT), 2)
         comm = compute_total_commission("prom", cat_name, disc_price, prom_cat)
-        net = round(disc_price * (1 - comm) - cost, 2)
-        net_pct = round(net / cost * 100, 1) if cost > 0 else None
+        # 2026-11-16: + PROM_ORDER_FEE_UAH (рішення власника «додай 10 грн») — те саме, що в decide_price_for_platform;
+        # у рядку "cost" лишається чиста собівартість Toysi, витрата Prom — окремо в "prom_fee".
+        cost_eff = cp.prom_effective_cost(cost)
+        net = round(disc_price * (1 - comm) - cost_eff, 2)
+        net_pct = round(net / cost_eff * 100, 1) if cost_eff > 0 else None
         row = {"sku": str(sku), "base": round(float(base), 2), "disc": disc_price,
-               "cost": round(cost, 2), "comm_pct": round(comm * 100, 2),
+               "cost": round(cost, 2), "prom_fee": round(cost_eff - cost, 2), "comm_pct": round(comm * 100, 2),
                "comm_source": comm_source, "net": net, "net_pct": net_pct, "stock": stock,
                "name": (item.get("name") or "")[:48]}
         result["rows"].append(row)

@@ -65,6 +65,7 @@ from competitor_pricing import (
     compute_total_commission,
     decide_price_for_platform,
     load_fresh_prom_price_overrides,
+    prom_effective_cost,
 )
 from generate_prom_feed import _VENDOR_ALIASES, normalize_vendor
 from generate_prom_feed_top import select_top_items, SELECT_COUNT
@@ -276,8 +277,10 @@ def check_price_floor(top_catalog: dict) -> list:
             floor_to_compare = decision["floor"]
         else:
             total_commission = compute_total_commission("prom", category_name)
-            margin_pct = round((actual_price * (1 - total_commission) - cost) / cost * 100, 1)
-            floor_to_compare = compute_floor(cost, total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
+            # 2026-11-16: + PROM_ORDER_FEE_UAH (рішення власника «додай 10 грн») — та сама cost_eff, що в decide_price_for_platform
+            cost_eff = prom_effective_cost(cost)
+            margin_pct = round((actual_price * (1 - total_commission) - cost_eff) / cost_eff * 100, 1)
+            floor_to_compare = compute_floor(cost_eff, total_commission, MIN_PROFIT_COMPETITOR_FLOOR)
         if actual_price <= floor_to_compare + 0.005:
             flagged.append((pid, item.get("name", ""), category_name, margin_pct))
     return flagged

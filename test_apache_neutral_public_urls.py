@@ -3,6 +3,7 @@
 """test_apache_neutral_public_urls.py — Apache-правила нейтральних публічних адрес RoyalToys (власник 10.11.2026: «щоб покупець не бачив» постачальника; контракт Shopify-code, SITE_CHANNEL 07:45, PR #1142).
 Перевіряє deploy/activate_site_apache.sh (шаблон vhost body_tpl): правила на місці, умови -f, регулярки на прикладах (PCRE ≈ Python re для цих шаблонів), порядок відносно сусідніх правил.
 `python test_apache_neutral_public_urls.py` → exit 0/1."""
+import os
 import re
 import sys
 from pathlib import Path
@@ -76,5 +77,12 @@ if r301 and rimg:
     idx = {id(x): i for i, x in enumerate(R)}
     gone = [x for x in R if "(?:product|category)-" in x[1]]
     chk("новий блок іде ПІСЛЯ правила 410 для знятих сторінок і ПЕРЕД загальними 301/410 нижче", gone and idx[id(gone[0])] < idx[id(r)] < idx[id(find("helovin")[0])])
+
+# --- KIDDISVIT (17.11.2026): фото kv-карток і захист supplier_kv.json
+_txt = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy", "activate_site_apache.sh"), encoding="utf-8").read()
+chk("Apache: /img/p/k<id>-N.jpg → /img/kv/kv-<id>-N.jpg (лише цифри, з умовою -f)", "RewriteRule ^/img/p/k([0-9]+)-([0-9]{1,2})\\.jpg$ /img/kv/kv-$1-$2.jpg [L]" in _txt and "RewriteCond %{DOCUMENT_ROOT}/img/kv/kv-$1-$2.jpg -f" in _txt)
+chk("Apache: supplier_kv.json заборонений (FilesMatch, як supplier_rt.json)", '<FilesMatch "^supplier_kv\\.json$">' in _txt)
+_m = re.search(r"RewriteRule (\^/img/p/k\(\[0-9\]\+\)-\(\[0-9\]\{1,2\}\)\\\.jpg\$) ", _txt)
+chk("регекс фото kv: збігається з /img/p/k5-1.jpg і /img/p/k123456-12.jpg, не збігається з /img/p/y5-1.jpg, /img/p/k5a-1.jpg, /img/p/k5-123.jpg, /img/rt/…", _m and re.match(_m.group(1).replace("^/", "^/"), "/img/p/k5-1.jpg") and re.match(_m.group(1), "/img/p/k123456-12.jpg") and not any(re.match(_m.group(1), x) for x in ("/img/p/y5-1.jpg", "/img/p/k5a-1.jpg", "/img/p/k5-123.jpg", "/img/rt/rt-5-1.jpg")))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

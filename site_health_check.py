@@ -85,7 +85,8 @@ def check_cards(index: list, today: date, fetcher=fetch, n: int = SAMPLE_N) -> l
     out = []
     for it in rng.sample(pool, min(n, len(pool))):
         pid, pr = str(it["id"]), it["pr"]
-        code, html, _ = fetcher(f"{SITE}/product-{pid}.html")
+        slug = str(it.get("u") or pid)          # публічний slug (RoyalToys y<id>, KIDDISVIT k<id>); поле «u» є лише там, де адреса відрізняється від id — для kv-/rt- сторінки «product-kv-…» не існує (хибна тривога)
+        code, html, _ = fetcher(f"{SITE}/product-{slug}.html")
         if code != 200 or not html:
             out.append(f"картка product-{pid}: HTTP {code}")
             continue

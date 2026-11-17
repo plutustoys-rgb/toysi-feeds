@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+"""kiddisvit_api.py — клієнт B2B API KIDDISVIT V2 (https://b2b.kiddisvit.ua/api/v2), ЛИШЕ ЧИТАННЯ каталогу, цін клієнта і залишків.
+
+Джерело правди про методи: ДОВІДНИК_KIDDISVIT_API.md (Продажник, 16.11.2026) + живі проби 17.11.2026 (clients/list, catalog/products, catalog/brands, catalog/categories,
+products/rests/prices, products/rests: усі HTTP 200). Менеджер Т. Сіденко 17.11 13:45: «не більше 25 запитів за 10 сек, ліміти не знімаємо» — клієнт тримає ≤ ~1,4 запиту/с (MIN_INTERVAL_S=0,7).
+Cloudflare перед API відхиляє запити без власного User-Agent (помилка 1010) — тому заголовок обов'язковий. Ключ (Bearer) — з env KIDDISVIT_API_KEY (.env на VPS, ставить власник); НІКОЛИ не друкується й не потрапляє в винятки/логи.
+Замовлення (orders/create, assembly, ttn-data) тут НЕ реалізовані: окремий модуль за воротами, лише зі словом власника."""
+import json
+import os
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+try:                              # як parser.py/royaltoys_parser.py: .env з робочої теки (VPS: /opt/plutustoys/.env); нема python-dotenv → лише змінні середовища
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))      # явний шлях: поруч із модулем (на VPS /opt/plutustoys/.env)
+except ImportError:               # pragma: no cover
+    pass
+
+BASE_URL = os.environ.get("KIDDISVIT_API_BASE", "https://b2b.kiddisvit.ua/api/v2").rstrip("/")
+USER_AGENT = "PlutusToys-b2b-client/1.0"
+MIN_INTERVAL_S = 0.7           # 25 запитів / 10 с = 2,5/с дозволено (менеджер 17.11); 1/0,7 ≈ 1,4/с — запас майже вдвічі
+TIMEOUT_S = 180                # catalog/products ≈ 26 МБ
+MAX_RETRIES = 4
+RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+
+class KiddisvitError(Exception):
+    """Збій API. У повідомленні немає ключа й тіла відповіді (лише код і шлях)."""
+
+
+class KiddisvitClient:
+    def __init__(self, key: str | None = None, base_url: str | None = None, opener=None, sleep=time.sleep, clock=time.monotonic):
+        self._key = (key if key is not None else os.environ.get("KIDDISVIT_API_KEY", "")).strip()
+        self.base = (base_url or BASE_URL).rstrip("/")
+        self._opener = opener or self._urlopen
+        self._sleep = sleep
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._last = None
+
+    @staticmethod
+    def _urlopen(req, timeout):
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def has_key(self) -> bool:
+        return bool(self._key)
+
+    def _throttle(self) -> None:
+        with self._lock:
+            now = self._clock()
+            if self._last is not None:
+                wait = MIN_INTERVAL_S - (now - self._last)
+                if wait > 0:
+                    self._sleep(wait)
+            self._last = self._clock()
+
+    def _request(self, method: str, path: str, body: dict | None = None):
+        if not self._key:
+            raise KiddisvitError("KIDDISVIT_API_KEY не задано")
+        url = f"{self.base}/{path.lstrip('/')}"
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"Authorization": "Bearer " + self._key, "Accept": "application/json", "User-Agent": USER_AGENT}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        last_status = None
+        for attempt in range(MAX_RETRIES + 1):
+            self._throttle()
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            try:
+                with self._opener(req, TIMEOUT_S) as r:
+                    raw = r.read().decode("utf-8", "replace")
+                    status = getattr(r, "status", 200)
+            except urllib.error.HTTPError as e:
+                status, raw = e.code, ""
+                retry_after = e.headers.get("Retry-After") if getattr(e, "headers", None) else None
+                if status in RETRY_STATUSES and attempt < MAX_RETRIES:
+                    last_status = status
+                    try:
+                        delay = max(float(retry_after), 1.0) if retry_after else 0.0
+                    except ValueError:
+                        delay = 0.0
+                    self._sleep(max(delay, 5.0 * (attempt + 1)))
+                    continue
+                raise KiddisvitError(f"{method} {path}: HTTP {status}") from None
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                last_status = type(e).__name__
+                if attempt < MAX_RETRIES:
+                    self._sleep(5.0 * (attempt + 1))
+                    continue
+                raise KiddisvitError(f"{method} {path}: {type(e).__name__}") from None
+            if status != 200:
+                raise KiddisvitError(f"{method} {path}: HTTP {status}")
+            try:
+                d = json.loads(raw)
+            except ValueError:
+                raise KiddisvitError(f"{method} {path}: відповідь не JSON") from None
+            if not isinstance(d, dict) or d.get("status") != "success":
+                raise KiddisvitError(f"{method} {path}: status={str(d.get('status') if isinstance(d, dict) else type(d).__name__)[:30]}")
+            return d.get("data")
+        raise KiddisvitError(f"{method} {path}: вичерпано спроби (останній збій {last_status})")
+
+    # ---- читання -------------------------------------------------------------------------------------------------------------------------
+    def clients_list(self) -> dict:
+        """clients/list: {user,…,clients:[{ClientID,ContractID,OrganizationID,…}],shops:[{shopID,…}]}."""
+        return self._request("GET", "clients/list")
+
+    def brands(self) -> list:
+        """catalog/brands: [{ID, Name, brand_id}]."""
+        return self._request("GET", "catalog/brands") or []
+
+    def categories(self, locale: str = "ua") -> list:
+        """catalog/categories/{locale}: [{id, id_crm, parentID, name}]."""
+        return self._request("GET", f"catalog/categories/{urllib.parse.quote(locale)}") or []
+
+    def products(self, locale: str = "ua", in_stock: bool = True, updated_at: str = "2000-01-01 00:00:00") -> list:
+        """catalog/products/{locale}/{stock_status}/{updated_at} (GET; перевірено 17.11): весь каталог одним запитом ≈26 МБ. Елемент: productID, name, description(HTML), brand_name, brand_id, barcode, sku, price (РРЦ, акційна якщо діє), price_old, url, category_id, images[], properties[{name,value}]."""
+        path = f"catalog/products/{urllib.parse.quote(locale)}/{1 if in_stock else 0}/{urllib.parse.quote(updated_at)}"
+        d = self._request("GET", path) or {}
+        return d.get("products") or []
+
+    def prices_by_brand(self, client_id: str, contract_id: str, brand_id: str) -> list:
+        """products/rests/prices для ВСІХ товарів бренду (без списку id і без warehouses: з warehouses відповідь порожня — перевірено 17.11).
+        Елемент: ProductID, ProductArticle, clientPrice (наша закупівля), retailPrice, clientPriceWithoutAction, retailPriceWithoutAction, startAction, endAction, rest[{WarehouseID,Rest}]."""
+        d = self._request("POST", "products/rests/prices", {"clientID": client_id, "ContractID": contract_id, "brands": [{"brandID": brand_id}]}) or {}
+        return d.get("products") or []
+
+    def rests(self) -> list:
+        """products/rests: [{ProductID, rest:[{WarehouseID, Rest}]}] — залишки всього каталогу."""
+        d = self._request("GET", "products/rests") or {}
+        return d.get("products") or []
+
+
+if __name__ == "__main__":
+    # Самоперевірка без друку секретів: python kiddisvit_api.py
+    c = KiddisvitClient()
+    if not c.has_key():
+        print("KIDDISVIT_API_KEY не задано", file=sys.stderr)
+        sys.exit(2)
+    try:
+        d = c.clients_list()
+        print("OK clients/list: клієнтів", len(d.get("clients") or []), "магазинів", len(d.get("shops") or []))
+    except KiddisvitError as e:
+        print("ЗБІЙ:", e, file=sys.stderr)
+        sys.exit(1)

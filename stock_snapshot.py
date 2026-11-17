@@ -49,12 +49,11 @@ def build_snapshot(catalog: dict, now: datetime | None = None) -> dict:
 RT_MAX_AGE = timedelta(hours=3)      # залишки RoyalToys оновлюються щогодини, rt-supplier-export.timer теж щогодини; 3 інтервали без оновлення = залишок rt- «не знаємо» → бекенд замовлень вважає «немає» (fail-closed). Той самий принцип «3 інтервали», що STOCK_MAX_AGE у site_order_api. Картки (ціна) живуть довше: 3 доби у build_site.
 
 
-def rt_stock_entries(path=None, now: datetime | None = None) -> dict:
-    """{"rt-<id>": залишок} з приватного supplier_rt.json (rt_supplier_export). Нема файлу/нечитабельний/старший за RT_MAX_AGE (3 год) → {} (без ключів rt- сайт і бекенд показують «немає»)."""
+def _supplier_stock_entries(path, now: datetime | None = None) -> dict:
+    """{"<id>": залишок} з приватного файлу постачальника {"updated", "items": {id: {stock}}}. Нема файлу/нечитабельний/старший за RT_MAX_AGE (3 год) → {} (без ключів сайт і бекенд показують «немає»)."""
     try:
         from datetime import timezone
-        from rt_supplier_export import OUT_FILE
-        raw = json.loads(Path(path or OUT_FILE).read_text(encoding="utf-8-sig"))
+        raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
         upd = datetime.fromisoformat(str(raw["updated"]).replace("Z", "+00:00"))
         if upd.tzinfo is None:
             upd = upd.replace(tzinfo=timezone.utc)
@@ -67,7 +66,25 @@ def rt_stock_entries(path=None, now: datetime | None = None) -> dict:
             except (TypeError, ValueError, AttributeError):
                 continue
         return out
-    except Exception:  # noqa: BLE001 — немає файлу = пілот не розгорнуто
+    except Exception:  # noqa: BLE001 — немає файлу = постачальника не розгорнуто
+        return {}
+
+
+def rt_stock_entries(path=None, now: datetime | None = None) -> dict:
+    """{"rt-<id>": залишок} з приватного supplier_rt.json (rt_supplier_export). Нема файлу/нечитабельний/старший за RT_MAX_AGE (3 год) → {} (без ключів rt- сайт і бекенд показують «немає»)."""
+    try:
+        from rt_supplier_export import OUT_FILE
+        return _supplier_stock_entries(path or OUT_FILE, now)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def kv_stock_entries(path=None, now: datetime | None = None) -> dict:
+    """{"kv-<id>": залишок Dnepr (кап 100)} з приватного supplier_kv.json (kv_supplier_export; 17.11.2026). Нема файлу/старший за 3 год → {} (fail-closed, як rt-)."""
+    try:
+        from kv_supplier_export import OUT_FILE
+        return _supplier_stock_entries(path or OUT_FILE, now)
+    except Exception:  # noqa: BLE001
         return {}
 
 
@@ -123,6 +140,10 @@ def run_once(fetch=None, out=None, now=None, cost_out=None) -> bool:
         rt = rt_stock_entries()                  # пілот RoyalToys (19.10): залишки rt-<id> з приватного supplier_rt.json (без нього ключів rt- нема → fail-closed)
         if rt:
             snap["s"].update(rt)
+            snap["n"] = len(snap["s"])
+        kv = kv_stock_entries()                  # KIDDISVIT (17.11.2026): залишки kv-<id> з приватного supplier_kv.json (без нього ключів kv- нема → fail-closed)
+        if kv:
+            snap["s"].update(kv)
             snap["n"] = len(snap["s"])
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(out.name + ".tmp")

@@ -983,6 +983,11 @@ def _has_rt_items(order: dict) -> bool:
     return any(str((it or {}).get("toysi_code") or "").strip().lower().startswith("rt-") for it in (order.get("items") or []))
 
 
+def _has_kv_items(order: dict) -> bool:
+    """Позиції KIDDISVIT (id «kv-…» / «kvu-…» — «Уцінка»): окремий постачальник, у Toysi не існують."""
+    return any(str((it or {}).get("toysi_code") or "").strip().lower().startswith(("kv-", "kvu-")) for it in (order.get("items") or []))
+
+
 def _has_legacy_dropt_items(order: dict) -> bool:
     # Захист ІСТОРИЧНИХ замовлень: постачальника прибрано 16.11.2026, але в БД можуть лишитись замовлення з id «dropt-…» — у Toysi їх не передаємо ніколи.
     return any(str((it or {}).get("toysi_code") or "").strip().lower().startswith("dropt-") for it in (order.get("items") or []))
@@ -1007,6 +1012,10 @@ def route_order(conn, order: dict, test_mode: bool = False, toysi_catalog: dict 
     # тимчасову недоступність фіда Toysi.
     if _has_legacy_dropt_items(order):
         print(f"[order_router] {order['internal_order_id']}: історична позиція «dropt-…» (постачальника прибрано) — НЕ передається в Toysi, обробка вручну")
+        return
+    if _has_kv_items(order):
+        # KIDDISVIT (17.11.2026): позиції «kv-…»/«kvu-…» у Toysi не існують — автоформард неможливий. Поки нема раннера KIDDISVIT, шлях — вручну (замовлення в B2B-кабінеті + наша ТТН); панель покаже «оплачено, нікуди не передано».
+        print(f"[order_router] {order['internal_order_id']}: містить kv-позиції (KIDDISVIT) — НЕ передається в Toysi, обробка вручну (кабінет B2B)", file=sys.stderr)
         return
     if _has_rt_items(order):
         # Позиції партнера RoyalToys (id «rt-…») у Toysi не існують: автоформард неможливий (Toysi відхилив би або взяв чужий код). Шлях — вручну:

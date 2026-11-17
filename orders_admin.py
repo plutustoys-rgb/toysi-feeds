@@ -100,11 +100,11 @@ _DELIVERY = {"processing": "передано, в обробці", "assembling": 
              "cancelled": "скасовано", "returned": "повернення"}
 
 
-_SUPPLIER_BY_PREFIX = (("rt-", "RoyalToys"), ("zb-", "ZooBaza"))
+_SUPPLIER_BY_PREFIX = (("rt-", "RoyalToys"), ("kvu-", "KIDDISVIT"), ("kv-", "KIDDISVIT"), ("zb-", "ZooBaza"))
 
 
 def supplier_of(row: dict) -> str:
-    """Постачальник замовлення за кодами позицій (так само, як розводить конвеєр: rt- → RoyalToys, zb- → ZooBaza, решта — Toysi).
+    """Постачальник замовлення за кодами позицій (так само, як розводить конвеєр: rt- → RoyalToys, kv-/kvu- → KIDDISVIT, zb- → ZooBaza, решта — Toysi).
     Змішане (кілька постачальників в одному замовленні) — перелік через « + »."""
     found = []
     for i in row.get("items") or []:

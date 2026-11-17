@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys: KIDDISVIT — оновлення даних для сайту й фідів щогодини (залишки в B2B синхронізуються з 1С кожні 10 хв, ціни клієнта оновлюються разом з акціями після 00:00)
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

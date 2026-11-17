@@ -1,0 +1,14 @@
+[Unit]
+Description=PlutusToys: дані KIDDISVIT для сайту й фідів (kv_supplier_export.py → supplier_kv.json + фото site/img/kv)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. supplier_kv.json (із закупівлею) пишеться у /opt/plutustoys, ПОЗА DocumentRoot; фото — у публічну site/img/kv. KIDDISVIT_API_KEY береться з /opt/plutustoys/.env (секрет, ставить власник).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/kv_supplier_export.py
+# Повний прогін ≈2,5 хв без фото (26 МБ каталог + ~140 запитів цін з паузою 0,7 с); перше завантаження фото ~1850 карток × до 3 — бюджет PREFETCH_BUDGET_S=900 с; TimeoutStartSec перекриває бюджет + таймаути + запис.
+TimeoutStartSec=2400
+Nice=10

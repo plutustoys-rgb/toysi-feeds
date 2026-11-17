@@ -109,10 +109,10 @@ r, e = load({"kv-41": dict(GOOD, images=im("kv-41"), vendor="KIDDISVIT", vendor_
 chk("vendor/vendor_code/опис з іменем постачальника чи kv- — обнулені/вирізані; назва з ним — картка не публікується; «KIDDI SMART» (окремий бренд) лишається",
     "kv-42" not in r and r["kv-41"]["vendor"] == "" and r["kv-41"]["vendor_code"] == "" and "kiddisvit" not in r["kv-41"]["description"].lower() and "kv-41" not in r["kv-41"]["description"] and r["kv-43"]["vendor"] == "KIDDI SMART")
 # обходи фільтра (повторний аудит #1694): сутності в назві, розділювачі, кирилиця/латиниця, id з розділювачем, цифри id у описі, незакриті теги
-LEAKY = ["Kiddi&#115;vit фігурка", "Фігурка Кідді Світ", "Фігурка Kiddi-Svit", "Фігурка kiddi_svit", "Фігурка Кiддiсвiт", "Фігурка КІДДІСВІТ", "Фігурка kv_12", "Фігурка KV 12", "Фігурка kvu-2"]
+LEAKY = ["Kiddi&#115;vit фігурка", "Фігурка Кідді Світ", "Фігурка Kiddi-Svit", "Фігурка kiddi_svit", "Фігурка Кiддiсвiт", "Фігурка КІДДІСВІТ", "Фігурка kv_12", "Фігурка Kv-12", "Фігурка kvu-2", "Фігурка Kid\u200bdisvit", "Фігурка Kid\u00addisvit", "Фігурка Kiddi\u2011svit", "Фігурка Kiddi\u00a0svit", "Фігурка ＫＩＤＤＩＳＶＩＴ", "Фігурка Kiddi.svit"]
 r, e = load({f"kv-{60 + i}": dict(GOOD, name=n, images=im(f"kv-{60 + i}")) for i, n in enumerate(LEAKY)})
 chk(f"назва з іменем постачальника у будь-якому написанні ({len(LEAKY)} варіантів) → картка НЕ публікується: {sorted(r)}", r == {})
-r, e = load({"kv-71": dict(GOOD, images=im("kv-71"), vendor="Kiddi-Svit", vendor_code="KV 71", description="Артикул kv-501 від Кідді Світ. Добра фігурка.", name="Фігурка «Герой»"),
+r, e = load({"kv-71": dict(GOOD, images=im("kv-71"), vendor="Kiddi-Svit", vendor_code="KV-71", description="Артикул kv-501 від Кідді Світ. Добра фігурка.", name="Фігурка «Герой»"),
              "kv-72": dict(GOOD, images=im("kv-72"), vendor="KIDDI SMART", vendor_code="KS-72", name="Фігурка KIDDI SMART")})
 chk("vendor/код у різних написаннях обнулюються; з опису вирізано ім'я й УСІ цифри id (не лишається «01»); «KIDDI SMART» лишається",
     r["kv-71"]["vendor"] == "" and r["kv-71"]["vendor_code"] == "" and "501" not in r["kv-71"]["description"] and "01 " not in r["kv-71"]["description"] and "Світ" not in r["kv-71"]["description"] and "Добра фігурка" in r["kv-71"]["description"]
@@ -120,6 +120,21 @@ chk("vendor/код у різних написаннях обнулюються; 
 r, e = load({"kv-81": dict(GOOD, images=im("kv-81"), description="<ul><li>один<li>два</ul></b><b>жирний")})
 d81 = r["kv-81"]["description"]
 chk("опис <ul><li>один<li>два</ul></b><b>жирний → рівно по одній парі <ul>, двох <li>, одній <b>", d81.count("<ul>") == 1 and d81.count("</ul>") == 1 and d81.count("<li>") == 2 and d81.count("</li>") == 2 and d81.count("<b>") == 1 and d81.count("</b>") == 1)
+# хибні збіги (повторний аудит #1694): звичайні «KV 250», «кв 3 м», «Квадрат», «Світ», «Кітті» НЕ чіпаємо ні в назві, ні в описі
+r, e = load({"kv-91": dict(GOOD, images=im("kv-91"), name="Модель KV 250 машинка", description="Площа 20 кв 2 кімнати, Модель KV 250. Дитячий світ, Кітті, Квадрат 2, Kvasy, Rkv 12."),
+             "kv-92": dict(GOOD, images=im("kv-92"), name="Тканина кв 3 м Кітті Дитячий світ")})
+chk("«KV 250», «кв 3 м», «Кітті», «Дитячий світ» у назві → картки публікуються; опис із такими фрагментами не спотворюється", set(r) == {"kv-91", "kv-92"} and "Площа 20 кв 2 кімнати, Модель KV 250." in r["kv-91"]["description"] and "Kvasy, Rkv 12" in r["kv-91"]["description"])
+# ім'я, розірване дозволеним тегом, і невидимі символи в описі; ліміт довжини
+r, e = load({"kv-93": dict(GOOD, images=im("kv-93"), description="Фігурка Kiddi<b>svit</b> та Kid\u200bdisvit; артикул kv-93 відомий. Добра.")})
+d93 = r["kv-93"]["description"]
+chk("опис: ім'я, розірване <b>…</b> або невидимим символом, і id kv-93 вирізані; решта тексту на місці; баланс тегів", "svit" not in d93.lower() and "disvit" not in d93.lower() and "kv-93" not in d93 and "Добра." in d93 and d93.count("<b>") == d93.count("</b>"))
+r, e = load({"kv-94": dict(GOOD, images=im("kv-94"), name="Фігурка Kid\u200b«Герой»", vendor="Fun\u200bko")})
+chk("невидимі символи з назви й бренду прибрані назавжди", r["kv-94"]["name"] == "Фігурка Kid«Герой»" and r["kv-94"]["vendor"] == "Funko")
+import time
+_t0 = time.time()
+r, e = load({"kv-95": dict(GOOD, images=im("kv-95"), description="<ul><li>" * 12500)})
+_dt = time.time() - _t0
+chk(f"патологічний опис 100 тис. символів без крапок обробляється швидко ({_dt:.2f} с < 3 с): ліміт довжини перед очищенням", _dt < 3 and "kv-95" in r and len(r["kv-95"]["description"]) < 100000)
 r, e = load({"kv-501": GOOD}, updated=now - timedelta(days=4))
 chk("файл старіший за 3 доби → порожньо, голосно", r == {} and "застарів" in e)
 bs.LIQPAY_LIVE = False

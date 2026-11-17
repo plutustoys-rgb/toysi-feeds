@@ -15,6 +15,7 @@ PlutusToys — статичний генератор власного магаз
 Ціна = real_toysi_discounted × 1.5 (без комісії маркетплейсу — сенс власного сайту).
 LIMIT (env) обмежує к-ть карток для швидкого демо-прогону; порожній = увесь in-stock+фото.
 """
+import unicodedata
 import os, re, sys, json, html, unicodedata, hashlib, random, bisect, heapq, functools, time
 from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")
@@ -822,30 +823,63 @@ def _load_supplier_rt(now=None):
 # site/kv_category_map.json: {"paths": {«Кореневий > … > листок» → категорія сайту}, "brands": {бренд (casefold) → категорія}}: їхнє дерево хибне місцями, тож бренд має пріоритет. Шлях без запису = картка НЕ публікується (голосне попередження), а не «Інше».
 # «index» не True (false або поля нема) → noindex,follow і поза sitemap (хвилі відкриття до Google — лише за словом власника/SEO). Уцінка `kvu-<id>` цим завантажувачем НЕ приймається (окреме рішення).
 SITE_KV_LIVE = os.environ.get("SITE_KV_LIVE") == "1"
+KV_DESC_MAX_CHARS = 20000   # опис постачальника довший — обрізаємо до очищення (захист від патологічних входів)
 # Ім'я постачальника/внутрішній id не мають потрапити в назву, бренд, код, опис (аудит #1694). Шукаємо в «згорнутому» рядку: кирилиця-двійники → латиниця (кіддісвіт/Кiддiсвiт/Kiddisvit → kiddisvit), розділювачі в імені
 # (Kiddi-Svit, kiddi_svit, «Кідді Світ») і id з розділювачем (kv-1, kv_1, «KV 1», kvu-2) теж ловимо; «KIDDI SMART» — окремий бренд, не збігається. Згортка 1:1 за довжиною — вирізаємо за позиціями з оригіналу.
 _KV_FOLD = str.maketrans({"і": "i", "ї": "i", "к": "k", "с": "s", "в": "v", "т": "t", "и": "i", "д": "d", "ы": "i", "у": "y", "й": "y"})
-_KV_LEAK_RX = re.compile(r"kidd?[iy][\s\-_.]*svit|\bkvu?[\s\-_]*[0-9]+")
+_KV_NAME_RX = re.compile(r"kidd?[iy][\W_]*svit")   # ім'я постачальника: після NFKC/згортки; розділювач — будь-які не-літери/цифри (Kiddi-Svit, kiddi.svit, «Кідді Світ», nbsp, ‑)
+_KV_ID_LEAK_RX = re.compile(r"(?<![a-z0-9])kvu?[-_][0-9]+")   # внутрішній id: лише з дефісом/підкресленням і лише латиницею (звичайне «KV 250», «кв 3 м» не чіпаємо)
+_KV_ALLOWED_TAG_RX = re.compile(r"&lt;(/?)(br|p|b|strong|em|ul|ol|li)\s*/?&gt;", re.I)
+_KV_TRANSPARENT_TAG_RX = re.compile(r"</?(?:p|b|strong|em|ul|ol|li|br)\s*/?>", re.I)   # дозволені теги опису не розривають ім'я («Kiddi<b>svit</b>»)
 
 
-def _kv_leak_spans(s):
+def _kv_norm(s, transparent_tags=False):
+    """(рядок для пошуку, мапа позицій → індекс в оригіналі): NFKC, без невидимих (Cf: ZWSP, м'який перенос, word joiner), нижній регістр, кирилиця-двійники → латиниця; за потреби дозволені теги прозорі."""
     s = str(s or "")
-    fold = s.lower().translate(_KV_FOLD)
-    if len(fold) != len(s):   # екзотичний регістр змінив довжину — вважаємо, що збігів нема (довжини мають збігатися для позицій)
-        fold = s.translate(_KV_FOLD)
-    return [m.span() for m in _KV_LEAK_RX.finditer(fold)] if len(fold) == len(s) else []
+    skip = set()
+    if transparent_tags:
+        for m in _KV_TRANSPARENT_TAG_RX.finditer(s):
+            skip.update(range(m.start(), m.end()))
+    out, idx = [], []
+    for i, ch in enumerate(s):
+        if i in skip or unicodedata.category(ch) == "Cf":
+            continue
+        for c2 in unicodedata.normalize("NFKC", ch):
+            out.append(c2.lower().translate(_KV_FOLD))
+            idx.append(i)
+    return "".join(out), idx
+
+
+def _kv_leak_spans(s, transparent_tags=False):
+    """Проміжки [a, b) в ОРИГІНАЛЬНОМУ рядку, що містять ім'я постачальника або внутрішній id kv-/kvu-."""
+    norm, idx = _kv_norm(s, transparent_tags)
+    spans = []
+    for rx in (_KV_NAME_RX, _KV_ID_LEAK_RX):
+        for m in rx.finditer(norm):
+            spans.append((idx[m.start()], idx[m.end() - 1] + 1))
+    return sorted(spans)
 
 
 def _kv_leaks(s):
     return bool(_kv_leak_spans(s))
 
 
-def _kv_leak_cut(s):
+def _kv_leak_cut(s, transparent_tags=False):
     s = str(s or "")
-    for a, b in reversed(_kv_leak_spans(s)):
+    cut = []
+    for a, b in _kv_leak_spans(s, transparent_tags):   # злиття перекритих проміжків
+        if cut and a <= cut[-1][1]:
+            cut[-1] = (cut[-1][0], max(cut[-1][1], b))
+        else:
+            cut.append((a, b))
+    for a, b in reversed(cut):
         s = s[:a] + s[b:]
     return s
-_KV_ALLOWED_TAG_RX = re.compile(r"&lt;(/?)(br|p|b|strong|em|ul|ol|li)\s*/?&gt;", re.I)
+
+
+def _kv_strip_cf(s):
+    """Невидимі символи (Cf: ZWSP, м'який перенос, word joiner…) із назви/бренду постачальника — назавжди."""
+    return "".join(ch for ch in str(s or "") if unicodedata.category(ch) != "Cf")
 
 
 def _kv_strict_int(x):
@@ -861,11 +895,19 @@ def _kv_strict_int(x):
     return None
 
 
+def _kv_clean_cod(text):
+    """Те саме, що _rt_clean_description (у картках постачальника не обіцяємо оплату при отриманні: прибираємо речення з «накладен/при отриманні/післяплат»), але за ЛІНІЙНИЙ час: ділимо на речення, а не регексом [^.!?]*…[^.!?]*."""
+    pieces = re.split(r"(?<=[.!?\n])", str(text or ""))
+    t = "".join(x for x in pieces if not re.search(r"накладен|при отриманні|післяплат", x, re.I)).strip()
+    return re.sub(r"[ \t]{2,}", " ", t)
+
+
 def _kv_safe_html(text):
     """Опис постачальника → безпечний HTML: усе екранується, лишаються лише <br>/<p>/<b>/<strong>/<em>/<ul>/<ol>/<li> БЕЗ атрибутів (новий зовнішній канал B2B API; опис вставляється в сторінку як HTML — stored XSS, аудит #1694).
     «&730;» (без #) спершу лагодиться до «&#730;» (SEO 10.11), потім сутності розкодовуються і екранування вже коректне."""
-    t = _BROKEN_NUM_ENTITY_RX.sub(lambda m: "&#" + m.group(1) + ";", _rt_clean_description(text))
-    t = html.escape(html.unescape(t), quote=False)
+    t = _BROKEN_NUM_ENTITY_RX.sub(lambda m: "&#" + m.group(1) + ";", _kv_clean_cod(str(text or "")[:KV_DESC_MAX_CHARS]))   # ліміт довжини + лінійне очищення (RT-регекс квадратичний на довгих рядках без крапок, аудит #1694)
+    t = _kv_leak_cut(html.unescape(t), transparent_tags=True)   # ім'я постачальника/id — з тексту (після розкодування сутностей; дозволені теги не розривають ім'я)
+    t = html.escape(t, quote=False)
     t = _KV_ALLOWED_TAG_RX.sub(lambda m: "<" + m.group(1) + m.group(2).lower() + ">", t)
     # незакриті дозволені теги закриваємо (інакше <ul><li>… ламає верстку решти блоку опису); зайві закривні — прибираємо
     stack, parts = [], []
@@ -933,7 +975,7 @@ def _load_supplier_kv(now=None):
             why = "id"
         else:
             imgs = [u for u in (v.get("images") or []) if isinstance(u, str) and (lambda m: bool(m) and m.group(1) == k)(_PUBLIC_IMG_KV_RX.fullmatch(u))]   # лише НАШІ файли цього id (https://plutustoys.com.ua/img/kv/<id>-N.jpg): чужий хост/чужий id не публікуємо (аудит #1694)
-            vendor_name = _supplier_text_plain(str(v.get("vendor") or "").strip())
+            vendor_name = _kv_strip_cf(_supplier_text_plain(str(v.get("vendor") or "").strip()))
             if _kv_leaks(vendor_name):
                 vendor_name = ""
             cpath = [str(x).strip() for x in (v.get("category_path") or []) if str(x).strip()] if isinstance(v.get("category_path"), list) else []
@@ -958,12 +1000,12 @@ def _load_supplier_kv(now=None):
             kv_cost = round(float(v.get("cost") or 0), 2)
         except (TypeError, ValueError):
             kv_cost = 0.0
-        _desc = _kv_leak_cut(_kv_safe_html(v.get("description")))
+        _desc = _kv_safe_html(v.get("description"))
         _vcode = str(v.get("vendor_code") or "").strip()
         if _kv_leaks(_vcode):
             _vcode = ""
         _bc = re.sub(r"\D", "", str(v.get("barcode") or ""))
-        out[k] = {"id": k, "name": _supplier_text_plain(str(v["name"]).strip()), "description": _desc, "vendor": vendor_name,
+        out[k] = {"id": k, "name": _kv_strip_cf(_supplier_text_plain(str(v["name"]).strip())), "description": _desc, "vendor": vendor_name,
                   "vendor_code": _vcode, "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
                   "site_price": price, "rt_cost": kv_cost, "supplier": "kiddisvit", "price": price, "barcode": _bc,
                   # «index» не True (false або поля нема) → noindex,follow і поза sitemap; опис <50 знаків (тонка картка) → noindex завжди

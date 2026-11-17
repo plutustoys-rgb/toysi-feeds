@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """test_kiddisvit_api.py — клієнт B2B API KIDDISVIT (17.11.2026). Інваріанти: (1) власний User-Agent і Bearer у КОЖНОМУ запиті (Cloudflare 1010 без UA), ключ ніколи не потрапляє у виняток; (2) пауза між запитами ≥ MIN_INTERVAL_S (ліміт постачальника 25/10 с);
 (3) 429/5xx → ретрай з паузою, далі KiddisvitError; не-200 / не-JSON / status≠success → KiddisvitError; (4) нема ключа → KiddisvitError до мережі; (5) шляхи й тіла: products(GET, locale/1/дата), prices_by_brand(POST без warehouses), clients_list."""
+import http.client
 import io
 import json
 import sys
@@ -131,6 +132,29 @@ sent = json.loads(f.calls[0][3])
 chk("products/rests/prices: POST, лише clientID+ContractID+brands (без warehouses/products: з ними відповідь порожня)", f.calls[0][0] == "POST" and sent == {"clientID": "CL", "ContractID": "CT", "brands": [{"brandID": "BR"}]} and res[0]["clientPrice"] == 10)
 cl, f, c = mk([OK([{"ID": "g", "Name": "N", "brand_id": "X1"}]), OK([{"id": "c", "name": "Кат"}])])
 chk("brands / categories(ua)", cl.brands()[0]["Name"] == "N" and cl.categories()[0]["name"] == "Кат" and f.calls[1][1].endswith("/catalog/categories/ua"))
+
+# аудит #1691: усічена відповідь (IncompleteRead — HTTPException, не OSError) → ретрай, потім успіх; Retry-After має стелю
+cl, f, c = mk([http.client.IncompleteRead(b"x"), OK({"products": [7]})])
+chk("IncompleteRead (усічена відповідь 26 МБ) → ретрай, потім успіх", cl.rests() == [7] and len(f.calls) == 2)
+cl, f, c = mk([http.client.IncompleteRead(b"x")] * (api.MAX_RETRIES + 1))
+try:
+    cl.rests()
+    r = False
+except api.KiddisvitError:
+    r = True
+chk("IncompleteRead постійно → KiddisvitError (а не сирий виняток)", r)
+cl, f, c = mk([http_error(429, "86400"), OK({"products": []})])
+cl.rests()
+chk("Retry-After 86400 → пауза обмежена MAX_RETRY_AFTER_S", max(c.sleeps) <= max(api.MAX_RETRY_AFTER_S, 5.0 * (api.MAX_RETRIES + 1)) and sum(c.sleeps) < 200)
+for bad in ("inf", "nan", "-5", "abc"):
+    cl, f, c = mk([http_error(429, bad), OK({"products": []})])
+    try:
+        cl.rests()
+        ok_ = sum(c.sleeps) < 200
+    except Exception:  # noqa: BLE001
+        ok_ = False
+    chk(f"Retry-After «{bad}» не ламає ретрай", ok_)
+
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

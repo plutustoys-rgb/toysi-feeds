@@ -4,7 +4,7 @@
 Той самий контракт, що supplier_rt.json (Shopify-code: site/build_site.py за аналогією `_load_supplier_rt`): {"updated": ISO UTC, "catalog_n": N, "items": {"kv-<id>": {name, description, vendor, vendor_code, barcode, category (УКР. назва листка каталогу KIDDISVIT), category_path[…], images[https://plutustoys.com.ua/img/kv/…],
 price (закрита формула сайту), cost (clientPrice із API: НАША закупівля), rrp (поточна РРЦ), stock, dims_cm [Д,Ш,В], weight_kg|null, index}}}.
 Джерела (усе через kiddisvit_api.KiddisvitClient, ЛИШЕ ЧИТАННЯ): catalog/products (назва, опис, фото, бренд, штрихкод, габарити з properties), catalog/categories, catalog/brands + products/rests/prices по бренду (clientPrice, залишки).
-Правила: залишок = лише склад «Dnepr» (склади NTV20/NTV30 — товар із пошкодженим пакуванням, умови не з'ясовано → НЕ публікуємо), «101» у API = «100+» → кап 100; відбір — політика (зброя/18+/UNO), `kv_selection.json` (мін. залишок, бренди-не-іграшки), позиція без фото на диску, без габаритів, без ціни/назви — не публікується.
+Правила: залишок = лише склад «Dnepr» (склади NTV20/NTV30 — товар із пошкодженим пакуванням, умови не з'ясовано → НЕ публікуємо), «101» у API = «100+» → кап 100; відбір — політика (зброя/18+; марка UNO відсікається далі, у build_site через trademark_filter), `kv_selection.json` (необов'язковий: мін. залишок, бренди-не-іграшки, exclude_not_toys; нема файлу → типові значення), позиція без фото на диску, без габаритів, без ціни/назви — не публікується.
 Ціна сайту — ЗАКРИТА формула (13.10.2026, `rt_supplier_export.site_price`), НЕ змінювати без слова власника. Порожній каталог/ціни → попередній файл НЕ перезаписується (build_site сам вимкне картки, коли «updated» старший за 3 доби — fail-closed), сигнал раз на добу.
 Запуск: kv-supplier-export.timer щогодини (клієнт тримає ≤1,4 запиту/с: ліміт постачальника 25 запитів/10 с). stock_snapshot додає в site/stock.json ключі kv-<id>. Замовлення KIDDISVIT тут НЕ чіпаються."""
 import json
@@ -36,7 +36,7 @@ PREFETCH_BUDGET_S = 900
 MIN_FREE_GB = 10
 MIN_KEEP_RATIO = rt.MIN_KEEP_RATIO
 _ID_RE = re.compile(r"kv-[0-9]+")
-DEFAULT_SELECTION = {"min_stock": 3, "min_cost": None, "exclude_brands": ["Goo.N Plus", "Goo.N Premium Soft", "Goo.N Slim & Comfortable", "Lansinoh"]}   # підгузки/гігієна — не іграшки (асортимент, не політика); власник може зняти у kv_selection.json
+DEFAULT_SELECTION = {"min_stock": 3, "min_cost": None, "exclude_not_toys": True, "exclude_brands": ["Goo.N Plus", "Goo.N Premium Soft", "Goo.N Slim & Comfortable", "Lansinoh"]}   # підгузки/гігієна — не іграшки (асортимент, не політика); власник може зняти у kv_selection.json
 
 
 def _norm(s: str) -> str:
@@ -100,14 +100,13 @@ def category_path(cat_id: str, cats: dict) -> list:
 
 
 def stock_of(rest, warehouse: str = SITE_WAREHOUSE) -> int:
-    """Залишок складу Dnepr (кап STOCK_CAP). rest=[{WarehouseID, Rest}]."""
+    """Залишок складу Dnepr (кап STOCK_CAP). rest=[{WarehouseID, Rest}]; регістр складу не важливий, «7.0» теж число."""
     tot = 0
     for r in rest or []:
-        if isinstance(r, dict) and r.get("WarehouseID") == warehouse:
-            try:
-                tot += max(0, int(r.get("Rest") or 0))
-            except (TypeError, ValueError):
-                pass
+        if isinstance(r, dict) and _norm(r.get("WarehouseID")) == _norm(warehouse):
+            n = _num(r.get("Rest"))
+            if n is not None:
+                tot += int(n)
     return min(tot, STOCK_CAP)
 
 
@@ -140,7 +139,11 @@ def build_item(pid: str, prod: dict, price_row: dict, cats: dict, images: list) 
 def select_ids(products: dict, prices: dict, cats: dict, sel: dict) -> list:
     """Упорядкований список pid до публікації: політика, фільтри kv_selection.json, залишок Dnepr ≥ min_stock; за спаданням внеску (ціннішим фото качаємо першими)."""
     excl = {_norm(b) for b in (sel.get("exclude_brands") or [])}
-    mc, ms = sel.get("min_cost"), int(sel.get("min_stock") or 0)
+    mc = sel.get("min_cost")
+    try:
+        ms = int(sel.get("min_stock") or 0)
+    except (TypeError, ValueError):
+        ms = DEFAULT_SELECTION["min_stock"]           # сміття в kv_selection.json → типове (fail-safe), а не падіння прогону
     extra = []
     for pid, p in products.items():
         sid = f"kv-{pid}"
@@ -153,7 +156,8 @@ def select_ids(products: dict, prices: dict, cats: dict, sel: dict) -> list:
         if stock_of(row.get("rest")) < max(1, ms):
             continue
         path = category_path(p.get("category_id"), cats)
-        if rt.policy_reason({"id": pid, "name": p.get("name"), "name_ua": p.get("name"), "category_name": path[-1] if path else ""}) == "policy":
+        reason = rt.policy_reason({"id": pid, "name": p.get("name"), "name_ua": p.get("name"), "category_name": path[-1] if path else ""})
+        if reason == "policy" or (reason == "not_toy" and sel.get("exclude_not_toys", True)):
             continue
         sp = rt.site_price(cost)
         extra.append((sp - cost - sp * 0.028, sid))
@@ -185,15 +189,39 @@ def collect(client: KiddisvitClient) -> tuple[dict, dict, dict]:
     return products, prices, cats
 
 
-def out_guard_ok(out: Path, catalog_n: int) -> bool:
+MIN_PRICE_COVERAGE = 0.8       # частка товарів каталогу, для яких API віддав ціну клієнта: на живому прогоні 17.11 було ≈0,98; нижче → збій частини запитів цін (бренд без відповіді/Cloudflare), файл не перезаписуємо
+
+
+def out_guard_ok(out: Path, catalog_n: int, priced_n: int = 0) -> bool:
+    """Гарди усадки: (а) покриття цінами <MIN_PRICE_COVERAGE каталогу; (б) розмір каталогу <50 % попереднього запису; (в) цін клієнта <50 % попереднього priced_n (ціни йдуть окремими ~140 запитами, яких catalog_n не міряє). Законне звуження вибірки (min_stock, exclude_brands) гард не зачіпає. Свідоме звуження каталогу — видалити supplier_kv.json на VPS."""
+    if catalog_n and priced_n < catalog_n * MIN_PRICE_COVERAGE:
+        rt._alert("kv_export_coverage", f"⚠️ kv_supplier_export: ціни клієнта є лише для {priced_n} із {catalog_n} товарів каталогу (<{int(MIN_PRICE_COVERAGE * 100)}%) — частина запитів products/rests/prices не відповіла? supplier_kv.json НЕ перезаписано.")
+        return False
     try:
-        prev = int(json.loads(Path(out).read_text(encoding="utf-8")).get("catalog_n") or 0)
-    except (OSError, ValueError, TypeError):
+        prev_d = json.loads(Path(out).read_text(encoding="utf-8"))
+        prev, prev_p = int(prev_d.get("catalog_n") or 0), int(prev_d.get("priced_n") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
         return True
     if prev and catalog_n < prev * MIN_KEEP_RATIO:
-        rt._alert("kv_export_shrink", f"⚠️ kv_supplier_export: у каталозі KIDDISVIT {catalog_n} позицій проти {prev} під час попереднього запису (менше {int(MIN_KEEP_RATIO * 100)}%) — відповідь усічена? supplier_kv.json НЕ перезаписано.")
+        rt._alert("kv_export_shrink", f"⚠️ kv_supplier_export: у каталозі KIDDISVIT {catalog_n} позицій проти {prev} під час попереднього запису (менше {int(MIN_KEEP_RATIO * 100)}%) — відповідь усічена? supplier_kv.json НЕ перезаписано. Свідоме звуження — видалити supplier_kv.json на VPS.")
+        return False
+    if prev_p and priced_n < prev_p * MIN_KEEP_RATIO:
+        rt._alert("kv_export_coverage", f"⚠️ kv_supplier_export: цін клієнта {priced_n} проти {prev_p} під час попереднього запису (менше {int(MIN_KEEP_RATIO * 100)}%) — supplier_kv.json НЕ перезаписано.")
         return False
     return True
+
+
+def _write_json(out: Path, items: dict, now, catalog_n: int, priced_n: int) -> None:
+    """Як rt_supplier_export._write_json, плюс priced_n (покриття цінами для гарду)."""
+    payload = {"updated": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"), "catalog_n": catalog_n, "priced_n": priced_n, "items": items}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, out)
 
 
 def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | None = None, fetch=rt.fetch_image, img_dir: Path = IMG_DIR, now: datetime | None = None,
@@ -211,7 +239,8 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
         if not products or not prices:
             rt._alert("kv_export_empty", "⚠️ kv_supplier_export: API KIDDISVIT повернув порожні товари/ціни (ключ, ліміт, Cloudflare?) — supplier_kv.json НЕ оновлено; через 3 доби картки kv- зникнуть із сайту (fail-closed).")
             return False
-        if not out_guard_ok(out, len(products)):
+        priced_n = sum(1 for pid in products if _num((prices.get(pid) or {}).get("clientPrice")) is not None)
+        if not out_guard_ok(out, len(products), priced_n):
             return False
         sel = selection if selection is not None else load_selection()
         idx = load_index_ids() if index_ids is None else index_ids
@@ -244,7 +273,7 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
         disk = {dest: True for _u, dest in tasks if rt._on_disk(dest)}
         disk_items = build_items(disk)[0] if disk else {}
         if disk_items:                                          # проміжний запис: залишки/картки не чекають на докачування фото
-            rt._write_json(out, disk_items, now, len(products))
+            _write_json(out, disk_items, now, len(products), priced_n)
         todo = [(u, d) for u, d in tasks if d not in disk]
         if check_disk and todo:
             import shutil
@@ -259,7 +288,7 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
         if not items:
             rt._alert("kv_export_none", f"⚠️ kv_supplier_export: жодної з {len(ids)} відібраних карток не зібрано (без фото/назви/ціни/габаритів: {nophoto}) — supplier_kv.json НЕ оновлено.")
             return False
-        rt._write_json(out, items, now, len(products))
+        _write_json(out, items, now, len(products), priced_n)
         print(f"[kv_export] ✅ {len(items)} карток із {len(products)} у каталозі (відібрано {len(ids)}, без назви/ціни/габаритів {nophoto})")
         return True
     except KiddisvitError as e:
@@ -268,8 +297,12 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
         return False
     except Exception as e:  # noqa: BLE001
         print(f"[kv_export] збій: {type(e).__name__}: {e}", file=sys.stderr)
+        rt._alert("kv_export_crash", f"⚠️ kv_supplier_export: неочікуваний збій {type(e).__name__} — supplier_kv.json НЕ оновлено; дивись журнал kv-supplier-export.")
         return False
 
 
 if __name__ == "__main__":
+    if not KiddisvitClient().has_key():
+        print("[kv_export] KIDDISVIT_API_KEY не задано — експорт не налаштований, пропускаємо (це не збій)")
+        sys.exit(0)
     sys.exit(0 if run_once(workers=PREFETCH_WORKERS, budget_s=PREFETCH_BUDGET_S, check_disk=True) else 1)

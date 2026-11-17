@@ -141,5 +141,49 @@ with tempfile.TemporaryDirectory() as td2:
     chk("stock_snapshot: нема файлу / сміття → {}", ss.kv_stock_entries(td2 / "none.json", NOW) == {} and ss.kv_stock_entries(__file__, NOW) == {})
     chk("stock_snapshot: rt_stock_entries поводиться як раніше (спільний хелпер)", ss.rt_stock_entries(ok_f, NOW) == {"kv-1": 7, "kv-3": 0})
 
+# аудит #1691: покриття цінами, не-іграшки, регістр складу, нестандартні числа, збій генерує сигнал
+alerts = []
+_real_alert = ex.rt._alert
+ex.rt._alert = lambda k, t: alerts.append(k)
+with tempfile.TemporaryDirectory() as td3:
+    td3 = Path(td3)
+    prods200 = {str(i): P(str(i)) for i in range(1, 201)}
+    full = {str(i): R(str(i)) for i in range(1, 201)}
+    o9 = td3 / "o9.json"
+    chk("повне покриття цінами → файл записано, priced_n = 200 і catalog_n = 200", ex.run_once(collected=(prods200, full, CATS), out=o9, fetch=fetch_ok, img_dir=td3 / "img", now=NOW, selection=ex.DEFAULT_SELECTION, index_ids=set()) and json.loads(o9.read_text(encoding="utf-8"))["priced_n"] == 200)
+    before9 = o9.read_bytes()
+    alerts.clear()
+    part = {str(i): R(str(i)) for i in range(1, 21)}          # ціни прийшли лише для 10 % (збій решти запитів по брендах)
+    chk("ціни лише для 10 % каталогу → False, файл не змінено, сигнал kv_export_coverage", not ex.run_once(collected=(prods200, part, CATS), out=o9, fetch=fetch_ok, img_dir=td3 / "img", now=NOW, selection=ex.DEFAULT_SELECTION, index_ids=set()) and o9.read_bytes() == before9 and "kv_export_coverage" in alerts)
+    chk("покриття 85 % (понад поріг 80 %) → законно, записує", ex.run_once(collected=(prods200, {str(i): R(str(i)) for i in range(1, 171)}, CATS), out=td3 / "o10.json", fetch=fetch_ok, img_dir=td3 / "img", now=NOW, selection=ex.DEFAULT_SELECTION, index_ids=set()))
+    alerts.clear()
+    half = {str(i): R(str(i)) for i in range(1, 201)}
+    for i in range(1, 201):
+        if i > 90:
+            half[str(i)] = R(str(i), cost=None)                 # каталог цілий, але цін клієнта лише 90 з 200 (45 %) < 80 %
+    chk("45 % покриття → False (поріг покриття)", not ex.run_once(collected=(prods200, half, CATS), out=td3 / "o11.json", fetch=fetch_ok, img_dir=td3 / "img", now=NOW, selection=ex.DEFAULT_SELECTION, index_ids=set()) and "kv_export_coverage" in alerts)
+    alerts.clear()
+
+    class Crash(api.KiddisvitClient):
+        def __init__(self):
+            super().__init__(key="K")
+
+        def clients_list(self):
+            raise ValueError("несподіване")
+
+    chk("неочікуваний збій коду → False + сигнал kv_export_crash", not ex.run_once(client=Crash(), out=td3 / "o12.json", img_dir=td3 / "img") and "kv_export_crash" in alerts)
+ex.rt._alert = _real_alert
+
+chk("залишок: «7.0» і склад у іншому регістрі («dnepr») рахуються; «101» = 100", ex.stock_of([{"WarehouseID": "dnepr", "Rest": "7.0"}]) == 7 and ex.stock_of([{"WarehouseID": "Dnepr", "Rest": 101}]) == 100)
+chk("не-іграшки (зошит/гантелі за політикою rt.policy_reason) виключаються за замовчуванням і повертаються при exclude_not_toys=false", (lambda a, b: ("kv-9" not in a) and ("kv-9" in b))(
+    ex.select_ids({"9": P("9", name="Зошит у клітинку")}, {"9": R("9")}, CATS, ex.DEFAULT_SELECTION),
+    ex.select_ids({"9": P("9", name="Зошит у клітинку")}, {"9": R("9")}, CATS, dict(ex.DEFAULT_SELECTION, exclude_not_toys=False))))
+chk("сміття в min_stock (рядок) не валить відбір, діє типове", ex.select_ids({"1": P("1")}, {"1": R("1")}, CATS, {"min_stock": "abc", "exclude_brands": []}) == ["kv-1"])
+import subprocess  # noqa: E402
+env0 = {k: v for k, v in __import__("os").environ.items() if k != "KIDDISVIT_API_KEY"}
+r0 = subprocess.run([sys.executable, str(HERE / "kv_supplier_export.py")], capture_output=True, env=dict(env0, KIDDISVIT_API_KEY="", SUPPLIER_KV_FILE=str(Path(tempfile.gettempdir()) / "nokey_kv_test.json")), cwd=str(HERE), timeout=60)
+chk("запуск без ключа → код 0 («не налаштовано»), а не щогодинний збій юніта", r0.returncode == 0)
+
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

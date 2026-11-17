@@ -5,7 +5,9 @@
 products/rests/prices, products/rests: усі HTTP 200). Менеджер Т. Сіденко 17.11 13:45: «не більше 25 запитів за 10 сек, ліміти не знімаємо» — клієнт тримає ≤ ~1,4 запиту/с (MIN_INTERVAL_S=0,7).
 Cloudflare перед API відхиляє запити без власного User-Agent (помилка 1010) — тому заголовок обов'язковий. Ключ (Bearer) — з env KIDDISVIT_API_KEY (.env на VPS, ставить власник); НІКОЛИ не друкується й не потрапляє в винятки/логи.
 Замовлення (orders/create, assembly, ttn-data) тут НЕ реалізовані: окремий модуль за воротами, лише зі словом власника."""
+import http.client
 import json
+import math
 import os
 import sys
 import threading
@@ -25,6 +27,7 @@ USER_AGENT = "PlutusToys-b2b-client/1.0"
 MIN_INTERVAL_S = 0.7           # 25 запитів / 10 с = 2,5/с дозволено (менеджер 17.11); 1/0,7 ≈ 1,4/с — запас майже вдвічі
 TIMEOUT_S = 180                # catalog/products ≈ 26 МБ
 MAX_RETRIES = 4
+MAX_RETRY_AFTER_S = 60.0
 RETRY_STATUSES = (429, 500, 502, 503, 504)
 
 
@@ -80,13 +83,14 @@ class KiddisvitClient:
                 if status in RETRY_STATUSES and attempt < MAX_RETRIES:
                     last_status = status
                     try:
-                        delay = max(float(retry_after), 1.0) if retry_after else 0.0
+                        delay = float(retry_after) if retry_after else 0.0
+                        delay = min(max(delay, 1.0), MAX_RETRY_AFTER_S) if math.isfinite(delay) and delay > 0 else 0.0     # стеля: Retry-After 86400/inf/nan не вішає прогін
                     except ValueError:
                         delay = 0.0
                     self._sleep(max(delay, 5.0 * (attempt + 1)))
                     continue
                 raise KiddisvitError(f"{method} {path}: HTTP {status}") from None
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:      # HTTPException: IncompleteRead на великих відповідях (catalog/products ≈26 МБ) — не OSError
                 last_status = type(e).__name__
                 if attempt < MAX_RETRIES:
                     self._sleep(5.0 * (attempt + 1))

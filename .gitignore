@@ -335,6 +335,9 @@ gmc_service_account*.json
 # RoyalToys: опт у файлі (cost) — не в git і не в DocumentRoot (Код 19.10)
 /supplier_rt.json
 /supplier_rt.json.tmp
+/supplier_kv.json
+/supplier_kv.json.tmp
+/site/img/kv/
 /site/img/rt/
 # Рілси, яких пише автомат публікації (VPS): не в git і не в DocumentRoot (20.10)
 /ig_reels.json

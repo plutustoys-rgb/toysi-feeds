@@ -125,6 +125,19 @@ def assert_catalog_size_sane(catalog: Dict[str, dict], min_expected: int = TOYSI
         )
 
 
+def _parse_bool_tag(text) -> "bool | None":
+    """"true"/"false" (без урахування регістру й пробілів) -> True/False; тега нема / інше значення -> None.
+    None = «невідомо» (НЕ False): споживач (competitor_pricing.toysi_cost_discounted_price) тоді лишається на старому фолбеку."""
+    if text is None:
+        return None
+    t = text.strip().lower()
+    if t == "true":
+        return True
+    if t == "false":
+        return False
+    return None
+
+
 def _parse_ostatok(raw: str) -> int:
     """
     Перетворює рядок залишку Toysi на ціле число.
@@ -213,6 +226,11 @@ def _parse_xml(xml_content: bytes, lang: str = "ukr") -> Dict[str, dict]:
         # для не-новинок). Раніше відкидався; тепер потрібен для кроку "найновіші" у
         # порядку відбору EVA (пряме рішення власника).
         date = offer.findtext("date", "").strip()
+        # ДОДАНО (2026-11-16, рішення власника щодо собівартості): тег <isImport> Toysi (true/false; тега нема -> None).
+        # Знижка Toysi по товару відома лише ПІСЛЯ продажу; виміряно 16.11 на 117 SKU зі спостереженою знижкою:
+        # isImport=true -> 15 % у 40 із 40, isImport=false -> 5 % у 61 із 77 (15 % у 13, 0 % у 3).
+        # Споживач — ЛИШЕ competitor_pricing.toysi_cost_discounted_price (собівартість), не база ціни сайту/EVA.
+        is_import = _parse_bool_tag(offer.findtext("isImport"))
 
         catalog[product_id] = {
             "id":            product_id,
@@ -232,6 +250,7 @@ def _parse_xml(xml_content: bytes, lang: str = "ukr") -> Dict[str, dict]:
             "category_name": cat_names.get(category_id, ""),
             "params":        params,
             "date":          date,
+            "is_import":     is_import,   # True/False/None (тега нема) — див. коментар вище
         }
 
     print(f"[Toysi] Загружено товаров: {len(catalog)}")

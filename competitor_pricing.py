@@ -403,6 +403,22 @@ TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS = (
     "автокрісл", "біговел", "велосипед", "самокат", "електромобіл",
 )
 
+# ДОДАНО (2026-11-16, рішення власника «так, роби п.1»): знижка Toysi по товару відома лише ПІСЛЯ продажу,
+# а старий фолбек для SKU без спостереження = 15 % (кап 5 % для України) систематично занижував собівартість
+# не-імпортних товарів. Виміряно 16.11 (observed_discount_out.txt від 07.11, 117 SKU зі збігом у фіді Toysi,
+# тег <isImport>): isImport=true -> 15 % у 40 із 40; isImport=false -> 5 % у 61 із 77 (15 % у 13, 0 % у 3).
+# Правило «імпортний -> 15 %, не імпортний -> 5 %» вгадує 101 із 117; 13 помилок безпечні (реально 15 %, ми
+# закладаємо 5 % -> собівартість трохи завищена), 3 збиткові (реально 0 %).
+# ⚠️ Діє ЛИШЕ в toysi_cost_discounted_price() -> real_toysi_cost() (СОБІВАРТІСТЬ). toysi_discounted_price()
+# (база роздрібної ціни сайту ×1,5 і EVA ×1,45 — «закрита формула ціни сайту») НЕ ЧІПАЄТЬСЯ.
+# Ворота: env TOYSI_COST_BY_IMPORT (типово "1"; "0" = повернення до старого фолбеку).
+TOYSI_DISCOUNT_RATE_NON_IMPORT = 0.05
+
+
+def toysi_cost_by_import_on() -> bool:
+    return os.environ.get("TOYSI_COST_BY_IMPORT", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
 # ДОДАНО (2026-07-26, живе прохання власниці — "де наша вигода", реальне
 # замовлення toysi.ua/order_detailed показало окрему статтю "Збірка" 15₴
 # понад ціну товару): живо підтверджено через order_positions API на 6
@@ -554,8 +570,12 @@ def real_toysi_cost(item: dict) -> float:
     Знижка НЕ поширюється на товари з виняткових брендів/категорій, а
     Збірка на неї взагалі не поширюється НІКОЛИ (підтверджено живо —
     positions_discount_price для Збірки завжди дорівнює її повній ціні),
-    тому Збірка додається ОКРЕМО, після знижки, в усіх випадках."""
-    discounted_price = toysi_discounted_price(item)
+    тому Збірка додається ОКРЕМО, після знижки, в усіх випадках.
+
+    2026-11-16: «15 % для всіх SKU без спостереження» ЗАМІНЕНО правилом за тегом <isImport> каталогу
+    (true -> 15 %, false -> 5 %; нема тега -> старий фолбек) — див. toysi_cost_discounted_price і
+    коментар над TOYSI_DISCOUNT_RATE_NON_IMPORT. Ворота TOYSI_COST_BY_IMPORT=0 повертає старе."""
+    discounted_price = toysi_cost_discounted_price(item)  # 2026-11-16: з урахуванням isImport (НЕ toysi_discounted_price — вона база ціни сайту/EVA)
     if discounted_price <= 0:
         return discounted_price
     return round(discounted_price + TOYSI_ASSEMBLY_FEE_UAH, 2)
@@ -676,6 +696,77 @@ def toysi_discounted_price(item: dict) -> float:
     if country in TOYSI_DISCOUNT_UKRAINE_COUNTRIES:
         discount = min(discount, TOYSI_DISCOUNT_UKRAINE_CAP)
     return base_price * (1 - discount)
+
+
+def toysi_cost_discounted_price(item: dict) -> float:
+    """Ціна Toysi зі знижкою ДЛЯ СОБІВАРТОСТІ (викликає ЛИШЕ real_toysi_cost). Порядок (2026-11-16):
+      (а) observed_discount_pct(pid) — реально спостережена знижка цього SKU (як було);
+      (б) винятки TOYSI_DISCOUNT_EXCLUDED_BRANDS/CATEGORY_KEYWORDS -> без знижки (як було);
+      (в) ворота TOYSI_COST_BY_IMPORT і item["is_import"] відомий (тег <isImport> каталогу): True -> 15 %, False -> 5 %.
+          Кап «Україна» на цьому шляху НЕ застосовується (у вибірці 4 українських SKU з isImport=true мали 15 %);
+      (г) інакше — старий фолбек toysi_discounted_price (15 %, кап 5 % для України), БАЙТ-У-БАЙТ як було.
+    toysi_discounted_price() НЕ змінена: вона — база ціни сайту (×1,5) і EVA (×1,45); їхні ціни від isImport не залежать.
+    НЕ округлює (як і toysi_discounted_price)."""
+    try:
+        base_price = float(item.get("price") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if base_price <= 0:
+        return base_price
+
+    observed = observed_discount_pct(item.get("id") or item.get("vendor_code"))
+    if observed is not None:
+        return base_price * (1 - observed)
+
+    vendor_norm = _normalize_for_discount_match(item.get("vendor"))
+    category_name = (item.get("category_name") or "").lower()
+    if (
+        vendor_norm in TOYSI_DISCOUNT_EXCLUDED_BRANDS
+        or any(kw in category_name for kw in TOYSI_DISCOUNT_EXCLUDED_CATEGORY_KEYWORDS)
+    ):
+        return base_price
+
+    if toysi_cost_by_import_on():
+        flag = item.get("is_import")
+        if flag is True:
+            return base_price * (1 - TOYSI_DISCOUNT_RATE)
+        if flag is False:
+            return base_price * (1 - TOYSI_DISCOUNT_RATE_NON_IMPORT)
+
+    return toysi_discounted_price(item)
+
+
+# ДОДАНО (2026-11-16, рішення власника, дослівно «додай 10 грн»): фіксована витрата на замовлення Prom —
+# «Дешева доставка», наша частка для замовлень 200–700 ₴ — додається до собівартості Prom у розрахунку нижньої межі й
+# ціни. РІВНО 10 ₴ (слова власника), НЕ 30 ₴ для замовлень ≥ 700 ₴. Лише Prom: Rozetka/сайт/EVA/Allo НЕ чіпаємо.
+# Ворота/відкат: env PROM_ORDER_FEE_UAH ("0" вимикає; некоректне/від'ємне/нескінченне значення -> 10.0, без винятку).
+PROM_ORDER_FEE_DEFAULT_UAH = 10.0
+
+
+def _parse_prom_order_fee(raw) -> float:
+    try:
+        v = float(str(raw).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return PROM_ORDER_FEE_DEFAULT_UAH
+    if v != v or v in (float("inf"), float("-inf")) or v < 0:
+        return PROM_ORDER_FEE_DEFAULT_UAH
+    return v
+
+
+PROM_ORDER_FEE_UAH = _parse_prom_order_fee(os.environ.get("PROM_ORDER_FEE_UAH", PROM_ORDER_FEE_DEFAULT_UAH))
+
+
+def prom_effective_cost(cost: float) -> float:
+    """Собівартість Prom для нижньої межі/ціни = cost + PROM_ORDER_FEE_UAH. Єдина точка для ВСІХ місць, де Prom
+    рахує підлогу окремо від decide_price_for_platform (фід-гард, аудитор, звіти) — щоб не розсинхронізувати.
+    cost <= 0 / не число -> без змін (невизначена собівартість лишається невизначеною, а не 10 ₴)."""
+    try:
+        c = float(cost)
+    except (TypeError, ValueError):
+        return cost
+    if c <= 0 or c != c:
+        return cost
+    return c + PROM_ORDER_FEE_UAH
 
 
 PLATFORMS = ("prom", "rozetka")
@@ -1669,7 +1760,7 @@ def decide_price_for_platform(
     Рішення про ціну для ОДНОГО майданчика (Prom або Rozetka):
         Шлях 1 (немає конкурента):
             нижня_межа = (cost + cost*MIN_PROFIT) / (1 - комісія_майданчика - комісія_оплати)
-            ціна       = max(cost*NO_COMPETITOR_MULT, нижня_межа)
+            ціна       = max(cost*NO_COMPETITOR_MULT, нижня_межа)   (Prom: нижня_межа від cost+PROM_ORDER_FEE_UAH, множник — від cost)
         Шлях 2, Rozetka (є конкурент):
             нижня_межа = (cost + cost*MIN_PROFIT_COMPETITOR_FLOOR) / (1 - комісія_майданчика - комісія_оплати)
             кандидат   = min_competitor - PRICE_STEP (фіксований крок, грн — не %)
@@ -1701,9 +1792,15 @@ def decide_price_for_platform(
     """
     payment_commission = PAYMENT_COMMISSION.get(platform, 0.0)
     target_margin = MIN_PROFIT if min_competitor is None else MIN_PROFIT_COMPETITOR_FLOOR
+    # 2026-11-16 (рішення власника «додай 10 грн»): Prom — собівартість + фіксована витрата на замовлення
+    # («Дешева доставка», PROM_ORDER_FEE_UAH); для решти майданчиків cost_eff == cost. cost_eff йде у НИЖНЮ МЕЖУ й
+    # звітну маржу (floor, canonical_competitor_floor, min_safe_price, margin_pct). У НАЦІНКУ «без конкурента»
+    # (cost * NO_COMPETITOR_MULT) 10 ₴ НЕ множиться (уточнення власника-координатора 16.11: «додай 10 грн» = у нижню межу
+    # ціни Prom, не в націнку; floor уже містить +10).
+    cost_eff = prom_effective_cost(cost) if platform == "prom" else cost
 
     if platform == "rozetka":
-        floor, floor_commission = _resolve_rozetka_floor(cost, target_margin, payment_commission)
+        floor, floor_commission = _resolve_rozetka_floor(cost_eff, target_margin, payment_commission)
         if floor_commission + payment_commission >= 1:
             raise ValueError(
                 f"[{platform}] сумарна комісія {floor_commission + payment_commission:.0%} >= 100% — перевір "
@@ -1716,17 +1813,17 @@ def decide_price_for_platform(
                 f"[{platform}] сумарна комісія {total_commission:.0%} >= 100% — перевір "
                 "PROM_CATEGORY_COMMISSION/ROZETKA_COMMISSION_DEFAULT/PAYMENT_COMMISSION"
             )
-        floor = compute_floor(cost, total_commission, target_margin)
+        floor = compute_floor(cost_eff, total_commission, target_margin)
 
     if min_competitor is None:
-        price = round(max(cost * NO_COMPETITOR_MULT, floor), 2)
+        price = round(max(cost * NO_COMPETITOR_MULT, floor), 2)   # cost, НЕ cost_eff: +10 ₴ лише в floor
         result_category = "no_competitor"
     else:
         candidate = round(min_competitor - PRICE_STEP, 2)
         if platform != "rozetka":
             # Канонічна формула власниці (пряме додавання) — винесена у спільний
             # canonical_competitor_floor(), той самий floor кличе floor-гард фіду.
-            floor = canonical_competitor_floor(cost, candidate, total_commission, target_margin)
+            floor = canonical_competitor_floor(cost_eff, candidate, total_commission, target_margin)
         price = round(max(floor, candidate), 2)
         result_category = "floor" if floor >= candidate else "undercut"
 
@@ -1751,14 +1848,14 @@ def decide_price_for_platform(
     # Rozetka (сходинкова, залежить від ціни) перераховується ще раз ПІСЛЯ
     # підняття ціни — сходинка могла змінитись.
     if final_commission < 1:
-        min_safe_price = round(cost / (1 - final_commission), 2)
+        min_safe_price = round(cost_eff / (1 - final_commission), 2)
         if price < min_safe_price:
             price = min_safe_price
             result_category = "floor"
             final_commission = compute_total_commission(platform, category_name, price, prom_category_id=prom_category_id)
 
     net_revenue = price * (1 - final_commission)
-    margin_pct = round((net_revenue - cost) / cost * 100, 1) if cost else 0.0
+    margin_pct = round((net_revenue - cost_eff) / cost_eff * 100, 1) if cost_eff else 0.0
 
     return {
         "platform": platform,

@@ -9,7 +9,8 @@ from datetime import datetime
 from competitor_pricing import (decide_price_for_platform, load_fresh_prom_price_overrides,
                                  load_description_overrides, real_toysi_cost,
                                  compute_floor, compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR,
-                                 canonical_competitor_floor, PRICE_STEP, cap_stale_prom_override)
+                                 canonical_competitor_floor, PRICE_STEP, cap_stale_prom_override,
+                                 prom_effective_cost)
 from forbidden_products import is_forbidden
 from parser import fetch_toysi_catalog
 from seo_description import description_for
@@ -673,6 +674,9 @@ def _build_xml(
             # ніколи не нижче конкурента). Формульна гілка (else) floor уже поважає через
             # decide_price_for_platform. Read-only по стану репрайсера — жодної гонки за файл.
             commission = compute_total_commission(PLATFORM, item.get("category_name"), retail, prom_category_id=prom_category_id)
+            # 2026-11-16: + PROM_ORDER_FEE_UAH (рішення власника «додай 10 грн») — та сама cost_eff, що в decide_price_for_platform: floor-гард мусить
+            # рахувати від тієї ж собівартості, що й репрайсер/decide_price_for_platform, інакше гард «дозволяв» би ціни нижче їхньої межі.
+            cost_eff = prom_effective_cost(cost)
             comp = comp_prices.get(item_id)
             if comp and comp > 0:
                 # Є свіжий ЖИВИЙ конкурент → floor рахуємо КАНОНІЧНОЮ формулою власниці
@@ -683,11 +687,11 @@ def _build_xml(
                 # перебивав коректний undercut −3 на ціну НАД ринком (баг 2026-08-22:
                 # 325 SKU опинялись вище конкурента при медіані каталогу −3).
                 candidate = round(comp - PRICE_STEP, 2)
-                floor = canonical_competitor_floor(cost, candidate, commission)
+                floor = canonical_competitor_floor(cost_eff, candidate, commission)
             else:
                 # Немає свіжого живого конкурента (override = ціна "без конкурента",
                 # NO_COMPETITOR_MULT/25%) — консервативний division-floor як і раніше.
-                floor = compute_floor(cost, commission, MIN_PROFIT_COMPETITOR_FLOOR)
+                floor = compute_floor(cost_eff, commission, MIN_PROFIT_COMPETITOR_FLOOR)
             # min_safe: та сама остання гарантія, що в decide_price_for_platform (net-виручка
             # ≥ собівартість), яку власниця додала 2026-07-26 проти "конкурент ≈ 0₴ → чиста
             # виручка < cost". Канонічний floor її НЕ забезпечує (при низькому конкуренті +
@@ -696,7 +700,7 @@ def _build_xml(
             # безпечний для ОБОХ гілок: у здоровому undercut candidate ≥ min_safe, тож не кусає
             # й не повертає баг 325-SKU — спрацьовує лише в дистрес-режимі (товар і так над ринком).
             if commission < 1:
-                floor = max(floor, round(cost / (1 - commission), 2))
+                floor = max(floor, round(cost_eff / (1 - commission), 2))
             if retail < floor:
                 # ceil до копійки (не round) — гард ніколи не має публікувати навіть на пів-копійки
                 # НИЖЧЕ floor; -1e-6 гасить float-шум, щоб рівно-копійчаний floor не стрибав угору.

@@ -57,11 +57,12 @@ TC_GRID = (0.117, 0.137, 0.17, 0.20, 0.25)   # сумарна комісія Pro
 
 def floor_for(cost: float, competitor_price: float, tc: float) -> float:
     """Канонічна підлога репо при відомому конкуренті (candidate = ціна − крок)."""
-    return cp.canonical_competitor_floor(cost, competitor_price - cp.PRICE_STEP, tc, cp.MIN_PROFIT_COMPETITOR_FLOOR)
+    # 2026-11-16: + PROM_ORDER_FEE_UAH (cp.prom_effective_cost) — підлога Prom однакова з репо
+    return cp.canonical_competitor_floor(cp.prom_effective_cost(cost), competitor_price - cp.PRICE_STEP, tc, cp.MIN_PROFIT_COMPETITOR_FLOOR)
 
 
 def division_floor(cost: float, tc: float) -> float:
-    return cost * (1 + cp.MIN_PROFIT_COMPETITOR_FLOOR) / (1 - tc)
+    return cp.prom_effective_cost(cost) * (1 + cp.MIN_PROFIT_COMPETITOR_FLOOR) / (1 - tc)
 
 
 import re

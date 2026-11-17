@@ -74,7 +74,7 @@ from prom_competitor_pricer import SEARCH_DELAY
 from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices,
                                 decide_price_for_platform, compute_floor, cap_stale_prom_override, site_retail_price,
                                 compute_total_commission, MIN_PROFIT_COMPETITOR_FLOOR,
-                                PAYMENT_COMMISSION, SITE_FULFILL_PER_ORDER)
+                                PAYMENT_COMMISSION, SITE_FULFILL_PER_ORDER, prom_effective_cost)
 
 from trademark_filter import is_uno_trademark_blocked
 from feed_title_norm import normalize_title
@@ -812,7 +812,8 @@ def _prom_page_price(cost: float, category_name, override, has_fresh_competitor:
             # не вище дефолтної ×1.75-формули; інакше ціна оголошення розійшлась би з ціною сторінки Prom.
             retail = cap_stale_prom_override(
                 retail, decide_price_for_platform(cost, None, "prom", category_name)["price"], False)
-        floor = compute_floor(cost, compute_total_commission("prom", category_name, retail),
+        floor = compute_floor(prom_effective_cost(cost),  # 2026-11-16: + PROM_ORDER_FEE_UAH (рішення власника «додай 10 грн») — та сама cost_eff, що в decide_price_for_platform
+                              compute_total_commission("prom", category_name, retail),
                               MIN_PROFIT_COMPETITOR_FLOOR)
         if retail < floor:
             retail = math.ceil(floor * 100 - 1e-6) / 100

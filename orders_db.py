@@ -592,6 +592,8 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
               OR (payment_method = 'prepaid' AND payment_confirmed = 1)
           )
           AND items NOT LIKE '%"toysi_code": "rt-%'
+          AND items NOT LIKE '%"toysi_code": "kv-%'         -- KIDDISVIT (17.11.2026): окремий постачальник, у Toysi не передаємо (обробка вручну в B2B-кабінеті, поки нема раннера)
+          AND items NOT LIKE '%"toysi_code": "kvu-%'        -- KIDDISVIT, «Уцінка» (склади NTV)
           AND items NOT LIKE '%"toysi_code": "dropt-%'      -- історичні замовлення (постачальника прибрано 16.11.2026): у Toysi не передаємо
         """
     ).fetchall()

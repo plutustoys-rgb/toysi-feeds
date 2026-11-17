@@ -304,6 +304,19 @@ def is_rt_id(pid) -> bool:
     return str(pid or "").strip().lower().startswith(RT_PREFIX)
 
 
+KV_PREFIXES = ("kv-", "kvu-")
+
+
+def is_kv_id(pid) -> bool:
+    """Товар KIDDISVIT (17.11.2026): id «kv-<id>» або «kvu-<id>» («Уцінка», склади NTV)."""
+    return str(pid or "").strip().lower().startswith(KV_PREFIXES)
+
+
+def is_direct_id(pid) -> bool:
+    """Товар партнера напряму (не Toysi): RoyalToys або KIDDISVIT — склад fail-closed (нема знімка/ключа → «немає»)."""
+    return is_rt_id(pid) or is_kv_id(pid)
+
+
 def is_zb_id(pid) -> bool:
     return str(pid or "").strip().lower().startswith("zb-")
 
@@ -401,16 +414,16 @@ def check_stock(items: list) -> list:
         rt_only = False
     bad = []
     for pid, v in need.items():
-        if rt_only and not is_rt_id(pid):
+        if rt_only and not is_direct_id(pid):
             continue
         if pid not in snap:
-            if is_rt_id(pid):
+            if is_direct_id(pid):
                 bad.append({"id": pid, "name": v["name"], "requested": v["requested"], "available": 0})
             continue
         try:
             avail = int(snap[pid])
         except (TypeError, ValueError):
-            if is_rt_id(pid):
+            if is_direct_id(pid):
                 bad.append({"id": pid, "name": v["name"], "requested": v["requested"], "available": 0})
             continue
         if avail < v["requested"]:
@@ -566,6 +579,14 @@ def build_order(payload: dict) -> tuple:
         site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_MIXED, items)   # облік відхилень (без ПІБ/адреси): рішення про поділ замовлень — за числом
         # змішаний кошик (Toysi + RoyalToys): у них різні постачальники/відправлення, а автоматичного поділу замовлення немає — оплачене замовлення зависло б. Просимо оформити окремо (fail-closed)
         raise OrderError("Товари партнера (RoyalToys) відправляються окремою посилкою: оформіть їх окремим замовленням від інших товарів")
+    kv_cnt = sum(1 for i in items if is_kv_id(i["toysi_code"]))
+    if kv_cnt and kv_cnt != len(items):
+        # KIDDISVIT (17.11.2026): автоматичного поділу на ТРИ замовлення (Toysi + RoyalToys + KIDDISVIT) нема — змішаний кошик з kv- відхиляємо ЗАВЖДИ (навіть коли SITE_MIXED_ORDERS=1): оплачене замовлення зависло б
+        site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_MIXED, items)
+        raise OrderError("Товари партнера відправляються окремою посилкою: оформіть їх окремим замовленням від інших товарів")
+    if kv_cnt and payment_method != "prepaid":
+        site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_RT_COD, items)
+        raise OrderError("Товари партнера відправляються лише за повною передоплатою: оберіть оплату карткою онлайн")
     if payment_method != "prepaid" and any(is_rt_id(i["toysi_code"]) for i in items):
         site_rejected_baskets.log_rejected(site_rejected_baskets.KIND_RT_COD, items)
         # fail-closed: у кошику товар партнера RoyalToys — накладений платіж не приймаємо (і невідомий/відсутній спосіб теж), лише картка онлайн

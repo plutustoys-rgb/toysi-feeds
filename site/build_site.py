@@ -190,13 +190,19 @@ def is_russian_language_item(name):
 # ЗА ВОРОТАМИ SITE_PUBLIC_IDS_LIVE=1 вмикає Код ПІСЛЯ того, як Apache вже має 301 зі старих адрес і rewrite нового шляху фото (deploy/activate_site_apache.sh);
 # вимкнено → збірка як була (product-rt-…, /img/rt/…, PT-R…). Внутрішній id (rt-…) лишається ключем даних, кошика й замовлень.
 PUBLIC_IDS_LIVE = os.environ.get("SITE_PUBLIC_IDS_LIVE") == "1"
-PUBLIC_SLUG_PREFIX = {"rt-": "y"}    # нейтральна літера (не ініціал постачальника): RoyalToys «rt-69616» -> «y69616»; Toysi — лише ASCII-цифри, тож слаги однозначні
+PUBLIC_SLUG_PREFIX = {"rt-": "y", "kv-": "k"}    # нейтральна літера (не ініціал постачальника): RoyalToys «rt-69616» -> «y69616»; Toysi — лише ASCII-цифри, тож слаги однозначні
+# KIDDISVIT (kv-<id>, 17.11.2026, Код → Shopify-code): нових адрес до воріт не існувало, тож публічний slug «k<id>», код «PT-K<id>» і фото «/img/p/k<id>-N.jpg» діють ЗАВЖДИ (не залежать від SITE_PUBLIC_IDS_LIVE);
+# Apache має віддавати /img/p/k<id>-N.jpg з файлу /img/kv/kv-<id>-N.jpg (rewrite — Код, ДО SITE_KV_LIVE=1). Внутрішній id (kv-…) лишається ключем даних, кошика й замовлень.
+_KV_ID_RX = re.compile(r"kv-[0-9]+")
+_PUBLIC_IMG_KV_RX = re.compile(r"https://plutustoys\.com\.ua/img/kv/(kv-[0-9]+)-([0-9]{1,2})\.jpg")
 _PUBLIC_IMG_RX = re.compile(r"https://plutustoys\.com\.ua/img/(rt)/(\1-[0-9A-Za-z_]+)-([0-9]{1,2})\.jpg")   # каталог зв'язаний з префіксом id (\1): /img/rt/<чужий id> не переписуємо
 
 
 def public_slug(pid):
     """Публічна частина адреси картки. Toysi — як є; RoyalToys при SITE_PUBLIC_IDS_LIVE=1 — нейтральний slug (y69616); сміттєві id не перетворюються."""
     pid = str(pid)
+    if _KV_ID_RX.fullmatch(pid):
+        return PUBLIC_SLUG_PREFIX["kv-"] + pid[3:]   # KIDDISVIT: нейтральний slug завжди (k<id>)
     if not PUBLIC_IDS_LIVE:
         return pid
     if _RT_ID_RX.fullmatch(pid):
@@ -211,6 +217,9 @@ def product_file(pid):
 
 def public_photo(pid, url):
     """Фото RoyalToys з нашого сервера: https://plutustoys.com.ua/img/rt/<id>-N.jpg -> https://plutustoys.com.ua/img/p/<slug>-N.jpg (Apache переписує назад). Інші URL (Toysi тощо) — без змін."""
+    if isinstance(url, str) and _KV_ID_RX.fullmatch(str(pid)):
+        mk = _PUBLIC_IMG_KV_RX.fullmatch(url)   # KIDDISVIT: https://plutustoys.com.ua/img/kv/kv-<id>-N.jpg -> /img/p/k<id>-N.jpg (Apache переписує назад); чужий id у шляху не переписуємо
+        return f"https://plutustoys.com.ua/img/p/{public_slug(pid)}-{mk.group(2)}.jpg" if mk and mk.group(1) == str(pid) else url
     if not PUBLIC_IDS_LIVE or not isinstance(url, str):
         return url
     m = _PUBLIC_IMG_RX.fullmatch(url)
@@ -265,6 +274,8 @@ def normalize_site_title(name):
 def site_product_code(pid):
     """Власний код товару для покупця: Toysi «176003» -> «PT-176003»; RoyalToys при SITE_PUBLIC_IDS_LIVE=1 — «PT-Y69616» (нейтральна літера = публічний slug); до відкриття воріт — як було: RoyalToys «rt-X» -> «PT-RX»."""
     pid = str(pid)
+    if _KV_ID_RX.fullmatch(pid):
+        return "PT-K" + pid[3:]   # KIDDISVIT: завжди «PT-K<id>» (не залежить від воріт публічних id)
     if PUBLIC_IDS_LIVE and public_slug(pid) != pid:
         return "PT-" + public_slug(pid)[0].upper() + public_slug(pid)[1:]   # регістр решти id зберігаємо (rt-id, що різняться регістром, не зливаються в один код)
     return "PT-R" + pid[3:] if pid.startswith("rt-") else "PT-" + pid
@@ -635,7 +646,7 @@ def index_entries(prods):
     """Записи index.json (клієнтський пошук/сорт, site_order_api): pr — ціна, за якою ПРОДАЄМО (акційна під час «Знижки тижня»), op — стара ціна акції (лише інформація: замовлення її ігнорує)."""
     return [{"id": p["id"], **({"u": public_slug(p["id"])} if public_slug(p["id"]) != p["id"] else {}), "n": p["name"], "pr": p["price"], "p": p["photo"],
              "c": p["category"], "s": 1 if p["stock"] > 0 else 0, **({"op": p["old_price"]} if p.get("old_price") else {}),
-             **({"rt": 1, "ix": 0 if p.get("noindex") else 1} if p.get("rt") else {})} for p in prods]   # rt/ix — для фідів Google/Meta/Bing (Код): RoyalToys лише з ix=1
+             **({"rt": 1, "ix": 0 if p.get("noindex") else 1} if p.get("rt") else {}), **({"sup": "kv"} if p.get("kv") else {})} for p in prods]   # rt/ix — для фідів Google/Meta/Bing (Код): RoyalToys лише з ix=1
 
 
 def tile(p, cls="", eager=False, prio=False, badge=False):
@@ -804,6 +815,207 @@ def _load_supplier_rt(now=None):
     return out
 
 
+# ── Третій постачальник (KIDDISVIT, B2B API; рішення власника 17.11.2026: «додаєш їхні товари у всі фіди, подивимось як вони працюють із замовленнями»; дані й замовлення — Код, сайт — тут) ──
+# <корінь репо>/supplier_kv.json (НЕ в site/: там "cost" — наша закупівля): {"updated": ISO, "catalog_n": N, "items": {"kv-<productID>": {name (укр.), description, vendor, vendor_code (=sku), barcode (цифри), category (листок), category_path[…],
+# images[https://plutustoys.com.ua/img/kv/kv-<id>-N.jpg], price (закрита формула сайту — НЕ перераховуємо), cost, rrp, stock (склад Dnepr, кап 100), dims_cm, weight_kg, index (false до хвилі SEO)}}}.
+# Картки з'являються ЛИШЕ за воротами SITE_KV_LIVE=1 (за замовчуванням вимкнено) І коли онлайн-оплата live (kv- — лише передоплата, як rt-). Файл старший за 3 доби — карток нема.
+# site/kv_category_map.json: {"paths": {«Кореневий > … > листок» → категорія сайту}, "brands": {бренд (casefold) → категорія}}: їхнє дерево хибне місцями, тож бренд має пріоритет. Шлях без запису = картка НЕ публікується (голосне попередження), а не «Інше».
+# «index» не True (false або поля нема) → noindex,follow і поза sitemap (хвилі відкриття до Google — лише за словом власника/SEO). Уцінка `kvu-<id>` цим завантажувачем НЕ приймається (окреме рішення).
+SITE_KV_LIVE = os.environ.get("SITE_KV_LIVE") == "1"
+KV_DESC_MAX_CHARS = 20000   # опис постачальника довший — обрізаємо до очищення (захист від патологічних входів)
+# Ім'я постачальника/внутрішній id не мають потрапити в назву, бренд, код, опис (аудит #1694). Шукаємо в «згорнутому» рядку: кирилиця-двійники → латиниця (кіддісвіт/Кiддiсвiт/Kiddisvit → kiddisvit), розділювачі в імені
+# (Kiddi-Svit, kiddi_svit, «Кідді Світ») і id з розділювачем (kv-1, kv_1, «KV 1», kvu-2) теж ловимо; «KIDDI SMART» — окремий бренд, не збігається. Згортка 1:1 за довжиною — вирізаємо за позиціями з оригіналу.
+_KV_FOLD = str.maketrans({"і": "i", "ї": "i", "к": "k", "с": "s", "в": "v", "т": "t", "и": "i", "д": "d", "ы": "i", "у": "y", "й": "y"})
+_KV_NAME_RX = re.compile(r"kidd?[iy][\W_]*svit")   # ім'я постачальника: після NFKC/згортки; розділювач — будь-які не-літери/цифри (Kiddi-Svit, kiddi.svit, «Кідді Світ», nbsp, ‑)
+_KV_ID_LEAK_RX = re.compile(r"(?<![a-z0-9])kvu?[-_][0-9]+")   # внутрішній id: лише з дефісом/підкресленням і лише латиницею (звичайне «KV 250», «кв 3 м» не чіпаємо)
+_KV_ALLOWED_TAG_RX = re.compile(r"&lt;(/?)(br|p|b|strong|em|ul|ol|li)\s*/?&gt;", re.I)
+_KV_TRANSPARENT_TAG_RX = re.compile(r"</?(?:p|b|strong|em|ul|ol|li|br)\s*/?>", re.I)   # дозволені теги опису не розривають ім'я («Kiddi<b>svit</b>»)
+
+
+def _kv_norm(s, transparent_tags=False):
+    """(рядок для пошуку, мапа позицій → індекс в оригіналі): NFKC, без невидимих (Cf: ZWSP, м'який перенос, word joiner), нижній регістр, кирилиця-двійники → латиниця; за потреби дозволені теги прозорі."""
+    s = str(s or "")
+    skip = set()
+    if transparent_tags:
+        for m in _KV_TRANSPARENT_TAG_RX.finditer(s):
+            skip.update(range(m.start(), m.end()))
+    out, idx = [], []
+    for i, ch in enumerate(s):
+        if i in skip or unicodedata.category(ch) == "Cf":
+            continue
+        for c2 in unicodedata.normalize("NFKC", ch):
+            out.append(c2.lower().translate(_KV_FOLD))
+            idx.append(i)
+    return "".join(out), idx
+
+
+def _kv_leak_spans(s, transparent_tags=False):
+    """Проміжки [a, b) в ОРИГІНАЛЬНОМУ рядку, що містять ім'я постачальника або внутрішній id kv-/kvu-."""
+    norm, idx = _kv_norm(s, transparent_tags)
+    spans = []
+    for rx in (_KV_NAME_RX, _KV_ID_LEAK_RX):
+        for m in rx.finditer(norm):
+            spans.append((idx[m.start()], idx[m.end() - 1] + 1))
+    return sorted(spans)
+
+
+def _kv_leaks(s):
+    return bool(_kv_leak_spans(s))
+
+
+def _kv_leak_cut(s, transparent_tags=False):
+    s = str(s or "")
+    cut = []
+    for a, b in _kv_leak_spans(s, transparent_tags):   # злиття перекритих проміжків
+        if cut and a <= cut[-1][1]:
+            cut[-1] = (cut[-1][0], max(cut[-1][1], b))
+        else:
+            cut.append((a, b))
+    for a, b in reversed(cut):
+        s = s[:a] + s[b:]
+    return s
+
+
+def _kv_strip_cf(s):
+    """Невидимі символи (Cf: ZWSP, м'який перенос, word joiner…) із назви/бренду постачальника — назавжди."""
+    return "".join(ch for ch in str(s or "") if unicodedata.category(ch) != "Cf")
+
+
+def _kv_strict_int(x):
+    """Ціле з файлу постачальника: int, ціле float (959.0) або рядок із цифр; bool, дріб (959.9), «1 200» — None (ціна закрита формулою — тихо не округлюємо; аудит #1694)."""
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, int):
+        return x
+    if isinstance(x, float):
+        return int(x) if x.is_integer() else None
+    if isinstance(x, str) and re.fullmatch(r"[0-9]{1,9}", x.strip()):
+        return int(x.strip())
+    return None
+
+
+def _kv_clean_cod(text):
+    """Те саме, що _rt_clean_description (у картках постачальника не обіцяємо оплату при отриманні: прибираємо речення з «накладен/при отриманні/післяплат»), але за ЛІНІЙНИЙ час: ділимо на речення, а не регексом [^.!?]*…[^.!?]*."""
+    pieces = re.split(r"(?<=[.!?\n])", str(text or ""))
+    t = "".join(x for x in pieces if not re.search(r"накладен|при отриманні|післяплат", x, re.I)).strip()
+    return re.sub(r"[ \t]{2,}", " ", t)
+
+
+def _kv_safe_html(text):
+    """Опис постачальника → безпечний HTML: усе екранується, лишаються лише <br>/<p>/<b>/<strong>/<em>/<ul>/<ol>/<li> БЕЗ атрибутів (новий зовнішній канал B2B API; опис вставляється в сторінку як HTML — stored XSS, аудит #1694).
+    «&730;» (без #) спершу лагодиться до «&#730;» (SEO 10.11), потім сутності розкодовуються і екранування вже коректне."""
+    t = _BROKEN_NUM_ENTITY_RX.sub(lambda m: "&#" + m.group(1) + ";", _kv_clean_cod(str(text or "")[:KV_DESC_MAX_CHARS]))   # ліміт довжини + лінійне очищення (RT-регекс квадратичний на довгих рядках без крапок, аудит #1694)
+    t = _kv_leak_cut(html.unescape(t), transparent_tags=True)   # ім'я постачальника/id — з тексту (після розкодування сутностей; дозволені теги не розривають ім'я)
+    t = html.escape(t, quote=False)
+    t = _KV_ALLOWED_TAG_RX.sub(lambda m: "<" + m.group(1) + m.group(2).lower() + ">", t)
+    # незакриті дозволені теги закриваємо (інакше <ul><li>… ламає верстку решти блоку опису); зайві закривні — прибираємо
+    stack, parts = [], []
+    for piece in re.split(r"(</?(?:p|b|strong|em|ul|ol|li)>)", t):
+        m = re.fullmatch(r"<(/?)(p|b|strong|em|ul|ol|li)>", piece)
+        if not m:
+            parts.append(piece)
+        elif not m.group(1):
+            stack.append(m.group(2))
+            parts.append(piece)
+        elif m.group(2) in stack:
+            while stack:
+                top = stack.pop()
+                parts.append(f"</{top}>")
+                if top == m.group(2):
+                    break
+    return "".join(parts) + "".join(f"</{x}>" for x in reversed(stack))
+SUPPLIER_KV_FILE = os.environ.get("SUPPLIER_KV_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_kv.json")
+KV_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kv_category_map.json")
+SUPPLIER_KV_MAX_AGE_DAYS = 3
+
+
+def _load_supplier_kv(now=None):
+    """{id: елемент у форматі Toysi/RT} для карток KIDDISVIT. Ворота SITE_KV_LIVE не відкриті / нема файлу / LIQPAY не live / файл застарілий — порожньо; поламаний — ГОЛОСНО (stderr), збірка не падає."""
+    if not SITE_KV_LIVE:
+        return {}
+    try:
+        with open(SUPPLIER_KV_FILE, encoding="utf-8-sig") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        print("[build] ⚠ SITE_KV_LIVE=1, але supplier_kv.json нема — карток KIDDISVIT не буде", file=sys.stderr)
+        return {}
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"[build] ⚠ supplier_kv.json НЕ прочитано ({type(e).__name__}: {e}) — карток KIDDISVIT не буде", file=sys.stderr)
+        return {}
+    items = raw.get("items") if isinstance(raw, dict) else None
+    if not isinstance(items, dict):
+        print("[build] ⚠ supplier_kv.json: очікується {\"updated\":…, \"items\":{…}} — карток KIDDISVIT не буде", file=sys.stderr)
+        return {}
+    if not LIQPAY_LIVE:
+        print("[build] ⚠ supplier_kv.json: онлайн-оплата не ввімкнена (SITE_LIQPAY_LIVE) — картки KIDDISVIT не публікуємо (лише передоплата)", file=sys.stderr)
+        return {}
+    try:
+        upd = datetime.fromisoformat(str(raw.get("updated")).replace("Z", "+00:00"))
+        if upd.tzinfo is None:
+            upd = upd.replace(tzinfo=timezone.utc)
+        age = ((now or datetime.now(timezone.utc)) - upd).total_seconds() / 86400.0
+    except (ValueError, TypeError):
+        print("[build] ⚠ supplier_kv.json: нема коректного «updated» — карток KIDDISVIT не буде", file=sys.stderr)
+        return {}
+    if age > SUPPLIER_KV_MAX_AGE_DAYS:
+        print(f"[build] ⚠ supplier_kv.json застарів ({age:.1f} діб > {SUPPLIER_KV_MAX_AGE_DAYS}) — карток KIDDISVIT не буде (ціни/залишки не свіжі)", file=sys.stderr)
+        return {}
+    try:
+        with open(KV_CATEGORY_MAP_FILE, encoding="utf-8-sig") as f:
+            cmap = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        cmap = {}
+    paths = cmap.get("paths") if isinstance(cmap, dict) and isinstance(cmap.get("paths"), dict) else {}
+    brands = {str(b).strip().casefold(): c for b, c in (cmap.get("brands") or {}).items()} if isinstance(cmap, dict) and isinstance(cmap.get("brands"), dict) else {}
+    out, skipped = {}, {}
+    for k, v in items.items():
+        why = None
+        if not isinstance(k, str) or not _KV_ID_RX.fullmatch(k) or not isinstance(v, dict):
+            why = "id"
+        else:
+            imgs = [u for u in (v.get("images") or []) if isinstance(u, str) and (lambda m: bool(m) and m.group(1) == k)(_PUBLIC_IMG_KV_RX.fullmatch(u))]   # лише НАШІ файли цього id (https://plutustoys.com.ua/img/kv/<id>-N.jpg): чужий хост/чужий id не публікуємо (аудит #1694)
+            vendor_name = _kv_strip_cf(_supplier_text_plain(str(v.get("vendor") or "").strip()))
+            if _kv_leaks(vendor_name):
+                vendor_name = ""
+            cpath = [str(x).strip() for x in (v.get("category_path") or []) if str(x).strip()] if isinstance(v.get("category_path"), list) else []
+            cat_name = brands.get(vendor_name.casefold()) or paths.get(" > ".join(cpath) if cpath else str(v.get("category") or "").strip())
+            price, stock = _kv_strict_int(v.get("price")), _kv_strict_int(v.get("stock"))
+            if price is None or stock is None:
+                price, stock = 0, -1
+            if not str(v.get("name") or "").strip():
+                why = "name"
+            elif _kv_leaks(_supplier_text_plain(str(v.get("name")))):
+                why = "leak"   # у назві ім'я постачальника/внутрішній id — не публікуємо
+            elif not imgs:
+                why = "images"
+            elif price <= 0 or stock < 0:
+                why = "price/stock"
+            elif not isinstance(cat_name, str) or not cat_name.strip():
+                why = "category:" + (" > ".join(cpath) if cpath else str(v.get("category")))[:60]
+        if why:
+            skipped.setdefault(why, []).append(str(k)[:30])
+            continue
+        try:
+            kv_cost = round(float(v.get("cost") or 0), 2)
+        except (TypeError, ValueError):
+            kv_cost = 0.0
+        _desc = _kv_safe_html(v.get("description"))
+        _vcode = str(v.get("vendor_code") or "").strip()
+        if _kv_leaks(_vcode):
+            _vcode = ""
+        _bc = re.sub(r"\D", "", str(v.get("barcode") or ""))
+        out[k] = {"id": k, "name": _kv_strip_cf(_supplier_text_plain(str(v["name"]).strip())), "description": _desc, "vendor": vendor_name,
+                  "vendor_code": _vcode, "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
+                  "site_price": price, "rt_cost": kv_cost, "supplier": "kiddisvit", "price": price, "barcode": _bc,
+                  # «index» не True (false або поля нема) → noindex,follow і поза sitemap; опис <50 знаків (тонка картка) → noindex завжди
+                  "rt_noindex": v.get("index") is not True or len(re.sub(r"<[^>]+>", "", _desc).strip()) < RT_MIN_DESC_INDEX,
+                  "dup_of": ""}
+    if skipped:
+        print("[build] ⚠ supplier_kv.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
+    print(f"[build] KIDDISVIT: {len(out)} карток із supplier_kv.json")
+    return out
+
+
 def build():
     global SALE_ACTIVE
     _lastmod_reset()
@@ -833,6 +1045,7 @@ def build():
         raise
     cat = dict(cat)
     _load_category_overrides({str(v.get("category_name") or "").strip() for v in cat.values() if str(v.get("stock") or "0") not in ("0", "")} - {""})   # перенесення товарів між категоріями даними (SEO 23.10)
+    cat.update(_load_supplier_kv())   # третій постачальник (KIDDISVIT, Код 17.11): картки «kv-…» за воротами SITE_KV_LIVE=1
     cat.update(_load_supplier_rt())   # другий постачальник (пілот RoyalToys, Код 19.10): картки «rt-…» у ЗАГАЛЬНОМУ каталозі
     prods = []
     # Товари БЕЗ залишку (рішення Консультанта 11.10.2026, GSC: 7 605 адрес «404» з 8 960 непроіндексованих — це самі зниклі зі складу товари):
@@ -856,10 +1069,10 @@ def build():
             continue   # політика «що не продаємо» (forbidden_products, рішення власника 2026-10-07): ножі/зброя; старі сторінки прибере крок 8 build()
         if is_uno_trademark_blocked(name, it.get("vendor") or ""):
             continue   # ТМ «UNO» (претензія Mattel): не продаємо на власному сайті (SEO-замовлення 2026-10-06)
-        name = normalize_site_title(name if it.get("supplier") == "royaltoys" else _supplier_text_plain(name))   # Toysi (parser.py: supplier="Toysi"): сутності з фіду («Build &amp; Play», SEO 10.11: 131989, 154061) розкодовуємо до esc(); RT вже розкодовані при завантаженні (подвійний прохід не потрібен). Далі: після всіх фільтрів за оригінальною назвою: регістр назви-капсом (feed_title_norm, лише зміна регістру)
+        name = normalize_site_title(name if it.get("supplier") in ("royaltoys", "kiddisvit") else _supplier_text_plain(name))   # Toysi (parser.py: supplier="Toysi"): сутності з фіду («Build &amp; Play», SEO 10.11: 131989, 154061) розкодовуємо до esc(); RT вже розкодовані при завантаженні (подвійний прохід не потрібен). Далі: після всіх фільтрів за оригінальною назвою: регістр назви-капсом (feed_title_norm, лише зміна регістру)
         catname = it.get("category_name") or "Інше"
         _cat_ov = _CATEGORY_OVERRIDES.get(str(it.get("id")))
-        if _cat_ov and not str(it.get("id")).startswith("rt-") and _cat_ov != catname:
+        if _cat_ov and not str(it.get("id")).startswith(("rt-", "kv-")) and _cat_ov != catname:
             catname = _cat_ov   # перенесення в іншу категорію сайту (category_overrides.json)
             _cat_ov_applied += 1
         # Каталог ПОВНИЙ відповідно до Toysi (рішення власника 2026-10-05): без відсікань за ціною чи категорією
@@ -888,7 +1101,7 @@ def build():
             "photo": toysi_proxy_photo(PHOTO_OVERRIDES.get(str(it.get("id")), public_photo(str(it.get("id")), pics[0]))), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
-            "rt": 1 if str(it.get("id")).startswith("rt-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
+            "rt": 1 if str(it.get("id")).startswith(("rt-", "kv-")) else 0, "kv": 1 if str(it.get("id")).startswith("kv-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
             "vendor": (it.get("vendor") or "").strip(), "vendor_code": (it.get("vendor_code") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
     if _CATEGORY_OVERRIDES:
@@ -1946,7 +2159,7 @@ def _utf8_clean(v):
 
 def _product_text_key_ok(k):
     """Ключ тексту картки: id Toysi (лише ASCII-цифри), id RoyalToys `rt-…` (`_RT_ID_RX`, 31.10.2026 — Копірайтер, 11 207 rt-товарів без наших описів). fullmatch, тож юнікод-цифри й хвости не проходять."""
-    return isinstance(k, str) and (re.fullmatch(r"[0-9]+", k) is not None or _RT_ID_RX.fullmatch(k) is not None)
+    return isinstance(k, str) and (re.fullmatch(r"[0-9]+", k) is not None or _RT_ID_RX.fullmatch(k) is not None or _KV_ID_RX.fullmatch(k) is not None)
 
 
 def _load_product_texts():
@@ -4651,7 +4864,7 @@ def _write(fname, content):
 SITEMAP_PRIORITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitemap_priority.json")
 PROM_GROUP_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prom_group_to_category.json")
 SITEMAP_STALE_FILES = ("sitemap-dropt.xml", "sitemap-more.xml")   # Dropt прибрано з сайту (16.11.2026): його сегмент не будуємо, файли від попередніх збірок прибираємо
-SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority)
+SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt", "k")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority)
 
 
 def _sitemap_priority():
@@ -4703,7 +4916,7 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=fro
             continue   # NOINDEX_CATEGORIES (True): товар noindex і поза sitemap
         if p.get("rt"):
             if not p.get("noindex"):
-                seg["rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
+                seg["k" if p.get("kv") else "rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
             continue
         (seg["priority"] if p["id"] in pri_ids else seg["products"]).append((f, f, "0.6", "weekly"))
     # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий

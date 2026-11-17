@@ -137,5 +137,84 @@ with tempfile.TemporaryDirectory() as td:
     (site / "sitemap.xml").unlink()
     chk("нема sitemap → no_sitemap, нічого не шлемо", ix.run(now=9100.0, site_dir=site, state_file=sf, http=Http())["status"] == "no_sitemap")
 
+# --- аудит #1698 ---
+import http.client  # noqa: E402
+import urllib.request  # noqa: E402
+
+# (1) гонка пінг ↔ збірка: sitemap уже записано, стан збірки ще старий; після flush нові сторінки НЕ губляться
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    site, lm = make_site(td, n=3, t0=1000.0)
+    state_path = site / ".htlastmod_state.json"
+    os.utime(state_path, (1500.0, 1500.0))                       # mtime ПОПЕРЕДНЬОЇ записаної версії стану
+    sf = td / "st.json"
+    ix.run(now=1600.0, site_dir=site, state_file=sf, http=Http())  # baseline: last_ts = min(1600, mtime 1500) = 1500
+    chk("baseline: межа = min(зараз, mtime стану збірки), а не «зараз» (збірка пише стан ПІЗНІШЕ за sitemap)", json.loads(sf.read_text())["last_ts"] == 1500.0)
+    # нові сторінки з t=1550 з'являються в sitemap, а стан збірки ще не перезаписано (stale: нема запису) → пінг нічого не бачить
+    sm = (site / "sitemap-products.xml").read_text(encoding="utf-8").replace("</urlset>", f"<url><loc>{ix.SITE_URL}/product-new.html</loc></url></urlset>")
+    (site / "sitemap-products.xml").write_text(sm, encoding="utf-8")
+    h = Http()
+    r = ix.run(now=1700.0, site_dir=site, state_file=sf, http=h)
+    chk("між записом sitemap і записом стану: нової сторінки в стані ще нема → не шлемо, last_ts не просувається вперед за mtime стану", r["status"] == "nothing" and json.loads(sf.read_text())["last_ts"] == 1500.0)
+    lm["product-new.html"] = {"h": "x", "t": 1550.0}              # збірка дописала стан (його mtime тепер новіший)
+    state_path.write_text(json.dumps(lm), encoding="utf-8")
+    os.utime(state_path, (1800.0, 1800.0))
+    h = Http()
+    r = ix.run(now=1900.0, site_dir=site, state_file=sf, http=h)
+    posts = [c for c in h.calls if c[0] == "POST"]
+    chk("після flush стану нова сторінка (t=1550 < «зараз» першого пінгу) ВСЕ ОДНО піде в IndexNow", r["sent"] == 1 and posts[0][2]["urlList"] == [f"{ix.SITE_URL}/product-new.html"])
+
+# (2) 4xx: некоректну пачку пропускаємо, 429/403/5xx зупиняють без втрати черги
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    site, lm = make_site(td, n=4, t0=1000.0)
+    sf = td / "st.json"
+    ix.run(now=900.0, site_dir=site, state_file=sf, http=Http())           # baseline (last_ts = now: файлу стану mtime реальний → min(900, mtime) = 900)
+    old_b = ix.BATCH
+    ix.BATCH = 2
+    h = Http(statuses=[422, 200])
+    r = ix.run(now=5000.0, site_dir=site, state_file=sf, http=h)
+    chk("422 на першій пачці (2 адреси): відхилено як некоректну (спожито), решта 3 прийнято; черга порожня (не блокується назавжди)", r["sent"] == 3 and r["backlog"] == 0 and r["status"] == "ok")
+    for st_code in (403, 429, 503, 0):
+        site2, lm2 = make_site(td / f"s{st_code}", n=2, t0=1000.0) if (td / f"s{st_code}").mkdir() is None else (None, None)
+        sf2 = td / f"st{st_code}.json"
+        ix.run(now=900.0, site_dir=site2, state_file=sf2, http=Http())
+        h = Http(statuses=[st_code])
+        r = ix.run(now=5000.0, site_dir=site2, state_file=sf2, http=h)
+        chk(f"HTTP {st_code} → зупинка, жодної адреси не втрачено (backlog = 3: 2 картки + головна)", r["sent"] == 0 and r["backlog"] == 3 and r["status"] == "partial")
+    ix.BATCH = old_b
+
+# (3) швидкість: 30 000 змінених + 20 000 у черзі (квадратичний set(old) давав 81 с)
+import time as _time  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    site = td / "site"
+    site.mkdir()
+    n = 30000
+    urls = [f"{ix.SITE_URL}/product-{i}.html" for i in range(n)]
+    (site / "sitemap.xml").write_text('<sitemapindex><sitemap><loc>%s/sitemap-products.xml</loc></sitemap></sitemapindex>' % ix.SITE_URL, encoding="utf-8")
+    (site / "sitemap-products.xml").write_text("<urlset>" + "".join(f"<url><loc>{u}</loc></url>" for u in urls) + "</urlset>", encoding="utf-8")
+    (site / ".htlastmod_state.json").write_text(json.dumps({f"product-{i}.html": {"h": "x", "t": 9000.0 + i} for i in range(n)}), encoding="utf-8")
+    sf = td / "st.json"
+    sf.write_text(json.dumps({"last_ts": 1.0, "day": "2000-01-01", "day_count": 0, "backlog": urls[:20000]}), encoding="utf-8")
+    t0 = _time.time()
+    r = ix.run(now=20000.0, site_dir=site, state_file=sf, http=Http())
+    chk("30 000 змінених + 20 000 у черзі обробляються < 5 с (лінійно, а не 81 с)", _time.time() - t0 < 5 and r["sent"] == ix.MAX_PER_RUN)
+
+# (4) HTTPException (IncompleteRead/BadStatusLine) не валить скрипт
+real_urlopen = urllib.request.urlopen
+
+
+def boom(*a, **k):
+    raise http.client.IncompleteRead(b"x")
+
+
+urllib.request.urlopen = boom
+try:
+    st_, body_ = ix._http("GET", "https://example.invalid/x")
+finally:
+    urllib.request.urlopen = real_urlopen
+chk("_http: IncompleteRead → (0, '') замість винятку (юніт не падає з кодом 1)", st_ == 0 and body_ == "")
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

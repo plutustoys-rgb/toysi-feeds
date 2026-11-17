@@ -6,6 +6,7 @@
 Ключ IndexNow публічний за задумом протоколу (файл `site/<ключ>.txt`, який віддає сам сайт); перед пінгом скрипт перевіряє, що https://<host>/<ключ>.txt віддає ключ (інакше не пінгує й мовчить).
 Ліміти: ≤MAX_PER_RUN адрес за запуск (нові — першими), ≤MAX_PER_DAY за добу; невідправлене (ліміт, 429/5xx, ключ не віддається) лишається в черзі backlog у стані й іде наступними запусками.
 Запуск: indexnow-ping.timer (щодві години о :40, після site-rebuild о :20). Вимкнути: INDEXNOW=0 у .env. Лише GET/POST публічних адрес; жодних секретів, ПІБ, цін."""
+import http.client
 import json
 import os
 import re
@@ -49,7 +50,7 @@ def _http(method: str, url: str, body: bytes | None = None, headers: dict | None
             return r.status, r.read(65536).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, ""
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):      # HTTPException (IncompleteRead, BadStatusLine) — не OSError (аудит #1698)
         return 0, ""
 
 
@@ -100,18 +101,24 @@ def key_served(host_url: str = SITE_URL, key: str = KEY, http=_http) -> bool:
     return status == 200 and body.strip() == key
 
 
-def submit(urls: list, http=_http) -> int:
-    """Шле пачками; повертає кількість УСПІШНО прийнятих адрес; зупиняється на першій невдалій пачці (429/5xx/сміття)."""
-    done = 0
+def submit(urls: list, http=_http) -> tuple:
+    """Шле пачками. → (прийнято, спожито): «спожито» = прийнято + ВІДХИЛЕНІ як некоректні (400/422 і інші 4xx, крім 403/429: повтор тієї самої пачки нічого не дасть — інакше вона блокувала б чергу назавжди).
+    Зупиняємось (пачка лишається в черзі) на 429, 5xx, мережевому збої (0) і 403 (ключ не прийнято — нехай спершу з'явиться файл ключа)."""
+    accepted = consumed = 0
     for i in range(0, len(urls), BATCH):
         chunk = urls[i:i + BATCH]
         payload = json.dumps({"host": HOST, "key": KEY, "keyLocation": f"{SITE_URL}/{KEY}.txt", "urlList": chunk}).encode("utf-8")
         status, _ = http("POST", ENDPOINT, payload, {"Content-Type": "application/json; charset=utf-8"})
-        if status not in (200, 202):
+        if status in (200, 202):
+            accepted += len(chunk)
+            consumed += len(chunk)
+            continue
+        if status in (0, 403, 429) or status >= 500:
             print(f"[indexnow] пачка {i // BATCH + 1}: HTTP {status} — зупиняюсь, повтор наступним запуском", file=sys.stderr)
             break
-        done += len(chunk)
-    return done
+        print(f"[indexnow] пачка {i // BATCH + 1}: HTTP {status} — пачку ({len(chunk)} адрес) відхилено як некоректну, пропускаю", file=sys.stderr)
+        consumed += len(chunk)
+    return accepted, consumed
 
 
 def run(now: float | None = None, site_dir: Path = SITE_DIR, state_file: Path = STATE_FILE, http=_http) -> dict:
@@ -124,7 +131,7 @@ def run(now: float | None = None, site_dir: Path = SITE_DIR, state_file: Path = 
     day = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
     state = read_json(state_file, None)
     if not isinstance(state, dict) or not isinstance(state.get("last_ts"), (int, float)):
-        _write_state(state_file, {"last_ts": now, "day": day, "day_count": 0, "backlog": []})
+        _write_state(state_file, {"last_ts": _safe_ts(now, site_dir), "day": day, "day_count": 0, "backlog": []})
         return {"status": "baseline", "sent": 0, "backlog": 0}           # перший запуск: запам'ятали «зараз», нічого не шлемо
     day_count = int(state.get("day_count") or 0) if state.get("day") == day else 0
     urls = sitemap_urls(site_dir)
@@ -135,7 +142,8 @@ def run(now: float | None = None, site_dir: Path = SITE_DIR, state_file: Path = 
         return {"status": "no_lastmod_state", "sent": 0, "backlog": len(state.get("backlog") or [])}
     live = {u for u, _f in urls}
     old = [u for u in (state.get("backlog") or []) if isinstance(u, str) and u in live]       # адреси, що зникли з sitemap, з черги випадають
-    fresh = [u for u, _t in changed_urls(urls, lastmod, float(state["last_ts"])) if u not in set(old)]
+    old_set = set(old)
+    fresh = [u for u, _t in changed_urls(urls, lastmod, float(state["last_ts"])) if u not in old_set]
     queue = (fresh + old)[:MAX_BACKLOG]                                                          # нові — першими
     room = max(0, MAX_PER_DAY - day_count)
     sent = 0
@@ -146,13 +154,22 @@ def run(now: float | None = None, site_dir: Path = SITE_DIR, state_file: Path = 
             print(f"[indexnow] {SITE_URL}/{KEY}.txt не віддає ключ — не пінгуємо (файл site/{KEY}.txt ще не на сайті?)", file=sys.stderr)
             status = "key_not_served"
         else:
-            sent = submit(batch, http=http)
-            status = "ok" if sent == len(batch) else "partial"
-            queue = queue[sent:]
+            sent, consumed = submit(batch, http=http)
+            status = "ok" if consumed == len(batch) else "partial"
+            queue = queue[consumed:]
     elif queue:
         status = "daily_cap"
-    _write_state(state_file, {"last_ts": now, "day": day, "day_count": day_count + sent, "backlog": queue})
+    _write_state(state_file, {"last_ts": _safe_ts(now, site_dir), "day": day, "day_count": day_count + sent, "backlog": queue})
     return {"status": status, "sent": sent, "backlog": len(queue)}
+
+
+def _safe_ts(now: float, site_dir: Path) -> float:
+    """Межа «що вже оброблено» = min(зараз, mtime стану збірки .htlastmod_state.json). Збірка пише sitemap-и РАНІШЕ за стан (стан — у самому кінці): якщо пінг потрапив між цими записами, нові сторінки є в sitemap, але ще без запису у стані; з last_ts=now їхні t
+    (< now) ніколи б не пройшли t > last_ts. Нові зміни мають t, пізніший за mtime ПОПЕРЕДНЬОЇ записаної версії стану, тож з цією межею нічого не губиться (аудит #1698)."""
+    try:
+        return min(float(now), float((Path(site_dir) / LASTMOD_STATE).stat().st_mtime))
+    except OSError:
+        return float(now)
 
 
 def _write_state(path: Path, data: dict) -> None:

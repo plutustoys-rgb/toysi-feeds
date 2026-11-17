@@ -28,6 +28,7 @@ IMG_DIR = Path(os.environ.get("SITE_DIR", str(HERE / "site"))) / "img" / "kv"
 IMG_URL = "https://plutustoys.com.ua/img/kv/{name}"
 SELECTION_FILE = HERE / "kv_selection.json"
 INDEX_FILE = HERE / "kv_index_ids.json"
+DUP_FILE = HERE / "kv_dup_map.json"
 MAX_IMAGES = 3
 STOCK_CAP = 100                     # у API «101» = «100+» (ДОВІДНИК §4)
 SITE_WAREHOUSE = "Dnepr"
@@ -64,6 +65,15 @@ def load_index_ids(path: Path = INDEX_FILE) -> set:
         return {str(i) for i in (d.get("ids") or []) if _ID_RE.fullmatch(str(i))} if isinstance(d, dict) else set()
     except (OSError, ValueError):
         return set()
+
+
+def load_dup_map(path: Path = DUP_FILE) -> dict:
+    """kv_dup_map.json {"kv-<id>": "<id товару Toysi>"} (kv_dup_finder.py) → поле `dup_of` у supplier_kv.json: той самий товар у Toysi (чинне правило «варіант 1 резерв»: жива Toysi показується, kv — тінь; рішення про тінь — на сайті). Нема/битий файл → {}."""
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in d.items() if re.fullmatch(r"kv-[0-9]+", str(k)) and re.fullmatch(r"[0-9]{1,12}", str(v))} if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _num(raw) -> float | None:
@@ -251,7 +261,7 @@ def _write_json(out: Path, items: dict, now, catalog_n: int, priced_n: int) -> N
 
 
 def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | None = None, fetch=rt.fetch_image, img_dir: Path = IMG_DIR, now: datetime | None = None,
-             selection: dict | None = None, workers: int = 1, budget_s: float | None = None, check_disk: bool = False, index_ids: set | None = None) -> bool:
+             selection: dict | None = None, workers: int = 1, budget_s: float | None = None, check_disk: bool = False, index_ids: set | None = None, dup_map: dict | None = None) -> bool:
     """True — файл записано. Порожнє/збій → попередній файл лишається, False."""
     out = Path(out or OUT_FILE)
     try:
@@ -270,6 +280,7 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
             return False
         sel = selection if selection is not None else load_selection()
         idx = load_index_ids() if index_ids is None else index_ids
+        dups = load_dup_map() if dup_map is None else dup_map
         ids = select_ids(products, prices, cats, sel)
         cand, tasks, nophoto, task_dests = [], [], 0, set()
         for sid in ids:
@@ -297,6 +308,8 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
                     miss += 1
                     continue
                 it["index"] = sid in idx
+                if not md and sid in dups:
+                    it["dup_of"] = dups[sid]                   # лише для kv-; «Уцінка» kvu- — окрема картка (не дубль)
                 res[sid] = it
             return res, miss
 

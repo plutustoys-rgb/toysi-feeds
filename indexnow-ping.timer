@@ -1,0 +1,10 @@
+[Unit]
+Description=PlutusToys: IndexNow щодві години о :40 (site-rebuild іде о :20 кожні 2 год)
+
+[Timer]
+OnCalendar=*-*-* 00/2:40:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

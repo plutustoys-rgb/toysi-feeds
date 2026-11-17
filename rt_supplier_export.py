@@ -28,6 +28,7 @@ IMG_URL = "https://plutustoys.com.ua/img/rt/{name}"
 MAX_IMAGES = 3
 SELECTION_FILE = HERE / "rt_selection.json"
 DUP_FILE = HERE / "rt_dup_map.json"
+KV_DUP_FILE = HERE / "rt_kv_dup_map.json"
 INDEX_FILE = HERE / "rt_index_ids.json"
 PREFETCH_WORKERS = 6
 PREFETCH_BUDGET_S = 900       # ліміт часу на завантаження фото за один запуск (виміряно аудитом ≈10 фото/с на 6 потоках): решта — наступного разу; TimeoutStartSec юніта (2400) з запасом перекриває бюджет + таймаути запитів + запис
@@ -127,6 +128,15 @@ def load_dup_map(path: Path = DUP_FILE) -> dict:
     try:
         d = json.loads(Path(path).read_text(encoding="utf-8"))
         return {str(k): str(v) for k, v in d.items() if _ID_RE.fullmatch(str(k))} if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def load_kv_dup_map(path: Path = KV_DUP_FILE) -> dict:
+    """rt_kv_dup_map.json {"rt-<id>": "kv-<id>"} (kv_dup_finder.py; рішення власника 17.11: коли товар є і в RT, і в KIDDISVIT — показувати KIDDISVIT, RT — «тінь») → поле `kv_dup_of` у supplier_rt.json. Нема/битий файл → {}."""
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in d.items() if _ID_RE.fullmatch(str(k)) and re.fullmatch(r"kv-[0-9]+", str(v))} if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
 
@@ -323,6 +333,7 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
             ids = select_ids(catalog or {}, pilot, selection if selection is not None else load_selection())
             index_set = set(pilot) | load_index_ids()          # пілот завжди відкритий; решта — noindex і поза sitemap, поки SEO не відкриє хвилю (rt_index_ids.json)
         dup_map = load_dup_map() if dup_map is None else dup_map
+        kv_dup = load_kv_dup_map()
         if not catalog:
             _alert("rt_export_empty", "⚠️ rt_supplier_export: YML RoyalToys порожній/недоступний (ROYALTOYS_YML_URL у .env на VPS?) — supplier_rt.json НЕ оновлено; через 3 доби картки rt- зникнуть із сайту (fail-closed).")
             return False
@@ -354,6 +365,8 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
                 it["index"] = True if index_set is None else (sid in index_set)       # Shopify-code: false → noindex,follow і поза sitemap-rt.xml
                 if sid in dup_map:
                     it["dup_of"] = dup_map[sid]
+                if sid in kv_dup:
+                    it["kv_dup_of"] = kv_dup[sid]
                 res[sid] = it
             return res, miss
 

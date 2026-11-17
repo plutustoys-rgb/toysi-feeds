@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: IndexNow — повідомити Bing/Yandex про нові й змінені сторінки сайту (indexnow_ping.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Читає site/sitemap*.xml і site/.htlastmod_state.json (стан збірки сайту), шле ЛИШЕ публічні адреси; ключ IndexNow публічний (site/<ключ>.txt).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/indexnow_ping.py
+TimeoutStartSec=300
+Nice=10

@@ -222,6 +222,10 @@ cat <<'EOF'
     <FilesMatch "^supplier_rt\.json$">
         Require all denied
     </FilesMatch>
+    # 17.11.2026 KIDDISVIT: supplier_kv.json (закупівля, склади) лежить у корені репо ПОЗА DocumentRoot, це страховка «у глибину» (як supplier_rt.json)
+    <FilesMatch "^supplier_kv\.json$">
+        Require all denied
+    </FilesMatch>
     <DirectoryMatch "/__pycache__">
         Require all denied
     </DirectoryMatch>
@@ -273,6 +277,10 @@ cat <<'EOF'
     # внутрішній rewrite фото (без редиректу): публічний шлях → фізичний файл; старі шляхи /img/rt віддаються як були (збережені кошики, Google Images)
     RewriteCond %{DOCUMENT_ROOT}/img/rt/rt-$1-$2.jpg -f
     RewriteRule ^/img/p/y([0-9A-Za-z_]+)-([0-9]{1,2})\.jpg$ /img/rt/rt-$1-$2.jpg [L]
+    # 17.11.2026 KIDDISVIT (Shopify-code, PR #1694, SITE_CHANNEL 16:31 п.1): фото kv-карток — публічний шлях /img/p/k<id>-N.jpg → фізичний файл /img/kv/kv-<id>-N.jpg (kv_supplier_export; файли не рухаються).
+    # Без цього правила всі фото kv-карток дадуть 404. Лише цифри в <id> (kv-<productID>); -f: нема файлу → 404, а не петля.
+    RewriteCond %{DOCUMENT_ROOT}/img/kv/kv-$1-$2.jpg -f
+    RewriteRule ^/img/p/k([0-9]+)-([0-9]{1,2})\.jpg$ /img/kv/kv-$1-$2.jpg [L]
     # 10.11.2026 (власник: «роби проксі» — фото Toysi під нашою адресою, без домену постачальника в коді сторінок/фідах): /img/t/<шлях> → https://toysi.ua/p/<шлях>. Лише суворий шаблон файлів Toysi (цифри/enl_, .jpg/.png/.webp,
     # не більше одного підкаталогу з цифр) — інакше це відкритий проксі (SSRF/обхід шляхів неможливі: символи лише [0-9a-z_] і одна «/»). Фото НЕ копіюємо: тягнемо з Toysi на запит; браузер кешує добу+ (Cache-Control нижче).
     SSLProxyEngine On

@@ -135,5 +135,18 @@ free = srv.getsockname()[1]
 srv.close()
 chk("port_open: закритий порт → False (не виняток)", sh.port_open("127.0.0.1", free, 1.0) is False)
 chk("port_open: неіснуючий хост (DNS) → False (не виняток)", sh.port_open("host.invalid", 22, 1.0) is False)
+# KIDDISVIT / RoyalToys: публічний slug «u» (SITE_CHANNEL 16:31 п.3) — перевірка бере /product-<u>.html, а не /product-<id>.html (для kv-/rt- такої сторінки нема → хибна тривога)
+_seen = []
+KVINDEX = [{"id": "kv-5", "u": "k5", "pr": 100}, {"id": "rt-9", "u": "y9", "pr": 100}, {"id": "77", "pr": 100}]
+
+
+def _fetch_u(u, timeout=25):
+    _seen.append(u)
+    pid = u.rsplit("/product-", 1)[-1][:-5]
+    return 200, page(pid, price=100), 0.1
+
+
+v = sh.check_cards(KVINDEX, date(2026, 11, 17), _fetch_u, n=3)
+chk("картки з публічним slug: запити /product-k5.html, /product-y9.html (Toysi — як раніше /product-77.html); хибних тривог нема", sorted(x.rsplit("/", 1)[-1] for x in _seen) == ["product-77.html", "product-k5.html", "product-y9.html"] and v == [])
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

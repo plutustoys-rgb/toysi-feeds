@@ -69,7 +69,7 @@ chk("Apache забороняє віддавати supplier_rt.json навіть 
 _fm = re.search(r'<FilesMatch "(\^supplier_[^"]+)">', apa)
 chk("FilesMatch забороняє саме supplier_rt.json (там закупівельна ціна = cost)", bool(_fm) and re.fullmatch(_fm.group(1), "supplier_rt.json") is not None)
 js = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
-chk("замовлення з rt-позицією явно йде з payment_method=prepaid (app.js), навіть якщо радіо не обране", re.search(r'some\(function\(k\)\{ return /\^rt-/\.test\(k\); \}\)\) payment="prepaid"', js) is not None)
+chk("замовлення з rt-позицією явно йде з payment_method=prepaid (app.js), навіть якщо радіо не обране", re.search(r'some\(function\(k\)\{ return /\^\(rt\|kv\)-/\.test\(k\); \}\)\) payment="prepaid"', js) is not None)
 bs.LIQPAY_LIVE = True
 r, e = load({"rt-101": GOOD})
 it = r.get("rt-101", {})

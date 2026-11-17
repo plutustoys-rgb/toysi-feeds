@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """test_site_supplier_kv.py — 17.11.2026 (Код → Shopify-code: картки KIDDISVIT `kv-<id>` на сайті за схемою RT; рішення власника: «додаєш їхні товари у всі фіди, подивимось як вони працюють із замовленнями»).
 (1) завантажувач `_load_supplier_kv`: ворота SITE_KV_LIVE (за замовчуванням вимкнено), LIQPAY live, свіжість ≤3 доби, мапа категорій (шлях/бренд; невідомий шлях = НЕ публікуємо), id лише `kv-<цифри>` (kvu- не приймаємо), index не True → noindex;
-(2) повна збірка: product-k<id>.html (НЕ product-kv-…), фото /img/p/k<id>-N.jpg, код PT-K<id>, жодного «kiddisvit»/закупівлі cost у видачі, sitemap-kv.xml лише для index=true, index.json (rt=1, sup=kv, ix), index-rt.json, головна без kv;
+(2) повна збірка: product-k<id>.html (НЕ product-kv-…), фото /img/p/k<id>-N.jpg, код PT-K<id>, жодного «kiddisvit»/закупівлі cost у видачі, sitemap-k.xml лише для index=true, index.json (rt=1, sup=kv, ix), index-rt.json, головна без kv;
 (3) app.js/кошик (браузер): kv- = лише передоплата, окрема посилка, href k<id> → внутрішній id kv-<id>."""
 import contextlib
 import functools
@@ -49,6 +49,11 @@ GOOD = {"name": "Фігурка колекційна «Герой» 10 см", "d
 CMAP = {"paths": {"Funko > Герої фільмів та серіалів": "Фігурки героїв", "Ляльки > Пупси": "Пупси", "Конструктори": "Конструктори KV"}, "brands": {"squishmallows": "М'які іграшки"}}
 
 
+def im(k, n=1):
+    """Фото НАШОГО сервера для картки k (kv-<id>): лише такі завантажувач і приймає (аудит #1694)."""
+    return [f"https://plutustoys.com.ua/img/kv/{k}-{i}.jpg" for i in range(1, n + 1)]
+
+
 def write_files(items, updated=None, cmap=None):
     (tmp / "s.json").write_text(json.dumps({"updated": (updated or now).isoformat(), "catalog_n": len(items), "items": items}, ensure_ascii=False), encoding="utf-8")
     (tmp / "m.json").write_text(json.dumps(cmap if cmap is not None else CMAP, ensure_ascii=False), encoding="utf-8")
@@ -82,13 +87,27 @@ chk("валідна картка: id kv-501, категорія з мапи, ф�
 chk("price_of бере ціну з файлу (закрита формула Коду; не перераховуємо)", bs.price_of(it) == 959)
 chk("опис без речень про накладений платіж/оплату при отриманні", "отриман" not in it["description"] and "накладен" not in it["description"].lower() and "Колекційна фігурка" in it["description"])
 chk("index=true і опис ≥50 знаків → rt_noindex False", it.get("rt_noindex") is False)
-r, e = load({"kv-502": dict(GOOD, index=False), "kv-503": {k: v for k, v in GOOD.items() if k != "index"}, "kv-504": dict(GOOD, description="Коротко.")})
+r, e = load({"kv-502": dict(GOOD, index=False, images=im("kv-502")), "kv-503": {k: v for k, v in dict(GOOD, images=im("kv-503")).items() if k != "index"}, "kv-504": dict(GOOD, description="Коротко.", images=im("kv-504"))})
 chk("index=false, поля index нема (fail-safe), тонкий опис <50 знаків → noindex", all(r[k]["rt_noindex"] is True for k in ("kv-502", "kv-503", "kv-504")))
-r, e = load({"kv-505": dict(GOOD, vendor="Squishmallows"), "kv-506": dict(GOOD, category_path=["Ляльки", "Пупси"], vendor="BABY born"), "kv-507": dict(GOOD, category_path=["Конструктори"], vendor="JAKI")})
+r, e = load({"kv-505": dict(GOOD, vendor="Squishmallows", images=im("kv-505")), "kv-506": dict(GOOD, category_path=["Ляльки", "Пупси"], vendor="BABY born", images=im("kv-506")), "kv-507": dict(GOOD, category_path=["Конструктори"], vendor="JAKI", images=im("kv-507"))})
 chk("бренд (Squishmallows) має пріоритет над шляхом; шлях без бренду → категорія з мапи", r["kv-505"]["category_name"] == "М'які іграшки" and r["kv-506"]["category_name"] == "Пупси" and r["kv-507"]["category_name"] == "Конструктори KV")
-r, e = load({"kv-1": dict(GOOD, category_path=["Невідома", "Гілка"]), "kv-2": dict(GOOD, images=[]), "kv-3": dict(GOOD, price=0), "kvu-4": GOOD, "bad id": GOOD, "kv-5": dict(GOOD, name=" "), "kv-6": dict(GOOD, stock=-1),
-             "rt-7": GOOD, "kv-8": dict(GOOD, images=["http://x/1.jpg"])})
+r, e = load({"kv-1": dict(GOOD, category_path=["Невідома", "Гілка"], images=im("kv-1")), "kv-2": dict(GOOD, images=[]), "kv-3": dict(GOOD, price=0, images=im("kv-3")), "kvu-4": GOOD, "bad id": GOOD, "kv-5": dict(GOOD, name=" ", images=im("kv-5")),
+             "kv-6": dict(GOOD, stock=-1, images=im("kv-6")), "rt-7": GOOD, "kv-8": dict(GOOD, images=["http://x/1.jpg"])})
 chk("невідомий шлях/нема фото/ціна 0/kvu-/поганий id/нема назви/мінусовий залишок/rt-id/http-фото — НЕ публікуються, у stderr є пояснення", r == {} and "supplier_kv.json: не опубліковано" in e and "category:Невідома > Гілка" in e)
+# аудит #1694: ціна/залишок — лише цілі; фото — лише наші файли цього id; опис — безпечний HTML; ім'я постачальника не просочується
+r, e = load({"kv-11": dict(GOOD, price=True, images=im("kv-11")), "kv-12": dict(GOOD, price=959.9, images=im("kv-12")), "kv-13": dict(GOOD, stock=True, images=im("kv-13")), "kv-14": dict(GOOD, price="1 200", images=im("kv-14")),
+             "kv-15": dict(GOOD, price=959.0, images=im("kv-15")), "kv-16": dict(GOOD, price="959", stock="7", images=im("kv-16"))})
+chk("ціна true / 959.9 / «1 200» і залишок true — НЕ публікуються (не округлюємо закриту ціну); 959.0 і «959» — публікуються як 959", set(r) == {"kv-15", "kv-16"} and r["kv-15"]["site_price"] == 959 and r["kv-16"]["site_price"] == 959 and r["kv-16"]["stock"] == 7)
+r, e = load({"kv-21": dict(GOOD, images=["https://cdn.kiddisvit.ua/upload/21.jpg"]), "kv-22": dict(GOOD, images=["https://plutustoys.com.ua/img/kv/kv-999-1.jpg"]), "kv-23": dict(GOOD, images=["https://example.com/img/kv/kv-23-1.jpg"]),
+             "kv-24": dict(GOOD, images=["https://cdn.kiddisvit.ua/x.jpg"] + im("kv-24", 2))})
+chk("фото чужого хоста / чужого id / чужого домену з нашим шляхом — картка НЕ публікується; змішаний список лишає лише наші файли", set(r) == {"kv-24"} and r["kv-24"]["pictures"] == im("kv-24", 2) and "images" in e)
+r, e = load({"kv-31": dict(GOOD, images=im("kv-31"), description="<script>alert(1)</script><img src=x onerror=alert(2)> Розмір <5 см, a<b. <b>Жирний</b><br>рядок <p onclick=x>абзац</p>")})
+d31 = r["kv-31"]["description"]
+chk("опис: <script>/<img onerror> екрановані; <b>, <br>, <p> без атрибутів лишаються; <p onclick=…> екранований; «<5 см» не ламає розмітку", "<script" not in d31 and "<img" not in d31 and "&lt;script&gt;" in d31 and "<b>Жирний</b>" in d31 and "<br>" in d31 and "<p onclick" not in d31 and "&lt;5 см" in d31)
+r, e = load({"kv-41": dict(GOOD, images=im("kv-41"), vendor="KIDDISVIT", vendor_code="kv-77", description="Фігурка від KIDDISVIT, артикул kv-41. Добра."), "kv-42": dict(GOOD, images=im("kv-42"), name="Фігурка KIDDISVIT Герой"),
+             "kv-43": dict(GOOD, images=im("kv-43"), vendor="KIDDI SMART")})
+chk("vendor/vendor_code/опис з іменем постачальника чи kv- — обнулені/вирізані; назва з ним — картка не публікується; «KIDDI SMART» (окремий бренд) лишається",
+    "kv-42" not in r and r["kv-41"]["vendor"] == "" and r["kv-41"]["vendor_code"] == "" and "kiddisvit" not in r["kv-41"]["description"].lower() and "kv-41" not in r["kv-41"]["description"] and r["kv-43"]["vendor"] == "KIDDI SMART")
 r, e = load({"kv-501": GOOD}, updated=now - timedelta(days=4))
 chk("файл старіший за 3 доби → порожньо, голосно", r == {} and "застарів" in e)
 bs.LIQPAY_LIVE = False
@@ -114,13 +133,15 @@ chk("public_photo: /img/kv/kv-501-2.jpg → /img/p/k501-2.jpg; чужий id у 
     bs.public_photo("kv-501", "https://plutustoys.com.ua/img/kv/kv-501-2.jpg") == "https://plutustoys.com.ua/img/p/k501-2.jpg"
     and bs.public_photo("kv-501", "https://plutustoys.com.ua/img/kv/kv-999-2.jpg") == "https://plutustoys.com.ua/img/kv/kv-999-2.jpg"
     and bs.public_photo("kv-501", "https://example.com/img/kv/kv-501-2.jpg") == "https://example.com/img/kv/kv-501-2.jpg")
-chk("текстові ключі: kv-<цифри> приймаються (Копірайтер), kv-abc і kvu-1 — ні", bs._valid_text_key("kv-501") and not bs._valid_text_key("kv-abc") and not bs._valid_text_key("kvu-1")) if hasattr(bs, "_valid_text_key") else chk("ключ тексту: функція перевірки є", True)
+chk("текстові ключі: kv-<цифри> приймаються (Копірайтер), kv-abc і kvu-1 — ні; Toysi і rt- як були", bs._product_text_key_ok("kv-501") and not bs._product_text_key_ok("kv-abc") and not bs._product_text_key_ok("kvu-1") and bs._product_text_key_ok("176003") and bs._product_text_key_ok("rt-69616"))
 
 # ── (2) повна збірка ──
 items = {"kv-501": GOOD,
          "kv-502": dict(GOOD, name="Пупс «Малюк» 30 см", vendor="BABY born", category_path=["Ляльки", "Пупси"], category="Пупси", vendor_code="KV-5002", barcode="4823099900022", price=1200, images=["https://plutustoys.com.ua/img/kv/kv-502-1.jpg"], index=False),
          "kv-503": dict(GOOD, name="Пупс «Сплячий» 28 см", vendor="BABY born", category_path=["Ляльки", "Пупси"], category="Пупси", vendor_code="KV-5003", barcode="4823099900039", price=1100, images=["https://plutustoys.com.ua/img/kv/kv-503-1.jpg"], stock=0)}
 write_files(items)
+# збірка при ВИМКНЕНИХ воротах (SITE_KV_LIVE не 1) з чинним файлом: жодної kv-картки, жодного sitemap-k.xml (аудит #1694: порівняння з вимкненими воротами)
+bs.SITE_KV_LIVE = False
 
 
 def toysi(pid, name, cat):
@@ -132,6 +153,13 @@ catalog = {str(i): toysi(i, f"Іграшка {i}", "Фігурки героїв"
 bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
 bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None
 bs.CATEGORY_GROUPS_FILE = str(tmp / "none.json")
+out_off = Path(tempfile.mkdtemp())
+bs.OUT = str(out_off)
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    bs.build()
+chk("ворота вимкнені, файл чинний: немає product-k*.html, sitemap-k.xml і жодного kv- в index*.json/sitemap", not list(out_off.glob("product-k*.html")) and not (out_off / "sitemap-k.xml").exists()
+    and all("kv-" not in (out_off / n).read_text(encoding="utf-8") for n in ("index.json", "index-t.json", "index-rt.json", "sitemap.xml")))
+bs.SITE_KV_LIVE = True
 out = Path(tempfile.mkdtemp())
 bs.OUT = str(out)
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -142,6 +170,8 @@ chk("index.json: kv-501 з ціною 959, u=k501, rt=1, ix=1, sup=kv; kv-502 ix
     ix.get("kv-501", {}).get("pr") == 959 and ix["kv-501"].get("u") == "k501" and ix["kv-501"].get("rt") == 1 and ix["kv-501"].get("ix") == 1 and ix["kv-501"].get("sup") == "kv"
     and ix.get("kv-502", {}).get("ix") == 0 and "kv-503" not in ix)
 chk("у звичайного товару Toysi і RT нема поля sup", "sup" not in ix["5"])
+ALLOWED_KEYS = {"id", "u", "n", "pr", "p", "c", "s", "op", "rt", "ix", "sup", "dup"}
+chk("index.json: набір ключів ⊆ дозволеного (нема contribution/cost/внеску, з якого видно закупівлю)", all(set(x) <= ALLOWED_KEYS for x in idx) and set(ix["kv-501"]) <= ALLOWED_KEYS)
 chk("фото в index.json: /img/p/k501-1.jpg (не /img/kv/ і не адреса постачальника)", ix["kv-501"]["p"] == "https://plutustoys.com.ua/img/p/k501-1.jpg")
 pg = out / "product-k501.html"
 h = pg.read_text(encoding="utf-8") if pg.exists() else ""
@@ -151,16 +181,17 @@ main = h.split("<footer")[0]
 chk("картка kv: «Оплата карткою онлайн», НЕМАЄ «Оплата при отриманні» і «при накладеному платежі»", "Оплата карткою онлайн" in main and "Оплата при отриманні" not in main and "при накладеному платежі" not in main)
 chk("штрихкод у JSON-LD (gtin) і бренд Funko на місці", '"gtin' in h and "4823099900015" in h and "Funko" in h)
 chk("у видачі немає імені постачальника (KIDDISVIT), рядка kv- чи закупівлі", all("kiddisvit" not in q.read_text(encoding="utf-8", errors="ignore").lower() and COST_MARK not in q.read_text(encoding="utf-8", errors="ignore") for q in out.glob("*.html")) and COST_MARK not in (out / "index.json").read_text(encoding="utf-8"))
-chk("у відкритих HTML немає внутрішнього id «kv-501» (лише в index.json/кошику як ключ)", "kv-501" not in h or 'data-add' in h)
+non_prod = [q for q in out.glob("*.html") if not q.name.startswith(("product-", "category-", "catalog"))]
+chk(f"kv-картка не на головній/в акціях/подарунках/add-on кошика (перевірено {len(non_prod)} сторінок поза product/category/catalog; головна наповнюється з index-t.json, куди kv не входить — перевірено окремо)", len(non_prod) > 5 and not any(("product-k501" in q.read_text(encoding="utf-8") or "kv-501" in q.read_text(encoding="utf-8")) for q in non_prod))
 h502 = (out / "product-k502.html").read_text(encoding="utf-8")
 chk("kv-502 (index=false): <meta robots noindex,follow>; kv-501 — без noindex", 'content="noindex,follow"' in h502 and "noindex" not in h.split("</head>")[0])
 h503 = out / "product-k503.html"
 chk("kv-503 (залишок 0): сторінка жива (OutOfStock), без оплати при отриманні", h503.exists() and "OutOfStock" in h503.read_text(encoding="utf-8") and "при отриманні" not in h503.read_text(encoding="utf-8").split("<footer")[0])
-smk = (out / "sitemap-kv.xml").read_text(encoding="utf-8") if (out / "sitemap-kv.xml").exists() else ""
+smk = (out / "sitemap-k.xml").read_text(encoding="utf-8") if (out / "sitemap-k.xml").exists() else ""
 small = "".join(q.read_text(encoding="utf-8") for q in out.glob("sitemap-*.xml"))
-chk("sitemap-kv.xml: лише індексована kv-501 (рівно раз); kv-502 (noindex) і kv-503 (OOS) — ні; у rt/products/priority kv нема", "/product-k501.html" in smk and "/product-k502.html" not in small and small.count("/product-k501.html") == 1 and "k501" not in (out / "sitemap-products.xml").read_text(encoding="utf-8"))
+chk("sitemap-k.xml: лише індексована kv-501 (рівно раз); kv-502 (noindex) і kv-503 (OOS) — ні; у rt/products/priority kv нема", "/product-k501.html" in smk and "/product-k502.html" not in small and small.count("/product-k501.html") == 1 and "k501" not in (out / "sitemap-products.xml").read_text(encoding="utf-8"))
 sm_index = (out / "sitemap.xml").read_text(encoding="utf-8")
-chk("sitemap.xml (індекс) містить sitemap-kv.xml", "sitemap-kv.xml" in sm_index)
+chk("sitemap.xml (індекс) містить sitemap-k.xml", "sitemap-k.xml" in sm_index)
 home = (out / "index.html").read_text(encoding="utf-8")
 chk("kv-картки НЕ потрапляють на головну і в кошикові add-on", "product-k501" not in home and "product-k501" not in (out / "cart.html").read_text(encoding="utf-8"))
 irt = json.loads((out / "index-rt.json").read_text(encoding="utf-8"))

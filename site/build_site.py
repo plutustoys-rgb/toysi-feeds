@@ -822,6 +822,29 @@ def _load_supplier_rt(now=None):
 # site/kv_category_map.json: {"paths": {«Кореневий > … > листок» → категорія сайту}, "brands": {бренд (casefold) → категорія}}: їхнє дерево хибне місцями, тож бренд має пріоритет. Шлях без запису = картка НЕ публікується (голосне попередження), а не «Інше».
 # «index» не True (false або поля нема) → noindex,follow і поза sitemap (хвилі відкриття до Google — лише за словом власника/SEO). Уцінка `kvu-<id>` цим завантажувачем НЕ приймається (окреме рішення).
 SITE_KV_LIVE = os.environ.get("SITE_KV_LIVE") == "1"
+_KV_LEAK_RX = re.compile(r"kiddi\s*svit|кіддісвіт|киддисвит|\bkvu?-[0-9]", re.I)   # ім'я постачальника/внутрішній id не мають потрапити в назву, бренд, код, опис (аудит #1694); «KIDDI SMART» — окремий бренд, не збігається
+_KV_ALLOWED_TAG_RX = re.compile(r"&lt;(/?)(br|p|b|strong|em|ul|ol|li)\s*/?&gt;", re.I)
+
+
+def _kv_strict_int(x):
+    """Ціле з файлу постачальника: int, ціле float (959.0) або рядок із цифр; bool, дріб (959.9), «1 200» — None (ціна закрита формулою — тихо не округлюємо; аудит #1694)."""
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, int):
+        return x
+    if isinstance(x, float):
+        return int(x) if x.is_integer() else None
+    if isinstance(x, str) and re.fullmatch(r"[0-9]{1,9}", x.strip()):
+        return int(x.strip())
+    return None
+
+
+def _kv_safe_html(text):
+    """Опис постачальника → безпечний HTML: усе екранується, лишаються лише <br>/<p>/<b>/<strong>/<em>/<ul>/<ol>/<li> БЕЗ атрибутів (новий зовнішній канал B2B API; опис вставляється в сторінку як HTML — stored XSS, аудит #1694).
+    «&730;» (без #) спершу лагодиться до «&#730;» (SEO 10.11), потім сутності розкодовуються і екранування вже коректне."""
+    t = _BROKEN_NUM_ENTITY_RX.sub(lambda m: "&#" + m.group(1) + ";", _rt_clean_description(text))
+    t = html.escape(html.unescape(t), quote=False)
+    return _KV_ALLOWED_TAG_RX.sub(lambda m: "<" + m.group(1) + m.group(2).lower() + ">", t)
 SUPPLIER_KV_FILE = os.environ.get("SUPPLIER_KV_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "supplier_kv.json")
 KV_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kv_category_map.json")
 SUPPLIER_KV_MAX_AGE_DAYS = 3
@@ -871,16 +894,19 @@ def _load_supplier_kv(now=None):
         if not isinstance(k, str) or not _KV_ID_RX.fullmatch(k) or not isinstance(v, dict):
             why = "id"
         else:
-            imgs = [u for u in (v.get("images") or []) if isinstance(u, str) and u.startswith("https://")]
+            imgs = [u for u in (v.get("images") or []) if isinstance(u, str) and (lambda m: bool(m) and m.group(1) == k)(_PUBLIC_IMG_KV_RX.fullmatch(u))]   # лише НАШІ файли цього id (https://plutustoys.com.ua/img/kv/<id>-N.jpg): чужий хост/чужий id не публікуємо (аудит #1694)
             vendor_name = _supplier_text_plain(str(v.get("vendor") or "").strip())
+            if _KV_LEAK_RX.search(vendor_name):
+                vendor_name = ""
             cpath = [str(x).strip() for x in (v.get("category_path") or []) if str(x).strip()] if isinstance(v.get("category_path"), list) else []
             cat_name = brands.get(vendor_name.casefold()) or paths.get(" > ".join(cpath) if cpath else str(v.get("category") or "").strip())
-            try:
-                price, stock = int(v.get("price")), int(v.get("stock"))
-            except (TypeError, ValueError):
+            price, stock = _kv_strict_int(v.get("price")), _kv_strict_int(v.get("stock"))
+            if price is None or stock is None:
                 price, stock = 0, -1
             if not str(v.get("name") or "").strip():
                 why = "name"
+            elif _KV_LEAK_RX.search(str(v.get("name"))):
+                why = "leak"   # у назві ім'я постачальника/внутрішній id — не публікуємо
             elif not imgs:
                 why = "images"
             elif price <= 0 or stock < 0:
@@ -894,10 +920,13 @@ def _load_supplier_kv(now=None):
             kv_cost = round(float(v.get("cost") or 0), 2)
         except (TypeError, ValueError):
             kv_cost = 0.0
-        _desc = _BROKEN_NUM_ENTITY_RX.sub(lambda m: "&#" + m.group(1) + ";", _rt_clean_description(v.get("description")))
+        _desc = _KV_LEAK_RX.sub("", _kv_safe_html(v.get("description")))
+        _vcode = str(v.get("vendor_code") or "").strip()
+        if _KV_LEAK_RX.search(_vcode):
+            _vcode = ""
         _bc = re.sub(r"\D", "", str(v.get("barcode") or ""))
         out[k] = {"id": k, "name": _supplier_text_plain(str(v["name"]).strip()), "description": _desc, "vendor": vendor_name,
-                  "vendor_code": str(v.get("vendor_code") or "").strip(), "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
+                  "vendor_code": _vcode, "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
                   "site_price": price, "rt_cost": kv_cost, "supplier": "kiddisvit", "price": price, "barcode": _bc,
                   # «index» не True (false або поля нема) → noindex,follow і поза sitemap; опис <50 знаків (тонка картка) → noindex завжди
                   "rt_noindex": v.get("index") is not True or len(re.sub(r"<[^>]+>", "", _desc).strip()) < RT_MIN_DESC_INDEX,
@@ -4756,7 +4785,7 @@ def _write(fname, content):
 SITEMAP_PRIORITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitemap_priority.json")
 PROM_GROUP_CATEGORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prom_group_to_category.json")
 SITEMAP_STALE_FILES = ("sitemap-dropt.xml", "sitemap-more.xml")   # Dropt прибрано з сайту (16.11.2026): його сегмент не будуємо, файли від попередніх збірок прибираємо
-SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt", "kv")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority)
+SITEMAP_SEGMENTS = ("priority", "products", "oos", "categories", "static", "rt", "k")   # rt — окремий сегмент RoyalToys (SEO 19.10: міряти rt- vs Toysi окремо; НЕ в priority)
 
 
 def _sitemap_priority():
@@ -4808,7 +4837,7 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=fro
             continue   # NOINDEX_CATEGORIES (True): товар noindex і поза sitemap
         if p.get("rt"):
             if not p.get("noindex"):
-                seg["kv" if p.get("kv") else "rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
+                seg["k" if p.get("kv") else "rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
             continue
         (seg["priority"] if p["id"] in pri_ids else seg["products"]).append((f, f, "0.6", "weekly"))
     # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий

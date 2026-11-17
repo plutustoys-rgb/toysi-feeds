@@ -615,7 +615,7 @@
   // ── Другий постачальник (RoyalToys, id «rt-…»; рішення власника 19.10): працює лише за повною передоплатою → у кошику з такою позицією «накладений платіж» неактивний, лишається «картка онлайн» ──
   // Сервер це теж перевіряє (409), тут — щоб покупець не обирав те, що буде відхилено. Нема rt-позицій — нічого не міняємо.
   function applyRtPayment(ids){
-    var rt=ids.filter(function(k){ return /^(rt|kv)-/.test(k); }).length, mixed=rt>0 && rt<ids.length;
+    var rt=ids.filter(function(k){ return /^(rt|kv)-/.test(k); }).length, hasR=ids.some(function(k){ return /^rt-/.test(k); }), hasK=ids.some(function(k){ return /^kv-/.test(k); }), mixed=rt>0 && (rt<ids.length || (hasR && hasK));
     var cod=document.querySelector('input[name="payment"][value="cod"]'), pre=document.querySelector('input[name="payment"][value="prepaid"]');
     var note=document.getElementById("rt-pay-note");
     var tp=document.querySelector(".trust-pay"); if(tp){ if(tp.getAttribute("data-orig")===null) tp.setAttribute("data-orig", tp.textContent); tp.textContent = rt>0 ? (mixed ? "💳 Оплата карткою онлайн — для частини товарів у кошику лише передоплата" : "💳 Оплата карткою онлайн — цей товар відправляється лише за передоплатою") : tp.getAttribute("data-orig"); }

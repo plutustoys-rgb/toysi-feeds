@@ -15,7 +15,6 @@ PlutusToys — статичний генератор власного магаз
 Ціна = real_toysi_discounted × 1.5 (без комісії маркетплейсу — сенс власного сайту).
 LIMIT (env) обмежує к-ть карток для швидкого демо-прогону; порожній = увесь in-stock+фото.
 """
-import unicodedata
 import os, re, sys, json, html, unicodedata, hashlib, random, bisect, heapq, functools, time
 from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + os.sep + "..")

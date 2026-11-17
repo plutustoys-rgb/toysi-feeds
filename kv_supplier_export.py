@@ -4,7 +4,7 @@
 Той самий контракт, що supplier_rt.json (Shopify-code: site/build_site.py за аналогією `_load_supplier_rt`): {"updated": ISO UTC, "catalog_n": N, "items": {"kv-<id>": {name, description, vendor, vendor_code, barcode, category (УКР. назва листка каталогу KIDDISVIT), category_path[…], images[https://plutustoys.com.ua/img/kv/…],
 price (закрита формула сайту), cost (clientPrice із API: НАША закупівля), rrp (поточна РРЦ), stock, dims_cm [Д,Ш,В], weight_kg|null, index}}}.
 Джерела (усе через kiddisvit_api.KiddisvitClient, ЛИШЕ ЧИТАННЯ): catalog/products (назва, опис, фото, бренд, штрихкод, габарити з properties), catalog/categories, catalog/brands + products/rests/prices по бренду (clientPrice, залишки).
-Правила: залишок = лише склад «Dnepr» (склади NTV20/NTV30 — товар із пошкодженим пакуванням, умови не з'ясовано → НЕ публікуємо), «101» у API = «100+» → кап 100; відбір — політика (зброя/18+; марка UNO відсікається далі, у build_site через trademark_filter), `kv_selection.json` (необов'язковий: мін. залишок, бренди-не-іграшки, exclude_not_toys; нема файлу → типові значення), позиція без фото на диску, без габаритів, без ціни/назви — не публікується.
+Правила: залишок «Dnepr» → картка `kv-<id>` (новий товар); залишок складів NTV20/NTV30 (пошкоджене пакування; менеджер 17.11: «такий товар продається»; рішення власника 17.11: «пошкоджене в Уцінку») → ОКРЕМА картка `kvu-<id>` з category «Уцінка», condition=damaged_packaging і складом для замовлення (`warehouse`); «101» у API = «100+» → кап 100; відбір — політика (зброя/18+; марка UNO відсікається далі, у build_site через trademark_filter), `kv_selection.json` (необов'язковий: мін. залишок, бренди-не-іграшки, exclude_not_toys; нема файлу → типові значення), позиція без фото на диску, без габаритів, без ціни/назви — не публікується.
 Ціна сайту — ЗАКРИТА формула (13.10.2026, `rt_supplier_export.site_price`), НЕ змінювати без слова власника. Порожній каталог/ціни → попередній файл НЕ перезаписується (build_site сам вимкне картки, коли «updated» старший за 3 доби — fail-closed), сигнал раз на добу.
 Запуск: kv-supplier-export.timer щогодини (клієнт тримає ≤1,4 запиту/с: ліміт постачальника 25 запитів/10 с). stock_snapshot додає в site/stock.json ключі kv-<id>. Замовлення KIDDISVIT тут НЕ чіпаються."""
 import json
@@ -30,14 +30,16 @@ SELECTION_FILE = HERE / "kv_selection.json"
 INDEX_FILE = HERE / "kv_index_ids.json"
 MAX_IMAGES = 3
 STOCK_CAP = 100                     # у API «101» = «100+» (ДОВІДНИК §4)
-SITE_WAREHOUSE = "Dnepr"            # NTV20/NTV30 — пошкоджене пакування, умови продажу не з'ясовано (Т. Сіденко 17.11 13:04: «такий товар продається») → не публікуємо, доки власник не вирішить
+SITE_WAREHOUSE = "Dnepr"
+MARKDOWN_WAREHOUSES = ("NTV20", "NTV30")   # пошкоджене пакування → картки kvu-<id> у категорії «Уцінка» (рішення власника 17.11)
+MARKDOWN_CATEGORY = "Уцінка"
 PREFETCH_WORKERS = 6
 PREFETCH_BUDGET_S = 900
 MIN_FREE_GB = 10
 MIN_KEEP_RATIO = rt.MIN_KEEP_RATIO
-_ID_RE = re.compile(r"kv-[0-9]+")
-# exclude_not_toys=False: регекси `rt_supplier_export._NOT_TOY_*` писані під рос. категорії RoyalToys і хибно спрацьовують на укр. назвах KIDDISVIT («Каталка з ручкою», «Набір олівців», «Книга-гра»; аудит #1691) → не-іграшки відсікаємо лише брендами (kv_selection.json), а не цим регексом.
-DEFAULT_SELECTION = {"min_stock": 3, "min_cost": None, "exclude_not_toys": False, "exclude_brands": ["Goo.N Plus", "Goo.N Premium Soft", "Goo.N Slim & Comfortable", "Lansinoh"]}   # підгузки/гігієна — не іграшки (асортимент, не політика); власник може зняти у kv_selection.json
+_ID_RE = re.compile(r"kvu?-[0-9]+")
+# exclude_not_toys=False: регекси `rt_supplier_export._NOT_TOY_*` писані під рос. категорії RoyalToys і хибно спрацьовують на укр. назвах KIDDISVIT («Каталка з ручкою», «Набір олівців», «Книга-гра»; аудит #1691) → не-іграшки відсікаємо лише брендами (kv_selection.json, типово порожньо), а не цим регексом.
+DEFAULT_SELECTION = {"min_stock": 3, "min_cost": None, "exclude_not_toys": False, "exclude_brands": []}   # рішення власника 17.11: «усе додавай, це для дітей» — підгузки/гігієна (Goo.N, Lansinoh) теж; бренди-виключення — лише через kv_selection.json
 
 
 def _norm(s: str) -> str:
@@ -111,12 +113,22 @@ def stock_of(rest, warehouse: str = SITE_WAREHOUSE) -> int:
     return min(tot, STOCK_CAP)
 
 
+def markdown_stock(rest) -> tuple:
+    """(склад, залишок) складу NTV з більшим залишком (NTV20/NTV30; кап 100) або (None, 0). Замовлення KIDDISVIT вказує один склад на позицію, тож беремо один."""
+    best = (None, 0)
+    for wh in MARKDOWN_WAREHOUSES:
+        n = stock_of(rest, wh)
+        if n > best[1]:
+            best = (wh, n)
+    return best
+
+
 def _ua_ok(name: str) -> bool:
     return bool(name) and not (rt._RU_LETTERS_RE.search(name) or rt._RU_WORDS_RE.search(name) or (rt._RU_LANG_MARK_RE.search(name) and not rt._UA_LANG_MARK_RE.search(name)))
 
 
-def build_item(pid: str, prod: dict, price_row: dict, cats: dict, images: list) -> dict | None:
-    """Елемент supplier_kv.json або None. Чиста функція (без мережі)."""
+def build_item(pid: str, prod: dict, price_row: dict, cats: dict, images: list, markdown: bool = False) -> dict | None:
+    """Елемент supplier_kv.json або None. Чиста функція (без мережі). markdown=True — картка `kvu-<id>` зі складів NTV («Уцінка»)."""
     name = str(prod.get("name") or "").strip()
     if not _ua_ok(name) or not images:
         return None
@@ -131,14 +143,22 @@ def build_item(pid: str, prod: dict, price_row: dict, cats: dict, images: list) 
         desc = ""
     path = category_path(prod.get("category_id"), cats)
     rrp = _num((price_row or {}).get("retailPrice"))
+    if markdown:
+        wh, stock = markdown_stock((price_row or {}).get("rest"))
+        if not wh:
+            return None
+    else:
+        wh, stock = SITE_WAREHOUSE, stock_of((price_row or {}).get("rest"))
     return {"name": name, "description": desc, "vendor": str(prod.get("brand_name") or "").strip(), "vendor_code": str(prod.get("sku") or "").strip(),
-            "barcode": re.sub(r"\D", "", str(prod.get("barcode") or "")) or None, "category": path[-1] if path else "", "category_path": path,
+            "barcode": re.sub(r"\D", "", str(prod.get("barcode") or "")) or None,
+            "category": MARKDOWN_CATEGORY if markdown else (path[-1] if path else ""), "category_path": [MARKDOWN_CATEGORY] if markdown else path, "source_category_path": path,
+            "condition": "damaged_packaging" if markdown else "new", "warehouse": wh,
             "images": images, "price": rt.site_price(cost), "cost": round(cost, 2), "rrp": round(rrp, 2) if rrp else None,
-            "stock": stock_of((price_row or {}).get("rest")), "dims_cm": dims, "weight_kg": None}
+            "stock": stock, "dims_cm": dims, "weight_kg": None}
 
 
 def select_ids(products: dict, prices: dict, cats: dict, sel: dict) -> list:
-    """Упорядкований список pid до публікації: політика, фільтри kv_selection.json, залишок Dnepr ≥ min_stock; за спаданням внеску (ціннішим фото качаємо першими)."""
+    """Упорядкований список sid до публікації: політика, фільтри kv_selection.json; `kv-<pid>` — залишок Dnepr ≥ min_stock, `kvu-<pid>` — залишок NTV ≥ min_stock (Уцінка); за спаданням внеску (ціннішим фото качаємо першими)."""
     excl = {_norm(b) for b in (sel.get("exclude_brands") or [])}
     mc = sel.get("min_cost")
     try:
@@ -154,14 +174,19 @@ def select_ids(products: dict, prices: dict, cats: dict, sel: dict) -> list:
         cost = _num((row or {}).get("clientPrice"))
         if cost is None or (mc is not None and cost < float(mc)):
             continue
-        if stock_of(row.get("rest")) < max(1, ms):
+        main_ok = stock_of(row.get("rest")) >= max(1, ms)
+        md_ok = markdown_stock(row.get("rest"))[1] >= max(1, ms)
+        if not (main_ok or md_ok):
             continue
         path = category_path(p.get("category_id"), cats)
         reason = rt.policy_reason({"id": pid, "name": p.get("name"), "name_ua": p.get("name"), "category_name": path[-1] if path else ""})
         if reason == "policy" or (reason == "not_toy" and sel.get("exclude_not_toys", True)):
             continue
         sp = rt.site_price(cost)
-        extra.append((sp - cost - sp * 0.028, sid))
+        if main_ok:
+            extra.append((sp - cost - sp * 0.028, sid))
+        if md_ok:
+            extra.append((sp - cost - sp * 0.028, f"kvu-{pid}"))
     extra.sort(key=lambda x: (-x[0], x[1]))
     return [sid for _, sid in extra]
 
@@ -248,22 +273,25 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
         ids = select_ids(products, prices, cats, sel)
         cand, tasks, nophoto = [], [], 0
         for sid in ids:
-            pid = sid[3:]
+            pid = sid.split("-", 1)[1]
+            md = sid.startswith("kvu-")
             p = products[pid]
-            if build_item(pid, p, prices[pid], cats, ["-"]) is None:
+            if build_item(pid, p, prices[pid], cats, ["-"], md) is None:
                 nophoto += 1                                   # назва/ціна/габарити невалідні — фото даремно не качаємо
                 continue
-            cand.append((sid, pid))
+            cand.append((sid, pid, md))
             for n, url in enumerate([u for u in (p.get("images") or []) if isinstance(u, str)][:MAX_IMAGES], 1):
-                tasks.append((url, img_dir / f"{sid}-{n}.jpg"))
+                dest = img_dir / f"kv-{pid}-{n}.jpg"          # фото ділять kv-<id> і kvu-<id> (один товар)
+                if all(d != dest for _u, d in tasks):
+                    tasks.append((url, dest))
 
         def build_items(got):
             res, miss = {}, 0
-            for sid, pid in cand:
+            for sid, pid, md in cand:
                 p = products[pid]
                 n_img = len([u for u in (p.get("images") or []) if isinstance(u, str)][:MAX_IMAGES])
-                imgs = [IMG_URL.format(name=f"{sid}-{n}.jpg") for n in range(1, n_img + 1) if got.get(img_dir / f"{sid}-{n}.jpg")]
-                it = build_item(pid, p, prices[pid], cats, imgs)
+                imgs = [IMG_URL.format(name=f"kv-{pid}-{n}.jpg") for n in range(1, n_img + 1) if got.get(img_dir / f"kv-{pid}-{n}.jpg")]
+                it = build_item(pid, p, prices[pid], cats, imgs, md)
                 if it is None:
                     miss += 1
                     continue

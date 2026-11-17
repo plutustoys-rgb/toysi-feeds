@@ -60,7 +60,8 @@ chk("українське не ловиться: «в наборі», «Зеле
 prods = {"1": P("1"), "2": P("2", brand_name="Goo.N Plus"), "3": P("3"), "4": P("4"), "5": P("5", name="Іграшковий пістолет з пістонами")}
 prices = {"1": R("1"), "2": R("2"), "3": R("3", rest=[{"WarehouseID": "Dnepr", "Rest": 2}]), "4": R("4", rest=[{"WarehouseID": "NTV20", "Rest": 80}]), "5": R("5")}
 sel = ex.select_ids(prods, prices, CATS, ex.DEFAULT_SELECTION)
-chk("відбір: пройшов лише kv-1 (kv-2 підгузки-бренд; kv-3 залишок 2 < 3; kv-4 лише NTV; kv-5 зброя/політика)", sel == ["kv-1"])
+chk("відбір (типово без виключених брендів): kv-1, kv-2 (підгузки Goo.N — рішення власника «усе додавай»), kvu-4 (лише NTV → Уцінка); НЕ kv-3 (залишок 2 < 3), НЕ kv-5 (зброя)", set(sel) == {"kv-1", "kv-2", "kvu-4"} and ex.DEFAULT_SELECTION["exclude_brands"] == [])
+chk("exclude_brands у kv_selection.json діє (регістронезалежно): Goo.N Plus → kv-2 нема", "kv-2" not in ex.select_ids(prods, prices, CATS, dict(ex.DEFAULT_SELECTION, exclude_brands=["goo.n plus"])))
 chk("відбір: без вимоги залишку/мін. ціни kv_selection → kv-3 теж", "kv-3" in ex.select_ids(prods, prices, CATS, {"min_stock": 0, "exclude_brands": []}) and "kv-2" in ex.select_ids(prods, prices, CATS, {"min_stock": 0, "exclude_brands": []}))
 chk("відбір: min_cost відсікає дешеве", ex.select_ids(prods, prices, CATS, {"min_stock": 1, "min_cost": 800, "exclude_brands": []}) == [])
 chk("kv_selection.json: нема/битий файл → типові (мін. залишок 3, підгузки виключені)", ex.load_selection(Path("/nonexistent.json")) == ex.DEFAULT_SELECTION)
@@ -81,7 +82,10 @@ with tempfile.TemporaryDirectory() as td:
     out = td / "supplier_kv.json"
     ok = ex.run_once(collected=(prods, prices, CATS), out=out, fetch=fetch_ok, img_dir=td / "img", now=NOW, selection=ex.DEFAULT_SELECTION, index_ids=set())
     d = json.loads(out.read_text(encoding="utf-8"))
-    chk("run_once: файл записано; ключ kv-1; фото kv-1-1/-2 на диску; index=false за замовчуванням; updated ISO UTC; catalog_n = розмір каталогу", ok and list(d["items"]) == ["kv-1"] and (td / "img" / "kv-1-1.jpg").exists() and (td / "img" / "kv-1-2.jpg").exists() and d["items"]["kv-1"]["index"] is False and d["updated"].startswith("2026-11-17T12:00:00") and d["catalog_n"] == 5)
+    chk("run_once: файл записано; ключі kv-1, kv-2, kvu-4; фото kv-1-1/-2 на диску; index=false за замовчуванням; updated ISO UTC; catalog_n = розмір каталогу", ok and set(d["items"]) == {"kv-1", "kv-2", "kvu-4"} and (td / "img" / "kv-1-1.jpg").exists() and (td / "img" / "kv-1-2.jpg").exists() and d["items"]["kv-1"]["index"] is False and d["updated"].startswith("2026-11-17T12:00:00") and d["catalog_n"] == 5)
+    md = d["items"]["kvu-4"]
+    chk("Уцінка: kvu-4 — category «Уцінка», condition damaged_packaging, склад NTV20, залишок 80, джерело-категорія збережена; закупівля й ціна ті самі, що в звичайної картки; фото за pid (kv-4-N.jpg)", md["category"] == "Уцінка" and md["category_path"] == ["Уцінка"] and md["condition"] == "damaged_packaging" and md["warehouse"] == "NTV20" and md["stock"] == 80 and md["source_category_path"] == ["Ігри", "Фігурки"] and md["cost"] == d["items"]["kv-1"]["cost"] and md["price"] == d["items"]["kv-1"]["price"] and all("/kv-4-" in u for u in md["images"]) and (td / "img" / "kv-4-1.jpg").exists())
+    chk("звичайна картка: condition new, warehouse Dnepr; фото kv-1 не дублюються", d["items"]["kv-1"]["condition"] == "new" and d["items"]["kv-1"]["warehouse"] == "Dnepr" and sum(1 for f in fetched if f.endswith("kv-1-1.jpg")) == 1)
     chk("фото ≤ MAX_IMAGES; URL фото на нашому сервері, не KIDDISVIT", len(d["items"]["kv-1"]["images"]) == 2 and all(u.startswith("https://plutustoys.com.ua/img/kv/") for u in d["items"]["kv-1"]["images"]))
     chk("файл приватний: поза site/", "site" not in ex.OUT_FILE.parts)
     ok2 = ex.run_once(collected=(prods, prices, CATS), out=out, fetch=fetch_ok, img_dir=td / "img", now=NOW, selection=ex.DEFAULT_SELECTION, index_ids={"kv-1"})
@@ -185,6 +189,15 @@ env0 = {k: v for k, v in __import__("os").environ.items() if k != "KIDDISVIT_API
 r0 = subprocess.run([sys.executable, str(HERE / "kv_supplier_export.py")], capture_output=True, env=dict(env0, KIDDISVIT_API_KEY="", SUPPLIER_KV_FILE=str(Path(tempfile.gettempdir()) / "nokey_kv_test.json")), cwd=str(HERE), timeout=60)
 chk("запуск без ключа → код 0 («не налаштовано»), а не щогодинний збій юніта", r0.returncode == 0)
 
+
+# Уцінка: товар і на Dnepr, і на NTV → ДВІ картки зі своїми залишками; обидва склади NTV → береться більший; без NTV → kvu- нема
+both = {"7": P("7")}
+pr_both = {"7": R("7", rest=[{"WarehouseID": "Dnepr", "Rest": 12}, {"WarehouseID": "NTV20", "Rest": 4}, {"WarehouseID": "NTV30", "Rest": 9}])}
+chk("markdown_stock: більший із NTV20/NTV30 (NTV30: 9), кап 100, без NTV → (None, 0)", ex.markdown_stock(pr_both["7"]["rest"]) == ("NTV30", 9) and ex.markdown_stock([{"WarehouseID": "NTV20", "Rest": 101}]) == ("NTV20", 100) and ex.markdown_stock([{"WarehouseID": "Dnepr", "Rest": 5}]) == (None, 0))
+sl = ex.select_ids(both, pr_both, CATS, ex.DEFAULT_SELECTION)
+chk("товар і на Dnepr, і на NTV → kv-7 (12) та kvu-7 (NTV30: 9)", set(sl) == {"kv-7", "kvu-7"})
+chk("kvu- без залишку NTV → None; kv- без залишку Dnepr (лише NTV) за build_item → stock 0, але select_ids його не бере", ex.build_item("7", P("7"), R("7", rest=[{"WarehouseID": "Dnepr", "Rest": 5}]), CATS, ["u"], True) is None and ex.build_item("7", P("7"), pr_both["7"], CATS, ["u"], True)["warehouse"] == "NTV30")
+chk("id kvu-<число> проходить регекс; kv-abc / kvu- ні", all(ex._ID_RE.fullmatch(x) for x in ("kv-1", "kvu-1")) and not any(ex._ID_RE.fullmatch(x) for x in ("kv-abc", "kvu-", "kvx-1")))
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

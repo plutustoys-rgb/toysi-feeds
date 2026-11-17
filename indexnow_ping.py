@@ -137,6 +137,7 @@ def run(now: float | None = None, site_dir: Path = SITE_DIR, state_file: Path = 
     urls = sitemap_urls(site_dir)
     if not urls:
         return {"status": "no_sitemap", "sent": 0, "backlog": len(state.get("backlog") or [])}
+    safe = _safe_ts(now, site_dir)         # ДО читання стану збірки: flush збірки в проміжку (HTTP-фаза пінгу) не посуне межу повз ще не прочитані зміни (аудит #1698, повторний)
     lastmod = read_json(site_dir / LASTMOD_STATE, {})
     if not isinstance(lastmod, dict) or not lastmod:
         return {"status": "no_lastmod_state", "sent": 0, "backlog": len(state.get("backlog") or [])}
@@ -159,7 +160,7 @@ def run(now: float | None = None, site_dir: Path = SITE_DIR, state_file: Path = 
             queue = queue[consumed:]
     elif queue:
         status = "daily_cap"
-    _write_state(state_file, {"last_ts": _safe_ts(now, site_dir), "day": day, "day_count": day_count + sent, "backlog": queue})
+    _write_state(state_file, {"last_ts": safe, "day": day, "day_count": day_count + sent, "backlog": queue})
     return {"status": status, "sent": sent, "backlog": len(queue)}
 
 

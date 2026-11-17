@@ -36,7 +36,8 @@ PREFETCH_BUDGET_S = 900
 MIN_FREE_GB = 10
 MIN_KEEP_RATIO = rt.MIN_KEEP_RATIO
 _ID_RE = re.compile(r"kv-[0-9]+")
-DEFAULT_SELECTION = {"min_stock": 3, "min_cost": None, "exclude_not_toys": True, "exclude_brands": ["Goo.N Plus", "Goo.N Premium Soft", "Goo.N Slim & Comfortable", "Lansinoh"]}   # підгузки/гігієна — не іграшки (асортимент, не політика); власник може зняти у kv_selection.json
+# exclude_not_toys=False: регекси `rt_supplier_export._NOT_TOY_*` писані під рос. категорії RoyalToys і хибно спрацьовують на укр. назвах KIDDISVIT («Каталка з ручкою», «Набір олівців», «Книга-гра»; аудит #1691) → не-іграшки відсікаємо лише брендами (kv_selection.json), а не цим регексом.
+DEFAULT_SELECTION = {"min_stock": 3, "min_cost": None, "exclude_not_toys": False, "exclude_brands": ["Goo.N Plus", "Goo.N Premium Soft", "Goo.N Slim & Comfortable", "Lansinoh"]}   # підгузки/гігієна — не іграшки (асортимент, не політика); власник може зняти у kv_selection.json
 
 
 def _norm(s: str) -> str:
@@ -193,7 +194,7 @@ MIN_PRICE_COVERAGE = 0.8       # частка товарів каталогу, �
 
 
 def out_guard_ok(out: Path, catalog_n: int, priced_n: int = 0) -> bool:
-    """Гарди усадки: (а) покриття цінами <MIN_PRICE_COVERAGE каталогу; (б) розмір каталогу <50 % попереднього запису; (в) цін клієнта <50 % попереднього priced_n (ціни йдуть окремими ~140 запитами, яких catalog_n не міряє). Законне звуження вибірки (min_stock, exclude_brands) гард не зачіпає. Свідоме звуження каталогу — видалити supplier_kv.json на VPS."""
+    """Гарди усадки: (а) покриття цінами <MIN_PRICE_COVERAGE каталогу; (б) розмір каталогу <50 % попереднього запису; (в) цін клієнта <50 % попереднього priced_n (ціни йдуть окремими ~140 запитами, яких catalog_n не міряє). Законне звуження вибірки (min_stock, exclude_brands) гард не зачіпає. Свідоме звуження каталогу — видалити supplier_kv.json на VPS (гард покриття цінами (а) так НЕ обходиться: поріг MIN_PRICE_COVERAGE змінюється кодом — якщо договір колись відкриє товари без цін, покриття впаде нижче порога)."""
     if catalog_n and priced_n < catalog_n * MIN_PRICE_COVERAGE:
         rt._alert("kv_export_coverage", f"⚠️ kv_supplier_export: ціни клієнта є лише для {priced_n} із {catalog_n} товарів каталогу (<{int(MIN_PRICE_COVERAGE * 100)}%) — частина запитів products/rests/prices не відповіла? supplier_kv.json НЕ перезаписано.")
         return False
@@ -304,5 +305,7 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
 if __name__ == "__main__":
     if not KiddisvitClient().has_key():
         print("[kv_export] KIDDISVIT_API_KEY не задано — експорт не налаштований, пропускаємо (це не збій)")
+        if OUT_FILE.exists():          # ключ зник/зіпсований після того, як файл уже був: залишки зникнуть через 3 год, картки через 3 доби — сигнал, не тиша
+            rt._alert("kv_export_nokey", "⚠️ kv_supplier_export: KIDDISVIT_API_KEY зник із .env, а supplier_kv.json уже існує — залишки kv- зникнуть через 3 год, картки через 3 доби. Поверніть ключ.")
         sys.exit(0)
     sys.exit(0 if run_once(workers=PREFETCH_WORKERS, budget_s=PREFETCH_BUDGET_S, check_disk=True) else 1)

@@ -175,9 +175,10 @@ with tempfile.TemporaryDirectory() as td3:
 ex.rt._alert = _real_alert
 
 chk("залишок: «7.0» і склад у іншому регістрі («dnepr») рахуються; «101» = 100", ex.stock_of([{"WarehouseID": "dnepr", "Rest": "7.0"}]) == 7 and ex.stock_of([{"WarehouseID": "Dnepr", "Rest": 101}]) == 100)
-chk("не-іграшки (зошит/гантелі за політикою rt.policy_reason) виключаються за замовчуванням і повертаються при exclude_not_toys=false", (lambda a, b: ("kv-9" not in a) and ("kv-9" in b))(
+chk("exclude_not_toys: типово вимкнено (регекси RT дають хибні спрацювання на укр. назвах: «Каталка з ручкою», «Набір олівців», «Книга-гра»); увімкнене в kv_selection.json — відсікає «Зошит»", (lambda dflt, on: ("kv-9" in dflt) and ("kv-9" not in on))(
     ex.select_ids({"9": P("9", name="Зошит у клітинку")}, {"9": R("9")}, CATS, ex.DEFAULT_SELECTION),
-    ex.select_ids({"9": P("9", name="Зошит у клітинку")}, {"9": R("9")}, CATS, dict(ex.DEFAULT_SELECTION, exclude_not_toys=False))))
+    ex.select_ids({"9": P("9", name="Зошит у клітинку")}, {"9": R("9")}, CATS, dict(ex.DEFAULT_SELECTION, exclude_not_toys=True))))
+chk("укр. назви з «ручк/олівц/книга» НЕ відсікаються за замовчуванням", all(ex.select_ids({"8": P("8", name=n)}, {"8": R("8")}, CATS, ex.DEFAULT_SELECTION) == ["kv-8"] for n in ("Каталка з ручкою Мишко", "Набір олівців для малювання", "Книга-гра Лабіринти")))
 chk("сміття в min_stock (рядок) не валить відбір, діє типове", ex.select_ids({"1": P("1")}, {"1": R("1")}, CATS, {"min_stock": "abc", "exclude_brands": []}) == ["kv-1"])
 import subprocess  # noqa: E402
 env0 = {k: v for k, v in __import__("os").environ.items() if k != "KIDDISVIT_API_KEY"}

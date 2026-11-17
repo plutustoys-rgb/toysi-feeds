@@ -155,6 +155,69 @@ st, body = post({"Content-Type": "application/json", "X-Panel": "1"})
 chk("панель: з X-Panel → 200 і дані", st == 200 and json.loads(body).get("ok") is True)
 h = http.client.HTTPConnection("127.0.0.1", port, timeout=10); h.request("GET", "/"); page = h.getresponse().read().decode("utf-8")
 chk("сторінка панелі містить блок «Замовлення» і loadOrders", "loadOrders" in page and "id=otab" in page)
+# ── статус НП (17.11.2026, власник: «є замовлення ще на НП не забрані, панель їх більше не показує»)
+NOW2 = datetime(2026, 11, 17, 18, 0, 0)
+
+
+def SN(now=NOW2, **kw):
+    base = {"platform": "prom", "status": "forwarded_to_supplier", "payment_method": "prepaid", "payment_confirmed": 1, "created_at": "2026-11-10T10:00:00", "forwarded_to_toysi_at": "2026-11-10T10:05:00",
+            "delivery_status": "shipped", "toysi_ttn": "20451580000001"}
+    base.update(kw)
+    return oa.stage(base, now)
+
+
+c1 = SN(np_status="Прибув у відділення", np_code="7", np_arrived="2026-11-16 12:00:00")
+chk("відправлено + НП «Прибув у відділення» 1,25 дн. → у підписі статус НП і дні, без тривоги", "НП: Прибув у відділення (1.2 дн.)" in c1[1] and c1[2] is False and c1[0] == "shipped")
+c2 = SN(np_status="Прибув у відділення", np_code="7", np_arrived="2026-11-13 12:00:00")
+chk("≥4 доби на відділенні → тривога «НЕ ЗАБРАНО, скоро повернення» (безкоштовне зберігання 5 діб)", c2[2] is True and "НЕ ЗАБРАНО" in c2[1])
+c3 = SN(np_status="Відправлення отримано", np_code="9")
+chk("НП каже «отримано», а наш delivery_status застряг на shipped → доставлено (за статусом НП), без тривоги", c3[0] == "delivered" and c3[2] is False)
+c4 = SN(np_status="Відправлення отримано. Грошовий переказ видано одержувачу.", np_code="11", status="x")
+chk("«отримано» з грошовим переказом (код 11) теж доставлено", c4[0] == "delivered")
+c5 = SN(np_status="В дорозі", np_code="4")
+chk("в дорозі (код 4): статус НП у підписі, без тривоги й без «дн.»", "НП: В дорозі" in c5[1] and c5[2] is False and "дн.)" not in c5[1])
+chk("нема даних НП → підпис і тривога як раніше (зворотна сумісність)", SN()[1].startswith("відправлено") and "НП:" not in SN()[1] and SN()[2] is False)
+# скасовані з посилкою
+k1 = SN(delivery_status="cancelled", cancelled_at="2026-11-16T19:53:24", cancel_reason="EVA статус 9", np_status="Прибув у відділення", np_code="7", np_arrived="2026-11-17 15:54:10")
+chk("СКАСОВАНЕ, але посилка ще на НП → тривога «⚠ посилка ще в НП»", k1[0] == "cancelled" and k1[2] is True and "посилка ще в НП" in k1[1])
+k2 = SN(delivery_status="cancelled", cancelled_at="2026-11-16T19:53:24", np_status="Відправлення отримано", np_code="9")
+chk("СКАСОВАНЕ, а посилку ОТРИМАНО → тривога «ПОСИЛКУ ОТРИМАНО … перевір гроші» (клас інциденту EVA 8-084428382)", k2[2] is True and "ОТРИМАНО" in k2[1])
+k3 = SN(delivery_status="cancelled", cancelled_at="2026-11-16T19:53:24", np_status="Відправлення повертається", np_code="102")
+chk("скасоване, посилка повертається — лише інформація, без тривоги", k3[2] is False and "НП: Відправлення повертається" in k3[1])
+k4 = SN(delivery_status="cancelled", cancelled_at="2026-11-16T19:53:24")
+chk("скасоване без даних НП — як раніше (без тривоги)", k4[2] is False)
+
+# payload: carry-over, підтвердження власника
+def fake_fetch(days=30, runner=None):
+    base = {"platform": "eva", "status": "cancelled", "payment_method": "prepaid", "payment_confirmed": 1, "created_at": "2026-11-13T23:54:03", "cancelled_at": "2026-11-16T19:53:24", "delivery_status": "cancelled",
+            "toysi_ttn": "20451588716656", "np_status": "Прибув у відділення", "np_code": "7", "np_arrived": "2026-11-17 15:54:10", "items": [{"code": "1", "name": "n", "qty": 1, "price": 668}]}
+    old_ship = {"platform": "prom", "internal_order_id": "prom_1", "order_id": "1", "status": "forwarded_to_supplier", "payment_method": "prepaid", "payment_confirmed": 1, "created_at": "2026-11-05T10:00:00", "forwarded_to_toysi_at": "2026-11-05T10:05:00",
+                "delivery_status": "shipped", "toysi_ttn": "2", "carry": True, "np_status": "Прибув у відділення", "np_code": "7", "np_arrived": "2026-11-13 10:00:00", "items": []}
+    old_recv = dict(old_ship, internal_order_id="prom_2", order_id="2", toysi_ttn="3", np_status="Відправлення отримано", np_code="9")
+    return {"ok": True, "generated": "2026-11-17T18:00:00", "days": days, "rows": [dict(base, internal_order_id="eva_8-1", order_id="8-1"), old_ship, old_recv]}
+
+
+orig_fetch = oa.fetch
+oa.fetch = fake_fetch
+orig_ack = oa.ACK_FILE
+with __import__("tempfile").TemporaryDirectory() as _td:
+    oa.ACK_FILE = os.path.join(_td, "none.json")
+    pl = oa.payload(7, now=NOW2)
+    ids = {r["internal_order_id"]: r for r in pl["rows"]}
+    chk("carry: стара відправлена посилка, що ще на НП, лишається в огляді з міткою carry і тривогою; стара вже ОТРИМАНА — відкидається", "prom_1" in ids and ids["prom_1"]["carry"] and ids["prom_1"]["attention"] and "prom_2" not in ids)
+    chk("скасоване з посилкою на НП без підтвердження → у summary.attention", pl["summary"]["attention"] == 2 and ids["eva_8-1"]["attention"] is True)
+    ackp = os.path.join(_td, "ack.json")
+    open(ackp, "w", encoding="utf-8").write(json.dumps({"eva_8-1": "клієнт оплатив"}))
+    oa.ACK_FILE = ackp
+    pl2 = oa.payload(7, now=NOW2)
+    e = {r["internal_order_id"]: r for r in pl2["rows"]}["eva_8-1"]
+    chk("підтверджено власником (panel_ack.json) → без тривоги, нотатка в підписі; інші тривоги лишаються", e["attention"] is False and "підтверджено власником: клієнт оплатив" in e["stage_label"] and pl2["summary"]["attention"] == 1)
+    oa.ACK_FILE = os.path.join(_td, "broken.json")
+    open(oa.ACK_FILE, "w", encoding="utf-8").write("{не json")
+    chk("битий panel_ack.json → порожньо, не падаємо", oa.load_ack() == {})
+oa.ACK_FILE = orig_ack
+oa.fetch = orig_fetch
+chk("REMOTE_SCRIPT лишається ASCII (кирилиця через stdin ssh ламається) і містить carry + НП-статус", all(ord(ch) < 128 for ch in oa.REMOTE_SCRIPT) and "carry" in oa.REMOTE_SCRIPT and "getStatusDocuments" in oa.REMOTE_SCRIPT)
 srv.shutdown(); oa.fetch = orig
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

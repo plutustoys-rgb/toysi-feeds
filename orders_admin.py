@@ -42,6 +42,43 @@ for r in c.execute("select " + ",".join(sel) + " from orders where created_at >=
         its = []
     d["items"] = [{"code": str(i.get("toysi_code", ""))[:30], "name": str(i.get("name", ""))[:100], "qty": i.get("qty"), "price": i.get("price")} for i in its if isinstance(i, dict)][:30]
     rows.append(d)
+# carry-over: orders OLDER than the chosen period that are still on the way (have a TTN, not final): the parcel may be waiting at the post office
+# (owner 17.11.2026: "the panel no longer shows orders that are still at the post office, not picked up"). Final = delivered/cancelled/returned/expired.
+CARRY_DAYS = 120
+carry_since = (datetime.datetime.now() - datetime.timedelta(days=CARRY_DAYS)).strftime("%Y-%m-%dT%H:%M:%S")
+if "toysi_ttn" in cols and "delivery_status" in cols:
+    cancel_since = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
+    q = ("select " + ",".join(sel) + " from orders where created_at < ? and toysi_ttn is not null and toysi_ttn != '' and (status is null or status != 'sandbox_test') and "
+         "((created_at >= ? and cancelled_at is null and (delivery_status is null or delivery_status not in ('delivered','cancelled','returned','expired')) and (status is null or status not like '%cancel%')) "
+         "or (created_at >= ? and (cancelled_at is not null or delivery_status = 'cancelled' or status like '%cancel%') and (delivery_status is null or delivery_status not in ('delivered','returned','expired')))) "
+         "order by created_at desc limit 300")
+    for r in c.execute(q, (since, carry_since, cancel_since)):
+        d = {k: r[k] for k in sel}
+        try:
+            its = json.loads(d.pop("items") or "[]")
+        except Exception:
+            its = []
+        d["items"] = [{"code": str(i.get("toysi_code", ""))[:30], "name": str(i.get("name", ""))[:100], "qty": i.get("qty"), "price": i.get("price")} for i in its if isinstance(i, dict)][:30]
+        d["carry"] = True
+        rows.append(d)
+# Nova Poshta status for parcels on the way (read-only batch call, public tracking; failure = no NP info, never an error)
+try:
+    import nova_poshta
+    cancel_since_np = (datetime.datetime.now() - datetime.timedelta(days=45)).strftime("%Y-%m-%dT%H:%M:%S")
+    ttns = []
+    for d in rows:
+        t = str(d.get("toysi_ttn") or "").strip()
+        if t and (d.get("delivery_status") or "") not in ("delivered", "returned", "expired") and str(d.get("created_at") or "") >= cancel_since_np:
+            ttns.append(t)
+    ttns = list(dict.fromkeys(ttns))[:150]
+    info = {}
+    for i in range(0, len(ttns), 50):
+        for x in nova_poshta._call("TrackingDocument", "getStatusDocuments", {"Documents": [{"DocumentNumber": t, "Phone": ""} for t in ttns[i:i + 50]]}) or []:
+            info[str(x.get("Number") or "")] = {"np_status": str(x.get("Status") or "")[:80], "np_code": str(x.get("StatusCode") or ""), "np_arrived": str(x.get("ActualDeliveryDate") or "")[:19], "np_scheduled": str(x.get("ScheduledDeliveryDate") or "")[:19]}
+    for d in rows:
+        d.update(info.get(str(d.get("toysi_ttn") or "").strip(), {}))
+except Exception:
+    pass
 print(json.dumps({"generated": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "days": days, "rows": rows}, ensure_ascii=True))
 '''.replace("ROWLIMIT", str(ROW_LIMIT))
 
@@ -115,7 +152,7 @@ def supplier_of(row: dict) -> str:
     return " + ".join(found) if found else "?"
 
 
-def stage(row: dict, now: datetime) -> tuple:
+def _stage_base(row: dict, now: datetime) -> tuple:
     """→ (код, підпис українською, прапорець «потребує уваги»). Лише за службовими полями orders.db.
     ЗМІШАНИЙ кошик сайту (Toysi+RT) у базі — ДВА окремі замовлення (site_order_api.split_mixed_children) з однією оплатою: неоплачений змішаний кошик у лічильнику «чекають оплати» дає 2 (одиниця = рядок orders.db)."""
     st = (row.get("status") or "")
@@ -160,6 +197,51 @@ def stage(row: dict, now: datetime) -> tuple:
     return "accepted", "прийнято" + (f" ({st})" if st else ""), False
 
 
+NP_HOLD_WARN_DAYS = 4        # безкоштовне зберігання на НП — 5 діб (налаштоване власником автоповернення): з 4-ї доби на відділенні підсвічуємо
+_FINAL_STAGES = ("delivered", "cancelled", "returned", "expired", "test", "error")
+ACK_FILE = os.environ.get("ORDERS_ADMIN_ACK_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel_ack.json"))      # {"<internal_order_id>": "нотатка власника"} — підтверджені винятки (не тривожимо); локальний файл, поза git
+
+
+def load_ack() -> dict:
+    try:
+        d = json.load(open(ACK_FILE, encoding="utf-8"))
+        return {str(k): str(v) for k, v in d.items()} if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _np_arrived_days(row: dict, now: datetime):
+    t = _parse(row.get("np_arrived"))
+    return (now - t).total_seconds() / 86400.0 if t else None
+
+
+def stage(row: dict, now: datetime) -> tuple:
+    """→ (код, підпис, прапорець «потребує уваги»). Базовий стан (_stage_base) + статус НП за ТТН (read-only трекінг, якщо є): «НП: Прибув у відділення (3,2 дн.)»; з NP_HOLD_WARN_DAYS на відділенні — прапорець уваги
+    (власник 17.11: «є замовлення ще на НП не забрані», панель мусить їх показувати навіть якщо вони старші за вибраний період — див. carry у REMOTE_SCRIPT)."""
+    code, label, attn = _stage_base(row, now)
+    np_st = str(row.get("np_status") or "").strip()
+    if np_st and code == "cancelled":
+        low = np_st.lower()
+        got = str(row.get("np_code") or "") in ("9", "10", "11") or low.startswith("відправлення отримано")
+        back = any(w in low for w in ("повертається", "відмов", "повернен"))
+        if got:
+            return code, label + f" · ⚠ ПОСИЛКУ ОТРИМАНО (НП) при скасованому замовленні — перевір гроші", True
+        if not back:
+            days = _np_arrived_days(row, now)
+            return code, label + f" · ⚠ посилка ще в НП: {np_st}" + (f" ({days:.1f} дн.)" if days is not None and "прибув" in low else ""), True
+        return code, label + f" · НП: {np_st}", attn
+    if np_st and code not in _FINAL_STAGES and (str(row.get("np_code") or "") in ("9", "10", "11") or np_st.lower().startswith("відправлення отримано")):
+        return "delivered", "доставлено (за статусом НП)" + (f" · ТТН {row['toysi_ttn']}" if row.get("toysi_ttn") else ""), False      # наш delivery_status може відставати: НП уже каже «отримано»
+    if np_st and code not in _FINAL_STAGES:
+        days = _np_arrived_days(row, now)
+        waiting = "прибув" in np_st.lower() and days is not None
+        label += f" · НП: {np_st}" + (f" ({days:.1f} дн.)" if waiting else "")
+        if waiting and days >= NP_HOLD_WARN_DAYS:
+            attn = True
+            label += " — НЕ ЗАБРАНО, скоро повернення"
+    return code, label, attn
+
+
 def summarize(rows: list, now: datetime) -> dict:
     """Лічильники: усього / по площадках / по станах / сьогодні; окремо «сайт: неоплачені». Одиниця — ЗАМОВЛЕННЯ (рядок orders.db)."""
     today = now.strftime("%Y-%m-%d")
@@ -179,6 +261,8 @@ def summarize(rows: list, now: datetime) -> dict:
     attn = []
     for r in rows:
         code, label, flag = stage(r, now)
+        if "attention" in r:                  # payload уже врахував підтвердження власника (panel_ack.json) — тривогу не перераховуємо
+            flag, label = bool(r["attention"]), r.get("stage_label") or label
         if flag and code not in ("unpaid",):
             attn.append({"platform": r.get("platform"), "id": r.get("public_number") or r.get("order_id"), "stage": code, "label": label})
     return {"total": len(rows), "by_platform": by_platform, "by_stage": by_stage, "today": today_n, "site_unpaid": site_unpaid, "site_unpaid_stale": site_unpaid_stale,
@@ -191,9 +275,19 @@ def payload(days: int = 30, runner=None, now: datetime | None = None) -> dict:
     if not d.get("ok"):
         return d
     now = now or datetime.now()
+    ack = load_ack()
     out = []
     for r in d.get("rows") or []:
+        r = dict(r)
+        note = ack.get(str(r.get("internal_order_id") or ""))
+        if note is not None:
+            r["ack"] = note
         code, label, attn = stage(r, now)
+        if note is not None:
+            label += f" · ✔ підтверджено власником: {note}"
+            attn = False
+        if r.get("carry") and code in _FINAL_STAGES and not (code == "cancelled" and attn):
+            continue          # старіше періоду й уже отримано/скасовано/повернено — для огляду не цікаве (carry показує лише ТЕ, ЩО ЩЕ В ДОРОЗІ)
         r = dict(r)
         r.update({"stage": code, "stage_label": label, "attention": attn, "total": round(total(r), 2), "supplier": supplier_of(r)})
         out.append(r)

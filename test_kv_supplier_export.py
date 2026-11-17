@@ -19,6 +19,7 @@ import stock_snapshot as ss  # noqa: E402
 from datetime import timedelta  # noqa: E402
 
 F = []
+ex.rt._alert = lambda k, t: None      # тести НЕ шлють реальних сигналів у журнал алертів/Telegram (15:03 17.11 хибні «Десктоп test_kv_supplier_export.py» у стані системи)
 
 
 def chk(n, c):

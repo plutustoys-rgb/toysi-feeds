@@ -22,8 +22,9 @@ class NovaPoshtaAPIError(Exception):
     виклик вище має повідомити про проблему з API, а не "не знайдено"."""
 
 
-def _call(model_name: str, called_method: str, method_properties: dict) -> list:
-    if not NP_API_KEY:
+def _call(model_name: str, called_method: str, method_properties: dict, api_key: str | None = None) -> list:
+    api_key = api_key or NP_API_KEY
+    if not api_key:
         raise NovaPoshtaAPIError(
             "не заданий NP_API_KEY. Безкоштовний ключ реєструється на novaposhta.ua "
             "(особистий кабінет -> Налаштування -> API). Окремий бізнес-акаунт НЕ потрібен. "
@@ -31,7 +32,7 @@ def _call(model_name: str, called_method: str, method_properties: dict) -> list:
         )
 
     payload = {
-        "apiKey": NP_API_KEY,
+        "apiKey": api_key,
         "modelName": model_name,
         "calledMethod": called_method,
         "methodProperties": method_properties,
@@ -443,6 +444,10 @@ def is_refusal(info: dict) -> bool:
 # getReturnOrdersList нашим ключем повертає реальні повернення, отримувач — наш
 # ФОП). Причина/підтип звірені живо через getReturnReasons(Subtypes). Модель і всі
 # реф-и — через env, щоб правити без деплою, якщо НП змінить довідник.
+# 🔴 КЛЮЧ ДЛЯ ПОВЕРНЕНЬ (17.11.2026, живе читання кабінету НП): ТТН Toysi лежать у кабінеті ФОП власника (контракт 1081695), а NP_API_KEY на VPS — ключ ІНШОГО акаунта («Приватна особа»),
+# тому CheckPossibilityCreateReturn/orderCargoReturn по ТТН Toysi давали «Документ не належить даному користувачу» (37 із 40 ТТН). Операції з ТТН Toysi (перевірка/створення повернення) виконуємо
+# ключем акаунта ФОП — змінна NP_FOP_API_KEY у .env VPS (ставить власник). Нема змінної → як раніше NP_API_KEY (зворотна сумісність). Довідники/трекінг/np_ttn лишаються на NP_API_KEY.
+NP_FOP_API_KEY     = os.environ.get("NP_FOP_API_KEY", "").strip()
 RETURN_MODEL       = os.environ.get("NP_RETURN_MODEL", "AdditionalServiceGeneral")
 RETURN_REASON_REF  = os.environ.get("NP_RETURN_REASON_REF",  "49754eb2-a9e1-11e3-9fa0-0050568002cf")  # «Відмова від доставки»
 RETURN_SUBTYPE_REF = os.environ.get("NP_RETURN_SUBTYPE_REF", "49754ec6-a9e1-11e3-9fa0-0050568002cf")  # «Відправник скасував доставку відправлення»
@@ -456,7 +461,7 @@ def check_return_possibility(ttn: str) -> dict:
     (напр. «Документ не належить даному користувачу») НЕ кидає — кладе в 'error',
     щоб викликач сам вирішив (лог+ескалація), а не завалив пайплайн інших замовлень."""
     try:
-        data = _call(RETURN_MODEL, "CheckPossibilityCreateReturn", {"Number": str(ttn)})
+        data = _call(RETURN_MODEL, "CheckPossibilityCreateReturn", {"Number": str(ttn)}, api_key=NP_FOP_API_KEY or None)
         return {"possible": True, "error": None, "data": data}
     except Exception as e:  # NovaPoshtaAPIError від _call при API-помилці (ловимо широко — не кидаємо вгору)
         return {"possible": False, "error": str(e), "data": None}
@@ -481,7 +486,7 @@ def create_return_order(ttn: str, note: str = "", reason_ref: str = "",
     addr = return_address_ref or RETURN_ADDRESS_REF
     if addr:
         props["ReturnAddressRef"] = addr
-    data = _call(RETURN_MODEL, "save", props)
+    data = _call(RETURN_MODEL, "save", props, api_key=NP_FOP_API_KEY or None)
     rec = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
     return {"number": rec.get("Number"), "ref": rec.get("Ref")}
 

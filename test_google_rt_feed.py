@@ -133,9 +133,9 @@ chk("extend_items: усі брами вимкнено → items без змін 
 os.environ["META_RT_IN_FEED"] = "1"
 chk("брама Meta вмикається окремо, Google лишається вимкненою", g.gate_on("meta") and not g.gate_on("google") and not g.gate_on("bing"))
 _orig = g.build_items
-g.build_items = lambda gf_: (_ for _ in ()).throw(RuntimeError("boom"))
+g.build_items = lambda gf_, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
 chk("extend_items: збій build_items НЕ валить фід — items без змін", g.extend_items(list(base), gf, "meta") == base)
-g.build_items = lambda gf_: ([{"id": "x1"}], {"candidates": 1, "included": 1})
+g.build_items = lambda gf_, **kw: ([{"id": "x1"}], {"candidates": 1, "included": 1})
 chk("extend_items: брама =1 → позиції додано", g.extend_items(list(base), gf, "meta") == base + [{"id": "x1"}])
 g.build_items = _orig
 os.environ.pop("META_RT_IN_FEED", None)
@@ -208,5 +208,73 @@ os.environ.pop("GOOGLE_RU_RT_DROPT_IN_FEED", None)
 # реальний файл перекладів: лише rt-, без записів іншого постачальника
 _real = g._load_ru_file()
 chk("rt_ru_text.json читається, усі ключі — rt-", len(_real) > 1000 and all(k.startswith("rt-") for k in _real))
+# ── KIDDISVIT (kv-, 17.11.2026): той самий конвеєр, власні брами, окремі джерела
+def kv_entry(pid, slug, **kw):
+    e = entry(pid, slug, **kw)
+    e["sup"] = "kv"
+    return e
+
+
+KV_GOOD_DESC = "Фігурка героя з відомого серіалу: добре промальована, міцна, пасує до колекції й ігор."
+kv_entries = {
+    "kv-1": kv_entry("kv-1", "k1", name="Фігурка Funko POP! Гаррі", pr=1050, cat="Фігурки героїв"),
+    "kv-2": kv_entry("kv-2", "k2", s=0),
+    "kv-3": kv_entry("kv-3", "k3", ix=0),
+    "kv-4": kv_entry("kv-4", "k4", dup=True),
+    "kv-5": kv_entry("kv-5", "k5", p="https://plutustoys.com.ua/img/kv/kv-5-1.jpg"),
+    "kv-6": kv_entry("kv-6", "k6", name="Каталка з ручкою Мишко", pr=900),
+    "kv-7": kv_entry("kv-7", "k7", pr=500),
+    "rt-1": entry("rt-1", "y1"),                                        # rt- у kv-запуску не береться
+    "kvu-9": kv_entry("kvu-9", "k9"),                                   # «Уцінка» (kvu-) у фіди не йде
+}
+kv_sup = {"kv-1": {"vendor": "Funko", "cost": 700.02, "description": KV_GOOD_DESC, "category": "Герої фільмів та серіалів", "barcode": "8930007515264"},
+          "kv-2": sup(), "kv-3": sup(), "kv-4": sup(), "kv-5": sup(), "kv-6": {"vendor": "KIDDI SMART", "cost": 600, "description": KV_GOOD_DESC, "category": "Каталки"},
+          "kv-7": {"vendor": "Funko", "cost": 495, "description": KV_GOOD_DESC, "category": "Фігурки"}, "kvu-9": sup(), "rt-1": sup()}
+kitems, kst = g.build_items(gf, entries=kv_entries, rt_sup=kv_sup, kind="kv")
+kby = {i["id"]: i for i in kitems}
+chk("kv-запуск: у фіді k1 і k6 (id = публічний slug k<id>, без «kv-»); rt-1 і kvu-9 не беруться", sorted(kby) == ["k1", "k6"] and kst["included_kv"] == 2 and kst["included_rt"] == 0 and kst["kind"] == "kv")
+ksk = kst["skip"]
+chk("kv відсів: залишок 1, не відкрито для індексу 1, тінь 1, фото 1 (старий шлях /img/kv/), збиткові 1 (k7)", ksk.get("out_of_stock") == 1 and ksk.get("not_opened_for_index") == 1 and ksk.get("shadow_duplicate_of_toysi") == 1 and ksk.get("no_image") == 1 and ksk.get("site_unprofitable") == 1)
+k1 = kby["k1"]
+chk("kv: ціна фіда = ціна картки 1050.00 UAH, посилка /product-k1.html, бренд Funko, валідний GTIN, опис постачальника", k1["price"] == "1050.00 UAH" and k1["link"] == gf.SHOP_URL + "/product-k1.html" and k1["brand"] == "Funko" and k1["gtin"] == "8930007515264" and KV_GOOD_DESC[:30] in k1["description"])
+chk("kv: «Каталка з ручкою» не відсіюється хибним правилом не-іграшок (бренд KIDDI SMART лишається)", kby["k6"]["brand"] == "KIDDI SMART")
+chk("rt-запуск не бере kv-: RT-запуск на змішаному index → лише y1", [i["id"] for i in g.build_items(gf, entries=kv_entries, rt_sup=kv_sup, kind="rt")[0]] == ["y1"])
+# витік імені постачальника KIDDISVIT
+leak_e = {"kv-1": kv_entry("kv-1", "k1", name="Фігурка від KIDDISVIT", pr=1050)}
+chk("ім'я KIDDISVIT у назві → позиція не віддається (supplier_name_leak)", g.build_items(gf, entries=leak_e, rt_sup={"kv-1": kv_sup["kv-1"]}, kind="kv")[1]["skip"].get("supplier_name_leak") == 1)
+dsc = g.scrub_description("Класна фігурка. Замовляйте на сайті kiddisvit.ua тепер. Є ще й набір.")
+chk("scrub_description: речення з доменом KIDDISVIT вирізається", "kiddisvit" not in dsc.lower() and "Класна фігурка." in dsc)
+chk("leaks: «kv-»/«kvu-» як id у значеннях ловиться, звичайні слова — ні", g.leaks("id kv-5") and g.leaks("kvu-12") and not g.leaks("Kiddi Smart набір"))
+chk("supplier_stale для kv: джерело не свіже → жодної позиції, відсів supplier_stale", g.build_items(gf, entries=kv_entries, rt_sup=kv_sup, rt_fresh=False, kind="kv")[1]["skip"].get("supplier_stale", 0) >= 1)
+# брами
+os.environ.pop("META_KV_IN_FEED", None)
+chk("брама kv вимкнена за замовчуванням і НЕ залежить від RT-брами", g.gate_on("meta", "kv") is False)
+os.environ["META_RT_IN_FEED"] = "1"
+chk("META_RT_IN_FEED=1 не вмикає kv", g.gate_on("meta", "kv") is False and g.gate_on("meta", "rt") is True)
+os.environ["META_KV_IN_FEED"] = "1"
+chk("META_KV_IN_FEED=1 вмикає kv окремо", g.gate_on("meta", "kv") is True)
+calls = []
+g.build_items = lambda gf_, **kw: (calls.append(kw.get("kind")) or ([{"id": "x_" + kw.get("kind", "rt")}], {"candidates": 1, "included": 1, "kind": kw.get("kind", "rt")}))
+r = g.extend_items(list(base), gf, "meta")
+chk("extend_items: обидві брами =1 → і RT, і KIDDISVIT додано (кожен своїм викликом)", calls == ["rt", "kv"] and r == base + [{"id": "x_rt"}, {"id": "x_kv"}])
+os.environ.pop("META_RT_IN_FEED", None)
+calls.clear()
+r2 = g.extend_items(list(base), gf, "meta")
+chk("лише KIDDISVIT-брама → додано лише kv", calls == ["kv"] and r2 == base + [{"id": "x_kv"}])
+
+
+def _boom(gf_, **kw):
+    if kw.get("kind") == "rt":
+        raise RuntimeError("rt boom")
+    return [{"id": "ok_kv"}], {"candidates": 1, "included": 1, "kind": "kv"}
+
+
+os.environ["META_RT_IN_FEED"] = "1"
+g.build_items = _boom
+chk("збій RT НЕ забирає KIDDISVIT (і навпаки): kv-позиції додано попри виняток RT", g.extend_items(list(base), gf, "meta") == base + [{"id": "ok_kv"}])
+g.build_items = _orig
+os.environ.pop("META_RT_IN_FEED", None)
+os.environ.pop("META_KV_IN_FEED", None)
+chk("supplier_path: kv → supplier_kv.json, rt → supplier_rt.json; перевизначення SUPPLIER_KV_FILE", g.supplier_path("kv").name == "supplier_kv.json" and g.supplier_path("rt").name == "supplier_rt.json")
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

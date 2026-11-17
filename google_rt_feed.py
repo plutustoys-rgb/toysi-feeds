@@ -6,7 +6,9 @@
 ПРАВИЛА (ті самі, що в Toysi-шляху build_feed_items): ціна фіда = ЦІНА КАРТКИ (index.json) — без «Price mismatch»; посилання = публічна адреса картки (`/product-<u>.html`); id у фіді = публічний slug (x…/y…), БЕЗ імені постачальника;
 фільтри: forbidden_products, FEED_EXCLUDED_CATEGORIES, UNO, ліцензійні марки (гейт/чорний/білий списки), репліки зброї, 18+, внесок за економікою сайту (ціна − закупівля − комісія − логістика > FEED_MIN_SITE_CONTRIBUTION), фото, залишок.
 ГЕЙТИ у .env VPS (власник); без них нічого не змінюється. Google, Meta і Bing — кожен за СВОЄЮ брамою (GOOGLE_/META_/BING_RT_IN_FEED=1); російський Google-фід — за окремою брамою GOOGLE_RU_RT_IN_FEED=1 і лише з готовим перекладом (rt_ru_text.json).
-НЕ ВИГАДУЄМО даних: нема джерела для бренду → «PlutusToys» (як Toysi); штрихкод — лише валідний GTIN; опис — з постачальника (очищений), інакше назва."""
+НЕ ВИГАДУЄМО даних: нема джерела для бренду → «PlutusToys» (як Toysi); штрихкод — лише валідний GTIN; опис — з постачальника (очищений), інакше назва.
+KIDDISVIT (kv-, 17.11.2026, рішення власника «додаєш їхні товари у всі фіди»): ТОЙ САМИЙ конвеєр (build_items(kind="kv")) на index.json-записах `kv-…` + supplier_kv.json; кожен фід — за СВОЄЮ брамою GOOGLE_/META_/BING_KV_IN_FEED=1 (окремо від RT);
+російський Google-фід kv НЕ отримує (нема перекладів: build_ru_items пропускає позиції без російського тексту). «Уцінка» (kvu-) у фіди не йде (префікс лише «kv-» + політика «Уцінка» не рекламується)."""
 import json
 import os
 import re
@@ -17,9 +19,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SUPPLIER_MAX_AGE_H = 72          # supplier_*.json старший за це — джерело брендів/закупівлі не свіже: фід RT цього прогону НЕ формуємо (fail-safe; решта фіда не страждає)
 PREFIXES = ("rt-",)
+KV_PREFIXES = ("kv-",)
 PHOTO_PREFIX = "https://plutustoys.com.ua/img/p/"        # фото лише з нашого шляху /img/p/<slug>-K.jpg (public_photo, build_site.py) — інакше позицію не віддаємо
-LEAK_TOKENS = ("royaltoys", "royal toys", "toysi")      # ім'я постачальника не має потрапити ні в бренд, ні в назву, ні в опис, ні в посилання, ні в id, ні в фото (рішення власника 10.11). «royal» окремо НЕ ловимо: легальні назви товарів («Royal Pony»); «rt-» — лише як id (нижче)
-_RT_ID_RX = re.compile(r"(?<![a-z0-9])rt-[0-9a-z]", re.I)
+LEAK_TOKENS = ("royaltoys", "royal toys", "toysi", "kiddisvit", "kiddi svit", "kiddi-svit")      # ім'я постачальника не має потрапити ні в бренд, ні в назву, ні в опис, ні в посилання, ні в id, ні в фото (рішення власника 10.11). «royal» окремо НЕ ловимо: легальні назви товарів («Royal Pony»); «rt-» — лише як id (нижче)
+_RT_ID_RX = re.compile(r"(?<![a-z0-9])(?:rt|kvu?)-[0-9a-z]", re.I)
 _URL_RX = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+\.(?:com|ua|net|org|in\.ua|com\.ua)\b\S*", re.I)
 _PHONE_RX = re.compile(r"\+?\d[\d\s().-]{8,}\d")
 _BAD_SENTENCE_RX = re.compile(r"накладен|післяплат|наложен|наложк|при отриманні|при получении|оплат\w* (?:при|на пошті|на поште)|менеджер|дропшип|dropship|на нашому сайті|на нашем сайте|наш сайт|royal ?toys|toysi|телефон\w*|звертайтесь|замовляйте", re.I)
@@ -53,41 +56,49 @@ def only_indexable() -> bool:
     return _env("FEED_RT_ONLY_IX", "FEED_RT_DROPT_ONLY_IX", "1") != "0"      # ТИМЧАСОВО: запасне старе ім'я, прибрати після міграції .env на VPS
 
 
-def gate_on(feed: str = "google") -> bool:
-    """Брама на КОЖЕН фід окремо: GOOGLE_/META_/BING_RT_IN_FEED=1 у .env VPS (ТИМЧАСОВО діє й старе GOOGLE_/META_/BING_RT_DROPT_IN_FEED — прибрати після міграції .env)."""
+def gate_on(feed: str = "google", kind: str = "rt") -> bool:
+    """Брама на КОЖЕН фід окремо: GOOGLE_/META_/BING_RT_IN_FEED=1 у .env VPS (ТИМЧАСОВО діє й старе GOOGLE_/META_/BING_RT_DROPT_IN_FEED — прибрати після міграції .env). KIDDISVIT (kind="kv") — власні GOOGLE_/META_/BING_KV_IN_FEED=1."""
+    if kind == "kv":
+        return os.environ.get(f"{feed.upper()}_KV_IN_FEED") == "1"
     return _env(f"{feed.upper()}_RT_IN_FEED", f"{feed.upper()}_RT_DROPT_IN_FEED") == "1"
 
 
 def extend_items(items: list, gf, feed: str = "google") -> list:
-    """Додає RT до items фіда `feed` за його брамою. Збій/вимкнено → items без змін (основний фід не страждає)."""
-    if not gate_on(feed):
-        return items
-    try:
-        extra, st = build_items(gf)
-        print(f"[{feed}] RT: " + describe(st))
-        return items + extra
-    except Exception as e:  # noqa: BLE001
-        import traceback
-        traceback.print_exc()
-        print(f"[{feed}] RT пропущено ({type(e).__name__}: {str(e)[:120]}) — фід лише з Toysi.", file=sys.stderr)
-        return items
+    """Додає RT і KIDDISVIT до items фіда `feed` — кожен за СВОЄЮ брамою. Збій/вимкнено → items без змін (основний фід не страждає; збій одного постачальника не чіпає іншого)."""
+    for kind, label in (("rt", "RT"), ("kv", "KIDDISVIT")):
+        if not gate_on(feed, kind):
+            continue
+        try:
+            extra, st = build_items(gf, kind=kind)
+            print(f"[{feed}] {label}: " + describe(st))
+            items = items + extra
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            print(f"[{feed}] {label} пропущено ({type(e).__name__}: {str(e)[:120]}) — фід без цього постачальника.", file=sys.stderr)
+    return items
 
 
 def _site_dir() -> Path:
     return Path(os.environ.get("SITE_DIR", str(HERE / "site")))
 
 
-def load_site_entries() -> dict:
-    """{id → запис index.json} лише для rt- з наявністю на сайті. Порожній dict — індекс недоступний."""
+def load_site_entries(prefixes: tuple = PREFIXES) -> dict:
+    """{id → запис index.json} лише для карток постачальника за префіксами (rt-; kv-) з наявністю на сайті. Порожній dict — індекс недоступний."""
     try:
         data = json.loads((_site_dir() / "index.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     out = {}
     for p in data if isinstance(data, list) else []:
-        if isinstance(p, dict) and str(p.get("id", "")).startswith(PREFIXES):
+        if isinstance(p, dict) and str(p.get("id", "")).startswith(prefixes):
             out[str(p["id"])] = p
     return out
+
+
+def supplier_path(kind: str = "rt") -> Path:
+    """Приватний файл постачальника (VPS): supplier_rt.json / supplier_kv.json; ті самі змінні середовища, що в експортерах (SUPPLIER_RT_FILE / SUPPLIER_KV_FILE)."""
+    return Path(os.environ.get("SUPPLIER_KV_FILE" if kind == "kv" else "SUPPLIER_RT_FILE", str(HERE / ("supplier_kv.json" if kind == "kv" else "supplier_rt.json"))))
 
 
 def _load_supplier(path: Path) -> tuple:
@@ -110,18 +121,19 @@ def _num(x):
         return None
 
 
-def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_fresh: bool = True) -> tuple:
-    """→ (items для generate_google_feed._build_xml, stats). gf — модуль generate_google_feed (функції/константи Toysi-шляху). Параметри entries/rt_sup — для тестів; None → читаємо з диска."""
-    stats = {"candidates": 0, "included": 0, "included_rt": 0, "noindex_pages_included": 0}
+def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_fresh: bool = True, kind: str = "rt") -> tuple:
+    """→ (items для generate_google_feed._build_xml, stats). gf — модуль generate_google_feed (функції/константи Toysi-шляху). Параметри entries/rt_sup — для тестів; None → читаємо з диска.
+    kind: "rt" (RoyalToys, supplier_rt.json) або "kv" (KIDDISVIT, supplier_kv.json); rt_sup — це словник постачальника ТОГО kind."""
+    stats = {"candidates": 0, "included": 0, "included_rt": 0, "included_kv": 0, "noindex_pages_included": 0, "kind": kind}
     skip = {}
 
     def no(why):
         skip[why] = skip.get(why, 0) + 1
 
     if entries is None:
-        entries = load_site_entries()
+        entries = load_site_entries(KV_PREFIXES if kind == "kv" else PREFIXES)
     if rt_sup is None:
-        rt_sup, rt_fresh = _load_supplier(HERE / "supplier_rt.json")
+        rt_sup, rt_fresh = _load_supplier(supplier_path(kind))
     if not entries:
         stats["skip"] = {"index_unavailable": 1}
         return [], stats
@@ -130,7 +142,10 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_
     licensed_rx = gf.load_licensed_marks_regex() if (licensed_gate or licensed_bl) else None
     licensed_wl = gf.load_licensed_vendor_whitelist() if (licensed_gate and gf.licensed_whitelist_on()) else frozenset()
     items, seen = [], set()
+    pfx = KV_PREFIXES if kind == "kv" else PREFIXES
     for pid, e in entries.items():
+        if not str(pid).startswith(pfx):
+            continue            # kv-запуск не бере rt- і навпаки (index.json має обидва; kvu- «Уцінка» не рекламуємо)
         stats["candidates"] += 1
         if not rt_fresh:
             no("supplier_stale")
@@ -239,7 +254,7 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_
             "licensed_whitelisted": lic_wl,
         })
         stats["included"] += 1
-        stats["included_rt"] += 1
+        stats["included_" + kind] += 1
         if e.get("ix") != 1:
             stats["noindex_pages_included"] += 1
     stats["skip"] = skip
@@ -329,7 +344,7 @@ def merge_ru_texts(russian_text: dict, items: list, path=None) -> tuple:
 
 def describe(stats: dict) -> str:
     sk = ", ".join(f"{k}={v}" for k, v in sorted((stats.get("skip") or {}).items(), key=lambda kv: -kv[1]))
-    return (f"кандидатів {stats.get('candidates', 0)}; у фіді {stats.get('included', 0)} (RT {stats.get('included_rt', 0)}); "
+    return (f"кандидатів {stats.get('candidates', 0)}; у фіді {stats.get('included', 0)} ({'KIDDISVIT' if stats.get('kind') == 'kv' else 'RT'} {stats.get('included_' + str(stats.get('kind') or 'rt'), 0)}); "
             f"з них сторінок noindex: {stats.get('noindex_pages_included', 0)}; відсів: {sk or '—'}")
 
 

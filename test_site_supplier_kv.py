@@ -108,6 +108,18 @@ r, e = load({"kv-41": dict(GOOD, images=im("kv-41"), vendor="KIDDISVIT", vendor_
              "kv-43": dict(GOOD, images=im("kv-43"), vendor="KIDDI SMART")})
 chk("vendor/vendor_code/опис з іменем постачальника чи kv- — обнулені/вирізані; назва з ним — картка не публікується; «KIDDI SMART» (окремий бренд) лишається",
     "kv-42" not in r and r["kv-41"]["vendor"] == "" and r["kv-41"]["vendor_code"] == "" and "kiddisvit" not in r["kv-41"]["description"].lower() and "kv-41" not in r["kv-41"]["description"] and r["kv-43"]["vendor"] == "KIDDI SMART")
+# обходи фільтра (повторний аудит #1694): сутності в назві, розділювачі, кирилиця/латиниця, id з розділювачем, цифри id у описі, незакриті теги
+LEAKY = ["Kiddi&#115;vit фігурка", "Фігурка Кідді Світ", "Фігурка Kiddi-Svit", "Фігурка kiddi_svit", "Фігурка Кiддiсвiт", "Фігурка КІДДІСВІТ", "Фігурка kv_12", "Фігурка KV 12", "Фігурка kvu-2"]
+r, e = load({f"kv-{60 + i}": dict(GOOD, name=n, images=im(f"kv-{60 + i}")) for i, n in enumerate(LEAKY)})
+chk(f"назва з іменем постачальника у будь-якому написанні ({len(LEAKY)} варіантів) → картка НЕ публікується: {sorted(r)}", r == {})
+r, e = load({"kv-71": dict(GOOD, images=im("kv-71"), vendor="Kiddi-Svit", vendor_code="KV 71", description="Артикул kv-501 від Кідді Світ. Добра фігурка.", name="Фігурка «Герой»"),
+             "kv-72": dict(GOOD, images=im("kv-72"), vendor="KIDDI SMART", vendor_code="KS-72", name="Фігурка KIDDI SMART")})
+chk("vendor/код у різних написаннях обнулюються; з опису вирізано ім'я й УСІ цифри id (не лишається «01»); «KIDDI SMART» лишається",
+    r["kv-71"]["vendor"] == "" and r["kv-71"]["vendor_code"] == "" and "501" not in r["kv-71"]["description"] and "01 " not in r["kv-71"]["description"] and "Світ" not in r["kv-71"]["description"] and "Добра фігурка" in r["kv-71"]["description"]
+    and r["kv-72"]["vendor"] == "KIDDI SMART" and "kv-72" in r)
+r, e = load({"kv-81": dict(GOOD, images=im("kv-81"), description="<ul><li>один<li>два</ul></b><b>жирний")})
+d81 = r["kv-81"]["description"]
+chk("опис <ul><li>один<li>два</ul></b><b>жирний → рівно по одній парі <ul>, двох <li>, одній <b>", d81.count("<ul>") == 1 and d81.count("</ul>") == 1 and d81.count("<li>") == 2 and d81.count("</li>") == 2 and d81.count("<b>") == 1 and d81.count("</b>") == 1)
 r, e = load({"kv-501": GOOD}, updated=now - timedelta(days=4))
 chk("файл старіший за 3 доби → порожньо, голосно", r == {} and "застарів" in e)
 bs.LIQPAY_LIVE = False

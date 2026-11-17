@@ -271,7 +271,7 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
         sel = selection if selection is not None else load_selection()
         idx = load_index_ids() if index_ids is None else index_ids
         ids = select_ids(products, prices, cats, sel)
-        cand, tasks, nophoto = [], [], 0
+        cand, tasks, nophoto, task_dests = [], [], 0, set()
         for sid in ids:
             pid = sid.split("-", 1)[1]
             md = sid.startswith("kvu-")
@@ -282,7 +282,8 @@ def run_once(client: KiddisvitClient | None = None, collected=None, out: Path | 
             cand.append((sid, pid, md))
             for n, url in enumerate([u for u in (p.get("images") or []) if isinstance(u, str)][:MAX_IMAGES], 1):
                 dest = img_dir / f"kv-{pid}-{n}.jpg"          # фото ділять kv-<id> і kvu-<id> (один товар)
-                if all(d != dest for _u, d in tasks):
+                if dest not in task_dests:
+                    task_dests.add(dest)
                     tasks.append((url, dest))
 
         def build_items(got):

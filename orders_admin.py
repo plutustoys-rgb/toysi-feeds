@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 
 SSH_HOST = os.environ.get("ORDERS_ADMIN_SSH_HOST", "root@45.94.157.4")
@@ -26,6 +27,7 @@ REMOTE_SCRIPT = r'''
 import sqlite3, json, sys, datetime
 days = int(sys.argv[1]) if len(sys.argv) > 1 else 30
 days = max(1, min(days, 365))
+want_np = (sys.argv[2] != "0") if len(sys.argv) > 2 else True
 c = sqlite3.connect("file:orders.db?mode=ro", uri=True)
 c.row_factory = sqlite3.Row
 cols = {r[1] for r in c.execute("pragma table_info(orders)")}
@@ -61,36 +63,44 @@ if "toysi_ttn" in cols and "delivery_status" in cols:
         d["items"] = [{"code": str(i.get("toysi_code", ""))[:30], "name": str(i.get("name", ""))[:100], "qty": i.get("qty"), "price": i.get("price")} for i in its if isinstance(i, dict)][:30]
         d["carry"] = True
         rows.append(d)
-# Nova Poshta status for parcels on the way (read-only batch call, public tracking; failure = no NP info, never an error)
-try:
-    import nova_poshta
-    cancel_since_np = (datetime.datetime.now() - datetime.timedelta(days=45)).strftime("%Y-%m-%dT%H:%M:%S")
-    ttns = []
-    for d in rows:
-        t = str(d.get("toysi_ttn") or "").strip()
-        if t and (d.get("delivery_status") or "") not in ("delivered", "returned", "expired") and str(d.get("created_at") or "") >= cancel_since_np:
-            ttns.append(t)
-    ttns = list(dict.fromkeys(ttns))[:150]
-    info = {}
-    for i in range(0, len(ttns), 50):
-        for x in nova_poshta._call("TrackingDocument", "getStatusDocuments", {"Documents": [{"DocumentNumber": t, "Phone": ""} for t in ttns[i:i + 50]]}) or []:
-            info[str(x.get("Number") or "")] = {"np_status": str(x.get("Status") or "")[:80], "np_code": str(x.get("StatusCode") or ""), "np_arrived": str(x.get("ActualDeliveryDate") or "")[:19], "np_scheduled": str(x.get("ScheduledDeliveryDate") or "")[:19]}
-    for d in rows:
-        d.update(info.get(str(d.get("toysi_ttn") or "").strip(), {}))
-except Exception:
-    pass
-print(json.dumps({"generated": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "days": days, "rows": rows}, ensure_ascii=True))
+# Nova Poshta status for parcels on the way (read-only batch call, public tracking). The result carries np_meta: a failure must NOT look like "all fine" (audit #1699).
+np_meta = {"asked": 0, "got": 0, "ok": True, "error": "", "skipped": not want_np}
+if want_np:
+    try:
+        import nova_poshta
+        cancel_since_np = (datetime.datetime.now() - datetime.timedelta(days=45)).strftime("%Y-%m-%dT%H:%M:%S")
+        cand = [d for d in rows if str(d.get("toysi_ttn") or "").strip() and (d.get("delivery_status") or "") not in ("delivered", "returned", "expired") and str(d.get("created_at") or "") >= cancel_since_np]
+        cand.sort(key=lambda d: (0 if d.get("carry") else 1))        # carry (older, easy to forget) FIRST: the limit of 150 must not eat exactly them
+        ttns = list(dict.fromkeys(str(d.get("toysi_ttn")).strip() for d in cand))[:150]
+        np_meta["asked"] = len(ttns)
+        info = {}
+        for i in range(0, len(ttns), 50):
+            try:
+                got = nova_poshta._call("TrackingDocument", "getStatusDocuments", {"Documents": [{"DocumentNumber": t, "Phone": ""} for t in ttns[i:i + 50]]}) or []
+            except Exception as e:
+                np_meta["ok"] = False
+                np_meta["error"] = type(e).__name__ + ": " + str(e)[:80].encode("ascii", "replace").decode()
+                break          # the chunks already received are kept (partial data is better than none, but np_meta says it is partial)
+            for x in got:
+                info[str(x.get("Number") or "")] = {"np_status": str(x.get("Status") or "")[:80], "np_code": str(x.get("StatusCode") or ""), "np_arrived": str(x.get("ActualDeliveryDate") or "")[:19], "np_scheduled": str(x.get("ScheduledDeliveryDate") or "")[:19]}
+        np_meta["got"] = len(info)
+        for d in rows:
+            d.update(info.get(str(d.get("toysi_ttn") or "").strip(), {}))
+    except Exception as e:
+        np_meta["ok"] = False
+        np_meta["error"] = type(e).__name__
+print(json.dumps({"generated": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "days": days, "np_meta": np_meta, "rows": rows}, ensure_ascii=True))
 '''.replace("ROWLIMIT", str(ROW_LIMIT))
 
 
-def fetch(days: int = 30, runner=None) -> dict:
+def fetch(days: int = 30, runner=None, with_np: bool = True) -> dict:
     """→ {"ok": True, "generated", "days", "rows": [...]} або {"ok": False, "error": "..."}. runner — для тестів (замінює subprocess.run)."""
     try:
         days = max(1, min(int(days), 365))
     except (TypeError, ValueError):
         days = 30
     cmd = ["ssh", "-i", SSH_KEY, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15", SSH_HOST,
-           f"cd /opt/plutustoys && venv/bin/python3 - {days}"]
+           f"cd /opt/plutustoys && venv/bin/python3 - {days} {1 if with_np else 0}"]
     try:
         r = (runner or subprocess.run)(cmd, input=REMOTE_SCRIPT.encode("ascii"), capture_output=True, timeout=SSH_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
@@ -210,9 +220,12 @@ def load_ack() -> dict:
         return {}
 
 
+_NP_NO_PARCEL = ("1", "2", "3", "105", "106", "107")      # «очікує надходження від відправника», «видалено», «номер не знайдено», … — посилки в НП фактично нема: не тривога
+
+
 def _np_arrived_days(row: dict, now: datetime):
     t = _parse(row.get("np_arrived"))
-    return (now - t).total_seconds() / 86400.0 if t else None
+    return max(0.0, (now - t).total_seconds() / 86400.0) if t else None
 
 
 def stage(row: dict, now: datetime) -> tuple:
@@ -223,7 +236,7 @@ def stage(row: dict, now: datetime) -> tuple:
     if np_st and code == "cancelled":
         low = np_st.lower()
         got = str(row.get("np_code") or "") in ("9", "10", "11") or low.startswith("відправлення отримано")
-        back = any(w in low for w in ("повертається", "відмов", "повернен"))
+        back = any(w in low for w in ("повертається", "відмов", "повернен")) or str(row.get("np_code") or "") in _NP_NO_PARCEL
         if got:
             return code, label + f" · ⚠ ПОСИЛКУ ОТРИМАНО (НП) при скасованому замовленні — перевір гроші", True
         if not back:
@@ -269,11 +282,29 @@ def summarize(rows: list, now: datetime) -> dict:
             "attention": len(attn), "attention_rows": attn[:12]}
 
 
-def payload(days: int = 30, runner=None, now: datetime | None = None) -> dict:
+NP_CACHE_TTL_SEC = 1800          # панель автооновлюється кожні 5 хв, а НП-трекінг — публічний API з лімітом: свіжі дані НП беремо раз на 30 хв або за явним кліком (force)
+_np_cache = {"ts": 0.0, "info": {}}
+
+
+def payload(days: int = 30, runner=None, now: datetime | None = None, force_np: bool = False) -> dict:
     """Те, що віддає /api/orders: рядки з обчисленими полями (стан, сума) + лічильники."""
-    d = fetch(days, runner=runner)
+    use_cache = (not force_np) and bool(_np_cache["info"]) and (time.time() - _np_cache["ts"] < NP_CACHE_TTL_SEC)
+    d = fetch(days, runner=runner, with_np=not use_cache)
     if not d.get("ok"):
         return d
+    meta = d.get("np_meta") or {}
+    if not use_cache and meta.get("ok") and meta.get("got"):
+        _np_cache["info"] = {str(r.get("toysi_ttn")): {k: r[k] for k in ("np_status", "np_code", "np_arrived", "np_scheduled") if k in r} for r in d.get("rows") or [] if r.get("np_status")}
+        _np_cache["ts"] = time.time()
+    if use_cache:
+        for r in d.get("rows") or []:
+            r.update(_np_cache["info"].get(str(r.get("toysi_ttn")), {}))
+        meta = {"ok": True, "cached": True, "asked": 0, "got": len(_np_cache["info"])}
+    np_warning = ""
+    if not meta.get("ok", True):
+        np_warning = f"дані НП недоступні ({meta.get('error') or '?'}): статуси «не забрано/отримано» не показано — не вважати, що все гаразд"
+    elif meta.get("asked") and meta.get("got", 0) < meta["asked"]:
+        np_warning = f"НП віддала статус лише для {meta.get('got', 0)} із {meta['asked']} посилок"
     now = now or datetime.now()
     ack = load_ack()
     out = []
@@ -291,7 +322,9 @@ def payload(days: int = 30, runner=None, now: datetime | None = None) -> dict:
         r = dict(r)
         r.update({"stage": code, "stage_label": label, "attention": attn, "total": round(total(r), 2), "supplier": supplier_of(r)})
         out.append(r)
-    return {"ok": True, "generated": d.get("generated"), "days": d.get("days"), "rows": out, "summary": summarize(out, now)}
+    summ = summarize(out, now)
+    summ["np_warning"] = np_warning
+    return {"ok": True, "generated": d.get("generated"), "days": d.get("days"), "rows": out, "summary": summ}
 
 
 if __name__ == "__main__":

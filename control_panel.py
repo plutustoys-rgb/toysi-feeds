@@ -363,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200 if ok else 500, {"ok": ok, "msg": msg})
         if path == "/api/orders":        # огляд замовлень (власник 10.11.2026): читальний ssh-запит до orders.db на VPS; ПІБ/телефон лише для цієї локальної сторінки
             import orders_admin
-            res = orders_admin.payload(body.get("days") or 30)
+            res = orders_admin.payload(body.get("days") or 30, force_np=bool(body.get("force")))
             return self._json(200 if res.get("ok") else 502, res)
         if path == "/api/term":          # термінал НЕ прив'язаний до агента (машинна оболонка)
             cmd = (body.get("cmd") or "").strip()
@@ -412,7 +412,7 @@ button.ghost{background:#222a33;color:var(--tx)}button:disabled{opacity:.5;curso
   <div class=row style="margin:0 0 8px"><select id=odays class=tinp style="width:auto"><option value=1>1 день</option><option value=7 selected>7 днів</option><option value=30>30 днів</option><option value=90>90 днів</option></select>
     <select id=oplat class=tinp style="width:auto" onchange=renderOrders()><option value="">усі площадки</option><option>site</option><option>prom</option><option>rozetka</option><option>eva</option></select>
     <input id=oq class=tinp style="width:220px" placeholder="пошук: №, ім'я, телефон, ТТН" oninput=renderOrders()>
-    <button onclick=loadOrders()>↻ завантажити замовлення</button><span class="small mut" id=ogen></span></div>
+    <button onclick=loadOrders(true)>↻ завантажити замовлення</button><span class="small mut" id=ogen></span></div>
   <div id=oalert></div>
   <div id=osum class="small" style="margin-bottom:8px"></div>
   <div class=scroll style="max-height:460px"><table id=otab style="width:100%;border-collapse:collapse;font-size:12.5px"></table></div>
@@ -445,9 +445,9 @@ async function refresh(){
   const d=await jget('/api/digest');$('#digest').textContent=d.text;
 }
 let ORD=null;
-async function loadOrders(){
+async function loadOrders(force){
   $('#ogen').textContent=' завантажую…';
-  try{const r=await jpost('/api/orders',{days:+$('#odays').value});
+  try{const r=await jpost('/api/orders',{days:+$('#odays').value,force:force===true});
     if(!r.ok){$('#ogen').textContent=' помилка: '+(r.error||'?');unknownOrders();return}
     ORD=r;$('#ogen').textContent=' знято '+r.generated+' (VPS)';renderOrders();
   }catch(e){$('#ogen').textContent=' помилка: '+e;unknownOrders()}
@@ -460,7 +460,8 @@ function renderOrders(){
   const pn=Object.entries(S.by_platform).map(([k,v])=>k+': '+v).join(' · ');
   const td=Object.entries(S.today).map(([k,v])=>k+': '+v).join(' · ')||'0';
   const AT=(S.attention_rows||[]).map(a=>'<div>🔴 '+esc(a.platform)+' '+esc(String(a.id))+' — '+esc(a.label)+'</div>').join('');
-  $('#oalert').innerHTML=S.attention?'<div style="border:2px solid var(--err);border-radius:8px;padding:8px 10px;margin:6px 0;color:var(--err)"><b>⚠ Замовлення, що потребують уваги: '+S.attention+'</b>'+AT+'</div>':'';
+  const NPW=S.np_warning?'<div style="border:2px solid var(--warn);border-radius:8px;padding:6px 10px;margin:6px 0;color:var(--warn)"><b>⚠ '+esc(S.np_warning)+'</b></div>':'';
+  $('#oalert').innerHTML=NPW+(S.attention?'<div style="border:2px solid var(--err);border-radius:8px;padding:8px 10px;margin:6px 0;color:var(--err)"><b>⚠ Замовлення, що потребують уваги: '+S.attention+'</b>'+AT+'</div>':'');
   $('#osum').innerHTML='<b>Усього за період: '+S.total+'</b> ('+esc(pn)+') · <b>сьогодні:</b> '+esc(td)
     +' · сайт: <b>чекають оплати '+S.site_unpaid+'</b>'+(S.site_unpaid_stale?' (<span style="color:var(--err)">зависли: '+S.site_unpaid_stale+'</span>)':'');
   const rows=ORD.rows.filter(r=>(!pl||r.platform===pl)&&(!q||JSON.stringify([r.public_number,r.order_id,r.customer_name,r.phone,r.toysi_ttn,r.toysi_order_id]).toLowerCase().includes(q)));

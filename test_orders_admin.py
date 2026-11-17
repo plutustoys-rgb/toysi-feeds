@@ -130,7 +130,7 @@ def runner_ok(cmd, **kw):
     seen["cmd"], seen["input"] = cmd, kw.get("input")
     return R(0, json.dumps({"generated": "2026-11-10T15:00:00", "days": 7, "rows": [{"platform": "site", "created_at": "2026-11-10T07:27:15", "status": "x", "payment_method": "prepaid", "payment_confirmed": 0, "items": []}]}).encode())
 ok = oa.payload("7; rm -rf /", runner=runner_ok, now=NOW)
-chk("fetch: успіх, ін'єкція у days неможлива (шлях до числа 30), BatchMode", ok.get("ok") and seen["cmd"][-1].endswith("python3 - 30") and "BatchMode=yes" in seen["cmd"])
+chk("fetch: успіх, ін'єкція у days неможлива (шлях до числа 30), BatchMode", ok.get("ok") and seen["cmd"][-1].endswith("python3 - 30 1") and "BatchMode=yes" in seen["cmd"])
 chk("payload: стан і сума обчислені, лічильники є", ok["rows"][0]["stage"] == "unpaid" and ok["summary"]["site_unpaid"] == 1)
 chk("fetch: ssh код 255 → ok False з текстом", oa.fetch(7, runner=lambda c, **k: R(255, b"", b"Permission denied"))["ok"] is False)
 def to(cmd, **kw): raise subprocess.TimeoutExpired(cmd, 1)
@@ -141,7 +141,7 @@ chk("fetch: не-JSON → ok False", oa.fetch(7, runner=lambda c, **k: R(0, b"ga
 import control_panel as cp  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
 orig = oa.fetch
-oa.fetch = lambda days=30, runner=None: json.loads(json.dumps({"ok": True, "generated": "G", "days": days, "rows": []}))
+oa.fetch = lambda days=30, runner=None, with_np=True: json.loads(json.dumps({"ok": True, "generated": "G", "days": days, "rows": []}))
 srv = ThreadingHTTPServer(("127.0.0.1", 0), cp.Handler)
 port = srv.server_address[1]
 threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -188,7 +188,7 @@ k4 = SN(delivery_status="cancelled", cancelled_at="2026-11-16T19:53:24")
 chk("скасоване без даних НП — як раніше (без тривоги)", k4[2] is False)
 
 # payload: carry-over, підтвердження власника
-def fake_fetch(days=30, runner=None):
+def fake_fetch(days=30, runner=None, with_np=True):
     base = {"platform": "eva", "status": "cancelled", "payment_method": "prepaid", "payment_confirmed": 1, "created_at": "2026-11-13T23:54:03", "cancelled_at": "2026-11-16T19:53:24", "delivery_status": "cancelled",
             "toysi_ttn": "20451588716656", "np_status": "Прибув у відділення", "np_code": "7", "np_arrived": "2026-11-17 15:54:10", "items": [{"code": "1", "name": "n", "qty": 1, "price": 668}]}
     old_ship = {"platform": "prom", "internal_order_id": "prom_1", "order_id": "1", "status": "forwarded_to_supplier", "payment_method": "prepaid", "payment_confirmed": 1, "created_at": "2026-11-05T10:00:00", "forwarded_to_toysi_at": "2026-11-05T10:05:00",
@@ -218,6 +218,57 @@ with __import__("tempfile").TemporaryDirectory() as _td:
 oa.ACK_FILE = orig_ack
 oa.fetch = orig_fetch
 chk("REMOTE_SCRIPT лишається ASCII (кирилиця через stdin ssh ламається) і містить carry + НП-статус", all(ord(ch) < 128 for ch in oa.REMOTE_SCRIPT) and "carry" in oa.REMOTE_SCRIPT and "getStatusDocuments" in oa.REMOTE_SCRIPT)
+# --- аудит #1699: carry першими, збій НП не мовчить, кеш НП, коди «посилки нема»
+_seen0 = {}
+
+
+def _runner0(cmd, **kw):
+    _seen0["c"] = cmd
+    return R(0, b'{"rows": []}')
+
+
+orig(7, runner=_runner0, with_np=False)
+chk("fetch без НП: останній аргумент ssh-команди 0 (панель-автооновлення не смикає НП)", _seen0["c"][-1].endswith("python3 - 7 0"))
+rs = oa.REMOTE_SCRIPT
+chk("віддалений скрипт: carry сортується першим у списку ТТН перед лімітом 150, np_meta віддається, часткові чанки зберігаються", 'cand.sort(key=lambda d: (0 if d.get("carry") else 1))' in rs and '"np_meta": np_meta' in rs and "break" in rs and 'want_np = (sys.argv[2] != "0")' in rs)
+k5 = SN(delivery_status="cancelled", cancelled_at="2026-11-16T19:53:24", np_status="Видалено", np_code="2")
+k6 = SN(delivery_status="cancelled", cancelled_at="2026-11-16T19:53:24", np_status="Номер не знайдено", np_code="3")
+k7 = SN(delivery_status="cancelled", cancelled_at="2026-11-16T19:53:24", np_status="Нова Пошта очікує надходження від відправника", np_code="1")
+chk("скасоване + НП коди 1/2/3 («посилки в НП нема») → без тривоги (хибні спрацювання з аудиту)", not (k5[2] or k6[2] or k7[2]))
+chk("дата прибуття в майбутньому → дні не від'ємні", "-" not in SN(np_status="Прибув у відділення", np_code="7", np_arrived="2026-11-20 12:00:00")[1].split("НП:")[1])
+
+calls = []
+
+
+def np_fetch(days=30, runner=None, with_np=True, _meta=None):
+    calls.append(with_np)
+    rows = [{"platform": "prom", "internal_order_id": "p1", "order_id": "1", "status": "forwarded_to_supplier", "payment_method": "prepaid", "payment_confirmed": 1, "created_at": "2026-11-12T10:00:00",
+             "forwarded_to_toysi_at": "2026-11-12T10:05:00", "delivery_status": "shipped", "toysi_ttn": "111", "items": []}]
+    meta = {"ok": True, "asked": 1, "got": 0} if with_np else {"skipped": True}
+    if with_np and _meta is None:
+        rows[0].update({"np_status": "Прибув у відділення", "np_code": "7", "np_arrived": "2026-11-16 12:00:00"})
+        meta = {"ok": True, "asked": 1, "got": 1}
+    elif with_np:
+        meta = _meta
+    return {"ok": True, "generated": "G", "days": days, "np_meta": meta, "rows": rows}
+
+
+oa.fetch = np_fetch
+oa._np_cache["info"], oa._np_cache["ts"] = {}, 0.0
+p1 = oa.payload(7, now=NOW2)
+p2 = oa.payload(7, now=NOW2)
+chk("кеш НП: перший виклик питає НП, другий (автооновлення) — ні, але статус НП у рядку лишається", calls == [True, False] and "НП: Прибув у відділення" in p2["rows"][0]["stage_label"])
+p3 = oa.payload(7, now=NOW2, force_np=True)
+chk("force (клік) → знову питаємо НП", calls[-1] is True)
+oa.fetch = lambda days=30, runner=None, with_np=True: np_fetch(days, runner, with_np, _meta={"ok": False, "asked": 5, "got": 0, "error": "NovaPoshtaAPIError: To many requests"})
+oa._np_cache["info"], oa._np_cache["ts"] = {}, 0.0
+p4 = oa.payload(7, now=NOW2, force_np=True)
+chk("збій НП → у summary.np_warning є текст «дані НП недоступні» (не «все гаразд»)", "недоступні" in p4["summary"]["np_warning"] and "To many requests" in p4["summary"]["np_warning"])
+oa.fetch = lambda days=30, runner=None, with_np=True: np_fetch(days, runner, with_np, _meta={"ok": True, "asked": 5, "got": 3})
+oa._np_cache["info"], oa._np_cache["ts"] = {}, 0.0
+chk("НП віддала статус лише для 3 з 5 → попередження про неповні дані", "3 із 5" in oa.payload(7, now=NOW2, force_np=True)["summary"]["np_warning"])
+oa.fetch = orig_fetch
+
 srv.shutdown(); oa.fetch = orig
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -337,6 +337,7 @@ gmc_service_account*.json
 /supplier_rt.json.tmp
 /supplier_kv.json
 /indexnow_state.json
+/panel_ack.json
 /indexnow_state.json.tmp
 /supplier_kv.json.tmp
 /site/img/kv/

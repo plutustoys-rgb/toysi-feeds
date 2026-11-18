@@ -366,6 +366,56 @@
       res.innerHTML='<div class="empty" style="padding:40px 0">Не вдалося завантажити пошук. Перевірте звʼязок і спробуйте ще раз.</div>';
     });
   }
+  // Сторінка всіх результатів пошуку: search.html?q=… (noindex). Enter або «Готово» в оверлеї ведуть сюди; той самий пошук (токени AND, бренди), усі збіги з «Показати ще», сортування.
+  function goSearchPage(v){
+    v=String(v==null?"":v).trim();
+    if(v.length<2 || !searchTokens(v).length) return false;
+    location.href="search.html?q="+encodeURIComponent(v);
+    return true;
+  }
+  function initSearchPage(){
+    var root=document.getElementById("search-page");
+    if(!root) return;
+    var inp=document.getElementById("sp-q"), h1=document.getElementById("sp-h1"), meta=document.getElementById("sp-meta"),
+        grid=document.getElementById("sp-grid"), moreWrap=document.getElementById("sp-more-wrap"), moreBtn=document.getElementById("sp-more");
+    var m=(location.search||"").match(/[?&]q=([^&#]*)/), q="";
+    try{ q=m ? decodeURIComponent(m[1].replace(/\+/g," ")) : ""; }catch(e){ q=m ? m[1] : ""; }
+    q=q.trim();
+    if(inp) inp.value=q;
+    try{ document.title=(q ? "Пошук: "+q : "Пошук")+" — PlutusToys"; }catch(e){}
+    var PER=48, shown=PER, sort="rec", matches=[];
+    function note(html){ if(meta) meta.innerHTML=html; if(grid) grid.innerHTML=""; if(moreWrap) moreWrap.hidden=true; }
+    if(q.length<2){ note('<p class="empty">Введіть у рядок вище щонайменше 2 символи.</p>'); return; }
+    var toks=searchTokens(q);
+    if(!toks.length){ note('<p class="empty">Введіть слово для пошуку.</p>'); return; }
+    if(h1) h1.textContent="Пошук: «"+q+"»";
+    function render(){
+      if(!matches.length){ note('<p class="empty">Нічого не знайдено за «'+esc(q)+'». Спробуйте інше слово або <a href="catalog.html">перегляньте каталог</a>.</p>'); return; }
+      var all=sortedMatches(matches, sort), out=all.slice(0, shown);
+      meta.innerHTML='<div class="sr-meta"><span>Знайдено '+matches.length+(out.length<matches.length ? ', показано '+out.length : '')+'</span><span class="sr-sort">'+
+        [["rec","Рекомендовані"],["cheap","Дешевші"],["dear","Дорожчі"]].map(function(x){
+          return '<button type="button" data-sp-sort="'+x[0]+'"'+(sort===x[0]?' class="on"':'')+'>'+x[1]+'</button>';
+        }).join("")+'</span></div>';
+      grid.innerHTML=out.map(catCard).join("");
+      moreWrap.hidden = out.length>=matches.length;
+    }
+    if(meta) meta.addEventListener("click", function(e){ var b=e.target.closest("[data-sp-sort]"); if(b){ e.preventDefault(); sort=b.getAttribute("data-sp-sort"); shown=PER; render(); } });
+    if(moreBtn) moreBtn.addEventListener("click", function(){ shown+=PER; render(); });
+    note('<p class="empty">Шукаємо…</p>');
+    function run(){
+      ensureIndex(function(data){
+        var all=[];
+        for(var i=0;i<data.length;i++){
+          var p=data[i];
+          if(p._nn===undefined) p._nn=buildHay(p);
+          if(searchMatch(p._nn, toks)) all.push(p);
+        }
+        matches=all; render();
+        if(rtState!==2) ensureRt(run);   // ще не довантажено RoyalToys: щойно прийде — той самий запит ще раз
+      }, function(){ note('<p class="empty">Не вдалося завантажити пошук. Перевірте звʼязок і спробуйте ще раз.</p>'); });
+    }
+    run();
+  }
   function esc(s){ return String(s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }   // ' теж: назви в data-add='…' (аудит #691: «М'яка іграшка» ламала кнопку й давала ін'єкцію атрибута)
 
   // ── Каталог: сортування + фільтри (клієнтом з index.json, весь каталог) ──
@@ -873,7 +923,7 @@
       var sc=e.target.closest(".sku-copy");
       if(sc){ e.preventDefault(); copySku(sc); return; }
       if(e.target.closest("#open-search")){ e.preventDefault(); openSearch(); return; }
-      if(e.target.closest("#close-search")){ e.preventDefault(); closeSearch(); return; }
+      if(e.target.closest("#close-search")){ e.preventDefault(); var oi=document.querySelector("#search-overlay input"); if(oi && goSearchPage(oi.value)) return; closeSearch(); return; }   // «Готово» з набраним запитом (≥2 символи) = на сторінку всіх результатів; порожньо — закрити
       var ov=document.getElementById("search-overlay");
       if(ov && ov.classList.contains("on")){
         if(e.target===ov){ closeSearch(); return; }   // клік по затемненню за панеллю (не по самій панелі)
@@ -901,6 +951,7 @@
     });
 
     var so=document.querySelector("#search-overlay input");
+    if(so){ so.addEventListener("keydown", function(e){ if((e.key==="Enter" || e.keyCode===13) && goSearchPage(so.value)) e.preventDefault(); }); }   // Enter = сторінка з усіма результатами (власник 18.11: «нічого не відбувається»)
     if(so){ var sTimer=null; so.addEventListener("input", function(){ clearTimeout(sTimer); sTimer=setTimeout(function(){ runSearch(so.value); }, 200); }); }   // debounce 200 мс: не перераховуємо 21 тис. на кожне натискання
 
     renderCart();
@@ -910,6 +961,7 @@
     initCheckout();
     initNpAutocomplete();
     initCatalog();
+    initSearchPage();
     initHomeCarousel();
     initListTracking();
     initNaboryChips();

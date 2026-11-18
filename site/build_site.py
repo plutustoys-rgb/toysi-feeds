@@ -4880,7 +4880,7 @@ def _ov_faq_html(ov):
 SELECTION_TEXTS_FILE = os.path.join(OUT, "selection_pages.json")
 SELECTION_MIN_ITEMS, SELECTION_MAX_ITEMS = 12, 48
 SELECTION_FAQ_MIN, SELECTION_FAQ_MAX = 3, 5
-_SEL_KOSA_RX = re.compile(r"(?<!\w)кос(?:а|у|ою|ої|ій|і|ий|ого)?\.?\s*(?:лін|з\s*доп)|допоміжн", re.I)   # аудит #1726: «космос лінія» не ловимо, «кос. лінія» ловимо
+_SEL_KOSA_RX = re.compile(r"(?<!\w)кос(?:а|у|ою|ої|ій|і|ий|ого|и|их|им|ими|е)?\.?\s*(?:лін|з\s*доп)|допоміжн", re.I)   # аудит #1726: «космос лінія» не ловимо, «кос. лінія» ловимо
 SELECTION_PAGES = (
     ("zoshyty-u-kosu-liniiu", "Зошити в косу лінію", "Зошити в косу лінію та з допоміжною лінією — купити | PlutusToys", "zoshyty", "Зошити",
      lambda p: "зошит" in (p.get("name") or "").lower() and bool(_SEL_KOSA_RX.search(p.get("name") or ""))),

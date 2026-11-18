@@ -1459,9 +1459,16 @@ def _maybe_add_kv_offers(root: ET.Element, catalog: dict) -> ET.Element:
     import copy
     try:
         import kv_eva
-        if not kv_eva.gate_on():
+        mode = kv_eva.gate_mode()
+        if not mode:
             return root
         me = sys.modules[__name__]
+        if mode == "deactivate":                                # АВАРІЙНЕ вимкнення: усі колись додані kv-картки → available=false; свіжість постачальника/відбору не потрібна (заглушки зі знімка)
+            work = copy.deepcopy(root)
+            sel0 = kv_eva.load_selection() or {}
+            st = kv_eva.append_kv_offers(work, me, {"items": {}, "valid_ids": sel0.get("valid_ids") or []}, kv_eva.load_supplier(), catalog, deactivate_all=True)
+            print(f"[EVA] KIDDISVIT АВАРІЙНО вимкнено (EVA_KV_IN_FEED=deactivate): {st}")
+            return work
         if not kv_eva.supplier_fresh():
             print("[EVA] KV: supplier_kv.json застарів (>6 год) — KIDDISVIT у цей фід НЕ додано (EVA лишає попередній стан).", file=sys.stderr)
             return root

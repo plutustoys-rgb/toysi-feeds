@@ -264,6 +264,26 @@ pz = ids_of(rootp2).get("kv-71")
 chk("заглушка деактивації: ціна зі знімка з копійками (124.66), а не округлена гривня і не ціна сайту 9876", pz is not None and pz.get("available") == "false" and pz.findtext("price") == "124.66")
 kv_eva.LISTED_FILE.unlink(missing_ok=True)
 
+# ---- аварійне вимкнення EVA_KV_IN_FEED=deactivate ----
+for val, want in (("1", "1"), ("deactivate", "deactivate"), (" DEACTIVATE ", "deactivate"), ("0", ""), ("", ""), ("yes", "")):
+    os.environ["EVA_KV_IN_FEED"] = val
+    if kv_eva.gate_mode() != want:
+        chk(f"gate_mode({val!r}) == {want!r}", False)
+chk("gate_mode: «1»/«deactivate» (регістр і пробіли ігноруються); 0/порожньо/інше → вимкнено; gate_on лише для «1»", True)
+os.environ["EVA_KV_IN_FEED"] = "deactivate"
+chk("gate_on() для «deactivate» = False (нових карток не додаємо)", not kv_eva.gate_on())
+snap_a = {"cat": EV, "catname": "Фігурки", "name": "Фігурка А Модель 81", "price": 150.0, "vendor": "TestBrand", "pics": ["https://plutustoys.com.ua/img/kv/kv-81-1.jpg"], "desc": DESC}
+kv_eva.LISTED_FILE.write_text(json.dumps({"v": 1, "listed": {"kv-81": snap_a, "kv-82": dict(snap_a, name="Фігурка Б Модель 82")}}), encoding="utf-8")
+kv_eva.SUPPLIER_FILE.write_text(json.dumps({"updated": (datetime.now().astimezone() - timedelta(hours=40)).isoformat(), "items": {"kv-81": item(name="Фігурка А Модель 81"), "kv-83": item(name="Новий Модель 83")}}), encoding="utf-8")   # постачальник ЗАСТАРІВ: на аварійне вимкнення це не впливає
+rootk = base_root()
+rootk2 = ge._maybe_add_kv_offers(rootk, catalog)
+idk = ids_of(rootk2)
+chk("deactivate: усі колись додані kv (81, 82) віддаються available=false stock 0 зі знімком (ціна 150.00, категорія, бренд); нових (83) нема; вхідне дерево не змінене", rootk2 is not rootk and set(i for i in idk if i.startswith("kv-")) == {"kv-81", "kv-82"} and all(idk[i].get("available") == "false" and idk[i].findtext("stock_quantity") == "0" and idk[i].findtext("price") == "150.00" and idk[i].findtext("categoryId") == EV for i in ("kv-81", "kv-82")) and "kv-81" not in ids_of(rootk))
+os.environ["EVA_KV_IN_FEED"] = ""
+chk("брама порожня → дерево те саме (kv у фіді нема взагалі)", ge._maybe_add_kv_offers(rootk, catalog) is rootk)
+os.environ.pop("EVA_KV_IN_FEED", None)
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+
 if F:
     print("\nFAIL:", len(F))
     sys.exit(1)

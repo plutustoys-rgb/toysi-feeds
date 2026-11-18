@@ -1,0 +1,31 @@
+{
+ "rozmalovky-novorichni": {
+  "sheets": [
+   {
+    "id": "plutus-yalynka-rozmalovka",
+    "title": "Плутус прикрашає ялинку",
+    "alt": "Розмальовка: Плутус прикрашає ялинку"
+   },
+   {
+    "id": "plutus-podarunky-rozmalovka",
+    "title": "Плутус із новорічними подарунками",
+    "alt": "Розмальовка: Плутус із новорічними подарунками"
+   },
+   {
+    "id": "plutus-snihovyk-rozmalovka",
+    "title": "Плутус і сніговик",
+    "alt": "Розмальовка: Плутус ліпить сніговика"
+   },
+   {
+    "id": "plutus-shapka-mykolaia-rozmalovka",
+    "title": "Плутус у шапці Миколая",
+    "alt": "Розмальовка: Плутус у новорічній шапці"
+   },
+   {
+    "id": "plutus-snizhynky-rozmalovka",
+    "title": "Плутус ловить сніжинки",
+    "alt": "Розмальовка: Плутус ловить сніжинки"
+   }
+  ]
+ }
+}

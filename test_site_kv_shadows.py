@@ -119,6 +119,14 @@ chk("kv-603 — звичайна, ціль для rt", canon("product-k603.html"
 chk("kv-604 (dup_of Toysi 6) — тінь Toysi 6", canon("product-k604.html") == "product-6.html")
 chk("rt-701 → kv-603: тінь KIDDISVIT, canonical product-k603.html (публічна адреса), noindex", canon("product-rt-701.html" if not bs.PUBLIC_IDS_LIVE else "product-y701.html") == "product-k603.html")
 chk("rt-702 → kv-604 (сама тінь Toysi 6): canonical одразу product-6.html — без ланцюжка rt → kv → Toysi", canon("product-rt-702.html") == "product-6.html")
+def twin_ok(fn, href):
+    body = page(fn).split("<footer")[0]
+    return "data-add=" not in body and f'href="{href}">Перейти до товару' in body
+
+
+chk("тіні (rt→kv, ланцюжок rt→kv→Toysi, rt→Toysi, kv→Toysi): нема data-add/ціни, кнопка «Перейти до товару» веде на кінцеву картку",
+    twin_ok("product-rt-701.html" if not bs.PUBLIC_IDS_LIVE else "product-y701.html", "product-k603.html") and twin_ok("product-rt-702.html", "product-6.html")
+    and twin_ok("product-rt-704.html", "product-7.html") and twin_ok("product-rt-707.html", "product-8.html") and twin_ok("product-k601.html", "product-5.html") and twin_ok("product-k604.html", "product-6.html"))
 chk("rt-703 (ціль kv-999 нема) — звичайна: canonical на себе, не тінь, в index-rt.json", canon("product-rt-703.html") == "product-rt-703.html" and "rt-703" in irt)
 chk("rt-704 (і dup_of Toysi 7, і kv_dup_of) — пріоритет Toysi: canonical product-7.html", canon("product-rt-704.html") == "product-7.html")
 chk("rt-705 (kv-605 вичерпана) і rt-706 (kv_dup_of сміттєве) — звичайні", canon("product-rt-705.html") == "product-rt-705.html" and canon("product-rt-706.html") == "product-rt-706.html" and {"rt-705", "rt-706"} <= irt)

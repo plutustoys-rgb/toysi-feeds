@@ -1255,10 +1255,12 @@ def build():
     # сторінки подарунків (SEO 15.11): план (добірки + наявність тексту) визначаємо ДО запису сторінок, щоб футер усіх сторінок знав, чи є хаб
     _gift_plan = gift_plan([p for p in prods if not p.get("rt")])
     GIFT_BUILT[:] = [(s, h, lb) for s, h, lb, _r, _i in _gift_plan]
-    _porady = {s: v for s, v in _load_porady().items() if BRAND_PAGES_LIVE or s not in BRAND_FOR_PORADY}   # статті про бренди — лише разом зі сторінками брендів (ворота SITE_BRAND_PAGES_LIVE=1)
-    GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
-    _brand_plan = brand_plan(prods)   # сторінки брендів (SEO 17.11) — за воротами SITE_BRAND_PAGES_LIVE=1; план ДО запису сторінок, щоб футер усіх сторінок знав про хаб
+    _brand_plan = brand_plan(prods)   # сторінки брендів (SEO 17.11) — за воротами SITE_BRAND_PAGES_LIVE=1; план (вже без підсторінок без батька) ДО запису сторінок, щоб футер усіх сторінок знав про хаб
     BRAND_BUILT[:] = [(s, h) for s, h, _par, _items, _t in _brand_plan]
+    _brand_slugs = {s for s, _h in BRAND_BUILT}
+    # статті про бренди — лише разом зі сторінками брендів: ворота + головний бренд статті (перший у BRAND_FOR_PORADY) справді збудовано (інакше тексти «у каталозі є…» неправдиві)
+    _porady = {s: v for s, v in _load_porady().items() if s not in BRAND_FOR_PORADY or BRAND_FOR_PORADY[s][0] in _brand_slugs}
+    GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
     n = 0
     # 1) картки товарів
     # Внутрішня перелінковка (SEO 12.10.2026): «Схожі товари» = до 6 товарів В НАЯВНОСТІ з тієї ж категорії, найближчих за ціною (індекс по категорії + bisect, не O(n²)); «Уцінка» — без блоку.
@@ -4421,11 +4423,17 @@ def _brand_hay(p):
 
 
 _BR_FUNKO = re.compile(r"(?<![a-z0-9])funko(?![a-z])|фанко")
-_BR_BORN = re.compile(r"baby\s*born|бебі\s*борн")
-_BR_BRATZ = re.compile(r"(?<![a-z0-9])bratz(?![a-z0-9])|братц")
-_BR_SQUISH = re.compile(r"squishmallow|сквішмелоу|сквишмеллоу")
-_BR_RAINBOW = re.compile(r"rainbow\s*high|рейнбоу\s*хай")
-_BR_LOL = re.compile(r"(?<![a-zа-яіїєґ0-9])l\.\s?o\.\s?l\.|(?<![a-zа-яіїєґ0-9])lol\s+(?:surprise|сюрприз)|(?<![a-zа-яіїєґ0-9])лол\s+(?:surprise|сюрприз)")
+_BR_BORN = re.compile(r"baby[\s\-]*born|бе(?:бі|би|бі)[\s\-]*борн")
+_BR_BRATZ = re.compile(r"(?<![a-z0-9])bratz(?![a-z0-9])|(?<![а-яіїєґ])братц(?![а-яіїєґ])")
+_BR_SQUISH = re.compile(r"squishmal+ow|сквішмел+оу|сквишмел+оу")
+_BR_RAINBOW = re.compile(r"rainbow[\s\-]*high(?![a-z0-9])|рейнбоу[\s\-]*хай")
+_BR_LOL = re.compile(r"(?<![a-zа-яіїєґ0-9])(?:l\.\s?o\.\s?l|л\.\s?о\.\s?л)(?![a-zа-яіїєґ0-9])|(?<![a-zа-яіїєґ0-9])(?:lol|лол)[\s\-]*(?:surprise|сюрприз)")
+# H1 «Ляльки …»: у добірці лише ляльки й супутні товари, без пазлів/картин за номерами/розмальовок/творчості (аудит #1706: у Rainbow High було 3 ляльки з 15)
+_BR_NOT_DOLL_CAT = re.compile(r"пазл|картин|розмальов|мозаїк|пластилін|тісто|творч|фарб|наліп|книж|канцтовар|зошит|блокнот|алмазн|вишиван|розпис|гравюр", re.I)
+
+
+def _doll_only(fn):
+    return lambda p: fn(p) and not _BR_NOT_DOLL_CAT.search(str(p.get("category") or ""))
 
 
 def _is_funko(p):
@@ -4435,11 +4443,11 @@ def _is_funko(p):
 # (slug, батьківська сторінка або None, правило-предикат). Підсторінки Funko — лише картки Funko (H1 «Funko Pop …») з потрібним шляхом KIDDISVIT (поле src_path; Toysi/RT без шляху — лише на головній сторінці Funko).
 BRAND_PAGES = (
     ("brend-funko-pop", None, _is_funko),
-    ("brend-baby-born", None, lambda p: bool(_BR_BORN.search(_brand_hay(p)))),
-    ("brend-bratz", None, lambda p: bool(_BR_BRATZ.search(_brand_hay(p)))),
+    ("brend-baby-born", None, _doll_only(lambda p: bool(_BR_BORN.search(_brand_hay(p))))),
+    ("brend-bratz", None, _doll_only(lambda p: bool(_BR_BRATZ.search(_brand_hay(p))))),
     ("brend-squishmallows", None, lambda p: bool(_BR_SQUISH.search(_brand_hay(p)))),
-    ("brend-rainbow-high", None, lambda p: bool(_BR_RAINBOW.search(_brand_hay(p)))),
-    ("brend-lol-surprise", None, lambda p: bool(_BR_LOL.search(_brand_hay(p)))),
+    ("brend-rainbow-high", None, _doll_only(lambda p: bool(_BR_RAINBOW.search(_brand_hay(p))))),
+    ("brend-lol-surprise", None, _doll_only(lambda p: bool(_BR_LOL.search(_brand_hay(p))))),
     ("brend-funko-pop-filmy-serialy", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Funko > Герої фільмів та серіалів"),
     ("brend-funko-pop-multfilmy", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Funko > Герої мультфільмів"),
     ("brend-funko-pop-anime", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Ліцензійні герої > Герої Аніме"),
@@ -4481,7 +4489,7 @@ def _load_brand_texts(path=None):
 
 
 def _brand_ok(p):
-    return (p.get("stock") or 0) > 0 and bool(p.get("photo")) and (p.get("price") or 0) > 0 and not p.get("shadow")
+    return (p.get("stock") or 0) > 0 and bool(p.get("photo")) and (p.get("price") or 0) > 0 and not p.get("shadow") and not _is_markdown_item(p) and not is_weapon_replica(str(p["id"]), p.get("name") or "")
 
 
 def brand_plan(prods, texts=None):
@@ -4501,6 +4509,10 @@ def brand_plan(prods, texts=None):
             continue
         items.sort(key=lambda p: (-(p["contribution"] if p.get("contribution") is not None else -1e9), -(p.get("price") or 0), str(p["id"])))
         plan.append((slug, texts[slug]["h1"], parent, items[:BRAND_SHOW_MAX], texts[slug]))
+    _have = {x[0] for x in plan}
+    for x in [x for x in plan if x[2] is not None and x[2] not in _have]:   # підсторінка без збудованого батька (нема тексту/мало товарів) — не будуємо, інакше крихти ведуть у нікуди
+        print(f"[build] ⚠ brand: {x[0]} — головна сторінка {x[2]} не збудована — підсторінку не будуємо", file=sys.stderr)
+    plan = [x for x in plan if x[2] is None or x[2] in _have]
     return plan
 
 
@@ -4508,8 +4520,6 @@ def write_brand_pages(plan):
     """Пише сторінки брендів і хаб; повертає [(файл, пріоритет, частота)] для sitemap. Підсторінка Funko будується лише разом із головною сторінкою Funko (інакше хлібні крихти ведуть у нікуди)."""
     if not plan:
         return []
-    built = {s for s, _h, _par, _it, _t in plan}
-    plan = [x for x in plan if x[2] is None or x[2] in built]
     written = []
     h1_of = {s: h for s, h, _par, _it, _t in plan}
     for slug, h1, parent, items, t in plan:

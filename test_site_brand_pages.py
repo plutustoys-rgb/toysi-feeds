@@ -62,6 +62,11 @@ nm = lambda n, v="", path="": {"name": n, "vendor": v, "src_path": path}  # noqa
 LOL_YES = ["Лялька L.O.L. Surprise! Dance", "LOL Surprise OMG Fashion", "L. O. L. SURPRISE мініатюра", "ЛОЛ Сюрприз ляльки", "Набір L.O.L. SURPRISE! Tweens"]
 LOL_NO = ["Lollipop іграшка льодяник", "Trolls LOL game", "Lolita сукня", "Doll set Lol-pop", "Мобільна гра lol"]
 chk(f"LOL: 5 «так» ({sum(rules['brend-lol-surprise'](nm(n)) for n in LOL_YES)}/5) і 5 «ні» ({sum(not rules['brend-lol-surprise'](nm(n)) for n in LOL_NO)}/5)", all(rules["brend-lol-surprise"](nm(n)) for n in LOL_YES) and not any(rules["brend-lol-surprise"](nm(n)) for n in LOL_NO))
+LOL_YES2 = ["L.O.L Surprise! OMG", "LOLSurprise Dolls", "lol-surprise tweens", "ЛОЛ-Сюрприз Лялька", "Лялька Л.О.Л. Танці"]
+chk("LOL (аудит #1706): «L.O.L» без кінцевої крапки, «LOLSurprise», «lol-surprise», «ЛОЛ-Сюрприз», «Л.О.Л.» — ловляться", all(rules["brend-lol-surprise"](nm(n)) for n in LOL_YES2))
+chk("Baby-Born/Беби Борн/Rainbow-High/Сквішмеллоу ловляться; «Rainbow Highway» і «братця» — ні", rules["brend-baby-born"](nm("Baby-Born лялька")) and rules["brend-baby-born"](nm("Беби Борн")) and rules["brend-rainbow-high"](nm("Rainbow-High Ruby"))
+    and rules["brend-squishmallows"](nm("Сквішмеллоу кіт")) and not rules["brend-rainbow-high"](nm("Rainbow Highway")) and not rules["brend-bratz"](nm("братця Івасик")) and rules["brend-bratz"](nm("Лялька Братц")))
+chk("ляльки-сторінки не беруть пазли/картини за номерами/розмальовки (H1 «Ляльки …»): Rainbow High у категорії «Пазли» — ні, у «Ляльки» — так", not rules["brend-rainbow-high"]({"name": "Пазл Rainbow High", "vendor": "", "category": "Пазли і вкладиші"}) and rules["brend-rainbow-high"]({"name": "Rainbow High лялька", "vendor": "", "category": "Ляльки + лялькові набори"}))
 chk("Funko: бренд Funko у vendor або в назві; «Funko Pop», «Фанко»; «Funkoland»/«Sunko» — ні", rules["brend-funko-pop"](nm("Фігурка Pop", "Funko")) and rules["brend-funko-pop"](nm("Funko Pop! Marvel")) and rules["brend-funko-pop"](nm("Фанко поп")) and not rules["brend-funko-pop"](nm("Funkoland набір")) and not rules["brend-funko-pop"](nm("Sunko іграшка")))
 chk("Baby Born / Bratz / Squishmallows / Rainbow High — без регістру; «Bratzillaz» — не Bratz",
     rules["brend-baby-born"](nm("Лялька BABY born 43 см")) and rules["brend-bratz"](nm("Лялька BRATZ Yasmin")) and not rules["brend-bratz"](nm("Bratzillaz Jade")) and rules["brend-squishmallows"](nm("Squishmallows Cam 30 см"))
@@ -98,6 +103,8 @@ for i in range(501, 513):
 for i in range(601, 613):
     catalog[str(i)] = toysi(i, f"Лялька L.O.L. Surprise! Танці {i}", "LOL")
 catalog["650"] = toysi(650, "Lollipop льодяник набір", "Інша творчість")
+for i in range(701, 706):   # Rainbow High-пазли: у H1 «Ляльки …» їх бути не має
+    catalog[str(i)] = toysi(i, f"Пазл Rainbow High Пазл {i}", "Пазли і вкладиші")
 kv_items = {}
 for i in range(1, 14):   # 13 kv-карток Funko зі шляхом «Funko > Герої фільмів та серіалів» → підсторінка «фільми й серіали»
     k = f"kv-{900 + i}"
@@ -161,7 +168,30 @@ chk("статті: porady-funko-pop… лінкує на головну Funko і
 chk("сторінка Funko лінкує на свою статтю; Baby Born — на свою", 'href="porady-funko-pop-bitty-pop-klipsa.html"' in hf and 'href="porady-baby-born-za-vikom.html"' in h)
 bad_words = re.compile(r"оригінал|офіційн|ліцензійн|дистриб|kiddisvit|кіддісвіт", re.I)
 chk("жодна сторінка брендів/хаб/статті не містить «оригінал/офіційний/ліцензійний/дистриб'ютор/KIDDISVIT»", not any(bad_words.search(pg(f"{s}.html").split("<footer")[0]) for s in list(built) + ["brendy", "porady-funko-pop-bitty-pop-klipsa", "porady-baby-born-za-vikom"]))
+chk("Rainbow High: пазли (категорія «Пазли») НЕ в добірці ляльок; лише 12 ляльок", "Пазл Rainbow High" not in pg("brend-rainbow-high.html") and pg("brend-rainbow-high.html").count('class="card') == 12)
 chk("закупівля kv (600.5) не просочилась у сторінки брендів", not any("600.5" in pg(f"{s}.html") for s in built))
+# аудит #1706 (🟡1): нема тексту головної сторінки Funko → підсторінка не будується, футер/хаб/статті узгоджені з фактично записаним, без 404-посилань
+texts_all = json.loads((SITE / "brand_pages.json").read_text(encoding="utf-8"))
+texts_cut = {k: v for k, v in texts_all.items() if k != "brend-funko-pop"}
+(tmp / "bp_cut.json").write_text(json.dumps(texts_cut, ensure_ascii=False), encoding="utf-8")
+bs.BRAND_TEXTS_FILE = str(tmp / "bp_cut.json")
+out, err = build(True)
+built2 = {q.stem for q in out.glob("brend-*.html")}
+art_f = pg("porady-funko-pop-bitty-pop-klipsa.html")
+chk(f"без тексту Funko: збудовано {sorted(built2)}; підсторінка Funko НЕ записана (голосне попередження), стаття про Funko НЕ збудована, жодного href на не записану сторінку",
+    "brend-funko-pop" not in built2 and "brend-funko-pop-filmy-serialy" not in built2 and "головна сторінка brend-funko-pop не збудована" in err and art_f == "" and pg("porady-baby-born-za-vikom.html") != ""
+    and all(f"{h_}.html" in {q.name for q in out.glob("*.html")} for h_ in re.findall(r'href="(brend-[a-z-]+)\.html"', pg("brendy.html") + pg("index.html"))))
+# немає жодного тексту → хаб і футер не будуються
+(tmp / "bp_none.json").write_text("{}", encoding="utf-8")
+bs.BRAND_TEXTS_FILE = str(tmp / "bp_none.json")
+out, err = build(True)
+chk("жодного тексту брендів: нема хаба, нема «Бренди» у футері, нема статей про бренди", not (out / "brendy.html").exists() and 'href="brendy.html"' not in pg("index.html") and pg("porady-baby-born-za-vikom.html") == "")
+# мало товарів Baby Born (<12) → стаття про Baby Born НЕ публікується (її тексти «у каталозі є 26/28/…» були б неправдиві)
+bs.BRAND_TEXTS_FILE = str(SITE / "brand_pages.json")
+for i in range(201, 207):
+    catalog.pop(str(i))
+out, err = build(True)
+chk("Baby Born лише 6 товарів (<12): сторінки нема, статті про Baby Born теж нема; стаття про Funko є", not (out / "brend-baby-born.html").exists() and pg("porady-baby-born-za-vikom.html") == "" and pg("porady-funko-pop-bitty-pop-klipsa.html") != "")
 # повторна збірка з вимкненими воротами в ту саму теку прибирає застарілі сторінки
 out, err = build(False)
 chk("повторна збірка з вимкненими воротами прибрала всі brend-*.html і brendy.html", not list(out.glob("brend-*.html")) and not (out / "brendy.html").exists())

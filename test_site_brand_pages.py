@@ -125,9 +125,9 @@ def build(live):
 
 OUTD = Path(tempfile.mkdtemp())
 out, err = build(False)
-chk("ворота вимкнені: жодної brend-*.html і brendy.html; у футері нема «Бренди»; статті про бренди без посилань на бренди",
+chk("ворота вимкнені: жодної brend-*.html і brendy.html; у футері нема «Бренди»; статей про бренди теж нема (йдуть разом зі сторінками брендів)",
     not list(out.glob("brend-*.html")) and not (out / "brendy.html").exists() and 'href="brendy.html"' not in (out / "index.html").read_text(encoding="utf-8")
-    and not re.search(r'href="brend-', (out / "porady-funko-pop-bitty-pop-klipsa.html").read_text(encoding="utf-8")) if (out / "porady-funko-pop-bitty-pop-klipsa.html").exists() else not list(out.glob("brend-*.html")))
+    and not (out / "porady-funko-pop-bitty-pop-klipsa.html").exists() and not (out / "porady-baby-born-za-vikom.html").exists())
 out, err = build(True)
 built = {q.stem for q in out.glob("brend-*.html")}
 chk(f"ворота відкриті: збудовано {sorted(built)}", built == {"brend-funko-pop", "brend-baby-born", "brend-squishmallows", "brend-rainbow-high", "brend-lol-surprise", "brend-funko-pop-filmy-serialy"})

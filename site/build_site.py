@@ -1255,7 +1255,7 @@ def build():
     # сторінки подарунків (SEO 15.11): план (добірки + наявність тексту) визначаємо ДО запису сторінок, щоб футер усіх сторінок знав, чи є хаб
     _gift_plan = gift_plan([p for p in prods if not p.get("rt")])
     GIFT_BUILT[:] = [(s, h, lb) for s, h, lb, _r, _i in _gift_plan]
-    _porady = _load_porady()
+    _porady = {s: v for s, v in _load_porady().items() if BRAND_PAGES_LIVE or s not in BRAND_FOR_PORADY}   # статті про бренди — лише разом зі сторінками брендів (ворота SITE_BRAND_PAGES_LIVE=1)
     GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
     _brand_plan = brand_plan(prods)   # сторінки брендів (SEO 17.11) — за воротами SITE_BRAND_PAGES_LIVE=1; план ДО запису сторінок, щоб футер усіх сторінок знав про хаб
     BRAND_BUILT[:] = [(s, h) for s, h, _par, _items, _t in _brand_plan]

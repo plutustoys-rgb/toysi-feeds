@@ -164,7 +164,24 @@ chk("у тексті «8 аркушів», а аркушів 5 → новорі�
 man3 = mk_manifest(dict(SHEETS, **{"rozmalovky-dlia-ditei": 2}))
 (tmp / "man.json").write_text(json.dumps(man3, ensure_ascii=False), encoding="utf-8")
 err = build()
-chk("«для дітей» лише 2 аркуші (<3) → ні хаба, ні добірок; голосно «лише 2 аркушів»", not list(OUTD.glob("rozmalovky*.html")) and "rozmalovky-dlia-ditei — лише 2 аркушів" in err and "потребує всіх 3 добірок" in err)
+chk("«для дітей» лише 2 аркуші (<3), тексти БЕЗ прапорця standalone (згадують інші добірки/число) → ні хаба, ні добірок; голосно", not list(OUTD.glob("rozmalovky*.html")) and "rozmalovky-dlia-ditei — лише 2 аркушів" in err and "не позначені standalone" in err)
+# (б2) SEO 18.11 варіант «а»: тексти standalone → хаб з тими добірками, що є; новорічна не чекає інших
+alone = json.loads((SITE / "rozmalovky_texts.json").read_text(encoding="utf-8"))
+for k_ in alone:
+    alone[k_]["standalone"] = True
+(tmp / "texts_alone.json").write_text(json.dumps(alone, ensure_ascii=False), encoding="utf-8")
+bs.COLORING_TEXTS_FILE = str(tmp / "texts_alone.json")
+err = build()
+built_b = {q_.stem for q_ in OUTD.glob("rozmalovky*.html")}
+chk(f"standalone-тексти: «для дітей» (2 аркуші) не збудована, а хаб + новорічна + малюки — так: {sorted(built_b)}; хаб лінкує лише на збудовані", built_b == {"rozmalovky", "rozmalovky-novorichni", "rozmalovky-dlia-malyukiv"} and 'href="rozmalovky-dlia-ditei.html"' not in pg("rozmalovky.html") and 'href="rozmalovky.html">Розмальовки для друку<' in pg("index.html"))
+# лише новорічна (SMM поки здав тільки її)
+(tmp / "man.json").write_text(json.dumps(mk_manifest({"rozmalovky-novorichni": 8}), ensure_ascii=False), encoding="utf-8")
+err = build()
+built_c = {q_.stem for q_ in OUTD.glob("rozmalovky*.html")}
+chk(f"SMM здав лише новорічні (8): збудовано {sorted(built_c)}; хаб показує 8 прев'ю без згадок відсутніх добірок; без шуму про відсутні добірки", built_c == {"rozmalovky", "rozmalovky-novorichni"} and pg("rozmalovky.html").count('class="coloring-sheet"') == 8 and "лише 0 аркушів" not in err)
+bs.COLORING_TEXTS_FILE = str(SITE / "rozmalovky_texts.json")
+err = build()
+chk("ті самі 8 новорічних, але тексти БЕЗ standalone (старі: «три добірки») → не будуємо (інакше хаб бреше)", not list(OUTD.glob("rozmalovky*.html")) and "не позначені standalone" in err)
 # (в) хаб без тексту, а добірки з текстом → нічого (інакше футер вів би на неіснуючий хаб)
 (tmp / "man.json").write_text(json.dumps(mk_manifest(SHEETS), ensure_ascii=False), encoding="utf-8")
 no_hub = {k: v for k, v in json.loads((SITE / "rozmalovky_texts.json").read_text(encoding="utf-8")).items() if k != "rozmalovky"}

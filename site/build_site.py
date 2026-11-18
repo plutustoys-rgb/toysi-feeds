@@ -4677,7 +4677,7 @@ def _load_coloring(path_m=None, path_t=None):
         if _coloring_bad(" ".join([h1, intro] + [q + " " + a for q, a in faq])):
             print(f"[build] ⚠ rozmalovky_texts.json[{slug}]: заборонене слово (обіцянка розвитку/користі, чужа марка), ім'я постачальника чи «<» «>» — запис пропущено", file=sys.stderr)
             continue
-        texts[slug] = {"h1": h1.strip(), "intro": intro.strip(), "faq": faq[:COLORING_FAQ_MAX]}
+        texts[slug] = {"h1": h1.strip(), "intro": intro.strip(), "faq": faq[:COLORING_FAQ_MAX], "standalone": v.get("standalone") is True}   # standalone: текст без згадок інших добірок («три добірки», «є добірка для…») — дозволяє будувати розділ, коли готові не всі добірки
     return man, texts
 
 
@@ -4704,9 +4704,14 @@ def coloring_plan(prods, loaded=None):
     hub_slug = COLORING_HUB_FILE[:-5]
     if not plan:
         return []
-    if hub_slug not in texts or len(plan) < len(COLORING_SUBPAGES):   # хаб (і його текст «три добірки») — лише коли побудовано ВСІ три добірки; без хаба добірки не будуємо (футер/крихти ведуть на хаб)
-        print(f"[build] ⚠ coloring: хаб {hub_slug} {'без тексту' if hub_slug not in texts else f'потребує всіх {len(COLORING_SUBPAGES)} добірок (є {len(plan)})'} — розмальовки не будуємо", file=sys.stderr)
+    if hub_slug not in texts:
+        print(f"[build] ⚠ coloring: хаб {hub_slug} без тексту — розмальовки не будуємо", file=sys.stderr)
         return []
+    if len(plan) < len(COLORING_SUBPAGES):   # SEO 18.11 (варіант «а»): новорічна не чекає інших добірок — хаб будується з тими, що є, але ЛИШЕ з текстами без посилань на відсутні добірки (прапорець standalone)
+        _bad = [s for s, _h, _sh, tx in plan + [(hub_slug, "", [], texts[hub_slug])] if not tx.get("standalone")]
+        if _bad:
+            print(f"[build] ⚠ coloring: збудовано лише {len(plan)} з {len(COLORING_SUBPAGES)} добірок, а тексти {', '.join(_bad)} не позначені standalone (згадують інші добірки/число) — розмальовки не будуємо", file=sys.stderr)
+            return []
     _seen, _all = set(), []
     for _s, _h, shs, _t in plan:
         for sh in shs:

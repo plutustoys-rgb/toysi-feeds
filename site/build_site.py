@@ -379,6 +379,8 @@ def footer():
         _fl.insert(1, (GIFT_HUB_FILE, "Подарунки дитині"))
     if BRAND_BUILT:   # хаб брендів (SEO 17.11): посилання лише коли хаб справді побудовано в цій збірці
         _fl.insert(2 if GIFT_BUILT else 1, (BRAND_HUB_FILE, "Бренди"))
+    if COLORING_BUILT:   # безкоштовні розмальовки з Плутусом (SEO 18.11): посилання лише коли хаб справді побудовано
+        _fl.insert(1, (COLORING_HUB_FILE, "Розмальовки для друку"))
     nav = " · ".join(f'<a href="{u}">{esc(t)}</a>' for u, t in _fl)
     return (
       '<footer class="foot">'
@@ -1261,6 +1263,8 @@ def build():
     # статті про бренди — лише разом зі сторінками брендів: ворота + головний бренд статті (перший у BRAND_FOR_PORADY) справді збудовано (інакше тексти «у каталозі є…» неправдиві)
     _porady = {s: v for s, v in _load_porady().items() if s not in BRAND_FOR_PORADY or BRAND_FOR_PORADY[s][0] in _brand_slugs}
     GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
+    _coloring_plan = coloring_plan(prods)   # безкоштовні розмальовки (SEO 18.11): будуємо лише сторінки, для яких є текст і ≥COLORING_MIN_SHEETS аркушів (png+pdf у site/colorings/)
+    COLORING_BUILT[:] = [(s, h) for s, h, _sheets, _t in _coloring_plan]
     n = 0
     # 1) картки товарів
     # Внутрішня перелінковка (SEO 12.10.2026): «Схожі товари» = до 6 товарів В НАЯВНОСТІ з тієї ж категорії, найближчих за ціною (індекс по категорії + bisect, не O(n²)); «Уцінка» — без блоку.
@@ -1294,7 +1298,7 @@ def build():
     write_home(toysi_prods, _cats_toysi, [c for c in nav_list if _cats_toysi.get(c)], cat_slug)
     write_ig(toysi_prods)
     has_nabory = write_nabory(toysi_prods)
-    gift_urls = write_gift_pages(toysi_prods, plan=_gift_plan) + write_porady(_porady) + write_brand_pages(_brand_plan)
+    gift_urls = write_gift_pages(toysi_prods, plan=_gift_plan) + write_porady(_porady) + write_brand_pages(_brand_plan) + write_coloring_pages(_coloring_plan, prods)
     # 5) кошик + checkout + сторінка подяки
     write_cart(_cart_addons(toysi_prods))
     write_thanks()
@@ -1335,7 +1339,7 @@ def build():
                 removed += 1
             except OSError:
                 pass
-        elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES) and fn not in _gift_files:   # сторінка подарунків, якої ця збірка не будує (мало товарів/нема тексту), не лишається живою
+        elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES or fn in COLORING_PAGE_FILES) and fn not in _gift_files:   # сторінка подарунків, якої ця збірка не будує (мало товарів/нема тексту), не лишається живою
             try:
                 os.remove(os.path.join(OUT, fn))
                 removed += 1
@@ -2759,6 +2763,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
                 f'<script type="application/json" id="cat-urls">{urls}</script>\n' +
                 chips(cat_list, cat_slug, active) +
                 _category_top_html(fname, prods) +
+                (COLORING_CAT_NOTICE if (active in COLORING_CATEGORIES and COLORING_BUILT) else "") +
                 _catalog_js_grid() +
                 f'<div id="cat-static">{static_grid}</div>' +
                 _relcats_html(fname, cat_slug, active)
@@ -4279,7 +4284,8 @@ def write_gift_pages(prods, texts=None, plan=None):
     _kinds = ([] if not any(s in ("podarunok-na-mykolaia", "novorichnyi-podarunok-dytyni") for s, _h, _lb in GIFT_BUILT) else ["на Миколая та Новий рік"]) + (["за ціною"] if any("-hrn" in s for s, _h, _lb in GIFT_BUILT) else []) + (["за віком, який рекомендує виробник"] if any(s.startswith("podarunok-na-") and s.endswith(("-rik", "-roky", "-rokiv")) for s, _h, _lb in GIFT_BUILT) else [])
     hub_kinds = ", ".join(_kinds) or "подарунки дитині"
     hub_body = (crumbs_html(trail) + '<h1 class="page">Подарунки дитині: добірки за віком і бюджетом</h1>'
-                f'<p class="gift-hub-lead">Добірки іграшок у наявності: {esc(hub_kinds)}.</p>'
+                f'<p class="gift-hub-lead">Добірки іграшок у наявності: {esc(hub_kinds)}.</p>' +
+                (f'<p class="gift-hub-lead"><a href="{COLORING_HUB_FILE}">Безкоштовні розмальовки з Плутусом для друку</a></p>' if COLORING_BUILT else "") +
                 f'<nav class="gift-links" aria-label="Добірки подарунків"><ul>{lis}</ul></nav>'
                 + (('<nav class="gift-links" aria-label="Статті-поради"><h2>Поради</h2><ul>' + "".join(f'<li><a href="{s_}.html">{esc(t_)}</a></li>' for s_, t_ in GIFT_ARTICLES_BUILT) + '</ul></nav>') if GIFT_ARTICLES_BUILT else ""))
     head = breadcrumb_ld(trail) + _ld_script({"@context": "https://schema.org", "@type": "ItemList", "name": "Подарунки дитині",
@@ -4562,6 +4568,157 @@ def write_brand_pages(plan):
     _write(BRAND_HUB_FILE, page("Бренди іграшок", hub_body, extra_head=head, description=_cut("Добірки іграшок за брендами в наявності: " + ", ".join(h for _s, h in top[:6]) + ". Доставка Новою Поштою.", DESC_MAX),
                                 canonical=BRAND_HUB_FILE, og_image=OG_IMAGE, title_full="Бренди іграшок — добірки в наявності | PlutusToys"))
     written.append((BRAND_HUB_FILE, "0.7", "weekly"))
+    return written
+
+
+# ── Безкоштовні розмальовки з Плутусом (SEO 18.11.2026, рішення власника «Так, робимо») ─────────────────────────────────────────────────────────────────────────────────────────────────
+# Хаб /rozmalovky.html + 3 добірки (/rozmalovky-novorichni|-dlia-malyukiv|-dlia-ditei.html). Аркуші (SMM): PNG 1240×1754 (прев'ю) і PDF A4 у site/colorings/<id>.png|.pdf, перелік і alt — site/rozmalovky.json:
+# {"<slug>": {"sheets": [{"id": "plutus-yalynka-rozmalovka", "title": "…", "alt": "Розмальовка: …"}]}}; тексти (вступ, 3 питання) — site/rozmalovky_texts.json ({"<slug>": {"h1", "intro", "faq": [{"q","a"}]}}, пише Копірайтер).
+# Сторінка будується, лише коли є текст І ≥COLORING_MIN_SHEETS аркушів з обома файлами (інакше голосне попередження); хаб — коли збудовано хоч одну добірку. Нижче — 8–12 живих розмальовок-книжок і наборів (оновлюються щозбірки).
+COLORING_MANIFEST_FILE = os.path.join(OUT, "rozmalovky.json")
+COLORING_TEXTS_FILE = os.path.join(OUT, "rozmalovky_texts.json")
+COLORING_DIR = "colorings"
+COLORING_HUB_FILE = "rozmalovky.html"
+COLORING_MIN_SHEETS = 3
+COLORING_PRODUCTS_MIN, COLORING_PRODUCTS_MAX = 4, 12
+COLORING_FAQ_MIN, COLORING_FAQ_MAX = 3, 6
+COLORING_CATEGORIES = ("Класичні розмальовки", "Водні розмальовки", "Незвичайні розмальовки")
+COLORING_SUBPAGES = ("rozmalovky-novorichni", "rozmalovky-dlia-malyukiv", "rozmalovky-dlia-ditei")
+COLORING_PAGE_FILES = frozenset(f"{s}.html" for s in COLORING_SUBPAGES) | {COLORING_HUB_FILE}
+COLORING_BUILT = []   # [(slug, h1)] збудованих сторінок поточної збірки (хаб — slug "rozmalovky"); footer() і категорії розмальовок читають
+COLORING_CAT_NOTICE = '<p class="sale-lead">Безкоштовні розмальовки з Плутусом для друку: <a href="rozmalovky.html">завантажити й роздрукувати</a>.</p>'
+_COLORING_ID_RX = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_COLORING_BAD_TEXT_RX = re.compile(r"розвива|корисн|<|>|kiddi\s*svit|кіддісвіт|\bkvu?-[0-9]", re.I)
+
+
+def _coloring_site_dir():
+    return os.path.join(OUT, COLORING_DIR)
+
+
+def _load_coloring(path_m=None, path_t=None):
+    """(manifest {slug: [sheet…]}, texts {slug: {h1, intro, faq}}). Аркуш — лише з існуючими PNG і PDF; кривий запис/відсутній файл/заборонені слова — ГОЛОСНО, запис пропускаємо."""
+    path_m, path_t = path_m or COLORING_MANIFEST_FILE, path_t or COLORING_TEXTS_FILE
+    man, texts = {}, {}
+    try:
+        with open(path_m, encoding="utf-8-sig") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        raw = {}
+    except (OSError, ValueError) as e:
+        print(f"[build] ⚠ rozmalovky.json не читається ({e}) — сторінки розмальовок не будуються", file=sys.stderr)
+        raw = {}
+    for slug, v in (raw.items() if isinstance(raw, dict) else []):
+        if slug.startswith("_") or not isinstance(v, dict) or not isinstance(v.get("sheets"), list):
+            continue
+        ok = []
+        for s in v["sheets"]:
+            sid = s.get("id") if isinstance(s, dict) else None
+            if not isinstance(sid, str) or not _COLORING_ID_RX.fullmatch(sid) or not str(s.get("alt") or "").strip() or not str(s.get("title") or "").strip():
+                print(f"[build] ⚠ rozmalovky.json[{slug}]: аркуш без коректних id/title/alt пропущено ({str(sid)[:40]})", file=sys.stderr)
+                continue
+            if not (os.path.isfile(os.path.join(_coloring_site_dir(), sid + ".png")) and os.path.isfile(os.path.join(_coloring_site_dir(), sid + ".pdf"))):
+                print(f"[build] ⚠ rozmalovky.json[{slug}]: нема site/{COLORING_DIR}/{sid}.png або .pdf — аркуш пропущено", file=sys.stderr)
+                continue
+            ok.append({"id": sid, "title": str(s["title"]).strip(), "alt": str(s["alt"]).strip()})
+        man[slug] = ok
+    try:
+        with open(path_t, encoding="utf-8-sig") as fh:
+            rawt = json.load(fh)
+    except FileNotFoundError:
+        rawt = {}
+    except (OSError, ValueError) as e:
+        print(f"[build] ⚠ rozmalovky_texts.json не читається ({e}) — сторінки розмальовок не будуються", file=sys.stderr)
+        rawt = {}
+    for slug, v in (rawt.items() if isinstance(rawt, dict) else []):
+        if slug.startswith("_") or not isinstance(v, dict):
+            continue
+        h1, intro, _faq = v.get("h1"), v.get("intro"), v.get("faq")
+        faq = [(x["q"].strip(), x["a"].strip()) for x in (_faq if isinstance(_faq, list) else []) if isinstance(x, dict) and isinstance(x.get("q"), str) and isinstance(x.get("a"), str) and x["q"].strip() and x["a"].strip()]
+        if not isinstance(h1, str) or not h1.strip() or not isinstance(intro, str) or not intro.strip() or len(faq) < COLORING_FAQ_MIN:
+            print(f"[build] ⚠ rozmalovky_texts.json[{slug}]: потрібні h1, intro і ≥{COLORING_FAQ_MIN} пар q/a — запис пропущено", file=sys.stderr)
+            continue
+        if _COLORING_BAD_TEXT_RX.search(" ".join([h1, intro] + [q + " " + a for q, a in faq])):
+            print(f"[build] ⚠ rozmalovky_texts.json[{slug}]: заборонене слово (обіцянка розвитку/користі), ім'я постачальника чи «<» «>» — запис пропущено", file=sys.stderr)
+            continue
+        texts[slug] = {"h1": h1.strip(), "intro": intro.strip(), "faq": faq[:COLORING_FAQ_MAX]}
+    return man, texts
+
+
+def coloring_plan(prods, loaded=None):
+    """[(slug, h1, sheets, text)] сторінок, які МОЖНА побудувати: добірки (≥COLORING_MIN_SHEETS аркушів + текст) і хаб (є текст і хоч одна добірка)."""
+    man, texts = _load_coloring() if loaded is None else loaded
+    plan = []
+    for slug in COLORING_SUBPAGES:
+        if slug not in texts:
+            if man.get(slug):
+                print(f"[build] ⚠ coloring: для {slug} нема тексту в rozmalovky_texts.json — сторінку не будуємо", file=sys.stderr)
+            continue
+        sheets = man.get(slug) or []
+        if len(sheets) < COLORING_MIN_SHEETS:
+            print(f"[build] ⚠ coloring: {slug} — лише {len(sheets)} аркушів із файлами (< {COLORING_MIN_SHEETS}) — сторінку не будуємо", file=sys.stderr)
+            continue
+        plan.append((slug, texts[slug]["h1"], sheets, texts[slug]))
+    hub_slug = COLORING_HUB_FILE[:-5]
+    if plan and hub_slug in texts:
+        plan.append((hub_slug, texts[hub_slug]["h1"], [sh for _s, _h, shs, _t in plan for sh in shs], texts[hub_slug]))
+    elif plan:
+        print(f"[build] ⚠ coloring: для хаба {hub_slug} нема тексту — розмальовки без хаба не будуємо", file=sys.stderr)
+        return []
+    return plan
+
+
+def _coloring_products(prods):
+    pool = [p for p in prods if (p.get("category") or "") in COLORING_CATEGORIES and (p.get("stock") or 0) > 0 and p.get("photo") and (p.get("price") or 0) > 0 and not p.get("shadow")]
+    pool.sort(key=lambda p: (-(p["contribution"] if p.get("contribution") is not None else -1e9), -(p.get("price") or 0), str(p["id"])))
+    out, keys = [], set()
+    for p in pool:
+        k = _pick_key(p["name"])
+        if k in keys:
+            continue
+        keys.add(k)
+        out.append(p)
+        if len(out) >= COLORING_PRODUCTS_MAX:
+            break
+    return out
+
+
+def write_coloring_pages(plan, prods):
+    """Пише хаб і добірки розмальовок; повертає [(файл, пріоритет, частота)] для sitemap. Аркуш = прев'ю <img alt> + «Завантажити PDF» (без реєстрації/форм); розмітка ImageObject на кожне прев'ю, BreadcrumbList, FAQPage."""
+    if not plan:
+        return []
+    items = _coloring_products(prods)
+    written = []
+    hub_slug = COLORING_HUB_FILE[:-5]
+    subs = [(s, h) for s, h, _sh, _t in plan if s != hub_slug]
+    for slug, h1, sheets, t in plan:
+        is_hub = slug == hub_slug
+        fname = f"{slug}.html"
+        trail = [("Головна", "index.html")] + ([] if is_hub else [("Безкоштовні розмальовки", COLORING_HUB_FILE)]) + [(h1, None)]
+        figs = "".join(
+            f'<figure class="coloring-sheet"><a href="{COLORING_DIR}/{sh["id"]}.pdf" download><img src="{COLORING_DIR}/{sh["id"]}.png" alt="{esc(sh["alt"])}" width="310" height="438" loading="lazy"></a>'
+            f'<figcaption>{esc(sh["title"])}</figcaption><a class="btn coloring-dl" href="{COLORING_DIR}/{sh["id"]}.pdf" download>Завантажити PDF</a></figure>' for sh in sheets)
+        links = "".join(f'<li><a href="{s_}.html">{esc(h_)}</a></li>' for s_, h_ in subs if s_ != slug)
+        faq_html = "".join(f"<h3>{esc(q)}</h3><p>{esc(a)}</p>" for q, a in t["faq"])
+        shop_html = (f'<section class="coloring-shop"><h2>Розмальовки-книжки й набори</h2><div class="gift-list" id="gift-list" data-list="coloring_shop">' + grid(items, eager_n=0, badge=True) + '</div></section>') if len(items) >= COLORING_PRODUCTS_MIN else ""
+        body = (
+            crumbs_html(trail) +
+            f'<h1 class="page">{esc(h1)}</h1>'
+            f'<div class="gift-intro">{_gift_paras(t["intro"])}</div>'
+            f'<div class="coloring-grid">{figs}</div>' + shop_html +
+            f'<section class="gift-faq"><h2>Питання й відповіді</h2>{faq_html}</section>'
+            f'<nav class="gift-links" aria-label="Інші розмальовки"><h2>Інші розмальовки</h2><ul>{links}</ul>'
+            + (f'<p><a href="{COLORING_HUB_FILE}">Усі безкоштовні розмальовки</a> · <a href="catalog.html">Увесь каталог</a></p>' if not is_hub else '<p><a href="catalog.html">Увесь каталог</a></p>') + '</nav>'
+        )
+        head = breadcrumb_ld(trail)
+        for sh in sheets:
+            head += _ld_script({"@context": "https://schema.org", "@type": "ImageObject", "contentUrl": f"{SITE_URL}/{COLORING_DIR}/{sh['id']}.png", "url": f"{SITE_URL}/{COLORING_DIR}/{sh['id']}.png",
+                                "name": sh["title"], "caption": sh["alt"], "description": sh["alt"], "encodingFormat": "image/png", "width": 1240, "height": 1754,
+                                "creator": {"@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/"}, "acquireLicensePage": f"{SITE_URL}/{fname}"})
+        head += _ld_script({"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in t["faq"]]})
+        first = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", t["intro"]).strip())
+        desc = _cut(" ".join(first[:2]), DESC_MAX) or h1
+        _write(fname, page(h1, body, extra_head=head, description=desc, canonical=fname, og_image=f"{SITE_URL}/{COLORING_DIR}/{sheets[0]['id']}.png", title_full=(f"{h1} | PlutusToys" if len(h1) + 13 <= TITLE_MAX else h1)))
+        written.append((fname, "0.7" if is_hub else "0.6", "weekly"))
     return written
 
 

@@ -242,6 +242,28 @@ chk("прев'ю: CSV містить унікальний kv-51 і дубль kv
 
 chk("CSV прев'ю: клітинки з формулами (=, +, -, @) екрануються апострофом; звичайний текст і числа як є", kv_eva._csv_safe('=HYPERLINK("x")') == "'=HYPERLINK(\"x\")" and kv_eva._csv_safe("-1") == "'-1" and kv_eva._csv_safe("Pop") == "Pop" and kv_eva._csv_safe(None) == "" and kv_eva._csv_safe(300) == "300")
 
+# ---- ціна EVA = формула EVA (закупівля × 1,5), не ціна сайту ----
+chk("eva_price: закупівля 200 → 300.00 (×1,5); 133.33 → 200.0 (до копійки); нижче MIN_SUPPLIER_PRICE/порожньо/0 → None", kv_eva.eva_price("200", ge) == 300.0 and kv_eva.eva_price(133.33, ge) == round(133.33 * ge.EVA_PRICE_MULTIPLIER, 2) and kv_eva.eva_price(None, ge) is None and kv_eva.eva_price(0, ge) is None and kv_eva.eva_price(ge.MIN_SUPPLIER_PRICE - 0.01, ge) is None)
+_m = ge.EVA_PRICE_MULTIPLIER
+ge.EVA_PRICE_MULTIPLIER = 1.1                                  # штучно «збиткова» націнка → спрацьовує покривна підлога (як у generate_eva_feed._eva_price)
+try:
+    floored = kv_eva.eva_price(100, ge)
+finally:
+    ge.EVA_PRICE_MULTIPLIER = _m
+chk("покривна підлога: нетто після комісії < собівартості → ціна піднімається до cost×1,05/(1−комісія), як у Toysi-формулі", floored == round(100 * (1 + ge.EVA_LOSS_FLOOR_MARGIN) / (1 - ge.EVA_COMMISSION_EST), 2) and kv_eva.eva_price(100, ge) == 150.0)
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+roota = base_root()
+kv_eva.append_kv_offers(roota, ge, sel_of({"kv-61": dict(S)}), {"kv-61": item(cost="100.0", price="999")}, catalog)
+chk("offer kv-61: ціна EVA = 100×1,5 = 150.00, а НЕ ціна сайту 999", ids_of(roota)["kv-61"].findtext("price") == "150.00")
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+
+kv_eva.LISTED_FILE.write_text(json.dumps({"v": 1, "listed": {"kv-71": {"cat": EV, "catname": "Фігурки", "name": "Фігурка Дубль Модель 71", "price": 124.66, "vendor": "TestBrand", "pics": ["https://plutustoys.com.ua/img/kv/kv-71-1.jpg"], "desc": DESC}}}), encoding="utf-8")
+rootp2 = base_root(toysi_live=["7001"])
+kv_eva.append_kv_offers(rootp2, ge, sel_of({"kv-71": dict(S, cls="DUP")}), {"kv-71": item(name="Фігурка Дубль Модель 71", cost="83.11", dup_of="7001", price="9876")}, {"7001": {"stock": 9}})   # двійник Toysi 7001 активний → заглушка
+pz = ids_of(rootp2).get("kv-71")
+chk("заглушка деактивації: ціна зі знімка з копійками (124.66), а не округлена гривня і не ціна сайту 9876", pz is not None and pz.get("available") == "false" and pz.findtext("price") == "124.66")
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+
 if F:
     print("\nFAIL:", len(F))
     sys.exit(1)

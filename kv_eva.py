@@ -119,7 +119,10 @@ def selection_fresh(sel, now=None) -> bool:
         return False
 
 
-def ensure_selection(ty: dict, ge, rebuild_after_h: float = 12.0):
+KV_REBUILD_AFTER_H = 4.0        # коротше, ніж у RT (12 год): двійник Toysi, що повернувся/з'явився, не має висіти поряд із kv-карткою до півдоби (аудит #1705, залишковий ризик 1)
+
+
+def ensure_selection(ty: dict, ge, rebuild_after_h: float = KV_REBUILD_AFTER_H):
     """Ті самі гарди, що в rt_eva.ensure_selection (аудит #939 B4): усічений каталог Toysi → без перебудови; новий відбір <70% попереднього → відкидаємо; збій → старий, якщо свіжий."""
     sup = load_supplier()
     if not sup:
@@ -298,9 +301,9 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
         pics = rt_eva._pictures(r, ge.EVA_MAX_PICTURES) if r else []
         for p in (pics or snap.get("pics") or []):
             ET.SubElement(o, "picture").text = p
-        vend = (r.get("vendor") or snap.get("vendor") or "").strip()
-        if vend:
-            ET.SubElement(o, "vendor").text = ge._clean_text(ge.normalize_vendor(vend)) if r else vend
+        vend = (snap.get("vendor") or r.get("vendor") or "").strip()          # зі знімка першим: що вже було в EVA, те й лишається; живий запис постачальника міг змінитись (аудит #1705)
+        if vend and not leaks(vend):
+            ET.SubElement(o, "vendor").text = vend if snap.get("vendor") else ge._clean_text(ge.normalize_vendor(vend))
         d = snap.get("desc") or ""
         if len(d) >= ge.EVA_DESCRIPTION_MIN_LEN:
             ET.SubElement(o, "description_ua").text = d
@@ -312,12 +315,62 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
     return dict(stats)
 
 
+def _csv_safe(v):
+    """Клітинка, що починається з = + - @ таб/CR, у Excel виконується як формула (назви беруться з даних постачальника) — префікс апострофа."""
+    t = "" if v is None else str(v)
+    return "'" + t if t[:1] in ("=", "+", "-", "@", chr(9), chr(13)) else t
+
+
+def preview(eva_xml: str, out_csv: str) -> int:
+    """ПРОБНИЙ розрахунок (нічого не пише у фід і в стан-файли): «скільки і які kv-картки пішли б у EVA» на ПОТОЧНОМУ eva_feed.xml. Відбір будується в пам'яті, стан листованого — тимчасовий. Вихід — CSV."""
+    import csv
+    import tempfile
+    from parser import fetch_toysi_catalog
+    import generate_eva_feed as ge
+    ty = fetch_toysi_catalog()
+    sup = load_supplier()
+    if len(ty) < 25_000 or not sup:
+        print("[kv_eva] каталог Toysi/supplier_kv порожній або усічений — прев'ю неможливе", file=sys.stderr)
+        return 1
+    tmpd = Path(tempfile.mkdtemp())
+    global LISTED_FILE
+    real_listed = LISTED_FILE
+    LISTED_FILE = tmpd / "listed.json"                         # справжній kv_eva_listed_state.json НЕ чіпаємо
+    try:
+        sel = build_selection(ty, sup, ge)
+        sel["built_at"] = datetime.now().isoformat(timespec="seconds")
+        root = ET.parse(eva_xml).getroot()
+        before = {o.get("id") for o in root.find("shop").find("offers")}
+        st = append_kv_offers(root, ge, sel, sup, ty)
+    finally:
+        LISTED_FILE = real_listed
+    rows = []
+    rt_tw = load_rt_twins() or {}
+    items_sel = sel.get("items", {})
+    for o in root.find("shop").find("offers"):
+        i = o.get("id")
+        if i in before or not KV_ID_RX.fullmatch(str(i)):
+            continue
+        r = sup.get(i, {})
+        is_dup = bool(r.get("dup_of")) or i in rt_tw or (items_sel.get(i) or {}).get("cls") == "DUP"
+        rows.append([i, o.findtext("name_ua"), o.findtext("price"), o.findtext("stock_quantity"), o.findtext("categoryId"), o.findtext("vendor"), "дубль (двійника немає в наявності)" if is_dup else "унікальний"])
+    with open(out_csv, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "назва", "ціна", "залишок", "категорія_EVA", "бренд", "тип"])
+        w.writerows([[_csv_safe(c) for c in r] for r in rows])
+    print("[kv_eva] прев'ю:", json.dumps(st, ensure_ascii=False), "→", out_csv, len(rows), "карток")
+    return 0
+
+
 def main(argv=None) -> int:
-    """CLI: python kv_eva.py --build → перебудувати kv_eva_selection.json (важко; лише VPS/читання каталогів)."""
+    """CLI: python kv_eva.py --build → перебудувати kv_eva_selection.json (важко; лише VPS/читання каталогів). --preview eva_feed.xml OUT.csv → пробний розрахунок без запису у фід."""
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", action="store_true")
+    ap.add_argument("--preview", nargs=2, metavar=("EVA_XML", "OUT_CSV"))
     a = ap.parse_args(argv)
+    if a.preview:
+        return preview(*a.preview)
     if not a.build:
         ap.print_help()
         return 0

@@ -934,6 +934,23 @@ KV_CATEGORY_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 SUPPLIER_KV_MAX_AGE_DAYS = 3
 
 
+def _kv_path_keys(v, cpath):
+    """Ключі пошуку категорії у kv_category_map.json: шлях як є, той самий БЕЗ провідного «Catalog > » (SEO 18.11: у фіді постачальника шляхи мають корінь «Catalog», а ключі мапи — без нього;
+    79 з 99 «незібраних» шляхів були саме через це), те саме для source_category_path; потім плоске поле category."""
+    keys = []
+    for lst in (cpath, [str(x).strip() for x in (v.get("source_category_path") or []) if str(x).strip()] if isinstance(v.get("source_category_path"), list) else []):
+        if lst:
+            keys.append(" > ".join(lst))
+            if lst[0].casefold() == "catalog" and len(lst) > 1:
+                keys.append(" > ".join(lst[1:]))
+    flat = str(v.get("category") or "").strip()
+    if flat:
+        keys.append(flat)
+        if flat.casefold().startswith("catalog > "):
+            keys.append(flat[len("catalog > "):])
+    return keys
+
+
 def _load_supplier_kv(now=None):
     """{id: елемент у форматі Toysi/RT} для карток KIDDISVIT. Ворота SITE_KV_LIVE не відкриті / нема файлу / LIQPAY не live / файл застарілий — порожньо; поламаний — ГОЛОСНО (stderr), збірка не падає."""
     if not SITE_KV_LIVE:
@@ -979,11 +996,11 @@ def _load_supplier_kv(now=None):
             why = "id"
         else:
             imgs = [u for u in (v.get("images") or []) if isinstance(u, str) and (lambda m: bool(m) and m.group(1) == k)(_PUBLIC_IMG_KV_RX.fullmatch(u))]   # лише НАШІ файли цього id (https://plutustoys.com.ua/img/kv/<id>-N.jpg): чужий хост/чужий id не публікуємо (аудит #1694)
-            vendor_name = _kv_strip_cf(_supplier_text_plain(str(v.get("vendor") or "").strip()))
+            vendor_name = _kv_strip_cf(_supplier_text_plain(str(v.get("vendor") or v.get("brand") or v.get("brend") or "").strip()))
             if _kv_leaks(vendor_name):
                 vendor_name = ""
             cpath = [str(x).strip() for x in (v.get("category_path") or []) if str(x).strip()] if isinstance(v.get("category_path"), list) else []
-            cat_name = brands.get(vendor_name.casefold()) or paths.get(" > ".join(cpath) if cpath else str(v.get("category") or "").strip())
+            cat_name = brands.get(vendor_name.casefold()) or next((paths[k_] for k_ in _kv_path_keys(v, cpath) if k_ in paths), None)
             price, stock = _kv_strict_int(v.get("price")), _kv_strict_int(v.get("stock"))
             if price is None or stock is None:
                 price, stock = 0, -1

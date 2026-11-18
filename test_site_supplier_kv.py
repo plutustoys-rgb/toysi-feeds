@@ -91,6 +91,16 @@ r, e = load({"kv-502": dict(GOOD, index=False, images=im("kv-502")), "kv-503": {
 chk("index=false, поля index нема (fail-safe), тонкий опис <50 знаків → noindex", all(r[k]["rt_noindex"] is True for k in ("kv-502", "kv-503", "kv-504")))
 r, e = load({"kv-505": dict(GOOD, vendor="Squishmallows", images=im("kv-505")), "kv-506": dict(GOOD, category_path=["Ляльки", "Пупси"], vendor="BABY born", images=im("kv-506")), "kv-507": dict(GOOD, category_path=["Конструктори"], vendor="JAKI", images=im("kv-507"))})
 chk("бренд (Squishmallows) має пріоритет над шляхом; шлях без бренду → категорія з мапи", r["kv-505"]["category_name"] == "М'які іграшки" and r["kv-506"]["category_name"] == "Пупси" and r["kv-507"]["category_name"] == "Конструктори KV")
+# SEO 18.11: корінь «Catalog > » у шляху постачальника не заважає мапі; бренд — також з полів brand/brend; невідомий шлях без «Catalog» теж не публікується
+r, e = load({"kv-601": dict(GOOD, category_path=["Catalog", "Ляльки", "Пупси"], vendor="", images=im("kv-601")),
+             "kv-602": dict(GOOD, category_path=["Catalog", "Конструктори"], vendor="JAKI", images=im("kv-602")),
+             "kv-603": dict(GOOD, category_path=["Невідома"], source_category_path=["Catalog", "Ляльки", "Пупси"], vendor="", images=im("kv-603")),
+             "kv-604": dict(GOOD, category_path=["Невідома"], vendor="", brand="Squishmallows", images=im("kv-604")),
+             "kv-605": dict(GOOD, category_path=["Catalog", "Невідома", "Гілка"], vendor="", images=im("kv-605")),
+             "kv-606": dict(GOOD, category_path=[], category="Catalog > Ляльки > Пупси", vendor="", images=im("kv-606"))})
+chk("«Catalog > » зрізається при пошуку категорії (path / source_category_path / плоске category); бренд з поля brand; невідоме лишається поза",
+    r.get("kv-601", {}).get("category_name") == "Пупси" and r.get("kv-602", {}).get("category_name") == "Конструктори KV" and r.get("kv-603", {}).get("category_name") == "Пупси"
+    and r.get("kv-604", {}).get("category_name") == "М'які іграшки" and "kv-605" not in r and r.get("kv-606", {}).get("category_name") == "Пупси" and "category:Catalog > Невідома > Гілка" in e)
 r, e = load({"kv-1": dict(GOOD, category_path=["Невідома", "Гілка"], images=im("kv-1")), "kv-2": dict(GOOD, images=[]), "kv-3": dict(GOOD, price=0, images=im("kv-3")), "kvu-4": GOOD, "bad id": GOOD, "kv-5": dict(GOOD, name=" ", images=im("kv-5")),
              "kv-6": dict(GOOD, stock=-1, images=im("kv-6")), "rt-7": GOOD, "kv-8": dict(GOOD, images=["http://x/1.jpg"])})
 chk("невідомий шлях/нема фото/ціна 0/kvu-/поганий id/нема назви/мінусовий залишок/rt-id/http-фото — НЕ публікуються, у stderr є пояснення", r == {} and "supplier_kv.json: не опубліковано" in e and "category:Невідома > Гілка" in e)

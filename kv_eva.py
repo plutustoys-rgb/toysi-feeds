@@ -15,7 +15,7 @@
  • Колись листована kv-картка тримає ТУ САМУ категорію (липка, kv_eva_listed_state.json) — EVA після додавання categoryId не міняти.
  • Нові id додаються лише через відбір з перевіреною категорією (rt_eva.build_selection: ручні рішення → правило категорії → високодовірений kNN; нема впевненості → товар не беремо).
 Брама: EVA_KV_IN_FEED=1 у .env VPS (вмикає лише власник); без неї — нічого не міняється. Застарілі supplier_kv.json (>6 год) і відбір (>36 год) → kv у цьому прогоні пропускається (fail-safe).
-Емісія — ті самі перевірки полів, що в rt_eva.build_offer_fields (бренд, стоп-бренди, заборонені слова/товари, залишок ≥2, ціна, фото https, опис ≥30, розміри, ≥2 параметри); ціна = supplier_kv.price (закрита формула сайту; рішення про ціну EVA окреме — власника)."""
+Емісія — ті самі перевірки полів, що в rt_eva.build_offer_fields (бренд, стоп-бренди, заборонені слова/товари, залишок ≥2, фото https, опис ≥30, розміри, ≥2 параметри); ЦІНА — формула EVA як у Toysi (`eva_price`: закупівля × 1,5 + покривна підлога), НЕ ціна сайту."""
 import json
 import os
 import re
@@ -165,6 +165,18 @@ def _load_listed() -> dict:
     return {}
 
 
+def eva_price(cost, ge):
+    """Ціна EVA для kv-картки — ТА САМА формула EVA, що для Toysi (`generate_eva_feed._eva_price`, рішення власника 18.11.2026: «формула для EVA незмінна»): закупівля × EVA_PRICE_MULTIPLIER (1,5), до копійки;
+    покривна підлога лише для збиткових: нетто після комісії EVA нижче собівартості → cost×(1+EVA_LOSS_FLOOR_MARGIN)/(1−EVA_COMMISSION_EST). Закупівля = supplier_kv.cost (clientPrice, без «Збірки» Toysi — її в KIDDISVIT нема). Ціна сайту (закрита формула) в EVA НЕ використовується."""
+    c = rt_eva._num(cost)
+    if not c or c <= 0 or c < ge.MIN_SUPPLIER_PRICE:
+        return None
+    price = round(c * ge.EVA_PRICE_MULTIPLIER, 2)
+    if price * (1 - ge.EVA_COMMISSION_EST) < c:
+        price = round(c * (1 + ge.EVA_LOSS_FLOOR_MARGIN) / (1 - ge.EVA_COMMISSION_EST), 2)
+    return price
+
+
 def twin_in_stock(tid: str, live: set, catalog: dict | None, ge) -> bool:
     """Двійник «є в наявності»: активний у цьому фіді АБО в каталозі Toysi залишок > EVA_SELECTION_MIN_STOCK (та сама межа, що для відбору Toysi у EVA; слово власника — «у Тойсі немає в наявності», а не «Toysi-картки немає в EVA»)."""
     if tid in live:
@@ -235,10 +247,15 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
             continue
         if not twins_ok and sid not in prev:
             continue                                            # нова картка без перевірки RT-двійників — ні
-        f, why = rt_eva.build_offer_fields(sid, r, sel_item, ge, is_forbidden)
+        ep = eva_price(r.get("cost"), ge)
+        if ep is None:
+            stats["skip_price"] += 1
+            continue
+        f, why = rt_eva.build_offer_fields(sid, {**r, "price": ep}, sel_item, ge, is_forbidden)      # перевірки полів ті самі; ціна — EVA-формула, а не ціна сайту
         if f is None:
             stats["skip_" + why] += 1
             continue
+        f["price"] = ep                                            # build_offer_fields округлює до гривні; EVA-формула — до копійки (як Toysi)
         bad = _validate(f, valid, ge.EVA_NAME_MAX_LEN)
         if bad:
             stats["invalid_" + bad] += 1
@@ -283,7 +300,7 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
     for sid in sorted(set(new_prev) - set(active)):             # деактивація: колись листовані, зараз не активні (двійник повернувся / вичерпано / зникло з відбору)
         snap = new_prev.get(sid) or {}
         r = sup_items.get(sid) or {}
-        price = rt_eva._num(r.get("price")) or rt_eva._num(snap.get("price"))
+        price = rt_eva._num(snap.get("price")) or eva_price(r.get("cost"), ge)      # заглушка: ціна, з якою картка стояла в EVA (знімок), а не ціна сайту
         name = snap.get("name") or r.get("name") or ""            # назва зі знімка (з артикулом, якщо додавався): назва існуючого id не міняється при деактивації (аудит #1705)
         if not price or price <= 0 or not name:
             continue

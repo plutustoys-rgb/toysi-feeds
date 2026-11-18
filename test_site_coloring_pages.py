@@ -154,6 +154,15 @@ chk("sitemap: хаб і 3 добірки — рівно раз", all(sm.count(f"
 chk("og:image = перший аркуш; жодного KIDDISVIT/kv-/rt- на сторінках розмальовок", 'colorings/plutus-novorichni-1.png' in h.split("</head>")[0] and not re.search(r"kiddisvit|kv-\d|rt-\d", h + hub, re.I))
 
 # ── (3) інваріанти узгодженості ──
+# «старі» тексти (до 18.11: з числами аркушів і згадками «трьох добірок», без standalone) — фікстура; шипнуті тексти тепер standalone
+legacy = json.loads((SITE / "rozmalovky_texts.json").read_text(encoding="utf-8"))
+for k_ in legacy:
+    legacy[k_].pop("standalone", None)
+legacy["rozmalovky-novorichni"]["intro"] = "Новорічні розмальовки з Плутусом — 8 аркушів зі святковими сюжетами."
+legacy["rozmalovky-dlia-malyukiv"]["intro"] = "Розмальовки для малюків 3–5 років — 6 аркушів з Плутусом. Порівняно з добіркою для малюків, у добірці для дітей 6–9 років більше деталей."
+legacy["rozmalovky"]["intro"] = "Безкоштовні розмальовки з Плутусом зібрані в три добірки: новорічні, для малюків і для дітей."
+(tmp / "texts_legacy.json").write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+bs.COLORING_TEXTS_FILE = str(tmp / "texts_legacy.json")
 # (а) число в тексті ≠ фактична кількість → добірка не будується (а отже й хаб)
 SHEETS2 = dict(SHEETS, **{"rozmalovky-novorichni": 5})
 man2 = mk_manifest(SHEETS2)
@@ -181,7 +190,7 @@ chk(f"standalone-тексти: «для дітей» (2 аркуші) не зб�
 err = build()
 built_c = {q_.stem for q_ in OUTD.glob("rozmalovky*.html")}
 chk(f"SMM здав лише новорічні (8): збудовано {sorted(built_c)}; хаб показує 8 прев'ю без згадок відсутніх добірок; без шуму про відсутні добірки", built_c == {"rozmalovky", "rozmalovky-novorichni"} and pg("rozmalovky.html").count('class="coloring-sheet"') == 8 and "лише 0 аркушів" not in err)
-bs.COLORING_TEXTS_FILE = str(SITE / "rozmalovky_texts.json")
+bs.COLORING_TEXTS_FILE = str(tmp / "texts_legacy.json")
 err = build()
 chk("ті самі 8 новорічних, але тексти БЕЗ standalone (старі: «три добірки») → не будуємо (інакше хаб бреше)", not list(OUTD.glob("rozmalovky*.html")) and "не позначені standalone" in err)
 # (б3) standalone — не лише декларація (аудит #1711): текст «три добірки» / назва відсутньої добірки / число хаба ≠ аркушів / не-bool прапорець → не будуємо
@@ -216,6 +225,12 @@ shared["rozmalovky-dlia-malyukiv"]["sheets"][0] = dict(shared["rozmalovky-novori
 build()
 chk("спільний аркуш у двох добірках → у хабі 13 прев'ю (дубль id пропущено), а не 14", pg("rozmalovky.html").count('class="coloring-sheet"') == 13)
 bs.COLORING_TEXTS_FILE = str(SITE / "rozmalovky_texts.json")
+# ПРОДАКШН-СТАН 18.11: шипнуті тексти (standalone) + лише 5 новорічних аркушів SMM → хаб + новорічна
+bs.COLORING_TEXTS_FILE = str(SITE / "rozmalovky_texts.json")
+(tmp / "man.json").write_text(json.dumps(mk_manifest({"rozmalovky-novorichni": 5}), ensure_ascii=False), encoding="utf-8")
+err = build()
+built_p = {q_.stem for q_ in OUTD.glob("rozmalovky*.html")}
+chk(f"шипнуті тексти + 5 новорічних аркушів → збудовано {sorted(built_p)}; без попереджень «coloring»; хаб без згадок відсутніх добірок", built_p == {"rozmalovky", "rozmalovky-novorichni"} and "coloring" not in err and not re.search(r"малюк|6–9|три добірки", pg("rozmalovky.html").split('<h1 class="page">')[1].split('<div class="coloring-grid">')[0] + pg("rozmalovky.html").split('<nav class="gift-links"')[1].split("</nav>")[0], re.I))
 # (в) хаб без тексту, а добірки з текстом → нічого (інакше футер вів би на неіснуючий хаб)
 (tmp / "man.json").write_text(json.dumps(mk_manifest(SHEETS), ensure_ascii=False), encoding="utf-8")
 no_hub = {k: v for k, v in json.loads((SITE / "rozmalovky_texts.json").read_text(encoding="utf-8")).items() if k != "rozmalovky"}

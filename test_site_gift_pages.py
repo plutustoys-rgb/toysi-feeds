@@ -245,7 +245,7 @@ chk("хаб: опис складено з побудованого (є вік і
 # ── чип «Миколай і Новий рік» і крок прибирання ──
 chk("файли подарунків відомі кроку прибирання застарілих", "podarunky.html" in bs.GIFT_PAGE_FILES and "podarunok-na-3-roky.html" in bs.GIFT_PAGE_FILES)
 src = Path(bs.__file__).read_text(encoding="utf-8")
-chk("крок прибирання: gift-файли, яких збірка не будує, видаляються окремою гілкою; початок оригінального if лишився (тест gsc_verification)", "elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES) and fn not in _gift_files:" in src and "        if (fn.startswith((\"product-\"" in src)
+chk("крок прибирання: gift-файли, яких збірка не будує, видаляються окремою гілкою; початок оригінального if лишився (тест gsc_verification)", "elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES or fn in COLORING_PAGE_FILES) and fn not in _gift_files:" in src and "        if (fn.startswith((\"product-\"" in src)
 bs.HELOVIN_JSON = str(Path(tempfile.mkdtemp()) / "none.json")
 os.environ["SITE_PICK_DATE"] = "2026-12-10"
 ny_prods = [P(f"Новорічна ялинка «{W[i % 20]}{i}»", 250, f"Ялинки{i}", "", contrib=70) for i in range(40)] + [P(f"Звичайна іграшка «{W[i % 20]}{i}»", 300 + i, f"Звич{i}", "", contrib=150) for i in range(14)]
@@ -300,7 +300,7 @@ chk("без статей сторінки подарунків НЕ лінкую
 bad_p = Path(tempfile.mkdtemp()) / "porady.json"
 bad_p.write_text(json.dumps({"porady-podarunok-na-5-rokiv": {"title": "x", "published": "2026-11-15", "lead": "y", "sections": 5}, "porady-чужа": {"title": "x"}, "porady-yak-vybraty-nastilnu-hru": {"title": "T", "published": "15.11.2026", "lead": "l", "sections": [{"h": "a", "short": "b"}] * 3}}), encoding="utf-8")
 chk("кривий porady.json (sections не список, чужий slug, дата не ISO): збірка НЕ падає, записи пропущено", bs._load_porady(str(bad_p)) == {})
-chk("файли статей відомі кроку прибирання застарілих", all(f"{s_}.html" in bs.PORADY_FILES for s_ in bs.PORADY_SLUGS) and "elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES)" in src)
+chk("файли статей відомі кроку прибирання застарілих", all(f"{s_}.html" in bs.PORADY_FILES for s_ in bs.PORADY_SLUGS) and "elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES or fn in COLORING_PAGE_FILES)" in src)
 
 if F:
     print(f"\n❌ FAIL: {len(F)}")

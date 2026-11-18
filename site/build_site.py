@@ -4782,9 +4782,9 @@ def write_coloring_pages(plan, prods):
         body = (
             crumbs_html(trail) +
             f'<h1 class="page">{esc(h1)}</h1>'
-            f'<div class="gift-intro">{_gift_paras(t["intro"])}</div>'
+            f'<div class="gift-intro coloring-wide">{_gift_paras(t["intro"])}</div>'
             f'<div class="coloring-grid">{figs}</div>' + shop_html +
-            f'<section class="gift-faq"><h2>Питання й відповіді</h2>{faq_html}</section>'
+            f'<section class="gift-faq coloring-wide"><h2>Питання й відповіді</h2>{faq_html}</section>'
             f'<nav class="gift-links" aria-label="Інші розмальовки">' + (f'<h2>Інші розмальовки</h2><ul>{links}</ul>' if links else '')
             + (f'<p><a href="{COLORING_HUB_FILE}">Усі безкоштовні розмальовки</a> · <a href="catalog.html">Увесь каталог</a></p>' if not is_hub else '<p><a href="catalog.html">Увесь каталог</a></p>') + '</nav>'
         )

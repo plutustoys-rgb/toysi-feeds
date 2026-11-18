@@ -808,7 +808,8 @@ def _load_supplier_rt(now=None):
                   "site_price": price, "rt_cost": rt_cost, "supplier": "royaltoys", "price": price,
                   # хвилі відкриття до Google (SEO 19.10): "index": false → noindex,follow і поза sitemap; нема поля → true (пілот); опис <50 знаків (тонка картка) → noindex завжди
                   "rt_noindex": v.get("index") is False or len(re.sub(r"<[^>]+>", "", _desc).strip()) < RT_MIN_DESC_INDEX,
-                  "dup_of": str(v.get("dup_of")) if re.fullmatch(r"[0-9]{1,12}", str(v.get("dup_of") or "")) else ""}   # збіг із товаром Toysi (рішення власника 20.10, варіант 1 «резерв»)
+                  "dup_of": str(v.get("dup_of")) if re.fullmatch(r"[0-9]{1,12}", str(v.get("dup_of") or "")) else "",
+                  "kv_dup_of": str(v.get("kv_dup_of")) if re.fullmatch(r"kv-[0-9]{1,12}", str(v.get("kv_dup_of") or "")) else ""}   # збіг із товаром Toysi (рішення власника 20.10, варіант 1 «резерв»)
     if skipped:
         print("[build] ⚠ supplier_rt.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
     print(f"[build] RoyalToys: {len(out)} карток із supplier_rt.json")
@@ -1009,7 +1010,7 @@ def _load_supplier_kv(now=None):
                   "site_price": price, "rt_cost": kv_cost, "supplier": "kiddisvit", "price": price, "barcode": _bc,
                   # «index» не True (false або поля нема) → noindex,follow і поза sitemap; опис <50 знаків (тонка картка) → noindex завжди
                   "rt_noindex": v.get("index") is not True or len(re.sub(r"<[^>]+>", "", _desc).strip()) < RT_MIN_DESC_INDEX,
-                  "dup_of": ""}
+                  "dup_of": str(v.get("dup_of")) if re.fullmatch(r"[0-9]{1,12}", str(v.get("dup_of") or "")) else "", "kv_dup_of": ""}   # збіг із товаром Toysi (Код 17.11, kv_dup_map.json): kv — тінь, поки Toysi в наявності
     if skipped:
         print("[build] ⚠ supplier_kv.json: не опубліковано " + ", ".join(f"{len(ids)}× {why} ({', '.join(ids[:3])}…)" for why, ids in skipped.items()), file=sys.stderr)
     print(f"[build] KIDDISVIT: {len(out)} карток із supplier_kv.json")
@@ -1101,22 +1102,40 @@ def build():
             "photo": toysi_proxy_photo(PHOTO_OVERRIDES.get(str(it.get("id")), public_photo(str(it.get("id")), pics[0]))), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
-            "rt": 1 if str(it.get("id")).startswith(("rt-", "kv-")) else 0, "kv": 1 if str(it.get("id")).startswith("kv-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""),
+            "rt": 1 if str(it.get("id")).startswith(("rt-", "kv-")) else 0, "kv": 1 if str(it.get("id")).startswith("kv-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""), "kv_dup_of": str(it.get("kv_dup_of") or ""),
             "vendor": (it.get("vendor") or "").strip(), "vendor_code": (it.get("vendor_code") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
     if _CATEGORY_OVERRIDES:
         print(f"[build] перенесення між категоріями: у файлі {len(_CATEGORY_OVERRIDES)}, застосовано до карток {_cat_ov_applied}")
     # RoyalToys-дублі Toysi, варіант 1 «резерв» (власник 20.10): rt-картка з dup_of на товар Toysi, що Є В НАЯВНОСТІ, — «тінь»: покупцям не показуємо (нема в каталозі/пошуку/sitemap/
     # блоках), сторінка жива, але noindex і canonical на сторінку Toysi. Щойно товар Toysi вичерпався (його нема в prods) — rt-картка стає звичайною.
+    # 17.11.2026 (Код: kv_dup_map/rt_kv_dup_map; SEO: canonical БЕЗ ланцюжків — завжди на кінцеву ЖИВУ картку): (1) rt- і kv- картка з dup_of на Toysi, що в наявності → тінь Toysi (пріоритет Toysi і в rt з обома dup_of/kv_dup_of);
+    # (2) rt- картка з kv_dup_of на kv-картку, що в наявності й сама НЕ тінь → тінь kv; якщо та kv — тінь Toysi, rt → одразу на Toysi (ланцюжок rt → kv → Toysi стискається). Ціль не опублікована/вичерпана → тінь не ставимо.
     _toysi_live = {q["id"] for q in prods if not q.get("rt")}
-    shadows = [q for q in prods if q.get("rt") and q.get("dup_of") in _toysi_live]
+    _by_id = {q["id"]: q for q in prods}
+    shadows = []
+    for q in prods:
+        if q.get("rt") and q.get("dup_of") in _toysi_live:
+            q["shadow_to"] = q["dup_of"]
+            shadows.append(q)
+    _toysi_shadow_ids = {q["id"] for q in shadows}
+    _rt_kv = 0
+    for q in prods:
+        if q.get("rt") and not q.get("kv") and q["id"] not in _toysi_shadow_ids and str(q.get("kv_dup_of") or "") in _by_id and _by_id[q["kv_dup_of"]].get("kv"):
+            _tgt = _by_id[q["kv_dup_of"]]
+            if _tgt["id"] in _toysi_shadow_ids:
+                q["shadow_to"] = _tgt["shadow_to"]   # ланцюжок rt → kv → Toysi: canonical одразу на кінцеву картку (Toysi)
+            else:
+                q["shadow_to"] = _tgt["id"]
+            shadows.append(q)
+            _rt_kv += 1
     if shadows:
         _sh_ids = {q["id"] for q in shadows}
         prods[:] = [q for q in prods if q["id"] not in _sh_ids]
         for q in shadows:
             q["shadow"] = True
             q["noindex"] = True
-        print(f"[build] RoyalToys: {len(shadows)} карток-дублів Toysi (Toysi є в наявності) — не показуємо, noindex + canonical на Toysi", file=sys.stderr)
+        print(f"[build] Дублі: {len(shadows)} карток-тіней (Toysi/KIDDISVIT є в наявності; з них RT→KIDDISVIT {_rt_kv}) — не показуємо, noindex + canonical на кінцеву картку", file=sys.stderr)
     # Порядок «Рекомендовані» = за ВНЕСКОМ спадно (рішення Консультанта: на перший екран —
     # позиції, що приносять маржу, а не найбільша категорія/найдорожче). Товари з невідомою
     # собівартістю (contribution=None) — у кінець. Тай-брейк: ціна спадно, потім назва (детермінізм).
@@ -3448,7 +3467,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
                else '<button class="btn" disabled>Немає в наявності</button>')
     # Тінь (RoyalToys-дубль Toysi у наявності): сторінка жива лише як резерв (noindex + canonical), але купити тут не можна й ціну не показуємо — інакше той самий товар
     # на двох живих сторінках має дві ціни (тестувальник 21, 20.10). Покупця ведемо на сторінку Toysi.
-    _shadow_twin = f'product-{p["dup_of"]}.html' if (p.get("shadow") and p.get("dup_of")) else ""   # dup_of — лише цифри (перевірено в _load_supplier_rt)
+    _shadow_twin = product_file(p["shadow_to"]) if (p.get("shadow") and p.get("shadow_to")) else ""   # shadow_to — id кінцевої живої картки (Toysi цифри / kv-<id>); product_file дає публічну адресу
     _buy_p = f'<div class="p">{p["price"]} ₴</div>'
     _shadow_note = ""    
     if _shadow_twin:
@@ -3530,7 +3549,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
     body = crumbs_html(trail) + body
     _write(product_file(p['id']), page(
         p["name"], body, extra_head=extra, title_full=product_title_for(p, in_stock), description=meta_desc,
-        canonical=(f'product-{p["dup_of"]}.html' if p.get("shadow") else product_file(p["id"])), og_image=p["photo"], og_type="product", noindex=bool(p.get("noindex"))))   # rt: хвиля не відкрита / тонкий опис
+        canonical=(product_file(p["shadow_to"]) if p.get("shadow") and p.get("shadow_to") else product_file(p["id"])), og_image=p["photo"], og_type="product", noindex=bool(p.get("noindex"))))   # rt: хвиля не відкрита / тонкий опис
 
 CART_ADDONS_MAX = 12     # пул «Додайте до замовлення» у кошику (на сторінці показуємо 3, яких ще нема в кошику)
 

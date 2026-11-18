@@ -240,6 +240,8 @@ csv_txt = out_csv.read_text(encoding="utf-8-sig")
 chk("прев'ю: CSV містить унікальний kv-51 і дубль kv-52 (двійника в наявності нема); вхідний eva_feed.xml не змінено; справжній стан листованого не створено/не змінено",
     rc == 0 and "kv-51" in csv_txt and "kv-52" in csv_txt and "унікальний" in csv_txt and "дубль" in csv_txt and xml_in.read_bytes() == xml_before and kv_eva.LISTED_FILE == real_listed_before and not kv_eva.LISTED_FILE.exists())
 
+chk("CSV прев'ю: клітинки з формулами (=, +, -, @) екрануються апострофом; звичайний текст і числа як є", kv_eva._csv_safe('=HYPERLINK("x")') == "'=HYPERLINK(\"x\")" and kv_eva._csv_safe("-1") == "'-1" and kv_eva._csv_safe("Pop") == "Pop" and kv_eva._csv_safe(None) == "" and kv_eva._csv_safe(300) == "300")
+
 if F:
     print("\nFAIL:", len(F))
     sys.exit(1)

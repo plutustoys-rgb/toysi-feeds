@@ -315,6 +315,12 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
     return dict(stats)
 
 
+def _csv_safe(v):
+    """Клітинка, що починається з = + - @ таб/CR, у Excel виконується як формула (назви беруться з даних постачальника) — префікс апострофа."""
+    t = "" if v is None else str(v)
+    return "'" + t if t[:1] in ("=", "+", "-", "@", "	", "") else t
+
+
 def preview(eva_xml: str, out_csv: str) -> int:
     """ПРОБНИЙ розрахунок (нічого не пише у фід і в стан-файли): «скільки і які kv-картки пішли б у EVA» на ПОТОЧНОМУ eva_feed.xml. Відбір будується в пам'яті, стан листованого — тимчасовий. Вихід — CSV."""
     import csv
@@ -351,7 +357,7 @@ def preview(eva_xml: str, out_csv: str) -> int:
     with open(out_csv, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(["id", "назва", "ціна", "залишок", "категорія_EVA", "бренд", "тип"])
-        w.writerows(rows)
+        w.writerows([[_csv_safe(c) for c in r] for r in rows])
     print("[kv_eva] прев'ю:", json.dumps(st, ensure_ascii=False), "→", out_csv, len(rows), "карток")
     return 0
 

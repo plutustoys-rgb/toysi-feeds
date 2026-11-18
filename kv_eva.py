@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import rt_eva
+from google_rt_feed import leaks
 
 HERE = Path(__file__).resolve().parent
 SEL_FILE = Path(os.environ.get("KV_EVA_SELECTION_FILE", str(HERE / "kv_eva_selection.json")))
@@ -184,6 +185,7 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
     have_cats = {c.get("id") for c in cats_el}
     valid = set(selection.get("valid_ids") or []) | have_cats
     live = {o.get("id") for o in offers_el if o.get("available") == "true"}           # активні картки EVA цього прогону (Toysi + RT)
+    live_names = {ge._dedup_key(o.findtext("name_ua") or "") for o in offers_el if o.get("available") == "true"}      # назви активних карток: динамічна перевірка двійників (мапи dup_of/rt_kv — знімки, а двійник може з'явитись/повернутись між їх перебудовами; аудит #1705 B1)
     toysi_names = {ge._dedup_key(o.findtext("name_ua") or "") for o in offers_el}
     rt_twins = load_rt_twins()
     stats = Counter()
@@ -218,6 +220,9 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
         if (r.get("category") or "").strip() in excluded_cats:
             stats["skip_override_exclude"] += 1
             continue
+        if not catalog and sid not in prev:
+            stats["skip_no_catalog"] += 1                        # без каталогу Toysi наявність двійників не перевірити → нових карток не додаємо
+            continue
         tw, unknown = twins_of(sid, r, sel_item, rt_twins)
         if unknown:
             stats["skip_dup_twin_unknown"] += 1
@@ -234,6 +239,12 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
         bad = _validate(f, valid, ge.EVA_NAME_MAX_LEN)
         if bad:
             stats["invalid_" + bad] += 1
+            continue
+        if leaks(f["name"], f["vendor"], f["description"], *[v for _n, v in f["params"]]):
+            stats["skip_supplier_leak"] += 1                    # ім'я постачальника/службовий id не мають потрапити в EVA-картку (рішення власника: покупець не бачить постачальника)
+            continue
+        if ge._dedup_key(f["name"]) in live_names:
+            stats["skip_name_matches_live_card"] += 1           # та сама назва, що в активній картці Toysi/RT → вважаємо двійником (замість суфікса «(артикул)»)
             continue
         active[sid] = (f, sel_item, bool(tw))
     seen = set(toysi_names)
@@ -270,7 +281,7 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
         snap = new_prev.get(sid) or {}
         r = sup_items.get(sid) or {}
         price = rt_eva._num(r.get("price")) or rt_eva._num(snap.get("price"))
-        name = r.get("name") or snap.get("name") or ""
+        name = snap.get("name") or r.get("name") or ""            # назва зі знімка (з артикулом, якщо додавався): назва існуючого id не міняється при деактивації (аудит #1705)
         if not price or price <= 0 or not name:
             continue
         o = ET.SubElement(offers_el, "offer", id=sid, available="false")

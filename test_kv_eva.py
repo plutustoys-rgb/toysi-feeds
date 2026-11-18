@@ -140,6 +140,46 @@ st4 = kv_eva.append_kv_offers(root4, ge, sel_of({"kv-1": dict(S)}), {"kv-1": ite
 chk("зіпсована rt_kv_dup_map.json → нових kv-карток НЕ додаємо (ризик зайвого дубля)", "kv-1" not in ids_of(root4) and st4.get("abort_rt_kv_map_unreadable") == 1)
 kv_eva.RT_KV_MAP_FILE.write_text(json.dumps({"rt-50": "kv-5"}), encoding="utf-8")
 
+# ---- аудит #1705: динамічні двійники за назвою, витік постачальника, порожній каталог, назва заглушки ----
+kv_eva.RT_KV_MAP_FILE.write_text("{}", encoding="utf-8")
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+rootn = base_root()
+off = rootn.find("shop").find("offers")
+for oid, nm, av in (("rt-77", "Фігурка Гаррі Pop", "true"), ("555", "Фігурка Герміона Pop", "true"), ("556", "Фігурка Рон Pop", "false")):
+    o = ET.SubElement(off, "offer", id=oid, available=av)
+    ET.SubElement(o, "name_ua").text = nm
+supn = {"kv-21": item(name="Фігурка Гаррі Pop", vendor_code="VC1"), "kv-22": item(name="Фігурка Герміона Pop", vendor_code="VC2"), "kv-23": item(name="Фігурка Рон Pop", vendor_code="VC3"),
+        "kv-24": item(name="Фігурка Невіл Pop", vendor_code="VC4")}
+seln = sel_of({k: dict(S) for k in supn})
+stn = kv_eva.append_kv_offers(rootn, ge, seln, supn, {"1": {"stock": 0}})
+idn = ids_of(rootn)
+chk("назва збігається з АКТИВНОЮ карткою Toysi/RT (мапи про двійника не знають) → kv НЕ емітовано, суфікса нема", "kv-21" not in idn and "kv-22" not in idn and stn.get("skip_name_matches_live_card") == 2)
+chk("назва збігається лише з НЕактивною карткою (Toysi 556 available=false) → емітовано з артикулом; унікальна → як є", "kv-23" in idn and "VC3" in idn["kv-23"].findtext("name_ua") and "kv-24" in idn)
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+roote = base_root()
+ste = kv_eva.append_kv_offers(roote, ge, sel_of({"kv-1": dict(S)}), {"kv-1": item()}, {})
+chk("порожній каталог Toysi (наявність двійників не перевірити) → нових kv не додаємо", "kv-1" not in ids_of(roote) and ste.get("skip_no_catalog") == 1)
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+rootl = base_root()
+supl = {"kv-11": item(vendor="KIDDISVIT"), "kv-12": item(name="Набір Kiddisvit Pop", vendor_code="X12"), "kv-13": item(description=DESC + " Виробник Kiddisvit.", vendor_code="X13"), "kv-14": item(name="Чиста назва Модель 14", vendor_code="X14")}
+stl = kv_eva.append_kv_offers(rootl, ge, sel_of({k: dict(S) for k in supl}), supl, catalog)
+idl = ids_of(rootl)
+chk("ім'я постачальника у бренді/назві/описі → картка НЕ емітується; чиста — так; у XML нема «kiddisvit»", set(idl) == {"kv-14"} and stl.get("skip_supplier_leak") == 3 and "kiddisvit" not in ET.tostring(rootl, encoding="unicode").lower())
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+rootd = base_root(toysi_live=["9001"])
+supd = {"kv-31": item(name="Колізійна назва Модель 31", vendor_code="DUP31")}
+rootd.find("shop").find("offers").append(ET.fromstring('<offer id="9100" available="true"><name_ua>Колізійна назва Модель 31</name_ua></offer>'))
+kv_eva.append_kv_offers(rootd, ge, sel_of({"kv-31": dict(S)}), supd, catalog)
+chk("назва колізії з активною карткою → kv-31 не емітовано", "kv-31" not in ids_of(rootd))
+kv_eva.LISTED_FILE.write_text(json.dumps({"v": 1, "listed": {"kv-31": {"cat": EV, "catname": "Фігурки", "name": "Колізійна назва Модель 31 (DUP31)", "price": 300, "vendor": "TestBrand", "pics": ["https://plutustoys.com.ua/img/kv/kv-31-1.jpg"], "desc": DESC}}}), encoding="utf-8")
+rootz = base_root()
+rootz.find("shop").find("offers").append(ET.fromstring('<offer id="9100" available="true"><name_ua>Колізійна назва Модель 31</name_ua></offer>'))
+kv_eva.append_kv_offers(rootz, ge, sel_of({"kv-31": dict(S)}), supd, catalog)
+z = ids_of(rootz)["kv-31"]
+chk("колись листований (з артикулом у назві), двійник з'явився → заглушка available=false зі ТОЮ САМОЮ назвою (id не перейменовується)", z.get("available") == "false" and z.findtext("name_ua") == "Колізійна назва Модель 31 (DUP31)")
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+kv_eva.RT_KV_MAP_FILE.write_text(json.dumps({"rt-50": "kv-5"}), encoding="utf-8")
+
 # ---- відбір / гарди ----
 sig = inspect.signature(rt_eva.build_selection)
 chk("rt_eva.build_selection: нові параметри необов'язкові (None) → поведінка RT не змінена", sig.parameters["overrides"].default is None and sig.parameters["include_classes"].default is None)

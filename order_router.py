@@ -1224,7 +1224,12 @@ def _retry_pending_rz_markings(conn) -> None:
 def _issue_kv_receipts(conn, test_mode: bool = False) -> None:
     """Фіскальні чеки передоплати для KIDDISVIT-замовлень сайту (kv-/kvu-): вони не йдуть у route_order() (get_orders_ready_to_forward їх виключає), тож чек виписується ТУТ — тим самим безпечним шляхом
     (_ensure_site_prepaid_receipt: claim, невідомий результат → без другого чека, money-safety суми). Збій одного замовлення не валить цикл (алерт усередині)."""
-    for order in get_kv_orders_needing_receipt(conn):
+    try:
+        orders = get_kv_orders_needing_receipt(conn)
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_router] чеки KIDDISVIT: запит не вдався ({type(e).__name__}: {str(e)[:160]}) — пропущено цикл", file=sys.stderr)
+        return
+    for order in orders:
         try:
             _ensure_site_prepaid_receipt(conn, order, test_mode)
             conn.commit()

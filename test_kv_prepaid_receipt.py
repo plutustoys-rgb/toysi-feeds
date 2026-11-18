@@ -145,6 +145,29 @@ pay("PT-K8", "777008", 850)
 cycle()
 chk("сума позицій ≠ site_charged_total → чек НЕ видано (money-safety), алерт є", len(receipt_calls) == 0 and not get("PT-K8").get("checkbox_ettn_registered_at") and alerts)
 
+
+# ── 5b. аудит #1728: скасовані/повернені/старші за межу — чек НЕ видається
+reset()
+for oid, upd in (("PT-C1", "cancelled_at = '2026-11-18T12:00:00', status = 'cancelled'"), ("PT-C2", "refund_receipt_at = '2026-11-18T12:00:00'"), ("PT-C3", "delivery_status = 'cancelled'"),
+                 ("PT-C4", "delivery_status = 'returned'"), ("PT-C5", "refund_receipt_claim_at = '2026-11-18T12:00:00'"), ("PT-C6", "created_at = '2026-11-17T23:59:59'")):
+    new_order(oid)
+    pay(oid, "7770" + oid[-1])
+    with orders_db.get_connection() as c:
+        c.execute(f"UPDATE orders SET {upd} WHERE internal_order_id = 'site_{oid}'")
+        c.commit()
+cycle()
+chk("скасоване / з чеком повернення / delivery cancelled|returned / refund claim / створене до межі KV_RECEIPT_SINCE → чек НЕ видається", len(receipt_calls) == 0)
+with orders_db.get_connection() as c:
+    chk("жодне з них не потрапляє у вибірку запиту", [o["internal_order_id"] for o in orders_db.get_kv_orders_needing_receipt(c) if o["internal_order_id"].startswith("site_PT-C")] == [])
+orig_q = orders_db.get_kv_orders_needing_receipt
+orr.get_kv_orders_needing_receipt = lambda conn: (_ for _ in ()).throw(RuntimeError("sql boom"))
+try:
+    cycle()
+    chk("збій самого запиту не валить цикл (лише рядок у stderr)", True)
+except Exception:
+    chk("збій самого запиту не валить цикл (лише рядок у stderr)", False)
+orr.get_kv_orders_needing_receipt = orig_q
+
 # ── 6. підключення до циклу
 src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_router.py"), encoding="utf-8").read()
 i = src.index("def route_pending_orders")

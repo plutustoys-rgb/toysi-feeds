@@ -257,6 +257,13 @@ kv_eva.append_kv_offers(roota, ge, sel_of({"kv-61": dict(S)}), {"kv-61": item(co
 chk("offer kv-61: ціна EVA = 100×1,5 = 150.00, а НЕ ціна сайту 999", ids_of(roota)["kv-61"].findtext("price") == "150.00")
 kv_eva.LISTED_FILE.unlink(missing_ok=True)
 
+kv_eva.LISTED_FILE.write_text(json.dumps({"v": 1, "listed": {"kv-71": {"cat": EV, "catname": "Фігурки", "name": "Фігурка Дубль Модель 71", "price": 124.66, "vendor": "TestBrand", "pics": ["https://plutustoys.com.ua/img/kv/kv-71-1.jpg"], "desc": DESC}}}), encoding="utf-8")
+rootp2 = base_root(toysi_live=["7001"])
+kv_eva.append_kv_offers(rootp2, ge, sel_of({"kv-71": dict(S, cls="DUP")}), {"kv-71": item(name="Фігурка Дубль Модель 71", cost="83.11", dup_of="7001", price="9876")}, {"7001": {"stock": 9}})   # двійник Toysi 7001 активний → заглушка
+pz = ids_of(rootp2).get("kv-71")
+chk("заглушка деактивації: ціна зі знімка з копійками (124.66), а не округлена гривня і не ціна сайту 9876", pz is not None and pz.get("available") == "false" and pz.findtext("price") == "124.66")
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+
 if F:
     print("\nFAIL:", len(F))
     sys.exit(1)

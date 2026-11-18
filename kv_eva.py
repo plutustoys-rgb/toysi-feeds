@@ -306,7 +306,7 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
             continue
         o = ET.SubElement(offers_el, "offer", id=sid, available="false")
         ET.SubElement(o, "name_ua").text = ge._truncate(ge._normalize_trailing_color_case(ge._limit_punctuation(ge._denoise_caps(ge._clean_text(name)))), ge.EVA_NAME_MAX_LEN) or f"Товар {sid}"
-        ET.SubElement(o, "price").text = f"{round(price):.2f}"
+        ET.SubElement(o, "price").text = f"{price:.2f}"                   # копійки як в активній картці (EVA-формула до копійки); округлення до гривні змінювало б ціну існуючого id (аудит #1712)
         ET.SubElement(o, "currencyId").text = "UAH"
         ET.SubElement(o, "stock_quantity").text = "0"
         cat = snap.get("cat") or (cand.get(sid) or {}).get("eva_id")

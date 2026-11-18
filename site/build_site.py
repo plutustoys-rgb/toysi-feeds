@@ -1308,6 +1308,7 @@ def build():
     write_home(toysi_prods, _cats_toysi, [c for c in nav_list if _cats_toysi.get(c)], cat_slug)
     write_ig(toysi_prods)
     has_nabory = write_nabory(toysi_prods)
+    WINTER_LINKS[:] = [(f"category-{cat_slug[c]}.html", (_CATEGORY_SEO.get(cat_slug[c]) or {}).get("h1") or c) for c in WINTER_CATEGORIES if c in cat_list and cats.get(c) and not category_hidden(c)]   # SEO 18.11: блок «Новорічне для дому» (лише існуючі непорожні категорії)
     gift_urls = write_gift_pages(toysi_prods, plan=_gift_plan) + write_porady(_porady) + write_brand_pages(_brand_plan) + write_coloring_pages(_coloring_plan, prods) + write_selection_pages(_sel_plan)
     # 5) кошик + checkout + сторінка подяки
     write_cart(_cart_addons(toysi_prods))
@@ -4286,7 +4287,7 @@ def write_gift_pages(prods, texts=None, plan=None):
             links += "".join(f'<li><a href="{s}.html">{esc(h)}</a></li>' for s, h in _selection_gift_links())
         faq_html = "".join(f"<h3>{esc(q)}</h3><p>{esc(a)}</p>" for q, a in t["faq"])
         arts = [(s_, t_) for s_, t_ in GIFT_ARTICLES_BUILT if s_ in PORADY_FOR_GIFT.get(slug, ())]
-        art_html = ('<nav class="gift-links" aria-label="Статті-поради"><h2>Поради</h2><ul>' + "".join(f'<li><a href="{s_}.html">{esc(t_)}</a></li>' for s_, t_ in arts) + '</ul></nav>') if arts else ""
+        art_html = (_winter_block_html() if slug in ("podarunok-na-mykolaia", "novorichnyi-podarunok-dytyni") else "") + (('<nav class="gift-links" aria-label="Статті-поради"><h2>Поради</h2><ul>' + "".join(f'<li><a href="{s_}.html">{esc(t_)}</a></li>' for s_, t_ in arts) + '</ul></nav>') if arts else "")
         body = (
             crumbs_html(trail) +
             f'<h1 class="page">{esc(h1)}</h1>'
@@ -4956,6 +4957,16 @@ def selection_plan(prods, texts=None):
 def _sel_parent(par, name):
     """(url, назва) батька для крихт: категорія category-<slug>.html або хаб подарунків."""
     return (GIFT_HUB_FILE, name) if par == SEL_PARENT_GIFT else (f"category-{par}.html", name)
+
+
+WINTER_CATEGORIES = ("Гірлянди", "Новорічний декор", "Іграшки на ялинку", "Льодянки", "Сніжколіпи")
+WINTER_LINKS = []   # [(url категорії, анкор)] — блок «Новорічне для дому» на podarunok-na-mykolaia і novorichnyi-podarunok-dytyni (SEO 18.11)
+
+
+def _winter_block_html():
+    if not WINTER_LINKS:
+        return ""
+    return '<nav class="gift-links" aria-label="Новорічне для дому"><h2>Новорічне для дому</h2><ul>' + "".join(f'<li><a href="{u}">{esc(a)}</a></li>' for u, a in WINTER_LINKS) + "</ul></nav>"
 
 
 def _selection_gift_links():

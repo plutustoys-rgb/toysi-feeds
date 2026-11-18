@@ -164,8 +164,9 @@ def classify_dups(rt, ty, sids, rd):
     return cls, m
 
 
-def build_selection(ty: dict, sup_items: dict, ge) -> dict:
-    """Повний відбір (важкий: Matcher по Toysi+RT і kNN; ~1–3 хв). sup_items — supplier_rt.json["items"] {rt-<id>: item}."""
+def build_selection(ty: dict, sup_items: dict, ge, overrides: dict | None = None, include_classes: tuple | None = None) -> dict:
+    """Повний відбір (важкий: Matcher по Toysi+RT і kNN; ~1–3 хв). sup_items — supplier_rt.json["items"] {rt-<id>: item}.
+    overrides/include_classes — лише для kv_eva.py (KIDDISVIT: власна таблиця ручних рішень і власний набір класів); за замовчуванням (None) поведінка RT НЕ змінюється."""
     import rt_dup_finder as rd
     rt = {sid[3:]: v for sid, v in sup_items.items()}
     sids = list(sup_items)
@@ -173,13 +174,13 @@ def build_selection(ty: dict, sup_items: dict, ge) -> dict:
     knn = Knn(m, ge)
     thr = calibrate(knn, random.Random(20261021))
     known = {knn.label(t)[0] for t in knn.items if knn.safe(t)} - {"EXCL"}       # id категорій, які поточний Toysi-фід УЖЕ віддає EVA (відомо-прийняті: співставлені + legacy у кабінеті) — єдина безпечна множина для авто-вибору
-    overrides = load_overrides()
+    overrides = load_overrides() if overrides is None else overrides
     ref_ids = valid_eva_ids()
     valid = known
     per_cat = defaultdict(list)
     preds = {}
     for sid in sids:
-        if cls[sid] not in INCLUDE_CLASSES:
+        if cls[sid] not in (INCLUDE_CLASSES if include_classes is None else include_classes):
             continue
         r = sup_items[sid]
         tokens = rd.tokens_for_sim(r["name"], set(rd.normalize_name(r.get("vendor") or "")))

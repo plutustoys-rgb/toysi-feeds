@@ -1454,6 +1454,30 @@ def _maybe_add_rt_offers(root: ET.Element, catalog: dict) -> ET.Element:
         return root
 
 
+def _maybe_add_kv_offers(root: ET.Element, catalog: dict) -> ET.Element:
+    """Товари KIDDISVIT у фіді (kv_eva.py, 18.11.2026): лише за брамою EVA_KV_IN_FEED=1, лише зі свіжими supplier_kv.json і відбором; ТІЛЬКИ без двійників у каталозі (двійник Toysi/RT є в наявності → kv не показуємо). Працює на КОПІЇ дерева: будь-який збій → фід без kv, решта без змін."""
+    import copy
+    try:
+        import kv_eva
+        if not kv_eva.gate_on():
+            return root
+        me = sys.modules[__name__]
+        if not kv_eva.supplier_fresh():
+            print("[EVA] KV: supplier_kv.json застарів (>6 год) — KIDDISVIT у цей фід НЕ додано (EVA лишає попередній стан).", file=sys.stderr)
+            return root
+        sel = kv_eva.ensure_selection(catalog, me)
+        if not sel or not kv_eva.selection_fresh(sel):
+            print("[EVA] KV: відбір відсутній/застарілий — KIDDISVIT у цей фід НЕ додано (решта без змін).", file=sys.stderr)
+            return root
+        work = copy.deepcopy(root)
+        st = kv_eva.append_kv_offers(work, me, sel, kv_eva.load_supplier(), catalog)
+        print(f"[EVA] KIDDISVIT у фіді: {st}")
+        return work
+    except Exception as e:  # noqa: BLE001
+        print(f"[EVA] KV: збій додавання ({type(e).__name__}: {str(e)[:160]}) — KIDDISVIT у фід НЕ додано, решта без змін.", file=sys.stderr)
+        return root
+
+
 def generate_feed(output_file: str = OUTPUT_FILE,
                   catalog: dict = None,
                   exclude_ids: set = None,
@@ -1491,6 +1515,7 @@ def generate_feed(output_file: str = OUTPUT_FILE,
     )
 
     root = _maybe_add_rt_offers(root, catalog)
+    root = _maybe_add_kv_offers(root, catalog)          # ПІСЛЯ RT: активні RT-картки цього фіду — двійники для kv
 
     ET.indent(root, space="  ")
     xml_str = ET.tostring(root, encoding="unicode")

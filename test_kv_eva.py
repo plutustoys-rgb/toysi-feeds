@@ -207,6 +207,39 @@ kv_eva.SUPPLIER_FILE.write_text(json.dumps({"updated": (datetime.now().astimezon
 chk("_maybe_add_kv_offers: брама ввімкнена, але supplier застарів → дерево те саме (fail-safe)", ge._maybe_add_kv_offers(rootg, {}) is rootg)
 os.environ.pop("EVA_KV_IN_FEED")
 
+# ---- PR прев'ю/TTL ----
+chk("TTL перебудови відбору для kv — 4 год (коротше за RT 12): двійник, що з'явився, не висить до півдоби", kv_eva.KV_REBUILD_AFTER_H == 4.0 and inspect.signature(kv_eva.ensure_selection).parameters["rebuild_after_h"].default == 4.0)
+kv_eva.LISTED_FILE.write_text(json.dumps({"v": 1, "listed": {"kv-41": {"cat": EV, "catname": "Фігурки", "name": "Фігурка Збережена Модель 41", "price": 300, "vendor": "Збережений бренд", "pics": ["https://plutustoys.com.ua/img/kv/kv-41-1.jpg"], "desc": DESC}}}), encoding="utf-8")
+rootv = base_root()
+kv_eva.append_kv_offers(rootv, ge, sel_of({}), {"kv-41": item(name="Фігурка Збережена Модель 41", vendor="KIDDISVIT")}, catalog)
+rootv2 = base_root()
+kv_eva.LISTED_FILE.write_text(json.dumps({"v": 1, "listed": {"kv-41": {"cat": EV, "catname": "Фігурки", "name": "Фігурка Збережена Модель 41", "price": 300, "vendor": "Збережений бренд", "pics": ["https://plutustoys.com.ua/img/kv/kv-41-1.jpg"], "desc": DESC}}}), encoding="utf-8")
+sup41 = {"kv-41": item(name="Фігурка Збережена Модель 41", vendor="KIDDISVIT", stock="0")}
+kv_eva.append_kv_offers(rootv2, ge, sel_of({}), sup41, catalog)
+zz = ids_of(rootv2)["kv-41"]
+chk("заглушка деактивації: бренд зі знімка, а не з поточного (зміненого на постачальника) запису; у XML нема «kiddisvit»", zz.get("available") == "false" and zz.findtext("vendor") == "Збережений бренд" and "kiddisvit" not in ET.tostring(rootv2, encoding="unicode").lower())
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+
+# ---- прев'ю: нічого не пише у фід і у справжній стан ----
+import parser as _parser  # noqa: E402
+kv_eva.SUPPLIER_FILE.write_text(json.dumps({"updated": datetime.now().astimezone().isoformat(), "items": {"kv-51": item(name="Прев'ю Унікальний Модель 51", vendor_code="P51"), "kv-52": item(name="Прев'ю Дубль Модель 52", vendor_code="P52", dup_of="5200")}}), encoding="utf-8")
+kv_eva.RT_KV_MAP_FILE.write_text("{}", encoding="utf-8")
+xml_in = tmp / "eva_in.xml"
+ET.ElementTree(base_root(toysi_live=["1"])).write(xml_in, encoding="utf-8")
+xml_before = xml_in.read_bytes()
+_orig_fetch, _orig_bs2 = _parser.fetch_toysi_catalog, kv_eva.build_selection
+_parser.fetch_toysi_catalog = lambda: {str(i): {"stock": 0} for i in range(25_001)}
+kv_eva.build_selection = lambda ty, sp, g: sel_of({"kv-51": dict(S), "kv-52": dict(S, cls="DUP")})
+real_listed_before = kv_eva.LISTED_FILE
+out_csv = tmp / "prev.csv"
+try:
+    rc = kv_eva.preview(str(xml_in), str(out_csv))
+finally:
+    _parser.fetch_toysi_catalog, kv_eva.build_selection = _orig_fetch, _orig_bs2
+csv_txt = out_csv.read_text(encoding="utf-8-sig")
+chk("прев'ю: CSV містить унікальний kv-51 і дубль kv-52 (двійника в наявності нема); вхідний eva_feed.xml не змінено; справжній стан листованого не створено/не змінено",
+    rc == 0 and "kv-51" in csv_txt and "kv-52" in csv_txt and "унікальний" in csv_txt and "дубль" in csv_txt and xml_in.read_bytes() == xml_before and kv_eva.LISTED_FILE == real_listed_before and not kv_eva.LISTED_FILE.exists())
+
 if F:
     print("\nFAIL:", len(F))
     sys.exit(1)

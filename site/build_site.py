@@ -1030,6 +1030,7 @@ def build():
         print(f"[build] акція {SALE_ACTIVE['week']}: −{SALE_ACTIVE['pct']}%, {len(SALE_ACTIVE['items'])} позицій у файлі, до {SALE_ACTIVE['until'].isoformat()}")
     _load_category_texts()
     _load_category_ru_alt()
+    _load_category_seo()
     _load_product_texts()
     _load_category_related()
     _load_reviews()
@@ -1263,6 +1264,8 @@ def build():
     # статті про бренди — лише разом зі сторінками брендів: ворота + головний бренд статті (перший у BRAND_FOR_PORADY) справді збудовано (інакше тексти «у каталозі є…» неправдиві)
     _porady = {s: v for s, v in _load_porady().items() if s not in BRAND_FOR_PORADY or BRAND_FOR_PORADY[s][0] in _brand_slugs}
     GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
+    _sel_plan = selection_plan(prods)   # сторінки-добори за назвою (SEO 18.11: «Зошити в косу лінію»): план ДО запису категорій, щоб категорія-батько знала про посилання
+    SELECTION_BUILT[:] = [(s, h, par) for s, h, _t, par, _it, _tx in _sel_plan]
     _coloring_plan = coloring_plan(prods)   # безкоштовні розмальовки (SEO 18.11): будуємо лише сторінки, для яких є текст і ≥COLORING_MIN_SHEETS аркушів (png+pdf у site/colorings/)
     _col_gone = sorted(fn for fn in COLORING_PAGE_FILES if os.path.isfile(os.path.join(OUT, fn)) and fn[:-5] not in {s for s, _h, _sh, _t in _coloring_plan})
     if _col_gone:   # хоч одна сторінка розмальовок була жива в попередній збірці, а тепер її нема в плані (аркуш/текст/файл/кількість зникли) → збірка її ПРИБЕРЕ: алерт (аудит #1707/#1711; сезонна сторінка не має зникати мовчки)
@@ -1305,7 +1308,7 @@ def build():
     write_home(toysi_prods, _cats_toysi, [c for c in nav_list if _cats_toysi.get(c)], cat_slug)
     write_ig(toysi_prods)
     has_nabory = write_nabory(toysi_prods)
-    gift_urls = write_gift_pages(toysi_prods, plan=_gift_plan) + write_porady(_porady) + write_brand_pages(_brand_plan) + write_coloring_pages(_coloring_plan, prods)
+    gift_urls = write_gift_pages(toysi_prods, plan=_gift_plan) + write_porady(_porady) + write_brand_pages(_brand_plan) + write_coloring_pages(_coloring_plan, prods) + write_selection_pages(_sel_plan)
     # 5) кошик + checkout + сторінка подяки
     write_cart(_cart_addons(toysi_prods))
     write_thanks()
@@ -1346,7 +1349,7 @@ def build():
                 removed += 1
             except OSError:
                 pass
-        elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES or fn in COLORING_PAGE_FILES) and fn not in _gift_files:   # сторінка подарунків, якої ця збірка не будує (мало товарів/нема тексту), не лишається живою
+        elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES or fn in COLORING_PAGE_FILES or fn in SELECTION_PAGE_FILES) and fn not in _gift_files:   # сторінка подарунків, якої ця збірка не будує (мало товарів/нема тексту), не лишається живою
             try:
                 os.remove(os.path.join(OUT, fn))
                 removed += 1
@@ -1359,6 +1362,9 @@ def build():
     _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)
     if _unmatched:
         print(f"[build] ⚠ category_texts.json: slug без сторінки категорії (друкарська помилка? текст не з'явиться): {_unmatched[:10]}", file=sys.stderr)
+    _seo_unmatched = sorted(set(_CATEGORY_SEO) - _written_slugs)
+    if _seo_unmatched:
+        print(f"[build] ⚠ category_seo.json: slug без сторінки категорії (друкарська помилка? перекриття не з'явиться): {_seo_unmatched[:10]}", file=sys.stderr)
     _alt_unmatched = sorted(set(_CATEGORY_RU_ALT) - _written_slugs)
     if _alt_unmatched:
         print(f"[build] ⚠ category_ru_alt.json: slug без сторінки категорії (друкарська помилка? рядок не з'явиться): {_alt_unmatched[:10]}", file=sys.stderr)
@@ -2080,6 +2086,8 @@ def _category_intro_html(fname, cat_prods=None):
     """Вступний текст категорії (лише 1-ша сторінка; на пагінації не дублюємо). slug = ім'я файлу без «category-» і «.html». HTML у тексті екранується, абзаци — за порожнім рядком."""
     m = re.fullmatch(r"category-(.+)\.html", fname or "")
     text = _CATEGORY_TEXTS.get(m.group(1)) if m else None
+    if m and m.group(1) in _CATEGORY_SEO:   # SEO-перекриття (18.11): вступ із category_seo.json замінює category_texts.json (лише 1-ша сторінка — цю функцію й викликають із k == 1)
+        text = _CATEGORY_SEO[m.group(1)]["intro"]
     if not text and m and m.group(1) in BRAND_CATEGORIES:   # SEO 21.10: динамічний текст брендової категорії (із даних збірки)
         text = brand_category_text(m.group(1), cat_prods)
     alt = _CATEGORY_RU_ALT.get(m.group(1)) if m else None
@@ -2699,6 +2707,11 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         ptitle = title if k == 1 else f"{title} — сторінка {k}"
         full_t, desc = category_meta(active, total, min((x["price"] for x in prods), default=0), k, pages)
         trail = [("Головна", "index.html")] + ([("Усі категорії", "catalog.html")] if active else []) + [(active or "Усі категорії", None)]
+        _bslug = (re.fullmatch(r"category-(.+)\.html", fname or "") or [None, None])[1]
+        _ov = _CATEGORY_SEO.get(_bslug) if (active and not special and k == 1 and _bslug) else None   # SEO-перекриття категорії (18.11): title/H1/вступ/FAQ — лише 1-ша сторінка; нема запису → як раніше
+        if _ov:
+            full_t = _ov["title"]
+            desc = _ov.get("description") or desc
         if special:   # службова сторінка зі своїм H1/title/description (напр. /utsinka.html)
             full_t = special["title"] if k == 1 else special["title"].replace(" | PlutusToys", f" — сторінка {k} | PlutusToys")
             desc = (special["desc"] if k == 1 else f"Сторінка {k} з {pages}. " + special["desc"])[:DESC_MAX]
@@ -2707,7 +2720,9 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
         head += _ld_script({"@context": "https://schema.org", "@type": "ItemList",
                             "itemListElement": [{"@type": "ListItem", "position": (k - 1) * PER_PAGE + i + 1,
                                                  "url": f"{SITE_URL}/{product_file(x['id'])}"} for i, x in enumerate(chunk)]})
-        _bslug = (re.fullmatch(r"category-(.+)\.html", fname or "") or [None, None])[1]
+        if _ov:
+            head += _ld_script({"@context": "https://schema.org", "@type": "FAQPage",
+                                "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in _ov["faq"]]})
         if active and not special and k == 1 and _bslug in BRAND_CATEGORIES:   # SEO 21.10: CollectionPage (BreadcrumbList і ItemList лишаються)
             head += _ld_script({"@context": "https://schema.org", "@type": "CollectionPage", "name": active, "url": f"{SITE_URL}/{fname}", "description": desc,
                                 "about": {"@type": "Brand", "name": BRAND_CATEGORIES[_bslug]["brand"]}})
@@ -2766,13 +2781,15 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
             urls = json.dumps({c: f"category-{cat_slug[c]}.html" for c in cat_list}, ensure_ascii=False).replace("</", "<\\/")
             body = (
                 crumbs_html(trail) +   # на сторінці категорії крихти лишаємо (навігація «Головна › Каталог › Категорія» + внутрішні посилання для SEO), «Сторінку 1 з N» прибрано
-                f'<div class="cat-bar"><h1 class="page cat-h1">{esc(active)}</h1>' + _catalog_controls(preset=active, rtonly=bool(prods) and all(p.get("rt") for p in prods)) + catalog_mascot_html() + '</div>\n' +
+                f'<div class="cat-bar"><h1 class="page cat-h1">{esc(_ov["h1"] if _ov else active)}</h1>' + _catalog_controls(preset=active, rtonly=bool(prods) and all(p.get("rt") for p in prods)) + catalog_mascot_html() + '</div>\n' +
                 f'<script type="application/json" id="cat-urls">{urls}</script>\n' +
                 chips(cat_list, cat_slug, active) +
                 _category_top_html(fname, prods) +
                 (COLORING_CAT_NOTICE if (active in COLORING_CATEGORIES and COLORING_BUILT) else "") +
+                _selection_cat_notice(_bslug) +
                 _catalog_js_grid() +
                 f'<div id="cat-static">{static_grid}</div>' +
+                (_ov_faq_html(_ov) if _ov else "") +
                 _relcats_html(fname, cat_slug, active)
             )
             _write(cur, page(ptitle, body, extra_head=head, description=desc, canonical=cur, og_image=OG_IMAGE, title_full=full_t, noindex=bool(active and category_hidden(active))))
@@ -4803,6 +4820,162 @@ def write_coloring_pages(plan, prods):
         desc = _cut(" ".join(first[:2]), DESC_MAX) or h1
         _write(fname, page(h1, body, extra_head=head, description=desc, canonical=fname, og_image=f"{SITE_URL}/{COLORING_DIR}/{sheets[0]['id']}.png", title_full=(f"{h1} | PlutusToys" if len(h1) + 13 <= TITLE_MAX else h1)))
         written.append((fname, "0.7" if is_hub else "0.6", "weekly"))
+    return written
+
+
+# ── SEO 18.11 (рішення власника «запускай обидві»): перекриття SEO-полів категорії + сторінки-добори за назвою ──
+CATEGORY_SEO_FILE = os.path.join(OUT, "category_seo.json")
+CATEGORY_SEO_FAQ_MIN, CATEGORY_SEO_FAQ_MAX = 3, 6
+_CATEGORY_SEO = {}   # {slug категорії: {title, h1, intro, faq: [(q, a)], description?}} — нема запису → категорія як раніше
+_SEO_BAD_TEXT_RX = re.compile(r"оригінал|офіційн|ліцензійн|дистриб|kiddi\s*svit|кіддісвіт|\bkvu?-[0-9]|<|>", re.I)
+
+
+def _seo_clean_faq(raw):
+    return [(x["q"].strip(), x["a"].strip()) for x in (raw if isinstance(raw, list) else [])
+            if isinstance(x, dict) and isinstance(x.get("q"), str) and isinstance(x.get("a"), str) and x["q"].strip() and x["a"].strip()]
+
+
+def _load_category_seo(path=None):
+    """site/category_seo.json → {slug: {"title", "h1", "intro", "faq": [(q, a), …], "description"?}}. Кривий запис, заборонені слова/теги, надто довгий title,
+    <3 питань — пропускаємо ГОЛОСНО (категорія лишається як була). Нема файлу — тихо."""
+    global _CATEGORY_SEO
+    path = path or CATEGORY_SEO_FILE
+    _CATEGORY_SEO = {}
+    if not os.path.isfile(path):
+        return _CATEGORY_SEO
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"[build] ⚠ category_seo.json не читається ({type(e).__name__}: {e}) — SEO-перекриттів категорій не буде", file=sys.stderr)
+        return _CATEGORY_SEO
+    if not isinstance(raw, dict):
+        print("[build] ⚠ category_seo.json: корінь не об'єкт {slug: {title, h1, intro, faq}} — перекриттів не буде", file=sys.stderr)
+        return _CATEGORY_SEO
+    for slug, v in raw.items():
+        if str(slug).startswith("_") or not isinstance(v, dict):
+            continue
+        title, h1, intro, desc = v.get("title"), v.get("h1"), v.get("intro"), v.get("description")
+        faq = _seo_clean_faq(v.get("faq"))
+        if not all(isinstance(x, str) and x.strip() for x in (title, h1, intro)) or len(faq) < CATEGORY_SEO_FAQ_MIN:
+            print(f"[build] ⚠ category_seo.json[{slug}]: потрібні рядки title, h1, intro і ≥{CATEGORY_SEO_FAQ_MIN} пар q/a — запис пропущено", file=sys.stderr)
+            continue
+        if desc is not None and not (isinstance(desc, str) and desc.strip()):
+            desc = None
+        _all = " ".join([title, h1, intro] + [q + " " + a for q, a in faq] + ([desc] if desc else []))
+        if _SEO_BAD_TEXT_RX.search(_all) or _kv_leaks(_all):
+            print(f"[build] ⚠ category_seo.json[{slug}]: заборонене слово (оригінал/офіційний/ліцензійний/дистриб'ютор), ім'я постачальника чи «<» «>» — запис пропущено", file=sys.stderr)
+            continue
+        if len(title.strip()) > TITLE_MAX:
+            print(f"[build] ⚠ category_seo.json[{slug}]: title {len(title.strip())} симв. > {TITLE_MAX} — запис пропущено (Google обріже)", file=sys.stderr)
+            continue
+        _warn_money_rendered("категорія-SEO", slug, intro + " " + " ".join(a for _q, a in faq))
+        _CATEGORY_SEO[str(slug)] = {"title": title.strip(), "h1": h1.strip(), "intro": intro.strip(), "faq": faq[:CATEGORY_SEO_FAQ_MAX],
+                                    **({"description": _cut(desc.strip(), DESC_MAX)} if desc else {})}
+    return _CATEGORY_SEO
+
+
+def _ov_faq_html(ov):
+    return '<section class="gift-faq coloring-wide"><h2>Питання й відповіді</h2>' + "".join(f"<h3>{esc(q)}</h3><p>{esc(a)}</p>" for q, a in ov["faq"]) + "</section>\n"
+
+
+# Сторінки-добори за назвою товару (не за категорією): slug, H1, title, slug категорії-батька, предикат за назвою. Тексти — site/selection_pages.json {slug: {intro, faq}} від Копірайтера.
+SELECTION_TEXTS_FILE = os.path.join(OUT, "selection_pages.json")
+SELECTION_MIN_ITEMS, SELECTION_MAX_ITEMS = 12, 48
+SELECTION_FAQ_MIN, SELECTION_FAQ_MAX = 3, 5
+_SEL_KOSA_RX = re.compile(r"(?<!\w)кос(?:а|у|ою|ої|ій|і|ий|ого|и|их|им|ими|е)?\.?\s*(?:лін|з\s*доп)|допоміжн", re.I)   # аудит #1726: «космос лінія» не ловимо, «кос. лінія» ловимо
+SELECTION_PAGES = (
+    ("zoshyty-u-kosu-liniiu", "Зошити в косу лінію", "Зошити в косу лінію та з допоміжною лінією — купити | PlutusToys", "zoshyty", "Зошити",
+     lambda p: "зошит" in (p.get("name") or "").lower() and bool(_SEL_KOSA_RX.search(p.get("name") or ""))),
+)
+SELECTION_PAGE_FILES = frozenset(f"{s}.html" for s, _h, _t, _par, _pn, _fn in SELECTION_PAGES)
+SELECTION_BUILT = []   # [(slug, h1, parent_cat_slug)] збудованих у цій збірці; категорія-батько лінкує лише на них
+
+
+def _load_selection_texts(path=None):
+    """site/selection_pages.json → {slug: {"intro", "faq": [(q, a), …]}}. Кривий запис — ГОЛОСНО, сторінка без тексту не будується."""
+    path = path or SELECTION_TEXTS_FILE
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"[build] ⚠ selection_pages.json не читається ({type(e).__name__}: {e}) — сторінки-добори не будуються", file=sys.stderr)
+        return {}
+    if not isinstance(raw, dict):
+        print("[build] ⚠ selection_pages.json: корінь не об'єкт {slug: {intro, faq}} — сторінки-добори не будуються", file=sys.stderr)
+        return {}
+    out = {}
+    for slug, v in raw.items():
+        if str(slug).startswith("_") or not isinstance(v, dict):
+            continue
+        intro, faq = v.get("intro"), _seo_clean_faq(v.get("faq"))
+        if not isinstance(intro, str) or not intro.strip() or len(faq) < SELECTION_FAQ_MIN:
+            print(f"[build] ⚠ selection_pages.json[{slug}]: потрібні рядок intro і ≥{SELECTION_FAQ_MIN} пар q/a — запис пропущено", file=sys.stderr)
+            continue
+        if _SEO_BAD_TEXT_RX.search(" ".join([intro] + [q + " " + a for q, a in faq])) or _kv_leaks(" ".join([intro] + [q + " " + a for q, a in faq])):
+            print(f"[build] ⚠ selection_pages.json[{slug}]: заборонене слово, ім'я постачальника чи «<» «>» — запис пропущено", file=sys.stderr)
+            continue
+        _warn_money_rendered("добір", slug, intro + " " + " ".join(a for _q, a in faq))
+        out[str(slug)] = {"intro": intro.strip(), "faq": faq[:SELECTION_FAQ_MAX]}
+    return out
+
+
+def selection_plan(prods, texts=None):
+    """[(slug, h1, title, parent_slug, items, text)] сторінок-добірок, які МОЖНА побудувати: є текст і ≥SELECTION_MIN_ITEMS карток у наявності з фото й ціною
+    (без тіней, noindex і уцінки); решту — голосне попередження."""
+    texts = _load_selection_texts() if texts is None else texts
+    pool = [p for p in prods if (p.get("stock") or 0) > 0 and p.get("photo") and (p.get("price") or 0) > 0 and not p.get("shadow")
+            and not p.get("noindex") and not _is_markdown_item(p)]
+    plan = []
+    for slug, h1, title, par, _pname, fn in SELECTION_PAGES:
+        if slug not in texts:
+            if os.path.isfile(SELECTION_TEXTS_FILE) or os.path.isfile(os.path.join(OUT, f"{slug}.html")):
+                print(f"[build] ⚠ selection: для {slug} нема тексту в selection_pages.json — сторінку не будуємо", file=sys.stderr)
+            continue
+        items = [p for p in pool if fn(p)]
+        items.sort(key=lambda p: (-(p["contribution"] if p.get("contribution") is not None else -1e9), -(p.get("price") or 0), str(p["id"])))
+        if len(items) < SELECTION_MIN_ITEMS:
+            print(f"[build] ⚠ selection: {slug} — лише {len(items)} карток за назвою (< {SELECTION_MIN_ITEMS}) — сторінку не будуємо", file=sys.stderr)
+            continue
+        plan.append((slug, h1, title, par, items[:SELECTION_MAX_ITEMS], texts[slug]))
+    return plan
+
+
+def _selection_cat_notice(cat_slug):
+    """Рядок у категорії-батьку з посиланням на збудовану сторінку-добір."""
+    links = [(s, h) for s, h, par in SELECTION_BUILT if par == cat_slug]
+    if not links:
+        return ""
+    return '<p class="sale-lead">' + " · ".join(f'<a href="{s}.html">{esc(h)}</a>' for s, h in links) + "</p>\n"
+
+
+def write_selection_pages(plan):
+    """Пише сторінки-добори; повертає [(файл, пріоритет, частота)] для sitemap. ItemList + FAQPage + BreadcrumbList, canonical на себе."""
+    written = []
+    names = {s: pn for s, _h, _t, _par, pn, _fn in SELECTION_PAGES}
+    for slug, h1, title, par, items, t in plan:
+        fname = f"{slug}.html"
+        trail = [("Головна", "index.html"), (names[slug], f"category-{par}.html"), (h1, None)]
+        faq_html = "".join(f"<h3>{esc(q)}</h3><p>{esc(a)}</p>" for q, a in t["faq"])
+        body = (
+            crumbs_html(trail) +
+            f'<h1 class="page">{esc(h1)}</h1>'
+            f'<div class="gift-intro">{_gift_paras(t["intro"])}</div>'
+            f'<div class="gift-list" id="gift-list" data-list="selection_{slug}">' + grid(items, eager_n=min(3, len(items)), badge=True) + '</div>'
+            f'<section class="gift-faq"><h2>Питання й відповіді</h2>{faq_html}</section>'
+            f'<nav class="gift-links" aria-label="Інші розділи"><p><a href="category-{par}.html">Усі {esc(names[slug].lower())}</a> · <a href="catalog.html">Увесь каталог</a></p></nav>'
+        )
+        head = breadcrumb_ld(trail)
+        head += _ld_script({"@context": "https://schema.org", "@type": "ItemList", "name": h1,
+                            "itemListElement": [{"@type": "ListItem", "position": i + 1, "url": f"{SITE_URL}/{product_file(x['id'])}"} for i, x in enumerate(items)]})
+        head += _ld_script({"@context": "https://schema.org", "@type": "FAQPage",
+                            "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in t["faq"]]})
+        first = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", t["intro"]).strip())
+        desc = _cut(" ".join(first[:2]), DESC_MAX) or h1
+        _write(fname, page(h1, body, extra_head=head, description=desc, canonical=fname, og_image=OG_IMAGE, title_full=title))
+        written.append((fname, "0.6", "weekly"))
     return written
 
 

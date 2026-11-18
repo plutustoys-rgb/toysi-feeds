@@ -318,7 +318,7 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
 def _csv_safe(v):
     """Клітинка, що починається з = + - @ таб/CR, у Excel виконується як формула (назви беруться з даних постачальника) — префікс апострофа."""
     t = "" if v is None else str(v)
-    return "'" + t if t[:1] in ("=", "+", "-", "@", "	", "") else t
+    return "'" + t if t[:1] in ("=", "+", "-", "@", chr(9), chr(13)) else t
 
 
 def preview(eva_xml: str, out_csv: str) -> int:

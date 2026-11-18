@@ -43,6 +43,12 @@ texts = bs._load_brand_texts(str(SITE / "brand_pages.json"))
 want = {s for s, _p, _f in bs.BRAND_PAGES}
 chk(f"site/brand_pages.json: усі {len(want)} сторінок брендів проходять завантажувач (є h1, intro, ≥3 питання; без заборонених слів)", set(texts) == want)
 chk("тексти: жодного «оригінал/офіційний/ліцензійний/дистриб'ютор», імені постачальника, «<» чи «>»", not any(bs._BRAND_BAD_TEXT_RX.search(" ".join([v["h1"], v["intro"]] + [q + " " + a for q, a in v["faq"]])) for v in texts.values()))
+# підсторінка Funko приймає 1 питання, головна сторінка — ні (мін. 3)
+one = tmp / "one_faq.json"
+one.write_text(json.dumps({"brend-funko-pop-anime": {"h1": "Funko аніме", "intro": "Фігурки героїв аніме.", "faq": [{"q": "q", "a": "a"}]},
+                           "brend-funko-pop": {"h1": "Funko", "intro": "Фігурки.", "faq": [{"q": "q", "a": "a"}]}}, ensure_ascii=False), encoding="utf-8")
+_one = bs._load_brand_texts(str(one))
+chk("підсторінка Funko з 1 питанням — приймається; головна сторінка бренду з 1 питанням — пропущена", "brend-funko-pop-anime" in _one and "brend-funko-pop" not in _one)
 bad = tmp / "bad.json"
 bad.write_text(json.dumps({"brend-bratz": {"h1": "Ляльки Bratz", "intro": "Це оригінальна лялька.", "faq": [{"q": f"q{i}", "a": f"a{i}"} for i in range(3)]},
                            "brend-baby-born": {"h1": "Ляльки Baby Born", "intro": "Ляльки від KIDDISVIT.", "faq": [{"q": f"q{i}", "a": f"a{i}"} for i in range(3)]},

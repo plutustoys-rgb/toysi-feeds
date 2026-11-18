@@ -4424,6 +4424,7 @@ BRAND_HUB_FILE = "brendy.html"
 BRAND_MIN_ITEMS = 12
 BRAND_SHOW_MAX = 48
 BRAND_FAQ_MIN, BRAND_FAQ_MAX = 3, 6
+BRAND_SUB_FAQ_MIN = 1   # підсторінки Funko (аудит текстів 18.11: FAQ не дублює головну сторінку — лишається одне унікальне питання про серії)
 BRAND_LIST_NAME = "brand_page"
 _BRAND_BAD_TEXT_RX = re.compile(r"оригінал|офіційн|ліцензійн|дистриб|kiddi\s*svit|кіддісвіт|\bkvu?-[0-9]|<|>", re.I)
 BRAND_BUILT = []    # [(slug, h1)] побудованих сторінок поточної збірки; footer() і статті читають
@@ -4468,6 +4469,7 @@ BRAND_PAGES = (
     ("brend-funko-pop-harry-potter", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Funko > Гаррі Поттер"),
     ("brend-funko-pop-marvel", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Хлопчикам > Ліцензійні герої > Marvel"),
 )
+_BRAND_SUB_SLUGS = frozenset(s for s, _par, _fn in BRAND_PAGES if _par)
 BRAND_PAGE_FILES = frozenset(f"{s}.html" for s, _par, _fn in BRAND_PAGES) | {BRAND_HUB_FILE}
 
 
@@ -4491,8 +4493,8 @@ def _load_brand_texts(path=None):
             continue
         h1, intro, _faq = v.get("h1"), v.get("intro"), v.get("faq")
         faq = [(x["q"].strip(), x["a"].strip()) for x in (_faq if isinstance(_faq, list) else []) if isinstance(x, dict) and isinstance(x.get("q"), str) and isinstance(x.get("a"), str) and x["q"].strip() and x["a"].strip()]
-        if not isinstance(h1, str) or not h1.strip() or not isinstance(intro, str) or not intro.strip() or len(faq) < BRAND_FAQ_MIN:
-            print(f"[build] ⚠ brand_pages.json[{slug}]: потрібні рядки h1, intro і ≥{BRAND_FAQ_MIN} пар q/a — запис пропущено", file=sys.stderr)
+        if not isinstance(h1, str) or not h1.strip() or not isinstance(intro, str) or not intro.strip() or len(faq) < (BRAND_SUB_FAQ_MIN if slug in _BRAND_SUB_SLUGS else BRAND_FAQ_MIN):
+            print(f"[build] ⚠ brand_pages.json[{slug}]: потрібні рядки h1, intro і ≥{BRAND_SUB_FAQ_MIN if slug in _BRAND_SUB_SLUGS else BRAND_FAQ_MIN} пар q/a — запис пропущено", file=sys.stderr)
             continue
         if _BRAND_BAD_TEXT_RX.search(" ".join([h1, intro] + [q + " " + a for q, a in faq])):
             print(f"[build] ⚠ brand_pages.json[{slug}]: заборонене слово («оригінал/офіційний/ліцензійний/дистриб'ютор», ім'я постачальника) чи «<» «>» — запис пропущено", file=sys.stderr)

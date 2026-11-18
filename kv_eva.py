@@ -41,8 +41,16 @@ MIN_KEEP_RATIO = rt_eva.MIN_KEEP_RATIO
 KV_ID_RX = re.compile(r"kv-[0-9]{1,12}")
 
 
+def gate_mode() -> str:
+    """EVA_KV_IN_FEED: «1» — додавати/вести kv-картки; «deactivate» — АВАРІЙНЕ вимкнення: усі колись додані kv-картки віддаються як available=false (EVA вимикає їх, не видаляє), нових немає; будь-що інше/порожньо — kv у фіді нема взагалі (картки, додані раніше, EVA просто перестає отримувати оновлення)."""
+    v = os.environ.get("EVA_KV_IN_FEED", "").strip().lower()
+    if v and v not in ("0", "1", "deactivate"):
+        print(f"[kv_eva] УВАГА: невідоме значення EVA_KV_IN_FEED={v!r} (очікується 1 / deactivate / порожньо) — kv у фіді НЕ буде; це НЕ вимкнення раніше доданих карток (для вимкнення — deactivate).", file=sys.stderr)
+    return v if v in ("1", "deactivate") else ""
+
+
 def gate_on() -> bool:
-    return os.environ.get("EVA_KV_IN_FEED") == "1"
+    return gate_mode() == "1"
 
 
 def load_overrides() -> dict:
@@ -192,7 +200,7 @@ def twin_in_stock(tid: str, live: set, catalog: dict | None, ge) -> bool:
     return False
 
 
-def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, catalog: dict | None = None) -> dict:
+def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, catalog: dict | None = None, deactivate_all: bool = False) -> dict:
     """Дописує у <shop> категорії (якщо ще нема) і offer'и KIDDISVIT за правилом з докстрінга. root — результат ge._build_xml (+ RT, якщо ввімкнено) ДО indent/CDATA. catalog — каталог Toysi {id: item} (наявність двійників)."""
     from forbidden_products import is_forbidden
     shop = root.find("shop")
@@ -204,13 +212,16 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
     toysi_names = {ge._dedup_key(o.findtext("name_ua") or "") for o in offers_el}
     rt_twins = load_rt_twins()
     stats = Counter()
-    if rt_twins is None:
+    if rt_twins is None and not deactivate_all:
         stats["abort_rt_kv_map_unreadable"] += 1               # без мапи RT↔kv не знаємо, чи нема RT-двійника в EVA: нічого нового не додаємо, лише підтримуємо вже листоване (нижче)
         rt_twins = {}
         twins_ok = False
     else:
         twins_ok = True
     prev = _load_listed()
+    if deactivate_all and not prev:
+        print("[kv_eva] УВАГА: аварійне вимкнення, але знімок kv_eva_listed_state.json порожній/відсутній/нечитабельний — нема що вимикати; картки, додані раніше, лишаться активними в EVA. Перевірити файл.", file=sys.stderr)
+        stats["deactivate_empty_snapshot"] += 1
     items = selection.get("items", {})
     cand = {}
     for sid, si in items.items():
@@ -227,6 +238,9 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
             si["eva_id"], si["eva_name"] = sc, (prev[sid].get("catname") or si.get("eva_name") or "")
     excluded_cats = {k for k, v in load_overrides().items() if v is None}
     active = {}
+    if deactivate_all:
+        cand = {}                                               # аварійне вимкнення: жодної активної kv-картки → усі колись листовані підуть заглушками available=false
+        stats["deactivate_all"] += 1
     for sid, sel_item in cand.items():
         r = sup_items.get(sid)
         if not r:
@@ -310,7 +324,7 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
         ET.SubElement(o, "currencyId").text = "UAH"
         ET.SubElement(o, "stock_quantity").text = "0"
         cat = snap.get("cat") or (cand.get(sid) or {}).get("eva_id")
-        if cat and cat in valid:
+        if cat and (cat in valid or deactivate_all):             # аварійне вимкнення: категорія зі знімка була валідною, коли картку додавали, — не губимо її через застарілий відбір
             ET.SubElement(o, "categoryId").text = cat
             if cat not in have_cats:
                 ET.SubElement(cats_el, "category", id=cat).text = ge._clean_text(snap.get("catname") or (cand.get(sid) or {}).get("eva_name") or cat)
@@ -325,6 +339,8 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
         if len(d) >= ge.EVA_DESCRIPTION_MIN_LEN:
             ET.SubElement(o, "description_ua").text = d
         stats["deactivated"] += 1
+    if deactivate_all:
+        return dict(stats)                                     # аварійне вимкнення стан НЕ переписує (зіпсований/порожній файл не знищуємо; знімки потрібні для повторного вмикання)
     try:
         rt_eva._atomic_write(LISTED_FILE, {"v": 1, "listed": new_prev, "saved_at": datetime.now().isoformat(timespec="seconds")})
     except OSError as e:

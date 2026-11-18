@@ -91,7 +91,11 @@ chk("Marvel: шлях «…Marvel» АБО назва (Танос, Шибайг�
     rules["brend-funko-pop-marvel"](nm("Funko Pop Танос", "Funko", "Бренди > Funko")) and rules["brend-funko-pop-marvel"](nm("Funko Pop Шибайголов", "Funko", "Іграшки для колекціонування"))
     and rules["brend-funko-pop-marvel"](nm("Funko Pop Тор Рагнарок", "Funko", "")) and rules["brend-funko-pop-marvel"](nm("Funko Hulk", "Funko", "Хлопчикам > Ліцензійні герої > Marvel"))
     and not rules["brend-funko-pop-marvel"](nm("Funko Pop Аркейн – Віктор", "Funko", "")) and not rules["brend-funko-pop-marvel"](nm("Funko Pop Ворота Балдура – Імператор", "Funko", ""))
-    and not rules["brend-funko-pop-marvel"](nm("Marvel пазл", "Ravensburger", "Пазли")))
+    and not rules["brend-funko-pop-marvel"](nm("Marvel пазл", "Ravensburger", "Пазли"))
+    and not rules["brend-funko-pop-marvel"](nm("Ігрова фігурка Funko POP! - Хелоу Кітті в торті", "Funko", "Funko > Герої мультфільмів"))
+    and not rules["brend-funko-pop-marvel"](nm("Funko POP! серії Підземелля смакоти - Лайос Торден", "Funko", "Ліцензійні герої > Герої Аніме"))
+    and not rules["brend-funko-pop-marvel"](nm("Funko Pop Тореадор", "Funko", "")) and not rules["brend-funko-pop-marvel"](nm("Funko Pop Торговець", "Funko", ""))
+    and rules["brend-funko-pop-marvel"](nm("Funko Pop Тор", "Funko", "")) and rules["brend-funko-pop-marvel"](nm("Фігурка Funko Тора", "Funko", "")))   # аудит #1727: «тор» і з правою межею (не «торт», «Торден»)
 
 # ── (3) збірка ──
 now = datetime.now(timezone.utc)

@@ -4457,7 +4457,7 @@ def _is_funko(p):
 # (slug, батьківська сторінка або None, правило-предикат). Підсторінки Funko — лише картки Funko (H1 «Funko Pop …») з потрібним шляхом KIDDISVIT (поле src_path; Toysi/RT без шляху — лише на головній сторінці Funko).
 # підсторінки Funko «Гаррі Поттер» і «Marvel»: шлях АБО назва (SEO 18.11 15:31, варіант «а»: за шляхом HP було лише 9 карток < BRAND_MIN_ITEMS, герої з тексту лежали в інших шляхах)
 _BR_HP = re.compile(r"harry potter|гаррі поттер|гарі поттер|hogwarts|гоґвортс|гогвортс")
-_BR_MARVEL = re.compile(r"marvel|марвел|месник|avengers|людина[- ]павук|spider-?man|залізна людина|iron man|танос|thanos|шибайголов|daredevil|дедпул|deadpool|росомаха|wolverine|халк|hulk|(?<!\w)тор|локі|loki|капітан америка|чорна пантера|black panther|вартові галактики|groot|грут|веном|venom|x-men|люди ікс")
+_BR_MARVEL = re.compile(r"marvel|марвел|месник|avengers|людина[- ]павук|spider-?man|залізна людина|iron man|танос|thanos|шибайголов|daredevil|дедпул|deadpool|росомаха|wolverine|халк|hulk|(?<!\w)тор(?:а|у|ом)?(?!\w)|локі|loki|капітан америка|чорна пантера|black panther|вартові галактики|groot|грут|веном|venom|x-men|люди ікс")
 BRAND_PAGES = (
     ("brend-funko-pop", None, _is_funko),
     ("brend-baby-born", None, _doll_only(lambda p: bool(_BR_BORN.search(_brand_hay(p))))),

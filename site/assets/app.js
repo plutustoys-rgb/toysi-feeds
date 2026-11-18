@@ -370,7 +370,8 @@
   function goSearchPage(v){
     v=String(v==null?"":v).trim();
     if(v.length<2 || !searchTokens(v).length) return false;
-    location.href="search.html?q="+encodeURIComponent(v);
+    searchPushed=false;   // запис історії, який поклав оверлей (pushState), ЗАМІНЮЄМО сторінкою результатів: один «Назад» повертає на ту сторінку, звідки відкрили пошук (аудит #1736)
+    try{ location.replace("search.html?q="+encodeURIComponent(v)); }catch(e){ location.href="search.html?q="+encodeURIComponent(v); }
     return true;
   }
   function initSearchPage(){
@@ -390,7 +391,10 @@
     if(!toks.length){ note('<p class="empty">Введіть слово для пошуку.</p>'); return; }
     if(h1) h1.textContent="Пошук: «"+q+"»";
     function render(){
-      if(!matches.length){ note('<p class="empty">Нічого не знайдено за «'+esc(q)+'». Спробуйте інше слово або <a href="catalog.html">перегляньте каталог</a>.</p>'); return; }
+      if(!matches.length){
+        if(rtState!==2){ note('<p class="empty">Шукаємо…</p>'); return; }   // ще довантажується RoyalToys: «нічого не знайдено» показуємо лише коли весь індекс є
+        note('<p class="empty">Нічого не знайдено за «'+esc(q)+'». Спробуйте інше слово або <a href="catalog.html">перегляньте каталог</a>.</p>'); return;
+      }
       var all=sortedMatches(matches, sort), out=all.slice(0, shown);
       meta.innerHTML='<div class="sr-meta"><span>Знайдено '+matches.length+(out.length<matches.length ? ', показано '+out.length : '')+'</span><span class="sr-sort">'+
         [["rec","Рекомендовані"],["cheap","Дешевші"],["dear","Дорожчі"]].map(function(x){
@@ -951,7 +955,7 @@
     });
 
     var so=document.querySelector("#search-overlay input");
-    if(so){ so.addEventListener("keydown", function(e){ if((e.key==="Enter" || e.keyCode===13) && goSearchPage(so.value)) e.preventDefault(); }); }   // Enter = сторінка з усіма результатами (власник 18.11: «нічого не відбувається»)
+    if(so){ so.addEventListener("keydown", function(e){ if(e.isComposing || e.keyCode===229) return; if((e.key==="Enter" || e.keyCode===13) && goSearchPage(so.value)) e.preventDefault(); }); }   // Enter = сторінка з усіма результатами (власник 18.11: «нічого не відбувається»)
     if(so){ var sTimer=null; so.addEventListener("input", function(){ clearTimeout(sTimer); sTimer=setTimeout(function(){ runSearch(so.value); }, 200); }); }   // debounce 200 мс: не перераховуємо 21 тис. на кожне натискання
 
     renderCart();

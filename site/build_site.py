@@ -4683,7 +4683,7 @@ def _load_coloring(path_m=None, path_t=None):
 
 
 _COLORING_NUM_RX = re.compile(r"(\d+)\s+аркуш")
-_COLORING_MANY_RX = re.compile(r"(?:три|3|дві|2|всі|усі|кілька|декілька)\s+(?:окрем\w+\s+)?добірк|добірк\w*\s+(?:для|на)\s+(?:малюк|дітей|нов)", re.I)   # згадка інших добірок («зібрані в три добірки»)
+_COLORING_MANY_RX = re.compile(r"(?:три|3|дві|2|всі|усі|кілька|декілька)\s+(?:окрем\w+\s+)?добірк|(?:чотири|п'ять|інш\w+|окрем\w+)\s+добірк", re.I)   # згадка інших добірок («зібрані в три добірки»)
 
 
 _COLORING_MENTION_RX = {"rozmalovky-novorichni": re.compile(r"новорічн|різдв|миколая"), "rozmalovky-dlia-malyukiv": re.compile(r"малюк|3\s*[–-]\s*5\s*рок"), "rozmalovky-dlia-ditei": re.compile(r"6\s*[–-]\s*9\s*рок|старш\w+ діт")}

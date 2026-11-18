@@ -4282,6 +4282,8 @@ def write_gift_pages(prods, texts=None, plan=None):
         fname = f"{slug}.html"
         trail = [("Головна", "index.html"), ("Подарунки", GIFT_HUB_FILE), (h1, None)]
         links = "".join(f'<li><a href="{s}.html">{esc(h)}</a></li>' for s, h, _lb in GIFT_BUILT if s != slug)
+        if slug in ("podarunok-na-mykolaia", "novorichnyi-podarunok-dytyni"):   # SEO 18.11: календарі відкривають 1.12 — з новорічних подарунків лінкуємо на сторінку адвент-календарів (лише якщо збудована)
+            links += "".join(f'<li><a href="{s}.html">{esc(h)}</a></li>' for s, h in _selection_gift_links())
         faq_html = "".join(f"<h3>{esc(q)}</h3><p>{esc(a)}</p>" for q, a in t["faq"])
         arts = [(s_, t_) for s_, t_ in GIFT_ARTICLES_BUILT if s_ in PORADY_FOR_GIFT.get(slug, ())]
         art_html = ('<nav class="gift-links" aria-label="Статті-поради"><h2>Поради</h2><ul>' + "".join(f'<li><a href="{s_}.html">{esc(t_)}</a></li>' for s_, t_ in arts) + '</ul></nav>') if arts else ""
@@ -4310,6 +4312,7 @@ def write_gift_pages(prods, texts=None, plan=None):
     hub_body = (crumbs_html(trail) + '<h1 class="page">Подарунки дитині: добірки за віком і бюджетом</h1>'
                 f'<p class="gift-hub-lead">Добірки іграшок у наявності: {esc(hub_kinds)}.</p>' +
                 (f'<p class="gift-hub-lead"><a href="{COLORING_HUB_FILE}">Безкоштовні розмальовки з Плутусом для друку</a></p>' if COLORING_BUILT else "") +
+                "".join(f'<p class="gift-hub-lead"><a href="{s}.html">{esc(h)}</a></p>' for s, h in _selection_gift_links()) +
                 f'<nav class="gift-links" aria-label="Добірки подарунків"><ul>{lis}</ul></nav>'
                 + (('<nav class="gift-links" aria-label="Статті-поради"><h2>Поради</h2><ul>' + "".join(f'<li><a href="{s_}.html">{esc(t_)}</a></li>' for s_, t_ in GIFT_ARTICLES_BUILT) + '</ul></nav>') if GIFT_ARTICLES_BUILT else ""))
     head = breadcrumb_ld(trail) + _ld_script({"@context": "https://schema.org", "@type": "ItemList", "name": "Подарунки дитині",
@@ -4884,9 +4887,13 @@ SELECTION_TEXTS_FILE = os.path.join(OUT, "selection_pages.json")
 SELECTION_MIN_ITEMS, SELECTION_MAX_ITEMS = 12, 48
 SELECTION_FAQ_MIN, SELECTION_FAQ_MAX = 3, 5
 _SEL_KOSA_RX = re.compile(r"(?<!\w)кос(?:а|у|ою|ої|ій|і|ий|ого|и|их|им|ими|е)?\.?\s*(?:лін|з\s*доп)|допоміжн", re.I)   # аудит #1726: «космос лінія» не ловимо, «кос. лінія» ловимо
+SEL_PARENT_GIFT = "__gift"   # батько — хаб подарунків (podarunky.html), а не категорія
 SELECTION_PAGES = (
     ("zoshyty-u-kosu-liniiu", "Зошити в косу лінію", "Зошити в косу лінію та з допоміжною лінією — купити | PlutusToys", "zoshyty", "Зошити",
      lambda p: "зошит" in (p.get("name") or "").lower() and bool(_SEL_KOSA_RX.search(p.get("name") or ""))),
+    # SEO 18.11 (сезон, календарі відкривають 1.12): кирилиця «адвент» у назві (латинське advent ловить Adventure — не беремо); уцінка відсіюється пулом
+    ("advent-kalendari", "Адвент-календарі для дітей", "Адвент-календарі для дітей 2026 — купити | PlutusToys", SEL_PARENT_GIFT, "Подарунки",
+     lambda p: "адвент" in (p.get("name") or "").lower()),
 )
 SELECTION_PAGE_FILES = frozenset(f"{s}.html" for s, _h, _t, _par, _pn, _fn in SELECTION_PAGES)
 SELECTION_BUILT = []   # [(slug, h1, parent_cat_slug)] збудованих у цій збірці; категорія-батько лінкує лише на них
@@ -4934,6 +4941,9 @@ def selection_plan(prods, texts=None):
             if os.path.isfile(SELECTION_TEXTS_FILE) or os.path.isfile(os.path.join(OUT, f"{slug}.html")):
                 print(f"[build] ⚠ selection: для {slug} нема тексту в selection_pages.json — сторінку не будуємо", file=sys.stderr)
             continue
+        if par == SEL_PARENT_GIFT and not GIFT_BUILT:   # батьківський хаб podarunky.html не збудовано → крихта вела б у 404
+            print(f"[build] ⚠ selection: {slug} — хаб подарунків не збудовано — сторінку не будуємо", file=sys.stderr)
+            continue
         items = [p for p in pool if fn(p)]
         items.sort(key=lambda p: (-(p["contribution"] if p.get("contribution") is not None else -1e9), -(p.get("price") or 0), str(p["id"])))
         if len(items) < SELECTION_MIN_ITEMS:
@@ -4941,6 +4951,16 @@ def selection_plan(prods, texts=None):
             continue
         plan.append((slug, h1, title, par, items[:SELECTION_MAX_ITEMS], texts[slug]))
     return plan
+
+
+def _sel_parent(par, name):
+    """(url, назва) батька для крихт: категорія category-<slug>.html або хаб подарунків."""
+    return (GIFT_HUB_FILE, name) if par == SEL_PARENT_GIFT else (f"category-{par}.html", name)
+
+
+def _selection_gift_links():
+    """[(slug, h1)] збудованих сторінок-добірок з батьком «хаб подарунків» (лінкуємо з podarunky.html і новорічних сторінок подарунків)."""
+    return [(s, h) for s, h, par in SELECTION_BUILT if par == SEL_PARENT_GIFT]
 
 
 def _selection_cat_notice(cat_slug):
@@ -4957,15 +4977,17 @@ def write_selection_pages(plan):
     names = {s: pn for s, _h, _t, _par, pn, _fn in SELECTION_PAGES}
     for slug, h1, title, par, items, t in plan:
         fname = f"{slug}.html"
-        trail = [("Головна", "index.html"), (names[slug], f"category-{par}.html"), (h1, None)]
+        _purl, _pname = _sel_parent(par, names[slug])
+        trail = [("Головна", "index.html"), (_pname, _purl), (h1, None)]
         faq_html = "".join(f"<h3>{esc(q)}</h3><p>{esc(a)}</p>" for q, a in t["faq"])
+        _back = f'<a href="{GIFT_HUB_FILE}">Усі добірки подарунків</a>' if par == SEL_PARENT_GIFT else f'<a href="{_purl}">Усі {esc(_pname.lower())}</a>'
         body = (
             crumbs_html(trail) +
             f'<h1 class="page">{esc(h1)}</h1>'
             f'<div class="gift-intro">{_gift_paras(t["intro"])}</div>'
             f'<div class="gift-list" id="gift-list" data-list="selection_{slug}">' + grid(items, eager_n=min(3, len(items)), badge=True) + '</div>'
             f'<section class="gift-faq"><h2>Питання й відповіді</h2>{faq_html}</section>'
-            f'<nav class="gift-links" aria-label="Інші розділи"><p><a href="category-{par}.html">Усі {esc(names[slug].lower())}</a> · <a href="catalog.html">Увесь каталог</a></p></nav>'
+            f'<nav class="gift-links" aria-label="Інші розділи"><p>{_back} · <a href="catalog.html">Увесь каталог</a></p></nav>'
         )
         head = breadcrumb_ld(trail)
         head += _ld_script({"@context": "https://schema.org", "@type": "ItemList", "name": h1,

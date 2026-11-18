@@ -170,6 +170,45 @@ chk("<3 питань → запис пропущено голосно, стор�
 out9, err9 = build(sel={"zoshyty-u-kosu-liniiu": dict(GOOD_SEL["zoshyty-u-kosu-liniiu"], intro="Офіційні зошити.")}, cat=make_catalog(14))
 chk("заборонене слово («офіційні») → запис пропущено голосно", not (out9 / "zoshyty-u-kosu-liniiu.html").exists() and "заборонене слово" in err9)
 
+# ── (3) Адвент-календарі (SEO 18.11): кирилиця «адвент» у назві, у наявності, без уцінки; латинське advent — ні ──
+def make_advent_catalog(n):
+    cat = make_catalog(14)
+    for i in range(700, 700 + n):
+        cat[str(i)] = toysi(i, f"Адвент-календар конструктор {i}, 24 віконця", "Конструктори")
+    cat["760"] = toysi(760, "Набір Adventure Set SPACE ADVENTURE", "Конструктори")          # латиницею — НЕ беремо
+    cat["761"] = toysi(761, "Уцінка. Адвент-календар прикраси - Пошкоджена упаковка", "Уцінка")   # уцінка — не беремо
+    cat["762"] = toysi(762, "Адвент-календар вичерпаний", "Конструктори", stock=0)         # немає в наявності
+    return cat
+
+
+GOOD_ADV = {"advent-kalendari": {
+    "intro": "Адвент-календарі для дітей: конструктори з віконцями на кожен день перед Новим роком. Адвент календарь тут зібрано в одному розділі.",
+    "faq": [{"q": "Що таке адвент-календар?", "a": "Набір із віконцями, які відкривають по одному щодня."},
+            {"q": "Скільки віконець?", "a": "У назвах товарів вказано 24 віконця."},
+            {"q": "Де шукати календарі?", "a": "На цій сторінці."}]}}
+adv_sel = dict(GOOD_SEL, **GOOD_ADV)
+_GIFT_MIN = bs.GIFT_MIN_ITEMS
+bs.GIFT_MIN_ITEMS = 1   # у синтетичному каталозі сторінки подарунків мають мало карток — потрібен лише хаб podarunky.html
+outA, errA = build(sel=adv_sel, cat=make_advent_catalog(14))
+fa = outA / "advent-kalendari.html"
+hA = fa.read_text(encoding="utf-8") if fa.exists() else ""
+chk(f"адвент: сторінка збудована (14 календарів у наявності; латиниця, уцінка і «немає в наявності» відсіяні): карток {hA.count('class=' + chr(34) + 'card')}", fa.exists() and hA.count('class="card') == 14
+    and "Adventure" not in hA and "Уцінка" not in hA and "вичерпаний" not in hA)
+chk("адвент: title і H1 за ТЗ; ItemList + FAQPage + BreadcrumbList; canonical на себе", head_title(hA) == "Адвент-календарі для дітей 2026 — купити | PlutusToys" and '<h1 class="page">Адвент-календарі для дітей</h1>' in hA
+    and '"@type": "ItemList"' in hA and '"@type": "FAQPage"' in hA and 'rel="canonical" href="https://plutustoys.com.ua/advent-kalendari.html"' in hA)
+hub = (outA / "podarunky.html").read_text(encoding="utf-8") if (outA / "podarunky.html").exists() else ""
+chk("адвент: крихта веде на хаб подарунків; хаб подарунків і новорічні сторінки подарунків лінкують на advent-kalendari.html", 'href="podarunky.html"' in hA and 'href="advent-kalendari.html"' in hub
+    and all('href="advent-kalendari.html"' in (outA / f"{g}.html").read_text(encoding="utf-8") for g in ("podarunok-na-mykolaia", "novorichnyi-podarunok-dytyni") if (outA / f"{g}.html").exists()))
+smA = "".join(q_.read_text(encoding="utf-8") for q_ in outA.glob("sitemap-*.xml"))
+chk("адвент: sitemap рівно раз; зошити в косу лінію теж збудовано (обидві добори незалежні)", smA.count("/advent-kalendari.html") == 1 and (outA / "zoshyty-u-kosu-liniiu.html").exists())
+outB, errB = build(sel=adv_sel, cat=make_advent_catalog(8))
+chk("адвент: лише 8 календарів (<12) → сторінку НЕ будуємо, голосне попередження, хаб подарунків не лінкує", not (outB / "advent-kalendari.html").exists() and "advent-kalendari — лише 8 карток" in errB
+    and 'href="advent-kalendari.html"' not in (outB / "podarunky.html").read_text(encoding="utf-8"))
+outC, errC = build(sel=GOOD_SEL, cat=make_advent_catalog(14))
+chk("без тексту адвенту сторінки нема (як і посилань)", not (outC / "advent-kalendari.html").exists() and 'href="advent-kalendari.html"' not in (outC / "podarunky.html").read_text(encoding="utf-8"))
+bs.GIFT_MIN_ITEMS = _GIFT_MIN
+bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
+
 # повторна збірка у ту саму теку прибирає застарілу сторінку
 same = Path(tempfile.mkdtemp())
 for run, sel in enumerate((GOOD_SEL, None)):

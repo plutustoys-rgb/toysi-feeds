@@ -209,6 +209,34 @@ chk("без тексту адвенту сторінки нема (як і по�
 bs.GIFT_MIN_ITEMS = _GIFT_MIN
 bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
 
+# ── (4) блок «Новорічне для дому» на новорічних сторінках подарунків (SEO 18.11) ──
+def make_winter_catalog():
+    cat = make_catalog(14)
+    for i in range(800, 806):
+        cat[str(i)] = toysi(i, f"Гірлянда новорічна {i}", "Гірлянди")
+    for i in range(810, 816):
+        cat[str(i)] = toysi(i, f"Новорічна прикраса {i}", "Новорічний декор")
+    return cat
+
+
+bs.GIFT_MIN_ITEMS = 1
+outW, errW = build(sel=None, cat=make_winter_catalog())
+chk("блок «Новорічне для дому»: на podarunok-na-mykolaia і novorichnyi-podarunok-dytyni — лише існуючі категорії (Гірлянди, Новорічний декор), без Льодянок/Сніжколіпів, без «арт»-умови",
+    all(("Новорічне для дому" in (outW / f"{g}.html").read_text(encoding="utf-8") and 'href="category-hirliandy.html"' in (outW / f"{g}.html").read_text(encoding="utf-8")
+         and 'href="category-novorichnyy-dekor.html"' in (outW / f"{g}.html").read_text(encoding="utf-8") and "category-lodianky" not in (outW / f"{g}.html").read_text(encoding="utf-8"))
+        for g in ("podarunok-na-mykolaia", "novorichnyi-podarunok-dytyni") if (outW / f"{g}.html").exists())
+    and (outW / "podarunok-na-mykolaia.html").exists())
+if (outW / "podarunok-do-500-hrn.html").exists():
+    chk("блок «Новорічне для дому» НЕ на інших сторінках подарунків", "Новорічне для дому" not in (outW / "podarunok-do-500-hrn.html").read_text(encoding="utf-8"))
+winter_seo = {"hirliandy": dict(GOOD_SEO["dytiachyy-posud"], h1="Новорічні гірлянди")}
+outW2, _eW2 = build(seo=winter_seo, cat=make_winter_catalog())
+chk("анкор у блоці — H1 з SEO-перекриття (якщо є), інакше назва категорії", ">Новорічні гірлянди</a>" in (outW2 / "podarunok-na-mykolaia.html").read_text(encoding="utf-8")
+    and ">Новорічний декор</a>" in (outW2 / "podarunok-na-mykolaia.html").read_text(encoding="utf-8"))
+outW3, _eW3 = build(sel=None, cat=make_catalog(14))
+chk("без зимових категорій блоку нема", "Новорічне для дому" not in (outW3 / "podarunok-na-mykolaia.html").read_text(encoding="utf-8") if (outW3 / "podarunok-na-mykolaia.html").exists() else True)
+bs.GIFT_MIN_ITEMS = _GIFT_MIN
+bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
+
 # повторна збірка у ту саму теку прибирає застарілу сторінку
 same = Path(tempfile.mkdtemp())
 for run, sel in enumerate((GOOD_SEL, None)):

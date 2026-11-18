@@ -1264,6 +1264,12 @@ def build():
     _porady = {s: v for s, v in _load_porady().items() if s not in BRAND_FOR_PORADY or BRAND_FOR_PORADY[s][0] in _brand_slugs}
     GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
     _coloring_plan = coloring_plan(prods)   # безкоштовні розмальовки (SEO 18.11): будуємо лише сторінки, для яких є текст і ≥COLORING_MIN_SHEETS аркушів (png+pdf у site/colorings/)
+    if not _coloring_plan and os.path.isfile(os.path.join(OUT, COLORING_HUB_FILE)):   # розмальовки були живі в попередній збірці, а тепер план порожній (аркуш/текст/файл зник) → збірка їх ПРИБЕРЕ: алерт (аудит #1707; сезонна сторінка не має зникати мовчки)
+        try:
+            from telegram_notify import send_throttled_alert
+            send_throttled_alert("site_coloring_vanished", "⚠️ site-rebuild: безкоштовні розмальовки (rozmalovky*.html) БУЛИ на сайті, а в цій збірці їх не збудовано (аркуш/файл/текст/кількість аркушів). Сторінки прибрано. Причина — у логу збірки («coloring»).", cooldown_sec=6 * 3600)
+        except Exception:  # noqa: BLE001 — алерт best-effort
+            pass
     COLORING_BUILT[:] = [(s, h) for s, h, _sheets, _t in _coloring_plan]
     n = 0
     # 1) картки товарів

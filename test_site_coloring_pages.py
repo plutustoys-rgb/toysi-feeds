@@ -177,14 +177,22 @@ bs.COLORING_TEXTS_FILE = str(SITE / "rozmalovky_texts.json")
 bs.COLORING_MANIFEST_FILE = str(tmp / "absent.json")
 err = build()
 chk("маніфесту нема (аркушів ще нема): нічого не будується, у журналі збірки жодних «coloring»-попереджень", not list(OUTD.glob("rozmalovky*.html")) and "coloring" not in err)
-# (д) стара збірка з сторінками → аркуші зникли → застарілі сторінки прибрано
+# (д) стара збірка з сторінками → аркуші зникли → застарілі сторінки прибрано І алерт (сезонна сторінка не зникає мовчки)
+import telegram_notify  # noqa: E402
+ALERTS = []
+telegram_notify.send_throttled_alert = lambda *a, **k: ALERTS.append(a)
 bs.COLORING_MANIFEST_FILE = str(tmp / "man.json")
 (tmp / "man.json").write_text(json.dumps(mk_manifest(SHEETS), ensure_ascii=False), encoding="utf-8")
 build()
 assert (OUTD / "rozmalovky.html").exists()
+chk("збірка зі сторінками розмальовок — алерту «зникли» нема", not ALERTS)
 for q in cdir.glob("*"):
     q.unlink()
 build()
 chk("аркушів не стало → застарілі rozmalovky*.html прибрано, посилання у футері зникло", not list(OUTD.glob("rozmalovky*.html")) and 'href="rozmalovky.html"' not in pg("index.html"))
+chk("і АЛЕРТ site_coloring_vanished (раніше живі сторінки зникли); повторна збірка без сторінок — алерту вже нема (файлу хаба нема)", len(ALERTS) == 1 and ALERTS[0][0] == "site_coloring_vanished")
+n_before = len(ALERTS)
+build()
+chk("повторна збірка без розмальовок не дзвонить знову", len(ALERTS) == n_before)
 print("\n" + ("ALL OK" if not F else f"FAIL: {len(F)}"))
 sys.exit(1 if F else 0)

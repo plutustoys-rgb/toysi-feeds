@@ -81,6 +81,22 @@ chk("підсторінка Funko: потрібен шлях KIDDISVIT І бре
     rules["brend-funko-pop-igry"](nm("Funko Pop Mario", "Funko", "Funko > Герої ігор")) and not rules["brend-funko-pop-igry"](nm("Squishmallows Cam", "Squishmallows", "Funko > Герої ігор")) and not rules["brend-funko-pop-igry"](nm("Funko Pop Mario", "Funko", ""))
     and rules["brend-funko-pop-marvel"](nm("Funko Pop Hulk", "Funko", "Хлопчикам > Ліцензійні герої > Marvel")))
 
+# підсторінки HP і Marvel: шлях АБО назва (SEO 18.11 15:31)
+chk("HP: шлях «Funko > Гаррі Поттер» АБО назва (Harry Potter / Гоґвортс); не-Funko — ні",
+    rules["brend-funko-pop-harry-potter"](nm("Funko Pop Dementor", "Funko", "Funko > Герої фільмів та серіалів")) is False
+    and rules["brend-funko-pop-harry-potter"](nm("Фігурка Funko Pop Harry Potter Dementor", "Funko", "Funko > Герої фільмів та серіалів"))
+    and rules["brend-funko-pop-harry-potter"](nm("Funko Bitty Pop Гоґвортс", "Funko", "")) and rules["brend-funko-pop-harry-potter"](nm("Funko Pop Снейп", "Funko", "Funko > Гаррі Поттер"))
+    and not rules["brend-funko-pop-harry-potter"](nm("Harry Potter пазл", "Ravensburger", "Пазли")))
+chk("Marvel: шлях «…Marvel» АБО назва (Танос, Шибайголов, Hulk, Тор); «Віктор» і «Імператор» — НІ (тор лише з лівою межею); не-Funko — ні",
+    rules["brend-funko-pop-marvel"](nm("Funko Pop Танос", "Funko", "Бренди > Funko")) and rules["brend-funko-pop-marvel"](nm("Funko Pop Шибайголов", "Funko", "Іграшки для колекціонування"))
+    and rules["brend-funko-pop-marvel"](nm("Funko Pop Тор Рагнарок", "Funko", "")) and rules["brend-funko-pop-marvel"](nm("Funko Hulk", "Funko", "Хлопчикам > Ліцензійні герої > Marvel"))
+    and not rules["brend-funko-pop-marvel"](nm("Funko Pop Аркейн – Віктор", "Funko", "")) and not rules["brend-funko-pop-marvel"](nm("Funko Pop Ворота Балдура – Імператор", "Funko", ""))
+    and not rules["brend-funko-pop-marvel"](nm("Marvel пазл", "Ravensburger", "Пазли"))
+    and not rules["brend-funko-pop-marvel"](nm("Ігрова фігурка Funko POP! - Хелоу Кітті в торті", "Funko", "Funko > Герої мультфільмів"))
+    and not rules["brend-funko-pop-marvel"](nm("Funko POP! серії Підземелля смакоти - Лайос Торден", "Funko", "Ліцензійні герої > Герої Аніме"))
+    and not rules["brend-funko-pop-marvel"](nm("Funko Pop Тореадор", "Funko", "")) and not rules["brend-funko-pop-marvel"](nm("Funko Pop Торговець", "Funko", ""))
+    and rules["brend-funko-pop-marvel"](nm("Funko Pop Тор", "Funko", "")) and rules["brend-funko-pop-marvel"](nm("Фігурка Funko Тора", "Funko", "")))   # аудит #1727: «тор» і з правою межею (не «торт», «Торден»)
+
 # ── (3) збірка ──
 now = datetime.now(timezone.utc)
 bs.LIQPAY_LIVE = True

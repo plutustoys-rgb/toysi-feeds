@@ -1264,10 +1264,11 @@ def build():
     _porady = {s: v for s, v in _load_porady().items() if s not in BRAND_FOR_PORADY or BRAND_FOR_PORADY[s][0] in _brand_slugs}
     GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
     _coloring_plan = coloring_plan(prods)   # безкоштовні розмальовки (SEO 18.11): будуємо лише сторінки, для яких є текст і ≥COLORING_MIN_SHEETS аркушів (png+pdf у site/colorings/)
-    if not _coloring_plan and os.path.isfile(os.path.join(OUT, COLORING_HUB_FILE)):   # розмальовки були живі в попередній збірці, а тепер план порожній (аркуш/текст/файл зник) → збірка їх ПРИБЕРЕ: алерт (аудит #1707; сезонна сторінка не має зникати мовчки)
+    _col_gone = sorted(fn for fn in COLORING_PAGE_FILES if os.path.isfile(os.path.join(OUT, fn)) and fn[:-5] not in {s for s, _h, _sh, _t in _coloring_plan})
+    if _col_gone:   # хоч одна сторінка розмальовок була жива в попередній збірці, а тепер її нема в плані (аркуш/текст/файл/кількість зникли) → збірка її ПРИБЕРЕ: алерт (аудит #1707/#1711; сезонна сторінка не має зникати мовчки)
         try:
             from telegram_notify import send_throttled_alert
-            send_throttled_alert("site_coloring_vanished", "⚠️ site-rebuild: безкоштовні розмальовки (rozmalovky*.html) БУЛИ на сайті, а в цій збірці їх не збудовано (аркуш/файл/текст/кількість аркушів). Сторінки прибрано. Причина — у логу збірки («coloring»).", cooldown_sec=6 * 3600)
+            send_throttled_alert("site_coloring_vanished", "⚠️ site-rebuild: сторінки розмальовок БУЛИ на сайті, а в цій збірці їх не збудовано: " + ", ".join(_col_gone) + " (аркуш/файл/текст/кількість аркушів). Сторінки прибрано. Причина — у логу збірки («coloring»).", cooldown_sec=6 * 3600)
         except Exception:  # noqa: BLE001 — алерт best-effort
             pass
     COLORING_BUILT[:] = [(s, h) for s, h, _sheets, _t in _coloring_plan]
@@ -4681,6 +4682,17 @@ def _load_coloring(path_m=None, path_t=None):
     return man, texts
 
 
+_COLORING_NUM_RX = re.compile(r"(\d+)\s+аркуш")
+_COLORING_MANY_RX = re.compile(r"(?:три|3|дві|2|всі|усі|кілька|декілька)\s+(?:окрем\w+\s+)?добірк|добірк\w*\s+(?:для|на)\s+(?:малюк|дітей|нов)", re.I)   # згадка інших добірок («зібрані в три добірки»)
+
+
+_COLORING_MENTION_RX = {"rozmalovky-novorichni": re.compile(r"новорічн|різдв|миколая"), "rozmalovky-dlia-malyukiv": re.compile(r"малюк|3\s*[–-]\s*5\s*рок"), "rozmalovky-dlia-ditei": re.compile(r"6\s*[–-]\s*9\s*рок|старш\w+ діт")}
+
+
+def _coloring_alltext(tx):
+    return " ".join([tx["intro"]] + [q + " " + a for q, a in tx["faq"]])
+
+
 def coloring_plan(prods, loaded=None):
     """[(slug, h1, sheets, text)] сторінок, які МОЖНА побудувати: добірки (≥COLORING_MIN_SHEETS аркушів + текст) і хаб (є текст і хоч одна добірка)."""
     man, texts = _load_coloring() if loaded is None else loaded
@@ -4696,8 +4708,8 @@ def coloring_plan(prods, loaded=None):
         if len(sheets) < COLORING_MIN_SHEETS:
             print(f"[build] ⚠ coloring: {slug} — лише {len(sheets)} аркушів із файлами (< {COLORING_MIN_SHEETS}) — сторінку не будуємо", file=sys.stderr)
             continue
-        _m = re.search(r"(\d+)\s+аркуш", texts[slug]["intro"])   # текст називає кількість аркушів («8 аркушів») — вона має збігатися з фактичною (інакше сторінка бреше)
-        if _m and int(_m.group(1)) != len(sheets):
+        _m = next((m_ for m_ in _COLORING_NUM_RX.finditer(_coloring_alltext(texts[slug])) if int(m_.group(1)) != len(sheets)), None)   # текст (intro+FAQ) називає кількість аркушів («8 аркушів») — кожна згадка має збігатися з фактичною (інакше сторінка бреше)
+        if _m:
             print(f"[build] ⚠ coloring: {slug} — у тексті «{_m.group(0)}», а аркушів із файлами {len(sheets)} — сторінку не будуємо (виправте текст або додайте аркуші)", file=sys.stderr)
             continue
         plan.append((slug, texts[slug]["h1"], sheets, texts[slug]))
@@ -4707,10 +4719,16 @@ def coloring_plan(prods, loaded=None):
     if hub_slug not in texts:
         print(f"[build] ⚠ coloring: хаб {hub_slug} без тексту — розмальовки не будуємо", file=sys.stderr)
         return []
-    if len(plan) < len(COLORING_SUBPAGES):   # SEO 18.11 (варіант «а»): новорічна не чекає інших добірок — хаб будується з тими, що є, але ЛИШЕ з текстами без посилань на відсутні добірки (прапорець standalone)
-        _bad = [s for s, _h, _sh, tx in plan + [(hub_slug, "", [], texts[hub_slug])] if not tx.get("standalone")]
+    if len(plan) < len(COLORING_SUBPAGES):   # SEO 18.11 (варіант «а»): новорічна не чекає інших добірок — хаб будується з тими, що є, але ЛИШЕ з текстами без посилань на відсутні добірки (прапорець standalone + механічна перевірка)
+        _built = {s for s, _h, _sh, _t in plan}
+        _gone_rx = [_COLORING_MENTION_RX[s] for s in COLORING_SUBPAGES if s not in _built]   # згадки відсутніх добірок
+        _bad = []
+        for s, _h, _sh, tx in plan + [(hub_slug, "", [], texts[hub_slug])]:
+            _all_t = _coloring_alltext(tx).lower()
+            if not tx.get("standalone") or _COLORING_MANY_RX.search(_all_t) or any(rx_.search(_all_t) for rx_ in _gone_rx):
+                _bad.append(s)
         if _bad:
-            print(f"[build] ⚠ coloring: збудовано лише {len(plan)} з {len(COLORING_SUBPAGES)} добірок, а тексти {', '.join(_bad)} не позначені standalone (згадують інші добірки/число) — розмальовки не будуємо", file=sys.stderr)
+            print(f"[build] ⚠ coloring: збудовано лише {len(plan)} з {len(COLORING_SUBPAGES)} добірок, а тексти {', '.join(_bad)} не позначені standalone або згадують інші добірки («три добірки», назви відсутніх) — розмальовки не будуємо", file=sys.stderr)
             return []
     _seen, _all = set(), []
     for _s, _h, shs, _t in plan:
@@ -4718,6 +4736,10 @@ def coloring_plan(prods, loaded=None):
             if sh["id"] not in _seen:
                 _seen.add(sh["id"])
                 _all.append(sh)
+    _mh = next((m_ for m_ in _COLORING_NUM_RX.finditer(_coloring_alltext(texts[hub_slug])) if int(m_.group(1)) != len(_all)), None)   # хаб: число аркушів у тексті = усі унікальні аркуші
+    if _mh:
+        print(f"[build] ⚠ coloring: хаб — у тексті «{_mh.group(0)}», а аркушів {len(_all)} — розмальовки не будуємо", file=sys.stderr)
+        return []
     plan.append((hub_slug, texts[hub_slug]["h1"], _all, texts[hub_slug]))
     return plan
 
@@ -4763,7 +4785,7 @@ def write_coloring_pages(plan, prods):
             f'<div class="gift-intro">{_gift_paras(t["intro"])}</div>'
             f'<div class="coloring-grid">{figs}</div>' + shop_html +
             f'<section class="gift-faq"><h2>Питання й відповіді</h2>{faq_html}</section>'
-            f'<nav class="gift-links" aria-label="Інші розмальовки"><h2>Інші розмальовки</h2><ul>{links}</ul>'
+            f'<nav class="gift-links" aria-label="Інші розмальовки">' + (f'<h2>Інші розмальовки</h2><ul>{links}</ul>' if links else '')
             + (f'<p><a href="{COLORING_HUB_FILE}">Усі безкоштовні розмальовки</a> · <a href="catalog.html">Увесь каталог</a></p>' if not is_hub else '<p><a href="catalog.html">Увесь каталог</a></p>') + '</nav>'
         )
         head = breadcrumb_ld(trail)

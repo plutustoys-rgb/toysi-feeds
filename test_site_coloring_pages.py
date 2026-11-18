@@ -167,7 +167,9 @@ err = build()
 chk("«для дітей» лише 2 аркуші (<3), тексти БЕЗ прапорця standalone (згадують інші добірки/число) → ні хаба, ні добірок; голосно", not list(OUTD.glob("rozmalovky*.html")) and "rozmalovky-dlia-ditei — лише 2 аркушів" in err and "не позначені standalone" in err)
 # (б2) SEO 18.11 варіант «а»: тексти standalone → хаб з тими добірками, що є; новорічна не чекає інших
 alone = json.loads((SITE / "rozmalovky_texts.json").read_text(encoding="utf-8"))
-for k_ in alone:
+for k_ in alone:   # чисті standalone-тексти: без чисел і без згадок інших добірок
+    alone[k_]["intro"] = "Розмальовки з Плутусом — власним персонажем магазину PlutusToys. Аркуші можна безкоштовно завантажити у PDF і роздрукувати вдома без реєстрації."
+    alone[k_]["faq"] = alone[k_]["faq"][:2] + [{"q": "Скільки це коштує?", "a": "Нічого: аркуші безкоштовні."}]
     alone[k_]["standalone"] = True
 (tmp / "texts_alone.json").write_text(json.dumps(alone, ensure_ascii=False), encoding="utf-8")
 bs.COLORING_TEXTS_FILE = str(tmp / "texts_alone.json")
@@ -182,6 +184,38 @@ chk(f"SMM здав лише новорічні (8): збудовано {sorted(b
 bs.COLORING_TEXTS_FILE = str(SITE / "rozmalovky_texts.json")
 err = build()
 chk("ті самі 8 новорічних, але тексти БЕЗ standalone (старі: «три добірки») → не будуємо (інакше хаб бреше)", not list(OUTD.glob("rozmalovky*.html")) and "не позначені standalone" in err)
+# (б3) standalone — не лише декларація (аудит #1711): текст «три добірки» / назва відсутньої добірки / число хаба ≠ аркушів / не-bool прапорець → не будуємо
+def build_with(mod, cnt):
+    d_ = json.loads((tmp / "texts_alone.json").read_text(encoding="utf-8"))
+    mod(d_)
+    (tmp / "texts_x.json").write_text(json.dumps(d_, ensure_ascii=False), encoding="utf-8")
+    (tmp / "man.json").write_text(json.dumps(mk_manifest(cnt), ensure_ascii=False), encoding="utf-8")
+    bs.COLORING_TEXTS_FILE = str(tmp / "texts_x.json")
+    e_ = build()
+    return {q_.stem for q_ in OUTD.glob("rozmalovky*.html")}, e_
+ONLY1 = {"rozmalovky-novorichni": 8}
+b_, e_ = build_with(lambda d: d["rozmalovky"].update(intro="Безкоштовні розмальовки — зібрані в три добірки для друку вдома."), ONLY1)
+chk("standalone-хаб згадує «три добірки», а є одна → не будуємо", not b_ and "згадують інші добірки" in e_)
+b_, e_ = build_with(lambda d: d["rozmalovky-novorichni"].update(intro="Новорічні розмальовки. Для менших дітей є розмальовки для малюків 3–5 років — окрема добірка."), ONLY1)
+chk("standalone-текст називає відсутню добірку за назвою → не будуємо", not b_ and "згадують інші добірки" in e_)
+b_, e_ = build_with(lambda d: d["rozmalovky"].update(intro="У хабі 5 аркушів для друку."), ONLY1)
+chk("число аркушів у тексті ХАБА (5) ≠ фактичних (8) → не будуємо; голосно", not b_ and "хаб — у тексті «5 аркуш" in e_)
+b_, e_ = build_with(lambda d: d["rozmalovky-novorichni"].update(faq=d["rozmalovky-novorichni"]["faq"] + [{"q": "Скільки аркушів?", "a": "Усього 6 аркушів."}]), ONLY1)
+chk("число аркушів у FAQ добірки (6) ≠ 8 → добірка не будується", not b_ and "6 аркуш" in e_)
+for bad_ in ("true", 1, None):
+    b_, e_ = build_with(lambda d, v=bad_: d["rozmalovky"].update(standalone=v), ONLY1)
+    chk(f"standalone={bad_!r} (не булевий true) → не будуємо", not b_)
+b_, e_ = build_with(lambda d: d["rozmalovky-novorichni"].pop("standalone"), ONLY1)
+chk("прапорець лише на хабі, а на добірці нема → не будуємо", not b_)
+b_, e_ = build_with(lambda d: None, ONLY1)
+hp = pg("rozmalovky.html")
+chk("одна добірка: на її сторінці нема порожнього блоку «Інші розмальовки»; на хабі є лінк на неї", b_ == {"rozmalovky", "rozmalovky-novorichni"} and "Інші розмальовки</h2>" not in pg("rozmalovky-novorichni.html") and "<ul></ul>" not in pg("rozmalovky-novorichni.html") and 'href="rozmalovky-novorichni.html"' in hp)
+shared = mk_manifest({"rozmalovky-novorichni": 8, "rozmalovky-dlia-malyukiv": 6})
+shared["rozmalovky-dlia-malyukiv"]["sheets"][0] = dict(shared["rozmalovky-novorichni"]["sheets"][0])
+(tmp / "man.json").write_text(json.dumps(shared, ensure_ascii=False), encoding="utf-8")
+build()
+chk("спільний аркуш у двох добірках → у хабі 13 прев'ю (дубль id пропущено), а не 14", pg("rozmalovky.html").count('class="coloring-sheet"') == 13)
+bs.COLORING_TEXTS_FILE = str(SITE / "rozmalovky_texts.json")
 # (в) хаб без тексту, а добірки з текстом → нічого (інакше футер вів би на неіснуючий хаб)
 (tmp / "man.json").write_text(json.dumps(mk_manifest(SHEETS), ensure_ascii=False), encoding="utf-8")
 no_hub = {k: v for k, v in json.loads((SITE / "rozmalovky_texts.json").read_text(encoding="utf-8")).items() if k != "rozmalovky"}
@@ -211,5 +245,14 @@ chk("і АЛЕРТ site_coloring_vanished (раніше живі сторінк�
 n_before = len(ALERTS)
 build()
 chk("повторна збірка без розмальовок не дзвонить знову", len(ALERTS) == n_before)
+# (е) часткове зникнення (аудит #1711): хаб лишається, а добірка, що була жива, зникла → теж алерт (з назвою файлу)
+bs.COLORING_TEXTS_FILE = str(tmp / "texts_alone.json")
+(tmp / "man.json").write_text(json.dumps(mk_manifest({"rozmalovky-novorichni": 8, "rozmalovky-dlia-malyukiv": 6}), ensure_ascii=False), encoding="utf-8")
+build()
+n0 = len(ALERTS)
+assert (OUTD / "rozmalovky-dlia-malyukiv.html").exists()
+(tmp / "man.json").write_text(json.dumps(mk_manifest({"rozmalovky-novorichni": 8}), ensure_ascii=False), encoding="utf-8")
+build()
+chk("добірка «малюки» зникла, хаб і новорічна лишились → алерт із назвою rozmalovky-dlia-malyukiv.html", len(ALERTS) == n0 + 1 and "rozmalovky-dlia-malyukiv.html" in ALERTS[-1][1] and not (OUTD / "rozmalovky-dlia-malyukiv.html").exists() and (OUTD / "rozmalovky.html").exists())
 print("\n" + ("ALL OK" if not F else f"FAIL: {len(F)}"))
 sys.exit(1 if F else 0)

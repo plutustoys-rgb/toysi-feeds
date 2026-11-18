@@ -44,6 +44,8 @@ KV_ID_RX = re.compile(r"kv-[0-9]{1,12}")
 def gate_mode() -> str:
     """EVA_KV_IN_FEED: «1» — додавати/вести kv-картки; «deactivate» — АВАРІЙНЕ вимкнення: усі колись додані kv-картки віддаються як available=false (EVA вимикає їх, не видаляє), нових немає; будь-що інше/порожньо — kv у фіді нема взагалі (картки, додані раніше, EVA просто перестає отримувати оновлення)."""
     v = os.environ.get("EVA_KV_IN_FEED", "").strip().lower()
+    if v and v not in ("0", "1", "deactivate"):
+        print(f"[kv_eva] УВАГА: невідоме значення EVA_KV_IN_FEED={v!r} (очікується 1 / deactivate / порожньо) — kv у фіді НЕ буде; це НЕ вимкнення раніше доданих карток (для вимкнення — deactivate).", file=sys.stderr)
     return v if v in ("1", "deactivate") else ""
 
 
@@ -217,6 +219,9 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
     else:
         twins_ok = True
     prev = _load_listed()
+    if deactivate_all and not prev:
+        print("[kv_eva] УВАГА: аварійне вимкнення, але знімок kv_eva_listed_state.json порожній/відсутній/нечитабельний — нема що вимикати; картки, додані раніше, лишаться активними в EVA. Перевірити файл.", file=sys.stderr)
+        stats["deactivate_empty_snapshot"] += 1
     items = selection.get("items", {})
     cand = {}
     for sid, si in items.items():
@@ -334,6 +339,8 @@ def append_kv_offers(root: ET.Element, ge, selection: dict, sup_items: dict, cat
         if len(d) >= ge.EVA_DESCRIPTION_MIN_LEN:
             ET.SubElement(o, "description_ua").text = d
         stats["deactivated"] += 1
+    if deactivate_all:
+        return dict(stats)                                     # аварійне вимкнення стан НЕ переписує (зіпсований/порожній файл не знищуємо; знімки потрібні для повторного вмикання)
     try:
         rt_eva._atomic_write(LISTED_FILE, {"v": 1, "listed": new_prev, "saved_at": datetime.now().isoformat(timespec="seconds")})
     except OSError as e:

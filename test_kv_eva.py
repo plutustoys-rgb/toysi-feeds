@@ -284,6 +284,27 @@ chk("брама порожня → дерево те саме (kv у фіді н
 os.environ.pop("EVA_KV_IN_FEED", None)
 kv_eva.LISTED_FILE.unlink(missing_ok=True)
 
+# ---- аудит #1713: попередження і недоторканість стану при аварійному вимкненні ----
+import io, contextlib  # noqa: E402
+kv_eva.LISTED_FILE.write_text("{ зіпсований", encoding="utf-8")
+os.environ["EVA_KV_IN_FEED"] = "deactivate"
+errb = io.StringIO()
+with contextlib.redirect_stderr(errb):
+    rootq = ge._maybe_add_kv_offers(base_root(), catalog)
+chk("deactivate при зіпсованому/порожньому знімку: попередження в stderr, фід цілий, файл знімка НЕ перезаписано", "знімок" in errb.getvalue() and kv_eva.LISTED_FILE.read_text(encoding="utf-8") == "{ зіпсований" and not [o for o in rootq.find("shop").find("offers") if o.get("id", "").startswith("kv-")])
+os.environ["EVA_KV_IN_FEED"] = "deactivated"
+errb2 = io.StringIO()
+with contextlib.redirect_stderr(errb2):
+    gm = kv_eva.gate_mode()
+chk("невідоме значення брами (deactivated) → попередження, режим вимкнено (kv у фіді нема)", gm == "" and "невідоме значення" in errb2.getvalue())
+os.environ["EVA_KV_IN_FEED"] = "0"
+errb3 = io.StringIO()
+with contextlib.redirect_stderr(errb3):
+    gm0 = kv_eva.gate_mode()
+chk("«0» і порожньо — без попередження (штатне вимкнено)", gm0 == "" and errb3.getvalue() == "")
+os.environ.pop("EVA_KV_IN_FEED", None)
+kv_eva.LISTED_FILE.unlink(missing_ok=True)
+
 if F:
     print("\nFAIL:", len(F))
     sys.exit(1)

@@ -8,7 +8,7 @@ from orders_db import (
     get_connection, get_orders_ready_to_forward, mark_forwarded_to_toysi,
     mark_ukrposhta_shipment, update_delivery_status,
     mark_stock_alert_sent, clear_stock_alert, mark_rozetka_delivery_ttn,
-    init_db, mark_rz_marking_sent, bump_rz_marking_attempt, get_rz_markings_to_retry,
+    init_db, mark_rz_marking_sent, bump_rz_marking_attempt, get_rz_markings_to_retry, get_kv_orders_needing_receipt,
     mark_checkbox_ettn_registered, claim_receipt, release_receipt_claim, get_receipt_state, get_group_children,
     clean_customer_comment,
 )
@@ -1221,6 +1221,22 @@ def _retry_pending_rz_markings(conn) -> None:
         _maybe_send_rz_delivery_marking(conn, order)
 
 
+def _issue_kv_receipts(conn, test_mode: bool = False) -> None:
+    """Фіскальні чеки передоплати для KIDDISVIT-замовлень сайту (kv-/kvu-): вони не йдуть у route_order() (get_orders_ready_to_forward їх виключає), тож чек виписується ТУТ — тим самим безпечним шляхом
+    (_ensure_site_prepaid_receipt: claim, невідомий результат → без другого чека, money-safety суми). Збій одного замовлення не валить цикл (алерт усередині)."""
+    try:
+        orders = get_kv_orders_needing_receipt(conn)
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_router] чеки KIDDISVIT: запит не вдався ({type(e).__name__}: {str(e)[:160]}) — пропущено цикл", file=sys.stderr)
+        return
+    for order in orders:
+        try:
+            _ensure_site_prepaid_receipt(conn, order, test_mode)
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            print(f"[order_router] чек KIDDISVIT {order.get('internal_order_id')}: збій {type(e).__name__}: {str(e)[:160]}", file=sys.stderr)
+
+
 def route_pending_orders(test_mode: bool = False) -> None:
     init_db()  # гарантувати наявність колонок (міграція ідемпотентна) навіть при standalone-запуску
     with get_connection() as conn:
@@ -1237,6 +1253,7 @@ def route_pending_orders(test_mode: bool = False) -> None:
         # Ретрай непересланих RZ-Delivery-маркувань — біжить НЕЗАЛЕЖНО від наявності нових замовлень
         # (раніше при порожньому candidates був ранній return, і ретрай не мав би шансу).
         _retry_pending_rz_markings(conn)
+        _issue_kv_receipts(conn, test_mode)      # чеки передоплати KIDDISVIT-замовлень (у route_order вони не потрапляють)
 
 
 if __name__ == "__main__":

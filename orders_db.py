@@ -600,6 +600,29 @@ def get_orders_ready_to_forward(conn: sqlite3.Connection) -> list:
     return [_row_to_dict(row) for row in rows]
 
 
+KV_RECEIPT_SINCE = "2026-11-18"        # дата вмикання автоматичного чека KIDDISVIT: замовлення, створені РАНІШЕ, автоматично чека не отримують (могли мати ручний чек у Checkbox без прапорця в БД → другий реальний чек); їх — лише вручну
+
+
+def get_kv_orders_needing_receipt(conn: sqlite3.Connection) -> list:
+    """KIDDISVIT-замовлення САЙТУ (kv-/kvu-), оплачені передоплатою (підтверджено), для яких чек ще НЕ видано. Вони виключені з get_orders_ready_to_forward (у Toysi не йдуть), тож route_order()
+    для них не викликається і фіскальний чек (закон: не пізніше передачі товару/оплати) не виписувався б взагалі — аудит #1697. Це єдиний шлях їхнього чека; claim/дубль-захист — у order_router._ensure_site_prepaid_receipt."""
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE platform = 'site' AND payment_method = 'prepaid' AND payment_confirmed = 1
+          AND checkbox_ettn_registered_at IS NULL
+          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled', 'eva_cancelled_before_forward'))
+          AND cancelled_at IS NULL
+          AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL           -- як у get_rt_orders_pending: чек продажу на скасоване/повернене замовлення не виписуємо (аудит #1728)
+          AND COALESCE(delivery_status, '') NOT IN ('cancelled', 'returned')
+          AND created_at >= ?
+          AND (items LIKE '%"toysi_code": "kv-%' OR items LIKE '%"toysi_code": "kvu-%')
+        """,
+        (KV_RECEIPT_SINCE,),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
 RT_ITEM_MARK = '"toysi_code": "rt-'          # так json.dumps(ensure_ascii=False) пише позицію RoyalToys (insert_order)
 RT_STATES = ("ttn_creating", "ttn_created", "marking_ready", "rt_ordering", "rt_ordered", "shipped", "delivered", "returned", "manual")
 # ttn_creating / rt_ordering — «claim» ПЕРЕД незворотним зовнішнім кроком (створення ТТН НП / натискання кнопки в RoyalToys): якщо процес помер чи результат невідомий, стан лишається і конвеєр сам НЕ повторює крок (потрібна ручна звірка).

@@ -361,7 +361,7 @@ def search_overlay():
       '<div class="overlay" id="search-overlay" role="dialog" aria-label="Пошук">'
       '<div class="sp">'
       '<div class="obar">'
-        '<input type="search" placeholder="Що шукаємо?" aria-label="Пошук">'
+        '<input type="search" placeholder="Що шукаємо?" aria-label="Пошук" maxlength="120">'
         '<button class="x" id="close-search">Готово</button>'
       '</div><div class="results"></div>'
       f'<template id="search-empty">{search_empty_html()}</template></div></div>'
@@ -1314,6 +1314,7 @@ def build():
     write_cart(_cart_addons(toysi_prods))
     write_thanks()
     write_review_page()
+    write_search_page()
     write_404()
     # 5б) індекс усіх категорій (закриває orphan) + сторінки довіри (Про нас/Доставка/…)
     groups = SITE_GROUPS
@@ -3760,6 +3761,24 @@ _REVIEW_JS = (
 )
 
 
+def write_search_page():
+    """search.html — сторінка ВСІХ результатів пошуку (власник 18.11: Enter/«Готово» в оверлеї нічого не робили; з підказок перехід був, а загальної картини — ні).
+    Результати рахує app.js (initSearchPage) з index.json за ?q=…; noindex, поза sitemap, Disallow у robots.txt (нескінченні варіанти запитів)."""
+    body = (
+      '<section class="doc search-page" id="search-page">'
+      '<h1 class="page" id="sp-h1" style="margin-left:0;margin-right:0">Пошук</h1>'
+      '<form class="sp-form" action="search.html" method="get" role="search">'
+        '<input type="search" name="q" id="sp-q" placeholder="Що шукаємо?" aria-label="Пошук" autocomplete="off" minlength="2" maxlength="120" required>'
+        '<button class="btn" type="submit">Шукати</button>'
+      '</form>'
+      '<div id="sp-meta"></div><div class="grid" id="sp-grid"></div>'
+      '<div id="sp-more-wrap" hidden style="text-align:center;margin:18px 0"><button class="btn" type="button" id="sp-more">Показати ще</button></div>'
+      '<noscript><p>Для пошуку потрібен JavaScript. <a href="catalog.html">Перейти до каталогу</a></p></noscript>'
+      '</section>'
+    )
+    _write("search.html", page("Пошук", body, description="Пошук іграшок PlutusToys.", noindex=True, canonical="search.html"))
+
+
 def write_review_page():
     """review.html — форма відгуку за одноразовим посиланням (`review.html#t=<токен>`; токен видає й перевіряє бекенд VPS: POST api/review/form, POST api/review — див. site/REVIEWS_CONTRACT.md).
     noindex, поза sitemap (не в static_urls) і Disallow у robots.txt; БЕЗ аналітики (analytics=False): page_view/Pixel відправили б адресу з токеном третім сторонам."""
@@ -5601,6 +5620,7 @@ def write_robots():
            "Disallow: /cart.html\n"
            "Disallow: /thanks.html\n"
            "Disallow: /review.html\n"
+           "Disallow: /search.html\n"
            f"Sitemap: {SITE_URL}/sitemap.xml\n")
 
 

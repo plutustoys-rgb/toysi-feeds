@@ -661,3 +661,6 @@ label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накла
 .gift-intro.coloring-wide,.gift-faq.coloring-wide{max-width:none}   /* на сторінках розмальовок текст на всю ширину контенту (.wrap), як сітка аркушів */
 .coloring-shop{margin:8px 0 22px}
 .coloring-shop h2{font-size:18px;margin:0 16px 10px}
+.sp-form{display:flex;gap:8px;margin:0 0 14px;max-width:560px}
+.sp-form input{flex:1;min-width:0;padding:12px 14px;border:1px solid var(--line,#e6e6ee);border-radius:12px;font:inherit;background:var(--card,#fff)}
+.search-page .grid{margin-top:8px}

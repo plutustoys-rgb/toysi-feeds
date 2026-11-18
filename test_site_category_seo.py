@@ -127,7 +127,12 @@ bad_seo = {"dytiachyy-posud": dict(GOOD_SEO["dytiachyy-posud"], faq=GOOD_SEO["dy
 out2, err2 = build(seo=bad_seo)
 chk("кривий запис (2 питання / «оригінал» / title >65 / не рядки) пропускається ГОЛОСНО, категорія лишається як була",
     err2.count("category_seo.json[") == 4 and head_title(pg(out2, "category-dytiachyy-posud.html")) == "Дитячий посуд — купити в Україні | PlutusToys" and "FAQPage" not in pg(out2, "category-dytiachyy-posud.html"))
-chk("запис, що вказує на неіснуючу категорію, нічого не ламає", build(seo={"nema-takoi": GOOD_SEO["dytiachyy-posud"]})[1] == "" or "Traceback" not in build(seo={"nema-takoi": GOOD_SEO["dytiachyy-posud"]})[1])
+_o, _e = build(seo={"nema-takoi": GOOD_SEO["dytiachyy-posud"]})
+chk("запис із помилковим slug (немає такої категорії) — ГОЛОСНЕ попередження, збірка не падає", "category_seo.json: slug без сторінки категорії" in _e and "nema-takoi" in _e and "Traceback" not in _e)
+KOSA = bs._SEL_KOSA_RX
+chk("регекс добору: «коса лінія», «в косу лінійку», «кос. лінія», «з допоміжною» — так; «космос лінія», «Косинус лінія», «клітинка» — ні",
+    all(KOSA.search(x) for x in ("Зошит 12 арк. коса лінія", "зошит в косу лінійку", "Зошит кос. лінія", "Зошит з допоміжною лінією", "Зошит косою лінією"))
+    and not any(KOSA.search(x) for x in ("Зошит Космос лінія", "Зошит Косинус лінія", "Зошит у клітинку", "Космос лінійка")))
 
 # пагінація: перекриття лише на 1-й сторінці
 big = make_catalog(14)

@@ -1362,6 +1362,9 @@ def build():
     _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)
     if _unmatched:
         print(f"[build] ⚠ category_texts.json: slug без сторінки категорії (друкарська помилка? текст не з'явиться): {_unmatched[:10]}", file=sys.stderr)
+    _seo_unmatched = sorted(set(_CATEGORY_SEO) - _written_slugs)
+    if _seo_unmatched:
+        print(f"[build] ⚠ category_seo.json: slug без сторінки категорії (друкарська помилка? перекриття не з'явиться): {_seo_unmatched[:10]}", file=sys.stderr)
     _alt_unmatched = sorted(set(_CATEGORY_RU_ALT) - _written_slugs)
     if _alt_unmatched:
         print(f"[build] ⚠ category_ru_alt.json: slug без сторінки категорії (друкарська помилка? рядок не з'явиться): {_alt_unmatched[:10]}", file=sys.stderr)
@@ -4877,7 +4880,7 @@ def _ov_faq_html(ov):
 SELECTION_TEXTS_FILE = os.path.join(OUT, "selection_pages.json")
 SELECTION_MIN_ITEMS, SELECTION_MAX_ITEMS = 12, 48
 SELECTION_FAQ_MIN, SELECTION_FAQ_MAX = 3, 5
-_SEL_KOSA_RX = re.compile(r"кос\w*\s*(?:лін|з\s*доп)|допоміжн", re.I)
+_SEL_KOSA_RX = re.compile(r"(?<!\w)кос(?:а|у|ою|ої|ій|і|ий|ого)?\.?\s*(?:лін|з\s*доп)|допоміжн", re.I)   # аудит #1726: «космос лінія» не ловимо, «кос. лінія» ловимо
 SELECTION_PAGES = (
     ("zoshyty-u-kosu-liniiu", "Зошити в косу лінію", "Зошити в косу лінію та з допоміжною лінією — купити | PlutusToys", "zoshyty", "Зошити",
      lambda p: "зошит" in (p.get("name") or "").lower() and bool(_SEL_KOSA_RX.search(p.get("name") or ""))),

@@ -377,6 +377,8 @@ def footer():
     _fl = list(FOOTER_LINKS)
     if GIFT_BUILT:   # хаб подарунків (SEO 15.11): посилання лише коли хаб справді побудовано в цій збірці
         _fl.insert(1, (GIFT_HUB_FILE, "Подарунки дитині"))
+    if BRAND_BUILT:   # хаб брендів (SEO 17.11): посилання лише коли хаб справді побудовано в цій збірці
+        _fl.insert(2 if GIFT_BUILT else 1, (BRAND_HUB_FILE, "Бренди"))
     nav = " · ".join(f'<a href="{u}">{esc(t)}</a>' for u, t in _fl)
     return (
       '<footer class="foot">'
@@ -1008,6 +1010,7 @@ def _load_supplier_kv(now=None):
         out[k] = {"id": k, "name": _kv_strip_cf(_supplier_text_plain(str(v["name"]).strip())), "description": _desc, "vendor": vendor_name,
                   "vendor_code": _vcode, "category_name": cat_name.strip(), "pictures": imgs, "stock": stock,
                   "site_price": price, "rt_cost": kv_cost, "supplier": "kiddisvit", "price": price, "barcode": _bc,
+                  "kv_src_path": " > ".join(str(x).strip() for x in (v.get("source_category_path") or v.get("category_path") or []) if str(x).strip()) if isinstance(v.get("source_category_path") or v.get("category_path"), list) else "",
                   # «index» не True (false або поля нема) → noindex,follow і поза sitemap; опис <50 знаків (тонка картка) → noindex завжди
                   "rt_noindex": v.get("index") is not True or len(re.sub(r"<[^>]+>", "", _desc).strip()) < RT_MIN_DESC_INDEX,
                   "dup_of": str(v.get("dup_of")) if re.fullmatch(r"[0-9]{1,12}", str(v.get("dup_of") or "")) else "", "kv_dup_of": ""}   # збіг із товаром Toysi (Код 17.11, kv_dup_map.json): kv — тінь, поки Toysi в наявності
@@ -1102,7 +1105,7 @@ def build():
             "photo": toysi_proxy_photo(PHOTO_OVERRIDES.get(str(it.get("id")), public_photo(str(it.get("id")), pics[0]))), "stock": int(it.get("stock") or 0),
             "desc": it.get("description") or "",
             "contribution": contribution,
-            "rt": 1 if str(it.get("id")).startswith(("rt-", "kv-")) else 0, "kv": 1 if str(it.get("id")).startswith("kv-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""), "kv_dup_of": str(it.get("kv_dup_of") or ""),
+            "rt": 1 if str(it.get("id")).startswith(("rt-", "kv-")) else 0, "kv": 1 if str(it.get("id")).startswith("kv-") else 0, "noindex": bool(it.get("rt_noindex")) or NOINDEX_CATEGORIES.get(str(catname or "").strip().casefold()) is True, "dup_of": str(it.get("dup_of") or ""), "kv_dup_of": str(it.get("kv_dup_of") or ""), "src_path": str(it.get("kv_src_path") or ""),
             "vendor": (it.get("vendor") or "").strip(), "vendor_code": (it.get("vendor_code") or "").strip(), "barcode": (it.get("barcode") or "").strip(),   # JSON-LD: brand (запасний), gtin (лише валідний штрихкод)
         })
     if _CATEGORY_OVERRIDES:
@@ -1254,6 +1257,8 @@ def build():
     GIFT_BUILT[:] = [(s, h, lb) for s, h, lb, _r, _i in _gift_plan]
     _porady = _load_porady()
     GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
+    _brand_plan = brand_plan(prods)   # сторінки брендів (SEO 17.11) — за воротами SITE_BRAND_PAGES_LIVE=1; план ДО запису сторінок, щоб футер усіх сторінок знав про хаб
+    BRAND_BUILT[:] = [(s, h) for s, h, _par, _items, _t in _brand_plan]
     n = 0
     # 1) картки товарів
     # Внутрішня перелінковка (SEO 12.10.2026): «Схожі товари» = до 6 товарів В НАЯВНОСТІ з тієї ж категорії, найближчих за ціною (індекс по категорії + bisect, не O(n²)); «Уцінка» — без блоку.
@@ -1287,7 +1292,7 @@ def build():
     write_home(toysi_prods, _cats_toysi, [c for c in nav_list if _cats_toysi.get(c)], cat_slug)
     write_ig(toysi_prods)
     has_nabory = write_nabory(toysi_prods)
-    gift_urls = write_gift_pages(toysi_prods, plan=_gift_plan) + write_porady(_porady)
+    gift_urls = write_gift_pages(toysi_prods, plan=_gift_plan) + write_porady(_porady) + write_brand_pages(_brand_plan)
     # 5) кошик + checkout + сторінка подяки
     write_cart(_cart_addons(toysi_prods))
     write_thanks()
@@ -1328,7 +1333,7 @@ def build():
                 removed += 1
             except OSError:
                 pass
-        elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES) and fn not in _gift_files:   # сторінка подарунків, якої ця збірка не будує (мало товарів/нема тексту), не лишається живою
+        elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES) and fn not in _gift_files:   # сторінка подарунків, якої ця збірка не будує (мало товарів/нема тексту), не лишається живою
             try:
                 os.remove(os.path.join(OUT, fn))
                 removed += 1
@@ -4286,7 +4291,7 @@ def write_gift_pages(prods, texts=None, plan=None):
 # ── Статті-поради (SEO 15.11, ТЗ розд. 2): /porady-<slug>.html — підзаголовки-питання, коротка відповідь на початку кожного розділу, Article (+FAQPage) ──
 # Тексти пише Копірайтер у site/porady.json: {"porady-<slug>": {"title", "published": "РРРР-ММ-ДД", "lead", "sections": [{"h", "short", "text"}], "faq": [{"q", "a"}]}}.
 # Дозволені лише slug-и з PORADY_SLUGS (хвиля 1); решта — голосне попередження. Дата публікації — з файлу (dateModified = datePublished: не вигадуємо «свіжість»); автор — PlutusToys.
-PORADY_SLUGS = ("porady-shcho-podaruvaty-na-mykolaia", "porady-podarunok-na-5-rokiv", "porady-yak-vybraty-nastilnu-hru")
+PORADY_SLUGS = ("porady-shcho-podaruvaty-na-mykolaia", "porady-podarunok-na-5-rokiv", "porady-yak-vybraty-nastilnu-hru", "porady-funko-pop-bitty-pop-klipsa", "porady-baby-born-za-vikom")
 PORADY_FILE = os.path.join(OUT, "porady.json")
 PORADY_FILES = frozenset(f"{s}.html" for s in PORADY_SLUGS)
 PORADY_MIN_SECTIONS = 3
@@ -4369,6 +4374,8 @@ def write_porady(porady):
         secs_html = "".join(f'<section class="porady-sec"><h2>{esc(h)}</h2><p class="porady-short"><strong>{esc(short)}</strong></p>{_gift_paras(text)}</section>' for h, short, text in a["sections"])
         faq_html = ("<section class=\"gift-faq\"><h2>Часті запитання</h2>" + "".join(f"<h3>{esc(q)}</h3><p>{esc(an)}</p>" for q, an in a["faq"]) + "</section>") if a["faq"] else ""
         rel = [(g, built_gifts[g]) for g, arts in PORADY_FOR_GIFT.items() if slug in arts and g in built_gifts]
+        _bl = {s: h for s, h in BRAND_BUILT}
+        rel += [(b_, _bl[b_]) for b_ in BRAND_FOR_PORADY.get(slug, ()) if b_ in _bl]   # статті про бренди лінкують на побудовані сторінки брендів
         rel_links = "".join(f'<li><a href="{g}.html">{esc(h)}</a></li>' for g, h in rel)
         rel_html = ('<nav class="gift-links" aria-label="Добірки товарів за темою">' + (f'<h2>Добірки товарів за темою</h2><ul>{rel_links}</ul>' if rel else "")
                     + (f'<p><a href="{GIFT_HUB_FILE}">Усі добірки подарунків</a> · <a href="catalog.html">Увесь каталог</a></p>' if GIFT_BUILT else '<p><a href="catalog.html">Увесь каталог</a></p>') + '</nav>')
@@ -4389,6 +4396,162 @@ def write_porady(porady):
         desc = _cut(" ".join(first[:2]), DESC_MAX) or a["title"]
         _write(fname, page(a["title"], body, extra_head=head, description=desc, canonical=fname, og_image=OG_IMAGE, og_type="article", title_full=(f'{a["title"]} | PlutusToys' if len(a["title"]) + 13 <= TITLE_MAX else a["title"])))
         written.append((fname, "0.6", "monthly"))
+    return written
+
+
+# ── Сторінки брендів (SEO 17.11.2026, ТЗ «сторінки брендів KIDDISVIT», рішення власника «Так, усе») ────────────────────────────────────────────────────────────────────────────────────
+# 6 сторінок брендів (/brend-<slug>.html) + 6 підсторінок Funko (за шляхом категорій KIDDISVIT) + хаб /brendy.html. Добірка РАХУЄТЬСЯ при кожній збірці по ВСЬОМУ каталогу (Toysi + RT + kv; у наявності; не тіні);
+# менше BRAND_MIN_ITEMS — сторінку не будуємо (голосне попередження). Вступ і питання-відповіді — site/brand_pages.json ({"<slug>": {"h1", "intro", "faq": [{"q","a"}]}}, пише Копірайтер); без тексту сторінку не будуємо.
+# Сторінки будуються ЛИШЕ за воротами SITE_BRAND_PAGES_LIVE=1 (вимкнено за замовчуванням: SEO — запуск після SITE_KV_LIVE=1 і тіні дублів). Заборонені слова в текстах («оригінал/офіційний/ліцензійний/дистриб'ютор», ім'я постачальника) — збірка їх не пропускає.
+BRAND_PAGES_LIVE = os.environ.get("SITE_BRAND_PAGES_LIVE") == "1"
+BRAND_TEXTS_FILE = os.path.join(OUT, "brand_pages.json")
+BRAND_HUB_FILE = "brendy.html"
+BRAND_MIN_ITEMS = 12
+BRAND_SHOW_MAX = 48
+BRAND_FAQ_MIN, BRAND_FAQ_MAX = 3, 6
+BRAND_LIST_NAME = "brand_page"
+_BRAND_BAD_TEXT_RX = re.compile(r"оригінал|офіційн|ліцензійн|дистриб|kiddi\s*svit|кіддісвіт|\bkvu?-[0-9]|<|>", re.I)
+BRAND_BUILT = []    # [(slug, h1)] побудованих сторінок поточної збірки; footer() і статті читають
+BRAND_FOR_PORADY = {"porady-funko-pop-bitty-pop-klipsa": ("brend-funko-pop", "brend-funko-pop-filmy-serialy", "brend-funko-pop-multfilmy", "brend-funko-pop-anime", "brend-funko-pop-igry", "brend-funko-pop-harry-potter", "brend-funko-pop-marvel"),
+                    "porady-baby-born-za-vikom": ("brend-baby-born",)}
+
+
+def _brand_hay(p):
+    return f'{p.get("name") or ""} {p.get("vendor") or ""}'.casefold()
+
+
+_BR_FUNKO = re.compile(r"(?<![a-z0-9])funko(?![a-z])|фанко")
+_BR_BORN = re.compile(r"baby\s*born|бебі\s*борн")
+_BR_BRATZ = re.compile(r"(?<![a-z0-9])bratz(?![a-z0-9])|братц")
+_BR_SQUISH = re.compile(r"squishmallow|сквішмелоу|сквишмеллоу")
+_BR_RAINBOW = re.compile(r"rainbow\s*high|рейнбоу\s*хай")
+_BR_LOL = re.compile(r"(?<![a-zа-яіїєґ0-9])l\.\s?o\.\s?l\.|(?<![a-zа-яіїєґ0-9])lol\s+(?:surprise|сюрприз)|(?<![a-zа-яіїєґ0-9])лол\s+(?:surprise|сюрприз)")
+
+
+def _is_funko(p):
+    return bool(_BR_FUNKO.search(_brand_hay(p)))
+
+
+# (slug, батьківська сторінка або None, правило-предикат). Підсторінки Funko — лише картки Funko (H1 «Funko Pop …») з потрібним шляхом KIDDISVIT (поле src_path; Toysi/RT без шляху — лише на головній сторінці Funko).
+BRAND_PAGES = (
+    ("brend-funko-pop", None, _is_funko),
+    ("brend-baby-born", None, lambda p: bool(_BR_BORN.search(_brand_hay(p)))),
+    ("brend-bratz", None, lambda p: bool(_BR_BRATZ.search(_brand_hay(p)))),
+    ("brend-squishmallows", None, lambda p: bool(_BR_SQUISH.search(_brand_hay(p)))),
+    ("brend-rainbow-high", None, lambda p: bool(_BR_RAINBOW.search(_brand_hay(p)))),
+    ("brend-lol-surprise", None, lambda p: bool(_BR_LOL.search(_brand_hay(p)))),
+    ("brend-funko-pop-filmy-serialy", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Funko > Герої фільмів та серіалів"),
+    ("brend-funko-pop-multfilmy", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Funko > Герої мультфільмів"),
+    ("brend-funko-pop-anime", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Ліцензійні герої > Герої Аніме"),
+    ("brend-funko-pop-igry", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Funko > Герої ігор"),
+    ("brend-funko-pop-harry-potter", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Funko > Гаррі Поттер"),
+    ("brend-funko-pop-marvel", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Хлопчикам > Ліцензійні герої > Marvel"),
+)
+BRAND_PAGE_FILES = frozenset(f"{s}.html" for s, _par, _fn in BRAND_PAGES) | {BRAND_HUB_FILE}
+
+
+def _load_brand_texts(path=None):
+    """site/brand_pages.json → {slug: {"h1", "intro", "faq": [(q, a), …]}}. Кривий запис, заборонені слова/теги — пропускаємо ГОЛОСНО (сторінка без тексту не будується)."""
+    path = path or BRAND_TEXTS_FILE
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as e:
+        print(f"[build] ⚠ brand_pages.json не читається ({e}) — сторінки брендів не будуються", file=sys.stderr)
+        return {}
+    if not isinstance(raw, dict):
+        print("[build] ⚠ brand_pages.json: корінь не об'єкт {slug: {h1, intro, faq}} — сторінки брендів не будуються", file=sys.stderr)
+        return {}
+    out = {}
+    for slug, v in raw.items():
+        if slug.startswith("_") or not isinstance(v, dict):
+            continue
+        h1, intro, _faq = v.get("h1"), v.get("intro"), v.get("faq")
+        faq = [(x["q"].strip(), x["a"].strip()) for x in (_faq if isinstance(_faq, list) else []) if isinstance(x, dict) and isinstance(x.get("q"), str) and isinstance(x.get("a"), str) and x["q"].strip() and x["a"].strip()]
+        if not isinstance(h1, str) or not h1.strip() or not isinstance(intro, str) or not intro.strip() or len(faq) < BRAND_FAQ_MIN:
+            print(f"[build] ⚠ brand_pages.json[{slug}]: потрібні рядки h1, intro і ≥{BRAND_FAQ_MIN} пар q/a — запис пропущено", file=sys.stderr)
+            continue
+        if _BRAND_BAD_TEXT_RX.search(" ".join([h1, intro] + [q + " " + a for q, a in faq])):
+            print(f"[build] ⚠ brand_pages.json[{slug}]: заборонене слово («оригінал/офіційний/ліцензійний/дистриб'ютор», ім'я постачальника) чи «<» «>» — запис пропущено", file=sys.stderr)
+            continue
+        out[slug] = {"h1": h1.strip(), "intro": intro.strip(), "faq": faq[:BRAND_FAQ_MAX]}
+    return out
+
+
+def _brand_ok(p):
+    return (p.get("stock") or 0) > 0 and bool(p.get("photo")) and (p.get("price") or 0) > 0 and not p.get("shadow")
+
+
+def brand_plan(prods, texts=None):
+    """[(slug, h1, parent, items)] сторінок брендів, які МОЖНА побудувати (ворота відкриті, є текст, ≥BRAND_MIN_ITEMS товарів у наявності). Порядок добірки: за внеском спадно (невідомий — в кінець), потім ціна."""
+    if not BRAND_PAGES_LIVE:
+        return []
+    texts = _load_brand_texts() if texts is None else texts
+    pool = [p for p in prods if _brand_ok(p)]
+    plan = []
+    for slug, parent, fn in BRAND_PAGES:
+        if slug not in texts:
+            print(f"[build] ⚠ brand: для {slug} нема тексту в brand_pages.json — сторінку не будуємо", file=sys.stderr)
+            continue
+        items = [p for p in pool if fn(p)]
+        if len(items) < BRAND_MIN_ITEMS:
+            print(f"[build] ⚠ brand: {slug} — лише {len(items)} товарів за правилом (< {BRAND_MIN_ITEMS}) — сторінку не будуємо", file=sys.stderr)
+            continue
+        items.sort(key=lambda p: (-(p["contribution"] if p.get("contribution") is not None else -1e9), -(p.get("price") or 0), str(p["id"])))
+        plan.append((slug, texts[slug]["h1"], parent, items[:BRAND_SHOW_MAX], texts[slug]))
+    return plan
+
+
+def write_brand_pages(plan):
+    """Пише сторінки брендів і хаб; повертає [(файл, пріоритет, частота)] для sitemap. Підсторінка Funko будується лише разом із головною сторінкою Funko (інакше хлібні крихти ведуть у нікуди)."""
+    if not plan:
+        return []
+    built = {s for s, _h, _par, _it, _t in plan}
+    plan = [x for x in plan if x[2] is None or x[2] in built]
+    written = []
+    h1_of = {s: h for s, h, _par, _it, _t in plan}
+    for slug, h1, parent, items, t in plan:
+        fname = f"{slug}.html"
+        trail = [("Головна", "index.html"), ("Бренди", BRAND_HUB_FILE)] + ([(h1_of[parent], f"{parent}.html")] if parent else []) + [(h1, None)]
+        sib = [(s_, h_) for s_, h_, par_, _i, _t in plan if s_ != slug and par_ is None]
+        sub = [(s_, h_) for s_, h_, par_, _i, _t in plan if par_ == slug]
+        links = "".join(f'<li><a href="{s_}.html">{esc(h_)}</a></li>' for s_, h_ in sub + sib)
+        arts = [(a_, t_) for a_, t_ in GIFT_ARTICLES_BUILT if slug in BRAND_FOR_PORADY.get(a_, ())]
+        art_html = ('<nav class="gift-links" aria-label="Статті-поради"><h2>Поради</h2><ul>' + "".join(f'<li><a href="{a_}.html">{esc(t_)}</a></li>' for a_, t_ in arts) + '</ul></nav>') if arts else ""
+        faq_html = "".join(f"<h3>{esc(q)}</h3><p>{esc(a)}</p>" for q, a in t["faq"])
+        body = (
+            crumbs_html(trail) +
+            f'<h1 class="page">{esc(h1)}</h1>'
+            f'<div class="gift-intro">{_gift_paras(t["intro"])}</div>'
+            f'<div class="gift-list" id="gift-list" data-list="{BRAND_LIST_NAME}">' + grid(items, eager_n=min(3, len(items)), badge=True) + '</div>'
+            f'<section class="gift-faq"><h2>Питання й відповіді</h2>{faq_html}</section>' + art_html +
+            f'<nav class="gift-links" aria-label="Інші бренди"><h2>Інші бренди та добірки</h2><ul>{links}</ul>'
+            f'<p><a href="{BRAND_HUB_FILE}">Усі бренди</a> · <a href="catalog.html">Увесь каталог</a></p></nav>'
+        )
+        head = breadcrumb_ld(trail)
+        head += _ld_script({"@context": "https://schema.org", "@type": "ItemList", "name": h1,
+                            "itemListElement": [{"@type": "ListItem", "position": i + 1, "url": f"{SITE_URL}/{product_file(x['id'])}"} for i, x in enumerate(items)]})
+        head += _ld_script({"@context": "https://schema.org", "@type": "FAQPage",
+                            "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in t["faq"]]})
+        first = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", t["intro"]).strip())
+        desc = _cut(" ".join(first[:2]), DESC_MAX) or h1
+        _write(fname, page(h1, body, extra_head=head, description=desc, canonical=fname, og_image=OG_IMAGE, title_full=(f"{h1} — купити в Україні | PlutusToys" if len(h1) + 29 <= TITLE_MAX else f"{h1} | PlutusToys")))
+        written.append((fname, "0.6", "weekly"))
+    top = [(s, h) for s, h, par, _i, _t in plan if par is None]
+    trail = [("Головна", "index.html"), ("Бренди", None)]
+    subs = {s: [(s_, h_) for s_, h_, par_, _i, _t in plan if par_ == s] for s, _h in top}
+    lis = "".join(f'<li><a href="{s}.html">{esc(h)}</a>' + (('<ul>' + "".join(f'<li><a href="{s2}.html">{esc(h2)}</a></li>' for s2, h2 in subs[s]) + '</ul>') if subs[s] else "") + '</li>' for s, h in top)
+    hub_body = (crumbs_html(trail) + '<h1 class="page">Бренди іграшок у PlutusToys</h1>'
+                '<p class="gift-hub-lead">Добірки товарів у наявності за брендами: фігурки, ляльки, м\'які іграшки.</p>'
+                f'<nav class="gift-links" aria-label="Бренди"><ul>{lis}</ul></nav>'
+                + (('<nav class="gift-links" aria-label="Статті-поради"><h2>Поради</h2><ul>' + "".join(f'<li><a href="{s_}.html">{esc(t_)}</a></li>' for s_, t_ in GIFT_ARTICLES_BUILT if s_ in BRAND_FOR_PORADY) + '</ul></nav>') if any(s_ in BRAND_FOR_PORADY for s_, _t in GIFT_ARTICLES_BUILT) else ""))
+    head = breadcrumb_ld(trail) + _ld_script({"@context": "https://schema.org", "@type": "ItemList", "name": "Бренди іграшок",
+                                              "itemListElement": [{"@type": "ListItem", "position": i + 1, "name": h, "url": f"{SITE_URL}/{s}.html"} for i, (s, h) in enumerate(top)]})
+    _write(BRAND_HUB_FILE, page("Бренди іграшок", hub_body, extra_head=head, description=_cut("Добірки іграшок за брендами в наявності: " + ", ".join(h for _s, h in top[:6]) + ". Доставка Новою Поштою.", DESC_MAX),
+                                canonical=BRAND_HUB_FILE, og_image=OG_IMAGE, title_full="Бренди іграшок — добірки в наявності | PlutusToys"))
+    written.append((BRAND_HUB_FILE, "0.7", "weekly"))
     return written
 
 

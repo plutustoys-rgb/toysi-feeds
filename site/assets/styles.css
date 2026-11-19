@@ -420,8 +420,8 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .gift-intro{margin:0 16px 14px;color:var(--muted);font-size:15px;line-height:1.5;max-width:none}   /* текст на всю ширину контенту (.wrap), як сітка карток (власник 19.11: «текст не по ширині») */
 .gift-intro p{margin:0 0 8px}
 .gift-hub-lead{margin:-6px 16px 12px;color:var(--muted);font-size:14px}
-.gift-hub-lead a,.sale-lead a,.gift-intro a{color:var(--accent-hover);text-decoration:underline;font-weight:600}   /* посилання в сірому тексті не мають зливатися з описом (власник 19.11) */
-.gift-hub-lead a:hover,.sale-lead a:hover,.gift-intro a:hover{color:var(--accent)}
+.gift-hub-lead a,.sale-lead a,.gift-intro a{color:#8a3b00;text-decoration:underline;font-weight:600}   /* посилання в сірому тексті не мають зливатися з описом (власник 19.11) */
+.gift-hub-lead a:hover,.sale-lead a:hover,.gift-intro a:hover{color:#6b2d00}
 .gift-faq{margin:22px 16px 8px;max-width:none}
 .gift-faq h2,.gift-links h2{font-size:18px;margin:0 0 8px}
 .gift-faq h3{font-size:15px;margin:14px 0 4px}
@@ -430,7 +430,7 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .gift-links ul{list-style:none;margin:0 0 10px;padding:0;columns:2 240px;column-gap:24px}
 .gift-links li{break-inside:avoid;padding:4px 0;font-size:15px;line-height:1.35}
 .porady-by{margin:-4px 16px 10px;color:var(--muted);font-size:13px}
-.porady-sec{margin:18px 16px 0;max-width:760px}
+.porady-sec{margin:18px 16px 0;max-width:none}
 .porady-sec h2{font-size:18px;margin:0 0 6px}
 .porady-sec p{margin:0 0 8px;font-size:15px;line-height:1.5}
 .porady-short{font-size:15px}

@@ -57,6 +57,7 @@ p1 = prod()
 L = bs._collection_links(p1)
 chk(f"картка 250 ₴, від 2 років, Funko → 3 посилання у порядку бюджет → вік → бренд: {[u for u, _a in L]}",
     [u for u, _a in L] == ["podarunok-do-300-hrn.html", "podarunok-na-2-roky.html", "brend-funko-pop.html"] and L[0][1] == "Подарунок до 300")
+chk("картка «18+» (відомий вік > GIFT_MAX_AGE) НЕ отримує бюджетне посилання (бюджетні сторінки її відсікають), вікове — не з нашого діапазону", [u for u, _a in bs._collection_links(prod(price=250, desc="Від 18 років", vendor="T", name="Настільна гра"))] == [])
 chk("тіні, уцінка, немає в наявності, ціна 0 — без блоку", all(bs._collection_links(prod(**kw)) == [] for kw in ({"shadow": True}, {"name": "Уцінка. Funko Pop", "price": 100}, {"stock": 0}, {"price": 0})))
 chk("ціна більша за найбільший бюджет → без бюджетного посилання; вік невідомий → без вікового", [u for u, _a in bs._collection_links(prod(price=900, desc="Фігурка"))] == ["brend-funko-pop.html"])
 chk("RT-картка: лише бренд/добір (подарункові сторінки — тільки Toysi)", [u for u, _a in bs._collection_links(prod(rt=True))] == ["brend-funko-pop.html"])

@@ -3505,11 +3505,12 @@ def _collection_links(p):
     out = []
     if not p.get("rt") and _gift_ok(p):
         price = p["price"]
-        for lo, hi, slug, h1 in COLLECTION_RULES["budget"]:
-            if lo <= price <= hi:
-                out.append((f"{slug}.html", h1))
-                break
         age = gift_min_age(p.get("desc"))
+        if age is None or age <= GIFT_MAX_AGE:   # бюджетні сторінки відсікають відомий вік > GIFT_MAX_AGE («14+», «18+») — картка з таким віком у них не за правилом (аудит #1741)
+            for lo, hi, slug, h1 in COLLECTION_RULES["budget"]:
+                if lo <= price <= hi:
+                    out.append((f"{slug}.html", h1))
+                    break
         if age is not None and price <= GIFT_AGE_PRICE_MAX:
             for lo, hi, slug, h1 in COLLECTION_RULES["age"]:
                 if lo <= age <= hi:

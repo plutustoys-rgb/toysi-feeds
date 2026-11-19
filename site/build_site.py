@@ -4647,6 +4647,10 @@ def write_brand_pages(plan):
 COLORING_MANIFEST_FILE = os.path.join(OUT, "rozmalovky.json")
 COLORING_TEXTS_FILE = os.path.join(OUT, "rozmalovky_texts.json")
 COLORING_DIR = "colorings"
+COLORING_TERMS_ID = "umovy"
+COLORING_TERMS_URL = f"{SITE_URL}/rozmalovky.html#{COLORING_TERMS_ID}"
+COLORING_TERMS_HTML = (f'<section class="gift-intro coloring-wide" id="{COLORING_TERMS_ID}"><h2>Умови використання</h2>'
+                       '<p>Розмальовки з Плутусом можна безкоштовно завантажити й роздрукувати для домашнього використання. Персонаж Плутус — PlutusToys.</p></section>')
 COLORING_HUB_FILE = "rozmalovky.html"
 COLORING_MIN_SHEETS = 3
 COLORING_PRODUCTS_MIN, COLORING_PRODUCTS_MAX = 4, 12
@@ -4845,7 +4849,7 @@ def write_coloring_pages(plan, prods):
             crumbs_html(trail) +
             f'<h1 class="page">{esc(h1)}</h1>'
             f'<div class="gift-intro coloring-wide">{_gift_paras(t["intro"])}</div>'
-            f'<div class="coloring-grid">{figs}</div>' + shop_html +
+            f'<div class="coloring-grid">{figs}</div>' + (COLORING_TERMS_HTML if is_hub else "") + shop_html +
             f'<section class="gift-faq coloring-wide"><h2>Питання й відповіді</h2>{faq_html}</section>'
             f'<nav class="gift-links" aria-label="Інші розмальовки">' + (f'<h2>Інші розмальовки</h2><ul>{links}</ul>' if links else '')
             + (f'<p><a href="{COLORING_HUB_FILE}">Усі безкоштовні розмальовки</a> · <a href="catalog.html">Увесь каталог</a></p>' if not is_hub else '<p><a href="catalog.html">Увесь каталог</a></p>') + '</nav>'
@@ -4854,7 +4858,8 @@ def write_coloring_pages(plan, prods):
         for sh in sheets:
             head += _ld_script({"@context": "https://schema.org", "@type": "ImageObject", "contentUrl": f"{SITE_URL}/{COLORING_DIR}/{sh['id']}.png", "url": f"{SITE_URL}/{COLORING_DIR}/{sh['id']}.png",
                                 "name": sh["title"], "caption": sh["alt"], "description": sh["alt"], "encodingFormat": "image/png", "width": sh["w"], "height": sh["h"],
-                                "creator": {"@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/"}})
+                                "creator": {"@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/"},
+                                "creditText": "PlutusToys", "copyrightNotice": "© PlutusToys", "license": COLORING_TERMS_URL, "acquireLicensePage": COLORING_TERMS_URL})   # GSC «Метадані зображень» (SEO 19.11): ліцензія/автор → позначка в Google Картинках
         head += _ld_script({"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in t["faq"]]})
         first = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", t["intro"]).strip())
         desc = _cut(" ".join(first[:2]), DESC_MAX) or h1

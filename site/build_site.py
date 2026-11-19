@@ -944,7 +944,7 @@ def _kv_path_keys(v, cpath):
             if lst[0].casefold() == "catalog" and len(lst) > 1:
                 keys.append(" > ".join(lst[1:]))
     flat = str(v.get("category") or "").strip()
-    if flat:
+    if flat and not keys:   # плоске category — лише листок шляху; за наявності шляху його не чіпаємо (аудит #1737: інакше «Підгузки та гігієна > Одяг» публікувався б через листок «Одяг»)
         keys.append(flat)
         if flat.casefold().startswith("catalog > "):
             keys.append(flat[len("catalog > "):])

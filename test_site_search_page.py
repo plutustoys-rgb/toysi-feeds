@@ -109,6 +109,9 @@ with sync_playwright() as pw:
         meta = pg.evaluate("document.getElementById('sp-meta').textContent")
         h1 = pg.evaluate("document.getElementById('sp-h1').textContent")
         chk(f"{w}px: Enter у пошуку → search.html: URL {pg.url.split('/')[-1]}, H1 «{h1}», знайдено 60, показано {n} (≤48), {meta[:60]!r}", "search.html?q=" in pg.url and h1 == "Пошук: «лялька»" and n == 48 and "Знайдено 60" in meta)
+        geo = pg.evaluate("(()=>{const r=e=>document.querySelector(e).getBoundingClientRect(); const wr=document.querySelector('.wrap').getBoundingClientRect(); return [r('#sp-q').width, r('.sp-form .btn').width, r('#sp-grid').width, wr.width]})()")
+        chk(f"{w}px: розкладка сторінки результатів (скарга власника 19.11): поле вводу ширше за кнопку, кнопка компактна, сітка на всю ширину контенту (не вузька колонка): {[round(x) for x in geo]}",
+            geo[0] > geo[1] * 1.8 and geo[1] < 220 and geo[2] >= geo[3] - 40)
         chk(f"{w}px: у полі сторінки результатів — той самий запит; title містить запит", pg.evaluate("document.getElementById('sp-q').value") == "лялька" and "лялька" in pg.title())
         pg.click("#sp-more")
         pg.wait_for_timeout(300)

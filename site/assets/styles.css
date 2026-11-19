@@ -661,6 +661,8 @@ label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накла
 .gift-intro.coloring-wide,.gift-faq.coloring-wide{max-width:none}   /* на сторінках розмальовок текст на всю ширину контенту (.wrap), як сітка аркушів */
 .coloring-shop{margin:8px 0 22px}
 .coloring-shop h2{font-size:18px;margin:0 16px 10px}
+.doc.search-page{max-width:none;margin:0}   /* сторінка результатів на всю ширину .wrap (як каталог), а не вузька колонка .doc 720px */
 .sp-form{display:flex;gap:8px;margin:0 0 14px;max-width:560px}
+.sp-form .btn{width:auto;flex:none;padding:12px 24px}   /* .btn за замовчуванням width:100% і стискав поле вводу (скарга власника 19.11) */
 .sp-form input{flex:1;min-width:0;padding:12px 14px;border:1px solid var(--line,#e6e6ee);border-radius:12px;font:inherit;background:var(--card,#fff)}
-.search-page .grid{margin-top:8px}
+.search-page .grid{margin-top:8px;padding:0}   /* бокові поля вже дає .doc: без подвійного відступу сітка вирівнюється з шапкою */

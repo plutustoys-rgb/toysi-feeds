@@ -1283,6 +1283,7 @@ def build():
     GIFT_ARTICLES_BUILT[:] = [(s, _porady[s]["title"]) for s in PORADY_SLUGS if s in _porady]
     _sel_plan = selection_plan(prods)   # сторінки-добори за назвою (SEO 18.11: «Зошити в косу лінію»): план ДО запису категорій, щоб категорія-батько знала про посилання
     SELECTION_BUILT[:] = [(s, h, par) for s, h, _t, par, _it, _tx in _sel_plan]
+    _set_collection_rules(_gift_plan, _brand_plan, _sel_plan)   # блок «Добірки» на картці (SEO 18.11): лише збудовані сторінки, чиє правило добору картка задовольняє
     _coloring_plan = coloring_plan(prods)   # безкоштовні розмальовки (SEO 18.11): будуємо лише сторінки, для яких є текст і ≥COLORING_MIN_SHEETS аркушів (png+pdf у site/colorings/)
     _col_gone = sorted(fn for fn in COLORING_PAGE_FILES if os.path.isfile(os.path.join(OUT, fn)) and fn[:-5] not in {s for s, _h, _sh, _t in _coloring_plan})
     if _col_gone:   # хоч одна сторінка розмальовок була жива в попередній збірці, а тепер її нема в плані (аркуш/текст/файл/кількість зникли) → збірка її ПРИБЕРЕ: алерт (аудит #1707/#1711; сезонна сторінка не має зникати мовчки)
@@ -3469,6 +3470,70 @@ def _clean_desc(html):
     return html.strip()
 
 
+# ── Блок «Добірки» на картці (SEO 18.11): до COLLECTIONS_MAX внутрішніх посилань на збудовані сторінки, чиє правило добору картка задовольняє ──
+# порядок: бюджет (найменший podarunok-do-N, у який вкладається ціна) → вік (podarunok-na-N за мінімальним віком з опису) → бренд (brend-*) → добір за назвою (адвент). Анкор = H1 сторінки.
+# Лише збудовані сторінки поточної збірки (правила беремо з планів); тіні, уцінка, немає в наявності — без блоку. Бюджет/вік — лише для карток, що проходять «подарункові» виключення (як самі сторінки).
+COLLECTIONS_MAX = 3
+COLLECTION_RULES = {"budget": [], "age": [], "brand": [], "sel": []}
+
+
+def _set_collection_rules(gift_plan_, brand_plan_, sel_plan_):
+    r = {"budget": [], "age": [], "brand": [], "sel": []}
+    for slug, h1, _lb, rule, _items in gift_plan_:
+        if "age" in rule:
+            r["age"].append((rule["age"][0], rule["age"][1], slug, h1))
+        elif "pmax" in rule and not rule.get("bands") and not rule.get("ny"):
+            r["budget"].append((rule.get("pmin", 0), rule["pmax"], slug, h1))
+    r["budget"].sort(key=lambda x: x[1])
+    r["age"].sort(key=lambda x: (x[1] - x[0], x[0]))   # вужчий віковий діапазон першим
+    fns = {s: fn for s, par, fn in BRAND_PAGES}
+    for slug, h1, par, _items, _t in brand_plan_:
+        if par is None:
+            r["brand"].append((slug, h1, fns[slug]))
+    fns_s = {x[0]: x[5] for x in SELECTION_PAGES}
+    for slug, h1, _title, par, _items, _tx in sel_plan_:
+        if par == SEL_PARENT_GIFT:
+            r["sel"].append((slug, h1, fns_s[slug]))
+    COLLECTION_RULES.clear()
+    COLLECTION_RULES.update(r)
+
+
+def _collection_links(p):
+    """[(url, анкор)] до COLLECTIONS_MAX посилань для картки p (порядок: бюджет, вік, бренд, добір)."""
+    if p.get("shadow") or _is_markdown_item(p) or (p.get("stock") or 0) <= 0 or (p.get("price") or 0) <= 0:
+        return []
+    out = []
+    if not p.get("rt") and _gift_ok(p):
+        price = p["price"]
+        age = gift_min_age(p.get("desc"))
+        if age is None or age <= GIFT_MAX_AGE:   # бюджетні сторінки відсікають відомий вік > GIFT_MAX_AGE («14+», «18+») — картка з таким віком у них не за правилом (аудит #1741)
+            for lo, hi, slug, h1 in COLLECTION_RULES["budget"]:
+                if lo <= price <= hi:
+                    out.append((f"{slug}.html", h1))
+                    break
+        if age is not None and price <= GIFT_AGE_PRICE_MAX:
+            for lo, hi, slug, h1 in COLLECTION_RULES["age"]:
+                if lo <= age <= hi:
+                    out.append((f"{slug}.html", h1))
+                    break
+    if _brand_ok(p):
+        for slug, h1, fn in COLLECTION_RULES["brand"]:
+            if fn(p):
+                out.append((f"{slug}.html", h1))
+                break
+    for slug, h1, fn in COLLECTION_RULES["sel"]:
+        if (p.get("photo")) and not p.get("noindex") and fn(p):
+            out.append((f"{slug}.html", h1))
+    return out[:COLLECTIONS_MAX]
+
+
+def _collections_html(p):
+    links = _collection_links(p)
+    if not links:
+        return ""
+    return '<nav class="gift-links card-collections" aria-label="Добірки"><h2>Добірки</h2><ul>' + "".join(f'<li><a href="{u}">{esc(a)}</a></li>' for u, a in links) + "</ul></nav>"
+
+
 def write_product(p, related=None, cat_slug=None, related_title="Додайте до замовлення", similar=None, similar_title="Схожі товари"):
     raw = p["desc"]
     parts = [x.strip() for x in re.split(r"<br\s*/?>", raw) if x.strip()]
@@ -3546,6 +3611,7 @@ def write_product(p, related=None, cat_slug=None, related_title="Додайте 
       '</div></div>'
       + (f'<section class="related"><h2>{esc(related_title)}</h2>{grid(related)}</section>' if related else "")
       + (f'<section class="related"><h2>{esc(similar_title)}</h2>{grid(similar)}</section>' if similar else "")
+      + _collections_html(p)
       + '<div class="buybar"><div class="buybar-inner">'
       f'{_buy_p}'
       f'{buy_btn}'

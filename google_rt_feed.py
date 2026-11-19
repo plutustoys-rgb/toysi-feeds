@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+from feed_brand_title import brand_for_title, with_brand   # марка виробника в назві (SEO 19.11); без залежностей від generate_google_feed
+
 HERE = Path(__file__).resolve().parent
 SUPPLIER_MAX_AGE_H = 72          # supplier_*.json старший за це — джерело брендів/закупівлі не свіже: фід RT цього прогону НЕ формуємо (fail-safe; решта фіда не страждає)
 PREFIXES = ("rt-",)
@@ -210,7 +212,8 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_
         if contribution <= gf.FEED_MIN_SITE_CONTRIBUTION:
             no("site_unprofitable")
             continue
-        title = gf.normalize_title(name)
+        title_brand = brand_for_title(vendor, vendor_key=gf.vendor_key, licensed_rx=licensed_rx, licensed_wl=licensed_wl, licensed_bl=licensed_bl)
+        title = gf.normalize_title(with_brand(name, title_brand))   # марка виробника в назві (SEO 19.11, feed_brand_title)
         if gf.is_weapon_replica(slug, title):
             no("weapon_replica")
             continue
@@ -238,6 +241,7 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_
         items.append({
             "pid": pid,
             "id": feed_id,
+            "title_brand": title_brand,
             "title": title,
             "description": desc,
             "category_name": cat_site or cat_sup,

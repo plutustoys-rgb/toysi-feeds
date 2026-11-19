@@ -4592,7 +4592,8 @@ _BR_DANKO = re.compile(r"danko toys")
 
 
 def _ua_brand(rx):
-    return lambda p: bool(rx.search(_brand_hay(p))) and not _BR_UA_BLOCK.search(_brand_hay(p))
+    # лише за НАЗВОЮ (не за vendor): тексти UA-сторінок звірено з назвами; vendor давав би картки без бренду в назві (аудит #1744: Strateg 36→572, Vladi 18→300)
+    return lambda p: bool(rx.search((p.get("name") or "").casefold())) and not _BR_UA_BLOCK.search(_brand_hay(p))
 
 
 _BR_HP = re.compile(r"harry potter|гаррі поттер|гарі поттер|hogwarts|гоґвортс|гогвортс")
@@ -4662,7 +4663,10 @@ def brand_plan(prods, texts=None):
     pool = [p for p in prods if _brand_ok(p)]
     plan = []
     for slug, parent, fn in BRAND_PAGES:
-        if not BRAND_PAGES_LIVE and slug not in BRAND_UA_SLUGS:   # ворота брендів закриті: за окремими воротами будуємо лише українські бренди
+        if slug in BRAND_UA_SLUGS:   # українські бренди — лише за своїми воротами (SITE_UA_BRAND_PAGES_LIVE), решта — лише за SITE_BRAND_PAGES_LIVE
+            if not UA_BRAND_PAGES_LIVE:
+                continue
+        elif not BRAND_PAGES_LIVE:
             continue
         if slug not in texts:
             print(f"[build] ⚠ brand: для {slug} нема тексту в brand_pages.json — сторінку не будуємо", file=sys.stderr)

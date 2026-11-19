@@ -227,6 +227,8 @@ chk("Ранок: лише з артикулом «Ранок 123»; «Італі
 chk("Strateg / Vladi Toys / Danko Toys за назвою; Bambi і Paw Patrol не беруться",
     ua["brend-strateg"](nm2("Настільна гра Strateg 30972")) and not ua["brend-strateg"](nm2("Strategy гра")) and ua["brend-vladi-toys"](nm2("Магнітна гра Vladi Toys Емоції")) and ua["brend-danko-toys"](nm2("Фреска з піску Danko Toys"))
     and not ua["brend-danko-toys"](nm2("Danko Toys Paw Patrol")) and not ua["brend-vladi-toys"](nm2("Vladi Toys Bambi")))
+chk("UA-бренди беруться лише за НАЗВОЮ: vendor «Технок»/«Vladi Toys»/«Danko Toys»/«Strateg» без бренду в назві — не збіг",
+    not any(ua[k_](nm2("Гра настільна магнітна одягалка", v_)) for k_, v_ in (("brend-tekhnok", "Технок"), ("brend-vladi-toys", "Vladi Toys"), ("brend-danko-toys", "Danko Toys"), ("brend-strateg", "Strateg"))))
 chk("UA-слаги в BRAND_UA_SLUGS; ворота UA вимкнені за замовчуванням (змінна середовища не виставлена)", bs.BRAND_UA_SLUGS == {"brend-tekhnok", "brend-ranok", "brend-strateg", "brend-vladi-toys", "brend-danko-toys"} and (os.environ.get("SITE_UA_BRAND_PAGES_LIVE") == "1") == bs.UA_BRAND_PAGES_LIVE)
 for i in range(1000, 1013):
     catalog[str(i)] = toysi(i, f"Піщаний набір Технок {i}", "Пісочні набори")

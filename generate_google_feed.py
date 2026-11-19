@@ -78,6 +78,7 @@ from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides
 
 from trademark_filter import is_uno_trademark_blocked
 from feed_title_norm import normalize_title
+from feed_brand_title import brand_for_title, with_brand
 import site_sale
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
@@ -223,8 +224,13 @@ def fetch_prom_products_resilient() -> dict:
 
 
 def is_valid_gtin(barcode: str) -> bool:
+    """GTIN-8/12/13/14: лише цифри, дозволена довжина І правильна контрольна цифра GS1 (19.11.2026, запит SEO: раніше перевірялись лише довжина й цифри,
+    тож штрихкод із хибною контрольною цифрою потрапляв би в g:gtin і Merchant Center відхиляв би позицію як «invalid GTIN»)."""
     b = (barcode or "").strip()
-    return b.isdigit() and len(b) in GTIN_VALID_LENGTHS
+    if not (b.isdigit() and len(b) in GTIN_VALID_LENGTHS):
+        return False
+    s = sum(int(ch) * (3 if i % 2 == 0 else 1) for i, ch in enumerate(reversed(b[:-1])))
+    return (10 - s % 10) % 10 == int(b[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -1242,10 +1248,13 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             sale_dates = _sale["dates"]
             sale_dates_colon = _sale["dates_colon"]
             stats["on_sale"] += 1
+        # марка виробника в назві (SEO 19.11, feed_brand_title): лише перелік SEO, не обходить ліцензійні фільтри; службове title_brand у XML не пишеться (його бере й ru-фід)
+        title_brand = brand_for_title(item.get("vendor"), vendor_key=vendor_key, licensed_rx=licensed_rx, licensed_gate=licensed_gate, licensed_wl=licensed_wl, licensed_bl=licensed_bl)
         items.append({
             "pid": str(pid),   # id каталогу Toysi (ключ російського тексту); у XML не пишеться
             "id": str(item.get("vendor_code") or pid),
-            "title": normalize_title(name),   # правило SEO 14.10: регістр без «крику» (feed_title_norm), ≤150 без обрізання слова
+            "title_brand": title_brand,
+            "title": normalize_title(with_brand(name, title_brand)),   # правило SEO 14.10: регістр без «крику» (feed_title_norm), ≤150 без обрізання слова
             "description": enrich_brand_only_description(pid, name, _clean_description(item.get("description", ""))[:5000] or name, item.get("category_name") or "", "uk"),
             "category_name": item.get("category_name") or "",   # для опису м'яких іграшок і product_type у Google XML
             "link": SITE_LINK_TEMPLATE.format(pid=pid),
@@ -1348,7 +1357,7 @@ def build_ru_items(items: list, russian_text: dict) -> tuple[list, dict]:
         if ru_name == (it.get("title") or "").strip():
             same += 1    # назва збіглась з українською (нейтральні слова/бренди) — це нормально, лише лічильник
         c = dict(it)
-        c["title"] = normalize_title(ru_name)
+        c["title"] = normalize_title(with_brand(ru_name, it.get("title_brand") or ""))   # те саме рішення про марку, що й в укр-назві (feed_brand_title)
         c["description"] = enrich_brand_only_description(it.get("pid"), ru_name, _clean_description(ru.get("description", ""))[:5000] or ru_name, "", "ru")
         out.append(c)
     return out, {"ru_included": len(out), "ru_missing_skipped": no_ru, "ru_same_as_ukr": same}

@@ -237,6 +237,20 @@ chk("без зимових категорій блоку нема", "Новор�
 bs.GIFT_MIN_ITEMS = _GIFT_MIN
 bs.tp.fetch_toysi_catalog = lambda: dict(catalog)
 
+# ── (5) SEO 19.11: у добір «зошити в косу лінію» беремо й noindex-картки (RT), для адвенту і решти — лише індексовані ──
+def _sp(i, name, noindex):
+    return {"id": str(i), "name": name, "price": 60 + i % 40, "stock": 3, "photo": "x.jpg", "category": "Зошити", "contribution": 10.0, "noindex": noindex, "rt": noindex}
+
+
+_tx = {"zoshyty-u-kosu-liniiu": {"intro": "i", "faq": [("q", "a")] * 3}, "advent-kalendari": {"intro": "i", "faq": [("q", "a")] * 3}}
+_prods = [_sp(i, f"Зошит Плутус {i}, 12 аркушів, в косу лінію", False) for i in range(6)] + [_sp(100 + i, f"Зошит Кенділенд {i}, 12 аркушів, в косу лінію", True) for i in range(15)]     + [_sp(300 + i, f"Адвент-календар RT {i}", True) for i in range(14)] + [_sp(400 + i, f"Адвент-календар Toysi {i}", False) for i in range(5)]
+bs.GIFT_BUILT[:] = [("podarunok-do-100-hrn", "x", "y")]
+_plan = {x[0]: x for x in bs.selection_plan(_prods, _tx)}
+chk(f"зошити: 6 індексованих + 15 noindex-RT = 21 картка → сторінка збудована ({len(_plan.get('zoshyty-u-kosu-liniiu', (0,)*5)[4]) if 'zoshyty-u-kosu-liniiu' in _plan else 'нема'})",
+    "zoshyty-u-kosu-liniiu" in _plan and len(_plan["zoshyty-u-kosu-liniiu"][4]) == 21)
+chk("адвент: 5 індексованих + 14 noindex → noindex НЕ береться → <12 → сторінки нема (правило «лише індексовані» не змінено)", "advent-kalendari" not in _plan)
+bs.GIFT_BUILT[:] = []
+
 # повторна збірка у ту саму теку прибирає застарілу сторінку
 same = Path(tempfile.mkdtemp())
 for run, sel in enumerate((GOOD_SEL, None)):

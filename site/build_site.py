@@ -4995,6 +4995,7 @@ SELECTION_TEXTS_FILE = os.path.join(OUT, "selection_pages.json")
 SELECTION_MIN_ITEMS, SELECTION_MAX_ITEMS = 12, 48
 SELECTION_FAQ_MIN, SELECTION_FAQ_MAX = 3, 5
 _SEL_KOSA_RX = re.compile(r"(?<!\w)кос(?:а|у|ою|ої|ій|і|ий|ого|и|их|им|ими|е)?\.?\s*(?:лін|з\s*доп)|допоміжн", re.I)   # аудит #1726: «космос лінія» не ловимо, «кос. лінія» ловимо
+SELECTION_ALLOW_NOINDEX = frozenset(("zoshyty-u-kosu-liniiu",))   # SEO 19.11: у добір цієї сторінки беремо й noindex-картки (RT-зошити «Кенділенд» тощо), інакше лишається 6 Toysi < SELECTION_MIN_ITEMS; для решти сторінок правило «лише індексовані» незмінне
 SEL_PARENT_GIFT = "__gift"   # батько — хаб подарунків (podarunky.html), а не категорія
 SELECTION_PAGES = (
     ("zoshyty-u-kosu-liniiu", "Зошити в косу лінію", "Зошити в косу лінію та з допоміжною лінією — купити | PlutusToys", "zoshyty", "Зошити",
@@ -5041,8 +5042,8 @@ def selection_plan(prods, texts=None):
     """[(slug, h1, title, parent_slug, items, text)] сторінок-добірок, які МОЖНА побудувати: є текст і ≥SELECTION_MIN_ITEMS карток у наявності з фото й ціною
     (без тіней, noindex і уцінки); решту — голосне попередження."""
     texts = _load_selection_texts() if texts is None else texts
-    pool = [p for p in prods if (p.get("stock") or 0) > 0 and p.get("photo") and (p.get("price") or 0) > 0 and not p.get("shadow")
-            and not p.get("noindex") and not _is_markdown_item(p)]
+    pool_all = [p for p in prods if (p.get("stock") or 0) > 0 and p.get("photo") and (p.get("price") or 0) > 0 and not p.get("shadow") and not _is_markdown_item(p)]
+    pool = [p for p in pool_all if not p.get("noindex")]
     plan = []
     for slug, h1, title, par, _pname, fn in SELECTION_PAGES:
         if slug not in texts:
@@ -5052,7 +5053,7 @@ def selection_plan(prods, texts=None):
         if par == SEL_PARENT_GIFT and not GIFT_BUILT:   # батьківський хаб podarunky.html не збудовано → крихта вела б у 404
             print(f"[build] ⚠ selection: {slug} — хаб подарунків не збудовано — сторінку не будуємо", file=sys.stderr)
             continue
-        items = [p for p in pool if fn(p)]
+        items = [p for p in (pool_all if slug in SELECTION_ALLOW_NOINDEX else pool) if fn(p)]
         items.sort(key=lambda p: (-(p["contribution"] if p.get("contribution") is not None else -1e9), -(p.get("price") or 0), str(p["id"])))
         if len(items) < SELECTION_MIN_ITEMS:
             print(f"[build] ⚠ selection: {slug} — лише {len(items)} карток за назвою (< {SELECTION_MIN_ITEMS}) — сторінку не будуємо", file=sys.stderr)

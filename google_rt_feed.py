@@ -212,7 +212,8 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_
         if contribution <= gf.FEED_MIN_SITE_CONTRIBUTION:
             no("site_unprofitable")
             continue
-        title_brand = brand_for_title(vendor, vendor_key=gf.vendor_key, licensed_rx=licensed_rx, licensed_wl=licensed_wl, licensed_bl=licensed_bl)
+        title_brand = brand_for_title(vendor, vendor_key=gf.vendor_key, licensed_rx=licensed_rx, licensed_gate=licensed_gate, licensed_wl=licensed_wl, licensed_bl=licensed_bl)
+        title_src = gf.normalize_title(name)                          # назва БЕЗ марки: від неї хеш перекладу RT (інакше марка інвалідує всі збережені переклади)
         title = gf.normalize_title(with_brand(name, title_brand))   # марка виробника в назві (SEO 19.11, feed_brand_title)
         if gf.is_weapon_replica(slug, title):
             no("weapon_replica")
@@ -242,6 +243,7 @@ def build_items(gf, entries: dict | None = None, rt_sup: dict | None = None, rt_
             "pid": pid,
             "id": feed_id,
             "title_brand": title_brand,
+            "title_src": title_src,
             "title": title,
             "description": desc,
             "category_name": cat_site or cat_sup,
@@ -277,7 +279,7 @@ def gate_ru_on() -> bool:
 
 def ru_source(item: dict) -> tuple:
     """(назва, короткий опис ≤RU_DESC_MAX по межі речення) — те, що перекладаємо; той самий текст рахується і під час експорту, і під час фіда."""
-    title = (item.get("title") or "").strip()
+    title = (item.get("title_src") or item.get("title") or "").strip()   # title_src = назва без марки (SEO 19.11): марка в g:title не змінює хеш і не йде перекладачу; марку ru-фід додає сам (build_ru_items)
     d = (item.get("description") or "").strip()
     if len(d) > RU_DESC_MAX:
         cut = max(d.rfind(". ", 0, RU_DESC_MAX), d.rfind("! ", 0, RU_DESC_MAX), d.rfind("? ", 0, RU_DESC_MAX))

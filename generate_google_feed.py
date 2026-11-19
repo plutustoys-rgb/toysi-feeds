@@ -1249,7 +1249,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
             sale_dates_colon = _sale["dates_colon"]
             stats["on_sale"] += 1
         # марка виробника в назві (SEO 19.11, feed_brand_title): лише перелік SEO, не обходить ліцензійні фільтри; службове title_brand у XML не пишеться (його бере й ru-фід)
-        title_brand = brand_for_title(item.get("vendor"), vendor_key=vendor_key, licensed_rx=licensed_rx, licensed_wl=licensed_wl, licensed_bl=licensed_bl)
+        title_brand = brand_for_title(item.get("vendor"), vendor_key=vendor_key, licensed_rx=licensed_rx, licensed_gate=licensed_gate, licensed_wl=licensed_wl, licensed_bl=licensed_bl)
         items.append({
             "pid": str(pid),   # id каталогу Toysi (ключ російського тексту); у XML не пишеться
             "id": str(item.get("vendor_code") or pid),

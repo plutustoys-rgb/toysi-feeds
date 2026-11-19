@@ -8,9 +8,10 @@
 Інші vendor (≈930 рідкісних) НЕ додаємо, поки SEO не розширить перелік.
 
 ЛІЦЕНЗІЙНІ ФІЛЬТРИ (чому тут, а не лише в генераторі): ліцензійний фільтр перевіряє НАЗВУ ДО додавання марки. Марка з include
-може сама бути ліцензійною (Hasbro, Funko, Squishmallows, L.O.L. Surprise!, BABY born). Тому марка НЕ додається, якщо:
-  • vendor у чорному списку (MIC/Bambi та ін.) або в exclude;
-  • марка збігається з ліцензійним переліком, а vendor НЕ в білому списку (інакше ми показали б марку, якої фільтр не пропустив би).
+може сама бути ліцензійною (Hasbro, Funko, Squishmallows, L.O.L. Surprise!, BABY born). Логіка дзеркалить фільтр генератора. Марка НЕ додається, якщо:
+  • vendor у чорному списку (MIC/Bambi та ін.) або в exclude (завжди);
+  • гейт ліцензій УВІМКНЕНО (FEED_EXCLUDE_LICENSED=1), марка збігається з ліцензійним переліком і vendor НЕ в білому списку.
+При ВИМКНЕНОМУ гейті (типово, рішення власника 30.10 «повертай усі бренди у фід») ліцензійна марка в назву додається, як і сам товар лишається у фіді.
 Вимкнути цілком без деплою: FEED_BRAND_IN_TITLE=0 у .env VPS (за замовчуванням увімкнено, якщо файл переліку є).
 """
 from __future__ import annotations
@@ -35,12 +36,14 @@ def _norm(s: str) -> str:
 def _load() -> tuple[frozenset, frozenset]:
     """(include, exclude) з feed_title_brands.json. Нема файла/зіпсований → порожні (марка не додається) + stderr: збій не ламає фід."""
     try:
-        d = json.loads(BRANDS_FILE.read_text(encoding="utf-8"))
+        d = json.loads(BRANDS_FILE.read_text(encoding="utf-8-sig"))   # utf-8-sig: файл з BOM не вимикає марки мовчки
+        if not isinstance(d, dict):
+            raise ValueError("верхній рівень не об'єкт")
         inc = frozenset(str(v).strip() for v in d.get("include", []) if str(v).strip())
         exc_raw = d.get("exclude", [])
         exc = frozenset(str(v[0] if isinstance(v, (list, tuple)) else v).strip() for v in exc_raw)
         return inc, exc
-    except (OSError, ValueError, TypeError) as e:
+    except (OSError, ValueError, TypeError, AttributeError) as e:
         print(f"[feed_brand_title] перелік марок недоступний ({type(e).__name__}) — марка в назву не додається", file=sys.stderr)
         return frozenset(), frozenset()
 
@@ -49,7 +52,7 @@ def enabled() -> bool:
     return os.environ.get("FEED_BRAND_IN_TITLE", "1").strip() != "0"
 
 
-def brand_for_title(vendor, *, vendor_key=lambda v: str(v or ""), licensed_rx=None,
+def brand_for_title(vendor, *, vendor_key=lambda v: str(v or ""), licensed_rx=None, licensed_gate=False,
                     licensed_wl=frozenset(), licensed_bl=frozenset()) -> str:
     """Марка для додавання в назву або "" (не додавати). Не залежить від самої назви: «вже є в назві» перевіряє with_brand()."""
     if not enabled():
@@ -61,7 +64,10 @@ def brand_for_title(vendor, *, vendor_key=lambda v: str(v or ""), licensed_rx=No
     vk = vendor_key(v)
     if vk in licensed_bl:
         return ""
-    if licensed_rx is not None and licensed_rx.search(v) and vk not in licensed_wl:
+    # ТА САМА логіка, що в ліцензійному фільтрі генератора (generate_google_feed.build_feed_items): при ВИМКНЕНОМУ гейті
+    # (типово, рішення власника 30.10 «повертай усі бренди у фід») ліцензійна марка не блокується; блок лише коли гейт УВІМКНЕНО
+    # (FEED_EXCLUDE_LICENSED=1) і vendor не в білому списку. Інакше марка не з'являлась би в назві там, де сам товар у фіді є.
+    if licensed_gate and licensed_rx is not None and licensed_rx.search(v) and vk not in licensed_wl:
         return ""
     return v
 

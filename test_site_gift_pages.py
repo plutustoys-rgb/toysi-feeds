@@ -302,6 +302,16 @@ bad_p.write_text(json.dumps({"porady-podarunok-na-5-rokiv": {"title": "x", "publ
 chk("кривий porady.json (sections не список, чужий slug, дата не ISO): збірка НЕ падає, записи пропущено", bs._load_porady(str(bad_p)) == {})
 chk("файли статей відомі кроку прибирання застарілих", all(f"{s_}.html" in bs.PORADY_FILES for s_ in bs.PORADY_SLUGS) and "elif (fn in GIFT_PAGE_FILES or fn in PORADY_FILES or fn in BRAND_PAGE_FILES or fn in COLORING_PAGE_FILES or fn in SELECTION_PAGE_FILES)" in src)
 
+# ── CSS (власник 19.11): вступ/FAQ добірок на всю ширину контенту; посилання в сірому тексті не зливаються з описом ──
+_css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
+_m = re.search(r"\.gift-intro\{[^}]*\}", _css)
+_f = re.search(r"\.gift-faq\{[^}]*\}", _css)
+chk(".gift-intro і .gift-faq без вузького max-width (на всю ширину .wrap)", bool(_m and _f) and "max-width:none" in _m.group(0) and "max-width:none" in _f.group(0))
+_l = re.search(r"\.gift-hub-lead a,\.sale-lead a,\.gift-intro a\{[^}]*\}", _css)
+chk("посилання в .gift-hub-lead/.sale-lead/.gift-intro: усі три селектори в одному правилі, підкреслені, темний колір #8a3b00 (контраст ≥ AA на світлому фоні)", bool(_l) and "underline" in _l.group(0) and "#8a3b00" in _l.group(0))
+_p = re.search(r"\.porady-sec\{[^}]*\}", _css)
+chk("статті порад: .porady-sec теж без вузького max-width (рівна розкладка з лідом і FAQ)", bool(_p) and "max-width:none" in _p.group(0))
+
 if F:
     print(f"\n❌ FAIL: {len(F)}")
     sys.exit(1)

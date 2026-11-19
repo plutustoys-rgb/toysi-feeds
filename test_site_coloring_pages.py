@@ -138,7 +138,7 @@ chk("голосні попередження: аркуш без файлів, н
 h = pg("rozmalovky-novorichni.html")
 chk("новорічна: H1, 8 аркушів: <img alt> + «Завантажити PDF» (download, type=pdf), перший без lazy; без форм; ImageObject ×8 з реальним розміром 1240×1754, FAQPage, BreadcrumbList; canonical на себе; не noindex",
     "Новорічні розмальовки для дітей" in h and h.count('class="coloring-sheet"') == 8 and h.count('class="btn coloring-dl"') == 8 and h.count('<img src="colorings/plutus-novorichni-') == 8 and 'alt="Розмальовка: Плутус, сюжет 1 (rozmalovky-novorichni)"' in h
-    and h.count('"@type": "ImageObject"') == 8 and '"width": 1240' in h and '"height": 1754' in h and '"acquireLicensePage"' not in h and '"@type": "FAQPage"' in h and '"@type": "BreadcrumbList"' in h
+    and h.count('"@type": "ImageObject"') == 8 and '"width": 1240' in h and '"height": 1754' in h and h.count('"acquireLicensePage": "https://plutustoys.com.ua/rozmalovky.html#umovy"') == 8 and h.count('"license": "https://plutustoys.com.ua/rozmalovky.html#umovy"') == 8 and h.count('"creditText": "PlutusToys"') == 8 and h.count('"copyrightNotice": "© PlutusToys"') == 8 and 'id="umovy"' not in h and '"@type": "FAQPage"' in h and '"@type": "BreadcrumbList"' in h
     and 'rel="canonical" href="https://plutustoys.com.ua/rozmalovky-novorichni.html"' in h and "noindex" not in h.split("</head>")[0] and "<form" not in h.split("<footer")[0].split("</header>")[-1]
     and 'href="colorings/plutus-novorichni-1.pdf" type="application/pdf" download' in h and re.search(r'plutus-novorichni-1\.png"[^>]*height="438"[^>]*decoding="async"', h) and 'plutus-novorichni-2.png"' in h and re.search(r'plutus-novorichni-2\.png"[^>]*loading="lazy"', h))
 chk("блок «Розмальовки-книжки й набори»: живі товари з категорій розмальовок (4–12; без вичерпаного й уцінки), посилання на хаб; 3 категорії + «Розмальовки та розпис»", "Розмальовки-книжки й набори" in h and 4 <= h.count('class="card') <= 12 and "вичерпана" not in h and "з дефектом" not in h and 'href="rozmalovky.html"' in h and "Казка" in h)
@@ -149,6 +149,7 @@ chk("футер: «Розмальовки для друку» → rozmalovky.htm
 chk("сторінки категорій розмальовок (Класичні, Водні, «Розмальовки та розпис») лінкують на хаб (notice); Машинки — ні",
     all('href="rozmalovky.html">завантажити й роздрукувати' in pg(f"category-{s}.html") for s in ("klasychni-rozmalovky", "vodni-rozmalovky", "rozmalovky-ta-rozpys") if (OUTD / f"category-{s}.html").exists())
     and sum(1 for s in ("klasychni-rozmalovky", "vodni-rozmalovky", "rozmalovky-ta-rozpys") if (OUTD / f"category-{s}.html").exists()) >= 2 and "завантажити й роздрукувати" not in pg("category-mashynky.html"))
+chk("хаб: блок «Умови використання» з id=umovy (ціль license/acquireLicensePage); текст за ТЗ; лише на хабі", hub.count('id="umovy"') == 1 and "Розмальовки з Плутусом можна безкоштовно завантажити й роздрукувати для домашнього використання. Персонаж Плутус — PlutusToys." in hub)
 sm = "".join(q.read_text(encoding="utf-8") for q in OUTD.glob("sitemap-*.xml"))
 chk("sitemap: хаб і 3 добірки — рівно раз", all(sm.count(f"/{s}.html") == 1 for s in ("rozmalovky", *bs.COLORING_SUBPAGES)))
 chk("og:image = перший аркуш; жодного KIDDISVIT/kv-/rt- на сторінках розмальовок", 'colorings/plutus-novorichni-1.png' in h.split("</head>")[0] and not re.search(r"kiddisvit|kv-\d|rt-\d", h + hub, re.I))

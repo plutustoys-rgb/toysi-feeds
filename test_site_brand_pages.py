@@ -217,5 +217,39 @@ chk("Baby Born лише 6 товарів (<12): сторінки нема, ст�
 # повторна збірка з вимкненими воротами в ту саму теку прибирає застарілі сторінки
 out, err = build(False)
 chk("повторна збірка з вимкненими воротами прибрала всі brend-*.html і brendy.html", not list(out.glob("brend-*.html")) and not (out / "brendy.html").exists())
+# ── (5) Сторінки УКРАЇНСЬКИХ брендів (SEO 18.11): Технок, Ранок, Strateg, Vladi Toys, Danko Toys — окремі ворота SITE_UA_BRAND_PAGES_LIVE (вимкнені за замовчуванням) ──
+ua = {s_: fn for s_, _p, fn in bs.BRAND_PAGES}
+nm2 = lambda n, v="", path="": {"name": n, "vendor": v, "src_path": path}  # noqa: E731
+chk("Технок: «Технок», «ТехноК», «Технок.» — так; «Технократ», «Уценка. Технок», «Технок Bambi» — ні",
+    all(ua["brend-tekhnok"](nm2(n)) for n in ("Піщаний набір Технок", "Машинка ТехноК 7525", "Мозаїка Технок.")) and not any(ua["brend-tekhnok"](nm2(n)) for n in ("Технократ", "Уценка. Піщаний набір Технок", "Набір Bambi Технок")))
+chk("Ранок: лише з артикулом «Ранок 123»; «Італійський ранок», «Кавовий ранок» (картини) — ні; «Щенячий Патруль Ранок 237003» — ні (Paw Patrol)",
+    ua["brend-ranok"](nm2("Книга Ранок 1234 Енциклопедія")) and not any(ua["brend-ranok"](nm2(n)) for n in ("Італійський ранок", "Кавовий ранок картина за номерами", "Щенячий Патруль Ранок 237003")))
+chk("Strateg / Vladi Toys / Danko Toys за назвою; Bambi і Paw Patrol не беруться",
+    ua["brend-strateg"](nm2("Настільна гра Strateg 30972")) and not ua["brend-strateg"](nm2("Strategy гра")) and ua["brend-vladi-toys"](nm2("Магнітна гра Vladi Toys Емоції")) and ua["brend-danko-toys"](nm2("Фреска з піску Danko Toys"))
+    and not ua["brend-danko-toys"](nm2("Danko Toys Paw Patrol")) and not ua["brend-vladi-toys"](nm2("Vladi Toys Bambi")))
+chk("UA-бренди беруться лише за НАЗВОЮ: vendor «Технок»/«Vladi Toys»/«Danko Toys»/«Strateg» без бренду в назві — не збіг",
+    not any(ua[k_](nm2("Гра настільна магнітна одягалка", v_)) for k_, v_ in (("brend-tekhnok", "Технок"), ("brend-vladi-toys", "Vladi Toys"), ("brend-danko-toys", "Danko Toys"), ("brend-strateg", "Strateg"))))
+chk("UA-слаги в BRAND_UA_SLUGS; ворота UA вимкнені за замовчуванням (змінна середовища не виставлена)", bs.BRAND_UA_SLUGS == {"brend-tekhnok", "brend-ranok", "brend-strateg", "brend-vladi-toys", "brend-danko-toys"} and (os.environ.get("SITE_UA_BRAND_PAGES_LIVE") == "1") == bs.UA_BRAND_PAGES_LIVE)
+for i in range(1000, 1013):
+    catalog[str(i)] = toysi(i, f"Піщаний набір Технок {i}", "Пісочні набори")
+for i in range(1100, 1113):
+    catalog[str(i)] = toysi(i, f"Магнітна гра Vladi Toys Емоції {i}", "Розважальні")
+for i in range(1200, 1206):   # лише 6 → сторінка Danko не будується (<12)
+    catalog[str(i)] = toysi(i, f"Фреска з піску Danko Toys {i}", "Інша творчість")
+catalog["1300"] = toysi(1300, "Уценка. Піщаний набір Технок", "Пісочні набори")
+bs.BRAND_TEXTS_FILE = str(SITE / "brand_pages.json")
+bs.UA_BRAND_PAGES_LIVE = False
+out, err = build(False)
+chk("обидва ворота закриті: жодної brend-*.html, брендового хаба нема, у футері нема «Бренди»", not list(out.glob("brend-*.html")) and not (out / "brendy.html").exists() and 'href="brendy.html"' not in (out / "index.html").read_text(encoding="utf-8"))
+bs.UA_BRAND_PAGES_LIVE = True
+out, err = build(False)
+built_ua = {q_.stem for q_ in out.glob("brend-*.html")}
+chk(f"ворота UA відкриті, ворота брендів закриті: збудовано лише UA з ≥12 товарами {sorted(built_ua)} (Funko/Baby Born… НЕ будуються; Danko 6 < 12 — ні)", built_ua == {"brend-tekhnok", "brend-vladi-toys"})
+ht = (out / "brend-tekhnok.html").read_text(encoding="utf-8")
+chk("Технок: 13 карток (без «Уценка.»), H1 «Іграшки Технок», FAQPage + ItemList; хаб брендів лише з UA; футер «Бренди»", ht.count('class="card') == 13 and "Уценка" not in ht and '<h1 class="page">Іграшки Технок</h1>' in ht and '"@type": "FAQPage"' in ht and '"@type": "ItemList"' in ht
+    and 'href="brend-tekhnok.html"' in (out / "brendy.html").read_text(encoding="utf-8") and 'href="brend-funko-pop.html"' not in (out / "brendy.html").read_text(encoding="utf-8") and 'href="brendy.html"' in (out / "index.html").read_text(encoding="utf-8"))
+bs.UA_BRAND_PAGES_LIVE = False
+out, err = build(False)
+chk("UA-ворота закрито знову — UA-сторінки прибрано", not list(out.glob("brend-*.html")) and not (out / "brendy.html").exists())
 print("\n" + ("ALL OK" if not F else f"FAIL: {len(F)}"))
 sys.exit(1 if F else 0)

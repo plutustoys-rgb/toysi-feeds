@@ -4542,6 +4542,10 @@ def write_porady(porady):
 # менше BRAND_MIN_ITEMS — сторінку не будуємо (голосне попередження). Вступ і питання-відповіді — site/brand_pages.json ({"<slug>": {"h1", "intro", "faq": [{"q","a"}]}}, пише Копірайтер); без тексту сторінку не будуємо.
 # Сторінки будуються ЛИШЕ за воротами SITE_BRAND_PAGES_LIVE=1 (вимкнено за замовчуванням: SEO — запуск після SITE_KV_LIVE=1 і тіні дублів). Заборонені слова в текстах («оригінал/офіційний/ліцензійний/дистриб'ютор», ім'я постачальника) — збірка їх не пропускає.
 BRAND_PAGES_LIVE = os.environ.get("SITE_BRAND_PAGES_LIVE") == "1"
+# Сторінки УКРАЇНСЬКИХ брендів (SEO 18.11: Технок, Ранок, Strateg, Vladi Toys, Danko Toys) не залежать від KIDDISVIT/kv — тексти звірено з назвами Toysi/RT. Окремі ворота
+# SITE_UA_BRAND_PAGES_LIVE (за замовчуванням ВИМКНЕНО; відкриває лише власник/Код: =1) дозволяють побудувати їх, не відкриваючи SITE_BRAND_PAGES_LIVE (Funko/Baby Born тощо, тексти яких звірено лише з kv).
+UA_BRAND_PAGES_LIVE = os.environ.get("SITE_UA_BRAND_PAGES_LIVE") == "1"
+BRAND_UA_SLUGS = frozenset(("brend-tekhnok", "brend-ranok", "brend-strateg", "brend-vladi-toys", "brend-danko-toys"))
 BRAND_TEXTS_FILE = os.path.join(OUT, "brand_pages.json")
 BRAND_HUB_FILE = "brendy.html"
 BRAND_MIN_ITEMS = 12
@@ -4579,6 +4583,19 @@ def _is_funko(p):
 
 # (slug, батьківська сторінка або None, правило-предикат). Підсторінки Funko — лише картки Funko (H1 «Funko Pop …») з потрібним шляхом KIDDISVIT (поле src_path; Toysi/RT без шляху — лише на головній сторінці Funko).
 # підсторінки Funko «Гаррі Поттер» і «Marvel»: шлях АБО назва (SEO 18.11 15:31, варіант «а»: за шляхом HP було лише 9 карток < BRAND_MIN_ITEMS, герої з тексту лежали в інших шляхах)
+_BR_UA_BLOCK = re.compile(r"bambi|бамбі|paw\s*patrol|щенячий|уценк")   # «Уценка.» (через «е») пропускає фільтр «Уцінка» (аудит)   # SEO 18.11: Bambi (вендор у блок-листі фідів, рішення власника 31.10) і Paw Patrol (ліцензійна марка) — на сторінки українських брендів не беремо
+_BR_TEKHNOK = re.compile(r"(?<!\w)технок(?!\w)")
+_BR_RANOK = re.compile(r"(?<!\w)ранок\s+\d")   # лише з артикулом: без нього ловить «Італійський ранок», «Кавовий ранок» (картини)
+_BR_STRATEG = re.compile(r"(?<!\w)strateg(?!\w)")
+_BR_VLADI = re.compile(r"vladi toys")
+_BR_DANKO = re.compile(r"danko toys")
+
+
+def _ua_brand(rx):
+    # лише за НАЗВОЮ (не за vendor): тексти UA-сторінок звірено з назвами; vendor давав би картки без бренду в назві (аудит #1744: Strateg 36→572, Vladi 18→300)
+    return lambda p: bool(rx.search((p.get("name") or "").casefold())) and not _BR_UA_BLOCK.search(_brand_hay(p))
+
+
 _BR_HP = re.compile(r"harry potter|гаррі поттер|гарі поттер|hogwarts|гоґвортс|гогвортс")
 _BR_MARVEL = re.compile(r"marvel|марвел|месник|avengers|людина[- ]павук|spider-?man|залізна людина|iron man|танос|thanos|шибайголов|daredevil|дедпул|deadpool|росомаха|wolverine|халк|hulk|(?<!\w)тор(?:а|у|ом)?(?!\w)|локі|loki|капітан америка|чорна пантера|black panther|вартові галактики|groot|грут|веном|venom|x-men|люди ікс")
 BRAND_PAGES = (
@@ -4593,6 +4610,11 @@ BRAND_PAGES = (
     ("brend-funko-pop-anime", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Ліцензійні герої > Герої Аніме"),
     ("brend-funko-pop-igry", "brend-funko-pop", lambda p: _is_funko(p) and p.get("src_path") == "Funko > Герої ігор"),
     ("brend-funko-pop-harry-potter", "brend-funko-pop", lambda p: _is_funko(p) and ("Гаррі Поттер" in (p.get("src_path") or "") or bool(_BR_HP.search(_brand_hay(p))))),
+    ("brend-tekhnok", None, _ua_brand(_BR_TEKHNOK)),
+    ("brend-ranok", None, _ua_brand(_BR_RANOK)),
+    ("brend-strateg", None, _ua_brand(_BR_STRATEG)),
+    ("brend-vladi-toys", None, _ua_brand(_BR_VLADI)),
+    ("brend-danko-toys", None, _ua_brand(_BR_DANKO)),
     ("brend-funko-pop-marvel", "brend-funko-pop", lambda p: _is_funko(p) and ("Marvel" in (p.get("src_path") or "") or bool(_BR_MARVEL.search(_brand_hay(p))))),
 )
 _BRAND_SUB_SLUGS = frozenset(s for s, _par, _fn in BRAND_PAGES if _par)
@@ -4635,12 +4657,17 @@ def _brand_ok(p):
 
 def brand_plan(prods, texts=None):
     """[(slug, h1, parent, items)] сторінок брендів, які МОЖНА побудувати (ворота відкриті, є текст, ≥BRAND_MIN_ITEMS товарів у наявності). Порядок добірки: за внеском спадно (невідомий — в кінець), потім ціна."""
-    if not BRAND_PAGES_LIVE:
+    if not BRAND_PAGES_LIVE and not UA_BRAND_PAGES_LIVE:
         return []
     texts = _load_brand_texts() if texts is None else texts
     pool = [p for p in prods if _brand_ok(p)]
     plan = []
     for slug, parent, fn in BRAND_PAGES:
+        if slug in BRAND_UA_SLUGS:   # українські бренди — лише за своїми воротами (SITE_UA_BRAND_PAGES_LIVE), решта — лише за SITE_BRAND_PAGES_LIVE
+            if not UA_BRAND_PAGES_LIVE:
+                continue
+        elif not BRAND_PAGES_LIVE:
+            continue
         if slug not in texts:
             print(f"[build] ⚠ brand: для {slug} нема тексту в brand_pages.json — сторінку не будуємо", file=sys.stderr)
             continue
@@ -4695,7 +4722,7 @@ def write_brand_pages(plan):
     subs = {s: [(s_, h_) for s_, h_, par_, _i, _t in plan if par_ == s] for s, _h in top}
     lis = "".join(f'<li><a href="{s}.html">{esc(h)}</a>' + (('<ul>' + "".join(f'<li><a href="{s2}.html">{esc(h2)}</a></li>' for s2, h2 in subs[s]) + '</ul>') if subs[s] else "") + '</li>' for s, h in top)
     hub_body = (crumbs_html(trail) + '<h1 class="page">Бренди іграшок у PlutusToys</h1>'
-                '<p class="gift-hub-lead">Добірки товарів у наявності за брендами: фігурки, ляльки, м\'які іграшки.</p>'
+                '<p class="gift-hub-lead">Добірки товарів у наявності за брендами.</p>'
                 f'<nav class="gift-links" aria-label="Бренди"><ul>{lis}</ul></nav>'
                 + (('<nav class="gift-links" aria-label="Статті-поради"><h2>Поради</h2><ul>' + "".join(f'<li><a href="{s_}.html">{esc(t_)}</a></li>' for s_, t_ in GIFT_ARTICLES_BUILT if s_ in BRAND_FOR_PORADY) + '</ul></nav>') if any(s_ in BRAND_FOR_PORADY for s_, _t in GIFT_ARTICLES_BUILT) else ""))
     head = breadcrumb_ld(trail) + _ld_script({"@context": "https://schema.org", "@type": "ItemList", "name": "Бренди іграшок",

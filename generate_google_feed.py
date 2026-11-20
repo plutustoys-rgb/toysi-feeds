@@ -79,6 +79,7 @@ from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides
 from trademark_filter import is_uno_trademark_blocked
 from feed_title_norm import normalize_title
 from feed_brand_title import brand_for_title, with_brand
+import feed_product_size
 import site_sale
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
@@ -1336,6 +1337,9 @@ def _build_xml(items: list) -> ET.Element:
         ET.SubElement(entry, f"{{{NS}}}google_product_category").text = it["google_product_category"]
         if it.get("category_name"):
             ET.SubElement(entry, f"{{{NS}}}product_type").text = f"Головна > {it['category_name']}"      # запит SEO п.4б: наш шлях категорії
+        _size = feed_product_size.extract(it.get("title"), it.get("description"), it.get("category_name"))    # SEO 20.11: розмір м'якої іграшки дослівно з назви/опису (GMC «Добавить в описание: Размер»)
+        if _size:
+            ET.SubElement(entry, f"{{{NS}}}size").text = _size
         if it.get("price_band"):
             ET.SubElement(entry, f"{{{NS}}}custom_label_0").text = it["price_band"]                      # запит SEO 18.10: цінова смуга
         _lab = _labels.get(str(it.get("id"))) or ("ni" if _labels else None)       # є свіжий знімок, а товару в ньому нема → контрольної ціни нема → ni (специфікація Аудитора: «без контрольної ціни НЕ вигідний»); знімка нема → без мітки

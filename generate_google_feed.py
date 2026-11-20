@@ -79,6 +79,7 @@ from competitor_pricing import (real_toysi_cost, load_fresh_prom_price_overrides
 from trademark_filter import is_uno_trademark_blocked
 from feed_title_norm import normalize_title
 from feed_brand_title import brand_for_title, with_brand
+import feed_photo_size
 import site_sale
 
 OUTPUT_FILE = "feeds/google_merchant_feed.xml"
@@ -825,6 +826,38 @@ def _upscale_prom_image(url: str) -> str:
     return _PROM_IMAGE_SIZE_RE.sub("_w1024_h1024_", url, count=1)
 
 
+def feed_image_candidates(item: dict, prom_product: dict):
+    """(фото для фіду до заміни, оригінал Toysi як можлива заміна | None). Перше ПРИДАТНЕ фото (Prom main_image → фото каталогу Toysi), для Prom — збільшений URL.
+    Заміна — лише для фото images.prom.ua (Prom віддає ≤ 500 px) і лише оригінал Toysi (`/p/enl_N.jpg` → `/p/N.jpg`); рішення «міняти чи ні» — feed_photo_size.choose_image за кешем розмірів."""
+    image = next((c for c in [prom_product.get("main_image"), *(item.get("pictures") or [])] if usable_feed_image(c)), None)
+    if not image:
+        return None, None
+    image = _upscale_prom_image(image)
+    alt = None
+    if "images.prom.ua" in image:
+        alt = next((_toysi_original_image(c) for c in (item.get("pictures") or []) if usable_feed_image(c) and str(c).startswith("https://toysi.ua/p/")), None)
+    return image, alt
+
+
+def prefetch_feed_photo_sizes(catalog: dict, prom_products: dict, budget_s: float = feed_photo_size.DEFAULT_BUDGET_S) -> dict:
+    """Перед збіркою: дізнатися розміри Prom-фото й оригіналів Toysi (кеш feed_photo_dims_cache.json). Ніколи не кидає; збій → фото лишаються як були."""
+    try:
+        pairs = []
+        for pid, item in (catalog or {}).items():
+            if not isinstance(item, dict):
+                continue
+            pp = (prom_products or {}).get(str(item.get("vendor_code") or pid)) or {}
+            image, alt = feed_image_candidates(item, pp)
+            if image and alt:
+                pairs.append((image, alt))
+        st = feed_photo_size.prefetch(pairs, budget_s)
+        print(f"[Feed] Розміри фото: опитано Prom {st['prom']}, Toysi {st['toysi']}; Prom < {feed_photo_size.MIN_SIDE} px: {st['need']}; заміна на оригінал Toysi: {st['swap']}.")
+        return st
+    except Exception as e:  # noqa: BLE001
+        print(f"[Feed] prefetch_feed_photo_sizes збій ({type(e).__name__}: {str(e)[:120]}) — фото як були.", file=sys.stderr)
+        return {}
+
+
 def _prom_page_price(cost: float, category_name, override, has_fresh_competitor: bool = True) -> float:
     """Ціна, ЩО РЕАЛЬНО ЙДЕ НА СТОРІНКУ PROM — точна копія логіки generate_prom_feed.py (ряд. ~611-637).
     Оголошення Google/Meta/Bing ведуть на цю сторінку, тож беруть ТУ САМУ ціну → жодного
@@ -1238,11 +1271,15 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
 
         prom_product = prom_products.get(str(item.get("vendor_code") or pid)) or {}
         # перше ПРИДАТНЕ фото: Prom main_image (може бути відносною заглушкою «no-image») → фото каталогу Toysi; жодного придатного → пропуск
-        image = next((c for c in [prom_product.get("main_image"), *(item.get("pictures") or [])] if usable_feed_image(c)), None)
+        image, _alt = feed_image_candidates(item, prom_product)
         if not image:
             stats["no_image"] += 1
             continue
-        image = _upscale_prom_image(image)
+        if _alt:   # Prom-фото < 500 px і оригінал Toysi більший (за кешем розмірів; нема в кеші → без змін) — SEO 20.11, feed_photo_size.py
+            _chosen = feed_photo_size.choose_image(image, _alt)
+            if _chosen != image:
+                stats["photo_toysi_original"] = stats.get("photo_toysi_original", 0) + 1
+            image = _chosen
         image = _toysi_original_image(image)
         image = _public_toysi_image(image)
 
@@ -1488,6 +1525,7 @@ def generate_google_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> N
             print(f"[Google] build_prom_category_cache збій ({type(e).__name__}: {str(e)[:120]}) — пропущено.", file=sys.stderr)
     print(f"[Google] Кеш реальних Prom-категорій: {len(category_cache)} товарів.")
 
+    prefetch_feed_photo_sizes(feed_catalog, prom_by_external_id)   # SEO 20.11: розміри Prom-фото/оригіналів Toysi у кеш (мережа лише тут; build_feed_items читає кеш)
     prom_price_overrides = load_fresh_prom_price_overrides()
     items, stats = build_feed_items(feed_catalog, prom_by_external_id, links, prom_price_overrides,
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())

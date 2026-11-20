@@ -401,7 +401,23 @@ def check_seo_metrics(ctx):
     return []
 
 
-CHECKS = (("vps", check_vps), ("artifacts", check_artifacts), ("tasks", check_tasks), ("local_journal", check_local_journal), ("critical", check_critical), ("seo_metrics", check_seo_metrics))
+# ---------- %TEMP%: накопичення сміття тестів (20.11.2026: 21 471 тека, 22,4 ГБ → диск ноутбука повний) ----------
+TEMP_SCRATCH_MIN_AGE_H = 48    # доба janitor-порогу + період janitor (щодоби) — інакше свіжа доба «старіє» й тривога висить щодня (аудит #1849)
+TEMP_SCRATCH_WARN = 500    # тек-сміття старших за 48 год (janitor не працює); нормальний «хвіст» живих тестів — одиниці/десятки, 21 471 було при повному диску
+
+
+def check_temp(ctx):
+    """Лише читає (рахує теки за шаблоном temp_janitor, без розміру). Багато старих → warn з командою прибирання."""
+    import temp_janitor as tj
+    n = len(tj.find_old_scratch(tj.tempfile.gettempdir(), TEMP_SCRATCH_MIN_AGE_H))
+    if n > TEMP_SCRATCH_WARN:
+        return [issue("temp:scratch", "warn", f"%TEMP%: {n} тек-сміття тестів старших за {TEMP_SCRATCH_MIN_AGE_H} год (поріг {TEMP_SCRATCH_WARN})", "тести й агенти лишають tmp-теки; Windows їх не чистить",
+                      "python temp_janitor.py (dry-run) → python temp_janitor.py --apply")]
+    return []
+
+
+
+CHECKS = (("vps", check_vps), ("artifacts", check_artifacts), ("tasks", check_tasks), ("local_journal", check_local_journal), ("critical", check_critical), ("seo_metrics", check_seo_metrics), ("temp", check_temp))
 
 
 def _run_one(ctx, name, fn):
@@ -416,7 +432,7 @@ def _run_one(ctx, name, fn):
 
 
 def run_checks(ctx):
-    """Шість перевірок паралельно (мережа/PowerShell/git незалежні): загальний час = найповільніша, а не сума — хук SessionStart має бюджет 15 с."""
+    """Сім перевірок паралельно (мережа/PowerShell/git незалежні): загальний час = найповільніша, а не сума — хук SessionStart має бюджет 15 с."""
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=len(CHECKS)) as ex:
         futs = [ex.submit(_run_one, ctx, name, fn) for name, fn in CHECKS]
@@ -442,7 +458,7 @@ def save_state(state: dict, path: Path = None) -> None:
     tmp.replace(p)
 
 
-BLIND_PREFIX = {"vps": ("vps:",), "artifacts": ("art:",), "tasks": ("task:",), "local_journal": ("loc:",), "critical": ("crit:",), "seo_metrics": ("seo:",)}
+BLIND_PREFIX = {"vps": ("vps:",), "artifacts": ("art:",), "tasks": ("task:",), "local_journal": ("loc:",), "critical": ("crit:",), "seo_metrics": ("seo:",), "temp": ("temp:",)}
 BLIND_IDS = {"vps:stale": ("vps:",), "vps:no_snapshot": ("vps:",)}   # знімок застарів/нема → стан VPS невідомий, «знято» писати не можна
 
 

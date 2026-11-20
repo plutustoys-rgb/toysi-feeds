@@ -318,6 +318,7 @@ _CATEGORY_NAME_MAP = {
     "меблі для ляльок": "2497",               # Dollhouse Accessories
     "супермаркет": "3298",                    # Toy Kitchens & Play Food
     "ведмеді": "1259",                        # Stuffed Animals
+    "м'які іграшки": "1259",                  # Stuffed Animals (20.11.2026: 156 товарів лишались на 1239 — правило _CATEGORY_RULES шукає «м'яка іграшка» в однині; назва категорії Toysi — множина. Однозначна, як «ведмеді»)
 }
 
 

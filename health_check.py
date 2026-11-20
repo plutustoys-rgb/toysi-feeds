@@ -401,7 +401,22 @@ def check_seo_metrics(ctx):
     return []
 
 
-CHECKS = (("vps", check_vps), ("artifacts", check_artifacts), ("tasks", check_tasks), ("local_journal", check_local_journal), ("critical", check_critical), ("seo_metrics", check_seo_metrics))
+# ---------- %TEMP%: накопичення сміття тестів (20.11.2026: 21 471 тека, 22,4 ГБ → диск ноутбука повний) ----------
+TEMP_SCRATCH_WARN = 500    # тек-сміття старших за добу; нормальний «хвіст» живих тестів — одиниці/десятки, 21 471 було при повному диску
+
+
+def check_temp(ctx):
+    """Лише читає (рахує теки за шаблоном temp_janitor, без розміру). Багато старих → warn з командою прибирання."""
+    import temp_janitor as tj
+    n = len(tj.find_old_scratch(tj.tempfile.gettempdir(), 24))
+    if n > TEMP_SCRATCH_WARN:
+        return [issue("temp:scratch", "warn", f"%TEMP%: {n} тек-сміття тестів старших за добу (поріг {TEMP_SCRATCH_WARN})", "тести й агенти лишають tmp-теки; Windows їх не чистить",
+                      "python temp_janitor.py (dry-run) → python temp_janitor.py --apply")]
+    return []
+
+
+
+CHECKS = (("vps", check_vps), ("artifacts", check_artifacts), ("tasks", check_tasks), ("local_journal", check_local_journal), ("critical", check_critical), ("seo_metrics", check_seo_metrics), ("temp", check_temp))
 
 
 def _run_one(ctx, name, fn):

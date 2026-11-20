@@ -53,6 +53,9 @@ NEW_HIST = f"""<html><body>
 NONE = "<html><body><p>Нічого</p></body></html>"
 
 
+LAST_MODE = None
+
+
 def run(html, apply):
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True)
@@ -69,6 +72,8 @@ def run(html, apply):
             res, err = None, str(e)
         sent = page.evaluate("window.__sent||0")
         checked = page.evaluate("(()=>{const c=document.querySelector('input[type=checkbox]');return c?c.checked:null})()")
+        global LAST_MODE
+        LAST_MODE = page.evaluate("window.__mode||null")
         b.close()
     return res, err, sent, checked
 
@@ -89,5 +94,28 @@ r, e, sent, ck = run(NONE, apply=True)
 chk("нема ні поля, ні кнопки → EvaCabinetError", r is None and e and "Оновити каталог" in e and sent == 0)
 r, e, sent, ck = run(OLD, apply=True)
 chk("стара верстка (поле + «Почати») працює як раніше", r is not None and r["submitted"] is True and sent == 1)
+
+# Верстка v3 (20.11.2026, збій імпорту з 17.11 23:50): адреса в <input name=url>, приховане import_mode (за замовч. partial), вкладки «Повне/Часткове».
+V3 = """<html><body><form method=post>
+<input type=hidden name=import_mode value=partial>
+<button type=button onclick="document.querySelector('[name=import_mode]').value='full'">Повне оновлення каталогу</button>
+<button type=button onclick="document.querySelector('[name=import_mode]').value='partial'">Часткове оновлення каталогу</button>
+<input type=text name=url value="{url}"><button type=submit name=submit_action value=save_url>Зберегти посилання</button>
+<label><input type=checkbox name=send_new_to_moderation> Відправити нові товари з співставленою категорією на модерацію</label>
+<input type=radio name=import_method_choice value=file><input type=radio name=import_method_choice value=url checked>
+<button type=submit name=submit_action value=url>Оновити каталог</button></form>
+<script>document.addEventListener('submit',e=>{e.preventDefault();window.__sent=(window.__sent||0)+1;window.__mode=document.querySelector('[name=import_mode]').value;});</script></body></html>"""
+V3_BROKEN = V3.replace("value='full'", "value='partial'")
+
+r, e, sent, ck = run(V3.replace("{url}", FEED), apply=True)
+chk("v3 (адреса в input, import_mode=partial за замовч.): режим перемкнено на full, чекбокс, кнопку натиснуто 1 раз", r is not None and r["submitted"] is True and sent == 1 and LAST_MODE == "full" and ck is True)
+r, e, sent, ck = run(V3.replace("{url}", FEED), apply=False)
+chk("v3, DRY-RUN: кнопку 'Оновити каталог' НЕ натиснуто", r is not None and r["submitted"] is False and sent == 0)
+r, e, sent, ck = run(V3.replace("{url}", "https://example.com/other.xml"), apply=True)
+chk("v3: адреса в input ≠ наш фід → відмова, кнопку не натиснуто", r is None and e and "не збігається" in e and sent == 0)
+r, e, sent, ck = run(V3.replace("{url}", FEED + ".old"), apply=True)
+chk("v3: адреса в input — довший URL → відмова (точний збіг)", r is None and e and "не збігається" in e and sent == 0)
+r, e, sent, ck = run(V3_BROKEN.replace("{url}", FEED), apply=True)
+chk("v3: режим не став full → відмова (не робимо часткове, воно вимикає автооновлення цін), кнопку не натиснуто", r is None and e and "import_mode" in e and sent == 0)
 
 sys.exit(1 if F else 0)

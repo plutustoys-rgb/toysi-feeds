@@ -339,8 +339,25 @@ def _trigger_full_import_saved_url(page, feed_url: str, apply: bool, res: dict) 
     cb = form.locator("input[name=send_new_to_moderation]")
     if cb.count() != 1:
         raise EvaCabinetError("у формі кнопки 'Оновити каталог' нема чекбокса модерації send_new_to_moderation (верстка змінилась)")
-    if not re.search(r"(?<![\w/.:%?=&-])" + re.escape(feed_url) + r"(?![\w/.%?=&-])", form.inner_text()):
+    # Верстка v3 (звірено живо 20.11.2026, read-only огляд /integrations/imports/new; збій імпорту з 17.11 23:50: адреса стоїть у <input name=url>, а не текстом — inner_text її не бачить):
+    # поле input[name=url] з адресою, приховане input[name=import_mode] (за замовч. «partial»!), вкладки-кнопки «Повне/Часткове оновлення каталогу». Часткове за посиланням ВИМИКАЄ автооновлення цін і наявності
+    # (модалка «Підтвердіть часткове оновлення»), тому режим ставимо ЯВНО «full» і перевіряємо значення перед кліком — інакше не запускаємо.
+    url_inp = form.locator("input[name=url]")
+    if url_inp.count() == 1:
+        saved = (url_inp.first.evaluate("e => e.value") or "").strip()
+        if saved != feed_url:
+            raise EvaCabinetError(f"збережена в кабінеті адреса XML не збігається з {feed_url} — імпорт не запущено")
+    elif not re.search(r"(?<![\w/.:%?=&-])" + re.escape(feed_url) + r"(?![\w/.%?=&-])", form.inner_text()):
         raise EvaCabinetError(f"збережена в кабінеті адреса XML не збігається з {feed_url} — імпорт не запущено")
+    mode = form.locator("input[name=import_mode]")
+    if mode.count():
+        full_btn = form.get_by_role("button", name="Повне оновлення каталогу", exact=True)
+        if full_btn.count() != 1:
+            raise EvaCabinetError("у формі є import_mode, але нема єдиної кнопки 'Повне оновлення каталогу' (верстка змінилась) — імпорт не запущено")
+        full_btn.click()
+        page.wait_for_timeout(500)
+        if (mode.first.evaluate("e => e.value") or "") != "full":
+            raise EvaCabinetError("не вдалося перемкнути режим на 'full' (import_mode != full) — імпорт не запущено, щоб не зробити часткове оновлення")
     radio = page.locator("input[name=import_method_choice][value=url]")
     if radio.count() and not radio.first.is_checked():
         radio.first.check()

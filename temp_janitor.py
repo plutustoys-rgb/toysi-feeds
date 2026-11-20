@@ -117,6 +117,9 @@ def main(argv=None) -> int:
     ap.add_argument("--dir", default=None, help="лише для тесту; типово %%TEMP%%")
     a = ap.parse_args(argv)
     r = sweep(a.dir, a.min_age_hours, a.apply)
+    if r.get("refused"):
+        print(f"[temp_janitor] REFUSED {r['base']}: корінь диска або домашня тека — нічого не чіпаю")
+        return 2
     print(f"[temp_janitor] {'APPLY' if a.apply else 'DRY-RUN'} {r['base']}: знайдено {r['found']}, видалено {r['removed']}, не вдалося {r['failed']}")
     return 0
 

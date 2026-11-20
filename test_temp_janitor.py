@@ -73,7 +73,7 @@ try:
     top = act / "fresh_child"; top.mkdir(); os.utime(top, (now, now)); os.utime(act, (old, old))
     chk("вік за найсвіжішою активністю: корінь старий, але дитина верхнього рівня свіжа → не сміття", str(act) not in tj.find_old_scratch(base, 24, now))
     chk("корінь диска/домашня тека → відмова, нічого не знайдено",
-        tj.sweep(os.path.splitdrive(str(base))[0] + os.sep, 24, apply=True).get("refused") is True and tj.sweep(os.path.expanduser("~"), 24, apply=True).get("refused") is True)
+        tj.sweep(os.path.splitdrive(str(base))[0] + os.sep, 24, apply=False).get("refused") is True and tj.sweep(os.path.expanduser("~"), 24, apply=False).get("refused") is True and tj.main(["--dir", os.path.expanduser("~")]) == 2)
 
     chk("main(): без --apply це dry-run (exit 0)", tj.main(["--dir", str(base), "--min-age-hours", "0"]) == 0 and "claude" in os.listdir(base))
 finally:
@@ -82,10 +82,12 @@ finally:
 import health_check as hc  # noqa: E402
 
 _orig = tj.find_old_scratch
-tj.find_old_scratch = lambda *a, **k: ["x"] * (hc.TEMP_SCRATCH_WARN + 1)
+_ages = []
+tj.find_old_scratch = lambda *a, **k: (_ages.append(a[1]), ["x"] * (hc.TEMP_SCRATCH_WARN + 1))[1]
 r = hc.check_temp(None)
 chk("health_check.check_temp: більше порогу → одне попередження temp:scratch з командою прибирання", len(r) == 1 and r[0]["id"] == "temp:scratch" and r[0]["sev"] == "warn" and "temp_janitor.py" in r[0]["hint"])
 tj.find_old_scratch = lambda *a, **k: ["x"] * hc.TEMP_SCRATCH_WARN
+chk("health_check.check_temp: вік береться з TEMP_SCRATCH_MIN_AGE_H (48), а не 24", _ages == [hc.TEMP_SCRATCH_MIN_AGE_H] and hc.TEMP_SCRATCH_MIN_AGE_H == 48)
 chk("health_check.check_temp: рівно поріг → чисто", hc.check_temp(None) == [])
 tj.find_old_scratch = _orig
 

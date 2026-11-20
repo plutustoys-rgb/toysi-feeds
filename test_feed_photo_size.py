@@ -151,16 +151,25 @@ fetched.clear()
 fps.prefetch(pairs, 60, now=t_now + 40 * 24 * 3600)
 chk("через 40 діб: усе прострочено → опитано заново (Prom 4 + оригінали 3)", len(fetched) == 7)
 
-# збій через 30+ діб не затирає давній успіх (аудит #1861)
+# збій після закінчення TTL → розмір невідомий → choose_image повертає Prom (безпечний відкат; давній успіх не зберігаємо — URL Toysi без версії, може віддавати 404; аудит #1864)
 fps.reset_cache()
+fps.cache_path().unlink(missing_ok=True)   # чистий кеш: інакше записи попереднього кроку (мітка +40 діб) були б «свіжими»
 fps.prefetch(pairs, 60, now=t_now)
 _ok = SIZES["https://toysi.ua/p/1.jpg"]
 SIZES["https://toysi.ua/p/1.jpg"] = None
 fps.reset_cache()
 fps.prefetch(pairs, 60, now=t_now + 40 * 24 * 3600)
-chk("тимчасовий збій після 30 діб НЕ затирає давній успіх (розмір лишився 900x800, мітка часу оновлена)",
-    fps.lookup("https://toysi.ua/p/1.jpg") == (900, 800) and fps._load()["https://toysi.ua/p/1.jpg"]["t"] == t_now + 40 * 24 * 3600)
+chk("збій оригіналу після 30 діб → запис None, choose_image повертає Prom (не мертвий URL)",
+    fps.lookup("https://toysi.ua/p/1.jpg") is None and fps.choose_image(*pairs[0]) == pairs[0][0])
 SIZES["https://toysi.ua/p/1.jpg"] = _ok
+
+# збій запису кеша → .tmp.<pid> не лишається, виняток не виходить назовні (prefetch ловить)
+_real_replace = fps.os.replace
+fps.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+fps.reset_cache()
+_st = fps.prefetch(pairs, 60, now=t_now)
+fps.os.replace = _real_replace
+chk("збій запису кеша (os.replace кидає) → prefetch не падає і tmp-файл не лишається", isinstance(_st, dict) and not list(fps.cache_path().parent.glob(fps.cache_path().name + ".tmp*")))
 
 fps.reset_cache()
 os.remove(fps.cache_path())

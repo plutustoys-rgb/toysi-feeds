@@ -122,8 +122,14 @@ def reset_cache():
 def _save(cache: dict):
     p = cache_path()
     tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")   # аудит #1861: два одночасні запуски не пишуть в один tmp
-    tmp.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    os.replace(tmp, p)
+    try:
+        tmp.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, p)
+    finally:
+        try:
+            tmp.unlink()   # лишився лише при збої запису (після успішного replace файлу вже нема)
+        except OSError:
+            pass
 
 
 def lookup(url):
@@ -174,11 +180,7 @@ def _probe(urls, budget_s, now, workers=WORKERS) -> dict:
             out[u] = fut.result()
             del pending[u]
     for u, d in out.items():
-        old = cache.get(u)
-        if d is None and isinstance(old, dict) and old.get("d"):
-            cache[u] = {"d": old["d"], "t": now}   # аудит #1861: тимчасовий збій не затирає давній успіх (розмір файлу за тим URL не міняється)
-        else:
-            cache[u] = {"d": list(d) if d else None, "t": now}
+        cache[u] = {"d": list(d) if d else None, "t": now}   # збій → None: choose_image повертає Prom (безпечний відкат). Давній успіх НЕ зберігаємо: URL оригіналу Toysi без версії, може вже віддавати 404 (аудит #1864)
     return out
 
 

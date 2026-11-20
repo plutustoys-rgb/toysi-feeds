@@ -365,3 +365,4 @@ site_gone_apache.map
 
 # Кеш розмірів фото для фідів (feed_photo_size.py пише в main() генераторів, build_feed_items читає) — генерується наново, не для git
 feed_photo_dims_cache.json
+feed_photo_dims_cache.json.tmp.*

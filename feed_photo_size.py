@@ -92,6 +92,8 @@ def fetch_dims(url):
     try:
         rq = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (PlutusToys feed photo check)", "Range": f"bytes=0-{READ_CAP - 1}"})
         with urllib.request.urlopen(rq, timeout=TIMEOUT_S) as r:
+            if not host_allowed(r.geturl()):   # аудит #1861: редірект на інший хост/схему — не довіряємо
+                return None
             return parse_dims(r.read(READ_CAP))
     except Exception:  # noqa: BLE001 — мережа/HTTP/таймаут: розмір невідомий → фото не міняємо
         return None
@@ -119,9 +121,15 @@ def reset_cache():
 
 def _save(cache: dict):
     p = cache_path()
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    os.replace(tmp, p)
+    tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")   # аудит #1861: два одночасні запуски не пишуть в один tmp
+    try:
+        tmp.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, p)
+    finally:
+        try:
+            tmp.unlink()   # лишився лише при збої запису (після успішного replace файлу вже нема)
+        except OSError:
+            pass
 
 
 def lookup(url):
@@ -172,7 +180,7 @@ def _probe(urls, budget_s, now, workers=WORKERS) -> dict:
             out[u] = fut.result()
             del pending[u]
     for u, d in out.items():
-        cache[u] = {"d": list(d) if d else None, "t": now}
+        cache[u] = {"d": list(d) if d else None, "t": now}   # збій → None: choose_image повертає Prom (безпечний відкат). Давній успіх НЕ зберігаємо: URL оригіналу Toysi без версії, може вже віддавати 404 (аудит #1864)
     return out
 
 

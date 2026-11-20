@@ -109,5 +109,10 @@ chk("робочий етап: mode=ids, цілі етапу є в мапі, ко
 bad = [t for t, (lid, ln) in live.items() if g._norm_eva_name(live_matched[lid]["eva"]) != g._norm_eva_name(g.EVA_CATEGORY_MAP[t]["name"]) or "(МП)" in ln or lid in g.EVA_EXCLUDED_CATEGORIES]
 chk("робочий етап: у кожного L EVA-ціль у кабінеті ТОТОЖНА цілі мапи, без (МП), не виключена", not bad)
 chk("«Пазли» поза мапою (99075) тепер у мапі -> 105311 і перенаправляється разом із пазлами", g.EVA_CATEGORY_MAP.get("99075", {}).get("id") == "105311" and "99075" in live)
+chk("етап 2 (20.11): 98999 «Глазастики» → 101231 і 98958 «Машинки» → 120703 у мапі та перенаправлені у співставлені",
+    g.EVA_CATEGORY_MAP.get("98999", {}).get("id") == "101231" and g.EVA_CATEGORY_MAP.get("98958", {}).get("id") == "120703"
+    and "98999" in live and "98958" in live)
+chk("етап 2: жодна T із цілей етапу не лишилась без перенаправлення (інакше її товари знов у «Потребують співставлення»)",
+    all(t in live or t in g.EVA_LEGACY_OVERRIDE or t in g.EVA_EXCLUDED_CATEGORIES for t, v in g.EVA_CATEGORY_MAP.items() if v["id"] in set(cfg.get("ids") or [])))
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

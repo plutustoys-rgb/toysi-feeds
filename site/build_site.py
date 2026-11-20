@@ -5077,6 +5077,12 @@ SELECTION_PAGES = (
     # SEO 18.11 (сезон, календарі відкривають 1.12): кирилиця «адвент» у назві (латинське advent ловить Adventure — не беремо); уцінка відсіюється пулом
     ("advent-kalendari", "Адвент-календарі для дітей", "Адвент-календарі для дітей 2026 — купити | PlutusToys", SEL_PARENT_GIFT, "Подарунки",
      lambda p: "адвент" in (p.get("name") or "").lower()),
+    # SEO 20.11 (GSC 90 д: «детская тарелка с разделителями/на присоске…» 431 показ, поз. 61): категорія «Дитячий посуд» І «тарілк» у назві
+    ("dytiachi-tarilky", "Дитячі тарілки", "Дитячі тарілки на присосці, секційні, силіконові — купити | PlutusToys", "dytiachyy-posud", "Дитячий посуд",
+     lambda p: (p.get("category") or "") == "Дитячий посуд" and "тарілк" in (p.get("name") or "").lower()),
+    # SEO 20.11 («настольные игры эрудит» 157 показів, поз. 42): кирилиця «ерудит» у назві, будь-яка категорія; уцінку відсіює пул selection_plan
+    ("nastilna-hra-erudyt", "Настільна гра Ерудит", "Настільна гра Ерудит українською — купити | PlutusToys", "nastilni-ihry", "Настільні ігри",
+     lambda p: "ерудит" in (p.get("name") or "").lower()),
 )
 SELECTION_PAGE_FILES = frozenset(f"{s}.html" for s, _h, _t, _par, _pn, _fn in SELECTION_PAGES)
 SELECTION_BUILT = []   # [(slug, h1, parent_cat_slug)] збудованих у цій збірці; категорія-батько лінкує лише на них

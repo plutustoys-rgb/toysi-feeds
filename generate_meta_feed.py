@@ -41,6 +41,7 @@ from prom_catalog_sync import fetch_prom_products
 from competitor_pricing import load_fresh_prom_price_overrides, load_fresh_prom_competitor_prices
 from generate_google_feed import (
     build_feed_items,
+    prefetch_feed_photo_sizes,
     select_feed_catalog,
     load_site_product_ids,
     load_prom_products_cache,
@@ -165,6 +166,7 @@ def generate_meta_feed(output_file: str = OUTPUT_FILE, limit: int = None) -> Non
             file=sys.stderr,
         )
 
+    prefetch_feed_photo_sizes(feed_catalog, prom_by_external_id)   # SEO 20.11: розміри фото (кеш спільний з Google; мережа лише тут)
     items, stats = build_feed_items(feed_catalog, prom_by_external_id, links, load_fresh_prom_price_overrides(),
                                     load_fresh_prom_competitor_prices(), load_site_product_ids())
     # Репліки зброї виключає САМ build_feed_items (спільно для google/meta/bing) — тут не дублюємо.

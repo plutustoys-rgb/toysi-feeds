@@ -79,6 +79,30 @@ class _NoNet:
 _orig_urlopen = fps.urllib.request.urlopen
 fps.urllib.request.urlopen = _NoNet()
 chk("fetch_dims для чужого хоста → None БЕЗ мережі", fps.fetch_dims("https://evil.com/a.jpg") is None and not _calls)
+
+class _Resp:
+    def __init__(self, url, body):
+        self._u, self._b = url, body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def geturl(self):
+        return self._u
+
+    def read(self, n=-1):
+        return self._b
+
+
+fps.urllib.request.urlopen = lambda rq, timeout=0: _Resp("https://evil.example/x.jpg", jpeg(900, 900))
+chk("редірект на чужий хост (geturl не з дозволених) → None, розмір не береться", fps.fetch_dims("https://toysi.ua/p/1.jpg") is None)
+fps.urllib.request.urlopen = lambda rq, timeout=0: _Resp("http://toysi.ua/p/1.jpg", jpeg(900, 900))
+chk("редірект на http (схема) → None", fps.fetch_dims("https://toysi.ua/p/1.jpg") is None)
+fps.urllib.request.urlopen = lambda rq, timeout=0: _Resp("https://toysi.ua/p/1.jpg", jpeg(900, 800))
+chk("без редіректу: розмір береться (900, 800)", fps.fetch_dims("https://toysi.ua/p/1.jpg") == (900, 800))
 fps.urllib.request.urlopen = _orig_urlopen
 
 # ── prefetch з підміненою мережею ──
@@ -113,7 +137,7 @@ chk("choose: b (Prom 500) → Prom", fps.choose_image(*pairs[1]) == pairs[1][0])
 chk("choose: c (оригінал не більший) → Prom", fps.choose_image(*pairs[2]) == pairs[2][0])
 chk("choose: d (оригінал недоступний) → Prom", fps.choose_image(*pairs[3]) == pairs[3][0])
 chk("choose: невідомий розмір (нема в кеші) → Prom", fps.choose_image("https://images.prom.ua/zz.jpg", "https://toysi.ua/p/9.jpg") == "https://images.prom.ua/zz.jpg")
-chk("кеш записано атомарно (файл є, .tmp нема)", fps.cache_path().exists() and not Path(str(fps.cache_path()) + ".tmp").exists())
+chk("кеш записано атомарно (файл є, жодного .tmp* не лишилось)", fps.cache_path().exists() and not list(fps.cache_path().parent.glob(fps.cache_path().name + ".tmp*")))
 
 fetched.clear()
 fps.reset_cache()           # перечитати з файлу
@@ -126,6 +150,17 @@ fps.reset_cache()
 fetched.clear()
 fps.prefetch(pairs, 60, now=t_now + 40 * 24 * 3600)
 chk("через 40 діб: усе прострочено → опитано заново (Prom 4 + оригінали 3)", len(fetched) == 7)
+
+# збій через 30+ діб не затирає давній успіх (аудит #1861)
+fps.reset_cache()
+fps.prefetch(pairs, 60, now=t_now)
+_ok = SIZES["https://toysi.ua/p/1.jpg"]
+SIZES["https://toysi.ua/p/1.jpg"] = None
+fps.reset_cache()
+fps.prefetch(pairs, 60, now=t_now + 40 * 24 * 3600)
+chk("тимчасовий збій після 30 діб НЕ затирає давній успіх (розмір лишився 900x800, мітка часу оновлена)",
+    fps.lookup("https://toysi.ua/p/1.jpg") == (900, 800) and fps._load()["https://toysi.ua/p/1.jpg"]["t"] == t_now + 40 * 24 * 3600)
+SIZES["https://toysi.ua/p/1.jpg"] = _ok
 
 fps.reset_cache()
 os.remove(fps.cache_path())

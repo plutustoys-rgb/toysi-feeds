@@ -92,6 +92,8 @@ def fetch_dims(url):
     try:
         rq = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (PlutusToys feed photo check)", "Range": f"bytes=0-{READ_CAP - 1}"})
         with urllib.request.urlopen(rq, timeout=TIMEOUT_S) as r:
+            if not host_allowed(r.geturl()):   # аудит #1861: редірект на інший хост/схему — не довіряємо
+                return None
             return parse_dims(r.read(READ_CAP))
     except Exception:  # noqa: BLE001 — мережа/HTTP/таймаут: розмір невідомий → фото не міняємо
         return None
@@ -119,7 +121,7 @@ def reset_cache():
 
 def _save(cache: dict):
     p = cache_path()
-    tmp = p.with_name(p.name + ".tmp")
+    tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")   # аудит #1861: два одночасні запуски не пишуть в один tmp
     tmp.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     os.replace(tmp, p)
 
@@ -172,7 +174,11 @@ def _probe(urls, budget_s, now, workers=WORKERS) -> dict:
             out[u] = fut.result()
             del pending[u]
     for u, d in out.items():
-        cache[u] = {"d": list(d) if d else None, "t": now}
+        old = cache.get(u)
+        if d is None and isinstance(old, dict) and old.get("d"):
+            cache[u] = {"d": old["d"], "t": now}   # аудит #1861: тимчасовий збій не затирає давній успіх (розмір файлу за тим URL не міняється)
+        else:
+            cache[u] = {"d": list(d) if d else None, "t": now}
     return out
 
 

@@ -1069,6 +1069,7 @@ def build():
         raise
     cat = dict(cat)
     _load_category_overrides({str(v.get("category_name") or "").strip() for v in cat.values() if str(v.get("stock") or "0") not in ("0", "")} - {""})   # перенесення товарів між категоріями даними (SEO 23.10)
+    _load_rt_name_overrides()   # виправлення назв карток rt- (SEO 20.11)
     cat.update(_load_supplier_kv())   # третій постачальник (KIDDISVIT, Код 17.11): картки «kv-…» за воротами SITE_KV_LIVE=1
     cat.update(_load_supplier_rt())   # другий постачальник (пілот RoyalToys, Код 19.10): картки «rt-…» у ЗАГАЛЬНОМУ каталозі
     prods = []
@@ -1094,6 +1095,8 @@ def build():
         if is_uno_trademark_blocked(name, it.get("vendor") or ""):
             continue   # ТМ «UNO» (претензія Mattel): не продаємо на власному сайті (SEO-замовлення 2026-10-06)
         name = normalize_site_title(name if it.get("supplier") in ("royaltoys", "kiddisvit") else _supplier_text_plain(name))   # Toysi (parser.py: supplier="Toysi"): сутності з фіду («Build &amp; Play», SEO 10.11: 131989, 154061) розкодовуємо до esc(); RT вже розкодовані при завантаженні (подвійний прохід не потрібен). Далі: після всіх фільтрів за оригінальною назвою: регістр назви-капсом (feed_title_norm, лише зміна регістру)
+        if it.get("supplier") == "royaltoys":
+            name = apply_rt_name_override(it.get("id"), name)   # rt_name_overrides.json
         catname = it.get("category_name") or "Інше"
         _cat_ov = _CATEGORY_OVERRIDES.get(str(it.get("id")))
         if _cat_ov and not str(it.get("id")).startswith(("rt-", "kv-")) and _cat_ov != catname:
@@ -2447,6 +2450,49 @@ def _reviews_html(rv):
 NEW_CATEGORIES_ALLOWED = ("Ігри 16+ та 18+",)
 _CATEGORY_OVERRIDES_FILE = os.path.join(_HERE, "category_overrides.json")
 _CATEGORY_OVERRIDES = {}
+
+# Точкові виправлення назв карток RoyalToys (SEO 20.11): site/rt_name_overrides.json {"rt-<id>": {"from": назва постачальника, "to": назва для сайту}}.
+# Застосовується лише коли назва постачальника (після нормалізації) дорівнює from: постачальник виправив/змінив назву — WARN у збірці, лишається його назва. Лише id «rt-…».
+_RT_NAME_OVERRIDES_FILE = os.path.join(_HERE, "rt_name_overrides.json")
+_RT_NAME_OVERRIDES = {}
+_RT_NAME_OVERRIDES_WARNED = set()
+
+
+def _load_rt_name_overrides():
+    global _RT_NAME_OVERRIDES
+    _RT_NAME_OVERRIDES = {}
+    _RT_NAME_OVERRIDES_WARNED.clear()
+    data = _read_json_loud(_RT_NAME_OVERRIDES_FILE, "rt_name_overrides.json", "виправлень назв карток rt- не буде")
+    if data is _MISSING:
+        return _RT_NAME_OVERRIDES
+    if not isinstance(data, dict):
+        print(f"[build] ⚠ rt_name_overrides.json — очікується об'єкт {{id: {{from, to}}}}, отримано {type(data).__name__} — виправлень не буде", file=sys.stderr)
+        return _RT_NAME_OVERRIDES
+    bad = []
+    for k, v in data.items():
+        if isinstance(k, str) and k.startswith("_"):
+            continue
+        if (isinstance(k, str) and _RT_ID_RX.fullmatch(k) and isinstance(v, dict) and isinstance(v.get("from"), str) and isinstance(v.get("to"), str)
+                and v["from"].strip() and v["to"].strip() and v["from"].strip() != v["to"].strip()):
+            _RT_NAME_OVERRIDES[k] = (v["from"].strip(), v["to"].strip())
+        else:
+            bad.append(str(k)[:20])
+    if bad:
+        print(f"[build] ⚠ rt_name_overrides.json: {len(bad)} записів відкинуто (id не «rt-…», нема рядків from/to, порожні або однакові): {', '.join(bad[:5])}", file=sys.stderr)
+    return _RT_NAME_OVERRIDES
+
+
+def apply_rt_name_override(item_id, name):
+    """Назва для сайту: виправлена за rt_name_overrides.json, якщо назва постачальника дорівнює from; інакше без змін (і один WARN на id)."""
+    ov = _RT_NAME_OVERRIDES.get(str(item_id))
+    if not ov:
+        return name
+    if name.strip() == ov[0]:
+        return ov[1]
+    if str(item_id) not in _RT_NAME_OVERRIDES_WARNED:
+        _RT_NAME_OVERRIDES_WARNED.add(str(item_id))
+        print(f"[build] ⚠ rt_name_overrides.json: {item_id} — назва постачальника змінилась ({name[:60]!r} ≠ from) — виправлення пропущено", file=sys.stderr)
+    return name
 
 
 def _load_category_overrides(known_categories):

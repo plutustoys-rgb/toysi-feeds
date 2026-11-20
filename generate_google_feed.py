@@ -343,6 +343,27 @@ def google_product_category(category_name: str) -> str:
     return _CATEGORY_NAME_MAP.get(text, GOOGLE_CATEGORY_FALLBACK)
 
 
+# 20.11.2026 (SEO, «1259 за назвою», дозвіл SEO; замір живого index.json: 918 товарів Toysi): м'які іграшки лежать у категоріях сайту «Тварини і птахи», «Персонажі…» тощо й
+# лишаються в загальній 1239, бо правила шукають категорію, а не назву. Правило — ВСІ ТРИ умови: (1) назва — м'яка іграшка; (2) категорія сайту з білого списку; (3) у назві нема стоп-слів
+# (брелоки, подушки, ляльки, рюкзаки, інтерактивні… — це не «Stuffed Animals»). Міняє ЛИШЕ загальну 1239 (вже визначену категорію не чіпає). FEED_SOFT_TOY_CAT_BY_TITLE=0 вимикає.
+_APOS_TR = str.maketrans({"ʼ": "'", "’": "'", "`": "'", "‘": "'"})
+_SOFT_TITLE_RX = re.compile(r"м'як\w*\s+іграшк|мягк\w*\s+игруш|м'яконабивн|мягконабивн|плюшев", re.I)
+_SOFT_STOP_RX = re.compile(r"брелок|брелк|подушк|ляльк|кукл|на руку|рукавичк|рукавиц|рюкзак|сумк|гаманец|нічник|ночник|проектор|плед|ковдр|інтерактивн|музичн|музыкальн|радіокер|пенал|чохол|грілк", re.I)
+_SOFT_CAT_WHITELIST = {"тварини і птахи", "персонажі ігор та мультфільмів", "ведмеді", "тварини", "інші герої", "глазастики", "м'які іграшки", "тварини ру", "динозаври та дракони", "уцінка"}
+
+
+def google_product_category_for_item(title: str, category_name: str) -> str:
+    """Категорія Google для позиції: за назвою категорії (google_product_category); якщо вийшла загальна 1239 І це м'яка іграшка за правилом SEO (назва + білий список + без стоп-слів) → 1259."""
+    cat = google_product_category(category_name)
+    if cat != GOOGLE_CATEGORY_FALLBACK or os.environ.get("FEED_SOFT_TOY_CAT_BY_TITLE", "1").strip() == "0":
+        return cat
+    t = (title or "").translate(_APOS_TR)
+    c = (category_name or "").strip().lower().translate(_APOS_TR)
+    if c in _SOFT_CAT_WHITELIST and _SOFT_TITLE_RX.search(t) and not _SOFT_STOP_RX.search(t):
+        return "1259"
+    return cat
+
+
 # ---------------------------------------------------------------------------
 # link — реальний URL сторінки товару на власному сайті.
 #
@@ -1273,7 +1294,7 @@ def build_feed_items(catalog: dict, prom_products: dict, links: dict, prom_price
         if not gtin:
             stats["no_gtin"] += 1
 
-        cat_id = google_product_category(item.get("category_name"))
+        cat_id = google_product_category_for_item(name, item.get("category_name"))
         if cat_id == GOOGLE_CATEGORY_FALLBACK:
             stats["category_fallback"] += 1
 

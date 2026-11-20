@@ -40,6 +40,8 @@ try:
             f.write_text("x")
             if readonly:
                 os.chmod(f, stat.S_IREAD)
+        for q in [*d.rglob("*")]:               # усе всередині теж «старе» (інакше вкладені mtime = зараз і тека виглядає живою)
+            os.utime(q, (age, age))
         os.utime(d, (age, age))
         return d
 
@@ -47,6 +49,8 @@ try:
     mk("tmpz62iu_b7")                       # старе python-сміття
     mk("tmpfresh123", age=now - 3600)        # нове (1 год) — не чіпати
     mk("tmpro_dir12", readonly=True)         # read-only файли всередині (як git-об'єкти)
+    mk("tmpABCDEFGH")                       # велика літера в 8-символьній частині — не шаблон Python
+    mk("tmpshort")                          # закоротка назва
     mk("claude")                            # чужа тека зі старим mtime — не чіпати
     mk("playwright_chromiumdev_profile-ab")  # не за шаблоном — не чіпати
     (base / "tmpaabbccdd").write_text("файл, а не тека")
@@ -54,7 +58,7 @@ try:
 
     r = tj.sweep(base, 24, apply=False, now=now)
     names = set(os.listdir(base))
-    chk("dry-run: знайшов 3 старі (bash, python, read-only), нічого не видалив", r["found"] == 3 and r["removed"] == 0 and len(names) == 7)
+    chk("dry-run: знайшов 3 старі (bash, python, read-only), нічого не видалив", r["found"] == 3 and r["removed"] == 0 and len(names) == 9)
 
     r = tj.sweep(base, 24, apply=True, now=now)
     names = set(os.listdir(base))
@@ -64,6 +68,12 @@ try:
 
     r = tj.sweep(base, 0.5, apply=True, now=now)
     chk("поріг 0,5 год: нова (1 год) тека теж видаляється, чужі лишаються", "tmpfresh123" not in os.listdir(base) and "claude" in os.listdir(base))
+
+    act = mk("tmpactive01")
+    top = act / "fresh_child"; top.mkdir(); os.utime(top, (now, now)); os.utime(act, (old, old))
+    chk("вік за найсвіжішою активністю: корінь старий, але дитина верхнього рівня свіжа → не сміття", str(act) not in tj.find_old_scratch(base, 24, now))
+    chk("корінь диска/домашня тека → відмова, нічого не знайдено",
+        tj.sweep(os.path.splitdrive(str(base))[0] + os.sep, 24, apply=True).get("refused") is True and tj.sweep(os.path.expanduser("~"), 24, apply=True).get("refused") is True)
 
     chk("main(): без --apply це dry-run (exit 0)", tj.main(["--dir", str(base), "--min-age-hours", "0"]) == 0 and "claude" in os.listdir(base))
 finally:

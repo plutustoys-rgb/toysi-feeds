@@ -42,6 +42,27 @@ def _is_link(path: str) -> bool:
         return False
 
 
+def _last_activity(path: str, root_mtime: float) -> float:
+    """Найсвіжіший mtime серед кореня теки і її ДІТЕЙ верхнього рівня (на NTFS mtime кореня не змінюється від змін вкладених файлів; аудит #1849)."""
+    m = root_mtime
+    try:
+        with os.scandir(path) as it:
+            for c in it:
+                try:
+                    m = max(m, c.stat(follow_symlinks=False).st_mtime)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return m
+
+
+def _unsafe_base(base: str) -> bool:
+    """Корінь диска або домашня тека — не чистимо (аварійний TEMP, наприклад заданий хибно)."""
+    b = os.path.normcase(os.path.abspath(base))
+    return b == os.path.normcase(os.path.splitdrive(b)[0] + os.sep) or b == os.path.normcase(os.path.expanduser("~"))
+
+
 def find_old_scratch(base, min_age_hours: float = 24.0, now: float | None = None) -> list:
     """Список шляхів тек-сміття (за шаблоном і віком) у base. Лише читає."""
     now = time.time() if now is None else now
@@ -52,7 +73,7 @@ def find_old_scratch(base, min_age_hours: float = 24.0, now: float | None = None
             try:
                 if not e.is_dir(follow_symlinks=False) or not is_scratch_name(e.name) or _is_link(e.path):
                     continue
-                if e.stat(follow_symlinks=False).st_mtime < cutoff:
+                if _last_activity(e.path, e.stat(follow_symlinks=False).st_mtime) < cutoff:
                     out.append(e.path)
             except OSError:
                 continue
@@ -71,6 +92,8 @@ def _onerror(func, path, exc_info):
 def sweep(base=None, min_age_hours: float = 24.0, apply: bool = False, budget_s: float = 600.0, now: float | None = None) -> dict:
     """{found, removed, failed}. Без apply — лише found."""
     base = str(base or tempfile.gettempdir())
+    if _unsafe_base(base):
+        return {"base": base, "found": 0, "removed": 0, "failed": 0, "refused": True}
     found = find_old_scratch(base, min_age_hours, now)
     res = {"base": base, "found": len(found), "removed": 0, "failed": 0}
     if not apply:

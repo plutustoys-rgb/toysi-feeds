@@ -289,25 +289,51 @@ def queue_count(queue_dir):
     return len(_queue_manifests(queue_dir))
 
 
-def publishable_count(queue_dir, prices):
-    """Скільки рілсів у черзі ПРОЙДЕ перевірку publisher'а (reel_autopublish.check_item): файли на місці, у verify є товари і ВСІ вони в наявності на сайті
-    (є в `prices` = site_prices: s==1). Ціну publisher виправляє сам (refresh_prices), тож розбіжність у ціні рілс НЕ робить непридатним. Притримані рілси
-    (товар зник) у ціль НЕ рахуємо, інакше вони назавжди займають слоти й автозбирач не добирає заміну (21.11.2026: dough_02 і squish_02 → публікація стояла з 10.11).
-    Рілс із `<name>.publishing` (стан невідомий) теж не рахуємо. Повертає (придатних, [імена притриманих])."""
+def publishable_count(queue_dir, prices, now=None):
+    """Скільки рілсів у черзі ПРОЙДЕ перевірку publisher'а. Правила НЕ дублюємо (аудит #1926: дубль розходився — підпис >2200, ціна без «грн» у підписі, неоднозначна ціна,
+    не-словник у verify, ім'я файлу, not_before): викликаємо ті самі reel_autopublish.refresh_prices і check_item на ТИМЧАСОВІЙ КОПІЇ підпису й маніфесту (рілс у черзі не змінюється)
+    з індексом сайту з `prices` ({id: ціна}, лише в наявності — як fetch_site_index). Порядок і умови — як у reel_autopublish.run_once: ім'я [a-z0-9_-]+, `.publishing`,
+    маніфест-об'єкт, not_before (нечитабельний → притриманий; у майбутньому → оцінюємо решту так само: рілс чекає слота, а не «не придатний»), refresh_prices, check_item.
+    Притримані (зник товар, неоднозначна ціна, довгий підпис, файли…) у ціль НЕ рахуємо, інакше вони назавжди займають слоти й автозбирач не добирає заміну
+    (21.11.2026: dough_02 і squish_02 → публікація стояла з 10.11). Повертає (придатних, [імена притриманих])."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+    import reel_autopublish as ra
+    index = {str(i): {"price": float(p), "name": ""} for i, p in prices.items()}
+    now = now or datetime.now()
     ok, held = 0, []
     for name, mpath in _queue_manifests(queue_dir):
-        base = os.path.join(queue_dir, name)
-        try:
-            manifest = json.load(open(mpath, encoding="utf-8"))
-            ver = manifest.get("verify") if isinstance(manifest, dict) else None
-            mp4_ok = os.path.isfile(base + ".mp4") and os.path.getsize(base + ".mp4") > 0
-            cap_ok = os.path.isfile(base + ".caption.txt") and bool(open(base + ".caption.txt", encoding="utf-8").read().strip())
-        except (OSError, ValueError, TypeError, AttributeError):
+        base = Path(queue_dir) / name
+        if not re.fullmatch(r"[a-z0-9_-]+", name) or (Path(queue_dir) / f"{name}.publishing").exists():
             held.append(name)
             continue
-        ids = [str(v.get("id", "")) for v in ver if isinstance(v, dict)] if isinstance(ver, list) else []
-        if (not ids or any(not i or i not in prices for i in ids) or not (mp4_ok and cap_ok)
-                or os.path.exists(base + ".publishing")):
+        try:
+            manifest = json.loads(Path(mpath).read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("маніфест має бути об'єктом")
+            nb = manifest.get("not_before")
+            if nb:
+                datetime.fromisoformat(str(nb))                  # нечитабельний not_before — publisher тримає (fail-closed)
+        except (OSError, ValueError):
+            held.append(name)
+            continue
+        mp4, cap = base.with_suffix(".mp4"), Path(queue_dir) / f"{name}.caption.txt"
+        try:
+            with tempfile.TemporaryDirectory(prefix="reelchk_") as td:
+                t_m, t_c = Path(td) / f"{name}.json", Path(td) / f"{name}.caption.txt"
+                shutil.copyfile(mpath, t_m)
+                if cap.is_file():
+                    shutil.copyfile(cap, t_c)
+                try:
+                    if ra.refresh_prices(name, manifest, t_m, t_c, index):
+                        manifest = json.loads(t_m.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001 — як у publisher: збій автооновлення цін → далі звичайна перевірка
+                    pass
+                problems = ra.check_item(name, manifest, mp4, t_c if t_c.is_file() else cap, index)
+        except Exception as e:  # noqa: BLE001 — fail-closed, як publisher: перевірка не вдалась = не придатний
+            problems = [f"перевірка не вдалась ({type(e).__name__})"]
+        if problems:
             held.append(name)
         else:
             ok += 1
@@ -320,11 +346,13 @@ def _next_slot_on_or_after(d):
     return d
 
 
-def queue_last_slot(queue_dir, today):
+def queue_last_slot(queue_dir, today, exclude=()):
     """Дата ОСТАННЬОГО фактичного слоту (вт/пт), який займає черга: симуляція за not_before (publisher віддає один рілс на слот, найстаріший за mtime).
     Нові рілси продовжуються ПІСЛЯ неї (дати not_before у файлах можуть «з'їхати» відносно слотів — спеки репо тут не враховуємо). Порожня черга → None."""
     nbs = []
     for _name, path in _queue_manifests(queue_dir):
+        if _name in exclude:
+            continue                # притримані (publisher їх не віддасть) слотів не займають — інакше нові рілси лягають на тижні пізніше, ніж треба (аудит #1926)
         try:
             m = json.load(open(path, encoding="utf-8"))
             nbs.append(date.fromisoformat(str(m.get("not_before") or "")[:10]))
@@ -595,7 +623,7 @@ def run_vps(ensure_slots=ENSURE_SLOTS, queue_dir=VPS_QUEUE, staging_dir=VPS_STAG
         need = min(MAX_PER_RUN, ensure_slots - have)
         print(f"[reel_weekly] у черзі {have} рілсів{' придатних до публікації (з ' + str(queue_count(queue_dir)) + ' у черзі)' if held else ''}, ціль {ensure_slots}, добираю {max(0, need)}")
         if held:
-            alert("reel_weekly_held", "⚠️ reel-weekly: у черзі рілси, які publisher не пропустить (зник товар / файли / .publishing): " + ", ".join(held)
+            alert("reel_weekly_held", "⚠️ reel-weekly: у черзі рілси, які publisher не пропустить (перевірка check_item: зник товар, неоднозначна ціна, підпис, файли, .publishing…): " + ", ".join(held)
                   + " — вони не рахуються в ціль, заміна добирається; ручні рілси автозбирач не виселяє (SMM: замінити товар у підписі/маніфесті або прибрати)")
         if need <= 0:
             return []
@@ -604,7 +632,7 @@ def run_vps(ensure_slots=ENSURE_SLOTS, queue_dir=VPS_QUEUE, staging_dir=VPS_STAG
         failures = []
         kw.setdefault("specs_dir", "")        # спеки репо (reels_specs) на VPS не враховуємо: їхні дати застарівають відносно черги
         built = run_build(need, staging_dir, dry_run=dry_run, today=today, state_dir=staging_dir, scan_dirs=(queue_dir,), feed_file=feed_file,
-                          last_slot=queue_last_slot(queue_dir, today),
+                          last_slot=queue_last_slot(queue_dir, today, exclude=held),
                           state_seed=lambda st, keys: seed_state_from_queue(st, queue_dir, keys),
                           on_built=None if dry_run else (lambda spec: publish_to_queue(spec["queue_name"], staging_dir, queue_dir)), failures=failures, **kw)
         if failures and not dry_run:

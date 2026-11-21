@@ -242,7 +242,7 @@ try:
     chk("збій першого рілса: другий зібрано, сигнал reel_weekly_fail надіслано", len(b4) == 1 and [k for k, _ in alerts] == ["reel_weekly_fail"])
     chk("невдала спека не лишилась у _specs/ (не займає id/дату), у черзі лише успішний", sorted(os.listdir(stg4 / "_specs")) == [b4[0]["queue_name"] + ".json"] and rw.queue_count(str(q)) == 1)
 
-    # ── 5б. притримані рілси (зник товар) не займають слоти черги (21.11.2026: dough_02/squish_02 блокували добір заміни)
+    # ── 5б. притримані рілси (зник товар тощо) не займають слоти черги (21.11.2026: dough_02/squish_02 блокували добір заміни; аудит #1926: перевірка = САМ publisher)
     BIG = {x["id"]: int(x["pr"]) for x in items + filler}               # >= 1000 товарів у наявності -> ціни сайту «повні»
     assert len(BIG) >= 1000
     for p in list(q.glob("*")):
@@ -250,33 +250,55 @@ try:
             p.unlink()
     some = [x["id"] for x in items[:12]]
 
-    def put(name, ids, price_off=0, mp4=True, cap=True, publishing=False, raw=None):
-        (q / f"{name}.json").write_text(raw if raw is not None else json.dumps({"verify": [{"id": i, "price": BIG.get(i, 1) + price_off} for i in ids], "not_before": "2026-11-24T00:00"}))
+    def put(name, ids, price_off=0, mp4=True, cap=True, publishing=False, raw=None, caption=None, nb="2026-11-24T00:00", prices=None):
+        pr = prices or {i: BIG.get(i, 1) + price_off for i in ids}
+        man = raw if raw is not None else json.dumps({"verify": [{"id": i, "price": pr[i]} for i in ids], "not_before": nb})
+        (q / f"{name}.json").write_text(man, encoding="utf-8")
         if mp4:
             (q / f"{name}.mp4").write_bytes(b"v")
         if cap:
-            (q / f"{name}.caption.txt").write_text("підпис")
+            (q / f"{name}.caption.txt").write_text(caption if caption is not None else "Товари: " + ", ".join(f"{pr[i]} грн" for i in ids), encoding="utf-8")
         if publishing:
-            (q / f"{name}.publishing").write_text("2026-11-20T18:31:00")
+            (q / f"{name}.publishing").write_text("2026-11-20T18:31:00", encoding="utf-8")
 
+    def clear_q():
+        for p in list(q.glob("*")):
+            if p.is_file() and p.name != "published.json":
+                p.unlink()
+
+    GONE = {some[6]: 100, "999999": 100, some[7]: 100}
     put("ok_a", some[0:3])
-    put("ok_price_drift", some[3:6], price_off=50)                      # ціна в маніфесті застаріла: publisher виправить сам -> придатний
-    put("held_oos", [some[6], "999999", some[7]])                       # товару нема в наявності -> притриманий
+    put("ok_price_drift", some[3:6], price_off=50)                      # ціна в маніфесті/підписі застаріла: publisher виправить сам (refresh_prices) -> придатний
+    put("held_oos", [some[6], "999999", some[7]], prices=GONE)         # товару нема в наявності -> притриманий
     put("held_nocap", some[8:10], cap=False)
     put("held_nomp4", some[8:10], mp4=False)
     put("held_publishing", some[10:12], publishing=True)
     put("held_empty_verify", [], raw=json.dumps({"verify": [], "not_before": "2026-11-24T00:00"}))
     put("held_badjson", [], raw="{не json")
+    put("held_longcap", some[0:2], caption="x" * 2300 + " ".join(f"{BIG[i]} грн" for i in some[0:2]))      # підпис > 2200 (check_item)
+    put("held_noprice_in_cap", some[0:2], caption="Без цін у підписі")                                       # ціни нема в підписі (check_item)
+    put("held_verify_nondict", [], raw=json.dumps({"verify": ["x", {"id": some[0], "price": BIG[some[0]]}], "not_before": "2026-11-24T00:00"}))
+    put("held_nb_bad", some[0:2], nb="завтра")                                                                # нечитабельний not_before
+    put("Held_Name", some[0:2])                                                                                # ім'я не за [a-z0-9_-]+
+    put("held_ambiguous_price", some[0:2], prices={some[0]: 246, some[1]: 246})                               # одна стара ціна -> дві різні нові: refresh не вгадує (як dough_03)
     ok_n, held_n = rw.publishable_count(str(q), BIG)
-    chk("publishable_count: 2 придатні (звичайний і з застарілою ціною), решта 6 притримані", ok_n == 2 and sorted(held_n) == ["held_badjson", "held_empty_verify", "held_nocap", "held_nomp4", "held_oos", "held_publishing"])
-    chk("queue_count (стара метрика) рахує всі 8", rw.queue_count(str(q)) == 8)
-    for p in list(q.glob("*")):
-        if p.is_file() and p.name != "published.json":
-            p.unlink()
+    want_held = ["held_badjson", "held_empty_verify", "held_nocap", "held_nomp4", "held_oos", "held_publishing", "held_longcap", "held_noprice_in_cap",
+                 "held_verify_nondict", "held_nb_bad", "Held_Name", "held_ambiguous_price"]
+    chk("publishable_count: 2 придатні (звичайний і з застарілою ціною), решта 12 притримані — за правилами САМОГО publisher'а", ok_n == 2 and sorted(held_n) == sorted(want_held))
+    cap_after = (q / "ok_price_drift.caption.txt").read_text(encoding="utf-8")
+    chk("publishable_count НЕ міняє файли рілсів у черзі (перевірка на тимчасовій копії): стара ціна лишилась у підписі й маніфесті",
+        str(BIG[some[3]] + 50) in cap_after and json.loads((q / "ok_price_drift.json").read_text(encoding="utf-8"))["verify"][0]["price"] == BIG[some[3]] + 50)
+    chk("queue_count (стара метрика) рахує всі 14", rw.queue_count(str(q)) == 14)
+    clear_q()
+    put("ok_a", some[0:3])
+    put("future_ok", some[3:6], nb="2026-12-04T00:00")                                                         # not_before у майбутньому — очікує слота, придатний
+    ok_f, held_f = rw.publishable_count(str(q), BIG)
+    chk("not_before у майбутньому — НЕ притриманий (чекає слота)", ok_f == 2 and held_f == [])
+    clear_q()
     put("ok_a", some[0:3])
     put("ok_b", some[3:6])
-    put("held_oos", [some[6], "999999", some[7]])
-    put("held_oos2", [some[8], "888888", some[9]])
+    put("held_oos", [some[6], "999999", some[7]], prices=GONE, nb="2026-11-17T00:00")
+    put("held_oos2", [some[8], "888888", some[9]], prices={some[8]: 100, "888888": 100, some[9]: 100}, nb="2026-11-20T00:00")
     alerts.clear()
     b5 = rw.run_vps(ensure_slots=4, queue_dir=str(q), staging_dir=str(tmp / "staging5"), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(),
                     now_forbidden=lambda it: False, specs_dir=EMPTY, alert=lambda k, t: alerts.append((k, t)), prices=BIG)
@@ -287,11 +309,16 @@ try:
     b6 = rw.run_vps(ensure_slots=4, queue_dir=str(q), staging_dir=str(tmp / "staging5"), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(),
                     now_forbidden=lambda it: False, specs_dir=EMPTY, alert=lambda k, t: alerts.append((k, t)), prices=BIG)
     chk("повторний запуск: придатних 4 -> нічого не збирає (черга не росте без кінця)", b6 == [] and rw.queue_count(str(q)) == 6)
-    for p in list(q.glob("*")):
-        if p.is_file() and p.name != "published.json":
-            p.unlink()
+    # слоти: притримані не займають слотів у симуляції (аудит #1926, п.4)
+    clear_q()
+    put("ok_a", some[0:3], nb="2026-11-24T00:00")
+    put("held_far", [some[6], "999999"], prices={some[6]: 100, "999999": 100}, nb="2026-12-30T00:00")
+    last_all = str(rw.queue_last_slot(str(q), date(2026, 11, 21)))
+    last_ok = str(rw.queue_last_slot(str(q), date(2026, 11, 21), exclude=("held_far",)))
+    chk("queue_last_slot без виключення враховує притриманий (кінець грудня), з exclude — лише придатний (24.11)", last_all >= "2026-12-30" and last_ok == "2026-11-24")
+    clear_q()
     put("ok_a", some[0:3])
-    put("held_oos", [some[6], "999999", some[7]])
+    put("held_oos", [some[6], "999999", some[7]], prices=GONE)
     SMALL = {k: v for k, v in list(BIG.items())[:50]}                   # ціни сайту неповні (< 1000) -> стара поведінка: рахуємо всі маніфести, нічого не вгадуємо
     alerts.clear()
     b7 = rw.run_vps(ensure_slots=4, queue_dir=str(q), staging_dir=str(tmp / "staging6"), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(),

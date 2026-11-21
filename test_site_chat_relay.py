@@ -128,7 +128,9 @@ chk("після відповіді 333 знову «уже відповіли» 
 
 # ── 4. текст: посилання
 OK_TEXTS = ("Каталог: https://plutustoys.com.ua/catalog.html.", "Дивіться https://plutustoys.com.ua", "(https://plutustoys.com.ua/podarunky.html) і ще", "сайт plutustoys.com.ua працює", "Ціна 1250 грн, артикул 123456789", "1000, 2000, 3000, 4000, 5000 грн",
-            "ТТН 20451234567890 вже в дорозі", "https://plutustoys.com.ua/category-skvishi.html?page=2&x=1#a")
+            "ТТН 20451234567890 вже в дорозі", "https://plutustoys.com.ua/category-skvishi.html?page=2&x=1#a",
+            "Замовлення PT-20261110-142322-abcdef відправлено", "0671234567 / 0501234567", "артикули 1234567 2345678", "Дивіться https://plutustoys.com.ua 24/7", "UA 25 шт", "напр. т.д. вул. Шевченка, 21.11.2026 14:30, 30x20.5 см, Wi-Fi 5.0",
+            "21.11.2026 14:30 22.11.2026 15:45", "ТТН 20451234567890 і 20451234567891", "+380501112233")
 for t in OK_TEXTS:
     try:
         r.check_text(t)
@@ -140,7 +142,9 @@ BAD_URLS = ("зайдіть на evil.com/pay", "plutustoys.com.ua.evil.com/x", 
             "tg://resolve?domain=evil", "ftp://evil.com/x", "mailto:a@evil.com", "сайтhttps://evil.com/x", "ahttps://evil.com", "_https://evil.com", "1https://evil.com", "https://plutustoys.com.ua/a​https://evil.com/x",
             "https://plutustoys.com.ua/a,https://evil.com/x", "(https://plutustoys.com.ua/a)https://evil.com/x", 'https://plutustoys.com.ua/a"https://evil.com', "https://plutustoys.com.ua/a|https://evil.com",
             "[https://plutustoys.com.ua/](https://evil.com)", "https:​//evil.com", "ｈｔｔｐｓ://evil.com", "http://plutustoys.com.ua/x", "www.evil.com", "<a href=\"https://evil.com\">x</a>", "[сайт](https://evil.com)",
-            "HTTPS://EVIL.COM/x", "https://PLUTUSTOYS.com.ua.evil.com/", "https://xn--e1afmkfd.xn--p1ai/", "http://192.168.0.1/x", "tel:+380501112233", "javascript:alert(1)", "bit.ly/abc")
+            "HTTPS://EVIL.COM/x", "https://PLUTUSTOYS.com.ua.evil.com/", "https://xn--e1afmkfd.xn--p1ai/", "http://192.168.0.1/x", "tel:+380501112233", "javascript:alert(1)", "bit.ly/abc",
+            "https://plutustoys.com.ua.онлайн/pay", "https://plutustoys.com.ua.рф/pay", "https://plutustoys.com.ua.укр", "plutustoys.com.ua.онлайн", "https://plutustoys.com.ua。онлайн/", "https://plutustoys.com.uaї/",
+            "пошта.com", "магазин-оплата.com/x", "evil.рф", "магазин.рф", "сайт.укр", "evil.бел", "eviĺ.com", "evilㅤ.com", "evil⠀.com", "evil。com", "evil｡com")
 for t in BAD_URLS:
     try:
         r.check_text(t)
@@ -150,7 +154,8 @@ for t in BAD_URLS:
     chk(f"відхилено посилання: {t[:55]!r}", ok)
 # ── 5. цифри
 for t in ("картка 4111 1111 1111 1111", "4111-1111-1111-1111", "4111  1111  1111  1111", "4111.1111.1111.1111", "4111_1111_1111_1111", "4111/1111/1111/1111", "4111​1111​1111​1111", "4111,1111,1111,1111", "4111111111111111",
-          "UA21 3223 1300 0002 6007 2335 6600 1", "UA21.3223.1300.0002.6007.2335.6600.1", "2045 1234 5678 90", "٤١١١ ١١١١ ١١١١ ١١١١"):
+          "UA21 3223 1300 0002 6007 2335 6600 1", "UA21.3223.1300.0002.6007.2335.6600.1", "2045 1234 5678 90", "٤١١١ ١١١١ ١١١١ ١١١١",
+          "4111:1111:1111:1111", "4111#1111#1111#1111", "4111+1111+1111+1111", "4111 -- 1111 -- 1111 -- 1111", "4111 -.- 1111 -.- 1111 -.- 1111"):
     try:
         r.check_text(t)
         ok = False

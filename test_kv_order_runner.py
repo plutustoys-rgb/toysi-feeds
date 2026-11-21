@@ -63,10 +63,11 @@ def row(iid):
 
 
 class Deps:
-    def __init__(self, rest=10, create=None, ttn_live_exc=None, push=None, search=None):
+    def __init__(self, rest=10, create=None, ttn_live_exc=None, push=None, search=None, rest_map=None, ttn_res=None):
         self.calls = []
         self.rest, self.create, self.ttn_live_exc, self.push, self.search = rest, create, ttn_live_exc, push, search
         self.extra_seen = []
+        self.rest_map, self.ttn_res = rest_map, ttn_res
 
     def ids(self):
         return {"OrganizationID": "org", "ClientID": "cl", "ContractID": "co", "shopID": "sh"}
@@ -76,7 +77,7 @@ class Deps:
 
     def rests(self):
         self.calls.append("rests")
-        return {"100": {"Dnepr": self.rest}}
+        return self.rest_map if self.rest_map is not None else {"100": {"Dnepr": self.rest}}
 
     def create_order(self, payload):
         self.calls.append("create")
@@ -97,6 +98,8 @@ class Deps:
         self.extra_seen.append(extra)
         if self.ttn_live_exc:
             raise self.ttn_live_exc
+        if self.ttn_res is not None:
+            return self.ttn_res
         return {"number": "20450000000001", "ref": "11111111-2222-3333-4444-555555555555"}
 
     def save_docs(self, ref, oid):
@@ -108,6 +111,8 @@ class Deps:
 
     def push_docs(self, kv_id, paths):
         self.calls.append("push")
+        if isinstance(self.push, Exception):
+            raise self.push
         return self.push if self.push is not None else [{"id": kv_id, "status": "success", "errorMessage": ""}]
 
 
@@ -226,6 +231,45 @@ d = Deps()
 reps = kr._run_pipeline(False, d)
 chk("SINCE: старіше без стану не береться", all(r.get("order") != k for r in reps))
 os.environ.pop("KV_RUNNER_SINCE", None)
+
+
+# ── 11. (аудит #1946) ліміт спроб, вже є ТТН, формат залишку, відповідь ТТН, ttn-data
+r1 = new()
+d = Deps(create=api.KiddisvitError("orders/create: HTTP 422"))
+step(r1, True, d)
+step(r1, True, d)
+chk("відмова create x2: стан NULL, kv_error має лічильник [n=2], create викликано 2 рази", row(r1)["kv_state"] is None and str(row(r1)["kv_error"]).startswith("[n=2]") and d.calls.count("create") == 2)
+step(r1, True, d)
+chk("відмова create x3 -> manual, create викликано РІВНО 3 рази", row(r1)["kv_state"] == "manual" and d.calls.count("create") == 3)
+step(r1, True, d)
+chk("після manual замовлення не береться знову (create лишається 3)", d.calls.count("create") == 3)
+r2 = new(toysi_ttn="20450000009999")
+d = Deps()
+rep = step(r2, True, d)
+chk("вже є toysi_ttn (оформлено вручну) -> create НЕ викликано, стан NULL", "create" not in d.calls and row(r2)["kv_state"] is None and rep["problems"])
+r3 = new()
+d = Deps(rest_map={"100": {"dnepr": "10.0"}})
+step(r3, True, d)
+chk("залишок '10.0' і склад «dnepr» (регістр) приймається -> create викликано", d.calls.count("create") == 1)
+r4 = new()
+d = Deps(rest_map={"100": {"Dnepr": "n/a"}})
+rep = step(r4, True, d)
+chk("залишок не число -> створення НЕ відбулось", "create" not in d.calls and rep["problems"])
+r5 = new()
+d = Deps(ttn_res={"dry_run": True, "payload": {}})
+rep = step(r5, True, d)
+chk("create_ttn повернув dry-run/без Ref -> ttn_creating (STUCK), не ttn_created", row(r5)["kv_state"] == "ttn_creating" and rep["problems"])
+r6 = new()
+d = Deps(ttn_live_exc=RuntimeError("мережа"))
+rep = step(r6, True, d)
+chk("збій live-ТТН: текст проблеми каже НЕВІДОМИЙ", "НЕВІДОМИЙ" in rep["problems"][0])
+r7 = new()
+d = Deps(push=api.KiddisvitUncertain("таймаут"))
+step(r7, True, d)
+step(r7, True, d)
+chk("ttn-data Uncertain x2: docs_ready, лічильник [n=2]", row(r7)["kv_state"] == "docs_ready" and str(row(r7)["kv_error"]).startswith("[n=2]"))
+step(r7, True, d)
+chk("ttn-data без підтвердження x3 -> manual, create/ТТН лишились по 1", row(r7)["kv_state"] == "manual" and d.calls.count("create") == 1 and d.calls.count("ttn_live") == 1 and d.calls.count("push") == 3)
 
 print("\nПідсумок:", "УСЕ ЗЕЛЕНЕ" if not F else f"ПРОВАЛИ: {F}")
 sys.exit(1 if F else 0)

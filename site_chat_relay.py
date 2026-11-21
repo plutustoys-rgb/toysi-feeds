@@ -58,14 +58,16 @@ _ALLOWED_URL_RE = re.compile(r"(?<![\w.@/:%\\-])https://plutustoys\.com\.ua(?:/[
 _ALLOWED_BARE_RE = re.compile(r"(?<![\w.@/\\-])plutustoys\.com\.ua(?![\w@/\\-]|\.\w)")
 _SCHEME_WORD_RE = re.compile(r"(?i)\b(?:https?|ftp|tg|mailto|tel|file|javascript|data|sms|viber|whatsapp|skype|ws|wss|intent)\s*:")
 # домено-подібне в БУДЬ-ЯКОМУ скрипті: токен із літерою, крапка, ≥2 літери одразу (без пробілу): `пошта.com`, `evil.рф`, `t.me`; «т.д.», «21.11.2026», «5.0», «30x20.5» — не спрацьовують
-_DOMAIN_LIKE_RE = re.compile(r"[\w-]*[^\W\d_][\w-]*\.[^\W\d_]{2,}|xn--|\bwww\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", re.IGNORECASE)
+_DOMAIN_LIKE_RE = re.compile(r"[\w-]+\.[^\W\d_]{2,}|xn--|\bwww\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", re.IGNORECASE)
+# типові скорочення адрес («м.Київ», «вул.Шевченка», «обл.Київська», «р-н.Бучанський») — не домен: перед перевіркою додається пробіл після крапки
+_ADDR_ABBR_RE = re.compile(r"(?i)\b(м|вул|обл|р-н|буд|кв|с|смт|пр|просп|пров|ім|мкр|бул|пл|оф|тел|ід)\.(?=[А-ЯІЇЄҐа-яіїєґ])")
 _DOTS_RE = re.compile("[\u3002\uff0e\uff61\u2024\u2e3c\ufe52]")
 _INVISIBLE = set("\u3164\u2800\u115f\u1160\u17b4\u17b5\uffa0\u180e")
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_TTN_RE = re.compile(r"(?<!\d)\d{14}(?!\d)")
+_TTN_RE = re.compile(r"(?<!\d)(?:\d{14}|\d{4}\s\d{4}\s\d{4}\s\d{2})(?!\d)")
 _PHONE_RE = re.compile(r"(?<![\d+])(?:\+?38)?0\d{9}(?!\d)")
-_ORDER_NO_RE = re.compile(r"(?i)\bPT-\d{8}-\d{6}-[0-9a-f]{6}\b|\bPT-\d{4,}\b")
-_IBAN_RE = re.compile(r"(?i)\bUA\s*\d{2}\s*\d{4}")
+_ORDER_NO_RE = re.compile(r"(?i)\bPT-\d{8}-\d{6}-[0-9a-f]{6}\b|\bPT-\d{4,9}\b")
+_IBAN_RE = re.compile(r"(?i)\bUA\s*\d{2}\s*\d{4}\s*\d{4}")
 
 
 class Rejected(Exception):
@@ -114,7 +116,7 @@ def _long_digit_chain(t: str) -> bool:
     for m in re.finditer(r"\d+", t):
         ln = m.end() - m.start()
         sep = t[prev_end:m.start()] if prev_end is not None else None
-        if sep is not None and 1 <= len(sep) <= 5 and re.fullmatch(r"[\W_]+", sep) and (len(sep) == 1 or ("," not in sep and ";" not in sep)) and 2 <= ln <= 6 and 3 <= prev_len <= 6:      # кома/«;» разом з пробілом = перелік (ціни); кома без пробілу — ланцюг; групи 3..6 цифр (дати з 2-цифрових частин не ланцюжаться; IBAN ловить окрема регулярка)
+        if sep is not None and 1 <= len(sep) <= 5 and re.fullmatch(r"[\W_]+", sep) and (len(sep) == 1 or ("," not in sep and ";" not in sep)) and 2 <= ln <= 12 and 3 <= prev_len <= 12:      # кома/«;» разом з пробілом = перелік (ціни); кома без пробілу — ланцюг; групи 3..6 цифр (дати з 2-цифрових частин не ланцюжаться; IBAN ловить окрема регулярка)
             total += ln
         else:
             total = ln
@@ -135,9 +137,10 @@ def check_text(text: str) -> None:
     t = _normalize(text)
     rest = _ALLOWED_URL_RE.sub(" ", t)
     rest = _ALLOWED_BARE_RE.sub(" ", rest)
-    if "://" in rest or "@" in rest or "\\" in rest or _SCHEME_WORD_RE.search(rest) or _DOMAIN_LIKE_RE.search(rest):
+    chk_rest = _ADDR_ABBR_RE.sub(lambda m: m.group(0) + " ", rest)
+    if "://" in rest or "@" in rest or "\\" in rest or _SCHEME_WORD_RE.search(rest) or _DOMAIN_LIKE_RE.search(chk_rest):
         raise Rejected(f"reply: дозволені лише посилання https://{ALLOWED_HOST}/… (знайдено інше посилання/домен/контакт/@)")
-    if _long_digit_chain(_ORDER_NO_RE.sub(" ", _PHONE_RE.sub(" ", _TTN_RE.sub(" ", rest)))) or _IBAN_RE.search(rest):
+    if _long_digit_chain(_ORDER_NO_RE.sub(" ", _PHONE_RE.sub(" ", _TTN_RE.sub(" ", t)))) or _IBAN_RE.search(t):          # на ПОВНОМУ тексті: номер картки/IBAN у query дозволеного URL теж ловиться
         raise Rejected("reply: довгий цифровий рядок/IBAN (схоже на номер картки/рахунку) — не надсилаємо; ТТН — рівно 14 цифр підряд")
 
 

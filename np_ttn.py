@@ -23,6 +23,9 @@ if hasattr(sys.stdout, "reconfigure"):
 # Відправлення RoyalToys: Нова Пошта, с. Мила (Київська обл.), відділення № 2 (вул. Комарова, 38) — перевірено через НП 19.10.2026
 RT_SENDER_CITY_REF = os.environ.get("NP_RT_SENDER_CITY_REF", "905c11b6-13d6-11e4-acce-0050568002cf")
 RT_SENDER_WAREHOUSE_REF = os.environ.get("NP_RT_SENDER_WAREHOUSE_REF", "c80e75dd-05e3-11e9-ad0d-005056b24375")
+# Відправлення KIDDISVIT (21.11.2026): ТТН створюємо НАШИМ ключем, відправка «Дніпро Нова Пошта №28, Березинська 58» (менеджер Т. Сіденко; довідник НП на VPS 21.11): Ref міста Дніпро і відділення №28.
+KV_SENDER_CITY_REF = os.environ.get("NP_KV_SENDER_CITY_REF", "db5c88f0-391c-11dd-90d9-001a92567626")
+KV_SENDER_WAREHOUSE_REF = os.environ.get("NP_KV_SENDER_WAREHOUSE_REF", "16922832-e1c2-11e3-8c4a-0050568002cf")
 DEFAULT_SEAT_WEIGHT = float(os.environ.get("NP_DEFAULT_SEAT_WEIGHT", "0.5"))      # кг, поки RoyalToys не дав вагу/габарити (запитано 19.10); НП перерахує за фактичною
 def _dims_from_env() -> tuple:
     try:
@@ -39,6 +42,8 @@ MIN_SEAT_VOLUME = 0.0004     # м³ (мінімум НП для місця)
 MIN_DECLARED_COST = 200      # оголошена вартість не нижче (як у вже створених ТТН)
 APPLY_ENV = "NP_TTN_APPLY"
 MARKING_URL = "https://my.novaposhta.ua/orders/printMarking100x100/orders[]/{ref}/type/pdf/apiKey/{key}"
+DOCUMENT_URL = "https://my.novaposhta.ua/orders/printDocument/orders[]/{ref}/type/pdf/apiKey/{key}"      # експрес-накладна PDF (перевірено 21.11.2026 на VPS: HTTP 200, %PDF)
+EXTRA_PROPS_ALLOWED = ("AdditionalInformation", "InfoRegClientBarcodes")      # поля ТТН, які викликач (KIDDISVIT: номер замовлення КЗ-…) може перевизначити
 _PHONE_RE = re.compile(r"\D+")
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -139,7 +144,7 @@ def declared_cost(items: list) -> int:
     return int(max(MIN_DECLARED_COST, round(total)))
 
 
-def build_ttn_payload(order: dict, sender: dict, recipient: dict, now: datetime | None = None, cod_amount: int = 0) -> dict:
+def build_ttn_payload(order: dict, sender: dict, recipient: dict, now: datetime | None = None, cod_amount: int = 0, extra_props: dict | None = None) -> dict:
     """InternetDocument.save methodProperties (чиста функція). sender={'ref','contact_ref','phone','city_ref','address_ref'};
     recipient={'ref','contact_ref','phone','city_ref','address_ref'}. cod_amount>0 → зворотна доставка (накладений платіж) цілими гривнями на нас; 0 → без неї."""
     now = now or datetime.now()
@@ -169,6 +174,10 @@ def build_ttn_payload(order: dict, sender: dict, recipient: dict, now: datetime 
         "RecipientsPhone": normalize_phone(recipient["phone"]),
         "InfoRegClientBarcodes": str(order.get("internal_order_id") or "")[:36],
     }
+    for k, v in (extra_props or {}).items():
+        if k not in EXTRA_PROPS_ALLOWED:
+            raise TtnError(f"extra_props: поле {k!r} не дозволено ({EXTRA_PROPS_ALLOWED})")
+        props[k] = str(v)[:36] if k == "InfoRegClientBarcodes" else str(v)[:100]
     if cod_amount and int(cod_amount) > 0:
         props["BackwardDeliveryData"] = [{"PayerType": "Recipient", "CargoType": "Money", "RedeliveryString": str(int(cod_amount))}]
     return props
@@ -189,12 +198,16 @@ def _apply_allowed(apply: bool) -> bool:
 
 
 _SENDER_CACHE: dict = {}
+_SENDER_CACHE_KV: dict = {}
 
 
-def resolve_sender() -> dict:
+def resolve_sender(kind: str = "rt") -> dict:
     """Відправник = НАШ контрагент у НП (перший «Sender») + його перша контактна особа; адреса відправлення — RoyalToys (с. Мила № 2). Кеш у пам'яті процесу."""
-    if _SENDER_CACHE:
-        return dict(_SENDER_CACHE)
+    if kind not in ("rt", "kv"):
+        raise TtnError(f"resolve_sender: невідомий тип відправника {kind!r}")
+    cache = _SENDER_CACHE_KV if kind == "kv" else _SENDER_CACHE
+    if cache:
+        return dict(cache)
     cps = np_._call("Counterparty", "getCounterparties", {"CounterpartyProperty": "Sender", "Page": "1"})
     if not cps:
         raise TtnError("у НП нема контрагента-відправника")
@@ -203,8 +216,9 @@ def resolve_sender() -> dict:
     if not contacts:
         raise TtnError("у контрагента-відправника нема контактної особи")
     phone = os.environ.get("NP_SENDER_PHONE") or (contacts[0].get("Phones") or "")
-    _SENDER_CACHE.update({"ref": cp["Ref"], "contact_ref": contacts[0]["Ref"], "phone": phone, "city_ref": RT_SENDER_CITY_REF, "address_ref": RT_SENDER_WAREHOUSE_REF})
-    return dict(_SENDER_CACHE)
+    cache.update({"ref": cp["Ref"], "contact_ref": contacts[0]["Ref"], "phone": phone,
+                  "city_ref": KV_SENDER_CITY_REF if kind == "kv" else RT_SENDER_CITY_REF, "address_ref": KV_SENDER_WAREHOUSE_REF if kind == "kv" else RT_SENDER_WAREHOUSE_REF})
+    return dict(cache)
 
 
 def resolve_recipient_address(order: dict) -> tuple:
@@ -232,22 +246,40 @@ def create_recipient(fio: str, phone: str, apply: bool = False) -> dict:
     return {"ref": rec["Ref"], "contact_ref": contact["Ref"]}
 
 
-def with_supplier_dims(order: dict, supplier_file=None) -> dict:
+def _supplier_items(kind: str, supplier_file=None) -> dict:
+    """items із приватного файлу постачальника (rt: supplier_rt.json, kv: supplier_kv.json). Нема/битий → TtnError (габарити невідомі — ТТН не створюємо)."""
+    import json
+    from pathlib import Path
+    if supplier_file is None:
+        if kind == "kv":
+            from kv_supplier_export import OUT_FILE as supplier_file
+        else:
+            from rt_supplier_export import OUT_FILE as supplier_file
+    try:
+        return (json.loads(Path(supplier_file).read_text(encoding="utf-8-sig")).get("items") or {})
+    except (OSError, ValueError, AttributeError):
+        raise TtnError(f"{'supplier_kv' if kind == 'kv' else 'supplier_rt'}.json недоступний: габарити позицій невідомі") from None
+
+
+def with_supplier_dims(order: dict, supplier_file=None, kv_supplier_file=None) -> dict:
     """Копія замовлення, де rt-позиції отримали dims_cm/weight_kg із приватного supplier_rt.json (rt_supplier_export). rt-позиція без габаритів → TtnError (fail-closed: на запасних розмірах ТТН не створюємо)."""
     items = []
     sup = None
+    kv_sup = None
     for it in order.get("items") or []:
         it = dict(it)
-        if str(it.get("toysi_code") or "").strip().lower().startswith("rt-") and not it.get("dims_cm"):
+        _code = str(it.get("toysi_code") or "").strip().lower()
+        if _code.startswith("kv-") or _code.startswith("kvu-"):
+            if not it.get("dims_cm"):
+                if kv_sup is None:
+                    kv_sup = _supplier_items("kv", kv_supplier_file)
+                src = kv_sup.get(_code) or {}
+                if not src.get("dims_cm"):
+                    raise TtnError(f"нема габаритів для {it.get('toysi_code')}: ТТН не створюємо")
+                it["dims_cm"], it["weight_kg"] = src["dims_cm"], src.get("weight_kg")
+        elif _code.startswith("rt-") and not it.get("dims_cm"):
             if sup is None:
-                import json
-                from pathlib import Path
-                if supplier_file is None:
-                    from rt_supplier_export import OUT_FILE as supplier_file
-                try:
-                    sup = (json.loads(Path(supplier_file).read_text(encoding="utf-8-sig")).get("items") or {})
-                except (OSError, ValueError):
-                    raise TtnError("supplier_rt.json недоступний: габарити rt-позицій невідомі") from None
+                sup = _supplier_items("rt", supplier_file)
             src = sup.get(it["toysi_code"].strip().lower()) or sup.get(it["toysi_code"]) or {}
             if not src.get("dims_cm"):
                 raise TtnError(f"нема габаритів для {it.get('toysi_code')}: ТТН не створюємо")
@@ -256,7 +288,7 @@ def with_supplier_dims(order: dict, supplier_file=None) -> dict:
     return {**order, "items": items}
 
 
-def create_ttn(order: dict, apply: bool = False, cod_amount: int = 0, now: datetime | None = None) -> dict:
+def create_ttn(order: dict, apply: bool = False, cod_amount: int = 0, now: datetime | None = None, sender_kind: str = "rt", extra_props: dict | None = None) -> dict:
     """dry_run (за замовчуванням): payload із ПЛЕЙСХОЛДЕРАМИ отримувача + вартість доставки з НП (getDocumentPrice); нічого не створює.
     apply=True і NP_TTN_APPLY=1: створює отримувача й накладну; повертає {'dry_run': False, 'number', 'ref', 'cost'}.
     ІДЕМПОТЕНТНІСТЬ — на стороні виклику: зберегти number/ref у замовленні одразу після створення і передавати їх як order['ttn_ref'|'ttn_number'] (тоді live-виклик відмовить); повторний виклик без цього створить другу платну ТТН."""
@@ -264,15 +296,15 @@ def create_ttn(order: dict, apply: bool = False, cod_amount: int = 0, now: datet
     live = _apply_allowed(apply)
     if live and (order.get("ttn_ref") or order.get("ttn_number")):
         raise TtnError("у замовлення вже є ТТН (ttn_ref/ttn_number): повторне створення коштувало б грошей — ідемпотентність на стороні виклику")
-    sender = resolve_sender()
+    sender = resolve_sender(sender_kind)
     city_ref, wh_ref = resolve_recipient_address(order)
     recipient = {"ref": "DRY-RUN", "contact_ref": "DRY-RUN", "phone": order.get("phone"), "city_ref": city_ref, "address_ref": wh_ref}
-    props = build_ttn_payload(order, sender, recipient, now=now, cod_amount=cod_amount)   # уся валідація ДО будь-якої реальної дії (нема сиріт-контрагентів)
+    props = build_ttn_payload(order, sender, recipient, now=now, cod_amount=cod_amount, extra_props=extra_props)   # уся валідація ДО будь-якої реальної дії (нема сиріт-контрагентів)
     if live:
         split_fio(order.get("customer_name"))
         rcp = create_recipient(order.get("customer_name"), order.get("phone"), apply=True)
         recipient.update(rcp)
-        props = build_ttn_payload(order, sender, recipient, now=now, cod_amount=cod_amount)
+        props = build_ttn_payload(order, sender, recipient, now=now, cod_amount=cod_amount, extra_props=extra_props)
     if not live:
         pr = np_._call("InternetDocument", "getDocumentPrice", price_payload(props))
         price = pr[0] if pr else {}
@@ -300,6 +332,21 @@ def fetch_marking_pdf(ref: str, timeout: int = 30) -> bytes:
         raise TtnError("маркування: помилка з'єднання з НП") from None   # без тексту винятку: він містить URL з ключем
     if r.status_code != 200 or not r.content.startswith(b"%PDF"):
         raise TtnError(f"маркування не отримано (HTTP {r.status_code}, не PDF)")
+    return r.content
+
+
+def fetch_document_pdf(ref: str, timeout: int = 30) -> bytes:
+    """Експрес-накладна (PDF) для ТТН — «document» для KIDDISVIT (orders/delivery/ttn-data). Читання; ключ не логуємо й не повертаємо."""
+    if not np_.NP_API_KEY:
+        raise TtnError("не заданий NP_API_KEY")
+    if not _GUID_RE.match(ref or ""):
+        raise TtnError("накладна: Ref ТТН має бути GUID")
+    try:
+        r = requests.get(DOCUMENT_URL.format(ref=ref, key=np_.NP_API_KEY), timeout=timeout)
+    except requests.RequestException:
+        raise TtnError("накладна: помилка з'єднання з НП") from None   # без тексту винятку: він містить URL з ключем
+    if r.status_code != 200 or not r.content.startswith(b"%PDF"):
+        raise TtnError(f"накладну не отримано (HTTP {r.status_code}, не PDF)")
     return r.content
 
 

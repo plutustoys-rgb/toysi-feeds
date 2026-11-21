@@ -370,3 +370,7 @@ feed_photo_dims_cache.json.tmp.*
 # Маркер режиму акції для фідів (site/build_site.py пише, site_sale.load_feed_sale читає) — не публічний, не для git
 site_sale_mode.json
 support_relay.log
+install_support_relay_out.txt
+remove_support_relay_out.txt
+support_relay.log.1
+support_relay.log.lock

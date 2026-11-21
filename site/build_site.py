@@ -461,6 +461,7 @@ def asset_url(rel):
 
 
 META_DOMAIN_VERIFICATION = "zrxty9pynr6k0qh1y1tpgzkfyliv7s"   # Meta Business «PlutusToys», домен plutustoys.com.ua (SEO 18.10, «Not Verified» → після деплою SEO натискає «Підтвердити домен») — у <head> КОЖНОЇ сторінки
+PINTEREST_DOMAIN_VERIFICATION = "7082b41dee053ccc3daa41b03c94262d"   # Pinterest Business «plutustoys»: підтвердження сайту (SMM 21.11, settings/claim → «Додати тег HTML»); публічний тег, не секрет
 GSC_VERIFICATION = "AzAID7jv3z26c8wFyrtnzjRTa_2xDyEnFx_R-neaoZY"   # підтвердження права власності Search Console (код власника з 17.07, був на вітрині Prom; SEO 18.10: на новому сайті злетіло) — у <head> КОЖНОЇ сторінки
 
 
@@ -491,6 +492,7 @@ def page(title, body, extra_head="", description="", canonical="", og_image="", 
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
       f"<meta name=\"google-site-verification\" content=\"{GSC_VERIFICATION}\">\n"
       f"<meta name=\"facebook-domain-verification\" content=\"{META_DOMAIN_VERIFICATION}\" />\n"
+      f"<meta name=\"p:domain_verify\" content=\"{PINTEREST_DOMAIN_VERIFICATION}\" />\n"
       # base_root лише для 404: її віддають за БУДЬ-ЯКОЇ адреси (/a/b/c), а шляхи в шаблоні відносні (assets/…, index.json, api/…)
       + ("<base href=\"/\">\n" if base_root else "") +
       f"<title>{esc(full_title)}</title>\n"

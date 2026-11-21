@@ -498,6 +498,11 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .sale-left{font-weight:700}
 .sale-left:not(:empty)::before{content:" · ";font-weight:400}
 .sale-lead{margin:0 0 10px;color:var(--muted)}
+.coloring-strip{margin:0 clamp(12px,3vw,24px) 8px;padding:10px 18px;border-radius:14px;background:#fff7ec;border:1px solid #f0d9b5;text-align:center;line-height:1.35}
+.coloring-strip a{color:#8a3b00;text-decoration:none}
+.coloring-strip a b{text-decoration:underline;text-underline-offset:3px}
+.coloring-strip a:hover{color:#6b2d00}
+@media(max-width:600px){.coloring-strip{padding:10px 12px}.coloring-strip span{display:block}}
 .hero2 .btn.btn-sale{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:#D93A3A;color:#fff;border:2px solid #7A1313;box-shadow:3px 3px 0 #7A1313;font-weight:800;transform:rotate(-1.5deg);transition:transform .18s ease}
 .hero2 .btn.btn-sale:hover,.hero2 .btn.btn-sale:focus-visible{transform:rotate(0deg)}
 .hero2 .btn.btn-sale .btn-ico{flex:none}

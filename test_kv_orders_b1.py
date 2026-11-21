@@ -235,6 +235,20 @@ finally:
     t.requests.get = real_get
 chk("fetch_document_pdf: мережевий збій → TtnError, ключ НЕ витікає", ok and "TESTKEY" not in msg)
 
+# ── 8. (аудит #1940, знахідки 2 і 4) None/порожнє в extra_props; відправник мусить відповідати позиціям
+ex3 = t.build_ttn_payload(order, sender, recipient, extra_props={"AdditionalInformation": None, "InfoRegClientBarcodes": "  "})
+chk("extra_props: None/порожнє пропускається (немає літерального «None», InfoRegClientBarcodes лишається internal_order_id)", "AdditionalInformation" not in ex3 and ex3["InfoRegClientBarcodes"] == "site_77")
+KVI, RTI = {"toysi_code": "kv-1", "qty": 1, "price": 100}, {"toysi_code": "rt-1", "qty": 1, "price": 100}
+for label, items, kind in (("kv-позиції з відправником rt (за замовчуванням)", [KVI], "rt"), ("rt-позиція з відправником kv", [RTI], "kv"), ("мішане замовлення, відправник kv", [KVI, RTI], "kv"),
+                           ("мішане замовлення, відправник rt", [KVI, RTI], "rt"), ("порожні позиції з відправником kv", [], "kv")):
+    try:
+        t.create_ttn({"internal_order_id": "site_9", "items": items}, apply=False, sender_kind=kind)
+        ok, msg = False, ""
+    except t.TtnError as e:
+        ok, msg = True, str(e)
+    chk(f"create_ttn: {label} → TtnError до будь-якого звернення до НП", ok and "не відповідає" in msg)
+
+
 print()
 if F:
     print(f"FAIL: {len(F)}")

@@ -24,8 +24,8 @@ if hasattr(sys.stdout, "reconfigure"):
 RT_SENDER_CITY_REF = os.environ.get("NP_RT_SENDER_CITY_REF", "905c11b6-13d6-11e4-acce-0050568002cf")
 RT_SENDER_WAREHOUSE_REF = os.environ.get("NP_RT_SENDER_WAREHOUSE_REF", "c80e75dd-05e3-11e9-ad0d-005056b24375")
 # Відправлення KIDDISVIT (21.11.2026): ТТН створюємо НАШИМ ключем, відправка «Дніпро Нова Пошта №28, Березинська 58» (менеджер Т. Сіденко; довідник НП на VPS 21.11): Ref міста Дніпро і відділення №28.
-KV_SENDER_CITY_REF = os.environ.get("NP_KV_SENDER_CITY_REF", "db5c88f0-391c-11dd-90d9-001a92567626")
-KV_SENDER_WAREHOUSE_REF = os.environ.get("NP_KV_SENDER_WAREHOUSE_REF", "16922832-e1c2-11e3-8c4a-0050568002cf")
+KV_SENDER_CITY_REF = os.environ.get("NP_KV_SENDER_CITY_REF") or "db5c88f0-391c-11dd-90d9-001a92567626"
+KV_SENDER_WAREHOUSE_REF = os.environ.get("NP_KV_SENDER_WAREHOUSE_REF") or "16922832-e1c2-11e3-8c4a-0050568002cf"
 DEFAULT_SEAT_WEIGHT = float(os.environ.get("NP_DEFAULT_SEAT_WEIGHT", "0.5"))      # кг, поки RoyalToys не дав вагу/габарити (запитано 19.10); НП перерахує за фактичною
 def _dims_from_env() -> tuple:
     try:
@@ -177,6 +177,8 @@ def build_ttn_payload(order: dict, sender: dict, recipient: dict, now: datetime 
     for k, v in (extra_props or {}).items():
         if k not in EXTRA_PROPS_ALLOWED:
             raise TtnError(f"extra_props: поле {k!r} не дозволено ({EXTRA_PROPS_ALLOWED})")
+        if v is None or not str(v).strip():
+            continue                      # None/порожнє не перетирає значення за замовчуванням (аудит #1940, знахідка 2: інакше літеральне «None»)
         props[k] = str(v)[:36] if k == "InfoRegClientBarcodes" else str(v)[:100]
     if cod_amount and int(cod_amount) > 0:
         props["BackwardDeliveryData"] = [{"PayerType": "Recipient", "CargoType": "Money", "RedeliveryString": str(int(cod_amount))}]
@@ -292,6 +294,10 @@ def create_ttn(order: dict, apply: bool = False, cod_amount: int = 0, now: datet
     """dry_run (за замовчуванням): payload із ПЛЕЙСХОЛДЕРАМИ отримувача + вартість доставки з НП (getDocumentPrice); нічого не створює.
     apply=True і NP_TTN_APPLY=1: створює отримувача й накладну; повертає {'dry_run': False, 'number', 'ref', 'cost'}.
     ІДЕМПОТЕНТНІСТЬ — на стороні виклику: зберегти number/ref у замовленні одразу після створення і передавати їх як order['ttn_ref'|'ttn_number'] (тоді live-виклик відмовить); повторний виклик без цього створить другу платну ТТН."""
+    _codes = [str((i or {}).get("toysi_code") or "").strip().lower() for i in (order.get("items") or [])]
+    _kv_n = sum(1 for c in _codes if c.startswith(("kv-", "kvu-")))
+    if not ((sender_kind == "kv" and _codes and _kv_n == len(_codes)) or (sender_kind != "kv" and _kv_n == 0)):
+        raise TtnError(f"відправник «{sender_kind}» не відповідає позиціям замовлення (kv-позицій {_kv_n} з {len(_codes)}) — ТТН не створюємо (аудит #1940, знахідка 4)")
     order = with_supplier_dims(order)    # rt-позиції: габарити з картки постачальника (fail-closed без них)
     live = _apply_allowed(apply)
     if live and (order.get("ttn_ref") or order.get("ttn_number")):

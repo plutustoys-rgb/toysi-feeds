@@ -18,6 +18,7 @@ os.environ.setdefault("AUDIT_NO_TELEGRAM", "1")
 for k in ("SITE_LIQPAY_LIVE", "SITE_SELLER_TAXID", "SITE_BUILD_LIMIT", "SITE_SALE_NOW"):
     os.environ.pop(k, None)
 os.environ["SITE_PICK_DATE"] = "2026-10-21"
+os.environ["SITE_SALE_MODE_FILE"] = os.path.join(tempfile.mkdtemp(prefix="sale_mode_"), "site_sale_mode.json")   # маркер режиму акції — не в корінь репо
 sys.path.insert(0, str(HERE / "site"))
 sys.path.insert(0, str(HERE))
 import build_site as bs  # noqa: E402

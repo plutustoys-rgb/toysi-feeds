@@ -115,6 +115,25 @@ chk("JSON-LD: ввімкнено — priceValidUntil = звичайна дата
 bs.SALE_ACTIVE = None
 os.environ.pop("SITE_SALE_INVENTED_OLD", None)
 
+# ── маркер режиму для фідів (аудит #1931, знахідка 1): фід безпечний, навіть коли env у процесі фіда не виставлено
+mk = tmpd / "sale_mode_marker.json"
+bs.SALE_MODE_MARKER = str(mk)
+ss.SALE_MODE_MARKER = mk
+os.environ.pop("SITE_SALE_INVENTED_OLD", None)
+bs._write_sale_mode_marker()
+chk("збірка при вимкненій брамі пише маркер {invented:false}", json.loads(mk.read_text(encoding="utf-8")) == {"invented": False})
+chk("маркер false + env нема → фід віддає акцію (як було)", ss.load_feed_sale(now_f, sf).get("1", {}).get("new") == 170)
+os.environ["SITE_SALE_INVENTED_OLD"] = "1"
+bs._write_sale_mode_marker()
+chk("збірка при ввімкненій брамі пише маркер {invented:true}", json.loads(mk.read_text(encoding="utf-8")) == {"invented": True})
+os.environ.pop("SITE_SALE_INVENTED_OLD", None)          # процес фіда БЕЗ env, але збірка сайту була в режимі «вигаданої»
+chk("маркер true + env у процесі фіда НЕ виставлено → фід БЕЗ sale_price (захист від розсинхрону env)", ss.load_feed_sale(now_f, sf) == {})
+mk.write_text("{не json", encoding="utf-8")
+chk("зіпсований маркер → діє env (вимкнено → акція в фіді як було), без винятку", ss.load_feed_sale(now_f, sf).get("1", {}).get("new") == 170)
+mk.unlink()
+chk("нема маркера → діє env, без винятку", ss.load_feed_sale(now_f, sf).get("1", {}).get("new") == 170)
+chk("маркер не в публічній теці site/ (SITE_DIR)", not str(bs.SALE_MODE_MARKER).startswith(str(tmpd / "site")) and os.path.basename(os.path.dirname(os.path.abspath(bs.__file__))) == "site")
+
 print()
 if F:
     print(f"FAIL: {len(F)}")

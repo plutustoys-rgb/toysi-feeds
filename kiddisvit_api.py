@@ -83,7 +83,7 @@ class KiddisvitClient:
         """as_is=True — повернути розібраний JSON як є (orders/assembly відповідає {"success": …} без обгортки status/data). retry=False — БЕЗ автоповторів і з KiddisvitUncertain на
         невизначених збоях (POST orders/*: повтор міг би створити друге замовлення)."""
         p_ = path.lstrip("/")
-        if method.upper() != "GET" and p_.startswith("orders/") and not p_.startswith("orders/search"):
+        if method.upper() != "GET" and p_.startswith("orders/") and p_.split("?")[0].rstrip("/") != "orders/search":      # ТОЧНИЙ збіг (аудит #1933: префікс пропускав «orders/searchX/../create»)
             self._need_live(p_)          # ворота діють на рівні _request, а не лише в обгортках (аудит #1933): будь-який POST orders/* крім search — лише за KV_ORDERS_LIVE=1 і без автоповторів
             retry = False
         if not self._key:

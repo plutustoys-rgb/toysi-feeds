@@ -264,6 +264,48 @@ def uncertain(fn):
 chk("interpret_create: без number або id → KiddisvitUncertain (НЕ OrderBlocked: create міг пройти, повтор заборонено)",
     uncertain(lambda: ko.interpret_create({"id": "x"})) and uncertain(lambda: ko.interpret_create({"number": "КЗ-1"})) and uncertain(lambda: ko.interpret_create(None)))
 
+# ── хвости аудиту #1933
+os.environ.pop("KV_ORDERS_LIVE", None)
+for pth in ("orders/searchX/../create", "orders/search/../create", "orders/create", "orders/searching"):
+    c, f = client([Resp(json.dumps({"status": "success", "data": {"x": 1}}))])
+    try:
+        c._request("POST", pth, {"a": 1})
+        got = None
+    except api.KiddisvitError as e:
+        got = e
+    chk(f"ворота: POST {pth} без KV_ORDERS_LIVE=1 → відмова ДО мережі (точний збіг orders/search)", got is not None and not f.calls)
+for pth in ("orders/search", "orders/search/", "/orders/search?x=1"):
+    c, f = client([Resp(json.dumps({"status": "success", "data": {"Orders": []}}))])
+    c._request("POST", pth, {"a": 1})
+    chk(f"читання {pth} проходить без воріт", len(f.calls) == 1)
+nan = float("nan")
+badn = dict(SUP, **{"kv-310": {"cost": nan, "warehouse": "Dnepr", "stock": 5}, "kv-311": {"cost": 5, "warehouse": "Dnepr", "stock": nan}, "kv-312": {"cost": float("inf"), "warehouse": "Dnepr", "stock": 5}})
+chk("NaN/inf у cost або NaN у stock постачальника → OrderBlocked", all(blocked(lambda c=c: ko.map_items(order([it(c)]), badn)) for c in ("kv-310", "kv-311", "kv-312")))
+# lookup_np_ref: guard формату CityRef і розбір довідника (фейковий nova_poshta)
+import types
+fake_np = types.ModuleType("nova_poshta")
+calls_np = []
+def _cw(ref):
+    calls_np.append(ref)
+    return [{"ref": "R15", "number": "15", "description": "Відділення №15"}, {"Ref": "R28", "Number": "28"}]
+fake_np._city_warehouses = _cw
+real_np = sys.modules.get("nova_poshta")
+sys.modules["nova_poshta"] = fake_np
+try:
+    CITY = "db5c88f0-391c-11dd-90d9-001a92567626"
+    chk("lookup_np_ref: знаходить за (місто, номер) — ключі ref/number", ko.lookup_np_ref(CITY, "15") == "R15")
+    chk("lookup_np_ref: знаходить і з ключами Ref/Number", ko.lookup_np_ref(CITY, "28") == "R28")
+    chk("lookup_np_ref: номера нема → None", ko.lookup_np_ref(CITY, "99") is None)
+    n_before = len(calls_np)
+    chk("lookup_np_ref: сміття у CityRef → None БЕЗ звернення до довідника", ko.lookup_np_ref("'; drop", "15") is None and ko.lookup_np_ref("", "15") is None and ko.lookup_np_ref(None, "15") is None and len(calls_np) == n_before)
+    r_look = ko.dry_run(order([it("kv-100")], np_city_ref=CITY, np_warehouse_number="28"), SUP, IDS, ko.lookup_np_ref)
+    chk("dry_run із справжнім lookup_np_ref (фейковий довідник): DeliveryWarehouse = R28", r_look["ok"] and r_look["payload"]["DeliveryWarehouse"] == "R28")
+finally:
+    if real_np is not None:
+        sys.modules["nova_poshta"] = real_np
+    else:
+        sys.modules.pop("nova_poshta", None)
+
 print()
 if F:
     print(f"FAIL: {len(F)}")

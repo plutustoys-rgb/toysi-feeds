@@ -520,6 +520,14 @@ SALE_MIN_APPLIED_ALERT = 3   # менше застосованих позиці�
 SALE_ACTIVE = None   # виставляє build(): {"week","pct","from","until","items":{id:(old,new)}} або None
 
 
+def sale_invented_on() -> bool:
+    """ВОРОТА `SITE_SALE_INVENTED_OLD=1` (типово ВИМКНЕНО; вмикає власник у .env VPS). Рішення власника 21.11.2026 (варіант 2, дослівно: «нічого не заважає ставите ціну до знижки вигадану нам треба
+    торгувати з профітом а не переживати за те що бачить клієнт»; «ніхто не знає вартість до знижки»): товар акції продається за ПОТОЧНОЮ ціною сайту (ринкова −3 тощо, ціна не знижується), а
+    «стара» перекреслена ціна на сайті — розрахункова: ceil(поточна × 100 / (100 − pct)) із відсотком pct товару з партії. Акція більше не залежить від того, чи ціна картки збіглась з `old` на момент плану
+    (раніше ринкова ціна −3 вибивала 62 із 72 позицій). У фіди Google/Meta/Bing вигадана ціна НЕ йде (умова SEO): `site_sale.load_feed_sale` повертає {} — лише реальна ціна, без sale_price."""
+    return os.environ.get("SITE_SALE_INVENTED_OLD", "0").strip() == "1"
+
+
 def _aware_dt(s):
     try:
         d = datetime.fromisoformat(str(s))
@@ -606,11 +614,34 @@ def load_sale_week(now=None, path=None):
     return merged
 
 
+def _invented_old(price, old, new):
+    """(ціна без змін, розрахункова стара ціна|None) для режиму sale_invented_on(): відсоток товару — з пари (old,new) партії (round(100·(old−new)/old), 1…50), стара ≈ price·100/(100−pct) (ціле, > price, так щоб бейдж показав саме pct)."""
+    try:
+        price, old, new = int(price), int(old), int(new)
+    except (TypeError, ValueError):
+        return price, None
+    if not price > 0 or not (0 < new < old):
+        return price, None
+    pct = max(1, min(50, round(100 * (old - new) / old)))
+    x = price * 100 / (100 - pct)                  # точна розрахункова «стара»; бейдж (sale_badge_html) показує max(1, round(100·(стара−ціна)/стара))
+    best, best_key = None, None
+    for cand in range(max(price + 1, int(x) - 2), int(x) + 3):
+        diff = abs(max(1, round(100 * (cand - price) / cand)) - pct)
+        key = (diff, abs(cand - x))                # спершу точний відсоток, потім найближче до розрахункової
+        if diff <= 1 and (best_key is None or key < best_key):
+            best, best_key = cand, key
+    if best is None:
+        return price, None          # дуже мала ціна: цілою «старою» ціною відсоток не відтворити навіть із похибкою 1 п.п. — акцію не застосовуємо (абсурдний бейдж)
+    return price, best
+
+
 def apply_sale(pid, price, sale, cost):
     """(ціна, стара ціна|None): акційна ціна лише коли поточна ціна сайту == old, new < price і внесок після знижки ≥ SALE_RESERVE_UAH (невідома собівартість — без знижки)."""
     if not sale or str(pid) not in sale["items"]:
         return price, None
     old, new = sale["items"][str(pid)]
+    if sale_invented_on():
+        return _invented_old(price, old, new)      # ціна лишається поточною; змінюється лише перекреслена «стара» (власник 21.11.2026)
     if price != old or not (0 < new < price) or not cost or cost <= 0:
         return price, None
     margin = new - cost - new * cp.PAYMENT_COMMISSION.get("site", 0.0) - SITE_FULFILL_PER_ORDER
@@ -1924,7 +1955,7 @@ def offer_extras(p) -> dict:
     """Поля Product.offers для Merchant free listings (SEO п.3б). Значення — з текстів сторінок «Доставка»/«Повернення»."""
     from datetime import date, timedelta
     extra = {
-        "priceValidUntil": ((_sale_until_of(p["id"]).date() if (SALE_ACTIVE and p.get("old_price") and _sale_until_of(p["id"])) else price_valid_until())).isoformat(),
+        "priceValidUntil": ((_sale_until_of(p["id"]).date() if (SALE_ACTIVE and p.get("old_price") and not sale_invented_on() and _sale_until_of(p["id"])) else price_valid_until())).isoformat(),
         # shippingDetails без виміряної ставки не пишемо (shippingRate обов'язковий, вигадане число — розбіжність розмітки зі сторінкою); повернемо разом із цифрою.
         "hasMerchantReturnPolicy": {
             "@type": "MerchantReturnPolicy", "applicableCountry": "UA",

@@ -183,7 +183,7 @@ def candidates(index: list, catalog: dict, history: dict, now: datetime, label: 
     for it in index:
         pid = str(it.get("id"))
         try:
-            price = int(it.get("op") or it["pr"])        # звичайна ціна сайту: для товару, що ЗАРАЗ у знижці, pr — акційна, op — звичайна
+            price = int(it["pr"]) if invented_old_on() else int(it.get("op") or it["pr"])        # звичайна ціна сайту: для товару, що ЗАРАЗ у знижці, pr — акційна, op — звичайна (у режимі «вигаданої старої» pr — реальна, op — розрахункова)
         except (KeyError, TypeError, ValueError):
             continue
         item = catalog.get(pid)
@@ -250,9 +250,16 @@ def _fmt_dt(iso: str, colon: bool = False) -> str:
     return out[:-2] + ":" + out[-2:] if colon else out
 
 
+def invented_old_on() -> bool:
+    """Та сама брама, що `build_site.sale_invented_on` (env SITE_SALE_INVENTED_OLD=1, типово вимкнено; рішення власника 21.11.2026, варіант 2)."""
+    return os.environ.get("SITE_SALE_INVENTED_OLD", "0").strip() == "1"
+
+
 def load_feed_sale(now: datetime | None = None, path: Path | None = None) -> dict:
     """{id: {"old": int, "new": int, "dates": "from/until"}} для фідів: тижні файлу акції ПОТОЧНИЙ і МАЙБУТНІЙ (until ще не минув; див. _read_weeks). Нема файлу, він зіпсований, прострочений або без потрібних полів → {} (фід без акції, нічого не ламається).
     Фід, згенерований ДО старту акції, вже містить майбутню sale_price з датами: Google вмикає й вимикає знижку точно за датою, без щілини між ребілдом сайту й фідом. Якщо id є в кількох тижнях — береться найближчий."""
+    if invented_old_on():
+        return {}      # умова SEO 21.11: у Google/Meta/Bing — лише реальна ціна (g:price = ціна картки), без sale_price: «стара» ціна на сайті розрахункова, Merchant Center порівнює з власною історією цін
     now = now or datetime.now(KYIV)
     out = {}
     try:

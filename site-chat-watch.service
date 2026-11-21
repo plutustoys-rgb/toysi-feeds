@@ -1,0 +1,13 @@
+[Unit]
+Description=PlutusToys: сторож чату підтримки сайту (site_chat_watch.py — повідомлення клієнтів без відповіді людини >30 хв → один агрегований Telegram-алерт без тексту)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Читає site_chat.db лише для читання; нічого не змінює. Код виходу завжди 0 (збій алерту — у stderr).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_chat_watch.py
+TimeoutStartSec=120
+Nice=10

@@ -521,9 +521,9 @@ SALE_ACTIVE = None   # виставляє build(): {"week","pct","from","until",
 
 
 def sale_invented_on() -> bool:
-    """ВОРОТА `SITE_SALE_INVENTED_OLD=1` (типово ВИМКНЕНО; вмикає власник у .env VPS). Рішення власника 21.11.2026 (варіант 2, дослівно: «нічого не заважає ставите ціну до знижки вигадану нам треба
+    """ВОРОТА `SITE_SALE_INVENTED_OLD=1` (типово ВИМКНЕНО; вмикає власник у .env VPS; збірка пише маркер site_sale_mode.json для фідів). Рішення власника 21.11.2026 (варіант 2, дослівно: «нічого не заважає ставите ціну до знижки вигадану нам треба
     торгувати з профітом а не переживати за те що бачить клієнт»; «ніхто не знає вартість до знижки»): товар акції продається за ПОТОЧНОЮ ціною сайту (ринкова −3 тощо, ціна не знижується), а
-    «стара» перекреслена ціна на сайті — розрахункова: ceil(поточна × 100 / (100 − pct)) із відсотком pct товару з партії. Акція більше не залежить від того, чи ціна картки збіглась з `old` на момент плану
+    «стара» перекреслена ціна на сайті — розрахункова: найближче ціле до поточна × 100 / (100 − pct), на якому бейдж показує pct (до ±1 п.п.), pct береться з пари old/new партії. Акція більше не залежить від того, чи ціна картки збіглась з `old` на момент плану
     (раніше ринкова ціна −3 вибивала 62 із 72 позицій). У фіди Google/Meta/Bing вигадана ціна НЕ йде (умова SEO): `site_sale.load_feed_sale` повертає {} — лише реальна ціна, без sale_price."""
     return os.environ.get("SITE_SALE_INVENTED_OLD", "0").strip() == "1"
 
@@ -612,6 +612,18 @@ def load_sale_week(now=None, path=None):
                 merged["items"][pid] = v
                 merged["until_by_id"][pid] = got["until"]
     return merged
+
+
+SALE_MODE_MARKER = os.environ.get("SITE_SALE_MODE_FILE") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "site_sale_mode.json")
+
+
+def _write_sale_mode_marker() -> None:
+    """Маркер {"invented": bool} для site_sale.load_feed_sale: фід НЕ віддає sale_price, коли ЗБІРКА САЙТУ в режимі «вигаданої старої» — навіть якщо у процесі генерації фіда env SITE_SALE_INVENTED_OLD не виставлено
+    (аудит #1931: інакше фід рекламував би g:price=old і g:sale_price=new, нижчі за реальну ціну сайту → розбіжність для GMC). Файл НЕ в site/ (не публічний). Збій запису не валить збірку."""
+    try:
+        _write_text_atomic(SALE_MODE_MARKER, json.dumps({"invented": bool(sale_invented_on())}))
+    except OSError as e:
+        print(f"[build] ⚠ маркер режиму акції не записано ({type(e).__name__}) — фід покладається на env SITE_SALE_INVENTED_OLD", file=sys.stderr)
 
 
 def _invented_old(price, old, new):
@@ -1203,7 +1215,7 @@ def build():
         return (-c, -p["price"], p["name"])
     if SALE_ACTIVE:
         _applied = sum(1 for p in prods if p.get("old_price"))
-        print(f"[build] акція: застосовано {_applied} з {len(SALE_ACTIVE['items'])} позицій файлу (решта випала: ціна ≠ old / нема в наявності / внесок < запасу)")
+        print(f"[build] акція: застосовано {_applied} з {len(SALE_ACTIVE['items'])} позицій файлу (решта випала: " + ("нема в наявності / дуже мала ціна" if sale_invented_on() else "ціна ≠ old / нема в наявності / внесок < запасу") + ")")
         if _applied < SALE_MIN_APPLIED_ALERT:   # акція ідe, а позицій майже нема (ціни змінились/собівартість зросла): тихо не лишаємо
             try:
                 from telegram_notify import send_throttled_alert
@@ -1379,6 +1391,7 @@ def build():
     # index.json — клієнтський пошук + фільтр/сорт каталогу. c=категорія, s=наявність(1/0).
     idx = index_entries(prods_rec) + [{**e, "dup": 1} for e in index_entries(shadows)]   # тіні — лише в повному index.json (сервер бере ціни); пошук/каталог їх не читають
     _write_text_atomic(os.path.join(OUT, "index.json"), json.dumps(idx, ensure_ascii=False))   # index.json читають кошик і пошук — запис атомарний
+    _write_sale_mode_marker()      # режим «вигаданої старої ціни» для генераторів фідів: поза публічною текою site/ (аудит #1931)
     # Сторінки (app.js) читають НЕ повний index.json, а два файли: index-t.json (Toysi, як було) і index-rt.json (RoyalToys, довантажується у фоні) —
     # 20.10: 9,9 тис. карток RoyalToys підняли index.json з 1,0 до 1,5 МБ gzip, і LCP каталогу/категорій у Lighthouse зріс з ≈3 до ≈12 с. Повний index.json лишається для site_order_api (ціни) і фідів.
     _write_text_atomic(os.path.join(OUT, "index-t.json"), json.dumps([x for x in idx if not x.get("rt") and not x.get("dup")], ensure_ascii=False))

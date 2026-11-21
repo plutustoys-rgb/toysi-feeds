@@ -250,6 +250,18 @@ def _fmt_dt(iso: str, colon: bool = False) -> str:
     return out[:-2] + ":" + out[-2:] if colon else out
 
 
+SALE_MODE_MARKER = Path(os.environ.get("SITE_SALE_MODE_FILE") or (HERE / "site_sale_mode.json"))
+
+
+def _marker_invented() -> bool:
+    """Маркер режиму від збірки сайту (build_site._write_sale_mode_marker): {"invented": true} → фід без sale_price, навіть коли env у процесі фіда не виставлено (аудит #1931). Нема/зіпсований → False (діє env)."""
+    try:
+        d = json.loads(SALE_MODE_MARKER.read_text(encoding="utf-8"))
+        return isinstance(d, dict) and d.get("invented") is True
+    except (OSError, ValueError):
+        return False
+
+
 def invented_old_on() -> bool:
     """Та сама брама, що `build_site.sale_invented_on` (env SITE_SALE_INVENTED_OLD=1, типово вимкнено; рішення власника 21.11.2026, варіант 2)."""
     return os.environ.get("SITE_SALE_INVENTED_OLD", "0").strip() == "1"
@@ -258,7 +270,7 @@ def invented_old_on() -> bool:
 def load_feed_sale(now: datetime | None = None, path: Path | None = None) -> dict:
     """{id: {"old": int, "new": int, "dates": "from/until"}} для фідів: тижні файлу акції ПОТОЧНИЙ і МАЙБУТНІЙ (until ще не минув; див. _read_weeks). Нема файлу, він зіпсований, прострочений або без потрібних полів → {} (фід без акції, нічого не ламається).
     Фід, згенерований ДО старту акції, вже містить майбутню sale_price з датами: Google вмикає й вимикає знижку точно за датою, без щілини між ребілдом сайту й фідом. Якщо id є в кількох тижнях — береться найближчий."""
-    if invented_old_on():
+    if invented_old_on() or _marker_invented():
         return {}      # умова SEO 21.11: у Google/Meta/Bing — лише реальна ціна (g:price = ціна картки), без sale_price: «стара» ціна на сайті розрахункова, Merchant Center порівнює з власною історією цін
     now = now or datetime.now(KYIV)
     out = {}

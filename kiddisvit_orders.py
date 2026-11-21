@@ -80,6 +80,8 @@ def map_items(order: dict, supplier: dict) -> list:
             cost = float(src.get("cost"))
         except (TypeError, ValueError):
             cost = 0.0
+        if not math.isfinite(cost):
+            cost = 0.0
         wh = str(src.get("warehouse") or "").strip()
         if cost <= 0 or wh not in WAREHOUSES:
             raise OrderBlocked(f"{code}: у даних постачальника нема собівартості або склад «{wh}» не з {WAREHOUSES}")
@@ -105,6 +107,8 @@ def map_items(order: dict, supplier: dict) -> list:
             stock = float(m["stock"])
         except (TypeError, ValueError):
             raise OrderBlocked(f"{m['code']}: залишок у файлі постачальника невідомий") from None
+        if not math.isfinite(stock):
+            raise OrderBlocked(f"{m['code']}: залишок у файлі постачальника невідомий")
         if stock < m["qty"]:
             raise OrderBlocked(f"{m['code']}: залишок {stock:g} менший за замовлене {m['qty']}")
     whs = {m["warehouse"] for m in merged.values()}
@@ -160,7 +164,10 @@ def np_warehouse_ref(order: dict, lookup=None) -> str:
 def lookup_np_ref(city_ref: str, number: str):
     """Справжній резолв Ref відділення за (CityRef, номер) із довідника НП (читання; nova_poshta._city_warehouses). Нічого не знайдено → None."""
     import nova_poshta as np_
-    for w in np_._city_warehouses(str(city_ref).strip()):
+    city_ref = str(city_ref or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F-]{10,40}", city_ref):
+        return None               # як guard у nova_poshta.search_warehouses: довільний рядок у getWarehouses не передаємо
+    for w in np_._city_warehouses(city_ref):
         if str(w.get("number") or w.get("Number") or "").strip() == str(number).strip():
             return w.get("ref") or w.get("Ref")
     return None

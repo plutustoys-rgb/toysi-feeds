@@ -78,7 +78,7 @@ def cards(html):
 payload = {"date": "2026-10-12", "ids": ["7", 3, "900", "3", "999999", "901", "12", "15", "20", "25", "30"]}
 out, err = build_with(json.dumps(payload))
 ig = (out / "ig.html").read_text(encoding="utf-8")
-chk("/ig.html збирається; H1 «З Instagram: що показали Плутус»", '<h1 class="page">З Instagram: що показали Плутус</h1>' in ig)
+chk("/ig.html збирається; H1 «З Instagram: що показав Плутус»", '<h1 class="page">З Instagram: що показав Плутус</h1>' in ig)
 chk("підзаголовок «Ці товари з нашого останнього відео» і кнопка «Усі іграшки» → catalog.html", "Ці товари з нашого останнього відео" in ig and re.search(r'<a class="btn" href="catalog.html">Усі іграшки</a>', ig) is not None)
 c = cards(ig)
 chk("сітка: рівно товари з JSON у заданому порядку (7, 3, 901, 12, 15, 20), без дубля «3», без OOS «900» і неіснуючого, максимум 6", c == ["7", "3", "901", "12", "15", "20"])

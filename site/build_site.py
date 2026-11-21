@@ -3492,6 +3492,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       '<div class="hero2">' + hero_mascot_html(hero_clips) +
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
       '<div class="act">' + hero_act + '</div></div>'
+      + (f'<p class="coloring-strip"><a href="{COLORING_HUB_FILE}"><b>Безкоштовні розмальовки з Плутусом</b><span> — завантажити й роздрукувати</span></a></p>' if COLORING_BUILT else "")   # SMM 21.11: на головній посилання на розмальовки було лише в підвалі; смужка під героєм, лише коли хаб справді побудовано
       + carousel
       + '<div class="sec-title more-title"><a href="catalog.html">Усі товари →</a></div>' + (grid(more) if more else "")   # власник 16.10: замість «Більше іграшок» — посилання «Усі товари →» (вигляд як «Усі знижки →», зліва) і під ним 10 випадкових зі «Популярне зараз»
     )

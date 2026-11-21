@@ -4112,13 +4112,13 @@ def write_ig(prods):
             n_shown += len(shown_r)
         if secs:
             body = (
-                '<h1 class="page">З Instagram: що показали Плутус</h1>'
+                '<h1 class="page">З Instagram: що показав Плутус</h1>'
                 '<p class="ig-lead">Ці товари з наших останніх відео.</p>'
                 + _coloring_strip_html() +
                 f'<div class="ig-list" id="ig-list" data-list="{IG_LIST_NAME}">' + "".join(secs) + '</div>'
                 '<p class="ig-all"><a class="btn" href="catalog.html">Усі іграшки</a></p>'
             )
-            _write("ig.html", page("З Instagram: що показали Плутус", body, canonical="ig.html", noindex=True,
+            _write("ig.html", page("З Instagram: що показав Плутус", body, canonical="ig.html", noindex=True,
                                    description="Товари з наших відео в Instagram — PlutusToys."))
             return
         print("[build] ⚠ ig_featured.json: жодного товару в наявності у жодному рілсі — /ig.html показує лише кнопку каталогу", file=sys.stderr)
@@ -4136,13 +4136,13 @@ def write_ig(prods):
         grid_html = ""
         lead = "Добірка з нашого останнього відео скоро з\u2019явиться. А поки — увесь каталог."
     body = (
-        '<h1 class="page">З Instagram: що показали Плутус</h1>'
+        '<h1 class="page">З Instagram: що показав Плутус</h1>'
         f'<p class="ig-lead">{esc(lead)}</p>'
         + _coloring_strip_html() +
         f'{grid_html}'
         '<p class="ig-all"><a class="btn" href="catalog.html">Усі іграшки</a></p>'
     )
-    _write("ig.html", page("З Instagram: що показали Плутус", body, canonical="ig.html", noindex=True,
+    _write("ig.html", page("З Instagram: що показав Плутус", body, canonical="ig.html", noindex=True,
                            description="Товари з нашого останнього відео в Instagram — PlutusToys."))
 
 # ── /nabory.html: «Набори, які займуть дитину надовго» (SMM 12.10) ──

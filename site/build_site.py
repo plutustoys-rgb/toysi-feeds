@@ -3564,7 +3564,7 @@ def _clean_desc(html):
 
 
 # ── Блок «Добірки» на картці (SEO 18.11): до COLLECTIONS_MAX внутрішніх посилань на збудовані сторінки, чиє правило добору картка задовольняє ──
-# порядок: бюджет (найменший podarunok-do-N, у який вкладається ціна) → вік (podarunok-na-N за мінімальним віком з опису) → бренд (brend-*) → добір за назвою (адвент). Анкор = H1 сторінки.
+# порядок (SEO 21.11 20:43): добір за назвою (Ерудит, тарілки, зошити, адвент) → вік (podarunok-na-N за мінімальним віком з опису) → бюджет (найменший podarunok-do-N, у який вкладається ціна) → бренд (brend-*). Анкор = H1 сторінки.
 # Лише збудовані сторінки поточної збірки (правила беремо з планів); тіні, уцінка, немає в наявності — без блоку. Бюджет/вік — лише для карток, що проходять «подарункові» виключення (як самі сторінки).
 COLLECTIONS_MAX = 3
 COLLECTION_RULES = {"budget": [], "age": [], "brand": [], "sel": []}
@@ -3592,32 +3592,32 @@ def _set_collection_rules(gift_plan_, brand_plan_, sel_plan_):
 
 
 def _collection_links(p):
-    """[(url, анкор)] до COLLECTIONS_MAX посилань для картки p (порядок: бюджет, вік, бренд, добір)."""
+    """[(url, анкор)] до COLLECTIONS_MAX посилань для картки p. Порядок (SEO 21.11 20:43): тематичні добори (Ерудит, тарілки, зошити, адвент) → вік → бюджет → бренд."""
     if p.get("shadow") or _is_markdown_item(p) or (p.get("stock") or 0) <= 0 or (p.get("price") or 0) <= 0:
         return []
-    out = []
+    budget_l, age_l, brand_l, sel_l = [], [], [], []
     if not p.get("rt") and _gift_ok(p):
         price = p["price"]
         age = gift_min_age(p.get("desc"))
         if age is None or age <= GIFT_MAX_AGE:   # бюджетні сторінки відсікають відомий вік > GIFT_MAX_AGE («14+», «18+») — картка з таким віком у них не за правилом (аудит #1741)
             for lo, hi, slug, h1 in COLLECTION_RULES["budget"]:
                 if lo <= price <= hi:
-                    out.append((f"{slug}.html", h1))
+                    budget_l.append((f"{slug}.html", h1))
                     break
         if age is not None and price <= GIFT_AGE_PRICE_MAX:
             for lo, hi, slug, h1 in COLLECTION_RULES["age"]:
                 if lo <= age <= hi:
-                    out.append((f"{slug}.html", h1))
+                    age_l.append((f"{slug}.html", h1))
                     break
     if _brand_ok(p):
         for slug, h1, fn in COLLECTION_RULES["brand"]:
             if fn(p):
-                out.append((f"{slug}.html", h1))
+                brand_l.append((f"{slug}.html", h1))
                 break
     for slug, h1, fn, ids in COLLECTION_RULES["sel"]:
         if (p.get("photo")) and not p.get("noindex") and fn(p) and (ids is None or str(p["id"]) in ids):
-            out.append((f"{slug}.html", h1))
-    return out[:COLLECTIONS_MAX]
+            sel_l.append((f"{slug}.html", h1))
+    return (sel_l + age_l + budget_l + brand_l)[:COLLECTIONS_MAX]
 
 
 def _collections_html(p):
@@ -5133,7 +5133,7 @@ SELECTION_PAGES = (
     ("advent-kalendari", "Адвент-календарі для дітей", "Адвент-календарі для дітей 2026 — купити | PlutusToys", SEL_PARENT_GIFT, "Подарунки",
      lambda p: "адвент" in (p.get("name") or "").lower()),
     # SEO 20.11 (GSC 90 д: «детская тарелка с разделителями/на присоске…» 431 показ, поз. 61): категорія «Дитячий посуд» І «тарілк» у назві
-    ("dytiachi-tarilky", "Дитячі тарілки", "Дитячі тарілки на присосці, секційні, силіконові — купити | PlutusToys", "dytiachyy-posud", "Дитячий посуд",
+    ("dytiachi-tarilky", "Дитячі тарілки", "Дитячі тарілки на присосці й силіконові | PlutusToys", "dytiachyy-posud", "Дитячий посуд",
      lambda p: (p.get("category") or "") == "Дитячий посуд" and "тарілк" in (p.get("name") or "").lower()),
     # SEO 20.11 («настольные игры эрудит» 157 показів, поз. 42): кирилиця «ерудит» у назві, будь-яка категорія; уцінку відсіює пул selection_plan
     ("nastilna-hra-erudyt", "Настільна гра Ерудит", "Настільна гра Ерудит українською — купити | PlutusToys", "nastilni-ihry", "Настільні ігри",

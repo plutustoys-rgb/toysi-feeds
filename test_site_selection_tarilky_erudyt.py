@@ -42,9 +42,9 @@ with contextlib.redirect_stderr(err):
 chk("selection_pages.json: dytiachi-tarilky і nastilna-hra-erudyt завантажені без попереджень (вступ 60–150 слів, ≥3 FAQ)",
     all(k in real and 60 <= len(real[k]["intro"].split()) <= 150 and len(real[k]["faq"]) >= 3 for k in ("dytiachi-tarilky", "nastilna-hra-erudyt")) and err.getvalue() == "")
 chk("метадані сторінок за ТЗ: H1, title, батько",
-    SP["dytiachi-tarilky"][:3] == ("Дитячі тарілки", "Дитячі тарілки на присосці, секційні, силіконові — купити | PlutusToys", "dytiachyy-posud")
+    SP["dytiachi-tarilky"][:3] == ("Дитячі тарілки", "Дитячі тарілки на присосці й силіконові | PlutusToys", "dytiachyy-posud")
     and SP["nastilna-hra-erudyt"][:3] == ("Настільна гра Ерудит", "Настільна гра Ерудит українською — купити | PlutusToys", "nastilni-ihry")
-    and len(SP["nastilna-hra-erudyt"][1]) <= bs.TITLE_MAX)   # title тарілок (70 симв.) — дослівно з ТЗ SEO; > TITLE_MAX=65, Google може обрізати хвіст «| PlutusToys» (питання SEO в PR)
+    and len(SP["nastilna-hra-erudyt"][1]) <= bs.TITLE_MAX and len(SP["dytiachi-tarilky"][1]) <= bs.TITLE_MAX)
 
 # ── (2) предикати ──
 pt, pe = SP["dytiachi-tarilky"][3], SP["nastilna-hra-erudyt"][3]
@@ -96,7 +96,7 @@ tp_, er = out / "dytiachi-tarilky.html", out / "nastilna-hra-erudyt.html"
 ht = tp_.read_text(encoding="utf-8") if tp_.exists() else ""
 he = er.read_text(encoding="utf-8") if er.exists() else ""
 chk("14 тарілок → dytiachi-tarilky.html збудовано: H1, title, FAQPage + ItemList; у добір не потрапили чашка, піщана тарілка й уцінка",
-    '<h1 class="page">Дитячі тарілки</h1>' in ht and "Дитячі тарілки на присосці, секційні, силіконові — купити | PlutusToys" in ht and '"@type": "FAQPage"' in ht and '"@type": "ItemList"' in ht
+    '<h1 class="page">Дитячі тарілки</h1>' in ht and "Дитячі тарілки на присосці й силіконові | PlutusToys" in ht and '"@type": "FAQPage"' in ht and '"@type": "ItemList"' in ht
     and ht.count('class="card') == 14 and "Чашка" not in ht and "піску" not in ht and "Уцінка" not in ht)
 chk("14 «Ерудит» → nastilna-hra-erudyt.html збудовано: H1, title, FAQPage + ItemList; уцінка й «Мафія» не входять; картки з різних категорій",
     '<h1 class="page">Настільна гра Ерудит</h1>' in he and "Настільна гра Ерудит українською — купити | PlutusToys" in he and '"@type": "FAQPage"' in he and '"@type": "ItemList"' in he

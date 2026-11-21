@@ -55,14 +55,16 @@ def prod(**kw):
 
 p1 = prod()
 L = bs._collection_links(p1)
-chk(f"картка 250 ₴, від 2 років, Funko → 3 посилання у порядку бюджет → вік → бренд: {[u for u, _a in L]}",
-    [u for u, _a in L] == ["podarunok-do-300-hrn.html", "podarunok-na-2-roky.html", "brend-funko-pop.html"] and L[0][1] == "Подарунок до 300")
+chk(f"картка 250 ₴, від 2 років, Funko → 3 посилання у порядку вік → бюджет → бренд (SEO 21.11: тематичні → вік → бюджет → бренд): {[u for u, _a in L]}",
+    [u for u, _a in L] == ["podarunok-na-2-roky.html", "podarunok-do-300-hrn.html", "brend-funko-pop.html"] and L[1][1] == "Подарунок до 300")
 chk("картка «18+» (відомий вік > GIFT_MAX_AGE) НЕ отримує бюджетне посилання (бюджетні сторінки її відсікають), вікове — не з нашого діапазону", [u for u, _a in bs._collection_links(prod(price=250, desc="Від 18 років", vendor="T", name="Настільна гра"))] == [])
 chk("тіні, уцінка, немає в наявності, ціна 0 — без блоку", all(bs._collection_links(prod(**kw)) == [] for kw in ({"shadow": True}, {"name": "Уцінка. Funko Pop", "price": 100}, {"stock": 0}, {"price": 0})))
 chk("ціна більша за найбільший бюджет → без бюджетного посилання; вік невідомий → без вікового", [u for u, _a in bs._collection_links(prod(price=900, desc="Фігурка"))] == ["brend-funko-pop.html"])
 chk("RT-картка: лише бренд/добір (подарункові сторінки — тільки Toysi)", [u for u, _a in bs._collection_links(prod(rt=True))] == ["brend-funko-pop.html"])
 adv = prod(name="Адвент-календар конструктор 24 віконця", vendor="T", desc="", price=900)
 chk("адвент: картка з «адвент» у назві → advent-kalendari (і лише якщо сторінка в плані)", [u for u, _a in bs._collection_links(adv)] == ["advent-kalendari.html"])
+adv2 = prod(name="Адвент-календар конструктор 24 віконця", vendor="T", desc="Від 2 років", price=250)
+chk("порядок (SEO 21.11 20:43): тематичний добір першим, далі вік, далі бюджет, бренд останнім; максимум 3", [u for u, _a in bs._collection_links(adv2)] == ["advent-kalendari.html", "podarunok-na-2-roky.html", "podarunok-do-300-hrn.html"])
 chk("добір не лише з батьком «хаб подарунків» (SEO 21.11): зошит у косу лінію → zoshyty-u-kosu-liniiu (батько — категорія)", [u for u, _a in bs._collection_links(prod(name="Зошит у косу лінію 12 арк", vendor="T", desc="", price=900))] == ["zoshyty-u-kosu-liniiu.html"])
 cap_items = [{"id": str(i)} for i in range(bs.SELECTION_MAX_ITEMS)]
 bs._set_collection_rules([], [], [("zoshyty-u-kosu-liniiu", "Зошити", "t", "zoshyty", cap_items, {})])

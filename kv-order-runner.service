@@ -1,0 +1,14 @@
+[Unit]
+Description=PlutusToys: конвеєр замовлень KIDDISVIT (kv_order_runner.py — оплачене kv- замовлення → orders/create у B2B → своя ТТН НП із відділення Дніпро №28 → наліпка і накладна → ttn-data)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. За замовчуванням DRY-RUN: нічого не створюється, поки власник не виставить у /opt/plutustoys/.env ВСІ: KV_RUNNER_APPLY=1, NP_TTN_APPLY=1, KV_ORDERS_LIVE=1 + KV_RUNNER_SINCE=<ISO-дата>.
+# Код виходу 1 = у замовленні є проблема (див. journalctl -u kv-order-runner). Перший живий запуск — лише зі словом власника (гроші).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/kv_order_runner.py
+TimeoutStartSec=1200
+Nice=10

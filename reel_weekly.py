@@ -289,6 +289,31 @@ def queue_count(queue_dir):
     return len(_queue_manifests(queue_dir))
 
 
+def publishable_count(queue_dir, prices):
+    """Скільки рілсів у черзі ПРОЙДЕ перевірку publisher'а (reel_autopublish.check_item): файли на місці, у verify є товари і ВСІ вони в наявності на сайті
+    (є в `prices` = site_prices: s==1). Ціну publisher виправляє сам (refresh_prices), тож розбіжність у ціні рілс НЕ робить непридатним. Притримані рілси
+    (товар зник) у ціль НЕ рахуємо, інакше вони назавжди займають слоти й автозбирач не добирає заміну (21.11.2026: dough_02 і squish_02 → публікація стояла з 10.11).
+    Рілс із `<name>.publishing` (стан невідомий) теж не рахуємо. Повертає (придатних, [імена притриманих])."""
+    ok, held = 0, []
+    for name, mpath in _queue_manifests(queue_dir):
+        base = os.path.join(queue_dir, name)
+        try:
+            manifest = json.load(open(mpath, encoding="utf-8"))
+            ver = manifest.get("verify") if isinstance(manifest, dict) else None
+            mp4_ok = os.path.isfile(base + ".mp4") and os.path.getsize(base + ".mp4") > 0
+            cap_ok = os.path.isfile(base + ".caption.txt") and bool(open(base + ".caption.txt", encoding="utf-8").read().strip())
+        except (OSError, ValueError, TypeError, AttributeError):
+            held.append(name)
+            continue
+        ids = [str(v.get("id", "")) for v in ver if isinstance(v, dict)] if isinstance(ver, list) else []
+        if (not ids or any(not i or i not in prices for i in ids) or not (mp4_ok and cap_ok)
+                or os.path.exists(base + ".publishing")):
+            held.append(name)
+        else:
+            ok += 1
+    return ok, held
+
+
 def _next_slot_on_or_after(d):
     while d.weekday() not in (1, 4):
         d += timedelta(days=1)
@@ -561,11 +586,17 @@ def run_vps(ensure_slots=ENSURE_SLOTS, queue_dir=VPS_QUEUE, staging_dir=VPS_STAG
         if prices is None and not dry_run:
             import reel_batch
             prices = reel_batch.site_prices()
+        held = []
         if prices is not None and len(prices) >= 1000:
             refresh_queue(queue_dir, staging_dir, prices, alert)
-        have = queue_count(queue_dir)
+            have, held = publishable_count(queue_dir, prices)      # притримані (товар зник) не займають слоти: інакше заміни не буде (21.11.2026)
+        else:
+            have = queue_count(queue_dir)                          # ціни сайту неповні — як раніше (не вгадуємо, що придатне)
         need = min(MAX_PER_RUN, ensure_slots - have)
-        print(f"[reel_weekly] у черзі {have} рілсів, ціль {ensure_slots}, добираю {max(0, need)}")
+        print(f"[reel_weekly] у черзі {have} рілсів{' придатних до публікації (з ' + str(queue_count(queue_dir)) + ' у черзі)' if held else ''}, ціль {ensure_slots}, добираю {max(0, need)}")
+        if held:
+            alert("reel_weekly_held", "⚠️ reel-weekly: у черзі рілси, які publisher не пропустить (зник товар / файли / .publishing): " + ", ".join(held)
+                  + " — вони не рахуються в ціль, заміна добирається; ручні рілси автозбирач не виселяє (SMM: замінити товар у підписі/маніфесті або прибрати)")
         if need <= 0:
             return []
         if feed_file is None and os.path.isfile(VPS_FEED) and (datetime.now().timestamp() - os.path.getmtime(VPS_FEED)) / 3600 <= FEED_MAX_AGE_H:

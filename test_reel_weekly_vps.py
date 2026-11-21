@@ -241,6 +241,62 @@ try:
                     now_forbidden=lambda it: False, specs_dir=EMPTY, alert=lambda k, t: alerts.append((k, t)))
     chk("збій першого рілса: другий зібрано, сигнал reel_weekly_fail надіслано", len(b4) == 1 and [k for k, _ in alerts] == ["reel_weekly_fail"])
     chk("невдала спека не лишилась у _specs/ (не займає id/дату), у черзі лише успішний", sorted(os.listdir(stg4 / "_specs")) == [b4[0]["queue_name"] + ".json"] and rw.queue_count(str(q)) == 1)
+
+    # ── 5б. притримані рілси (зник товар) не займають слоти черги (21.11.2026: dough_02/squish_02 блокували добір заміни)
+    BIG = {x["id"]: int(x["pr"]) for x in items + filler}               # >= 1000 товарів у наявності -> ціни сайту «повні»
+    assert len(BIG) >= 1000
+    for p in list(q.glob("*")):
+        if p.is_file() and p.name != "published.json":
+            p.unlink()
+    some = [x["id"] for x in items[:12]]
+
+    def put(name, ids, price_off=0, mp4=True, cap=True, publishing=False, raw=None):
+        (q / f"{name}.json").write_text(raw if raw is not None else json.dumps({"verify": [{"id": i, "price": BIG.get(i, 1) + price_off} for i in ids], "not_before": "2026-11-24T00:00"}))
+        if mp4:
+            (q / f"{name}.mp4").write_bytes(b"v")
+        if cap:
+            (q / f"{name}.caption.txt").write_text("підпис")
+        if publishing:
+            (q / f"{name}.publishing").write_text("2026-11-20T18:31:00")
+
+    put("ok_a", some[0:3])
+    put("ok_price_drift", some[3:6], price_off=50)                      # ціна в маніфесті застаріла: publisher виправить сам -> придатний
+    put("held_oos", [some[6], "999999", some[7]])                       # товару нема в наявності -> притриманий
+    put("held_nocap", some[8:10], cap=False)
+    put("held_nomp4", some[8:10], mp4=False)
+    put("held_publishing", some[10:12], publishing=True)
+    put("held_empty_verify", [], raw=json.dumps({"verify": [], "not_before": "2026-11-24T00:00"}))
+    put("held_badjson", [], raw="{не json")
+    ok_n, held_n = rw.publishable_count(str(q), BIG)
+    chk("publishable_count: 2 придатні (звичайний і з застарілою ціною), решта 6 притримані", ok_n == 2 and sorted(held_n) == ["held_badjson", "held_empty_verify", "held_nocap", "held_nomp4", "held_oos", "held_publishing"])
+    chk("queue_count (стара метрика) рахує всі 8", rw.queue_count(str(q)) == 8)
+    for p in list(q.glob("*")):
+        if p.is_file() and p.name != "published.json":
+            p.unlink()
+    put("ok_a", some[0:3])
+    put("ok_b", some[3:6])
+    put("held_oos", [some[6], "999999", some[7]])
+    put("held_oos2", [some[8], "888888", some[9]])
+    alerts.clear()
+    b5 = rw.run_vps(ensure_slots=4, queue_dir=str(q), staging_dir=str(tmp / "staging5"), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(),
+                    now_forbidden=lambda it: False, specs_dir=EMPTY, alert=lambda k, t: alerts.append((k, t)), prices=BIG)
+    chk("run_vps: у черзі 4, але 2 притримані -> придатних 2, ціль 4 -> ДОБРАНО 2 (раніше «4 з 4, добираю 0»)", len(b5) == 2)
+    chk("сигнал reel_weekly_held називає притримані; ручні притримані НЕ виселено з черги", [k for k, _ in alerts] == ["reel_weekly_held"] and "held_oos" in alerts[0][1] and "held_oos2" in alerts[0][1]
+        and (q / "held_oos.json").exists() and (q / "held_oos2.json").exists() and rw.queue_count(str(q)) == 6)
+    alerts.clear()
+    b6 = rw.run_vps(ensure_slots=4, queue_dir=str(q), staging_dir=str(tmp / "staging5"), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(),
+                    now_forbidden=lambda it: False, specs_dir=EMPTY, alert=lambda k, t: alerts.append((k, t)), prices=BIG)
+    chk("повторний запуск: придатних 4 -> нічого не збирає (черга не росте без кінця)", b6 == [] and rw.queue_count(str(q)) == 6)
+    for p in list(q.glob("*")):
+        if p.is_file() and p.name != "published.json":
+            p.unlink()
+    put("ok_a", some[0:3])
+    put("held_oos", [some[6], "999999", some[7]])
+    SMALL = {k: v for k, v in list(BIG.items())[:50]}                   # ціни сайту неповні (< 1000) -> стара поведінка: рахуємо всі маніфести, нічого не вгадуємо
+    alerts.clear()
+    b7 = rw.run_vps(ensure_slots=4, queue_dir=str(q), staging_dir=str(tmp / "staging6"), today=date(2026, 10, 25), index=items + filler, feed=feed, demand=set(),
+                    now_forbidden=lambda it: False, specs_dir=EMPTY, alert=lambda k, t: alerts.append((k, t)), prices=SMALL)
+    chk("неповні ціни сайту (<1000) -> як раніше: у черзі 2, добирає 2, без сигналу reel_weekly_held", len(b7) == 2 and "reel_weekly_held" not in [k for k, _ in alerts])
 finally:
     reel_batch.process, reel_batch.site_prices = real_process, real_prices
 

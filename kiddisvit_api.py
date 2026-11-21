@@ -35,6 +35,15 @@ class KiddisvitError(Exception):
     """Збій API. У повідомленні немає ключа й тіла відповіді (лише код і шлях)."""
 
 
+# HTTP-коди запису, які однозначно означають «відхилено ДО обробки, замовлення НЕ створене» (валідація/авторизація/ліміт). Усе інше при запису (2xx крім чистого 200+success, 3xx, 408, 409, 5xx, обрив) = результат НЕВІДОМИЙ.
+WRITE_DEFINITE_REJECT = (400, 401, 403, 404, 405, 415, 422, 429)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None            # POST із ключем НЕ переходить за Location (urllib для 301/302 перейшов би GET-ом і переслав Authorization)
+
+
 class KiddisvitUncertain(KiddisvitError):
     """POST без автоповтору: запит міг дійти до KIDDISVIT, але результат невідомий (таймаут/обрив/5xx). Замовлення могло бути створене — автоповтору НЕМАЄ, лише людина (звірити в кабінеті/orders/search)."""
 
@@ -44,6 +53,7 @@ class KiddisvitClient:
         self._key = (key if key is not None else os.environ.get("KIDDISVIT_API_KEY", "")).strip()
         self.base = (base_url or BASE_URL).rstrip("/")
         self._opener = opener or self._urlopen
+        self._write_opener = opener or self._urlopen_write
         self._sleep = sleep
         self._clock = clock
         self._lock = threading.Lock()
@@ -52,6 +62,10 @@ class KiddisvitClient:
     @staticmethod
     def _urlopen(req, timeout):
         return urllib.request.urlopen(req, timeout=timeout)
+
+    @staticmethod
+    def _urlopen_write(req, timeout):
+        return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
 
     def has_key(self) -> bool:
         return bool(self._key)
@@ -68,6 +82,10 @@ class KiddisvitClient:
     def _request(self, method: str, path: str, body: dict | None = None, as_is: bool = False, retry: bool = True):
         """as_is=True — повернути розібраний JSON як є (orders/assembly відповідає {"success": …} без обгортки status/data). retry=False — БЕЗ автоповторів і з KiddisvitUncertain на
         невизначених збоях (POST orders/*: повтор міг би створити друге замовлення)."""
+        p_ = path.lstrip("/")
+        if method.upper() != "GET" and p_.startswith("orders/") and not p_.startswith("orders/search"):
+            self._need_live(p_)          # ворота діють на рівні _request, а не лише в обгортках (аудит #1933): будь-який POST orders/* крім search — лише за KV_ORDERS_LIVE=1 і без автоповторів
+            retry = False
         if not self._key:
             raise KiddisvitError("KIDDISVIT_API_KEY не задано")
         url = f"{self.base}/{path.lstrip('/')}"
@@ -81,7 +99,7 @@ class KiddisvitClient:
             self._throttle()
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             try:
-                with self._opener(req, TIMEOUT_S) as r:
+                with (self._opener if retry else self._write_opener)(req, TIMEOUT_S) as r:
                     raw = r.read().decode("utf-8", "replace")
                     status = getattr(r, "status", 200)
             except urllib.error.HTTPError as e:
@@ -96,7 +114,7 @@ class KiddisvitClient:
                         delay = 0.0
                     self._sleep(max(delay, 5.0 * (attempt + 1)))
                     continue
-                if not retry and status >= 500:
+                if not retry and status not in WRITE_DEFINITE_REJECT:
                     raise KiddisvitUncertain(f"{method} {path}: HTTP {status} (результат невідомий, автоповтору нема)") from None
                 raise KiddisvitError(f"{method} {path}: HTTP {status}") from None
             except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:      # HTTPException: IncompleteRead на великих відповідях (catalog/products ≈26 МБ) — не OSError
@@ -108,6 +126,8 @@ class KiddisvitClient:
                     raise KiddisvitUncertain(f"{method} {path}: {type(e).__name__} (результат невідомий, автоповтору нема)") from None
                 raise KiddisvitError(f"{method} {path}: {type(e).__name__}") from None
             if status != 200:
+                if not retry:
+                    raise KiddisvitUncertain(f"{method} {path}: HTTP {status} (не 200: результат невідомий, автоповтору нема)")      # 201/202/204/3xx при записі = можливо створено
                 raise KiddisvitError(f"{method} {path}: HTTP {status}")
             try:
                 d = json.loads(raw)
@@ -118,7 +138,10 @@ class KiddisvitClient:
             if as_is:
                 return d
             if not isinstance(d, dict) or d.get("status") != "success":
-                raise KiddisvitError(f"{method} {path}: status={str(d.get('status') if isinstance(d, dict) else type(d).__name__)[:30]}")
+                msg = f"{method} {path}: status={str(d.get('status') if isinstance(d, dict) else type(d).__name__)[:30]}"
+                if not retry:
+                    raise KiddisvitUncertain(msg + " (запис: 200 без status=success — перевірте в кабінеті/orders/search, автоповтору нема)")
+                raise KiddisvitError(msg)
             return d.get("data")
         raise KiddisvitError(f"{method} {path}: вичерпано спроби (останній збій {last_status})")
 
@@ -165,7 +188,9 @@ class KiddisvitClient:
         """POST orders/create → data: {number («КЗ-…»), id, status_OK (1 = сформовано/зарезервовано, 0 = створено, але НЕ зарезервовано), Comment, assembly, …}. Без автоповтору: невизначений збій → KiddisvitUncertain (замовлення могло бути створене)."""
         self._need_live("orders/create")
         d = self._request("POST", "orders/create", payload, retry=False)
-        return d if isinstance(d, dict) else {}
+        if not isinstance(d, dict) or not d:
+            raise KiddisvitUncertain("orders/create: success без data (результат невідомий, автоповтору нема)")
+        return d
 
     def orders_ttn_data(self, order_id: str, documents: list) -> list:
         """POST orders/delivery/ttn-data: documents=[{type: "marking"|"document", BinaryData: base64}]; відповідь — масив [{id, status, errorMessage}]. Без автоповтору."""

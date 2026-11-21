@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 test_kiddisvit_orders.py — етап А модуля замовлень KIDDISVIT (21.11.2026): kiddisvit_orders.py (чиста логіка) + методи запису в kiddisvit_api.py.
-ІНВАРІАНТИ: (1) запис (orders/create, ttn-data, assembly) ЛИШЕ за KV_ORDERS_LIVE=1 — інакше KiddisvitError ДО мережі; orders/search (читання) без воріт; (2) POST без автоповторів: 429/5xx/таймаут/не-JSON →
-KiddisvitUncertain, рівно ОДИН запит; 4xx → звичайний KiddisvitError; (3) assembly/ttn-data парсяться без обгортки status/data; (4) map_items: лише kv-/kvu-, є в постачальника, собівартість, ОДИН склад,
+ІНВАРІАНТИ: (1) запис (orders/create, ttn-data, assembly) ЛИШЕ за KV_ORDERS_LIVE=1 — інакше KiddisvitError ДО мережі; orders/search (читання) без воріт; (2) POST без автоповторів, рівно ОДИН запит: невизначене (5xx, таймаут, обрив, не-JSON, 200 без
+status=success, 2xx крім 200, 3xx, 408/409) → KiddisvitUncertain; однозначна відмова до обробки (400/401/403/404/405/415/422/429) → звичайний KiddisvitError; редірект не виконується;
+ворота діють і на рівні _request (будь-який POST orders/* крім search); (3) assembly/ttn-data парсяться без обгортки status/data; (4) map_items: лише kv-/kvu-, є в постачальника, собівартість, ОДИН склад,
 залишок ≥ кількості, ціна клієнта ≥ собівартості, однакові коди зливаються; (5) recipient/платіж/чек/платформа — перевірки до побудови запиту; (6) payload: my_ttn, без redelivery, Ref міста й відділення;
 (7) interpret_create: status_OK 0 → reserved=False; нема number/id → OrderBlocked. Без мережі. `python test_kiddisvit_orders.py` → exit 0/1.
 """
@@ -96,7 +97,39 @@ for label, script, exc in (("HTTP 500", [http_error(500)], api.KiddisvitUncertai
         got = None
     except api.KiddisvitError as e:
         got = e
-    chk(f"orders_create {label}: помилка {exc.__name__}, РІВНО 1 запит (автоповтору нема)", isinstance(got, exc) and len(f.calls) == 1)
+    chk(f"orders_create {label}: помилка {exc.__name__} (точний тип), РІВНО 1 запит (автоповтору нема)", type(got) is exc and len(f.calls) == 1)
+for code in (201, 202, 204):
+    c, f = client([Resp(json.dumps({"status": "success", "data": {"number": "КЗ-1", "id": "x"}}), status=code)])
+    try:
+        c.orders_create({"a": 1})
+        got = None
+    except api.KiddisvitError as e:
+        got = e
+    chk(f"orders_create HTTP {code} (не чистий 200): KiddisvitUncertain, 1 запит (раніше ставало «точно не створено»)", type(got) is api.KiddisvitUncertain and len(f.calls) == 1)
+for code in (301, 302, 307, 308, 408, 409, 502, 524):
+    c, f = client([http_error(code)])
+    try:
+        c.orders_create({"a": 1})
+        got = None
+    except api.KiddisvitError as e:
+        got = e
+    chk(f"orders_create HTTP {code}: KiddisvitUncertain, 1 запит", type(got) is api.KiddisvitUncertain and len(f.calls) == 1)
+for code in (400, 401, 403, 404, 405, 415, 422, 429):
+    c, f = client([http_error(code)])
+    try:
+        c.orders_create({"a": 1})
+        got = None
+    except api.KiddisvitError as e:
+        got = e
+    chk(f"orders_create HTTP {code}: однозначна відмова KiddisvitError (не Uncertain), 1 запит, без тіла в повідомленні", type(got) is api.KiddisvitError and len(f.calls) == 1 and "SECRET" not in str(got))
+chk("POST із ключем НЕ йде за редіректом (NoRedirect.redirect_request → None)", api._NoRedirect().redirect_request(None, None, 302, "Found", {}, "http://x") is None)
+c, f = client([Resp(json.dumps({"status": "success", "data": {}}))])
+try:
+    c.orders_create({"a": 1})
+    got = None
+except api.KiddisvitError as e:
+    got = e
+chk("orders_create: success з порожнім data → KiddisvitUncertain (раніше мовчки {})", type(got) is api.KiddisvitUncertain)
 c, f = client([http_error(400)])
 try:
     c.orders_create({"a": 1})
@@ -110,7 +143,28 @@ try:
     got = None
 except api.KiddisvitError as e:
     got = e
-chk("status≠success у відповіді → KiddisvitError", got is not None)
+chk("запис: 200 зі status≠success → KiddisvitUncertain (НЕ «точно не створено»), 1 запит", type(got) is api.KiddisvitUncertain and len(f.calls) == 1)
+# ворота на рівні _request
+os.environ.pop("KV_ORDERS_LIVE", None)
+c, f = client([Resp(json.dumps({"status": "success", "data": {"x": 1}}))])
+try:
+    c._request("POST", "orders/create", {"a": 1})
+    got = None
+except api.KiddisvitError as e:
+    got = e
+chk("_request('POST','orders/create') напряму БЕЗ KV_ORDERS_LIVE=1 → відмова ДО мережі", got is not None and not f.calls)
+c, f = client([http_error(503), Resp(json.dumps({"status": "success", "data": {}}))])
+os.environ["KV_ORDERS_LIVE"] = "1"
+try:
+    c._request("POST", "orders/anything", {"a": 1}, retry=True)       # навіть із retry=True запис orders/* без автоповторів
+    got = None
+except api.KiddisvitError as e:
+    got = e
+chk("_request POST orders/*: retry=True ігнорується — 503 → Uncertain, 1 запит", type(got) is api.KiddisvitUncertain and len(f.calls) == 1)
+c, f = client([http_error(503), Resp(json.dumps({"status": "success", "data": {"products": []}}))])
+c.prices_by_brand("c", "k", "b")
+chk("читальний POST products/rests/prices ЛИШАЄТЬСЯ з автоповтором (503 → 200, 2 запити)", len(f.calls) == 2)
+os.environ["KV_ORDERS_LIVE"] = "1"
 
 # ── 3. assembly / ttn-data без обгортки; search — читання без воріт
 c, f = client([Resp(json.dumps({"success": True}))])
@@ -129,8 +183,8 @@ SUP = {"kv-100": {"cost": 100.0, "warehouse": "Dnepr", "stock": 50, "name": "Ф�
 
 
 def order(items, **kw):
-    o = {"internal_order_id": "site_77", "platform": "site", "payment_method": "prepaid", "payment_confirmed": 1, "checkbox_receipt_id": "rc1", "customer_name": "Іваненко Марія", "phone": "0971234567",
-         "np_city_ref": "city-ref", "np_ref_id": "wh-ref", "items": items}
+    o = {"internal_order_id": "site_77", "platform": "site", "payment_method": "prepaid", "payment_confirmed": 1, "checkbox_ettn_registered_at": "2026-11-21T10:00:00", "customer_name": "Іваненко Марія", "phone": "0971234567",
+         "np_city_ref": "city-ref", "np_warehouse_number": "28", "items": items}
     o.update(kw)
     return o
 
@@ -154,6 +208,10 @@ chk("склади Dnepr+NTV20 в одному замовленні → OrderBloc
 chk("ціна клієнта 90 < собівартості 100 → OrderBlocked (збиток)", "нижча за собівартість" in (blocked(lambda: ko.map_items(order([it("kv-100", 1, 90)]), SUP)) or ""))
 chk("кількість 0, 51 і «x» → OrderBlocked", all(blocked(lambda q=q: ko.map_items(order([it("kv-100", q)]), SUP)) for q in (0, 51, "x")))
 chk("порожнє замовлення → OrderBlocked", blocked(lambda: ko.map_items(order([]), SUP)) is not None)
+chk("кількість True/2.5 → OrderBlocked (раніше тихо 1/2); 2.0 → 2", blocked(lambda: ko.map_items(order([it("kv-100", True)]), SUP)) and blocked(lambda: ko.map_items(order([it("kv-100", 2.5)]), SUP))
+    and ko.map_items(order([it("kv-100", 2.0)]), SUP)[0]["qty"] == 2)
+chk("ціна NaN / inf / 0 → OrderBlocked", all(blocked(lambda p=p: ko.map_items(order([it("kv-100", 1, p)]), SUP)) for p in (float("nan"), float("inf"), 0)))
+chk("злиття 30+30=60 > 50 → OrderBlocked (ліміт після злиття)", "сумарна" in (blocked(lambda: ko.map_items(order([it("kv-100", 30), it("kv-100", 30)]), SUP)) or ""))
 bad = dict(SUP, **{"kv-300": {"cost": 0, "warehouse": "Dnepr", "stock": 5}, "kv-301": {"cost": 5, "warehouse": "Kyiv", "stock": 5}})
 chk("нульова собівартість / невідомий склад → OrderBlocked", blocked(lambda: ko.map_items(order([it("kv-300")]), bad)) and blocked(lambda: ko.map_items(order([it("kv-301")]), bad)))
 chk("product_id: kv-, kvu-, сміття", ko.product_id("KV-12") == "12" and ko.product_id("kvu-9") == "9" and ko.product_id("rt-1") == "" and ko.product_id("kv-../x") == "")
@@ -162,29 +220,49 @@ chk("product_id: kv-, kvu-, сміття", ko.product_id("KV-12") == "12" and ko
 chk("recipient: «0971234567» → +380971234567", ko.recipient(order([]))[1] == "+380971234567" and ko.recipient(order([]))[0] == "Іваненко Марія")
 chk("recipient: ім'я з одного слова / короткий телефон → OrderBlocked", blocked(lambda: ko.recipient(order([], customer_name="Марія"))) and blocked(lambda: ko.recipient(order([], phone="12345"))))
 IDS = {"OrganizationID": "o", "ClientID": "c", "ContractID": "k", "shopID": "s"}
-ok_rep = ko.dry_run(order([it("kv-100", 2)]), SUP, IDS)
+LOOK = lambda city, num: "wh-ref" if (city, num) == ("city-ref", "28") else None
+ok_rep = ko.dry_run(order([it("kv-100", 2)]), SUP, IDS, LOOK)
 chk("dry_run: придатне замовлення → ok, payload, собівартість 200", ok_rep["ok"] and ok_rep["payload"] and ok_rep["cost_total"] == 200.0 and ok_rep["items"] == [("kv-100", 2, "Dnepr")])
 p = ok_rep["payload"]
 chk("payload: my_ttn=true, БЕЗ redelivery, delivery_payer=recipient, NewPost/DeliveryServiceWarehouse, Ref міста/відділення, Items[Product,Warehouse,Quantity]",
     p["my_ttn"] is True and "redelivery" not in p and p["delivery_payer"] == "recipient" and p["deliveryService"] == "NewPost" and p["Shipment"] == "DeliveryServiceWarehouse"
     and p["DeliveryCity"] == "city-ref" and p["DeliveryWarehouse"] == "wh-ref" and p["Items"] == [{"Product": "100", "Warehouse": "Dnepr", "Quantity": 2}] and p["recipient_phone"] == "+380971234567")
 for label, kw, frag in (("COD", {"payment_method": "cod"}, "передоплат"), ("не підтверджено", {"payment_confirmed": 0}, "передоплат"), ("не з сайту", {"platform": "rozetka"}, "платформа"),
-                        ("скасоване", {"cancelled_at": "2026-11-21"}, "скасоване"), ("sandbox", {"status": "sandbox_test"}, "скасоване"), ("без чека", {"checkbox_receipt_id": None}, "чек"),
-                        ("без Ref відділення", {"np_ref_id": ""}, "відділення НП"), ("без Ref міста", {"np_city_ref": None}, "відділення НП")):
-    r = ko.dry_run(order([it("kv-100")], **kw), SUP, IDS)
+                        ("скасоване", {"cancelled_at": "2026-11-21"}, "скасоване"), ("sandbox", {"status": "sandbox_test"}, "скасоване"), ("без чека", {"checkbox_ettn_registered_at": None}, "чек"),
+                        ("чек повернення", {"refund_receipt_at": "2026-11-21"}, "повернен"), ("claim чека повернення", {"refund_receipt_claim_at": "2026-11-21"}, "повернен"),
+                        ("доставка returned", {"delivery_status": "returned"}, "повернен"), ("доставка cancelled", {"delivery_status": "cancelled"}, "повернен"),
+                        ("eva_cancelled_before_forward", {"status": "eva_cancelled_before_forward"}, "скасоване"),
+                        ("без номера відділення", {"np_warehouse_number": ""}, "відділення НП"), ("без Ref міста", {"np_city_ref": None}, "відділення НП")):
+    r = ko.dry_run(order([it("kv-100")], **kw), SUP, IDS, LOOK)
     chk(f"dry_run: {label} → НЕ ok, причина містить «{frag}»", (not r["ok"]) and frag in " ".join(r["problems"]) and r["payload"] is None)
-chk("dry_run: нема ClientID у clients/list → не ok", not ko.dry_run(order([it("kv-100")]), SUP, dict(IDS, ClientID=""))["ok"])
-chk("dry_run нічого не кидає назовні і не змінює замовлення", ko.dry_run({}, SUP, IDS)["ok"] is False)
+chk("dry_run: нема ClientID у clients/list → не ok", not ko.dry_run(order([it("kv-100")]), SUP, dict(IDS, ClientID=""), LOOK)["ok"])
+chk("dry_run нічого не кидає назовні (порожнє замовлення, None, items-рядок, ids=None)", ko.dry_run({}, SUP, IDS)["ok"] is False and ko.dry_run(None, SUP, IDS)["ok"] is False
+    and ko.dry_run(order("рядок"), SUP, IDS)["ok"] is False and ko.dry_run(order([it("kv-100")]), SUP, None, LOOK)["ok"] is False)
+# Ref відділення: сайтове замовлення без np_ref_id
+r_nol = ko.dry_run(order([it("kv-100")]), SUP, IDS)
+chk("сайтове замовлення БЕЗ np_ref_id і без lookup → заблоковано чесною причиною (резолв — етап Б)", (not r_nol["ok"]) and "резолв" in " ".join(r_nol["problems"]))
+chk("lookup повернув None → «не знайдено в довіднику НП»", "не знайдено" in " ".join(ko.dry_run(order([it("kv-100")]), SUP, IDS, lambda c, n: None)["problems"]))
+def _boom(c, n):
+    raise RuntimeError("down")
+chk("lookup кинув виняток → блок «довідник НП недоступний», без винятку назовні", "недоступний" in " ".join(ko.dry_run(order([it("kv-100")]), SUP, IDS, _boom)["problems"]))
+chk("є np_ref_id (Rozetka/Prom/EVA) → береться він, lookup не потрібен", ko.dry_run(order([it("kv-100")], np_ref_id="given-ref"), SUP, IDS)["payload"]["DeliveryWarehouse"] == "given-ref")
 before = json.dumps(order([it("kv-100")]), sort_keys=True)
 o = order([it("kv-100")])
-ko.dry_run(o, SUP, IDS)
+ko.dry_run(o, SUP, IDS, LOOK)
 chk("dry_run не мутує вхідне замовлення", json.dumps(o, sort_keys=True) == before)
 
 # ── 6. interpret_create
 chk("interpret_create: status_OK=1 → reserved", ko.interpret_create({"number": "КЗ-1128886", "id": "i1", "status_OK": 1}) == {"number": "КЗ-1128886", "id": "i1", "reserved": True, "comment": ""})
 r0 = ko.interpret_create({"number": "КЗ-2", "id": "i2", "status_OK": 0, "Comment": "Замовлення створено, але не проведено і товар не зарезервовано"})
 chk("interpret_create: status_OK=0 → reserved=False + Comment (ручне рішення)", r0["reserved"] is False and "не зарезервовано" in r0["comment"])
-chk("interpret_create: без number або id → OrderBlocked", blocked(lambda: ko.interpret_create({"id": "x"})) and blocked(lambda: ko.interpret_create({"number": "КЗ-1"})) and blocked(lambda: ko.interpret_create(None)))
+def uncertain(fn):
+    try:
+        fn()
+        return False
+    except api.KiddisvitUncertain:
+        return True
+chk("interpret_create: без number або id → KiddisvitUncertain (НЕ OrderBlocked: create міг пройти, повтор заборонено)",
+    uncertain(lambda: ko.interpret_create({"id": "x"})) and uncertain(lambda: ko.interpret_create({"number": "КЗ-1"})) and uncertain(lambda: ko.interpret_create(None)))
 
 print()
 if F:

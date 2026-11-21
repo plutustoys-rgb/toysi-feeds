@@ -145,6 +145,8 @@ chk("блок «Розмальовки-книжки й набори»: живі 
 hub = pg("rozmalovky.html")
 chk("хаб: посилання на 3 добірки, усі 20 прев'ю без дублів", all(f'href="{s}.html"' in hub for s in bs.COLORING_SUBPAGES) and hub.count('class="coloring-sheet"') == 20)
 idx_h = pg("index.html")
+ig_h = pg("ig.html")
+chk("/ig.html (SMM 21.11): смужка «Безкоштовні розмальовки з Плутусом» → rozmalovky.html, один раз, перед сіткою/кнопкою каталогу", ig_h.count('class="coloring-strip"') == 1 and 'class="coloring-strip"><a href="rozmalovky.html"><b>Безкоштовні розмальовки з Плутусом</b>' in ig_h and ig_h.index('class="ig-lead"') < ig_h.index('class="coloring-strip"') < ig_h.index('class="ig-all"'))
 chk("головна (SMM 21.11): смужка «Безкоштовні розмальовки з Плутусом» → rozmalovky.html у верхній частині — між героєм і каруселлю, один раз", idx_h.count('class="coloring-strip"') == 1 and 'class="coloring-strip"><a href="rozmalovky.html"><b>Безкоштовні розмальовки з Плутусом</b>' in idx_h and idx_h.index('class="hero2"') < idx_h.index('class="coloring-strip"') < idx_h.index('class="sec-title more-title"'))
 chk("футер: «Розмальовки для друку» → rozmalovky.html на головній і на сторінці добірки", 'href="rozmalovky.html">Розмальовки для друку<' in idx_h and 'href="rozmalovky.html">Розмальовки для друку<' in h)
 chk("сторінки категорій розмальовок (Класичні, Водні, «Розмальовки та розпис») лінкують на хаб (notice); Машинки — ні",

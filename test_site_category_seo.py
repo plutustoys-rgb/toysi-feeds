@@ -281,6 +281,10 @@ chk("Q10 (SEO 21.11): 13 нових перекрить категорій у р�
 chk("«Настільні ігри» (SEO 21.11 21:01): slug nastilni-ihry у реальному category_seo.json завантажений; title ≤ TITLE_MAX, 3–6 FAQ, без кутових дужок; запит «настольные игры» і «зокрема» (відкритий перелік) на місці",
     "nastilni-ihry" in _real_seo and len(_real_seo["nastilni-ihry"]["title"]) <= bs.TITLE_MAX and bs.CATEGORY_SEO_FAQ_MIN <= len(_real_seo["nastilni-ihry"]["faq"]) <= bs.CATEGORY_SEO_FAQ_MAX
     and "<" not in str(_real_seo["nastilni-ihry"]) and ">" not in str(_real_seo["nastilni-ihry"]) and "настольные игры" in _real_seo["nastilni-ihry"]["intro"] and "зокрема" in _real_seo["nastilni-ihry"]["intro"])
+Q11_SLUGS = ('lol', 'inshi-pazly', 'supermarket', 'koliasky-dlia-lialok', 'horshchyky-i-vannochky', 'konstruktory', 'boks', 'mashynky-na-batarey-kakh', 'samokaty-chotyrykolisni', 'pazly-castorland', 'mebli-dlia-lialok', 'metalevi-konstruktory', 'khudozhni-knyhy')
+chk("Q11 (SEO 21.11 22:13): 13 нових перекрить категорій у реальному category_seo.json завантажені; title ≤ TITLE_MAX, 3–6 FAQ, без кутових дужок, H1 не порожній, поле _звірка не потрапило",
+    all(s_ in _real_seo and len(_real_seo[s_]["title"]) <= bs.TITLE_MAX and bs.CATEGORY_SEO_FAQ_MIN <= len(_real_seo[s_]["faq"]) <= bs.CATEGORY_SEO_FAQ_MAX
+        and "<" not in str(_real_seo[s_]) and ">" not in str(_real_seo[s_]) and _real_seo[s_]["h1"].strip() and "_звірка" not in str(_real_seo[s_]) for s_ in Q11_SLUGS))
 _cnt_rx = re.compile(r"\d+\s+з\s+\d+|у розділі\s+\d|у назвах\s+\d|\d+\s+(?:товар|набор|модел|іграш|виріб|позиц)", re.I)
 _cnt_bad = {k_: _cnt_rx.findall(" ".join([v_["intro"]] + [q_ + " " + a_ for q_, a_ in v_["faq"]])) for k_, v_ in _real_seo.items()}
 chk("правило SEO 21.11: у вступі й FAQ category_seo.json нема лічильників складу («N з M», «у розділі N», «N товарів/наборів/моделей…») — вони застарівають з наявністю: " + str({k_: m_ for k_, m_ in _cnt_bad.items() if m_}), not any(_cnt_bad.values()))

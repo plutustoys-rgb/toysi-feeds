@@ -4084,6 +4084,13 @@ def _load_ig_reels():
     return merged[:6]
 
 
+def _coloring_strip_html():
+    """Смужка-посилання на безкоштовні розмальовки (SMM 21.11): лише коли хаб розмальовок справді збудовано (COLORING_BUILT)."""
+    if not COLORING_BUILT:
+        return ""
+    return f'<p class="coloring-strip"><a href="{COLORING_HUB_FILE}"><b>Безкоштовні розмальовки з Плутусом</b><span> — завантажити й роздрукувати</span></a></p>'
+
+
 def write_ig(prods):
     """Сторінка /ig.html: сітка з товарів ig_featured.json, ЛИШЕ в наявності (нема — не показуємо, у лог іде попередження). noindex (кампанійна сторінка), canonical без параметрів
     (utm не плодять дублів). Не в sitemap (noindex). Трекінг: view_item_list/select_item з item_list_name «ig_landing» (assets/app.js, initListTracking)."""
@@ -4107,6 +4114,7 @@ def write_ig(prods):
             body = (
                 '<h1 class="page">З Instagram: що показали Плутус</h1>'
                 '<p class="ig-lead">Ці товари з наших останніх відео.</p>'
+                + _coloring_strip_html() +
                 f'<div class="ig-list" id="ig-list" data-list="{IG_LIST_NAME}">' + "".join(secs) + '</div>'
                 '<p class="ig-all"><a class="btn" href="catalog.html">Усі іграшки</a></p>'
             )
@@ -4130,6 +4138,7 @@ def write_ig(prods):
     body = (
         '<h1 class="page">З Instagram: що показали Плутус</h1>'
         f'<p class="ig-lead">{esc(lead)}</p>'
+        + _coloring_strip_html() +
         f'{grid_html}'
         '<p class="ig-all"><a class="btn" href="catalog.html">Усі іграшки</a></p>'
     )

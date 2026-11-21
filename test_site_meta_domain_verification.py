@@ -24,6 +24,7 @@ def chk(n, c):
 
 
 TAG = '<meta name="facebook-domain-verification" content="zrxty9pynr6k0qh1y1tpgzkfyliv7s" />'
+PIN = '<meta name="p:domain_verify" content="7082b41dee053ccc3daa41b03c94262d" />'
 chk("константа — токен Meta Business «PlutusToys» від SEO", bs.META_DOMAIN_VERIFICATION == "zrxty9pynr6k0qh1y1tpgzkfyliv7s")
 tmp = tempfile.mkdtemp()
 bs.OUT = tmp
@@ -33,6 +34,7 @@ for name, kw in (("p1.html", {}), ("p2.html", {"noindex": True}), ("p3.html", {"
     head = h.split("</head>")[0]
     chk(f"{name}: тег у <head>, рівно один: {kw}", head.count(TAG) == 1 and h.count("facebook-domain-verification") == 1)
     chk(f"{name}: тег Search Console лишився на місці", head.count('name="google-site-verification"') == 1)
+    chk(f"{name}: тег Pinterest (SMM 21.11) у <head>, рівно один", head.count(PIN) == 1 and h.count("p:domain_verify") == 1)
 print()
 if F:
     print(f"FAILED ({len(F)}):")

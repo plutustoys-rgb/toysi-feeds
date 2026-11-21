@@ -266,6 +266,11 @@ chk("чип: без хаба посилання нема", 'href="podarunky.html
 real_t = bs._load_gift_texts()
 real_p = bs._load_porady()
 chk(f"реальний site/gift_pages.json: усі {len(bs.GIFT_PAGES)} slug з текстом (вступ 80–150 слів, ≥3 питань)", set(real_t) == {s_ for s_, _h, _l, _r in bs.GIFT_PAGES} and all(80 <= len(v["intro"].split()) <= 150 and len(v["faq"]) >= 3 for v in real_t.values()))
+AGE_SLUGS = ("podarunok-na-1-rik", "podarunok-na-2-roky", "podarunok-na-3-roky", "podarunok-na-5-rokiv", "podarunok-na-7-rokiv", "podarunok-na-10-rokiv")
+chk("вікові сторінки (SEO 21.11): 5 FAQ (3 + «хлопчику/дівчинці» + «похреснику/похресниці»), ≤ GIFT_FAQ_MAX, обидва нових питання на місці, без кутових дужок",
+    all(len(real_t[s_]["faq"]) == 5 and len(real_t[s_]["faq"]) <= bs.GIFT_FAQ_MAX and "хлопчику чи дівчинці" in real_t[s_]["faq"][3][0] and "похреснику чи похресниці" in real_t[s_]["faq"][4][0]
+        and "<" not in str(real_t[s_]["faq"]) and ">" not in str(real_t[s_]["faq"]) for s_ in AGE_SLUGS))
+chk("решта сторінок подарунків лишилась із 3 FAQ (нові FAQ — лише на вікових)", all(len(v["faq"]) == 3 for k, v in real_t.items() if k not in AGE_SLUGS))
 chk("реальний site/porady.json: 3 статті, ≥3 розділів, дата РРРР-ММ-ДД", set(real_p) == set(bs.PORADY_SLUGS) and all(len(v["sections"]) >= 3 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v["published"]) for v in real_p.values()))
 _sec = re.compile(r"\b[а-яіїєґ'ʼ]{1,}(?:єш|еш|иш|їш)(?:ся)?\b", re.I)
 _bad = re.compile(r"безпечн|ліценз|оригінал|офіційн|найкращ|гарн|приємн|чудов", re.I)

@@ -10,7 +10,9 @@
 Запуск: kv-order-runner.timer (VPS, кожні 15 хв; без kv-замовлень — миттєвий вихід). Збій → один алерт на замовлення/стан/добу."""
 import base64
 import json
+import math
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +26,9 @@ MAX_ORDERS_PER_RUN = 3
 STUCK = ("kv_creating", "kv_unknown", "ttn_creating")
 ACTION_STATES = (None, "kv_created", "ttn_created", "docs_ready")      # стани, де runner робить КРОК (решта — лише спостереження/сигнал)
 SENDER_KIND = "kv"
+MAX_RETRIES = 3                      # визначені відмови orders/create і збої ttn-data: після 3 спроб — manual (аудит #1946, знахідки 1–2)
+_GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_ATTEMPT_RE = re.compile(r"^\[n=(\d+)\]")
 
 
 class RunnerError(Exception):
@@ -84,7 +89,17 @@ class _Deps:
         """{ProductID: {WarehouseID: Rest}} — свіжі залишки всього каталогу (GET, читання)."""
         out = {}
         for p in self.client.rests():
-            out[str(p.get("ProductID"))] = {str(w.get("WarehouseID")): w.get("Rest") for w in (p.get("rest") or [])}
+            one = {}
+            for w in (p.get("rest") or []):                                 # кілька рядків ОДНОГО складу в одному товарі — додаємо (як kv_supplier_export.stock_of)
+                try:
+                    q = float(w.get("Rest"))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(q) and q >= 0:
+                    one[str(w.get("WarehouseID"))] = one.get(str(w.get("WarehouseID")), 0.0) + q
+            row = out.setdefault(str(p.get("ProductID")), {})
+            for k, q in one.items():                                         # той самий ProductID двічі на верхньому рівні — береться БІЛЬШЕ ЗНАЧЕННЯ НЕ сума: дубль не має завищувати залишок (аудит #1948, знахідка 5)
+                row[k] = max(row.get(k, 0.0), q)
         return out
 
     def create_order(self, payload: dict) -> dict:
@@ -117,6 +132,28 @@ class _Deps:
     def push_docs(self, kv_order_id: str, paths: dict) -> list:
         docs = [{"type": k, "BinaryData": base64.b64encode(Path(paths[k]).read_bytes()).decode("ascii")} for k in ("marking", "document")]
         return self.client.orders_ttn_data(kv_order_id, docs)
+
+
+def _attempts(order: dict) -> int:
+    """Лічильник спроб кроку живе в префіксі kv_error: «[n=2] …». Нема префікса → 0."""
+    m = _ATTEMPT_RE.match(str(order.get("kv_error") or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _rest_qty(rests: dict, product, warehouse):
+    """Залишок товару на складі: ключ складу без урахування регістру, значення '7.0'/7 → float; нема/некоректно → None."""
+    row = rests.get(str(product)) or {}
+    want = str(warehouse).strip().lower()
+    got = None
+    for k, v in row.items():
+        if str(k).strip().lower() == want:
+            try:
+                q = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(q) and q >= 0:
+                got = (got or 0.0) + q
+    return got
 
 
 def _ttn_extra(number: str) -> dict:
@@ -176,6 +213,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
     oid = order["internal_order_id"]
     state = order.get("kv_state")
     rep = {"order": oid, "state": state, "apply": apply, "actions": [], "problems": []}
+    attempt = {"n": 0}
     try:
         if state in STUCK:
             hint = _reconcile_hint(d, order) if state in ("kv_creating", "kv_unknown") else ""
@@ -187,11 +225,13 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             plan = ko.dry_run(order, supplier, ids, d.lookup)
             if not plan["ok"]:
                 raise RunnerError("; ".join(plan["problems"]))
+            if str(order.get("toysi_ttn") or "").strip() or str(order.get("delivery_status") or "").strip():
+                raise RunnerError("у замовлення вже є ТТН/статус доставки (оформлено вручну?) — автоматично не створюю, потрібне рішення людини (аудит #1946, знахідка 4)")
             rests = d.rests()
             for it in plan["payload"]["Items"]:
-                have = (rests.get(str(it["Product"])) or {}).get(str(it["Warehouse"]))
+                have = _rest_qty(rests, it["Product"], it["Warehouse"])
                 try:
-                    ok = int(have) >= int(it["Quantity"])
+                    ok = have is not None and have >= int(it["Quantity"])
                 except (TypeError, ValueError):
                     ok = False
                 if not ok:
@@ -213,9 +253,17 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 orders_db.set_kv_state(conn, oid, "kv_unknown", kv_error=str(e)[:300])
                 conn.commit()
                 raise RunnerError(f"orders/create: результат невідомий ({str(e)[:160]}) — стан kv_unknown, повтору немає")
-            except KiddisvitError as e:           # визначена відмова ДО створення (4xx/ворота): повертаємо крок
+            except KiddisvitError as e:           # визначена відмова ДО створення (4xx/ворота): повертаємо крок, але не безкінечно
+                n = _attempts(order) + 1
+                attempt["n"] = n
+                if n >= MAX_RETRIES:
+                    orders_db.set_kv_state(conn, oid, "manual", kv_error=f"[n={n}] orders/create відхилено {n} рази: {str(e)[:200]}")
+                    conn.commit()
+                    _alert(oid, "reject_limit", f"orders/create відхилено {n} рази поспіль ({str(e)[:160]}) — автоповтор зупинено (стан manual): перевірте дані замовлення/кабінет KIDDISVIT")
+                    rep["actions"].append(f"відмова ×{n} → manual")
+                    return rep
                 _release_claim(conn, oid, "kv_creating")
-                raise RunnerError(f"orders/create відхилено: {str(e)[:200]}")
+                raise RunnerError(f"orders/create відхилено (спроба {n} з {MAX_RETRIES}): {str(e)[:200]}")
             if not res["reserved"]:
                 orders_db.set_kv_state(conn, oid, "manual", kv_order_number=res["number"], kv_order_id=res["id"], kv_error=("створено, але НЕ зарезервовано: " + res["comment"])[:300])
                 conn.commit()
@@ -227,7 +275,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             print(f"[kv_runner] {oid}: замовлення KIDDISVIT {res['number']} (id {res['id']})", flush=True)
             rep["actions"].append(f"замовлення KIDDISVIT {res['number']}")
             state = "kv_created"
-            order = {**order, "kv_state": state, "kv_order_number": res["number"], "kv_order_id": res["id"]}
+            order = {**order, "kv_state": state, "kv_order_number": res["number"], "kv_order_id": res["id"], "kv_error": None}
         if state == "kv_created":
             if not apply:
                 return rep
@@ -238,13 +286,19 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             d.ttn_dry_run(order, extra)                                         # валідація ДО claim: збій тут ще не «невідомий результат»
             if not orders_db.claim_kv_state(conn, oid, "kv_created", "ttn_creating"):
                 raise RunnerError("замовлення вже взяте іншим запуском (claim) — пропускаю")
-            res = d.create_ttn(order, extra)                                    # будь-який збій тут лишає ttn_creating (STUCK): ТТН могла створитись
+            try:
+                res = d.create_ttn(order, extra)                                # будь-який збій тут лишає ttn_creating (STUCK): ТТН могла створитись
+            except Exception as e:  # noqa: BLE001
+                raise RunnerError(f"створення ТТН: результат НЕВІДОМИЙ ({type(e).__name__}); ТТН могла бути створена — НЕ виставляйте kv_created без звірки в кабінеті НП (знахідка 7)") from None
+            if not isinstance(res, dict) or res.get("dry_run") or not str(res.get("number") or "").strip() or not _GUID_RE.match(str(res.get("ref") or "")):
+                raise RunnerError(f"створення ТТН: відповідь без номера/Ref або dry-run (номер у відповіді: {res.get('number') if isinstance(res, dict) else None}) — ТТН могла бути створена; стан ttn_creating, звірте кабінет НП (знахідка 5)")
+            print(f"[kv_runner] {oid}: ТТН НП створено {res['number']} (ref {res['ref']}) — далі запис у БД", flush=True)      # номер у журналі ДО запису в БД (як у rt_order_runner)
             orders_db.set_kv_state(conn, oid, "ttn_created", kv_ttn_ref=res["ref"], toysi_ttn=res["number"], kv_error=None)
             conn.commit()
             print(f"[kv_runner] {oid}: ТТН НП {res['number']} (ref {res['ref']})", flush=True)
             rep["actions"].append(f"ТТН {res['number']}")
             state = "ttn_created"
-            order = {**order, "kv_state": state, "kv_ttn_ref": res["ref"], "toysi_ttn": res["number"]}
+            order = {**order, "kv_state": state, "kv_ttn_ref": res["ref"], "toysi_ttn": res["number"], "kv_error": None}
         if state == "ttn_created":
             if not apply:
                 return rep
@@ -253,7 +307,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             conn.commit()
             rep["actions"].append("наліпка 100×100 і накладна збережені")
             state = "docs_ready"
-            order = {**order, "kv_state": state, "kv_docs_path": json.dumps(paths, ensure_ascii=False)}
+            order = {**order, "kv_state": state, "kv_docs_path": json.dumps(paths, ensure_ascii=False), "kv_error": None}
         if state == "docs_ready":
             if not apply:
                 return rep
@@ -261,11 +315,23 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                 paths = json.loads(order.get("kv_docs_path") or "{}")
             except ValueError:
                 paths = {}
+            n = _attempts(order) + 1
+            attempt["n"] = n                                                # рахуємо спробу й коли PDF зник/виняток не з KIDDISVIT (аудит #1948, знахідка 3)
             if not all(paths.get(k) and Path(paths[k]).is_file() for k in ("marking", "document")):
                 raise RunnerError("файли наліпки/накладної не знайдені — перезбережіть (kv_state=ttn_created)")
-            res = d.push_docs(str(order["kv_order_id"]), paths)
-            if not docs_push_ok(res):
-                raise RunnerError(f"ttn-data: відповідь неоднозначна/з помилкою ({json.dumps(res, ensure_ascii=False, default=str)[:200]}) — документи не підтверджені, повтор наступного циклу")
+            try:
+                res = d.push_docs(str(order["kv_order_id"]), paths)
+                bad = None if docs_push_ok(res) else f"відповідь неоднозначна/з помилкою ({json.dumps(res, ensure_ascii=False, default=str)[:200]})"
+            except KiddisvitError as e:       # у т.ч. KiddisvitUncertain: ідемпотентність ttn-data не підтверджена — повторюємо лише обмежено
+                bad = f"запит не підтверджено ({type(e).__name__}: {str(e)[:160]})"
+            if bad:
+                if n >= MAX_RETRIES:
+                    orders_db.set_kv_state(conn, oid, "manual", kv_error=f"[n={n}] ttn-data {n} рази без підтвердження: {bad}"[:500])
+                    conn.commit()
+                    _alert(oid, "docs_limit", f"документи (наліпка+накладна) не передано в KIDDISVIT після {n} спроб ({bad[:200]}) — автоповтор зупинено (manual): завантажте PDF у кабінеті вручну (файли: {order.get('kv_docs_path')})")
+                    rep["actions"].append(f"ttn-data ×{n} без підтвердження → manual")
+                    return rep
+                raise RunnerError(f"ttn-data (спроба {n} з {MAX_RETRIES}): {bad}")
             orders_db.set_kv_state(conn, oid, "docs_sent", kv_error=None)
             conn.commit()
             rep["actions"].append("документи передано в KIDDISVIT (ttn-data)")
@@ -274,8 +340,18 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
     except Exception as e:  # noqa: BLE001
         rep["problems"].append(f"збій {type(e).__name__}: {str(e)[:200]}")
     if rep["problems"] and apply:
+        if state == "docs_ready" and attempt["n"] >= MAX_RETRIES:         # ліміт і для винятку не з KIDDISVIT (OSError, відсутні PDF…)
+            try:
+                orders_db.set_kv_state(conn, oid, "manual", kv_error=f"[n={attempt['n']}] ttn-data {attempt['n']} рази: {'; '.join(rep['problems'])}"[:500])
+                conn.commit()
+            except Exception as e:  # noqa: BLE001
+                print(f"[kv_runner] {oid}: не вдалося перевести в manual ({type(e).__name__})", file=sys.stderr)
+            _alert(oid, "docs_limit", f"документи не передано після {attempt['n']} спроб ({'; '.join(rep['problems'])[:200]}) — автоповтор зупинено (manual): завантажте PDF у кабінеті вручну (файли: {order.get('kv_docs_path')})")
+            rep["actions"].append(f"ttn-data ×{attempt['n']} → manual")
+            return rep
+        keep = attempt["n"] or _attempts(order)                           # (знахідка 2) проміжна проблема без лічильника не скидає накопичений
         try:
-            orders_db.set_kv_state(conn, oid, None, kv_error="; ".join(rep["problems"])[:500])
+            orders_db.set_kv_state(conn, oid, None, kv_error=((f"[n={keep}] " if keep else "") + "; ".join(rep["problems"]))[:500])
             conn.commit()
         except Exception as e:  # noqa: BLE001
             print(f"[kv_runner] {oid}: не вдалося записати kv_error ({type(e).__name__})", file=sys.stderr)

@@ -43,7 +43,7 @@ bs._set_collection_rules(plan_g, plan_b, plan_s)
 R = bs.COLLECTION_RULES
 chk("правила: бюджетні лише без bands/ny (Миколай не бюджет), за зростанням pmax; вікові — вужчий діапазон першим; бренд — лише головні; добір — лише з батьком «хаб подарунків»",
     [x[2] for x in R["budget"]] == ["podarunok-do-100-hrn", "podarunok-do-300-hrn"] and [x[2] for x in R["age"]] == ["podarunok-na-2-roky", "podarunok-na-3-roky"]
-    and [x[0] for x in R["brand"]] == ["brend-funko-pop"] and [x[0] for x in R["sel"]] == ["advent-kalendari"])
+    and [x[0] for x in R["brand"]] == ["brend-funko-pop"] and [x[0] for x in R["sel"]] == ["advent-kalendari", "zoshyty-u-kosu-liniiu"])
 
 
 def prod(**kw):
@@ -63,6 +63,13 @@ chk("ціна більша за найбільший бюджет → без б�
 chk("RT-картка: лише бренд/добір (подарункові сторінки — тільки Toysi)", [u for u, _a in bs._collection_links(prod(rt=True))] == ["brend-funko-pop.html"])
 adv = prod(name="Адвент-календар конструктор 24 віконця", vendor="T", desc="", price=900)
 chk("адвент: картка з «адвент» у назві → advent-kalendari (і лише якщо сторінка в плані)", [u for u, _a in bs._collection_links(adv)] == ["advent-kalendari.html"])
+chk("добір не лише з батьком «хаб подарунків» (SEO 21.11): зошит у косу лінію → zoshyty-u-kosu-liniiu (батько — категорія)", [u for u, _a in bs._collection_links(prod(name="Зошит у косу лінію 12 арк", vendor="T", desc="", price=900))] == ["zoshyty-u-kosu-liniiu.html"])
+cap_items = [{"id": str(i)} for i in range(bs.SELECTION_MAX_ITEMS)]
+bs._set_collection_rules([], [], [("zoshyty-u-kosu-liniiu", "Зошити", "t", "zoshyty", cap_items, {})])
+chk("добір обрізано до SELECTION_MAX_ITEMS: лінкуємо лише картку, що реально на сторінці (id 5), не ту, що лише за правилом (id 9999)",
+    [u for u, _a in bs._collection_links(prod(id="5", name="Зошит у косу лінію", vendor="T", desc="", price=900))] == ["zoshyty-u-kosu-liniiu.html"]
+    and bs._collection_links(prod(id="9999", name="Зошит у косу лінію", vendor="T", desc="", price=900)) == [])
+chk("noindex-картка добору не лінкується (SEO: лише без noindex)", bs._collection_links(prod(id="5", name="Зошит у косу лінію", vendor="T", desc="", price=900, noindex=True)) == [])
 bs._set_collection_rules([], [], [])
 chk("нема збудованих сторінок — нема посилань", bs._collection_links(p1) == [] and bs._collections_html(p1) == "")
 

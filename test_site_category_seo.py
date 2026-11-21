@@ -271,5 +271,12 @@ chk("повторна збірка без тексту прибирає заст
 chk("shipped: site/category_seo.json і site/selection_pages.json (якщо є) проходять завантажувачі без попереджень",
     all(not (HERE / "site" / n).exists() or (bs._load_category_seo(str(HERE / "site" / n)) is not None) for n in ("category_seo.json",))
     and bs._load_selection_texts(str(HERE / "site" / "selection_pages.json")) is not None)
+Q10_SLUGS = ("perukarski-nabory", "bihovely", "stilchyky-dlia-hoduvannia", "plastykovi-konstruktory", "kubyky", "muzychni-instrumenty", "likarski-nabory", "dereviani-vkladyshi", "katalky-tolokar", "skvishi")
+_err_q10 = io.StringIO()
+with contextlib.redirect_stderr(_err_q10):
+    _real_seo = bs._load_category_seo(str(HERE / "site" / "category_seo.json"))
+chk("Q10 (SEO 21.11): 10 нових перекрить категорій (pazly-trefl, miaki-ihrashky, vodna-zbroia — на виправленні фактів) у реальному category_seo.json завантажені без попереджень; title ≤ TITLE_MAX, вступ 80–150 слів, 3–6 FAQ, без кутових дужок, H1 не порожній",
+    all(s_ in _real_seo and len(_real_seo[s_]["title"]) <= bs.TITLE_MAX and 80 <= len(_real_seo[s_]["intro"].split()) <= 150 and bs.CATEGORY_SEO_FAQ_MIN <= len(_real_seo[s_]["faq"]) <= bs.CATEGORY_SEO_FAQ_MAX
+        and "<" not in str(_real_seo[s_]) and ">" not in str(_real_seo[s_]) and _real_seo[s_]["h1"].strip() for s_ in Q10_SLUGS) and _err_q10.getvalue() == "")
 print("\n" + ("ALL OK" if not F else f"FAIL: {len(F)}"))
 sys.exit(1 if F else 0)

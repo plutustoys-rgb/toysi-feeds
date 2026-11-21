@@ -77,8 +77,8 @@ ereal = io.StringIO()
 with contextlib.redirect_stderr(ereal):
     real = dict(bs._load_rt_name_overrides())
 raw = json.loads(Path(REAL).read_text(encoding="utf-8"))
-chk("справжній rt_name_overrides.json: 14 валідних записів, жоден не відкинуто",
-    len(real) == 14 and ereal.getvalue() == "" and set(real) == {k for k in raw if not k.startswith("_")})
+chk("справжній rt_name_overrides.json: 17 валідних записів, жоден не відкинуто",
+    len(real) == 17 and ereal.getvalue() == "" and set(real) == {k for k in raw if not k.startswith("_")})
 chk("правки з ТЗ: Соціальні сервіси / Літачок / Чарівна валізка ×2 / кілечок / Монстрик ×6; без «із безпечних матерів» ×2",
     "Соціальні сервіси" in real["rt-42389"][1] and "Літачок Максик" in real["rt-25852s33794"][1]
     and all("Чарівна валізка" in real[k][1] for k in ("rt-69816", "rt-69817")) and "80 кілечок" in real["rt-70755"][1]
@@ -86,6 +86,7 @@ chk("правки з ТЗ: Соціальні сервіси / Літачок / 
     and all("безпечних матерів" not in real[k][1] and real[k][1].endswith(("Зелений", "Синій")) for k in ("rt-47109s59593", "rt-47109s59594"))
     and all(a != b for a, b in real.values()))
 chk("rt-57494: «лабораторнний» → «лабораторний» (SEO 18:31)", real["rt-57494"][1] == "Дитячий лабораторний набір Ящірка Bambi 803B, скелет, внутрішні органи" and "лабораторнний" not in real["rt-57494"][1])
+chk("SEO 21.11 20:43: «Монстрік» → «Монстрик» (rt-23806s30835/36), «Tubro» → «Turbo» (rt-45683)", all("Монстрик" in real[k][1] and "Монстрік" not in real[k][1] for k in ("rt-23806s30835", "rt-23806s30836")) and "Turbo" in real["rt-45683"][1] and "Tubro" not in real["rt-45683"][1] and "Tubro" in real["rt-45683"][0])
 chk("кожна правка змінює лише потрібне (різниця довжин ≤ 25 знаків)", all(abs(len(a) - len(b)) <= 25 for a, b in real.values()))
 
 # ── (3) наскрізна збірка ──

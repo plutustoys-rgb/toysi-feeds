@@ -278,5 +278,9 @@ with contextlib.redirect_stderr(_err_q10):
 chk("Q10 (SEO 21.11): 13 нових перекрить категорій у реальному category_seo.json завантажені без попереджень; title ≤ TITLE_MAX, вступ 80–150 слів, 3–6 FAQ, без кутових дужок, H1 не порожній",
     all(s_ in _real_seo and len(_real_seo[s_]["title"]) <= bs.TITLE_MAX and 80 <= len(_real_seo[s_]["intro"].split()) <= 150 and bs.CATEGORY_SEO_FAQ_MIN <= len(_real_seo[s_]["faq"]) <= bs.CATEGORY_SEO_FAQ_MAX
         and "<" not in str(_real_seo[s_]) and ">" not in str(_real_seo[s_]) and _real_seo[s_]["h1"].strip() for s_ in Q10_SLUGS) and _err_q10.getvalue() == "")
+_cnt_rx = re.compile(r"\d+\s+з\s+\d+|у розділі\s+\d|у назвах\s+\d|\d+\s+(?:товар|набор|модел|іграш|виріб|позиц)", re.I)
+_cnt_bad = {k_: _cnt_rx.findall(" ".join([v_["intro"]] + [q_ + " " + a_ for q_, a_ in v_["faq"]])) for k_, v_ in _real_seo.items()}
+chk("правило SEO 21.11: у вступі й FAQ category_seo.json нема лічильників складу («N з M», «у розділі N», «N товарів/наборів/моделей…») — вони застарівають з наявністю: " + str({k_: m_ for k_, m_ in _cnt_bad.items() if m_}), not any(_cnt_bad.values()))
+chk("запобіжник справді ловить лічильники (позитивний контроль)", all(_cnt_rx.search(s_) for s_ in ("У розділі 290 таких наборів", "60 з 290 на 1000 елементів", "у назвах 114 з 144", "39 товарів")) and not any(_cnt_rx.search(s_) for s_ in ("найчастіше — на 1000 елементів", "колеса 12 дюймів", "пазли на 4000 елементів")))
 print("\n" + ("ALL OK" if not F else f"FAIL: {len(F)}"))
 sys.exit(1 if F else 0)

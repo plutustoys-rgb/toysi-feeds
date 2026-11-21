@@ -271,5 +271,59 @@ chk("ttn-data Uncertain x2: docs_ready, лічильник [n=2]", row(r7)["kv_s
 step(r7, True, d)
 chk("ttn-data без підтвердження x3 -> manual, create/ТТН лишились по 1", row(r7)["kv_state"] == "manual" and d.calls.count("create") == 1 and d.calls.count("ttn_live") == 1 and d.calls.count("push") == 3)
 
+
+# ── 12. (аудит #1948) застарілий лічильник, збереження лічильника, ліміт для винятку не з KIDDISVIT, номер ТТН, залишок
+t1 = new()
+d = Deps(create=api.KiddisvitError("orders/create: HTTP 422"))
+step(t1, True, d)
+step(t1, True, d)
+d.create = None
+d.push = api.KiddisvitUncertain("таймаут")
+step(t1, True, d)
+chk("create відхилено x2, на 3-му запуску create пройшов, перший збій ttn-data = спроба 1 (не manual): лічильник не переноситься між кроками", row(t1)["kv_state"] == "docs_ready" and str(row(t1)["kv_error"]).startswith("[n=1]"))
+t2 = new()
+d = Deps(create=api.KiddisvitError("orders/create: HTTP 422"))
+step(t2, True, d)
+step(t2, True, d)
+d.rest = 1
+step(t2, True, d)
+chk("проміжна проблема (залишок) не скидає накопичений лічильник [n=2]", str(row(t2)["kv_error"]).startswith("[n=2]") and row(t2)["kv_state"] is None)
+t3 = new()
+d = Deps(push=OSError("disk"))
+step(t3, True, d)
+step(t3, True, d)
+chk("ttn-data: виняток не з KIDDISVIT x2 — ще docs_ready", row(t3)["kv_state"] == "docs_ready")
+step(t3, True, d)
+chk("ttn-data: виняток не з KIDDISVIT x3 → manual (ліміт діє й для загального винятку)", row(t3)["kv_state"] == "manual" and d.calls.count("push") == 3)
+t4 = new()
+d = Deps(push=api.KiddisvitUncertain("таймаут"))
+step(t4, True, d)
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET kv_docs_path=? WHERE internal_order_id=?", (json.dumps({"marking": "/нема/a.pdf", "document": "/нема/b.pdf"}), t4))
+    c.commit()
+step(t4, True, d)
+chk("PDF зникли: спроба 2 — ще docs_ready, push не викликано", row(t4)["kv_state"] == "docs_ready" and d.calls.count("push") == 1)
+step(t4, True, d)
+chk("PDF зникли: спроба 3 → manual (не безкінечний повтор), push так і не викликано повторно", row(t4)["kv_state"] == "manual" and d.calls.count("push") == 1)
+t5 = new()
+d = Deps(ttn_res={"number": "20450000007777", "ref": "не-guid"})
+rep = step(t5, True, d)
+chk("відповідь ТТН з номером, але не-GUID Ref: номер у тексті проблеми (для ручної звірки), стан ttn_creating", "20450000007777" in rep["problems"][0] and row(t5)["kv_state"] == "ttn_creating")
+chk("_rest_qty: inf / від'ємне / не число → None; '7.0' → 7.0", kr._rest_qty({"100": {"Dnepr": "inf"}}, 100, "Dnepr") is None and kr._rest_qty({"100": {"Dnepr": -5}}, 100, "Dnepr") is None
+    and kr._rest_qty({"100": {"Dnepr": "n/a"}}, 100, "Dnepr") is None and kr._rest_qty({"100": {"Dnepr": "7.0"}}, 100, "Dnepr") == 7.0)
+
+
+class FakeClient:
+    def rests(self):
+        return [{"ProductID": 100, "rest": [{"WarehouseID": "Dnepr", "Rest": 3}, {"WarehouseID": "Dnepr", "Rest": 4}, {"WarehouseID": "NTV20", "Rest": "inf"}, {"WarehouseID": "NTV20", "Rest": -2}]},
+                {"ProductID": 100, "rest": [{"WarehouseID": "Dnepr", "Rest": 5}]},
+                {"ProductID": 200, "rest": [{"WarehouseID": "Dnepr", "Rest": 1}]}]
+
+
+dd = kr._Deps.__new__(kr._Deps)
+dd.client = FakeClient()
+rr = dd.rests()
+chk("_Deps.rests: рядки одного складу в одному товарі додаються (3+4=7), дубль ProductID — більше значення (max 7, а не 12), inf і від'ємне відкинуті", rr["100"].get("Dnepr") == 7.0 and "NTV20" not in rr["100"] and rr["200"]["Dnepr"] == 1.0)
+
 print("\nПідсумок:", "УСЕ ЗЕЛЕНЕ" if not F else f"ПРОВАЛИ: {F}")
 sys.exit(1 if F else 0)

@@ -3538,9 +3538,9 @@ def _set_collection_rules(gift_plan_, brand_plan_, sel_plan_):
         if par is None:
             r["brand"].append((slug, h1, fns[slug]))
     fns_s = {x[0]: x[5] for x in SELECTION_PAGES}
-    for slug, h1, _title, par, _items, _tx in sel_plan_:
-        if par == SEL_PARENT_GIFT:
-            r["sel"].append((slug, h1, fns_s[slug]))
+    for slug, h1, _title, par, _items, _tx in sel_plan_:   # SEO 21.11: усі збудовані добори (тарілки, Ерудит, зошити, адвент), не лише з батьком «хаб подарунків»
+        ids = {str(x["id"]) for x in _items} if len(_items) >= SELECTION_MAX_ITEMS else None   # сторінка обрізана до SELECTION_MAX_ITEMS → лінкуємо лише картки, що реально на ній; інакше на ній усі, хто задовольняє правило
+        r["sel"].append((slug, h1, fns_s[slug], ids))
     COLLECTION_RULES.clear()
     COLLECTION_RULES.update(r)
 
@@ -3568,8 +3568,8 @@ def _collection_links(p):
             if fn(p):
                 out.append((f"{slug}.html", h1))
                 break
-    for slug, h1, fn in COLLECTION_RULES["sel"]:
-        if (p.get("photo")) and not p.get("noindex") and fn(p):
+    for slug, h1, fn, ids in COLLECTION_RULES["sel"]:
+        if (p.get("photo")) and not p.get("noindex") and fn(p) and (ids is None or str(p["id"]) in ids):
             out.append((f"{slug}.html", h1))
     return out[:COLLECTIONS_MAX]
 

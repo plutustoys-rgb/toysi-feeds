@@ -328,6 +328,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "promo_code", "promo_code TEXT")
         _ensure_column(conn, "orders", "promo_discount_total", "promo_discount_total REAL")
         _ensure_column(conn, "orders", "np_return_dryrun_notified_at", "np_return_dryrun_notified_at TEXT")
+        for _kv_col in ("kv_state", "kv_order_number", "kv_order_id", "kv_ttn_ref", "kv_docs_path", "kv_error", "kv_updated_at"):      # KIDDISVIT (етап Б, 21.11.2026)
+            _ensure_column(conn, "orders", _kv_col, f"{_kv_col} TEXT")
         _ensure_column(conn, "orders", "cancelled_at", "cancelled_at TEXT")
         _ensure_column(conn, "orders", "cancel_reason", "cancel_reason TEXT")
         # Структурні реф-поля відділення НП з площадки (EVA передає city_id/warehouse_number
@@ -625,6 +627,11 @@ def get_kv_orders_needing_receipt(conn: sqlite3.Connection) -> list:
 
 RT_ITEM_MARK = '"toysi_code": "rt-'          # так json.dumps(ensure_ascii=False) пише позицію RoyalToys (insert_order)
 RT_STATES = ("ttn_creating", "ttn_created", "marking_ready", "rt_ordering", "rt_ordered", "shipped", "delivered", "returned", "manual")
+# Стани замовлень KIDDISVIT (kv_state, етап Б, 21.11.2026): kv_creating — claim ДО orders/create (результат невідомий — лише людина); kv_unknown — KiddisvitUncertain (замовлення могло бути створене, create НЕ повторювати);
+# kv_created — замовлення створено й зарезервовано, є номер КЗ-…; ttn_creating/ttn_created — ТТН НП з номером замовлення; docs_ready — наліпка 100×100 + накладна збережені; docs_sent — передані в KIDDISVIT (ttn-data);
+# shipped/delivered/returned — трекінг; manual — потрібна людина (не зарезервовано, збій, ручне рішення).
+KV_STATES = ("kv_creating", "kv_unknown", "kv_created", "ttn_creating", "ttn_created", "docs_ready", "docs_sent", "shipped", "delivered", "returned", "manual")
+KV_STUCK_STATES = ("kv_creating", "kv_unknown", "ttn_creating")      # результат кроку невідомий — автоповтору немає, лише людина
 # ttn_creating / rt_ordering — «claim» ПЕРЕД незворотним зовнішнім кроком (створення ТТН НП / натискання кнопки в RoyalToys): якщо процес помер чи результат невідомий, стан лишається і конвеєр сам НЕ повторює крок (потрібна ручна звірка).
 # manual — власник виконав замовлення вручну (термінальний, конвеєр не чіпає).
 
@@ -726,6 +733,59 @@ def claim_rt_state(conn: sqlite3.Connection, internal_order_id: str, from_state:
         raise ValueError(f"claim_rt_state: невідомий стан {to_state!r}")
     cur = conn.execute(
         "UPDATE orders SET rt_state = ?, rt_updated_at = ? WHERE internal_order_id = ? AND " + ("rt_state IS NULL" if from_state is None else "rt_state = ?"),
+        (to_state, datetime.now().isoformat(timespec="seconds"), internal_order_id) + (() if from_state is None else (from_state,)),
+    )
+    conn.commit()
+    return cur.rowcount == 1
+
+
+def get_kv_orders_pending(conn: sqlite3.Connection) -> list:
+    """Оплачені (prepaid, підтверджено) замовлення САЙТУ з товарами KIDDISVIT (kv-/kvu-), створені не раніше KV_RECEIPT_SINCE, не скасовані/не повернені, kv_state НЕ термінальний (delivered/returned/manual).
+    Ті самі умови скасування/повернення, що в get_kv_orders_needing_receipt (аудит #1728/#1933). Замовлення в стані kv_unknown/kv_creating ТУТ ЛИШАЮТЬСЯ (раннер їх лише сигналить)."""
+    rows = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE platform = 'site' AND payment_method = 'prepaid' AND payment_confirmed = 1
+          AND (items LIKE '%"toysi_code": "kv-%' OR items LIKE '%"toysi_code": "kvu-%')
+          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled', 'eva_cancelled_before_forward'))
+          AND cancelled_at IS NULL
+          AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL
+          AND COALESCE(delivery_status, '') NOT IN ('cancelled', 'returned')
+          AND created_at >= ?
+          AND (kv_state IS NULL OR kv_state NOT IN ('delivered', 'returned', 'manual'))
+        ORDER BY created_at
+        """,
+        (KV_RECEIPT_SINCE,),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def set_kv_state(conn: sqlite3.Connection, internal_order_id: str, state: str | None = None, **fields) -> None:
+    """Оновлює kv_state та/або kv_order_number / kv_order_id / kv_ttn_ref / kv_docs_path / kv_error / toysi_ttn / delivery_status; kv_updated_at ставиться завжди. Невідомі поля й стани — ValueError. state=None — стан не міняється."""
+    allowed = {"kv_order_number", "kv_order_id", "kv_ttn_ref", "kv_docs_path", "kv_error", "toysi_ttn", "delivery_status"}
+    bad = set(fields) - allowed
+    if bad or (state is not None and state not in KV_STATES):
+        raise ValueError(f"set_kv_state: невідомий стан/поле {state!r} {sorted(bad)}")
+    sets, params = ["kv_updated_at = ?"], [datetime.now().isoformat(timespec="seconds")]
+    if state is not None:
+        sets.append("kv_state = ?")
+        params.append(state)
+    for k, v in fields.items():
+        sets.append(f"{k} = ?")
+        params.append(v)
+    if state == "delivered" or fields.get("delivery_status") == "delivered":
+        sets.append("delivered_at = COALESCE(delivered_at, ?)")
+        params.append(datetime.now().isoformat(timespec="seconds"))
+    params.append(internal_order_id)
+    conn.execute(f"UPDATE orders SET {', '.join(sets)} WHERE internal_order_id = ?", params)
+
+
+def claim_kv_state(conn: sqlite3.Connection, internal_order_id: str, from_state: str | None, to_state: str) -> bool:
+    """Атомарний claim перед незворотним кроком KIDDISVIT (orders/create, створення ТТН): UPDATE ... WHERE kv_state = from_state. True — claim наш (закомічений); False — хтось уже взяв/стан інший."""
+    if to_state not in KV_STATES:
+        raise ValueError(f"claim_kv_state: невідомий стан {to_state!r}")
+    cur = conn.execute(
+        "UPDATE orders SET kv_state = ?, kv_updated_at = ? WHERE internal_order_id = ? AND " + ("kv_state IS NULL" if from_state is None else "kv_state = ?"),
         (to_state, datetime.now().isoformat(timespec="seconds"), internal_order_id) + (() if from_state is None else (from_state,)),
     )
     conn.commit()

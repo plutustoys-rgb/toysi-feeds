@@ -4,7 +4,7 @@
 Джерело правди про методи: ДОВІДНИК_KIDDISVIT_API.md (Продажник, 16.11.2026) + живі проби 17.11.2026 (clients/list, catalog/products, catalog/brands, catalog/categories,
 products/rests/prices, products/rests: усі HTTP 200). Менеджер Т. Сіденко 17.11 13:45: «не більше 25 запитів за 10 сек, ліміти не знімаємо» — клієнт тримає ≤ ~1,4 запиту/с (MIN_INTERVAL_S=0,7).
 Cloudflare перед API відхиляє запити без власного User-Agent (помилка 1010) — тому заголовок обов'язковий. Ключ (Bearer) — з env KIDDISVIT_API_KEY (.env на VPS, ставить власник); НІКОЛИ не друкується й не потрапляє в винятки/логи.
-Замовлення (orders/create, assembly, ttn-data) тут НЕ реалізовані: окремий модуль за воротами, лише зі словом власника."""
+Запис (orders/create, orders/delivery/ttn-data, orders/assembly) — методами нижче, ЛИШЕ за воротами KV_ORDERS_LIVE=1 (типово вимкнено; слово власника 21.11.2026 «будувати»; перше живе замовлення — пробне власника), без автоповторів (POST не ідемпотентний); логіка замовлень — kiddisvit_orders.py."""
 import http.client
 import json
 import math
@@ -35,6 +35,10 @@ class KiddisvitError(Exception):
     """Збій API. У повідомленні немає ключа й тіла відповіді (лише код і шлях)."""
 
 
+class KiddisvitUncertain(KiddisvitError):
+    """POST без автоповтору: запит міг дійти до KIDDISVIT, але результат невідомий (таймаут/обрив/5xx). Замовлення могло бути створене — автоповтору НЕМАЄ, лише людина (звірити в кабінеті/orders/search)."""
+
+
 class KiddisvitClient:
     def __init__(self, key: str | None = None, base_url: str | None = None, opener=None, sleep=time.sleep, clock=time.monotonic):
         self._key = (key if key is not None else os.environ.get("KIDDISVIT_API_KEY", "")).strip()
@@ -61,7 +65,9 @@ class KiddisvitClient:
                     self._sleep(wait)
             self._last = self._clock()
 
-    def _request(self, method: str, path: str, body: dict | None = None):
+    def _request(self, method: str, path: str, body: dict | None = None, as_is: bool = False, retry: bool = True):
+        """as_is=True — повернути розібраний JSON як є (orders/assembly відповідає {"success": …} без обгортки status/data). retry=False — БЕЗ автоповторів і з KiddisvitUncertain на
+        невизначених збоях (POST orders/*: повтор міг би створити друге замовлення)."""
         if not self._key:
             raise KiddisvitError("KIDDISVIT_API_KEY не задано")
         url = f"{self.base}/{path.lstrip('/')}"
@@ -70,7 +76,8 @@ class KiddisvitClient:
         if data is not None:
             headers["Content-Type"] = "application/json"
         last_status = None
-        for attempt in range(MAX_RETRIES + 1):
+        retries = MAX_RETRIES if retry else 0
+        for attempt in range(retries + 1):
             self._throttle()
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             try:
@@ -80,7 +87,7 @@ class KiddisvitClient:
             except urllib.error.HTTPError as e:
                 status, raw = e.code, ""
                 retry_after = e.headers.get("Retry-After") if getattr(e, "headers", None) else None
-                if status in RETRY_STATUSES and attempt < MAX_RETRIES:
+                if status in RETRY_STATUSES and attempt < retries:
                     last_status = status
                     try:
                         delay = float(retry_after) if retry_after else 0.0
@@ -89,19 +96,27 @@ class KiddisvitClient:
                         delay = 0.0
                     self._sleep(max(delay, 5.0 * (attempt + 1)))
                     continue
+                if not retry and status >= 500:
+                    raise KiddisvitUncertain(f"{method} {path}: HTTP {status} (результат невідомий, автоповтору нема)") from None
                 raise KiddisvitError(f"{method} {path}: HTTP {status}") from None
             except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:      # HTTPException: IncompleteRead на великих відповідях (catalog/products ≈26 МБ) — не OSError
                 last_status = type(e).__name__
-                if attempt < MAX_RETRIES:
+                if attempt < retries:
                     self._sleep(5.0 * (attempt + 1))
                     continue
+                if not retry:
+                    raise KiddisvitUncertain(f"{method} {path}: {type(e).__name__} (результат невідомий, автоповтору нема)") from None
                 raise KiddisvitError(f"{method} {path}: {type(e).__name__}") from None
             if status != 200:
                 raise KiddisvitError(f"{method} {path}: HTTP {status}")
             try:
                 d = json.loads(raw)
             except ValueError:
+                if not retry:
+                    raise KiddisvitUncertain(f"{method} {path}: HTTP 200, але відповідь не JSON (результат невідомий)") from None
                 raise KiddisvitError(f"{method} {path}: відповідь не JSON") from None
+            if as_is:
+                return d
             if not isinstance(d, dict) or d.get("status") != "success":
                 raise KiddisvitError(f"{method} {path}: status={str(d.get('status') if isinstance(d, dict) else type(d).__name__)[:30]}")
             return d.get("data")
@@ -136,6 +151,40 @@ class KiddisvitClient:
         """products/rests: [{ProductID, rest:[{WarehouseID, Rest}]}] — залишки всього каталогу."""
         d = self._request("GET", "products/rests") or {}
         return d.get("products") or []
+
+    # ---- запис (ТІЛЬКИ за воротами KV_ORDERS_LIVE=1; POST без автоповторів) -------------------------------------------------------------------
+    @staticmethod
+    def orders_live() -> bool:
+        return os.environ.get("KV_ORDERS_LIVE", "").strip() == "1"
+
+    def _need_live(self, what: str) -> None:
+        if not self.orders_live():
+            raise KiddisvitError(f"{what}: запис у KIDDISVIT вимкнено (KV_ORDERS_LIVE≠1)")
+
+    def orders_create(self, payload: dict) -> dict:
+        """POST orders/create → data: {number («КЗ-…»), id, status_OK (1 = сформовано/зарезервовано, 0 = створено, але НЕ зарезервовано), Comment, assembly, …}. Без автоповтору: невизначений збій → KiddisvitUncertain (замовлення могло бути створене)."""
+        self._need_live("orders/create")
+        d = self._request("POST", "orders/create", payload, retry=False)
+        return d if isinstance(d, dict) else {}
+
+    def orders_ttn_data(self, order_id: str, documents: list) -> list:
+        """POST orders/delivery/ttn-data: documents=[{type: "marking"|"document", BinaryData: base64}]; відповідь — масив [{id, status, errorMessage}]. Без автоповтору."""
+        self._need_live("orders/delivery/ttn-data")
+        d = self._request("POST", "orders/delivery/ttn-data", {"id": str(order_id), "Documents": documents}, as_is=True, retry=False)
+        if isinstance(d, dict) and "data" in d:
+            d = d["data"]
+        return d if isinstance(d, list) else ([d] if isinstance(d, dict) else [])
+
+    def orders_assembly(self, order_id: str, documents: list) -> dict:
+        """POST orders/assembly (ref_Order, Documents…): відповідь {"success": true} або {"success": false, "Error": …}. Лише для клієнтів, яким менеджер дозволив; без автоповтору."""
+        self._need_live("orders/assembly")
+        d = self._request("POST", "orders/assembly", {"ref_Order": str(order_id), "Documents": documents}, as_is=True, retry=False)
+        return d if isinstance(d, dict) else {}
+
+    def orders_search(self, client_id: str, contract_id: str, date_from: str, date_to: str) -> list:
+        """POST orders/search (ЧИТАННЯ, ворота не потрібні): [{number, id, status, TTN, assembly, Sum, orderStatuses, …}]. Дати РРРРММДД."""
+        d = self._request("POST", "orders/search", {"ClientID": client_id, "ContractID": contract_id, "dateFrom": date_from, "dateTo": date_to}) or {}
+        return d.get("Orders") or []
 
 
 if __name__ == "__main__":

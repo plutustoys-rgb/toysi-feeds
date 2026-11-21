@@ -374,3 +374,4 @@ install_support_relay_out.txt
 remove_support_relay_out.txt
 support_relay.log.1
 support_relay.log.lock
+site_chat_watch_state.json

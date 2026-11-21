@@ -1,0 +1,10 @@
+[Unit]
+Description=PlutusToys: сторож чату підтримки сайту — кожні 10 хв
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

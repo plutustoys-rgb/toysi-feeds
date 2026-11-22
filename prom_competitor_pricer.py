@@ -482,6 +482,9 @@ MAX_RUNTIME_SECONDS = 5 * 3600
 # спільною межею без протягування параметра через кожен виклик.
 _RUN_DEADLINE: float | None = None
 
+# Контекст для rt-фази (rt_reprice): main() кладе сюди каталог Toysi і фінальний apply; порожній, якщо main() не дійшов до цього місця.
+_RT_CTX: dict = {}
+
 
 def _time_budget_exceeded() -> bool:
     return _RUN_DEADLINE is not None and time.monotonic() >= _RUN_DEADLINE
@@ -2025,6 +2028,11 @@ def main() -> None:
         write_pricer_summary(f"⚠ Зупинено: каталог Toysi порожній/замалий ({e}).", errors=1)
         sys.exit(1)
 
+    # rt-репрайсинг (rt_reprice.py, брама PROM_RT_REPRICE=1): фаза ПІСЛЯ повного Toysi-циклу (див. кінець файлу) бере цей каталог і фінальний args.apply (з урахуванням SAFETY_HOLD) —
+    # без повторного ~70 МБ запиту. Лише присвоєння; Toysi-логіка нижче не змінена.
+    _RT_CTX["catalog"] = toysi_catalog
+    _RT_CTX["apply"] = bool(args.apply)
+
     # ЗМІНЕНО (2026-07-24, ротаційні партії замість гейту "не частіше
     # ~20 год"): мітка last_batch_run пишеться на КОЖНОМУ прогоні (не
     # лише раз на добу) — суто діагностична, "коли репрайсер востаннє
@@ -2814,5 +2822,27 @@ def main() -> None:
         sys.exit(1)
 
 
-if __name__ == "__main__":
+def _run_rt_reprice_phase() -> None:
+    """Фаза репрайсингу rt-карток (rt_reprice.py) ПІСЛЯ повного Toysi-циклу. Лише за брамою PROM_RT_REPRICE=observe|1 (вимкнена → одразу return, поведінка бітово та сама). Запускається лише при нормальному
+    завершенні main() (sys.exit від circuit breaker/каталогу її пропускає). Жодних API-записів у Prom (feed-only, див. rt_reprice); будь-який збій тут не торкається вже виконаної Toysi-роботи."""
+    try:
+        import rt_reprice
+        if rt_reprice.mode() == "off":                  # PROM_RT_REPRICE=observe також запускає фазу (лише журнал рішень); =1 застосовує
+            return
+        if not _RT_CTX.get("catalog"):
+            print("[Pricer] rt-репрайсинг пропущено: каталог Toysi цього прогону недоступний.", file=sys.stderr)
+            return
+        st = rt_reprice.run_phase(_RT_CTX["catalog"], apply=bool(_RT_CTX.get("apply")), time_exceeded=_time_budget_exceeded)
+        print(f"[Pricer] rt-репрайсинг: {st}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[Pricer] rt-репрайсинг збій ({type(e).__name__}: {str(e)[:160]}) — Toysi-частина не зачеплена.", file=sys.stderr)
+
+
+def _cli_main() -> None:
+    """Точка входу CLI: Toysi-цикл main(), потім (лише при нормальному завершенні — SystemExit від main фазу пропускає) rt-фаза за брамою PROM_RT_REPRICE."""
     main()
+    _run_rt_reprice_phase()
+
+
+if __name__ == "__main__":
+    _cli_main()

@@ -18,8 +18,9 @@
     Ємність: RT займають лише ВІЛЬНІ слоти (TOTAL_CAP − Toysi-offer'и) і не більше PROM_RT_MAX (за замовчуванням 1500, не вище 3000) — RT ніколи не витісняють Toysi. Журнал rt_prom_listed_state.json (усі колись емітовані rt-id): ті, що випали з активних, лишаються в кабінеті Prom «Немає в наявності» і займають слоти (catalog_sync їх не прибере) — віддаються заглушками available="false" і ВІДНІМАЮТЬСЯ від ємності активних.
 Брама: PROM_RT_IN_FEED=1 (за замовчуванням ВИМКНЕНО — фід бітово незмінний). Свіжість supplier_rt.json (≤SUPPLIER_MAX_H) і відбору (≤STALE_H) — fail-safe: застаріле → RT цього прогону НЕ додаємо.
 
-ЧОГО ТУТ СВІДОМО НЕМАЄ (окремі етапи): репрайсер/delist/скан конкурентів для rt- (ціна без конкурента = cost×1.75, репрайсер Prom її не знижує — rt- не входять до select_top_items);
-запис rt- у prom_pushed_ledger (НЕ додаємо: prom_catalog_sync інакше вважав би їх «зниклими з Toysi» і гасив); авто-виконання Prom-замовлень з rt- (rt_order_runner зараз лише EVA).
+КОНКУРЕНТНА ЦІНА rt- (rt_reprice.py, брама PROM_RT_REPRICE=1, за замовчуванням ВИМКНЕНО): репрайсер/скан конкурентів для rt- живе в rt_reprice.py (пул — repricer_pool нижче; стан — окремий rt_prom_reprice_state.json); тут лише
+читання: build_offer_fields(reprice=…) бере ціну зі стану, а неконкурентні (delist-рішення) не емітуються (skip_noncompetitive) → стають осиротілими. Без брами — ціна без конкурента = cost×1.75, як було.
+ЧОГО ТУТ СВІДОМО НЕМАЄ (окремі етапи): API-зміна ціни/видалення rt- (лише фід); запис rt- у prom_pushed_ledger (НЕ додаємо: prom_catalog_sync інакше вважав би їх «зниклими з Toysi» і гасив); авто-виконання Prom-замовлень з rt- (rt_order_runner зараз лише EVA).
 Двійник Toysi перевіряється ЗА ЖИВИМ stock>0 на кожній емісії: відбір записує ПОТЕНЦІЙНИХ двійників без урахування залишку (брендових і «сліпих» за назвою без бренду, wjac ≥0.75), dup_of/rt_dup_map/відбір — fail-closed (id двійника, якого нема в каталозі → RT не емітуємо).
 Жодних API-видалень цей модуль не робить; осиротілі rt- віддаються заглушками available="false" (див. вище)."""
 import copy
@@ -512,8 +513,9 @@ def _clean_xml_text(x):
     return _XML_BAD_RE.sub("", x) if isinstance(x, str) else x
 
 
-def build_offer_fields(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map: dict):
-    """→ (dict полів offer, "") або (None, причина). Усі перевірки; зіпсований offer не емітуємо. Чиста функція (без мережі)."""
+def build_offer_fields(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map: dict, reprice: dict | None = None):
+    """→ (dict полів offer, "") або (None, причина). Усі перевірки; зіпсований offer не емітуємо. Чиста функція (без мережі).
+    reprice — контекст rt_reprice.feed_context() (лише за брамою PROM_RT_REPRICE=1; None = ціна «без конкурента», як було): ціна зі стану репрайсера; неконкурентний rt- → (None, "noncompetitive")."""
     import competitor_pricing as cp
     import generate_prom_feed as gp
     import google_rt_feed as grf
@@ -562,6 +564,13 @@ def build_offer_fields(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map
     tcat = sel_item.get("toysi_cat") or None
     dec = cp.decide_price_for_platform(cost, None, PLATFORM, tcat, prom_category_id=pid_int)
     price = dec["price"]
+    rank_commission = cp.compute_total_commission(PLATFORM, tcat, price, prom_category_id=pid_int)
+    rank_profit = price * (1 - rank_commission) - cp.prom_effective_cost(cost)   # профіт за ДЕФОЛТНОЮ ціною — ключ черги: пул репрайсера і емісія сортують однаково, не залежно від ціни зі стану
+    if reprice is not None:
+        import rt_reprice
+        price, rwhy = rt_reprice.feed_price(sid, cost, tcat, pid_int, price, reprice)
+        if rwhy:
+            return None, rwhy                                 # "noncompetitive": репрайсер визнав rt- неконкурентним → не публікуємо (стане осиротілим)
     if price < MIN_PROM_PRICE:
         return None, "cheap"
     if price < cost:
@@ -573,7 +582,7 @@ def build_offer_fields(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map
     return {"id": sid, "vendor_code": sid, "name": name, "price": price, "stock": int(stock), "category": str(pid_int), "pictures": pics,
             "vendor": gp.normalize_vendor(vendor) if vendor and not grf.leaks(vendor) else "", "description": gp.sanitize_prom_text(desc), "params": params,
             "keywords_ua": gp.dedupe_keywords(gp.sanitize_prom_text(kw_ua)) if kw_ua else "", "keywords": gp.dedupe_keywords(gp.sanitize_prom_text(kw_ru)) if kw_ru else "",
-            "profit": profit}, ""
+            "profit": profit, "rank_profit": rank_profit}, ""
 
 
 def validate_offer(f: dict, valid_ids: set) -> str:
@@ -785,7 +794,50 @@ def _stub_offer(offers_el: ET.Element, sid: str, snap: dict) -> bool:
     return True
 
 
-def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items: dict, total_cap: int, prev_ids: set | None = None, save_state: bool = True, prev_snaps: dict | None = None) -> dict:
+NEW_CARD_MAX_AGE_H = 48.0       # check-before-create: НОВА картка (нема в журналі й не в поточному фіді) емітується лише за записом репрайсера action=adjust не старшим за це
+
+
+def _rank_key(f: dict, known: set) -> tuple:
+    return (f["id"] not in known, -f.get("rank_profit", f["profit"]), f["id"])
+
+
+def eligible_offers(catalog: dict, selection: dict, sup_items: dict, stats: Counter, dead: set, known: set, dup_map: dict, reprice: dict | None = None, for_pool: bool = False) -> list:
+    """ЄДИНИЙ відбір кандидатів емісії — для append_rt_offers (for_pool=False) і для пулу репрайсера (for_pool=True): ті самі виключення (клас, надгробки cleanup, постачальник, build_offer_fields, validate_offer)
+    і той самий порядок (_rank_key: колись емітовані → профіт за дефолтною ціною → id). Різниця лише в двох свідомих місцях (лише при reprice): (1) check-before-create — НОВА картка (sid ∉ known) емітується
+    тільки за свіжим записом стану action=adjust ≤NEW_CARD_MAX_AGE_H (для пулу не діє: пул і існує, щоб такі id перевірити); (2) підтверджено неконкурентний rt- у пулі повертається, коли настав
+    час переперевірки (rt_reprice.feed_price, ctx["for_pool"]). → список полів offer у порядку черги."""
+    valid = set(selection.get("valid_ids") or [])
+    ok = []
+    for sid, si in sorted(selection.get("items", {}).items()):
+        if si.get("cls") not in INCLUDE_CLASSES:
+            continue
+        if sid in dead:
+            stats["skip_deleted_by_cleanup"] += 1
+            continue
+        r = sup_items.get(sid)
+        if not r:
+            stats["skip_not_in_supplier"] += 1
+            continue
+        f, why = build_offer_fields(sid, r, si, catalog, dup_map, **({"reprice": reprice} if reprice is not None else {}))   # без брами — виклик бітово як раніше
+        if f is None:
+            stats["skip_" + why] += 1
+            continue
+        bad = validate_offer(f, valid)
+        if bad:
+            stats["invalid_" + bad] += 1
+            continue
+        if reprice is not None and not for_pool and sid not in known:
+            import rt_reprice
+            if not rt_reprice.new_card_checked(sid, reprice, NEW_CARD_MAX_AGE_H):
+                stats["skip_new_unchecked"] += 1
+                continue
+        ok.append(f)
+    ok.sort(key=lambda f: _rank_key(f, known))
+    return ok
+
+
+def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items: dict, total_cap: int, prev_ids: set | None = None, save_state: bool = True, prev_snaps: dict | None = None,
+                     reprice: dict | None = None) -> dict:
     """Дописує offer'и RT у <shop>/<offers>. root — результат generate_prom_feed._build_xml. Повертає статистику.
     ЄМНІСТЬ (A2): cap_total = min(total_cap − Toysi-offer'и, rt_hard_max()); осиротілі (колись емітовані, зараз не активні — у кабінеті Prom вони «Немає в наявності» і зайняті слоти) віддаються
     заглушками available="false" і ВІДНІМАЮТЬСЯ від ємності активних. Порядок активних при нестачі: колись у фіді → прибуток → id."""
@@ -803,28 +855,8 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
     toysi_n = len(offers_el)
     cap_total = max(0, min(int(total_cap) - toysi_n, rt_hard_max()))
     stats = Counter()
-    ok = []
-    for sid, si in sorted(selection.get("items", {}).items()):
-        if si.get("cls") not in INCLUDE_CLASSES:
-            continue
-        if sid in dead:
-            stats["skip_deleted_by_cleanup"] += 1
-            continue
-        r = sup_items.get(sid)
-        if not r:
-            stats["skip_not_in_supplier"] += 1
-            continue
-        f, why = build_offer_fields(sid, r, si, catalog, dup_map)
-        if f is None:
-            stats["skip_" + why] += 1
-            continue
-        bad = validate_offer(f, valid)
-        if bad:
-            stats["invalid_" + bad] += 1
-            continue
-        ok.append(f)
     known = set(listed) | prev_ids
-    ok.sort(key=lambda f: (f["id"] not in known, -f["profit"], f["id"]))
+    ok = eligible_offers(catalog, selection, sup_items, stats, dead, known, dup_map, reprice=reprice)
     ok_ids = {f["id"] for f in ok}
     forced_orphans = len(known - ok_ids)
     room = max(0, cap_total - forced_orphans)
@@ -902,6 +934,27 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
     return dict(stats)
 
 
+def repricer_pool(catalog: dict, selection: dict, sup_items: dict, max_items: int | None = None, reprice: dict | None = None) -> dict:
+    """Пул rt-id для репрайсера (rt_reprice) — ТОЙ САМИЙ відбір і порядок, що в емісії (eligible_offers, for_pool=True): UNIQUE/UNIQUE_BRAND, надгробки rt_prom_cleanup (rt_prom_deleted_state.json, з TTL) виключені,
+    усі фільтри build_offer_fields і validate_offer, порядок _rank_key (колись емітовані → профіт за дефолтною ціною → id). Дві свідомі відмінності від емісії (див. eligible_offers): НОВІ карт­ки без запису стану
+    ВХОДЯТЬ у пул (їх треба перевірити ДО створення), а підтверджено неконкурентні входять лише коли настав час переперевірки (reprice["for_pool"]). Межа — rt_hard_max() (≤RT_ABS_MAX): пул ⊇ префікс емісії
+    за тим самим порядком, весь каталог RT не скануємо.
+    → {sid: {"name", "cost", "tcat", "pid_int", "pictures", "profit"}} у порядку пріоритету. Чиста (без мережі)."""
+    dup_map = load_dup_map()
+    dead = set(load_deleted())
+    known = set(load_listed()) - dead
+    rp = dict(reprice, for_pool=True) if reprice is not None else None
+    ok = eligible_offers(catalog, selection, sup_items, Counter(), dead, known, dup_map, reprice=rp, for_pool=True)
+    cap = rt_hard_max() if max_items is None else max(0, min(int(max_items), rt_hard_max()))
+    out = {}
+    for f in ok[:cap]:
+        r = sup_items[f["id"]]
+        si = selection["items"][f["id"]]
+        out[f["id"]] = {"name": " ".join(_clean_xml_text(str(r.get("name") or "")).split()), "cost": _num(r.get("cost")), "tcat": si.get("toysi_cat") or None,
+                        "pid_int": int(si["prom_id"]), "pictures": f["pictures"], "profit": f.get("rank_profit", f["profit"])}
+    return out
+
+
 def maybe_add_rt_offers(root: ET.Element, catalog: dict, cache: dict, total_cap: int, prev_feed_path=None) -> ET.Element:
     """Точка входу для generate_prom_feed.generate_feed(post_build=…): лише за брамою PROM_RT_IN_FEED=1, лише зі свіжим постачальником і відбором, лише на повному каталозі Toysi.
     Працює на КОПІЇ дерева: будь-який збій → повертається ОРИГІНАЛ (Toysi-частина без змін, RT у цьому прогоні не йдуть)."""
@@ -923,7 +976,15 @@ def maybe_add_rt_offers(root: ET.Element, catalog: dict, cache: dict, total_cap:
         listed_now = load_listed()
         need = {i for i in prev_ids if not (listed_now.get(i) or {}).get("name")}
         prev_snaps = load_prev_rt_snapshots(prev_feed_path, need) if need else {}
-        st = append_rt_offers(work, catalog, sel, load_supplier(), total_cap, prev_ids, prev_snaps=prev_snaps)
+        reprice = None
+        try:
+            import rt_reprice
+            if rt_reprice.gate_on():
+                reprice = rt_reprice.feed_context()
+                rt_reprice.check_state_health()
+        except Exception as e:  # noqa: BLE001 — стан репрайсера не читається → ціна «без конкурента», як до брами
+            print(f"[Prom] RT: стан репрайсера недоступний ({type(e).__name__}: {str(e)[:120]}) — ціна без конкурента.", file=sys.stderr)
+        st = append_rt_offers(work, catalog, sel, load_supplier(), total_cap, prev_ids, prev_snaps=prev_snaps, reprice=reprice)
         print(f"[Prom] RoyalToys у фіді: {st}")
         return work
     except Exception as e:  # noqa: BLE001

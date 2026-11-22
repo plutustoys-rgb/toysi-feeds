@@ -105,7 +105,7 @@ def _notify(text: str) -> None:
     print(f"[rt_prom_cleanup] {text}", file=sys.stderr)
     try:
         from telegram_notify import send_telegram_message
-        send_telegram_message("🧹 rt_prom_cleanup: " + text)
+        send_telegram_message("⚠️ rt_prom_cleanup (увага, необоротні видалення карток): " + text)
     except Exception as e:  # noqa: BLE001
         print(f"[rt_prom_cleanup] сповіщення не надіслано: {type(e).__name__}", file=sys.stderr)
 

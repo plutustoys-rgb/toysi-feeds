@@ -405,5 +405,37 @@ def run_once(catalog: dict | None = None, ids: list | None = None, out: Path | N
         return False
 
 
+DEFAULT_GRACE_H = 2.5      # МЕНШЕ порога застарілості залишків у stock_snapshot (RT_MAX_AGE = 3 год): інакше юніт «зелений», а залишки rt-/kv- на сайті вже зникли (аудит #1979, знахідка 2)
+
+
+def _grace_hours() -> float:
+    """SUPPLIER_EXPORT_GRACE_H з env; некоректне/порожнє/нескінченне/від'ємне → DEFAULT_GRACE_H (імпорт модуля НЕ ламається: його імпортують stock_snapshot, np_ttn, rt_order_runner…); не вище 3 год (поріг споживачів)."""
+    try:
+        v = float(os.environ.get("SUPPLIER_EXPORT_GRACE_H", ""))
+    except ValueError:
+        return DEFAULT_GRACE_H
+    if not math.isfinite(v) or v < 0:
+        return DEFAULT_GRACE_H
+    return min(v, 3.0)
+
+
+def grace_exit(ok: bool, out: Path, name: str, grace_h: float | None = None, now_ts: float | None = None) -> int:
+    """Код виходу експортера. ok → 0. Збій (500/504 постачальника, таймаут), але ПОПЕРЕДНІЙ файл свіжіший за grace_h год → 0 з попередженням (юніт НЕ failed → нема хибної тривоги «потрібен власник» щогодини);
+    файл старший/відсутній → 1 (реальна проблема: дані застарівають). Саме збій і так сигналить _alert усередині run_once (раз на добу)."""
+    if ok:
+        return 0
+    grace_h = _grace_hours() if grace_h is None else grace_h
+    try:
+        age_h = ((now_ts if now_ts is not None else time.time()) - Path(out).stat().st_mtime) / 3600
+    except OSError:
+        print(f"[{name}] збій, а попереднього файлу нема — це помилка", file=sys.stderr)
+        return 1
+    if 0 <= age_h <= grace_h:
+        print(f"[{name}] тимчасовий збій постачальника: попередній файл свіжий ({age_h:.1f} год ≤ {grace_h:g}) — не вважаю помилкою; наступний запуск повторить", file=sys.stderr)
+        return 0
+    print(f"[{name}] збій, а файл застарів ({age_h:.1f} год > {grace_h:g}) — помилка", file=sys.stderr)
+    return 1
+
+
 if __name__ == "__main__":
-    sys.exit(0 if run_once(workers=PREFETCH_WORKERS, budget_s=PREFETCH_BUDGET_S, category_keys=load_category_keys(), check_disk=True) else 1)
+    sys.exit(grace_exit(run_once(workers=PREFETCH_WORKERS, budget_s=PREFETCH_BUDGET_S, category_keys=load_category_keys(), check_disk=True), OUT_FILE, "rt_export"))

@@ -350,6 +350,7 @@ def _convert_prom_order(order: dict) -> dict:
         "status": order.get("status", "pending"),
         "payment_method": "cod" if is_cod else "prepaid",
         "payment_confirmed": payment_confirmed_by_prom,
+        "payment_option_name": str((order.get("payment_option") or {}).get("name") or "").strip() or None,      # сирий підпис оплати (22.11.2026): конвеєр RT для Prom (RT_PROM_ORDERS_AUTO) fail-closed без нього
         "customer_name": customer_name,
         "phone": order.get("phone", ""),
         "np_branch": order.get("delivery_address", ""),
@@ -976,8 +977,30 @@ def normalize_order(raw_order: dict) -> dict:
         "np_warehouse_number": raw_order.get("np_warehouse_number"), # точний № відділення з площадки, якщо є
         "np_ref_id":         raw_order.get("np_ref_id"),            # сирий Ref НП (Rozetka delivery.ref_id / EVA warehouse_id) — на ретрай резолву при форварді
         "carrier":           raw_order.get("carrier", "nova_poshta"),
+        "payment_option_name": raw_order.get("payment_option_name"),     # лише Prom (None для решти); див. orders_db.classify_rt_prom_order
         "items":             raw_order["items"],
     }
+
+
+_RT_NOTE_MANUAL = "⚠️ є rt-позиції (RoyalToys): у Toysi НЕ передається, виконати ВРУЧНУ"
+
+
+def _prom_rt_note(order: dict) -> str:
+    """Примітка до сповіщення про нове Prom-замовлення з rt-позицією (RoyalToys). БЕЗ брами RT_PROM_ORDERS_AUTO — ЗАВЖДИ «виконати ВРУЧНУ» (бітово як було). З брамою (22.11.2026):
+    «обробляється автоматично» лише коли автоматика реально може (реальний режим конвеєра RT і orders_db.classify_rt_prom_order → ok/unpaid); інакше «ВРУЧНУ» з причиною."""
+    if order.get("platform") != "prom":
+        return ""
+    if not any(str((_i or {}).get("toysi_code") or "").strip().lower().startswith("rt-") for _i in (order.get("items") or [])):
+        return ""
+    import orders_db
+    if not orders_db.rt_prom_auto_enabled():
+        return _RT_NOTE_MANUAL
+    if not orders_db.rt_prom_auto_active():
+        return _RT_NOTE_MANUAL + " (автоматика Prom+RT увімкнена, але конвеєр RT у dry-run: RT_RUNNER_APPLY≠1)"
+    verdict, why = orders_db.classify_rt_prom_order(order)
+    if verdict in ("ok", "unpaid"):
+        return "🤖 rt-позиції (RoyalToys): обробляється АВТОМАТИЧНО" + (" після підтвердження оплати" if verdict == "unpaid" else "") + " — вручну нічого не робити"
+    return f"{_RT_NOTE_MANUAL} (автоматично НЕ обробляється: {why})"
 
 
 def poll_once() -> None:
@@ -999,9 +1022,8 @@ def poll_once() -> None:
                         from telegram_notify import notify_new_order
                         _items = order.get("items") or []
                         # Prom-замовлення з rt-позицією (RoyalToys у prom_feed_top.xml, rt_prom.py): order_router/get_orders_ready_to_forward їх у Toysi НЕ передають, а конвеєр RT (get_rt_orders_pending) бере лише site/eva —
-                        # тож це ЄДИНИЙ сигнал, що замовлення потребує ручного виконання (кабінет RoyalToys + ТТН); без позначки воно б виглядало як звичайне.
-                        _rt_note = ("⚠️ є rt-позиції (RoyalToys): у Toysi НЕ передається, виконати ВРУЧНУ"
-                                    if order["platform"] == "prom" and any(str((_i or {}).get("toysi_code") or "").strip().lower().startswith("rt-") for _i in _items) else "")
+                        # тож це ЄДИНИЙ сигнал, що замовлення потребує ручного виконання (кабінет RoyalToys + ТТН); без позначки воно б виглядало як звичайне. З брамою RT_PROM_ORDERS_AUTO=1 (22.11.2026) get_rt_orders_pending бере й Prom — текст дає _prom_rt_note.
+                        _rt_note = _prom_rt_note(order)
                         notify_new_order(order["platform"], order["order_id"],
                                          sum(float(i.get("price") or 0) * int(i.get("qty") or 1) for i in _items),
                                          len(_items), order.get("payment_method", ""), note=_rt_note)

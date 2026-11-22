@@ -371,6 +371,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         _ensure_column(conn, "orders", "attribution", "attribution TEXT")
         _ensure_column(conn, "orders", "rt_confirmed_at", "rt_confirmed_at TEXT")
         _ensure_column(conn, "orders", "rt_total", "rt_total REAL")
+        # Сирий підпис способу оплати Prom (payment_option.name, 22.11.2026): потрібен конвеєру RT для Prom (RT_PROM_ORDERS_AUTO) — fail-closed: порожній/невідомий/схожий на накладений платіж → НЕ обробляємо автоматично. Лише Prom; для решти NULL.
+        _ensure_column(conn, "orders", "payment_option_name", "payment_option_name TEXT")
         # КОДВ-журнал (2026-07-20, daily_report.py): коли замовлення вже
         # дописано в kodv_ledger.jsonl — персистентна позначка, не 24-годинне
         # вікно, щоб дрейф/пропуск таймера (як уже стався з update-feeds.yml)
@@ -474,6 +476,9 @@ def insert_order(conn: sqlite3.Connection, order: dict) -> bool:
             order.get("promo_discount_total"),
         ),
     )
+    _pon = str(order.get("payment_option_name") or "").strip()
+    if _pon:        # лише Prom (orders_watcher._convert_prom_order); окремим UPDATE — щоб INSERT решти платформ лишився бітово тим самим
+        conn.execute("UPDATE orders SET payment_option_name = ? WHERE internal_order_id = ?", (_pon[:200], internal_order_id))
     return True
 
 
@@ -636,14 +641,62 @@ KV_STUCK_STATES = ("kv_creating", "kv_unknown", "ttn_creating")      # резу�
 # manual — власник виконав замовлення вручну (термінальний, конвеєр не чіпає).
 
 
-def get_rt_orders_pending(conn: sqlite3.Connection) -> list:
-    """Оплачені замовлення САЙТУ з товарами RoyalToys, які ще не дійшли до кінця конвеєра (rt_state не delivered/returned/manual). Лише передоплата з підтвердженою оплатою; sandbox_test, скасовані й ПОВЕРНЕНІ (чек повернення LiqPay виписано/в роботі) — ні; замовлення, де ТТН уже внесено вручну (toysi_ttn) і конвеєр його не починав, — ні (не дублюємо ручну відправку)."""
+def rt_prom_auto_enabled() -> bool:
+    """Брама автоматичного виконання Prom-замовлень з rt-позиціями (рішення власника 22.11.2026). ЗА ЗАМОВЧУВАННЯМ ВИМКНЕНО: без RT_PROM_ORDERS_AUTO=1 поведінка така, як до PR (Prom+rt лише сповіщення «виконати ВРУЧНУ»)."""
+    return os.environ.get("RT_PROM_ORDERS_AUTO") == "1"
+
+
+def rt_prom_auto_active() -> bool:
+    """Автоматика Prom+RT реально працюватиме: брама відкрита І конвеєр RT у реальному режимі (RT_RUNNER_APPLY=1). Для тексту сповіщення про нове замовлення (дешева перевірка env; повна перевірка воріт — rt_order_runner.apply_enabled)."""
+    return rt_prom_auto_enabled() and os.environ.get("RT_RUNNER_APPLY") == "1"
+
+
+_COD_LIKE_RE = re.compile(r"наклад|післяплат|послеплат|наложен|отриман|получен|готівк|наличн|при\s+отрим|при\s+получ|cash|\bcod\b", re.IGNORECASE)
+
+
+def classify_rt_prom_order(order: dict) -> tuple:
+    """Вердикт для Prom-замовлення з rt-позиціями: (код, причина). Коди: 'not_rt' (rt-позицій нема), 'mixed' (rt + інші), 'carrier' (не Нова Пошта), 'cod' (накладений платіж/схоже на нього), 'unknown_payment' (спосіб оплати невідомий — fail-closed),
+    'unpaid' (передоплата, оплата ще не підтверджена — чекаємо), 'ok' (можна обробляти автоматично). Порядок = пріоритет: спершу те, що назавжди унеможливлює автоматику."""
+    items = order.get("items") or []
+    codes = [str((it or {}).get("toysi_code") or "").strip().lower() for it in items]
+    n_rt = sum(1 for c in codes if c.startswith("rt-"))
+    if not n_rt:
+        return "not_rt", "rt-позицій нема"
+    if n_rt != len(codes):
+        return "mixed", "змішане замовлення (rt- + інші позиції): Toysi-частину ніхто не форвардить, RT-частину конвеєр не оформлює"
+    if (order.get("carrier") or "nova_poshta") != "nova_poshta":
+        return "carrier", f"перевізник «{order.get('carrier')}» — конвеєр RT оформлює лише Нову Пошту"
+    name = str(order.get("payment_option_name") or "").strip()
+    if order.get("payment_method") != "prepaid" or (name and _COD_LIKE_RE.search(name)):
+        return "cod", f"накладений платіж або схоже на нього («{name or order.get('payment_method')}»): конвеєр RT бере лише передоплату"
+    if not name:
+        return "unknown_payment", "спосіб оплати Prom невідомий (payment_option.name не збережено) — fail-closed, автоматично не обробляємо"
+    if not order.get("payment_confirmed"):
+        return "unpaid", "оплата ще не підтверджена"
+    return "ok", ""
+
+
+def get_rt_prom_delivered_unpushed(conn: sqlite3.Connection, since_iso: str) -> list:
+    """Prom-замовлення RT, доставлені (rt_state='delivered', за нашим трекінгом НП), для яких статус «delivered» ще не передано в Prom (prom_delivered_pushed_at) — ретрай, бо delivered виходить із черги. Лише останні (rt_updated_at >= since_iso): вічного ретраю нема."""
     rows = conn.execute(
-        """
+        "SELECT * FROM orders WHERE platform = 'prom' AND rt_state = 'delivered' AND prom_delivered_pushed_at IS NULL "
+        "AND toysi_ttn IS NOT NULL AND toysi_ttn != '' AND rt_updated_at >= ? ORDER BY rt_updated_at",
+        (since_iso,),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_rt_orders_pending(conn: sqlite3.Connection, include_prom: bool = False) -> list:
+    """Оплачені замовлення САЙТУ з товарами RoyalToys, які ще не дійшли до кінця конвеєра (rt_state не delivered/returned/manual). Лише передоплата з підтвердженою оплатою; sandbox_test, скасовані й ПОВЕРНЕНІ (чек повернення LiqPay виписано/в роботі) — ні; замовлення, де ТТН уже внесено вручну (toysi_ttn) і конвеєр його не починав, — ні (не дублюємо ручну відправку).
+    include_prom=True (лише з брамою RT_PROM_ORDERS_AUTO, 22.11.2026) додає platform='prom'; без нього запит семантично той самий, що й раніше (site, eva). Чи Prom-замовлення придатне для автоматики (змішане/не НП/невідома оплата) вирішує rt_order_runner через classify_rt_prom_order — тут лише відбір."""
+    platforms = "'site', 'eva', 'prom'" if include_prom else "'site', 'eva'"
+    bad_status = "'sandbox_test', 'cancelled', 'eva_cancelled_before_forward'" + (", 'prom_cancelled_before_forward', 'canceled'" if include_prom else "")      # 'canceled' — вокабуляр Prom (знімок при першому погляді)
+    rows = conn.execute(
+        f"""
         SELECT * FROM orders
-        WHERE platform IN ('site', 'eva') AND payment_method = 'prepaid' AND payment_confirmed = 1
+        WHERE platform IN ({platforms}) AND payment_method = 'prepaid' AND payment_confirmed = 1
           AND items LIKE '%' || ? || '%'
-          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled', 'eva_cancelled_before_forward'))
+          AND (status IS NULL OR status NOT IN ({bad_status}))
           AND cancelled_at IS NULL
           AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL
           AND (rt_state IS NULL OR rt_state NOT IN ('delivered', 'returned', 'manual'))
@@ -655,14 +708,16 @@ def get_rt_orders_pending(conn: sqlite3.Connection) -> list:
     return [_row_to_dict(row) for row in rows]
 
 
-def get_rt_cod_orders(conn: sqlite3.Connection) -> list:
+def get_rt_cod_orders(conn: sqlite3.Connection, include_prom: bool = False) -> list:
     """Замовлення з товарами RoyalToys і НАКЛАДЕНИМ платежем (сайт це відхиляє на вході; EVA — власник 21.10: «післяплати там немає», але якщо раптом з'явиться): конвеєр RT їх НЕ бере (лише передоплата — повернення накладеного лягає на нас),
-    тож без цього запиту вони б висіли мовчки. Лише ще не оброблені (rt_state порожній) і не скасовані."""
+    тож без цього запиту вони б висіли мовчки. Лише ще не оброблені (rt_state порожній) і не скасовані. include_prom=True — те саме для Prom (брама RT_PROM_ORDERS_AUTO)."""
+    platforms = "'site', 'eva', 'prom'" if include_prom else "'site', 'eva'"
+    bad_status = "'sandbox_test', 'cancelled', 'eva_cancelled_before_forward'" + (", 'prom_cancelled_before_forward', 'canceled'" if include_prom else "")
     rows = conn.execute(
-        """
+        f"""
         SELECT * FROM orders
-        WHERE platform IN ('site', 'eva') AND payment_method = 'cod' AND items LIKE '%' || ? || '%'
-          AND (status IS NULL OR status NOT IN ('sandbox_test', 'cancelled', 'eva_cancelled_before_forward'))
+        WHERE platform IN ({platforms}) AND payment_method = 'cod' AND items LIKE '%' || ? || '%'
+          AND (status IS NULL OR status NOT IN ({bad_status}))
           AND cancelled_at IS NULL AND rt_state IS NULL
           AND (toysi_ttn IS NULL OR toysi_ttn = '') AND forwarded_to_toysi_at IS NULL
         ORDER BY created_at

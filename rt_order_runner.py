@@ -6,6 +6,8 @@
   • ЗА ЗАМОВЧУВАННЯМ — DRY-RUN: нічого не створюється (ні ТТН, ні замовлення в RoyalToys); звіт: що б зробили (маппінг позицій, залишки, вартість доставки НП, перевірка кошика/форми RoyalToys на тестовому PDF). Реальний режим: RT_RUNNER_APPLY=1 І NP_TTN_APPLY=1 І RT_ORDER_SUBMIT=1 І rt_cabinet.final_implemented(RT_ORDER_MODE) (за замовчуванням reserve = кнопка «Резерв»: нічого не відправляється й не списується, 2 дні; «З балансу» НЕ підключено).
   • Лише оплачені (prepaid+payment_confirmed) замовлення сайту ЗІ ВСІМА позиціями rt- (змішані ловить сервер; тут — стоп з причиною), з розпізнаним відділенням НП (np_city_ref+np_warehouse_number), фіскальним чеком ДО передачі постачальнику, залишком у supplier_rt.json ≥ кількості, габаритами.
   • ПІБ і телефон отримувача ПЕРЕДАЮТЬСЯ в RoyalToys (обов'язкові поля кабінету; власник 20.10: «ПІБ передавай»), перевіряються ДО створення ТТН.
+PROM (22.11.2026, брама RT_PROM_ORDERS_AUTO=1, ЗА ЗАМОВЧУВАННЯМ ВИМКНЕНО): Prom-замовлення з rt-позиціями йдуть тим самим ланцюжком (get_rt_orders_pending(include_prom=True)). Fail-closed блокери ДО чека (prom_blocker): змішане, не Нова Пошта, накладений платіж/невідомий спосіб оплати (orders.payment_option_name), оплата не підтверджена, скасовано на Prom.
+  Чек для Prom — лише в реальному режимі (apply_enabled). Після резерву: Prom «Прийнято» + ЕН нашої ТТН (order_status_tracker._maybe_push_ttn_to_prom — той самий виклик, що для Toysi-замовлень Prom), «delivered» — _maybe_push_delivered_to_prom.
 Запуск: rt-order-runner.timer (VPS, кожні 15 хв; без rt-замовлень — миттєвий вихід). Збій → один самодіагностичний алерт на замовлення/стан/6 год."""
 import json
 import os
@@ -299,6 +301,87 @@ _EVA_BLOCK_TEXT = {
 }
 
 
+class WaitError(RunnerError):
+    """Тимчасова відсутність даних (живий статус Prom невідомий/API недоступний): НЕ виконуємо й НЕ алертимо (лише лог) — повтор наступного циклу (аудит #2013 Б2)."""
+
+
+_PROM_BLOCK_TEXT = {
+    "gate": "Prom+RoyalToys: автоматика вимкнена (RT_PROM_ORDERS_AUTO вимкнено) — виконайте замовлення вручну (кабінет RoyalToys + ТТН)",
+    "no_date": "Prom+RoyalToys: RT_PROM_ORDERS_AUTO увімкнено БЕЗ дати — вкажіть дату/час вмикання (напр. RT_PROM_ORDERS_AUTO=2026-11-23T10:00): без неї нові Prom-замовлення не обробляються",
+    "before_since": "Prom+RoyalToys: замовлення створене ДО дати вмикання RT_PROM_ORDERS_AUTO — автоматично не обробляємо (виконується вручну)",
+    "unpaid": "Prom+RoyalToys: оплату не підтвердив сам Prom (payment_data.status≠paid) — не оформлюємо",
+    "not_rt": "Prom: у замовленні нема rt-позицій — конвеєр RT не оформлює",
+    "cancelled": "Prom: замовлення скасоване покупцем ДО оформлення — не оформлюємо (позначено prom_cancelled_before_forward, зі черги знято)",
+    "foreign_status": "Prom+RoyalToys: живий статус замовлення на Prom вже НЕ «pending/paid» (прийнято/відправлено/доставлено/інше — схоже, виконано вручну або змінено) — автоматично НЕ обробляємо, стан виставлено manual",
+}
+PROM_NEW_STATUSES = ("pending", "paid")      # живі статуси Prom, з яких можна СТАРТУВАТИ (решта — received/delivered/canceled/draft/custom-… — не нове)
+
+
+def prom_blocker(conn, d, order: dict):
+    """Причина, за якої Prom-замовлення НЕ можна оформлювати через конвеєр RT, або None (22.11.2026). Перевіряється ДО чека і ДО будь-якої дії; FAIL-CLOSED. Застосовується лише до СТАРТУ (rt_state порожній).
+    gate — брама вимкнена; no_date — брама без дати (аудит #2013 Б1); before_since — створене до дати вмикання; wait — живий статус Prom невідомий (Б2: не виконуємо, без алерту); cancelled — скасовано покупцем; foreign_status — на Prom уже не pending/paid (виконано вручну тощо);
+    далі за вмістом (orders_db.classify_rt_prom_order): mixed / carrier / cod / unknown_payment (дозвільний список, Б4) / unpaid. Живий статус перевіряється ДО вердикту за вмістом, щоб скасовані/виконані заблоковані замовлення виходили з черги, а не алертили довічно (Б7)."""
+    if order.get("platform") != "prom":
+        return None
+    import orders_db
+    since = orders_db.rt_prom_auto_since()
+    if since is None:
+        return "gate"
+    if since == "INVALID":
+        return "no_date"
+    if str(order.get("created_at") or "") < since:
+        return "before_since"
+    st = d.prom_live_status(order) if hasattr(d, "prom_live_status") else "pending"
+    if st is None:
+        return "wait"
+    if st == "canceled":
+        return "cancelled"
+    if st not in PROM_NEW_STATUSES:
+        return "foreign_status"
+    verdict, _why = orders_db.classify_rt_prom_order(order)
+    if verdict != "ok":
+        return verdict
+    return None
+
+
+def platform_blocker(conn, d, order: dict):
+    """prom_blocker для Prom, eva_blocker для решти (сайт/EVA — як було)."""
+    if order.get("platform") == "prom":
+        return prom_blocker(conn, d, order)
+    return eva_blocker(conn, d, order)
+
+
+def blocker_text(order: dict, why: str) -> str:
+    if order.get("platform") == "prom":
+        import orders_db
+        if why in ("mixed", "carrier", "cod", "unknown_payment"):
+            return "Prom+RoyalToys, автоматично НЕ обробляється, чек НЕ видано: " + orders_db.classify_rt_prom_order(order)[1] + " — потрібне рішення (виконати вручну або скасувати з причиною на Prom; повернення коштів веде Prom). Конвеєр підхопить замовлення сам після виправлення причини"
+        return _PROM_BLOCK_TEXT.get(why, f"Prom: заблоковано ({why})")
+    return _EVA_BLOCK_TEXT[why]
+
+
+def _prom_live(d, oid: str, order: dict, rep: dict) -> str:
+    """Живий статус Prom безпосередньо ПЕРЕД незворотною дією (аудит #2013 Б2): 'ok' — можна; 'unknown' — статус невідомий/API недоступний → НЕ виконуємо (лише лог, повтор наступного циклу); 'canceled' — покупець скасував →
+    стоп + 🟠 алерт «потрібне ручне скасування ТТН/резерву» (автоскасування ТТН/резерву НЕ робимо)."""
+    st = d.prom_live_status(order) if hasattr(d, "prom_live_status") else "pending"
+    if st is None:
+        print(f"[rt_runner] {oid}: живий статус Prom невідомий — «З балансу»/ЕН цього циклу не виконуємо", file=sys.stderr)
+        rep["actions"].append("Prom: живий статус невідомий — крок відкладено на наступний цикл")
+        return "unknown"
+    if st == "canceled":
+        _alert(oid, "prom_cancelled", f"покупець скасував замовлення на Prom (RT {order.get('rt_order_ref')}, ТТН {order.get('toysi_ttn')}) — потрібне РУЧНЕ скасування ТТН НП і резерву/замовлення RoyalToys (автоскасування не робимо); «З балансу» і ЕН у Prom зупинено; кошти покупцю повертає Prom")
+        rep["actions"].append("Prom: замовлення скасоване покупцем — «З балансу»/ЕН зупинено, потрібне ручне скасування ТТН/резерву")
+        return "canceled"
+    return "ok"
+
+
+def _receipt_step(conn, d, order: dict, apply: bool) -> bool:
+    """Чек передоплати для «позалімітних»/без SINCE замовлень. Сайт/EVA — як було. Prom (аудит #2013 Б6): чек видається ЛИШЕ в process_order ПІСЛЯ усіх офлайн-валідацій (залишок, ПІБ/телефон, відділення, кабінет RT) і лише в реальному режимі — тут Prom чек НЕ видаємо. True — «можна рухатись далі»."""
+    if order.get("platform") == "prom":
+        return True
+    return d.ensure_receipt(conn, order)
+
+
 def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> dict:
     """Один крок(и) для замовлення. Повертає звіт-словник. deps — підміна зовнішніх викликів у тестах."""
     import orders_db
@@ -322,8 +405,26 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                         d.eva_accept_and_push_ttn(conn, order, order.get("toysi_ttn"))      # ретрай: ТТН ще не передано в EVA; 12 — лише ПІСЛЯ підтвердження «З балансу» (посилка реально йде), якщо автопідтвердження ввімкнено
                     except Exception as e:  # noqa: BLE001
                         print(f"[rt_runner] {oid}: ТТН у EVA не передано ({type(e).__name__}) — повтор", file=sys.stderr)
-            if state == "rt_ordered" and apply and auto_confirm_enabled() and not order.get("rt_confirmed_at"):
+            _prom_hold = False
+            if apply and order.get("platform") == "prom":
+                _need = (not order.get("prom_ttn_pushed_at") and (not auto_confirm_enabled() or order.get("rt_confirmed_at"))) or (state == "rt_ordered" and auto_confirm_enabled() and not order.get("rt_confirmed_at"))
+                if state == "rt_ordered" or _need:      # скасування — щоциклу в rt_ordered (log-only при невідомому статусі); перед «З балансу»/ЕН (shipped теж) — СУВОРО (Б2): невідомо → крок не виконуємо
+                    _lv = _prom_live(d, oid, order, rep)
+                    if _lv == "canceled":
+                        return rep              # скасоване покупцем: НЕ підтверджуємо «З балансу», ЕН не передаємо; алерт «ручне скасування ТТН/резерву» вже надіслано
+                    _prom_hold = (_lv == "unknown") and _need
+                if not _prom_hold and not order.get("prom_ttn_pushed_at") and hasattr(d, "prom_accept_and_push_ttn") and (not auto_confirm_enabled() or order.get("rt_confirmed_at")):
+                    try:
+                        d.prom_accept_and_push_ttn(conn, order, order.get("toysi_ttn"), False)      # ретрай: ЕН ще не передано в Prom (лише declaration; «Прийнято» виставлено при оформленні)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[rt_runner] {oid}: ЕН у Prom не передано ({type(e).__name__}) — повтор", file=sys.stderr)
+            if state == "rt_ordered" and apply and auto_confirm_enabled() and not order.get("rt_confirmed_at") and not _prom_hold:
                 _done = _confirm_step(conn, d, oid, order, rep)
+                if _done and order.get("platform") == "prom" and not order.get("prom_ttn_pushed_at") and hasattr(d, "prom_accept_and_push_ttn") and _prom_live(d, oid, order, rep) == "ok":
+                    try:
+                        d.prom_accept_and_push_ttn(conn, order, order.get("toysi_ttn"), False)      # підтвердили саме зараз — повторна перевірка живого статусу, далі одразу ЕН у Prom
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[rt_runner] {oid}: ЕН у Prom не передано ({type(e).__name__}) — повтор", file=sys.stderr)
                 if _done and order.get("platform") == "eva" and not order.get("eva_ttn_pushed_at") and hasattr(d, "eva_accept_and_push_ttn"):
                     try:
                         d.eva_accept_and_push_ttn(conn, order, order.get("toysi_ttn"))      # підтвердили саме зараз — одразу 12 з ТТН
@@ -351,24 +452,46 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                     orders_db.set_rt_state(conn, oid, new_state, delivery_status=ds)
                     conn.commit()
                     if new_state == "returned":
-                        _alert(oid, "returned", "посилка повертається/відмова одержувача — потрібне рішення: повернення коштів клієнту (LiqPay) і розбір із RoyalToys (повернення на нас чи на склад — див. відповідь менеджера)")
+                        _alert(oid, "returned", "посилка повертається/відмова одержувача — потрібне рішення: повернення коштів клієнту ("
+                               + ("через Prom — Пром-оплата" if order.get("platform") == "prom" else "LiqPay") + ") і розбір із RoyalToys (повернення на нас чи на склад — див. відповідь менеджера)")
+                    if new_state == "delivered" and order.get("platform") == "prom" and hasattr(d, "prom_delivered_push"):
+                        try:
+                            d.prom_delivered_push(conn, order)      # «delivered» у Prom тим самим механізмом, що й для Toysi-замовлень (order_status_tracker._maybe_push_delivered_to_prom); збій → ретрай у _run_pipeline
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[rt_runner] {oid}: «delivered» у Prom не передано ({type(e).__name__}) — ретрай наступного циклу", file=sys.stderr)
                 rep["actions"].append(f"трекінг НП: {state} → {new_state}")
             elif _stale(order):
                 _alert(oid, "stale", f"стан «{state}» без змін понад {STALE_DAYS} днів (ТТН {order.get('toysi_ttn')}) — звірте статус посилки в НП (видалена/зберігання/відмова)")
                 rep["actions"].append(f"стан без змін понад {STALE_DAYS} днів — алерт")
             return rep
         if state is None:
-            _why = eva_blocker(conn, d, order)
+            _why = platform_blocker(conn, d, order)
             if _why:
-                if _why != "cancelled":
-                    _alert(oid, "eva_" + _why, _EVA_BLOCK_TEXT[_why])
-                raise RunnerError(_EVA_BLOCK_TEXT[_why])
+                _is_prom = order.get("platform") == "prom"
+                if _is_prom and _why == "wait":
+                    raise WaitError("Prom: живий статус замовлення невідомий (API недоступний/не знайдено) — не виконуємо, повтор наступного циклу")
+                if _is_prom and _why in ("before_since", "gate"):
+                    raise WaitError(blocker_text(order, _why))          # поза чергою за задумом (старе/брама закрита): без алерту
+                if _is_prom and apply and _why == "cancelled" and hasattr(d, "prom_mark_cancelled"):
+                    d.prom_mark_cancelled(conn, order)                  # status=prom_cancelled_before_forward → виходить із черги (Б7)
+                    conn.commit()
+                if _is_prom and apply and _why == "foreign_status":
+                    orders_db.set_rt_state(conn, oid, "manual", rt_error=_PROM_BLOCK_TEXT["foreign_status"][:300])      # виконано/змінено поза конвеєром — термінальний manual (Б1/Б7)
+                    conn.commit()
+                if _why != "cancelled" or _is_prom:
+                    _alert(oid, ("prom_" if _is_prom else "eva_") + _why, blocker_text(order, _why))
+                raise RunnerError(blocker_text(order, _why))
         if state is None:
             # фіскальний чек — ПЕРШИМ кроком, як у роутері (бухгалтер 12.10: не пізніше передачі товару), НЕ залежить ні від воріт, ні від залишку/відділення/ціни
-            if not d.ensure_receipt(conn, order):
+            if order.get("platform") != "prom" and not d.ensure_receipt(conn, order):      # Prom: чек ПІСЛЯ усіх офлайн-валідацій (нижче, перед claim) — аудит #2013 Б6
                 raise RunnerError("фіскальний чек не видано — передачу постачальнику не починаємо")
         items = map_items(order, supplier)
         rep["items"] = [(i["toysi_code"], i["qty"], i["vendor_code"]) for i in items]
+        if order.get("platform") == "prom":      # Б5: customer_name Prom = «Ім'я Прізвище», а НП/RoyalToys чекають «Прізвище Ім'я По батькові» — беремо recipient_fio (лише в RT-шляху; customer_name в БД не чіпаємо)
+            _fio = " ".join(str(order.get("recipient_fio") or "").split())
+            if len(_fio.split()) < 2:
+                raise RunnerError("Prom: нема ПІБ отримувача у порядку «Прізвище Ім'я» (orders.recipient_fio) — ТТН не створюємо, щоб не переплутати прізвище й ім'я")
+            order = {**order, "customer_name": _fio}
         recipient = _recipient(order)          # ПІБ і телефон ОБОВ'ЯЗКОВІ для RoyalToys — перевіряємо ДО ТТН (інакше ТТН-сирота)
         order = _verified_np_destination(order, d)      # 11.11: city_id площадки (EVA) не завжди валідний NP CityRef → «City not found»; Ref відділення — авторитетне джерело (як order_router.py:337–361)
         if not (order.get("np_city_ref") and order.get("np_warehouse_number")):
@@ -398,6 +521,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             rt = d.rt_dry_run(items, recipient)
             if not rt.get("ready"):
                 raise RunnerError(f"кабінет RoyalToys не готовий до оформлення: {rt.get('problems')}")
+            if order.get("platform") == "prom" and not d.ensure_receipt(conn, order):      # Prom (Б6): чек лише коли ВСЕ локальне/кабінетне перевірено і ТТН буде створено одразу; у dry-run/закритих воротах сюди не доходимо
+                raise RunnerError("фіскальний чек не видано — передачу постачальнику не починаємо")
             if not orders_db.claim_rt_state(conn, oid, None, "ttn_creating"):
                 raise RunnerError("замовлення вже взяте іншим запуском (claim) — пропускаю")
             res = d.create_ttn(order_for_ttn(order, items))
@@ -428,7 +553,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             conn.commit()
             rep["actions"].append(f"замовлення RoyalToys {res['rt_order_ref']}")
             _confirmed = False
-            if auto_confirm_enabled():
+            _prom_ok = order.get("platform") != "prom" or _prom_live(d, oid, order, rep) == "ok"      # Б2: живий статус Prom безпосередньо перед «З балансу» і ЕН (невідомо/скасовано → не виконуємо; наступний цикл повторить)
+            if auto_confirm_enabled() and _prom_ok:
                 try:
                     _confirmed = _confirm_step(conn, d, oid, {**order, "rt_order_ref": str(res["rt_order_ref"]), "rt_total": float(_tot) if isinstance(_tot, (int, float)) else None, "rt_confirmed_at": None}, rep)
                 except Exception as e:  # noqa: BLE001
@@ -446,9 +572,26 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                     d.eva_accept(order)         # 12 чекає підтвердження «З балансу», але 11 виставляємо одразу (EVA авто-скасовує непідтверджені за 24 год)
                 except Exception as e:  # noqa: BLE001
                     print(f"[rt_runner] {oid}: EVA 11 не виставлено ({type(e).__name__})", file=sys.stderr)
+            if order.get("platform") == "prom" and _prom_ok and hasattr(d, "prom_accept_and_push_ttn") and (_confirmed or not auto_confirm_enabled()):
+                try:
+                    if d.prom_accept_and_push_ttn(conn, order, order["toysi_ttn"]):
+                        rep["actions"].append("ТТН передано в Prom («Прийнято» + ЕН)")
+                    else:
+                        rep["actions"].append("ЕН у Prom не передано — повтор наступного циклу")
+                except Exception as e:  # noqa: BLE001
+                    rep["actions"].append(f"ЕН у Prom не передано ({type(e).__name__}) — повтор наступного циклу")
+            elif order.get("platform") == "prom" and _prom_ok and hasattr(d, "prom_accept"):
+                try:
+                    d.prom_accept(order)         # ЕН чекає підтвердження «З балансу», але «Прийнято» виставляємо одразу (як Toysi-потік у момент форварду)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[rt_runner] {oid}: Prom «Прийнято» не виставлено ({type(e).__name__})", file=sys.stderr)
             if not auto_confirm_enabled() and _order_mode() == "reserve":      # окремий блок для ОБОХ платформ (аудит #938 B2): при автопідтвердженні «reserved» хибний
                 _alert(oid, "reserved", ("" if res.get("reserve_status_seen", True) else "⚠️ статус «резерв» біля ТТН у списку НЕ підтверджено — звірте кабінет. ") + f"замовлення RoyalToys {res['rt_order_ref']} стоїть у РЕЗЕРВІ (ТТН {order['toysi_ttn']}): нічого не відправлено й не списано. Щоб відправили — поповніть баланс і натисніть «З балансу» в кабінеті "
                                        "(або напишіть менеджеру в чат) до 14:00 пн–пт; резерв тримається 2 дні, на третій скасується. ТТН НП живе обмежений час — не тягніть.", cooldown=24 * 60 * 60)
+    except WaitError as e:
+        rep["actions"].append(str(e))
+        print(f"[rt_runner] {oid}: {e}", file=sys.stderr)
+        return rep
     except RunnerError as e:
         rep["problems"].append(str(e))
     except Exception as e:  # noqa: BLE001
@@ -515,7 +658,7 @@ class _Deps:
     def ensure_receipt(self, conn, order):
         """Чек передоплати: сайт і EVA — один безпечний шлях (order_router._ensure_site_prepaid_receipt: свіжий стан БД, атомарний claim, невідомий результат Checkbox → другого чека автоматично НЕ буде)."""
         from order_router import _ensure_site_prepaid_receipt
-        return _ensure_site_prepaid_receipt(conn, order, include_eva=True)
+        return _ensure_site_prepaid_receipt(conn, order, include_eva=True, include_prom=True)      # include_prom діє лише для platform=prom (22.11.2026); сайт/EVA — як було
 
     def eva_precheck(self, conn, order):
         """True = можна оформлювати. EVA-замовлення, скасоване покупцем ДО нашої дії, не оформлюємо (як у order_router для Toysi-потоку; позначає status eva_cancelled_before_forward + Telegram)."""
@@ -540,6 +683,47 @@ class _Deps:
         ost._maybe_push_ttn_to_eva(conn, order, ttn)
         row = conn.execute("SELECT eva_ttn_pushed_at FROM orders WHERE internal_order_id = ?", (order["internal_order_id"],)).fetchone()
         return bool(row and row[0])
+
+    def prom_live_status(self, order):
+        """Живий статус замовлення на Prom (orders_watcher.check_prom_order_status, GET /orders/list з вікном від доби до створення — те саме, що order_router перед форвардом). None = невідомо (нема ключа/мережа/не знайдено): викликач НЕ виконує дію (fail-closed, Б2)."""
+        from order_router import _prom_date_from
+        from orders_watcher import check_prom_order_status
+        try:
+            return check_prom_order_status(order["order_id"], date_from=_prom_date_from(order))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def prom_mark_cancelled(self, conn, order):
+        """Покупець скасував ДО оформлення: status=prom_cancelled_before_forward (той самий маркер, що ставить order_router) — замовлення виходить із черги RT."""
+        import orders_db
+        orders_db.update_delivery_status(conn, order["internal_order_id"], status="prom_cancelled_before_forward")
+
+    def prom_accept(self, order):
+        """Prom: «Прийнято» (status=received) — той самий виклик, що order_router._update_marketplace_status для Toysi-замовлень (orders_watcher.update_prom_order_status)."""
+        from orders_watcher import update_prom_order_status
+        update_prom_order_status(order["order_id"])
+
+    def prom_accept_and_push_ttn(self, conn, order, ttn, accept=True):
+        """Prom-потік: «Прийнято» (received, best-effort, лише accept=True) → ЕН нашої ТТН у Prom через order_status_tracker._maybe_push_ttn_to_prom (POST /delivery/save_declaration_id; ідемпотентно за prom_ttn_pushed_at; Prom сам відповідає «ЕН уже додано» як успіх).
+        Це той самий код, що передає ЕН для Toysi-замовлень Prom — нового API-виклику нема. True — ЕН у Prom (прапорець prom_ttn_pushed_at стоїть)."""
+        import order_status_tracker as ost
+        if order.get("prom_ttn_pushed_at"):
+            return True
+        if accept:
+            try:
+                self.prom_accept(order)
+            except Exception as e:  # noqa: BLE001
+                print(f"[rt_runner] {order['internal_order_id']}: Prom «Прийнято» не виставлено ({type(e).__name__}) — пробуємо ЕН одразу", file=sys.stderr)
+        ost._maybe_push_ttn_to_prom(conn, order, ttn)
+        conn.commit()
+        row = conn.execute("SELECT prom_ttn_pushed_at FROM orders WHERE internal_order_id = ?", (order["internal_order_id"],)).fetchone()
+        return bool(row and row[0])
+
+    def prom_delivered_push(self, conn, order):
+        """Prom «delivered» — order_status_tracker._maybe_push_delivered_to_prom (перевіряє НП ще раз, POST /orders/set_status; ідемпотентно за prom_delivered_pushed_at; збій лише логується)."""
+        import order_status_tracker as ost
+        ost._maybe_push_delivered_to_prom(conn, order, order.get("toysi_ttn"))
+        conn.commit()
 
     def eva_cancelled_live(self, order):
         """True, якщо замовлення на сторінці EVA вже скасоване (9/10). Помилка/невідомо → False (не вигадуємо)."""
@@ -619,13 +803,43 @@ def refresh_cabinet_statuses(conn, d, orders: list) -> int:
     return changed
 
 
+PROM_DELIVERED_RETRY_DAYS = 3
+
+
+def _prom_delivered_retry(conn, d) -> int:
+    """Prom (22.11.2026): доставлене rt-замовлення виходить із черги конвеєра, тож якщо «delivered» у Prom не передалось у момент переходу — допередаємо тут (останні PROM_DELIVERED_RETRY_DAYS днів; ідемпотентно за prom_delivered_pushed_at). Повертає кількість спроб."""
+    import orders_db
+    from datetime import datetime, timedelta
+    if not hasattr(d, "prom_delivered_push"):
+        return 0
+    since = (datetime.now() - timedelta(days=PROM_DELIVERED_RETRY_DAYS)).isoformat(timespec="seconds")
+    n = 0
+    for o in orders_db.get_rt_prom_delivered_unpushed(conn, since):
+        try:
+            d.prom_delivered_push(conn, o)
+            n += 1
+        except Exception as e:  # noqa: BLE001
+            print(f"[rt_runner] {o.get('internal_order_id')}: «delivered» у Prom не передано ({type(e).__name__}) — ретрай наступного циклу", file=sys.stderr)
+    return n
+
+
 def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
     import orders_db
     since = _since()
     reports = []
     with orders_db.get_connection(db_path) if db_path else orders_db.get_connection() as conn:
-        pending = orders_db.get_rt_orders_pending(conn)
-        for _o in orders_db.get_rt_cod_orders(conn):            # товари RoyalToys + накладений платіж: конвеєр їх не бере (лише передоплата) — не мовчимо
+        prom_on = orders_db.rt_prom_auto_enabled()          # брама RT_PROM_ORDERS_AUTO (за замовчуванням ВИМКНЕНО → Prom у конвеєр не потрапляє, виклики нижче бітово як раніше)
+        pending = orders_db.get_rt_orders_pending(conn, include_prom=True) if prom_on else orders_db.get_rt_orders_pending(conn)
+        _cod = orders_db.get_rt_cod_orders(conn, include_prom=True) if prom_on else orders_db.get_rt_cod_orders(conn)
+        # PROM (аудит #2013 Б1/Б3): СТАРТ нових Prom-замовлень лише з дійсною датою вмикання (RT_PROM_ORDERS_AUTO=<ISO>) і лише створених НЕ раніше неї; Prom-рядки в польоті (rt_state NOT NULL) беремо ЗАВЖДИ — завершення кроків/трекінг/ЕН/delivered
+        prom_since = orders_db.rt_prom_auto_since() if prom_on else None
+        _prom_ok_start = lambda o: o.get("platform") != "prom" or bool(o.get("rt_state")) or (prom_since not in (None, "INVALID") and str(o.get("created_at") or "") >= prom_since)
+        _prom_held = [o for o in pending if o.get("platform") == "prom" and not o.get("rt_state")]
+        pending = [o for o in pending if _prom_ok_start(o)]
+        _cod = [o for o in _cod if _prom_ok_start(o)]
+        if prom_since == "INVALID" and _prom_held:
+            _alert("prom_gate", "prom_no_date", "RT_PROM_ORDERS_AUTO увімкнено БЕЗ дати — Prom-замовлення НЕ обробляються. Вкажіть дату/час вмикання у форматі ISO (напр. RT_PROM_ORDERS_AUTO=2026-11-23T10:00): обробляться лише створені не раніше неї (старі виконані вручну)")
+        for _o in _cod:            # товари RoyalToys + накладений платіж: конвеєр їх не бере (лише передоплата) — не мовчимо
             _alert(_o["internal_order_id"], "rt_cod", f"замовлення з товарами RoyalToys і НАКЛАДЕНИМ платежем ({_o.get('platform')}) — конвеєр RT їх не оформлює (лише передоплата, рішення власника 19.10): потрібне ручне рішення (скасувати/узгодити з покупцем)")
         if since == "INVALID":
             print("[rt_runner] RT_RUNNER_SINCE не розібрано як ISO-дата — реальний режим закритий", file=sys.stderr)
@@ -636,16 +850,18 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
             midway = [o for o in pending if o.get("rt_state") in ("ttn_created", "marking_ready")]
             for o in midway:                   # ланцюг посередині, а SINCE зник/зіпсований — не мовчимо
                 _alert(o["internal_order_id"], "since_mid", f"RT_RUNNER_SINCE не задано або не ISO-дата — замовлення зупинено на стані {o.get('rt_state')} (ТТН {o.get('toysi_ttn')})", cooldown=24 * 60 * 60)
-            dropped = [o for o in pending if o.get("rt_state") is None]
+            dropped = [o for o in pending if o.get("rt_state") is None and o.get("platform") != "prom"]      # Prom має власну дату (RT_PROM_ORDERS_AUTO) і чека поза process_order не отримує
             pending = [o for o in pending if o.get("rt_state") in ("rt_ordered", "shipped") or o.get("rt_state") in STUCK]
             dd = deps or _Deps()
             for o in dropped:                  # нові замовлення без дійсного SINCE: чек (бухгалтер) і сигнал ВСЕ ОДНО — вони не повинні мовчки зависнути
                 try:
-                    ok_r = False if eva_blocker(conn, dd, o) else dd.ensure_receipt(conn, o)
+                    ok_r = False if platform_blocker(conn, dd, o) else _receipt_step(conn, dd, o, apply)
                 except Exception as e:  # noqa: BLE001
                     ok_r = False
                     print(f"[rt_runner] {o['internal_order_id']}: чек збій {type(e).__name__}", file=sys.stderr)
                 _alert(o["internal_order_id"], "since", "RT_RUNNER_SINCE не задано або не ISO-дата — оплачене замовлення RoyalToys не обробляється" + ("" if ok_r else " (чек НЕ видано!)"), cooldown=24 * 60 * 60)
+        if apply:
+            _prom_delivered_retry(conn, deps or _Deps())      # Prom-рядки з rt_state існують лише якщо конвеєр їх уже брав (Б3: брама гейтить лише СТАРТ), тож без брами запит порожній
         if not pending:
             print("[rt_runner] немає замовлень RoyalToys у роботі")
             return reports
@@ -664,7 +880,7 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
         for order in rest:                       # поза лімітом кроків — але чек (бухгалтер) і сигнал «чекає» отримують ВСІ нові замовлення
             if order.get("rt_state") is None:
                 try:
-                    ok_r = False if eva_blocker(conn, d, order) else d.ensure_receipt(conn, order)
+                    ok_r = False if platform_blocker(conn, d, order) else _receipt_step(conn, d, order, apply)
                 except Exception as e:  # noqa: BLE001
                     ok_r = False
                     print(f"[rt_runner] {order['internal_order_id']}: чек збій {type(e).__name__}", file=sys.stderr)

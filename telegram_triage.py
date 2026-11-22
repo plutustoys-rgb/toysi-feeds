@@ -90,7 +90,7 @@ def is_owner_critical(text: str) -> bool:
 
 # ВИНЯТОК №2 (рішення власника 20.10.2026: «п.3 роби»): події ланцюжка замовлень RoyalToys, що потребують людини — резерв створено / посилка повертається / збій чи зупинка / стан застряг. Маркер «🟠 RoyalToys site_PT-…»;
 # інформаційні (dry-run «чекає ручної обробки», ворота) у rt_order_runner._alert мають інший маркер «⚪» і в Telegram не йдуть. Ліміт частоти — send_throttled_alert (ключ на замовлення+подію).
-RT_CHAIN_ALERT_RE = re.compile(r"^🟠 RoyalToys site_PT-")
+RT_CHAIN_ALERT_RE = re.compile(r"^🟠 RoyalToys (?:site_PT-|prom_)")      # prom_ — Prom+RT автоматика (22.11.2026, RT_PROM_ORDERS_AUTO): збої/блокери (змішане, накладений платіж, невідома оплата) мають дійти до власника
 
 
 def is_rt_chain_alert(text: str) -> bool:

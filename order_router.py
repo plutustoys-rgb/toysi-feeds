@@ -577,6 +577,18 @@ def _update_marketplace_status(order: dict) -> None:
 _PROM_CANCELLED_STATUSES = {"canceled"}
 
 
+def _prom_date_from(order: dict):
+    """date_from для check_prom_order_status(): початок КАЛЕНДАРНОГО ДНЯ перед created_at замовлення (див. докстрінг _check_prom_not_cancelled); None — немає/нерозбірливий created_at. Винесено без зміни логіки (22.11.2026: те саме вікно потрібне конвеєру RT)."""
+    created_at = order.get("created_at")
+    if created_at:
+        try:
+            created_date = datetime.fromisoformat(created_at).date()
+            return (datetime(created_date.year, created_date.month, created_date.day) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+    return None
+
+
 def _check_prom_not_cancelled(conn, order: dict) -> bool:
     """Живий запит до Prom Orders API ПЕРЕД будь-яким форвардом у Toysi —
     єдина точка виклику всередині route_order(), тож автоматично
@@ -619,14 +631,7 @@ def _check_prom_not_cancelled(conn, order: dict) -> bool:
     if order.get("platform") != "prom":
         return True
 
-    date_from = None
-    created_at = order.get("created_at")
-    if created_at:
-        try:
-            created_date = datetime.fromisoformat(created_at).date()
-            date_from = (datetime(created_date.year, created_date.month, created_date.day) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
-        except ValueError:
-            date_from = None
+    date_from = _prom_date_from(order)
 
     live_status = check_prom_order_status(order["order_id"], date_from=date_from)
     if live_status not in _PROM_CANCELLED_STATUSES:
@@ -850,7 +855,7 @@ def _receipt_search_hint(order) -> str:
     return f"footer «замовлення {shown}»" + (f", «LiqPay payment_id {pid}»" if pid else "") + ", а також за сумою й датою оплати"
 
 
-def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, include_eva: bool = False) -> bool:
+def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, include_eva: bool = False, include_prom: bool = False) -> bool:
     """Сайт + передоплата (LiqPay): фіскальний чек ПРРО Checkbox SELL/CASHLESS виписується одразу після підтвердженої оплати (колбек success) і ДО передачі в Toysi/НП
     (рішення головного бухгалтера 12.10.2026, КОДВ_CHANNEL: розрахунковий документ — не пізніше передачі товару; Закон №265/95-ВР ст.3). Місце — тут, на початку route_order:
     гроші вже отримано, тож чек не залежить ні від залишку Toysi, ні від hold-гейтів адреси. Повертає True — можна рухатись далі (не наш випадок / чек уже є / видано щойно);
@@ -861,10 +866,10 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
     «звір у кабінеті Checkbox»: другого чека автоматично не буде; (4) збій запису прапорця ПІСЛЯ успішного чека не губить чек: ретрай + алерт, замовлення продовжує шлях (чек є).
     ЗМІШАНИЙ кошик (два замовлення з однаковим site_group_id — Toysi і RT — під одну оплату): ОДИН чек на всю оплату з позиціями обох частин; claim і прапорець — на ПЕРШІЙ частині групи, id чека й прапорець копіюються на другу.
     Sandbox LiqPay: реальний фіскальний чек на тестовий платіж не видається (SITE_RECEIPT_IN_SANDBOX=1 вмикає свідомо)."""
-    if test_mode or order.get("platform") not in (("site", "eva") if include_eva else ("site",)) or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
-        return True        # include_eva=True ЛИШЕ з конвеєра RT (rt_order_runner): звичайні EVA-замовлення з Toysi, як і раніше, отримують чек від трекера ПІСЛЯ форварду (аудит #938 B1)
+    if test_mode or order.get("platform") not in (("site",) + (("eva",) if include_eva else ()) + (("prom",) if include_prom else ())) or order.get("payment_method") != "prepaid" or not order.get("payment_confirmed"):
+        return True        # include_eva/include_prom=True ЛИШЕ з конвеєра RT (rt_order_runner): звичайні EVA/Prom-замовлення з Toysi, як і раніше, отримують чек від трекера ПІСЛЯ форварду (аудит #938 B1; Prom+RT — 22.11.2026)
     oid = order["internal_order_id"]
-    is_eva = order.get("platform") == "eva"       # EVA+RoyalToys (21.10): той самий безпечний шлях (claim, невідомий результат → без другого чека), без LiqPay-специфіки
+    is_eva = order.get("platform") in ("eva", "prom")       # EVA+RoyalToys (21.10) і Prom+RoyalToys (22.11): той самий безпечний шлях (claim, невідомий результат → без другого чека), без LiqPay-специфіки (змінна історично зветься is_eva — «маркетплейс»)
     import liqpay_client
     if not is_eva and liqpay_client.LIQPAY_SANDBOX and os.environ.get("SITE_RECEIPT_IN_SANDBOX", "0") != "1":
         print(f"[order_router] LiqPay у sandbox: реальний фіскальний чек для {oid} НЕ видається (SITE_RECEIPT_IN_SANDBOX=1 вмикає)", file=sys.stderr)
@@ -920,7 +925,7 @@ def _ensure_site_prepaid_receipt(conn, order: dict, test_mode: bool = False, inc
         if is_eva:
             if total <= 0:
                 raise ValueError("сума позицій EVA-замовлення ≤ 0: чек НЕ видано (money-safety)")
-            footer = f"EVA замовлення {order.get('order_id')}"
+            footer = f"{'Prom' if order.get('platform') == 'prom' else 'EVA'} замовлення {order.get('order_id')}"
         else:
             charged = order.get("site_charged_total")
             if group:

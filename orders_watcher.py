@@ -350,6 +350,8 @@ def _convert_prom_order(order: dict) -> dict:
         "status": order.get("status", "pending"),
         "payment_method": "cod" if is_cod else "prepaid",
         "payment_confirmed": payment_confirmed_by_prom,
+        "prom_payment_status": str(payment_data.get("status") or "").strip() or None,      # «paid» = Prom САМ підтвердив оплату (аудит #2013 Б4: Prom+RT приймає лише це)
+        "recipient_fio": " ".join(p for p in (order.get("client_last_name"), order.get("client_first_name"), order.get("client_second_name")) if p) or None,      # «Прізвище Ім'я По батькові» для ТТН НП/RoyalToys (customer_name лишається «Ім'я Прізвище» — інші потоки; аудит #2013 Б5)
         "payment_option_name": str((order.get("payment_option") or {}).get("name") or "").strip() or None,      # сирий підпис оплати (22.11.2026): конвеєр RT для Prom (RT_PROM_ORDERS_AUTO) fail-closed без нього
         "customer_name": customer_name,
         "phone": order.get("phone", ""),
@@ -978,6 +980,8 @@ def normalize_order(raw_order: dict) -> dict:
         "np_ref_id":         raw_order.get("np_ref_id"),            # сирий Ref НП (Rozetka delivery.ref_id / EVA warehouse_id) — на ретрай резолву при форварді
         "carrier":           raw_order.get("carrier", "nova_poshta"),
         "payment_option_name": raw_order.get("payment_option_name"),     # лише Prom (None для решти); див. orders_db.classify_rt_prom_order
+        "prom_payment_status": raw_order.get("prom_payment_status"),
+        "recipient_fio": raw_order.get("recipient_fio"),
         "items":             raw_order["items"],
     }
 
@@ -995,6 +999,8 @@ def _prom_rt_note(order: dict) -> str:
     import orders_db
     if not orders_db.rt_prom_auto_enabled():
         return _RT_NOTE_MANUAL
+    if orders_db.rt_prom_auto_since() == "INVALID":
+        return _RT_NOTE_MANUAL + " (автоматика Prom+RT увімкнена без дати: вкажіть RT_PROM_ORDERS_AUTO=<ISO-дата/час>)"
     if not orders_db.rt_prom_auto_active():
         return _RT_NOTE_MANUAL + " (автоматика Prom+RT увімкнена, але конвеєр RT у dry-run: RT_RUNNER_APPLY≠1)"
     verdict, why = orders_db.classify_rt_prom_order(order)
@@ -1044,6 +1050,9 @@ def poll_once() -> None:
                 # (/orders/status-payment name=="paid") — усі можуть перейти pending->оплачено
                 # швидше за цикл опитування; та сама логіка до-підтвердження вже наявного запису
                 # (напр. замовлення збереглось непідтвердженим, а через цикл клієнт оплатив).
+                if order["platform"] == "prom" and order.get("prom_payment_status"):
+                    conn.execute("UPDATE orders SET prom_payment_status = ? WHERE internal_order_id = ? AND COALESCE(prom_payment_status, '') != ?",
+                                 (order["prom_payment_status"], internal_id, order["prom_payment_status"]))      # Prom підтвердив «paid» уже ПІСЛЯ першого погляду (або після bank_check) — Prom+RT вимагає саме цього (аудит #2013 Б4)
                 if order["platform"] in ("prom", "eva", "rozetka") and order.get("payment_confirmed"):
                     existing = conn.execute(
                         "SELECT payment_confirmed FROM orders WHERE internal_order_id = ?", (internal_id,)

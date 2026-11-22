@@ -15,12 +15,13 @@
     «без конкурента» (cost×NO_COMPETITOR_MULT, але не нижче нижньої межі; +PROM_ORDER_FEE_UAH у межі); фіксований мінімум MIN_PROM_PRICE=60 ₴ (див. константу). ПЕРЕД емісією — живий каталог Toysi (параметр catalog):
     якщо двійник (dup_of з supplier_rt.json / rt_dup_map.json) зараз у наявності (stock>0) — товар НЕ беремо. Ідентифікатор offer і vendorCode = «rt-<id>» (Prom віддає його в замовленні як sku/external_id →
     orders_watcher: toysi_code «rt-…» → order_router НЕ передає в Toysi, «обробка вручну»).
-    Ємність: RT займають лише ВІЛЬНІ слоти (TOTAL_CAP − кількість Toysi-offer'ів у фіді) — RT ніколи не витісняють Toysi.
+    Ємність: RT займають лише ВІЛЬНІ слоти (TOTAL_CAP − Toysi-offer'и) і не більше PROM_RT_MAX (за замовчуванням 1500, не вище 3000) — RT ніколи не витісняють Toysi. Журнал rt_prom_listed_state.json (усі колись емітовані rt-id): ті, що випали з активних, лишаються в кабінеті Prom «Немає в наявності» і займають слоти (catalog_sync їх не прибере) — віддаються заглушками available="false" і ВІДНІМАЮТЬСЯ від ємності активних.
 Брама: PROM_RT_IN_FEED=1 (за замовчуванням ВИМКНЕНО — фід бітово незмінний). Свіжість supplier_rt.json (≤SUPPLIER_MAX_H) і відбору (≤STALE_H) — fail-safe: застаріле → RT цього прогону НЕ додаємо.
 
 ЧОГО ТУТ СВІДОМО НЕМАЄ (окремі етапи): репрайсер/delist/скан конкурентів для rt- (ціна без конкурента = cost×1.75, репрайсер Prom її не знижує — rt- не входять до select_top_items);
 запис rt- у prom_pushed_ledger (НЕ додаємо: prom_catalog_sync інакше вважав би їх «зниклими з Toysi» і гасив); авто-виконання Prom-замовлень з rt- (rt_order_runner зараз лише EVA).
-Товар, що випав з фіду, Prom за налаштуванням імпорту «Статус товарів, яких немає в файлі» = «Немає в наявності» позначає недоступним сам — жодних stub-offer'ів і API-видалень цей модуль не робить."""
+Двійник Toysi перевіряється ЗА ЖИВИМ stock>0 на кожній емісії: відбір записує ПОТЕНЦІЙНИХ двійників без урахування залишку (брендових і «сліпих» за назвою без бренду, wjac ≥0.75), dup_of/rt_dup_map/відбір — fail-closed (id двійника, якого нема в каталозі → RT не емітуємо).
+Жодних API-видалень цей модуль не робить; осиротілі rt- віддаються заглушками available="false" (див. вище)."""
 import copy
 import csv
 import json
@@ -59,6 +60,11 @@ STUB_PROM_CATEGORY = "29"       # «Товари, загальне» (25% ком
 MIN_PROM_PRICE = 60.0
 PLATFORM = "prom"
 OFFERS_PICTURES_MAX = 10
+BLIND_SIM = 0.75                # «сліпий» двійник: схожість назв (IDF-Жаккар без бренду) із БУДЬ-ЯКИМ товаром Toysi незалежно від бренду ≥ цього → RT вважаємо дублем (поріг rt_dup_finder.SIM_T)
+RT_DEFAULT_MAX = 1500           # жорсткий верхній ліміт RT у фіді (активні + осиротілі)
+RT_ABS_MAX = 3000               # env PROM_RT_MAX не може піднятись вище цього
+LISTED_FILE = Path(os.environ.get("RT_PROM_LISTED_FILE", str(HERE / "rt_prom_listed_state.json")))
+_XML_BAD_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")      # символи, недопустимі в XML 1.0 (і сурогати, що не кодуються в utf-8)
 
 
 def gate_on() -> bool:
@@ -247,6 +253,55 @@ def calibrate(knn: PromKnn, rnd, n: int = 2000) -> dict:
 
 
 # ───────────────────────────── відбір ─────────────────────────────
+def _forced_stock_catalog(ty: dict) -> dict:
+    """Копія каталогу, де кожен товар «в наявності» (stock ≥ 1): rt_dup_finder бере кандидатів лише зі stock>0, тож ТАК шукаємо потенційних двійників незалежно від поточного залишку (товар Toysi, що повернеться в наявність пізніше)."""
+    out = {}
+    for k, v in ty.items():
+        try:
+            st = int(v.get("stock") or 0)
+        except (TypeError, ValueError):
+            st = 0
+        out[k] = v if st > 0 else dict(v, stock=1)
+    return out
+
+
+def _potential_twins(rt: dict, ty: dict, sids: list, rd, cand_sids: list) -> dict:
+    """{rt-sid: [id Toysi, …]} — ПОТЕНЦІЙНІ двійники кандидатів БЕЗ урахування залишку Toysi (запис у відбір; жива перевірка stock — на емісії).
+    (1) брендові: рішення DUP за rt_dup_finder + кандидати з sim ≥ GRAY_SIM або збігом артикула; (2) «сліпі»: wjac назви без бренду ≥ BLIND_SIM із БУДЬ-ЯКИМ товаром Toysi незалежно від бренду
+    (RT з порожнім/іншим брендом інакше дістав би UNIQUE за конструкцією: Matcher.evaluate без кандидатів того ж бренду → None). Пошук — за індексом токенів (як PromKnn), не перебором."""
+    import rt_eva
+    ty_all = _forced_stock_catalog(ty)
+    dup, ev, m_all = rd.find_dups(rt, ty_all, sids)
+    post = defaultdict(list)
+    df = Counter()
+    for t in m_all.tel:
+        df.update(t["_tok"])
+    for i, t in enumerate(m_all.tel):
+        for w in t["_tok"]:
+            if df[w] <= POST_MAX_DF:
+                post[w].append(i)
+    out = {}
+    for sid in cand_sids:
+        tw = set()
+        if sid in dup:
+            tw.add(str(dup[sid][0]))
+        for c in (ev.get(sid) or {}).get("cands", []):
+            if c["sim"] >= rt_eva.GRAY_SIM or c["art"]:
+                tw.add(str(c["tid"]))
+        r = rt[sid[3:]]
+        tokens = rd.tokens_for_sim(r["name"], set(rd.normalize_name(r.get("vendor") or "")))
+        acc = Counter()
+        for w in tokens:
+            for i in post.get(w, ()):
+                acc[i] += m_all.idf(w)
+        for i, _ in acc.most_common(40):
+            t = m_all.tel[i]
+            if m_all.wjac(tokens, t["_tok"]) >= BLIND_SIM:
+                tw.add(str(t["id"]))
+        out[sid] = sorted(tw)
+    return out
+
+
 def build_selection(ty: dict, sup_items: dict, cache: dict, overrides: dict | None = None, prev_sel: dict | None = None) -> dict:
     """Повний відбір (важкий: Matcher по Toysi+RT і kNN; хвилини). ty — повний каталог Toysi; sup_items — supplier_rt.json["items"] {rt-<id>: item}; cache — prom_category_cache.
     prev_sel — попередній відбір: категорія уже відібраного товару ЛИШАЄТЬСЯ тією самою, поки лишається валідною (Prom: категорія вже створеної картки не має «гуляти» між прогонами)."""
@@ -255,6 +310,7 @@ def build_selection(ty: dict, sup_items: dict, cache: dict, overrides: dict | No
     rt = {sid[3:]: v for sid, v in sup_items.items()}
     sids = list(sup_items)
     cls, m = rt_eva.classify_dups(rt, ty, sids, rd)
+    twins = _potential_twins(rt, ty, sids, rd, [sid for sid in sids if cls[sid] in INCLUDE_CLASSES])
     labels = {}
     for t in m.tel:
         lab = toysi_prom_label(t, cache)
@@ -315,7 +371,8 @@ def build_selection(ty: dict, sup_items: dict, cache: dict, overrides: dict | No
             if prev.get("prom_id") in valid and prev.get("prom_id") != got["prom_id"] and src != "override":
                 got = {"prom_id": prev["prom_id"], "prom_name": prev.get("prom_name") or "", "toysi_cat": prev.get("toysi_cat") or got.get("toysi_cat") or ""}
                 src = "sticky"
-            items[sid] = {"prom_id": got["prom_id"], "prom_name": got.get("prom_name") or "", "toysi_cat": got.get("toysi_cat") or "", "cls": cls[sid], "src": src}
+            items[sid] = {"prom_id": got["prom_id"], "prom_name": got.get("prom_name") or "", "toysi_cat": got.get("toysi_cat") or "", "cls": cls[sid], "src": src,
+                          "twins": twins.get(sid, [])}
     review = []
     for cname, lst in sorted(per_cat.items(), key=lambda kv: -len(kv[1])):
         if cname in rules or cname in overrides:
@@ -330,7 +387,7 @@ def build_selection(ty: dict, sup_items: dict, cache: dict, overrides: dict | No
         review.append({"rt_category": cname, "items": len(lst), "guess_prom_id": guess, "guess_prom_name": gname, "guess_share": round(share, 2), "guess_valid": guess in valid,
                        "examples": [sup_items[s]["name"][:60] for s in lst[:3]]})
     stats = {"rt_total": len(sids), "classes": dict(Counter(cls.values())), "in_feed_candidates": len(items), "by_src": dict(Counter(v["src"] for v in items.values())),
-             "dropped": dict(drop), "rules": len(rules), "bad_overrides": sorted(bad_ov),
+             "dropped": dict(drop), "rules": len(rules), "with_potential_twin": sum(1 for v in items.values() if v["twins"]), "bad_overrides": sorted(bad_ov),
              "calibration": {"thresholds": ({"top1": thr[0], "share": thr[1]} if thr else None), "prec_cal_half": cal["prec_a"], "n_cal_half": cal["n_a"], "prec_holdout": cal["prec_b"], "n_holdout": cal["n_b"],
                              "labelled_toysi": cal["labelled"], "reason": cal["reason"]}}
     return {"built_at": datetime.now().isoformat(timespec="seconds"), "toysi_n": len(ty), "rt_n": len(sids), "items": items, "rules": rules, "review": review,
@@ -371,7 +428,7 @@ def _pictures(r: dict) -> list:
             pics = json.loads(pics.replace("'", '"'))
         except ValueError:
             pics = []
-    return [p for p in (pics or []) if isinstance(p, str) and p.startswith("https://") and len(p) <= 1999][:OFFERS_PICTURES_MAX]
+    return [p for p in (pics or []) if isinstance(p, str) and p.startswith("https://") and len(p) <= 1999 and not _XML_BAD_RE.search(p)][:OFFERS_PICTURES_MAX]
 
 
 def _dims_params(r: dict) -> list:
@@ -393,18 +450,45 @@ def _dims_params(r: dict) -> list:
     return out
 
 
-def toysi_twin_in_stock(sid: str, r: dict, catalog: dict, dup_map: dict) -> str:
-    """Id двійника Toysi, що ЗАРАЗ у наявності (живий каталог, stock>0), або "". Джерела двійників: dup_of з supplier_rt.json і rt_dup_map.json (обидва — результат rt_dup_finder)."""
-    for tid in {str(r.get("dup_of") or ""), str(dup_map.get(sid) or "")}:
-        if not tid:
-            continue
+def toysi_twin_block(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map: dict) -> str:
+    """Причина НЕ емітувати RT через двійника Toysi, або "" (можна). FAIL-CLOSED. Двійники = dup_of з supplier_rt.json ∪ rt_dup_map.json ∪ sel_item["twins"] (потенційні двійники БЕЗ урахування залишку, записані
+    відбором: rt_dup_finder бере кандидатів лише зі stock>0, тож двійник, що був OOS на момент відбору, інакше лишився б невидимим). Критерій «в наявності» = stock>0 за ЖИВИМ каталогом
+    (як generate_prom_feed._build_xml: available = stock>0, і _margin: stock<=0 → -1). Нестрокове/списковe dup_of → "bad_dup_of"; id двійника, якого нема в живому каталозі → "toysi_twin_unknown";
+    нерозбірливий залишок → "toysi_twin_in_stock". Ключі нормалізуються str().strip()."""
+    tids = set()
+    raw = r.get("dup_of")
+    if raw not in (None, ""):
+        if not isinstance(raw, str):
+            return "bad_dup_of"
+        tids.add(raw.strip())
+    mp = dup_map.get(sid)
+    if mp not in (None, ""):
+        if not isinstance(mp, str):
+            return "bad_dup_of"
+        tids.add(mp.strip())
+    tw = sel_item.get("twins") or []
+    if not isinstance(tw, list):
+        return "bad_dup_of"
+    for x in tw:
+        if not isinstance(x, str):
+            return "bad_dup_of"
+        tids.add(x.strip())
+    tids.discard("")
+    for tid in sorted(tids):
         it = catalog.get(tid)
+        if it is None:
+            return "toysi_twin_unknown"
         try:
-            if it and int(it.get("stock") or 0) > 0:
-                return tid
+            if int(it.get("stock") or 0) > 0:
+                return "toysi_twin_in_stock"
         except (TypeError, ValueError):
-            return tid                                       # нерозбірливий залишок двійника → не ризикуємо
+            return "toysi_twin_in_stock"                     # нерозбірливий залишок двійника → не ризикуємо
     return ""
+
+
+def _clean_xml_text(x):
+    """Прибирає символи, недопустимі в XML 1.0 (керівні, сурогати, U+FFFE/U+FFFF)."""
+    return _XML_BAD_RE.sub("", x) if isinstance(x, str) else x
 
 
 def build_offer_fields(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map: dict):
@@ -416,11 +500,11 @@ def build_offer_fields(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map
     from trademark_filter import is_uno_trademark_blocked
     if r.get("kv_dup_of"):
         return None, "kv_shadow"                              # RT-«тінь» товару KIDDISVIT (рішення власника 17.11: показуємо KIDDISVIT)
-    twin = toysi_twin_in_stock(sid, r, catalog, dup_map)
+    twin = toysi_twin_block(sid, r, sel_item, catalog, dup_map)
     if twin:
-        return None, "toysi_twin_in_stock"
-    raw_name = " ".join(str(r.get("name") or "").split())
-    vendor = " ".join(str(r.get("vendor") or "").split())
+        return None, twin
+    raw_name = " ".join(_clean_xml_text(str(r.get("name") or "")).split())
+    vendor = " ".join(_clean_xml_text(str(r.get("vendor") or "")).split())
     cat_src = (r.get("category") or "").strip()
     reason = rse.policy_reason({"id": sid[3:], "name": raw_name, "name_ua": raw_name, "category_name": cat_src})
     if reason:
@@ -442,7 +526,7 @@ def build_offer_fields(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map
     pics = _pictures(r)
     if not pics:
         return None, "no_pictures"
-    desc = grf.scrub_description(rse.plain_text(r.get("description") or ""))
+    desc = _clean_xml_text(grf.scrub_description(rse.plain_text(_clean_xml_text(str(r.get("description") or "")))))
     if len(desc) < 30:
         return None, "short_desc"
     if grf.leaks(raw_name, vendor, desc):
@@ -485,6 +569,9 @@ def validate_offer(f: dict, valid_ids: set) -> str:
         return "pictures"
     if len(f["description"]) < 30:
         return "fields"
+    texts = [f["name"], f["description"], f["vendor"], f.get("keywords_ua", ""), f.get("keywords", ""), *f["pictures"]] + [x for pn, pv in f["params"] for x in (pn, pv)]
+    if any(_XML_BAD_RE.search(str(x)) for x in texts):
+        return "xml_chars"                                    # недопустимі в XML символи (A6): до цього місця вони вже вичищені — якщо лишились, відхиляємо
     return ""
 
 
@@ -496,17 +583,78 @@ def load_prev_rt_ids(feed_path) -> set:
         return set()
 
 
-def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items: dict, total_cap: int, prev_ids: set | None = None) -> dict:
+def rt_hard_max() -> int:
+    """Жорсткий верхній ліміт RT у фіді (активні + осиротілі): за замовчуванням RT_DEFAULT_MAX; env PROM_RT_MAX (ціле ≥0) може його змінити, але ніколи не вище RT_ABS_MAX."""
+    v = os.environ.get("PROM_RT_MAX", "").strip()
+    return min(int(v), RT_ABS_MAX) if v.isdigit() else RT_DEFAULT_MAX
+
+
+def load_listed() -> dict:
+    """Журнал усіх rt-id, КОЛИСЬ емітованих у фід, зі знімком для заглушки: {sid: {name, price, cat, vendor, pics, desc}}. Записи НЕ видаляються: картка, що вже створена в Prom, лишається в кабінеті
+    («Опубліковано / Немає в наявності») і займає слот; catalog_sync її ніколи не прибере (ext_id ∉ toysi_ids), тож облік слотів має це знати."""
+    try:
+        d = json.loads(LISTED_FILE.read_text(encoding="utf-8"))
+        v = d.get("listed")
+        return {str(k): (x if isinstance(x, dict) else {}) for k, x in v.items()} if isinstance(v, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _snapshot(f: dict) -> dict:
+    return {"name": f["name"], "price": f["price"], "cat": f["category"], "vendor": f["vendor"], "pics": f["pictures"][:3], "desc": f["description"][:1000]}
+
+
+def _roundtrip_ok(o: ET.Element) -> bool:
+    """offer має серіалізуватись у валідний UTF-8 XML і прочитатись назад (A6: невалідний символ ламав би весь файл поза try-хуком)."""
+    try:
+        txt = ET.tostring(o, encoding="unicode")
+        txt.encode("utf-8")
+        ET.fromstring(txt)
+        return True
+    except (ValueError, UnicodeError, ET.ParseError):
+        return False
+
+
+def _stub_offer(offers_el: ET.Element, sid: str, snap: dict) -> bool:
+    """Осиротілий rt- (колись у фіді, зараз не активний) → мінімальний offer available="false" (як деактивація в rt_eva): Prom тримає його «Немає в наявності» у фіді, облік слотів чесний."""
+    price = _num(snap.get("price"))
+    name = snap.get("name") or ""
+    if not price or price <= 0 or not name:
+        return False
+    o = ET.SubElement(offers_el, "offer", id=sid, available="false")
+    ET.SubElement(o, "vendorCode").text = sid
+    ET.SubElement(o, "name").text = name
+    ET.SubElement(o, "name_ua").text = name
+    ET.SubElement(o, "price").text = f"{price:.2f}"
+    ET.SubElement(o, "currencyId").text = "UAH"
+    ET.SubElement(o, "quantity_in_stock").text = "0"
+    if snap.get("cat"):
+        ET.SubElement(o, "categoryId").text = str(snap["cat"])
+    for p in (snap.get("pics") or []):
+        ET.SubElement(o, "picture").text = p
+    if snap.get("vendor"):
+        ET.SubElement(o, "vendor").text = snap["vendor"]
+    d = snap.get("desc") or ""
+    if len(d) >= 30:
+        ET.SubElement(o, "description").text = d
+        ET.SubElement(o, "description_ua").text = d
+    if not _roundtrip_ok(o):
+        offers_el.remove(o)
+        return False
+    return True
+
+
+def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items: dict, total_cap: int, prev_ids: set | None = None, save_state: bool = True) -> dict:
     """Дописує offer'и RT у <shop>/<offers>. root — результат generate_prom_feed._build_xml. Повертає статистику.
-    Слотів: total_cap − (кількість Toysi-offer'ів у фіді); при нестачі — спершу ті, що вже були у фіді, далі за прибутком (profit за каноном decide_price_for_platform), далі за id."""
+    ЄМНІСТЬ (A2): cap_total = min(total_cap − Toysi-offer'и, rt_hard_max()); осиротілі (колись емітовані, зараз не активні — у кабінеті Prom вони «Немає в наявності» і зайняті слоти) віддаються
+    заглушками available="false" і ВІДНІМАЮТЬСЯ від ємності активних. Порядок активних при нестачі: колись у фіді → прибуток → id."""
     shop = root.find("shop")
     offers_el = shop.find("offers")
     valid = set(selection.get("valid_ids") or [])
     dup_map = load_dup_map()
-    free = max(0, int(total_cap) - len(offers_el))
-    env_cap = os.environ.get("PROM_RT_MAX", "").strip()
-    if env_cap.isdigit():
-        free = min(free, int(env_cap))
+    listed = load_listed()
+    toysi_n = len(offers_el)
+    cap_total = max(0, min(int(total_cap) - toysi_n, rt_hard_max()))
     stats = Counter()
     ok = []
     for sid, si in sorted(selection.get("items", {}).items()):
@@ -525,13 +673,16 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
             stats["invalid_" + bad] += 1
             continue
         ok.append(f)
-    prev_ids = prev_ids or set()
-    ok.sort(key=lambda f: (f["id"] not in prev_ids, -f["profit"], f["id"]))
+    known = set(listed) | (prev_ids or set())
+    ok.sort(key=lambda f: (f["id"] not in known, -f["profit"], f["id"]))
+    ok_ids = {f["id"] for f in ok}
+    forced_orphans = len(set(listed) - ok_ids)
+    room = max(0, cap_total - forced_orphans)
     stats["eligible"] = len(ok)
-    stats["free_slots"] = free
-    if len(ok) > free:
-        stats["skip_no_free_slot"] = len(ok) - free
-        ok = ok[:free]
+    if len(ok) > room:
+        stats["skip_no_free_slot"] = len(ok) - room
+        ok = ok[:room]
+    active = []
     for f in sorted(ok, key=lambda f: f["id"]):
         o = ET.SubElement(offers_el, "offer", id=f["id"], available="true")
         ET.SubElement(o, "vendorCode").text = f["vendor_code"]
@@ -553,7 +704,33 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
             ET.SubElement(o, "keywords").text = f["keywords"]
         for pn, pv in f["params"]:
             ET.SubElement(o, "param", name=pn).text = pv
+        if not _roundtrip_ok(o):
+            offers_el.remove(o)
+            stats["invalid_xml_roundtrip"] += 1
+            continue
+        active.append(f)
         stats["emitted"] += 1
+    active_ids = {f["id"] for f in active}
+    new_listed = dict(listed)
+    for f in active:
+        new_listed[f["id"]] = _snapshot(f)
+    stubs = 0
+    for sid in sorted(set(new_listed) - active_ids):
+        if _stub_offer(offers_el, sid, new_listed[sid]):
+            stubs += 1
+        else:
+            stats["orphan_no_snapshot"] += 1                    # слот зайнятий, але заглушку зібрати нема з чого (запис без ціни/назви) — лише рахуємо
+    n_orph = len(set(new_listed) - active_ids)
+    stats["orphans"] = n_orph
+    stats["orphan_stubs"] = stubs
+    stats["slots_total"] = cap_total
+    stats["free_slots"] = max(0, cap_total - len(active) - n_orph)
+    print(f"[Prom RT] у фіді {len(active)} активних + {n_orph} осиротілих, вільних слотів {stats['free_slots']} (ємність RT {cap_total} = мін(слоти {int(total_cap)} − Toysi {toysi_n}, ліміт {rt_hard_max()}))", file=sys.stderr)
+    if save_state and new_listed != listed:
+        try:
+            _atomic_write(LISTED_FILE, {"v": 1, "listed": new_listed, "saved_at": datetime.now().isoformat(timespec="seconds")})
+        except OSError as e:
+            print(f"[Prom RT] не вдалось зберегти {LISTED_FILE.name}: {e} — облік осиротілих неповний", file=sys.stderr)
     return dict(stats)
 
 

@@ -42,6 +42,18 @@ rt_prom.SEL_FILE = tmp / "sel.json"
 rt_prom.SUPPLIER_FILE = tmp / "supplier_rt.json"
 rt_prom.DUP_FILE = tmp / "rt_dup_map.json"
 rt_prom.OVERRIDES_FILE = tmp / "overrides.json"
+import itertools  # noqa: E402
+import contextlib  # noqa: E402
+import io  # noqa: E402
+_cnt = itertools.count()
+
+
+def fresh_state():
+    """Новий порожній журнал rt_prom_listed_state.json (тести не повинні накопичувати осиротілих один в одного)."""
+    rt_prom.LISTED_FILE = tmp / f"listed_{next(_cnt)}.json"
+
+
+fresh_state()
 rt_prom.MIN_CATALOG_N = 10                  # синтетичний каталог малий; гард «усічений каталог» перевіряємо окремо, повертаючи справжню константу
 
 # ───────────────────────── синтетичний каталог Toysi з відомими Prom-категоріями ─────────────────────────
@@ -102,6 +114,10 @@ sup["rt-9003"] = rt_item(toysi[oos_id]["name"], cat="RT Тест-Машини", 
 t3 = toysi["1003"]
 words = t3["name"].split()
 sup["rt-9004"] = rt_item(" ".join(words[:3]) + " ЦІКАВИЙ", cat="RT Тест-Машини", vendor=t3["vendor"], vendor_code="GR-1")        # 3 з 4 слів збігаються → сумнівний двійник (GRAY) або DUP
+blind_src = toysi["1010"]
+sup["rt-9005"] = rt_item(blind_src["name"], cat="RT Тест-Машини", vendor="Сліпий", vendor_code="BL-1")          # інший бренд, назва = товару Toysi у наявності → брендовий пошук його не бачить (UNIQUE), «сліпий» бачить
+pz_words = CATS["Тест-Пазли"][1]
+sup["rt-9006"] = rt_item(" ".join(pz_words[:3]) + " чарівний", cat="RT Тест-Машини", vendor="РТвендор", vendor_code="VT-1")      # назва пазлів, але категорія RT «машини» → вето
 cls, m = __import__("rt_eva").classify_dups({k[3:]: v for k, v in sup.items()}, toysi, list(sup), rd)
 chk("класифікація: rt-9001 → DUP, rt-9002 → UNIQUE_BRAND, rt-9003 (двійник OOS) → не DUP/GRAY, унікальні RT бренду без перетину → UNIQUE",
     cls["rt-9001"] == "DUP" and cls["rt-9002"] == "UNIQUE_BRAND" and cls["rt-9003"] in rt_prom.INCLUDE_CLASSES and cls["rt-1"] == "UNIQUE")
@@ -129,6 +145,13 @@ chk("override: «RT Різне» → 2606 (src=override); null → усі RT Т�
 prev = {"items": {"rt-1": {"prom_id": "2605", "prom_name": "", "toysi_cat": "Тест-Лялі"}}}
 sel_st = rt_prom.build_selection(toysi, sup, cache, overrides={}, prev_sel=prev)
 chk("липка категорія: rt-1 лишається в 2605 (src=sticky), хоча kNN дав би іншу", sel_st["items"]["rt-1"]["prom_id"] == "2605" and sel_st["items"]["rt-1"]["src"] == "sticky")
+# A1/A3: потенційні двійники записані у відбір незалежно від залишку; сліпий двійник (інший бренд) теж
+chk("A1: rt-9003 (двійник 1002 був OOS на момент відбору) → у відборі, а id двійника записано в twins", "rt-9003" in sel["items"] and "1002" in sel["items"]["rt-9003"]["twins"])
+chk("A3: rt-9005 (бренд «Сліпий», назва = товару 1010 у наявності) → клас UNIQUE (брендовий пошук сліпий), але twins містить 1010 (wjac без бренду ≥0.75)", cls["rt-9005"] == "UNIQUE" and "1010" in sel["items"].get("rt-9005", {}).get("twins", []))
+chk("A3: звичайні унікальні RT (rt-1) без потенційного двійника: twins порожній (відсіву зайвого немає)", sel["items"]["rt-1"]["twins"] == [])
+chk("_forced_stock_catalog не мутує вихідний каталог (OOS-двійник лишається stock=0)", rt_prom._forced_stock_catalog(toysi)[oos_id]["stock"] == 1 and toysi[oos_id]["stock"] == 0)
+# A5: вето — товар упевнено «пазлового» вигляду в RT-категорії з правилом «машини»
+chk("A5: rt-9006 (назва пазлів, RT-категорія з правилом «машини») → вето kNN↔правило: у відбір НЕ потрапляє, лічильник veto ≥1", "rt-9006" not in sel["items"] and sel["stats"]["dropped"].get("veto", 0) >= 1)
 # відкладена вибірка не підтверджує → авто-категорій немає: шумні мітки (випадкові Prom-id)
 noisy = {k: {"category_id": rnd.choice([2606, 2605, 180613, 2614]), "category_caption": "n"} for k in toysi}
 sel_noisy = rt_prom.build_selection(toysi, sup, noisy, overrides={})
@@ -161,9 +184,28 @@ chk(f"мінімум ціни: товар із ціною Prom {dec_cheap:.2f} <
 r_tw = rt_item("Тест А Б В", dup_of="1001")
 chk("двійник Toysi (dup_of) у наявності за живим каталогом → toysi_twin_in_stock; той самий товар, коли двійник OOS (stock=0) → береться",
     rt_prom.build_offer_fields("rt-9", r_tw, SI, live, {})[1] == "toysi_twin_in_stock" and rt_prom.build_offer_fields("rt-9", dict(r_tw, dup_of=oos_id), SI, live, {})[0] is not None)
-chk("двійник із rt_dup_map.json (не з supplier_rt) теж враховується; двійник зник із каталогу → береться; нерозбірливий залишок двійника → НЕ беремо",
-    rt_prom.build_offer_fields("rt-9", rt_item("Тест А Б В"), SI, live, {"rt-9": "1001"})[1] == "toysi_twin_in_stock" and rt_prom.build_offer_fields("rt-9", rt_item("Тест А Б В"), SI, live, {"rt-9": "999999"})[0] is not None
+chk("двійник із rt_dup_map.json (не з supplier_rt) теж враховується; двійник зник із каталогу → НЕ беремо (fail-closed); нерозбірливий залишок двійника → НЕ беремо",
+    rt_prom.build_offer_fields("rt-9", rt_item("Тест А Б В"), SI, live, {"rt-9": "1001"})[1] == "toysi_twin_in_stock" and rt_prom.build_offer_fields("rt-9", rt_item("Тест А Б В"), SI, live, {"rt-9": "999999"})[1] == "toysi_twin_unknown"
     and rt_prom.build_offer_fields("rt-9", r_tw, SI, dict(live, **{"1001": dict(live["1001"], stock="abc")}), {})[1] == "toysi_twin_in_stock")
+sel9003 = dict(sel["items"]["rt-9003"])
+r9003 = {k: v for k, v in sup["rt-9003"].items() if k != "dup_of"}          # БЕЗ dup_of: статичний supplier_rt цього двійника не знає
+live2 = {k: dict(v) for k, v in toysi.items()}
+chk("A1: двійник OOS у момент відбору (stock=0) → RT емітується; той самий двійник пізніше stock=5, dup_of відсутній → RT НЕ емітується (береться з twins відбору)",
+    rt_prom.build_offer_fields("rt-9003", r9003, sel9003, live2, {})[0] is not None
+    and rt_prom.build_offer_fields("rt-9003", r9003, sel9003, {**live2, oos_id: dict(live2[oos_id], stock=5)}, {})[1] == "toysi_twin_in_stock")
+chk("A3: rt-9005 емітується лише коли сліпий двійник 1010 не в наявності; 1010 stock=5 → toysi_twin_in_stock; stock=0 → емітується",
+    rt_prom.build_offer_fields("rt-9005", sup["rt-9005"], sel["items"]["rt-9005"], live2, {})[1] == "toysi_twin_in_stock"
+    and rt_prom.build_offer_fields("rt-9005", sup["rt-9005"], sel["items"]["rt-9005"], {**live2, "1010": dict(live2["1010"], stock=0)}, {})[0] is not None)
+twr = lambda **kw: rt_prom.build_offer_fields("rt-9", rt_item("Тест А Б В", **kw), SI, live, {})[1]      # noqa: E731
+chk("A4: dup_of задано, але його нема в живому каталозі → fail-closed (toysi_twin_unknown); ключ із пробілами нормалізується (' 1001 ' → у наявності); dup_of-список/число → bad_dup_of; twins/dup_map нестрокові → bad_dup_of",
+    twr(dup_of="999999") == "toysi_twin_unknown" and twr(dup_of=" 1001 ") == "toysi_twin_in_stock" and twr(dup_of=["1001"]) == "bad_dup_of" and twr(dup_of=1001) == "bad_dup_of"
+    and rt_prom.build_offer_fields("rt-9", rt_item("Тест А Б В"), dict(SI, twins=[1001]), live, {})[1] == "bad_dup_of" and rt_prom.build_offer_fields("rt-9", rt_item("Тест А Б В"), SI, live, {"rt-9": 1001})[1] == "bad_dup_of"
+    and rt_prom.build_offer_fields("rt-9", rt_item("Тест А Б В"), dict(SI, twins=["888888"]), live, {})[1] == "toysi_twin_unknown" and twr(dup_of="") == "" and twr(dup_of=None) == "")
+# A6: керівні символи / сурогати — вичищаються; після емісії offer перевіряється roundtrip-ом
+dirty = rt_item("Тест\x0b іграшка\x00 Модель\ufffe 7", vendor="Бренд\x0c", description=DESC + "\x1f \ud800 кінець опису з текстом")
+fd_, why_d = rt_prom.build_offer_fields("rt-77", dirty, SI, live, {})
+chk("A6: керівні символи/сурогати/U+FFFE у name/vendor/description вичищені (offer валідний), validate_offer пропускає чисте", fd_ is not None and not rt_prom._XML_BAD_RE.search(fd_["name"] + fd_["vendor"] + fd_["description"]) and rt_prom.validate_offer(fd_, valid | {"2606"}) == "")
+chk("A6: validate_offer відхиляє нечисте (name/description/vendor/param/картинка) → xml_chars", all(rt_prom.validate_offer(dict(fd_, **kw), valid | {"2606"}) == "xml_chars" for kw in ({"name": "a\x0bb"}, {"description": fd_["description"] + "\x00"}, {"vendor": "x\x1f"}, {"params": [("p", "v\x08")]}, {"pictures": ["https://a/b\ufffe.jpg"]})))
 chk("validate_offer: id/категорія 29/невідома/ціна<60 → відмова", rt_prom.validate_offer(dict(f, id="x-1"), valid | {"2606"}) == "id" and rt_prom.validate_offer(dict(f, category="29"), valid | {"29", "2606"}) == "category"
     and rt_prom.validate_offer(dict(f, category="123"), valid) == "category" and rt_prom.validate_offer(dict(f, price=59.99), valid | {"2606"}) == "price/stock")
 
@@ -187,6 +229,7 @@ sel_ok = {"built_at": datetime.now().isoformat(timespec="seconds"), "rt_n": 4, "
           "items": {"rt-1": dict(SI), "rt-2": dict(SI, cls="UNIQUE_BRAND"), "rt-3": dict(SI, cls="GRAY"), "rt-4": dict(SI, cls="DUP"), "rt-5": dict(SI)}}
 sup_e = {"rt-1": rt_item("Перша іграшка Модель 1", vendor_code="A-1"), "rt-2": rt_item("Друга іграшка Модель 2", cost=200), "rt-3": rt_item("Третя іграшка Модель 3"), "rt-4": rt_item("Четверта іграшка Модель 4"),
          "rt-5": rt_item("П'ята іграшка Модель 5", dup_of="1001")}
+fresh_state()
 root = base_root(5)
 toysi_before = as_text(root)
 stt = rt_prom.append_rt_offers(root, live, sel_ok, sup_e, total_cap=6000)
@@ -198,18 +241,72 @@ chk("offer: id=vendorCode=rt-1, available=true, price .2f, quantity_in_stock, ca
     and o1.findtext("vendor") == "РТвендор" and len(o1.findtext("description_ua")) >= 30 and o1.findtext("name") == o1.findtext("name_ua") == "Перша іграшка Модель 1" and o1.findall("param") and o1.findtext("keywords_ua"))
 chk("Toysi-частина дерева НЕ змінилась: перші 5 offer'ів (текст) ідентичні, RT лише дописані в кінець", as_text(root).startswith(toysi_before[:toysi_before.index("</offers>")]) and list(ids)[:5] == ["500", "501", "502", "503", "504"] and list(ids)[5:] == ["rt-1", "rt-2"])
 # ємність
+fresh_state()
 root2 = base_root(5)
 sel_many = dict(sel_ok, items={f"rt-{i}": dict(SI) for i in range(1, 6)})
 sup_many = {f"rt-{i}": rt_item(f"Іграшка номер {i} Тест", cost=100 + 20 * i) for i in range(1, 6)}
 s2 = rt_prom.append_rt_offers(root2, live, sel_many, sup_many, total_cap=7, prev_ids={"rt-1"})
 got2 = [o.get("id") for o in root2.find("shop").find("offers")][5:]
-chk("ємність: cap 7, Toysi 5 → лише 2 вільні слоти; спершу вже присутній у фіді (rt-1), далі найприбутковіший (rt-5); решта skip_no_free_slot=3", got2 == ["rt-1", "rt-5"] and s2["skip_no_free_slot"] == 3 and s2["free_slots"] == 2)
+chk("ємність: cap 7, Toysi 5 → лише 2 слоти (slots_total=2, вільних після заповнення 0); спершу вже присутній у фіді (rt-1), далі найприбутковіший (rt-5); решта skip_no_free_slot=3", got2 == ["rt-1", "rt-5"] and s2["skip_no_free_slot"] == 3 and s2["slots_total"] == 2 and s2["free_slots"] == 0)
+fresh_state()
 s3 = rt_prom.append_rt_offers(base_root(8), live, sel_many, sup_many, total_cap=7)
-chk("Toysi займають усі слоти (8 ≥ cap 7) → RT 0 (RT ніколи не витісняють Toysi)", s3.get("emitted", 0) == 0 and s3["free_slots"] == 0)
+chk("Toysi займають усі слоти (8 ≥ cap 7) → RT 0 (RT ніколи не витісняють Toysi)", s3.get("emitted", 0) == 0 and s3["slots_total"] == 0)
+fresh_state()
 os.environ["PROM_RT_MAX"] = "1"
 s4 = rt_prom.append_rt_offers(base_root(5), live, sel_many, sup_many, total_cap=6000)
 os.environ.pop("PROM_RT_MAX")
 chk("PROM_RT_MAX=1 — додатковий поверх-обмежувач (поетапна розкатка)", s4["emitted"] == 1)
+
+# ───────────────────────── A2: журнал колись емітованих і осиротілі ─────────────────────────
+os.environ.pop("PROM_RT_MAX", None)
+chk("PROM_RT_MAX: за замовчуванням 1500; env знижує (5), підвищує лише до 3000 (99999 → 3000); сміття → 1500", rt_prom.rt_hard_max() == 1500 and (os.environ.__setitem__("PROM_RT_MAX", "5") or rt_prom.rt_hard_max() == 5)
+    and (os.environ.__setitem__("PROM_RT_MAX", "99999") or rt_prom.rt_hard_max() == 3000) and (os.environ.__setitem__("PROM_RT_MAX", "abc") or rt_prom.rt_hard_max() == 1500))
+os.environ.pop("PROM_RT_MAX", None)
+fresh_state()
+sel_o = dict(sel_ok, items={f"rt-{i}": dict(SI) for i in range(1, 6)})
+sup_o = {f"rt-{i}": rt_item(f"Орфан іграшка номер {i} Тест", cost=100 + 20 * i) for i in range(1, 6)}
+ra1 = base_root(5)
+sa1 = rt_prom.append_rt_offers(ra1, live, sel_o, sup_o, total_cap=5 + 20)
+chk("A2: перший прогін — 5 активних, журнал записано (5 id зі знімками), осиротілих 0", sa1["emitted"] == 5 and sa1["orphans"] == 0 and set(rt_prom.load_listed()) == {f"rt-{i}" for i in range(1, 6)} and rt_prom.load_listed()["rt-1"]["name"])
+sup_o2 = {k: v for k, v in sup_o.items() if k not in ("rt-2", "rt-3")}          # rt-2 і rt-3 випали (зникли з supplier_rt)
+ra2 = base_root(5)
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    sa2 = rt_prom.append_rt_offers(ra2, live, sel_o, sup_o2, total_cap=5 + 8)
+offs2 = {o.get("id"): o for o in ra2.find("shop").find("offers")}
+chk("A2: rt-2 і rt-3 випали → у фіді як available=false (мінімальна заглушка: vendorCode, quantity 0, категорія, фото, опис); активні 3", offs2["rt-2"].get("available") == "false" and offs2["rt-3"].get("available") == "false" and offs2["rt-2"].findtext("quantity_in_stock") == "0"
+    and offs2["rt-2"].findtext("vendorCode") == "rt-2" and offs2["rt-2"].findtext("categoryId") == "2606" and offs2["rt-2"].find("picture") is not None and sa2["emitted"] == 3 and sa2["orphans"] == 2 and sa2["orphan_stubs"] == 2)
+chk("A2: осиротілі ЗМЕНШУЮТЬ ємність (cap 8: 3 активних + 2 осиротілі → вільних 3) і лишаються в журналі", sa2["slots_total"] == 8 and sa2["free_slots"] == 3 and set(rt_prom.load_listed()) == {f"rt-{i}" for i in range(1, 6)})
+chk("A2: рядок у stderr «[Prom RT] у фіді N активних + M осиротілих, вільних слотів K»", "[Prom RT] у фіді 3 активних + 2 осиротілих, вільних слотів 3" in err.getvalue())
+ra3 = base_root(5)
+sa3 = rt_prom.append_rt_offers(ra3, live, sel_o, sup_o2, total_cap=5 + 4)
+ids3 = [o.get("id") for o in ra3.find("shop").find("offers")][5:]
+chk("A2: ємність 4 < 5 колись листованих (2 осиротілі зайняті) → активних лише 2 (skip_no_free_slot=1), відсічений rt- стає заглушкою; жоден листований не зникає з фіду (5 offer'ів), вільних 0", sa3["emitted"] == 2 and sa3["skip_no_free_slot"] == 1 and len(ids3) == 5 and sa3["orphans"] == 3 and sa3["free_slots"] == 0)
+sup_o3 = dict(sup_o)                                                              # rt-2 повернувся як кандидат → знову активний (той самий слот), осиротілий лише rt-3 зник
+del sup_o3["rt-3"]
+ra4 = base_root(5)
+sa4 = rt_prom.append_rt_offers(ra4, live, sel_o, sup_o3, total_cap=5 + 10)
+chk("A2: повернення rt-2 → активний знову (available=true), осиротілий лише rt-3", {o.get("id"): o.get("available") for o in ra4.find("shop").find("offers")}["rt-2"] == "true" and sa4["orphans"] == 1)
+os.environ["PROM_RT_MAX"] = "3"
+fresh_state()
+rt_prom._atomic_write(rt_prom.LISTED_FILE, {"v": 1, "listed": {"rt-x1": {"name": "Старий товар", "price": 100, "cat": "2606", "pics": ["https://a/b.jpg"], "desc": DESC}}})
+ra5 = base_root(5)
+sa5 = rt_prom.append_rt_offers(ra5, live, sel_o, sup_o, total_cap=6000)
+os.environ.pop("PROM_RT_MAX")
+chk("A2: жорсткий ліміт PROM_RT_MAX=3 враховує осиротілих: 1 осиротілий (rt-x1) + лише 2 активних", sa5["emitted"] == 2 and sa5["orphans"] >= 1 and sa5["slots_total"] == 3)
+# A6: roundtrip після емісії — навіть якщо валідацію обійшли
+fresh_state()
+orig_bof, orig_val = rt_prom.build_offer_fields, rt_prom.validate_offer
+try:
+    rt_prom.build_offer_fields = lambda sid, r, si, cat, dm: ({**orig_bof(sid, r, si, cat, dm)[0], "name": "Погано\x0bназва"}, "") if sid == "rt-1" else orig_bof(sid, r, si, cat, dm)
+    rt_prom.validate_offer = lambda f, v: ""
+    ra6 = base_root(5)
+    sa6 = rt_prom.append_rt_offers(ra6, live, dict(sel_ok, items={"rt-1": dict(SI), "rt-2": dict(SI)}), sup_e, total_cap=6000)
+finally:
+    rt_prom.build_offer_fields, rt_prom.validate_offer = orig_bof, orig_val
+ids6 = [o.get("id") for o in ra6.find("shop").find("offers")]
+chk("A6: offer із недопустимим символом, що обійшов валідацію, не проходить ET-roundtrip → пропущено (invalid_xml_roundtrip=1), решта RT і Toysi цілі", sa6["invalid_xml_roundtrip"] == 1 and "rt-1" not in ids6 and "rt-2" in ids6 and len(ids6) == 6)
+fresh_state()
 
 # ───────────────────────── брама, свіжість, збої ─────────────────────────
 def write_sup(age_h=0.0, items=None):
@@ -217,6 +314,7 @@ def write_sup(age_h=0.0, items=None):
 
 
 write_sup()
+fresh_state()
 rt_prom._atomic_write(rt_prom.SEL_FILE, sel_ok)
 big = {str(i): {} for i in range(50)}            # «повний» каталог для гарду MIN_CATALOG_N=10; двійників у ньому немає
 big.update(live)
@@ -300,6 +398,7 @@ try:
     chk("_rt_post_build: брама ввімкнена → хук", callable(hook))
     rt_prom._atomic_write(rt_prom.SEL_FILE, sel_ok)
     write_sup()
+    fresh_state()
     gp.generate_feed(output_file=str(fc), catalog=mini, full_catalog=mini, post_build=lambda root: rt_prom.maybe_add_rt_offers(root, big, {}, 6000))
 finally:
     os.environ.pop("PROM_RT_IN_FEED", None)

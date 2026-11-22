@@ -2823,11 +2823,11 @@ def main() -> None:
 
 
 def _run_rt_reprice_phase() -> None:
-    """Фаза репрайсингу rt-карток (rt_reprice.py) ПІСЛЯ повного Toysi-циклу. Лише за брамою PROM_RT_REPRICE=1 (вимкнена → одразу return, поведінка бітово та сама). Запускається лише при нормальному
+    """Фаза репрайсингу rt-карток (rt_reprice.py) ПІСЛЯ повного Toysi-циклу. Лише за брамою PROM_RT_REPRICE=observe|1 (вимкнена → одразу return, поведінка бітово та сама). Запускається лише при нормальному
     завершенні main() (sys.exit від circuit breaker/каталогу її пропускає). Жодних API-записів у Prom (feed-only, див. rt_reprice); будь-який збій тут не торкається вже виконаної Toysi-роботи."""
     try:
         import rt_reprice
-        if not rt_reprice.gate_on():
+        if rt_reprice.mode() == "off":                  # PROM_RT_REPRICE=observe також запускає фазу (лише журнал рішень); =1 застосовує
             return
         if not _RT_CTX.get("catalog"):
             print("[Pricer] rt-репрайсинг пропущено: каталог Toysi цього прогону недоступний.", file=sys.stderr)
@@ -2838,6 +2838,11 @@ def _run_rt_reprice_phase() -> None:
         print(f"[Pricer] rt-репрайсинг збій ({type(e).__name__}: {str(e)[:160]}) — Toysi-частина не зачеплена.", file=sys.stderr)
 
 
-if __name__ == "__main__":
+def _cli_main() -> None:
+    """Точка входу CLI: Toysi-цикл main(), потім (лише при нормальному завершенні — SystemExit від main фазу пропускає) rt-фаза за брамою PROM_RT_REPRICE."""
     main()
     _run_rt_reprice_phase()
+
+
+if __name__ == "__main__":
+    _cli_main()

@@ -382,3 +382,4 @@ site_chat_watch_state.json
 # Стан репрайсингу rt- (rt_reprice.py): VPS-локальний, містить cost/margin — НЕ в git і НЕ в feed-data (публічна гілка).
 rt_prom_reprice_state.json
 rt_prom_reprice_state.json.bak
+rt_prom_reprice_state.json.tmp.*

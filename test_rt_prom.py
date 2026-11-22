@@ -118,6 +118,7 @@ blind_src = toysi["1010"]
 sup["rt-9005"] = rt_item(blind_src["name"], cat="RT Тест-Машини", vendor="Сліпий", vendor_code="BL-1")          # інший бренд, назва = товару Toysi у наявності → брендовий пошук його не бачить (UNIQUE), «сліпий» бачить
 pz_words = CATS["Тест-Пазли"][1]
 sup["rt-9006"] = rt_item(" ".join(pz_words[:3]) + " чарівний", cat="RT Тест-Машини", vendor="РТвендор", vendor_code="VT-1")      # назва пазлів, але категорія RT «машини» → вето
+sup["rt-9007"] = rt_item("Квазар Пульсар Галактика Туманність", cat="RT Тест-Машини", vendor="РТвендор", vendor_code="NK-1")      # жодного спільного токена з Toysi → item-level kNN порожній
 cls, m = __import__("rt_eva").classify_dups({k[3:]: v for k, v in sup.items()}, toysi, list(sup), rd)
 chk("класифікація: rt-9001 → DUP, rt-9002 → UNIQUE_BRAND, rt-9003 (двійник OOS) → не DUP/GRAY, унікальні RT бренду без перетину → UNIQUE",
     cls["rt-9001"] == "DUP" and cls["rt-9002"] == "UNIQUE_BRAND" and cls["rt-9003"] in rt_prom.INCLUDE_CLASSES and cls["rt-1"] == "UNIQUE")
@@ -152,6 +153,32 @@ chk("A3: звичайні унікальні RT (rt-1) без потенційн
 chk("_forced_stock_catalog не мутує вихідний каталог (OOS-двійник лишається stock=0)", rt_prom._forced_stock_catalog(toysi)[oos_id]["stock"] == 1 and toysi[oos_id]["stock"] == 0)
 # A5: вето — товар упевнено «пазлового» вигляду в RT-категорії з правилом «машини»
 chk("A5: rt-9006 (назва пазлів, RT-категорія з правилом «машини») → вето kNN↔правило: у відбір НЕ потрапляє, лічильник veto ≥1", "rt-9006" not in sel["items"] and sel["stats"]["dropped"].get("veto", 0) >= 1)
+chk("A5: rt-9007 (правило категорії RT є, але item-level kNN порожній) → НЕ беремо (rule_no_item_knn); калібрування рахує ізольованих товарів Toysi", "rt-9007" not in sel["items"] and sel["stats"]["dropped"].get("rule_no_item_knn", 0) >= 1
+    and sel["stats"]["calibration"]["isolated_n"] > 0)
+
+
+class _FakeKnn:
+    """Підроблений kNN із заданими передбаченнями: «ізольовані» (top1 0.4) точні на iso_prec, «з сусідами-варіантами» (top1 0.8) — 100%."""
+
+    def __init__(self, iso_prec):
+        self.items, self.labels, self.table = [], {}, {}
+        r = random.Random(3)
+        for i in range(800):
+            iso = i < 400
+            tid = str(i)
+            self.items.append({"id": tid, "_tok": tid})
+            self.labels[tid] = ("A", "", "c")
+            ok = r.random() < (iso_prec if iso else 1.0)
+            self.table[tid] = {"prom_id": "A" if ok else "B", "prom_name": "", "toysi_cat": "c", "share": 1.0, "top1": 0.4 if iso else 0.8}
+
+    def predict(self, tokens, exclude_id=None):
+        return self.table[tokens]
+
+
+cal_bad = rt_prom.calibrate(_FakeKnn(0.90), random.Random(1))
+cal_good = rt_prom.calibrate(_FakeKnn(1.0), random.Random(1))
+chk("A5: вимір на ІЗОЛЬОВАНИХ товарах: якщо ізольовані лише 90% точні (а з сусідами-варіантами 100%) → thr=None (звичайний leave-one-out дав би ~95% і пропустив би); ізольовані 100% → пороги є, prec_b=1.0",
+    cal_bad["thr"] is None and "ізольованих" in cal_bad["reason"] and cal_bad["isolated_n"] > 300 and cal_good["thr"] is not None and cal_good["prec_b"] == 1.0 and cal_good["ref_thr_prec_b"] == 1.0)
 # відкладена вибірка не підтверджує → авто-категорій немає: шумні мітки (випадкові Prom-id)
 noisy = {k: {"category_id": rnd.choice([2606, 2605, 180613, 2614]), "category_caption": "n"} for k in toysi}
 sel_noisy = rt_prom.build_selection(toysi, sup, noisy, overrides={})
@@ -162,7 +189,7 @@ chk("кеш Prom-категорій порожній (і мапа нічого �
 
 # ───────────────────────── емісія ─────────────────────────
 valid = set(sel["valid_ids"])
-SI = {"prom_id": "2606", "prom_name": "", "toysi_cat": "Тест-Машини", "cls": "UNIQUE", "src": "rule"}
+SI = {"prom_id": "2606", "prom_name": "", "toysi_cat": "Тест-Машини", "cls": "UNIQUE", "src": "rule", "twins": []}
 live = {k: dict(v) for k, v in toysi.items()}
 f, why = rt_prom.build_offer_fields("rt-1", rt_item("Тестова іграшка Модель 1"), SI, live, {})
 canon = cp.decide_price_for_platform(120.0, None, "prom", "Тест-Машини", prom_category_id=2606)["price"]
@@ -242,6 +269,7 @@ chk("offer: id=vendorCode=rt-1, available=true, price .2f, quantity_in_stock, ca
 chk("Toysi-частина дерева НЕ змінилась: перші 5 offer'ів (текст) ідентичні, RT лише дописані в кінець", as_text(root).startswith(toysi_before[:toysi_before.index("</offers>")]) and list(ids)[:5] == ["500", "501", "502", "503", "504"] and list(ids)[5:] == ["rt-1", "rt-2"])
 # ємність
 fresh_state()
+rt_prom._atomic_write(rt_prom.LISTED_FILE, {"v": 1, "listed": {}})          # журнал є й порожній (без нього prev_ids = режим лікування, перевіряється нижче)
 root2 = base_root(5)
 sel_many = dict(sel_ok, items={f"rt-{i}": dict(SI) for i in range(1, 6)})
 sup_many = {f"rt-{i}": rt_item(f"Іграшка номер {i} Тест", cost=100 + 20 * i) for i in range(1, 6)}
@@ -318,6 +346,82 @@ fresh_state()
 rt_prom._atomic_write(rt_prom.SEL_FILE, sel_ok)
 big = {str(i): {} for i in range(50)}            # «повний» каталог для гарду MIN_CATALOG_N=10; двійників у ньому немає
 big.update(live)
+# ───────────────────────── А2-в: лікування втраченого/пошкодженого журналу ─────────────────────────
+fresh_state()                                                     # журналу НЕМА
+prev_feed = tmp / "prev_feed.xml"
+prev_feed.write_text('<?xml version="1.0"?><yml_catalog><shop><offers>'
+                     '<offer id="500" available="true"><name_ua>Toysi</name_ua></offer>'
+                     '<offer id="rt-71" available="true"><vendorCode>rt-71</vendorCode><name_ua>Старий товар з фіду</name_ua><price>321.00</price><categoryId>2606</categoryId><vendor>РТвендор</vendor>'
+                     '<picture>https://plutustoys.com.ua/img/rt/rt-71-1.jpg</picture><description_ua><![CDATA[' + DESC + ']]></description_ua></offer>'
+                     '<offer id="rt-72" available="false"><name_ua>Ще старий</name_ua><price>150.00</price></offer>'
+                     '</offers></shop></yml_catalog>', encoding="utf-8")
+chk("load_prev_rt_snapshots: знімки rt- із поточного фіду (ціна, категорія, фото, опис); нема в фіді (rt-99) — не вигадується", set(rt_prom.load_prev_rt_snapshots(prev_feed, {"rt-71", "rt-72", "rt-99"})) == {"rt-71", "rt-72"} and rt_prom.load_prev_rt_snapshots(prev_feed, set()) == {}
+    and rt_prom.load_prev_rt_snapshots(prev_feed, {"rt-71"})["rt-71"]["price"] == "321.00" and rt_prom.load_prev_rt_snapshots(prev_feed, {"rt-71"})["rt-71"]["cat"] == "2606")
+sel_r = dict(sel_ok, items={"rt-1": dict(SI), "rt-2": dict(SI)})
+sup_r = {"rt-1": rt_item("Перша іграшка Модель 1", vendor_code="A-1"), "rt-2": rt_item("Друга іграшка Модель 2"), "rt-72": rt_item("Ще старий товар Постачальника", cost=100)}     # rt-71 нема в supplier зовсім
+prev_ids_r = {"rt-71", "rt-72"}
+prev_snaps_r = rt_prom.load_prev_rt_snapshots(prev_feed, prev_ids_r)
+rr = base_root(5)
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    sr = rt_prom.append_rt_offers(rr, live, sel_r, sup_r, total_cap=5 + 3, prev_ids=prev_ids_r, prev_snaps=prev_snaps_r)
+offr = {o.get("id"): o for o in rr.find("shop").find("offers")}
+chk("А2-в: журнала нема, у фіді rt-71/rt-72 → РЕЖИМ ЛІКУВАННЯ: нових карток (rt-1, rt-2) не створено, осиротілі rt-71 (знімок із фіду: ціна 321) і rt-72 отримали заглушки available=false, ємність враховує їх (3 − 2 осиротілі)",
+    sr.get("recovery") == 1 and "rt-1" not in offr and "rt-2" not in offr and offr["rt-71"].get("available") == "false" and offr["rt-71"].findtext("price") == "321.00" and offr["rt-72"].get("available") == "false"
+    and sr["orphans"] == 2 and sr["skip_recovery_no_new_cards"] == 2 and "нових карток цього прогону НЕ створюю" in err.getvalue())
+chk("А2-в: журнал відновлено з фіду (записано, 2 id), тож наступний прогін НЕ в режимі лікування", set(rt_prom.load_listed()) == prev_ids_r and rt_prom.load_listed_status()[1] == "ok")
+rr2 = base_root(5)
+sr2 = rt_prom.append_rt_offers(rr2, live, sel_r, sup_r, total_cap=5 + 4, prev_ids=prev_ids_r)
+offr2 = {o.get("id"): o for o in rr2.find("shop").find("offers")}
+chk("А2-в: після відновлення — звичайний режим: rt-1, rt-2 емітуються (ємність 4 − 2 осиротілі = 2), rt-71 лишається заглушкою; rt-72 (є в supplier, але не у відборі) теж осиротілий", sr2.get("recovery") is None and offr2["rt-1"].get("available") == "true" and offr2["rt-2"].get("available") == "true" and offr2["rt-71"].get("available") == "false")
+fresh_state()
+rt_prom.LISTED_FILE.write_text("{не json", encoding="utf-8")
+rr3 = base_root(5)
+sr3 = rt_prom.append_rt_offers(rr3, live, sel_r, sup_r, total_cap=5 + 8)
+chk("А2-в: журнал ПОШКОДЖЕНО (навіть без prev_ids) → режим лікування (нових карток нема), файл переписано валідним; наступний прогін — звичайний",
+    sr3.get("recovery") == 1 and sr3.get("emitted", 0) == 0 and rt_prom.load_listed_status()[1] == "ok" and rt_prom.append_rt_offers(base_root(5), live, sel_r, sup_r, total_cap=5 + 8)["emitted"] == 2)
+fresh_state()
+chk("А2-в: перший запуск (журнала нема І rt- у фіді нема) — НЕ лікування: нові картки створюються", rt_prom.append_rt_offers(base_root(5), live, sel_r, sup_r, total_cap=5 + 8)["emitted"] == 2)
+fresh_state()
+rt_prom._atomic_write(rt_prom.LISTED_FILE, {"v": 1, "listed": {"rt-1": {"name": "Перша", "price": 200}}})
+rr4 = base_root(5)
+sr4 = rt_prom.append_rt_offers(rr4, live, sel_r, sup_r, total_cap=5 + 8, prev_ids={"rt-1", "rt-72"}, prev_snaps=prev_snaps_r)
+chk("А2-в: журнал є, але в поточному фіді є rt-72, якого журнал не знає → він теж осиротілий (forced_orphans = listed ∪ prev_ids мінус активні), заглушка зі знімка/постачальника",
+    {o.get("id"): o.get("available") for o in rr4.find("shop").find("offers")}.get("rt-72") == "false" and sr4["orphans"] >= 1 and sr4.get("recovery") is None)
+# наскрізно через maybe_add_rt_offers: знімок із файлу фіду
+fresh_state()
+write_sup(items=sup_r)
+rt_prom._atomic_write(rt_prom.SEL_FILE, sel_r)
+os.environ["PROM_RT_IN_FEED"] = "1"
+try:
+    out_e = rt_prom.maybe_add_rt_offers(base_root(5), big, {}, 6000, prev_feed_path=prev_feed)
+finally:
+    os.environ.pop("PROM_RT_IN_FEED", None)
+ido = {o.get("id"): o for o in out_e.find("shop").find("offers")}
+chk("А2-в: maybe_add_rt_offers із файлом поточного фіду: журнала нема → rt-71 віддано заглушкою зі знімка фіду (ціна 321), нових карток цього прогону нема", ido["rt-71"].get("available") == "false" and ido["rt-71"].findtext("price") == "321.00" and "rt-1" not in ido)
+fresh_state()
+
+# ───────────────────────── відбір без twins — недійсний ─────────────────────────
+old_style = {"built_at": datetime.now().isoformat(timespec="seconds"), "rt_n": 2, "valid_ids": ["2606"], "items": {"rt-1": {k: v for k, v in SI.items() if k != "twins"}, "rt-2": dict(SI)}}
+chk("twins: відбір, де хоч в одного товару нема ключа twins (стара версія) → selection_fresh=False; повний → True", not rt_prom.selection_fresh(old_style) and rt_prom.selection_fresh(dict(old_style, items={"rt-2": dict(SI)})))
+chk("twins: емісія товару без ключа twins → no_twins_key (навіть якщо двійників у каталозі нема)", rt_prom.build_offer_fields("rt-1", rt_item("Тест А Б В"), {k: v for k, v in SI.items() if k != "twins"}, live, {})[1] == "no_twins_key"
+    and rt_prom.build_offer_fields("rt-1", rt_item("Тест А Б В"), dict(SI, twins="1001"), live, {})[1] == "no_twins_key")
+write_sup()
+rt_prom._atomic_write(rt_prom.SEL_FILE, old_style)
+os.environ["PROM_RT_IN_FEED"] = "1"
+orig_bs2 = rt_prom.build_selection
+try:
+    rt_prom.build_selection = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    r_old = base_root()
+    chk("twins: старий відбір без twins + перебудова впала → ensure_selection повертає None, RT НЕ додаємо (root той самий)", rt_prom.ensure_selection(big, {}) is None and rt_prom.maybe_add_rt_offers(r_old, big, {}, 6000) is r_old)
+    rt_prom.build_selection = lambda *a, **k: {"built_at": datetime.now().isoformat(timespec="seconds"), "rt_n": 1, "items": {"rt-2": dict(SI)}, "valid_ids": ["2606"], "stats": {"in_feed_candidates": 1}}
+    chk("twins: старий відбір без twins → перебудова (а не використання), новий із twins записано", rt_prom.ensure_selection(big, {})["items"]["rt-2"]["twins"] == [] and rt_prom.selection_fresh(rt_prom.load_selection()))
+finally:
+    rt_prom.build_selection = orig_bs2
+    os.environ.pop("PROM_RT_IN_FEED", None)
+fresh_state()
+write_sup()
+rt_prom._atomic_write(rt_prom.SEL_FILE, sel_ok)
 r0 = base_root()
 chk("брама PROM_RT_IN_FEED вимкнена → maybe_add_rt_offers повертає той самий root (фід не змінюється)", rt_prom.maybe_add_rt_offers(r0, big, {}, 6000) is r0)
 os.environ["PROM_RT_IN_FEED"] = "1"

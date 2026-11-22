@@ -49,6 +49,8 @@ CAL_MIN_N = 50                  # вузол сітки порогів потр�
 MIN_AUTO = 5
 AGREE_T = 0.8
 POST_MAX_DF = 400
+ISOLATED_SIM = 0.6              # «ізольований» товар Toysi: найближчий сусід у каталозі має wjac < цього (немає близького двійника-варіанта) — проксі для RT
+REF_THR = (0.3, 0.6)            # пороги першої версії (PR #2004) — лише для звіту «що було б зі старими порогами на ізольованій вибірці»
 TOPK = 5
 INCLUDE_CLASSES = ("UNIQUE", "UNIQUE_BRAND")      # власник 22.11: без дублів; GRAY (сумнівний двійник) НЕ беремо — на відміну від EVA
 MIN_RT_STOCK = 3                # як min_stock у rt_selection.json (експорт на сайт не віддає RT з залишком менше): менший залишок → ризик продажу того, чого в постачальника вже нема
@@ -133,8 +135,10 @@ def load_selection():
 
 def selection_fresh(sel, now=None) -> bool:
     try:
+        if not all(isinstance(v, dict) and "twins" in v for v in sel["items"].values()):
+            return False                                   # відбір зібрано старою версією (без ключа twins) — захисту від двійників, що повернулись у наявність, нема → недійсний, перебудувати
         return (now or datetime.now()) - datetime.fromisoformat(sel["built_at"]) <= timedelta(hours=STALE_H)
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, AttributeError):
         return False
 
 
@@ -211,25 +215,31 @@ class PromKnn:
         return {"prom_id": win, "prom_name": cap, "toysi_cat": tcat, "share": (w / tot) if tot else 0.0, "top1": top[0][0]}
 
 
-def calibrate(knn: PromKnn, rnd, n: int = 2000) -> dict:
+def calibrate(knn: PromKnn, rnd, n: int = 5000) -> dict:
     """Пороги (top1, share) на половині A вибірки Toysi (leave-one-out: сусід-сам-себе виключено); точність ПЕРЕВІРЯЄТЬСЯ на відкладеній половині B.
-    → {"thr": (top1, share)|None, "prec_a", "n_a", "prec_b", "n_b", "labelled", "reason"}. thr=None → авто-категорій немає."""
+    ВИМІР — лише на «ізольованих» товарах Toysi: без близького двійника-варіанта в тому ж каталозі (найближчий сусід wjac < ISOLATED_SIM) — це проксі для RT, чиїх двійників у Toysi нема за визначенням
+    (звичайний leave-one-out на Toysi-із-сусідами-варіантами завищує точність). Пороги беруться з ЦЬОГО виміру, не з Toysi-із-сусідами.
+    → {"thr": (top1, share)|None, "prec_a", "n_a", "prec_b", "n_b" (ізольовані), "isolated_n", "prec_b_all" (усі, для порівняння), "ref_thr_prec_b"/"ref_thr_n_b" (старі пороги REF_THR на ізольованих B), "labelled", "reason"}. thr=None → авто-категорій немає."""
     pool = [t for t in knn.items if knn.labels[t["id"]][0] != "EXCL"]
-    out = {"thr": None, "prec_a": None, "n_a": 0, "prec_b": None, "n_b": 0, "labelled": len(pool), "reason": ""}
+    out = {"thr": None, "prec_a": None, "n_a": 0, "prec_b": None, "n_b": 0, "isolated_n": 0, "prec_b_all": None, "ref_thr_prec_b": None, "ref_thr_n_b": 0, "labelled": len(pool), "reason": ""}
     if len(pool) < 2 * CAL_MIN_N:
         out["reason"] = f"замало навчальних товарів Toysi з відомою Prom-категорією ({len(pool)} < {2 * CAL_MIN_N})"
         return out
     sample = rnd.sample(pool, min(n, len(pool)))
     half = len(sample) // 2
     sets = {"a": sample[:half], "b": sample[half:]}
-    loo = {}
+    loo, loo_all = {}, {}
     for k, part in sets.items():
-        res = []
+        res, res_all = [], []
         for t in part:
             p = knn.predict(t["_tok"], exclude_id=t["id"])
             if p:
-                res.append((p, p["prom_id"] == knn.labels[t["id"]][0]))
-        loo[k] = res
+                row = (p, p["prom_id"] == knn.labels[t["id"]][0])
+                res_all.append(row)
+                if p["top1"] < ISOLATED_SIM:
+                    res.append(row)
+        loo[k], loo_all[k] = res, res_all
+    out["isolated_n"] = len(loo["a"]) + len(loo["b"])
     best = None
     for x in (0.3, 0.4, 0.5, 0.6, 0.7):
         for y in (0.6, 0.8, 1.0):
@@ -239,12 +249,16 @@ def calibrate(knn: PromKnn, rnd, n: int = 2000) -> dict:
             prec = sum(sel) / len(sel)
             if prec >= TARGET_PREC and (best is None or len(sel) > best[2]):
                 best = (x, y, len(sel), prec)
+    rx, ry = REF_THR
+    selr = [ok for p, ok in loo["b"] if p["top1"] >= rx and p["share"] >= ry]
+    out.update({"ref_thr_n_b": len(selr), "ref_thr_prec_b": round(sum(selr) / len(selr), 3) if selr else None})
     if best is None:
-        out["reason"] = f"жоден вузол сітки порогів не дає точності ≥{TARGET_PREC} на половині A"
+        out["reason"] = f"жоден вузол сітки порогів не дає точності ≥{TARGET_PREC} на ізольованих товарах половини A (n_ізольованих={len(loo['a'])})"
         return out
     x, y = best[0], best[1]
     selb = [ok for p, ok in loo["b"] if p["top1"] >= x and p["share"] >= y]
-    out.update({"prec_a": round(best[3], 3), "n_a": best[2], "n_b": len(selb), "prec_b": round(sum(selb) / len(selb), 3) if selb else None})
+    alls = [ok for p, ok in loo_all["b"] if p["top1"] >= x and p["share"] >= y]
+    out.update({"prec_a": round(best[3], 3), "n_a": best[2], "n_b": len(selb), "prec_b": round(sum(selb) / len(selb), 3) if selb else None, "prec_b_all": round(sum(alls) / len(alls), 3) if alls else None})
     if len(selb) < HOLDOUT_MIN_N or out["prec_b"] < HOLDOUT_MIN_PREC:
         out["reason"] = f"відкладена вибірка не підтвердила точність (n_b={len(selb)}, prec_b={out['prec_b']}; потрібно n≥{HOLDOUT_MIN_N}, prec≥{HOLDOUT_MIN_PREC})"
         return out
@@ -358,8 +372,11 @@ def build_selection(ty: dict, sup_items: dict, cache: dict, overrides: dict | No
                 else:
                     bad_ov.add(cname)                        # ручне рішення з невідомим/заглушковим id — ігноруємо, як ніби його нема
             if got is None and cname in rules:
-                if high and p["prom_id"] != rules[cname]["prom_id"]:
-                    drop["veto"] += 1                        # товар упевнено «іншої» категорії, ніж правило його категорії RT
+                if p is None:
+                    drop["rule_no_item_knn"] += 1            # правило категорії RT без жодного item-level підтвердження → не беремо (лише ручна таблиця рятує такий товар)
+                    continue
+                if p["prom_id"] != rules[cname]["prom_id"]:
+                    drop["veto"] += 1                        # item-level kNN (будь-якої довіри) суперечить правилу категорії RT
                     continue
                 got, src = dict(rules[cname]), "rule"
             elif got is None and high and p["prom_id"] != "EXCL" and p["prom_id"] in valid:
@@ -389,7 +406,8 @@ def build_selection(ty: dict, sup_items: dict, cache: dict, overrides: dict | No
     stats = {"rt_total": len(sids), "classes": dict(Counter(cls.values())), "in_feed_candidates": len(items), "by_src": dict(Counter(v["src"] for v in items.values())),
              "dropped": dict(drop), "rules": len(rules), "with_potential_twin": sum(1 for v in items.values() if v["twins"]), "bad_overrides": sorted(bad_ov),
              "calibration": {"thresholds": ({"top1": thr[0], "share": thr[1]} if thr else None), "prec_cal_half": cal["prec_a"], "n_cal_half": cal["n_a"], "prec_holdout": cal["prec_b"], "n_holdout": cal["n_b"],
-                             "labelled_toysi": cal["labelled"], "reason": cal["reason"]}}
+                             "labelled_toysi": cal["labelled"], "isolated_n": cal["isolated_n"], "prec_holdout_all_neighbours": cal["prec_b_all"],
+                             "old_thr_prec_holdout": cal["ref_thr_prec_b"], "old_thr_n_holdout": cal["ref_thr_n_b"], "reason": cal["reason"]}}
     return {"built_at": datetime.now().isoformat(timespec="seconds"), "toysi_n": len(ty), "rt_n": len(sids), "items": items, "rules": rules, "review": review,
             "valid_ids": sorted(valid), "dup_ids": sorted(s for s, c in cls.items() if c == "DUP"), "stats": stats}
 
@@ -455,6 +473,8 @@ def toysi_twin_block(sid: str, r: dict, sel_item: dict, catalog: dict, dup_map: 
     відбором: rt_dup_finder бере кандидатів лише зі stock>0, тож двійник, що був OOS на момент відбору, інакше лишився б невидимим). Критерій «в наявності» = stock>0 за ЖИВИМ каталогом
     (як generate_prom_feed._build_xml: available = stock>0, і _margin: stock<=0 → -1). Нестрокове/списковe dup_of → "bad_dup_of"; id двійника, якого нема в живому каталозі → "toysi_twin_unknown";
     нерозбірливий залишок → "toysi_twin_in_stock". Ключі нормалізуються str().strip()."""
+    if not isinstance(sel_item.get("twins"), list):
+        return "no_twins_key"                                # fail-closed: відсутній/нескладений twins = захист від повернення двійника не діє
     tids = set()
     raw = r.get("dup_of")
     if raw not in (None, ""):
@@ -589,15 +609,47 @@ def rt_hard_max() -> int:
     return min(int(v), RT_ABS_MAX) if v.isdigit() else RT_DEFAULT_MAX
 
 
-def load_listed() -> dict:
-    """Журнал усіх rt-id, КОЛИСЬ емітованих у фід, зі знімком для заглушки: {sid: {name, price, cat, vendor, pics, desc}}. Записи НЕ видаляються: картка, що вже створена в Prom, лишається в кабінеті
-    («Опубліковано / Немає в наявності») і займає слот; catalog_sync її ніколи не прибере (ext_id ∉ toysi_ids), тож облік слотів має це знати."""
+def load_listed_status() -> tuple:
+    """→ ({sid: знімок}, "ok" | "missing" | "corrupt"). Журнал усіх rt-id, КОЛИСЬ емітованих у фід, зі знімком для заглушки: {name, price, cat, vendor, pics, desc}. Записи НЕ видаляються: картка, що вже створена в Prom,
+    лишається в кабінеті («Опубліковано / Немає в наявності») і займає слот; catalog_sync її ніколи не прибере (ext_id ∉ toysi_ids), тож облік слотів має це знати.
+    "missing" — файлу нема (перший запуск АБО втрата), "corrupt" — є, але не читається/не того формату: обидва випадки append_rt_offers лікує з prev_ids (див. recovery)."""
     try:
-        d = json.loads(LISTED_FILE.read_text(encoding="utf-8"))
-        v = d.get("listed")
-        return {str(k): (x if isinstance(x, dict) else {}) for k, x in v.items()} if isinstance(v, dict) else {}
-    except (OSError, ValueError, AttributeError):
-        return {}
+        text = LISTED_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, "missing"
+    except OSError:
+        return {}, "corrupt"
+    try:
+        v = json.loads(text).get("listed")
+        if not isinstance(v, dict):
+            return {}, "corrupt"
+        return {str(k): (x if isinstance(x, dict) else {}) for k, x in v.items()}, "ok"
+    except (ValueError, AttributeError):
+        return {}, "corrupt"
+
+
+def load_listed() -> dict:
+    return load_listed_status()[0]
+
+
+def load_prev_rt_snapshots(feed_path, ids) -> dict:
+    """{rt-id: знімок} з поточного prom_feed_top.xml (читати ДО перезапису) — лише для заданих id; джерело заглушок для осиротілих, якщо журнал втрачено. Помилка розбору → те, що встигли зібрати."""
+    want = set(ids)
+    out = {}
+    if not want or not feed_path:
+        return out
+    try:
+        for _ev, el in ET.iterparse(str(feed_path), events=("end",)):
+            if el.tag != "offer":
+                continue
+            oid = el.get("id")
+            if oid in want:
+                out[oid] = {"name": el.findtext("name_ua") or el.findtext("name") or "", "price": el.findtext("price"), "cat": el.findtext("categoryId") or "", "vendor": el.findtext("vendor") or "",
+                            "pics": [x.text for x in el.findall("picture") if x.text][:3], "desc": (el.findtext("description_ua") or "")[:1000]}
+            el.clear()
+    except (ET.ParseError, OSError):
+        pass
+    return out
 
 
 def _snapshot(f: dict) -> dict:
@@ -644,7 +696,7 @@ def _stub_offer(offers_el: ET.Element, sid: str, snap: dict) -> bool:
     return True
 
 
-def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items: dict, total_cap: int, prev_ids: set | None = None, save_state: bool = True) -> dict:
+def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items: dict, total_cap: int, prev_ids: set | None = None, save_state: bool = True, prev_snaps: dict | None = None) -> dict:
     """Дописує offer'и RT у <shop>/<offers>. root — результат generate_prom_feed._build_xml. Повертає статистику.
     ЄМНІСТЬ (A2): cap_total = min(total_cap − Toysi-offer'и, rt_hard_max()); осиротілі (колись емітовані, зараз не активні — у кабінеті Prom вони «Немає в наявності» і зайняті слоти) віддаються
     заглушками available="false" і ВІДНІМАЮТЬСЯ від ємності активних. Порядок активних при нестачі: колись у фіді → прибуток → id."""
@@ -652,7 +704,11 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
     offers_el = shop.find("offers")
     valid = set(selection.get("valid_ids") or [])
     dup_map = load_dup_map()
-    listed = load_listed()
+    listed, lstatus = load_listed_status()
+    prev_ids = set(prev_ids or ())
+    prev_snaps = prev_snaps or {}
+    # ЛІКУВАННЯ втраченого/пошкодженого журналу: rt-id із ПОТОЧНОГО фіду (prev_ids) лишаються в кабінеті Prom, навіть якщо журнал їх не знає — обліковуємо їх як осиротілих і НЕ створюємо нових карток, доки журнал не відновлено
+    recovery = lstatus == "corrupt" or (lstatus == "missing" and bool(prev_ids))
     toysi_n = len(offers_el)
     cap_total = max(0, min(int(total_cap) - toysi_n, rt_hard_max()))
     stats = Counter()
@@ -673,12 +729,18 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
             stats["invalid_" + bad] += 1
             continue
         ok.append(f)
-    known = set(listed) | (prev_ids or set())
+    known = set(listed) | prev_ids
     ok.sort(key=lambda f: (f["id"] not in known, -f["profit"], f["id"]))
     ok_ids = {f["id"] for f in ok}
-    forced_orphans = len(set(listed) - ok_ids)
+    forced_orphans = len(known - ok_ids)
     room = max(0, cap_total - forced_orphans)
     stats["eligible"] = len(ok)
+    if recovery:
+        stats["recovery"] = 1
+        new_cards = [f for f in ok if f["id"] not in prev_ids]
+        ok = [f for f in ok if f["id"] in prev_ids]
+        stats["skip_recovery_no_new_cards"] = len(new_cards)
+        print(f"[Prom RT] журнал {LISTED_FILE.name} {'відсутній' if lstatus == 'missing' else 'пошкоджений'}, а в поточному фіді є {len(prev_ids)} rt- — відновлюю облік із фіду; нових карток цього прогону НЕ створюю ({len(new_cards)} відкладено)", file=sys.stderr)
     if len(ok) > room:
         stats["skip_no_free_slot"] = len(ok) - room
         ok = ok[:room]
@@ -712,11 +774,20 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
         stats["emitted"] += 1
     active_ids = {f["id"] for f in active}
     new_listed = dict(listed)
+    for sid in prev_ids:
+        if sid not in new_listed or not new_listed[sid]:
+            new_listed[sid] = dict(prev_snaps.get(sid) or {})                   # відновлення журналу з поточного фіду
     for f in active:
         new_listed[f["id"]] = _snapshot(f)
     stubs = 0
     for sid in sorted(set(new_listed) - active_ids):
-        if _stub_offer(offers_el, sid, new_listed[sid]):
+        snap = dict(new_listed[sid])
+        r = sup_items.get(sid) or {}
+        if not snap.get("name") and r.get("name"):
+            snap["name"] = _clean_xml_text(str(r["name"]))                      # знімка нема — мінімум із живих даних постачальника
+        if not _num(snap.get("price")) and _num(r.get("price")):
+            snap["price"] = _num(r["price"])
+        if _stub_offer(offers_el, sid, snap):
             stubs += 1
         else:
             stats["orphan_no_snapshot"] += 1                    # слот зайнятий, але заглушку зібрати нема з чого (запис без ціни/назви) — лише рахуємо
@@ -726,7 +797,7 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
     stats["slots_total"] = cap_total
     stats["free_slots"] = max(0, cap_total - len(active) - n_orph)
     print(f"[Prom RT] у фіді {len(active)} активних + {n_orph} осиротілих, вільних слотів {stats['free_slots']} (ємність RT {cap_total} = мін(слоти {int(total_cap)} − Toysi {toysi_n}, ліміт {rt_hard_max()}))", file=sys.stderr)
-    if save_state and new_listed != listed:
+    if save_state and (new_listed != listed or lstatus == "corrupt"):
         try:
             _atomic_write(LISTED_FILE, {"v": 1, "listed": new_listed, "saved_at": datetime.now().isoformat(timespec="seconds")})
         except OSError as e:
@@ -752,7 +823,10 @@ def maybe_add_rt_offers(root: ET.Element, catalog: dict, cache: dict, total_cap:
             return root
         work = copy.deepcopy(root)
         prev_ids = load_prev_rt_ids(prev_feed_path) if prev_feed_path else set()
-        st = append_rt_offers(work, catalog, sel, load_supplier(), total_cap, prev_ids)
+        listed_now = load_listed()
+        need = {i for i in prev_ids if not (listed_now.get(i) or {}).get("name")}
+        prev_snaps = load_prev_rt_snapshots(prev_feed_path, need) if need else {}
+        st = append_rt_offers(work, catalog, sel, load_supplier(), total_cap, prev_ids, prev_snaps=prev_snaps)
         print(f"[Prom] RoyalToys у фіді: {st}")
         return work
     except Exception as e:  # noqa: BLE001
@@ -783,6 +857,10 @@ def main(argv=None) -> int:
     if not a.dry:
         _atomic_write(SEL_FILE, sel)
     print("[rt_prom]", "(dry) " if a.dry else "записано " + SEL_FILE.name + " ", json.dumps(sel["stats"], ensure_ascii=False))
+    c = sel["stats"]["calibration"]
+    print(f"[rt_prom] КАЛІБРУВАННЯ (ізольовані товари Toysi, без варіантів-сусідів wjac≥{ISOLATED_SIM}; проксі для RT): пороги {c['thresholds']}, точність на половині A {c['prec_cal_half']} (n={c['n_cal_half']}), "
+          f"на ВІДКЛАДЕНІЙ половині B {c['prec_holdout']} (n={c['n_holdout']}); усього ізольованих {c['isolated_n']}; старі пороги {REF_THR}: точність B {c['old_thr_prec_holdout']} (n={c['old_thr_n_holdout']}); "
+          f"для порівняння точність із сусідами-варіантами {c['prec_holdout_all_neighbours']}; причина відмови: {c['reason'] or '—'}")
     if a.review_csv:
         with open(a.review_csv, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f)

@@ -998,9 +998,13 @@ def poll_once() -> None:
                     try:      # єдине повідомлення власнику в Telegram (режим «лише замовлення»); без ПІБ/телефону/адреси; збій не зупиняє прогін
                         from telegram_notify import notify_new_order
                         _items = order.get("items") or []
+                        # Prom-замовлення з rt-позицією (RoyalToys у prom_feed_top.xml, rt_prom.py): order_router/get_orders_ready_to_forward їх у Toysi НЕ передають, а конвеєр RT (get_rt_orders_pending) бере лише site/eva —
+                        # тож це ЄДИНИЙ сигнал, що замовлення потребує ручного виконання (кабінет RoyalToys + ТТН); без позначки воно б виглядало як звичайне.
+                        _rt_note = ("⚠️ є rt-позиції (RoyalToys): у Toysi НЕ передається, виконати ВРУЧНУ"
+                                    if order["platform"] == "prom" and any(str((_i or {}).get("toysi_code") or "").strip().lower().startswith("rt-") for _i in _items) else "")
                         notify_new_order(order["platform"], order["order_id"],
                                          sum(float(i.get("price") or 0) * int(i.get("qty") or 1) for i in _items),
-                                         len(_items), order.get("payment_method", ""))
+                                         len(_items), order.get("payment_method", ""), note=_rt_note)
                     except Exception as _ne:  # noqa: BLE001
                         print(f"[orders_watcher] сповіщення про нове замовлення не надіслано: {type(_ne).__name__}", file=sys.stderr)
                     continue

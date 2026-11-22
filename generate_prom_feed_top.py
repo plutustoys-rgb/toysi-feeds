@@ -349,6 +349,7 @@ def generate_top_feed(output_file: str = OUTPUT_FILE) -> None:
     # _build_xml, Vis-9), фолбек на Toysi для решти → поступова безпечна розкатка по SKU.
     # Prom першим (за домовленістю). Порожньо/помилка → сирі описи (нічого не ламає).
     from seo_content_db import load_approved_prom_overrides
+    prom_category_cache = _load_prom_category_cache()
     generate_feed(
         output_file=output_file,
         catalog=top_catalog,
@@ -356,14 +357,29 @@ def generate_top_feed(output_file: str = OUTPUT_FILE) -> None:
         # competitor_price тих самих свіжих записів → floor-гард рахує канонічний floor
         # власниці (не завищений division), щоб не перебивати undercut над ринок (2026-08-22).
         competitor_prices=load_fresh_prom_competitor_prices(),
-        prom_category_cache=_load_prom_category_cache(),
+        prom_category_cache=prom_category_cache,
         description_overrides=load_approved_prom_overrides(),
         # ПОВНИЙ каталог (не лише топ-6000) для виведення Toysi→Prom категорій:
         # кеш містить Prom-категорії всіх ~5836 імпортованих SKU, більшість з яких
         # через ротацію зараз поза топ-6000 — derive по повному каталогу дає їм усім
         # шанс стати fallback-джерелом і різко зменшує «Товари, общее» 25% (~3190).
         full_catalog=catalog,
+        post_build=_rt_post_build(catalog, prom_category_cache),
     )
+
+
+def _rt_post_build(catalog: dict, prom_category_cache: dict):
+    """Хук RT у фіді (rt_prom.py, рішення власника 22.11.2026): брама PROM_RT_IN_FEED=1; вимкнена (за замовчуванням) → None, тобто generate_feed працює бітово як до цього PR.
+    RT додаються на КОПІЇ дерева лише у ВІЛЬНІ слоти (SELECT_COUNT − Toysi-offer'и) і НЕ потрапляють у prom_pushed_ledger (він записаний вище лише з top_catalog — Toysi): інакше
+    prom_catalog_sync вважав би їх «зниклими з Toysi» і гасив. Будь-яка помилка → None (фід без RT)."""
+    try:
+        import rt_prom
+        if not rt_prom.gate_on():
+            return None
+        return lambda root: rt_prom.maybe_add_rt_offers(root, catalog, prom_category_cache, SELECT_COUNT, prev_feed_path=FEED_PATH)
+    except Exception as e:  # noqa: BLE001
+        print(f"[Prom Top] RT: хук не підключено ({type(e).__name__}: {str(e)[:120]}) — фід без RT.", file=__import__("sys").stderr)
+        return None
 
 
 if __name__ == "__main__":

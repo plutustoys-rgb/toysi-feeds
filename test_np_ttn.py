@@ -109,6 +109,21 @@ try:
 except t.TtnError:
     ok = True
 chk("нема np_city_ref/np_warehouse_number → TtnError", ok)
+# --- 22.11.2026: поштомат (нема серед відділень за номером) → np_ref_id як авторитетний Ref ---
+PM_REF = "d943c856-76b3-11eb-ac16-b8830365bd14"
+np_.search_warehouses = lambda city, q="", limit=12: []
+chk("поштомат: 0 за номером + np_ref_id (GUID) → (city, np_ref_id)", t.resolve_recipient_address({"np_city_ref": "CITY", "np_warehouse_number": "6166", "np_ref_id": PM_REF}) == ("CITY", PM_REF))
+for bad_ref in ("", None, "не-guid", "d943c856-76b3-11eb-ac16"):
+    try:
+        t.resolve_recipient_address({"np_city_ref": "CITY", "np_warehouse_number": "6166", "np_ref_id": bad_ref})
+        ok = False
+    except t.TtnError:
+        ok = True
+    chk(f"0 за номером і np_ref_id={bad_ref!r} → TtnError (як раніше)", ok)
+np_.search_warehouses = lambda city, q="", limit=12: [{"ref": "A", "number": "5"}, {"ref": "B", "number": "5"}]
+chk("неоднозначно (2) + np_ref_id (GUID) → np_ref_id", t.resolve_recipient_address({"np_city_ref": "CITY", "np_warehouse_number": "5", "np_ref_id": PM_REF}) == ("CITY", PM_REF))
+np_.search_warehouses = lambda city, q="", limit=12: [{"ref": "WH-5", "number": "5"}]
+chk("рівно 1 за номером → поведінка НЕ змінена: Ref із довідника, навіть якщо є np_ref_id", t.resolve_recipient_address({"np_city_ref": "CITY", "np_warehouse_number": "5", "np_ref_id": PM_REF}) == ("CITY", "WH-5"))
 os.environ.pop(t.APPLY_ENV, None)
 calls.clear()
 chk("delete_ttn без воріт → False і без виклику", t.delete_ttn("REF", apply=True) is False and not calls and t.delete_ttn("REF", apply=False) is False)

@@ -230,9 +230,14 @@ def resolve_recipient_address(order: dict) -> tuple:
     if not city or not num:
         raise TtnError("у замовленні нема np_city_ref/np_warehouse_number: відділення не визначено")
     whs = [w for w in np_.search_warehouses(city, num, limit=50) if (w.get("number") or "") == num]
-    if len(whs) != 1:
-        raise TtnError(f"відділення №{num} у місті {city}: знайдено {len(whs)} (потрібно рівно 1)")
-    return city, whs[0]["ref"]
+    if len(whs) == 1:
+        return city, whs[0]["ref"]
+    # Нема/неоднозначно за номером серед ВІДДІЛЕНЬ (типово — ПОШТОМАТ: інший тип, пошук його не віддає), але маркетплейс (EVA/Prom/Rozetka) передав точний Ref пункту видачі в np_ref_id — він авторитетний
+    # (так само у kiddisvit_orders.np_warehouse_ref). 22.11.2026: eva_8-084959229, поштомат №6166, «знайдено 0» зупиняв конвеєр RT.
+    ref = str(order.get("np_ref_id") or "").strip()
+    if _GUID_RE.match(ref):
+        return city, ref
+    raise TtnError(f"відділення №{num} у місті {city}: знайдено {len(whs)} (потрібно рівно 1)")
 
 
 def create_recipient(fio: str, phone: str, apply: bool = False) -> dict:

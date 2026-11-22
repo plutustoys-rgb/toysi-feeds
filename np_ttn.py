@@ -236,7 +236,15 @@ def resolve_recipient_address(order: dict) -> tuple:
     # (так само у kiddisvit_orders.np_warehouse_ref). 22.11.2026: eva_8-084959229, поштомат №6166, «знайдено 0» зупиняв конвеєр RT.
     ref = str(order.get("np_ref_id") or "").strip()
     if _GUID_RE.match(ref):
-        return city, ref
+        # Fail-closed (аудит #1985): Ref мусить за ДОВІДНИКОМ НП (warehouse_by_ref: локальний кеш → getWarehouses(Ref)) належати ТОМУ САМОМУ місту й мати ЦЕЙ номер — інакше платна ТТН пішла б у чужий пункт
+        # (dry-run getDocumentPrice RecipientAddress не валідує, помилка вилізла б лише на save після claim). Довідник мовчить/не збігається → TtnError, як раніше.
+        try:
+            info = np_.warehouse_by_ref(ref)
+        except Exception:  # noqa: BLE001
+            info = None
+        if info and str(info.get("city_ref") or "").strip() == city and str(info.get("number") or "").strip() == num:
+            return city, ref
+        raise TtnError(f"відділення №{num} у місті {city}: за номером знайдено {len(whs)}, а np_ref_id не підтверджено довідником НП (місто/номер не збігаються або довідник недоступний)")
     raise TtnError(f"відділення №{num} у місті {city}: знайдено {len(whs)} (потрібно рівно 1)")
 
 

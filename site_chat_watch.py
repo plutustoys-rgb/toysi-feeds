@@ -20,7 +20,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = Path(__file__).resolve().parent
-WAIT_MIN = 30
+WAIT_MIN = 120      # СТРАХОВКА (рішення власника 22.11: кожне повідомлення будить того, хто веде чат, а не власника): власнику — лише якщо ніхто не відповів 2 год
 MAX_AGE_H = 72
 REPEAT_H = 4
 DAY_START, DAY_END = 8, 22      # години (початок включно, кінець виключно), за Києвом
@@ -65,15 +65,15 @@ def waiting(db_path=None, now=None, wait_min: int = WAIT_MIN, max_age_h: int = M
     return out
 
 
-def build_alert(rows: list):
+def build_alert(rows: list, wait_min: int = WAIT_MIN):
     """(dedup_key, text) або None. Ключ прив'язаний до id найстарішого очікуваного повідомлення. Без chat_id і без тексту клієнтів."""
     if not rows:
         return None
     chats = {r[1] for r in rows}
     oldest = min(rows, key=lambda r: r[0])
     worst = max(r[3] for r in rows)
-    text = (f"🟠 Чат сайту: {len(rows)} повідомл. у {len(chats)} чат(ах) без відповіді людини понад {WAIT_MIN} хв (найдовше {worst} хв). "
-            "Читає й відповідає Shopify-code (`support_relay.py list`/`reply`); якщо не відповідає — напишіть їй в сесію.")
+    text = (f"🟠 Чат сайту: {len(rows)} повідомл. у {len(chats)} чат(ах) без відповіді людини понад {wait_min} хв (найдовше {worst} хв) — страховка: Shopify-code не відповіла. "
+            "Кожне нове повідомлення її будить через `support_relay_watch.py`; якщо не відповідає — напишіть їй в сесію.")
     return f"site_chat_unanswered:{oldest[0]}", text
 
 
@@ -118,16 +118,16 @@ def send_owner(text: str) -> bool:
         return False
 
 
-def run(dry=False, db_path=None, now=None, send=None, state_path=None) -> int:
+def run(dry=False, db_path=None, now=None, send=None, state_path=None, wait_min: int = WAIT_MIN) -> int:
     t0 = now or datetime.now()
     try:
-        rows = waiting(db_path, t0)
+        rows = waiting(db_path, t0, wait_min)
     except DbError as e:
         print(f"[site_chat_watch] {e}", file=sys.stderr)
         return 1
-    msg = build_alert(rows)
+    msg = build_alert(rows, wait_min)
     if msg is None:
-        print(f"[site_chat_watch] немає повідомлень без відповіді довше за {WAIT_MIN} хв (і не старших за {MAX_AGE_H} год)")
+        print(f"[site_chat_watch] немає повідомлень без відповіді довше за {wait_min} хв (і не старших за {MAX_AGE_H} год)")
         return 0
     key, text = msg
     print("[site_chat_watch]", text)

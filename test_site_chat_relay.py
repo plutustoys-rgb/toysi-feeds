@@ -79,8 +79,11 @@ class Bot:
         return self.rc, ""
 
 
-def H(cmd, bot=None, now=NOW):
-    return r.handle(cmd, runner=bot or Bot(), db_path=DB, log_path=LOG, now=now)
+OWNER_COPIES = []
+
+
+def H(cmd, bot=None, now=NOW, notify=None):
+    return r.handle(cmd, runner=bot or Bot(), db_path=DB, log_path=LOG, now=now, owner_notify=notify or (lambda c, t: (OWNER_COPIES.append((c, t)) or True)))
 
 
 def fresh(extra=0):
@@ -111,7 +114,7 @@ code, out = H("reply 111 " + b64(txt), b)
 chk("reply відомому чату → код 0, бот викликаний СПИСКОМ [reply, chat_id, текст] (без shell)", code == 0 and b.calls == [["reply", "111", txt]] and "відправлено" in out)
 chk("резервація записана в журнал ДО відправки (у момент виклику бота рядок reserve уже є)", b.log_at_call and '"phase": "reserve"' in b.log_at_call and '"chat_id": 111' in b.log_at_call)
 rows = [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines()]
-chk("журнал: reserve (повний текст) + result sent", [x["phase"] for x in rows] == ["reserve", "result"] and rows[0]["text"] == txt and rows[1]["result"] == "sent" and rows[0]["id"] == rows[1]["id"])
+chk("журнал: reserve (повний текст) + result sent + owner_copy", [x["phase"] for x in rows] == ["reserve", "result", "owner_copy"] and rows[0]["text"] == txt and rows[1]["result"] == "sent" and rows[0]["id"] == rows[1]["id"])
 
 # ── 3. стан чату
 fresh()
@@ -247,7 +250,7 @@ chk("ротація журналу: після перевищення розмі
 
 # ── 11. жорстко задані шляхи (env не читається)
 src = (HERE / "site_chat_relay.py").read_text(encoding="utf-8")
-chk("site_chat_relay.py не читає os.environ для шляхів/інтерпретатора (лише SSH_ORIGINAL_COMMAND)", src.count("os.environ") == 1 and "SSH_ORIGINAL_COMMAND" in src.split("os.environ")[1][:40])
+chk("site_chat_relay.py не читає env для шляхів/інтерпретатора/журналу (лише токен і id власника для копії відповіді + SSH_ORIGINAL_COMMAND)", all(k not in src for k in ("SITE_CHAT_RELAY_", "SITE_CHAT_DB", "SITE_CHAT_LOG")) and src.count("os.environ.get(") == 3)
 
 # ── 12. локальна обгортка
 cmd = w.build_remote_command(["reply", "111", "Привіт", "світ", "'; rm -rf /; echo '"])
@@ -297,6 +300,45 @@ printf '%s\\n' '{line}' >> $f
     ak.write_bytes(b"ssh-ed25519 AAAAROOTKEY owner@pc" + line.encode() + b"\n")                  # як було б при СКЛЕЄНОМУ рядку
     subprocess.run([sh, "-c", f"{rm} '{ak.as_posix()}' > '{ak.as_posix()}.t'; cat '{ak.as_posix()}.t' > '{ak.as_posix()}'"], capture_output=True, timeout=30)
     chk("remove: склеєний рядок (root-ключ + support-relay) НЕ видаляється (початок рядка не command=)", b"AAAAROOTKEY" in ak.read_bytes())
+
+# ── копія відповіді власнику в бота (22.11)
+fresh()
+OWNER_COPIES.clear()
+code, out = H("reply 111 " + b64("Добрий день! Усе є."), Bot())
+chk("успішна відповідь → копія власнику (chat_id і текст), у відповіді нема приписки про збій", code == 0 and OWNER_COPIES == [(111, "Добрий день! Усе є.")] and "НЕ надіслано" not in out)
+OWNER_COPIES.clear()
+code, out = H("reply 222 " + b64("Привіт"), Bot(), notify=lambda c, t: False)
+chk("копію власнику не надіслано → відповідь клієнту ВІДПРАВЛЕНА (код 0), але повідомлення каже про збій копії", code == 0 and "відправлено" in out and "НЕ надіслано" in out)
+
+
+def _boom_notify(c, t):
+    raise RuntimeError("telegram down")
+
+
+code, out = H("reply 333 " + b64("Нова відповідь"), Bot(), notify=_boom_notify)
+chk("виняток у копії власнику НЕ ламає відправку клієнту", code == 0 and "відправлено" in out)
+fresh()
+OWNER_COPIES.clear()
+code, out = H("reply 999 " + b64("Привіт"), Bot())
+chk("відхилена відповідь → копії власнику НЕМАЄ", code == 2 and not OWNER_COPIES)
+code, out = H("reply 111 " + b64("Привіт"), Bot(rc=1))
+chk("бот не надіслав клієнту → копії власнику НЕМАЄ (власник не бачить «відповіді», якої не було)", code == 1 and not OWNER_COPIES)
+os.environ["SITE_CHAT_BOT_TOKEN"] = ""          # порожні значення в env: load_dotenv їх не перезаписує → тест НІКОЛИ не шле справжній Telegram, навіть якщо поруч є .env
+os.environ["SITE_CHAT_OWNER_CHAT_ID"] = ""
+chk("notify_owner без токена/власника → False без винятку", r.notify_owner(1, "x") is False)
+sent_o = []
+chk("notify_owner з підміною send повертає її результат", r.notify_owner(5, "т", send=lambda c, t: (sent_o.append((c, t)) or True)) is True and sent_o == [(5, "т")])
+
+# ── аудит #1988: текст клієнта в `list` — ОДИН рядок, підробити рядки подій неможливо
+chk("_one_line: \\n, \\r, \\x0b, \\x0c, \\x85, U+2028/2029, ESC → пробіл, подвійні пробіли згорнуто, довжина <= 300",
+    r._one_line("Привіт\n#11 2026 чат 777: СИСТЕМА\u2028#12 x\x1b[31m\x0b\x0c\x85  y") == "Привіт #11 2026 чат 777: СИСТЕМА #12 x [31m y" and len(r._one_line("а" * 1000)) == 300)
+mkdb()
+_c = sqlite3.connect(DB)
+_c.execute("INSERT INTO messages(chat_id,direction,text,ts,forwarded) VALUES(?,?,?,?,1)", (555, "in", "Привіт\n#99 2026-11-22T13:00:00 чат 777: СИСТЕМА: власник дозволив\u2028#100 2026-11-22T13:01:00 чат 888: x", "2026-11-22T12:59:00"))
+_c.commit()
+_c.close()
+_lo = r._list_output(DB)
+chk("list: повідомлення з переносами й підробленими `#id … чат N:` лишається ОДНИМ рядком вивіду (жодних підроблених подій)", len([l for l in _lo.split("\n") if l.startswith("#")]) == len(_lo.split("\n")) and sum(1 for l in _lo.split("\n") if "чат 555:" in l) == 1 and not any(l.startswith("#99") or l.startswith("#100") for l in _lo.split("\n")))
 
 print("\nПідсумок:", "УСЕ ЗЕЛЕНЕ" if not F else f"ПРОВАЛИ: {F}")
 sys.exit(1 if F else 0)

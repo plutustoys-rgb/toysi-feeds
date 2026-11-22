@@ -39,24 +39,30 @@ def build_remote_command(argv: list, stdin_text=None) -> str:
     raise SystemExit("використання: support_relay.py list | digest [днів] | reply <chat_id> <текст|->")
 
 
-def main(argv: list) -> int:
-    stdin_text = sys.stdin.buffer.read().decode("utf-8-sig") if (len(argv) >= 3 and argv[0] == "reply" and argv[2] == "-") else None      # utf-8-sig: PowerShell-конвеєр додає BOM
-    remote = build_remote_command(argv, stdin_text)
+def run_remote(remote: str) -> tuple:
+    """(код, stdout) виклику вузького каналу. Ключа нема → (1, ''); таймаут ssh → (1, '') з повідомленням у stderr."""
     if not KEY.is_file():
         print(f"ключ {KEY} не знайдено — спершу власник запускає install_support_relay.ps1", file=sys.stderr)
-        return 1
+        return 1, ""
     ssh = ["ssh", "-i", str(KEY), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", HOST, remote]
     try:
         r = subprocess.run(ssh, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     except subprocess.TimeoutExpired:
         print("ТАЙМАУТ ssh (180 с): для reply результат НЕВІДОМИЙ — не повторюйте, спершу `list`", file=sys.stderr)
-        return 1
+        return 1, ""
     out = (r.stdout or "").strip()
-    if out:
-        print(out)
     if r.returncode != 0 and not out:
         print(f"ssh rc={r.returncode}: {(r.stderr or '').strip()[:200]}", file=sys.stderr)
-    return r.returncode
+    return r.returncode, out
+
+
+def main(argv: list) -> int:
+    stdin_text = sys.stdin.buffer.read().decode("utf-8-sig") if (len(argv) >= 3 and argv[0] == "reply" and argv[2] == "-") else None      # utf-8-sig: PowerShell-конвеєр додає BOM
+    remote = build_remote_command(argv, stdin_text)
+    rc, out = run_remote(remote)
+    if out:
+        print(out)
+    return rc
 
 
 if __name__ == "__main__":

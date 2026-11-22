@@ -2827,6 +2827,7 @@ def _run_rt_reprice_phase() -> None:
     завершенні main() (sys.exit від circuit breaker/каталогу її пропускає). Жодних API-записів у Prom (feed-only, див. rt_reprice); будь-який збій тут не торкається вже виконаної Toysi-роботи."""
     try:
         import rt_reprice
+        rt_reprice.warn_unknown_gate()                   # невідоме значення (true/yes…) = тихо «вимкнено» → ⚠️
         if rt_reprice.mode() == "off":                  # PROM_RT_REPRICE=observe також запускає фазу (лише журнал рішень); =1 застосовує
             return
         if not _RT_CTX.get("catalog"):

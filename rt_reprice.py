@@ -55,6 +55,7 @@ STREAK_GAP_H = 20.0             # мінімальний інтервал між
 STREAK_MAX_GAP_H = 168.0        # серія старша за це починається заново
 HYSTERESIS_H = 72.0             # знята/повернена за останні 3 доби картка не міняє стан знову
 NONCOMP_RECHECK_H = 168.0       # підтверджено неконкурентний rt- переперевіряється раз на 7 діб (лише в пулі)
+OBSERVE_MAX_LINES = 50_000      # observe-журнал: понад це — ротація в .jsonl.1 (одна попередня генерація)
 STATE_STALE_H = 36.0            # стан репрайсера старший за це при увімкненій брамі → ⚠️-сповіщення
 LINK_RESOLVE_LIMIT = 100
 LINK_RETRY_H = 24.0
@@ -71,6 +72,15 @@ def noncomp_memory_h() -> float:
 def mode() -> str:
     v = os.environ.get("PROM_RT_REPRICE", "").strip().lower()
     return "on" if v == "1" else ("observe" if v == "observe" else "off")
+
+
+def warn_unknown_gate() -> bool:
+    """Значення PROM_RT_REPRICE не з {порожньо, 0, 1, observe} (напр. «true»/«yes») тихо означало б «вимкнено» — власник думав би, що ввімкнув. → ⚠️-сповіщення (тротлінг 12 год); True, якщо значення невідоме."""
+    v = os.environ.get("PROM_RT_REPRICE", "").strip().lower()
+    if v in ("", "0", "1", "observe"):
+        return False
+    _alert("gate_value", f"PROM_RT_REPRICE={os.environ.get('PROM_RT_REPRICE')!r} — невідоме значення (дозволено лише 1, observe, порожньо/0): брама ВВАЖАЄТЬСЯ ВИМКНЕНОЮ, rt-репрайсинг не працює.")
+    return True
 
 
 def gate_on() -> bool:
@@ -219,9 +229,10 @@ def _age_h(ts_text, now: datetime):
 
 
 def new_card_checked(sid: str, ctx: dict, max_age_h: float) -> bool:
-    """check-before-create: є запис стану action=adjust не старший max_age_h."""
+    """check-before-create: є запис стану action=adjust, НЕ старший max_age_h і БЕЗ незавершеної delist-серії (streak == 0): картка, що вже отримала перше сире delist-рішення, ще не підтверджена —
+    НОВУ таку не створюємо (інакше її створили б, а після другого delist зняли/видалили)."""
     e = (ctx.get("items") or {}).get(sid)
-    if not isinstance(e, dict) or e.get("action") == "delist":
+    if not isinstance(e, dict) or e.get("action") == "delist" or int(e.get("streak") or 0) >= 1:
         return False
     age = _age_h(e.get("timestamp"), ctx.get("now") or datetime.now())
     return age is not None and 0 <= age <= max_age_h
@@ -241,7 +252,7 @@ def feed_price(sid: str, cost: float, tcat, pid_int: int, default_price: float, 
     age = _age_h(e.get("timestamp"), now)
     if e.get("action") == "delist":
         if age is None or age <= noncomp_memory_h():
-            if ctx.get("for_pool") and age is not None and age >= NONCOMP_RECHECK_H:
+            if ctx.get("for_pool") and age is not None and (age >= NONCOMP_RECHECK_H or (int(e.get("ret_streak") or 0) >= 1 and age >= STREAK_GAP_H)):
                 return default_price, ""
             return None, "noncompetitive"
     if age is None:
@@ -276,9 +287,10 @@ def feed_price(sid: str, cost: float, tcat, pid_int: int, default_price: float, 
 
 
 # ───────────────────────────── партія (ротація) ─────────────────────────────
-def pick_batch(pool_ids, items: dict, limit: int, now: datetime | None = None) -> list:
-    """«Ніколи не перевірені» першими, але не більше limit − limit//4: чверть партії ГАРАНТОВАНО — найстарішим перевіреним. Підтверджено неконкурентні (action=delist) беруться лише коли минуло NONCOMP_RECHECK_H
-    від останньої перевірки. Не вистачає перевірених — слоти добираються новими. Порядок пулу стабільний."""
+def pick_batch(pool_ids, items: dict, limit: int, now: datetime | None = None, refresh_share: bool = True) -> list:
+    """«Ніколи не перевірені» першими, але не більше limit − limit//4: чверть партії ГАРАНТОВАНО — найстарішим перевіреним (refresh_share=False — без цієї квоти: режим observe, де оновлювати нічого,
+    а покриття пулу важливіше). Підтверджено неконкурентні (action=delist) беруться лише коли минуло NONCOMP_RECHECK_H від останньої перевірки АБО вони чекають другого підтвердження повернення
+    (ret_streak ≥ 1) і минуло STREAK_GAP_H. Не вистачає перевірених — слоти добираються новими. Порядок пулу стабільний."""
     now = now or datetime.now()
 
     def last(sid):
@@ -289,12 +301,14 @@ def pick_batch(pool_ids, items: dict, limit: int, now: datetime | None = None) -
         if e.get("action") != "delist":
             return False
         age = _age_h(e.get("timestamp"), now)
+        if age is not None and int(e.get("ret_streak") or 0) >= 1 and age >= STREAK_GAP_H:
+            return False
         return age is None or age < NONCOMP_RECHECK_H
 
     ids = [s for s in pool_ids if not noncomp_recent(s)]
     never = [s for s in ids if not last(s)]
     checked = [s for s in ids if last(s)]
-    nb = never[: limit - limit // 4]
+    nb = never[: limit - (limit // 4 if refresh_share else 0)]
     rb = sorted(checked, key=last)[: max(0, limit - len(nb))]
     out = nb + rb
     if len(out) < limit:
@@ -302,30 +316,89 @@ def pick_batch(pool_ids, items: dict, limit: int, now: datetime | None = None) -
     return out
 
 
+def observe_seen() -> dict:
+    """{rt-id: {"timestamp": остання мітка в observe-журналі}} (поточний файл + .1): ротація БЕЗ стану для режиму observe/--dry (стан у observe не пишеться)."""
+    out = {}
+    for path in (OBSERVE_FILE.with_suffix(OBSERVE_FILE.suffix + ".1"), OBSERVE_FILE):
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                        sid, at = r["id"], r["at"]
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if at > (out.get(sid) or {}).get("timestamp", ""):
+                        out[sid] = {"timestamp": at}
+        except OSError:
+            continue
+    return out
+
+
+def merged_for_rotation(items: dict) -> dict:
+    """Стан репрайсера + observe-журнал для вибору партії: по кожному id — пізніша з двох міток."""
+    seen = observe_seen()
+    out = dict(items)
+    for sid, v in seen.items():
+        cur = out.get(sid)
+        if cur is None:
+            out[sid] = v
+        elif v["timestamp"] > (cur.get("timestamp") or ""):
+            out[sid] = dict(cur, timestamp=v["timestamp"])
+    return out
+
+
+def _append_observe(records: list) -> None:
+    """Додає рядки в observe-журнал; перед цим, якщо рядків уже ≥ OBSERVE_MAX_LINES, поточний файл → .jsonl.1 (замінюючи попередній)."""
+    OBSERVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(OBSERVE_FILE, encoding="utf-8") as f:
+            n = sum(1 for _ in f)
+    except OSError:
+        n = 0
+    if n + len(records) > OBSERVE_MAX_LINES and n > 0:
+        os.replace(OBSERVE_FILE, OBSERVE_FILE.with_suffix(OBSERVE_FILE.suffix + ".1"))
+    with open(OBSERVE_FILE, "a", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
 # ───────────────────────────── серія/гістерезис ─────────────────────────────
 def advance(prev: dict, raw: str, now: datetime) -> dict:
-    """Чиста функція переходу стану одного rt-id. raw — «сире» рішення цього прогону ("adjust"|"delist"). → {action, streak, streak_at, status_at, wants_delist, held}.
+    """Чиста функція переходу стану одного rt-id. raw — «сире» рішення цього прогону ("adjust"|"delist"). → {action, streak, streak_at, ret_streak, ret_at, status_at, wants_delist, held}.
     • delist-рішення зараховується в серію лише з інтервалом ≥ STREAK_GAP_H від попереднього зарахованого; серія старша STREAK_MAX_GAP_H або перервана adjust починається заново;
     • зняття (action=delist) — коли streak ≥ STREAK_MIN (wants_delist; остаточне слово за капами в run_phase) і картка не була змінена за останні HYSTERESIS_H;
-    • повернення (adjust після delist) — не раніше ніж через HYSTERESIS_H після зняття (до того тримаємо delist, held=True)."""
+    • повернення (adjust після delist) СИМЕТРИЧНЕ зняттю: не раніше HYSTERESIS_H після зняття І після STREAK_MIN adjust-рішень поспіль з інтервалом ≥ STREAK_GAP_H (ret_streak); до того action=delist (held=True);
+      delist-рішення під час очікування повернення скидає ret_streak."""
     prev_action = prev.get("action") or "adjust"
     status_at = prev.get("status_at")
     st_age = _age_h(status_at, now) if status_at else None
     recent_change = st_age is not None and st_age < HYSTERESIS_H
     now_iso = now.isoformat()
     streak, streak_at = int(prev.get("streak") or 0), prev.get("streak_at")
+    ret_streak, ret_at = int(prev.get("ret_streak") or 0), prev.get("ret_at")
     held = False
     wants = False
     if raw == "adjust":
         streak, streak_at = 0, None
         if prev_action == "delist":
             if recent_change:
-                action, held = "delist", True
+                action, held, ret_streak, ret_at = "delist", True, 0, None
             else:
-                action, status_at = "adjust", now_iso
+                ra = _age_h(ret_at, now) if ret_at else None
+                if ret_streak >= 1 and ra is not None and ra <= STREAK_MAX_GAP_H:
+                    if ra >= STREAK_GAP_H:
+                        ret_streak, ret_at = ret_streak + 1, now_iso
+                else:
+                    ret_streak, ret_at = 1, now_iso
+                if ret_streak >= STREAK_MIN:
+                    action, status_at, ret_streak, ret_at = "adjust", now_iso, 0, None
+                else:
+                    action, held = "delist", True
         else:
-            action = "adjust"
+            action, ret_streak, ret_at = "adjust", 0, None
     else:
+        ret_streak, ret_at = 0, None
         if prev_action == "delist":
             action = "delist"
         else:
@@ -341,7 +414,7 @@ def advance(prev: dict, raw: str, now: datetime) -> dict:
                     held = True
                 else:
                     wants = True
-    return {"action": action, "streak": streak, "streak_at": streak_at, "status_at": status_at, "wants_delist": wants, "held": held}
+    return {"action": action, "streak": streak, "streak_at": streak_at, "ret_streak": ret_streak, "ret_at": ret_at, "status_at": status_at, "wants_delist": wants, "held": held}
 
 
 # ───────────────────────────── мережеві залежності (підміняються в тестах) ─────────────────────────────
@@ -420,6 +493,18 @@ def _apply_rt_price_rules(decision: dict, p: dict) -> dict:
     decision["price"] = round(price, 2)
     decision["margin_pct"] = round((price * (1 - comm) - cost_eff) / cost_eff * 100, 1) if cost_eff else 0.0
     return decision
+
+
+def _default_price(p: dict) -> float:
+    import competitor_pricing as cp
+    return cp.decide_price_for_platform(p["cost"], None, PLATFORM, p["tcat"], prom_category_id=p["pid_int"])["price"]
+
+
+def _margin_at(p: dict, price: float) -> float:
+    import competitor_pricing as cp
+    comm = cp.compute_total_commission(PLATFORM, p["tcat"], price, prom_category_id=p["pid_int"])
+    cost_eff = cp.prom_effective_cost(p["cost"])
+    return round((price * (1 - comm) - cost_eff) / cost_eff * 100, 1) if cost_eff else 0.0
 
 
 def decide_one(p: dict, own_link, net):
@@ -517,7 +602,7 @@ def run_phase(catalog: dict, apply: bool = False, *, net=None, now: datetime | N
     if status in ("lost", "unreadable"):
         _alert("state_lost", f"стан {STATE_FILE.name} пошкоджений без резервної копії — серії/гістерезис/пам'ять неконкурентних обнулено, фаза продовжує з порожнього стану.")
     items, links = state["items"], state["links"]
-    batch = pick_batch(list(pool), items, batch_size(), now)
+    batch = pick_batch(list(pool), merged_for_rotation(items) if m == "observe" else items, batch_size(), now, refresh_share=(m != "observe"))
     print(f"[rt_reprice] режим {m.upper()}{' (apply)' if apply else ' (DRY-RUN)'}; пул {len(pool)} rt-id (≤{rt_prom.rt_hard_max()}); партія {len(batch)} (≈{estimate_minutes(len(batch)):.0f} хв за {SEC_PER_SKU_REALISTIC:.1f} с/SKU).")
     listed = rt_prom.load_listed()
     deadline = time.monotonic() + run_budget_s()
@@ -533,10 +618,7 @@ def run_phase(catalog: dict, apply: bool = False, *, net=None, now: datetime | N
         stats["checked"] = checked
         if apply:
             try:
-                OBSERVE_FILE.parent.mkdir(parents=True, exist_ok=True)
-                with open(OBSERVE_FILE, "a", encoding="utf-8") as f:
-                    for sid, decision, raw_comp in results:
-                        f.write(json.dumps(_observe_record(sid, pool[sid], decision, raw_comp, now_iso), ensure_ascii=False) + "\n")
+                _append_observe([_observe_record(sid, pool[sid], decision, raw_comp, now_iso) for sid, decision, raw_comp in results])
             except OSError as e:
                 print(f"[rt_reprice] не вдалось записати {OBSERVE_FILE}: {e}", file=sys.stderr)
         print(f"[rt_reprice] OBSERVE: перевірено {checked}, сирих delist {len(raw_delist)}, відкинуто строгим гейтом назви {stats['strict_rejected']}; стан/ціни/фід НЕ змінено.")
@@ -552,7 +634,7 @@ def run_phase(catalog: dict, apply: bool = False, *, net=None, now: datetime | N
             stats["held_hysteresis"] += 1
         new_items[sid] = {"price": decision["price"], "timestamp": now_iso, "action": adv["action"], "category": decision["category"], "competitor_price": decision["competitor_price"],
                           "competitor_key": net.identity(decision.get("competitor")), "cost": pool[sid]["cost"], "margin_pct": decision["margin_pct"], "streak": adv["streak"],
-                          "streak_at": adv["streak_at"], "status_at": adv["status_at"], "held": adv["held"]}
+                          "streak_at": adv["streak_at"], "ret_streak": adv["ret_streak"], "ret_at": adv["ret_at"], "status_at": adv["status_at"], "held": adv["held"]}
         if adv["wants_delist"]:
             wants.append((sid, decision))
         if decision.get("competitor") is None:
@@ -564,6 +646,20 @@ def run_phase(catalog: dict, apply: bool = False, *, net=None, now: datetime | N
     stats["delist_deferred_by_cap"] = max(0, len(wants) - len(allowed))
     for sid in allowed:
         new_items[sid]["action"], new_items[sid]["status_at"] = "delist", now_iso
+    # ціна НЕ падає до division-floor, поки зняття не підтверджено: для сирого delist без остаточного зняття (перша серія, відкладено капом/гістерезисом, breaker) тримаємо попередню ціну
+    # (або default, якщо попередньої дійсної нема) — інакше ще активна картка недоотримувала б маржу на непідтвердженому (можливо хибному) конкуренті.
+    for sid, decision, _rc in results:
+        if decision["action"] == "delist" and new_items[sid]["action"] != "delist":
+            prev_e = items.get(sid) or {}
+            try:
+                pp = float(prev_e.get("price"))
+            except (TypeError, ValueError):
+                pp = 0.0
+            dflt = _default_price(pool[sid])
+            hold = min(pp, dflt) if pp > 0 and prev_e.get("action") != "delist" else dflt
+            new_items[sid]["price"] = round(hold, 2)
+            new_items[sid]["margin_pct"] = _margin_at(pool[sid], hold)
+            stats["held_price"] += 1
     for sid, e in new_items.items():
         if e["action"] == "delist" and e.get("status_at") == now_iso:
             stats["noncompetitive_new"] += 1
@@ -599,6 +695,7 @@ def main(argv=None, *, net=None, catalog=None, now: datetime | None = None) -> i
     ap = argparse.ArgumentParser(description="rt_reprice: перегляд рішень репрайсера для rt- без запису")
     ap.add_argument("--dry", action="store_true", help="обов'язковий прапорець: лише перегляд, без запису")
     ap.add_argument("--limit", type=int, default=30, help="скільки rt-id переглянути (за ротацією), за замовчуванням 30")
+    ap.add_argument("--offset", type=int, default=None, help="взяти rt-id за позиціями пулу [offset, offset+limit) замість ротації (оглянути різні частини пулу без стану)")
     a = ap.parse_args(argv)
     if not a.dry:
         ap.print_help()
@@ -616,7 +713,10 @@ def main(argv=None, *, net=None, catalog=None, now: datetime | None = None) -> i
         print(f"[rt_reprice --dry] {skip}")
         return 1
     import rt_prom
-    batch = pick_batch(list(pool), state["items"], max(1, a.limit), now)
+    if a.offset is not None:
+        batch = list(pool)[max(0, a.offset): max(0, a.offset) + max(1, a.limit)]
+    else:
+        batch = pick_batch(list(pool), merged_for_rotation(state["items"]), max(1, a.limit), now, refresh_share=False)      # ротація за станом і observe-журналом (--dry сам нічого не пише)
     links = dict(state["links"])
     deadline = time.monotonic() + run_budget_s()
     _resolve_links(batch, links, rt_prom.load_listed(), net, now.isoformat(), now, stats, deadline)      # лише в пам'яті

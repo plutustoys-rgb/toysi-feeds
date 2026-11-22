@@ -295,8 +295,12 @@ dec_floor = cp.decide_price_for_platform(COST, 100.0, "prom", "Тест-Маши
 cost_eff = cp.prom_effective_cost(COST)
 chk("БЛОК-1(б) перше delist-рішення ще НЕ знімає: rt-3 (buyBox 100, floor) → action=adjust, streak=1, лишається в емісії; rt-5 (текстовий, сторінка підтверджує) теж streak=1; rt-4 (сторінка НЕ підтверджує) → streak 0",
     items["rt-3"]["action"] == "adjust" and items["rt-3"]["streak"] == 1 and items["rt-5"]["action"] == "adjust" and items["rt-5"]["streak"] == 1 and items["rt-4"]["streak"] == 0 and dec_floor["category"] == "floor")
-chk("СЕРЕДНЯ-4: рішення «floor» → division-floor 3 % (не break-even): margin_pct rt-3 ≥ 3.0, ціна < дефолту; стара формула (decide_price_for_platform) давала " + f"{dec_floor['margin_pct']}%",
-    items["rt-3"]["margin_pct"] >= 3.0 and items["rt-3"]["price"] > dec_floor["price"] and items["rt-3"]["price"] < default_p and dec_floor["margin_pct"] < 1.0)
+P_floor = {"name": "Качечка", "cost": COST, "tcat": "Тест-Машини", "pid_int": 2606, "pictures": ["https://plutustoys.com.ua/img/rt/rt-1-1.jpg"]}
+dd_fl, _ = rt_reprice.decide_one(P_floor, None, FakeNet({"Качечка": bb(60.0)}))
+chk("СЕРЕДНЯ-4: рішення «floor» (cost 120, конкурент 60) → division-floor 3 %: margin_pct ≥ 3.0, ціна < дефолту; стара формула (decide_price_for_platform) давала " + f"{dec_floor['margin_pct']}%",
+    dd_fl["category"] == "floor" and dd_fl["margin_pct"] >= 3.0 and dd_fl["price"] > dec_floor["price"] and dd_fl["price"] < default_p and dec_floor["margin_pct"] < 1.0)
+chk("ПОВТОРНИЙ АУДИТ (3): поки зняття не підтверджено (streak=1), у СТАНІ лишається default 210 (нема попередньої ціни) — НЕ division-floor; rt-3/rt-5 не знижено на непідтвердженому конкуренті",
+    items["rt-3"]["price"] == default_p and items["rt-5"]["price"] == default_p and items["rt-3"]["margin_pct"] > 40)
 run(net, 10)
 it2 = rt_reprice.load_state()["items"]
 chk("БЛОК-1(б): 2-й delist через 10 год (<20 год) НЕ зараховується: streak лишається 1, action=adjust", it2["rt-3"]["streak"] == 1 and it2["rt-3"]["action"] == "adjust")
@@ -359,7 +363,8 @@ chk("advance: 1-й delist → streak 1; через 19 год не зарахов
     a1["streak"] == 1 and not a1["wants_delist"] and a2["streak"] == 1 and not a2["wants_delist"] and a3["streak"] == 2 and a3["wants_delist"] and a4["streak"] == 1 and not a4["wants_delist"] and a5["streak"] == 0)
 dl = {"action": "delist", "streak": 2, "status_at": t0.isoformat()}
 h1 = rt_reprice.advance(dl, "adjust", t0 + timedelta(hours=30))
-h2 = rt_reprice.advance(dl, "adjust", t0 + timedelta(hours=80))
+h2a = rt_reprice.advance(dl, "adjust", t0 + timedelta(hours=80))
+h2 = rt_reprice.advance(dict(dl, ret_streak=h2a["ret_streak"], ret_at=h2a["ret_at"]), "adjust", t0 + timedelta(hours=101))
 h3 = rt_reprice.advance({"action": "adjust", "streak": 1, "streak_at": t0.isoformat(), "status_at": (t0 + timedelta(hours=10)).isoformat()}, "delist", t0 + timedelta(hours=30))
 chk("БЛОК-1(г) гістерезис: знята <3 діб тому картка НЕ повертається (held, action=delist); через 80 год — повертається; щойно ПОВЕРНУТА <3 діб не знімається знову (held, wants_delist=False)",
     h1["action"] == "delist" and h1["held"] and h2["action"] == "adjust" and h2["status_at"] != dl["status_at"] and h3["held"] and not h3["wants_delist"] and h3["action"] == "adjust")
@@ -745,6 +750,134 @@ chk("_cli_main: SystemExit(1) від main (circuit breaker/каталог) → r
 pcp.main, pcp._run_rt_reprice_phase = _om, _op
 src_main = inspect.getsource(pcp).split('if __name__ == "__main__":')[-1]
 chk("блок `if __name__ == \"__main__\"` викликає лише _cli_main()", src_main.strip() == "_cli_main()")
+
+# ═════════════════════════ ПОВТОРНИЙ АУДИТ #2015: доробка ═════════════════════════
+# (1) БЛОКУЮЧА: check-before-create не обходиться першим delist-рішенням
+os.environ["PROM_RT_IN_FEED"] = "1"
+os.environ["PROM_RT_REPRICE"] = "1"
+fresh_files()
+e_pending = dict(e_fresh, action="adjust", streak=1, streak_at=(NOW - timedelta(hours=2)).isoformat(), price=default_p, competitor_price=100.0)
+chk("(1) new_card_checked: запис adjust із streak=1 (перше сире delist) → НОВУ картку не пускає; streak=0 → пускає; delist → ні",
+    not rt_reprice.new_card_checked("rt-1", {"items": {"rt-1": e_pending}, "now": NOW}, 48.0) and rt_reprice.new_card_checked("rt-1", {"items": {"rt-1": dict(e_pending, streak=0)}, "now": NOW}, 48.0)
+    and not rt_reprice.new_card_checked("rt-1", {"items": {"rt-1": dict(e_pending, action="delist", streak=2)}, "now": NOW}, 48.0))
+_t, st_p, root_p = feed_text({"items": {"rt-1": e_pending, "rt-2": dict(e_pending, streak=0), "rt-3": dict(e_pending, streak=0)}, "now": NOW}, known=[])
+ids_p = sorted(o.get("id") for o in root_p.iter("offer") if o.get("id", "").startswith("rt-") and o.get("available") == "true")
+chk("(1) НОВА картка після 1-го delist НЕ емітується (rt-1, streak=1); після стану без серії (rt-2, rt-3) — емітується", ids_p == ["rt-2", "rt-3"] and st_p["skip_new_unchecked"] >= 1)
+_t, st_p2, root_p2 = feed_text({"items": {"rt-1": e_pending}, "now": NOW}, known=["rt-1"])
+ids_p2 = [o.get("id") for o in root_p2.iter("offer") if o.get("id") == "rt-1" and o.get("available") == "true"]
+chk("(1) ІСНУЮЧА активна картка (є в журналі) із streak=1 лишається в емісії (правило лише для нових)", ids_p2 == ["rt-1"])
+# наскрізно: run_phase → стан → фід
+fresh_files()
+net_e = FakeNet(comps)
+run(net_e, 0)
+ctx_e = rt_reprice.feed_context(NOW + timedelta(hours=1))
+_t, st_e, root_e = feed_text(ctx_e, known=[])
+ids_e = sorted(o.get("id") for o in root_e.iter("offer") if o.get("id", "").startswith("rt-") and o.get("available") == "true")
+chk("(1) наскрізно: після 1-го прогону (rt-3, rt-5 мають сире delist, streak=1) нові картки rt-3/rt-5 НЕ створюються; решта (без серії) — так", "rt-3" not in ids_e and "rt-5" not in ids_e and "rt-1" in ids_e and "rt-2" in ids_e)
+
+# (3) ціна утримується до підтвердження зняття (для вже активних карток)
+fresh_files()
+prev_price = 187.0
+rt_reprice.save_state({"v": 1, "items": {"rt-3": {"price": prev_price, "timestamp": (NOW - timedelta(hours=30)).isoformat(), "action": "adjust", "streak": 0, "category": "undercut", "competitor_price": 190.0}}, "links": {}, "_meta": {}})
+run(FakeNet({"Третя іграшка Модель 3": bb(100.0)}), 0)
+e3 = rt_reprice.load_state()["items"]["rt-3"]
+chk("(3) активна картка з попередньою ціною 187: перше сире delist → streak=1, ціна ЛИШАЄТЬСЯ 187 (не division-floor 151), маржа перерахована від утримуваної ціни", e3["streak"] == 1 and e3["price"] == prev_price and e3["action"] == "adjust" and e3["margin_pct"] > 10)
+_t, _s, root_h = feed_text(rt_reprice.feed_context(NOW + timedelta(hours=1)), known=ALL7)
+ph = {o.get("id"): float(o.findtext("price")) for o in root_h.iter("offer") if o.get("id", "").startswith("rt-") and o.get("available") == "true"}
+chk("(3) у фіді rt-3 тримає 187 до другого підтвердження", ph["rt-3"] == prev_price)
+rt_reprice.save_state({"v": 1, "items": {"rt-3": {"price": 999.0, "timestamp": (NOW - timedelta(hours=30)).isoformat(), "action": "adjust", "streak": 0}}, "links": {}, "_meta": {}})
+run(FakeNet({"Третя іграшка Модель 3": bb(100.0)}), 0)
+chk("(3) попередня ціна вища за default → утримуємо min(попередня, default)=210", rt_reprice.load_state()["items"]["rt-3"]["price"] == default_p)
+
+# (4) симетрія: повернення теж через 2 підтвердження ≥20 год
+fresh_files()
+t_del = (NOW - timedelta(days=8)).isoformat()
+rt_reprice.save_state({"v": 1, "items": {"rt-3": {"price": 151.0, "timestamp": t_del, "action": "delist", "streak": 2, "status_at": t_del, "category": "floor", "competitor_price": 100.0}}, "links": {}, "_meta": {}})
+net_r = FakeNet({})
+run(net_r, 0)
+r1 = rt_reprice.load_state()["items"]["rt-3"]
+chk("(4) повернення: 1-ше adjust після 8 діб → ще action=delist (ret_streak=1, held), у фід НЕ повертається", r1["action"] == "delist" and r1["ret_streak"] == 1 and rt_reprice.feed_price("rt-3", COST, "Тест-Машини", 2606, default_p, {"items": {"rt-3": r1}, "now": NOW}) == (None, "noncompetitive"))
+chk("(4) очікуване 2-ге підтвердження переперевіряється не через 7 діб, а через ≥20 год (pick_batch): +10 год — ні, +21 год — так",
+    rt_reprice.pick_batch(["rt-3"], {"rt-3": r1}, 5, NOW + timedelta(hours=10)) == [] and rt_reprice.pick_batch(["rt-3"], {"rt-3": r1}, 5, NOW + timedelta(hours=21)) == ["rt-3"])
+net_r.calls.clear()
+run(net_r, 21)
+r2 = rt_reprice.load_state()["items"]["rt-3"]
+chk("(4) 2-ге adjust через 21 год → картка ПОВЕРНУТА (action=adjust, ret_streak обнулено)", r2["action"] == "adjust" and r2["ret_streak"] == 0 and "Третя іграшка Модель 3" in net_r.calls)
+rr = rt_reprice.advance({"action": "delist", "streak": 2, "status_at": t_del, "ret_streak": 1, "ret_at": NOW.isoformat()}, "delist", NOW + timedelta(hours=25))
+chk("(4) delist-рішення під час очікування повернення скидає ret_streak (картка лишається знятою)", rr["action"] == "delist" and rr["ret_streak"] == 0)
+
+# (2) ротація observe без стану; --dry --offset; (5) ліміт розміру журналу
+big_sup2, big_sel2 = mk(40)
+rt_prom._atomic_write(rt_prom.SEL_FILE, big_sel2)
+rt_prom._atomic_write(rt_prom.SUPPLIER_FILE, {"updated": NOW.isoformat(timespec="seconds"), "items": big_sup2})
+fresh_files()
+rt_reprice.OBSERVE_FILE = tmp / "observe_rot.jsonl"
+os.environ["PROM_RT_REPRICE"] = "observe"
+os.environ["PROM_RT_REPRICE_BATCH"] = "10"
+for k in range(3):
+    rt_reprice.run_phase(live, apply=True, net=FakeNet({}), now=NOW + timedelta(hours=6 * k))
+seen_ids = [json.loads(x)["id"] for x in rt_reprice.OBSERVE_FILE.read_text(encoding="utf-8").splitlines()]
+chk("(2) observe БЕЗ стану: 3 прогони по 10 з пулу 40 → 30 РІЗНИХ id (ротація за observe-журналом, не ті самі 10 зверху)", len(seen_ids) == 30 and len(set(seen_ids)) == 30 and not rt_reprice.STATE_FILE.exists())
+rt_reprice.run_phase(live, apply=True, net=FakeNet({}), now=NOW + timedelta(hours=18))
+seen4 = [json.loads(x)["id"] for x in rt_reprice.OBSERVE_FILE.read_text(encoding="utf-8").splitlines()]
+chk("(2) 4-й прогін добирає останні 10 ще не переглянутих → усі 40 покриті", len(set(seen4)) == 40)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rt_reprice.main(["--dry", "--limit", "5"], net=FakeNet({}), catalog=live, now=NOW + timedelta(hours=30))
+dry_rot = buf.getvalue()
+pool40 = rt_prom.repricer_pool(live, big_sel2, big_sup2)
+first_run = {pool40[i]["name"] for i in seen_ids[:10]}
+last_run = {pool40[i]["name"] for i in seen4[30:40]}
+chk("(2) `--dry` без offset ротується за observe-журналом: бере НАЙДАВНІШЕ переглянуті (5 із першої партії), жодного з щойно переглянутої; нічого не пише",
+    sum(1 for n in first_run if n in dry_rot) == 5 and not any(n in dry_rot for n in last_run))
+size_before = rt_reprice.OBSERVE_FILE.stat().st_size
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rt_reprice.main(["--dry", "--limit", "5", "--offset", "10"], net=FakeNet({}), catalog=live, now=NOW)
+off_names = [pool40[k]["name"] for k in list(pool40)[10:15]]
+chk("(2) `--dry --offset 10 --limit 5` показує РІВНО rt-id пулу [10:15]; файл observe не змінено", all(n in buf.getvalue() for n in off_names) and rt_reprice.OBSERVE_FILE.stat().st_size == size_before and not rt_reprice.STATE_FILE.exists())
+# (5) ліміт розміру
+rt_reprice.OBSERVE_FILE = tmp / "observe_cap.jsonl"
+rt_reprice.OBSERVE_MAX_LINES = 25
+for k in range(6):
+    rt_reprice.run_phase(live, apply=True, net=FakeNet({}), now=NOW + timedelta(hours=6 * k))
+n_cur = len(rt_reprice.OBSERVE_FILE.read_text(encoding="utf-8").splitlines())
+p1 = rt_reprice.OBSERVE_FILE.with_suffix(rt_reprice.OBSERVE_FILE.suffix + ".1")
+chk("(5) observe-журнал обмежено: після 60 записів при ліміті 25 → поточний ≤25 рядків, попередня генерація в .jsonl.1, рядки не губляться (≤2 генерації)", n_cur <= 25 and p1.exists() and len(p1.read_text(encoding="utf-8").splitlines()) <= 25)
+chk("(5) observe_seen читає й .1 (історія для ротації не втрачена): бачено > ніж у поточному файлі", len(rt_reprice.observe_seen()) > len({json.loads(x)["id"] for x in rt_reprice.OBSERVE_FILE.read_text(encoding="utf-8").splitlines()}))
+rt_reprice.OBSERVE_MAX_LINES = 50_000
+os.environ.pop("PROM_RT_REPRICE_BATCH")
+rt_prom._atomic_write(rt_prom.SEL_FILE, selection)
+rt_prom._atomic_write(rt_prom.SUPPLIER_FILE, {"updated": NOW.isoformat(timespec="seconds"), "items": sup_items})
+
+# невідоме значення брами → ⚠️-алерт
+al2 = []
+_oa = rt_reprice._alert
+rt_reprice._alert = lambda key, text: al2.append((key, text))
+res_vals = {}
+for val in ("true", "yes", "ON", "2", "observe", "1", "", "0", " OBSERVE "):
+    al2.clear()
+    os.environ["PROM_RT_REPRICE"] = val
+    res_vals[val] = (rt_reprice.warn_unknown_gate(), bool(al2))
+chk("невідоме значення PROM_RT_REPRICE (true/yes/ON/2) → ⚠️-алерт gate_value і mode()=off; дозволені 1/observe/порожньо/0 (регістр і пробіли ігноруються) — без алерту",
+    all(res_vals[v] == (True, True) for v in ("true", "yes", "ON", "2")) and all(res_vals[v] == (False, False) for v in ("observe", "1", "", "0", " OBSERVE ")))
+al2.clear()
+os.environ["PROM_RT_REPRICE"] = "true"
+pcp._RT_CTX.clear()
+pcp._RT_CTX.update({"catalog": catalog, "apply": True})
+with contextlib.redirect_stderr(io.StringIO()):
+    pcp._run_rt_reprice_phase()
+chk("хук фази ловить невідоме значення (⚠️ gate_value) і НЕ запускає фазу", al2 and al2[0][0] == "gate_value" and not rt_reprice.STATE_FILE.exists())
+al2.clear()
+os.environ["PROM_RT_IN_FEED"] = "1"
+os.environ["PROM_RT_REPRICE"] = "yes"
+write_journal(ALL7)
+rt_prom.maybe_add_rt_offers(base_root(), live, {}, 6000)
+chk("фід-гейт теж сигналізує про невідоме значення (maybe_add_rt_offers → ⚠️ gate_value) і лишається без репрайсингу", any(k == "gate_value" for k, _t in al2))
+rt_reprice._alert = _oa
+pcp._RT_CTX.clear()
+os.environ.pop("PROM_RT_REPRICE", None)
+os.environ.pop("PROM_RT_IN_FEED", None)
 
 if F:
     print(f"\nFAIL: {len(F)}")

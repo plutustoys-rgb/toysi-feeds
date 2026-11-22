@@ -979,6 +979,7 @@ def maybe_add_rt_offers(root: ET.Element, catalog: dict, cache: dict, total_cap:
         reprice = None
         try:
             import rt_reprice
+            rt_reprice.warn_unknown_gate()
             if rt_reprice.gate_on():
                 reprice = rt_reprice.feed_context()
                 rt_reprice.check_state_health()

@@ -297,7 +297,24 @@ def _list_output(db_path=None) -> str:
     return "\n".join(f"#{r[0]} {r[1]} чат {r[2]}: {str(r[3])[:300]}" for r in rows)[-MAX_OUT:]
 
 
-def handle(cmd: str, runner=None, db_path=None, log_path=None, now=None) -> tuple:
+def notify_owner(chat_id: int, text: str, send=None) -> bool:
+    """Копія відповіді (хто веде чат → клієнту) ВЛАСНИКУ в бота чату (рішення власника 22.11: «відповіді шопіфі направ до мене в бота»). Best-effort: збій НЕ змінює результат відправки клієнту.
+    Токен/id власника — з .env через site_chat_bot (його імпорт робить load_dotenv); у лог не потрапляють."""
+    try:
+        if send is not None:
+            return bool(send(chat_id, text))
+        from site_chat_bot import TelegramAPI          # імпорт підтягує .env
+        token = os.environ.get("SITE_CHAT_BOT_TOKEN", "").strip()
+        owner = os.environ.get("SITE_CHAT_OWNER_CHAT_ID", "").strip()
+        if not token or not owner:
+            return False
+        TelegramAPI(token).call("sendMessage", chat_id=int(owner), text=f"📤 Відповідь Shopify-code клієнту (чат {chat_id}):\n{text}")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def handle(cmd: str, runner=None, db_path=None, log_path=None, now=None, owner_notify=None) -> tuple:
     """→ (код_виходу, текст_для_stdout). runner(args)->(rc,out), db_path, log_path, now — підміни ЛИШЕ для тестів (у бойовому запуску жорстко задані константами)."""
     run = runner or _run_bot
     lp = Path(log_path or LOG)
@@ -341,7 +358,15 @@ def handle(cmd: str, runner=None, db_path=None, log_path=None, now=None) -> tupl
         rc, out = 1, "бот завершився без нового запису відповіді (токен не задано?)"
     finish(token, "sent" if rc == 0 else "bot_failed", lp, now, rc)
     if rc == 0:
-        return 0, f"відправлено (chat {chat_id}, {len(text)} символів)"
+        try:
+            copied = (owner_notify or notify_owner)(chat_id, text)          # копія власнику; збій не впливає на результат
+        except Exception:  # noqa: BLE001
+            copied = False
+        try:
+            _append(lp, {"ts": now.replace(microsecond=0).isoformat(), "phase": "owner_copy", "id": token, "ok": bool(copied)})
+        except OSError:
+            pass
+        return 0, f"відправлено (chat {chat_id}, {len(text)} символів)" + ("" if copied else "; копію власнику в бота НЕ надіслано")
     return 1, f"бот не надіслав (rc={rc}): {out[:200]}. Перед повтором перевірте `list`."
 
 

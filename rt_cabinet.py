@@ -469,6 +469,11 @@ def cart_row_vendor_code(txt: str, wanted) -> str:
     return m.group(1) if m else ""
 
 
+def row_has_vendor_code(txt: str, vc: str) -> bool:
+    """Рядок ВАРІАНТУ на сторінці товару (label.product__skus-label: «Червоний Арт.: M 0003(Red) 106 грн. …») належить саме артикулу vc (nbsp-стійко, без префіксних збігів за lookahead)."""
+    return cart_row_vendor_code(txt, [vc]) == vc
+
+
 def _squash(t: str) -> str:
     """Текст без пробілів/переносів/nbsp — для звірки 14-значного № ТТН незалежно від групування в кабінеті."""
     return re.sub(r"\s", "", t or "")
@@ -579,7 +584,16 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                         page.goto("https://royaltoys.com.ua" + href, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
                         page.wait_for_timeout(1200)
                         if re.search(r"Арт\.?\s*:?\s*" + re.escape(it["vendor_code"]) + r"(?!\w)", page.inner_text("body")):
-                            btn = page.locator("button.add-to-cart, button[class*=add], .js-add-to-cart").first
+                            variant_rows = page.locator("label.product__skus-label")
+                            if variant_rows.count() > 0:
+                                # сторінка з ВАРІАНТАМИ (колір/розмір): кожен має свій рядок «Арт.: …» і СВОЮ кнопку «В кошик»; клікаємо кнопку саме в рядку з потрібним артикулом
+                                # (22.11.2026 eva_8-084959229: «M 0003(Red)» клало Green — клікалась ПЕРША кнопка на сторінці; звірка кошика це зловила й нічого не замовила)
+                                match = [k for k in range(variant_rows.count()) if row_has_vendor_code(variant_rows.nth(k).inner_text(), it["vendor_code"])]
+                                if len(match) != 1:
+                                    continue          # нема/неоднозначно серед варіантів цієї сторінки → наступне посилання; у кінці «товар за артикулом не знайдено» (нічого не додано)
+                                btn = variant_rows.nth(match[0]).locator("button.js-add-single-sku, button.add-to-cart, button[class*=add]").first
+                            else:
+                                btn = page.locator("button.add-to-cart, button[class*=add], .js-add-to-cart").first
                             if btn.count() == 0:
                                 raise OrderError(f"{it['vendor_code']}: кнопки «в кошик» нема (товар недоступний?)")
                             btn.evaluate("e => e.click()")

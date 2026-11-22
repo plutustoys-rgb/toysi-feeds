@@ -350,4 +350,4 @@ if __name__ == "__main__":
         if OUT_FILE.exists():          # ключ зник/зіпсований після того, як файл уже був: залишки зникнуть через 3 год, картки через 3 доби — сигнал, не тиша
             rt._alert("kv_export_nokey", "⚠️ kv_supplier_export: KIDDISVIT_API_KEY зник із .env, а supplier_kv.json уже існує — залишки kv- зникнуть через 3 год, картки через 3 доби. Поверніть ключ.")
         sys.exit(0)
-    sys.exit(0 if run_once(workers=PREFETCH_WORKERS, budget_s=PREFETCH_BUDGET_S, check_disk=True) else 1)
+    sys.exit(rt.grace_exit(run_once(workers=PREFETCH_WORKERS, budget_s=PREFETCH_BUDGET_S, check_disk=True), OUT_FILE, "kv_export"))

@@ -377,3 +377,6 @@ remove_support_relay_out.txt
 support_relay.log.1
 support_relay.log.lock
 site_chat_watch_state.json
+# Стан репрайсингу rt- (rt_reprice.py): VPS-локальний, містить cost/margin — НЕ в git і НЕ в feed-data (публічна гілка).
+rt_prom_reprice_state.json
+rt_prom_reprice_state.json.bak

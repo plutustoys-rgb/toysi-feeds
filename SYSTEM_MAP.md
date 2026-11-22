@@ -257,8 +257,14 @@
   `catalog_health_monitor`, `catalog_size_tracker`, `link_cache_validator`, `meta_feed_coverage_monitor`
   → Код (інфра), дані/якість — **SEO+якість каталогу**.
 - **Ціноутворення/репрайсинг:** `competitor_pricing`, `repricer`, `apply_prices`, `apply_live_dumping_fix`,
-  `full_catalog_competitor_scan`, `prom_competitor_pricer`, `rozetka_competitor_repricer`, `price_state_redact`
+  `full_catalog_competitor_scan`, `prom_competitor_pricer`, `rozetka_competitor_repricer`, `price_state_redact`, `rt_reprice`
   → Код + **КОДВ/власник** (маржа/ціна/флор). НЕ SEO.
+  **Конкурентна ціна rt- (RoyalToys) у Prom-фіді (22.11.2026, слово власника «роби без ручної роботи»; `rt_reprice.py`, PR `feat/rt-prom-repricer`):** брама `PROM_RT_REPRICE=1` (потребує й `PROM_RT_IN_FEED=1`), **ЗА ЗАМОВЧУВАННЯМ ВИМКНЕНА** — без неї скан/стан/фід бітово як до PR.
+  Фаза `prom_competitor_pricer._run_rt_reprice_phase()` ПІСЛЯ повного Toysi-циклу (лише при нормальному завершенні `main()`; dry-run/`--apply`/`SAFETY_HOLD` успадковано; пропускається, якщо Toysi вичерпав свій 5-год бюджет): пул `rt_prom.repricer_pool` (лише rt-id,
+  що могли б бути в емісії, ≤`rt_hard_max()`), партія 400 rt-id/прогін (≈17 хв за виміряним 2,52 с/SKU; feed-pipeline 4×/добу → повний круг пулу 1500 ≈ 22 год; бюджет фази 20 хв), ТІ САМІ `find_best_competitor`/`decide_action`/`verify_competitor_really_available`/
+  `decide_price_for_platform`. Рішення — в ОКРЕМИЙ VPS-локальний `rt_prom_reprice_state.json` (ключ `rt-<id>`; Toysi-стани `prom_competitor_price_state.json`/`full_catalog_scan_state.json` не чіпаються). Фід (`rt_prom.build_offer_fields(reprice=…)` → `rt_reprice.feed_price`)
+  бере ціну зі стану за правилами `generate_prom_feed._build_xml` (45 діб, стеля застарілого, floor-гард, min_safe, мін. 60 ₴); неконкурентний (delist-рішення, ≤7 діб) НЕ емітується (`skip_noncompetitive`) → осиротілий (заглушка available=false, журнал `rt_prom_listed_state.json`
+  лише читається). **Без запису в Prom API** (ні apply_price, ні delist) — лише фід. Кап зняттів 100/прогін, breaker (≥60 % delist серед ≥30 перевірених → зняття блокуються), дефолтна комісія → без зняття. Окремого нічного скану для rt- нема (його роль виконує сама фаза). Тест `test_rt_prom_repricer.py`.
   **Собівартість Toysi і витрата Prom (рішення власника 16.11.2026, «так, роби п.1 та додай 10 грн»; PR `feat/cost-isimport-prom-fee`):**
   (1) `competitor_pricing.real_toysi_cost` = знижена ціна + «Збірка» 15 ₴, а знижену ціну для СОБІВАРТОСТІ дає новa `toysi_cost_discounted_price`:
   (а) спостережена знижка SKU (`observed_discount_pct`) → (б) винятки бренд/категорія → без знижки → (в) тег каталогу `<isImport>` (`parser._parse_xml` → `item["is_import"]`, True/False/None):

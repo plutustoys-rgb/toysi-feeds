@@ -42,6 +42,7 @@ rt_prom.SEL_FILE = tmp / "sel.json"
 rt_prom.SUPPLIER_FILE = tmp / "supplier_rt.json"
 rt_prom.DUP_FILE = tmp / "rt_dup_map.json"
 rt_prom.OVERRIDES_FILE = tmp / "overrides.json"
+rt_prom.DELETED_FILE = tmp / "deleted.json"       # надгробки rt_prom_cleanup.py (тест не торкається реального файлу)
 import itertools  # noqa: E402
 import contextlib  # noqa: E402
 import io  # noqa: E402
@@ -306,6 +307,9 @@ chk("A2: rt-2 і rt-3 випали → у фіді як available=false (мін�
     and offs2["rt-2"].findtext("vendorCode") == "rt-2" and offs2["rt-2"].findtext("categoryId") == "2606" and offs2["rt-2"].find("picture") is not None and sa2["emitted"] == 3 and sa2["orphans"] == 2 and sa2["orphan_stubs"] == 2)
 chk("A2: осиротілі ЗМЕНШУЮТЬ ємність (cap 8: 3 активних + 2 осиротілі → вільних 3) і лишаються в журналі", sa2["slots_total"] == 8 and sa2["free_slots"] == 3 and set(rt_prom.load_listed()) == {f"rt-{i}" for i in range(1, 6)})
 chk("A2: рядок у stderr «[Prom RT] у фіді N активних + M осиротілих, вільних слотів K»", "[Prom RT] у фіді 3 активних + 2 осиротілих, вільних слотів 3" in err.getvalue())
+_lst2 = rt_prom.load_listed()
+_os2 = {k: (_lst2[k] or {}).get("orphan_since") for k in ("rt-2", "rt-3")}
+chk("A2: мітка orphan_since — лише в осиротілих (rt-2, rt-3), валідний ISO; в активних її нема", all(_os2.values()) and all(datetime.fromisoformat(v) for v in _os2.values()) and not any("orphan_since" in (_lst2[k] or {}) for k in ("rt-1", "rt-4", "rt-5")))
 ra3 = base_root(5)
 sa3 = rt_prom.append_rt_offers(ra3, live, sel_o, sup_o2, total_cap=5 + 4)
 ids3 = [o.get("id") for o in ra3.find("shop").find("offers")][5:]
@@ -315,6 +319,19 @@ del sup_o3["rt-3"]
 ra4 = base_root(5)
 sa4 = rt_prom.append_rt_offers(ra4, live, sel_o, sup_o3, total_cap=5 + 10)
 chk("A2: повернення rt-2 → активний знову (available=true), осиротілий лише rt-3", {o.get("id"): o.get("available") for o in ra4.find("shop").find("offers")}["rt-2"] == "true" and sa4["orphans"] == 1)
+_lst4 = rt_prom.load_listed()
+chk("A2: мітка непрервна для того, хто лишається осиротілим (rt-3 — та сама), і скидається, коли картка знову активна (rt-2)", _lst4["rt-3"].get("orphan_since") == _os2["rt-3"] and "orphan_since" not in _lst4["rt-2"])
+# надгробки rt_prom_cleanup: видалений rt- не віддається ні активним, ні заглушкою, і прибирається з обліку
+chk("надгробки: mark_deleted записує, load_deleted читає; remove_listed прибирає з журналу атомарно", rt_prom.mark_deleted(["rt-3"]) and "rt-3" in rt_prom.load_deleted() and rt_prom.remove_listed(["rt-3", "rt-nonexistent"]) == 1 and "rt-3" not in rt_prom.load_listed())
+ra4b = base_root(5)
+sa4b = rt_prom.append_rt_offers(ra4b, live, sel_o, sup_o, total_cap=5 + 10, prev_ids={"rt-3"})       # rt-3 є і в постачальнику/відборі, і в «поточному фіді» (prev_ids), але видалений
+ids4b = {o.get("id") for o in ra4b.find("shop").find("offers")}
+chk("надгробки: видалений rt-3 НЕ емітується (ні активним, ні заглушкою), не потрапляє в журнал; решта — як було", "rt-3" not in ids4b and "rt-3" not in rt_prom.load_listed() and sa4b.get("skip_deleted_by_cleanup") == 1 and sa4b["emitted"] == 4)
+rt_prom._atomic_write(rt_prom.DELETED_FILE, {"v": 1, "deleted": {"rt-3": (datetime.now() - timedelta(days=15)).isoformat()}})           # надгробок прострочений (TTL 14 діб)
+ra4c = base_root(5)
+sa4c = rt_prom.append_rt_offers(ra4c, live, sel_o, sup_o, total_cap=5 + 10)
+chk("надгробки: після TTL (15 діб > 14) rt-3 знову емітується активним", {o.get("id"): o.get("available") for o in ra4c.find("shop").find("offers")}.get("rt-3") == "true" and not sa4c.get("skip_deleted_by_cleanup"))
+rt_prom.DELETED_FILE.unlink()                                                    # далі тести без надгробків
 os.environ["PROM_RT_MAX"] = "3"
 fresh_state()
 rt_prom._atomic_write(rt_prom.LISTED_FILE, {"v": 1, "listed": {"rt-x1": {"name": "Старий товар", "price": 100, "cat": "2606", "pics": ["https://a/b.jpg"], "desc": DESC}}})

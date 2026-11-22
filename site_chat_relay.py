@@ -6,7 +6,7 @@
   list                      → чати, де є вхідні повідомлення НОВІШІ за останню відповідь людини (сире листування клієнтів: ПІБ/телефони/адреси можуть бути в тексті — це потрібно тому, хто веде чат)
   digest [днів 1..14]       → `site_chat_bot.py digest N` (телефони/e-mail у збірці маскуються ботом; ПІБ і адреси — НІ)
   reply <chat_id> <base64>  → `site_chat_bot.py reply <chat_id> <текст>`; текст у base64 (UTF-8), бо кирилиця через ssh ламається у «????».
-Запобіжники reply (аудит #1949 — 13 знахідок, усі враховано):
+Env: ШЛЯХИ й інтерпретатор НЕ беруться з env (лише токен і id власника для копії відповіді). Запобіжники reply (аудит #1949 — 13 знахідок, усі враховано):
   • чат мусить мати вхідне повідомлення НОВІШЕ за останню відповідь людини (не можна писати «в нікуди» й повторно відповідати вже відповіданому);
   • ліміти: ≤12 відповідей/год загалом і ≤3/год на чат; резервація запису в журнал АТОМАРНА (flock) і робиться ДО відправки; не вдалося записати журнал → НЕ відправляємо;
   • текст 1..1000 без керівних; NFKC + вилучення невидимих (Cf); посилання лише `https://plutustoys.com.ua/…` (перевіряється ВИДАЛЕННЯМ дозволених URL і забороною решти: `://`, `@`, t.me, tg:/mailto:/…, будь-який домен);
@@ -290,27 +290,39 @@ def _run_bot(args: list, timeout: int = BOT_TIMEOUT) -> tuple:
     return r.returncode, (r.stdout or "")[:MAX_OUT]
 
 
+def _one_line(text, limit: int = 300) -> str:
+    """Текст КЛІЄНТА в один рядок: усі пробільні/керівні/невидимі символи (\n, \r, \x0b, \x0c, \x85, U+2028/2029, ESC, Cc/Cf) → пробіл, подвійні пробіли згортаються, довжина ≤ limit.
+    Інакше клієнт підробляв би рядки `#id … чат N: …` у виводі `list` і пейджері (аудит #1988, знахідка 2)."""
+    t = "".join(" " if (c.isspace() or unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp")) else c for c in str(text))
+    return re.sub(r" {2,}", " ", t).strip()[:limit]
+
+
 def _list_output(db_path=None) -> str:
     rows = waiting_messages(db_path)[-60:]                                   # найновіші; старіші відсікаються з голови
     if not rows:
         return "(черга порожня: на всі вхідні повідомлення вже відповіла людина)"
-    return "\n".join(f"#{r[0]} {r[1]} чат {r[2]}: {str(r[3])[:300]}" for r in rows)[-MAX_OUT:]
+    return "\n".join(f"#{r[0]} {r[1]} чат {r[2]}: {_one_line(r[3])}" for r in rows)[-MAX_OUT:]
 
 
 def notify_owner(chat_id: int, text: str, send=None) -> bool:
     """Копія відповіді (хто веде чат → клієнту) ВЛАСНИКУ в бота чату (рішення власника 22.11: «відповіді шопіфі направ до мене в бота»). Best-effort: збій НЕ змінює результат відправки клієнту.
-    Токен/id власника — з .env через site_chat_bot (його імпорт робить load_dotenv); у лог не потрапляють."""
+    Токен/id власника — з .env (load_dotenv поруч зі скриптом) → прямий POST на Telegram із ТАЙМАУТОМ 5 с (щоб копія не затримувала відповідь forced-команди; аудит #1988, знахідка 5); у лог/виняток нічого не потрапляє."""
     try:
         if send is not None:
             return bool(send(chat_id, text))
-        from site_chat_bot import TelegramAPI          # імпорт підтягує .env
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(HERE / ".env")
+        except ImportError:
+            pass
         token = os.environ.get("SITE_CHAT_BOT_TOKEN", "").strip()
         owner = os.environ.get("SITE_CHAT_OWNER_CHAT_ID", "").strip()
         if not token or not owner:
             return False
-        TelegramAPI(token).call("sendMessage", chat_id=int(owner), text=f"📤 Відповідь Shopify-code клієнту (чат {chat_id}):\n{text}")
-        return True
-    except Exception:  # noqa: BLE001
+        import requests
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": int(owner), "text": f"📤 Відповідь Shopify-code клієнту (чат {chat_id}):\n{text}"}, timeout=5)
+        return bool(r.ok)
+    except Exception:  # noqa: BLE001 — повідомлення requests містить URL з токеном: НЕ друкуємо
         return False
 
 

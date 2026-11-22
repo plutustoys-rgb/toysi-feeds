@@ -1,5 +1,5 @@
 [Unit]
-Description=PlutusToys: сторож чату підтримки сайту (site_chat_watch.py — повідомлення клієнтів без відповіді людини >30 хв → один агрегований Telegram-алерт без тексту)
+Description=PlutusToys: сторож чату підтримки сайту (site_chat_watch.py — повідомлення клієнтів без відповіді людини >120 хв (страховка) → один агрегований Telegram-алерт без тексту)
 After=network-online.target
 Wants=network-online.target
 

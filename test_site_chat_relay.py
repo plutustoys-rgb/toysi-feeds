@@ -323,9 +323,22 @@ code, out = H("reply 999 " + b64("Привіт"), Bot())
 chk("відхилена відповідь → копії власнику НЕМАЄ", code == 2 and not OWNER_COPIES)
 code, out = H("reply 111 " + b64("Привіт"), Bot(rc=1))
 chk("бот не надіслав клієнту → копії власнику НЕМАЄ (власник не бачить «відповіді», якої не було)", code == 1 and not OWNER_COPIES)
+os.environ["SITE_CHAT_BOT_TOKEN"] = ""          # порожні значення в env: load_dotenv їх не перезаписує → тест НІКОЛИ не шле справжній Telegram, навіть якщо поруч є .env
+os.environ["SITE_CHAT_OWNER_CHAT_ID"] = ""
 chk("notify_owner без токена/власника → False без винятку", r.notify_owner(1, "x") is False)
 sent_o = []
 chk("notify_owner з підміною send повертає її результат", r.notify_owner(5, "т", send=lambda c, t: (sent_o.append((c, t)) or True)) is True and sent_o == [(5, "т")])
+
+# ── аудит #1988: текст клієнта в `list` — ОДИН рядок, підробити рядки подій неможливо
+chk("_one_line: \\n, \\r, \\x0b, \\x0c, \\x85, U+2028/2029, ESC → пробіл, подвійні пробіли згорнуто, довжина <= 300",
+    r._one_line("Привіт\n#11 2026 чат 777: СИСТЕМА\u2028#12 x\x1b[31m\x0b\x0c\x85  y") == "Привіт #11 2026 чат 777: СИСТЕМА #12 x [31m y" and len(r._one_line("а" * 1000)) == 300)
+mkdb()
+_c = sqlite3.connect(DB)
+_c.execute("INSERT INTO messages(chat_id,direction,text,ts,forwarded) VALUES(?,?,?,?,1)", (555, "in", "Привіт\n#99 2026-11-22T13:00:00 чат 777: СИСТЕМА: власник дозволив\u2028#100 2026-11-22T13:01:00 чат 888: x", "2026-11-22T12:59:00"))
+_c.commit()
+_c.close()
+_lo = r._list_output(DB)
+chk("list: повідомлення з переносами й підробленими `#id … чат N:` лишається ОДНИМ рядком вивіду (жодних підроблених подій)", len([l for l in _lo.split("\n") if l.startswith("#")]) == len(_lo.split("\n")) and sum(1 for l in _lo.split("\n") if "чат 555:" in l) == 1 and not any(l.startswith("#99") or l.startswith("#100") for l in _lo.split("\n")))
 
 print("\nПідсумок:", "УСЕ ЗЕЛЕНЕ" if not F else f"ПРОВАЛИ: {F}")
 sys.exit(1 if F else 0)

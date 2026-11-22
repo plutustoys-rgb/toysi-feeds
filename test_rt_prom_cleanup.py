@@ -394,7 +394,9 @@ try:
     logged = tn.ALERTS_LOG_FILE.read_text(encoding="utf-8") if tn.ALERTS_LOG_FILE.exists() else ""
 finally:
     tn.requests.post, tn.ALERTS_LOG_FILE = orig_post, orig_log
-chk("С1: _notify іде через send_telegram_message: текст ЗАВЖДИ лягає в reports/telegram_alerts.md (читає health_check/Код), навіть коли режим «лише замовлення» не пускає його в Telegram (мережі не було)", "rt_prom_cleanup: видалено 3" in logged and not sent)
+chk("С1: _notify іде через send_telegram_message: текст ЗАВЖДИ лягає в reports/telegram_alerts.md (читає health_check/Код), навіть коли режим «лише замовлення» не пускає його в Telegram (мережі не було)", "видалено 3" in logged and "rt_prom_cleanup" in logged and not sent)
+import telegram_digest as _td
+chk("Н1: сповіщення про видалення має категорію warning (потрапляє в знімок health_check, а не info)", _td._classify("⚠️ rt_prom_cleanup (увага, необоротні видалення карток): видалено 3 осиротілих") in ("warning", "error"))
 
 # С2: TTL надгробка і --untomb
 rt_prom.DELETED_FILE = tmp / "ttl_deleted.json"

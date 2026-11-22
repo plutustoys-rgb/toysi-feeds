@@ -813,6 +813,106 @@ chk("бітово: брама вимкнена → Prom без rt_state не ч�
     get("prom_BIT1", RB)["rt_state"] is None and "prom_live" not in fk.calls and get("site_BS1", RB)["rt_state"] == "rt_ordered" and ow._prom_rt_note(base) == MAN)
 open_gates(False)
 
+# ---------------------------------------------------------------- 14. ПОВТОРНИЙ АУДИТ #2013 (Н1, Н2, Б2-а, Б2-б, шум алертів)
+from datetime import datetime, timedelta  # noqa: E402
+os.environ["RT_RUNNER_APPLY"] = "1"
+n_base = dict(base)
+os.environ["RT_PROM_ORDERS_AUTO"] = "2999-01-01T00:00"
+nf = ow._prom_rt_note(n_base)
+chk("Н1: брама з МАЙБУТНЬОЮ датою → нове замовлення отримує «виконати ВРУЧНУ» (а не «автоматично»), з поясненням", nf.startswith(MAN) and "АВТОМАТИЧНО" not in nf and "раніше за дату вмикання" in nf)
+os.environ["RT_PROM_ORDERS_AUTO"] = "2020-01-01T00:00"
+chk("Н1: минула дата → «АВТОМАТИЧНО»", "АВТОМАТИЧНО" in ow._prom_rt_note(n_base))
+chk("Н1: минула дата, але замовлення створене РАНІШЕ за неї → «ВРУЧНУ»", ow._prom_rt_note(dict(n_base, created_at="2019-12-31T23:00:00")).startswith(MAN) and "АВТОМАТИЧНО" not in ow._prom_rt_note(dict(n_base, created_at="2019-12-31T23:00:00")))
+chk("Н1: замовлення створене після дати → «АВТОМАТИЧНО»", "АВТОМАТИЧНО" in ow._prom_rt_note(dict(n_base, created_at="2020-01-01T00:00:01")))
+for bad in ("1", "true", "yes"):
+    os.environ["RT_PROM_ORDERS_AUTO"] = bad
+    nb = ow._prom_rt_note(n_base)
+    chk(f"Н1: значення брами «{bad}» (не дата) → «ВРУЧНУ», не «автоматично»", nb.startswith(MAN) and "АВТОМАТИЧНО" not in nb and "без дати" in nb)
+for off in ("", "0"):
+    os.environ["RT_PROM_ORDERS_AUTO"] = off
+    chk(f"Н1: брама вимкнена («{off}») → рівно стара позначка", ow._prom_rt_note(n_base) == MAN)
+os.environ.pop("RT_PROM_ORDERS_AUTO", None)
+open_gates(True)
+os.environ["RT_PROM_ORDERS_AUTO"] = "2020-01-01T00:00"
+
+# Б2-а: номер RoyalToys у тексті алерту скасування
+o_rt = new_prom("N201", created="2026-11-23T19:00:00")
+_alerts.clear()
+fk = PromFake(live_seq=["pending", "canceled"])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(o_rt), SUP, apply=True, deps=fk)
+txt = [t for _, k, t in _alerts if k == "prom_cancelled"]
+chk("Б2-а: алерт скасування у вікні після резерву містить фактичний номер RoyalToys (RT000900500) і ТТН, без «RT None»", len(txt) == 1 and "RT000900500" in txt[0] and "RT None" not in txt[0] and "20451500000777" in txt[0] and "РУЧНЕ скасування" in txt[0])
+
+# Б2-б: тихе очікування → алерт після 3 год
+o_w = new_prom("N202", created="2026-11-23T19:01:00")
+_alerts.clear()
+fk = PromFake(live=None)
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(o_w), SUP, apply=True, deps=fk)
+w1 = get(o_w)
+chk("Б2-б: перше «невідомо» → лише позначка очікування в rt_error, БЕЗ алерту, дій немає", str(w1["rt_error"]).startswith("prom_wait:") and not _alerts and fk.calls == ["prom_live"])
+t_1h = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET rt_error=? WHERE internal_order_id=?", ("prom_wait:" + t_1h + " статус Prom невідомий — чекаємо", o_w))
+    c.commit()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(o_w), SUP, apply=True, deps=PromFake(live=None))
+chk("Б2-б: очікування 1 год (< 3) → алерту нема", not _alerts)
+t_4h = (datetime.now() - timedelta(hours=4)).isoformat(timespec="seconds")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET rt_error=? WHERE internal_order_id=?", ("prom_wait:" + t_4h + " статус Prom невідомий — чекаємо", o_w))
+    c.commit()
+with orders_db.get_connection() as c:
+    r_w = rr.process_order(c, get(o_w), SUP, apply=True, deps=PromFake(live=None))
+chk("Б2-б: очікування 4 год (≥ 3) → 🟠 алерт prom_status_unknown без ПІІ (є номер замовлення/id, нема ПІБ/телефону), замовлення НЕ оформлено, problems порожні",
+    len(_alerts) == 1 and _alerts[0][1] == "prom_status_unknown" and "Петренко" not in _alerts[0][2] and "067" not in _alerts[0][2] and not r_w["problems"] and get(o_w)["rt_state"] is None)
+fk = PromFake(live="pending")
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(o_w), SUP, apply=True, deps=fk)
+chk("Б2-б: щойно статус відомий — замовлення оформлюється, позначка очікування зникає", get(o_w)["rt_state"] == "rt_ordered" and not get(o_w)["rt_error"])
+with orders_db.get_connection() as c:
+    rr.process_order(c, get(new_prom("N203", created="2026-11-23T19:02:00")), SUP, apply=False, deps=PromFake(live=None))
+chk("Б2-б: у dry-run позначка очікування не пишеться", not get("prom_N203")["rt_error"])
+
+# шум: один алерт замість двох
+for label, kw, live, key in (("скасовано до оформлення", {}, "canceled", "prom_cancelled"), ("невідомий спосіб оплати", {"pname": "Оплата на карту"}, "pending", "prom_unknown_payment"), ("змішане", {"items": [dict(RT_ITEM), dict(TOYSI_ITEM)]}, "pending", "prom_mixed")):
+    on = new_prom("N3" + str(abs(hash(label)) % 1000), created="2026-11-23T19:10:00", **kw)
+    _alerts.clear()
+    with orders_db.get_connection() as c:
+        rn_ = rr.process_order(c, get(on), SUP, apply=True, deps=PromFake(live=live))
+    chk(f"шум: {label} → рівно ОДИН алерт ({key}), без другого «конвеєр зупинено»; rt_error/problems збережено", len(_alerts) == 1 and _alerts[0][1] == key and rn_["problems"] and (get(on)["rt_error"] or get(on)["rt_state"] == "manual" or key == "prom_cancelled"))
+# EVA-блокери (не Prom) поводяться як раніше: два алерти
+ev_m = new_prom("N399")
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET platform='eva', internal_order_id='eva_N399' WHERE internal_order_id=?", (ev_m,))
+    c.execute("UPDATE orders SET items=? WHERE internal_order_id='eva_N399'", ('[{"toysi_code": "rt-1", "name": "a", "qty": 1, "price": 300}, {"toysi_code": "100", "name": "t", "qty": 1, "price": 100}]',))
+    c.commit()
+_alerts.clear()
+with orders_db.get_connection() as c:
+    rr.process_order(c, get("eva_N399"), SUP, apply=True, deps=PromFake())
+chk("EVA-блокер без змін: алерт eva_mixed + загальний «конвеєр зупинено» (як і раніше)", [k for _, k, _t in _alerts].count("eva_mixed") == 1 and len(_alerts) == 2)
+
+# Н2: дата вмикання в майбутньому → алерт у раннері
+R9 = os.path.join(tempfile.mkdtemp(), "r9.db")
+orders_db.init_db(R9)
+new_prom("N401", db=R9, created=datetime.now().isoformat(timespec="seconds"))
+fut = (datetime.now() + timedelta(hours=5)).isoformat(timespec="minutes")
+os.environ["RT_PROM_ORDERS_AUTO"] = fut
+_alerts.clear()
+fk = PromFake()
+rr.run(apply=True, deps=fk, db_path=R9)
+chk("Н2: дата брами в майбутньому → 🟠 prom_future «нові замовлення поки не обробляються», замовлення не чіпаємо", any(oid == "prom_gate" and k == "prom_future" and "МАЙБУТНЬОМУ" in t for oid, k, t in _alerts) and not fk.calls)
+os.environ["RT_PROM_ORDERS_AUTO"] = (datetime.now() - timedelta(minutes=1)).isoformat(timespec="minutes")
+_alerts.clear()
+rr.run(apply=True, deps=PromFake(), db_path=R9)
+chk("Н2: дата «щойно» (у минулому) → алерту про майбутнє нема", not any(k == "prom_future" for _, k, _t in _alerts))
+os.environ.pop("RT_PROM_ORDERS_AUTO", None)
+_alerts.clear()
+rr.run(apply=True, deps=PromFake(), db_path=R9)
+chk("Н2/бітово: брама вимкнена → жодного prom_* алерту від раннера", not any(k.startswith("prom_") for _, k, _t in _alerts))
+open_gates(False)
+
 # ---------------------------------------------------------------- 12. Telegram-сито та приймання інших платформ
 chk("12. 🟠 RoyalToys prom_… іде власнику (виняток №2 розширено на Prom); site_PT- як раніше; ⚪ і чужі «🟠» — ні",
     tt.is_rt_chain_alert("🟠 RoyalToys prom_555001: збій") and tt.is_rt_chain_alert("🟠 RoyalToys site_PT-20261020-153620-193ef9: резерв") and not tt.is_rt_chain_alert("⚪ RoyalToys prom_555001: чекає") and not tt.is_rt_chain_alert("🟠 Щось інше"))

@@ -327,6 +327,10 @@ ra4b = base_root(5)
 sa4b = rt_prom.append_rt_offers(ra4b, live, sel_o, sup_o, total_cap=5 + 10, prev_ids={"rt-3"})       # rt-3 є і в постачальнику/відборі, і в «поточному фіді» (prev_ids), але видалений
 ids4b = {o.get("id") for o in ra4b.find("shop").find("offers")}
 chk("надгробки: видалений rt-3 НЕ емітується (ні активним, ні заглушкою), не потрапляє в журнал; решта — як було", "rt-3" not in ids4b and "rt-3" not in rt_prom.load_listed() and sa4b.get("skip_deleted_by_cleanup") == 1 and sa4b["emitted"] == 4)
+rt_prom._atomic_write(rt_prom.DELETED_FILE, {"v": 1, "deleted": {"rt-3": (datetime.now() - timedelta(days=15)).isoformat()}})           # надгробок прострочений (TTL 14 діб)
+ra4c = base_root(5)
+sa4c = rt_prom.append_rt_offers(ra4c, live, sel_o, sup_o, total_cap=5 + 10)
+chk("надгробки: після TTL (15 діб > 14) rt-3 знову емітується активним", {o.get("id"): o.get("available") for o in ra4c.find("shop").find("offers")}.get("rt-3") == "true" and not sa4c.get("skip_deleted_by_cleanup"))
 rt_prom.DELETED_FILE.unlink()                                                    # далі тести без надгробків
 os.environ["PROM_RT_MAX"] = "3"
 fresh_state()

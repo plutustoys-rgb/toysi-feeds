@@ -3,6 +3,7 @@ from prom_text_sanitize import sanitize as sanitize_prom_text, dedupe_keywords
 import math
 import os
 import re
+import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
@@ -909,7 +910,10 @@ def generate_feed(output_file: str = OUTPUT_FILE,
                   description_overrides: dict = None,
                   prom_category_cache: dict = None,
                   full_catalog: dict = None,
-                  competitor_prices: dict = None) -> None:
+                  competitor_prices: dict = None,
+                  post_build=None) -> None:
+    """post_build — необов'язковий хук root→root (RT у фіді, rt_prom.maybe_add_rt_offers): викликається ПІСЛЯ _build_xml і ДО запису файлу; сам працює на копії дерева
+    й повертає оригінал при збої. None (за замовчуванням, брама PROM_RT_IN_FEED вимкнена) → поведінка бітово та сама, що й до хука."""
     if catalog is None:
         print("[Prom] Завантажуємо каталог Toysi...")
         catalog = fetch_toysi_catalog()
@@ -928,6 +932,13 @@ def generate_feed(output_file: str = OUTPUT_FILE,
         # fallback-категорій, ніж лише топ-6000) — див. _build_xml/_derive.
         full_catalog=full_catalog,
     )
+    if post_build is not None:
+        try:
+            _built = post_build(root)
+            if _built is not None:
+                root = _built
+        except Exception as e:  # noqa: BLE001 — хук допоміжний: збій → Toysi-фід як є
+            print(f"[Prom] post_build пропущено ({type(e).__name__}: {str(e)[:160]})", file=sys.stderr)
 
     ET.indent(root, space="  ")
     xml_str = ET.tostring(root, encoding="unicode")

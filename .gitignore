@@ -349,6 +349,7 @@ gmc_service_account*.json
 # RoyalToys у EVA-фіді: машинний стан (рахується на VPS)
 rt_eva_selection.json
 rt_eva_listed_state.json
+rt_prom_selection.json
 kv_eva_selection.json
 kv_eva_listed_state.json
 

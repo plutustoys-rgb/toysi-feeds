@@ -722,6 +722,19 @@ def deactivate(stale_ids: list) -> tuple:
     return processed, errors
 
 
+def run_rt_orphan_cleanup(apply: bool) -> dict | None:
+    """Автоприбирання осиротілих rt- карток RoyalToys (rt_prom_cleanup.py, рішення власника 22.11.2026). Брама PROM_RT_CLEANUP=1 — ЗА ЗАМОВЧУВАННЯМ ВИМКНЕНО (вимкнена → нічого, ні читання, ні запису).
+    Використовує ті самі fetch_prom_products_by_external_ids (жива звірка) і deactivate (delist по одному + GET-звірка) цього модуля. Будь-який збій тут НЕ валить решту sync (rt_prom_cleanup.run сам fail-closed)."""
+    try:
+        import rt_prom_cleanup
+        if not rt_prom_cleanup.gate_on():
+            return None
+        return rt_prom_cleanup.run(apply, fetch_prom_products_by_external_ids, deactivate)
+    except Exception as e:  # noqa: BLE001
+        print(f"[Sync] rt-прибирання пропущено: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+        return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true",
@@ -806,6 +819,9 @@ def main() -> None:
                 save_prom_price_state(l_price_state)
                 print(f"[Sync] Журнал: записано {len(l_processed)} SKU у _delisted_since "
                       "(select_top_items() не пропонуватиме їх знову).")
+
+    # Осиротілі rt- (RoyalToys) — окремий клас, що ledger/find_stale не бачать (rt- нема в журналі штовхнутих і в каталозі Toysi); лише за брамою PROM_RT_CLEANUP=1.
+    run_rt_orphan_cleanup(bool(args.apply))
 
     stale_ids = find_stale_external_ids(prom_products, desired_ids, toysi_ids)
     print(f"[Sync] Застарілих товарів (є в Prom, походять з Toysi, "

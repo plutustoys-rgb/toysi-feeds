@@ -66,6 +66,7 @@ BLIND_SIM = 0.75                # «сліпий» двійник: схожіс�
 RT_DEFAULT_MAX = 1500           # жорсткий верхній ліміт RT у фіді (активні + осиротілі)
 RT_ABS_MAX = 3000               # env PROM_RT_MAX не може піднятись вище цього
 LISTED_FILE = Path(os.environ.get("RT_PROM_LISTED_FILE", str(HERE / "rt_prom_listed_state.json")))
+DELETED_FILE = Path(os.environ.get("RT_PROM_DELETED_FILE", str(HERE / "rt_prom_deleted_state.json")))   # надгробки rt-карток, видалених rt_prom_cleanup.py: {"v":1,"deleted":{rt-id: ISO-час}} — НЕ віддаються у фід (інакше Prom «відновив» би видалене)
 _XML_BAD_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")      # символи, недопустимі в XML 1.0 (і сурогати, що не кодуються в utf-8)
 
 
@@ -632,6 +633,59 @@ def load_listed() -> dict:
     return load_listed_status()[0]
 
 
+def load_deleted_status() -> tuple:
+    """→ ({rt-id: ISO-час видалення}, "ok" | "missing" | "corrupt"). Надгробки rt-карток, які rt_prom_cleanup.py ВИДАЛИВ у кабінеті Prom: такі id більше НЕ емітуються (ні активними, ні заглушками) —
+    поки вони в опублікованому фіді, Prom може «відновити» видалену картку при імпорті (так було з видаленими Toysi-SKU, див. competitor_pricing.load_delisted_pids). Нема файлу = нічого не видалено."""
+    try:
+        text = DELETED_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, "missing"
+    except OSError:
+        return {}, "corrupt"
+    try:
+        v = json.loads(text).get("deleted")
+        if not isinstance(v, dict):
+            return {}, "corrupt"
+        return {str(k): str(x) for k, x in v.items()}, "ok"
+    except (ValueError, AttributeError):
+        return {}, "corrupt"
+
+
+def load_deleted() -> dict:
+    return load_deleted_status()[0]
+
+
+def mark_deleted(ids, when: str | None = None) -> bool:
+    """Дописати надгробки (атомарно). False — файл пошкоджений/запис не вдався (викликач НЕ має вважати прибирання завершеним)."""
+    cur, st = load_deleted_status()
+    if st == "corrupt":
+        return False
+    when = when or datetime.now().isoformat(timespec="seconds")
+    for i in ids:
+        cur.setdefault(str(i), when)
+    try:
+        _atomic_write(DELETED_FILE, {"v": 1, "deleted": cur, "saved_at": datetime.now().isoformat(timespec="seconds")})
+        return True
+    except OSError:
+        return False
+
+
+def remove_listed(ids) -> int:
+    """Прибрати id з журналу rt_prom_listed_state.json (атомарно; перечитує файл безпосередньо перед записом). Журнал відсутній/пошкоджений → нічого не пишемо (повертає -1). Інакше — скільки реально прибрано."""
+    cur, st = load_listed_status()
+    if st != "ok":
+        return -1
+    drop = {str(i) for i in ids}
+    hit = drop & set(cur)
+    if not hit:
+        return 0
+    try:
+        _atomic_write(LISTED_FILE, {"v": 1, "listed": {k: v for k, v in cur.items() if k not in hit}, "saved_at": datetime.now().isoformat(timespec="seconds")})
+    except OSError:
+        return -1
+    return len(hit)
+
+
 def load_prev_rt_snapshots(feed_path, ids) -> dict:
     """{rt-id: знімок} з поточного prom_feed_top.xml (читати ДО перезапису) — лише для заданих id; джерело заглушок для осиротілих, якщо журнал втрачено. Помилка розбору → те, що встигли зібрати."""
     want = set(ids)
@@ -705,7 +759,9 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
     valid = set(selection.get("valid_ids") or [])
     dup_map = load_dup_map()
     listed, lstatus = load_listed_status()
-    prev_ids = set(prev_ids or ())
+    dead = set(load_deleted())                                                  # видалені rt_prom_cleanup.py: ні активними, ні заглушками, ні в облік
+    listed = {k: v for k, v in listed.items() if k not in dead}
+    prev_ids = set(prev_ids or ()) - dead
     prev_snaps = prev_snaps or {}
     # ЛІКУВАННЯ втраченого/пошкодженого журналу: rt-id із ПОТОЧНОГО фіду (prev_ids) лишаються в кабінеті Prom, навіть якщо журнал їх не знає — обліковуємо їх як осиротілих і НЕ створюємо нових карток, доки журнал не відновлено
     recovery = lstatus == "corrupt" or (lstatus == "missing" and bool(prev_ids))
@@ -715,6 +771,9 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
     ok = []
     for sid, si in sorted(selection.get("items", {}).items()):
         if si.get("cls") not in INCLUDE_CLASSES:
+            continue
+        if sid in dead:
+            stats["skip_deleted_by_cleanup"] += 1
             continue
         r = sup_items.get(sid)
         if not r:
@@ -780,7 +839,10 @@ def append_rt_offers(root: ET.Element, catalog: dict, selection: dict, sup_items
     for f in active:
         new_listed[f["id"]] = _snapshot(f)
     stubs = 0
+    now_iso = datetime.now().isoformat(timespec="seconds")
     for sid in sorted(set(new_listed) - active_ids):
+        if not (new_listed[sid] or {}).get("orphan_since"):
+            new_listed[sid] = {**(new_listed[sid] or {}), "orphan_since": now_iso}   # мітка «осиротілий з» (для rt_prom_cleanup.py); новий dict — не мутуємо `listed`. Активні отримують свіжий _snapshot БЕЗ мітки → вона скидається
         snap = dict(new_listed[sid])
         r = sup_items.get(sid) or {}
         if not snap.get("name") and r.get("name"):

@@ -1003,6 +1003,9 @@ def _prom_rt_note(order: dict) -> str:
         return _RT_NOTE_MANUAL + " (автоматика Prom+RT увімкнена без дати: вкажіть RT_PROM_ORDERS_AUTO=<ISO-дата/час>)"
     if not orders_db.rt_prom_auto_active():
         return _RT_NOTE_MANUAL + " (автоматика Prom+RT увімкнена, але конвеєр RT у dry-run: RT_RUNNER_APPLY≠1)"
+    _since = orders_db.rt_prom_auto_since()
+    if str(order.get("created_at") or datetime.now().isoformat(timespec="seconds")) < _since:
+        return _RT_NOTE_MANUAL + f" (замовлення раніше за дату вмикання автоматики Prom+RT {_since}: раннер його не бере)"
     verdict, why = orders_db.classify_rt_prom_order(order)
     if verdict in ("ok", "unpaid"):
         return "🤖 rt-позиції (RoyalToys): обробляється АВТОМАТИЧНО" + (" після підтвердження оплати" if verdict == "unpaid" else "") + " — вручну нічого не робити"

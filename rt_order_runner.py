@@ -307,7 +307,7 @@ class WaitError(RunnerError):
 
 _PROM_BLOCK_TEXT = {
     "gate": "Prom+RoyalToys: автоматика вимкнена (RT_PROM_ORDERS_AUTO вимкнено) — виконайте замовлення вручну (кабінет RoyalToys + ТТН)",
-    "no_date": "Prom+RoyalToys: RT_PROM_ORDERS_AUTO увімкнено БЕЗ дати — вкажіть дату/час вмикання (напр. RT_PROM_ORDERS_AUTO=2026-11-23T10:00): без неї нові Prom-замовлення не обробляються",
+    "no_date": "Prom+RoyalToys: RT_PROM_ORDERS_AUTO увімкнено БЕЗ дати — вкажіть дату/час вмикання (формат YYYY-MM-DDTHH:MM — дата/час «зараз» за часом VPS, НЕ майбутня): без неї нові Prom-замовлення не обробляються",
     "before_since": "Prom+RoyalToys: замовлення створене ДО дати вмикання RT_PROM_ORDERS_AUTO — автоматично не обробляємо (виконується вручну)",
     "unpaid": "Prom+RoyalToys: оплату не підтвердив сам Prom (payment_data.status≠paid) — не оформлюємо",
     "not_rt": "Prom: у замовленні нема rt-позицій — конвеєр RT не оформлює",
@@ -360,6 +360,27 @@ def blocker_text(order: dict, why: str) -> str:
     return _EVA_BLOCK_TEXT[why]
 
 
+PROM_WAIT_ALERT_HOURS = 3
+
+
+def _prom_wait_mark(conn, oid: str, order: dict) -> None:
+    """Живий статус Prom невідомий для оплаченого замовлення: перший раз пам'ятаємо момент у rt_error («prom_wait:<ISO> …»), далі, коли очікування триває ≥ PROM_WAIT_ALERT_HOURS, — 🟠 алерт раз на добу (без ПІІ). Позначка зникає, щойно крок рушить (rt_error=None) або з'явиться інша причина."""
+    import orders_db
+    from datetime import datetime, timedelta
+    err = str(order.get("rt_error") or "")
+    now = datetime.now()
+    try:
+        if err.startswith("prom_wait:"):
+            t0 = datetime.fromisoformat(err[len("prom_wait:"):len("prom_wait:") + 19])
+            if now - t0 >= timedelta(hours=PROM_WAIT_ALERT_HOURS):
+                _alert(oid, "prom_status_unknown", f"живий статус замовлення на Prom невідомий уже понад {PROM_WAIT_ALERT_HOURS} год (з {t0.isoformat(timespec='minutes')}): оплачене замовлення RoyalToys НЕ оформлюється — перевірте PROM_API_KEY/доступність Prom API; конвеєр повторює щоциклу")
+            return
+        orders_db.set_rt_state(conn, oid, None, rt_error="prom_wait:" + now.isoformat(timespec="seconds") + " статус Prom невідомий — чекаємо")
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        print(f"[rt_runner] {oid}: позначку очікування статусу Prom не записано ({type(e).__name__})", file=sys.stderr)
+
+
 def _prom_live(d, oid: str, order: dict, rep: dict) -> str:
     """Живий статус Prom безпосередньо ПЕРЕД незворотною дією (аудит #2013 Б2): 'ok' — можна; 'unknown' — статус невідомий/API недоступний → НЕ виконуємо (лише лог, повтор наступного циклу); 'canceled' — покупець скасував →
     стоп + 🟠 алерт «потрібне ручне скасування ТТН/резерву» (автоскасування ТТН/резерву НЕ робимо)."""
@@ -389,6 +410,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
     oid = order["internal_order_id"]
     rep = {"order": oid, "state": order.get("rt_state"), "apply": apply, "actions": [], "problems": []}
     state = order.get("rt_state")
+    _blocker_alerted = False          # Prom-блокер уже надіслав свій алерт — другого («конвеєр зупинено») не шлемо
     try:
         if state in STUCK:
             raise RunnerError(f"крок «{state}» розпочато, але результат невідомий (збій/таймаут) — конвеєр сам НЕ повторює. Звірте ТТН у кабінеті НП / замовлення в кабінеті RoyalToys і виставте стан вручну "
@@ -469,6 +491,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             if _why:
                 _is_prom = order.get("platform") == "prom"
                 if _is_prom and _why == "wait":
+                    if apply:
+                        _prom_wait_mark(conn, oid, order)
                     raise WaitError("Prom: живий статус замовлення невідомий (API недоступний/не знайдено) — не виконуємо, повтор наступного циклу")
                 if _is_prom and _why in ("before_since", "gate"):
                     raise WaitError(blocker_text(order, _why))          # поза чергою за задумом (старе/брама закрита): без алерту
@@ -480,6 +504,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
                     conn.commit()
                 if _why != "cancelled" or _is_prom:
                     _alert(oid, ("prom_" if _is_prom else "eva_") + _why, blocker_text(order, _why))
+                    _blocker_alerted = _is_prom
                 raise RunnerError(blocker_text(order, _why))
         if state is None:
             # фіскальний чек — ПЕРШИМ кроком, як у роутері (бухгалтер 12.10: не пізніше передачі товару), НЕ залежить ні від воріт, ні від залишку/відділення/ціни
@@ -553,7 +578,7 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             conn.commit()
             rep["actions"].append(f"замовлення RoyalToys {res['rt_order_ref']}")
             _confirmed = False
-            _prom_ok = order.get("platform") != "prom" or _prom_live(d, oid, order, rep) == "ok"      # Б2: живий статус Prom безпосередньо перед «З балансу» і ЕН (невідомо/скасовано → не виконуємо; наступний цикл повторить)
+            _prom_ok = order.get("platform") != "prom" or _prom_live(d, oid, {**order, "rt_order_ref": str(res["rt_order_ref"])}, rep) == "ok"      # Б2: живий статус Prom безпосередньо перед «З балансу» і ЕН (невідомо/скасовано → не виконуємо; наступний цикл повторить)
             if auto_confirm_enabled() and _prom_ok:
                 try:
                     _confirmed = _confirm_step(conn, d, oid, {**order, "rt_order_ref": str(res["rt_order_ref"]), "rt_total": float(_tot) if isinstance(_tot, (int, float)) else None, "rt_confirmed_at": None}, rep)
@@ -602,7 +627,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
             conn.commit()
         except Exception as e:  # noqa: BLE001
             print(f"[rt_runner] {oid}: не вдалося записати rt_error ({type(e).__name__})", file=sys.stderr)
-        _alert(oid, str(state), "; ".join(rep["problems"])[:400] + " — конвеєр зупинено на цьому замовленні")
+        if not _blocker_alerted:
+            _alert(oid, str(state), "; ".join(rep["problems"])[:400] + " — конвеєр зупинено на цьому замовленні")
     elif rep["problems"]:
         _alert(oid, "wait", "; ".join(rep["problems"])[:400] + " — замовлення RoyalToys чекає (конвеєр у dry-run: оформлюйте вручну або відкрийте ворота)")
     return rep
@@ -837,8 +863,12 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
         _prom_held = [o for o in pending if o.get("platform") == "prom" and not o.get("rt_state")]
         pending = [o for o in pending if _prom_ok_start(o)]
         _cod = [o for o in _cod if _prom_ok_start(o)]
+        if prom_since not in (None, "INVALID"):
+            from datetime import datetime, timedelta
+            if datetime.fromisoformat(prom_since) > datetime.now() + timedelta(minutes=1):
+                _alert("prom_gate", "prom_future", f"RT_PROM_ORDERS_AUTO={prom_since} у МАЙБУТНЬОМУ (зараз {datetime.now().isoformat(timespec='minutes')}, час VPS) — нові Prom-замовлення поки не обробляються (і до цього моменту сповіщення кажуть «виконати ВРУЧНУ»). Ставте дату «зараз» у часовому поясі VPS")
         if prom_since == "INVALID" and _prom_held:
-            _alert("prom_gate", "prom_no_date", "RT_PROM_ORDERS_AUTO увімкнено БЕЗ дати — Prom-замовлення НЕ обробляються. Вкажіть дату/час вмикання у форматі ISO (напр. RT_PROM_ORDERS_AUTO=2026-11-23T10:00): обробляться лише створені не раніше неї (старі виконані вручну)")
+            _alert("prom_gate", "prom_no_date", "RT_PROM_ORDERS_AUTO увімкнено БЕЗ дати — Prom-замовлення НЕ обробляються. Вкажіть дату/час вмикання у форматі ISO (формат YYYY-MM-DDTHH:MM — дата/час «зараз» за часом VPS, НЕ майбутня): обробляться лише створені не раніше неї (старі виконані вручну)")
         for _o in _cod:            # товари RoyalToys + накладений платіж: конвеєр їх не бере (лише передоплата) — не мовчимо
             _alert(_o["internal_order_id"], "rt_cod", f"замовлення з товарами RoyalToys і НАКЛАДЕНИМ платежем ({_o.get('platform')}) — конвеєр RT їх не оформлює (лише передоплата, рішення власника 19.10): потрібне ручне рішення (скасувати/узгодити з покупцем)")
         if since == "INVALID":

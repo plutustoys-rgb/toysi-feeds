@@ -461,8 +461,8 @@ def confirm_new_reserve(after_text: str, refs_before: set, total, qty=None):
 
 def cart_row_vendor_code(txt: str, wanted) -> str:
     """Артикул рядка кошика: серед ОЧІКУВАНИХ артикулів (можуть містити пробіл: «MK 6039») шукаємо той, що стоїть після «Арт.:» (найдовший збіг — «MK 6039», а не «MK»). Нема збігу → перше слово після «Арт.» (щоб розбіжність було видно в повідомленні)."""
-    t = txt or ""
-    hits = [vc for vc in wanted if re.search(r"Арт\.?\s*:?\s*" + re.escape(vc) + r"(?![0-9A-Za-zА-Яа-яІіЇїЄє])", t)]
+    t = re.sub(r"\s+", " ", txt or "")        # \s у str-regex охоплює й nbsp (U+00A0)/вузькі пробіли: у кошику артикул мав nbsp, а очікуваний — звичайний пробіл (22.11.2026 eva_8-084959229: «у кошику {'M': 1}»)
+    hits = [vc for vc in wanted if re.search(r"Арт\.?\s*:?\s*" + r"\s+".join(re.escape(p) for p in re.split(r"\s+", str(vc).strip())) + r"(?![0-9A-Za-zА-Яа-яІіЇїЄє])", t)]
     if hits:
         return max(hits, key=len)
     m = re.search(r"Арт\.?\s*:?\s*([^\s\n]+)", t)
@@ -605,7 +605,8 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                 for name, val, txt in page.eval_on_selector_all("input[name^='quantity[']", "els => els.map(e => [e.name, e.value, (e.closest('[class*=cart-item]') || e.closest('tr') || e.parentElement.parentElement).innerText])"):
                     got[cart_row_vendor_code(txt, want) or name] = int(val or 0)
                 if got != want:
-                    raise OrderError(f"кошик не збігається з замовленням: у кошику {got}, потрібно {want}")
+                    dbg_rows = [re.sub(r"\s+", " ", str(t))[:140] for _, _, t in rows]      # діагностика (без f-string-вкладених лапок: python на VPS може бути <3.12)
+                    raise OrderError(f"кошик не збігається з замовленням: у кошику {got}, потрібно {want}; рядки кошика (діагностика): {dbg_rows}")
                 cart_text = page.inner_text("body")
                 res["cart_total"] = _money(cart_text.split("Всього", 1)[-1][:40]) if "Всього" in cart_text else None
                 expected = sum(it["cost"] * it["qty"] for it in order["items"])

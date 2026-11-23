@@ -62,21 +62,23 @@ def lm_map(fname):
     return dict(re.findall(r"<loc>([^<]+)</loc><lastmod>([^<]+)</lastmod>", (out / fname).read_text(encoding="utf-8")))
 
 
-BASE_SEGS = [n for n in bs.SITEMAP_SEGMENTS if n not in ("rt", "k")]   # rt (RoyalToys), k (KIDDISVIT) — порожні без supplier_rt.json / supplier_kv.json (і воріт SITE_KV_LIVE): файл не пишеться, у індексі нема
+BASE_SEGS = [n for n in bs.SITEMAP_SEGMENTS if n not in ("rt", "k", "oos")]   # oos: з 23.11 картки без залишку поза sitemap (SEO) — файл сегмента не пишеться   # rt (RoyalToys), k (KIDDISVIT) — порожні без supplier_rt.json / supplier_kv.json (і воріт SITE_KV_LIVE): файл не пишеться, у індексі нема
 build()
 idx = (out / "sitemap.xml").read_text(encoding="utf-8")
-chk("sitemap.xml — sitemapindex із 5 дочірніми (priority, products, oos, categories, static), кожен файл існує і має lastmod",
-    "<sitemapindex" in idx and all(f"{bs.SITE_URL}/sitemap-{n}.xml</loc><lastmod>" in idx for n in BASE_SEGS) and all((out / f"sitemap-{n}.xml").exists() for n in BASE_SEGS))
+chk("sitemap.xml — sitemapindex із 4 дочірніми (priority, products, categories, static), кожен файл існує і має lastmod; sitemap-oos.xml нема ні в індексі, ні на диску",
+    "<sitemapindex" in idx and all(f"{bs.SITE_URL}/sitemap-{n}.xml</loc><lastmod>" in idx for n in BASE_SEGS) and all((out / f"sitemap-{n}.xml").exists() for n in BASE_SEGS)
+    and "sitemap-oos.xml" not in idx and not (out / "sitemap-oos.xml").exists())
 seg = {n: locs(f"sitemap-{n}.xml") for n in BASE_SEGS}
 allu = [u for n in BASE_SEGS for u in seg[n]]
 chk(f"кожен URL рівно в одному сегменті (разом {len(allu)}, унікальних {len(set(allu))}), без сторінок пагінації _N", len(allu) == len(set(allu)) and not any(re.search(r"_\d+\.html$", u) for u in allu))
 P = bs.SITE_URL + "/"
 pid = lambda i: f"{P}product-{i}.html"  # noqa: E731
-chk("priority: головна (корінь «/»), картки з PRI_IDS (в т.ч. без залишку), категорія з priority-набору", f"{P}" in seg["priority"] and pid("10") in seg["priority"] and pid("11") in seg["priority"] and pid("14") in seg["priority"] and f"{P}category-kat1.html" in seg["priority"])
-chk("products: картки в наявності, не з priority; oos: без залишку, не з priority (priority 0.3 лишається)", pid("12") in seg["products"] and pid("10") not in seg["products"] and pid("7") in seg["oos"] and pid("14") not in seg["oos"]
-    and all(pr == "0.3" for pr in re.findall(r"<priority>([^<]+)</priority>", (out / "sitemap-oos.xml").read_text(encoding="utf-8"))))
+chk("priority: головна (корінь «/»), картки з PRI_IDS В НАЯВНОСТІ (10, 11; 14 без залишку — поза sitemap), категорія з priority-набору", f"{P}" in seg["priority"] and pid("10") in seg["priority"] and pid("11") in seg["priority"] and pid("14") not in seg["priority"] and f"{P}category-kat1.html" in seg["priority"])
+chk("products: картки в наявності, не з priority; картки без залишку (7, 14) у sitemap НЕМАЄ (ані в oos, ані в priority, навіть якщо id у PRI_IDS), але сторінки живі",
+    pid("12") in seg["products"] and pid("10") not in seg["products"] and pid("7") not in allu and pid("14") not in allu
+    and (out / "product-7.html").exists() and (out / "product-14.html").exists())
 chk("categories: catalog.html і інші категорії (не з priority); static: categories.html і сторінки довіри", f"{P}catalog.html" in seg["categories"] and f"{P}category-kat1.html" not in seg["categories"] and f"{P}categories.html" in seg["static"])
-chk("усі згенеровані картки (в наявності + без залишку) присутні в sitemap рівно раз", sum(1 for u in allu if "/product-" in u) == len(list(out.glob("product-*.html"))))
+chk("усі згенеровані картки В НАЯВНОСТІ присутні в sitemap рівно раз (без залишку — поза ним)", sum(1 for u in allu if "/product-" in u) == len(list(out.glob("product-*.html"))) - sum(1 for i in range(1, 160) if i % 7 == 0))
 
 # ── lastmod і mtime ──
 state_path = out / bs.LASTMOD_STATE_FILE
@@ -102,6 +104,28 @@ chk(f"змінилась ціна картки 12: її lastmod = сьогодн
     moved == {pid("12")})
 unmoved = [f for f in out.glob("product-*.html") if abs(f.stat().st_mtime - OLD) < 2]
 chk(f"mtime зміненої картки свіжий; незмінених карток зі старим mtime: {len(unmoved)}", time.time() - (out / "product-12.html").stat().st_mtime < 600 and len(unmoved) >= len(lm) - 1)
+
+# ── 23.11: шапка/підвал («хром») не рухають lastmod; перехід на нову маску не рухає дат ──
+bs._lastmod_reset()
+bs.OUT = str(out)
+_cfile = "product-chrome-test.html"
+_body = '<main>власний вміст картки</main>'
+_h = lambda foot: '<header class="top"><a href="x.html">Шапка</a></header>' + _body + '<footer class="foot"><nav class="fnav">' + foot + '</nav></footer>'
+bs._write(_cfile, _h('<a href="about.html">Про нас</a>'))
+_t0 = bs._lm_state()[_cfile]["t"]
+_old = time.time() - 86400 * 40
+bs._lm_state()[_cfile]["t"] = _old
+bs._write(_cfile, _h('<a href="about.html">Про нас</a> · <a href="brendy.html">Бренди</a>'))
+chk("додали посилання «Бренди» у підвал: lastmod сторінки НЕ рухається (хром поза хешем)", abs(bs._lm_state()[_cfile]["t"] - _old) < 1)
+bs._write(_cfile, _h('<a href="about.html">Про нас</a>').replace("власний вміст картки", "ІНШИЙ вміст картки"))
+chk("змінився власний вміст картки: lastmod рухається", bs._lm_state()[_cfile]["t"] > _old + 86400)
+# міграція: стан записано СТАРОЮ маскою (хеш разом із хромом) → тепер збігається за old-хешем і дата лишається
+_html = _h('<a href="about.html">Про нас</a> · <a href="brendy.html">Бренди</a>')
+import hashlib
+_old_h = hashlib.sha1(bs._LASTMOD_FLOAT_RX.sub("", _html).encode("utf-8")).hexdigest()
+bs._lm_state()["product-migr.html"] = {"h": _old_h, "t": _old}
+bs._write("product-migr.html", _html)
+chk("міграція маски: стан зі СТАРИМ хешем (з хромом) → дата сторінки не рухається, хеш оновлюється на новий", abs(bs._lm_state()["product-migr.html"]["t"] - _old) < 1 and bs._lm_state()["product-migr.html"]["h"] != _old_h)
 
 # ── «плаваючі» поля ──
 bs._lastmod_reset()

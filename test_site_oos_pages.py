@@ -115,8 +115,8 @@ for p in out.glob("product-*.html"):
 rel_leak = [p.name for p in out.glob("product-*.html") if re.search(r"product-50[1-7]\.html", p.read_text(encoding="utf-8")) and p.name not in ("product-501.html", "product-502.html", "product-503.html", "product-507.html")]
 chk("крос-сел на сторінках у наявності не пропонує товар без залишку", not rel_leak)
 sm = chr(10).join(f.read_text(encoding="utf-8") for f in sorted(out.glob("sitemap-*.xml")))   # SEO 15.10: sitemap.xml — індекс, URL у сегментах sitemap-*.xml
-chk("sitemap: OOS-сторінки є з priority 0.3", all(f"/product-{i}.html</loc>" in sm for i in ("501", "502", "503", "507"))
-    and re.search(r"product-501\.html</loc>[^\n]*<priority>0\.3</priority>", sm) is not None)
+chk("sitemap (SEO 23.11): OOS-сторінок у sitemap НЕМАЄ (сторінки живі: файли є), sitemap-oos.xml не пишеться", not any(f"/product-{i}.html</loc>" in sm for i in ("501", "502", "503", "507"))
+    and all((out / f"product-{i}.html").exists() for i in ("501", "502", "503", "507")) and not (out / "sitemap-oos.xml").exists())
 chk("sitemap: товари в наявності лишились з priority 0.6", re.search(r"product-1\.html</loc>[^\n]*<priority>0\.6</priority>", sm) is not None)
 chk("sitemap: немає сторінок без фото/заборонених/UNO", not re.search(r"product-50[456]\.html", sm))
 

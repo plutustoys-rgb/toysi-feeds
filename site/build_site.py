@@ -1400,6 +1400,7 @@ def build():
     static_urls = [("categories.html", "0.7", "weekly")] +([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust] + gift_urls
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods, hidden_files={f"category-{cat_slug[c]}.html" for c in cat_list if category_hidden(c)} | {f for g in SITE_GROUPS for f in g.get("former", [])})   # сторінки-вказівники старих груп — поза sitemap
     write_robots()
+    write_llms()
 
     # 8) ПРИБИРАННЯ ЗАСТАРІЛИХ сторінок від попередніх білдів: build пише лише поточний вибір,
     # а старі product-/category-/catalog-*.html лишались у site/ і віддавались із застарілими цінами/сміттям
@@ -2923,6 +2924,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
     return written
 
 SOCIAL_URLS = ["https://www.instagram.com/plutustoys.ua/", "https://www.facebook.com/profile.php?id=61590292022031"]
+PINTEREST_URL = "https://www.pinterest.com/plutustoys/"   # SEO 23.11: сайт підтверджено в Pinterest 22.11; лише в JSON-LD sameAs (у шапці/підвалі — тільки Instagram і Facebook)
 
 
 def _footer_utm(url):
@@ -2936,7 +2938,7 @@ def home_jsonld() -> str:
     з URL-шаблоном немає, а Google не приймає SearchAction без неї."""
     org = {
         "@context": "https://schema.org", "@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/",
-        "logo": f"{SITE_URL}/assets/plutus_mascot.png", "sameAs": SOCIAL_URLS,
+        "logo": f"{SITE_URL}/assets/plutus_mascot.png", "sameAs": SOCIAL_URLS + [PINTEREST_URL],
         "contactPoint": [{"@type": "ContactPoint", "telephone": "+380730150815", "contactType": "customer service",
                           "email": "plutustoys@gmail.com", "areaServed": "UA", "availableLanguage": ["uk"]}],
     }
@@ -5846,6 +5848,30 @@ def write_robots():
            "Disallow: /review.html\n"
            "Disallow: /search.html\n"
            f"Sitemap: {SITE_URL}/sitemap.xml\n")
+
+
+LLMS_SECTIONS = [   # (заголовок, [(файл, підпис)]) — файл потрапляє в llms.txt лише якщо збудований (без 404 у файлі для ШІ-пошуку)
+    ("Головні розділи", [("catalog.html", "Каталог іграшок"), ("categories.html", "Усі категорії"), ("brendy.html", "Бренди"),
+                         ("podarunky.html", "Подарунки: добірки за віком і приводом"), ("rozmalovky.html", "Розмальовки для друку"),
+                         ("utsinka.html", "Уцінка"), ("aktsii.html", "Акції")]),
+    ("Популярні категорії", [("category-fihurky-heroi-v.html", "Фігурки героїв"), ("category-kartyny-za-nomeramy.html", "Картини за номерами"),
+                             ("category-pazly-dlia-maliukiv.html", "Пазли для малюків"), ("category-pisochni-nabory.html", "Пісочні набори"),
+                             ("category-tvaryny-i-ptakhy.html", "Тварини і птахи"), ("category-rozvazhalni.html", "Розважальні"),
+                             ("category-metalevi-modeli.html", "Металеві моделі")]),
+    ("Про магазин та умови", [("about.html", "Про нас"), ("contacts.html", "Контакти"), ("delivery.html", "Доставка й оплата"),
+                              ("returns.html", "Повернення"), ("offer.html", "Публічна оферта"), ("privacy.html", "Політика конфіденційності")]),
+]
+
+
+def write_llms():
+    """/llms.txt — короткий опис сайту для ШІ-пошуку (SEO 23.11): хто ми й куди дивитись. Без цін, без обіцянок; лише збудовані сторінки."""
+    parts = ["# PlutusToys", "",
+             "> Інтернет-магазин дитячих іграшок в Україні: конструктори, ляльки, машинки, розвиваючі та творчі набори. Мова сайту — українська.", ""]
+    for title, items in LLMS_SECTIONS:
+        lines = [f"- [{label}]({SITE_URL}/{f})" for f, label in items if os.path.exists(os.path.join(OUT, f))]
+        if lines:
+            parts += [f"## {title}", ""] + lines + [""]
+    _write("llms.txt", chr(10).join(parts))
 
 
 if __name__ == "__main__":

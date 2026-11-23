@@ -253,6 +253,8 @@ cat <<'EOF'
     </IfModule>
     # власна 404 (шлях, не URL → статус лишається 404). Без неї — дефолт Webuzo з логотипом Softaculous по http:// і посиланням на чужий сайт
     ErrorDocument 404 /404.html
+    # 23.11.2026: те саме для 410 (зняті картки/категорії, Prom-URL): людина за старим посиланням бачить нашу сторінку з пошуком і каталогом, а не голу «Gone» Apache; статус лишається 410
+    ErrorDocument 410 /404.html
     RewriteEngine On
     RewriteMap promredir "txt:@MAPFILE@"
     # старі Prom-URL (укр. і рос. версії; SEO-замовлення 2026-10-06, GSC: 5 583 URL у 404) → наша картка / каталог (301)
@@ -460,7 +462,7 @@ write_vhost() {   # $1 = http | https
     sg_pid=$(awk '/^product-/{sub(/^product-/, "", $1); print $1; exit}' "$GONEMAP" 2>/dev/null || true)
     sg_cat=$(awk '/^category-/{sub(/^category-/, "", $1); print $1; exit}' "$GONEMAP" 2>/dev/null || true)
     for try in 1 2 3; do
-        sg_ctl=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/product-999999999999.html")
+        sg_ctl=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/category-kontrol-poza-mapoiu-999999999999.html")   # 23.11: контроль «чужої» адреси — категорія (загальне 410 видалених карток бере будь-який product-… без файлу)
         if [ -n "$sg_pid" ]; then sg_p=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/product-$sg_pid.html"); else sg_p="410"; fi
         if [ -n "$sg_cat" ]; then
             sg_c=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/category-$sg_cat.html")
@@ -471,10 +473,19 @@ write_vhost() {   # $1 = http | https
         [ "$sg_p" = "410" ] && [ "$sg_c" = "410" ] && [ "$sg_c2" = "410" ] && [ "$sg_ctl" = "404" ] && break
         echo "ℹ️  проба 410 знятих сторінок ще не збіглась (спроба $try/3): товар = $sg_p, категорія = $sg_c, _2 = $sg_c2, поза мапою = $sg_ctl — чекаю"; sleep 4
     done
-    echo "  зняті назавжди: /product-${sg_pid:-?}.html = $sg_p, /category-${sg_cat:-?}.html = $sg_c, _2 = $sg_c2 (очікую 410; порожня мапа — пропуск); товар поза мапою = $sg_ctl (очікую 404)"
+    echo "  зняті назавжди: /product-${sg_pid:-?}.html = $sg_p, /category-${sg_cat:-?}.html = $sg_c, _2 = $sg_c2 (очікую 410; порожня мапа — пропуск); категорія поза мапою = $sg_ctl (очікую 404)"
     [ "$sg_p" = "410" ] || { echo "🚨 знятий назавжди товар /product-$sg_pid.html віддає $sg_p, а не 410"; bad=1; }
     [ "$sg_c" = "410" ] && [ "$sg_c2" = "410" ] || { echo "🚨 знята назавжди категорія /category-$sg_cat.html (_2) віддає $sg_c ($sg_c2), а не 410"; bad=1; }
-    [ "$sg_ctl" = "404" ] || { echo "🚨 товар поза мапою 410 віддає $sg_ctl, а не 404 (правило sitegone зачепило чужу адресу?)"; bad=1; }
+    [ "$sg_ctl" = "404" ] || { echo "🚨 категорія поза мапою 410 віддає $sg_ctl, а не 404 (правило sitegone зачепило чужу адресу?)"; bad=1; }
+    # 23.11.2026: видалена картка (product-… без файлу в site/) → 410 загальним правилом; проба після основного циклу, ті самі 3 спроби
+    local sg_del="ERR"
+    for try in 1 2 3; do
+        sg_del=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/product-999999999999.html")
+        [ "$sg_del" = "410" ] && break
+        sleep 4
+    done
+    echo "  видалена картка (файлу нема): /product-999999999999.html = $sg_del (очікую 410)"
+    [ "$sg_del" = "410" ] || { echo "🚨 неіснуюча картка віддає $sg_del, а не 410 (загальне правило видалених карток не діє)"; bad=1; }
     local sg_try
     local sg_got=""
     while read -r sg_key _; do

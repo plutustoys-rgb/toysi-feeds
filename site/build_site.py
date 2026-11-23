@@ -5780,10 +5780,9 @@ def _sitemap_priority():
 
 
 def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=frozenset()):
-    """sitemap.xml = ІНДЕКС п'яти сегментів (SEO 15.10.2026: GSC рахує виявлені/проіндексовані по кожному sitemap окремо — швидкий вимір): priority / products (в наявності) / oos / categories / static.
+    """sitemap.xml = ІНДЕКС сегментів (з 23.11 сегмент oos порожній: картки без залишку поза sitemap) (SEO 15.10.2026: GSC рахує виявлені/проіндексовані по кожному sitemap окремо — швидкий вимір): priority / products (в наявності) / oos / categories / static.
     Кожен URL рівно в одному сегменті. lastmod — дата реальної зміни сторінки (див. _write). paged = усі сторінки каталогу/категорій; стор.≥2 не потрапляють у sitemap."""
     pri_ids, pri_cats = _sitemap_priority()
-    exist = {p["id"] for p in prods} | {p["id"] for p in oos_prods}
     seg = {k: [] for k in SITEMAP_SEGMENTS}
     # головна — КОРІНЬ '/', а не '/index.html': збігається з canonical головної (page()),
     # інакше конфліктний сигнал каноніку (loc {SITE_URL}/{u} з u='' дає {SITE_URL}/).

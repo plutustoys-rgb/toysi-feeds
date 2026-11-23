@@ -24,5 +24,9 @@ for u in ("/product-300946.html", "/product-x59309.html", "/product-x56639.html"
     chk(f"патерн ловить {u}", bool(pat.match(u)))
 for u in ("/product-1.html/extra", "/category-x.html", "/productx.html", "/assets/product-1.html", "/product-1.jpg"):
     chk(f"патерн НЕ ловить {u}", not pat.match(u))
+chk("ErrorDocument 410 /404.html: людина за старим посиланням бачить нашу сторінку, статус лишається 410", re.search(r"^\s*ErrorDocument 410 /404\.html\s*$", sh, re.M) is not None)
+chk("післяактиваційна проба: «чужа» адреса — категорія поза мапою → 404 (НЕ product-…, його бере загальне 410), а product-999999999999 очікує 410",
+    re.search(r"sg_ctl=\$\(code[^\n]*category-kontrol", sh) is not None and not re.search(r"sg_ctl=\$\(code[^\n]*product-999999999999", sh)
+    and "sg_del=$(code" in sh and '"$sg_del" = "410"' in sh)
 print("\nALL OK" if not F else f"\nFAIL: {len(F)}")
 sys.exit(1 if F else 0)

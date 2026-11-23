@@ -486,6 +486,24 @@ write_vhost() {   # $1 = http | https
     done
     echo "  видалена картка (файлу нема): /product-999999999999.html = $sg_del (очікую 410)"
     [ "$sg_del" = "410" ] || { echo "🚨 неіснуюча картка віддає $sg_del, а не 410 (загальне правило видалених карток не діє)"; bad=1; }
+    # 23.11.2026 (аудит #2042): ЖИВА картка мусить віддавати 200. Інакше `!-f` міг би хибно спрацювати на існуючому файлі (права, DocumentRoot) —
+    # усі картки віддавали б 410, а проба «неіснуюча → 410» цього не бачить. Беремо першу за алфавітом product-<цифри>.html (Toysi-картка без префікса:
+    # rt-/kv-/y-/x- можуть бути 301 або тінню). Glob у for (не ls | head: pipefail); файлів нема → попередження, не bad.
+    local lv_name="" lv_f="" lv_code="ERR"
+    for lv_f in "$APP"/site/product-[0-9]*.html; do
+        [ -f "$lv_f" ] && lv_name="$(basename "$lv_f")" && break
+    done
+    if [ -n "$lv_name" ]; then
+        for try in 1 2 3; do
+            lv_code=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/$lv_name")
+            [ "$lv_code" = "200" ] && break
+            sleep 4
+        done
+        echo "  жива картка: /$lv_name = $lv_code (очікую 200)"
+        [ "$lv_code" = "200" ] || { echo "🚨 жива картка /$lv_name віддає $lv_code, а не 200 (правило видалених карток 410 зачепило існуючий файл?)"; bad=1; }
+    else
+        echo "⚠️  жива картка: у $APP/site нема product-<цифри>.html — пробу пропущено (збірка site/ не виконана?)"
+    fi
     local sg_try
     local sg_got=""
     while read -r sg_key _; do
@@ -577,6 +595,7 @@ write_vhost() {   # $1 = http | https
     fi
     if [ "$bad" = "1" ]; then restore; return 1; fi
     echo "✅ vhost ($mode) застосовано; чужі vhost'и, default server і поведінка (shopify, vartov.app, сертифікати) — без змін"
+    if [ -n "$bak" ]; then echo "  ручний відкат: cp $bak $VHOST && $APACHECTL -t && $APACHECTL graceful"; else echo "  ручний відкат: попереднього vhost'а не було — rm -f $VHOST && $APACHECTL -t && $APACHECTL graceful"; fi
 }
 
 cert_has_www() { local t; t=$(openssl x509 -in "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" -noout -text 2>/dev/null || true); grep -q "DNS:$WWW" <<< "$t"; }

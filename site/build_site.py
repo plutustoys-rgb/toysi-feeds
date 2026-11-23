@@ -5638,6 +5638,9 @@ _LASTMOD_FLOAT_RX = re.compile(r'"priceValidUntil":\s*"\d{4}-\d{2}-\d{2}"|\?v=[0
 _LASTMOD_GRID_RX = re.compile(r'<h2>[^<]*</h2><div class="grid">(?:\s*<a class="card".*?</a>)*\s*</div>', re.S)
 # На сторінці категорії не рахуємо права колонка «Рекомендуємо»/«Знижка тижня» (ротація щодня, акція щотижня — це не зміна самої сторінки).
 _LASTMOD_ASIDE_RX = re.compile(r'<aside class="cat-aside".*?</aside>', re.S)
+# SEO 23.11: 22.11 о 21:11 у підвал додали «Бренди» (footer(): BRAND_BUILT) — відрендерений HTML ВСІХ сторінок змінився, а маска цього не знала → lastmod 17 950 з 18 239 адрес priority став 2026-11-22.
+# Шапка (header.top) і підвал (footer.foot) — глобальний «хром» сайту (посилання-хаби з воріт GIFT/BRAND/COLORING_BUILT, соцмережі, тел.), а не зміна самої сторінки: у хеш не входять.
+_LASTMOD_CHROME_RX = re.compile(r'<header class="top">.*?</header>|<footer class="foot">.*?</footer>', re.S)
 _lm = {"out": None, "state": {}}
 
 
@@ -5726,9 +5729,12 @@ def _write(fname, content):
             masked = _LASTMOD_GRID_RX.sub("", masked)
         elif fname.startswith("category-"):
             masked = _LASTMOD_ASIDE_RX.sub("", masked)
+        h_old = hashlib.sha1(masked.encode("utf-8")).hexdigest()   # хеш за старою маскою (до 23.11): стан попередніх збірок записано саме ним
+        masked = _LASTMOD_CHROME_RX.sub("", masked)
         h = hashlib.sha1(masked.encode("utf-8")).hexdigest()
         ent = st.get(fname)
-        t = ent["t"] if (ent and ent["h"] == h) else time.time()
+        # перехід на нову маску не рухає дати: сторінка, що не змінилась з минулої збірки, збігається зі збереженим хешем або за новою, або за старою маскою
+        t = ent["t"] if (ent and ent["h"] in (h, h_old)) else time.time()
         try:
             with open(path, encoding="utf-8") as f:
                 same = f.read() == content
@@ -5774,10 +5780,9 @@ def _sitemap_priority():
 
 
 def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=frozenset()):
-    """sitemap.xml = ІНДЕКС п'яти сегментів (SEO 15.10.2026: GSC рахує виявлені/проіндексовані по кожному sitemap окремо — швидкий вимір): priority / products (в наявності) / oos / categories / static.
+    """sitemap.xml = ІНДЕКС сегментів (з 23.11 сегмент oos порожній: картки без залишку поза sitemap) (SEO 15.10.2026: GSC рахує виявлені/проіндексовані по кожному sitemap окремо — швидкий вимір): priority / products (в наявності) / oos / categories / static.
     Кожен URL рівно в одному сегменті. lastmod — дата реальної зміни сторінки (див. _write). paged = усі сторінки каталогу/категорій; стор.≥2 не потрапляють у sitemap."""
     pri_ids, pri_cats = _sitemap_priority()
-    exist = {p["id"] for p in prods} | {p["id"] for p in oos_prods}
     seg = {k: [] for k in SITEMAP_SEGMENTS}
     # головна — КОРІНЬ '/', а не '/index.html': збігається з canonical головної (page()),
     # інакше конфліктний сигнал каноніку (loc {SITE_URL}/{u} з u='' дає {SITE_URL}/).
@@ -5803,14 +5808,8 @@ def write_sitemap(prods, paged, static_urls=None, oos_prods=(), hidden_files=fro
                 seg["k" if p.get("kv") else "rt"].append((f, f, "0.5", "weekly"))   # noindex-картки в sitemap не потрапляють
             continue
         (seg["priority"] if p["id"] in pri_ids else seg["products"]).append((f, f, "0.6", "weekly"))
-    # без залишку: адреса жива (OutOfStock), лишається в sitemap — інакше Google знову побачить 404 на вже проіндексованому; пріоритет нижчий
-    for p in oos_prods:
-        f = product_file(p['id'])
-        if product_hidden(p):
-            continue
-        if p.get("rt"):
-            continue   # rt без залишку: сторінка жива, у sitemap не додаємо
-        (seg["priority"] if p["id"] in pri_ids else seg["oos"]).append((f, f, "0.6" if p["id"] in pri_ids else "0.3", "weekly" if p["id"] in pri_ids else "monthly"))
+    # без залишку (SEO 23.11): сторінка жива (200, OutOfStock), але НЕ в sitemap — карток немає в index.json/каталозі, у GSC 24.10–20.11 вони мали 37 показів і 1 клік, а обхід з'їдають
+    # (sitemap-oos.xml 6 537 адрес + 896 адрес priority без залишку). Сегмент "oos" лишається порожнім → файл сегмента видаляється, у sitemap.xml його нема.
     index_items = []
     for _legacy in SITEMAP_STALE_FILES:
         try:

@@ -191,19 +191,25 @@ def list_by_status(conn, status="pending", limit=50):
     return [dict(r) for r in conn.execute("SELECT * FROM reviews WHERE status = ? ORDER BY id LIMIT ?", (status, int(limit))).fetchall()]
 
 
-def moderate(conn: sqlite3.Connection, review_id, action, by="cli", now=None):
+def moderate(conn: sqlite3.Connection, review_id, action, by="cli", now=None, expect_status=None):
     """action: 'approve' | 'reject'. Дозволені переходи: pending → published/rejected; published → rejected (зняти); rejected → published (повернути). invited — ні (нема тексту).
-    Повертає новий статус або None (нема такого / недозволений перехід). Експорт файлу — окремим викликом export_reviews()."""
+    Повертає новий статус або None (нема такого / недозволений перехід). Експорт файлу — окремим викликом export_reviews().
+    expect_status (необов'язково; за замовчуванням поведінка без змін): якщо задано — перехід робиться ЛИШЕ з цього статусу (`UPDATE … WHERE id=? AND status=?`, перевірка rowcount); стан змінився іншим процесом → None (захист від гонки relay ↔ CLI)."""
     if action not in ("approve", "reject"):
         raise ValueError(action)
     row = get(conn, review_id)
     if not row or row["status"] not in ("pending", "published", "rejected"):
         return None
     new = "published" if action == "approve" else "rejected"
+    if expect_status is not None and row["status"] != expect_status:
+        return None
     if row["status"] == new:
         return new
-    conn.execute("UPDATE reviews SET status=?, moderated_at=?, moderated_by=? WHERE id=?", (new, _iso(_now(now)), str(by)[:40], review_id))
-    return new
+    if expect_status is None:
+        conn.execute("UPDATE reviews SET status=?, moderated_at=?, moderated_by=? WHERE id=?", (new, _iso(_now(now)), str(by)[:40], review_id))
+        return new
+    cur = conn.execute("UPDATE reviews SET status=?, moderated_at=?, moderated_by=? WHERE id=? AND status=?", (new, _iso(_now(now)), str(by)[:40], review_id, expect_status))
+    return new if cur.rowcount == 1 else None
 
 
 def _kyiv_date(iso_ts: str) -> str:
@@ -235,7 +241,14 @@ def export_reviews(conn: sqlite3.Connection, path=None, now=None) -> int:
     path = Path(path or EXPORT_FILE)
     doc = build_export(conn, now)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")          # унікальний tmp: два одночасні експортери (relay і CLI) не затирають файл одне одного
+    try:
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     return doc["_meta"]["count"]

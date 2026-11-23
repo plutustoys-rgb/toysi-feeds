@@ -427,7 +427,18 @@ DIRTY = {
     "Tag-символи (U+E0041)": "Добрий товар" + chr(0xE0041) + chr(0xE0042),
     "нульова ширина": "Добрий" + chr(0x200B) + " товар",
     "комбівний символ": "Добре" + chr(0x0301) + " товар",
-    "NBSP": "Добрий" + chr(0xA0) + "товар",
+    "U+2800 (braille blank)": "Добрий" + chr(0x2800) + "товар",
+    "U+115F": "Добрий" + chr(0x115F) + "товар",
+    "U+1160": "Добрий" + chr(0x1160) + "товар",
+    "U+3164": "Добрий" + chr(0x3164) + "товар",
+    "U+FFA0": "Добрий" + chr(0xFFA0) + "товар",
+    "½ (NFKC)": "Взяли ½ кг",
+    "™ (NFKC)": "Lego™ супер",
+    "лігатура ﬁ (NFKC)": "Добрий " + chr(0xFB01) + "лм",
+    "VS-16 поза емодзі": "Добрий" + chr(0xFE0F) + " товар",
+    "ZWJ поза емодзі": "Добрий" + chr(0x200D) + "товар",
+    "Thanks.It (голий домен fail-safe)": "Thanks.It was great",
+    "сайт.com (кирилична мітка + .com)": "Дивіться сайт.com",
     "U+2028": "Добрий" + chr(0x2028) + "товар",
     "табуляція": "Добрий" + chr(9) + "товар",
     "ESC": "Добрий" + chr(27) + "[31m товар",
@@ -443,7 +454,6 @@ DIRTY = {
     "www.x": "Заходьте www.x",
     "t.me/foo": "Пишіть t.me/foo",
     "@нік": "Пишіть @evilnick",
-    "ellipsis (NFKC)": "Все добре… дякую",
 }
 for name, txt in DIRTY.items():
     fresh([(1, "pending", 5, "100001", txt, "Олена")])
@@ -459,6 +469,11 @@ CLEAN_OK = {
     "ціни й кількості": "Ціна 1250 грн, 2,5 кг, діти 3-5 років, артикул 123456",
     "емодзі ZWJ + VS16": "Сім'я в захваті " + chr(0x1F468) + chr(0x200D) + chr(0x1F469) + chr(0x200D) + chr(0x1F467) + " " + chr(0x2764) + chr(0xFE0F),
     "кілька рядків": "Рядок перший" + chr(10) + "Рядок другий",
+    "«…» і NBSP (iOS)": "Все добре" + chr(0x2026) + " дякую" + chr(0xA0) + "друже",
+    "U+202F і U+2009": "Ціна" + chr(0x202F) + "100" + chr(0x2009) + "грн",
+    "№": chr(0x2116) + "5 дуже добре",
+    "keycap 1️⃣": "Оцінка 1" + chr(0xFE0F) + chr(0x20E3) + " з 5",
+    "серце-вогонь (VS16+ZWJ)": "Супер " + chr(0x2764) + chr(0xFE0F) + chr(0x200D) + chr(0x1F525),
 }
 for name, txt in CLEAN_OK.items():
     fresh([(1, "pending", 5, "100001", txt, "Олена")])
@@ -546,6 +561,54 @@ fresh([(i, "published", 5, "1%05d" % i, f"відгук {i}", None) for i in rang
 code, out = H("list published")
 ls_ = out.split("\n")
 chk("list published → останні 50 (#71..#120)", len(ls_) == 50 and ls_[0].startswith("#71 ") and ls_[-1].startswith("#120 "))
+
+# ── 12c. usability (аудит #2041, низькі): блокування _INVISIBLE, голий домен, пейджер-стеля, tmp-збір
+fresh([(1, "pending", 5, "100001", "Все добре" + chr(0x2026) + " дякую" + chr(0xA0) + "друже", "Олена")])
+code, out = H("approve 1")
+chk("approve тексту з «…» і NBSP → ДОЗВОЛЕНО, у reviews.json потрапляє ОРИГІНАЛ (свідоме рішення), не нормалізована копія", code == 0 and any(x["text"] == "Все добре" + chr(0x2026) + " дякую" + chr(0xA0) + "друже" for x in json.loads((TMP / "reviews.json").read_text(encoding="utf-8"))["100001"]))
+for txt in ("Добре.Дякую", "тому.що", "Дякую.Все супер"):
+    chk(f"голий домен: кирилиця.кирилиця НЕ маскується: {txt!r}", r.mask_text(txt) == txt)
+for txt in ("Thanks.It", "evil.xyz/pay", "my-shop.ua", "сайт.com", "магазин.online", "a1.bc"):
+    chk(f"голий домен маскується: {txt!r}", "[посилання]" in r.mask_text(txt))
+# пейджер: стеля подій
+big = "\n".join(f"#{i} [pending] ★5 товар 1{i:05d} · 2026-11-23T10:{i % 60:02d}:00+00:00 · автор Х.: відгук {i}" for i in range(1, 31))
+evs, seen3, st3 = [], set(), {}
+n = pw.step(seen3, st3, lambda: (0, big), evs.append)
+chk("пейджер: 30 нових за один прохід → 20 подій + ОДНА зведена «ЩЕ 10 …» з вказівкою `list pending`", n == 30 and len(evs) == 21 and evs[20].startswith("ЩЕ 10 НОВИХ") and "list pending" in evs[20] and all(e.startswith("НОВИЙ ВІДГУК НА ПЕРЕВІРЦІ #") for e in evs[:20]))
+n = pw.step(seen3, st3, lambda: (0, big), evs.append)
+chk("пейджер: наступний прохід без змін → нічого (зведена не повторюється, решта вже у seen)", n == 0 and len(evs) == 21)
+note = "(на перевірці більше 200: показано найстарші 200; решта з'явиться після обробки)"
+evs2, st4 = [], {}
+pw.step(set(), st4, lambda: (0, big[:200] + "\n" + note), evs2.append)
+pw.step(set(), st4, lambda: (0, big[:200] + "\n" + note), evs2.append)
+ov = [e for e in evs2 if "БІЛЬШЕ 200" in e]
+chk("пейджер: примітка про переповнення (>200) → ОДНА подія на серію", len(ov) == 1)
+pw.step(set(), st4, lambda: (0, big[:200]), evs2.append)
+pw.step(set(), st4, lambda: (0, big[:200] + "\n" + note), evs2.append)
+chk("пейджер: переповнення зникло й повернулось → подія знову (одна)", len([e for e in evs2 if "БІЛЬШЕ 200" in e]) == 2)
+fresh(many)
+code, out = H("list")
+evs3 = []
+pw.step(set(), {}, lambda: (0, out), evs3.append)
+chk("інтеграція: реальний list на 205 pending → ≤20 подій + зведена + подія переповнення (формат подій і ключ seen не змінено)", len(evs3) == 22 and sum("БІЛЬШЕ 200" in e for e in evs3) == 1 and sum(e.startswith("ЩЕ 180") for e in evs3) == 1)
+# збір старих tmp експорту
+import time as _t  # noqa: E402
+fresh()
+sd = TMP / "sweep"
+sd.mkdir(exist_ok=True)
+for f_ in sd.glob("*"):
+    f_.unlink()
+old_ts = _t.time() - 7200
+mk = {"reviews.json.123.deadbeef.tmp": old_ts, "reviews.json.tmp": old_ts, "reviews.json.456.cafebabe.tmp": _t.time(), "other.json.9.deadbeef.tmp": old_ts, "reviews.json.abc.tmp": old_ts, "reviews.json.bak": old_ts}
+for nm, ts_ in mk.items():
+    (sd / nm).write_text("x", encoding="utf-8")
+    os.utime(sd / nm, (ts_, ts_))
+con = sqlite3.connect(DB)
+con.row_factory = sqlite3.Row
+rdb.export_reviews(con, sd / "reviews.json")
+con.close()
+left = sorted(p.name for p in sd.glob("*"))
+chk("export_reviews прибирає ЛИШЕ власні tmp старші 1 год (старий формат теж); свіжий tmp, чужі/невідповідні імена й .bak лишаються", left == sorted(["reviews.json", "reviews.json.456.cafebabe.tmp", "other.json.9.deadbeef.tmp", "reviews.json.abc.tmp", "reviews.json.bak"]))
 
 # ── 13. ps1 (статично + реальний shell-текст)
 ins = (HERE / "install_review_relay.ps1").read_text(encoding="utf-8")

@@ -210,6 +210,67 @@ class Ctx:
 
 # ---------- перевірки ----------
 
+REEL_SLOT_WINDOW_H = 48          # слот вт/пт 18:30 (reel-autopublish.timer): без придатного рілса за 48 год до нього → 🟠 (23.11.2026: слоти 13.11/17.11/20.11 стояли непомітно)
+REEL_GUARD_MAX_AGE_H = 36        # reel-guard.timer щодня ≈12:00; стан старший за 36 год = сторож не відпрацював
+_REEL_HOLD_RE = re.compile(r"^⚠️ Reel (\S+) НЕ опубліковано")      # текст reel_autopublish.run_once; категорія warning → у group_alerts лише ℹ️ (не друкується) — підіймаємо до 🟠
+
+
+def next_reel_slot(now: datetime):
+    """Найближчий (строго після now) слот автопублікації: вт/пт 18:30 у поясі `now`."""
+    for d in range(0, 9):
+        c = (now + timedelta(days=d)).replace(hour=18, minute=30, second=0, microsecond=0)
+        if c > now and c.weekday() in (1, 4):
+            return c
+    return None
+
+
+def check_reels(snap, now: datetime):
+    """Рілси за знімком VPS (vps_health.collect_reels): (а) найближчий слот без придатного рілса в черзі за 48 год; (б) рілси, які утримав reel_guard (причини, скільки днів); (в) «Reel … НЕ опубліковано»
+    з журналу алертів VPS — як 🟠, а не ℹ️; (г) reel-guard.timer увімкнено, а стан сторожа старший за 36 год. Знімок без секції `reels` (VPS на старому коді) → нічого."""
+    r = snap.get("reels")
+    if not isinstance(r, dict) or not r.get("queue_present"):
+        return []
+    out = []
+    slot = next_reel_slot(now)
+    guard = r.get("guard") if isinstance(r.get("guard"), dict) else None
+    g_age = _age_h(guard.get("at"), now) if guard else None
+    g_fresh = g_age is not None and g_age <= REEL_GUARD_MAX_AGE_H
+    held = guard.get("held") if g_fresh and isinstance(guard.get("held"), dict) else {}
+    queue = [q for q in (r.get("queue") or []) if isinstance(q, dict)]
+    cands = []
+    for q in queue:
+        if not (q.get("readable") and q.get("name_ok") and q.get("has_mp4") and q.get("has_caption")) or q.get("publishing") or q.get("name") in held:
+            continue
+        nb = q.get("not_before")
+        if nb:
+            nbdt = _to_dt(nb, None)
+            if nbdt is None or (slot and nbdt > slot):
+                continue            # нечитабельний not_before publisher тримає; майбутній — ще не для цього слота
+        cands.append(q.get("name"))
+    if slot and (slot - now).total_seconds() / 3600 <= REEL_SLOT_WINDOW_H and not cands:
+        out.append(issue(f"vps:reel_slot:{slot:%Y-%m-%d}", "warn", f"Рілси: на слот {slot:%d.%m} 18:30 нема придатного рілса в черзі (у черзі {len(queue)}, утримано сторожем {len(held)})",
+                         f"остання публікація {r.get('last_published_at') or 'невідомо'}; стан сторожа: {'свіжий ' + str(guard.get('at')) if g_fresh else 'нема/застарів'}",
+                         "reels_queue порожня або всі рілси утримані: причини — у `reels_pending/_guard_state.json` (утримані) і reports/reel_guard_log.jsonl; добір робить reel-weekly (нд 03:40), заміну товару — reel_guard при REEL_GUARD=1; ручні рілси — SMM"))
+    for name, h in sorted(held.items()):
+        days = (_age_h(h.get("first_seen"), now) or 0) / 24 if isinstance(h, dict) else 0
+        probs = "; ".join(h.get("problems") or [])[:200] if isinstance(h, dict) else ""
+        kind = "ручний (SMM)" if isinstance(h, dict) and h.get("manual") else "збирач"
+        out.append(issue(f"vps:reel_held:{name}", "warn", f"Рілс {name} утримано {days:.0f} дн ({kind}): {probs}", "",
+                         "publisher його не опублікує; збирач — reel_guard збере заміну при REEL_GUARD=1; ручний — замінити товар у підписі/маніфесті або прибрати (SMM)"))
+    seen = {}
+    for a in snap.get("alerts") or []:
+        m = _REEL_HOLD_RE.match((a.get("text") or "").lstrip()) if isinstance(a, dict) else None
+        if m and m.group(1) not in held and a.get("at", "") >= seen.get(m.group(1), ("", ""))[0]:
+            seen[m.group(1)] = (a.get("at", ""), (a.get("text") or "").lstrip().splitlines()[0][:200])
+    for name, (at, first) in sorted(seen.items()):
+        out.append(issue(f"vps:reel_hold_alert:{name}", "warn", f"Рілс {name} не опубліковано (журнал VPS {at}): {first}", "", "reel_autopublish утримав рілс; без reel_guard це видно лише в журналі алертів VPS"))
+    timers = ((snap.get("units") or {}).get("timers") or {})
+    if (timers.get("reel-guard.timer") or {}).get("enabled") == "enabled" and not g_fresh:
+        out.append(issue("vps:reel_guard_stale", "warn", f"reel-guard: стан сторожа {'відсутній' if g_age is None else f'старший за {REEL_GUARD_MAX_AGE_H} год ({g_age:.0f} год)'} при увімкненому таймері", "",
+                         "reel-guard.service мав відпрацювати щодня ≈12:00: журнал юніта — read-only витяг від власника"))
+    return out
+
+
 def check_vps(ctx):
     snap, err = ctx.vps_snapshot()
     ctx.last_snapshot = snap      # для write_site_build_warnings (без другого git fetch)
@@ -271,6 +332,10 @@ def check_vps(ctx):
         out.append(issue(f"vps:feed_pipeline:{fp['last_status']}", "crit" if fp["last_status"] == "failed" else "warn",
                          f"feed-pipeline: статус {fp['last_status']}", str(fp.get("reason") or "")[:200], "причина — у полі reason; репрайсер/топ-фід провалились, фолбек публікує попередню версію"))
     out += group_alerts(snap.get("alerts") or [], "vps", ctx.now, "VPS ")
+    try:
+        out += check_reels(snap, ctx.now)
+    except Exception as e:  # noqa: BLE001      # помилка в перевірці рілсів не має ховати решту знімка VPS
+        out.append(issue("vps:reel_check", "warn", f"Перевірка рілсів за знімком не відпрацювала: {type(e).__name__}", str(e)[:120], "виправити health_check.check_reels"))
     return out
 
 

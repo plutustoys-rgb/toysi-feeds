@@ -1417,6 +1417,14 @@
       } else if(t.closest(".fsoc")){
         var net=/instagram\.com/.test(href)?"instagram":(/facebook\.com/.test(href)?"facebook":"other");
         trackRaw("social_click", {network:net, link_url:href, page_path:location.pathname}, "SocialClick", {network:net}, true);
+      } else {
+        // Розмальовки (SEO 23.11): клік по PDF/прев'ю аркуша -> coloring_download {sheet_id, sheet_title, via, page_path}; джерело трафіку GA4 бере з сесії
+        var cm=/(?:^|\/)colorings\/([a-z0-9-]+)\.pdf(?:$|[?#])/.exec(href);
+        if(cm){
+          var fg=t.closest ? t.closest("figure.coloring-sheet") : null, cap=fg ? fg.querySelector("figcaption") : null;
+          var via=(t.classList && t.classList.contains("coloring-dl")) ? "button" : "preview";
+          trackRaw("coloring_download", {sheet_id:cm[1], sheet_title:cap ? cap.textContent.trim() : "", via:via, page_path:location.pathname, link_url:href}, "ColoringDownload", {sheet_id:cm[1]}, true);
+        }
       }
     });
   }

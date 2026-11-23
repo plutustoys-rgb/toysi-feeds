@@ -1,0 +1,11 @@
+[Unit]
+Description=PlutusToys: щоденна перевірка черги рілсів (≈12:00, за ≈6 год до слота вт/пт 18:30)
+
+[Timer]
+# 12:00 щодня: до слота (вт/пт 18:30) лишається ≈6 год — заміна встигає зібратися. Persistent — наздогнати пропущене після вимкнення VPS.
+OnCalendar=*-*-* 12:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -182,6 +182,51 @@ def collect_eva_session(app_dir: str = APP_DIR) -> dict:
     return {"present": True, "sessionid_expires": int(exp) if exp is not None else None}
 
 
+REELS_QUEUE_MAX = 60
+GUARD_STATE_REL = ("reels_pending", "_guard_state.json")      # пише reel_guard.py (staging автозбирача, поза чергою)
+
+
+def collect_reels(app_dir: str = APP_DIR) -> dict:
+    """Черга рілсів і стан reel_guard — щоб Код/SMM бачили простій слотів БЕЗ ssh (23.11.2026: слоти вт/пт стояли 10 днів, бо алерт «рілс утримано» лягав лише в журнал VPS, а health_check показує його як ℹ️).
+    ТІЛЬКИ ЧИТАННЯ файлів: маніфести черги (not_before, чи є mp4/підпис, `.publishing`), published.json (останній запис), `_guard_state.json` сторожа (утримані рілси з причинами й датою першого утримання).
+    Без мережі й без перевірки цін — вона у reel_guard (щодня ≈12:00); тут лише структура черги, незалежна від того, чи ввімкнено reel_guard."""
+    qd = Path(os.environ.get("REEL_QUEUE_DIR") or Path(app_dir) / "reels_queue")
+    out = {"queue_present": qd.is_dir(), "queue": [], "last_published_at": None, "guard": None}
+    if not out["queue_present"]:
+        return out
+    for f in sorted(qd.glob("*.json")):
+        if f.name == "published.json" or f.name.startswith("_"):
+            continue
+        name = f.stem
+        nb, readable = None, True
+        try:
+            m = json.loads(f.read_text(encoding="utf-8"))
+            if not isinstance(m, dict):
+                raise ValueError("не об'єкт")
+            nb = str(m["not_before"])[:19] if m.get("not_before") else None
+        except (OSError, ValueError):
+            readable = False
+        mp4, cap = qd / f"{name}.mp4", qd / f"{name}.caption.txt"
+        out["queue"].append({"name": name, "not_before": nb, "readable": readable, "name_ok": bool(re.fullmatch(r"[a-z0-9_-]+", name)),
+                             "has_mp4": mp4.is_file() and mp4.stat().st_size > 0, "has_caption": cap.is_file() and cap.stat().st_size > 0, "publishing": (qd / f"{name}.publishing").exists()})
+        if len(out["queue"]) >= REELS_QUEUE_MAX:
+            break
+    try:
+        pub = json.loads((qd / "published.json").read_text(encoding="utf-8"))
+        out["last_published_at"] = max((str(p.get("at")) for p in pub if isinstance(p, dict) and p.get("at")), default=None)
+    except (OSError, ValueError, TypeError):
+        pass
+    gp = Path(os.environ.get("REEL_STAGING_DIR") or Path(app_dir) / GUARD_STATE_REL[0]) / GUARD_STATE_REL[1]
+    try:
+        if gp.stat().st_size <= 20000:
+            g = json.loads(gp.read_text(encoding="utf-8"))
+            if isinstance(g, dict):
+                out["guard"] = {k: g.get(k) for k in ("at", "mode", "slot", "checked", "ok", "held", "slot_covered")}
+    except (OSError, ValueError):
+        pass
+    return out
+
+
 def collect_alerts(now: datetime, app_dir: str = APP_DIR, path=None) -> list:
     """Алерти за ALERT_WINDOW_HOURS з журналу VPS (категорії error/warning/money, крім «🛒 Нове замовлення»), найновіші першими."""
     sys.path.insert(0, str(BASE))
@@ -214,7 +259,7 @@ def collect(now: datetime = None, run=_run, app_dir: str = APP_DIR) -> dict:
     now = now or datetime.now(timezone.utc)
     out = {"schema": 1, "generated_at": now.isoformat(timespec="seconds"), "host": os.uname().nodename if hasattr(os, "uname") else "?", "errors": []}
     for key, fn, default in (("units", lambda: collect_units(run, app_dir), {"services": {}, "timers": {}, "failed": []}), ("host_stats", lambda: collect_host(app_dir), {}),
-                             ("state_files", lambda: collect_state_files(app_dir), {}), ("site_build_warnings", lambda: collect_build_warnings(run), {}), ("eva_session", lambda: collect_eva_session(app_dir), {}), ("alerts", lambda: collect_alerts(now, app_dir), [])):
+                             ("state_files", lambda: collect_state_files(app_dir), {}), ("reels", lambda: collect_reels(app_dir), {}), ("site_build_warnings", lambda: collect_build_warnings(run), {}), ("eva_session", lambda: collect_eva_session(app_dir), {}), ("alerts", lambda: collect_alerts(now, app_dir), [])):
         try:
             out[key] = fn()
         except Exception as e:  # noqa: BLE001

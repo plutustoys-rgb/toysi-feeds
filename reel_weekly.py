@@ -289,6 +289,32 @@ def queue_count(queue_dir):
     return len(_queue_manifests(queue_dir))
 
 
+def check_queue_item(queue_dir, name, mpath, manifest, index):
+    """Перевірка ОДНОГО рілса черги так, як її зробить publisher (reel_autopublish.refresh_prices + check_item) на ТИМЧАСОВІЙ КОПІЇ підпису й маніфесту: рілс у черзі не змінюється.
+    `index` = {id: {"price": float, "name": ""}} (як fetch_site_index). Повертає список проблем (порожній = publisher пропустить). Збій самої перевірки = fail-closed (проблема «перевірка не вдалась»).
+    Винесено з publishable_count без зміни поведінки: той самий код тепер використовує й reel_guard (одне правило, без дубля — аудит #1926)."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+    import reel_autopublish as ra
+    base = Path(queue_dir) / name
+    mp4, cap = base.with_suffix(".mp4"), Path(queue_dir) / f"{name}.caption.txt"
+    try:
+        with tempfile.TemporaryDirectory(prefix="reelchk_") as td:
+            t_m, t_c = Path(td) / f"{name}.json", Path(td) / f"{name}.caption.txt"
+            shutil.copyfile(mpath, t_m)
+            if cap.is_file():
+                shutil.copyfile(cap, t_c)
+            try:
+                if ra.refresh_prices(name, manifest, t_m, t_c, index):
+                    manifest = json.loads(t_m.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 — як у publisher: збій автооновлення цін → далі звичайна перевірка
+                pass
+            return ra.check_item(name, manifest, mp4, t_c if t_c.is_file() else cap, index)
+    except Exception as e:  # noqa: BLE001 — fail-closed, як publisher: перевірка не вдалась = не придатний
+        return [f"перевірка не вдалась ({type(e).__name__})"]
+
+
 def publishable_count(queue_dir, prices, now=None):
     """Скільки рілсів у черзі ПРОЙДЕ перевірку publisher'а. Правила НЕ дублюємо (аудит #1926: дубль розходився — підпис >2200, ціна без «грн» у підписі, неоднозначна ціна,
     не-словник у verify, ім'я файлу, not_before): викликаємо ті самі reel_autopublish.refresh_prices і check_item на ТИМЧАСОВІЙ КОПІЇ підпису й маніфесту (рілс у черзі не змінюється)
@@ -296,15 +322,11 @@ def publishable_count(queue_dir, prices, now=None):
     маніфест-об'єкт, not_before (нечитабельний → притриманий; у майбутньому → оцінюємо решту так само: рілс чекає слота, а не «не придатний»), refresh_prices, check_item.
     Притримані (зник товар, неоднозначна ціна, довгий підпис, файли…) у ціль НЕ рахуємо, інакше вони назавжди займають слоти й автозбирач не добирає заміну
     (21.11.2026: dough_02 і squish_02 → публікація стояла з 10.11). Повертає (придатних, [імена притриманих])."""
-    import shutil
-    import tempfile
     from pathlib import Path
-    import reel_autopublish as ra
     index = {str(i): {"price": float(p), "name": ""} for i, p in prices.items()}
     now = now or datetime.now()
     ok, held = 0, []
     for name, mpath in _queue_manifests(queue_dir):
-        base = Path(queue_dir) / name
         if not re.fullmatch(r"[a-z0-9_-]+", name) or (Path(queue_dir) / f"{name}.publishing").exists():
             held.append(name)
             continue
@@ -318,21 +340,7 @@ def publishable_count(queue_dir, prices, now=None):
         except (OSError, ValueError):
             held.append(name)
             continue
-        mp4, cap = base.with_suffix(".mp4"), Path(queue_dir) / f"{name}.caption.txt"
-        try:
-            with tempfile.TemporaryDirectory(prefix="reelchk_") as td:
-                t_m, t_c = Path(td) / f"{name}.json", Path(td) / f"{name}.caption.txt"
-                shutil.copyfile(mpath, t_m)
-                if cap.is_file():
-                    shutil.copyfile(cap, t_c)
-                try:
-                    if ra.refresh_prices(name, manifest, t_m, t_c, index):
-                        manifest = json.loads(t_m.read_text(encoding="utf-8"))
-                except Exception:  # noqa: BLE001 — як у publisher: збій автооновлення цін → далі звичайна перевірка
-                    pass
-                problems = ra.check_item(name, manifest, mp4, t_c if t_c.is_file() else cap, index)
-        except Exception as e:  # noqa: BLE001 — fail-closed, як publisher: перевірка не вдалась = не придатний
-            problems = [f"перевірка не вдалась ({type(e).__name__})"]
+        problems = check_queue_item(queue_dir, name, mpath, manifest, index)
         if problems:
             held.append(name)
         else:
@@ -392,6 +400,17 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
+def evict_to_staging(queue_dir, staging_dir, name):
+    """Виселення рілса з черги в staging/_evicted/ (json ПЕРШИМ: publisher одразу перестає його бачити). Винесено з refresh_queue без зміни поведінки; його ж викликає reel_guard."""
+    ev = os.path.join(staging_dir, "_evicted")
+    os.makedirs(ev, exist_ok=True)
+    for fn in (name + ".json", name + ".caption.txt", name + ".mp4"):
+        try:
+            os.replace(os.path.join(queue_dir, fn), os.path.join(ev, fn))
+        except OSError:
+            pass
+
+
 def refresh_queue(queue_dir, staging_dir, prices, alert):
     """Ціни в підписі/маніфесті фіксуються при збірці й за тижні старіють; publisher правильно НЕ публікує рілс із чужою ціною, але в авто-режимі нікому оновити
     підпис. Для рілсів, зібраних на VPS (спека лежить у staging/_specs/), перед добором звіряємо з живим сайтом: ціна змінилась → переписуємо підпис і verify
@@ -435,14 +454,8 @@ def refresh_queue(queue_dir, staging_dir, prices, alert):
     if evict and len(evict) >= 2 and len(evict) * 2 >= vps_built:
         alert("reel_weekly_evict_mass", f"🔴 reel-weekly: виселення {len(evict)} з {vps_built} рілсів VPS ЗУПИНЕНО (схоже на збій даних сайту): " + ", ".join(evict))
     else:
-        ev = os.path.join(staging_dir, "_evicted")
         for name in evict:
-            os.makedirs(ev, exist_ok=True)
-            for fn in (name + ".json", name + ".caption.txt", name + ".mp4"):         # json першим: publisher одразу перестає його бачити
-                try:
-                    os.replace(os.path.join(queue_dir, fn), os.path.join(ev, fn))
-                except OSError:
-                    pass
+            evict_to_staging(queue_dir, staging_dir, name)
             evicted.append(name)
     for name, (mpath, manifest, verify, caption) in updates.items():
         manifest["verify"] = verify
@@ -496,10 +509,12 @@ def _download(url, path, timeout=60):
 
 
 def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, demand=None, now_forbidden=None, feed_path=None, specs_dir=None,
-              state_dir=None, scan_dirs=(), feed_file=None, on_built=None, failures=None, last_slot=None, state_seed=None):
+              state_dir=None, scan_dirs=(), feed_file=None, on_built=None, failures=None, last_slot=None, state_seed=None, slots=None, prefer_theme=None):
     """Збирає `count` рілсів. Дані можна підмінити (тести): index/feed/demand. VPS-режим: state_dir (стан поза чергою), scan_dirs (черга — звідки беруться
     використані id і імена), last_slot (дата останнього фактичного слоту черги), state_seed(st) (засів стану), feed_file (локальний meta_feed.xml),
-    on_built(spec) (кладе готовий рілс у чергу), failures (список збоїв збірки; у VPS-режимі збій одного рілса не валить партію)."""
+    on_built(spec) (кладе готовий рілс у чергу), failures (список збоїв збірки; у VPS-режимі збій одного рілса не валить партію).
+    Лише для reel_guard (заміна рілса): slots — явні дати слотів замість next_slots(...) (заміна лягає на ТОЙ САМИЙ слот), prefer_theme — ключ теми, яку пробуємо першою
+    (≥ ITEMS_PER_REEL придатних товарів; інакше звичайний pick_theme). Без них (за замовчуванням None) поведінка бітово як раніше."""
     import reel_build
     import reel_batch
     from forbidden_products import is_forbidden
@@ -538,12 +553,21 @@ def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, 
     folder_ids, last_date = folder_used_ids_and_last_date(out_dir, specs_dir, extra=tuple(scan_dirs))
     used = set(st["used_ids"]) | folder_ids
     base = last_slot or last_date
-    slots = next_slots(max(today, base) if base else today, count)
+    slots = list(slots) if slots else next_slots(max(today, base) if base else today, count)
     prices = None if dry_run else reel_batch.site_prices()
     built = []
     bad_ids = set()             # товари з невдалої збірки: у цьому запуску їх більше не беремо
     for sd in slots:
-        th, items = pick_theme(themes, st["themes"], index, feed, used, demand, set(FEED_EXCLUDED_PRODUCT_IDS) | bad_ids, now_forbidden or is_forbidden)
+        excl = set(FEED_EXCLUDED_PRODUCT_IDS) | bad_ids
+        th, items = None, []
+        if prefer_theme:      # заміна рілса (reel_guard): та сама тема, якщо в ній ще є ≥ ITEMS_PER_REEL придатних різних товарів
+            th0 = next((t for t in themes if t["key"] == prefer_theme), None)
+            if th0:
+                pk = pick_items(candidates(th0, index, feed, used, demand, excl, now_forbidden or is_forbidden))
+                if len(pk) >= ITEMS_PER_REEL:
+                    th, items = th0, pk
+        if not th:
+            th, items = pick_theme(themes, st["themes"], index, feed, used, demand, excl, now_forbidden or is_forbidden)
         if not th:
             print(f"[reel_weekly] ⚠ для слоту {sd} немає теми з ≥{ITEMS_PER_REEL} придатними товарами — пропускаю", file=sys.stderr)
             if failures is not None:
@@ -585,7 +609,8 @@ def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, 
                 continue
         used |= {i["id"] for i in spec["items"]}
         st["used_ids"] = sorted(used)
-        st["themes"].append(th["key"])
+        if not (prefer_theme and th["key"] == prefer_theme):      # заміна тієї ж теми: вона вже в журналі тем, дубль стиснув би вікно cooldown
+            st["themes"].append(th["key"])
         st["scenes"].append(scene)
         built.append(spec)
         if not dry_run:

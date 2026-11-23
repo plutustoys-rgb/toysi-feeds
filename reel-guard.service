@@ -1,0 +1,17 @@
+# /etc/systemd/system/reel-guard.service
+[Unit]
+Description=PlutusToys: сторож черги рілсів (reel_guard.py: щоденна перевірка reels_queue перед слотом вт/пт; заміна товару — лише з REEL_GUARD=1 у .env)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/plutustoys
+# КРИТИЧНО (CLAUDE.md): venv-python. Брама замін: REEL_GUARD=1 у /opt/plutustoys/.env (reel_guard.main робить load_dotenv); без неї — лише спостереження (жодних змін у черзі).
+ExecStart=/opt/plutustoys/venv/bin/python3 /opt/plutustoys/reel_guard.py
+# Заміна = рендер reel_build (ffmpeg), ≤2 за добу: ті самі обмеження, що в reel-weekly.service (2 ядра, ≈2,7 ГБ вільної RAM; не заважаємо order-pipeline).
+Nice=15
+IOSchedulingClass=idle
+MemoryMax=1800M
+TimeoutStartSec=3600

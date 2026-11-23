@@ -378,11 +378,39 @@ def run(queue_dir=rw.VPS_QUEUE, staging_dir=rw.VPS_STAGING, now=None, dry=False,
                 pass
 
 
-def _recover_interrupted(st, queue_dir, staging_dir, now):
+def _recover_interrupted(st, queue_dir, staging_dir, now, lock_held=False):
     """Спроба заміни, що лишилась «in_progress» (процес убито: OOM/SIGKILL/TimeoutStartSec/MemoryError — запис про завершення не зроблено), — це НЕВДАЛА спроба (вона вже рахується в ліміті,
     бо ok=False). Тут ще: (а) якщо в черзі з'явився рівно один новий повний рілс зі спекою — заміна встигла лягти в чергу: позначаємо ok, і наступний крок лише виселить старий (без другої збірки);
     (б) інакше прибираємо осиротіле: спеки _specs/<ім'я>.json, яких не було перед спробою й яких нема в черзі (інакше їх id «згоряють» у used_ids і ім'я лишається зайнятим), недоплетені
-    staging/<ім'я>.{mp4,caption.txt,json} і *.incoming у черзі. -> кількість відновлених спроб."""
+    staging/<ім'я>.{mp4,caption.txt,json} і *.incoming у черзі. -> кількість відновлених спроб.
+    ЛИШЕ під спільним замком збірки reel_build.lock (його вже тримає викликач із `lock_held=True` або беремо тут): чужий живий рендер (reel_weekly пише спеку в _specs і mp4 у staging)
+    інакше був би прийнятий за «осиротіле» й видалений. Замок зайнятий/недоступний → нічого не змінюємо, спроба лишається in_progress (рахується як невдала) до наступного запуску.
+    «Заміною, що встигла лягти» визнаємо лише рілс ТІЄЇ Ж теми (префікс імені) з not_before == слоту спроби — легітимний рілс weekly іншої теми/слоту заміною не вважається."""
+    if not any(isinstance(a, dict) and a.get("in_progress") for a in st["attempts"]):
+        return 0
+    own = None
+    if not lock_held:
+        try:
+            own = rw.acquire_build_lock(staging_dir)
+        except rw.BuildLockError:
+            own = None
+        if own is None:
+            _log("recover_skipped", now, reason="замок збірки зайнятий або недоступний")
+            return 0
+    try:
+        return _recover_locked(st, queue_dir, staging_dir, now)
+    finally:
+        rw.release_build_lock(own)
+
+
+def _manifest_slot(queue_dir, name):
+    try:
+        return str(json.load(open(os.path.join(queue_dir, name + ".json"), encoding="utf-8")).get("not_before") or "")[:10]
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _recover_locked(st, queue_dir, staging_dir, now):
     fixed = 0
     for a in st["attempts"]:
         if not (isinstance(a, dict) and a.get("in_progress")):
@@ -395,6 +423,7 @@ def _recover_interrupted(st, queue_dir, staging_dir, now):
             spec_names = set()
         qnow = {n for n, _ in rw._queue_manifests(queue_dir)}
         landed = [n for n in sorted(qnow - set(a.get("queue_before") or [])) if n in spec_names
+                  and n.rsplit("_", 1)[0] == a.get("theme") and _manifest_slot(queue_dir, n) == a.get("slot")
                   and os.path.isfile(os.path.join(queue_dir, n + ".mp4")) and os.path.isfile(os.path.join(queue_dir, n + ".caption.txt"))]
         if len(landed) == 1:
             a.update(new=landed[0], ok=True, recovered=True)
@@ -445,7 +474,7 @@ def _run_locked(res, queue_dir, staging_dir, now, dry, enabled, prices, alert, f
         if not dry:
             alert("reel_guard_state", "⚠️ reel_guard: стан сторожа (_guard_state.json) пошкоджено або втрачено — лічильники взято з .bak, заміни цього запуску вимкнено\nПеревірка й сповіщення працюють; наступний запуск продовжить із відновленим станом.")
             _log("state_recovered", now)
-    if not dry:
+    if active:        # у режимі спостереження/dry нічого не прибираємо й не визнаємо (лише читання + власні звіти)
         _recover_interrupted(st, queue_dir, staging_dir, now)
     st["attempts"] = [a for a in st["attempts"] if isinstance(a, dict) and (_age_h(a.get("at"), now) or 0) < ATTEMPT_KEEP_DAYS * 24]
     entries = classify_queue(queue_dir, staging_dir, prices, now, heal=active)
@@ -519,7 +548,12 @@ def _do_replacements(res, entries, held, st, queue_dir, staging_dir, prices, now
         return
     if feed_file is None and os.path.isfile(rw.VPS_FEED) and (now.timestamp() - os.path.getmtime(rw.VPS_FEED)) / 3600 <= rw.FEED_MAX_AGE_H:
         feed_file = rw.VPS_FEED
-    bl = rw.acquire_build_lock(staging_dir)      # спільний із reel_weekly замок збірки (flock): два рендери ffmpeg на 2 ядрах VPS одночасно не запускаємо
+    try:
+        bl = rw.acquire_build_lock(staging_dir)      # спільний із reel_weekly замок збірки (flock): два рендери ffmpeg на 2 ядрах VPS одночасно не запускаємо
+    except rw.BuildLockError as ex:
+        alert("reel_guard_lock_error", f"⚠️ reel_guard: заміну відкладено — файл замка збірки не відкривається\n{str(ex)[:150]}\nБез замка не рендеримо (щоб не збігтись із reel-weekly); перевірити права на reel_build.lock.")
+        _log("lock_error", now, error=str(ex)[:200])
+        return
     if bl is None:
         alert("reel_guard_busy", "⚠️ reel_guard: заміну відкладено — замок збірки зайнятий (reel-weekly збирає чергу)\nНаступний запуск (через добу) спробує знову; спроба не рахується.")
         _log("busy", now, names=[e["name"] for e in pending])
@@ -541,14 +575,14 @@ def _do_replacements(res, entries, held, st, queue_dir, staging_dir, prices, now
             except OSError:
                 specs_before = []
             # спробу фіксуємо ДО збірки як «in_progress» (ok=False: уже рахується в лімітах): якщо збірку вб'є OOM/SIGKILL/TimeoutStartSec/MemoryError, лічильник не загубиться (аудит 23.11)
-            att = {"at": now.isoformat(timespec="seconds"), "slot": slot.isoformat(), "old": e["name"], "new": None, "ok": False, "in_progress": True,
+            att = {"at": now.isoformat(timespec="seconds"), "slot": slot.isoformat(), "old": e["name"], "new": None, "ok": False, "in_progress": True, "theme": e["name"].rsplit("_", 1)[0],
                    "specs_before": specs_before, "queue_before": sorted(n for n, _ in rw._queue_manifests(queue_dir))}
             st["attempts"].append(att)
             save_state(staging_dir, {**st, "at": now.isoformat(timespec="seconds")})
             try:
                 new, why_not = build_replacement(e, slot, queue_dir, staging_dir, prices, now, feed_file, build_kw)
             except BaseException:
-                _recover_interrupted(st, queue_dir, staging_dir, now)      # MemoryError/KeyboardInterrupt/SystemExit: спробу закриваємо як невдалу, осиротіле прибираємо, далі піднімаємо
+                _recover_interrupted(st, queue_dir, staging_dir, now, lock_held=True)      # MemoryError/KeyboardInterrupt/SystemExit: спробу закриваємо як невдалу, осиротіле прибираємо, далі піднімаємо
                 raise
             att.update(new=new, ok=bool(new), in_progress=False)
             att.pop("specs_before", None)

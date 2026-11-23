@@ -11,6 +11,7 @@
 
 Запуск:  python reel_weekly.py build [--count 2] [--out теку] [--dry-run]   (dry-run: лише план і підписи, без рендера)"""
 import argparse
+import errno
 import json
 import os
 import re
@@ -625,12 +626,23 @@ def build_lock_path(staging_dir):
     return os.path.join(os.path.dirname(os.path.abspath(staging_dir)), "reel_build.lock")
 
 
+class BuildLockError(OSError):
+    """Файл замка збірки не відкривається / замок не береться НЕ через те, що він зайнятий (права, диск, це тека…)."""
+
+
+_LOCK_BUSY_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK, getattr(errno, "EDEADLOCK", errno.EDEADLK)}
+
+
 def acquire_build_lock(staging_dir):
     """Неблокуюче беремо міжпроцесний замок збірки (flock на Linux/VPS, msvcrt на Windows). Замок знімається сам, коли процес помирає (kill/OOM), тож «осиротілого» замка нема.
-    -> дескриптор (тримати до release_build_lock) або None, якщо збірку вже веде інший процес (reel-weekly чи reel-guard: обидва рендерять ffmpeg на 2 ядрах)."""
+    -> дескриптор (тримати до release_build_lock) або None, якщо збірку вже веде інший процес (reel-weekly чи reel-guard: обидва рендерять ffmpeg на 2 ядрах).
+    Збій, що НЕ означає «зайнято» (PermissionError/тека/диск), → BuildLockError: викликач вирішує сам (weekly сигналить і працює як до введення замка, guard нічого не змінює)."""
     path = build_lock_path(staging_dir)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fh = open(path, "a+")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fh = open(path, "a+")
+    except OSError as e:
+        raise BuildLockError(f"замок збірки {path} не відкривається: {type(e).__name__}") from e
     try:
         try:
             import fcntl
@@ -640,9 +652,11 @@ def acquire_build_lock(staging_dir):
             fh.seek(0)
             msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
         return fh
-    except OSError:
+    except OSError as e:
         fh.close()
-        return None
+        if isinstance(e, BlockingIOError) or e.errno in _LOCK_BUSY_ERRNOS:
+            return None
+        raise BuildLockError(f"замок збірки {path} не береться: {type(e).__name__}") from e
 
 
 def release_build_lock(fh):
@@ -677,11 +691,17 @@ def run_vps(ensure_slots=ENSURE_SLOTS, queue_dir=VPS_QUEUE, staging_dir=VPS_STAG
     except RuntimeError as e:
         alert("reel_weekly_lib", f"🔴 reel-weekly: {e}")
         sys.exit(f"[reel_weekly] СТОП: {e}")
-    lock = acquire_build_lock(staging_dir)
-    if lock is None:      # reel_guard (заміна рілса) зараз рендерить: не змагаємось за 2 ядра VPS і чергу; наступний запуск (нд) добере
-        print("[reel_weekly] збірку веде інший процес (reel_guard тримає замок reel_build.lock) — цього запуску нічого не збираю")
-        alert("reel_weekly_busy", "⚠️ reel-weekly: добір черги пропущено — замок збірки зайнятий (reel_guard збирає заміну); наступний запуск добере")
-        return []
+    lock = None
+    if not dry_run:       # dry-run нічого не пише й не рендерить: замок не беремо і «зайнято» не сигналимо
+        try:
+            lock = acquire_build_lock(staging_dir)
+            if lock is None:      # reel_guard (заміна рілса) зараз рендерить: не змагаємось за 2 ядра VPS і чергу. Повтору нема: наступний запуск — через тиждень (нд), запас черги ≈2 тижні (ENSURE_SLOTS=4), а порожній слот видно health_check (🟠)
+                print("[reel_weekly] збірку веде інший процес (reel_guard тримає замок reel_build.lock) — цього запуску нічого не збираю")
+                alert("reel_weekly_busy", "⚠️ reel-weekly: добір черги пропущено — замок збірки зайнятий (reel_guard збирає заміну); наступний запуск — наступної неділі (запас черги ≈2 тижні)")
+                return []
+        except BuildLockError as e:     # замок недоступний (права/диск): не вбиваємо автозбір — працюємо як до введення замка, але з сигналом
+            print(f"[reel_weekly] ⚠ {e} — збираю без замка", file=sys.stderr)
+            alert("reel_weekly_lock_error", f"⚠️ reel-weekly: замок збірки недоступний ({e}) — добір іде БЕЗ замка (можливий збіг із reel_guard); перевірити права на reel_build.lock")
     try:
         if prices is None and not dry_run:
             import reel_batch

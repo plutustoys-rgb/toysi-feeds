@@ -28,21 +28,25 @@ if ($Action -eq 'Install') {
 }
 # Remote script for On/Off (single-quoted here-string: nothing is expanded by PowerShell). Sent as base64 -> `base64 -d | bash`, so quotes/newlines survive ssh.
 # On: drops old REEL_GUARD lines, GUARANTEES a trailing newline before appending (otherwise "A=1" + "REEL_GUARD=1" would glue into "A=1REEL_GUARD=1" and break key A),
-# appends exactly one REEL_GUARD=1; then compares .env (without REEL_GUARD lines) with the backup: every other key must be byte-identical.
+# appends exactly one REEL_GUARD=1 (a line `export REEL_GUARD=...` or an indented one also counts as a REEL_GUARD line); temp copies are 0600 (umask 077, mktemp) and removed on exit;
+# then compares .env (without REEL_GUARD lines) with the backup: every other key must be byte-identical.
 $envScript = @'
 set -u
+umask 077
 ENV=__APP__/.env
 BAK=__BAK__
-sed -i '/^REEL_GUARD=/d' "$ENV"
+TA=$(mktemp) && TB=$(mktemp) || exit 1
+trap 'rm -f "$TA" "$TB"' EXIT
+RE='^[[:space:]]*(export[[:space:]]+)?REEL_GUARD='
+sed -i -E "/$RE/d" "$ENV"
 if [ "__ACTION__" = "On" ]; then
   if [ -s "$ENV" ] && [ -n "$(tail -c1 "$ENV")" ]; then printf '\n' >> "$ENV"; fi
   echo 'REEL_GUARD=1' >> "$ENV"
 fi
-grep -v '^REEL_GUARD=' "$BAK" > /tmp/reelguard_a.$$
-grep -v '^REEL_GUARD=' "$ENV" > /tmp/reelguard_b.$$
-if cmp -s /tmp/reelguard_a.$$ /tmp/reelguard_b.$$; then echo OTHER_KEYS_INTACT; else echo OTHER_KEYS_CHANGED; fi
-rm -f /tmp/reelguard_a.$$ /tmp/reelguard_b.$$
-echo "REEL_GUARD_LINES=$(grep -c '^REEL_GUARD=' "$ENV")"
+grep -vE "$RE" "$BAK" > "$TA"
+grep -vE "$RE" "$ENV" > "$TB"
+if cmp -s "$TA" "$TB"; then echo OTHER_KEYS_INTACT; else echo OTHER_KEYS_CHANGED; fi
+echo "REEL_GUARD_LINES=$(grep -cE "$RE" "$ENV")"
 echo "REEL_GUARD_ONE=$(grep -c '^REEL_GUARD=1$' "$ENV")"
 '@
 function Invoke-VpsScript($script) {

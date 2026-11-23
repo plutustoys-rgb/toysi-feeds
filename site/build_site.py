@@ -1400,7 +1400,6 @@ def build():
     static_urls = [("categories.html", "0.7", "weekly")] +([("nabory.html", "0.7", "weekly")] if has_nabory else []) + [(f, "0.4", "monthly") for f in trust] + gift_urls
     write_sitemap(prods, paged, static_urls, oos_prods=oos_prods, hidden_files={f"category-{cat_slug[c]}.html" for c in cat_list if category_hidden(c)} | {f for g in SITE_GROUPS for f in g.get("former", [])})   # сторінки-вказівники старих груп — поза sitemap
     write_robots()
-    write_llms()
 
     # 8) ПРИБИРАННЯ ЗАСТАРІЛИХ сторінок від попередніх білдів: build пише лише поточний вибір,
     # а старі product-/category-/catalog-*.html лишались у site/ і віддавались із застарілими цінами/сміттям
@@ -1427,6 +1426,7 @@ def build():
                 pass
 
     _remove_stale_tmp(OUT)
+    write_llms()   # ПІСЛЯ прибирання застарілих сторінок: перелік звіряється з файлами, що реально лишились (інакше старий utsinka.html потрапив би в llms.txt і зник)
 
     _written_slugs = {m.group(1) for m in (re.fullmatch(r"category-(.+)\.html", f) for f in paged if not re.search(r"_\d+\.html$", f)) if m}
     _unmatched = sorted(set(_CATEGORY_TEXTS) - _written_slugs)

@@ -226,7 +226,7 @@ def next_reel_slot(now: datetime):
 
 def check_reels(snap, now: datetime):
     """Рілси за знімком VPS (vps_health.collect_reels): (а) найближчий слот без придатного рілса в черзі за 48 год; (б) рілси, які утримав reel_guard (причини, скільки днів); (в) «Reel … НЕ опубліковано»
-    з журналу алертів VPS — як 🟠, а не ℹ️; (г) reel-guard.timer увімкнено, а стан сторожа старший за 36 год. Знімок без секції `reels` (VPS на старому коді) → нічого."""
+    з журналу алертів VPS — як 🟠, а не ℹ️; (г) reel-guard.timer увімкнено і вже спрацьовував (>2 год тому), а стан сторожа старший за 36 год або відсутній (до першого запуску — мовчить). Знімок без секції `reels` (VPS на старому коді) → нічого."""
     r = snap.get("reels")
     if not isinstance(r, dict) or not r.get("queue_present"):
         return []
@@ -265,7 +265,10 @@ def check_reels(snap, now: datetime):
     for name, (at, first) in sorted(seen.items()):
         out.append(issue(f"vps:reel_hold_alert:{name}", "warn", f"Рілс {name} не опубліковано (журнал VPS {at}): {first}", "", "reel_autopublish утримав рілс; без reel_guard це видно лише в журналі алертів VPS"))
     timers = ((snap.get("units") or {}).get("timers") or {})
-    if (timers.get("reel-guard.timer") or {}).get("enabled") == "enabled" and not g_fresh:
+    tm = timers.get("reel-guard.timer") or {}
+    since_trigger = _age_h(tm.get("last_trigger_utc"), now) if tm.get("last_trigger_utc") else None
+    # не раніше, ніж таймер СПРАЦЮВАВ хоча б раз і минуло >2 год (час на запуск): одразу після деплою таймер уже enabled, а перший запуск (12:00) ще не був — стану нема, і це не збій
+    if tm.get("enabled") == "enabled" and not g_fresh and since_trigger is not None and since_trigger > 2:
         out.append(issue("vps:reel_guard_stale", "warn", f"reel-guard: стан сторожа {'відсутній' if g_age is None else f'старший за {REEL_GUARD_MAX_AGE_H} год ({g_age:.0f} год)'} при увімкненому таймері", "",
                          "reel-guard.service мав відпрацювати щодня ≈12:00: журнал юніта — read-only витяг від власника"))
     return out

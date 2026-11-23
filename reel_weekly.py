@@ -620,6 +620,48 @@ def run_build(count, out_dir, dry_run=False, today=None, index=None, feed=None, 
     return built
 
 
+def build_lock_path(staging_dir):
+    """Спільний замок збірки рілсів (reel_weekly і reel_guard): файл ПОРУЧ із текою staging (не в ній і не в черзі), на VPS — /opt/plutustoys/reel_build.lock (у .gitignore)."""
+    return os.path.join(os.path.dirname(os.path.abspath(staging_dir)), "reel_build.lock")
+
+
+def acquire_build_lock(staging_dir):
+    """Неблокуюче беремо міжпроцесний замок збірки (flock на Linux/VPS, msvcrt на Windows). Замок знімається сам, коли процес помирає (kill/OOM), тож «осиротілого» замка нема.
+    -> дескриптор (тримати до release_build_lock) або None, якщо збірку вже веде інший процес (reel-weekly чи reel-guard: обидва рендерять ffmpeg на 2 ядрах)."""
+    path = build_lock_path(staging_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fh = open(path, "a+")
+    try:
+        try:
+            import fcntl
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        return fh
+    except OSError:
+        fh.close()
+        return None
+
+
+def release_build_lock(fh):
+    if fh is None:
+        return
+    try:
+        try:
+            import fcntl
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        except ImportError:
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    finally:
+        fh.close()
+
+
 def run_vps(ensure_slots=ENSURE_SLOTS, queue_dir=VPS_QUEUE, staging_dir=VPS_STAGING, today=None, dry_run=False, feed_file=None, alert=None, prices=None, **kw):
     """Тижневий автозбирач на VPS без людського схвалення (лише схвалені власником перші сцени). Добирає чергу до `ensure_slots` майбутніх слотів.
     Бібліотеки нема на VPS → тихо нічого не робить (exit 0): автозбір вмикається самою заливкою бібліотеки. Пошкоджена бібліотека → СТОП + сигнал."""
@@ -635,6 +677,11 @@ def run_vps(ensure_slots=ENSURE_SLOTS, queue_dir=VPS_QUEUE, staging_dir=VPS_STAG
     except RuntimeError as e:
         alert("reel_weekly_lib", f"🔴 reel-weekly: {e}")
         sys.exit(f"[reel_weekly] СТОП: {e}")
+    lock = acquire_build_lock(staging_dir)
+    if lock is None:      # reel_guard (заміна рілса) зараз рендерить: не змагаємось за 2 ядра VPS і чергу; наступний запуск (нд) добере
+        print("[reel_weekly] збірку веде інший процес (reel_guard тримає замок reel_build.lock) — цього запуску нічого не збираю")
+        alert("reel_weekly_busy", "⚠️ reel-weekly: добір черги пропущено — замок збірки зайнятий (reel_guard збирає заміну); наступний запуск добере")
+        return []
     try:
         if prices is None and not dry_run:
             import reel_batch
@@ -668,6 +715,8 @@ def run_vps(ensure_slots=ENSURE_SLOTS, queue_dir=VPS_QUEUE, staging_dir=VPS_STAG
     except (Exception, SystemExit) as e:
         alert("reel_weekly_crash", f"🔴 reel-weekly: збій авто-збірки — {type(e).__name__}: {str(e)[:300]}")
         raise
+    finally:
+        release_build_lock(lock)
 
 
 def main(argv=None):

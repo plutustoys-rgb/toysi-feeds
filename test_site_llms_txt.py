@@ -33,5 +33,8 @@ chk("хаби: brendy, podarunky, rozmalovky", all(f"https://plutustoys.com.ua/{
 chk("без цін і обіцянок (грн/₴/безкоштовн/гарант/знижк)", not re.search(r"грн|₴|безкоштовн|гарант|знижк|найкращ|дешев", t, re.I))
 chk("без вкладених < > і CRLF", "<" not in t and ">" not in t.replace("> Інтернет", "") and "\r" not in t)
 chk("sameAs головної містить Pinterest", bs.PINTEREST_URL == "https://www.pinterest.com/plutustoys/" and bs.PINTEREST_URL in bs.home_jsonld())
+src = (HERE / "site" / "build_site.py").read_text(encoding="utf-8")
+chk("write_llms() у build() викликається ПІСЛЯ кроку прибирання застарілих сторінок (аудит #2039: старий файл не потрапляє в llms.txt і не зникає після)",
+    src.index("    write_llms()   #") > src.index("# 8) ПРИБИРАННЯ ЗАСТАРІЛИХ") and src.count("write_llms()") == 2)
 print("\nALL OK" if not F else f"\nFAIL: {len(F)}")
 sys.exit(1 if F else 0)

@@ -236,11 +236,31 @@ def build_export(conn: sqlite3.Connection, now=None) -> dict:
     return {"_meta": meta, **out}
 
 
+TMP_STALE_SECONDS = 3600
+
+
+def _sweep_stale_tmp(path: Path, limit: int = 50) -> None:
+    """Прибирає ВЛАСНІ tmp експорту (`<ім'я>.<pid>.<hex8>.tmp` і старий `<ім'я>.tmp`) старші за 1 год — лишаються після kill між write і replace. Обмежено: ≤limit файлів за виклик; збій не заважає експорту."""
+    try:
+        rx = re.compile(re.escape(path.name) + r"(?:\.[0-9]+\.[0-9a-f]{8})?\.tmp")
+        cutoff = datetime.now().timestamp() - TMP_STALE_SECONDS
+        n = 0
+        for f in path.parent.iterdir():
+            if n >= limit:
+                break
+            if rx.fullmatch(f.name) and f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                n += 1
+    except OSError:
+        pass
+
+
 def export_reviews(conn: sqlite3.Connection, path=None, now=None) -> int:
     """Пише reviews.json атомарно (tmp + os.replace); повертає кількість записів. Помилка запису → виняток (викликач вирішує; стара версія файлу лишається)."""
     path = Path(path or EXPORT_FILE)
     doc = build_export(conn, now)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_tmp(path)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")          # унікальний tmp: два одночасні експортери (relay і CLI) не затирають файл одне одного
     try:
         tmp.write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

@@ -20,6 +20,8 @@ if hasattr(sys.stdout, "reconfigure"):
 import review_relay_cli as rc  # noqa: E402
 
 INTERVAL = 60
+MAX_EVENTS_PER_PASS = 20
+_OVERFLOW_RE = re.compile(r"^\(на перевірці більше (\d+)")
 _LINE_RE = re.compile(r"^#(\d+) \[(\w+)\] ★(\S+) товар (\S+) · (\S+) · автор (\S+): (.*)$")
 
 
@@ -65,8 +67,14 @@ def step(seen: set, state: dict, fetch=None, emit=print) -> int:
         emit("канал відгуків відновився")
         state["down"] = False
     fresh = new_reviews(seen, parse_list(out))
-    for r in fresh:
+    for r in fresh[:MAX_EVENTS_PER_PASS]:
         emit(format_event(r))
+    if len(fresh) > MAX_EVENTS_PER_PASS:             # потоп (напр. старт при великій черзі): стеля подій + ОДНА зведена; решта вже у seen, їх видно в `list pending`
+        emit(f"ЩЕ {len(fresh) - MAX_EVENTS_PER_PASS} НОВИХ ВІДГУКІВ НА ПЕРЕВІРЦІ — окремі події не виводяться (стеля {MAX_EVENTS_PER_PASS} за прохід): потрібен `python review_relay_cli.py list pending`")
+    overflow = any(_OVERFLOW_RE.match(l.strip(chr(13))) for l in (out or "").split(chr(10)))
+    if overflow and not state.get("overflow"):
+        emit("У ЧЕРЗІ НА ПЕРЕВІРЦІ БІЛЬШЕ 200 ВІДГУКІВ: `list pending` показує лише найстарші 200, новіші не видно — обробіть чергу (approve/reject)")
+    state["overflow"] = overflow
     return len(fresh)
 
 

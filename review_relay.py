@@ -66,9 +66,9 @@ _EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)*")
 _URL_RE = re.compile(r"(?i)(?:\b[a-z][a-z0-9+.\-]*://|\bwww\.|\bt\.me\b|\bmailto:|\btel:)\S*")
 _AT_RE = re.compile(r"@\w+")
 # \u0434\u043e\u043c\u0435\u043d: \u041b\u0418\u0428\u0415 \u043b\u0430\u0442\u0438\u043d\u0438\u0447\u043d\u0456 \u043c\u0456\u0442\u043a\u0438 \u0437 \u0432\u0456\u0434\u043e\u043c\u0438\u043c TLD (+ \u043a\u0438\u0440\u0438\u043b\u0438\u0447\u043d\u0456 TLD \u0437\u0456 \u0441\u043f\u0438\u0441\u043a\u0443) \u2014 \u00ab\u0414\u043e\u0431\u0440\u0435.\u0414\u044f\u043a\u0443\u044e\u00bb, \u00ab\u0442\u043e\u043c\u0443.\u0449\u043e\u00bb \u041d\u0415 \u043c\u0430\u0441\u043a\u0443\u044e\u0442\u044c\u0441\u044f (\u0440\u0435\u0432'\u044e\u0435\u0440 \u043c\u0443\u0441\u0438\u0442\u044c \u0431\u0430\u0447\u0438\u0442\u0438 \u0442\u0435\u043a\u0441\u0442)
-_TLDS = ("com|net|org|ua|info|me|ru|io|co|biz|shop|top|xyz|site|online|store|app|dev|link|ly|tv|su|by|pl|de|eu|cc|cn|club|click|vip|pro|live|xxx|tk|ml|ga|cf|gq|ws|to|gl|gg|cz|kz|uk|us|fr|it|es|nl|tel|mobi|name|one|cloud|ink|fun|icu|work|win|bid|loan|men|date|space|website|tech|digital|agency|company|page|world|today|email|group|network|zone")
-_DOMAIN_RE = re.compile(r"(?<![a-z0-9_\-])(?:[a-z0-9\-]+\.)+(?:" + _TLDS + r")(?![a-z0-9\-])(?:/\S*)?", re.IGNORECASE | re.ASCII)
-_DOMAIN_CYR_RE = re.compile(r"[\w\-]+(?:\.[\w\-]+)*\.(?:\u0440\u0444|\u0443\u043a\u0440|\u043e\u043d\u043b\u0430\u0439\u043d|\u043e\u0440\u0433|\u043a\u043e\u043c|\u043c\u043e\u0441\u043a\u0432\u0430|\u0431\u0435\u043b|\u0441\u0440\u0431|\u043c\u043a\u0434|\u043c\u043e\u043d|\u043a\u0430\u0442\u043e\u043b\u0438\u043a|\u0440\u0443\u0441|\u0434\u0435\u0442\u0438)(?![\w\-])(?:/\S*)?", re.IGNORECASE)
+# голий домен без схеми: будь-яка латинична `мітка(≥2).літери(≥2)` (хибні спрацювання на «Thanks.It» — fail-safe: краще замаскувати зайве, ніж пропустити домен); «Добре.Дякую» (кирилиця.кирилиця) не чіпається
+_DOMAIN_RE = re.compile(r"(?<![a-z0-9_\-])(?:[a-z0-9\-]{2,}\.)+[a-z]{2,}(?![a-z0-9\-])(?:/\S*)?", re.IGNORECASE | re.ASCII)
+_DOMAIN_CYR_RE = re.compile(r"[\w\-]+(?:\.[\w\-]+)*\.(?:\u0440\u0444|\u0443\u043a\u0440|\u043e\u043d\u043b\u0430\u0439\u043d|\u043e\u0440\u0433|\u043a\u043e\u043c|\u043c\u043e\u0441\u043a\u0432\u0430|\u0431\u0435\u043b|\u0441\u0440\u0431|\u043c\u043a\u0434|\u043c\u043e\u043d|\u043a\u0430\u0442\u043e\u043b\u0438\u043a|\u0440\u0443\u0441|\u0434\u0435\u0442\u0438|com|ua|net|org|info|shop|store|online)(?![\w\-])(?:/\S*)?", re.IGNORECASE)
 _HXXP_RE = re.compile(r"(?i)\bhxxps?\b\S*")
 _DIGITS_RE = re.compile(r"\d(?:[ ().,;:_\-\u2013\u2014/]{0,2}\d)+")
 _DATE_RE = re.compile(r"(?:0?[1-9]|[12][0-9]|3[01])[./-](?:0?[1-9]|1[0-2])[./-](?:19|20)[0-9]{2}|(?:19|20)[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])")       # \u0434\u0430\u0442\u0430 \u043d\u0435 \u0454 \u043d\u043e\u043c\u0435\u0440\u043e\u043c
@@ -76,6 +76,8 @@ _DATE_RE = re.compile(r"(?:0?[1-9]|[12][0-9]|3[01])[./-](?:0?[1-9]|1[0-2])[./-](
 _OBF_DOT_RE = re.compile(r"(?i)\s*[\[({<]\s*(?:\.|dot)\s*[\])}>]\s*|(?<=[a-z0-9])\s+dot\s+(?=[a-z0-9])|(?<=[a-z0-9])\s+\.\s*(?=[a-z0-9])|(?<=[a-z0-9])\s*\.\s+(?=[a-z0-9])", re.ASCII)
 _OBF_AT_RE = re.compile(r"(?i)\s*[\[({<]\s*(?:at|@)\s*[\])}>]\s*", re.ASCII)
 _OBF_SLASH_RE = re.compile(r"(?i)(?<=\.me)\s*/\s*(?=[a-z0-9_])", re.ASCII)
+_SAFE_SUBST = {0xA0: " ", 0x202F: " ", 0x2009: " ", 0x2026: "...", 0x2116: "No"}          # свідомо дозволені (нешкідливі) символи: NBSP, вузький/тонкий пробіл, «…», №
+_KEYCAP_BASE = "0123456789#*"
 MARKERS = ("[\u043d\u043e\u043c\u0435\u0440]", "[\u043f\u043e\u0441\u0438\u043b\u0430\u043d\u043d\u044f]", "[e-mail]", "[@]")
 
 
@@ -124,23 +126,29 @@ def approve_blockers(*values) -> list:
         if v is None:
             continue
         raw = str(v)
+        raw2 = raw.translate(_SAFE_SUBST)                      # безпечні замінники (NBSP, «…», №) не блокують: рев'юер бачить те саме; публікується оригінал із БД
         bad = False
-        for i, c in enumerate(raw):
+        for i, c in enumerate(raw2):
             cat = unicodedata.category(c)
             if c == chr(10) or c == " ":
                 continue
-            prev = raw[i - 1] if i else ""
-            nxt = raw[i + 1] if i + 1 < len(raw) else ""
-            if c == "\u200d" and prev and nxt and unicodedata.category(prev) in ("So", "Sk") and unicodedata.category(nxt) in ("So", "Sk"):
+            prev = raw2[i - 1] if i else ""
+            prev2 = raw2[i - 2] if i >= 2 else ""
+            nxt = raw2[i + 1] if i + 1 < len(raw2) else ""
+            pcat = unicodedata.category(prev) if prev else ""
+            ncat = unicodedata.category(nxt) if nxt else ""
+            if c == "\u200d" and prev and nxt and (pcat in ("So", "Sk") or prev == "\ufe0f") and ncat in ("So", "Sk"):
                 continue
-            if c == "\ufe0f" and prev and unicodedata.category(prev) == "So":
+            if c == "\ufe0f" and prev and (pcat == "So" or (prev in _KEYCAP_BASE and nxt == "\u20e3")):
                 continue
-            if cat[0] in ("C", "Z") or cat in ("Mn", "Me"):
+            if c == "\u20e3" and prev == "\ufe0f" and prev2 in _KEYCAP_BASE and prev2:
+                continue
+            if c in _INVISIBLE or cat[0] in ("C", "Z") or cat in ("Mn", "Me"):
                 bad = True
                 break
         if bad and "керівні/невидимі/комбівні символи" not in why:
             why.append("керівні/невидимі/комбівні символи")
-        if unicodedata.normalize("NFKC", raw) != raw and "символи, що змінює NFKC-нормалізація" not in why and not bad:
+        if unicodedata.normalize("NFKC", raw2) != raw2 and "символи, що змінює NFKC-нормалізація" not in why and not bad:
             why.append("символи, що змінює NFKC-нормалізація")
         m = mask_text(raw)
         found = [k for k in MARKERS if k in m]

@@ -17,7 +17,7 @@
           (publish_date = not_before старого) і ТУ САМУ тему (якщо в ній ≥3 придатних товарів, інакше — звичайний вибір теми); готова заміна проходить перевірку publisher'а ДО запису в чергу;
        в) лише ПІСЛЯ успішної заміни старий рілс виселяється в reels_pending/_evicted/ (reel_weekly.evict_to_staging; json першим), заміна успадковує mtime старого (порядок черги publisher'а).
      Збій збірки/перевірки/запису → старий рілс ЛИШАЄТЬСЯ в черзі (нічого не втрачено), сповіщення, наступна спроба не раніше ніж через добу.
-     Ліміти: ≤1 спроба за добу на слот, ≤2 за добу всього (спроби рахуються й невдалі — навантаження ffmpeg на VPS), ≤3 невдалі спроби на рілс (далі лише сигнал), масове утримання (≥3 і ≥ половини рілсів збирача) = схоже на проблему даних сайту → заміни зупинено.
+     Ліміти: ≤1 спроба за добу на слот, ≤2 за добу всього (спроби рахуються й невдалі — навантаження ffmpeg на VPS), ≤3 невдалі спроби на рілс (далі лише сигнал), масове утримання (≥2 і ≥ половини рілсів збирача) = схоже на проблему даних сайту → заміни зупинено.
      НЕ чіпає: ручні рілси (SMM: нема спеки збирача або id не збігаються), рілси з `.publishing`, опубліковані (published.json / тека published/), рілси поза горизонтом.
   --dry: нічого не пише (ні черга, ні стан, ні журнал, ні сповіщення, ні збірка) — друкує план.
 
@@ -44,7 +44,7 @@ HORIZON_DAYS = 3                        # перевіряємо рілси зі
 MAX_PER_DAY = 2                         # спроб заміни за добу всього
 MAX_PER_SLOT_DAY = 1                    # спроб заміни за добу на слот (= на рілс)
 MAX_FAILED_PER_REEL = 3                 # невдалих спроб заміни одного рілса за ATTEMPT_KEEP_DAYS: далі не пробуємо (лише сигнал) — захист від щоденного зациклення збірки
-MASS_MIN = 3                            # масове утримання: ≥ MASS_MIN і ≥ половини рілсів збирача → не діємо (схоже на проблему даних сайту)
+MASS_MIN = 2                            # масове утримання: ≥ MASS_MIN і ≥ половини рілсів збирача → не діємо (схоже на проблему даних сайту; як reel_weekly.refresh_queue: ≥2)
 MIN_PRICES = 1000                       # як reel_weekly: менше цін сайту = дані неповні, не вгадуємо
 LOCK_STALE_H = 3
 ATTEMPT_KEEP_DAYS = 30
@@ -80,9 +80,10 @@ def _state_path(staging_dir):
     return os.path.join(staging_dir, "_guard_state.json")
 
 
-def load_state(staging_dir):
+def _read_state_file(path):
+    """-> dict стану або None (нема/нечитабельний/не тієї форми)."""
     try:
-        st = json.load(open(_state_path(staging_dir), encoding="utf-8"))
+        st = json.load(open(path, encoding="utf-8"))
         if isinstance(st, dict):
             st.setdefault("attempts", [])
             st.setdefault("held", {})
@@ -90,12 +91,32 @@ def load_state(staging_dir):
                 return st
     except (OSError, ValueError):
         pass
-    return {"attempts": [], "held": {}}
+    return None
+
+
+def load_state(staging_dir):
+    """-> (стан, статус). «fresh» — файлу стану ніколи не було (перший запуск); «ok»; «recovered» — основний файл ПОШКОДЖЕНО або ВТРАЧЕНО, лічильники взято з _guard_state.json.bak (або порожні):
+    лічильники спроб/лімітів могли загубитись, тому у цей запуск заміни НЕ виконуємо (fail-closed, лише сигнал)."""
+    p = _state_path(staging_dir)
+    st = _read_state_file(p)
+    if st is not None:
+        return st, "ok"
+    bak = _read_state_file(p + ".bak")
+    if os.path.exists(p) or bak is not None:
+        return (bak or {"attempts": [], "held": {}}), "recovered"
+    return {"attempts": [], "held": {}}, "fresh"
 
 
 def save_state(staging_dir, st):
+    """Атомарно (tmp + os.replace); попередню ВАЛІДНУ версію перед цим копіюємо в .bak (битий файл у .bak НЕ потрапляє)."""
     os.makedirs(staging_dir, exist_ok=True)
     p = _state_path(staging_dir)
+    if _read_state_file(p) is not None:
+        try:
+            import shutil
+            shutil.copyfile(p, p + ".bak")
+        except OSError:
+            pass
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(st, f, ensure_ascii=False, indent=1)
@@ -357,6 +378,49 @@ def run(queue_dir=rw.VPS_QUEUE, staging_dir=rw.VPS_STAGING, now=None, dry=False,
                 pass
 
 
+def _recover_interrupted(st, queue_dir, staging_dir, now):
+    """Спроба заміни, що лишилась «in_progress» (процес убито: OOM/SIGKILL/TimeoutStartSec/MemoryError — запис про завершення не зроблено), — це НЕВДАЛА спроба (вона вже рахується в ліміті,
+    бо ok=False). Тут ще: (а) якщо в черзі з'явився рівно один новий повний рілс зі спекою — заміна встигла лягти в чергу: позначаємо ok, і наступний крок лише виселить старий (без другої збірки);
+    (б) інакше прибираємо осиротіле: спеки _specs/<ім'я>.json, яких не було перед спробою й яких нема в черзі (інакше їх id «згоряють» у used_ids і ім'я лишається зайнятим), недоплетені
+    staging/<ім'я>.{mp4,caption.txt,json} і *.incoming у черзі. -> кількість відновлених спроб."""
+    fixed = 0
+    for a in st["attempts"]:
+        if not (isinstance(a, dict) and a.get("in_progress")):
+            continue
+        fixed += 1
+        specs_dir = os.path.join(staging_dir, "_specs")
+        try:
+            spec_names = {f[:-5] for f in os.listdir(specs_dir) if f.endswith(".json")}
+        except OSError:
+            spec_names = set()
+        qnow = {n for n, _ in rw._queue_manifests(queue_dir)}
+        landed = [n for n in sorted(qnow - set(a.get("queue_before") or [])) if n in spec_names
+                  and os.path.isfile(os.path.join(queue_dir, n + ".mp4")) and os.path.isfile(os.path.join(queue_dir, n + ".caption.txt"))]
+        if len(landed) == 1:
+            a.update(new=landed[0], ok=True, recovered=True)
+        else:
+            for n in sorted(spec_names - set(a.get("specs_before") or []) - qnow):
+                for victim in (os.path.join(specs_dir, n + ".json"), *(os.path.join(staging_dir, n + e) for e in (".mp4", ".caption.txt", ".json"))):
+                    try:
+                        os.remove(victim)
+                    except OSError:
+                        pass
+                try:
+                    for f in os.listdir(queue_dir):
+                        if f.startswith(n + ".") and f.endswith(".incoming"):
+                            os.remove(os.path.join(queue_dir, f))
+                except OSError:
+                    pass
+            a.update(new=None, ok=False, error="перервано (kill/OOM/TimeoutStartSec/MemoryError): запис про завершення не зроблено")
+        a["in_progress"] = False
+        a.pop("specs_before", None)
+        a.pop("queue_before", None)
+        _log("attempt_recovered", now, old=a.get("old"), ok=a.get("ok"), new=a.get("new"))
+    if fixed:
+        save_state(staging_dir, {**st, "at": now.isoformat(timespec="seconds")})
+    return fixed
+
+
 def _summarize(entries, prev_held, now, slot):
     """-> (перевірені, утримані, {ім'я: опис утримання зі збереженим first_seen}, придатні для найближчого слота)."""
     checked = [e for e in entries if e["state"] != "far"]
@@ -374,7 +438,15 @@ def _run_locked(res, queue_dir, staging_dir, now, dry, enabled, prices, alert, f
     active = enabled and not dry
     slot = next_slot_date(now)
     res["slot"] = slot.isoformat()
-    st = load_state(staging_dir)
+    st, st_status = load_state(staging_dir)
+    res["state_status"] = st_status
+    if st_status == "recovered":
+        active = False        # fail-closed: стан сторожа пошкоджено/втрачено — лічильники ліміту могли обнулитись, заміни цього запуску не виконуємо
+        if not dry:
+            alert("reel_guard_state", "⚠️ reel_guard: стан сторожа (_guard_state.json) пошкоджено або втрачено — лічильники взято з .bak, заміни цього запуску вимкнено\nПеревірка й сповіщення працюють; наступний запуск продовжить із відновленим станом.")
+            _log("state_recovered", now)
+    if not dry:
+        _recover_interrupted(st, queue_dir, staging_dir, now)
     st["attempts"] = [a for a in st["attempts"] if isinstance(a, dict) and (_age_h(a.get("at"), now) or 0) < ATTEMPT_KEEP_DAYS * 24]
     entries = classify_queue(queue_dir, staging_dir, prices, now, heal=active)
     checked, held, new_held, covered = _summarize(entries, st["held"], now, slot)
@@ -447,38 +519,60 @@ def _do_replacements(res, entries, held, st, queue_dir, staging_dir, prices, now
         return
     if feed_file is None and os.path.isfile(rw.VPS_FEED) and (now.timestamp() - os.path.getmtime(rw.VPS_FEED)) / 3600 <= rw.FEED_MAX_AGE_H:
         feed_file = rw.VPS_FEED
-    for e in pending:
-        recent = [a for a in st["attempts"] if _within(a.get("at"), now, 24)]
-        slot = replacement_slot(e["nb"], now)
-        if sum(1 for a in st["attempts"] if a.get("old") == e["name"] and not a.get("ok")) >= MAX_FAILED_PER_REEL:
-            alert(f"reel_guard_giveup:{e['name']}", f"⚠️ reel_guard: рілс {e['name']} — {MAX_FAILED_PER_REEL} невдалі спроби заміни, більше не пробую (слот {slot:%d.%m})\nПотрібна людина: замінити рілс вручну або виправити причину (див. reports/reel_guard_log.jsonl).")
-            _log("giveup", now, name=e["name"])
-            continue
-        if len(recent) >= MAX_PER_DAY or sum(1 for a in recent if a.get("slot") == slot.isoformat()) >= MAX_PER_SLOT_DAY:
-            alert(f"reel_guard_limit:{e['name']}", f"⚠️ reel_guard: ліміт замін за добу вичерпано — рілс {e['name']} лишається утриманим (слот {slot:%d.%m})\nНаступна спроба — після доби від попередньої.")
-            _log("limit", now, name=e["name"], slot=slot.isoformat(), recent=len(recent))
-            continue
-        new, why_not = build_replacement(e, slot, queue_dir, staging_dir, prices, now, feed_file, build_kw)
-        att = {"at": now.isoformat(timespec="seconds"), "slot": slot.isoformat(), "old": e["name"], "new": new, "ok": bool(new)}
-        if why_not:
-            att["error"] = why_not[:200]
-        st["attempts"].append(att)
-        save_state(staging_dir, {**st, "at": now.isoformat(timespec="seconds")})      # спробу фіксуємо ДО виселення: збій далі не призведе до другої збірки
-        if not new:
-            res["failed"].append(e["name"])
-            alert(f"reel_guard_fail:{e['name']}", f"⚠️ reel_guard: заміну рілса {e['name']} не зібрано (слот {slot:%d.%m}); старий лишається в черзі\nПричина: {why_not}")
-            _log("replace_failed", now, old=e["name"], slot=slot.isoformat(), reason=why_not)
-            continue
-        if _evict_after_replace(queue_dir, staging_dir, e["name"], new):
-            res["replaced"].append([e["name"], new])
-            new_held.pop(e["name"], None)
-            res["held"].pop(e["name"], None)
-            alert(f"reel_guard_done:{e['name']}", f"⚠️ reel_guard: рілс {e['name']} замінено на {new} (слот {slot:%d.%m})\nПричина: " + "; ".join(_trim(e["problems"])))
-            _log("replaced", now, old=e["name"], new=new, slot=slot.isoformat(), reason=_trim(e["problems"]))
-        else:
-            res["failed"].append(e["name"])
-            alert(f"reel_guard_fail:{e['name']}", f"⚠️ reel_guard: заміну {new} зібрано, але в черзі її нема — старий {e['name']} не виселено")
-            _log("replace_failed", now, old=e["name"], reason="нова відсутня в черзі")
+    bl = rw.acquire_build_lock(staging_dir)      # спільний із reel_weekly замок збірки (flock): два рендери ffmpeg на 2 ядрах VPS одночасно не запускаємо
+    if bl is None:
+        alert("reel_guard_busy", "⚠️ reel_guard: заміну відкладено — замок збірки зайнятий (reel-weekly збирає чергу)\nНаступний запуск (через добу) спробує знову; спроба не рахується.")
+        _log("busy", now, names=[e["name"] for e in pending])
+        return
+    try:
+        for e in pending:
+            recent = [a for a in st["attempts"] if _within(a.get("at"), now, 24)]
+            slot = replacement_slot(e["nb"], now)
+            if sum(1 for a in st["attempts"] if a.get("old") == e["name"] and not a.get("ok")) >= MAX_FAILED_PER_REEL:
+                alert(f"reel_guard_giveup:{e['name']}", f"⚠️ reel_guard: рілс {e['name']} — {MAX_FAILED_PER_REEL} невдалі спроби заміни, більше не пробую (слот {slot:%d.%m})\nПотрібна людина: замінити рілс вручну або виправити причину (див. reports/reel_guard_log.jsonl).")
+                _log("giveup", now, name=e["name"])
+                continue
+            if len(recent) >= MAX_PER_DAY or sum(1 for a in recent if a.get("slot") == slot.isoformat()) >= MAX_PER_SLOT_DAY:
+                alert(f"reel_guard_limit:{e['name']}", f"⚠️ reel_guard: ліміт замін за добу вичерпано — рілс {e['name']} лишається утриманим (слот {slot:%d.%m})\nНаступна спроба — після доби від попередньої.")
+                _log("limit", now, name=e["name"], slot=slot.isoformat(), recent=len(recent))
+                continue
+            try:
+                specs_before = sorted(f[:-5] for f in os.listdir(os.path.join(staging_dir, "_specs")) if f.endswith(".json"))
+            except OSError:
+                specs_before = []
+            # спробу фіксуємо ДО збірки як «in_progress» (ok=False: уже рахується в лімітах): якщо збірку вб'є OOM/SIGKILL/TimeoutStartSec/MemoryError, лічильник не загубиться (аудит 23.11)
+            att = {"at": now.isoformat(timespec="seconds"), "slot": slot.isoformat(), "old": e["name"], "new": None, "ok": False, "in_progress": True,
+                   "specs_before": specs_before, "queue_before": sorted(n for n, _ in rw._queue_manifests(queue_dir))}
+            st["attempts"].append(att)
+            save_state(staging_dir, {**st, "at": now.isoformat(timespec="seconds")})
+            try:
+                new, why_not = build_replacement(e, slot, queue_dir, staging_dir, prices, now, feed_file, build_kw)
+            except BaseException:
+                _recover_interrupted(st, queue_dir, staging_dir, now)      # MemoryError/KeyboardInterrupt/SystemExit: спробу закриваємо як невдалу, осиротіле прибираємо, далі піднімаємо
+                raise
+            att.update(new=new, ok=bool(new), in_progress=False)
+            att.pop("specs_before", None)
+            att.pop("queue_before", None)
+            if why_not:
+                att["error"] = why_not[:200]
+            save_state(staging_dir, {**st, "at": now.isoformat(timespec="seconds")})      # результат фіксуємо ДО виселення: збій далі не призведе до другої збірки
+            if not new:
+                res["failed"].append(e["name"])
+                alert(f"reel_guard_fail:{e['name']}", f"⚠️ reel_guard: заміну рілса {e['name']} не зібрано (слот {slot:%d.%m}); старий лишається в черзі\nПричина: {why_not}")
+                _log("replace_failed", now, old=e["name"], slot=slot.isoformat(), reason=why_not)
+                continue
+            if _evict_after_replace(queue_dir, staging_dir, e["name"], new):
+                res["replaced"].append([e["name"], new])
+                new_held.pop(e["name"], None)
+                res["held"].pop(e["name"], None)
+                alert(f"reel_guard_done:{e['name']}", f"⚠️ reel_guard: рілс {e['name']} замінено на {new} (слот {slot:%d.%m})\nПричина: " + "; ".join(_trim(e["problems"])))
+                _log("replaced", now, old=e["name"], new=new, slot=slot.isoformat(), reason=_trim(e["problems"]))
+            else:
+                res["failed"].append(e["name"])
+                alert(f"reel_guard_fail:{e['name']}", f"⚠️ reel_guard: заміну {new} зібрано, але в черзі її нема — старий {e['name']} не виселено")
+                _log("replace_failed", now, old=e["name"], reason="нова відсутня в черзі")
+    finally:
+        rw.release_build_lock(bl)
 
 
 def _print_plan(res, entries, now):

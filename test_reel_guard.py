@@ -568,8 +568,11 @@ chk("health_check: рілс утримано сторожем → 🟠 vps:reel_
 iss = hc.check_vps(hctx(hsnap([hq("a_01")], guard=dict(g_ok, at=hiso(60)))))
 chk("health_check: стан сторожа застарів (60 год) — утримані з нього не показуємо як факт; без reel-guard.timer це не помилка сторожа", not any(i["id"].startswith("vps:reel_held") for i in iss)
     and not any(i["id"] == "vps:reel_guard_stale" for i in iss))
-iss = hc.check_vps(hctx(hsnap([hq("a_01")], guard=dict(g_ok, at=hiso(60), held={}), timers={"reel-guard.timer": {"enabled": "enabled", "active": "active"}})))
-chk("health_check: reel-guard.timer увімкнено, стан старший за 36 год → 🟠 vps:reel_guard_stale", any(i["id"] == "vps:reel_guard_stale" and i["sev"] == "warn" for i in iss))
+iss = hc.check_vps(hctx(hsnap([hq("a_01")], guard=dict(g_ok, at=hiso(60), held={}), timers={"reel-guard.timer": {"enabled": "enabled", "active": "active", "last_trigger_utc": hiso(30)}})))
+chk("health_check: reel-guard.timer увімкнено і вже спрацьовував (30 год тому), стан старший за 36 год → 🟠 vps:reel_guard_stale", any(i["id"] == "vps:reel_guard_stale" and i["sev"] == "warn" for i in iss))
+for lt, why in ((None, "ще не спрацьовував (одразу після деплою)"), (hiso(1), "спрацював лише годину тому (час на запуск)")):
+    iss = hc.check_vps(hctx(hsnap([hq("a_01")], timers={"reel-guard.timer": {"enabled": "enabled", "active": "active", "last_trigger_utc": lt}})))
+    chk(f"health_check: стану сторожа ще нема, але таймер {why} → БЕЗ хибного 🟠 vps:reel_guard_stale", not any(i["id"] == "vps:reel_guard_stale" for i in iss))
 al_vps = [{"at": "2026-11-23T03:10:00", "source": "reel_autopublish.py", "category": "warning", "muted_in_telegram": True,
            "text": "⚠️ Reel dough_02 НЕ опубліковано, поки: товару 22118 немає в каталозі сайту (нема в наявності). SMM: онови підпис/ціни й маніфест, власник: перезалий файли."}]
 iss = hc.check_vps(hctx(hsnap([hq("a_01")], alerts=al_vps)))
@@ -581,6 +584,231 @@ del snap_old["reels"]
 chk("знімок без ключа reels (VPS на старому коді) → нічого про рілси, без падіння", not any("reel" in i["id"] for i in hc.check_vps(hctx(snap_old))))
 chk("queue_present=False → мовчить (нема теки черги)", hc.check_reels(hsnap([], present=False), H_NOW) == [])
 chk("next_reel_slot: пн 12:00 → вт 24.11 18:30; вт 19:00 → пт 27.11", hc.next_reel_slot(H_NOW).date() == date(2026, 11, 24) and hc.next_reel_slot(datetime(2026, 11, 24, 19, 0, tzinfo=timezone.utc)).date() == date(2026, 11, 27))
+
+root = Path(__file__).parent
+
+
+def lock_free(staging):
+    """Чи вільний спільний замок збірки (і одразу звільняємо, щоб тест не тримав його)."""
+    h = rw.acquire_build_lock(str(staging))
+    rw.release_build_lock(h)
+    return h is not None
+
+
+# ── 15. аудит 23.11: жорсткий збій збірки (MemoryError/kill) рахується як невдала спроба ──────────────────────────────────────────────
+import shutil
+import subprocess
+
+
+def oom_process(*a, **k):
+    calls["n"] += 1
+    raise MemoryError()
+
+
+def stage_four(name):
+    q, s = new_env(name)
+    mk_built(q, s, "puzzles_01", "puzzles", ids_of(0, 0, 3), "2026-11-24")
+    for th, ix in (("dough", 1), ("bubbles", 3), ("games", 4)):
+        mk_built(q, s, f"{th}_01", th, ids_of(ix, 0, 3), "2026-11-27")
+    return q, s
+
+
+q, s = stage_four("oom")
+specs_orig = sorted(os.listdir(s / "_specs"))
+calls["n"] = 0
+al = []
+statuses = []
+reel_batch.process = oom_process
+try:
+    for day in range(6):
+        try:
+            run_guard(q, s, now=NOW + timedelta(days=day), enabled=True, prices=P1, vanished=vanished_ids, alerts=al)
+            statuses.append("ok")
+        except MemoryError:
+            statuses.append("oom")
+finally:
+    reel_batch.process = fake_process
+gst = json.load(open(s / "_guard_state.json", encoding="utf-8"))
+fails = [a for a in gst["attempts"] if not a["ok"]]
+chk("6 щоденних запусків із MemoryError: перші три падають із MemoryError, далі збірку НЕ викликають (calls=3), лічильник невдалих = 3", statuses == ["oom", "oom", "oom", "ok", "ok", "ok"] and calls["n"] == 3 and len(fails) == 3
+    and not any(a.get("in_progress") for a in gst["attempts"]))
+chk("після MemoryError осиротілі спеки/файли прибрано (used_ids не «згорають»), старий рілс у черзі, замки знято", sorted(os.listdir(s / "_specs")) == specs_orig and "puzzles_01" in queue_names(q) and not (s / "_weekly_state.json").exists()
+    and not (s / "_guard.lock").exists() and lock_free(s))
+chk("після 3 невдач сповіщення reel_guard_giveup (щодня), у черзі лишається лише старий рілс + 3 придатні", any(k == "reel_guard_giveup:puzzles_01" for k, _ in al) and len(queue_names(q)) == 4)
+
+
+class Killed(BaseException):
+    """Імітація SIGKILL/OOM-killer: жодного finally-коду збирача не мало б виконатись; тут _recover_interrupted вимикаємо вручну."""
+
+
+def killed_process(spec_path, out_dir, feed_path, prices, render=True):
+    calls["n"] += 1
+    spec = json.load(open(spec_path, encoding="utf-8"))
+    Path(out_dir, spec["queue_name"] + ".mp4").write_bytes(b"half-rendered")
+    raise Killed()
+
+
+q, s = stage_four("kill")
+calls["n"] = 0
+real_recover = rg._recover_interrupted
+reel_batch.process = killed_process
+rg._recover_interrupted = lambda *a, **k: 0                                   # справжній kill не встигає нічого прибрати
+try:
+    try:
+        run_guard(q, s, enabled=True, prices=P1, vanished=vanished_ids)
+        killed = False
+    except Killed:
+        killed = True
+finally:
+    rg._recover_interrupted = real_recover
+    reel_batch.process = fake_process
+gst = json.load(open(s / "_guard_state.json", encoding="utf-8"))
+orph = [n for n in os.listdir(s / "_specs") if n not in ("puzzles_01.json", "dough_01.json", "bubbles_01.json", "games_01.json")]
+orph_ids = {i["id"] for i in json.load(open(s / "_specs" / orph[0], encoding="utf-8"))["items"]} if orph else set()
+chk("жорсткий kill: у стані лишився запис спроби «in_progress» (ok=False — уже в лімітах), осиротіла спека й напіввідрендерений mp4 на місці",
+    killed and gst["attempts"][-1]["in_progress"] is True and gst["attempts"][-1]["ok"] is False and len(orph) == 1 and (s / (orph[0][:-5] + ".mp4")).exists())
+al = []
+r = run_guard(q, s, now=NOW + timedelta(hours=26), enabled=True, prices=P1, vanished=vanished_ids, alerts=al)
+gst2 = json.load(open(s / "_guard_state.json", encoding="utf-8"))
+chk("наступний запуск: спроба закрита як невдала («перервано»), осиротілу спеку й mp4 прибрано, ім'я й used_ids не «згоріли» — нова заміна бере ТІ САМІ товари",
+    gst2["attempts"][0]["in_progress"] is False and gst2["attempts"][0]["ok"] is False and "перервано" in gst2["attempts"][0]["error"] and len(r["replaced"]) == 1
+    and {v["id"] for v in json.load(open(q / f"{r['replaced'][0][1]}.json", encoding="utf-8"))["verify"]} == orph_ids)
+
+# заміна встигла лягти в чергу, а процес убито до запису результату → друга збірка не потрібна
+q, s = stage_four("kill2")
+calls["n"] = 0
+real_pub = rw.publish_to_queue
+
+
+def pub_then_kill(name, staging, queue):
+    real_pub(name, staging, queue)
+    raise Killed()
+
+
+rw.publish_to_queue = pub_then_kill
+rg._recover_interrupted = lambda *a, **k: 0
+try:
+    try:
+        run_guard(q, s, enabled=True, prices=P1, vanished=vanished_ids)
+    except Killed:
+        pass
+finally:
+    rw.publish_to_queue = real_pub
+    rg._recover_interrupted = real_recover
+n_after = calls["n"]
+r = run_guard(q, s, now=NOW + timedelta(hours=26), enabled=True, prices=P1, vanished=vanished_ids)
+chk("kill ПІСЛЯ запису заміни в чергу: наступний запуск визнає заміну (recovered, ok), НЕ збирає другу, лише виселяє старий; у черзі рівно одна puzzles-заміна",
+    calls["n"] == n_after == 1 and r["evict_finished"] == ["puzzles_01"] and not (q / "puzzles_01.json").exists() and len([n for n in queue_names(q) if n.startswith("puzzles_")]) == 1)
+
+# ── 16. стан сторожа: .bak і fail-closed при пошкодженні ──────────────────────────────────────────────────────────────────────────────────
+q, s = stage_four("state")
+fail_mode["on"] = True
+try:
+    run_guard(q, s, enabled=True, prices=P1, vanished=vanished_ids)
+finally:
+    fail_mode["on"] = False
+chk("save_state ротує попередню валідну версію в _guard_state.json.bak", (s / "_guard_state.json.bak").is_file() and json.load(open(s / "_guard_state.json.bak", encoding="utf-8")) is not None)
+(s / "_guard_state.json").write_text("{пошкоджено", encoding="utf-8")
+calls["n"] = 0
+al = []
+b_q = snapshot_dir(q)
+r = run_guard(q, s, now=NOW + timedelta(hours=26), enabled=True, prices=P1, vanished=vanished_ids, alerts=al)
+st_after = json.load(open(s / "_guard_state.json", encoding="utf-8"))
+chk("битий _guard_state.json: лічильники взято з .bak, ЗАМІН у цей запуск немає (fail-closed), сповіщення reel_guard_state (warning), чергу не чіпає",
+    r["state_status"] == "recovered" and calls["n"] == 0 and r["replaced"] == [] and snapshot_dir(q) == b_q and any(k == "reel_guard_state" and td._classify(t) == "warning" for k, t in al)
+    and any(a["old"] == "puzzles_01" for a in st_after["attempts"]))
+r = run_guard(q, s, now=NOW + timedelta(hours=27), enabled=True, prices=P1, vanished=vanished_ids)
+chk("наступний запуск: стан знову ок (status=ok), заміни дозволені", r["state_status"] == "ok" and len(r["replaced"]) == 1)
+q, s = stage_four("state2")
+fail_mode["on"] = True
+try:
+    run_guard(q, s, enabled=True, prices=P1, vanished=vanished_ids)
+finally:
+    fail_mode["on"] = False
+os.remove(s / "_guard_state.json")                                           # втрата основного файлу при наявному .bak
+calls["n"] = 0
+r = run_guard(q, s, now=NOW + timedelta(hours=26), enabled=True, prices=P1, vanished=vanished_ids)
+chk("втрачений _guard_state.json при наявному .bak → теж recovered: заміни вимкнено на цей запуск", r["state_status"] == "recovered" and calls["n"] == 0)
+q, s = stage_four("state3")
+r = run_guard(q, s, enabled=False, prices=P1, vanished=vanished_ids)
+chk("перший запуск (стану й .bak ніколи не було) — «fresh», не пошкодження", r["state_status"] == "fresh")
+
+# ── 17. масовий стоп вирівняно з reel_weekly (≥2) ───────────────────────────────────────────────────────────────────────────────────────────
+chk("MASS_MIN = 2 (як reel_weekly.refresh_queue: ≥2 і ≥ половини)", rg.MASS_MIN == 2)
+q, s = new_env("mass2")
+for th, ix in (("puzzles", 0), ("squish", 2), ("dough", 1)):
+    mk_built(q, s, f"{th}_01", th, ids_of(ix, 0, 3), "2026-11-24")
+al = []
+calls["n"] = 0
+r = run_guard(q, s, enabled=True, prices=gone(BIG, "500", "700"), vanished=("500", "700"), alerts=al)
+chk("2 із 3 рілсів збирача утримано → масовий стоп (раніше при MASS_MIN=3 замінило б обидва)", r["replaced"] == [] and calls["n"] == 0 and any(k == "reel_guard_mass" for k, _ in al))
+
+# ── 18. спільний замок збірки reel_weekly ↔ reel_guard ─────────────────────────────────────────────────────────────────────────────────────
+CUR["prices"] = P1
+q, s = stage_four("blk")
+held_lock = rw.acquire_build_lock(str(s))
+chk("acquire_build_lock: замок беремо; другий захват того ж замка (інший процес/дескриптор) — None", held_lock is not None and rw.acquire_build_lock(str(s)) is None)
+calls["n"] = 0
+al = []
+b_q = snapshot_dir(q)
+r = run_guard(q, s, enabled=True, prices=P1, vanished=vanished_ids, alerts=al)
+st_b = json.load(open(s / "_guard_state.json", encoding="utf-8"))
+chk("reel_guard при зайнятому замку збірки: заміну НЕ збирає, спроба НЕ рахується, сповіщення reel_guard_busy (warning), чергу не чіпає",
+    r["replaced"] == [] and calls["n"] == 0 and st_b["attempts"] == [] and snapshot_dir(q) == b_q and any(k == "reel_guard_busy" and td._classify(t) == "warning" for k, t in al))
+al_w = []
+b_s_all = snapshot_dir(s)
+out_w = rw.run_vps(ensure_slots=8, queue_dir=str(q), staging_dir=str(s), today=date(2026, 11, 23), index=ITEMS + FILLER, feed=FEED, demand=set(), now_forbidden=lambda it: False,
+                   specs_dir=EMPTY_SPECS, alert=lambda k, t: al_w.append(k), prices=BIG)
+chk("reel_weekly.run_vps при зайнятому замку: нічого не збирає й не чіпає чергу/staging, сигнал reel_weekly_busy, повертає []", out_w == [] and al_w == ["reel_weekly_busy"] and snapshot_dir(q) == b_q
+    and {k: v for k, v in snapshot_dir(s).items() if k != "_guard_state.json" and not k.startswith("_guard_state")} == {k: v for k, v in b_s_all.items() if not k.startswith("_guard_state")})
+rw.release_build_lock(held_lock)
+r = run_guard(q, s, now=NOW + timedelta(hours=1), enabled=True, prices=P1, vanished=vanished_ids)
+chk("після звільнення замка reel_guard збирає заміну, і сам замок знімає після запуску", len(r["replaced"]) == 1 and lock_free(s))
+CUR["prices"] = BIG
+q, s = stage_four("blk2")
+out_w = rw.run_vps(ensure_slots=6, queue_dir=str(q), staging_dir=str(s), today=date(2026, 11, 23), index=ITEMS + FILLER, feed=FEED, demand=set(), now_forbidden=lambda it: False,
+                   specs_dir=EMPTY_SPECS, alert=lambda k, t: None, prices=BIG)
+lk = rw.acquire_build_lock(str(s))
+chk("штатний розклад: reel_weekly без конкурента збирає як раніше (добір до 6) і звільняє замок", len(out_w) == 2 and lk is not None)
+rw.release_build_lock(lk)
+CUR["prices"] = P1
+
+# ── 19. deploy/reel_guard_switch.ps1: дописування REEL_GUARD=1 не склеює останній ключ .env ───────────────────────────────────────────────
+ps1_txt = (root / "deploy" / "reel_guard_switch.ps1").read_text(encoding="utf-8")
+env_script = ps1_txt.replace("\r\n", "\n").split("$envScript = @'\n", 1)[1].split("\n'@", 1)[0]
+bash = shutil.which("bash")
+if bash and "system32" in bash.lower():           # WSL-bash не розуміє C:/-шляхів: беремо Git Bash, якщо є
+    bash = next((p for p in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe") if os.path.isfile(p)), None)
+
+
+def run_env(content, action):
+    d = tmp / f"envtest_{abs(hash((content, action, os.urandom(2))))}"
+    d.mkdir()
+    (d / ".env").write_bytes(content.encode("utf-8"))
+    (d / ".env.bak").write_bytes(content.encode("utf-8"))
+    script = env_script.replace("__APP__", d.as_posix()).replace("__BAK__", (d / ".env.bak").as_posix()).replace("__ACTION__", action)
+    sh = d / "go.sh"
+    sh.write_bytes(script.encode("utf-8"))
+    out = subprocess.run([bash, sh.as_posix()], capture_output=True, text=True, timeout=60).stdout
+    return (d / ".env").read_bytes().decode("utf-8"), out
+
+
+if bash:
+    c, o = run_env("A=1", "On")
+    chk("ps1 On: .env без кінцевого \\n («A=1») → «A=1\\nREEL_GUARD=1\\n», попередній ключ цілий (НЕ «A=1REEL_GUARD=1»), рівно один рядок", c == "A=1\nREEL_GUARD=1\n" and "OTHER_KEYS_INTACT" in o and "REEL_GUARD_LINES=1" in o and "REEL_GUARD_ONE=1" in o)
+    c, o = run_env("A=1\nREEL_GUARD=0\nB=2\nREEL_GUARD=1\n", "On")
+    chk("ps1 On: старі рядки REEL_GUARD (0 і 1) видалено, інші ключі не зачеплено, один новий рядок в кінці", c == "A=1\nB=2\nREEL_GUARD=1\n" and "OTHER_KEYS_INTACT" in o and "REEL_GUARD_LINES=1" in o)
+    c, o = run_env("A=1\nREEL_GUARD=1\n", "Off")
+    chk("ps1 Off: REEL_GUARD прибрано, інші ключі цілі, рядків 0", c == "A=1\n" and "OTHER_KEYS_INTACT" in o and "REEL_GUARD_LINES=0" in o)
+    c, o = run_env("A=1\n", "On")
+    c2, o2 = run_env(c, "On")
+    chk("ps1 On двічі поспіль ідемпотентний (один рядок REEL_GUARD=1)", c == c2 == "A=1\nREEL_GUARD=1\n" and "REEL_GUARD_LINES=1" in o2)
+    c, o = run_env("", "On")
+    chk("ps1 On: порожній .env → лише «REEL_GUARD=1\\n»", c == "REEL_GUARD=1\n")
+else:
+    chk("ps1: bash не знайдено — перевірку скрипта .env пропущено (на CI/VPS є)", True)
+chk("ps1: дописування йде через base64 (лапки/переноси не псуються в ssh), перевірка «рівно один рядок» і «інші ключі цілі» є в тексті", "ToBase64String" in ps1_txt and "OTHER_KEYS_INTACT" in ps1_txt and "tail -c1" in ps1_txt)
+
 
 # ── 14. юніти й реєстр ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 root = Path(__file__).parent

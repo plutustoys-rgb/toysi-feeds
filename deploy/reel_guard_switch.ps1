@@ -26,16 +26,41 @@ if ($Action -eq 'Install') {
     $r = Invoke-VpsCmd "cd $app && bash deploy_systemd_units.sh 2>&1 | tail -n 5"
     Write-Output $r
 }
+# Remote script for On/Off (single-quoted here-string: nothing is expanded by PowerShell). Sent as base64 -> `base64 -d | bash`, so quotes/newlines survive ssh.
+# On: drops old REEL_GUARD lines, GUARANTEES a trailing newline before appending (otherwise "A=1" + "REEL_GUARD=1" would glue into "A=1REEL_GUARD=1" and break key A),
+# appends exactly one REEL_GUARD=1; then compares .env (without REEL_GUARD lines) with the backup: every other key must be byte-identical.
+$envScript = @'
+set -u
+ENV=__APP__/.env
+BAK=__BAK__
+sed -i '/^REEL_GUARD=/d' "$ENV"
+if [ "__ACTION__" = "On" ]; then
+  if [ -s "$ENV" ] && [ -n "$(tail -c1 "$ENV")" ]; then printf '\n' >> "$ENV"; fi
+  echo 'REEL_GUARD=1' >> "$ENV"
+fi
+grep -v '^REEL_GUARD=' "$BAK" > /tmp/reelguard_a.$$
+grep -v '^REEL_GUARD=' "$ENV" > /tmp/reelguard_b.$$
+if cmp -s /tmp/reelguard_a.$$ /tmp/reelguard_b.$$; then echo OTHER_KEYS_INTACT; else echo OTHER_KEYS_CHANGED; fi
+rm -f /tmp/reelguard_a.$$ /tmp/reelguard_b.$$
+echo "REEL_GUARD_LINES=$(grep -c '^REEL_GUARD=' "$ENV")"
+echo "REEL_GUARD_ONE=$(grep -c '^REEL_GUARD=1$' "$ENV")"
+'@
+function Invoke-VpsScript($script) {
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($script -replace "`r", '')))
+    return (Invoke-VpsCmd "echo $b64 | base64 -d | bash")
+}
 if ($Action -eq 'On' -or $Action -eq 'Off') {
-    $r = Invoke-VpsCmd "test -f $app/.env && cp -p $app/.env $app/.env.bak_reelguard_$stamp && echo BACKUP_OK"
+    $bak = "$app/.env.bak_reelguard_$stamp"
+    $r = Invoke-VpsCmd "test -f $app/.env && cp -p $app/.env $bak && echo BACKUP_OK"
     if ($vpsRc -ne 0 -or $r -notmatch 'BACKUP_OK') { Stop-Here "cannot back up .env (rc $vpsRc): $r" }
-    $line = ''
-    if ($Action -eq 'On') { $line = " && echo 'REEL_GUARD=1' >> $app/.env" }
-    $r = Invoke-VpsCmd "sed -i '/^REEL_GUARD=/d' $app/.env$line && grep -c '^REEL_GUARD=1' $app/.env"
-    $n = ($r -split "`n" | Select-Object -Last 1).Trim()
-    if ($Action -eq 'On' -and $n -ne '1') { Stop-Here "REEL_GUARD=1 not set (count=$n); backup: $app/.env.bak_reelguard_$stamp" }
-    if ($Action -eq 'Off' -and $n -ne '0') { Stop-Here "REEL_GUARD still present (count=$n); backup: $app/.env.bak_reelguard_$stamp" }
-    Write-Output "OK: REEL_GUARD lines with value 1 in .env = $n (backup $app/.env.bak_reelguard_$stamp)"
+    $r = Invoke-VpsScript ($envScript.Replace('__APP__', $app).Replace('__BAK__', $bak).Replace('__ACTION__', $Action))
+    $intact = $r -match 'OTHER_KEYS_INTACT'
+    $lines = if ($r -match 'REEL_GUARD_LINES=(\d+)') { [int]$Matches[1] } else { -1 }
+    $ones = if ($r -match 'REEL_GUARD_ONE=(\d+)') { [int]$Matches[1] } else { -1 }
+    if (-not $intact) { Stop-Here "other keys in .env changed or check failed - restore: cp $bak $app/.env ; output: $r" }
+    if ($Action -eq 'On' -and ($lines -ne 1 -or $ones -ne 1)) { Stop-Here "expected exactly one REEL_GUARD=1 line (lines=$lines, ones=$ones); backup: $bak" }
+    if ($Action -eq 'Off' -and $lines -ne 0) { Stop-Here "REEL_GUARD still present (lines=$lines); backup: $bak" }
+    Write-Output "OK: REEL_GUARD lines=$lines (value 1: $ones), all other .env keys byte-identical to the backup $bak"
 }
 if ($Action -eq 'DryRun' -or $Action -eq 'On') {
     Write-Output '--- dry run (writes nothing)'

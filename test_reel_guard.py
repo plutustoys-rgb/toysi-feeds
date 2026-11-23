@@ -810,6 +810,114 @@ else:
 chk("ps1: дописування йде через base64 (лапки/переноси не псуються в ssh), перевірка «рівно один рядок» і «інші ключі цілі» є в тексті", "ToBase64String" in ps1_txt and "OTHER_KEYS_INTACT" in ps1_txt and "tail -c1" in ps1_txt)
 
 
+# ── 20. повторний аудит: відновлення лише під замком, суворе визнання «заміни, що встигла лягти», помилки замка, dry, ps1 ───────────────────────────────────────
+def craft_in_progress(q, s, old="puzzles_01", slot="2026-11-24", theme="puzzles"):
+    """Стан сторожа зі старою спробою in_progress (процес колись убито): знімок спек і черги — як у реальному записі."""
+    specs_before = sorted(f[:-5] for f in os.listdir(s / "_specs") if f.endswith(".json"))
+    att = {"at": NOW.isoformat(timespec="seconds"), "slot": slot, "old": old, "new": None, "ok": False, "in_progress": True, "theme": theme,
+           "specs_before": specs_before, "queue_before": queue_names(q)}
+    rg.save_state(str(s), {"attempts": [att], "held": {}, "at": NOW.isoformat(timespec="seconds")})
+    return att
+
+
+# (1) живий weekly: замок зайнятий, у _specs його спека, у staging його mp4 — guard НІЧОГО не видаляє
+q, s = stage_four("recov1")
+craft_in_progress(q, s)
+live_spec = s / "_specs" / "puzzles_09.json"
+live_spec.write_text(json.dumps({"queue_name": "puzzles_09", "items": []}), encoding="utf-8")
+live_mp4 = s / "puzzles_09.mp4"
+live_mp4.write_bytes(b"weekly-is-rendering-now")
+weekly_lock = rw.acquire_build_lock(str(s))
+calls["n"] = 0
+for enabled in (True, False):
+    run_guard(q, s, now=NOW + timedelta(hours=26), enabled=enabled, prices=P1, vanished=vanished_ids)
+st1 = json.load(open(s / "_guard_state.json", encoding="utf-8"))
+chk("живий замок weekly + його спека в _specs + його mp4 у staging: reel_guard (і з брамою, і без) НІЧОГО не видаляє; стара спроба лишається in_progress; збірки нема",
+    live_spec.is_file() and live_mp4.is_file() and st1["attempts"][0]["in_progress"] is True and calls["n"] == 0)
+rw.release_build_lock(weekly_lock)
+# режим спостереження (без замка) відновлення НЕ запускає
+run_guard(q, s, now=NOW + timedelta(hours=27), enabled=False, prices=P1, vanished=vanished_ids)
+st1 = json.load(open(s / "_guard_state.json", encoding="utf-8"))
+chk("режим спостереження (REEL_GUARD вимкнено), замок вільний: відновлення теж не виконується — in_progress лишається, живі файли на місці", st1["attempts"][0]["in_progress"] is True and live_spec.is_file() and live_mp4.is_file())
+# брама ON, замок вільний: відновлення відбувається, але чужі (не з цієї спроби) файли — теж у _specs і не в черзі → це «осиротіле», знімок specs_before їх не містив
+run_guard(q, s, now=NOW + timedelta(hours=28), enabled=True, prices=P1, vanished=vanished_ids)
+st1 = json.load(open(s / "_guard_state.json", encoding="utf-8"))
+chk("брама ON і замок вільний: стара in_progress закрито як невдалу, осиротілу спеку/mp4 (яких не було перед спробою) прибрано під замком", st1["attempts"][0]["in_progress"] is False and not live_spec.exists() and not live_mp4.exists())
+
+# (2) «заміна, що встигла лягти»: легітимний рілс weekly ІНШОЇ теми й ІНШОГО слота не є заміною puzzles_01
+q, s = stage_four("recov2")
+craft_in_progress(q, s)
+mk_built(q, s, "squish_02", "squish", ids_of(2, 3, 6), "2026-12-04")
+calls["n"] = 0
+r = run_guard(q, s, now=NOW + timedelta(hours=26), enabled=True, prices=P1, vanished=vanished_ids)
+a0 = json.load(open(s / "_guard_state.json", encoding="utf-8"))["attempts"][0]
+chk("weekly-рілс squish_02 (слот 04.12) не визнано заміною puzzles_01 (слот 24.11): спроба закрита як невдала (new=None); squish_02 у черзі; puzzles_01 виселено лише справжньою новою заміною",
+    a0["in_progress"] is False and a0["ok"] is False and a0["new"] is None and (q / "squish_02.json").is_file() and r["evict_finished"] == [] and len(r["replaced"]) == 1 and r["replaced"][0][1].startswith("puzzles_") and calls["n"] == 1)
+q, s = stage_four("recov3")
+craft_in_progress(q, s)
+mk_built(q, s, "puzzles_07", "puzzles", ids_of(0, 3, 6), "2026-12-04")           # та сама тема, але інший слот
+calls["n"] = 0
+r = run_guard(q, s, now=NOW + timedelta(hours=26), enabled=True, prices=P1, vanished=vanished_ids)
+a0 = json.load(open(s / "_guard_state.json", encoding="utf-8"))["attempts"][0]
+chk("рілс тієї ж теми, але з іншим not_before (04.12 ≠ слот 24.11) — теж не заміна", a0["ok"] is False and a0["new"] is None and (q / "puzzles_07.json").is_file() and r["evict_finished"] == [])
+
+# (3) помилка відкриття файлу замка: не вбиває weekly і не змінює нічого в guard
+for nm in ("lockerr_w", "lockerr_g"):
+    (tmp / nm).mkdir()
+    (tmp / nm / "reel_build.lock").mkdir()          # замість файла — тека: open() дає IsADirectoryError/PermissionError
+try:
+    rw.acquire_build_lock(str(tmp / "lockerr_w" / "stg"))
+    lock_err = False
+except rw.BuildLockError:
+    lock_err = True
+chk("acquire_build_lock: файл замка не відкривається → BuildLockError (а не «зайнято» і не необроблений виняток)", lock_err)
+CUR["prices"] = BIG
+q, _s = stage_four("lockerr_src")
+stg_w = tmp / "lockerr_w" / "stg"
+(stg_w / "_specs").mkdir(parents=True)
+shutil.copytree(q, tmp / "lockerr_w" / "q")
+al_w = []
+try:
+    out_w = rw.run_vps(ensure_slots=6, queue_dir=str(tmp / "lockerr_w" / "q"), staging_dir=str(stg_w), today=date(2026, 11, 23), index=ITEMS + FILLER, feed=FEED, demand=set(), now_forbidden=lambda it: False,
+                       specs_dir=EMPTY_SPECS, alert=lambda k, t: al_w.append(k), prices=BIG)
+    died = False
+except Exception:
+    died, out_w = True, None
+chk("reel_weekly при недоступному файлі замка НЕ вмирає: сигнал reel_weekly_lock_error, добір іде як до введення замка", not died and "reel_weekly_lock_error" in al_w and len(out_w) == 2)
+CUR["prices"] = P1
+q, s = stage_four("lockerr_g")
+stg_g = tmp / "lockerr_g" / "stg"
+shutil.copytree(s, stg_g)
+al = []
+b_q = snapshot_dir(q)
+calls["n"] = 0
+r = rg.run(str(q), str(stg_g), now=NOW, dry=False, enabled=True, prices=P1, alert=lambda k, t: al.append((k, t)), build_kw=bkw(vanished_ids))
+chk("reel_guard при недоступному файлі замка: заміну НЕ збирає (fail-closed), спроба не записана, сигнал reel_guard_lock_error (warning), чергу не чіпає",
+    r["replaced"] == [] and calls["n"] == 0 and snapshot_dir(q) == b_q and any(k == "reel_guard_lock_error" and td._classify(t) == "warning" for k, t in al)
+    and json.load(open(stg_g / "_guard_state.json", encoding="utf-8"))["attempts"] == [])
+
+# (4) dry-run weekly замок не бере і «зайнято» не сигналить
+CUR["prices"] = BIG
+q, s = stage_four("dryw")
+h = rw.acquire_build_lock(str(s))
+al_w = []
+out_d = rw.run_vps(ensure_slots=6, queue_dir=str(q), staging_dir=str(s), today=date(2026, 11, 23), dry_run=True, index=ITEMS + FILLER, feed=FEED, demand=set(), now_forbidden=lambda it: False,
+                   specs_dir=EMPTY_SPECS, alert=lambda k, t: al_w.append(k))
+rw.release_build_lock(h)
+chk("run_vps(dry_run=True) при зайнятому замку: замок не береться, reel_weekly_busy не шлеться, план показано (2 рілси)", al_w == [] and len(out_d) == 2)
+CUR["prices"] = P1
+
+# (6) ps1: export/відступ у .env, права тимчасових файлів
+if bash:
+    c, o = run_env("A=1\nexport REEL_GUARD=0\n  REEL_GUARD=2\nB=2", "On")
+    chk("ps1 On: `export REEL_GUARD=…` і рядок із відступом теж вважаються рядком REEL_GUARD (видаляються), інші ключі цілі, рівно один новий рядок", c == "A=1\nB=2\nREEL_GUARD=1\n" and "OTHER_KEYS_INTACT" in o and "REEL_GUARD_LINES=1" in o)
+    c, o = run_env("A=1\nexport REEL_GUARD=1\n", "Off")
+    chk("ps1 Off: `export REEL_GUARD=1` прибрано", c == "A=1\n" and "REEL_GUARD_LINES=0" in o)
+    chk("ps1: umask 077 + mktemp + trap для тимчасових копій .env", "umask 077" in env_script and "mktemp" in env_script and "trap " in env_script and "/tmp/reelguard" not in env_script)
+else:
+    chk("ps1: bash не знайдено — перевірку скрипта .env пропущено", True)
+
+
 # ── 14. юніти й реєстр ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 root = Path(__file__).parent
 svc = (root / "reel-guard.service").read_text(encoding="utf-8")

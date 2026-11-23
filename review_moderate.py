@@ -46,8 +46,8 @@ def cmd_show(conn, rid):
     return 0
 
 
-def cmd_moderate(conn, rid, action, by="cli"):
-    new = reviews_db.moderate(conn, rid, action, by=by)
+def cmd_moderate(conn, rid, action, by="cli", expect_status=None):
+    new = reviews_db.moderate(conn, rid, action, by=by, expect_status=expect_status)
     if not new:
         print(f"відгук #{rid}: нема або перехід недозволений (invited без тексту змінити не можна)")
         return 1

@@ -7,7 +7,8 @@ $rootKey = Join-Path $env:USERPROFILE ".ssh\plutustoys_vps"
 $sh = @'
 umask 077
 f=/root/.ssh/authorized_keys
-cp -p $f $f.bak_review_relay_remove && chmod 600 $f.bak_review_relay_remove
+bk=$f.bak_review_relay_remove_$(date +%Y%m%d%H%M%S)_$$
+cp -p $f $bk && chmod 600 $bk
 n0=$(grep -c . $f)
 s0=$(grep -c ' support-relay$' $f)
 grep -v '^command="/opt/plutustoys/venv/bin/python3 /opt/plutustoys/review_relay.py",restrict ssh-ed25519 [A-Za-z0-9+/=]* review-relay$' $f > $f.tmp_rr

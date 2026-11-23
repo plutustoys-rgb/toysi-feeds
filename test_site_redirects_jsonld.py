@@ -93,7 +93,7 @@ types = {d["@type"] for d in data}
 chk("головна: Organization + WebSite", types == {"Organization", "WebSite"})
 org = next(d for d in data if d["@type"] == "Organization")
 chk("Organization: name/url/logo/телефон/соцмережі", org["name"] == "PlutusToys" and org["url"].startswith("https://plutustoys.com.ua")
-    and org["contactPoint"][0]["telephone"] == "+380730150815" and len(org["sameAs"]) == 2)
+    and org["contactPoint"][0]["telephone"] == "+380730150815" and len(org["sameAs"]) == 3 and org["sameAs"][2] == "https://www.pinterest.com/plutustoys/")
 chk("WebSite без SearchAction (пошук клієнтський, сторінки результатів нема)", "potentialAction" not in next(d for d in data if d["@type"] == "WebSite"))
 chk("JSON-LD безпечний у <script> (жодного літерального '<' всередині)", all("<" not in b for b in blocks))
 print(f"\n{'❌ ПРОВАЛЕНО: ' + str(F) if F else '✅ редіректи/HSTS/таймер/JSON-LD — усі перевірки коректні.'}")

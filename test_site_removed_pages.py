@@ -63,6 +63,10 @@ def body_rules(script):
     return [l.strip() for l in body.splitlines() if l.strip().startswith(("RewriteCond ", "RewriteRule "))]
 
 
+# «живі» файли site/ для умов -f / !-f (23.11: загальне 410 для видалених карток діє лише на відсутні файли)
+LIVE_FILES = {"product-1.html", "product-2773030.html", "product-27730.html", "product-299076.html", "product-277303.html"}   # 277303: при порожній мапі файл «живий» — загальне 410 на нього не діє
+
+
 def simulate(script, path, maps):
     conds = []
     for line in body_rules(script):
@@ -83,6 +87,12 @@ def simulate(script, path, maps):
         ok = True
         for cond in pending:
             if cond.startswith("%{THE_REQUEST}"):
+                continue
+            fm = re.fullmatch(r"%\{DOCUMENT_ROOT\}/(\S+) (!?)-f", cond)
+            if fm:
+                exists = expand(fm.group(1)) in LIVE_FILES
+                if exists == (fm.group(2) == "!"):
+                    ok = False
                 continue
             cm = re.fullmatch(r"(\S+) (!?)=(.*)", cond)
             if (expand(cm.group(1)) == cm.group(3)) == (cm.group(2) == "!"):

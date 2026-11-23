@@ -70,6 +70,11 @@ def simulate(script, path, query="", maps=None):
         for cond in pending:
             if cond.startswith("%{THE_REQUEST}"):
                 continue                        # симулюємо пряме звернення клієнта
+            fm = re.fullmatch(r"%\{DOCUMENT_ROOT\}/\S+ (!?)-f", cond)   # умови -f/!-f (23.11, загальне 410 видалених карток): у цьому наборі проб усі product-* вважаємо «живими» файлами
+            if fm:
+                if fm.group(1) == "!":
+                    ok = False
+                continue
             cm = re.fullmatch(r"(\S+) (!?)=(.*)", cond)
             if (expand(cm.group(1)) == cm.group(3)) == (cm.group(2) == "!"):
                 ok = False

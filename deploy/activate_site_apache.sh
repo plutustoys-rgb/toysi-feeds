@@ -274,6 +274,10 @@ cat <<'EOF'
     # 301 зі старих адрес — лише коли нова сторінка вже існує (-f): до першої збірки з воротами старі адреси віддаються як було (без 301 у 404). Правила нічого не міняють, поки збірка не створила нових файлів.
     RewriteCond %{DOCUMENT_ROOT}/product-y$1.html -f
     RewriteRule ^/product-rt-([0-9A-Za-z_]+)\.html$ /product-y$1.html [R=301,L]
+    # 23.11.2026 (SEO, GSC: 32 % обходу Googlebot за 90 днів — 404): видалені власні картки (product-<id>, product-x…, product-y…, product-rt-…, product-k…), яких НЕМА у site/ (build_site крок 8 прибрав їх HTML),
+    # → 410 Gone, як і старі Prom-адреси: 404 не припиняє переобхід. Існуючий файл правило не чіпає (-f), тож жива картка (в т.ч. «немає в наявності») віддається як є; 301 rt→y (вище) спрацьовує раніше за це правило.
+    RewriteCond %{DOCUMENT_ROOT}/$1.html !-f
+    RewriteRule ^/(product-[A-Za-z0-9_-]+)\.html$ - [G,L]
     # внутрішній rewrite фото (без редиректу): публічний шлях → фізичний файл; старі шляхи /img/rt віддаються як були (збережені кошики, Google Images)
     RewriteCond %{DOCUMENT_ROOT}/img/rt/rt-$1-$2.jpg -f
     RewriteRule ^/img/p/y([0-9A-Za-z_]+)-([0-9]{1,2})\.jpg$ /img/rt/rt-$1-$2.jpg [L]

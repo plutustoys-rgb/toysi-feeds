@@ -2,11 +2,12 @@
 """kv_order_runner.py — конвеєр замовлень САЙТУ з товарами KIDDISVIT (kv-/kvu-), етап Б2 (21.11.2026).
 Оплачене замовлення (prepaid, чек видано) → orders/create у B2B KIDDISVIT («my_ttn», без redelivery) → наша ТТН НП із відділення Дніпро №28 (номер замовлення КЗ-… у двох полях) → PDF наліпки 100×100 + експрес-накладної → orders/delivery/ttn-data.
 
-СТАНИ (orders.kv_state): NULL → kv_creating → kv_created → ttn_creating → ttn_created → docs_ready → docs_sent (→ shipped/delivered/returned — трекінг, етап Б3).
+СТАНИ (orders.kv_state): NULL → kv_creating → kv_created → ttn_creating → ttn_created → docs_ready → docs_sent → shipped → delivered | returned (трекінг НП, етап Б3, 23.11.2026: `track_shipments`).
   • kv_creating / kv_unknown / ttn_creating = «результат кроку невідомий»: ЖОДНОГО автоповтору (create/ТТН платні/незворотні) — лише сигнал і ручна звірка. kv_unknown: результат orders/create невизначений (таймаут, 5xx, відповідь без номера).
   • manual = термінальний: замовлення створено, але НЕ зарезервовано (status_OK=0) або рішення людини.
 Запобіжники (усе ВІДЧИНЕНО лише разом): KV_RUNNER_APPLY=1 І NP_TTN_APPLY=1 І KV_ORDERS_LIVE=1 І KV_RUNNER_SINCE=<ISO-дата> (замовлення без стану, створені раніше, не беремо). Інакше DRY-RUN: нічого не створюється, звіт «що б зробили».
   • Перед create — свіжа перевірка замовлення з БД (повернення/скасування/чек), живий залишок products/rests на складі, сухий прогін ТТН (getDocumentPrice), атомарний claim.
+ТРЕКІНГ (етап Б3): для замовлень у docs_sent/shipped з ТТН (14 цифр) один пакетний `nova_poshta.get_tracking_batch` за цикл → shipped (посилка в дорозі), delivered (отримано), returned (відмова/повернення) + `delivery_status`. Лише в реальному режимі (ті самі ворота, що й створення); fail-closed: НП недоступна / ТТН не знайдена / невідомий статус → стан НЕ міняється. Алерт — лише при returned. delivered нічого грошового не робить (лише запис стану).
 Запуск: kv-order-runner.timer (VPS, кожні 15 хв; без kv-замовлень — миттєвий вихід). Збій → один алерт на замовлення/стан/добу."""
 import base64
 import json
@@ -26,7 +27,10 @@ MAX_ORDERS_PER_RUN = 3
 STUCK = ("kv_creating", "kv_unknown", "ttn_creating")
 ACTION_STATES = (None, "kv_created", "ttn_created", "docs_ready")      # стани, де runner робить КРОК (решта — лише спостереження/сигнал)
 SENDER_KIND = "kv"
-MAX_RETRIES = 3                      # визначені відмови orders/create і збої ttn-data: після 3 спроб — manual (аудит #1946, знахідки 1–2)
+TRACK_STATES = ("docs_sent", "shipped")                               # стани, де раннер лише спостерігає за посилкою (етап Б3)
+_TTN_RE = re.compile(r"^\d{14}$")                                     # номер ЕН НП — 14 цифр (як у nova_poshta.get_tracking_*: len == 14 and isdigit)
+_NP_NOT_SENT_CODES = ("1", "2", "3")                                  # НП: створена/видалена/не знайдена — ще НЕ в дорозі (так само rt_order_runner._tracking_state)
+MAX_RETRIES = 3                     # визначені відмови orders/create і збої ttn-data: після 3 спроб — manual (аудит #1946, знахідки 1–2)
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _ATTEMPT_RE = re.compile(r"^\[n=(\d+)\]")
 
@@ -129,6 +133,11 @@ class _Deps:
             out[kind] = str(p)
         return out
 
+    def tracking_batch(self, ttns: list) -> dict:
+        """{ТТН: {status, status_code, return_ttn, …}} — читання НП (TrackingDocument.getStatusDocuments), без запису."""
+        import nova_poshta
+        return nova_poshta.get_tracking_batch(ttns)
+
     def push_docs(self, kv_order_id: str, paths: dict) -> list:
         docs = [{"type": k, "BinaryData": base64.b64encode(Path(paths[k]).read_bytes()).decode("ascii")} for k in ("marking", "document")]
         return self.client.orders_ttn_data(kv_order_id, docs)
@@ -205,6 +214,90 @@ def _reconcile_hint(d, order: dict, since_days: int = 3) -> str:
         return ""
 
 
+def classify_np(info) -> str | None:
+    """Запис НП (get_tracking_batch) → 'returned' | 'delivered' | 'shipped' | None. None = невідомо/ще не в дорозі → стан НЕ міняємо (fail-closed).
+    Ті самі критерії, що в order_status_tracker для замовлень сайту: відмова/повернення — nova_poshta.is_refusal (має пріоритет, як у трекері); отримано — site_order_status_notify.np_delivered
+    (код 9/10/11/106 І текст «отримано/одержано», без документа повернення); решта з відомим кодом, крім 1/2/3 (створена/видалена/не знайдена), — «в дорозі»."""
+    if not isinstance(info, dict):
+        return None
+    code = str(info.get("status_code") or "").strip()
+    text = str(info.get("status") or "").strip()
+    if not code or not text:
+        return None
+    import nova_poshta
+    import site_order_status_notify
+    if nova_poshta.is_refusal(info):
+        return "returned"
+    if site_order_status_notify.np_delivered(info):
+        return "delivered"
+    if code in _NP_NOT_SENT_CODES:
+        return None
+    return "shipped"
+
+
+def track_shipments(conn, orders: list, apply: bool, deps=None) -> list:
+    """Етап Б3: docs_sent/shipped → shipped/delivered/returned за статусом НП. Поза реальним режимом (apply=False) нічого не робить (і НП не питає). Один пакетний запит НП на цикл.
+    Переходи лише ВПЕРЕД: docs_sent→shipped|delivered|returned, shipped→delivered|returned (delivered/returned термінальні — виходять із get_kv_orders_pending). НП недоступна, ТТН не знайдена,
+    статус невідомий, стан у БД змінився між вибіркою й записом, delivery_status уже виставлено чимось іншим → нічого не пишемо. Грошових дій немає: лише kv_state + delivery_status (set_kv_state ставить delivered_at); алерт — тільки returned."""
+    import orders_db
+    if not apply:
+        return []
+    cands, reps = [], []
+    for o in orders:
+        if o.get("kv_state") not in TRACK_STATES:
+            continue
+        rep = {"order": o["internal_order_id"], "state": o.get("kv_state"), "apply": apply, "tracking": True, "actions": [], "problems": []}
+        reps.append(rep)
+        ttn = str(o.get("toysi_ttn") or "").strip()
+        if not _TTN_RE.match(ttn):
+            rep["problems"].append(f"стан «{o.get('kv_state')}», але ТТН порожня або не 14 цифр ({ttn[:20]!r}) — трекінг НП неможливий, потрібна ручна перевірка")
+            continue
+        cands.append((o, rep, ttn))
+    if not cands:
+        return reps
+    d = deps or _Deps()
+    try:
+        info = d.tracking_batch([t for _, _, t in cands])
+        if not isinstance(info, dict):
+            raise ValueError("відповідь НП не словник")
+    except Exception as e:  # noqa: BLE001
+        print(f"[kv_runner] трекінг НП недоступний ({type(e).__name__}) — стани без змін, повтор наступного циклу", file=sys.stderr)
+        for _, rep, _ in cands:
+            rep["actions"].append("трекінг НП недоступний — без змін")
+        return reps
+    for o, rep, ttn in cands:
+        oid, cur = o["internal_order_id"], o["kv_state"]
+        try:
+            x = info.get(ttn)
+            new = classify_np(x)
+            if new is None:
+                rep["actions"].append(f"НП: ТТН не знайдена/статус невідомий або ще не в дорозі (код {str((x or {}).get('status_code') or '—')}) — без змін")
+                continue
+            if new == cur:
+                continue
+            fresh = orders_db.get_order(conn, oid) or {}
+            if fresh.get("kv_state") != cur or str(fresh.get("toysi_ttn") or "").strip() != ttn:
+                rep["actions"].append("стан/ТТН у БД змінилися під час циклу — пропущено")
+                continue
+            if str(fresh.get("delivery_status") or "") not in ("", "shipped"):
+                rep["problems"].append(f"delivery_status уже «{fresh.get('delivery_status')}» (виставлено не трекінгом) — НП каже «{new}», стан НЕ змінено, потрібна ручна перевірка")
+                continue
+            extra = {}
+            if new == "returned":
+                extra["kv_error"] = f"НП: {str(x.get('status') or '')[:120]}; ТТН повернення: {x.get('return_ttn') or '—'}"
+            orders_db.set_kv_state(conn, oid, new, delivery_status=new, **extra)
+            conn.commit()
+            rep["actions"].append(f"трекінг НП: {cur} → {new}")
+            print(f"[kv_runner] {oid}: ТТН {ttn} — {cur} → {new} (НП: {str(x.get('status') or '')[:80]})", flush=True)
+            if new == "returned":
+                _alert(oid, "returned", f"посилка повертається/відмова одержувача (НП: «{str(x.get('status') or '')[:80]}», ТТН {ttn}"
+                       + (f", ТТН повернення {x.get('return_ttn')}" if x.get("return_ttn") else "")
+                       + ") — стан returned (відкат лише вручну). Потрібне рішення людини: повернення коштів клієнту й розбір із KIDDISVIT; автоматично нічого не робиться.")
+        except Exception as e:  # noqa: BLE001
+            rep["problems"].append(f"збій трекінгу {type(e).__name__}: {str(e)[:160]}")
+    return reps
+
+
 def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> dict:
     import kiddisvit_orders as ko
     import orders_db
@@ -218,8 +311,8 @@ def process_order(conn, order: dict, supplier: dict, apply: bool, deps=None) -> 
         if state in STUCK:
             hint = _reconcile_hint(d, order) if state in ("kv_creating", "kv_unknown") else ""
             raise RunnerError(f"крок «{state}» розпочато, але результат невідомий — конвеєр НЕ повторює (create/ТТН платні й незворотні). Звірте кабінет KIDDISVIT / кабінет НП і виставте kv_state вручну." + hint)
-        if state in ("docs_sent", "shipped"):
-            return rep                      # трекінг — етап Б3
+        if state in TRACK_STATES:
+            return rep                      # трекінг — track_shipments (етап Б3): один пакетний запит НП на цикл у _run_pipeline
         if state is None:
             ids = d.ids()
             plan = ko.dry_run(order, supplier, ids, d.lookup)
@@ -384,10 +477,14 @@ def _run_pipeline(apply: bool, deps=None, db_path=None) -> list:
             print("[kv_runner] немає замовлень KIDDISVIT у роботі")
             return reports
         try:
+            reports.extend(track_shipments(conn, [o for o in pending if o.get("kv_state") in TRACK_STATES], apply, deps or _Deps()))      # етап Б3: до завантаження постачальника — збій файлу не блокує трекінг
+        except Exception as e:  # noqa: BLE001
+            print(f"[kv_runner] трекінг збійний ({type(e).__name__}) — решту конвеєра не зачеплено", file=sys.stderr)
+        try:
             supplier = ko.load_supplier()
         except Exception as e:  # noqa: BLE001
             print(f"[kv_runner] постачальницький файл недоступний ({type(e).__name__})", file=sys.stderr)
-            return [{"problems": [f"supplier недоступний ({type(e).__name__})"]}]
+            return reports + [{"problems": [f"supplier недоступний ({type(e).__name__})"]}]      # reports — звіти трекінгу (етап Б3), що вже виконався
         light = [o for o in pending if o.get("kv_state") not in ACTION_STATES]
         action_all = sorted([o for o in pending if o.get("kv_state") in ACTION_STATES], key=lambda o: (o.get("kv_updated_at") or "", o.get("created_at") or ""))
         action = action_all[:MAX_ORDERS_PER_RUN]

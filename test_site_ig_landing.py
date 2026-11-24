@@ -158,7 +158,7 @@ bs.IG_AUTO_FILE = str(tmpd / "нема.json")   # далі — без автоз
 home = (out / "index.html").read_text(encoding="utf-8")
 fsoc = re.search(r'<p class="fsoc">(.*?)</p>', home, re.S).group(1)
 hrefs = re.findall(r'href="([^"]+)"', fsoc)
-chk("футер: Instagram і Facebook з utm_source=site&utm_medium=footer&utm_campaign=social_link", len(hrefs) == 2
+chk("футер: Instagram, Facebook і YouTube з utm_source=site&utm_medium=footer&utm_campaign=social_link", len(hrefs) == 3 and "youtube.com/@PlutusToys" in hrefs[2]
     and all("utm_source=site&utm_medium=footer&utm_campaign=social_link" in h for h in hrefs))
 chk("футер: у Facebook-посилання (вже має ?id=…) utm додано через «&», а не другий «?»", [h for h in hrefs if "facebook" in h][0].count("?") == 1)
 chk("JSON-LD sameAs — чисті адреси без utm", '"sameAs"' in home and "utm_" not in re.search(r'"sameAs":\s*\[[^\]]*\]', home).group(0))

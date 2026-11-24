@@ -1415,7 +1415,7 @@
       if(href.indexOf("tel:")===0){
         trackRaw("phone_click", {link_url:href, page_path:location.pathname}, "Contact", {method:"phone"}, false);
       } else if(t.closest(".fsoc")){
-        var net=/instagram\.com/.test(href)?"instagram":(/facebook\.com/.test(href)?"facebook":"other");
+        var net=/instagram\.com/.test(href)?"instagram":(/facebook\.com/.test(href)?"facebook":(/youtube\.com/.test(href)?"youtube":"other"));
         trackRaw("social_click", {network:net, link_url:href, page_path:location.pathname}, "SocialClick", {network:net}, true);
       } else {
         // Розмальовки (SEO 23.11): клік по PDF/прев'ю аркуша -> coloring_download {sheet_id, sheet_title, via, page_path}; джерело трафіку GA4 бере з сесії

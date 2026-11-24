@@ -32,9 +32,9 @@ def chk(n, c):
 h = bs.header()
 hs = re.search(r'<div class="hsoc">(.*?)</div>', h, re.S).group(1)
 hrefs = re.findall(r'<a class="hsoc-a" href="([^"]+)"', hs)
-chk("шапка: рівно 3 значки — Instagram, Facebook, пошта (aria-label, без тексту-плейсхолдера)", len(hrefs) == 3 and 'aria-label="Instagram"' in hs and 'aria-label="Facebook"' in hs and "mailto:plutustoys@gmail.com" in hs)
-chk("Instagram/Facebook — ті самі адреси, що в SOCIAL_URLS, з utm_medium=header (не footer); у Facebook один «?»", hrefs[0].startswith(bs.SOCIAL_URLS[0]) and hrefs[1].startswith(bs.SOCIAL_URLS[1]) and all("utm_source=site&utm_medium=header&utm_campaign=social_link" in x for x in hrefs[:2]) and hrefs[1].count("?") == 1 and "utm_medium=footer" not in hs)
-chk("зовнішні посилання відкриваються в новій вкладці з rel=noopener", hs.count('target="_blank" rel="noopener"') == 2)
+chk("шапка: рівно 4 значки — Instagram, YouTube (поруч з Instagram, власник 24.11), Facebook, пошта (aria-label, без тексту-плейсхолдера)", len(hrefs) == 4 and 'aria-label="Instagram"' in hs and 'aria-label="YouTube"' in hs and 'aria-label="Facebook"' in hs and "mailto:plutustoys@gmail.com" in hs and hs.index('aria-label="Instagram"') < hs.index('aria-label="YouTube"') < hs.index('aria-label="Facebook"'))
+chk("Instagram/Facebook — ті самі адреси, що в SOCIAL_URLS, з utm_medium=header (не footer); у Facebook один «?»", hrefs[0].startswith(bs.SOCIAL_URLS[0]) and hrefs[1].startswith(bs.YOUTUBE_URL) and hrefs[2].startswith(bs.SOCIAL_URLS[1]) and all("utm_source=site&utm_medium=header&utm_campaign=social_link" in x for x in hrefs[:3]) and hrefs[2].count("?") == 1 and hrefs[1].count("?") == 1 and "utm_medium=footer" not in hs)
+chk("зовнішні посилання відкриваються в новій вкладці з rel=noopener", hs.count('target="_blank" rel="noopener"') == 3)
 chk("порядок у шапці (власник 15.10): пошук → «Підтримка» → значки → кошик крайній праворуч", h.index('class="search"') < h.index('class="chatwrap"') < h.index('class="hsoc"') < h.index('class="cartbtn"'))
 
 out = Path(tempfile.mkdtemp())
@@ -64,7 +64,7 @@ with sync_playwright() as pw:
         pg.goto(f"{base}/cart.html", wait_until="load")
         g = pg.evaluate(GEO)
         if w >= 900:
-            ok = (g["soc"][4] == "flex" and len(g["as"]) == 3 and all(a[2] == 40 and a[3] == 40 for a in g["as"])
+            ok = (g["soc"][4] == "flex" and len(g["as"]) == 4 and all(a[2] == 40 and a[3] == 40 for a in g["as"])
                   and g["chat"][1] <= g["soc"][0] and g["soc"][1] <= g["cart"][0]
                   and abs(g["soc"][2] - g["chat"][2]) <= 8 and g["sw"] <= g["cw"])
             chk(f"{w}px: значки видно, 40×40, в одному рядку: «Підтримка» ({g['chat'][1]}) → значки {g['soc']} → кошик ({g['cart'][0]})", ok)

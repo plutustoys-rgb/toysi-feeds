@@ -303,13 +303,15 @@ def chat_menu_html():
 
 
 def header_socials_html():
-    """Значки Instagram / Facebook / пошта у шапці (власник 14.10: «це поле пустує»): на ПК заповнюють проміжок між кошиком і кнопкою «Підтримка»; на вузьких екранах приховані (там вони в підвалі). Посилання — ті самі, що в підвалі, utm_medium=header."""
-    ig, fb = (_footer_utm(u).replace("utm_medium=footer", "utm_medium=header") for u in SOCIAL_URLS)
+    """Значки Instagram / YouTube / Facebook / пошта у шапці (власник 14.10: «це поле пустує»): на ПК заповнюють проміжок між кошиком і кнопкою «Підтримка»; на вузьких екранах приховані (там вони в підвалі). Посилання — ті самі, що в підвалі, utm_medium=header."""
+    ig, fb, yt = (_footer_utm(u).replace("utm_medium=footer", "utm_medium=header") for u in SOCIAL_URLS + [YOUTUBE_URL])   # YouTube (власник 24.11): поруч із Instagram
     ico = 'width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"'
     return (
       '<div class="hsoc">'
       f'<a class="hsoc-a" href="{ig}" target="_blank" rel="noopener" aria-label="Instagram" data-hsoc="instagram">'
         f'<svg {ico}><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".6" fill="currentColor"/></svg></a>'
+      f'<a class="hsoc-a" href="{yt}" target="_blank" rel="noopener" aria-label="YouTube" data-hsoc="youtube">'
+        f'<svg {ico}><rect x="2.5" y="5.5" width="19" height="13" rx="4"/><path d="M10 9.2v5.6l4.8-2.8Z"/></svg></a>'
       f'<a class="hsoc-a" href="{fb}" target="_blank" rel="noopener" aria-label="Facebook" data-hsoc="facebook">'
         f'<svg {ico}><path d="M14 8h2.5V4.5H14a4 4 0 0 0-4 4V11H7.5v3.5H10V21h3.5v-6.5H16L16.5 11h-3V8.8c0-.5.3-.8.8-.8Z"/></svg></a>'
       '<a class="hsoc-a" href="mailto:plutustoys@gmail.com" aria-label="Написати на пошту plutustoys@gmail.com" data-hsoc="email">'

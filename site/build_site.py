@@ -2928,7 +2928,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
 
 SOCIAL_URLS = ["https://www.instagram.com/plutustoys.ua/", "https://www.facebook.com/profile.php?id=61590292022031"]
 YOUTUBE_URL = "https://www.youtube.com/@PlutusToys"   # SMM 24.11: канал бренду (рілси 2/тиждень); у футері, на сторінках розмальовок і в sameAs
-PINTEREST_URL = "https://www.pinterest.com/plutustoys/"   # SEO 23.11: сайт підтверджено в Pinterest 22.11; лише в JSON-LD sameAs (у шапці/підвалі — тільки Instagram і Facebook)
+PINTEREST_URL = "https://www.pinterest.com/plutustoys/"   # SEO 23.11: сайт підтверджено в Pinterest 22.11; лише в JSON-LD sameAs (у шапці/підвалі його нема: там Instagram, YouTube, Facebook)
 
 
 def _footer_utm(url):

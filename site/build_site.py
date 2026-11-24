@@ -3886,7 +3886,7 @@ def write_thanks():
       '<div class="thanks-tg" id="thanks-tg-wrap" hidden>'
         '<p class="thanks-tg-hint" id="thanks-tg-hint" data-calm="Передумали? Натисніть «Старт» у боті — і ми напишемо вам, коли замовлення відправлять.">Натисніть «Старт» у боті — і ми напишемо вам, коли замовлення відправлять.</p>'
         '<a class="btn" id="thanks-tg" href="https://t.me/plutustoys_support_bot" target="_blank" rel="noopener">Старт у Telegram</a>'
-        '<p class="thanks-tg-note">Після доставки бот запропонує залишити відгук про замовлення.</p>'
+        '<p class="thanks-tg-note">Після доставки бот може запропонувати залишити відгук про замовлення.</p>'
       '</div>'
       '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
       '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'

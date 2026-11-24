@@ -220,10 +220,13 @@ h1.prod{font-size:clamp(20px,4.5vw,26px);line-height:1.25;margin:0 0 12px;font-w
 .done .oid{font-weight:800;color:var(--text)}
 .tgopt{display:flex;align-items:flex-start;gap:10px;margin:0 0 14px;font-size:14px;color:var(--text);cursor:pointer}
 .tgopt input{width:auto;flex:0 0 auto;margin:3px 0 0;padding:0}
-.thanks-tg{max-width:360px;margin:18px auto 0;padding:16px;border:1px solid var(--accent);border-radius:14px;background:var(--surface)}
+.thanks-tg{max-width:360px;margin:18px auto 22px;padding:16px;border:2px solid var(--accent);border-radius:14px;background:var(--surface)}
+.thanks-tg .btn{display:block;width:100%;font-size:17px}
+.thanks-tg .thanks-tg-note{margin:10px 0 0;font-size:13px;color:var(--muted)}
 .thanks-tg[hidden]{display:none}
 .thanks-tg .thanks-tg-hint{color:var(--text);font-weight:600;margin:0 0 12px}
 .thanks-tg.is-calm{padding:0;border:0;background:none}
+.thanks-tg.is-calm .btn{display:inline-block;width:auto}
 .thanks-tg.is-calm .thanks-tg-hint{color:var(--muted);font-weight:400;font-size:14px}
 .thanks-tg.is-calm .btn{background:var(--surface);color:var(--accent);border:1px solid var(--accent);font-size:14px}
 .empty{text-align:center;color:var(--muted);padding:60px 24px}

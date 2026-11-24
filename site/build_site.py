@@ -3882,13 +3882,14 @@ def write_thanks():
     body = (
       '<div class="done"><div class="fox"><img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="105" height="96" decoding="async"></div>'
       '<h2>Дякуємо за замовлення!</h2>'
-      '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
-      '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'
-      # Telegram-статус: блок видно, коли номер замовлення відомий (sessionStorage або ?o= після LiqPay); галочка «статус у Telegram» вимкнена → клас is-calm (тихіше, але кнопка є)
+      # Telegram-статус (запит Коду 24.11: від підписки на бота залежить, чи піде клієнту запрошення на відгук) — ПЕРШОЮ дією одразу під заголовком: блок видно, коли номер замовлення відомий (sessionStorage або ?o= після LiqPay); галочка «статус у Telegram» вимкнена → клас is-calm (тихіше, але кнопка є)
       '<div class="thanks-tg" id="thanks-tg-wrap" hidden>'
         '<p class="thanks-tg-hint" id="thanks-tg-hint" data-calm="Передумали? Натисніть «Старт» у боті — і ми напишемо вам, коли замовлення відправлять.">Натисніть «Старт» у боті — і ми напишемо вам, коли замовлення відправлять.</p>'
         '<a class="btn" id="thanks-tg" href="https://t.me/plutustoys_support_bot" target="_blank" rel="noopener">Старт у Telegram</a>'
+        '<p class="thanks-tg-note">Після доставки бот запропонує залишити відгук про замовлення.</p>'
       '</div>'
+      '<p>Ми отримали ваше замовлення <span class="oid" id="thanks-oid"></span> і готуємо його до відправки.</p>'
+      '<p>Про статус повідомимо за номером замовлення. Доставка — Новою Поштою.</p>'
       '<p style="margin-top:20px"><a class="btn ghost" href="/" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )

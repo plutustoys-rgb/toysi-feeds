@@ -1414,6 +1414,10 @@
       var href=t.getAttribute("href")||"";
       if(href.indexOf("tel:")===0){
         trackRaw("phone_click", {link_url:href, page_path:location.pathname}, "Contact", {method:"phone"}, false);
+      } else if(t.id==="thanks-tg"){
+        // «Старт у Telegram» на сторінці подяки (запит Коду 24.11: міряти частку, що тисне кнопку; від підписки залежить запрошення на відгук). href має номер замовлення — в аналітику НЕ йде (лише шлях і чи кнопка «тиха»)
+        var twp=document.getElementById("thanks-tg-wrap");
+        trackRaw("telegram_status_click", {page_path:location.pathname, calm:(twp && /is-calm/.test(twp.className)) ? "1" : "0"}, "TelegramStatusClick", {}, true);
       } else if(t.closest(".fsoc")){
         var net=/instagram\.com/.test(href)?"instagram":(/facebook\.com/.test(href)?"facebook":(/youtube\.com/.test(href)?"youtube":"other"));
         trackRaw("social_click", {network:net, link_url:href, page_path:location.pathname}, "SocialClick", {network:net}, true);

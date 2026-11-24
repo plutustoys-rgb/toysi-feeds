@@ -42,6 +42,7 @@ js = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
 for ev in ("view_item", "add_to_cart", "begin_checkout", "purchase"):
     chk(f"app.js: подія {ev}", f'"{ev}"' in js)
 chk("app.js: purchase один раз на замовлення (pt_purchase_sent)", "pt_purchase_sent" in js)
+chk("app.js: telegram_status_click (клік по #thanks-tg; page_path, calm) через trackRaw; НОМЕР ЗАМОВЛЕННЯ з href в аналітику не йде", 'trackRaw("telegram_status_click"' in js and "link_url" not in js[js.index('trackRaw("telegram_status_click"'):js.index('trackRaw("telegram_status_click"')+200])
 chk("app.js: coloring_download (клік по colorings/<id>.pdf; sheet_id, via, page_path) шлеться через trackRaw лише з конфігом", 'trackRaw("coloring_download"' in js and "colorings\/([a-z0-9-]+)\.pdf" in js)
 chk("app.js: для prepaid позиції замовлення НЕ зберігаються (purchase лише COD)", 'if(payment!=="prepaid"){' in js and 'removeItem("pt_last_order_items")' in js)
 chk("app.js: без window.PT_ANALYTICS нічого не шле (cfg.ga4/cfg.fb умови)", "cfg.ga4 && window.gtag" in js and "cfg.fb && window.fbq" in js)

@@ -389,7 +389,8 @@ def footer():
       '<a href="mailto:plutustoys@gmail.com">plutustoys@gmail.com</a></p>'
       '<p class="flp">' + LIQPAY_LOGO_HTML.format(src=asset_url('assets/liqpay-logo.svg'), w=100, h=21) + '</p>'
       f'<p class="fsoc"><a href="{_footer_utm(SOCIAL_URLS[0])}" rel="noopener" target="_blank">Instagram</a> · '
-      f'<a href="{_footer_utm(SOCIAL_URLS[1])}" rel="noopener" target="_blank">Facebook</a></p>'
+      f'<a href="{_footer_utm(SOCIAL_URLS[1])}" rel="noopener" target="_blank">Facebook</a> · '
+      f'<a href="{_footer_utm(YOUTUBE_URL)}" rel="noopener" target="_blank">YouTube</a></p>'
       '<p class="ftag">PlutusToys — іграшки з доставкою Новою Поштою по Україні.'
       + ('<br>Оплата карткою онлайн або накладений платіж.' if LIQPAY_LIVE else '') +
       '</p>'
@@ -2924,6 +2925,7 @@ def write_catalog(title, prods, cat_list, cat_slug, fname, active, special=None)
     return written
 
 SOCIAL_URLS = ["https://www.instagram.com/plutustoys.ua/", "https://www.facebook.com/profile.php?id=61590292022031"]
+YOUTUBE_URL = "https://www.youtube.com/@PlutusToys"   # SMM 24.11: канал бренду (рілси 2/тиждень); у футері, на сторінках розмальовок і в sameAs
 PINTEREST_URL = "https://www.pinterest.com/plutustoys/"   # SEO 23.11: сайт підтверджено в Pinterest 22.11; лише в JSON-LD sameAs (у шапці/підвалі — тільки Instagram і Facebook)
 
 
@@ -2938,7 +2940,7 @@ def home_jsonld() -> str:
     з URL-шаблоном немає, а Google не приймає SearchAction без неї."""
     org = {
         "@context": "https://schema.org", "@type": "Organization", "name": "PlutusToys", "url": f"{SITE_URL}/",
-        "logo": f"{SITE_URL}/assets/plutus_mascot.png", "sameAs": SOCIAL_URLS + [PINTEREST_URL],
+        "logo": f"{SITE_URL}/assets/plutus_mascot.png", "sameAs": SOCIAL_URLS + [PINTEREST_URL, YOUTUBE_URL],
         "contactPoint": [{"@type": "ContactPoint", "telephone": "+380730150815", "contactType": "customer service",
                           "email": "plutustoys@gmail.com", "areaServed": "UA", "availableLanguage": ["uk"]}],
     }
@@ -5049,7 +5051,8 @@ def write_coloring_pages(plan, prods):
             f'<div class="coloring-grid">{figs}</div>' + (COLORING_TERMS_HTML if is_hub else "") + shop_html +
             f'<section class="gift-faq coloring-wide"><h2>Питання й відповіді</h2>{faq_html}</section>'
             f'<nav class="gift-links" aria-label="Інші розмальовки">' + (f'<h2>Інші розмальовки</h2><ul>{links}</ul>' if links else '')
-            + (f'<p><a href="{COLORING_HUB_FILE}">Усі безкоштовні розмальовки</a> · <a href="catalog.html">Увесь каталог</a></p>' if not is_hub else '<p><a href="catalog.html">Увесь каталог</a></p>') + '</nav>'
+            + (f'<p><a href="{COLORING_HUB_FILE}">Усі безкоштовні розмальовки</a> · <a href="catalog.html">Увесь каталог</a></p>' if not is_hub else '<p><a href="catalog.html">Увесь каталог</a></p>')
+            + f'<p class="coloring-yt"><a href="{_footer_utm(YOUTUBE_URL).replace("utm_medium=footer", "utm_medium=coloring")}" rel="noopener" target="_blank">Мультики про Плутуса — на YouTube</a></p>' + '</nav>'
         )
         head = breadcrumb_ld(trail)
         for sh in sheets:

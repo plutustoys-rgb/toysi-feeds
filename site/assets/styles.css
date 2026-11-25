@@ -504,6 +504,12 @@ body:has(.buybar) footer.foot{margin-bottom:84px}                               
 .coloring-strip{margin:0 clamp(12px,3vw,24px) 8px;padding:10px 18px;border-radius:14px;background:#fff7ec;border:1px solid #f0d9b5;text-align:center;line-height:1.35}
 .coloring-strip a{color:#8a3b00;text-decoration:none}
 .coloring-strip a b{text-decoration:underline;text-underline-offset:3px}
+.season-strip{margin:0 clamp(12px,3vw,24px) 8px;padding:10px 18px;border-radius:14px;background:#eef6ee;border:1px solid #cfe3cf;text-align:center;line-height:1.7}
+.season-strip a{color:#1f5a2a;font-weight:600;text-decoration:underline;text-underline-offset:3px;white-space:nowrap}
+.season-strip b{color:#1f5a2a;margin-right:4px}
+.hseason{display:none;flex:0 0 auto;font-weight:700;font-size:14px;color:var(--accent);text-decoration:none;white-space:nowrap;padding:0 4px}
+.hseason:hover{text-decoration:underline}
+@media(min-width:1100px){.hseason{display:block}}
 .coloring-strip a:hover{color:#6b2d00}
 @media(max-width:600px){.coloring-strip{padding:10px 12px}.coloring-strip span{display:block}}
 .hero2 .btn.btn-sale{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:#D93A3A;color:#fff;border:2px solid #7A1313;box-shadow:3px 3px 0 #7A1313;font-weight:800;transform:rotate(-1.5deg);transition:transform .18s ease}

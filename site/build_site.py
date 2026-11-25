@@ -320,11 +320,64 @@ def header_socials_html():
     )
 
 
+# ── Сезонні посилання (SEO 25.11, до Миколая 11 днів: Миколай/Новий рік мали 0 посилань з головної, позиції 38–67) ──
+# Лише ЗБУДОВАНІ сторінки поточної збірки (немає сторінки → нема посилання, 404 не з'являється). Дати — за Києвом (_today()); збірка щодві години, тож перемикання «Миколай → Новий рік» само.
+SEASON_BLOCK_FROM, SEASON_BLOCK_TO = (11, 20), (1, 10)   # сезонний блок на головній і хабі подарунків: 20.11–10.01 (проміжок через Новий рік)
+SEASON_HEADER_MYKOLAI_TO = (12, 6)                        # шапка: «Подарунки на Миколая» до 6.12 включно
+SEASON_HEADER_NY_TO = (12, 31)                            # далі «Новорічні подарунки» до 31.12 включно
+
+
+def season_block_active(today=None):
+    t = today or _today()
+    md = (t.month, t.day)
+    return md >= SEASON_BLOCK_FROM or md <= SEASON_BLOCK_TO
+
+
+def season_links():
+    """[(файл, підпис)] збудованих сезонних сторінок: подарунки на Миколая / новорічні подарунки / порадник / адвент-календарі / новорічні розмальовки."""
+    gifts = {s for s, _h, _lb in GIFT_BUILT}
+    out = []
+    if "podarunok-na-mykolaia" in gifts:
+        out.append(("podarunok-na-mykolaia.html", "Подарунки на Миколая"))
+    if "novorichnyi-podarunok-dytyni" in gifts:
+        out.append(("novorichnyi-podarunok-dytyni.html", "Новорічні подарунки"))
+    if any(s == "porady-shcho-podaruvaty-na-mykolaia" for s, _t in GIFT_ARTICLES_BUILT):
+        out.append(("porady-shcho-podaruvaty-na-mykolaia.html", "Що подарувати на Миколая"))
+    if any(s == "advent-kalendari" for s, _h, _p in SELECTION_BUILT):
+        out.append(("advent-kalendari.html", "Адвент-календарі"))
+    if any(s == "rozmalovky-novorichni" for s, _h in COLORING_BUILT):
+        out.append(("rozmalovky-novorichni.html", "Новорічні розмальовки для друку"))
+    return out
+
+
+def season_strip_html():
+    """Сезонний блок на головній (звичайні <a href>, без JS)."""
+    if not season_block_active():
+        return ""
+    links = season_links()
+    if not links:
+        return ""
+    return '<nav class="season-strip" aria-label="До свят"><b>До свят:</b> ' + " · ".join(f'<a href="{f}">{esc(lb)}</a>' for f, lb in links) + "</nav>"
+
+
+def header_season_html():
+    """Посилання в шапці: «Подарунки на Миколая» до 6.12, потім «Новорічні подарунки» до 31.12 (SEO 25.11). Лише на широких екранах (див. CSS .hseason)."""
+    t = _today()
+    md = (t.month, t.day)
+    gifts = {s for s, _h, _lb in GIFT_BUILT}
+    if (11, 1) <= md <= SEASON_HEADER_MYKOLAI_TO and "podarunok-na-mykolaia" in gifts:
+        return '<a class="hseason" href="podarunok-na-mykolaia.html">Подарунки на Миколая</a>'
+    if SEASON_HEADER_MYKOLAI_TO < md <= SEASON_HEADER_NY_TO and "novorichnyi-podarunok-dytyni" in gifts:
+        return '<a class="hseason" href="novorichnyi-podarunok-dytyni.html">Новорічні подарунки</a>'
+    return ""
+
+
 def header():
     return (
       '<header class="top">'
       '<a class="logo" href="/">Plutus<span>Toys</span>'
       ' <img class="mascot" src="assets/plutus_mascot_s.png" alt="Плутус" width="24" height="22" decoding="async"></a>'
+      + header_season_html() +
       '<div class="search" id="open-search">'
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
         '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'
@@ -3544,6 +3597,7 @@ def write_home(prods, cats, cat_list, cat_slug):
       '<div class="hero2">' + hero_mascot_html(hero_clips) +
       '<div class="txt"><h1>Іграшки, що радують</h1><p>Обираємо те, що радує дитину.</p></div>'
       '<div class="act">' + hero_act + '</div></div>'
+      + season_strip_html()   # SEO 25.11: сезонні посилання (Миколай, Новий рік, адвент, новорічні розмальовки) просто під героєм
       + (f'<p class="coloring-strip"><a href="{COLORING_HUB_FILE}"><b>Безкоштовні розмальовки з Плутусом</b><span> — завантажити й роздрукувати</span></a></p>' if COLORING_BUILT else "")   # SMM 21.11: на головній посилання на розмальовки було лише в підвалі; смужка під героєм, лише коли хаб справді побудовано
       + carousel
       + '<div class="sec-title more-title"><a href="catalog.html">Усі товари →</a></div>' + (grid(more) if more else "")   # власник 16.10: замість «Більше іграшок» — посилання «Усі товари →» (вигляд як «Усі знижки →», зліва) і під ним 10 випадкових зі «Популярне зараз»
@@ -4522,6 +4576,7 @@ def write_gift_pages(prods, texts=None, plan=None):
     _kinds = ([] if not any(s in ("podarunok-na-mykolaia", "novorichnyi-podarunok-dytyni") for s, _h, _lb in GIFT_BUILT) else ["на Миколая та Новий рік"]) + (["за ціною"] if any("-hrn" in s for s, _h, _lb in GIFT_BUILT) else []) + (["за віком, який рекомендує виробник"] if any(s.startswith("podarunok-na-") and s.endswith(("-rik", "-roky", "-rokiv")) for s, _h, _lb in GIFT_BUILT) else [])
     hub_kinds = ", ".join(_kinds) or "подарунки дитині"
     hub_body = (crumbs_html(trail) + '<h1 class="page">Подарунки дитині: добірки за віком і бюджетом</h1>'
+                + season_strip_html() +   # SEO 25.11: помітні посилання на Миколая / Новий рік / порадник / адвент / новорічні розмальовки
                 f'<p class="gift-hub-lead">Добірки іграшок у наявності: {esc(hub_kinds)}.</p>' +
                 (f'<p class="gift-hub-lead"><a href="{COLORING_HUB_FILE}">Безкоштовні розмальовки з Плутусом для друку</a></p>' if COLORING_BUILT else "") +
                 "".join(f'<p class="gift-hub-lead"><a href="{s}.html">{esc(h)}</a></p>' for s, h in _selection_gift_links()) +

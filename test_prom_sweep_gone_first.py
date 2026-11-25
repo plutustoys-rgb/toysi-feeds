@@ -85,6 +85,9 @@ chk("тривале усічення <20 год (з відліку після в
 # порожній toysi_ids, guard, межа
 reset()
 chk("ПОРОЖНІЙ toysi_ids → ([], []) і стан не чіпається", run(ledger, {"1"}, set(), 0) == ([], []) and STORE["gone"] == {})
+DEFAULT_GUARD = pcs.GONE_MASS_GUARD
+chk("за замовчуванням масовий запобіжник ВИМКНЕНО (0), рішення власника 25.11", DEFAULT_GUARD == 0)
+pcs.GONE_MASS_GUARD = 600                           # далі перевіряємо, що УВІМКНЕНИЙ запобіжник (env PROM_GONE_MASS_GUARD=600) працює як раніше
 big = [str(i) for i in range(2, 2 + 603)]          # 603 − 2 ще в Toysi = 601 зниклих (> guard 600)
 LIVE.clear(); LIVE.update({k: {"status": "on_display"} for k in big})
 td, _ = run(big, {"1"}, {"2", "3"}, 0)
@@ -94,6 +97,11 @@ b600 = [str(i) for i in range(2, 2 + 601)]          # 601 − 1 ще в Toysi = 
 LIVE.clear(); LIVE.update({k: {"status": "on_display"} for k in b600})
 run(b600, {"1"}, {"2"}, 0)
 chk("рівно 600 зниклих — guard не спрацьовує", not alerts)
+pcs.GONE_MASS_GUARD = DEFAULT_GUARD                   # повертаємо дефолт (вимкнено)
+reset()
+LIVE.clear(); LIVE.update({k: {"status": "on_display"} for k in big})
+td, _ = run(big, {"1"}, {"2", "3"}, 0)
+chk("запобіжник вимкнено: 601 зниклих НЕ дає 🚨 і шлях зниклих НЕ пропускається", not alerts)
 
 # 343 реальні: 2 прогони з інтервалом ≥20 год, sweep-курсор не ховає підтверджених і залишок після капу
 reset()
@@ -102,7 +110,7 @@ LIVE.clear(); LIVE.update({k: {"status": "on_display"} for k in real})
 run(real, {"1"}, {"2"}, 0)
 td, _ = run(real, {"1"}, {"2"}, 21)
 chk("343 реальні зниклі, підтверджені через 21 год → усі в to_delist, без алерта", len(td) >= 342 and not alerts)
-chk("кап 200 не змінено (застосовується в main)", pcs.LEDGER_MAX_DELIST_PER_RUN == 200 and pcs.GONE_MASS_GUARD == 600 and pcs.GONE_MIN_AGE_HOURS == 20)
+chk("кап 200 не змінено (застосовується в main)", pcs.LEDGER_MAX_DELIST_PER_RUN == 200 and pcs.GONE_MASS_GUARD == 0 and pcs.GONE_MIN_AGE_HOURS == 20)
 chk("підтверджені зниклі НЕ потрапили в sweep-курсор (залишок після капу не ховається до кінця циклу)", not (CHECKED["c"] & set(real[1:])))
 td_next, _ = run(real, {"1"}, {"2"}, 25)
 chk("наступний прогін знову бачить усі підтверджені зниклі (143 понад кап — не загублені)", len(td_next) >= 342)

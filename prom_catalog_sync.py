@@ -539,7 +539,10 @@ def supplement_cabinet_view(prom_products: dict, desired_ids: set) -> dict:
 # принцип свіжої звірки, що й supplement_cabinet_view). Bounded lookup + delist-кап +
 # sweep-курсор — як у супплементі вище.
 LEDGER_SWEEP_LOOKUP_LIMIT = 800   # by_external_id-звірок за прогін (як CABINET_SUPPLEMENT_LOOKUP_LIMIT)
-GONE_MASS_GUARD = 600              # >600 «зниклих з Toysi» в журналі = підозра на усічений каталог, а не справжнє зникнення (на 12.10 їх 343)
+# 25.11.2026, рішення власника («прибери запобіжники, нехай видаляє»): масовий запобіжник ВИМКНЕНО за замовчуванням (0 = вимкнено). Було 600 («>600 зниклих з Toysi в журналі = підозра на усічений каталог»; на 12.10 їх 343, 25.11 — 2 690,
+# каталог Toysi цілий: 30 133 позиції 25.11 10:49). Решта захистів ЛИШАЄТЬСЯ: порожній toysi_ids → нічого; підтвердження у двох прогонах ≥ GONE_MIN_AGE_HOURS; жива звірка by_external_id на КОЖНОГО; кап LEDGER_MAX_DELIST_PER_RUN.
+# Повернути запобіжник: PROM_GONE_MASS_GUARD=<число> у .env VPS.
+GONE_MASS_GUARD = int(os.environ.get("PROM_GONE_MASS_GUARD", "0") or 0)
 LEDGER_MAX_DELIST_PER_RUN = 200   # кап на деактивації з цього шляху (дзеркало MAX_DEACTIVATIONS_PER_RUN)
 LEDGER_SWEEP_CHECKED_FILE = Path(__file__).parent / "prom_ledger_sweep_checked.json"
 GONE_SEEN_FILE = Path(__file__).parent / "prom_gone_seen.json"   # «зниклі з Toysi» минулого прогону (підтвердження у двох прогонах)
@@ -628,7 +631,7 @@ def find_stale_via_ledger(desired_ids: set, toysi_ids: set, prom_products: dict,
         return [], []      # порожній каталог Toysi (збій фетчу) → «усе зниклe»: НЕ видаляємо нічого (аудит PR #680: безпека не лише на assert у main)
     candidates = [e for e in ledger if e not in desired_ids]
     gone = [e for e in candidates if e not in toysi_ids]
-    if len(gone) > GONE_MASS_GUARD:
+    if GONE_MASS_GUARD > 0 and len(gone) > GONE_MASS_GUARD:
         # УСІЧЕНИЙ, але структурно коректний каталог Toysi (25–29 тис. проходить assert_catalog_size_sane) зробив би «зниклими» тисячі ЖИВИХ карток (аудит PR #680):
         # нормальне накопичення — сотні (343 на 12.10), тисячі = збій фетчу. Тоді шлях «зниклих» НЕ виконуємо (стара поведінка: лише e in toysi_ids) і кричимо.
         msg = (f"🚨 prom_catalog_sync: «зниклих з Toysi» карток у журналі {len(gone)} > {GONE_MASS_GUARD} — схоже на УСІЧЕНИЙ каталог Toysi, а не справжнє зникнення; "

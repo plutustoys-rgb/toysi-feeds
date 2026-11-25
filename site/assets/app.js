@@ -697,6 +697,9 @@
     applyRtPayment(ids);   // RoyalToys (id «rt-…»): лише передоплата
     var codn=document.getElementById("cod-limit-note");
     if(codn) codn.style.display = total()>COD_CEILING ? "" : "none";
+    // підказки «Є оплата при отриманні» (pay-hint у способі оплати й рядок у trust-inline над кнопкою) — лише коли накладений платіж справді доступний: без rt-/kv- позицій і до COD_CEILING (аудит #2061)
+    var noCod = ids.some(function(k){ return /^(rt|kv)-/.test(k); }) || total()>COD_CEILING;
+    Array.prototype.forEach.call(document.querySelectorAll(".pay-hint,.trust-inline-cod"), function(e){ e.style.display = noCod ? "none" : ""; });
     var ct=document.getElementById("checkout-title"); if(ct) ct.style.display = ids.length ? "" : "none";
     var form=document.getElementById("checkout-form");
     if(ids.length===0){
@@ -730,6 +733,7 @@
     if(g) g.textContent=goods+" ₴";
     if(d && freeShip) d.textContent="Безкоштовно"; else applyDeliveryView(goods);
     if(t) t.textContent=goods+" ₴";
+    var cbt=document.getElementById("cb-total"); if(cbt) cbt.textContent=goods+" ₴";   // липка панель «Товари + Оформити» (мобільний)
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
     var note=document.getElementById("free-ship-note");

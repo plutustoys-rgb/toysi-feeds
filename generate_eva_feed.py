@@ -504,6 +504,8 @@ EVA_LOSS_FLOOR_MARGIN = 0.05
 # Ворота EVA_COMPETITOR_PRICE=1 у .env VPS (типово ВИМКНЕНО — без воріт нічого не змінюється). Файл старший за EVA_COMPETITOR_MAX_AGE_DAYS (3) або битий → ігнорується (діє стара формула).
 EVA_COMPETITOR_UNDERCUT = 3.0
 EVA_COMPETITOR_MAX_AGE_DAYS = 3
+# Санітарний ліміт (аудит #2065): «ціна конкурента» < EVA_COMPETITOR_MIN_SHARE × формули — майже напевно інша комплектація/збій розбору, а не ринок → ігноруємо (діє формула). 0.5 обрано з виміряного розподілу нас/конкурент на 609 збігах 25.11: 607 мають ≤1.62, лише 2 вище (2.03; 2.53).
+EVA_COMPETITOR_MIN_SHARE = 0.5
 EVA_COMPETITOR_FILE = Path(os.environ.get("EVA_COMPETITOR_PRICES_FILE") or (Path(__file__).resolve().parent / "eva_competitor_prices.json"))
 _eva_competitor_cache = None
 
@@ -521,7 +523,10 @@ def _load_eva_competitor_prices(now=None) -> dict:
     try:
         d = json.loads(EVA_COMPETITOR_FILE.read_text(encoding="utf-8"))
         at = datetime.fromisoformat(str(d.get("at")))
-        if ((now or datetime.now()) - at).total_seconds() <= EVA_COMPETITOR_MAX_AGE_DAYS * 86400:
+        age = ((now or datetime.now()) - at).total_seconds()
+        if age < -600:      # `at` з майбутнього (хибний годинник) — не довіряємо
+            print(f"[EVA] файл цін конкурентів з майбутнього ({at:%Y-%m-%d %H:%M}) — ігнорую", file=sys.stderr)
+        elif age <= EVA_COMPETITOR_MAX_AGE_DAYS * 86400:
             for k, v in (d.get("prices") or {}).items():
                 try:
                     fv = float(v)
@@ -1053,7 +1058,7 @@ def _eva_price(item: dict):
     # Репрайсер за конкурентом (ворота EVA_COMPETITOR_PRICE=1): лише ЗНИЖУЄ, не вище формули (cap = price вище), не нижче покривної підлоги (5 % маржі над собівартістю після комісії 15 %). Промо-SKU не чіпаємо.
     if eva_competitor_on() and not is_promo:
         comp = _load_eva_competitor_prices().get(str(item.get("id")))
-        if comp:
+        if comp and comp >= price * EVA_COMPETITOR_MIN_SHARE:
             floor = round(cost * (1 + EVA_LOSS_FLOOR_MARGIN) / (1 - EVA_COMMISSION_EST), 2)
             price = round(min(price, max(round(comp - EVA_COMPETITOR_UNDERCUT, 2), floor)), 2)
     return price

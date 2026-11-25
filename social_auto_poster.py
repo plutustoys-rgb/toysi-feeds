@@ -197,6 +197,80 @@ def load_products() -> list:
         if avail and avail != "in stock":
             continue
         out.append({"sku": sku, "name": name, "url": url, "image": image, "price": price})
+    return _safe_and_rotated(out)
+
+
+# 25.11.2026 (запит SMM + власника: в IG вийшли пости з водяними пістолетами взимку). Раніше брався ПЕРШИЙ товар у порядку фіду без жодного відсіву.
+# Тепер: (1) той самий відсів, що в рілсах (reel_weekly.BAD_NAME_RE, forbidden_products.is_forbidden, FEED_EXCLUDED_PRODUCT_IDS);
+# (2) сезон: з 01.10 по 31.03 не беремо водяні/літні/пляжні/надувні; (3) ціна 80–1500 грн; (4) ротація тем за днем замість «перший за порядком фіду».
+SEASON_OFF_MONTHS = {10, 11, 12, 1, 2, 3}
+SUMMER_RE = re.compile(r"водян|водяні|водний|літн|пляж|надув|басейн|плаваль|купальн|аквапарк|розбризк|\bласт(и|ів)\b|для піску|пісочн", re.I)
+PRICE_MIN, PRICE_MAX = 80.0, 1500.0
+THEME_RES = [re.compile(r, re.I) for r in (r"ляльк|барбі|barbie", r"конструктор|lego|лего", r"пазл", r"настільн", r"творч|розмальов|малюв|набір для|ліплен",
+                                             r"м['ʼ’]?як|плюш")]
+
+
+def _price_num(raw: str):
+    try:
+        return float((raw or "").split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _safe_and_rotated(items: list, today=None) -> list:
+    """Відсіває небезпечне/недоречне і впорядковує: теми по черзі (зсув від дати), у межах теми — порядок фіду. Не кидає: збій імпорту фільтрів → лише локальний відсів."""
+    from datetime import date as _date
+    today = today or _date.today()
+    bad_re, forbidden, excluded = None, None, set()
+    try:
+        from reel_weekly import BAD_NAME_RE as bad_re
+    except Exception as e:  # noqa: BLE001
+        print(f"[social] BAD_NAME_RE недоступний ({type(e).__name__}) — локальний мінімум", file=sys.stderr)
+        bad_re = re.compile(r"пістолет|пистолет|рушниц|автомат(?!ичн)|зброя|зброї|бластер|ніж|меч|арбалет|гранат", re.I)
+    try:
+        from forbidden_products import is_forbidden as forbidden
+    except Exception as e:  # noqa: BLE001
+        print(f"[social] is_forbidden недоступний ({type(e).__name__})", file=sys.stderr)
+    try:
+        from generate_google_feed import FEED_EXCLUDED_PRODUCT_IDS as excluded
+    except Exception as e:  # noqa: BLE001
+        print(f"[social] FEED_EXCLUDED_PRODUCT_IDS недоступний ({type(e).__name__})", file=sys.stderr)
+    winter = today.month in SEASON_OFF_MONTHS
+    kept = []
+    for p in items:
+        name = p["name"]
+        if bad_re.search(name) or (winter and SUMMER_RE.search(name)):
+            continue
+        if str(p["sku"]) in (excluded or ()):
+            continue
+        if forbidden is not None:
+            try:
+                if forbidden({"id": p["sku"], "category_name": "", "name": name}):
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+        pr = _price_num(p.get("price"))
+        if pr is not None and not (PRICE_MIN <= pr <= PRICE_MAX):
+            continue
+        kept.append(p)
+    buckets = [[] for _ in range(len(THEME_RES) + 1)]          # остання корзина — решта
+    for p in kept:
+        for i, rx in enumerate(THEME_RES):
+            if rx.search(p["name"]):
+                buckets[i].append(p)
+                break
+        else:
+            buckets[-1].append(p)
+    order = list(range(len(THEME_RES)))
+    k = today.toordinal() % len(order)
+    order = order[k:] + order[:k] + [len(THEME_RES)]
+    out, idx = [], {i: 0 for i in order}
+    while any(idx[i] < len(buckets[i]) for i in order):
+        for i in order[:-1]:                                    # по одному з кожної теми по колу
+            if idx[i] < len(buckets[i]):
+                out.append(buckets[i][idx[i]]); idx[i] += 1
+        if all(idx[i] >= len(buckets[i]) for i in order[:-1]) and idx[order[-1]] < len(buckets[order[-1]]):
+            out.append(buckets[order[-1]][idx[order[-1]]]); idx[order[-1]] += 1
     return out
 
 

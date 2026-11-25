@@ -3907,13 +3907,13 @@ def write_cart(addons=None):
         # Telegram-статус (запит Коду 20.10): галочка лише керує тим, НАСКІЛЬКИ помітна кнопка «Старт у Telegram» на сторінці подяки (автопідписка без натискання «Старт» у Telegram неможлива); на сервер вибір не йде
         '<label class="tgopt"><input type="checkbox" id="f-tg" name="tg" checked> <span>Хочу отримувати статус замовлення в Telegram</span></label>'
         # мобільний: довіра НАД кнопкою (десктоп — права колонка), липка панель «Разом + Оформити» (CSS .checkout-bar), «Додайте до замовлення» — ПІД кнопкою (SEO/Код 25.11: воно стояло між формою й кнопкою)
-        '<ul class="trust-inline"><li>🧾 Фіскальний чек на кожне замовлення</li><li>↩ Повернення протягом 14 днів</li><li>💳 Оплата при отриманні — розраховуєтесь на відділенні</li></ul>'
+        '<ul class="trust-inline"><li>🧾 Фіскальний чек на кожне замовлення</li><li>↩ Повернення протягом 14 днів</li><li class="trust-inline-cod">💳 Оплата при отриманні — розраховуєтесь на відділенні</li></ul>'
+        '<div class="note" id="checkout-msg" role="alert" aria-live="polite"></div>'   # повідомлення про помилку — НАД липкою панеллю (аудит #2061: під add-on його не видно, фокуса на нього нема)
         '<div class="checkout-bar"><div class="cb-total"><span>Товари</span><b id="cb-total">0 ₴</b></div>'
           '<button class="btn" type="submit" id="checkout-submit">Оформити замовлення</button></div>'
         '<p class="note consent">Оформлюючи замовлення, ви погоджуєтесь з <a href="offer.html">публічною офертою</a> '
         'та <a href="privacy.html">політикою конфіденційності</a>.</p>'
         '<div class="addon-box addon-m" data-addon></div>'
-        '<div class="note" id="checkout-msg" role="alert" aria-live="polite"></div>'
       '</form></div>'
       '<aside class="cart-aside" id="cart-aside" aria-label="Інформація про замовлення">'
         '<div class="aside-card" id="aside-order"><h2>Ваше замовлення</h2><div id="aside-items"></div>'

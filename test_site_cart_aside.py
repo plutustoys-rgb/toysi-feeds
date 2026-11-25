@@ -66,7 +66,11 @@ cart = (out / "cart.html").read_text(encoding="utf-8")
 chk("кошик: .cart-grid із .cart-main та aside#cart-aside", '<div class="cart-grid"><div class="cart-main">' in cart and '<aside class="cart-aside" id="cart-aside"' in cart)
 form = re.search(r'<form id="checkout-form">(.*?)</form>', cart, re.S).group(1)
 chk("мобільний (SEO/Код 25.11): «Додайте до замовлення» (addon-m) усередині форми, але ПІСЛЯ кнопки «Оформити»; довіра (trust-inline) і липка панель (checkout-bar) — ДО кнопки", 'class="addon-box addon-m" data-addon' in form and form.index("addon-m") > form.index('id="checkout-submit"')
-    and form.index('class="trust-inline"') < form.index('class="checkout-bar"') < form.index('id="checkout-submit"') and 'id="cb-total"' in form and "Є оплата при отриманні" in form)
+    and form.index('class="trust-inline"') < form.index('class="checkout-bar"') < form.index('id="checkout-submit"') and 'id="cb-total"' in form and "Є оплата при отриманні" in form
+    and form.index('id="checkout-msg"') < form.index('class="checkout-bar"') and 'class="trust-inline-cod"' in form and 'class="note pay-hint"' in form)
+js_app = (HERE / "site" / "assets" / "app.js").read_text(encoding="utf-8")
+chk("app.js: підказки про оплату при отриманні (.pay-hint, .trust-inline-cod) ховаються для rt-/kv- у кошику й суми понад COD_CEILING (аудит #2061)",
+    ".pay-hint,.trust-inline-cod" in js_app and "total()>COD_CEILING" in js_app and "noCod = ids.some(" in js_app)
 aside = re.search(r'<aside class="cart-aside".*?</aside>', cart, re.S).group(0)
 chk("колонка: «Ваше замовлення» (А), довіра (Б), add-on (В), Плутус (Г)", all(x in aside for x in ('id="aside-order"', 'class="aside-card trust-card"', 'addon-box addon-d', 'class="aside-card pack-card"')))
 chk("довіра: фіскальний чек, повернення 14 днів (посилання на returns.html), оплата при отриманні, рядок про 12:00 — без нових обіцянок («зазвичай»)", "Фіскальний чек" in aside and 'href="returns.html"' in aside and "Повернення протягом 14 днів" in aside

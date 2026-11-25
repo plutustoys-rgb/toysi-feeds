@@ -34,6 +34,9 @@ chk("влітку літній/надувний круг дозволений, �
 a = [p["sku"] for p in sp._safe_and_rotated(items, today=date(2026, 11, 25))]
 b = [p["sku"] for p in sp._safe_and_rotated(items, today=date(2026, 11, 26))]
 chk("ротація: наступного дня першою йде інша тема", a[0] != b[0])
+pl = sp._safe_and_rotated([P(30, "Конструктор пластиковий з шестернями"), P(31, "Набір з пластиліном і ластиком"), P(32, "Intex Ласти для плавання"), P(33, "Ласти дитячі")], today=date(2026, 11, 25))
+chk("пластик/пластилін/ластик НЕ відсіюються сезонним фільтром (поправка аудиту #2064)", {"30", "31"} <= {p["sku"] for p in pl})
+chk("справжні ласти взимку відсіюються", not ({"32", "33"} & {p["sku"] for p in pl}))
 chk("ціна невідома (порожня) — товар не відсіюється за ціною", [p["sku"] for p in sp._safe_and_rotated([P(20, "Пазл казковий", "")], today=date(2026, 11, 25))] == ["20"])
 print("\nALL OK" if not fails else "\nFAILS: %d" % fails)
 sys.exit(1 if fails else 0)

@@ -65,7 +65,8 @@ cart = (out / "cart.html").read_text(encoding="utf-8")
 
 chk("кошик: .cart-grid із .cart-main та aside#cart-aside", '<div class="cart-grid"><div class="cart-main">' in cart and '<aside class="cart-aside" id="cart-aside"' in cart)
 form = re.search(r'<form id="checkout-form">(.*?)</form>', cart, re.S).group(1)
-chk("мобільний: «Додайте до замовлення» (addon-m) ВСЕРЕДИНІ форми і РАНІШЕ кнопки «Оформити»", 'class="addon-box addon-m" data-addon' in form and form.index("addon-m") < form.index('id="checkout-submit"'))
+chk("мобільний (SEO/Код 25.11): «Додайте до замовлення» (addon-m) усередині форми, але ПІСЛЯ кнопки «Оформити»; довіра (trust-inline) і липка панель (checkout-bar) — ДО кнопки", 'class="addon-box addon-m" data-addon' in form and form.index("addon-m") > form.index('id="checkout-submit"')
+    and form.index('class="trust-inline"') < form.index('class="checkout-bar"') < form.index('id="checkout-submit"') and 'id="cb-total"' in form and "Є оплата при отриманні" in form)
 aside = re.search(r'<aside class="cart-aside".*?</aside>', cart, re.S).group(0)
 chk("колонка: «Ваше замовлення» (А), довіра (Б), add-on (В), Плутус (Г)", all(x in aside for x in ('id="aside-order"', 'class="aside-card trust-card"', 'addon-box addon-d', 'class="aside-card pack-card"')))
 chk("довіра: фіскальний чек, повернення 14 днів (посилання на returns.html), оплата при отриманні, рядок про 12:00 — без нових обіцянок («зазвичай»)", "Фіскальний чек" in aside and 'href="returns.html"' in aside and "Повернення протягом 14 днів" in aside
@@ -91,7 +92,7 @@ chk("write_cart() без аргументу (старі виклики/тест�
 
 css = (HERE / "site" / "assets" / "styles.css").read_text(encoding="utf-8")
 chk("CSS: ≥960 px — дві колонки (1fr + 380px), sticky-колонка; десктопний підсумок і мобільний add-on сховано", re.search(r"@media \(min-width:960px\)\{[^@]*\.cart-grid\{display:grid;grid-template-columns:minmax\(0,1fr\) 380px", css) is not None
-    and "position:sticky;top:84px" in css and re.search(r"\.addon-m,#cart-summary\{display:none !important\}", css) is not None)
+    and "position:sticky;top:84px" in css and re.search(r"\.addon-m,#cart-summary,\.trust-inline,\.cb-total\{display:none !important\}", css) is not None and ".checkout-bar{display:flex" in css and "position:sticky;bottom:0" in css)
 chk("CSS: на мобільному «Ваше замовлення» і десктопний add-on за замовчуванням сховані (#aside-order,.addon-d{display:none})", "#aside-order,.addon-d{display:none}" in css)
 chk("CSS: колонка вища за вікно прокручується всередині (max-height + overflow-y), список позицій обмежено — add-on і Плутус досяжні (аудит #691 F3)", re.search(r"\.cart-aside\{position:sticky;top:84px;max-height:calc\(100vh - 100px\);overflow-y:auto", css) is not None and "#aside-items{max-height:220px;overflow-y:auto}" in css)
 

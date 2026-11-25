@@ -730,6 +730,7 @@
     if(g) g.textContent=goods+" ₴";
     if(d && freeShip) d.textContent="Безкоштовно"; else applyDeliveryView(goods);
     if(t) t.textContent=goods+" ₴";
+    var cbt=document.getElementById("cb-total"); if(cbt) cbt.textContent=goods+" ₴";   // липка панель «Товари + Оформити» (мобільний)
     var block=document.getElementById("free-ship-block");
     if(block) block.style.display=FREE_SHIPPING_ENABLED ? "" : "none";
     var note=document.getElementById("free-ship-note");

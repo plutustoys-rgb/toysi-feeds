@@ -499,6 +499,43 @@ EVA_PRICE_MULTIPLIER = 1.5   # 2026-08-28 власник підняв 1.45 → 1
 EVA_COMMISSION_EST = 0.15
 EVA_LOSS_FLOOR_MARGIN = 0.05
 
+# 25.11.2026, РІШЕННЯ ВЛАСНИКА («так будувати»: репрайсер EVA «мінімум конкурента −3 ₴»): ціна EVA = max(мін. конкурента на EVA − 3 ₴, покривна підлога), але НІКОЛИ не вища за формулу вище (база × EVA_PRICE_MULTIPLIER).
+# Дані про конкурентів — файл eva_competitor_prices.json {"at": ISO-час, "prices": {код_Toysi: мін_ціна_конкурента}}, який збирає eva_competitor_scan.py з ПК власника (EVA блокує VPS) і кладе на VPS власник.
+# Ворота EVA_COMPETITOR_PRICE=1 у .env VPS (типово ВИМКНЕНО — без воріт нічого не змінюється). Файл старший за EVA_COMPETITOR_MAX_AGE_DAYS (3) або битий → ігнорується (діє стара формула).
+EVA_COMPETITOR_UNDERCUT = 3.0
+EVA_COMPETITOR_MAX_AGE_DAYS = 3
+EVA_COMPETITOR_FILE = Path(os.environ.get("EVA_COMPETITOR_PRICES_FILE") or (Path(__file__).resolve().parent / "eva_competitor_prices.json"))
+_eva_competitor_cache = None
+
+
+def eva_competitor_on() -> bool:
+    return os.environ.get("EVA_COMPETITOR_PRICE", "").strip() == "1"
+
+
+def _load_eva_competitor_prices(now=None) -> dict:
+    """{код_Toysi: мін_ціна_конкурента} зі СВІЖОГО файлу; будь-яка проблема (нема файлу, битий, старий) → {} (стара формула). Кеш на процес."""
+    global _eva_competitor_cache
+    if _eva_competitor_cache is not None:
+        return _eva_competitor_cache
+    out = {}
+    try:
+        d = json.loads(EVA_COMPETITOR_FILE.read_text(encoding="utf-8"))
+        at = datetime.fromisoformat(str(d.get("at")))
+        if ((now or datetime.now()) - at).total_seconds() <= EVA_COMPETITOR_MAX_AGE_DAYS * 86400:
+            for k, v in (d.get("prices") or {}).items():
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if fv > 0:
+                    out[str(k)] = fv
+        else:
+            print(f"[EVA] файл цін конкурентів старший за {EVA_COMPETITOR_MAX_AGE_DAYS} доби ({at:%Y-%m-%d %H:%M}) — ігнорую", file=sys.stderr)
+    except (OSError, ValueError, TypeError, AttributeError):
+        out = {}
+    _eva_competitor_cache = out
+    return out
+
 
 # EVA «День народження»: для 39 in-demand SKU (наказ власника 28.08) ціна = база × 2.143 замість
 # ×1.5. Ці SKU також ОБХОДЯТЬ EVA_EXCLUDED_CATEGORIES (щоб точно потрапили у фід — власник просив
@@ -1013,6 +1050,12 @@ def _eva_price(item: dict):
     # знижкою EVA, підлога тут не застосовна (їх мало, ціна вища за ×1.5, у мінус майже не бувають).
     if not is_promo and price * (1 - EVA_COMMISSION_EST) < cost:
         price = round(cost * (1 + EVA_LOSS_FLOOR_MARGIN) / (1 - EVA_COMMISSION_EST), 2)
+    # Репрайсер за конкурентом (ворота EVA_COMPETITOR_PRICE=1): лише ЗНИЖУЄ, не вище формули (cap = price вище), не нижче покривної підлоги (5 % маржі над собівартістю після комісії 15 %). Промо-SKU не чіпаємо.
+    if eva_competitor_on() and not is_promo:
+        comp = _load_eva_competitor_prices().get(str(item.get("id")))
+        if comp:
+            floor = round(cost * (1 + EVA_LOSS_FLOOR_MARGIN) / (1 - EVA_COMMISSION_EST), 2)
+            price = round(min(price, max(round(comp - EVA_COMPETITOR_UNDERCUT, 2), floor)), 2)
     return price
 
 

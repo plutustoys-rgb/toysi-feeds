@@ -387,4 +387,4 @@ rt_prom_reprice_state.json.tmp.*
 reel_build.lock
 
 # Знижки Toysi зі скану кабінету (toysi_discount_scan.py): закупівельні ціни — фінтаємниця, лише локально/VPS.
-toysi_discounts.json
+toysi_discounts*

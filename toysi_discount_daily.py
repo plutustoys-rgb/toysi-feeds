@@ -17,6 +17,8 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 OUT = BASE / "toysi_discounts.json"
 TMP_OUT = BASE / "toysi_discounts.new.json"
+MAX_ZERO_SHARE = 0.20        # 25.11: 1 002/24 304 = 4 %
+MIN_VS_PREVIOUS = 0.85       # скан не менший за 85 % попереднього
 MIN_ITEMS = 15000            # повний обхід 25.11 = 24 304; менше -> обхід урізаний, не публікуємо
 VPS = "root@45.94.157.4"
 KEY = str(Path.home() / ".ssh" / "plutustoys_vps")
@@ -43,10 +45,23 @@ def main() -> int:
         import toysi_discount_scan
         toysi_discount_scan.scan(a.delay, 0, TMP_OUT)
         src = TMP_OUT
-    n = len(json.loads(src.read_text(encoding="utf-8"))["items"])
+    items = json.loads(src.read_text(encoding="utf-8"))["items"]
+    n = len(items)
     if n < MIN_ITEMS:
         print(f"[toysi_daily] ЗБІЙ: у скані {n} < {MIN_ITEMS} товарів — обхід урізаний, на VPS НЕ відправляю", file=sys.stderr)
         return 1
+    zero = sum(1 for v in items.values() if v.get("price") == v.get("base"))
+    if zero / n > MAX_ZERO_SHARE:  # зміна розмітки (одна ціна замість двох) дала б disc=0 скрізь -> ціни вгору по всьому каталогу
+        print(f"[toysi_daily] ЗБІЙ: частка товарів без знижки {zero}/{n} = {zero / n:.0%} > {MAX_ZERO_SHARE:.0%} — схоже на зміну розмітки, НЕ відправляю", file=sys.stderr)
+        return 1
+    if not a.upload_existing and OUT.exists():
+        try:
+            prev_n = len(json.loads(OUT.read_text(encoding="utf-8"))["items"])
+        except (OSError, ValueError, KeyError, TypeError):
+            prev_n = 0
+        if prev_n and n < prev_n * MIN_VS_PREVIOUS:
+            print(f"[toysi_daily] ЗБІЙ: у скані {n} товарів проти {prev_n} попереднього (< {MIN_VS_PREVIOUS:.0%}) — НЕ відправляю", file=sys.stderr)
+            return 1
     if not a.upload_existing:
         os.replace(TMP_OUT, OUT)
         src = OUT

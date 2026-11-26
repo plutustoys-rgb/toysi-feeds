@@ -519,7 +519,7 @@ def observed_discount_pct(pid) -> float | None:
 # Вимкнути: env TOYSI_SCAN_DISCOUNT=0. Файл — фінтаємниця (закупівельні ціни), у git НЕ потрапляє (.gitignore).
 TOYSI_SCAN_FILE = Path(__file__).parent / "toysi_discounts.json"
 TOYSI_SCAN_MAX_AGE_DAYS = 3
-_scan_cache: tuple | None = None  # (mtime, dict) — лінива, перечитується при зміні файлу
+_scan_cache: tuple | None = None  # (mtime|None, items, at|None) — лінива, перечитується лише при зміні mtime файлу
 
 
 def toysi_scan_on() -> bool:
@@ -527,20 +527,33 @@ def toysi_scan_on() -> bool:
 
 
 def _load_scan() -> dict:
+    """items скану або {}; fail-closed: немає/битий файл, tz-aware/майбутня `at` (>1 доби), вік > TOYSI_SCAN_MAX_AGE_DAYS -> {}.
+    Кеш за mtime (помилка розбору теж кешується під справжнім mtime — файл не перечитується щовиклику); вік перевіряється КОЖЕН виклик
+    (довгий процес не користується застарілим сканом)."""
     global _scan_cache
     try:
         mt = TOYSI_SCAN_FILE.stat().st_mtime
-        if _scan_cache is not None and _scan_cache[0] == mt:
-            return _scan_cache[1]
-        data = json.loads(TOYSI_SCAN_FILE.read_text(encoding="utf-8"))
-        at = datetime.fromisoformat(data["at"])
-        items = data["items"]
-        if not isinstance(items, dict) or datetime.now() - at > timedelta(days=TOYSI_SCAN_MAX_AGE_DAYS):
-            items = {}
-    except (OSError, ValueError, KeyError, TypeError):
-        items = {}
-        mt = None
-    _scan_cache = (mt, items)
+    except OSError:
+        _scan_cache = (None, {}, None)
+        return {}
+    if _scan_cache is None or _scan_cache[0] != mt:
+        items, at = {}, None
+        try:
+            data = json.loads(TOYSI_SCAN_FILE.read_text(encoding="utf-8"))
+            at = datetime.fromisoformat(data["at"])
+            if at.tzinfo is not None or not isinstance(data["items"], dict):
+                at = None
+            else:
+                items = data["items"]
+        except (OSError, ValueError, KeyError, TypeError, OverflowError):
+            items, at = {}, None
+        _scan_cache = (mt, items, at)
+    _mt, items, at = _scan_cache
+    if at is None:
+        return {}
+    age = datetime.now() - at
+    if age > timedelta(days=TOYSI_SCAN_MAX_AGE_DAYS) or age < timedelta(days=-1):
+        return {}
     return items
 
 
@@ -556,7 +569,7 @@ def scanned_discount_pct(pid, base_price) -> float | None:
         pct = 1.0 - float(entry["price"]) / base
         if abs(base - float(base_price)) > 0.02:
             return None
-    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
         return None
     if not (0.0 <= pct <= TOYSI_OBSERVED_DISCOUNT_SANITY_MAX):
         return None

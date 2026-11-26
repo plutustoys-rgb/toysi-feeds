@@ -82,5 +82,43 @@ with tempfile.TemporaryDirectory() as td, mock.patch.dict(os.environ, env_on, cl
              mock.patch.object(cp, "TOYSI_SCAN_FILE", _scan(td, ITEMS)), mock.patch.object(cp, "_scan_cache", None):
             _chk("2 спостереження із замовлень (5 %) переважає скан (15 %)", abs(cp.toysi_discounted_price(dict(BIKE)) - 291.92 * 0.95) < 0.02)
 
+# ── C6 (аудит #2068): fail-closed на брудні дані ──
+with tempfile.TemporaryDirectory() as td, mock.patch.dict(os.environ, env_on, clear=True):
+    obs = Path(td) / "obs.json"
+    with mock.patch.object(cp, "TOYSI_OBSERVED_DISCOUNT_FILE", obs), mock.patch.object(cp, "_observed_discount_cache", None):
+        def _one(entry_items, base=100.0, pid="1", age=0.0, raw=None, at_override=None):
+            f = _scan(td, entry_items, age_days=age, raw=raw)
+            if at_override:
+                f.write_text(json.dumps({"at": at_override, "items": entry_items}), encoding="utf-8")
+            with mock.patch.object(cp, "TOYSI_SCAN_FILE", f), mock.patch.object(cp, "_scan_cache", None):
+                return cp.scanned_discount_pct(pid, base)
+        _chk("C6 price>base -> None", _one({"1": {"base": 100.0, "price": 120.0}}) is None)
+        _chk("C6 NaN price -> None", _one({"1": {"base": 100.0, "price": float("nan")}}) is None)
+        _chk("C6 base=0 -> None", _one({"1": {"base": 0, "price": 0}}, base=0) is None)
+        _chk("C6 id числом -> знайдено за str(id)", _one({"1": {"base": 100.0, "price": 90.0}}, pid=1) == 0.1)
+        _chk("C6 entry — список -> None", _one({"1": [100.0, 90.0]}) is None)
+        _chk("C6 entry — рядок -> None", _one({"1": "x"}) is None)
+        _chk("C6 OverflowError (base=10**400) -> None, без винятку", _one({"1": {"base": 10 ** 400, "price": 1}}, base=1.0) is None)
+        fut = (datetime.now() + timedelta(days=30)).isoformat(timespec="seconds")
+        _chk("C6 `at` у майбутньому (+30 діб) -> None", _one({"1": {"base": 100.0, "price": 90.0}}, at_override=fut) is None)
+        tz = datetime.now().astimezone().isoformat(timespec="seconds")
+        _chk("C6 tz-aware `at` -> None", _one({"1": {"base": 100.0, "price": 90.0}}, at_override=tz) is None)
+        _chk("C6 items — список -> None", _one([1, 2]) is None)
+        _chk("C6 JSON без `at` -> None", _one(None, raw='{"items": {}}') is None)
+    # C1: помилка розбору кешується під справжнім mtime — файл не перечитується щовиклику
+    f = Path(td) / "toysi_discounts.json"
+    f.write_text('{"items": {}}', encoding="utf-8")
+    with mock.patch.object(cp, "TOYSI_SCAN_FILE", f), mock.patch.object(cp, "_scan_cache", None):
+        calls = []
+        orig = Path.read_text
+        def _spy(self, *a, **k):
+            if self == f:
+                calls.append(1)
+            return orig(self, *a, **k)
+        with mock.patch.object(Path, "read_text", _spy):
+            for _ in range(50):
+                cp.scanned_discount_pct("1", 100.0)
+        _chk("C1 битий файл читається 1 раз на 50 викликів", len(calls) == 1)
+
 print("ALL OK" if not _FAILS else f"FAILED: {_FAILS}")
 sys.exit(1 if _FAILS else 0)

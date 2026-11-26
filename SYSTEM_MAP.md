@@ -513,7 +513,7 @@
 ```json
 {
   "local_tasks": [
-    "PlutusToys_SystemMapDriftCheck", "PlutusToys_HealthCheck", "PlutusToys_TempJanitor",
+    "PlutusToys_SystemMapDriftCheck", "PlutusToys_HealthCheck", "PlutusToys_TempJanitor", "PlutusToys_ToysiDiscountScan",
     "PlutusToys_RozetkaLocalChain", "PlutusToys_RozetkaPricePull",
     "PlutusToys_RozetkaKeepalive", "PlutusToys_PromCatalogHistory", "PlutusToys_PromCabinetKeepalive",
     "PlutusToys_EvaCabinetKeepalive",

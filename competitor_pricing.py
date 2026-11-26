@@ -519,6 +519,8 @@ def observed_discount_pct(pid) -> float | None:
 # Вимкнути: env TOYSI_SCAN_DISCOUNT=0. Файл — фінтаємниця (закупівельні ціни), у git НЕ потрапляє (.gitignore).
 TOYSI_SCAN_FILE = Path(__file__).parent / "toysi_discounts.json"
 TOYSI_SCAN_MAX_AGE_DAYS = 3
+TOYSI_SCAN_LEVELS = (0.0, 0.05, 0.15)   # відомі рівні знижки Toysi (повний скан 129 замовлень, 27.09)
+TOYSI_SCAN_LEVEL_TOL = 0.004
 _scan_cache: tuple | None = None  # (mtime|None, items, at|None) — лінива, перечитується лише при зміні mtime файлу
 
 
@@ -566,8 +568,17 @@ def scanned_discount_pct(pid, base_price) -> float | None:
         return None
     try:
         base = float(entry["base"])
-        pct = 1.0 - float(entry["price"]) / base
+        price = float(entry["price"])
+        pct = 1.0 - price / base
         if abs(base - float(base_price)) > 0.02:
+            # База скану ≠ каталожна ціна (API) — у кабінеті «база» інша (виміряно 26.11: 7 038 із 24 224). Тоді персональна ціна
+            # може все одно дорівнювати API × (1 − відомий рівень): приймаємо ЛИШЕ коли 1 − price/API лягає на 0/5/15 % у межах
+            # TOYSI_SCAN_LEVEL_TOL (виміряно: 2 721 SKU; на 21 спостереженому з замовлень збіг 17). Інакше None -> правило.
+            api = float(base_price)
+            alt = 1.0 - price / api
+            for lvl in TOYSI_SCAN_LEVELS:
+                if abs(alt - lvl) <= TOYSI_SCAN_LEVEL_TOL:
+                    return lvl
             return None
     except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
         return None

@@ -120,5 +120,22 @@ with tempfile.TemporaryDirectory() as td, mock.patch.dict(os.environ, env_on, cl
                 cp.scanned_discount_pct("1", 100.0)
         _chk("C1 битий файл читається 1 раз на 50 викликів", len(calls) == 1)
 
+# ── рівневе зіставлення, коли база скану ≠ каталожна ціна (PR level-match) ──
+with tempfile.TemporaryDirectory() as td, mock.patch.dict(os.environ, env_on, clear=True):
+    obs = Path(td) / "obs.json"
+    items = {"a": {"base": 124.17, "price": 112.06},    # API 118.0: 1-112.06/118.0 = 5.0 %
+             "b": {"base": 90.0, "price": 85.0},        # API 100.0: 15 %
+             "c": {"base": 90.0, "price": 70.0},        # API 100.0: 30 % -> поза рівнями
+             "d": {"base": 90.0, "price": 100.0},       # API 100.0: 0 %
+             "e": {"base": 90.0, "price": 94.0}}        # API 100.0: -6 % (скан дорожчий) -> None
+    with mock.patch.object(cp, "TOYSI_OBSERVED_DISCOUNT_FILE", obs), mock.patch.object(cp, "_observed_discount_cache", None),          mock.patch.object(cp, "TOYSI_SCAN_FILE", _scan(td, items)), mock.patch.object(cp, "_scan_cache", None):
+        _chk("LM 5 % за рівнем (API 117.96)", cp.scanned_discount_pct("a", 117.96) == 0.05)
+        _chk("LM 15 % за рівнем", cp.scanned_discount_pct("b", 100.0) == 0.15 or cp.scanned_discount_pct("b", 100.0) is None)
+        _chk("LM 15 %: price 85 / API 100 = рівно 15 %", cp.scanned_discount_pct("b", 100.0) == 0.15)
+        _chk("LM 30 % не лягає на рівні -> None", cp.scanned_discount_pct("c", 100.0) is None)
+        _chk("LM 0 % (price = API) -> 0.0", cp.scanned_discount_pct("d", 100.0) == 0.0)
+        _chk("LM скан дорожчий за API -> None", cp.scanned_discount_pct("e", 100.0) is None)
+        _chk("LM API=0 -> None без винятку", cp.scanned_discount_pct("b", 0) is None)
+
 print("ALL OK" if not _FAILS else f"FAILED: {_FAILS}")
 sys.exit(1 if _FAILS else 0)

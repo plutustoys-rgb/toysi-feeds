@@ -510,6 +510,81 @@ def observed_discount_pct(pid) -> float | None:
         return None
 
 
+# ДОДАНО (2026-11-26, слово власника «п.1»: «для Toysi теж треба скрапер… ми постійно у програші з їхніми знижками»):
+# ЗНЯТА З КАБІНЕТУ Toysi персональна ціна по КОЖНОМУ товару каталогу (toysi_discount_scan.py -> toysi_discounts.json
+# {"at", "items": {код: {"base","price","disc"}}}). Це друге джерело знижки ПІСЛЯ спостережень із замовлень і ПЕРЕД
+# правилами за категорією/брендом/isImport (повний обхід 25.11: правило завищувало собівартість у 2 571 SKU і занижувало в 60).
+# Безпечні умови (інакше -> None і діє правило, як було): файл існує, не старший TOYSI_SCAN_MAX_AGE_DAYS; запис є; каталожна
+# ціна зараз = base у скані (±0.02 ₴; ціна змінилась -> скан про іншу ціну); знижка в [0, TOYSI_OBSERVED_DISCOUNT_SANITY_MAX].
+# Вимкнути: env TOYSI_SCAN_DISCOUNT=0. Файл — фінтаємниця (закупівельні ціни), у git НЕ потрапляє (.gitignore).
+TOYSI_SCAN_FILE = Path(__file__).parent / "toysi_discounts.json"
+TOYSI_SCAN_MAX_AGE_DAYS = 3
+_scan_cache: tuple | None = None  # (mtime|None, items, at|None) — лінива, перечитується лише при зміні mtime файлу
+
+
+def toysi_scan_on() -> bool:
+    return os.environ.get("TOYSI_SCAN_DISCOUNT", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _load_scan() -> dict:
+    """items скану або {}; fail-closed: немає/битий файл, tz-aware/майбутня `at` (>1 доби), вік > TOYSI_SCAN_MAX_AGE_DAYS -> {}.
+    Кеш за mtime (помилка розбору теж кешується під справжнім mtime — файл не перечитується щовиклику); вік перевіряється КОЖЕН виклик
+    (довгий процес не користується застарілим сканом)."""
+    global _scan_cache
+    try:
+        mt = TOYSI_SCAN_FILE.stat().st_mtime
+    except OSError:
+        _scan_cache = (None, {}, None)
+        return {}
+    if _scan_cache is None or _scan_cache[0] != mt:
+        items, at = {}, None
+        try:
+            data = json.loads(TOYSI_SCAN_FILE.read_text(encoding="utf-8"))
+            at = datetime.fromisoformat(data["at"])
+            if at.tzinfo is not None or not isinstance(data["items"], dict):
+                at = None
+            else:
+                items = data["items"]
+        except (OSError, ValueError, KeyError, TypeError, OverflowError):
+            items, at = {}, None
+        _scan_cache = (mt, items, at)
+    _mt, items, at = _scan_cache
+    if at is None:
+        return {}
+    age = datetime.now() - at
+    if age > timedelta(days=TOYSI_SCAN_MAX_AGE_DAYS) or age < timedelta(days=-1):
+        return {}
+    return items
+
+
+def scanned_discount_pct(pid, base_price) -> float | None:
+    """Знижка цього SKU зі скану кабінету Toysi (див. коментар вище) або None."""
+    if not toysi_scan_on():
+        return None
+    entry = _load_scan().get(str(pid))
+    if not entry:
+        return None
+    try:
+        base = float(entry["base"])
+        pct = 1.0 - float(entry["price"]) / base
+        if abs(base - float(base_price)) > 0.02:
+            return None
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
+        return None
+    if not (0.0 <= pct <= TOYSI_OBSERVED_DISCOUNT_SANITY_MAX):
+        return None
+    return round(pct, 4)
+
+
+def known_discount_pct(item: dict, base_price) -> float | None:
+    """Найкраща ВІДОМА знижка SKU: спостережена із замовлень -> зі скану кабінету -> None (далі правила)."""
+    pid = item.get("id") or item.get("vendor_code")
+    v = observed_discount_pct(pid)
+    if v is not None:
+        return v
+    return scanned_discount_pct(pid, base_price)
+
+
 # Санітарна межа на спостережений pct (аудит PR перед мержем 2026-09-27): усі відомі РЕАЛЬНІ
 # рівні знижки Toysi — 0%/5%/15% (повний скан 129 замовлень). Без цієї межі один спотворений
 # запис (напр. розсинхрон positions_price/positions_discount_price на боці Toysi чи парсингу)
@@ -679,7 +754,7 @@ def toysi_discounted_price(item: dict) -> float:
     # ПЕРШЕ джерело: реально спостережена знижка ЦЬОГО pid (аудит 2026-09-27 — виняток
     # per-SKU, метадані-правила нижче цього не ловлять, див. коментар над
     # TOYSI_OBSERVED_DISCOUNT_FILE). Товар без живого прецеденту падає у фолбек нижче.
-    observed = observed_discount_pct(item.get("id") or item.get("vendor_code"))
+    observed = known_discount_pct(item, base_price)
     if observed is not None:
         return base_price * (1 - observed)
 
@@ -714,7 +789,7 @@ def toysi_cost_discounted_price(item: dict) -> float:
     if base_price <= 0:
         return base_price
 
-    observed = observed_discount_pct(item.get("id") or item.get("vendor_code"))
+    observed = known_discount_pct(item, base_price)
     if observed is not None:
         return base_price * (1 - observed)
 

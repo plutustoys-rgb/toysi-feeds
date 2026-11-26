@@ -385,3 +385,6 @@ rt_prom_reprice_state.json.bak
 rt_prom_reprice_state.json.tmp.*
 # Спільний замок збірки рілсів (reel_weekly + reel_guard), runtime на VPS
 reel_build.lock
+
+# Знижки Toysi зі скану кабінету (toysi_discount_scan.py): закупівельні ціни — фінтаємниця, лише локально/VPS.
+toysi_discounts.json

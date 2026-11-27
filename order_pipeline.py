@@ -44,6 +44,7 @@ import sys
 import bank_check
 import order_router
 import orders_watcher
+import rozetka_refund_receipts
 import site_refund_receipts
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -58,6 +59,10 @@ def run_once() -> None:
         site_refund_receipts.run_once()
     except Exception as e:  # noqa: BLE001
         print(f"[order_pipeline] site_refund_receipts: {type(e).__name__}: {e}", file=sys.stderr)
+    try:    # чек повернення Rozetka за статусом оплати «returned» (27.11.2026): теж best-effort
+        rozetka_refund_receipts.run_once()
+    except Exception as e:  # noqa: BLE001
+        print(f"[order_pipeline] rozetka_refund_receipts: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

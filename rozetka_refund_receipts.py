@@ -24,6 +24,10 @@ if hasattr(sys.stdout, "reconfigure"):
 LOOKBACK_DAYS = 90
 RECHECK_AFTER = timedelta(hours=1)
 RETURNED = "returned"          # Rozetka status-payment name для «Повернено»
+# ЗАПОБІЖНИК ВІД ЧАСТКОВОГО ПОВЕРНЕННЯ (бухгалтер 27.11: у Orders API ознаки часткового нема — `returned` лише name): RETURN на суму чека продажу видаємо автоматично ТІЛЬКИ коли замовлення
+# повернуто/скасовано ЦІЛИМ (наш delivery_status): returned (посилка повернулась), cancelled, expired (Rozetka скасувала). Якщо Rozetka каже «returned», а замовлення «доставлене/в дорозі» —
+# це може бути часткова компенсація: чек НЕ видаємо, алерт людині (бухгалтер звіряє суму з реєстром RozetkaPay). Краще чек пізніше, ніж фіскальний чек на неправильну суму.
+FULL_RETURN_DELIVERY = ("returned", "cancelled", "expired")
 
 
 def _alert(key: str, text: str) -> None:
@@ -81,6 +85,11 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
             conn.commit()
             if (st or {}).get("name") != RETURNED:
                 continue                                  # paid / інше — нічого (часткове чи невідоме не фіскалізуємо)
+            if str(o.get("delivery_status") or "") not in FULL_RETURN_DELIVERY:
+                out["human"] += 1
+                _alert(f"rz_refund_notfull:{oid}", f"🔴 Rozetka показує «Повернено» по {oid}, але замовлення не повернуто/не скасовано цілим (наш delivery_status={o.get('delivery_status')!r}): це може бути ЧАСТКОВЕ повернення/компенсація — чек повернення автоматично НЕ створено. "
+                       f"Звір суму повернення в реєстрі RozetkaPay (має дорівнювати сумі чека продажу) і оформи чек вручну (kodv_return_receipt.py), або зміни стан замовлення на returned/cancelled, і наступний цикл створить сам.")
+                continue
             try:
                 token = token or auth()
                 headers = {"X-License-Key": cb.CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}

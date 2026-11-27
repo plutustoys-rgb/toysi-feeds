@@ -31,11 +31,11 @@ rrr._alert = lambda key, text: alerts.append((key, text))
 orders_db.init_db()
 
 
-def make_order(oid, total=258, platform="rozetka", payment_method="prepaid", receipt="r-"):
+def make_order(oid, total=258, platform="rozetka", payment_method="prepaid", receipt="r-", delivery="returned"):
     with orders_db.get_connection() as c:
         orders_db.insert_order(c, dict(order_id=oid, platform=platform, payment_method=payment_method, payment_confirmed=True, customer_name="Т Т", phone="+380501112233",
                                        np_branch="Київ, Відділення №1", items=[{"toysi_code": "1", "name": "x", "qty": 1, "price": total}], status="forwarded_to_supplier"))
-        c.execute("UPDATE orders SET checkbox_receipt_id = ? WHERE internal_order_id = ?", ((receipt + oid) if receipt else None, f"{platform}_{oid}"))
+        c.execute("UPDATE orders SET checkbox_receipt_id = ?, delivery_status = ? WHERE internal_order_id = ?", ((receipt + oid) if receipt else None, delivery, f"{platform}_{oid}"))
         c.commit()
 
 
@@ -81,7 +81,7 @@ def reset_check(*oids):
 
 
 # ── (1)+(4) paid -> нічого (реальний 912764384)
-make_order("912764384", total=137)
+make_order("912764384", total=137, delivery="shipped")
 STATUS["912764384"] = {"name": "paid", "title": "Оплачено", "value": 1}
 SELLS["r-912764384"] = sell_receipt("r-912764384", 137)
 r = run()
@@ -188,6 +188,25 @@ chk("site/prom замовлення цим модулем не опитують�
 with orders_db.get_connection() as _c:
     _cands = orders_db.get_rozetka_refund_candidates(_c, "2000-01-01T00:00:00", "2999-01-01T00:00:00")
 chk("get_rozetka_refund_candidates не віддає не-rozetka", all(c["platform"] == "rozetka" for c in _cands))
+
+# ── (12) запобіжник: returned, але замовлення НЕ повернуто цілим (delivered/shipped) -> чека нема, алерт
+make_order("1201", delivery="delivered")
+STATUS["1201"] = {"name": "returned"}
+SELLS["r-1201"] = sell_receipt("r-1201")
+n, na = len(posted), len(alerts)
+r = run()
+chk("returned при delivery_status=delivered: чек НЕ створено, human, алерт «ймовірно часткове»", len(posted) == n and r["human"] >= 1 and any("rz_refund_notfull:rozetka_1201" == a[0] for a in alerts[na:]))
+chk("запобіжник: refund_receipt_at порожній", not row("1201").get("refund_receipt_at"))
+with orders_db.get_connection() as c:
+    c.execute("UPDATE orders SET delivery_status = 'returned', refund_checked_at = NULL WHERE internal_order_id = 'rozetka_1201'"); c.commit()
+r = run()
+chk("після переходу замовлення в returned наступний цикл створює чек", r["created"] == 1 and bool(row("1201").get("refund_receipt_at")))
+for ds in ("cancelled", "expired"):
+    oid = "12" + ds[:2]
+    make_order(oid, delivery=ds); STATUS[oid] = {"name": "returned"}; SELLS["r-" + oid] = sell_receipt("r-" + oid)
+n = len(posted)
+r = run()
+chk("cancelled/expired теж вважаються цілим поверненням -> чеки створено (2)", len(posted) == n + 2)
 
 print("ALL OK" if not F else f"FAILED: {F}")
 sys.exit(1 if F else 0)

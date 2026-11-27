@@ -282,6 +282,26 @@ def _price_grn(raw: str) -> str:
         return ""
 
 
+UTM_MEDIUM = "social"
+UTM_CAMPAIGN = "product_post"
+
+
+def utm_url(url: str, source: str) -> str:
+    """URL із UTM для підпису автопосту (запит SMM 27.11.2026: FB давав ≈50 переходів за 12 днів без кампанії).
+    Додає utm_source/utm_medium/utm_campaign, СТАРІ параметри не чіпає; якщо utm_source уже є — повертає як було.
+    p["url"] у постері лишається голим (перевірка живості, журнал, info.json) — UTM лише в тексті підпису."""
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    try:
+        parts = urlsplit(url)
+        q = parse_qsl(parts.query, keep_blank_values=True)
+        if not parts.scheme or any(k == "utm_source" for k, _ in q):
+            return url
+        q += [("utm_source", source), ("utm_medium", UTM_MEDIUM), ("utm_campaign", UTM_CAMPAIGN)]
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
+    except Exception:  # noqa: BLE001 — підпис важливіший за UTM
+        return url
+
+
 def build_caption(p: dict, platform: str = "fb", tagged: bool = False) -> str:
     """Підпис під платформу. Спільне: хук + назва + користь + ціна + хештеги. Різниця: на FB
     URL товару клікабельний → лишаємо; на IG посилання в підписі НЕ клікабельні. Якщо на IG
@@ -297,7 +317,7 @@ def build_caption(p: dict, platform: str = "fb", tagged: bool = False) -> str:
         lines.append("🛍️ Щоб замовити — тапни позначку товару на фото або посилання в профілі."
                      if tagged else "Замовлення — за посиланням у шапці профілю 🔗")
     else:
-        lines.append(p["url"])
+        lines.append(utm_url(p["url"], "facebook"))
     lines.append(_hashtags(p["name"]))
     return "\n".join(lines)
 

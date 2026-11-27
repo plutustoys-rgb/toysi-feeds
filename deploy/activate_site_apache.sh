@@ -180,6 +180,23 @@ if ! can_read "$GONEMAP"; then
     can_read "$GONEMAP" || die "$APUSER не читає $GONEMAP — Apache НЕ чіпано"
 fi
 
+# 27.11.2026 (SEO, GSC 28 днів: знятих карток із попитом 135 → 432 покази, віддавали 410): мапа 301 «знята картка → живий аналог» (site/gone_redirects.json; site_gone_redirects.py; RewriteMap sitegoneredir
+# у vhost — ДО загального 410). Файл МУСИТЬ існувати (RewriteMap txt: з відсутнім файлом валить configtest). Порожня мапа — не помилка: усі зняті картки лишаються 410, як було.
+GONEREDIRMAP="$APP/site_gone_redirect_apache.map"
+"$PY" "$APP/site_gone_redirects.py" || echo "  (генератор мапи 301 site_gone_redirects.py завершився з помилкою — лишаю наявну мапу)"
+if [ ! -e "$GONEREDIRMAP" ]; then
+    printf '# порожня мапа 301 (site_gone_redirects.py не створив) — усі зняті картки віддають 410\n' > "$GONEREDIRMAP"
+    chmod 644 "$GONEREDIRMAP"
+    echo "⚠️  $GONEREDIRMAP не створено генератором — поклав порожню (зняті картки віддаватимуть 410 без 301 на аналог)"
+fi
+GONEREDIRLINES=$(grep -c '^product-' "$GONEREDIRMAP" 2>/dev/null || true)
+GONEREDIRLINES=${GONEREDIRLINES:-0}
+echo "ℹ️  рядків у мапі 301 (зняті картки → аналог): $GONEREDIRLINES"
+if ! can_read "$GONEREDIRMAP"; then
+    command -v setfacl >/dev/null 2>&1 && setfacl -m "u:$APUSER:r--" "$GONEREDIRMAP" || true
+    can_read "$GONEREDIRMAP" || die "$APUSER не читає $GONEREDIRMAP — Apache НЕ чіпано"
+fi
+
 if ! systemctl is-active --quiet site-order-api; then
     if ss -ltn 2>/dev/null | grep -q '127.0.0.1:8901 \|:8901 '; then die "порт 8901 уже зайнятий не нашим site-order-api — розбери вручну"; fi
 fi
@@ -278,6 +295,12 @@ cat <<'EOF'
     RewriteRule ^/product-rt-([0-9A-Za-z_]+)\.html$ /product-y$1.html [R=301,L]
     # 23.11.2026 (SEO, GSC: 32 % обходу Googlebot за 90 днів — 404): видалені власні картки (product-<id>, product-x…, product-y…, product-rt-…, product-k…), яких НЕМА у site/ (build_site крок 8 прибрав їх HTML),
     # → 410 Gone, як і старі Prom-адреси: 404 не припиняє переобхід. Існуючий файл правило не чіпає (-f), тож жива картка (в т.ч. «немає в наявності») віддається як є; 301 rt→y (вище) спрацьовує раніше за це правило.
+    # 27.11.2026 (SEO): знята картка з попитом, для якої є живий аналог (site/gone_redirects.json → site_gone_redirects.py → site_gone_redirect_apache.map, значення — готове ім'я файлу цілі) → 301 на аналог.
+    # ДО загального 410 (вище нижче не доходить); -f: жива сторінка (у т.ч. «немає в наявності») ніколи не редіректиться; адреси поза мапою — як було (410).
+    RewriteMap sitegoneredir "txt:@APP@/site_gone_redirect_apache.map"
+    RewriteCond ${sitegoneredir:$1|-} !=-
+    RewriteCond %{DOCUMENT_ROOT}/$1.html !-f
+    RewriteRule ^/(product-[0-9]+)\.html$ /${sitegoneredir:$1} [R=301,L]
     RewriteCond %{DOCUMENT_ROOT}/$1.html !-f
     RewriteRule ^/(product-[A-Za-z0-9_-]+)\.html$ - [G,L]
     # внутрішній rewrite фото (без редиректу): публічний шлях → фізичний файл; старі шляхи /img/rt віддаються як були (збережені кошики, Google Images)
@@ -516,6 +539,28 @@ write_vhost() {   # $1 = http | https
         [ "$sg_got" = "410" ] || { echo "🚨 /$sg_key.html з мапи 410 віддає $sg_got, а не 410 (3 спроби)"; sg_bad=$((sg_bad + 1)); }
     done < "$GONEMAP"
     if [ "$sg_bad" != "0" ]; then echo "🚨 $sg_bad адрес(и) мапи 410 віддають не 410"; bad=1; fi
+    # проба мапи 301 «знята картка → аналог» (27.11.2026): перший рядок мапи → /product-<знята>.html веде 301 на /<ціль>.html, ціль віддає 200. Порожня мапа — пропуск. Хибний напрям/редирект живої = відкат.
+    local gr_key=""
+    local gr_val=""
+    local gr_exp=""
+    local gr_p="ERR"
+    local gr_t="ERR"
+    gr_key=$(awk '/^product-/{print $1; exit}' "$GONEREDIRMAP" 2>/dev/null || true)
+    gr_val=$(awk '/^product-/{print $2; exit}' "$GONEREDIRMAP" 2>/dev/null || true)
+    if [ -n "$gr_key" ] && [ -n "$gr_val" ]; then
+        gr_exp="301 $sch2://$DOMAIN/$gr_val"
+        for try in 1 2 3; do
+            gr_p=$(redir --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/$gr_key.html")
+            gr_t=$(code --resolve "$DOMAIN:$prt2:$IP" "$sch2://$DOMAIN/$gr_val")
+            [ "$gr_p" = "$gr_exp" ] && [ "$gr_t" = "200" ] && break
+            echo "ℹ️  проба 301 знятої картки ще не збіглась (спроба $try/3): знята = $gr_p, ціль = $gr_t — чекаю"; sleep 4
+        done
+        echo "  знята картка з аналогом: /$gr_key.html = $gr_p (очікую $gr_exp); ціль /$gr_val = $gr_t (очікую 200)"
+        [ "$gr_p" = "$gr_exp" ] || { echo "🚨 знята картка /$gr_key.html веде не на аналог ($gr_p, очікую $gr_exp)"; bad=1; }
+        [ "$gr_t" = "200" ] || { echo "🚨 ціль 301 /$gr_val віддає $gr_t, а не 200"; bad=1; }
+    else
+        echo "  мапа 301 знятих карток порожня — пробу пропущено"
+    fi
     # проба правила груп Prom (12.10.2026): gid з мапи (перший рядок = найбільше показів) → 301 на СВОЮ категорію — і з /ua/, і без префікса (з ?query, який QSD має відкинути);
     # gid поза мапою → 301 на /catalog.html, як було. Хибний напрям (не та категорія / каталог для мапованого) = відкат.
     local gp_key=""

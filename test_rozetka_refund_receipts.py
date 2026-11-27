@@ -197,6 +197,8 @@ n, na = len(posted), len(alerts)
 r = run()
 chk("returned при delivery_status=delivered: чек НЕ створено, human, алерт «ймовірно часткове»", len(posted) == n and r["human"] >= 1 and any("rz_refund_notfull:rozetka_1201" == a[0] for a in alerts[na:]))
 chk("запобіжник: refund_receipt_at порожній", not row("1201").get("refund_receipt_at"))
+al = [a[1] for a in alerts if a[0] == "rz_refund_notfull:rozetka_1201"]
+chk("алерт містить номер замовлення Rozetka, id і серіал чека продажу", al and "1201" in al[0] and "r-1201" in al[0] and "серіал 7" in al[0])
 with orders_db.get_connection() as c:
     c.execute("UPDATE orders SET delivery_status = 'returned', refund_checked_at = NULL WHERE internal_order_id = 'rozetka_1201'"); c.commit()
 r = run()

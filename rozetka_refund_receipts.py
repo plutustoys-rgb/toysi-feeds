@@ -87,7 +87,13 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
                 continue                                  # paid / інше — нічого (часткове чи невідоме не фіскалізуємо)
             if str(o.get("delivery_status") or "") not in FULL_RETURN_DELIVERY:
                 out["human"] += 1
-                _alert(f"rz_refund_notfull:{oid}", f"🔴 Rozetka показує «Повернено» по {oid}, але замовлення не повернуто/не скасовано цілим (наш delivery_status={o.get('delivery_status')!r}): це може бути ЧАСТКОВЕ повернення/компенсація — чек повернення автоматично НЕ створено. "
+                serial = "?"
+                try:                                      # серіал чека продажу для бухгалтера (рідкісна гілка; збій не заважає алерту)
+                    token = token or auth()
+                    serial = (get_receipt(token, o["checkbox_receipt_id"]) or {}).get("serial") or "?"
+                except Exception:  # noqa: BLE001
+                    pass
+                _alert(f"rz_refund_notfull:{oid}", f"🔴 Rozetka показує «Повернено» по {oid} (Rozetka № {o.get('order_id')}), чек продажу: id {o.get('checkbox_receipt_id')}, серіал {serial}, але замовлення не повернуто/не скасовано цілим (наш delivery_status={o.get('delivery_status')!r}): це може бути ЧАСТКОВЕ повернення/компенсація — чек повернення автоматично НЕ створено. "
                        f"Звір суму повернення в реєстрі RozetkaPay (має дорівнювати сумі чека продажу) і оформи чек вручну (kodv_return_receipt.py), або зміни стан замовлення на returned/cancelled, і наступний цикл створить сам.")
                 continue
             try:

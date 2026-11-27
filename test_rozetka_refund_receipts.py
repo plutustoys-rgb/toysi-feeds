@@ -59,8 +59,15 @@ def status_fn(oid):
     return v
 
 
+ORDERS = {}
+
+
+def order_fn(oid):
+    return ORDERS.get(oid, {"amount": "258.00", "total_quantity": 1})
+
+
 def run(**over):
-    kw = dict(status_fn=status_fn, auth=lambda: "tok", get_receipt=lambda tok, rid: SELLS[rid], fetch_window=lambda h, a, b: list(FRESH),
+    kw = dict(status_fn=status_fn, order_fn=order_fn, auth=lambda: "tok", get_receipt=lambda tok, rid: SELLS[rid], fetch_window=lambda h, a, b: list(FRESH),
               ensure_shift=lambda tok: shifts.append(1), post=lambda tok, body: (posted.append(body) or {"id": "ret-" + str(len(posted))}),
               wait=lambda tok, rid: {"id": rid, "serial": 99, "fiscal_code": "FC9", "total_sum": 25800})
     kw.update(over)
@@ -209,6 +216,28 @@ for ds in ("cancelled", "expired"):
 n = len(posted)
 r = run()
 chk("cancelled/expired теж вважаються цілим поверненням -> чеки створено (2)", len(posted) == n + 2)
+
+# ── (13) аудит #2093 Z1: сума й кількість із замовлення Rozetka
+make_order("1301")
+STATUS["1301"] = {"name": "returned"}; SELLS["r-1301"] = sell_receipt("r-1301", 258)
+ORDERS["1301"] = {"amount": "300.00", "total_quantity": 1}
+n, na = len(posted), len(alerts)
+r = run()
+chk("сума замовлення Rozetka ≠ сумі чека -> відмова validate, чека нема, алерт", len(posted) == n and r["human"] >= 1 and len(alerts) > na)
+make_order("1302")
+STATUS["1302"] = {"name": "returned"}; SELLS["r-1302"] = sell_receipt("r-1302", 258)
+ORDERS["1302"] = {"amount": "258.00", "total_quantity": 2}
+n = len(posted)
+r = run()
+chk("total_quantity=2 -> автоматично не видаємо", len(posted) == n and not row("1302").get("refund_receipt_at"))
+make_order("1303")
+STATUS["1303"] = {"name": "returned"}; SELLS["r-1303"] = sell_receipt("r-1303", 258)
+ORDERS["1303"] = {"total_quantity": 1}
+n = len(posted)
+r = run()
+chk("суми замовлення нема -> відмова, чека нема", len(posted) == n and not row("1303").get("refund_receipt_at"))
+print("alert done sent:", any(a[0].startswith("rz_refund_done") for a in alerts))
+chk("успішний чек НЕ шле Telegram-алерт rz_refund_done (правило власника)", not any(a[0].startswith("rz_refund_done") for a in alerts))
 
 print("ALL OK" if not F else f"FAILED: {F}")
 sys.exit(1 if F else 0)

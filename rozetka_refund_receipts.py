@@ -21,7 +21,7 @@ import rozetka_client
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-LOOKBACK_DAYS = 90
+LOOKBACK_DAYS = 88       # менше за вікно пошуку Checkbox (89 діб), щоб дубль RETURN не губився на межі (аудит #2093 Z2)
 RECHECK_AFTER = timedelta(hours=1)
 RETURNED = "returned"          # Rozetka status-payment name для «Повернено»
 # ЗАПОБІЖНИК ВІД ЧАСТКОВОГО ПОВЕРНЕННЯ (бухгалтер 27.11: у Orders API ознаки часткового нема — `returned` лише name): RETURN на суму чека продажу видаємо автоматично ТІЛЬКИ коли замовлення
@@ -50,10 +50,11 @@ def run_once(conn=None, **kw) -> dict:
         return {"checked": 0, "created": 0, "already": 0, "human": 0, "failed": 1}
 
 
-def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None, ensure_shift=None, post=None, wait=None, now=None) -> dict:
+def _run(conn, *, status_fn=None, order_fn=None, auth=None, get_receipt=None, fetch_window=None, ensure_shift=None, post=None, wait=None, now=None) -> dict:
     out = {"checked": 0, "created": 0, "already": 0, "human": 0, "failed": 0}
     try:
         status_fn = status_fn or rozetka_client.get_payment_status
+        order_fn = order_fn or rozetka_client.get_order_details
         auth = auth or cb._authenticate_cashier
         get_receipt = get_receipt or krr._get_receipt
         fetch_window = fetch_window or cs._fetch_window
@@ -97,6 +98,14 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
                        f"Звір суму повернення в реєстрі RozetkaPay (має дорівнювати сумі чека продажу) і оформи чек вручну (kodv_return_receipt.py), або зміни стан замовлення на returned/cancelled, і наступний цикл створить сам.")
                 continue
             try:
+                od = order_fn(o["order_id"]) or {}                    # крос-перевірка суми й кількості з замовленням Rozetka (аудит #2093 Z1): RETURN незворотний
+                try:
+                    amount = float(od.get("amount"))
+                except (TypeError, ValueError):
+                    raise krr.Refusal("сума замовлення Rozetka невідома (GET /orders/{id}.amount) — звір вручну")
+                qty = od.get("total_quantity")
+                if qty is not None and str(qty).strip() not in ("1", "1.0", "1.00"):
+                    raise krr.Refusal(f"у замовленні Rozetka {qty} одиниць (total_quantity) — автоматично лише 1 одиниця; чек повернення оформи вручну")
                 token = token or auth()
                 headers = {"X-License-Key": cb.CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
                 sell = get_receipt(token, o["checkbox_receipt_id"])
@@ -108,7 +117,7 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
                     out["already"] += 1
                     print(f"[rozetka_refund_receipts] {oid}: чек повернення вже існує (серіал {existing.get('serial')}) — позначено виконаним")
                     continue
-                krr.validate(sell, fresh, expect_fiscal=None, expect_sum=None)
+                krr.validate(sell, fresh, expect_fiscal=None, expect_sum=amount)
                 body = krr.build_body(sell)
             except krr.Refusal as e:
                 out["human"] += 1
@@ -133,7 +142,7 @@ def _run(conn, *, status_fn=None, auth=None, get_receipt=None, fetch_window=None
                 conn.commit()
                 out["created"] += 1
                 print(f"[rozetka_refund_receipts] ✅ {oid}: чек повернення створено (серіал {done.get('serial')}, фіскальний {done.get('fiscal_code')}, {(done.get('total_sum') or 0) / 100:.2f} грн)")
-                _alert(f"rz_refund_done:{oid}", f"🧾 Чек повернення видано для {oid}: серіал {done.get('serial')}, {(done.get('total_sum') or 0) / 100:.2f} грн (Rozetka: «Повернено»).")
+                # успішний чек — лише журнал (правило власника: у Telegram тільки «Нове замовлення»; збої йдуть Коду алертом вище)
             except Exception as e:  # noqa: BLE001
                 out["failed"] += 1
                 if sent:

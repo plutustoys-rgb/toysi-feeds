@@ -57,5 +57,11 @@ with tempfile.TemporaryDirectory() as td2:
         item(21, "Пазл Весела ферма", img="https://plutustoys.com.ua/img/p/c.jpg")])), encoding="utf-8")
     chk("явне виключення за id (y35922, 279290)", sorted(r[0] for r in gp.build_rows(gp.load_items(s3), today=date(2026, 11, 27))) == ["21"])
 
+# ── аудит #2090: гілка ЗСУ без керівних символів і з межами слова ──
+import re as _re
+chk("MILITARY_RE: у патерні нема керівних символів (0x08 тощо)", not any(ord(ch) < 32 for ch in gp.MILITARY_RE.pattern))
+chk("ЗСУ-назви виключаються (окремо від 'солдат')", all(gp.MILITARY_RE.search(n) for n in ("Пазл Котики ЗСУ та танк", "Набір з джавеліном ЗСУ", "Сухопутні війська ЗСУ")))
+chk("цивільні слова зі складом 'зсу' лишаються", not any(gp.MILITARY_RE.search(n) for n in ("Дитячі розсувні ролики", "Розсувна каталка", "Пазл Весела ферма")))
+
 print("ALL OK" if not fails else f"FAILED: {fails}")
 sys.exit(1 if fails else 0)

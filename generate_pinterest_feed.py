@@ -62,7 +62,7 @@ def load_items(src: Path) -> list:
 EXCLUDED_IMAGE_HOSTS = ("images.prom.ua",)
 # Явно за id (рішення SMM 27.11: відсів за описом НЕ розширювати — ризик хибних спрацювань): y35922 — воєнна настільна гра «Прорив» (танки/ракетні установки/солдати), 279290 — набір A.C.I.D. з розділу «Солдатики».
 EXCLUDED_PRODUCT_IDS = {"y35922", "279290"}
-MILITARY_RE = re.compile(r"солдат|блок[-\s]?пост|зсу", re.I)
+MILITARY_RE = re.compile(r"солдат|блок[-\s]?пост|(?<![а-яіїєґ])зсу(?![а-яіїєґ])", re.I)
 
 
 def _keep(p: dict) -> bool:

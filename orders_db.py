@@ -987,6 +987,20 @@ def get_refund_receipt_candidates(conn: sqlite3.Connection, since_iso: str, chec
     return [_row_to_dict(r) for r in rows]
 
 
+def get_rozetka_refund_candidates(conn: sqlite3.Connection, since_iso: str, checked_before_iso: str) -> list:
+    """Передоплачені (картка RozetkaPay) ОПЛАЧЕНІ замовлення Rozetka з чеком продажу, для яких чека повернення ще нема (запит бухгалтера 27.11.2026, слово власника).
+    Той самий набір прапорців claim/done/checked, що й у get_refund_receipt_candidates (сайт); refund_checked_at: статус у Rozetka — не частіше разу на годину."""
+    rows = conn.execute(
+        """SELECT * FROM orders WHERE platform = 'rozetka' AND payment_method = 'prepaid' AND payment_confirmed = 1
+             AND (status IS NULL OR status != 'sandbox_test') AND checkbox_receipt_id IS NOT NULL AND checkbox_receipt_id != ''
+             AND refund_receipt_at IS NULL AND refund_receipt_claim_at IS NULL
+             AND created_at >= ? AND (refund_checked_at IS NULL OR refund_checked_at < ?)
+           ORDER BY created_at""",
+        (since_iso, checked_before_iso),
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
 def get_stuck_refund_claims(conn: sqlite3.Connection, older_than_iso: str) -> list:
     """Замовлення, де claim чека повернення взято, а чека нема (refund_receipt_at порожній) давніше за older_than_iso: вбитий процес чи невідомий результат — потрібна людина."""
     rows = conn.execute(

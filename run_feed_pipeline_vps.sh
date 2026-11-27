@@ -81,6 +81,7 @@ FAIL_REASON=""
 python3 generate_google_feed.py || echo "[FeedPipeline] generate_google_feed.py провалився (best-effort, buyBox-кеш лишається попереднім)"
 python3 generate_meta_feed.py || echo "[FeedPipeline] generate_meta_feed.py провалився (best-effort)"
 python3 generate_bing_feed.py || echo "[FeedPipeline] generate_bing_feed.py провалився (best-effort)"
+python3 generate_pinterest_feed.py || echo "[FeedPipeline] generate_pinterest_feed.py провалився (best-effort, попередня версія лишається)"
 
 if ! python3 prom_competitor_pricer.py --apply; then
     FAIL_REASON="prom_competitor_pricer.py --apply провалився"

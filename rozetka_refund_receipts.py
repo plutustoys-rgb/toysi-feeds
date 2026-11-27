@@ -86,26 +86,7 @@ def _run(conn, *, status_fn=None, order_fn=None, auth=None, get_receipt=None, fe
             conn.commit()
             if (st or {}).get("name") != RETURNED:
                 continue                                  # paid / інше — нічого (часткове чи невідоме не фіскалізуємо)
-            if str(o.get("delivery_status") or "") not in FULL_RETURN_DELIVERY:
-                out["human"] += 1
-                serial = "?"
-                try:                                      # серіал чека продажу для бухгалтера (рідкісна гілка; збій не заважає алерту)
-                    token = token or auth()
-                    serial = (get_receipt(token, o["checkbox_receipt_id"]) or {}).get("serial") or "?"
-                except Exception:  # noqa: BLE001
-                    pass
-                _alert(f"rz_refund_notfull:{oid}", f"🔴 Rozetka показує «Повернено» по {oid} (Rozetka № {o.get('order_id')}), чек продажу: id {o.get('checkbox_receipt_id')}, серіал {serial}, але замовлення не повернуто/не скасовано цілим (наш delivery_status={o.get('delivery_status')!r}): це може бути ЧАСТКОВЕ повернення/компенсація — чек повернення автоматично НЕ створено. "
-                       f"Звір суму повернення в реєстрі RozetkaPay (має дорівнювати сумі чека продажу) і оформи чек вручну (kodv_return_receipt.py), або зміни стан замовлення на returned/cancelled, і наступний цикл створить сам.")
-                continue
             try:
-                od = order_fn(o["order_id"]) or {}                    # крос-перевірка суми й кількості з замовленням Rozetka (аудит #2093 Z1): RETURN незворотний
-                try:
-                    amount = float(od.get("amount"))
-                except (TypeError, ValueError):
-                    raise krr.Refusal("сума замовлення Rozetka невідома (GET /orders/{id}.amount) — звір вручну")
-                qty = od.get("total_quantity")
-                if qty is not None and str(qty).strip() not in ("1", "1.0", "1.00"):
-                    raise krr.Refusal(f"у замовленні Rozetka {qty} одиниць (total_quantity) — автоматично лише 1 одиниця; чек повернення оформи вручну")
                 token = token or auth()
                 headers = {"X-License-Key": cb.CHECKBOX_API_KEY, "Authorization": f"Bearer {token}"}
                 sell = get_receipt(token, o["checkbox_receipt_id"])
@@ -117,6 +98,19 @@ def _run(conn, *, status_fn=None, order_fn=None, auth=None, get_receipt=None, fe
                     out["already"] += 1
                     print(f"[rozetka_refund_receipts] {oid}: чек повернення вже існує (серіал {existing.get('serial')}) — позначено виконаним")
                     continue
+                if str(o.get("delivery_status") or "") not in FULL_RETURN_DELIVERY:      # гейт — ЛИШЕ перед створенням нового чека (після find_duplicate: аудит #2093 Z5)
+                    out["human"] += 1
+                    _alert(f"rz_refund_notfull:{oid}", f"🔴 Rozetka показує «Повернено» по {oid} (Rozetka № {o.get('order_id')}), чек продажу: id {o.get('checkbox_receipt_id')}, серіал {sell.get('serial') or '?'}, але замовлення не повернуто/не скасовано цілим (наш delivery_status={o.get('delivery_status')!r}): це може бути ЧАСТКОВЕ повернення/компенсація — чек повернення автоматично НЕ створено. "
+                           f"Звір суму повернення в реєстрі RozetkaPay (має дорівнювати сумі чека продажу) і оформи чек вручну (kodv_return_receipt.py), або зміни стан замовлення на returned/cancelled, і наступний цикл створить сам.")
+                    continue
+                od = order_fn(o["order_id"]) or {}                    # крос-перевірка суми й кількості з замовленням Rozetka (аудит #2093 Z1): RETURN незворотний
+                try:
+                    amount = float(od.get("amount"))
+                except (TypeError, ValueError):
+                    raise krr.Refusal("сума замовлення Rozetka невідома (GET /orders/{id}.amount) — звір вручну")
+                qty = od.get("total_quantity")
+                if qty is not None and str(qty).strip() not in ("1", "1.0", "1.00"):
+                    raise krr.Refusal(f"у замовленні Rozetka {qty} одиниць (total_quantity) — автоматично лише 1 одиниця; чек повернення оформи вручну")
                 krr.validate(sell, fresh, expect_fiscal=None, expect_sum=amount)
                 body = krr.build_body(sell)
             except krr.Refusal as e:

@@ -239,5 +239,14 @@ chk("суми замовлення нема -> відмова, чека нема
 print("alert done sent:", any(a[0].startswith("rz_refund_done") for a in alerts))
 chk("успішний чек НЕ шле Telegram-алерт rz_refund_done (правило власника)", not any(a[0].startswith("rz_refund_done") for a in alerts))
 
+# ── (14) аудит #2093 Z5: find_duplicate ПЕРЕД гейтом delivery_status — ручний RETURN позначається «вже є» навіть при delivery_status=shipped
+make_order("1401", delivery="shipped")
+STATUS["1401"] = {"name": "returned"}; SELLS["r-1401"] = sell_receipt("r-1401")
+FRESH[:] = [{"id": "man-9", "type": "RETURN", "status": "DONE", "serial": 5, "related_receipt_id": "r-1401"}]
+n, na = len(posted), len(alerts)
+r = run()
+chk("RETURN уже є + delivery_status=shipped -> «вже є», без алерту notfull і без нового чека", r["already"] == 1 and len(posted) == n and bool(row("1401").get("refund_receipt_at")) and not any(a[0] == "rz_refund_notfull:rozetka_1401" for a in alerts[na:]))
+FRESH[:] = []
+
 print("ALL OK" if not F else f"FAILED: {F}")
 sys.exit(1 if F else 0)

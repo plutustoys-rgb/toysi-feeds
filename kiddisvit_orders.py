@@ -214,9 +214,33 @@ def dry_run(order: dict, supplier: dict, ids: dict, lookup=None) -> dict:
     return rep
 
 
+_SENSITIVE_KEY = re.compile(r"token|key|pass|secret|phone|tel|mail|name|fio|address|адрес|телефон|піб|прізв|ім'я", re.I)
+
+
+def _response_hint(res) -> str:
+    """Діагностика невідомого результату create (27.11.2026: тест-замовлення дало kv_unknown, а що саме відповів KIDDISVIT — не збереглось).
+    Лише ключі верхнього рівня й короткі (≤40 симв.) значення скалярів, без вкладених структур і довгих рядків: у відповіді нема секретів,
+    але журнал/БД не мають тягнути зайве. Збій формування підказки НЕ має міняти висновок «результат невідомий»."""
+    try:
+        if isinstance(res, dict):
+            parts = []
+            for k in sorted(res)[:12]:
+                v = res[k]
+                if _SENSITIVE_KEY.search(str(k)):
+                    shown = "***"
+                else:
+                    shown = "<структура>" if isinstance(v, (dict, list)) else str(v)[:40]
+                parts.append(f"{str(k)[:24]}={shown}")
+            return " [відповідь: " + "; ".join(parts) + "]"
+        return f" [відповідь: {type(res).__name__} {str(res)[:80]}]"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def interpret_create(res: dict) -> dict:
     """Відповідь orders/create → {'number','id','reserved': bool,'comment'}. Номер і id обов'язкові: інакше KiddisvitUncertain (НЕ OrderBlocked!): запит ДІЙШОВ, замовлення могло бути створене — повторювати create заборонено,
     лише звірка в кабінеті/orders/search (за Comment з internal_order_id). reserved = status_OK==1; 0 → замовлення СТВОРЕНО, але не зарезервовано (Comment): конвеєр НЕ йде далі до ТТН, рішення людини."""
     if not isinstance(res, dict) or not str(res.get("number") or "").strip() or not str(res.get("id") or "").strip():
-        raise KiddisvitUncertain("відповідь orders/create без number/id — замовлення могло бути створене; повторювати create заборонено, звірте в кабінеті KIDDISVIT")
+        # Підказка ПЕРШОЮ: kv_error[:300] і RunnerError[:160] у раннері обрізають хвіст (аудит #2086, Z1)
+        raise KiddisvitUncertain(_response_hint(res).strip() + " відповідь orders/create без number/id — замовлення могло бути створене; повторювати create заборонено, звірте в кабінеті KIDDISVIT")
     return {"number": str(res["number"]).strip(), "id": str(res["id"]).strip(), "reserved": res.get("status_OK") in (1, True, "1"), "comment": str(res.get("Comment") or "")[:300]}

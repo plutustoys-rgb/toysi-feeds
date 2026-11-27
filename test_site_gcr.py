@@ -68,5 +68,14 @@ if mm:
     want[7] = "2027-01-06"
     chk(f"gcrEta: дати очікуваної доставки (Node) {got}", got == want)
 
+# ── Політика конфіденційності: пункт про Google (текст погоджено власником 27.11) — лише з воротами ──
+priv_off = bs._privacy_with_gcr(False); priv_on = bs._privacy_with_gcr(True)
+chk("privacy вимкнено: без пункту про Google і без службового маркера; Checkbox закінчується крапкою, як було", "Google Відгуки клієнтів" not in priv_off and "<!--GCR-->" not in priv_off and "якщо чек оформлюється.</li>\n</ul>" in priv_off)
+GCR_TXT = "<b>Google</b> (програма «Google Відгуки клієнтів») — адреса електронної пошти, номер замовлення, країна та очікувана дата доставки, лише якщо ви вказали email і погодилися на опитування у вікні Google після оформлення замовлення. Google надішле лист із проханням оцінити магазин. Участь добровільна."
+_gi = priv_on.find(GCR_TXT)
+chk("privacy увімкнено: пункт дослівно, у списку «Кому ми передаємо дані», останнім перед «Ми не продаємо ваші дані…»", _gi > 0 and priv_on.index("Кому ми передаємо дані") < _gi and "<!--GCR-->" not in priv_on and priv_on.index("</ul>", _gi) < priv_on.index("Ми не продаємо ваші дані"))
+_tp = {t[0]: t[2] for t in bs.TRUST_PAGES}
+chk("TRUST_PAGES: privacy.html за замовчуванням (ворота вимкнені) без пункту про Google", "Google Відгуки клієнтів" not in _tp["privacy.html"])
+
 print("\nALL OK" if not F else f"\nFAIL: {len(F)}")
 sys.exit(1 if F else 0)

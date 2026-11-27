@@ -139,6 +139,19 @@ def main() -> int:
             _alert("мапу 301 НЕ оновлено: " + " | ".join(_warn.log))
             return 1
     lines = build_lines(src)
+    if not lines:
+        # shrink-guard 2 (аудит #2094): непорожнє джерело, але жодна ціль не пройшла (напр. SITE_DIR без збірки / усі цілі зникли) при непорожній наявній мапі —
+        # не стираємо мапу порожнім результатом (це збій середовища, а не рішення); щоб прибрати всі 301 навмисно — видали мапу вручну.
+        try:
+            prev = [l for l in OUT_FILE.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
+        except FileNotFoundError:
+            prev = []
+        except (OSError, ValueError):
+            prev = ["<нечитна наявна мапа>"]
+        if prev:
+            _warn(f"жодна пара не пройшла перевірку, а наявна мапа має {len(prev)} адрес — мапу 301 не оновлюю (збірка site/ неповна?)")
+            _alert("мапу 301 НЕ оновлено: " + " | ".join(_warn.log[:5]))
+            return 1
     if _warn.log:
         _alert("мапу 301 записано, але з пропусками: " + " | ".join(_warn.log[:5]) + (f" (+ ще {len(_warn.log) - 5})" if len(_warn.log) > 5 else ""))
     assert all(LINE_RE.fullmatch(l) for l in lines)

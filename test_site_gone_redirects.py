@@ -104,6 +104,23 @@ with tempfile.TemporaryDirectory() as td:
     rc, err = run_main(g)
     chk("нема ні JSON, ні мапи: exit 1, але порожня мапа створена (Apache configtest не впаде)", rc == 1 and (tmp / "out.map").exists() and (tmp / "out.map").read_text(encoding="utf-8").startswith("#"))
 
+# ── 2б. shrink-guard 2: непорожнє джерело, але жодна ціль не пройшла, при непорожній мапі → мапу не стираємо ──
+with tempfile.TemporaryDirectory() as td:
+    tmp = Path(td); (tmp / "site").mkdir(); site = tmp / "site"
+    (site / "product-251737.html").write_text("x", encoding="utf-8")
+    (site / "gone_redirects.json").write_text(json.dumps({"redirects": {"279941": "251737"}}), encoding="utf-8")
+    g = load_gen(GEN_SRC, tmp)
+    rc, _ = run_main(g)
+    good = (tmp / "out.map").read_text(encoding="utf-8")
+    (site / "product-251737.html").unlink()   # «збірка неповна»: ціль зникла
+    g = load_gen(GEN_SRC, tmp)
+    rc, err = run_main(g)
+    chk("shrink-guard 2: усі цілі зникли при непорожній мапі → exit 1, мапа НЕ стерта", rc == 1 and (tmp / "out.map").read_text(encoding="utf-8") == good and "жодна пара" in err)
+    (tmp / "out.map").unlink()
+    g = load_gen(GEN_SRC, tmp)
+    rc, _ = run_main(g)
+    chk("мапи ще нема, цілей нема: пишемо порожню (exit 0) — Apache configtest не впаде", rc == 0 and (tmp / "out.map").exists())
+
 # ── 3. правило Apache і скрипт активації ──
 RULE = re.search(r'RewriteMap sitegoneredir "txt:@APP@/site_gone_redirect_apache\.map"\n(\s*RewriteCond[^\n]+\n){2}\s*RewriteRule[^\n]+\n', SCRIPT_SRC)
 chk("Apache: RewriteMap sitegoneredir + дві умови + RewriteRule з R=301", RULE is not None)
@@ -114,6 +131,8 @@ i_red = SCRIPT_SRC.find("RewriteMap sitegoneredir")
 i_gen = SCRIPT_SRC.find("RewriteRule ^/(product-[A-Za-z0-9_-]+)\\.html$ - [G,L]")
 chk("Apache: правило 301 стоїть ДО загального 410 видалених карток (інакше 410 перекрило б 301)", 0 < i_red < i_gen)
 chk("скрипт активації: викликає site_gone_redirects.py, кладе порожню мапу за відсутності, виставляє ACL", 'site_gone_redirects.py' in SCRIPT_SRC and 'GONEREDIRMAP="$APP/site_gone_redirect_apache.map"' in SCRIPT_SRC and 'setfacl -m "u:$APUSER:r--" "$GONEREDIRMAP"' in SCRIPT_SRC and "порожня мапа 301" in SCRIPT_SRC)
+SVC_SRC = (HERE / "deploy" / "site-rebuild.service").read_text(encoding="utf-8")
+chk("site-rebuild.service: мапа 301 регенерується після КОЖНОЇ збірки (ExecStartPost, не-фатально «-»), після site_gone_pages.py", "ExecStartPost=-/opt/plutustoys/venv/bin/python3 /opt/plutustoys/site_gone_redirects.py" in SVC_SRC and SVC_SRC.index("site_gone_pages.py") < SVC_SRC.index("site_gone_redirects.py"))
 chk("скрипт активації: проба (перший рядок мапи → 301 на ціль, ціль 200; хибне = bad=1)", "gr_exp=" in SCRIPT_SRC and "веде не на аналог" in SCRIPT_SRC and "ціль 301" in SCRIPT_SRC)
 
 # ── 4. МУТАЦІЇ ──

@@ -4170,6 +4170,33 @@ def _coloring_strip_html():
     return f'<p class="coloring-strip"><a href="{COLORING_HUB_FILE}"><b>Безкоштовні розмальовки з Плутусом</b><span> — завантажити й роздрукувати</span></a></p>'
 
 
+IG_PROFILE_UTM = "utm_source=instagram&utm_medium=social&utm_campaign=profile_link"   # SMM 27.11: мітки кампанії для блоків угорі ig.html (посилання з профілю Instagram)
+
+def _ig_top_blocks_html():
+    """Блоки угорі /ig.html (SMM 27.11, згода власника): «Подарунок на Миколая (до 6 грудня)» → podarunok-na-mykolaia.html (з 7.12 — «Новорічний подарунок» → novorichnyi-podarunok-dytyni.html), під ним «Безкоштовні розмальовки»
+    → rozmalovky-novorichni.html; обидва посилання з UTM (instagram/social/profile_link). Без цін і знижок. Показуємо лише збудовані сторінки (як header_season_html): нема сторінки — нема блоку; нема сезонних сторінок взагалі →
+    лишається звична смужка розмальовок (_coloring_strip_html)."""
+    t = _today()
+    md = (t.month, t.day)
+    gifts = {s for s, _h, _lb in GIFT_BUILT}
+    cards = []
+    if (11, 1) <= md <= SEASON_HEADER_MYKOLAI_TO and "podarunok-na-mykolaia" in gifts:
+        cards.append(("podarunok-na-mykolaia.html", "Подарунок на Миколая", "до 6 грудня — добірка подарунків для дітей", True))
+    elif SEASON_HEADER_MYKOLAI_TO < md <= SEASON_HEADER_NY_TO and "novorichnyi-podarunok-dytyni" in gifts:
+        cards.append(("novorichnyi-podarunok-dytyni.html", "Новорічний подарунок", "добірка подарунків для дітей", True))
+    if any(s == "rozmalovky-novorichni" for s, _h in COLORING_BUILT):
+        cards.append(("rozmalovky-novorichni.html", "Безкоштовні розмальовки", "завантажити й роздрукувати", False))
+    elif COLORING_BUILT:   # новорічної добірки нема, але хаб є — блок веде на хаб (аудит #2087: розмальовки не мають зникати з ig.html)
+        cards.append((COLORING_HUB_FILE, "Безкоштовні розмальовки", "завантажити й роздрукувати", False))
+    if not cards:
+        return _coloring_strip_html()
+    out = []
+    for href, title, sub, primary in cards:
+        cls = "ig-season-card is-gift" if primary else "ig-season-card"
+        out.append(f'<a class="{cls}" href="{href}?{IG_PROFILE_UTM}"><b>{esc(title)}</b><span>{esc(sub)}</span></a>')
+    return '<div class="ig-season">' + "".join(out) + "</div>"
+
+
 def write_ig(prods):
     """Сторінка /ig.html: сітка з товарів ig_featured.json, ЛИШЕ в наявності (нема — не показуємо, у лог іде попередження). noindex (кампанійна сторінка), canonical без параметрів
     (utm не плодять дублів). Не в sitemap (noindex). Трекінг: view_item_list/select_item з item_list_name «ig_landing» (assets/app.js, initListTracking)."""
@@ -4193,7 +4220,7 @@ def write_ig(prods):
             body = (
                 '<h1 class="page">З Instagram: що показав Плутус</h1>'
                 '<p class="ig-lead">Ці товари з наших останніх відео.</p>'
-                + _coloring_strip_html() +
+                + _ig_top_blocks_html() +
                 f'<div class="ig-list" id="ig-list" data-list="{IG_LIST_NAME}">' + "".join(secs) + '</div>'
                 '<p class="ig-all"><a class="btn" href="catalog.html">Усі іграшки</a></p>'
             )
@@ -4217,7 +4244,7 @@ def write_ig(prods):
     body = (
         '<h1 class="page">З Instagram: що показав Плутус</h1>'
         f'<p class="ig-lead">{esc(lead)}</p>'
-        + _coloring_strip_html() +
+        + _ig_top_blocks_html() +
         f'{grid_html}'
         '<p class="ig-all"><a class="btn" href="catalog.html">Усі іграшки</a></p>'
     )

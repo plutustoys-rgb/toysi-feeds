@@ -690,3 +690,11 @@ label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накла
 .sp-form .btn{width:auto;flex:none;padding:12px 24px}   /* .btn за замовчуванням width:100% і стискав поле вводу (скарга власника 19.11) */
 .sp-form input{flex:1;min-width:0;padding:12px 14px;border:1px solid var(--line,#e6e6ee);border-radius:12px;font:inherit;background:var(--card,#fff)}
 .search-page .grid{margin-top:8px;padding:0}   /* бокові поля вже дає .doc: без подвійного відступу сітка вирівнюється з шапкою */
+.ig-season{display:grid;gap:10px;margin:0 clamp(12px,3vw,24px) 14px}
+.ig-season-card{display:block;padding:14px 18px;border-radius:14px;background:#fff7ec;border:1px solid #f0d9b5;text-align:center;line-height:1.35;color:#8a3b00;text-decoration:none}
+.ig-season-card b{display:block;font-size:1.1rem}
+.ig-season-card span{display:block;font-size:.92rem;opacity:.85}
+.ig-season-card.is-gift{background:var(--accent);border-color:var(--accent);color:#fff}
+.ig-season-card.is-gift:hover{background:var(--accent-hover)}
+.ig-season-card:hover{filter:brightness(.97)}
+.ig-season-card.is-gift span{opacity:1}

@@ -452,6 +452,20 @@ def footer():
       '</footer>'
     )
 
+# ── Google Відгуки клієнтів (Google Customer Reviews, SEO 27.11, власник погодив) ─────────────────────────────────────────────────────────────────
+# Модуль опитування на thanks.html: Google сам пропонує покупцю оцінити магазин після доставки (рейтинг продавця в Google Покупках). Ворота SITE_GCR_LIVE=1 (за замовчуванням ВИМКНЕНО):
+# без них у HTML немає жодного сліду (ні window.PT_GCR, ні посилання на Google) — вмикати лише коли SEO підтвердить активацію програми в Merchant Center. Умови показу (див. app.js): накладений платіж,
+# покупець ВКАЗАВ email (поле необовʼязкове), номер замовлення відомий. Email живе лише в sessionStorage цієї вкладки і видаляється при показі. Очікувана дата доставки — з наших строків (картка товару):
+# «Замовлення до 12:00 йдуть того ж дня, далі 1–3 робочі дні» → верхня межа: відправка того ж робочого дня до 12:00 (Київ), далі 3 робочі дні.
+GCR_MERCHANT_ID = 5824264949
+SITE_GCR_LIVE = os.environ.get("SITE_GCR_LIVE") == "1"
+GCR_CUTOFF_HOUR = 12
+GCR_MAX_TRANSIT_DAYS = 3
+def gcr_head() -> str:
+    if not SITE_GCR_LIVE:
+        return ""
+    return '<script>window.PT_GCR=' + json.dumps({"merchant_id": GCR_MERCHANT_ID, "cutoff": GCR_CUTOFF_HOUR, "days": GCR_MAX_TRANSIT_DAYS}) + ';</script>\n'
+
 def analytics_head(defer=True) -> str:
     """Сніпети GA4 (gtag) і Meta Pixel + `window.PT_ANALYTICS` для app.js (події view_item/add_to_cart/begin_checkout/purchase). Порожній рядок, якщо ID не задано.
     defer=True (усі сторінки, КРІМ «Дякуємо»; рішення Консультанта 12.10: Lighthouse mobile TBT 1,4–3,3 с майже весь від трекерів — Pixel ≈1,3 с, gtag ≈0,7–1,2 с): стаби gtag/fbq (черга) ставимо ОДРАЗУ —
@@ -3934,7 +3948,7 @@ def write_cart(addons=None):
       '<script type="application/json" id="cart-addons">' + addons_json + '</script>'
     )
     _write("cart.html", page("Кошик і оформлення", body,
-        description="Ваш кошик і оформлення замовлення в PlutusToys.", noindex=True))
+        description="Ваш кошик і оформлення замовлення в PlutusToys.", noindex=True, extra_head=gcr_head()))
 
 def write_thanks():
     body = (
@@ -3951,7 +3965,7 @@ def write_thanks():
       '<p style="margin-top:20px"><a class="btn ghost" href="/" style="display:inline-block;max-width:260px">На головну</a></p>'
       '</div>'
     )
-    _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True, defer_trackers=False))   # purchase — без відкладання (рішення Консультанта 12.10)
+    _write("thanks.html", page("Дякуємо за замовлення", body, noindex=True, defer_trackers=False, extra_head=gcr_head()))   # purchase — без відкладання (рішення Консультанта 12.10)
 
 REVIEW_RATING_LABELS = ((5, "чудово"), (4, "добре"), (3, "нормально"), (2, "погано"), (1, "дуже погано"))
 # Скрипт форми відгуку: посилання `review.html#t=<токен>` — токен лише у ФРАГМЕНТІ (не йде ні в Referer, ні в журнали сервера; аудит 04.11); одразу після зчитування фрагмент прибирається

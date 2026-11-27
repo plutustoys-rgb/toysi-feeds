@@ -1026,6 +1026,34 @@
       try{ if(!sessionStorage.getItem("pt_last_order_items") && !purchaseDone(thanksO)){ pollPaid(thanksO); } }catch(e){}
     }
 
+    // Google Відгуки клієнтів (Google Customer Reviews): лише при window.PT_GCR (ворота SITE_GCR_LIVE на збірці), накладений платіж, покупець вказав email. Email зчитуємо і ОДРАЗУ видаляємо (оновлення сторінки не дублює).
+    /*GCR-ETA-START*/
+    function gcrEta(y,m,d,h,cutoff,days){
+      var t=Date.UTC(y,m-1,d), DAY=86400000;
+      function wd(x){ return new Date(x).getUTCDay(); }
+      function nextBiz(x){ do{ x+=DAY; }while(wd(x)===0||wd(x)===6); return x; }
+      if(wd(t)===6){ t=nextBiz(t); } else if(wd(t)===0){ t=nextBiz(t); } else if(h>=cutoff){ t=nextBiz(t); }
+      for(var i=0;i<days;i++){ t=nextBiz(t); }
+      return new Date(t).toISOString().slice(0,10);
+    }
+    /*GCR-ETA-END*/
+    if(oidEl && window.PT_GCR){
+      try{
+        var gcrEm=sessionStorage.getItem("pt_last_email")||""; sessionStorage.removeItem("pt_last_email");
+        var gcrId=thanksPub||thanksO;
+        if(gcrEm && gcrId && /^\d+$/.test(String(window.PT_GCR.merchant_id))){
+          var kp={}; new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Kyiv",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hourCycle:"h23"}).formatToParts(new Date()).forEach(function(x){ kp[x.type]=x.value; });
+          var gcrDate=gcrEta(+kp.year,+kp.month,+kp.day,+kp.hour,+window.PT_GCR.cutoff||12,+window.PT_GCR.days||3);
+          window.renderOptIn=function(){
+            window.gapi.load("surveyoptin",function(){
+              window.gapi.surveyoptin.render({merchant_id:+window.PT_GCR.merchant_id, order_id:gcrId, email:gcrEm, delivery_country:"UA", estimated_delivery_date:gcrDate});
+            });
+          };
+          var gs=document.createElement("script"); gs.src="https://apis.google.com/js/platform.js?onload=renderOptIn"; gs.async=true; gs.defer=true; document.head.appendChild(gs);
+        }
+      }catch(e){}
+    }
+
     // подія view_item — на картці товару в наявності (дані з кнопки «У кошик»)
     var vi=document.querySelector("h1.prod") && document.querySelector("[data-add]");
     if(vi){ try{ var vp=JSON.parse(vi.getAttribute("data-add")); track("view_item", [{id:vp.id, name:vp.name, price:+vp.price, qty:1}], +vp.price); }catch(e){} }
@@ -1687,6 +1715,11 @@
             // вибір «статус у Telegram» (галочка на чекауті): sessionStorage + localStorage — після LiqPay покупець може повернутись в іншу вкладку, де sessionStorage порожній
             var tgBox=document.getElementById("f-tg"), tgv=(tgBox && tgBox.checked===false) ? "0" : "1";
             sessionStorage.setItem("pt_tg_opt", tgv);
+            // Google Відгуки клієнтів (лише коли модуль увімкнено, window.PT_GCR): email для опитування — тільки в цій вкладці, тільки для накладеного платежу; на thanks.html видаляється одразу після зчитування
+            try{
+              var gem=((document.getElementById("f-email")||{}).value||"").trim();
+              if(window.PT_GCR && payment!=="prepaid" && gem.length<=254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(gem)){ sessionStorage.setItem("pt_last_email", gem); } else { sessionStorage.removeItem("pt_last_email"); }
+            }catch(e4){}
             try{ localStorage.setItem("pt_tg_opt", tgv); }catch(e2){}
             // purchase лише для накладеного платежу: при prepaid (LiqPay) покупець повертається на thanks.html ще БЕЗ підтвердженої оплати —
             // подію не шлемо, щоб не завищувати конверсії (аудит #626); для prepaid позиції не зберігаємо

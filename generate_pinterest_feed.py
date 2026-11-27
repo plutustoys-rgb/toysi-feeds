@@ -8,6 +8,7 @@
 Порожній/зламаний вхід → файл НЕ перезаписується (публікація лишає попередню версію). Запуск: python3 generate_pinterest_feed.py [--src шлях] [--out шлях]"""
 import argparse
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -56,9 +57,25 @@ def load_items(src: Path) -> list:
     return out
 
 
+# Рішення SMM 27.11 (аудит #2089, P1/P2): (1) фото на чужому нестабільному CDN images.prom.ua в каталог Pinterest НЕ беремо (зламане фото = відхилення/пониження каталогу);
+# (2) військові набори «Солдати/Солдатики/Блок-пост/ЗСУ» — у відсів нарівні зі зброєю.
+EXCLUDED_IMAGE_HOSTS = ("images.prom.ua",)
+# Явно за id (рішення SMM 27.11: відсів за описом НЕ розширювати — ризик хибних спрацювань): y35922 — воєнна настільна гра «Прорив» (танки/ракетні установки/солдати), 279290 — набір A.C.I.D. з розділу «Солдатики».
+EXCLUDED_PRODUCT_IDS = {"y35922", "279290"}
+MILITARY_RE = re.compile(r"солдат|блок[-\s]?пост|(?<![а-яіїєґ])зсу(?![а-яіїєґ])", re.I)
+
+
+def _keep(p: dict) -> bool:
+    if str(p.get("sku")) in EXCLUDED_PRODUCT_IDS:
+        return False
+    if any(h in (p.get("image") or "") for h in EXCLUDED_IMAGE_HOSTS):
+        return False
+    return not MILITARY_RE.search(p.get("name") or "")
+
+
 def build_rows(items: list, today=None) -> list:
     import social_auto_poster as sp
-    kept = sp._safe_and_rotated(items, today=today)     # відсів і порядок — ті самі, що в соц-постері
+    kept = [p for p in sp._safe_and_rotated(items, today=today) if _keep(p)]   # відсів і порядок як у соц-постері + рішення SMM (див. вище)
     return [[_cell(p["sku"]), _cell(p["name"]), _cell(p["description"])[:500], with_utm(p["url"]), _cell(p["image"]),
              _cell(p["price"]), "in stock", _cell(p["condition"]), _cell(p["brand"])] for p in kept]
 

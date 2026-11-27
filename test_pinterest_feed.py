@@ -38,5 +38,30 @@ with tempfile.TemporaryDirectory() as td:
     chk("with_utm: не дублює utm_source", gp.with_utm("https://a/b.html?utm_source=x") == "https://a/b.html?utm_source=x")
     (td / "bad.xml").write_text("<rss", encoding="utf-8")
     chk("биті XML -> код 1, вихідний файл не створено", gp.main.__globals__["ET"] is not None and (lambda: (sys.argv.__setitem__(slice(None), ["x", "--src", str(td / "bad.xml"), "--out", str(td / "o.xml")]) or gp.main()))() == 1 and not (td / "o.xml").exists())
+# ── рішення SMM 27.11 (P1 фото images.prom.ua, P2 військові набори) ──
+with tempfile.TemporaryDirectory() as td2:
+    td2 = Path(td2)
+    s2 = td2 / "m.xml"
+    s2.write_text(XML.format(items="".join([
+        item(11, "Пазл Весела ферма", img="https://plutustoys.com.ua/img/p/11-1.jpg"),
+        item(12, "Пазл Лісові друзі", img="https://images.prom.ua/123_w1024_h1024_x.jpg"),
+        item(13, "Набір Солдатики. Блок-пост", img="https://plutustoys.com.ua/img/p/13-1.jpg"),
+        item(14, "Фігурка Солдат ЗСУ", img="https://plutustoys.com.ua/img/p/14-1.jpg"),
+        item(15, "Лялька Софі і сад", img="https://plutustoys.com.ua/img/p/15-1.jpg", price="300.00 UAH")])), encoding="utf-8")
+    ids2 = sorted(r[0] for r in gp.build_rows(gp.load_items(s2), today=date(2026, 11, 27)))
+    chk("P1: фото images.prom.ua виключено (12)", "12" not in ids2)
+    chk("P2: «Солдатики. Блок-пост» (13) і «Солдат ЗСУ» (14) виключено", "13" not in ids2 and "14" not in ids2)
+    chk("звичайні товари з нашим доменом лишились (11, 15)", ids2 == ["11", "15"])
+    s3 = td2 / "m3.xml"
+    s3.write_text(XML.format(items="".join([item("y35922", "Настільна гра Прорив", img="https://plutustoys.com.ua/img/p/a.jpg"), item("279290", "Ігровий набір A.C.I.D. MorphoZor", img="https://plutustoys.com.ua/img/p/b.jpg"),
+        item(21, "Пазл Весела ферма", img="https://plutustoys.com.ua/img/p/c.jpg")])), encoding="utf-8")
+    chk("явне виключення за id (y35922, 279290)", sorted(r[0] for r in gp.build_rows(gp.load_items(s3), today=date(2026, 11, 27))) == ["21"])
+
+# ── аудит #2090: гілка ЗСУ без керівних символів і з межами слова ──
+import re as _re
+chk("MILITARY_RE: у патерні нема керівних символів (0x08 тощо)", not any(ord(ch) < 32 for ch in gp.MILITARY_RE.pattern))
+chk("ЗСУ-назви виключаються (окремо від 'солдат')", all(gp.MILITARY_RE.search(n) for n in ("Пазл Котики ЗСУ та танк", "Набір з джавеліном ЗСУ", "Сухопутні війська ЗСУ")))
+chk("цивільні слова зі складом 'зсу' лишаються", not any(gp.MILITARY_RE.search(n) for n in ("Дитячі розсувні ролики", "Розсувна каталка", "Пазл Весела ферма")))
+
 print("ALL OK" if not fails else f"FAILED: {fails}")
 sys.exit(1 if fails else 0)

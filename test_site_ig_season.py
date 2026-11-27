@@ -46,7 +46,7 @@ chk("сторінка Миколая не збудована: кнопки на 
 bs.GIFT_BUILT[:] = []
 bs.COLORING_BUILT[:] = [("rozmalovky", "H")]
 h = bs._ig_top_blocks_html()
-chk("нема сезонних сторінок: звична смужка розмальовок (хаб), без UTM-блоків", 'class="coloring-strip"' in h and "ig-season" not in h)
+chk("є лише хаб розмальовок (без новорічної добірки й без подарункових сторінок): блок «Безкоштовні розмальовки» веде на хаб з UTM, розмальовки не зникають", f'href="rozmalovky.html?{UTM}"' in h and "podarunok" not in h and "Безкоштовні розмальовки" in h)
 bs.COLORING_BUILT[:] = []
 chk("нічого не збудовано: порожньо", bs._ig_top_blocks_html() == "")
 

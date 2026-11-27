@@ -4186,6 +4186,8 @@ def _ig_top_blocks_html():
         cards.append(("novorichnyi-podarunok-dytyni.html", "Новорічний подарунок", "добірка подарунків для дітей", True))
     if any(s == "rozmalovky-novorichni" for s, _h in COLORING_BUILT):
         cards.append(("rozmalovky-novorichni.html", "Безкоштовні розмальовки", "завантажити й роздрукувати", False))
+    elif COLORING_BUILT:   # новорічної добірки нема, але хаб є — блок веде на хаб (аудит #2087: розмальовки не мають зникати з ig.html)
+        cards.append((COLORING_HUB_FILE, "Безкоштовні розмальовки", "завантажити й роздрукувати", False))
     if not cards:
         return _coloring_strip_html()
     out = []

@@ -697,4 +697,4 @@ label.pay.is-off{opacity:.5}   /* RoyalToys (rt-…) у кошику: накла
 .ig-season-card.is-gift{background:var(--accent);border-color:var(--accent);color:#fff}
 .ig-season-card.is-gift:hover{background:var(--accent-hover)}
 .ig-season-card:hover{filter:brightness(.97)}
-@media(min-width:700px){.ig-season{grid-template-columns:1fr 1fr}}
+.ig-season-card.is-gift span{opacity:1}

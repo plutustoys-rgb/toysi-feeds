@@ -52,6 +52,10 @@ with tempfile.TemporaryDirectory() as td2:
     chk("P1: фото images.prom.ua виключено (12)", "12" not in ids2)
     chk("P2: «Солдатики. Блок-пост» (13) і «Солдат ЗСУ» (14) виключено", "13" not in ids2 and "14" not in ids2)
     chk("звичайні товари з нашим доменом лишились (11, 15)", ids2 == ["11", "15"])
+    s3 = td2 / "m3.xml"
+    s3.write_text(XML.format(items="".join([item("y35922", "Настільна гра Прорив", img="https://plutustoys.com.ua/img/p/a.jpg"), item("279290", "Ігровий набір A.C.I.D. MorphoZor", img="https://plutustoys.com.ua/img/p/b.jpg"),
+        item(21, "Пазл Весела ферма", img="https://plutustoys.com.ua/img/p/c.jpg")])), encoding="utf-8")
+    chk("явне виключення за id (y35922, 279290)", sorted(r[0] for r in gp.build_rows(gp.load_items(s3), today=date(2026, 11, 27))) == ["21"])
 
 print("ALL OK" if not fails else f"FAILED: {fails}")
 sys.exit(1 if fails else 0)

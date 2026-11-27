@@ -25,5 +25,8 @@ chk("не dict -> без винятку, є тип", "list" in (msg([1, 2]) or "
 chk("порожня відповідь {} -> Uncertain", msg({}) is not None)
 ok = ko.interpret_create({"number": "КЗ-1", "id": "abc", "status_OK": 1})
 chk("нормальна відповідь без змін", ok["number"] == "КЗ-1" and ok["id"] == "abc" and ok["reserved"] is True)
+m2 = msg({"Error": "E123", "Message": "x", "token": "SECRET1", "client_phone": "+380501112233", "ClientName": "Іваненко І."})
+chk("чутливі ключі замасковані (token/phone/name)", m2 is not None and "SECRET1" not in m2 and "+3805" not in m2 and "Іваненко" not in m2 and "token=***" in m2)
+chk("підказка ПЕРШОЮ: переживає обрізання [:160]", m2 is not None and "Error=E123" in m2[:160])
 print("ALL OK" if not fails else f"FAILED: {fails}")
 sys.exit(1 if fails else 0)

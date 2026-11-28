@@ -206,5 +206,12 @@ chk("parse: футер списку («Кіл-сть замовлень … Фі
 chk("read_order_statuses: поллер НЕ запускає автовхід (немає виклику ensure_session) і без файлу сесії → OrderError до браузера",
     "ensure_session()" not in __import__("inspect").getsource(rc.read_order_statuses) and (_raises2(lambda: (setattr(rc, "STATE_FILE", __import__("pathlib").Path("Z:/нема/state.json")), rc.read_order_statuses(["RT000000001"]))) is not None))
 
+_of_src = __import__("inspect").getsource(rc.order_flow)
+chk("order_flow: submit=True стартує з not_submitted_certain=True (помилка ДО кліку = точно не відправлено, runner відкочує крок; 28.11 eva_8-085489509)",
+    '"not_submitted_certain": bool(submit)' in _of_src)
+_k = _of_src.index('res["not_submitted_certain"] = False') if _of_src.count('res["not_submitted_certain"] = False') == 1 else -1
+chk("order_flow: not_submitted_certain скидається в False РІВНО раз — після перевірок кнопки й безпосередньо перед кліком #checkout-btn",
+    _k > _of_src.index('sub.first.get_attribute("type")') and _k < _of_src.index('sub.first.evaluate("e => e.click()")'))
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

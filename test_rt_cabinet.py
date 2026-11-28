@@ -264,15 +264,18 @@ chk("order_flow: повторна перевірка телефону стоїт
     _pc < _of2.index('res["not_submitted_certain"] = False') < _of2.index('sub.first.evaluate("e => e.click()")'))
 
 class _FakePhoneTimeout(_FakePhone):
-    def click(self, timeout=0): raise TimeoutError("Timeout 8000ms exceeded")
+    def evaluate(self, js):
+        if "e.focus()" in js: raise TimeoutError("Timeout 8000ms exceeded")
+        if "getBoundingClientRect" in js: return {"len": 0, "y": 700, "h": 30, "vh": 720, "cov": "div#loader.overlay"}
+        return _FakePhone.evaluate(self, js)
     def is_visible(self): return True
     def is_enabled(self): return True
-    def is_editable(self): return False
+    def is_editable(self): return True
 try:
     rc.enter_phone(_FakePhoneTimeout(False, ()), "+380501234567"); _m6 = ""
 except rc.OrderError as _e6:
     _m6 = str(_e6)
-chk("enter_phone: таймаут кроку → OrderError з назвою кроку й станом поля, без номера", "крок «click»" in _m6 and "TimeoutError" in _m6 and '"editable": false' in _m6 and "501234567" not in _m6)
+chk("enter_phone: збій кроку → OrderError з назвою кроку, станом поля і елементом, що перекриває; без номера", "крок «focus»" in _m6 and "TimeoutError" in _m6 and "div#loader.overlay" in _m6 and "501234567" not in _m6)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

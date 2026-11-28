@@ -768,7 +768,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                     out.step_confirmation = !!(btn && btn.closest('.step-confirmation'));
                                     const matched = [], other = [];
                                     for (const k of ['click', 'submit']) for (const h of (ev[k] || [])) { if (!h.selector) continue; let m = false; try { m = J(btn).is(h.selector); } catch (e) { m = false; }
-                                        const code = String(h.handler).replace(/""" + bs*2 + """s+/g, ' ');
+                                        const code = String(h.handler).replace(/\\s+/g, ' ');
                                         if (m) matched.push(k + ' ' + h.selector.slice(-60) + ' => ' + code.slice(0, 1400));
                                         else if (/checkout|confirm|step/.test(h.selector)) other.push(k + ' ' + h.selector.slice(-80) + ' => ' + code.slice(0, 300)); }
                                     out.matched = matched.slice(0, 3); out.other = other.slice(0, 3);

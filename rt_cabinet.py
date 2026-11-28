@@ -763,19 +763,23 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                 res["problems"].append("валідація форми після кліку: не прочитано")
                             try:    # ДІАГНОСТИКА 28.11 (валідація чиста: valid=true, novalidate=true, action нема → сабміт робить JS сторінки): які jQuery-обробники click/submit висять на #checkout-btn/формі (код САЙТУ RT, не значення полів)
                                 _hnd = page.evaluate("""() => { const out = {}; try { const J = window.jQuery; if (!J) return {nojq: true};
-                                    const ev = J._data(document, 'events') || {};
-                                    out.doc = Object.keys(ev).slice(0, 12).map(k => k + ':' + ev[k].map(h => h.selector || '-').slice(0, 12).join(','));
-                                    const btn = document.querySelector('#checkout-btn'); const matched = [];
-                                    for (const k of ['click', 'submit']) for (const h of (ev[k] || [])) { if (h.selector && btn && btn.matches(h.selector)) matched.push(k + ' ' + h.selector + ' => ' + String(h.handler).replace(/\\s+/g, ' ').slice(0, 600)); }
-                                    out.matched = matched.slice(0, 4);
+                                    const ev = J._data(document, 'events') || {}; const btn = document.querySelector('#checkout-btn');
+                                    out.chain = []; for (let e = btn, n = 0; e && n < 7; e = e.parentElement, n++) out.chain.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + String(e.className || '').split(' ').filter(Boolean).slice(0, 3).map(c => '.' + c).join(''));
+                                    out.step_confirmation = !!(btn && btn.closest('.step-confirmation'));
+                                    const matched = [], other = [];
+                                    for (const k of ['click', 'submit']) for (const h of (ev[k] || [])) { if (!h.selector) continue; let m = false; try { m = J(btn).is(h.selector); } catch (e) { m = false; }
+                                        const code = String(h.handler).replace(/""" + bs*2 + """s+/g, ' ');
+                                        if (m) matched.push(k + ' ' + h.selector.slice(-60) + ' => ' + code.slice(0, 1400));
+                                        else if (/checkout|confirm|step/.test(h.selector)) other.push(k + ' ' + h.selector.slice(-80) + ' => ' + code.slice(0, 300)); }
+                                    out.matched = matched.slice(0, 3); out.other = other.slice(0, 3);
+                                    out.submit_sel = (ev.submit || []).map(h => h.selector || '-').slice(0, 8);
                                     const f = document.querySelector('form.checkout-form'); const fe = (f && J._data(f, 'events')) || {};
                                     out.form = Object.keys(fe).slice(0, 8).map(k => k + ':' + fe[k].map(h => h.selector || '-').join(','));
-                                    const we = J._data(window, 'events') || {}; out.win = Object.keys(we).slice(0, 8);
-                                } catch (e) { out.err = String(e).slice(0, 80); } return out; }""")
+                                } catch (e) { out.err = String(e).slice(0, 120); } return out; }""")
                                 _hs = re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", json.dumps(_hnd, ensure_ascii=False))     # цифрові послідовності маскуємо (телефони/ТТН не мають потрапити в журнал)
                                 for _t in [t for t in re.split(r"\s+", order["recipient_name"]) if len(t) > 2]:
                                     _hs = _hs.replace(_t, "#")
-                                res["problems"].append("обробники кнопки після кліку: " + _hs[:2400])
+                                res["problems"].append("обробники кнопки після кліку: " + _hs[:4200])
                             except Exception:  # noqa: BLE001
                                 res["problems"].append("обробники кнопки після кліку: не прочитано")
                             try:

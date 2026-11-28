@@ -511,7 +511,9 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
         ensure_session()          # автовхід ДО будь-яких дій у кабінеті; збій = OrderError ДО кліку (runner відкотить крок)
     if not STATE_FILE.exists():
         raise OrderError(f"нема сесії {STATE_FILE.name}: --vps-login")
-    res = {"ready": False, "submitted": False, "not_submitted_certain": False, "problems": []}
+    # З submit=True ДО кліку «Резерв» (прапор скидається в False лише перед самим кліком) будь-яка помилка — кошик не порожній, пошук, форма, PDF — означає «точно НЕ відправлено»: runner має відкотити
+    # крок у marking_ready й повторити (інакше замовлення назавжди застрягає в rt_ordering до ручного скидання БД — 28.11 eva_8-085489509: «кошик не порожній» залишив claim).
+    res = {"ready": False, "submitted": False, "not_submitted_certain": bool(submit), "problems": []}
     blocked = {"final": False}
     up_dir = None        # temp-каталог копії PDF під коротким іменем: прибирається в зовнішньому finally (після фіналу/будь-якого виходу — форма може тримати File до відправки)
     aborted = []         # ДІАГНОСТИКА: шляхи (без query/тіла) POST-запитів, які лок заблокував — щоб побачити, куди насправді йде клік по «Резерв»

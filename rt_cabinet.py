@@ -751,6 +751,14 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                             _errs = [re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", re.sub(r"\s+", " ", x))[:70] for x in _errs]     # цифри/телефони маскуємо: ПІБ/телефон не мають потрапити в rt_error/алерт
                             res["problems"].append("видимі повідомлення форми після кліку: " + (" | ".join(_errs) or "нема"))
                             res["problems"].append("усі запити у вікні кліку: " + (", ".join(seen_req) or "жодного") + "; діалоги: " + (" | ".join(dialogs) or "нема"))
+                            try:    # ДІАГНОСТИКА 28.11 (eva_8-085489509: клік без жодного запиту): HTML5-валідація форми мовчки блокує сабміт — лише ІМЕНА/типи/повідомлення полів, значень (ПІБ/телефон) не читаємо
+                                _val = page.evaluate("""() => { const f = document.querySelector('form.checkout-form'); if (!f) return null;
+                                    return {valid: f.checkValidity(), novalidate: f.noValidate, action_set: !!f.getAttribute('action'),
+                                            invalid: Array.from(f.elements).filter(e => e.willValidate && !e.validity.valid).slice(0, 8).map(e => ({n: String(e.name || e.id || '').slice(0, 60), t: e.type, req: e.required, vis: e.offsetParent !== null, m: String(e.validationMessage || '').slice(0, 60)})),
+                                            hidden_required_empty: Array.from(f.querySelectorAll('[required]')).filter(e => e.offsetParent === null && !e.value).slice(0, 5).map(e => String(e.name || e.id || '').slice(0, 60))}; }""")
+                                res["problems"].append("валідація форми після кліку: " + json.dumps(_val, ensure_ascii=False)[:900])
+                            except Exception:  # noqa: BLE001
+                                res["problems"].append("валідація форми після кліку: не прочитано")
                             try:
                                 _toks = [t for t in re.split(r"\s+", order["recipient_name"]) if len(t) > 2] + ([order["recipient_phone"][-4:]] if order["recipient_phone"] else [])
                                 _dom = page.evaluate("""(toks) => {

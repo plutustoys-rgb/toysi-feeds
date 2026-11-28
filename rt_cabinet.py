@@ -761,6 +761,23 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                 res["problems"].append("валідація форми після кліку: " + json.dumps(_val, ensure_ascii=False)[:900])
                             except Exception:  # noqa: BLE001
                                 res["problems"].append("валідація форми після кліку: не прочитано")
+                            try:    # ДІАГНОСТИКА 28.11 (валідація чиста: valid=true, novalidate=true, action нема → сабміт робить JS сторінки): які jQuery-обробники click/submit висять на #checkout-btn/формі (код САЙТУ RT, не значення полів)
+                                _hnd = page.evaluate("""() => { const out = {}; try { const J = window.jQuery; if (!J) return {nojq: true};
+                                    const ev = J._data(document, 'events') || {};
+                                    out.doc = Object.keys(ev).slice(0, 12).map(k => k + ':' + ev[k].map(h => h.selector || '-').slice(0, 12).join(','));
+                                    const btn = document.querySelector('#checkout-btn'); const matched = [];
+                                    for (const k of ['click', 'submit']) for (const h of (ev[k] || [])) { if (h.selector && btn && btn.matches(h.selector)) matched.push(k + ' ' + h.selector + ' => ' + String(h.handler).replace(/\\s+/g, ' ').slice(0, 600)); }
+                                    out.matched = matched.slice(0, 4);
+                                    const f = document.querySelector('form.checkout-form'); const fe = (f && J._data(f, 'events')) || {};
+                                    out.form = Object.keys(fe).slice(0, 8).map(k => k + ':' + fe[k].map(h => h.selector || '-').join(','));
+                                    const we = J._data(window, 'events') || {}; out.win = Object.keys(we).slice(0, 8);
+                                } catch (e) { out.err = String(e).slice(0, 80); } return out; }""")
+                                _hs = re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", json.dumps(_hnd, ensure_ascii=False))     # цифрові послідовності маскуємо (телефони/ТТН не мають потрапити в журнал)
+                                for _t in [t for t in re.split(r"\s+", order["recipient_name"]) if len(t) > 2]:
+                                    _hs = _hs.replace(_t, "#")
+                                res["problems"].append("обробники кнопки після кліку: " + _hs[:2400])
+                            except Exception:  # noqa: BLE001
+                                res["problems"].append("обробники кнопки після кліку: не прочитано")
                             try:
                                 _toks = [t for t in re.split(r"\s+", order["recipient_name"]) if len(t) > 2] + ([order["recipient_phone"][-4:]] if order["recipient_phone"] else [])
                                 _dom = page.evaluate("""(toks) => {

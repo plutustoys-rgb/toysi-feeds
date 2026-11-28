@@ -19,6 +19,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 import orders_db  # noqa: E402
 import rt_order_runner as rr  # noqa: E402
 import rt_cabinet  # noqa: E402
+# ІЗОЛЯЦІЯ ЖУРНАЛУ АЛЕРТІВ (28.11.2026): rt_order_runner._alert → telegram_notify.send_throttled_alert ПИШЕ у reports/telegram_alerts.md і
+# reports/.alert_throttle.json БОЙОВОЇ копії (AUDIT_NO_TELEGRAM глушить лише Telegram). Тричі за день це засмітило health_check хибними 🟠 (site_F1, site_Q1…).
+import telegram_notify as _tn  # noqa: E402
+_alert_tmp = Path(tempfile.mkdtemp())
+_tn.ALERTS_LOG_FILE = _alert_tmp / "telegram_alerts.md"
+_tn.ALERT_THROTTLE_FILE = _alert_tmp / ".alert_throttle.json"
 
 F = []
 
@@ -908,6 +914,8 @@ with orders_db.get_connection() as c:
     rr.refresh_cabinet_statuses(c, CabFake({}), [o for o in orders_db.get_rt_orders_pending(c) if o["internal_order_id"] == cb4])
 chk("не знайдено у списку (None) → без алерту", not _alerts)
 rr._alert = _orig_alert
+
+chk("тест пише алерти у ТИМЧАСОВИЙ журнал, а не в бойовий reports/ (28.11: тричі засмітив health_check)", _tn.ALERTS_LOG_FILE.parent == _alert_tmp and _tn.ALERTS_LOG_FILE.exists() and _tn.ALERT_THROTTLE_FILE.parent == _alert_tmp)
 
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

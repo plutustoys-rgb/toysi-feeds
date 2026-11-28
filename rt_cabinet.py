@@ -766,20 +766,23 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                     const ev = J._data(document, 'events') || {}; const btn = document.querySelector('#checkout-btn');
                                     out.chain = []; for (let e = btn, n = 0; e && n < 7; e = e.parentElement, n++) out.chain.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + String(e.className || '').split(' ').filter(Boolean).slice(0, 3).map(c => '.' + c).join(''));
                                     out.step_confirmation = !!(btn && btn.closest('.step-confirmation'));
-                                    const matched = [], other = [];
+                                    const matched = [], other = []; let fullcode = '';
                                     for (const k of ['click', 'submit']) for (const h of (ev[k] || [])) { if (!h.selector) continue; let m = false; try { m = J(btn).is(h.selector); } catch (e) { m = false; }
                                         const code = String(h.handler).replace(/\\s+/g, ' ');
-                                        if (m) matched.push(k + ' ' + h.selector.slice(-60) + ' => ' + code.slice(0, 1400));
+                                        if (m) { if (!fullcode) fullcode = code; matched.push(k + ' ' + h.selector.slice(-60) + ' => ' + code.slice(0, 1400)); }
                                         else if (/checkout|confirm|step/.test(h.selector)) other.push(k + ' ' + h.selector.slice(-80) + ' => ' + code.slice(0, 300)); }
                                     out.matched = matched.slice(0, 3); out.other = other.slice(0, 3);
                                     out.submit_sel = (ev.submit || []).map(h => h.selector || '-').slice(0, 8);
+                                    out.matched_tail = fullcode.slice(1400, 6200);
+                                    out.shipping_blocks = Array.from(document.querySelectorAll('div, li, section')).filter(e => Array.from(e.classList).some(c => /^shipping-[0-9]+$/.test(c))).slice(0, 8).map(e => Array.from(e.classList).filter(c => /^shipping-[0-9]+$/.test(c) || c === 'sel').join('.'));
+                                    out.fields15 = Array.from(document.querySelectorAll('.shipping-15 input, .shipping-15 select, .shipping-15 textarea')).slice(0, 20).map(e => { const w = e.closest('[class*=wa-field-address-]'); const c = w ? Array.from(w.classList).find(x => x.indexOf('wa-field-address-') === 0) : ''; return (c || e.name || '?').replace('wa-field-address-', '').slice(0, 30) + ':' + (e.value ? 'filled' : 'EMPTY'); });
                                     const f = document.querySelector('form.checkout-form'); const fe = (f && J._data(f, 'events')) || {};
                                     out.form = Object.keys(fe).slice(0, 8).map(k => k + ':' + fe[k].map(h => h.selector || '-').join(','));
                                 } catch (e) { out.err = String(e).slice(0, 120); } return out; }""")
                                 _hs = re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", json.dumps(_hnd, ensure_ascii=False))     # цифрові послідовності маскуємо (телефони/ТТН не мають потрапити в журнал)
                                 for _t in [t for t in re.split(r"\s+", order["recipient_name"]) if len(t) > 2]:
                                     _hs = _hs.replace(_t, "#")
-                                res["problems"].append("обробники кнопки після кліку: " + _hs[:4200])
+                                res["problems"].append("обробники кнопки після кліку: " + _hs[:9000])
                             except Exception:  # noqa: BLE001
                                 res["problems"].append("обробники кнопки після кліку: не прочитано")
                             try:

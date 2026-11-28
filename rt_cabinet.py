@@ -771,9 +771,12 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                         const code = String(h.handler).replace(/\\s+/g, ' ');
                                         if (m) { if (!fullcode) fullcode = code; matched.push(k + ' ' + h.selector.slice(-60) + ' => ' + code.slice(0, 1400)); }
                                         else if (/checkout|confirm|step/.test(h.selector)) other.push(k + ' ' + h.selector.slice(-80) + ' => ' + code.slice(0, 300)); }
-                                    out.matched = matched.slice(0, 3); out.other = other.slice(0, 3);
+                                    out.matched = matched.slice(0, 1).map(x => x.slice(0, 160)); out.other = other.slice(0, 2).map(x => x.slice(0, 200));
                                     out.submit_sel = (ev.submit || []).map(h => h.selector || '-').slice(0, 8);
-                                    out.matched_tail = fullcode.slice(1400, 6200);
+                                    out.code_len = fullcode.length; out.tail2 = fullcode.slice(6200, 12500);
+                                    out.fields10 = Array.from(document.querySelectorAll('.shipping-10 input, .shipping-10 select, .shipping-10 textarea')).slice(0, 24).map(e => { const w = e.closest('[class*=wa-field-address-]'); const c = w ? Array.from(w.classList).find(x => x.indexOf('wa-field-address-') === 0) : ''; return (c || e.name || '?').replace('wa-field-address-', '').slice(0, 30) + ':' + (e.value ? 'filled' + (e.name && e.name.indexOf('nomer-ttn') >= 0 ? '(len' + String(e.value).length + ')' : '') : 'EMPTY'); });
+                                    const rs = document.querySelector('.shipping-10 select.shipping-rates'); out.rates10 = rs ? String(rs.value).slice(0, 20) : null;
+                                    const of = document.querySelector('#orderaddon-files'); out.files_html_len = of ? of.innerHTML.replace(/s+/g, '').length : null;
                                     out.shipping_blocks = Array.from(document.querySelectorAll('div, li, section')).filter(e => Array.from(e.classList).some(c => /^shipping-[0-9]+$/.test(c))).slice(0, 8).map(e => Array.from(e.classList).filter(c => /^shipping-[0-9]+$/.test(c) || c === 'sel').join('.'));
                                     out.fields15 = Array.from(document.querySelectorAll('.shipping-15 input, .shipping-15 select, .shipping-15 textarea')).slice(0, 20).map(e => { const w = e.closest('[class*=wa-field-address-]'); const c = w ? Array.from(w.classList).find(x => x.indexOf('wa-field-address-') === 0) : ''; return (c || e.name || '?').replace('wa-field-address-', '').slice(0, 30) + ':' + (e.value ? 'filled' : 'EMPTY'); });
                                     const f = document.querySelector('form.checkout-form'); const fe = (f && J._data(f, 'events')) || {};
@@ -782,7 +785,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                 _hs = re.sub(r"[+\d][\d\s()\-]{5,}\d", "#", json.dumps(_hnd, ensure_ascii=False))     # цифрові послідовності маскуємо (телефони/ТТН не мають потрапити в журнал)
                                 for _t in [t for t in re.split(r"\s+", order["recipient_name"]) if len(t) > 2]:
                                     _hs = _hs.replace(_t, "#")
-                                res["problems"].append("обробники кнопки після кліку: " + _hs[:9000])
+                                res["problems"].append("обробники кнопки після кліку: " + _hs[:11000])
                             except Exception:  # noqa: BLE001
                                 res["problems"].append("обробники кнопки після кліку: не прочитано")
                             try:

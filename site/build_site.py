@@ -843,6 +843,7 @@ SUPPLIER_RT_MAX_AGE_DAYS = 3
 PHOTO_OVERRIDES = {"265377": "https://toysi.ua/p/3/enl_265377.jpg", "255663": "https://toysi.ua/p/2/enl_255663.jpg"}
 RT_MIN_DESC_INDEX = 50
 _RT_ID_RX = re.compile(r"rt-[0-9A-Za-z_]+")
+_NAME_OV_NUM_RX = re.compile(r"[0-9]{1,12}")   # id Toysi (лише ASCII-цифри) для rt_name_overrides.json (SEO 28.11: назва 219860 зіпсована в джерелі)
 _RT_COD_SENTENCE_RX = re.compile(r"[^.!?\n]*(?:накладен|при отриманні|післяплат)[^.!?\n]*[.!?]?", re.I)   # у картках rt- не обіцяємо оплату при отриманні
 
 
@@ -1210,8 +1211,7 @@ def build():
         if is_uno_trademark_blocked(name, it.get("vendor") or ""):
             continue   # ТМ «UNO» (претензія Mattel): не продаємо на власному сайті (SEO-замовлення 2026-10-06)
         name = normalize_site_title(name if it.get("supplier") in ("royaltoys", "kiddisvit") else _supplier_text_plain(name))   # Toysi (parser.py: supplier="Toysi"): сутності з фіду («Build &amp; Play», SEO 10.11: 131989, 154061) розкодовуємо до esc(); RT вже розкодовані при завантаженні (подвійний прохід не потрібен). Далі: після всіх фільтрів за оригінальною назвою: регістр назви-капсом (feed_title_norm, лише зміна регістру)
-        if it.get("supplier") == "royaltoys":
-            name = apply_rt_name_override(it.get("id"), name)   # rt_name_overrides.json
+        name = apply_rt_name_override(it.get("id"), name)   # rt_name_overrides.json: rt-… і числові id Toysi (SEO 28.11); застосовується лише при збігу from
         catname = it.get("category_name") or "Інше"
         _cat_ov = _CATEGORY_OVERRIDES.get(str(it.get("id")))
         if _cat_ov and not str(it.get("id")).startswith(("rt-", "kv-")) and _cat_ov != catname:
@@ -2569,7 +2569,7 @@ _CATEGORY_OVERRIDES_FILE = os.path.join(_HERE, "category_overrides.json")
 _CATEGORY_OVERRIDES = {}
 
 # Точкові виправлення назв карток RoyalToys (SEO 20.11): site/rt_name_overrides.json {"rt-<id>": {"from": назва постачальника, "to": назва для сайту}}.
-# Застосовується лише коли назва постачальника (після нормалізації) дорівнює from: постачальник виправив/змінив назву — WARN у збірці, лишається його назва. Лише id «rt-…».
+# Застосовується лише коли назва постачальника (після нормалізації) дорівнює from: постачальник виправив/змінив назву — WARN у збірці, лишається його назва. id «rt-…» і (з 28.11, SEO) числові id Toysi.
 _RT_NAME_OVERRIDES_FILE = os.path.join(_HERE, "rt_name_overrides.json")
 _RT_NAME_OVERRIDES = {}
 _RT_NAME_OVERRIDES_WARNED = set()
@@ -2589,13 +2589,13 @@ def _load_rt_name_overrides():
     for k, v in data.items():
         if isinstance(k, str) and k.startswith("_"):
             continue
-        if (isinstance(k, str) and _RT_ID_RX.fullmatch(k) and isinstance(v, dict) and isinstance(v.get("from"), str) and isinstance(v.get("to"), str)
+        if (isinstance(k, str) and (_RT_ID_RX.fullmatch(k) or _NAME_OV_NUM_RX.fullmatch(k)) and isinstance(v, dict) and isinstance(v.get("from"), str) and isinstance(v.get("to"), str)
                 and v["from"].strip() and v["to"].strip() and v["from"].strip() != v["to"].strip()):
             _RT_NAME_OVERRIDES[k] = (v["from"].strip(), v["to"].strip())
         else:
             bad.append(str(k)[:20])
     if bad:
-        print(f"[build] ⚠ rt_name_overrides.json: {len(bad)} записів відкинуто (id не «rt-…», нема рядків from/to, порожні або однакові): {', '.join(bad[:5])}", file=sys.stderr)
+        print(f"[build] ⚠ rt_name_overrides.json: {len(bad)} записів відкинуто (id не «rt-…» і не з цифр, нема рядків from/to, порожні або однакові): {', '.join(bad[:5])}", file=sys.stderr)
     return _RT_NAME_OVERRIDES
 
 

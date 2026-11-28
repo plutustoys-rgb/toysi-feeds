@@ -263,5 +263,16 @@ _pc = _of2.index("телефон отримувача зник із форми �
 chk("order_flow: повторна перевірка телефону стоїть ПЕРЕД скиданням прапора й кліком (аудит #2107)",
     _pc < _of2.index('res["not_submitted_certain"] = False') < _of2.index('sub.first.evaluate("e => e.click()")'))
 
+class _FakePhoneTimeout(_FakePhone):
+    def click(self, timeout=0): raise TimeoutError("Timeout 8000ms exceeded")
+    def is_visible(self): return True
+    def is_enabled(self): return True
+    def is_editable(self): return False
+try:
+    rc.enter_phone(_FakePhoneTimeout(False, ()), "+380501234567"); _m6 = ""
+except rc.OrderError as _e6:
+    _m6 = str(_e6)
+chk("enter_phone: таймаут кроку → OrderError з назвою кроку й станом поля, без номера", "крок «click»" in _m6 and "TimeoutError" in _m6 and '"editable": false' in _m6 and "501234567" not in _m6)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -218,5 +218,39 @@ _tree = _ast.parse(open(rc.__file__, encoding="utf-8").read())
 _bad = [n.lineno for n in _ast.walk(_tree) if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Attribute) and n.func.attr in ("evaluate", "eval_on_selector", "eval_on_selector_all") and n.args and not isinstance(n.args[0], (_ast.Constant, _ast.Name)) and not (n.func.attr != "evaluate" and isinstance(n.args[0], _ast.Constant))]
 chk("rt_cabinet: JS-діагностики page.evaluate — суцільні рядкові константи (без конкатенації/невизначених імен; аудит #2104 зловив bs*2)", not _bad)
 
+class _FakePhone:
+    """Двійник поля телефону: mode — як поле реагує. fill_keeps: чи тримає .fill(); typed_ok: які формати друку приймає (за кількістю цифр)."""
+    def __init__(self, fill_keeps, typed_ok):
+        self.v, self.fill_keeps, self.typed_ok, self.log = "", fill_keeps, typed_ok, []
+    def fill(self, val, timeout=0):
+        self.log.append("fill")
+        self.v = val if (self.fill_keeps or val == "") else ""
+    def click(self, timeout=0): self.log.append("click")
+    def press_sequentially(self, text, delay=0, timeout=0):
+        self.log.append("type:" + str(len(text)))
+        self.v = text if len(text) in self.typed_ok else ""
+    def input_value(self): return self.v
+    def evaluate(self, js):
+        return {"ph": "+38 (0__) ___-__-__", "ml": 19, "attrs": "type,data-mask"} if "placeholder" in js else None
+_ph = "+380501234567"
+_f1 = _FakePhone(True, ()); rc.enter_phone(_f1, _ph)
+chk("enter_phone: поле тримає fill → без друку клавішами", _f1.log == ["fill"])
+_f2 = _FakePhone(False, (13,)); rc.enter_phone(_f2, _ph)
+chk("enter_phone: fill стирається, друк +380… (13 знаків) проходить з першої спроби", _f2.log.count("fill") == 2 and "type:13" in _f2.log and "type:10" not in _f2.log)
+_f3 = _FakePhone(False, (10,)); rc.enter_phone(_f3, _ph)
+chk("enter_phone: приймає лише національний 0XXXXXXXXX — знаходить другим форматом", "type:13" in _f3.log and "type:10" in _f3.log and _f3.v == "0501234567")
+_f4 = _FakePhone(False, ())
+try:
+    rc.enter_phone(_f4, _ph); _ok4 = False; _msg4 = ""
+except rc.OrderError as _e:
+    _ok4 = True; _msg4 = str(_e)
+chk("enter_phone: жодний формат не тримається → OrderError (ДО кліку) з атрибутами поля, без номера", _ok4 and "data-mask" in _msg4 and "501234567" not in _msg4)
+try:
+    rc.enter_phone(_FakePhone(True, ()), "12"); _ok5 = False
+except rc.OrderError:
+    _ok5 = True
+chk("enter_phone: порожній/короткий номер → OrderError до будь-якого введення", _ok5)
+
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

@@ -213,5 +213,10 @@ _k = _of_src.index('res["not_submitted_certain"] = False') if _of_src.count('res
 chk("order_flow: not_submitted_certain скидається в False РІВНО раз — після перевірок кнопки й безпосередньо перед кліком #checkout-btn",
     _k > _of_src.index('sub.first.get_attribute("type")') and _k < _of_src.index('sub.first.evaluate("e => e.click()")'))
 
+import ast as _ast
+_tree = _ast.parse(open(rc.__file__, encoding="utf-8").read())
+_bad = [n.lineno for n in _ast.walk(_tree) if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Attribute) and n.func.attr in ("evaluate", "eval_on_selector", "eval_on_selector_all") and n.args and not isinstance(n.args[0], (_ast.Constant, _ast.Name)) and not (n.func.attr != "evaluate" and isinstance(n.args[0], _ast.Constant))]
+chk("rt_cabinet: JS-діагностики page.evaluate — суцільні рядкові константи (без конкатенації/невизначених імен; аудит #2104 зловив bs*2)", not _bad)
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

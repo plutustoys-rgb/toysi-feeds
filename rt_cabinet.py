@@ -524,15 +524,29 @@ def enter_phone(loc, phone: str, wait=None) -> None:
         if wait:
             wait(ms)
 
-    loc.fill(phone, timeout=8000)
+    def step(name, fn):
+        """Кожен крок вводу в обгортці: збій/таймаут → OrderError з НАЗВОЮ кроку й станом поля (видиме/активне/редаговане), без значень (28.11: «збій TimeoutError» без кроку)."""
+        try:
+            return fn()
+        except OrderError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            try:
+                st = {"vis": bool(loc.is_visible()), "enabled": bool(loc.is_enabled()), "editable": bool(loc.is_editable())}
+            except Exception:  # noqa: BLE001
+                st = None
+            raise OrderError(f"телефон отримувача: крок «{name}» не вдався ({type(e).__name__}); стан поля: {json.dumps(st)}")
+
+    step("fill", lambda: loc.fill(phone, timeout=8000))
     pause(200)
     if ok():
         return
     for variant in ("+" + want, want[-10:], want):
-        loc.click(timeout=8000)
-        loc.fill("", timeout=8000)
-        loc.press_sequentially(variant, delay=70, timeout=15000)
-        loc.evaluate("e => { e.dispatchEvent(new Event('change', {bubbles: true})); e.blur(); }")
+        n = len(variant)
+        step("click", lambda: loc.click(timeout=8000))
+        step("clear", lambda: loc.fill("", timeout=8000))
+        step("type%d" % n, lambda: loc.press_sequentially(variant, delay=70, timeout=15000))
+        step("change/blur", lambda: loc.evaluate("e => { e.dispatchEvent(new Event('change', {bubbles: true})); e.blur(); }"))
         pause(300)
         if ok():
             return

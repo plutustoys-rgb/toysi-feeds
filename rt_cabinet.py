@@ -766,7 +766,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                                     const ev = J._data(document, 'events') || {};
                                     out.doc = Object.keys(ev).slice(0, 12).map(k => k + ':' + ev[k].map(h => h.selector || '-').slice(0, 12).join(','));
                                     const btn = document.querySelector('#checkout-btn'); const matched = [];
-                                    for (const k of ['click', 'submit']) for (const h of (ev[k] || [])) { if (h.selector && btn && btn.matches(h.selector)) matched.push(k + ' ' + h.selector + ' => ' + String(h.handler).replace(/\s+/g, ' ').slice(0, 600)); }
+                                    for (const k of ['click', 'submit']) for (const h of (ev[k] || [])) { if (h.selector && btn && btn.matches(h.selector)) matched.push(k + ' ' + h.selector + ' => ' + String(h.handler).replace(/\\s+/g, ' ').slice(0, 600)); }
                                     out.matched = matched.slice(0, 4);
                                     const f = document.querySelector('form.checkout-form'); const fe = (f && J._data(f, 'events')) || {};
                                     out.form = Object.keys(fe).slice(0, 8).map(k => k + ':' + fe[k].map(h => h.selector || '-').join(','));

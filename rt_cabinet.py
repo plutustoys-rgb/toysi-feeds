@@ -531,10 +531,12 @@ def enter_phone(loc, phone: str, wait=None) -> None:
         except OrderError:
             raise
         except Exception as e:  # noqa: BLE001
+            st = None
             try:
                 st = {"vis": bool(loc.is_visible()), "enabled": bool(loc.is_enabled()), "editable": bool(loc.is_editable())}
+                st["geom"] = loc.evaluate("e => { const r = e.getBoundingClientRect(); const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return {len: String(e.value || '').length, y: Math.round(r.top), h: Math.round(r.height), vh: window.innerHeight, cov: (t && t !== e) ? (t.tagName.toLowerCase() + (t.id ? '#' + t.id : '') + String(t.className || '').split(' ').filter(Boolean).slice(0, 3).map(c => '.' + c).join('')) : 'self'}; }")
             except Exception:  # noqa: BLE001
-                st = None
+                pass        # st лишається тим, що вдалось зібрати (None або без geom)
             raise OrderError(f"телефон отримувача: крок «{name}» не вдався ({type(e).__name__}); стан поля: {json.dumps(st)}")
 
     step("fill", lambda: loc.fill(phone, timeout=8000))
@@ -543,7 +545,7 @@ def enter_phone(loc, phone: str, wait=None) -> None:
         return
     for variant in ("+" + want, want[-10:], want):
         n = len(variant)
-        step("click", lambda: loc.click(timeout=8000))
+        step("focus", lambda: loc.evaluate("e => e.focus()"))        # без pointer-actionability: click() тут давав TimeoutError (28.11), хоча поле vis/enabled/editable
         step("clear", lambda: loc.fill("", timeout=8000))
         step("type%d" % n, lambda: loc.press_sequentially(variant, delay=70, timeout=15000))
         step("change/blur", lambda: loc.evaluate("e => { e.dispatchEvent(new Event('change', {bubbles: true})); e.blur(); }"))

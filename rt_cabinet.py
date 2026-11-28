@@ -499,6 +499,50 @@ def _mask_pii(text, order: dict) -> str:
     return t
 
 
+def phone_still_ok(loc, phone: str) -> bool:
+    """Чи в полі телефону RT зараз лежить саме цей номер (≥10 цифр, кінець = останні 9 цифр номера). Використовується і після вводу, і ПЕРЕД кліком «Резерв»
+    (аудит #2107: між вводом і кліком форма змінюється — change, PDF, перемикач; якщо значення стирає подія/перерендер RT, а не маска, перевірка одразу після вводу цього не бачить)."""
+    want = re.sub(r"\D", "", phone or "")
+    got = re.sub(r"\D", "", loc.input_value() or "")
+    return len(want) >= 10 and len(got) >= 10 and got.endswith(want[-9:])
+
+
+def enter_phone(loc, phone: str, wait=None) -> None:
+    """Вводить телефон отримувача в поле RoyalToys і ПЕРЕВІРЯЄ, що значення справді лишилось у полі.
+    28.11 (eva_8-085489509): .fill() давав порожнє поле (на сторінці RT — маска/скидання значення), а власний обробник RT мовчки блокує сабміт без телефону
+    (`telefon-polucha` порожній → червоний border, k=1, жодного запиту). Тому: спершу fill; якщо цифри не збігаються — друкуємо клавішами у трьох форматах
+    (+380…, 0XXXXXXXXX, 380…) і після кожного читаємо значення назад. Не вдалось — OrderError ДО кліку (крок відкотиться), у повідомленні лише
+    атрибути поля (placeholder/maxlength/назви mask-атрибутів), без значень. loc — Playwright Locator (або двійник у тесті)."""
+    want = re.sub(r"\D", "", phone or "")
+    if len(want) < 10:
+        raise OrderError("телефон отримувача для форми RoyalToys порожній/некоректний")
+
+    def ok() -> bool:
+        return phone_still_ok(loc, phone)
+
+    def pause(ms):
+        if wait:
+            wait(ms)
+
+    loc.fill(phone, timeout=8000)
+    pause(200)
+    if ok():
+        return
+    for variant in ("+" + want, want[-10:], want):
+        loc.click(timeout=8000)
+        loc.fill("", timeout=8000)
+        loc.press_sequentially(variant, delay=70, timeout=15000)
+        loc.evaluate("e => { e.dispatchEvent(new Event('change', {bubbles: true})); e.blur(); }")
+        pause(300)
+        if ok():
+            return
+    try:
+        attrs = loc.evaluate("e => ({ph: String(e.placeholder || '').slice(0, 30), ml: e.maxLength, attrs: Array.from(e.attributes).map(a => a.name).filter(n => /mask|pattern|format|type/i.test(n)).join(',')})")
+    except Exception:  # noqa: BLE001
+        attrs = None
+    raise OrderError("телефон отримувача не вдалося ввести у форму RoyalToys (поле його не тримає): " + json.dumps(attrs, ensure_ascii=False)[:200])
+
+
 def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict:
     """Оформлення в кабінеті RoyalToys. Без submit — зупиняємось перед фіналом. Повертає словник зі станом. Кошик лишається ЧИСТИМ (finally)."""
     from playwright.sync_api import sync_playwright
@@ -643,7 +687,7 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                 if order["recipient_name"]:
                     setf(pre + "[fio-poluchately]", order["recipient_name"])
                 if order["recipient_phone"]:
-                    setf(pre + "[telefon-polucha]", order["recipient_phone"])
+                    enter_phone(page.locator("[name='%s[telefon-polucha]']" % pre).first, order["recipient_phone"], page.wait_for_timeout)
                 setf(pre + "[nomer-ttn]", order["ttn_number"])
                 sel = page.locator("[name='%s[variant-oplaty]']" % pre).first
                 sel.evaluate("(e, v) => { const o = [...e.options].find(x => x.value === v); if (!o) throw new Error('no option'); e.value = v; e.dispatchEvent(new Event('change', {bubbles:true})); }", PAYMENT_PREPAID)
@@ -729,6 +773,8 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     res["submit_button_type"] = sub.first.get_attribute("type")
                     if not sub.first.is_visible() or not sub.first.is_enabled() or "балансу" in sub_text:
                         raise OrderError(f"кнопка відправки недоступна або має несподіваний текст («{sub_text[:40]}») — зупинка")
+                    if order["recipient_phone"] and not phone_still_ok(page.locator("[name='%s[telefon-polucha]']" % pre).first, order["recipient_phone"]):
+                        raise OrderError("телефон отримувача зник із форми до кліку (подія/перерендер RoyalToys після введення) — зупинка до озброєння, крок відкотиться")
                     # З цього рядка результат може бути невідомим: помилки лишають rt_ordering (автоповтору немає)
                     res["not_submitted_certain"] = False
                     armed["on"] = True

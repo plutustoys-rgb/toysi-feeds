@@ -48,9 +48,9 @@ def load_ov(data):
 
 # ── (1) юніт ──
 r, e = load_ov({"_призначення": "службове", "rt-1": {"from": "Самолетик", "to": "Літачок"}, "rt-2s3": {"from": " А б ", "to": "А"},
-                "123": {"from": "x", "to": "y"}, "rt-4": {"from": "Same", "to": "Same"}, "rt-5": {"from": "A"}, "rt-6": "рядок", "rt-7": {"from": "", "to": "B"}, "rt-8": {"from": 1, "to": "B"}})
-chk("завантажувач бере лише валідні «rt-…» з рядками from≠to; службовий ключ ігнорує; решту 6 відкидає ГОЛОСНО",
-    set(r) == {"rt-1", "rt-2s3"} and r["rt-2s3"] == ("А б", "А") and "6 записів відкинуто" in e)
+                "123": {"from": "x", "to": "y"}, "12a": {"from": "x", "to": "y"}, "rt-4": {"from": "Same", "to": "Same"}, "rt-5": {"from": "A"}, "rt-6": "рядок", "rt-7": {"from": "", "to": "B"}, "rt-8": {"from": 1, "to": "B"}})
+chk("завантажувач бере валідні «rt-…» і числові id Toysi з рядками from≠to; службовий ключ ігнорує; решту 6 (в т.ч. «12a») відкидає ГОЛОСНО",
+    set(r) == {"rt-1", "rt-2s3", "123"} and r["rt-2s3"] == ("А б", "А") and "6 записів відкинуто" in e)
 r, e = load_ov("{ не json")
 chk("поламаний JSON: порожньо, голосно, збірка не падає", r == {} and "rt_name_overrides.json" in e)
 r, e = load_ov([1, 2])
@@ -77,8 +77,8 @@ ereal = io.StringIO()
 with contextlib.redirect_stderr(ereal):
     real = dict(bs._load_rt_name_overrides())
 raw = json.loads(Path(REAL).read_text(encoding="utf-8"))
-chk("справжній rt_name_overrides.json: 17 валідних записів, жоден не відкинуто",
-    len(real) == 17 and ereal.getvalue() == "" and set(real) == {k for k in raw if not k.startswith("_")})
+chk("справжній rt_name_overrides.json: 18 валідних записів, жоден не відкинуто",
+    len(real) == 18 and ereal.getvalue() == "" and set(real) == {k for k in raw if not k.startswith("_")})
 chk("правки з ТЗ: Соціальні сервіси / Літачок / Чарівна валізка ×2 / кілечок / Монстрик ×6; без «із безпечних матерів» ×2",
     "Соціальні сервіси" in real["rt-42389"][1] and "Літачок Максик" in real["rt-25852s33794"][1]
     and all("Чарівна валізка" in real[k][1] for k in ("rt-69816", "rt-69817")) and "80 кілечок" in real["rt-70755"][1]
@@ -87,6 +87,8 @@ chk("правки з ТЗ: Соціальні сервіси / Літачок / 
     and all(a != b for a, b in real.values()))
 chk("rt-57494: «лабораторнний» → «лабораторний» (SEO 18:31)", real["rt-57494"][1] == "Дитячий лабораторний набір Ящірка Bambi 803B, скелет, внутрішні органи" and "лабораторнний" not in real["rt-57494"][1])
 chk("SEO 21.11 20:43: «Монстрік» → «Монстрик» (rt-23806s30835/36), «Tubro» → «Turbo» (rt-45683)", all("Монстрик" in real[k][1] and "Монстрік" not in real[k][1] for k in ("rt-23806s30835", "rt-23806s30836")) and "Turbo" in real["rt-45683"][1] and "Tubro" not in real["rt-45683"][1] and "Tubro" in real["rt-45683"][0])
+chk("219860 (SEO 28.11): «Р / УТанк … / 18 /» → «Р/У Танк бойовий…», дефект уцінки збережено дослівно",
+    real["219860"][1].startswith("Уцінка. Р/У Танк бойовий") and real["219860"][1].endswith("Немає колеса та кришки для пульта, на роботу не впливає") and "/ 18 /" not in real["219860"][1])
 chk("кожна правка змінює лише потрібне (різниця довжин ≤ 25 знаків)", all(abs(len(a) - len(b)) <= 25 for a, b in real.values()))
 
 # ── (3) наскрізна збірка ──
@@ -105,13 +107,15 @@ def rt_item(n):
 (tmp / "m.json").write_text(json.dumps({"Конструкторы": "Конструктори"}, ensure_ascii=False), encoding="utf-8")
 (tmp / "ov_e2e.json").write_text(json.dumps({"rt-9001": {"from": "Самолетик Максик Червоний", "to": "Літачок Максик Червоний"},
                                               "rt-9002": {"from": "Самолетик Максик Синій", "to": "Літачок Максик Синій"},
-                                              "9003": {"from": "Toysi", "to": "Не має чіпати"}}, ensure_ascii=False), encoding="utf-8")
+                                              "9003": {"from": "Toysi", "to": "Toysi виправлена"},
+                                              "9004": {"from": "Toysi стара", "to": "Toysi нова"}}, ensure_ascii=False), encoding="utf-8")
 bs.SUPPLIER_RT_FILE, bs.RT_CATEGORY_MAP_FILE = str(tmp / "s.json"), str(tmp / "m.json")
 bs.SUPPLIER_KV_FILE = str(tmp / "no_kv.json")
 bs.CATEGORY_GROUPS_FILE = str(tmp / "none.json")
 bs._RT_NAME_OVERRIDES_FILE = str(tmp / "ov_e2e.json")
 toysi = {"9003": {"id": "9003", "name": "Toysi", "vendor": "T", "price": 100, "stock": 5, "category_name": "Машинки", "category_id": "10", "pictures": ["https://toysi.ua/p/enl_9003.jpg"],
                   "description": "Опис товару достатньої довжини для картки сайту, понад сорок символів.", "params": {}, "url": "https://toysi.ua/p/9003", "rt_cost": 10}}
+toysi["9004"] = dict(toysi["9003"], id="9004", name="Toysi змінена постачальником", url="https://toysi.ua/p/9004", pictures=["https://toysi.ua/p/enl_9004.jpg"])
 bs.tp.fetch_toysi_catalog = lambda: dict(toysi)
 bs.tp.assert_catalog_size_sane = lambda c, *a, **k: None
 out = Path(tempfile.mkdtemp())
@@ -120,12 +124,13 @@ err = io.StringIO()
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
     bs.build()
 idx = {x["id"]: x for x in json.loads((out / "index.json").read_text(encoding="utf-8"))}
-chk("збірка: назва rt-9001 у index.json виправлена; rt-9002 (змінена постачальником) лишилась його; Toysi 9003 не зачеплено",
-    idx.get("rt-9001", {}).get("n") == "Літачок Максик Червоний" and idx.get("rt-9002", {}).get("n") == "Літачок інший, змінений постачальником" and idx.get("9003", {}).get("n") == "Toysi")
+chk("збірка: назва rt-9001 у index.json виправлена; rt-9002 (змінена постачальником) лишилась його; Toysi 9003 виправлено (з 28.11, числові id); Toysi 9004 (назву змінив постачальник) лишилась його",
+    idx.get("rt-9001", {}).get("n") == "Літачок Максик Червоний" and idx.get("rt-9002", {}).get("n") == "Літачок інший, змінений постачальником" and idx.get("9003", {}).get("n") == "Toysi виправлена"
+    and idx.get("9004", {}).get("n") == "Toysi змінена постачальником")
 pf = out / "product-rt-9001.html"
 h = pf.read_text(encoding="utf-8") if pf.exists() else ""
 chk("картка rt-9001: нова назва є, старої нема", "Літачок Максик Червоний" in h and "Самолетик" not in h)
-chk("WARN у stderr збірки: розбіжність названо (rt-9002), відкинутий ключ «9003» теж",
-    "rt-9002" in err.getvalue() and "назва постачальника змінилась" in err.getvalue() and "1 записів відкинуто" in err.getvalue())
+chk("WARN у stderr збірки: розбіжність названо для rt-9002 і для 9004; жодного запису не відкинуто",
+    "rt-9002" in err.getvalue() and "9004" in err.getvalue() and "назва постачальника змінилась" in err.getvalue() and not any("rt_name_overrides.json" in l and "відкинуто" in l for l in err.getvalue().splitlines()))
 print("\n" + ("ALL OK" if not F else f"FAIL: {len(F)}"))
 sys.exit(1 if F else 0)

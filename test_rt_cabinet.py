@@ -252,5 +252,16 @@ except rc.OrderError:
 chk("enter_phone: порожній/короткий номер → OrderError до будь-якого введення", _ok5)
 
 
+_fp = _FakePhone(True, ()); _fp.v = "+38 (050) 123-45-67"
+chk("phone_still_ok: значення з маскою (+38 (050) 123-45-67) збігається з +380501234567", rc.phone_still_ok(_fp, "+380501234567"))
+_fp.v = ""
+chk("phone_still_ok: порожнє поле → False", not rc.phone_still_ok(_fp, "+380501234567"))
+_fp.v = "+38 (050) 999-99-99"
+chk("phone_still_ok: чужий номер (інші останні 9 цифр) → False", not rc.phone_still_ok(_fp, "+380501234567"))
+_of2 = __import__("inspect").getsource(rc.order_flow)
+_pc = _of2.index("телефон отримувача зник із форми до кліку")
+chk("order_flow: повторна перевірка телефону стоїть ПЕРЕД скиданням прапора й кліком (аудит #2107)",
+    _pc < _of2.index('res["not_submitted_certain"] = False') < _of2.index('sub.first.evaluate("e => e.click()")'))
+
 print("\nFAIL:" if F else "\nOK: усі перевірки пройдені", *F, sep="\n")
 sys.exit(1 if F else 0)

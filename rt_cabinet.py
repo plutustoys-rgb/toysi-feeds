@@ -499,6 +499,14 @@ def _mask_pii(text, order: dict) -> str:
     return t
 
 
+def phone_still_ok(loc, phone: str) -> bool:
+    """Чи в полі телефону RT зараз лежить саме цей номер (≥10 цифр, кінець = останні 9 цифр номера). Використовується і після вводу, і ПЕРЕД кліком «Резерв»
+    (аудит #2107: між вводом і кліком форма змінюється — change, PDF, перемикач; якщо значення стирає подія/перерендер RT, а не маска, перевірка одразу після вводу цього не бачить)."""
+    want = re.sub(r"\D", "", phone or "")
+    got = re.sub(r"\D", "", loc.input_value() or "")
+    return len(want) >= 10 and len(got) >= 10 and got.endswith(want[-9:])
+
+
 def enter_phone(loc, phone: str, wait=None) -> None:
     """Вводить телефон отримувача в поле RoyalToys і ПЕРЕВІРЯЄ, що значення справді лишилось у полі.
     28.11 (eva_8-085489509): .fill() давав порожнє поле (на сторінці RT — маска/скидання значення), а власний обробник RT мовчки блокує сабміт без телефону
@@ -510,8 +518,7 @@ def enter_phone(loc, phone: str, wait=None) -> None:
         raise OrderError("телефон отримувача для форми RoyalToys порожній/некоректний")
 
     def ok() -> bool:
-        got = re.sub(r"\D", "", loc.input_value() or "")
-        return len(got) >= 10 and got.endswith(want[-9:])
+        return phone_still_ok(loc, phone)
 
     def pause(ms):
         if wait:
@@ -766,6 +773,8 @@ def order_flow(order: dict, submit: bool = False, mode: str = "reserve") -> dict
                     res["submit_button_type"] = sub.first.get_attribute("type")
                     if not sub.first.is_visible() or not sub.first.is_enabled() or "балансу" in sub_text:
                         raise OrderError(f"кнопка відправки недоступна або має несподіваний текст («{sub_text[:40]}») — зупинка")
+                    if order["recipient_phone"] and not phone_still_ok(page.locator("[name='%s[telefon-polucha]']" % pre).first, order["recipient_phone"]):
+                        raise OrderError("телефон отримувача зник із форми до кліку (подія/перерендер RoyalToys після введення) — зупинка до озброєння, крок відкотиться")
                     # З цього рядка результат може бути невідомим: помилки лишають rt_ordering (автоповтору немає)
                     res["not_submitted_certain"] = False
                     armed["on"] = True
